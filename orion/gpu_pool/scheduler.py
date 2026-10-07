@@ -24,7 +24,7 @@ Stage 4.3 (docs/superpowers/specs/2026-09-25-gpu-pool-stage4-durable-runs-and-ac
   H4 hold recall uses defaults.hold_clawback_grace_sec; a swap seat with max_hold_sec drains once
      it has been loaded that long, then unloads (today's DURABLE_RUNS_ELASTIC_MAX_BORROW_SEC)
   S1 a seat load is blocked -- reported as SwapBlocked, never silent -- by min residency after an
-     unload, cooldown after a failed load, or a failing guard (thermal, visual_baseline)
+     unload, cooldown after a failed load, or a failing guard (thermal)
   S2 a card in "fault" grants nothing on any of its roles; a card mid-swap grants nothing on the
      seat or the roles it evicts
 
@@ -40,17 +40,42 @@ Urgent (docs/superpowers/specs/2026-09-28-urgent-curiosity-and-hardware-watch-de
      its priority (system as well as background, even if a background hold elsewhere could be
      paused instead): that is its pause (urgent_preempt, short grace), not owner_waiting with the
      hold grace
-  U2 the paused hold's abort re-queues it in place without spending an attempt (lease_graph)
+  U2 the paused hold's abort re-queues it in place without spending an attempt (lease_graph); so does
+     the abort of any other recalled retryable hold (H4 max_hold, owner reclaim, unlend, drain)
   U3 urgent holds are exempt from H1 (bounded by slots and urgent_max_concurrent) and skip a
      swap seat's after_wait_sec when no pause serves them (guards still apply). On a role it
      borrows, an urgent hold's gaps stay open to that role's owners (rule 5)
   urgent_max_concurrent caps active urgent leases; 0 is the rollback: urgent is background
+  U4 shed (docs/superpowers/plans/2026-09-29-urgent-curiosity-plan-4-5-hardware-watch-and-shedding.md):
+     ``shed`` maps a priority to the shed reason blocking it (orion/gpu_pool/shed.py decides which;
+     only background/system are ever passed). A queued, backlogged or retrying lease of a shed
+     priority gets no NEW grant and is reported as Shed(reason="shed:<name>"); it is not demand
+     anywhere (no owner-waiting recall, no swap load, no seat drain, no wait/backlog/fail verdict)
+     and keeps its place in line and its deadline. Running work is untouched: nothing is recalled,
+     and a granted hold's own calls (children) are still granted. Decided on the lease's ORIGINAL
+     priority, so the urgent rollback never makes urgent work sheddable.
+     One-shot refusal (D3, docs/superpowers/specs/2026-10-06-thermal-controller-redesign-design.md):
+     a ONE-SHOT request -- kind "request", no hold_lease_id, status "queued" at the start of the
+     tick, and not a lease someone comes back for (its class is not on_unavailable "backlog" with
+     retryable set; a non-retryable backlog lease already behaves like "wait", rule 10) -- is
+     refused at once with Unavailable(reason="shed:<name>") instead of waiting out its deadline,
+     so the caller's fallback runs now. Durable-run holds, backlog leases and retry_wait leases
+     keep the Shed (wait) behavior above; a retry_wait lease is Requeue'd this tick and is not
+     also refused, so one lease never gets two transitions in one tick
+
+Stage 5 (docs/superpowers/specs/2026-09-29-gpu-pool-stage5-world-diffusion-generic-actuation.md):
+  Z1 serialize_with: nothing is placed on a role while a lease (request, hold or child) is active on
+     a role it serializes with, in either direction. No recall and no preemption across the pair:
+     the waiting lease keeps its place in queue order (priority, then age) and its own deadline --
+     a lease blocked only by the mutex reserves the partner role, so later leases are not granted
+     there and the partner drains. A lease a free role would otherwise
+     take is reported as Serialized(reason="serialized:<role>"), never silent
 """
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
-from typing import Iterable, Union
+from typing import Collection, Iterable, Mapping, Union
 
 from orion.gpu_pool.config import PoolConfig
 from orion.schemas.gpu_pool import URGENT_PREEMPT as PREEMPT
@@ -180,8 +205,37 @@ class SwapBlocked:
     detail: str | None = None
 
 
+@dataclass(frozen=True)
+class Serialized:
+    """A queued lease a role could otherwise take right now, held back by ``serialize_with``
+    (stage 5): ``reason`` is ``serialized:<role>`` naming the role whose active lease blocks it.
+    Reported (edge-triggered by the runtime), never a lease transition: the lease stays queued."""
+    lease_id: str
+    role: str
+    reason: str
+
+
+@dataclass(frozen=True)
+class Shed:
+    """A lease a shed reason keeps waiting (U4): ``reason`` is ``shed:<name>``. Reported
+    (edge-triggered by the runtime), never a lease transition: the lease stays where it is."""
+    lease_id: str
+    reason: str
+
+
 Decision = Union[Grant, Recall, Abort, Expire, Unavailable, Backlog, Requeue, DeadLetter, SwapLoad, SwapUnload,
-                 SwapBlocked]
+                 SwapBlocked, Serialized, Shed]
+
+
+def _one_shot(cfg: PoolConfig, lease: LeaseView) -> bool:
+    """D3: a lease nobody comes back for -- refused at once when shed instead of waiting.
+
+    Status "queued" only: a retry_wait lease got Requeue this tick (and is retryable by definition),
+    a backlogged one is a backlog lease. "backlog" counts only with ``retryable``: without it rule 10
+    already treats the class as "wait" (the gateway's metacog/agent calls are this case)."""
+    if lease.kind != "request" or lease.hold_lease_id is not None or lease.status != "queued":
+        return False
+    return not (cfg.classes[lease.work_class].on_unavailable == "backlog" and lease.retryable)
 
 
 @dataclass
@@ -307,8 +361,17 @@ class _Ctx:
             return False
         return True
 
+    def serialized_by(self, role: str) -> str | None:
+        """The ``serialize_with`` partner (either direction) with an active lease, or None. Reads
+        ``used``/``holds``, which this tick's grants update, so two partners are never both granted
+        in one tick."""
+        for other in self.cfg.serialized_with(role):
+            if self.used.get(other) or self.holds.get(other):
+                return other
+        return None
+
     def placeable(self, lease: LeaseView, role: str) -> bool:
-        return self.usable(role) and self.fits(lease, role)
+        return self.usable(role) and self.fits(lease, role) and self.serialized_by(role) is None
 
 
 def _order(cfg: PoolConfig, leases: Iterable[LeaseView]) -> list[LeaseView]:
@@ -323,6 +386,8 @@ def schedule(
     now: datetime,
     seen_ctx: dict[str, int] | None = None,
     guards: dict[str, str | None] | None = None,
+    shed: Mapping[str, str] | None = None,
+    frozen: Collection[str] | None = None,
 ) -> list[Decision]:
     """``seen_ctx``: each role's last-seen per-slot context, kept by the caller across restarts of
     the role. Used ONLY to decide "too big for this class" -- a briefly-down big role must not make
@@ -330,9 +395,22 @@ def schedule(
 
     ``guards``: swap-guard name -> None when clear, else why it fails (a guard the caller could not
     read must be passed as failing, e.g. "unavailable"). A name missing from a dict fails closed.
-    ``None`` means the caller evaluates no guards at all (pure tests, the replay eval)."""
+    ``None`` means the caller evaluates no guards at all (pure tests, the replay eval).
+
+    ``shed``: priority -> shed reason name (U4). None or empty = nothing shed.
+
+    ``frozen``: swap seats whose load/unload cannot happen right now (stage 5.7: the operator paused
+    actuation). A swap seat with no ``launch`` block is always frozen (nothing can load it). A frozen
+    seat is never drained -- not for an owner reclaim, not at max_hold_sec, and an operator lease on
+    it never drains its residents -- because a drain only exists to empty a card for a swap, and a
+    swap that cannot happen would leave the card serving nobody. Swap decisions are still returned,
+    so the caller can report them."""
     d = cfg.defaults
     out: list[Decision] = []
+    # U4, on the ORIGINAL priority (before the urgent rollback below rewrites urgent to background).
+    shed_of = {l.lease_id: shed[l.priority] for l in leases
+               if shed and l.hold_lease_id is None and l.priority in shed
+               and l.status in ("queued", "backlogged", "retry_wait")}
     if d.urgent_max_concurrent <= 0:
         # Rollback switch: urgent behaves exactly like background (no pause, no stacking).
         leases = [replace(l, priority="background") if l.priority == URGENT else l for l in leases]
@@ -388,6 +466,8 @@ def schedule(
             else:
                 queued.append(lease)
         elif lease.status == "backlogged":
+            # U4: a shed lease still ages out here -- deadlines apply under shed by design (plan
+            # 2026-09-29 "Deadlines still apply"); only a very long cooling incident reaches it.
             if (now - lease.created_at).total_seconds() >= d.backlog_max_age_sec:
                 out.append(DeadLetter(lease.lease_id, "backlog_max_age"))
             else:
@@ -399,14 +479,18 @@ def schedule(
 
     # --- 2. what is draining this tick (no new grants there) -------------------------
     swap_roles = [r for r, spec in cfg.roles.items() if spec.swap is not None]
+    frozen_seats = set(frozen or ()) | {r for r in swap_roles if cfg.roles[r].launch is None}
     max_held: set[str] = set()
     for seat in swap_roles:
         spec = cfg.roles[seat]
+        if seat in frozen_seats:
+            continue
         if ctx.loaded(seat):
             # A resident owner that could actually run there wants its card back: the seat drains.
             if not spec.operator_only and any(
                     ctx.cfg.owns(q.work_class, ev) and ctx.fits(q, ev)
-                    for q in queued + backlogged for ev in cfg.evicted_by(seat)):
+                    for q in queued + backlogged if q.lease_id not in shed_of
+                    for ev in cfg.evicted_by(seat)):
                 ctx.draining.add(seat)
             # H4: a seat loaded for max_hold_sec gives its card back (loaded_at is only set when
             # the pool itself loaded or adopted the seat, never by observation alone).
@@ -415,7 +499,8 @@ def schedule(
                     and (now - min(loaded_at)).total_seconds() >= spec.max_hold_sec:
                 ctx.draining.add(seat)
                 max_held.add(seat)
-        elif spec.operator_only and any(q.work_class in spec.owner and q.operator for q in queued):
+        elif spec.operator_only and any(q.work_class in spec.owner and q.operator and q.lease_id not in shed_of
+                                        for q in queued):
             # An operator is taking the cards: everything the seat evicts drains.
             ctx.draining.update(cfg.evicted_by(seat))
 
@@ -429,6 +514,16 @@ def schedule(
             still_backlogged.append(lease)
     backlogged = still_backlogged
 
+    # U4: shed leases leave the placement pass entirely -- reported, never granted, never demand.
+    # D3: a one-shot request is refused now (its caller falls back at once); the rest wait.
+    for lease in _order(cfg, [l for l in queued if l.lease_id in shed_of]):
+        if _one_shot(cfg, lease):
+            out.append(Unavailable(lease.lease_id, f"shed:{shed_of[lease.lease_id]}"))
+        else:
+            out.append(Shed(lease.lease_id, f"shed:{shed_of[lease.lease_id]}"))
+    queued = [l for l in queued if l.lease_id not in shed_of]
+    backlogged = [l for l in backlogged if l.lease_id not in shed_of]
+
     # --- 3. grants: a run's own calls first, then owners on their own roles, then the rest
     order = _order(cfg, queued)
     granted: set[str] = set()
@@ -437,6 +532,25 @@ def schedule(
 
     def capped(lease: LeaseView) -> bool:
         return lease.priority == URGENT and urgent_n[0] >= d.urgent_max_concurrent
+
+    # Z1 queue order: a lease a role would take now but for serialize_with reserves the blocking
+    # partner(s): no LATER lease in queue order is granted there, so a stream of overlapping calls
+    # on one side cannot starve an older waiter on the other. role -> the role that reserved it.
+    serial_reserved: dict[str, str] = {}
+
+    def serial_blocked(lease: LeaseView, role: str) -> bool:
+        """``lease`` could take ``role`` now except for serialize_with (Z1)."""
+        return ctx.serialized_by(role) is not None and ctx.usable(role) and ctx.fits(lease, role) \
+            and ctx.free_for(lease, role) > 0
+
+    def reserve_partners(lease: LeaseView, roles: Iterable[str]) -> None:
+        if capped(lease):
+            return
+        for role in roles:
+            if serial_blocked(lease, role):
+                for partner in cfg.serialized_with(role):
+                    if ctx.used.get(partner) or ctx.holds.get(partner):
+                        serial_reserved.setdefault(partner, role)
 
     def grant(lease: LeaseView, role: str) -> None:
         out.append(Grant(lease.lease_id, role))
@@ -470,10 +584,13 @@ def schedule(
     for lease in order:
         if capped(lease):
             continue
-        for role in cfg.classes[lease.work_class].roles:
-            if cfg.owns(lease.work_class, role) and ctx.placeable(lease, role) and ctx.free_for(lease, role) > 0:
+        own = [r for r in cfg.classes[lease.work_class].roles if cfg.owns(lease.work_class, r)]
+        for role in own:
+            if role not in serial_reserved and ctx.placeable(lease, role) and ctx.free_for(lease, role) > 0:
                 grant(lease, role)
                 break
+        else:
+            reserve_partners(lease, own)
 
     def admitted_urgent() -> list[LeaseView]:
         """The waiting urgent leases the cap still has room for, in queue order. Only these are owed
@@ -485,15 +602,19 @@ def schedule(
     admitted = {q.lease_id for q in admitted_urgent()}
 
     def owners_waiting(role: str) -> list[LeaseView]:
+        # usable+fits, not placeable: an owner held back only by serialize_with (Z1) still waits for
+        # its role, so no borrower may slip in ahead of it.
         return [q for q in order if q.lease_id not in granted
                 and (q.priority != URGENT or q.lease_id in admitted)
-                and cfg.owns(q.work_class, role) and ctx.placeable(q, role)]
+                and cfg.owns(q.work_class, role) and ctx.usable(role) and ctx.fits(q, role)]
 
     for lease in order:
         if lease.lease_id in granted or capped(lease):
             continue
         for role in cfg.classes[lease.work_class].roles:
-            if not ctx.placeable(lease, role) or ctx.free_for(lease, role) <= 0:
+            if role in serial_reserved or not ctx.placeable(lease, role) or ctx.free_for(lease, role) <= 0:
+                if role not in serial_reserved and (cfg.owns(lease.work_class, role) or not owners_waiting(role)):
+                    reserve_partners(lease, [role])
                 continue
             if not cfg.owns(lease.work_class, role) and owners_waiting(role):
                 continue
@@ -503,6 +624,25 @@ def schedule(
                 continue
             grant(lease, role)
             break
+
+    # serialize_with: say why a lease that a free role would otherwise take is still waiting --
+    # blocked by an active partner, or by a role reserved for an older waiter on the other side.
+    # Not for a lease the urgent cap holds back, nor on a borrowed role whose owners come first.
+    for lease in order:
+        if lease.lease_id in granted or capped(lease):
+            continue
+        for role in cfg.classes[lease.work_class].roles:
+            if not cfg.owns(lease.work_class, role) and owners_waiting(role):
+                continue
+            blocker = ctx.serialized_by(role)
+            if blocker is None and role in serial_reserved and ctx.usable(role) and ctx.fits(lease, role) \
+                    and ctx.free_for(lease, role) > 0:
+                blocker = serial_reserved[role]
+            elif blocker is not None and not serial_blocked(lease, role):
+                blocker = None
+            if blocker is not None:
+                out.append(Serialized(lease.lease_id, role, f"serialized:{blocker}"))
+                break
 
     # --- 4. recalls ------------------------------------------------------------------
     recalled: set[str] = set()
@@ -674,7 +814,7 @@ def schedule(
                     l.granted_at and (now - l.granted_at).total_seconds() >= spec.max_hold_sec for l in holders)
                 if not holders:
                     out.append(SwapUnload(seat, "operator_released"))
-                elif over:
+                elif over and seat not in frozen_seats:   # frozen: its unload cannot happen, keep the holders
                     for l in holders:
                         if l.status == "granted":
                             recall(l, "max_hold")

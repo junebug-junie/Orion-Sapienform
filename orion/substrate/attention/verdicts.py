@@ -154,6 +154,9 @@ def load_terminal_verdict_loop_ids(
             SELECT DISTINCT ON (loop_id) loop_id, verdict, created_at
             FROM attention_loop_outcome
             WHERE loop_id IN :ids
+              -- Orion's own non-final 'acted' (attend-to-act loop) is never the latest verdict here:
+              -- it must not shadow a human resolve/dismiss written before it.
+              AND verdict <> 'acted'
             ORDER BY loop_id, created_at DESC
             """
         ).bindparams(bindparam("ids", expanding=True))

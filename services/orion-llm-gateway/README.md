@@ -66,6 +66,7 @@ Provenance: `.env_example` → `docker-compose.yml` → `settings.py`
 | :--- | :--- |
 | `GET /health` | Service liveness and configured route keys. |
 | `GET /routes` | **Compatibility view generated from orion-gpu-pool state** (removed in stage 6). Same shape as before: per-route `id`, `served_by`, `backend`, `status` (`up`/`down`/`operator_closed`/`unknown`), `model` (discovered model file), `n_ctx` (discovered ctx per slot), `vision`, `upstream`, `gate_open`. `unknown` for every route when the pool cannot be reached -- never a fabricated `up`. |
+| `GET /debug/lane-senders` | GPU pool stage 6.4 census, in-process since boot: every bus call that carries a lane (`options.llm_lane` / `options.execution_lane`) or that lane routing re-routes, by caller `source` + lane + `route_in` + `route_chosen` (today) + `route_without_lane_routing` (after `lane_routes.py` is deleted). `rerouted_total == 0` with `uptime_sec >= 86400` means deleting lane routing changes nothing; otherwise every `rerouted: true` row needs an answer first. Each recorded call also logs `llm_gateway_lane_sender` (survives a restart). |
 | `GET /v1/models` | Anthropic-compatible model list from configured route keys (FCC / Claude Code). |
 | `GET /v1/messages` | Anthropic Messages endpoint liveness (same as HEAD). |
 | `POST /v1/messages` | Anthropic Messages passthrough to the pool-granted llama.cpp role's `/v1/messages` (lease holder `http:anthropic`). |
@@ -78,11 +79,27 @@ Provenance: `.env_example` → `docker-compose.yml` → `settings.py`
 
 The gateway exposes an Anthropic Messages-compatible HTTP membrane for Claude Code and FCC. Traffic uses the same route names (`config/gpu_pool.yaml` `routes:` -- `agent`, `chat`, `harness`, `quick`, `metacog`, etc.) and takes a GPU pool lease like the bus path, but **does not** go through the bus-native `run_llm_chat()` path.
 
-Claude session hooks can append `role=system` context inside `messages` after a
-user turn. Gateway moves those blocks into Anthropic's top-level `system` field
-before forwarding to llama.cpp, whose model template requires system context
-first. Existing system blocks, cache metadata, and conversation/tool ordering
-are preserved. Durable-lease validation and a GPU pool lease still apply to the request.
+Claude Code puts `role=system` messages inside `messages`: SessionStart hook
+context, a `<total_tokens>` reminder every step, and PreToolUse hook context
+after tool calls. llama.cpp's Qwen templates reject (:8015) or drop (:8011) a
+system message that is not first, so the gateway reshapes them:
+
+- System messages **before** the first user/assistant turn are moved into the
+  top-level `system` field.
+- Every **later** system message stays where it is, as a `role=user` turn
+  wrapped in `<system-reminder>...</system-reminder>`.
+
+Later ones are deliberately not moved into `system`: that made the system block
+grow every step, which shifted the whole conversation, and these models then
+re-read the entire 13-30k-token prompt each step (~38 s) instead of only the
+new tokens (~1 s). Keeping them in place makes each step's prompt the previous
+prompt plus new text (figures from the design doc's replay). Blocks and
+`cache_control` are preserved; the wrapper text is added inside the first and
+last text block. A reminder that lands between an assistant `tool_use` and its
+`tool_result` is placed after the result, so tool pairing stays intact; empty
+reminders are dropped. See
+`docs/superpowers/specs/2026-10-02-fcc-prompt-prefix-cache-design.md`.
+Durable-lease validation and a GPU pool lease still apply to the request.
 
 Topology:
 
@@ -200,6 +217,20 @@ Failure shape (bus): empty text with `raw.error = "gpu_pool_unavailable"` and
 header `X-Gpu-Pool-Bus: down`) until the pool RPC client is connected. HTTP: 503
 with `error.type = "gpu_pool_unavailable"`.
 
+Upstream failure shape (bus, since 2026-10-07): when the granted worker answers non-2xx, answers
+2xx with an error body (`{"error": ...}` and no completion), returns an empty template, or never
+answers (timeout / refused connection), the reply is the same shape -- empty text,
+`raw.error` = `upstream_http_5xx` | `upstream_http_4xx` | `upstream_not_found` |
+`upstream_timeout` | `upstream_connect` | `upstream_error` (or `gateway_exception` when the
+gateway's own post-processing raised, which is not blamed on the worker), and
+`raw.details = {reason, status_code, message, backend, route, served_by, url}` where `message` is
+the worker's own error text (truncated to 500 chars) and `reason` is `http_<status>`,
+`error_body`, `empty_prompt` or the exception type. cortex-exec fails the step as
+`<raw.error>:<reason>: <message>`; the pool lease is released `upstream_error` with that
+message as its detail. No retry and no move to another card: only a context overflow re-leases.
+Before this, a worker 500 came back as text `[Error: llamacpp failed: Server error '500 ...']`
+with `raw={}`, which cortex-exec recorded as a successful step.
+
 Deleted with this cutover: `capacity.py` (durable-runs `/capacity` permits),
 `upstream_admission.py` (per-upstream semaphores), `priority_admission.py` (background `/slots`
 polling -- pool priority replaces it), `lane_gate.py` + `GET/PUT /routes/{id}/gate` (the pool's
@@ -262,8 +293,8 @@ curl http://localhost:8210/health
 ## Inference grammar lane (the gateway reporting on itself)
 
 The code default is off; `.env_example` turns it on (`LLM_GATEWAY_GRAMMAR_ENABLED=true`,
-since 2026-09-25, together with the reducer and field flags). When on, every bus-RPC chat
-reply is classified by what actually happened (`app/grammar_emit.py::classify_outcome`):
+since 2026-09-25, together with the reducer and field flags). When on, every chat
+reply -- bus RPC and, since stage 6.2, the OpenAI/Anthropic HTTP passthroughs -- is classified by what actually happened (`app/grammar_emit.py::classify_outcome`):
 `served`, a backend failure (`upstream_timeout`, `upstream_connect`, `upstream_http_5xx`,
 `upstream_http_4xx`, `upstream_not_found`, `upstream_error`), a gateway refusal
 (`gateway_overloaded`, `gateway_capacity_rejected`, `resource_lease_rejected`,
@@ -275,58 +306,96 @@ reply is classified by what actually happened (`app/grammar_emit.py::classify_ou
 one `llm_inference_window_observed` atom per node, plus an
 `llm_gateway_window_completed` atom that is sent even for an empty window.
 
-Why here: a failed backend call comes back to the caller as an ordinary reply whose
-text is `[Error: ...]`, so the caller's RPC health counts it a success, and an idle,
-broken backend reads as calm GPU pressure. Only the gateway sees the call fail.
+Why here: a failed backend call comes back to the caller as an ordinary reply (empty text and
+a typed `raw.error`, see the upstream failure shape above), so the caller's RPC health counts it
+a success, and an idle, broken backend reads as calm GPU pressure. Only the gateway sees the
+call fail.
 
-Counts, latency percentiles and token totals only -- no prompt or reply text leaves
-the process. Only the bus path (`handle_chat`) is counted; the OpenAI/Anthropic HTTP
-passthroughs are not.
+Counts, clock percentiles and token totals only -- no prompt or reply text leaves
+the process. Both the bus path (`handle_chat`) and the HTTP passthroughs
+(`/v1/messages`, `/v1/chat/completions`, `app/passthrough_proxy.py`) are counted, once
+per call. A passthrough is classified by its upstream status (`classify_http_outcome`);
+a client that leaves while queued or mid-stream is `client_gone` (inspection only).
+Passthrough calls land in the per-role clocks only (`http_calls` says how many):
+the node-level counts behind `inference_failure_pressure` stay bus-RPC calls, since
+widening that live field channel's population is a metric-definition change, not
+part of stage 6.2.
 
-What counts as a backend failure: only replies framed `[Error: ...` that are a
+**Two clocks per granted role (gpu-pool stage 6.2, 2026-09-30).** Each call carries a
+`CallClock`: `wait` is GPU-pool acquire -> grant (the line), `model` is grant -> reply
+or stream end (the worker). The intervals are disjoint; a re-lease (context overflow)
+sums each. Each node atom carries
+`roles=<role>[calls:n|served:n|upstream_failed:n|refused:n|request_invalid:n|wait_p50_ms:..|wait_p95_ms:..|model_p50_ms:..|model_p95_ms:..|decode_tps_p50:..|decode_tps_n:n]...`
+keyed by the granted pool role (`chat`, `agent`, `agent-gpu2`, `metacog`, `fast`;
+`ungranted` for calls that never held a lease -- filed under the pool's host node, so
+the wait survives the reducer while the node counts stay unattributed). `wait` counts
+every call that waited;
+`model` and `decode_tps` count served calls only. `decode_tps` is llama.cpp's own
+`timings.predicted_per_second` (bus reply `raw`, passthrough body, or a stream's last
+chunk) -- never derived from wall time; absent, not 0, when not reported. The reducer
+puts these on `nodes.<llm_node>.by_role` in `substrate_llm_inference_projection`
+(debug only, no field channel). The old `p50_ms`/`p95_ms` (one clock from before the
+lease: queue wait + model time, per machine) are retired.
+
+Covariates, so a per-role baseline does not read normal slot sharing as a degraded
+worker (stage 7 input): `busy` is this gateway's calls in flight on the granted role
+at grant, this one included (`pool_placement.busy_at_grant`, counted from grant to
+lease release); decode speed is also split `decode_tps_solo_p50` (busy == 1) vs
+`decode_tps_shared_p50`; `slots` is the pool's discovered slot count for the role,
+read once per window from pool state (omitted when the pool is unreachable);
+`prompt_n`/`cache_n` sum llama.cpp's `timings.prompt_n` (prompt tokens processed)
+and `timings.cache_n` (reused from the KV cache) over served calls that reported both.
+
+What counts as a backend failure: a typed `raw.error` in `UPSTREAM_FAILURE_CLASSES`
+(passed through as its own class), or a reply framed `[Error: ...` that is a
 timeout, refused/failed connection, HTTP 5xx, 404 or other backend error. Upstream
 4xx (e.g. an oversized prompt), image-to-text-route refusals and unreadable
 attachments are the caller's request, counted as `request_invalid`. A call that
 raises inside dispatch is counted as `gateway_exception` (unattributed). Known limits:
 - `upstream_timeout` includes calls whose read timeout was the caller's own leftover
   budget, so a short-budget caller on a busy-but-healthy lane can register one.
-- latency p50/p95 is the whole stay in the gateway (admission wait + generation).
+- `wait` is measured on the gateway's clock (acquire -> grant), not read from the
+  pool's `waited_ms`; the two should agree to within the bus round trip.
+- a streamed passthrough's `model` time runs to stream end, so a slow-reading client adds
+  its own time (`decode_tps` is unaffected). A call re-leased after a context overflow
+  sums both attempts under the final role.
+- a window with only per-role data (passthroughs, ungranted waits) sends a `calls=0`
+  node atom; the reducer updates `by_role` and leaves `inference_failure_pressure` and
+  its rolling span untouched.
 - the reducer keys state by serving node only; it assumes ONE gateway reports on a
   node (true today). A second gateway would overwrite the first's windows.
 - the publisher has no shutdown hook: the partial window at SIGTERM is lost, and a
   publish failure mid-window drops the rest of that window (logged).
 
+Each node atom also carries per-worker counts (2026-09-29):
+`worker_attempted=<label>:<n>|...` (served + backend failures) and
+`worker_failed=<label>:<n>|...`, bounded to 8 labels (the rest count as `other`).
+Older reducers ignore the extra keys.
+
 Downstream: substrate-runtime's `llm_inference` reducer
 (`ENABLE_LLM_INFERENCE_REDUCER`) turns each window into node
-`inference_failure_pressure` = backend failures / (served + backend failures), which
-the field digester (`ENABLE_LLM_INFERENCE_FIELD_DIGESTION`) carries to
+`inference_failure_pressure`: over the node's last 600 s of windows, backend
+failures / max(served + backend failures, 10), and 0.0 until 2 failures are in that
+span -- the worse of the node-pooled share and the worst single worker's
+(`orion/substrate/llm_inference_loop/failure_window.py`, the RPC delivery bridge's
+rule). Before 2026-09-29 it was one window's unfloored share, so one timeout on a
+one-call minute read 1.0. The field digester (`ENABLE_LLM_INFERENCE_FIELD_DIGESTION`) carries to
 `capability:llm_inference` `reliability_pressure`. Refusals and `upstream_empty` are
 recorded in the projection for inspection and never reach the field. Replay what the
 channel would read from existing logs with
 `evals/run_inference_outcome_eval.py`.
 
-## Optional durable resource leases
+## Calls under a durable run's GPU pool hold
 
-`LLM_GATEWAY_LEASE_VALIDATION_ENABLED=true` is the operator-template default.
-Requests carrying a typed `resource_lease` (bus) or the bounded
-`X-Orion-Resource-Lease` header (Anthropic HTTP) must validate against
-`LLM_GATEWAY_LEASE_VALIDATION_URL` (default
-`http://durable-runs:8121/leases/validate`). Checks occur before dispatch,
-periodically during execution/streaming, and before accepting the final result.
-The interval defaults to 5 seconds and validation timeout to 2 seconds. Missing
-tokens remain valid for existing synchronous traffic; malformed or stale tokens
-are rejected. Tokens never reach the model prompt or backend headers.
+A durable run holds one GPU pool lease for its whole life. Every LLM call it makes carries that
+hold's ref -- bus `options.gpu_lease`, HTTP `X-Orion-Gpu-Lease` (a base64 `GpuLeaseRefV1`) -- and
+the gateway `attach`es the call to the hold instead of taking a lease of its own, so a run never
+queues behind itself. The pool is the fencing authority: a stale or unknown hold makes `attach`
+refuse (`gpu_pool_unavailable`); a malformed ref is refused `resource_lease_rejected`
+(`malformed_gpu_lease`). A call under a hold keeps its caller's route (lane routing does not move it).
 
-Since the GPU pool cutover the durable lease is an **admission token only**:
-the lane must match and the broker must still consider the generation current,
-but placement always comes from a GPU pool lease (a burst route is agent work:
-`agent-burst`/`chat-burst` -> class `agent`). The lease's `backend_key` is not
-compared with the granted URL, because the pool may legitimately place the call
-on another role. A cancelled blocking Python HTTP thread keeps its pool lease
-until the thread exits; stale results are rejected, but physical inference
-cannot be forcibly stopped by cancelling that thread.
-
-See [resource admission ownership and rollout](../../docs/architecture/durable-resource-admission.md).
+The older durable-run lease token (`options.resource_lease`, `X-Orion-Resource-Lease`) and its
+broker validation (`LLM_GATEWAY_LEASE_VALIDATION_*`) were deleted in GPU pool stage 4.6.
 
 ## Lending chat's card
 
@@ -335,12 +404,3 @@ Juniper's chat card is the GPU pool's `lent` flag on `gpu0` (Hub GPU pool panel 
 Until durable-runs reads pool state (stage 4), `GET /routes` still reports `chat-burst` as
 `operator_closed` (with `gate_open: false`) unless gpu0 is lent, and `agent-burst` as `up` only
 while the `agent-gpu2` swap seat is confirmed.
-
-## Optional GPU2 elastic admission
-
-GPU2 diffusion/agent-burst borrowing is additive and defaults off. See the
-[ownership ADR](../../docs/architecture/gpu2-elastic-admission.md),
-[pre-edit repository/live evidence](../../docs/architecture/gpu2-elastic-evidence.md),
-and [consumer-first rollout and rollback](../../docs/runbooks/gpu2-elastic-admission.md)
-for this service's exact flags, HTTP contracts and operator commands.
-No production env sync, migration, GPU transition or deployment was performed.

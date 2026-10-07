@@ -38,7 +38,7 @@ from orion.schemas.attention_schema import ATTENTION_SCHEMA_KIND
 from .acceptance_bus import TypedBus
 from .acceptance_turn import build_turn_adapter, DRAFT, REPAIRED
 from .pool_fixture import CFG, LIVE, InProcessPool
-from .test_admission_runtime_postgres import DSN, legacy_rows, with_database
+from .test_admission_runtime_postgres import DSN, legacy_tables, with_database
 
 pytestmark = pytest.mark.skipif(not DSN, reason="isolated ORION_ADMISSION_TEST_DSN required")
 ROOT = Path(__file__).resolve().parents[3]
@@ -66,6 +66,11 @@ def install_gpu2_actuator(bus, gpu, actions):
                 payload=GpuActuateResultV1(action_id=msg.action_id, generation=msg.generation, role=msg.role,
                                            action=msg.action, status=status, **kw).model_dump(mode="json")))
 
+        if msg.action == "status":   # enforce's boot reconcile: report what runs, change nothing
+            up = SEAT in gpu.live and "diffusion" in gpu.down
+            await answer("succeeded", in_flight=False, observed={SEAT: "running" if up else "exited",
+                                                                 "diffusion": "exited" if up else "running"})
+            return
         await answer("accepted")
         gpu.live[SEAT] = LIVE["agent"]
         gpu.down.add("diffusion")
@@ -83,15 +88,16 @@ def install_gpu2_actuator(bus, gpu, actions):
 def test_curiosity_receipt_wait_restart_grant_dispatch_and_completion(monkeypatch, placement, repair_required):
     async def scenario(pool, saver, store):
         bus = TypedBus()
-        gpu = InProcessPool(actuate=(SEAT,) if placement == "gpu2" else ())
+        # gpu2 runs the production mode (enforce: boot reconcile answered by the actuator fixture).
+        gpu = InProcessPool(can_load=placement == "gpu2", mode="enforce" if placement == "gpu2" else "observe")
         settings = Settings(_env_file=None, DURABLE_RUNS_GRAPH_HOST="", POSTGRES_URI=DSN, ORION_BUS_ENABLED=False,
             DURABLE_RUNS_ADMISSION_ENABLED=True, DURABLE_RUNS_TURN_RPC_TIMEOUT_SEC=0.05,
-            DURABLE_RUNS_LEASE_HEARTBEAT_SEC=0.1, DURABLE_RUNS_LEASE_SECONDS=90)
+            DURABLE_RUNS_LEASE_HEARTBEAT_SEC=0.1)
         runner = DurableRunner(settings, bus=bus, checkpointer=saver)
         runtime = AdmissionRuntime(settings, runner, pool, store=store)
         monkeypatch.setenv("POSTGRES_URI", DSN)
         main = importlib.import_module("app.main")
-        for name, value in {"runner": runner, "admission": runtime, "capacity": None,
+        for name, value in {"runner": runner, "admission": runtime,
                             "rpc_bus": bus, "_settings": settings}.items():
             monkeypatch.setattr(main, name, value)
         bus.handlers[DURABLE_RUN_REQUEST_CHANNEL] = main._handle_request
@@ -157,8 +163,10 @@ def test_curiosity_receipt_wait_restart_grant_dispatch_and_completion(monkeypatc
                 # The run waits past the seat's after_wait_sec (1200 s): the pool loads gpu2.
                 await gpu.later(1230, beat=[blocker.lease_id])
                 await bus.drain()
-                [load] = actions
+                boot_status, load = actions        # enforce: the boot reconcile agreed, then one load
+                assert (boot_status.role, boot_status.action) == (SEAT, "status")
                 assert (load.role, load.action, load.actuator) == (SEAT, "load", "circe")
+                assert not gpu.events("actuation_paused") and not gpu.rt._reconciling
                 await gpu.later(30, beat=[blocker.lease_id])   # discovery confirms the 27B
                 await bus.drain()
                 assert gpu.events("swap_started") and gpu.events("swapped")
@@ -215,7 +223,7 @@ def test_curiosity_receipt_wait_restart_grant_dispatch_and_completion(monkeypatc
             assigned = next(e for e in history if e["event"] == "run.lane_assigned")
             assert assigned["detail"]["lane"] == expected_role    # Hub's run view: lane = the hold's role
             assert (await gpu.lease(hold["lease_id"]))["status"] == "released"
-            assert await legacy_rows(store) == (0, 0)
+            assert await legacy_tables(store) == []
             assert not bus.inflight_rpc and not bus.subscriptions
             await restarted.close()
         finally:

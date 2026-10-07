@@ -27,14 +27,13 @@ LISTEN orion:thought:request
   → PUBLISH orion:thought:artifact
 ```
 
-An admitted turn supplies optional `StanceReactRequestV1.resource_lease` using
-`ResourceLeaseV1`. Hub sends the same lease ID and generation used by the turn's
-motor; Thought forwards it in the Cortex Exec context and sets both `llm_route`
-and `llm_lane` to the assigned lease lane. Gateway can therefore account for
-stance under the existing reservation. The assigned lane takes precedence over
-the caller's route preference. Requests without a lease keep their prior route
-behavior and Hub omits only the absent `resource_lease` field from the bus payload,
-preserving the existing payload's null fields for rolling upgrades.
+An admitted turn supplies optional `StanceReactRequestV1.gpu_lease` (the durable run's GPU pool
+hold ref, `GpuLeaseRefV1`). Hub sends the same hold the turn's motor runs under; Thought forwards it
+in the Cortex Exec context and sets both `llm_route` and `llm_lane` to `agent` (the hold's work
+class, never its role), so the gateway attaches stance to the existing hold instead of queueing it
+behind the run. The hold takes precedence over the caller's route preference. Requests without a
+hold keep their prior route behavior. The older durable token (`resource_lease` /
+`ResourceLeaseV1`) was deleted in GPU pool stage 4.6.
 
 ## Local checks
 
@@ -684,9 +683,17 @@ both paths write identical chain rows through the same `visual_chain.py` pieces.
   (`legacy_visual_worker_enabled`), not an ending. A replay returns the frozen plan:
   rotation does not advance and the context is not re-interpreted. No GPU.
 - **generate** is the only GPU stage. It validates the run's diffusion hold
-  (`holder == durable-runs:<run_id>`), then thermal gate, single-flight lock, GPU2
-  permit and diffusion under its own deadline (`ORION_VISUAL_CHAIN_STEP_GENERATE_DEADLINE_SEC`,
-  default 330, never below permit budget + diffusion timeout + 10). The image is
+  (`holder == durable-runs:<run_id>`), then thermal gate, single-flight lock and
+  diffusion under its own deadline (`ORION_VISUAL_CHAIN_STEP_GENERATE_DEADLINE_SEC`,
+  default 330, never below `ORION_VISUAL_CHAIN_GPU_LEASE_DEADLINE_SEC` + diffusion timeout + 10).
+  GPU pool stage 5.4: the diffusion call attaches a child lease under the validated hold (runs
+  in the hold's slot, no second wait; no durable-runs `/capacity` permit). The child lives as
+  long as the diffusion thread -- even past a cancelled step, for up to one more diffusion
+  timeout -- so world-model cannot take gpu2 mid-render even if the run gives its hold back
+  (`config/gpu_pool.yaml` `world.serialize_with: [diffusion]`). A generate outside a durable
+  run (`/visual-chain/run-once`, the legacy worker) has no hold, so it takes a pool `diffusion`
+  lease for the call; refused, late or pool unreachable is `resource_deferred:gpu_pool...`, never
+  an ungated diffusion call. An unreachable diffusion-host is `resource_deferred:diffusion_unreachable`. The image is
   stored on disk and recorded in `stage_json`; a replay with a recorded image makes no
   diffusion call. A generate that started less than 2x the deadline ago blocks another
   (`generate_in_flight`): an abandoned diffusion thread may still be on the card.
@@ -704,7 +711,7 @@ both paths write identical chain rows through the same `visual_chain.py` pieces.
   Result outcome is `unknown`; the row becomes `abandoned`, which does not block later
   claims. If a generate started inside the in-flight window the row stays `unknown`
   until that generate records its exit. A generate past its step deadline is not
-  cancelled: it keeps the lock and GPU2 permit until diffusion returns (hard ceiling:
+  cancelled: it keeps the lock (inside the run's hold) until diffusion returns (hard ceiling:
   the in-flight window, then `generate_wedged`) and records its own exit. If the
   process died instead, the next claim (durable prepare or legacy run-once) releases
   the row once the window passed.
@@ -716,7 +723,7 @@ retry window) as `abandoned` with result reason `attempt_expired` -- unless a
 production receipt reconciles it to `produced`, or a generate is recorded inside the
 in-flight window.
 
-Every result carries `elapsed_sec` (generate: permit wait + diffusion + disk write).
+Every result carries `elapsed_sec` (generate: diffusion + disk write).
 Unexpected errors are retries (`step_exception:<Type>`); a missing stage table or
 column is `stage_store_unavailable`, never a recompute. A step request that fails
 schema validation is a retry (`invalid_step_request`), so schema skew during a

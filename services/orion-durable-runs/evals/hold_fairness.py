@@ -35,7 +35,7 @@ from app.admission_runtime import AdmissionRuntime  # noqa: E402
 from app.graph import Deps  # noqa: E402
 from app.pool_hold import PoolHolds  # noqa: E402
 from app.settings import Settings  # noqa: E402
-from orion.durable_admission.store import PostgresAdmissionStore  # noqa: E402
+from orion.durable_runs.registry_store import DurableRunRegistryStore  # noqa: E402
 from orion.schemas.durable_run import CuriosityTurnResultV1, DurableRunRequestV1  # noqa: E402
 from orion.schemas.gpu_pool import GpuActuateResultV1, GpuActuateV1, GpuLeaseRequestV1  # noqa: E402
 from pool_fixture import CFG, LIVE, InProcessPool, PoolBus  # noqa: E402
@@ -151,7 +151,7 @@ async def scenario_home(pool, saver, store) -> dict:
 
 
 async def scenario_gpu2(pool, saver, store) -> dict:
-    gpu = await InProcessPool(actuate=(SEAT,)).boot()
+    gpu = await InProcessPool(can_load=True).boot()
     actions: list[tuple[str, str]] = []
 
     async def actuator(channel, env):
@@ -237,7 +237,7 @@ async def with_schema(dsn, name, scenario):
                     "options": f"-c search_path={schema},public"}) as pool:
         saver = AsyncPostgresSaver(pool)
         await saver.setup()
-        store = PostgresAdmissionStore(pool)
+        store = DurableRunRegistryStore(pool)
         await store.setup()
         return await scenario(pool, saver, store)
 

@@ -241,7 +241,7 @@ def test_falkor_rejects_non_concept_durable_write():
         ),
     )
 
-    with pytest.raises(ValueError, match="concept, evidence, entity nodes only"):
+    with pytest.raises(ValueError, match="concept, evidence, entity, assertion nodes only"):
         store.upsert_node(identity_key="drive:curiosity", node=drive)
 
     assert client.calls == []
@@ -663,6 +663,7 @@ def test_falkor_hydrates_edge_source_target_node_ids_correctly():
     # literal string "None" that a missing/NULL source_id previously
     # produced via decode_edge()'s str(row["source_id"]) coercion.
     client = RecordingFalkorClient(
+        hydrate_node_rows=[_hydrated_node_row(n, n) for n in ("sub-concept-a", "sub-concept-b")],
         hydrate_edge_rows=[
             {
                 "edge_id": "sub-edge-a-b",
@@ -730,7 +731,9 @@ def test_falkor_sanitizes_metadata_cathedral():
     store.upsert_node(identity_key="id-b", node=node)
     stored = store.get_node_by_id(node.node_id)
     assert stored is not None
-    assert len(stored.metadata) <= 16
+    # activation_decayed_at is a typed durable property exempt from the cap
+    # (falkor_store.upsert_node); every other key is still capped at 16.
+    assert len({k: v for k, v in stored.metadata.items() if k != "activation_decayed_at"}) <= 16
 
 
 def test_falkor_edge_is_persisted_as_typed_relationship():
@@ -925,12 +928,14 @@ def test_falkor_hydrates_from_redis_py_result_set_lists():
 
         def graph_query(self, cypher: str, params: dict | None = None):
             self.calls.append((cypher, params))
+            if params and params.get("after_id", -1) >= 0:
+                return []
             if "WHERE n.payload_json IS NOT NULL" in cypher:
-                return [[legacy.model_dump_json(), "concept:legacy-list"]]
+                return [[legacy.model_dump_json(), "concept:legacy-list", 0]]
             if "WHERE e.payload_json IS NOT NULL" in cypher:
                 return []
             if "RETURN n.node_id AS node_id" in cypher:
-                return [values]
+                return [values + [0]]
             if "RETURN e.edge_id AS edge_id" in cypher:
                 return []
             return []
@@ -990,8 +995,13 @@ def test_falkor_hydrates_edge_from_redis_py_result_set_lists():
 
     class EdgeListRowClient:
         def graph_query(self, cypher: str, params: dict | None = None):
+            if params and params.get("after_id", -1) >= 0:
+                return []
+            if "RETURN n.node_id AS node_id" in cypher:
+                return [dict(_hydrated_node_row(n, n), object_id=i) for i, n in enumerate(
+                    ("sub-concept-redis-py-a", "sub-concept-redis-py-b"))]
             if "MATCH (source:SubstrateNode)-[e]->(target:SubstrateNode)" in cypher:
-                return [values]
+                return [values + [0]]
             return []
 
     store = FalkorSubstrateStore(
@@ -1149,7 +1159,7 @@ def test_falkor_hydrated_concepts_support_concept_region_query():
 # always return self._cache.snapshot() with no refresh at all, so (a) a node
 # deleted directly from Falkor (bypassing this process, e.g. an operator
 # running Cypher DELETE by hand) stayed resurrected in the cache forever, and
-# (b) the decay scheduler (services/orion-hub/scripts/api_routes.py::
+# (b) the then-Hub decay scheduler (since removed; services/orion-hub/scripts/api_routes.py::
 # decay_concept_activations) durably re-upserts every node in every snapshot()
 # it reads on every tick -- so a stale cache didn't just show old data, it
 # actively wrote deleted data back into Falkor on the next tick, undoing the
@@ -1211,7 +1221,7 @@ def test_falkor_snapshot_same_generation_reuses_cache_no_new_query():
 
     first = store.snapshot()
     calls_after_first = len(client.calls)
-    assert calls_after_first == 4  # node query, edge query, 2 legacy queries
+    assert calls_after_first == 5  # node page + empty terminal page, edge + 2 legacy scans
     assert "concept-a" in first.nodes
 
     second = store.snapshot()
@@ -1572,7 +1582,7 @@ def test_falkor_still_rejects_a_kind_nothing_writes():
             authority="local_inferred", source_kind="test", source_channel="test", producer="t"
         ),
     )
-    with pytest.raises(ValueError, match="concept, evidence, entity nodes only"):
+    with pytest.raises(ValueError, match="concept, evidence, entity, assertion nodes only"):
         store.upsert_node(identity_key="drive:curiosity", node=drive)
     assert client.calls == []
 
@@ -1666,3 +1676,161 @@ def test_legacy_payload_migration_accepts_every_durable_kind():
     src = inspect.getsource(store_mod.FalkorSubstrateStore._migrate_legacy_payload_nodes)
     assert "DURABLE_NODE_KINDS" in src
     assert "entity" in DURABLE_NODE_KINDS
+
+
+# ---------------------------------------------------------------------------
+# Writes vs. snapshot (2026-10-06, turn-latency L2). cortex-exec now runs the
+# stance build (and so snapshot()) on a worker thread while the event loop can
+# still write to the same store.
+# ---------------------------------------------------------------------------
+
+
+class _DurableRecordingClient(RecordingFalkorClient):
+    """Fake Falkor that durably records node MERGEs, like the real graph, and can
+    run a hook from inside the hydrate scan (i.e. mid-snapshot)."""
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.mid_scan_hook = None
+
+    def graph_query(self, cypher, params=None):
+        if cypher.startswith("MERGE (n:SubstrateNode") and params:
+            self._hydrate_node_rows.append(
+                _hydrated_node_row(str(params["node_id"]), str(params.get("identity_key") or params["node_id"]))
+            )
+        result = super().graph_query(cypher, params)
+        if "e.payload_json IS NOT NULL" in cypher and self.mid_scan_hook is not None:
+            hook, self.mid_scan_hook = self.mid_scan_hook, None
+            hook()
+        return result
+
+
+def test_falkor_write_during_snapshot_never_yields_a_cache_missing_it():
+    client = _DurableRecordingClient(hydrate_node_rows=[_hydrated_node_row("concept-a", "concept:a")])
+    store = FalkorSubstrateStore(
+        FalkorSubstrateStoreConfig(
+            uri="redis://localhost:6379", graph_name="orion_substrate", snapshot_force_refresh_ceiling_sec=60.0
+        ),
+        client=client,
+        hydrate=False,
+    )
+
+    def _write_from_another_thread():
+        import threading
+
+        writer = threading.Thread(
+            target=lambda: store.upsert_node(identity_key="concept:b", node=_concept(node_id="concept-b"))
+        )
+        writer.start()
+        writer.join(timeout=5)
+        assert not writer.is_alive()
+
+    client.mid_scan_hook = _write_from_another_thread
+    during = store.snapshot()
+    assert "concept-b" in during.nodes
+    after = store.snapshot()
+    assert "concept-a" in after.nodes and "concept-b" in after.nodes
+
+
+def test_falkor_concurrent_writes_and_snapshots_keep_every_completed_write():
+    import threading
+
+    client = _DurableRecordingClient(hydrate_node_rows=[_hydrated_node_row("concept-a", "concept:a")])
+    store = FalkorSubstrateStore(
+        FalkorSubstrateStoreConfig(
+            uri="redis://localhost:6379", graph_name="orion_substrate", snapshot_force_refresh_ceiling_sec=60.0
+        ),
+        client=client,
+        hydrate=False,
+    )
+    written: list[str] = []
+    missing: list[tuple[str, int]] = []
+    stop = threading.Event()
+
+    def _writer():
+        for i in range(60):
+            node_id = f"concept-w{i}"
+            store.upsert_node(identity_key=f"concept:w{i}", node=_concept(node_id=node_id))
+            written.append(node_id)
+        stop.set()
+
+    def _reader():
+        while not stop.is_set():
+            done_before = list(written)
+            snap = store.snapshot()
+            for node_id in done_before:
+                if node_id not in snap.nodes:
+                    missing.append((node_id, len(done_before)))
+
+    readers = [threading.Thread(target=_reader) for _ in range(2)]
+    writer = threading.Thread(target=_writer)
+    for t in readers:
+        t.start()
+    writer.start()
+    writer.join(timeout=30)
+    for t in readers:
+        t.join(timeout=30)
+
+    assert missing == []
+    assert store._write_generation == 60
+    final = store.snapshot()
+    assert set(written) <= set(final.nodes)
+
+
+class _GenerationHookStore(FalkorSubstrateStore):
+    """Runs a hook on the first read of _write_generation after the hydrate scan
+    finishes -- i.e. exactly at the generation check that precedes the swap."""
+
+    _hook = None
+    _armed = False
+
+    @property
+    def _write_generation(self):
+        value = self.__dict__.get("_wg", 0)
+        if self._armed and self._hook is not None:
+            hook, self._hook, self._armed = self._hook, None, False
+            hook()
+        return value
+
+    @_write_generation.setter
+    def _write_generation(self, value):
+        self.__dict__["_wg"] = value
+
+
+def test_falkor_write_between_generation_check_and_swap_is_not_dropped():
+    """The race L2 fixes: a write landing after the scan's generation check but
+    before the cache swap went into the old cache, and the swap threw it away.
+    With the check and swap under _cache_lock the writer waits, then lands in
+    the new cache."""
+    import threading
+
+    client = _DurableRecordingClient(hydrate_node_rows=[_hydrated_node_row("concept-a", "concept:a")])
+    store = _GenerationHookStore(
+        FalkorSubstrateStoreConfig(
+            uri="redis://localhost:6379", graph_name="orion_substrate", snapshot_force_refresh_ceiling_sec=60.0
+        ),
+        client=client,
+        hydrate=False,
+    )
+    writers: list[threading.Thread] = []
+
+    def _start_writer():
+        writer = threading.Thread(
+            target=lambda: store.upsert_node(identity_key="concept:b", node=_concept(node_id="concept-b"))
+        )
+        writers.append(writer)
+        writer.start()
+        # Give an unlocked writer every chance to finish inside the window.
+        writer.join(timeout=0.5)
+
+    def _arm():
+        store._hook = _start_writer
+        store._armed = True
+
+    client.mid_scan_hook = _arm
+    store.snapshot()
+    writers[0].join(timeout=5)
+    assert not writers[0].is_alive()
+    # The completed write must be in the live cache, not dropped by the swap.
+    assert store._cache.get_node_by_id("concept-b") is not None
+    assert "concept-b" in store.snapshot().nodes

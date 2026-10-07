@@ -255,3 +255,20 @@ def test_trim_drops_whole_sections_when_the_trend_is_not_enough() -> None:
     assert ue.encoded_size(trimmed) <= URGENT_EVIDENCE_MAX_BYTES
     assert trimmed["hosts"]["error"].startswith("trimmed")
     assert trimmed["cooling"] == {"ok": True}
+
+
+def test_gpu_cards_carry_pool_derived_lanes(readers) -> None:
+    """Stage 5.5: the urgent bundle labels a circe card from the pool's own state, the same label
+    Juniper sees in the biometrics modal; athena (no pool) stays unassigned."""
+    state = {**_POOL_STATE, "host": "circe",
+             "cards": [{"card": "gpu0", "index": 0, "vram_gb": 32.0, "swap_state": "idle",
+                        "swapped_in": [], "lent": False}],
+             "roles": [{"role": "chat", "kind": "llm", "cards": ["gpu0"], "url": "http://x",
+                        "status": "confirmed"}]}
+    readers.setattr(ue.gpu_pool_routes, "feed", _Feed(state))
+
+    bundle = asyncio.run(ue.collect_evidence())
+
+    assert bundle["gpus"]["circe"][0]["lane"] == "chat"
+    assert bundle["gpus"]["circe"][0]["lane_assigned"] is True
+    assert bundle["gpus"]["athena"][0]["lane"] == "unassigned"

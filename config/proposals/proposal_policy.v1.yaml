@@ -590,3 +590,38 @@ proposal_templates:
     reversibility: 1.0
     dimensions:
       resource_pressure: 0.35
+
+  # 2026-10-01: ORION'S FIRST WORLD-FACING, SELF-REVERTING ACTION (attend-to-act loop A1;
+  # docs/superpowers/specs/2026-09-29-attend-to-act-loop-design.md, "Amendment 2026-09-29").
+  #
+  # Bound to the WORKSPACE broadcast winner (target_binding workspace.winner), never the
+  # field-attention ranking: emitted only when the winner's attended node is in binds_to_nodes, the
+  # projection is <= 90 s old and held >= 2 ticks, AND the world is in the state the action is for
+  # (cabinet elevated -- not hot -- and rising >= 0.5 C / 15 min by the reflex's own rise function,
+  # hardware-watch healthy with zero open incidents, >= 1 background lease granted or queued, no
+  # earlier episode still in flight). orion/autonomy/self_shed.py owns those rules.
+  #
+  # What it does: sets the lower-precedence orion_self_shed reason on the GPU pool's shed lever --
+  # no NEW background grants for <= 15 min; running work finishes; nothing recalled; never system,
+  # interactive or urgent. The pool enforces the caps (TTL, 1 h/day, 15 min gap) and refuses while
+  # the reflex is active. Scored t0 -> t0 + 20 min on cabinet_heat_pressure against a randomized
+  # control arm (holdback_fraction 0.5, drawn only among eligible decisions).
+  #
+  # target_id is the lever, not the winner: the posterior cell (kind, target, signal, bin) must pool
+  # across the two winners that can trigger it.
+  shed_background_gpu:
+    kind: self_regulate
+    target_kind: system
+    target_id: pool:background_gpu
+    proposed_effect: reduce_pressure
+    required_policy_gate: self_reversible
+    base_priority: 0.30
+    base_risk: 0.10
+    reversibility: 1.0
+    target_binding: workspace.winner
+    binds_to_nodes:
+      - node:substrate.biometrics
+      - node:substrate.cabinet
+    expected_signal: cabinet_heat_pressure
+    expected_direction: decrease
+    holdback_fraction: 0.5

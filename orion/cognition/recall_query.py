@@ -16,6 +16,50 @@ DEFAULT_RECALL_REPLY_PREFIX = "orion:exec:result:RecallService"
 
 _PROFILES_DIR = Path(__file__).resolve().parents[1] / "recall" / "profiles"
 
+# RecallQueryV1.retrieval_query's own max_length. Callers cap to it rather than
+# fail validation on a long standing question or reading claim.
+RETRIEVAL_QUERY_MAX_CHARS = 1000
+RECALL_MODES = ("retrieve", "context_only")
+
+
+def cap_retrieval_query(value: Any) -> str | None:
+    """Trimmed, capped search text, or None when there is nothing to search for."""
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    if not text:
+        return None
+    return text[:RETRIEVAL_QUERY_MAX_CHARS].rstrip() or None
+
+
+def retrieval_query_from_ctx(ctx: dict[str, Any] | None) -> str | None:
+    """What the caller asked recall to search for (``ctx["retrieval_query"]``).
+
+    None means the caller did not say, and recall condenses ``fragment`` itself.
+    """
+    if not isinstance(ctx, dict):
+        return None
+    return cap_retrieval_query(ctx.get("retrieval_query"))
+
+
+# recall_cfg key for RecallQueryV1.mode. NOT recall_cfg["mode"]: that key is
+# already RecallDirective.mode ("hybrid"/"deep"/"graph"), which cortex-orch
+# always sets, so sharing it would silently drop a verb's context_only default
+# (PR #2423 review).
+RECALL_QUERY_MODE_KEY = "query_mode"
+
+
+def recall_query_mode_from_cfg(recall_cfg: dict[str, Any] | None) -> str:
+    """``recall_cfg["query_mode"]`` when it is a known RecallQueryV1 mode, else ``retrieve``.
+
+    The router fills this from a verb YAML's ``recall_query_mode`` (plan metadata
+    ``recall_query_mode_default``), the same way ``recall_enabled`` flows.
+    """
+    if not isinstance(recall_cfg, dict):
+        return "retrieve"
+    mode = str(recall_cfg.get(RECALL_QUERY_MODE_KEY) or "").strip().lower()
+    return mode if mode in RECALL_MODES else "retrieve"
+
 
 @lru_cache(maxsize=32)
 def recall_profile_prompt_flags(profile_name: str | None) -> dict[str, Any]:
@@ -83,11 +127,18 @@ def build_recall_query_v1(
     recall_profile: str | None = None,
     recall_cfg: dict[str, Any] | None = None,
     reply_to: str | None = None,
+    deadline_ms: int | None = None,
 ) -> RecallQueryV1 | None:
-    """Build RecallQueryV1 using the same fields Exec ``run_recall_step`` sends."""
+    """Build RecallQueryV1 using the same fields Exec ``run_recall_step`` sends.
+
+    ``fragment`` stays the turn text (provenance, self-hit exclusion);
+    ``retrieval_query`` is what the caller asked to search for, when it said.
+    """
     recall_cfg = recall_cfg if isinstance(recall_cfg, dict) else {}
     fragment_text = last_user_message_from_ctx(ctx)
-    if not fragment_text:
+    retrieval_query = retrieval_query_from_ctx(ctx)
+    mode = recall_query_mode_from_cfg(recall_cfg)
+    if not fragment_text and not retrieval_query and mode != "context_only":
         return None
     lane_val = recall_cfg.get("lane")
     if lane_val is not None:
@@ -108,6 +159,9 @@ def build_recall_query_v1(
             "active_turn_ts": time.time(),
         },
         reply_to=reply_to,
+        retrieval_query=retrieval_query,
+        deadline_ms=int(deadline_ms) if deadline_ms and int(deadline_ms) > 0 else None,
+        mode=mode,
     )
 
 

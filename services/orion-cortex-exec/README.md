@@ -122,6 +122,13 @@ pytest orion/substrate/tests/test_current_turn_signal_detector.py -q
 python services/orion-cortex-exec/evals/run_current_turn_signal_eval.py
 ```
 
+### Reverie glimpse voice label (memory Stage 2, PR D)
+
+`_project_reverie_glimpse` renders the latest reverie through `orion/memory/voice_render.py`, so it reads as
+Orion's own thought, "not something Juniper and I discussed". Only `chat_stance_brief.j2` (the legacy
+`chat_general` stance) renders `chat_reverie_glimpse`; the live `stance_react.j2` does not. Adding it there is
+pending Juniper's decision. Concept table: `orion/memory/README.md`.
+
 ### Grammar substrate (shadow observability)
 
 | Channel | Env Var | Kind | Description |
@@ -393,15 +400,14 @@ If `self_state` is absent, stale, or fails to parse, metacog-lane scoring falls 
 
 **Conversation phase (`ConversationPhaseContextV1`, Redis-backed since 2026-08-21):** `_build_conversation_phase()` (async) buckets "how long since we last talked" into `same_breath`/`short_pause`/`resumed_thread`/`long_gap`/`next_day`/`stale_thread`, driving reconnection/reassurance framing in replies. The last-user-turn/last-Orion-turn timestamps live in Redis (`orion/situational/session_turn_phase.py`, key `orion:cortex-exec:session_turn_phase:{session_id}`, single JSON payload, 7-day TTL), not in an in-process dict — there are four separate `orion-cortex-exec` containers (`-chat`/`-background`/`-spark`/main), each an independent process, and a single chat turn's pipeline can touch more than one of them. `mark_orion_turn()` (`app/router.py`, called at the end of `run_plan`, keyed by the plan context's top-level `session_id`) is the other writer, doing a read-modify-write so it never clobbers the user-turn side of the pair. Both `read_session_turn_state`/`write_session_turn_state` are fail-open (a Redis hiccup degrades to `phase="unknown"`, never raises) and require the store's bus to be bound at startup via `orion/situational/state_buses.py::bind_situation_state_buses()` (`main.py`); the phase-bucketing thresholds themselves are unaffected by this — only where the timestamps are stored changed. Unified (Orion-mode) turns build their situation brief in orion-hub's process instead, so Hub's startup calls the same helper; the stance step (`stance_react`, dispatched by orion-thought) is what runs `mark_orion_turn` for those turns.
 
-**Runtime identity (`RuntimeContextV1`, 2026-08-14):** which LLM model is actually serving Orion's chat replies, added because Orion previously had no way to know. `_fetch_runtime_context()` reads `orion-llm-gateway`'s `GET /routes` (see that service's README, "Model identity" section, for where the live model id comes from) for `ORION_SITUATION_RUNTIME_ROUTE`'s (default `chat`) served model, cached `ORION_SITUATION_RUNTIME_TTL_SECONDS` (default `120`). Renders as `"Default model for route <route>: <id>. The GPU pool places each call itself, so this is the route's default, not a confirmation of this turn."` or `"Current model: unavailable; do not infer or guess a name."` — never a guessed name. When the caller passes `ctx["gpu_placement"]` (orion-hub does, for a turn holding a GPU pool lease) the line instead states the granted role's discovered model: `"You are running on model: <id> (GPU pool role <role>, profile <profile>, held for this turn)."` (`RuntimeContextV1.placement="lease"`).
+**Runtime identity (`RuntimeContextV1`, 2026-08-14):** which LLM model is actually serving Orion's chat replies, added because Orion previously had no way to know. `_fetch_runtime_context()` reads GPU pool state (one `orion:gpu_pool:state` RPC with the pool's config via `orion/situational/runtime_route_view.py`, bound at startup by `bind_situation_state_buses`; built into a per-route view by `orion/gpu_pool/route_view.py`) for the model a call on `ORION_SITUATION_RUNTIME_ROUTE` (default `chat`) would land on right now -- GPU pool stage 6.3; it no longer reads the gateway's retiring `GET /routes`. An unreachable pool reads as unavailable, never a guessed model. Cached `ORION_SITUATION_RUNTIME_TTL_SECONDS` (default `120`). Renders as `"Default model for route <route>: <id>. The GPU pool places each call itself, so this is the route's default, not a confirmation of this turn."` or `"Current model: unavailable; do not infer or guess a name."` — never a guessed name. When the caller passes `ctx["gpu_placement"]` (orion-hub does, for a turn holding a GPU pool lease) the line instead states the granted role's discovered model: `"You are running on model: <id> (GPU pool role <role>, profile <profile>, held for this turn)."` (`RuntimeContextV1.placement="lease"`).
 
 | Variable | Default (`.env_example`) | Role |
 | :--- | :--- | :--- |
 | `ORION_SITUATION_RUNTIME_ENABLED` | `true` | Master switch. Unlike perception this carries no private-home content, so it defaults on. |
 | `ORION_SITUATION_RUNTIME_ROUTE` | `chat` | Which `orion-llm-gateway` route's model to report. |
 | `ORION_SITUATION_RUNTIME_TTL_SECONDS` | `120` | This service's own cache, on top of the gateway's own 15s route-health cache. |
-| `ORION_SITUATION_RUNTIME_PROBE_TIMEOUT_SEC` | `2.0` | Bound on the `GET /routes` call; a slow/dead gateway degrades the prompt line, never blocks the turn. |
-| `CORTEX_EXEC_LLM_GATEWAY_URL` | `http://llm-gateway:8210` | Base URL for the probe. `llm-gateway` is the real Docker Compose service key (`scripts/check_service_hostname_refs.py` gates against hardcoding a `services/<dirname>`-shaped hostname like `orion-llm-gateway` instead -- that directory-name pattern has caused a real silent-crash incident before, see that script's docstring); matches `CONTEXT_EXEC_LLM_GATEWAY_URL`/`HUB_LLM_GATEWAY_URL`'s existing convention. |
+| `ORION_SITUATION_RUNTIME_PROBE_TIMEOUT_SEC` | `2.0` | Bound on the GPU pool state RPC; a slow/dead pool degrades the prompt line, never blocks the turn. |
 
 **Tests:** `tests/test_situation_provider.py` (mocks `urlopen`; covers live-model-reported, gateway-unreachable degrade, route-missing-from-response degrade, disabled-by-default, and TTL caching).
 
@@ -583,3 +589,19 @@ python scripts/bus_harness.py brain "plan a party"
 ```
 
 Self-study reads the published Graphify bundle via `SELF_STUDY_GRAPH_PATH`, mounted from warm storage using `SELF_STUDY_GRAPH_HOST_PATH`. See [local graph operations](../../docs/graphify-local-storage.md).
+
+## Orion's Day verbs (2026-09-30)
+
+`orion_day_note_v1` and `orion_day_carry_forward_v1` (`orion/cognition/verbs/`) are called by
+the `orion_day.letter` durable run (services/orion-durable-runs) under its GPU pool hold, route
+`agent` (also this executor's default for them when a caller forgets to stamp one). Both return
+plain text and stay out of the structured-output verb list.
+
+| Variable | Default | Description |
+| :--- | :--- | :--- |
+| `LLM_ORION_DAY_NOTE_MAX_TOKENS` | `12000` | Completion budget for the long reflective note (reasoning tokens count against it on the agent-lane model). |
+| `LLM_ORION_DAY_CARRY_FORWARD_MAX_TOKENS` | `4000` | Completion budget for the carry-forward thread list. |
+
+### Stance build: no full-graph hydrate (2026-10-06)
+
+The unification layer behind every chat stance build reads Falkor through `FalkorAnchorStanceStore` (`orion/substrate/falkor_anchor_store.py`, chosen by `build_unification_store_from_env()` when `SUBSTRATE_STORE_BACKEND=falkor`). It fetches only the non-`world` anchor nodes (216 of 5,051 live) and the concept region, in about 80 ms each. Before this, each Hub turn's build re-hydrated the whole graph (38k edges, ~14 s, 17-28 s live) because the store's 30 s refresh ceiling had always lapsed by the next human turn. Each build logs `stance_build_phase_timing corr=... queue_wait_ms=... felt_state_ms=... beliefs_ms=... snapshot_calls=... snapshot_ms=...`.

@@ -359,3 +359,20 @@ def test_insert_record_dedupe_safe_is_atomic(tmp_path, monkeypatch) -> None:
     assert outcome_a == "created"
     assert outcome_b == "dedupe_hit"
     assert stored_a.experiment_id == stored_b.experiment_id
+
+
+@pytest.mark.parametrize(
+    "skill_id", ["skills.docker.compose_service_bringup.v1", "skills.imagination.render_scene.v1"]
+)
+def test_world_changing_skills_rejected_as_read_only_probes(skill_id: str) -> None:
+    """2026-10-01: both were labelled read-only; daily pulse created a
+    compose_service_bringup "read-only skill probe" on 2026-08-30. Real manifest, no stub."""
+    from orion.schemas.self_experiments import SelfExperimentCreateRequestV1
+
+    with pytest.raises(ExperimentValidationError, match="non_read_only_skill_rejected"):
+        normalize_create_request(
+            SelfExperimentCreateRequestV1(skill_id=skill_id, provenance={}),
+            experiment_id="exp-x",
+            created_at_utc=_now(),
+            allow_non_read_only=False,
+        )

@@ -112,6 +112,11 @@ class PlaceContextV1(BaseModel):
     locality: Optional[str] = None
     region: Optional[str] = None
     country: Optional[str] = None
+    # Fixed facts about where Orion lives, independent of where Juniper is
+    # this week. Rendered in the Situation block so a mention of "outside" or
+    # "the camera" cannot be resolved against a travel city from recent chat.
+    home_location: Optional[str] = None
+    physical_location: Optional[str] = None
     timezone: str = "America/Denver"
     precision: Literal["none", "coarse", "city", "exact"] = "coarse"
     source: Literal["configured_home", "browser_metadata", "manual", "unknown"] = "unknown"
@@ -317,9 +322,12 @@ class RuntimeContextV1(BaseModel):
     # runs and `model_id`/`profile_name` are the pool's discovered profile for that role.
     # "route_default": no lease was known when the brief was built, so `model_id` is only
     # the gateway's default for `route`; the pool may place a call elsewhere.
-    placement: Literal["route_default", "lease"] = "route_default"
+    # "harness": the harness prompt states the model for the route it actually uses, so the
+    # brief says nothing (two "default model" lines for two routes would contradict).
+    placement: Literal["route_default", "lease", "harness"] = "route_default"
     granted_role: Optional[str] = None
     profile_name: Optional[str] = None
+    role_status: Optional[str] = None   # pool discovery status of granted_role (confirmed, mismatch, ...)
 
 
 class SurfaceContextV1(BaseModel):

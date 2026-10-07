@@ -695,6 +695,94 @@ class ExecutionDispatchRuntimeStore:
             )
         return bool(getattr(result, "rowcount", 0))
 
+    # --- attend-to-act loop: world-action episodes + shed settlement --------------------------
+    def insert_world_episode(self, row: dict) -> bool:
+        """Precommit (orion/autonomy/world_episodes.py). Creates the ledger lazily under a short
+        lock_timeout. Raises on failure: the caller must NOT act without its precommit."""
+        from orion.autonomy import world_episodes
+
+        with self._engine.begin() as conn:
+            if not getattr(self, "_world_episodes_ready", False):
+                world_episodes.ensure_table(conn)
+            inserted = world_episodes.insert_decision(conn, row)
+        self._world_episodes_ready = True
+        return inserted
+
+    def load_world_admission_inputs(self, *, template: str, now: datetime) -> tuple[list[str], list[dict]]:
+        """(episodes still in flight, treated episodes of the last 24 h). ([], []) while the ledger
+        table does not exist (no world decision has ever been made). Other failures raise."""
+        from orion.autonomy import world_episodes
+
+        with self._engine.connect() as conn:
+            if conn.execute(text("SELECT to_regclass(:t)"), {"t": world_episodes.TABLE}).scalar() is None:
+                return [], []
+            return (world_episodes.in_flight(conn, template=template, now=now),
+                    world_episodes.recent_treated(conn, template=template, since=now - timedelta(days=1)))
+
+    def world_episode_arm(self, episode_id: str) -> str | None:
+        from orion.autonomy import world_episodes
+
+        with self._engine.connect() as conn:
+            return world_episodes.arm_of(conn, episode_id)
+
+    def record_world_settlement(self, *, episode_id: str, shed_id: str | None, state: str, settlement: dict) -> None:
+        from orion.autonomy import world_episodes
+
+        with self._engine.begin() as conn:
+            world_episodes.record_settlement(conn, episode_id=episode_id, shed_id=shed_id, state=state,
+                                             settlement=settlement)
+
+    def load_pending_shed_settlements(self, *, limit: int = 20) -> list[dict]:
+        """shed_pending results joined to the pool's orion_self_shed record (NULL until it exists)."""
+        with self._engine.connect() as conn:
+            if conn.execute(text("SELECT to_regclass('public.gpu_pool_orion_shed')")).scalar() is None:
+                # The pool has never created its ledger: no shed exists to settle from. Rows still
+                # settle -- as settlement_timeout orphans -- with pool_row None.
+                rows = conn.execute(text(
+                    """
+                    SELECT result_id, dispatch_id, result_json, created_at, latency_ms, dispatch_kind, target_id,
+                           NULL::jsonb AS pool_row
+                      FROM substrate_dispatch_results
+                     WHERE dispatch_kind = 'self_regulate'
+                       AND result_json->'settlement'->>'state' = 'shed_pending'
+                       AND created_at > now() - interval '6 hours'
+                     ORDER BY created_at LIMIT :limit
+                    """), {"limit": limit}).mappings().all()
+                return [dict(r) for r in rows]
+            rows = conn.execute(text(
+                """
+                SELECT r.result_id, r.dispatch_id, r.result_json, r.created_at, r.latency_ms,
+                       r.dispatch_kind, r.target_id, to_jsonb(s) AS pool_row
+                  FROM substrate_dispatch_results r
+                  LEFT JOIN LATERAL (
+                        SELECT shed_id, state, refusal, started_at, ended_at, drained_at, grants_withheld,
+                               delayed_grant_sec, background_live_at_start, valid_until, ttl_sec
+                          FROM public.gpu_pool_orion_shed g WHERE g.dispatch_id = r.dispatch_id LIMIT 1) s ON true
+                 WHERE r.dispatch_kind = 'self_regulate'
+                   AND r.result_json->'settlement'->>'state' = 'shed_pending'
+                   AND r.created_at > now() - interval '6 hours'
+                 ORDER BY r.created_at
+                 LIMIT :limit
+                """), {"limit": limit}).mappings().all()
+        out = []
+        for row in rows:
+            item = dict(row)
+            for key in ("result_json", "pool_row"):
+                if isinstance(item.get(key), str):
+                    item[key] = json.loads(item[key])
+            out.append(item)
+        return out
+
+    def settle_shed_dispatch_result(self, *, result_id: str, status: str, result_json: dict) -> bool:
+        """shed_pending -> settled, once. latency_ms (the RPC's wall time, the motor cost) is kept."""
+        with self._engine.begin() as conn:
+            result = conn.execute(text(
+                """
+                UPDATE substrate_dispatch_results SET status = :status, result_json = :result_json
+                 WHERE result_id = :result_id AND result_json->'settlement'->>'state' = 'shed_pending'
+                """), {"result_id": result_id, "status": status, "result_json": Json(result_json)})
+        return bool(getattr(result, "rowcount", 0))
+
     def load_dispatch_result_by_dispatch_id(self, dispatch_id: str) -> dict | None:
         with self._engine.connect() as conn:
             row = (

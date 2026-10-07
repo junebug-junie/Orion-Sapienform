@@ -197,7 +197,7 @@ def compile_harness_prefix(
         # the caller BEFORE this function runs (runner.py: the turn's GPU pool
         # lease role -> the pool's discovered profile for that role, else the
         # route's default model) so this stays a pure formatter. Never the
-        # gateway's /routes default stated as fact: under the GPU pool a call
+        # route's default stated as fact: under the GPU pool a call
         # can be served by another role (agent -> agent-gpu2 or chat), and the
         # old "currently serving this turn" line was then false about Orion
         # itself (docs/superpowers/specs/2026-09-24-gpu-pool-design.md,

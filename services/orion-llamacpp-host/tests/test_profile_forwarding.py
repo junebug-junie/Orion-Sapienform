@@ -1176,3 +1176,57 @@ def test_deepseek_v41_circe_profile_loads_from_yaml():
         "DeepSeek-V4.1-Flash-MXFP4-engram-00001-of-00011.gguf"
     )
     assert profile.llamacpp.model_root.endswith("DeepSeek-V4.1-Flash-MXFP4-engram")
+
+
+def test_parse_llama_build_upstream_and_semver_fork():
+    main = importlib.import_module("app.main")
+    assert main._parse_llama_build("version: 8740 (3b6fcfe)\nbuilt with GNU") == 8740
+    # PrismML fork: the leading 0 is a semver major, not the build number. Reading it as 0
+    # made the wrapper treat the binary as pre-b5332 and drop --flash-attn off / --reasoning.
+    assert main._parse_llama_build("version: 0.2.0-dev (build 10750, commit 88c4bc60)") == 10750
+    assert main._parse_llama_build("no version here") is None
+
+
+def test_circe_chat_deep_cognition_forwards_preserve_thinking(monkeypatch):
+    """The :8011 chat lane keeps prior reasoning so FCC prompts stay append-only.
+
+    This model's template defaults preserve_thinking to false, so without the
+    flag each in-place reminder user turn strips the previous step's <think>
+    block and the prompt stops being a pure prefix (design doc Fix B,
+    docs/superpowers/specs/2026-10-02-fcc-prompt-prefix-cache-design.md).
+    Thinking itself must stay off: budget 0 still has to be emitted.
+    """
+    profile_name = "qwen36-35b-a3b-udq5km-2xv100-32gb-deep-cognition"
+    repo_root = Path(__file__).resolve().parents[3]
+    config_path = repo_root / "config" / "llm_profiles.yaml"
+
+    monkeypatch.setenv("LLM_PROFILE_NAME", profile_name)
+    monkeypatch.setenv("LLM_PROFILES_CONFIG_PATH", str(config_path))
+
+    main = importlib.import_module("app.main")
+    settings_mod = importlib.import_module("app.settings")
+    profiles_mod = importlib.import_module("app.profiles")
+
+    raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    profile = profiles_mod.LLMProfile(name=profile_name, **raw["profiles"][profile_name])
+
+    monkeypatch.setattr(main, "_ensure_model_file", lambda *_a, **_k: None)
+    monkeypatch.setattr(main, "_ensure_mmproj_file", lambda *_a, **_k: None, raising=False)
+    monkeypatch.setattr(
+        main,
+        "_get_supported_llama_server_flags",
+        lambda _bin: {"--jinja", "--reasoning", "--reasoning-budget",
+                      "--chat-template-kwargs", "--no-context-shift", "--n-predict"},
+    )
+    monkeypatch.setattr(main, "_get_llama_server_build", lambda _bin: 10398)
+    monkeypatch.setattr(
+        settings_mod.settings,
+        "llamacpp_model_path_override",
+        "/models/gguf/Qwen3.6-35B-A3B-UD-Q5_K_M.gguf",
+    )
+
+    cmd, _env = main.build_llama_server_cmd_and_env(profile)
+
+    assert json.loads(_find_flag_value(cmd, "--chat-template-kwargs")) == {"preserve_thinking": True}
+    assert "--jinja" in cmd
+    assert _find_flag_value(cmd, "--reasoning-budget") == "0"

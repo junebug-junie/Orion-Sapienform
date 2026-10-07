@@ -84,7 +84,14 @@ _EXECUTION_PREDICTION_ERROR_MIN_VARIANCE = 1e-10
 # z>=3.0 "anomalous" convention shared by every other z-score domain in this module.
 _CHAT_PREDICTION_ERROR_EWMA_ALPHA = 0.2
 _CHAT_PREDICTION_ERROR_ZSCORE_SATURATION = 3.0
-_CHAT_PREDICTION_ERROR_MIN_VARIANCE = 5e-8
+# 2026-09-29 (chat definition v3, touched turns only): the 5e-8 above was derived
+# from v1/v2's diluted raw deltas (every stored turn in the denominator). Touched-
+# only raw deltas are ~300x larger; replayed over the live projection (1,691
+# turns), the warmed-up (n>=5) EWMA variance ranged min 2.9e-4, p1 6.4e-4,
+# median 3.4e-2. Re-set one order of magnitude below that minimum, the same
+# convention as the original derivation. It still never binds for real v3 data
+# past cold start; it only stops the floor being a v2 leftover.
+_CHAT_PREDICTION_ERROR_MIN_VARIANCE = 3e-5
 
 
 # 2026-07-30: codebase_prediction_error's EWMA baseline calibration (Phase 1 contract
@@ -662,10 +669,27 @@ def chat_prediction_error(
     ``_CHAT_PREDICTION_ERROR_MIN_VARIANCE``'s own comment for the live-data
     derivation behind its value. Returns 0.0 on the first tick with any real
     deltas, same reasoning as execution's identical cold-start case.
+
+    **Definition v3 (2026-09-29): average over the turns this batch touched, not
+    every turn in the projection.** Same defect and same fix as
+    ``route_prediction_error`` v2. The chat projection keeps every turn it has
+    ever seen (~1,700 on 2026-09-29, never evicted), and every turn the batch did
+    not touch is identical in ``prev``/``curr`` and added two 0.0 deltas. So the
+    raw mean was the new turn's change divided by ~1,700: replayed over the live
+    projection, raw mean 5.1e-4 (v2) vs 0.144 touched-only, and the variance
+    floor, not the data, set the z-score on 922 of 1,691 turns (55%). A turn is
+    touched when it is new or differs from its ``prev`` copy (``_touched_runs``;
+    the chat reducer rewrites a turn only when an event for it arrives). No
+    touched turns -> 0.0 and the EWMA is not advanced, as before. Bumped
+    ``orion.schemas.prediction_error_definitions`` (chat_session 2 -> 3) so
+    Candidate A's baseline restarts; the projection's own EWMA fields
+    (``prediction_error_baseline_*``) hold v2-scale numbers and must be zeroed at
+    deploy (see the 2026-09-29 PR report), or the first v3 turns all read 1.0.
+    ``_CHAT_PREDICTION_ERROR_MIN_VARIANCE`` re-derived on the v3 scale.
     """
     deltas: list[float] = []
     prev_fallback = _latest_run(prev.turns)
-    for turn_id, curr_turn in curr.turns.items():
+    for turn_id, curr_turn in _touched_runs(prev.turns, curr.turns):
         prev_turn = prev.turns.get(turn_id)
         if prev_turn is None:
             prev_turn = prev_fallback
@@ -883,6 +907,14 @@ def bus_synaptic_prediction_error(edge_zscores: list[float]) -> float:
 
 # ---------------------------------------------------------------------------
 # capability:vision -- perceptual availability
+#
+# 2026-10-02: the node:substrate.vision tick that consumed this section was
+# retired. capability:vision is now fed by the frame router's own report
+# (orion/substrate/vision_organ_loop/), which still uses
+# vision_channel_staleness_pressure below, per camera stream. perceptual_yield /
+# perceptual_blindness_pressure have no runtime caller now; they are kept for
+# the per-stream day-shape yield prior, not wired anywhere. References below to
+# node:substrate.vision are history.
 #
 # 2026-08-13: an earlier draft of this node derived vision health from the bus
 # synaptic graph's `gap_zscore` over the orion:vision:* channels, reusing

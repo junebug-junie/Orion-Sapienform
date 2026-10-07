@@ -56,7 +56,7 @@ class FakeBus:
         return [e.payload for c, e in self.published if c == "orion:grammar:event"]
 
 
-def make(down=(), store=None, saver=None, clock=None, bus=None):
+def make(down=(), store=None, saver=None, clock=None, bus=None, mode="enforce"):
     clock = clock or Clock()
 
     async def prober(role, url, kind, health):
@@ -73,7 +73,7 @@ def make(down=(), store=None, saver=None, clock=None, bus=None):
 
     rt = PoolRuntime(cfg=CFG, profiles=PROFILES, store=store or MemoryStore(),
                      graph=build_lease_graph(lambda: CFG, saver or MemorySaver()), bus=bus or FakeBus(),
-                     prober=prober, now=clock, probe_interval_sec=0)
+                     prober=prober, now=clock, probe_interval_sec=0, mode=mode)
     return rt, clock
 
 
@@ -97,7 +97,7 @@ async def later(rt, clock, sec):
     await rt.tick()
 
 
-CLEAR_GUARDS = {"thermal": None, "visual_baseline": None}
+CLEAR_GUARDS = {"thermal": None}
 SEAT_WAIT = CFG.swap_after_wait_sec("agent-gpu2")
 
 
@@ -158,6 +158,48 @@ def test_queue_then_release_hands_the_slot_on_and_records_wait_outside_transport
         roles = {g["atom"]["semantic_role"] for g in rt.bus.grammar()}
         assert "gpu_lease_granted" not in roles        # routine grants stay out of grammar
     run(go())
+
+
+TURN = "0f1e2d3c-4b5a-4968-8776-655443322110"
+
+
+def test_pool_events_travel_on_their_own_correlation_id_not_the_turns():
+    """Spec "Transport-metric and reader impacts" item 1: bus-mirror chains every shared envelope
+    correlation_id into CAUSALLY_FOLLOWED_BY edges, so a pool event on the turn's id put the pool
+    inside the turn's causal chain. Envelope id = the event's own id; the turn rides in the payload."""
+    import uuid
+
+    async def go():
+        rt, clock = make()
+        await boot(rt)
+        first = await rt.acquire(acq("chat", priority="interactive", turn_correlation_id=TURN))
+        second = await rt.acquire(acq("chat", priority="interactive", turn_correlation_id=TURN,
+                                      deadline_at=rt.now() + timedelta(seconds=2)))
+        assert first.status == "granted" and second.status == "queued"
+        await later(rt, clock, 5)                       # second's deadline passes: an "unavailable" exception
+        pool = [e for c, e in rt.bus.published if c == "orion:gpu_pool:event"
+                and e.payload.get("turn_correlation_id") == TURN]
+        assert {e.payload["event"] for e in pool} >= {"admitted", "granted", "unavailable"}
+        for env in pool:
+            assert str(env.correlation_id) != TURN
+            assert env.correlation_id == uuid.UUID(hex=env.payload["event_id"])
+        assert len({e.correlation_id for e in pool}) == len(pool)   # fresh per event, no shared chain
+        grammar = [e for c, e in rt.bus.published if c == "orion:grammar:event"
+                   and e.payload.get("correlation_id") == TURN]
+        assert grammar, "the unavailable exception must still reach grammar with the turn in its payload"
+        for env in grammar:
+            assert str(env.correlation_id) != TURN
+            assert env.correlation_id == uuid.UUID(hex=env.payload["provenance"]["source_event_id"])
+    run(go())
+
+
+def test_event_envelope_correlation_falls_back_to_fresh_uuid_for_a_non_hex_event_id():
+    from app.runtime import event_envelope_correlation
+    from orion.schemas.gpu_pool import GpuPoolEventV1
+
+    ev = GpuPoolEventV1(event="granted", event_id="not-a-uuid", turn_correlation_id=TURN)
+    a, b = event_envelope_correlation(ev), event_envelope_correlation(ev)
+    assert str(a) != TURN and a != b
 
 
 def test_acquire_is_idempotent_on_request_id():
@@ -226,9 +268,9 @@ def test_gpu0_lend_lets_agent_borrow_and_chat_recalls_it():
 def test_backlog_replays_when_the_role_returns():
     async def go():
         store, saver, clock = MemoryStore(), MemorySaver(), Clock()
-        rt, _ = make(down=("world",), store=store, saver=saver, clock=clock)
+        rt, _ = make(down=("diffusion",), store=store, saver=saver, clock=clock)   # a backlog class
         await boot(rt)
-        r = await rt.acquire(acq_r("world"))
+        r = await rt.acquire(acq_r("diffusion"))
         assert r.status == "backlogged"
         rt2, _ = make(store=store, saver=saver, clock=clock)   # restart, world is back
         await boot(rt2)
@@ -271,17 +313,19 @@ def test_mismatched_worker_gets_no_grants_and_is_reported():
     run(go())
 
 
-def test_observe_mode_publishes_swap_requests_without_touching_cards():
+def test_paused_pool_publishes_swap_requests_without_touching_cards():
     async def go():
         rt, clock = make()
         await boot(rt)
         rt.guard_states = dict(CLEAR_GUARDS)
+        await rt.control(GpuPoolControlV1(verb="pause_actuation"))
         h = await rt.acquire(acq("agent", kind="hold"))
         await rt.acquire(acq("agent"))
         await beating(rt, clock, SEAT_WAIT + 1, [h.lease_id])
         [s] = rt.bus.events("swap_requested")
-        assert s["role"] == "agent-gpu2" and s["detail"] == {"action": "load", "actuated": False, "mode": "observe"}
-        assert not rt.cards["gpu2"].swapped_in
+        assert s["role"] == "agent-gpu2" and s["reason"] == "actuation_paused"
+        assert s["detail"] == {"action": "load", "actuated": False, "mode": "enforce", "paused": True, "wanted": "demand"}
+        assert not rt.cards["gpu2"].swapped_in and rt.cards["gpu2"].swap_state == "idle"
     run(go())
 
 
@@ -311,8 +355,11 @@ def test_state_snapshot_shows_cards_roles_and_queue():
         await rt.acquire(acq("chat", priority="interactive"))
         state = await rt.snapshot()
         assert {c.card for c in state.cards} == set(CFG.cards)
-        assert state.queue_depth == {"chat": 1} and state.mode == "observe"
+        assert state.queue_depth == {"chat": 1} and state.mode == "enforce" and state.actuation_paused is None
         assert state.config_digest == CFG.digest
+        # Stage 5.5: Hub's biometrics labels join nvidia-smi on the card index, for the pool's host.
+        assert state.host == CFG.host.name
+        assert {c.card: c.index for c in state.cards} == {c: spec.index for c, spec in CFG.cards.items()}
     run(go())
 
 
@@ -363,6 +410,7 @@ def test_swap_request_is_reported_again_when_it_recurs():
         rt, clock = make()
         await boot(rt)
         rt.guard_states = dict(CLEAR_GUARDS)
+        await rt.control(GpuPoolControlV1(verb="pause_actuation"))   # reported, never sent
         held = await rt.acquire(acq("agent", kind="hold"))
         await rt.acquire(acq("agent", deadline_at=rt.now() + timedelta(seconds=SEAT_WAIT + 40)))
         await beating(rt, clock, SEAT_WAIT + 1, [held.lease_id])
@@ -401,18 +449,17 @@ def test_projection_heals_from_checkpoint():
     run(go())
 
 
-def test_operator_hold_via_control_and_release():
+def test_operator_hold_on_a_seat_nothing_can_load_is_refused_in_every_mode():
+    """Stage 5.7: experiment has no launch block. Its hold would drain every card and load nothing."""
     async def go():
-        rt, _ = make()
-        await boot(rt)
-        refused = await rt.control(GpuPoolControlV1(verb="hold", work_class="experiment"))
-        assert not refused.ok and refused.reason == "hold_requires_swap_actuation"   # observe mode
-        rt.mode = "enforce"
-        held = await rt.control(GpuPoolControlV1(verb="hold", work_class="experiment"))
-        assert held.ok and held.detail["status"] == "queued"      # it drains every card first
-        rel = await rt.control(GpuPoolControlV1(verb="release",
-                                                lease_id=held.detail["lease_id"]))
-        assert rel.ok
+        for mode in ("enforce", "observe"):
+            rt, _ = make(mode=mode)
+            await boot(rt)
+            refused = await rt.control(GpuPoolControlV1(verb="hold", work_class="experiment"))
+            assert not refused.ok and refused.reason == "not_actuatable:experiment"
+            assert not rt.store.leases                             # nothing admitted, nothing drains
+            direct = await rt.acquire(acq("experiment", kind="hold"), operator=True)
+            assert direct.status == "unavailable" and direct.reason == "not_actuatable:experiment"
     run(go())
 
 
@@ -441,9 +488,11 @@ def test_grant_served_by_keeps_the_node_worker_shape():
     run(go())
 
 
-def test_swap_seat_counts_as_loaded_when_its_worker_is_really_up():
+def test_observe_mode_counts_a_swap_seat_loaded_when_its_worker_is_really_up():
+    """observe (the stage 5.7 rollback) keeps the liveness shortcut; enforce asks the actuator
+    instead (tests/test_stage5_7_enforce.py)."""
     async def go():
-        rt, clock = make()
+        rt, clock = make(mode="observe")
         LIVE["agent-gpu2"] = ("qwen3.8-27b-udq4kxl-v100-32gb-circe-agent-flex", "Qwen3.8-27B-UD-Q4_K_XL.gguf", 1, 131072)
         try:
             await boot(rt)
@@ -539,3 +588,29 @@ def test_a_slow_lock_holder_is_named_and_counted(caplog):
         assert any("op=acquire" in m and "live_leases" in m for m in slow), slow
         assert rt.lock_stats.drain() == {}                   # drained
     run(go())
+
+
+def test_serialize_with_reports_queued_reason_once_then_grants_after_release():
+    """Stage 5 Z1: world waits while diffusion computes on gpu2 and the pool says why, once."""
+    async def go():
+        rt, clock = make()
+        await boot(rt)
+        d = await rt.acquire(acq("diffusion"))
+        assert d.status == "granted"
+        w = await rt.acquire(acq("world"))
+        assert w.status == "queued"
+        await later(rt, clock, 1)
+        await later(rt, clock, 1)
+        why = [e for e in rt.bus.events("queued") if e["reason"] == "serialized:diffusion"]
+        assert len(why) == 1                                   # edge-triggered, not every tick
+        assert why[0]["lease_id"] == w.lease_id and why[0]["role"] == "world"
+        assert why[0]["cards"] == ["gpu2"] and why[0]["detail"] == {"serialized": True}
+        assert (await store_status(rt, w.lease_id)) == "queued"   # a report, not a transition
+        await rt.release(d.lease_id, "ok")
+        await later(rt, clock, 1)
+        assert (await store_status(rt, w.lease_id)) == "granted"
+    run(go())
+
+
+async def store_status(rt, lease_id):
+    return (await rt.store.lease(lease_id))["status"]

@@ -708,3 +708,52 @@ class TestBusSynapticGraphWriterVerbStep:
         write_call = fake_client.calls[-1]
         assert write_call[1]["node"] == "unknown"
         assert fake_client._edges[("EXECUTES_VERB", "cortex-exec", "draft_entry", "unknown")]["count"] == 1
+
+
+class TestEnsureIndexes:
+    def test_creates_an_index_for_every_merged_property(self) -> None:
+        client = FakeGraphClient()
+        BusSynapticGraphWriter(client, alpha=0.2).ensure_indexes()
+
+        created = [cypher for cypher, _ in client.calls]
+        assert created == [
+            "CREATE INDEX FOR (n:Channel) ON (n.channel)",
+            "CREATE INDEX FOR (n:Organ) ON (n.organ_id)",
+            "CREATE INDEX FOR (n:Verb) ON (n.verb_name)",
+        ]
+
+    def test_every_merge_key_in_the_writer_is_indexed(self, fake_client: FakeGraphClient) -> None:
+        # Guards the incident itself: a MERGE on an unindexed property is a
+        # full label scan per message. Any new MERGE key must join the list.
+        import re
+
+        writer = BusSynapticGraphWriter(fake_client, alpha=0.2)
+        writer.record_publish(BusEventFact(organ_id="a", channel="orion:x", correlation_id=None, observed_at_epoch=1.0))
+        writer.record_causal_hop(
+            prior_organ_id="a",
+            prior_epoch=0.0,
+            fact=BusEventFact(organ_id="b", channel="orion:x", correlation_id=None, observed_at_epoch=1.0),
+        )
+        writer.record_verb_step(VerbStepFact(organ_id="a", verb_name="v", latency_sec=0.1, node=None, observed_at_epoch=1.0))
+        merged = {
+            (label, prop)
+            for cypher, _ in fake_client.calls
+            for label, prop in re.findall(r"MERGE \(\w+:(\w+) \{(\w+):", cypher)
+        }
+        assert merged
+        assert merged <= set(BusSynapticGraphWriter.INDEXED_PROPERTIES)
+
+    def test_already_indexed_and_other_errors_never_raise(self) -> None:
+        class RaisingClient:
+            def __init__(self, message: str) -> None:
+                self.message = message
+                self.calls = 0
+
+            def graph_query(self, cypher: str, params: dict[str, Any] | None = None) -> Any:
+                self.calls += 1
+                raise RuntimeError(self.message)
+
+        for message in ("Attribute 'channel' is already indexed", "connection refused"):
+            client = RaisingClient(message)
+            BusSynapticGraphWriter(client, alpha=0.2).ensure_indexes()
+            assert client.calls == 3

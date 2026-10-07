@@ -206,13 +206,49 @@
     return hit ? hit[0] : null;
   }
 
+  /** Stage 5.7: the emergency stop, and which swap seats the pool can load at all. A seat is actuated
+   *  iff config/gpu_pool.yaml gives it a launch block; one without (experiment) is not_actuatable. */
+  function actuationModel(config, state) {
+    const roles = (config && config.roles) || {};
+    const seats = Object.keys(roles).filter((r) => roles[r].swap);
+    const notActuatable = {};
+    seats.forEach((r) => { if (!roles[r].launch) notActuatable[r] = `not_actuatable:${r}`; });
+    const p = state && state.actuation_paused;
+    return { paused: !!(p && p.paused), since: (p && p.since) || null, by: (p && p.by) || null,
+             actuated: seats.filter((r) => roles[r].launch), notActuatable };
+  }
+
+  /** What the hold control for an operator-only seat offers: release the operator hold already there,
+   *  a hold, or a refusal named with the pool's own reason (the button is greyed out, never hidden). */
+  function holdControlFor(config, state, role) {
+    const classesCfg = (config && config.classes) || {};
+    const held = ((state && state.leases) || []).find((l) => l.holder && l.holder.startsWith("operator:")
+      && ((classesCfg[l.work_class] || {}).roles || []).includes(role));
+    // An existing hold can always be released, whatever the mode.
+    if (held) return { kind: "release", leaseId: held.lease_id, status: held.status };
+    const a = actuationModel(config, state);
+    if (a.notActuatable[role]) return { kind: "refused", reason: a.notActuatable[role],
+      text: "nothing can load it (no launch block in config/gpu_pool.yaml); a hold would only empty every card it spans" };
+    const cls = holdClassFor(config, role);
+    if (!cls) return { kind: "refused", reason: "no_class", text: "no class lists this role" };
+    if (!state || state.mode !== "enforce") return { kind: "refused", reason: "hold_refused_observe_mode",
+      text: "the pool is in observe mode (the rollback): operator holds are off" };
+    if (a.paused) return { kind: "refused", reason: "actuation_paused", text: "model loading is paused" };
+    return { kind: "hold", workClass: cls };
+  }
+
+  function modeLabel(state) {
+    const a = actuationModel(null, state);
+    return `mode: ${state && state.mode}${a.paused ? " · model loading PAUSED" : ""}`;
+  }
+
   const BACKFILL_LIMIT = 1000;  // the pool's own cap
   function backfillLabel(n) {
     return n >= BACKFILL_LIMIT ? `${BACKFILL_LIMIT}+` : String(n);
   }
 
   const api = { EDGES, NODES, pct, fmtMs, fmtAt, stateAgeSec, holdClassFor, backfillLabel, BACKFILL_LIMIT, cardModel, liveByRole, liveByClass, walkerPath, seriesModel,
-                slotUse, swapModel, guardModel, holdModel };
+                slotUse, swapModel, guardModel, holdModel, actuationModel, holdControlFor, modeLabel };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   root.OrionGpuPool = api;
   if (typeof document === "undefined") return;
@@ -245,9 +281,13 @@
       if (!seats.length && sw.swapState === "idle" && !sw.action) return "";
       const a = sw.action;
       const lines = [];
-      lines.push(sw.actuatedRoles.length ? `pool actuates ${esc(sw.actuatedRoles.join(", "))}` : "observe only: swaps are reported, not actuated");
+      const paused = actuationModel(null, view.state).paused;
+      lines.push(sw.actuatedRoles.length
+        ? `pool actuates ${esc(sw.actuatedRoles.join(", "))}${paused ? " · PAUSED: nothing is loaded or unloaded" : ""}`
+        : "no seat here the pool can load: swaps are reported, not actuated");
       if (a) {
         lines.push(`${esc(a.action)} ${esc(a.role)} (g${esc(a.generation)}, ${esc(a.reason)})`
+          + (a.profile ? ` · model ${esc(a.profile)}` : "")
           + (a.phase ? ` · phase ${esc(a.phase)}` : "") + (a.outcome ? ` · ${esc(a.outcome)}` : " · in flight")
           + (a.sent_at ? ` · sent ${esc(fmtAt(a.sent_at))}` : ""));
       }
@@ -302,17 +342,20 @@
        <span class="muted">${c.lent ? "borrowers may use it; its owner still claws back" : "owner only"}</span>`).join("")
       || '<span class="muted">No lendable cards in the YAML.</span>';
     const classesCfg = (view.config && view.config.classes) || {};
+    const act = actuationModel(view.config, view.state);
+    $("actuationControls").innerHTML = act.paused
+      ? `<div class="meta" data-actuation="paused"><strong>Model loading and unloading is PAUSED</strong> since ${esc(fmtAt(act.since))}${act.by ? ` by ${esc(act.by)}` : ""}.
+           Nothing is loaded or unloaded and no seat is drained; a swap already in flight finishes.</div>
+         <button type="button" data-verb="resume_actuation">Resume model loading/unloading (the pool first asks what each card holds)</button>`
+      : `<button type="button" data-verb="pause_actuation" data-actuation="running">Emergency stop: pause all model loading/unloading</button>
+         <span class="muted">stays paused across a pool restart until resumed${act.actuated.length ? `; the pool loads ${esc(act.actuated.join(", "))}` : ""}</span>`;
     const holdable = m.spanning.concat(...m.cards.map((c) => c.roles)).filter((r) => r.operatorOnly);
-    const holds = ((view.state && view.state.leases) || []).filter((l) => l.holder && l.holder.startsWith("operator:"));
-    const enforce = view.state && view.state.mode === "enforce";
     $("holdControls").innerHTML = holdable.map((r) => {
-      const cls = holdClassFor(view.config, r.name);
-      const held = holds.find((l) => ((classesCfg[l.work_class] || {}).roles || []).includes(r.name));
-      // An existing hold can always be released, whatever the mode.
-      if (held) return `<button type="button" data-verb="release" data-lease="${esc(held.lease_id)}">Release ${esc(r.name)} (${esc(held.status)})</button>`;
-      if (!enforce) return `<span class="muted">Hold ${esc(r.name)}: needs the pool to load and unload models itself (stage 5); until then a hold would only drain every card.</span>`;
-      return cls ? `<button type="button" data-verb="hold" data-class="${esc(cls)}">Hold ${esc(r.name)} (drains ${esc(r.cards.join(", "))})</button>`
-                 : `<span class="muted">${esc(r.name)}: no class lists this role</span>`;
+      const h = holdControlFor(view.config, view.state, r.name);
+      if (h.kind === "release") return `<button type="button" data-verb="release" data-lease="${esc(h.leaseId)}">Release ${esc(r.name)} (${esc(h.status)})</button>`;
+      if (h.kind === "hold") return `<button type="button" data-verb="hold" data-class="${esc(h.workClass)}">Hold ${esc(r.name)} (drains ${esc(r.cards.join(", "))})</button>`;
+      return `<button type="button" disabled data-hold-refused="${esc(h.reason)}" title="${esc(h.reason)}">Hold ${esc(r.name)}</button>
+        <span class="muted">${esc(h.reason)}: ${esc(h.text)}</span>`;
     }).join("");
     const classes = Object.keys(classesCfg);
     const opts = classes.map((c) => `<option>${esc(c)}</option>`).join("");
@@ -480,7 +523,7 @@
       if (!s) return;
       view.state = s;
       if (!view.config) { loadConfig(); return; }   // pool was unreachable at page load: try again now
-      $("poolMode").textContent = `mode: ${s.mode}`;
+      $("poolMode").textContent = modeLabel(s);
       if (view.config && s.config_digest && view.configDigest && s.config_digest !== view.configDigest) loadConfig();
       renderCards();
       if (view.range === "live") renderTraffic();
@@ -532,7 +575,7 @@
     const s = await res.json();
     view.config = s.config; view.configYaml = s.config_yaml; view.configDigest = s.config_digest; view.state = s;
     $("poolDigest").textContent = `config ${s.config_digest}`;
-    $("poolMode").textContent = `mode: ${s.mode}`;
+    $("poolMode").textContent = modeLabel(s);
     renderCards();
     renderTraffic();
   }
@@ -547,6 +590,8 @@
       if (btn.dataset.class) body.work_class = btn.dataset.class;
       if (body.verb === "clear_fault" && !confirm(`Clear the fault on ${body.card}? The pool asks the actuator what is loaded and believes it.`)) return;
       if (body.verb === "hold" && !confirm(`Hold ${body.work_class}? Every card it spans is drained first.`)) return;
+      if (body.verb === "pause_actuation" && !confirm("Pause ALL model loading and unloading? Nothing is loaded or unloaded until you resume; a swap already running finishes. It stays paused across a pool restart.")) return;
+      if (body.verb === "resume_actuation" && !confirm("Resume model loading and unloading? The pool first asks the actuator what each card holds, then acts on queued demand.")) return;
       btn.disabled = true;   // no double-submit before the next state frame redraws the controls
       try { await control(body); } finally { btn.disabled = false; }
       return;

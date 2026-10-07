@@ -35,6 +35,7 @@ doc for why each of those is deliberately left alone.
 from __future__ import annotations
 
 import logging
+import threading
 from typing import Any, Iterable
 
 from orion.core.schemas.cognitive_substrate import BaseSubstrateNodeV1, SubstrateEdgeV1
@@ -53,8 +54,8 @@ _NODE_FRAGMENT_ID_PREFIX = "concept_region:node:"
 # Search breadth for the label-match pass. `read_concept_region` ranks and
 # truncates by salience/confidence, so a low-salience concept could be cut
 # before we ever get to compare its label against the turn text unless we
-# ask for a generous slice up front. This is still a single bounded call
-# into the store's existing region-read API -- no new traversal method.
+# ask for a generous slice up front. On Falkor this ranking runs in the
+# database (orion/substrate/falkor_direct.py); only matched rows come back.
 _DEFAULT_SEARCH_LIMIT_NODES = 500
 _DEFAULT_SEARCH_LIMIT_EDGES = 500
 
@@ -155,7 +156,19 @@ def fetch_concept_region_fragment(
     turn_text_lower = turn_text.lower()
 
     try:
-        region = store.read_concept_region(limit_nodes=limit_nodes, limit_edges=limit_edges)
+        # A store that can apply the label filter itself (the hydration-free
+        # Falkor handle, orion/substrate/falkor_direct.py) only fetches full
+        # rows for what matches. Same result as filtering the full slice
+        # below -- the filter below is idempotent on it.
+        matching = getattr(store, "read_concept_region_matching", None)
+        if callable(matching):
+            region = matching(
+                keep_label=lambda label: _label_matches(label, turn_text_lower),
+                limit_nodes=limit_nodes,
+                limit_edges=limit_edges,
+            )
+        else:
+            region = store.read_concept_region(limit_nodes=limit_nodes, limit_edges=limit_edges)
     except Exception as exc:  # noqa: BLE001 - collector must degrade, never raise
         logger.debug("concept_region collector: store read failed: %s", exc)
         return []
@@ -185,6 +198,7 @@ def reinforce_matched_concepts(
     *,
     store: SubstrateGraphStore | None,
     boost: float = _RECALL_REINFORCEMENT_BOOST,
+    abandoned: "threading.Event | None" = None,
 ) -> int:
     """Bump activation for concept nodes that were actually surfaced in a live turn.
 
@@ -201,15 +215,16 @@ def reinforce_matched_concepts(
     module's read-side conventions. Returns the count of nodes actually
     reinforced.
 
-    Deliberately does not call `store.snapshot()`. On `FalkorSubstrateStore`,
-    `snapshot()` can trigger a full, currently-unbounded re-hydrate query
-    whenever the write generation has moved since the last call (see
-    `orion/substrate/falkor_store.py`) -- fine for Hub's 120s decay-scheduler
-    cadence, but this function runs on a live per-turn hot path where that
-    cost compounds with every reinforcing turn. `get_node_by_id()` and
-    `get_identity_key_by_node_id()` both read straight from the store's
-    in-process cache with no such refresh cost (confirmed by reading
-    `FalkorSubstrateStore`'s own implementation of both).
+    Never calls `store.snapshot()` (a complete graph read). In the live
+    service `store` is `FalkorDirectConceptStore`
+    (`orion/substrate/falkor_direct.py`), which has no snapshot at all:
+    `get_node_and_identity_key()` is one single-node `GRAPH.RO_QUERY` and
+    `upsert_node()` is one `MERGE ... SET`. Stores without the combined read
+    (the in-memory store) use `get_node_by_id()` + `get_identity_key_by_node_id()`.
+
+    ``abandoned``: checked before every node, so once the recall stops waiting
+    for this call (deadline passed mid-loop) no further node is read or
+    written. Nodes already written before that moment stay written.
     """
     node_ids = {str(node_id) for node_id in matched_node_ids if node_id}
     if not node_ids or store is None:
@@ -217,19 +232,31 @@ def reinforce_matched_concepts(
 
     clamped_boost = min(1.0, max(0.0, boost))
 
+    read_both = getattr(store, "get_node_and_identity_key", None)
+
     reinforced = 0
-    for node_id in node_ids:
+    for node_id in sorted(node_ids):
+        if abandoned is not None and abandoned.is_set():
+            logger.debug(
+                "concept_region reinforcement stopped: recall abandoned this call reinforced=%s remaining=%s",
+                reinforced,
+                len(node_ids) - reinforced,
+            )
+            break
         try:
-            node = store.get_node_by_id(node_id)
+            if callable(read_both):
+                node, identity_key = read_both(node_id)
+            else:
+                node = store.get_node_by_id(node_id)
+                identity_key = (
+                    store.get_identity_key_by_node_id(node_id)
+                    if node is not None and getattr(node, "node_kind", None) == "concept"
+                    else None
+                )
         except Exception as exc:  # noqa: BLE001 - must degrade, never raise
-            logger.debug("concept_region reinforcement: get_node_by_id(%s) failed: %s", node_id, exc)
+            logger.debug("concept_region reinforcement: read of %s failed: %s", node_id, exc)
             continue
         if node is None or getattr(node, "node_kind", None) != "concept":
-            continue
-        try:
-            identity_key = store.get_identity_key_by_node_id(node_id)
-        except Exception as exc:  # noqa: BLE001 - must degrade, never raise
-            logger.debug("concept_region reinforcement: get_identity_key_by_node_id(%s) failed: %s", node_id, exc)
             continue
         if not identity_key:
             # Falkor's codec writes `identity_key or ""` unconditionally on
@@ -246,6 +273,8 @@ def reinforce_matched_concepts(
             updated_signal = activation_signal.model_copy(update={"activation": boosted})
             updated_signals = node.signals.model_copy(update={"activation": updated_signal})
             updated_node = node.model_copy(update={"signals": updated_signals})
+            if abandoned is not None and abandoned.is_set():
+                break
             # skip_metadata_keys: updated_node's metadata is node.metadata,
             # read moments earlier by get_node_by_id() above -- only
             # signals.activation is actually recomputed here, but
@@ -275,6 +304,7 @@ def fetch_concept_region_fragment_and_reinforce(
     store: SubstrateGraphStore | None,
     limit_nodes: int = _DEFAULT_SEARCH_LIMIT_NODES,
     limit_edges: int = _DEFAULT_SEARCH_LIMIT_EDGES,
+    abandoned: "threading.Event | None" = None,
 ) -> list[dict[str, Any]]:
     """`fetch_concept_region_fragment()` plus reinforcement for whatever it matched.
 
@@ -282,6 +312,12 @@ def fetch_concept_region_fragment_and_reinforce(
     `fetch_concept_region_fragment()` itself, which keeps its own
     never-persists contract intact for any other caller. This is the
     function the live turn-assembly pipeline should call.
+
+    ``abandoned``: set by the caller when it stops waiting for this call (the
+    recall deadline passed while this ran in a worker thread). Checked before
+    reinforcement starts and again before every node's write (inside
+    `reinforce_matched_concepts`), so fragments the recall dropped are not
+    reinforced as if they had been surfaced in the turn.
     """
     fragments = fetch_concept_region_fragment(
         query, store=store, limit_nodes=limit_nodes, limit_edges=limit_edges
@@ -295,7 +331,13 @@ def fetch_concept_region_fragment_and_reinforce(
         if str(fragment.get("id", "")).startswith(_NODE_FRAGMENT_ID_PREFIX)
     ]
     if matched_node_ids:
-        reinforce_matched_concepts(matched_node_ids, store=store)
+        if abandoned is not None and abandoned.is_set():
+            logger.debug(
+                "concept_region reinforcement skipped: recall abandoned this call matched=%s",
+                len(matched_node_ids),
+            )
+            return fragments
+        reinforce_matched_concepts(matched_node_ids, store=store, abandoned=abandoned)
 
     return fragments
 

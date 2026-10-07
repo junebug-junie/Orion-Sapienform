@@ -1,29 +1,23 @@
-"""See services/orion-thought/tests/conftest.py's own `_gpu2_capacity_off_
-by_default` for the full story -- this is the same fixture, duplicated
-rather than shared, because `evals/` is a sibling of `tests/`, not a child:
-pytest conftest discovery walks up from each collected file's own
-directory, so `tests/conftest.py` never applies here. Confirmed live in CI
-(.github/workflows/visual-baseline.yml's "Image degradation eval" step,
-`services/orion-thought/evals/test_visual_chain_honesty_eval.py`): this
-eval calls `run_visual_chain_once` with `call_diffusion_generate` mocked
-but no capacity mocking, and with `visual_chain_gpu2_capacity_enabled`
-defaulting True in production, it hung the whole CI job for 20+ minutes
-polling a real, unreachable durable-runs address up to its 180s budget,
-repeated across the eval's scenario matrix, before this fixture existed.
+"""A generate with no durable-run hold takes a GPU pool `diffusion` lease (stage 5.4). `evals/`
+is a sibling of `tests/`, so tests/conftest.py's fixture never applies here: same fixture, a pool
+that grants at once, patched on ``orion.gpu_pool.client`` (visual_chain calls it through the
+module, so every re-imported copy of app.visual_chain sees it). Without it the honesty eval would
+wait on a pool that is not there and record resource_deferred instead of the scenario it tests.
 """
 from __future__ import annotations
+
+import contextlib
+from types import SimpleNamespace
 
 import pytest
 
 
 @pytest.fixture(autouse=True)
-def _gpu2_capacity_off_by_default(monkeypatch):
-    monkeypatch.setenv("ORION_VISUAL_CHAIN_GPU2_CAPACITY_ENABLED", "false")
-    try:
-        from app import visual_chain
+def _gpu_pool_grants(monkeypatch):
+    from orion.gpu_pool import client
 
-        settings_obj = getattr(visual_chain, "settings", None)
-        if settings_obj is not None:
-            monkeypatch.setattr(settings_obj, "visual_chain_gpu2_capacity_enabled", False)
-    except ImportError:
-        pass
+    @contextlib.asynccontextmanager
+    async def grant(bus, **kw):
+        yield SimpleNamespace(lease_id="eval-lease", release_outcome=None, release_detail=None)
+
+    monkeypatch.setattr(client, "gpu_lease", grant)

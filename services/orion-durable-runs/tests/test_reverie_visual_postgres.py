@@ -139,7 +139,7 @@ def test_unanswered_abandon_is_a_durable_pending_record_a_restarted_runtime_retr
 def test_redelivered_dispatch_with_a_new_deadline_is_the_same_run_but_a_new_brief_conflicts():
     """cortex-exec recomputes admission.deadline_at from its clock on every submit: a redelivered
     dispatch is idempotent (the first deadline wins), a different brief is still a conflict."""
-    from orion.durable_admission.store import SubmissionConflict
+    from orion.durable_runs.registry_store import SubmissionConflict
 
     async def scenario(pool, saver, store):
         first = reverie_request("dispatch-e2e-4")

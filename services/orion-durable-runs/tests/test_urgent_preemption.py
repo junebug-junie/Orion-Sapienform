@@ -32,7 +32,7 @@ NOW = datetime(2026, 9, 28, tzinfo=timezone.utc)
 HOLDER = "durable-runs:study-001"
 
 
-# --- graph: HoldPreempted replays the node, HoldLost still spends an attempt ------------------------
+# --- graph: HoldPreempted / HoldLost replay the node; a real turn failure spends an attempt --------
 
 class PreemptWorld(World):
     def __init__(self, raise_once: BaseException):
@@ -79,9 +79,24 @@ def test_preempted_turn_retries_now_under_the_same_hold_without_spending_an_atte
     asyncio.run(scenario())
 
 
-def test_a_lost_hold_still_spends_an_attempt_with_backoff():
+def test_a_lost_hold_waits_for_the_same_hold_without_spending_an_attempt():
+    """Live 2026-09-26..28: a recall past its grace (gpu2 max_hold, an owner reclaim) came back as
+    HoldLost and spent one of three attempts; the third recall failed the run. The pool took the seat
+    back -- the run did nothing wrong."""
     async def scenario():
-        world, saver = PreemptWorld(HoldLost("gpu_hold_lost:queued")), InMemorySaver()
+        world, saver = PreemptWorld(HoldLost("gpu_hold_lost:queued:recall_grace_exceeded")), InMemorySaver()
+        world.grant()
+        delta = await _turn_update(world.graph(saver), initial())
+        assert delta["status"] == "retrying" and "attempt" not in delta
+        assert delta["retry_at"] == world.now.isoformat()
+        assert delta["hold"] == {"request_id": "study-001:1", "lease_id": "hold-1"}
+        assert world.release_calls == [("hold_lost", True)]
+    asyncio.run(scenario())
+
+
+def test_a_real_turn_failure_still_spends_an_attempt_with_backoff():
+    async def scenario():
+        world, saver = PreemptWorld(RuntimeError("harness_boom")), InMemorySaver()
         world.grant()
         delta = await _turn_update(world.graph(saver), initial())
         assert delta["status"] == "retrying" and delta["attempt"] == 1
@@ -100,7 +115,7 @@ def _reading_state():
 
 def _reading_graph(world, saver, turn, preempted):
     return build_reading_graph(turn, AdmissionDeps(world.register, world.lease, world.execute, world.release,
-                                                   world.event, preempted=preempted), saver)
+                                                   world.event, requeued=preempted), saver)
 
 
 @pytest.mark.parametrize("preempted", [True, False])
@@ -117,7 +132,7 @@ def test_a_reading_turn_that_failed_because_its_hold_was_preempted_waits_instead
 
         async def was_preempted(state):
             asked.append(state["lease"]["lease_id"])
-            return preempted
+            return URGENT_PREEMPT if preempted else None
 
         result = await _reading_graph(world, InMemorySaver(), turn, was_preempted).ainvoke(_reading_state(), CFG)
         assert asked == ["hold-1"]
@@ -158,7 +173,7 @@ class HeldAdmission:
 
     def deps(self):
         return AdmissionDeps(self.register, self.lease, self.execute, self.release, self.event,
-                             now=lambda: NOW, max_attempts=3, preempted=self.preempted)
+                             now=lambda: NOW, max_attempts=3, requeued=self.preempted)
 
     async def register(self, state):
         return {"status": "waiting_resource", "hold": {"request_id": "r-1:1", "lease_id": "hold-1"}, "hold_seq": 1}
@@ -184,7 +199,7 @@ class HeldAdmission:
         return {"lease": None, "hold": None}
 
     async def preempted(self, state):
-        return self.is_preempted
+        return URGENT_PREEMPT if self.is_preempted else None
 
     async def event(self, *args):
         pass
@@ -343,6 +358,7 @@ def bare_runtime(holds, store=None):
     rt._outreach_loaded_at = None
     rt._abandons, rt._abandons_loaded_at, rt._abandoning = {}, None, {}
     rt._urgent_drivers = set()
+    rt._system_drivers = set()
     return rt
 
 
@@ -356,6 +372,7 @@ def _held_state(workflow="self_study.reflect"):
 
 
 def test_beat_on_a_hold_requeued_for_urgent_work_raises_preempted_and_a_plain_requeue_is_lost():
+    """Both are HoldLost (neither spends an attempt); only the urgent one is HoldPreempted."""
     async def scenario():
         rt = bare_runtime(Holds([_reply("queued", reason=URGENT_PREEMPT)]))
         with pytest.raises(HoldPreempted):
@@ -461,9 +478,9 @@ def test_a_held_run_beats_within_the_urgent_grace_so_a_pause_is_seen_before_the_
         beats = []
         real_beat = rt._beat
 
-        async def timed(lease):
+        async def timed(lease, admission=None):
             beats.append(loop.time())
-            return await real_beat(lease)
+            return await real_beat(lease, admission)
 
         rt._beat = timed
 
@@ -488,9 +505,9 @@ def test_an_other_recall_keeps_the_normal_heartbeat(monkeypatch):
         beats = []
         real_beat = rt._beat
 
-        async def counted(lease):
+        async def counted(lease, admission=None):
             beats.append(1)
-            return await real_beat(lease)
+            return await real_beat(lease, admission)
 
         rt._beat = counted
 
@@ -788,4 +805,101 @@ def test_urgent_max_concurrent_zero_drives_urgent_like_background():
         assert order == [f"bg-{i}" for i in range(MAX_CONCURRENT_DRIVERS)]   # list order, no bypass
         gate.set()
         await asyncio.gather(*rt.active.values())
+    asyncio.run(scenario())
+
+
+# --- any pool take-back, not only urgent (2026-09-29) -----------------------------------------------
+
+def test_taken_back_classifies_every_mid_node_pool_answer():
+    """A re-queue for any reason or a newer-generation grant is HoldLost (same hold, no attempt); an
+    ended hold is HoldLost unless the reason is the run's own (deadline -> WorkflowDeadline, a class
+    nothing serves -> a plain error for the attempt path)."""
+    from app.admitted_graph import WorkflowDeadline
+    rt = bare_runtime(Holds([_reply("granted")]))
+    cases = {
+        ("queued", "recall_grace_exceeded", 1): HoldLost,
+        ("queued", None, 1): HoldLost,
+        ("backlogged", "no_serviceable_role", 1): HoldLost,
+        ("granted", None, 2): HoldLost,
+        ("recall", "max_hold", 2): HoldLost,
+        ("unavailable", "recall_grace_exceeded", 1): HoldLost,
+        ("ok", None, 1): HoldLost,
+        ("unavailable", "deadline", 1): WorkflowDeadline,
+        ("unavailable", "unknown_class:nothing-serves-this", 1): RuntimeError,
+    }
+    for (status, reason, generation), expected in cases.items():
+        exc = rt._taken_back(LEASE, _reply(status, reason=reason, generation=generation), {})
+        assert type(exc) is expected, (status, reason, exc)
+        assert not isinstance(exc, HoldPreempted)
+    assert type(rt._taken_back(LEASE, _reply("queued", reason=URGENT_PREEMPT), {})) is HoldPreempted
+    assert HoldLost("x").release_reason == "hold_lost" and HoldPreempted("x").release_reason == URGENT_PREEMPT
+
+
+def test_a_work_failure_after_a_non_urgent_requeue_is_a_take_back_not_an_attempt():
+    async def scenario():
+        rt = bare_runtime(Holds([_reply("granted")], status=_reply("queued", reason="recall_grace_exceeded")))
+
+        async def node(state):
+            raise RuntimeError("gpu_lease_attach_refused")
+
+        with pytest.raises(HoldLost) as raised:
+            await rt.execute(_held_state(), node)
+        assert type(raised.value) is HoldLost and raised.value.release_reason == "hold_lost"
+        assert await rt.requeued(_held_state()) == "hold_lost"
+        rt = bare_runtime(Holds([_reply("granted")], status=_reply("granted")))
+        assert await rt.requeued(_held_state()) is None                   # still ours: a real failure
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("reason,kept", [("hold_lost", True), (URGENT_PREEMPT, True), ("attempt_failed", False)])
+def test_release_keeps_a_regranted_hold_only_on_a_take_back(reason, kept):
+    """A take-back goes straight back to resource_wait, which reads the new grant; a failed attempt
+    backs off with nothing heartbeating the hold, so the seat is handed back instead of idling."""
+    async def scenario():
+        holds = Holds([_reply("granted")], status=_reply("granted", generation=2))
+        rt = bare_runtime(holds)
+        update = await rt.release(_held_state(), reason, keep_requeued=True)
+        if kept:
+            assert update["hold"]["lease_id"] == "hold-1" and holds.released == []
+            assert "resource.lease_expired" in rt.store.names()
+        else:
+            assert update["hold"] is None and holds.released == [reason]
+    asyncio.run(scenario())
+
+
+def test_the_take_back_limit_fails_the_run_instead_of_replaying_forever():
+    async def scenario():
+        world, saver = PreemptWorld(HoldLost("gpu_hold_lost:queued:recall_grace_exceeded")), InMemorySaver()
+        world.grant()
+        graph = world.graph(saver, max_takebacks=1)
+        delta = await _turn_update(graph, {**initial(), "hold_takebacks": 1})
+        assert delta["status"] == "failed" and delta["hold_takebacks"] == 2
+        assert delta["last_error"].startswith("hold_takeback_limit:1: HoldLost")
+        assert world.release_calls[0] == ("hold_takeback_limit", False)
+        world, saver = PreemptWorld(HoldLost("gpu_hold_lost:queued:recall_grace_exceeded")), InMemorySaver()
+        world.grant()
+        delta = await _turn_update(world.graph(saver, max_takebacks=2), {**initial(), "hold_takebacks": 1})
+        assert delta["status"] == "retrying" and delta["hold_takebacks"] == 2 and "attempt" not in delta
+    asyncio.run(scenario())
+
+
+def test_a_system_run_is_driven_ahead_of_background_even_when_every_background_slot_is_busy():
+    """memory.episode_distill (2026-10-02) runs at "system" priority: it must reach the pool
+    while four background turns are already driving, and rank behind urgent."""
+    from app.admission_runtime import MAX_CONCURRENT_SYSTEM_DRIVERS
+
+    async def scenario():
+        rows = [_row(f"bg-{i}") for i in range(6)] + [_row("s-1", "system"), _row("s-2", "system"),
+                                                     _row("u-1", "urgent")]
+        rt = bare_runtime(Holds(), Store(rows))
+        order, gate = _driving(rt)
+        await rt.reconcile()
+        await _settle()
+        assert order[0] == "u-1"
+        assert order[1:1 + MAX_CONCURRENT_SYSTEM_DRIVERS] == ["s-1"]          # capped at one system driver
+        assert order[1 + MAX_CONCURRENT_SYSTEM_DRIVERS:] == [f"bg-{i}" for i in range(MAX_CONCURRENT_DRIVERS)]
+        assert "s-2" not in rt.active
+        gate.set()
+        await asyncio.gather(*rt.active.values())
+        assert rt.active == {} and rt._system_drivers == set()
     asyncio.run(scenario())

@@ -5,11 +5,9 @@ The table is written every ~30s by orion-substrate-runtime's
 `SUBSTRATE_ATTENTION_SELF_MODEL_TICK_ENABLED`); this service only ever reads it
 and must never write it.
 
-Not this service's first Postgres read (an earlier draft of this docstring
-claimed that; corrected by review 2026-07-30): `app/substrate_metacog_gate.py`
-already calls `hydrate_felt_state_ctx` -> `orion/substrate/felt_state_reader.py`
-on a live, default-enabled path. That reader uses SQLAlchemy rather than raw
-psycopg2, which is why this one does not simply reuse it -- but its `max_age`
+The shared felt-state reader (`orion/substrate/felt_state_reader.py`, used here
+until the substrate dense/pulse gate was retired 2026-09-29) uses SQLAlchemy
+rather than raw psycopg2, which is why this one does not reuse it -- but its `max_age`
 staleness convention IS reused, in the poll loop's own freshness check
 (`_generative_samples_are_fresh`), because a frozen window otherwise satisfies
 both gate conditions forever.

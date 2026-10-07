@@ -1,12 +1,9 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
-
 import pytest
 from pydantic import ValidationError
 
 from app.bus_listener import build_stance_react_context, build_stance_react_plan_request
-from orion.schemas.resource_admission import ResourceLeaseV1
 from orion.schemas.thought import HubAssociationBundleV1, StanceReactRequestV1
 
 
@@ -57,31 +54,6 @@ def test_context_with_none_llm_route_omits_key() -> None:
     assert "llm_route" not in ctx
 
 
-@pytest.mark.parametrize("lane", ["agent", "chat", "metacog"])
-def test_admitted_stance_plan_uses_owning_lease_and_assigned_lane(lane: str) -> None:
-    now = datetime.now(timezone.utc)
-    lease = ResourceLeaseV1(
-        run_id="run-1", demand_id="run-1:turn", lease_id="lease-1",
-        resource_key=f"llm.route.{lane}", lane=lane, backend_key="http://worker:8000",
-        generation=7, granted_at=now, heartbeat_at=now,
-        expires_at=now + timedelta(seconds=60),
-    )
-    request = _request(llm_route="agent", resource_lease=lease.model_dump(mode="json"))
-
-    plan = build_stance_react_plan_request(request)
-
-    assert isinstance(request.resource_lease, ResourceLeaseV1)
-    assert plan.context["resource_lease"] == lease.model_dump(mode="json")
-    assert plan.context["llm_route"] == lane
-    assert plan.context["llm_lane"] == lane
-    assert plan.context["metadata"]["correlation_id"] == request.correlation_id
-
-
-def test_stance_rejects_invalid_lease_instead_of_dispatching_without_ownership() -> None:
-    with pytest.raises(ValidationError):
-        _request(resource_lease={"lease_id": "lease-1", "generation": 0})
-
-
 _REF = {"lease_id": "hold-1", "generation": 3, "role": "agent-gpu2", "holder": "durable-runs:run-1"}
 
 
@@ -94,15 +66,13 @@ def test_held_stance_carries_the_gpu_lease_ref_on_the_agent_route() -> None:
     assert "resource_lease" not in ctx
 
 
-def test_old_lease_lane_wins_when_both_ride_the_request() -> None:
-    now = datetime.now(timezone.utc)
-    lease = ResourceLeaseV1(
-        run_id="run-1", demand_id="run-1:turn", lease_id="lease-1", resource_key="llm.route.chat", lane="chat",
-        backend_key="http://worker:8000", generation=7, granted_at=now, heartbeat_at=now,
-        expires_at=now + timedelta(seconds=60),
-    )
-    ctx = build_stance_react_context(_request(resource_lease=lease.model_dump(mode="json"), gpu_lease=_REF))
-    assert ctx["llm_route"] == "chat" and ctx["gpu_lease"] == _REF
+def test_a_legacy_resource_lease_is_no_longer_part_of_the_contract() -> None:
+    """Stage 4.6: the durable token is gone. StanceReactRequestV1 ignores unknown fields, so a stray
+    one from an old producer is dropped -- it never reaches cortex-exec's context or picks the lane."""
+    assert "resource_lease" not in StanceReactRequestV1.model_fields
+    ctx = build_stance_react_context(
+        _request(llm_route="chat", resource_lease={"lease_id": "legacy", "lane": "metacog"}, gpu_lease=_REF))
+    assert "resource_lease" not in ctx and ctx["llm_route"] == "agent" and ctx["gpu_lease"] == _REF
 
 
 def test_malformed_ref_is_refused_instead_of_dispatching_unheld() -> None:

@@ -6,7 +6,7 @@ from app.routers import publish as publish_router
 from app.state import RUN_RESULTS
 from app.services import publish_hub as publish_hub_service
 from app.services.publish_hub import publish_hub_message
-from app.services.renderers import render_email_digest, render_hub_digest
+from app.services.renderers import render_hub_digest
 from orion.schemas.world_pulse import (
     DailyWorldPulseItemV1,
     DailyWorldPulseSectionsV1,
@@ -104,12 +104,6 @@ def _digest() -> DailyWorldPulseV1:
         orion_analysis_layer="analysis",
         created_at=now,
     )
-
-
-def test_render_email_subject_format():
-    digest = _digest()
-    email = render_email_digest(digest, subject_prefix="Orion Daily World Pulse", to=[], from_email=None, dry_run=True)
-    assert email.subject == f"Orion Daily World Pulse — {digest.date}"
 
 
 def test_publish_hub_dry_run_returns_payload_preview(monkeypatch):

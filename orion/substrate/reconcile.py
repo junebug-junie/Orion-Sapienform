@@ -35,6 +35,22 @@ _CONCEPT_EMBEDDING_SIMILARITY_THRESHOLD = 0.8
 # familiar order of magnitude for this store, not a new tuning knob.
 _CONCEPT_REGION_SCAN_LIMIT = 500
 
+# Producers whose nodes have identity by node_id ONLY (memory Stage 2 spec 1.1,
+# #2497 "IDs are not hashes of labels"). Their nodes are never merged into, or
+# merged with, another node by label or by embedding cosine: equal names can
+# mean different things, and the only way two of them become one is a recorded
+# merge decision applied by their own projector. Producer: orion/memory/referents
+# (PR B). Consumers: canonical_node_key() and the embedding candidate scan below,
+# plus orion/substrate/eligibility.py.
+IDENTITY_FENCED_PRODUCERS: frozenset[str] = frozenset({"memory.referents"})
+
+
+def is_identity_fenced(node: BaseSubstrateNodeV1) -> bool:
+    """True for nodes whose identity is their node_id alone (fenced producers and
+    every Assertion). Their lifecycle fields are owned by the projector that wrote
+    them; see merge_node()."""
+    return node.node_kind == "assertion" or node.provenance.producer in IDENTITY_FENCED_PRODUCERS
+
 
 def _cosine(a: Any, b: Any) -> float:
     """Plain-Python cosine similarity -- copied from
@@ -105,6 +121,11 @@ class SubstrateIdentityResolver:
     def canonical_node_key(self, node: BaseSubstrateNodeV1) -> str | None:
         subject = str(node.subject_ref or "")
         scope = node.anchor_scope
+        if is_identity_fenced(node):
+            # Checked before every kind branch: a fenced concept must never reach
+            # _concept_embedding_match_key, and a fenced entity must never get the
+            # label key topic-foundry's same-named entity already holds.
+            return f"fenced|{node.node_kind}|{node.node_id}"
         if node.node_kind == "concept":
             embedding_match_key = self._concept_embedding_match_key(node, scope=scope, subject=subject)
             if embedding_match_key is not None:
@@ -182,6 +203,10 @@ class SubstrateIdentityResolver:
                 continue
             if candidate.node_id == node.node_id:
                 continue
+            if is_identity_fenced(candidate):
+                # The other direction of the fence: an incoming concept must not
+                # resolve INTO a fenced node because its embedding is close.
+                continue
             if candidate.anchor_scope != scope or str(candidate.subject_ref or "") != subject:
                 continue
             candidate_embedding = candidate.metadata.get(_CONCEPT_EMBEDDING_METADATA_KEY)
@@ -219,6 +244,12 @@ class SubstrateIdentityResolver:
 
     @staticmethod
     def canonical_edge_key(edge: SubstrateEdgeV1) -> str:
+        if edge.edge_role == "semantic_projection":
+            # #2497: a projection's identity is its assertion, so it never merges
+            # into a same-endpoint legacy edge and is retracted with its assertion.
+            return f"projection|{edge.assertion_id}"
+        if edge.edge_role != "legacy_unreviewed":
+            return f"{edge.edge_role}|{edge.source.node_id}|{edge.predicate}|{edge.target.node_id}"
         return f"{edge.source.node_id}|{edge.predicate}|{edge.target.node_id}"
 
 
@@ -318,7 +349,7 @@ def merge_node(existing: BaseSubstrateNodeV1, incoming: BaseSubstrateNodeV1, *, 
         }
     )
 
-    return existing.model_copy(
+    merged = existing.model_copy(
         update={
             "temporal": merged_temporal,
             "provenance": merged_provenance,
@@ -326,6 +357,31 @@ def merge_node(existing: BaseSubstrateNodeV1, incoming: BaseSubstrateNodeV1, *, 
             "metadata": merged_metadata,
         }
     )
+    if is_identity_fenced(existing) and is_identity_fenced(incoming):
+        # A fenced node has exactly one writer, its projector, which rebuilds it
+        # from the journal. Its lifecycle and display fields are that writer's
+        # current answer, not something to max()/min() against an older copy:
+        # without this a rejected assertion would keep its old promotion_state
+        # and revision forever, and a deprecated referent would stay walkable.
+        lifecycle = {
+            "promotion_state": incoming.promotion_state,
+            "risk_tier": incoming.risk_tier,
+            "temporal": incoming.temporal,
+            "signals": incoming.signals,
+        }
+        for field_name in _FENCED_KIND_FIELDS.get(incoming.node_kind, ()):
+            lifecycle[field_name] = getattr(incoming, field_name)
+        merged = merged.model_copy(update=lifecycle)
+    return merged
+
+
+# Kind-specific fields a fenced node's projector owns (see merge_node).
+_FENCED_KIND_FIELDS: dict[str, tuple[str, ...]] = {
+    "assertion": ("predicate", "statement_key", "statement_text", "revision", "decision_ref"),
+    "entity": ("label", "entity_type", "aliases"),
+    "concept": ("label", "definition"),
+    "evidence": ("evidence_type", "content_ref"),
+}
 
 
 def merge_edge(existing: SubstrateEdgeV1, incoming: SubstrateEdgeV1, *, source_graph_id: str) -> SubstrateEdgeV1:
@@ -340,6 +396,18 @@ def merge_edge(existing: SubstrateEdgeV1, incoming: SubstrateEdgeV1, *, source_g
     lineage = lineage[-100:]
     merged_metadata = {**incoming.metadata, **existing.metadata, "materialization_lineage": lineage}
     merged_evidence_refs = sorted({*existing.provenance.evidence_refs, *incoming.provenance.evidence_refs})
+    if incoming.edge_role != "legacy_unreviewed":
+        # Role-bearing edges (provenance, assertion_structure, semantic_projection)
+        # are written only by a projector replaying the journal: its copy is the
+        # current truth. valid_to closing a provenance edge, or a new
+        # assertion_revision on a projection, must land, not be max()-ed away.
+        return incoming.model_copy(
+            update={
+                "edge_id": existing.edge_id,
+                "provenance": incoming.provenance.model_copy(update={"evidence_refs": merged_evidence_refs}),
+                "metadata": merged_metadata,
+            }
+        )
     return existing.model_copy(
         update={
             "confidence": max(existing.confidence, incoming.confidence),

@@ -67,18 +67,7 @@ class Settings(BaseSettings):
 
     # Metacognition
     metacog_enable: bool = Field(False, alias="EQUILIBRIUM_METACOG_ENABLE")
-    metacog_baseline_interval_sec: float = Field(3600.0, alias="EQUILIBRIUM_METACOG_BASELINE_INTERVAL_SEC")
-    metacog_baseline_max_skips: int = Field(3, alias="EQUILIBRIUM_METACOG_BASELINE_MAX_SKIPS")
     metacog_cooldown_sec: float = Field(30.0, alias="EQUILIBRIUM_METACOG_COOLDOWN_SEC")
-    metacog_substrate_trigger_enable: bool = Field(
-        True, alias="EQUILIBRIUM_METACOG_SUBSTRATE_TRIGGER_ENABLE"
-    )
-    metacog_substrate_dense_threshold: float = Field(
-        0.55, alias="EQUILIBRIUM_METACOG_SUBSTRATE_DENSE_THRESHOLD"
-    )
-    metacog_substrate_pulse_threshold: float = Field(
-        0.30, alias="EQUILIBRIUM_METACOG_SUBSTRATE_PULSE_THRESHOLD"
-    )
     metacog_recall_enabled: bool = Field(
         False,
         alias="EQUILIBRIUM_METACOG_RECALL_ENABLED",
@@ -229,9 +218,15 @@ class Settings(BaseSettings):
     )
     # EMIT: also publish episode triggers (open/escalate/close). Requires
     # ENABLE and EQUILIBRIUM_METACOG_TRANSPORT_TRIGGER_ENABLE. While effective,
-    # the legacy rpc_health timeout branch is not called (no double firing).
+    # the gate owns every rpc_request() timeout it saw in a snapshot, and the
+    # rpc_transport_timeout atom for that same timeout is dropped
+    # (app/transport_timeout_owner.py). (The pooled rpc_health legacy timeout
+    # branch was retired 2026-09-29; the atom owns timeouts while EMIT is off.)
+    # On since 2026-10-01: the first graded night passed 11 of 11 hops that can
+    # alert (no spike/saturation opened at rest), and every would-emit row
+    # matched a real timeout.
     transport_baseline_emit: bool = Field(
-        False, alias="EQUILIBRIUM_TRANSPORT_BASELINE_EMIT"
+        True, alias="EQUILIBRIUM_TRANSPORT_BASELINE_EMIT"
     )
     # Comma-separated health labels / verb names / whole hop keys that are
     # baselined and logged but never trigger. Default breaks metacog's self-loop.
@@ -275,54 +270,20 @@ class Settings(BaseSettings):
     transport_baseline_max_triggers_per_hour: int = Field(
         30, alias="EQUILIBRIUM_TRANSPORT_BASELINE_MAX_TRIGGERS_PER_HOUR"
     )
-    # Option (bus_synaptic): third transport evidence source, reads
-    # node:substrate.bus_synaptic's prediction_error directly from FalkorDB
-    # (orion_substrate graph, written by orion-substrate-runtime's
-    # _bus_synaptic_tick -- PR #1377/#1380). Passively covers RPC-health-
-    # invisible organs (bespoke long-poll clients like orion-harness-governor)
-    # that Options A/C structurally cannot see -- see
-    # docs/superpowers/specs/2026-07-23-transport-domain-rpc-health-redesign.md's
-    # 2026-07-25 revisions. Shares trigger_kind="transport"'s existing cooldown
-    # lane -- same kind, third evidence branch, not a new one.
-    metacog_transport_bus_synaptic_poll_enable: bool = Field(
-        False, alias="EQUILIBRIUM_METACOG_TRANSPORT_BUS_SYNAPTIC_POLL_ENABLE"
+    # EMIT only: how long an rpc_transport_timeout atom waits for a gate-folded
+    # snapshot window that saw the same timeout before it fires on its own.
+    # Must exceed one rpc_health publish interval (30 s) plus bus latency; an
+    # atom no window claims always fires (coverage fails open, never closed).
+    transport_timeout_atom_grace_sec: float = Field(
+        75.0, alias="EQUILIBRIUM_TRANSPORT_TIMEOUT_ATOM_GRACE_SEC"
     )
-    metacog_transport_bus_synaptic_poll_interval_sec: float = Field(
-        30.0, alias="EQUILIBRIUM_METACOG_TRANSPORT_BUS_SYNAPTIC_POLL_INTERVAL_SEC"
-    )
-    # 1.0 = bus_synaptic_prediction_error's own saturation ceiling, which by
-    # construction means the aggregated edges' mean |zscore| already reached
-    # 3.0 -- reuses the same anomaly bar Hub's own debug routes use
-    # (zscore_threshold=3.0), not a new arbitrary threshold.
-    metacog_transport_bus_synaptic_error_threshold: float = Field(
-        0.15, alias="EQUILIBRIUM_METACOG_TRANSPORT_BUS_SYNAPTIC_ERROR_THRESHOLD"
-    )
-    # Hysteresis re-arm fraction (2026-07-30). Rising-edge firing alone still
-    # re-fires on every crossing, and this metric is currently bimodal, so a
-    # value oscillating around the threshold would flap. Once fired, the branch
-    # only re-arms after the reading falls below
-    # `error_threshold * this` -- a Schmitt-trigger band, not a second
-    # threshold to calibrate.
-    #
-    # Deliberately NOT solved by raising EQUILIBRIUM_METACOG_TRANSPORT_COOLDOWN_SEC:
-    # that lane is shared by all three transport evidence branches, and the
-    # other two (rpc_health windows, rpc_timeout grammar) are genuinely
-    # event-driven and are NOT low-volume: measured live over 7 days,
-    # cortex-exec 810 + cortex-orch 523 + rpc_timeout 118 = 1,451 rows/week,
-    # and over the last 24h rpc_health alone (820) out-published this branch
-    # (466). An earlier draft of this comment said "~180 rows/week combined",
-    # which was wrong by ~8x and was load-bearing for this decision -- corrected
-    # after live measurement. The conclusion is unchanged but now better
-    # supported: throttling the shared lane would suppress a LOT of real sibling
-    # events, the same "one kind starves the others" bug the per-kind lanes were
-    # introduced to fix. That same volume is also why the rising edge must latch
-    # on publish success rather than on the raw level (see service.py).
-    # Bounded (0, 1]: a value <= 0 makes clear_at <= 0, so `error < clear_at` is
-    # never true, the branch latches True after its first fire and NEVER
-    # re-arms for the process lifetime -- the exact "detector quietly stops
-    # detecting" failure this patch exists to prevent, reachable by a typo.
-    metacog_transport_bus_synaptic_clear_ratio: float = Field(
-        0.8, gt=0.0, le=1.0, alias="EQUILIBRIUM_METACOG_TRANSPORT_BUS_SYNAPTIC_CLEAR_RATIO"
+    # Durable readings: one TransportBaselineHourlyV1 per (service, instance,
+    # hop, UTC hour) on CHANNEL_TRANSPORT_BASELINE_HOURLY, persisted by
+    # orion-sql-writer into transport_baseline_hourly. Deploy sql-writer FIRST
+    # (it must know the route before this publishes; an unrouted kind lands in
+    # the sql-writer fallback log instead of the table).
+    transport_baseline_hourly_publish_enable: bool = Field(
+        True, alias="EQUILIBRIUM_TRANSPORT_BASELINE_HOURLY_PUBLISH_ENABLE"
     )
     # ---------------------------------------------------------------------
     # Generative (non-rupture) metacog triggers: insight + flow.
@@ -334,7 +295,7 @@ class Settings(BaseSettings):
     # different windowing functions -- insight looks for a low->high transition,
     # flow looks for a sustained plateau. No new producer, reducer or schema.
     #
-    # Both ship DISABLED. Matching the bus_synaptic precedent (PR #1385 ->
+    # Both ship DISABLED. Matching the (since retired) bus_synaptic precedent (PR #1385 ->
     # #1387): a gate that dispatches a real MetacogTriggerV1 into orion_metacog
     # gets flipped on by a human only after its own post-merge live-data check,
     # separately from "is the underlying signal worth reading."
@@ -388,9 +349,8 @@ class Settings(BaseSettings):
     # Staleness guard. The tick that writes these rows is itself flag-gated
     # (SUBSTRATE_ATTENTION_SELF_MODEL_TICK_ENABLED), so it can simply stop --
     # and a frozen window still satisfies both gate conditions forever.
-    # Reproduced pre-fix: 20 rows all 3 days old fired the flow gate. Same
-    # convention as this service's existing SUBSTRATE_FELT_STATE_MAX_AGE_SEC
-    # (120s): a few multiples of the write cadence, not a tight bound.
+    # Reproduced pre-fix: 20 rows all 3 days old fired the flow gate. 120s:
+    # a few multiples of the write cadence, not a tight bound.
     metacog_generative_max_age_sec: float = Field(
         120.0, alias="EQUILIBRIUM_METACOG_GENERATIVE_MAX_AGE_SEC"
     )
@@ -436,12 +396,10 @@ class Settings(BaseSettings):
     # ~10 minutes of consecutive calm at a ~30s tick cadence.
     metacog_flow_min_ticks: int = Field(20, alias="EQUILIBRIUM_METACOG_FLOW_MIN_TICKS")
 
-    falkordb_uri: str = Field("redis://localhost:6379", alias="FALKORDB_URI")
-    falkordb_substrate_graph: str = Field(
-        "orion_substrate", alias="FALKORDB_SUBSTRATE_GRAPH"
-    )
-
     channel_metacog_trigger: str = Field("orion:equilibrium:metacog:trigger", alias="CHANNEL_EQUILIBRIUM_METACOG_TRIGGER")
+    channel_transport_baseline_hourly: str = Field(
+        "orion:equilibrium:transport_baseline:hourly", alias="CHANNEL_TRANSPORT_BASELINE_HOURLY"
+    )
     channel_collapse_mirror_user_event: str = Field("orion:collapse:intake", alias="CHANNEL_COLLAPSE_MIRROR_USER_EVENT")
     channel_repair_pressure_appraisal: str = Field(
         "orion:repair_pressure:appraisal", alias="CHANNEL_REPAIR_PRESSURE_APPRAISAL"
@@ -474,7 +432,8 @@ class Settings(BaseSettings):
 
     def transport_baseline_emit_effective(self) -> bool:
         """True only when baseline triggers really publish -- the single
-        predicate that also retires the legacy rpc_health timeout branch."""
+        predicate that also hands ownership of the timeouts the gate saw from
+        the rpc_transport_timeout atom to the gate (app/transport_timeout_owner.py)."""
         return bool(
             self.transport_baseline_enable
             and self.transport_baseline_emit

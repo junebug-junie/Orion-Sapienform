@@ -121,12 +121,12 @@ NEVER_SYNC_KEYS = frozenset(
 
 # Prefixes / exact keys synced after .env_example edits (default mode).
 SYNC_PREFIXES = (
-    # Durable admission spans runner, Orch, Hub and Gateway. Hub's existing
-    # HUB_CURIOSITY_ prefix already covers its side; these three were missing.
+    # Durable admission spans runner, Orch and Hub. Hub's existing HUB_CURIOSITY_
+    # prefix already covers its side. (The Gateway's LLM_GATEWAY_LEASE_ keys were
+    # deleted with the durable lease token in GPU pool stage 4.6; LLM_GATEWAY_CAPACITY_
+    # had no keys left before that. Its pool-placement keys are below.)
     "DURABLE_RUNS_",
     "CORTEX_DURABLE_",
-    "LLM_GATEWAY_LEASE_",
-    "LLM_GATEWAY_CAPACITY_",
     # GPU pool (2026-09-25, stage 3): the pool's own keys and the Gateway's pool-placement keys.
     # Without these the default sync visited both .env files and silently added nothing.
     "GPU_POOL_",
@@ -187,10 +187,16 @@ SYNC_PREFIXES = (
     # field-digester gate. None matched an existing prefix.
     "LLM_GATEWAY_GRAMMAR_",
     "ENABLE_LLM_INFERENCE_",
+    # vision_organ lane (2026-10-02): router emitter, substrate reducer,
+    # field-digester gate.
+    "VISION_ORGAN_",
+    "ENABLE_VISION_ORGAN_",
     "LLM_INFERENCE_",
     # rpc delivery field bridge (2026-09-25): substrate-runtime producer keys and
     # the field-digester gate. None matched an existing prefix.
     "SUBSTRATE_RPC_DELIVERY_",
+    # Reverie PE-magnitude history writer (spec 2026-10-02, step 1).
+    "SUBSTRATE_PE_HISTORY_",
     "SUBSTRATE_RPC_HEALTH_",
     "ENABLE_RPC_DELIVERY_",
     "ENABLE_PRE_TURN_",
@@ -203,6 +209,11 @@ SYNC_PREFIXES = (
     "TRANSPORT_SUBSTRATE_",
     # bus_fallback_log backlog watcher (orion-sql-writer)
     "SQL_WRITER_FALLBACK_WATCH_",
+    # storage-write organ (2026-10-02): sql-writer emitter, substrate reducer,
+    # field-digester gate. None matched an existing prefix.
+    "SQL_WRITER_WRITE_HEALTH_",
+    "ENABLE_STORAGE_WRITE_",
+    "STORAGE_WRITE_",
     "HUB_PROPOSAL_REVIEW_",
     # Runtime activity marquee (2026-09-09): its two keys matched no prefix and
     # were silently skipped on first sync; found by grepping the live .env after.
@@ -301,6 +312,8 @@ SYNC_PREFIXES = (
     "STANCE_REACT_",
     # Mind stance enrichment (unified turn; orion-thought → orion-mind, default-off)
     "ORION_THOUGHT_MIND_",
+    # Unified-turn latency L4: stance context built while orion-mind runs.
+    "ORION_THOUGHT_STANCE_PREPARE_",
     "ORION_MIND_",
     "HARNESS_FCC_",
     "ORION_FCC_",
@@ -372,6 +385,20 @@ SYNC_PREFIXES = (
     # reached the live .env.
     "DREAM_INTROSPECT_",
     "DREAM_SEARCH_",
+    # Attend-to-act loop (2026-10-01): the world-action switches (dispatch), the workspace-winner
+    # proposals + hardware-watch URL + rise threshold (proposal runtime), settle-time scoring
+    # (feedback runtime) and the cabinet attention bridge (substrate runtime). The pool's own
+    # GPU_POOL_ORION_SHED_* keys are already covered by GPU_POOL_.
+    "ORION_WORLD_ACTION",
+    "ORION_WORLD_SETTLEMENT_",
+    "ORION_WORKSPACE_WINNER_",
+    "ORION_HARDWARE_WATCH_HEALTH_URL",
+    "ORION_SHED_",
+    "ORION_GPU_POOL_SHED_",
+    "SUBSTRATE_CABINET_HEAT_",
+    # Camera perception in the situation brief (Hub + cortex-exec, 2026-10-07).
+    "ORION_SITUATION_PERCEPTION_",
+    "ORION_SITUATION_STREET_",
 )
 
 SYNC_EXACT = frozenset(

@@ -113,7 +113,7 @@ const HOLD_STATE = {
   cards: [{ card: "gpu2", swap_state: "fault", swap_role: "agent-gpu2", actuated_roles: ["agent-gpu2"],
             actuation: { action: "load", role: "agent-gpu2", generation: 3, reason: "demand", outcome: "failed" },
             cooldown_until: null }, { card: "gpu1" }],
-  swap_guards: { thermal: null, visual_baseline: "visual_baseline_urgent" },
+  swap_guards: { thermal: "hot:temp_over_hot" },   // visual_baseline guard deleted in stage 5.4
   leases: [
     { lease_id: "h1", kind: "hold", holder: "durable-runs:r1", status: "granted", role: "agent", generation: 2, granted_at: "2026-09-25T10:00:00Z" },
     { lease_id: "c1", kind: "request", hold_lease_id: "h1", status: "granted", role: "agent" },
@@ -144,12 +144,59 @@ test("swapModel exposes fault and the action; guardModel says which guard blocks
   assert.equal(sw.gpu2.action.outcome, "failed");
   assert.deepEqual(sw.gpu2.actuatedRoles, ["agent-gpu2"]);
   assert.equal(sw.gpu1.swapState, "idle");                       // a pre-4.3 pool sends none of it
-  assert.deepEqual(gp.guardModel(HOLD_STATE), [{ name: "thermal", clear: true, why: null },
-    { name: "visual_baseline", clear: false, why: "visual_baseline_urgent" }]);
+  assert.deepEqual(gp.guardModel(HOLD_STATE), [{ name: "thermal", clear: false, why: "hot:temp_over_hot" }]);
+  assert.deepEqual(gp.guardModel({ swap_guards: { thermal: null } }), [{ name: "thermal", clear: true, why: null }]);
 });
 
 test("the template carries the holds and guards mount points the renderer writes to", () => {
   const html = fs.readFileSync(path.join(__dirname, "..", "..", "templates", "gpu_pool.html"), "utf8");
   for (const id of ["holds", "swapGuards"]) assert.ok(html.includes(`id="${id}"`), id);
   assert.ok(html.includes(".swap-fault"));
+});
+
+// --- stage 5.7: enforce is the end state -------------------------------------------------------
+const LAUNCH = { actuator: "circe", service: "atlas-agent-burst" };
+const CFG57 = {
+  roles: {
+    "agent-gpu2": { kind: "llm", cards: ["gpu2"], swap: { evicts: ["diffusion"] }, launch: LAUNCH },
+    diffusion: { kind: "service", cards: ["gpu2"], launch: LAUNCH },
+    experiment: { kind: "llm", cards: ["gpu0", "gpu2"], operator_only: true, swap: { evicts: "all" }, launch: null },
+    soak: { kind: "llm", cards: ["gpu0", "gpu2"], operator_only: true, swap: { evicts: "all" }, launch: LAUNCH },
+  },
+  classes: { experiment: { roles: ["experiment"] }, soak_cls: { roles: ["soak"] } },
+};
+
+test("actuationModel: a seat is actuated iff it has a launch block; the pause comes from state", () => {
+  const a = gp.actuationModel(CFG57, { mode: "enforce" });
+  assert.deepEqual(a.actuated, ["agent-gpu2", "soak"]);           // diffusion is a resident, not a seat
+  assert.deepEqual(a.notActuatable, { experiment: "not_actuatable:experiment" });
+  assert.equal(a.paused, false);
+  const p = gp.actuationModel(CFG57, { actuation_paused: { paused: true, since: "2026-09-30T07:00:00Z", by: "juniper" } });
+  assert.deepEqual([p.paused, p.by], [true, "juniper"]);
+  assert.equal(gp.modeLabel({ mode: "enforce", actuation_paused: { paused: true } }), "mode: enforce · model loading PAUSED");
+  assert.equal(gp.modeLabel({ mode: "enforce", actuation_paused: null }), "mode: enforce");
+});
+
+test("holdControlFor: refused with the pool's own reason for a seat nothing can load, in every mode", () => {
+  for (const mode of ["enforce", "observe"]) {
+    const h = gp.holdControlFor(CFG57, { mode }, "experiment");
+    assert.equal(h.kind, "refused");
+    assert.equal(h.reason, "not_actuatable:experiment");
+  }
+});
+
+test("holdControlFor: a seat that can actuate gets a hold in enforce, refused in observe or while paused", () => {
+  assert.deepEqual(gp.holdControlFor(CFG57, { mode: "enforce" }, "soak"), { kind: "hold", workClass: "soak_cls" });
+  assert.equal(gp.holdControlFor(CFG57, { mode: "observe" }, "soak").reason, "hold_refused_observe_mode");
+  assert.equal(gp.holdControlFor(CFG57, { mode: "enforce", actuation_paused: { paused: true } }, "soak").reason,
+               "actuation_paused");
+  // an operator hold already there can always be released, even while paused
+  const held = { mode: "observe", actuation_paused: { paused: true },
+                 leases: [{ lease_id: "op1", holder: "operator:hub-operator", work_class: "soak_cls", status: "queued" }] };
+  assert.deepEqual(gp.holdControlFor(CFG57, held, "soak"), { kind: "release", leaseId: "op1", status: "queued" });
+});
+
+test("the template carries the emergency-stop mount point", () => {
+  const html = fs.readFileSync(path.join(__dirname, "..", "..", "templates", "gpu_pool.html"), "utf8");
+  assert.ok(html.includes('id="actuationControls"'));
 });

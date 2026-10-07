@@ -20,7 +20,6 @@ from app import main as actions_main  # noqa: E402
 from app.settings import Settings  # noqa: E402
 from app.world_pulse_journal import handle_world_pulse_run_result_journal  # noqa: E402
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef  # noqa: E402
-from orion.journaler import cooldown_key_for_trigger  # noqa: E402
 from orion.schemas.world_pulse import (  # noqa: E402
     DailyWorldPulseSectionsV1,
     DailyWorldPulseV1,
@@ -64,17 +63,14 @@ def _envelope(*, run_id: str = "wp-integration-1", dry_run: bool = False) -> Bas
 
 
 @pytest.mark.asyncio
-async def test_handle_envelope_routes_world_pulse_run_result_to_dispatch_journal() -> None:
+async def test_handle_envelope_routes_world_pulse_run_result_to_durable_submit() -> None:
     """Exercise app.state.bus_handler (handle_envelope) for world.pulse.run.result.v1."""
     env = _envelope(run_id="wp-route-99")
     captured: dict = {}
 
-    async def capture_dispatch(parent, *, trigger, audit_action: str, dedupe_key: str, reason: str | None = None, **kwargs):
-        captured["trigger"] = trigger
-        captured["audit_action"] = audit_action
-        captured["dedupe_key"] = dedupe_key
-        captured.update(kwargs)
-        return True
+    async def capture_submit(request):
+        captured["request"] = request
+        return None
 
     cfg = Settings(
         ACTIONS_WORLD_PULSE_JOURNAL_ENABLED=True,
@@ -96,8 +92,9 @@ async def test_handle_envelope_routes_world_pulse_run_result_to_dispatch_journal
         return await handle_world_pulse_run_result_journal(
             env,
             settings=cfg,
-            dispatch_journal=capture_dispatch,
+            submit=capture_submit,
             audit=AsyncMock(),
+            llm_route="quick_background",
         )
 
     _real_create_task = asyncio.create_task
@@ -125,12 +122,13 @@ async def test_handle_envelope_routes_world_pulse_run_result_to_dispatch_journal
     routed.assert_awaited_once()
     assert routed.await_args.args[0].kind == "world.pulse.run.result.v1"
 
-    trigger = captured["trigger"]
+    request = captured["request"]
+    assert request.workflow == "journal.compose"
+    assert request.run_id == "world-pulse-journal:wp-route-99"
+    trigger = request.brief.trigger
     assert trigger.trigger_kind == "world_pulse_digest"
     assert trigger.source_kind == "world_pulse"
     assert trigger.source_ref == "wp-route-99"
-    assert captured["dedupe_key"] == cooldown_key_for_trigger(trigger)
-    assert captured["audit_action"] == "journal.world_pulse_digest"
 
 
 def test_handle_envelope_does_not_fall_through_to_collapse_for_world_pulse_kind() -> None:

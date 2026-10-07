@@ -131,7 +131,7 @@ def _runner(monkeypatch, deps: Deps) -> tuple[DurableRunner, list[dict[str, Any]
     )
     emitted: list[dict[str, Any]] = []
 
-    async def record(state, *, spec, node, status, detail=None, resumed_from=None):
+    async def record(state, *, spec, node, status, detail=None, resumed_from=None, terminal=False):
         emitted.append({"node": node, "status": status, "detail": dict(detail or {})})
 
     monkeypatch.setattr(runner, "_emit_state", record)

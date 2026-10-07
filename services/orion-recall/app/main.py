@@ -23,7 +23,7 @@ from .storage.falkor_entity_relatedness import (
     fetch_entity_mention_timeline,
     fetch_related_entities,
 )
-from .worker import handle_recall, process_recall, _persist_decision, set_recall_pg_pool
+from .worker import handle_recall, process_recall, persist_decision_async, set_recall_pg_pool
 
 from orion.core.contracts.recall import RecallQueryV1
 
@@ -59,6 +59,11 @@ async def lifespan(app: FastAPI):
         if settings.RECALL_RDF_ENDPOINT_URL:
             logger.info("recall_graph_backend_selected backend=sparql query_url=%s", settings.RECALL_RDF_ENDPOINT_URL)
 
+    # Advertise that this process reads the assertion-core graph shapes, so the referent/
+    # assertion projectors' readiness gate can open. Background thread; never blocks or raises.
+    from orion.substrate.reader_capability import advertise_at_startup
+
+    advertise_at_startup()
     rabbit = Rabbit(
         chassis_cfg(),
         request_channel=settings.RECALL_BUS_INTAKE,
@@ -176,7 +181,7 @@ async def recall_endpoint(body: RecallRequestBody):
     bundle, decision = await process_recall(q, corr_id=corr, diagnostic=bool(body.diagnostic))
 
     # Best-effort persist to Postgres (creates recall_telemetry table in the same DB)
-    _persist_decision(decision)
+    await persist_decision_async(decision)
 
     debug: dict = {}
     if body.diagnostic:

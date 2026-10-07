@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from .neighborhood import NeighborhoodRequestV1, NeighborhoodResultV1
+
 import json
 import logging
 import math
@@ -283,6 +285,7 @@ INSERT {{
       orion:sourceNodeId {self._lit(edge.source.node_id)} ;
       orion:targetNodeId {self._lit(edge.target.node_id)} ;
       orion:predicate {self._lit(edge.predicate)} ;
+      orion:edgeRole {self._lit(edge.edge_role)} ;
       orion:confidence {self._typed_float(edge.confidence)} ;
       orion:salience {self._typed_float(edge.salience)} ;
       orion:observedAt {self._typed_datetime(edge.temporal.observed_at.isoformat())} ;
@@ -346,6 +349,10 @@ WHERE {{ OPTIONAL {{ GRAPH <{self._cfg.graph_uri}> {{ {edge_iri} ?p ?o . }} }} }
             return self._cache.snapshot()
 
     # ---- primary query layer (GraphDB-first) ----
+    def read_neighborhood(self, request: NeighborhoodRequestV1) -> NeighborhoodResultV1:
+        from .neighborhood_backends import read_sparql_neighborhood
+        return read_sparql_neighborhood(self, request)
+
     def query_focal_slice(self, *, node_ids: list[str], max_edges: int = 64) -> SubstrateQueryResultV1:
         node_ids = [str(node_id).strip() for node_id in node_ids if str(node_id).strip()]
         edges_limit = max(1, int(max_edges))
@@ -850,7 +857,11 @@ def _redact_endpoint_for_log(endpoint: str) -> str:
     return urlunparse((p.scheme, netloc, p.path, p.params, p.query, p.fragment))
 
 
-def build_substrate_store_from_env() -> SubstrateGraphStore:
+def build_substrate_store_from_env(
+    *,
+    falkor_socket_timeout_s: float | None = None,
+    falkor_socket_connect_timeout_s: float | None = None,
+) -> SubstrateGraphStore:
     """Select substrate semantic store.
 
     **RDF Store V1 safety:** GraphDB is used only when ``SUBSTRATE_STORE_BACKEND`` is set to
@@ -884,7 +895,12 @@ def build_substrate_store_from_env() -> SubstrateGraphStore:
     if backend in {"falkor", "falkordb"}:
         from orion.substrate.falkor_store import build_falkor_substrate_store_from_env
 
-        return build_falkor_substrate_store_from_env()
+        # Optional redis socket timeouts, only for the direct falkor backend
+        # (None = no timeout, the prior behaviour for every caller).
+        return build_falkor_substrate_store_from_env(
+            client_socket_timeout_s=falkor_socket_timeout_s,
+            client_socket_connect_timeout_s=falkor_socket_connect_timeout_s,
+        )
 
     if backend in {"routed"}:
         from orion.substrate.routed_store import build_routed_substrate_store_from_env

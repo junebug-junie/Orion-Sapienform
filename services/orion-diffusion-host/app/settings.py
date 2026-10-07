@@ -108,13 +108,9 @@ class Settings(BaseSettings):
 
     # --- Power intent (stage 2) ---
     DIFFUSION_POWER_INTENT_ENABLED: bool = True
-    # PHYSICAL nvidia-smi index, NOT the container's CUDA index. These are different
-    # numbers and conflating them has already cost this repo once (a `device=cuda:2` log
-    # naming the wrong physical card). CUDA_VISIBLE_DEVICES=2 scopes this container to
-    # physical GPU 2, which it then addresses as cuda:0 -- so DIFFUSION_DEVICE is
-    # exactly the wrong thing to derive this from. The settler runs on the host and
-    # queries nvidia-smi, which only knows physical indices.
-    DIFFUSION_POWER_INTENT_GPU_INDEX: int = 2
+    # The card index is not a setting (stage 5.5): app/main.py derives the PHYSICAL nvidia-smi index
+    # from this process's own CUDA_VISIBLE_DEVICES (set from config/gpu_pool.yaml cards.<c>.index) and
+    # refuses to declare an intent if it cannot (power_intent_gpu_index_unresolved).
     # A first guess at how long to hold the sample window open. Deliberately NOT an
     # expected_watts -- that stays None until real settlements produce a distribution.
     DIFFUSION_POWER_INTENT_DURATION_SEC: float = 60.0

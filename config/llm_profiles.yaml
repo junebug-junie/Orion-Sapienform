@@ -186,7 +186,9 @@ profiles:
       n_predict: 8192
 
       no_context_shift: true
-      flash_attn: "off"
+      # on: the wrapper dropped "off", so this lane ran llama.cpp auto (probed: auto -> on for the
+      # 27B on the same build; not probed for this model). docs/2026-09-30-flash-attention-volta-circe.md
+      flash_attn: "on"
 
     notes: |
       Balanced profile for Qwen3-8B on one V100 16GB; thinking disabled only for workers using THIS profile key.
@@ -238,7 +240,9 @@ profiles:
       reasoning_budget: 0
 
       no_context_shift: true
-      flash_attn: "off"
+      # on: the wrapper dropped "off", so this lane ran llama.cpp auto (probed: auto -> on for the
+      # 27B on the same build; not probed for this model). docs/2026-09-30-flash-attention-volta-circe.md
+      flash_attn: "on"
 
       temperature: 0.35
       top_k: 20
@@ -458,8 +462,23 @@ profiles:
       reasoning: "off"
       reasoning_budget: 0
       #reasoning_format: "deepseek"
-      #chat_template_kwargs:
-      #  enable_thinking: true
+      # ADDED 2026-10-02: keep earlier assistant turns' reasoning in the
+      # rendered prompt, same as the :8015 agent lane already does. Unlike
+      # that lane, THIS model's template treats an unset preserve_thinking as
+      # false: every time a new user turn appears (the gateway now forwards
+      # Claude Code's per-step reminders as in-place <system-reminder> user
+      # turns), the template strips the previous step's <think> block, so the
+      # old prompt is no longer a pure prefix of the new one. Measured with
+      # this lane's own /apply-template on captured FCC steps: unset -> 6
+      # chars lost per step (inside the end checkpoint, cheap but not zero,
+      # and the model loses its own prior reasoning); true -> 0 lost. See
+      # docs/superpowers/specs/2026-10-02-fcc-prompt-prefix-cache-design.md
+      # (Fix B). Server-wide for every :8011 client, not only FCC: any history
+      # carrying reasoning_content / thinking blocks now keeps that text in
+      # the prompt (costs those tokens) instead of having it stripped. Inert
+      # for histories that carry none (most Hub/cortex chat).
+      chat_template_kwargs:
+        preserve_thinking: true
 
       no_context_shift: true
       # CHANGED 2026-09-21: single GPU now (num_gpus: 1 above), so split_mode/
@@ -468,7 +487,8 @@ profiles:
       # last known-stable combination (skew weights to the primary card so
       # the second card mostly carries KV/overflow; equal "1,1" paid PCIe tax
       # without buying context). No YaRN — native 262k first.
-      flash_attn: "off"
+      # on: measured on this model, 1 card, 2026-09-30 (docs/2026-09-30-flash-attention-volta-circe.md).
+      flash_attn: "on"
 
       # Cooler than Unsloth chat defaults (0.7/0.8/1.5) for FCC tool+code stability.
       temperature: 0.48
@@ -501,7 +521,7 @@ profiles:
       - Target lane: Cortex / planner / introspection / deep repo reasoning / FCC motor.
       - Uses Unsloth dynamic GGUF UD-Q5_K_M (~25GB) — prefer over Q6 so KV headroom survives.
       - 65536 ctx (n_parallel=1) must match HARNESS_FCC_MAX_CONTEXT_TOKENS / Hub agent Claude budget.
-      - flash_attn off (Volta); sampling kept cooler than Unsloth chat card for agent stability.
+      - flash_attn on (measured 2026-09-30: 61K-depth decode 85 vs 45 tok/s off; docs/2026-09-30-flash-attention-volta-circe.md); sampling kept cooler than Unsloth chat card for agent stability.
       - If OOM at 65536 on one GPU: go back to 2 GPUs (see revert steps above), not
         further ctx reduction -- single-GPU headroom is already tighter than the
         old 2-GPU budget was.
@@ -759,6 +779,8 @@ profiles:
       - 64k ctx supports smolagents transcripts + repo snippets without YaRN (native 262k available if VRAM allows later tuning).
       - Same non-thinking launch policy as the breadth profile (reasoning_budget 0 → jinja path).
       - Circe llama-optimus (2026-07-09): flash_attn off, split_mode layer, ngl 87, batch 1175, ubatch 541, threads 18.
+      - That bench (older build, 2-GPU split) is the source of the "~20x FA collapse on Volta" rule. It did
+        not reproduce single-card on b10398 for 27B/35B/Bonsai (docs/2026-09-30-flash-attention-volta-circe.md); this profile is kept at its own measured value.
       - Use when Gate 1 smolcode live proof needs more reasoning depth; expect slower per-step latency.
       - Wire: dedicated atlas-agent worker OR swap ATLAS_AGENT_PROFILE_NAME for depth-first deployments.
       - If OOM: lower ctx_size to 49152 before falling back to qwen3-coder-next-q4km-2xv100-32gb-agent-breadth.
@@ -1186,12 +1208,12 @@ profiles:
       image_min_tokens: 256
       image_max_tokens: 1024
 
-      # V100 is Volta. Left off: qwen3-coder-next-q5km-2xv100-32gb-agent-depth's llama-optimus
-      # bench found flash_attn on collapses TG ~20x on Volta. The 1x-V100 qwen36-35b-a3b
-      # "balanced" profile sets it on anyway — untested here, treat that as an open
-      # inconsistency, not a precedent to copy without its own bench.
+      # The "~20x collapse on Volta" came from one 2026-07-09 llama-optimus bench of
+      # qwen3-coder-next split over 2 GPUs on an older build. On b10398, single card, flash
+      # attention on is ~2x faster at depth for every model re-benched (docs/2026-09-30-flash-attention-volta-circe.md).
+      # Not re-benched for this model; "on" is what the wrapper actually ran anyway.
       no_context_shift: true
-      flash_attn: "off"
+      flash_attn: "on"
 
       # Google-style sampling per Muse Glimmer model card (matches gemma4-*-it profiles).
       temperature: 1.0
@@ -1411,11 +1433,10 @@ profiles:
         preserve_thinking: true
 
       no_context_shift: true
-      # V100 is Volta -- same reasoning as muse-glimmer-30b-udq4kxl above
-      # (that profile's own bench found flash_attn on collapses TG ~20x on
-      # Volta). Off by default here for the same hardware reason, not
-      # re-benched separately for this specific model.
-      flash_attn: "off"
+      # Measured on circe gpu0 2026-09-30 (1 slot, 65K): on vs off -> 61K-depth decode
+      # 25.4 vs 12.8 tok/s, reasoning 20/20 (docs/2026-09-30-flash-attention-volta-circe.md). llama.cpp auto -> "Flash Attention
+      # enabled" for this model, which is what the live lane actually ran all along.
+      flash_attn: "on"
 
       # Unsloth's Thinking-Mode defaults (fetched 2026-09-02) -- reasoning_
       # effort defaults to xhigh above, so this lane runs in thinking mode
@@ -1651,12 +1672,10 @@ profiles:
       # 4th GPU (was "1,1,1" for 3).
       split_mode: "layer"
       tensor_split: "1,1,1,1"
-      # V100 is Volta (sm_70). Whether this brand-new architecture even runs
-      # on Volta at all is UNVERIFIED -- nothing in the sources fetched while
-      # writing this card confirms or denies it. Off by default for the same
-      # reason every other V100 profile in this file is off (Volta flash-attn
-      # regression), but this specific architecture was not itself bench-tested.
-      flash_attn: "off"
+      # V100 is Volta (sm_70). Whether this architecture runs on Volta at all is
+      # UNVERIFIED. flash_attn on: the old "Volta regression" rule did not hold for
+      # the 27B/35B/8B-class single-card lanes on b10398 (docs/2026-09-30-flash-attention-volta-circe.md); multi-GPU untested.
+      flash_attn: "on"
 
       # Unsloth's Thinking-Mode sampling (fetched from unsloth.ai/docs/models/
       # qwen3.8-next, 2026-09-03/04) -- matches reasoning_effort=xhigh above.
@@ -1830,7 +1849,8 @@ profiles:
       no_context_shift: true
       split_mode: "layer"
       tensor_split: "1,1,1,1"
-      flash_attn: "off"
+      # on: matches what actually ran (wrapper dropped "off"); multi-GPU untested (docs/2026-09-30-flash-attention-volta-circe.md).
+      flash_attn: "on"
 
       temperature: 1.0
       top_k: 20
@@ -1971,9 +1991,9 @@ profiles:
         preserve_thinking: true
 
       no_context_shift: true
-      # V100 is Volta -- same reasoning as the Q4_K_XL card, not re-benched
-      # separately for the BF16 weight format.
-      flash_attn: "off"
+      # on: the b10398 wrapper misread its build as 0, so "off" was never emitted and
+      # llama.cpp auto -> on is what actually ran. Multi-GPU split not re-benched (docs/2026-09-30-flash-attention-volta-circe.md).
+      flash_attn: "on"
       split_mode: "layer"
       tensor_split: "1,1,1,1"
 
@@ -2085,7 +2105,8 @@ profiles:
       no_context_shift: true
       split_mode: "layer"
       tensor_split: "1,1,1,1"
-      # Volta: flash-attn collapses TG elsewhere on Circe; keep off.
+      # Off as run in the 2026-09-18 soak on this fork. The general "Volta collapse" rule did
+      # not hold on stock b10398 (docs/2026-09-30-flash-attention-volta-circe.md); not re-benched on dsv41-porte.
       flash_attn: "off"
 
       temperature: 1.0
@@ -2125,3 +2146,162 @@ profiles:
       Escalation after first boot: raise ctx_size, then moe_stream_cache if
       HBM headroom exists, then try reasoning on. Do not chase Q3/Q4 until
       Q/MXFP4 load + tok/s are measured on Volta.
+
+  ternary-bonsai2-27b-pq2-v100-32gb-circe-np4:
+    display_name: "Ternary Bonsai 2 27B – PQ2_0 (PrismML llama.cpp fork, 1x V100 32GB, Circe 4-slot bake-off)"
+    task_type: chat
+    backend: llamacpp
+    model_id: "ternary-bonsai-2-27b-pq2_0"
+
+    supports_tools: true
+    supports_embeddings: false
+    # The repo ships an mmproj, but this bake-off is text-only curiosity runs.
+    supports_vision: false
+
+    gpu:
+      num_gpus: 1
+      tensor_parallel_size: 1
+      # Doc-only; the real pin is BONSAI_CUDA_VISIBLE_DEVICES in
+      # services/orion-llamacpp-bonsai-host/.env (required; gpu1 or gpu2, never gpu0 = chat's card).
+      device_ids: [2]
+      max_model_len: 65536
+      max_batch_tokens: 1024
+      max_concurrent_requests: 4
+      gpu_memory_fraction: 0.90
+
+    llamacpp:
+      model_root: "/models/gguf"
+      hf_repo_id: "prism-ml/Ternary-Bonsai-2-27B-gguf"
+      hf_filename: "Ternary-Bonsai-2-27B-PQ2_0.gguf"
+      host: "0.0.0.0"
+      port: 8080
+
+      # llama-server splits --ctx-size across --parallel: 262144 / 4 = 65536
+      # per run. VRAM on circe gpu0 2026-09-30: 24.1-24.3 GB flash_attn on (two nvidia-smi readings),
+      # 27.2-28.6 GB off (1,639 samples).
+      ctx_size: 262144
+      n_gpu_layers: 99
+      threads: 16
+      n_parallel: 4
+      batch_size: 1024
+
+      # Prism KNOWN_ISSUES (2026-09-23): `--reasoning on` overrides a client's
+      # reasoning_effort "none", so leave the server at auto.
+      reasoning: "auto"
+      reasoning_format: "deepseek"
+      chat_template_kwargs:
+        # Template accepts low/medium/xhigh ("high" -> HTTP 500; "low" ~= xhigh).
+        # medium: four concurrent xhigh runs would be slow and hit n_predict mid-thought.
+        reasoning_effort: "medium"
+        # Prism KNOWN_ISSUES: re-rendering earlier reasoning into later turns
+        # makes the prompt cache miss in tool loops (Bonsai-demo #183).
+        preserve_thinking: false
+      # Prism KNOWN_ISSUES: small output caps end generation mid-thought.
+      n_predict: 16384
+
+      no_context_shift: true
+      # Measured on circe gpu0 2026-09-30 (docs/2026-09-30-ternary-bonsai2-27b-1xv100-circe.md):
+      # on vs off -> 61K-depth decode 32.3 vs 17.6 tok/s, VRAM 24.1 vs 27.2-28.6 GB,
+      # 4 concurrent 27 vs 25 tok/s each. Cost: exactly 2 concurrent runs drop to 23 tok/s
+      # each (off: 41). The "off on Volta" rule came from other models, not this one.
+      flash_attn: "on"
+
+    notes: |
+      Bake-off only (2026-09-29). Runs on services/orion-llamacpp-bonsai-host,
+      never orion-llamacpp-host: stock llama.cpp rejects PQ2_0.
+      Question: can one 32 GB V100 serve 4 concurrent curiosity runs with
+      acceptable answers? Measure per run: answer sanity, tok/s, prompt tokens
+      re-processed per step (prompt-cache reuse), and peak VRAM.
+      Runs on Volta (circe gpu0, 2026-09-30); results in
+      docs/2026-09-30-ternary-bonsai2-27b-1xv100-circe.md.
+
+  ternary-bonsai2-27b-pq2-v100-32gb-circe-agent:
+    display_name: "Ternary Bonsai 2 27B – PQ2_0 (PrismML fork, 1x V100 32GB, Circe agent-gpu2, 2 x 131K)"
+    task_type: chat
+    backend: llamacpp
+    model_id: "ternary-bonsai-2-27b-pq2_0"
+
+    supports_tools: true
+    supports_embeddings: false
+    supports_vision: false
+
+    gpu:
+      num_gpus: 1
+      tensor_parallel_size: 1
+      # Doc-only: the lane controller sets CUDA_VISIBLE_DEVICES_OVERRIDE from config/gpu_pool.yaml
+      # (agent-gpu2 -> gpu2, index 2). Never gpu0 (chat's card, Juniper 2026-09-30).
+      device_ids: [2]
+      # Per session (= per llama.cpp slot), same as the Q4 agent-flex lane it replaces on this seat.
+      max_model_len: 131072
+      max_batch_tokens: 1024
+      max_concurrent_requests: 2
+      gpu_memory_fraction: 0.90
+
+    llamacpp:
+      # GPU pool stage 7.2 (docs/superpowers/specs/2026-09-30-gpu-pool-stage7-concurrency.md):
+      # the first entry of agent-gpu2's launch.profiles. Runs on the PrismML fork inside the
+      # orion-llamacpp-host-prism image (Dockerfile.prism); stock llama.cpp rejects PQ2_0.
+      server_build: prism
+      model_root: "/models/gguf"
+      hf_repo_id: "prism-ml/Ternary-Bonsai-2-27B-gguf"
+      hf_filename: "Ternary-Bonsai-2-27B-PQ2_0.gguf"
+      host: "0.0.0.0"
+      port: 8080
+
+      # llama-server splits --ctx-size evenly across --parallel: 262144 / 2 = 131072 per slot,
+      # the per-session context the harness budgets for (agent-lane prompts: p95 68K, max 82K).
+      # Total KV equals the measured 4 x 65K layout: ~24.1 GB with flash attention on (circe,
+      # 2026-09-30). The pool reads slots/ctx from /props (discovery) -- nothing in gpu_pool.yaml.
+      # H1 is unchanged (one durable-run hold per role): the second slot serves one-off calls.
+      ctx_size: 262144
+      n_gpu_layers: 99
+      threads: 16
+      n_parallel: 2
+      batch_size: 1024
+
+      # Prism KNOWN_ISSUES (2026-09-23): `--reasoning on` overrides a client's thinking-off
+      # request, so leave the server at auto. Bonsai's template rejects reasoning_effort "none"
+      # and "high" (HTTP 500); per-request `enable_thinking: false` works.
+      reasoning: "auto"
+      reasoning_format: "deepseek"
+      chat_template_kwargs:
+        # Parity with the Q4 agent-flex lane (stage 7 spec D7): xhigh, bounded by n_predict.
+        reasoning_effort: "xhigh"
+        # Parity with agent-flex (design doc question 3): the prompt cache misses the prior
+        # assistant reply on both Qwen3.8 builds (79.4% vs 79.7% reuse), so false buys nothing
+        # Bonsai-specific. The bake-off profile used false (Prism KNOWN_ISSUES, Bonsai-demo #183);
+        # revisit with the 7.2 per-role cache_n/prompt_n reuse (PR report query M2, cache_reuse).
+        preserve_thinking: true
+      # The GGUF's embedded template raises "No user query found in messages." (HTTP 500) on any
+      # request without a plain user turn -- cortex-exec sends system-only agent steps, so 44/44
+      # agent calls 500'd 10-02..10-06 -- and on a second leading system message. The shipped file
+      # is that template plus the Q4 (Unsloth) template's two hunks for both
+      # (services/orion-llamacpp-host/tests/bonsai_template_patch.py). Baked in via `COPY config`.
+      chat_template_file: "chat_templates/ternary-bonsai-2-27b.jinja"
+      # Prism KNOWN_ISSUES: small output caps end generation mid-thought.
+      n_predict: 16384
+      no_context_shift: true
+      # Measured on circe 2026-09-30: 61K-depth decode 32.3 (on) vs 17.6 (off) tok/s,
+      # VRAM 24.1 vs 27.2-28.6 GB. Cost: 2 concurrent runs at 4 x 65K dropped to 23.4 tok/s each.
+      flash_attn: "on"
+
+      # llama.cpp #27148 (RAM prompt cache restoring another conversation into a slot): left at
+      # the binary's defaults. The 2026-10-01 probe did not reproduce on metacog/fast; Juniper's
+      # rule is to set `cache_idle_slots: false` on every multi-slot lane only if it reproduces.
+      # services/orion-llamacpp-host/scripts/probe_slot_bleed.py checks this seat after deploy.
+
+      # Same sampling as agent-flex (Unsloth thinking-mode defaults for Qwen3.8).
+      temperature: 1.0
+      top_k: 20
+      top_p: 0.95
+      min_p: 0.0
+      presence_penalty: 0.0
+
+    notes: |
+      GPU pool stage 7.2: agent-gpu2's first launch profile (config/gpu_pool.yaml). The seat's
+      previous profile, qwen3.8-27b-udq4kxl-v100-32gb-circe-agent-flex, stays second in that list
+      as the rollback: swap the two entries and the pool's next load serves the Q4 27B again, on
+      the same image's stock binary.
+      Quality: hard depth test 19/20 vs Q4 20/20 (docs/2026-09-30-ternary-bonsai2-27b-1xv100-circe.md).
+      Acceptance (design doc): turn_ok within 5 points of Q4 over >= 1 day or 30 turns, read a
+      sample of curiosity findings by hand.

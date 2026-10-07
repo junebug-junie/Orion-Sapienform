@@ -33,6 +33,7 @@ _KNOWN_STORES = {
     "orion.situational.session_turn_phase",
     "orion.situational.juniper_affect_state",
     "orion.situational.identity_ask_cooldown",
+    "orion.situational.runtime_route_view",
 }
 
 
@@ -65,6 +66,20 @@ def test_helper_binds_every_situation_store(monkeypatch):
 
     unbound = sorted(m.__name__ for m in modules if m._BUS is not bus)
     assert not unbound, f"bind_situation_state_buses does not bind: {unbound}"
+
+
+def test_runtime_route_view_rides_the_rpc_fork_when_one_is_given(monkeypatch):
+    """GPU pool stage 6.3: the runtime line's pool-state read is an RPC, so a process with a forked
+    RPC client (orion-hub) binds it there; the Redis stores stay on the main bus."""
+    import orion.situational.runtime_route_view as route_view_store
+
+    for mod in _modules_with_bus_bind():
+        monkeypatch.setattr(mod, "_BUS", None)
+    bus, rpc = object(), object()
+    bind_situation_state_buses(bus, rpc_bus=rpc)
+    assert route_view_store._BUS is rpc
+    others = [m for m in _modules_with_bus_bind() if m is not route_view_store]
+    assert others and all(m._BUS is bus for m in others)
 
 
 class _FakeRedis:

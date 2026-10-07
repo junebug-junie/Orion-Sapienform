@@ -76,6 +76,10 @@ class SchedulerCursorStore:
         temp.write_text(json.dumps(data, indent=2, sort_keys=True))
         temp.replace(self._path)
 
+    @property
+    def path(self) -> Path:
+        return self._path
+
     def get(self, job_key: str) -> str | None:
         with self._lock:
             v = self._cursors.get(job_key)

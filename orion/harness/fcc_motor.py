@@ -6,29 +6,34 @@ import asyncio
 import json
 import logging
 import os
+import sys
 import time
 import urllib.error
 import urllib.request
 from pathlib import Path
 from typing import Any, AsyncIterator, Dict, List, Mapping, Optional, Tuple
 
-import httpx
 
 from orion.fcc.claude_spawn import claude_permission_argv, extend_mcp_argv, setting_sources_argv
 from orion.fcc.turn_lock import turn_in_progress
+from orion.curiosity.write_stamp import WriteStamper, completed_tool_use_ids, graph_write_tool_use_ids
 from orion.fcc.context_budget import (
     annotate_harness_step,
     apply_context_overflow_hint,
     build_context_pressure_step,
     context_fill_pct,
     context_pressure_threshold_chars,
+    is_compact_boundary_event,
     is_context_overflow_text,
     is_provider_error_envelope,
     max_context_chars,
     max_context_tokens,
     measure_step_payload_chars,
+    post_compaction_context_chars,
     summarize_context_risk_suffix,
 )
+
+from orion.harness.cut_short import FCC_CONTEXT_CEILING_ERROR_CODE
 
 logger = logging.getLogger("orion.harness.fcc_motor")
 
@@ -122,7 +127,7 @@ def _text_blocks_from_assistant(event: Dict[str, Any]) -> str:
 def _weights_file_basename(raw: str) -> str:
     """Reduce a served-model string to a basename with any weights-file
     extension stripped. Shared by both served-model paths (post-hoc
-    discovery from a completed turn, and the pre-turn /routes probe below)
+    discovery from a completed turn, and the pre-turn pool-state probe below)
     so a raw server-side filesystem path (e.g.
     "/models/gguf/Qwen_Qwen3-8B-Q4_K_M.gguf") never reaches a user-facing
     field or a prompt verbatim.
@@ -280,6 +285,19 @@ def summarize_harness_step(step: Dict[str, Any], *, index: int) -> str:
     return base + summarize_context_risk_suffix(step)
 
 
+def is_progress_frame(step: Dict[str, Any]) -> bool:
+    """True for the CLI's `tool_progress` heartbeat frames ("still running", no content).
+
+    They arrive in bulk (~21% of recorded harness steps over 48h, ~75% inside the largest
+    runs), carry no work of their own, and were being recorded as a started+completed grammar
+    atom pair each -- flooding one sql-writer lane at run end (2026-09-29: 722 events shed).
+    """
+    if not isinstance(step, dict):
+        return False
+    raw = step.get("raw") if isinstance(step.get("raw"), dict) else step
+    return str(raw.get("type") or step.get("type") or "") == "tool_progress"
+
+
 def _extract_tool_name(step: Dict[str, Any]) -> str | None:
     raw = step.get("raw") if isinstance(step.get("raw"), dict) else step
     if not isinstance(raw, dict):
@@ -428,7 +446,7 @@ def label_to_claude_model_id(label: str, env: Dict[str, str]) -> str:
 
 # Backends orion-llm-gateway's anthropic_passthrough actually routes (see
 # services/orion-llm-gateway/app/anthropic_passthrough.py's
-# _ANTHROPIC_COMPAT_BACKENDS) -- the only ones GET /routes can answer for.
+# _ANTHROPIC_COMPAT_BACKENDS) -- the only ones the GPU pool's route view can answer for.
 _ROUTE_PROBE_BACKENDS = frozenset({"llamacpp", "llama-cpp"})
 
 
@@ -449,6 +467,26 @@ def _route_key_from_fcc_env_value(raw_value: str) -> Optional[Tuple[str, str]]:
     return backend, route_key
 
 
+def resolve_fcc_backend(
+    fcc_model_label: str | None, *, env: Dict[str, str] | None = None
+) -> Optional[Tuple[str, str]]:
+    """``(backend, route)`` a turn's FCC label resolves to (``("llamacpp", "agent")``,
+    ``("nvidia-nim", "z-ai/glm-5.2")``), any backend, or None. Same two label shapes and order as
+    `label_to_claude_model_id`."""
+    label = str(fcc_model_label or "").strip()
+    if not label:
+        return None
+    parsed = _route_key_from_fcc_env_value(label)
+    if parsed is None:
+        resolved_env = (
+            env
+            if env is not None
+            else load_fcc_env(expand_env_path(os.environ.get("HARNESS_FCC_ENV_PATH", "~/.fcc/.env")))
+        )
+        parsed = _route_key_from_fcc_env_value(resolved_env.get(label, ""))
+    return parsed
+
+
 def resolve_fcc_route_key(
     fcc_model_label: str | None, *, env: Dict[str, str] | None = None
 ) -> Optional[str]:
@@ -462,17 +500,7 @@ def resolve_fcc_route_key(
     on" self-context on exactly the lane where it differs most from the
     default. None for a non-llamacpp backend (not a gateway pool route).
     """
-    label = str(fcc_model_label or "").strip()
-    if not label:
-        return None
-    parsed = _route_key_from_fcc_env_value(label)
-    if parsed is None:
-        resolved_env = (
-            env
-            if env is not None
-            else load_fcc_env(expand_env_path(os.environ.get("HARNESS_FCC_ENV_PATH", "~/.fcc/.env")))
-        )
-        parsed = _route_key_from_fcc_env_value(resolved_env.get(label, ""))
+    parsed = resolve_fcc_backend(fcc_model_label, env=env)
     if parsed is None:
         return None
     backend, route_key = parsed
@@ -481,96 +509,91 @@ def resolve_fcc_route_key(
     return route_key
 
 
+def _positive_int(value: Any) -> Optional[int]:
+    return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else None
+
+
 async def probe_route_runtime(
     fcc_model_label: str | None,
     *,
     env: Dict[str, str] | None = None,
-    gateway_url: str | None = None,
-    timeout_sec: float = 2.0,
+    pool_state: Mapping[str, Any] | None = None,
 ) -> Tuple[Optional[str], Optional[int]]:
     """Orion capability: best-effort "what backend am I about to run on"
-    read, for injecting into the harness system prompt *before* a turn
-    starts.
+    read, for the harness system prompt and the motor's context budget,
+    *before* a turn starts.
 
     `_served_model_from_assistant` above only learns the truth from a
     turn's own stream-json output -- after the prompt was already sent, too
     late for self-context. This is the pre-turn equivalent: resolve
-    fcc_model_label (e.g. "MODEL_SONNET") through ~/.fcc/.env to an
-    orion-llm-gateway route key, then read that route's live-probed model
-    off GET /routes. Not a new probe -- route_catalog.py's `_probe_model`
-    already live-probes and caches this exact fact (15s TTL) for the Hub
-    route picker; this just reads it.
+    fcc_model_label (e.g. "MODEL_SONNET") through ~/.fcc/.env to a pool
+    route key, then read that route's model and per-slot window out of GPU
+    pool state (``orion.gpu_pool.route_view``: the role a call on that route
+    would land on right now, and the model/ctx the pool discovered there).
 
-    Fails open to None on: no label, missing/malformed env entry, a
-    non-llamacpp backend (MODEL_HAIKU's nvidia_nim route isn't in this
-    route table -- see _ROUTE_PROBE_BACKENDS), an unreachable gateway, a
-    non-2xx response, or a route id with no cached model yet (worker down).
+    GPU pool stage 6.3: this used to read orion-llm-gateway's GET /routes
+    over HTTP. It now reads the ``pool_state`` the caller already fetched
+    (HarnessRunner reads it once per turn over ``orion:gpu_pool:state``, with
+    the pool's config) -- no network read of its own.
+
+    Fails open to (None, None) on: no label, missing/malformed env entry, a
+    non-llamacpp backend (MODEL_HAIKU's nvidia_nim route is not a pool
+    route -- see _ROUTE_PROBE_BACKENDS), no pool state (pool unreachable),
+    or a route that is not up (worker down: no model, no window). A None
+    window means "fall back to the configured default", never "unlimited".
     A self-context probe must never block or fail a turn over a missing
     fact about itself.
     """
+    from orion.gpu_pool.route_view import SOURCE_UNAVAILABLE, build_route_view, route_entry
+
     label = str(fcc_model_label or "").strip()
     route_key = resolve_fcc_route_key(label, env=env)
-    if route_key is None:
+    if route_key is None or pool_state is None:
         return None, None
+    view = build_route_view(pool_state)
+    if view.get("source") == SOURCE_UNAVAILABLE:
+        return None, None
+    entry = route_entry(view, route_key)
+    if entry is None:
+        return None, None
+    n_ctx = _positive_int(entry.get("n_ctx"))
+    model = entry.get("model")
+    if isinstance(model, str) and model.strip():
+        return _weights_file_basename(model.strip()), n_ctx
+    return None, n_ctx
 
-    url = str(
-        gateway_url or os.environ.get("HARNESS_LLM_GATEWAY_URL", "http://llm-gateway:8210")
-    ).rstrip("/")
-    try:
-        async with httpx.AsyncClient(timeout=timeout_sec) as client:
-            response = await client.get(f"{url}/routes")
-            if response.status_code >= 400:
-                return None, None
-            payload = response.json()
-    except Exception:
-        logger.warning("probe_route_runtime failed label=%s route=%s", label, route_key, exc_info=True)
-        return None, None
 
-    routes = payload.get("routes") if isinstance(payload, dict) else None
-    if not isinstance(routes, list):
-        return None, None
-    for route in routes:
-        if not isinstance(route, dict) or route.get("id") != route_key:
-            continue
-        raw_ctx = route.get("n_ctx")
-        # Absent on an older gateway that predates this field, and null whenever the
-        # worker is down or answered an unexpected shape. Both mean "no ceiling known",
-        # which callers must treat as "fall back to the configured default" -- never as
-        # unlimited.
-        n_ctx = raw_ctx if isinstance(raw_ctx, int) and not isinstance(raw_ctx, bool) and raw_ctx > 0 else None
-        model = route.get("model")
-        if isinstance(model, str) and model.strip():
-            return _weights_file_basename(model.strip()), n_ctx
-        return None, n_ctx
-    return None, None
+def held_role_window(pool_state: Mapping[str, Any] | None, role: str | None) -> Optional[int]:
+    """Per-slot context of the pool role a held turn runs on (the grant, not the route default).
+
+    A turn holding a lease runs every call on its granted role, so that role's discovered
+    ``ctx_per_slot`` is the window it will really hit. None when unknown (no state, or the role is
+    not confirmed) -- the caller falls back to the configured ceiling."""
+    from orion.gpu_pool.placement import discovered_role
+
+    if not role:
+        return None
+    found = discovered_role(pool_state, role)
+    if found is None or found.status not in ("confirmed", "static"):
+        return None
+    return _positive_int(found.ctx_per_slot)
 
 
 async def probe_current_served_model(
     fcc_model_label: str | None,
     *,
     env: Dict[str, str] | None = None,
-    gateway_url: str | None = None,
-    timeout_sec: float = 2.0,
+    pool_state: Mapping[str, Any] | None = None,
 ) -> Optional[str]:
     """Just the served-model half of `probe_route_runtime`, for the prompt.
 
     Kept as its own name because that is what the harness prefix asks for, and
-    what `HarnessRunner.served_model_probe` injects and its tests assert.
-
-    NOTE: this is a SEPARATE HTTP call from the motor's own window probe -- the
-    runner calls this before the turn to build the prompt, the motor calls
-    `probe_route_runtime` inside the turn to size its budget, so a turn now
-    makes two `GET /routes` requests rather than one. Not deduplicated
-    deliberately: a module-level TTL cache here would leak state between the
-    existing `probe_current_served_model` tests, and the cost is small and
-    bounded -- the gateway serves /routes from its own 15s health cache, the
-    call has a 2s timeout, and it fails open to None on anything at all. Revisit
-    by threading the window down from the runner if this ever shows up in turn
-    latency; do not add a hidden cache.
+    what `HarnessRunner.served_model_probe` injects and its tests assert. The
+    runner reads pool state once per turn and hands the same state to this
+    and (via ``pool_state``) to the motor's window probe, so a turn makes one
+    pool read, not two.
     """
-    model, _ = await probe_route_runtime(
-        fcc_model_label, env=env, gateway_url=gateway_url, timeout_sec=timeout_sec
-    )
+    model, _ = await probe_route_runtime(fcc_model_label, env=env, pool_state=pool_state)
     return model
 
 
@@ -665,9 +688,17 @@ def _harness_aitown_env(fcc_env: Dict[str, str]) -> Dict[str, str]:
     return ae
 
 
-def _maybe_render_mcp_config(*, correlation_id: str, reading_binding=None, reading_only=False) -> Optional[Path]:
+def _maybe_render_mcp_config(
+    *,
+    correlation_id: str,
+    reading_binding=None,
+    reading_only=False,
+    warm_binding_files: Optional[Tuple[Path, Path]] = None,
+) -> Optional[Path]:
+    """``warm_binding_files`` = (reading, introspect) files a warm slot rewrites per
+    turn; the reading/introspect servers then follow whichever turn is bound."""
     from orion.fcc.mcp_config import render_mcp_config
-    from orion.introspect.binding import introspect_binding_for_turn
+    from orion.introspect.binding import introspect_binding_for_turn, introspect_enabled, outward_tools_attached
 
     if reading_only:
         return render_mcp_config(correlation_id=correlation_id, fcc_env={}, reading_only=True)
@@ -696,6 +727,15 @@ def _maybe_render_mcp_config(*, correlation_id: str, reading_binding=None, readi
         reading_bus_url=os.environ.get("ORION_BUS_URL"),
         introspect_binding=introspect_binding_for_turn(reading_binding, reading_only=reading_only),
         introspect_bus_url=os.environ.get("ORION_BUS_URL"),
+        **(
+            {
+                "reading_binding_file": warm_binding_files[0],
+                "introspect_binding_file": warm_binding_files[1] if introspect_enabled() else None,
+                "introspect_memory_allowed": not outward_tools_attached(),
+            }
+            if warm_binding_files is not None
+            else {}
+        ),
         include_aitown=include_aitown,
         aitown_env=_harness_aitown_env(env) if include_aitown else None,
         include_gitnexus=_env_truthy("HARNESS_FCC_GITNEXUS_ENABLED"),
@@ -744,35 +784,31 @@ def _build_subprocess_env(
     turn_deadline_epoch: Optional[float] = None,
     turn_step_stall_sec: Optional[float] = None,
     n_ctx: Optional[int] = None,
-    resource_lease: dict | None = None,
     gpu_lease: dict | None = None,
+    chat_reply: bool = False,
 ) -> Dict[str, str]:
     env = os.environ.copy()
-    from orion.llm.resource_lease import (
-        GPU_LEASE_HEADER, LEASE_HEADER, encode_gpu_lease_header, encode_lease_header,
-    )
+    from orion.llm.resource_lease import GPU_LEASE_HEADER, encode_gpu_lease_header
     # Never inherit another run's lease; preserve unrelated custom headers.
-    ours = {LEASE_HEADER.lower(), GPU_LEASE_HEADER.lower()}
+    ours = {GPU_LEASE_HEADER.lower()}
     headers = [line for line in env.get("ANTHROPIC_CUSTOM_HEADERS", "").splitlines()
                if line.partition(":")[0].strip().lower() not in ours]
-    if resource_lease is not None:
-        headers.append(f"{LEASE_HEADER}: {encode_lease_header(resource_lease)}")
     if gpu_lease is not None:
-        # Stage 4: the run's GPU pool hold. The gateway attaches every call to it, so the run's own
+        # The run's GPU pool hold. The gateway attaches every call to it, so the run's own
         # calls never queue behind the hold that reserves their slot.
         headers.append(f"{GPU_LEASE_HEADER}: {encode_gpu_lease_header(gpu_lease)}")
     if headers:
         env["ANTHROPIC_CUSTOM_HEADERS"] = "\n".join(headers)
     else:
         env.pop("ANTHROPIC_CUSTOM_HEADERS", None)
-    if resource_lease is not None or gpu_lease is not None:
+    if gpu_lease is not None:
         # FCC's external proxy has no header-forwarding contract. Send this
         # protected request directly to the existing Anthropic Gateway route.
         env["ANTHROPIC_BASE_URL"] = os.environ.get(
             "HARNESS_LLM_GATEWAY_URL", "http://llm-gateway:8210"
         ).rstrip("/")
-        # Claude requires a token, but Gateway authorizes this request using
-        # its broker fence. Do not send the external FCC proxy's credential.
+        # Claude requires a token, but the pool fences this request (the gateway
+        # attaches it to the hold). Do not send the external FCC proxy's credential.
         env["ANTHROPIC_AUTH_TOKEN"] = "orion-resource-lease"
         env.pop("ANTHROPIC_API_KEY", None)
     else:
@@ -842,19 +878,135 @@ def _build_subprocess_env(
     # confident negative and exits 0 -- it only makes the wrong number absurd
     # (~-1.8e9) instead of plausible (~-3000). The prompt carries the actual
     # guard, testing for emptiness before doing the arithmetic.
-    if turn_budget_sec is not None:
-        env["ORION_TURN_BUDGET_SEC"] = str(int(turn_budget_sec))
+    #
+    # The warm chat pool cannot change a live process's env, so it writes the
+    # same three values (from `turn_clock_env`, one source for both) to the
+    # slot's CLAUDE_ENV_FILE before every turn instead -- see fcc_warm_pool.py.
+    for key in TURN_CLOCK_ENV_KEYS:
+        env.pop(key, None)
+    env.update(
+        turn_clock_env(
+            turn_budget_sec=turn_budget_sec,
+            turn_deadline_epoch=turn_deadline_epoch,
+            turn_step_stall_sec=turn_step_stall_sec,
+        )
+    )
+    # Claude Code auto-memory is keyed by working directory, and every FCC turn
+    # runs in the same sandbox checkout, so chat replies were reading notes that
+    # curiosity/urgent/self-inquiry/mutation runs wrote there -- ungoverned, no
+    # provenance (spec 2026-10-06-unified-turn-latency-design.md, L7). Chat
+    # replies get it switched off; anything that should reach a conversation
+    # comes through recall instead. Investigation turns keep it. Popped rather
+    # than left alone otherwise, so a container-wide value cannot silently
+    # change investigation turns too.
+    if chat_reply and chat_auto_memory_disabled():
+        env["CLAUDE_CODE_DISABLE_AUTO_MEMORY"] = "1"
     else:
-        env.pop("ORION_TURN_BUDGET_SEC", None)
-    if turn_deadline_epoch is not None:
-        env["ORION_TURN_DEADLINE_EPOCH"] = str(int(turn_deadline_epoch))
-    else:
-        env.pop("ORION_TURN_DEADLINE_EPOCH", None)
-    if turn_step_stall_sec is not None:
-        env["ORION_TURN_STEP_STALL_SEC"] = str(int(turn_step_stall_sec))
-    else:
-        env.pop("ORION_TURN_STEP_STALL_SEC", None)
+        env.pop("CLAUDE_CODE_DISABLE_AUTO_MEMORY", None)
     return env
+
+
+TURN_CLOCK_ENV_KEYS = ("ORION_TURN_BUDGET_SEC", "ORION_TURN_DEADLINE_EPOCH", "ORION_TURN_STEP_STALL_SEC")
+
+
+def turn_clock_env(
+    *,
+    turn_budget_sec: Optional[float],
+    turn_deadline_epoch: Optional[float],
+    turn_step_stall_sec: Optional[float],
+) -> Dict[str, str]:
+    """The turn's own clock as sandbox env values; a None value is left out."""
+    out: Dict[str, str] = {}
+    for key, value in zip(TURN_CLOCK_ENV_KEYS, (turn_budget_sec, turn_deadline_epoch, turn_step_stall_sec)):
+        if value is not None:
+            out[key] = str(int(value))
+    return out
+
+
+def chat_auto_memory_disabled() -> bool:
+    """HARNESS_FCC_CHAT_DISABLE_AUTO_MEMORY: keep Claude Code auto-memory out
+    of chat-reply turns. Default ON; only an explicit false-y value turns it off."""
+    raw = os.environ.get("HARNESS_FCC_CHAT_DISABLE_AUTO_MEMORY", "").strip().lower()
+    if not raw:
+        return True
+    return raw not in {"0", "false", "no", "off"}
+
+
+def repeat_failure_threshold() -> int:
+    """HARNESS_FCC_REPEAT_FAILURE_THRESHOLD: identical failed calls before the
+    breaker blocks that call for the rest of the turn. 0 disables it."""
+    from orion.fcc.repeat_failure_breaker import DEFAULT_THRESHOLD
+
+    raw = os.environ.get("HARNESS_FCC_REPEAT_FAILURE_THRESHOLD", "").strip()
+    if not raw:
+        return DEFAULT_THRESHOLD
+    try:
+        return max(0, int(raw))
+    except ValueError:
+        logger.warning(
+            "invalid HARNESS_FCC_REPEAT_FAILURE_THRESHOLD=%r; using default %d", raw, DEFAULT_THRESHOLD
+        )
+        return DEFAULT_THRESHOLD
+
+
+def repeat_failure_breaker_argv(*, correlation_id: str) -> List[str]:
+    """``--settings`` installing the repeat-failing-call PreToolUse hook (all tools).
+
+    Passed as flag settings so it applies regardless of --setting-sources
+    (reading-only turns pass an empty source list). See
+    orion/fcc/repeat_failure_breaker.py for the rule and the incident.
+    """
+    from orion.fcc.repeat_failure_breaker import hook_settings_json
+
+    threshold = repeat_failure_threshold()
+    if threshold <= 0:
+        logger.info("fcc_repeat_failure_breaker_disabled corr=%s", correlation_id)
+        return []
+    return ["--settings", hook_settings_json(threshold=threshold, python_bin=sys.executable)]
+
+
+def _log_repeat_failure_blocks(parsed: Dict[str, Any], *, correlation_id: str) -> None:
+    """Trace: one log line per tool_result the breaker blocked."""
+    from orion.fcc.repeat_failure_breaker import BLOCK_MARKER
+
+    for err in _extract_tool_result_errors(parsed):
+        if BLOCK_MARKER in err:
+            logger.warning(
+                "fcc_repeat_failure_breaker_fired corr=%s detail=%s",
+                correlation_id,
+                " ".join(err.split())[:400],
+            )
+
+
+async def _arm_write_stamper(
+    fcc_env: Dict[str, str], *, reading_only: bool, correlation_id: str
+) -> Optional[WriteStamper]:
+    """A baselined stamper for this turn, or None (no graph creds, or unreachable).
+
+    Reading-only turns never get the curiosity credentials, so they cannot
+    write the graph and get no stamper."""
+    if reading_only:
+        return None
+    stamper = WriteStamper.from_env(fcc_env)
+    if stamper is None:
+        return None
+    if not await asyncio.to_thread(stamper.take_baseline):
+        logger.warning(
+            "write_stamp_disarmed corr=%s -- no baseline, so this turn's graph "
+            "writes will not be stamped (legacy nodes cannot be told apart)",
+            correlation_id,
+        )
+        return None
+    return stamper
+
+
+async def _run_write_stamp(stamper: WriteStamper, *, correlation_id: str, phase: str) -> None:
+    count = await asyncio.to_thread(stamper.stamp)
+    if count:
+        logger.info(
+            "write_stamp_applied corr=%s phase=%s stamped=%s total=%s graph=%s",
+            correlation_id, phase, count, stamper.stamped_total, stamper.graph_name,
+        )
 
 
 async def run_fcc_turn(
@@ -870,8 +1022,9 @@ async def run_fcc_turn(
     stream_read_limit: int = DEFAULT_STREAM_READ_LIMIT,
     reading_binding=None,
     reading_only=False,
-    resource_lease: dict | None = None,
     gpu_lease: dict | None = None,
+    pool_state: Mapping[str, Any] | None = None,
+    chat_reply: bool = False,
 ) -> AsyncIterator[Dict[str, object]]:
     """Orion capability: the actual FCC-Claude process.
 
@@ -896,10 +1049,16 @@ async def run_fcc_turn(
 
     # The window the lane's worker is actually serving, so every budget below is the
     # ceiling THIS turn will really hit rather than the container's one-size default.
-    # Best-effort by construction: None (older gateway, worker down, non-llamacpp
-    # backend) falls the whole chain back to the env ceiling, exactly as before.
-    lane_n_ctx = await probe_route_runtime(label, env=env)
-    lane_n_ctx = lane_n_ctx[1]
+    # From the GPU pool state the runner read for this turn (stage 6.3; this used to be a
+    # GET /routes read): a held turn runs on its granted role, so that role's window; an
+    # unheld one, the role its route lands on right now. Best-effort by construction: None
+    # (pool unreachable, worker down, non-llamacpp backend) falls the whole chain back to the
+    # env ceiling, exactly as before.
+    held_role = str((gpu_lease or {}).get("role") or "").strip() or None
+    if held_role:
+        lane_n_ctx = held_role_window(pool_state, held_role)
+    else:
+        lane_n_ctx = (await probe_route_runtime(label, env=env, pool_state=pool_state))[1]
 
     # A lane can be too small to host this turn AT ALL, and that has to be said
     # before spawning rather than discovered as a provider error mid-stream.
@@ -934,6 +1093,86 @@ async def run_fcc_turn(
         yield {"type": "error", "error": str(exc), "error_code": "fcc_spawn_failed"}
         return
 
+    # One clock for the whole turn, both modes: a warm acquire, a fallback spawn
+    # after a failed warm attempt, and the spawn path all count against the same
+    # deadline. Wall clock alongside, for the sandbox's `date +%s` comparisons.
+    started = time.monotonic()
+    deadline = started + float(timeout_sec)
+    deadline_epoch = time.time() + float(timeout_sec)
+    stall_timeout_sec = _stream_stall_timeout_sec(timeout_sec)
+    if stream_read_limit < 65536:
+        stream_read_limit = 65536
+    drive_kwargs: Dict[str, Any] = dict(
+        prompt=prompt,
+        correlation_id=correlation_id,
+        label=label,
+        timeout_sec=float(timeout_sec),
+        started=started,
+        deadline=deadline,
+        stall_timeout_sec=stall_timeout_sec,
+        lane_n_ctx=lane_n_ctx,
+        fcc_env=env,
+        reading_only=reading_only,
+        workspace=workspace,
+    )
+
+    # Warm pool (spec L5): Juniper's chat replies only. Every Unified Chat turn
+    # carries a reading binding (orion/hub/turn_orchestrator.py); the warm slot
+    # hosts the reading/introspect servers against a per-turn binding file, so
+    # the binding no longer forces a spawn. Reading-only turns (an empty MCP
+    # config) still spawn.
+    fallback_reason: Optional[str] = None
+    from orion.harness.fcc_warm_pool import get_warm_pool
+
+    if not chat_reply:
+        warm_decision = "spawn:not_chat_reply"
+    elif reading_only:
+        warm_decision = "spawn:reading_only"
+    elif get_warm_pool() is None:
+        warm_decision = "spawn:no_pool_running"
+    else:
+        warm_decision = "try_warm"
+    warm_eligible = warm_decision == "try_warm"
+    # One line per turn saying why it did or did not try the warm path; a
+    # failed warm attempt adds fcc_warm_pool_fallback with the pool's reason.
+    logger.info(
+        "fcc_warm_path_decision corr=%s decision=%s chat_reply=%s reading_only=%s has_reading_binding=%s",
+        correlation_id, warm_decision, bool(chat_reply), bool(reading_only), reading_binding is not None,
+    )
+    if warm_eligible:
+        warm_turn, fallback_reason = await _acquire_warm_turn(
+            model_id=model_id,
+            n_ctx=lane_n_ctx,
+            correlation_id=correlation_id,
+            gpu_lease=gpu_lease,
+            fcc_server_url=fcc_server_url,
+            auth_token=auth_token,
+            fcc_env=env,
+            turn_env=turn_clock_env(
+                turn_budget_sec=float(timeout_sec),
+                turn_deadline_epoch=deadline_epoch,
+                turn_step_stall_sec=stall_timeout_sec,
+            ),
+            reading_binding=reading_binding,
+        )
+        if warm_turn is not None:
+            outcome: Dict[str, Any] = {"retry_spawn": False}
+            try:
+                async for frame in _drive_fcc_turn(
+                    io=_WarmTurnIO(warm_turn, prompt), outcome=outcome, mcp_config_path=None, **drive_kwargs
+                ):
+                    yield frame
+            finally:
+                # Idempotent. Covers a failure/cancel before _drive_fcc_turn's own
+                # try (stamper baseline, turn lock): without it the slot stays busy
+                # forever with the turn's lease still bound on the relay.
+                await warm_turn.release()
+            if not outcome["retry_spawn"]:
+                return
+            fallback_reason = "warm_process_died_before_first_event"
+    if fallback_reason is not None:
+        logger.warning("fcc_warm_pool_fallback corr=%s reason=%s", correlation_id, fallback_reason)
+
     mcp_config_path: Optional[Path] = None
     try:
         from orion.fcc.mcp_config import McpPreflightError
@@ -947,22 +1186,63 @@ async def run_fcc_turn(
         yield {"type": "error", "error": str(exc), "error_code": exc.error_code}
         return
 
-    argv = [
-        claude_bin,
-        "-p",
-        prompt,
-        "--output-format",
-        "stream-json",
-        "--verbose",
-        "--model",
-        model_id,
-    ]
+    argv = build_claude_argv(
+        claude_bin=claude_bin,
+        model_id=model_id,
+        prompt=prompt,
+        correlation_id=correlation_id,
+        reading_only=reading_only,
+        mcp_config_path=mcp_config_path,
+    )
+    spawn_env = _build_subprocess_env(
+        chat_reply=chat_reply,
+        gpu_lease=gpu_lease,
+        n_ctx=lane_n_ctx,
+        fcc_server_url=fcc_server_url,
+        auth_token=auth_token,
+        # Already loaded above for the model label; passed on so the
+        # curiosity credentials reach the subprocess too.
+        fcc_env=None if reading_only else env,
+        turn_budget_sec=float(timeout_sec),
+        turn_deadline_epoch=deadline_epoch,
+        turn_step_stall_sec=stall_timeout_sec,
+    )
+    io = _SpawnTurnIO(argv, cwd=workspace, env=spawn_env, limit=stream_read_limit, claude_bin=claude_bin)
+    async for frame in _drive_fcc_turn(
+        io=io, outcome={"retry_spawn": False}, mcp_config_path=mcp_config_path, **drive_kwargs
+    ):
+        yield frame
+
+
+def build_claude_argv(
+    *,
+    claude_bin: str,
+    model_id: str,
+    prompt: Optional[str],
+    correlation_id: str,
+    reading_only: bool = False,
+    mcp_config_path: Optional[Path] = None,
+) -> List[str]:
+    """The ``claude`` argv for one FCC turn.
+
+    ``prompt=None`` builds the warm pool's long-lived streaming-input process
+    (``--input-format stream-json``; prompts arrive on stdin). Everything after
+    the prompt is identical in both modes, so a warm chat process runs with the
+    same tools, settings sources, breaker hook, MCP servers and permissions a
+    spawned chat turn gets.
+    """
+    if prompt is None:
+        argv = [claude_bin, "-p", "--input-format", "stream-json"]
+    else:
+        argv = [claude_bin, "-p", prompt]
+    argv.extend(["--output-format", "stream-json", "--verbose", "--model", model_id])
     if reading_only:
         # Source models can fetch/search, but cannot reach shell, filesystem,
         # graph tools, memory writers or operator-installed MCP servers/plugins.
         argv.extend(["--tools", "WebFetch,WebSearch", "--strict-mcp-config", "--setting-sources", ""])
     else:
         argv.extend(setting_sources_argv("HARNESS_FCC_SETTING_SOURCES"))
+    argv.extend(repeat_failure_breaker_argv(correlation_id=correlation_id))
     if mcp_config_path is not None:
         extra_allowed_tools: Optional[List[str]] = None
         if not reading_only and _env_truthy("HARNESS_FCC_CONTEXT_MODE_HOOKS_ENABLED"):
@@ -977,26 +1257,223 @@ async def run_fcc_turn(
             model_idx = argv.index("--model")
             for offset, token in enumerate(perm):
                 argv.insert(model_idx + offset, token)
+    return argv
 
-    started = time.monotonic()
-    deadline = started + float(timeout_sec)
-    # Same instant, wall clock -- for the subprocess env only. The loop below
-    # still enforces against `deadline` (monotonic).
-    deadline_epoch = time.time() + float(timeout_sec)
-    stall_timeout_sec = _stream_stall_timeout_sec(timeout_sec)
+
+def relay_binding_for_turn(
+    *,
+    correlation_id: str,
+    gpu_lease: dict | None,
+    fcc_server_url: str,
+    auth_token: str,
+):
+    """What the warm relay must do for this turn's requests.
+
+    Same upstream/credential rule as `_build_subprocess_env`: a leased turn goes
+    straight to llm-gateway with the lease header (FCC's proxy forwards no
+    headers) and a placeholder token; anything else goes to the FCC server with
+    its own token.
+    """
+    from orion.harness.fcc_warm_relay import RelayTurnBinding, RelayUpstream
+    from orion.llm.resource_lease import encode_gpu_lease_header
+
+    if gpu_lease is not None:
+        return RelayTurnBinding(
+            correlation_id=str(correlation_id),
+            upstream=RelayUpstream(
+                base_url=os.environ.get("HARNESS_LLM_GATEWAY_URL", "http://llm-gateway:8210").rstrip("/"),
+                auth_token="orion-resource-lease",
+            ),
+            gpu_lease_header=encode_gpu_lease_header(gpu_lease),
+        )
+    return RelayTurnBinding(
+        correlation_id=str(correlation_id),
+        upstream=default_relay_upstream(fcc_server_url=fcc_server_url, auth_token=auth_token),
+    )
+
+
+def default_relay_upstream(*, fcc_server_url: str, auth_token: str):
+    """The FCC upstream with the credentials a spawned non-leased turn would send."""
+    from orion.harness.fcc_warm_relay import RelayUpstream
+
+    return RelayUpstream(
+        base_url=str(fcc_server_url).rstrip("/"),
+        auth_token=auth_token,
+        # A spawned turn inherits the container's ANTHROPIC_API_KEY (if any) on the
+        # non-leased path; the leased path pops it. Mirror that.
+        api_key=(os.environ.get("ANTHROPIC_API_KEY") or None),
+    )
+
+
+async def _acquire_warm_turn(
+    *,
+    model_id: str,
+    n_ctx: Optional[int],
+    correlation_id: str,
+    gpu_lease: dict | None,
+    fcc_server_url: str,
+    auth_token: str,
+    fcc_env: Dict[str, str],
+    turn_env: Dict[str, str],
+    reading_binding: Any = None,
+) -> Tuple[Optional[Any], Optional[str]]:
+    """(warm turn, None) on a hit; (None, reason) on a miss; (None, None) when no pool runs here."""
+    from orion.harness.fcc_warm_pool import get_warm_pool
+
+    pool = get_warm_pool()
+    if pool is None:
+        return None, None
+    try:
+        binding = relay_binding_for_turn(
+            correlation_id=correlation_id,
+            gpu_lease=gpu_lease,
+            fcc_server_url=fcc_server_url,
+            auth_token=auth_token,
+        )
+        return await pool.acquire(
+            model_id=model_id,
+            n_ctx=n_ctx,
+            correlation_id=correlation_id,
+            binding=binding,
+            turn_env=turn_env,
+            fcc_env=fcc_env,
+            reading_binding=reading_binding,
+        )
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:  # noqa: BLE001 -- any pool failure falls back to a spawn
+        logger.warning("fcc_warm_pool_acquire_error corr=%s error=%r", correlation_id, exc, exc_info=True)
+        return None, f"acquire_error:{type(exc).__name__}"
+
+
+class _SpawnTurnIO:
+    """Today's path: one ``claude -p <prompt>`` process per turn, ends at EOF."""
+
+    mode = "spawn"
+
+    def __init__(self, argv: List[str], *, cwd: str, env: Dict[str, str], limit: int, claude_bin: str) -> None:
+        self.argv = argv
+        self.cwd = cwd
+        self.env = env
+        self.limit = limit
+        self.claude_bin = claude_bin
+        self.proc: Any = None
+        self.died_before_output = False
+
+    async def start(self) -> Any:
+        self.proc = await asyncio.create_subprocess_exec(
+            *self.argv,
+            cwd=self.cwd,
+            env=self.env,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            limit=self.limit,
+        )
+        assert self.proc.stdout is not None
+        return self.proc
+
+    async def readline(self) -> bytes:
+        return await self.proc.stdout.readline()
+
+    def kill(self) -> None:
+        self.proc.kill()
+
+    async def wait(self) -> int:
+        return await self.proc.wait()
+
+    async def stderr_snippet(self) -> str:
+        stderr_stream = getattr(self.proc, "stderr", None) if self.proc is not None else None
+        if stderr_stream is None:
+            return ""
+        try:
+            stderr_bytes = await stderr_stream.read()
+            return stderr_bytes.decode("utf-8", errors="replace").strip()[:500]
+        except Exception:
+            return ""
+
+    async def close(self) -> None:
+        return None
+
+
+class _WarmTurnIO:
+    """A borrowed warm process: prompt goes in on stdin, the turn ends at its `result` event."""
+
+    mode = "warm"
+
+    def __init__(self, turn: Any, prompt: str) -> None:
+        self.turn = turn
+        self.prompt = prompt
+
+    @property
+    def died_before_output(self) -> bool:
+        return bool(self.turn.died_unexpectedly)
+
+    async def start(self) -> Any:
+        await self.turn.send_prompt(self.prompt)
+        return self.turn.killable
+
+    async def readline(self) -> bytes:
+        return await self.turn.readline()
+
+    def kill(self) -> None:
+        self.turn.kill()
+
+    async def wait(self) -> int:
+        return await self.turn.wait()
+
+    async def stderr_snippet(self) -> str:
+        return self.turn.stderr_snippet()
+
+    async def close(self) -> None:
+        await self.turn.release()
+
+
+async def _drive_fcc_turn(
+    *,
+    io: Any,
+    outcome: Dict[str, Any],
+    mcp_config_path: Optional[Path],
+    prompt: str,
+    correlation_id: str,
+    label: str,
+    timeout_sec: float,
+    started: float,
+    deadline: float,
+    stall_timeout_sec: float,
+    lane_n_ctx: Optional[int],
+    fcc_env: Dict[str, str],
+    reading_only: bool,
+    workspace: str,
+) -> AsyncIterator[Dict[str, object]]:
+    """Read one turn's stream-json and yield Orion frames. Shared by spawn and warm modes."""
     steps_seen = 0
-    proc: Optional[asyncio.subprocess.Process] = None
     accumulated = ""
     claude_session_id: Optional[str] = None
     served_model: Optional[str] = None
     exit_code = 1
+    # Estimated chars currently in the model's context, NOT a lifetime total:
+    # rebased to the post-compaction size on every CLI `compact_boundary`.
     budget_chars = len(prompt)
+    compactions = 0
+    # The CLI's own "turn complete" event arrived. A timeout/stall AFTER it is the
+    # process hanging on exit (e.g. MCP teardown), not a turn cut short: the
+    # runner must keep `accumulated` as the finished answer.
+    saw_result = False
     ceiling_chars = max_context_chars(lane_n_ctx)
     pressure_chars = context_pressure_threshold_chars(lane_n_ctx)
+    # Start-up telemetry (spec L5): turn start -> the turn's first system/init
+    # (the point the L5 probe measured), and -> its first assistant/user event.
+    init_ms: Optional[int] = None
+    first_event_ms: Optional[int] = None
 
     context_nudge_sent = False
-    if stream_read_limit < 65536:
-        stream_read_limit = 65536
+    # `written_at` on the run nodes Orion writes into its own graph is enforced
+    # here, not by the prompt: see orion/curiosity/write_stamp.py. Baseline is
+    # taken BEFORE the subprocess exists, so nothing this turn writes can be
+    # mistaken for a legacy node.
+    stamper = await _arm_write_stamper(fcc_env, reading_only=reading_only, correlation_id=correlation_id)
+    pending_graph_writes: set[str] = set()
+    saw_tool_use = False
 
     # Hold the shared sandbox lock for the whole turn. Hub refreshes the sandbox to
     # origin/main on every browser refresh (hard reset + clean), and its only prior
@@ -1008,36 +1485,16 @@ async def run_fcc_turn(
     _turn_lock = turn_in_progress(workspace)
     _turn_lock.__enter__()
     try:
-        proc = await asyncio.create_subprocess_exec(
-            *argv,
-            cwd=workspace,
-            env=_build_subprocess_env(
-                resource_lease=resource_lease,
-                gpu_lease=gpu_lease,
-                n_ctx=lane_n_ctx,
-                fcc_server_url=fcc_server_url,
-                auth_token=auth_token,
-                # Already loaded above for the model label; passed on so the
-                # curiosity credentials reach the subprocess too.
-                fcc_env=None if reading_only else env,
-                turn_budget_sec=float(timeout_sec),
-                turn_deadline_epoch=deadline_epoch,
-                turn_step_stall_sec=stall_timeout_sec,
-            ),
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            limit=stream_read_limit,
-        )
-        assert proc.stdout is not None
-        _register_process(correlation_id, proc)
+        killable = await io.start()
+        _register_process(correlation_id, killable)
 
         while True:
             remaining = deadline - time.monotonic()
             read_wait = max(0.0, min(stall_timeout_sec, remaining))
             try:
-                line_bytes = await asyncio.wait_for(proc.stdout.readline(), timeout=read_wait)
+                line_bytes = await asyncio.wait_for(io.readline(), timeout=read_wait)
             except asyncio.TimeoutError:
-                proc.kill()
+                io.kill()
                 stalled = stall_timeout_sec < remaining
                 if stalled:
                     error_code = "fcc_stream_stalled"
@@ -1061,17 +1518,17 @@ async def run_fcc_turn(
                     # known (see the identical carry-forward on the ceiling-
                     # exceeded and line-limit error yields below, and the
                     # authoritative one on the "final"/fcc_nonzero_exit yields).
-                    "metadata": {"fcc_served_model": served_model},
+                    "metadata": {"fcc_served_model": served_model, "fcc_result_seen": saw_result},
                 }
                 return
             except asyncio.LimitOverrunError as exc:
-                proc.kill()
+                io.kill()
                 yield {
                     "type": "error",
                     "error": f"fcc stream line exceeded read limit: {exc}",
                     "error_code": "fcc_stream_line_limit",
                     "llm_response": accumulated or None,
-                    "metadata": {"fcc_served_model": served_model},
+                    "metadata": {"fcc_served_model": served_model, "fcc_result_seen": saw_result},
                 }
                 return
 
@@ -1088,9 +1545,35 @@ async def run_fcc_turn(
             # thinking text is counted in the completed assistant block.
             if parsed.get("type") == "system" and parsed.get("subtype") == "thinking_tokens":
                 continue
+            ptype = str(parsed.get("type") or "")
+            if init_ms is None and ptype == "system" and parsed.get("subtype") == "init":
+                init_ms = int((time.monotonic() - started) * 1000)
+            elif first_event_ms is None and ptype in ("assistant", "user"):
+                first_event_ms = int((time.monotonic() - started) * 1000)
             steps_seen += 1
+            if stamper is not None:
+                if _extract_tool_name(parsed):
+                    saw_tool_use = True
+                pending_graph_writes |= graph_write_tool_use_ids(parsed)
+                finished = completed_tool_use_ids(parsed) & pending_graph_writes
+                if finished:
+                    pending_graph_writes -= finished
+                    await _run_write_stamp(stamper, correlation_id=correlation_id, phase="tool_result")
 
+            _log_repeat_failure_blocks(parsed, correlation_id=correlation_id)
             step = build_step_frame(parsed)
+            if is_compact_boundary_event(parsed):
+                # The CLI just dropped the old transcript for a summary; what the
+                # turn saw before this point is no longer in context.
+                before = budget_chars
+                budget_chars = post_compaction_context_chars(parsed, prompt_chars=len(prompt))
+                compactions += 1
+                # Re-arm the pressure nudge: context can legitimately fill again.
+                context_nudge_sent = False
+                logger.info(
+                    "fcc_context_compacted corr=%s compactions=%s budget_chars=%s->%s ceiling=%s",
+                    correlation_id, compactions, before, budget_chars, ceiling_chars,
+                )
             step = annotate_harness_step(step, accumulated_chars=budget_chars, max_chars=ceiling_chars)
             budget_chars += measure_step_payload_chars(step)
             yield {"type": "step", "step": step}
@@ -1117,18 +1600,24 @@ async def run_fcc_turn(
             # it falls back to json.dumps(raw), re-measuring text already
             # counted via the preceding assistant deltas) and lose the
             # completed answer to a false-positive runaway-draft error.
-            if str(parsed.get("type") or "") != "result" and budget_chars >= ceiling_chars:
-                proc.kill()
+            #
+            # Reaching the ceiling now means the estimated LIVE context (rebased on
+            # every compaction above) passed the lane window -- the CLI's own
+            # autocompact (CLAUDE_AUTOCOMPACT_PCT_OVERRIDE, below 100%) did not
+            # fire in time. That is the runaway this guard exists for.
+            if ptype != "result" and budget_chars >= ceiling_chars:
+                io.kill()
                 yield {
                     "type": "error",
                     "error": (
-                        f"fcc draft exceeded context ceiling ({budget_chars} >= "
-                        f"{ceiling_chars} chars) without completing the turn"
+                        f"fcc estimated live context exceeded the lane ceiling ({budget_chars} >= "
+                        f"{ceiling_chars} chars, {compactions} CLI compaction(s) this turn) "
+                        "without completing the turn"
                     ),
-                    "error_code": "fcc_draft_length_ceiling_exceeded",
+                    "error_code": FCC_CONTEXT_CEILING_ERROR_CODE,
                     "steps_seen": steps_seen,
                     "llm_response": accumulated or None,
-                    "metadata": {"fcc_served_model": served_model},
+                    "metadata": {"fcc_served_model": served_model, "fcc_compactions": compactions},
                 }
                 return
 
@@ -1137,35 +1626,56 @@ async def run_fcc_turn(
                 accumulated = text
             if sid:
                 claude_session_id = sid
-            if str(parsed.get("type") or "") == "assistant":
+            if ptype == "result":
+                saw_result = True
+            if ptype == "assistant":
                 seen_model = _served_model_from_assistant(parsed)
                 if seen_model:
                     served_model = seen_model
 
-        exit_code = await proc.wait()
+        exit_code = await io.wait()
     except FileNotFoundError:
         yield {
             "type": "error",
-            "error": f"claude binary not found: {claude_bin!r}",
+            "error": f"claude binary not found: {getattr(io, 'claude_bin', 'claude')!r}",
             "error_code": "fcc_spawn_failed",
         }
         return
     finally:
         _unregister_process(correlation_id)
         _turn_lock.__exit__(None, None, None)
+        if stamper is not None:
+            # Every exit path, including kills and timeouts: a write the
+            # command check missed still gets a (turn-end) stamp. Skipped when
+            # the turn ran no tool at all -- it cannot have written the graph,
+            # and a plain chat reply should not wait on a graph write.
+            try:
+                if saw_tool_use:
+                    await _run_write_stamp(stamper, correlation_id=correlation_id, phase="turn_end")
+            except Exception:  # noqa: BLE001 -- cancellation must propagate
+                logger.warning("write_stamp_turn_end_failed corr=%s", correlation_id, exc_info=True)
+            finally:
+                stamper.close()
         if mcp_config_path is not None:
             from orion.fcc.mcp_config import cleanup_mcp_config
 
             cleanup_mcp_config(mcp_config_path)
-
-    stderr_snippet = ""
-    stderr_stream = getattr(proc, "stderr", None) if proc is not None else None
-    if stderr_stream is not None:
         try:
-            stderr_bytes = await stderr_stream.read()
-            stderr_snippet = stderr_bytes.decode("utf-8", errors="replace").strip()[:500]
-        except Exception:
-            stderr_snippet = ""
+            await io.close()
+        except Exception:  # noqa: BLE001 -- a pool bookkeeping failure must not mask the turn's result
+            logger.warning("fcc_turn_io_close_failed corr=%s mode=%s", correlation_id, io.mode, exc_info=True)
+        logger.info(
+            "fcc_turn_start_timing corr=%s mode=%s spawn_or_acquire_ms=%s first_event_ms=%s steps=%s",
+            correlation_id, io.mode, init_ms, first_event_ms, steps_seen,
+        )
+
+    if io.mode == "warm" and io.died_before_output and steps_seen == 0:
+        # The borrowed process died after the prompt went in but before it said
+        # anything: no tool can have run, so the turn is retried as a spawn.
+        outcome["retry_spawn"] = True
+        return
+
+    stderr_snippet = await io.stderr_snippet()
 
     duration_ms = int((time.monotonic() - started) * 1000)
     metadata = {
@@ -1179,6 +1689,12 @@ async def run_fcc_turn(
         "claude_session_id": claude_session_id,
         "duration_ms": duration_ms,
         "exit_code": exit_code,
+        # How many times the CLI compacted this turn's context (compact_boundary).
+        "fcc_compactions": compactions,
+        # Spec L5 start-up telemetry: "warm" (pooled process) or "spawn".
+        "fcc_spawn_mode": io.mode,
+        "fcc_spawn_or_acquire_ms": init_ms,
+        "fcc_first_event_ms": first_event_ms,
     }
 
     if exit_code != 0:

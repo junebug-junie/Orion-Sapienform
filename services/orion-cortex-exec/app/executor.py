@@ -27,7 +27,13 @@ from orion.llm.routes import LLM_ROUTE_ALIASES, METACOG_LLM_ROUTES, normalize_ll
 from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import AttachmentRefV1, BaseEnvelope, ChatRequestPayload, LLMMessage, ServiceRef
 from orion.core.contracts.recall import RecallQueryV1
+from orion.cognition.recall_query import (
+    cap_retrieval_query,
+    recall_query_mode_from_cfg,
+    retrieval_query_from_ctx,
+)
 
+from orion.schemas.stance_context_prepare import STANCE_PREPARE_REQUESTED_CTX_KEY
 from orion.schemas.agents.schemas import DeliberationRequest
 from orion.core.verbs import VerbResultV1
 from orion.schemas.collapse_mirror import (
@@ -54,7 +60,6 @@ from orion.schemas.state.contracts import StateGetLatestRequest, StateLatestRepl
 from orion.schemas.chat_stance import ChatStanceBrief
 from orion.llm.resource_lease import GPU_LEASE_ROUTE
 from orion.schemas.gpu_pool import GpuLeaseRefV1
-from orion.schemas.resource_admission import ResourceLeaseV1
 from orion.substrate.appraisal import REPAIR_PRESSURE_CONTRACT_METADATA_KEY
 from orion.schemas.metacog_patches import MetacogDraftTextPatchV1
 from orion.schemas.metacog_entry import (
@@ -468,6 +473,18 @@ def _resolve_llm_chat_max_tokens(step: ExecutionStep, ctx: Dict[str, Any]) -> Tu
     # siblings above, not a bespoke budget.
     if step.verb_name == "self_study.reflect" and step.step_name == "draft_self_study_reflection":
         return int(settings.llm_chat_general_max_tokens), requested, "settings.llm_chat_general_max_tokens_self_study_reflect"
+
+    # Orion's Day (orion/schemas/orion_day.py): a LONG freeform note (plain markdown, not
+    # structured output) and a short list of carry-forward threads, both on the agent lane.
+    # Their own budgets: LLM_CHAT_GENERAL_MAX_TOKENS is tuned for chat replies and strict-JSON
+    # verbs, and the agent-lane model spends part of its budget on reasoning before the answer
+    # (the self_study.reflect incident above), so either would truncate the note mid-sentence.
+    if step.verb_name == "orion_day_note_v1":
+        return int(settings.llm_orion_day_note_max_tokens), requested, "settings.llm_orion_day_note_max_tokens"
+
+    if step.verb_name == "orion_day_carry_forward_v1":
+        return (int(settings.llm_orion_day_carry_forward_max_tokens), requested,
+                "settings.llm_orion_day_carry_forward_max_tokens")
 
     return int(settings.llm_chat_max_tokens_default), requested, "settings.llm_chat_max_tokens_default"
 
@@ -1778,6 +1795,9 @@ def _append_memory_digest(prompt: str, memory_digest: str) -> str:
     )
 
 
+GATEWAY_FAILURE_MESSAGE_MAX_CHARS = 240
+
+
 def gateway_error_step_failure(result_payload: Any) -> Optional[str]:
     """Name the failure when the gateway answered with no text and an error flag.
 
@@ -1813,9 +1833,16 @@ def gateway_error_step_failure(result_payload: Any) -> Optional[str]:
             return None
     details = raw.get("details") if isinstance(raw.get("details"), dict) else {}
     detail = details.get("stage") or details.get("reason")
+    named = error.strip()
     if isinstance(detail, str) and detail.strip():
-        return f"{error.strip()}:{detail.strip()}"
-    return error.strip()
+        named = f"{named}:{detail.strip()}"
+    # An upstream worker's own words for why it failed (gateway raw.details.message, already
+    # truncated there), e.g. ``upstream_http_5xx:http_500: No user query found in messages.``
+    # -- live 2026-10-02..06 that message existed only in the gateway's log.
+    message = details.get("message")
+    if isinstance(message, str) and message.strip():
+        named = f"{named}: {' '.join(message.split())[:GATEWAY_FAILURE_MESSAGE_MAX_CHARS]}"
+    return named
 
 
 def _extract_llm_text(res: Any) -> str:
@@ -2053,17 +2080,7 @@ def _resolve_llm_route_override(ctx: Dict[str, Any]) -> Tuple[Optional[str], Opt
     """
     options = ctx.get("options") if isinstance(ctx.get("options"), dict) else {}
     raw = ctx.get("llm_route") or options.get("llm_route")
-    lease_value = options.get("resource_lease")
-    if lease_value is None:
-        lease_value = ctx.get("resource_lease")
-    if lease_value is not None:
-        lease = ResourceLeaseV1.model_validate(lease_value)
-        # Broker assignments can name internal/catalog routes unavailable to
-        # the human picker. Preserve an explicit different override too:
-        # Gateway must reject the mismatch instead of silently rerouting it.
-        attempted = str(raw).strip() if raw else None
-        return attempted or lease.lane, attempted
-    # Stage 4: a GPU pool hold ref. The gateway attaches the call to the hold's role whatever
+    # A GPU pool hold ref (the only run lease since stage 4.6). The gateway attaches the call to the hold's role whatever
     # route it names; an explicit route is kept, else the hold's work-class route (a role such
     # as "agent-gpu2" is not a route name and must never be forwarded as one).
     ref_value = options.get("gpu_lease")
@@ -2188,6 +2205,10 @@ def _default_llm_route_for_step(*, verb_name: Optional[str], step_name: Optional
     - metacog mode: METACOG lane
     """
     if verb_name in {"harness_finalize_reflect", "orion_response_repair"}:
+        return "agent"
+    # Orion's Day: the durable run always stamps llm_route="agent"; this default only keeps an
+    # unstamped caller off the quick lane, whose context a ~70k-token day digest overflows.
+    if verb_name in {"orion_day_note_v1", "orion_day_carry_forward_v1"}:
         return "agent"
     if verb_name == "stance_react":
         return "chat"
@@ -2446,9 +2467,17 @@ async def run_recall_step(
     retrieval_intent: str | None = None,
     task_hints: Dict[str, Any] | None = None,
     seed_crystallization_id: str | None = None,
+    retrieval_query: str | None = None,
 ) -> Tuple[StepExecutionResult, Dict[str, Any], str]:
     """RecallService bus RPC. If ``rpc_timeout_sec`` is omitted, wait is ``min(STEP_TIMEOUT_MS, lane cap)``:
     ``CHAT_QUICK_RECALL_TIMEOUT_SEC`` for ``ctx['verb']`` in fast single-pass chat verbs, else ``RECALL_RPC_TIMEOUT_SEC``.
+
+    What recall searches for: ``retrieval_query`` when given (PCR phase 3 passes
+    the one phase 0+1 used), else ``ctx["retrieval_query"]`` (the caller's
+    choice, e.g. a self-inquiry run's standing question), else None and recall
+    condenses ``fragment`` itself. ``fragment`` stays the turn text either way.
+    ``recall_cfg["query_mode"]`` (``context_only`` for verbs whose YAML says so) and
+    ``deadline_ms`` (the RPC wait actually used) ride on the same request.
     """
     t0 = time.time()
     recall_client = RecallClient(bus)
@@ -2463,6 +2492,13 @@ async def run_recall_step(
     )
 
     fragment_text = _last_user_message(ctx) or ""
+    search_text = (
+        cap_retrieval_query(retrieval_query)
+        if retrieval_query is not None
+        else retrieval_query_from_ctx(ctx)
+    )
+    recall_mode = recall_query_mode_from_cfg(recall_cfg)
+    deadline_ms = max(1, int(round(float(recall_timeout) * 1000)))
     _log_grounding_snapshot(
         component=f"recall:{step_name}",
         ctx=ctx,
@@ -2508,9 +2544,15 @@ async def run_recall_step(
         retrieval_intent=retrieval_intent,
         task_hints=task_hints,
         seed_crystallization_id=seed_crystallization_id,
+        retrieval_query=search_text,
+        deadline_ms=deadline_ms,
+        mode=recall_mode,
     )
 
-    logs: List[str] = [f"rpc -> RecallService (profile={req.profile})"]
+    logs: List[str] = [
+        f"rpc -> RecallService (profile={req.profile}, mode={req.mode}, "
+        f"retrieval_query={'caller' if req.retrieval_query else 'none'}, deadline_ms={req.deadline_ms})"
+    ]
     debug: Dict[str, Any] = {}
     profile_source = (ctx.get("debug") or {}).get("recall_profile_source")
     override_source = (ctx.get("debug") or {}).get("recall_profile_override_source")
@@ -4375,7 +4417,6 @@ async def call_step_services(
                     **lane_opts,
                 }
                 for _fwd_key in (
-                    "resource_lease",
                     "gpu_lease",
                     "structured_output_schema",
                     "structured_output_schema_name",
@@ -4782,6 +4823,14 @@ async def prepare_brain_reply_context(ctx: Dict[str, Any], *, force_refresh: boo
         return None
     if not force_refresh and isinstance(ctx.get("chat_stance_inputs"), dict):
         return ctx.get("chat_stance_inputs")
+    if not force_refresh and ctx.get(STANCE_PREPARE_REQUESTED_CTX_KEY):
+        # Unified-turn latency L4: orion-thought built this context while
+        # orion-mind ran (app/stance_prepare.py). Waits for an in-flight
+        # prepare instead of building a second time.
+        from .stance_prepare import take_prepared_stance_context
+
+        if await take_prepared_stance_context(ctx):
+            return ctx.get("chat_stance_inputs")
 
     _inject_identity_context(ctx)
     stance_inputs = await build_chat_stance_inputs(ctx)
@@ -4795,6 +4844,45 @@ async def prepare_brain_reply_context(ctx: Dict[str, Any], *, force_refresh: boo
     return stance_inputs
 
 
+# Verbs that run in mode=brain but never read the stance/identity context that
+# prepare_brain_reply_context builds. Shared by the router's pre-plan hook and the
+# step-time check so the two cannot drift (they did: the router skipped a verb the
+# step-time check then rebuilt anyway).
+#   introspect_spark / memory_graph_suggest: render only from context.metadata.
+#   harness_finalize_reflect / orion_response_repair: the harness finalize chain
+#     (orion/harness/finalize.py) runs these right after a stance_react for the same
+#     turn and reads back text only; the rebuild was a full duplicate stance build
+#     (~9 s, plus duplicate cortex_turn / chat_stance_belief_log rows).
+BRAIN_REPLY_CONTEXT_SKIP_VERBS = frozenset(
+    {
+        "introspect_spark",
+        "memory_graph_suggest",
+        "harness_finalize_reflect",
+        "orion_response_repair",
+    }
+)
+
+
+def brain_reply_context_skipped(
+    verb: Any, ctx: Dict[str, Any], options: Dict[str, Any] | None = None
+) -> bool:
+    """True when this verb must not run the brain reply-context build.
+
+    Reads the ``skip_brain_reply_context`` flag from ``ctx`` and from ``options``
+    (``options`` defaults to ``ctx["options"]``); callers such as
+    memory_graph_suggest set it in options only.
+    """
+    verb_name = str(verb or "").strip().lower()
+    if verb_name in BRAIN_REPLY_CONTEXT_SKIP_VERBS:
+        return True
+    if bool(ctx.get("skip_brain_reply_context")):
+        return True
+    opts = options if isinstance(options, dict) else ctx.get("options")
+    if isinstance(opts, dict) and bool(opts.get("skip_brain_reply_context")):
+        return True
+    return False
+
+
 def _should_prepare_brain_reply_context(*, step: ExecutionStep, ctx: Dict[str, Any]) -> bool:
     mode = str(ctx.get("mode") or "").strip().lower()
     if mode != "brain":
@@ -4806,12 +4894,7 @@ def _should_prepare_brain_reply_context(*, step: ExecutionStep, ctx: Dict[str, A
     # context.metadata (prompt/response/spark_meta). Full brain stance + unified
     # beliefs (GraphDB/recall/social) is wasted work and dominated latency after the
     # 2026-05-09 cognitive unification layer landed in build_chat_stance_inputs.
-    if verb_name in {"introspect_spark", "memory_graph_suggest"}:
-        return False
-    if bool(ctx.get("skip_brain_reply_context")):
-        return False
-    opts = ctx.get("options") if isinstance(ctx.get("options"), dict) else {}
-    if bool(opts.get("skip_brain_reply_context")):
+    if brain_reply_context_skipped(verb_name, ctx):
         return False
     if verb_name.startswith("skills.runtime."):
         return False

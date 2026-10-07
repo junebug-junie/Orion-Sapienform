@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import time
+from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable, Mapping, Protocol, Sequence
 
 from orion.schemas.cognition.answer_contract import AnswerContract
@@ -41,10 +43,10 @@ from orion.schemas.pre_turn_appraisal import (
     PreTurnAppraisalRequestV1,
     TurnAppraisalBundleV1,
 )
+from orion.cognition.recall_query import cap_retrieval_query
 from orion.schemas.thought import StanceReactRequestV1, ThoughtEventV1
 from orion.llm.resource_lease import GPU_LEASE_ROUTE
 from orion.schemas.gpu_pool import GpuLeaseRefV1
-from orion.schemas.resource_admission import ResourceLeaseV1
 from orion.substrate.appraisal.turn_window import build_turn_window
 from orion.llm.routes import FCC_LLAMACPP_MODEL_PREFIX, fcc_model_for_route, is_agent_route_model_label
 from orion.hub.runtime_activity import get_runtime_activity
@@ -302,6 +304,8 @@ async def _publish_unified_turn_chat_grammar(
         from scripts.grammar_publish import publish_hub_chat_grammar_trace
         from scripts.pre_turn_appraisal_wiring import repair_pressure_grammar_scalars
 
+        from orion.substrate.appraisal.contract import is_repair_signal
+
         repair_pressure_level, repair_pressure_confidence = repair_pressure_grammar_scalars(
             pre_turn_bundle=repair_bundle,
             substrate_summary=None,
@@ -313,7 +317,13 @@ async def _publish_unified_turn_chat_grammar(
             word_count=len((user_message or "").split()),
             repair_pressure_level=repair_pressure_level,
             repair_pressure_confidence=repair_pressure_confidence,
-            has_repair_signal=repair_bundle is not None,
+            # Real repair pressure only (the level at which the repair
+            # contract steers the reply), not "an appraisal ran" -- that
+            # was true for ~96% of turns and fed nearly every chat window
+            # into memory as a "repair". The sub-floor reading still
+            # travels on its own atom.
+            has_repair_signal=is_repair_signal(repair_pressure_level),
+            has_repair_pressure_reading=repair_bundle is not None,
             stance_disposition=stance_disposition,
             stance_disposition_reasons=stance_disposition_reasons,
             stance_boundary_register=stance_boundary_register,
@@ -392,13 +402,37 @@ def _with_overflow_hint(text: str | None) -> str | None:
     return apply_context_overflow_hint(text, n_ctx=max_context_tokens())
 
 
-def _partial_draft_from_run(run: HarnessRunV1) -> str | None:
+# Urgent curiosity turns hand the draft to the incident report as Orion's words
+# (durable-runs `FINDING_TEXT_CAP`), so their frames carry the same length.
+_URGENT_PARTIAL_DRAFT_MAX_LEN = 8000
+# Seconds kept between the harness's reply budget and the caller's own deadline:
+# bus transit of the reply plus durable-runs' timer starting a moment before Hub's.
+_REPLY_TRANSIT_SLACK_SEC = 10.0
+
+
+def _held_turn_budgets(payload: dict[str, Any]) -> tuple[float | None, float | None]:
+    """(inference_timeout_sec, reply_budget_sec) for the harness request.
+
+    The caller (curiosity's held turns) may stamp a monotonic deadline at which it
+    stops waiting. Measured here, after stance/recall, so the harness learns how long
+    it really has; the motor's budget is never allowed past it."""
+    inference = payload.get("inference_timeout_sec")
+    deadline = payload.get("harness_reply_deadline_monotonic")
+    if deadline is None:
+        return inference, None
+    reply_budget = max(1.0, float(deadline) - time.monotonic() - _REPLY_TRANSIT_SLACK_SEC)
+    if inference is not None:
+        inference = min(float(inference), reply_budget)
+    return inference, reply_budget
+
+
+def _partial_draft_from_run(run: HarnessRunV1, max_len: int = _PARTIAL_DRAFT_MAX_LEN) -> str | None:
     draft = run.draft_text
     if not draft:
         return None
-    if len(draft) <= _PARTIAL_DRAFT_MAX_LEN:
+    if len(draft) <= max_len:
         return draft
-    return draft[:_PARTIAL_DRAFT_MAX_LEN]
+    return draft[:max_len]
 
 
 def _finalize_phase_error(run: HarnessRunV1) -> bool:
@@ -412,7 +446,9 @@ def _finalize_phase_error(run: HarnessRunV1) -> bool:
     return "orion_response_repair" in status or "orion_voice_finalize" in status
 
 
-def _harness_error_frame(run: HarnessRunV1, *, correlation_id: str) -> dict[str, Any]:
+def _harness_error_frame(
+    run: HarnessRunV1, *, correlation_id: str, partial_max_len: int = _PARTIAL_DRAFT_MAX_LEN
+) -> dict[str, Any]:
     base: dict[str, Any] = {
         "type": "turn_error",
         "correlation_id": correlation_id,
@@ -428,7 +464,7 @@ def _harness_error_frame(run: HarnessRunV1, *, correlation_id: str) -> dict[str,
             "partial",
             "failed",
         } else "substrate_appraisal"
-        partial = _partial_draft_from_run(run)
+        partial = _partial_draft_from_run(run, partial_max_len)
         if partial:
             base["partial_draft"] = _with_overflow_hint(partial) or partial
         return base
@@ -436,7 +472,7 @@ def _harness_error_frame(run: HarnessRunV1, *, correlation_id: str) -> dict[str,
         run.substrate_appraisal is not None and (run.reflection is None or not run.final_text)
     ):
         base["phase"] = "finalize"
-        partial = _partial_draft_from_run(run)
+        partial = _partial_draft_from_run(run, partial_max_len)
         if partial:
             base["partial_draft"] = _with_overflow_hint(partial) or partial
         if run.grounding_status:
@@ -448,7 +484,7 @@ def _harness_error_frame(run: HarnessRunV1, *, correlation_id: str) -> dict[str,
     base["phase"] = "harness"
     if run.step_count:
         base["partial"] = run.step_count
-    partial = _partial_draft_from_run(run)
+    partial = _partial_draft_from_run(run, partial_max_len)
     if partial:
         base["partial_draft"] = _with_overflow_hint(partial) or partial
     if run.grounding_status:
@@ -491,6 +527,8 @@ def _success_frames(
         "llm_response": final_text,
         "finalize_ran": run.finalize_ran,
         "finalize_changed": run.finalize_changed,
+        "response_repair_ran": run.response_repair_ran,
+        "response_repair_reason": run.response_repair_reason,
         "harness_step_count": run.step_count,
         "harness_grounding_status": run.grounding_status,
         # The FCC leg's own duration. Distinct from any wall time Hub can
@@ -702,8 +740,37 @@ def _turn_gpu_placement(payload: dict[str, Any]) -> dict[str, Any] | None:
         state = gpu_pool_feed.state
     except Exception:
         state = None
+    if not _pool_state_is_fresh(state):
+        # The feed keeps its last snapshot when the bus drops or the pool dies; naming a model
+        # from an hours-old snapshot would be the same false claim this replaces.
+        state = None
     placement = placement_from_lease(role, discovered_role(state, role))
-    return {"role": placement.role, "model": placement.model, "profile": placement.profile}
+    return {"role": placement.role, "model": placement.model, "profile": placement.profile,
+            "status": placement.role_status}
+
+
+# The pool broadcasts state every GPU_POOL_STATE_PUBLISH_SEC (5s); a snapshot older than a few
+# broadcasts means the feed is not hearing the pool.
+_POOL_STATE_MAX_AGE_SEC = 30.0
+
+
+def _pool_state_is_fresh(state: Any) -> bool:
+    if not isinstance(state, dict):
+        return False
+    try:
+        generated = datetime.fromisoformat(str(state.get("generated_at")).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return False
+    if generated.tzinfo is None:
+        generated = generated.replace(tzinfo=timezone.utc)
+    return (datetime.now(timezone.utc) - generated).total_seconds() <= _POOL_STATE_MAX_AGE_SEC
+
+
+def _harness_owns_model_line(payload: dict[str, Any]) -> bool:
+    """A unified turn without a lease: the harness prompt already states the default of the
+    route the motor actually asks for, so the situation brief's own route-default line (always
+    ``ORION_SITUATION_RUNTIME_ROUTE``) would name a second route and model next to it."""
+    return not isinstance(payload.get("gpu_lease"), dict)
 
 
 async def _build_situation_prompt_fragment(
@@ -800,8 +867,14 @@ async def _build_situation_prompt_fragment(
         gpu_placement = _turn_gpu_placement(payload)
         if gpu_placement is not None:
             situation_ctx["gpu_placement"] = gpu_placement
+        elif _harness_owns_model_line(payload):
+            situation_ctx["runtime_line_owner"] = "harness"
+        # This turn's wall-clock reading, persisted on the chat turn as
+        # spark_meta.conversation_phase (memory episode boundary, Fix 1).
+        # Filled on a cache hit too -- see _phase_stamp_from_cached_brief.
+        phase_stamp: dict[str, Any] = {}
         situation_brief, situation_fragment = await build_situation_for_ctx(
-            situation_ctx, situation_runtime_ns
+            situation_ctx, situation_runtime_ns, phase_stamp_out=phase_stamp
         )
         if not situation_brief and not situation_fragment:
             return {
@@ -835,6 +908,7 @@ async def _build_situation_prompt_fragment(
             "source_summary": source_summary,
             "perception_enabled": perception_enabled,
             "diagnostics": diagnostics,
+            "conversation_phase": dict(phase_stamp) if phase_stamp else None,
         }
     except Exception:
         logger.warning("unified_turn_situation_context_failed corr=%s", correlation_id, exc_info=True)
@@ -897,6 +971,8 @@ async def execute_unified_turn(
     mind_appraisal_text: str | None = None,
     client_meta: dict[str, Any] | None = None,
     urgent: bool = False,
+    retrieval_query: str | None = None,
+    draft_preview: bool = False,
 ) -> list[dict[str, Any]]:
     """Orion capability: unified Hub chat turn.
 
@@ -918,6 +994,16 @@ async def execute_unified_turn(
     defer/refuse is overridden to proceed with an `urgent_override:<original>`
     reason, and an unavailable stance is a `turn_error` (the run fails), never
     a deferral.
+
+    `retrieval_query` is what recall should search for on this turn (a
+    self-initiated turn's standing question, a reading's source and claim).
+    None keeps today's behavior: recall condenses the turn text itself. It
+    rides StanceReactRequestV1.retrieval_query to cortex-exec's recall calls.
+
+    `draft_preview=True` (interactive chat only, via run_unified_turn) asks the
+    governor to publish the draft before the finalize judge (spec L8). The
+    draft reaches the client through the step relay; this function's returned
+    frames still carry only the final text, which is all that is persisted.
     """
     from scripts.settings import settings as hub_settings
 
@@ -935,8 +1021,8 @@ async def execute_unified_turn(
     # already final by this point.
     mode_tag = str(payload.get("mode") or "orion").strip().lower()
     resolved_fcc_model_label = _resolve_fcc_model_label(payload, mode_tag)
-    if payload.get("gpu_lease") is not None and payload.get("resource_lease") is None:
-        # Stage 4: every call of a held turn attaches to the hold's role; name the hold's
+    if payload.get("gpu_lease") is not None:
+        # Every call of a held turn attaches to the hold's role; name the hold's
         # work-class route once here so no caller's chat label can send a chat-class attach.
         resolved_fcc_model_label = f"{FCC_LLAMACPP_MODEL_PREFIX}{GPU_LEASE_ROUTE}"
 
@@ -1061,12 +1147,7 @@ async def execute_unified_turn(
     from scripts.harness_governor_client import HarnessGovernorClient
     from scripts.thought_client import ThoughtClient
 
-    stance_lease = (
-        ResourceLeaseV1.model_validate(payload["resource_lease"])
-        if payload.get("resource_lease") is not None
-        else None
-    )
-    # Stage 4: the durable run's GPU pool hold ref rides the whole turn (stance + harness).
+    # The durable run's GPU pool hold ref rides the whole turn (stance + harness).
     turn_gpu_lease = (
         GpuLeaseRefV1.model_validate(payload["gpu_lease"])
         if payload.get("gpu_lease") is not None
@@ -1081,6 +1162,10 @@ async def execute_unified_turn(
         # Motor/harness still sees the full prompt; stance_inputs["user_message"]
         # must match StanceReactRequestV1.user_message (Mind snapshot user_text).
         stance_inputs["harness_user_message"] = user_message
+    # Not copied into stance_inputs: stance_react.j2 renders every stance_inputs
+    # key into the stance LLM prompt as "additional context". This is recall's
+    # search text, not something stance should read (PR #2423 review).
+    stance_retrieval_query = cap_retrieval_query(retrieval_query)
     stance_req = StanceReactRequestV1(
         correlation_id=correlation_id,
         session_id=session_id,
@@ -1088,14 +1173,12 @@ async def execute_unified_turn(
         association=association,
         repair_bundle=repair_bundle,
         stance_inputs=stance_inputs,
-        # Admission owns the lane for the whole turn. Without a lease, preserve
+        # Admission owns the lane for the whole turn. Without a hold, preserve
         # the resolved motor preference: agent override or Exec's chat default.
         llm_route=(
-            stance_lease.lane if stance_lease is not None
-            else GPU_LEASE_ROUTE if turn_gpu_lease is not None
+            GPU_LEASE_ROUTE if turn_gpu_lease is not None
             else "agent" if is_agent_route_model_label(resolved_fcc_model_label) else None
         ),
-        resource_lease=stance_lease,
         gpu_lease=turn_gpu_lease,
         # endogenous_outreach.py (OUTREACH_TAG="endogenous_outreach") already runs
         # its OWN agent-lane-then-chat-lane fallback around this whole call (PR
@@ -1107,6 +1190,7 @@ async def execute_unified_turn(
         # agent-preferring caller (autonomous reading, curiosity) has no
         # caller-side fallback and needs orion-thought's.
         caller_handles_lane_fallback=payload.get("source") == "endogenous_outreach",
+        retrieval_query=stance_retrieval_query,
     )
     await _deliver_cockpit_frames(
         [
@@ -1445,10 +1529,11 @@ async def execute_unified_turn(
         enabled=bool(getattr(cfg, "HUB_CURIOSITY_ROLE_TEACH_DISCLOSURE", True)),
         progress_lines=progress_lines,
     )
+    inference_timeout_sec, reply_budget_sec = _held_turn_budgets(payload)
     harness_req = HarnessRunRequestV1(
-        resource_lease=payload.get("resource_lease"),
         gpu_lease=payload.get("gpu_lease"),
-        inference_timeout_sec=payload.get("inference_timeout_sec"),
+        inference_timeout_sec=inference_timeout_sec,
+        reply_budget_sec=reply_budget_sec,
         reading_binding=reading_binding,
         reading_only=reading_only,
         correlation_id=correlation_id,
@@ -1473,7 +1558,9 @@ async def execute_unified_turn(
         # function -- also what stance_req.llm_route above was derived from.)
         fcc_model_label=resolved_fcc_model_label,
         mode=mode_tag,
+        utterance_origin=utterance_origin,
         situation_prompt_fragment=situation_prompt_fragment,
+        draft_preview=bool(draft_preview),
     )
     harness_bus = harness_rpc_bus or bus
     if harness_step_relay is not None and harness_step_queue is not None:
@@ -1622,6 +1709,7 @@ async def execute_unified_turn(
             source_label=str(payload.get("chat_history_source") or "hub_orion"),
             fcc_model_label=resolved_model_label,
             client_meta=client_meta,
+            conversation_phase=situation_bundle.get("conversation_phase"),
         )
         degraded_frame = {
             "type": "turn_degraded",
@@ -1640,7 +1728,10 @@ async def execute_unified_turn(
         ]
     if not run.finalize_ran or not run.final_text:
         await _finish_cockpit(run, success=False)
-        return [_harness_error_frame(run, correlation_id=correlation_id)]
+        return [_harness_error_frame(
+            run, correlation_id=correlation_id,
+            partial_max_len=_URGENT_PARTIAL_DRAFT_MAX_LEN if urgent else _PARTIAL_DRAFT_MAX_LEN,
+        )]
     await _publish_unified_turn_chat_history(
         bus=bus,
         correlation_id=correlation_id,
@@ -1652,6 +1743,7 @@ async def execute_unified_turn(
         source_label=str(payload.get("chat_history_source") or "hub_orion"),
         fcc_model_label=resolved_model_label,
         client_meta=client_meta,
+        conversation_phase=situation_bundle.get("conversation_phase"),
     )
     await _finish_cockpit(run, success=True)
     return _success_frames(
@@ -1674,8 +1766,14 @@ async def _publish_unified_turn_chat_history(
     source_label: str = "hub_orion",
     fcc_model_label: str | None = None,
     client_meta: dict[str, Any] | None = None,
+    conversation_phase: dict[str, Any] | None = None,
 ) -> None:
     """Orion capability: unified-turn persistence after successful handoff.
+
+    ``conversation_phase`` (2026-10-02, memory episode boundary Fix 1): this
+    turn's wall-clock stamp from the situation build, persisted as
+    ``spark_meta.conversation_phase`` so orion-memory-consolidation's boundary
+    rule can read it. Before this, 0 of 3,586 window turns carried a phase.
 
     ``client_meta`` (2026-09-22): the reply stamp (`in_reply_to`,
     `in_reply_to_source`) computed by `websocket_handler` before the lane
@@ -1733,6 +1831,8 @@ async def _publish_unified_turn_chat_history(
         "harness_grounding_status": run.grounding_status,
         "chat_route": CHAT_ROUTE_UNIFIED_TURN_HARNESS,
     }
+    if isinstance(conversation_phase, dict) and conversation_phase.get("phase_change"):
+        spark_meta["conversation_phase"] = dict(conversation_phase)
 
     reasoning_trace: dict[str, Any] | None = None
     if run.reflection is not None:
@@ -1819,6 +1919,56 @@ async def _publish_unified_turn_chat_history(
     )
 
 
+# Draft-first display (spec L8). The relay queue item the governor's draft
+# preview becomes (services/orion-hub/scripts/harness_step_relay.py), and the
+# WebSocket frame type the browser renders as a provisional Orion message.
+# The frame carries the text under `draft_text`, never `llm_response`/`text`,
+# so a browser running older JS ignores it instead of rendering a second bubble.
+DRAFT_PREVIEW_ITEM_KIND = "draft_preview"
+DRAFT_PREVIEW_FRAME_TYPE = "draft_preview"
+
+
+def draft_preview_frame(item: Mapping[str, Any], *, correlation_id: str) -> dict[str, Any] | None:
+    text = item.get("text")
+    if not isinstance(text, str) or not text.strip():
+        return None
+    return {
+        "type": DRAFT_PREVIEW_FRAME_TYPE,
+        "correlation_id": correlation_id,
+        "draft_text": _with_overflow_hint(text) or text,
+    }
+
+
+def annotate_frames_after_draft(
+    frames: list[dict[str, Any]], *, shown_draft_text: str
+) -> dict[str, Any]:
+    """Tell the browser how the turn's outcome relates to the draft it shows.
+
+    Mutates the final / turn_error frames in place and returns a summary for
+    logging. `revised` is computed from the text actually shown versus the
+    text actually delivered, not from the governor's own flags, so it can only
+    claim a revision the person could see.
+    """
+    summary: dict[str, Any] = {"revised": False, "revised_reason": None, "outcome": "none"}
+    for frame in frames:
+        ftype = frame.get("type")
+        if ftype == "final":
+            final_text = str(frame.get("llm_response") or "")
+            revised = final_text.strip() != shown_draft_text.strip()
+            reason = None
+            if revised:
+                reason = str(frame.get("response_repair_reason") or "finalize_changed")
+            frame["replaces_draft"] = True
+            frame["revised"] = revised
+            frame["revised_reason"] = reason
+            summary = {"revised": revised, "revised_reason": reason, "outcome": "final"}
+        elif ftype in ("turn_error", "turn_deferred"):
+            frame["draft_shown"] = True
+            if summary["outcome"] == "none":
+                summary = {"revised": False, "revised_reason": None, "outcome": str(ftype)}
+    return summary
+
+
 async def run_unified_turn(
     websocket: _WebSocketLike,
     *,
@@ -1834,10 +1984,28 @@ async def run_unified_turn(
     harness_step_relay: Any | None = None,
     client_meta: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
-    """Execute unified turn and emit WS frames."""
+    """Execute unified turn and emit WS frames.
+
+    With HUB_UNIFIED_DRAFT_FIRST_ENABLED (spec L8) the governor's pre-judge
+    draft is forwarded as a `draft_preview` frame the moment it arrives, and
+    the final frame is annotated (`replaces_draft`/`revised`/`revised_reason`)
+    so the browser swaps it in place. Logs `unified_turn_first_visible` and
+    `unified_turn_final_visible` (corr, elapsed_ms) as the before/after
+    measure, plus `unified_turn_revision` when the shown text changed.
+    """
+    from scripts.settings import settings as hub_settings
+
+    turn_started = time.monotonic()
+    draft_first = bool(getattr(hub_settings, "HUB_UNIFIED_DRAFT_FIRST_ENABLED", False)) and (
+        harness_step_relay is not None
+    )
+    shown_draft: dict[str, Any] = {}
     step_queue: asyncio.Queue | None = None
     drain_task: asyncio.Task | None = None
     cockpit_run_holder: dict[str, Any] = {}
+
+    def _elapsed_ms() -> int:
+        return int((time.monotonic() - turn_started) * 1000)
 
     async def _send_ws(frame: dict[str, Any]) -> None:
         outbound = frame
@@ -1859,6 +2027,20 @@ async def run_unified_turn(
                 )
 
     async def _emit_relay_frame(frame: dict[str, Any]) -> None:
+        if frame.get("kind") == DRAFT_PREVIEW_ITEM_KIND:
+            draft_frame = draft_preview_frame(frame, correlation_id=correlation_id) if draft_first else None
+            if draft_frame is None or shown_draft:
+                return
+            await _send_ws(draft_frame)
+            shown_draft["text"] = draft_frame["draft_text"]
+            shown_draft["elapsed_ms"] = _elapsed_ms()
+            logger.info(
+                "unified_turn_first_visible corr=%s kind=draft_preview elapsed_ms=%s chars=%s",
+                correlation_id,
+                shown_draft["elapsed_ms"],
+                len(shown_draft["text"]),
+            )
+            return
         if frame.get("kind") == "claude_step":
             step = frame.get("step")
             step_dict = step if isinstance(step, dict) else {}
@@ -1910,6 +2092,8 @@ async def run_unified_turn(
             name=f"harness-steps-{correlation_id}",
         )
 
+    turn_exc: BaseException | None = None
+    frames: list[dict[str, Any]] = []
     try:
         frames = await execute_unified_turn(
             bus=bus,
@@ -1926,7 +2110,12 @@ async def run_unified_turn(
             cockpit_run_holder=cockpit_run_holder,
             utterance_origin="juniper",
             client_meta=client_meta,
+            draft_preview=draft_first,
         )
+    except Exception as exc:  # noqa: BLE001 -- re-raised below, after the drain flush
+        # Held until the step drain has flushed, so a draft still queued is
+        # sent before (not after) the error frame that settles it.
+        turn_exc = exc
     finally:
         if harness_step_relay is not None and step_queue is not None:
             drain_stop.set()
@@ -1960,8 +2149,48 @@ async def run_unified_turn(
             # arrived while RPC was returning still land in Soft HUD.
             harness_step_relay.unregister_queue(correlation_id, step_queue)
             harness_step_relay.forget(correlation_id)
+    if turn_exc is not None:
+        if shown_draft:
+            # Otherwise the browser's draft bubble would read "still being
+            # checked" forever: no final/turn_error ever names this turn.
+            with contextlib.suppress(Exception):
+                await _send_ws(
+                    {
+                        "type": "turn_error",
+                        "correlation_id": correlation_id,
+                        "phase": "hub",
+                        "error": "hub_turn_failed",
+                        "finalize_ran": False,
+                        "draft_shown": True,
+                    }
+                )
+        raise turn_exc
+    has_final = any(frame.get("type") == "final" for frame in frames)
+    if shown_draft:
+        draft_outcome = annotate_frames_after_draft(frames, shown_draft_text=str(shown_draft["text"]))
+        if draft_outcome["revised"]:
+            logger.info(
+                "unified_turn_revision corr=%s reason=%s draft_visible_ms=%s",
+                correlation_id,
+                draft_outcome["revised_reason"],
+                _elapsed_ms() - int(shown_draft["elapsed_ms"]),
+            )
+    elif has_final:
+        logger.info(
+            "unified_turn_first_visible corr=%s kind=final elapsed_ms=%s",
+            correlation_id,
+            _elapsed_ms(),
+        )
     for frame in frames:
         await _send_ws(frame)
+    if has_final:
+        logger.info(
+            "unified_turn_final_visible corr=%s elapsed_ms=%s draft_shown=%s revised=%s",
+            correlation_id,
+            _elapsed_ms(),
+            bool(shown_draft),
+            any(bool(frame.get("revised")) for frame in frames),
+        )
     try:
         run_dump = cockpit_run_holder.get("run")
         if isinstance(run_dump, dict) and any(frame.get("type") == "final" for frame in frames):

@@ -19,7 +19,7 @@ def held_model_boundary(monkeypatch):
     from orion.schemas.reading_turn import ReadingRunBriefV1, ReadingTurnRequestV1
     from scripts.world_pulse_read_stage2 import GenerateOutcome
 
-    async def generate(pipe, prompt, correlation_id, *, seed_id="test-seed"):
+    async def generate(pipe, prompt, correlation_id, *, seed_id="test-seed", retrieval_query=None):
         listener = ReadingTurnListener(pipe._source_ref, pipe._step_relay_provider)
         listener.bus = pipe._bus
         listener.rpc_bus = pipe._harness_rpc_bus or pipe._bus
@@ -27,7 +27,7 @@ def held_model_boundary(monkeypatch):
             run_id="test-run", correlation_id=correlation_id,
             brief=ReadingRunBriefV1(seed_id=seed_id, stage=2, prompt=prompt,
                 session_id=pipe.session_id, timeout_sec=pipe.timeout_sec,
-                fcc_model_label=pipe._fcc_model_label),
+                fcc_model_label=pipe._fcc_model_label, retrieval_query=retrieval_query),
             gpu_lease={"lease_id": "test-hold", "generation": 1,
                        "role": "agent", "holder": "durable-runs:test-run"},
         ))
@@ -1147,3 +1147,23 @@ def test_reentry_passes_on_an_already_read_url_even_when_wallet_a_is_backing_off
         return read_before, fresh
 
     assert asyncio.run(_run()) == ("already_read", "refund_backoff")
+
+
+def test_stage2_turn_recalls_about_title_and_stage1_claim(monkeypatch) -> None:
+    """Recall retrieval design phase 3: "<source title> — <stage-1 claim>", not the stage-2
+    prompt that embeds the whole stage-1 handoff JSON."""
+    bus, conn = _FakeBus(), _FakeConn()
+    pipe = _pipeline(bus, conn)
+    captured: dict = {}
+
+    async def _turn(**kwargs):
+        captured.update(kwargs)
+        return [{"type": "final", "llm_response": "{}"}]
+
+    monkeypatch.setattr("orion.hub.turn_orchestrator.execute_unified_turn", _turn)
+    try:
+        asyncio.run(pipe._stage2_pass(_handoff()))
+    except Exception:  # noqa: BLE001 -- only the turn's arguments matter here
+        pass
+
+    assert captured["retrieval_query"] == "A — Learned about packaging."

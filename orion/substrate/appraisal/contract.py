@@ -42,6 +42,29 @@ _RULES_CONCRETE_BIAS: tuple[str, ...] = (
 
 _KIND_RULE_THRESHOLD = 0.65
 
+# The level at which the repair contract stops being "default" and actually
+# steers the reply (mode `concrete_bias`). Below it the appraisal ran but found
+# nothing worth acting on: 0.087 is the classifier's confident all-NO floor, and
+# 0.19-0.34 is one or two kinds leaning weakly yes. This is the one place the
+# system already decided what "real repair pressure" means, so the turn-level
+# repair signal (the `repair_signal` grammar atom) reuses it instead of picking a
+# second number. Live 2026-09-01..10-01 (`repair_pressure_appraisal_log`,
+# n=1,823): 10 rows (0.55%) are at or above it; the grammar trace
+# (n=498, 09-28..10-01) has 2 (0.4%).
+REPAIR_SIGNAL_LEVEL_FLOOR = _LEVEL_MID
+
+
+def is_repair_signal(level: float | None) -> bool:
+    """True only when repair pressure is high enough to change the reply contract.
+
+    "An appraisal ran" is not a repair signal; that reading was on for ~96% of
+    turns and pushed nearly every chat window straight into memory.
+    """
+    try:
+        return float(level or 0.0) >= REPAIR_SIGNAL_LEVEL_FLOOR
+    except (TypeError, ValueError):
+        return False
+
 _KIND_RULES: dict[str, str] = {
     "specificity_demand": "include file/module boundaries",
     "trust_rupture": "acknowledge correction briefly",

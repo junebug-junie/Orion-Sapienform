@@ -1132,8 +1132,19 @@ def test_every_payload_field_is_readable_for_every_durable_node_kind(
             signals=sig,
         ),
     )
-    # every kind the store can persist must be represented above
-    assert set(DURABLE_NODE_KINDS) == {"concept", "evidence", "entity"}
+    from orion.core.schemas.cognitive_substrate import AssertionNodeV1
+
+    store.upsert_node(
+        identity_key="a:x",
+        node=AssertionNodeV1(
+            node_id="a-x", anchor_scope="world", temporal=_temporal(), provenance=prov, signals=sig,
+            predicate="co_occurs_with", statement_key="n-x|co_occurs_with|c-x|",
+            statement_text="athena and Alpha were named together", revision=1, promotion_state="provisional",
+        ),
+    )
+    # every kind the store can persist must be represented above (an Assertion is persisted
+    # but, below, never reached: region reads drop its structure edges)
+    assert set(DURABLE_NODE_KINDS) == {"concept", "evidence", "entity", "assertion"}
     store.upsert_edge(
         identity_key="edge:ex-cx", edge=_edge("edge-ex-cx", "e-x", "c-x", predicate="supports")
     )
@@ -1141,12 +1152,25 @@ def test_every_payload_field_is_readable_for_every_durable_node_kind(
         identity_key="edge:cx-nx",
         edge=_edge("edge-cx-nx", "c-x", "n-x", predicate="associated_with"),
     )
+    from orion.core.schemas.cognitive_substrate import NodeRefV1, SubstrateEdgeV1
+
+    store.upsert_edge(
+        identity_key="edge:ax-cx",
+        edge=SubstrateEdgeV1(
+            edge_id="edge-ax-cx", source=NodeRefV1(node_id="a-x", node_kind="assertion"),
+            target=NodeRefV1(node_id="c-x", node_kind="concept"), predicate="assertion_object",
+            edge_role="assertion_structure", temporal=_temporal(), provenance=prov,
+        ),
+    )
     monkeypatch.setattr(concept_atlas_routes, "_get_substrate_store", lambda: store)
 
     r = client.get("/api/substrate/concepts/network")
     assert r.status_code == 200, r.text
     nodes = r.json()["nodes"]
+    # #2515 review: region reads apply the edge-role gate, so the claim's structure edge (and
+    # with it the Assertion node) never reaches the Atlas as if it were a relationship.
     assert {n["node_kind"] for n in nodes} == {"concept", "evidence", "entity"}
+    assert "edge-ax-cx" not in {e["id"] for e in r.json()["edges"]}
     for node in nodes:
         assert node["label"], f"every node needs a readable label: {node}"
         assert node["origin"] in ("topic_foundry", "concept")
@@ -1203,3 +1227,24 @@ def test_hydration_truncation_is_reported_when_something_was_dropped(
     body = client.get("/api/substrate/concepts/network").json()
     assert body["hydrated_count"] == 2
     assert body["hydration_truncated"] is True
+
+
+def test_typed_relation_classifier_never_reads_projections_or_memory_nodes() -> None:
+    """#2515 review: the classifier mints LEGACY typed edges, so it reads only the cognitive
+    view: a projection (accepted or rejected) or anything touching a fenced memory node or an
+    assertion must never become a candidate."""
+    from orion.substrate.store import InMemorySubstrateGraphStore
+    from orion.substrate.tests.test_assertion_core import FENCED, assertion, concept, edge
+    from scripts import concept_atlas_routes
+
+    store = InMemorySubstrateGraphStore()
+    for node in (concept("c-a", "alpha"), concept("c-b", "beta"), concept("c-m", "ours", producer=FENCED),
+                 assertion("as-no", state="rejected", revision=1)):
+        store.upsert_node(identity_key=node.node_id, node=node)
+    store.upsert_edge(identity_key="l", edge=edge("legacy", ("c-a", "concept"), ("c-b", "concept")))
+    store.upsert_edge(identity_key="p", edge=edge("proj", ("c-b", "concept"), ("c-a", "concept"),
+                                                  edge_role="semantic_projection", assertion_id="as-no",
+                                                  assertion_revision=1))
+    store.upsert_edge(identity_key="m", edge=edge("mem", ("c-a", "concept"), ("c-m", "concept")))
+    _concepts, candidates = concept_atlas_routes._typed_relation_classification_candidates(store)
+    assert [e.edge_id for e in candidates] == ["legacy"]

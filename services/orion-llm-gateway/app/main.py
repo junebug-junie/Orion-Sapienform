@@ -7,7 +7,7 @@ import os
 import time
 from typing import Any, Dict, Optional
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 import uvicorn
 
@@ -33,10 +33,10 @@ from .llm_backend import (
 )
 from .anthropic_passthrough import register_anthropic_passthrough_routes
 from .openai_passthrough import register_openai_passthrough_routes
-from . import grammar_emit, pool_placement, upstream_cancel
+from . import grammar_emit, lane_senders, pool_placement, routes_compat_reads, upstream_cancel
 from .embed_publish import publish_assistant_embedding
 from .models import ChatBody
-from .resource_lease import LeaseGuard, ResourceLeaseRejected, gpu_lease_from_options
+from .resource_lease import ResourceLeaseRejected, gpu_lease_from_options
 from .settings import settings
 
 logger = logging.getLogger("orion-llm-gateway")
@@ -127,11 +127,25 @@ async def ready() -> JSONResponse:
 
 
 @app.get("/routes")
-async def routes_catalog() -> Dict[str, Any]:
-    """Compatibility view generated from orion-gpu-pool state (pool_placement.build_routes_compat).
-    Kept until durable-runs, fcc_motor, situational context, context-exec and the Hub read pool
-    state directly; removed in stage 6 of the GPU pool spec."""
+async def routes_catalog(request: Request) -> Dict[str, Any]:
+    """Compatibility view generated from orion-gpu-pool state (orion.gpu_pool.route_view).
+    Stage 6.3 moved every known reader to pool state; every read left is counted and logged
+    (routes_compat_reads) so PR 6.5 can delete this after 24 h of zero reads."""
+    routes_compat_reads.record(request.client.host if request.client else None,
+                               request.headers.get("user-agent"))
     return await pool_placement.get_routes_payload()
+
+
+@app.get("/debug/routes-compat-reads")
+async def routes_compat_reads_debug() -> Dict[str, Any]:
+    """Reads of ``GET /routes`` since this process started (see app/routes_compat_reads.py)."""
+    return routes_compat_reads.snapshot()
+
+
+@app.get("/debug/lane-senders")
+async def lane_senders_debug() -> Dict[str, Any]:
+    """Calls carrying a lane, and calls lane routing re-routes, since boot (app/lane_senders.py)."""
+    return lane_senders.snapshot()
 
 
 def _cfg() -> ChassisConfig:
@@ -214,8 +228,23 @@ class _UpstreamFailed(Exception):
     the caller still gets back unchanged."""
 
     def __init__(self, result: Dict[str, Any]):
-        super().__init__(str((result.get("raw") or {}).get("error") or result.get("text") or "upstream_error")[:300])
+        super().__init__(_failure_summary(result))
         self.result = result
+
+
+def _failure_summary(result: Dict[str, Any]) -> str:
+    """What the pool's lease release records as the reason: the error class plus, when the
+    upstream said why (raw.details.message), its own words -- so ``gpu_pool_events`` shows
+    ``upstream_http_5xx: No user query found in messages`` rather than a bare class name."""
+    raw = result.get("raw") if isinstance(result.get("raw"), dict) else {}
+    error = raw.get("error")
+    details = raw.get("details") if isinstance(raw.get("details"), dict) else {}
+    message = details.get("message")
+    if error and message:
+        summary = f"{error}: {message}"
+    else:
+        summary = str(error or result.get("text") or "upstream_error")
+    return summary[:300]
 
 
 class _ContextOverflow(_UpstreamFailed):
@@ -337,26 +366,24 @@ async def _run_on_grant(plan: ChatDispatchPlan, lease: Lease, read_timeout_s: fl
         budget.cancel()
 
 
-async def _dispatch_chat(body: ChatBody, *, correlation_id: str, holder: str = "llm-gateway") -> Dict[str, Any]:
+async def _dispatch_chat(body: ChatBody, *, correlation_id: str, holder: str = "llm-gateway",
+                         timing: Optional[grammar_emit.CallClock] = None) -> Dict[str, Any]:
     plan = plan_llm_chat(body)
     if plan.error is not None:
         return dict(plan.error)
-    # A durable-run lease is validated first (don't take a GPU for a stale token), then kept
-    # checked for the whole call. It is admission only: placement is the pool lease below.
-    guard = LeaseGuard((body.options or {}).get("resource_lease"), lane=plan.route)
     try:
-        # Stage 4: a call carrying its run's GPU pool hold ref attaches to that hold.
+        # A call carrying its run's GPU pool hold ref attaches to that hold.
         hold = gpu_lease_from_options(body.options)
-        await guard.check()
-        return await guard.run(_dispatch_on_pool(plan, correlation_id=correlation_id, holder=holder, hold=hold))
     except ResourceLeaseRejected as exc:
         logger.warning("resource_lease_rejected correlation_id=%s reason=%s", correlation_id, exc)
         return {"text": "", "content": "", "route": plan.route,
                 "raw": {"error": "resource_lease_rejected", "details": {"reason": str(exc)}}}
+    return await _dispatch_on_pool(plan, correlation_id=correlation_id, holder=holder, hold=hold, timing=timing)
 
 
 async def _dispatch_on_pool(plan: ChatDispatchPlan, *, correlation_id: str, holder: str,
-                            hold: Optional[GpuLeaseRefV1] = None) -> Dict[str, Any]:
+                            hold: Optional[GpuLeaseRefV1] = None,
+                            timing: Optional[grammar_emit.CallClock] = None) -> Dict[str, Any]:
     """Lease -> run on the granted URL -> release. At most three acquires, never a loop:
 
     * the pool refuses a prompt bigger than every role of its class (``min_ctx_exceeds_class:<max>``)
@@ -373,7 +400,11 @@ async def _dispatch_on_pool(plan: ChatDispatchPlan, *, correlation_id: str, hold
 
     Under a hold (``hold`` set, stage 4) every acquire is an ``attach``, and an upstream overflow is
     returned as is: the child can only run on the hold's role, so a bigger re-lease has nowhere to go.
+
+    ``timing`` (stage 6.2) gets the two disjoint clocks: acquire -> grant (wait) and grant -> reply
+    (model), summed across re-leases, plus the last granted role.
     """
+    timing = timing if timing is not None else grammar_emit.CallClock()
     budget_s = resolve_caller_budget_sec(plan.body)
     deadline = time.monotonic() + budget_s
     options = plan.body.options or {}
@@ -384,16 +415,19 @@ async def _dispatch_on_pool(plan: ChatDispatchPlan, *, correlation_id: str, hold
     for _ in range(3):
         remaining = deadline - time.monotonic()
         wait_s = min(pool_placement.wait_budget_sec(plan.priority or "system"), remaining)
+        timing.waiting()
         try:
             async with pool_placement.lease_for_route(
                 plan.route, holder=holder, turn_correlation_id=correlation_id,
                 min_ctx_tokens=min_ctx, deadline_sec=wait_s, hold=hold,
             ) as lease:
+                timing.granted(getattr(lease.grant, "role", None), busy=pool_placement.busy_at_grant(lease))
                 read_timeout_s = deadline - time.monotonic()
                 if read_timeout_s <= 0:
                     # The grant came after the caller's budget ran out: generate nothing.
                     return overflow or _pool_unavailable_result(plan, "deadline")
                 result = await _run_on_grant(plan, lease, read_timeout_s)
+                timing.replied()
                 error = _result_error(result)
                 if error == CONTEXT_OVERFLOW_ERROR:
                     # The prompt was too big for the slot: not a GPU/server failure, so keep it out
@@ -415,6 +449,7 @@ async def _dispatch_on_pool(plan: ChatDispatchPlan, *, correlation_id: str, hold
         except _UpstreamFailed as exc:
             return exc.result
         except LeaseUnavailable as exc:
+            timing.not_granted()
             if overflow is not None:
                 # Nothing bigger could take it: the honest answer is the overflow itself.
                 return overflow
@@ -508,9 +543,12 @@ async def handle_chat(env: BaseEnvelope) -> BaseEnvelope:
     )
 
     holder = (typed_req.source.name if typed_req.source else None) or "llm-gateway"
-    dispatch_started = time.monotonic()
+    # Two clocks, not one (gpu-pool stage 6.2): the old single clock started here, before the
+    # pool lease, so it reported queue wait plus model time as one number.
+    call_clock = grammar_emit.CallClock(pool_node=pool_placement.pool_node())
     try:
-        result = await _dispatch_chat(body, correlation_id=str(typed_req.correlation_id), holder=holder)
+        result = await _dispatch_chat(body, correlation_id=str(typed_req.correlation_id), holder=holder,
+                                      timing=call_clock)
     except Exception:
         # A crashed call is still an outcome; count it, then let it propagate as before.
         if settings.llm_gateway_grammar_enabled:
@@ -518,7 +556,7 @@ async def handle_chat(env: BaseEnvelope) -> BaseEnvelope:
                 grammar_emit.get_recorder().record(
                     {"text": "", "raw": {"error": "gateway_exception"}},
                     served_by=None,
-                    elapsed_s=time.monotonic() - dispatch_started,
+                    timing=call_clock,
                 )
             except Exception:  # noqa: BLE001
                 pass
@@ -528,7 +566,7 @@ async def handle_chat(env: BaseEnvelope) -> BaseEnvelope:
             grammar_emit.get_recorder().record(
                 result,
                 served_by=(result.get("served_by") if isinstance(result, dict) else None),
-                elapsed_s=time.monotonic() - dispatch_started,
+                timing=call_clock,
             )
         except Exception:  # noqa: BLE001 -- telemetry must never break a reply
             logger.warning("llm_gateway_grammar_record_failed", exc_info=True)
@@ -726,6 +764,7 @@ async def main() -> None:
                 chat_svc.bus,
                 gateway_node=settings.node_name or "gateway",
                 window_sec=settings.llm_gateway_grammar_window_sec,
+                slots_provider=pool_placement.role_slots,
             )
         )
     await asyncio.gather(*tasks)

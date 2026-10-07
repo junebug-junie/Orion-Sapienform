@@ -6,6 +6,7 @@ import concurrent.futures
 import json
 import logging
 import os
+import time
 import uuid
 from collections import deque
 from copy import deepcopy
@@ -70,6 +71,7 @@ from app.models import (
     CuriosityHopReadingSQL,
     DurableRunStateSQL,
     GpuPoolEventSQL,
+    TransportBaselineHourlySQL,
     ChatStanceBeliefLogSQL,
     SelfConceptHistorySQL,
     SelfSenseEvalLogSQL,
@@ -121,6 +123,7 @@ from orion.schemas.curiosity_peer import PeerBriefV1
 from orion.schemas.curiosity_supervisor import HopReadingV1
 from orion.schemas.durable_run import DurableRunStateV1
 from orion.schemas.gpu_pool import GpuPoolEventV1
+from orion.schemas.telemetry.transport_baseline_hourly import TransportBaselineHourlyV1
 from orion.schemas.chat_stance_belief import ChatStanceBeliefLogV1
 from orion.schemas.self_concept_history import SelfConceptHistoryV1
 from orion.schemas.self_sense import SelfSenseEvalV1
@@ -235,6 +238,8 @@ except ImportError:
     normalize_spark_state_snapshot = None
     normalize_spark_telemetry = None
 
+from app import write_health
+
 logger = logging.getLogger("sql-writer")
 GrammarWorkItem = tuple[BaseEnvelope, GrammarEventV1, dict[str, Any], str]
 _GRAMMAR_EXECUTORS: list[concurrent.futures.ThreadPoolExecutor] | None = None
@@ -242,6 +247,8 @@ _GRAMMAR_QUEUES: list[asyncio.Queue[GrammarWorkItem]] | None = None
 _GRAMMAR_DEFERRED: list[deque[GrammarWorkItem]] | None = None
 _GRAMMAR_WORKER_TASKS: list[asyncio.Task] = []
 _GRAMMAR_BACKGROUND_TASKS: set[asyncio.Task] = set()
+_GRAMMAR_QUEUE_HIGH_WATER: dict[int, int] = {}
+GRAMMAR_QUEUE_FULL_ERROR = "grammar queue full"
 _WRITE_SEMAPHORE: asyncio.Semaphore | None = None
 _SPARK_CONTRACT_METRICS = SparkContractMetrics()
 COLLAPSE_STORED_KIND = "collapse.mirror.stored.v1"
@@ -250,6 +257,7 @@ SOCIAL_TURN_STORED_KIND = "social.turn.stored.v1"
 INSERT_ONLY_MODELS = {
     JournalEntrySQL,
     GpuPoolEventSQL,
+    TransportBaselineHourlySQL,
     DurableRunStateSQL,
     SelfKnowledgeItemLogSQL,
     AttentionSchemaSQL,
@@ -286,7 +294,12 @@ def grammar_queue_snapshot() -> dict[str, Any]:
     if queues is None:
         return {"workers": shard_count, "total_depth": 0, "shards": []}
     shards = [
-        {"shard": idx, "depth": queues[idx].qsize(), "maxsize": queues[idx].maxsize}
+        {
+            "shard": idx,
+            "depth": queues[idx].qsize(),
+            "maxsize": queues[idx].maxsize,
+            "high_water": _GRAMMAR_QUEUE_HIGH_WATER.get(idx, 0),
+        }
         for idx in range(len(queues))
     ]
     return {
@@ -318,7 +331,7 @@ def _ensure_grammar_workers() -> None:
     shard_count = _grammar_shard_count()
     _get_grammar_executors()
     if _GRAMMAR_QUEUES is None:
-        _GRAMMAR_QUEUES = [asyncio.Queue(maxsize=512) for _ in range(shard_count)]
+        _GRAMMAR_QUEUES = [asyncio.Queue(maxsize=max(1, int(settings.sql_writer_grammar_queue_maxsize))) for _ in range(shard_count)]
     while len(_GRAMMAR_WORKER_TASKS) < shard_count:
         shard = len(_GRAMMAR_WORKER_TASKS)
         task = asyncio.create_task(_grammar_worker_loop(shard))
@@ -416,7 +429,11 @@ def _spawn_grammar_persist(
     queue = queues[shard]
     try:
         queue.put_nowait((env, event, payload, corr_id))
+        depth = queue.qsize()
+        if depth > _GRAMMAR_QUEUE_HIGH_WATER.get(shard, 0):
+            _GRAMMAR_QUEUE_HIGH_WATER[shard] = depth
     except asyncio.QueueFull:
+        write_health.record_grammar([event.trace_id], "backpressure")
         logger.warning(
             "grammar_queue_full shard=%s event_id=%s trace_id=%s",
             shard,
@@ -429,7 +446,7 @@ def _spawn_grammar_persist(
                 env.kind,
                 corr_id,
                 payload,
-                "grammar queue full",
+                GRAMMAR_QUEUE_FULL_ERROR,
             )
         )
 
@@ -521,6 +538,7 @@ MODEL_MAP: Dict[str, Tuple[Type[Any], Optional[Type[BaseModel]]]] = {
     "CuriosityHopReadingSQL": (CuriosityHopReadingSQL, HopReadingV1),
     "DurableRunStateSQL": (DurableRunStateSQL, DurableRunStateV1),
     "GpuPoolEventSQL": (GpuPoolEventSQL, GpuPoolEventV1),
+    "TransportBaselineHourlySQL": (TransportBaselineHourlySQL, TransportBaselineHourlyV1),
     "ChatStanceBeliefLogSQL": (ChatStanceBeliefLogSQL, ChatStanceBeliefLogV1),
     "SelfConceptHistorySQL": (SelfConceptHistorySQL, SelfConceptHistoryV1),
     "SelfSenseEvalLogSQL": (SelfSenseEvalLogSQL, SelfSenseEvalV1),
@@ -2077,6 +2095,10 @@ def _normalize_calibration_profile_audit_payload(payload: Any) -> Dict[str, Any]
 
 
 def _write_fallback(kind: str, correlation_id: str, payload: Any, error: str = None) -> None:
+    # Every lost write on the envelope path ends here, so this is where the
+    # storage-write organ learns the class. No-op on the grammar path (no
+    # envelope outcome in context: those are recorded in the persist helpers).
+    write_health.mark_failed(error)
     sess = get_session()
     try:
         safe_payload = payload
@@ -2133,10 +2155,25 @@ async def _write(
         data.update(extra_fields)
 
     try:
-        return await asyncio.to_thread(_write_row, sql_model_cls, data)
+        written = await asyncio.to_thread(_write_row, sql_model_cls, data)
     except Exception as e:
         logger.error(f"Failed to write to primary table: {e}")
         raise
+    # _write_row returns False only for an idempotent duplicate skip.
+    write_health.mark_written(bool(written), getattr(sql_model_cls, "__tablename__", None))
+    return written
+
+
+def _grammar_persist_with_outcome(fn: Any, *args: Any) -> tuple[Any, dict[str, int] | None]:
+    """Run a grammar persist and read what it actually did, in the same executor
+    thread (the outcome is a thread-local; run_in_executor does not carry
+    contextvars). The persist functions return False/0 for a duplicate AND for a
+    swallowed statement cancel or integrity reject; only the outcome tells them apart."""
+    from app.grammar_ledger_handler import take_last_grammar_outcome
+
+    take_last_grammar_outcome()
+    result = fn(*args)
+    return result, take_last_grammar_outcome()
 
 
 async def _persist_grammar_trace_batch_envelope(
@@ -2154,10 +2191,21 @@ async def _persist_grammar_trace_batch_envelope(
     )
     loop = asyncio.get_running_loop()
     executor = _get_grammar_executors()[shard]
-    fut = loop.run_in_executor(executor, persist_grammar_trace_batch, events, shard)
+    fut = loop.run_in_executor(
+        executor, _grammar_persist_with_outcome, persist_grammar_trace_batch, events, shard
+    )
+    trace_ids = [e.trace_id for e in events]
+    started = time.perf_counter()
     try:
-        await asyncio.wait_for(fut, timeout=timeout_sec)
+        applied, outcome = await asyncio.wait_for(fut, timeout=timeout_sec)
+        if outcome is None:
+            n_applied = max(0, min(len(events), int(applied or 0)))
+            outcome = {"committed": n_applied, "duplicate": len(events) - n_applied}
+        write_health.record_grammar_outcome(
+            trace_id, outcome, latency_ms=(time.perf_counter() - started) * 1000.0
+        )
     except asyncio.TimeoutError:
+        write_health.record_grammar(trace_ids, "timeout")
         canceled = cancel_active_grammar_persist(shard)
         logger.error(
             "sql_writer_grammar_trace_batch_timeout shard=%s trace_id=%s events=%s timeout_sec=%s canceled=%s",
@@ -2183,6 +2231,7 @@ async def _persist_grammar_trace_batch_envelope(
                     exc,
                 )
     except Exception as exc:
+        write_health.record_grammar(trace_ids, write_health.classify_write_error(exc))
         logger.exception(
             "sql_writer_grammar_trace_batch_failed trace_id=%s events=%s error=%s",
             trace_id,
@@ -2213,10 +2262,19 @@ async def _persist_grammar_event_envelope(
     timeout_sec = float(settings.sql_writer_grammar_persist_timeout_sec)
     loop = asyncio.get_running_loop()
     executor = _get_grammar_executors()[shard]
-    fut = loop.run_in_executor(executor, persist_grammar_event, event, shard)
+    fut = loop.run_in_executor(
+        executor, _grammar_persist_with_outcome, persist_grammar_event, event, shard
+    )
+    started = time.perf_counter()
     try:
-        await asyncio.wait_for(fut, timeout=timeout_sec)
+        applied, outcome = await asyncio.wait_for(fut, timeout=timeout_sec)
+        if outcome is None:
+            outcome = {"committed" if applied else "duplicate": 1}
+        write_health.record_grammar_outcome(
+            event.trace_id, outcome, latency_ms=(time.perf_counter() - started) * 1000.0
+        )
     except asyncio.TimeoutError:
+        write_health.record_grammar([event.trace_id], "timeout")
         canceled = cancel_active_grammar_persist(shard)
         logger.error(
             "sql_writer_grammar_persist_timeout shard=%s event_id=%s trace_id=%s timeout_sec=%s canceled=%s",
@@ -2242,6 +2300,7 @@ async def _persist_grammar_event_envelope(
                 exc,
             )
     except Exception as exc:
+        write_health.record_grammar([event.trace_id], write_health.classify_write_error(exc))
         logger.exception(
             "sql_writer_grammar_persist_failed event_id=%s trace_id=%s error=%s",
             event.event_id,
@@ -2404,6 +2463,59 @@ async def _maybe_emit_memory_turn_from_row(
         logger.exception("Failed to emit memory turn persisted event corr=%s", corr_id)
 
 
+# One orion:memory:turn:persisted per turn (2026-10-02). A Hub turn reaches this writer as a
+# `chat.history` turn envelope AND an assistant `chat.history.message.v1`, in either order (both
+# orders seen live). Each used to publish, so memory-consolidation judged every turn twice. The
+# turn envelope carries the turn's spark_meta (conversation_phase), the row read-back does not, so
+# the envelope wins: it claims the correlation id and publishes at once; a message only schedules
+# a row-based publish after a short delay, dropped if the envelope claimed the id meanwhile.
+# Message-only flows (Collapse Mirror reply) still publish once, from the row.
+# In-process and best-effort: a restart inside the delay drops that one publish (the consumer's
+# degraded-classify retry still appraises the row); claims expire after an hour.
+_MEMORY_TURN_EMIT_CLAIMS: dict[str, float] = {}
+_MEMORY_TURN_CLAIM_TTL_SEC = 3600.0
+_MEMORY_TURN_CLAIM_MAX = 20000
+
+
+def _claim_memory_turn_emit(corr_id: str) -> bool:
+    """True if this caller may publish the turn for corr_id (first claim within the TTL)."""
+    now = time.monotonic()
+    if len(_MEMORY_TURN_EMIT_CLAIMS) > _MEMORY_TURN_CLAIM_MAX:
+        for key, at in list(_MEMORY_TURN_EMIT_CLAIMS.items()):
+            if now - at > _MEMORY_TURN_CLAIM_TTL_SEC:
+                _MEMORY_TURN_EMIT_CLAIMS.pop(key, None)
+    at = _MEMORY_TURN_EMIT_CLAIMS.get(corr_id)
+    if at is not None and now - at <= _MEMORY_TURN_CLAIM_TTL_SEC:
+        return False
+    _MEMORY_TURN_EMIT_CLAIMS[corr_id] = now
+    return True
+
+
+async def _emit_memory_turn_from_envelope_once(bus: Any, *, parent_env: BaseEnvelope, turn: dict) -> None:
+    corr = str(turn["correlation_id"])
+    if not _claim_memory_turn_emit(corr):
+        logger.info("memory_turn_persisted_duplicate_suppressed corr=%s source=turn_envelope", corr)
+        return
+    await _emit_memory_turn_persisted(bus, parent_env=parent_env, turn=turn)
+
+
+async def _emit_memory_turn_from_row_deferred(bus: Any, *, parent_env: BaseEnvelope, corr_id: str) -> None:
+    await asyncio.sleep(float(settings.sql_writer_memory_turn_row_emit_delay_sec))
+    if not _claim_memory_turn_emit(corr_id):
+        logger.info("memory_turn_persisted_duplicate_suppressed corr=%s source=message_row", corr_id)
+        return
+    await _maybe_emit_memory_turn_from_row(bus, parent_env=parent_env, corr_id=corr_id)
+
+
+def _schedule_memory_turn_from_row(bus: Any, *, parent_env: BaseEnvelope, corr_id: str) -> None:
+    task = asyncio.create_task(_emit_memory_turn_from_row_deferred(bus, parent_env=parent_env, corr_id=corr_id))
+    _PENDING_MEMORY_TURN_TASKS.add(task)
+    task.add_done_callback(_PENDING_MEMORY_TURN_TASKS.discard)
+
+
+_PENDING_MEMORY_TURN_TASKS: set = set()
+
+
 async def handle_envelope(env: BaseEnvelope, *, bus: Any | None = None) -> None:
     if env.kind == "grammar.event.v1":
         payload = env.payload if isinstance(env.payload, dict) else {}
@@ -2413,7 +2525,37 @@ async def handle_envelope(env: BaseEnvelope, *, bus: Any | None = None) -> None:
         return
 
     async with _get_write_semaphore():
-        await _handle_envelope_body(env, bus=bus)
+        outcome, token = (
+            write_health.begin_envelope(_write_family_for_kind(env.kind))
+            if write_health.is_enabled()
+            else (None, None)
+        )
+        started = time.perf_counter()
+        error: BaseException | None = None
+        try:
+            await _handle_envelope_body(env, bus=bus)
+        except Exception as exc:
+            error = exc
+            raise
+        finally:
+            write_health.end_envelope(outcome, token, started=started, error=error)
+
+
+def _write_family_for_kind(kind: str) -> str:
+    """The table an envelope kind is written to: the storage-write organ's family.
+
+    Mirrors _handle_envelope_body's dispatch: the special-cased kinds first, then
+    the route map. A kind with no route reports as ``unrouted``."""
+    if kind == "chat.history.spark_meta.patch.v1":
+        return "chat_history_log"
+    if kind == VISION_CROP_OBSERVATION_KIND:
+        return "vision_crop_observation"
+    if kind == "spark.state.snapshot.v1":
+        return "spark_telemetry"
+    route_key = settings.route_map.get(kind)
+    if route_key and route_key in MODEL_MAP:
+        return str(getattr(MODEL_MAP[route_key][0], "__tablename__", route_key))
+    return "unrouted"
 
 
 async def _handle_envelope_body(env: BaseEnvelope, *, bus: Any | None = None) -> None:
@@ -2431,6 +2573,8 @@ async def _handle_envelope_body(env: BaseEnvelope, *, bus: Any | None = None) ->
 
         try:
             n = await asyncio.to_thread(persist_crop_observation, payload)
+            if n:
+                write_health.mark_written(True)
             logger.info("Written %s -> vision_crop_observation rows=%s", env.kind, n)
         except Exception as exc:
             logger.error(
@@ -2991,7 +3135,7 @@ async def _handle_envelope_body(env: BaseEnvelope, *, bus: Any | None = None) ->
                     prompt = str(data_to_process.get("prompt") or "").strip()
                     response = str(data_to_process.get("response") or "").strip()
                     if corr and prompt and response:
-                        await _emit_memory_turn_persisted(
+                        await _emit_memory_turn_from_envelope_once(
                             bus,
                             parent_env=env,
                             turn={
@@ -3012,7 +3156,7 @@ async def _handle_envelope_body(env: BaseEnvelope, *, bus: Any | None = None) ->
                                 "source_platform": _chat_source_platform(payload.get("client_meta")),
                             },
                         )
-                    elif corr:
+                    elif corr and _claim_memory_turn_emit(corr):
                         await _maybe_emit_memory_turn_from_row(bus, parent_env=env, corr_id=corr)
                 except Exception:
                     logger.exception(
@@ -3030,7 +3174,8 @@ async def _handle_envelope_body(env: BaseEnvelope, *, bus: Any | None = None) ->
                 and (payload.get("role") or "").lower() == "assistant"
             ):
                 corr = str(env.correlation_id or payload.get("correlation_id") or "")
-                await _maybe_emit_memory_turn_from_row(bus, parent_env=env, corr_id=corr)
+                if corr and settings.sql_writer_emit_memory_turn_persisted:
+                    _schedule_memory_turn_from_row(bus, parent_env=env, corr_id=corr)
 
         except Exception as e:
             logger.exception(f"Error writing {env.kind} to {sql_model.__tablename__}, falling back.")

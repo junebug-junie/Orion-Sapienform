@@ -18,6 +18,7 @@ on:
       - "services/orion-substrate-runtime/**"
       - "tests/test_sql_writer_*.py"
       - "tests/test_transport_*.py"
+      - "tests/test_storage_write_*.py"
       - "tests/fixtures/transport_*"
       - ".github/workflows/orion-sql-writer-tests.yml"
   push:
@@ -33,6 +34,7 @@ on:
       - "services/orion-substrate-runtime/**"
       - "tests/test_sql_writer_*.py"
       - "tests/test_transport_*.py"
+      - "tests/test_storage_write_*.py"
       - "tests/fixtures/transport_*"
       - ".github/workflows/orion-sql-writer-tests.yml"
 
@@ -58,7 +60,8 @@ jobs:
             tests/test_transport_substrate_reducer.py \
             tests/test_transport_substrate_pipeline.py \
             tests/test_transport_rpc_timeout_not_a_bus.py \
-            tests/test_energy_bus_catalog.py
+            tests/test_energy_bus_catalog.py \
+            tests/test_storage_write_substrate_reducer.py
       - name: Run sql-writer unit tests
         run: |
           PYTHONPATH=.:services/orion-sql-writer python -m pytest -q \
@@ -76,7 +79,9 @@ jobs:
             services/orion-sql-writer/tests/test_vision_expect_refresh.py \
             services/orion-sql-writer/tests/test_vision_event_sql_shape.py \
             services/orion-sql-writer/tests/test_energy_sql_shape.py \
-            services/orion-sql-writer/evals/test_walkway_reducers_eval.py
+            services/orion-sql-writer/evals/test_walkway_reducers_eval.py \
+            services/orion-sql-writer/tests/test_write_health.py \
+            services/orion-sql-writer/evals/test_storage_write_replay_eval.py
 
   sql-writer-integration:
     name: SQL writer — Postgres grammar integration

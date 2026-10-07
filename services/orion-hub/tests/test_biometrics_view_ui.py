@@ -99,6 +99,7 @@ def test_template_declares_four_subtabs_and_subview_panels() -> None:
     for subtab_id in (
         "biometricsSubtabAthena",
         "biometricsSubtabCirce",
+        "biometricsSubtabHecate",
         "biometricsSubtabGpu",
         "biometricsSubtabCabinet",
     ):
@@ -137,10 +138,11 @@ def test_app_js_notifies_biometrics_view_of_open_and_close() -> None:
 
 def test_biometrics_view_js_declares_subview_switch_and_lazy_load_state() -> None:
     assert "function showModalSubview(" in BIOMETRICS_VIEW_JS
-    for name in ("athena", "circe", "gpu", "cabinet"):
+    for name in ("athena", "circe", "hecate", "gpu", "cabinet"):
         assert f'"{name}"' in BIOMETRICS_VIEW_JS
     assert "loaded.athena" in BIOMETRICS_VIEW_JS
     assert "loaded.circe" in BIOMETRICS_VIEW_JS
+    assert "loaded.hecate" in BIOMETRICS_VIEW_JS
     assert "loaded.gpu" in BIOMETRICS_VIEW_JS
 
 
@@ -387,3 +389,15 @@ def test_biometrics_tile_labels_are_not_the_smallest_lowest_contrast_text() -> N
     text-gray-500 -- bumped to at least 11px / gray-400 for legibility."""
     assert 'l.className = "text-[11px] uppercase tracking-wide text-gray-400 truncate";' in BIOMETRICS_VIEW_JS
     assert 'l.className = "text-[10px] uppercase tracking-wide text-gray-500 truncate";' not in BIOMETRICS_VIEW_JS
+
+
+def test_gpu_lane_badge_is_pool_derived_and_loaded_by_the_page() -> None:
+    """Stage 5.5: the badge renders the server's pool-derived label and greys on the
+    server's own lane_assigned verdict; the page loads this exact script."""
+    assert '<script src="/static/js/biometrics-view.js?v={{HUB_UI_ASSET_VERSION}}"' in INDEX_HTML
+    assert "function laneBadge(gpu)" in BIOMETRICS_VIEW_JS
+    assert "gpu.lane_assigned" in BIOMETRICS_VIEW_JS
+    card_fn = BIOMETRICS_VIEW_JS[BIOMETRICS_VIEW_JS.index("function gpuCard(gpu)"):]
+    card_fn = card_fn[: card_fn.index("var memFraction")]
+    assert "laneBadge(gpu)" in card_fn
+    assert 'gpu.lane === "unassigned"' not in card_fn

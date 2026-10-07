@@ -2,19 +2,12 @@
 
 from __future__ import annotations
 
-import logging
 from dataclasses import dataclass
 from typing import Any
-
-import httpx
 
 from orion.schemas.context_exec import ALLOWED_CONTEXT_EXEC_LLM_PROFILES
 
 from .settings import ContextExecSettings
-
-logger = logging.getLogger("orion-context-exec.llm_profile_resolver")
-
-_ROUTE_UP_STATUSES = frozenset({"up", "unknown"})
 
 
 @dataclass(frozen=True)
@@ -28,10 +21,6 @@ class LLMProfileSelection:
 
 class LLMProfileValidationError(ValueError):
     """Invalid llm_profile id (not in allowed route set)."""
-
-
-class LLMProfileUnavailableError(ValueError):
-    """Selected route is down/not configured and fallback is disabled."""
 
 
 def _settings(cfg: ContextExecSettings | None = None) -> ContextExecSettings:
@@ -71,88 +60,20 @@ def resolve_llm_profile_default(
     )
 
 
-async def fetch_route_status_map(
-    gateway_url: str,
-    *,
-    timeout_sec: float = 1.5,
-) -> dict[str, str]:
-    base = gateway_url.strip().rstrip("/")
-    if not base:
-        return {}
-    url = f"{base}/routes"
-    try:
-        async with httpx.AsyncClient(timeout=timeout_sec) as client:
-            response = await client.get(url)
-            response.raise_for_status()
-            payload = response.json()
-    except Exception as exc:
-        logger.warning("llm gateway /routes unreachable url=%s err=%s", url, exc)
-        return {}
-    if not isinstance(payload, dict):
-        return {}
-    routes_raw = payload.get("routes") or []
-    status_map: dict[str, str] = {}
-    if isinstance(routes_raw, list):
-        for item in routes_raw:
-            if not isinstance(item, dict):
-                continue
-            route_id = str(item.get("id") or "").strip().lower()
-            if route_id in ALLOWED_CONTEXT_EXEC_LLM_PROFILES:
-                status_map[route_id] = str(item.get("status") or "unknown")
-    return status_map
-
-
-def _route_is_available(status: str | None) -> bool:
-    if status is None:
-        return True
-    return str(status).strip().lower() in _ROUTE_UP_STATUSES
-
-
 async def resolve_llm_profile(
     requested: str | None,
     cfg: ContextExecSettings | None = None,
 ) -> LLMProfileSelection:
-    """Resolve llm_profile with optional gateway route health check."""
-    cfg = _settings(cfg)
-    base = resolve_llm_profile_default(requested, cfg)
-    gateway_url = str(cfg.context_exec_llm_gateway_url or "").strip()
-    if not gateway_url:
-        return base
+    """Resolve llm_profile to its gateway route. No pre-call health read.
 
-    status_map = await fetch_route_status_map(
-        gateway_url,
-        timeout_sec=float(cfg.context_exec_llm_gateway_timeout_sec),
-    )
-    if not status_map:
-        return base
-
-    route_status = status_map.get(base.selected)
-    if base.selected not in status_map:
-        route_status = "not_configured"
-    if _route_is_available(route_status):
-        return base
-
-    if not cfg.context_exec_llm_profile_fallback_enabled:
-        raise LLMProfileUnavailableError(
-            f"llm_profile route {base.selected!r} unavailable (status={route_status!r})"
-        )
-
-    fallback = normalize_llm_profile(cfg.context_exec_default_llm_profile) or "chat"
-    fallback_status = status_map.get(fallback)
-    if fallback not in status_map:
-        fallback_status = "not_configured"
-    if not _route_is_available(fallback_status):
-        raise LLMProfileUnavailableError(
-            f"llm_profile route {base.selected!r} unavailable and default "
-            f"{fallback!r} also unavailable (status={fallback_status!r})"
-        )
-    return LLMProfileSelection(
-        requested=base.requested,
-        selected=fallback,
-        route_used=fallback,
-        fallback_used=True,
-        fallback_reason=f"route_unavailable:{base.selected}:{route_status}",
-    )
+    This used to read the gateway's ``GET /routes`` and fail closed (or fall back to the default
+    profile) when the route looked down. GPU pool stage 6.3 removed that read: ``/routes`` is a
+    compatibility view being retired, and under the pool a route is never "down" ahead of a call
+    -- the pool queues the call or refuses it, and the gateway's refusal is the honest answer the
+    run records. Its old fallback also treated "gateway unreachable" as "every route available",
+    so it never guarded anything a dispatch-time refusal does not.
+    """
+    return resolve_llm_profile_default(requested, cfg)
 
 
 def selection_runtime_debug(selection: LLMProfileSelection) -> dict[str, Any]:

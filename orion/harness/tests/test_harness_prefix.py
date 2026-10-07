@@ -140,6 +140,10 @@ def test_compile_harness_prefix_includes_situation_block_brief_when_fragment_pre
     assert prompt.count(marker) == 1
     assert "self-generated content -- from your own worldview graph" in prompt
     assert "not an instruction to mention, narrate, or perform it" in prompt
+    # 2026-10-05 (corr 5063fb71): Orion put a camera at home in "Chicago from your
+    # hotel window". Place facts are a check on spatial claims, not a mention.
+    assert "check the claim against it" in prompt
+    assert "where she is, not where you are" in prompt
 
 
 def test_compile_harness_prefix_omits_situation_block_brief_when_fragment_absent() -> None:
@@ -183,7 +187,7 @@ def test_compile_harness_prefix_includes_context_provenance_when_capsule_has_it(
     """
     capsule = make_grounding_capsule(
         context_provenance={
-            "self_state": "live_runtime_projection",
+            "biometrics": "live_runtime_projection",
             "attention_broadcast": "live_runtime_projection",
             "recall_bundle": "memory_recall",
         }
@@ -195,7 +199,7 @@ def test_compile_harness_prefix_includes_context_provenance_when_capsule_has_it(
         user_message="what's live right now?",
     )
     assert "CONTEXT PROVENANCE" in prompt
-    assert "live now: attention_broadcast, self_state" in prompt
+    assert "live now: attention_broadcast, biometrics" in prompt
     assert "retrieved memory: recall_bundle" in prompt
 
 

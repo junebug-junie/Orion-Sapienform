@@ -16,6 +16,10 @@ class DispatchModeConfigV1(BaseModel):
     # by a config file appearing -- it takes a deliberate operator decision,
     # same posture allow_mutating_dispatch has held since 2026-08-12.
     allow_express_dispatch: bool = False
+    # 2026-10-01: gates SELF_REVERSIBLE_SCOPE routes (attend-to-act loop A1). Structural, like the two
+    # above; the operational switch is the dispatch runtime's ORION_WORLD_ACTIONS_ENABLED plus the
+    # template named in ORION_WORLD_ACTIONS_ALLOWED -- all three must be open for a send.
+    allow_self_reversible_dispatch: bool = False
 
 
 # The single non-read-only route scope. Lives here, not in builder.py, because
@@ -31,6 +35,13 @@ MAINTENANCE_SCOPE = "maintenance_bounded"
 # independently: turning off image generation should not also stop docker
 # pruning, and vice versa. A shared flag makes both an all-or-nothing choice.
 EXPRESS_SCOPE = "express_bounded"
+
+# 2026-10-01 (attend-to-act loop A1): a bounded, auto-reverting action on Orion's OWN resources
+# (today: the GPU pool's orion_self_shed reason). Its own scope so it can be closed without touching
+# maintenance or express, and so the route table says what the action is. Not a cortex verb: the
+# route's cortex_verb is an executor key the dispatch runtime maps to a GPU-pool shed RPC.
+SELF_REVERSIBLE_SCOPE = "self_reversible"
+SHED_EXECUTOR_VERB = "orion.gpu_pool.shed.v1"
 
 # Keys a route's static `skill_args` may never carry, because a real value
 # for them is derived from runtime safety state rather than chosen by an

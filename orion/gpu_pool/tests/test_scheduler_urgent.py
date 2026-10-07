@@ -12,7 +12,7 @@ from orion.gpu_pool.scheduler import (
 )
 from orion.gpu_pool.tests.test_scheduler import CFG, T0, cards, grants, lease, live, of, run
 
-CLEAR = {"thermal": None, "visual_baseline": None}
+CLEAR = {"thermal": None}
 GRACE = timedelta(seconds=CFG.defaults.urgent_preempt_grace_sec)
 LENT = cards(gpu0=CardLive("gpu0", lent=True))
 
@@ -454,7 +454,7 @@ def test_urgent_skips_after_wait_sec_for_a_swap_seat():
 
 
 def test_urgent_seat_load_still_obeys_guards():
-    hot = {"thermal": "hot", "visual_baseline": None}
+    hot = {"thermal": "hot"}
     d = schedule(CFG, live(), cards(), _seat_demand(), T0, guards=hot)
     assert not of(SwapLoad, d)
     assert [(b.role, b.reason, b.detail) for b in of(SwapBlocked, d)] == [("agent-gpu2", "guard:thermal", "hot")]

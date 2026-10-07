@@ -1,8 +1,7 @@
 """Stage 4.4: Hub accepts a durable run's GPU pool hold ref (``CuriosityTurnRequestV1.gpu_lease``).
 
-Hub fences it with the pool's ``status`` verb (not durable-runs /leases/validate), runs the turn
-under it (every LLM call attaches to the hold), and picks it up for Door-A outreach. Coexists with
-the old ``lease`` until 4.6. Spec: docs/superpowers/specs/2026-09-25-gpu-pool-stage4-durable-runs-and-actuation.md.
+Hub fences it with the pool's ``status`` verb, runs the turn under it (every LLM call attaches to
+the hold), and picks it up for Door-A outreach. The only run lease since stage 4.6. Spec: docs/superpowers/specs/2026-09-25-gpu-pool-stage4-durable-runs-and-actuation.md.
 """
 from __future__ import annotations
 
@@ -15,7 +14,6 @@ from orion.gpu_pool.client import LeaseUnavailable
 from orion.schemas.durable_run import CuriosityTurnRequestV1
 from orion.schemas.gpu_pool import GpuLeaseRefV1
 from scripts import curiosity_investigation as ci
-from test_curiosity_admission import lease
 from test_curiosity_investigation import _CortexBus, _loop
 
 
@@ -32,8 +30,6 @@ def request(run="run-one", generation=1, **kw):
 def test_hold_ref_is_validated_with_the_pool_and_the_turn_runs_under_it(monkeypatch):
     validate = AsyncMock()
     monkeypatch.setattr(ci, "validate_hold_ref", validate)
-    old = AsyncMock(side_effect=AssertionError("a pool ref must not hit durable-runs /leases/validate"))
-    monkeypatch.setattr(ci, "validate_resource_lease", old)
     loop = _loop(_CortexBus(), kickoff_via_cortex=True)
     loop._generate = AsyncMock(return_value=("grounded finding", {}))
     result = asyncio.run(loop._turn_result_for(request(), hold_lock=False))
@@ -41,7 +37,8 @@ def test_hold_ref_is_validated_with_the_pool_and_the_turn_runs_under_it(monkeypa
     args, kwargs = validate.await_args
     assert args[1] == ref() and kwargs["expected_holder"] == "durable-runs:run-one"
     gen = loop._generate.await_args.kwargs
-    assert gen["gpu_lease"] == ref() and gen["timeout_sec"] == 42
+    # The limit counts from receipt (durable-runs' timer is already running).
+    assert gen["gpu_lease"] == ref() and 41.0 < gen["timeout_sec"] <= 42
     # The role (agent-gpu2) is not a route: FCC names the hold's work-class route.
     assert gen["fcc_model_label"] == "llamacpp/agent"
     assert "resource_lease" not in gen
@@ -81,17 +78,9 @@ def test_fence_rechecked_on_cache_and_new_generation_is_a_new_execution(monkeypa
     assert validate.await_count == 3
 
 
-def test_old_lease_and_new_ref_coexist(monkeypatch):
-    monkeypatch.setattr(ci, "validate_hold_ref", AsyncMock())
-    monkeypatch.setattr(ci, "validate_resource_lease", AsyncMock())
-    loop = _loop(_CortexBus(), kickoff_via_cortex=True)
-    loop._generate = AsyncMock(return_value=("grounded finding", {}))
-    both = CuriosityTurnRequestV1(run_id="run-one", correlation_id="run-one", prompt="p", timeout_sec=42,
-                                  assigned_lane="chat", lease=lease("run-one", "chat"), gpu_lease=ref())
-    asyncio.run(loop._turn_result_for(both, hold_lock=False))
-    gen = loop._generate.await_args.kwargs
-    assert gen["fcc_model_label"] == "llamacpp/chat"  # the old lease's lane still wins until 4.6
-    assert gen["resource_lease"].lane == "chat" and gen["gpu_lease"] == ref()
+def test_deleted_durable_lease_validator_is_gone():
+    assert not hasattr(ci, "validate_resource_lease")
+    assert "lease" not in CuriosityTurnRequestV1.model_fields
 
 
 def test_generate_puts_the_ref_and_timeout_in_the_unified_turn_payload(monkeypatch):
@@ -146,7 +135,7 @@ def test_completed_run_state_hands_the_door_a_ref_to_outreach():
                         "gpu_lease": ref().model_dump(mode="json")}}
     env = BaseEnvelope(kind="durable.run.state.v1", source=ServiceRef(name="t"), payload=state)
     asyncio.run(loop._handle_run_state({"data": bus.codec.encode(env)}))
-    assert seen["gpu_lease"] == ref() and seen["resource_lease"] is None
+    assert seen["gpu_lease"] == ref() and "resource_lease" not in seen
 
 
 class _Outreach:
@@ -172,7 +161,7 @@ def test_door_a_refuses_a_hold_the_pool_no_longer_grants(monkeypatch):
     outcome = ci.TurnOutcome(run_id="run-one", continue_line=False, continue_note="", reach_out=True, reach_out_why="x")
     result = asyncio.run(loop._maybe_reach_out_inner(
         outcome=outcome, finding_text="f", run_id="run-one", hop_notes=[], line=ci.LINE_INVESTIGATE,
-        resource_lease=None, correlation_id="c", gpu_lease=ref()))
+        correlation_id="c", gpu_lease=ref()))
     assert result == "gpu_lease_invalid" and skips == [("gpu_lease_invalid", "run-one")]
     assert validate.await_args.kwargs["expected_holder"] == "durable-runs:run-one"
 

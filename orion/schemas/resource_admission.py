@@ -19,13 +19,12 @@ class ResourceRequirementV1(BaseModel):
     resource: str = "llm.route.agent"
     mode: Literal["exclusive"] = "exclusive"
     lease_scope: Literal["run"] = "run"
-    priority: Literal["background", "urgent"] = "background"
+    # "system" (2026-10-02, memory episode redesign): ahead of background holds in the pool's
+    # queue and in durable-runs' driver order, below urgent. ADDITIVE on a forbid model: only
+    # orion-durable-runs submits it (memory.episode_distill), so deploy durable-runs first.
+    priority: Literal["background", "system", "urgent"] = "background"
     preferred_lane: str = "agent"
-    allow_elastic_activation: bool = False
-    alternatives: list[str] = Field(default_factory=list)
     requirements: dict[str, Any] = Field(default_factory=dict)
-    operator_override: str | None = None
-    pinned_lane: str | None = None
     deadline_at: datetime | None = None
 
     @model_validator(mode="after")
@@ -43,22 +42,6 @@ class ResourceRequirementV1(BaseModel):
         return self
 
 
-class ResourceLeaseV1(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    run_id: str
-    demand_id: str
-    lease_id: str
-    resource_key: str
-    lane: str
-    backend_key: str
-    generation: int = Field(ge=1)
-    granted_at: datetime
-    expires_at: datetime
-    heartbeat_at: datetime
-    status: Literal["active", "released", "expired"] = "active"
-
-
 class ResourceEventV1(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -70,49 +53,3 @@ class ResourceEventV1(BaseModel):
     correlation_id: str
     generated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     detail: dict[str, Any] = Field(default_factory=dict)
-
-
-class CapacityAcquireV1(BaseModel):
-    """Internal HTTP request permit; no model content or workflow state."""
-    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
-
-    request_id: str = Field(min_length=1, max_length=128)
-    correlation_id: str = Field(min_length=1, max_length=256)
-    lane: str = Field(min_length=1, max_length=128)
-    backend_key: str = Field(min_length=1, max_length=2048)
-    max_inflight: int = Field(ge=1, le=128)
-    budget_sec: float = Field(gt=0, le=86400)
-    lease: ResourceLeaseV1 | None = None
-
-
-class CapacityTokenV1(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    request_id: str = Field(min_length=1, max_length=128)
-    permit_id: str = Field(min_length=1, max_length=128)
-
-
-class CapacityPermitV1(CapacityTokenV1):
-    correlation_id: str
-    lane: str
-    backend_key: str
-    lease_id: str | None = None
-    generation: int | None = None
-    granted_at: datetime
-    heartbeat_at: datetime
-    expires_at: datetime
-    status: Literal["active", "released", "expired"]
-
-
-class CapacityAcquireResultV1(BaseModel):
-    acquired: bool
-    reason: str
-    permit: CapacityPermitV1 | None = None
-
-
-class CapacityRenewResultV1(BaseModel):
-    valid: bool
-    permit: CapacityPermitV1 | None = None
-
-
-class CapacityReleaseResultV1(BaseModel):
-    released: bool

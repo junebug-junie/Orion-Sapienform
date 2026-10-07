@@ -1461,16 +1461,29 @@ async def test_resource_deferral_writes_no_failure_or_image(tmp_path, monkeypatc
     bus.rpc_request.assert_not_called()  # never reached the vision-host hop
 
 
-def test_verified_diffusion_rollback_allows_visual_generation(monkeypatch):
-    import io,json
+def test_call_diffusion_generate_makes_exactly_one_http_call(monkeypatch):
+    """The gpu-lane-controller slot-status pre-check is gone (GPU pool stage 5.4): arbitration is the
+    pool lease/hold around this call, so the call itself is one POST to diffusion-host and nothing else."""
+    import io
     from app import visual_chain as v
-    monkeypatch.setattr(v.settings,'visual_elastic_status_enabled',True)
-    calls=[]
-    def open_url(req,**kwargs):
+    calls = []
+
+    def open_url(req, **kwargs):
         calls.append(req)
-        if isinstance(req,str):
-            return io.BytesIO(json.dumps({'enabled':True,'active':'diffusion','state':'failed','restored':True}).encode())
         return io.BytesIO(b'image fixture')
-    monkeypatch.setattr(v.urllib.request,'urlopen',open_url)
-    assert v.call_diffusion_generate('fixture',base_url='http://fixture-diffusion',timeout_sec=1)==b'image fixture'
-    assert len(calls)==2
+    monkeypatch.setattr(v.urllib.request, 'urlopen', open_url)
+    assert v.call_diffusion_generate('fixture', base_url='http://fixture-diffusion', timeout_sec=1) == b'image fixture'
+    assert [getattr(c, 'full_url', c) for c in calls] == ['http://fixture-diffusion/generate']
+
+
+def test_unreachable_diffusion_is_a_deferral_not_an_image_failure(monkeypatch):
+    """Kept from the live elastic-flag behaviour (on in production until stage 5.4 deleted the flag):
+    a diffusion-host that does not answer (e.g. mid owner-reclaim restart) defers, it is not a failure."""
+    import urllib.error
+    from app import visual_chain as v
+
+    def refuse(req, **kwargs):
+        raise urllib.error.URLError("connection refused")
+    monkeypatch.setattr(v.urllib.request, 'urlopen', refuse)
+    with pytest.raises(v.DiffusionResourceDeferred, match="diffusion_unreachable"):
+        v.call_diffusion_generate('fixture', base_url='http://fixture-diffusion', timeout_sec=1)

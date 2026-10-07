@@ -47,3 +47,42 @@ def test_every_compose_worker_declares_a_role_and_port():
     for name in ("docker-compose.atlas-workers.yml", "docker-compose.dsv41.yml"):
         text = (Path(__file__).resolve().parents[1] / name).read_text()
         assert text.count("LLM_PROFILE_NAME=") == text.count("LLM_ROLE=") == text.count("LLM_ANNOUNCE_PORT="), name
+
+
+def test_heartbeat_loop_survives_bus_down_then_hung_then_recovers(monkeypatch):
+    """A bus down at boot, then a hung publish, must not kill or wedge the loop: it reconnects."""
+    calls = {"n": 0}
+    published = []
+
+    class FlakyBus:
+        def __init__(self, *a, **k):
+            pass
+
+        async def connect(self):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise ConnectionError("bus down at boot")
+
+        async def publish(self, channel, env):
+            if calls["n"] == 2:
+                await asyncio.sleep(3600)  # hung socket
+            published.append(channel)
+
+        async def close(self):
+            pass
+
+    monkeypatch.setattr(host_main, "OrionBusAsync", FlakyBus)
+    monkeypatch.setattr(host_main, "HEARTBEAT_INTERVAL_SEC", 0.01)
+    monkeypatch.setattr(host_main, "HEARTBEAT_STEP_TIMEOUT_SEC", 0.05)
+
+    async def scenario():
+        task = asyncio.create_task(host_main.heartbeat_loop(_settings(orion_bus_url="redis://x")))
+        for _ in range(300):
+            if LLM_WORKER_ANNOUNCE_CHANNEL in published:
+                break
+            await asyncio.sleep(0.01)
+        task.cancel()
+        await task
+    asyncio.run(scenario())
+    assert "orion:system:health" in published and LLM_WORKER_ANNOUNCE_CHANNEL in published
+    assert calls["n"] >= 3

@@ -25,7 +25,7 @@ from app.admission_runtime import AdmissionRuntime
 from app.graph import Deps
 from app.pool_hold import PoolHolds
 from app.settings import Settings
-from orion.durable_admission.store import PostgresAdmissionStore
+from orion.durable_runs.registry_store import DurableRunRegistryStore
 from orion.schemas.durable_run import DurableRunRequestV1, CuriosityTurnResultV1
 from orion.schemas.gpu_pool import GpuLeaseRequestV1, GpuPoolControlV1
 from pool_fixture import CFG, InProcessPool, PoolBus
@@ -114,7 +114,7 @@ async def with_database(scenario):
                     "options": f"-c search_path={schema},public"}) as pool:
         saver = AsyncPostgresSaver(pool)
         await saver.setup()
-        store = PostgresAdmissionStore(pool)
+        store = DurableRunRegistryStore(pool)
         await store.setup()
         await scenario(pool, saver, store)
 
@@ -132,11 +132,17 @@ def runtime(pool, saver, store, block=None, *, gpu=None, outcome=None, **overrid
     return rt
 
 
-async def legacy_rows(store):
+LEGACY_TABLES = ("durable_gateway_permits", "durable_resource_leases", "durable_resource_demands",
+                 "durable_elastic_slot")
+
+
+async def legacy_tables(store):
+    """The pre-pool broker tables that exist. Stage 5.6 drops them (setup() applies the drop
+    migration), so a run can only ever touch the registry + events: expected []."""
     async with store.pool.connection() as conn:
-        demands = (await (await conn.execute("SELECT count(*) AS n FROM durable_resource_demands")).fetchone())["n"]
-        leases = (await (await conn.execute("SELECT count(*) AS n FROM durable_resource_leases")).fetchone())["n"]
-    return demands, leases
+        rows = [(await (await conn.execute("SELECT to_regclass(%s) AS t", (name,))).fetchone())["t"]
+                for name in LEGACY_TABLES]
+    return [str(r) for r in rows if r is not None]
 
 
 async def occupy_agent(gpu, name="blocker"):
@@ -191,7 +197,7 @@ def test_waiting_run_queues_in_the_pool_wakes_on_the_grant_and_completes_under_i
         assert len(restarted.runner.calls) == 1
         turn = restarted.runner.calls[0]
         assert turn.gpu_lease.lease_id == hold["lease_id"] and turn.gpu_lease.holder == "durable-runs:waiting-001"
-        assert turn.assigned_lane is None and turn.lease is None
+        assert turn.assigned_lane is None
         assert (await store.get_run(waiting.run_id))["terminal"] == "completed"
         assert (await gpu.lease(hold["lease_id"]))["status"] == "released"
         assert (await restarted.submit(waiting))["status"] == "completed"
@@ -202,7 +208,7 @@ def test_waiting_run_queues_in_the_pool_wakes_on_the_grant_and_completes_under_i
                 "resource.lease_released", "run.completed"} <= set(events)
         assert events["run.lane_assigned"]["detail"]["lane"] == "agent"
         # Acceptance check 1: the durable broker tables get nothing new; the pool holds one hold.
-        assert await legacy_rows(store) == (0, 0)
+        assert await legacy_tables(store) == []
         assert len(gpu.leases(holder="durable-runs:waiting-001", kind="hold")) == 1
     asyncio.run(with_database(scenario))
 
@@ -266,14 +272,15 @@ def test_lost_heartbeat_mid_turn_cancels_the_turn_and_waits_for_the_same_lease()
         assert rt.runner.cancels(), "a turn under a lost hold must be stopped"
         snap = await rt.graph.aget_state(rt.config(req.run_id))
         assert snap.values["hold"]["lease_id"] == hold["lease_id"]       # kept: same lease, same place
-        assert snap.values["lease"] is None and snap.values["status"] == "retrying"
+        # Not a failed attempt: straight back in line for the same hold, no backoff (2026-09-29).
+        assert snap.values["lease"] is None and snap.values["status"] == "waiting_resource"
+        assert snap.values["attempt"] == 0 and snap.next == ("resource_wait",)
         history = [e["event"] for e in await store.history(req.run_id)]
         assert "resource.lease_expired" in history and "resource.lease_released" not in history
         block.set()
         await gpu.later(60)                                               # retry delay: re-queued, re-granted
         row = await gpu.lease(hold["lease_id"])
         assert row["status"] == "granted" and row["generation"] == 2
-        await asyncio.sleep(0.06)                                         # durable retry backoff
         await rt.on_pool_event({"holder": "durable-runs:expire-001", "event": "granted"})
         await rt._drive(await store.get_run(req.run_id))
         await rt._drive(await store.get_run(req.run_id))
@@ -426,9 +433,9 @@ def test_legacy_durable_lease_in_a_checkpoint_is_dropped_and_the_run_asks_the_po
         await rt._drive(await store.get_run(req.run_id))
         assert (await store.get_run(req.run_id))["terminal"] == "completed"
         [turn] = rt.runner.calls
-        assert turn.lease is None and turn.gpu_lease is not None and turn.assigned_lane is None
+        assert turn.gpu_lease is not None and turn.assigned_lane is None
         assert "agent-burst" not in turn.model_dump_json()
-        assert await legacy_rows(store) == (0, 0)
+        assert await legacy_tables(store) == []
         await rt.close()
     asyncio.run(with_database(scenario))
 
@@ -475,7 +482,7 @@ def test_unreachable_pool_keeps_the_request_id_and_retries_idempotently():
 def test_heartbeat_interval_must_fit_twice_in_the_pool_hold_ttl():
     async def scenario(pool, saver, store):
         with pytest.raises(ValueError, match="at most half"):
-            runtime(pool, saver, store, DURABLE_RUNS_LEASE_HEARTBEAT_SEC=46, DURABLE_RUNS_LEASE_SECONDS=120)
+            runtime(pool, saver, store, DURABLE_RUNS_LEASE_HEARTBEAT_SEC=46)
     asyncio.run(with_database(scenario))
 
 
@@ -490,3 +497,14 @@ def test_list_pending_pages_urgent_rows_first_so_a_long_backlog_cannot_hide_one(
         assert [r["run_id"] for r in await store.list_pending(limit=2)] == ["pending-u-1", "pending-bg-0"]
         assert [r["run_id"] for r in await store.list_pending()] == ["pending-u-1", "pending-bg-0", "pending-bg-1", "pending-bg-2", "pending-legacy-0"]
     asyncio.run(with_database(scenario))
+
+
+def test_store_setup_refuses_the_public_schema():
+    """setup() applies the stage-5.6 drop migration: on the public schema (production's) it must
+    refuse before touching anything -- the real drop goes through the snapshot script."""
+    async def scenario():
+        async with AsyncConnectionPool(DSN, min_size=1, max_size=1, open=False,
+                kwargs={"autocommit": True, "row_factory": dict_row, "options": "-c search_path=public"}) as pool:
+            with pytest.raises(RuntimeError, match="test-only"):
+                await DurableRunRegistryStore(pool).setup()
+    asyncio.run(scenario())

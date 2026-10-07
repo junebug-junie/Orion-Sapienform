@@ -253,8 +253,8 @@ def build_reverie_visual_graph(run_step: RunStep, admission: AdmissionDeps, chec
             # Released by the runtime before generate started: queue afresh.
             return {**calls, "status": "waiting_resource", "route": "resource_request",
                     "lease": None, "hold": None}
-        except HoldLost:
-            released = await admission.release(state, "hold_lost", keep_requeued=True)
+        except HoldLost as exc:   # any pool take-back (urgent pause, recall past grace): not a retry
+            released = await admission.release(state, exc.release_reason, keep_requeued=True)
             return {**released, **calls, "status": "waiting_resource", "route": "resource_request"}
         except Exception as exc:  # noqa: BLE001 -- timeout/transport: a deferral, not a failure
             if str(exc).startswith("run_control:"):

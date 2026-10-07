@@ -93,6 +93,31 @@ class RecallQueryV1(BaseModel):
         default=None,
         description="Render budget override for phase-3 belief digest.",
     )
+    retrieval_query: Optional[str] = Field(
+        default=None,
+        max_length=1000,
+        description=(
+            "What to search for, chosen by the caller. When set, recall searches this text "
+            "instead of `fragment` (which stays the turn text, used for provenance and "
+            "self-hit exclusion). When absent, recall condenses `fragment` itself."
+        ),
+    )
+    deadline_ms: Optional[int] = Field(
+        default=None,
+        gt=0,
+        description=(
+            "Caller's remaining time budget in milliseconds. Recall aims to finish at 80% of it "
+            "and returns whatever arrived by then (decision.deadline_hit=True)."
+        ),
+    )
+    mode: Literal["retrieve", "context_only"] = Field(
+        default="retrieve",
+        description=(
+            "`retrieve` (default) runs context feeds plus query-driven retrievers. "
+            "`context_only` runs only the query-independent context feeds "
+            "(recent chat, recent timeline, bus anomalies): no retrievers, no expansion."
+        ),
+    )
 
 
 class RecallReplyV1(BaseModel):
@@ -203,5 +228,41 @@ class RecallDecisionV1(BaseModel):
     ranking_debug: List[Dict[str, Optional[float | int | str | bool]]] = Field(
         default_factory=list,
         description="Optional relevance diagnostics for ranked candidates.",
+    )
+    query_chars: Optional[int] = Field(
+        default=None,
+        description="Length of the text recall actually searched (after intake), in characters.",
+    )
+    retrieval_query_source: Optional[Literal["caller", "condensed", "fragment"]] = Field(
+        default=None,
+        description=(
+            "Where the searched text came from: `caller` (RecallQueryV1.retrieval_query), "
+            "`condensed` (fragment over RECALL_MAX_QUERY_CHARS, deterministically condensed), "
+            "or `fragment` (the fragment as-is)."
+        ),
+    )
+    sub_query_count: Optional[int] = Field(
+        default=None,
+        description="Number of sub-queries (signals) the retrievers ran over.",
+    )
+    candidates_fetched: Optional[int] = Field(
+        default=None,
+        description="Candidates returned by all backends before windowing/self-hit suppression.",
+    )
+    candidates_kept: Optional[int] = Field(
+        default=None,
+        description="Candidates left after windowing and self-hit suppression, entering fusion.",
+    )
+    deadline_hit: Optional[bool] = Field(
+        default=None,
+        description="True when the fetch deadline expired and pending backends were cancelled.",
+    )
+    timings_ms: Dict[str, int] = Field(
+        default_factory=dict,
+        description=(
+            "Per-stage wall time in ms: intake, fetch (feeds and retrievers are its "
+            "critical paths), windowing, suppression, pcr_collectors (pcr_active_packet, "
+            "pcr_concept_region), boost, fusion, eligible_count, shadow_compare, total."
+        ),
     )
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))

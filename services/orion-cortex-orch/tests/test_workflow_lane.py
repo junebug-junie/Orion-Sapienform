@@ -2671,7 +2671,8 @@ def test_chat_history_compactor_pass_upserts_card_and_writes_journal(monkeypatch
     assert result.metadata["workflow"]["turn_count"] == 1
     assert card_calls.get("digest") is not None
     assert any(ch == "orion:journal:write" for ch, _ in bus.published)
-    assert digest_routes[0] == "chat"
+    # Durable-admission route, never Juniper's reserved `chat` lane.
+    assert digest_routes[0] == "agent"
     assert "Discussed indexed memory card upserts." in (result.final_text or "")
     # Regression: "compact the last N hours" must fetch everything organic in
     # the window, not just the trailing contiguous session — a quiet gap must
@@ -3006,83 +3007,9 @@ def test_chat_history_compactor_pass_window_of_only_workflow_triggers_is_treated
     assert result.metadata["workflow"]["persisted"] == []
 
 
-def test_chat_history_compactor_pass_digest_chat_then_quick_retry(monkeypatch) -> None:
-    bus = DummyBus()
-    routes: list[str] = []
-
-    async def _fake_call_verb_runtime(*args, **kwargs):
-        req = kwargs["client_request"]
-        if req.verb == "skills.chat.discussion_window.v1":
-            skill = {
-                "window_start_utc": "2026-07-09T04:00:00+00:00",
-                "window_end_utc": "2026-07-09T10:00:00+00:00",
-                "turn_count": 1,
-                "turns": [
-                    {
-                        "created_at": "2026-07-09T05:00:00+00:00",
-                        "correlation_id": "corr-b",
-                        "prompt": "hi",
-                        "response": "hello",
-                    }
-                ],
-                "transcript_text": "user: hi\norion: hello",
-                "selection_strategy": "time_bound_then_contiguous_suffix",
-            }
-            return DummyVerbResult(
-                payload={
-                    "result": {
-                        "status": "success",
-                        "final_text": json.dumps(skill),
-                        "metadata": {"skill_result": skill},
-                    }
-                }
-            )
-        if req.verb == "chat_history_compactor_digest_v1":
-            route = str((req.options or {}).get("llm_route") or "")
-            routes.append(route)
-            if route == "chat":
-                return DummyVerbResult(
-                    payload={"result": {"status": "success", "final_text": "not-json", "metadata": {}}}
-                )
-            digest = {
-                "card_summary": "Quick-route digest recovered.",
-                "journal_title": "Chat digest",
-                "journal_body": "Recovered on quick.",
-                "turn_refs": ["corr-b"],
-            }
-            return DummyVerbResult(
-                payload={
-                    "result": {
-                        "status": "success",
-                        "final_text": json.dumps(digest),
-                        "metadata": {"chat_history_compactor_digest": digest},
-                    }
-                }
-            )
-        raise AssertionError(f"unexpected verb {req.verb}")
-
-    async def _fake_persist_card(**kwargs):
-        return uuid4()
-
-    monkeypatch.setattr(
-        "app.workflow_runtime.persist_chat_history_compactor_memory_card",
-        _fake_persist_card,
-    )
-
-    result = asyncio.run(
-        execute_chat_workflow(
-            bus=bus,
-            source=ServiceRef(name="cortex-orch"),
-            req=_req("chat_history_compactor_pass"),
-            correlation_id="00000000-0000-0000-0000-000000000303",
-            causality_chain=[],
-            trace={},
-            call_verb_runtime=_fake_call_verb_runtime,
-        )
-    )
-    assert result.ok is True
-    assert routes == ["chat", "quick"]
-    assert result.metadata["workflow"].get("digest_llm_route") == "quick"
+# test_chat_history_compactor_pass_digest_retries_after_invalid_json moved: a failed digest call
+# is now one bounded attempt of the compactor.digest durable run
+# (services/orion-durable-runs/tests/test_compactor_digest_graph.py), not an in-process retry.
 
 
 def test_chat_history_compactor_pass_digest_from_final_text_only(monkeypatch) -> None:
@@ -3158,7 +3085,7 @@ def test_chat_history_compactor_pass_digest_from_final_text_only(monkeypatch) ->
     assert result.ok is True
     assert card_calls.get("digest") is not None
     assert card_calls["digest"].card_summary == "Digest parsed from final_text."
-    assert result.metadata["workflow"].get("digest_llm_route") == "chat"
+    assert result.metadata["workflow"].get("digest_llm_route") == "agent"
     assert any(ch == "orion:journal:write" for ch, _ in bus.published)
 
 
@@ -3314,9 +3241,9 @@ def test_chat_history_compactor_pass_over_budget_is_trimmed_and_persisted(monkey
         )
     )
     assert result.ok is True
-    # Repaired on the first route: an over-budget digest must not burn the "quick"
-    # retry route, which re-runs the whole digest for a formatting miss.
-    assert routes == ["chat"]
+    # Repaired on the first attempt: an over-budget digest must not burn the
+    # retry, which re-runs the whole digest for a formatting miss.
+    assert routes == ["agent"]
     assert card_called["n"] == 1
     assert len(persisted_digests[0].card_summary) == CHAT_CARD_SUMMARY_MAX_CHARS
     assert persisted_digests[0].card_summary.endswith("\u2026")

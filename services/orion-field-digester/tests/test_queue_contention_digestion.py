@@ -347,9 +347,9 @@ def test_age_sql_filters_match_the_queue_they_describe() -> None:
     # Head of line in CLAIM_SQL's own order.
     assert "ORDER BY EXISTS (SELECT 1 FROM reading_durable_turn" in seed_sql
     assert "priority ASC, created_at ASC, seed_id ASC LIMIT 1" in seed_sql
-    # Durable: legacy pending demands UNION waiting pool holds (stage 4.4); behaviour is pinned on
-    # real Postgres in test_durable_waiting_sql_postgres.py.
-    assert "FROM durable_resource_demands d WHERE d.status = 'pending'" in durable_sql
+    # Durable: waiting pool holds only (stage 4.6 dropped the frozen durable_resource_demands
+    # half); behaviour is pinned on real Postgres in test_durable_waiting_sql_postgres.py.
+    assert "durable_resource_demands" not in durable_sql
     assert "h.kind = 'hold' AND h.holder LIKE 'durable-runs:%' AND h.status IN ('queued', 'backlogged')" in durable_sql
     assert "min(waiting_since)" in durable_sql
     # Queued only: backlogged leases may wait up to backlog_max_age_sec by design. Requests only:
@@ -376,13 +376,12 @@ def test_age_sql_empty_queue_is_zero_and_negative_clamped() -> None:
 
 
 def test_durable_waiting_sql_joins_on_the_pool_clients_holder_shape() -> None:
-    """The hold side is found by holder text; if durable-runs (4.5) and this reader disagreed on
-    it, every resumed run would be counted twice across the cutover."""
+    """Durable holds are found by holder text; if durable-runs and this reader disagreed on it,
+    every waiting run would drop out of durable_demand_pending and land in gpu_pool_waiting."""
     from app.store import DURABLE_WAITING_SQL
     from orion.gpu_pool.client import DURABLE_RUN_HOLDER_PREFIX, durable_run_holder
     from app.store import NOT_DURABLE_HOLD_SQL
 
-    assert f"h.holder = '{DURABLE_RUN_HOLDER_PREFIX}' || d.run_id" in DURABLE_WAITING_SQL
     assert f"h.holder LIKE '{DURABLE_RUN_HOLDER_PREFIX}%'" in DURABLE_WAITING_SQL
     assert f"holder NOT LIKE '{DURABLE_RUN_HOLDER_PREFIX}%'" in NOT_DURABLE_HOLD_SQL
     assert durable_run_holder("r") == f"{DURABLE_RUN_HOLDER_PREFIX}r"

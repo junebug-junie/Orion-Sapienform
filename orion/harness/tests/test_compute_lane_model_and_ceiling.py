@@ -449,3 +449,66 @@ def test_agent_route_model_label_is_a_stable_non_none_constant() -> None:
     from orion.llm.routes import AGENT_ROUTE_FCC_MODEL_LABEL
 
     assert AGENT_ROUTE_FCC_MODEL_LABEL == "llamacpp/agent"
+
+
+# --- GPU pool stage 6.3: the window comes from pool state, and a held turn uses its grant ------
+
+@pytest.mark.asyncio
+async def test_a_held_turn_sizes_its_window_from_the_granted_role_not_the_route(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A turn holding agent-gpu2 runs every call there, so agent-gpu2's discovered ctx_per_slot
+    is the ceiling -- the route-default probe must not even be consulted."""
+    from orion.harness import fcc_motor
+
+    monkeypatch.setattr(fcc_motor, "load_fcc_env", lambda *_a, **_k: dict(FCC_ENV))
+
+    async def _route_probe(*_a, **_k):
+        raise AssertionError("a held turn must not size itself from the route default")
+
+    def _boom(*_a, **_k):
+        raise AssertionError("guard must return before spending anything")
+
+    monkeypatch.setattr(fcc_motor, "probe_route_runtime", _route_probe)
+    monkeypatch.setattr(fcc_motor, "_preflight_fcc_server", _boom)
+    monkeypatch.setattr(fcc_motor, "_maybe_render_mcp_config", _boom)
+    pool_state = {"roles": [{"role": "agent-gpu2", "kind": "llm", "cards": ["gpu2"], "url": "http://h:8016",
+                             "status": "confirmed", "model_file": "gpu2.gguf", "ctx_per_slot": 4096}]}
+    events = [
+        ev
+        async for ev in fcc_motor.run_fcc_turn(
+            prompt="x" * 40_000, correlation_id="corr-held", fcc_model_label="llamacpp/agent",
+            workspace="/tmp", fcc_server_url="http://fcc:8082", auth_token="t", claude_bin="claude",
+            timeout_sec=5.0, pool_state=pool_state,
+            gpu_lease={"lease_id": "L1", "generation": 1, "role": "agent-gpu2", "holder": "durable-runs:r1"},
+        )
+    ]
+    assert [e["error_code"] for e in events] == ["fcc_lane_context_too_small"]
+    assert events[0]["metadata"]["fcc_lane_n_ctx"] == 4096
+
+
+@pytest.mark.asyncio
+async def test_no_pool_state_falls_back_to_the_env_ceiling(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pool unreachable (runner passed no state): no window is known, so the guard does not fire
+    on a guessed ctx -- the configured ceiling governs, exactly as when /routes was down."""
+    events = await _drive_turn_real_probe(monkeypatch, pool_state=None)
+    assert all(e.get("error_code") != "fcc_lane_context_too_small" for e in events)
+
+
+async def _drive_turn_real_probe(monkeypatch: pytest.MonkeyPatch, *, pool_state) -> list:
+    from orion.harness import fcc_motor
+
+    monkeypatch.setattr(fcc_motor, "load_fcc_env", lambda *_a, **_k: dict(FCC_ENV))
+
+    def _stop(*_a, **_k):
+        raise RuntimeError("stop after the guard")
+
+    monkeypatch.setattr(fcc_motor, "_preflight_fcc_server", _stop)
+    return [
+        ev
+        async for ev in fcc_motor.run_fcc_turn(
+            prompt="x" * 40_000, correlation_id="corr-nostate", fcc_model_label="llamacpp/agent",
+            workspace="/tmp", fcc_server_url="http://fcc:8082", auth_token="t", claude_bin="claude",
+            timeout_sec=5.0, pool_state=pool_state,
+        )
+    ]

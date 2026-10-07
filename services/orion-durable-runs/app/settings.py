@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from pydantic import Field, model_validator
+from pydantic import Field
 from pydantic_settings import BaseSettings
 
 from orion.schemas.durable_run import DURABLE_RUN_REQUEST_CHANNEL, DURABLE_RUN_STATE_CHANNEL
@@ -53,12 +53,7 @@ class Settings(BaseSettings):
     # Admitted runs (resource admission) are driven here on GPU pool holds (stage 4.5): the pool is
     # the only scheduler. The broker, widening and gpu2 elastic keys were deleted with the broker.
     admission_enabled: bool = Field(False, alias="DURABLE_RUNS_ADMISSION_ENABLED")
-    # Gateway capacity permits for world-model and the visual chain (/capacity). NOT GPU pool
-    # holds; stays until stage 5 moves those onto pool leases.
-    capacity_enabled: bool = Field(False, alias="DURABLE_RUNS_CAPACITY_ENABLED")
     admission_tick_sec: float = Field(5.0, gt=0.0, alias="DURABLE_RUNS_ADMISSION_TICK_SEC")
-    # Capacity permit TTL (/capacity). Admitted runs' holds use the pool's hold_lease_ttl_sec.
-    lease_seconds: float = Field(90.0, ge=15.0, alias="DURABLE_RUNS_LEASE_SECONDS")
     # How often a working run heartbeats its pool hold (must be at most half the pool's
     # hold_lease_ttl_sec, checked at startup) and how often a Door-A hold is kept alive.
     lease_heartbeat_sec: float = Field(15.0, gt=0.0, alias="DURABLE_RUNS_LEASE_HEARTBEAT_SEC")
@@ -75,6 +70,9 @@ class Settings(BaseSettings):
     pool_retry_base_sec: float = Field(15.0, gt=0.0, alias="DURABLE_RUNS_POOL_RETRY_BASE_SEC")
     pool_retry_max_sec: float = Field(300.0, gt=0.0, alias="DURABLE_RUNS_POOL_RETRY_MAX_SEC")
     retry_max_attempts: int = Field(3, ge=1, le=20, alias="DURABLE_RUNS_RETRY_MAX_ATTEMPTS")
+    # The pool taking a run's hold back mid-node (recall past its grace, lost heartbeat) is not an
+    # attempt; this bounds how often one run may be taken back and replayed. 0 = unbounded.
+    hold_max_takebacks: int = Field(12, ge=0, le=1000, alias="DURABLE_RUNS_HOLD_MAX_TAKEBACKS")
     retry_base_sec: float = Field(30.0, gt=0.0, alias="DURABLE_RUNS_RETRY_BASE_SEC")
     retry_max_sec: float = Field(300.0, gt=0.0, alias="DURABLE_RUNS_RETRY_MAX_SEC")
     # Admitted runs: a run is failed terminally once it has at least
@@ -103,12 +101,25 @@ class Settings(BaseSettings):
     # A timeout is a retry (backoff, no attempt spent), bounded only by the run's deadline.
     reverie_visual_step_timeout_sec: float = Field(600.0, gt=0.0, alias="DURABLE_RUNS_REVERIE_VISUAL_STEP_TIMEOUT_SEC")
 
-    @model_validator(mode="after")
-    def valid_lease_heartbeat(self):
-        if self.lease_heartbeat_sec >= self.lease_seconds:
-            raise ValueError("lease heartbeat interval must be shorter than lease duration")
-        return self
-
+    # Memory episode redesign Stage 1 (2026-10-02, SHADOW): subscribe orion:memory:episode:closed
+    # and distill each closed episode into episode_memory* tables. Kill switch: false stops new
+    # submissions (runs already accepted still finish). Nothing live reads those tables.
+    memory_episode_writer_enabled: bool = Field(True, alias="MEMORY_EPISODE_WRITER_ENABLED")
+    memory_episode_closed_channel: str = Field("orion:memory:episode:closed", alias="CHANNEL_MEMORY_EPISODE_CLOSED")
+    memory_episode_distill_route: str = Field("memory_distill", alias="MEMORY_EPISODE_DISTILL_ROUTE")
+    memory_episode_distill_timeout_sec: float = Field(600.0, gt=0.0, le=900.0, alias="MEMORY_EPISODE_DISTILL_TIMEOUT_SEC")
+    memory_episode_distill_max_tokens: int = Field(4096, gt=0, alias="MEMORY_EPISODE_DISTILL_MAX_TOKENS")
+    memory_episode_distill_deadline_hours: float = Field(20.0, gt=0.0, lt=24.0,
+                                                         alias="MEMORY_EPISODE_DISTILL_DEADLINE_HOURS")
+    llm_intake_channel: str = Field("orion:exec:request:LLMGatewayService", alias="CHANNEL_LLM_INTAKE")
+    # Reconciler: resubmits closed episodes with no distill run (lost close event or a failed run)
+    # as a NEW durable attempt, at most MEMORY_EPISODE_DISTILL_MAX_ATTEMPTS per episode.
+    memory_episode_reconcile_interval_sec: float = Field(900.0, gt=0.0, alias="MEMORY_EPISODE_RECONCILE_INTERVAL_SEC")
+    memory_episode_distill_max_attempts: int = Field(3, ge=1, le=10, alias="MEMORY_EPISODE_DISTILL_MAX_ATTEMPTS")
+    # Memory Stage 2 referents (orion/memory/referents). Each acceptance rule has its own switch.
+    memory_referents_enabled: bool = Field(True, alias="MEMORY_REFERENTS_ENABLED")
+    memory_alias_grounding_auto_accept: bool = Field(True, alias="MEMORY_ALIAS_GROUNDING_AUTO_ACCEPT")
+    memory_cooccurrence_auto_accept: bool = Field(True, alias="MEMORY_COOCCURRENCE_AUTO_ACCEPT")
     request_channel: str = DURABLE_RUN_REQUEST_CHANNEL
     state_channel: str = DURABLE_RUN_STATE_CHANNEL
 

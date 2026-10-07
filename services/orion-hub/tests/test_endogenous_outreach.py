@@ -769,7 +769,7 @@ def _stub_context(
 
 
 def _stub_generation(monkeypatch, text: str) -> None:
-    async def fake_generate(self, prompt, session_id, correlation_id):
+    async def fake_generate(self, prompt, session_id, correlation_id, **_kw):
         return text, {"stub": True}
 
     monkeypatch.setattr(EndogenousOutreach, "_generate", fake_generate)
@@ -853,7 +853,7 @@ def test_no_grounding_context_skips_generation(monkeypatch) -> None:
 
     called = {"n": 0}
 
-    async def fake_generate(self, prompt, session_id, correlation_id):
+    async def fake_generate(self, prompt, session_id, correlation_id, **_kw):
         called["n"] += 1
         return "unreachable", {}
 
@@ -1497,7 +1497,7 @@ def test_turn_starting_during_generation_drops_the_outreach(monkeypatch) -> None
     outreach.register_connection("c1", queue, {"correlation_id": None, "kind": None})
     _stub_context(monkeypatch)
 
-    async def generate_then_user_starts_typing(self, prompt, session_id, correlation_id):
+    async def generate_then_user_starts_typing(self, prompt, session_id, correlation_id, **_kw):
         outreach.note_busy("c1")  # Juniper hits Enter while the LLM is working
         return "something I was thinking about", {"stub": True}
 
@@ -1572,7 +1572,7 @@ def test_concurrent_ticks_cannot_both_send(monkeypatch) -> None:
     _stub_context(monkeypatch)
     released = asyncio.Event()
 
-    async def slow_generate(self, prompt, session_id, correlation_id):
+    async def slow_generate(self, prompt, session_id, correlation_id, **_kw):
         await released.wait()
         return "an unprompted thought", {}
 
@@ -2440,7 +2440,7 @@ def test_concurrent_ticks_persist_their_own_forced_flag_not_each_others(monkeypa
     _stub_context(monkeypatch)
     released = asyncio.Event()
 
-    async def slow_generate(self, prompt, session_id, correlation_id):
+    async def slow_generate(self, prompt, session_id, correlation_id, **_kw):
         await released.wait()
         return "an unprompted thought", {}
 
@@ -3542,7 +3542,7 @@ def test_a_concurrent_tick_cannot_strip_the_trace_off_a_delivered_row(monkeypatc
     inside = asyncio.Event()
     released = asyncio.Event()
 
-    async def slow_generate(self, prompt, session_id, correlation_id):
+    async def slow_generate(self, prompt, session_id, correlation_id, **_kw):
         inside.set()
         await released.wait()
         return "an unprompted thought", {}
@@ -3833,3 +3833,60 @@ def test_the_reader_and_writer_agree_on_the_decision_log_flag(monkeypatch) -> No
     monkeypatch.setenv("HUB_ENDOGENOUS_OUTREACH_DECISION_LOG_ENABLED", "true")
     assert count_sent_on("2026-08-28", "America/Denver") is None
     assert consulted, "the reader never reached the engine even with the log on"
+
+
+# --- recall retrieval design phase 3 (PR #2423 review): outreach's search text ---
+
+
+def test_outreach_retrieval_query_is_the_talkable_content() -> None:
+    from scripts.endogenous_outreach import outreach_retrieval_query
+
+    ctx = OutreachContext(
+        curiosity_summaries=["sustained prediction\n error on node:x"],
+        recent_turns=[("user", "not content, just continuity")],
+        presence=None,
+        open_prior_previews=["the gate is biased toward chat"],
+        daydream=(12.0, "a quiet GPU at night"),
+    )
+    q = outreach_retrieval_query(ctx)
+    assert q == "the gate is biased toward chat; sustained prediction error on node:x; a quiet GPU at night"
+    assert "continuity" not in q  # recent turns are not the subject
+
+
+def test_outreach_retrieval_query_none_without_talkable_content() -> None:
+    from scripts.endogenous_outreach import outreach_retrieval_query
+
+    ctx = OutreachContext(curiosity_summaries=[], recent_turns=[], presence=None)
+    assert outreach_retrieval_query(ctx) is None
+    big = OutreachContext(curiosity_summaries=["y" * 5000], recent_turns=[], presence=None)
+    assert len(outreach_retrieval_query(big)) == 1000
+
+
+def test_outreach_tick_sends_its_subject_not_the_prompt(monkeypatch) -> None:
+    outreach = _outreach()
+    _stub_context(monkeypatch, open_prior_previews=("the gate is biased toward chat",), open_prior_ids=("p1",))
+    seen: dict = {}
+
+    async def fake_generate(self, prompt, session_id, correlation_id, **kw):
+        seen.update(kw, prompt=prompt)
+        return "", {"stub": True}
+
+    monkeypatch.setattr(EndogenousOutreach, "_generate", fake_generate)
+    asyncio.run(outreach.maybe_outreach(force=True))
+    assert seen["retrieval_query"] == "the gate is biased toward chat; sustained prediction error on node:x"
+    assert seen["retrieval_query"] != seen["prompt"]
+
+
+def test_real_generate_threads_retrieval_query_into_both_lane_attempts(monkeypatch) -> None:
+    outreach = _outreach(agent_lane_timeout_sec=5.0)
+    outreach._bus = object()
+    calls: list = []
+
+    async def fake_execute(**kwargs):
+        calls.append(kwargs)
+        return [] if len(calls) == 1 else [_final_frame("hello")]  # agent lane fails, chat succeeds
+
+    _stub_unified_turn(monkeypatch, fake_execute)
+    text, _debug = asyncio.run(outreach._generate("prompt", "sess", "corr-1", retrieval_query="the subject"))
+    assert text == "hello"
+    assert [c["retrieval_query"] for c in calls] == ["the subject", "the subject"]

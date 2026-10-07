@@ -194,3 +194,126 @@ test('a thumbnail that fails to load is hidden, not shown broken', () => {
   img.listeners.error();
   assert.equal(img.hidden, true);
 });
+
+// --- memory confirmation cards (2026-10-06) ---------------------------------
+
+const MEM_ASK = {
+  ask_id: 'm1', question: 'You told me something on Oct 3, and I wrote it down like this: “X.” Want me to remember that?',
+  source_kind: 'memory_confirmation', source_ref: 'memory-confirm-00000000-0000-0000-0000-000000000007',
+  memory_statement: 'Juniper told me that X happened today.',
+};
+
+function memMount(postReply) {
+  const doc = fakeDoc();
+  let open = [MEM_ASK];
+  const posts = [];
+  const fetchFn = async (url, init) => {
+    if (init && init.method === 'POST') {
+      posts.push({ url, body: JSON.parse(init.body || '{}') });
+      const reply = postReply ? postReply(posts) : { ok: true, status: 200, body: { ok: true } };
+      if (reply.ok) open = [];
+      return { ok: reply.ok, status: reply.status, json: async () => reply.body };
+    }
+    return { ok: true, status: 200, json: async () => ({ asks: open }) };
+  };
+  return { doc, posts, handle: asks.mount(doc, fetchFn) };
+}
+
+const settle = async () => { for (let i = 0; i < 4; i++) await new Promise((r) => setTimeout(r, 0)); };
+const action = (card, a) => find(card, (n) => n.attrs && n.attrs['data-ask-action'] === a);
+
+test('a memory card offers Confirm / Revise / Reject, not Answer / Dismiss', async () => {
+  const { doc, handle } = memMount();
+  await handle.refresh();
+  const card = doc.byId.visionAsksList.children[0];
+  assert.equal(card.attrs['data-ask-kind'], 'resolvable');
+  for (const a of ['confirm', 'revise', 'reject']) assert.ok(action(card, a), a);
+  assert.equal(action(card, 'answer'), null);
+  assert.equal(action(card, 'dismiss'), null);
+  assert.ok(asks.isResolvable(MEM_ASK) && !asks.isResolvable({ source_kind: 'vision_individual' }));
+  handle.stop();
+});
+
+for (const [btn, resolution] of [['confirm', 'confirmed'], ['reject', 'rejected']]) {
+  test(`${btn} posts {resolution: ${resolution}} to the resolve route and refreshes`, async () => {
+    const { doc, posts, handle } = memMount();
+    await handle.refresh();
+    await action(doc.byId.visionAsksList.children[0], btn).listeners.click();
+    await settle();
+    assert.deepEqual(posts, [{ url: '/api/asks/m1/resolve', body: { resolution, note: '' } }]);
+    assert.equal(doc.byId.visionAsksStatus.textContent, 'Orion has no open questions for you.');
+    handle.stop();
+  });
+}
+
+test('Revise opens a box prefilled with the current wording and posts the edit', async () => {
+  const { doc, posts, handle } = memMount();
+  await handle.refresh();
+  const card = doc.byId.visionAsksList.children[0];
+  const box = find(card, (n) => n.tagName === 'textarea');
+  assert.equal(box.value, '');
+  const panel = find(card, (n) => n.attrs && n.attrs['data-ask-revise'] === 'm1');
+  assert.equal(panel.hidden, true);
+  action(card, 'revise').listeners.click();
+  assert.equal(panel.hidden, false);
+  assert.equal(box.value, 'Juniper told me that X happened today.');
+  box.value = '  Juniper told me Y happened, not X. ';
+  await action(card, 'save-revision').listeners.click();
+  await settle();
+  assert.deepEqual(posts, [{ url: '/api/asks/m1/resolve', body: { resolution: 'revised', note: 'Juniper told me Y happened, not X.' } }]);
+  handle.stop();
+});
+
+test('Revise with an empty box does not POST and says why', async () => {
+  const { doc, posts, handle } = memMount();
+  await handle.refresh();
+  const card = doc.byId.visionAsksList.children[0];
+  find(card, (n) => n.tagName === 'textarea').value = '   ';
+  await action(card, 'save-revision').listeners.click();
+  await settle();
+  assert.equal(posts.length, 0);
+  assert.ok(find(card, (n) => n.textContent === 'Write how I should remember it first.'));
+  handle.stop();
+});
+
+test('a stale memory card (409) explains and refreshes', async () => {
+  const { doc, handle } = memMount(() => ({ ok: false, status: 409, body: { detail: 'ask_not_open:answered' } }));
+  await handle.refresh();
+  const card = doc.byId.visionAsksList.children[0];
+  await action(card, 'confirm').listeners.click();
+  await settle();
+  assert.ok(find(card, (n) => /already answered/.test(n.textContent)));
+  handle.stop();
+});
+
+test('revisionProblem mirrors the server: empty, too short, unchanged (structural, no word list)', () => {
+  assert.equal(asks.revisionProblem('   ', 'a b c d e f'), 'revised_needs_note');
+  assert.equal(asks.revisionProblem("no that's wrong", 'a b c d e f'), 'revised_too_short');
+  assert.equal(asks.revisionProblem(' Juniper told me X   happened today ', 'juniper told me x happened today'), 'revised_unchanged');
+  assert.equal(asks.revisionProblem('Juniper told me Y happened, not X.', 'Juniper told me X happened.'), null);
+});
+
+test('a meta-note revision is refused in the card, points at Reject, and does not POST', async () => {
+  const { doc, posts, handle } = memMount();
+  await handle.refresh();
+  const card = doc.byId.visionAsksList.children[0];
+  action(card, 'revise').listeners.click();
+  find(card, (n) => n.tagName === 'textarea').value = 'no, wrong';
+  await action(card, 'save-revision').listeners.click();
+  await settle();
+  assert.equal(posts.length, 0);
+  assert.ok(find(card, (n) => /press Reject/.test(n.textContent)));
+  find(card, (n) => n.tagName === 'textarea').value = ' juniper told me that X happened today. ';  // the prefill, unchanged
+  await action(card, 'save-revision').listeners.click();
+  await settle();
+  assert.equal(posts.length, 0);
+  assert.ok(find(card, (n) => /same as what I have/.test(n.textContent)));
+  handle.stop();
+});
+
+test('asks list: only the first two cards are visible, the rest scroll', () => {
+  assert.equal(asks.visibleAsksMaxHeight([100, 120, 90, 300], 8), 228);
+  assert.equal(asks.visibleAsksMaxHeight([100, 120], 8), null);
+  assert.equal(asks.visibleAsksMaxHeight([], 8), null);
+  assert.equal(asks.visibleAsksMaxHeight([50, 60, 70], 0), 110);
+});

@@ -57,12 +57,27 @@ class Settings(BaseSettings):
         False,
         alias="ENABLE_LLM_INFERENCE_FIELD_DIGESTION",
     )
+    # vision_organ deltas (orion-vision-frame-router's own report on the eye, via
+    # substrate-runtime's vision_organ reducer) -> node:substrate.vision_organ
+    # vision_frame_staleness / vision_processing_failure_pressure ->
+    # capability:vision. Off in code; the operator template turns it on.
+    enable_vision_organ_field_digestion: bool = Field(
+        False,
+        alias="ENABLE_VISION_ORGAN_FIELD_DIGESTION",
+    )
     # rpc_delivery deltas (substrate-runtime's RPC delivery bridge: worst bus
     # hop's timeout ratio from every service's rpc-health snapshots) -> node
     # rpc_timeout_pressure -> capability:transport reliability_pressure.
     enable_rpc_delivery_field_digestion: bool = Field(
         False,
         alias="ENABLE_RPC_DELIVERY_FIELD_DIGESTION",
+    )
+    # storage_write deltas (orion-sql-writer's own write outcomes, via
+    # substrate-runtime's storage_write reducer) -> node:substrate.storage_write
+    # write_failure_pressure -> capability:storage reliability_pressure.
+    enable_storage_write_field_digestion: bool = Field(
+        False,
+        alias="ENABLE_STORAGE_WRITE_FIELD_DIGESTION",
     )
     enable_idle_tick: bool = Field(True, alias="FIELD_DIGESTER_IDLE_TICK_ENABLED")
     field_state_retention_hours: float = Field(72.0, alias="FIELD_STATE_RETENTION_HOURS")

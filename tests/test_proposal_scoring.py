@@ -493,7 +493,11 @@ def test_every_template_sets_an_explicit_base_priority():
 # (see their comments in config/proposals/proposal_policy.v1.yaml). Adding to
 # this set is a decision, not a default.
 _EMPTY_DIMENSION_TEMPLATES_ALLOWED = frozenset(
-    {"inspect_field_topology_catalog", "inspect_attended_target", "analyze_self_study_source"}
+    {"inspect_field_topology_catalog", "inspect_attended_target", "analyze_self_study_source",
+     # 2026-10-01: a workspace.winner world action is never scored on field-pressure dimensions --
+     # orion/proposals/builder.py::_build_workspace_candidates builds it from the winner + its own
+     # physical eligibility rules, so a `dimensions` map here would be a decoration nothing reads.
+     "shed_background_gpu"}
 )
 
 

@@ -456,3 +456,104 @@ def test_the_real_transport_treats_a_partial_refusal_as_a_failure(monkeypatch) -
     )
     with pytest.raises(smtplib.SMTPRecipientsRefused):
         tx.send(_Payload(title="t", body_text="b", body_md=None, attachments=[]))
+
+
+# --------------------------------------------------------------------------
+# the /notify RESPONSE carries the email outcome, not just "queued"
+#
+# The endpoint sends synchronously but used to always answer status="queued",
+# so a caller (e.g. a daily letter producer) could not tell a sent email from a
+# failed one without querying notify_requests.
+# --------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "transport_exc, should, expected_email_status",
+    [
+        (None, (True, "policy_ok"), "sent"),
+        (RuntimeError("smtp down"), (True, "policy_ok"), "failed"),
+        (None, (False, "severity_below_threshold"), "skipped"),
+    ],
+)
+async def test_notify_response_reports_the_real_email_outcome(
+    monkeypatch, transport_exc, should, expected_email_status
+) -> None:
+    m, req, published, coros = _app_request(monkeypatch, _Transport(exc=transport_exc))
+    monkeypatch.setattr(m, "should_send_email", lambda p: should)
+    from orion.schemas.notify import NotificationRequest
+
+    accepted = await m.notify(
+        payload=NotificationRequest(
+            source_service="test", event_kind="test.kind", severity="critical",
+            title="t", body_text="b",
+        ),
+        request=req,
+    )
+    await _drain(coros, published)
+    assert accepted.status == "queued", "wire-compatible status unchanged"
+    assert accepted.email_status == expected_email_status
+    # the response and the persisted record must agree on what happened
+    assert published[0].status == {"sent": "sent", "failed": "failed", "skipped": "no_email"}[expected_email_status]
+    if expected_email_status == "sent":
+        assert accepted.detail is None
+    else:
+        assert accepted.detail, "a non-sent outcome must say why"
+
+
+@pytest.mark.asyncio
+async def test_notify_response_reports_skipped_when_no_transport(monkeypatch) -> None:
+    m, req, published, coros = _app_request(monkeypatch, None)
+    monkeypatch.setattr(m, "should_send_email", lambda p: (True, "policy_ok"))
+    from orion.schemas.notify import NotificationRequest
+
+    accepted = await m.notify(
+        payload=NotificationRequest(
+            source_service="test", event_kind="test.kind", severity="critical",
+            title="t", body_text="b",
+        ),
+        request=req,
+    )
+    await _drain(coros, published)
+    assert accepted.email_status == "skipped"
+    assert accepted.detail == "smtp_transport_unconfigured"
+
+
+@pytest.mark.asyncio
+async def test_body_html_is_not_published_on_any_bus_channel(monkeypatch) -> None:
+    """body_html is email-only. Assert on the serialized envelopes actually
+    handed to the bus on BOTH paths (persistence + in-app hub event), so a
+    future `**payload.model_dump()` refactor on either would trip this."""
+    pytest.importorskip("fastapi")
+    from types import SimpleNamespace
+
+    from app import main as m
+    from orion.schemas.notify import NotificationRequest
+
+    sent: list = []
+    coros: list = []
+
+    class _Bus:
+        async def publish(self, channel, envelope):
+            sent.append((channel, envelope))
+
+    monkeypatch.setattr(m.asyncio, "create_task", lambda c: coros.append(c) or None)
+    monkeypatch.setattr(m, "_check_token", lambda *_a, **_k: None)
+    monkeypatch.setattr(m, "should_send_email", lambda p: (True, "policy_ok"))
+    monkeypatch.setattr(m.settings, "NOTIFY_IN_APP_ENABLED", True)
+    req = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(bus=_Bus(), email_transport=_Transport())))
+
+    await m.notify(
+        payload=NotificationRequest(
+            source_service="test", event_kind="test.kind", severity="critical",
+            title="t", body_text="b", body_html="<p>big letter</p>",
+        ),
+        request=req,
+    )
+    for c in coros:
+        await c
+    channels = {c for c, _ in sent}
+    assert channels == {m.settings.NOTIFY_IN_APP_CHANNEL, "orion:notify:persistence:request"}, channels
+    for channel, env in sent:
+        blob = env.model_dump_json()
+        assert "big letter" not in blob, f"body_html leaked onto {channel}"
+        assert "body_html" not in blob, f"body_html key leaked onto {channel}"

@@ -88,6 +88,28 @@ def test_lease_ref_round_trip_and_header():
         GpuLeaseRefV1(lease_id="hold-1", generation=0, role="agent", holder="h")
 
 
+def test_the_hold_ref_is_the_only_run_lease_after_4_6():
+    """Stage 4.6 deleted the durable token and the broker-only admission fields (kill means kill)."""
+    import orion.llm.resource_lease as wire
+    import orion.schemas.resource_admission as admission
+
+    assert not hasattr(admission, "ResourceLeaseV1")
+    for name in ("LEASE_HEADER", "encode_lease_header", "decode_lease_header", "validate_resource_lease"):
+        assert not hasattr(wire, name), name
+    with pytest.raises(ValueError):   # never registered; guards against a future re-registration
+        resolve("ResourceLeaseV1")
+    for field in ("allow_elastic_activation", "alternatives", "pinned_lane", "operator_override"):
+        assert field not in admission.ResourceRequirementV1.model_fields
+        with pytest.raises(ValidationError):   # extra="forbid": a producer still sending one is refused
+            admission.ResourceRequirementV1(**{field: None})
+    # Stage 5.6: the /capacity permit contracts are gone with the broker, and were never registered.
+    for name in ("CapacityAcquireV1", "CapacityTokenV1", "CapacityPermitV1", "CapacityAcquireResultV1",
+                 "CapacityRenewResultV1", "CapacityReleaseResultV1"):
+        assert not hasattr(admission, name), name
+        with pytest.raises(ValueError):
+            resolve(name)
+
+
 # --- pool events / card state ----------------------------------------------------------------
 @pytest.mark.parametrize("event", ["swap_started", "swap_failed", "actuate_refused", "swap_requested", "swapped"])
 def test_new_swap_events(event):
@@ -96,6 +118,9 @@ def test_new_swap_events(event):
 
 def test_card_fault_state():
     assert GpuCardStateV1(card="gpu2", vram_gb=32, swap_state="fault").swap_state == "fault"
+    # Stage 5.5: additive, optional -- a pre-5.5 payload (no index) still validates.
+    assert GpuCardStateV1(card="gpu2", vram_gb=32).index is None
+    assert GpuCardStateV1(card="gpu2", vram_gb=32, index=2).index == 2
 
 
 # --- actuation --------------------------------------------------------------------------------
@@ -193,14 +218,13 @@ def test_rejects_actuator_on_another_host():
     _bad(lambda d: d["actuators"].update(atlas={"host": "atlas"}), "is not the pool host")
 
 
-def test_rejects_half_a_bridge():
-    _bad(lambda d: d["roles"]["agent-gpu2"]["swap"].pop("unload"), "come as a pair")
+def test_rejects_a_bridge_verb():
+    # 5.6 deleted the bridge: even half of the old pair is an unknown key.
+    _bad(lambda d: d["roles"]["agent-gpu2"]["swap"].update(load="gpu2/agent"), "Extra inputs")
 
 
-def test_rejects_unbridged_seat_whose_evicted_role_has_no_launch():
+def test_rejects_seat_whose_evicted_role_has_no_launch():
     def mutate(d):
-        d["roles"]["agent-gpu2"]["swap"].pop("load")
-        d["roles"]["agent-gpu2"]["swap"].pop("unload")
         d["roles"]["diffusion"].pop("launch")
     _bad(mutate, r"missing on \['diffusion'\]")
 
@@ -217,11 +241,10 @@ def test_rejects_bad_launch_block(field, value):
     _bad(lambda d: d["roles"]["agent-gpu2"]["launch"].update({field: value}), "")
 
 
-def test_unbridged_seat_with_launches_is_valid_and_after_wait_overrides():
+def test_seat_with_launches_is_valid_and_after_wait_overrides():
     data = copy.deepcopy(RAW)
     swap = data["roles"]["agent-gpu2"]["swap"]
-    swap.pop("load"), swap.pop("unload")
-    swap.update(after_wait_sec=1200, guards=["thermal", "visual_baseline"])
+    swap.update(after_wait_sec=1200, guards=["thermal"])
     cfg = PoolConfig.model_validate(data)
     assert cfg.swap_after_wait_sec("agent-gpu2") == 1200
     assert cfg.swap_after_wait_sec("experiment") == cfg.defaults.swap_after_wait_sec
@@ -229,8 +252,10 @@ def test_unbridged_seat_with_launches_is_valid_and_after_wait_overrides():
 
 # --- the static gate against compose ------------------------------------------------------------
 def _compose_mutation(tmp_path: Path, edit) -> list[str]:
-    """Copy the real compose + env templates into tmp, edit the agent-burst service, re-check."""
-    for rel in ("services/orion-llamacpp-host/docker-compose.atlas-workers.yml",
+    """Copy the real compose + env templates (and llm_profiles.yaml, which agent-gpu2's
+    launch.profiles is checked against since 5.3) into tmp, edit the agent-burst service, re-check."""
+    for rel in ("config/llm_profiles.yaml",
+                "services/orion-llamacpp-host/docker-compose.atlas-workers.yml",
                 "services/orion-llamacpp-host/.env_example",
                 "services/orion-diffusion-host/docker-compose.yml",
                 "services/orion-diffusion-host/.env_example"):
@@ -252,7 +277,7 @@ def _set_env(svc, key, value):
     (lambda s, c: _set_env(s, "LLM_ANNOUNCE_PORT", "${SOME_UNSET_PORT_VAR:-8017}"), "announces port 8017"),
     (lambda s, c: s.update(profiles=["burst"]), "compose_profile agent-burst"),
     (lambda s, c: _set_env(s, "CUDA_VISIBLE_DEVICES_OVERRIDE", "1"), "CUDA_VISIBLE_DEVICES_OVERRIDE=1"),
-    (lambda s, c: s.update(environment=[e for e in s["environment"] if "CUDA" not in e]), "does not set"),
+    (lambda s, c: s.update(environment=[e for e in s["environment"] if "CUDA" not in e]), "sets none of"),
     (lambda s, c: c["services"].pop("atlas-agent-burst"), "is not a service"),
 ])
 def test_gate_catches_compose_drift(tmp_path, edit, match):
@@ -310,26 +335,26 @@ GPU4_COMPOSE = textwrap.dedent("""
         environment:
           - LLM_ROLE=fast2
           - LLM_ANNOUNCE_PORT=${ATLAS_FAST2_HOST_PORT:-8017}
-          - CUDA_VISIBLE_DEVICES_OVERRIDE=4
+          - CUDA_VISIBLE_DEVICES_OVERRIDE=${ATLAS_FAST2_CUDA_VISIBLE_DEVICES:-4}
       atlas-vision4:
         profiles: ["vision4"]
         environment:
           - LLM_ROLE=vision4
           - LLM_ANNOUNCE_PORT=${ATLAS_VISION4_HOST_PORT:-8018}
-          - CUDA_VISIBLE_DEVICES_OVERRIDE=4
+          - CUDA_VISIBLE_DEVICES_OVERRIDE=${ATLAS_VISION4_CUDA_VISIBLE_DEVICES:-4}
 """)
 
 
 def _gpu4(data: dict, *, list_fast2_in_metacog: bool) -> dict:
     launch = {"actuator": "circe", "compose": "services/orion-llamacpp-host/docker-compose.atlas-workers.yml",
-              "env_file": "services/orion-llamacpp-host/.env", "cuda_env": "CUDA_VISIBLE_DEVICES_OVERRIDE",
-              "ready": "/health"}
+              "env_file": "services/orion-llamacpp-host/.env", "ready": "/health"}
     data["cards"]["gpu4"] = {"vram_gb": 32, "index": 4}
     data["roles"]["fast2"] = {"kind": "llm", "cards": ["gpu4"], "owner": ["metacog", "fast"], "port": 8017,
-                              "launch": {**launch, "service": "atlas-fast2", "timeout_sec": 300}}
+                              "launch": {**launch, "service": "atlas-fast2", "timeout_sec": 300,
+                                         "cuda_env": "ATLAS_FAST2_CUDA_VISIBLE_DEVICES"}}
     data["roles"]["vision4"] = {"kind": "llm", "cards": ["gpu4"], "owner": "vision", "port": 8018,
                                 "launch": {**launch, "service": "atlas-vision4", "compose_profile": "vision4",
-                                           "timeout_sec": 600},
+                                           "timeout_sec": 600, "cuda_env": "ATLAS_VISION4_CUDA_VISIBLE_DEVICES"},
                                 "swap": {"evicts": ["fast2"], "guards": ["thermal"]}}
     data["classes"]["fast"] = {"roles": ["fast", "metacog", "fast2", "agent", "agent-gpu2", "chat"],
                                "on_unavailable": "wait"}
@@ -350,7 +375,6 @@ def test_spec_gpu4_example_corrected_is_accepted_with_no_pool_code(tmp_path):
     cfg = PoolConfig.model_validate(_gpu4(copy.deepcopy(RAW), list_fast2_in_metacog=True))
     assert cfg.evicted_by("vision4") == ["fast2"]
     assert "fast2" in cfg.resident_roles() and "vision4" not in cfg.resident_roles()
-    assert not cfg.roles["vision4"].swap.bridged
     # The gate against a compose file that has both services (and the real gpu2 ones):
     _compose_mutation(tmp_path, lambda s, c: c["services"].update(yaml.safe_load(GPU4_COMPOSE)["services"]))
     assert check_launch(cfg, tmp_path) == []

@@ -31,6 +31,8 @@ from orion.fcc.context_budget import (
     max_context_chars,
     max_context_tokens,
     measure_step_payload_chars,
+    post_compaction_context_chars,
+    is_compact_boundary_event,
     extend_fcc_subprocess_env,
 )
 
@@ -416,6 +418,11 @@ async def run_turn(
                 continue
 
             step = build_step_frame(parsed)
+            if is_compact_boundary_event(parsed):
+                # Same rebase as orion/harness/fcc_motor.py: after the CLI compacts,
+                # the running total no longer describes what is in context.
+                budget_chars = post_compaction_context_chars(parsed, prompt_chars=len(prompt))
+                context_nudge_sent = False
             step = annotate_harness_step(step, accumulated_chars=budget_chars, max_chars=ceiling_chars)
             budget_chars += measure_step_payload_chars(step)
             yield {"type": "step", "step": step}

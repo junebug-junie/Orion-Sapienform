@@ -811,6 +811,12 @@ def _dream_section(dream_hypotheses: Sequence = ()) -> list[str]:
     return format_dream_section(dream_hypotheses or ())
 
 
+def _carry_forward_section(carry_forward=None) -> list[str]:
+    from orion.orion_day.carry_forward import format_carry_forward_section
+
+    return format_carry_forward_section(carry_forward)
+
+
 def _role_and_help_section(
     *,
     own_graph: str,
@@ -968,8 +974,14 @@ def build_kickoff_prompt(
     contractor_peer_enabled: bool = False,
     peer_briefs: Sequence = (),
     dream_hypotheses: Sequence = (),
+    carry_forward=None,
 ) -> str:
     """Assemble the whole invitation.
+
+    ``carry_forward`` (orion.orion_day.carry_forward.OfferedCarryForward): the threads Orion's
+    Day named for future curiosity. Its own section with its own header, never inside the
+    dream section or the material, and not gated on the graph (it asks for no write). Only
+    the letter's carry-forward text ever arrives here -- never its freeform note.
 
     THREE STATES, NOT TWO, and conflating the last two is a real bug this
     signature exists to prevent (caught by its own test, 2026-08-26):
@@ -1007,6 +1019,7 @@ def build_kickoff_prompt(
         if writable:
             lines += _dream_section(dream_hypotheses)
 
+    lines += _carry_forward_section(carry_forward)
     lines += _material_section(material)
     lines += _access_section(
         own_graph=own_graph,

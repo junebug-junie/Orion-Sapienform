@@ -1,6 +1,8 @@
-"""Tests for app/main.py's HTTP surface: auth gate on POST
-/v1/gpu-lane/flip, pass-through of GET /v1/gpu-lane/status, and the
-fail-closed behavior when GPU_LANE_CONTROLLER_TOKEN is unset.
+"""app/main.py's HTTP surface: /health only.
+
+GPU pool stage 5.6 deleted every HTTP control/status route (the GPU1 affect/agent flip, its
+GPU_LANE_CONTROLLER_TOKEN, /v1/gpu-lane/status and /v1/gpu-slots/*): the pool's bus actuation
+(app/actuator_bus.py) is the only way to move a card. Also the shared module loader for this suite.
 """
 
 from __future__ import annotations
@@ -9,7 +11,6 @@ import importlib.util
 import sys
 import types
 from pathlib import Path
-from unittest.mock import AsyncMock
 
 import pytest
 from fastapi.testclient import TestClient
@@ -43,111 +44,57 @@ def _load(name: str):
 
 settings_module = _load("settings")
 sys.modules[f"{APP_PACKAGE_NAME}.settings"] = settings_module
-lane_control_module = _load("lane_control")
-sys.modules[f"{APP_PACKAGE_NAME}.lane_control"] = lane_control_module
 main_module = _load("main")
 
 
 @pytest.fixture
 def client(monkeypatch):
-    # Heartbeat chassis talks to a real bus -- irrelevant to these HTTP
+    # The bus chassis talks to a real bus -- irrelevant to these HTTP
     # contract tests and not something to stand a real Redis up for.
     monkeypatch.setattr(main_module.settings, "ORION_BUS_ENABLED", False)
-    monkeypatch.setattr(
-        main_module, "build_heartbeat_chassis", lambda: (_ for _ in ()).throw(RuntimeError("no bus in tests"))
-    )
     with TestClient(main_module.app) as c:
         yield c
 
 
-def test_health_no_auth_needed(client):
+def test_health(client):
     resp = client.get("/health")
     assert resp.status_code == 200
     assert resp.json()["ok"] is True
 
 
-def test_status_no_auth_needed(client, monkeypatch):
-    monkeypatch.setattr(
-        main_module.lane_control, "get_status", lambda: {"active": "agent", "affect": {}, "agent": {}}
-    )
-    resp = client.get("/v1/gpu-lane/status")
-    assert resp.status_code == 200
-    assert resp.json()["active"] == "agent"
+@pytest.mark.parametrize("method,path", [
+    ("post", "/v1/gpu-lane/flip"), ("get", "/v1/gpu-lane/status"),
+    ("get", "/v1/gpu-slots/circe-gpu1/status"), ("get", "/v1/gpu-slots/circe-gpu2/status"),
+    ("post", "/v1/gpu-slots/activate"), ("post", "/v1/gpu-lanes/flip"),
+])
+def test_stage5_6_legacy_http_routes_are_gone(client, method, path):
+    resp = getattr(client, method)(path, json={"target": "agent"}) if method == "post" else client.get(path)
+    assert resp.status_code in (404, 405)
 
 
-def test_flip_fails_closed_when_token_unset(client, monkeypatch):
-    monkeypatch.setattr(main_module.settings, "GPU_LANE_CONTROLLER_TOKEN", "")
-    resp = client.post("/v1/gpu-lane/flip", json={"target": "agent"})
-    assert resp.status_code == 503
+def test_health_is_the_only_route():
+    paths = {getattr(r, "path", "") for r in main_module.app.routes}
+    assert {p for p in paths if p.startswith("/v1")} == set()
 
 
-def test_flip_rejects_missing_bearer_token(client, monkeypatch):
-    monkeypatch.setattr(main_module.settings, "GPU_LANE_CONTROLLER_TOKEN", "secret-token")
-    resp = client.post("/v1/gpu-lane/flip", json={"target": "agent"})
-    assert resp.status_code == 401
-
-
-def test_flip_rejects_wrong_bearer_token(client, monkeypatch):
-    monkeypatch.setattr(main_module.settings, "GPU_LANE_CONTROLLER_TOKEN", "secret-token")
-    resp = client.post(
-        "/v1/gpu-lane/flip",
-        json={"target": "agent"},
-        headers={"Authorization": "Bearer wrong-token"},
-    )
-    assert resp.status_code == 401
-
-
-def test_flip_accepts_correct_bearer_token(client, monkeypatch):
-    monkeypatch.setattr(main_module.settings, "GPU_LANE_CONTROLLER_TOKEN", "secret-token")
-    monkeypatch.setattr(
-        main_module.lane_control,
-        "flip",
-        AsyncMock(return_value={"status": "noop", "target": "agent", "user_facing_summary": "already there"}),
-    )
-    resp = client.post(
-        "/v1/gpu-lane/flip",
-        json={"target": "agent"},
-        headers={"Authorization": "Bearer secret-token"},
-    )
-    assert resp.status_code == 200
-    assert resp.json()["status"] == "noop"
-
-
-def test_flip_rejects_invalid_target_body(client, monkeypatch):
-    monkeypatch.setattr(main_module.settings, "GPU_LANE_CONTROLLER_TOKEN", "secret-token")
-    resp = client.post(
-        "/v1/gpu-lane/flip",
-        json={"target": "not-a-real-lane"},
-        headers={"Authorization": "Bearer secret-token"},
-    )
-    assert resp.status_code == 422
-
-
-def test_flip_returns_409_when_busy(client, monkeypatch):
-    monkeypatch.setattr(main_module.settings, "GPU_LANE_CONTROLLER_TOKEN", "secret-token")
-    monkeypatch.setattr(
-        main_module.lane_control,
-        "flip",
-        AsyncMock(return_value={"status": "busy", "target": "agent", "user_facing_summary": "in progress"}),
-    )
-    resp = client.post(
-        "/v1/gpu-lane/flip",
-        json={"target": "agent"},
-        headers={"Authorization": "Bearer secret-token"},
-    )
-    assert resp.status_code == 409
-
-
-def test_flip_surfaces_failure_status_as_502(client, monkeypatch):
-    monkeypatch.setattr(main_module.settings, "GPU_LANE_CONTROLLER_TOKEN", "secret-token")
-    monkeypatch.setattr(
-        main_module.lane_control,
-        "flip",
-        AsyncMock(return_value={"status": "stop_failed", "target": "agent", "user_facing_summary": "nope"}),
-    )
-    resp = client.post(
-        "/v1/gpu-lane/flip",
-        json={"target": "agent"},
-        headers={"Authorization": "Bearer secret-token"},
-    )
-    assert resp.status_code == 502
+def test_stage5_6_gpu2_bridge_and_flip_modules_and_keys_are_gone():
+    app_dir = SERVICE_DIR / "app"
+    assert not (app_dir / "gpu2.py").exists() and not (app_dir / "lane_control.py").exists()
+    fields = set(type(main_module.settings).model_fields)
+    gone = {"GPU2_ENABLED", "GPU2_DIFFUSION_URL", "GPU2_AGENT_URL", "GPU2_DRAIN_TIMEOUT_SEC",
+            "GPU2_MODEL_READY_TIMEOUT_SEC", "GPU2_POOL_FENCE_STATE_PATH", "GPU2_AUTHORITY", "GPU2_AUTHORITY_URL",
+            "GPU_LANE_CONTROLLER_TOKEN", "GPU_LANE_HEALTH_POLL_SEC", "AGENT_GPU1_CUDA_VISIBLE_DEVICES",
+            "AFFECT_COMPOSE_RELPATH", "AGENT_COMPOSE_RELPATH"}
+    assert fields & gone == set()
+    assert {"GPU_POOL_FENCE_STATE_PATH", "GPU_LANE_DRAIN_TIMEOUT_SEC"} <= fields
+    # Renamed, not reset: the same file on the same volume, so the fence's last generation carries over.
+    assert type(main_module.settings)(_env_file=None).GPU_POOL_FENCE_STATE_PATH == "/state/gpu2_pool_fence.json"
+    assert type(main_module.settings)(_env_file=None).GPU_LANE_DRAIN_TIMEOUT_SEC == 300.0
+    for rel in (".env_example", "docker-compose.yml"):
+        text = (SERVICE_DIR / rel).read_text()
+        live = "\n".join(line for line in text.splitlines() if not line.lstrip().startswith("#"))
+        for key in ("GPU2_", "GPU_LANE_CONTROLLER_TOKEN"):
+            assert key not in live, (rel, key)
+    # No literal CUDA device index anywhere in the actuator: the card index comes from the YAML.
+    for path in app_dir.glob("*.py"):
+        assert "CUDA_VISIBLE_DEVICES" not in path.read_text(), path.name

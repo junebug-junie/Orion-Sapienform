@@ -35,7 +35,10 @@ class OrionAskV1(BaseModel):
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     expires_at: Optional[datetime] = None
     # What the question is about, so the answer can be routed back to it.
-    # e.g. source_kind="vision_individual", source_ref="<individual_id>".
+    # e.g. source_kind="vision_individual", source_ref="<individual_id>";
+    # source_kind="memory_confirmation", source_ref="memory-confirm-<memory_id>" (2026-10-06,
+    # orion.memory.episode.confirmation: answered only through the Hub's /resolve route, which also
+    # writes the attention_loop_outcome row).
     source_kind: str
     source_ref: str
 

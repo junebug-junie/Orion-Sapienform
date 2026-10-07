@@ -1,7 +1,6 @@
-"""Stage 4.2: the pool-generation fence for gpu2 (GPU2_AUTHORITY=pool).
+"""Stage 4.2: the pool-generation fence -- the only actuation authority since stage 4.6.
 
-Replaces the durable-runs ``/elastic/status`` callback as the thing that says "this transition is
-still the current intent". Two checks, both local to circe:
+The thing that says "this transition is still the current intent". Two checks, both local to circe:
 
 - **generation**: the pool issues a generation per card set; the controller refuses anything
   <= the last one it accepted, and persists the accepted one *before* touching a container, so a
@@ -13,6 +12,14 @@ still the current intent". Two checks, both local to circe:
 
 Spec: docs/superpowers/specs/2026-09-25-gpu-pool-stage4-durable-runs-and-actuation.md
 ("Stage 4 bridge (Option A)").
+
+Stage 5.2 (docs/superpowers/specs/2026-09-29-gpu-pool-stage5-world-diffusion-generic-actuation.md,
+Decision 2): ``resolve()`` returns a ``LaunchPlan`` for a swap seat,
+built only from this checkout's ``launch`` blocks (compose file, service, profile, env var names) plus
+the card ``index`` and a profile from the role's ``launch.profiles`` allow-list. The request names a
+role and a profile, never a container, path or env value. Executed by app/launch_exec.py. Stage 5.6
+deleted the stage-4 gpu2 bridge (``swap.load``/``swap.unload`` verbs, BRIDGE_TARGETS, gpu2.py): a
+LaunchPlan is the only thing a load/unload resolves to.
 """
 from __future__ import annotations
 
@@ -20,18 +27,14 @@ import asyncio
 import json
 import os
 import threading
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from orion.gpu_pool.config import PoolConfig, launch_digest, load_pool_config
+from orion.gpu_pool.config import DrainSpec, PoolConfig, launch_digest, load_pool_config
 
 from .settings import settings
 
-# Stage-4 bridge verbs (config/gpu_pool.yaml roles.<seat>.swap.load/unload) -> gpu2.transition target.
-# Deleted in stage 5, when the controller builds the compose call from the role's `launch` block.
-BRIDGE_TARGETS = {"gpu2/agent": "agent-burst", "gpu2/restore": "diffusion"}
-# gpu2.transition target -> the pool role name it puts on the card (for `observed`).
-TARGET_ROLES = {"agent-burst": "agent-gpu2", "diffusion": "diffusion"}
 MAX_RECORDED_ACTIONS = 50
 
 _file_lock = threading.Lock()
@@ -54,9 +57,74 @@ def card_set(cards: list[str]) -> str:
     return ",".join(sorted(set(cards)))
 
 
-def resolve(cfg: PoolConfig, *, role: str, action: str, cards: list[str], digest: str | None) -> str | None:
-    """The gpu2.transition target for a pool request, or raise Refusal. ``digest=None`` skips the
-    digest check (``status`` is a read and must still answer from a diverged checkout)."""
+@dataclass(frozen=True)
+class RolePlan:
+    """One role's compose call, entirely from this checkout's ``launch`` block."""
+    role: str
+    kind: str                      # "llm" (idle check = llama.cpp /slots) | "service"
+    compose: str                   # repo-relative
+    env_file: str | None           # repo-relative
+    service: str
+    compose_profile: str | None
+    env: dict[str, str]            # compose interpolation vars: cuda_env (+ profile_var)
+    unset: tuple[str, ...] = ()    # vars removed from the process env (profile_var when no profile)
+    drain: DrainSpec | None = None
+    ready: str = "/health"         # HTTP path
+    base_url: str = ""             # http://<pool host address>:<role port>
+    timeout_sec: float = 600.0     # readiness wait after `up` (one budget for resume + ready)
+
+    def env_text(self) -> str:
+        return " ".join(f"{k}={v}" for k, v in sorted(self.env.items()))
+
+
+@dataclass(frozen=True)
+class LaunchPlan:
+    """A swap seat plus the roles it evicts (drained + stopped before it starts; restarted in
+    reverse stop order on a failed load's rollback, in YAML order on unload)."""
+    seat: RolePlan
+    evicts: tuple[RolePlan, ...] = field(default_factory=tuple)
+    profile: str | None = None
+
+
+def _role_plan(cfg: PoolConfig, name: str, profile: str | None) -> RolePlan:
+    spec = cfg.roles[name]
+    launch = spec.launch
+    if launch is None or launch.actuator != settings.GPU_POOL_ACTUATOR_NAME:
+        raise Refusal(f"no_launch_block:{name}")
+    # Card index, never a request value: the config validator guarantees an index on every card of
+    # a launch role, and the 5.1 gate that the compose device entry is ${cuda_env}.
+    env = {launch.cuda_env: ",".join(str(cfg.cards[c].index) for c in spec.cards)}
+    unset: tuple[str, ...] = ()
+    if profile is not None:
+        env[launch.profile_var] = profile
+    elif launch.profile_var is not None:
+        # No profile -> compose's own default, never a value inherited from the controller's env.
+        unset = (launch.profile_var,)
+    return RolePlan(role=name, kind=spec.kind, compose=launch.compose, env_file=launch.env_file,
+                    service=launch.service, compose_profile=launch.compose_profile, env=env, unset=unset,
+                    drain=launch.drain, ready=launch.ready, base_url=cfg.url(name),
+                    timeout_sec=float(launch.timeout_sec))
+
+
+def build_plan(cfg: PoolConfig, role: str, profile: str | None) -> LaunchPlan:
+    """The generic launch plan for a swap seat. Evicted roles restart on their compose default
+    model (no profile): the seat's profile choice is the seat's alone."""
+    return LaunchPlan(seat=_role_plan(cfg, role, profile),
+                      evicts=tuple(_role_plan(cfg, r, None) for r in cfg.evicted_by(role)),
+                      profile=profile)
+
+
+def role_plans(cfg: PoolConfig) -> dict[str, RolePlan]:
+    """Every role whose launch names this actuator, for ``observed`` (replaces TARGET_ROLES)."""
+    return {name: _role_plan(cfg, name, None) for name, spec in cfg.roles.items()
+            if spec.launch is not None and spec.launch.actuator == settings.GPU_POOL_ACTUATOR_NAME}
+
+
+def resolve(cfg: PoolConfig, *, role: str, action: str, cards: list[str], digest: str | None,
+            profile: str | None = None) -> LaunchPlan | None:
+    """What to run for a pool request, or raise Refusal: a LaunchPlan for a swap seat's load/unload,
+    or None for ``status``. ``digest=None`` skips the digest check (``status`` is a read and must still
+    answer from a diverged checkout)."""
     spec = cfg.roles.get(role)
     if spec is None:
         raise Refusal("unknown_role")
@@ -68,14 +136,14 @@ def resolve(cfg: PoolConfig, *, role: str, action: str, cards: list[str], digest
         raise Refusal("launch_digest_mismatch")
     if action == "status":
         return None
-    if spec.swap is None or not spec.swap.bridged:
-        # Stage 4 only bridges seats with swap.load/unload; generic launch actuation is stage 5.
-        raise Refusal("not_a_bridge_role")
-    verb = spec.swap.load if action == "load" else spec.swap.unload
-    target = BRIDGE_TARGETS.get(verb or "")
-    if target is None:
-        raise Refusal("bridge_verb_unsupported")
-    return target
+    if profile is not None and profile not in spec.launch.profiles:
+        # The allow-list is this checkout's YAML: a bus message can only pick among its entries.
+        raise Refusal("profile_not_allowed")
+    if spec.swap is None:
+        # Residents are started only as a seat's evictions (restore), never loaded on their own:
+        # a direct load could put them on a card a loaded seat still holds.
+        raise Refusal("not_a_swap_seat")
+    return build_plan(cfg, role, profile)
 
 
 # --- persisted fence state -------------------------------------------------------------------
@@ -85,7 +153,7 @@ def _empty() -> dict[str, Any]:
 
 
 def read_state() -> dict[str, Any]:
-    path = Path(settings.GPU2_POOL_FENCE_STATE_PATH)
+    path = Path(settings.GPU_POOL_FENCE_STATE_PATH)
     with _file_lock:
         if not path.exists():
             return _empty()
@@ -97,7 +165,7 @@ def read_state() -> dict[str, Any]:
 
 def write_state(state: dict[str, Any]) -> None:
     """Atomic replace + fsync: the generation must be durable before any container is touched."""
-    path = Path(settings.GPU2_POOL_FENCE_STATE_PATH)
+    path = Path(settings.GPU_POOL_FENCE_STATE_PATH)
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".tmp")
     with _file_lock:
@@ -143,15 +211,14 @@ def recover_interrupted() -> dict[str, Any] | None:
 async def authority(req, *, require_drained=True):
     # require_drained=False is the pre-flight and the rollback check. Rollback returns the card to
     # its previous residents, so a checkout edited mid-load must not block it: identity and
-    # generation only. (The durable admissions require_drained guarded do not exist under pool.)
+    # generation only.
     return await asyncio.to_thread(_authority, req, require_drained)
 
 
 def _authority(req, check_digest=True):
-    """Pool-mode replacement for gpu2.authority(): the transition in progress must still be the
-    newest generation accepted for gpu2, and the checkout must still match the digest it was
-    accepted under. Drain/idle *safety* stays in gpu2.transition; whether-to-act (thermal, visual
-    baseline, lease recall) is pool policy and is not re-asked here."""
+    """The action in progress must still be the newest generation accepted for its card set,
+    and the checkout must still match the digest it was accepted under. Drain/idle *safety* stays in
+    launch_exec; whether-to-act (thermal, lease recall) is pool policy and is not re-asked here."""
     state = read_state()
     flight = state.get("in_flight") or {}
     if flight.get("action_id") != req.operation_id or flight.get("generation") != req.generation:

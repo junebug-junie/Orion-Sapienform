@@ -924,13 +924,18 @@ def _apply_answers(conn, now: datetime) -> int:
     return len(rows)
 
 
+# The vision daily cap counts only vision asks. orion_ask is shared: since 2026-10-06 the memory
+# confirmation loop also opens cards there under its own cap (5 open), and those must not use up
+# the walkway camera's daily budget.
+ASKED_TODAY_SQL = "SELECT count(*) FROM orion_ask WHERE source_kind = 'vision_individual' AND created_at >= :d"
+
+
 def _open_asks(conn, now: datetime, tz: ZoneInfo, cfg: IndividualsConfig) -> List[dict]:
     from sqlalchemy import text
 
     from orion.schemas.ask import OrionAskV1
 
-    asked_today = conn.execute(text("SELECT count(*) FROM orion_ask WHERE created_at >= :d"),
-                               {"d": local_day_start(now, tz)}).scalar() or 0
+    asked_today = conn.execute(text(ASKED_TODAY_SQL), {"d": local_day_start(now, tz)}).scalar() or 0
     budget = remaining_ask_budget(daily_cap=cfg.ask_daily_cap, asked_today=int(asked_today))
     if budget <= 0:
         return []

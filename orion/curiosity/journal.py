@@ -102,8 +102,10 @@ def build_investigation_journal_entry(
 
     lines += [
         "",
+        # "saved", not "approved": most of these were auto-saved by policy
+        # and nobody reviewed them (memory redesign Stage 0A).
         f"(Offered {len(material.crystallizations)} of "
-        f"{material.approved_total} approved concepts [{offered}] and "
+        f"{material.approved_total} saved concepts [{offered}] and "
         f"{len(material.relations)} of {material.relation_total} relation "
         "judgements, all sampled at random.",
     ]

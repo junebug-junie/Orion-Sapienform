@@ -14,10 +14,7 @@ from orion.core.bus.rpc_health_publish import RpcHealthPublisher
 from orion.schemas.durable_run import DURABLE_RUN_REQUEST_KIND, DURABLE_RUN_RECEIPT_KIND, DurableRunRequestV1, DurableRunReceiptV1
 from orion.schemas.gpu_pool import GPU_POOL_EVENT_CHANNEL, GPU_POOL_EVENT_KIND
 from orion.schemas.resource_admission import RESOURCE_EVENT_CHANNEL, RESOURCE_EVENT_KIND, ResourceEventV1
-from orion.schemas.resource_admission import (
-    CapacityAcquireV1, CapacityTokenV1, CapacityAcquireResultV1,
-    CapacityRenewResultV1, CapacityReleaseResultV1,
-)
+from orion.schemas.memory_episode import MEMORY_EPISODE_CLOSED_KIND
 
 from app.settings import get_settings
 
@@ -34,7 +31,7 @@ _sweep_task: asyncio.Task[None] | None = None
 _checkpointer_cm: Any = None
 admission: Any = None
 _admission_task: asyncio.Task | None = None
-capacity: Any = None
+_reconcile_task: asyncio.Task | None = None
 rpc_health_publisher: RpcHealthPublisher | None = None
 
 
@@ -82,6 +79,9 @@ async def _handle_request(env: BaseEnvelope) -> None:
         if admission is not None:
             await admission.wakeup(ResourceEventV1.model_validate(env.payload))
         return
+    if env.kind == MEMORY_EPISODE_CLOSED_KIND:
+        await _submit_episode_distill(env)
+        return
     if env.kind != DURABLE_RUN_REQUEST_KIND:
         logger.warning("durable_run_request_unexpected_kind kind=%s", env.kind)
         return
@@ -105,6 +105,35 @@ async def _handle_request(env: BaseEnvelope) -> None:
                 correlation_id=env.correlation_id, payload=receipt.model_dump(mode="json")))
         return
     await runner.start_run(request)
+
+
+async def _submit_episode_distill(env: BaseEnvelope) -> None:
+    """orion:memory:episode:closed -> one admitted memory.episode_distill run (SHADOW).
+
+    The run id is deterministic per episode, so a re-delivered close event is refused by the
+    admission store as a duplicate. Skipped (command-only) episodes get no run.
+    """
+    if not _settings.memory_episode_writer_enabled:
+        return
+    if admission is None:
+        logger.warning("memory_episode_distill_dropped reason=admission_disabled corr=%s", env.correlation_id)
+        return
+    from app.episode_distill_graph import request_from_closed_event
+
+    try:
+        request = request_from_closed_event(env.payload or {}, settings=_settings)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("memory_episode_closed_invalid corr=%s err=%s", env.correlation_id, exc)
+        return
+    if request is None:
+        logger.info("memory_episode_distill_skipped episode=%s", (env.payload or {}).get("episode_id"))
+        return
+    try:
+        receipt = await admission.submit(request)
+    except ValueError as exc:   # SubmissionConflict: this episode was already submitted
+        logger.info("memory_episode_distill_duplicate run=%s err=%s", request.run_id, exc)
+        return
+    logger.info("memory_episode_distill_submitted run=%s status=%s", request.run_id, receipt.get("status"))
 
 
 async def _open_checkpointer():
@@ -139,7 +168,7 @@ async def _open_checkpointer():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global runner, rpc_bus, hunter, heartbeat, _sweep_task, admission, _admission_task, capacity
+    global runner, rpc_bus, hunter, heartbeat, _sweep_task, admission, _admission_task, _reconcile_task
     global rpc_health_publisher
     from app.runner import DurableRunner
 
@@ -158,14 +187,6 @@ async def lifespan(app: FastAPI):
             rpc_health_publisher = build_rpc_health_publisher()
             rpc_health_publisher.start()
         runner = DurableRunner(_settings, bus=rpc_bus, checkpointer=saver)
-        if _settings.capacity_enabled:
-            from orion.durable_admission.capacity import PostgresCapacityStore
-            from orion.durable_admission.store import PostgresAdmissionStore
-            # reserve_waiting=False: pending durable demands are frozen since stage 4.5 (the pool
-            # places runs); no broker exists to honour a drain reservation for them any more.
-            capacity = PostgresCapacityStore(PostgresAdmissionStore(_checkpointer_cm),
-                                             ttl_seconds=_settings.lease_seconds, reserve_waiting=False)
-            await capacity.snapshot()  # Additive migration must be applied first.
         if _settings.admission_enabled:
             from app.admission_runtime import AdmissionRuntime
             admission = AdmissionRuntime(_settings, runner, _checkpointer_cm)
@@ -183,10 +204,17 @@ async def lifespan(app: FastAPI):
         _sweep_task = asyncio.create_task(runner.sweep_forever(_stop))
         if admission is not None:
             _admission_task = asyncio.create_task(admission.run(_stop))
+            if _settings.memory_episode_writer_enabled:
+                from app.episode_distill_reconcile import run_reconcile_loop
+
+                _reconcile_task = asyncio.create_task(
+                    run_reconcile_loop(admission.pool, admission.submit, _settings, _stop))
         if _settings.orion_bus_enabled:
             patterns = [_settings.request_channel, RESOURCE_EVENT_CHANNEL]
             if admission is not None:
                 patterns.append(GPU_POOL_EVENT_CHANNEL)  # wakes waiting runs on their hold's grant
+                if _settings.memory_episode_writer_enabled:
+                    patterns.append(_settings.memory_episode_closed_channel)
             hunter = Hunter(_chassis_cfg(), handler=_handle_request, patterns=patterns)
             await hunter.start_background()
             logger.info("durable_runs_listening channel=%s", _settings.request_channel)
@@ -199,6 +227,8 @@ async def lifespan(app: FastAPI):
         _stop.set()
         if _sweep_task is not None:
             _sweep_task.cancel()
+        if _reconcile_task is not None:
+            _reconcile_task.cancel()
         if _admission_task is not None:
             _admission_task.cancel()
             await asyncio.gather(_admission_task, return_exceptions=True)
@@ -236,7 +266,6 @@ async def health() -> dict[str, Any]:
         "enabled": _settings.enabled,
         "active_runs": runner.active_run_ids if runner is not None else [],
         "admission_enabled": admission is not None,
-        "capacity_enabled": capacity is not None,
         "admitted_active_runs": sorted(admission.active) if admission is not None else [],
     }
 
@@ -300,34 +329,3 @@ async def release_outreach_lease(run_id: str):
     except ValueError as exc:
         raise HTTPException(409, str(exc)) from exc
 
-
-def _capacity():
-    if capacity is None:
-        raise HTTPException(503, "Gateway capacity authority is disabled")
-    return capacity
-
-
-@app.post("/capacity/acquire", response_model=CapacityAcquireResultV1)
-async def acquire_capacity(request: CapacityAcquireV1):
-    try:
-        return await _capacity().acquire(request)
-    except ValueError as exc:
-        raise HTTPException(409, str(exc)) from exc
-
-
-@app.post("/capacity/renew", response_model=CapacityRenewResultV1)
-async def renew_capacity(token: CapacityTokenV1):
-    return await _capacity().renew(token)
-
-
-@app.post("/capacity/release", response_model=CapacityReleaseResultV1)
-async def release_capacity(token: CapacityTokenV1):
-    result = await _capacity().release(token)
-    if admission is not None:
-        admission._wake.set()
-    return result
-
-
-@app.get("/capacity")
-async def capacity_snapshot():
-    return await _capacity().snapshot()

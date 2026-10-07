@@ -38,7 +38,6 @@ NODE_CHANNELS = [
     "turn_incompletion",
     "context_gathering_ratio",
     "conversation_load",
-    "contract_pressure",
     "catalog_drift_pressure",
     "observer_failure_pressure",
     # orion-llm-gateway's own view of its calls to this node's backends: share of
@@ -51,6 +50,19 @@ NODE_CHANNELS = [
     # (orion/substrate/rpc_delivery.py). Only written on node:substrate.rpc_delivery;
     # holds (not in NODE_DECAY_CHANNELS) when no bus RPC call happened in the window.
     "rpc_timeout_pressure",
+    # orion-sql-writer's own view of its writes: the worst table family's share of
+    # writes that did not reach their table over a rolling 600 s of writer windows,
+    # failed / max(attempted, 10), 0 until 2 failures (orion/substrate/storage_write_loop/).
+    # Only written on node:substrate.storage_write; expires (EXPIRING_NODE_CHANNELS)
+    # when the writer stops reporting.
+    "write_failure_pressure",
+    # The eye's own report (orion-vision-frame-router -> substrate vision_organ
+    # reducer). Only written on node:substrate.vision_organ. Staleness of the
+    # freshest camera stream (1.0 when none delivers or the router goes silent),
+    # and the rolling share of frames handed to the vision host that came back
+    # without a usable answer. Neither decays: both expire (decay.py).
+    "vision_frame_staleness",
+    "vision_processing_failure_pressure",
     "field_coherence_warning",
     "prediction_error",
 ]
@@ -135,6 +147,12 @@ SINGLE_OBSERVER_NODE_CHANNELS: dict[str, str] = {
     # node would otherwise be seeded with a never-written 0.0 by
     # DEFAULT_NODE_VECTOR, which reads as "measured, calm".
     "rpc_timeout_pressure": "node:substrate.rpc_delivery",
+    # Written only by substrate-runtime's storage_write reducer (sql-writer's
+    # own write outcomes). Same reason: never seed a calm 0.0 elsewhere.
+    "write_failure_pressure": "node:substrate.storage_write",
+    # Written only by substrate-runtime's vision_organ reducer.
+    "vision_frame_staleness": "node:substrate.vision_organ",
+    "vision_processing_failure_pressure": "node:substrate.vision_organ",
 }
 
 # Channel names that were RENAMED and no longer have a producer. reconcile
@@ -175,6 +193,14 @@ RETIRED_NODE_CHANNELS: dict[str, str | None] = {
     "stream_backlog_pressure": None,
     "stream_backlog_health": None,
     "delivery_confidence": None,
+    # 2026-10-07 (fix/transport-lattice-names-and-contract, docs/superpowers/
+    # specs/2026-10-07-transport-lattice-names-and-contract.md): no successor.
+    # Node-level contract_pressure was the bus observer's XREVRANGE schema
+    # sample of two world_pulse streams; 0.0 on 123,412 of 123,412 field ticks.
+    # NODE level only: capability:transport.contract_pressure is a different
+    # quantity (0.85 x node:athena catalog_drift_pressure via the topology
+    # channel_map) and stays in CAPABILITY_CHANNELS.
+    "contract_pressure": None,
 }
 
 # Same contract as RETIRED_NODE_CHANNELS, one level over: capability channel
@@ -240,6 +266,13 @@ RETIRED_PSEUDO_NODES: dict[str, str] = {
     # still iterated by every generic node_vectors consumer.
     # Successor: node:substrate.bus_synaptic.
     "node:substrate.transport": "retired: successor node:substrate.bus_synaptic",
+    # Written by substrate-runtime's vision-channel artifact tick until
+    # 2026-10-02, when the tick was killed. It pooled detect artifacts from
+    # every camera, so one live camera hid every dead one: prediction_error was
+    # 0.0 on all 124,612 field ticks 2026-09-29..10-02 while the carbon webcam
+    # sent no frame at all. Successor: node:substrate.vision_organ (the frame
+    # router's own per-stream report).
+    "node:substrate.vision": "retired: successor node:substrate.vision_organ",
 }
 
 # Every node id reconcile drops wholesale (perturbation refusal covers only

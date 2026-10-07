@@ -34,10 +34,10 @@ def test_build_grounding_capsule_from_ctx() -> None:
 
 
 def test_context_provenance_for_ctx_only_includes_present_keys() -> None:
-    ctx = {"self_state": {"overall_condition": "steady"}, "user_message": "hi"}
+    ctx = {"attention_broadcast": {"selected_action_type": "watch"}, "user_message": "hi"}
     provenance = context_provenance_for_ctx(ctx)
     assert provenance == {
-        "self_state": "live_runtime_projection",
+        "attention_broadcast": "live_runtime_projection",
         "user_message": "user_input",
     }
 
@@ -52,7 +52,7 @@ def test_context_provenance_for_ctx_excludes_empty_fallback_values() -> None:
     # the live computation didn't run or failed -- must not be classified as
     # "live_runtime_projection" just because the key is present.
     ctx = {
-        "self_state": {"overall_condition": "steady"},
+        "attention_broadcast": {"selected_action_type": "watch"},
         "biometrics": {},
         "system_alert_tags": [],
         "belief_digest": None,
@@ -60,17 +60,17 @@ def test_context_provenance_for_ctx_excludes_empty_fallback_values() -> None:
     }
     provenance = context_provenance_for_ctx(ctx)
     assert provenance == {
-        "self_state": "live_runtime_projection",
+        "attention_broadcast": "live_runtime_projection",
         # a real live score of exactly 0.0 is genuine content, not absence:
         "substrate_eventfulness_score": "live_runtime_projection",
     }
 
 
 def test_context_provenance_for_ctx_caches_on_ctx() -> None:
-    ctx = {"self_state": {"overall_condition": "steady"}}
+    ctx = {"attention_broadcast": {"selected_action_type": "watch"}}
     first = context_provenance_for_ctx(ctx)
     assert ctx["_context_provenance_cache"] is first
-    ctx["self_state"] = {"overall_condition": "strained"}  # mutate after caching
+    ctx["attention_broadcast"] = {"selected_action_type": "speak"}  # mutate after caching
     second = context_provenance_for_ctx(ctx)
     assert second is first  # cache reused, not recomputed
 

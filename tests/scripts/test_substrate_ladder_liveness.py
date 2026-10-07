@@ -747,3 +747,87 @@ def test_a_crash_inside_the_dedupe_path_still_cards_the_red(monkeypatch, capsys)
     assert cli.main(["--notify"]) == cli.EXIT_ESCALATION_FAILED
     assert len(ok.calls) == 1
     assert "dedupe state unusable (unexpected ValueError: bug)" in capsys.readouterr().err
+
+
+# ------------------------------------------------- merged SQL migration section
+# Incidents: PR #2424 (hardware_watch_incident table never created, orion-hardware-watch
+# crash-looped 13x) and PR #2400 (a column never added, attention silently degraded). The parser
+# and replay are covered in tests/test_sql_migration_drift_gate.py; these pin the WIRING: a
+# missing object becomes a debounced Hub card naming the file and the apply command.
+
+from orion import sql_migration_drift as drift  # noqa: E402
+
+_HW = "manual_migration_hardware_watch_v1.sql"
+
+
+def _migration_report(hw_present: bool) -> drift.DriftReport:
+    now = datetime.now(timezone.utc)
+    f = drift.MigrationFile(_HW, "create table if not exists hardware_watch_incident (id text);",
+                            now - timedelta(days=2), now - timedelta(days=1))
+    tables = {"hardware_watch_incident"} if hw_present else set()
+    return drift.evaluate([f], drift.LiveState(tables, set(), {}, set()), now=now)
+
+
+def test_missing_migration_object_makes_the_ladder_red_with_a_card_naming_the_file(tmp_path):
+    cli = _load_cli()
+    rep = ll.LadderReport(migrations=_migration_report(hw_present=False))
+    assert rep.red
+    assert rep.red_keys() == [f"migration:{_HW}"]
+    assert rep.severity() == "critical"
+    ok = _FakeClient()
+    state = str(tmp_path / "state.json")
+    assert cli.notify(rep, state_file=state, base_url="x", token=None, client=ok).sent is True
+    msg = ok.calls[0]["message"]
+    assert _HW in msg and "hardware_watch_incident" in msg
+    assert f"psql -U postgres -d conjourney -v ON_ERROR_STOP=1 < services/orion-sql-db/{_HW}" in msg
+    # Debounced while still missing; re-arms after a verified apply.
+    assert cli.notify(rep, state_file=state, base_url="x", token=None, client=ok).sent is None
+    applied = ll.LadderReport(migrations=_migration_report(hw_present=True))
+    assert not applied.red and f"migration:{_HW}" in applied.green_keys()
+    assert cli.notify(applied, state_file=state, base_url="x", token=None, client=ok).sent is None
+    assert cli.notify(rep, state_file=state, base_url="x", token=None, client=ok).sent is True
+
+
+def test_migration_section_that_could_not_run_is_cannot_check_not_green(monkeypatch):
+    cli = _load_cli()
+
+    def boom(*a, **k):
+        raise RuntimeError("git log failed")
+
+    monkeypatch.setattr(cli.drift, "check_repo", boom)
+    rep = ll.LadderReport()
+    args = type("A", (), {"repo": str(REPO), "migration_days": 30})()
+    cli.check_migrations(None, args, rep)
+    assert rep.migrations is None
+    assert rep.cannot_check == ["migrations: RuntimeError: git log failed"]
+    assert not any(k.startswith("migration:") for k in rep.green_keys())
+
+
+def test_migration_section_is_in_json_and_human_output(capsys):
+    cli = _load_cli()
+    rep = ll.LadderReport(migrations=_migration_report(hw_present=False))
+    d = rep.to_dict()
+    assert d["red"] and d["migrations"][0]["file"] == _HW and d["migrations"][0]["apply"]
+    cli.print_human(rep)
+    out = capsys.readouterr().out
+    assert f"RED migration {_HW}" in out and "apply:" in out
+    assert out.strip().endswith("RED")
+
+
+def test_the_watch_keeps_a_carded_migration_red_past_the_window(tmp_path, monkeypatch):
+    """Review finding 1: the delivered-card list is passed as sticky keys, so a carded file
+    stays red until applied instead of ageing out with its debounce key stuck."""
+    cli = _load_cli()
+    state = tmp_path / "state.json"
+    state.write_text(json.dumps({"notified_keys": [f"migration:{_HW}", "rung:attention"]}))
+    seen = {}
+
+    def fake_check_repo(conn, repo, **kw):
+        seen.update(kw)
+        return _migration_report(hw_present=True)
+
+    monkeypatch.setattr(cli.drift, "check_repo", fake_check_repo)
+    args = type("A", (), {"repo": str(REPO), "migration_days": 30, "state_file": str(state)})()
+    cli.check_migrations(None, args, ll.LadderReport())
+    assert seen["sticky_keys"] == [f"migration:{_HW}"]
+    assert cli._delivered_migration_keys(str(tmp_path / "absent.json")) == []

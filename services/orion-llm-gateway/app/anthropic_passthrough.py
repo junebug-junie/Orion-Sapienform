@@ -11,7 +11,7 @@ from fastapi.responses import JSONResponse
 from . import pool_placement
 from .passthrough_proxy import proxy_on_pool
 from .settings import settings
-from .resource_lease import LeaseGuard, ResourceLeaseRejected, gpu_lease_from_headers, lease_error
+from .resource_lease import ResourceLeaseRejected, gpu_lease_from_headers, lease_error
 
 logger = logging.getLogger("orion-llm-gateway.anthropic")
 
@@ -48,13 +48,70 @@ _FORWARD_REQUEST_HEADERS = frozenset(
 )
 
 
-def normalize_anthropic_system_messages(body: Dict[str, Any]) -> Dict[str, Any]:
-    """Hoist Claude hook system messages into Anthropic's system field.
+_REMINDER_OPEN = "<system-reminder>\n"
+_REMINDER_CLOSE = "\n</system-reminder>"
 
-    Claude can append SessionStart context after a user message. Native
-    llama.cpp preserves that role, but its model template requires system
-    context at the beginning. Preserve every block and its cache metadata,
-    leaving conversational/tool order and the caller's request untouched.
+
+def _content_blocks(content: Any) -> list:
+    if isinstance(content, str):
+        return [{"type": "text", "text": content}] if content else []
+    if content is None:
+        return []
+    if isinstance(content, list):
+        return list(content)
+    raise ValueError("System content must be a string or a list of blocks")
+
+
+def _system_message_as_reminder(content: Any) -> Dict[str, Any]:
+    """Render a mid-conversation system message as an in-place user turn.
+
+    The wrapper goes inside the first/last text block rather than as extra
+    blocks: Claude Code resends the same reminder as a one-block list with
+    cache_control on the step it is new and as a plain string afterwards, and
+    llama.cpp may join separate text parts with a newline. Wrapping in-block
+    makes both shapes render byte-identically, so step N's prompt stays a
+    strict prefix of step N+1's.
+    """
+    blocks = [dict(block) if isinstance(block, dict) else block for block in _content_blocks(content)]
+    first = blocks[0] if blocks else None
+    if isinstance(first, dict) and first.get("type") == "text":
+        first["text"] = _REMINDER_OPEN + str(first.get("text") or "")
+    else:
+        blocks.insert(0, {"type": "text", "text": _REMINDER_OPEN})
+    last = blocks[-1]
+    if isinstance(last, dict) and last.get("type") == "text":
+        last["text"] = str(last.get("text") or "") + _REMINDER_CLOSE
+    else:
+        blocks.append({"type": "text", "text": _REMINDER_CLOSE})
+    return {"role": "user", "content": blocks}
+
+
+def _awaits_tool_result(message: Any) -> bool:
+    content = message.get("content") if isinstance(message, dict) else None
+    return (
+        isinstance(message, dict)
+        and message.get("role") == "assistant"
+        and isinstance(content, list)
+        and any(isinstance(block, dict) and block.get("type") == "tool_use" for block in content)
+    )
+
+
+def normalize_anthropic_system_messages(body: Dict[str, Any]) -> Dict[str, Any]:
+    """Make Claude Code's role=system messages acceptable to llama.cpp, append-only.
+
+    llama.cpp's Qwen templates reject (:8015) or drop (:8011) a system message
+    that is not at the start. Only the *leading* run of system messages (before
+    the first user/assistant turn) is hoisted into the top-level ``system``
+    field. Every later one (per-step ``<total_tokens>`` reminders, PreToolUse /
+    SessionStart hook context) becomes a ``<system-reminder>``-wrapped user
+    turn in the same position. Hoisting those grew the system block every
+    step, which shifted the whole conversation and forced llama.cpp to
+    re-prefill the full prompt on every step (these hybrid models cannot reuse
+    a prefix that changes further back than ~512 tokens from the end). See
+    docs/superpowers/specs/2026-10-02-fcc-prompt-prefix-cache-design.md.
+
+    Block content and cache_control metadata are preserved; the caller's
+    request is not mutated.
     """
     messages = body.get("messages")
     if not isinstance(messages, list) or not any(
@@ -63,26 +120,39 @@ def normalize_anthropic_system_messages(body: Dict[str, Any]) -> Dict[str, Any]:
     ):
         return dict(body)
 
-    def blocks(content: Any) -> list:
-        if isinstance(content, str):
-            return [{"type": "text", "text": content}] if content else []
-        if content is None:
-            return []
-        if isinstance(content, list):
-            return list(content)
-        raise ValueError("System content must be a string or a list of blocks")
-
-    system = blocks(body.get("system"))
-    conversation = []
+    system = _content_blocks(body.get("system"))
+    conversation: list = []
+    # Reminders that arrive between an assistant tool_use and its tool_result
+    # wait until after that next message, so tool call/result pairing survives.
+    pending: list = []
+    leading = True
     for message in messages:
-        if isinstance(message, dict) and message.get("role") == "system":
-            additional = blocks(message.get("content"))
+        is_system = isinstance(message, dict) and message.get("role") == "system"
+        if is_system and leading:
+            additional = _content_blocks(message.get("content"))
             if system and additional:
                 system.append({"type": "text", "text": "\n\n"})
             system.extend(additional)
+        elif is_system:
+            if not _content_blocks(message.get("content")):
+                continue  # an empty reminder carries nothing; same drop as the leading path
+            reminder = _system_message_as_reminder(message.get("content"))
+            if pending or _awaits_tool_result(conversation[-1] if conversation else None):
+                pending.append(reminder)
+            else:
+                conversation.append(reminder)
         else:
+            if isinstance(message, dict) and message.get("role") in ("user", "assistant"):
+                leading = False
             conversation.append(message)
-    return {**body, "system": system, "messages": conversation}
+            if pending and not _awaits_tool_result(message):
+                conversation.extend(pending)
+                pending = []
+    conversation.extend(pending)
+    forwarded = {**body, "messages": conversation}
+    if system or "system" in body:
+        forwarded["system"] = system
+    return forwarded
 
 
 def normalize_anthropic_model_name(model: Optional[str]) -> str:
@@ -271,7 +341,6 @@ async def handle_messages_post(request: Request) -> Response:
             {"error": {"type": "invalid_request", "message": str(exc)}}, status_code=400
         )
     try:
-        guard = LeaseGuard.from_headers(request.headers, lane=route_key)
         hold = gpu_lease_from_headers(request.headers)
     except ResourceLeaseRejected as exc:
         return JSONResponse(lease_error(str(exc)), status_code=409)
@@ -297,7 +366,6 @@ async def handle_messages_post(request: Request) -> Response:
         forward_body=forward_body,
         path="/v1/messages",
         holder=pool_placement.HOLDER_ANTHROPIC,
-        guard=guard,
         hold=hold,
         correlation_id=correlation_id,
         min_ctx_tokens=pool_placement.estimate_min_ctx_tokens(

@@ -300,6 +300,45 @@ def test_get_routes_endpoint_uses_pool_state(monkeypatch):
     assert _by_id(payload)["quick"]["status"] == "up"
 
 
+def test_get_routes_is_counted_and_logged_per_caller(monkeypatch, caplog):
+    """Stage 6.3: every read left on the retiring view is visible, so 6.5's 24 h zero-read window
+    is measurable from the counter and from the log line (which survives a restart)."""
+    from app import routes_compat_reads
+
+    async def state():
+        return None
+
+    monkeypatch.setattr(pool_placement, "fetch_pool_state", state)
+    routes_compat_reads.reset()
+    client = TestClient(gateway.app)
+    before = client.get("/debug/routes-compat-reads").json()
+    assert before["reads_total"] == 0 and before["last_read_at"] is None and before["by_caller"] == {}
+    with caplog.at_level("WARNING", logger="orion-llm-gateway.routes_compat_reads"):
+        client.get("/routes", headers={"user-agent": "Python/3.12 aiohttp/3.9"})
+        client.get("/routes", headers={"user-agent": "python-httpx/0.27"})
+        client.get("/routes", headers={"user-agent": "python-httpx/0.27"})
+    after = client.get("/debug/routes-compat-reads").json()
+    assert after["reads_total"] == 3 and after["last_read_at"]
+    by_agent = {k.split(" ", 1)[1]: v["reads"] for k, v in after["by_caller"].items()}
+    assert by_agent == {"Python/3.12 aiohttp/3.9": 1, "python-httpx/0.27": 2}
+    lines = [r.getMessage() for r in caplog.records if "routes_compat_read" in r.getMessage()]
+    assert len(lines) == 3 and "python-httpx/0.27" in lines[-1] and "total_since_boot=3" in lines[-1]
+    # Reading the counter is not itself a /routes read.
+    assert client.get("/debug/routes-compat-reads").json()["reads_total"] == 3
+
+
+def test_routes_compat_caller_table_is_bounded():
+    from app import routes_compat_reads
+
+    routes_compat_reads.reset()
+    for i in range(routes_compat_reads._MAX_CALLERS + 10):
+        routes_compat_reads.record("10.0.0.1", f"agent-{i}")
+    snap = routes_compat_reads.snapshot()
+    assert snap["reads_total"] == routes_compat_reads._MAX_CALLERS + 10
+    assert len(snap["by_caller"]) == routes_compat_reads._MAX_CALLERS + 1
+    assert snap["by_caller"]["other"]["reads"] == 10
+
+
 @pytest.mark.asyncio
 async def test_fetch_pool_state_rpc_shape_and_cache(monkeypatch):
     pool_placement.reset_pool_state_cache()

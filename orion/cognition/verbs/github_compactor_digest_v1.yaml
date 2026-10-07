@@ -1,7 +1,8 @@
 name: github_compactor_digest_v1
 label: GitHub Compactor Digest
 description: >
-  Compact merged PR descriptions into bounded card + journal digest JSON.
+  Compact merged PR descriptions (a whole day, one chunk of it, or a merge of
+  chunk digests) into card + journal digest JSON.
   Uses only github_compactor_input payload passed in metadata.
 
 category: Generative
@@ -9,8 +10,9 @@ priority: high
 
 requires_gpu: true
 requires_memory: false
-# 10 minutes: 8k-token digest over ~30 PRs routinely exceeds the old 90s
-# deadline (live empty/invalid_json failure 2026-09-05). Chat can wait.
+# 10 minutes: a long digest over ~30 PRs routinely exceeds the old 90s
+# deadline (live empty/invalid_json failure 2026-09-05). Must equal
+# orion.cognition.compactor.constants.DIGEST_VERB_TIMEOUT_MS.
 timeout_ms: 600000
 
 services:

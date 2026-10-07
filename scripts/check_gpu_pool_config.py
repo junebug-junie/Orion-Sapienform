@@ -11,9 +11,14 @@ Fails on:
   - service roles whose declared VRAM does not fit their card, alone or after a swap
   - a big-model class listing an 8B role (nothing spills down to gpu3)
   - stage 4 (docs/superpowers/specs/2026-09-25-gpu-pool-stage4-durable-runs-and-actuation.md):
-    a swap seat with neither a load/unload bridge nor a launch on itself and every role it evicts;
+    a swap seat without a launch on itself and every role it evicts (stage 5.6 removed swap.load/unload);
     a launch naming an unknown actuator; a launch role on a card with no index; and a launch whose
     compose file/service/profile/LLM_ROLE/port/cuda_env does not match what it names
+  - stage 5.1 (docs/superpowers/specs/2026-09-29-gpu-pool-stage5-world-diffusion-generic-actuation.md):
+    a launch service whose GPU is a literal instead of ${cuda_env} / ${cuda_env:-<index>} (the
+    actuator could never move it), a literal device_ids pin, an LLM_PROFILE_NAME that does not
+    interpolate launch.profile_var, a launch.profiles entry missing from config/llm_profiles.yaml,
+    and a serialize_with naming an unknown role or one sharing no card
 
 Exit 0 = clean. Model-dependent VRAM for LLM roles is checked live by the pool against the
 discovered profile, not here: the YAML deliberately carries no model names.

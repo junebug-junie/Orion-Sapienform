@@ -25,7 +25,6 @@ def test_adapter_reads_hub_uppercase_attrs_not_defaults() -> None:
         ORION_SITUATION_TIMEZONE="Europe/Berlin",
         ORION_PRESENCE_DEFAULT_REQUESTOR="Someone Else",
         ORION_PRESENCE_PERSIST_ALLOWED=True,
-        HUB_LLM_GATEWAY_URL="http://127.0.0.1:9999",
     )
     ns = hub_settings_to_runtime_namespace(hub_settings)
 
@@ -34,7 +33,8 @@ def test_adapter_reads_hub_uppercase_attrs_not_defaults() -> None:
     assert ns.orion_situation_timezone == "Europe/Berlin"
     assert ns.orion_presence_default_requestor == "Someone Else"
     assert ns.orion_presence_persist_allowed is True
-    assert ns.cortex_exec_llm_gateway_url == "http://127.0.0.1:9999"
+    # GPU pool stage 6.3: no gateway URL is carried any more (the runtime line reads pool state).
+    assert not hasattr(ns, "cortex_exec_llm_gateway_url")
 
 
 def test_adapter_output_survives_settings_from_runtime_round_trip() -> None:
@@ -47,7 +47,6 @@ def test_adapter_output_survives_settings_from_runtime_round_trip() -> None:
         ORION_SITUATION_TIMEZONE="Pacific/Auckland",
         ORION_PRESENCE_DEFAULT_REQUESTOR="Juniper",
         ORION_PRESENCE_PERSIST_ALLOWED=False,
-        HUB_LLM_GATEWAY_URL="http://127.0.0.1:8210",
     )
     cfg = settings_from_runtime(hub_settings_to_runtime_namespace(hub_settings))
 
@@ -55,17 +54,19 @@ def test_adapter_output_survives_settings_from_runtime_round_trip() -> None:
     assert cfg.ttl_seconds == 45
     assert cfg.timezone == "Pacific/Auckland"
     assert cfg.default_requestor == "Juniper"
-    assert cfg.llm_gateway_base_url == "http://127.0.0.1:8210"
+    # GPU pool stage 6.3: the runtime line reads pool state, not a gateway URL.
+    assert not hasattr(cfg, "llm_gateway_base_url")
 
 
 def test_adapter_turns_off_unwired_providers_explicitly() -> None:
-    """Lab/perception are not yet configurable from orion-hub -- the adapter
-    must turn them off explicitly rather than leave it to a
-    missing-attribute default to silently decide."""
+    """Lab has no provider anywhere -- the adapter must turn it off
+    explicitly rather than leave it to a missing-attribute default to
+    silently decide. Perception is ON by default since 2026-10-07 (see
+    test_hub_situation_perception.py)."""
     cfg = settings_from_runtime(hub_settings_to_runtime_namespace(SimpleNamespace()))
 
     assert cfg.lab_enabled is False
-    assert cfg.perception_enabled is False
+    assert cfg.perception_enabled is True
     # Weather, the runtime (self-model) probe, and affect ARE wired --
     # weather reads orion-hub's own ORION_SITUATION_WEATHER_* fields, the
     # runtime probe reuses HUB_LLM_GATEWAY_URL (a host orion-hub already

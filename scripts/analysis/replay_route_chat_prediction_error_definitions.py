@@ -19,9 +19,13 @@ first 24h of the route history has a smaller denominator than live did. That
 only flatters v1 (smaller denominator = larger number), never v2.
 
 v1 is a frozen copy of the pre-2026-09-25 functions, kept here so the
-comparison survives the live code moving on. v2 is imported from the live
-module. ``chat v2+touched`` is an analysis-only variant (not shipped) showing
-what the same dilution fix route received would do to chat.
+comparison survives the live code moving on. Route v2 is imported from the live
+module. Chat v2 (2026-09-25: two hints, every stored turn in the mean, variance
+floor 5e-8) is frozen here too since 2026-09-29; chat v3 is the live
+``chat_prediction_error`` (touched turns only, re-derived floor), run through the
+projection's own EWMA fields exactly as the substrate runtime does.
+``switchover v2->v3`` scores v3 against the EWMA v2 left behind -- what deploying
+without zeroing the projection's ``prediction_error_baseline_*`` fields does.
 """
 
 from __future__ import annotations
@@ -79,6 +83,9 @@ def _chat_hints_v1(turn: ChatTurnStateV1) -> dict[str, float]:
         "repair_pressure": turn.repair_pressure_level,
         "topic_coherence": max(0.0, 1.0 - turn.repair_pressure_level),
     }
+
+
+CHAT_V2_MIN_VARIANCE = 5e-8  # frozen: the pre-2026-09-29 _CHAT_PREDICTION_ERROR_MIN_VARIANCE
 
 
 def _chat_raw(prev, curr, *, keys, hints, touched_only: bool) -> float | None:
@@ -144,52 +151,73 @@ def replay_route(raw: dict) -> dict[str, list[float]]:
 
 def replay_chat(raw: dict) -> dict[str, list[float]]:
     turns = {k: ChatTurnStateV1.model_validate(v) for k, v in raw["turns"].items()}
-    variants = {
+    frozen = {
         "v1": (("conversation_load", "repair_pressure", "topic_coherence"), _chat_hints_v1, False),
         "v2": (("conversation_load", "repair_pressure"), pe.compute_chat_pressure_hints, False),
-        "v2+touched": (("conversation_load", "repair_pressure"), pe.compute_chat_pressure_hints, True),
     }
-    ewmas = {
-        name: _Ewma(pe._CHAT_PREDICTION_ERROR_EWMA_ALPHA, pe._CHAT_PREDICTION_ERROR_MIN_VARIANCE)
-        for name in variants
-    }
-    out: dict[str, list[float]] = {name: [] for name in variants}
-    out.update({f"{name}:raw": [] for name in variants})
-    floor_bound = {name: 0 for name in variants}
-    # Switchover probe for the projection's OWN EWMA baseline (ChatSessionProjectionV1
-    # .prediction_error_baseline_*): at the midpoint, v2 continues from v1's baseline
-    # ("carried") -- what deploying without a reset does -- vs v2's own history.
-    carried: _Ewma | None = None
+    ewmas = {name: _Ewma(pe._CHAT_PREDICTION_ERROR_EWMA_ALPHA, CHAT_V2_MIN_VARIANCE) for name in frozen}
+    names = (*frozen, "v3")
+    out: dict[str, list[float]] = {name: [] for name in names}
+    out.update({f"{name}:raw": [] for name in names})
+    out["switchover"], out["switchover_ref"] = [], []
+    floor_bound = {name: 0 for name in names}
+    # v3 keeps its EWMA on the projection, as live. The switchover copy starts at the
+    # midpoint from v2's EWMA state, and is compared against v3's own.
+    v3_base = (0.0, 0.0, 0)
+    carried: tuple[float, float, int] | None = None
     switch_at = len({t.last_updated_at for t in turns.values()}) // 2
     tick_index = 0
     prev_turns: dict[str, ChatTurnStateV1] = {}
     for stamp, keys in _ticks(turns, lambda t: t.last_updated_at):
         curr_turns = dict(prev_turns)
         curr_turns.update({k: turns[k] for k in keys})
-        mk = lambda ts: ChatSessionProjectionV1(  # noqa: E731
-            projection_id="replay", generated_at=stamp, turns=ts
-        )
+
+        def mk(ts, base=(0.0, 0.0, 0)):
+            return ChatSessionProjectionV1(
+                projection_id="replay", generated_at=stamp, turns=ts,
+                prediction_error_baseline_ewma=base[0],
+                prediction_error_baseline_ewma_var=base[1],
+                prediction_error_baseline_ewma_n=base[2],
+            )
+
         prev, curr = mk(prev_turns), mk(curr_turns)
-        for name, (keys_, hints, touched) in variants.items():
+        for name, (keys_, hints, touched) in frozen.items():
             rawv = _chat_raw(prev, curr, keys=keys_, hints=hints, touched_only=touched)
             if rawv is None:
                 continue
             e = ewmas[name]
             if e.n > 0 and e.var < e.min_var:
                 floor_bound[name] += 1
-            if name == "v2" and carried is not None:
-                out["carried"].append(carried.score(rawv))
-                out["carried_ref"].append(e.score(rawv))
-                out[f"{name}:raw"].append(rawv)
-                out[name].append(out["carried_ref"][-1])
-                continue
             out[name].append(e.score(rawv))
             out[f"{name}:raw"].append(rawv)
+        v3_raw = _chat_raw(
+            prev, curr, keys=("conversation_load", "repair_pressure"),
+            hints=pe.compute_chat_pressure_hints, touched_only=True,
+        )
+        if v3_raw is not None:
+            if v3_base[2] > 0 and v3_base[1] < pe._CHAT_PREDICTION_ERROR_MIN_VARIANCE:
+                floor_bound["v3"] += 1
+            p3, c3 = mk(prev_turns, v3_base), mk(curr_turns, v3_base)
+            out["v3"].append(pe.chat_prediction_error(p3, c3))
+            out["v3:raw"].append(v3_raw)
+            v3_base = (
+                c3.prediction_error_baseline_ewma,
+                c3.prediction_error_baseline_ewma_var,
+                c3.prediction_error_baseline_ewma_n,
+            )
+            if carried is not None:
+                pc, cc = mk(prev_turns, carried), mk(curr_turns, carried)
+                out["switchover"].append(pe.chat_prediction_error(pc, cc))
+                out["switchover_ref"].append(out["v3"][-1])
+                carried = (
+                    cc.prediction_error_baseline_ewma,
+                    cc.prediction_error_baseline_ewma_var,
+                    cc.prediction_error_baseline_ewma_n,
+                )
         tick_index += 1
         if tick_index == switch_at:
-            carried = _Ewma(ewmas["v1"].alpha, ewmas["v1"].min_var)
-            carried.ewma, carried.var, carried.n = ewmas["v1"].ewma, ewmas["v1"].var, ewmas["v1"].n
-            out["carried"], out["carried_ref"] = [], []
+            e2 = ewmas["v2"]
+            carried = (e2.ewma, e2.var, e2.n)
         prev_turns = curr_turns
     out["_floor_bound"] = floor_bound  # type: ignore[assignment]
     return out
@@ -234,20 +262,21 @@ def main() -> int:
     if args.chat_json:
         c = replay_chat(json.loads(args.chat_json.read_text()))
         print("## chat_prediction_error")
-        for name in ("v1", "v2", "v2+touched"):
+        for name in ("v1", "v2", "v3"):
             print(f"{name} score: {summarize(c[name], args.attention_level)}")
             print(f"{name} raw:   {summarize(c[name + ':raw'], 0.1)}")
             print(f"{name}: variance-floor bound on {c['_floor_bound'][name]} ticks; {node_baseline(c[name])}")
-        pairs = list(zip(c["v1"], c["v2"]))
-        diffs = [abs(a - b) for a, b in pairs]
-        print(f"|v1 - v2| score per tick: mean={statistics.fmean(diffs):.4g} max={max(diffs):.4g}")
-        cd = [abs(a - b) for a, b in zip(c.get("carried", []), c.get("carried_ref", []))]
+        diffs = [abs(a - b) for a, b in zip(c["v2"], c["v3"])]
+        print(f"|v2 - v3| score per tick: mean={statistics.fmean(diffs):.4g} max={max(diffs):.4g}")
+        cd = [abs(a - b) for a, b in zip(c["switchover"], c["switchover_ref"])]
         if cd:
             settle = next((i for i in range(len(cd)) if all(d < 0.01 for d in cd[i:])), len(cd))
+            sat = sum(1 for v in c["switchover"][:settle] if v >= 1.0)
             print(
-                f"switchover (v2 carrying v1's projection baseline vs v2's own): "
+                f"switchover v2->v3 (v3 scored against v2's leftover projection EWMA vs a zeroed one): "
                 f"first-tick diff={cd[0]:.4g} max diff={max(cd):.4g} "
-                f"ticks until every later diff < 0.01: {settle} of {len(cd)}"
+                f"ticks until every later diff < 0.01: {settle} of {len(cd)}; "
+                f"saturated (1.0) readings before settling: {sat}"
             )
     return 0
 

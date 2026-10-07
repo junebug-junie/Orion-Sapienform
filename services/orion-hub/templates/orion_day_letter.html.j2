@@ -1,0 +1,190 @@
+{#- Orion's Day email. Rendered by scripts/orion_day_email.py (autoescaped; *_html values are
+    markdown already rendered with raw HTML disabled). Email-safe: tables + inline styles only,
+    no external CSS/JS/fonts, no <details>. Nothing is truncated. -#}
+{%- set ink = "#1f2430" -%}
+{%- set muted = "#5b6474" -%}
+{%- set rule = "#d0d5dd" -%}
+{%- macro heading(text) -%}
+<tr><td style="padding:28px 28px 6px 28px;">
+<h2 style="margin:0;font-size:19px;line-height:1.3;color:{{ ink }};border-bottom:1px solid {{ rule }};padding-bottom:6px;">{{ text }}</h2>
+</td></tr>
+{%- endmacro -%}
+{%- macro item_title(text, meta="") -%}
+<h3 style="margin:18px 0 4px 0;font-size:16px;line-height:1.35;color:{{ ink }};">{{ text }}</h3>
+{%- if meta %}<p style="margin:0 0 8px 0;font-size:13px;color:{{ muted }};">{{ meta }}</p>{% endif -%}
+{%- endmacro -%}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light">
+<meta name="supported-color-schemes" content="light">
+<title>{{ subject }}</title>
+</head>
+<body style="margin:0;padding:0;background-color:#eef0f3;">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" bgcolor="#eef0f3" style="background-color:#eef0f3;">
+<tr><td align="center" style="padding:16px 8px;">
+<table role="presentation" width="680" cellpadding="0" cellspacing="0" border="0" bgcolor="#ffffff"
+       style="width:100%;max-width:680px;background-color:#ffffff;color:{{ ink }};font-family:Georgia,'Times New Roman',serif;font-size:15px;line-height:1.55;">
+
+<!-- header -->
+<tr><td bgcolor="#28324a" style="background-color:#28324a;padding:22px 28px;color:#f4f5f8;">
+<p style="margin:0;font-size:12px;letter-spacing:2px;text-transform:uppercase;color:#c9cfdc;">Orion's Day</p>
+<h1 style="margin:4px 0 6px 0;font-size:24px;line-height:1.25;color:#ffffff;">{{ letter_date_long }}</h1>
+<p style="margin:0;font-size:13px;color:#c9cfdc;">The day ({{ timezone }}): {{ window_start_utc }} to {{ window_end_utc }}. Written {{ written_at }} by run {{ run_id }}.</p>
+</td></tr>
+
+<!-- Orion's note -->
+{{ heading("Orion's note") }}
+<tr><td style="padding:4px 28px 8px 28px;" data-section="note">
+{{ note_html }}
+</td></tr>
+
+<!-- carry-forward: visually distinct -->
+<tr><td style="padding:18px 28px 8px 28px;">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" bgcolor="#e8f3ee"
+       style="background-color:#e8f3ee;border-left:5px solid #2f7d5b;" data-section="carry-forward">
+<tr><td style="padding:14px 18px;color:#17352a;font-family:Arial,Helvetica,sans-serif;font-size:14px;">
+<p style="margin:0 0 4px 0;font-size:12px;letter-spacing:1.5px;text-transform:uppercase;color:#2f7d5b;font-weight:bold;">Carrying forward into curiosity</p>
+<p style="margin:0 0 10px 0;font-size:12px;color:#3d5c4f;">Offered once to Orion's next regular curiosity run{% if carry_forward_expires %}, until {{ carry_forward_expires }}{% endif %}. This is the only part of the letter curiosity sees.</p>
+{{ carry_forward_html }}
+</td></tr>
+</table>
+</td></tr>
+
+<tr><td style="padding:26px 28px 0 28px;">
+<p style="margin:0;font-size:12px;letter-spacing:2px;text-transform:uppercase;color:{{ muted }};">What the day held</p>
+</td></tr>
+
+{% if curiosity or curiosity_failed %}
+{{ heading("Curiosity (" ~ curiosity|length ~ " finished, " ~ curiosity_failed|length ~ " failed)") }}
+<tr><td style="padding:0 28px 8px 28px;" data-section="curiosity">
+{% for r in curiosity %}
+{{ item_title(r.title, "line: " ~ r.line ~ (", family: " ~ r.family if r.family else "") ~ " · finished " ~ r.when) }}
+{% if r.verdict %}<p style="margin:0 0 8px 0;"><strong>Verdict:</strong> {{ r.verdict }}</p>{% endif %}
+<p style="margin:0 0 8px 0;font-size:13px;color:{{ muted }};">Line continues: {{ r.continue_line }}. Reached out: {{ r.reach_out }}{% if r.reach_out_why %} &mdash; {{ r.reach_out_why }}{% endif %}.</p>
+{% if r.self_definition %}<p style="margin:0 0 4px 0;font-weight:bold;">Self-definition after this run</p>{{ r.self_definition }}{% endif %}
+{% if r.lived_answer %}<p style="margin:0 0 4px 0;font-weight:bold;">Lived answer after this run</p>{{ r.lived_answer }}{% endif %}
+{% if r.writeup %}{{ r.writeup }}{% endif %}
+{% endfor %}
+{% if curiosity_failed %}
+<p style="margin:14px 0 4px 0;font-weight:bold;">Runs that failed</p>
+<ul style="margin:0 0 12px 0;padding-left:22px;">
+{% for f in curiosity_failed %}<li style="margin:0 0 4px 0;font-size:13px;">{{ f.when }} &middot; {{ f.workflow }}: {{ f.error }}</li>
+{% endfor %}</ul>
+{% endif %}
+</td></tr>
+{% endif %}
+
+{% if self_sense %}
+{{ heading("Self-sense answers") }}
+<tr><td style="padding:0 28px 8px 28px;" data-section="self-sense">
+{% for a in self_sense %}
+{{ item_title(a.question, a.when ~ " · self-label " ~ a.self_label ~ ", grounded-record " ~ a.grounded) }}
+{{ a.answer }}
+{% endfor %}
+</td></tr>
+{% endif %}
+
+{% if readings or reading_journals %}
+{{ heading("Readings (" ~ readings|length ~ " readings, " ~ reading_journals|length ~ " reading journals)") }}
+<tr><td style="padding:0 28px 8px 28px;" data-section="readings">
+{% for r in readings %}
+{{ item_title(r.title, r.when ~ " · " ~ r.status) }}
+{% if r.href %}<p style="margin:0 0 6px 0;font-size:13px;word-break:break-all;"><a href="{{ r.href }}" style="color:#2f5fb3;">{{ r.url }}</a></p>{% elif r.url %}<p style="margin:0 0 6px 0;font-size:13px;word-break:break-all;">{{ r.url }}</p>{% endif %}
+{% if r.why_now %}<p style="margin:0 0 6px 0;font-size:14px;"><em>Why:</em> {{ r.why_now }}</p>{% endif %}
+<p style="margin:0 0 4px 0;font-weight:bold;">What was learned</p>
+{% if r.learned %}{{ r.learned }}{% else %}<p style="margin:0 0 12px 0;color:{{ muted }};">(nothing recorded)</p>{% endif %}
+{% endfor %}
+{% for j in reading_journals %}
+{{ item_title("Reading journal: " ~ j.title, j.when) }}
+{{ j.body }}
+{% endfor %}
+</td></tr>
+{% endif %}
+
+{% if dream_narratives or dream_hypotheses %}
+{{ heading("Dreams") }}
+<tr><td style="padding:0 28px 8px 28px;" data-section="dreams">
+{% for d in dream_narratives %}
+{{ item_title(d.tldr) }}
+{{ d.narrative }}
+{% endfor %}
+{% if dream_hypotheses %}
+<p style="margin:14px 0 6px 0;font-weight:bold;">Links the dream cycle offered to Orion</p>
+<ul style="margin:0 0 12px 0;padding-left:22px;">
+{% for h in dream_hypotheses %}<li style="margin:0 0 6px 0;line-height:1.5;">{{ h.claim }}{% if h.why %}<br><span style="font-size:13px;color:{{ muted }};">{{ h.why }}</span>{% endif %}</li>
+{% endfor %}</ul>
+{% endif %}
+</td></tr>
+{% endif %}
+
+{% if visuals %}
+{{ heading("Visual reveries (" ~ visuals|length ~ " images, " ~ images_attached ~ " shown)") }}
+<tr><td style="padding:0 28px 8px 28px;" data-section="visuals">
+{% for v in visuals if v.cid %}
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="margin:14px 0 4px 0;">
+<tr><td><img src="{{ v.cid }}" width="624" alt="{{ v.description }}" style="display:block;width:100%;max-width:624px;height:auto;border:0;"></td></tr>
+<tr><td style="padding:6px 0 0 0;font-size:13px;color:{{ muted }};">{{ v.when }}{% if v.theme %} &middot; {{ v.theme }}{% endif %} &mdash; {{ v.description }}</td></tr>
+</table>
+{% endfor %}
+{% set rest = visuals | rejectattr("cid") | list %}
+{% if rest %}
+<p style="margin:14px 0 4px 0;font-weight:bold;">Not attached ({{ rest|length }})</p>
+<ul style="margin:0 0 12px 0;padding-left:22px;">
+{% for v in rest %}<li style="margin:0 0 4px 0;font-size:13px;">{{ v.when }}{% if v.theme %} &middot; {{ v.theme }}{% endif %} &mdash; {{ v.description }}</li>
+{% endfor %}</ul>
+{% endif %}
+</td></tr>
+{% endif %}
+
+{% if github %}
+{{ heading("Changes to Orion's code") }}
+<tr><td style="padding:0 28px 8px 28px;" data-section="github">
+{{ item_title(github.title) }}
+{{ github.body }}
+</td></tr>
+{% endif %}
+
+{% if chat %}
+{{ heading("Conversations with Juniper") }}
+<tr><td style="padding:0 28px 8px 28px;" data-section="chat">
+{{ item_title(chat.title) }}
+{{ chat.body }}
+</td></tr>
+{% endif %}
+
+{% if world %}
+{{ heading("World news") }}
+<tr><td style="padding:0 28px 8px 28px;" data-section="world">
+{{ item_title(world.title or "World pulse") }}
+{% if world.executive_summary %}<p style="margin:0 0 10px 0;">{{ world.executive_summary }}</p>{% endif %}
+<ul style="margin:0 0 12px 0;padding-left:22px;">
+{% for i in world["items"] %}<li style="margin:0 0 8px 0;line-height:1.5;"><span style="font-size:12px;color:{{ muted }};">{{ i.category or "general" }}</span> &middot; <strong>{{ i.title }}</strong>{% if i.summary and i.summary != i.title %}<br>{{ i.summary }}{% endif %}{% if i.why_it_matters and i.why_it_matters != i.title and i.why_it_matters != i.summary %}<br><em>Why it matters:</em> {{ i.why_it_matters }}{% endif %}</li>
+{% endfor %}</ul>
+</td></tr>
+{% endif %}
+
+{{ heading("Reveries (counts)") }}
+<tr><td style="padding:0 28px 8px 28px;" data-section="reveries">
+<p style="margin:0 0 8px 0;">{{ reveries.thoughts }} thoughts ({{ reveries.hollow }} hollow) across {{ reveries.chains }} chains and {{ reveries.themes }} themes; {{ reveries.images }} images.</p>
+{% if reveries.top_themes %}<p style="margin:0 0 8px 0;font-size:14px;">Most frequent themes: {% for t, n in reveries.top_themes %}{{ t }} ({{ n }}){% if not loop.last %}, {% endif %}{% endfor %}.</p>{% endif %}
+{% if reveries.verdicts %}<p style="margin:0 0 8px 0;font-size:14px;">Expectation verdicts: {% for v, n in reveries.verdicts %}{{ v }} {{ n }}{% if not loop.last %}, {% endif %}{% endfor %}.</p>{% endif %}
+</td></tr>
+
+<!-- footer: honesty about what was read and what the note was written from -->
+<tr><td style="padding:22px 28px 26px 28px;font-family:Arial,Helvetica,sans-serif;font-size:12px;color:{{ muted }};border-top:1px solid {{ rule }};">
+{% if source_problems %}
+<p style="margin:0 0 6px 0;"><strong>Sources with gaps:</strong>
+{% for name, status, error, truncated in source_problems %}{{ name }} ({{ status }}{% if truncated %}, more rows existed than were read{% endif %}{% if error %}: {{ error }}{% endif %}){% if not loop.last %}; {% endif %}{% endfor %}</p>
+{% endif %}
+<p style="margin:0 0 6px 0;">Everything above is shown in full. Orion wrote the note from a condensed view: {{ condensed.reverie_thoughts_included }} of {{ condensed.reverie_thoughts_total }} reverie thoughts{% if condensed.full_text_items_clipped %}, and {{ condensed.full_text_items_clipped }} of {{ condensed.full_text_items_total }} long texts shortened to {{ condensed.full_text_clip_chars }} characters for the model{% endif %}.</p>
+<p style="margin:0;">Sent by orion-hub. The letter row is <code style="font-family:Menlo,Consolas,monospace;">orion_day_letter</code> for {{ letter_date }}.</p>
+</td></tr>
+
+</table>
+</td></tr>
+</table>
+</body>
+</html>

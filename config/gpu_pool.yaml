@@ -34,11 +34,15 @@ actuators:
 
 priorities: [urgent, interactive, system, background]   # highest first
 
+# index = the card's CUDA / nvidia-smi device number on circe (CUDA_DEVICE_ORDER=PCI_BUS_ID). Hub's
+# biometrics GPU labels join nvidia-smi on it (stage 5.5). gpu0/1/3 verified live 2026-09-29 against
+# circe's running containers (atlas chat/agent/metacog+fast CUDA_VISIBLE_DEVICES_OVERRIDE=0/1/3); those
+# roles have no launch block, so CI cannot check them against compose -- re-verify if a card moves.
 cards:
-  gpu0: {vram_gb: 32, lendable: true}   # chat's card; others only while Juniper has it lent
-  gpu1: {vram_gb: 32}
-  gpu2: {vram_gb: 32, index: 2}         # PG500-216 (a V100); index = CUDA device on circe
-  gpu3: {vram_gb: 32}
+  gpu0: {vram_gb: 32, lendable: true, index: 0}   # chat's card; others only while Juniper has it lent
+  gpu1: {vram_gb: 32, index: 1}
+  gpu2: {vram_gb: 32, index: 2}         # PG500-216 (a V100); the actuator sets the launch roles' device from it
+  gpu3: {vram_gb: 32, index: 3}
 
 roles:
   chat:       {kind: llm, cards: [gpu0], owner: chat, port: 8011}
@@ -46,54 +50,92 @@ roles:
   agent-gpu2: {kind: llm, cards: [gpu2], owner: agent, port: 8016,   # diffusion reclaims gpu2 via evicts
                # How long gpu2 may stay borrowed from diffusion once the pool loaded it (was
                # DURABLE_RUNS_ELASTIC_MAX_BORROW_SEC): then holds are recalled and the seat unloads.
-               max_hold_sec: 3600,
-               # load/unload: stage-4 bridge verbs onto the controller's fixed gpu2 transitions (deleted in stage 5).
-               # after_wait_sec keeps today's 1200s elastic trigger; guards are today's elastic eligibility checks.
-               swap: {evicts: [diffusion], load: gpu2/agent, unload: gpu2/restore,
-                      after_wait_sec: 1200, guards: [thermal, visual_baseline]},
+               # 9000 s (~2.5 h), Juniper 2026-09-29 (stage 5 spec, "Juniper's answers" 1): curiosity and
+               # self-sense holds may land here; image generation may wait up to ~2.5 h for gpu2.
+               max_hold_sec: 9000,
+               # The controller runs this `launch` block and diffusion's through its generic executor
+               # (stage 5.3 cutover; 5.6 deleted the load/unload bridge verbs and the controller's bridge).
+               # after_wait_sec keeps today's 1200s elastic trigger. guards: thermal only -- visual_baseline was
+               # deleted in stage 5.4 (a reverie-visual diffusion hold reclaims gpu2 through the queue).
+               swap: {evicts: [diffusion], after_wait_sec: 1200, guards: [thermal]},
                launch: {actuator: circe, compose: services/orion-llamacpp-host/docker-compose.atlas-workers.yml,
                         env_file: services/orion-llamacpp-host/.env, service: atlas-agent-burst,
-                        compose_profile: agent-burst, cuda_env: CUDA_VISIBLE_DEVICES_OVERRIDE,
+                        compose_profile: agent-burst,
+                        # Compose interpolation variables the actuator sets: the card index, and the
+                        # profile the pool sends. The pool sends the FIRST entry of `profiles` on every
+                        # load (choosing by vision/ctx/VRAM is not built).
+                        # Stage 7.2 (docs/superpowers/specs/2026-09-30-gpu-pool-stage7-concurrency.md):
+                        # Ternary-Bonsai-2-27B, 2 slots x 131072 (discovery reads slots/ctx from /props).
+                        # The second entry, the Q4 27B this seat served through stage 6, is the rollback:
+                        # swap the two entries. The atlas-agent-burst image carries both binaries
+                        # (Dockerfile.prism), so rollback needs no image change. Either edit changes this
+                        # role's launch digest: pool (athena) and controller checkout (circe) move together.
+                        cuda_env: ATLAS_AGENT_BURST_CUDA_VISIBLE_DEVICES,
+                        profile_var: ATLAS_AGENT_BURST_PROFILE_NAME,
+                        profiles: [ternary-bonsai2-27b-pq2-v100-32gb-circe-agent,
+                                   qwen3.8-27b-udq4kxl-v100-32gb-circe-agent-flex],
                         ready: /health, timeout_sec: 900}}
   metacog:    {kind: llm, cards: [gpu3], owner: [metacog, fast], port: 8012}
   fast:       {kind: llm, cards: [gpu3], owner: [metacog, fast], port: 8013}
-  world:      {kind: service, cards: [gpu2], owner: world, port: 6613, slots: 2, vram_gb: 1}
+  world:      {kind: service, cards: [gpu2], owner: world, port: 6613, slots: 2, vram_gb: 1,
+               # Never compute at the same time as diffusion (symmetric; the scheduler reports
+               # queued reason=serialized:<role>). Keeps the old /capacity permit's mutex: two
+               # "CUDA-capable device busy" failures on 2026-09-24, cause UNVERIFIED (stage 5 Decision 1).
+               serialize_with: [diffusion]}
   diffusion:  {kind: service, cards: [gpu2], owner: diffusion, port: 8014, slots: 1, vram_gb: 24,
                launch: {actuator: circe, compose: services/orion-diffusion-host/docker-compose.yml,
                         env_file: services/orion-diffusion-host/.env, service: diffusion-host,
                         cuda_env: CUDA_VISIBLE_DEVICES,
                         drain: {set: /v1/lifecycle/drain, status: /v1/lifecycle/status},
                         ready: /ready, timeout_sec: 600}}
+  # Deferred (stage 5 Decision 3): no launch block, so the pool marks it
+  # not_actuatable. Making it real = launch blocks here and on every role it evicts.
   experiment: {kind: llm, cards: [gpu0, gpu1, gpu2, gpu3], owner: experiment, port: 8099,
                operator_only: true, max_hold_sec: 14400,
-               swap: {evicts: all, load: circe/experiment, unload: circe/restore}}
+               swap: {evicts: all}}
 
 classes:   # roles that may serve a class, in preference order; nothing big spills down to gpu3
   chat:       {roles: [chat], on_unavailable: wait}
   agent:      {roles: [agent, agent-gpu2, chat], on_unavailable: backlog}
   metacog:    {roles: [metacog, fast, agent, agent-gpu2, chat], on_unavailable: backlog}
   fast:       {roles: [fast, metacog, agent, agent-gpu2, chat], on_unavailable: wait}
-  world:      {roles: [world], on_unavailable: backlog}
+  world:      {roles: [world], on_unavailable: wait}   # a world prediction replayed hours later is useless
   diffusion:  {roles: [diffusion], on_unavailable: backlog}
   experiment: {roles: [experiment], on_unavailable: fail}
+  # Memory episode distiller (2026-10-02, Juniper's choice): the 27B on gpu1 ONLY. Never the gpu2
+  # seat (a different model may load there) and never the lent chat card. Backlog, not wait: a
+  # distill run waits for the hold under durable-runs admission anyway.
+  memory_distill: {roles: [agent], on_unavailable: backlog}
 
 routes:    # what llm-gateway callers say -> class (+ priority). Every gateway route must be listed:
            # the gateway refuses a route that is not here rather than guess a GPU.
+           # Always long form with an explicit priority (orion/gpu_pool/tests/test_route_priorities_explicit.py):
+           # the shorthand `name: class` silently meant `system`, i.e. shed under heat (2026-10-06 C6).
   chat: {class: chat, priority: interactive}
   harness: {class: chat, priority: interactive}
-  agent: agent
+  agent: {class: agent, priority: system}
   metacog: {class: metacog, priority: system}
   metacog_background: {class: metacog, priority: background}
-  quick: fast
+  quick: {class: fast, priority: system}
   quick_background: {class: fast, priority: background}
+  # Calls on a human's critical path (spec 2026-10-06-thermal-controller-redesign D4): same class
+  # as metacog, but interactive, so a heat shed never holds a live Hub turn (orion-mind on a Hub
+  # turn, MIND_TURN_MODEL_ROUTE). metacog stays system: it also carries background callers.
+  # quick_turn / agent_turn (spec D4, Q4) are NOT added: no live-turn caller sends quick or agent
+  # today (cortex-orch's memory annotation listens to finished turns; Hub Agent mode runs through the
+  # FCC harness). Add each with the caller that uses it, not before.
+  metacog_turn: {class: metacog, priority: interactive}
   # The old "burst" lanes: agent work on a borrowed card. The pool now decides which card
   # (agent -> gpu2 seat when loaded -> gpu0 when lent), so both are just agent work.
   agent-burst: {class: agent, priority: system}
   chat-burst: {class: agent, priority: system}
+  # Memory episode distiller (2026-10-02): durable-runs holds the 27B on gpu1 at system priority
+  # (ahead of curiosity's background holds) and calls the gateway on this route.
+  memory_distill: {class: memory_distill, priority: system}
 
 hold_routes:   # durable-run holds on non-LLM roles; durable-runs reads these, the gateway never does
   # reverie.visual's generate step (docs/superpowers/specs/2026-09-28-visual-reverie-durable-graph-design.md).
-  # Advisory for the diffusion host itself: orion-thought validates the hold ref before generating,
-  # and still takes the /capacity permit world-model shares gpu2 through until stage 5.
+  # The hold IS the grant (stage 5.4): orion-thought validates the hold ref before generating and
+  # takes no second gate; world.serialize_with keeps world-model off gpu2 while it is held.
   # priority is informational: ResourceRequirementV1.priority (always background) wins for holds.
   diffusion: {class: diffusion, priority: background}

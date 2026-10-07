@@ -115,12 +115,25 @@ def _node_kind_regions(nodes, now, firing, starving) -> list[BrainRegionV1]:
     return regions
 
 
+def _quarantine_count(entry: Any) -> float:
+    """Unacknowledged quarantine count for one lane.
+
+    ``store.quarantine_summary()`` shapes each ``quarantine_by_reducer`` entry as
+    ``{"unacknowledged_count": int, "recent_examples": [...]}`` (since 2026-06-16).
+    The lane region carries the count only; examples stay on the grammar-truth
+    surface. A bare number is accepted for callers that already reduced it.
+    """
+    if isinstance(entry, Mapping):
+        entry = entry.get("unacknowledged_count", 0)
+    return float(entry or 0)
+
+
 def _lane_regions(lane_health: Mapping[str, Any], now, firing, starving) -> list[BrainRegionV1]:
     lag = dict(lane_health.get("cursor_lag_by_reducer") or {})
     backlog = dict(lane_health.get("pending_backlog_by_reducer") or {})
     quarantine = dict(lane_health.get("quarantine_by_reducer") or {})
     regions: list[BrainRegionV1] = []
-    lane_keys = set(lag) | set(backlog) | set(_LANE_LABELS)
+    lane_keys = set(lag) | set(backlog) | set(quarantine) | set(_LANE_LABELS)
     for lane in sorted(lane_keys):
         lag_sec = float(lag.get(lane, 0.0) or 0.0)
         pending = float(backlog.get(lane, 0.0) or 0.0)
@@ -140,36 +153,7 @@ def _lane_regions(lane_health: Mapping[str, Any], now, firing, starving) -> list
                 node_count=int(pending),
                 as_of=now,
                 stale=False,
-                detail={"lag_sec": lag_sec, "backlog": pending, "quarantine": float(quarantine.get(lane, 0) or 0)},
-            )
-        )
-    return regions
-
-
-def _self_state_regions(self_state, now, cadence_sec) -> list[BrainRegionV1]:
-    if not isinstance(self_state, Mapping):
-        return []
-    as_of = _parse_dt(self_state.get("generated_at")) or now
-    stale = (now - as_of).total_seconds() > cadence_sec
-    dims = self_state.get("dimensions") or {}
-    regions: list[BrainRegionV1] = []
-    for dim_id, payload in sorted(dims.items()):
-        if not isinstance(payload, Mapping):
-            continue
-        score = _clamp01(payload.get("score", 0.0))
-        conf = _clamp01(payload.get("confidence", 0.0))
-        regions.append(
-            BrainRegionV1(
-                dimension="self_state",
-                region_id=f"self_state:{dim_id}",
-                label=dim_id.replace("_", " ").title(),
-                intensity=score,
-                # self-state dims are always shown as steps, not fired/starved.
-                state="steady",
-                node_count=0,
-                as_of=as_of,
-                stale=stale,
-                detail={"confidence": conf},
+                detail={"lag_sec": lag_sec, "backlog": pending, "quarantine": _quarantine_count(quarantine.get(lane))},
             )
         )
     return regions
@@ -320,7 +304,6 @@ def assemble_brain_frame(
     nodes: Iterable[Any],
     edges: Iterable[Any],
     lane_health: Mapping[str, Any],
-    self_state: Mapping[str, Any] | None,
     attention: Any | None,
     attention_payload: Any | None = None,
     field_anomaly: Any | None = None,
@@ -335,7 +318,6 @@ def assemble_brain_frame(
     regions = (
         _node_kind_regions(nodes, now, firing, starving)
         + _lane_regions(lane_health or {}, now, firing, starving)
-        + _self_state_regions(self_state, now, float(settings.brain_frame_self_state_cadence_sec))
         + _honesty_regions(attention_payload, now)
         + _field_anomaly_regions(field_anomaly, now)
     )

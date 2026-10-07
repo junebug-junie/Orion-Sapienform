@@ -1,6 +1,6 @@
 """Hub read API backing the Cognitive EKG card's Biometrics toggle + deep-inspection modal.
 
-Athena and circe are the only two live host nodes; a third node (`atlas`) was
+Athena, circe and hecate are the live host nodes; a third node (`atlas`) was
 decommissioned 2026-08-20 and is rejected explicitly rather than silently
 dropped or forwarded as a doomed cross-host call (see `biometrics_node_client.py`).
 
@@ -20,7 +20,6 @@ forced this.
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import os
 import threading
@@ -32,7 +31,7 @@ from fastapi import APIRouter, HTTPException, Query
 
 from orion.substrate.metacog_trend_signals import latest_biometrics_induction_by_node
 
-from . import biometrics_node_client
+from . import biometrics_node_client, gpu_pool_routes
 from .biometrics_node_client import BiometricsNodeClientError, LIVE_NODES
 from .cabinet_ambient_routes import downsample_points, parse_window
 from .settings import settings
@@ -117,20 +116,87 @@ def _validate_node(node: str) -> str:
     )
 
 
-def _parse_lane_map(node: str) -> Dict[str, str]:
-    raw = (
-        settings.GPU_LANE_MAP_ATHENA_JSON
-        if node == "athena"
-        else settings.GPU_LANE_MAP_CIRCE_JSON
-    )
+#: A pool state older than this is not used for labels (the pool publishes every ~5 s).
+POOL_STATE_MAX_AGE_SEC = 60.0
+#: Discovery statuses that mean the role is not on its card right now.
+_NOT_RESIDENT = {"evicted", "unloaded"}
+#: Discovery statuses that mean the role is up and answering.
+_HEALTHY = {"confirmed", "static"}
+LANE_UNASSIGNED = "unassigned"
+LANE_NO_POOL_STATE = "no pool state"
+
+
+def lane_map_from_pool_state(
+    node: str, state: Any, now: Optional[datetime] = None
+) -> tuple[Dict[str, str], str]:
+    """GPU index -> the roles on that card right now, from one ``GpuPoolStateV1`` payload (dict).
+
+    Returns ``(labels, default)``: ``default`` is the label for an index the map lacks. Stage 5.5 of
+    docs/superpowers/specs/2026-09-29-gpu-pool-stage5-world-diffusion-generic-actuation.md (Decision 4)
+    -- this replaced the hand-maintained ``GPU_LANE_MAP_{ATHENA,CIRCE}_JSON`` keys, which were ``{}`` in
+    production, so every card read "unassigned".
+
+    - A node the pool does not manage (athena: no pool, a non-goal) -> ``({}, "unassigned")``.
+    - No pool state, a state without ``host`` (a pre-5.5 pool) or one older than
+      ``POOL_STATE_MAX_AGE_SEC`` -> ``({}, "no pool state")``: unknown, which is not the same fact as
+      "nothing assigned".
+    - A role is on a card when its discovery status is not ``evicted``/``unloaded`` (so the loaded
+      side of a swap card, e.g. ``agent-gpu2`` or ``diffusion``). A resident role that is not healthy
+      (``down``/``mismatch``/``silent``) keeps its name with the status in brackets. Services report
+      ``static`` when healthy, never ``confirmed``.
+    - A card with no ``index`` in the pool YAML is not labelled (it is never guessed).
+    """
+    if not isinstance(state, dict):
+        return {}, LANE_NO_POOL_STATE
+    host = state.get("host")
+    if not isinstance(host, str) or not host:
+        # A pre-5.5 pool sends neither host nor card index: labels cannot be joined yet.
+        return {}, LANE_NO_POOL_STATE
+    if host.strip().lower() != node:
+        return {}, LANE_UNASSIGNED
+    generated = state.get("generated_at")
     try:
-        parsed = json.loads(raw or "{}")
+        at = datetime.fromisoformat(str(generated).replace("Z", "+00:00"))
+        if at.tzinfo is None:
+            at = at.replace(tzinfo=timezone.utc)
     except (TypeError, ValueError):
-        logger.warning("Invalid GPU_LANE_MAP_%s_JSON; treating as empty.", node.upper())
-        return {}
-    if not isinstance(parsed, dict):
-        return {}
-    return {str(k): str(v) for k, v in parsed.items()}
+        return {}, LANE_NO_POOL_STATE
+    # generated_at is the pool service's clock (it runs on athena, like Hub; `host` is the node whose
+    # cards it manages). 60 s against a 5 s publish cadence also tolerates skew if they ever split.
+    if ((now or _now_utc()) - at).total_seconds() > POOL_STATE_MAX_AGE_SEC:
+        return {}, LANE_NO_POOL_STATE
+
+    on_card: dict[str, list[str]] = {}
+    for role in state.get("roles") or []:
+        if not isinstance(role, dict) or role.get("status") in _NOT_RESIDENT:
+            continue
+        name = str(role.get("role") or "")
+        if not name:
+            continue
+        status = role.get("status")
+        label = name if status in _HEALTHY else f"{name} [{status or 'unknown'}]"
+        for card in role.get("cards") or []:
+            on_card.setdefault(str(card), []).append(label)
+
+    labels: Dict[str, str] = {}
+    for card in state.get("cards") or []:
+        if not isinstance(card, dict) or card.get("index") is None:
+            continue
+        roles = on_card.get(str(card.get("card")), [])
+        label = ", ".join(roles) if roles else "nothing loaded"
+        if card.get("lent"):
+            label += " (lent)"
+        swap_state = card.get("swap_state")
+        if swap_state and swap_state != "idle":
+            seat = card.get("swap_role")
+            label += f" [{swap_state}{' ' + str(seat) if seat else ''}]"
+        labels[str(card["index"])] = label
+    return labels, LANE_UNASSIGNED
+
+
+def pool_lane_map(node: str, now: Optional[datetime] = None) -> tuple[Dict[str, str], str]:
+    """``lane_map_from_pool_state`` over Hub's live pool feed (``orion:gpu_pool:state``)."""
+    return lane_map_from_pool_state(node, gpu_pool_routes.feed.snapshot().get("state"), now=now)
 
 
 @router.get("/snapshot")
@@ -592,14 +658,19 @@ async def api_biometrics_preview_gpu(node: str = Query(...), limit: int = Query(
         logger.warning("biometrics preview gpu unavailable for %s: %s", nid, exc)
         return {"ok": False, "node": nid, "gpus": [], "error": "node_unreachable"}
 
-    cards = gpu_cards_from_raw_recent(payload, _parse_lane_map(nid))
+    lane_map, lane_default = pool_lane_map(nid)
+    cards = gpu_cards_from_raw_recent(payload, lane_map, lane_default)
     return {"ok": bool(cards), "node": nid, "gpus": cards}
 
 
-def gpu_cards_from_raw_recent(payload: Any, lane_map: Mapping[str, str]) -> list[dict[str, Any]]:
+def gpu_cards_from_raw_recent(
+    payload: Any, lane_map: Mapping[str, str], lane_default: str = LANE_UNASSIGNED
+) -> list[dict[str, Any]]:
     """Per-GPU cards (newest sample + utilization trend) from a node's `/raw/recent` payload.
 
-    Shared with the urgent-curiosity evidence bundle (scripts/urgent_evidence.py)."""
+    ``lane`` is the pool-derived label for the card's index (``pool_lane_map``), else
+    ``lane_default``; ``lane_assigned`` says which. Shared with the urgent-curiosity evidence bundle
+    (scripts/urgent_evidence.py)."""
     items = payload.get("items") or [] if isinstance(payload, dict) else []
     # orion-biometrics' /raw/recent iterates reversed(_RAW_RECENT) -- items[0]
     # is the newest sample, items[-1] the oldest.
@@ -627,7 +698,8 @@ def gpu_cards_from_raw_recent(payload: Any, lane_map: Mapping[str, str]) -> list
             {
                 "index": idx,
                 "name": gpu.get("name") or gpu.get("gpu_name"),
-                "lane": lane_map.get(idx, "unassigned"),
+                "lane": lane_map.get(idx, lane_default),
+                "lane_assigned": idx in lane_map,
                 "utilization_gpu": gpu.get("utilization_gpu"),
                 "memory_used_mb": gpu.get("memory_used_mb"),
                 "memory_total_mb": gpu.get("memory_total_mb"),

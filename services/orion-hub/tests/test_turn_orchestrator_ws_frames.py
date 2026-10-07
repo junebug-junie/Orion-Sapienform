@@ -300,7 +300,7 @@ async def test_turn_orchestrator_stance_req_llm_route_none_by_default() -> None:
     react_mock.assert_awaited_once()
     stance_req = react_mock.await_args.args[0]
     assert stance_req.llm_route is None
-    assert stance_req.resource_lease is None
+    assert stance_req.gpu_lease is None
 
 
 @pytest.mark.asyncio
@@ -336,7 +336,6 @@ async def test_turn_orchestrator_threads_situation_prompt_fragment_into_harness_
         ORION_SITUATION_TIMEZONE="America/Denver",
         ORION_PRESENCE_DEFAULT_REQUESTOR="Juniper",
         ORION_PRESENCE_PERSIST_ALLOWED=False,
-        HUB_LLM_GATEWAY_URL="http://127.0.0.1:8210",
     )
     with patches[0], patches[1], patches[2], patch.object(
         turn_orchestrator_mod, "build_situation_for_ctx", build_situation_mock
@@ -395,7 +394,6 @@ async def test_turn_orchestrator_emits_situation_cockpit_hop() -> None:
         ORION_SITUATION_TIMEZONE="America/Denver",
         ORION_PRESENCE_DEFAULT_REQUESTOR="Juniper",
         ORION_PRESENCE_PERSIST_ALLOWED=False,
-        HUB_LLM_GATEWAY_URL="http://127.0.0.1:8210",
         orion_situation_perception_enabled=False,
     )
     with patches[0], patches[1], patches[2], patch.object(
@@ -1516,37 +1514,6 @@ async def test_reading_binding_is_runtime_context_not_model_payload(context, run
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("assigned_lane", ["agent", "chat", "metacog"])
-async def test_resource_lease_and_inference_budget_reach_governor(assigned_lane):
-    from datetime import timedelta
-    from orion.schemas.resource_admission import ResourceLeaseV1
-    now = datetime.now(timezone.utc)
-    token = ResourceLeaseV1(run_id="run-one", demand_id="run-one:turn", lease_id="lease-one",
-        resource_key=f"llm.route.{assigned_lane}", lane=assigned_lane, backend_key="http://worker:8000", generation=7,
-        granted_at=now, heartbeat_at=now, expires_at=now + timedelta(seconds=60))
-    harness_run = HarnessRunV1(correlation_id=_CORR_ID, final_text="A grounded finding.", finalize_ran=True,
-                              step_count=14, compliance_verdict="completed", grounding_status="grounded")
-    capture = AsyncMock(return_value=harness_run)
-    patches = _hub_client_patches(thought=_thought(), harness_run=capture)
-    with patches[0], patches[1] as react_mock, patches[2]:
-        await execute_unified_turn(
-            bus=MagicMock(), correlation_id=_CORR_ID, session_id="s", user_message="Study this",
-            payload={"no_write": True, "fcc_model_label": "llamacpp/agent",
-                     "resource_lease": token.model_dump(mode="json"), "inference_timeout_sec": 42},
-            reading_context="curiosity", reading_parent_run_id="run-one",
-            emit_observation_fn=lambda **kwargs: None,
-        )
-    request = capture.await_args.args[0]
-    assert request.resource_lease == token
-    assert request.inference_timeout_sec == 42
-    assert request.fcc_model_label == "llamacpp/agent"
-    assert request.reading_binding.parent_run_id == "run-one"
-    stance_request = react_mock.await_args.args[0]
-    assert stance_request.resource_lease == token
-    assert stance_request.llm_route == assigned_lane
-
-
-@pytest.mark.asyncio
 async def test_gpu_pool_hold_ref_reaches_governor_and_stance():
     """Stage 4.4: the durable run's hold ref rides the whole turn -- harness (FCC + finalize) and
     stance -- and stance names the hold's work-class route, never the role."""
@@ -1566,11 +1533,11 @@ async def test_gpu_pool_hold_ref_reaches_governor_and_stance():
             emit_observation_fn=lambda **kwargs: None,
         )
     request = capture.await_args.args[0]
-    assert request.gpu_lease == ref and request.resource_lease is None
+    assert request.gpu_lease == ref and "resource_lease" not in type(request).model_fields
     assert request.inference_timeout_sec == 42
     assert request.fcc_model_label == "llamacpp/agent"
     stance_request = react_mock.await_args.args[0]
-    assert stance_request.gpu_lease == ref and stance_request.resource_lease is None
+    assert stance_request.gpu_lease == ref and "resource_lease" not in type(stance_request).model_fields
     assert stance_request.llm_route == "agent"
 
 

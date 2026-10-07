@@ -133,12 +133,13 @@ def test_exception_in_block_releases_as_upstream_error():
 def test_backlogged_and_unavailable_are_typed_not_timeouts():
     async def go():
         bus = WiredBus()
-        await pool(bus, down=("world",))
+        # diffusion: a backlog class (world is `wait` since stage 5)
+        await pool(bus, down=("diffusion",))
         with pytest.raises(LeaseBacklogged):                  # opted in: the pool keeps it
-            async with gpu_lease(bus, work_class="world", holder="t", retryable=True):
+            async with gpu_lease(bus, work_class="diffusion", holder="t", retryable=True):
                 pass
         with pytest.raises(LeaseUnavailable) as waited:       # default: waits, then a typed deadline
-            async with gpu_lease(bus, work_class="world", holder="t", deadline_sec=0.2):
+            async with gpu_lease(bus, work_class="diffusion", holder="t", deadline_sec=0.2):
                 pass
         assert waited.value.reason == "deadline" and not isinstance(waited.value, LeaseBacklogged)
         with pytest.raises(LeaseUnavailable) as err:

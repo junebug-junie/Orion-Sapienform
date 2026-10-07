@@ -43,6 +43,20 @@ class Settings(BaseSettings):
     # services/orion-sql-db/manual_migration_llm_inference_substrate_loop.sql first.
     enable_llm_inference_reducer: bool = Field(False, alias="ENABLE_LLM_INFERENCE_REDUCER")
     llm_inference_grammar_batch_limit: int = Field(200, alias="LLM_INFERENCE_GRAMMAR_BATCH_LIMIT")
+    # storage_write lane (orion-sql-writer reporting on its own writes, trace
+    # prefix sql_writer.storage:). Off in code: needs
+    # services/orion-sql-db/manual_migration_storage_write_substrate_loop.sql first.
+    enable_storage_write_reducer: bool = Field(False, alias="ENABLE_STORAGE_WRITE_REDUCER")
+    storage_write_grammar_batch_limit: int = Field(200, alias="STORAGE_WRITE_GRAMMAR_BATCH_LIMIT")
+    # vision_organ lane (orion-vision-frame-router reporting on the eye, trace
+    # prefix vision.organ:). Off in code: needs
+    # services/orion-sql-db/manual_migration_vision_organ_substrate_loop.sql first.
+    # Successor of the retired SUBSTRATE_VISION_CHANNEL_TICK_* artifact tick.
+    enable_vision_organ_reducer: bool = Field(False, alias="ENABLE_VISION_ORGAN_REDUCER")
+    vision_organ_grammar_batch_limit: int = Field(200, alias="VISION_ORGAN_GRAMMAR_BATCH_LIMIT")
+    # No router window for this long -> capability:vision staleness 1.0 on a
+    # clock. 3x the router's 60 s window: one late window is not an outage.
+    vision_organ_silence_sec: float = Field(180.0, alias="VISION_ORGAN_SILENCE_SEC")
     transport_substrate_maturity: str = Field(
         "trace_only",
         alias="TRANSPORT_SUBSTRATE_MATURITY",
@@ -54,8 +68,16 @@ class Settings(BaseSettings):
         alias="NODE_CATALOG_PATH",
     )
     grammar_poll_interval_sec: float = Field(5.0, alias="GRAMMAR_POLL_INTERVAL_SEC")
-    enable_dynamics_tick: bool = Field(False, alias="SUBSTRATE_DYNAMICS_TICK_ENABLED")
+    # Default ON since 2026-10-06: this tick is the only writer of activation
+    # decay (the Hub's second decay scheduler was removed), so with it off
+    # nothing decays at all.
+    enable_dynamics_tick: bool = Field(True, alias="SUBSTRATE_DYNAMICS_TICK_ENABLED")
     dynamics_tick_interval_sec: float = Field(30.0, alias="SUBSTRATE_DYNAMICS_TICK_INTERVAL_SEC")
+    # since_last: decay stored activation only by the time since its last decay
+    # (metadata activation_decayed_at). legacy: pre-2026-10-06 compounding decay
+    # by full age every tick -- rollback only. Validated in
+    # orion.substrate.activation.normalize_decay_mode (unknown value raises).
+    dynamics_decay_mode: str = Field("since_last", alias="SUBSTRATE_DYNAMICS_DECAY_MODE")
     enable_episodic_tick: bool = Field(False, alias="SUBSTRATE_EPISODIC_TICK_ENABLED")
     episodic_tick_interval_sec: float = Field(300.0, alias="SUBSTRATE_EPISODIC_TICK_INTERVAL_SEC")
     # bus_synaptic_prediction_error: own explicit flag, not piggybacked on
@@ -77,23 +99,10 @@ class Settings(BaseSettings):
     bus_synaptic_max_edge_age_sec: float = Field(
         3600.0, alias="SUBSTRATE_BUS_SYNAPTIC_MAX_EDGE_AGE_SEC"
     )
-    # Perceptual availability, feeding node:substrate.vision ->
-    # capability:vision so that capability has a real edge instead of a
-    # fabricated constant. A bus listener on the vision artifact channel feeds
-    # a clock-driven tick -- NOT a bus-cadence statistic, which was tried and
-    # deleted (it z-scored a fixed scheduler, and froze rather than rose when
-    # the eye went silent). Own flag and interval, like bus_synaptic, because
-    # it is a different question rather than another grammar-event domain.
-    # Deliberately NOT added to ACTIVE_INFERENCE_DOMAINS or to worker.py's
-    # _PREDICTION_ERROR_DOMAIN_NODE_IDS in this patch; see the perception
-    # design doc's metric gate, item 6.
-    enable_vision_channel_tick: bool = Field(
-        False, alias="SUBSTRATE_VISION_CHANNEL_TICK_ENABLED"
-    )
-    vision_channel_tick_interval_sec: float = Field(
-        30.0, alias="SUBSTRATE_VISION_CHANNEL_TICK_INTERVAL_SEC"
-    )
-    # The channel carrying the detector's real output. Chosen over
+    # The channel carrying the detector's real output, read by the perception
+    # prediction-error listener (P2). (The vision-channel availability tick that
+    # also read it was retired 2026-10-02: capability:vision is now fed by the
+    # frame router's own report, ENABLE_VISION_ORGAN_REDUCER below.) Chosen over
     # orion:vision:events (~11/hour -- far too sparse to read as liveness) and
     # over orion:vision:frames (0.1s, but pre-detector, so it stays healthy
     # while the eye is blind). Measured live 2026-08-13: one message every 5.0s.
@@ -125,6 +134,21 @@ class Settings(BaseSettings):
         "log_orion_metacognition,gpu_pool_wait,current_turn_probe",
         alias="SUBSTRATE_RPC_DELIVERY_EXCLUDE_LABELS",
     )
+    # Cabinet warming -> the workspace competition (attend-to-act loop; orion/autonomy/cabinet_heat.py).
+    # Writes node:substrate.cabinet's prediction_error = the cabinet warming error (non-zero only while
+    # the cabinet is ELEVATED and RISING >= the threshold within 15 min), so the EXISTING dynamics
+    # engine (prediction_error -> dynamic_pressure) admits it to the broadcast like every other
+    # prediction-error node. Needs SUBSTRATE_WRITE_PREDICTION_ERROR_NODES and the dynamics tick.
+    # OFF in code and in .env_example: it changes what wins Orion's attention -- Juniper flips it.
+    enable_cabinet_heat_attention: bool = Field(
+        False, alias="SUBSTRATE_CABINET_HEAT_ATTENTION_ENABLED"
+    )
+    cabinet_heat_tick_interval_sec: float = Field(
+        30.0, alias="SUBSTRATE_CABINET_HEAT_TICK_INTERVAL_SEC"
+    )
+    cabinet_heat_rise_threshold_c: float = Field(
+        0.5, ge=0.0, alias="SUBSTRATE_CABINET_HEAT_RISE_THRESHOLD_C"
+    )
     rpc_health_snapshot_channel: str = Field(
         "orion:rpc_health:snapshot", alias="SUBSTRATE_RPC_HEALTH_SNAPSHOT_CHANNEL"
     )
@@ -150,6 +174,25 @@ class Settings(BaseSettings):
     attention_broadcast_log_retention_hours: float = Field(
         168.0, alias="ORION_ATTENTION_BROADCAST_LOG_RETENTION_HOURS"
     )
+    # Prediction-error magnitude history (docs/superpowers/specs/2026-10-02-
+    # reverie-prediction-error-magnitude-proposal.md, step 1). When on, the
+    # attention-broadcast tick records each node:substrate.* node's
+    # prediction_error into substrate_node_prediction_error_history (only
+    # when its observed_at moved) and attaches OpenLoopV1.magnitude to
+    # broadcast loops. Default off: OpenLoopV1 is extra="forbid", so every
+    # broadcast consumer must be rebuilt BEFORE this is turned on. Apply
+    # manual_migration_node_prediction_error_history_v1.sql first.
+    pe_history_enabled: bool = Field(True, alias="SUBSTRATE_PE_HISTORY_ENABLED")
+    # Floor 25h: below that the prune would delete the readings the 24h and
+    # prior-24h windows need (0 would delete every row just written). Below
+    # 168 the 7-day fields silently cover less than 7 days after a restart.
+    pe_history_retention_hours: float = Field(
+        168.0, ge=25.0, alias="SUBSTRATE_PE_HISTORY_RETENTION_HOURS"
+    )
+    # Minimum |median_1h - median_prior_24h| before trend reads rising/settling
+    # (the effective threshold is max(this, 0.5 * (p90_7d - p50_7d))). A knob,
+    # not a finding.
+    pe_trend_min_delta: float = Field(0.01, alias="ORION_REVERIE_PE_TREND_MIN_DELTA")
 
     # System One / Kev appraisal. Rides the attention-broadcast cadence,
     # persists a compiled frame, emits a grammar shadow, and publishes the
@@ -237,6 +280,14 @@ class Settings(BaseSettings):
     attention_self_model_trend_window_ticks: int = Field(
         2, alias="SUBSTRATE_ATTENTION_SELF_MODEL_TREND_WINDOW_TICKS"
     )
+    # Omit a domain's prediction_error from the self-model's
+    # prediction_error_confidence (and trend buffer) when its Falkor node's
+    # temporal.observed_at is older than the shared 1800 s horizon
+    # (orion/substrate/prediction_error_freshness.py). Omit, not fade: a faded
+    # value reads as calm. false restores the old read-every-node behavior.
+    attention_self_model_omit_stale_pe: bool = Field(
+        True, alias="SUBSTRATE_ATTENTION_SELF_MODEL_OMIT_STALE_PE"
+    )
     # Same 168h (7-day) default as attention_broadcast_log_retention_hours
     # above -- covers this repo's default 48h analysis-window scripts with
     # margin.
@@ -285,9 +336,8 @@ class Settings(BaseSettings):
     brain_frame_firing_threshold: float = Field(0.5, alias="BRAIN_FRAME_FIRING_THRESHOLD")
     brain_frame_starving_threshold: float = Field(0.1, alias="BRAIN_FRAME_STARVING_THRESHOLD")
     # A dimension renders stale when generated_at - as_of exceeds its cadence.
-    brain_frame_self_state_cadence_sec: float = Field(
-        30.0, alias="BRAIN_FRAME_SELF_STATE_CADENCE_SEC"
-    )
+    # (BRAIN_FRAME_SELF_STATE_CADENCE_SEC retired 2026-10-07 with the
+    # self_state brain region -- its source table had 0 rows.)
     brain_frame_spotlight_cadence_sec: float = Field(
         30.0, alias="BRAIN_FRAME_SPOTLIGHT_CADENCE_SEC"
     )
@@ -450,7 +500,8 @@ class Settings(BaseSettings):
     # (the value this flag published for its first day live) was found
     # numerically incomparable to every other prediction_error domain's
     # min_error threshold and migrated to include stage 2. Own explicit
-    # flag, not piggybacked on SUBSTRATE_VISION_CHANNEL_TICK_ENABLED or
+    # flag, not piggybacked on SUBSTRATE_VISION_CHANNEL_TICK_ENABLED (retired
+    # 2026-10-02, see ENABLE_VISION_ORGAN_REDUCER) or
     # SUBSTRATE_WRITE_PREDICTION_ERROR_NODES -- same domain-independence
     # convention every tick in this file follows (bus_synaptic vs
     # vision_channel vs codebase all have their own flags despite

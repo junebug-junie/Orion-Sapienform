@@ -90,116 +90,108 @@ def test_route_key_none_when_blank() -> None:
     assert _route_key_from_fcc_env_value("llamacpp/") is None
 
 
-# --- probe_current_served_model -------------------------------------------
+# --- probe_current_served_model / probe_route_runtime (GPU pool state, stage 6.3) ---------
 
 
-class _FakeRoutesResponse:
-    def __init__(self, *, status_code: int, payload: dict) -> None:
-        self.status_code = status_code
-        self._payload = payload
+from orion.gpu_pool.config import load_pool_config  # noqa: E402
+from orion.harness.fcc_motor import held_role_window, probe_route_runtime  # noqa: E402
 
-    def json(self) -> dict:
-        return self._payload
+_CFG_PAYLOAD = load_pool_config().model_dump(mode="json", by_alias=True, exclude={"digest"})
 
 
-def _mock_client_returning(payload: dict, *, status_code: int = 200) -> MagicMock:
-    mock_client = AsyncMock()
-    mock_client.__aenter__.return_value = mock_client
-    mock_client.__aexit__.return_value = False
-    mock_client.get = AsyncMock(return_value=_FakeRoutesResponse(status_code=status_code, payload=payload))
-    mock_client_cls = MagicMock(return_value=mock_client)
-    return mock_client_cls
+def _pool_state(*roles: dict, config: bool = True) -> dict:
+    state = {"generated_at": "2026-09-30T00:00:00Z",
+             "cards": [{"card": "gpu0", "vram_gb": 32, "lendable": True, "lent": False}],
+             "roles": list(roles)}
+    if config:
+        state["config"] = _CFG_PAYLOAD
+    return state
+
+
+def _role(role: str, status: str = "confirmed", **kw) -> dict:
+    return {"role": role, "kind": "llm", "cards": ["gpu0"], "url": "http://h:8011", "status": status,
+            "model_file": f"{role}.gguf", "ctx_per_slot": 8192, **kw}
 
 
 @pytest.mark.asyncio
-async def test_probe_current_served_model_reads_cached_route_model() -> None:
-    routes_payload = {
-        "routes": [
-            {"id": "chat", "model": "/models/gguf/Qwen_Qwen3-8B-Q4_K_M.gguf", "status": "up"},
-            {"id": "quick", "model": "/models/gguf/other.gguf", "status": "up"},
-        ]
-    }
-    with patch(
-        "orion.harness.fcc_motor.httpx.AsyncClient", _mock_client_returning(routes_payload)
-    ):
-        result = await probe_current_served_model(
-            "MODEL_SONNET",
-            env={"MODEL_SONNET": "llamacpp/chat"},
-            gateway_url="http://llm-gateway:8210",
-        )
+async def test_probe_current_served_model_reads_the_route_model_from_pool_state() -> None:
+    state = _pool_state(_role("chat", model_path="/models/gguf/Qwen_Qwen3-8B-Q4_K_M.gguf"))
+    result = await probe_current_served_model(
+        "MODEL_SONNET", env={"MODEL_SONNET": "llamacpp/chat"}, pool_state=state,
+    )
     assert result == "Qwen_Qwen3-8B-Q4_K_M"
 
 
 @pytest.mark.asyncio
+async def test_probe_route_runtime_returns_the_landing_roles_window() -> None:
+    # metacog's own role is down: the route lands on fast, so fast's model and window.
+    state = _pool_state(_role("metacog", "down"), _role("fast", ctx_per_slot=4096))
+    assert await probe_route_runtime("llamacpp/metacog", env={}, pool_state=state) == ("fast", 4096)
+
+
+@pytest.mark.asyncio
 async def test_probe_current_served_model_none_when_no_label() -> None:
-    assert await probe_current_served_model(None, env={}) is None
-    assert await probe_current_served_model("", env={}) is None
+    state = _pool_state(_role("chat"))
+    assert await probe_current_served_model(None, env={}, pool_state=state) is None
+    assert await probe_current_served_model("", env={}, pool_state=state) is None
 
 
 @pytest.mark.asyncio
 async def test_probe_current_served_model_none_when_label_missing_from_env() -> None:
-    assert await probe_current_served_model("MODEL_SONNET", env={}) is None
+    assert await probe_current_served_model("MODEL_SONNET", env={}, pool_state=_pool_state(_role("chat"))) is None
 
 
 @pytest.mark.asyncio
 async def test_probe_current_served_model_none_for_non_llamacpp_backend() -> None:
-    """MODEL_HAIKU-style entries (e.g. nvidia_nim/z-ai/glm-5.2) aren't in
-    orion-llm-gateway's route table -- must fail open without even calling
-    out, not raise or misreport."""
-    with patch("orion.harness.fcc_motor.httpx.AsyncClient") as mock_cls:
-        result = await probe_current_served_model(
-            "MODEL_HAIKU", env={"MODEL_HAIKU": "nvidia_nim/z-ai/glm-5.2"}
-        )
-    assert result is None
-    mock_cls.assert_not_called()
-
-
-@pytest.mark.asyncio
-async def test_probe_current_served_model_none_when_route_not_found() -> None:
-    routes_payload = {"routes": [{"id": "quick", "model": "x", "status": "up"}]}
-    with patch(
-        "orion.harness.fcc_motor.httpx.AsyncClient", _mock_client_returning(routes_payload)
-    ):
-        result = await probe_current_served_model(
-            "MODEL_SONNET", env={"MODEL_SONNET": "llamacpp/chat"}
-        )
+    """MODEL_HAIKU-style entries (e.g. nvidia_nim/z-ai/glm-5.2) are not pool routes -- must fail
+    open, not raise or misreport."""
+    result = await probe_current_served_model(
+        "MODEL_HAIKU", env={"MODEL_HAIKU": "nvidia_nim/z-ai/glm-5.2"}, pool_state=_pool_state(_role("chat"))
+    )
     assert result is None
 
 
 @pytest.mark.asyncio
-async def test_probe_current_served_model_none_when_route_model_not_yet_probed() -> None:
-    """A down worker's route entry has model=None -- must not crash or
-    return a placeholder."""
-    routes_payload = {"routes": [{"id": "chat", "model": None, "status": "down"}]}
-    with patch(
-        "orion.harness.fcc_motor.httpx.AsyncClient", _mock_client_returning(routes_payload)
-    ):
-        result = await probe_current_served_model(
-            "MODEL_SONNET", env={"MODEL_SONNET": "llamacpp/chat"}
-        )
+async def test_probe_current_served_model_none_when_route_not_in_pool_config() -> None:
+    result = await probe_current_served_model(
+        "MODEL_SONNET", env={"MODEL_SONNET": "llamacpp/no-such-route"}, pool_state=_pool_state(_role("chat"))
+    )
     assert result is None
 
 
 @pytest.mark.asyncio
-async def test_probe_current_served_model_none_on_gateway_error_status() -> None:
-    with patch(
-        "orion.harness.fcc_motor.httpx.AsyncClient",
-        _mock_client_returning({}, status_code=503),
-    ):
-        result = await probe_current_served_model(
-            "MODEL_SONNET", env={"MODEL_SONNET": "llamacpp/chat"}
-        )
-    assert result is None
+async def test_probe_current_served_model_none_when_worker_down() -> None:
+    """A down route has no model and no window -- never a placeholder."""
+    state = _pool_state(_role("chat", "down"))
+    assert await probe_route_runtime("MODEL_SONNET", env={"MODEL_SONNET": "llamacpp/chat"},
+                                     pool_state=state) == (None, None)
 
 
 @pytest.mark.asyncio
-async def test_probe_current_served_model_none_on_transport_exception() -> None:
-    mock_client = AsyncMock()
-    mock_client.__aenter__.return_value = mock_client
-    mock_client.__aexit__.return_value = False
-    mock_client.get = AsyncMock(side_effect=RuntimeError("connection refused"))
-    with patch("orion.harness.fcc_motor.httpx.AsyncClient", MagicMock(return_value=mock_client)):
-        result = await probe_current_served_model(
-            "MODEL_SONNET", env={"MODEL_SONNET": "llamacpp/chat"}
-        )
-    assert result is None
+@pytest.mark.parametrize("state", [
+    None,  # pool unreachable
+    _pool_state(_role("chat"), config=False),  # a broadcast frame: cannot map route -> role
+])
+async def test_probe_is_unknown_without_usable_pool_state(state) -> None:
+    """Pool unreachable is an honest unknown (None, None): never the route default guessed."""
+    assert await probe_route_runtime("MODEL_SONNET", env={"MODEL_SONNET": "llamacpp/chat"},
+                                     pool_state=state) == (None, None)
+
+
+def test_probe_makes_no_http_call() -> None:
+    """Stage 6.3 pin: the motor no longer reads the gateway's retiring GET /routes."""
+    import inspect
+
+    import orion.harness.fcc_motor as motor
+
+    assert not hasattr(motor, "httpx")
+    source = inspect.getsource(motor.probe_route_runtime)
+    assert "AsyncClient" not in source and "urlopen" not in source and "gateway_url" not in source
+
+
+def test_held_role_window_is_the_grants_ctx_not_the_route_default() -> None:
+    state = _pool_state(_role("agent", ctx_per_slot=32768), _role("agent-gpu2", ctx_per_slot=65536))
+    assert held_role_window(state, "agent-gpu2") == 65536
+    assert held_role_window(state, "missing") is None
+    assert held_role_window(_pool_state(_role("chat", "mismatch")), "chat") is None
+    assert held_role_window(None, "chat") is None

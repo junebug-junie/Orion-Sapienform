@@ -5,10 +5,28 @@ from datetime import datetime, timezone
 from typing import Any, Protocol
 
 from orion.core.schemas.cognitive_substrate import BaseSubstrateNodeV1, SubstrateEdgeV1
+from .neighborhood import NeighborhoodRequestV1, NeighborhoodResultV1, read_memory_neighborhood
 
 
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+@dataclass(frozen=True)
+class CompleteScanReceipt:
+    """Operational coverage receipt; a paged read is never snapshot isolation."""
+
+    started_at: str
+    finished_at: str
+    complete: bool
+    stale: bool
+    node_count: int
+    edge_count: int
+    pages_read: int
+    last_successful_refresh_at: str | None
+    reason: str | None = None
+    consistency: str = "non_atomic_keyset"
+    edge_identity_aliases: int = 0
 
 
 @dataclass(frozen=True)
@@ -17,6 +35,7 @@ class MaterializedSubstrateGraphState:
     edges: dict[str, SubstrateEdgeV1]
     node_identity_index: dict[str, str]
     edge_identity_index: dict[str, str]
+    scan_receipt: CompleteScanReceipt | None = None
 
 
 @dataclass(frozen=True)
@@ -53,6 +72,8 @@ class SubstrateGraphStore(Protocol):
     ) -> None: ...
     def upsert_edge(self, *, identity_key: str, edge: SubstrateEdgeV1) -> None: ...
     def snapshot(self) -> MaterializedSubstrateGraphState: ...
+
+    def read_neighborhood(self, request: NeighborhoodRequestV1) -> NeighborhoodResultV1: ...
 
     def query_focal_slice(self, *, node_ids: list[str], max_edges: int = 64) -> SubstrateQueryResultV1: ...
     def query_hotspot_region(self, *, min_salience: float = 0.6, limit_nodes: int = 32, limit_edges: int = 64) -> SubstrateQueryResultV1: ...
@@ -138,6 +159,9 @@ class InMemorySubstrateGraphStore:
             edge_identity_index=dict(self._edge_identity_index),
         )
 
+    def read_neighborhood(self, request: NeighborhoodRequestV1) -> NeighborhoodResultV1:
+        return read_memory_neighborhood(self, request)
+
     def query_focal_slice(self, *, node_ids: list[str], max_edges: int = 64) -> SubstrateQueryResultV1:
         edges_limit = max(1, int(max_edges))
         slice_value = self.read_focal_slice(node_ids=node_ids, max_edges=edges_limit)
@@ -204,10 +228,17 @@ class InMemorySubstrateGraphStore:
         edge_candidates = [
             edge
             for edge in self._edges.values()
-            if edge.source.node_id in node_set or edge.target.node_id in node_set
+            if (edge.source.node_id in node_set or edge.target.node_id in node_set) and self._walkable(edge)
         ]
         edge_candidates.sort(key=lambda edge: (edge.salience, edge.confidence), reverse=True)
         return SubstrateNeighborhoodSliceV1(nodes=nodes, edges=edge_candidates[: max(1, int(max_edges))])
+
+    def _walkable(self, edge: SubstrateEdgeV1) -> bool:
+        """The neighborhood's edge-role gate, for every region read (recall's concept region
+        included): no structure/provenance edges, no unaccepted projections."""
+        from .neighborhood import walkable_edge
+
+        return walkable_edge(edge, self._nodes.get(edge.assertion_id) if edge.assertion_id else None)
 
     def _read_by_node_predicate(self, *, node_predicate, limit_nodes: int, limit_edges: int) -> SubstrateNeighborhoodSliceV1:
         bounded_nodes = max(1, int(limit_nodes))
@@ -219,10 +250,14 @@ class InMemorySubstrateGraphStore:
         edges = [
             edge
             for edge in self._edges.values()
-            if edge.source.node_id in node_ids or edge.target.node_id in node_ids
+            if (edge.source.node_id in node_ids or edge.target.node_id in node_ids)
+            and edge.edge_role in ("legacy_unreviewed", "semantic_projection")
         ]
         edges.sort(key=lambda edge: (edge.salience, edge.confidence), reverse=True)
-        return SubstrateNeighborhoodSliceV1(nodes=selected_nodes, edges=edges[:bounded_edges])
+        # Same order as falkor_direct's concept region: role filter before the cut, the
+        # assertion check on what survives it (the two must stay equivalent).
+        return SubstrateNeighborhoodSliceV1(nodes=selected_nodes,
+                                            edges=[e for e in edges[:bounded_edges] if self._walkable(e)])
 
     def read_hotspot_region(self, *, min_salience: float = 0.6, limit_nodes: int = 32, limit_edges: int = 64) -> SubstrateNeighborhoodSliceV1:
         threshold = max(0.0, min(1.0, float(min_salience)))

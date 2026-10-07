@@ -32,7 +32,9 @@ logger = logging.getLogger("llamacpp-host")
 
 BOOT_ID = str(uuid.uuid4())
 _LLAMA_FLAG_PATTERN = re.compile(r"--([a-z0-9][a-z0-9-]*)")
-_LLAMA_BUILD_PATTERN = re.compile(r"version:\s*(\d+)")
+# Upstream prints `version: 8740 (hash)`; semver'd forks (PrismML) print
+# `version: 0.2.0-dev (build 10750, commit ...)`, where the leading digit is not the build.
+_LLAMA_BUILD_PATTERN = re.compile(r"\(build\s+(\d+)|version:\s*(\d+)\b(?!\.)")
 _GGUF_SHARD_PATTERN = re.compile(r"^(.+/)(.+)-(\d{5})-of-(\d{5})\.gguf$")
 
 # llama-server --spec-type values that load a draft GGUF with no classic-draft
@@ -249,6 +251,56 @@ def _resolve_runtime(profile: LLMProfile) -> Tuple[str, LlamaCppConfig, Dict[str
     return model_path, cfg, env
 
 
+def _resolve_chat_template_file(profile: LLMProfile, value: str) -> str:
+    """Absolute path of ``llamacpp.chat_template_file``; relative paths sit next to llm_profiles.yaml."""
+    path = Path(value)
+    if not path.is_absolute():
+        path = Path(settings.llm_profiles_config_path).parent / path
+    if not path.is_file():
+        raise RuntimeError(
+            f"Profile '{profile.name}' sets chat_template_file={value!r} but {path} does not exist "
+            "(is config/ baked into this image?)"
+        )
+    return str(path)
+
+
+STOCK_SERVER_BIN = "/app/llama-server"
+LEGACY_SERVER_BIN = "/app/llama.cpp/build/bin/llama-server"
+# PrismML's llama.cpp fork (Dockerfile.prism), next to the stock binary, with its own .so files.
+PRISM_SERVER_DIR = "/app/prism"
+
+
+def _server_bin(profile: LLMProfile, cfg: LlamaCppConfig) -> str:
+    """The llama-server binary this profile runs (``llamacpp.server_build``).
+
+    A ``prism`` profile never falls back to the stock binary: stock llama.cpp rejects Ternary-Bonsai
+    PQ2_0 weights or loads them and emits garbage (no Hadamard activation runtime)."""
+    if cfg.server_build == "prism":
+        prism = Path(PRISM_SERVER_DIR) / "llama-server"
+        if not prism.exists():
+            raise RuntimeError(
+                f"Profile '{profile.name}' needs llamacpp.server_build=prism but {prism} is missing: "
+                "this image was not built from services/orion-llamacpp-host/Dockerfile.prism"
+            )
+        return str(prism)
+    if Path(STOCK_SERVER_BIN).exists():
+        return STOCK_SERVER_BIN
+    return LEGACY_SERVER_BIN
+
+
+def _server_bin_env(server_bin: str, base: Optional[Dict[str, str]] = None) -> Optional[Dict[str, str]]:
+    """Env for running the fork: its own directory first on LD_LIBRARY_PATH, so it loads its sibling
+    libllama/libggml and never the stock ones in /app (an ABI mismatch). None for every other binary,
+    so stock lanes (chat/metacog/fast/agent) keep exactly the env they ran with before."""
+    parent = str(Path(server_bin).parent)
+    if parent != PRISM_SERVER_DIR:
+        return None
+    env = dict(base if base is not None else os.environ)
+    prev = env.get("LD_LIBRARY_PATH")
+    env["LD_LIBRARY_PATH"] = parent + (f":{prev}" if prev else "")
+    return env
+
+
 @lru_cache(maxsize=4)
 def _get_supported_llama_server_flags(server_bin: str) -> Optional[Set[str]]:
     """
@@ -262,6 +314,7 @@ def _get_supported_llama_server_flags(server_bin: str) -> Optional[Set[str]]:
             text=True,
             check=False,
             timeout=10,
+            env=_server_bin_env(server_bin),
         )
     except (OSError, subprocess.SubprocessError) as exc:
         logger.warning("Could not inspect llama-server flags via --help: %s", exc)
@@ -289,6 +342,7 @@ def _get_llama_server_build(server_bin: str) -> Optional[int]:
             text=True,
             check=False,
             timeout=10,
+            env=_server_bin_env(server_bin),
         )
     except (OSError, subprocess.SubprocessError) as exc:
         logger.warning("Could not inspect llama-server build via --version: %s", exc)
@@ -299,10 +353,12 @@ def _get_llama_server_build(server_bin: str) -> Optional[int]:
         return None
 
     version_text = f"{result.stdout}\n{result.stderr}"
-    match = _LLAMA_BUILD_PATTERN.search(version_text)
-    if match is None:
-        return None
-    return int(match.group(1))
+    return _parse_llama_build(version_text)
+
+
+def _parse_llama_build(version_text: str) -> Optional[int]:
+    builds = [int(a or b) for a, b in _LLAMA_BUILD_PATTERN.findall(version_text)]
+    return builds[0] if builds else None
 
 
 def build_llama_server_cmd_and_env(profile: LLMProfile) -> Tuple[List[str], Dict[str, str]]:
@@ -312,10 +368,9 @@ def build_llama_server_cmd_and_env(profile: LLMProfile) -> Tuple[List[str], Dict
     _ensure_model_file(model_path, cfg)
     mmproj_path = _ensure_mmproj_file(cfg)
 
-    # llama-server binary inside your built image
-    server_bin = "/app/llama-server"
-    if not Path(server_bin).exists():
-        server_bin = "/app/llama.cpp/build/bin/llama-server"
+    # llama-server binary inside your built image (stock, or the Prism fork per profile)
+    server_bin = _server_bin(profile, cfg)
+    env = _server_bin_env(server_bin, env) or env
 
     cmd: List[str] = [
         server_bin,
@@ -378,6 +433,18 @@ def build_llama_server_cmd_and_env(profile: LLMProfile) -> Tuple[List[str], Dict
             ensure_jinja()
         append_flag("--reasoning-budget", str(int(policy.effective_reasoning_budget)))
 
+    # Replaces the GGUF's embedded chat template (Bonsai's raises on system-only requests). Fails
+    # closed: booting on the embedded template would 500 every agent step that has no user turn.
+    if cfg.chat_template_file is not None:
+        template_path = _resolve_chat_template_file(profile, cfg.chat_template_file)
+        ensure_jinja()
+        append_flag("--chat-template-file", template_path)
+        if "--chat-template-file" not in cmd or "--jinja" not in cmd:
+            raise RuntimeError(
+                f"Profile '{profile.name}' sets chat_template_file but this llama-server lacks "
+                "--chat-template-file/--jinja"
+            )
+
     if reasoning_format_emitted and "--jinja" not in cmd:
         logger.warning("--reasoning-format requested but --jinja could not be emitted")
 
@@ -393,6 +460,17 @@ def build_llama_server_cmd_and_env(profile: LLMProfile) -> Tuple[List[str], Dict
                 )
         else:
             append_flag("--flash-attn", cfg.flash_attn)
+    # #27148 mitigation (stage 7 D2): a privacy knob, so it fails closed -- a profile that asks
+    # for the RAM prompt cache off must not boot on a binary that silently keeps it on.
+    if cfg.cache_ram_mib is not None:
+        append_flag("--cache-ram", str(int(cfg.cache_ram_mib)))
+        if "--cache-ram" not in cmd:
+            raise RuntimeError(f"Profile '{profile.name}' sets cache_ram_mib but this llama-server has no --cache-ram")
+    if cfg.cache_idle_slots is not None:
+        idle_flag = "--cache-idle-slots" if cfg.cache_idle_slots else "--no-cache-idle-slots"
+        append_flag(idle_flag)
+        if idle_flag not in cmd:
+            raise RuntimeError(f"Profile '{profile.name}' sets cache_idle_slots but this llama-server has no {idle_flag}")
     if cfg.rope_scaling is not None:
         append_flag("--rope-scaling", cfg.rope_scaling)
     if cfg.rope_scale is not None:
@@ -643,45 +721,64 @@ async def _announce_worker(bus, settings) -> None:
 
 
 # Heartbeat Coroutine
-async def heartbeat_loop(settings):
-    # Initialize a local bus just for this script
-    bus = OrionBusAsync(url=settings.orion_bus_url, enabled=True)
-    await bus.connect()
+HEARTBEAT_INTERVAL_SEC = 30.0
+HEARTBEAT_STEP_TIMEOUT_SEC = 15.0
 
+
+async def _beat(bus, settings) -> None:
+    """One heartbeat: connect if needed (idempotent), publish health, announce to the GPU pool."""
+    await bus.connect()
+    payload = SystemHealthV1(
+        service=settings.service_name,
+        version=settings.service_version,
+        boot_id=BOOT_ID,
+        last_seen_ts=datetime.now(timezone.utc),
+        node="llamacpp-node",
+        status="ok",
+        # heartbeat_interval_sec must match this loop's real period. Left at the
+        # schema default of 10.0, orion-equilibrium-service computes
+        # grace = interval * EQUILIBRIUM_GRACE_MULTIPLIER (3.0) = 30.0s and marks the
+        # service "down" once delta > grace (service.py's status check). Publishing
+        # every 30s leaves ZERO margin, so any event-loop delay or bus latency flips
+        # it to down, emits a spurious transition and pushes distress_score.
+        heartbeat_interval_sec=HEARTBEAT_INTERVAL_SEC,
+    ).model_dump(mode="json")
+    await bus.publish("orion:system:health", BaseEnvelope(
+        kind="system.health.v1",
+        source=ServiceRef(name=settings.service_name, version=settings.service_version),
+        payload=payload
+    ))
+    await _announce_worker(bus, settings)
+
+
+async def heartbeat_loop(settings):
+    """Heartbeat + pool announcement every 30s, self-healing. A bus that is down at boot, or a
+    connection that dies later, used to leave this loop dead or wedged on a hung socket with no
+    log line (circe, 2026-10-03: four lane hosts silent for 3h, hub chat down). Every step is
+    time-bounded, and any failure drops the connection so the next beat reconnects."""
+    bus = OrionBusAsync(url=settings.orion_bus_url, enabled=True)
     logger.info("Heartbeat loop started.")
     try:
         while True:
             try:
-                payload = SystemHealthV1(
-                    service=settings.service_name,
-                    version=settings.service_version,
-                    boot_id=BOOT_ID,
-                    last_seen_ts=datetime.now(timezone.utc),
-                    node="llamacpp-node",
-                    status="ok",
-                    # heartbeat_interval_sec must match this loop's real period. Left at the
-                    # schema default of 10.0, orion-equilibrium-service computes
-                    # grace = interval * EQUILIBRIUM_GRACE_MULTIPLIER (3.0) = 30.0s and marks the
-                    # service "down" once delta > grace (service.py's status check). Publishing
-                    # every 30s leaves ZERO margin, so any event-loop delay or bus latency flips
-                    # it to down, emits a spurious transition and pushes distress_score.
-                    heartbeat_interval_sec=30.0,
-                ).model_dump(mode="json")
-
-                await bus.publish("orion:system:health", BaseEnvelope(
-                    kind="system.health.v1",
-                    source=ServiceRef(name=settings.service_name, version=settings.service_version),
-                    payload=payload
-                ))
-            except Exception as e:
-                logger.warning(f"Heartbeat failed: {e}")
-
-            await _announce_worker(bus, settings)
-            await asyncio.sleep(30)
+                await asyncio.wait_for(_beat(bus, settings), timeout=HEARTBEAT_STEP_TIMEOUT_SEC)
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:  # noqa: BLE001 -- includes TimeoutError from a hung socket
+                logger.warning(f"Heartbeat failed ({type(e).__name__}: {e}); will reconnect")
+                stale, bus = bus, OrionBusAsync(url=settings.orion_bus_url, enabled=True)
+                try:  # never reuse a suspect client, even if its close() hangs
+                    await asyncio.wait_for(stale.close(), timeout=HEARTBEAT_STEP_TIMEOUT_SEC)
+                except Exception:  # noqa: BLE001
+                    pass
+            await asyncio.sleep(HEARTBEAT_INTERVAL_SEC)
     except asyncio.CancelledError:
         logger.info("Heartbeat loop stopping...")
     finally:
-        await bus.close()
+        try:
+            await bus.close()
+        except Exception:  # noqa: BLE001
+            pass
 
 #  Main Entrypoint
 async def _main_async():
@@ -707,9 +804,13 @@ async def _main_async():
     hb_task = asyncio.create_task(heartbeat_loop(settings))
 
     # Create subprocess
+    # The fork runs from its own directory: ggml's backend loader also searches the cwd, and /app
+    # holds the stock image's libggml-* variants.
+    cwd = PRISM_SERVER_DIR if str(Path(cmd[0]).parent) == PRISM_SERVER_DIR else None
     process = await asyncio.create_subprocess_exec(
         *cmd,
         env=env,
+        cwd=cwd,
         stdout=None, # Inherit
         stderr=None
     )

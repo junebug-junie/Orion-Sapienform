@@ -65,6 +65,7 @@ _TRIGGER_TO_MODE: dict[str, JournalMode] = {
     "town_episode": "digest",
     "walkway_forecast": "digest",
     "walkway_grade": "digest",
+    "orion_day_letter": "daily",
 }
 
 _AUTONOMY_EPISODE_NARRATIVE_SECTIONS = (
@@ -318,28 +319,45 @@ def format_world_pulse_curiosity_block(followups: list[CuriosityFollowupV1]) -> 
     return "\n".join(lines).strip()
 
 
+def world_pulse_curiosity_appendix(result: WorldPulseRunResultV1) -> tuple[str | None, list[str]]:
+    """(block, present_markers) for the deterministic "Orion went looking" section.
+
+    ``block`` is appended to a composed body unless the body already contains every marker
+    (``append_unless_present``): the followups' URLs, or -- when every followup found nothing --
+    the "looked, found nothing" phrase. Pre-rendered so a producer can hand it to a durable run
+    as plain text instead of shipping the whole run result (journal.compose brief)."""
+    digest = result.digest
+    if digest is None or not digest.curiosity_followups:
+        return None, []
+    followups = digest.curiosity_followups
+    block = format_world_pulse_curiosity_block(followups)
+    if not block:
+        return None, []
+    urls = [str(a.url).strip() for f in followups for a in f.articles if str(a.url or "").strip()]
+    if urls:
+        return block, urls
+    if all(not f.articles for f in followups):
+        return block, ["looked, found nothing"]
+    return block, []
+
+
+def append_unless_present(draft: JournalEntryDraftV1, block: str | None, markers: list[str]) -> JournalEntryDraftV1:
+    if not block:
+        return draft
+    body = str(draft.body or "").strip()
+    lowered = body.lower()
+    if markers and all(m.lower() in lowered for m in markers):
+        return draft
+    return draft.model_copy(update={"body": f"{body}\n\n{block}".strip()})
+
+
 def merge_world_pulse_curiosity_into_draft(
     draft: JournalEntryDraftV1,
     result: WorldPulseRunResultV1,
 ) -> JournalEntryDraftV1:
     """Append concrete gap-fill findings when compose omitted them from the body."""
-    digest = result.digest
-    if digest is None or not digest.curiosity_followups:
-        return draft
-    followups = digest.curiosity_followups
-    body = str(draft.body or "").strip()
-    urls = [str(a.url).strip() for f in followups for a in f.articles if str(a.url or "").strip()]
-    if urls:
-        if all(url in body for url in urls):
-            return draft
-    elif all(not f.articles for f in followups):
-        if "looked, found nothing" in body.lower():
-            return draft
-    block = format_world_pulse_curiosity_block(followups)
-    if not block:
-        return draft
-    merged = f"{body}\n\n{block}".strip()
-    return draft.model_copy(update={"body": merged})
+    block, markers = world_pulse_curiosity_appendix(result)
+    return append_unless_present(draft, block, markers)
 
 
 def build_metacog_trigger(trigger: MetacogTriggerV1) -> JournalTriggerV1:

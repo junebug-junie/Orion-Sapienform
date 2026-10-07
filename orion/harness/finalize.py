@@ -13,12 +13,15 @@ from pydantic import ValidationError
 
 from orion.cognition.cortex_payload_extract import (
     cortex_exec_failure_detail,
+    cortex_payload_truncated,
+    extract_cortex_answer_text,
     extract_cortex_payload_text,
     looks_like_error_text,
 )
 from orion.cognition.plan_loader import build_plan_for_verb
 from orion.core.llm_json import parse_json_object
 from orion.embodiment.intents import build_intent
+from orion.harness.cut_short import ensure_cut_short_marked
 from orion.harness.reading_receipts import enforce_reading_receipt_grounding
 from orion.schemas.embodiment import EmbodimentIntentV1
 from orion.schemas.cognition.answer_contract import AnswerContract
@@ -37,7 +40,6 @@ from orion.schemas.reading import ReadingRecommendationOutcomeV1
 from orion.llm.routes import is_agent_route_model_label
 from orion.llm.resource_lease import GPU_LEASE_ROUTE
 from orion.schemas.gpu_pool import GpuLeaseRefV1
-from orion.schemas.resource_admission import ResourceLeaseV1
 from orion.schemas.thought import StanceHarnessSliceV1, ThoughtEventV1
 from orion.substrate.ids import stable_hash_id
 from orion.thought.policy_refusal import TRUST_RUPTURE_DEFER_THRESHOLD
@@ -270,6 +272,69 @@ def format_tool_execution_digest(receipts: list[GrammarReceiptV1] | None) -> str
     )
 
 
+def sensitive_turn_reason(
+    *,
+    thought: ThoughtEventV1,
+    repair_overlay: HarnessRepairOverlayV1,
+) -> str | None:
+    """Return why this turn is identity/boundary-sensitive, else None.
+
+    Uses only inputs known before the draft exists (the stance thought and the
+    repair overlay), so callers can decide before finalize starts. Shared by
+    quick_lane_block_reason (the judge must run) and draft_preview_hold_reason
+    (the draft must not be shown before the judge).
+    """
+    repair = thought.repair_pressure_level
+    if repair is not None and repair >= REPAIR_PRESSURE_MAX:
+        return "repair_pressure_level"
+
+    trust = thought.trust_rupture_score
+    if trust is not None and trust >= TRUST_RUPTURE_DEFER_THRESHOLD:
+        return "trust_rupture_score"
+
+    if thought.boundary_register:
+        return "boundary_register"
+
+    if repair_overlay.mode != "default":
+        return "repair_overlay_mode"
+
+    return None
+
+
+def draft_preview_hold_reason(
+    *,
+    thought: ThoughtEventV1,
+    repair_overlay: HarnessRepairOverlayV1,
+    preserve_structured_output: bool = False,
+    cut_short: bool = False,
+) -> str | None:
+    """Why the draft must wait for the judge (spec L8); None means show it now.
+
+    Sensitive turns keep judge-before-display. Structured (machine) output and
+    cut-short drafts are not chat prose a person should see unjudged.
+    """
+    if preserve_structured_output:
+        return "structured_output"
+    if cut_short:
+        return "cut_short"
+    sensitive = sensitive_turn_reason(thought=thought, repair_overlay=repair_overlay)
+    if sensitive is not None:
+        return f"sensitive:{sensitive}"
+    return None
+
+
+def draft_preview_display_text(
+    draft_text: str,
+    reading_receipts: list[ReadingRecommendationOutcomeV1] | None,
+) -> str:
+    """The draft after the same deterministic grounding finalize applies.
+
+    No LLM call. When the judge leaves the draft alone, the chain's final text
+    is exactly this string, so an unrevised turn shows identical text twice.
+    """
+    return enforce_reading_receipt_grounding(draft_text, list(reading_receipts or []))
+
+
 def quick_lane_block_reason(
     *,
     substrate_appraisal: SubstrateFinalizeAppraisalV1,
@@ -290,19 +355,9 @@ def quick_lane_block_reason(
     if substrate_appraisal.open_loop_pressure >= OPEN_LOOP_PRESSURE_MAX:
         return "open_loop_pressure"
 
-    repair = thought.repair_pressure_level
-    if repair is not None and repair >= REPAIR_PRESSURE_MAX:
-        return "repair_pressure_level"
-
-    trust = thought.trust_rupture_score
-    if trust is not None and trust >= TRUST_RUPTURE_DEFER_THRESHOLD:
-        return "trust_rupture_score"
-
-    if thought.boundary_register:
-        return "boundary_register"
-
-    if repair_overlay.mode != "default":
-        return "repair_overlay_mode"
+    sensitive = sensitive_turn_reason(thought=thought, repair_overlay=repair_overlay)
+    if sensitive is not None:
+        return sensitive
 
     # See _PERCEPTION_INTENT_RE docstring: a substrate-calm turn can still
     # explicitly ask Orion to look at something, and the tool-recall loop
@@ -350,23 +405,20 @@ def maybe_quick_lane_verdict(
 
 def resolve_finalize_llm_lane(
     *,
-    resource_lease: ResourceLeaseV1 | None = None,
     gpu_lease: GpuLeaseRefV1 | None = None,
     fcc_model_label: str | None = None,
 ) -> str:
     """Gateway llm_route/llm_lane for harness finalize (reflect + repair).
 
-    Owner rule (2026-09-15): admitted lease wins; else agent FCC model label
-    → agent; else chat (default unified Hub chat / non-agent labels including
-    MODEL_SONNET). Do not hardcode ordinary finalize to agent — that stranded
-    chat turns behind curiosity (corr 60f0e051).
+    Owner rule (2026-09-15): an admitted run's GPU pool hold wins; else agent
+    FCC model label → agent; else chat (default unified Hub chat / non-agent
+    labels including MODEL_SONNET). Do not hardcode ordinary finalize to agent —
+    that stranded chat turns behind curiosity (corr 60f0e051).
 
-    A GPU pool hold (stage 4) is next: its calls attach to the hold's role
-    whatever route they name, so the route only names the work class
-    (``GPU_LEASE_ROUTE``, durable holds are agent class).
+    A hold's calls attach to the hold's role whatever route they name, so the
+    route only names the work class (``GPU_LEASE_ROUTE``, durable holds are
+    agent class).
     """
-    if resource_lease is not None:
-        return str(resource_lease.lane)
     if gpu_lease is not None:
         return GPU_LEASE_ROUTE
     if is_agent_route_model_label(fcc_model_label):
@@ -383,12 +435,10 @@ def build_finalize_reflect_context(
     repair_overlay: HarnessRepairOverlayV1,
     user_message: str,
     grammar_receipts: list[GrammarReceiptV1] | None = None,
-    resource_lease: ResourceLeaseV1 | None = None,
     gpu_lease: GpuLeaseRefV1 | None = None,
     fcc_model_label: str | None = None,
 ) -> dict[str, Any]:
     lane = resolve_finalize_llm_lane(
-        resource_lease=resource_lease,
         gpu_lease=gpu_lease,
         fcc_model_label=fcc_model_label,
     )
@@ -401,11 +451,10 @@ def build_finalize_reflect_context(
         "repair_overlay": repair_overlay.model_dump(mode="json"),
         "finalize_overlay": "",
         "user_message": user_message,
-        # Owner-lane finalize: lease lane when admitted; else agent FCC label
+        # Owner-lane finalize: hold route when admitted; else agent FCC label
         # → agent; else chat. Cortex-exec honors top-level llm_route/llm_lane.
         "llm_route": lane,
         "llm_lane": lane,
-        **({"resource_lease": resource_lease.model_dump(mode="json")} if resource_lease else {}),
         **({"gpu_lease": gpu_lease.model_dump(mode="json")} if gpu_lease else {}),
         "allow_chat_fallback": False,
         "metadata": {
@@ -424,7 +473,6 @@ def build_finalize_reflect_plan_request(
     repair_overlay: HarnessRepairOverlayV1,
     user_message: str,
     grammar_receipts: list[GrammarReceiptV1] | None = None,
-    resource_lease: ResourceLeaseV1 | None = None,
     gpu_lease: GpuLeaseRefV1 | None = None,
     fcc_model_label: str | None = None,
 ) -> PlanExecutionRequest:
@@ -444,7 +492,6 @@ def build_finalize_reflect_plan_request(
             repair_overlay=repair_overlay,
             user_message=user_message,
             grammar_receipts=grammar_receipts,
-            resource_lease=resource_lease,
             gpu_lease=gpu_lease,
             fcc_model_label=fcc_model_label,
         ),
@@ -489,7 +536,6 @@ async def run_finalize_reflection(
     user_message: str = "",
     grammar_receipts: list[GrammarReceiptV1] | None = None,
     cortex_client: CortexClientFn | None = None,
-    resource_lease: ResourceLeaseV1 | None = None,
     gpu_lease: GpuLeaseRefV1 | None = None,
     fcc_model_label: str | None = None,
 ) -> tuple[FinalizeReflectionV1, bool, str | None]:
@@ -518,7 +564,6 @@ async def run_finalize_reflection(
         repair_overlay=overlay,
         user_message=user_message,
         grammar_receipts=grammar_receipts,
-        resource_lease=resource_lease,
         gpu_lease=gpu_lease,
         fcc_model_label=fcc_model_label,
     )
@@ -619,7 +664,6 @@ async def maybe_run_finalize_tool_retry(
     bus: Any = None,
     grammar_channel: str = DEFAULT_GRAMMAR_EVENT_CHANNEL,
     grammar_publish_fn: Any = None,
-    resource_lease: ResourceLeaseV1 | None = None,
     gpu_lease: GpuLeaseRefV1 | None = None,
     fcc_model_label: str | None = None,
 ) -> tuple[FinalizeReflectionV1, list[GrammarReceiptV1], bool, str | None, str | None]:
@@ -787,7 +831,6 @@ async def maybe_run_finalize_tool_retry(
             user_message=user_message,
             grammar_receipts=receipts,
             cortex_client=cortex_client,
-            resource_lease=resource_lease,
             gpu_lease=gpu_lease,
             fcc_model_label=fcc_model_label,
         )
@@ -844,6 +887,24 @@ async def emit_verdict_molecule(
     return molecule
 
 
+# orion_response_repair is a prose rewrite of the motor draft, so the model's
+# answer IS the output and hidden reasoning only burns budget. Live 2026-09-28..30
+# on the thinking-on agent lane (Qwen3.8-27B): no max_tokens here meant cortex-exec's
+# llm_chat_general_max_tokens (8000) and 10 of 27 calls spent all of it reasoning,
+# 9 returning content="" (cognition_traces corr 0ba83fec-e66d-5685-9182-d9f867fc81c2).
+# Budget sized from real data (14 days): non-empty repair outputs p50 678 / p99 5466 /
+# max 6602 chars; observed ~3.3 chars/token -> max ~2000 tokens. 3072 covers that with
+# margin; a longer rewrite is cut at finish_reason=length and refused below
+# (extract_response_repair_text), never shipped half-written.
+# Depends on the backend honouring enable_thinking: the gateway forwards
+# chat_template_kwargs only for llamacpp / llama-cola (llm_backend.py). Live 7-day
+# repair traces that record a backend all say llamacpp. If this lane ever moves to
+# a backend that drops it, thinking stays on, 3072 starves, and repairs fail closed
+# (no reply) rather than leaking reasoning.
+RESPONSE_REPAIR_MAX_TOKENS = 3072
+RESPONSE_REPAIR_CHAT_TEMPLATE_KWARGS: dict[str, Any] = {"enable_thinking": False}
+
+
 def build_response_repair_context(
     *,
     correlation_id: str,
@@ -851,12 +912,10 @@ def build_response_repair_context(
     reflection: FinalizeReflectionV1,
     user_message: str,
     grammar_receipts: list[GrammarReceiptV1] | None = None,
-    resource_lease: ResourceLeaseV1 | None = None,
     gpu_lease: GpuLeaseRefV1 | None = None,
     fcc_model_label: str | None = None,
 ) -> dict[str, Any]:
     lane = resolve_finalize_llm_lane(
-        resource_lease=resource_lease,
         gpu_lease=gpu_lease,
         fcc_model_label=fcc_model_label,
     )
@@ -869,9 +928,12 @@ def build_response_repair_context(
         # Same owner as reflect (5b).
         "llm_route": lane,
         "llm_lane": lane,
-        **({"resource_lease": resource_lease.model_dump(mode="json")} if resource_lease else {}),
         **({"gpu_lease": gpu_lease.model_dump(mode="json")} if gpu_lease else {}),
         "allow_chat_fallback": False,
+        # Read by cortex-exec: ctx.max_tokens wins in _resolve_llm_chat_max_tokens,
+        # chat_template_kwargs is forwarded to the gateway -> llama.cpp payload.
+        "max_tokens": RESPONSE_REPAIR_MAX_TOKENS,
+        "chat_template_kwargs": dict(RESPONSE_REPAIR_CHAT_TEMPLATE_KWARGS),
         "metadata": {
             "correlation_id": correlation_id,
             "mode": "brain",
@@ -886,7 +948,6 @@ def build_response_repair_plan_request(
     reflection: FinalizeReflectionV1,
     user_message: str,
     grammar_receipts: list[GrammarReceiptV1] | None = None,
-    resource_lease: ResourceLeaseV1 | None = None,
     gpu_lease: GpuLeaseRefV1 | None = None,
     fcc_model_label: str | None = None,
 ) -> PlanExecutionRequest:
@@ -904,7 +965,6 @@ def build_response_repair_plan_request(
             reflection=reflection,
             user_message=user_message,
             grammar_receipts=grammar_receipts,
-            resource_lease=resource_lease,
             gpu_lease=gpu_lease,
             fcc_model_label=fcc_model_label,
         ),
@@ -912,18 +972,29 @@ def build_response_repair_plan_request(
 
 
 def extract_response_repair_text(result: dict[str, Any]) -> str:
-    """Extract repair-pass user-visible text; refuse error-shaped payloads."""
-    text = extract_cortex_payload_text(result)
+    """Extract repair-pass user-visible text.
+
+    Refuses (ValueError -> HarnessFinalizeFailedError, the existing failure
+    path) on: no answer text even when reasoning exists -- a reasoning model's
+    chain-of-thought is never Orion's reply -- error-shaped text, and a reply
+    cut off at max_tokens (finish_reason=length; live a84fc74a shipped a
+    51-char fragment)."""
+    text = extract_cortex_answer_text(result)
     if text:
         if looks_like_error_text(text):
             raise ValueError(
                 f"orion_response_repair returned error-shaped text: {_excerpt(text, max_len=200)}"
             )
+        if cortex_payload_truncated(result):
+            raise ValueError("orion_response_repair reply truncated at max_tokens (finish_reason=length)")
         return text
 
     detail = cortex_exec_failure_detail(result)
     if detail:
         raise ValueError(f"orion_response_repair exec failed: {detail}")
+    if extract_cortex_payload_text(result):
+        # Only reasoning came back: the answer is empty.
+        raise ValueError("orion_response_repair returned reasoning only, empty answer")
     raise ValueError("orion_response_repair exec result missing final_text")
 
 
@@ -949,7 +1020,6 @@ async def run_orion_response_repair(
     user_message: str = "",
     grammar_receipts: list[GrammarReceiptV1] | None = None,
     cortex_client: CortexClientFn | None = None,
-    resource_lease: ResourceLeaseV1 | None = None,
     gpu_lease: GpuLeaseRefV1 | None = None,
     fcc_model_label: str | None = None,
 ) -> tuple[str, dict[str, Any]]:
@@ -968,7 +1038,6 @@ async def run_orion_response_repair(
         reflection=reflection,
         user_message=user_message,
         grammar_receipts=grammar_receipts,
-        resource_lease=resource_lease,
         gpu_lease=gpu_lease,
         fcc_model_label=fcc_model_label,
     )
@@ -1317,11 +1386,18 @@ async def run_harness_finalize_chain(
     system_error_publish_fn: PublishFn | None = None,
     grammar_channel: str = DEFAULT_GRAMMAR_EVENT_CHANNEL,
     grammar_publish_fn: Any = None,
-    resource_lease: ResourceLeaseV1 | None = None,
     gpu_lease: GpuLeaseRefV1 | None = None,
     fcc_model_label: str | None = None,
+    cut_short: bool = False,
 ) -> HarnessFinalizeChainResult:
     """Orion capability: unified-turn reflection and conditional response repair.
+
+    ``cut_short``: the motor stopped this turn mid-work and the draft is the
+    turn's own recorded findings under a cut-short marker
+    (orion/harness/cut_short.py). Response repair is skipped -- a prose rewrite
+    would synthesize those findings into something that reads finished -- and
+    the draft passes through verbatim, so the outcome molecule, the run record
+    and the hash all carry the same marked text.
 
     Orchestrates finalize beats 5a → 5b → 5b-prime → 5c → 6b: substrate
     appraisal (5a), integrative reflection or its deterministic quick lane
@@ -1336,7 +1412,7 @@ async def run_harness_finalize_chain(
     JSON in place of prose-oriented 5c. The default remains false, preserving
     conditional response repair for ordinary turns.
 
-    Owner identity comes from ``resource_lease`` when admitted, otherwise from
+    Owner identity comes from ``gpu_lease`` (the run's hold) when admitted, otherwise from
     ``fcc_model_label``. The same owner lane flows through reflection, any
     re-reflection, and conditional response repair.
 
@@ -1360,7 +1436,6 @@ async def run_harness_finalize_chain(
         user_message=user_message,
         grammar_receipts=grammar_receipts,
         cortex_client=cortex_client,
-        resource_lease=resource_lease,
         gpu_lease=gpu_lease,
         fcc_model_label=fcc_model_label,
     )
@@ -1387,7 +1462,6 @@ async def run_harness_finalize_chain(
                 user_message=user_message,
                 grammar_receipts=grammar_receipts,
                 cortex_client=cortex_client,
-                resource_lease=resource_lease,
                 gpu_lease=gpu_lease,
                 fcc_model_label=fcc_model_label,
                 bus=bus,
@@ -1434,6 +1508,17 @@ async def run_harness_finalize_chain(
                 correlation_id,
                 len(final_text),
             )
+        elif cut_short:
+            logger.info(
+                "response_repair_skipped corr=%s reason=cut_short",
+                correlation_id,
+            )
+            final_text = ensure_cut_short_marked(draft_text) or draft_text
+            voice_meta = {
+                "finalize_changed": final_text != draft_text,
+                "response_repair_ran": False,
+                "response_repair_reason": None,
+            }
         elif needs_response_repair(reflection):
             reason = response_repair_reason_for(reflection)
             final_text, voice_meta = await run_orion_response_repair(
@@ -1447,7 +1532,6 @@ async def run_harness_finalize_chain(
                 user_message=user_message,
                 grammar_receipts=grammar_receipts,
                 cortex_client=cortex_client,
-                resource_lease=resource_lease,
                 gpu_lease=gpu_lease,
                 fcc_model_label=fcc_model_label,
             )

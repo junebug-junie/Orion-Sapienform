@@ -71,6 +71,11 @@ def test_other_templates_have_no_target_binding() -> None:
     for key, tmpl in policy.proposal_templates.items():
         if key == "inspect_attended_target":
             continue
+        if tmpl.target_binding == "workspace.winner":
+            # 2026-10-01 attend-to-act loop: bound to the WORKSPACE broadcast winner (a different
+            # source than field attention), and only with an explicit binds_to_nodes list.
+            assert tmpl.binds_to_nodes, key
+            continue
         assert tmpl.target_binding is None
 
 

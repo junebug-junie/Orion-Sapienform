@@ -1,0 +1,63 @@
+name: Attend-to-act loop (shed_background_gpu)
+on:
+  pull_request:
+    paths:
+      - 'orion/autonomy/cabinet_heat.py'
+      - 'orion/autonomy/self_shed.py'
+      - 'orion/autonomy/world_episodes.py'
+      - 'orion/autonomy/attend_act_loop.py'
+      - 'orion/autonomy/agency_episode*.py'
+      - 'orion/autonomy/evals/run_attend_act_loop_eval.py'
+      - 'orion/autonomy/evals/fixtures/attend_act_loop_chain.json'
+      - 'orion/hardware_watch/rules.py'
+      - 'orion/feedback/world_settlement.py'
+      - 'orion/feedback/outcome_resolution.py'
+      - 'orion/execution_dispatch/**'
+      - 'orion/proposals/**'
+      - 'orion/policy/**'
+      - 'orion/schemas/*frame.py'
+      - 'orion/schemas/action_prediction.py'
+      - 'orion/schemas/attention_salience.py'
+      - 'config/proposals/**'
+      - 'config/policy/**'
+      - 'config/execution_dispatch/**'
+      - 'services/orion-proposal-runtime/**'
+      - 'services/orion-execution-dispatch-runtime/**'
+      - 'services/orion-feedback-runtime/**'
+      - 'services/orion-substrate-runtime/app/worker.py'
+      - 'services/orion-substrate-runtime/tests/test_cabinet_heat_tick.py'
+      - 'scripts/analysis/replay_attention_eligibility.py'
+      - 'tests/test_shed_background_gpu_pipeline.py'
+      - 'tests/test_world_action_dispatch.py'
+      - 'tests/test_world_settlement_scoring.py'
+      - '.github/workflows/attend-act-loop.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  loop:
+    runs-on: ubuntu-latest
+    env:
+      ORION_BUS_URL: redis://100.92.216.81:6379/0
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -r services/orion-thought/requirements.txt pytest pytest-asyncio psycopg2-binary
+      - name: Signal, eligibility, proposal -> policy -> dispatch, settle-time scoring
+        run: >-
+          python -m pytest -q tests/test_shed_background_gpu_pipeline.py tests/test_world_settlement_scoring.py
+          tests/test_world_action_dispatch.py tests/test_proposal_policy_loader.py tests/test_proposal_scoring.py
+          tests/test_action_outcome_resolution.py
+      # One process per service: each service's tests import a top-level `app` package.
+      - name: Proposal runtime (workspace winner context)
+        run: python -m pytest -q services/orion-proposal-runtime/tests/test_workspace_winner_context.py
+      - name: Feedback runtime (settle-time world scoring pass)
+        run: python -m pytest -q services/orion-feedback-runtime/tests/test_world_settlement_pass.py
+      - name: Agency episode audit (attention_winner + loop_outcome links)
+        run: python -m pytest -q orion/autonomy/tests/test_agency_episode.py orion/autonomy/tests/test_agency_episode_reader.py orion/autonomy/tests/test_agency_episode_world_links.py
+      - name: Attend-act loop eval (fixture mode)
+        run: python orion/autonomy/evals/run_attend_act_loop_eval.py
+      - name: Agency episode eval (unchanged report shape)
+        run: python orion/autonomy/evals/run_agency_episode_eval.py

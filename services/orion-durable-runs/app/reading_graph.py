@@ -2,7 +2,9 @@
 
 from typing import Any, TypedDict
 
-from app.admitted_graph import HoldLost, HoldRecalled, RunControlPending, replay_if_preempted, resource_nodes
+from app.admitted_graph import (
+    HoldLost, HoldRecalled, RunControlPending, WorkflowDeadline, replay_if_requeued, resource_nodes, taken_back,
+)
 from app.graph import turn_correlation_id
 from orion.schemas.reading_turn import (
     ReadingRunBriefV1,
@@ -19,6 +21,7 @@ class ReadingState(TypedDict, total=False):
     admission: dict
     requested_at: str
     attempt: int
+    hold_takebacks: int   # times the pool took the hold back mid-node (never an attempt)
     lease: dict | None
     hold: dict | None
     hold_seq: int
@@ -70,19 +73,20 @@ def build_reading_graph(run_turn, admission, checkpointer: Any):
             result = await admission.execute(dict(state), operation)
             if result.get("status") == "failed":
                 # A failed turn is a result here, not an exception: an urgent preemption's too.
-                released = await replay_if_preempted(admission, dict(state))
-                if released is not None:
-                    return {**released, "status": "waiting_resource"}
+                replay = await replay_if_requeued(admission, dict(state), {"status": "waiting_resource"})
+                if replay is not None:
+                    return replay
             return result
         except RunControlPending:
             raise
         except HoldRecalled:
             return {"status": "waiting_resource", "lease": None, "hold": None}
-        except HoldLost:   # HoldPreempted too: the pool keeps its place, no attempt spent
-            released = await admission.release(
-                dict(state), "hold_lost", keep_requeued=True
-            )
-            return {**released, "status": "waiting_resource"}
+        except WorkflowDeadline:
+            released = await admission.release(dict(state), "workflow_deadline")
+            return {**released, "status": "failed", "last_error": "workflow_deadline"}
+        except HoldLost as exc:   # HoldPreempted too: the pool keeps its place, no attempt spent
+            return await taken_back(admission, dict(state), exc.release_reason,
+                                    f"{type(exc).__name__}: {exc}", {"status": "waiting_resource"})
         except Exception as exc:
             # Reading's existing queue owns bounded actual-work retries. Waiting
             # and recalls never spend those attempts; do not nest another retry loop.

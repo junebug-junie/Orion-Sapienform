@@ -89,6 +89,12 @@ from orion.schemas.execution_projection import (
 )
 from orion.schemas.grammar import GrammarEventV1
 from orion.schemas.system_one_appraisal import SystemOneAppraisalFrameV1
+from orion.schemas.stance_context_prepare import (
+    STANCE_CONTEXT_PREPARE_REQUEST_KIND,
+    STANCE_CONTEXT_PREPARE_RESULT_KIND,
+    StanceContextPrepareRequestV1,
+    StanceContextPrepareResultV1,
+)
 from orion.schemas.graph_write_intent import GraphWriteIntentV1
 from orion.schemas.memory_consolidation import (
     ChatHistorySparkMetaPatchV1,
@@ -97,6 +103,7 @@ from orion.schemas.memory_consolidation import (
     MemoryTurnPersistedV1,
 )
 from orion.schemas.memory_crystallization import ActiveMemoryPacketV1, MemoryCrystallizationV1
+from orion.schemas.memory_episode import MEMORY_EPISODE_CLOSED_KIND, MemoryEpisodeClosedV1
 from orion.schemas.context_exec import (
     BeliefProvenanceReportV1,
     ContextExecBudgetV1,
@@ -144,9 +151,21 @@ from orion.schemas.reduction_receipt import ProjectionUpdateV1, ReductionReceipt
 from orion.schemas.state_delta import StateDeltaV1
 from orion.schemas.substrate_telemetry import SubstrateTierOutcomesPayloadV1
 from orion.schemas.transport_projection import TransportBusProjectionV1, TransportBusStateV1
+from orion.schemas.storage_write_projection import (
+    StorageWriteFamilyStateV1,
+    StorageWriteProjectionV1,
+    StorageWriteWindowCountV1,
+)
 from orion.schemas.llm_inference_projection import (
     LlmInferenceNodeStateV1,
     LlmInferenceProjectionV1,
+    LlmInferenceRoleStateV1,
+    LlmInferenceWindowCountV1,
+)
+from orion.schemas.vision_organ_projection import (
+    VisionOrganProjectionV1,
+    VisionOrganStreamStateV1,
+    VisionOrganWindowCountV1,
 )
 from orion.schemas.agents.bound_capability import (
     BoundCapabilityExecutionFailureV1,
@@ -354,6 +373,7 @@ from orion.core.schemas.cognitive_substrate import (
     StateSnapshotNodeV1,
     HypothesisNodeV1,
     OntologyBranchNodeV1,
+    AssertionNodeV1,
     SubstrateEdgeV1,
     SubstrateGraphRecordV1,
 )
@@ -508,6 +528,7 @@ from orion.schemas.telemetry.rpc_health import RpcChannelLatencyV1, RpcHealthSna
 from orion.schemas.telemetry.cognition_trace import CognitionTracePayload
 from orion.schemas.telemetry.metacognition import MetacognitionTickV1
 from orion.schemas.telemetry.metacog_trigger import MetacogTriggerV1
+from orion.schemas.telemetry.transport_baseline_hourly import TransportBaselineHourlyV1
 from orion.schemas.telemetry.meta_tags import MetaTagsPayload, MetaTagsRequestV1, MetaTagsResultV1
 from orion.schemas.metacog_patches import MetacogDraftTextPatchV1
 from orion.schemas.metacog_entry import MetacogEntryV1, MetacogRepairPressure
@@ -591,6 +612,7 @@ from orion.schemas.harness_finalize import (
     HarnessPostTurnClosureV1,
     HarnessRepairOverlayV1,
     HarnessRunCancelV1,
+    HarnessRunDraftPreviewV1,
     HarnessRunRequestV1,
     HarnessRunStepV1,
     HarnessRunV1,
@@ -625,6 +647,7 @@ from orion.schemas.attention_frame import (
     AttentionBroadcastProjectionV1,
     AttentionFrameV1,
     AttentionSignalV1,
+    PredictionErrorMagnitudeV1,
     SalienceFeaturesV1,
     VoluntaryOverrideV1,
 )
@@ -635,6 +658,13 @@ from orion.schemas.attention_schema import AttentionSchemaV1
 from orion.schemas.curiosity_peer import HelpRequestV1, PeerBriefConsumedV1, PeerBriefV1
 from orion.schemas.curiosity_supervisor import READING_KIND, HopReadingV1
 from orion.schemas.curiosity_urgent import URGENT_REQUEST_KIND, CuriosityUrgentRequestV1
+from orion.schemas.hardware_watch import (
+    HARDWARE_WATCH_INCIDENT_KIND,
+    HARDWARE_WATCH_REFLEX_SHED_KIND,
+    HardwareWatchIncidentV1,
+    HardwareWatchReflexShedV1,
+)
+from orion.schemas.compactor_digest_run import CompactorDigestResultV1, CompactorDigestRunBriefV1
 from orion.schemas.durable_run import (
     CuriosityTurnRequestV1,
     CuriosityTurnResultV1,
@@ -650,6 +680,8 @@ from orion.schemas.gpu_pool import (
     GpuLeaseRequestV1,
     GpuPoolControlReplyV1,
     GpuPoolControlV1,
+    GpuPoolShedReasonRequestV1,
+    GpuPoolShedResultV1,
     GpuPoolEventV1,
     GpuPoolStateRequestV1,
     GpuPoolStateV1,
@@ -718,7 +750,6 @@ from orion.schemas.brain_frame import (
 )
 from orion.schemas.policy_decision_frame import PolicyDecisionFrameV1, PolicyDecisionV1
 from orion.schemas.proposal_frame import ProposalCandidateV1, ProposalFrameV1
-from orion.schemas.self_state import SelfStateDimensionV1, SelfStateV1
 from orion.schemas.evidence_index import (
     EvidenceQueryResultItemV1,
     EvidenceQueryV1,
@@ -750,7 +781,11 @@ from orion.schemas.workflow_execution import (
     WorkflowScheduleSpecV1,
 )
 from orion.schemas.reading_turn import ReadingTurnRequestV1, ReadingTurnResultV1
+from orion.schemas.journal_compose_run import JournalComposeRunBriefV1
 from orion.schemas.reverie_visual_run import ReverieVisualStepRequestV1, ReverieVisualStepResultV1
+from orion.schemas.orion_day import (
+    OrionDayLetterV1, OrionDayLlmViewV1, OrionDayMaterialV1, OrionDayRunBriefV1,
+)
 from orion.schemas.reading import (
     ReadingRequestedV1, ReadingToolBindingV1, ReadingToolRequestV1, ReadingToolResultV1, ReadingLifecycleV1
 )
@@ -772,7 +807,6 @@ from orion.schemas.world_pulse import (
     ClaimRecordV1,
     DailyWorldPulseItemV1,
     DailyWorldPulseV1,
-    EmailWorldPulseRenderV1,
     EntityRecordV1,
     EventRecordV1,
     GraphDeltaPlanV1,
@@ -831,6 +865,8 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "SubstrateTierOutcomesPayloadV1": SubstrateTierOutcomesPayloadV1,
     "GrammarEventV1": GrammarEventV1,
     "SystemOneAppraisalFrameV1": SystemOneAppraisalFrameV1,
+    "StanceContextPrepareRequestV1": StanceContextPrepareRequestV1,
+    "StanceContextPrepareResultV1": StanceContextPrepareResultV1,
     "OrganEmissionV1": OrganEmissionV1,
     "ReductionReceiptV1": ReductionReceiptV1,
     "StateDeltaV1": StateDeltaV1,
@@ -843,6 +879,14 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "TransportBusProjectionV1": TransportBusProjectionV1,
     "LlmInferenceNodeStateV1": LlmInferenceNodeStateV1,
     "LlmInferenceProjectionV1": LlmInferenceProjectionV1,
+    "StorageWriteFamilyStateV1": StorageWriteFamilyStateV1,
+    "StorageWriteWindowCountV1": StorageWriteWindowCountV1,
+    "StorageWriteProjectionV1": StorageWriteProjectionV1,
+    "VisionOrganProjectionV1": VisionOrganProjectionV1,
+    "VisionOrganStreamStateV1": VisionOrganStreamStateV1,
+    "VisionOrganWindowCountV1": VisionOrganWindowCountV1,
+    "LlmInferenceRoleStateV1": LlmInferenceRoleStateV1,
+    "LlmInferenceWindowCountV1": LlmInferenceWindowCountV1,
     "CodebaseDeltaV1": CodebaseDeltaV1,
     "JuniperAffectiveStateV1": JuniperAffectiveStateV1,
     "DocSemanticDriftV1": DocSemanticDriftV1,
@@ -870,6 +914,7 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "MetacognitionTickV1": MetacognitionTickV1,
     "MetacognitiveTraceV1": MetacognitiveTraceV1,
     "MetacogTriggerV1": MetacogTriggerV1,
+    "TransportBaselineHourlyV1": TransportBaselineHourlyV1,
     "MetacogDraftTextPatchV1": MetacogDraftTextPatchV1,
     "MetacogEntryV1": MetacogEntryV1,
     "RepairPressureAppraisalV1": RepairPressureAppraisalV1,
@@ -982,12 +1027,16 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "AttentionFrameV1": AttentionFrameV1,
     "AttentionSignalV1": AttentionSignalV1,
     "SalienceFeaturesV1": SalienceFeaturesV1,
+    "PredictionErrorMagnitudeV1": PredictionErrorMagnitudeV1,
     "AttentionBroadcastProjectionV1": AttentionBroadcastProjectionV1,
     "VoluntaryOverrideV1": VoluntaryOverrideV1,
     "AttentionSelfModelV1": AttentionSelfModelV1,
     "AttentionSchemaV1": AttentionSchemaV1,
     "DurableRunRequestV1": DurableRunRequestV1,
+    "JournalComposeRunBriefV1": JournalComposeRunBriefV1,
     "DurableRunReceiptV1": DurableRunReceiptV1,
+    "CompactorDigestRunBriefV1": CompactorDigestRunBriefV1,
+    "CompactorDigestResultV1": CompactorDigestResultV1,
     "ResourceEventV1": ResourceEventV1,
     "GpuLeaseRequestV1": GpuLeaseRequestV1,
     "GpuLeaseReplyV1": GpuLeaseReplyV1,
@@ -996,6 +1045,8 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "GpuPoolStateRequestV1": GpuPoolStateRequestV1,
     "GpuPoolControlV1": GpuPoolControlV1,
     "GpuPoolControlReplyV1": GpuPoolControlReplyV1,
+    "GpuPoolShedReasonRequestV1": GpuPoolShedReasonRequestV1,
+    "GpuPoolShedResultV1": GpuPoolShedResultV1,
     "GpuActuateV1": GpuActuateV1,
     "GpuActuateResultV1": GpuActuateResultV1,
     "LlmWorkerAnnounceV1": LlmWorkerAnnounceV1,
@@ -1005,8 +1056,16 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "ReadingTurnResultV1": ReadingTurnResultV1,
     "ReverieVisualStepRequestV1": ReverieVisualStepRequestV1,
     "ReverieVisualStepResultV1": ReverieVisualStepResultV1,
+    # Orion's Day letter (orion/schemas/orion_day.py): nested payloads of
+    # DurableRunRequestV1 (brief) and the orion_day_letter row, not bus kinds.
+    "OrionDayRunBriefV1": OrionDayRunBriefV1,
+    "OrionDayMaterialV1": OrionDayMaterialV1,
+    "OrionDayLlmViewV1": OrionDayLlmViewV1,
+    "OrionDayLetterV1": OrionDayLetterV1,
     "CuriosityTurnResultV1": CuriosityTurnResultV1,
     "CuriosityUrgentRequestV1": CuriosityUrgentRequestV1,
+    "HardwareWatchIncidentV1": HardwareWatchIncidentV1,
+    "HardwareWatchReflexShedV1": HardwareWatchReflexShedV1,
     "HelpRequestV1": HelpRequestV1,
     "PeerBriefV1": PeerBriefV1,
     "PeerBriefConsumedV1": PeerBriefConsumedV1,
@@ -1206,6 +1265,7 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "StateSnapshotNodeV1": StateSnapshotNodeV1,
     "HypothesisNodeV1": HypothesisNodeV1,
     "OntologyBranchNodeV1": OntologyBranchNodeV1,
+    "AssertionNodeV1": AssertionNodeV1,
     "SubstrateEdgeV1": SubstrateEdgeV1,
     "SubstrateGraphRecordV1": SubstrateGraphRecordV1,
     "FrontierContextRefsV1": FrontierContextRefsV1,
@@ -1359,8 +1419,6 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "FieldAttentionFrameV1": FieldAttentionFrameV1,
     "FieldGoalProvenanceV1": FieldGoalProvenanceV1,
     "DominanceStreakTickV1": DominanceStreakTickV1,
-    "SelfStateDimensionV1": SelfStateDimensionV1,
-    "SelfStateV1": SelfStateV1,
     "PolicyDecisionV1": PolicyDecisionV1,
     "PolicyDecisionFrameV1": PolicyDecisionFrameV1,
     "ProposalCandidateV1": ProposalCandidateV1,
@@ -1433,7 +1491,6 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "WorldPulseRunResultV1": WorldPulseRunResultV1,
     "GraphDeltaPlanV1": GraphDeltaPlanV1,
     "HubWorldPulseMessageV1": HubWorldPulseMessageV1,
-    "EmailWorldPulseRenderV1": EmailWorldPulseRenderV1,
     "CompressionRegionV1": CompressionRegionV1,
     "CompressionStalenessMarkV1": CompressionStalenessMarkV1,
     "GraphCompressionRegionMaterializedV1": GraphCompressionRegionMaterializedV1,
@@ -1444,6 +1501,9 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "ChatHistorySparkMetaPatchV1": ChatHistorySparkMetaPatchV1,
     "MemoryConsolidationWindowV1": MemoryConsolidationWindowV1,
     "MemoryGraphSuggestDraftRecordV1": MemoryGraphSuggestDraftRecordV1,
+    # Memory episode redesign Stage 1 (2026-10-02). Registered in BOTH this
+    # dict and SCHEMA_REGISTRY below.
+    "MemoryEpisodeClosedV1": MemoryEpisodeClosedV1,
     "ContextExecRequestV1": ContextExecRequestV1,
     "ContextExecRunV1": ContextExecRunV1,
     "ContextExecOperatorSummaryV1": ContextExecOperatorSummaryV1,
@@ -1508,6 +1568,7 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "HarnessRunRequestV1": HarnessRunRequestV1,
     "HarnessRunCancelV1": HarnessRunCancelV1,
     "HarnessRunStepV1": HarnessRunStepV1,
+    "HarnessRunDraftPreviewV1": HarnessRunDraftPreviewV1,
     "CockpitHopV1": CockpitHopV1,
     "HarnessRunV1": HarnessRunV1,
     "EmbodimentIntentV1": EmbodimentIntentV1,
@@ -1775,6 +1836,10 @@ SCHEMA_REGISTRY: Dict[str, SchemaRegistration] = {
         model=HarnessRunStepV1,
         kind="harness.run.step.v1",
     ),
+    "HarnessRunDraftPreviewV1": SchemaRegistration(
+        model=HarnessRunDraftPreviewV1,
+        kind="harness.run.draft_preview.v1",
+    ),
     "CockpitHopV1": SchemaRegistration(
         model=CockpitHopV1,
         kind="cockpit.hop.v1",
@@ -1860,10 +1925,16 @@ SCHEMA_REGISTRY: Dict[str, SchemaRegistration] = {
     "GpuLeaseRequestV1": SchemaRegistration(model=GpuLeaseRequestV1, kind="gpu_pool.lease.request.v1"),
     "GpuLeaseReplyV1": SchemaRegistration(model=GpuLeaseReplyV1, kind="gpu_pool.lease.reply.v1"),
     "GpuPoolEventV1": SchemaRegistration(model=GpuPoolEventV1, kind="gpu_pool.event.v1"),
+    # Transport baseline gate hourly per-hop summary (2026-09-29). In BOTH maps.
+    "TransportBaselineHourlyV1": SchemaRegistration(
+        model=TransportBaselineHourlyV1, kind="transport_baseline.hourly.v1"
+    ),
     "GpuPoolStateV1": SchemaRegistration(model=GpuPoolStateV1, kind="gpu_pool.state.v1"),
     "GpuPoolStateRequestV1": SchemaRegistration(model=GpuPoolStateRequestV1, kind="gpu_pool.state.request.v1"),
     "GpuPoolControlV1": SchemaRegistration(model=GpuPoolControlV1, kind="gpu_pool.control.v1"),
     "GpuPoolControlReplyV1": SchemaRegistration(model=GpuPoolControlReplyV1, kind="gpu_pool.control.reply.v1"),
+    "GpuPoolShedReasonRequestV1": SchemaRegistration(model=GpuPoolShedReasonRequestV1, kind="gpu_pool.shed.request.v1"),
+    "GpuPoolShedResultV1": SchemaRegistration(model=GpuPoolShedResultV1, kind="gpu_pool.shed.result.v1"),
     # Stage 4 actuation (docs/superpowers/specs/2026-09-25-gpu-pool-stage4-durable-runs-and-actuation.md).
     "GpuActuateV1": SchemaRegistration(model=GpuActuateV1, kind="gpu_pool.actuate.v1"),
     "GpuActuateResultV1": SchemaRegistration(model=GpuActuateResultV1, kind="gpu_pool.actuate.result.v1"),
@@ -1875,6 +1946,8 @@ SCHEMA_REGISTRY: Dict[str, SchemaRegistration] = {
     "ReverieVisualStepResultV1": SchemaRegistration(model=ReverieVisualStepResultV1, kind="reverie.visual.step.result.v1"),
     "CuriosityTurnResultV1": SchemaRegistration(model=CuriosityTurnResultV1, kind="curiosity.turn.result.v1"),
     "CuriosityUrgentRequestV1": SchemaRegistration(model=CuriosityUrgentRequestV1, kind=URGENT_REQUEST_KIND),
+    "HardwareWatchIncidentV1": SchemaRegistration(model=HardwareWatchIncidentV1, kind=HARDWARE_WATCH_INCIDENT_KIND),
+    "HardwareWatchReflexShedV1": SchemaRegistration(model=HardwareWatchReflexShedV1, kind=HARDWARE_WATCH_REFLEX_SHED_KIND),
     "HelpRequestV1": SchemaRegistration(
         model=HelpRequestV1,
         kind="curiosity.help.request.v1",
@@ -1908,6 +1981,21 @@ SCHEMA_REGISTRY: Dict[str, SchemaRegistration] = {
     "SystemOneAppraisalFrameV1": SchemaRegistration(
         model=SystemOneAppraisalFrameV1,
         kind="system_one.appraisal.frame.v1",
+    ),
+    # Unified-turn latency L4 (2026-10-06): stance context built while
+    # orion-mind runs. Also in `_REGISTRY`.
+    "StanceContextPrepareRequestV1": SchemaRegistration(
+        model=StanceContextPrepareRequestV1,
+        kind=STANCE_CONTEXT_PREPARE_REQUEST_KIND,
+    ),
+    "StanceContextPrepareResultV1": SchemaRegistration(
+        model=StanceContextPrepareResultV1,
+        kind=STANCE_CONTEXT_PREPARE_RESULT_KIND,
+    ),
+    # Memory episode redesign Stage 1 (2026-10-02). Also in `_REGISTRY`.
+    "MemoryEpisodeClosedV1": SchemaRegistration(
+        model=MemoryEpisodeClosedV1,
+        kind=MEMORY_EPISODE_CLOSED_KIND,
     ),
 }
 

@@ -28,7 +28,7 @@ def test_transport_bus_delta_maps_to_node_channels() -> None:
                 "stream_backlog_health": 1.0,
                 "delivery_confidence": 1.0,
                 "catalog_drift_pressure": 1.0,
-                "contract_pressure": 1.0,
+                "contract_pressure": 1.0,  # retired 2026-10-07
                 "stream_backlog_pressure": 0.0,
             },
         },
@@ -37,11 +37,10 @@ def test_transport_bus_delta_maps_to_node_channels() -> None:
     )
     perturbations = delta_to_perturbations(delta)
     channels = {p.channel: p.intensity for p in perturbations}
-    assert channels["contract_pressure"] == 1.0
     assert channels["catalog_drift_pressure"] == 1.0
     # Retired 2026-09-25: still present in this (pre-retirement-shaped) delta,
     # but must not reach the field.
-    for retired in ("stream_backlog_health", "delivery_confidence", "stream_backlog_pressure"):
+    for retired in ("stream_backlog_health", "delivery_confidence", "stream_backlog_pressure", "contract_pressure"):
         assert retired not in channels
     assert perturbations[0].node_id == "node:athena"
 
@@ -59,7 +58,6 @@ def test_transport_perturbations_diffuse_to_transport_capability() -> None:
             "node_id": "athena",
             "pressure_hints": {
                 "catalog_drift_pressure": 1.0,
-                "contract_pressure": 1.0,
             },
         },
         caused_by_event_ids=["gev_2"],
@@ -74,6 +72,8 @@ def test_transport_perturbations_diffuse_to_transport_capability() -> None:
         staleness_threshold_sec=90.0,
     )
     cap = field.capability_vectors.get("capability:transport") or {}
+    # capability:transport.contract_pressure is fed by node:athena
+    # catalog_drift_pressure (topology channel_map), not a contract hint.
     assert cap.get("contract_pressure", 0.0) > 0.0
 
 

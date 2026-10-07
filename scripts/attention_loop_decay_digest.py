@@ -113,6 +113,8 @@ _SELECT_TRACES_SQL = """
 _SELECT_LATEST_VERDICTS_SQL = """
     SELECT DISTINCT ON (loop_id) loop_id, verdict
     FROM attention_loop_outcome
+    -- Memory confirmation answers (2026-10-06) share this table; they are not chat loops.
+    WHERE loop_id NOT LIKE 'memory-confirm-%'
     ORDER BY loop_id, created_at DESC
 """
 

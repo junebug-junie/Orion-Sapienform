@@ -1,6 +1,6 @@
-"""Stage 4.4: ``durable_demand_pending`` counts durable runs waiting for a GPU across the cutover
-from durable-runs' own broker (durable_resource_demands) to GPU pool holds (gpu_pool_leases
-kind='hold') -- no gap, no double count -- and ``gpu_pool_waiting`` stops counting holds.
+"""``durable_demand_pending`` counts durable runs waiting for a GPU: durable-run GPU pool holds
+(gpu_pool_leases kind='hold') queued or backlogged, and ``gpu_pool_waiting`` never counts them.
+Since stage 4.6 the frozen legacy broker queue (durable_resource_demands) is not read at all.
 
 Runs the store's real SQL on a throwaway Postgres (GPU_POOL_TEST_POSTGRES_URI, the pool CI
 service; never the live 55432), in a private schema, with gpu_pool_leases created by the real
@@ -36,7 +36,8 @@ def store():
     st = FieldDigesterStore(scoped)
     with st._engine.begin() as conn:
         conn.exec_driver_sql(POOL_MIGRATION.read_text())
-        # Only the columns the reader touches (the full admission migration drags in its FKs).
+        # The frozen legacy queue still exists live (stage 5 drops it); present here only to prove
+        # the reader ignores it. Minimal columns (the full admission migration drags in its FKs).
         conn.exec_driver_sql(
             "CREATE TABLE durable_resource_demands (demand_id text PRIMARY KEY, run_id text NOT NULL UNIQUE, "
             "created_at timestamptz NOT NULL, status text NOT NULL)")
@@ -71,40 +72,32 @@ def hold(st, run: str, status: str, **kw) -> None:
     lease(st, f"hold-{run}", kind="hold", status=status, holder=f"durable-runs:{run}", **kw)
 
 
-def test_before_cutover_it_is_exactly_the_legacy_queue(store):
-    demand(store, "a", age_sec=4000)
+def test_frozen_legacy_demands_are_not_counted(store):
+    # Stage 4.6: a pending durable_resource_demands row is no longer a waiting run, even with no
+    # hold of its own -- the broker that would grant it is gone.
+    demand(store, "a", age_sec=380000)
     demand(store, "b", age_sec=100)
-    demand(store, "c", status="granted", age_sec=9000)
     lease(store, "r1", kind="request", status="queued", holder="http:anthropic", queued_age_sec=5)
-    assert store.count_durable_demand_pending() == 2
-    assert 3990 <= store.oldest_durable_demand_pending_age_sec() <= 4100
+    assert store.count_durable_demand_pending() == 0
+    assert store.oldest_durable_demand_pending_age_sec() == 0.0
     assert store.count_gpu_pool_waiting() == 1
 
 
-def test_during_cutover_a_run_with_both_counts_once(store):
-    # a: frozen legacy demand AND a re-registered queued hold -> one waiting run, not two.
-    demand(store, "a", age_sec=380000)
+def test_only_queued_or_backlogged_holds_are_waiting(store):
     hold(store, "a", "queued", queued_age_sec=50)
-    # b: legacy demand still pending but its hold is already granted -> running, not waiting.
-    demand(store, "b", age_sec=200000)
     hold(store, "b", "granted")
-    # c: only a hold, backlogged (no role can serve it yet) -> waiting.
     hold(store, "c", "backlogged", age_sec=70)
-    # d: only a hold, cooling down after an expiry -> not waiting (same rule as gpu_pool_waiting).
+    # cooling down after an expiry -> not waiting (same rule as gpu_pool_waiting).
     hold(store, "d", "retry_wait")
-    # e: re-registered through the pool, held and released; its frozen demand is still 'pending'
-    # until step 6's withdrawal -> NOT waiting (no phantom 4-day-old wait).
-    demand(store, "e", age_sec=300000)
     hold(store, "e", "released")
-    # f: legacy only, never re-registered yet -> still the legacy wait.
-    demand(store, "f", age_sec=1000)
-    assert store.count_durable_demand_pending() == 3  # a (hold), c (hold), f (legacy)
-    # a's and e's old demands are superseded by their holds; oldest is f's legacy demand.
-    assert 990 <= store.oldest_durable_demand_pending_age_sec() <= 1100
+    hold(store, "f", "recalling")
+    demand(store, "g", age_sec=1000)  # legacy, ignored
+    assert store.count_durable_demand_pending() == 2  # a, c
+    # c has no queued_since: its created_at (70s) is the oldest wait, not g's legacy 1000s.
+    assert 65 <= store.oldest_durable_demand_pending_age_sec() <= 170
 
 
-def test_after_migration_it_is_exactly_the_waiting_holds(store):
-    demand(store, "a", status="withdrawn", age_sec=380000)
+def test_oldest_wait_reads_queued_since_not_created_at(store):
     hold(store, "a", "queued", age_sec=900, queued_age_sec=600)
     hold(store, "b", "queued", queued_age_sec=10)
     assert store.count_durable_demand_pending() == 2

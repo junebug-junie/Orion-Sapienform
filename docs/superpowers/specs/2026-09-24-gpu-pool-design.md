@@ -1,6 +1,7 @@
 # GPU pool — one lease queue for every GPU on circe
 
 Status: v2, stage 1 built (observe mode). Signed off by Juniper 2026-09-24.
+Status update 2026-10-01: stages 1-5 merged (pool in `enforce`). Stage 6 (`docs/superpowers/specs/2026-09-30-gpu-pool-stage6-telemetry-reducers-lockdown.md`): 6.1, 6.2 and 6.3 merged; 6.6 lockdown tooling (CI port gate `scripts/check_circe_worker_refs.py`, `scripts/report_dead_env_keys.py`, circe firewall runbook `docs/runbooks/2026-10-01-circe-llm-port-firewall.md`) in its own PR. **Stage 6 is NOT done:** 6.4 (lane census), 6.5 (delete `/routes`) and 6.7 (FCC baseline key, after the 6.2 48 h checkpoint) are still open, and the dead-key `--apply` / firewall are operator steps.
 Date: 2026-09-24
 Supersedes: `orion/durable_admission/` (broker, policy, capacity, elastic, capacity_client), gateway
 `capacity.py` / `upstream_admission.py` / `priority_admission.py` / `lane_gate.py` /
@@ -242,7 +243,10 @@ hold ──(interrupt; heartbeats/release resume it)──┬─► release(outc
                                                   │        ─► retry_wait ─► place   (attempt<max)
                                                   │        ─► dead_letter           (attempt=max)
                                                   ├─► recalled ─► grace ─┬─► released (finished)
-                                                  │                      └─► aborted ─► retry_wait
+                                                  │                      └─► aborted ─┬─► place, original spot,
+                                                  │                                   │   no attempt (retryable hold;
+                                                  │                                   │   2026-09-29, and urgent U2)
+                                                  │                                   └─► retry_wait (request lease)
                                                   └─► heartbeat lost ─► expired ─► retry_wait
 
 dead_letter ──(operator replay)──► place   (new attempt series, same lease_id, audit kept)

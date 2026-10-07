@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from functools import lru_cache
+from typing import Literal
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -26,9 +27,13 @@ class Settings(BaseSettings):
     config_path: str = Field("/app/config/gpu_pool.yaml", alias="GPU_POOL_CONFIG_PATH")
     profiles_path: str = Field("/app/config/llm_profiles.yaml", alias="GPU_POOL_PROFILES_PATH")
 
-    # observe: the pool discovers, answers leases and publishes state, but nothing depends on it
-    # and swap decisions are published as swap_requested events without actuation (stage 1).
-    mode: str = Field("observe", alias="GPU_POOL_MODE")
+    # Stage 5.7 end state: enforce. Both modes actuate every swap seat that has a launch block in
+    # config/gpu_pool.yaml. observe is the documented rollback and differs in exactly three ways:
+    # a swap seat the pool has NEVER acted on is marked loaded when its worker answers (liveness
+    # adoption; no such seat today), there is no boot/resume `status` reconcile, and operator holds
+    # are refused.
+    # A typo fails the boot. Emergency stop is the pause_actuation control verb, not a mode.
+    mode: Literal["enforce", "observe"] = Field("enforce", alias="GPU_POOL_MODE")
     tick_sec: float = Field(1.0, alias="GPU_POOL_TICK_SEC")
     probe_interval_sec: float = Field(15.0, alias="GPU_POOL_PROBE_INTERVAL_SEC")
     probe_timeout_sec: float = Field(3.0, alias="GPU_POOL_PROBE_TIMEOUT_SEC")
@@ -37,19 +42,20 @@ class Settings(BaseSettings):
     replay_payload_max_bytes: int = Field(262144, alias="GPU_POOL_REPLAY_PAYLOAD_MAX_BYTES")
     lease_retention_hours: float = Field(168.0, gt=0, alias="GPU_POOL_LEASE_RETENTION_HOURS")
 
-    # Stage 4.3 actuation. Comma-separated swap seats the pool may load/unload itself by sending
-    # GpuActuateV1 to the seat's host actuator. Empty (default) = actuation OFF: every swap stays a
-    # published swap_requested {actuated: false}, exactly as before. `agent-gpu2` at the 4.5 cutover.
-    actuate_roles: str = Field("", alias="GPU_POOL_ACTUATE_ROLES")
     # Swap-load guards (read outside the runtime lock, every guard_refresh_sec).
     cabinet_url: str = Field("http://100.92.216.81:8080/api/cabinet/sensors/latest", alias="GPU_POOL_CABINET_URL")
-    visual_activity_url: str = Field("http://orion-athena-thought:7155/visual-chain/activity",
-                                     alias="GPU_POOL_VISUAL_ACTIVITY_URL")
     guard_refresh_sec: float = Field(30.0, gt=0, alias="GPU_POOL_GUARD_REFRESH_SEC")
-
-    @property
-    def actuate_role_list(self) -> list[str]:
-        return [r.strip() for r in self.actuate_roles.split(",") if r.strip()]
+    # U4 shed lever kill switch (orion/gpu_pool/shed.py). OFF in code: the pool still receives and
+    # shows shed signals (orion-hardware-watch cooling incidents) but blocks nothing. ON in .env_example.
+    shed_enabled: bool = Field(False, alias="GPU_POOL_SHED_ENABLED")
+    # Orion's learned shed (attend-to-act loop A1): the lower-precedence ``orion_self_shed`` reason.
+    # OFF in code AND in .env_example -- Juniper flips it. false refuses every set and settles any
+    # active Orion shed ``cancelled`` at boot; it never touches the reflex's cooling_incident.
+    orion_shed_enabled: bool = Field(False, alias="GPU_POOL_ORION_SHED_ENABLED")
+    # Caps, enforced in the pool (no caller can exceed them); orion_self_shed only, never the reflex.
+    orion_shed_max_ttl_sec: float = Field(900.0, gt=0, le=3600, alias="GPU_POOL_ORION_SHED_MAX_TTL_SEC")
+    orion_shed_max_sec_per_day: float = Field(3600.0, ge=0, alias="GPU_POOL_ORION_SHED_MAX_SEC_PER_DAY")
+    orion_shed_min_gap_sec: float = Field(900.0, ge=0, alias="GPU_POOL_ORION_SHED_MIN_GAP_SEC")
 
 
 @lru_cache

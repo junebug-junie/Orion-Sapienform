@@ -1,0 +1,58 @@
+name: orion FCC warm chat pool tests
+
+# Spec L5: always-warm Claude Code pool for chat replies. Real subprocesses
+# (a fake `claude` speaking stream-json), a real relay, a local stub upstream.
+# No model or network call leaves the runner.
+
+on:
+  pull_request:
+    paths:
+      - "orion/harness/fcc_motor.py"
+      - "orion/harness/fcc_warm_pool.py"
+      - "orion/harness/fcc_warm_relay.py"
+      - "orion/harness/tests/test_fcc_warm_pool.py"
+      - "orion/harness/tests/fake_claude_stream.py"
+      - "orion/harness/tests/test_fcc_*.py"
+      - "orion/fcc/**"
+      - "orion/world_pulse_read/mcp_server.py"
+      - "orion/introspect/mcp_server.py"
+      - "services/orion-harness-governor/**"
+      - ".github/workflows/orion-fcc-warm-pool-tests.yml"
+  push:
+    branches: [main]
+    paths:
+      - "orion/harness/fcc_motor.py"
+      - "orion/harness/fcc_warm_pool.py"
+      - "orion/harness/fcc_warm_relay.py"
+      - "services/orion-harness-governor/**"
+
+jobs:
+  warm-pool:
+    name: warm pool + FCC motor + governor wiring
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      PYTHONPATH: ${{ github.workspace }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install deps (governor requirements + dev)
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r services/orion-harness-governor/requirements.txt
+          python -m pip install -r requirements-dev.txt
+      - name: Warm pool, relay, and FCC motor tests
+        run: |
+          python -m pytest orion/harness/tests/test_fcc_warm_pool.py \
+            orion/harness/tests/test_fcc_warm_pool_chat_binding.py \
+            orion/harness/tests/test_fcc_motor_cancel.py \
+            orion/harness/tests/test_fcc_context_ceiling_compaction.py \
+            orion/harness/tests/test_fcc_chat_auto_memory.py \
+            orion/harness/tests/test_fcc_motor_served_model.py \
+            orion/harness/tests/test_fcc_motor_write_stamp.py \
+            orion/harness/tests/test_fcc_motor_repeat_failure_breaker.py \
+            -q -p no:cacheprovider
+      - name: Governor wiring
+        run: cd services/orion-harness-governor && python -m pytest tests/test_fcc_warm_pool_wiring.py -q -p no:cacheprovider

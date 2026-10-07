@@ -1,5 +1,8 @@
 # Durable resource admission: implementation evidence and ADR
 
+> **SUPERSEDED by the GPU pool (2026-10-01, stage 6.6).** durable resource admission (`durable_admission_*`, the gateway `/capacity` broker and lease validation) was replaced by `orion-gpu-pool` leases and deleted in stages 4.6-5.6. `durable_admission_runs` and `durable_resource_events` are still live tables (see the stage 6 spec), but the admission logic described here is not. Current design: `docs/superpowers/specs/2026-09-24-gpu-pool-design.md` and `docs/superpowers/specs/2026-09-30-gpu-pool-stage6-telemetry-reducers-lockdown.md`. Not deleted: it holds incident evidence.
+
+
 ## Evidence before implementation (2026-09-12)
 
 The existing service `services/orion-durable-runs` already depends on
@@ -229,6 +232,12 @@ The checked-in operator templates now select the admitted Curiosity path. Code
 and compose fallbacks remain false when a deployment supplies no env contract;
 `DURABLE_RUNS_ADMISSION_SHADOW` also remains false because shadow mode does not
 execute admitted work. Relevant operator-template values:
+
+> **Superseded.** GPU pool stage 4.5 deleted the broker (runner policy/widening/discovery rows) and
+> stage 4.6 deleted the durable lease token: the Hub lease validator
+> (`HUB_CURIOSITY_LEASE_VALIDATION_URL`) and the Gateway `LLM_GATEWAY_LEASE_VALIDATION_*` /
+> `LLM_GATEWAY_CAPACITY_*` settings no longer exist. A run's GPU pool hold ref is the only run lease;
+> see `docs/superpowers/pr-reports/2026-09-29-gpu-pool-stage4-6-cleanup-pr.md`. Table kept as history.
 
 | Service | Settings |
 | --- | --- |

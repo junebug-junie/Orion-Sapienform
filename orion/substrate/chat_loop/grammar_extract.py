@@ -76,6 +76,12 @@ def extract_chat_turn_state(
             repair_pressure_level = atom.salience or 0.0
             repair_pressure_confidence = atom.confidence or 0.0
             has_repair_signal = True
+        elif role == "repair_pressure_reading":
+            # Sub-floor appraisal (hub grammar_emit): same level/confidence the
+            # `repair_signal` atom used to carry for every appraised turn, but
+            # not a repair signal.
+            repair_pressure_level = atom.salience or 0.0
+            repair_pressure_confidence = atom.confidence or 0.0
         elif role == "session_context":
             if atom.text_value is not None:
                 session_id = atom.text_value

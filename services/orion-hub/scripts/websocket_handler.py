@@ -1805,6 +1805,8 @@ async def websocket_endpoint(websocket: WebSocket):
                     from scripts.grammar_publish import publish_hub_chat_grammar_trace
                     from scripts.pre_turn_appraisal_wiring import repair_pressure_grammar_scalars
 
+                    from orion.substrate.appraisal.contract import is_repair_signal
+
                     repair_pressure_level, repair_pressure_confidence = repair_pressure_grammar_scalars(
                         pre_turn_bundle=pre_turn_bundle,
                         substrate_summary=substrate_summary,
@@ -1816,7 +1818,14 @@ async def websocket_endpoint(websocket: WebSocket):
                         word_count=len((transcript or "").split()),
                         repair_pressure_level=repair_pressure_level,
                         repair_pressure_confidence=repair_pressure_confidence,
-                        has_repair_signal=substrate_summary is not None,
+                        # Same rule as the unified turn (turn_orchestrator):
+                        # real repair pressure only, sub-floor readings on
+                        # their own atom.
+                        has_repair_signal=(
+                            substrate_summary is not None
+                            and is_repair_signal(repair_pressure_level)
+                        ),
+                        has_repair_pressure_reading=substrate_summary is not None,
                     )
                     _schedule_publish(
                         publish_hub_chat_grammar_trace(

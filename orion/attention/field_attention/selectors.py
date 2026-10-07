@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Literal
 
 from orion.attention.field_attention.candidate_precision_weighted import (
@@ -226,6 +227,7 @@ def select_node_targets(
     field: FieldStateV1,
     policy: FieldAttentionPolicyV1,
     prediction_error_baselines: dict[str, PrecisionEwmaBaseline],
+    now: datetime | None = None,
 ) -> list[FieldAttentionTargetV1]:
     """Real, precision-weighted node targets only (Candidate A -- Feldman &
     Friston 2010, "Attention, Uncertainty, and Free-Energy":
@@ -269,6 +271,11 @@ def select_node_targets(
     data" and "confidently calm" are different claims, same discipline as
     before, just keyed off a real cumulative count instead of a
     window-bounded one.
+
+    2026-09-29: ``now`` ages each target's last reading
+    (`precision_weighted_salience_from_baseline`'s staleness fade). Without it a
+    domain that only reports on activity (chat) kept its last reading as the
+    "current" error for hours and won this competition on it.
     """
     results: dict[str, PrecisionWeightedSalienceResult] = {}
     raw_scores: dict[str, float] = {}
@@ -285,7 +292,7 @@ def select_node_targets(
             min_variance=NODE_TARGET_PREDICTION_ERROR_MIN_VARIANCE,
         )
         result = precision_weighted_salience_from_baseline(
-            baseline, min_variance=min_variance
+            baseline, min_variance=min_variance, now=now
         )
         if result.n_samples == 0:
             continue
@@ -302,6 +309,12 @@ def select_node_targets(
             f"precision-weighted prediction-error salience (current error "
             f"{result.current_error:.4f}, precision {result.precision:.2f}, n={result.n_samples})"
         ]
+        if result.staleness_factor < 1.0 and result.reading_age_sec is not None:
+            reasons.append(
+                f"stale reading: last error {result.raw_error:.4f} is "
+                f"{result.reading_age_sec / 60.0:.0f} min old, weighted "
+                f"{result.staleness_factor:.2f}"
+            )
         if result.variance_floored:
             reasons.append("variance-floor instability: near-constant recent error history")
         targets.append(

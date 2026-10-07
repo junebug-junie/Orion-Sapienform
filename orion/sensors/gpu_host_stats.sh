@@ -4,19 +4,21 @@
 
 # Run once, collect GPU stats, save to /mnt/telemetry/gpu_stats
 
-OUTDIR="/mnt/telemetry/gpu_stats"
+OUTDIR="${GPU_STATS_OUTDIR:-/mnt/telemetry/gpu_stats}"
 mkdir -p "$OUTDIR"
 
 TIMESTAMP=$(date -Iseconds)
 OUTFILE="$OUTDIR/${TIMESTAMP}.csv"
 PROCS_OUTFILE="$OUTDIR/${TIMESTAMP}.procs.csv"
 
-echo "timestamp,gpu_index,gpu_uuid,gpu_name,utilization_gpu,memory_used_mb,memory_total_mb,power_draw_watts" > "$OUTFILE"
+# temperature_gpu_c is the LAST column on purpose: readers that predate it (csv.DictReader by
+# header name) are unaffected. Added for orion-hardware-watch's GPU heat rule (2026-09-29).
+echo "timestamp,gpu_index,gpu_uuid,gpu_name,utilization_gpu,memory_used_mb,memory_total_mb,power_draw_watts,temperature_gpu_c" > "$OUTFILE"
 
-nvidia-smi --query-gpu=index,uuid,name,utilization.gpu,memory.used,memory.total,power.draw \
+nvidia-smi --query-gpu=index,uuid,name,utilization.gpu,memory.used,memory.total,power.draw,temperature.gpu \
            --format=csv,noheader,nounits \
-| while IFS=',' read -r index uuid name util mem_used mem_total power; do
-    echo "$TIMESTAMP,$index,$uuid,$name,$util,$mem_used,$mem_total,$power" >> "$OUTFILE"
+| while IFS=',' read -r index uuid name util mem_used mem_total power temp; do
+    echo "$TIMESTAMP,$index,$uuid,$name,$util,$mem_used,$mem_total,$power,$temp" >> "$OUTFILE"
 done
 
 # Per-GPU compute-process list, joined back to the row above by gpu_uuid (not

@@ -225,7 +225,7 @@ async def test_harness_runner_threads_served_model_probe_into_prompt() -> None:
     )
     await runner.run(request)
 
-    probe.assert_awaited_once_with("MODEL_SONNET")
+    probe.assert_awaited_once_with("MODEL_SONNET", pool_state=None)
     # No lease: the route's model is stated as its default, never as "serving this turn".
     assert "Qwen3.6-35B-A3B-UD-Q5_K_M12" in captured_kwargs["prompt"]
     assert "Default backend model" in captured_kwargs["prompt"]
@@ -305,6 +305,30 @@ async def test_harness_runner_spilled_held_turn_names_granted_role_not_route_def
     assert "Route-Default-27B" not in prompt
     assert result.serving_role == "agent-gpu2"
     assert result.fcc_route == "agent"
+
+
+@pytest.mark.asyncio
+async def test_harness_runner_resolves_route_or_backend_for_the_hop_key(monkeypatch, tmp_path) -> None:
+    """Unheld: a llamacpp label keys by route; a non-pool backend by backend; no label falls
+    back to the motor's own default label for BOTH the hop key and the route-default probe."""
+    env_file = tmp_path / "fcc.env"
+    env_file.write_text("MODEL_SONNET=llamacpp/harness\nMODEL_HAIKU=nvidia_nim/z-ai/glm-5.2\n")
+    monkeypatch.setenv("HARNESS_FCC_ENV_PATH", str(env_file))
+
+    async def _runner(**_: Any) -> AsyncIterator[dict[str, Any]]:
+        yield {"type": "final", "llm_response": "answer", "metadata": {"exit_code": 0}}
+
+    def _req(label):
+        return HarnessRunRequestV1(correlation_id="c-route", thought_event=make_thought(), user_message="hi",
+                                   permissions=ContextExecPermissionV1(), answer_contract=AnswerContract(),
+                                   fcc_model_label=label)
+
+    probe = AsyncMock(return_value=None)
+    unlabeled = await HarnessRunner(AsyncMock(), fcc_runner=_runner, served_model_probe=probe).run(_req(None))
+    assert (unlabeled.fcc_route, unlabeled.fcc_backend) == ("harness", None)
+    probe.assert_awaited_once_with("MODEL_SONNET", pool_state=None)
+    haiku = await HarnessRunner(AsyncMock(), fcc_runner=_runner, served_model_probe=probe).run(_req("MODEL_HAIKU"))
+    assert (haiku.fcc_route, haiku.fcc_backend) == (None, "nvidia-nim")
 
 
 @pytest.mark.asyncio
@@ -707,6 +731,18 @@ async def _mock_fcc_runner_fetch_then_error_with_partial(**_: Any) -> AsyncItera
             },
         },
     }
+    # The real motor only ever carries text in `llm_response` that it already
+    # streamed as an assistant step (fcc_motor.run_fcc_turn's `accumulated`).
+    yield {
+        "type": "step",
+        "step": {
+            "type": "assistant",
+            "raw": {
+                "type": "assistant",
+                "message": {"content": [{"type": "text", "text": "partial text salvaged before the timeout"}]},
+            },
+        },
+    }
     yield {
         "type": "error",
         "llm_response": "partial text salvaged before the timeout",
@@ -969,3 +1005,72 @@ def test_the_run_schema_carries_the_leg_and_defaults_to_absent() -> None:
         compliance_verdict="refused", grounding_status="invalid_request",
     )
     assert refused.fcc_elapsed_sec is None
+
+
+@pytest.mark.asyncio
+async def test_unheld_pool_turn_reads_pool_state_once_and_shares_it_with_the_motor() -> None:
+    """GPU pool stage 6.3: one pool-state read per turn feeds both the prompt's route-default line
+    and the motor's window (both used to be separate GET /routes reads)."""
+    captured_kwargs: dict[str, Any] = {}
+
+    async def _capturing_fcc_runner(**kwargs: Any) -> AsyncIterator[dict[str, Any]]:
+        captured_kwargs.update(kwargs)
+        yield {"type": "final", "llm_response": "answer", "metadata": {"exit_code": 0}}
+
+    state = {"roles": [], "cards": []}
+    pool_probe = AsyncMock(return_value=state)
+    route_probe = AsyncMock(return_value="Route-Default-27B.gguf")
+    request = HarnessRunRequestV1(
+        correlation_id="c-unheld-pool",
+        thought_event=make_thought(),
+        user_message="hello",
+        permissions=ContextExecPermissionV1(),
+        answer_contract=AnswerContract(),
+        fcc_model_label="llamacpp/agent",
+    )
+    await HarnessRunner(AsyncMock(), fcc_runner=_capturing_fcc_runner, served_model_probe=route_probe,
+                        pool_state_probe=pool_probe).run(request)
+    pool_probe.assert_awaited_once()
+    route_probe.assert_awaited_once_with("llamacpp/agent", pool_state=state)
+    assert captured_kwargs["pool_state"] is state
+    assert "Default backend model for route agent: Route-Default-27B.gguf" in captured_kwargs["prompt"]
+
+
+@pytest.mark.asyncio
+async def test_pool_unreachable_unheld_turn_states_no_model_and_passes_no_state() -> None:
+    captured_kwargs: dict[str, Any] = {}
+
+    async def _capturing_fcc_runner(**kwargs: Any) -> AsyncIterator[dict[str, Any]]:
+        captured_kwargs.update(kwargs)
+        yield {"type": "final", "llm_response": "answer", "metadata": {"exit_code": 0}}
+
+    request = HarnessRunRequestV1(
+        correlation_id="c-unheld-pool-down",
+        thought_event=make_thought(),
+        user_message="hello",
+        permissions=ContextExecPermissionV1(),
+        answer_contract=AnswerContract(),
+        fcc_model_label="llamacpp/agent",
+    )
+    result = await HarnessRunner(AsyncMock(), fcc_runner=_capturing_fcc_runner,
+                                 pool_state_probe=AsyncMock(return_value=None)).run(request)
+    assert result.compliance_verdict == "completed"
+    assert "pool_state" not in captured_kwargs
+    assert "Backend model" not in captured_kwargs["prompt"]
+    assert "Default backend model" not in captured_kwargs["prompt"]
+
+
+@pytest.mark.asyncio
+async def test_default_pool_state_probe_asks_for_the_pool_config() -> None:
+    """The route view needs the pool's route/class table; the default probe must request it."""
+    from unittest.mock import patch
+
+    seen: dict[str, Any] = {}
+
+    async def _fetch(bus, **kw):
+        seen.update(kw)
+        return None
+
+    with patch("orion.harness.runner.fetch_pool_state", _fetch):
+        await HarnessRunner(AsyncMock())._read_pool_state()
+    assert seen["include_config"] is True

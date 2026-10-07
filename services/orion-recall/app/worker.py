@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import functools
 import logging
 import re
+import threading
 import time
 from typing import Any, Dict, List, Optional, Tuple
 from uuid import uuid4
@@ -237,11 +239,20 @@ def _extract_entities(text: str) -> List[str]:
     ("Tell" in "Tell me about...") -- a separate, disclosed, deliberately
     deferred concern (services/orion-recall/README.md's entity-relatedness-
     boost section), not something this fix attempts to solve."""
-    ents = set()
-    ents.update(re.findall(r"[A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+)?", text))
-    ents.update(re.findall(r"[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}", text, flags=re.I))
-    ents.update(re.findall(r"[A-Za-z0-9_]+\.[A-Za-z0-9_.]+", text))
-    return [e.strip() for e in ents if e.strip()]
+    # Deterministic order (2026-09-29): results come back in order of first
+    # appearance in the text. This used to be a set(), so every caller that
+    # sliced it ("first 3 entities") got an arbitrary, restart-dependent pick.
+    first_pos: Dict[str, int] = {}
+    for pattern, flags in (
+        (r"[A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+)?", 0),
+        (r"[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}", re.I),
+        (r"[A-Za-z0-9_]+\.[A-Za-z0-9_.]+", 0),
+    ):
+        for m in re.finditer(pattern, text or "", flags=flags):
+            ent = m.group(0).strip()
+            if ent and (ent not in first_pos or m.start() < first_pos[ent]):
+                first_pos[ent] = m.start()
+    return sorted(first_pos, key=lambda e: (first_pos[e], e))
 
 
 def _extract_keywords(text: str, *, max_keywords: int = 6) -> List[str]:
@@ -261,11 +272,19 @@ def _extract_keywords(text: str, *, max_keywords: int = 6) -> List[str]:
 def _anchor_tokens(text: str, *, max_tokens: int = 3) -> List[str]:
     if not text:
         return []
-    tokens = re.findall(r"\\b[A-Za-z][A-Za-z0-9]*\\d+\\b", text)
+    # Was r"\\b...\\d+\\b" (a literal backslash inside an r-string), so it
+    # could only match text containing backslashes: the anchor rail was dead
+    # (_anchor_tokens("p4 v100 gpu1") == []). Fixed 2026-09-29.
+    # UUIDs first: \b treats their hyphens as word boundaries, so a run id
+    # like 1765808d-3a64-4be2-be03-... would otherwise yield "be03" as an
+    # "anchor" (seen on 12 of 80 live recall_telemetry queries once this
+    # regex was fixed). Pure-hex ids of 8+ chars (trace ids) are dropped too.
+    text = re.sub(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}", " ", text)
+    tokens = re.findall(r"\b[A-Za-z][A-Za-z0-9]*\d+\b", text)
     seen = set()
     anchors: List[str] = []
     for token in tokens:
-        if token in seen:
+        if token in seen or (len(token) >= 8 and re.fullmatch(r"[0-9a-fA-F]+", token)):
             continue
         seen.add(token)
         anchors.append(token)
@@ -274,13 +293,29 @@ def _anchor_tokens(text: str, *, max_tokens: int = 3) -> List[str]:
     return anchors
 
 
+# The browse shortcut is for a short, direct request ("show recent
+# memories"). Its regex was dead until 2026-09-29 (same literal-backslash bug
+# as _anchor_tokens). Once live, an unbounded check would send any long
+# prompt that merely mentions "recall ... context" down the recent-only
+# browse path and skip retrieval entirely, so it only applies to short text.
+_MEMORY_BROWSE_MAX_CHARS = 160
+
+
 def _is_memory_browse(text: str) -> bool:
-    if not text:
+    """Recent-only browse shortcut. Off by default
+    (RECALL_BROWSE_SHORTCUT_ENABLED=false keeps main's pre-2026-09-29
+    behavior, when this regex could never match). When on, the object of the
+    verb must be memory/memories within a few words ("show recent memories",
+    "list my memories"): ordinary questions like "show me the context around
+    the gpu1 crash" or "list the recent errors" must keep full retrieval
+    (code review, PR #2416)."""
+    if not bool(getattr(settings, "RECALL_BROWSE_SHORTCUT_ENABLED", False)):
+        return False
+    if not text or len(text) > _MEMORY_BROWSE_MAX_CHARS:
         return False
     lowered = text.lower()
     return bool(
-        re.search(r"\\b(fetch|show|list|browse|recall)\\b", lowered)
-        and re.search(r"\\b(memory|memories|recent|context)\\b", lowered)
+        re.search(r"\b(fetch|show|list|browse|recall)\b(?:\s+[a-z']+){0,3}?\s+(memory|memories)\b", lowered)
     )
 
 
@@ -400,6 +435,167 @@ def _derive_chat_general_query(fragment: str, *, verb: str | None, profile_name:
     }
 
 
+def _max_sub_queries() -> int:
+    """RECALL_MAX_SUB_QUERIES, where 0 means uncapped. Deliberately not
+    `x or DEFAULT`: that would turn a configured 0 (the rollback lever) back
+    into the default cap."""
+    raw = getattr(settings, "RECALL_MAX_SUB_QUERIES", None)
+    if raw is None:
+        return 4
+    try:
+        return max(0, int(raw))
+    except Exception:
+        return 4
+
+
+def _max_query_chars() -> int:
+    raw = getattr(settings, "RECALL_MAX_QUERY_CHARS", None)
+    if raw is None:
+        return 600
+    try:
+        return int(raw)
+    except Exception:
+        return 600
+
+
+def _condense_query(text: str, *, max_chars: int) -> str:
+    """Deterministic condensation of an over-long fragment, for every verb.
+
+    Generalizes _derive_chat_general_query's clause scoring (which only runs
+    for chat_general): strip a trailing recall instruction, split into
+    clauses, drop social filler, rank by _informative_score (ties broken by
+    position), then take whole clauses best-first until ``max_chars`` is
+    full. A single clause longer than the budget is hard-cut. No LLM, same
+    input -> same output.
+    """
+    trimmed, _tail = _strip_recall_instruction_tail(str(text or ""))
+    # Keep each clause's terminator so questions can be told apart.
+    raw_clauses = [c.strip() for c in re.findall(r"[^.!?\n]+[.!?]?", trimmed) if c.strip(" .!?\t")]
+    is_question = [c.endswith("?") for c in raw_clauses]
+    clauses = [c.rstrip(".!?").strip() for c in raw_clauses]
+    substantive = [(i, c) for i, c in enumerate(clauses) if not _social_clause(c)] or list(enumerate(clauses))
+    # Question clauses first: in a self-initiated prompt the question is
+    # what the turn is about (the 30,663-char self-inquiry prompt's standing
+    # question, not its most word-dense instruction). Then informative
+    # score, then position. Prompts with no questions rank exactly as
+    # _derive_chat_general_query's scoring would.
+    ranked = sorted(substantive, key=lambda ic: (not is_question[ic[0]], -_informative_score(ic[1]), ic[0]))
+    picked: List[str] = []
+    used = 0
+    for _i, clause in ranked:
+        extra = len(clause) + (2 if picked else 0)
+        if used + extra > max_chars:
+            if not picked:
+                cut = clause[:max_chars].strip()
+                if cut:
+                    picked.append(cut)
+                    used = len(cut)
+            continue
+        picked.append(clause)
+        used += extra
+    condensed = ". ".join(picked).strip()
+    # Never empty for non-empty input: fall back to the raw head.
+    return condensed[:max_chars].strip() or str(text or "")[:max_chars].strip() or str(text or "")[:max_chars]
+
+
+def _intake_query(q: RecallQueryV1, *, profile_name: str) -> Dict[str, Any]:
+    """Pick the text recall actually searches (design step 1, intake guard).
+
+    - ``caller``: RecallQueryV1.retrieval_query is set -> search it. The
+      fragment stays the turn text (self-hit exclusion, provenance).
+    - ``condensed``: no retrieval_query and the (chat_general-targeted)
+      fragment exceeds RECALL_MAX_QUERY_CHARS -> _condense_query.
+    - ``fragment``: otherwise, the fragment as today.
+    """
+    retrieval_query = str(getattr(q, "retrieval_query", None) or "").strip()
+    if retrieval_query:
+        # Classification only (turn_type feeds fusion's substantive-query
+        # salience); the caller's text is searched as given.
+        targeting = _derive_chat_general_query(retrieval_query, verb=q.verb, profile_name=profile_name)
+        return {"search_text": retrieval_query, "source": "caller", "query_targeting": targeting}
+
+    targeting = _derive_chat_general_query(q.fragment, verb=q.verb, profile_name=profile_name)
+    text = str(targeting.get("query_fragment") or q.fragment or "")
+    max_chars = _max_query_chars()
+    if not text.strip():
+        # Whitespace only: nothing to search for, and nothing to condense.
+        return {"search_text": "", "source": "fragment", "query_targeting": targeting}
+    if max_chars > 0 and len(text) > max_chars:
+        condensed = _condense_query(text, max_chars=max_chars)
+        targeting = {**targeting, "query_fragment": condensed, "query_changed": True, "condensed_from_chars": len(text)}
+        return {"search_text": condensed, "source": "condensed", "query_targeting": targeting}
+    return {"search_text": text, "source": "fragment", "query_targeting": targeting}
+
+
+# Capitalized words that start sentences or address the reader, not things a
+# memory is "about". Small and explicit on purpose (tested in
+# tests/test_recall_bounded_retrieval.py): the 30,663-char live prompt turned
+# "No", "It", "The", "You" into sub-queries. Not a taxonomy -- anything not
+# listed here still has to win on specificity to survive the cap.
+_EXPANSION_STOPWORDS = frozenset(
+    {
+        "a", "an", "the", "and", "or", "but", "if", "then", "so", "because", "also",
+        "no", "not", "yes", "ok", "okay",
+        "i", "me", "my", "we", "our", "us", "you", "your", "he", "she", "it", "its", "they", "them", "their",
+        "this", "that", "these", "those", "there", "here",
+        "what", "when", "where", "why", "how", "who", "which", "whether",
+        "is", "are", "was", "were", "be", "been", "do", "does", "did", "have", "has", "had",
+        "can", "could", "will", "would", "should", "may", "might", "must",
+        "in", "on", "at", "to", "of", "for", "from", "with", "by", "as", "about", "into", "after", "before",
+        "each", "every", "all", "any", "some", "one", "only", "just", "now", "never", "always",
+        "please", "note", "use", "return", "write", "keep", "make", "tell", "let", "give",
+        "hi", "hey", "hello", "thanks",
+    }
+)
+
+
+def _clean_entity(ent: str) -> str:
+    """Drop leading stopword words ("The Orion" -> "Orion"); '' if nothing is left."""
+    words = ent.split()
+    while words and words[0].lower() in _EXPANSION_STOPWORDS:
+        words = words[1:]
+    if not words:
+        return ""
+    if len(words) == 1 and words[0].lower() in _EXPANSION_STOPWORDS:
+        return ""
+    return " ".join(words)
+
+
+def _entity_specificity_key(ent: str, first_pos: int) -> Tuple[int, int, int]:
+    """Sort key, most specific first. Identifier-shaped (uuid, dotted name,
+    contains a digit) beats a multi-word proper name beats a single word;
+    then longer beats shorter; then earlier in the text. Fully deterministic."""
+    if re.fullmatch(r"[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}", ent, flags=re.I):
+        kind = 3
+    elif "." in ent or any(ch.isdigit() for ch in ent):
+        kind = 2
+    elif " " in ent:
+        kind = 1
+    else:
+        kind = 0
+    return (-kind, -len(ent), first_pos)
+
+
+def _ranked_entities(text: str, *, limit: int) -> List[str]:
+    """Bounded, stopword-filtered, specificity-ranked entities.
+
+    ``limit`` 0 = the pre-2026-09-29 behavior: every _extract_entities hit,
+    unfiltered, in first-appearance order (rollback lever)."""
+    raw = _extract_entities(text)
+    if limit <= 0:
+        return raw
+    seen: Dict[str, int] = {}
+    cleaned: List[Tuple[str, int]] = []
+    for pos, ent in enumerate(raw):
+        c = _clean_entity(ent)
+        if not c or len(c) < 2 or c.lower() in seen:
+            continue
+        seen[c.lower()] = pos
+        cleaned.append((c, pos))
+    cleaned.sort(key=lambda cp: _entity_specificity_key(cp[0], cp[1]))
+    return [c for c, _ in cleaned[:limit]]
+
+
 def _normalize_text(value: Any) -> str:
     text = str(value or "").strip().lower()
     return " ".join(text.split())
@@ -511,19 +707,40 @@ def _extract_anchor_terms(rdf_items: List[Dict[str, Any]], *, max_items: int = 1
     return terms[:max_items]
 
 
-def _expand_query(fragment: str, *, verb: str | None, intent: str | None, enable: bool) -> List[str]:
+def _expand_query(
+    fragment: str,
+    *,
+    verb: str | None,
+    intent: str | None,
+    enable: bool,
+    max_sub_queries: int | None = None,
+    entities: List[str] | None = None,
+) -> List[str]:
+    """Sub-queries the retrievers run over: the search text, the verb/intent
+    hints, then extracted entities.
+
+    Bounded (2026-09-29): with K = RECALL_MAX_SUB_QUERIES > 0 the result has
+    at most K + 2 entries, entities are stopword-filtered and ranked most
+    specific first, and duplicates (case-insensitive) collapse. A 30,663-char
+    prompt used to yield 268 sub-queries here. K = 0 restores the old,
+    uncapped fan-out."""
     if not enable:
         return [fragment]
-    signals = [fragment]
-    hints = []
-    if verb:
-        hints.append(verb)
-    if intent:
-        hints.append(intent)
-    entities = _extract_entities(fragment)
-    signals.extend(hints)
-    signals.extend(entities)
-    return [s for s in signals if s]
+    k = _max_sub_queries() if max_sub_queries is None else max(0, int(max_sub_queries))
+    hints = [h for h in (verb, intent) if h]
+    if entities is None:
+        entities = _ranked_entities(fragment, limit=k)
+    if k <= 0:
+        return [s for s in [fragment, *hints, *entities] if s]
+    signals: List[str] = []
+    seen: set[str] = set()
+    for sig in [fragment, *hints, *entities]:
+        key = str(sig or "").strip().lower()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        signals.append(sig)
+    return signals[: k + 2]
 
 
 _ENTITY_RELATEDNESS_MAX_QUERY_ENTITIES = 3
@@ -557,10 +774,20 @@ _ENTITY_RELATEDNESS_MIN_INJECTION_SCORE = 0.15
 _ENTITY_RELATEDNESS_UNKNOWN_DEGREE_DISCOUNT = 0.1
 
 
+def _boost_query_entities(query_text: str) -> List[str]:
+    """Entities the boost targets: the specificity-ranked list, max(K, 3)
+    long (the boost fans out on its first 3), or the raw list when K=0.
+    Both process_recall and the standalone fallback call this, so they
+    always agree on the count."""
+    k = _max_sub_queries()
+    return _ranked_entities(query_text, limit=(max(k, _ENTITY_RELATEDNESS_MAX_QUERY_ENTITIES) if k > 0 else 0))
+
+
 async def _compute_entity_relatedness_boost_map(
     *,
     query_text: str,
     candidates: List[Dict[str, Any]],
+    query_entities: List[str] | None = None,
 ) -> Tuple[Dict[str, float], List[Dict[str, Any]]]:
     """Phase 2 of entity-graph-reasoning (docs/superpowers/specs/
     2026-07-19-recall-entity-graph-reasoning-arc.md). Best-effort: any
@@ -615,7 +842,14 @@ async def _compute_entity_relatedness_boost_map(
         return {}, []
 
     try:
-        query_entities = list(dict.fromkeys(e.lower() for e in _extract_entities(query_text)))
+        # 2026-09-29: the entities come ranked most-specific-first
+        # (_ranked_entities) and bounded by RECALL_MAX_SUB_QUERIES, so the
+        # "first 3" below are the 3 most specific, deterministically -- not
+        # whatever order a set() happened to iterate in, and not all 266
+        # capitalized words of a 30k-char prompt as degree/mention targets.
+        if query_entities is None:
+            query_entities = _boost_query_entities(query_text)
+        query_entities = list(dict.fromkeys(str(e).lower() for e in query_entities if str(e).strip()))
         if not query_entities:
             return {}, []
 
@@ -974,10 +1208,29 @@ async def _fetch_anchor_candidates(
     profile: Dict[str, Any],
     diagnostic: bool = False,
     exclusion: Dict[str, Any] | None = None,
+    sink: List[Dict[str, Any]] | None = None,
+    sink_key: Any = "anchor",
 ) -> Tuple[List[Dict[str, Any]], Dict[str, int]]:
+    """Exact-token anchor rail. Each sub-fetch appends its result to ``sink``
+    as it lands (same contract as _query_backends' units), so a deadline
+    cancel keeps the SQL half even if the RDF half is still running."""
     tokens = _anchor_tokens(query_text)
     if not tokens:
         return [], {}
+
+    def _to_sink(idx: int, name: str, cands: List[Dict[str, Any]], unit_counts: Dict[str, int], started: float) -> None:
+        if sink is not None:
+            sink.append(
+                {
+                    "key": sink_key,
+                    "idx": idx,
+                    "name": name,
+                    "kind": _UNIT_RETRIEVER,
+                    "candidates": list(cands),
+                    "counts": dict(unit_counts),
+                    "elapsed_ms": int((time.perf_counter() - started) * 1000),
+                }
+            )
 
     candidates: List[Dict[str, Any]] = []
     counts: Dict[str, int] = {}
@@ -985,6 +1238,7 @@ async def _fetch_anchor_candidates(
     exclusion = exclusion or {}
     since_minutes = int(profile.get("sql_since_minutes", settings.RECALL_SQL_SINCE_MINUTES))
 
+    sql_started = time.perf_counter()
     try:
         sql_items = await fetch_exact_fragments(
             tokens=tokens,
@@ -1012,12 +1266,18 @@ async def _fetch_anchor_candidates(
             )
     except Exception as exc:
         logger.debug(f"sql anchor fetch skipped: {exc}")
-
     counts["vector_anchor"] = 0
+    _to_sink(0, "sql_timeline_anchor", candidates, counts, sql_started)
 
     if _rdf_enabled(profile) and settings.RECALL_RDF_ENDPOINT_URL:
+        rdf_started = time.perf_counter()
+        rdf_cands: List[Dict[str, Any]] = []
         try:
-            rdf = fetch_rdf_chatturn_exact_matches(
+            # Synchronous requests.post (up to 5s): off the event loop, or it
+            # stalls every concurrent backend unit, the deadline timer and
+            # every other in-flight recall (code review, PR #2416).
+            rdf = await asyncio.to_thread(
+                fetch_rdf_chatturn_exact_matches,
                 tokens=tokens,
                 session_id=session_id,
                 max_items=limit,
@@ -1027,9 +1287,11 @@ async def _fetch_anchor_candidates(
                 item = dict(item)
                 item["tags"] = list(item.get("tags") or []) + ["anchor_exact"]
                 item["score"] = max(0.9, float(item.get("score") or 0.0))
-                candidates.append(item)
+                rdf_cands.append(item)
         except Exception as exc:
             logger.debug(f"rdf anchor fetch skipped: {exc}")
+        candidates.extend(rdf_cands)
+        _to_sink(1, "rdf_chat_anchor", rdf_cands, {"rdf_chat_anchor": len(rdf_cands)}, rdf_started)
 
     if diagnostic:
         logger.info(
@@ -1058,6 +1320,29 @@ def _cards_fetch_enabled(profile: Dict[str, Any]) -> bool:
     return topk > 0 or wt > 0.0
 
 
+# Per-recall concurrency bound for backend units and the anchor rail (all
+# sub-queries share it). Several units each open their own Postgres
+# connection, so this is also the per-recall connection ceiling for the
+# fetch stage. RECALL_FETCH_CONCURRENCY, default 4.
+_FETCH_CONCURRENCY_DEFAULT = 4
+
+
+def _fetch_concurrency() -> int:
+    raw = getattr(settings, "RECALL_FETCH_CONCURRENCY", None)
+    if raw is None:
+        return _FETCH_CONCURRENCY_DEFAULT
+    try:
+        return max(1, int(raw))
+    except Exception:
+        return _FETCH_CONCURRENCY_DEFAULT
+
+# Unit kinds. A "feed" answers "what is going on" and ignores the query text,
+# so process_recall runs it once per recall; a "retriever" answers "what
+# matches X" and runs once per sub-query.
+_UNIT_FEED = "feed"
+_UNIT_RETRIEVER = "retriever"
+
+
 async def _query_backends(
     fragment: str,
     profile: Dict[str, Any],
@@ -1069,10 +1354,120 @@ async def _query_backends(
     exclusion: Dict[str, Any] | None = None,
     lane: str | None = None,
     include_cards: bool = False,
+    include_feeds: bool = True,
+    include_retrievers: bool = True,
+    falkor_chat_since_minutes: int | None = None,
+    allow_empty_query_feeds: bool = False,
+    semaphore: asyncio.Semaphore | None = None,
+    sink: List[Dict[str, Any]] | None = None,
+    sink_key: Any = None,
+) -> Tuple[List[Dict[str, Any]], Dict[str, int]]:
+    """Fetch candidates from every enabled backend for one query text.
+
+    Split 2026-09-29 (bounded-retrieval design) into ordered units, each
+    tagged feed or retriever:
+
+    - feeds (query-independent): bus_synaptic_anomaly, falkor_chat (recency
+      only), sql_chat pairs/msgs, sql_timeline recent + related_by_entities
+      (``entities`` is the recall-wide bounded list, not this sub-query).
+    - retrievers (use ``fragment``): falkor_neighborhood, rdf_chat, rdf,
+      cards (only with ``include_cards``), graph_compression.
+
+    ``include_feeds``/``include_retrievers`` let process_recall run the feeds
+    once per recall and the retrievers once per sub-query. With both True
+    (the default) this is the old single-signal behavior: same gates, same
+    backend order, same candidate order. Units run concurrently under
+    ``semaphore``; each unit fails open on its own, and each completed unit
+    is appended to ``sink`` (tagged ``sink_key``) as it lands, so a caller
+    that cancels this coroutine at a deadline still keeps what finished.
+    """
+    exclusion = exclusion or {}
+    units = _backend_units(
+        fragment,
+        profile,
+        session_id=session_id,
+        node_id=node_id,
+        entities=entities,
+        diagnostic=diagnostic,
+        exclusion=exclusion,
+        lane=lane,
+        include_cards=include_cards,
+        include_feeds=include_feeds,
+        include_retrievers=include_retrievers,
+        falkor_chat_since_minutes=falkor_chat_since_minutes,
+        allow_empty_query_feeds=allow_empty_query_feeds,
+    )
+    sem = semaphore or asyncio.Semaphore(_fetch_concurrency())
+    results: List[Tuple[List[Dict[str, Any]], Dict[str, int]] | None] = [None] * len(units)
+
+    async def _run(idx: int, name: str, kind: str, factory) -> None:
+        async with sem:
+            started = time.perf_counter()
+            try:
+                cands, counts = await factory()
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # each unit already fails open; belt and braces
+                logger.debug("recall backend unit %s skipped: %s", name, exc)
+                cands, counts = [], {}
+            results[idx] = (cands, counts)
+            if sink is not None:
+                sink.append(
+                    {
+                        "key": sink_key,
+                        "idx": idx,
+                        "name": name,
+                        "kind": kind,
+                        "candidates": cands,
+                        "counts": counts,
+                        "elapsed_ms": int((time.perf_counter() - started) * 1000),
+                    }
+                )
+
+    await asyncio.gather(*(_run(i, n, k, f) for i, (n, k, f) in enumerate(units)))
+    return _merge_unit_results(results, include_retrievers=include_retrievers, profile=profile)
+
+
+def _merge_unit_results(
+    results: List[Tuple[List[Dict[str, Any]], Dict[str, int]] | None],
+    *,
+    include_retrievers: bool,
+    profile: Dict[str, Any],
 ) -> Tuple[List[Dict[str, Any]], Dict[str, int]]:
     candidates: List[Dict[str, Any]] = []
     backend_counts: Dict[str, int] = {}
-    exclusion = exclusion or {}
+    for res in results:
+        if res is None:
+            continue
+        cands, counts = res
+        candidates.extend(cands)
+        for k, v in counts.items():
+            backend_counts[k] = backend_counts.get(k, 0) + v
+    if include_retrievers:
+        backend_counts.setdefault("vector", 0)
+        backend_counts.setdefault("graph_compression", 0)
+    return candidates, backend_counts
+
+
+def _backend_units(
+    fragment: str,
+    profile: Dict[str, Any],
+    *,
+    session_id: str | None,
+    node_id: str | None,
+    entities: List[str],
+    diagnostic: bool,
+    exclusion: Dict[str, Any],
+    lane: str | None,
+    include_cards: bool,
+    include_feeds: bool,
+    include_retrievers: bool,
+    falkor_chat_since_minutes: int | None,
+    allow_empty_query_feeds: bool,
+) -> List[Tuple[str, str, Any]]:
+    """Ordered (name, kind, coroutine-factory) list. Order matches the
+    pre-split sequential code, so merged candidate order is unchanged."""
+    units: List[Tuple[str, str, Any]] = []
 
     rdf_enabled = _rdf_enabled(profile) and bool(settings.RECALL_RDF_ENDPOINT_URL)
     rdf_top_k = int(profile.get("rdf_top_k", 0))
@@ -1107,139 +1502,162 @@ async def _query_backends(
         and bool(profile.get("enable_falkor_neighborhood", True))
         and rdf_top_k > 0
     )
-    if falkor_neighborhood_enabled:
-        try:
-            falkor_neighborhood = await fetch_falkor_neighborhood_fragments(
-                query_text=fragment,
-                max_items=rdf_top_k,
-            )
-        except Exception as exc:
-            logger.debug(f"falkor neighborhood fetch skipped: {exc}")
-            falkor_neighborhood = []
-        backend_counts["falkor_neighborhood"] = len(falkor_neighborhood)
-        candidates.extend(falkor_neighborhood)
+
+    if include_retrievers and falkor_neighborhood_enabled:
+
+        async def _falkor_neighborhood():
+            try:
+                items = await fetch_falkor_neighborhood_fragments(query_text=fragment, max_items=rdf_top_k)
+            except Exception as exc:
+                logger.debug(f"falkor neighborhood fetch skipped: {exc}")
+                items = []
+            return list(items), {"falkor_neighborhood": len(items)}
+
+        units.append(("falkor_neighborhood", _UNIT_RETRIEVER, _falkor_neighborhood))
 
     # Idea 4 of the bus synaptic graph arc (docs/superpowers/specs/2026-07-24-
     # bus-synaptic-graph-reasoning-consumer-design.md). Deliberately NOT gated
     # on query_text/fragment relevance like falkor_neighborhood above -- this
     # checks Orion's own live transport-layer state, not something "about"
     # what the user said, so it runs unconditionally whenever the flag and
-    # profile allow it (recall runs on effectively every chat turn per this
-    # arc's own confirmed live behavior).
+    # profile allow it. A context feed: once per recall, not per sub-query
+    # (it used to run 268 times for one 30k-char query).
     bus_synaptic_anomaly_enabled = bool(settings.RECALL_BUS_SYNAPTIC_ANOMALY_IN_CHAT) and bool(
         profile.get("enable_bus_synaptic_anomaly", True)
     )
-    if bus_synaptic_anomaly_enabled:
-        try:
-            bus_synaptic_anomalies = await fetch_bus_synaptic_anomaly_fragments(
-                max_edge_age_sec=float(settings.RECALL_BUS_SYNAPTIC_ANOMALY_MAX_AGE_SEC),
-            )
-        except Exception as exc:
-            logger.debug(f"bus synaptic anomaly fetch skipped: {exc}")
-            bus_synaptic_anomalies = []
-        backend_counts["bus_synaptic_anomaly"] = len(bus_synaptic_anomalies)
-        candidates.extend(bus_synaptic_anomalies)
+    if include_feeds and bus_synaptic_anomaly_enabled:
 
-    if falkor_chat_enabled:
+        async def _bus_synaptic_anomaly():
+            try:
+                items = await fetch_bus_synaptic_anomaly_fragments(
+                    max_edge_age_sec=float(settings.RECALL_BUS_SYNAPTIC_ANOMALY_MAX_AGE_SEC),
+                )
+            except Exception as exc:
+                logger.debug(f"bus synaptic anomaly fetch skipped: {exc}")
+                items = []
+            return list(items), {"bus_synaptic_anomaly": len(items)}
+
+        units.append(("bus_synaptic_anomaly", _UNIT_FEED, _bus_synaptic_anomaly))
+
+    if include_feeds and falkor_chat_enabled:
         # Swap, not additive: this replaces the RDF chatturn fetch below,
         # not a merge -- running both would double up the same turns in
         # fusion's candidate list (see settings.py's RECALL_FALKOR_IN_CHAT
         # comment for why this differs from RECALL_GRAPHITI_IN_CHAT's
-        # additive pattern).
-        try:
-            falkor_chat = await fetch_falkor_chatturn_fragments(
-                query_text=fragment,
-                session_id=session_id,
-                max_items=max(rdf_top_k, 6),
-            )
-        except Exception as exc:
-            logger.debug(f"falkor chat fetch skipped: {exc}")
-            falkor_chat = []
-        backend_counts["falkor_chat"] = len(falkor_chat)
-        candidates.extend(falkor_chat)
+        # additive pattern). Recency-only (no query filter), so a feed.
 
-    if rdf_enabled:
-        try:
-            if not falkor_chat_enabled:
-                # 0) Pull raw ChatTurns (prompt/response) from GRAPH <orion:chat>.
-                # Skipped when Falkor already covered this above (swap, not
-                # additive -- see the falkor_chat_enabled block).
-                rdf_chat: List[Dict[str, Any]] = []
-                rdf_chat = fetch_rdf_chatturn_fragments(
-                    query_text=fragment,
-                    session_id=session_id,
-                    max_items=max(rdf_top_k, 6),
-                )
-                backend_counts["rdf_chat"] = len(rdf_chat)
-                candidates.extend(rdf_chat)
+        async def _falkor_chat():
+            try:
+                kwargs: Dict[str, Any] = {
+                    "query_text": fragment,
+                    "session_id": session_id,
+                    "max_items": max(rdf_top_k, 6),
+                }
+                if falkor_chat_since_minutes is not None:
+                    kwargs["since_minutes"] = falkor_chat_since_minutes
+                if allow_empty_query_feeds:
+                    kwargs["allow_empty_query"] = True
+                items = await fetch_falkor_chatturn_fragments(**kwargs)
+            except Exception as exc:
+                logger.debug(f"falkor chat fetch skipped: {exc}")
+                items = []
+            return list(items), {"falkor_chat": len(items)}
 
-            if not falkor_neighborhood_enabled:
-                # Skipped when Falkor already covered this above (swap, not
-                # additive -- see the falkor_neighborhood_enabled block).
-                rdf = fetch_rdf_fragments(
-                    query_text=fragment,
-                    max_items=rdf_top_k,
-                )
-                backend_counts["rdf"] = len(rdf)
-                candidates.extend(rdf)
-        except Exception as exc:
-            logger.debug(f"rdf backend skipped: {exc}")
+        units.append(("falkor_chat", _UNIT_FEED, _falkor_chat))
 
+    if include_retrievers and rdf_enabled:
+        # The RDF adapters are synchronous (blocking HTTP); off the event
+        # loop so the recall deadline can still fire while they run.
+        if not falkor_chat_enabled:
+            # 0) Pull raw ChatTurns (prompt/response) from GRAPH <orion:chat>.
+            # Skipped when Falkor already covered this above (swap, not
+            # additive). Keyword-filtered in SPARQL, so a retriever.
 
-    backend_counts["vector"] = 0
+            async def _rdf_chat():
+                try:
+                    items = await asyncio.to_thread(
+                        fetch_rdf_chatturn_fragments,
+                        query_text=fragment,
+                        session_id=session_id,
+                        max_items=max(rdf_top_k, 6),
+                    )
+                except Exception as exc:
+                    logger.debug(f"rdf backend skipped: {exc}")
+                    return [], {}
+                return list(items), {"rdf_chat": len(items)}
 
-    if diagnostic:
+            units.append(("rdf_chat", _UNIT_RETRIEVER, _rdf_chat))
+
+        if not falkor_neighborhood_enabled:
+
+            async def _rdf():
+                try:
+                    items = await asyncio.to_thread(fetch_rdf_fragments, query_text=fragment, max_items=rdf_top_k)
+                except Exception as exc:
+                    logger.debug(f"rdf backend skipped: {exc}")
+                    return [], {}
+                return list(items), {"rdf": len(items)}
+
+            units.append(("rdf", _UNIT_RETRIEVER, _rdf))
+
+    if diagnostic and include_retrievers:
         logger.info(
-            "recall rdf_enabled=%s rdf_top_k=%s rdf_candidates=%s",
+            "recall rdf_enabled=%s rdf_top_k=%s",
             rdf_enabled,
             rdf_top_k,
-            backend_counts.get("rdf", 0),
         )
 
-    if _sql_chat_enabled_for_profile(profile):
-        try:
-            chat_pairs = await fetch_chat_history_pairs(
-                limit=int(profile.get("sql_chat_top_k", settings.RECALL_SQL_TOP_K)),
-                since_minutes=int(profile.get("sql_since_minutes", settings.RECALL_SQL_SINCE_MINUTES)),
-                exclude_text=exclusion.get("active_turn_text"),
-                exclude_ids=exclusion.get("active_turn_ids"),
-            )
-            backend_counts["sql_chat_pairs"] = len(chat_pairs)
-            for item in chat_pairs:
-                candidates.append(
-                    {
-                        "id": item.id,
-                        "source": "sql_chat",
-                        "source_ref": item.source_ref,
-                        "text": item.text,
-                        "ts": item.ts,
-                        "tags": ["sql", "chat", "pairs"],
-                        "score": 0.75,
-                    }
-                )
+    if include_feeds and _sql_chat_enabled_for_profile(profile):
 
-            chat_msgs = await fetch_chat_messages(
-                limit=int(profile.get("sql_chat_top_k", settings.RECALL_SQL_TOP_K)),
-                since_minutes=int(profile.get("sql_since_minutes", settings.RECALL_SQL_SINCE_MINUTES)),
-                exclude_text=exclusion.get("active_turn_text"),
-                exclude_ids=exclusion.get("active_turn_ids"),
-            )
-            backend_counts["sql_chat_msgs"] = len(chat_msgs)
-            for item in chat_msgs:
-                candidates.append(
-                    {
-                        "id": item.id,
-                        "source": "sql_chat",
-                        "source_ref": item.source_ref,
-                        "text": item.text,
-                        "ts": item.ts,
-                        "tags": ["sql", "chat", "messages"],
-                        "score": 0.75,
-                    }
+        async def _sql_chat():
+            cands: List[Dict[str, Any]] = []
+            counts: Dict[str, int] = {}
+            try:
+                chat_pairs = await fetch_chat_history_pairs(
+                    limit=int(profile.get("sql_chat_top_k", settings.RECALL_SQL_TOP_K)),
+                    since_minutes=int(profile.get("sql_since_minutes", settings.RECALL_SQL_SINCE_MINUTES)),
+                    exclude_text=exclusion.get("active_turn_text"),
+                    exclude_ids=exclusion.get("active_turn_ids"),
                 )
-        except Exception as exc:
-            logger.debug(f"sql chat backend skipped: {exc}")
-    elif diagnostic:
+                counts["sql_chat_pairs"] = len(chat_pairs)
+                for item in chat_pairs:
+                    cands.append(
+                        {
+                            "id": item.id,
+                            "source": "sql_chat",
+                            "source_ref": item.source_ref,
+                            "text": item.text,
+                            "ts": item.ts,
+                            "tags": ["sql", "chat", "pairs"],
+                            "score": 0.75,
+                        }
+                    )
+
+                chat_msgs = await fetch_chat_messages(
+                    limit=int(profile.get("sql_chat_top_k", settings.RECALL_SQL_TOP_K)),
+                    since_minutes=int(profile.get("sql_since_minutes", settings.RECALL_SQL_SINCE_MINUTES)),
+                    exclude_text=exclusion.get("active_turn_text"),
+                    exclude_ids=exclusion.get("active_turn_ids"),
+                )
+                counts["sql_chat_msgs"] = len(chat_msgs)
+                for item in chat_msgs:
+                    cands.append(
+                        {
+                            "id": item.id,
+                            "source": "sql_chat",
+                            "source_ref": item.source_ref,
+                            "text": item.text,
+                            "ts": item.ts,
+                            "tags": ["sql", "chat", "messages"],
+                            "score": 0.75,
+                        }
+                    )
+            except Exception as exc:
+                logger.debug(f"sql chat backend skipped: {exc}")
+            return cands, counts
+
+        units.append(("sql_chat", _UNIT_FEED, _sql_chat))
+    elif include_feeds and diagnostic:
         logger.info(
             "recall sql_chat skipped profile=%s enable_sql_chat=%s global_sql_chat_enabled=%s",
             profile.get("profile"),
@@ -1247,49 +1665,59 @@ async def _query_backends(
             settings.RECALL_ENABLE_SQL_CHAT,
         )
 
-    if _sql_timeline_enabled_for_profile(profile):
-        try:
+    if include_feeds and _sql_timeline_enabled_for_profile(profile):
 
-            since_minutes_effective = int(profile.get("sql_since_minutes", settings.RECALL_SQL_SINCE_MINUTES))
-            since_hours_effective = int(profile.get("sql_since_hours", max(1, since_minutes_effective // 60)))
-            sql_top_k = int(profile.get("sql_top_k", settings.RECALL_SQL_TOP_K))
+        async def _sql_timeline():
+            cands: List[Dict[str, Any]] = []
+            counts: Dict[str, int] = {}
+            try:
+                since_minutes_effective = int(profile.get("sql_since_minutes", settings.RECALL_SQL_SINCE_MINUTES))
+                since_hours_effective = int(profile.get("sql_since_hours", max(1, since_minutes_effective // 60)))
+                sql_top_k = int(profile.get("sql_top_k", settings.RECALL_SQL_TOP_K))
 
-            recent_items = await fetch_recent_fragments(
-                session_id,
-                node_id,
-                since_minutes_effective,
-                sql_top_k,
-                exclude_ids=exclusion.get("active_turn_ids"),
-                exclude_text=exclusion.get("active_turn_text"),
-            )
-            related_items = await fetch_related_by_entities(
-                entities,
-                since_hours_effective,
-                sql_top_k,
-                session_id=session_id,
-                exclude_ids=exclusion.get("active_turn_ids"),
-                exclude_text=exclusion.get("active_turn_text"),
-            )
-
-            recent_items = list(recent_items) + list(related_items)
-            backend_counts["sql_timeline"] = len(recent_items)
-            for item in recent_items:
-                candidates.append(
-                    {
-                        "id": item.id,
-                        "source": "sql_timeline",
-                        "source_ref": item.source_ref,
-                        "text": item.text,
-                        "ts": item.ts,
-                        "session_id": item.session_id,
-                        "tags": item.tags,
-                        "turn_effect_delta": item.turn_effect_delta,
-                        "score": 0.7,
-                    }
+                recent_items = await fetch_recent_fragments(
+                    session_id,
+                    node_id,
+                    since_minutes_effective,
+                    sql_top_k,
+                    exclude_ids=exclusion.get("active_turn_ids"),
+                    exclude_text=exclusion.get("active_turn_text"),
                 )
-        except Exception as exc:
-            logger.debug(f"sql timeline backend skipped: {exc}")
-    elif diagnostic:
+                # ``entities`` is the recall-wide bounded list (at most
+                # RECALL_MAX_SUB_QUERIES ILIKE patterns), computed once --
+                # it used to be every capitalized word of the full query,
+                # recomputed and re-queried once per sub-query.
+                related_items = await fetch_related_by_entities(
+                    entities,
+                    since_hours_effective,
+                    sql_top_k,
+                    session_id=session_id,
+                    exclude_ids=exclusion.get("active_turn_ids"),
+                    exclude_text=exclusion.get("active_turn_text"),
+                )
+
+                all_items = list(recent_items) + list(related_items)
+                counts["sql_timeline"] = len(all_items)
+                for item in all_items:
+                    cands.append(
+                        {
+                            "id": item.id,
+                            "source": "sql_timeline",
+                            "source_ref": item.source_ref,
+                            "text": item.text,
+                            "ts": item.ts,
+                            "session_id": item.session_id,
+                            "tags": item.tags,
+                            "turn_effect_delta": item.turn_effect_delta,
+                            "score": 0.7,
+                        }
+                    )
+            except Exception as exc:
+                logger.debug(f"sql timeline backend skipped: {exc}")
+            return cands, counts
+
+        units.append(("sql_timeline", _UNIT_FEED, _sql_timeline))
+    elif include_feeds and diagnostic:
         logger.info(
             "recall sql_timeline skipped profile=%s enable_sql_timeline=%s global_sql_timeline_enabled=%s",
             profile.get("profile"),
@@ -1297,22 +1725,26 @@ async def _query_backends(
             settings.RECALL_ENABLE_SQL_TIMELINE,
         )
 
-    if include_cards and _cards_fetch_enabled(profile):
+    if include_retrievers and include_cards and _cards_fetch_enabled(profile):
         pool = _recall_pg_pool
         if pool is not None and asyncpg is not None:
-            try:
-                card_frags = await fetch_card_fragments_guarded(
-                    pool,
-                    fragment,
-                    profile,
-                    lane=lane,
-                    timeout_sec=float(getattr(settings, "RECALL_CARDS_TIMEOUT_SEC", 0.25) or 0.25),
-                    max_neighbors=int(getattr(settings, "RECALL_CARDS_MAX_NEIGHBORS", 6) or 6),
-                )
-                backend_counts["cards"] = len(card_frags)
-                candidates.extend(card_frags)
-            except Exception as exc:
-                logger.warning("cards fetch skipped: %s", exc)
+
+            async def _cards():
+                try:
+                    card_frags = await fetch_card_fragments_guarded(
+                        pool,
+                        fragment,
+                        profile,
+                        lane=lane,
+                        timeout_sec=float(getattr(settings, "RECALL_CARDS_TIMEOUT_SEC", 0.25) or 0.25),
+                        max_neighbors=int(getattr(settings, "RECALL_CARDS_MAX_NEIGHBORS", 6) or 6),
+                    )
+                except Exception as exc:
+                    logger.warning("cards fetch skipped: %s", exc)
+                    return [], {}
+                return list(card_frags), {"cards": len(card_frags)}
+
+            units.append(("cards", _UNIT_RETRIEVER, _cards))
         elif diagnostic:
             logger.info("recall cards skipped pool_asyncpg_available=%s", pool is not None)
 
@@ -1323,99 +1755,201 @@ async def _query_backends(
         and bool(getattr(settings, "RECALL_COMPRESSION_PG_DSN", None))
         and fetch_graph_compression_fragments is not None
     )
-    if compression_enabled:
-        try:
-            # Run the blocking Postgres + Fuseki I/O off the event loop so it does
-            # not stall the recall hot path (mirrors the memory_graph_sparql path).
-            compression_frags = await asyncio.to_thread(
-                fetch_graph_compression_fragments,
-                query_text=fragment,
-                mode=str(profile.get("compression_mode") or "unified"),
-                max_global=int(profile.get("compression_global_top_k") or 5),
-                max_local=int(profile.get("compression_local_top_k") or 5),
-                # self_study dropped from the default 2026-07-23: orion-graph-compression
-                # retired the scope entirely (live-verified zero communities/artifacts,
-                # ever -- its three source Fuseki graphs have always been empty).
-                scopes=list(profile.get("compression_scopes") or ["episodic", "substrate"]),
-                pg_dsn=settings.RECALL_COMPRESSION_PG_DSN,
-                rdf_query_url=getattr(settings, "RECALL_COMPRESSION_RDF_QUERY_URL", None),
-                rdf_user=getattr(settings, "RECALL_COMPRESSION_RDF_USER", "admin"),
-                rdf_pass=getattr(settings, "RECALL_COMPRESSION_RDF_PASS", "orion"),
-                timeout_sec=float(getattr(settings, "RECALL_COMPRESSION_TIMEOUT_SEC", 3.0)),
-            )
-            backend_counts["graph_compression"] = len(compression_frags)
-            candidates.extend(compression_frags)
-        except Exception as exc:
-            logger.debug("graph_compression_backend_skipped reason=%s", exc)
-            backend_counts["graph_compression"] = 0
-    else:
-        backend_counts["graph_compression"] = 0
+    if include_retrievers and compression_enabled:
 
-    return candidates, backend_counts
+        async def _graph_compression():
+            try:
+                # Run the blocking Postgres + Fuseki I/O off the event loop so it does
+                # not stall the recall hot path (mirrors the memory_graph_sparql path).
+                compression_frags = await asyncio.to_thread(
+                    fetch_graph_compression_fragments,
+                    query_text=fragment,
+                    mode=str(profile.get("compression_mode") or "unified"),
+                    max_global=int(profile.get("compression_global_top_k") or 5),
+                    max_local=int(profile.get("compression_local_top_k") or 5),
+                    # self_study dropped from the default 2026-07-23: orion-graph-compression
+                    # retired the scope entirely (live-verified zero communities/artifacts,
+                    # ever -- its three source Fuseki graphs have always been empty).
+                    scopes=list(profile.get("compression_scopes") or ["episodic", "substrate"]),
+                    pg_dsn=settings.RECALL_COMPRESSION_PG_DSN,
+                    rdf_query_url=getattr(settings, "RECALL_COMPRESSION_RDF_QUERY_URL", None),
+                    rdf_user=getattr(settings, "RECALL_COMPRESSION_RDF_USER", "admin"),
+                    rdf_pass=getattr(settings, "RECALL_COMPRESSION_RDF_PASS", "orion"),
+                    timeout_sec=float(getattr(settings, "RECALL_COMPRESSION_TIMEOUT_SEC", 3.0)),
+                )
+            except Exception as exc:
+                logger.debug("graph_compression_backend_skipped reason=%s", exc)
+                return [], {"graph_compression": 0}
+            return list(compression_frags), {"graph_compression": len(compression_frags)}
+
+        units.append(("graph_compression", _UNIT_RETRIEVER, _graph_compression))
+
+    return units
+
+
+_telemetry_table_ready = False
+_telemetry_failure_warned = False
+# Names of the bounded-retrieval columns this process has confirmed exist
+# (found in information_schema, or added by our own ALTER). The insert only
+# writes these, so a failed/timed-out DDL degrades to the pre-2026-09-29 row.
+_telemetry_present_columns: set = set()
+
+_TELEMETRY_BOUNDED_RETRIEVAL_COLUMNS = (
+    "query_chars integer",
+    "retrieval_query_source text",
+    "sub_query_count integer",
+    "candidates_fetched integer",
+    "candidates_kept integer",
+    "deadline_hit boolean",
+    "timings_ms jsonb",
+)
+
+
+_TELEMETRY_BOUNDED_RETRIEVAL_COLUMN_NAMES = tuple(c.split()[0] for c in _TELEMETRY_BOUNDED_RETRIEVAL_COLUMNS)
+
+
+def _ensure_telemetry_schema(cur: Any) -> None:
+    """CREATE TABLE if missing, then ALTER only the columns that are missing.
+
+    Code review, PR #2416: `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` takes
+    ACCESS EXCLUSIVE even when the column already exists, so running it on
+    every boot queues behind a backup's lock and every later INSERT queues
+    behind the ALTER (the 09-xx boot-hang pattern). So: read
+    information_schema first (no table lock), ALTER only what is absent, and
+    bound the DDL with lock_timeout/statement_timeout. Any failure is logged
+    once and swallowed; the caller's insert then writes only confirmed
+    columns.
+    """
+    global _telemetry_present_columns
+    try:
+        cur.execute("SET lock_timeout = '2s'")
+        cur.execute("SET statement_timeout = '5s'")
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS recall_telemetry (
+                id uuid primary key,
+                corr_id text,
+                session_id text,
+                node_id text,
+                verb text,
+                profile text,
+                query text,
+                selected_ids jsonb,
+                backend_counts jsonb,
+                latency_ms integer,
+                created_at timestamptz default now()
+            )
+            """
+        )
+        cur.execute(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_schema = current_schema() AND table_name = 'recall_telemetry'"
+        )
+        existing = {str(r[0]) for r in (cur.fetchall() or [])}
+        present = {c for c in _TELEMETRY_BOUNDED_RETRIEVAL_COLUMN_NAMES if c in existing}
+        _telemetry_present_columns = set(present)
+        # Bounded-retrieval columns (2026-09-29). Nullable and additive.
+        # Kept in sync with sql/recall_telemetry.sql.
+        for column_ddl in _TELEMETRY_BOUNDED_RETRIEVAL_COLUMNS:
+            name = column_ddl.split()[0]
+            if name in present:
+                continue
+            cur.execute(f"ALTER TABLE recall_telemetry ADD COLUMN IF NOT EXISTS {column_ddl}")
+            _telemetry_present_columns.add(name)
+    except Exception as exc:
+        logger.warning(
+            "recall_telemetry_schema_ddl_failed (not retried this process; inserting confirmed columns only: %s): %s",
+            sorted(_telemetry_present_columns),
+            exc,
+        )
+    # The timeouts stay set for this (per-call) connection, so the insert
+    # that follows is bounded the same way.
 
 
 def _persist_decision(decision: RecallDecisionV1) -> None:
     """
-    Durable log to Postgres if available. Best-effort.
+    Durable log to Postgres if available. Best-effort, blocking (psycopg2):
+    callers on the event loop go through ``persist_decision_async``.
+
+    jsonb columns take ``psycopg2.extras.Json``: psycopg2 cannot adapt a raw
+    dict, so before 2026-09-29 every insert raised "can't adapt type 'dict'"
+    and the failure was logged at debug level -- recall_telemetry had zero
+    rows ever. The first failure per process is now a warning.
     """
+    global _telemetry_table_ready, _telemetry_failure_warned
     dsn = settings.RECALL_PG_DSN
     if not dsn:
         return
     if psycopg2 is None:
         return
-    try:
-        conn = psycopg2.connect(dsn)
-        conn.autocommit = True
-    except Exception as exc:
-        logger.debug(f"recall telemetry pg connect failed: {exc}")
-        return
+    from psycopg2.extras import Json  # type: ignore
 
+    conn = None
     try:
+        # Bounded: the bus handler awaits this before replying, so a hung
+        # connect must not hold a recall reply hostage.
+        conn = psycopg2.connect(dsn, connect_timeout=3)
+        conn.autocommit = True
         with conn.cursor() as cur:
+            if not _telemetry_table_ready:
+                # Once per process, success or failure: a failed DDL is never
+                # retried per request, and never blocks the insert below.
+                _telemetry_table_ready = True
+                _ensure_telemetry_schema(cur)
+            new_cols = [c for c in _TELEMETRY_BOUNDED_RETRIEVAL_COLUMN_NAMES if c in _telemetry_present_columns]
+            values_by_col = {
+                "query_chars": decision.query_chars,
+                "retrieval_query_source": decision.retrieval_query_source,
+                "sub_query_count": decision.sub_query_count,
+                "candidates_fetched": decision.candidates_fetched,
+                "candidates_kept": decision.candidates_kept,
+                "deadline_hit": decision.deadline_hit,
+                "timings_ms": Json(dict(decision.timings_ms or {})),
+            }
+            base_cols = [
+                "id", "corr_id", "session_id", "node_id", "verb", "profile", "query",
+                "selected_ids", "backend_counts", "latency_ms",
+            ]
+            params = [
+                decision.id,
+                decision.corr_id,
+                decision.session_id,
+                decision.node_id,
+                decision.verb,
+                decision.profile,
+                decision.query,
+                Json(decision.selected_ids),
+                Json(decision.backend_counts),
+                decision.latency_ms,
+            ] + [values_by_col[c] for c in new_cols]
+            cols = base_cols + new_cols
             cur.execute(
-                """
-                CREATE TABLE IF NOT EXISTS recall_telemetry (
-                    id uuid primary key,
-                    corr_id text,
-                    session_id text,
-                    node_id text,
-                    verb text,
-                    profile text,
-                    query text,
-                    selected_ids jsonb,
-                    backend_counts jsonb,
-                    latency_ms integer,
-                    created_at timestamptz default now()
-                )
-                """
-            )
-            cur.execute(
-                """
+                f"""
                 INSERT INTO recall_telemetry
-                (id, corr_id, session_id, node_id, verb, profile, query, selected_ids, backend_counts, latency_ms)
-                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                ({", ".join(cols)})
+                VALUES ({",".join(["%s"] * len(cols))})
                 ON CONFLICT (id) DO NOTHING
                 """,
-                (
-                    decision.id,
-                    decision.corr_id,
-                    decision.session_id,
-                    decision.node_id,
-                    decision.verb,
-                    decision.profile,
-                    decision.query,
-                    decision.selected_ids,
-                    decision.backend_counts,
-                    decision.latency_ms,
-                ),
+                tuple(params),
             )
     except Exception as exc:
-        logger.debug(f"recall telemetry persist failed: {exc}")
+        if not _telemetry_failure_warned:
+            _telemetry_failure_warned = True
+            logger.warning("recall_telemetry_persist_failed (further failures at debug): %s", exc)
+        else:
+            logger.debug("recall_telemetry_persist_failed: %s", exc)
     finally:
-        try:
-            conn.close()
-        except Exception:
-            pass
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+
+async def persist_decision_async(decision: RecallDecisionV1) -> None:
+    """Run the blocking psycopg2 write off the event loop, so one recall's
+    telemetry connect+insert never stalls every other in-flight request."""
+    await asyncio.to_thread(_persist_decision, decision)
 
 
 def _log_debug_dump(
@@ -1475,12 +2009,157 @@ def _bounded_selected_summary(items: List[Any], *, limit: int = 8) -> List[Dict[
     return summary
 
 
+def _recall_deadline_budget_ms(q: RecallQueryV1) -> int:
+    """Fetch budget in ms: 80% of the caller's deadline_ms when given, else
+    RECALL_DEADLINE_MS_DEFAULT. <= 0 means no deadline."""
+    caller = getattr(q, "deadline_ms", None)
+    if caller is not None and int(caller) > 0:
+        return max(1, int(int(caller) * 0.8))
+    raw = getattr(settings, "RECALL_DEADLINE_MS_DEFAULT", None)
+    if raw is None:
+        return 60000
+    try:
+        return int(raw)
+    except Exception:
+        return 60000
+
+
+async def _run_pcr_collectors(
+    q: RecallQueryV1,
+    *,
+    pcr_backend_plan: Dict[str, bool],
+    remaining_s: float | None,
+    corr_id: str,
+) -> Tuple[List[Dict[str, Any]], Dict[str, int], Dict[str, int], bool]:
+    """Run the purposeful-recall PCR collectors under the recall deadline.
+
+    Returns (candidates, backend_counts, elapsed_ms_per_collector,
+    deadline_hit). Both collectors run concurrently and share whatever is left
+    of the overall recall deadline (``remaining_s``; None = no deadline). A
+    collector still running at the deadline is cancelled and its result
+    dropped; the recall never fails because of it. concept_region's work runs
+    in a thread (asyncio.to_thread) that cannot be killed: cancelling only
+    stops the recall from waiting on it, the thread finishes in the
+    background.
+
+    Before 2026-09-30 this block ran after the deadline-bounded fetch, with
+    no deadline and no timing: a cold get_substrate_store() (first-call
+    Falkor hydration, measured 6.25s live) made the first belief recall after
+    a restart take 9.5s with ~9.3s missing from timings_ms. Since 2026-10-06
+    recall never hydrates: concept_region issues bounded direct Falkor reads
+    (see app/substrate_store.py).
+    """
+    units: List[Tuple[str, Any]] = []
+    # Set when the recall stops waiting for concept_region (deadline or
+    # cancellation). The thread cannot be killed, so the collector checks this
+    # right before its reinforcement write: dropped fragments must not be
+    # reinforced as if they had been surfaced.
+    cr_abandoned = threading.Event()
+    on_cancel: Dict[str, threading.Event] = {"concept_region": cr_abandoned}
+    if pcr_backend_plan.get("active_packet") and settings.RECALL_ACTIVE_PACKET_ENABLED:
+        units.append(
+            (
+                "active_packet",
+                lambda: fetch_active_packet_fragments(q, pool=_recall_pg_pool, settings=settings),
+            )
+        )
+    if pcr_backend_plan.get("concept_region") and settings.RECALL_CONCEPT_REGION_ENABLED:
+        # fetch_concept_region_fragment_and_reinforce's Falkor reads/write
+        # are blocking network calls (bounded by the socket timeouts in
+        # app/substrate_store.py) -- they must run inside the offloaded
+        # thread, and so does get_substrate_store() for symmetry. The inner
+        # lambda defers both calls into the thread (an argument expression
+        # would be evaluated on the event loop). The collector also writes a
+        # small activation bump for whatever it matched (see
+        # collectors/CONCEPT_REINFORCEMENT_DESIGN.md), on the same thread.
+        units.append(
+            (
+                "concept_region",
+                lambda: asyncio.to_thread(
+                    lambda: fetch_concept_region_fragment_and_reinforce(
+                        q, store=get_substrate_store(), abandoned=cr_abandoned
+                    )
+                ),
+            )
+        )
+    if not units:
+        return [], {}, {}, False
+    if remaining_s is not None and remaining_s <= 0:
+        logger.warning(
+            "recall_deadline_hit corr_id=%s stage=pcr_collectors skipped=%s",
+            corr_id,
+            [name for name, _f in units],
+        )
+        return [], {}, {name: 0 for name, _f in units}, True
+
+    elapsed_ms: Dict[str, int] = {}
+
+    async def _timed(name: str, factory: Any) -> Any:
+        started = time.perf_counter()
+        try:
+            return await factory()
+        except asyncio.CancelledError:
+            ev = on_cancel.get(name)
+            if ev is not None:
+                ev.set()
+            raise
+        finally:
+            elapsed_ms[name] = int((time.perf_counter() - started) * 1000)
+
+    tasks: List[Tuple[str, asyncio.Future]] = []
+    for name, factory in units:
+        try:
+            tasks.append((name, asyncio.ensure_future(_timed(name, factory))))
+        except Exception as exc:  # one broken collector must not strand the other
+            logger.debug("%s collector could not start: %s", name, exc)
+    deadline_hit = False
+    if tasks:
+        _done, pending = await asyncio.wait(
+            [t for _n, t in tasks],
+            timeout=(max(0.0, remaining_s) if remaining_s is not None else None),
+        )
+        if pending:
+            deadline_hit = True
+            for n, t in tasks:
+                if t in pending and n in on_cancel:
+                    # Before cancel(), so the flag is up even if the
+                    # thread returns before the cancellation is delivered.
+                    on_cancel[n].set()
+            for t in pending:
+                t.cancel()
+            await asyncio.gather(*pending, return_exceptions=True)
+            logger.warning(
+                "recall_deadline_hit corr_id=%s stage=pcr_collectors pending=%s",
+                corr_id,
+                [n for n, t in tasks if t in pending],
+            )
+
+    candidates: List[Dict[str, Any]] = []
+    counts: Dict[str, int] = {}
+    for name, task in tasks:
+        if task.cancelled():
+            continue
+        exc = task.exception()
+        if exc is not None:
+            logger.debug("%s collector skipped: %s", name, exc)
+            continue
+        frags = list(task.result() or [])
+        candidates.extend(frags)
+        counts[name] = len(frags)
+    return candidates, counts, elapsed_ms, deadline_hit
+
+
 async def process_recall(
     q: RecallQueryV1,
     *,
     corr_id: str,
     diagnostic: bool = False,
 ) -> Tuple[MemoryBundleV1, RecallDecisionV1]:
+    # Whole-recall clock: the deadline and latency_ms both run from here
+    # (latency_ms used to stop before the entity boost and fusion).
+    t0 = time.time()
+    recall_started = time.perf_counter()
+    timings_ms: Dict[str, int] = {}
     recall_phase = getattr(q, "recall_phase", None)
     selected_profile = q.profile
     intent_payload: Dict[str, Any] | None = None
@@ -1516,8 +2195,11 @@ async def process_recall(
         pcr_backend_plan = collectors_for_intent(retrieval_intent)
         profile = apply_collector_plan(profile, pcr_backend_plan)
         profile_name = str(profile.get("profile") or profile_name)
-    query_targeting = _derive_chat_general_query(q.fragment, verb=q.verb, profile_name=profile_name)
-    query_fragment = str(query_targeting.get("query_fragment") or q.fragment or "")
+    intake = _intake_query(q, profile_name=profile_name)
+    query_targeting = intake["query_targeting"]
+    query_fragment = str(intake["search_text"] or "")
+    retrieval_query_source = str(intake["source"])
+    context_only = str(getattr(q, "mode", "retrieve") or "retrieve") == "context_only"
     if diagnostic and query_targeting.get("query_changed"):
         logger.info(
             "recall query_targeting adjusted profile=%s verb=%s raw=%r targeted=%r turn_type=%s tail_stripped=%s",
@@ -1529,7 +2211,24 @@ async def process_recall(
             query_targeting.get("tail_stripped"),
         )
     enable_qe = bool(profile.get("enable_query_expansion", True))
-    signals = _expand_query(query_fragment, verb=q.verb, intent=q.intent, enable=enable_qe)
+    max_sub_queries = _max_sub_queries()
+    # One bounded entity list per recall: sub-queries, sql_timeline's
+    # related_by_entities patterns and the entity boost all read it (the
+    # related_by_entities list used to be re-extracted from the full query on
+    # every sub-query iteration).
+    bounded_entities: List[str] = [] if context_only else _ranked_entities(query_fragment, limit=max_sub_queries)
+    if context_only:
+        signals: List[str] = []
+    else:
+        signals = _expand_query(
+            query_fragment,
+            verb=q.verb,
+            intent=q.intent,
+            enable=enable_qe,
+            max_sub_queries=max_sub_queries,
+            entities=bounded_entities,
+        )
+    timings_ms["intake"] = int((time.perf_counter() - recall_started) * 1000)
     ignored_session_id = q.session_id
     effective_session_id: str | None = None
     exclusion = _parse_exclusion(q)
@@ -1545,12 +2244,11 @@ async def process_recall(
         else "disabled_by_profile_or_global"
     )
 
-    t0 = time.time()
     timing_breakdown_ms: Dict[str, int] = {}
     candidates: List[Dict[str, Any]] = []
     backend_counts_total: Dict[str, int] = {}
 
-    if _is_memory_browse(query_fragment):
+    if not context_only and _is_memory_browse(query_fragment):
         since_minutes_effective = int(profile.get("sql_since_minutes", settings.RECALL_SQL_SINCE_MINUTES))
         browse_limit = max(10, min(20, int(profile.get("max_total_items", 12))))
         if _sql_timeline_enabled_for_profile(profile):
@@ -1615,6 +2313,13 @@ async def process_recall(
             selected_ids=[i.id for i in bundle.items],
             backend_counts=backend_counts_total or bundle.stats.backend_counts,
             latency_ms=latency_ms,
+            query_chars=len(query_fragment),
+            retrieval_query_source=retrieval_query_source,
+            sub_query_count=0,
+            candidates_fetched=len(candidates),
+            candidates_kept=len(candidates),
+            deadline_hit=False,
+            timings_ms={**timings_ms, "total": latency_ms},
             dropped=dict((bundle.stats.diagnostic or {}).get("drop_counts") or {}),
             ranking_debug=ranking_debug if diagnostic else [],
             recall_debug=(
@@ -1656,47 +2361,169 @@ async def process_recall(
         )
         return bundle, decision
 
-    fetch_started = time.time()
-    anchor_candidates: List[Dict[str, Any]] = []
-    anchor_counts: Dict[str, int] = {}
-    if bool(profile.get("enable_anchor_candidates", True)):
-        anchor_candidates, anchor_counts = await _fetch_anchor_candidates(
-            query_text=query_fragment,
-            session_id=effective_session_id,
-            node_id=q.node_id,
-            profile=profile,
-            diagnostic=diagnostic,
-            exclusion=exclusion,
-        )
+    # ── Fetch: feeds once, retrievers per sub-query, concurrently, one deadline ──
+    sql_chat_window_min = int(
+        profile.get("sql_chat_since_minutes")
+        or profile.get("sql_since_minutes")
+        or settings.RECALL_SQL_SINCE_MINUTES
+    )
+    deadline_budget_ms = _recall_deadline_budget_ms(q)
+    deadline_at = recall_started + deadline_budget_ms / 1000.0 if deadline_budget_ms > 0 else None
+
+    def _remaining_s() -> float | None:
+        return None if deadline_at is None else deadline_at - time.perf_counter()
+
+    fetch_started = time.perf_counter()
+    semaphore = asyncio.Semaphore(_fetch_concurrency())
+    sink: List[Dict[str, Any]] = []
+    jobs: List[Tuple[Any, Any]] = []
+    anchor_elapsed_ms: List[int] = []
+
+    if not context_only and bool(profile.get("enable_anchor_candidates", True)):
+
+        async def _anchor_job():
+            # Same semaphore as the backend units: it opens Postgres (and
+            # possibly RDF) connections too.
+            async with semaphore:
+                started = time.perf_counter()
+                try:
+                    return await _fetch_anchor_candidates(
+                        query_text=query_fragment,
+                        session_id=effective_session_id,
+                        node_id=q.node_id,
+                        profile=profile,
+                        diagnostic=diagnostic,
+                        exclusion=exclusion,
+                        sink=sink,
+                        sink_key="anchor",
+                    )
+                finally:
+                    anchor_elapsed_ms.append(int((time.perf_counter() - started) * 1000))
+
+        jobs.append(("anchor", _anchor_job))
     elif diagnostic:
         logger.info(
-            "recall anchor rail skipped profile=%s enable_anchor_candidates=%s",
+            "recall anchor rail skipped profile=%s enable_anchor_candidates=%s context_only=%s",
             profile.get("profile"),
             profile.get("enable_anchor_candidates"),
+            context_only,
         )
-    timing_breakdown_ms["anchor_fetch"] = int((time.time() - fetch_started) * 1000)
-    if anchor_candidates:
-        candidates.extend(anchor_candidates)
-        for key, value in anchor_counts.items():
-            backend_counts_total[key] = value
 
-    backend_start = time.time()
-    for sig_i, sig in enumerate(signals):
-        cand, counts = await _query_backends(
-            sig,
-            profile,
-            session_id=effective_session_id,
-            node_id=q.node_id,
-            entities=_extract_entities(query_fragment),
-            diagnostic=diagnostic,
-            exclusion=exclusion,
-            lane=getattr(q, "lane", None),
-            include_cards=(sig_i == 0),
+    common_kwargs: Dict[str, Any] = {
+        "session_id": effective_session_id,
+        "node_id": q.node_id,
+        "entities": bounded_entities,
+        "diagnostic": diagnostic,
+        "exclusion": exclusion,
+        "lane": getattr(q, "lane", None),
+        "falkor_chat_since_minutes": sql_chat_window_min,
+        "semaphore": semaphore,
+        "sink": sink,
+    }
+    if signals:
+        for sig_i, sig in enumerate(signals):
+            jobs.append(
+                (
+                    sig_i,
+                    functools.partial(
+                        _query_backends,
+                        sig,
+                        profile,
+                        include_cards=(sig_i == 0),
+                        include_feeds=(sig_i == 0),
+                        include_retrievers=True,
+                        sink_key=sig_i,
+                        **common_kwargs,
+                    ),
+                )
+            )
+    else:
+        # context_only (or nothing to search for): feeds only, once.
+        jobs.append(
+            (
+                0,
+                functools.partial(
+                    _query_backends,
+                    query_fragment,
+                    profile,
+                    include_cards=False,
+                    include_feeds=True,
+                    include_retrievers=False,
+                    allow_empty_query_feeds=context_only,
+                    sink_key=0,
+                    **common_kwargs,
+                ),
+            )
         )
+
+    job_tasks: List[Tuple[Any, asyncio.Future]] = []
+    for key, factory in jobs:
+        try:
+            job_tasks.append((key, asyncio.ensure_future(factory())))
+        except Exception as exc:  # one broken job must not strand the others
+            logger.warning("recall fetch job %s could not start: %s", key, exc)
+    remaining = _remaining_s()
+    deadline_hit = False
+    if job_tasks:
+        _done, pending = await asyncio.wait(
+            [t for _k, t in job_tasks],
+            timeout=(max(0.0, remaining) if remaining is not None else None),
+        )
+        if pending:
+            deadline_hit = True
+            for t in pending:
+                t.cancel()
+            await asyncio.gather(*pending, return_exceptions=True)
+            logger.warning(
+                "recall_deadline_hit corr_id=%s budget_ms=%s pending_jobs=%s completed_units=%s",
+                corr_id,
+                deadline_budget_ms,
+                len(pending),
+                len(sink),
+            )
+
+    for key, task in job_tasks:
+        result = None
+        if task.done() and not task.cancelled() and task.exception() is None:
+            result = task.result()
+        elif task.done() and not task.cancelled() and task.exception() is not None:
+            logger.debug("recall fetch job %s failed: %s", key, task.exception())
+        if key == "anchor":
+            if result is None:
+                partial = sorted((e for e in sink if e.get("key") == "anchor"), key=lambda e: e["idx"])
+                result = _merge_unit_results(
+                    [(e["candidates"], e["counts"]) for e in partial], include_retrievers=False, profile=profile
+                )
+            anchor_candidates, anchor_counts = result
+            candidates.extend(anchor_candidates)
+            for ck, cv in anchor_counts.items():
+                backend_counts_total[ck] = cv
+            continue
+        if result is None:
+            # Cancelled at the deadline (or crashed): keep the units that
+            # completed before that, in their normal order.
+            partial = sorted((e for e in sink if e.get("key") == key), key=lambda e: e["idx"])
+            result = _merge_unit_results(
+                [(e["candidates"], e["counts"]) for e in partial], include_retrievers=False, profile=profile
+            )
+        cand, counts = result
         candidates.extend(cand)
-        for k, v in counts.items():
-            backend_counts_total[k] = backend_counts_total.get(k, 0) + v
-    timing_breakdown_ms["backend_fetch"] = int((time.time() - backend_start) * 1000)
+        for ck, cv in counts.items():
+            backend_counts_total[ck] = backend_counts_total.get(ck, 0) + cv
+
+    fetch_ms = int((time.perf_counter() - fetch_started) * 1000)
+    feed_elapsed = [e["elapsed_ms"] for e in sink if e.get("kind") == _UNIT_FEED]
+    retriever_elapsed = [
+        e["elapsed_ms"] for e in sink if e.get("kind") == _UNIT_RETRIEVER and e.get("key") != "anchor"
+    ] + anchor_elapsed_ms
+    # Units overlap, so these are each group's critical path (slowest unit),
+    # not sums; "fetch" is the wall time of the whole concurrent stage.
+    timings_ms["feeds"] = max(feed_elapsed) if feed_elapsed else 0
+    timings_ms["retrievers"] = max(retriever_elapsed) if retriever_elapsed else 0
+    timings_ms["fetch"] = fetch_ms
+    timing_breakdown_ms["anchor_fetch"] = max(anchor_elapsed_ms) if anchor_elapsed_ms else 0
+    timing_breakdown_ms["backend_fetch"] = fetch_ms
+    candidates_fetched = len(candidates)
 
     # memory_graph_sparql augment removed 2026-07-22: RECALL_MEMORY_GRAPH_SPARQL_ENABLED
     # was already false live (dead in production), and the Fuseki content it
@@ -1705,6 +2532,7 @@ async def process_recall(
     # orion/memory_graph/approve.py's docstring for the full trace. Purged
     # from Fuseki 2026-07-22.
 
+    windowing_started = time.perf_counter()
     if settings.RECALL_RDF_CHAT_WINDOW_ENABLED:
         rdf_chat_window_min = int(
             profile.get("rdf_chat_since_minutes")
@@ -1723,11 +2551,6 @@ async def process_recall(
                 rdf_chat_dropped,
             )
 
-    sql_chat_window_min = int(
-        profile.get("sql_chat_since_minutes")
-        or profile.get("sql_since_minutes")
-        or settings.RECALL_SQL_SINCE_MINUTES
-    )
     candidates, sql_chat_dropped = await _window_sql_chat_candidates(
         candidates, since_minutes=sql_chat_window_min
     )
@@ -1740,6 +2563,8 @@ async def process_recall(
             sql_chat_dropped,
         )
 
+    timings_ms["windowing"] = int((time.perf_counter() - windowing_started) * 1000)
+
     suppression_start = time.time()
     candidates, suppressed = _suppress_self_hits(
         candidates,
@@ -1748,6 +2573,8 @@ async def process_recall(
         active_turn_ts=exclusion.get("active_turn_ts"),
     )
     timing_breakdown_ms["self_hit_suppression"] = int((time.time() - suppression_start) * 1000)
+    timings_ms["suppression"] = timing_breakdown_ms["self_hit_suppression"]
+    candidates_kept = len(candidates)
     if suppressed:
         logger.info(
             "recall self-hit suppression active_turn_ids=%s suppressed=%s",
@@ -1755,44 +2582,27 @@ async def process_recall(
             suppressed,
         )
 
+    pcr_started = time.perf_counter()
     if settings.RECALL_PCR_ENABLED and recall_phase == "purposeful":
-        if pcr_backend_plan.get("active_packet") and settings.RECALL_ACTIVE_PACKET_ENABLED:
-            try:
-                ap_frags = await fetch_active_packet_fragments(q, pool=_recall_pg_pool, settings=settings)
-                candidates.extend(ap_frags)
-                backend_counts_total["active_packet"] = len(ap_frags)
-            except Exception as exc:
-                logger.debug("active_packet collector skipped: %s", exc)
+        pcr_cands, pcr_counts, pcr_elapsed, pcr_deadline_hit = await _run_pcr_collectors(
+            q,
+            pcr_backend_plan=pcr_backend_plan,
+            remaining_s=_remaining_s(),
+            corr_id=corr_id,
+        )
+        candidates.extend(pcr_cands)
+        backend_counts_total.update(pcr_counts)
+        for name, ms in pcr_elapsed.items():
+            timings_ms[f"pcr_{name}"] = ms
+        if pcr_deadline_hit:
+            deadline_hit = True
+    timings_ms["pcr_collectors"] = int((time.perf_counter() - pcr_started) * 1000)
 
-        if pcr_backend_plan.get("concept_region") and settings.RECALL_CONCEPT_REGION_ENABLED:
-            try:
-                # Both get_substrate_store() (first-call hydration: FalkorDB
-                # issues several synchronous GRAPH.QUERY network calls with
-                # no client-side timeout, see FalkorSubstrateStore.__init__)
-                # and fetch_concept_region_fragment_and_reinforce's store
-                # reads/write are blocking -- both must run inside the
-                # offloaded thread, not just the fragment fetch.
-                # asyncio.to_thread only defers execution of the callable
-                # it's given; any argument expression (like a bare
-                # get_substrate_store() call) is still evaluated up front on
-                # the calling coroutine, i.e. still on this shared event
-                # loop. The lambda below defers both calls into the thread.
-                # fetch_concept_region_fragment_and_reinforce also writes a
-                # small activation bump for whatever it matched (see
-                # collectors/CONCEPT_REINFORCEMENT_DESIGN.md) -- a real
-                # Falkor write measured sub-millisecond live, on the same
-                # already-offloaded thread, so no new latency risk on the
-                # event loop.
-                cr_frags = await asyncio.to_thread(
-                    lambda: fetch_concept_region_fragment_and_reinforce(q, store=get_substrate_store())
-                )
-                candidates.extend(cr_frags)
-                backend_counts_total["concept_region"] = len(cr_frags)
-            except Exception as exc:
-                logger.debug("concept_region collector skipped: %s", exc)
-
+    # Provisional: fusion stamps this into bundle.stats; both are overwritten
+    # with the true end-to-end figure once everything below has run.
     latency_ms = int((time.time() - t0) * 1000)
     fuse_started = time.time()
+    timings_ms["boost"] = 0
     if settings.RECALL_PCR_ENABLED and recall_phase == "continuity":
         profile["sql_since_minutes"] = settings.RECALL_CONTINUITY_SQL_MINUTES
         profile["render_budget_tokens"] = settings.RECALL_CONTINUITY_RENDER_BUDGET
@@ -1815,9 +2625,26 @@ async def process_recall(
         )
     else:
         entity_boost_started = time.time()
-        entity_boost_map, entity_injected_candidates = await _compute_entity_relatedness_boost_map(
-            query_text=query_fragment, candidates=candidates
-        )
+        entity_boost_map: Dict[str, float] = {}
+        entity_injected_candidates: List[Dict[str, Any]] = []
+        boost_remaining = _remaining_s()
+        if context_only:
+            pass  # the boost injects entity-matched turns: retrieval, not a feed
+        elif boost_remaining is not None and boost_remaining <= 0:
+            deadline_hit = True
+        else:
+            try:
+                entity_boost_map, entity_injected_candidates = await asyncio.wait_for(
+                    _compute_entity_relatedness_boost_map(
+                        query_text=query_fragment,
+                        candidates=candidates,
+                        query_entities=_boost_query_entities(query_fragment),
+                    ),
+                    timeout=boost_remaining,
+                )
+            except asyncio.TimeoutError:
+                deadline_hit = True
+                logger.warning("recall_deadline_hit corr_id=%s stage=entity_boost", corr_id)
         if entity_injected_candidates:
             # Live evidence (6 real queries, 3 profiles) showed the boost
             # alone never fires: falkor_chat's own fetch is recency-windowed
@@ -1835,6 +2662,7 @@ async def process_recall(
         # making a future latency regression here invisible in the existing
         # telemetry surface (found in code review).
         timing_breakdown_ms["entity_relatedness_boost"] = int((time.time() - entity_boost_started) * 1000)
+        timings_ms["boost"] = timing_breakdown_ms["entity_relatedness_boost"]
         fuse_started = time.time()
         bundle, ranking_debug = fuse_candidates(
             candidates=candidates,
@@ -1847,13 +2675,27 @@ async def process_recall(
             entity_boost_map=entity_boost_map,
         )
     timing_breakdown_ms["fusion"] = int((time.time() - fuse_started) * 1000)
+    timings_ms["fusion"] = timing_breakdown_ms["fusion"]
     timing_breakdown_ms["total"] = latency_ms
     eligible_belief_count = 0
+    eligible_started = time.perf_counter()
     if settings.RECALL_PCR_ENABLED and recall_phase in {"continuity", "purposeful"} and _recall_pg_pool is not None:
-        try:
-            eligible_belief_count = await count_eligible_active(_recall_pg_pool)
-        except Exception as exc:
-            logger.debug("eligible_belief_count skipped: %s", exc)
+        # Debug-only count: bounded by what is left of the deadline and
+        # skipped once it has passed, like the shadow compare below. Skipping
+        # it does not cut any results, so it does not set deadline_hit.
+        eligible_remaining = _remaining_s()
+        if eligible_remaining is not None and eligible_remaining <= 0:
+            logger.debug("eligible_belief_count skipped: deadline passed")
+        else:
+            try:
+                eligible_belief_count = await asyncio.wait_for(
+                    count_eligible_active(_recall_pg_pool), timeout=eligible_remaining
+                )
+            except asyncio.TimeoutError:
+                logger.debug("eligible_belief_count skipped: deadline passed")
+            except Exception as exc:
+                logger.debug("eligible_belief_count skipped: %s", exc)
+    timings_ms["eligible_count"] = int((time.perf_counter() - eligible_started) * 1000)
     pcr_debug: Dict[str, Any] | None = None
     if settings.RECALL_PCR_ENABLED and recall_phase in {"continuity", "purposeful"}:
         continuity_count = sum(1 for i in bundle.items if recall_phase == "continuity")
@@ -1889,6 +2731,13 @@ async def process_recall(
         selected_ids=[i.id for i in bundle.items],
         backend_counts=backend_counts_total or bundle.stats.backend_counts,
         latency_ms=latency_ms,
+        query_chars=len(query_fragment),
+        retrieval_query_source=retrieval_query_source,
+        sub_query_count=len(signals),
+        candidates_fetched=candidates_fetched,
+        candidates_kept=candidates_kept,
+        deadline_hit=deadline_hit,
+        timings_ms=dict(timings_ms),
         dropped=dict((bundle.stats.diagnostic or {}).get("drop_counts") or {}),
         ranking_debug=ranking_debug if diagnostic else [],
         recall_debug=(
@@ -1928,16 +2777,31 @@ async def process_recall(
     compare_summary: Dict[str, Any] = {}
     anchor_plan_summary: Dict[str, Any] = {}
     selected_cards: list[Dict[str, Any]] = []
+    # Main's effective triggers only: empty bundle or vector-topped. Main
+    # also listed "query has anchor tokens", but _anchor_tokens was dead
+    # there, so that branch never fired; fixing the regex must not start
+    # running this inline diagnostic (extra Postgres + RDF round trips before
+    # the reply) on every anchor-bearing query (code review, PR #2416).
     should_shadow_compare = bool(
-        not bundle.items
-        or any(str(item.source or "") == "vector" for item in bundle.items[:2])
-        or bool(_anchor_tokens(q.fragment, max_tokens=6))
+        not context_only
+        and (
+            not bundle.items
+            or any(str(item.source or "") == "vector" for item in bundle.items[:2])
+        )
     )
+    shadow_started = time.perf_counter()
+    shadow_remaining = _remaining_s()
+    if should_shadow_compare and shadow_remaining is not None and shadow_remaining <= 0:
+        # Diagnostic only: never spend time past the deadline on it.
+        should_shadow_compare = False
     if should_shadow_compare:
         try:
             from .recall_v2 import run_recall_v2_shadow
 
-            shadow_bundle, shadow_debug = await run_recall_v2_shadow(q, profile=profile)
+            shadow_q = q if query_fragment == q.fragment else q.model_copy(update={"fragment": query_fragment})
+            shadow_bundle, shadow_debug = await asyncio.wait_for(
+                run_recall_v2_shadow(shadow_q, profile=profile), timeout=shadow_remaining
+            )
             compare_summary = {
                 "v1_latency_ms": decision.latency_ms,
                 "v2_latency_ms": int(shadow_debug.get("latency_ms") or 0),
@@ -1949,6 +2813,7 @@ async def process_recall(
             selected_cards = list(shadow_debug.get("ranked_cards") or [])[:6]
         except Exception as exc:
             logger.debug(f"recall shadow compare skipped: {exc}")
+    timings_ms["shadow_compare"] = int((time.perf_counter() - shadow_started) * 1000)
 
     pressure_events = _build_recall_pressure_events(
         q=q,
@@ -1981,6 +2846,14 @@ async def process_recall(
             timing_breakdown_ms,
             decision.selected_ids[:8],
         )
+    # True end-to-end latency, after boost, fusion and the shadow compare.
+    latency_ms = int((time.time() - t0) * 1000)
+    timings_ms["total"] = latency_ms
+    timing_breakdown_ms["total"] = latency_ms
+    bundle.stats.latency_ms = latency_ms
+    decision = decision.model_copy(
+        update={"latency_ms": latency_ms, "timings_ms": dict(timings_ms), "deadline_hit": deadline_hit}
+    )
     _log_debug_dump(
         corr_id=decision.corr_id,
         profile=profile,
@@ -2072,7 +2945,7 @@ async def handle_recall(env: BaseEnvelope, *, bus) -> BaseEnvelope:
     except Exception as exc:
         logger.debug(f"telemetry publish failed: {exc}")
 
-    _persist_decision(decision)
+    await persist_decision_async(decision)
 
     debug_payload: Dict[str, Any] | None = None
     if diagnostic:

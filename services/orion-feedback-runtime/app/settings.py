@@ -88,6 +88,16 @@ class Settings(BaseSettings):
         9, alias="FEEDBACK_RECONCILE_FULL_SWEEP_HOUR_UTC", ge=-1, le=23
     )
     enable_feedback_runtime: bool = Field(True, alias="ENABLE_FEEDBACK_RUNTIME")
+    # Attend-to-act loop: score world-action episodes (both arms) at settle time on the cabinet
+    # sensor (orion/feedback/world_settlement.py), write the ledger row + posterior/control cell +
+    # Orion's non-final `acted` loop verdict. Record-only: it acts on nothing and only ever finds
+    # episodes once execution dispatch has made one. OFF in code, ON in .env_example.
+    world_settlement_scoring_enabled: bool = Field(
+        False, alias="ORION_WORLD_SETTLEMENT_SCORING_ENABLED"
+    )
+    world_settlement_interval_sec: float = Field(
+        30.0, gt=0, alias="ORION_WORLD_SETTLEMENT_INTERVAL_SEC"
+    )
     log_level: str = Field("INFO", alias="LOG_LEVEL")
 
     # Repo-wide bus convention (see root CLAUDE.md): always the real tailscale node address,

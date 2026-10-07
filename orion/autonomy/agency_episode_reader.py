@@ -95,6 +95,21 @@ def collect(conn, graph, *, limit: int = 10) -> dict:
         row["proposal_ids"] = [c["proposal_id"] for c in payload.get("candidates", []) if c.get("proposal_id")]
     feedback_ids = sorted({r["feedback_frame_id"] for r in bundle["outcomes"]["rows"]})
     sql("feedback_frames", "SELECT frame_id,source_execution_dispatch_frame_id FROM substrate_feedback_frames WHERE frame_id = ANY(%s)", (feedback_ids,))
+    # Attend-to-act loop (2026-10-01): world-action episodes for the sampled dispatches, the broadcast
+    # rows they bound to, and the loop verdicts. Metadata only. The ledger table only exists once a
+    # world action has been decided; until then the source is "unavailable", never "empty".
+    sql("world_episodes", "SELECT episode_id, template, arm, decided_at, open_loop_id, broadcast_log_id, node_id, "
+        "settlement_state, expected_effect IS NOT NULL AS expected_effect_recorded, scored_at, loop_outcome_id, "
+        "outcome->>'excluded_reason' AS excluded_reason, outcome->'overlap' AS overlap, "
+        "((outcome->'overlap') ? 'overlap:reflex' AND COALESCE((outcome->>'posterior_updated')::boolean, false)) "
+        "AS posterior_from_reflex_overlap FROM substrate_world_action_episodes WHERE episode_id = ANY(%s)", (dispatch_ids,))
+    loop_ids = sorted({r["open_loop_id"] for r in bundle["world_episodes"]["rows"] if r.get("open_loop_id")})
+    log_ids = sorted({r["broadcast_log_id"] for r in bundle["world_episodes"]["rows"] if r.get("broadcast_log_id")})
+    sql("broadcast_rows", "SELECT log_id, generated_at, projection_json->>'selected_open_loop_id' AS selected_open_loop_id "
+        "FROM substrate_attention_broadcast_log WHERE log_id = ANY(%s)", (log_ids,))
+    sql("loop_outcomes", "SELECT outcome_id, loop_id, verdict, actor, created_at, "
+        "features_at_close->>'episode_id' AS episode_id FROM attention_loop_outcome WHERE loop_id = ANY(%s) "
+        "ORDER BY created_at LIMIT %s", (loop_ids, limit * 10 + 1))
     # Refuse a capped relationship set rather than asserting false missing links.
     for source in ("graph_briefs", "sql_briefs", "outcomes", "results"):
         if len(bundle.get(source, {}).get("rows", [])) > limit * 10:

@@ -1,5 +1,8 @@
 # GPU2 elastic admission: operator rollout and rollback
 
+> **SUPERSEDED by the GPU pool (2026-10-01, stage 6.6).** Do NOT run these steps. Every key and endpoint they touch (`DURABLE_RUNS_ELASTIC_*`, `GPU2_*`, `/capacity`, the gpu2 bridge) was deleted in GPU pool stages 4.6-5.6. Operator control of gpu2 is the Hub GPU pool panel and `scripts/gpu_pool_pause.py`. Current design: `docs/superpowers/specs/2026-09-24-gpu-pool-design.md` and `docs/superpowers/specs/2026-09-30-gpu-pool-stage6-telemetry-reducers-lockdown.md`. Not deleted: it holds incident evidence.
+
+
 Do not execute until this branch is reviewed/merged and the operator authorizes
 production activation. No deployment or production migration was performed for
 this patch. Worktree build configs are validation-only copies of safe templates.

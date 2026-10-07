@@ -171,7 +171,7 @@ first place. Full reasoning and phased detail:
    is expected to still report NOT MET, now for the honest reason of insufficient
    accumulated history rather than a structurally absent table — re-run again after a
    few days of live 30s-cadence ticks to check for MET. Hard-gate signal-
-   quality pass (`scripts/analysis/measure_self_state_signal_quality.py`) run against real
+   quality pass (`scripts/analysis/measure_self_state_signal_quality.py`, deleted 2026-10-07 with its empty source table) run against real
    48h `substrate_self_state` history: confirms the coherence/uncertainty sawtooth named in
    §4's Missing Question 4 is **still live in `SelfStateV1`'s own values** (median 5-tick
    oscillation period, 3500+ zero-crossings each over 84k samples) — the upstream field-

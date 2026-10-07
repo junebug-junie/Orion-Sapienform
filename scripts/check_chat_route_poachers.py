@@ -108,10 +108,6 @@ ALLOW: dict[str, str] = {
     "orion/curiosity/supervisor.py:<module>": (
         "long-context batch (6000 tokens, 180 s); needs durable admission (follow-up)"
     ),
-    "services/orion-cortex-orch/app/workflow_runtime.py:_run_chat_history_compactor_digest": (
-        "digest input is up to 30 turns x 3200 chars (~24k tokens), over quick (4k) and "
-        "metacog (16k); needs durable admission"
-    ),
     "services/orion-context-exec/**:*": (
         "CONTEXT_EXEC_DEFAULT_LLM_PROFILE=chat: long-context investigations; needs durable admission"
     ),

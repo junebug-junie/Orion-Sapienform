@@ -81,7 +81,7 @@ def test_worker_invokes_concept_region_when_enabled(monkeypatch: pytest.MonkeyPa
 
     concept_region_called: list = []
 
-    def _mock_concept_region(query, *, store):
+    def _mock_concept_region(query, *, store, **_kw):
         concept_region_called.append((query, store))
         return [{"id": "cr-1", "source": "concept_region", "snippet": "Orion: continuity", "score": 0.7}]
 
@@ -109,7 +109,7 @@ def test_worker_skips_concept_region_when_disabled(monkeypatch: pytest.MonkeyPat
 
     concept_region_called: list = []
 
-    def _mock_concept_region(query, *, store):
+    def _mock_concept_region(query, *, store, **_kw):
         concept_region_called.append((query, store))
         return [{"id": "cr-1", "source": "concept_region", "snippet": "should not appear", "score": 0.7}]
 
@@ -129,7 +129,7 @@ def test_worker_concept_region_failure_degrades_gracefully(monkeypatch: pytest.M
     belief_fuse_called: list = []
     _wire_common_mocks(monkeypatch, belief_fuse_called=belief_fuse_called)
 
-    def _raising_concept_region(query, *, store):
+    def _raising_concept_region(query, *, store, **_kw):
         raise RuntimeError("store unreachable")
 
     monkeypatch.setattr(worker, "fetch_concept_region_fragment_and_reinforce", _raising_concept_region)
@@ -145,12 +145,10 @@ def test_worker_concept_region_failure_degrades_gracefully(monkeypatch: pytest.M
 def test_get_substrate_store_never_raises_on_init_failure(monkeypatch: pytest.MonkeyPatch) -> None:
     import app.substrate_store as substrate_store_mod
 
-    monkeypatch.setattr(substrate_store_mod, "_STORE", None)
-
     def _boom():
         raise RuntimeError("backend unreachable")
 
-    monkeypatch.setattr(substrate_store_mod, "build_substrate_store_from_env", _boom)
+    monkeypatch.setattr(substrate_store_mod, "_build_store", _boom)
 
     assert substrate_store_mod.get_substrate_store() is None
 
@@ -158,15 +156,13 @@ def test_get_substrate_store_never_raises_on_init_failure(monkeypatch: pytest.Mo
 def test_get_substrate_store_caches_singleton(monkeypatch: pytest.MonkeyPatch) -> None:
     import app.substrate_store as substrate_store_mod
 
-    monkeypatch.setattr(substrate_store_mod, "_STORE", None)
-
     calls: list[int] = []
 
     def _fake_build():
         calls.append(1)
         return object()
 
-    monkeypatch.setattr(substrate_store_mod, "build_substrate_store_from_env", _fake_build)
+    monkeypatch.setattr(substrate_store_mod, "_build_store", _fake_build)
 
     first = get_substrate_store()
     second = substrate_store_mod.get_substrate_store()

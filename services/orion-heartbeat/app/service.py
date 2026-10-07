@@ -96,7 +96,7 @@ class HeartbeatService(BaseChassis):
             base_seed=settings.substrate_seed,
         )
         self.latest_h1: Optional[EnsembleH1ResultV1] = None
-        self.organ_fires = OrganFireWindow()
+        self.organ_fires = OrganFireWindow(window_sec=settings.organ_fire_window_sec)
         self._absorb_queue: asyncio.Queue[SiteAssignment] = asyncio.Queue(
             maxsize=settings.absorb_queue_maxsize
         )
@@ -362,8 +362,11 @@ class HeartbeatService(BaseChassis):
             await asyncio.sleep(settings.h1_interval_sec)
             try:
                 async with self._ensemble_lock:
+                    fire_snapshot = self.organ_fires.snapshot()
                     self.latest_h1 = compute_h1_ensemble(
-                        self.ensemble, fire_counts=self.organ_fires.counts()
+                        self.ensemble,
+                        fire_counts=fire_snapshot.counts,
+                        fire_snapshot=fire_snapshot,
                     )
                 logger.info(
                     "heartbeat_h1_computed tick_count=%d mean_ratio=%.4f std_ratio=%.4f "

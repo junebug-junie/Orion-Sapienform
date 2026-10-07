@@ -1604,7 +1604,7 @@ tab (`GET /concept-atlas`, backed by `GET /api/substrate/concepts/summary` and `
 | Stage | Where | Flag (default) |
 |---|---|---|
 | Seed golden concepts at startup | `api_routes.py::seed_golden_concepts_at_startup()` | `SUBSTRATE_CONCEPT_SEED_ENABLED` (`true`) |
-| Live activation decay | `api_routes.py::decay_concept_activations()`, ticked by `main.py`'s `substrate_decay_task` | `SUBSTRATE_DECAY_SCHEDULER_ENABLED` (`true`), interval `SUBSTRATE_DECAY_SCHEDULER_INTERVAL_SEC` (`120`) |
+| Live activation decay | **Not in the Hub.** orion-substrate-runtime's `SubstrateDynamicsEngine.tick()` is the single owner (every 30 s). The Hub scheduler (`decay_concept_activations`, `SUBSTRATE_DECAY_SCHEDULER_*`) was removed 2026-10-06: two processes decaying the same Falkor nodes landed writes out of order | n/a |
 | Manual topic-foundry ingestion | `POST /api/substrate/concepts/ingest-topic-foundry` (`concept_atlas_routes.py`) | operator-triggered, no flag |
 | Typed relation classification (supports/contradicts/refines) | `concept_atlas_routes.py::_classify_typed_concept_relations()`, called from the ingestion route above | runs automatically as part of ingestion, capped at `_RELATION_CLASSIFICATION_PAIR_CAP=10` pairs/call — see `services/orion-hub/scripts/concept_relation_classifier.py` for the real LLM classifier |
 | Autonomous scheduled training + ingestion | `main.py`'s `substrate_topic_foundry_scheduler_task`, calling `concept_atlas_routes.py::trigger_topic_foundry_training_run()` then the ingestion route above | `SUBSTRATE_TOPIC_FOUNDRY_SCHEDULER_ENABLED` (**`true`** — flipped on live 2026-07-17; shipped disabled by default, real compute cost), interval `SUBSTRATE_TOPIC_FOUNDRY_SCHEDULER_INTERVAL_SEC` (`86400`), window `SUBSTRATE_TOPIC_FOUNDRY_WINDOW_DAYS` (`30`) |
@@ -1683,22 +1683,15 @@ salient:
   `concept_region` collector (see `services/orion-recall/README.md` § 15, PR #1133) — a
   cheap label-substring match against the current turn's text, empty when nothing matches.
 
-**Decay math, if you're debugging why an activation value looks wrong:**
-`decay_concept_activations()` takes an explicit `elapsed_seconds` parameter from its caller
-(the scheduler passes true wall-clock time since the previous tick, tracked via
-`time.monotonic()`) rather than deriving elapsed time from `node.temporal.observed_at`
-internally — the latter is only a documented one-shot fallback for ad-hoc/manual invocation.
-A function called repeatedly on a loop that re-derives elapsed time from a never-advancing
-`observed_at` on every call compounds: each tick re-decays an already-shrunk value against
-an ever-growing elapsed-since-creation window, collapsing activation to `decay_floor` within
-roughly one configured half-life regardless of the half-life value (a real bug caught in
-review during PR #1131 — see that PR's description for the numeric trace).
+**Decay math, if you're debugging why an activation value looks wrong:** see
+`orion/substrate/dynamics.py` (`since_last` mode, `activation_decayed_at` stamp). The Hub no
+longer decays anything (removed 2026-10-06, see the table above).
 
 **Activation was seeded at 0.0 with no half-life until 2026-07-17 (fixed):** decay math
 being correct is meaningless if there's nothing to decay. No `ConceptNodeV1` producer ever
 set `signals.activation` when constructing a node — every concept was born at the schema
 default (`activation=0.0`, `decay_half_life_seconds=None`), and `decay_activation()` treats
-a falsy half-life as "clamp to floor, don't decay." So the live scheduler above was decaying
+a falsy half-life as "clamp to floor, don't decay." So the live scheduler (since removed) was decaying
 an input that was permanently `(0.0, None)` — 120s ticks that correctly computed nothing,
 forever. This was not limited to the two organic-growth adapters (`topic_foundry.py`,
 `concept_induction.py`) — a code-review pass on the first version of this fix found 16+ live
@@ -1844,6 +1837,28 @@ Topic Studio relies on the Topic Foundry `/capabilities` endpoint to configure s
 
 ---
 
+## Draft-first chat replies (spec L8)
+
+`HUB_UNIFIED_DRAFT_FIRST_ENABLED=true` (default): on Unified Chat turns the
+Hub shows Orion's draft as soon as the reply writer finishes, while the
+finalize judge is still checking it. If the judge rewrites it, the message is
+replaced in place and marked "revised: <reason>"; if not, the draft is swapped
+for the identical final message with no mark. Sensitive turns (boundary,
+trust rupture, repair pressure) are never shown early. `false` restores
+judge-before-display for every turn.
+
+- Wire: governor publishes `HarnessRunDraftPreviewV1` on
+  `orion:harness:run:draft_preview` (`CHANNEL_HARNESS_RUN_DRAFT_PREVIEW`);
+  `HarnessStepRelay` subscribes alongside the step channel and queues it to
+  the turn; `run_unified_turn` sends `{"type": "draft_preview", "draft_text"}`
+  and annotates the `final` frame with `replaces_draft`, `revised`,
+  `revised_reason`. Browser: `static/js/draft-revision.js`.
+- Only the final text is persisted (chat history, memory, TTS); the draft
+  never is, so a revision cannot create a duplicate turn.
+- Measure: `unified_turn_first_visible corr=... kind=draft_preview|final
+  elapsed_ms=...`, `unified_turn_final_visible`, `unified_turn_revision
+  corr=... reason=...` in Hub logs.
+
 ## Voice debugging
 
 Hub records PCM in the browser, resamples to 16 kHz WAV, and sends `client_audio_meta` with peak, RMS, duration, and chunk count. Low peak warns in the UI but still sends audio. STT silence rejection is configured in `orion-whisper-tts` via `STT_NEAR_SILENT_PEAK_INT16` (default `50`).
@@ -1890,10 +1905,10 @@ producer -- these are facts Hub already sees):
   evidence the governor started the turn; before that the turn is *queued*).
   The lane is derived from the same `fcc_model_label` predicate
   `HarnessGovernorClient.run()` uses to pick the queue, so it cannot disagree.
-- **LLM gateway lanes** -- polled from orion-llm-gateway's `GET /admission`
-  (per-upstream inflight / waiting / shed gauges) joined to `GET /routes` by
-  the catalog's `upstream` field, so each worker's queue is labelled with the
-  route names that dispatch to it (`metacog`, `quick_background`, ...).
+- **LLM gateway lanes** -- one record per GPU pool role, built from the Hub's
+  live pool feed (`scripts/runtime_activity_routes.py` `pool_lanes`). The old
+  `GET /admission` + `GET /routes` join is gone (the admission ledger was
+  deleted in pool stage 5; `/routes` is retiring in stage 6).
 
 Endpoints: `GET /api/runtime-activity` (snapshot) and
 `GET /api/runtime-activity/stream` (SSE, one frame per change). Reducer:
@@ -2021,7 +2036,7 @@ Then open the Hub Memory tab → **Review queue**, or `GET /api/memory/cards?sta
 
 **Proposal review (attention + review decisions):** Hub main tab → **Pending Decisions** lists decision-worthy `pending_review` proposals from the context-exec proposal review API. Enabled in Athena `.env_example` (`HUB_PROPOSAL_REVIEW_ENABLED=true`); panel and script are omitted from the page when false. Hub calls `GET /health`, `GET /proposals`, detail, eligibility, and `POST /proposals/{id}/review` only — it does not read JSON ledger files, does not POST triage, and does not execute proposals directly. Approval creates future execution eligibility only. See [docs/proposal-review-api.md](../../docs/proposal-review-api.md).
 
-**Compute lane override (mode vs compute):** Hub chat UI exposes **Mode** and **Compute** dropdowns. Mode decides behavior (`Auto`, `Grounded Small`, `Brain`, `Quick`, `Story`, `Agent`, `Council`); **Compute** selects the GPU/model lane (`chat`, `quick`, `agent`, `metacog`). Default compute is `quick`. Hub proxies `GET /api/llm-routes` from `HUB_LLM_GATEWAY_URL` (`GET /routes` on orion-llm-gateway) and polls every 30s. Selected lane is sent as `llm_route` on chat payloads (wired into cortex `options.llm_route`). **Mode: Agent now routes through FCC (see below), not context-exec** — `llm_route`/**Compute** is independent of Mode and unaffected by this: it's still the plain-completion lane picker used by Quick/Story/auto-escalated turns via `orion-llm-gateway`, not something FCC (Orion or Agent mode) ever consults. Down lanes warn with explicit **Use quick / Try anyway / Cancel** — no silent fallback.
+**Compute lane override (mode vs compute):** Hub chat UI exposes **Mode** and **Compute** dropdowns. Mode decides behavior (`Auto`, `Grounded Small`, `Brain`, `Quick`, `Story`, `Agent`, `Council`); **Compute** selects the GPU/model lane (`chat`, `quick`, `agent`, `metacog`). Default compute is `quick`. Hub serves `GET /api/llm-routes` from GPU pool state (`orion:gpu_pool:state` RPC with the pool's config, built by `orion/gpu_pool/route_view.py`, cached 10s; GPU pool stage 6.3 -- it no longer calls orion-llm-gateway's retiring `GET /routes`) and polls every 30s. When the pool cannot be asked, every lane is `unknown` (`source: gpu_pool_unavailable`), never a guessed `up`. Selected lane is sent as `llm_route` on chat payloads (wired into cortex `options.llm_route`). **Mode: Agent now routes through FCC (see below), not context-exec** — `llm_route`/**Compute** is independent of Mode and unaffected by this: it's still the plain-completion lane picker used by Quick/Story/auto-escalated turns via `orion-llm-gateway`, not something FCC (Orion or Agent mode) ever consults. Down lanes warn with explicit **Use quick / Try anyway / Cancel** — no silent fallback.
 
 **Social room toggle vs Mode vs Compute:**
 
@@ -2810,10 +2825,10 @@ state.
   deleted 2026-07-28) plus whether `docs/superpowers/specs/2026-08-21-phi-v2-design.md`'s
   successor pieces (`scripts/fit_phi_encoder.py`) exist on disk. phi-v2 itself is not implemented.
 - **`GET /api/self-brain/region-provenance`** (`scripts/self_brain_routes.py`): which service
-  actually backs each of `BrainRegionV1.dimension`'s 6 values (`orion.metrics.lineage
+  actually backs each of `BrainRegionV1.dimension`'s 5 values (`orion.metrics.lineage
   ::resolve_brain_regions()`), for the Self tab's Self-Observability EKG region-click detail panel
-  (see that section above) — `field_anomaly` names `orion-field-digester`; the other 5 name
-  `orion-substrate-runtime`. Static (6 entries, computed once via `lru_cache`), not per-tick.
+  (see that section above) — `field_anomaly` names `orion-field-digester`; the other 4 name
+  `orion-substrate-runtime`. Static (5 entries, computed once via `lru_cache`), not per-tick.
 
 ## Cabinet tab
 
@@ -3226,6 +3241,34 @@ turns get it, truth rules, search pattern, how to add a tool), see the
 
 **Reading search (orion-introspect `reading_results query=...`).** A loop in `ReadingListener` embeds each verified reading once (title + learned text, via vector-host HTTP `/embedding`) and publishes `VectorUpsertV1` on `orion:vector:semantic:upsert`; orion-vector-writer stores it in Chroma `HUB_READING_SEARCH_COLLECTION`. The loop is hash-aware, so a Stage 2 summary replacing Stage 1 text is re-indexed, and it doubles as the backfill (`reading_search_index indexed=N pending=M` every `HUB_READING_SEARCH_INDEX_INTERVAL_SEC`). A query embeds only the question, keeps Chroma hits at or above `HUB_READING_SEARCH_MIN_SIMILARITY`, and re-reads each hit from Postgres through the same verified-reading gate. Embedder/Chroma failure or a not-yet-built index is logged as `reading_search_failure` and reported to the model as "answer unknown", never as no results. Recalibrate the floor with `python services/orion-hub/evals/run_reading_search_calibration.py`.
 
+## Orion's Day (daily letter)
+
+Once a day Hub writes Juniper a letter about what Orion thought about yesterday
+(one America/Denver calendar day), and hands a short list of threads to
+Orion's next curiosity run.
+
+- **Scheduling** (`scripts/orion_day_letter.py`): after 08:30 local
+  (`HUB_ORION_DAY_HOUR_LOCAL`/`_MINUTE_LOCAL`) Hub gathers the day and submits an
+  admitted `orion_day.letter` durable run to orion-durable-runs
+  (`HUB_ORION_DAY_DURABLE_URL`). The run writes the `orion_day_letter` row. Hub keeps
+  no state of its own: the attempt number comes from `GET /runs/orion-day-<date>-<n>`,
+  a failed/abandoned attempt is retried as `n+1` up to `HUB_ORION_DAY_MAX_ATTEMPTS`
+  (then one in-app notice), an operator cancel is not retried, and the letter is
+  abandoned at the next day's slot. An empty day sends nothing.
+- **Email** (`scripts/orion_day_email.py`, `templates/orion_day_letter.html.j2`): a row
+  with `emailed_at IS NULL` is rendered (HTML with inline styles + a full plain-text
+  part, nothing truncated, up to `HUB_ORION_DAY_MAX_IMAGES` reverie images inline as
+  `cid:reverieN@orion`) and sent through orion-notify. `emailed_at` /
+  `email_notification_id` (uuid5 of the date) are stamped only when notify answers
+  `email_status == "sent"`. Kill switch: `HUB_ORION_DAY_EMAIL_ENABLED`.
+- **Carry-forward** (`orion/orion_day/carry_forward.py`): the regular investigate
+  line claims the freshest unexpired, unoffered `carry_forward_md` once and shows it
+  under its own header in the kickoff prompt; a cancelled turn gives it back. The
+  letter's note never reaches curiosity. Kill switch:
+  `HUB_CURIOSITY_CARRY_FORWARD_ENABLED`; freshness `HUB_ORION_DAY_CARRY_FORWARD_TTL_HOURS`.
+- Checks: `tests/test_orion_day_letter.py`; eval
+  `python services/orion-hub/evals/run_orion_day_email_eval.py [--material m.json]`.
+
 ## Curiosity resource admission
 
 `HUB_CURIOSITY_DURABLE_ADMISSION_ENABLED=true` is the operator-template default.
@@ -3235,17 +3278,14 @@ investigation and self-inquiry submissions. An uncertain receipt never triggers
 an unleased direct fallback or a budget refund: inspect/retry the same run ID.
 Set the flag false to preserve the prior non-admitted durable kickoff.
 
-Hub validates admitted turn fences using `HUB_CURIOSITY_LEASE_VALIDATION_URL`
-(default `http://127.0.0.1:8124/leases/validate`, since Hub uses host networking).
-Each admitted turn uses its lease's assigned lane and request's inference timeout; concurrent
-admitted lanes bypass the legacy local turn lock. Duplicate turns coalesce by
-run ID plus lease identity/generation, and even cached results require a current
-fence. Shutdown cancels and joins active turn tasks. The typed lease passes
-through the unified turn and Harness request into FCC's per-process
-`X-Orion-Resource-Lease` header; it never enters the prompt or a global env value.
-Stance, reflection, re-reflection, and conditional response repair use the same lease and
-assigned lane through their Cortex requests. Ordinary turns keep their existing
-routes; Hub omits an absent lease from the legacy stance bus payload.
+An admitted run waits in orion-durable-runs for one GPU pool hold (GPU pool stage 4). Hub
+validates each turn's hold ref (`gpu_lease`) with the pool's `status` verb before spending a turn
+on it, and every LLM call of the turn (FCC via `X-Orion-Gpu-Lease`, stance/reflection/repair via
+`options.gpu_lease`) attaches to that hold. Duplicate turns coalesce by run ID plus hold
+identity/generation. For Door-A, durable-runs keeps the hold past finish; Hub composes under it,
+then posts `/runs/{id}/release-outreach-lease` to `HUB_CURIOSITY_DURABLE_RUNS_URL` (the durable-runs
+base URL, default `http://127.0.0.1:8124`). The old durable lease token (`X-Orion-Resource-Lease`,
+`HUB_CURIOSITY_LEASE_VALIDATION_URL`) was deleted in stage 4.6.
 Full ownership and activation: `docs/architecture/durable-resource-admission.md`.
 
 ## Urgent curiosity runs
@@ -3268,8 +3308,14 @@ logged as `urgent_request_invalid`; when it still names a usable incident id it 
   curiosity durable run with the seed on the brief, `timeout_sec =
   HUB_CURIOSITY_URGENT_TURN_TIMEOUT_SEC`, and GPU admission `priority: urgent` with
   `deadline_at = now + HUB_CURIOSITY_URGENT_TIMEOUT_SEC` (durable-runs fails the run with
-  `workflow_deadline` there, queued or mid-turn). The prompt offers `psql` history only when
-  the `HUB_CURIOSITY_PG_READONLY_ROLE` role exists (or the check is off);
+  `workflow_deadline` there, queued or mid-turn). The prompt's only sources are `psql`
+  queries (biometrics per minute, the cabinet AC plug, and who held which GPU card from
+  `gpu_pool_events` joined to the `durable_run_workflow` view); it names no HTTP URLs,
+  because the harness blocks curl/wget in the sandbox. They are offered only when the
+  `HUB_CURIOSITY_PG_READONLY_ROLE` role exists (or the check is off); otherwise the
+  prompt says the evidence bundle is all the run has. The grants are
+  `scripts/sql/2026-09-28_grant_orion_readonly_hardware.sql` and
+  `scripts/sql/2026-10-02_grant_orion_readonly_gpu_pool.sql`;
 - skips the run lock, cooldown, daily cap and waking window, and spends none of them;
 - records the incident in the Redis hash `orion:curiosity:urgent:incidents` (newest 50 by
   `requested_at`; an incident whose open key is held is never evicted);
@@ -3339,14 +3385,10 @@ no GPU, unconfirmed dispatch) through the real reader, run-state handler and com
 Plan: `docs/superpowers/plans/2026-09-28-urgent-curiosity-plan-3-seeded-urgent-runs.md`.
 
 
-## Optional GPU2 elastic admission
+## GPU2 (agent-gpu2)
 
-GPU2 diffusion/agent-burst borrowing is additive and defaults off. See the
-[ownership ADR](../../docs/architecture/gpu2-elastic-admission.md),
-[pre-edit repository/live evidence](../../docs/architecture/gpu2-elastic-evidence.md),
-and [consumer-first rollout and rollback](../../docs/runbooks/gpu2-elastic-admission.md)
-for this service's exact flags, HTTP contracts and operator commands.
-No production env sync, migration, GPU transition or deployment was performed.
+gpu2 is loaded and unloaded only by orion-gpu-pool (GPU pool stage 4). The old per-run
+`HUB_CURIOSITY_ELASTIC_ACTIVATION_ENABLED` permission was deleted in stage 4.6.
 
 ## Lend chat GPU (gpu0 in orion-gpu-pool)
 
@@ -3379,12 +3421,20 @@ snapshots feed only the per-hop EWMA baseline gate
 
 ## Orion is asking (open questions to Juniper)
 
-Walkway camera idea 3 (`docs/superpowers/specs/2026-09-22-walkway-camera-busy-world-design.md`). A card in the Vision panel ("Orion is asking", `#visionAsksCard`, `static/js/vision-asks.js`) lists Orion's open questions and lets Juniper answer or dismiss them. Routes in `scripts/ask_routes.py`, on the Hub's asyncpg pool (`RECALL_PG_DSN`, `conjourney`):
+Walkway camera idea 3 (`docs/superpowers/specs/2026-09-22-walkway-camera-busy-world-design.md`). The "Orion is asking" panel (`#visionAsksCard`, `static/js/vision-asks.js`; since 2026-10-06 the first card on the Hub home, no longer inside Vision) lists Orion's open questions and lets Juniper answer or dismiss them. Routes in `scripts/ask_routes.py`, on the Hub's asyncpg pool (`RECALL_PG_DSN`, `conjourney`):
 
 - `GET /api/asks?status=open` -- open, unexpired `orion_ask` rows, newest first.
 - `POST /api/asks/{ask_id}/answer` with `{"answer": "..."}` and `POST /api/asks/{ask_id}/dismiss` -- only an open, unexpired row moves (409 otherwise, 404 if unknown). Sets `status`, `answer`, `answered_at`, then publishes `OrionAskAnsweredV1` on `orion:ask:answered` (consumed by `orion-substrate-runtime`). If the publish fails the answer is still saved (`published: false` in the response); `orion-sql-writer` applies labels from the row itself.
 
-Asks are opened by `orion-sql-writer`'s individuals loop (row insert only, no bus event); the card polls every 60s. Needs `services/orion-sql-db/manual_migration_walkway_camera_v1.sql` applied, otherwise the routes return 503 `ask_schema_missing`. Pictures: a `thumb:<sha256>` ref is served by `GET /api/vision/crop-thumbs/{sha256}` from the read-only `HUB_VISION_CROP_THUMB_DIR` mount (hex-only ids, regular files only, size-capped); an http(s) URL is shown as-is; anything else is shown as text.
+Asks are opened by `orion-sql-writer`'s individuals loop (row insert only, no bus event); the card polls every 60s.
+
+**Memory confirmation cards (2026-10-06).** `orion-memory-consolidation` also opens cards here (`source_kind=memory_confirmation`, `source_ref=memory-confirm-<memory_id>`) for high-stakes shadow memories: at most 5 open, 7-day expiry. These cards show **Confirm / Revise / Reject** instead of Answer / Dismiss, and cannot be closed through `/answer` or `/dismiss` (409 `ask_needs_resolution`), because a close without an outcome would orphan the memory.
+
+- `POST /api/asks/{ask_id}/resolve` with `{"resolution": "confirmed"|"revised"|"rejected", "note": "..."}`. `revised` needs a note that is new wording: at least 6 words and different from the current statement (422 `revised_needs_note` / `revised_too_short` / `revised_unchanged`; the "unchanged" check reads the memory inside the same transaction, so a refusal leaves the card open). There is no word list: a note that only says "no" is refused as too short, and the box tells her to press Reject. The panel's Revise box starts from the memory's current statement (`memory_statement`, added to these cards by `GET /api/asks`). In ONE transaction it closes the card (`answered`, or `dismissed` for a rejection) and inserts the `attention_loop_outcome` row (`outcome_id = uuid5(ask_id)`, `verdict` resolved/dismissed, `features_at_close = {resolution, ask_id, via: "orion_is_asking", memory_id, ...}`). After the commit it publishes `AttentionLoopOutcomeV1` on `orion:attention:loop_outcome` and the usual `OrionAskAnsweredV1`. A failed publish is reported (`published_outcome: false`) and recovered by the consumer's table catch-up.
+- Privacy: the Hub has no authentication. These cards quote family and health memories, sit first on the Hub home, and are visible to anyone who can reach the Hub on the tailnet.
+- Kill switch: `MEMORY_CONFIRMATION_LOOP_ENABLED=false` makes `/resolve` return 404 (cards stay open).
+- `orion-sql-writer`'s vision daily ask cap now counts only `vision_individual` asks, so memory cards do not use up the camera's budget.
+- Tests: `tests/test_ask_routes.py`, `tests/test_ask_resolve_pg.py` (real Postgres, end to end with the memory consumer), `tests/test_orion_is_asking_browser_smoke.py` (Chromium), `static/js/vision-asks.test.js`. Needs `services/orion-sql-db/manual_migration_walkway_camera_v1.sql` applied, otherwise the routes return 503 `ask_schema_missing`. Pictures: a `thumb:<sha256>` ref is served by `GET /api/vision/crop-thumbs/{sha256}` from the read-only `HUB_VISION_CROP_THUMB_DIR` mount (hex-only ids, regular files only, size-capped); an http(s) URL is shown as-is; anything else is shown as text.
 
 ## Dream operator surface
 

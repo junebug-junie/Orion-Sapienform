@@ -145,3 +145,13 @@ This service has no periodic eval harness; follow-up: replay recorded visual
 outcome sequences through feedback after an approved deployment and confirm no
 posterior changes on non-observations. The visual-baseline integration eval is
 owned by the visual producer/dispatch patch.
+
+
+## Settle-time world scoring (attend-to-act loop, 2026-10-01)
+
+`ORION_WORLD_SETTLEMENT_SCORING_ENABLED` (record-only, ON in .env_example): every 30 s,
+`substrate_world_action_episodes` rows whose window closed (t0 + TTL + 5 min) are scored by
+`orion/feedback/world_settlement.py` on `cabinet_heat_pressure` minute means: treated `expired` ->
+ledger row + posterior; control -> `randomized_holdback` row + control cell; `overlap:reflex` ->
+excluded in both arms; Orion's non-final `acted` loop verdict when the shed actually started. The
+field-window path skips `cabinet_heat_pressure` (`settle_time_signal:*`).

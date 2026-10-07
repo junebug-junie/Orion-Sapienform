@@ -1,3 +1,5 @@
+-- GPU pool stage 5.6: this file also creates durable_resource_demands/_leases and their sequence, which
+-- are dead. On a new host apply it, then manual_migration_gpu_pool_stage5_drop_legacy_tables.sql.
 -- Apply before enabling DURABLE_RESOURCE_ADMISSION_ENABLED.
 -- LangGraph owns checkpoint DDL and workflow state. These are inbox/resource facts.
 CREATE TABLE IF NOT EXISTS durable_admission_runs (

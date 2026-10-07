@@ -71,6 +71,8 @@ something worth writing up manufactures significance daily.
 from __future__ import annotations
 
 import asyncio
+
+import httpx
 import json
 import logging
 import re
@@ -107,6 +109,7 @@ from orion.curiosity.kickoff_prompt import (
     build_kickoff_prompt,
     build_resume_preamble,
 )
+from orion.orion_day.carry_forward import release_carry_forward, take_carry_forward
 from orion.dream.hypotheses import release_hypotheses_for_run, take_hypotheses_for_offer
 from orion.curiosity.peer_briefs import (
     REFUSED_OR_FAILED_RECENT_CYPHER,
@@ -141,6 +144,7 @@ from orion.curiosity.self_inquiry import (
     read_self_question_mints,
     self_definition_from_detail,
 )
+from orion.cognition.recall_query import cap_retrieval_query
 from orion.curiosity.self_inquiry_prompt import PreviousLivedAnswer, build_self_inquiry_prompt
 from orion.curiosity.self_question_pool import (
     SELECT_ALL_SQL,
@@ -196,9 +200,9 @@ from orion.curiosity.worldview import (
 )
 from orion.llm.routes import FCC_LLAMACPP_MODEL_PREFIX, fcc_model_for_route
 from orion.gpu_pool.client import LeaseUnavailable, durable_run_holder, validate_hold_ref
-from orion.llm.resource_lease import GPU_LEASE_ROUTE, validate_resource_lease
+from orion.llm.resource_lease import GPU_LEASE_ROUTE
 from orion.schemas.gpu_pool import GpuLeaseRefV1
-from orion.schemas.resource_admission import ResourceRequirementV1, ResourceLeaseV1
+from orion.schemas.resource_admission import ResourceRequirementV1
 from orion.journaler.schemas import JournalEntryWriteV1
 from orion.curiosity.journal import (  # moved 2026-09-06; names unchanged for callers/tests
     INVESTIGATION_TAG,
@@ -333,6 +337,16 @@ def _line_keys(line: str) -> tuple[str, str, str]:
             _SENSE_EVAL_LAST_RUN_KEY,
         )
     return _COOLDOWN_KEY, _DAILY_COUNT_KEY_PREFIX, _LAST_RUN_KEY
+
+
+def _standing_question_from_view(view) -> str | None:
+    """What a world-curiosity run is still asking: the note the last run asked
+    itself to keep pulling on. None at a fresh kickoff (Orion has not chosen a
+    question yet), and recall then falls back to the Mind appraisal."""
+    outcome = getattr(view, "continuation", None)
+    if outcome is None or not getattr(outcome, "continue_line", False):
+        return None
+    return cap_retrieval_query(getattr(outcome, "continue_note", None))
 
 
 def _investigation_subject_from_view(view) -> str:
@@ -556,6 +570,42 @@ def signal_block_reason(inp: SignalGateInputs) -> Optional[str]:
 
 
 
+# In-process only: `execute_unified_turn` turns it into the harness request's
+# `reply_budget_sec`. A monotonic stamp, so it never leaves this process.
+REPLY_DEADLINE_PAYLOAD_KEY = "harness_reply_deadline_monotonic"
+
+
+def held_turn_fcc_budget_sec(turn_timeout_sec: float, reserve_sec: float) -> float:
+    """The motor's budget for a held turn: the turn's limit minus the finalize reserve.
+
+    durable-runs stops the attempt and releases the run's GPU hold at the turn's limit
+    (`brief.timeout_sec`), and Hub stops waiting at the same limit. A motor given the
+    whole limit is still running when the hold goes, so finalize's LLM calls fail with
+    `hold_not_granted:released` and the draft is thrown away (run a153451fe423). A
+    reserve that would leave the motor nothing is ignored rather than starving it."""
+    turn = float(turn_timeout_sec)
+    budget = turn - max(0.0, float(reserve_sec))
+    if budget > 0:
+        return budget
+    if reserve_sec > 0:
+        logger.warning(
+            "curiosity_held_turn_reserve_exceeds_turn turn_sec=%.0f reserve_sec=%.0f -- motor gets the whole "
+            "turn; finalize will be cut at the reply deadline and the draft returned", turn, reserve_sec,
+        )
+    return turn
+
+
+def salvage_urgent_draft(frame: Any) -> str:
+    """Orion's unfinalized draft from a `turn_error` frame (`partial_draft`), or "".
+    A context-overflow frame's draft is not Orion's answer and is never salvaged."""
+    if not isinstance(frame, dict) or frame.get("context_overflow"):
+        return ""
+    draft = str(frame.get("partial_draft") or "").strip()
+    from orion.fcc.context_budget import is_context_overflow_text
+
+    return "" if is_context_overflow_text(draft) else draft
+
+
 def _turn_payload(source: str, fcc_model_label: Optional[str]) -> dict:
     """The unified-turn payload for one curiosity turn.
 
@@ -616,8 +666,9 @@ class CuriosityInvestigation:
         reader: Optional[WorldviewReader] = None,
         kickoff_via_cortex: bool = False,
         durable_admission_enabled: bool = False,
-        elastic_activation_enabled: bool = False,
-        lease_validation_url: str = "http://127.0.0.1:8124/leases/validate",
+        # Base URL of orion-durable-runs (same service the reading loop submits to); Hub posts
+        # ``/runs/{id}/release-outreach-lease`` there when Door-A composition is done.
+        durable_runs_url: str = "http://127.0.0.1:8124",
         cortex_request_channel: str = "orion:cortex:request",
         cortex_result_prefix: str = "orion:cortex:result",
         # --- contractor peer soft-nudge ------------------------------------
@@ -625,6 +676,10 @@ class CuriosityInvestigation:
         # --- dream hypotheses (orion/dream/hypotheses.py) -------------------
         dream_hypotheses_enabled: bool = False,
         dream_hypotheses_per_run: int = 3,
+        # --- Orion's Day carry-forward (orion/orion_day/carry_forward.py) ---
+        # The regular investigate line only: claims yesterday's letter's
+        # carry_forward_md once and shows it as its own kickoff section.
+        carry_forward_enabled: bool = False,
         # --- the self-inquiry line -----------------------------------------
         self_inquiry_enabled: bool = False,
         self_inquiry_daily_cap: int = 3,
@@ -650,6 +705,7 @@ class CuriosityInvestigation:
         urgent_enabled: bool = False,
         urgent_turn_timeout_sec: float = 900.0,
         urgent_timeout_sec: float = 1200.0,
+        held_turn_finalize_reserve_sec: float = 0.0,
     ) -> None:
         # Durable runs: when on, `_investigate` builds the same prompt and
         # hands the run to cortex instead of running the turn here; the
@@ -657,10 +713,9 @@ class CuriosityInvestigation:
         # reports completion on `orion:durable:run:state` (outreach stays here).
         self.kickoff_via_cortex = bool(kickoff_via_cortex)
         self.durable_admission_enabled = bool(durable_admission_enabled)
-        self.elastic_activation_enabled = bool(elastic_activation_enabled)
         if self.durable_admission_enabled and not self.kickoff_via_cortex:
             raise ValueError("durable admission requires kickoff_via_cortex")
-        self.lease_validation_url = lease_validation_url
+        self.durable_runs_url = durable_runs_url
         self._turn_tasks: set[asyncio.Task] = set()
         self.cortex_request_channel = cortex_request_channel
         self.cortex_result_prefix = cortex_result_prefix
@@ -749,6 +804,12 @@ class CuriosityInvestigation:
         self.contractor_peer_enabled = bool(contractor_peer_enabled)
         self.dream_hypotheses_enabled = bool(dream_hypotheses_enabled)
         self.dream_hypotheses_per_run = max(0, int(dream_hypotheses_per_run))
+        self.carry_forward_enabled = bool(carry_forward_enabled)
+        # Other Hub loops that want terminal durable-run states without a second
+        # subscription (Orion's Day: scripts/orion_day_letter.py). Each hook gets
+        # every DurableRunStateV1 this listener decodes; a failing hook is logged
+        # and never stops curiosity's own handling.
+        self.run_state_hooks: list = []
         # Per-run dedupe: durable admission completes via `_handle_run_state`,
         # while non-durable / dispatch-fallback journals in-process. Both call
         # `_enqueue_help_requests_after_run`; a run that hits both must not
@@ -841,6 +902,8 @@ class CuriosityInvestigation:
         self.urgent_enabled = bool(urgent_enabled)
         self.urgent_turn_timeout_sec = float(urgent_turn_timeout_sec)
         self.urgent_timeout_sec = float(urgent_timeout_sec)
+        # Held turns only: see held_turn_fcc_budget_sec.
+        self.held_turn_finalize_reserve_sec = max(0.0, float(held_turn_finalize_reserve_sec))
         self.urgent_reporter: Any = None
         self.urgent_listener_task: Optional[asyncio.Task] = None
         # Terminal-report deliveries retry for up to 30 min; held here so the
@@ -1131,6 +1194,48 @@ class CuriosityInvestigation:
         return await take_hypotheses_for_offer(
             self._pool_provider(), run_id=run_id, limit=self.dream_hypotheses_per_run
         )
+
+    async def _take_carry_forward(self, run_id: str):
+        """Claim Orion's Day carry-forward for this run. None when off or nothing fresh.
+
+        Not gated on the graph: the section asks for no write, so it is shown on
+        every prompt it is claimed for (the claim means "shown to Orion").
+        """
+        if not self.carry_forward_enabled or not run_id:
+            return None
+        return await take_carry_forward(self._pool_provider(), run_id=run_id)
+
+    async def _release_carry_forward_if_unseen(self, run_id: str) -> None:
+        """A durable run that ended before its turn started never showed Orion the
+        carry-forward it claimed at kickoff: give it back. "Started" is the run's own
+        `run.started` event in durable-runs' history (GET /runs/{id}); on any doubt
+        (unreachable, unknown run) the claim is kept -- a lost offer is recoverable by the
+        next day's letter, a double offer is not."""
+        if not self.carry_forward_enabled or not run_id:
+            return
+        root = str(self.durable_runs_url or "").strip().rstrip("/")
+        if not root:
+            return
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                resp = await client.get(f"{root}/runs/{run_id}")
+            if resp.status_code != 200:
+                return
+            history = resp.json().get("history") or []
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("curiosity_carry_forward_release_check_failed run=%s err=%s", run_id, exc)
+            return
+        if any(isinstance(e, dict) and e.get("event") == "run.started" for e in history):
+            return
+        await release_carry_forward(self._pool_provider(), run_id=run_id)
+        logger.info("curiosity_carry_forward_released_unstarted run=%s", run_id)
+
+    async def _release_offers(self, run_id: str, *, dream: bool, carry_forward: bool) -> None:
+        """Give back what this run claimed but Orion never saw (cancelled before the turn)."""
+        if dream:
+            await release_hypotheses_for_run(self._pool_provider(), run_id=run_id)
+        if carry_forward:
+            await release_carry_forward(self._pool_provider(), run_id=run_id)
 
     async def _read_peer_briefs_for_nudge(self) -> tuple:
         """Unused PeerBriefs for kickoff soft-nudge (RO_QUERY only).
@@ -1768,6 +1873,7 @@ class CuriosityInvestigation:
         if self.contractor_peer_enabled:
             peer_briefs = await self._read_peer_briefs_for_nudge()
         dream_hypotheses = await self._take_dream_hypotheses(view, run_id)
+        carry_forward = await self._take_carry_forward(run_id)
         prompt = build_kickoff_prompt(
             material,
             view=view,
@@ -1785,7 +1891,13 @@ class CuriosityInvestigation:
             contractor_peer_enabled=self.contractor_peer_enabled,
             peer_briefs=peer_briefs,
             dream_hypotheses=dream_hypotheses,
+            carry_forward=carry_forward,
         )
+        if carry_forward is not None:
+            logger.info(
+                "curiosity_carry_forward_offered run=%s letter_date=%s chars=%s",
+                run_id, carry_forward.letter_date, len(carry_forward.text),
+            )
         if dream_hypotheses:
             logger.info(
                 "curiosity_dream_hypotheses_offered run=%s ids=%s",
@@ -1795,6 +1907,10 @@ class CuriosityInvestigation:
         # Claim is unset at kickoff (Orion has not chosen). Continuation note
         # rides on Mind; the HelpRequest teach block stays on the harness prompt.
         self._mind_appraisal_by_run_id[run_id] = _investigation_subject_from_view(view)
+        # What recall searches for during the turn. Carried on the durable brief
+        # (and the in-process turn request), not only in the in-memory dict
+        # above, so a Hub restart mid-run does not lose it.
+        retrieval_query = _standing_question_from_view(view)
         if peer_briefs:
             # Hub is RO on worldview; peer service MERGEs consumed=true.
             await publish_peer_briefs_consumed(
@@ -1809,6 +1925,7 @@ class CuriosityInvestigation:
                     correlation_id=correlation_id,
                     prompt=prompt,
                     material=material,
+                    retrieval_query=retrieval_query,
                 )
             except asyncio.CancelledError:
                 # Hub going away mid-dispatch (the RPC to cortex-orch can take
@@ -1818,8 +1935,9 @@ class CuriosityInvestigation:
                 # cooldown stamp spent for a run cortex never confirmed.
                 if not self.durable_admission_enabled:
                     await self._refund_investigation(previous_stamp)
-                    if dream_hypotheses:
-                        await release_hypotheses_for_run(self._pool_provider(), run_id=run_id)
+                    await self._release_offers(
+                        run_id, dream=bool(dream_hypotheses), carry_forward=carry_forward is not None
+                    )
                 raise
             if dispatched:
                 return "dispatched"
@@ -1848,21 +1966,26 @@ class CuriosityInvestigation:
                         fcc_model_label=self._fcc_model_label,
                         timeout_sec=float(self.timeout_sec),
                         source_tag=INVESTIGATION_TAG,
+                        retrieval_query=retrieval_query,
                     ),
                     hold_lock=False,  # tick already holds _run_lock
                 )
                 text, debug = turn.text, dict(turn.debug)
             else:
                 await self._spend_turn_started(run_id)
-                text, debug = await self._generate(prompt, correlation_id, parent_run_id=run_id)
+                text, debug = await self._generate(
+                    prompt, correlation_id, parent_run_id=run_id,
+                    **({"retrieval_query": retrieval_query} if retrieval_query else {}),
+                )
                 await self._spend_turn_ended(run_id, turn_ok=bool(text))
         except asyncio.CancelledError:
             # Hub is going away mid-turn. Give the slot back and let the
             # cancellation continue -- swallowing it would leave a task the
             # shutdown is waiting on.
             await self._refund_investigation(previous_stamp)
-            if dream_hypotheses:
-                await release_hypotheses_for_run(self._pool_provider(), run_id=run_id)
+            await self._release_offers(
+                run_id, dream=bool(dream_hypotheses), carry_forward=carry_forward is not None
+            )
             raise
         if not text:
             logger.info("curiosity_investigation_no_text run=%s debug=%s", run_id, debug)
@@ -1985,8 +2108,8 @@ class CuriosityInvestigation:
         if redis is None:
             return await self._refuse_urgent(seed, "redis_unavailable")
 
-        # A missing role does not refuse an urgent run (the HTTP readings still
-        # work); it only drops the psql history from the prompt. Checked before the
+        # A missing role does not refuse an urgent run (the evidence bundle is
+        # still there); it only drops the psql sources from the prompt. Checked before the
         # open key is taken and bounded: a hung pool must not strand the incident.
         pg_available = True
         if self.pg_readonly_role:
@@ -2008,11 +2131,12 @@ class CuriosityInvestigation:
             seed,
             run_id=run_id,
             own_graph=self.graph_own,
-            hub_url=self.hub_url,
             graph_enabled=self._reader is not None,
             pg_available=pg_available,
         )
         self._mind_appraisal_by_run_id[run_id] = seed.question
+        # The seed's question is the standing question; durable on the brief.
+        retrieval_query = cap_retrieval_query(seed.question)
         logger.info(
             "curiosity_urgent_starting incident_id=%s run=%s trigger=%s subject=%s corr=%s",
             incident_id, run_id, seed.trigger, seed.subject or "-", correlation_id,
@@ -2026,6 +2150,7 @@ class CuriosityInvestigation:
                 priority="urgent",
                 urgent=seed,
                 timeout_sec=self.urgent_turn_timeout_sec,
+                retrieval_query=retrieval_query,
             )
         except asyncio.CancelledError:
             await self._release_urgent_open_key(open_key)
@@ -2608,6 +2733,9 @@ class CuriosityInvestigation:
         # rides on Mind; the SelfDefinition / HelpRequest teach stays on the
         # harness prompt. Same subject builder as world-curiosity.
         self._mind_appraisal_by_run_id[run_id] = _investigation_subject_from_view(view)
+        # The picked question is this run's standing question: what recall
+        # searches for. Durable on the brief / turn request, not the dict above.
+        retrieval_query = cap_retrieval_query(picked.text)
         if peer_briefs:
             await publish_peer_briefs_consumed(
                 bus=self._bus,
@@ -2623,6 +2751,7 @@ class CuriosityInvestigation:
                     prompt=prompt,
                     material=material,
                     line=LINE_SELF_INQUIRY,
+                    retrieval_query=retrieval_query,
                 )
             except asyncio.CancelledError:
                 if not self.durable_admission_enabled:
@@ -2650,12 +2779,19 @@ class CuriosityInvestigation:
                         fcc_model_label=self._fcc_model_label,
                         timeout_sec=float(self.timeout_sec),
                         source_tag=SELF_INQUIRY_TAG,
+                        retrieval_query=retrieval_query,
                     ),
                     hold_lock=False,
                 )
                 text, debug = turn.text, dict(turn.debug)
             else:
-                text, debug = await self._generate(prompt, correlation_id, source=SELF_INQUIRY_TAG, parent_run_id=run_id)
+                text, debug = await self._generate(
+                    prompt,
+                    correlation_id,
+                    source=SELF_INQUIRY_TAG,
+                    parent_run_id=run_id,
+                    **({"retrieval_query": retrieval_query} if retrieval_query else {}),
+                )
         except asyncio.CancelledError:
             await self._refund_investigation(previous_stamp, LINE_SELF_INQUIRY)
             raise
@@ -3165,10 +3301,10 @@ class CuriosityInvestigation:
         parent_run_id: str | None = None,
         fcc_model_label: str | None = None,
         timeout_sec: float | None = None,
-        resource_lease: ResourceLeaseV1 | None = None,
         session_id: str | None = None,
         gpu_lease: GpuLeaseRefV1 | None = None,
         urgent: bool = False,
+        retrieval_query: str | None = None,
     ) -> Tuple[str, dict]:
         """Real unified-turn generation. Returns ("", debug) on any failure,
         defer, or degraded run -- same "never fabricate, silence over a false
@@ -3197,7 +3333,16 @@ class CuriosityInvestigation:
         `urgent=True` (an urgent run's typed seed was on the turn request)
         makes `execute_unified_turn` proceed past a stance defer/refuse and
         fail -- not defer -- when stance is unavailable; that turn_error's
-        reason becomes `debug["error"]` so the run says why it failed."""
+        reason becomes `debug["error"]` so the run says why it failed.
+
+        `retrieval_query` is what recall searches for: the run's standing
+        question, carried durably on the run's brief / turn request. When a run
+        does not carry one it is None and recall condenses the prompt itself.
+        Never the Mind appraisal: at kickoff that is `build_investigation_subject`
+        boilerplate ("Investigation claim: not yet chosen."), and sending it would
+        label boilerplate as a caller query in recall telemetry (PR #2423 review).
+        Every real standing question -- the self-inquiry question, the urgent
+        seed's question, the continuation note -- is already on the brief."""
         if self._bus is None:
             return "", {"error": "no_bus"}
         from orion.cognition.cortex_payload_extract import looks_like_error_text
@@ -3206,13 +3351,16 @@ class CuriosityInvestigation:
         started = time.monotonic()
         turn_timeout = self.timeout_sec if timeout_sec is None else timeout_sec
         payload = _turn_payload(source, fcc_model_label or self._fcc_model_label)
-        if resource_lease is not None:
-            payload["resource_lease"] = resource_lease.model_dump(mode="json")
-            payload["inference_timeout_sec"] = turn_timeout
         if gpu_lease is not None:
             # Stage 4: every LLM call of the turn attaches to the run's GPU pool hold.
             payload["gpu_lease"] = gpu_lease.model_dump(mode="json")
-            payload["inference_timeout_sec"] = turn_timeout
+            # The motor gets the turn's limit minus the finalize reserve, and the harness is
+            # told when Hub stops waiting: durable-runs releases the hold at this same limit,
+            # so finalize must run -- and the reply land -- before it (run a153451fe423).
+            payload["inference_timeout_sec"] = held_turn_fcc_budget_sec(
+                turn_timeout, self.held_turn_finalize_reserve_sec
+            )
+            payload[REPLY_DEADLINE_PAYLOAD_KEY] = started + turn_timeout
         appraisal = None
         if parent_run_id and source in (INVESTIGATION_TAG, SELF_INQUIRY_TAG):
             appraisal = self._mind_appraisal_by_run_id.get(parent_run_id)
@@ -3220,6 +3368,7 @@ class CuriosityInvestigation:
             # Queue score is read inside turn_orchestrator from FieldState
             # (official digester meter — no Hub EWMA). Each hint fails open.
             await self._attach_role_teach_progress_hints(payload, parent_run_id)
+        turn_retrieval_query = cap_retrieval_query(retrieval_query)
         try:
             frames = await asyncio.wait_for(
                 execute_unified_turn(
@@ -3231,6 +3380,7 @@ class CuriosityInvestigation:
                     user_message=prompt,
                     utterance_origin="orion",
                     mind_appraisal_text=appraisal,
+                    retrieval_query=turn_retrieval_query,
                     # no_write: the journal entry below is the sole persistence
                     # path, so this does not also land as an untagged chat row.
                     # `fcc_model_label` is branch 1 of
@@ -3301,6 +3451,20 @@ class CuriosityInvestigation:
             error = "no_final_frame"
             if urgent and frame_type == "turn_error" and other.get("error"):
                 error = str(other["error"])
+            salvaged = salvage_urgent_draft(other) if urgent and frame_type == "turn_error" else ""
+            if salvaged and not looks_like_error_text(salvaged):
+                # An urgent run must end in Orion's own words, not a bare failure: the
+                # motor's draft, unfinalized, flagged so the report says what it is.
+                logger.warning(
+                    "curiosity_urgent_draft_salvaged corr=%s error=%s chars=%s",
+                    correlation_id, error, len(salvaged),
+                )
+                return salvaged, {
+                    "draft_salvaged": True,
+                    "salvaged_from_error": error[:300],
+                    "harness_step_count": other.get("partial"),
+                    "elapsed_sec": elapsed,
+                }
             return "", {
                 "error": error,
                 "frame_type": frame_type,
@@ -3407,7 +3571,6 @@ class CuriosityInvestigation:
         run_id: str,
         hop_notes: Optional[list[tuple[int, str]]] = None,
         line: str = LINE_INVESTIGATE,
-        resource_lease: ResourceLeaseV1 | None = None,
         gpu_lease: GpuLeaseRefV1 | None = None,
     ) -> Optional[str]:
         """Orion decided a finding is worth telling Juniper about. Compose it.
@@ -3424,9 +3587,9 @@ class CuriosityInvestigation:
         (2026-09-22): if Orion burned a run and asked to share, they share.
         Delivery still goes through `offer_message(skip_schedule_gates=True)`.
 
-        When ``resource_lease`` is set (durable admission held the grant past
-        finish for Door-A), composition uses that lease and Hub releases it
-        afterward so the GPU slot is not stranded.
+        When ``gpu_lease`` is set (durable-runs kept the run's GPU pool hold past
+        finish for Door-A), composition runs under that hold and Hub asks
+        durable-runs to release it afterward so the GPU slot is not stranded.
 
         EVERY exit below leaves a decision row (2026-09-22): the ones that
         reach `offer_message` are recorded there; the ones that do not go
@@ -3443,14 +3606,13 @@ class CuriosityInvestigation:
                 run_id=run_id,
                 hop_notes=hop_notes,
                 line=line,
-                resource_lease=resource_lease,
                 gpu_lease=gpu_lease,
                 correlation_id=correlation_id,
             )
         finally:
-            if resource_lease is not None or gpu_lease is not None:
-                # Durable-runs owns the release of either grant (a pool hold becomes a pool
-                # ``release`` there in 4.5); Hub only says it is done composing.
+            if gpu_lease is not None:
+                # Durable-runs owns the release of the hold (a pool ``release``); Hub only
+                # says it is done composing.
                 await self._release_outreach_lease(run_id)
 
     async def _maybe_reach_out_inner(
@@ -3461,7 +3623,6 @@ class CuriosityInvestigation:
         run_id: str,
         hop_notes: Optional[list[tuple[int, str]]],
         line: str,
-        resource_lease: ResourceLeaseV1 | None,
         correlation_id: str,
         gpu_lease: GpuLeaseRefV1 | None = None,
     ) -> Optional[str]:
@@ -3535,13 +3696,16 @@ class CuriosityInvestigation:
             reach_out_why=outcome.reach_out_why,
             hop_notes=notes,
         )
+        # Recall searches the finding Orion is composing about, not the
+        # composition prompt (recall retrieval design phase 3, PR #2423 review).
+        outreach_query = cap_retrieval_query(" ".join(str(finding_text or "").split()))
         text, debug = await self._generate(
             prompt,
             correlation_id,
             source=OUTREACH_TAG,
             require_lookup=False,
-            resource_lease=resource_lease,
             gpu_lease=gpu_lease,
+            **({"retrieval_query": outreach_query} if outreach_query else {}),
         )
         if not text:
             logger.info("curiosity_outreach_no_text run=%s debug=%s", run_id, debug)
@@ -3567,10 +3731,11 @@ class CuriosityInvestigation:
         return None if result.get("outreach") else str(result.get("reason") or "not_sent")
 
     async def _release_outreach_lease(self, run_id: str) -> None:
-        """Free the durable-runs grant held past finish for Door-A composition.
+        """Free the GPU pool hold durable-runs kept past finish for Door-A composition.
 
-        Best-effort: a failed release leaves the lease to expire on TTL so the
-        broker recovers capacity without Hub blocking the investigation path.
+        Best-effort: durable-runs bounds an unreleased outreach hold itself
+        (DURABLE_RUNS_OUTREACH_HOLD_MAX_SEC), so Hub never blocks the
+        investigation path on this call.
         """
         url = self._outreach_lease_release_url(run_id)
         if not url:
@@ -3595,15 +3760,10 @@ class CuriosityInvestigation:
             )
 
     def _outreach_lease_release_url(self, run_id: str) -> str:
-        """Derive release URL from the lease-validate base (no new env key)."""
-        base = str(self.lease_validation_url or "").strip()
-        if not base:
+        """``<durable_runs_url>/runs/{run_id}/release-outreach-lease``; empty base = no call."""
+        root = str(self.durable_runs_url or "").strip().rstrip("/")
+        if not root:
             return ""
-        marker = "/leases/validate"
-        if marker in base:
-            root = base.split(marker, 1)[0].rstrip("/")
-        else:
-            root = base.rstrip("/")
         return f"{root}/runs/{run_id}/release-outreach-lease"
 
     # --- durable runs: kickoff through cortex, turn on request, outreach on completion --
@@ -3616,6 +3776,7 @@ class CuriosityInvestigation:
         line: str = LINE_INVESTIGATE,
         urgent: Optional[CuriosityUrgentSeedV1] = None,
         timeout_sec: Optional[float] = None,
+        retrieval_query: Optional[str] = None,
     ) -> CuriosityRunBriefV1:
         # An urgent run is shown no study material: the brief's counts stay zero.
         material_brief = (
@@ -3639,6 +3800,7 @@ class CuriosityInvestigation:
             source_tag=SELF_INQUIRY_TAG if line == LINE_SELF_INQUIRY else INVESTIGATION_TAG,
             line=line,
             urgent=urgent,
+            retrieval_query=cap_retrieval_query(retrieval_query),
         )
 
     async def _dispatch_via_cortex(
@@ -3719,6 +3881,7 @@ class CuriosityInvestigation:
         priority: str = "background",
         urgent: Optional[CuriosityUrgentSeedV1] = None,
         timeout_sec: Optional[float] = None,
+        retrieval_query: Optional[str] = None,
     ) -> bool:
         """Hand the run to cortex. True only when cortex replied `accepted`."""
         if self._bus is None:
@@ -3728,10 +3891,10 @@ class CuriosityInvestigation:
             workflow="curiosity.investigate",
             correlation_id=correlation_id,
             brief=self._run_brief(
-                prompt=prompt, material=material, line=line, urgent=urgent, timeout_sec=timeout_sec
+                prompt=prompt, material=material, line=line, urgent=urgent, timeout_sec=timeout_sec,
+                retrieval_query=retrieval_query,
             ),
             admission=(ResourceRequirementV1(
-                allow_elastic_activation=self.elastic_activation_enabled,
                 preferred_lane=self.llm_route or "agent",
                 resource=f"llm.route.{self.llm_route or 'agent'}",
                 priority=priority,
@@ -3783,7 +3946,6 @@ class CuriosityInvestigation:
                 lived_answers=list(lived_answers),
             ),
             admission=(ResourceRequirementV1(
-                allow_elastic_activation=self.elastic_activation_enabled,
                 preferred_lane=self.llm_route or "agent",
                 resource=f"llm.route.{self.llm_route or 'agent'}",
             ) if self.durable_admission_enabled else None),
@@ -3838,7 +4000,7 @@ class CuriosityInvestigation:
         )
         try:
             result = await self._turn_result_for(
-                request, hold_lock=request.lease is None and request.gpu_lease is None
+                request, hold_lock=request.gpu_lease is None
             )
         except Exception as exc:
             # A stale fence is a prompt refusal, not a full inference RPC wait.
@@ -3907,16 +4069,10 @@ class CuriosityInvestigation:
         `False` from inside the tick, which already holds `_run_lock`
         (asyncio.Lock is not re-entrant)."""
         now = time.monotonic()
+        # durable-runs' attempt timer is already running: a held turn's limit counts from
+        # receipt, not from when `_generate` starts (hold fence, prompt read, lock wait).
+        received = now
         key = f"{request.run_id}:{request.correlation_id}"
-        if request.lease is not None:
-            lease = request.lease
-            if lease.run_id != request.run_id or request.assigned_lane != lease.lane:
-                raise ValueError("curiosity resource lease identity mismatch")
-            await validate_resource_lease(
-                lease.model_dump(mode="json"), lane=lease.lane, backend_key=lease.backend_key,
-                validation_url=self.lease_validation_url,
-            )
-            key = f"{request.run_id}:{request.correlation_id}:{lease.lease_id}:{lease.generation}"
         if request.gpu_lease is not None:
             # Stage 4: the pool is the fence. Refuse a hold that is gone, re-granted (stale
             # generation) or another run's before spending a harness turn on it.
@@ -3955,15 +4111,14 @@ class CuriosityInvestigation:
                     # already falls back to `self.session_id` when this is
                     # None, same as every other caller.
                     session_id=request.session_id,
-                    **({"fcc_model_label": f"{FCC_LLAMACPP_MODEL_PREFIX}{request.lease.lane}", "timeout_sec": request.timeout_sec,
-                        "resource_lease": request.lease} if request.lease is not None else {}),
                     # A hold's role (e.g. agent-gpu2) is not a route: FCC names the hold's
                     # work-class route and the gateway attaches every call to the hold.
                     **({"fcc_model_label": f"{FCC_LLAMACPP_MODEL_PREFIX}{GPU_LEASE_ROUTE}",
-                        "timeout_sec": request.timeout_sec}
-                       if request.gpu_lease is not None and request.lease is None else {}),
+                        "timeout_sec": max(1.0, request.timeout_sec - (time.monotonic() - received))}
+                       if request.gpu_lease is not None else {}),
                     **({"gpu_lease": request.gpu_lease} if request.gpu_lease is not None else {}),
                     **({"urgent": True} if request.urgent is not None else {}),
+                    **({"retrieval_query": request.retrieval_query} if request.retrieval_query else {}),
                 )
                 if measured:
                     await self._spend_turn_ended(request.run_id, turn_ok=bool(text))
@@ -4060,11 +4215,18 @@ class CuriosityInvestigation:
         # Every transition feeds Hub's live activity surface, before the
         # outreach filter below narrows to `completed`.
         get_runtime_activity().run_state(state.model_dump(mode="json"))
+        for hook in list(self.run_state_hooks):
+            try:
+                await hook(state)
+            except Exception:  # noqa: BLE001
+                logger.exception("curiosity_run_state_hook_failed run=%s", state.run_id)
         if state.workflow == "curiosity.investigate" and isinstance((state.detail or {}).get("urgent"), dict):
             # Urgent runs end in a report, never in reach-out or the ordinary
             # completion hooks.
             await self._handle_urgent_run_state(state)
             return
+        if state.workflow == "curiosity.investigate" and state.status in {"failed", "abandoned", "cancelled"}:
+            await self._release_carry_forward_if_unseen(state.run_id)
         if state.workflow != "curiosity.investigate" or state.status != "completed":
             return
         detail = state.detail or {}
@@ -4124,17 +4286,6 @@ class CuriosityInvestigation:
             reach_out=True,
             reach_out_why=str(detail.get("reach_out_why") or ""),
         )
-        lease = None
-        raw_lease = detail.get("resource_lease")
-        if isinstance(raw_lease, dict) and raw_lease:
-            try:
-                lease = ResourceLeaseV1.model_validate(raw_lease)
-            except Exception as exc:  # noqa: BLE001
-                logger.warning(
-                    "curiosity_outreach_lease_invalid run=%s err=%s",
-                    state.run_id,
-                    exc,
-                )
         gpu_lease = None
         raw_ref = detail.get("gpu_lease")
         if raw_ref is not None:
@@ -4160,7 +4311,6 @@ class CuriosityInvestigation:
             finding_text=str(detail.get("finding_text") or ""),
             run_id=state.run_id,
             line=str(detail.get("line") or LINE_INVESTIGATE),
-            resource_lease=lease,
             gpu_lease=gpu_lease,
         )
 

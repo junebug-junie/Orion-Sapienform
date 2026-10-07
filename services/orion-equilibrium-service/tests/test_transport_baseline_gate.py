@@ -156,9 +156,9 @@ async def test_log_only_mode_publishes_nothing_but_logs_and_persists(monkeypatch
         await svc._handle_rpc_health_snapshot(
             _snap(0, {LLM_HOP: _stats([], timeouts=1)}, timeouts=1), zen=0.9, distress=0.1
         )
-    # legacy timeout branch still owns publishing while EMIT is off
-    payloads = _published(svc)
-    assert [p["upstream"]["evidence_source"] for p in payloads] == ["rpc_health_snapshot"]
+    # log-only: a snapshot publishes no trigger at all (the pooled legacy
+    # timeout branch was retired 2026-09-29; the per-call atom owns timeouts)
+    assert _published(svc) == []
     assert "transport_baseline_event emit=False" in caplog.text
     assert "transport_baseline_obs" in caplog.text
     svc.bus.redis.set.assert_awaited()
@@ -168,7 +168,7 @@ async def test_log_only_mode_publishes_nothing_but_logs_and_persists(monkeypatch
 
 
 @pytest.mark.asyncio
-async def test_emit_mode_replaces_legacy_timeout_branch_no_double_firing(monkeypatch):
+async def test_emit_mode_one_snapshot_timeout_is_one_episode_row(monkeypatch):
     svc = _service(monkeypatch, emit=True)
     await svc._handle_rpc_health_snapshot(
         _snap(0, {LLM_HOP: _stats([], timeouts=2)}, timeouts=2), zen=0.9, distress=0.1
@@ -218,7 +218,9 @@ async def test_old_producer_without_channel_latency_is_skipped_quietly(monkeypat
 
 
 @pytest.mark.asyncio
-async def test_baseline_disabled_keeps_legacy_timeout_branch(monkeypatch):
+async def test_baseline_disabled_snapshot_fires_nothing_and_no_owner(monkeypatch):
+    """With the gate off there is no snapshot-driven trigger at all and no
+    timeout owner: every rpc_transport_timeout atom fires directly."""
     monkeypatch.setattr(settings, "transport_baseline_enable", False)
     monkeypatch.setattr(settings, "transport_baseline_emit", True)
     monkeypatch.setattr(settings, "metacog_transport_trigger_enable", True)
@@ -226,9 +228,10 @@ async def test_baseline_disabled_keeps_legacy_timeout_branch(monkeypatch):
     svc.bus = MagicMock()
     svc.bus.publish = AsyncMock()
     assert svc._transport_baseline_gate is None
+    assert svc._timeout_owner is None and svc._transport_hourly is None
     assert settings.transport_baseline_emit_effective() is False
     await svc._handle_rpc_health_snapshot(_snap(0, None, timeouts=1), zen=0.9, distress=0.1)
-    assert [p["upstream"]["evidence_source"] for p in _published(svc)] == ["rpc_health_snapshot"]
+    assert _published(svc) == []
 
 
 @pytest.mark.asyncio
@@ -263,7 +266,7 @@ async def test_mesh_wide_outage_is_capped_by_budget(monkeypatch, caplog):
 
 
 @pytest.mark.asyncio
-async def test_fold_exception_cold_starts_and_keeps_legacy_branch(monkeypatch, caplog):
+async def test_fold_exception_cold_starts_the_gate(monkeypatch, caplog):
     svc = _service(monkeypatch, emit=False)
     gate = svc._transport_baseline_gate
     gate.process(_snap(0, {LLM_HOP: _stats([1000.0] * 5)}), zen_state="zen", pressure=0.0, recall_enabled=True)
@@ -277,7 +280,7 @@ async def test_fold_exception_cold_starts_and_keeps_legacy_branch(monkeypatch, c
         await svc._handle_rpc_health_snapshot(_snap(1, {}, timeouts=1), zen=0.9, distress=0.1)
     assert gate.state.keys == {}
     assert "cold_start reason=fold_failed:RuntimeError" in caplog.text
-    assert [p["upstream"]["evidence_source"] for p in _published(svc)] == ["rpc_health_snapshot"]
+    assert _published(svc) == []
 
 
 def test_skipped_snapshots_are_logged_rate_limited(caplog):
@@ -291,16 +294,3 @@ def test_skipped_snapshots_are_logged_rate_limited(caplog):
         "transport_baseline_skip reason=no_channel_latency count=100 service=cortex-orch",
         "transport_baseline_skip reason=no_channel_latency count=200 service=cortex-orch",
     ]
-
-
-@pytest.mark.asyncio
-async def test_legacy_timeout_branch_ignores_new_publishers(monkeypatch):
-    monkeypatch.setattr(settings, "transport_baseline_enable", False)
-    monkeypatch.setattr(settings, "metacog_transport_trigger_enable", True)
-    svc = EquilibriumService()
-    svc.bus = MagicMock()
-    svc.bus.publish = AsyncMock()
-    snap = _snap(0, None, timeouts=3)
-    snap["service"] = "orion-durable-runs"
-    await svc._handle_rpc_health_snapshot(snap, zen=0.9, distress=0.1)
-    assert _published(svc) == []

@@ -73,6 +73,6 @@ Between the two pulls, the pool refuses gpu2 loads and unloads, which is safe. B
 
 ## PR link
 
-TBD
+https://github.com/junebug-junie/Orion-Sapienform/pull/2529
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

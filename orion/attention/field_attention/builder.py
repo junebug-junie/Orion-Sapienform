@@ -32,6 +32,7 @@ def build_attention_frame(
     prediction_error_baselines: dict[str, PrecisionEwmaBaseline] | None = None,
     previous_frame: FieldAttentionFrameV1 | None = None,
     now: datetime | None = None,
+    previous_field: FieldStateV1 | None = None,
 ) -> FieldAttentionFrameV1:
     """2026-07-30: `previous_frame` is used by `select_host_targets`/
     `select_capability_targets` (Candidate B's `novelty_scorer()`, real
@@ -57,10 +58,19 @@ def build_attention_frame(
     """
     generated_at = now or datetime.now(timezone.utc)
 
+    # #2534 decision 2: novelty skips channels that went dark / came back.
+    # Needs the field tick the previous frame was built from; any other tick
+    # would compare against the wrong vectors, so a mismatch is ignored.
+    if (
+        previous_field is not None
+        and (previous_frame is None or previous_field.tick_id != previous_frame.source_field_tick_id)
+    ):
+        previous_field = None
+
     node_targets = select_node_targets(
         field, policy, prediction_error_baselines or {}, now=generated_at
-    ) + select_host_targets(field, policy, previous_frame)
-    capability_targets = select_capability_targets(field, policy, previous_frame)
+    ) + select_host_targets(field, policy, previous_frame, previous_field)
+    capability_targets = select_capability_targets(field, policy, previous_frame, previous_field)
     system_targets = select_system_targets(field, policy)
 
     all_targets = node_targets + capability_targets + system_targets

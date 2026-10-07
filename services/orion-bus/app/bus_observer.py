@@ -248,23 +248,16 @@ async def run_observer_tick(
             rollup.streams_observed,
         )
     except Exception as exc:
+        # 2026-10-07 (#2534 decision 4, fix/field-decisions-d3-credit-novelty-
+        # observer): a failed tick no longer publishes a bus_observer_tick_failed
+        # trace. That trace fed observer_failure_pressure (0.0 on 123,099 of
+        # 123,099 field ticks; zero failed ticks in 72 h of retained atoms) and,
+        # because it carried no ping and no census, reduced to ping-unknown 0.5
+        # reliability and a 0.0 catalog drift -- readings nobody took. Now a
+        # failed tick publishes nothing: node:athena's transport channels go
+        # unrefreshed, and the observer's own liveness is this log line plus its
+        # SystemHealthV1 heartbeat (build_heartbeat_chassis, orion:system:health).
         logger.warning("bus observer tick failed: {}", exc, exc_info=True)
-        fail_collector = BusTransportGrammarCollector(
-            node_id=settings.bus_observer_node_id,
-            sample_window_id=window,
-            observed_at=observed_at,
-            code_version=settings.SERVICE_VERSION,
-        )
-        fail_collector.record_tick_started()
-        fail_collector.record_tick_failed(error_kind=type(exc).__name__)
-        events = build_bus_transport_grammar_events(fail_collector)
-        await publish_bus_transport_grammar_trace(
-            bus,
-            events,
-            channel=settings.grammar_event_channel,
-            source_name=settings.SERVICE_NAME,
-            enabled=settings.publish_orion_bus_grammar,
-        )
 
 
 def build_heartbeat_chassis(settings: Settings) -> HeartbeatOnly:

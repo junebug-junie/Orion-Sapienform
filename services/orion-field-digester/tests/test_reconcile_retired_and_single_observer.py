@@ -5,6 +5,8 @@ Both were found live on 2026-08-14, three weeks after the 2026-07-24 renames.
 """
 from datetime import datetime, timedelta, timezone
 
+import pytest
+
 from app.graph.lattice import load_lattice
 from app.tensor.channels import (
     RETIRED_LATTICE_NODES,
@@ -119,10 +121,10 @@ def test_retired_set_and_live_channels_do_not_overlap() -> None:
     assert not (set(RETIRED_NODE_CHANNELS) & set(NODE_CHANNELS))
     # A node-level retirement may share its name with a still-live capability
     # channel only when listed here on purpose: node pruning never touches
-    # capability vectors. contract_pressure (2026-10-07): the node channel was
-    # the dead two-stream schema sample; the capability channel is catalog
-    # drift via the topology map and is still written.
-    assert set(RETIRED_NODE_CHANNELS) & set(CAPABILITY_CHANNELS) == {"contract_pressure"}
+    # capability vectors. None today: node-level contract_pressure retired
+    # 2026-10-07 and the capability-level one was renamed catalog_drift_pressure
+    # the same day (D3), so contract_pressure is retired at both levels.
+    assert not (set(RETIRED_NODE_CHANNELS) & set(CAPABILITY_CHANNELS))
     assert not (set(RETIRED_CAPABILITY_CHANNELS) & set(CAPABILITY_CHANNELS))
     # Every replacement named in the map must itself be a real channel; None
     # means "retired with no successor" and is allowed.
@@ -183,18 +185,60 @@ def test_retired_channels_are_pruned_from_tension_baselines() -> None:
         assert live_key in store
 
 
-def test_node_contract_pressure_pruned_capability_contract_pressure_kept() -> None:
+def test_contract_pressure_pruned_at_both_levels_after_d3_rename() -> None:
     """2026-10-07: node-level contract_pressure is retired (0.0 on every live
-    tick); capability:transport.contract_pressure is a different, live
-    quantity and must survive reconcile."""
+    tick) and capability:transport.contract_pressure was renamed
+    catalog_drift_pressure (D3). A persisted pre-rename row must not keep the
+    old capability key next to the new one -- a generic consumer iterating the
+    vector would read the same catalog drift twice under two names."""
     state = FieldStateV1(
         generated_at=NOW,
         tick_id="t",
         node_vectors={"node:athena": {"cpu_pressure": 0.4, "contract_pressure": 0.0}},
         node_vector_updated_at={"node:athena": {"contract_pressure": NOW.isoformat()}},
         capability_vectors={"capability:transport": {"pressure": 0.02, "contract_pressure": 0.0109}},
+        capability_provenance={"capability:transport": {"contract_pressure": "node:athena"}},
     )
     out = reconcile_field_state_with_lattice(state, lattice=_lattice())
     assert "contract_pressure" not in out.node_vectors["node:athena"]
     assert "contract_pressure" not in out.node_vector_updated_at.get("node:athena", {})
-    assert out.capability_vectors["capability:transport"]["contract_pressure"] == 0.0109
+    for cap_id, vec in out.capability_vectors.items():
+        assert "contract_pressure" not in vec, cap_id
+        assert "contract_pressure" not in out.capability_provenance.get(cap_id, {}), cap_id
+    assert "catalog_drift_pressure" in out.capability_vectors["capability:transport"]
+
+
+def test_d3_rename_first_tick_after_deploy_writes_the_same_value_under_the_new_name() -> None:
+    """The transition tick: a stored pre-rename row (contract_pressure = 0.85 x
+    athena drift) goes through a real digestion tick. The new key carries the
+    same value the old key carried, and the old key is gone."""
+    from app.tensor.update_rules import run_digestion_tick
+
+    lattice = _lattice()
+    drift = 0.0128
+    state = FieldStateV1(
+        generated_at=NOW,
+        tick_id="t-pre",
+        node_vectors={"node:athena": {"catalog_drift_pressure": drift}},
+        node_vector_updated_at={"node:athena": {"catalog_drift_pressure": NOW.isoformat()}},
+        capability_vectors={"capability:transport": {"contract_pressure": 0.85 * drift}},
+        capability_provenance={"capability:transport": {"contract_pressure": "node:athena"}},
+    )
+    class _NoHistoryStore:
+        def load_recent_field_json(self, *, window_seconds: float) -> list:
+            return []
+
+    out = run_digestion_tick(
+        reconcile_field_state_with_lattice(state, lattice=lattice),
+        perturbations=[],
+        decay_rate=1.0,
+        diffusion_rate=1.0,
+        staleness_threshold_sec=90.0,
+        store=_NoHistoryStore(),
+        significance_window_seconds=60.0,
+        significance_check_interval_sec=1e9,
+    )
+    cap = out.capability_vectors["capability:transport"]
+    assert "contract_pressure" not in cap
+    assert cap["catalog_drift_pressure"] == pytest.approx(0.85 * drift)
+    assert out.capability_provenance["capability:transport"]["catalog_drift_pressure"] == "node:athena"

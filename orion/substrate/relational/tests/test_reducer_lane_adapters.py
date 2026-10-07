@@ -244,19 +244,21 @@ def test_registry_registers_three_reducer_lanes() -> None:
 
 
 @pytest.mark.parametrize(
-    ("ping_ok", "observer_failures", "expected_confidence"),
-    [(True, 0, 1.0), (None, 0, 0.5), (False, 0, 0.7), (True, 1, 0.7)],
+    ("ping_ok", "expected_confidence"),
+    [(True, 1.0), (None, 0.5), (False, 0.7)],
 )
 def test_transport_adapter_confidence_unchanged_by_delivery_confidence_retirement(
-    ping_ok, observer_failures, expected_confidence
+    ping_ok, expected_confidence
 ) -> None:
     """Old: _clamp(delivery_confidence) or 0.7. New: _clamp(1 - reliability_pressure)
-    or 0.7. Uses reducer-produced states so every real reliability value is covered."""
+    or 0.7. Uses reducer-produced states so every real reliability value is covered.
+    The observer-failure case left 2026-10-07 with observer_failure_pressure
+    (#2534 decision 4; it never fired live)."""
     from orion.substrate.transport_loop.extract import compute_transport_pressures
 
     state = TransportBusStateV1(
         target_id="bus:athena", node_id="athena", sample_window_id="w", source_trace_id="t",
-        redis_ping_ok=ping_ok, observer_failure_count=observer_failures,
+        redis_ping_ok=ping_ok,
     )
     state = state.model_copy(update=compute_transport_pressures(state))
     proj = TransportBusProjectionV1(updated_at=NOW, buses={"bus:athena": state})

@@ -25,8 +25,9 @@ look like a calm channel or freeze a learned threshold in place.
 
 Only channels in ``DERIVED_CHANNELS`` are wired. ``contract_pressure`` (5
 distinct values in 3.4 days, flat; its lattice row was deleted 2026-10-07)
-and ``observer_failure_pressure`` (96% exact zeros, event-only) failed the
-metric gate; see
+and ``observer_failure_pressure`` (96% exact zeros, event-only; retired end to
+end 2026-10-07, its lattice row replaced by the static
+``transport_reliability_pressure`` row) failed the metric gate; see
 ``docs/superpowers/specs/2026-09-30-ewma-transport-thresholds-gate.md``.
 
 One producer (``orion-substrate-runtime``'s bus-synaptic tick) writes the

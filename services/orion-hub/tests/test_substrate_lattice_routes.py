@@ -226,7 +226,6 @@ def _sample_proof_chain_for_gates(
                             "observed_at": ts,
                             "redis_ping_ok": True,
                             "catalog_drift_pressure": catalog_drift_pressure,
-                            "observer_failure_pressure": 0.0,
                             "reliability_pressure": 0.0,
                         }
                     } if source_trace_id else {},
@@ -250,15 +249,16 @@ def _sample_proof_chain_for_gates(
                 "timestamp": ts,
                 "age_sec": bus_age_sec,
                 # capability:transport's real field vector -- what _compute_gates
-                # actually reads post 2026-07-27. pressure/contract_pressure mirror
+                # actually reads post 2026-07-27. pressure/catalog_drift_pressure mirror
                 # the same test knobs used for M3 above so both code paths can be
                 # exercised from one fixture without a parameter per code path.
                 "values": {
                     "field_vector": {
                         "pressure": stream_backlog_pressure,
-                        # capability:transport.contract_pressure is
+                        # capability:transport.catalog_drift_pressure (was
+                        # contract_pressure until 2026-10-07, D3) is
                         # 0.85 x node:athena catalog_drift_pressure (topology).
-                        "contract_pressure": 0.85 * catalog_drift_pressure,
+                        "catalog_drift_pressure": 0.85 * catalog_drift_pressure,
                         # live vectors always carry it (node:athena measures it)
                         "reliability_pressure": 0.0,
                     },
@@ -497,6 +497,22 @@ def test_gates_pressure_unmeasured_transport_channel_reads_unknown_not_quiet(cli
     assert "reliability_pressure unmeasured" in gates["pressure"]["reason"]
 
 
+def test_gates_pressure_active_bus_half_still_watches_when_reliability_unmeasured(client) -> None:
+    """2026-10-07 review finding: after observer_failure_pressure's retirement,
+    transport reliability is absent during every RPC lull. That must not hide
+    a bus_synaptic reading at or above its watch threshold."""
+    chain = _sample_proof_chain_for_gates(stream_backlog_pressure=0.9)
+    chain["transport"]["m4"]["values"]["field_vector"].pop("reliability_pressure")
+    with patch.object(
+        substrate_lattice_routes, "_load_transport_proof_chain", return_value=chain
+    ):
+        resp = client.get("/api/substrate-lattice/transport/gates")
+    gates = {g["gate_id"]: g for g in resp.json()["gates"]}
+    assert gates["pressure"]["state"] == "watch"
+    assert "bus_synaptic_pressure=0.90" in gates["pressure"]["reason"]
+    assert "transport_reliability_pressure unmeasured" in gates["pressure"]["reason"]
+
+
 # ── _load_transport_proof_chain internals ────────────────────────
 
 
@@ -595,7 +611,7 @@ def test_simulate_catalog_drift_suppressed_when_threshold_above_value(client) ->
                 "thresholds": {
                     "catalog_drift_pressure_watch_at": 1.1,
                     "bus_synaptic_pressure_watch_at": 1.1,
-                    "observer_failure_pressure_watch_at": 1.1,
+                    "transport_reliability_pressure_watch_at": 1.1,
                 },
             },
         )
@@ -700,7 +716,12 @@ def test_latest_lattice_channels_come_from_policy_yaml(client) -> None:
     assert rows["bus_synaptic_pressure"]["state"] == "watch"
     assert rows["catalog_drift_pressure"]["value"] == 0.6
     assert rows["catalog_drift_pressure"]["state"] == "watch"
-    assert rows["observer_failure_pressure"]["state"] == "quiet"
+    # observer_failure_pressure retired 2026-10-07 (#2534 decision 4); the
+    # reliability row reads M4 capability:transport.reliability_pressure.
+    assert "observer_failure_pressure" not in rows
+    assert rows["transport_reliability_pressure"]["value"] == 0.0
+    assert rows["transport_reliability_pressure"]["state"] == "quiet"
+    assert rows["transport_reliability_pressure"]["value_source"] == "M4 capability:transport.reliability_pressure"
     assert "contract_pressure" not in rows
     # value_source comes from the policy row's `source:` block
     assert rows["bus_synaptic_pressure"]["value_source"] == "M4 capability:transport.pressure"

@@ -146,6 +146,7 @@ from pathlib import Path
 from orion.field.pressure import (
     CHANNEL_DIMENSION_MAP,
     collect_field_channel_pressures,
+    collect_field_channel_pressures_with_holders,
     map_channels_to_dimensions_with_provenance,
     winning_write_time,
 )
@@ -331,6 +332,155 @@ def channel_write_backed(
     if verdict == "unknown":
         return None
     return verdict == "producer_written"
+
+
+# Reason recorded when before_winner_went_unmeasured() withholds a dimension.
+BEFORE_WINNER_UNMEASURED = "before_winner_unmeasured"
+
+
+def dimension_winner_holder(
+    state: FieldStateV1, dimension: str
+) -> tuple[str, str, str] | None:
+    """(level, vector_id, channel) that won `dimension` this tick: level is
+    "node" (a raw node_vectors entry) or "capability" (a capability_vectors
+    entry). None when the dimension has no winner this tick. With ties, the
+    merge's own pick (last at the winning value); see dimension_value_holders()
+    for every vector that holds the winning value."""
+    merged, provenance, holders = collect_field_channel_pressures_with_holders(state)
+    _dims, detail = map_channels_to_dimensions_with_provenance(merged, provenance)
+    if dimension not in detail:
+        return None
+    channel = detail[dimension].winning_channel
+    holder = holders.get(channel)
+    if holder is None:
+        return None
+    return holder[0], holder[1], channel
+
+
+def dimension_value_holders(state: FieldStateV1, dimension: str) -> list[tuple[str, str, str]]:
+    """Every (level, vector_id, channel) holding `dimension`'s winning value
+    this tick -- the merge's winner plus anything tied with it, across every
+    channel routed to the dimension. A tie at the winning value means losing
+    the merge's pick changes nothing; the guard must ask whether ALL of them
+    went dark (review finding, 2026-10-07: a 0.0 -> 0.0 reliability tick was
+    withheld when only the last-iterated tied holder expired).
+
+    Mirrors the merge's eligibility rules: node channels skipped by the
+    staleness rule do not count, values are clamped the same way."""
+    from orion.field.pressure import (
+        HIGHER_IS_BETTER_CHANNELS,
+        MERGE_STALENESS_THRESHOLD_SEC,
+        PRESSURE_CHANNELS,
+        _stale_node_channels,
+        clamp01,
+    )
+
+    merged, provenance, _holders = collect_field_channel_pressures_with_holders(state)
+    dims, detail = map_channels_to_dimensions_with_provenance(merged, provenance)
+    if dimension not in detail:
+        return []
+    value = dims[dimension]
+    channels = {ch for ch, d in CHANNEL_DIMENSION_MAP.items() if d == dimension and ch in merged}
+    stale = _stale_node_channels(state, MERGE_STALENESS_THRESHOLD_SEC)
+    out: list[tuple[str, str, str]] = []
+
+    def _eligible(ch: str, v: float) -> bool:
+        return ch in HIGHER_IS_BETTER_CHANNELS or ch in PRESSURE_CHANNELS or v > 0
+
+    for node_id, vec in state.node_vectors.items():
+        for ch in channels:
+            if ch in vec and (node_id, ch) not in stale:
+                v = clamp01(float(vec[ch]))
+                if v == value and _eligible(ch, v):
+                    out.append(("node", node_id, ch))
+    for cap_id, vec in state.capability_vectors.items():
+        for ch in channels:
+            if ch in vec:
+                v = clamp01(float(vec[ch]))
+                if v == value and _eligible(ch, v):
+                    out.append(("capability", cap_id, ch))
+    return out
+
+
+def _vector_measures(
+    state: FieldStateV1,
+    level: str,
+    vector_id: str,
+    channel: str,
+    *,
+    max_staleness_seconds: float | None = None,
+) -> bool:
+    """Does this vector carry a measured `channel` this tick?
+
+    Absent key = unmeasured, the field's convention for both levels (decay.py
+    expire_unrefreshed_channels for nodes; diffusion.apply_diffusion for
+    capabilities, 2026-10-07). A capability channel some topology edge feeds
+    also needs a provenance entry, the same rule apply_diffusion uses for a
+    cap->cap source: reconcile re-seeds the key every tick, provenance it does
+    not. A capability channel no edge feeds is a seeded constant and is
+    reported as present -- it never measured anything before either.
+
+    A node channel that DECAYS instead of expiring keeps its key while its
+    producer is silent, so with `max_staleness_seconds` a node stamp older than
+    that also reads as unmeasured (review finding, 2026-10-07). A missing stamp
+    is unknown, not stale -- same rule as channel_write_backed()."""
+    if level == "node":
+        if channel not in (state.node_vectors.get(vector_id) or {}):
+            return False
+        if max_staleness_seconds is not None:
+            stamp = (state.node_vector_updated_at.get(vector_id) or {}).get(channel)
+            if stamp is not None:
+                verdict = _refresh_from_timestamps(
+                    [stamp], window_start=state.generated_at - timedelta(seconds=max_staleness_seconds)
+                )
+                if verdict == SILENT:
+                    return False
+        return True
+    if channel not in (state.capability_vectors.get(vector_id) or {}):
+        return False
+    diffused = any(
+        edge.target_id == vector_id and channel in edge.channel_map.values() for edge in state.edges
+    )
+    if diffused:
+        return channel in (state.capability_provenance.get(vector_id) or {})
+    return True
+
+
+def before_winner_went_unmeasured(
+    before: FieldStateV1 | None,
+    after: FieldStateV1 | None,
+    dimension: str,
+    *,
+    max_staleness_seconds: float | None = None,
+) -> bool:
+    """#2534 decision 1 (approved 2026-10-07): True when every vector holding
+    `dimension`'s winning value in the BEFORE tick no longer measures that
+    channel in the AFTER tick.
+
+    The trap: capability:vision pressure 0.85 wins resource_pressure, then the
+    frame router dies; vision's pressure is dropped as unmeasured, the
+    dimension falls to the next measured capability (say 0.3), and the drop
+    reads as a -0.55 "decrease" -- an outage credited as recovery.
+    channel_write_backed() cannot see it: it only checks the AFTER winner,
+    which is genuinely measured. The comparison is what is invalid, so the
+    caller withholds the dimension in both directions, same as R5b.
+
+    Ties: if another vector held the same winning value before and still
+    measures it, the comparison is valid and this returns False.
+    `max_staleness_seconds` (the feedback policy's stale_after_sec) also counts
+    a decaying node channel whose stamp went stale as unmeasured.
+
+    False when there is no before tick / no before winner: nothing to compare
+    against is R5b's question (channel_write_backed), not this one."""
+    if before is None or after is None:
+        return False
+    holders = dimension_value_holders(before, dimension)
+    if not holders:
+        return False
+    return not any(
+        _vector_measures(after, level, vector_id, channel, max_staleness_seconds=max_staleness_seconds)
+        for level, vector_id, channel in holders
+    )
 
 
 def _samples_for(

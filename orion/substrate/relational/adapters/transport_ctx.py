@@ -84,7 +84,8 @@ def map_transport_ctx_to_substrate(ctx: dict[str, Any]) -> SubstrateGraphRecordV
     for bus in buses:
         salience = _salience(bus)
         # Same value the retired delivery_confidence produced: it was always
-        # 1 - reliability_pressure (0.0 on observer failure, 0.5 unknown ping).
+        # 1 - reliability_pressure (0.0 on a failed ping, 0.5 unknown ping; the
+        # observer-failure input was retired 2026-10-07).
         confidence = _clamp(1.0 - bus.reliability_pressure) or 0.7
         nodes.append(
             ConceptNodeV1(

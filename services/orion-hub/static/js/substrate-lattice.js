@@ -187,7 +187,6 @@ function _renderProofChain(chain) {
             return `<div><span class="font-mono text-gray-300">${_esc(busId)}</span>
               streams_observed: <b>${_esc(b.streams_observed)}</b> &nbsp;|&nbsp;
               catalog_drift_pressure: <b>${_fmt(b.catalog_drift_pressure)}</b><br>
-              observer_failure_pressure: <b>${_fmt(b.observer_failure_pressure)}</b> &nbsp;|&nbsp;
               reliability_pressure: <b>${_fmt(b.reliability_pressure)}</b> &nbsp;|&nbsp;
               redis_ping_ok: <b>${_esc(b.redis_ping_ok)}</b></div>`;
           })

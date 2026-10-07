@@ -238,6 +238,26 @@ class AttentionRuntimeStore:
             payload = json.loads(payload)
         return FieldStateV1.model_validate(payload)
 
+    def load_field_for_tick(self, tick_id: str) -> FieldStateV1 | None:
+        """One stored field tick by id (primary key). Used for the previous
+        attention frame's own field tick (#2534 decision 2: novelty must not
+        count a channel going dark as a change)."""
+        with self._engine.connect() as conn:
+            row = (
+                conn.execute(
+                    text("SELECT field_json FROM substrate_field_state WHERE tick_id = :tick_id"),
+                    {"tick_id": tick_id},
+                )
+                .mappings()
+                .first()
+            )
+        if not row:
+            return None
+        payload = row["field_json"]
+        if isinstance(payload, str):
+            payload = json.loads(payload)
+        return FieldStateV1.model_validate(payload)
+
     def load_prediction_error_history(self, *, reducer_key: str, limit: int) -> list[float]:
         """Real, ASC-by-time prediction-error history for one reducer (oldest
         first, most recent/"current" last), for Candidate A

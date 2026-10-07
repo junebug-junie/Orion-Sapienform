@@ -823,8 +823,22 @@ same values and winners as before in every simulated outage, because an unmeasur
 max() and a fabricated 1.0 never won a min() while other capabilities were measured. The one
 difference (1 tick in 2,051) is the merged confidence winner's label, from the stale-provenance fix
 above. Partial coverage is not
-"unmeasured": `capability:transport` `reliability_pressure` keeps node:athena's
-`observer_failure_pressure` reading (0.0 on every tick in that window) when the RPC bridge expires.
+"unmeasured": `capability:transport` `reliability_pressure` kept node:athena's
+`observer_failure_pressure` reading (0.0 on every tick in that window) when the RPC bridge expired.
+**Superseded 2026-10-07:** `observer_failure_pressure` is retired (below), so an RPC-bridge outage now
+leaves transport reliability unmeasured (absent).
+
+## Field decisions follow-up (2026-10-07, #2534 decisions 1, 2, 4 and D3)
+
+- **D3:** `capability:transport.contract_pressure` renamed `catalog_drift_pressure` (same values);
+  persisted rows lose the old key on reconcile (`RETIRED_CAPABILITY_CHANNELS`).
+- **Decision 4:** `observer_failure_pressure` retired end to end (bus observer atom, reducer field,
+  node channel, topology edge mapping, glossary, lattice row, hub card). Transport reliability has one
+  source, the RPC delivery bridge, and reads unmeasured when it stops reporting.
+- **Decisions 1 and 2** live outside this service: the feedback credit guard
+  (`orion/field/credit_integrity.py::before_winner_went_unmeasured`) and attention novelty
+  (`orion/attention/field_attention/selectors.py`), both reading the absent-key convention above.
+- Replay: `scripts/eval_field_decisions_replay.py`.
 
 ## Retired: `stream_backlog_pressure` / `stream_backlog_health` / `delivery_confidence` (2026-09-25)
 
@@ -1638,11 +1652,15 @@ follow-up note, and `test_execution_run_fcc_channels_ignored_off_lane` /
 > sample of two world_pulse streams: 0.0 on 123,412 of 123,412 ticks, and a
 > mesh-wide version would read 0 by construction because
 > `OrionBusAsync.publish()` validates every payload before sending. The
-> **capability-level** `capability:transport.contract_pressure` stays: it is
-> 0.85 x `node:athena` `catalog_drift_pressure` (topology channel_map) under a
-> misleading name, kept because renaming it changes capability:transport's
-> attention pressure proxy on ~2.4% of ticks (decision D3 in that spec). The
-> history below predates both changes.
+> **capability-level** `capability:transport.contract_pressure` was 0.85 x
+> `node:athena` `catalog_drift_pressure` (topology channel_map) under a
+> misleading name. **Renamed to `catalog_drift_pressure` the same day**
+> (decision D3, approved by Juniper 2026-10-07; fix/field-decisions-d3-credit-
+> novelty-observer). Same values; the old key is pruned from persisted rows
+> (`RETIRED_CAPABILITY_CHANNELS`). The rename moved no downstream reading
+> (replay: `scripts/eval_field_decisions_replay.py`), because
+> `collect_field_channel_pressures()` max()-merges both levels by name and the
+> node reading always wins. The history below predates both changes.
 
 - **Meaning**: intended to represent pressure from bus/schema "contract"
   mismatches (the precise real-world condition isn't otherwise documented
@@ -1675,6 +1693,11 @@ follow-up note, and `test_execution_run_fcc_channels_ignored_off_lane` /
   confirmed; a separate investigation is tracking the actual root cause.
 
 #### `catalog_drift_pressure`
+> **2026-10-07:** now also a **capability** channel: `capability:transport`
+> carries 0.85 x the `node:athena` reading (formerly named `contract_pressure`,
+> decision D3). It is the only channel name present at both levels; the
+> merged (node + capability) value is always the node's.
+
 - **Meaning**: intended to represent drift/staleness in the bus event
   "catalog" (schema registry) relative to what's actually flowing.
 - **Producer**: `transport_bus` delta, `hints["catalog_drift_pressure"]`,
@@ -1767,6 +1790,9 @@ follow-up note, and `test_execution_run_fcc_channels_ignored_off_lane` /
   above was corrupting.
 
 #### `observer_failure_pressure`
+> **Retired 2026-10-07** (#2534 decision 4): 0.0 on 123,099 of 123,099 ticks; pruned via
+> `RETIRED_NODE_CHANNELS`. History below kept for reference.
+
 - **Meaning**: pressure from failures of the bus "observer" role
   (monitoring/subscriber-side failures).
 - **Producer**: `transport_bus` delta, `hints["observer_failure_pressure"]`,

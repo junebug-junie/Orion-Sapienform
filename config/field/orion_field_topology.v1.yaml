@@ -35,7 +35,8 @@ node_channels:
   # contract_pressure (node level) retired 2026-10-07: see
   # services/orion-field-digester/app/tensor/channels.py::RETIRED_NODE_CHANNELS.
   - catalog_drift_pressure
-  - observer_failure_pressure
+  # observer_failure_pressure retired 2026-10-07 (#2534 decision 4): 0.0 on
+  # 123,099 of 123,099 ticks; see channels.py::RETIRED_NODE_CHANNELS.
   - rpc_timeout_pressure
   - write_failure_pressure
   - conversation_load
@@ -48,7 +49,9 @@ capability_channels:
   - execution_pressure
   - reasoning_pressure
   - reliability_pressure
-  - contract_pressure
+  # was contract_pressure until 2026-10-07 (decision D3): catalog drift under a
+  # misleading name. Same values, honest name.
+  - catalog_drift_pressure
 
 edges:
   # node:atlas -> capability:llm_inference (weight 0.85) removed 2026-08-21:
@@ -61,15 +64,20 @@ edges:
   # 2-Redis-Stream "world_pulse" census (BUS_OBSERVER_STREAMS), already
   # documented dead in docs/superpowers/specs/2026-07-24-bus-vitality-field-
   # signal-brainstorm.md and docs/notes/2026-07-12-metrics-swamp-arsonist-
-  # review.md. catalog_drift_pressure/observer_failure_pressure are a
-  # separate, independently-fixed metric (PR #1373) and kept as-is.
+  # review.md. catalog_drift_pressure is a separate, independently-fixed
+  # metric (PR #1373) and kept (renamed at capability level 2026-10-07, D3);
+  # observer_failure_pressure was retired 2026-10-07 (#2534 decision 4).
   - source_id: node:athena
     target_id: capability:transport
     edge_type: node_capability
     weight: 0.85
     channel_map:
-      catalog_drift_pressure: contract_pressure
-      observer_failure_pressure: reliability_pressure
+      catalog_drift_pressure: catalog_drift_pressure
+      # observer_failure_pressure -> reliability_pressure removed 2026-10-07
+      # (#2534 decision 4). capability:transport reliability_pressure now has
+      # one source, node:substrate.rpc_delivery below: when the RPC bridge's
+      # reading expires (120 s), transport reliability reads UNMEASURED
+      # (absent) instead of the observer's constant 0.0.
 
   # 2026-07-26: real mesh-wide transport signal, replacing the removed
   # world_pulse-derived pressure above. node:substrate.bus_synaptic is not a
@@ -102,7 +110,9 @@ edges:
   # reliability_pressure's only source was node:athena's
   # observer_failure_pressure (the bus-observer's own failures), which has read
   # exactly 0 for weeks while LLMGatewayService RPC timeouts ran 30-150/day.
-  # Diffusion takes the max of the two, so neither masks the other.
+  # Diffusion took the max of the two; since 2026-10-07 this is the only
+  # source (observer_failure_pressure retired), so when this reading expires
+  # (120 s) capability:transport reliability_pressure is absent (unmeasured).
   # What it claims: "a part of Orion asked another over the bus and got no
   # answer before its own deadline" -- lost messages AND slow callees. On live
   # data nearly all nonzero readings name LLMGatewayService or

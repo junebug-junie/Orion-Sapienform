@@ -66,11 +66,22 @@ channels:
     propose_at: null
     action_ceiling: watch
 
-  observer_failure_pressure:
+  # observer_failure_pressure row (m3) deleted 2026-10-07 (#2534 decision 4,
+  # fix/field-decisions-d3-credit-novelty-observer): the bus observer's own
+  # tick failures, 0.0 on 123,099 of 123,099 field ticks, retired end to end.
+  # Its thresholds were also what the hub pressure gate compared M4
+  # capability:transport.reliability_pressure against, under the wrong name.
+  # This row is that same reading under its real address, with the same
+  # thresholds. capability:transport.reliability_pressure is now fed only by
+  # node:substrate.rpc_delivery rpc_timeout_pressure x 0.85, and is absent
+  # (unmeasured) when the RPC bridge stops reporting. Not EWMA-derived
+  # (orion/field/transport_thresholds.py DERIVED_CHANNELS): static thresholds.
+  transport_reliability_pressure:
     source:
-      layer: m3
-      field: observer_failure_pressure
-    dimension: observability_integrity
+      layer: m4
+      vector: capability:transport
+      channel: reliability_pressure
+    dimension: delivery_integrity
     watch_at: 0.25
     summarize_at: 0.50
     propose_at: null

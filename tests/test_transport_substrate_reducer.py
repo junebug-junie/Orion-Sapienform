@@ -220,23 +220,23 @@ def test_reducer_emits_transport_bus_delta_with_pressure_hints() -> None:
     # Exactly these four survive the 2026-09-25 retirement of the XLEN
     # depth family (stream_backlog_*/delivery_confidence/stream_depth_pressure/
     # backpressure). A retired name reappearing here would re-feed the field.
+    # observer_failure_pressure left 2026-10-07 (#2534 decision 4).
     assert set(hints) == {
         "catalog_drift_pressure",
-        "observer_failure_pressure",
         "reliability_pressure",
     }
 
 
 @pytest.mark.parametrize("ping_ok", [True, None, False])
-@pytest.mark.parametrize("observer_failures", [0, 1])
-def test_reliability_pressure_unchanged_by_delivery_confidence_retirement(
-    ping_ok: bool | None, observer_failures: int
-) -> None:
-    """reliability_pressure used to be max(observer_failure, 1 -
-    delivery_confidence), with delivery_confidence derived from the ping. The
-    2026-09-25 retirement removed delivery_confidence; reliability_pressure
-    must read exactly what it read before in every ping/failure combination,
-    including the non-calm ones (ping failed, observer failed)."""
+def test_reliability_pressure_unchanged_by_observer_failure_retirement(ping_ok: bool | None) -> None:
+    """reliability_pressure was max(observer_failure, 1 - delivery_confidence),
+    delivery_confidence derived from the ping (retired 2026-09-25), then
+    max(observer_failure, ping_pressure). observer_failure_pressure was 0.0 on
+    123,099 of 123,099 live ticks and is retired (2026-10-07, #2534 decision 4),
+    so every reading production actually produced (observer_failures=0) must
+    be unchanged, in every ping state. Scope, honestly: the value check would
+    also pass on main (it pins main's only live branch); what is new here is
+    that the retired key is gone from the pressures and the state."""
     from orion.schemas.transport_projection import TransportBusStateV1
 
     state = TransportBusStateV1(
@@ -245,19 +245,37 @@ def test_reliability_pressure_unchanged_by_delivery_confidence_retirement(
         sample_window_id="w",
         source_trace_id="t",
         redis_ping_ok=ping_ok,
-        observer_failure_count=observer_failures,
     )
-    # The pre-retirement formula, verbatim.
+    # The pre-retirement formula, verbatim, at the only live observer value (0).
     health = 1.0 if ping_ok is True else (0.0 if ping_ok is False else 0.5)
-    obs = 1.0 if observer_failures > 0 else 0.0
-    if obs > 0.0:
-        dc = 0.0
-    elif health >= 1.0:
+    obs = 0.0
+    if health >= 1.0:
         dc = 1.0
     elif health == 0.5:
         dc = 0.5
     else:
         dc = 0.0
     expected = max(obs, 1.0 - dc)
+    pressures = compute_transport_pressures(state)
+    assert pressures["reliability_pressure"] == expected
+    assert "observer_failure_pressure" not in pressures
+    assert "observer_failure_pressure" not in state.model_dump()
 
-    assert compute_transport_pressures(state)["reliability_pressure"] == expected
+
+def test_pre_deploy_observer_tick_failed_trace_reduces_to_a_noop() -> None:
+    """A bus_observer_tick_failed trace still in the backlog from before the
+    2026-10-07 retirement carries no ping and no census. It used to become
+    reliability 1.0 (observer failure) plus a census-off catalog drift 0.0.
+    Now it is not evidence at all, so the reducer emits no reading."""
+    from orion.substrate.transport_loop.reducer import reduce_transport_trace_events
+    from orion.schemas.transport_projection import TransportBusProjectionV1
+
+    events = [
+        _event("gev_start", "bus_observer_tick_started", "sample_window_id=20260525T233010Z"),
+        _event("gev_fail", "bus_observer_tick_failed", "error_kind=ConnectionError"),
+    ]
+    state = extract_transport_bus_state_from_events(events, now=NOW)
+    assert state.evidence_event_ids == []
+    projection = TransportBusProjectionV1(updated_at=NOW)
+    _updated, receipt = reduce_transport_trace_events(events=events, projection=projection, now=NOW)
+    assert receipt.state_deltas == []

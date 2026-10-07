@@ -90,6 +90,8 @@ def test_pre_retirement_persisted_row_still_loads_and_drops_retired_fields() -> 
         "backpressure_count",
         "contract_pressure",
         "schema_mismatch_stream_count",
+        "observer_failure_count",
+        "observer_failure_pressure",
     ):
         assert retired not in dumped
 
@@ -101,6 +103,17 @@ def test_pre_contract_retirement_row_with_nonzero_values_still_loads() -> None:
     bus = TransportBusStateV1.model_validate(row)
     assert "contract_pressure" not in bus.model_dump()
     assert not hasattr(bus, "schema_mismatch_stream_count")
+
+
+def test_pre_observer_retirement_row_with_nonzero_values_still_loads() -> None:
+    """2026-10-07 (#2534 decision 4): observer_failure_count /
+    observer_failure_pressure retired. A persisted row carrying them (even
+    nonzero) loads and drops them instead of raising under extra="forbid"."""
+    row = {**_LIVE_PRE_RETIREMENT_BUS, "observer_failure_count": 2, "observer_failure_pressure": 1.0}
+    bus = TransportBusStateV1.model_validate(row)
+    dumped = bus.model_dump()
+    assert "observer_failure_pressure" not in dumped
+    assert "observer_failure_count" not in dumped
 
 
 def test_retired_field_drop_does_not_open_extra_forbid_to_other_keys() -> None:

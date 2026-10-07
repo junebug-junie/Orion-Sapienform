@@ -20,6 +20,7 @@ from orion.attention.field_attention.goal_provenance import (
 from orion.attention.field_attention.policy import load_attention_policy
 from orion.attention.field_attention.selectors import PREDICTION_ERROR_NATIVE_TARGETS
 from orion.schemas.field_attention_frame import FieldAttentionFrameV1
+from orion.schemas.field_state import FieldStateV1
 from orion.schemas.field_goal import DominanceStreakTickV1, FieldGoalProvenanceV1
 
 from app.health_monitor import HealthMonitor
@@ -45,6 +46,8 @@ class AttentionRuntimeWorker:
         # `AttentionRuntimeStore.load_node_dominance_streak`'s docstring for why
         # this stopped being an acceptable in-memory-only gap.
         self._node_streak: DominanceStreak | None = None
+        # The field tick the last saved frame was built from (#2534 decision 2).
+        self._last_field: FieldStateV1 | None = None
         self._bus = None
         self._poll_task: asyncio.Task[None] | None = None
 
@@ -135,6 +138,21 @@ class AttentionRuntimeWorker:
             except asyncio.CancelledError:
                 break
 
+    def _previous_field_for(self, previous: FieldAttentionFrameV1 | None) -> FieldStateV1 | None:
+        """The field tick `previous` was built from: the one this worker saw last
+        tick (normal case, no query), else one primary-key read (after a
+        restart). Best effort: None keeps the plain proxy diff for this tick."""
+        if previous is None:
+            return None
+        cached = self._last_field
+        if cached is not None and cached.tick_id == previous.source_field_tick_id:
+            return cached
+        try:
+            return self._store.load_field_for_tick(previous.source_field_tick_id)
+        except Exception:
+            logger.warning("attention_previous_field_load_failed", exc_info=True)
+            return None
+
     def _tick(self) -> tuple[FieldGoalProvenanceV1 | None, DominanceStreakTickV1 | None]:
         if not self._settings.enable_attention_runtime:
             return None, None
@@ -147,6 +165,7 @@ class AttentionRuntimeWorker:
             return None, None
 
         previous = self._store.load_latest_attention_frame()
+        previous_field = self._previous_field_for(previous)
         # Candidate A (precision-weighted salience): real, persisted,
         # incrementally-updated EWMA baseline per qualified target, advanced by
         # whatever real new substrate_reduction_receipts rows landed since the
@@ -172,8 +191,10 @@ class AttentionRuntimeWorker:
             policy=self._policy,
             prediction_error_baselines=baselines,
             previous_frame=previous,
+            previous_field=previous_field,
         )
         self._store.save_attention_frame(frame)
+        self._last_field = field
         logger.info(
             "attention_frame_saved frame_id=%s tick_id=%s salience=%.3f",
             frame.frame_id,

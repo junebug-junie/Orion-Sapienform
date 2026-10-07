@@ -136,21 +136,26 @@ def test_storage_writer_outage_drops_reliability_but_keeps_measured_load() -> No
     assert s.capability_provenance["capability:storage"]["pressure"] == "node:athena"
 
 
-def test_rpc_outage_leaves_transport_reliability_to_the_remaining_source() -> None:
-    """Partial coverage, pinned on purpose: transport reliability is a max over
-    two sources. When the RPC bridge expires, node:athena's observer channel
-    still measures it, so the channel stays present and attributed to athena --
-    a lower bound, honestly labelled, not an unmeasured value."""
+def test_rpc_outage_leaves_transport_reliability_unmeasured() -> None:
+    """2026-10-07 (#2534 decision 4): transport reliability used to be a max over
+    two sources, and when the RPC bridge expired node:athena's
+    observer_failure_pressure (0.0 on 123,099 of 123,099 live ticks) kept the
+    channel "measured" at 0.0 -- an RPC-bridge outage read as calm reliability.
+    That channel is retired; the RPC bridge is the only source, so its outage
+    reads as UNMEASURED: no value, no provenance, even while athena keeps
+    reporting (including a stale pre-deploy observer value)."""
     f = _Field()
-    f.write("node:athena", {"observer_failure_pressure": 0.0}, NOW)
     f.write(RPC_NODE, {"rpc_timeout_pressure": 0.6}, NOW)
     s = f.tick(NOW + timedelta(seconds=5))
     assert s.capability_provenance["capability:transport"]["reliability_pressure"] == RPC_NODE
+    assert abs(s.capability_vectors["capability:transport"]["reliability_pressure"] - 0.85 * 0.6) < 1e-9
 
-    f.write("node:athena", {"observer_failure_pressure": 0.0}, NOW + timedelta(seconds=120))
+    f.write("node:athena", {"observer_failure_pressure": 0.0, "catalog_drift_pressure": 0.01}, NOW + timedelta(seconds=120))
     s = f.tick(NOW + timedelta(seconds=121))
-    assert s.capability_vectors["capability:transport"]["reliability_pressure"] == 0.0
-    assert s.capability_provenance["capability:transport"]["reliability_pressure"] == "node:athena"
+    assert "reliability_pressure" not in s.capability_vectors["capability:transport"]
+    assert "reliability_pressure" not in s.capability_provenance["capability:transport"]
+    # the retired node channel is pruned, not carried
+    assert "observer_failure_pressure" not in s.node_vectors["node:athena"]
 
 
 def test_unmeasured_capability_is_not_read_as_alarm_or_as_perfect_by_generic_consumers() -> None:

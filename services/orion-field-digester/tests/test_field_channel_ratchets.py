@@ -419,8 +419,9 @@ def test_remaining_transport_bus_channels_also_use_replace_mode() -> None:
     for p in perturbations:
         assert p.mode == "replace", f"{p.channel} unexpectedly still mode={p.mode}"
     # 2026-10-07: a pre-deploy receipt still carrying the retired
-    # contract_pressure hint injects nothing for it.
+    # contract_pressure / observer_failure_pressure hints injects nothing for them.
     assert "contract_pressure" not in {p.channel for p in perturbations}
+    assert "observer_failure_pressure" not in {p.channel for p in perturbations}
 
 
 def test_catalog_drift_pressure_drop_reflected_not_stuck() -> None:
@@ -441,7 +442,7 @@ def test_catalog_drift_pressure_drop_reflected_not_stuck() -> None:
 
 @pytest.mark.parametrize(
     "channel",
-    ["observer_failure_pressure", "reliability_pressure"],
+    ["reliability_pressure"],
 )
 def test_remaining_channels_drop_reflected_not_stuck(channel: str) -> None:
     """Same regression as test_catalog_drift_pressure_drop_reflected_not_stuck,

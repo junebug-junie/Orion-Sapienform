@@ -1,13 +1,15 @@
 {
   "_comment": "Definition lock for scripts/check_definition_drift.py. Generated, never hand-edited. Regenerate with --update; the resulting diff IS the definition-change alert. Unlike the *_baseline.json ratchets this tracks current truth in both directions -- a definition change is an event, not a defect.",
-  "metric_count": 696,
+  "metric_count": 694,
   "_last_change": {
-    "change_count": 3,
-    "high_severity_count": 2,
+    "change_count": 5,
+    "high_severity_count": 4,
     "changes": [
-      "high   routing_changed metric://bus_channel/orion-durable-runs/orion:durable:run:state (declared_consumers: \u2026ns', 'orion-hub', 'orion\u2026 -> \u2026ns', 'orion-durable-runs', 'orion-hub', 'orion\u2026)",
-      "high   routing_changed metric://bus_channel/orion-embodiment/orion:chat:history:turn (declared_consumers: ['orion-spark-concep\u2026 -> ['orion-durable-runs', 'orion-spark-concep\u2026)",
-      "medium added metric://bus_channel/orion-durable-runs/orion:situation:state"
+      "high   removed metric://field_channel/orion-field-digester/contract_pressure",
+      "high   removed metric://field_channel/orion-field-digester/observer_failure_pressure",
+      "high   semantics_changed metric://field_channel/orion-field-digester/catalog_drift_pressure (meaning: Drift/staleness in the bus event \"catalog\" (schema registry\u2026 -> Share of bus channels seen live that are missing from the d\u2026)",
+      "high   semantics_changed metric://field_channel/orion-field-digester/reliability_pressure (meaning: \u2026, failures, observer failures, RPC timeouts, storage write \u2026\u2026 -> \u2026, failures, RPC timeouts, storage write failures, inference\u2026\u2026)",
+      "medium annotation_changed metric://field_channel/orion-field-digester/catalog_drift_pressure (notes: category=infra_transport level=node -> category=infra_transport level=node,capability)"
     ]
   },
   "definitions": {
@@ -4109,8 +4111,8 @@
       "registry_source": "config/field/field_channel_glossary.v1.yaml"
     },
     "metric://field_channel/orion-field-digester/catalog_drift_pressure": {
-      "meaning": "Drift/staleness in the bus event \"catalog\" (schema registry) relative to what's actually flowing.",
-      "notes": "category=infra_transport level=node",
+      "meaning": "Share of bus channels seen live that are missing from the declared catalog (orion/bus/channels.yaml): the bus observer's census, undeclared_active_count / catalog_size, on node:athena (falls back to the observer's own configured-stream check when the census did not run). capability:transport carries 0.85 x the node:athena reading (it was named contract_pressure until 2026-10-07). Not a payload/schema check: OrionBusAsync.publish() validates every payload before sending.",
+      "notes": "category=infra_transport level=node,capability",
       "registry_source": "config/field/field_channel_glossary.v1.yaml"
     },
     "metric://field_channel/orion-field-digester/compliance_deficit": {
@@ -4126,11 +4128,6 @@
     "metric://field_channel/orion-field-digester/context_gathering_ratio": {
       "meaning": "What fraction of one FCC-motor turn's classified tool calls were read-only research/context tools (Read, Grep, WebSearch, mcp__gitnexus__*, mcp__firecrawl__*, ...) vs action/mutation tools (Bash, Edit, Write, other MCP tools) -- composition, not volume (harness_step_load already covers volume). A fixed, deterministic tool-name allowlist, not a taxonomy: an unmatched tool name increments neither bucket, so 0.0 can mean either all-execution or zero-classified-calls.",
       "notes": "category=task_execution level=node",
-      "registry_source": "config/field/field_channel_glossary.v1.yaml"
-    },
-    "metric://field_channel/orion-field-digester/contract_pressure": {
-      "meaning": "capability:transport only: 0.85 x node:athena's catalog_drift_pressure (share of live bus channels missing from orion/bus/channels.yaml). Not a payload/schema contract check -- the schema-sample version was retired 2026-10-07 because OrionBusAsync.publish() already validates every payload before sending.",
-      "notes": "category=infra_transport level=capability",
       "registry_source": "config/field/field_channel_glossary.v1.yaml"
     },
     "metric://field_channel/orion-field-digester/conversation_load": {
@@ -4254,11 +4251,6 @@
       "notes": "category=infra_transport level=node",
       "registry_source": "config/field/field_channel_glossary.v1.yaml"
     },
-    "metric://field_channel/orion-field-digester/observer_failure_pressure": {
-      "meaning": "Pressure from failures of the bus \"observer\" role (monitoring/subscriber-side failures).",
-      "notes": "category=infra_transport level=node",
-      "registry_source": "config/field/field_channel_glossary.v1.yaml"
-    },
     "metric://field_channel/orion-field-digester/power_pressure": {
       "meaning": "Node power-draw pressure. Real chassis-wide wattage (iLO/BMC RedFish) when that node has BMC credentials configured; falls back to a GPU-power-only estimate otherwise. 0.0 on a node with neither.",
       "feeds_dimensions": [
@@ -4297,7 +4289,7 @@
       "registry_source": "config/field/field_channel_glossary.v1.yaml"
     },
     "metric://field_channel/orion-field-digester/reliability_pressure": {
-      "meaning": "Capability-level pressure representing risk to reliability (from execution friction, failures, observer failures, RPC timeouts, storage write failures, inference failures, vision processing failures). Max over the sources that measured it this tick; where an edge feeds it, absent when none did (e.g. every input expired), never a calm 0.0. Capabilities with no reliability edge (graph, memory) still carry reconcile's seeded 0.0, which is not a measurement.",
+      "meaning": "Capability-level pressure representing risk to reliability (from execution friction, failures, RPC timeouts, storage write failures, inference failures, vision processing failures). Max over the sources that measured it this tick; where an edge feeds it, absent when none did (e.g. every input expired), never a calm 0.0. capability:transport has one source since 2026-10-07 (RPC timeouts; the bus observer's own failure channel was retired), so it is absent whenever the RPC delivery bridge stops reporting. Capabilities with no reliability edge (graph, memory) still carry reconcile's seeded 0.0, which is not a measurement.",
       "feeds_dimensions": [
         "reliability_pressure"
       ],

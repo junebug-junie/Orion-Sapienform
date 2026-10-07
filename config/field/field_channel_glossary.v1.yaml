@@ -31,7 +31,8 @@
 # docs/superpowers/specs/2026-09-25-bus-observer-stream-depth-retirement.md):
 # 48 entries / 47 distinct channels after removal. contract_pressure is now the
 # only node+capability overlap. (2026-10-07: no longer -- node-level
-# contract_pressure retired; the entry below is capability-only.)
+# contract_pressure retired and the capability-level one renamed to
+# catalog_drift_pressure, which is now the only node+capability overlap.)
 #
 # This is the machine-readable companion to
 # services/orion-field-digester/README.md's "Field channel glossary" section,
@@ -272,23 +273,18 @@ channels:
     meaning: "How much active conversational load (turn volume/complexity) is occurring."
     self_state_dimension: social_pressure
 
-  # 2026-10-07: node level retired (the bus observer's two-stream schema
-  # sample; 0.0 on 123,412 of 123,412 ticks). What remains at capability level
-  # is NOT a schema-contract check: config/field/orion_field_topology.v1.yaml
-  # maps node:athena catalog_drift_pressure -> capability:transport
-  # contract_pressure at weight 0.85. The name is a known mislabel kept on
-  # purpose (renaming it changes capability:transport's attention pressure
-  # proxy on ~2.4% of ticks); see docs/superpowers/specs/
-  # 2026-10-07-transport-lattice-names-and-contract.md, decision D3.
-  - channel: contract_pressure
-    level: [capability]
-    category: infra_transport
-    meaning: "capability:transport only: 0.85 x node:athena's catalog_drift_pressure (share of live bus channels missing from orion/bus/channels.yaml). Not a payload/schema contract check -- the schema-sample version was retired 2026-10-07 because OrionBusAsync.publish() already validates every payload before sending."
-
+  # 2026-10-07: node-level contract_pressure retired (the bus observer's
+  # two-stream schema sample; 0.0 on 123,412 of 123,412 ticks). The
+  # capability-level channel that kept that name was catalog drift all along
+  # (node:athena catalog_drift_pressure x 0.85 -> capability:transport) and
+  # was renamed to catalog_drift_pressure the same day (decision D3,
+  # docs/superpowers/specs/2026-10-07-transport-lattice-names-and-contract.md).
+  # The rename does not change any value: collect_field_channel_pressures()
+  # max()-merges both levels by name and the node reading always wins.
   - channel: catalog_drift_pressure
-    level: [node]
+    level: [node, capability]
     category: infra_transport
-    meaning: "Drift/staleness in the bus event \"catalog\" (schema registry) relative to what's actually flowing."
+    meaning: "Share of bus channels seen live that are missing from the declared catalog (orion/bus/channels.yaml): the bus observer's census, undeclared_active_count / catalog_size, on node:athena (falls back to the observer's own configured-stream check when the census did not run). capability:transport carries 0.85 x the node:athena reading (it was named contract_pressure until 2026-10-07). Not a payload/schema check: OrionBusAsync.publish() validates every payload before sending."
 
   - channel: observer_failure_pressure
     level: [node]

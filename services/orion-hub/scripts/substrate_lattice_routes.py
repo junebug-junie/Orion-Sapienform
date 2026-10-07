@@ -682,7 +682,8 @@ def _compute_gates(chain: dict[str, Any]) -> list[dict[str, Any]]:
     # both still live) -- no new query needed, this data was already being
     # fetched into the chain and simply never read from the right place.
     # 2026-10-07: the contract gate that read M4 contract_pressure was deleted;
-    # the hub no longer reads M4 contract_pressure at all.
+    # the hub no longer reads M4 contract_pressure at all, and the capability
+    # channel itself was renamed catalog_drift_pressure (decision D3).
     m4_status = m4.get("status", "missing")
     m4_field_vector = (
         (m4.get("values") or {}).get("field_vector", {}) if m4_status != "missing" else {}

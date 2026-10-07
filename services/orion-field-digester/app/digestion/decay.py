@@ -61,7 +61,7 @@ NODE_DECAY_CHANNELS = {
     "turn_incompletion",
     "context_gathering_ratio",
     # transport (node-level contract_pressure retired 2026-10-07; the
-    # capability-level channel below is a different, still-live quantity)
+    # capability-level catalog_drift_pressure below is a separate decay entry)
     "catalog_drift_pressure",
     "observer_failure_pressure",
     "reliability_pressure",
@@ -78,7 +78,7 @@ CAPABILITY_DECAY_CHANNELS = {
     "execution_pressure",
     "reasoning_pressure",
     "reliability_pressure",
-    "contract_pressure",
+    "catalog_drift_pressure",  # was contract_pressure until 2026-10-07 (D3)
 }
 
 

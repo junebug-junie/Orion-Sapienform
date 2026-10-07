@@ -187,7 +187,8 @@ proposal_templates:
   # dimensions because no transport-specific dimension exists to give them:
   #   - capability:transport `pressure` only reaches the arena inside
   #     resource_pressure, a max over every capability's pressure;
-  #   - capability:transport `contract_pressure` (catalog drift) is not routed
+  #   - capability:transport `catalog_drift_pressure` (named contract_pressure
+  #     until 2026-10-07, decision D3) is not routed
   #     to any dimension, and read 8 distinct values, max 0.0216, over 72h;
   #   - capability:transport `reliability_pressure` read exactly 0.0 on all
   #     121,114 ticks (inspect_transport_status keeps it; the RPC-health

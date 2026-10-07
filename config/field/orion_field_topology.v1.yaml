@@ -48,7 +48,9 @@ capability_channels:
   - execution_pressure
   - reasoning_pressure
   - reliability_pressure
-  - contract_pressure
+  # was contract_pressure until 2026-10-07 (decision D3): catalog drift under a
+  # misleading name. Same values, honest name.
+  - catalog_drift_pressure
 
 edges:
   # node:atlas -> capability:llm_inference (weight 0.85) removed 2026-08-21:
@@ -68,7 +70,7 @@ edges:
     edge_type: node_capability
     weight: 0.85
     channel_map:
-      catalog_drift_pressure: contract_pressure
+      catalog_drift_pressure: catalog_drift_pressure
       observer_failure_pressure: reliability_pressure
 
   # 2026-07-26: real mesh-wide transport signal, replacing the removed

@@ -250,15 +250,16 @@ def _sample_proof_chain_for_gates(
                 "timestamp": ts,
                 "age_sec": bus_age_sec,
                 # capability:transport's real field vector -- what _compute_gates
-                # actually reads post 2026-07-27. pressure/contract_pressure mirror
+                # actually reads post 2026-07-27. pressure/catalog_drift_pressure mirror
                 # the same test knobs used for M3 above so both code paths can be
                 # exercised from one fixture without a parameter per code path.
                 "values": {
                     "field_vector": {
                         "pressure": stream_backlog_pressure,
-                        # capability:transport.contract_pressure is
+                        # capability:transport.catalog_drift_pressure (was
+                        # contract_pressure until 2026-10-07, D3) is
                         # 0.85 x node:athena catalog_drift_pressure (topology).
-                        "contract_pressure": 0.85 * catalog_drift_pressure,
+                        "catalog_drift_pressure": 0.85 * catalog_drift_pressure,
                         # live vectors always carry it (node:athena measures it)
                         "reliability_pressure": 0.0,
                     },

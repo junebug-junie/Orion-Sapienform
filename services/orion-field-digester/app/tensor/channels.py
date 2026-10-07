@@ -73,7 +73,15 @@ CAPABILITY_CHANNELS = [
     "execution_pressure",
     "reasoning_pressure",
     "reliability_pressure",
-    "contract_pressure",
+    # capability:transport only, fed by node:athena's catalog_drift_pressure
+    # (topology channel_map, weight 0.85). Named contract_pressure until
+    # 2026-10-07 (decision D3, docs/superpowers/specs/2026-10-07-transport-
+    # lattice-names-and-contract.md): it was always catalog drift. Same name as
+    # the node-level channel on purpose -- collect_field_channel_pressures()
+    # max()-merges node and capability values by name, and 0.85 x the node
+    # reading never exceeds the node reading itself, so the merged value and
+    # winner are unchanged (replayed: scripts/eval_field_decisions_replay.py).
+    "catalog_drift_pressure",
 ]
 
 DEFAULT_NODE_VECTOR = {ch: 0.0 for ch in NODE_CHANNELS}
@@ -197,9 +205,9 @@ RETIRED_NODE_CHANNELS: dict[str, str | None] = {
     # specs/2026-10-07-transport-lattice-names-and-contract.md): no successor.
     # Node-level contract_pressure was the bus observer's XREVRANGE schema
     # sample of two world_pulse streams; 0.0 on 123,412 of 123,412 field ticks.
-    # NODE level only: capability:transport.contract_pressure is a different
-    # quantity (0.85 x node:athena catalog_drift_pressure via the topology
-    # channel_map) and stays in CAPABILITY_CHANNELS.
+    # The capability-level channel of the same name (0.85 x node:athena
+    # catalog_drift_pressure) was renamed to catalog_drift_pressure the same
+    # day -- see RETIRED_CAPABILITY_CHANNELS.
     "contract_pressure": None,
 }
 
@@ -214,6 +222,12 @@ RETIRED_CAPABILITY_CHANNELS: dict[str, str | None] = {
     # edge, whose source channel was never written (2026-09-22 audit). Edge
     # deleted in the same patch.
     "stream_backlog_pressure": None,
+    # Renamed 2026-10-07 (decision D3): capability:transport's catalog drift
+    # under a misleading name. The successor is written fresh by diffusion
+    # every tick (memoryless), so no value is carried over -- the old key is
+    # only pruned, so a persisted pre-rename row cannot leave both names
+    # standing (a generic consumer would read the same drift twice).
+    "contract_pressure": "catalog_drift_pressure",
 }
 
 # Node ids that were once real entries in orion_field_topology.v1.yaml's

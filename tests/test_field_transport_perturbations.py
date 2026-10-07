@@ -45,6 +45,11 @@ def test_transport_bus_delta_maps_to_node_channels() -> None:
     assert perturbations[0].node_id == "node:athena"
 
 
+class _NoHistoryStore:
+    def load_recent_field_json(self, *, window_seconds: float) -> list:
+        return []
+
+
 def test_transport_perturbations_diffuse_to_transport_capability() -> None:
     lattice = load_lattice(LATTICE)
     assert "capability:transport" in lattice.capabilities
@@ -70,11 +75,18 @@ def test_transport_perturbations_diffuse_to_transport_capability() -> None:
         decay_rate=1.0,
         diffusion_rate=1.0,
         staleness_threshold_sec=90.0,
+        # run_digestion_tick grew these (significance pressure); this test
+        # was failing on main for that reason alone, hiding its assertion.
+        store=_NoHistoryStore(),
+        significance_window_seconds=60.0,
+        significance_check_interval_sec=1e9,
     )
     cap = field.capability_vectors.get("capability:transport") or {}
-    # capability:transport.contract_pressure is fed by node:athena
-    # catalog_drift_pressure (topology channel_map), not a contract hint.
-    assert cap.get("contract_pressure", 0.0) > 0.0
+    # capability:transport.catalog_drift_pressure (named contract_pressure
+    # until 2026-10-07, decision D3) is fed by node:athena catalog_drift_pressure
+    # through the topology channel_map.
+    assert cap.get("catalog_drift_pressure", 0.0) > 0.0
+    assert "contract_pressure" not in cap
 
 
 def test_field_digester_store_does_not_query_grammar_events() -> None:

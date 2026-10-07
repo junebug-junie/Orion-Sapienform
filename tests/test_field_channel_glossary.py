@@ -46,14 +46,18 @@ def test_load_glossary_has_48_channels_matching_field_digester_channels_py():
     write outcomes, orion/substrate/storage_write_loop/) and vision_frame_staleness /
     vision_processing_failure_pressure added 2026-10-02 (the vision frame router
     reporting on the eye, orion/substrate/vision_organ_loop/): 49 -> 52 entries,
-    48 -> 51 names."""
+    48 -> 51 names.
+    - capability-level contract_pressure renamed to catalog_drift_pressure
+    2026-10-07 (decision D3): its entry folds into the existing
+    catalog_drift_pressure entry (now level [node, capability]): 52 -> 51
+    entries, 51 -> 50 names."""
     glossary = load_glossary()
     entries = glossary["entries"]
-    assert len(entries) == 52
+    assert len(entries) == 51
     names = {e.channel for e in entries}
-    for retired in ("stream_backlog_pressure", "stream_backlog_health", "delivery_confidence"):
+    for retired in ("stream_backlog_pressure", "stream_backlog_health", "delivery_confidence", "contract_pressure"):
         assert retired not in names
-    assert len(names) == 51, "a node-qualified entry must not introduce a new distinct channel name"
+    assert len(names) == 50, "a node-qualified entry must not introduce a new distinct channel name"
     assert "cpu_pressure" in names
     assert "reliability_pressure" in names
     assert "tension_deviation_pressure" in names
@@ -67,14 +71,11 @@ def test_load_glossary_has_48_channels_matching_field_digester_channels_py():
     assert "vision_processing_failure_pressure" in names
     assert "rpc_timeout_pressure" in names
     assert "write_failure_pressure" in names
-    # No node+capability overlap left: stream_backlog_pressure was retired
-    # 2026-09-25 and node-level contract_pressure 2026-10-07. The remaining
-    # contract_pressure entry is capability-only.
-    overlap = [e for e in entries if set(e.level) == {"node", "capability"}]
-    assert overlap == []
-    contract = next(e for e in entries if e.channel == "contract_pressure")
-    assert list(contract.level) == ["capability"]
-    assert "catalog_drift_pressure" in contract.meaning
+    # stream_backlog_pressure was retired 2026-09-25 and node-level
+    # contract_pressure 2026-10-07; the capability-level contract_pressure was
+    # renamed catalog_drift_pressure (D3), the only node+capability overlap.
+    overlap = [e.channel for e in entries if set(e.level) == {"node", "capability"}]
+    assert overlap == ["catalog_drift_pressure"]
 
 
 def test_glossary_path_candidates_prefers_orion_repo_root_env_var(monkeypatch):

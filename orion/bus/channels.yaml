@@ -3007,6 +3007,11 @@ channels:
       - orion-cortex-orch
       - orion-gpu-pool
       - orion-harness-governor
+      # settled H1 verdict transitions + one summary per hour (trace prefix
+      # heartbeat.h1:), gated by HEARTBEAT_VERDICT_ATOMS_ENABLED --
+      # services/orion-heartbeat/app/substrate/verdict_atoms.py. Ledger-only:
+      # no substrate reducer or field channel reads these.
+      - orion-heartbeat
       - orion-hub
       # per-window inference outcome traces (llm_gateway.inference:), gated by
       # LLM_GATEWAY_GRAMMAR_ENABLED -- services/orion-llm-gateway/app/grammar_emit.py
@@ -3031,8 +3036,8 @@ channels:
     # holographic-lattice-design.md) added as a read-only research consumer:
     # filters to atom_emitted events from five organs (orion-hub/orion-
     # biometrics/orion-cortex-exec/orion-bus/orion-cortex-orch) and feeds a
-    # small tensor-network substrate. Publishes nothing back to this or any
-    # other channel.
+    # small tensor-network substrate. Skips its own heartbeat.h1: atoms
+    # (source_service orion-heartbeat) so it never absorbs its own output.
     consumer_services: ["orion-sql-writer", "orion-equilibrium-service", "orion-heartbeat"]
     stability: "experimental"
     since: "2026-05-23"

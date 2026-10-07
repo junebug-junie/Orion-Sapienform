@@ -135,7 +135,7 @@ def _measure(T, prev, cur) -> dict:
     }
     guard = getattr(T["ci"], "before_winner_went_unmeasured", None)
     if guard is not None:
-        rec["guard"] = {d: guard(prev, cur, d) for d in CREDIT_DIMS}
+        rec["guard"] = {d: guard(prev, cur, d, max_staleness_seconds=120.0) for d in CREDIT_DIMS}
     return rec
 
 
@@ -272,7 +272,7 @@ def cmd_feedback(args) -> int:
                 backed = ci.channel_write_backed(after, d, max_staleness_seconds=120.0)
                 if backed is not True:
                     c[f"{mode}:r5b_withheld:{d}"] += 1
-                elif ci.before_winner_went_unmeasured(before, after, d):
+                elif ci.before_winner_went_unmeasured(before, after, d, max_staleness_seconds=120.0):
                     c[f"{mode}:guard_withheld:{d}"] += 1
                     holder = ci.dimension_winner_holder(before, d)
                     c[f"{mode}:guard_holder:{d}:{holder}"] += 1

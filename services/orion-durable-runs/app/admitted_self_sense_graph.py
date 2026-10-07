@@ -19,7 +19,7 @@ from app.admitted_graph import (
     AdmissionDeps, HoldLost, HoldRecalled, RunControlPending, WorkflowDeadline, replay_if_requeued,
     resource_nodes, taken_back,
 )
-from app.self_sense_graph import Deps, SelfSenseAskFailed, SelfSenseRunState, make_nodes
+from app.self_sense_graph import Deps, SelfSenseAskFailed, SelfSenseRunState, make_nodes, no_answers_error
 from orion.schemas.durable_run import SELF_SENSE_EVAL_NODES
 
 
@@ -39,6 +39,13 @@ def build_admitted_self_sense_graph(deps: Deps, admission: AdmissionDeps, checkp
                 replay = await replay_if_requeued(admission, dict(state), {"status": "waiting_resource"})
                 if replay is not None:
                     return replay
+            no_answers = no_answers_error(result.get("answers"))
+            if no_answers is not None:
+                # Every question came back empty (e.g. every LLM call 500'd): nothing was measured.
+                # Fail the run with the turns' own errors instead of publishing four
+                # non-measurements and reporting "completed".
+                released = await admission.release(dict(state), "attempt_failed")
+                return {**result, **released, "status": "failed", "last_error": no_answers}
             return {**result, "status": "running", "last_error": None}
         except WorkflowDeadline:
             released = await admission.release(dict(state), "workflow_deadline")

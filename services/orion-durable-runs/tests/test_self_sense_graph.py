@@ -146,3 +146,78 @@ def test_a_crash_between_ask_and_publish_resumes_without_re_asking_answered_ques
     assert len(world.turn_calls) == len(SELF_SENSE_QUESTIONS)  # unchanged
     assert final["status"] == "completed"
     assert len(world.published_rows) == len(SELF_SENSE_QUESTIONS)
+
+
+# Live 2026-10-02..06: four self-sense runs on the gpu2 worker "completed" with 16/16 blank answers
+# while every LLM call behind them 500'd. The per-turn error names the real cause.
+UPSTREAM_500 = "upstream_http_5xx:http_500: No user query found in messages."
+
+
+class _AllFailWorld(_World):
+    async def _run_turn(self, request: CuriosityTurnRequestV1) -> CuriosityTurnResultV1:
+        self.turn_calls.append(request)
+        return CuriosityTurnResultV1(
+            run_id=request.run_id, correlation_id=request.correlation_id, ok=False, error=UPSTREAM_500
+        )
+
+
+def test_every_answer_empty_fails_the_run_and_publishes_nothing():
+    world = _AllFailWorld()
+    graph = build_self_sense_graph(world.deps(), InMemorySaver())
+    initial = {"run_id": "sse-run-x", "correlation_id": "corr-x", "workflow": "self_sense_eval",
+               "brief": _brief(), "attempt": 0}
+    final = asyncio.run(graph.ainvoke(initial, _cfg("sse-run-x")))
+
+    assert len(world.turn_calls) == len(SELF_SENSE_QUESTIONS)
+    assert world.published_rows == []
+    assert final["status"] == "failed"
+    assert final["last_error"] == f"self_sense_no_answers: {UPSTREAM_500}"
+    detail = finish_detail(final)
+    assert detail["error"] == final["last_error"]
+    assert detail["published"] == 0 and detail["empty"] == len(SELF_SENSE_QUESTIONS)
+    # Each turn's own error is kept, not just a log line.
+    assert all(t["error"] == UPSTREAM_500 for t in detail["turns"].values())
+
+
+def test_one_empty_answer_keeps_its_error_in_the_turn_detail():
+    fail_key = SELF_SENSE_QUESTIONS[0][0]
+    world = _World(fail_keys={fail_key})
+    graph = build_self_sense_graph(world.deps(), InMemorySaver())
+    initial = {"run_id": "sse-run-y", "correlation_id": "corr-y", "workflow": "self_sense_eval",
+               "brief": _brief(), "attempt": 0}
+    final = asyncio.run(graph.ainvoke(initial, _cfg("sse-run-y")))
+
+    assert final["status"] == "completed"
+    turns = finish_detail(final)["turns"]
+    assert turns[fail_key]["error"] == "empty_generation"
+    assert all("error" not in t for k, t in turns.items() if k != fail_key)
+
+
+def test_runner_reports_a_no_answer_run_as_failed_not_completed(monkeypatch):
+    """The plain (non-admitted) runner emits the terminal state from the graph's own status, and a
+    failure at the last node is not resumable (next_node None)."""
+    monkeypatch.setenv("POSTGRES_URI", "postgresql://unused/unused")
+    monkeypatch.setenv("ORION_BUS_ENABLED", "false")
+    import app.settings as settings_mod
+    from app.runner import SELF_SENSE_EVAL_WORKFLOW, DurableRunner, WorkflowSpec
+    from orion.schemas.durable_run import SELF_SENSE_EVAL_NODES
+
+    settings_mod._settings = None
+    saver = InMemorySaver()
+    runner = DurableRunner(settings_mod.get_settings(), bus=None, checkpointer=saver)
+    world = _AllFailWorld()
+    spec = WorkflowSpec(workflow=SELF_SENSE_EVAL_WORKFLOW, graph=build_self_sense_graph(world.deps(), saver),
+                        nodes=list(SELF_SENSE_EVAL_NODES), finish_detail=finish_detail)
+    emitted: list[dict] = []
+
+    async def record(state, *, spec, node, status, detail=None, resumed_from=None):
+        emitted.append({"node": node, "status": status, "detail": dict(detail or {})})
+
+    monkeypatch.setattr(runner, "_emit_state", record)
+    initial = {"run_id": "sse-run-r", "correlation_id": "corr-r", "workflow": "self_sense_eval",
+               "brief": _brief(), "attempt": 0}
+    asyncio.run(runner._drive(spec, "sse-run-r", initial))
+    assert emitted[-1]["node"] == SELF_SENSE_EVAL_NODES[-1]
+    assert emitted[-1]["status"] == "failed"
+    assert emitted[-1]["detail"]["error"].startswith("self_sense_no_answers:")
+    settings_mod._settings = None

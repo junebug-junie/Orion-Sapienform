@@ -22,6 +22,8 @@ gracefully instead of crashing the render.
 
 from __future__ import annotations
 
+import pytest
+
 import importlib.util
 import sys
 import types
@@ -67,7 +69,7 @@ def _base_ctx(**overrides) -> dict:
         "allowed_scope": "inspect_only",
         "proposal_id": "proposal:inspect:node:atlas",
         "decision_id": "policy.decision:proposal:inspect:node:atlas:substrate_policy.v1",
-        "self_state_id": "self_state:v1:abcd",
+        "field_tick_id": "field.tick:abcd",
     }
     ctx.update(overrides)
     return ctx
@@ -161,3 +163,15 @@ def test_substrate_prompts_degrade_gracefully_with_explicit_none_dimensions():
         assert "REAL TELEMETRY" in prompt
         assert "unavailable" in prompt
         assert "none recorded for this target" in prompt
+
+
+@pytest.mark.parametrize("name", ["substrate_inspect.j2", "substrate_observe.j2", "substrate_summarize.j2"])
+def test_probe_provenance_names_the_real_field_tick_not_dead_self_state_id(name):
+    """2026-10-07: these prompts rendered `self_state_id: ` blank on every
+    dispatch since the 2026-07-22 SelfStateV1 burn -- the dispatch envelope
+    (orion/execution_dispatch/envelopes.py) carries field_tick_id, never
+    self_state_id. Pin the provenance line to the id that actually arrives."""
+    executor_module = _load_executor_module()
+    prompt = executor_module._render_prompt(_load_template(name), _base_ctx())
+    assert "field_tick_id: field.tick:abcd" in prompt
+    assert "self_state_id" not in prompt

@@ -336,9 +336,8 @@ class Settings(BaseSettings):
     brain_frame_firing_threshold: float = Field(0.5, alias="BRAIN_FRAME_FIRING_THRESHOLD")
     brain_frame_starving_threshold: float = Field(0.1, alias="BRAIN_FRAME_STARVING_THRESHOLD")
     # A dimension renders stale when generated_at - as_of exceeds its cadence.
-    brain_frame_self_state_cadence_sec: float = Field(
-        30.0, alias="BRAIN_FRAME_SELF_STATE_CADENCE_SEC"
-    )
+    # (BRAIN_FRAME_SELF_STATE_CADENCE_SEC retired 2026-10-07 with the
+    # self_state brain region -- its source table had 0 rows.)
     brain_frame_spotlight_cadence_sec: float = Field(
         30.0, alias="BRAIN_FRAME_SPOTLIGHT_CADENCE_SEC"
     )

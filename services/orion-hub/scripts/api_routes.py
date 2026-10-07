@@ -124,7 +124,6 @@ from orion.core.schemas.substrate_mutation import (
     RecallCanaryReviewArtifactV1,
     RecallCanaryRunV1,
     MutationPressureEvidenceV1,
-    MutationSignalV1,
     RecallProductionCandidateReviewV1,
     RecallShadowEvalRunV1,
     RecallStrategyProfileV1,
@@ -4779,19 +4778,6 @@ def _mutation_signal_intake_report(
     return report
 
 
-def _self_revision_signals_from_latest_self_state(
-    *, min_error: float, max_age_sec: float, now: datetime | None = None
-) -> list["MutationSignalV1"]:
-    """Always [] now. 2026-07-22 (SelfStateV1 burn,
-    docs/superpowers/specs/2026-07-22-self-state-phi-endo-origination-burn-
-    spec.md): this signal source was orion.substrate.mutation_self_revision's
-    only self_state-derived input, and self_state has no producer anymore.
-    Kept as a function (not inlined at the call site) so the fail-open
-    contract stays visible and the call site doesn't need to change."""
-    del min_error, max_age_sec, now
-    return []
-
-
 def substrate_autonomy_runtime_supported() -> tuple[bool, str]:
     if not SUBSTRATE_MUTATION_STORE.postgres_url:
         return False, "postgres_url_unset"
@@ -4861,7 +4847,6 @@ def execute_substrate_mutation_scheduled_cycle(
         proposals_enabled = _env_flag("SUBSTRATE_AUTONOMY_PROPOSALS_ENABLED", default=True)
         routing_proposals_enabled = _env_flag("SUBSTRATE_AUTONOMY_ROUTING_PROPOSALS_ENABLED", default=True)
         cognitive_proposals_enabled = _env_flag("SUBSTRATE_AUTONOMY_COGNITIVE_PROPOSALS_ENABLED", default=False)
-        self_revision_enabled = _env_flag("SUBSTRATE_AUTONOMY_SELF_REVISION_ENABLED", default=False)
         apply_enabled_global = _env_flag("SUBSTRATE_AUTONOMY_APPLY_ENABLED", default=False)
         routing_apply_enabled = _env_flag("SUBSTRATE_AUTONOMY_ROUTING_APPLY_ENABLED", default=False)
         apply_enabled = bool(apply_enabled_global and routing_apply_enabled)
@@ -5006,17 +4991,6 @@ def execute_substrate_mutation_scheduled_cycle(
                 "routing_rollback_delta_threshold": routing_rollback_threshold,
             }
         )
-        self_revision_signals: list[MutationSignalV1] = []
-        if self_revision_enabled and cognitive_proposals_enabled:
-            try:
-                self_revision_signals = _self_revision_signals_from_latest_self_state(
-                    min_error=_env_float("SUBSTRATE_AUTONOMY_SELF_REVISION_MIN_ERROR", default=0.3, minimum=0.0, maximum=1.0),
-                    max_age_sec=_env_float("SUBSTRATE_AUTONOMY_SELF_REVISION_MAX_AGE_SEC", default=300.0, minimum=30.0, maximum=3600.0),
-                    now=tick_now,
-                )
-            except Exception:
-                logger.exception("substrate_self_revision_signals_call_failed")
-                self_revision_signals = []
 
         _t_run = time.monotonic()
         result = worker.run_cycle(
@@ -5028,7 +5002,6 @@ def execute_substrate_mutation_scheduled_cycle(
             ),
             replay_telemetry=telemetry,
             now=tick_now,
-            extra_signals=self_revision_signals,
         )
         _phase_sec["run_cycle"] = time.monotonic() - _t_run
         _phase_sec["total"] = time.monotonic() - _t_cycle_start
@@ -5070,8 +5043,6 @@ def execute_substrate_mutation_scheduled_cycle(
             "applies_executed": applier.completed,
             "routing_proposals_enabled": routing_proposals_enabled,
             "cognitive_proposals_enabled": cognitive_proposals_enabled,
-            "self_revision_enabled": self_revision_enabled,
-            "self_revision_signals": len(self_revision_signals),
             "routing_apply_enabled": routing_apply_enabled,
             "apply_enabled_global": apply_enabled_global,
             "routing_only_scope": not cognitive_proposals_enabled,

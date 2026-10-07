@@ -15,7 +15,7 @@ _EXECUTOR_PY = Path(__file__).resolve().parents[3] / "services" / "orion-cortex-
 # a live chat turn (captured from orion-athena-cortex-exec-chat container
 # logs, "Context Keys available: [...]"). This is the primary gate for keys
 # that never appear as a literal ctx["key"] = assignment in executor.py
-# (e.g. self_state, attention_broadcast -- set via dict merges in helper
+# (e.g. attention_broadcast -- set via dict merges in helper
 # modules). Refresh by re-capturing that log line when the ingress shape
 # changes; test_static_ctx_assignments_covered below is the automated
 # safety net for the common case this snapshot can't self-update against.
@@ -37,7 +37,7 @@ LIVE_CTX_KEY_SNAPSHOT = frozenset(
         "turn_effect_evidence_json", "recent_turn_effect_alerts_json", "system_alert_tags",
         "turn_effect_policy", "turn_effect_policy_json", "turn_effect_explanations",
         "turn_effect_explanations_json", "trigger", "trigger_kind", "context_summary",
-        "metacog_biometrics_cue", "metacog_biometrics_cue_enrich", "self_state",
+        "metacog_biometrics_cue", "metacog_biometrics_cue_enrich",
         "execution_trajectory_projection", "transport_bus_projection",
         "active_node_pressure_projection", "attention_broadcast", "episode_summary",
         "curiosity_signals", "metacog_substrate_cue", "substrate_eventfulness_score",
@@ -76,6 +76,9 @@ def test_classify_returns_none_for_unknown_key():
 
 
 def test_classify_returns_registered_kind():
-    assert classify("self_state") == "live_runtime_projection"
+    assert classify("attention_broadcast") == "live_runtime_projection"
+    # self_state retired 2026-10-07: never populated since the 2026-07-22
+    # SelfStateV1 burn (0 of 65 live "Context Keys available" lines carried it).
+    assert classify("self_state") is None
     assert classify("recall_bundle") == "memory_recall"
     assert classify("orion_identity_summary") == "static_identity_config"

@@ -76,8 +76,7 @@ def fetch_channels(
     Uses psycopg2 (already a dependency of several services; no new dependency
     added when called from a service that already has it, e.g. orion-hub,
     orion-field-digester). Each row's jsonb column is flattened into one
-    channel per key (`biometrics:<key>`, `self_state:<key>`,
-    `bus_synaptic:<key>`); `attention_salience_trace.salience` has no
+    channel per key (`biometrics:<key>`, `bus_synaptic:<key>`); `attention_salience_trace.salience` has no
     sub-keys and becomes the single scalar channel `attention:salience`.
 
     Returns `(channels, table_row_counts)`. `table_row_counts` maps each source
@@ -131,20 +130,10 @@ def fetch_channels(
                 for key, value in (pressures or {}).items():
                     _append(f"biometrics:{key}", ts, value)
 
-            cur.execute(
-                """
-                SELECT generated_at AS ts, prediction_json->'predicted_dimension_scores' AS scores
-                FROM self_state_predictions
-                WHERE generated_at >= %s
-                ORDER BY ts
-                """,
-                (window_start,),
-            )
-            rows = cur.fetchall()
-            table_row_counts["self_state_predictions"] = len(rows)
-            for ts, scores in rows:
-                for key, value in (scores or {}).items():
-                    _append(f"self_state:{key}", ts, value)
+            # self_state_predictions source removed 2026-10-07: the table has
+            # had 0 rows since its producer was deleted in the 2026-07-22
+            # SelfStateV1 burn, so it contributed no channel to any snapshot
+            # (live snapshots: 19 channels, every one from the other sources).
 
             cur.execute(
                 """

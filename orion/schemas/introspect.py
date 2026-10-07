@@ -1,8 +1,9 @@
 """Introspect tool contracts: Orion reading back their own recorded activity.
 
 Design: docs/superpowers/specs/2026-09-28-orion-introspect-mcp-design.md.
-Slice 1 carries only ``reading_result``; each later slice extends
-``IntrospectOperation`` when its owning service gains a responder.
+``reading_result`` travels on the reading contract; every other operation is an
+``IntrospectBusOperation`` answered by its owning service over
+``orion:introspect:<domain>:request``.
 """
 from __future__ import annotations
 
@@ -23,7 +24,12 @@ DEFAULT_TEXT_CAP = 900
 SHORT_FIELD_CAP = 200
 URL_CAP = 500
 
-IntrospectOperation = Literal["reading_result"]
+FULL_TEXT_CAP = 4000
+THEME_CAP = 8
+DREAM_ID_PATTERN = r"^(dream:[0-9]{1,12}|dh-[0-9a-f]{6,32})$"
+
+IntrospectBusOperation = Literal["dreams"]
+IntrospectOperation = Literal["reading_result", "dreams"]
 
 
 def clip_text(text: str | None, cap: int = DEFAULT_TEXT_CAP) -> tuple[str, bool]:
@@ -123,4 +129,38 @@ class ReadingResultArguments(BaseModel):
         _require_tz(self.since, "since")
         if self.since is not None and (self.request_id is not None or self.url is not None):
             raise ValueError("since applies only to query or recent reads (no request_id or url)")
+        return self
+
+
+class IntrospectRequestV1(BaseModel):
+    """Harness -> owning service. ``args`` is validated by the owner per operation."""
+
+    model_config = ConfigDict(extra="forbid")
+    operation: IntrospectBusOperation
+    binding: IntrospectToolBindingV1
+    args: dict[str, Any] = Field(default_factory=dict)
+
+
+class DreamsArguments(BaseModel):
+    """Model-supplied arguments for the ``dreams`` tool."""
+
+    model_config = ConfigDict(extra="forbid")
+    query: str | None = Field(default=None, min_length=1, max_length=QUERY_CAP)
+    dream_id: str | None = Field(default=None, pattern=DREAM_ID_PATTERN)
+    kind: Literal["narrative", "hypothesis"] | None = None
+    limit: int = Field(default=DEFAULT_LIMIT, ge=1, le=MAX_ITEMS)
+    since: datetime | None = None
+
+    @field_validator("query", mode="before")
+    @classmethod
+    def _strip_query(cls, value: Any) -> Any:
+        return normalize_query(value)
+
+    @model_validator(mode="after")
+    def _selectors(self):
+        _require_tz(self.since, "since")
+        if self.dream_id is not None and (
+            self.query is not None or self.kind is not None or self.since is not None
+        ):
+            raise ValueError("dream_id fetches one dream; it cannot be combined with query, kind or since")
         return self

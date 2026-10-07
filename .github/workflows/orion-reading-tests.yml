@@ -8,6 +8,7 @@ on:
       - "orion/bus/channels.yaml"
       - "orion/fcc/**"
       - "orion/introspect/**"
+      - "orion/core/bus/**"
       - "orion/harness/**"
       - "orion/hub/**"
       - "orion/cognition/prompts/stance_react.j2"
@@ -15,6 +16,7 @@ on:
       - "orion/substrate/adapters/world_pulse_read.py"
       - "services/orion-hub/**"
       - "services/orion-durable-runs/**"
+      - "services/orion-dream/**"
       - "services/orion-harness-governor/**"
       - "services/orion-sql-db/manual_migration*reading*"
       - "services/orion-sql-db/manual_migration_world_pulse_read*"
@@ -63,6 +65,12 @@ jobs:
             tests/test_world_pulse_read_*.py \
             tests/test_unified_turn_schemas.py \
             tests/test_unified_turn_bus_catalog.py
+      - name: orion-dream introspect responder
+        run: |
+          python -m pytest -q \
+            services/orion-dream/tests/test_introspect_dreams.py \
+            services/orion-dream/tests/test_dream_search.py \
+            services/orion-dream/tests/test_introspect_listener.py
       - name: Offline source handoff behavior eval
         run: python -m pytest services/orion-hub/evals/test_reading_handoff_eval.py services/orion-hub/evals/test_reading_receipt_truth_eval.py -q
       - name: Checkpointed reading admission

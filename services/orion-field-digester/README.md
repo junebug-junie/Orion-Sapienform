@@ -1631,6 +1631,19 @@ follow-up note, and `test_execution_run_fcc_channels_ignored_off_lane` /
   yet wired to replace this channel or feed the field-digester corpus.
 
 #### `contract_pressure`
+> **2026-10-07 update (fix/transport-lattice-names-and-contract,
+> `docs/superpowers/specs/2026-10-07-transport-lattice-names-and-contract.md`):**
+> the **node-level** channel is retired (`RETIRED_NODE_CHANNELS`, no
+> successor). Its last producer was the bus observer's XREVRANGE schema
+> sample of two world_pulse streams: 0.0 on 123,412 of 123,412 ticks, and a
+> mesh-wide version would read 0 by construction because
+> `OrionBusAsync.publish()` validates every payload before sending. The
+> **capability-level** `capability:transport.contract_pressure` stays: it is
+> 0.85 x `node:athena` `catalog_drift_pressure` (topology channel_map) under a
+> misleading name, kept because renaming it changes capability:transport's
+> attention pressure proxy on ~2.4% of ticks (decision D3 in that spec). The
+> history below predates both changes.
+
 - **Meaning**: intended to represent pressure from bus/schema "contract"
   mismatches (the precise real-world condition isn't otherwise documented
   in code — it's perturbed from the same `transport_bus` hint dict as

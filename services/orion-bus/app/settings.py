@@ -38,8 +38,9 @@ class Settings(BaseSettings):
     #
     # What these keys are used for (2026-09-25): catalog membership
     # (bus_configured_stream_uncataloged, the census-off fallback for
-    # catalog_drift_pressure) and a bounded XREVRANGE schema sample
-    # (contract_pressure). They are NOT sampled for depth any more: the XLEN
+    # catalog_drift_pressure). The bounded XREVRANGE schema sample that fed
+    # contract_pressure was retired 2026-10-07 (fix/transport-lattice-names-
+    # and-contract). They are NOT sampled for depth any more: the XLEN
     # depth / backpressure family and BUS_STREAM_DEPTH_WARNING/CRITICAL were
     # retired (fix/bus-observer-scope). A live SCAN found 5 Redis Streams on
     # the whole bus; the only live consumer group sat at lag=0 pending=0, and
@@ -52,15 +53,6 @@ class Settings(BaseSettings):
         alias="BUS_OBSERVER_STREAMS",
     )
     bus_observer_node_id: str = Field("athena", alias="BUS_OBSERVER_NODE_ID")
-    # Bounded per-stream XREVRANGE sample size used to check recent entries on
-    # each *cataloged* configured stream against that channel's registered
-    # schema_id (orion/bus/channels.yaml). Kept small: cost is
-    # len(observer_stream_list) * this value extra Redis reads per tick, on
-    # top of the existing 1 PING.
-    bus_observer_schema_sample_count: int = Field(
-        5, alias="BUS_OBSERVER_SCHEMA_SAMPLE_COUNT"
-    )
-
     channels_catalog_path: str = Field(
         "orion/bus/channels.yaml",
         alias="BUS_CHANNELS_CATALOG_PATH",

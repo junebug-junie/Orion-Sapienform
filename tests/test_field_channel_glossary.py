@@ -67,10 +67,14 @@ def test_load_glossary_has_48_channels_matching_field_digester_channels_py():
     assert "vision_processing_failure_pressure" in names
     assert "rpc_timeout_pressure" in names
     assert "write_failure_pressure" in names
-    # contract_pressure is the only node+capability overlap since
-    # stream_backlog_pressure was retired (2026-09-25).
+    # No node+capability overlap left: stream_backlog_pressure was retired
+    # 2026-09-25 and node-level contract_pressure 2026-10-07. The remaining
+    # contract_pressure entry is capability-only.
     overlap = [e for e in entries if set(e.level) == {"node", "capability"}]
-    assert {e.channel for e in overlap} == {"contract_pressure"}
+    assert overlap == []
+    contract = next(e for e in entries if e.channel == "contract_pressure")
+    assert list(contract.level) == ["capability"]
+    assert "catalog_drift_pressure" in contract.meaning
 
 
 def test_glossary_path_candidates_prefers_orion_repo_root_env_var(monkeypatch):

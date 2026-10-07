@@ -186,7 +186,6 @@ function _renderProofChain(chain) {
             const b = buses[busId] || {};
             return `<div><span class="font-mono text-gray-300">${_esc(busId)}</span>
               streams_observed: <b>${_esc(b.streams_observed)}</b> &nbsp;|&nbsp;
-              contract_pressure: <b>${_fmt(b.contract_pressure)}</b> &nbsp;|&nbsp;
               catalog_drift_pressure: <b>${_fmt(b.catalog_drift_pressure)}</b><br>
               observer_failure_pressure: <b>${_fmt(b.observer_failure_pressure)}</b> &nbsp;|&nbsp;
               reliability_pressure: <b>${_fmt(b.reliability_pressure)}</b> &nbsp;|&nbsp;

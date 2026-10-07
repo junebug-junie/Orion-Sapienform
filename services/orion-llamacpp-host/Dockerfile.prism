@@ -61,7 +61,7 @@ RUN cmake -B build \
     && ./build/bin/llama-server --version 2>&1 | tee /tmp/version \
     && test "$(grep -oE '\(build [0-9]+' /tmp/version | grep -oE '[0-9]+')" -gt 5332 \
     && ./build/bin/llama-server --help > /tmp/help \
-    && for f in --ctx-checkpoints --jinja --reasoning --reasoning-format --chat-template-kwargs \
+    && for f in --ctx-checkpoints --jinja --reasoning --reasoning-format --chat-template-kwargs --chat-template-file \
                 --flash-attn --no-context-shift --parallel --n-predict; do \
          grep -qE -- "(^|[ ,])$f([ ,=]|$)" /tmp/help || { echo "missing $f"; exit 1; }; \
        done

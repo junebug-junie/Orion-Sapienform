@@ -27,6 +27,13 @@ RETIRED_TRANSPORT_BUS_STATE_FIELDS: frozenset[str] = frozenset(
         "stream_depth_pressure",
         "backpressure",
         "stream_backlog_pressure",
+        # Retired 2026-10-07 (fix/transport-lattice-names-and-contract): the
+        # two-stream XREVRANGE schema sample. contract_pressure read 0 on
+        # every live tick and a mesh-wide version is calm by construction
+        # (OrionBusAsync.publish() validates before sending). See
+        # docs/superpowers/specs/2026-10-07-transport-lattice-names-and-contract.md.
+        "schema_mismatch_stream_count",
+        "contract_pressure",
     }
 )
 
@@ -60,9 +67,9 @@ class TransportBusStateV1(BaseModel):
 
     redis_ping_ok: bool | None = None
 
-    # Count of BUS_OBSERVER_STREAMS keys checked for catalog membership and
-    # schema samples this tick (denominator for contract_pressure and the
-    # census-off catalog_drift_pressure fallback). Not a depth reading.
+    # Count of BUS_OBSERVER_STREAMS keys checked for catalog membership this
+    # tick (denominator for the census-off catalog_drift_pressure fallback).
+    # Not a depth reading.
     streams_observed: int = 0
 
     uncataloged_stream_count: int = 0
@@ -81,19 +88,8 @@ class TransportBusStateV1(BaseModel):
     # scan failed) -- must stay distinguishable from a real, honest zero.
     undeclared_active_count: int | None = None
     catalog_size: int = 0
-    # Distinct cataloged streams where a bounded XREVRANGE sample failed
-    # schema validation against the stream's declared schema_id
-    # (orion/bus/channels.yaml). Backs contract_pressure -- genuinely
-    # independent of uncataloged_stream_count/catalog_drift_pressure (which
-    # measures streams missing from the catalog entirely, a different
-    # failure mode). See services/orion-bus/app/bus_observer.py:
-    # count_schema_mismatches().
-    schema_mismatch_stream_count: int = 0
-
     catalog_drift_pressure: float = Field(ge=0.0, le=1.0, default=0.0)
     observer_failure_pressure: float = Field(ge=0.0, le=1.0, default=0.0)
-
-    contract_pressure: float = Field(ge=0.0, le=1.0, default=0.0)
     reliability_pressure: float = Field(ge=0.0, le=1.0, default=0.0)
 
     evidence_event_ids: list[str] = Field(default_factory=list)

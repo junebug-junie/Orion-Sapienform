@@ -3,46 +3,63 @@ schema_version: transport_lattice_policy.v1
 lane_id: transport
 
 # Single source of truth for the transport lane's per-channel thresholds.
-# Live readers (2026-09-25):
+# Live readers (2026-10-07):
 #   - services/orion-hub/scripts/substrate_lattice_routes.py -- gate overlay,
 #     lattice-values panel, threshold simulator, draft-policy-patch diff.
 #   - services/orion-mind/app/recall_signal_resolver.py -- bus_synaptic_pressure
 #     watch_at/summarize_at/propose_at rungs for the recall evidence line.
+#   - orion/field/transport_thresholds.py -- the row id is the key of the
+#     shared EWMA threshold state in Redis (orion:lattice:transport_thresholds:v1).
 # `dimension` is a display label only. A former `dimension_weights` block and
 # the hub's hand-copied `_TRANSPORT_CHANNELS` mirror of it were deleted
 # 2026-09-25: no process read the weights, and the mirror was still keyed on
 # the retired stream_backlog_pressure channel. Per-channel `required_windows`
 # and a `healthy_idle` block were deleted in the same pass for the same reason
 # (never read). See docs/superpowers/specs/2026-09-22-substrate-lattice-audit.md.
+#
+# Row ids vs. metrics (2026-10-07, docs/superpowers/specs/
+# 2026-10-07-transport-lattice-names-and-contract.md): a row id is a lane-local
+# label, not a metric name. `source:` says which real reading the row is:
+#   {layer: m4, vector: capability:transport, channel: <field channel>}
+#     a channel on M4's capability:transport field vector
+#     (config/field/orion_field_topology.v1.yaml, glossary entry required)
+#   {layer: m3, field: <name>}
+#     a TransportBusStateV1 field (orion/schemas/transport_projection.py),
+#     max over fresh per-bus rows
+# Every reader resolves the value through `source`; nobody maps names by hand.
+# tests/test_transport_lattice_policy_sources.py fails if a source points at a
+# channel nothing writes or a field the projection does not have.
 channels:
-  # Renamed from stream_backlog_pressure 2026-07-27 (PRs #1391-#1396): that
-  # channel was fed by a narrow 2-Redis-Stream "world_pulse" census, not real
-  # bus traffic, already retired. bus_synaptic_pressure is capability:transport's
-  # real, mesh-wide successor (config/field/orion_field_topology.v1.yaml).
+  # Renamed from stream_backlog_pressure 2026-07-27 (PRs #1391-#1396). The row
+  # id stays `bus_synaptic_pressure` on purpose: it keys 160+ hours of live
+  # EWMA threshold state, and a rename would cold-start it for 24 h (thresholds
+  # revert to static; hub gate and mind recall line change). The metric is
+  # capability:transport.pressure = 0.85 x node:substrate.bus_synaptic
+  # prediction_error (fraction of live bus-synaptic edges with |z| >= 3).
   # Thresholds carried over unchanged from the old channel -- Juniper's explicit
-  # call: the old gate effectively never fired (frozen near-zero for its whole
-  # life, plus a separate dict-nesting bug in substrate_lattice_routes.py that
-  # meant it read a nonexistent key regardless), so there's no real prior
-  # behavior to preserve continuity with. bus_synaptic's real distribution
-  # saturates at 1.0 for ~14% of ticks (6h live sample, 2026-07-27) -- these
-  # thresholds will make this gate active far more often than the old one ever
-  # was; that is treated as the honest signal the old gate never gave, not a
-  # miscalibration to chase.
+  # call: the old gate effectively never fired, so there's no real prior
+  # behavior to preserve continuity with. Thresholds are on the
+  # capability:transport.pressure scale, not raw prediction_error.
   bus_synaptic_pressure:
+    source:
+      layer: m4
+      vector: capability:transport
+      channel: pressure
     dimension: delivery_integrity
     watch_at: 0.25
     summarize_at: 0.50
     propose_at: 0.75
     action_ceiling: read_only
 
-  contract_pressure:
-    dimension: contract_integrity
-    watch_at: 0.50
-    summarize_at: 0.75
-    propose_at: null
-    action_ceiling: summarize
+  # contract_pressure row deleted 2026-10-07: its reading was the bus
+  # observer's two-stream schema sample (0.0 on every live tick), and the hub
+  # contract gate that used its threshold actually read catalog drift. Catalog
+  # drift is the row below.
 
   catalog_drift_pressure:
+    source:
+      layer: m3
+      field: catalog_drift_pressure
     dimension: topology_integrity
     watch_at: 0.50
     summarize_at: null
@@ -50,6 +67,9 @@ channels:
     action_ceiling: watch
 
   observer_failure_pressure:
+    source:
+      layer: m3
+      field: observer_failure_pressure
     dimension: observability_integrity
     watch_at: 0.25
     summarize_at: 0.50

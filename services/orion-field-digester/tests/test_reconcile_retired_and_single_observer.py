@@ -116,7 +116,13 @@ def test_retired_set_and_live_channels_do_not_overlap() -> None:
     from app.tensor.channels import RETIRED_CAPABILITY_CHANNELS
 
     live = set(NODE_CHANNELS) | set(CAPABILITY_CHANNELS)
-    assert not (set(RETIRED_NODE_CHANNELS) & live)
+    assert not (set(RETIRED_NODE_CHANNELS) & set(NODE_CHANNELS))
+    # A node-level retirement may share its name with a still-live capability
+    # channel only when listed here on purpose: node pruning never touches
+    # capability vectors. contract_pressure (2026-10-07): the node channel was
+    # the dead two-stream schema sample; the capability channel is catalog
+    # drift via the topology map and is still written.
+    assert set(RETIRED_NODE_CHANNELS) & set(CAPABILITY_CHANNELS) == {"contract_pressure"}
     assert not (set(RETIRED_CAPABILITY_CHANNELS) & set(CAPABILITY_CHANNELS))
     # Every replacement named in the map must itself be a real channel; None
     # means "retired with no successor" and is allowed.
@@ -175,3 +181,20 @@ def test_retired_channels_are_pruned_from_tension_baselines() -> None:
     for store in (out.tension_baseline_mu, out.tension_baseline_var, out.tension_baseline_n):
         assert retired_key not in store
         assert live_key in store
+
+
+def test_node_contract_pressure_pruned_capability_contract_pressure_kept() -> None:
+    """2026-10-07: node-level contract_pressure is retired (0.0 on every live
+    tick); capability:transport.contract_pressure is a different, live
+    quantity and must survive reconcile."""
+    state = FieldStateV1(
+        generated_at=NOW,
+        tick_id="t",
+        node_vectors={"node:athena": {"cpu_pressure": 0.4, "contract_pressure": 0.0}},
+        node_vector_updated_at={"node:athena": {"contract_pressure": NOW.isoformat()}},
+        capability_vectors={"capability:transport": {"pressure": 0.02, "contract_pressure": 0.0109}},
+    )
+    out = reconcile_field_state_with_lattice(state, lattice=_lattice())
+    assert "contract_pressure" not in out.node_vectors["node:athena"]
+    assert "contract_pressure" not in out.node_vector_updated_at.get("node:athena", {})
+    assert out.capability_vectors["capability:transport"]["contract_pressure"] == 0.0109

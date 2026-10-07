@@ -442,23 +442,22 @@ def _compute_verdict(chain: dict[str, Any]) -> str:
     return f"Transport lane partially stale: {stale_str} stale."
 
 
-# Where each transport-lattice channel's live value is read from. This is NOT a
-# copy of the policy: thresholds, ceilings and the channel list itself come only
-# from config/substrate-lattice/transport_lattice_policy.v1.yaml (`channels:`),
-# via _policy_channels(). This table only says which proof-chain layer holds a
-# channel's current reading. Default for a channel not listed here: the max of
-# that same key across M3's per-bus TransportBusStateV1 rows
-# (orion/schemas/transport_projection.py) -- M3's top level carries no pressure
-# fields at all, which is why the old simulator (reading M3's top level) always
-# saw 0.0.
-#
-# bus_synaptic_pressure has no M3 field; its only reading is M4's
-# capability:transport `pressure`, fed by node:substrate.bus_synaptic's
-# prediction_error edge in config/field/orion_field_topology.v1.yaml -- the same
-# value the pressure gate below already reads.
-_CHANNEL_VALUE_SOURCES: dict[str, tuple[str, str]] = {
-    "bus_synaptic_pressure": ("m4", "pressure"),
-}
+# Where each transport-lattice channel's live value is read from is declared
+# by the policy itself: every row in transport_lattice_policy.v1.yaml carries a
+# `source:` block (2026-10-07, fix/transport-lattice-names-and-contract).
+#   {layer: m4, vector: capability:transport, channel: <field channel>}
+#     -> M4's capability:transport field vector
+#   {layer: m3, field: <TransportBusStateV1 field>}
+#     -> max of that field over M3's fresh per-bus rows (M3's top level has no
+#        pressure fields, which is why the old simulator always saw 0.0)
+# The row id (e.g. `bus_synaptic_pressure`) is a lane-local label and the key
+# of the shared EWMA threshold state; the `source` is the metric. There used to
+# be a hand-kept `_CHANNEL_VALUE_SOURCES` table here mapping
+# bus_synaptic_pressure -> M4 `pressure`: a second place the two names could
+# drift. tests/test_transport_lattice_policy_sources.py pins every `source` to
+# the field topology and the projection schema.
+_M4_VECTOR = "capability:transport"
+
 
 # Ordering used to pick the strongest action ceiling among channels that crossed
 # their watch threshold. The hub simulator's own ranking, not a mirror of any
@@ -496,16 +495,37 @@ def _effective_channels(channels: dict[str, dict[str, Any]]) -> dict[str, dict[s
     return out
 
 
-def _channel_value(chain: dict[str, Any], channel_id: str) -> tuple[float | None, str]:
+def _channel_source(ch_def: dict[str, Any] | None) -> tuple[str, str] | None:
+    """(layer, key) from a policy row's `source:` block, or None if absent/invalid."""
+    src = (ch_def or {}).get("source")
+    if not isinstance(src, dict):
+        return None
+    layer = src.get("layer")
+    if layer == "m4" and src.get("vector") == _M4_VECTOR and src.get("channel"):
+        return "m4", str(src["channel"])
+    if layer == "m3" and src.get("field"):
+        return "m3_buses", str(src["field"])
+    return None
+
+
+def _channel_value(
+    chain: dict[str, Any], channel_id: str, ch_def: dict[str, Any] | None = None
+) -> tuple[float | None, str]:
     """Current reading for one policy channel, or None when it cannot be measured.
 
     Stale or missing source layers return None rather than 0.0: an unmeasured
-    channel must not read as a calm one.
+    channel must not read as a calm one. A row with no valid `source:` is
+    unmeasured too, never silently read from a guessed key.
     """
+    if ch_def is None:
+        ch_def = _policy_channels().get(channel_id)
+    resolved = _channel_source(ch_def)
+    if resolved is None:
+        return None, f"no valid source declared for {channel_id} in transport_lattice_policy"
+    layer, key = resolved
     transport = chain.get("transport", {})
-    layer, key = _CHANNEL_VALUE_SOURCES.get(channel_id, ("m3_buses", channel_id))
     if layer == "m4":
-        source = f"M4 capability:transport.{key}"
+        source = f"M4 {_M4_VECTOR}.{key}"
         m4 = transport.get("m4", {})
         if m4.get("status") in (None, "stale", "missing"):
             return None, source
@@ -549,14 +569,14 @@ def _bus_row_is_fresh(bus: dict[str, Any], max_age_sec: float) -> bool:
 
 
 def _channel_values(chain: dict[str, Any], channels: dict[str, dict[str, Any]]) -> dict[str, float | None]:
-    return {ch_id: _channel_value(chain, ch_id)[0] for ch_id in channels}
+    return {ch_id: _channel_value(chain, ch_id, ch_def)[0] for ch_id, ch_def in channels.items()}
 
 
 def _lattice_channel_rows(chain: dict[str, Any], channels: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
     """Per-channel rows for the Lattice Values panel and the simulator inputs."""
     rows: list[dict[str, Any]] = []
     for ch_id, ch_def in channels.items():
-        value, source = _channel_value(chain, ch_id)
+        value, source = _channel_value(chain, ch_id, ch_def)
         watch_at = ch_def.get("watch_at")
         if value is None or watch_at is None:
             state = "unmeasured" if value is None else "no_threshold"
@@ -644,7 +664,7 @@ def _compute_gates(chain: dict[str, Any]) -> list[dict[str, Any]]:
     m3_values = m3.get("values", {}) if m3_status != "missing" else {}
     buses = m3_values.get("buses", {})
 
-    # 2026-07-27: pressure/contract gates below read M4's capability:transport
+    # 2026-07-27: the pressure gate below reads M4's capability:transport
     # field_vector, not M3's raw projection. Found while wiring bus_synaptic in:
     # TransportBusProjectionV1 (orion/schemas/transport_projection.py) has NO
     # top-level stream_backlog_pressure/contract_pressure/observer_failure_pressure
@@ -661,6 +681,8 @@ def _compute_gates(chain: dict[str, Any]) -> list[dict[str, Any]]:
     # contract_pressure and observer_failure_pressure -> reliability_pressure,
     # both still live) -- no new query needed, this data was already being
     # fetched into the chain and simply never read from the right place.
+    # 2026-10-07: the contract gate that read M4 contract_pressure was deleted;
+    # the hub no longer reads M4 contract_pressure at all.
     m4_status = m4.get("status", "missing")
     m4_field_vector = (
         (m4.get("values") or {}).get("field_vector", {}) if m4_status != "missing" else {}
@@ -702,16 +724,18 @@ def _compute_gates(chain: dict[str, Any]) -> list[dict[str, Any]]:
 
     # --- pressure gate ---
     channels = _effective_channels(lattice_policy.get("channels", {}))
+    bus_def = channels.get("bus_synaptic_pressure") or {}
+    bus_src = _channel_source(bus_def)
+    observer_watch_at = float(
+        (channels.get("observer_failure_pressure") or {}).get("watch_at", 0.25)
+    )
     if m4_status in ("stale", "missing"):
-        # Review-caught gap, 2026-07-27: the contract gate below already guards
-        # on m4_status; this one didn't, and a stale/missing M4 was silently
-        # read as "quiet" (0.0 default) or as a real reading of whatever value
-        # last happened to be cached -- the exact failure class (stale/absent
-        # data mistaken for a genuine calm reading) this patch exists to fix.
-        # M3 and M4 have independent freshness clocks in production
+        # Review-caught gap, 2026-07-27: a stale/missing M4 was silently read
+        # as "quiet" (0.0 default) or as whatever value was last cached --
+        # stale/absent data mistaken for a genuine calm reading. M3 and M4
+        # have independent freshness clocks in production
         # (substrate_transport_bus_projection.updated_at vs
-        # substrate_field_state.generated_at), so M4 going stale/missing while
-        # M3 stays fresh is a real, not just theoretical, scenario.
+        # substrate_field_state.generated_at).
         pressure_state = "unknown"
         pressure_reason = f"pressure state unknown: M4 field vector is {m4_status}"
     elif "pressure" not in m4_field_vector or "reliability_pressure" not in m4_field_vector:
@@ -721,47 +745,41 @@ def _compute_gates(chain: dict[str, Any]) -> list[dict[str, Any]]:
         pressure_state = "unknown"
         pressure_reason = f"pressure state unknown: capability:transport {', '.join(missing)} unmeasured this tick"
     else:
-        transport_p = float(m4_field_vector.get("pressure") or 0.0)
         observer_p = float(m4_field_vector.get("reliability_pressure") or 0.0)
-        transport_watch_at = float(
-            (channels.get("bus_synaptic_pressure") or {}).get("watch_at", 0.25)
-        )
-        observer_watch_at = float(
-            (channels.get("observer_failure_pressure") or {}).get("watch_at", 0.25)
-        )
-        pressure_active = transport_p >= transport_watch_at or observer_p >= observer_watch_at
-        pressure_state = "watch" if pressure_active else "quiet"
-        pressure_reason = (
+        observer_part = (
             # Labels name what is actually read. M4 reliability_pressure is
             # diffused from node:athena's observer_failure_pressure, not the
             # M3 observer_failure_pressure channel shown in Lattice Values.
-            f"bus_synaptic_pressure={transport_p:.2f} [M4 capability:transport.pressure] "
             f"reliability_pressure={observer_p:.2f} [M4, vs observer_failure_pressure watch_at] "
-            f"(thresholds: transport={transport_watch_at}, observer={observer_watch_at})"
         )
-
-    # --- contract gate ---
-    contract_watch_at = float(
-        (channels.get("contract_pressure") or {}).get("watch_at", 0.50)
-    )
-    if m4_status in ("stale", "missing"):
-        contract_state = "unknown"
-        contract_reason = f"contract state unknown: M4 field vector is {m4_status}"
-    else:
-        contract_p = float(m4_field_vector.get("contract_pressure") or 0.0)
-        if contract_p == 0.0:
-            contract_state = "quiet"
-        elif contract_p >= contract_watch_at:
-            contract_state = "watch"
+        observer_active = observer_p >= observer_watch_at
+        if bus_src is None or bus_src[0] != "m4":
+            # No fallback key: the policy row is the only place this reading's
+            # address lives (see _channel_source). The observer half is
+            # independent of that row and still evaluated.
+            pressure_state = "watch" if observer_active else "unknown"
+            pressure_reason = (
+                "bus_synaptic_pressure unmeasured: no M4 source in transport_lattice_policy; "
+                + observer_part
+                + f"(threshold: observer={observer_watch_at})"
+            )
         else:
-            contract_state = "pass"
-        # M4 contract_pressure is fed by catalog_drift_pressure (orion_field_topology
-        # channel_map), not by the reducer's own contract_pressure -- open
-        # vocabulary bug, see docs/superpowers/specs/2026-09-22-substrate-lattice-audit.md.
-        contract_reason = (
-            f"contract_pressure={contract_p:.2f} [M4, fed by catalog_drift_pressure] "
-            f"(watch_at={contract_watch_at})"
-        )
+            bus_key = bus_src[1]
+            transport_p = float(m4_field_vector.get(bus_key) or 0.0)
+            transport_watch_at = float(bus_def.get("watch_at", 0.25))
+            pressure_active = transport_p >= transport_watch_at or observer_active
+            pressure_state = "watch" if pressure_active else "quiet"
+            pressure_reason = (
+                f"bus_synaptic_pressure={transport_p:.2f} [M4 {_M4_VECTOR}.{bus_key}] "
+                + observer_part
+                + f"(thresholds: transport={transport_watch_at}, observer={observer_watch_at})"
+            )
+
+    # The contract gate was deleted 2026-10-07 (fix/transport-lattice-names-
+    # and-contract). It read M4 contract_pressure, which the topology fills
+    # from catalog_drift_pressure, under the threshold of a policy row whose own
+    # Lattice Values reading was the dead two-stream schema sample. Catalog
+    # drift is shown by its own catalog_drift_pressure row.
 
     # --- attention gate ---
     m5_status = m5.get("status", "missing")
@@ -796,7 +814,6 @@ def _compute_gates(chain: dict[str, Any]) -> list[dict[str, Any]]:
         {"gate_id": "evidence", "state": evidence_state, "reason": evidence_reason},
         {"gate_id": "lineage", "state": lineage_state, "reason": lineage_reason},
         {"gate_id": "pressure", "state": pressure_state, "reason": pressure_reason},
-        {"gate_id": "contract", "state": contract_state, "reason": contract_reason},
         {"gate_id": "attention", "state": attention_state, "reason": attention_reason},
         {"gate_id": "action_ceiling", "state": action_ceiling_state, "reason": action_ceiling_reason},
     ]

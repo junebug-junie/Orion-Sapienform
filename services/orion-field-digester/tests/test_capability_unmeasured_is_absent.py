@@ -42,6 +42,13 @@ def _lattice():
     return load_lattice(REPO / "config" / "field" / "orion_field_topology.v1.yaml")
 
 
+class _NoHistoryStore:
+    """significance reads recent rows; none exist in a unit test."""
+
+    def load_recent_field_json(self, *, window_seconds: float) -> list:
+        return []
+
+
 class _Field:
     """The worker's per-tick loop, minus Postgres and the bus."""
 
@@ -66,7 +73,7 @@ class _Field:
             decay_rate=0.92,
             diffusion_rate=1.0,
             staleness_threshold_sec=90.0,
-            store=None,
+            store=_NoHistoryStore(),
             significance_window_seconds=60.0,
             significance_check_interval_sec=1e9,
         )
@@ -149,16 +156,70 @@ def test_rpc_outage_leaves_transport_reliability_to_the_remaining_source() -> No
 def test_unmeasured_capability_is_not_read_as_alarm_or_as_perfect_by_generic_consumers() -> None:
     """The two over/under-index traps, checked on the real generic readers.
 
-    Under-index (the bug): merged confidence / available_capacity must never be
-    sourced from the unmeasured capability. Over-index (option b, rejected): the
-    attention pressure proxy must not jump to 1.0 for it.
+    Every measured capability sits at a calm pressure 0.0 (confidence 1.0), so
+    on main the eye's fabricated confidence 1.0 TIED them in the merged min()
+    and could be named as its source. Under-index: the dark eye must carry no
+    confidence and never be the merged source. Over-index (option b, rejected):
+    the attention pressure proxy must not jump for it.
     """
+    calm = {
+        "node:athena": {"cpu_pressure": 0.0, "disk_pressure": 0.0, "memory_pressure": 0.0},
+        "node:circe": {"gpu_pressure": 0.0, "memory_pressure": 0.0},
+        "node:prometheus": {"cpu_pressure": 0.0},
+        "node:substrate.bus_synaptic": {"prediction_error": 0.0},
+    }
     f = _Field()
-    f.write("node:athena", {"cpu_pressure": 0.2, "disk_pressure": 0.2}, NOW)
     f.write(VISION_NODE, {"vision_frame_staleness": 0.0}, NOW)
-    f.write("node:athena", {"cpu_pressure": 0.2, "disk_pressure": 0.2}, NOW + timedelta(seconds=301))
-    s = f.tick(NOW + timedelta(seconds=301))
+    later = NOW + timedelta(seconds=301)
+    for node, chans in calm.items():
+        f.write(node, chans, later)
+    s = f.tick(later)
+    vision = s.capability_vectors["capability:vision"]
+    assert "confidence" not in vision and "available_capacity" not in vision
     _, provenance = collect_field_channel_pressures(s)
-    assert provenance.get("confidence") != "capability:vision"
-    assert provenance.get("pressure") != "capability:vision"
-    assert _current_pressure_proxy(s.capability_vectors["capability:vision"]) == 0.0
+    for ch in ("confidence", "available_capacity", "pressure"):
+        assert provenance.get(ch) != "capability:vision", ch
+    assert _current_pressure_proxy(vision) == 0.0
+
+
+def test_unmeasured_upstream_capability_is_not_a_measured_zero_downstream() -> None:
+    """cap->cap edge (llm_inference -> orchestration pressure): reconcile
+    re-seeds llm_inference.pressure to 0.0 after diffusion dropped it, so key
+    presence must not count as a measurement of the upstream capability."""
+    from app.digestion.diffusion import apply_diffusion
+    from orion.schemas.field_state import FieldEdgeV1
+
+    state = FieldStateV1(
+        generated_at=NOW,
+        tick_id="t",
+        node_vectors={"node:circe": {}},
+        capability_vectors={"capability:llm_inference": {"pressure": 0.0}},  # reconcile seed
+        capability_provenance={"capability:llm_inference": {}},
+        edges=[
+            FieldEdgeV1(source_id="node:circe", target_id="capability:llm_inference", edge_type="node_capability",
+                        weight=0.85, channel_map={"gpu_pressure": "pressure"}),
+            FieldEdgeV1(source_id="capability:llm_inference", target_id="capability:orchestration",
+                        edge_type="capability_capability", weight=0.6, channel_map={"pressure": "pressure"}),
+        ],
+    )
+    apply_diffusion(state, diffusion_rate=1.0)
+    assert "pressure" not in state.capability_vectors["capability:orchestration"]
+    assert "pressure" not in state.capability_provenance.get("capability:orchestration", {})
+
+
+def test_direct_measured_zero_confidence_survives_unmeasured_pressure() -> None:
+    from app.digestion.diffusion import apply_diffusion
+    from orion.schemas.field_state import FieldEdgeV1
+
+    state = FieldStateV1(
+        generated_at=NOW,
+        tick_id="t",
+        node_vectors={"node:x": {"conf_src": 0.0}},
+        edges=[FieldEdgeV1(source_id="node:x", target_id="capability:c", edge_type="node_capability", weight=1.0,
+                           channel_map={"press_src": "pressure", "conf_src": "confidence"})],
+    )
+    apply_diffusion(state, diffusion_rate=1.0)
+    cap = state.capability_vectors["capability:c"]
+    assert "pressure" not in cap
+    assert cap["confidence"] == 0.0
+    assert state.capability_provenance["capability:c"]["confidence"] == "node:x"

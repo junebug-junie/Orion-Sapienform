@@ -48,6 +48,8 @@ def test_dropping_unmeasured_changes_no_downstream_reading(tmp_path: Path) -> No
     for scen, c in out["scenarios"].items():
         diffs = {k: v for k, v in c.items() if k.startswith("a:") and k.endswith("differs") and v}
         assert diffs == {}, (scen, diffs)
+        # legacy is main's real apply_diffusion; every channel both wrote must agree
+        assert c["a_measured_channel_mismatch"] == 0, scen
     assert out["scenarios"]["outage:vision"]["ticks_with_unmeasured_capability_channel"] == 1
     assert out["scenarios"]["natural"]["ticks_with_unmeasured_capability_channel"] == 0
 

@@ -400,3 +400,15 @@ def test_retirement_is_retried_until_it_succeeds():
         assert d._retired_for == thread_for(w.now)
 
     asyncio.run(run())
+
+
+
+def test_tied_times_give_the_same_slots_whatever_the_row_order():
+    """Live 2026-10-07: three memories from one distill run share a timestamp; the query returned
+    them in varying order and the capped `recent` slot flipped between steps."""
+    rows = [trip(memory_id=f"m-{c}", referents=[], statement=f"Juniper mentioned thing {c} happening today.")
+            for c in "abcd"]
+    first = facts_from_rows(rows, T0 + timedelta(hours=1), TTL)
+    again = facts_from_rows(list(reversed(rows)), T0 + timedelta(hours=1), TTL)
+    assert first == again
+    assert [f["memory_id"] for f in first["recent"]] == ["m-d", "m-c", "m-b"]

@@ -188,7 +188,7 @@ def _build_situation(saver: Any):
     """The situation.update writer: reads episode_memory on the checkpointer's pool, projects to
     Redis + bus on the long-lived rpc_bus, traces each step on the durable state channel."""
     from datetime import datetime, timedelta, timezone
-    from uuid import uuid4
+    from uuid import UUID, uuid4
 
     from app import situation_store
     from app.situation_driver import SituationDriver
@@ -210,12 +210,21 @@ def _build_situation(saver: Any):
         await rpc_bus.publish(SITUATION_STATE_CHANNEL, _Env(kind=SITUATION_STATE_KIND, source=source,
                                                             correlation_id=uuid4(), payload=model.model_dump(mode="json")))
 
+    def _corr(raw: str):
+        # sql-writer stamps the row's correlation_id from the ENVELOPE, so it must carry the
+        # triggering turn's id (live 2026-10-07: rows showed a random id instead of the turn's).
+        try:
+            return UUID(str(raw))
+        except (TypeError, ValueError):
+            return uuid4()
+
     async def publish_state(row: DurableRunStateV1) -> None:
         if rpc_bus is None:
             return
         try:
             await rpc_bus.publish(s.state_channel, _Env(kind=DURABLE_RUN_STATE_KIND, source=source,
-                                                        correlation_id=uuid4(), payload=row.model_dump(mode="json")))
+                                                        correlation_id=_corr(row.correlation_id),
+                                                        payload=row.model_dump(mode="json")))
         except Exception:  # noqa: BLE001
             logger.warning("situation_state_publish_failed", exc_info=True)
 

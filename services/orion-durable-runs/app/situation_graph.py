@@ -151,12 +151,16 @@ def facts_from_rows(rows: list[dict], now: datetime, default_ttl: timedelta) -> 
             voice=str(r.get("voice") or ""), confirmation=str(r.get("confirmation_state") or ""),
             referents=sorted({str(x.get("key")) for x in refs if x.get("key")}),
         ))
-    newest_first = sorted(current, key=lambda f: f.valid_from, reverse=True)
+    # Ties are common (one distill run stamps several memories with the same time) and the query
+    # returns tied rows in no fixed order, so every sort breaks ties by memory_id. Without it the
+    # capped slots flipped membership between steps and bumped the revision for nothing (live
+    # 2026-10-07: revisions 1->2->3 with no real change).
+    newest_first = sorted(current, key=lambda f: (f.valid_from, f.memory_id), reverse=True)
     places = [f for f in newest_first if f.slot == "whereabouts"]
     whereabouts = places[0] if places else None
     doing = [f.model_copy(update={"slot": "doing"}) for f in places[1:]] + [f for f in newest_first if f.slot == "doing"]
-    doing.sort(key=lambda f: f.valid_from, reverse=True)
-    waiting = sorted((f for f in current if f.slot == "waiting_on"), key=lambda f: f.valid_until)
+    doing.sort(key=lambda f: (f.valid_from, f.memory_id), reverse=True)
+    waiting = sorted((f for f in current if f.slot == "waiting_on"), key=lambda f: (f.valid_until, f.memory_id))
     recent = [f for f in newest_first if f.slot == "recent"]
     return {
         # Every current memory id, before the per-slot display caps: lapsing is judged against

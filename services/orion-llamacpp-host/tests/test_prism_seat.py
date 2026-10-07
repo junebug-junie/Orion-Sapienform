@@ -184,9 +184,10 @@ def test_chat_template_file_fails_closed_when_missing(wrapper):
         main.build_llama_server_cmd_and_env(_profile(BONSAI, chat_template_file="chat_templates/nope.jinja"))
 
 
-def test_chat_template_file_fails_closed_on_a_binary_without_the_flag(wrapper, monkeypatch):
+@pytest.mark.parametrize("missing", ["--chat-template-file", "--jinja"])
+def test_chat_template_file_fails_closed_on_a_binary_without_the_flag(wrapper, monkeypatch, missing):
     main, _stock, _prism = wrapper
-    monkeypatch.setattr(main, "_get_supported_llama_server_flags", lambda _bin: FLAGS - {"--chat-template-file"})
+    monkeypatch.setattr(main, "_get_supported_llama_server_flags", lambda _bin: FLAGS - {missing})
     with pytest.raises(RuntimeError, match="chat-template-file"):
         main.build_llama_server_cmd_and_env(_profile(BONSAI))
 

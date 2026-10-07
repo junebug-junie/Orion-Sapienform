@@ -2274,8 +2274,9 @@ profiles:
         preserve_thinking: true
       # The GGUF's embedded template raises "No user query found in messages." (HTTP 500) on any
       # request without a plain user turn -- cortex-exec sends system-only agent steps, so 44/44
-      # agent calls 500'd 10-02..10-06. Same template with that one check removed (the Q4 template
-      # has no such check). Baked into the image via `COPY config /app/config`.
+      # agent calls 500'd 10-02..10-06 -- and on a second leading system message. The shipped file
+      # is that template plus the Q4 (Unsloth) template's two hunks for both
+      # (services/orion-llamacpp-host/tests/bonsai_template_patch.py). Baked in via `COPY config`.
       chat_template_file: "chat_templates/ternary-bonsai-2-27b.jinja"
       # Prism KNOWN_ISSUES: small output caps end generation mid-thought.
       n_predict: 16384

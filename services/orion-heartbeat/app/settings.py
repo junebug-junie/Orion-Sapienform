@@ -125,11 +125,11 @@ class Settings(BaseSettings):
     verdict_atoms_enabled: bool = Field(True, alias="HEARTBEAT_VERDICT_ATOMS_ENABLED")
     # 3 ticks (~90 s at the 30 s H1 cadence): on 7 days of recorded verdicts,
     # 1 -> 31.8 atoms/h (threshold flicker), 2 -> 5.0/h, 3 -> 1.1/h.
-    verdict_settle_ticks: int = Field(3, alias="HEARTBEAT_VERDICT_SETTLE_TICKS")
-    verdict_summary_interval_sec: float = Field(3600.0, alias="HEARTBEAT_VERDICT_SUMMARY_INTERVAL_SEC")
+    verdict_settle_ticks: int = Field(3, ge=1, alias="HEARTBEAT_VERDICT_SETTLE_TICKS")
+    verdict_summary_interval_sec: float = Field(3600.0, gt=0, alias="HEARTBEAT_VERDICT_SUMMARY_INTERVAL_SEC")
     # Hard ceiling on transition atoms per rolling hour; extras are counted in
     # the summary (transitions_suppressed), not dropped silently.
-    verdict_max_transitions_per_hour: int = Field(12, alias="HEARTBEAT_VERDICT_MAX_TRANSITIONS_PER_HOUR")
+    verdict_max_transitions_per_hour: int = Field(12, ge=1, alias="HEARTBEAT_VERDICT_MAX_TRANSITIONS_PER_HOUR")
 
 
 settings = Settings()

@@ -11,9 +11,13 @@ module turns that stream into two kinds of grammar atom:
   ``redundant`` runs have median length 1 and never exceed 3 samples,
   ``concentrated`` median 1. A per-flip atom would be ~760/day of threshold
   noise. Requiring 3 settled ticks cut that to ~1.1/hour on the same history.
-  A hard per-hour cap (``max_transitions_per_hour``) bounds it regardless.
-* ``h1_hourly_summary`` -- once per summary window, always (also when no H1
-  tick completed, so a dead H1 loop reads as ``h1_ticks=0``, not as calm):
+  A hard per-hour cap (``max_transitions_per_hour``) bounds it regardless;
+  a capped transition still moves the confirmed class, so the next published
+  atom carries ``suppressed_since_last=N`` to explain its ``from=``.
+* ``h1_hourly_summary`` -- once per summary window, also when every H1
+  computation in it failed (``h1_ticks=0 h1_failures=N``, confidence 0 -- an
+  absence, not calm). If the H1 loop task itself dies, summaries stop: that
+  reads as missing ``heartbeat.h1:`` rows in grammar_events.
   per-class tick counts, raw flips, settled transitions, mean/min/max of
   std_ratio (ensemble spread), mean_ratio and bulk depth, and per-producer
   counts of grammar atoms heartbeat could not route.
@@ -46,7 +50,7 @@ _MAX_UNROUTED_KEYS = 32
 _SAFE_RE = re.compile(r"[^a-z0-9_.-]")
 
 
-def _safe(value: Any, default: str = "unknown") -> str:
+def safe_token(value: Any, default: str = "unknown") -> str:
     raw = _SAFE_RE.sub("", str(value or "").strip().lower())
     return raw[:64] or default
 
@@ -89,29 +93,35 @@ class VerdictTransitionTracker:
             raise ValueError(f"settle_ticks must be >= 1, got {settle_ticks}")
         self.settle_ticks = settle_ticks
         self.confirmed: Optional[str] = None
+        # Current run of identical verdicts: constant-size state, however long
+        # a class holds.
         self._streak_verdict: Optional[str] = None
-        self._streak: list[H1Tick] = []
+        self._streak_len = 0
+        self._streak_since: Optional[datetime] = None
+        self._streak_std_sum = 0.0
 
     def observe(self, tick: H1Tick) -> Optional[VerdictTransition]:
         if tick.verdict != self._streak_verdict:
             self._streak_verdict = tick.verdict
-            self._streak = []
-        self._streak.append(tick)
-        if len(self._streak) < self.settle_ticks or tick.verdict == self.confirmed:
+            self._streak_len = 0
+            self._streak_since = tick.at
+            self._streak_std_sum = 0.0
+        self._streak_len += 1
+        self._streak_std_sum += tick.std_ratio
+        if self._streak_len < self.settle_ticks or tick.verdict == self.confirmed:
             return None
         previous = self.confirmed
         self.confirmed = tick.verdict
-        held = list(self._streak)
         return VerdictTransition(
             from_verdict=previous or "none",
             to_verdict=tick.verdict,
-            held_ticks=len(held),
-            held_since=held[0].at,
+            held_ticks=self._streak_len,
+            held_since=self._streak_since or tick.at,
             confirmed_at=tick.at,
             mean_ratio=tick.mean_ratio,
             std_ratio=tick.std_ratio,
             bulk_penetration_depth=tick.bulk_penetration_depth,
-            mean_std_ratio_while_held=sum(t.std_ratio for t in held) / len(held),
+            mean_std_ratio_while_held=self._streak_std_sum / self._streak_len,
         )
 
 
@@ -124,6 +134,7 @@ class HourlyWindow:
     raw_flips: int = 0
     transitions_emitted: int = 0
     transitions_suppressed: int = 0
+    transitions_publish_failed: int = 0
     h1_failures: int = 0
     unrouted_by_source: dict[str, int] = field(default_factory=dict)
     _last_verdict: Optional[str] = None
@@ -141,7 +152,7 @@ class HourlyWindow:
         self._bulk.append(tick.bulk_penetration_depth)
 
     def record_unrouted(self, source_service: str) -> None:
-        key = _safe(source_service)
+        key = safe_token(source_service)
         if key not in self.unrouted_by_source and len(self.unrouted_by_source) >= _MAX_UNROUTED_KEYS:
             key = "other"
         self.unrouted_by_source[key] = self.unrouted_by_source.get(key, 0) + 1
@@ -166,6 +177,7 @@ class HourlyWindow:
             f"h1_ticks={self.h1_ticks} h1_failures={self.h1_failures} verdict_ticks={ticks} "
             f"raw_flips={self.raw_flips} transitions={self.transitions_emitted} "
             f"transitions_suppressed={self.transitions_suppressed} "
+            f"transitions_publish_failed={self.transitions_publish_failed} "
             f"{stat('std_ratio', self._std)} {stat('mean_ratio', self._mean)} "
             f"{stat('bulk', self._bulk)} "
             f"unrouted_atoms={unrouted}"
@@ -212,15 +224,18 @@ def _event(
     )
 
 
-def build_transition_event(*, node: str, transition: VerdictTransition) -> GrammarEventV1:
+def build_transition_event(
+    *, node: str, transition: VerdictTransition, suppressed_since_last: int = 0
+) -> GrammarEventV1:
     t = transition
-    trace_id = f"{TRACE_PREFIX}{_safe(node, 'node')}:transition:{_stamp(t.confirmed_at)}"
+    trace_id = f"{TRACE_PREFIX}{safe_token(node, 'node')}:transition:{_stamp(t.confirmed_at)}"
     summary = (
         f"from={t.from_verdict} to={t.to_verdict} held_ticks={t.held_ticks} "
         f"held_since={t.held_since.isoformat()} confirmed_at={t.confirmed_at.isoformat()} "
         f"mean_ratio={t.mean_ratio:.4f} std_ratio={t.std_ratio:.4f} "
         f"mean_std_ratio_while_held={t.mean_std_ratio_while_held:.4f} "
-        f"bulk_penetration_depth={t.bulk_penetration_depth:.4f}"
+        f"bulk_penetration_depth={t.bulk_penetration_depth:.4f} "
+        f"suppressed_since_last={suppressed_since_last}"
     )
     return _event(
         trace_id=trace_id,
@@ -233,7 +248,7 @@ def build_transition_event(*, node: str, transition: VerdictTransition) -> Gramm
 
 
 def build_summary_event(*, node: str, window: HourlyWindow, end: datetime) -> GrammarEventV1:
-    trace_id = f"{TRACE_PREFIX}{_safe(node, 'node')}:summary:{_stamp(window.start)}"
+    trace_id = f"{TRACE_PREFIX}{safe_token(node, 'node')}:summary:{_stamp(window.start)}"
     # confidence 0 when no H1 tick completed: the window is a report of absence.
     return _event(
         trace_id=trace_id,

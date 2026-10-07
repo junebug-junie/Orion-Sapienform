@@ -68,6 +68,33 @@ def test_settle_ticks_must_be_positive() -> None:
         VerdictTransitionTracker(settle_ticks=0)
 
 
+def test_long_hold_keeps_constant_state_and_true_held_since() -> None:
+    tracker = VerdictTransitionTracker(settle_ticks=3)
+    _run(tracker, ["mixed"] * 5000)
+    assert tracker._streak_len == 5000
+    assert not hasattr(tracker, "_streak")
+    out = [tracker.observe(_tick(5000 + i, "redundant", std=0.01 * (i + 1))) for i in range(3)]
+    t = out[-1]
+    assert t is not None and t.held_since == T0 + timedelta(seconds=30 * 5000)
+    assert t.mean_std_ratio_while_held == pytest.approx(0.02)
+
+
+def test_settings_reject_degenerate_values(monkeypatch) -> None:
+    from pydantic import ValidationError
+
+    from app.settings import Settings
+
+    for key, bad in (
+        ("HEARTBEAT_VERDICT_SETTLE_TICKS", "0"),
+        ("HEARTBEAT_VERDICT_SUMMARY_INTERVAL_SEC", "0"),
+        ("HEARTBEAT_VERDICT_MAX_TRANSITIONS_PER_HOUR", "0"),
+    ):
+        monkeypatch.setenv(key, bad)
+        with pytest.raises(ValidationError):
+            Settings()
+        monkeypatch.delenv(key)
+
+
 def test_transition_event_is_a_valid_bounded_grammar_atom() -> None:
     tracker = VerdictTransitionTracker(settle_ticks=2)
     t = _run(tracker, ["mixed", "mixed"])[0]
@@ -172,11 +199,80 @@ async def test_transition_cap_counts_suppressed(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
+async def test_cap_frees_up_after_a_rolling_hour_and_reports_suppressed(monkeypatch) -> None:
+    bus = _FakeBus()
+    svc = _svc(monkeypatch, bus)
+    monkeypatch.setattr(settings, "verdict_max_transitions_per_hour", 1)
+    await _feed(svc, ["mixed"] * 3 + ["concentrated"] * 3)  # 2nd transition capped
+    assert len(bus.published) == 1
+    await _feed(svc, ["redundant"] * 3, start=T0 + timedelta(hours=1, minutes=1))
+    assert len(bus.published) == 2
+    summary = bus.published[-1][1].payload["atom"]["summary"]
+    assert "from=concentrated" in summary and "suppressed_since_last=1" in summary
+
+
+@pytest.mark.asyncio
 async def test_publish_failure_is_counted_not_raised(monkeypatch) -> None:
-    svc = _svc(monkeypatch, _FakeBus(fail=True))
+    bus = _FakeBus(fail=True)
+    svc = _svc(monkeypatch, bus)
     await _feed(svc, ["mixed"] * 3)
     assert svc.verdict_atoms_publish_failed == 1
     assert svc.verdict_atoms_published == 0
+    assert svc.verdict_window.transitions_publish_failed == 1
+    bus.fail = False
+    await _feed(svc, ["redundant"] * 3, start=T0 + timedelta(minutes=5))
+    assert "suppressed_since_last=1" in bus.published[-1][1].payload["atom"]["summary"]
+
+
+async def _run_h1_loop_once(svc: HeartbeatService, monkeypatch) -> None:
+    import asyncio
+
+    monkeypatch.setattr(settings, "h1_interval_sec", 0.0)
+    real_sleep = asyncio.sleep
+
+    async def one_tick_sleep(_sec):
+        # Stop is checked at the top of the loop, so setting it here lets
+        # exactly one loop body run after this sleep.
+        svc._stop.set()
+        await real_sleep(0)
+
+    monkeypatch.setattr(asyncio, "sleep", one_tick_sleep)
+    await svc._h1_loop()
+
+
+@pytest.mark.asyncio
+async def test_h1_loop_failure_still_flushes_an_absence_summary(monkeypatch) -> None:
+    bus = _FakeBus()
+    svc = _svc(monkeypatch, bus)
+    monkeypatch.setattr(settings, "verdict_summary_interval_sec", 0.001)
+    svc.verdict_window = HourlyWindow(start=T0)
+
+    def boom(*_a, **_k):
+        raise RuntimeError("quimb exploded")
+
+    # Patch the globals the loop actually resolves names in: conftest drops
+    # sys.modules["app.*"] between tests, so a dotted-string target misses.
+    monkeypatch.setitem(type(svc)._h1_loop.__globals__, "compute_h1_ensemble", boom)
+    await _run_h1_loop_once(svc, monkeypatch)
+    roles = [env.payload["atom"]["semantic_role"] for _, env in bus.published]
+    assert roles == [ROLE_HOURLY_SUMMARY]
+    summary = bus.published[0][1].payload["atom"]["summary"]
+    assert "h1_ticks=0" in summary and "h1_failures=1" in summary
+    assert bus.published[0][1].payload["atom"]["confidence"] == 0.0
+
+
+@pytest.mark.asyncio
+async def test_h1_loop_publishes_nothing_when_disabled(monkeypatch) -> None:
+    bus = _FakeBus()
+    svc = _svc(monkeypatch, bus)
+    monkeypatch.setattr(settings, "verdict_atoms_enabled", False)
+    monkeypatch.setattr(settings, "verdict_summary_interval_sec", 0.001)
+    monkeypatch.setattr(settings, "verdict_settle_ticks", 1)
+    svc.verdict_tracker = VerdictTransitionTracker(settle_ticks=1)
+    svc.verdict_window = HourlyWindow(start=T0)
+    await _run_h1_loop_once(svc, monkeypatch)
+    assert svc.latest_h1 is not None  # H1 itself still ran
+    assert bus.published == []
 
 
 @pytest.mark.asyncio
@@ -194,15 +290,13 @@ async def test_summary_flushes_once_per_window_and_resets(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
-async def test_own_atoms_are_skipped_not_absorbed_or_counted_unrouted(monkeypatch) -> None:
-    svc = _svc(monkeypatch, _FakeBus())
-    await svc._handle_grammar_message(
-        {
-            "event_kind": "atom_emitted",
-            "provenance": {"source_service": SELF_SOURCE_SERVICE},
-            "atom": {"atom_type": "observation", "confidence": 1.0, "salience": 0.2},
-        }
-    )
+async def test_own_published_atom_echo_is_skipped_not_absorbed_or_counted_unrouted(monkeypatch) -> None:
+    bus = _FakeBus()
+    svc = _svc(monkeypatch, bus)
+    await _feed(svc, ["mixed"] * 3)
+    _, envelope = bus.published[0]
+    # Feed back the exact wire payload heartbeat just published.
+    await svc._handle_grammar_message(envelope.payload)
     assert svc.events_skipped_self == 1
     assert svc.events_skipped_organ == 0
     assert svc.events_queued == 0
@@ -226,7 +320,17 @@ async def test_unrouted_producers_are_counted_by_source(monkeypatch) -> None:
     stats = await svc.stats()
     assert "orion-sql-writer" in stats["catalog_producers_unrouted"]
     assert stats["uncatalogued_sources_seen"] == []
+    assert stats["catalog_loaded"] is True
     assert stats["verdict_atoms"]["enabled"] is True
+
+
+@pytest.mark.asyncio
+async def test_unreadable_catalog_reads_unknown_not_empty(monkeypatch) -> None:
+    svc = _svc(monkeypatch, _FakeBus())
+    svc.catalog_producers = frozenset()
+    stats = await svc.stats()
+    assert stats["catalog_loaded"] is False
+    assert stats["catalog_producers_unrouted"] is None
 
 
 def test_catalog_producers_include_routed_organs_and_self() -> None:

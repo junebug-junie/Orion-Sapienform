@@ -32,6 +32,7 @@ from .substrate.verdict_atoms import (
     VerdictTransitionTracker,
     build_summary_event,
     build_transition_event,
+    safe_token,
 )
 
 logger = logging.getLogger("orion-heartbeat.service")
@@ -141,6 +142,9 @@ class HeartbeatService(BaseChassis):
         self.verdict_tracker = VerdictTransitionTracker(settle_ticks=settings.verdict_settle_ticks)
         self.verdict_window = HourlyWindow(start=datetime.now(timezone.utc))
         self._transition_times: deque[datetime] = deque()
+        # Transitions capped or failed since the last one that reached the bus
+        # -- carried on the next published atom so its from= is explicable.
+        self._unpublished_transitions = 0
         self.verdict_atoms_published = 0
         self.verdict_atoms_publish_failed = 0
         self.last_verdict_atom: dict[str, Any] | None = None
@@ -187,8 +191,13 @@ class HeartbeatService(BaseChassis):
             "events_skipped_organ_by_source": dict(self.events_skipped_organ_by_source),
             # Catalogued producers heartbeat does not route, and sources seen
             # on the wire that the catalog does not list (catalog drift).
-            "catalog_producers_unrouted": sorted(
-                self.catalog_producers - set(ORGAN_SITE_MAP) - {SELF_SOURCE_SERVICE}
+            # None (not []) when channels.yaml could not be read: unknown is
+            # not "nothing unrouted".
+            "catalog_loaded": bool(self.catalog_producers),
+            "catalog_producers_unrouted": (
+                sorted(self.catalog_producers - set(ORGAN_SITE_MAP) - {SELF_SOURCE_SERVICE})
+                if self.catalog_producers
+                else None
             ),
             "uncatalogued_sources_seen": sorted(
                 s for s in self.events_skipped_organ_by_source
@@ -256,7 +265,7 @@ class HeartbeatService(BaseChassis):
             )
         except UnroutableOrganError:
             self.events_skipped_organ += 1
-            key = source_service or "unknown"
+            key = safe_token(source_service)
             if (
                 key not in self.events_skipped_organ_by_source
                 and len(self.events_skipped_organ_by_source) >= _MAX_UNROUTED_SOURCE_KEYS
@@ -460,11 +469,20 @@ class HeartbeatService(BaseChassis):
             self._transition_times.popleft()
         if len(self._transition_times) >= settings.verdict_max_transitions_per_hour:
             self.verdict_window.transitions_suppressed += 1
+            self._unpublished_transitions += 1
             return
-        event = build_transition_event(node=settings.node_name or "unknown", transition=transition)
+        event = build_transition_event(
+            node=settings.node_name or "unknown",
+            transition=transition,
+            suppressed_since_last=self._unpublished_transitions,
+        )
         if await self._publish_verdict_event(event, "transition"):
             self._transition_times.append(now)
             self.verdict_window.transitions_emitted += 1
+            self._unpublished_transitions = 0
+        else:
+            self.verdict_window.transitions_publish_failed += 1
+            self._unpublished_transitions += 1
 
     async def _maybe_flush_summary(self, now: datetime) -> None:
         window = self.verdict_window

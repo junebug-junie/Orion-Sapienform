@@ -59,13 +59,14 @@ def test_adapter_output_survives_settings_from_runtime_round_trip() -> None:
 
 
 def test_adapter_turns_off_unwired_providers_explicitly() -> None:
-    """Lab/perception are not yet configurable from orion-hub -- the adapter
-    must turn them off explicitly rather than leave it to a
-    missing-attribute default to silently decide."""
+    """Lab has no provider anywhere -- the adapter must turn it off
+    explicitly rather than leave it to a missing-attribute default to
+    silently decide. Perception is ON by default since 2026-10-07 (see
+    test_hub_situation_perception.py)."""
     cfg = settings_from_runtime(hub_settings_to_runtime_namespace(SimpleNamespace()))
 
     assert cfg.lab_enabled is False
-    assert cfg.perception_enabled is False
+    assert cfg.perception_enabled is True
     # Weather, the runtime (self-model) probe, and affect ARE wired --
     # weather reads orion-hub's own ORION_SITUATION_WEATHER_* fields, the
     # runtime probe reuses HUB_LLM_GATEWAY_URL (a host orion-hub already

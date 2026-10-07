@@ -11,7 +11,16 @@ from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.core.bus.bus_service_chassis import ChassisConfig, HeartbeatOnly, Hunter
 from orion.core.bus.rpc_health_publish import RpcHealthPublisher
-from orion.schemas.durable_run import DURABLE_RUN_REQUEST_KIND, DURABLE_RUN_RECEIPT_KIND, DurableRunRequestV1, DurableRunReceiptV1
+from orion.schemas.chat_history import CHAT_HISTORY_TURN_KIND
+from orion.schemas.durable_run import (
+    DURABLE_RUN_RECEIPT_KIND,
+    DURABLE_RUN_REQUEST_KIND,
+    DURABLE_RUN_STATE_KIND,
+    DurableRunReceiptV1,
+    DurableRunRequestV1,
+    DurableRunStateV1,
+)
+from orion.schemas.situation_state import SITUATION_STATE_CHANNEL, SITUATION_STATE_KIND, SITUATION_STATE_REDIS_KEY
 from orion.schemas.gpu_pool import GPU_POOL_EVENT_CHANNEL, GPU_POOL_EVENT_KIND
 from orion.schemas.resource_admission import RESOURCE_EVENT_CHANNEL, RESOURCE_EVENT_KIND, ResourceEventV1
 from orion.schemas.memory_episode import MEMORY_EPISODE_CLOSED_KIND
@@ -32,6 +41,7 @@ _checkpointer_cm: Any = None
 admission: Any = None
 _admission_task: asyncio.Task | None = None
 _reconcile_task: asyncio.Task | None = None
+situation: Any = None
 rpc_health_publisher: RpcHealthPublisher | None = None
 
 
@@ -70,6 +80,14 @@ def _chassis_cfg() -> ChassisConfig:
 
 
 async def _handle_request(env: BaseEnvelope) -> None:
+    if env.kind in (CHAT_HISTORY_TURN_KIND, DURABLE_RUN_STATE_KIND):
+        # Situation graph inputs (shadow). Nothing else here consumes these two kinds.
+        if situation is not None and isinstance(env.payload, dict):
+            from app.situation_driver import event_from_chat_turn, event_from_run_state
+
+            situation.offer(event_from_chat_turn(env.payload) if env.kind == CHAT_HISTORY_TURN_KIND
+                            else event_from_run_state(env.payload))
+        return
     if env.kind == GPU_POOL_EVENT_KIND:
         # The pool's lease lifecycle: a waiting run wakes on "granted" for its own holder.
         if admission is not None and isinstance(env.payload, dict):
@@ -166,10 +184,57 @@ async def _open_checkpointer():
     return saver
 
 
+def _build_situation(saver: Any):
+    """The situation.update writer: reads episode_memory on the checkpointer's pool, projects to
+    Redis + bus on the long-lived rpc_bus, traces each step on the durable state channel."""
+    from datetime import datetime, timedelta, timezone
+    from uuid import uuid4
+
+    from app import situation_store
+    from app.situation_driver import SituationDriver
+    from app.situation_graph import SituationDeps
+    from orion.core.bus.bus_schemas import BaseEnvelope as _Env
+
+    s = _settings
+    ttl = timedelta(hours=s.situation_default_ttl_hours)
+    source = ServiceRef(name=s.service_name, version=s.service_version, node=s.node_name)
+
+    async def project(model) -> None:
+        if rpc_bus is None:
+            return
+        body = model.model_dump_json()
+        try:
+            await rpc_bus.redis.setex(SITUATION_STATE_REDIS_KEY, s.situation_redis_ttl_sec, body)
+        except Exception:  # noqa: BLE001
+            logger.warning("situation_redis_write_failed", exc_info=True)
+        await rpc_bus.publish(SITUATION_STATE_CHANNEL, _Env(kind=SITUATION_STATE_KIND, source=source,
+                                                            correlation_id=uuid4(), payload=model.model_dump(mode="json")))
+
+    async def publish_state(row: DurableRunStateV1) -> None:
+        if rpc_bus is None:
+            return
+        try:
+            await rpc_bus.publish(s.state_channel, _Env(kind=DURABLE_RUN_STATE_KIND, source=source,
+                                                        correlation_id=uuid4(), payload=row.model_dump(mode="json")))
+        except Exception:  # noqa: BLE001
+            logger.warning("situation_state_publish_failed", exc_info=True)
+
+    deps = SituationDeps(
+        load_facts=lambda now: situation_store.load_facts(_checkpointer_cm, now, ttl),
+        prime=lambda cues, exclude, limit: situation_store.prime(_checkpointer_cm, cues, exclude, limit),
+        project=project,
+        now=lambda: datetime.now(timezone.utc),
+        default_ttl=ttl,
+        prime_timeout_sec=s.situation_prime_timeout_sec,
+    )
+    return SituationDriver(checkpointer=saver, deps=deps, publish_state=publish_state,
+                           tick_sec=s.situation_tick_sec, retention_days=s.situation_retention_days)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global runner, rpc_bus, hunter, heartbeat, _sweep_task, admission, _admission_task, _reconcile_task
-    global rpc_health_publisher
+    global rpc_health_publisher, situation
     from app.runner import DurableRunner
 
     try:
@@ -202,6 +267,9 @@ async def lifespan(app: FastAPI):
                 logger.exception("durable_runs_resume_on_boot_failed")
         _stop.clear()
         _sweep_task = asyncio.create_task(runner.sweep_forever(_stop))
+        if _settings.situation_graph_enabled and _settings.orion_bus_enabled:
+            situation = _build_situation(saver)
+            await situation.start(_stop)
         if admission is not None:
             _admission_task = asyncio.create_task(admission.run(_stop))
             if _settings.memory_episode_writer_enabled:
@@ -215,6 +283,8 @@ async def lifespan(app: FastAPI):
                 patterns.append(GPU_POOL_EVENT_CHANNEL)  # wakes waiting runs on their hold's grant
                 if _settings.memory_episode_writer_enabled:
                     patterns.append(_settings.memory_episode_closed_channel)
+            if situation is not None:
+                patterns += [_settings.chat_history_turn_channel, _settings.state_channel]
             hunter = Hunter(_chassis_cfg(), handler=_handle_request, patterns=patterns)
             await hunter.start_background()
             logger.info("durable_runs_listening channel=%s", _settings.request_channel)
@@ -229,6 +299,8 @@ async def lifespan(app: FastAPI):
             _sweep_task.cancel()
         if _reconcile_task is not None:
             _reconcile_task.cancel()
+        if situation is not None:
+            await situation.close()
         if _admission_task is not None:
             _admission_task.cancel()
             await asyncio.gather(_admission_task, return_exceptions=True)
@@ -267,6 +339,7 @@ async def health() -> dict[str, Any]:
         "active_runs": runner.active_run_ids if runner is not None else [],
         "admission_enabled": admission is not None,
         "admitted_active_runs": sorted(admission.active) if admission is not None else [],
+        "situation": situation.health() if situation is not None else None,
     }
 
 

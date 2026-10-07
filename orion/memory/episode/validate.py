@@ -250,20 +250,35 @@ def ungrounded_names(statement: str, *, known_keys: Iterable[str], grounding_tex
     Names come from the keys' slugs ("place:the-wade" -> "the wade"), matched as whole words after
     the same folding the quote check uses. Participants and minted event/concept slugs are skipped.
     """
-    folded = fold_text(statement)
     grounds = [fold_text(t) for t in grounding_texts if t]
-    out: list[str] = []
+    return [
+        key for key, name in _named_in(statement, known_keys)
+        if not any(_contains_word(g, name) for g in grounds)
+    ]
+
+
+def referent_name(key: str) -> str:
+    """The name a referent key's slug spells, folded ("place:the-wade" -> "the wade")."""
+    return fold_text(key.partition(":")[2].replace("-", " "))
+
+
+def _named_in(text: str, known_keys: Iterable[str]) -> list[tuple[str, str]]:
+    folded = fold_text(text)
+    out: list[tuple[str, str]] = []
     for key in sorted(set(known_keys)):
-        kind, _, slug = key.partition(":")
+        kind = key.partition(":")[0]
         if key in PARTICIPANT_REFERENTS or kind not in NAMED_REFERENT_KINDS:
             continue
-        name = fold_text(slug.replace("-", " "))
-        if len(name) < MIN_NAME_CHARS or not _contains_word(folded, name):
-            continue
-        if any(_contains_word(g, name) for g in grounds):
-            continue
-        out.append(key)
+        name = referent_name(key)
+        if len(name) >= MIN_NAME_CHARS and _contains_word(folded, name):
+            out.append((key, name))
     return out
+
+
+def named_referents(text: str, known_keys: Iterable[str]) -> list[str]:
+    """Known person/place/project/service keys whose name appears in ``text`` as a whole word.
+    The same matching ``ungrounded_names`` uses; the situation graph cues recall with it."""
+    return [key for key, _ in _named_in(text, known_keys)]
 
 
 def _until_quote_problem(quote: Optional[str], turns: list[EpisodeTurn]) -> Optional[str]:

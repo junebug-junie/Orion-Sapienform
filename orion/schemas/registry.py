@@ -104,6 +104,7 @@ from orion.schemas.memory_consolidation import (
 )
 from orion.schemas.memory_crystallization import ActiveMemoryPacketV1, MemoryCrystallizationV1
 from orion.schemas.memory_episode import MEMORY_EPISODE_CLOSED_KIND, MemoryEpisodeClosedV1
+from orion.schemas.situation_state import SITUATION_STATE_KIND, SituationStateV1
 from orion.schemas.context_exec import (
     BeliefProvenanceReportV1,
     ContextExecBudgetV1,
@@ -1501,6 +1502,7 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     # Memory episode redesign Stage 1 (2026-10-02). Registered in BOTH this
     # dict and SCHEMA_REGISTRY below.
     "MemoryEpisodeClosedV1": MemoryEpisodeClosedV1,
+    "SituationStateV1": SituationStateV1,
     "ContextExecRequestV1": ContextExecRequestV1,
     "ContextExecRunV1": ContextExecRunV1,
     "ContextExecOperatorSummaryV1": ContextExecOperatorSummaryV1,
@@ -1993,6 +1995,10 @@ SCHEMA_REGISTRY: Dict[str, SchemaRegistration] = {
     "MemoryEpisodeClosedV1": SchemaRegistration(
         model=MemoryEpisodeClosedV1,
         kind=MEMORY_EPISODE_CLOSED_KIND,
+    ),
+    "SituationStateV1": SchemaRegistration(
+        model=SituationStateV1,
+        kind=SITUATION_STATE_KIND,
     ),
 }
 

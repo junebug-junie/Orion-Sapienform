@@ -292,15 +292,16 @@ Rebuild this service and Hub after applying the additive queue migration. See th
 **What it is.** A read-only tool server Orion gets during a harness turn. With
 it, Orion can look up what actually happened to them instead of reconstructing
 it from impression.
-- Today it covers what they learned from reading.
-- As later slices land it will cover their dreams, reveries, curiosity runs
-  and memories.
+- Live today: what they learned from reading (`reading_results`) and their
+  dreams (`dreams`).
+- Planned for later slices: reveries, curiosity runs and memories.
 
 Every answer comes from the service that owns the data, over the bus, under a
 correlation ID, so any claim Orion makes from it can be traced back to a stored
 record.
 
 Design: [`2026-09-28-orion-introspect-mcp-design.md`](../../docs/superpowers/specs/2026-09-28-orion-introspect-mcp-design.md).
+Dreams: [`2026-09-28-orion-introspect-slice2-dreams-design.md`](../../docs/superpowers/specs/2026-09-28-orion-introspect-slice2-dreams-design.md).
 Search by meaning: [`2026-09-28-orion-introspect-slice1b-semantic-search.md`](../../docs/superpowers/specs/2026-09-28-orion-introspect-slice1b-semantic-search.md).
 
 ### Tools
@@ -308,7 +309,7 @@ Search by meaning: [`2026-09-28-orion-introspect-slice1b-semantic-search.md`](..
 | Tool | What Orion can ask | Answered by | Request channel | Status |
 |---|---|---|---|---|
 | `reading_results` | What a reading actually taught them: recent finished reads, one read by `url`/`request_id`, or `query=` by meaning | orion-hub ([responder](../orion-hub/README.md#introspect-responder-reading_results)) | `orion:reading:tool:request`, operation `reading_result` | Live (slices 1 + 1b) |
-| `dreams` | Narrative dreams and the sleep-cycle hypotheses they have already been offered, recent / one / by meaning | orion-dream | `orion:introspect:dream:request` | Designed (slice 2) |
+| `dreams` | Narrative dreams and the sleep-cycle hypotheses they have already been offered, recent / one / by meaning | orion-dream ([responder](../orion-dream/README.md#introspect-responder-dreams)) | `orion:introspect:dream:request` | Live (slice 2) |
 | `reveries` | Their spontaneous-thought chains | orion-thought | `orion:introspect:reverie:request` | Planned |
 | `curiosity` | What their curiosity runs set out to do and what came of it | orion-substrate-runtime | `orion:introspect:curiosity:request` | Planned |
 | `memories` | Memory cards by meaning, with sensitivity labels | orion-recall | `orion:introspect:memory:request` | Planned; never listed when an outward-facing tool is attached |
@@ -357,10 +358,14 @@ claude -p (FCC motor)
 
 - **Read-only.** SELECTs only. Nothing is queued, retried, charged or written.
 - **Bounded.** At most 5 items, 900-char text per item, `truncated` set when
-  cut. Five full items stay under the 12,000-char MCP result budget
-  (`ORION_FCC_MCP_TOOL_RESULT_MAX_CHARS`); a test pins the worst case. The
-  proxy that enforces that budget does not wrap this server today; the
-  bound keeps wrapping it later safe.
+  cut. One exception: fetching a single dream by `dream_id` returns that one
+  item with up to 4,000 chars (`FULL_TEXT_CAP`).
+  - Every shape stays under the 12,000-char MCP result budget
+    (`ORION_FCC_MCP_TOOL_RESULT_MAX_CHARS`). Tests pin the worst case for
+    readings (`orion/introspect/tests`) and for dreams, including the
+    single 4,000-char dream (`services/orion-dream/tests/test_introspect_dreams.py`).
+  - The proxy that enforces that budget does not wrap this server today;
+    the bound keeps wrapping it later safe.
 - **Scaled.** Every success carries `as_of` and `total_available`, so "5 of
   40" is distinguishable from "all 5".
 - **Empty is not unknown.**
@@ -395,26 +400,50 @@ Same pattern for every domain that supports `query=`:
     view. The index is never the record.
 - **Failure.** An embedder or Chroma failure, or an unbuilt or empty index,
   means unknown.
-- **Floor.** Set per domain by a calibration eval on real data. Readings:
-  `services/orion-hub/evals/run_reading_search_calibration.py`.
-- **Code.** Reading search today: `orion/world_pulse_read/search.py`.
+- **Floor.** Set per domain by a calibration eval on real data; the value
+  lives in the owning service's `.env_example`.
+  - Readings: `HUB_READING_SEARCH_MIN_SIMILARITY` in
+    `services/orion-hub/.env_example`, set by
+    `services/orion-hub/evals/run_reading_search_calibration.py`.
+  - Dreams: `DREAM_SEARCH_MIN_SIMILARITY` in
+    `services/orion-dream/.env_example`, set by
+    `services/orion-dream/evals/run_dream_search_calibration.py`.
+- **Code.** Shared plumbing: `orion/introspect/semantic_index.py`. Domain
+  parts: `orion/world_pulse_read/search.py` (readings) and
+  `services/orion-dream/app/dream_search.py` (dreams).
 
 ### Verify it live
 
-- **Responder log.** `introspect op=<op> corr=<id> items=<n> total=<n> mode=<...>`
-  on success. Readings: `introspect op=reading_result`, failures
-  `reading_tool_failed ... category=...`.
+- **Responder logs.** Each answer logs one success line with its correlation
+  ID; each failure logs the reason category.
+  - Readings (orion-hub): `introspect op=reading_result corr=<id> items=<n> total=<n> mode=<...>`;
+    failures `reading_tool_failed correlation_id=<id> category=... phase=...`.
+  - Dreams (orion-dream): at startup `dream introspect responder started`
+    and `dream_introspect_listening channel=orion:introspect:dream:request`;
+    per answer `introspect op=dreams corr=<id> mode=recent|one|search items=<n> total=<n>`;
+    failures `introspect_failed op=dreams corr=<id> mode=... category=dream_query_failure|dream_search_failure`.
 - **Governor log.** `harness_grammar_step_published corr=<turn> ... tool=mcp__orion-introspect__<tool>`.
 - **Smoke (read-only).**
 
   ```bash
   ORION_BUS_URL=redis://100.92.216.81:6379/0 python scripts/smoke_introspect.py --limit 3
   ORION_BUS_URL=redis://100.92.216.81:6379/0 python scripts/smoke_introspect.py --query "graphics cards"
+  ORION_BUS_URL=redis://100.92.216.81:6379/0 python scripts/smoke_introspect.py --tool dreams --limit 3
+  ORION_BUS_URL=redis://100.92.216.81:6379/0 python scripts/smoke_introspect.py --tool dreams --query "vision"
+  ORION_BUS_URL=redis://100.92.216.81:6379/0 python scripts/smoke_introspect.py --tool dreams --dream-id dream:19
   ```
 
-  Exit 0 means a coherent answer, 1 a degenerate one, 2 an unknown one.
-- **Tests.** `orion/introspect/tests`, run in CI by
-  `.github/workflows/orion-reading-tests.yml`.
+  - Exit 0: a coherent answer.
+  - Exit 1: a degenerate one. That means a read source (`source_read=true`)
+    or a dream with no text, an empty
+    recent window, a search hit with no similarity score, or a named
+    `--dream-id` that did not come back.
+  - Exit 2: the answer is unknown (bus unreachable, timeout, owner error,
+    search outage), or bad arguments.
+- **Tests.** CI runs them in `.github/workflows/orion-reading-tests.yml`:
+  `orion/introspect/tests`, plus the orion-dream responder tests
+  `services/orion-dream/tests/test_introspect_dreams.py`,
+  `test_dream_search.py` and `test_introspect_listener.py`.
 
 ### Turn it off
 

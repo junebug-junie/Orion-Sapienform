@@ -52,15 +52,9 @@ this feature needs):
    no index on the `timestamp` column, so this query is a full scan filtered
    by node + cast timestamp; acceptable for a periodic offline report, not
    something to run in a hot path.
-4. `self_state_predictions` (jsonb `prediction_json.predicted_dimension_scores`,
-   keys observed live on 2026-07-16: agency_readiness, coherence,
-   continuity_pressure, execution_pressure, field_intensity,
-   introspection_pressure, reasoning_pressure, reliability_pressure,
-   resource_pressure, social_pressure, transport_integrity, uncertainty --
-   this is the actual key set from a live query, not the design doc's
-   original guess, and is enumerated per-row rather than hardcoded, so a
-   future added dimension is picked up automatically) -> channels
-   `self_state:<key>`. Timestamp: `generated_at`.
+4. (Retired 2026-10-07) `self_state_predictions` was a source here until its
+   producer was deleted in the 2026-07-22 SelfStateV1 burn; the table stayed
+   at 0 rows and contributed no channel, so the read was removed.
 
 Resampling
 ----------

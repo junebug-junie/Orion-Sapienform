@@ -1,7 +1,7 @@
 """Deterministic unit tests for measure_rpc_health_baseline.py.
 
 No docker, no subprocess. All pure functions operate on synthetic log-line strings,
-same module-loading pattern as scripts/analysis/tests/test_measure_self_state_signal_quality.py.
+same module-loading pattern as scripts/analysis/tests/test_measure_autonomy_gate.py.
 """
 
 from __future__ import annotations

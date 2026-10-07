@@ -7,7 +7,7 @@ URN form:
 Examples::
 
     metric://field_channel/orion-field-digester/cpu_pressure
-    metric://inner_state/orion-self-state-runtime/self_state.v1#reasoning_pressure
+    metric://inner_state/orion-field-digester/field_state.v1#queue_contention_score
     metric://organ_signal/biometrics/gpu_load#level
     metric://bus_channel/orion-substrate-runtime/orion:substrate:brain_frame
 
@@ -326,7 +326,7 @@ SUBSTRATE_RUNTIME = "orion-substrate-runtime"
 # approximation of something larger. Producer is the service that actually
 # COMPUTES the region's value inside assemble_brain_frame()
 # (services/orion-substrate-runtime/app/brain_frame_producer.py), which for
-# 5 of the 6 dimensions is the same service that owns the whole brain-frame
+# 4 of the 5 dimensions is the same service that owns the whole brain-frame
 # tick. `field_anomaly` is the one exception: its true producer is
 # orion-field-digester's mood-arc encoder (app/anomaly_scorer.py), relayed
 # onto the bus and merely cached/assembled by substrate-runtime -- see its
@@ -335,7 +335,6 @@ SUBSTRATE_RUNTIME = "orion-substrate-runtime"
 _BRAIN_REGION_PRODUCERS: dict[str, str] = {
     "node_kind": SUBSTRATE_RUNTIME,
     "lane": SUBSTRATE_RUNTIME,
-    "self_state": SUBSTRATE_RUNTIME,
     "lattice_layer": SUBSTRATE_RUNTIME,
     "honesty_metrics": SUBSTRATE_RUNTIME,
     "field_anomaly": FIELD_DIGESTER,
@@ -349,7 +348,7 @@ def resolve_brain_regions() -> list[MetricNode]:
     field channels, inner-state signals, organ signals, and bus channels,
     but nothing named which service backs an EKG *region* -- the Self tab's
     Self-Observability panel had no way to answer "what produced this bar"
-    for any of its 6 dimensions.
+    for any of its dimensions (6 until 2026-10-07, 5 since).
 
     `declared_consumers` names `orion-hub` (resolves to `services/orion-hub/`
     via the bare-service-name form `_resolve_consumer_path()` already

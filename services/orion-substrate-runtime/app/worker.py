@@ -3032,7 +3032,7 @@ class BiometricsSubstrateWorker:
     def _fetch_heartbeat_h1(self) -> dict | None:
         """One synchronous GET to orion-heartbeat's own `/h1` endpoint, same
         blocking-call-inside-an-async-tick pattern this file's other synchronous
-        SQL reads already use (e.g. `_brain_frame_self_state()` above) --
+        SQL reads already use (e.g. `_brain_frame_lane_health()` above) --
         this tick already does a cross-service Postgres read for the field
         lane, so one more short-timeout cross-service call is not a new kind
         of I/O for it.
@@ -3361,35 +3361,6 @@ class BiometricsSubstrateWorker:
             logger.exception("brain_frame_lane_health_failed")
             return {}
 
-    def _brain_frame_self_state(self) -> dict | None:
-        """Latest self-state row payload (dict) or None. Fail-open."""
-        try:
-            from sqlalchemy import text
-
-            engine = self._get_sql_engine()
-            if engine is None:
-                return None
-            with engine.connect() as conn:
-                row = conn.execute(
-                    text(
-                        """
-                        SELECT self_state_json FROM substrate_self_state
-                        ORDER BY generated_at DESC LIMIT 1
-                        """
-                    )
-                ).mappings().first()
-            if not row:
-                return None
-            payload = row["self_state_json"]
-            if isinstance(payload, str):
-                import json as _json
-
-                payload = _json.loads(payload)
-            return payload if isinstance(payload, dict) else None
-        except Exception:
-            logger.exception("brain_frame_self_state_load_failed")
-            return None
-
     def _brain_frame_prediction_error_by_domain(self, nodes: Iterable[Any]) -> dict:
         """Read each Active-Inference domain's latest prediction_error off the
         already-fetched node snapshot -- zero extra I/O.
@@ -3591,7 +3562,6 @@ class BiometricsSubstrateWorker:
                 nodes=nodes,
                 edges=edges,
                 lane_health=self._brain_frame_lane_health(),
-                self_state=self._brain_frame_self_state(),
                 attention=attention,
                 attention_payload=attention_self_model,
                 field_anomaly=self._latest_field_anomaly,

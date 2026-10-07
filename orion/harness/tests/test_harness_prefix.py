@@ -187,7 +187,7 @@ def test_compile_harness_prefix_includes_context_provenance_when_capsule_has_it(
     """
     capsule = make_grounding_capsule(
         context_provenance={
-            "self_state": "live_runtime_projection",
+            "biometrics": "live_runtime_projection",
             "attention_broadcast": "live_runtime_projection",
             "recall_bundle": "memory_recall",
         }
@@ -199,7 +199,7 @@ def test_compile_harness_prefix_includes_context_provenance_when_capsule_has_it(
         user_message="what's live right now?",
     )
     assert "CONTEXT PROVENANCE" in prompt
-    assert "live now: attention_broadcast, self_state" in prompt
+    assert "live now: attention_broadcast, biometrics" in prompt
     assert "retrieved memory: recall_bundle" in prompt
 
 

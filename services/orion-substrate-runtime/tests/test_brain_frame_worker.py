@@ -35,7 +35,6 @@ def _worker():
         brain_frame_sample_edges=60,
         brain_frame_firing_threshold=0.5,
         brain_frame_starving_threshold=0.1,
-        brain_frame_self_state_cadence_sec=30.0,
         brain_frame_spotlight_cadence_sec=30.0,
         brain_frame_retention_hours=24,
     )
@@ -54,7 +53,6 @@ def test_brain_frame_tick_assembles_and_persists(monkeypatch):
     )
     monkeypatch.setattr(w, "_get_substrate_graph_store", lambda **k: graph_store)
     monkeypatch.setattr(w, "_brain_frame_lane_health", lambda: {"cursor_lag_by_reducer": {}, "pending_backlog_by_reducer": {}, "quarantine_by_reducer": {}})
-    monkeypatch.setattr(w, "_brain_frame_self_state", lambda: None)
     w._store.load_attention_broadcast.return_value = None
 
     frame = w._brain_frame_tick()
@@ -114,7 +112,6 @@ def test_brain_frame_tick_has_no_phantom_or_mislabeled_lanes(monkeypatch):
         nodes={"t1": _node("t1", "tension", 0.9, 0.9)}, edges=[]
     )
     monkeypatch.setattr(w, "_get_substrate_graph_store", lambda **k: graph_store)
-    monkeypatch.setattr(w, "_brain_frame_self_state", lambda: None)
     w._store.load_attention_broadcast.return_value = None
 
     frame = w._brain_frame_tick()
@@ -202,7 +199,6 @@ def test_brain_frame_leaves_out_memory_referents_and_assertions(monkeypatch):
     )
     monkeypatch.setattr(w, "_get_substrate_graph_store", lambda **k: graph_store)
     monkeypatch.setattr(w, "_brain_frame_lane_health", lambda: {"cursor_lag_by_reducer": {}, "pending_backlog_by_reducer": {}, "quarantine_by_reducer": {}})
-    monkeypatch.setattr(w, "_brain_frame_self_state", lambda: None)
     w._store.load_attention_broadcast.return_value = None
 
     frame = w._brain_frame_tick()

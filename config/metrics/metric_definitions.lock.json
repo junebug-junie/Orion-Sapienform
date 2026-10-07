@@ -1,12 +1,15 @@
 {
   "_comment": "Definition lock for scripts/check_definition_drift.py. Generated, never hand-edited. Regenerate with --update; the resulting diff IS the definition-change alert. Unlike the *_baseline.json ratchets this tracks current truth in both directions -- a definition change is an event, not a defect.",
-  "metric_count": 698,
+  "metric_count": 693,
   "_last_change": {
-    "change_count": 2,
-    "high_severity_count": 1,
+    "change_count": 5,
+    "high_severity_count": 5,
     "changes": [
-      "high   semantics_changed metric://field_channel/orion-field-digester/contract_pressure (meaning: Pressure from bus/schema \"contract\" mismatches (precise rea\u2026 -> capability:transport only: 0.85 x node:athena's catalog_dri\u2026)",
-      "medium annotation_changed metric://field_channel/orion-field-digester/contract_pressure (notes: category=infra_transport level=node,capability -> category=infra_transport level=capability)"
+      "high   removed metric://brain_region/orion-substrate-runtime/self_state",
+      "high   removed metric://inner_state/orion-self-state-runtime (DELETED 2026-07-22, PR #1266)/self_state.v1",
+      "high   removed metric://inner_state/orion-self-state-runtime (DELETED 2026-07-22, PR #1266)/self_state.v1#overall_confidence",
+      "high   removed metric://inner_state/orion-self-state-runtime (DELETED 2026-07-22, PR #1266)/self_state.v1#overall_intensity",
+      "high   removed metric://inner_state/orion-self-state-runtime (DELETED 2026-07-22, PR #1266)/self_state.v1#overall_surprise"
     ]
   },
   "definitions": {
@@ -42,13 +45,6 @@
       "registry_source": "orion/schemas/brain_frame.py"
     },
     "metric://brain_region/orion-substrate-runtime/node_kind": {
-      "declared_consumers": [
-        "orion-hub"
-      ],
-      "notes": "Self tab / Self-Observability EKG region dimension",
-      "registry_source": "orion/schemas/brain_frame.py"
-    },
-    "metric://brain_region/orion-substrate-runtime/self_state": {
       "declared_consumers": [
         "orion-hub"
       ],
@@ -4101,8 +4097,8 @@
       "registry_source": "config/field/field_channel_glossary.v1.yaml"
     },
     "metric://field_channel/orion-field-digester/contract_pressure": {
-      "meaning": "capability:transport only: 0.85 x node:athena's catalog_drift_pressure (share of live bus channels missing from orion/bus/channels.yaml). Not a payload/schema contract check -- the schema-sample version was retired 2026-10-07 because OrionBusAsync.publish() already validates every payload before sending.",
-      "notes": "category=infra_transport level=capability",
+      "meaning": "Pressure from bus/schema \"contract\" mismatches (precise real-world condition not otherwise documented in code).",
+      "notes": "category=infra_transport level=node,capability",
       "registry_source": "config/field/field_channel_glossary.v1.yaml"
     },
     "metric://field_channel/orion-field-digester/conversation_load": {
@@ -4439,35 +4435,6 @@
     },
     "metric://inner_state/orion-proposal-runtime, orion-policy-runtime, orion-execution-dispatch-runtime, orion-feedback-runtime, orion-consolidation-runtime/l7_l11_ladder": {
       "notes": "cadence=multi_service composition=no_cognition_consumer",
-      "registry_source": "orion/inner_state_registry.py"
-    },
-    "metric://inner_state/orion-self-state-runtime (DELETED 2026-07-22, PR #1266)/self_state.v1": {
-      "schema_id": "SelfStateV1",
-      "notes": "cadence=per_tick composition=no_cognition_consumer",
-      "registry_source": "orion/inner_state_registry.py"
-    },
-    "metric://inner_state/orion-self-state-runtime (DELETED 2026-07-22, PR #1266)/self_state.v1#overall_confidence": {
-      "schema_id": "SelfStateV1",
-      "upstream": [
-        "metric://inner_state/orion-self-state-runtime (DELETED 2026-07-22, PR #1266)/self_state.v1"
-      ],
-      "notes": "scalar field on SelfStateV1",
-      "registry_source": "orion/inner_state_registry.py"
-    },
-    "metric://inner_state/orion-self-state-runtime (DELETED 2026-07-22, PR #1266)/self_state.v1#overall_intensity": {
-      "schema_id": "SelfStateV1",
-      "upstream": [
-        "metric://inner_state/orion-self-state-runtime (DELETED 2026-07-22, PR #1266)/self_state.v1"
-      ],
-      "notes": "scalar field on SelfStateV1",
-      "registry_source": "orion/inner_state_registry.py"
-    },
-    "metric://inner_state/orion-self-state-runtime (DELETED 2026-07-22, PR #1266)/self_state.v1#overall_surprise": {
-      "schema_id": "SelfStateV1",
-      "upstream": [
-        "metric://inner_state/orion-self-state-runtime (DELETED 2026-07-22, PR #1266)/self_state.v1"
-      ],
-      "notes": "scalar field on SelfStateV1",
       "registry_source": "orion/inner_state_registry.py"
     },
     "metric://inner_state/orion-spark-introspector/mood_arc_corpus.v1": {

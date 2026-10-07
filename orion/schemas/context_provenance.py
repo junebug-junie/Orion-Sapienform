@@ -119,7 +119,6 @@ CONTEXT_PROVENANCE_REGISTRY: dict[str, ContextKeyProvenance] = {
         _entry("turn_effect_explanations_json", "live_runtime_projection", "JSON-rendered turn-effect explanations."),
         _entry("metacog_biometrics_cue", "live_runtime_projection", "Compact live biometrics cue for metacog prompts."),
         _entry("metacog_biometrics_cue_enrich", "live_runtime_projection", "Enriched live biometrics cue."),
-        _entry("self_state", "live_runtime_projection", "Live self-state projection (SelfStateV1)."),
         _entry("execution_trajectory_projection", "live_runtime_projection", "Live execution-trajectory projection."),
         _entry("transport_bus_projection", "live_runtime_projection", "Live transport-bus projection."),
         _entry("active_node_pressure_projection", "live_runtime_projection", "Live substrate pressure-field projection."),

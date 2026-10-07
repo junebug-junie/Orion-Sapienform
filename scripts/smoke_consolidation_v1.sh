@@ -18,23 +18,6 @@ order by generated_at desc
 limit 1;
 "
 
-echo "=== Latest self-state ==="
-"${PSQL[@]}" -c "
-select
-    generated_at,
-    self_state_id,
-    source_field_tick_id,
-    source_attention_frame_id,
-    self_state_json #>> '{overall_condition}' as overall_condition,
-    self_state_json #>> '{overall_intensity}' as overall_intensity,
-    self_state_json #> '{dimensions}' as dimensions,
-    self_state_json #> '{dominant_attention_targets}' as dominant_attention_targets,
-    self_state_json #> '{summary_labels}' as summary_labels
-from substrate_self_state
-order by generated_at desc
-limit 1;
-"
-
 echo "=== Latest consolidation frame ==="
 "${PSQL[@]}" -c "
 select

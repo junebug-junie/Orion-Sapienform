@@ -27,6 +27,12 @@ SelfStateV1 itself), not just SelfStateV1's own module, and its CI gate
 (scripts/check_inner_state_registry.py) has real, independent value
 unrelated to whether SelfStateV1 specifically survives -- moved to a neutral
 location rather than deleted alongside orion/self_state/.
+
+2026-10-07: the self_state.v1 entry itself is removed, along with
+orion/schemas/self_state.py. It was already REHEARSAL with both ends gone
+(producer deleted 2026-07-22, consumer 2026-07-28, substrate_self_state at
+0 rows, re-counted live 2026-10-07); the entry only survived because the
+schema module did.
 """
 from __future__ import annotations
 
@@ -43,7 +49,6 @@ from orion.schemas.attention_self_model import AttentionSelfModelV1
 from orion.schemas.attention_schema import AttentionSchemaV1
 from orion.schemas.field_attention_frame import FieldAttentionFrameV1
 from orion.schemas.field_state import FieldStateV1
-from orion.schemas.self_state import SelfStateV1
 from orion.schemas.telemetry.biometrics import BiometricsClusterV1
 from orion.schemas.telemetry.field_channel_corpus import FieldChannelCorpusRowV1
 from orion.schemas.telemetry.mood_arc import MoodArcCorpusRowV1, MoodArcEncoderManifestV1
@@ -60,8 +65,12 @@ class Cadence(str, Enum):
 
 
 class CompositionStatus(str, Enum):
-    """Where a signal stands relative to SelfStateV1, the one schema every
-    cognition-facing prompt-builder is expected to read from."""
+    """Where a signal stands relative to cognition. The COMPOSED value's
+    string ("composed_into_self_state") is historical: it named SelfStateV1,
+    the composition target retired 2026-07-22 (schema module itself deleted
+    2026-10-07). The string is kept unchanged because it is recorded in
+    config/metrics/metric_definitions.lock.json notes for live entries;
+    renaming it is a separate definition change, not part of the retirement."""
 
     COMPOSED = "composed_into_self_state"
     SHADOW = "shadow_declared_not_composed"
@@ -142,7 +151,7 @@ REGISTRY: tuple[InnerStateSignal, ...] = (
             "structured per-target data (target_kind, pressure_score, top "
             "dominant_channel, top reason) survives on the additive "
             "SelfStateV1.dominant_attention_target_details field via "
-            "AttentionTargetSummaryV1 (orion/schemas/self_state.py)."
+            "AttentionTargetSummaryV1 (orion/schemas/self_state.py, deleted 2026-10-07)."
         ),
     ),
     InnerStateSignal(
@@ -239,35 +248,6 @@ REGISTRY: tuple[InnerStateSignal, ...] = (
             "cortex, which already produces here every real chat turn and "
             "is the kickoff point for any later sequencing of these "
             "processes."
-        ),
-    ),
-    InnerStateSignal(
-        signal_id="self_state.v1",
-        schema=SelfStateV1,
-        producer_service="orion-self-state-runtime (DELETED 2026-07-22, PR #1266)",
-        cadence=Cadence.PER_TICK,
-        composition_status=CompositionStatus.REHEARSAL,
-        cognition_consumers=(),
-        notes=(
-            "RETIRED, corrected 2026-08-13. This entry previously read "
-            "COMPOSED with producer orion-self-state-runtime and consumer "
-            "services.orion-spark-introspector.app.inner_state:"
-            "build_inner_state_features, and claimed it 'feeds phi's "
-            "InnerStateFeaturesV1 and the L7 ladder'. All three are false: "
-            "services/orion-self-state-runtime was deleted (PR #1266, "
-            "71b6fac57, merged 2026-07-22), services/orion-spark-introspector "
-            "was deleted in the 2026-07-28 spark-introspector retirement, and "
-            "substrate_self_state holds 0 rows (counted live 2026-08-13). "
-            "REHEARSAL is accurate now -- no cognition consumer, because both "
-            "ends are gone. The schema itself is kept only because other "
-            "modules still import SelfStateV1 for typing. "
-            "This was found because adding two SHADOW entries above made the "
-            "registry visibly self-contradictory: their shadow_reason states "
-            "that composed_into_self_state is unreachable, while this entry "
-            "thirty lines down still claimed to be exactly that. "
-            "Retiring the dead consumer here also clears one of the three "
-            "known_missing_consumers carried in "
-            "config/metrics/orphan_baseline.json."
         ),
     ),
     InnerStateSignal(

@@ -1304,7 +1304,11 @@ still an open question as of 2026-07-12 -- verify live before assuming either wa
 
 ### L6 (`SelfStateV1`) metric shape and mechanics
 
-Schema: `orion/schemas/self_state.py`. Computation: `orion/self_state/{builder,scoring,
+**Historical (retired).** Producer deleted 2026-07-22; the schema module and every
+remaining reader (brain-frame `self_state` region, causal-geometry
+`self_state_predictions` source) were removed 2026-10-07. Kept below as a record.
+
+Schema: `orion/schemas/self_state.py` (deleted). Computation: `orion/self_state/{builder,scoring,
 prediction}.py`. Tuning surface: `config/self_state/self_state_policy.v1.yaml` (weights,
 channel->dimension map, thresholds -- config, not code).
 
@@ -1379,7 +1383,7 @@ each individually live-verified against real running data before being wired in 
 |-----------|--------|-------------|-------------------------|
 | `node_kind` | graph | max activation per node category | **Ceiling-pinned** (0.9687–1.0 over 2min) — display only, not a good driver |
 | `lane` | reducer health | freshness + backlog composite | **Pinned regardless of `max()`/`min()`** — a dead reducer lane (`chat_grammar`, 70h+ stale) is either masked (`max`) or becomes a permanent floor (`min`) |
-| `self_state` | Postgres `substrate_self_state` | 13-dim projection read | **Dead.** Zero producer since the 2026-07-22 SelfStateV1 burn (confirmed in `orion-consolidation-runtime/app/store.py`) — this dimension never emits a region |
+| `self_state` | Postgres `substrate_self_state` | 13-dim projection read | **Dead.** Zero producer since the 2026-07-22 SelfStateV1 burn (confirmed in `orion-consolidation-runtime/app/store.py`) — this dimension never emits a region. **Removed from the brain-frame contract 2026-10-07.** |
 | `honesty_metrics` | Active Inference | `prediction_error_confidence`, no transform beyond clamp+threshold | **Real, live.** 0.7929–0.9935 over a real 2-minute window |
 | `field_anomaly` | mood-arc encoder (orion-field-digester) | `recon_loss`, calibrated against live-observed range | **Real, live.** Confirmed a genuine anomalous→calm state transition (~0.012 → 0.00012, both real ticks) |
 

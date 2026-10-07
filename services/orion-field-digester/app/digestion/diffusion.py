@@ -248,20 +248,25 @@ def apply_diffusion(state: FieldStateV1, *, diffusion_rate: float) -> None:
         provenance = state.capability_provenance.setdefault(target_id, {})
         for tgt_ch in channels:
             key = (target_id, tgt_ch)
-            tgt[tgt_ch] = best_contribution.get(key, 0.0)
             attributed = best_source.get(key) or measured_zero_source.get(key)
             if attributed is not None:
+                tgt[tgt_ch] = best_contribution.get(key, 0.0)
                 provenance[tgt_ch] = attributed
             else:
-                # Nobody contributed this tick -- clear stale provenance too,
-                # not just reset the value, so the two never disagree about
-                # what's currently true. Note "nobody contributed" now means
-                # nothing *measured* it either: a source reporting a real 0.0
-                # is attributed above, so an empty provenance entry once again
-                # means genuinely unknown rather than either-unknown-or-fine.
+                # Nobody measured this channel this tick: no edge source carries
+                # it (every EXPIRING_NODE_CHANNELS input expired, or the source
+                # node never reported). DROP the key -- value and provenance
+                # together -- instead of writing 0.0 (2026-10-07,
+                # fix/field-capability-unmeasured-fallback). A 0.0 here read as
+                # "measured calm" to every generic consumer; reconcile re-seeds
+                # the default each tick, so the drop must happen here, the last
+                # writer before the tick is saved. Same convention one layer up
+                # from decay.py's expire_unrefreshed_channels(): an absent key
+                # means unmeasured.
+                tgt.pop(tgt_ch, None)
                 provenance.pop(tgt_ch, None)
 
-        if "pressure" in tgt:
+        if "pressure" in channels:
             # Gate on best_source (a real >0 contribution THIS tick), not on
             # `channels` (every channel ever configured as a target for this
             # capability, whether or not it fired this tick) -- a capability
@@ -269,9 +274,21 @@ def apply_diffusion(state: FieldStateV1, *, diffusion_rate: float) -> None:
             # targets yet receive no contribution some tick (e.g. its source
             # is temporarily missing that field), in which case the derived
             # fallback must still run instead of leaving the channel
-            # hard-floored at 0.0 by the `best_contribution.get(key, 0.0)`
-            # reset above.
-            if (target_id, "available_capacity") not in best_source:
-                tgt["available_capacity"] = max(0.0, 1.0 - tgt.get("pressure", 0.0))
-            if (target_id, "confidence") not in best_source:
-                tgt["confidence"] = max(0.0, 1.0 - 0.5 * tgt.get("pressure", 0.0))
+            # hard-floored at 0.0.
+            #
+            # The derived formula needs a MEASURED pressure. With pressure
+            # unmeasured (dropped above) it used to compute 1 - 0 = 1.0 --
+            # an unmeasured capability reading perfectly confident with full
+            # capacity. Now those derived channels are dropped too.
+            pressure_measured = "pressure" in tgt
+            for derived_ch, derive in (
+                ("available_capacity", lambda p: max(0.0, 1.0 - p)),
+                ("confidence", lambda p: max(0.0, 1.0 - 0.5 * p)),
+            ):
+                if (target_id, derived_ch) in best_source:
+                    continue  # direct diffusion contributed for real this tick
+                if pressure_measured:
+                    tgt[derived_ch] = derive(tgt["pressure"])
+                else:
+                    tgt.pop(derived_ch, None)
+                    provenance.pop(derived_ch, None)

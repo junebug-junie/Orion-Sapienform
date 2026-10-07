@@ -122,8 +122,9 @@ def test_no_current_contributor_resets_value_and_clears_provenance() -> None:
     # The actual memoryless-recompute fix: a channel that WAS diffused in a
     # prior tick (simulated here via pre-seeded capability_vectors/
     # capability_provenance) but has zero real contributors THIS tick must
-    # reset to 0.0 and drop its provenance, not keep displaying a stale value
-    # attributed to a source that isn't contributing anymore.
+    # drop its value and its provenance, not keep displaying a stale value
+    # attributed to a source that isn't contributing anymore. (Until
+    # 2026-10-07 the value reset to 0.0, which read as "measured calm".)
     edge = FieldEdgeV1(
         source_id="node:circe",
         target_id="capability:llm_inference",
@@ -142,7 +143,7 @@ def test_no_current_contributor_resets_value_and_clears_provenance() -> None:
 
     apply_diffusion(state, diffusion_rate=1.0)
 
-    assert state.capability_vectors["capability:llm_inference"]["pressure"] == 0.0
+    assert "pressure" not in state.capability_vectors["capability:llm_inference"]
     assert "pressure" not in state.capability_provenance.get("capability:llm_inference", {})
 
 

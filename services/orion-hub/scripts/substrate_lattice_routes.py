@@ -738,6 +738,12 @@ def _compute_gates(chain: dict[str, Any]) -> list[dict[str, Any]]:
         # substrate_field_state.generated_at).
         pressure_state = "unknown"
         pressure_reason = f"pressure state unknown: M4 field vector is {m4_status}"
+    elif "pressure" not in m4_field_vector or "reliability_pressure" not in m4_field_vector:
+        # The digester drops a capability channel nothing measured this tick
+        # (2026-10-07) -- absent is unmeasured, not a quiet 0.0.
+        missing = [k for k in ("pressure", "reliability_pressure") if k not in m4_field_vector]
+        pressure_state = "unknown"
+        pressure_reason = f"pressure state unknown: capability:transport {', '.join(missing)} unmeasured this tick"
     else:
         observer_p = float(m4_field_vector.get("reliability_pressure") or 0.0)
         observer_part = (

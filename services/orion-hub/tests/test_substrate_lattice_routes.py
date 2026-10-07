@@ -259,6 +259,8 @@ def _sample_proof_chain_for_gates(
                         # capability:transport.contract_pressure is
                         # 0.85 x node:athena catalog_drift_pressure (topology).
                         "contract_pressure": 0.85 * catalog_drift_pressure,
+                        # live vectors always carry it (node:athena measures it)
+                        "reliability_pressure": 0.0,
                     },
                     "has_transport_vector": True,
                 },
@@ -478,6 +480,21 @@ def test_channel_value_unmeasured_when_row_has_no_source() -> None:
     )
     assert value is None
     assert "no valid source" in source
+
+
+def test_gates_pressure_unmeasured_transport_channel_reads_unknown_not_quiet(client) -> None:
+    """2026-10-07: the digester drops a capability channel nothing measured
+    this tick. A missing key must read "unknown", never the quiet 0.0 the old
+    `or 0.0` default produced."""
+    chain = _sample_proof_chain_for_gates(stream_backlog_pressure=0.0, catalog_drift_pressure=0.0)
+    chain["transport"]["m4"]["values"]["field_vector"].pop("reliability_pressure")
+    with patch.object(
+        substrate_lattice_routes, "_load_transport_proof_chain", return_value=chain
+    ):
+        resp = client.get("/api/substrate-lattice/transport/gates")
+    gates = {g["gate_id"]: g for g in resp.json()["gates"]}
+    assert gates["pressure"]["state"] == "unknown"
+    assert "reliability_pressure unmeasured" in gates["pressure"]["reason"]
 
 
 # ── _load_transport_proof_chain internals ────────────────────────

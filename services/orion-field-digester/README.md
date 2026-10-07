@@ -795,6 +795,37 @@ seeded on any other node. The edge maps it to `capability:storage` `reliability_
 had no input before (athena's disk/memory biometrics only feed `pressure`). Gated by
 `ENABLE_STORAGE_WRITE_FIELD_DIGESTION` (default off in code, on in `.env_example`).
 
+## Unmeasured capability channels are absent (2026-10-07)
+
+When no edge source measured a capability channel this tick, `apply_diffusion()` drops the key
+(and its `capability_provenance` entry) instead of writing 0.0. If `pressure` is unmeasured, the
+derived `confidence` / `available_capacity` are dropped too, instead of being computed as
+`1 - 0` = 1.0. Before this, a capability whose inputs had all expired (`EXPIRING_NODE_CHANNELS`)
+read pressure 0.0, confidence 1.0, capacity 1.0: unmeasured looked perfect, and an eye reporting
+"no camera" (pressure 0.85) flipped to perfect the moment the frame router died.
+
+Reconcile re-seeds the default keys every tick (`_ensure_capability_vector`), so the drop has to
+happen in diffusion, the last writer before the tick is saved. A measured zero still writes 0.0
+with provenance (`measured_zero_source`), so for a channel an edge feeds, "absent" means "nobody
+measured it". Channels no edge ever feeds (e.g. graph/memory `reliability_pressure`, vision
+`contract_pressure`) still carry reconcile's seeded 0.0 with no provenance -- not a measurement;
+left for a follow-up. A capability->capability edge counts its source as measured only when the
+source channel has provenance (reconcile re-seeds the key itself). A derived confidence /
+available_capacity no longer keeps a direct edge's stale provenance: live, `capability:transport`
+confidence named `node:athena` on 123,095 / 123,095 ticks (72 h), left over from the direct
+confidence edge retired 2026-09-25.
+
+What this does not change (simulated outages on 2,051 real ticks, 72 h, against a frozen copy of the
+previous `apply_diffusion`, `scripts/eval_capability_unmeasured_replay.py`; the real 72 h held no
+capability-level outage at all):
+proposal dimensions, feedback credit, merged confidence and the attention pressure proxy read the
+same values and winners as before in every simulated outage, because an unmeasured 0.0 never won a
+max() and a fabricated 1.0 never won a min() while other capabilities were measured. The one
+difference (1 tick in 2,051) is the merged confidence winner's label, from the stale-provenance fix
+above. Partial coverage is not
+"unmeasured": `capability:transport` `reliability_pressure` keeps node:athena's
+`observer_failure_pressure` reading (0.0 on every tick in that window) when the RPC bridge expires.
+
 ## Retired: `stream_backlog_pressure` / `stream_backlog_health` / `delivery_confidence` (2026-09-25)
 
 Removed from `NODE_CHANNELS` (and `stream_backlog_pressure` from `CAPABILITY_CHANNELS`), with no

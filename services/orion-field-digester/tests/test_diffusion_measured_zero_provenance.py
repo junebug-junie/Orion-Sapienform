@@ -67,7 +67,11 @@ def test_unmeasured_channel_stays_anonymous() -> None:
     """
     state = _state({"node:substrate.vision": {"some_other_channel": 0.4}}, [VISION_EDGE])
     apply_diffusion(state, diffusion_rate=1.0)
-    assert state.capability_vectors["capability:vision"]["pressure"] == 0.0
+    # 2026-10-07: unmeasured is an ABSENT key, not a fabricated 0.0 (and the
+    # derived confidence/available_capacity are not fabricated to 1.0 either).
+    vec = state.capability_vectors["capability:vision"]
+    assert "pressure" not in vec
+    assert "confidence" not in vec and "available_capacity" not in vec
     assert "pressure" not in state.capability_provenance.get("capability:vision", {})
 
 

@@ -16,6 +16,14 @@ lists, no "memorability" rules). It only checks things code can check exactly:
   is never rewritten.
 * **Structure.** Workflow-command turns produce no memories; a statement of five words or fewer,
   or a duplicate statement within the episode, is rejected.
+* **Names must come from Juniper or the quotes.** A statement that names a known person, place,
+  project or service Juniper never said in the episode, and that none of its own quotes contain,
+  is kept but escalated to high stakes ("ungrounded_name") so Juniper is asked. A memory in
+  Juniper's voice is grounded only by her own prompts; Orion's reply grounds only Orion's voice. Live case
+  2026-10-06: "...lives in Ogden, Utah, not Chicago" took "Chicago" from Orion's own reply. The
+  names come from referent keys (data), never from a word list.
+* **End dates on any purpose need Juniper's words.** A non-follow_up memory keeps ``expires_at``
+  only when ``until_quote`` is found in one of her prompts and the date is not before the episode.
 * **Stakes are the distiller's own judgment.** Juniper decided the rubric on 2026-10-06 (see
   memory_episode_distill.j2). This module never reads the statement to judge stakes; it only checks
   that ``stakes`` and ``stakes_reason`` are present and agree with each other and with
@@ -32,7 +40,8 @@ import unicodedata
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Optional, get_args
+from typing import Any, Iterable, Optional, get_args
+from zoneinfo import ZoneInfo
 
 from orion.schemas.memory_episode import (
     HIGH_STAKES_REASONS,
@@ -43,6 +52,10 @@ from orion.schemas.memory_episode import (
     EpisodeDistillationV1,
 )
 
+# Juniper's timezone: the prompt asks for datetimes "in her timezone", so a value the model
+# writes without an offset is read there, never as UTC (six hours early in MDT).
+DEFAULT_TZ = "America/Denver"
+
 # Stable namespace so a replayed persist mints the same memory_id (idempotent writes).
 MEMORY_ID_NAMESPACE = uuid.UUID("6f1c7b8e-2d0a-4c35-9a51-3e7d9b0c4a21")
 
@@ -51,6 +64,16 @@ INTERNAL_CHANNELS = frozenset({"reverie", "curiosity", "dream", "journal", "topi
 JUNIPER_VOICES = frozenset({"juniper_said", "worked_out_together"})
 VALID_STAKES_REASONS = frozenset(get_args(StakesReason))
 MIN_STATEMENT_WORDS = 6  # "0 statements of 5 words or fewer" (Stage 1 acceptance 7)
+
+# The two people in every chat episode: naming them is never an import from outside it.
+PARTICIPANT_REFERENTS = frozenset({"person:juniper", "person:orion"})
+# Kinds whose slug is a name someone says ("ogden", "hecate"). Event and concept slugs are
+# descriptions the distiller mints ("austin-offsite"), not words anyone said, so they are skipped.
+NAMED_REFERENT_KINDS = frozenset({"person", "place", "project", "service"})
+MIN_NAME_CHARS = 3
+# Stored as stakes_reason when a statement names something Juniper never said (validator label,
+# like "unjudged"; the confirmation card explains it).
+UNGROUNDED_NAME_STAKES_LABEL = "ungrounded_name"
 
 # Purpose -> (start strength, half-life days). Spec section 4.
 STRENGTH_BY_PURPOSE: dict[str, tuple[float, Optional[float]]] = {
@@ -213,7 +236,45 @@ def _parse_dt(value: Any) -> Optional[datetime]:
         dt = datetime.fromisoformat(str(value).strip().replace("Z", "+00:00"))
     except ValueError:
         return None
-    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+    return dt if dt.tzinfo else dt.replace(tzinfo=ZoneInfo(DEFAULT_TZ))
+
+
+def _contains_word(folded_text: str, folded_name: str) -> bool:
+    return re.search(r"(?<!\w)" + re.escape(folded_name) + r"(?!\w)", folded_text) is not None
+
+
+def ungrounded_names(statement: str, *, known_keys: Iterable[str], grounding_texts: Iterable[str]) -> list[str]:
+    """Known referent keys whose name the statement uses but no grounding text contains.
+
+    ``grounding_texts`` are Juniper's own prompts in the episode plus the memory's verified quotes.
+    Names come from the keys' slugs ("place:the-wade" -> "the wade"), matched as whole words after
+    the same folding the quote check uses. Participants and minted event/concept slugs are skipped.
+    """
+    folded = fold_text(statement)
+    grounds = [fold_text(t) for t in grounding_texts if t]
+    out: list[str] = []
+    for key in sorted(set(known_keys)):
+        kind, _, slug = key.partition(":")
+        if key in PARTICIPANT_REFERENTS or kind not in NAMED_REFERENT_KINDS:
+            continue
+        name = fold_text(slug.replace("-", " "))
+        if len(name) < MIN_NAME_CHARS or not _contains_word(folded, name):
+            continue
+        if any(_contains_word(g, name) for g in grounds):
+            continue
+        out.append(key)
+    return out
+
+
+def _until_quote_problem(quote: Optional[str], turns: list[EpisodeTurn]) -> Optional[str]:
+    """None when ``quote`` is Juniper's own words from one of her prompts, else the drop reason."""
+    if not quote:
+        return "no_until_quote"
+    if not quote_long_enough(quote):
+        return "until_quote_too_short"
+    if not any(not t.is_command and quote_in_text(quote, t.prompt) for t in turns):
+        return "until_quote_not_in_juniper_prompt"
+    return None
 
 
 def memory_id_for(episode_id: str, purpose: str, statement: str) -> str:
@@ -323,10 +384,17 @@ def validate_distillation(
     *,
     episode_id: str,
     prompt_version: Optional[str] = None,
+    known_referents: Iterable[str] = (),
 ) -> ValidationResult:
     """``prompt_version`` = the version of the template the answer was generated from (the durable
-    graph stamps it at render time). None means the current prompt."""
+    graph stamps it at render time). None means the current prompt. ``known_referents`` = referent
+    keys already in use (the prompt's candidate list); the keys this answer emits are added to it."""
     by_label = {t.label: t for t in turns}
+    known_keys = {k for k in (normalize_referent_key(x) for x in known_referents) if k}
+    for c in list(distillation.memories) + list(distillation.questions):
+        known_keys.update(k for k in (normalize_referent_key(r.key) for r in c.referents) if k)
+    juniper_prompts = [t.prompt for t in turns if not t.is_command]
+    episode_start = min((t.created_at for t in turns if t.created_at), default=None)
     category_required = stakes_category_required(prompt_version)
     memories: list[ValidatedMemory] = []
     questions: list[ValidatedQuestion] = []
@@ -400,11 +468,32 @@ def validate_distillation(
         )
         if stakes_event is not None:
             events.append(stakes_event)
+        # Source monitoring for names: a memory in Juniper's voice is grounded only by what she
+        # wrote. Orion's own reply never grounds her claim (the live case quoted Orion's "Chicago").
+        # A memory in Orion's voice may also name what Orion said in their quoted reply.
+        own_reply_quotes = [] if voice in JUNIPER_VOICES else [ev.quote for ev, _, fld in verified if fld == "response"]
+        imported = ungrounded_names(
+            statement, known_keys=known_keys, grounding_texts=juniper_prompts + own_reply_quotes,
+        )
+        if imported:
+            events.append(MemoryEvent("ungrounded_name", "statement_names_what_juniper_did_not_say",
+                                      {"referents": imported, "stakes_before": stakes}))
+            if stakes == "low":
+                stakes, stakes_reason = "high", UNGROUNDED_NAME_STAKES_LABEL
         confirmation_state = "pending_confirmation" if stakes == "high" else "auto"
         strength, half_life = STRENGTH_BY_PURPOSE[cand.purpose]
 
         due_after = _parse_dt(cand.due_after) if cand.purpose == "follow_up" else None
-        expires_at = _parse_dt(cand.expires_at) if cand.purpose == "follow_up" else None
+        expires_at = _parse_dt(cand.expires_at)
+        if cand.purpose != "follow_up" and expires_at is not None:
+            # An end date on a fact must rest on Juniper's own words for that period.
+            drop = _until_quote_problem(cand.until_quote, turns)
+            if drop is None and episode_start is not None and expires_at <= episode_start:
+                drop = "ends_before_episode"
+            if drop:
+                events.append(MemoryEvent("validity_dropped", drop,
+                                          {"expires_at": cand.expires_at, "until_quote": cand.until_quote}))
+                expires_at = None
 
         seen_statements.add(norm)
         memories.append(

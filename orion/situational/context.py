@@ -437,11 +437,21 @@ def hub_settings_to_runtime_namespace(cfg: Any) -> SimpleNamespace:
     but no place and Orion resolved "the camera outside" against a travel
     city in recent chat (correlation 5063fb71).
 
-    Fields orion-hub does not yet configure (lab, perception) are turned off here on purpose, not
-    left to `settings_from_runtime`'s own defaults to silently decide: hub
-    has no verified perception/lab runtime dependency yet (no DSN/HTTP
-    egress vetted for its event loop), so wiring those is a follow-up, not
-    an accident of a missing attr. Weather and the runtime probe (which
+    Lab is turned off here on purpose (it has no real provider anywhere), not
+    left to `settings_from_runtime`'s own defaults to silently decide.
+
+    Perception (2026-10-07) IS enabled here now, via Hub's own
+    ORION_SITUATION_PERCEPTION_ENABLED (default ON, Juniper's standing flag
+    rule). It was a literal False while Hub had no vetted DB path for its
+    event loop; every perception read now runs in `asyncio.to_thread`
+    (`_build_room_perception_context`, `_resolve_presence_and_identity_ask`,
+    `_build_street_fields`), and Hub already holds POSTGRES_URI. It is the
+    same builder cortex-exec runs -- not a fork. Privacy: this puts
+    camera-derived text about the home into Hub chat prompts (room
+    narrative, presence fragment, street summary, identity-ask caution);
+    the kill switch is ORION_SITUATION_PERCEPTION_ENABLED=false.
+
+    Weather and the runtime probe (which
     model is currently serving `chat`) ARE enabled -- weather now reads
     orion-hub's own ORION_SITUATION_WEATHER_* fields (added alongside this
     adapter's weather wiring; same provider/coordinates/TTL as cortex-exec's
@@ -452,7 +462,7 @@ def hub_settings_to_runtime_namespace(cfg: Any) -> SimpleNamespace:
     `asyncio.to_thread`, and the runtime read is an async RPC, so a cache-miss
     fetch cannot stall the event loop.
 
-    Affect (2026-08-25) IS enabled here, unlike perception/lab -- orion-hub
+    Affect (2026-08-25) IS enabled here -- orion-hub
     is the MOST verified host for it, not the least: Hub owns the capture
     loop that produces the read in the first place
     (`services/orion-hub/scripts/vision_affect_ambient.py`) and already
@@ -478,7 +488,7 @@ def hub_settings_to_runtime_namespace(cfg: Any) -> SimpleNamespace:
     no new sensor-path keys, just a new `ORION_SITUATION_CABINET_*` on/off +
     TTL pair. This is Orion's own physical housing, not private-home
     content, same "no new dependency, no privacy concern" shape as affect/
-    curiosity/reverie above -- unlike lab/perception, which stay off.
+    curiosity/reverie above -- unlike lab, which stays off.
     """
     return SimpleNamespace(
         orion_situation_enabled=bool(getattr(cfg, "ORION_SITUATION_ENABLED", True)),
@@ -536,9 +546,26 @@ def hub_settings_to_runtime_namespace(cfg: Any) -> SimpleNamespace:
         orion_situation_cabinet_stale_after_sec=float(
             getattr(cfg, "CABINET_SENSORS_STALE_AFTER_SEC", 10.0)
         ),
-        orion_situation_perception_enabled=False,
-        orion_situation_perception_max_age_seconds=900,
+        # 2026-10-07: was a literal False. Reads Hub's own
+        # ORION_SITUATION_PERCEPTION_* keys (same names and defaults as
+        # cortex-exec's) into the SAME shared builder cortex-exec uses --
+        # no forked perception path. Default ON per Juniper's standing flag
+        # rule; ORION_SITUATION_PERCEPTION_ENABLED=false is the kill switch.
+        orion_situation_perception_enabled=bool(
+            getattr(cfg, "ORION_SITUATION_PERCEPTION_ENABLED", True)
+        ),
+        orion_situation_perception_max_age_seconds=int(
+            getattr(cfg, "ORION_SITUATION_PERCEPTION_MAX_AGE_SECONDS", 900)
+        ),
         orion_situation_perception_stream_id="cam0",
+        orion_situation_perception_stream_ids=getattr(
+            cfg, "ORION_SITUATION_PERCEPTION_STREAM_IDS", "carbon,cam0"
+        ),
+        # Plain getattr, no `or` fallback: an explicit "" disables the
+        # Street line (settings_from_runtime's own contract).
+        orion_situation_street_stream_ids=getattr(
+            cfg, "ORION_SITUATION_STREET_STREAM_IDS", "walkway"
+        ),
         orion_situation_identity_ask_cooldown_seconds=1200,
         orion_situation_affect_enabled=bool(getattr(cfg, "ORION_SITUATION_AFFECT_ENABLED", True)),
         orion_situation_affect_max_age_seconds=int(
@@ -712,6 +739,24 @@ def _phase_stamp_from_cached_brief(brief: Any, ctx: dict[str, Any], now_utc: dat
     )
 
 
+def _cached_percept_outlived_gate(brief: Any, cached_age: float, cfg: SituationSettings) -> bool:
+    """True when a cached brief's room percept has aged past the staleness
+    gate since it was built (review finding, 2026-10-07).
+
+    Without this the effective bound was max_age + ttl: a percept 899 s old
+    at build time kept rendering "seen 15 min ago" for another 300 s of cache
+    hits, the exact stale-scene-as-current failure the gate exists to stop.
+    A miss here just rebuilds, which re-applies the gate fresh.
+    """
+    try:
+        perception = brief.perception
+        if not perception.available or perception.observation_age_seconds is None:
+            return False
+        return perception.observation_age_seconds + cached_age > cfg.perception_max_age_seconds
+    except Exception:  # noqa: BLE001 -- a malformed cache entry is just a miss
+        return True
+
+
 async def build_situation_for_ctx(
     ctx: dict[str, Any],
     runtime_settings: Any,
@@ -731,7 +776,15 @@ async def build_situation_for_ctx(
     cache_key = _situation_cache_key(ctx, cfg)
     with _LOCK:
         cached = _SITUATION_CACHE.get(cache_key)
-        if cached and (datetime.now(timezone.utc) - cached[0]).total_seconds() < cfg.ttl_seconds:
+        cached_age = (
+            (datetime.now(timezone.utc) - cached[0]).total_seconds() if cached else None
+        )
+        if (
+            cached
+            and cached_age is not None
+            and cached_age < cfg.ttl_seconds
+            and not _cached_percept_outlived_gate(cached[1], cached_age, cfg)
+        ):
             if phase_stamp_out is not None:
                 try:
                     phase_stamp_out.update(
@@ -762,7 +815,14 @@ async def build_situation_for_ctx(
     agenda_ctx = AgendaContextV1(available=False, source="stub")
     lab_ctx = _build_lab_context(cfg)
     cabinet_ctx = await _build_cabinet_context(cfg, diagnostics)
-    perception_ctx = await _build_perception_context(cfg, diagnostics)
+    # Only a turn Juniper actually took may spend the shared identity-ask
+    # cooldown (review finding, 2026-10-07): Hub also builds briefs for turns
+    # Orion authors itself (endogenous outreach), and claiming the slot there
+    # would open an unprompted message with "is that you?" and burn the ask
+    # her next real turn should get.
+    perception_ctx = await _build_perception_context(
+        cfg, diagnostics, allow_identity_ask=_records_user_turn(ctx)
+    )
     affect_ctx = await _build_affect_context(cfg, diagnostics)
     curiosity_ctx = await _build_curiosity_context(cfg, diagnostics)
     reverie_ctx = await _build_reverie_context(cfg, diagnostics)
@@ -1499,7 +1559,10 @@ class _PresenceReading:
 
 
 async def _resolve_presence_and_identity_ask(
-    cfg: SituationSettings, diagnostics: SituationDiagnosticsV1
+    cfg: SituationSettings,
+    diagnostics: SituationDiagnosticsV1,
+    *,
+    allow_identity_ask: bool = True,
 ) -> _PresenceReading:
     """Which camera speaks for "where is Juniper", and should Orion ask who
     this is.
@@ -1588,7 +1651,7 @@ async def _resolve_presence_and_identity_ask(
         reason = "no_visual_confirmation"
 
     identity_ask = None
-    if reason is not None:
+    if reason is not None and allow_identity_ask:
         ttl = (
             cfg.identity_ask_cooldown_seconds
             if reason in ("unmatched_face", "identity_unread")
@@ -1657,11 +1720,16 @@ async def _build_street_fields(
 
 
 async def _build_perception_context(
-    cfg: SituationSettings, diagnostics: SituationDiagnosticsV1
+    cfg: SituationSettings,
+    diagnostics: SituationDiagnosticsV1,
+    *,
+    allow_identity_ask: bool = True,
 ) -> PerceptionContextV1:
     """Room percept (below) plus the street summary, which is a different
     camera and so rides on every return path of the room read, stale or not."""
-    room = await _build_room_perception_context(cfg, diagnostics)
+    room = await _build_room_perception_context(
+        cfg, diagnostics, allow_identity_ask=allow_identity_ask
+    )
     if not cfg.perception_enabled or not cfg.street_stream_ids:
         return room
     street = await _build_street_fields(cfg, diagnostics)
@@ -1669,7 +1737,10 @@ async def _build_perception_context(
 
 
 async def _build_room_perception_context(
-    cfg: SituationSettings, diagnostics: SituationDiagnosticsV1
+    cfg: SituationSettings,
+    diagnostics: SituationDiagnosticsV1,
+    *,
+    allow_identity_ask: bool = True,
 ) -> PerceptionContextV1:
     """Most recent camera percept, gated hard on age.
 
@@ -1683,9 +1754,9 @@ async def _build_room_perception_context(
     percept, never an exception into turn assembly.
 
     `async` since 2026-08-26: the identity-uncertain cooldown check below is
-    a Redis round-trip (`identity_ask_cooldown.py`), the one await in this
-    function -- everything else here stays the same synchronous SQLAlchemy
-    reads it always was.
+    a Redis round-trip (`identity_ask_cooldown.py`). Since 2026-10-07 the
+    percept SQL read is awaited via `asyncio.to_thread` too, so no
+    synchronous database call runs on the caller's event loop (Hub's).
     """
     if not cfg.perception_enabled:
         diagnostics.provider_status["perception"] = "disabled"
@@ -1694,11 +1765,18 @@ async def _build_room_perception_context(
     # Resolved first so every return path below carries it -- see
     # _resolve_presence_and_identity_ask's docstring for why this must not
     # live inside the available=True branch.
-    reading = await _resolve_presence_and_identity_ask(cfg, diagnostics)
+    reading = await _resolve_presence_and_identity_ask(
+        cfg, diagnostics, allow_identity_ask=allow_identity_ask
+    )
 
     try:
-        percept = fetch_latest_percept(
-            stream_ids=cfg.perception_stream_ids or [cfg.perception_stream_id]
+        # Off the event loop (2026-10-07): this is a synchronous SQLAlchemy
+        # read, and Hub's chat event loop now runs it too. A slow or
+        # unreachable database must stall a worker thread, not every Hub
+        # websocket. The presence and street reads already do this.
+        percept = await asyncio.to_thread(
+            fetch_latest_percept,
+            stream_ids=cfg.perception_stream_ids or [cfg.perception_stream_id],
         )
     except Exception as exc:  # noqa: BLE001 -- provider contract is fail-open
         diagnostics.provider_status["perception"] = "error"

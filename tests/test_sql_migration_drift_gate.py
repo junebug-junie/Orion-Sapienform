@@ -594,3 +594,21 @@ class TestIncidentFilesDeclareWhatAHumanReadThemToDeclare:
             ("drop", "table", "durable_resource_demands", False),
             ("drop", "table", "durable_elastic_slot", False),
             ("drop", "sequence", "durable_resource_fencing_generation", False)}
+
+
+
+def test_rollback_files_are_never_replayed(tmp_path):
+    """Incident 2026-10-04..07: five *_rollback.sql files (DROP ... IF EXISTS) were replayed after
+    their forward migrations, so the expected schema lost those objects and the watch reported
+    'should have been dropped' -- RED on every run for 300+ runs."""
+    from orion.sql_migration_drift import is_rollback_file, load_files, MIGRATION_SUBDIR
+
+    d = tmp_path / MIGRATION_SUBDIR
+    d.mkdir(parents=True)
+    (d / "manual_migration_x_v1.sql").write_text("CREATE TABLE IF NOT EXISTS x_t (id int);\n")
+    (d / "manual_migration_x_v1_rollback.sql").write_text(
+        "-- Rollback of manual_migration_x_v1.sql\nDROP TABLE IF EXISTS x_t;\n")
+    names = [f.name for f in load_files(tmp_path, {})]
+    assert names == ["manual_migration_x_v1.sql"]
+    assert is_rollback_file("manual_migration_x_v1_rollback.sql")
+    assert not is_rollback_file("manual_migration_x_v1.sql")

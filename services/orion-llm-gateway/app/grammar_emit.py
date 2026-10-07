@@ -10,10 +10,12 @@ sent even when the window saw no calls, so "no traffic" and "gateway gone" stay
 distinguishable downstream.
 
 Why the gateway and nobody else: a backend failure comes back to the caller as
-a normal reply whose text is ``[Error: llamacpp failed: ...]`` (llm_backend.py
-has ~16 such returns), so caller-side RPC health counts it as a success and
-host GPU pressure reads an idle, broken backend as calm. Only this process sees
-the call fail.
+a normal ``llm.chat.result`` reply (since 2026-10-07 with empty content and a
+typed ``raw.error``; before that, text ``[Error: llamacpp failed: ...]`` and
+``raw={}``), so caller-side RPC health counts it as a success and host GPU
+pressure reads an idle, broken backend as calm. Only this process sees the call
+fail. The ``[Error: ...]`` text sniffing below remains for the gateway's own
+non-upstream refusals (vision, unconfigured route) that still use that framing.
 
 Two clocks per call, per granted GPU-pool role (gpu-pool stage 6.2, 2026-09-30):
 ``wait`` is lease request -> grant (the line), ``model`` is grant -> reply (the
@@ -87,6 +89,10 @@ def classify_outcome(result: Any) -> str:
     err = str(raw.get("error") or "").strip()
     if err:
         if err in REFUSAL_CLASSES or err in REQUEST_INVALID_CLASSES or err == "gateway_exception":
+            return err
+        if err in UPSTREAM_FAILURE_CLASSES:
+            # llm_backend's typed upstream failures (upstream_http_5xx, upstream_not_found, ...)
+            # already carry the contract's own class name.
             return err
         if err == "timeout":
             # the granted node was still working when the caller's budget ran out

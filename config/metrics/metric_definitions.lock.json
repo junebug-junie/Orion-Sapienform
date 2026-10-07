@@ -1,11 +1,14 @@
 {
   "_comment": "Definition lock for scripts/check_definition_drift.py. Generated, never hand-edited. Regenerate with --update; the resulting diff IS the definition-change alert. Unlike the *_baseline.json ratchets this tracks current truth in both directions -- a definition change is an event, not a defect.",
-  "metric_count": 698,
+  "metric_count": 693,
   "_last_change": {
-    "change_count": 1,
-    "high_severity_count": 1,
+    "change_count": 4,
+    "high_severity_count": 4,
     "changes": [
-      "high   routing_changed metric://bus_channel/orion-biometrics/orion:grammar:event (all_producers: \u2026r', 'orion-hub', 'orion-\u2026 -> \u2026r', 'orion-heartbeat', 'orion-hub', 'orion-\u2026)"
+      "high   semantics_changed metric://field_channel/orion-field-digester/available_capacity (meaning: \u2026s right now. -> \u2026s right now. Derived as 1 - pressure unless an edge writes \u2026)",
+      "high   semantics_changed metric://field_channel/orion-field-digester/confidence (meaning: \u2026e/available. -> \u2026e/available. Derived as 1 - 0.5 * pressure unless an edge w\u2026)",
+      "high   semantics_changed metric://field_channel/orion-field-digester/pressure (meaning: \u2026rt, vision). -> \u2026rt, vision). Where an edge feeds it: absent (key and proven\u2026)",
+      "high   semantics_changed metric://field_channel/orion-field-digester/reliability_pressure (meaning: \u2026 failures, or observer failures). -> \u2026 failures, observer failures, RPC timeouts, storage write f\u2026)"
     ]
   },
   "definitions": {
@@ -41,13 +44,6 @@
       "registry_source": "orion/schemas/brain_frame.py"
     },
     "metric://brain_region/orion-substrate-runtime/node_kind": {
-      "declared_consumers": [
-        "orion-hub"
-      ],
-      "notes": "Self tab / Self-Observability EKG region dimension",
-      "registry_source": "orion/schemas/brain_frame.py"
-    },
-    "metric://brain_region/orion-substrate-runtime/self_state": {
       "declared_consumers": [
         "orion-hub"
       ],
@@ -524,7 +520,6 @@
         "orion-cortex-orch",
         "orion-gpu-pool",
         "orion-harness-governor",
-        "orion-heartbeat",
         "orion-hub",
         "orion-llm-gateway",
         "orion-sql-writer",
@@ -4026,7 +4021,7 @@
       "registry_source": "config/field/field_channel_glossary.v1.yaml"
     },
     "metric://field_channel/orion-field-digester/available_capacity": {
-      "meaning": "How much spare operating capacity a capability has right now.",
+      "meaning": "How much spare operating capacity a capability has right now. Derived as 1 - pressure unless an edge writes it directly; absent when pressure is unmeasured (never a fabricated 1.0).",
       "notes": "category=synthesized_rollup level=capability",
       "registry_source": "config/field/field_channel_glossary.v1.yaml"
     },
@@ -4091,7 +4086,7 @@
       "registry_source": "config/field/field_channel_glossary.v1.yaml"
     },
     "metric://field_channel/orion-field-digester/confidence": {
-      "meaning": "How confident the system is that a given capability is currently reliable/available.",
+      "meaning": "How confident the system is that a given capability is currently reliable/available. Derived as 1 - 0.5 * pressure unless an edge writes it directly; absent when pressure is unmeasured (never a fabricated 1.0).",
       "notes": "category=synthesized_rollup level=capability",
       "registry_source": "config/field/field_channel_glossary.v1.yaml"
     },
@@ -4101,8 +4096,8 @@
       "registry_source": "config/field/field_channel_glossary.v1.yaml"
     },
     "metric://field_channel/orion-field-digester/contract_pressure": {
-      "meaning": "Pressure from bus/schema \"contract\" mismatches (precise real-world condition not otherwise documented in code).",
-      "notes": "category=infra_transport level=node,capability",
+      "meaning": "capability:transport only: 0.85 x node:athena's catalog_drift_pressure (share of live bus channels missing from orion/bus/channels.yaml). Not a payload/schema contract check -- the schema-sample version was retired 2026-10-07 because OrionBusAsync.publish() already validates every payload before sending.",
+      "notes": "category=infra_transport level=capability",
       "registry_source": "config/field/field_channel_glossary.v1.yaml"
     },
     "metric://field_channel/orion-field-digester/conversation_load": {
@@ -4245,7 +4240,7 @@
       "registry_source": "config/field/field_channel_glossary.v1.yaml"
     },
     "metric://field_channel/orion-field-digester/pressure": {
-      "meaning": "Overall load/pressure for a given capability (llm_inference, orchestration, storage, graph, memory, transport, vision).",
+      "meaning": "Overall load/pressure for a given capability (llm_inference, orchestration, storage, graph, memory, transport, vision). Where an edge feeds it: absent (key and provenance dropped) on a tick when no edge source measured it, never written as a calm 0.0.",
       "feeds_dimensions": [
         "resource_pressure"
       ],
@@ -4269,7 +4264,7 @@
       "registry_source": "config/field/field_channel_glossary.v1.yaml"
     },
     "metric://field_channel/orion-field-digester/reliability_pressure": {
-      "meaning": "Capability-level pressure representing risk to reliability (from execution friction, failures, or observer failures).",
+      "meaning": "Capability-level pressure representing risk to reliability (from execution friction, failures, observer failures, RPC timeouts, storage write failures, inference failures, vision processing failures). Max over the sources that measured it this tick; where an edge feeds it, absent when none did (e.g. every input expired), never a calm 0.0. Capabilities with no reliability edge (graph, memory) still carry reconcile's seeded 0.0, which is not a measurement.",
       "feeds_dimensions": [
         "reliability_pressure"
       ],
@@ -4439,35 +4434,6 @@
     },
     "metric://inner_state/orion-proposal-runtime, orion-policy-runtime, orion-execution-dispatch-runtime, orion-feedback-runtime, orion-consolidation-runtime/l7_l11_ladder": {
       "notes": "cadence=multi_service composition=no_cognition_consumer",
-      "registry_source": "orion/inner_state_registry.py"
-    },
-    "metric://inner_state/orion-self-state-runtime (DELETED 2026-07-22, PR #1266)/self_state.v1": {
-      "schema_id": "SelfStateV1",
-      "notes": "cadence=per_tick composition=no_cognition_consumer",
-      "registry_source": "orion/inner_state_registry.py"
-    },
-    "metric://inner_state/orion-self-state-runtime (DELETED 2026-07-22, PR #1266)/self_state.v1#overall_confidence": {
-      "schema_id": "SelfStateV1",
-      "upstream": [
-        "metric://inner_state/orion-self-state-runtime (DELETED 2026-07-22, PR #1266)/self_state.v1"
-      ],
-      "notes": "scalar field on SelfStateV1",
-      "registry_source": "orion/inner_state_registry.py"
-    },
-    "metric://inner_state/orion-self-state-runtime (DELETED 2026-07-22, PR #1266)/self_state.v1#overall_intensity": {
-      "schema_id": "SelfStateV1",
-      "upstream": [
-        "metric://inner_state/orion-self-state-runtime (DELETED 2026-07-22, PR #1266)/self_state.v1"
-      ],
-      "notes": "scalar field on SelfStateV1",
-      "registry_source": "orion/inner_state_registry.py"
-    },
-    "metric://inner_state/orion-self-state-runtime (DELETED 2026-07-22, PR #1266)/self_state.v1#overall_surprise": {
-      "schema_id": "SelfStateV1",
-      "upstream": [
-        "metric://inner_state/orion-self-state-runtime (DELETED 2026-07-22, PR #1266)/self_state.v1"
-      ],
-      "notes": "scalar field on SelfStateV1",
       "registry_source": "orion/inner_state_registry.py"
     },
     "metric://inner_state/orion-spark-introspector/mood_arc_corpus.v1": {

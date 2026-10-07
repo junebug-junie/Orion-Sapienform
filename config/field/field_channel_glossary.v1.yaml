@@ -30,7 +30,8 @@
 # delivery_confidence retired with no successor (fix/bus-observer-scope,
 # docs/superpowers/specs/2026-09-25-bus-observer-stream-depth-retirement.md):
 # 48 entries / 47 distinct channels after removal. contract_pressure is now the
-# only node+capability overlap.
+# only node+capability overlap. (2026-10-07: no longer -- node-level
+# contract_pressure retired; the entry below is capability-only.)
 #
 # This is the machine-readable companion to
 # services/orion-field-digester/README.md's "Field channel glossary" section,
@@ -271,10 +272,18 @@ channels:
     meaning: "How much active conversational load (turn volume/complexity) is occurring."
     self_state_dimension: social_pressure
 
+  # 2026-10-07: node level retired (the bus observer's two-stream schema
+  # sample; 0.0 on 123,412 of 123,412 ticks). What remains at capability level
+  # is NOT a schema-contract check: config/field/orion_field_topology.v1.yaml
+  # maps node:athena catalog_drift_pressure -> capability:transport
+  # contract_pressure at weight 0.85. The name is a known mislabel kept on
+  # purpose (renaming it changes capability:transport's attention pressure
+  # proxy on ~2.4% of ticks); see docs/superpowers/specs/
+  # 2026-10-07-transport-lattice-names-and-contract.md, decision D3.
   - channel: contract_pressure
-    level: [node, capability]
+    level: [capability]
     category: infra_transport
-    meaning: "Pressure from bus/schema \"contract\" mismatches (precise real-world condition not otherwise documented in code)."
+    meaning: "capability:transport only: 0.85 x node:athena's catalog_drift_pressure (share of live bus channels missing from orion/bus/channels.yaml). Not a payload/schema contract check -- the schema-sample version was retired 2026-10-07 because OrionBusAsync.publish() already validates every payload before sending."
 
   - channel: catalog_drift_pressure
     level: [node]
@@ -348,18 +357,18 @@ channels:
   - channel: pressure
     level: [capability]
     category: synthesized_rollup
-    meaning: "Overall load/pressure for a given capability (llm_inference, orchestration, storage, graph, memory, transport, vision)."
+    meaning: "Overall load/pressure for a given capability (llm_inference, orchestration, storage, graph, memory, transport, vision). Where an edge feeds it: absent (key and provenance dropped) on a tick when no edge source measured it, never written as a calm 0.0."
     self_state_dimension: resource_pressure
 
   - channel: confidence
     level: [capability]
     category: synthesized_rollup
-    meaning: "How confident the system is that a given capability is currently reliable/available."
+    meaning: "How confident the system is that a given capability is currently reliable/available. Derived as 1 - 0.5 * pressure unless an edge writes it directly; absent when pressure is unmeasured (never a fabricated 1.0)."
 
   - channel: available_capacity
     level: [capability]
     category: synthesized_rollup
-    meaning: "How much spare operating capacity a capability has right now."
+    meaning: "How much spare operating capacity a capability has right now. Derived as 1 - pressure unless an edge writes it directly; absent when pressure is unmeasured (never a fabricated 1.0)."
 
   - channel: execution_pressure
     level: [capability]
@@ -376,7 +385,7 @@ channels:
   - channel: reliability_pressure
     level: [capability]
     category: synthesized_rollup
-    meaning: "Capability-level pressure representing risk to reliability (from execution friction, failures, or observer failures)."
+    meaning: "Capability-level pressure representing risk to reliability (from execution friction, failures, observer failures, RPC timeouts, storage write failures, inference failures, vision processing failures). Max over the sources that measured it this tick; where an edge feeds it, absent when none did (e.g. every input expired), never a calm 0.0. Capabilities with no reliability edge (graph, memory) still carry reconcile's seeded 0.0, which is not a measurement."
     self_state_dimension: reliability_pressure
 
   # 2026-08-16 (docs/superpowers/specs/2026-08-16-tension-driven-mutating-

@@ -2825,10 +2825,10 @@ state.
   deleted 2026-07-28) plus whether `docs/superpowers/specs/2026-08-21-phi-v2-design.md`'s
   successor pieces (`scripts/fit_phi_encoder.py`) exist on disk. phi-v2 itself is not implemented.
 - **`GET /api/self-brain/region-provenance`** (`scripts/self_brain_routes.py`): which service
-  actually backs each of `BrainRegionV1.dimension`'s 6 values (`orion.metrics.lineage
+  actually backs each of `BrainRegionV1.dimension`'s 5 values (`orion.metrics.lineage
   ::resolve_brain_regions()`), for the Self tab's Self-Observability EKG region-click detail panel
-  (see that section above) — `field_anomaly` names `orion-field-digester`; the other 5 name
-  `orion-substrate-runtime`. Static (6 entries, computed once via `lru_cache`), not per-tick.
+  (see that section above) — `field_anomaly` names `orion-field-digester`; the other 4 name
+  `orion-substrate-runtime`. Static (5 entries, computed once via `lru_cache`), not per-tick.
 
 ## Cabinet tab
 

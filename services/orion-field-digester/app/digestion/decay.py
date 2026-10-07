@@ -60,8 +60,8 @@ NODE_DECAY_CHANNELS = {
     "compliance_deficit",
     "turn_incompletion",
     "context_gathering_ratio",
-    # transport
-    "contract_pressure",
+    # transport (node-level contract_pressure retired 2026-10-07; the
+    # capability-level channel below is a different, still-live quantity)
     "catalog_drift_pressure",
     "observer_failure_pressure",
     "reliability_pressure",
@@ -89,7 +89,9 @@ CAPABILITY_DECAY_CHANNELS = {
 # measurement to diffusion, capability provenance, and feedback credit's
 # write-backed check (orion/field/credit_integrity.py), none of which can tell
 # it apart from a fresh one. Dropping the key makes every consumer see
-# "unmeasured" instead.
+# "unmeasured" instead -- including one layer up: a capability channel left
+# with no measuring source is dropped by apply_diffusion() too (2026-10-07),
+# rather than written as 0.0 with a fabricated confidence 1.0.
 #
 # rpc_timeout_pressure: the bridge writes every 30 s whenever any bus RPC call
 # happened in the last 10 min; 120 s = four missed ticks.
@@ -163,6 +165,14 @@ def apply_decay(
             if is_fresh:
                 continue
             vec[ch] = vec[ch] * decay_rate
+    # CORRECTION (2026-10-07): the NOTE below is wrong for capability->
+    # capability edges. apply_diffusion() reads a cap->cap SOURCE from
+    # state.capability_vectors before recomputing it, so this loop's 0.92
+    # does reach capability:orchestration via the llm_inference edge (found
+    # replaying 72h of real ticks: the replay only matched stored
+    # orchestration pressure once this decay step was included). Left as-is;
+    # flagged, not changed, in fix/field-capability-unmeasured-fallback.
+    #
     # NOTE (2026-07-12, found by code review on the diffusion memoryless-
     # recompute fix): this capability_vectors loop -- and its
     # "available_capacity" recompute below -- is currently dead weight for

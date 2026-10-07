@@ -32,7 +32,8 @@ node_channels:
   - execution_friction
   - reasoning_load
   - failure_pressure
-  - contract_pressure
+  # contract_pressure (node level) retired 2026-10-07: see
+  # services/orion-field-digester/app/tensor/channels.py::RETIRED_NODE_CHANNELS.
   - catalog_drift_pressure
   - observer_failure_pressure
   - rpc_timeout_pressure
@@ -141,7 +142,12 @@ edges:
   # the field via channels.py RETIRED_PSEUDO_NODES.
   #
   # confidence/available_capacity intentionally NOT mapped: apply_diffusion()'s
-  # derived-fallback formula produces them from the real pressure. Per-stream
+  # derived-fallback formula produces them from the real pressure. When both
+  # organ channels expire (router or lane stopped, 300 s), every capability:
+  # vision channel this edge feeds -- and the derived confidence/available_
+  # capacity -- is DROPPED, not written 0.0/1.0 (2026-10-07; before that an
+  # unmeasured eye read as perfect, and an eye reporting "no camera" flipped
+  # to perfect the moment the router died). Per-stream
   # status (carbon dark while cam0 runs) stays on the projection, not here: a
   # laptop webcam is off whenever the laptop is, and with no day-shape prior a
   # worst-stream reading would pin capability:vision at alarm every evening.

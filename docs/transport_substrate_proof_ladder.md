@@ -104,7 +104,7 @@ and was not deleted.
 | L8 policy | `orion-policy-runtime` | *(no env flag; controlled by policy YAML)* | `substrate_policy_decision_frames` — approved transport inspect decisions |
 | L9 dispatch | `orion-execution-dispatch-runtime` | *(no env flag; `EXECUTION_DISPATCH_MODE`, production = `dispatch_read_only`)* | `substrate_execution_dispatch_frames` — dispatch_mode must be a read-only/dry-run mode |
 | L10 feedback | `orion-feedback-runtime` | *(no env flag)* | `substrate_feedback_frames` — outcome_status reflects dry_run result |
-| L11 consolidation | `orion-consolidation-runtime` | *(no env flag)* | `substrate_consolidation_frames` — `transport_contract_drift_loop` motif (needs contract_pressure ≥ 0.70; 7-day max observed 0.018, never fired in 30 days — see the audit) |
+| L11 consolidation | `orion-consolidation-runtime` | *(no env flag)* | `substrate_consolidation_frames` — `transport_contract_drift_loop` motif (needs contract_pressure ≥ 0.70; 7-day max observed 0.018, never fired in 30 days — see the audit); motif deleted 2026-09-25, node-level contract_pressure retired 2026-10-07) |
 
 **Safety constraint:** `TRANSPORT_PROPOSAL_MODE=read_only` (default) blocks
 `restart_bus`, `purge_stream`, `replay_stream`, `change_catalog`, `change_bus_config` proposals.

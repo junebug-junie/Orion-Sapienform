@@ -81,6 +81,24 @@ def _gpu_lease(state: dict[str, Any]) -> GpuLeaseRefV1 | None:
     return GpuLeaseRefV1.model_validate({key: lease[key] for key in ("lease_id", "generation", "role", "holder")})
 
 
+def no_answers_error(answers: dict[str, Any] | None) -> str | None:
+    """None when at least one answer has text; otherwise a bounded reason naming the turns'
+    own errors (deduplicated, in question order).
+
+    Every question empty means nothing was measured: the run is a failure, not a "completed"
+    run of "none"-source rows. Live 2026-10-02..06: four self-sense runs on the gpu2 worker
+    "completed" with 16/16 blank answers while every LLM call behind them 500'd."""
+    answers = answers or {}
+    if not answers or any(str((a or {}).get("text") or "").strip() for a in answers.values()):
+        return None
+    errors: list[str] = []
+    for answer in answers.values():
+        err = str((answer or {}).get("error") or "empty_generation")
+        if err not in errors:
+            errors.append(err)
+    return f"self_sense_no_answers: {'; '.join(errors)}"[:500]
+
+
 class SelfSenseAskFailed(RuntimeError):
     """Raised by `ask_questions` only on a transport-level failure (no bus,
     RPC exception) -- never for an individual empty/failed answer, which
@@ -158,9 +176,18 @@ def make_nodes(deps: Deps) -> dict[str, Callable[[SelfSenseRunState], Awaitable[
                 "text": result.text or "", "debug": dict(result.debug or {}), "correlation_id": correlation_id,
                 **{k: meta[k] for k in HARNESS_META_DETAIL_KEYS if meta.get(k) is not None},
             }
+            if not result.ok or not (result.text or "").strip():
+                # Why this answer is empty, kept on state (and in finish_detail's turns) instead of
+                # only in a log line.
+                answers[question_key]["error"] = str(result.error or "empty_generation")[:300]
         return {"answers": answers, "attempt": attempt}
 
     async def publish(state: SelfSenseRunState) -> dict[str, Any]:
+        no_answers = no_answers_error(state.get("answers"))
+        if no_answers is not None:
+            # Never publish non-measurements as a completed eval; finish reports the run failed.
+            return {"published": 0, "failed": 0, "empty": len(state.get("answers") or {}),
+                    "last_error": no_answers}
         brief = state["brief"]
         questions = _brief_questions(brief)
         answers = state.get("answers") or {}
@@ -198,6 +225,8 @@ def make_nodes(deps: Deps) -> dict[str, Callable[[SelfSenseRunState], Awaitable[
         return {"published": published, "failed": failed, "empty": empty}
 
     async def finish(state: SelfSenseRunState) -> dict[str, Any]:
+        if no_answers_error(state.get("answers")) is not None:
+            return {"status": "failed"}
         return {"status": "completed"}
 
     return {"ask_questions": ask_questions, "publish": publish, "finish": finish}
@@ -213,6 +242,7 @@ def finish_detail(state: dict[str, Any]) -> dict[str, Any]:
         "failed": int(state.get("failed") or 0),
         "empty": int(state.get("empty") or 0),
         "attempts": int(state.get("attempt") or 0),
+        **({"error": str(state["last_error"])[:500]} if state.get("last_error") else {}),
         "turns": _turns_detail(state),
     }
 
@@ -238,6 +268,8 @@ def _turns_detail(state: dict[str, Any]) -> dict[str, dict[str, Any]]:
         for k in HARNESS_META_DETAIL_KEYS:
             if answer.get(k) is not None:
                 entry[k] = answer[k]
+        if answer.get("error"):
+            entry["error"] = str(answer["error"])[:300]
         if entry:
             out[str(key)] = entry
     return out

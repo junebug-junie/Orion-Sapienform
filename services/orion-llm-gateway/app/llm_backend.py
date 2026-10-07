@@ -119,6 +119,159 @@ def _context_overflow_result(
     }
 
 
+# How much of an upstream's own error message survives into the reply/log/lease release.
+UPSTREAM_ERROR_MESSAGE_MAX_CHARS = 500
+
+
+def _upstream_error_message(response: Any) -> str:
+    """The upstream's own words for why it failed (llama.cpp: ``{"error": {"message": ...}}``),
+    whitespace-collapsed and truncated. Falls back to the body text, then the reason phrase."""
+    message: Any = None
+    try:
+        body = response.json()
+    except Exception:  # noqa: BLE001 -- a non-JSON body still has text
+        body = None
+    if isinstance(body, dict):
+        err = body.get("error")
+        message = err.get("message") if isinstance(err, dict) else err
+    if not message:
+        try:
+            message = response.text
+        except Exception:  # noqa: BLE001
+            message = None
+    if not message:
+        message = getattr(response, "reason_phrase", None) or "no body"
+    return " ".join(str(message).split())[:UPSTREAM_ERROR_MESSAGE_MAX_CHARS]
+
+
+def upstream_error_class(status: int) -> str:
+    """The class names stage 6.2 inference telemetry already uses
+    (orion/schemas/llm_inference_projection.py): 5xx is the node failing, 404 a missing
+    endpoint, any other 4xx the caller's request, a 2xx error body a generic upstream error."""
+    if status >= 500:
+        return "upstream_http_5xx"
+    if status == 404:
+        return "upstream_not_found"
+    if status >= 400:
+        return "upstream_http_4xx"
+    return "upstream_error"
+
+
+def _upstream_failure_result(
+    *,
+    backend_name: str,
+    url: str,
+    status: Optional[int],
+    message: str,
+    route: Optional[str],
+    served_by: Optional[str],
+    spark_meta: Dict[str, Any],
+    trace_id: Optional[str],
+    error: Optional[str] = None,
+    reason: Optional[str] = None,
+) -> Dict[str, Any]:
+    """An upstream that failed, as the gateway's standard failure reply: empty text, ``raw.error``
+    naming the class, ``raw.details`` carrying the upstream's own (truncated) message.
+
+    Same shape as every other gateway failure (pool unavailable, recalled, caller deadline), so
+    callers that already handle those handle this: cortex-exec's ``gateway_error_step_failure``
+    fails the step by name (it only does so when content is empty), main.py releases the pool
+    lease as ``upstream_error``, stage 6.2 telemetry counts the class. The old shape -- text
+    ``[Error: llamacpp failed: ...]`` and ``raw={}`` -- passed cortex-exec as a successful step:
+    2026-10-02..06 the gpu2 worker 500'd 44/44 agent calls ("No user query found in messages")
+    and callers recorded success with blank/error-text answers.
+    """
+    if error is None:
+        error = upstream_error_class(int(status or 0))
+    if reason is None:
+        reason = f"http_{status}" if status and status >= 400 else "error_body"
+    logger.error(
+        "[LLM-GW] upstream_failed backend=%s error=%s reason=%s status=%s route=%s served_by=%s url=%s corr=%s "
+        "message=%r",
+        backend_name, error, reason, status, route, served_by, url, trace_id, message,
+    )
+    return {
+        "text": "",
+        "spark_meta": spark_meta,
+        "raw": {
+            "error": error,
+            "details": {
+                "reason": reason,
+                "status_code": status,
+                "message": message,
+                "backend": backend_name,
+                "route": route,
+                "served_by": served_by,
+                "url": url,
+            },
+        },
+    }
+
+
+def _upstream_exception_result(
+    exc: BaseException,
+    *,
+    backend_name: str,
+    url: str,
+    route: Optional[str],
+    served_by: Optional[str],
+    spark_meta: Dict[str, Any],
+    trace_id: Optional[str],
+) -> Dict[str, Any]:
+    """The request never got a usable answer (timeout, refused connection, broken transport,
+    unparseable body): the same failure reply, classed the way telemetry already classed the old
+    text. Anything else raised inside the call is the gateway's own bug, not the worker's:
+    ``gateway_exception`` (unattributed in telemetry), still a failure to the caller and still
+    an ``upstream_error`` lease release (the slot's call did fail)."""
+    if isinstance(exc, httpx.TimeoutException):
+        error = "upstream_timeout"
+    elif isinstance(exc, httpx.ConnectError):
+        error = "upstream_connect"
+    elif isinstance(exc, (httpx.HTTPError, ValueError)):
+        # ValueError covers json.JSONDecodeError on a non-JSON 2xx body.
+        error = "upstream_error"
+    else:
+        error = "gateway_exception"
+    message = " ".join(str(exc).split())[:UPSTREAM_ERROR_MESSAGE_MAX_CHARS] or type(exc).__name__
+    return _upstream_failure_result(
+        backend_name=backend_name, url=url, status=None, message=message, route=route,
+        served_by=served_by, spark_meta=spark_meta, trace_id=trace_id,
+        error=error, reason=type(exc).__name__,
+    )
+
+
+def _upstream_http_failure(
+    response: Any,
+    *,
+    backend_name: str,
+    url: str,
+    route: Optional[str],
+    served_by: Optional[str],
+    spark_meta: Dict[str, Any],
+    trace_id: Optional[str],
+) -> Optional[Dict[str, Any]]:
+    """None for a 2xx/3xx; otherwise the typed failure for a non-2xx upstream reply."""
+    status = int(getattr(response, "status_code", 0) or 0)
+    if status < 400:
+        return None
+    return _upstream_failure_result(
+        backend_name=backend_name, url=url, status=status, message=_upstream_error_message(response),
+        route=route, served_by=served_by, spark_meta=spark_meta, trace_id=trace_id,
+    )
+
+
+def _error_body_message(data: Any) -> Optional[str]:
+    """A 2xx body that is an error report rather than a completion (``{"error": ...}`` with no
+    ``choices``/``content``/``message``) -> its message; None for anything else."""
+    if not isinstance(data, dict) or not data.get("error"):
+        return None
+    if data.get("choices") or data.get("content") or data.get("message"):
+        return None
+    err = data.get("error")
+    message = err.get("message") if isinstance(err, dict) else err
+    return " ".join(str(message or err).split())[:UPSTREAM_ERROR_MESSAGE_MAX_CHARS]
+
+
 def _timeout_summary(read_sec: Optional[float] = None) -> str:
     r = read_sec if read_sec is not None else float(getattr(settings, "read_timeout_sec", 60.0) or 60.0)
     return (
@@ -731,13 +884,12 @@ def _execute_ollama_chat(
     try:
         with _common_http_client(body) as client:
             r = client.post(url, json=payload)
-            if r.status_code == 404:
-                return {
-                    "text": f"[Error: ollama 404 Not Found at {url}]",
-                    "spark_meta": spark_meta,
-                    "raw": {},
-                }
-            r.raise_for_status()
+            failed = _upstream_http_failure(
+                r, backend_name="ollama", url=url, route=route, served_by=served_by,
+                spark_meta=spark_meta, trace_id=body.trace_id,
+            )
+            if failed is not None:
+                return failed
             raw_data = r.json()
             text = _extract_text_from_ollama_response(raw_data)
 
@@ -750,7 +902,7 @@ def _execute_ollama_chat(
                 "spark_vector": None,
                 "raw": raw_data,
             }
-    except httpx.TimeoutException:
+    except httpx.TimeoutException as e:
         logger.error(
             "[LLM-GW] ollama TIMEOUT route=%s served_by=%s url=%s corr=%s timeouts=%s",
             route,
@@ -759,18 +911,12 @@ def _execute_ollama_chat(
             body.trace_id,
             _timeout_summary(_resolve_http_read_timeout_sec(body)),
         )
-        return {
-            "text": "[Error: ollama timed out after waiting]",
-            "spark_meta": spark_meta,
-            "raw": {},
-        }
+        return _upstream_exception_result(e, backend_name="ollama", url=url, route=route, served_by=served_by,
+                                          spark_meta=spark_meta, trace_id=body.trace_id)
     except Exception as e:
         logger.error(f"[LLM-GW] ollama error: {e}", exc_info=True)
-        return {
-            "text": f"[Error: ollama failed: {str(e)}]",
-            "spark_meta": spark_meta,
-            "raw": {},
-        }
+        return _upstream_exception_result(e, backend_name="ollama", url=url, route=route, served_by=served_by,
+                                          spark_meta=spark_meta, trace_id=body.trace_id)
 
 
 def _should_use_native_llamacpp_completion(body: ChatBody, backend: str) -> bool:
@@ -837,6 +983,7 @@ def _execute_llamacpp_native_completion(
         "stop": opts.get("stop"),
     }
     completion_payload = {k: v for k, v in completion_payload.items() if v is not None}
+    in_flight_url = apply_url  # which endpoint a transport failure is reported against
 
     logger.info(
         "[LLM-GW] %s native completion corr=%s route=%s served_by=%s n_probs=%s n_predict=%s",
@@ -851,37 +998,43 @@ def _execute_llamacpp_native_completion(
     try:
         with _common_http_client(body) as client:
             apply_resp = client.post(apply_url, json=apply_payload)
-            if apply_resp.status_code == 404:
-                return {
-                    "text": f"[Error: {backend_name} /apply-template 404 at {apply_url}]",
-                    "spark_meta": spark_meta,
-                    "raw": {},
-                }
-            apply_resp.raise_for_status()
+            failed = _upstream_http_failure(
+                apply_resp, backend_name=backend_name, url=apply_url, route=route, served_by=served_by,
+                spark_meta=spark_meta, trace_id=body.trace_id,
+            )
+            if failed is not None:
+                return failed
             apply_data = apply_resp.json()
             prompt = apply_data.get("prompt") if isinstance(apply_data, dict) else None
             if not isinstance(prompt, str) or not prompt.strip():
-                return {
-                    "text": f"[Error: {backend_name} /apply-template returned empty prompt]",
-                    "spark_meta": spark_meta,
-                    "raw": apply_data if isinstance(apply_data, dict) else {},
-                }
+                return _upstream_failure_result(
+                    backend_name=backend_name, url=apply_url, status=apply_resp.status_code,
+                    message=_error_body_message(apply_data) or "/apply-template returned an empty prompt",
+                    route=route, served_by=served_by, spark_meta=spark_meta, trace_id=body.trace_id,
+                    error="upstream_error", reason="empty_prompt",
+                )
 
             completion_payload["prompt"] = prompt
+            in_flight_url = completion_url
             r = client.post(completion_url, json=completion_payload)
             overflow = _context_overflow_result(r, route=route, served_by=served_by, spark_meta=spark_meta)
             if overflow is not None:
                 return overflow
-            if r.status_code == 404:
-                return {
-                    "text": f"[Error: {backend_name} /completion 404 at {completion_url}]",
-                    "spark_meta": spark_meta,
-                    "raw": {},
-                }
-            r.raise_for_status()
+            failed = _upstream_http_failure(
+                r, backend_name=backend_name, url=completion_url, route=route, served_by=served_by,
+                spark_meta=spark_meta, trace_id=body.trace_id,
+            )
+            if failed is not None:
+                return failed
             raw_data = r.json()
             if not isinstance(raw_data, dict):
                 raw_data = {}
+            body_error = _error_body_message(raw_data)
+            if body_error is not None:
+                return _upstream_failure_result(
+                    backend_name=backend_name, url=completion_url, status=r.status_code, message=body_error,
+                    route=route, served_by=served_by, spark_meta=spark_meta, trace_id=body.trace_id,
+                )
 
         text = str(raw_data.get("content") or "")
         llm_uncertainty = None
@@ -913,12 +1066,14 @@ def _execute_llamacpp_native_completion(
             "structured_output_diagnostics": None,
             "llm_uncertainty": llm_uncertainty,
         }
-    except httpx.TimeoutException:
+    except httpx.TimeoutException as e:
         logger.error("[LLM-GW] %s native completion TIMEOUT corr=%s", backend_name, body.trace_id)
-        return {"text": f"[Error: {backend_name} timed out]", "spark_meta": spark_meta, "raw": {}}
+        return _upstream_exception_result(e, backend_name=backend_name, url=in_flight_url, route=route,
+                                          served_by=served_by, spark_meta=spark_meta, trace_id=body.trace_id)
     except Exception as e:
         logger.error(f"[LLM-GW] {backend_name} native completion error: {e}", exc_info=True)
-        return {"text": f"[Error: {backend_name} failed: {str(e)}]", "spark_meta": spark_meta, "raw": {}}
+        return _upstream_exception_result(e, backend_name=backend_name, url=in_flight_url, route=route,
+                                          served_by=served_by, spark_meta=spark_meta, trace_id=body.trace_id)
 
 
 def _execute_openai_chat(
@@ -1059,15 +1214,19 @@ def _execute_openai_chat(
             if overflow is not None:
                 return overflow
 
-            if r.status_code == 404:
-                return {
-                    "text": f"[Error: {backend_name} 404 Not Found at {url}]",
-                    "spark_meta": spark_meta,
-                    "raw": {},
-                }
-
-            r.raise_for_status()
+            failed = _upstream_http_failure(
+                r, backend_name=backend_name, url=url, route=route, served_by=served_by,
+                spark_meta=spark_meta, trace_id=body.trace_id,
+            )
+            if failed is not None:
+                return failed
             raw_data = r.json()
+            body_error = _error_body_message(raw_data)
+            if body_error is not None:
+                return _upstream_failure_result(
+                    backend_name=backend_name, url=url, status=r.status_code, message=body_error,
+                    route=route, served_by=served_by, spark_meta=spark_meta, trace_id=body.trace_id,
+                )
             raw_choices = raw_data.get("choices") if isinstance(raw_data, dict) else []
             raw_first = raw_choices[0] if isinstance(raw_choices, list) and raw_choices else {}
             raw_msg = raw_first.get("message") if isinstance(raw_first, dict) else {}
@@ -1240,7 +1399,7 @@ def _execute_openai_chat(
                 "vision": vision_diag or None,
             }
 
-    except httpx.TimeoutException:
+    except httpx.TimeoutException as e:
         logger.error(
             "[LLM-GW] %s TIMEOUT route=%s served_by=%s url=%s corr=%s timeouts=%s",
             backend_name,
@@ -1250,18 +1409,12 @@ def _execute_openai_chat(
             body.trace_id,
             _timeout_summary(_resolve_http_read_timeout_sec(body)),
         )
-        return {
-            "text": f"[Error: {backend_name} timed out after waiting]",
-            "spark_meta": spark_meta,
-            "raw": {},
-        }
+        return _upstream_exception_result(e, backend_name=backend_name, url=url, route=route,
+                                          served_by=served_by, spark_meta=spark_meta, trace_id=body.trace_id)
     except Exception as e:
         logger.error(f"[LLM-GW] {backend_name} error: {e}", exc_info=True)
-        return {
-            "text": f"[Error: {backend_name} failed: {str(e)}]",
-            "spark_meta": spark_meta,
-            "raw": {},
-        }
+        return _upstream_exception_result(e, backend_name=backend_name, url=url, route=route,
+                                          served_by=served_by, spark_meta=spark_meta, trace_id=body.trace_id)
 
 
 # ─────────────────────────────────────────────

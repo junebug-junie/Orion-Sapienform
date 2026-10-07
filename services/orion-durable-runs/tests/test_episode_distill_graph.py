@@ -200,8 +200,8 @@ def test_stored_prompt_version_is_the_rendered_template_not_the_brief():
         result = await graph(world, saver, d).ainvoke(Command(resume={}), CFG)
         assert result["status"] == "completed"
         kw = d.persisted[0]
-        assert kw["prompt_version"] == "memory_episode_distill.v4"
-        assert result["rendered_prompt_version"] == "memory_episode_distill.v4"
+        assert kw["prompt_version"] == "memory_episode_distill.v5"
+        assert result["rendered_prompt_version"] == "memory_episode_distill.v5"
         # GOOD names no stakes category: under v3 that is escalated and labelled, not left NULL.
         assert [(m.stakes, m.stakes_reason) for m in kw["result"].memories] == [("high", "unjudged")]
 
@@ -211,3 +211,27 @@ def test_stored_prompt_version_is_the_rendered_template_not_the_brief():
 def test_checkpoint_without_a_stamp_was_rendered_from_v2():
     assert rendered_prompt_version({}) == "memory_episode_distill.v2"
     assert rendered_prompt_version({"rendered_prompt_version": "memory_episode_distill.v3"}) == "memory_episode_distill.v3"
+
+
+def test_candidate_referents_reach_validation_so_an_imported_name_is_asked_about():
+    """The load node's candidate keys are the names the validator checks. A statement naming a
+    known place Juniper never said in the episode is kept but escalated (situation-graph spec §7)."""
+    imported = ('{"memories": [{"purpose": "happened", "voice": "juniper_said", "stakes": "low", "stakes_reason": "none",'
+                ' "statement": "Juniper flew from Seattle to Austin and returns Wednesday.",'
+                ' "evidence": [{"turn": "t1", "field": "prompt", "quote": "Headed to Austin"}]}], "questions": []}')
+
+    class WithCandidates(Distiller):
+        async def load(self, brief):
+            self.loads += 1
+            return {"turns": turns_to_state(turns_from_rows(ROWS)), "candidate_referents": ["place:seattle"]}
+
+    async def run():
+        world, saver = World(), InMemorySaver()
+        d = WithCandidates(world, [imported])
+        await asyncio.wait_for(graph(world, saver, d).ainvoke(initial(), CFG), 1)
+        world.grant()
+        await graph(world, saver, d).ainvoke(Command(resume={}), CFG)
+        (m,) = d.persisted[0]["result"].memories
+        assert (m.stakes, m.stakes_reason, m.confirmation_state) == ("high", "ungrounded_name", "pending_confirmation")
+
+    asyncio.run(run())

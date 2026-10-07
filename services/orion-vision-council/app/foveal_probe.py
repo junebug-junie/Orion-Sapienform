@@ -319,6 +319,16 @@ async def run_foveal_probe(
     # shaped reply that helper is built to handle.
     text = extract_chat_result_text(decoded.envelope.payload).strip()
     if not text:
+        # The gateway reports its failures (pool unavailable, worker HTTP 5xx, timeout, ...) as
+        # empty content with raw.error set and the worker's own message in raw.details.message.
+        payload = decoded.envelope.payload if isinstance(decoded.envelope.payload, dict) else {}
+        raw = payload.get("raw") if isinstance(payload.get("raw"), dict) else {}
+        gateway_error = raw.get("error")
+        if isinstance(gateway_error, str) and gateway_error.strip():
+            details = raw.get("details") if isinstance(raw.get("details"), dict) else {}
+            message = details.get("message") or details.get("reason")
+            detail = f"{gateway_error}: {message}" if message else gateway_error
+            raise FovealTaskFailedError(detail[:500], error_code="gateway_error")
         raise FovealTaskFailedError("empty response", error_code="empty_response")
     if text.startswith(GATEWAY_ERROR_PREFIX):
         raise FovealTaskFailedError(text, error_code="gateway_error")

@@ -32,6 +32,7 @@ _ENGINE_URL: str | None = None
 # Matches metacog_trend_reader's bound: this runs inside turn assembly, so a
 # slow database must degrade to "no percept" rather than delay a reply.
 _QUERY_STATEMENT_TIMEOUT_MS = 1500
+_CONNECT_TIMEOUT_SEC = 3
 
 
 def _dsn() -> str:
@@ -52,7 +53,14 @@ def _get_engine():
         _ENGINE = create_engine(
             url,
             pool_pre_ping=True,
-            connect_args={"options": f"-c statement_timeout={_QUERY_STATEMENT_TIMEOUT_MS}"},
+            # connect_timeout (2026-10-07): statement_timeout only bounds a
+            # query once connected. A blackholed host would otherwise hold
+            # every uncached chat turn for the OS TCP timeout (minutes) now
+            # that Hub's chat turns run this read too.
+            connect_args={
+                "options": f"-c statement_timeout={_QUERY_STATEMENT_TIMEOUT_MS}",
+                "connect_timeout": _CONNECT_TIMEOUT_SEC,
+            },
         )
         _ENGINE_URL = url
     return _ENGINE

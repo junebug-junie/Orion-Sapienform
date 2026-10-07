@@ -61,6 +61,63 @@ OVERLOADED_REPLY = {
 }
 
 
+# services/orion-llm-gateway/app/llm_backend.py::_upstream_failure_result -- the shape a worker
+# HTTP 500 now arrives as. Live 2026-10-02..06 the gpu2 worker answered 44/44 agent calls with
+# this 500 and the old reply (text "[Error: llamacpp failed: ...]", raw={}) passed as a success.
+UPSTREAM_500_REPLY = {
+    "text": "",
+    "content": "",
+    "spark_meta": {},
+    "raw": {
+        "error": "upstream_http_5xx",
+        "details": {
+            "reason": "http_500",
+            "status_code": 500,
+            "message": "No user query found in messages.",
+            "backend": "llamacpp",
+            "route": "agent",
+            "served_by": "circe-worker-agent-gpu2",
+            "url": "http://circe:8016/v1/chat/completions",
+        },
+    },
+    "route": "agent",
+    "served_by": "circe-worker-agent-gpu2",
+}
+
+# What that same 500 looked like before the gateway fix: must stay a non-failure here (text
+# wins), which is exactly why the gateway now replies with empty content.
+OLD_UPSTREAM_500_REPLY = {
+    "content": "[Error: llamacpp failed: Server error '500 Internal Server Error' for url "
+               "'http://circe:8016/v1/chat/completions']",
+    "raw": {},
+}
+
+
+def test_upstream_500_reply_is_named_with_the_workers_message() -> None:
+    assert gateway_error_step_failure(UPSTREAM_500_REPLY) == (
+        "upstream_http_5xx:http_500: No user query found in messages."
+    )
+
+
+def test_upstream_message_is_truncated_in_the_step_error() -> None:
+    reply = {"content": "", "raw": {"error": "upstream_http_5xx",
+                                    "details": {"reason": "http_500", "message": "x" * 5000}}}
+    out = gateway_error_step_failure(reply)
+    assert out is not None and len(out) < 300
+
+
+def test_old_error_text_shape_was_not_a_failure() -> None:
+    assert gateway_error_step_failure(OLD_UPSTREAM_500_REPLY) is None
+
+
+def test_agent_step_fails_by_name_on_upstream_500_reply() -> None:
+    result = _run_step(ChatResponsePayload.model_validate(UPSTREAM_500_REPLY))
+
+    assert result.status == "fail"
+    assert result.error == "upstream_http_5xx:http_500: No user query found in messages."
+    assert result.result["error"]["message"] == result.error
+
+
 def test_capacity_rejected_reply_is_named_with_its_reason() -> None:
     assert (
         gateway_error_step_failure(CAPACITY_REJECTED_REPLY)

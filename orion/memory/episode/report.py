@@ -49,7 +49,8 @@ FROM episode_memory m WHERE m.episode_id = $1 ORDER BY m.purpose, m.statement
 EVENTS_SQL = """
 SELECT op, reason, count(*) AS n FROM episode_memory_event
 WHERE episode_id = $1 AND op IN ('rejected_invalid', 'downgraded_voice', 'stakes_raised', 'stakes_reason_missing',
-                                    'stakes_reason_set', 'stakes_uncategorized', 'evidence_dropped')
+                                    'stakes_reason_set', 'stakes_uncategorized', 'evidence_dropped',
+                                    'ungrounded_name', 'validity_dropped')
 GROUP BY op, reason ORDER BY op, reason
 """
 # Closed (not skipped) episodes in the window whose distill run has not finished yet: while any

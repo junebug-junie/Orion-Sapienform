@@ -211,7 +211,6 @@ def reduce_transport_trace_events(
         for k in (
             "catalog_drift_pressure",
             "observer_failure_pressure",
-            "contract_pressure",
             "reliability_pressure",
         )
     }

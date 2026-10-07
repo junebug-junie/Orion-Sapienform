@@ -764,14 +764,16 @@ class DurableRunner:
         status: str,
         detail: dict[str, Any] | None = None,
         resumed_from: str | None = None,
+        terminal: bool = False,
     ) -> None:
+        """``terminal``: the graph reached END and reported its own failure -- nothing to resume
+        (a ``failed`` without it means a node raised and the thread resumes at ``node``)."""
         run_id = state["run_id"]
         nodes = spec.nodes
         idx = nodes.index(node) if node in nodes else -1
         next_node = nodes[idx + 1] if 0 <= idx < len(nodes) - 1 else None
         if status in ("completed", "failed", "abandoned"):
-            # A failure AT the last node (a graph's finish reporting failure) has nothing to resume.
-            next_node = None if status != "failed" or idx == len(nodes) - 1 else node
+            next_node = None if status != "failed" or terminal else node
         event = DurableRunStateV1(
             run_id=run_id,
             workflow=spec.workflow,
@@ -887,7 +889,8 @@ class DurableRunner:
                         # is reported failed; every other graph's finish returns "completed".
                         final = "failed" if last_state.get("status") == "failed" else "completed"
                         await self._emit_state(
-                            last_state, spec=spec, node=node, status=final, detail=spec.finish_detail(last_state)
+                            last_state, spec=spec, node=node, status=final, detail=spec.finish_detail(last_state),
+                            terminal=True,
                         )
                     else:
                         status = "resumed" if run_id in self._resumed_from else "running"

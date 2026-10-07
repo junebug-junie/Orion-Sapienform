@@ -471,3 +471,25 @@ async def test_run_foveal_probe_runs_blocking_io_off_the_event_loop(tmp_path) ->
         await run_foveal_probe(bus, settings)
 
     assert len(calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_run_foveal_probe_names_a_typed_gateway_failure(tmp_path) -> None:
+    """Since 2026-10-07 a worker HTTP 5xx/timeout reaches callers as empty content with raw.error
+    and the worker's message in raw.details.message -- a gateway_error, not an empty response."""
+    frame_bytes = b"frame"
+    real_sha = hashlib.sha256(frame_bytes).hexdigest()
+    (tmp_path / "frame.jpg").write_bytes(frame_bytes)
+    settings = _settings(FOVEAL_FRAMES_DIR=str(tmp_path))
+    reply = {"content": "", "raw": {"error": "upstream_http_5xx",
+                                    "details": {"reason": "http_500", "message": "No user query found in messages."}}}
+    bus = _FakeBus(reply_payload=reply)
+
+    with patch(
+        "urllib.request.urlopen",
+        return_value=_FakeResponse(json.dumps({"sha256": real_sha}).encode()),
+    ):
+        with pytest.raises(FovealTaskFailedError) as excinfo:
+            await run_foveal_probe(bus, settings)
+    assert excinfo.value.error_code == "gateway_error"
+    assert excinfo.value.detail == "upstream_http_5xx: No user query found in messages."

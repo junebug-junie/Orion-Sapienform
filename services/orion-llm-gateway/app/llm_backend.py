@@ -218,14 +218,20 @@ def _upstream_exception_result(
     spark_meta: Dict[str, Any],
     trace_id: Optional[str],
 ) -> Dict[str, Any]:
-    """The request never got an answer (timeout, refused connection, unreadable reply): the same
-    failure reply, classed the way telemetry already classed the old text."""
+    """The request never got a usable answer (timeout, refused connection, broken transport,
+    unparseable body): the same failure reply, classed the way telemetry already classed the old
+    text. Anything else raised inside the call is the gateway's own bug, not the worker's:
+    ``gateway_exception`` (unattributed in telemetry), still a failure to the caller and still
+    an ``upstream_error`` lease release (the slot's call did fail)."""
     if isinstance(exc, httpx.TimeoutException):
         error = "upstream_timeout"
     elif isinstance(exc, httpx.ConnectError):
         error = "upstream_connect"
-    else:
+    elif isinstance(exc, (httpx.HTTPError, ValueError)):
+        # ValueError covers json.JSONDecodeError on a non-JSON 2xx body.
         error = "upstream_error"
+    else:
+        error = "gateway_exception"
     message = " ".join(str(exc).split())[:UPSTREAM_ERROR_MESSAGE_MAX_CHARS] or type(exc).__name__
     return _upstream_failure_result(
         backend_name=backend_name, url=url, status=None, message=message, route=route,
@@ -977,6 +983,7 @@ def _execute_llamacpp_native_completion(
         "stop": opts.get("stop"),
     }
     completion_payload = {k: v for k, v in completion_payload.items() if v is not None}
+    in_flight_url = apply_url  # which endpoint a transport failure is reported against
 
     logger.info(
         "[LLM-GW] %s native completion corr=%s route=%s served_by=%s n_probs=%s n_predict=%s",
@@ -1008,6 +1015,7 @@ def _execute_llamacpp_native_completion(
                 )
 
             completion_payload["prompt"] = prompt
+            in_flight_url = completion_url
             r = client.post(completion_url, json=completion_payload)
             overflow = _context_overflow_result(r, route=route, served_by=served_by, spark_meta=spark_meta)
             if overflow is not None:
@@ -1060,11 +1068,11 @@ def _execute_llamacpp_native_completion(
         }
     except httpx.TimeoutException as e:
         logger.error("[LLM-GW] %s native completion TIMEOUT corr=%s", backend_name, body.trace_id)
-        return _upstream_exception_result(e, backend_name=backend_name, url=completion_url, route=route,
+        return _upstream_exception_result(e, backend_name=backend_name, url=in_flight_url, route=route,
                                           served_by=served_by, spark_meta=spark_meta, trace_id=body.trace_id)
     except Exception as e:
         logger.error(f"[LLM-GW] {backend_name} native completion error: {e}", exc_info=True)
-        return _upstream_exception_result(e, backend_name=backend_name, url=completion_url, route=route,
+        return _upstream_exception_result(e, backend_name=backend_name, url=in_flight_url, route=route,
                                           served_by=served_by, spark_meta=spark_meta, trace_id=body.trace_id)
 
 

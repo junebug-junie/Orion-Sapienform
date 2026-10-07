@@ -195,29 +195,38 @@ def test_one_empty_answer_keeps_its_error_in_the_turn_detail():
 
 def test_runner_reports_a_no_answer_run_as_failed_not_completed(monkeypatch):
     """The plain (non-admitted) runner emits the terminal state from the graph's own status, and a
-    failure at the last node is not resumable (next_node None)."""
+    run that reached END failed has nothing to resume (next_node None) -- asserted on the real
+    published DurableRunStateV1, not a stubbed _emit_state."""
     monkeypatch.setenv("POSTGRES_URI", "postgresql://unused/unused")
     monkeypatch.setenv("ORION_BUS_ENABLED", "false")
     import app.settings as settings_mod
     from app.runner import SELF_SENSE_EVAL_WORKFLOW, DurableRunner, WorkflowSpec
-    from orion.schemas.durable_run import SELF_SENSE_EVAL_NODES
+    from orion.schemas.durable_run import SELF_SENSE_EVAL_NODES, DurableRunStateV1
 
     settings_mod._settings = None
     saver = InMemorySaver()
-    runner = DurableRunner(settings_mod.get_settings(), bus=None, checkpointer=saver)
+    runner = DurableRunner(settings_mod.get_settings(), bus=object(), checkpointer=saver)
     world = _AllFailWorld()
     spec = WorkflowSpec(workflow=SELF_SENSE_EVAL_WORKFLOW, graph=build_self_sense_graph(world.deps(), saver),
                         nodes=list(SELF_SENSE_EVAL_NODES), finish_detail=finish_detail)
-    emitted: list[dict] = []
+    events: list[DurableRunStateV1] = []
 
-    async def record(state, *, spec, node, status, detail=None, resumed_from=None):
-        emitted.append({"node": node, "status": status, "detail": dict(detail or {})})
+    async def publish(channel, kind, payload, corr=None):
+        if isinstance(payload, DurableRunStateV1):
+            events.append(payload)
+        return True
 
-    monkeypatch.setattr(runner, "_emit_state", record)
+    monkeypatch.setattr(runner, "_publish", publish)
     initial = {"run_id": "sse-run-r", "correlation_id": "corr-r", "workflow": "self_sense_eval",
                "brief": _brief(), "attempt": 0}
-    asyncio.run(runner._drive(spec, "sse-run-r", initial))
-    assert emitted[-1]["node"] == SELF_SENSE_EVAL_NODES[-1]
-    assert emitted[-1]["status"] == "failed"
-    assert emitted[-1]["detail"]["error"].startswith("self_sense_no_answers:")
-    settings_mod._settings = None
+    try:
+        asyncio.run(runner._drive(spec, "sse-run-r", initial))
+    finally:
+        settings_mod._settings = None
+    last = events[-1]
+    assert last.node == SELF_SENSE_EVAL_NODES[-1]
+    assert last.status == "failed"
+    assert last.next_node is None
+    assert last.detail["error"].startswith("self_sense_no_answers:")
+    # Intermediate nodes are still ordinary running transitions.
+    assert all(e.status == "running" for e in events[:-1])

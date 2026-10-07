@@ -235,6 +235,12 @@ def test_admitted_run_with_every_answer_empty_fails_with_the_turns_error():
             self.turn_calls.append(req)
             return CuriosityTurnResultV1(run_id=req.run_id, correlation_id=req.correlation_id, ok=False, error=err)
 
+        async def release(self, state, reason, keep_requeued=False):
+            # Mirrors admission_runtime.release: nothing held -> nothing to release.
+            if not state.get("hold") and not state.get("lease"):
+                return {"lease": None, "hold": None}
+            return await super().release(state, reason, keep_requeued)
+
     async def scenario():
         world, saver = FailWorld(), InMemorySaver()
         world.grant()
@@ -243,8 +249,8 @@ def test_admitted_run_with_every_answer_empty_fails_with_the_turns_error():
         assert result["status"] == "failed"
         assert result["last_error"] == f"self_sense_no_answers: {err}"
         assert world.published == []
-        assert world.releases[0] == "attempt_failed"
-        assert "completed" not in world.releases
+        # One release: the failed node's second release is a no-op once the hold is gone.
+        assert world.releases == ["attempt_failed"]
         assert (await world.graph(saver).aget_state(CFG)).next == ()
 
     asyncio.run(scenario())

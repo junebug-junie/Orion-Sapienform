@@ -242,3 +242,64 @@ def test_apply_template_empty_prompt_is_a_failure(monkeypatch):
     assert result["text"] == ""
     assert result["raw"]["error"] == "upstream_error"
     assert result["raw"]["details"]["reason"] == "empty_prompt"
+
+
+# ── review findings, 2026-10-07 ─────────────────────────────────────────────────────────────
+
+OVERFLOW_400 = {"error": {"code": 400, "message": "the request exceeds the available context size",
+                          "type": "exceed_context_size_error"}}
+
+
+def test_context_overflow_still_wins_over_the_non_2xx_check_on_chat(monkeypatch):
+    """Ordering pin: an overflow 400 must stay context_overflow (main.py re-leases on it), never
+    become upstream_http_4xx."""
+    from app.ctx_overflow import CONTEXT_OVERFLOW_ERROR
+
+    _transport(monkeypatch, lambda req: httpx.Response(400, json=OVERFLOW_400))
+    result = _execute_openai_chat(_body(), "m", "http://w:8016", "llamacpp", route="agent", served_by="w")
+    assert result["raw"]["error"] == CONTEXT_OVERFLOW_ERROR
+
+
+def test_context_overflow_still_wins_over_the_non_2xx_check_on_native(monkeypatch):
+    from app.ctx_overflow import CONTEXT_OVERFLOW_ERROR
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        if req.url.path == "/apply-template":
+            return httpx.Response(200, json={"prompt": "<|user|>hi"})
+        return httpx.Response(400, json=OVERFLOW_400)
+
+    _transport(monkeypatch, handler)
+    result = _execute_llamacpp_native_completion(_body(), "m", "http://w:8016", "llamacpp",
+                                                 route="agent", served_by="w")
+    assert result["raw"]["error"] == CONTEXT_OVERFLOW_ERROR
+
+
+def test_a_gateway_bug_after_a_good_reply_is_not_blamed_on_the_worker(monkeypatch):
+    ok = {"choices": [{"message": {"content": "hello"}}]}
+    _transport(monkeypatch, lambda req: httpx.Response(200, json=ok))
+
+    def boom(*a, **k):
+        raise KeyError("post-processing bug")
+
+    monkeypatch.setattr("app.llm_backend._split_think_blocks", boom)
+    result = _execute_openai_chat(_body(), "m", "http://w:8016", "llamacpp", route="agent", served_by="w")
+    assert result["text"] == ""
+    assert result["raw"]["error"] == "gateway_exception"
+    assert grammar_emit.classify_outcome(result) == "gateway_exception"
+
+
+def test_a_non_json_2xx_body_is_an_upstream_error(monkeypatch):
+    _transport(monkeypatch, lambda req: httpx.Response(200, text="<html>proxy page</html>"))
+    result = _execute_openai_chat(_body(), "m", "http://w:8016", "llamacpp", route="agent", served_by="w")
+    assert result["raw"]["error"] == "upstream_error"
+
+
+def test_native_apply_template_transport_failure_names_the_apply_url(monkeypatch):
+    def handler(req: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("refused")
+
+    _transport(monkeypatch, handler)
+    result = _execute_llamacpp_native_completion(_body(), "m", "http://w:8016", "llamacpp",
+                                                 route="agent", served_by="w")
+    assert result["raw"]["error"] == "upstream_connect"
+    assert result["raw"]["details"]["url"].endswith("/apply-template")

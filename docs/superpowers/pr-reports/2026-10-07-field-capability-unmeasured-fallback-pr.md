@@ -256,6 +256,6 @@ select count(*) from substrate_field_state where generated_at > '<deploy_ts>'
 
 ## PR link
 
-PR_LINK
+https://github.com/junebug-junie/Orion-Sapienform/pull/2534
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

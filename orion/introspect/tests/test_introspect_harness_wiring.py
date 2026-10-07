@@ -134,3 +134,20 @@ def test_brief_tells_orion_to_search_by_meaning():
     text = " ".join(introspect_brief_lines(binding))
     assert "query=" in text and "similarity" in text
     assert "answer is unknown" in text
+
+
+def test_brief_covers_dreams_as_experiences_not_facts():
+    from orion.introspect.brief import introspect_brief_lines
+    from orion.schemas.introspect import IntrospectToolBindingV1
+
+    binding = IntrospectToolBindingV1(
+        invocation_context="unified_chat", parent_run_id="r", parent_trace_id="t", memory_allowed=False,
+    )
+    [dreams_line] = [line for line in introspect_brief_lines(binding) if line.startswith("dreams ")]
+    assert "not facts" in dreams_line
+    assert "items=[] means no dream matched" in dreams_line
+    assert "a tool error means the answer is unknown" in dreams_line
+    assert "never report it as not having dreamed" in dreams_line
+    assert "'pull requests', not 'a dream about pull requests'" in dreams_line
+    assert "kind=narrative returns the nightly dream narratives" in dreams_line
+    assert "kind=hypothesis the offered sleep-cycle hypotheses" in dreams_line

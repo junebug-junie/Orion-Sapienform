@@ -1394,7 +1394,7 @@ channels:
     producer_services: ["orion-hub", "orion-embodiment"]
     # orion-vector-writer removed 2026-08-14: same stale-consumer correction
     # as orion:chat:history:log above.
-    consumer_services: ["orion-sql-writer", "orion-vector-host", "orion-spark-concept-induction"]
+    consumer_services: ["orion-sql-writer", "orion-vector-host", "orion-spark-concept-induction", "orion-durable-runs"]
     stability: "experimental"
     since: "2026-01-10"
 
@@ -1954,6 +1954,18 @@ channels:
     stability: "experimental"
     since: "2026-10-02"
 
+  # Situation graph step 2 (spec 2026-10-07-situation-graph-design.md, SHADOW): Orion's running
+  # situation, published by the situation.update graph in orion-durable-runs when its revision
+  # changes. Also written to Redis orion:situation:latest. No consumer until step 3 (chat reads it).
+  - name: "orion:situation:state"
+    kind: "event"
+    schema_id: "SituationStateV1"
+    message_kind: "situation.state.v1"
+    producer_services: ["orion-durable-runs"]
+    consumer_services: []
+    stability: "experimental"
+    since: "2026-10-07"
+
   - name: "orion:chat:history:spark_meta:patch"
     kind: "event"
     schema_id: "ChatHistorySparkMetaPatchV1"
@@ -1968,7 +1980,7 @@ channels:
   - name: "orion:vector:semantic:upsert"
     kind: "event"
     schema_id: "VectorUpsertV1"
-    producer_services: ["orion-vector-host", "orion-hub"]
+    producer_services: ["orion-vector-host", "orion-hub", "orion-dream"]
     consumer_services: ["orion-vector-writer"]
     stability: "experimental"
     since: "2026-01-16"
@@ -3007,6 +3019,11 @@ channels:
       - orion-cortex-orch
       - orion-gpu-pool
       - orion-harness-governor
+      # settled H1 verdict transitions + one summary per hour (trace prefix
+      # heartbeat.h1:), gated by HEARTBEAT_VERDICT_ATOMS_ENABLED --
+      # services/orion-heartbeat/app/substrate/verdict_atoms.py. Ledger-only:
+      # no substrate reducer or field channel reads these.
+      - orion-heartbeat
       - orion-hub
       # per-window inference outcome traces (llm_gateway.inference:), gated by
       # LLM_GATEWAY_GRAMMAR_ENABLED -- services/orion-llm-gateway/app/grammar_emit.py
@@ -3031,8 +3048,8 @@ channels:
     # holographic-lattice-design.md) added as a read-only research consumer:
     # filters to atom_emitted events from five organs (orion-hub/orion-
     # biometrics/orion-cortex-exec/orion-bus/orion-cortex-orch) and feeds a
-    # small tensor-network substrate. Publishes nothing back to this or any
-    # other channel.
+    # small tensor-network substrate. Skips its own heartbeat.h1: atoms
+    # (source_service orion-heartbeat) so it never absorbs its own output.
     consumer_services: ["orion-sql-writer", "orion-equilibrium-service", "orion-heartbeat"]
     stability: "experimental"
     since: "2026-05-23"
@@ -3275,7 +3292,7 @@ channels:
     schema_id: "DurableRunStateV1"
     message_kind: "durable.run.state.v1"
     producer_services: ["orion-durable-runs"]
-    consumer_services: ["orion-sql-writer", "orion-hub", "orion-actions"]
+    consumer_services: ["orion-sql-writer", "orion-hub", "orion-actions", "orion-durable-runs"]
     stability: "experimental"
     since: "2026-09-06"
     description: "One row per node transition of a durable run -> substrate_durable_run_state (sql-writer). Hub consumes `completed` to run outreach, which only Hub can deliver. orion-actions consumes the terminal row of a `compactor.digest` run to settle the scheduled compactor run that submitted it."
@@ -3744,6 +3761,27 @@ channels:
     stability: "experimental"
     since: "2026-09-10"
     description: "Durable queue receipt, durable status, or an IntrospectResultV1 for reading_result. A timeout means acceptance (or the introspection answer) is unknown."
+
+  - name: "orion:introspect:dream:request"
+    kind: "request"
+    schema_id: "IntrospectRequestV1"
+    message_kind: "introspect.tool.request.v1"
+    producer_services: ["orion-harness-governor"]
+    consumer_services: ["orion-dream"]
+    single_consumer: true
+    stability: "experimental"
+    since: "2026-09-28"
+    description: "orion-introspect dreams tool RPC. Read-only: recent, one by dream_id, or query by meaning over narrative dreams and already-offered sleep-cycle hypotheses (both arms, arm never exposed). Reply on orion:introspect:result:<correlation_id>."
+
+  - name: "orion:introspect:result:*"
+    kind: "result"
+    schema_id: "IntrospectResultV1"
+    message_kind: "introspect.tool.result.v1"
+    producer_services: ["orion-dream"]
+    consumer_services: ["orion-harness-governor"]
+    stability: "experimental"
+    since: "2026-09-28"
+    description: "Owning-service answer to an introspect request. ok=true with items=[] means nothing matched; ok=false or a timeout means the answer is unknown."
 
   - name: "orion:reading:requested"
     kind: "event"

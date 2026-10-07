@@ -1,14 +1,13 @@
 {
   "_comment": "Definition lock for scripts/check_definition_drift.py. Generated, never hand-edited. Regenerate with --update; the resulting diff IS the definition-change alert. Unlike the *_baseline.json ratchets this tracks current truth in both directions -- a definition change is an event, not a defect.",
-  "metric_count": 693,
+  "metric_count": 696,
   "_last_change": {
-    "change_count": 4,
-    "high_severity_count": 4,
+    "change_count": 3,
+    "high_severity_count": 2,
     "changes": [
-      "high   semantics_changed metric://field_channel/orion-field-digester/available_capacity (meaning: \u2026s right now. -> \u2026s right now. Derived as 1 - pressure unless an edge writes \u2026)",
-      "high   semantics_changed metric://field_channel/orion-field-digester/confidence (meaning: \u2026e/available. -> \u2026e/available. Derived as 1 - 0.5 * pressure unless an edge w\u2026)",
-      "high   semantics_changed metric://field_channel/orion-field-digester/pressure (meaning: \u2026rt, vision). -> \u2026rt, vision). Where an edge feeds it: absent (key and proven\u2026)",
-      "high   semantics_changed metric://field_channel/orion-field-digester/reliability_pressure (meaning: \u2026 failures, or observer failures). -> \u2026 failures, observer failures, RPC timeouts, storage write f\u2026)"
+      "high   routing_changed metric://bus_channel/orion-durable-runs/orion:durable:run:state (declared_consumers: \u2026ns', 'orion-hub', 'orion\u2026 -> \u2026ns', 'orion-durable-runs', 'orion-hub', 'orion\u2026)",
+      "high   routing_changed metric://bus_channel/orion-embodiment/orion:chat:history:turn (declared_consumers: ['orion-spark-concep\u2026 -> ['orion-durable-runs', 'orion-spark-concep\u2026)",
+      "medium added metric://bus_channel/orion-durable-runs/orion:situation:state"
     ]
   },
   "definitions": {
@@ -520,6 +519,7 @@
         "orion-cortex-orch",
         "orion-gpu-pool",
         "orion-harness-governor",
+        "orion-heartbeat",
         "orion-hub",
         "orion-llm-gateway",
         "orion-sql-writer",
@@ -1250,6 +1250,30 @@
       "notes": "kind=event stability=stable",
       "registry_source": "orion/bus/channels.yaml"
     },
+    "metric://bus_channel/orion-dream/orion:introspect:result:*": {
+      "schema_id": "IntrospectResultV1",
+      "all_producers": [
+        "orion-dream"
+      ],
+      "declared_consumers": [
+        "orion-harness-governor"
+      ],
+      "notes": "kind=result stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-dream/orion:vector:semantic:upsert": {
+      "schema_id": "VectorUpsertV1",
+      "all_producers": [
+        "orion-dream",
+        "orion-hub",
+        "orion-vector-host"
+      ],
+      "declared_consumers": [
+        "orion-vector-writer"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
     "metric://bus_channel/orion-durable-runs/orion:curiosity:turn:request": {
       "schema_id": "CuriosityTurnRequestV1",
       "all_producers": [
@@ -1290,6 +1314,7 @@
       ],
       "declared_consumers": [
         "orion-actions",
+        "orion-durable-runs",
         "orion-hub",
         "orion-sql-writer"
       ],
@@ -1345,6 +1370,14 @@
       "notes": "kind=request stability=experimental",
       "registry_source": "orion/bus/channels.yaml"
     },
+    "metric://bus_channel/orion-durable-runs/orion:situation:state": {
+      "schema_id": "SituationStateV1",
+      "all_producers": [
+        "orion-durable-runs"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
     "metric://bus_channel/orion-embodiment/orion:chat:history:turn": {
       "schema_id": "ChatHistoryTurnV1",
       "all_producers": [
@@ -1352,6 +1385,7 @@
         "orion-hub"
       ],
       "declared_consumers": [
+        "orion-durable-runs",
         "orion-spark-concept-induction",
         "orion-sql-writer",
         "orion-vector-host"
@@ -1839,6 +1873,17 @@
         "orion-substrate-runtime"
       ],
       "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-harness-governor/orion:introspect:dream:request": {
+      "schema_id": "IntrospectRequestV1",
+      "all_producers": [
+        "orion-harness-governor"
+      ],
+      "declared_consumers": [
+        "orion-dream"
+      ],
+      "notes": "kind=request stability=experimental",
       "registry_source": "orion/bus/channels.yaml"
     },
     "metric://bus_channel/orion-harness-governor/orion:reading:tool:request": {
@@ -2332,18 +2377,6 @@
         "orion-whisper-tts"
       ],
       "notes": "kind=request stability=experimental",
-      "registry_source": "orion/bus/channels.yaml"
-    },
-    "metric://bus_channel/orion-hub/orion:vector:semantic:upsert": {
-      "schema_id": "VectorUpsertV1",
-      "all_producers": [
-        "orion-hub",
-        "orion-vector-host"
-      ],
-      "declared_consumers": [
-        "orion-vector-writer"
-      ],
-      "notes": "kind=event stability=experimental",
       "registry_source": "orion/bus/channels.yaml"
     },
     "metric://bus_channel/orion-juniper-affective-state/orion:affectgpt:assessment": {

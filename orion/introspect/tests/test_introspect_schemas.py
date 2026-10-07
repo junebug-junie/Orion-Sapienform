@@ -203,3 +203,83 @@ def test_query_length_is_checked_after_stripping_on_both_contracts():
     assert wire.query == "gpus"
     with pytest.raises(ValidationError):
         ReadingToolRequestV1(operation="reading_result", query="   ")
+
+
+from orion.introspect.transport import DREAM_REQUEST_CHANNEL, REQUEST_KIND, RESULT_KIND, RESULT_PREFIX  # noqa: E402
+from orion.schemas.introspect import (  # noqa: E402
+    FULL_TEXT_CAP,
+    DreamsArguments,
+    IntrospectRequestV1,
+    IntrospectResultV1,
+    IntrospectToolBindingV1,
+)
+
+_BINDING = IntrospectToolBindingV1(
+    invocation_context="unified_chat", parent_run_id="r", parent_trace_id="t", memory_allowed=True,
+)
+
+
+def test_transport_constants():
+    assert DREAM_REQUEST_CHANNEL == "orion:introspect:dream:request"
+    assert RESULT_PREFIX == "orion:introspect:result:"
+    assert (REQUEST_KIND, RESULT_KIND) == ("introspect.tool.request.v1", "introspect.tool.result.v1")
+
+
+def test_dreams_arguments_defaults_and_modes():
+    assert DreamsArguments().limit == 5
+    assert DreamsArguments(query="  vision  ").query == "vision"
+    assert DreamsArguments(dream_id="dream:19").dream_id == "dream:19"
+    assert DreamsArguments(dream_id="dh-33f002b0db4c").dream_id == "dh-33f002b0db4c"
+    assert DreamsArguments(kind="hypothesis", since=NOW).kind == "hypothesis"
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        {"query": "   "},
+        {"query": "x" * 501},
+        {"dream_id": "19"},
+        {"dream_id": "dh-XYZ"},
+        {"dream_id": "dream:19", "query": "vision"},
+        {"dream_id": "dream:19", "kind": "narrative"},
+        {"dream_id": "dream:19", "since": NOW},
+        {"kind": "control"},
+        {"limit": 6},
+        {"since": NOW.replace(tzinfo=None)},
+        {"arm": "dream"},
+    ],
+)
+def test_dreams_arguments_reject_bad_input(fields):
+    with pytest.raises(ValidationError):
+        DreamsArguments(**fields)
+
+
+def test_request_carries_only_bus_operations():
+    req = IntrospectRequestV1(operation="dreams", binding=_BINDING, args={"limit": 2})
+    assert req.model_dump(mode="json")["operation"] == "dreams"
+    with pytest.raises(ValidationError):
+        IntrospectRequestV1(operation="reading_result", binding=_BINDING, args={})
+
+
+def test_result_accepts_dreams_operation():
+    result = IntrospectResultV1(ok=True, operation="dreams", as_of=NOW, total_available=0)
+    assert result.operation == "dreams"
+    assert FULL_TEXT_CAP == 4000
+
+
+def test_registry_and_channels_know_the_dream_contract():
+    import yaml
+    from pathlib import Path
+
+    from orion.schemas.registry import _REGISTRY
+
+    assert {"IntrospectRequestV1", "DreamsArguments", "IntrospectResultV1"} <= set(_REGISTRY)
+    channels = yaml.safe_load((Path(__file__).resolve().parents[3] / "orion/bus/channels.yaml").read_text())["channels"]
+    by_name = {c["name"]: c for c in channels}
+    req = by_name["orion:introspect:dream:request"]
+    assert (req["schema_id"], req["message_kind"], req["consumer_services"]) == (
+        "IntrospectRequestV1", "introspect.tool.request.v1", ["orion-dream"],
+    )
+    res = by_name["orion:introspect:result:*"]
+    assert (res["schema_id"], res["message_kind"]) == ("IntrospectResultV1", "introspect.tool.result.v1")
+    assert "orion-dream" in by_name["orion:vector:semantic:upsert"]["producer_services"]

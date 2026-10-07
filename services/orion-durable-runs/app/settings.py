@@ -120,6 +120,16 @@ class Settings(BaseSettings):
     memory_referents_enabled: bool = Field(True, alias="MEMORY_REFERENTS_ENABLED")
     memory_alias_grounding_auto_accept: bool = Field(True, alias="MEMORY_ALIAS_GROUNDING_AUTO_ACCEPT")
     memory_cooccurrence_auto_accept: bool = Field(True, alias="MEMORY_COOCCURRENCE_AUTO_ACCEPT")
+    # Situation graph step 2 (spec 2026-10-07-situation-graph-design.md, SHADOW): one self-driven
+    # LangGraph thread per day that keeps Orion's running situation and projects it to Redis
+    # orion:situation:latest + bus orion:situation:state. Nothing reads it until step 3.
+    situation_graph_enabled: bool = Field(True, alias="SITUATION_GRAPH_ENABLED")
+    situation_tick_sec: float = Field(900.0, gt=0.0, alias="SITUATION_TICK_SEC")
+    situation_default_ttl_hours: float = Field(48.0, gt=0.0, alias="SITUATION_DEFAULT_TTL_HOURS")
+    situation_prime_timeout_sec: float = Field(0.4, gt=0.0, alias="SITUATION_PRIME_TIMEOUT_SEC")
+    situation_retention_days: int = Field(2, ge=1, le=30, alias="SITUATION_RETENTION_DAYS")
+    situation_redis_ttl_sec: int = Field(604800, gt=0, alias="SITUATION_REDIS_TTL_SEC")
+    chat_history_turn_channel: str = Field("orion:chat:history:turn", alias="CHANNEL_CHAT_HISTORY_TURN")
     request_channel: str = DURABLE_RUN_REQUEST_CHANNEL
     state_channel: str = DURABLE_RUN_STATE_CHANNEL
 

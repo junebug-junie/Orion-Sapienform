@@ -380,6 +380,11 @@ SYNC_PREFIXES = (
     # CURIOSITY_PEER_ also covers CURIOSITY_PEER_BRIEF_* (sql-writer) above.
     "CURIOSITY_PEER_",
     "ORION_CURIOSITY_GRAPH_",
+    # orion-dream introspect responder (dreams tool). Same blind spot: without
+    # these, the default sync reported "no changes" and none of the seven keys
+    # reached the live .env.
+    "DREAM_INTROSPECT_",
+    "DREAM_SEARCH_",
     # Attend-to-act loop (2026-10-01): the world-action switches (dispatch), the workspace-winner
     # proposals + hardware-watch URL + rise threshold (proposal runtime), settle-time scoring
     # (feedback runtime) and the cabinet attention bridge (substrate runtime). The pool's own

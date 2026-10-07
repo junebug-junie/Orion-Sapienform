@@ -124,11 +124,27 @@ def test_hub_empty_street_ids_disables_only_the_street_line() -> None:
     assert cfg.street_stream_ids == []
 
 
+def test_empty_street_ids_never_reads_the_street(monkeypatch) -> None:
+    def _boom(*_a, **_k):
+        raise AssertionError("street disabled: must not read")
+
+    monkeypatch.setattr(situation_mod, "fetch_latest_percept", lambda **_: _percept(60))
+    monkeypatch.setattr(situation_mod, "fetch_street_summary", _boom)
+    _brief, text = _fragment(_hub_ns(ORION_SITUATION_STREET_STREAM_IDS=""))
+    assert REAL_SCENE in text
+    assert "Street" not in text
+
+
 def test_flag_off_never_reads_the_camera_and_says_do_not_infer(monkeypatch) -> None:
     def _boom(**_k):
         raise AssertionError("perception disabled: must not read vision_events")
 
+    def _boom_pos(*_a, **_k):
+        raise AssertionError("perception disabled: must not read presence/street")
+
     monkeypatch.setattr(situation_mod, "fetch_latest_percept", _boom)
+    monkeypatch.setattr(situation_mod, "fetch_presence_resolved", _boom_pos)
+    monkeypatch.setattr(situation_mod, "fetch_street_summary", _boom_pos)
     brief, text = _fragment(_hub_ns(ORION_SITUATION_PERCEPTION_ENABLED=False))
     assert OFF_LINE in text
     assert brief["perception"]["source"] == "disabled"
@@ -163,15 +179,32 @@ def test_stale_or_absent_camera_never_carries_scene_text(monkeypatch, reader, so
     assert brief["perception"].get("scene_summary") in (None, "")
 
 
-def test_database_error_is_do_not_infer_not_an_empty_room(monkeypatch) -> None:
+def test_stubbed_reader_raising_is_do_not_infer(monkeypatch) -> None:
     def _down(**_k):
         raise ConnectionError("db down")
 
     monkeypatch.setattr(situation_mod, "fetch_latest_percept", _down)
     brief, text = _fragment(_hub_ns())
     assert OFF_LINE in text
-    assert "empty" not in text.lower()
     assert brief["perception"]["source"] == "error"
+
+
+def test_real_reader_outage_is_do_not_infer_not_an_empty_room(monkeypatch) -> None:
+    """The real reader swallows connection errors and returns None, so a
+    production outage arrives as `unavailable` -- pin THAT path, through the
+    real fetch_latest_percept, not only a stub that raises."""
+    from orion.situational import perception_reader
+
+    class _DeadEngine:
+        def connect(self):
+            raise ConnectionError("connection refused")
+
+    monkeypatch.setattr(perception_reader, "_get_engine", lambda: _DeadEngine())
+    monkeypatch.setattr(situation_mod, "fetch_latest_percept", perception_reader.fetch_latest_percept)
+    brief, text = _fragment(_hub_ns())
+    assert OFF_LINE in text
+    assert "empty" not in text.lower()
+    assert brief["perception"]["source"] == "unavailable"
 
 
 def test_stale_presence_row_does_not_claim_someone_is_in_view(monkeypatch) -> None:
@@ -264,8 +297,11 @@ def test_tight_cap_shortens_facts_but_never_slices_a_caution(monkeypatch) -> Non
     text = frag["compact_text"]
     assert len(text) <= 600
     # Each caution is in the prompt whole or not at all -- never a fragment.
+    lines = text.split("\n- ")
     for caution in frag["caution_lines"]:
-        assert caution in text or caution[:40] not in text, caution[:40]
+        for line in lines:
+            # No line may be a strict, cut-off prefix of a caution.
+            assert not (line != caution and len(line) > 10 and caution.startswith(line)), line
 
 
 # --- event loop ---------------------------------------------------------------
@@ -286,3 +322,76 @@ def test_room_read_runs_off_the_event_loop_thread(monkeypatch) -> None:
 
     asyncio.run(_run())
     assert seen["reader"] != seen["loop"]
+
+
+# --- identity ask only on Juniper's own turns ---------------------------------
+
+
+def test_orion_authored_turn_never_spends_the_identity_ask(monkeypatch) -> None:
+    """Hub builds briefs for endogenous outreach too (record_user_turn=False).
+    Those must not claim the shared cooldown: no unprompted "is that you?",
+    and the slot stays for Juniper's next real turn."""
+
+    async def _must_not_claim(*_a, **_k):
+        raise AssertionError("an Orion-authored turn must not claim the identity ask")
+
+    monkeypatch.setattr(situation_mod, "fetch_latest_percept", lambda **_: _percept(60))
+    monkeypatch.setattr(situation_mod, "try_claim_identity_ask", _must_not_claim)
+    brief, frag = asyncio.run(
+        build_situation_for_ctx({"session_id": "outreach", "record_user_turn": False}, _hub_ns())
+    )
+    assert brief["perception"]["presence_identity_ask"] is None
+    assert "is that you" not in str(frag.get("compact_text"))
+    assert REAL_SCENE in str(frag.get("compact_text"))
+
+
+def test_juniper_turn_still_gets_the_identity_ask(monkeypatch) -> None:
+    claims: list[str] = []
+
+    async def _claim(scope, *, reason, ttl_seconds):
+        claims.append(reason)
+        return True
+
+    monkeypatch.setattr(situation_mod, "fetch_latest_percept", lambda **_: _percept(60))
+    monkeypatch.setattr(situation_mod, "try_claim_identity_ask", _claim)
+    brief, _frag = asyncio.run(
+        build_situation_for_ctx({"session_id": "juniper", "record_user_turn": True}, _hub_ns())
+    )
+    assert claims == ["no_visual_confirmation"]
+    assert brief["perception"]["presence_identity_ask"] == "no_visual_confirmation"
+
+
+# --- cache cannot outlive the staleness gate ----------------------------------
+
+
+def test_cached_brief_is_rebuilt_once_its_percept_passes_the_gate(monkeypatch) -> None:
+    reads: list[int] = []
+
+    def _reader(**_k):
+        reads.append(1)
+        return _percept(899 if len(reads) == 1 else 2000)
+
+    monkeypatch.setattr(situation_mod, "fetch_latest_percept", _reader)
+    ns = _hub_ns()
+    _b, first = _fragment(ns, "cache")
+    assert REAL_SCENE in first
+    # Age the cache entry by 30 s: 899 + 30 > 900, so it must not be served.
+    key, (built, brief, frag) = next(iter(situation_mod._SITUATION_CACHE.items()))
+    situation_mod._SITUATION_CACHE[key] = (built - timedelta(seconds=30), brief, frag)
+    _b, second = _fragment(ns, "cache")
+    assert len(reads) == 2
+    assert OFF_LINE in second
+
+
+def test_fresh_cached_brief_is_still_served_from_cache(monkeypatch) -> None:
+    reads: list[int] = []
+
+    def _reader(**_k):
+        reads.append(1)
+        return _percept(60)
+
+    monkeypatch.setattr(situation_mod, "fetch_latest_percept", _reader)
+    ns = _hub_ns()
+    _fragment(ns, "cache2")
+    _fragment(ns, "cache2")
+    assert len(reads) == 1

@@ -13,14 +13,21 @@ Usage (from repo root; POSTGRES_URI must point at the live database):
 
     POSTGRES_URI=... PYTHONPATH=. python services/orion-hub/evals/run_situation_perception_eval.py
 
+Hub's real perception keys (ORION_SITUATION_PERCEPTION_*, _STREET_STREAM_IDS,
+_PROMPT_MAX_CHARS) are read from the environment when set, so
+`set -a; . services/orion-hub/.env` first evaluates Hub's configured values.
+
 Exit 1 when the perception-on fragment exceeds the budget or a non-live
-perception status still carries scene text (a stale scene leaking).
+perception status still carries scene text (a stale scene leaking). Exit 2
+(UNVERIFIED) when there is no DSN or the camera read did not answer with a
+real row (ok/stale) -- "no data" is not a pass.
 """
 
 from __future__ import annotations
 
 import asyncio
 import json
+import os
 import sys
 from types import SimpleNamespace
 
@@ -39,9 +46,23 @@ async def _no_ask(*_a, **_k) -> bool:
     return False
 
 
+_HUB_KEYS = {
+    "ORION_SITUATION_PERCEPTION_MAX_AGE_SECONDS": int,
+    "ORION_SITUATION_PERCEPTION_STREAM_IDS": str,
+    "ORION_SITUATION_STREET_STREAM_IDS": str,
+    "ORION_SITUATION_PROMPT_MAX_CHARS": int,
+}
+
+
+def _hub_env() -> dict:
+    return {k: cast(os.environ[k]) for k, cast in _HUB_KEYS.items() if k in os.environ}
+
+
 async def _build(perception_on: bool) -> tuple[dict, str, int]:
     ns = situation_mod.hub_settings_to_runtime_namespace(
-        SimpleNamespace(**_OTHERS_OFF, ORION_SITUATION_PERCEPTION_ENABLED=perception_on)
+        SimpleNamespace(
+            **_OTHERS_OFF, **_hub_env(), ORION_SITUATION_PERCEPTION_ENABLED=perception_on
+        )
     )
     ns.orion_situation_runtime_enabled = False
     situation_mod._SITUATION_CACHE.clear()
@@ -52,6 +73,9 @@ async def _build(perception_on: bool) -> tuple[dict, str, int]:
 
 
 def main() -> int:
+    if not any(os.getenv(k) for k in ("SITUATION_PERCEPTION_DSN", "POSTGRES_URI", "DATABASE_URL")):
+        print("UNVERIFIED: no DSN set (SITUATION_PERCEPTION_DSN/POSTGRES_URI/DATABASE_URL)", file=sys.stderr)
+        return 2
     situation_mod.try_claim_identity_ask = _no_ask  # never spend the real ask
     _off_brief, off_text, _ = asyncio.run(_build(False))
     brief, on_text, cap = asyncio.run(_build(True))
@@ -80,7 +104,15 @@ def main() -> int:
         failures.append("non-live perception carries scene text")
     for f in failures:
         print(f"FAIL: {f}", file=sys.stderr)
-    return 1 if failures else 0
+    if failures:
+        return 1
+    if status.get("perception") not in ("ok", "stale"):
+        print(
+            f"UNVERIFIED: camera read status={status.get('perception')!r}, no real row to evaluate",
+            file=sys.stderr,
+        )
+        return 2
+    return 0
 
 
 if __name__ == "__main__":

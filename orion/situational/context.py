@@ -739,6 +739,24 @@ def _phase_stamp_from_cached_brief(brief: Any, ctx: dict[str, Any], now_utc: dat
     )
 
 
+def _cached_percept_outlived_gate(brief: Any, cached_age: float, cfg: SituationSettings) -> bool:
+    """True when a cached brief's room percept has aged past the staleness
+    gate since it was built (review finding, 2026-10-07).
+
+    Without this the effective bound was max_age + ttl: a percept 899 s old
+    at build time kept rendering "seen 15 min ago" for another 300 s of cache
+    hits, the exact stale-scene-as-current failure the gate exists to stop.
+    A miss here just rebuilds, which re-applies the gate fresh.
+    """
+    try:
+        perception = brief.perception
+        if not perception.available or perception.observation_age_seconds is None:
+            return False
+        return perception.observation_age_seconds + cached_age > cfg.perception_max_age_seconds
+    except Exception:  # noqa: BLE001 -- a malformed cache entry is just a miss
+        return True
+
+
 async def build_situation_for_ctx(
     ctx: dict[str, Any],
     runtime_settings: Any,
@@ -758,7 +776,15 @@ async def build_situation_for_ctx(
     cache_key = _situation_cache_key(ctx, cfg)
     with _LOCK:
         cached = _SITUATION_CACHE.get(cache_key)
-        if cached and (datetime.now(timezone.utc) - cached[0]).total_seconds() < cfg.ttl_seconds:
+        cached_age = (
+            (datetime.now(timezone.utc) - cached[0]).total_seconds() if cached else None
+        )
+        if (
+            cached
+            and cached_age is not None
+            and cached_age < cfg.ttl_seconds
+            and not _cached_percept_outlived_gate(cached[1], cached_age, cfg)
+        ):
             if phase_stamp_out is not None:
                 try:
                     phase_stamp_out.update(
@@ -789,7 +815,14 @@ async def build_situation_for_ctx(
     agenda_ctx = AgendaContextV1(available=False, source="stub")
     lab_ctx = _build_lab_context(cfg)
     cabinet_ctx = await _build_cabinet_context(cfg, diagnostics)
-    perception_ctx = await _build_perception_context(cfg, diagnostics)
+    # Only a turn Juniper actually took may spend the shared identity-ask
+    # cooldown (review finding, 2026-10-07): Hub also builds briefs for turns
+    # Orion authors itself (endogenous outreach), and claiming the slot there
+    # would open an unprompted message with "is that you?" and burn the ask
+    # her next real turn should get.
+    perception_ctx = await _build_perception_context(
+        cfg, diagnostics, allow_identity_ask=_records_user_turn(ctx)
+    )
     affect_ctx = await _build_affect_context(cfg, diagnostics)
     curiosity_ctx = await _build_curiosity_context(cfg, diagnostics)
     reverie_ctx = await _build_reverie_context(cfg, diagnostics)
@@ -1526,7 +1559,10 @@ class _PresenceReading:
 
 
 async def _resolve_presence_and_identity_ask(
-    cfg: SituationSettings, diagnostics: SituationDiagnosticsV1
+    cfg: SituationSettings,
+    diagnostics: SituationDiagnosticsV1,
+    *,
+    allow_identity_ask: bool = True,
 ) -> _PresenceReading:
     """Which camera speaks for "where is Juniper", and should Orion ask who
     this is.
@@ -1615,7 +1651,7 @@ async def _resolve_presence_and_identity_ask(
         reason = "no_visual_confirmation"
 
     identity_ask = None
-    if reason is not None:
+    if reason is not None and allow_identity_ask:
         ttl = (
             cfg.identity_ask_cooldown_seconds
             if reason in ("unmatched_face", "identity_unread")
@@ -1684,11 +1720,16 @@ async def _build_street_fields(
 
 
 async def _build_perception_context(
-    cfg: SituationSettings, diagnostics: SituationDiagnosticsV1
+    cfg: SituationSettings,
+    diagnostics: SituationDiagnosticsV1,
+    *,
+    allow_identity_ask: bool = True,
 ) -> PerceptionContextV1:
     """Room percept (below) plus the street summary, which is a different
     camera and so rides on every return path of the room read, stale or not."""
-    room = await _build_room_perception_context(cfg, diagnostics)
+    room = await _build_room_perception_context(
+        cfg, diagnostics, allow_identity_ask=allow_identity_ask
+    )
     if not cfg.perception_enabled or not cfg.street_stream_ids:
         return room
     street = await _build_street_fields(cfg, diagnostics)
@@ -1696,7 +1737,10 @@ async def _build_perception_context(
 
 
 async def _build_room_perception_context(
-    cfg: SituationSettings, diagnostics: SituationDiagnosticsV1
+    cfg: SituationSettings,
+    diagnostics: SituationDiagnosticsV1,
+    *,
+    allow_identity_ask: bool = True,
 ) -> PerceptionContextV1:
     """Most recent camera percept, gated hard on age.
 
@@ -1721,7 +1765,9 @@ async def _build_room_perception_context(
     # Resolved first so every return path below carries it -- see
     # _resolve_presence_and_identity_ask's docstring for why this must not
     # live inside the available=True branch.
-    reading = await _resolve_presence_and_identity_ask(cfg, diagnostics)
+    reading = await _resolve_presence_and_identity_ask(
+        cfg, diagnostics, allow_identity_ask=allow_identity_ask
+    )
 
     try:
         # Off the event loop (2026-10-07): this is a synchronous SQLAlchemy

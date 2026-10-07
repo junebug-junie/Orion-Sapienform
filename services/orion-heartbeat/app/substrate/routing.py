@@ -123,6 +123,25 @@ class UnroutableAtomTypeError(ValueError):
     """
 
 
+GRAMMAR_EVENT_CHANNEL = "orion:grammar:event"
+SELF_SOURCE_SERVICE = "orion-heartbeat"
+
+
+def catalog_grammar_producers() -> frozenset[str]:
+    """orion:grammar:event's producer_services from orion/bus/channels.yaml.
+
+    Used to NAME the producers heartbeat does not route (counted per producer,
+    see service.py), not to route them -- see ORGAN_SITE_MAP for why site
+    assignment stays hand-checked. Empty set if the catalog can't be read;
+    callers must treat that as "unknown", not "no producers".
+    """
+    from orion.core.bus.catalog_loader import load_channel_catalog
+
+    entry = load_channel_catalog().get(GRAMMAR_EVENT_CHANNEL) or {}
+    producers = entry.get("producer_services") or []
+    return frozenset(str(p) for p in producers if isinstance(p, str) and p and p != "*")
+
+
 def route_atom(
     *,
     source_service: str,

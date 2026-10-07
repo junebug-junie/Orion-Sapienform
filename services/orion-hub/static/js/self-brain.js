@@ -7,7 +7,6 @@ const EKG_WINDOW = 120; // frames kept for realtime EKG
 const DIMENSIONS = [
   { key: "node_kind", label: "Node kinds" },
   { key: "lane", label: "Lanes" },
-  { key: "self_state", label: "Self-state" },
   { key: "honesty_metrics", label: "Prediction Confidence" },
   // Added 2026-09-04: field_anomaly (mood-arc encoder reconstruction error,
   // orion-field-digester) has been a real region on every brain frame since

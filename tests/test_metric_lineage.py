@@ -278,18 +278,24 @@ def test_organ_signal_urn_carries_dimension_field():
     assert nodes[urn].producer_service == "orion-biometrics"
 
 
-def test_brain_region_resolver_covers_all_six_dimensions():
+def test_brain_region_resolver_covers_all_five_dimensions():
     """BrainRegionV1.dimension's full Literal set, no more no less -- a
-    closed enumeration, so this is an exact-equality check, not a floor."""
+    closed enumeration, so this is an exact-equality check, not a floor.
+    (self_state retired 2026-10-07: source table had 0 rows since 2026-07-22.)"""
+    from typing import get_args
+
+    from orion.schemas.brain_frame import BrainRegionV1
+
     nodes = {n.name: n for n in resolve_brain_regions()}
-    assert set(nodes) == {
+    expected = {
         "node_kind",
         "lane",
-        "self_state",
         "lattice_layer",
         "honesty_metrics",
         "field_anomaly",
     }
+    assert set(nodes) == expected
+    assert set(get_args(BrainRegionV1.model_fields["dimension"].annotation)) == expected
     assert nodes["field_anomaly"].producer_service == "orion-field-digester"
     assert nodes["lane"].producer_service == "orion-substrate-runtime"
 

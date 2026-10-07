@@ -1581,59 +1581,6 @@ def _project_autonomy_from_beliefs(
     }
 
 
-_SELF_STATE_SEVERE_CONDITIONS = {"strained", "unstable"}
-
-
-def _project_self_state_from_beliefs(
-    beliefs: UnifiedRelationalBeliefSetV1 | None,
-    ctx: Dict[str, Any],
-) -> Dict[str, Any] | None:
-    """Projection helper: fold Orion's self-model condition into stance hazards.
-
-    Reads the ``self:overall_condition`` and ``self:{dimension_id}`` belief
-    nodes produced by ``orion.substrate.relational.adapters.self_state_ctx``.
-    Returns None if beliefs have no self-model nodes (nothing to fold in),
-    signalling the caller not to add any self_state-derived hazard.
-    """
-    if beliefs is None:
-        return None
-
-    anchor = beliefs.anchors.get("orion")
-    if not anchor:
-        return None
-
-    self_nodes = [n for n in anchor.concepts if str(getattr(n, "label", "")).startswith("self:")]
-    if not self_nodes:
-        return None
-
-    overall_condition: str | None = None
-    trajectory_condition: str | None = None
-    hazards: list[str] = []
-    pressure_threshold = _env_float("SELF_STATE_STANCE_PRESSURE_THRESHOLD", 0.8)
-
-    for node in self_nodes:
-        meta = node.metadata or {}
-        if node.label == "self:overall_condition":
-            overall_condition = meta.get("overall_condition")
-            trajectory_condition = meta.get("trajectory_condition")
-            if overall_condition in _SELF_STATE_SEVERE_CONDITIONS:
-                hazards.append(f"self_state overall_condition={overall_condition}")
-        else:
-            dim_id = meta.get("self_dimension_id")
-            score = meta.get("score")
-            if dim_id and isinstance(score, (int, float)) and score >= pressure_threshold:
-                hazards.append(f"self_state {dim_id} score={score:.2f} above threshold")
-
-    if overall_condition is None and not hazards:
-        return None
-
-    return {
-        "overall_condition": overall_condition,
-        "trajectory_condition": trajectory_condition,
-        "hazards": hazards,
-    }
-
-
 def _project_context_provenance_hazard(ctx: Dict[str, Any]) -> str | None:
     """Projection helper: name which of this turn's ctx keys are genuinely
     live substrate/biometric signal vs. retrieved/static/tool content.
@@ -2676,21 +2623,16 @@ async def build_chat_stance_inputs(ctx: Dict[str, Any]) -> Dict[str, Any]:
     reasoning = _compile_reasoning_summary(ctx)
     ctx["chat_reasoning_summary"] = reasoning["summary"]
     autonomy = _project_autonomy_from_beliefs(beliefs, ctx) or _load_autonomy_state(ctx)
-    self_state_projection = _project_self_state_from_beliefs(beliefs, ctx)
     context_provenance_hazard = _project_context_provenance_hazard(ctx)
-    # self_state severity and context-provenance are both standing epistemic/
-    # safety signals from this function's own reasoning, not reactive social
-    # hazards -- fold them in together, prepended ahead of the social/
-    # social_bridge hazards already in the list, so _unique(..., limit=8)'s
-    # truncation-in-order falls on the lower-stakes social hazards first
-    # instead of silently evicting one safety signal to make room for the
-    # other (a prior version prepended context_provenance_hazard alone,
-    # which could evict an already-folded self_state severity hazard once
-    # the list was full).
+    # Context-provenance is a standing epistemic/safety signal from this
+    # function's own reasoning, not a reactive social hazard -- prepended
+    # ahead of the social/social_bridge hazards already in the list, so
+    # _unique(..., limit=8)'s truncation-in-order falls on the lower-stakes
+    # social hazards first. (The self_state severity hazard that used to be
+    # folded in alongside it was retired 2026-10-07: its only producer, the
+    # self_state_ctx belief adapter, was deleted in the 2026-07-22 SelfStateV1
+    # burn, so it had returned None on every turn since.)
     priority_hazards: list[str] = []
-    if self_state_projection:
-        priority_hazards.extend(self_state_projection.get("hazards") or [])
-        ctx["chat_self_state_condition"] = self_state_projection.get("overall_condition")
     if context_provenance_hazard:
         priority_hazards.append(context_provenance_hazard)
     if priority_hazards:

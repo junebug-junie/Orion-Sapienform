@@ -32,8 +32,9 @@ class MoodArcCorpusRowV1(BaseModel):
     services/orion-spark-introspector/app/inner_state_sink.py when
     orion-field-digester's field_channel_corpus.v1 became a second
     consumer). Unlike
-    InnerStateFeaturesV1 (recoverable via scripts/backfill_phi_corpus.py
-    from Postgres), there is NO backfill path for pruned mood-arc rows --
+    InnerStateFeaturesV1 (formerly recoverable via scripts/backfill_phi_corpus.py
+    from Postgres -- script deleted 2026-10-07, its source table
+    substrate_self_state had 0 rows), there is NO backfill path for pruned mood-arc rows --
     once a rotated file ages past the retention count, that slice of
     history is genuinely gone, not just archived. At the default policy
     (200MB x 5 = up to ~1GB retained) this is generous relative to the

@@ -22,7 +22,7 @@ Also publishes a bus-native `SystemHealthV1` heartbeat to `orion:system:health` 
 5. **Concurrency:** `VISION_MAX_INFLIGHT`, `VISION_MAX_INFLIGHT_PER_GPU`, `VISION_QUEUE_WHEN_BUSY`, `VISION_MAX_QUEUE` — queue full returns `error_code=queue_full` on the bus reply and in structured logs.
 6. **Timeouts:** `VISION_TIMEOUT_S` wraps the threaded `VisionRunner.execute` path (wall-clock); logs include `scheduler_total_s`, estimated `queue_wait_est_s`, and `inference_s` when available.
 7. **Models:** Override `VISION_VLM_MODEL_ID` per node for your VRAM budget — default (`Salesforce/blip-image-captioning-base`) is sized for a shared/small card (e.g. athena's P4). `model_manager.py`'s `load_vlm_captioner` also supports BLIP2, Qwen2-VL, and Qwen2.5-VL model_ids (selected by substring match — see `.env_example` comment); Qwen2-VL-class models need real headroom (~4-5GB fp16) and route through a chat-template prompt, unlike BLIP's plain image+text call. Enable only profiles you need via `VISION_ENABLED_PROFILES`.
-8. **Caption quality:** VLM captions use a factual prompt and `caption_sanitize` rejects prompt-echo and stoplist garbage before artifacts are stored. Rejected captions append `caption_rejected:{reason}` to task meta warnings.
+8. **Caption quality:** the caption prompt is chosen by model family (`vlm_family.caption_prompt_for`): chat-template VLMs (Qwen2-VL/Qwen2.5-VL) get the factual `CAPTION_PROMPT`; BLIP/BLIP2 and unrecognized models get no prompt, because they continue text rather than follow it (handed the prompt, BLIP-base echoes it back -- every cam0 caption was blank until 2026-10-08 for this reason). `caption_sanitize` then rejects prompt-echo, too-short, stoplist and repetition garbage. A rejected caption publishes `{"text": "", "confidence": 0.0, "rejected_reason": "<reason>"}` and appends `caption_rejected:{reason}` to task warnings; empty text is never published at confidence 1.0.
 
 ## "Circe" Qwen2-VL lane (`docker-compose.circe-qwen.yml`)
 
@@ -308,11 +308,11 @@ belong to":
 
 | Family | `model_id` match | Prompt / decode |
 |--------|------------------|------------------|
-| BLIP2 | contains `blip2` | `processor(images=, text=)`, full-sequence decode |
+| BLIP2 | contains `blip2` | `processor(images=, text=)`, full-sequence decode; captions sent with no text |
 | BLIP | contains `blip` (not `blip2`) | same as above |
 | Qwen2-VL | contains `qwen2-vl`/`qwen2_vl` | `apply_chat_template` + image, decode sliced by input token length |
 | Qwen2.5-VL | contains `qwen2.5-vl`/`qwen2_5_vl` | same chat-template path as Qwen2-VL |
-| anything else | — | generic `AutoModelForVision2Seq`, BLIP-style call shape |
+| anything else | — | generic `AutoModelForVision2Seq`, BLIP-style call shape; captions sent with no text |
 
 The chat-template path exists because a chat-tuned VLM echoes its whole
 templated prompt back through `generate()` — decoding the full sequence (as

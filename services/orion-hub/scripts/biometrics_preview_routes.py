@@ -137,6 +137,8 @@ def lane_map_from_pool_state(
     production, so every card read "unassigned".
 
     - A node the pool does not manage (athena: no pool, a non-goal) -> ``({}, "unassigned")``.
+    - Multi-host pool: only cards whose ``host`` (else the state's ``host``) is ``node`` are labelled;
+      ``index`` repeats across nodes (circe gpu0 and hecate's card are both 0).
     - No pool state, a state without ``host`` (a pre-5.5 pool) or one older than
       ``POOL_STATE_MAX_AGE_SEC`` -> ``({}, "no pool state")``: unknown, which is not the same fact as
       "nothing assigned".
@@ -152,7 +154,13 @@ def lane_map_from_pool_state(
     if not isinstance(host, str) or not host:
         # A pre-5.5 pool sends neither host nor card index: labels cannot be joined yet.
         return {}, LANE_NO_POOL_STATE
-    if host.strip().lower() != node:
+    host = host.strip().lower()
+
+    def card_node(card: dict) -> str:
+        # Multi-host pool: each card names its node; a pre-multi-host pool's cards are all on ``host``.
+        return str(card.get("host") or host).strip().lower()
+
+    if not any(isinstance(c, dict) and card_node(c) == node for c in state.get("cards") or []):
         return {}, LANE_UNASSIGNED
     generated = state.get("generated_at")
     try:
@@ -180,7 +188,7 @@ def lane_map_from_pool_state(
 
     labels: Dict[str, str] = {}
     for card in state.get("cards") or []:
-        if not isinstance(card, dict) or card.get("index") is None:
+        if not isinstance(card, dict) or card.get("index") is None or card_node(card) != node:
             continue
         roles = on_card.get(str(card.get("card")), [])
         label = ", ".join(roles) if roles else "nothing loaded"

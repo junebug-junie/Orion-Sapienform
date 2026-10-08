@@ -30,11 +30,11 @@ def _load_route_urls() -> Dict[str, str]:
 
 
 def _expected_served_by(route: str) -> set:
-    """Every served_by the pool may legitimately answer with for this route ("circe-worker-<role>")."""
+    """Every served_by the pool may legitimately answer with for this route ("<node>-worker-<role>")."""
     cfg = _pool_routes()
     if route not in cfg.routes:
         raise AssertionError(f"route {route!r} is not in config/gpu_pool.yaml routes")
-    return {f"{cfg.host.name}-worker-{role}" for role in cfg.classes[cfg.routes[route].work_class].roles}
+    return {f"{cfg.role_host(role)}-worker-{role}" for role in cfg.classes[cfg.routes[route].work_class].roles}
 
 
 async def _rpc_chat(

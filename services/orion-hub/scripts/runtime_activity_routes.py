@@ -79,6 +79,12 @@ def pool_lanes(state: dict[str, Any] | None, events: list[dict[str, Any]], *, no
             waiting[lease.get("work_class") or "?"] = waiting.get(lease.get("work_class") or "?", 0) + 1
     lanes = []
     role_names = set()
+    # Multi-host pool: a role's node is its card's ``host``; a pre-multi-host state names one ``host``.
+    card_node = {c.get("card"): c.get("host") for c in state.get("cards") or [] if isinstance(c, dict)}
+
+    def node_of(role: dict) -> str:
+        cards = role.get("cards") or []
+        return str((card_node.get(cards[0]) if cards else None) or state.get("host") or "circe")
     for role in state.get("roles") or []:
         name = role.get("role")
         role_names.add(name)
@@ -86,7 +92,7 @@ def pool_lanes(state: dict[str, Any] | None, events: list[dict[str, Any]], *, no
             continue  # unloaded seats / evicted residents: nothing to show
         lanes.append({
             "upstream": role.get("url"),
-            "routes": [{"id": name, "served_by": f"circe-worker-{name}", "status": role.get("status"),
+            "routes": [{"id": name, "served_by": f"{node_of(role)}-worker-{name}", "status": role.get("status"),
                         "priority": None, "model": role.get("model_file")}],
             "inflight": held.get(name, 0), "waiting": waiting.get(name, 0), "max_inflight": role.get("slots"),
         })

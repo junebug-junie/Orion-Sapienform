@@ -97,7 +97,7 @@ def _entry(route_id: str, *, cfg: PoolConfig, role: str, status: str, discovered
     live = status == "up" and discovered is not None
     return {
         "id": route_id,
-        "served_by": f"{cfg.host.name}-worker-{role}",  # the same label the pool puts on a grant
+        "served_by": f"{cfg.role_host(role)}-worker-{role}",  # the same label the pool puts on a grant
         "backend": LLAMACPP_BACKEND,
         "status": status,
         "latency_ms": None,
@@ -129,7 +129,7 @@ def build_route_view(state: Mapping[str, Any] | None, cfg: PoolConfig | None = N
         for route_id in _catalog_route_ids(cfg):
             if cfg is not None:
                 first = cfg.classes[cfg.routes[route_id].work_class].roles[0]
-                routes.append(_unknown_entry(route_id, served_by=f"{cfg.host.name}-worker-{first}",
+                routes.append(_unknown_entry(route_id, served_by=f"{cfg.role_host(first)}-worker-{first}",
                                              upstream=cfg.url(first)))
             else:
                 routes.append(_unknown_entry(route_id))

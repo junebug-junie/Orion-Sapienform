@@ -9,6 +9,10 @@
 # Adding a service: add a role (kind: service needs slots + vram_gb) and a class that uses it.
 version: 1
 host: {name: circe, address: 100.112.254.99}
+# Other GPU nodes. A card on one says `host: <name>`; every other card is on `host` above. The pool
+# reaches a role at its card's node address + the role's port. A card's `index` is per node.
+hosts:
+  hecate: {address: 100.87.202.68}
 
 defaults:
   clawback_grace_sec: 60        # a recalled borrower finishes its current request, capped here
@@ -43,6 +47,10 @@ cards:
   gpu1: {vram_gb: 32, index: 1}
   gpu2: {vram_gb: 32, index: 2}         # PG500-216 (a V100); the actuator sets the launch roles' device from it
   gpu3: {vram_gb: 32, index: 3}
+  # hecate's one V100-SXM2-32GB (2026-10-08). No actuator on hecate: agent-deep is a fixed resident,
+  # and lending is a pool flag, not a docker action. Lendable like gpu0: agent/metacog/fast borrow it
+  # only while Juniper has it lent (Hub GPU pool panel: "Lend hecate-gpu0").
+  hecate-gpu0: {vram_gb: 32, lendable: true, index: 0, host: hecate}
 
 roles:
   chat:       {kind: llm, cards: [gpu0], owner: chat, port: 8011}
@@ -75,6 +83,9 @@ roles:
                         profiles: [ternary-bonsai2-27b-pq2-v100-32gb-circe-agent,
                                    qwen3.8-27b-udq4kxl-v100-32gb-circe-agent-flex],
                         ready: /health, timeout_sec: 900}}
+  # hecate: services/orion-llamacpp-host/docker-compose.hecate.yml (HECATE_AGENT_DEEP_* in that
+  # service's .env; the same 27B profile as circe's agent lane).
+  agent-deep: {kind: llm, cards: [hecate-gpu0], owner: agent-deep, port: 8021}
   metacog:    {kind: llm, cards: [gpu3], owner: [metacog, fast], port: 8012}
   fast:       {kind: llm, cards: [gpu3], owner: [metacog, fast], port: 8013}
   world:      {kind: service, cards: [gpu2], owner: world, port: 6613, slots: 2, vram_gb: 1,
@@ -96,9 +107,11 @@ roles:
 
 classes:   # roles that may serve a class, in preference order; nothing big spills down to gpu3
   chat:       {roles: [chat], on_unavailable: wait}
-  agent:      {roles: [agent, agent-gpu2, chat], on_unavailable: backlog}
-  metacog:    {roles: [metacog, fast, agent, agent-gpu2, chat], on_unavailable: backlog}
-  fast:       {roles: [fast, metacog, agent, agent-gpu2, chat], on_unavailable: wait}
+  # agent-deep (hecate) sits ahead of chat: both are lent cards, and hecate's has no human waiting on it.
+  agent:      {roles: [agent, agent-gpu2, agent-deep, chat], on_unavailable: backlog}
+  agent-deep: {roles: [agent-deep], on_unavailable: backlog}
+  metacog:    {roles: [metacog, fast, agent, agent-gpu2, agent-deep, chat], on_unavailable: backlog}
+  fast:       {roles: [fast, metacog, agent, agent-gpu2, agent-deep, chat], on_unavailable: wait}
   world:      {roles: [world], on_unavailable: wait}   # a world prediction replayed hours later is useless
   diffusion:  {roles: [diffusion], on_unavailable: backlog}
   experiment: {roles: [experiment], on_unavailable: fail}
@@ -132,6 +145,8 @@ routes:    # what llm-gateway callers say -> class (+ priority). Every gateway r
   # Memory episode distiller (2026-10-02): durable-runs holds the 27B on gpu1 at system priority
   # (ahead of curiosity's background holds) and calls the gateway on this route.
   memory_distill: {class: memory_distill, priority: system}
+  # hecate's 27B (2026-10-08): its own card, always this route's; others borrow it only while lent.
+  agent-deep: {class: agent-deep, priority: system}
 
 hold_routes:   # durable-run holds on non-LLM roles; durable-runs reads these, the gateway never does
   # reverie.visual's generate step (docs/superpowers/specs/2026-09-28-visual-reverie-durable-graph-design.md).

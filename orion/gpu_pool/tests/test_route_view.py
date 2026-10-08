@@ -64,6 +64,7 @@ def test_view_from_state_uses_the_config_the_pool_sent():
     assert routes["chat-burst"]["status"] == "operator_closed" and routes["chat-burst"]["gate_open"] is False
 
 
+ROUTES_ADDED_AFTER_GOLDEN = {"agent-deep"}   # hecate, 2026-10-08
 _GOLDEN = json.loads((Path(__file__).parent / "fixtures_routes_compat_golden.json").read_text())
 
 
@@ -79,7 +80,10 @@ def test_view_matches_the_old_gateway_generator_output(case):
     else:
         view = build_route_view({**golden["state"], "config": _config_payload()})
     got = [{k: v for k, v in entry.items() if k != "role"} for entry in view["routes"]]
-    assert got == golden["routes"]
+    # Routes added after the freeze have no old-generator output to match; each is pinned on its own.
+    frozen = {r["id"] for r in golden["routes"]}
+    assert {r["id"] for r in got} - frozen == ROUTES_ADDED_AFTER_GOLDEN
+    assert [r for r in got if r["id"] in frozen] == golden["routes"]
 
 
 def test_down_route_carries_no_model_ctx_or_vision():

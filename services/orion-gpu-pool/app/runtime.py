@@ -1391,7 +1391,7 @@ class PoolRuntime:
             ctx_per_slot=disc.ctx_per_slot if disc else None,
             # "{node}-worker-{role}": cortex-exec reads the node before "-worker" to attribute
             # reasoning_load (executor._normalize_served_by_to_node); any other shape loses it.
-            served_by=f"{self.cfg.host.name}-worker-{role}")
+            served_by=f"{self.cfg.role_host(role)}-worker-{role}")
 
     async def _reply_for(self, row: dict) -> GpuLeaseReplyV1:
         status = row["status"]
@@ -1435,6 +1435,7 @@ class PoolRuntime:
             host=self.cfg.host.name,
             cards=[GpuCardStateV1(card=c.card, vram_gb=self.cfg.cards[c.card].vram_gb,
                                   index=self.cfg.cards[c.card].index,
+                                  host=self.cfg.card_host(c.card),
                                   lendable=self.cfg.cards[c.card].lendable, lent=c.lent,
                                   swapped_in=sorted(c.swapped_in), swap_state=c.swap_state,
                                   cooldown_until=c.cooldown_until, swap_role=c.swap_role,

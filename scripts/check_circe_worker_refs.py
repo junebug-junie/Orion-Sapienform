@@ -176,8 +176,16 @@ def load_identity(root: pathlib.Path) -> Identity:
         host = cfg.get("host") or {}
         address = str(host.get("address") or address)
         name = str(host.get("name") or name)
+        cards = cfg.get("cards") or {}
+
+        def off_circe(role: dict) -> bool:
+            # Multi-host pool: a role whose card names another node (hecate's agent-deep) is not
+            # a circe worker; its port is that node's, outside circe's firewall.
+            return any(isinstance(cards.get(c), dict) and cards[c].get("host") not in (None, name)
+                       for c in role.get("cards") or [])
+
         for role in (cfg.get("roles") or {}).values():
-            if not isinstance(role, dict) or "port" not in role:
+            if not isinstance(role, dict) or "port" not in role or off_circe(role):
                 continue
             # llm seats are llama.cpp workers; a service role with a `launch` block is a
             # pool-leased GPU seat (diffusion). `world` is neither and is not a worker port.
@@ -193,7 +201,8 @@ def load_identity(root: pathlib.Path) -> Identity:
             m = _HOST_PORT_RE.match(raw.strip())
             # orion-llamacpp-host's generic LLAMACPP_HOST_PORT (7005) is the athena-side
             # single-model server, not a circe seat; the atlas/dsv41 keys are.
-            if m and m.group(1) != "LLAMACPP_HOST_PORT":
+            # HECATE_* keys are hecate's worker (docker-compose.hecate.yml), not a circe seat.
+            if m and m.group(1) != "LLAMACPP_HOST_PORT" and not m.group(1).startswith("HECATE_"):
                 ports.add(int(m.group(2)))
     if not ports:  # fail closed: never scan with an empty port set
         ports = {8011, 8012, 8013, 8014, 8015, 8016, 8017, 8090, 8099}

@@ -303,6 +303,23 @@ Important characteristics of this compose file:
 
 This is the repo's best current Atlas pattern, but it is still **operator-edited compose**, not a full deployment system.
 
+## hecate: `agent-deep` (second GPU node)
+
+hecate's one V100-SXM2-32GB serves the GPU pool role `agent-deep` (`config/gpu_pool.yaml`: card
+`hecate-gpu0` with `host: hecate`, port 8021). It is a fixed resident, like chat on circe: no lane
+controller runs on hecate. The card is lendable: the `agent-deep` route always reaches it, and
+agent/metacog/fast work spills onto it only while it is lent (Hub GPU pool panel).
+
+```bash
+# on hecate, from a worktree; HECATE_AGENT_DEEP_* live in this service's .env
+docker compose --env-file .env --env-file services/orion-llamacpp-host/.env \
+  -f services/orion-llamacpp-host/docker-compose.hecate.yml up -d --build
+curl -fsS http://100.87.202.68:8021/health
+```
+
+`HECATE_AGENT_DEEP_HOST_PORT` must equal the pool role's port: discovery reports `mismatch` otherwise.
+The first boot downloads the 27B GGUF into `LLM_CACHE_DIR`.
+
 ## agent-gpu2 on Ternary-Bonsai (GPU pool stage 7.2)
 
 `atlas-agent-burst` (pool role `agent-gpu2`, gpu2, port 8016) runs its own image,

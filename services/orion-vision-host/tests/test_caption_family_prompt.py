@@ -10,6 +10,7 @@ import sys
 from pathlib import Path
 from unittest.mock import MagicMock
 
+import pytest
 import torch
 from PIL import Image
 
@@ -111,3 +112,32 @@ def test_chat_template_vlm_still_gets_the_instruction(vlm_runner, monkeypatch) -
     messages = processor.apply_chat_template.call_args[0][0]
     assert messages[0]["content"][1] == {"type": "text", "text": CAPTION_PROMPT}
     assert out["caption"]["text"] == "one person seated at a desk, one chair"
+
+
+def test_chat_template_vlm_without_prompt_raises(vlm_runner) -> None:
+    from PIL import Image as _Image
+    with pytest.raises(ValueError, match="text prompt"):
+        vlm_runner._generate_vlm_text(_fake_model(), MagicMock(), _Image.new("RGB", (4, 4)), None, QWEN, "cpu", 8, 0.0)
+
+
+def test_unknown_family_gets_no_prompt() -> None:
+    # Pinned choice: anything not chat-template is called BLIP-style, unprompted.
+    assert caption_prompt_for("some-org/some-random-vlm") is None
+
+
+def test_rejected_vqa_answer_is_published_as_rejected(vlm_runner, monkeypatch) -> None:
+    question = "what color is the door?"
+    processor = MagicMock()
+    processor.side_effect = lambda **kw: {"input_ids": torch.zeros((1, 3), dtype=torch.long)}
+    processor.batch_decode.return_value = [question]  # pure echo; prefix strip leaves ""
+    monkeypatch.setattr(runner_mod.settings, "VISION_VLM_MODEL_ID", BLIP)
+    monkeypatch.setattr(runner_mod, "_load_image_from_request", lambda req: Image.new("RGB", (4, 4)))
+    monkeypatch.setattr(vlm_runner.models, "load_vlm_captioner", lambda **kw: (_fake_model(), processor))
+    warnings: list[str] = []
+    out = vlm_runner._run_vlm_vqa(
+        vlm_runner.profiles.get_profile("vlm_vqa"), {"question": question, "image_path": "x.jpg"}, "cpu", warnings
+    )
+    assert out["vqa"]["answer"] == ""
+    assert out["vqa"]["confidence"] == 0.0
+    assert out["vqa"]["rejected_reason"] == "empty"
+    assert warnings == ["answer_rejected:empty"]

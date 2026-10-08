@@ -991,6 +991,11 @@ class VisionRunner:
         )
 
         text_prompt = caption_prompt_for(model_id)
+        if text_prompt is None and "blip" not in model_id.lower():
+            # Unknown family: sent no prompt like BLIP. Instruction-tuned
+            # models outside vlm_family's allowlist (LLaVA, Florence-2) may
+            # need one -- add their markers to vlm_family when one ships.
+            logger.warning(f"caption_frame: unrecognized VLM family {model_id!r}; captioning with no prompt")
         max_tokens = settings.VISION_VLM_MAX_TOKENS
         temperature = settings.VISION_VLM_TEMPERATURE
 
@@ -1093,6 +1098,9 @@ class VisionRunner:
         if not ok:
             warnings.append(f"answer_rejected:{reason}")
             answer_text = ""
+        # Same rule as captions: a rejected answer is never published at full
+        # confidence.
+        vqa_confidence = 1.0 if ok else 0.0
 
         return {
             "configured": True,
@@ -1103,6 +1111,7 @@ class VisionRunner:
             "vqa": {
                 "question": question,
                 "answer": answer_text,
-                "confidence": 1.0,  # Placeholder -- same convention _run_caption_frame uses.
+                "confidence": vqa_confidence,  # 1.0 is a placeholder for accepted text.
+                **({} if ok else {"rejected_reason": reason}),
             },
         }

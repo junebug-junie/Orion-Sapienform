@@ -83,8 +83,8 @@ roles:
                         profiles: [ternary-bonsai2-27b-pq2-v100-32gb-circe-agent,
                                    qwen3.8-27b-udq4kxl-v100-32gb-circe-agent-flex],
                         ready: /health, timeout_sec: 900}}
-  # hecate (services/orion-llamacpp-host/docker-compose.hecate.yml, profile
-  # qwen3.8-27b-udq4kxl-v100-32gb-hecate-agent-deep).
+  # hecate: services/orion-llamacpp-host/docker-compose.hecate.yml (HECATE_AGENT_DEEP_* in that
+  # service's .env; the same 27B profile as circe's agent lane).
   agent-deep: {kind: llm, cards: [hecate-gpu0], owner: agent-deep, port: 8021}
   metacog:    {kind: llm, cards: [gpu3], owner: [metacog, fast], port: 8012}
   fast:       {kind: llm, cards: [gpu3], owner: [metacog, fast], port: 8013}

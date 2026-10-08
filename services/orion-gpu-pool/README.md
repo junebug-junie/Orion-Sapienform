@@ -24,6 +24,15 @@ Design: `docs/superpowers/specs/2026-09-24-gpu-pool-design.md`.
 a service:** add a role (`kind: service` needs `slots` and `vram_gb`) and a class that uses it.
 `python scripts/check_gpu_pool_config.py` checks the YAML against the llama.cpp compose files.
 
+## More than one GPU node
+
+`host` is the pool's home node; `hosts:` lists the others by name and address. A card on another
+node says `host: <name>`. The pool reaches a role at its card's node address, labels grants
+`<node>-worker-<role>`, and sends each card's `host` in `gpu_pool.state` (Hub labels biometrics
+cards per node, since `index` repeats across nodes). A role's cards must all sit on one node; an
+actuator may live on any listed node but only launches cards on its own. First use: hecate's
+`agent-deep` (see `services/orion-llamacpp-host/README.md`).
+
 ## Discovery: what is actually loaded
 
 Each llama.cpp worker announces `{role, llm_profiles profile, host port}` on

@@ -106,6 +106,8 @@ ACCEPTED_LLM_ROUTES: FrozenSet[str] = frozenset(
         # same pool class, interactive priority, so a heat shed never holds a live Hub turn.
         # System-only: see SYSTEM_LLM_ROUTES.
         "metacog_turn",
+        # hecate's 27B (2026-10-08): its own GPU node, agent-class work a caller asks for by name.
+        "agent-deep",
     }
 )
 
@@ -133,6 +135,7 @@ LLM_ROUTE_DISPLAY_ORDER: tuple[str, ...] = (
     "metacog",
     "metacog_background",
     "agent",
+    "agent-deep",
     "harness",
     "agent-burst",
     "chat-burst",

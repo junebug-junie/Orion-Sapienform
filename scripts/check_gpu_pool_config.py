@@ -37,10 +37,12 @@ from orion.gpu_pool.config import check_launch, check_vram, load_pool_config  # 
 COMPOSE = [
     ROOT / "services/orion-llamacpp-host/docker-compose.atlas-workers.yml",
     ROOT / "services/orion-llamacpp-host/docker-compose.dsv41.yml",
+    ROOT / "services/orion-llamacpp-host/docker-compose.hecate.yml",
 ]
 ROLE_RE = re.compile(r"-\s*LLM_ROLE=([\w-]+)")
 PORT_RE = re.compile(r"-\s*LLM_ANNOUNCE_PORT=\$\{[A-Z0-9_]+:-(\d+)\}")
 SMALL_ROLES = {"metacog", "fast"}
+LEND_GATED_ROLES = {"chat", "agent-deep"}   # chat on circe gpu0, agent-deep on hecate
 BIG_CLASSES = {"chat", "agent"}
 
 
@@ -69,8 +71,9 @@ def main() -> int:
             if cfg.owns(cls, role):
                 continue
             for card in cfg.roles[role].cards:
-                if role == "chat" and not cfg.cards[card].lendable:
-                    problems.append(f"class {cls} can borrow chat on non-lendable {card}")
+                # Lend-gated roles: others may only borrow them while Juniper lends the card.
+                if role in LEND_GATED_ROLES and not cfg.cards[card].lendable:
+                    problems.append(f"class {cls} can borrow {role} on non-lendable {card}")
         if cls in BIG_CLASSES and SMALL_ROLES & set(spec.roles):
             problems.append(f"class {cls} lists a small-model role {sorted(SMALL_ROLES & set(spec.roles))}")
 

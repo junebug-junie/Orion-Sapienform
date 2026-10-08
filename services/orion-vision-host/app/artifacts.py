@@ -68,7 +68,8 @@ def build_artifact_payload(res: VisionResult) -> Optional[VisionArtifactPayload]
     if "caption" in artifacts and isinstance(artifacts["caption"], dict):
         caption = VisionCaption(
             text=artifacts["caption"].get("text", ""),
-            confidence=artifacts["caption"].get("confidence")
+            confidence=artifacts["caption"].get("confidence"),
+            rejected_reason=artifacts["caption"].get("rejected_reason"),
         )
 
     if "embedding" in artifacts and isinstance(artifacts["embedding"], dict):

@@ -4,7 +4,7 @@ import hashlib
 import json
 import time
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 import numpy as np
 from loguru import logger
@@ -15,14 +15,14 @@ import torch
 from orion.vision.caption_echo import strip_echoed_prompt_prefix
 
 from .artifacts import merge_result_inputs
-from .caption_sanitize import CAPTION_PROMPT, sanitize_answer, sanitize_caption
+from .caption_sanitize import sanitize_answer, sanitize_caption
 from .crop_embeddings import ThumbRateLimiter, ThumbStore, attach_crop_embeddings, load_zones_fail_closed
 from .detections import cap_by_score, nms
 from .model_manager import ModelManager
 from .models import VisionResult, VisionTask
 from .profiles import PipelineDef, ProfileDef, VisionProfiles
 from .settings import Settings
-from .vlm_family import is_chat_template_vlm
+from .vlm_family import caption_prompt_for, is_chat_template_vlm
 from .when_guard import safe_when
 
 settings = Settings()
@@ -905,7 +905,7 @@ class VisionRunner:
         model: Any,
         processor: Any,
         img: Image.Image,
-        text_prompt: str,
+        text_prompt: Optional[str],
         model_id: str,
         device: str,
         max_tokens: int,
@@ -927,8 +927,14 @@ class VisionRunner:
         is not reliable against a chat template's special tokens, so this
         slices the reply by the real input token length instead, the
         standard Qwen2-VL usage pattern.
+
+        ``text_prompt=None`` on the plain path means unconditional generation
+        (the processor gets only the image), which is how a BLIP captioner is
+        meant to be called -- see ``vlm_family.caption_prompt_for``.
         """
         if is_chat_template_vlm(model_id):
+            if not text_prompt:
+                raise ValueError("chat-template VLM requires a text prompt")
             messages = [{
                 "role": "user",
                 "content": [{"type": "image"}, {"type": "text", "text": text_prompt}],
@@ -937,8 +943,10 @@ class VisionRunner:
                 messages, tokenize=False, add_generation_prompt=True
             )
             inputs = processor(text=[chat_text], images=[img], return_tensors="pt")
-        else:
+        elif text_prompt:
             inputs = processor(images=img, text=text_prompt, return_tensors="pt")
+        else:
+            inputs = processor(images=img, return_tensors="pt")
 
         inputs = self._cast_inputs_to_model_dtype(inputs, model, device)
 
@@ -982,7 +990,7 @@ class VisionRunner:
             qwen_max_pixels=settings.VISION_VLM_QWEN_MAX_PIXELS,
         )
 
-        text_prompt = CAPTION_PROMPT
+        text_prompt = caption_prompt_for(model_id)
         max_tokens = settings.VISION_VLM_MAX_TOKENS
         temperature = settings.VISION_VLM_TEMPERATURE
 
@@ -995,11 +1003,20 @@ class VisionRunner:
         # silently failed to strip a lowercased echo of a mixed-case prompt.
         # For a chat-template model this is already a no-op safety net --
         # _generate_vlm_text already trimmed the reply by input token length.
-        cleaned = strip_echoed_prompt_prefix(generated_text, prompt=text_prompt)
+        cleaned = (
+            strip_echoed_prompt_prefix(generated_text, prompt=text_prompt)
+            if text_prompt
+            else (generated_text or "").strip()
+        )
         caption_text, ok, reason = sanitize_caption(cleaned)
         if not ok:
             warnings.append(f"caption_rejected:{reason}")
-            caption_text = ""
+            # A rejected caption is published as rejected, never as an empty
+            # string at full confidence (what every cam0 artifact carried
+            # before 2026-10-08, indistinguishable from a real result).
+            caption = {"text": "", "confidence": 0.0, "rejected_reason": reason}
+        else:
+            caption = {"text": caption_text, "confidence": 1.0}  # Placeholder for accepted text
 
         return {
             "configured": True,
@@ -1007,10 +1024,7 @@ class VisionRunner:
             "kind": "caption_frame",
             "model_id": model_id,
             "device": device,
-            "caption": {
-                "text": caption_text,
-                "confidence": 1.0 # Placeholder
-            }
+            "caption": caption,
         }
 
     # ------------------------

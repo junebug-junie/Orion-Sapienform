@@ -34,6 +34,10 @@ VisionDetection = VisionObject
 class VisionCaption(BaseModel):
     text: str
     confidence: Optional[float] = None
+    # Additive (2026-10-08). Set only when the captioner's output was thrown
+    # away by the host's sanitizer (prompt_echo, too_short, stoplist_ratio,
+    # repetition_degenerate, empty); text is then "" and confidence 0.0.
+    rejected_reason: Optional[str] = None
 
 
 class VisionEmbedding(BaseModel):

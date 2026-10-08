@@ -52,6 +52,18 @@ def test_identity_reads_pool_config_and_host_ports(tmp_path: Path) -> None:
     assert 7005 not in ident.ports  # athena-side single-model server, not a circe seat
 
 
+def test_a_role_on_another_node_is_not_a_circe_port(tmp_path: Path) -> None:
+    """Multi-host pool (2026-10-08): hecate's agent-deep port is outside circe's firewall."""
+    root = _tree(tmp_path)
+    _write(root, "config/gpu_pool.yaml", _POOL_YAML.replace(
+        "roles:\n", "cards:\n  hecate-gpu0: {vram_gb: 32, host: hecate}\nroles:\n"
+                     "  agent-deep: {kind: llm, cards: [hecate-gpu0], owner: agent-deep, port: 8021}\n"))
+    _write(root, "services/orion-llamacpp-host/.env_example",
+           "ATLAS_FAST_HOST_PORT=8013\nHECATE_AGENT_DEEP_HOST_PORT=8021\n")
+    ident = gate.load_identity(root)
+    assert 8021 not in ident.ports and {8011, 8015, 8013} <= ident.ports
+
+
 def test_planted_direct_call_in_settings_fails(tmp_path: Path) -> None:
     root = _tree(tmp_path)
     _write(root, "services/orion-hub/app/settings.py", 'llm_url: str = "http://100.112.254.99:8011"\n')

@@ -215,7 +215,7 @@ def test_rejects_duplicate_index():
 
 
 def test_rejects_actuator_on_another_host():
-    _bad(lambda d: d["actuators"].update(atlas={"host": "atlas"}), "is not the pool host")
+    _bad(lambda d: d["actuators"].update(atlas={"host": "atlas"}), "is not a known host")
 
 
 def test_rejects_a_bridge_verb():

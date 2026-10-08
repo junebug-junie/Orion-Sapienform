@@ -59,6 +59,13 @@ class HostSpec(BaseModel):
     address: str
 
 
+class ExtraHostSpec(BaseModel):
+    """A second GPU node (``hosts:``). Its cards say ``host: <name>``; the pool's own ``host`` stays
+    the default for every card that names none."""
+    model_config = ConfigDict(extra="forbid")
+    address: str
+
+
 class ActuatorSpec(BaseModel):
     """A host-local actuator the pool routes GpuActuateV1 to by name (stage 4: circe's
     orion-gpu-lane-controller)."""
@@ -70,7 +77,8 @@ class CardSpec(BaseModel):
     model_config = ConfigDict(extra="forbid")
     vram_gb: float = Field(gt=0)
     lendable: bool = False
-    index: int | None = Field(None, ge=0)   # the actuator host's CUDA device number for this card
+    index: int | None = Field(None, ge=0)   # the card's host's CUDA device number for this card
+    host: str | None = None                 # a ``hosts:`` name; None = the pool's ``host``
 
 
 def _http_path(value: str) -> str:
@@ -197,6 +205,7 @@ class PoolConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
     version: Literal[1]
     host: HostSpec
+    hosts: dict[str, ExtraHostSpec] = Field(default_factory=dict)   # GPU nodes besides ``host``
     defaults: Defaults = Field(default_factory=Defaults)
     actuators: dict[str, ActuatorSpec] = Field(default_factory=dict)
     priorities: list[str] = Field(default_factory=lambda: list(PRIORITIES))
@@ -223,10 +232,17 @@ class PoolConfig(BaseModel):
         errors: list[str] = []
         if sorted(self.priorities) != sorted(PRIORITIES):
             errors.append(f"priorities must be a permutation of {PRIORITIES}")
+        if self.host.name in self.hosts:
+            errors.append(f"hosts: {self.host.name} is the pool host; list only the other nodes")
+        for card, spec in self.cards.items():
+            if spec.host is not None and spec.host != self.host.name and spec.host not in self.hosts:
+                errors.append(f"card {card}: unknown host {spec.host}")
         for name, role in self.roles.items():
             for card in role.cards:
                 if card not in self.cards:
                     errors.append(f"role {name}: unknown card {card}")
+            if len({self.card_host(c) for c in role.cards if c in self.cards}) > 1:
+                errors.append(f"role {name}: cards span hosts (one server serves a role)")
             for owner in role.owner:
                 if owner not in self.classes:
                     errors.append(f"role {name}: owner {owner} is not a class")
@@ -268,15 +284,24 @@ class PoolConfig(BaseModel):
                 errors.append(f"role {name}: swap seat and every role it evicts need a launch; "
                               f"missing on {unlaunched}")
         for name, act in self.actuators.items():
-            if act.host != self.host.name:
-                errors.append(f"actuator {name}: host {act.host} is not the pool host {self.host.name}")
-        indices: dict[int, str] = {}
+            if act.host != self.host.name and act.host not in self.hosts:
+                errors.append(f"actuator {name}: host {act.host} is not a known host")
+        for name, role in self.roles.items():
+            if role.launch is None or role.launch.actuator not in self.actuators:
+                continue
+            act_host = self.actuators[role.launch.actuator].host
+            for card in role.cards:
+                if card in self.cards and self.card_host(card) != act_host:
+                    errors.append(f"role {name}: card {card} is on {self.card_host(card)}, "
+                                  f"its actuator {role.launch.actuator} on {act_host}")
+        indices: dict[tuple[str, int], str] = {}
         for card, spec in self.cards.items():
             if spec.index is None:
                 continue
-            if spec.index in indices:
-                errors.append(f"cards {indices[spec.index]} and {card} share index {spec.index}")
-            indices[spec.index] = card
+            key = (self.card_host(card), spec.index)
+            if key in indices:
+                errors.append(f"cards {indices[key]} and {card} share index {spec.index}")
+            indices[key] = card
         for name, cls in self.classes.items():
             for role in cls.roles:
                 if role not in self.roles:
@@ -308,8 +333,19 @@ class PoolConfig(BaseModel):
     def priority_rank(self, priority: str) -> int:
         return self.priorities.index(priority)
 
+    def card_host(self, card: str) -> str:
+        """The node a card is in: its ``host``, else the pool's own ``host``."""
+        return self.cards[card].host or self.host.name
+
+    def role_host(self, role: str) -> str:
+        """The node serving ``role`` (the validator keeps a role's cards on one node)."""
+        return self.card_host(self.roles[role].cards[0])
+
+    def host_address(self, name: str) -> str:
+        return self.host.address if name == self.host.name else self.hosts[name].address
+
     def url(self, role: str) -> str:
-        return f"http://{self.host.address}:{self.roles[role].port}"
+        return f"http://{self.host_address(self.role_host(role))}:{self.roles[role].port}"
 
     def owns(self, work_class: str, role: str) -> bool:
         return work_class in self.roles[role].owner

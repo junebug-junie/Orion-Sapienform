@@ -395,6 +395,18 @@ def test_pool_labels_match_the_live_shape():
     assert default == "unassigned"
 
 
+def test_multi_host_pool_labels_each_node_only_with_its_own_cards():
+    """hecate's card is index 0 like circe's gpu0: each node gets only the cards whose host it is."""
+    state = _pool_state(generated_at=_NOW.isoformat())
+    state["cards"].append({"card": "hecate-gpu0", "index": 0, "host": "hecate", "lent": True,
+                           "swapped_in": [], "swap_state": "idle"})
+    state["roles"].append({"role": "agent-deep", "cards": ["hecate-gpu0"], "status": "confirmed"})
+    lm = biometrics_preview_routes.lane_map_from_pool_state
+    assert lm("circe", state, now=_NOW)[0]["0"] == "chat (lent)"
+    assert lm("hecate", state, now=_NOW) == ({"0": "agent-deep (lent)"}, "unassigned")
+    assert lm("athena", state, now=_NOW) == ({}, "unassigned")
+
+
 def test_pool_labels_follow_a_swap():
     """27B loaded on gpu2: diffusion is evicted, so it is not on the card."""
     state = _pool_state(generated_at=_NOW.isoformat())

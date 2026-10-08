@@ -196,6 +196,9 @@ class GpuCardStateV1(BaseModel):
     # The card's CUDA/nvidia-smi index on the pool host (config ``cards.<c>.index``); None when the
     # YAML leaves it unset. Stage 5.5: Hub's biometrics GPU labels join nvidia-smi cards on this.
     index: int | None = None
+    # The node this card is in (config ``cards.<c>.host``, else the pool ``host``). None from a pool
+    # that predates multi-host: read the state's ``host`` then. ``index`` is unique per node only.
+    host: str | None = None
     lendable: bool = False
     lent: bool = False
     swapped_in: list[str] = Field(default_factory=list)

@@ -54,12 +54,83 @@ def test_candidates_drop_unusable_rows_and_weight_by_declared_rules():
 
 
 def test_pressure_is_sum_of_weights_and_zero_when_nothing_new():
-    from app.replay import build_candidates, compute_pressure
+    from app.replay import compute_pressure, keyed_candidates
 
-    total, counts = compute_pressure(build_candidates(_rows()))
+    total, counts, new_counts = compute_pressure(keyed_candidates(_rows()))
     assert total == pytest.approx(1.0 + 0.6 + 0.5 + 0.7 + 0.8)
-    assert counts == {"metacog": 2, "compaction_request": 1, "resonance": 1, "crystallization": 1}
-    assert compute_pressure(build_candidates({k: [] for k in _rows()})) == (0.0, {})
+    assert counts == new_counts == {"metacog": 2, "compaction_request": 1, "resonance": 1, "crystallization": 1}
+    assert compute_pressure(keyed_candidates({k: [] for k in _rows()})) == (0.0, {}, {})
+
+
+def _timeouts(n, severity="degraded"):
+    # One event, n rows, model prose reworded every time (live: 222 rows/week of this key).
+    return [{"id": f"t{i}", "summary": f"the gateway timed out again, take {i}", "severity": severity,
+             "trigger_kind": "transport", "tags": [],
+             "dedupe_key": "transport:rpc_timeout:orion:exec:request:llmgatewayservice"} for i in range(n)]
+
+
+def test_repeats_of_one_thing_are_one_candidate_at_their_highest_weight():
+    from app.replay import compute_pressure, keyed_candidates, select_replay
+
+    rows = {"metacog": _timeouts(40) + _timeouts(1, "critical")}
+    keyed = keyed_candidates(rows)
+    assert len(keyed) == 1
+    (item,) = keyed.values()
+    assert item.weight == 1.0 and item.text == "the gateway timed out again, take 0"  # newest text, max weight
+    assert compute_pressure(keyed)[0] == 1.0  # not 41 rows of pressure
+    assert len(select_replay(list(keyed.values()), 12)) == 1
+
+
+def test_a_thing_seen_before_the_window_adds_no_pressure_but_stays_replayable():
+    from app.replay import compute_pressure, keyed_candidates, prior_keys
+
+    keyed = keyed_candidates({**_rows(), "metacog": _rows()["metacog"] + _timeouts(5)})
+    seen = prior_keys({"metacog": _timeouts(1)})
+    total, counts, new_counts = compute_pressure(keyed, seen)
+    assert counts["metacog"] == 3 and new_counts["metacog"] == 2  # the chronic timeout is not new
+    assert total == pytest.approx(1.0 + 0.6 + 0.5 + 0.7 + 0.8)
+    assert any(k.startswith("metacog:transport:") for k in keyed)
+
+
+def test_rows_without_a_key_count_as_their_own_thing_never_one_shared_blank():
+    """Guard for the dangerous failure: a null key collapsing everything into one
+    item would pin pressure near 0 and Orion would stop sleeping."""
+    from app.replay import keyed_candidates
+
+    rows = {"metacog": [{"id": f"m{i}", "summary": "s", "severity": "critical", "trigger_kind": "x",
+                         "dedupe_key": None} for i in range(3)]}
+    assert len(keyed_candidates(rows)) == 3
+
+
+def test_every_source_query_returns_a_key_and_honours_until():
+    from app.cycle_store import SOURCE_QUERIES
+
+    for kind, sql in SOURCE_QUERIES.items():
+        assert "dedupe_key" in sql and ":until" in sql and ":since" in sql, kind
+    # recall rewrites updated_at on ~100 crystallizations per retrieval: not new material
+    assert "memory_crystallization_history" in SOURCE_QUERIES["crystallization"]
+    assert "updated_at" not in SOURCE_QUERIES["crystallization"]
+    assert "trigger_reason" in SOURCE_QUERIES["metacog"]
+
+
+def test_read_pressure_reads_the_lookback_before_the_window():
+    from app.cycle import read_pressure
+    from app.settings import settings
+
+    f = _Fakes({**_rows(), "metacog": _rows()["metacog"] + _timeouts(3)})
+    asked = []
+
+    def prior(since, until):
+        asked.append((since, until))
+        return {"metacog": _timeouts(1)}
+
+    deps = f.deps()
+    deps.load_prior_rows = prior
+    last = NOW - timedelta(hours=7)
+    pressure, candidates = read_pressure(deps, NOW, last)
+    assert asked == [(last - timedelta(hours=settings.DREAM_LOOKBACK_HOURS), last)]
+    assert pressure.new_counts["metacog"] == 2 and pressure.counts["metacog"] == 3
+    assert len(candidates) == sum(pressure.counts.values())
 
 
 def test_select_replay_caps_any_one_source():

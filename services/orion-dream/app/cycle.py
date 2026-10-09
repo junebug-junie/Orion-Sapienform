@@ -24,7 +24,7 @@ from uuid import uuid4
 from orion.schemas.dream_cycle import DreamCycleV1, SleepPressureV1
 
 from app.recombine import Complete, control_pairs, dream_pairs, recombine
-from app.replay import build_candidates, compute_pressure, select_replay
+from app.replay import compute_pressure, keyed_candidates, prior_keys, select_replay
 from app.settings import settings
 
 logger = logging.getLogger("orion-dream.cycle")
@@ -42,6 +42,9 @@ class CycleDeps:
     complete: Complete
     # (cycle_id, window since) -> staged delta id or None
     rem_compaction: Optional[Callable[[str, datetime], Awaitable[Optional[str]]]] = None
+    # (since, until) -> source rows for the lookback before the window: what
+    # already counted as seen. None = nothing seen before (every key is new).
+    load_prior_rows: Optional[Callable[[datetime, datetime], dict[str, list[dict[str, Any]]]]] = None
 
 
 def _utc(dt: Optional[datetime]) -> Optional[datetime]:
@@ -60,13 +63,19 @@ def window_start(now: datetime, last_start: Optional[datetime]) -> datetime:
 def read_pressure(deps: CycleDeps, now: datetime, last_start: Optional[datetime]):
     """(SleepPressureV1, candidates). Blocking (sync DB); call via to_thread."""
     since = window_start(now, last_start)
-    candidates = build_candidates(deps.load_source_rows(since, settings.DREAM_CANDIDATES_PER_SOURCE))
-    total, counts = compute_pressure(candidates)
+    keyed = keyed_candidates(deps.load_source_rows(since, settings.DREAM_CANDIDATES_PER_SOURCE))
+    seen = set()
+    if deps.load_prior_rows is not None:
+        lookback = since - timedelta(hours=settings.DREAM_LOOKBACK_HOURS)
+        seen = prior_keys(deps.load_prior_rows(lookback, since))
+    total, counts, new_counts = compute_pressure(keyed, seen)
+    candidates = list(keyed.values())
     pressure = SleepPressureV1(
         since=since,
         computed_at=now,
         pressure=total,
         counts=counts,
+        new_counts=new_counts,
         idle_minutes=deps.load_idle_minutes(),
         threshold=settings.DREAM_SLEEP_PRESSURE_THRESHOLD,
         idle_required_minutes=settings.DREAM_IDLE_MINUTES,
@@ -95,9 +104,9 @@ async def run_cycle_once(deps: CycleDeps, *, trigger: str = "pressure", force: b
             return None
         if not pressure.should_sleep:
             logger.info(
-                "dream_cycle not due pressure=%.2f/%.2f idle=%s/%s counts=%s",
+                "dream_cycle not due pressure=%.2f/%.2f idle=%s/%s new=%s counts=%s",
                 pressure.pressure, pressure.threshold, pressure.idle_minutes,
-                pressure.idle_required_minutes, pressure.counts,
+                pressure.idle_required_minutes, pressure.new_counts, pressure.counts,
             )
             return None
 

@@ -42,11 +42,14 @@ def _utc_now() -> datetime:
 
 
 class SleepPressureV1(BaseModel):
-    """How much the day left unprocessed since the last cycle.
+    """How much NEW unprocessed material arrived since the last cycle.
 
-    `pressure` is the sum of candidate weights — the same numbers replay ranks
-    on, so pressure and replay cannot drift apart. It returns to exactly 0 after
-    a cycle because every source is windowed on `since` (the last cycle's end).
+    `counts`: distinct things per source in the window (rows sharing a key,
+    e.g. one recurring gateway timeout, are one thing) -- what replay draws on.
+    `new_counts`: the subset absent from the lookback before the window.
+    `pressure`: sum of the replay weights of those new things only, so a
+    chronic problem adds pressure once. It is exactly 0 right after a cycle:
+    every source is windowed on `since` (the last good cycle's start).
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -55,6 +58,7 @@ class SleepPressureV1(BaseModel):
     computed_at: datetime = Field(default_factory=_utc_now)
     pressure: float = Field(ge=0.0)
     counts: dict[str, int] = Field(default_factory=dict)
+    new_counts: dict[str, int] = Field(default_factory=dict)
     idle_minutes: Optional[float] = None
     threshold: float = Field(ge=0.0)
     idle_required_minutes: float = Field(ge=0.0)

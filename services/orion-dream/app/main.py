@@ -166,12 +166,13 @@ def build_cycle_deps():
         persist_cycle=_persist,
         complete=_complete,
         rem_compaction=_rem,
+        load_prior_rows=cycle_store.load_prior_rows,
     )
 
 
 app = FastAPI(
     title="Orion Dream Module",
-    description="Generates nightly dreams from Orion’s stored memories.",
+    description="Orion's sleep cycle: replay, recombination, and dream readouts.",
     version=settings.SERVICE_VERSION,
     lifespan=lifespan,
 )

@@ -98,6 +98,10 @@ class _Conn:
             return list(db["admission"])
         if "FROM durable_resource_events" in sql and "ORDER BY" in sql:
             return [e for e in db["events"] if e["run_id"] in args[0]]
+        if "JOURNAL_RUN_IDS" in sql:
+            since, until = args
+            return [{"run_id": j["source_ref"].split(":", 1)[1]} for j in db["journals"]
+                    if since <= j["created_at"] < until]
         if "DISTINCT ON (j.source_ref)" in sql:
             return list(db["journals"])
         if "FROM journal_entries" in sql:
@@ -461,3 +465,14 @@ def test_published_but_unstored_upserts_never_mark_the_curiosity_index_complete(
     assert (confirmed.indexed, confirmed.pending) == (0, 0)
     as_of = listener.index_complete_as_of
     assert started - INDEX_LAG_MARGIN - timedelta(seconds=1) <= as_of <= started - INDEX_LAG_MARGIN + timedelta(seconds=1)
+
+
+
+def test_graph_down_recent_still_lists_a_write_up_only_run():
+    """Runs from before the admission path are discoverable from their write-up alone."""
+    listener, _ = _graph_listener(_GraphReader(down=True))
+    result = _ask(listener, {"limit": 5})
+    assert [i.id for i in result.items] == ["g1", "new1", "fail1", "old1"]
+    g1 = result.items[0]
+    assert g1.extra["clock_from"] == "write_up" and g1.extra["graph_read"] is False
+    assert result.total_available == 4

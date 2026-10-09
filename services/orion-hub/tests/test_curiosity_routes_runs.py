@@ -476,3 +476,18 @@ def test_the_introspect_window_matches_the_run_store_window() -> None:
     from orion.schemas.introspect import CURIOSITY_WINDOW_DAYS
 
     assert CURIOSITY_WINDOW_DAYS == store.WINDOW_DAYS_MAX
+
+
+
+def test_a_write_up_only_run_is_listed_when_the_graph_is_down() -> None:
+    """Pre-admission runs have no admission/lifecycle row; their journal is the only Postgres trace."""
+    pool = _Pool({
+        "JOURNAL_RUN_IDS": [{"run_id": "old"}],
+        "FROM journal_entries WHERE source_ref = ANY": [{"entry_id": "j", "source_ref": "curiosity:old",
+                                                         "title": "Curiosity", "body": "prose",
+                                                         "created_at": NOW - timedelta(days=30)}],
+    })
+    payload = asyncio.run(store.read_runs_payload(pool=pool, reader=_Reader(raises=True), days=90, now=NOW))
+    assert payload["available"] is True and [r["run_id"] for r in payload["runs"]] == ["old"]
+    call = next(c for c in pool.conn.calls if "JOURNAL_RUN_IDS" in c[0])
+    assert call[1] == (NOW - timedelta(days=90), NOW)

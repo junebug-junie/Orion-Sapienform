@@ -58,3 +58,36 @@ def test_best_of_several_faces_wins():
         )
     )
     assert (v["outcome"], v["faces"], v["similarity"]) == ("probable", 2, 0.7)
+
+
+def test_state_without_subject_is_not_reported_as_a_match():
+    # identity_hint_from_artifact ignores a candidate with no subject, so the
+    # log must not claim "probable" for something presence never sees.
+    v = identity_verdict_summary(_art([{"state": "probable", "similarity": 0.7}]))
+    assert v["outcome"] == "unsure"
+
+
+def test_label_follows_the_hint_even_if_an_unsure_face_scores_higher():
+    v = identity_verdict_summary(
+        _art(
+            [
+                {"subject": "unknown", "state": "unsure", "similarity": 0.5},
+                {"subject": "juniper", "state": "possible", "similarity": 0.4, "detect_confidence": 0.9},
+            ]
+        )
+    )
+    assert (v["outcome"], v["similarity"], v["detect_confidence"]) == ("possible", 0.4, 0.9)
+
+
+def test_mixed_type_and_hostile_values_cannot_raise_or_escape_the_label_set():
+    v = identity_verdict_summary(
+        _art(
+            [
+                {"state": "unsure", "similarity": "0.5"},
+                {"state": "x\nINFO fake", "similarity": 0.4},
+                {"state": ["list"], "similarity": None},
+            ]
+        )
+    )
+    assert v["outcome"] in {"no_face", "not_enrolled", "unsure", "possible", "probable"}
+    assert v["similarity"] == 0.4

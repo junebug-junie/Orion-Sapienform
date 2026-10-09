@@ -301,14 +301,17 @@ class WindowService:
                 except Exception as e:
                     logger.warning(f"[WINDOW] Invalid identity artifact payload: {e}")
                     continue
-                verdict = identity_verdict_summary(payload)
-                self._identity_checks[verdict["outcome"]] += 1
-                logger.info(
-                    f"[WINDOW] identity_check stream={stream_key_from_artifact(payload)} "
-                    f"outcome={verdict['outcome']} faces={verdict['faces']} "
-                    f"similarity={verdict['similarity']} detect_conf={verdict['detect_confidence']} "
-                    f"corr={payload.correlation_id} totals={dict(self._identity_checks)}"
-                )
+                try:
+                    verdict = identity_verdict_summary(payload)
+                    self._identity_checks[verdict["outcome"]] += 1
+                    logger.info(
+                        f"[WINDOW] identity_check stream={stream_key_from_artifact(payload)} "
+                        f"outcome={verdict['outcome']} faces={verdict['faces']} "
+                        f"similarity={verdict['similarity']} detect_conf={verdict['detect_confidence']} "
+                        f"corr={payload.correlation_id} totals={dict(self._identity_checks)}"
+                    )
+                except Exception as e:  # the trace must never kill the identity loop
+                    logger.warning(f"[WINDOW] identity_check trace failed: {e}")
                 hint = identity_hint_from_artifact(payload)
                 confidence = identity_confidence_from_artifact(payload)
                 if hint is None and confidence is None:

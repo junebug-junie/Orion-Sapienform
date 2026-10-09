@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import http.cookiejar
 import json
 import logging
 import time
@@ -70,6 +71,10 @@ def fetch_ilo_snapshot(
     session.headers.update(
         {"Accept-Encoding": "identity", "Connection": "close", "OData-Version": "4.0"}
     )
+    # Basic auth goes on every request, so a BMC session cookie buys nothing -- and replaying
+    # one breaks hecate's Inspur/AMI BMC: it sets QSESSIONID on the first 200, then answers the
+    # next request carrying it with 401 "Invalid Authentication" (confirmed live 2026-10-09).
+    session.cookies.set_policy(http.cookiejar.DefaultCookiePolicy(allowed_domains=[]))
 
     def get(path: str):
         # Slash convention differs by firmware: athena's iLO and circe's AMI want the
@@ -137,10 +142,18 @@ def fetch_ilo_snapshot(
         power_resp = get(f"{chassis_path}/Power")
         if power_resp.ok:
             controls = power_resp.json().get("PowerControl") or []
-            if controls:
-                watts = controls[0].get("PowerConsumedWatts")
-                if watts is not None:
-                    power_watts = float(watts)
+            # DMTF says array; hecate's older Inspur firmware returns a bare object.
+            control = controls if isinstance(controls, dict) else (controls[0] if controls else {})
+            watts = control.get("PowerConsumedWatts")
+            if watts is not None:
+                power_watts = float(watts)
+
+        if not (thermal_resp.ok or power_resp.ok):
+            # Both sensor reads refused: a real fault, not "no reading yet" -- say so.
+            return IloSnapshot(
+                fetched_at=time.time(),
+                error=f"thermal_http_{thermal_resp.status_code},power_http_{power_resp.status_code}",
+            )
 
         return IloSnapshot(
             fetched_at=time.time(),

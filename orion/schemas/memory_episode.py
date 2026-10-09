@@ -53,7 +53,7 @@ class MemoryEpisodeClosedV1(BaseModel):
 # --- Stage 1 PR 2: the shadow distiller (memory.episode_distill) ---------------------------
 
 MEMORY_EPISODE_DISTILL_WORKFLOW = "memory.episode_distill"
-MEMORY_EPISODE_DISTILL_PROMPT_VERSION = "memory_episode_distill.v5"  # v5: until_quote + expires_at on any purpose; names only from this episode (2026-10-07)
+MEMORY_EPISODE_DISTILL_PROMPT_VERSION = "memory_episode_distill.v6"  # v6: Orion-initiated turns rendered ORION FIRST (2026-10-09)
 
 Purpose = Literal["happened", "about_juniper", "orion_view", "follow_up"]
 Voice = Literal["juniper_said", "worked_out_together", "orion_thought", "orion_read", "orion_self_knowledge"]

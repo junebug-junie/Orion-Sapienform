@@ -200,8 +200,8 @@ def test_stored_prompt_version_is_the_rendered_template_not_the_brief():
         result = await graph(world, saver, d).ainvoke(Command(resume={}), CFG)
         assert result["status"] == "completed"
         kw = d.persisted[0]
-        assert kw["prompt_version"] == "memory_episode_distill.v5"
-        assert result["rendered_prompt_version"] == "memory_episode_distill.v5"
+        assert kw["prompt_version"] == "memory_episode_distill.v6"
+        assert result["rendered_prompt_version"] == "memory_episode_distill.v6"
         # GOOD names no stakes category: under v3 that is escalated and labelled, not left NULL.
         assert [(m.stakes, m.stakes_reason) for m in kw["result"].memories] == [("high", "unjudged")]
 

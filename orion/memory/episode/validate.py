@@ -558,8 +558,9 @@ def validate_distillation(
 
 
 def coverage(result: ValidationResult, turns: list[EpisodeTurn]) -> dict[str, Any]:
-    """Stage 1 acceptance 6: share of non-command turns cited by some kept memory."""
-    content = [t for t in turns if not t.is_command]
+    """Stage 1 acceptance 6: share of Juniper's non-command turns cited by some kept memory.
+    Turns Orion wrote on their own (no prompt) are context, not Juniper turns to cover."""
+    content = [t for t in turns if not t.is_command and t.prompt.strip()]
     cited = {ev.source_id for m in result.memories for ev in m.evidence if ev.verified}
     hit = [t for t in content if t.correlation_id in cited]
     return {

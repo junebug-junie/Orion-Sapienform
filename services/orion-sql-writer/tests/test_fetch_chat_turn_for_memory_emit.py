@@ -129,3 +129,21 @@ def test_returns_none_when_missing_from_both_tables(monkeypatch: pytest.MonkeyPa
     turn = worker._fetch_chat_turn_for_memory_emit("corr-missing")
 
     assert turn is None
+
+
+def test_orion_initiated_row_is_emitted_as_orion(monkeypatch: pytest.MonkeyPatch):
+    """2026-10-09: Orion's own messages (empty prompt) were dropped here, so they never reached
+    episodes -- 53 of 101 turns over 14 days."""
+    sess = _FakeSession(rows_by_model={worker.ChatHistoryLogSQL: _Row(prompt="", response="Morning! Porch camera?")})
+    _patch_session(monkeypatch, sess)
+    turn = worker._fetch_chat_turn_for_memory_emit("corr-o")
+    assert turn is not None and turn["initiated_by"] == "orion" and turn["prompt"] == ""
+
+
+def test_juniper_row_is_marked_juniper_and_empty_response_still_dropped(monkeypatch: pytest.MonkeyPatch):
+    sess = _FakeSession(rows_by_model={worker.ChatHistoryLogSQL: _Row()})
+    _patch_session(monkeypatch, sess)
+    assert worker._fetch_chat_turn_for_memory_emit("corr-j")["initiated_by"] == "juniper"
+    sess = _FakeSession(rows_by_model={worker.ChatHistoryLogSQL: _Row(prompt="hello", response="")})
+    _patch_session(monkeypatch, sess)
+    assert worker._fetch_chat_turn_for_memory_emit("corr-x") is None

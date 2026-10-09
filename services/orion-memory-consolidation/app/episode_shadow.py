@@ -31,6 +31,7 @@ from orion.schemas.memory_episode import MemoryEpisodeClosedV1
 logger = logging.getLogger(__name__)
 
 SKIP_COMMAND_ONLY = "command_only"
+SKIP_NO_JUNIPER_TURN = "no_juniper_turn"  # only Orion's own messages, no reply from Juniper
 
 
 def is_workflow_command_turn(response: str | None) -> bool:
@@ -65,6 +66,7 @@ class ShadowTurn:
     boundary_score: Optional[float]
     is_command: bool
     legacy_close_reason: Optional[str]
+    initiated_by: str = "juniper"
 
     @classmethod
     def from_turn(
@@ -88,6 +90,7 @@ class ShadowTurn:
             boundary_score=float(score) if isinstance(score, (int, float)) else None,
             is_command=is_workflow_command_turn(turn.response),
             legacy_close_reason=legacy_close_reason,
+            initiated_by=turn.initiated_by,
         )
 
     def entry(self, *, v2_boundary: bool, v2_reason: str) -> dict[str, Any]:
@@ -100,6 +103,7 @@ class ShadowTurn:
             "boundary_score": self.boundary_score,
             "is_command": self.is_command,
             "legacy_close_reason": self.legacy_close_reason,
+            "initiated_by": self.initiated_by,
             "v2_boundary": v2_boundary,
             "v2_reason": v2_reason,
         }
@@ -118,8 +122,11 @@ def build_closed_event(
     real_turns = [t for t in turns if isinstance(t, dict)]
     ended_at = max((_parse_ts(t.get("at")) for t in real_turns if _parse_ts(t.get("at"))), default=started_at)
     commands = sum(1 for t in real_turns if t.get("is_command"))
-    juniper = len(real_turns) - commands
+    orion_only = sum(1 for t in real_turns if not t.get("is_command") and t.get("initiated_by") == "orion")
+    juniper = len(real_turns) - commands - orion_only
     status = "skipped" if real_turns and juniper == 0 else "closed"
+    # An episode of only Orion's own messages (no reply from Juniper) is not distilled.
+    skip_reason = (SKIP_COMMAND_ONLY if not orion_only else SKIP_NO_JUNIPER_TURN) if status == "skipped" else None
     return MemoryEpisodeClosedV1(
         episode_id=episode_id,
         source_platform=source_platform,
@@ -135,7 +142,7 @@ def build_closed_event(
         close_lag_sec=max(0.0, (closing.at - ended_at).total_seconds()),
         closing_turn_id=closing.correlation_id,
         episode_status=status,  # type: ignore[arg-type]
-        skip_reason=SKIP_COMMAND_ONLY if status == "skipped" else None,
+        skip_reason=skip_reason,
     )
 
 

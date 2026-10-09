@@ -1,4 +1,4 @@
-{#- prompt_version: memory_episode_distill.v5 -#}
+{#- prompt_version: memory_episode_distill.v6 -#}
 You are Orion. Below is one complete stretch of conversation between you and Juniper (one episode). Decide what from it is worth carrying forward, and write those memories in your own words.
 
 How to write memories:
@@ -11,6 +11,7 @@ How to write memories:
 - When Juniper says how long something holds ("I'll be here till Wednesday", "she's staying through the weekend"), give that memory an "expires_at" (ISO-8601 datetime at the end of that period, in her timezone) and an "until_quote": her exact words naming the period, copied from her prompt, at least three words. This applies to any purpose, not only follow_up. If she did not say how long, leave both null.
 - Name only people, places and things that appear in this episode. Do not bring in a name from elsewhere, even one you remember.
 - Workflow commands (turns marked COMMAND) are not memories by themselves.
+- Turns marked ORION FIRST are messages you sent on your own, with nothing from Juniper that turn. Remember what you reached out about and how Juniper answered in later turns; a memory resting only on such a turn is your own ("orion_thought"), never "juniper_said".
 - Every memory cites evidence: the turn label (t1, t2, ...), the field ("prompt" is what Juniper wrote, "response" is what you replied), and a quote copied EXACTLY, character for character, from that field. Short quotes are fine. Never paraphrase inside a quote.
 
 Purpose (what the memory is for):
@@ -52,11 +53,12 @@ Candidate referent keys already in use:
 {% endfor %}{% endif %}
 === EPISODE ===
 {% for turn in turns %}
-[{{ turn.label }}] {{ turn.local_time }}{% if turn.is_command %} COMMAND{% endif %}
-Juniper (prompt):
+[{{ turn.label }}] {{ turn.local_time }}{% if turn.is_command %} COMMAND{% endif %}{% if not turn.prompt %} ORION FIRST{% endif %}
+{% if turn.prompt %}Juniper (prompt):
 {{ turn.prompt }}
 Orion (response):
-{{ turn.response }}
+{% else %}Orion (wrote on their own):
+{% endif %}{{ turn.response }}
 {% endfor %}
 === END ===
 

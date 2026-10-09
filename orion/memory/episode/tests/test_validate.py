@@ -258,3 +258,12 @@ def test_v2_answer_is_not_forced_high_but_real_signals_still_escalate():
     assert [m.events[-1].op for m in r.memories] == ["stakes_uncategorized", "stakes_uncategorized", "stakes_raised"]
     strict = validate_distillation(d, TURNS, episode_id="ep-v3", prompt_version="memory_episode_distill.v3")
     assert strict.memories[0].stakes_reason == "unjudged"
+
+
+def test_coverage_counts_only_juniper_turns_not_orion_first_messages():
+    turns = TURNS[:2] + [EpisodeTurn("t5", "c-5", "", "Morning! I kept thinking about the porch camera.",
+                                     datetime(2026, 9, 28, 10, 0, tzinfo=timezone.utc))]
+    r = _run(_mem())                                  # cites t2 only
+    from orion.memory.episode.validate import validate_distillation as _v  # noqa: F401
+    cov = coverage(r, turns)
+    assert cov["content_turns"] == 2                  # t1, t2; the Orion-first t5 is context

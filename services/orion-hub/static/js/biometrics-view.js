@@ -82,6 +82,15 @@
     return (byNode[node] || {}).chassis_watts;
   }
 
+  // Motherboard heat: the hottest chipset / voltage-regulator sensor the node's own BMC
+  // reports (orion/telemetry/biometrics_pipeline.py's board_temp_c_max). Unlike wattage,
+  // every node self-reports this in its own snapshot. undefined when nothing measured it
+  // (no BMC, e.g. hecate) -- never a guessed number.
+  function boardTempFor(snapshot) {
+    var m = (snapshot && snapshot.summary && snapshot.summary.measurements) || {};
+    return m.board_temp_c_max;
+  }
+
   async function fetchJson(url) {
     var response = await fetch(url);
     return response.json();
@@ -322,6 +331,8 @@
       );
       var watts = chassisWattsFor(node, athenaSnapshot);
       grid.appendChild(tile(node + " power", watts !== undefined ? fmt(watts, 0) + " W" : "—", "chassis wattage"));
+      var boardTemp = boardTempFor(payload);
+      grid.appendChild(tile(node + " mobo", boardTemp !== undefined ? fmt(boardTemp, 0) + " °C" : "—", "chipset / VR max"));
     });
     if (status) status.textContent = results.every((r) => r[0].ok) ? "live" : "partial";
     loaded.cardPreview = true;
@@ -361,11 +372,12 @@
   var PRESSURE_CHANNELS = [
     "cpu", "gpu_util", "gpu_mem", "mem", "swap", "disk", "net", "thermal", "power", "disk_capacity", "fan",
   ];
-  // Raw physical units, not a 0-1 pressure -- own value source (chassisWattsFor, a live
-  // cluster read, not the pressures/composites dict), own format ("### W"), no tone.
-  // Still gets a trend chart for free via the ALL_CHANNELS-driven history loop below,
-  // since _CHANNEL_COLUMN maps it to the `measurements` JSONB column.
-  var RAW_CHANNELS = ["chassis_watts"];
+  // Raw physical units, not a 0-1 pressure -- own value source (chassisWattsFor /
+  // boardTempFor, not the pressures/composites dict), own unit suffix, no tone.
+  // Still get a trend chart for free via the ALL_CHANNELS-driven history loop below,
+  // since _CHANNEL_COLUMN maps them to the `measurements` JSONB column.
+  var RAW_UNITS = { chassis_watts: " W", board_temp_c_max: " °C" };
+  var RAW_CHANNELS = Object.keys(RAW_UNITS);
   var ALL_CHANNELS = COMPOSITE_CHANNELS.concat(PRESSURE_CHANNELS).concat(RAW_CHANNELS);
   var INVERTED_CHANNELS = { homeostasis: true, stability: true };
 
@@ -423,7 +435,11 @@
       var rows = ALL_CHANNELS.map(function (ch) {
         var isComposite = COMPOSITE_CHANNELS.indexOf(ch) !== -1;
         var isRaw = RAW_CHANNELS.indexOf(ch) !== -1;
-        var value = isComposite ? composites[ch] : isRaw ? chassisWattsFor(node, athenaSnapshot) : pressures[ch];
+        var value = isComposite ? composites[ch] : isRaw
+          ? ch === "chassis_watts"
+            ? chassisWattsFor(node, athenaSnapshot)
+            : boardTempFor(snapshot)
+          : pressures[ch];
         if (value === undefined) return null; // absent channel on this node -- omit, never zero-fill
         // (an unreachable node has no composites/pressures at all, so every
         // row already short-circuits above -- the "node status" tile below
@@ -447,7 +463,7 @@
         snapEl.appendChild(noData);
       }
       rows.forEach(function (row) {
-        var display = row.raw ? fmt(row.value, 0) + " W" : fmt(row.value, 2);
+        var display = row.raw ? fmt(row.value, 0) + RAW_UNITS[row.ch] : fmt(row.value, 2);
         snapEl.appendChild(tile(row.ch, display, null, { tone: row.tone, trend: row.trend }));
       });
       snapEl.appendChild(
@@ -790,6 +806,7 @@
     onModalClose,
     showModalSubview,
     shouldPoll,
+    boardTempFor,
     laneBadge,
   };
 

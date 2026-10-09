@@ -67,6 +67,9 @@ _CHANNEL_COLUMN: dict[str, str] = {
     # above (cluster_measurements_by_node), not from history, since circe's own PDU proxy
     # value is computed on athena and never persisted into circe's own summary row.
     "chassis_watts": "measurements",
+    # Raw degrees C: hottest motherboard chipset/voltage-regulator sensor, read from each
+    # node's own BMC and written into its own summary row (see extract_measurements).
+    "board_temp_c_max": "measurements",
 }
 
 # Injectable seam for tests, same pattern as cabinet_sensors_routes._history_query.

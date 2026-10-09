@@ -94,9 +94,9 @@ nodes:
     # Power comes from the Panduit PDU, outlets 19 and 25 (2 PSUs), polled ON ITS BEHALF by
     # athena's PDU_PROXY_OUTLETS -- the PDU's SNMP Manager allow-list only admits athena, so
     # hecate cannot self-poll. Outlet map is physical cabling (re-cabling needs a manual edit).
-    # expected_online is false until orion-biometrics is actually running on hecate: with no
-    # service there, its silence is not an outage and pressure_organ must not treat it as one.
-    # Flip to true when HECATE_BIOMETRICS_BASE_URL answers.
+    # expected_online stays false: hecate runs on demand, not 24/7 (Juniper, 2026-10-09), so its
+    # silence is not an outage and pressure_organ must not treat it as one -- even though
+    # orion-biometrics now runs there and HECATE_BIOMETRICS_BASE_URL answers while it is up.
     aliases:
       - hecate
       - hecate.tail348bbe.ts.net

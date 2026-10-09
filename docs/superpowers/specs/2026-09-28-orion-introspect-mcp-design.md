@@ -44,7 +44,7 @@ data. Shipped in five slices, memories last.
 | Reading results | orion-hub (`orion/world_pulse_read/`) | `world_pulse_read_seed` (`handoff_json`, `stage2_result_json`), `journal_entries` (`source_ref` `world_pulse_read:*`) | `/world-pulse-read/api/reads/{seed_id}` |
 | Dreams | orion-dream | `dream_cycle`, `dream_replay_item`, `dream_hypothesis` | `/api/dream/cycles` |
 | Reveries | orion-thought | `substrate_reverie_thought`, `substrate_reverie_chain` | `/api/reverie/text/recent` |
-| Curiosity | orion-substrate-runtime | `substrate_endogenous_curiosity_candidates`, `curiosity_run_outcomes`, `curiosity_self_questions` | `/curiosity/api/runs` |
+| Curiosity | orion-hub (runs execute through Hub + orion-durable-runs; write-ups in `journal_entries` `curiosity:<run_id>`; the run story join is `orion/curiosity/run_story.py`) | `journal_entries`, `durable_admission_runs`, `substrate_durable_run_state`, `curiosity_run_outcomes`, `curiosity_self_questions` | `/curiosity/api/runs` |
 | Memories | orion-recall | `memory_cards` (+ edges/history) | `/api/memory/cards` |
 
 - **Memory privacy today:** cards carry `sensitivity` (public/private/intimate,
@@ -124,7 +124,10 @@ optional `since` (tz-aware), optional single-record id (`cycle_id`,
 
 **Epistemic labels:** dream hypotheses and reveries are always
 `epistemic_status="unsettled"`. Reading results are source-attributed
-candidates (`unsettled`). Memory cards and curiosity run outcomes are `record`.
+candidates (`unsettled`). Memory cards are `record`. A curiosity run with a
+write-up is `unsettled` (the text is what Orion concluded then); its `extra`
+facts (status, hops, revisions, belief moves) and a run with no write-up
+(failed, or finished having written nothing) are `record`.
 
 ### Reading results — extend existing contract, no new channel
 
@@ -141,7 +144,7 @@ by the request model) does not.
 |---|---|---|
 | `orion:introspect:dream:request` | orion-dream | `introspect.tool.request.v1` |
 | `orion:introspect:reverie:request` | orion-thought | `introspect.tool.request.v1` |
-| `orion:introspect:curiosity:request` | orion-substrate-runtime | `introspect.tool.request.v1` |
+| `orion:introspect:curiosity:request` | orion-hub | `introspect.tool.request.v1` |
 | `orion:introspect:memory:request` | orion-recall | `introspect.tool.request.v1` |
 
 Replies on `orion:introspect:result:<correlation_id>`, kind
@@ -199,6 +202,29 @@ reading.
 - `mcp__orion-introspect__` added to `_CONTEXT_GATHERING_MCP_PREFIXES` once
   the read-only responders are in (slice 1 for `reading_results`).
 
+### Curiosity decisions (chat, 2026-10-09)
+
+Settled with Juniper before slice 3; the original table named the wrong owner.
+
+1. **Responder is orion-hub.** substrate-runtime only owns the candidate
+   menus. The Hub already joins each run (`curiosity_run_store.py` +
+   `orion/curiosity/run_story.py`) and is reused, not re-derived.
+2. **Items:** runs (write-up + recorded facts + `curiosity_run_outcomes`
+   belief-move counts where a row exists) and, on request, open
+   self-questions. Candidate menus and peer briefs are out.
+3. **Labels:** split per item, as above.
+4. **Length:** lists show the write-up's `## Answer` section (or opening),
+   900 chars. One run by id returns the write-up up to 9,000 characters
+   *as serialized JSON*, so escaping cannot push it past the 12k MCP budget.
+5. **Search by meaning:** own `orion_curiosity` Chroma index via
+   `orion/introspect/semantic_index.py`, with the dreams
+   `index_complete_as_of` rule (empty search is unknown until the index has
+   caught up).
+6. **Failed runs are returned** as short `record` items, so Orion's view of
+   their history includes failures.
+7. **Curiosity runs may read their own past runs.** No cap; per-turn call
+   counts stay visible in traces.
+
 ## Proposal-mode record
 
 - **Capability change:** Orion can look up their own dreams, reveries,
@@ -241,7 +267,7 @@ Slice 1 (foundation + reading results):
   `services/orion-hub/tests/`
 
 Slices 2–5, one each: `services/orion-dream/app/`, `services/orion-thought/app/`,
-`services/orion-substrate-runtime/app/`, `services/orion-recall/app/` — a
+`services/orion-hub/scripts/` (curiosity), `services/orion-recall/app/` — a
 listener module + query function + tests, and the matching channel entry.
 
 ## Non-goals

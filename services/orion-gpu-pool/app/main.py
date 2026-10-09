@@ -379,6 +379,9 @@ async def health() -> dict[str, Any]:
             # restart) -- apply the named operator migration or let the background retry heal it.
             "schema": _store.schema_status() if _store is not None else None,
             "actuation": ({"seats": sorted(runtime.actuated), **runtime._paused_detail()} if runtime else None),
+            # Stage 7.3: roles above one hold -- configured max_holds, discovered slots, the limit in
+            # force and why it is lower (scheduler.hold_cap). Pool state/Hub get holds/max_holds in 7.4.
+            "holds": runtime.hold_limits() if runtime else None,
             "shed": ({**runtime.shed_board.view(runtime.now(), runtime.shed_enabled).as_dict(),
                       "orion_self_shed": runtime.orion_shed.health()} if runtime else None)}
 

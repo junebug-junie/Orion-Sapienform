@@ -35,7 +35,7 @@ from orion.gpu_pool.discovery import Probe, resolve_roles
 from orion.gpu_pool.lease_graph import FINAL, InvalidTransition, initial_state
 from orion.gpu_pool.scheduler import (
     Abort, Backlog, CardLive, DeadLetter, Expire, Grant, LeaseView, Recall, Requeue, RoleLive,
-    Serialized, Shed, SwapBlocked, SwapLoad, SwapUnload, Unavailable, schedule,
+    Serialized, Shed, SwapBlocked, SwapLoad, SwapUnload, Unavailable, hold_cap, schedule,
 )
 from orion.gpu_pool.orion_shed import (
     SHED_DECISION_REASON as ORION_SHED_DECISION_REASON, MemoryOrionShedLedger, OrionShedCaps,
@@ -179,6 +179,7 @@ class PoolRuntime:
         self._last_state: datetime | None = None
         self._swap_requested: set[tuple] = set()
         self._serialized_reported: set[tuple] = set()   # (lease_id, reason) already reported
+        self._hold_cap_reported: dict[str, str | None] = {}   # role -> last logged clamp reason
         self._ctx_seen: dict[str, int] = {}
         # Stage 5.7: config, not a list. A seat is actuated iff it has a launch block.
         self.actuated = cfg.actuated_seats()
@@ -557,6 +558,7 @@ class PoolRuntime:
             t = time.monotonic()
             self._resolve()
             self._phase("resolve", t)
+            self._report_hold_caps()
             for d in self._discovery_changes:
                 await self._emit(GpuPoolEventV1(
                     event="discovery_confirmed" if d.status == "confirmed" else "discovery_mismatch",
@@ -1192,6 +1194,37 @@ class PoolRuntime:
             await self.publish_state()
         return GpuPoolControlReplyV1(ok=True, reason="paused" if pause else "resumed",
                                      detail={**self._paused_detail(), "in_flight": in_flight})
+
+    def hold_limits(self) -> dict[str, dict[str, Any]]:
+        """Stage 7.3: each role configured above one hold (or with a one-off reserve), as the
+        scheduler applies it right now: configured max_holds, discovered slots, the limit in force,
+        and why it is lower (None when it is not). /health shows it; 7.4 puts holds/max_holds in
+        pool state and Hub."""
+        out: dict[str, dict[str, Any]] = {}
+        for role, spec in self.cfg.roles.items():
+            if spec.max_holds <= 1 and not spec.reserve_one_off_slots:
+                continue
+            live = self.roles.get(role)
+            cap, reason = hold_cap(self.cfg, role, live)
+            out[role] = {"max_holds": spec.max_holds, "reserve_one_off_slots": spec.reserve_one_off_slots,
+                         "slots": live.slots if live else 0, "effective": cap, "reason": reason}
+        return out
+
+    def _report_hold_caps(self) -> None:
+        """Edge-triggered: say once when a role's hold limit is clamped below its max_holds (fewer
+        discovered slots than configured, or the one-off reserve), and once when it clears. An
+        unloaded seat (no slots) is not news: it takes no holds of any kind."""
+        for role, row in self.hold_limits().items():
+            reason = row["reason"]
+            if reason == "no_slots" or self._hold_cap_reported.get(role, "unset") == reason:
+                continue      # an unloaded seat changes nothing: keep the last state said
+            self._hold_cap_reported[role] = reason
+            if reason:
+                logger.warning("gpu_pool_max_holds_clamped role=%s max_holds=%s effective=%s slots=%s reason=%s",
+                               role, row["max_holds"], row["effective"], row["slots"], reason)
+            else:
+                logger.info("gpu_pool_max_holds_in_force role=%s max_holds=%s slots=%s",
+                            role, row["max_holds"], row["slots"])
 
     def _paused_detail(self) -> dict[str, Any]:
         if self.paused is None:

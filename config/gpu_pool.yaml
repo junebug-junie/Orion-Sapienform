@@ -61,6 +61,13 @@ roles:
                # 9000 s (~2.5 h), Juniper 2026-09-29 (stage 5 spec, "Juniper's answers" 1): curiosity and
                # self-sense holds may land here; image generation may wait up to ~2.5 h for gpu2.
                max_hold_sec: 9000,
+               # Stage 7.3 (docs/superpowers/specs/2026-09-30-gpu-pool-stage7-concurrency.md, D1): two
+               # durable runs at once, one per Bonsai slot (2 x 131072). Each run still holds one slot;
+               # one-off agent calls share the runs' gaps (H3, pinned to one run each). The scheduler
+               # clamps this to the slots discovery reads from /props, so the Q4 rollback profile (1
+               # slot) runs one hold even before this line is reverted. Rollback: delete this line.
+               # reserve_one_off_slots stays 0 (the default): see the stage 7.3 PR report for the data.
+               max_holds: 2,
                # The controller runs this `launch` block and diffusion's through its generic executor
                # (stage 5.3 cutover; 5.6 deleted the load/unload bridge verbs and the controller's bridge).
                # after_wait_sec keeps today's 1200s elastic trigger. guards: thermal only -- visual_baseline was
@@ -78,6 +85,7 @@ roles:
                         # swap the two entries. The atlas-agent-burst image carries both binaries
                         # (Dockerfile.prism), so rollback needs no image change. Either edit changes this
                         # role's launch digest: pool (athena) and controller checkout (circe) move together.
+                        # Swapping them also needs max_holds above back to 1 (check_gpu_pool_config).
                         cuda_env: ATLAS_AGENT_BURST_CUDA_VISIBLE_DEVICES,
                         profile_var: ATLAS_AGENT_BURST_PROFILE_NAME,
                         profiles: [ternary-bonsai2-27b-pq2-v100-32gb-circe-agent,

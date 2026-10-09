@@ -2,7 +2,7 @@
 (docs/superpowers/specs/2026-09-30-gpu-pool-stage7-concurrency.md, the 7.2 row).
 
 Config-only for the pool: the seat's first launch profile changes; slots and per-slot context are
-discovered from llama.cpp /props. H1 (one durable-run hold per role) is unchanged, so the second
+discovered from llama.cpp /props. In 7.2 H1 (one durable-run hold per role) was unchanged, so the second
 slot serves one-off calls only. Covers acceptance check 3 (discovery) and the profile half of
 check 10 (rollback drill); the max_holds half of check 10 belongs to stage 7.3.
 """
@@ -115,9 +115,16 @@ def _grants(slots: int, leases, ctx: int = 131072) -> dict[str, str]:
     return {d.lease_id: d.role for d in decisions if isinstance(d, Grant)}
 
 
-def test_h1_unchanged_a_second_run_never_holds_the_two_slot_seat():
+def test_a_second_run_holds_the_two_slot_seat_only_with_max_holds_2():
     held = [_hold("h1", "granted", "agent"), _hold("h2", "granted", "agent-gpu2")]
-    assert _grants(2, [*held, _hold("h3")]) == {}
+    # Stage 7.3 ships agent-gpu2 max_holds: 2 -- the second slot can carry a second run.
+    assert _grants(2, [*held, _hold("h3")]) == {"h3": "agent-gpu2"}
+    # 7.2's rule (max_holds 1, the default and the 7.3 rollback): the second run never holds it.
+    roles = dict(CFG.roles)
+    roles["agent-gpu2"] = roles["agent-gpu2"].model_copy(update={"max_holds": 1})
+    one = CFG.model_copy(update={"roles": roles})
+    decisions = schedule(one, _live(2, 131072), _cards(**GPU2_LOADED), [*held, _hold("h3")], NOW)
+    assert not [d for d in decisions if isinstance(d, Grant)]
 
 
 def test_second_slot_serves_a_one_off_call_while_a_run_is_mid_call():

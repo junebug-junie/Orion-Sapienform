@@ -5,7 +5,8 @@ gpu2 elastic decider deleted in 4.5. The same questions, now answered by the poo
 durable-runs runtime, the real in-process pool runtime (fake clock, fixture llama.cpp servers and
 a fixture gpu2 actuator) and real Postgres checkpoints:
 
-A. home card, 20 runs: grants are FIFO by arrival, at most one hold on the agent card at a time,
+A. home card, 20 runs: grants are FIFO by arrival, never more holds on the agent card at once than
+   its hold limit (stage 7.3: config max_holds, clamped to the fixture's discovered slots -- 1 today),
    each run holds exactly one hold, and during every run a system-priority agent call still gets
    the card between the run's own calls (shared gaps, Juniper 2026-09-25) without waiting.
 B. gpu2: with the agent card held for a long run, waiting runs past the seat's 1200 s trigger make
@@ -38,6 +39,7 @@ from app.settings import Settings  # noqa: E402
 from orion.durable_runs.registry_store import DurableRunRegistryStore  # noqa: E402
 from orion.schemas.durable_run import CuriosityTurnResultV1, DurableRunRequestV1  # noqa: E402
 from orion.schemas.gpu_pool import GpuActuateResultV1, GpuActuateV1, GpuLeaseRequestV1  # noqa: E402
+from orion.gpu_pool.scheduler import RoleLive, hold_cap  # noqa: E402
 from pool_fixture import CFG, LIVE, InProcessPool, PoolBus  # noqa: E402
 
 SEAT = "agent-gpu2"
@@ -100,6 +102,22 @@ class EvalRunner:
         return value
 
 
+def peak_concurrent_holds(gpu, role: str) -> int:
+    """Most eval-run holds granted on ``role`` at the same time, replayed from the pool's own
+    lifecycle events in order (granted opens a hold; released/recalled-then-aborted/expired ends it)."""
+    open_ids: set[str] = set()
+    peak = 0
+    for e in gpu.events():
+        if not str(e.get("holder") or "").startswith("durable-runs:eval-"):
+            continue
+        if e.get("event") == "granted" and e.get("role") == role:
+            open_ids.add(e["lease_id"])
+            peak = max(peak, len(open_ids))
+        elif e.get("event") in ("released", "aborted", "expired", "cancelled", "unavailable"):
+            open_ids.discard(e.get("lease_id"))
+    return peak
+
+
 def granted_holds(gpu) -> list[tuple[str, str]]:
     return [(e["holder"].split(":", 1)[1], e.get("role")) for e in gpu.events("granted")
             if str(e.get("holder") or "").startswith("durable-runs:eval-")]
@@ -137,9 +155,17 @@ async def scenario_home(pool, saver, store) -> dict:
     order = [run for run, _ in grants]
     holds_per_run = {r: len(gpu.leases(holder=f"durable-runs:{r}", kind="hold")) for r in run_ids}
     concurrent = max(sum(1 for r in gpu.leases(kind="hold") if r["status"] in ("granted", "recalling")), 0)
+    _, _, agent_slots, _ = LIVE["agent"]
+    cap, cap_reason = hold_cap(CFG, "agent", RoleLive("agent", True, agent_slots))
+    peak = peak_concurrent_holds(gpu, "agent")
     await rt.close()
     checks = {
         "fifo_grant_order": order == run_ids,
+        # Stage 7.3: the agent card's hold limit, read from config (max_holds) and discovery (slots).
+        # The fixture's agent role has 1 slot, so this pins the one-hold invariant on gpu1 through the
+        # real durable-runs path; the max_holds > 1 path is gated by the pool-day eval's concurrency
+        # scenario (services/orion-gpu-pool/evals/run_pool_day_eval.py) and the scheduler tests.
+        "holds_within_max_holds": 1 <= peak <= cap,
         "one_hold_per_run": set(holds_per_run.values()) == {1},
         "all_completed": [(await store.get_run(r))["terminal"] for r in run_ids] == ["completed"] * len(run_ids),
         "no_hold_left_granted": concurrent == 0,
@@ -147,6 +173,8 @@ async def scenario_home(pool, saver, store) -> dict:
         "all_turns_on_agent": {role for _, role in runner.turns} == {"agent"},
     }
     return {"runs": len(run_ids), "grant_order_head": order[:5], "interleaved": sorted(set(runner.interleaved)),
+            "agent_hold_limit": {"max_holds": CFG.roles["agent"].max_holds, "slots": agent_slots,
+                                 "effective": cap, "reason": cap_reason, "peak_concurrent": peak},
             "checks": checks}
 
 

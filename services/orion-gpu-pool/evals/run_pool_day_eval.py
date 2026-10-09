@@ -50,6 +50,25 @@ urgent hold arriving while cooling_incident sheds background+system. Hard target
     (non-retryable) background/system request arriving while shed is refused in the tick it
     arrives with Unavailable("shed:*") -- it never waits out its deadline
 
+Concurrency scenario (stage 7.3, docs/superpowers/specs/2026-09-30-gpu-pool-stage7-concurrency.md):
+agent-gpu2 loaded with 2 slots (Bonsai, 2 x 131072), gpu1's agent at 1 slot, nothing lent. Durable
+runs arrive faster than one run per card can drain them (six at once, then one every ~10 min), with
+the live hold shape (calls 120-240 s of single-slot work, 30-90 s tool gaps: ~75% busy), plus one-off
+system agent calls. Service time follows an OCCUPANCY SLOWDOWN MODEL measured live on agent-gpu2
+(2026-10-09): Bonsai decodes 46 tok/s alone and 26 tok/s per slot with both slots busy, so a call's
+work advances 1.0 s per second alone and 26/46 = 0.565 s per second while the other slot also runs
+a call. The same replay runs at max_holds 1 (stage 7.2), max_holds 2 (7.3) and max_holds 2 with
+reserve_one_off_slots 1. Hard targets (7.3 = max_holds 2):
+  - two holds granted on agent-gpu2 at once for some time (acceptance check 4)
+  - zero seconds where one gap-sharing call stalls two runs (two idle-run calls waiting, one
+    one-off on the seat), and a scripted tick (check 9's eval case): two idle runs, one call in a gap,
+    both runs' next calls plus a queued one-off arrive -> exactly one run's call is granted at once
+  - a run's call never waits longer than one slowed one-off inference (+2 s)
+  - queued-hold wait p90 and mean waiting holds below the max_holds 1 replay
+  - with reserve_one_off_slots 1 the seat never carries two holds (the reserve is in force)
+Reported, not gated: one-off system agent call waits per variant (acceptance check 6's question,
+which decides the reserve default -- see the stage 7.3 PR report).
+
 Also measured: lease-graph checkpoint throughput through the real PoolRuntime + MemorySaver.
 That number is an in-memory ceiling; Postgres checkpoint throughput is UNVERIFIED until live.
 
@@ -716,6 +735,260 @@ def enforce_failures(e: dict) -> list[str]:
     return out
 
 
+# --- stage 7.3 concurrency -------------------------------------------------------------------
+CONC_SEC = 8000                     # under agent-gpu2's max_hold_sec (9000): no drain in the window
+CONC_START_RUNS = 6                 # queued at once (live 2026-09-30: 7 waiting)
+CONC_RUN_EVERY_SEC = 600            # then one new run about every 10 min
+CONC_RUN_WORK_SEC = (1500, 3000)    # run length in single-slot seconds (live hold p50 2,225 s)
+CONC_CALL_SEC = (120, 240)          # one call's single-slot work (live median call ~181 s)
+CONC_GAP_SEC = (30, 90)             # tool phase between calls (runs busy ~75% of their hold)
+CONC_ONE_OFF_EVERY_SEC = 240        # one-off system agent calls (cortex-exec shape)
+CONC_ONE_OFF_SEC = (20, 60)
+# Occupancy slowdown model, agent-gpu2 only (Bonsai, measured live 2026-10-09): tok/s per slot by the
+# number of calls decoding on the seat at once. 1 -> 46, 2 -> 26.
+BONSAI_TOK_S = {1: 46.0, 2: 26.0}
+CONC_SEEDS = (3, 5, 8)
+
+
+def _slowdown(busy: int) -> float:
+    """Single-slot seconds of work one call gets through per wall second with ``busy`` calls on the seat."""
+    if busy <= 1:
+        return 1.0
+    return BONSAI_TOK_S[min(busy, max(BONSAI_TOK_S))] / BONSAI_TOK_S[1]
+
+
+def _p(values: list[float], q: float) -> float | None:
+    if not values:
+        return None
+    ordered = sorted(values)
+    return round(ordered[min(len(ordered) - 1, int(q * len(ordered)))], 1)
+
+
+def concurrency_scenario(cfg=CFG, seed: int = 3, gpu2_slots: int = 2) -> dict:
+    rng = random.Random(seed)
+    leases: dict[str, dict] = {}
+    work_left: dict[str, float] = {}
+    roles = dict(LIVE, **{"agent-gpu2": RoleLive("agent-gpu2", True, gpu2_slots, 131072)})
+    cards = {c: CardLive(c) for c in cfg.cards}
+    cards["gpu2"] = CardLive("gpu2", swapped_in={"agent-gpu2"}, loaded_at=T0, last_active_at=T0)
+    starts = [0] * CONC_START_RUNS
+    t = 0.0
+    while True:
+        t += rng.expovariate(1 / CONC_RUN_EVERY_SEC)
+        if t >= CONC_SEC - 1200:
+            break
+        starts.append(int(t))
+    runs = [{"id": f"r{i}", "start": st, "left": rng.uniform(*CONC_RUN_WORK_SEC), "hold": None, "child": None,
+             "phase": "gap", "phase_left": 0.0, "done": False} for i, st in enumerate(starts)]
+    next_one_off = rng.expovariate(1 / CONC_ONE_OFF_EVERY_SEC)
+    hold_waits: list[float] = []
+    child_waits: list[float] = []
+    one_off_waits: list[float] = []
+    waiting_holds: list[int] = []
+    two_holds_sec = 0
+    max_holds_seen = 0
+    pin_stall_sec = 0
+    seat_work_sec = 0.0
+    run_ends: list[float] = []
+    n = 0
+
+    def add(req: dict, now: datetime) -> str:
+        nonlocal n
+        n += 1
+        lid = f"C{n}"
+        st = dict(initial_state(lid, {"request_id": lid, **req}, now))
+        st["deadline_at"] = None
+        leases[lid] = st
+        return lid
+
+    def apply(st: dict, ev: dict) -> None:
+        st.update(transition(st, ev, cfg), history=[])
+
+    for sec in range(CONC_SEC):
+        now = T0 + timedelta(seconds=sec)
+        at = now.isoformat()
+        while next_one_off <= sec:
+            lid = add({"work_class": "agent", "kind": "request", "priority": "system", "retryable": True,
+                       "holder": "cortex-exec"}, now)
+            work_left[lid] = rng.uniform(*CONC_ONE_OFF_SEC)
+            next_one_off += rng.expovariate(1 / CONC_ONE_OFF_EVERY_SEC)
+
+        for run in runs:
+            if run["done"] or sec < run["start"]:
+                continue
+            hold = leases.get(run["hold"]) if run["hold"] else None
+            if hold is None or hold["status"] in ("released", "unavailable", "dead_letter"):
+                run["hold"] = add({"work_class": "agent", "kind": "hold", "priority": "background",
+                                   "retryable": True, "holder": f"durable-runs:{run['id']}"}, now)
+                run["child"], run["phase"], run["phase_left"] = None, "gap", 0.0
+                continue
+            if hold["status"] not in ("granted", "recalling"):
+                continue
+            child = leases.get(run["child"]) if run["child"] else None
+            if run["phase"] == "call" and child is not None:
+                if child["status"] in ("queued", "granted", "recalling"):
+                    continue
+                run["child"], run["phase"], run["phase_left"] = None, "gap", rng.uniform(*CONC_GAP_SEC)
+                continue
+            run["phase_left"] -= 1
+            if run["phase_left"] > 0:
+                continue
+            if run["left"] <= 0:
+                apply(hold, {"type": "release_ok", "at": at})
+                run["done"] = True
+                run_ends.append(sec - run["start"])
+                continue
+            call = min(run["left"], rng.uniform(*CONC_CALL_SEC))
+            run["left"] -= call
+            cid = add({"work_class": "agent", "kind": "request", "priority": "system", "retryable": False,
+                       "holder": "orion-llm-gateway", "hold_lease_id": hold["lease_id"]}, now)
+            work_left[cid] = call
+            run["child"], run["phase"] = cid, "call"
+
+        active = [st for st in leases.values() if st["status"] in ("granted", "recalling")]
+        calls_on = defaultdict(int)
+        for st in active:
+            if st["request"].get("kind") != "hold":
+                calls_on[st["role"]] += 1
+        for st in active:
+            lid = st["lease_id"]
+            if lid in work_left:
+                rate = _slowdown(calls_on[st["role"]]) if st["role"] == "agent-gpu2" else 1.0
+                work_left[lid] -= rate
+                if st["role"] == "agent-gpu2":
+                    seat_work_sec += rate
+                if work_left[lid] <= 0:
+                    apply(st, {"type": "release_ok", "at": at})
+                    continue
+            apply(st, {"type": "heartbeat", "at": at})
+            if st["role"] == "agent-gpu2":
+                cards["gpu2"].last_active_at = now
+
+        views = _views(leases)
+        for d in schedule(cfg, roles, cards, views, now, guards={"thermal": None}):
+            if not isinstance(d, tuple(_EV)):
+                continue                  # the seat stays loaded; no swap is part of this story
+            st = leases[d.lease_id]
+            ev = {"type": _EV[type(d)], "at": at, "reason": getattr(d, "reason", None)}
+            if isinstance(d, Grant):
+                ev["role"] = d.role
+                waited = (now - datetime.fromisoformat(st["queued_since"])).total_seconds()
+                req = st["request"]
+                if req.get("kind") == "hold":
+                    hold_waits.append(waited)
+                elif req.get("hold_lease_id"):
+                    child_waits.append(waited)
+                else:
+                    one_off_waits.append(waited)
+            if isinstance(d, Recall):
+                ev["recall_by"] = d.recall_by.isoformat()
+            apply(st, ev)
+
+        # Measured AFTER this tick's grants: a stall is what the scheduler left standing.
+        views = _views(leases)
+        seat_holds = [v for v in views if v.kind == "hold" and v.role == "agent-gpu2"
+                      and v.status in ("granted", "recalling")]
+        max_holds_seen = max(max_holds_seen, len(seat_holds))
+        two_holds_sec += len(seat_holds) >= 2
+        waiting_holds.append(sum(1 for v in views if v.kind == "hold" and v.status == "queued"))
+        seat_ids = {h.lease_id for h in seat_holds}
+        in_flight = {v.hold_lease_id for v in views if v.status in ("granted", "recalling") and v.hold_lease_id}
+        one_offs = [v for v in views if v.role == "agent-gpu2" and v.status in ("granted", "recalling")
+                    and v.kind != "hold" and v.hold_lease_id not in seat_ids]
+        stalled = {v.hold_lease_id for v in views if v.status == "queued" and v.hold_lease_id in seat_ids
+                   and v.hold_lease_id not in in_flight}
+        if gpu2_slots == 2 and len(stalled) == 2 and len(one_offs) == 1:
+            pin_stall_sec += 1        # one gap borrow holding up both idle runs' next calls
+
+    return {
+        "runs_started": len(runs), "runs_finished": len(run_ends),
+        "run_wall_sec_p50": _p(run_ends, 0.5),
+        "hold_wait_sec": {"n": len(hold_waits), "p50": _p(hold_waits, 0.5), "p90": _p(hold_waits, 0.9)},
+        "mean_waiting_holds": round(statistics.mean(waiting_holds), 2),
+        "one_off_wait_sec": {"n": len(one_off_waits), "p50": _p(one_off_waits, 0.5),
+                             "p90": _p(one_off_waits, 0.9), "max": _p(one_off_waits, 1.0)},
+        "run_call_wait_sec": {"n": len(child_waits), "p90": _p(child_waits, 0.9), "max": _p(child_waits, 1.0)},
+        "seat_two_holds_sec": two_holds_sec, "seat_max_holds_seen": max_holds_seen,
+        "gap_borrow_stalled_two_runs_sec": pin_stall_sec,
+        "seat_work_sec_per_hour": round(seat_work_sec / (CONC_SEC / 3600), 0),
+    }
+
+
+def _with_seat(cfg, **update):
+    roles = dict(cfg.roles)
+    roles["agent-gpu2"] = roles["agent-gpu2"].model_copy(update=update)
+    return cfg.model_copy(update={"roles": roles})
+
+
+def concurrency_report(cfg=CFG) -> dict:
+    variants = {"max_holds_1": _with_seat(cfg, max_holds=1, reserve_one_off_slots=0),
+                "max_holds_2": _with_seat(cfg, max_holds=2, reserve_one_off_slots=0),
+                "max_holds_2_reserve_1": _with_seat(cfg, max_holds=2, reserve_one_off_slots=1)}
+    out: dict = {"slowdown_model_tok_s": BONSAI_TOK_S, "seeds": list(CONC_SEEDS),
+                 "gap_pinning_case": gap_pinning_case(variants["max_holds_2"])}
+    for name, vcfg in variants.items():
+        per_seed = [concurrency_scenario(vcfg, seed) for seed in CONC_SEEDS]
+        out[name] = {"per_seed": per_seed,
+                     "mean_hold_wait_p90": round(statistics.mean(r["hold_wait_sec"]["p90"] or 0 for r in per_seed), 1),
+                     "mean_waiting_holds": round(statistics.mean(r["mean_waiting_holds"] for r in per_seed), 2),
+                     "mean_one_off_wait_p90": round(statistics.mean(r["one_off_wait_sec"]["p90"] or 0 for r in per_seed), 1),
+                     "runs_finished": sum(r["runs_finished"] for r in per_seed)}
+    return out
+
+
+def gap_pinning_case(cfg=CFG) -> dict:
+    """Acceptance check 9 as one scripted tick through the real lease table: two runs hold the
+    2-slot seat, both idle between calls; a system one-off is using one gap; then both runs' next
+    calls and another one-off arrive. Exactly one run's call is granted at once; the one-off waits."""
+    leases: dict[str, dict] = {}
+    roles = dict(LIVE, **{"agent-gpu2": RoleLive("agent-gpu2", True, 2, 131072),
+                          "agent": RoleLive("agent", True, 1, 131072)})
+    cards = {c: CardLive(c) for c in cfg.cards}
+    cards["gpu2"] = CardLive("gpu2", swapped_in={"agent-gpu2"}, loaded_at=T0, last_active_at=T0)
+
+    def add(lid: str, req: dict, at: datetime, role: str | None = None) -> None:
+        st = dict(initial_state(lid, {"request_id": lid, **req}, at))
+        if role:
+            st.update(transition(st, {"type": "grant", "at": at.isoformat(), "role": role}, cfg), history=[])
+        leases[lid] = st
+
+    # Times within the heartbeat TTLs (request 30 s, hold 90 s) so nothing expires in this one tick.
+    hold = {"work_class": "agent", "kind": "hold", "priority": "background", "retryable": True}
+    add("home", {**hold, "holder": "durable-runs:home"}, T0 - timedelta(seconds=25), "agent")
+    add("home-call", {"work_class": "agent", "kind": "request", "priority": "system", "hold_lease_id": "home"},
+        T0 - timedelta(seconds=5), "agent")
+    add("A", {**hold, "holder": "durable-runs:A"}, T0 - timedelta(seconds=20), "agent-gpu2")
+    add("B", {**hold, "holder": "durable-runs:B"}, T0 - timedelta(seconds=15), "agent-gpu2")
+    add("gap", {"work_class": "agent", "kind": "request", "priority": "system"}, T0 - timedelta(seconds=8), "agent-gpu2")
+    for lid, h in (("A-call", "A"), ("B-call", "B")):
+        add(lid, {"work_class": "agent", "kind": "request", "priority": "system", "hold_lease_id": h}, T0)
+    add("one-off", {"work_class": "agent", "kind": "request", "priority": "system"}, T0 - timedelta(seconds=5))
+    got = {d.lease_id: d.role for d in schedule(cfg, roles, cards, _views(leases), T0, guards={"thermal": None})
+           if isinstance(d, Grant)}
+    return {"granted": got}
+
+
+def concurrency_failures(c: dict) -> list[str]:
+    out = []
+    if c["gap_pinning_case"]["granted"] != {"A-call": "agent-gpu2"}:
+        out.append("conc_gap_pinning_case")
+    two, one, res = c["max_holds_2"], c["max_holds_1"], c["max_holds_2_reserve_1"]
+    bound = max(CONC_ONE_OFF_SEC) / _slowdown(2) + 2
+    if not all(r["seat_two_holds_sec"] for r in two["per_seed"]):
+        out.append("conc_never_two_holds")
+    if any(r["gap_borrow_stalled_two_runs_sec"] for r in two["per_seed"]):
+        out.append("conc_gap_borrow_stalled_two_runs")
+    if any((r["run_call_wait_sec"]["max"] or 0) > bound for r in two["per_seed"]):
+        out.append("conc_run_call_waited_past_one_inference")
+    if not two["mean_hold_wait_p90"] < one["mean_hold_wait_p90"]:
+        out.append("conc_hold_wait_not_reduced")
+    if not two["mean_waiting_holds"] < one["mean_waiting_holds"]:
+        out.append("conc_waiting_holds_not_reduced")
+    if any(r["seat_max_holds_seen"] > 1 for r in one["per_seed"] + res["per_seed"]):
+        out.append("conc_hold_limit_not_in_force")
+    return out
+
+
 async def checkpoint_throughput(n: int = 300) -> float:
     from langgraph.checkpoint.memory import MemorySaver
 
@@ -746,6 +1019,7 @@ def main() -> int:
     report["urgent_rollback_paused"] = rollback["paused"]
     report["shed_scenario"] = shed_scenario()
     report["enforce_scenario"] = enforce_scenario()
+    report["concurrency_scenario"] = concurrency_report()
     report["leases_per_sec_inmemory"] = round(asyncio.run(checkpoint_throughput()), 1)
     import json
 
@@ -755,6 +1029,7 @@ def main() -> int:
     failures += urgent_failures(report["urgent_scenario"], rollback)
     failures += shed_failures(report["shed_scenario"])
     failures += enforce_failures(report["enforce_scenario"])
+    failures += concurrency_failures(report["concurrency_scenario"])
     if not report["interleaved_grants"]:
         failures.append("interleaved_grants")
     if not (report["counts"].get("serialized:diffusion") or report["counts"].get("serialized:world")):

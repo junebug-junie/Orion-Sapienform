@@ -2252,7 +2252,9 @@ profiles:
       # the per-session context the harness budgets for (agent-lane prompts: p95 68K, max 82K).
       # Total KV equals the measured 4 x 65K layout: ~24.1 GB with flash attention on (circe,
       # 2026-09-30). The pool reads slots/ctx from /props (discovery) -- nothing in gpu_pool.yaml.
-      # H1 is unchanged (one durable-run hold per role): the second slot serves one-off calls.
+      # Stage 7.3: config/gpu_pool.yaml agent-gpu2 max_holds: 2 lets a second durable run hold the
+      # second slot (one-off calls share the runs' gaps). Keep max_holds <= n_parallel here
+      # (scripts/check_gpu_pool_config.py checks it against launch.profiles[0]).
       ctx_size: 262144
       n_gpu_layers: 99
       threads: 16

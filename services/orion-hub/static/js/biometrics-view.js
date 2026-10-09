@@ -58,6 +58,16 @@
     while (node.firstChild) node.removeChild(node.firstChild);
   }
 
+  // Swap a node's children for `fresh` in one step -- no empty frame in between.
+  function replaceChildren(node, fresh) {
+    if (typeof node.replaceChildren === "function") {
+      node.replaceChildren(fresh);
+    } else {
+      clear(node);
+      node.appendChild(fresh);
+    }
+  }
+
   function fmt(value, digits) {
     if (value === null || value === undefined || value === "") return "—";
     var n = Number(value);
@@ -91,9 +101,18 @@
     return m.board_temp_c_max;
   }
 
-  async function fetchJson(url) {
-    var response = await fetch(url);
-    return response.json();
+  // timeoutMs (optional) aborts a hung request so a polled view can't freeze on stale data
+  // behind its in-flight guard: the abort rejects, the caller's .catch() turns it into an
+  // "unreachable"/"partial" reading -- visible, not a silent stale "live".
+  async function fetchJson(url, timeoutMs) {
+    var ctrl = timeoutMs && typeof AbortController === "function" ? new AbortController() : null;
+    var timer = ctrl ? setTimeout(function () { ctrl.abort(); }, timeoutMs) : null;
+    try {
+      var response = await fetch(url, ctrl ? { signal: ctrl.signal } : undefined);
+      return await response.json();
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
   }
 
   // --- Status color + trend -----------------------------------------------
@@ -512,21 +531,36 @@
 
   // --- Cognitive EKG card toggle ---------------------------------------
 
-  async function loadCardPreview() {
+  // Polls build the new tiles off-DOM and swap them in only once every reading is back,
+  // so the card keeps showing the last view instead of blanking for the whole fetch (the
+  // "panel disappears every few seconds" flicker). A poll that fires while the previous one
+  // is still in flight is skipped, so a slow older response can't land after a newer one.
+  var cardPreviewInFlight = null;
+
+  function loadCardPreview() {
+    if (!cardPreviewInFlight) {
+      cardPreviewInFlight = renderCardPreview().finally(function () {
+        cardPreviewInFlight = null;
+      });
+    }
+    return cardPreviewInFlight;
+  }
+
+  async function renderCardPreview() {
     var status = el("biometricsPreviewStatus");
     var grid = el("biometricsPreviewGrid");
     if (!grid) return;
-    if (status) status.textContent = "Loading…";
-    clear(grid);
+    if (status && !grid.firstChild) status.textContent = "Loading…";
+    var next = document.createDocumentFragment();
     loadTiredness();
     var nodes = ["athena", "circe", "hecate"];
     var results = await Promise.all(
       nodes.map(function (n) {
         return Promise.all([
-          fetchJson("/api/biometrics/preview/snapshot?node=" + n).catch(function () {
+          fetchJson("/api/biometrics/preview/snapshot?node=" + n, CARD_POLL_MS).catch(function () {
             return { ok: false, node: n };
           }),
-          fetchJson("/api/biometrics/preview/induction?node=" + n).catch(function () {
+          fetchJson("/api/biometrics/preview/induction?node=" + n, CARD_POLL_MS).catch(function () {
             return { ok: false, metrics: {} };
           }),
         ]);
@@ -543,17 +577,18 @@
       var strain = composites.strain;
       var trendInfo = induction.metrics && induction.metrics.strain;
       var label = (payload.node || "?") + (payload.ok ? "" : " (unreachable)");
-      grid.appendChild(
+      next.appendChild(
         tile(label, strain !== undefined ? fmt(strain, 2) : "—", "strain · " + (payload.status || "—"), {
           tone: payload.ok && strain !== undefined ? toneForPressure(strain) : toneForNodeStatus(payload),
           trend: trendInfo ? trendArrow(trendInfo.trend) : null,
         })
       );
       var watts = chassisWattsFor(node, athenaSnapshot);
-      grid.appendChild(tile(node + " power", watts !== undefined ? fmt(watts, 0) + " W" : "—", "chassis wattage"));
+      next.appendChild(tile(node + " power", watts !== undefined ? fmt(watts, 0) + " W" : "—", "chassis wattage"));
       var boardTemp = boardTempFor(payload);
-      grid.appendChild(tile(node + " mobo", boardTemp !== undefined ? fmt(boardTemp, 0) + " °C" : "—", "chipset / VR max"));
+      next.appendChild(tile(node + " mobo", boardTemp !== undefined ? fmt(boardTemp, 0) + " °C" : "—", "chipset / VR max"));
     });
+    replaceChildren(grid, next);
     if (status) status.textContent = results.every((r) => r[0].ok) ? "live" : "partial";
     loaded.cardPreview = true;
   }
@@ -832,17 +867,21 @@
     var status = el("biometricsGpuStatus");
     var grid = el("biometricsGpuGrid");
     if (!grid) return;
-    if (status) status.textContent = "Loading…";
+    if (status && !grid.firstChild) status.textContent = "Loading…";
     // limit=40 (endpoint max is 60): the default 5-sample buffer read made
     // the "realtime trend" sparkline look almost flat/empty -- 40 samples at
     // orion-biometrics' collection cadence gives a real trend to look at.
-    var payload = await fetchJson("/api/biometrics/preview/gpu?node=" + node + "&limit=40").catch(function () {
+    var payload = await fetchJson("/api/biometrics/preview/gpu?node=" + node + "&limit=40", GPU_POLL_MS).catch(function () {
       return { ok: false, gpus: [] };
     });
-    clear(grid);
+    // The user switched node (or a newer poll owns the grid) while this was in flight --
+    // never draw one node's cards under the other node's active button.
+    if (node !== gpuNode) return;
+    var cards = document.createDocumentFragment();
     (payload.gpus || []).forEach(function (gpu) {
-      grid.appendChild(gpuCard(gpu));
+      cards.appendChild(gpuCard(gpu));
     });
+    replaceChildren(grid, cards);
     if (status) {
       status.textContent = payload.ok
         ? (payload.gpus || []).length + " GPU(s) on " + node
@@ -862,6 +901,8 @@
       btn.classList.toggle("bg-gray-900", !active);
       btn.classList.toggle("text-gray-400", !active);
     });
+    var status = el("biometricsGpuStatus");
+    if (status) status.textContent = "Loading " + node + "…";
     loadGpu(node);
   }
 
@@ -1027,6 +1068,7 @@
     showModalSubview,
     shouldPoll,
     boardTempFor,
+    loadCardPreview,
     laneBadge,
     tirednessModel,
   };

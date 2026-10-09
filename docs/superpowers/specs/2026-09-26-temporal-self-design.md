@@ -68,20 +68,23 @@ none of them moves with any other. Live data shows what that produces: the dream
 and outreach each claim to respond to need, but in practice each fires on a timer or stops at a
 cap. Dreams ran 52 times since 2026-09-26, almost exactly every six hours, with sleep pressure
 4 to 43 times over its own threshold every single time. Curiosity ran exactly 7 times a day, its
-cap. Outreach sent exactly 4 a day, its cap, while refusing itself about 4,000 times a day.
+cap. Outreach sent exactly 4 a day, its cap. It also refused itself about 8,000 times a day, about
+half of them at the cap.
 Meanwhile attention gave first place to two calm internal signals in 81-100% of frames for six
 straight hours, because nothing remembers that they have been winning all afternoon.
 
 Biological regulators run on *accumulated time*: sleep pressure builds with time awake,
 habituation with exposure, fatigue with effort. Temporal Self is exactly the record of accumulated
-time that such regulators need. Rev 4 adds three thin regulators on top of it, in priority order:
-**habituation** inside attention (a target that has been winning for a long calm stretch loses
-salience; a real change restores it), **one drive** (rest, the dream pressure pattern repaired
+time that such regulators need. Rev 4 adds thin regulators on top of it, in priority order.
+First, **habituation** inside attention: a target that keeps winning loses salience, and a real
+change restores it. This one is conditional. #2528 already removes the calm winners, so
+habituation is built only if a measurement after #2528 shows a target still hogging attention.
+Second, **one drive** (rest, the dream pressure pattern repaired
 and generalized into a template that any later drive must pass the metric gate to join), and
 **arousal** (one slow, three-level reading of whether Orion is engaged with the world, idle, or
 strained, which existing dials read to set their own gain). A fourth, the **immune sweep**, uses
-idle time to look for stuck, replayed, or constant signals. Three other drive candidates
-(explore, social, cooling) were run through the metric gate and **dropped**; the reasons are
+idle time to look for stuck, replayed, or constant signals. Four other drive candidates
+(explore, social, cooling, effort) were run through the metric gate and **dropped**; the reasons are
 recorded, and curiosity and outreach read arousal instead.
 
 No new service. No LLM inside the reducer. No narrative in the frame. Identity of a subject is an
@@ -105,7 +108,7 @@ code actually says, and what that does to the design.
 | `StateDeltaV1` is "essentially a typed answer to what changed in me" | It has **no timestamp and no correlation id** (`orion/schemas/state_delta.py:8-29`); time lives on the wrapping `ReductionReceiptV1.created_at`. Receipts are pruned after **30 minutes** on success (`services/orion-substrate-runtime/app/settings.py:352`). One delta is a 2-second channel nudge. | Raw deltas are telemetry, not autobiography. "What changed in me" comes from the higher-order changes that already persist: prior revisions, expectation verdicts, action outcome rows, hypothesis adoption. |
 | Broadcast history gives `dwell_ticks`, stability, transitions | Dwell, stability and transition history are **module globals** that reset on every restart (`orion/substrate/attention_broadcast.py:44-49`). Stability is a three-step constant (0.9/0.6/0.3, `:501-507`). The append-only log `substrate_attention_broadcast_log` (168h) holds only `log_id`, `generated_at`, `projection_json` (`services/orion-sql-db/manual_migration_attention_broadcast_log_v1.sql:15-20`) and has **no live reader**, only offline scripts. | Recompute dwell and returns from the log's row sequence. Do not trust `dwell_ticks`. Temporal Self becomes the log's first live consumer. |
 | Agency episodes give "durable before/after semantics" today | No `AgencyEpisodeV1`, no table. PR #2365 added a read-only audit whose verdicts all read UNVERIFIED (`orion/autonomy/agency_episode.py:110,185`). PR #2366 added three FalkorDB nodes for the ask lane (`PeerAskCommit`, `PeerBriefOffer`, `PeerBriefDecision`, `orion/curiosity/agency_episode.py`) behind `CURIOSITY_PEER_EPISODES_ENABLED`: code default false (`services/orion-curiosity-peer/app/settings.py:57`), `.env_example` true (`:33`), live `UNVERIFIED`. Re-checked 10-09: still no `AgencyEpisodeV1` class and no table. The new `episode_memory` table (46 rows, 8 episodes, 10-04 to 10-08 live) is something else: distilled *chat* memories written by the `memory.episode_distill` durable run (`orion/memory/episode/store.py:23,59`). | Bind to the peer-ask nodes when present; do not depend on them. `episode_memory` is bound as a conversation-arc source (by `episode_id` and `purpose`, never `statement`). |
-| Stakes work supplies "what Orion gave up" | Built from that design: the curiosity spend log (`curiosity_offer_decisions`, `curiosity_run_outcomes`; migration not applied as of `docs/superpowers/pr-reports/2026-09-25-attention-with-stakes-pr.md:145`; live by 10-09, with 91 offer decisions) and two defect fixes. No opportunity-cost field exists. | The constraints channel records only what the system already **stamps as a row**: visual reverie deferrals and GPU waits. The allocator's refusals are excluded because it has refused everything since 2026-09-08 (#2255), so they would be constant, not signal. The curiosity daily-cap block is a log line, not a row (`services/orion-hub/scripts/curiosity_investigation.py:1525`), so it is not readable. |
+| Stakes work supplies "what Orion gave up" | Built from that design: the curiosity spend log (`curiosity_offer_decisions`, `curiosity_run_outcomes`; migration not applied as of `docs/superpowers/pr-reports/2026-09-25-attention-with-stakes-pr.md:145`; live by 10-09, with 91 offer decisions) and two defect fixes. No opportunity-cost field exists. | The constraints channel records only what the system already **stamps as a row**: visual reverie deferrals and GPU waits. The allocator's refusals are excluded because it has refused everything since 2026-09-08 (#2255), so they would be constant, not signal. The curiosity daily-cap block is a log line, not a row (`services/orion-hub/scripts/curiosity_investigation.py:1696`), so it is not readable. |
 | Open loops have an "issue identity" | `OpenLoopV1` has no timestamp; its `id` is a 12-hex hash of the loop's text (`orion/substrate/attention/scoring.py:115-117`). The stable ref sits in `source_refs` (`orion/schemas/attention_frame.py:88`). The attention schema's `attended_id` is that same text hash in both the substrate lane (`orion/substrate/attention_self_model.py:814`) and the cortex lane (`orion/substrate/attention_frame.py:179`). | Subject identity for loops is `source_refs[0]`, read from the broadcast log's `projection_json`. `attended_id` is never a subject. |
 | `predicted_next` on `AttentionSchemaV1` is a prediction to score | All five lanes fill it, each with a different meaning. **Nothing reads it.** | Not scored in v1. |
 | `temporal_phase` lives in `session_turn_phase.py` | That module stores two raw timestamps in Redis (7-day TTL). `temporal_phase` is a cortex ctx key set at `services/orion-cortex-exec/app/executor.py:3179` from `conversation_phase.phase_change`. | Naming unchanged: still not the temporal self. |
@@ -161,7 +164,7 @@ conjourney`) and the bus Redis, 2026-10-09 00:59-01:10 UTC. The Postgres session
   with its own timezone key: orion-actions' `build_daily_window`
   (`services/orion-actions/app/main.py:205`, `ACTIONS_DAILY_TIMEZONE`,
   `services/orion-actions/.env_example:82`), the curiosity daily cap
-  (`services/orion-hub/scripts/curiosity_investigation.py:1212`), the chat compactor
+  (`services/orion-hub/scripts/curiosity_investigation.py:1352`, `_roll_daily_counter`), the chat compactor
   (`orion/cognition/chat_history_compactor/window.py:49`), and `dream_date`
   (`orion/schemas/telemetry/dream.py:81`, container-local `date.today`, timezone `UNVERIFIED`).
   There is no shared "which day is it" helper.
@@ -422,11 +425,11 @@ ends, `attention_loop_outcome` writes a verdict in its own words: `resolved`, `d
 days, and `carried_from_previous_day` is set when it does. This lane is where the frame's open
 threads come from: first raised, last raised, times raised, age.
 
-Two honest limits. Most closures will be the decay digest's, not Juniper's: #2255 counted 48 of 48
-loops `decayed_unattended` over 14 days, and that row's `created_at` is when the digest ran, not
-when silence began. And the trace's `description` is cut from Juniper's turn text (up to 200
-characters), so the label is stored with privacy class `juniper_chat` (see the schema below) and
-never leaves that boundary.
+Two honest limits. Most closures are still the decay digest's, not Juniper's: 76 of 90 verdicts in
+the 14 days to 10-09 were `decayed_unattended`. That row's `created_at` is when the digest ran,
+not when silence began. And the trace's `description` is cut from Juniper's turn text (up to 200
+characters). Orion's own consumers may read it. It carries `privacy_class='juniper_chat'` only
+so that it never goes outward, to contractor peers or to published artifacts.
 
 **3. The five-lane attention table, as a per-arc summary.** `substrate_attention_schema` is the
 only place where every process's own reason words sit on one clock. Its substrate lane writes
@@ -535,8 +538,9 @@ writes `to_state='unknown'`, so a dark camera closes the arc instead of leaving 
 behind.
 
 A company arc opens on a change to `present` and closes on `absent` (`recent` is the grace
-period) or `unknown`. Its subject is the `presence_id`. The chronology never stores an enrolled
-name, only whether identity was confirmed. Consumers: the stance cue ("someone has been at the desk
+period) or `unknown`. Its subject is the `presence_id`. The chronology stores whether identity was
+confirmed and, when it was, the enrolled label. It never stores an unconfirmed guess (Missing
+question 9). Consumers: the stance cue ("someone has been at the desk
 since nine"), the daily reflection, and outreach, which already reads the presence snapshot.
 
 Why company is its own lane rather than body context: people arriving and leaving are among the
@@ -591,9 +595,9 @@ question 3. The shared day helper must read the same zone.
 |---|---|---|---|---|
 | Self-prediction accuracy per arc (`predictions_correct / predictions_scored`) | the calibration script's own rule, run in the reducer (`scripts/analysis/measure_self_model_calibration.py:121-162`) | no online equivalent exists; confidence is excluded, so it is not a transform of an existing field | prospective prediction scoring, the same anchor the agency plan uses; higher-order self-model calibration | `UNVERIFIED`. Patch 1 must reproduce the script's 66.0% test accuracy from the reducer's code on the same rows before this is bound. Rest state is `predictions_scored = 0`, not 0% |
 | Company arc duration and count | the presence state machine's `state_since` (`presence.py:144-146`) via S1 | the snapshot gives only the current `since_sec`; no history exists | event boundaries at character entrances and exits (Zacks et al. 2009) | `UNVERIFIED` until S1 ships. Known risk: `identity_uncertain` was never true in any presence row (`docs/superpowers/pr-reports/2026-08-29-identity-ask-no-visual-confirmation-pr.md:63-75`) |
-| Interoception run length, returns, dwell | `update_dominance_streak` via S2 | different targets from the workspace's `dwell_ticks`; zero id overlap | Event Segmentation Theory, as for the other lanes | 5,516 runs in 9.2 days; mega-streaks up to about 8.9 hours not root-caused |
+| Interoception run length, returns, dwell | `update_dominance_streak` via S2 | different targets from the workspace's `dwell_ticks`; zero id overlap | Event Segmentation Theory, as for the other lanes | about 2,870 top-target runs per 24 h (live 10-09; 5,516 in 9.2 days in August); mega-streaks up to about 8.9 hours not root-caused |
 | Attention rows per lane, reason words per lane | row counts over `substrate_attention_schema` | a count, not a new sensor | none needed: it is a count of the source's own records | substrate lane ~2,000 rows a day (live 10-09); reverie's reason is the same word on almost every row |
-| Concern age, times raised | `attention_salience_trace.created_at`, `attention_loop_outcome.created_at` | no existing per-loop history across days | current concerns (Klinger 1975) | 48 of 48 loops decayed unattended in 14 days; closure time is the digest's detection time |
+| Concern age, times raised | `attention_salience_trace.created_at`, `attention_loop_outcome.created_at` | no existing per-loop history across days | current concerns (Klinger 1975) | 76 of 90 verdicts decayed unattended in the 14 days to 10-09; closure time is the digest's detection time |
 
 ## Regulation: habituation, drives, and arousal (new in Rev 4)
 
@@ -601,8 +605,10 @@ Temporal Self lets Orion remember its day. This section lets that memory change 
 next, using the same accumulated time. The plan has four parts. Each part names its producer, its
 consumer, and the test or trace that proves it.
 
-1. **Habituation:** attention stops crowning what it has been staring at all afternoon.
-2. **One drive, rest:** sleep pressure that actually decides when Orion sleeps.
+1. **Habituation (conditional on a post-#2528 measurement):** attention stops crowning what it
+   has been staring at for hours.
+2. **One drive, rest:** sleep pressure that can actually say "not yet". The dream service still
+   makes the decision, and the drive reading is its published trace.
 3. **Arousal:** one slow, shared reading of engaged, idle, or strained, which existing dials
    read to set their own gain.
 4. **Immune sweep:** idle time spent checking for signals that are stuck, replayed, or constant.
@@ -615,8 +621,9 @@ thread as Temporal Self (see Missing question 1), and it has no LLM.
 Orion has about 30 "when do I act" dials. Each reads its own clock, counter, or sensor, and none
 reads a shared state. There is no live global mode to reuse:
 
-- Spark's `arousal` field defaults to 0.5 and has had no producer since 2026-07-28
-  (`orion/schemas/telemetry/spark.py:42`, `:44-50`).
+- Spark's `arousal` field defaults to 0.5 (`orion/schemas/telemetry/spark.py:42`). Its producer,
+  the spark introspector, was retired on 2026-07-28, as the same file notes for its sibling
+  fields at `:44-50`.
 - Biometrics `strain` is the plain mean of seven hardware pressures, per host
   (`orion/telemetry/biometrics_pipeline.py:502-506`).
 - The GPU pool broadcasts queue and backlog depth every 5 s (`GpuPoolStateV1`,
@@ -626,7 +633,7 @@ The three dials that claim to respond to need behave like clocks:
 
 | Dial | What the code says | What live data shows |
 |---|---|---|
-| Dream cycle (`services/orion-dream`) | Sleep when pressure ≥ 3.0 (`DREAM_SLEEP_PRESSURE_THRESHOLD`, `orion/schemas/dream_cycle.py:69-70`), no chat for 45 min, and at least 6 h since the last sleep (`app/cycle.py:77-79`). Pressure is the sum of replay-candidate weights since the last cycle began (`app/replay.py:147-153`, window `app/cycle.py:53-57`) | 52 cycles from 09-26 to 10-09. Pressure at firing was 12.9 to 129, which is 4 to 43 times the threshold, on every cycle. Median gap between sleeps was 6.00 h; only 4 of 51 gaps ran past 6 h 15 min. The six-hour minimum decides; pressure never does |
+| Dream cycle (`services/orion-dream`) | Sleep when pressure ≥ 3.0 (`DREAM_SLEEP_PRESSURE_THRESHOLD`, `services/orion-dream/app/settings.py:61`; checked at `orion/schemas/dream_cycle.py:69-70`), no chat for 45 min, and at least 6 h since the last sleep (`app/cycle.py:77-79`). Pressure is the sum of replay-candidate weights since the last cycle began (`app/replay.py:147-153`, window `app/cycle.py:53-57`) | 52 cycles from 09-26 to 10-09. Pressure at firing was 12.9 to 129, which is 4 to 43 times the threshold, on every cycle. Median gap between sleeps was 6.00 h; only 4 of 51 gaps ran past 6 h 15 min. The six-hour minimum decides; pressure never does |
 | Dream idle gate | `max(created_at)` over **all** of `chat_history_log` (`app/cycle_store.py:57-60`) | Of the 52 `chat_history_log` rows in the 7 days to 10-09, 24 had no prompt and a NULL `source`. Those are Orion's own outreach messages (latest 10-07 16:33). So Orion speaking resets Orion's own idle clock |
 | Curiosity | Daily cap and paced cooldown (`services/orion-hub/scripts/curiosity_investigation.py:526-540`, `paced_cooldown_sec` `:448`). Production `.env`: cap 7, cooldown 1800 s. The settings defaults (3 and 14400) disagree with `.env_example` | Exactly 7 completed runs a day on every day from 10-02 to 10-08 (`curiosity_run_outcomes`). The cap decides |
 | Outreach | Cap 4/day, 2700 s cooldown, quiet hours 23:00-08:00, and a trigger that needs the same field-tension winner for 6 ticks (`services/orion-hub/scripts/endogenous_outreach.py:470-482`, `tension_outreach_trigger.py:125`) | 10-02 to 10-07: exactly 4 sent a day. Each day it also refused itself about 3,900-4,500 times for `daily_cap`, about 3,200 for `quiet_hours`, and 807 for `cooldown` (`endogenous_outreach_decisions`). On 10-08 it sent **0**: cap refusals stop at 05:00 UTC and are replaced by `content_already_used` (1,297) and `empty_generation` (49). That is a separate bug, listed under follow-ups |
@@ -637,62 +644,72 @@ So Orion has one drive-shaped mechanism, the dream cycle, and live data shows it
 working as a timer. Generalizing it as it stands would mean generalizing a timer. Rev 4 repairs
 it first, then turns it into the template that any later drive must use.
 
-### R1. Habituation, inside #2528's ranking seam
+### R1. Habituation, inside #2528's ranking seam (conditional)
 
-**What it does.** The longer a target has held attention through a calm stretch, the less
-salience it gets. A real change in that target restores its salience at once. Over time, with
-no exposure, the discount fades on its own.
+**What it would do.** The longer a target stays eligible and keeps winning, the less salience
+it gets. A real change in that target restores the salience at once. With no exposure, the
+discount fades over time.
 
-**Why it is needed.** On 10-08, from 13:00 to 18:00 UTC, `bus_synaptic` and `biometrics`
-together won 81-100% of field-attention frames every hour. Their mean prediction errors were
-0.04 and 0.12, and each win was crowned at salience 1.000. Nothing in the loop knows how long
-they have been winning.
+**Why the obvious motivation is not enough.** On 10-08, from 13:00 to 18:00 UTC,
+`bus_synaptic` and `biometrics` together won 81-100% of field-attention frames in every hour.
+Their mean prediction errors were 0.04 and 0.12, and every winner was crowned at salience 1.000.
 
-**Why exposure, not run length.** The two winners alternate, with a median run of 10 ticks
-(about 21 s). No single run is ever long, so a rule keyed on run length would never fire. The
-measure has to be *exposure*: for each target, a leaky integral of "won this frame", with time
-constant `τ` (`FIELD_ATTENTION_HABITUATION_TAU_SEC`, starting at 1800).
+That is a normalization problem, and #2528 fixes it more directly. #2528 makes an internal
+candidate eligible only when its unusualness band is `high` or `unusual` (#2528 spec :124). When
+nothing is eligible, the frame has no winner (:128). Once #2528 lands, those calm winners are not
+habituated. They are simply ineligible.
 
-**Where it lives.** It lives in the ranking that #2528 proposes, not in a parallel scorer.
-Today, min-max normalization crowns some winner at 1.0 on every frame (`normalize_across_targets`,
-which #2528 removes). If habituation discounted today's winner, the next calm target would simply
-be crowned at 1.0 instead. So **habituation is blocked on #2528**: it lands in the same patch as
-#2528's ranking change, or after it, never before. Inside that seam the rules are:
+Before #2528, habituation is pointless. Min-max normalization crowns some winner at 1.0 on every
+frame, so discounting today's winner would just crown the next calm target.
 
-- An eligible candidate ranks by `percentile × (1 − h × exposure)`, where `h ≤ 0.5`
-  (`FIELD_ATTENTION_HABITUATION_MAX_DISCOUNT`). Every frame target's `reasons` records
-  `habituated exposure=… discount=…`.
-- Dishabituation: when #2528's unusualness band moves (for example normal to high), the target's
-  exposure resets to 0.
-- A target in the top band (`unusual`) is never discounted. A body alarm that persists is not
-  habituated away. This is the same guard #2528 uses for its own baseline-absorption failure mode
-  (#2528 spec :268-269).
-- The cabinet-heat reflex and every other safety path are outside attention, so they are
-  untouched.
+**Where habituation is still needed after #2528.** Two cases remain, and #2528 handles neither:
 
-**Producer, consumer, trace.**
+- **A stuck high reading.** An internal target held in band `high` for hours. Rev 3's mega-runs
+  are an example: `node:substrate.chat` held single runs of up to 8.9 hours.
+- **An always-eligible external source.** #2528 makes an external candidate eligible whenever it
+  is fresh. A busy but monotonous one, such as a feed that is always active, would win forever.
 
-- **Producer:** `orion-attention-runtime` keeps the integral in memory and rebuilds it at boot
-  from the last `3τ` of S2 `field_dominance_run` rows. That is why S2 comes first: it gives the
-  integral a memory that survives a restart. The workspace `dwell_ticks` counter does not survive
-  one (`orion/substrate/attention_broadcast.py:44-49`).
-- **Consumer:** the ranking in `orion/attention/field_attention/selectors.py`.
-- **Trace:** the reason string on every frame target, plus a numeric `habituation_discount` on
-  `FieldAttentionTargetV1`. That model is forbid, so the field is added consumer-first.
+Whether either case actually happens is unknown until #2528 has run. So R1 is **conditional**.
+Patch R1a is read-only. It runs after #2528 has been live for 7 days and measures, per eligible
+target, the share of frames it won over rolling 30-minute windows. If no target exceeds 50% of
+frames for more than 2 hours, R1 is not built, and this section records that outcome.
+
+**If it is built.**
+
+- **Exposure, not run length.** The measure is a leaky integral of "won this frame", with time
+  constant `τ` (`FIELD_ATTENTION_HABITUATION_TAU_SEC`, starting at 1800). Run length does not
+  work, because live winners alternate with a median run of 10 ticks (about 21 s).
+- **Discounted ranking.** An eligible candidate ranks by `percentile × (1 − h × exposure)`, with
+  `h ≤ 0.5` (`FIELD_ATTENTION_HABITUATION_MAX_DISCOUNT`).
+- **Dishabituation.** A move in #2528's band (`quiet` / `usual` / `high` / `unusual`) resets that
+  target's exposure to 0.
+- **This design's own guard, not #2528's.** A target in the `unusual` band is never discounted,
+  so a persistent alarm keeps winning. (#2528's guard at :268-269 is a different one: it stops
+  the baseline from learning on flagged readings.) In practice, then, only `high`-band internal
+  targets and external targets can be habituated.
+- **Safety paths are untouched.** The cabinet-heat reflex and the other safety paths are outside
+  attention.
+- **Producer:** `orion-attention-runtime`. It keeps the integral in memory and rebuilds it at
+  boot from the last `3τ` of S2 `field_dominance_run` rows. The workspace `dwell_ticks` counter
+  does not survive a restart (`orion/substrate/attention_broadcast.py:44-49`).
+- **Consumer:** the #2528 ranking in `orion/attention/field_attention/selectors.py`.
+- **Trace:** a `habituated exposure=… discount=…` reason on each frame target, plus a numeric
+  `habituation_discount` on `FieldAttentionTargetV1`. Because that model forbids extra fields,
+  the consumers are updated first.
 
 **Metric gate.**
 
-1. **Provenance:** the winner sequence in `substrate_attention_frames` and the S2 rows.
-2. **Independence:** this is deliberately a feedback loop from attention's output to its input,
-   not a new sensor. It is not redundant with `dwell_ticks`, which resets on restart and counts
-   workspace coalitions, not field targets.
-3. **Theory:** habituation, with dishabituation and spontaneous recovery (Thompson & Spencer
-   1966, updated by Rankin et al. 2009).
-4. **Live rest:** exposure can fall to near zero. Between 01:00 and 01:10 UTC on 10-09, the two
-   calm targets' combined share was 10.2%.
-5. **Existing mechanism:** habituation was removed from the stakes-design attention path (G5).
-   Nothing replaced it.
-6. **Reversibility:** set `h = 0` to turn it off, and one field is dropped.
+1. **Provenance:** the winner sequence in `substrate_attention_frames`, plus S2 rows.
+2. **Independence:** a deliberate feedback loop from attention's output back to its input, not
+   a new sensor. It is not redundant with `dwell_ticks`, which resets on restart and counts
+   workspace coalitions.
+3. **Theory:** habituation with dishabituation and spontaneous recovery (Thompson & Spencer
+   1966; Rankin et al. 2009).
+4. **Live rest:** `UNVERIFIED`. Today's data comes from a different instrument (pre-#2528), so
+   patch R1a is the check. Exposure must fall back near 0 for targets that stop winning.
+5. **Existing mechanism:** habituation was removed from the stakes-design attention path (G5),
+   and nothing replaced it.
+6. **Reversibility:** set `h = 0`, and drop one field.
 
 ### R2. Drives: one template, one drive that passes
 
@@ -707,8 +724,21 @@ the following:
 - An explicit `no_reading` state for when a source is stale or absent. A missing source is never
   read as 0, and never as calm.
 
-Each reading is a `DriveReadingV1` (schema below). It is published inside `RegulationStateV1`,
-with `state` set to one of `resting`, `building`, `due`, `refractory`, or `no_reading`. A drive
+Each reading is a `DriveReadingV1` (schema below), built by **the service that owns the
+discharge action** from the same values its own gate uses. That leaves one copy of "due" and
+"refractory", never a mirror that could disagree. `state` is one of `resting`, `building`, `due`,
+`refractory`, or `no_reading`.
+
+For rest, the producer is `orion-dream`, publishing on every 600 s check. In v1 the readings
+have **trace consumers only**, and the dream service still decides with its own `should_sleep`.
+The consumers are:
+
+- the regulation state, which embeds the latest reading verbatim;
+- Temporal Self's sleep arc;
+- the closed day that the daily metacog reads.
+
+That is deliberate. A drive's job here is to make Orion's need visible and testable, not to
+move the decision out of the service that owns the action. A drive
 that does not pass all six steps of the CLAUDE.md metric gate is not built. Its gate record stays
 in this document so the question is not re-asked from scratch.
 
@@ -725,11 +755,15 @@ in this document so the question is not re-asked from scratch.
 **The two repairs that make rest a real drive** (both in `services/orion-dream`, each with a
 test):
 
-1. **Idle means Juniper is quiet, not Orion.** The dream service stops running its own
-   `IDLE_MINUTES_SQL` (`app/cycle_store.py:57-60`) and reads arousal instead. Arousal counts only
-   Juniper's turns: `source='hub_orion'` with a non-empty prompt (28 rows in the 7 days to 10-09).
-   If arousal is `unknown`, that is not idle, which is what `is_idle` already does
-   (`orion/schemas/dream_cycle.py:63-66`).
+1. **Idle means Juniper is quiet, not Orion.** Two changes in the dream service:
+   - `IDLE_MINUTES_SQL` (`app/cycle_store.py:57-60`) is filtered to Juniper's turns, which
+     fixes the live bug on its own.
+   - The dream then reads arousal first, and uses that query only as its fallback (see the
+     `unknown` rule in R3).
+   - Both count only Juniper's turns: `source='hub_orion'` with a non-empty prompt (28 rows in
+     the 7 days to 10-09).
+   - If the fallback query itself fails, that is still not idle, which is what `is_idle`
+     already does (`orion/schemas/dream_cycle.py:63-66`).
 2. **A threshold that can say "not yet".** Patch R2a is read-only. It replays `compute_pressure`
    at every 600 s check over 14 days, using the dream service's own loader, and records how long
    after each sleep pressure first crosses each candidate threshold. The threshold is then set
@@ -739,9 +773,12 @@ test):
    - If no threshold can do that without starving sleep, the honest verdict is that dream
      material accrues faster than Orion can sleep. The drive is then recorded as permanently
      `due`, and the clock stays the regulator.
-   - The dream service also publishes its pressure reading at every check, not only when it
-     fires, as kind `dream.sleep_pressure.v1`. That reuses `SleepPressureV1` as-is. Then the
-     `building` curve can be seen in the regulation state and in the Temporal Self sleep arc.
+   - Pressure has a ceiling. Candidates are capped at `DREAM_CANDIDATES_PER_SOURCE` = 50 per
+     source (`services/orion-dream/app/settings.py:65`, used at `app/cycle.py:63`), and each
+     weight is at most 1. R2a reports how close observed readings come to that ceiling. A
+     reading pinned at the ceiling is saturated, not "very sleepy".
+   - The dream service publishes a `DriveReadingV1` at every check, not only when it fires, as
+     kind `drive.reading.v1` on `orion:drive:reading`. That makes the `building` curve visible.
 
 ### R3. Arousal: one slow reading that existing dials read
 
@@ -752,19 +789,35 @@ test):
   immune sweep.
 - **Strained:** the body or compute is under load.
 
-A fourth state, **unknown**, covers stale inputs, and unknown is never treated as idle. The
-level changes slowly. It moves only after its condition has held for a while, and it records
-`since`. Existing dials read it and adjust *their own* gain. Arousal never acts on its own.
+A fourth state, **unknown**, covers stale inputs, and unknown is never treated as idle.
+
+Every level records `since`. Existing dials read it and adjust *their own* gain. Arousal never
+acts on its own.
+
+It is slow in specific, stated places:
+
+- GPU strain needs 5 minutes of sustained backlog before it counts.
+- Leaving strained needs 10 clear minutes.
+- Engaged becomes idle only after 45 minutes with no turn.
+
+Two moves are immediate by design, because the evidence for them is unambiguous: a Juniper
+turn, and the heat reflex.
 
 **Inputs.** Each input has a provenance, and each exclusion has a reason.
 
 - **E1, minutes since Juniper's last turn.** From `chat_history_log` rows with
   `source='hub_orion'` and a non-empty prompt. It also wakes immediately on the
   `orion:chat:history:turn` event, which the Situation driver already subscribes to.
-- **S1, the cabinet-heat reflex is asserting.** From `CabinetHeatVerdict.reflex`
-  (`orion/autonomy/cabinet_heat.py:151-156`).
+- **S1, the cabinet is judged hot.** True only when `CabinetHeatVerdict.reflex ==
+  REFLEX_CABINET_HOT` (`orion/autonomy/cabinet_heat.py:87,151-156`).
+  - It is computed by running that pure verdict over the latest athena cabinet reading, using
+    the same query the module uses (`:275`).
+  - `REFLEX_CABINET_UNKNOWN` means the sensor is missing. It makes S1 *stale*, not hot.
 - **S2, GPU backlog.** `GpuPoolStateV1.backlog_depth` is non-zero for at least 5 minutes
   (`orion/schemas/gpu_pool.py:253`; 9 `backlogged` events in the 7 days to 10-09).
+  - The regulate node subscribes to `orion:gpu_pool:state`, which is published every 5 s
+    (`services/orion-gpu-pool/app/runtime.py:1463-1468`).
+  - `orion/bus/channels.yaml` gains durable-runs as a consumer of that channel.
 - **Excluded, biometrics `strain`.** It is the mean of GPU utilization, thermal, and five other
   pressures, so it double-counts S1 and S2.
 - **Excluded, Spark `arousal`.** It is dead. The word "arousal" is already used in six other
@@ -775,18 +828,43 @@ level changes slowly. It moves only after its condition has held for a while, an
 - **Excluded, the rest drive.** It *reads* arousal, so deriving arousal from it would create a
   loop. Juniper's brief suggested deriving arousal from drives. With one drive that reads
   arousal, that is circular in v1.
-- **Excluded, anything Orion emits.** Outreach, reverie, and curiosity are all out. Otherwise
-  Orion would arouse itself.
+- **Excluded, Orion's own speech and thought.** Outreach, reverie, and curiosity are all out.
+  Otherwise Orion would arouse itself.
+- **A named loop that is kept.** S1 and S2 are partly caused by Orion's own GPU work: agent
+  work alone held 34.7 GPU-hours in the 24 h to 10-09. That is a *negative* feedback loop:
+  1. Orion's work raises strain.
+  2. The readers slow optional work.
+  3. The load falls.
+  4. Strain clears.
+
+  Negative feedback is what a regulator is for. The anti-oscillation guard is the 10-minute
+  clear time. Patch R3a counts strained to engaged/idle flips per day, and more than 12 a day
+  means that guard is too short.
 - **Undecided, room presence.** See Missing question 11.
 
 **Rule.** The rule is deterministic, with hysteresis.
 
-- Arousal is `strained` if S1 is asserting, or if S2 has held for at least 5 minutes. It leaves
-  `strained` only after 10 clear minutes. Strained outranks engaged.
-- Otherwise, it is `engaged` if E1 is under `DREAM_IDLE_MINUTES` (45). That reuses the dream
-  setting's existing meaning, so the threshold is not copied.
-- Otherwise, it is `idle`.
-- If any input is older than 3 times its cadence, arousal is `unknown`.
+Evaluate in this order:
+
+1. If any *fresh* strain input holds (S1 hot, or S2 sustained for at least 5 minutes),
+   arousal is `strained`. One fresh, true strain input is enough, even if other inputs are stale.
+   Arousal leaves `strained` only after 10 clear minutes.
+2. Otherwise, if any input is older than 3 times its cadence, arousal is `unknown`.
+3. Otherwise, it is `engaged` if E1 is under `DREAM_IDLE_MINUTES` (45). That reuses the dream
+   setting's existing meaning, so the threshold is not copied.
+4. Otherwise, it is `idle`.
+
+**When arousal is `unknown`, or the regulation state itself is missing or stale in Redis, every
+reader falls back to exactly its pre-arousal behaviour.** That is the same path as turning the
+flag off. For the dream, the fallback is its own idle query, filtered to Juniper's turns (repair
+1 below applies to that query as well). So an outage in durable-runs or Redis cannot stop Orion
+from sleeping.
+
+**History.** Every level change is written as an `arousal_transition` event in
+`temporal_self_event`. That gives the day frame "strained 14:02-14:40" with evidence, and gives
+R3a's flip count a live source. The regulation state itself is read from Redis
+`orion:regulation:latest` and from `GET /regulation/state`. It is **not** published on a bus
+channel in v1, because no bus consumer exists for it.
 
 **Live sanity.** On the 10-09 numbers, all three levels are reachable:
 
@@ -800,8 +878,8 @@ level changes slowly. It moves only after its condition has held for a while, an
 | Reads arousal | Where | Gain |
 |---|---|---|
 | Dream idle gate | `services/orion-dream/app/cycle_store.py:57-60` → replaced | sleeps only at `idle` |
-| Curiosity pacing | `services/orion-hub/scripts/curiosity_investigation.py:536-540` (cooldown check) | `strained`: returns a new reason, `arousal_strained`. `engaged`: cooldown doubled. `idle`: unchanged. The daily cap is unchanged |
-| Curiosity self-inquiry | same family, `curiosity_investigation.py:1316-1341` | runs only at `idle` |
+| Curiosity pacing | `services/orion-hub/scripts/curiosity_investigation.py:536-540` (the cooldown branch of `scheduling_block_reason`, `:518`) | `strained`: returns a new reason, `arousal_strained`. `engaged`: cooldown doubled. `idle`: unchanged. The daily cap is unchanged |
+| Curiosity self-inquiry | its `scheduling_block_reason` call, `curiosity_investigation.py:2336` | runs only at `idle` |
 | Visual reverie baseline | `orion/reverie/baseline.py:53` (`schedule`) | `strained`: defer by `retry_sec` |
 | Reverie chain cadence | `services/orion-thought/app/chain.py:421-442` | `strained`: interval doubled |
 | Self-modification pressure | `orion/substrate/mutation_pressure.py:92-98` (`ready_for_proposal`) | no proposal while `strained` |
@@ -877,9 +955,11 @@ fixtures:
 
 - **Producer:** the regulation step, gated on `idle`.
 - **Output:** one `immune_finding` event in `temporal_self_event`, with the metric id, failure
-  kind, and evidence window. It is also counted in `RegulationStateV1.immune`.
-- **Consumers:** the closed-day frame, which the daily metacog reads; and the drive and arousal
-  inputs, where a finding on an input forces that input to `no_reading`.
+  kind, and evidence window. It is also counted in `RegulationStateV1.immune_findings_open`.
+- **Consumer in v1:** the closed-day frame, which the daily metacog reads.
+- **Later consumer:** forcing a drive or arousal input to `no_reading`. That needs those inputs
+  (E1, S1, S2, rest pressure) to have metric-lock entries with `rest` and `value_kind` first. It
+  is not promised in v1, because R4 v1 only covers glossary channels.
 - **Test:** each of the three zombies, reconstructed as a fixture, is caught. A healthy
   fixture, and a genuinely calm fixture at its declared rest, are not flagged.
 
@@ -914,7 +994,7 @@ These are Juniper's calls. Each has a recommended default so patch 1 can start w
    Recommended: the shared `day_id` helper reads one key, `ORION_SITUATION_TIMEZONE`, added to the
    host's settings with the same default; unifying orion-actions onto it is a follow-up.
 4. **Juniper in town.** Orion's exchanges with Juniper inside AI Town: Juniper conversation or
-   town? Recommended: Juniper conversation, same privacy class as `chat_history_log`.
+   town? Recommended: Juniper conversation, the same as `chat_history_log`.
 5. **Retention.** Recommended: events 30 days, arcs 90 days, closed days 365 days, singleton
    frame forever.
 6. **Atlas publication.** Publish arc transitions as `TemporalHopV1`? Recommended: not in v1.
@@ -959,9 +1039,10 @@ These are Juniper's calls. Each has a recommended default so patch 1 can start w
 - **Data touched.** Read-only over the tables in the binding appendix. Temporal Self writes only
   to the new `temporal_self_*` tables, and no source table is modified. Rev 4 regulation writes:
   - `field_dominance_run` (S2);
-  - the regulation state, to Redis `orion:regulation:latest` and bus `orion:regulation:state`;
-  - `immune_finding` events in `temporal_self_event`;
-  - one new dream bus kind, `dream.sleep_pressure.v1`.
+  - the regulation state, to Redis `orion:regulation:latest`;
+  - `immune_finding`, `arousal_transition`, and `drive_reading` events in
+    `temporal_self_event`;
+  - one new dream bus kind, `drive.reading.v1`.
 
   It changes the gating behaviour of the seven readers in R3. No FalkorDB writes.
 - **Privacy boundary.** Juniper's standing rule is that there is no privacy boundary between
@@ -972,15 +1053,15 @@ These are Juniper's calls. Each has a recommended default so patch 1 can start w
   utterances: the chat grammar lane's own `payload_ref` discipline
   (`services/orion-hub/scripts/grammar_emit.py:68-216`) is the model. Chat turns contribute only
   `session_id`, `correlation_id`, and `created_at`. Cortex-turn attention labels are not copied
-  (Missing question 7). Town rows with a human partner are Juniper's and inherit
-  `chat_history_log`'s access class. Nothing here reaches contractor peers; the frame is not
+  (Missing question 7). Town rows with a human partner are treated as Juniper's
+  conversation. Nothing here reaches contractor peers; the frame is not
   published on any bus channel in v1.
 - **Trace that proves it worked.** One `temporal_self_arc` row whose `evidence_event_ids` resolve
   to real rows in at least two source tables, with `attention_returns ≥ 2`, and one consumer read
   of the frame that cites the arc id. A frame that reads "no active arc" on a quiet stretch is
   also required evidence: the instrument must be able to rest. For regulation:
-  - one live frame where a calm target lost first place to a lower-percentile candidate, with
-    the `habituated` reason on it;
+  - if R1 is built, one live frame where a high-band or external target lost first place to a
+    lower-percentile candidate, with the `habituated` reason on it;
   - one dream cycle that waited past the six-hour clock because pressure was below threshold;
   - one curiosity or outreach refusal with reason `arousal_strained` while the cabinet reflex was
     asserting;
@@ -1026,11 +1107,19 @@ These are Juniper's calls. Each has a recommended default so patch 1 can start w
      - E1 is filtered to Juniper's turns, and a test fixture includes an outreach row;
      - the time share per level is a live acceptance check;
      - `unknown` never reads as idle.
+  9b. *Arousal down, Orion never sleeps:* durable-runs or Redis is down, so the regulation state
+      goes stale. Mitigation: a stale or `unknown` state makes every reader fall back to its
+      pre-arousal path, the dream included (its own Juniper-filtered idle query). The fixture
+      deletes `orion:regulation:latest` and asserts that the dream still sleeps once idle.
   10. *Arousal loosening a safety gate:* a reader wired in the wrong direction. Mitigations:
       - arousal may only make a reader *more* conservative when `strained`, or when `engaged`
         for self-occupation;
-      - the must-not list is enforced by a test that fails if any module on that list imports the
-        regulation reader.
+      - the must-not list is enforced at the **branch** level, not the import level. Readers and
+        protected gates share functions: quiet hours sit beside the outreach cooldown
+        (`endogenous_outreach.py:470-482`), and the curiosity hour window sits beside its
+        cooldown in `scheduling_block_reason` (`curiosity_investigation.py:518-540`). So for
+        every protected reason, the test asserts the same decision under all four arousal values
+        and under no arousal at all.
   11. *A drive that only looks calibrated:* a threshold picked to produce some "not yet" checks on
       paper. Mitigation: Missing question 13. The threshold comes from the R2a replay, and its
       distribution is recorded here.
@@ -1082,15 +1171,17 @@ TemporalSelfEventV1                  # sparse: process boundaries, verdicts, def
     "memory_episode",        # episode_memory: episode_id, purpose, occurred_at; never statement
     "situation_revision",    # SituationStateV1 revision from Redis/bus; context only, Juniper's now
     "immune_finding",        # R4 output
+    "arousal_transition",    # R3: one row per level change, with the deciding input
+    "drive_reading",         # R2: rest drive state changes only (not every check)
   ]
   source_table: str
   source_ref: str                    # the row's own primary key, verbatim
   correlation_id: str | None
   subject_ref: str | None            # one canonical ref; None for context events
   related_refs: list[str]            # e.g. offered prior ids for a curiosity run; partner slug + session for town
-  label: str                         # ≤ 300 chars from the source row's own label; "" where privacy forbids
-  privacy_class: Literal["orion_internal", "juniper_chat"]   # juniper_chat never leaves the chat boundary:
-                                     # filtered out of crystallization candidates, peer briefs, and published days
+  label: str                         # ≤ 300 chars from the source row's own label; "" only where the label is model prose
+  privacy_class: Literal["orion_internal", "juniper_chat"]   # an OUTWARD boundary only: juniper_chat is readable by every
+                                     # Orion consumer, never sent to contractor peers or published artifacts
   verdict: str | None                # the source's own word (confirmed, missed, claim_upheld=false, ...); never normalised
   payload: dict[str, Any]            # bounded, documented per source_kind in sources.py
 
@@ -1222,7 +1313,7 @@ ArousalReadingV1
   gpu_backlog_sustained_sec: float | None    # S2
   reasons: list[str]                         # which input decided, in words from this table
 
-RegulationStateV1                    # one per step; Redis orion:regulation:latest + bus orion:regulation:state
+RegulationStateV1                    # one per step; Redis orion:regulation:latest + GET /regulation/state (no bus channel in v1)
   schema_version: "regulation.state.v1"
   generated_at: datetime
   arousal: ArousalReadingV1
@@ -1231,9 +1322,9 @@ RegulationStateV1                    # one per step; Redis orion:regulation:late
   immune_last_sweep_at: datetime | None
   warnings: list[str]
 
-# Bus (also registered in SCHEMA_REGISTRY, orion/bus/channels.yaml):
-#   orion:regulation:state      kind regulation.state.v1        producer orion-durable-runs
-#   orion:dream:sleep_pressure  kind dream.sleep_pressure.v1    producer orion-dream (payload: SleepPressureV1, unchanged)
+# Bus (registered in SCHEMA_REGISTRY and orion/bus/channels.yaml):
+#   orion:drive:reading   kind drive.reading.v1   producer orion-dream (each 600 s check)   consumer orion-durable-runs
+#   orion:gpu_pool:state  (existing)              add consumer orion-durable-runs (arousal S2)
 # FieldAttentionTargetV1 gains habituation_discount: float = 0.0 (consumer-first, forbid model).
 ```
 
@@ -1378,7 +1469,7 @@ FIELD_ATTENTION_HABITUATION_TAU_SEC=1800
 FIELD_ATTENTION_HABITUATION_MAX_DISCOUNT=0.5
 # services/orion-dream
 DREAM_IDLE_FROM_AROUSAL_ENABLED=true
-DREAM_PUBLISH_PRESSURE_ENABLED=true
+DREAM_PUBLISH_DRIVE_READING_ENABLED=true
 ```
 
 The engaged/idle boundary reuses `DREAM_IDLE_MINUTES` (45) instead of copying it. Each arousal
@@ -1422,8 +1513,8 @@ results appended to this document. The outputs gated: `active_arc_age_sec`, `att
    these licenses a feeling claim; they license the *shape* of the record.
 4. **Live-data sanity.** `UNVERIFIED`. Patch 1's replay must show, over seven live days: the
    distribution of broadcast streak lengths (so `K` is measured); how many distinct winners a day
-   has, given the recorded degeneracies (`attended_node_ids` empty on 99.9% of dwell-log rows on
-   2026-07-21; 48 of 48 loops decayed unattended in #2255); the distribution of returns per
+   has, given the recorded degeneracies (on 10-09, `attended_node_ids` was non-empty on 64% of broadcast
+   rows, and 76 of 90 loop verdicts were decay); the distribution of returns per
    subject per day, including that zero is common; stretches with no active arc (rest state
    reachable); arcs spanning a substrate-runtime restart without duplication; and that
    `peak_pressure_max` and `cabinet_temp_c_max` vary across arcs and can sit near their floors.
@@ -1501,17 +1592,19 @@ results appended to this document. The outputs gated: `active_arc_age_sec`, `att
   `compute_pressure` at every 600 s check over 14 days.
 - **R3a**, read-only: `scripts/analysis/measure_arousal_replay.py` (new). It records the time
   share per level over 14 days, and E1 with and without the outreach rows.
-- **R1**, with or after #2528: `orion/attention/field_attention/selectors.py` (the ranking),
+- **R1a**, read-only, 7 days after #2528 is live: `scripts/analysis/measure_attention_exposure.py`
+  (new). It measures per-target win share over rolling 30-minute windows.
+- **R1**, only if R1a says build: `orion/attention/field_attention/selectors.py` (the ranking),
   `orion/schemas/field_attention_frame.py` (`habituation_discount`, consumer-first), and
   `services/orion-attention-runtime/app/worker.py` (the exposure integral, rebuilt from S2).
   Plus settings, `.env_example`, and tests beside the existing selector tests.
 - **R2/R3:** `orion/schemas/regulation.py`, `orion/regulation/{arousal,drives,inputs}.py` (new),
   `orion/schemas/registry.py`, `orion/bus/channels.yaml`, and `orion/inner_state_registry.py`.
   In durable-runs, a `regulate` node at the end of the Temporal Self graph.
-  `services/orion-dream/app/cycle_store.py` and `app/cycle.py` (read arousal, publish pressure).
+  `services/orion-dream/app/cycle_store.py` and `app/cycle.py` (filter the idle query to Juniper's turns, read arousal with fallback, publish `drive.reading.v1`).
   Then one small PR per reader in the R3 table, each with a flag-off test that proves the old
-  path is unchanged. Plus `tests/test_regulation_must_not_readers.py` (new), which enforces the
-  must-not list.
+  path is unchanged. Plus `tests/test_regulation_must_not_readers.py` (new). For every
+  protected gate, it asserts that the decision is identical under every arousal value.
 - **R4:** `config/metrics/metric_definitions.lock.json` and
   `config/field/field_channel_glossary.v1.yaml`, with the fields #2528 adds;
   `orion/regulation/immune.py` (new); and fixtures for the three known zombies.
@@ -1525,33 +1618,36 @@ seam S3 in `services/orion-field-digester` (tension runs of at least 6 ticks).
 ## Non-goals
 
 - No sentience claim, no "continuity score", no feeling asserted from the `body` field.
-- No new service, no new bus channel, no LLM call inside the reducer, no generated narrative
-  stored as fact, no cross-source verdict vocabulary.
+- No new service, no LLM call inside the reducer, no generated narrative stored as fact, no
+  cross-source verdict vocabulary. Temporal Self adds no bus channel. Regulation adds exactly
+  one, `orion:drive:reading`.
 - No writes to any source table; no FalkorDB or Graphiti writes in v1. Ticks are never
   crystallized; at most one closed-day summary per day is a candidate for later crystallization.
 - No resurrection of `DriveStateV1`, `AutonomyStateV2`, `SelfStateV1`, or the world model. The
   per-tick `goal_provenance_streak_ticks` table is read only offline in patch 1 and is retired
   completely once seam S2 is live.
-- No room-camera narrative text, enrolled names, scene-inventory rows, or street sightings that
-  Orion's attention did not promote, in the chronology.
+- No room-camera narrative text, unconfirmed identity guesses, scene-inventory rows, or street
+  sightings that Orion's attention did not promote, in the chronology.
 - No replacement of `EpisodeSummaryV1`, `ConsolidationFrameV1`, the attention schema, or memory
   consolidation windows. Each remains authoritative for what it already records.
 - No NPC-to-NPC town turns in the chronology, and no fix here for their leak into social memory.
-- No reads of `metacognition_ticks`, `substrate_field_state`, `grammar_events`,
-  `substrate_episode_summaries`, `substrate_system_one_appraisal`, or `substrate_reduction_receipts`.
+- The chronology reducer never reads `metacognition_ticks`, `substrate_field_state`,
+  `grammar_events`, `substrate_episode_summaries`, `substrate_system_one_appraisal`, or
+  `substrate_reduction_receipts`. The one exception is the R4 immune sweep, which reads
+  `substrate_field_state`, only when idle and at most every 6 hours.
 - No opportunity-cost estimate. The constraints channel records rows the system already stamped
   as deferred or waited, with the stamping row's own reason.
 - Temporal Self itself changes no spend point, budget, cap, or gate. Regulation changes only the
   seven readers named in R3, and only in the conservative direction. No daily cap is raised. No
   safety, courtesy, or spend gate reads arousal.
-- No new service. Everything runs in `orion-durable-runs`, `orion-attention-runtime`, and
-  `orion-dream`. No LLM in any reducer. No narrative in any frame or regulation state.
+- Everything in regulation runs in `orion-durable-runs`, `orion-attention-runtime`, and
+  `orion-dream`. No narrative in any frame or regulation state.
 - No explore, social, cooling, or effort drive in v1. Each failed the metric gate above. No
   "mood", "valence", or emotion label is attached to arousal.
 - No parallel attention scorer: habituation lives only inside #2528's ranking.
 - No new metric registry: the immune sweep reads the glossary and metric lock, which #2528
   extends.
-- No resurrection of `DriveStateV1`, DriveEngine, or `signal_drive_map.yaml`.
+- The same no-resurrection rule covers DriveEngine and `signal_drive_map.yaml`.
 
 ## Acceptance checks
 
@@ -1591,49 +1687,62 @@ seam S3 in `services/orion-field-digester` (tension runs of at least 6 ticks).
    calibration script's 66.0% test accuracy on the same rows before `ArcSelfModelSummaryV1` is
    bound; a fixture day with a 9-hour single-target run yields one interoception arc and the
    stuck-reading warning; a fixture with a dark camera closes the company arc with
-   `source_stale`; no event carries room narrative text or a person's name; `juniper_chat` events
-   never appear in a closed day's crystallization candidates.
+   `source_stale`; no event carries room narrative text or an unconfirmed identity; `juniper_chat`
+   events never appear in anything sent to contractor peers.
 10. **Operational.** Retention runs; the migration passes `check_sql_migrations_applied.py`; the
    tolerant singleton loader is tested against a stale row; no module under
    `orion/temporal_self/` names a System One observational question (the existing
    no-consumers test stays green); the smoke script runs against the Tailscale bus URL only;
    local `.env` is synced.
-11. **Habituation (R1).** A fixture of two calm targets alternating every 10 ticks for 6 hours:
-    after about `τ`, a third eligible target with a lower percentile wins at least once. A band
-    change on the habituated target restores it on the next frame. A target in the `unusual`
-    band keeps winning for 6 hours. The exposure integral survives a simulated restart, because
-    it is rebuilt from S2 rows. Live: at least one frame carries a `habituated` reason, and the
-    hourly share of the top two calm targets falls below its 10-08 level of 81-100%.
+11. **Habituation (R1, only if R1a says build).** R1a's per-target exposure distribution, taken
+    after #2528, is recorded here first. If R1 is built, the fixtures are:
+    - **High-band internal target.** It stays eligible in band `high` for 6 hours, alternating
+      with a second high-band target every 10 ticks. After about `τ`, a third eligible target
+      with a lower percentile wins at least once.
+    - **Monotonous external source.** It does the same.
+    - **Band change.** When the band moves on a habituated target, that target is restored on
+      the next frame.
+    - **Unusual band.** A target in band `unusual` keeps winning for 6 hours.
+    - **Restart.** The exposure integral survives a simulated restart, rebuilt from S2 rows.
+
+    Live, measured against #2528-alone as the baseline (not against the 10-08 pre-#2528 data):
+    the longest single-target hogging stretch R1a found gets shorter.
 12. **Rest drive (R2).** R2a's crossing distribution is recorded here before the threshold
     changes. A fixture with an outreach-only `chat_history_log` row reads idle. Live: within
     14 days, at least one cycle fires later than the six-hour clock allowed because pressure was
     below threshold, and the regulation state shows the `building → due → refractory → building`
     sequence. If the R2a result rules this out, Missing question 13 applies, and the PR says so.
 13. **Arousal (R3).** R3a shows every level between 0% and 100% of time. Every reader's flag-off
-    test reproduces its current decision on the same inputs. The must-not test fails if a listed
-    module imports the reader. `unknown` never authorizes a dream. Live: `engaged` appears within
+    test reproduces its current decision on the same inputs. The must-not test shows every protected
+    gate's decision is invariant across arousal values. `unknown` never authorizes a dream through
+    arousal, and a missing regulation state falls back to the dream's own Juniper-filtered idle
+    query. Live: `engaged` appears within
     one step of a real Juniper turn, and `idle` holds overnight.
 14. **Immune sweep (R4).** All three zombie fixtures are caught, and the healthy and calm-at-rest
-    fixtures are not. The sweep never runs outside `idle`. A finding on a drive input turns that
-    drive to `no_reading`.
+    fixtures are not. The sweep never runs outside `idle`. A finding lands as an
+    `immune_finding` event in the closed day.
 
 ## Recommended next patch
 
 Work runs in two parallel lanes, the chronology lane and the regulation lane. They meet at S2,
 which both lanes need.
 
+Patch names follow the rest of this document: patches 1-7 and S1-S3 are the Temporal Self
+patches named in "Files likely to touch", and R1a-R4 are regulation. The Order column only sets
+sequence.
+
 | Order | Patch | Exit evidence |
 |---|---|---|
-| **1** | **S2: dominance runs in orion-attention-runtime; retire the streak-tick table completely** | Run rows match the offline reconstruction from the last 7 days of streak ticks (expect about 2,900 a day). The streak-tick producer, the `debug.attention.streak_tick.v1` channel, the model, and the table are gone |
-| 2 | Read-only replays in one PR: Temporal Self patch 1, R2a dream-pressure crossings, R3a arousal time shares | Distributions recorded here; `K`, `R`, the dream threshold, and the arousal hysteresis chosen from them; no runtime change |
-| 3 | R2+R3 core: regulation schemas, the pure reducer, the dream idle fix, dream pressure publishing, and the `regulate` node in durable-runs (with a minimal Temporal Self thread shell if patch 4 is not ready) | Live `orion:regulation:latest` reads idle overnight and engaged within one step of a turn; outreach rows no longer reset dream idle |
-| 4 | Temporal Self schemas, pure reducer, tests, arc-precision eval (old patch 2) | Tests and eval green; replay identity holds |
-| 5 | Temporal Self worker in durable-runs, migration, routes (old patch 3) | One real arc with returns ≥ 2; one closed day; cursors advancing |
-| 6 | Arousal readers, one small PR each, in the R3 table's order | Each has a flag-off test; one live `arousal_strained` refusal |
-| 7 | R1 habituation, in the same PR as #2528's ranking change or after it | Acceptance check 11 |
-| 8 | First Temporal Self consumers: daily metacog grounding, stance cue (old patch 4) | Metacog cites arc ids; stance boundary eval unchanged |
-| 9 | R4 immune sweep, after #2528's lock fields land | Acceptance check 14 |
-| later | Curiosity facts, reverie arcs, System One inputs, dream replay from arcs, Hub tab, S1, S3 (old patches 5-7, S1, S3) | As in Rev 3 |
+| **1** | **S2**: dominance runs in orion-attention-runtime; retire the streak-tick table completely | Run rows match the offline reconstruction from the last 7 days of streak ticks (expect about 2,900 a day). The streak-tick producer, the `debug.attention.streak_tick.v1` channel, the model, and the table are all gone |
+| 2 | **Patch 1 + R2a + R3a**: the read-only replays, in one PR | Distributions recorded here. `K`, `R`, the dream threshold (or the Missing question 13 verdict), and the arousal hysteresis are chosen from them. No runtime change |
+| 3 | **R2/R3 core**: regulation schemas, the pure reducer, the dream idle fix, `drive.reading.v1`, and a `regulate` node in a self-driven durable-runs thread. Patch 3 later adds the Temporal Self nodes to the same thread | Live `orion:regulation:latest` reads `idle` overnight and `engaged` within one step of a turn. Outreach rows no longer reset dream idle. Deleting the Redis key leaves the dream on its fallback |
+| 4 | **Patch 2**: Temporal Self schemas, pure reducer, tests, arc-precision eval | Tests and eval green; replay identity holds |
+| 5 | **Patch 3**: Temporal Self nodes in the durable-runs thread, migration, routes | One real arc with returns ≥ 2; one closed day; cursors advancing |
+| 6 | **R3 readers**: one small PR per reader, in the R3 table's order | Each reader has a flag-off test and a branch-level must-not test; one live `arousal_strained` refusal |
+| 7 | **R1a**, 7 days after #2528 is live; **R1** only if R1a finds a target hogging attention | R1a recorded here; acceptance check 11 if R1 is built |
+| 8 | **Patch 4**: daily metacog grounding and the stance cue | Metacog cites arc ids; stance boundary eval unchanged |
+| 9 | **R4** immune sweep, after #2528's lock fields land | Acceptance check 14 |
+| later | Patches 5-7, S1, S3 | As in Rev 3 |
 
 Start with S2. It is small, it retires a 41,000-row-a-day debug table that its own schema calls
 temporary, and both lanes need it: the interoception arcs and the habituation memory are both
@@ -1666,7 +1775,7 @@ as subject identity. A source not in this table is not read.
 | `attention_loop_raised` | `attention_salience_trace` where `scope='chat'` | `created_at` | `loop_id` | opens a concern arc; label `privacy_class=juniper_chat` |
 | `attention_loop_verdict` | `attention_loop_outcome` | `created_at` (digest detection time for `decayed_unattended`) | `loop_id` | verdict = resolved / dismissed / decayed_unattended |
 | `field_dominance_run` | `field_dominance_run` (seam S2) | `started_at` / `ended_at` | `target_id` | interoception arcs; before S2, reconstructed offline from `goal_provenance_streak_ticks` in patch 1 only |
-| `presence_transition` | `vision_presence_transition` (seam S1) | `occurred_at` | `presence_id` | company arcs; `identity_confirmed` boolean only |
+| `presence_transition` | `vision_presence_transition` (seam S1) | `occurred_at` | `presence_id` | company arcs; `identity_confirmed`, plus the enrolled label only when confirmed |
 | `vision_percept` | `vision_events` from room streams (or NULL `stream_id`) | `created_at` (write time; no observation time exists) | None (context) | `event_type` and `entities` only, never `narrative`; folds into `percept_entities` |
 | `unresolved_percept` | `vision_unresolved` | `observed_at` | None (context) | reason = council_uncertainty / no_label; table needs the walkway migration |
 | `attention_worthy_sighting` | `vision_events` where `event_type='attention_worthy'` | sighting `started_at` via `evidence_refs`, else `created_at` | None (context) | walkway only; not live |

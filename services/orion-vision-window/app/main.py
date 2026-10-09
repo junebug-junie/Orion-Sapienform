@@ -27,6 +27,7 @@ from .projection import (
     envelope_to_http_dict,
     identity_confidence_from_artifact,
     identity_hint_from_artifact,
+    identity_verdict_summary,
     stream_key_from_artifact,
 )
 from .crops import build_crop_observation
@@ -103,6 +104,8 @@ class WindowService:
         # never grows unbounded (one entry per stream_id, overwritten).
         self._identity_by_stream: Dict[str, Dict[str, Any]] = {}
         self._identity_lock = asyncio.Lock()
+        # Running count of identity_face verdicts by outcome (trace only).
+        self._identity_checks: Dict[str, int] = defaultdict(int)
 
         self._live_lock = asyncio.Lock()
         self._live_by_stream: Dict[str, VisionWindowPayload] = {}
@@ -298,6 +301,17 @@ class WindowService:
                 except Exception as e:
                     logger.warning(f"[WINDOW] Invalid identity artifact payload: {e}")
                     continue
+                try:
+                    verdict = identity_verdict_summary(payload)
+                    self._identity_checks[verdict["outcome"]] += 1
+                    logger.info(
+                        f"[WINDOW] identity_check stream={stream_key_from_artifact(payload)} "
+                        f"outcome={verdict['outcome']} faces={verdict['faces']} "
+                        f"similarity={verdict['similarity']} detect_conf={verdict['detect_confidence']} "
+                        f"corr={payload.correlation_id} totals={dict(self._identity_checks)}"
+                    )
+                except Exception as e:  # the trace must never kill the identity loop
+                    logger.warning(f"[WINDOW] identity_check trace failed: {e}")
                 hint = identity_hint_from_artifact(payload)
                 confidence = identity_confidence_from_artifact(payload)
                 if hint is None and confidence is None:

@@ -125,6 +125,44 @@ def identity_confidence_from_artifact(art: VisionArtifactPayload) -> Optional[st
     return "uncertain" if has_real_unsure_face else None
 
 
+def identity_verdict_summary(art: VisionArtifactPayload) -> Dict[str, Any]:
+    """What one identity_face check actually said, for the trace.
+
+    The two helpers above deliberately return None for "no face" and for a
+    weak match, so a check that found nothing used to leave no trace at all
+    (2026-10-08: a 13-minute office session produced 26 checks and no way to
+    tell "never saw a face" from "saw a face, did not match"). This keeps
+    the distinction: ``outcome`` is always one of ``no_face`` |
+    ``not_enrolled`` | ``unsure`` | ``possible`` | ``probable``, with the
+    best similarity and detector confidence. Numbers only -- no embeddings,
+    no pixels.
+
+    A match outcome comes from ``identity_hint_from_artifact`` itself, so
+    this label can never disagree with what presence/council act on.
+    """
+
+    def _num(v: Any) -> Optional[float]:
+        return float(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else None
+
+    identities = getattr(art.outputs, "identities", None)
+    candidates = identities.get("candidates") if isinstance(identities, dict) else None
+    candidates = [c for c in (candidates or []) if isinstance(c, dict)]
+    if not candidates:
+        return {"outcome": "no_face", "faces": 0, "similarity": None, "detect_confidence": None}
+    if all(c.get("reason") == "not_enrolled" for c in candidates):
+        return {"outcome": "not_enrolled", "faces": len(candidates), "similarity": None, "detect_confidence": None}
+    hint = identity_hint_from_artifact(art)
+    if hint is not None:
+        outcome, sim = hint["state"], _num(hint.get("similarity"))
+        pool = [c for c in candidates if c.get("state") == outcome and _num(c.get("similarity")) == sim]
+    else:
+        outcome, pool = "unsure", candidates
+        sim = max((s for s in (_num(c.get("similarity")) for c in candidates) if s is not None), default=None)
+        pool = [c for c in candidates if _num(c.get("similarity")) == sim]
+    detect = _num(pool[0].get("detect_confidence")) if pool else None
+    return {"outcome": outcome, "faces": len(candidates), "similarity": sim, "detect_confidence": detect}
+
+
 def artifact_uris_from_artifact(art: VisionArtifactPayload) -> List[str]:
     """Lightweight URI/path pointers only; no frame bytes (spec §3, §9)."""
     out: List[str] = []

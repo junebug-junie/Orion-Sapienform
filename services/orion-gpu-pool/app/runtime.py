@@ -1215,9 +1215,9 @@ class PoolRuntime:
         discovered slots than configured, or the one-off reserve), and once when it clears. An
         unloaded seat (no slots) is not news: it takes no holds of any kind."""
         for role, row in self.hold_limits().items():
-            reason = None if row["reason"] == "no_slots" else row["reason"]
-            if self._hold_cap_reported.get(role) == reason:
-                continue
+            reason = row["reason"]
+            if reason == "no_slots" or self._hold_cap_reported.get(role, "unset") == reason:
+                continue      # an unloaded seat changes nothing: keep the last state said
             self._hold_cap_reported[role] = reason
             if reason:
                 logger.warning("gpu_pool_max_holds_clamped role=%s max_holds=%s effective=%s slots=%s reason=%s",

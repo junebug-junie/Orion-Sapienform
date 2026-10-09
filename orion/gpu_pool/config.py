@@ -174,7 +174,8 @@ class RoleSpec(BaseModel):
     operator_only: bool = False
     max_hold_sec: float | None = Field(None, gt=0)
     # Stage 7.3 (docs/superpowers/specs/2026-09-30-gpu-pool-stage7-concurrency.md): how many
-    # non-urgent durable-run holds this role may carry at once (each holds one slot; a run never holds
+    # durable-run holds this role may carry before a non-urgent one waits -- urgent holds count toward
+    # it and may stack past it, bounded by slots (each holds one slot; a run never holds
     # two). 1 = the old "one hold per role" rule. The scheduler clamps it to the discovered slots and
     # says so (scheduler.hold_cap; the pool's /health ``holds`` block and a warning log line).
     max_holds: int = Field(1, ge=1)
@@ -199,8 +200,6 @@ class RoleSpec(BaseModel):
         # slots are discovered: the scheduler clamps to them at run time (scheduler.hold_cap).
         if self.slots is not None and self.max_holds > self.slots:
             raise ValueError(f"max_holds {self.max_holds} > slots {self.slots}")
-        if self.slots is not None and self.reserve_one_off_slots >= self.slots and self.reserve_one_off_slots:
-            raise ValueError(f"reserve_one_off_slots {self.reserve_one_off_slots} leaves no slot of {self.slots}")
         return self
 
 

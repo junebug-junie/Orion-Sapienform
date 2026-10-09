@@ -111,7 +111,7 @@ Default: **`reserve_one_off_slots: 0`**. Why:
 ## Tests run
 
 ```text
-python -m pytest orion/gpu_pool/tests -q                         416 passed
+python -m pytest orion/gpu_pool/tests -q                         420 passed
 cd services/orion-gpu-pool && python -m pytest tests -q          155 passed, 15 skipped
 cd services/orion-durable-runs && python -m pytest tests -q      371 passed, 1 skipped
 cd services/orion-gpu-lane-controller && python -m pytest tests -q   79 passed
@@ -156,7 +156,27 @@ once the seat is loaded.
 
 ## Review findings fixed
 
-(filled in below after the review subagent)
+Code-review subagent on the full diff: 1 blocker, 1 should-fix, 6 nits. All fixed.
+
+- Finding (blocker): a failed probe reads a role as 0 slots; gap pinning then charged its idle hold
+  as "lent", the seat looked empty, and a draining seat was unloaded under a live run -- a change from
+  main even at max_holds 1.
+  - Fix: `lent = min(used, used + idle - slots)` -- only a running call can be in a gap.
+  - Evidence: `test_a_failed_probe_never_makes_a_held_seat_look_empty[1|2]` (plus an empty-seat control).
+- Finding (should-fix): the charge ignored hold priority, so an urgent run could be charged for a
+  system one-off that was only ever allowed into a background run's gap.
+  - Fix: charge the lowest-priority idle hold first.
+  - Evidence: `test_a_gap_is_charged_to_the_lowest_priority_run_never_an_urgent_one`.
+- Finding (nit): docs said urgent holds don't count toward the limit; the code counts them (same as
+  main at 1). Fix: wording in config, scheduler docstring, README; `test_an_urgent_hold_counts_toward_the_hold_limit`.
+- Finding (nit): the config validator refused a reserve that `hold_cap` allows. Fix: validator branch removed.
+- Finding (nit): an unload after a clamp logged "in force". Fix: `no_slots` keeps the last state said.
+- Finding (nit): hold_fairness check A runs on a 1-slot fixture, so it cannot catch a broken
+  max_holds > 1 path. Fix: labelled as the gpu1 one-hold invariant; the >1 path is gated by the
+  pool-day concurrency scenario and the scheduler tests.
+- Finding (nit): the eval measured "one gap stalled two runs" before the tick's grants. Fix: measured
+  after. Eval numbers unchanged, still PASS.
+- Finding (nit): the "identical at 1 slot" docstring was only true after the blocker fix. Fix: reworded.
 
 ## Restart required
 
@@ -202,6 +222,6 @@ the pool. Running runs finish; the next tick grants no second hold (`test_rollba
 
 ## PR link
 
-(filled in after `gh pr create`)
+https://github.com/junebug-junie/Orion-Sapienform/pull/2553
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

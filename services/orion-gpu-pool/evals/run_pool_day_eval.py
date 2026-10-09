@@ -865,20 +865,6 @@ def concurrency_scenario(cfg=CFG, seed: int = 3, gpu2_slots: int = 2) -> dict:
                 cards["gpu2"].last_active_at = now
 
         views = _views(leases)
-        seat_holds = [v for v in views if v.kind == "hold" and v.role == "agent-gpu2"
-                      and v.status in ("granted", "recalling")]
-        max_holds_seen = max(max_holds_seen, len(seat_holds))
-        two_holds_sec += len(seat_holds) >= 2
-        waiting_holds.append(sum(1 for v in views if v.kind == "hold" and v.status == "queued"))
-        seat_ids = {h.lease_id for h in seat_holds}
-        in_flight = {v.hold_lease_id for v in views if v.status in ("granted", "recalling") and v.hold_lease_id}
-        one_offs = [v for v in views if v.role == "agent-gpu2" and v.status in ("granted", "recalling")
-                    and v.kind != "hold" and v.hold_lease_id not in seat_ids]
-        stalled = {v.hold_lease_id for v in views if v.status == "queued" and v.hold_lease_id in seat_ids
-                   and v.hold_lease_id not in in_flight}
-        if gpu2_slots == 2 and len(stalled) == 2 and len(one_offs) == 1:
-            pin_stall_sec += 1        # one gap borrow holding up both idle runs' next calls
-
         for d in schedule(cfg, roles, cards, views, now, guards={"thermal": None}):
             if not isinstance(d, tuple(_EV)):
                 continue                  # the seat stays loaded; no swap is part of this story
@@ -897,6 +883,22 @@ def concurrency_scenario(cfg=CFG, seed: int = 3, gpu2_slots: int = 2) -> dict:
             if isinstance(d, Recall):
                 ev["recall_by"] = d.recall_by.isoformat()
             apply(st, ev)
+
+        # Measured AFTER this tick's grants: a stall is what the scheduler left standing.
+        views = _views(leases)
+        seat_holds = [v for v in views if v.kind == "hold" and v.role == "agent-gpu2"
+                      and v.status in ("granted", "recalling")]
+        max_holds_seen = max(max_holds_seen, len(seat_holds))
+        two_holds_sec += len(seat_holds) >= 2
+        waiting_holds.append(sum(1 for v in views if v.kind == "hold" and v.status == "queued"))
+        seat_ids = {h.lease_id for h in seat_holds}
+        in_flight = {v.hold_lease_id for v in views if v.status in ("granted", "recalling") and v.hold_lease_id}
+        one_offs = [v for v in views if v.role == "agent-gpu2" and v.status in ("granted", "recalling")
+                    and v.kind != "hold" and v.hold_lease_id not in seat_ids]
+        stalled = {v.hold_lease_id for v in views if v.status == "queued" and v.hold_lease_id in seat_ids
+                   and v.hold_lease_id not in in_flight}
+        if gpu2_slots == 2 and len(stalled) == 2 and len(one_offs) == 1:
+            pin_stall_sec += 1        # one gap borrow holding up both idle runs' next calls
 
     return {
         "runs_started": len(runs), "runs_finished": len(run_ends),

@@ -54,8 +54,8 @@ def test_agent_gpu2_takes_two_holds_and_every_other_role_keeps_one():
 def test_service_role_with_more_holds_than_declared_slots_is_refused():
     with pytest.raises(ValueError, match="max_holds 2 > slots 1"):
         RoleSpec(kind="service", cards=["gpu2"], port=9000, slots=1, vram_gb=1, max_holds=2)
-    with pytest.raises(ValueError, match="leaves no slot"):
-        RoleSpec(kind="service", cards=["gpu2"], port=9000, slots=2, vram_gb=1, reserve_one_off_slots=2)
+    # A reserve never takes the first hold (hold_cap), so a reserve as large as the slots is allowed.
+    RoleSpec(kind="service", cards=["gpu2"], port=9000, slots=1, vram_gb=1, reserve_one_off_slots=1)
 
 
 def test_static_gate_max_holds_vs_the_profile_the_pool_loads():
@@ -245,3 +245,34 @@ def test_urgent_pauses_only_the_most_recent_of_two_runs():
     decisions = sched([home, a, b, u])
     assert [(r.lease_id, r.reason) for r in of(Recall, decisions)] == [("b", "urgent_preempt")]
     assert not of(Grant, decisions)
+
+
+# --- review findings ------------------------------------------------------------------------
+@pytest.mark.parametrize("max_holds", [1, 2])
+def test_a_failed_probe_never_makes_a_held_seat_look_empty(max_holds):
+    """slots 0 (probe down) must not charge the idle hold as lent: the seat stays occupied, so a
+    draining seat is not unloaded under a live run (identical to main at max_holds 1)."""
+    cfg = with_role(CFG, SEAT, max_holds=max_holds)
+    down = live(**{SEAT: RoleLive(SEAT, False)})
+    old = cards(gpu2=CardLive("gpu2", swapped_in={SEAT}, loaded_at=T0 - timedelta(seconds=10800)))
+    h = hold("h", "granted", SEAT)
+    assert not of(SwapUnload, sched(home_busy() + [h], cfg=cfg, roles=down, crds=old))
+    assert of(SwapUnload, sched(home_busy(), cfg=cfg, roles=down, crds=old))   # control: empty seat unloads
+
+
+def test_a_gap_is_charged_to_the_lowest_priority_run_never_an_urgent_one():
+    """A system one-off may only have borrowed the background run's gap; the urgent run's next call
+    must never wait behind it, even when the urgent run is the newest and has nothing waiting."""
+    n = hold("n", "granted", SEAT, granted_at=T0 - timedelta(seconds=300))
+    u = hold("u", "granted", SEAT, priority="urgent", granted_at=T0 - timedelta(seconds=100))
+    s = lease("agent", "granted", SEAT, priority="system", lease_id="s")
+    cu = child("u", "cu")
+    assert grants(sched(home_busy() + [n, u, s, cu])) == {"cu": SEAT}
+    cn = child("n", "cn")
+    assert grants(sched(home_busy() + [n, u, s, cn])) == {}      # the background run waits one call
+
+
+def test_an_urgent_hold_counts_toward_the_hold_limit():
+    u = hold("u", "granted", SEAT, priority="urgent")
+    a = hold("a", "granted", SEAT)
+    assert grants(sched(home_busy() + [u, a, hold("b")])) == {}

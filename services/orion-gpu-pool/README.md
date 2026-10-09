@@ -192,13 +192,14 @@ Spec: `docs/superpowers/specs/2026-09-25-gpu-pool-stage4-durable-runs-and-actuat
 - **Gaps are shared** (Juniper, 2026-09-25): while no call of the run is in flight, a lease of
   **strictly higher** priority may use the slot. Equal/lower priority and other holds may not.
 - **Holds per role** (stage 7.3, `docs/superpowers/specs/2026-09-30-gpu-pool-stage7-concurrency.md`):
-  `roles.<r>.max_holds` (default 1) non-urgent holds at once, one slot each. The scheduler clamps it
+  `roles.<r>.max_holds` (default 1) holds at once, one slot each (urgent holds count toward it and may
+  stack past it, bounded by slots). The scheduler clamps it
   to the slots discovery reads from `/props`, and `reserve_one_off_slots` (default 0) keeps that many
   slots for one-off calls (never the first hold). `GET /health` → `holds` shows configured, slots,
   the limit in force and why it is lower; a clamp is also logged once (`gpu_pool_max_holds_clamped`).
   Live: `agent-gpu2: max_holds: 2` (Bonsai, 2 × 131072). Rollback: delete that line.
 - **Gap pinning** (7.3): a one-off call in a gap is charged to ONE idle hold, rebuilt every tick
-  (an idle run with no call waiting first, then the most recently granted). Only that run waits
+  (the lowest-priority idle run, then one with no call waiting, then the most recently granted). Only that run waits
   one call; another idle run's next call gets its own slot at once. With two runs on two slots,
   one-off calls have no free slot: they wait for a run's gap (the shortest of the running calls).
 - **Two holds on a swap seat**: an owner reclaim or `max_hold_sec` drain recalls both holds in the

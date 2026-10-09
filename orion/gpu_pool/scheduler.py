@@ -16,17 +16,19 @@ Rules implemented (numbers match docs/superpowers/specs/2026-09-24-gpu-pool-desi
   10 on_unavailable: wait / backlog / fail
 
 Stage 4.3 (docs/superpowers/specs/2026-09-25-gpu-pool-stage4-durable-runs-and-actuation.md):
-  H1 a hold (kind="hold") is placed like any lease and reserves one slot; a role takes at most
-     ``hold_cap`` non-urgent holds at once (stage 7.3: roles.<r>.max_holds, default 1, clamped to the
-     discovered slots, less roles.<r>.reserve_one_off_slots but never below one hold)
+  H1 a hold (kind="hold") is placed like any lease and reserves one slot; a non-urgent hold is
+     granted only while the role carries fewer than ``hold_cap`` holds -- urgent holds on the role
+     count toward that (stage 7.3: roles.<r>.max_holds, default 1, clamped to the discovered slots,
+     less roles.<r>.reserve_one_off_slots but never below one hold)
   H2 a child (hold_lease_id set) runs in its hold's slot: only on the hold's role, ahead of the
      role's queue, never behind its own run, never taking a second slot for the pair
   H3 interleave: while a hold has no child in flight, a lease of STRICTLY higher priority may use
      that slot (gaps are shared, Juniper 2026-09-25); equal/lower priority and other holds may not.
      Stage 7.3 gap pinning: a call using a gap is charged to ONE idle hold (rebuilt every tick from
-     the active leases, ``_Ctx.charged``): an idle hold whose run has no call waiting first, then the
-     most recently granted. Only the charged run waits for it; another idle run's next call gets its
-     own slot at once. Without this one interloper on a 2-hold role stalled both runs
+     the active leases, ``_Ctx.charged``): the lowest-priority idle hold, then one whose run has no
+     call waiting, then the most recently granted. Only the charged run waits for it; another idle
+     run's next call gets its own slot at once. Without this one interloper on a 2-hold role stalled
+     both runs
   H4 hold recall uses defaults.hold_clawback_grace_sec; a swap seat with max_hold_sec drains once
      it has been loaded that long, then unloads (today's DURABLE_RUNS_ELASTIC_MAX_BORROW_SEC)
   S1 a seat load is blocked -- reported as SwapBlocked, never silent -- by min residency after an
@@ -245,7 +247,8 @@ def _one_shot(cfg: PoolConfig, lease: LeaseView) -> bool:
 
 
 def hold_cap(cfg: PoolConfig, role: str, live: RoleLive | None) -> tuple[int, str | None]:
-    """H1 (stage 7.3): how many non-urgent holds ``role`` may carry now, and why it is below the
+    """H1 (stage 7.3): how many holds ``role`` may carry before a non-urgent one waits (urgent holds
+    count toward it and may stack past it, U3), and why it is below the
     configured ``max_holds`` (None when it is not). Bounded by the DISCOVERED slots: a profile that
     comes up with fewer slots than the YAML expects never gets more holds than it can run. A
     ``reserve_one_off_slots`` reserve is taken from the slots beyond the first hold only, so a 1-slot
@@ -271,7 +274,7 @@ class _Ctx:
     cards: dict[str, CardLive]
     now: datetime
     used: dict[str, int]                  # active requests + children, per role
-    holds: dict[str, list[LeaseView]]     # active holds, per role (hold_cap non-urgent, + urgent)
+    holds: dict[str, list[LeaseView]]     # active holds, per role (urgent ones count toward hold_cap)
     busy_holds: set[str]                  # holds with a child in flight (the child sits in `used`)
     draining: set[str]
     operator_granted: set[str]
@@ -285,14 +288,22 @@ class _Ctx:
         holds are lent out (occupancy beyond the slots), not which -- so each lent gap is charged to
         the idle hold that loses least: one whose run has no call waiting, then the most recently
         granted (the urgent pause's victim order). One borrow charges one hold, so it stalls at most
-        one run. At one slot and one hold this is exactly the old rule."""
+        one run. At one slot and one hold this is exactly the old rule (``lent`` is capped by the
+        active calls, so a seat whose probe failed -- slots 0 -- still shows its idle hold)."""
         live = self.roles.get(role)
         slots = live.slots if live else 0
         idle = [h for h in self.holds.get(role, []) if h.lease_id not in self.busy_holds]
-        lent = self.used.get(role, 0) + len(idle) - slots
+        used = self.used.get(role, 0)
+        # Only a call actually running can be in a gap: never charge more holds than active calls
+        # (a failed probe reads slots 0, and an idle hold must still count as occupying its seat).
+        lent = min(used, used + len(idle) - slots)
         if lent <= 0 or not idle:
             return set()
-        idle.sort(key=lambda h: (h.lease_id in self.wanting,
+        rank = self.cfg.priority_rank
+        # Lowest-priority hold first: any call allowed into some hold's gap (strictly higher priority
+        # than that hold) is allowed into the lowest one's, so an urgent run is never charged for a
+        # one-off it outranks. Then a run with no call waiting, then the most recently granted.
+        idle.sort(key=lambda h: (-rank(h.priority), h.lease_id in self.wanting,
                                  -(h.granted_at or h.created_at).timestamp(), h.lease_id))
         return {h.lease_id for h in idle[:lent]}
 

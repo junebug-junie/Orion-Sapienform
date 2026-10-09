@@ -162,6 +162,9 @@ async def scenario_home(pool, saver, store) -> dict:
     checks = {
         "fifo_grant_order": order == run_ids,
         # Stage 7.3: the agent card's hold limit, read from config (max_holds) and discovery (slots).
+        # The fixture's agent role has 1 slot, so this pins the one-hold invariant on gpu1 through the
+        # real durable-runs path; the max_holds > 1 path is gated by the pool-day eval's concurrency
+        # scenario (services/orion-gpu-pool/evals/run_pool_day_eval.py) and the scheduler tests.
         "holds_within_max_holds": 1 <= peak <= cap,
         "one_hold_per_run": set(holds_per_run.values()) == {1},
         "all_completed": [(await store.get_run(r))["terminal"] for r in run_ids] == ["completed"] * len(run_ids),

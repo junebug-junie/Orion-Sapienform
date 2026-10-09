@@ -47,7 +47,7 @@ jobs:
     runs-on: ubuntu-latest
     services:
       postgres:
-        image: postgres:16
+        image: public.ecr.aws/docker/library/postgres:16  # Docker Hub mirror: no unauthenticated pull rate limit
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
@@ -61,7 +61,7 @@ jobs:
           --health-retries 5
       # Throwaway FalkorDB for the referent projector lane (memory Stage 2).
       falkordb:
-        image: falkordb/falkordb:latest
+        image: ghcr.io/falkordb/falkordb:latest  # GHCR copy: no Docker Hub pull rate limit
         ports:
           - 6380:6379
     env:

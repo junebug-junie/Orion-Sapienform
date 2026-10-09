@@ -90,7 +90,7 @@ jobs:
     timeout-minutes: 15
     services:
       postgres:
-        image: postgres:16
+        image: public.ecr.aws/docker/library/postgres:16  # Docker Hub mirror: no unauthenticated pull rate limit
         env:
           POSTGRES_PASSWORD: admission-test
           POSTGRES_DB: admission_test

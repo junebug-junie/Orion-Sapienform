@@ -31,7 +31,7 @@ jobs:
     runs-on: ubuntu-latest
     services:
       postgres:
-        image: postgres:15
+        image: public.ecr.aws/docker/library/postgres:15  # Docker Hub mirror: no unauthenticated pull rate limit
         env:
           POSTGRES_PASSWORD: visual_test_only
         ports:

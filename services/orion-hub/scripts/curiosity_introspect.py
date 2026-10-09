@@ -26,6 +26,13 @@ from orion.schemas.introspect import (
     clip_text,
 )
 
+# Budgets in SERIALIZED JSON characters (quotes, backslashes and newlines
+# double when escaped). Five list items -- text + error + prior claim +
+# unknown_reason + reach-out decision + fixed fields -- stay under the 12,000
+# MCP result budget; a test pins the worst case through the real MCP server.
+LIST_TEXT_JSON_BUDGET = 1000
+SHORT_JSON_BUDGET = 160
+
 RUN_KIND = "curiosity_run"
 SELF_QUESTION_KIND = "self_question"
 INDEX_TEXT_CHARS = 1800
@@ -84,7 +91,14 @@ def journal_clock(story: dict[str, Any]) -> Optional[datetime]:
 
 
 def _short(value: Any) -> str:
-    return clip_text(str(value or ""), SHORT_FIELD_CAP)[0]
+    text = clip_text(str(value or ""), SHORT_FIELD_CAP)[0]
+    return clip_json_text(text, SHORT_JSON_BUDGET)[0]
+
+
+def _list_text(text: str) -> tuple[str, bool]:
+    body, cut = clip_text(text, DEFAULT_TEXT_CAP)
+    body, cut_json = clip_json_text(body, LIST_TEXT_JSON_BUDGET)
+    return body, cut or cut_json
 
 
 def _prior(prior: Any) -> Optional[dict[str, Any]]:
@@ -133,9 +147,9 @@ def run_item(
         if full:
             text, truncated = clip_json_text(body, CURIOSITY_FULL_JSON_BUDGET)
         else:
-            text, truncated = clip_text(answer_section(body), DEFAULT_TEXT_CAP)
+            text, truncated = _list_text(answer_section(body))
     else:
-        status, (text, truncated) = "record", (_record_sentence(run), False)
+        status, (text, truncated) = "record", _list_text(_record_sentence(run))
     reach = run.get("reach_out") if isinstance(run.get("reach_out"), dict) else {}
     fields: dict[str, Any] = {
         "line": run.get("line"),
@@ -146,7 +160,7 @@ def run_item(
         "revisions": run.get("revisions"),
         "prior_touched": _prior(run.get("prior_touched")),
         "outcome_kind": run.get("outcome_kind"),
-        "reach_out": reach.get("decision"),
+        "reach_out": _short(reach.get("decision")) or None,
         "has_write_up": bool(body),
     }
     if outcome:
@@ -167,12 +181,12 @@ def self_question_item(row: dict[str, Any]) -> IntrospectItemV1:
     if created.tzinfo is None:
         created = created.replace(tzinfo=timezone.utc)
     last = row.get("last_asked_at")
-    text, truncated = clip_text(row.get("text"), DEFAULT_TEXT_CAP)
+    text, truncated = _list_text(str(row.get("text") or ""))
     return IntrospectItemV1(
         id=str(row["question_id"]), occurred_at=created, kind=SELF_QUESTION_KIND,
         epistemic_status="record", text=text, truncated=truncated,
         extra={
-            "family": row.get("family"),
+            "family": _short(row.get("family")),
             "ask_count": row.get("ask_count"),
             "last_asked_at": last.isoformat() if isinstance(last, datetime) else None,
             "pinned": bool(row.get("pinned")),

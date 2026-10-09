@@ -63,7 +63,10 @@ def test_a_run_with_a_write_up_is_unsettled_and_lists_its_answer():
     assert (extra["line"], extra["status"], extra["hops"], extra["findings"], extra["revisions"]) == (
         "investigate", "completed", 2, 1, 1)
     assert extra["reach_out"] == "blocked:quiet_hours" and extra["outcome_kind"] == "finished"
-    assert len(extra["prior_touched"]["claim"]) == SHORT_FIELD_CAP
+    from scripts.curiosity_introspect import SHORT_JSON_BUDGET
+
+    assert len(json.dumps(extra["prior_touched"]["claim"], ensure_ascii=False)) <= SHORT_JSON_BUDGET
+    assert len(extra["prior_touched"]["claim"]) == SHORT_JSON_BUDGET - 2
     assert (extra["prior_touched"]["from"], extra["prior_touched"]["to"]) == (0.4, 0.7)
     assert (extra["turn_ok"], extra["n_tested"], extra["n_moved"], extra["n_formed"]) == (True, 3, 1, 0)
     assert "realized_nats" not in extra, "only the named outcome counts are carried"
@@ -107,3 +110,82 @@ def test_self_question_item_is_a_record():
     assert (item.kind, item.epistemic_status, item.id) == ("self_question", "record", "lived.orion.camera_layer")
     assert item.occurred_at.tzinfo is not None
     assert item.extra == {"family": "lived", "ask_count": 1, "last_asked_at": NOW.isoformat(), "pinned": False}
+
+
+# --- the whole list fits the MCP budget as serialized JSON (review fix 4) -----
+
+NASTY = '"\\\né'  # quote, backslash, newline double when escaped; the accent is the unicode case
+
+
+def _worst_story(n, *, body=True):
+    return _story(
+        NASTY * 2000 if body else "",
+        run_id=f"{n:x}" * 64, status="failed", line="self_inquiry",
+        error=NASTY * 500, outcome_kind="died",
+        prior_touched={"prior_id": "p", "claim": NASTY * 500, "from": 0.123456789, "to": 0.987654321},
+        reach_out={"decision": "blocked:" + NASTY * 50},
+    )
+
+
+def _worst_outcome():
+    return {"turn_ok": False, "n_tested": 99999, "n_moved": 99999, "n_formed": 99999,
+            "unknown_reason": NASTY * 500}
+
+
+def _through_mcp(result_dict):
+    import asyncio
+
+    import pytest
+
+    pytest.importorskip("mcp")
+    from mcp.shared.memory import create_connected_server_and_client_session
+
+    from orion.introspect.mcp_server import build_server
+    from orion.introspect.tools import CURIOSITY_DESCRIPTION, ToolSpec
+    from orion.schemas.introspect import CuriosityArguments
+
+    class Tools:
+        def tool_specs(self):
+            return [ToolSpec("curiosity", CURIOSITY_DESCRIPTION, CuriosityArguments)]
+
+        async def invoke(self, name, arguments):
+            return result_dict
+
+    async def run():
+        async with create_connected_server_and_client_session(build_server(Tools())) as client:
+            response = await client.call_tool("curiosity", {})
+            assert not response.isError
+            return response.content[0].text
+
+    return asyncio.run(run())
+
+
+def test_five_worst_case_list_items_stay_under_the_mcp_cap():
+    from orion.schemas.introspect import MAX_ITEMS
+
+    extra = {"similarity": 0.987654321, "graph_read": False}
+    for with_write_up in (True, False):  # five write-ups is the worst case; five failure records too
+        items = [run_item(_worst_story(n, body=with_write_up), _worst_outcome(), extra=dict(extra))
+                 for n in range(MAX_ITEMS)]
+        result = IntrospectResultV1(ok=True, operation="curiosity", as_of=NOW, total_available=99999, items=items)
+        text = _through_mcp(result.model_dump(mode="json"))
+        assert len(text) < MCP_TOOL_RESULT_MAX_CHARS, len(text)
+        assert len(json.loads(text)["items"]) == MAX_ITEMS
+        print(f"worst_case_list_json_chars={len(text)} write_ups={with_write_up}")
+
+
+def test_one_worst_case_full_run_stays_under_the_mcp_cap():
+    item = run_item(_worst_story(1), _worst_outcome(), full=True, extra={"graph_read": False})
+    result = IntrospectResultV1(ok=True, operation="curiosity", as_of=NOW, total_available=1, items=[item])
+    text = _through_mcp(result.model_dump(mode="json"))
+    assert len(text) < MCP_TOOL_RESULT_MAX_CHARS, len(text)
+
+
+def test_five_worst_case_self_questions_stay_under_the_mcp_cap():
+    from orion.schemas.introspect import MAX_ITEMS
+
+    row = {"question_id": "lived." + "q" * 200, "text": NASTY * 500, "family": "lived", "pinned": True,
+           "ask_count": 99999, "last_asked_at": NOW, "created_at": NOW}
+    items = [self_question_item(row) for _ in range(MAX_ITEMS)]
+    result = IntrospectResultV1(ok=True, operation="curiosity", as_of=NOW, total_available=99999, items=items)
+    assert len(_through_mcp(result.model_dump(mode="json"))) < MCP_TOOL_RESULT_MAX_CHARS

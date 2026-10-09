@@ -3291,7 +3291,11 @@ the whole tool family see the
 - **Items and labels.**
   - A run with a write-up (`journal_entries.source_ref = 'curiosity:<run_id>'`,
     the newest one) is `curiosity_run`, `unsettled`: what Orion concluded
-    then. A list shows its `## Answer` section, else its opening, 900 chars.
+    then. A list shows its `## Answer` section, else its opening, 900 chars
+    and at most 1,000 characters once serialized as JSON; free-text fields in
+    `extra` (error, prior claim, unknown_reason, reach-out decision) are held
+    to 160 serialized characters, so five worst-case items stay under the
+    12k MCP budget (11,338 measured through the real MCP server).
     Live 2026-10-09 only 1 of 371 write-ups has an `## Answer` heading, so
     lists mostly show the opening.
   - A run without one -- failed, cancelled, wrote nothing -- is a short

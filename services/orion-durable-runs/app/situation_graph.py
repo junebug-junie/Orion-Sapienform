@@ -86,7 +86,7 @@ class SituationDeps:
     default_ttl: timedelta = timedelta(hours=48)
     prime_timeout_sec: float = 0.4
     reprime_after: timedelta = timedelta(hours=6)
-    sighting_hold: timedelta = timedelta(hours=18)
+    sighting_hold: timedelta = timedelta(hours=2)
 
 
 # --- pure helpers (unit-tested directly) ------------------------------------------------------
@@ -174,22 +174,28 @@ def facts_from_rows(rows: list[dict], now: datetime, default_ttl: timedelta) -> 
     }
 
 
+SIGHTING_KEY = "sighting"
+
+
 def fact_key(f: dict) -> str:
-    """Identity of a fact across steps: its memory, or (for a sighting) when it was seen."""
-    return f.get("memory_id") or f"sighting:{f.get('valid_from')}"
+    """Identity of a fact across steps: its memory, or one fixed key for the sighting, so a
+    refreshed sighting is the same fact, not a lapse of the previous one (review finding)."""
+    return f.get("memory_id") or SIGHTING_KEY
 
 
 def apply_sighting(facts: dict, sighting: Optional[dict], now: datetime, hold: timedelta) -> dict:
-    """A home-camera sighting of Juniper is positive evidence for where she is.
+    """A fresh home-camera sighting of Juniper is positive evidence for where she is now.
 
-    It becomes whereabouts for ``hold`` after she was seen, unless a whereabouts fact from her own
-    words is NEWER than the sighting (she said she was leaving after being seen). An away-fact it
-    displaces drops out of current_ids, so the expire step records it as no longer true.
+    For ``hold`` (short: she can leave without saying so) it becomes whereabouts, unless a
+    whereabouts fact from her own words is NEWER than the sighting (she said she was leaving after
+    being seen). It never erases her words: a stated stay it outranks moves to ``doing`` and stays
+    current, so the conflict is visible rather than hidden, and it is never marked lapsed by a
+    single camera match (review finding: one borderline match used to wipe a stated trip).
     """
     if not sighting:
         return facts
     seen = _dt(sighting.get("seen_at"))
-    if seen is None or seen > now or seen + hold <= now:
+    if seen is None or seen > now + timedelta(minutes=5) or seen + hold <= now:
         return facts
     told = facts.get("whereabouts")
     if told and (_dt(told.get("valid_from")) or seen) > seen:
@@ -200,8 +206,11 @@ def apply_sighting(facts: dict, sighting: Optional[dict], now: datetime, hold: t
         valid_from=seen, valid_until=seen + hold, until_source="sighting",
         voice="orion_observed", confirmation="observed", referents=[],
     ).model_dump(mode="json")
-    current = [k for k in facts.get("current_ids") or [] if not told or k != fact_key(told)]
-    return {**facts, "whereabouts": fact, "current_ids": sorted(current + [fact_key(fact)])}
+    doing = list(facts.get("doing") or [])
+    if told:
+        doing = ([{**told, "slot": "doing"}] + doing)[:MAX_DOING]
+    current = sorted(set(facts.get("current_ids") or []) | {SIGHTING_KEY})
+    return {**facts, "whereabouts": fact, "doing": doing, "current_ids": current}
 
 
 def _all_facts(juniper: dict) -> list[dict]:
@@ -215,7 +224,9 @@ def lapsed_from(previous: dict, current_ids: list[str], prior_lapsed: list, now:
     still = set(current_ids)
     gone = [
         SituationLapsedV1(memory_id=f.get("memory_id"), slot=f["slot"], gist=f["gist"], lapsed_at=now).model_dump(mode="json")
-        for f in _all_facts(previous) if fact_key(f) not in still
+        # A sighting that ages out is not something that "stopped being true" -- it just stops
+        # being fresh evidence. Only facts from memory lapse.
+        for f in _all_facts(previous) if fact_key(f) not in still and f.get("until_source") != "sighting"
     ]
     def lkey(x: dict) -> str:
         return x.get("memory_id") or f"gist:{x.get('gist')}"

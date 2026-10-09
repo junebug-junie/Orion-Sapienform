@@ -4033,3 +4033,15 @@ def test_a_home_camera_sighting_reads_as_seen_not_as_a_stated_stay():
                                   "valid_until": (_NOW + _td(hours=17)).isoformat()})
     lines = _eo_mod.situation_lines(sit, _NOW, _DENVER)
     assert lines[1] == "- I saw Juniper at home on camera cam0. (seen 20 minutes ago)"
+
+
+
+def test_a_stated_stay_outranked_by_a_sighting_is_still_shown():
+    sit = _situation(
+        whereabouts={"gist": "I saw Juniper at home on camera cam0.", "until_source": "sighting",
+                     "valid_from": (_NOW - _td(minutes=10)).isoformat(), "valid_until": (_NOW + _td(hours=1)).isoformat()},
+        doing=[{"gist": "Juniper told me she is in Denver for work until Friday.", "until_source": "juniper_words",
+                "valid_until": "2026-10-10T05:59:00+00:00"}])
+    lines = _eo_mod.situation_lines(sit, _NOW, _DENVER)
+    assert lines[1] == "- I saw Juniper at home on camera cam0. (seen 10 minutes ago)"
+    assert "- She said: Juniper told me she is in Denver for work until Friday. (until Fri Oct 09, 23:59)" in lines

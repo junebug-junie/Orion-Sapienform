@@ -106,6 +106,7 @@ class WindowService:
         # never grows unbounded (one entry per stream_id, overwritten).
         self._identity_by_stream: Dict[str, Dict[str, Any]] = {}
         self._last_sighting_at: Dict[str, float] = {}
+        self._probable_at: Dict[str, List[float]] = {}
         self._identity_lock = asyncio.Lock()
         # Running count of identity_face verdicts by outcome (trace only).
         self._identity_checks: Dict[str, int] = defaultdict(int)
@@ -607,13 +608,21 @@ class WindowService:
         if stream not in homes:
             return False
         now = time.time()
+        recent = [t for t in self._probable_at.get(stream, []) if now - t <= settings.WINDOW_SIGHTING_MATCH_WINDOW_SEC]
+        recent.append(now)
+        self._probable_at[stream] = recent[-20:]
+        if len(recent) < max(1, int(settings.WINDOW_SIGHTING_MIN_MATCHES)):
+            return False
         last = self._last_sighting_at.get(stream)
         if last is not None and now - last < settings.WINDOW_SIGHTING_MIN_INTERVAL_SEC:
             return False
         sim = hint.get("similarity")
+        frame_ts = (payload.inputs or {}).get("frame_ts") if isinstance(payload.inputs, dict) else None
+        seen_at = (datetime.fromtimestamp(float(frame_ts), tz=timezone.utc)
+                   if isinstance(frame_ts, (int, float)) else datetime.now(timezone.utc))
         sighting = IdentitySightingV1(
             subject=str(hint.get("subject") or ""), stream_id=stream,
-            seen_at=datetime.now(timezone.utc), similarity=float(sim) if isinstance(sim, (int, float)) else 0.0,
+            seen_at=seen_at, similarity=float(sim) if isinstance(sim, (int, float)) else 0.0,
             correlation_id=str(payload.correlation_id or ""),
         )
         await self.bus.publish(settings.CHANNEL_IDENTITY_SIGHTING_PUB, BaseEnvelope(

@@ -70,6 +70,10 @@ class Settings(BaseSettings):
     WINDOW_SIGHTING_ENABLED: bool = True
     WINDOW_SIGHTING_HOME_STREAMS: str = "cam0"
     WINDOW_SIGHTING_MIN_INTERVAL_SEC: float = 1800.0
+    # Corroboration: this many "probable" matches on the same stream within the window before a
+    # sighting is published -- one borderline frame (live: 0.56 at detect 0.71) is not enough.
+    WINDOW_SIGHTING_MIN_MATCHES: int = 2
+    WINDOW_SIGHTING_MATCH_WINDOW_SEC: float = 600.0
     CHANNEL_IDENTITY_SIGHTING_PUB: str = "orion:vision:identity:sighting"
 
     # Per-window scene census -> orion-sql-writer -> vision_scene_inventory.

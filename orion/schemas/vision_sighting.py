@@ -5,7 +5,8 @@ possible), but the match only lived in the camera's presence row while she was i
 rewritten to "unknown" when she stepped away. Nothing durable recorded "Juniper was seen at home".
 
 Producer: orion-vision-window, only for streams it is configured to treat as home cameras and
-only on a "probable" match (never "possible"; never the laptop webcam, which travels with her).
+only on a corroborated "probable" match (two within 10 min; never "possible"; never the laptop
+webcam, which travels with her).
 Consumer: the situation.update graph in orion-durable-runs, where it is positive evidence for
 Juniper's whereabouts.
 """

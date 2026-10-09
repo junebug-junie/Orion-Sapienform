@@ -419,7 +419,7 @@ def test_tied_times_give_the_same_slots_whatever_the_row_order():
 from app.situation_driver import event_from_sighting  # noqa: E402
 from app.situation_graph import apply_sighting  # noqa: E402
 
-HOLD = timedelta(hours=18)
+HOLD = timedelta(hours=2)
 
 
 def _seen(at, stream="cam0"):
@@ -432,13 +432,36 @@ def test_a_sighting_becomes_whereabouts_when_nothing_else_says_where_she_is():
     assert f["whereabouts"]["gist"] == "I saw Juniper at home on camera cam0."
 
 
-def test_a_sighting_after_she_said_she_was_away_displaces_the_trip():
-    """Seen at home after the stated stay began: the camera wins, and the trip lapses."""
+def test_a_fresh_sighting_outranks_a_stated_trip_without_erasing_it():
+    """Review finding: one borderline match used to lapse a trip she told Orion about. Now the
+    camera leads while fresh, and her words stay current (in doing) and visible."""
     away = facts_from_rows([trip(expires_at=T0 + timedelta(days=3))], T0 + timedelta(hours=1), TTL)
-    f = apply_sighting(away, _seen(T0 + timedelta(hours=2)), T0 + timedelta(hours=3), HOLD)
+    f = apply_sighting(away, _seen(T0 + timedelta(hours=2)), T0 + timedelta(hours=2, minutes=30), HOLD)
     assert f["whereabouts"]["until_source"] == "sighting"
-    assert "m-trip" not in f["current_ids"]
-    assert [x["memory_id"] for x in lapsed_from(away, f["current_ids"], [], T0 + timedelta(hours=3))] == ["m-trip"]
+    assert [d["memory_id"] for d in f["doing"]] == ["m-trip"]
+    assert "m-trip" in f["current_ids"]
+    assert lapsed_from(away, f["current_ids"], [], T0 + timedelta(hours=3)) == []
+
+
+def test_once_the_sighting_is_stale_her_stated_trip_leads_again():
+    away = facts_from_rows([trip(expires_at=T0 + timedelta(days=3))], T0 + timedelta(hours=5), TTL)
+    f = apply_sighting(away, _seen(T0 + timedelta(hours=2)), T0 + timedelta(hours=5), HOLD)
+    assert f["whereabouts"]["memory_id"] == "m-trip"
+
+
+def test_a_refreshed_sighting_is_not_a_lapse():
+    """Review finding: each new sighting used to record the previous one as 'No longer true'."""
+    base = facts_from_rows([], T0, TTL)
+    first = apply_sighting(base, _seen(T0), T0, HOLD)
+    second = apply_sighting(base, _seen(T0 + timedelta(minutes=31)), T0 + timedelta(minutes=31), HOLD)
+    assert lapsed_from(first, second["current_ids"], [], T0 + timedelta(minutes=31)) == []
+
+
+def test_an_aged_out_sighting_leaves_no_lapsed_entry():
+    first = apply_sighting(facts_from_rows([], T0, TTL), _seen(T0), T0, HOLD)
+    later = apply_sighting(facts_from_rows([], T0, TTL), _seen(T0), T0 + timedelta(hours=3), HOLD)
+    assert later["whereabouts"] is None
+    assert lapsed_from(first, later["current_ids"], [], T0 + timedelta(hours=3)) == []
 
 
 def test_she_said_she_was_leaving_after_she_was_seen_so_her_words_win():
@@ -449,7 +472,7 @@ def test_she_said_she_was_leaving_after_she_was_seen_so_her_words_win():
 
 
 def test_an_old_sighting_no_longer_counts():
-    f = apply_sighting(facts_from_rows([], T0, TTL), _seen(T0 - timedelta(hours=19)), T0, HOLD)
+    f = apply_sighting(facts_from_rows([], T0, TTL), _seen(T0 - timedelta(hours=3)), T0, HOLD)
     assert f["whereabouts"] is None
 
 
@@ -464,7 +487,7 @@ def test_sighting_event_reaches_whereabouts_through_the_graph_and_persists():
         await d.step(e)
         model = w.projected[-1]
         assert model.juniper.whereabouts.until_source == "sighting"
-        assert [x.memory_id for x in model.lapsed] == ["m-trip"]
+        assert [d.memory_id for d in model.juniper.doing] == ["m-trip"] and model.lapsed == []
         assert model.last_sighting.stream_id == "cam0"
         await d.step(ev("tick", 3))                      # carried by the checkpoint, not re-sent
         assert (await d._graph.aget_state(d._config(thread_for(w.now)))).values["situation"]["last_sighting"]

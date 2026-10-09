@@ -103,7 +103,6 @@ from app.models import (
     VisionEventSQL,
     VisionSceneInventorySQL,
     ActionOutcomeSQL,
-    DominanceStreakTickSQL,
     DevEconomicsLedgerSQL,
     DocSemanticDriftSQL,
     JuniperAffectiveStateSQL,
@@ -140,7 +139,6 @@ from orion.journaler import (
     build_journal_entry_index_payload,
 )
 from orion.schemas.chat_stance import ChatStanceBrief
-from orion.schemas.field_goal import DominanceStreakTickV1
 from orion.schemas.dev_economics import DevEconomicsLedgerV1
 from orion.schemas.doc_semantic_drift import DocSemanticDriftV1
 from orion.schemas.affective_state import JuniperAffectiveStateV1
@@ -572,7 +570,6 @@ MODEL_MAP: Dict[str, Tuple[Type[Any], Optional[Type[BaseModel]]]] = {
     "VisionSceneInventorySQL": (VisionSceneInventorySQL, VisionSceneInventoryV1),
     "VisionUnresolvedSQL": (VisionUnresolvedSQL, VisionUnresolvedV1),
     "ActionOutcomeSQL": (ActionOutcomeSQL, ActionOutcomeEmitV1),
-    "DominanceStreakTickSQL": (DominanceStreakTickSQL, DominanceStreakTickV1),
     "DevEconomicsLedgerSQL": (DevEconomicsLedgerSQL, DevEconomicsLedgerV1),
     "DocSemanticDriftSQL": (DocSemanticDriftSQL, DocSemanticDriftV1),
     "JuniperAffectiveStateSQL": (JuniperAffectiveStateSQL, JuniperAffectiveStateV1),

@@ -88,7 +88,6 @@ from .mind_run import MindRunSQL
 from .vision_event import VisionEventSQL
 from .vision_scene_inventory import VisionSceneInventorySQL
 from .action_outcome import ActionOutcomeSQL
-from .dominance_streak_tick import DominanceStreakTickSQL
 from .dev_economics_ledger import DevEconomicsLedgerSQL
 from .doc_semantic_drift import DocSemanticDriftSQL
 from .juniper_affective_state import JuniperAffectiveStateSQL
@@ -185,7 +184,6 @@ __all__ = [
     "VisionEventSQL",
     "VisionSceneInventorySQL",
     "ActionOutcomeSQL",
-    "DominanceStreakTickSQL",
     "DevEconomicsLedgerSQL",
     "DocSemanticDriftSQL",
     "JuniperAffectiveStateSQL",

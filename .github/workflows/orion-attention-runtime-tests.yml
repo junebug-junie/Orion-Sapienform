@@ -1,0 +1,56 @@
+name: orion-attention-runtime-tests
+
+on:
+  pull_request:
+    paths:
+      - 'services/orion-attention-runtime/**'
+      - 'services/orion-sql-writer/**'
+      - 'services/orion-sql-db/**'
+      - 'orion/attention/**'
+      - 'orion/schemas/**'
+      - 'orion/bus/channels.yaml'
+      - 'tests/test_attention*'
+      - '.github/workflows/orion-attention-runtime-tests.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'services/orion-attention-runtime/**'
+      - 'services/orion-sql-writer/**'
+      - 'services/orion-sql-db/**'
+      - 'orion/attention/**'
+      - 'orion/schemas/**'
+      - 'orion/bus/channels.yaml'
+      - 'tests/test_attention*'
+      - '.github/workflows/orion-attention-runtime-tests.yml'
+
+jobs:
+  attention-focus-runs:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: focus_runs_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      FOCUS_RUN_TEST_POSTGRES_URI: postgresql://postgres:postgres@localhost:5432/focus_runs_test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install -r services/orion-attention-runtime/requirements.txt pytest pytest-asyncio httpx
+      - name: Attention decisions, focus persistence and retirement
+        run: >-
+          python -m pytest -q services/orion-attention-runtime/tests
+          tests/test_attention_runtime_worker.py tests/test_attention_runtime_store.py
+          tests/test_attention_field_goal_provenance.py
+      - name: Focus history replay eval
+        run: python -m pytest -q services/orion-attention-runtime/evals

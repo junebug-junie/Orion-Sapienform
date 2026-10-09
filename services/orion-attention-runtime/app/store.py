@@ -16,6 +16,7 @@ from orion.attention.field_attention.candidate_precision_weighted import (
 from orion.attention.field_attention.goal_provenance import DominanceStreak
 from orion.schemas.field_attention_frame import FieldAttentionFrameV1
 from orion.schemas.field_state import FieldStateV1
+from app.dominance_runs import advance_run
 from orion.schemas.prediction_error_definitions import (
     UNSTAMPED_DEFINITION_VERSION,
     prediction_error_definition_version,
@@ -619,37 +620,21 @@ class AttentionRuntimeStore:
         return DominanceStreak(target_id=row["target_id"], count=int(row["count"]))
 
     def save_node_dominance_streak(self, streak: DominanceStreak) -> None:
-        """Persist the node-target dominance streak advanced this tick. See
-        `load_node_dominance_streak` for why this needs to survive a
-        restart. UPSERTed every real tick (cheap, same shape as
-        `save_attention_frame`) -- never crashes the tick on a write
-        failure, only fails to persist this one tick's advance.
-        """
+        """Persist the decision debounce, retaining its existing best-effort policy."""
         try:
             with self._engine.begin() as conn:
-                conn.execute(
-                    text(
-                        """
-                        INSERT INTO substrate_goal_provenance_streak (
-                            streak_id, target_id, count, updated_at
-                        ) VALUES (
-                            :streak_id, :target_id, :count, :updated_at
-                        )
-                        ON CONFLICT (streak_id) DO UPDATE SET
-                            target_id = EXCLUDED.target_id,
-                            count = EXCLUDED.count,
-                            updated_at = EXCLUDED.updated_at
-                        """
-                    ),
-                    {
-                        "streak_id": _NODE_DOMINANCE_STREAK_ID,
-                        "target_id": streak.target_id,
-                        "count": streak.count,
-                        "updated_at": datetime.now(timezone.utc),
-                    },
-                )
+                self._write_node_dominance_streak(conn, streak)
         except Exception:
             logger.exception("node_dominance_streak_save_failed")
+
+    def _write_node_dominance_streak(self, conn, streak: DominanceStreak) -> None:
+        conn.execute(text("""
+            INSERT INTO substrate_goal_provenance_streak (streak_id, target_id, count, updated_at)
+            VALUES (:streak_id, :target_id, :count, :updated_at)
+            ON CONFLICT (streak_id) DO UPDATE SET target_id = EXCLUDED.target_id,
+                count = EXCLUDED.count, updated_at = EXCLUDED.updated_at
+        """), dict(streak_id=_NODE_DOMINANCE_STREAK_ID, target_id=streak.target_id,
+                   count=streak.count, updated_at=datetime.now(timezone.utc)))
 
     def load_latest_attention_frame(self) -> FieldAttentionFrameV1 | None:
         with self._engine.connect() as conn:
@@ -749,10 +734,15 @@ class AttentionRuntimeStore:
             payload = json.loads(payload)
         return FieldAttentionFrameV1.model_validate(payload)
 
-    def save_attention_frame(self, frame: FieldAttentionFrameV1) -> None:
+    def save_attention_frame(
+        self, frame: FieldAttentionFrameV1, *,
+        streak: DominanceStreak | None = None,
+        target_kind: str | None = None,
+        min_streak: int = 1,
+    ) -> bool:
         now = datetime.now(timezone.utc)
         with self._engine.begin() as conn:
-            conn.execute(
+            result = conn.execute(
                 text(
                     """
                     INSERT INTO substrate_attention_frames (
@@ -772,12 +762,8 @@ class AttentionRuntimeStore:
                         :frame_json,
                         :created_at
                     )
-                    ON CONFLICT (frame_id) DO UPDATE SET
-                        source_field_tick_id = EXCLUDED.source_field_tick_id,
-                        source_field_generated_at = EXCLUDED.source_field_generated_at,
-                        generated_at = EXCLUDED.generated_at,
-                        policy_id = EXCLUDED.policy_id,
-                        frame_json = EXCLUDED.frame_json
+                    ON CONFLICT (frame_id) DO NOTHING
+                    RETURNING frame_id
                     """
                 ),
                 {
@@ -790,6 +776,71 @@ class AttentionRuntimeStore:
                     "created_at": now,
                 },
             )
+            if result.scalar() is None:
+                return False
+            if streak is not None:
+                # Recording must never stop a frame or goal. The savepoint keeps
+                # a recorder SQL error from poisoning the outer frame transaction.
+                try:
+                    with conn.begin_nested():
+                        self._save_dominance_tick(conn, frame, streak, target_kind, min_streak)
+                except Exception:
+                    logger.exception("attention_focus_record_failed frame_id=%s tick_id=%s",
+                                     frame.frame_id, frame.source_field_tick_id)
+                # Preserve the old best-effort debounce persistence contract too.
+                try:
+                    with conn.begin_nested():
+                        self._write_node_dominance_streak(conn, streak)
+                except Exception:
+                    logger.exception("node_dominance_streak_save_failed")
+        return True
+
+    def _save_dominance_tick(self, conn, frame, streak, target_kind, min_streak) -> None:
+        # The row lock serializes checkpoint updates. Frame PK dedupe above
+        # and this transaction make retrying a failed/duplicate tick harmless.
+        conn.execute(text("""
+            INSERT INTO substrate_goal_provenance_streak (streak_id, count)
+            VALUES (:id, 0) ON CONFLICT (streak_id) DO NOTHING
+        """), {"id": _NODE_DOMINANCE_STREAK_ID})
+        row = conn.execute(text("""
+            SELECT target_id, count, run_state,
+                (SELECT source_field_tick_id FROM substrate_attention_frames
+                 WHERE frame_id <> :frame_id ORDER BY generated_at DESC LIMIT 1)
+                    AS previous_field_tick_id
+            FROM substrate_goal_provenance_streak
+            WHERE streak_id = :id FOR UPDATE
+        """), {"id": _NODE_DOMINANCE_STREAK_ID, "frame_id": frame.frame_id}).mappings().one()
+        prior_state = row["run_state"]
+        if prior_state and prior_state["last_field_tick_id"] != row["previous_field_tick_id"]:
+            # A saved frame without a recorder advance means a failure/disabled
+            # period. Its winner is unknown: discard the incomplete open run,
+            # rather than silently claiming uninterrupted focus across the gap.
+            logger.warning("attention_focus_observation_gap frame_id=%s checkpoint_tick_id=%s",
+                           frame.frame_id, prior_state["last_field_tick_id"])
+            prior_state = None
+        state, completed = advance_run(
+            prior_state, target_id=streak.target_id, target_kind=target_kind,
+            observed_at=frame.generated_at, field_tick_id=frame.source_field_tick_id,
+            frame_id=frame.frame_id, min_streak=min_streak,
+            left_censored=(prior_state is None and row["target_id"] == streak.target_id
+                           and row["count"] > 0),
+        )
+        if completed is not None:
+            conn.execute(text("""
+                INSERT INTO field_dominance_run (
+                    run_id, target_id, target_kind, started_at, ended_at, tick_count,
+                    min_streak_at_run, first_source_attention_frame_id,
+                    last_source_attention_frame_id, left_censored
+                ) VALUES (
+                    :run_id, :target_id, :target_kind, :started_at, :ended_at, :tick_count,
+                    :min_streak_at_run, :first_source_attention_frame_id,
+                    :last_source_attention_frame_id, :left_censored
+                ) ON CONFLICT (run_id) DO NOTHING
+            """), completed.model_dump())
+        conn.execute(text("""
+            UPDATE substrate_goal_provenance_streak
+            SET run_state = :run_state WHERE streak_id = :id
+        """), dict(id=_NODE_DOMINANCE_STREAK_ID, run_state=Json(state)))
 
     def prune_attention_frames(self, *, retention_hours: float, batch_size: int = 5000) -> int:
         if retention_hours <= 0:

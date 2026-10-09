@@ -21,7 +21,7 @@ from orion.attention.field_attention.policy import load_attention_policy
 from orion.attention.field_attention.selectors import PREDICTION_ERROR_NATIVE_TARGETS
 from orion.schemas.field_attention_frame import FieldAttentionFrameV1
 from orion.schemas.field_state import FieldStateV1
-from orion.schemas.field_goal import DominanceStreakTickV1, FieldGoalProvenanceV1
+from orion.schemas.field_goal import FieldGoalProvenanceV1
 
 from app.health_monitor import HealthMonitor
 from app.settings import get_settings
@@ -79,11 +79,9 @@ class AttentionRuntimeWorker:
     async def _poll_loop(self) -> None:
         while not self._stop.is_set():
             try:
-                goal, streak_tick = await asyncio.to_thread(self._tick)
+                goal = await asyncio.to_thread(self._tick)
                 if goal is not None:
                     await self._publish_goal(goal)
-                if streak_tick is not None:
-                    await self._publish_streak_tick(streak_tick)
             except Exception:
                 logger.exception("attention_runtime_tick_failed")
             try:
@@ -153,16 +151,16 @@ class AttentionRuntimeWorker:
             logger.warning("attention_previous_field_load_failed", exc_info=True)
             return None
 
-    def _tick(self) -> tuple[FieldGoalProvenanceV1 | None, DominanceStreakTickV1 | None]:
+    def _tick(self) -> FieldGoalProvenanceV1 | None:
         if not self._settings.enable_attention_runtime:
-            return None, None
+            return None
 
         field = self._store.load_latest_field()
         if field is None:
-            return None, None
+            return None
 
         if self._store.load_attention_frame_for_field_tick(field.tick_id) is not None:
-            return None, None
+            return None
 
         previous = self._store.load_latest_attention_frame()
         previous_field = self._previous_field_for(previous)
@@ -193,7 +191,7 @@ class AttentionRuntimeWorker:
             previous_frame=previous,
             previous_field=previous_field,
         )
-        self._store.save_attention_frame(frame)
+        goal = self._maybe_build_goal(frame)
         self._last_field = field
         logger.info(
             "attention_frame_saved frame_id=%s tick_id=%s salience=%.3f",
@@ -201,13 +199,14 @@ class AttentionRuntimeWorker:
             field.tick_id,
             frame.overall_salience,
         )
-        return self._maybe_build_goal(frame)
+        return goal
 
     def _maybe_build_goal(
         self, frame: FieldAttentionFrameV1
-    ) -> tuple[FieldGoalProvenanceV1 | None, DominanceStreakTickV1 | None]:
+    ) -> FieldGoalProvenanceV1 | None:
         if not self._settings.enable_goal_provenance_producer or self._bus is None:
-            return None, None
+            self._store.save_attention_frame(frame)
+            return None
         if self._node_streak is None:
             self._node_streak = self._store.load_node_dominance_streak()
         # With fewer than two qualified candidates no competition set can change
@@ -219,24 +218,21 @@ class AttentionRuntimeWorker:
             frame, competing=competing, current=self._node_streak.target_id
         )
         winner_id = winner.target_id if winner is not None else None
-        self._node_streak, should_emit = update_dominance_streak(
+        next_streak, should_emit = update_dominance_streak(
             self._node_streak, winner_id, min_streak=self._settings.goal_provenance_min_streak
         )
-        self._store.save_node_dominance_streak(self._node_streak)
-
-        streak_tick: DominanceStreakTickV1 | None = None
-        if self._settings.enable_goal_provenance_streak_tick_telemetry:
-            streak_tick = DominanceStreakTickV1(
-                target_id=self._node_streak.target_id,
-                streak_count=self._node_streak.count,
-                min_streak_at_tick=self._settings.goal_provenance_min_streak,
-                qualified=should_emit,
-                source_field_tick_id=frame.source_field_tick_id,
-                source_attention_frame_id=frame.frame_id,
-            )
+        # Successful recording commits with its frame. Recorder failures are
+        # isolated in the store so they cannot change goal selection/emission.
+        if not self._store.save_attention_frame(
+            frame, streak=next_streak,
+            target_kind=winner.target_kind if winner else None,
+            min_streak=self._settings.goal_provenance_min_streak,
+        ):
+            return None
+        self._node_streak = next_streak
 
         if not should_emit or winner is None:
-            return None, streak_tick
+            return None
         goal = FieldGoalProvenanceV1(
             subject="attention",
             model_layer="field_attention",
@@ -268,7 +264,7 @@ class AttentionRuntimeWorker:
             ),
             ",".join(sorted(competing)) if competing else "",
         )
-        return goal, streak_tick
+        return goal
 
     def _load_competition(self) -> set[str] | None:
         """The substrate competition's current open-loop node ids, or None.
@@ -297,15 +293,8 @@ class AttentionRuntimeWorker:
         payload: dict,
         log_label: str,
         failure_event: str,
-        loud_on_failure: bool,
     ) -> bool:
-        """Shared envelope-build-and-publish scaffolding for _publish_goal and
-        _publish_streak_tick (factored 2026-08-11, review fix: the two had already drifted
-        once -- goal_provenance's success line vs. streak_tick's silence -- exactly the risk
-        of hand-duplicating this). Returns True on a successful publish, False otherwise;
-        never raises. `loud_on_failure` controls severity only, not whether this is caught:
-        both callers are equally never allowed to propagate a bus failure into the tick loop.
-        """
+        """Publish goal provenance; a bus failure never escapes the tick loop."""
         if self._bus is None:
             return False
         try:
@@ -325,16 +314,7 @@ class AttentionRuntimeWorker:
             await publish_with_reconnect(self._bus, channel, env, log_label=log_label)
             return True
         except Exception:
-            if loud_on_failure:
-                logger.exception(failure_event)
-            else:
-                # Debug telemetry: warning, not exception -- visible in normal log
-                # aggregation (unlike a bare .debug(), which would make a fully-broken
-                # publish path for this whole patch's purpose indistinguishable from
-                # "insufficient data yet" in the analysis script's own report), but
-                # deliberately quieter than field_goal_provenance_publish_failed, which
-                # stays the one real incident-worthy failure on this path.
-                logger.warning(failure_event, exc_info=True)
+            logger.exception(failure_event)
             return False
 
     async def _publish_goal(self, goal: FieldGoalProvenanceV1) -> None:
@@ -344,7 +324,6 @@ class AttentionRuntimeWorker:
             payload=goal.model_dump(mode="json"),
             log_label="attention_runtime_goal_provenance",
             failure_event="field_goal_provenance_publish_failed",
-            loud_on_failure=True,
         )
         if published:
             logger.info(
@@ -355,13 +334,3 @@ class AttentionRuntimeWorker:
                 goal.salience_score,
                 self._node_streak.count,
             )
-
-    async def _publish_streak_tick(self, streak_tick: DominanceStreakTickV1) -> None:
-        await self._publish_envelope(
-            kind="debug.attention.streak_tick.v1",
-            channel=self._settings.channel_goal_provenance_streak_tick,
-            payload=streak_tick.model_dump(mode="json"),
-            log_label="attention_runtime_streak_tick",
-            failure_event="goal_provenance_streak_tick_publish_failed",
-            loud_on_failure=False,
-        )

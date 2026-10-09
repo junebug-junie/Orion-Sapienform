@@ -688,8 +688,7 @@ def apply_substrate_organ_emissions_retention(
     """Bounded startup retention for substrate_organ_emissions older than retention_days.
 
     Uses the plain `engine` (not `grammar_engine`) -- this table is biometrics/substrate
-    data, not part of the grammar lane, same reasoning as goal_provenance_streak_ticks'
-    retention above using `engine` too. Already has idx_substrate_organ_emissions_created
+    data, not part of the grammar lane. Already has idx_substrate_organ_emissions_created
     (created_at DESC) from its original table definition, so no new index is needed for
     this one, unlike the three grammar_* tables.
     """

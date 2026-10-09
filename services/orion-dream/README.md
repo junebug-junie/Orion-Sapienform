@@ -46,6 +46,11 @@ scripts/dream_hypothesis_scorecard.py compares adoption/support per arm.
 
 HTTP: `GET /dreams/cycle/pressure` (read-only), `POST /dreams/cycle/run?force=true`.
 
+A recombination call the gateway refuses (e.g. the GPU pool sheds it for heat,
+`raw.error=gpu_pool_unavailable`) counts as a failed call (`llm_failures`), not an
+unparseable answer. A sleep where every call fails is stored `failed`, so the next
+sleep's replay window still covers its items. It retries after `DREAM_MIN_INTERVAL_HOURS`.
+
 Writes nothing to canonical memory. The dream never writes a belief.
 
 The legacy direct-gather path (`dream_cycle.py`, `aggregators_*`, `memory_listener.py`)
@@ -71,7 +76,10 @@ tool family (which turns get it, truth rules, search pattern), see the
   dream-worded questions can clear the floor (measured by the calibration
   eval's `KNOWN_WEAKNESS` line).
 - **Two kinds, labeled.**
-  - `dream_narrative` (id `dream:<n>`): the nightly story from `dreams`
+  - `dream_narrative` (id `dream:<n>`): the story dream from `dreams`. Nothing schedules it:
+    it runs only when something publishes `dream.trigger` (Hub workflow menu,
+    `POST /dreams/run`). 19 rows from 2026-07-31 to 2026-09-28, all hand-started.
+    Story text
     (written by orion-sql-writer). Text is tldr + narrative; `extra` carries
     `dream_date` and up to 8 themes. Timestamp is `created_at`, stored without
     a timezone by a UTC server and returned as UTC.

@@ -98,7 +98,7 @@ class _Conn:
             return list(db["admission"])
         if "FROM durable_resource_events" in sql and "ORDER BY" in sql:
             return [e for e in db["events"] if e["run_id"] in args[0]]
-        if "DISTINCT ON (source_ref)" in sql:
+        if "DISTINCT ON (j.source_ref)" in sql:
             return list(db["journals"])
         if "FROM journal_entries" in sql:
             return [j for j in db["journals"] if j["source_ref"] in args[0]]
@@ -241,7 +241,7 @@ def test_self_questions_are_open_questions_newest_first():
 
 
 def test_search_rereads_hits_through_the_run_join_in_ranked_order(monkeypatch):
-    async def fake_rank(client, cfg, query, *, since=None):
+    async def fake_rank(client, cfg, query, *, since=None, line=None):
         return [("old1", 0.81), ("read1", 0.79), ("new1", 0.70)]
 
     monkeypatch.setattr(il, "rank", fake_rank)
@@ -256,7 +256,7 @@ def test_search_rereads_hits_through_the_run_join_in_ranked_order(monkeypatch):
 
 
 def test_empty_search_is_unknown_until_the_index_has_caught_up(monkeypatch):
-    async def no_hits(client, cfg, query, *, since=None):
+    async def no_hits(client, cfg, query, *, since=None, line=None):
         return []
 
     monkeypatch.setattr(il, "rank", no_hits)
@@ -273,7 +273,7 @@ def test_search_not_configured_or_failing_is_unknown(monkeypatch):
     off, _ = _listener(search=None)
     assert _ask(off, {"query": "bees"}).error == il.SEARCH_UNAVAILABLE
 
-    async def broken(client, cfg, query, *, since=None):
+    async def broken(client, cfg, query, *, since=None, line=None):
         raise il.SearchUnavailableError("embedder unavailable: ConnectError")
 
     monkeypatch.setattr(il, "rank", broken)
@@ -289,7 +289,8 @@ def test_index_docs_keep_only_valid_runs_with_text():
         {"source_ref": "curiosity:empty", "body": "   ", "created_at": t},
         {"source_ref": "reading:1", "body": "text", "created_at": t},
     ])
-    assert docs == [("new1", "short answer", {"occurred_at": t.isoformat(), "occurred_ts": t.timestamp()})]
+    assert docs == [("new1", "short answer",
+                     {"occurred_at": t.isoformat(), "occurred_ts": t.timestamp(), "line": "investigate"})]
 
 
 def test_index_once_marks_complete_only_when_nothing_is_pending(monkeypatch):
@@ -306,7 +307,7 @@ def test_index_once_marks_complete_only_when_nothing_is_pending(monkeypatch):
     assert listener.index_complete_as_of is None
     asyncio.run(listener.index_once())
     assert listener.index_complete_as_of is not None
-    assert [d[0] for d in seen[0][0]] == ["old1", "new1"] and seen[0][1] == ("occurred_ts",)
+    assert [d[0] for d in seen[0][0]] == ["old1", "new1"] and seen[0][1] == ("occurred_ts", "line")
     assert all(pool.conn.readonly_flags)
     none_pool, _ = _listener(pool=None)
     assert asyncio.run(none_pool.index_once()) is None
@@ -398,3 +399,43 @@ def test_search_where_every_hit_was_dropped_for_a_non_filter_reason_is_unknown(m
     assert _ask(listener, {"query": "bees"}).error == il.QUERY_UNAVAILABLE
     up, _ = _graph_listener(_GraphReader({}))
     assert _ask(up, {"query": "bees"}).error == il.QUERY_UNAVAILABLE
+
+
+# --- line filter before the candidate cut (review fix 2) ----------------------
+
+from orion.introspect.tests.fake_chroma import FakeChroma  # noqa: E402
+
+LIVE_SEARCH = SearchConfig(chroma_url="http://chroma.test", embed_url="http://embed.test/embedding",
+                           collection="orion_curiosity", min_similarity=0.65)
+
+
+def test_index_docs_carry_the_run_line_from_postgres_signals():
+    t = NOW
+    docs = il.index_docs_from_rows([
+        {"source_ref": "curiosity:a", "title": "Curiosity", "body": "x", "created_at": t,
+         "request": json.dumps({"workflow": "curiosity.investigate", "brief": {"line": "self_inquiry"}})},
+        {"source_ref": "curiosity:b", "title": "Self-inquiry", "body": "x", "created_at": t},
+        {"source_ref": "curiosity:c", "title": "Curiosity", "body": "x", "created_at": t,
+         "detail": json.dumps({"line": "self_inquiry"})},
+        {"source_ref": "curiosity:d", "title": "Curiosity", "body": "x", "created_at": t},
+    ])
+    assert {d[0]: d[2]["line"] for d in docs} == {
+        "a": "self_inquiry", "b": "self_inquiry", "c": "self_inquiry", "d": "investigate",
+    }
+    assert "line" in il._HASH_KEYS, "a relabelled doc must re-upsert"
+
+
+def test_line_filter_reaches_the_index_before_the_candidate_cut():
+    db = _db()
+    db["admission"].append(_admission("si1", "curiosity.investigate", NOW - timedelta(hours=2), line="self_inquiry"))
+    db["events"] += _events("si1", NOW - timedelta(hours=2))
+    db["journals"].append(_journal("si1", NOW - timedelta(hours=2), "What I am made of."))
+    chroma = FakeChroma("orion_curiosity")
+    for n in range(10):
+        chroma.put(f"inv{n}", {"line": "investigate", "occurred_ts": NOW.timestamp()}, score=0.9 - n * 0.01)
+    chroma.put("si1", {"line": "self_inquiry", "occurred_ts": NOW.timestamp()}, score=0.7)
+    listener, _ = _graph_listener(_GraphReader({}), db=db, search=LIVE_SEARCH)
+    listener.client_factory = chroma.client
+    result = _ask(listener, {"query": "what am I made of", "line": "self_inquiry"})
+    assert [i.id for i in result.items] == ["si1"]
+    assert chroma.queries[-1]["where"] == {"line": "self_inquiry"}

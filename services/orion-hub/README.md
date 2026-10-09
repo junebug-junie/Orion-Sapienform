@@ -3339,9 +3339,13 @@ the whole tool family see the
     run id. `HUB_CURIOSITY_SEARCH_INDEX_BATCH` docs per pass: 371 write-ups
     on 2026-10-09 is about 37 passes (about 3 hours at the defaults) before an
     empty search can answer "none".
-  - A query embeds only the question, keeps up to 10 hits at or above
-    `HUB_CURIOSITY_SEARCH_MIN_SIMILARITY`, and re-reads each through the run
-    join (`similarity` in `extra`); `line`/`since` apply after the re-read.
+  - Each indexed doc carries its run's `line`, taken from the Postgres half
+    of the run join's own rule (`run_story._line_for`; live 2026-10-09 it
+    agreed with the tab on 353 of 353 comparable runs), so `line` and `since`
+    filter inside Chroma before the 10-candidate cut. A query embeds only the
+    question, keeps up to 10 hits at or above
+    `HUB_CURIOSITY_SEARCH_MIN_SIMILARITY`, re-reads each through the run join
+    (`similarity` in `extra`), and re-checks `line`/`since` on the story.
   - Floor 0.65, calibrated 2026-10-09 on 371 live write-ups: related
     questions' best hits 0.745-0.874, unrelated 0.515-0.626. Recalibrate with
     `python services/orion-hub/evals/run_curiosity_search_calibration.py`

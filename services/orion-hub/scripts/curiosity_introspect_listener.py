@@ -25,6 +25,7 @@ import httpx
 
 from orion.core.bus.bus_schemas import BaseEnvelope
 from orion.curiosity.atlas import valid_run_id
+from orion.curiosity.run_story import _line_for, _obj
 from orion.introspect.redact import safe_exception_detail
 from orion.introspect.semantic_index import (
     HTTP_TIMEOUT_SEC,
@@ -51,7 +52,7 @@ _NO_POOL_RETRY_SEC = 15.0
 # Above-floor hits re-read through the run join per query (~0.1 s each live).
 CANDIDATES = 10
 _DOC_PREFIX = "curiosity-search"
-_HASH_KEYS = ("occurred_ts",)
+_HASH_KEYS = ("occurred_ts", "line")
 _RUNNING = "running"
 # Recent mode re-reads at most limit * this many listed runs to fill `limit`.
 _REREAD_FACTOR = 3
@@ -66,11 +67,19 @@ SELF_QUESTIONS_SQL = (
     "WHERE status = 'open' AND ($1::timestamptz IS NULL OR created_at >= $1) "
     "ORDER BY created_at DESC, question_id DESC LIMIT $2"
 )
-# One write-up per run: the newest journal, which is the one the run story shows.
+# One write-up per run (the newest journal, the one the run story shows), with
+# the cheap Postgres signals `run_story._line_for` reads, so the index can
+# carry each run's line and a `line` filter runs before the top-N cut.
 INDEX_ROWS_SQL = (
-    "SELECT DISTINCT ON (source_ref) source_ref, body, created_at FROM journal_entries "
-    "WHERE source_ref LIKE 'curiosity:%' AND body IS NOT NULL "
-    "ORDER BY source_ref, created_at DESC"
+    "SELECT DISTINCT ON (j.source_ref) j.source_ref, j.title, j.body, j.created_at, "
+    "a.request::text AS request, "
+    "(SELECT s.detail::text FROM substrate_durable_run_state s "
+    " WHERE s.run_id = substr(j.source_ref, 11) AND s.status = 'completed' "
+    " ORDER BY s.created_at DESC LIMIT 1) AS detail, "
+    "EXISTS (SELECT 1 FROM self_sense_eval_log e WHERE e.run_id = substr(j.source_ref, 11)) AS self_sense "
+    "FROM journal_entries j LEFT JOIN durable_admission_runs a ON a.run_id = substr(j.source_ref, 11) "
+    "WHERE j.source_ref LIKE 'curiosity:%' AND j.body IS NOT NULL "
+    "ORDER BY j.source_ref, j.created_at DESC"
 )
 UNINDEXED_SQL = (
     "SELECT EXISTS (SELECT 1 FROM journal_entries "
@@ -119,6 +128,23 @@ def _graph_extra(stores: Any) -> dict[str, Any]:
     return {} if graph == "ok" else {"graph_read": False}
 
 
+def index_line(row: dict[str, Any]) -> str:
+    """The run's line from the Postgres half of the run join's own rule.
+
+    Calls `run_story._line_for` on a minimal slot rather than restating the
+    rule; the graph-only fallback (prior revisions) is not available here, and
+    the search re-checks the story's line after every re-read anyway.
+    """
+    slot = {
+        "admission": {"request": row.get("request")} if row.get("request") else None,
+        "self_sense": [True] if row.get("self_sense") else [],
+        "lifecycle": [],
+        "journals": [{"title": row.get("title")}],
+        "revisions": [],
+    }
+    return _line_for(slot, _obj(row.get("detail")), {})[0]
+
+
 def index_docs_from_rows(rows: list[dict[str, Any]]) -> list[tuple[str, str, dict[str, Any]]]:
     docs = []
     for row in rows:
@@ -128,21 +154,35 @@ def index_docs_from_rows(rows: list[dict[str, Any]]) -> list[tuple[str, str, dic
         created = row.get("created_at")
         if not run_id or not text or not isinstance(created, datetime):
             continue
-        docs.append((run_id, text, {"occurred_at": created.isoformat(), "occurred_ts": _epoch(created)}))
+        docs.append((run_id, text, {
+            "occurred_at": created.isoformat(), "occurred_ts": _epoch(created), "line": index_line(row),
+        }))
     return docs
 
 
-async def rank(
-    client: httpx.AsyncClient, cfg: SearchConfig, query: str, *, since: Optional[datetime] = None,
-) -> list[tuple[str, float]]:
-    """Embed the query once; (run_id, similarity) at or above the floor, best first.
+def search_filter(since: Optional[datetime], line: Optional[str]) -> dict[str, Any] | None:
+    """Chroma where-clause, so `since` and `line` apply before the top-N cut.
 
-    `since` filters on the write-up's own clock, which is never earlier than
-    the run's start, so it only ever removes runs the re-read would drop too.
+    `since` is on the write-up's own clock, which is never earlier than the
+    run's start, so it only removes runs the re-read would drop too.
     """
+    clauses: list[dict[str, Any]] = []
+    if line is not None:
+        clauses.append({"line": line})
+    if since is not None:
+        clauses.append({"occurred_ts": {"$gte": _epoch(since)}})
+    if not clauses:
+        return None
+    return clauses[0] if len(clauses) == 1 else {"$and": clauses}
+
+
+async def rank(
+    client: httpx.AsyncClient, cfg: SearchConfig, query: str,
+    *, since: Optional[datetime] = None, line: Optional[str] = None,
+) -> list[tuple[str, float]]:
+    """Embed the query once; (run_id, similarity) at or above the floor, best first."""
     vector, _ = await embed(client, cfg, query, doc_prefix=_DOC_PREFIX)
-    where = {"occurred_ts": {"$gte": _epoch(since)}} if since is not None else None
-    hits = await nearest(client, cfg, vector, CANDIDATES, where=where)
+    hits = await nearest(client, cfg, vector, CANDIDATES, where=search_filter(since, line))
     return [s for s in hits if s[1] >= cfg.min_similarity]
 
 
@@ -155,6 +195,7 @@ class CuriosityIntrospectListener:
         self.reader_provider = reader_provider
         self.source_ref = source_ref
         self.search = search
+        self.client_factory: Callable[[], httpx.AsyncClient] = lambda: httpx.AsyncClient(timeout=HTTP_TIMEOUT_SEC)
         self.bus: Any = None
         self.task: asyncio.Task | None = None
         self.index_task: asyncio.Task | None = None
@@ -303,8 +344,8 @@ class CuriosityIntrospectListener:
     async def _search(self, pool: ReadOnlyPool, args: CuriosityArguments, now: datetime) -> IntrospectResultV1:
         if self.search is None or not self.search.enabled:
             raise SearchUnavailableError("curiosity search is not configured")
-        async with httpx.AsyncClient(timeout=HTTP_TIMEOUT_SEC) as client:
-            scored = await rank(client, self.search, args.query, since=args.since)
+        async with self.client_factory() as client:
+            scored = await rank(client, self.search, args.query, since=args.since, line=args.line)
         matched, dropped = [], 0
         for run_id, score in scored:
             story = await self._story(pool, run_id)
@@ -355,7 +396,7 @@ class CuriosityIntrospectListener:
         # Release the connection before embedding; a pass can take seconds.
         async with self._pool().acquire() as conn:
             rows = [dict(r) for r in await conn.fetch(INDEX_ROWS_SQL)]
-        async with httpx.AsyncClient(timeout=HTTP_TIMEOUT_SEC) as client:
+        async with self.client_factory() as client:
             result = await index_docs(
                 index_docs_from_rows(rows), self.search, client=client, bus=self.bus,
                 source=self.source_ref, doc_prefix=_DOC_PREFIX, hash_keys=_HASH_KEYS,

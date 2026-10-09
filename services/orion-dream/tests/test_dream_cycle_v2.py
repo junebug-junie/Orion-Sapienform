@@ -522,3 +522,111 @@ def test_pressure_endpoint_reports_the_overdue_backstop(monkeypatch):
     recent = datetime.now(timezone.utc) - timedelta(hours=2)
     monkeypatch.setattr(main, "build_cycle_deps", lambda: _all_seen(recent).deps())
     assert asyncio.run(main.cycle_pressure_endpoint())["overdue"] is False
+
+
+# --- sleep -> story -------------------------------------------------------------
+
+
+def _story_fakes(**kw):
+    f = _Fakes(_rows(), **kw)
+    started = []
+
+    async def start_story(cycle):
+        started.append(cycle)
+
+    deps = f.deps()
+    deps.start_story = start_story
+    return f, deps, started
+
+
+def test_a_completed_sleep_starts_one_story_about_its_replay():
+    from app.cycle import run_cycle_once
+    from app.story import story_trigger
+    from orion.schemas.telemetry.dream import DreamInternalTriggerV1
+
+    f, deps, started = _story_fakes()
+    cycle = asyncio.run(run_cycle_once(deps))
+    assert cycle.status == "completed" and started == [cycle]
+
+    trigger = story_trigger(cycle)
+    assert trigger.trigger_id == f"sleep:{cycle.cycle_id}" and trigger.source == "orion-dream.sleep"
+    assert len(trigger.sleep.replay) == len(cycle.replay) > 0
+    # heaviest first, "source: text"
+    weights = [r.weight for r in sorted(cycle.replay, key=lambda r: r.weight, reverse=True)]
+    assert weights == sorted(weights, reverse=True)
+    assert all(": " in line for line in trigger.sleep.replay)
+    # What cortex-orch does with the payload: the digest survives the round trip.
+    dumped = DreamInternalTriggerV1.model_validate(trigger.model_dump(mode="json")).model_dump(mode="json")
+    assert dumped["sleep"]["cycle_id"] == cycle.cycle_id
+
+
+def test_the_story_never_sees_the_blind_hypotheses():
+    from app.cycle import run_cycle_once
+    from app.story import story_trigger
+
+    f, deps, _ = _story_fakes()
+    cycle = asyncio.run(run_cycle_once(deps))
+    assert cycle.hypotheses
+    payload = story_trigger(cycle).model_dump_json()
+    for h in cycle.hypotheses:
+        assert h.claim not in payload and h.hypothesis_id not in payload
+    assert '"arm"' not in payload and "control" not in payload
+
+
+def test_a_failed_or_empty_sleep_starts_no_story():
+    from app.cycle import run_cycle_once
+
+    _, deps, started = _story_fakes()
+    deps.complete = _always_fail
+    assert asyncio.run(run_cycle_once(deps)).status == "failed"
+
+    f = _Fakes({k: [] for k in _rows()})
+    empty_deps = f.deps()
+    empty_deps.start_story = deps.start_story
+    assert asyncio.run(run_cycle_once(empty_deps, trigger="manual", force=True)).status == "empty"
+    assert started == []
+
+
+async def _always_fail(prompt):
+    raise RuntimeError("gateway down")
+
+
+def test_a_story_that_fails_to_start_does_not_fail_the_sleep():
+    from app.cycle import run_cycle_once
+
+    f, deps, _ = _story_fakes()
+
+    async def broken(cycle):
+        raise ConnectionError("bus down")
+
+    deps.start_story = broken
+    cycle = asyncio.run(run_cycle_once(deps))
+    assert cycle.status == "completed" and f.persisted == [cycle]
+
+
+def test_story_digest_clips_long_replay_text_and_marks_overdue():
+    from app.story import REPLAY_TEXT_CHARS, story_trigger
+    from orion.schemas.dream_cycle import DreamCycleV1, ReplayItemV1, SleepPressureV1
+
+    now = datetime.now(timezone.utc)
+    cycle = DreamCycleV1(
+        cycle_id="dc-x", trigger="pressure", status="completed", started_at=now, ended_at=now,
+        pressure=SleepPressureV1(since=now, computed_at=now, pressure=1.234, threshold=3.0, idle_required_minutes=45.0),
+        replay=[ReplayItemV1(ref_id="a", source_kind="metacog", text="word\n" * 400, weight=0.4, reason="r"),
+                ReplayItemV1(ref_id="b", source_kind="resonance", text="loud", weight=0.9, reason="r")],
+        note="pairs dream=1 control=1 | overdue: 48 h without crossing threshold",
+    )
+    sleep = story_trigger(cycle).sleep
+    assert sleep.overdue and sleep.pressure == 1.23
+    assert sleep.replay[0] == "resonance: loud"
+    assert len(sleep.replay[1]) <= len("metacog: ") + REPLAY_TEXT_CHARS and "\n" not in sleep.replay[1]
+
+
+def test_story_after_sleep_switch_turns_the_link_off(monkeypatch):
+    from app import main
+    from app.settings import settings
+
+    monkeypatch.setattr(settings, "DREAM_STORY_AFTER_SLEEP_ENABLED", False)
+    assert main.build_cycle_deps().start_story is None
+    monkeypatch.setattr(settings, "DREAM_STORY_AFTER_SLEEP_ENABLED", True)
+    assert main.build_cycle_deps().start_story is not None

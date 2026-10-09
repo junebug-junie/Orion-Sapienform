@@ -44,6 +44,9 @@ class CycleDeps:
     # (cycle_id, window since) -> staged delta id or None
     rem_compaction: Optional[Callable[[str, datetime], Awaitable[Optional[str]]]] = None
     persist_pressure_observation: Optional[Callable[[DreamPressureObservationV1], bool]] = None
+    # A completed sleep ends in a story dream (app/story.py). Best effort: a
+    # failure to start it never fails or undoes the sleep.
+    start_story: Optional[Callable[[DreamCycleV1], Awaitable[None]]] = None
     # One deps instance per loop/request. The real clock loaders append failures;
     # each serialized check clears it before reading. Scheduling still sees None.
     read_errors: list[str] = field(default_factory=list)
@@ -212,6 +215,11 @@ async def run_cycle_once(deps: CycleDeps, *, trigger: str = "pressure", force: b
         sum(1 for h in rem.hypotheses if h.arm == "control"),
         rem.no_link, rem.unparseable, rem.failures,
     )
+    if deps.start_story is not None and cycle.status == "completed":
+        try:
+            await deps.start_story(cycle)
+        except Exception:
+            logger.exception("dream_story_start_failed cycle_id=%s", cycle_id)
     return cycle
 
 

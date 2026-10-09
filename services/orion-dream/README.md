@@ -85,6 +85,25 @@ Writes nothing to canonical memory. The dream never writes a belief.
 The legacy direct-gather path (`dream_cycle.py`, `aggregators_*`, `memory_listener.py`)
 was deleted in the same patch.
 
+### Every sleep ends in a story
+
+A completed sleep (not `failed`, not `empty`) starts one narrative dream, the kind
+stored in the `dreams` table. Before 2026-10-09 nothing scheduled that dream: all 19
+were started by hand, and Orion's journal noticed the silence. Now it runs on the
+same tiredness gate as the sleep (`app/story.py`).
+
+- The sleep publishes `dream.trigger` (`DreamInternalTriggerV1`) with `trigger_id`
+  `sleep:<cycle_id>` and a `sleep` digest: the replayed items, heaviest first.
+- cortex-orch runs the `dream_cycle` verb. `dream_cycle.j2` puts the replay first
+  and uses the recalled memories as texture. A hand-started dream (no `sleep`)
+  gets the old memory-only prompt.
+- The trigger, digest included, is saved with the dream in
+  `dreams.metrics._dream_audit.trigger`, so each story names the sleep it came from.
+- The sleep's hypotheses are never passed on. They are a blind experiment that
+  Orion is shown later with the arm hidden.
+- Starting the story is best effort. If the publish fails, the sleep still counts.
+- Off switch: `DREAM_STORY_AFTER_SLEEP_ENABLED=false`.
+
 ### HTTP / bus behavior
 
 - **No Hunter** in this process: `dream.trigger` is consumed by **cortex-orch** so triggers are not duplicated.
@@ -245,7 +264,7 @@ tool family (which turns get it, truth rules, search pattern), see the
 
 | Channel | Env Var | Kind | Description |
 | :--- | :--- | :--- | :--- |
-| `orion:dream:trigger` | `CHANNEL_DREAM_TRIGGER` | `dream.trigger` | Published by clients; **handled by cortex-orch**. |
+| `orion:dream:trigger` | `CHANNEL_DREAM_TRIGGER` | `dream.trigger` | `DreamInternalTriggerV1`; published by `POST /dreams/run` and at the end of every completed sleep; **handled by cortex-orch**. |
 
 ### Environment Variables
 

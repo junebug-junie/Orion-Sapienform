@@ -473,6 +473,7 @@ from orion.schemas.energy import (
 )
 from orion.schemas.telemetry.dream import (
     DreamInternalTriggerV1,
+    DreamSleepDigestV1,
     DreamRequest,
     DreamResultV1,
     DreamTriggerPayload,
@@ -1350,6 +1351,7 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "DreamRequest": DreamRequest,
     "DreamTriggerPayload": DreamTriggerPayload,
     "DreamInternalTriggerV1": DreamInternalTriggerV1,
+    "DreamSleepDigestV1": DreamSleepDigestV1,
     "DreamResultV1": DreamResultV1,
     "MetaTagsRequestV1": MetaTagsRequestV1,
     "MetaTagsResultV1": MetaTagsResultV1,

@@ -1,6 +1,6 @@
 # Dream sleep pressure that measures something
 
-Status: proposal (cognition loop change, needs Juniper's yes before implementation)
+Status: approved by Juniper 2026-10-09 (threshold 3, 48 h lookback, chronic problems add pressure once); implemented in the same PR
 Date: 2026-10-09
 Follows: PR #2549 (shed calls count as failures)
 
@@ -54,9 +54,8 @@ The new metric: **novel distinct unresolved items since the last sleep, weighted
 `SleepPressureV1` (`orion/schemas/dream_cycle.py`, `extra="forbid"`), additive and optional:
 
 - `new_counts: dict[str, int]`: new distinct keys per source since the last sleep (what drives `pressure`).
-- `distinct_counts: dict[str, int]`: all distinct keys per source in the window (what replay draws from).
 
-`pressure` changes meaning from "sum of row weights" to "sum of max weight per new distinct key". `counts` keeps meaning rows read, for continuity.
+`pressure` changes meaning from "sum of row weights" to "sum of max weight per new distinct key". `counts` now means distinct things per source in the window. Since the SQL returns one row per key, rows read and distinct things are the same number, so a separate `distinct_counts` field would have been redundant (dropped at implementation).
 
 Rollout order (forbid model, consumer first): ship the schema with the fields optional, and deploy Hub (`services/orion-hub/scripts/dream_routes.py` reads SleepPressureV1) before orion-dream starts filling them.
 

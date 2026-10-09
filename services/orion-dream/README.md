@@ -22,10 +22,10 @@ scoreable. Default off (`ORION_DREAM_CYCLE_ENABLED`).
 ```
 sleep pressure --(>= threshold AND idle AND >= min interval)--> replay
      |                                                             |
-     |   weighted count of what the day left unprocessed          +--> REM compaction (staged, existing)
-     |   since the last sleep: degraded/critical metacog,         |
-     |   reverie compaction asks, resonance alerts, touched       +--> recombination --> dream_hypothesis
-     |   active crystallizations. Reads exactly 0 after a sleep.       dream arm:   distant replay pairs
+     |   NEW distinct things since the last sleep (absent from    +--> REM compaction (staged, existing)
+     |   the 48 h before it): metacog event kinds, reverie        |
+     |   compaction themes, resonance themes, newly activated     +--> recombination --> dream_hypothesis
+     |   crystallizations. Reads exactly 0 after a sleep.              dream arm:   distant replay pairs
      |                                                                  control arm: random pairs, same prompt
      v
 Hub curiosity kickoff shows each hypothesis once, arm hidden. Orion alone
@@ -45,6 +45,28 @@ scripts/dream_hypothesis_scorecard.py compares adoption/support per arm.
 | Migration | `services/orion-sql-db/manual_migration_dream_cycle_v2.sql` |
 
 HTTP: `GET /dreams/cycle/pressure` (read-only), `POST /dreams/cycle/run?force=true`.
+
+### What makes Orion tired
+
+Pressure counts **things, not rows**, and only **new** things. Design and the
+metric-gate record: `docs/superpowers/specs/2026-10-09-dream-sleep-pressure-novelty-design.md`.
+
+- **One thing, one count.** Each source query returns one row per `dedupe_key`
+  (`cycle_store.SOURCE_QUERIES`): metacog's `trigger_reason` with ids and numbers
+  normalized (its `summary` is model prose, reworded every row), the reverie theme,
+  or the crystallization id. 222 copies of one gateway timeout are one replay item.
+- **Only new things add pressure.** A key also seen in the `DREAM_LOOKBACK_HOURS`
+  before the window adds nothing. A chronic problem adds pressure once, the first
+  time, and stays a replay candidate every window it recurs.
+- **Recall is not new material.** Crystallizations count when they are activated
+  (`memory_crystallization_history` `auto_activate`/`approve`), not when
+  `updated_at` moves: every recall rewrites `updated_at` on ~100 of them.
+- `SleepPressureV1.counts` = distinct things per source in the window;
+  `new_counts` = the ones that drove `pressure`.
+- Backtest on the real week before 2026-10-09 at threshold 3: 11 sleeps, gaps
+  6-40.5 h (the old rule: 28 sleeps, every gap 6 h). Re-run with
+  `pytest services/orion-dream/evals/test_sleep_pressure_backtest_eval.py -s`,
+  or against fresh live data with `scripts/backtest_sleep_pressure.py`.
 
 A recombination call the gateway refuses (e.g. the GPU pool sheds it for heat,
 `raw.error=gpu_pool_unavailable`) counts as a failed call (`llm_failures`), not an

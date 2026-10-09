@@ -134,10 +134,19 @@ def test_returns_none_when_missing_from_both_tables(monkeypatch: pytest.MonkeyPa
 def test_orion_initiated_row_is_emitted_as_orion(monkeypatch: pytest.MonkeyPatch):
     """2026-10-09: Orion's own messages (empty prompt) were dropped here, so they never reached
     episodes -- 53 of 101 turns over 14 days."""
-    sess = _FakeSession(rows_by_model={worker.ChatHistoryLogSQL: _Row(prompt="", response="Morning! Porch camera?")})
+    sess = _FakeSession(rows_by_model={worker.ChatHistoryLogSQL: _Row(
+        prompt="", response="Morning! Porch camera?", client_meta={"unsolicited": True})})
     _patch_session(monkeypatch, sess)
     turn = worker._fetch_chat_turn_for_memory_emit("corr-o")
     assert turn is not None and turn["initiated_by"] == "orion" and turn["prompt"] == ""
+
+
+def test_promptless_row_that_is_not_outreach_stays_out(monkeypatch: pytest.MonkeyPatch):
+    """Live: 17 empty-prompt rows are Claude speaking in the room (client_meta.room_claude)."""
+    sess = _FakeSession(rows_by_model={worker.ChatHistoryLogSQL: _Row(
+        prompt="", response="Orion, you're doing it again.", client_meta={"room_claude": True})})
+    _patch_session(monkeypatch, sess)
+    assert worker._fetch_chat_turn_for_memory_emit("corr-c") is None
 
 
 def test_juniper_row_is_marked_juniper_and_empty_response_still_dropped(monkeypatch: pytest.MonkeyPatch):

@@ -100,10 +100,45 @@ def test_rows_from_before_the_field_still_count_as_juniper():
     assert (ev.episode_status, ev.juniper_turn_count) == ("closed", 1)
 
 
-def test_orion_message_after_a_long_silence_closes_the_stale_episode():
-    """The live case: goodnight at 03:45, Orion writes at 14:04. No phase stamp, so Rule 3's
-    time-gap branch decides; 10 h is past the 90-min fallback."""
-    from app.boundary import rule3_boundary
+def _shadow(initiated_by, phase=None):
+    return episode_shadow.ShadowTurn(correlation_id="x", at=T0, phase_change=phase, delta_user_seconds=None,
+                                     phase_source=None, boundary_score=None, is_command=False,
+                                     legacy_close_reason=None, initiated_by=initiated_by)
 
-    is_boundary, reason = rule3_boundary(phase=None, boundary_score=None, gap_sec=10 * 3600, settings=worker.settings)
-    assert (is_boundary, reason) == (True, "v2:no_phase_time_gap")
+
+def test_orion_message_after_a_long_silence_closes_the_stale_episode():
+    """Live: goodnight at 03:45, Orion writes at 14:04 (10 h later) -> the goodnight episode
+    closes then, instead of waiting 23 h for Juniper's next message."""
+    turns = [_entry("j-goodnight", 0)]
+    assert episode_shadow.episode_boundary(turns, _shadow("orion"), 10 * 3600, worker.settings) == (
+        True, "v2:orion_after_silence")
+
+
+def test_orion_message_soon_after_juniper_joins_her_conversation():
+    """Review finding: at a 105-min gap the old 90-min fallback split a conversation she then
+    resumed. Under 3 h an Orion turn joins."""
+    turns = [_entry("j1", 0)]
+    assert episode_shadow.episode_boundary(turns, _shadow("orion"), 105 * 60, worker.settings) == (
+        False, "v2:orion_joins")
+
+
+def test_juniper_reply_joins_the_outreach_it_answers_despite_her_long_gap_phase():
+    """Review finding (25/25 live outreach): her reply is stamped long_gap/next_day from HER
+    last turn, which used to close the Orion-only episode so outreach was never remembered with
+    its reply. Orion at 14:00 and 14:50, Juniper next_day -> one episode."""
+    turns = [_entry("o1", 0, "orion"), _entry("o2", 50, "orion")]
+    for phase in ("next_day", "long_gap", "stale_thread"):
+        assert episode_shadow.episode_boundary(turns, _shadow("juniper", phase), 6 * 3600, worker.settings) == (
+            False, "v2:reply_to_orion")
+
+
+def test_a_reply_days_after_unanswered_outreach_starts_fresh():
+    turns = [_entry("o1", 0, "orion")]
+    is_boundary, _ = episode_shadow.episode_boundary(turns, _shadow("juniper", "next_day"), 30 * 3600, worker.settings)
+    assert is_boundary is True
+
+
+def test_juniper_turns_still_follow_rule3():
+    turns = [_entry("j1", 0)]
+    assert episode_shadow.episode_boundary(turns, _shadow("juniper", "next_day"), 20 * 3600, worker.settings) == (
+        True, "v2:phase_next_day")

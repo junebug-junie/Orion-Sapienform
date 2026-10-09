@@ -109,6 +109,33 @@ class ShadowTurn:
         }
 
 
+def _juniper_turns(turns: list[Any]) -> int:
+    return sum(1 for t in turns if isinstance(t, dict) and not t.get("is_command")
+               and t.get("initiated_by", "juniper") != "orion")
+
+
+def episode_boundary(turns: list[Any], shadow: "ShadowTurn", gap_sec: float, settings) -> tuple[bool, str]:
+    """Rule 3, plus where Orion's own messages fall (2026-10-09):
+
+    * an Orion turn closes the open episode only after MEMORY_EPISODE_ORION_CLOSE_GAP_SEC of
+      silence; otherwise it joins the conversation it follows;
+    * a Juniper turn joins an episode that holds only Orion's messages when it arrives within
+      MEMORY_EPISODE_ORION_REPLY_WINDOW_SEC of the last one: she is answering Orion, even though
+      her own phase stamp (measured from HER last turn) says long_gap;
+    * everything else is Rule 3 unchanged.
+    """
+    if shadow.initiated_by == "orion":
+        if gap_sec >= float(settings.MEMORY_EPISODE_ORION_CLOSE_GAP_SEC):
+            return True, "v2:orion_after_silence"
+        return False, "v2:orion_joins"
+    orion_only = bool(turns) and _juniper_turns(turns) == 0 and any(
+        isinstance(t, dict) and t.get("initiated_by") == "orion" for t in turns)
+    if orion_only and gap_sec <= float(settings.MEMORY_EPISODE_ORION_REPLY_WINDOW_SEC):
+        return False, "v2:reply_to_orion"
+    return rule3_boundary(phase=shadow.phase_change, boundary_score=shadow.boundary_score,
+                          gap_sec=gap_sec, settings=settings)
+
+
 def build_closed_event(
     *,
     episode_id: str,
@@ -188,13 +215,20 @@ class EpisodeShadowStore:
                 turns = turns if isinstance(turns, list) else []
                 if any(isinstance(t, dict) and t.get("correlation_id") == shadow.correlation_id for t in turns):
                     return None  # duplicate publish of a turn already placed
+                if shadow.initiated_by == "orion" and await conn.fetchval(
+                    """
+                    SELECT 1 FROM memory_episode_shadow
+                    WHERE status = 'closed' AND closed_at > now() - interval '3 days'
+                      AND turns @> $1::jsonb
+                    LIMIT 1
+                    """,
+                    json.dumps([{"correlation_id": shadow.correlation_id}]),
+                ):
+                    # Orion turns skip the window dedup, so a late duplicate of one already
+                    # placed in an episode that has since closed must not land in a second one.
+                    return None
                 gap = (shadow.at - _as_utc(row["last_turn_at"])).total_seconds()
-                is_boundary, reason = rule3_boundary(
-                    phase=shadow.phase_change,
-                    boundary_score=shadow.boundary_score,
-                    gap_sec=gap,
-                    settings=self._settings,
-                )
+                is_boundary, reason = episode_boundary(turns, shadow, gap, self._settings)
                 if not is_boundary:
                     turns.append(shadow.entry(v2_boundary=False, v2_reason=reason))
                     await conn.execute(

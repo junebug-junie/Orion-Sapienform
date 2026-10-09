@@ -62,6 +62,14 @@ class Settings(BaseSettings):
         default=400, alias="MEMORY_GRAPH_SUGGEST_MIN_PROMPT_TOKENS_ESTIMATE"
     )
     MEMORY_WINDOW_FALLBACK_GAP_SEC: int = Field(default=5400, alias="MEMORY_WINDOW_FALLBACK_GAP_SEC")
+    # Orion's own messages in episodes (2026-10-09). An Orion turn closes an open episode only
+    # after this much silence -- the end of Juniper's resumed_thread bucket (3 h) -- so outreach
+    # never splits a conversation she is about to resume.
+    MEMORY_EPISODE_ORION_CLOSE_GAP_SEC: int = Field(default=10800, alias="MEMORY_EPISODE_ORION_CLOSE_GAP_SEC")
+    # Juniper's reply joins an episode holding only Orion's messages (instead of her own phase
+    # stamp -- measured from HER last turn -- closing it) when it comes within this long of
+    # Orion's last message. Live: her next message came 6-35 h after outreach began.
+    MEMORY_EPISODE_ORION_REPLY_WINDOW_SEC: int = Field(default=86400, alias="MEMORY_EPISODE_ORION_REPLY_WINDOW_SEC")
     # Memory episode redesign Stage 1 (2026-10-02): boundary Rule 3 runs in
     # SHADOW beside the live windows and writes memory_episode_shadow, then
     # publishes memory.episode.closed.v1. Kill switch: false stops both; the

@@ -374,9 +374,9 @@ async def handle_memory_turn_persisted(
     if turn.initiated_by == "orion":
         # Orion wrote on their own: there is no prompt to classify against the window, and the
         # legacy crystallization windows are being retired (spec 2026-09-30), so this turn goes
-        # only to the episode tracker. It can close a stale episode (Rule 3's time-gap branch;
-        # it carries no phase stamp) and it becomes part of the next one, so Orion's own
-        # messages are remembered with the replies they got.
+        # only to the episode tracker. After 3 h of silence it closes the stale episode and opens
+        # the next one, which Juniper's reply then joins (episode_shadow.episode_boundary), so
+        # Orion's own messages are remembered together with the replies they got.
         await observe_shadow_episode(bus, episode_store, turn=turn, scores={}, legacy_close_reason=None)
         return
     # Boundary Fix 2: classify each turn once. sql-writer publishes this event

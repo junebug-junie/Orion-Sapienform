@@ -125,6 +125,33 @@ def identity_confidence_from_artifact(art: VisionArtifactPayload) -> Optional[st
     return "uncertain" if has_real_unsure_face else None
 
 
+def identity_verdict_summary(art: VisionArtifactPayload) -> Dict[str, Any]:
+    """What one identity_face check actually said, for the trace.
+
+    The two helpers above deliberately return None for "no face" and for a
+    weak match, so a check that found nothing used to leave no trace at all
+    (2026-10-08: a 13-minute office session produced 26 checks and no way to
+    tell "never saw a face" from "saw a face, did not match"). This keeps
+    the distinction: ``outcome`` is ``no_face`` | ``not_enrolled`` |
+    ``unsure`` | ``possible`` | ``probable``, with the best similarity and
+    detector confidence. Numbers only -- no embeddings, no pixels.
+    """
+    identities = getattr(art.outputs, "identities", None)
+    candidates = identities.get("candidates") if isinstance(identities, dict) else None
+    candidates = [c for c in (candidates or []) if isinstance(c, dict)]
+    if not candidates:
+        return {"outcome": "no_face", "faces": 0, "similarity": None, "detect_confidence": None}
+    if all(c.get("reason") == "not_enrolled" for c in candidates):
+        return {"outcome": "not_enrolled", "faces": len(candidates), "similarity": None, "detect_confidence": None}
+    best = max(candidates, key=lambda c: c.get("similarity") if c.get("similarity") is not None else -1.0)
+    return {
+        "outcome": best.get("state") or "unsure",
+        "faces": len(candidates),
+        "similarity": best.get("similarity"),
+        "detect_confidence": best.get("detect_confidence"),
+    }
+
+
 def artifact_uris_from_artifact(art: VisionArtifactPayload) -> List[str]:
     """Lightweight URI/path pointers only; no frame bytes (spec §3, §9)."""
     out: List[str] = []

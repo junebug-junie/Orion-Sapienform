@@ -110,6 +110,6 @@ Run from the primary checkout on main after merge.
 
 ## PR link
 
-TBD
+https://github.com/junebug-junie/Orion-Sapienform/pull/2548
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

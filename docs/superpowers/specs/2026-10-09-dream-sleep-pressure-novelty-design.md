@@ -116,6 +116,20 @@ No bus channel or env change.
 - **Dangerous failure mode:** pressure stuck at 0, so Orion never sleeps (e.g. the key column is always null, so every item looks identical). Guard: a null or empty key falls back to the row id (counts as new), and a test pins it.
 - **Disable / roll back:** revert the commit. No table or env change to unwind.
 
+## Added at implementation (code review)
+
+- **Overdue backstop** (`cycle.overdue`): pressure counts only new things and has no
+  maximum interval, so a repetitive stretch could hold it at 0 indefinitely. When the
+  window reaches `DREAM_LOOKBACK_HOURS` (its furthest reach), Orion sleeps anyway if
+  idle and there is something to replay. No new setting. Backtest: never fired in the
+  fixture week (longest gap 40.5 h).
+- **`DREAM_CANDIDATES_PER_SOURCE` retired**: one row per thing makes a 50 cap drop real
+  keys (47 distinct metacog keys in 48 h live). Both reads use `cycle.KEYS_PER_SOURCE`.
+- **One read path**: the lookback reuses `load_source_rows(since, limit, until=...)`
+  instead of a second loader.
+- **Hub Dream tab** shows `new_counts` ("New since last sleep (drives pressure)") next
+  to `counts` ("Distinct things to replay").
+
 ## Recommended next patch
 
 Answer the three questions, then one implementation PR. It touches only orion-dream plus the optional schema fields: Hub first for the schema, then orion-dream.

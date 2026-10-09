@@ -49,10 +49,10 @@ class _World:
     def deps(self):
         from app.cycle import CycleDeps
 
-        def load(since, limit):
+        def load(since, limit, until=None):
             out = {"metacog": [], "compaction_request": [], "resonance": [], "crystallization": []}
             for kind, ts, row in self.rows:
-                if ts > since:
+                if ts > since and (until is None or ts < until):
                     out[kind].append(row)
             return out
 

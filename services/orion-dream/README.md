@@ -61,6 +61,13 @@ metric-gate record: `docs/superpowers/specs/2026-10-09-dream-sleep-pressure-nove
 - **Recall is not new material.** Crystallizations count when they are activated
   (`memory_crystallization_history` `auto_activate`/`approve`), not when
   `updated_at` moves: every recall rewrites `updated_at` on ~100 of them.
+- **Backstop.** If the window reaches `DREAM_LOOKBACK_HOURS` (its furthest reach)
+  without crossing threshold, Orion sleeps anyway when idle and there is anything to
+  replay (cycle note: `overdue`). Without it, a repetitive stretch with nothing new
+  could hold pressure at 0 forever, and older material would fall out of view unreplayed.
+- **No per-source cap.** Reads are one row per thing, so `DREAM_CANDIDATES_PER_SOURCE`
+  (50) was retired: near real volume (~72 metacog kinds/48 h) it silently dropped keys.
+  `DREAM_REPLAY_MAX` bounds a sleep.
 - `SleepPressureV1.counts` = distinct things per source in the window;
   `new_counts` = the ones that drove `pressure`.
 - Backtest on the real week before 2026-10-09 at threshold 3: 11 sleeps, gaps

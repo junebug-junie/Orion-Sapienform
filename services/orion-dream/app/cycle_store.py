@@ -85,10 +85,6 @@ SOURCE_QUERIES: dict[str, str] = {
     """,
 }
 
-# Distinct things per source over 48 h run ~72 (metacog, live 10-09); a prior
-# read cut short would make old keys look new, so it gets a far higher cap.
-PRIOR_KEYS_LIMIT = 5000
-
 # chat_history_log.created_at is `timestamp without time zone` defaulted by the
 # server's now(), so compare against LOCALTIMESTAMP on the same server clock.
 IDLE_MINUTES_SQL = """
@@ -139,11 +135,6 @@ def load_source_rows(
             logger.warning("dream_cycle source read failed kind=%s err=%s", kind, exc)
             out[kind] = []
     return out
-
-
-def load_prior_rows(since: datetime, until: datetime) -> dict[str, list[dict[str, Any]]]:
-    """The lookback before a window: what counted as already seen."""
-    return load_source_rows(since, PRIOR_KEYS_LIMIT, until)
 
 
 def load_idle_minutes() -> Optional[float]:

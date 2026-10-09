@@ -166,7 +166,6 @@ def build_cycle_deps():
         persist_cycle=_persist,
         complete=_complete,
         rem_compaction=_rem,
-        load_prior_rows=cycle_store.load_prior_rows,
     )
 
 

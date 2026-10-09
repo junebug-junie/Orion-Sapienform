@@ -61,10 +61,12 @@ def _simulate(threshold: float):
         t += STEP_SEC
         if t - last < MIN_GAP_SEC:
             continue
-        keyed = keyed_candidates(_rows_between(events, last, t))
-        seen = prior_keys(_rows_between(events, last - LOOKBACK_SEC, last))
+        since = max(last, t - LOOKBACK_SEC)  # cycle.window_start's clamp
+        keyed = keyed_candidates(_rows_between(events, since, t))
+        seen = prior_keys(_rows_between(events, since - LOOKBACK_SEC, since))
         pressure, _, _ = compute_pressure(keyed, seen)
-        if pressure >= threshold:
+        overdue = t - last >= LOOKBACK_SEC and bool(keyed)  # cycle.overdue backstop
+        if pressure >= threshold or overdue:
             sleeps.append((t, pressure))
             last = t
     return sleeps
@@ -84,4 +86,4 @@ def test_orion_still_sleeps_at_least_daily_on_average():
     sleeps = _simulate(3.0)
     gaps_h = [(b[0] - a[0]) / 3600 for a, b in zip(sleeps, sleeps[1:])]
     assert len(sleeps) >= DAYS
-    assert max(gaps_h) < 72
+    assert max(gaps_h) <= LOOKBACK_SEC / 3600 + STEP_SEC / 3600  # the backstop bounds every gap

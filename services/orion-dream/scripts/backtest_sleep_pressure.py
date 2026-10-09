@@ -50,13 +50,16 @@ def simulate(ev, threshold: float, *, days=7, min_hours=6.0, lookback_hours=48.0
         t += step_sec
         if t - last < min_hours * 3600:
             continue
-        prior = {k for (tt, k, _) in ev if last - lookback_hours * 3600 <= tt < last}
+        since = max(last, t - lookback_hours * 3600)  # cycle.window_start's clamp
+        prior = {k for (tt, k, _) in ev if since - lookback_hours * 3600 <= tt < since}
+        window = {k for (tt, k, _) in ev if since <= tt < t}
         new: dict[str, float] = {}
         for tt, k, w in ev:
-            if last <= tt < t and k not in prior:
+            if since <= tt < t and k not in prior:
                 new[k] = max(new.get(k, 0.0), w)
         pressure = sum(new.values())
-        if pressure >= threshold:
+        overdue = t - last >= lookback_hours * 3600 and bool(window)  # cycle.overdue backstop
+        if pressure >= threshold or overdue:
             sleeps.append((t, pressure, len(new)))
             last = t
     return sleeps

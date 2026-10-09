@@ -117,18 +117,10 @@ def test_read_pressure_reads_the_lookback_before_the_window():
     from app.cycle import read_pressure
     from app.settings import settings
 
-    f = _Fakes({**_rows(), "metacog": _rows()["metacog"] + _timeouts(3)})
-    asked = []
-
-    def prior(since, until):
-        asked.append((since, until))
-        return {"metacog": _timeouts(1)}
-
-    deps = f.deps()
-    deps.load_prior_rows = prior
+    f = _Fakes({**_rows(), "metacog": _rows()["metacog"] + _timeouts(3)}, prior={"metacog": _timeouts(1)})
     last = NOW - timedelta(hours=7)
-    pressure, candidates = read_pressure(deps, NOW, last)
-    assert asked == [(last - timedelta(hours=settings.DREAM_LOOKBACK_HOURS), last)]
+    pressure, candidates = read_pressure(f.deps(), NOW, last)
+    assert f.reads == [(last, None), (last - timedelta(hours=settings.DREAM_LOOKBACK_HOURS), last)]
     assert pressure.new_counts["metacog"] == 2 and pressure.counts["metacog"] == 3
     assert len(candidates) == sum(pressure.counts.values())
 
@@ -230,8 +222,9 @@ def test_recombine_counts_no_link_failures_and_rejects_echo():
 
 
 class _Fakes:
-    def __init__(self, rows, idle=120.0, last_end=None, answer=None, last_start=None):
+    def __init__(self, rows, idle=120.0, last_end=None, answer=None, last_start=None, prior=None):
         self.rows, self.idle, self.last_end, self.last_start = rows, idle, last_end, last_start
+        self.prior, self.reads = prior or {}, []
         self.persisted, self.prompts = [], []
         self.answer = answer or json.dumps(
             {"link": True, "claim": "These two recur together more often than chance would allow", "why": "w"}
@@ -241,7 +234,10 @@ class _Fakes:
     def deps(self):
         from app.cycle import CycleDeps
 
-        def load(since, limit):
+        def load(since, limit, until=None):
+            self.reads.append((since, until))
+            if until is not None:  # the lookback before the window
+                return self.prior
             self.seen_since = since
             return self.rows
 
@@ -478,3 +474,34 @@ def test_gateway_refusal_keeps_the_bus_but_a_transport_error_drops_it(monkeypatc
     with pytest.raises(TimeoutError):
         asyncio.run(complete("p"))
     assert drops == [1]
+
+
+def _all_seen(last_start, idle=120.0):
+    # Every thing in the window was also seen before it: pressure 0, candidates present.
+    return _Fakes(_rows(), idle=idle, last_start=last_start, prior=_rows())
+
+
+def test_overdue_backstop_sleeps_when_nothing_new_but_the_window_hit_its_reach():
+    from app.cycle import run_cycle_once
+    from app.settings import settings
+
+    last = datetime.now(timezone.utc) - timedelta(hours=settings.DREAM_LOOKBACK_HOURS + 1)
+    f = _all_seen(last)
+    cycle = asyncio.run(run_cycle_once(f.deps()))
+    assert cycle is not None and cycle.status == "completed"
+    assert cycle.pressure.pressure == 0.0 and "overdue" in (cycle.note or "")
+
+
+def test_no_backstop_before_the_window_reaches_back_its_full_lookback():
+    from app.cycle import run_cycle_once
+
+    f = _all_seen(datetime.now(timezone.utc) - timedelta(hours=10))
+    assert asyncio.run(run_cycle_once(f.deps())) is None
+
+
+def test_backstop_never_sleeps_through_a_conversation():
+    from app.cycle import run_cycle_once
+    from app.settings import settings
+
+    last = datetime.now(timezone.utc) - timedelta(hours=settings.DREAM_LOOKBACK_HOURS + 1)
+    assert asyncio.run(run_cycle_once(_all_seen(last, idle=5.0).deps())) is None

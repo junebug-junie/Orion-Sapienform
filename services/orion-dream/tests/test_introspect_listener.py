@@ -7,7 +7,7 @@ from uuid import uuid4
 
 from app import introspect_listener as il
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
-from orion.introspect.semantic_index import IndexPass, SearchConfig, SearchUnavailableError
+from orion.introspect.semantic_index import INDEX_LAG_MARGIN, IndexPass, SearchConfig, SearchUnavailableError
 from orion.introspect.transport import REQUEST_KIND, RESULT_KIND, RESULT_PREFIX
 from orion.schemas.introspect import IntrospectRequestV1, IntrospectResultV1, IntrospectToolBindingV1
 
@@ -318,8 +318,8 @@ def test_index_once_reads_read_only_and_hands_rows_to_indexer(monkeypatch):
     assert engine.conn.calls[0] == "SET TRANSACTION READ ONLY"
 
 
-def test_index_complete_as_of_advances_only_when_nothing_is_pending(monkeypatch):
-    passes = iter([IndexPass(indexed=10, pending=5), IndexPass(indexed=5, pending=0)])
+def test_index_complete_as_of_advances_only_on_a_pass_that_confirmed_everything(monkeypatch):
+    passes = iter([IndexPass(indexed=10, pending=5), IndexPass(indexed=5, pending=0), IndexPass(indexed=0, pending=0)])
 
     async def fake_index(pairs, cfg, *, client, bus, source, batch=None):
         return next(passes)
@@ -328,9 +328,33 @@ def test_index_complete_as_of_advances_only_when_nothing_is_pending(monkeypatch)
     listener = _listener(FakeEngine([NARR]), index_complete_as_of=None)
     asyncio.run(listener.index_once())
     assert listener.index_complete_as_of is None
+    asyncio.run(listener.index_once())
+    assert listener.index_complete_as_of is None, "a pass that only published upserts proves nothing is stored"
     before = datetime.now(timezone.utc)
     asyncio.run(listener.index_once())
-    assert listener.index_complete_as_of is not None and listener.index_complete_as_of <= before + timedelta(seconds=1)
+    assert listener.index_complete_as_of is not None
+    assert listener.index_complete_as_of <= before - INDEX_LAG_MARGIN + timedelta(seconds=1)
+
+
+def test_published_but_unstored_upserts_never_mark_the_index_complete():
+    """Real index_missing against a Chroma that has not applied the upserts yet."""
+    from orion.introspect.tests.fake_chroma import FakeChroma
+
+    chroma = FakeChroma("orion_dreams")
+    search = SearchConfig(chroma_url="http://chroma.test", embed_url="http://embed.test/embedding",
+                          collection="orion_dreams", min_similarity=0.6)
+    listener = _listener(FakeEngine([NARR]), search=search, index_complete_as_of=None)
+    listener.client_factory = chroma.client
+    first = asyncio.run(listener.index_once())
+    assert first.indexed == 1 and first.pending == 0
+    assert listener.index_complete_as_of is None
+    asyncio.run(listener.index_once())
+    assert listener.index_complete_as_of is None, "vector-writer has not stored it yet"
+    assert chroma.apply(listener.bus) >= 1
+    started = datetime.now(timezone.utc)
+    confirmed = asyncio.run(listener.index_once())
+    assert (confirmed.indexed, confirmed.pending) == (0, 0)
+    assert started - INDEX_LAG_MARGIN - timedelta(seconds=1) <= listener.index_complete_as_of <= started - INDEX_LAG_MARGIN + timedelta(seconds=1)
 
 
 def test_start_stop_survives_a_dead_bus_and_skips_index_without_search():

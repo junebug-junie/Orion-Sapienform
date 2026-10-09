@@ -104,11 +104,15 @@ tool family (which turns get it, truth rules, search pattern), see the
 - **Empty vs unknown.**
   - No match: `ok=true, items=[]`. For a search, only once the index is known
     to hold every dream: the listener records the start of the last index pass
-    that left nothing pending, and if any dream in the search window is newer
-    than that (a just-offered hypothesis, or an indexer outage), or no pass has
-    completed since start, an empty search is `dream_search_unavailable`.
-    Right after a deploy, empty searches answer unknown until the backlog is
-    indexed (10 records per 5-minute pass).
+    whose stored hashes in Chroma matched every dream (nothing upserted,
+    nothing pending), minus a 10-minute margin for producer-stamped clocks
+    (`semantic_index.confirmed_complete_as_of`). A pass that only *published*
+    upserts proves nothing, because orion-vector-writer stores them later. If
+    any dream in the search window is newer than that (a just-offered
+    hypothesis, or an indexer outage), or no pass has confirmed since start, an
+    empty search is `dream_search_unavailable`. Right after a deploy, empty
+    searches answer unknown until the backlog is indexed (10 records per
+    5-minute pass) and one more pass confirms it.
   - A request that fails validation returns `invalid dreams request: …`.
   - A Postgres error returns `dreams_unavailable; answer unknown`.
   - An embedder or Chroma failure, an unbuilt index, or search not configured

@@ -215,3 +215,14 @@ def test_index_docs_stored_hashes_failure_raises_and_publishes_nothing():
             DOCS, CFG, client=c, bus=bus, source=ServiceRef(name="orion-dream"), doc_prefix="x",
         ), client)
     assert bus.published == [] and not any(r.url.host == "embed.test" for r in seen)
+
+
+def test_only_a_pass_with_nothing_to_upsert_confirms_the_index():
+    from datetime import datetime, timezone
+
+    from orion.introspect.semantic_index import INDEX_LAG_MARGIN, IndexPass, confirmed_complete_as_of
+
+    t = datetime(2026, 10, 9, 12, 0, tzinfo=timezone.utc)
+    assert confirmed_complete_as_of(IndexPass(indexed=3, pending=0), t) is None
+    assert confirmed_complete_as_of(IndexPass(indexed=0, pending=2), t) is None
+    assert confirmed_complete_as_of(IndexPass(indexed=0, pending=0), t) == t - INDEX_LAG_MARGIN

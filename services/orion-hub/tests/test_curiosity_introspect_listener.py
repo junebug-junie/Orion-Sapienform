@@ -294,7 +294,7 @@ def test_index_docs_keep_only_valid_runs_with_text():
 
 
 def test_index_once_marks_complete_only_when_nothing_is_pending(monkeypatch):
-    passes = iter([IndexPass(indexed=10, pending=3), IndexPass(indexed=3, pending=0)])
+    passes = iter([IndexPass(indexed=10, pending=3), IndexPass(indexed=0, pending=0)])
     seen = []
 
     async def fake_index_docs(docs, cfg, **kw):
@@ -439,3 +439,25 @@ def test_line_filter_reaches_the_index_before_the_candidate_cut():
     result = _ask(listener, {"query": "what am I made of", "line": "self_inquiry"})
     assert [i.id for i in result.items] == ["si1"]
     assert chroma.queries[-1]["where"] == {"line": "self_inquiry"}
+
+
+# --- index completeness needs stored, not published, docs (review fix 3) ------
+
+from orion.introspect.semantic_index import INDEX_LAG_MARGIN  # noqa: E402
+
+
+def test_published_but_unstored_upserts_never_mark_the_curiosity_index_complete():
+    chroma = FakeChroma("orion_curiosity")
+    listener, _ = _listener(search=LIVE_SEARCH, index_complete_as_of=None)
+    listener.client_factory = chroma.client
+    first = asyncio.run(listener.index_once())
+    assert first.indexed == 2 and first.pending == 0
+    assert listener.index_complete_as_of is None, "a pass that only published upserts proves nothing is stored"
+    asyncio.run(listener.index_once())
+    assert listener.index_complete_as_of is None, "vector-writer has not stored them yet"
+    assert chroma.apply(listener.bus) == 4
+    started = datetime.now(timezone.utc)
+    confirmed = asyncio.run(listener.index_once())
+    assert (confirmed.indexed, confirmed.pending) == (0, 0)
+    as_of = listener.index_complete_as_of
+    assert started - INDEX_LAG_MARGIN - timedelta(seconds=1) <= as_of <= started - INDEX_LAG_MARGIN + timedelta(seconds=1)

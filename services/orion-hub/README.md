@@ -3316,7 +3316,8 @@ the whole tool family see the
     READ ONLY transaction (`ReadOnlyPool`).
 - **Empty vs unknown.**
   - No match: `ok=true, items=[]`. A search is only empty once the index is
-    known to hold every write-up (the dreams `index_complete_as_of` rule);
+    known to hold every write-up (the dreams `index_complete_as_of` rule: a
+    pass whose stored hashes matched everything, minus a 10-minute margin);
     until then an empty search is `curiosity_search_unavailable`.
   - A run id Postgres does not know is only "not found" when the graph was
     read too (runs from before 2026-09-14 exist only there); otherwise, or

@@ -32,6 +32,7 @@ from orion.introspect.semantic_index import (
     IndexPass,
     SearchConfig,
     SearchUnavailableError,
+    confirmed_complete_as_of,
     embed,
     index_docs,
     nearest,
@@ -199,8 +200,9 @@ class CuriosityIntrospectListener:
         self.bus: Any = None
         self.task: asyncio.Task | None = None
         self.index_task: asyncio.Task | None = None
-        # Start time of the last index pass that left nothing pending: every
-        # write-up recorded before it is searchable. None until one succeeds.
+        # Every write-up recorded before this is searchable: the start of the
+        # last index pass whose stored hashes matched everything, minus the lag
+        # margin (semantic_index.confirmed_complete_as_of). None until then.
         self.index_complete_as_of: datetime | None = None
 
     def _pool(self) -> ReadOnlyPool:
@@ -401,8 +403,9 @@ class CuriosityIntrospectListener:
                 index_docs_from_rows(rows), self.search, client=client, bus=self.bus,
                 source=self.source_ref, doc_prefix=_DOC_PREFIX, hash_keys=_HASH_KEYS,
             )
-        if result.pending == 0:
-            self.index_complete_as_of = started
+        confirmed = confirmed_complete_as_of(result, started)
+        if confirmed is not None:
+            self.index_complete_as_of = confirmed
         logger.info("curiosity_search_index indexed=%d pending=%d", result.indexed, result.pending)
         return result
 

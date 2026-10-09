@@ -395,3 +395,58 @@ def test_fresh_cached_brief_is_still_served_from_cache(monkeypatch) -> None:
     _fragment(ns, "cache2")
     _fragment(ns, "cache2")
     assert len(reads) == 1
+
+
+# --- named presence + stale-read caution (2026-10-09) -------------------------
+# A turn asking "can you see me?" was handed "Room (seen 7 min ago): Someone has
+# been in view for 7 minutes. ..." while the camera had matched Juniper (0.70) a
+# minute earlier, and answered "Right here, right now" off a 7-minute-old read.
+
+
+def _live(monkeypatch, *, subject, percept_age, state="present", since=420.0) -> None:
+    row = {
+        "state": state,
+        "since_sec": since,
+        "subject": subject,
+        "identity_confirmed": subject not in ("unknown", "none"),
+        "row_updated_at": datetime.now(timezone.utc),
+    }
+    monkeypatch.setattr(
+        situation_mod, "fetch_latest_percept", lambda **_: _percept(percept_age, REAL_SCENE)
+    )
+    monkeypatch.setattr(
+        situation_mod,
+        "fetch_presence_resolved",
+        lambda stream_ids, *, max_age_seconds: PresenceResolution("cam0", row, True),
+    )
+
+    async def _ask(*_a, **_k):
+        return True
+
+    monkeypatch.setattr(situation_mod, "try_claim_identity_ask", _ask)
+
+
+def test_matched_face_names_the_person_in_the_room_line(monkeypatch) -> None:
+    _live(monkeypatch, subject="juniper", percept_age=30)
+    brief, text = _fragment(_hub_ns(), "named")
+    assert "Juniper has been in view for 7 minutes (matched by face)." in text
+    assert "Someone has been in view" not in text
+    assert brief["perception"]["presence_subject"] == "juniper"
+
+
+def test_unmatched_presence_still_says_someone_and_never_a_name(monkeypatch) -> None:
+    _live(monkeypatch, subject="unknown", percept_age=30)
+    _brief, text = _fragment(_hub_ns(), "anon")
+    assert "Someone has been in view for 7 minutes." in text
+    assert "matched by face" not in text
+
+
+def test_stale_read_gets_a_not_live_caution_and_fresh_read_does_not(monkeypatch) -> None:
+    _live(monkeypatch, subject="juniper", percept_age=7 * 60)
+    _brief, stale = _fragment(_hub_ns(), "stale")
+    assert "Your last visual read of the room is 7 min ago, not live." in stale
+    assert "Do not say you see anyone or anything right now" in stale
+
+    _live(monkeypatch, subject="juniper", percept_age=20)
+    _brief, fresh = _fragment(_hub_ns(), "fresh")
+    assert "not live" not in fresh

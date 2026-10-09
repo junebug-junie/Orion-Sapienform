@@ -578,6 +578,7 @@ async def startup_event():
                 enabled=settings.HUB_ENDOGENOUS_OUTREACH_ENABLED,
                 tick_interval_sec=settings.HUB_ENDOGENOUS_OUTREACH_TICK_SEC,
                 min_cooldown_sec=settings.HUB_ENDOGENOUS_OUTREACH_MIN_COOLDOWN_SEC,
+                recent_chat_sec=settings.HUB_ENDOGENOUS_OUTREACH_RECENT_CHAT_SEC,
                 daily_cap=settings.HUB_ENDOGENOUS_OUTREACH_DAILY_CAP,
                 quiet_start_hour=settings.HUB_ENDOGENOUS_OUTREACH_QUIET_START_HOUR,
                 quiet_end_hour=settings.HUB_ENDOGENOUS_OUTREACH_QUIET_END_HOUR,

@@ -289,7 +289,7 @@ async def cycle_pressure_endpoint():
     """What the sleep loop would see right now. Reads only; runs nothing."""
     from datetime import datetime
 
-    from app.cycle import read_pressure, too_soon
+    from app.cycle import overdue, read_pressure, too_soon
 
     deps = build_cycle_deps()
     now = datetime.now(timezone.utc)
@@ -303,6 +303,10 @@ async def cycle_pressure_endpoint():
         "should_sleep": pressure.should_sleep,
         "too_soon": too_soon(now, last_end),
         "candidates": len(candidates),
+        # The backstop run_cycle_once applies below threshold: the window has hit
+        # DREAM_LOOKBACK_HOURS, so Orion sleeps once idle if there is anything to replay.
+        "overdue": overdue(now, last_start),
+        "lookback_hours": settings.DREAM_LOOKBACK_HOURS,
     }
 
 

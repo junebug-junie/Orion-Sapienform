@@ -132,7 +132,7 @@ jobs:
     timeout-minutes: 15
     services:
       postgres:
-        image: postgres:16
+        image: public.ecr.aws/docker/library/postgres:16  # Docker Hub mirror: no unauthenticated pull rate limit
         env:
           POSTGRES_PASSWORD: gpu-pool-test
           POSTGRES_DB: gpu_pool_test
@@ -200,7 +200,7 @@ jobs:
     timeout-minutes: 15
     services:
       postgres:
-        image: postgres:16
+        image: public.ecr.aws/docker/library/postgres:16  # Docker Hub mirror: no unauthenticated pull rate limit
         env:
           POSTGRES_PASSWORD: gpu-pool-test
           POSTGRES_DB: gpu_pool_test

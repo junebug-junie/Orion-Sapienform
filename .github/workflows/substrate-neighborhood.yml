@@ -47,7 +47,7 @@ jobs:
           - 6379:6379
       # Throwaway Postgres for the substrate graph journal + assertion projector lane.
       postgres:
-        image: postgres:16
+        image: public.ecr.aws/docker/library/postgres:16  # Docker Hub mirror: no unauthenticated pull rate limit
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres

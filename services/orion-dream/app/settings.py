@@ -71,6 +71,9 @@ class Settings(BaseSettings):
     CHANNEL_LLM_INTAKE: str = Field(default="orion:exec:request:LLMGatewayService")
     DREAM_LLM_ROUTE: str = Field(default="metacog_background")
     DREAM_LLM_TIMEOUT_SEC: float = Field(default=90.0, gt=0.0)
+    # A completed sleep starts one narrative dream (cortex-orch dream_cycle verb,
+    # `dreams` table) fed that sleep's replay, on CHANNEL_DREAM_TRIGGER.
+    DREAM_STORY_AFTER_SLEEP_ENABLED: bool = Field(default=True)
 
     # --- Introspect responder (orion-introspect `dreams` tool; read-only) ---
     # Answers orion:introspect:dream:request. Empty search URLs keep recent/one

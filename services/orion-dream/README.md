@@ -85,6 +85,31 @@ Writes nothing to canonical memory. The dream never writes a belief.
 The legacy direct-gather path (`dream_cycle.py`, `aggregators_*`, `memory_listener.py`)
 was deleted in the same patch.
 
+### Every sleep ends in a story
+
+A completed sleep (not `failed`, not `empty`) starts one narrative dream, the kind
+stored in the `dreams` table. Before 2026-10-09 nothing scheduled that dream: all 19
+were started by hand, and Orion's journal noticed the silence. Now it runs on the
+same tiredness gate as the sleep (`app/story.py`).
+
+- The sleep publishes `dream.trigger` (`DreamInternalTriggerV1`) with `trigger_id`
+  `sleep:<cycle_id>` and a `sleep` digest. The digest holds tiredness against the
+  sleep line, whether this was an overdue (backstop) sleep, and `material`: the
+  replayed items plus every item in the control pairs, in a seeded shuffle.
+- cortex-orch runs the `dream_cycle` verb. `dream_cycle.j2` puts that material
+  first and uses the recalled memories as texture. A hand-started dream (no `sleep`)
+  gets the old memory-only prompt. Orch logs `sleep_material=<n>` on dispatch.
+- The trigger, digest included, is saved with the dream in
+  `dreams.metrics._dream_audit.trigger`, so each story names the sleep it came from.
+- Blind experiment: the sleep's hypotheses are shown to Orion later with the arm
+  hidden. Dream pairs come from the replay and control pairs from the whole pool.
+  A story about the replay alone would make the dream-arm items familiar and bias
+  the result, so the story gets both arms' items, unlabeled and unordered, and
+  never the hypotheses themselves.
+- No story for a sleep that was `failed`, `empty`, or not saved.
+- Starting the story is best effort. If the publish fails, the sleep still counts.
+- Off switch: `DREAM_STORY_AFTER_SLEEP_ENABLED=false`.
+
 ### HTTP / bus behavior
 
 - **No Hunter** in this process: `dream.trigger` is consumed by **cortex-orch** so triggers are not duplicated.
@@ -245,7 +270,7 @@ tool family (which turns get it, truth rules, search pattern), see the
 
 | Channel | Env Var | Kind | Description |
 | :--- | :--- | :--- | :--- |
-| `orion:dream:trigger` | `CHANNEL_DREAM_TRIGGER` | `dream.trigger` | Published by clients; **handled by cortex-orch**. |
+| `orion:dream:trigger` | `CHANNEL_DREAM_TRIGGER` | `dream.trigger` | `DreamInternalTriggerV1`; published by `POST /dreams/run` and at the end of every completed sleep; **handled by cortex-orch**. |
 
 ### Environment Variables
 

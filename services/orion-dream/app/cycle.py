@@ -22,9 +22,11 @@ from typing import Any, Awaitable, Callable, Optional
 from uuid import uuid4
 
 from orion.schemas.dream_cycle import DreamCycleV1, DreamPressureObservationV1, SleepPressureV1
+from orion.schemas.telemetry.dream import DreamInternalTriggerV1
 
 from app.recombine import Complete, control_pairs, dream_pairs, recombine
 from app.replay import compute_pressure, keyed_candidates, prior_keys, select_replay
+from app.story import story_trigger
 from app.settings import settings
 
 logger = logging.getLogger("orion-dream.cycle")
@@ -44,6 +46,9 @@ class CycleDeps:
     # (cycle_id, window since) -> staged delta id or None
     rem_compaction: Optional[Callable[[str, datetime], Awaitable[Optional[str]]]] = None
     persist_pressure_observation: Optional[Callable[[DreamPressureObservationV1], bool]] = None
+    # A completed, saved sleep ends in a story dream: publishes the trigger
+    # app/story.py builds. Best effort: a failure never fails or undoes the sleep.
+    start_story: Optional[Callable[[DreamInternalTriggerV1], Awaitable[None]]] = None
     # One deps instance per loop/request. The real clock loaders append failures;
     # each serialized check clears it before reading. Scheduling still sees None.
     read_errors: list[str] = field(default_factory=list)
@@ -202,7 +207,8 @@ async def run_cycle_once(deps: CycleDeps, *, trigger: str = "pressure", force: b
         note=f"pairs dream={len(d_pairs)} control={len(c_pairs)}"
         + (f" | overdue: {settings.DREAM_LOOKBACK_HOURS:g} h without crossing threshold" if backstop else ""),
     )
-    if not await asyncio.to_thread(deps.persist_cycle, cycle):
+    persisted = await asyncio.to_thread(deps.persist_cycle, cycle)
+    if not persisted:
         logger.warning("dream_cycle %s ran but was not persisted", cycle_id)
     logger.info(
         "dream_cycle %s id=%s pressure=%.2f replay=%d hypotheses=%d (dream=%d control=%d) "
@@ -212,6 +218,16 @@ async def run_cycle_once(deps: CycleDeps, *, trigger: str = "pressure", force: b
         sum(1 for h in rem.hypotheses if h.arm == "control"),
         rem.no_link, rem.unparseable, rem.failures,
     )
+    # No story for an unsaved sleep: its audit would point at a cycle that doesn't exist.
+    if deps.start_story is not None and persisted:
+        story = story_trigger(
+            cycle, control_items=[item for p in c_pairs for item in (p.a, p.b)], overdue=backstop,
+        )
+        if story is not None:
+            try:
+                await deps.start_story(story)
+            except Exception:
+                logger.exception("dream_story_start_failed cycle_id=%s", cycle_id)
     return cycle
 
 

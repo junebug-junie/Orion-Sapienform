@@ -31,6 +31,22 @@ class DreamTriggerPayload(BaseModel):
     mode: str = Field("standard", description="Dream mode / profile")
 
 
+class DreamSleepDigestV1(BaseModel):
+    """What one completed sleep (orion-dream cycle v2) worked on, handed to the
+    story dream it starts. `material` is the replay plus every item in the
+    control pairs, shuffled and unlabeled, so the story makes neither arm of the
+    blind hypothesis experiment (orion/dream/hypotheses.py) more familiar than
+    the other. The hypotheses themselves are never included."""
+    model_config = ConfigDict(extra="forbid")
+
+    cycle_id: str
+    started_at: datetime
+    pressure: float
+    threshold: float
+    overdue: bool = False
+    material: List[str] = Field(default_factory=list, max_length=40, description="'source: text', seeded shuffle")
+
+
 class DreamInternalTriggerV1(BaseModel):
     """
     Internal dream initiation contract (no final dream content).
@@ -49,6 +65,9 @@ class DreamInternalTriggerV1(BaseModel):
     scheduled_for: Optional[str] = Field(default=None, description="ISO8601 or opaque schedule hint")
     state_overrides: Dict[str, Any] = Field(default_factory=dict)
     correlation_id: Optional[str] = Field(default=None, description="Correlation id when not envelope-level")
+    sleep: Optional[DreamSleepDigestV1] = Field(
+        default=None, description="Set when a completed sleep starts this dream; the story's primary material"
+    )
 
 
 class DreamFragmentV1(BaseModel):

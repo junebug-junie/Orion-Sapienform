@@ -97,13 +97,50 @@ def test_fresh_mic_survives_missing_nano(tmp_path: Path, monkeypatch: pytest.Mon
     assert ctx.sound_vs_usual == "usual"
 
 
+@pytest.mark.parametrize("recent,expected", [(4000.0, "quieter"), (6000.0, "usual"), (9500.0, "louder")])
+def test_vs_usual_judges_the_10min_median_not_one_window(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, recent: float, expected: str
+) -> None:
+    mic = tmp_path / "latest.json"
+    _write_mic(mic, rms=30000.0)  # one loud clank in the live window
+    history = _HISTORY._replace(recent_median_rms=recent)
+    monkeypatch.setattr(situation_mod, "fetch_cabinet_sound_history", lambda **_: history)
+    assert _fetch_cabinet_context(_cfg(mic)).sound_vs_usual == expected
+
+
 @pytest.mark.parametrize("rms,expected", [(4000.0, "quieter"), (6000.0, "usual"), (9500.0, "louder")])
-def test_vs_usual_is_against_the_24h_band(tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-                                          rms: float, expected: str) -> None:
+def test_vs_usual_falls_back_to_live_level_without_recent_rows(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, rms: float, expected: str
+) -> None:
     mic = tmp_path / "latest.json"
     _write_mic(mic, rms=rms)
-    monkeypatch.setattr(situation_mod, "fetch_cabinet_sound_history", lambda **_: _HISTORY)
+    history = _HISTORY._replace(recent_median_rms=None)
+    monkeypatch.setattr(situation_mod, "fetch_cabinet_sound_history", lambda **_: history)
     assert _fetch_cabinet_context(_cfg(mic)).sound_vs_usual == expected
+
+
+def test_mic_failure_does_not_wipe_nano_read(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    mic = tmp_path / "latest.json"
+    _write_mic(mic)
+    nano = CabinetContextV1(available=True, source="cabinet_sensors", temp_c=28.7)
+    monkeypatch.setattr(situation_mod, "_fetch_cabinet_sensor_context", lambda cfg: nano)
+
+    def boom(**_):
+        raise RuntimeError("bad DSN")
+
+    monkeypatch.setattr(situation_mod, "fetch_cabinet_sound_history", boom)
+    ctx = _fetch_cabinet_context(_cfg(mic))
+    assert ctx.available is True and ctx.temp_c == 28.7
+    assert ctx.sound_available is False
+
+
+def test_brief_cache_hit_expires_once_mic_reading_is_stale(tmp_path: Path) -> None:
+    cfg = _cfg(tmp_path / "latest.json")
+    brief = _brief(CabinetContextV1(sound_available=True, sound_age_seconds=1.0, sound_dbfs=-16.0))
+    gate = situation_mod._cached_percept_outlived_gate
+    assert gate(brief, 2.0, cfg) is False
+    assert gate(brief, cfg.ambient_audio_stale_after_sec + 1.0, cfg) is True
+    assert gate(_brief(CabinetContextV1()), 1000.0, cfg) is False
 
 
 @pytest.mark.parametrize("status,age", [("error", 0), ("ok", 60)])
@@ -155,8 +192,8 @@ def test_sound_line_states_level_band_and_scale() -> None:
     )), 7200).compact_text
     assert "Your cabinet's sound (mic" in text
     assert "-10 dBFS, louder than usual (last 24h ranged -17 to -11, median -13; last 10 min -11)" in text
-    assert "not calibrated loudness" in text
-    assert "quiet room reads around -50 dBFS" in text
+    assert "not calibrated" in text and "own range" in text
+    assert "-50" not in text  # no unverified absolute anchors
     assert "Your cabinet sensors" not in text  # Nano unavailable, still no Nano line
 
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import math
 import os
 import threading
@@ -74,6 +75,8 @@ from orion.schemas.situation import (
 
 
 _LOCK = threading.Lock()
+logger = logging.getLogger(__name__)
+
 _SITUATION_CACHE: dict[str, tuple[datetime, SituationBriefV1, SituationPromptFragmentV1]] = {}
 _WEATHER_CACHE: dict[str, tuple[datetime, EnvironmentContextV1]] = {}
 _RUNTIME_CACHE: dict[str, tuple[datetime, RuntimeContextV1]] = {}
@@ -773,12 +776,25 @@ def _cached_percept_outlived_gate(brief: Any, cached_age: float, cfg: SituationS
     at build time kept rendering "seen 15 min ago" for another 300 s of cache
     hits, the exact stale-scene-as-current failure the gate exists to stop.
     A miss here just rebuilds, which re-applies the gate fresh.
+
+    Same rule for the cabinet mic (review finding, 2026-10-09): its 5 s
+    staleness gate is meaningless if a 300 s brief cache replays "heard just
+    now" -- fans can spin up between turns.
     """
     try:
         perception = brief.perception
-        if not perception.available or perception.observation_age_seconds is None:
-            return False
-        return perception.observation_age_seconds + cached_age > cfg.perception_max_age_seconds
+        if (
+            perception.available
+            and perception.observation_age_seconds is not None
+            and perception.observation_age_seconds + cached_age > cfg.perception_max_age_seconds
+        ):
+            return True
+        cabinet = brief.cabinet
+        return bool(
+            cabinet.sound_available
+            and cabinet.sound_age_seconds is not None
+            and cabinet.sound_age_seconds + cached_age > cfg.ambient_audio_stale_after_sec
+        )
     except Exception:  # noqa: BLE001 -- a malformed cache entry is just a miss
         return True
 
@@ -1369,6 +1385,7 @@ def _cabinet_sound_fields(cfg: SituationSettings) -> dict[str, Any]:
     history = fetch_cabinet_sound_history(node=cfg.ambient_audio_history_node)
     if history is None:
         return fields
+    level = history.recent_median_rms if history.recent_median_rms is not None else rms
     fields.update(
         sound_usual_low_dbfs=round(pcm16_to_dbfs(history.p10_rms), 1),
         sound_usual_dbfs=round(pcm16_to_dbfs(history.median_rms), 1),
@@ -1378,10 +1395,11 @@ def _cabinet_sound_fields(cfg: SituationSettings) -> dict[str, Any]:
             if history.recent_median_rms is not None
             else None
         ),
-        # Compared in raw RMS, not rounded dBFS, so a reading exactly on a
-        # band edge isn't flipped by rounding.
+        # Judged on the last-10-min median when there is one (review finding,
+        # 2026-10-09): a single 0.5 s window flips on one clank or word.
+        # Compared in raw RMS so rounding can't flip a reading on a band edge.
         sound_vs_usual=(
-            "quieter" if rms < history.p10_rms else "louder" if rms > history.p90_rms else "usual"
+            "quieter" if level < history.p10_rms else "louder" if level > history.p90_rms else "usual"
         ),
     )
     return fields
@@ -1391,7 +1409,11 @@ def _fetch_cabinet_context(cfg: SituationSettings) -> CabinetContextV1:
     """Nano sensor read plus the cabinet mic. The two sources are
     independent: a stale Nano frame does not hide a fresh mic reading."""
     ctx = _fetch_cabinet_sensor_context(cfg)
-    sound = _cabinet_sound_fields(cfg)
+    try:
+        sound = _cabinet_sound_fields(cfg)
+    except Exception as exc:  # noqa: BLE001 -- a mic/DB fault must not take the Nano read with it
+        logger.warning("situation_cabinet_sound_failed err=%s", exc)
+        sound = {}
     return ctx.model_copy(update=sound) if sound else ctx
 
 
@@ -1481,6 +1503,14 @@ def _fetch_cabinet_sensor_context(cfg: SituationSettings) -> CabinetContextV1:
     )
 
 
+def _record_cabinet_sound_status(ctx: CabinetContextV1, diagnostics: SituationDiagnosticsV1) -> None:
+    diagnostics.provider_status["cabinet_sound"] = (
+        "ok" if ctx.sound_usual_dbfs is not None
+        else "no_history" if ctx.sound_available
+        else "unavailable"
+    )
+
+
 async def _build_cabinet_context(
     cfg: SituationSettings, diagnostics: SituationDiagnosticsV1
 ) -> CabinetContextV1:
@@ -1496,10 +1526,14 @@ async def _build_cabinet_context(
         diagnostics.provider_status["cabinet"] = "disabled"
         return CabinetContextV1(available=False, source="disabled")
 
-    cache_key = f"{cfg.cabinet_sensors_path}:{cfg.cabinet_sensors_b_path}:{cfg.ambient_audio_path}"
+    cache_key = (
+        f"{cfg.cabinet_sensors_path}:{cfg.cabinet_sensors_b_path}:"
+        f"{cfg.ambient_audio_path}:{cfg.ambient_audio_history_node}"
+    )
     with _LOCK:
         cached = _CABINET_CACHE.get(cache_key)
         if cached and (datetime.now(timezone.utc) - cached[0]).total_seconds() < cfg.cabinet_ttl_seconds:
+            _record_cabinet_sound_status(cached[1], diagnostics)
             return cached[1]
     try:
         ctx = await asyncio.to_thread(_fetch_cabinet_context, cfg)
@@ -1510,11 +1544,7 @@ async def _build_cabinet_context(
     with _LOCK:
         _CABINET_CACHE[cache_key] = (datetime.now(timezone.utc), ctx)
     diagnostics.provider_status["cabinet"] = "ok" if ctx.available else ctx.source
-    diagnostics.provider_status["cabinet_sound"] = (
-        "ok" if ctx.sound_usual_dbfs is not None
-        else "no_history" if ctx.sound_available
-        else "unavailable"
-    )
+    _record_cabinet_sound_status(ctx, diagnostics)
     return ctx
 
 
@@ -2397,9 +2427,10 @@ def _build_prompt_fragment(brief: SituationBriefV1, max_chars: int) -> Situation
             lines.append(f"Your cabinet sensors (read {seen}): " + ", ".join(parts) + ".")
     # Cabinet mic, independent of the Nano frame above. Omitted (not a
     # placeholder) when there is no fresh reading, same reasoning as the
-    # sensors. The scale sentence is there because a bare number let Orion
-    # call a fan-roaring cabinet "quiet as a basement" (2026-10-09): dBFS
-    # means nothing without knowing where silence and speech sit.
+    # sensors. No absolute "quiet room / speech" anchors (review finding,
+    # 2026-10-09): the mic's gain is uncalibrated, so generic dBFS reference
+    # points would be stated as fact without evidence. The 24 h band is the
+    # honest comparison until a reference is measured on this mic.
     if brief.cabinet.sound_available and brief.cabinet.sound_dbfs is not None:
         cab = brief.cabinet
         heard = _recency_phrase(cab.sound_age_seconds)
@@ -2414,9 +2445,8 @@ def _build_prompt_fragment(brief: SituationBriefV1, max_chars: int) -> Situation
                 sound_line += f"; last 10 min {cab.sound_recent_dbfs:.0f}"
             sound_line += ")"
         sound_line += (
-            ". dBFS is level relative to the mic's maximum (0 = maximum), not calibrated loudness."
-            " For scale, on a typical USB mic a quiet room reads around -50 dBFS or lower"
-            " and nearby speech around -30 to -20."
+            ". dBFS is level relative to the mic's maximum (0 = maximum); the mic is not"
+            " calibrated, so judge it against your cabinet's own range, not as absolute loudness."
         )
         lines.append(sound_line)
     if brief.perception.available and brief.perception.scene_summary:

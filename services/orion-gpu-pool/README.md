@@ -191,6 +191,18 @@ Spec: `docs/superpowers/specs/2026-09-25-gpu-pool-stage4-durable-runs-and-actuat
   whose run holds the only slot would otherwise queue behind itself forever.
 - **Gaps are shared** (Juniper, 2026-09-25): while no call of the run is in flight, a lease of
   **strictly higher** priority may use the slot. Equal/lower priority and other holds may not.
+- **Holds per role** (stage 7.3, `docs/superpowers/specs/2026-09-30-gpu-pool-stage7-concurrency.md`):
+  `roles.<r>.max_holds` (default 1) non-urgent holds at once, one slot each. The scheduler clamps it
+  to the slots discovery reads from `/props`, and `reserve_one_off_slots` (default 0) keeps that many
+  slots for one-off calls (never the first hold). `GET /health` → `holds` shows configured, slots,
+  the limit in force and why it is lower; a clamp is also logged once (`gpu_pool_max_holds_clamped`).
+  Live: `agent-gpu2: max_holds: 2` (Bonsai, 2 × 131072). Rollback: delete that line.
+- **Gap pinning** (7.3): a one-off call in a gap is charged to ONE idle hold, rebuilt every tick
+  (an idle run with no call waiting first, then the most recently granted). Only that run waits
+  one call; another idle run's next call gets its own slot at once. With two runs on two slots,
+  one-off calls have no free slot: they wait for a run's gap (the shortest of the running calls).
+- **Two holds on a swap seat**: an owner reclaim or `max_hold_sec` drain recalls both holds in the
+  same tick (two take-backs, each with the 600 s grace); the seat unloads once both have left.
 - **Recall**: a hold borrowing another class's role is recalled as soon as that owner has demand
   there; a swap seat with `max_hold_sec` (agent-gpu2: 9000 s, ~2.5 h since stage 5.1) drains after being loaded that long.
   A recalled hold gets `hold_clawback_grace_sec` (600 s) to finish its current node, then is
@@ -230,7 +242,7 @@ durable-runs replays the interrupted node when it is granted again.
   recall before the abort and cancels the call about a second after it.
 - Urgent only pauses holds on roles its own class may use, and only urgent leases the cap has room
   for are owed a pause or count as a waiting owner.
-- Urgent holds may stack past "one hold per role" (bounded by slots and the cap below).
+- Urgent holds may stack past a role's `max_holds` (bounded by slots and the cap below).
 - `queued` and `recall` replies carry `reason`, so a caller can tell a pause from any other recall.
 
 Defaults (`config/gpu_pool.yaml`):

@@ -19,6 +19,9 @@ Fails on:
     actuator could never move it), a literal device_ids pin, an LLM_PROFILE_NAME that does not
     interpolate launch.profile_var, a launch.profiles entry missing from config/llm_profiles.yaml,
     and a serialize_with naming an unknown role or one sharing no card
+  - stage 7.3 (docs/superpowers/specs/2026-09-30-gpu-pool-stage7-concurrency.md): a role whose
+    max_holds exceeds the n_parallel of the profile the pool loads on it (launch.profiles[0]), or
+    whose reserve_one_off_slots makes its max_holds unreachable
 
 Exit 0 = clean. Model-dependent VRAM for LLM roles is checked live by the pool against the
 discovered profile, not here: the YAML deliberately carries no model names.
@@ -32,7 +35,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from orion.gpu_pool.config import check_launch, check_vram, load_pool_config  # noqa: E402
+from orion.gpu_pool.config import check_launch, check_max_holds, check_vram, load_pool_config  # noqa: E402
+from orion.gpu_pool.discovery import load_profiles  # noqa: E402
 
 COMPOSE = [
     ROOT / "services/orion-llamacpp-host/docker-compose.atlas-workers.yml",
@@ -80,6 +84,7 @@ def main() -> int:
     services = {r: s.vram_gb for r, s in cfg.roles.items() if s.kind == "service" and s.vram_gb}
     problems += check_vram(cfg, services)
     problems += check_launch(cfg, ROOT)
+    problems += check_max_holds(cfg, load_profiles(ROOT / "config/llm_profiles.yaml"))
 
     for p in problems:
         print(f"check_gpu_pool_config: {p}")

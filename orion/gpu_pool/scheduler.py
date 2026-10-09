@@ -16,11 +16,17 @@ Rules implemented (numbers match docs/superpowers/specs/2026-09-24-gpu-pool-desi
   10 on_unavailable: wait / backlog / fail
 
 Stage 4.3 (docs/superpowers/specs/2026-09-25-gpu-pool-stage4-durable-runs-and-actuation.md):
-  H1 a hold (kind="hold") is placed like any lease, at most one per role, and reserves one slot
+  H1 a hold (kind="hold") is placed like any lease and reserves one slot; a role takes at most
+     ``hold_cap`` non-urgent holds at once (stage 7.3: roles.<r>.max_holds, default 1, clamped to the
+     discovered slots, less roles.<r>.reserve_one_off_slots but never below one hold)
   H2 a child (hold_lease_id set) runs in its hold's slot: only on the hold's role, ahead of the
      role's queue, never behind its own run, never taking a second slot for the pair
   H3 interleave: while a hold has no child in flight, a lease of STRICTLY higher priority may use
-     that slot (gaps are shared, Juniper 2026-09-25); equal/lower priority and other holds may not
+     that slot (gaps are shared, Juniper 2026-09-25); equal/lower priority and other holds may not.
+     Stage 7.3 gap pinning: a call using a gap is charged to ONE idle hold (rebuilt every tick from
+     the active leases, ``_Ctx.charged``): an idle hold whose run has no call waiting first, then the
+     most recently granted. Only the charged run waits for it; another idle run's next call gets its
+     own slot at once. Without this one interloper on a 2-hold role stalled both runs
   H4 hold recall uses defaults.hold_clawback_grace_sec; a swap seat with max_hold_sec drains once
      it has been loaded that long, then unloads (today's DURABLE_RUNS_ELASTIC_MAX_BORROW_SEC)
   S1 a seat load is blocked -- reported as SwapBlocked, never silent -- by min residency after an
@@ -238,6 +244,26 @@ def _one_shot(cfg: PoolConfig, lease: LeaseView) -> bool:
     return not (cfg.classes[lease.work_class].on_unavailable == "backlog" and lease.retryable)
 
 
+def hold_cap(cfg: PoolConfig, role: str, live: RoleLive | None) -> tuple[int, str | None]:
+    """H1 (stage 7.3): how many non-urgent holds ``role`` may carry now, and why it is below the
+    configured ``max_holds`` (None when it is not). Bounded by the DISCOVERED slots: a profile that
+    comes up with fewer slots than the YAML expects never gets more holds than it can run. A
+    ``reserve_one_off_slots`` reserve is taken from the slots beyond the first hold only, so a 1-slot
+    role always runs one. A role with no live slots takes no hold (it is not usable anyway)."""
+    spec = cfg.roles[role]
+    slots = live.slots if live is not None else 0
+    if slots <= 0:
+        return 0, "no_slots"
+    cap, reason = spec.max_holds, None
+    if slots < cap:
+        cap, reason = slots, f"max_holds {spec.max_holds} > discovered slots {slots}"
+    if spec.reserve_one_off_slots:
+        room = max(1, slots - spec.reserve_one_off_slots)
+        if room < cap:
+            cap, reason = room, f"reserve_one_off_slots {spec.reserve_one_off_slots} of {slots} slots"
+    return cap, reason
+
+
 @dataclass
 class _Ctx:
     cfg: PoolConfig
@@ -245,10 +271,30 @@ class _Ctx:
     cards: dict[str, CardLive]
     now: datetime
     used: dict[str, int]                  # active requests + children, per role
-    holds: dict[str, list[LeaseView]]     # active holds, per role (at most one each)
+    holds: dict[str, list[LeaseView]]     # active holds, per role (hold_cap non-urgent, + urgent)
     busy_holds: set[str]                  # holds with a child in flight (the child sits in `used`)
     draining: set[str]
     operator_granted: set[str]
+    # Stage 7.3 gap pinning: holds whose run has a call waiting this tick (charged last).
+    wanting: set[str] = field(default_factory=set)
+
+    def charged(self, role: str) -> set[str]:
+        """H3 gap pinning: the idle holds on ``role`` whose gap a one-off call is using right now.
+
+        Rebuilt from active leases on every call, never stored: the slot count says how many idle
+        holds are lent out (occupancy beyond the slots), not which -- so each lent gap is charged to
+        the idle hold that loses least: one whose run has no call waiting, then the most recently
+        granted (the urgent pause's victim order). One borrow charges one hold, so it stalls at most
+        one run. At one slot and one hold this is exactly the old rule."""
+        live = self.roles.get(role)
+        slots = live.slots if live else 0
+        idle = [h for h in self.holds.get(role, []) if h.lease_id not in self.busy_holds]
+        lent = self.used.get(role, 0) + len(idle) - slots
+        if lent <= 0 or not idle:
+            return set()
+        idle.sort(key=lambda h: (h.lease_id in self.wanting,
+                                 -(h.granted_at or h.created_at).timestamp(), h.lease_id))
+        return {h.lease_id for h in idle[:lent]}
 
     def loaded(self, role: str) -> bool:
         spec = self.cfg.roles[role]
@@ -284,7 +330,10 @@ class _Ctx:
                     and not self.swap_blocked(role))
 
     def idle_holds(self, role: str) -> list[LeaseView]:
-        return [h for h in self.holds.get(role, []) if h.lease_id not in self.busy_holds]
+        """Holds whose slot is empty right now: no child in flight and no one-off in their gap."""
+        charged = self.charged(role)
+        return [h for h in self.holds.get(role, [])
+                if h.lease_id not in self.busy_holds and h.lease_id not in charged]
 
     def occupancy(self, role: str) -> int:
         """Slots taken, counting a hold with no child in flight as holding its one slot."""
@@ -292,8 +341,9 @@ class _Ctx:
 
     def free_for(self, lease: LeaseView, role: str) -> int:
         """H1-H3: free slots on ``role`` as ``lease`` sees them."""
-        if lease.kind == "hold" and self.holds.get(role) and lease.priority != URGENT:
-            return 0  # at most one hold per role (U3: urgent holds stack, bounded by slots)
+        if lease.kind == "hold" and lease.priority != URGENT \
+                and len(self.holds.get(role, [])) >= hold_cap(self.cfg, role, self.roles.get(role))[0]:
+            return 0  # H1: the role's hold limit (U3: urgent holds stack, bounded by slots)
         live = self.roles.get(role)
         n = (live.slots if live else 0) - self.used.get(role, 0)
         rank = self.cfg.priority_rank
@@ -476,6 +526,8 @@ def schedule(
             out.append(Abort(lease.lease_id, PREEMPT) if lease.reason == PREEMPT else Abort(lease.lease_id))
         elif lease.status in ACTIVE and lease.expires_at is not None and lease.expires_at <= now:
             out.append(Expire(lease.lease_id))
+
+    ctx.wanting = {c.hold_lease_id for c in children}
 
     # --- 2. what is draining this tick (no new grants there) -------------------------
     swap_roles = [r for r, spec in cfg.roles.items() if spec.swap is not None]

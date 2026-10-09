@@ -173,6 +173,15 @@ class RoleSpec(BaseModel):
     launch: LaunchSpec | None = None
     operator_only: bool = False
     max_hold_sec: float | None = Field(None, gt=0)
+    # Stage 7.3 (docs/superpowers/specs/2026-09-30-gpu-pool-stage7-concurrency.md): how many
+    # non-urgent durable-run holds this role may carry at once (each holds one slot; a run never holds
+    # two). 1 = the old "one hold per role" rule. The scheduler clamps it to the discovered slots and
+    # says so (scheduler.hold_cap; the pool's /health ``holds`` block and a warning log line).
+    max_holds: int = Field(1, ge=1)
+    # Slots kept for one-off calls (no hold): a hold is granted only while holds < slots - this. It never
+    # takes away the role's first hold (a 1-slot role still runs one run). 0 = holds may fill every slot
+    # up to max_holds and one-off calls share the runs' gaps (rule H3).
+    reserve_one_off_slots: int = Field(0, ge=0)
     # Stage 5: roles that must never compute at the same time as this one (same card). Symmetric:
     # the scheduler places nothing on R while a lease is active on a role R lists or that lists R.
     serialize_with: list[str] = Field(default_factory=list)
@@ -186,6 +195,12 @@ class RoleSpec(BaseModel):
     def _service_shape(self):
         if self.kind == "service" and (self.slots is None or self.vram_gb is None):
             raise ValueError("service roles must declare slots and vram_gb (no profile to discover)")
+        # A service declares its slots, so an impossible hold limit is refused here. An llm role's
+        # slots are discovered: the scheduler clamps to them at run time (scheduler.hold_cap).
+        if self.slots is not None and self.max_holds > self.slots:
+            raise ValueError(f"max_holds {self.max_holds} > slots {self.slots}")
+        if self.slots is not None and self.reserve_one_off_slots >= self.slots and self.reserve_one_off_slots:
+            raise ValueError(f"reserve_one_off_slots {self.reserve_one_off_slots} leaves no slot of {self.slots}")
         return self
 
 
@@ -560,6 +575,28 @@ def _known_profiles(root: Path) -> set[str] | None:
         return None
     data = yaml.safe_load(path.read_text()) or {}
     return set((data.get("profiles") or {}).keys())
+
+
+def check_max_holds(cfg: PoolConfig, profiles: dict[str, dict[str, Any]]) -> list[str]:
+    """Stage 7.3: a role whose pool-loaded profile is known (``launch.profiles[0]``, the one every load
+    sends) must have at least ``max_holds`` llama.cpp slots (``llamacpp.n_parallel``). Roles the pool
+    does not load (gpu1's agent) are checked live instead: the scheduler clamps to discovered slots."""
+    problems: list[str] = []
+    for name, role in cfg.roles.items():
+        if role.kind != "llm" or role.max_holds <= 1 or role.launch is None or not role.launch.profiles:
+            continue
+        first = role.launch.profiles[0]
+        prof = profiles.get(first)
+        if prof is None:
+            continue   # check_launch reports an unknown profile
+        n_parallel = int((prof.get("llamacpp") or {}).get("n_parallel") or 1)
+        if role.max_holds > n_parallel:
+            problems.append(f"role {name}: max_holds {role.max_holds} > n_parallel {n_parallel} of its "
+                            f"loaded profile {first} (set max_holds back to {n_parallel} with the profile)")
+        if role.reserve_one_off_slots and role.max_holds > max(1, n_parallel - role.reserve_one_off_slots):
+            problems.append(f"role {name}: max_holds {role.max_holds} can never be reached: "
+                            f"reserve_one_off_slots {role.reserve_one_off_slots} of {n_parallel} slots")
+    return problems
 
 
 def check_launch(cfg: PoolConfig, root: str | Path) -> list[str]:

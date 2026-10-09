@@ -12,6 +12,9 @@ parsing/skip logic deterministically in CI.
 from __future__ import annotations
 
 import asyncio
+import http.server
+import json
+import threading
 from typing import Any, Dict, Optional
 from unittest.mock import MagicMock
 
@@ -211,10 +214,74 @@ def test_fetch_ilo_snapshot_retries_slashless_when_bmc_404s_trailing_slash(
             return _FakeResponse(
                 {"Temperatures": [{"Name": "CPU", "ReadingCelsius": 41, "Status": {"State": "Enabled"}}]}
             )
-        return _FakeResponse({}, ok=False, status=500)  # Power: BMC-side psu failure, non-fatal
+        return _FakeResponse({}, ok=False, status=500)  # Power fails alone: non-fatal
 
     monkeypatch.setattr("requests.Session.get", fake_get, raising=True)
     snap = fetch_ilo_snapshot("https://bmc", "u", "p")
     assert snap.error is None
     assert snap.thermal_c == {"CPU": 41.0}
     assert snap.power_watts is None
+
+
+class _HecateLikeBmc(http.server.BaseHTTPRequestHandler):
+    """Mimics hecate's Inspur/AMI BMC as seen live 2026-10-09: 404 on trailing slash, sets
+    QSESSIONID on a 200, and 401s any request that replays that cookie."""
+
+    BODIES = {
+        "/redfish/v1/Chassis": {"Members": [{"@odata.id": "/redfish/v1/Chassis/1"}]},
+        "/redfish/v1/Chassis/1/Thermal": {
+            "Temperatures": [{"Name": "Inlet_Temp", "ReadingCelsius": 34, "Status": {"State": "Enabled"}}]
+        },
+        "/redfish/v1/Chassis/1/Power": {"PowerControl": {"PowerConsumedWatts": 400}},
+    }
+
+    def do_GET(self) -> None:  # noqa: N802
+        body = self.BODIES.get(self.path)
+        if body is None:
+            status, body, cookie = 404, {"error": "Invalid API Call"}, False
+        elif "QSESSIONID" in (self.headers.get("Cookie") or ""):
+            status, body, cookie = 401, {"error": "Invalid Authentication"}, False
+        else:
+            status, cookie = 200, True
+        raw = json.dumps(body).encode()
+        self.send_response(status)
+        if cookie:
+            self.send_header("Set-Cookie", "QSESSIONID=abc; path=/")
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(raw)))
+        self.end_headers()
+        self.wfile.write(raw)
+
+    def log_message(self, *args: Any) -> None:
+        pass
+
+
+def test_fetch_ilo_snapshot_does_not_replay_bmc_session_cookie() -> None:
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _HecateLikeBmc)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        snap = fetch_ilo_snapshot(f"http://127.0.0.1:{server.server_port}", "u", "p", timeout_sec=2)
+    finally:
+        server.shutdown()
+        server.server_close()
+    assert snap.error is None
+    assert snap.thermal_c == {"Inlet_Temp": 34.0}
+    assert snap.power_watts == 400.0  # PowerControl as a bare object, not the DMTF array
+
+
+def test_fetch_ilo_snapshot_reports_error_when_every_sensor_read_is_refused(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Both Thermal and Power refused must surface as an error, not as "no reading yet"."""
+    _fake_session(
+        monkeypatch,
+        {
+            "/Chassis/": _FakeResponse({"Members": [{"@odata.id": "/redfish/v1/Chassis/1"}]}),
+            "/Thermal/": _FakeResponse({}, ok=False, status=401),
+            "/Thermal": _FakeResponse({}, ok=False, status=401),
+            "/Power/": _FakeResponse({}, ok=False, status=401),
+            "/Power": _FakeResponse({}, ok=False, status=401),
+        },
+    )
+    snap = fetch_ilo_snapshot("https://bmc", "u", "p")
+    assert snap.error == "thermal_http_401,power_http_401"

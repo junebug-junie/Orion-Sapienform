@@ -7,7 +7,8 @@ Design: docs/superpowers/specs/2026-09-28-orion-introspect-mcp-design.md.
 """
 from __future__ import annotations
 
-from datetime import datetime
+import json
+from datetime import datetime, timedelta, timezone
 from typing import Any, Literal
 from uuid import UUID
 
@@ -28,8 +29,19 @@ FULL_TEXT_CAP = 4000
 THEME_CAP = 8
 DREAM_ID_PATTERN = r"^(dream:[0-9]{1,12}|dh-[0-9a-f]{6,32})$"
 
-IntrospectBusOperation = Literal["dreams"]
-IntrospectOperation = Literal["reading_result", "dreams"]
+# One curiosity run by id returns its write-up up to this many characters AS
+# SERIALIZED JSON (`clip_json_text`), so quote/newline escaping cannot push a
+# full item past the 12k MCP budget. Same shape as
+# `orion.curiosity.atlas._RUN_ID_RE`; a test pins the two equal.
+CURIOSITY_FULL_JSON_BUDGET = 9000
+# The run join reads at most this far back (orion-hub curiosity_run_store
+# WINDOW_DAYS_MAX, pinned equal by a Hub test); an older `since` is refused
+# rather than silently answered from a shorter window.
+CURIOSITY_WINDOW_DAYS = 90
+CURIOSITY_RUN_ID_PATTERN = r"^[A-Za-z0-9_.:-]{1,64}$"
+
+IntrospectBusOperation = Literal["dreams", "curiosity"]
+IntrospectOperation = Literal["reading_result", "dreams", "curiosity"]
 
 
 def clip_text(text: str | None, cap: int = DEFAULT_TEXT_CAP) -> tuple[str, bool]:
@@ -37,6 +49,30 @@ def clip_text(text: str | None, cap: int = DEFAULT_TEXT_CAP) -> tuple[str, bool]
     if len(body) <= cap:
         return body, False
     return body[:cap], True
+
+
+def _json_len(text: str) -> int:
+    return len(json.dumps(text, ensure_ascii=False))
+
+
+def clip_json_text(text: str | None, budget: int) -> tuple[str, bool]:
+    """Longest prefix of ``text`` whose JSON string encoding fits ``budget``.
+
+    ``clip_text`` counts characters; a write-up full of quotes, backslashes
+    and newlines can nearly double when serialized, which is what the MCP
+    budget actually measures.
+    """
+    body = (text or "").strip()
+    if _json_len(body) <= budget:
+        return body, False
+    lo, hi = 0, len(body)
+    while lo < hi:  # largest n with _json_len(body[:n]) <= budget
+        mid = (lo + hi + 1) // 2
+        if _json_len(body[:mid]) <= budget:
+            lo = mid
+        else:
+            hi = mid - 1
+    return body[:lo], True
 
 
 def _require_tz(value: datetime | None, field: str) -> None:
@@ -163,4 +199,43 @@ class DreamsArguments(BaseModel):
             self.query is not None or self.kind is not None or self.since is not None
         ):
             raise ValueError("dream_id fetches one dream; it cannot be combined with query, kind or since")
+        return self
+
+
+class CuriosityArguments(BaseModel):
+    """Model-supplied arguments for the ``curiosity`` tool."""
+
+    model_config = ConfigDict(extra="forbid")
+    query: str | None = Field(default=None, min_length=1, max_length=QUERY_CAP)
+    run_id: str | None = Field(default=None, pattern=CURIOSITY_RUN_ID_PATTERN)
+    kind: Literal["run", "self_question"] = "run"
+    line: Literal["investigate", "self_inquiry", "self_sense_eval"] | None = None
+    limit: int = Field(default=DEFAULT_LIMIT, ge=1, le=MAX_ITEMS)
+    since: datetime | None = None
+
+    @field_validator("query", mode="before")
+    @classmethod
+    def _strip_query(cls, value: Any) -> Any:
+        return normalize_query(value)
+
+    @model_validator(mode="after")
+    def _selectors(self):
+        _require_tz(self.since, "since")
+        if self.run_id is not None and (
+            self.query is not None or self.since is not None or self.line is not None
+            or self.kind != "run"
+        ):
+            raise ValueError("run_id fetches one run; it cannot be combined with query, since, line or kind")
+        if (
+            self.kind == "run" and self.since is not None
+            and self.since < datetime.now(timezone.utc) - timedelta(days=CURIOSITY_WINDOW_DAYS)
+        ):
+            raise ValueError(
+                f"since must be within the last {CURIOSITY_WINDOW_DAYS} days: curiosity runs are "
+                f"only readable {CURIOSITY_WINDOW_DAYS} days back"
+            )
+        if self.kind == "self_question" and (
+            self.query is not None or self.run_id is not None or self.line is not None
+        ):
+            raise ValueError("kind=self_question lists open self-questions; it takes only limit and since")
         return self

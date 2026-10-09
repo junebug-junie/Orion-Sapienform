@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import dataclass
+from datetime import datetime, timedelta
 from typing import Any, Sequence
 from uuid import uuid4
 
@@ -21,6 +22,10 @@ from orion.schemas.vector.schemas import EmbeddingGenerateV1, EmbeddingResultV1,
 UPSERT_CHANNEL = "orion:vector:semantic:upsert"
 UPSERT_KIND = "vector.upsert.v1"
 HTTP_TIMEOUT_SEC = 5.0
+# Subtracted from a confirming pass's start. A record's created_at is stamped
+# by its producer, possibly before the row is visible to the index loop's read,
+# so a record stamped just before a pass may not have been in that pass.
+INDEX_LAG_MARGIN = timedelta(minutes=10)
 
 
 class SearchUnavailableError(RuntimeError):
@@ -45,6 +50,20 @@ class SearchConfig:
 class IndexPass:
     indexed: int
     pending: int
+
+
+def confirmed_complete_as_of(result: "IndexPass", started: datetime) -> datetime | None:
+    """When a pass proves the index holds every record stamped before a time.
+
+    Only a pass that found nothing to upsert (indexed == 0) and nothing left
+    (pending == 0) proves it: stored hashes in Chroma matched every record. A
+    pass that published upserts proves nothing yet -- orion-vector-writer
+    stores them on its own schedule. The pass start is pulled back by
+    INDEX_LAG_MARGIN for producer-stamped clocks.
+    """
+    if result.indexed == 0 and result.pending == 0:
+        return started - INDEX_LAG_MARGIN
+    return None
 
 
 @dataclass(frozen=True)

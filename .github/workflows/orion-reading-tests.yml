@@ -11,6 +11,7 @@ on:
       - "orion/core/bus/**"
       - "orion/harness/**"
       - "orion/hub/**"
+      - "orion/curiosity/**"
       - "orion/cognition/prompts/stance_react.j2"
       - "orion/thought/**"
       - "orion/substrate/adapters/world_pulse_read.py"
@@ -54,6 +55,9 @@ jobs:
             services/orion-hub/tests/test_energy_routes.py \
             services/orion-hub/tests/test_energy_strip_panel.py \
             services/orion-hub/tests/test_curiosity_self_inquiry.py \
+            services/orion-hub/tests/test_curiosity_introspect.py \
+            services/orion-hub/tests/test_curiosity_introspect_listener.py \
+            services/orion-hub/tests/test_curiosity_routes_runs.py \
             services/orion-hub/tests/test_turn_orchestrator_ws_frames.py \
             orion/world_pulse_read/tests \
             orion/thought/tests \

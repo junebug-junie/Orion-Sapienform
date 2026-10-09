@@ -759,6 +759,27 @@ class Settings(BaseSettings):
     HUB_READING_SEARCH_INDEX_BATCH: int = Field(
         default=10, ge=1, le=50, alias="HUB_READING_SEARCH_INDEX_BATCH"
     )
+    # Search by meaning over curiosity run write-ups (orion-introspect
+    # `curiosity query=...`, scripts/curiosity_introspect_listener.py). Empty
+    # CHROMA or EMBED URL = search off; query calls then answer "unknown".
+    HUB_CURIOSITY_SEARCH_CHROMA_URL: str = Field(
+        default="http://127.0.0.1:8500", alias="HUB_CURIOSITY_SEARCH_CHROMA_URL"
+    )
+    HUB_CURIOSITY_SEARCH_EMBED_URL: str = Field(
+        default="http://127.0.0.1:8320/embedding", alias="HUB_CURIOSITY_SEARCH_EMBED_URL"
+    )
+    HUB_CURIOSITY_SEARCH_COLLECTION: str = Field(
+        default="orion_curiosity", alias="HUB_CURIOSITY_SEARCH_COLLECTION"
+    )
+    HUB_CURIOSITY_SEARCH_MIN_SIMILARITY: float = Field(
+        default=0.65, ge=0.0, le=1.0, alias="HUB_CURIOSITY_SEARCH_MIN_SIMILARITY"
+    )
+    HUB_CURIOSITY_SEARCH_INDEX_INTERVAL_SEC: float = Field(
+        default=300.0, gt=0, alias="HUB_CURIOSITY_SEARCH_INDEX_INTERVAL_SEC"
+    )
+    HUB_CURIOSITY_SEARCH_INDEX_BATCH: int = Field(
+        default=10, ge=1, le=50, alias="HUB_CURIOSITY_SEARCH_INDEX_BATCH"
+    )
     # Internal documents by absolute path (orion/world_pulse_read/documents.py).
     # Comma-separated roots Hub may read under; empty disables document reading.
     HUB_READING_DOCUMENT_ROOTS: str = Field(

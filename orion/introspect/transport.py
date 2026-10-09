@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 DREAM_REQUEST_CHANNEL = "orion:introspect:dream:request"
+CURIOSITY_REQUEST_CHANNEL = "orion:introspect:curiosity:request"
 RESULT_PREFIX = "orion:introspect:result:"
 REQUEST_KIND = "introspect.tool.request.v1"
 RESULT_KIND = "introspect.tool.result.v1"

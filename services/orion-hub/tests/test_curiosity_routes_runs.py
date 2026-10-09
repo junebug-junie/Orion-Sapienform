@@ -419,3 +419,75 @@ def test_the_budget_tiles_read_every_line_the_loop_keys(monkeypatch) -> None:
     assert any(k.startswith(ci._SENSE_EVAL_DAILY_COUNT_KEY_PREFIX) for k in keys)
     # Back-compat top-level fields describe the investigate line.
     assert out["runs_today"] == 2 and out["daily_cap"] == 3
+
+
+def test_runs_payload_drops_admission_runs_of_other_workflows() -> None:
+    """Live 2026-10-09: the 90-day strip held ~350 reading/reverie/compactor
+    runs labelled "World question" because only `self_study.reflect` was
+    dropped. Any admission row naming a non-curiosity workflow is not a run."""
+    t0 = NOW - timedelta(hours=6)
+
+    def _adm(run_id, workflow):
+        return {"run_id": run_id, "request": json.dumps({"workflow": workflow}), "created_at": t0,
+                "control": None, "terminal": "completed", "updated_at": NOW - timedelta(hours=5)}
+
+    pool = _Pool({
+        "FROM durable_admission_runs": [
+            _adm("cur", "curiosity.investigate"),
+            _adm("read1", "reading.turn"),
+            _adm("rev1", "reverie.visual"),
+        ],
+        "FROM durable_resource_events WHERE run_id = ANY($1::text[]) AND event = ANY($2::text[]) ORDER BY": [
+            {"entry_id": f"accepted:{rid}", "run_id": rid, "event": "run.accepted", "generated_at": t0, "payload": "{}"}
+            for rid in ("cur", "read1", "rev1")
+        ],
+        "GROUP BY run_id, event": [{"run_id": "rev1", "event": "run.checkpoint_resume_failed", "n": 2}],
+    })
+    payload = asyncio.run(store.read_runs_payload(pool=pool, reader=None, days=90, now=NOW))
+    assert [r["run_id"] for r in payload["runs"]] == ["cur"]
+    assert sum(payload["totals"].values()) == 1
+
+    one = asyncio.run(store.read_run_payload(pool=pool, reader=None, run_id="read1"))
+    assert one["found"] is False and one["available"] is True
+
+
+
+def test_self_sense_and_workflow_less_admission_rows_are_kept() -> None:
+    """The other-workflow drop must not take curiosity's own rows with it."""
+    t0 = NOW - timedelta(hours=6)
+
+    def _adm(run_id, request):
+        return {"run_id": run_id, "request": json.dumps(request), "created_at": t0,
+                "control": None, "terminal": "completed", "updated_at": NOW - timedelta(hours=5)}
+
+    pool = _Pool({
+        "FROM durable_admission_runs": [
+            _adm("sense", {"workflow": "self_sense_eval"}),
+            _adm("bare", {"brief": {"line": "investigate"}}),
+            _adm("rev", {"workflow": "reverie.visual"}),
+        ],
+    })
+    payload = asyncio.run(store.read_runs_payload(pool=pool, reader=None, days=90, now=NOW))
+    assert sorted(r["run_id"] for r in payload["runs"]) == ["bare", "sense"]
+    assert {r["run_id"]: r["line"] for r in payload["runs"]}["sense"] == "self_sense_eval"
+
+
+def test_the_introspect_window_matches_the_run_store_window() -> None:
+    from orion.schemas.introspect import CURIOSITY_WINDOW_DAYS
+
+    assert CURIOSITY_WINDOW_DAYS == store.WINDOW_DAYS_MAX
+
+
+
+def test_a_write_up_only_run_is_listed_when_the_graph_is_down() -> None:
+    """Pre-admission runs have no admission/lifecycle row; their journal is the only Postgres trace."""
+    pool = _Pool({
+        "JOURNAL_RUN_IDS": [{"run_id": "old"}],
+        "FROM journal_entries WHERE source_ref = ANY": [{"entry_id": "j", "source_ref": "curiosity:old",
+                                                         "title": "Curiosity", "body": "prose",
+                                                         "created_at": NOW - timedelta(days=30)}],
+    })
+    payload = asyncio.run(store.read_runs_payload(pool=pool, reader=_Reader(raises=True), days=90, now=NOW))
+    assert payload["available"] is True and [r["run_id"] for r in payload["runs"]] == ["old"]
+    call = next(c for c in pool.conn.calls if "JOURNAL_RUN_IDS" in c[0])
+    assert call[1] == (NOW - timedelta(days=90), NOW)

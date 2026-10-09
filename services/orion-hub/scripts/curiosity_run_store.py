@@ -56,6 +56,14 @@ LIFECYCLE_RUN_SQL = (
     f"SELECT {_LIFECYCLE_COLS} FROM substrate_durable_run_state "
     "WHERE run_id = $1 AND workflow = ANY($2::text[]) ORDER BY created_at ASC"
 )
+# Run discovery from the write-up alone. Runs from before the admission path
+# (2026-09-14) have no admission or bridge row; with the graph down their
+# journal is their only Postgres trace, and without this read they vanished
+# from the strip and from the introspect tool's recent window.
+JOURNAL_RUN_IDS_SQL = (
+    "SELECT /* JOURNAL_RUN_IDS */ DISTINCT substr(source_ref, 11) AS run_id FROM journal_entries "
+    "WHERE source_ref LIKE 'curiosity:%' AND created_at >= $1 AND created_at < $2"
+)
 JOURNALS_SQL = (
     "SELECT entry_id, source_ref, title, body, created_at FROM journal_entries "
     "WHERE source_ref = ANY($1::text[])"
@@ -241,17 +249,20 @@ async def _pg_primary(
     until: Optional[datetime] = None,
     until_is_now: bool = True,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
-    """(bridge lifecycle rows, self-sense rows, admission rows): the tables
-    that DEFINE which runs exist on the Postgres side."""
+    """(bridge lifecycle rows, self-sense rows, admission rows, journal run
+    ids): the tables that DEFINE which runs exist on the Postgres side. The
+    journal ids are read for a window only; one run by id finds its journal
+    in the secondary read."""
     if pool is None:
         stores.postgres = "no_pool"
-        return [], [], []
+        return [], [], [], []
     try:
         async with pool.acquire() as conn:
             if run_id is not None:
                 lifecycle = await conn.fetch(LIFECYCLE_RUN_SQL, run_id, list(CURIOSITY_WORKFLOWS))
                 sense = await conn.fetch(SELF_SENSE_RUN_SQL, run_id)
                 admission = await conn.fetch(ADMISSION_RUN_SQL, run_id)
+                journal_ids: Any = []
             else:
                 assert since is not None and until is not None
                 lifecycle = await conn.fetch(
@@ -260,12 +271,14 @@ async def _pg_primary(
                 sense = await conn.fetch(SELF_SENSE_WINDOW_SQL, since, until)
                 admission_sql = ADMISSION_WINDOW_LIVE_SQL if until_is_now else ADMISSION_WINDOW_SQL
                 admission = await conn.fetch(admission_sql, since, until)
+                journal_ids = await conn.fetch(JOURNAL_RUN_IDS_SQL, since, until)
         stores.postgres = "ok"
-        return _dicts(lifecycle), _dicts(sense), _dicts(admission)
+        ids = [str(r.get("run_id")) for r in _dicts(journal_ids) if valid_run_id(r.get("run_id"))]
+        return _dicts(lifecycle), _dicts(sense), _dicts(admission), ids
     except Exception as exc:  # noqa: BLE001 -- a dashboard never 500s
         logger.warning("curiosity_run_store_pg_primary_failed err=%s", exc)
         stores.postgres = f"{type(exc).__name__}: {str(exc)[:160]}"
-        return [], [], []
+        return [], [], [], []
 
 
 async def _pg_secondary(pool: Any, stores: _Stores, run_ids: list[str]) -> dict[str, list[dict[str, Any]]]:
@@ -369,7 +382,7 @@ async def read_runs_payload(
     until_ms = int(until_dt.timestamp() * 1000)
     stores = _Stores()
 
-    lifecycle, sense, admission = await _pg_primary(
+    lifecycle, sense, admission, journal_ids = await _pg_primary(
         pool, stores, run_id=None, since=since, until=until_dt, until_is_now=until_is_now
     )
     graph_ids = await _graph_ids(reader, stores, since_ms, until_ms)
@@ -377,6 +390,7 @@ async def read_runs_payload(
         {str(r["run_id"]) for r in lifecycle if r.get("run_id")}
         | {str(r["run_id"]) for r in admission if r.get("run_id")}
         | set(graph_ids)
+        | set(journal_ids)
     )
     graph_run_ids = [r for r in run_ids if valid_run_id(r)]
     nodes = await _graph_nodes(reader, stores, graph_run_ids)
@@ -427,7 +441,7 @@ async def read_run_payload(
     if rid is None:
         return {"available": True, "found": False, "reason": "bad_run_id"}
     stores = _Stores()
-    lifecycle, sense, admission = await _pg_primary(pool, stores, run_id=rid, since=None)
+    lifecycle, sense, admission, _ = await _pg_primary(pool, stores, run_id=rid, since=None)
     nodes = await _graph_nodes(reader, stores, [rid])
     secondary = await _pg_secondary(pool, stores, [rid])
     if not stores.any_ok:

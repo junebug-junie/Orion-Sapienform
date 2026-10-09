@@ -22,7 +22,12 @@ from app.introspect_dreams import by_ids, index_rows, one, recent
 from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import BaseEnvelope
 from orion.introspect.redact import safe_exception_detail
-from orion.introspect.semantic_index import HTTP_TIMEOUT_SEC, SearchConfig, SearchUnavailableError
+from orion.introspect.semantic_index import (
+    HTTP_TIMEOUT_SEC,
+    SearchConfig,
+    SearchUnavailableError,
+    confirmed_complete_as_of,
+)
 from orion.introspect.transport import DREAM_REQUEST_CHANNEL, REQUEST_KIND, RESULT_KIND, RESULT_PREFIX
 from orion.schemas.introspect import DreamsArguments, IntrospectRequestV1, IntrospectResultV1
 
@@ -47,12 +52,14 @@ class DreamIntrospectListener:
         self.source = source
         self.search = search
         self.bus_factory = bus_factory
+        self.client_factory: Callable[[], httpx.AsyncClient] = lambda: httpx.AsyncClient(timeout=HTTP_TIMEOUT_SEC)
         self.bus: Any = None
         self._ready = asyncio.Event()
         self.task: asyncio.Task | None = None
         self.index_task: asyncio.Task | None = None
-        # Start time of the last index pass that left nothing pending: every
-        # dream recorded before it is searchable. None until one succeeds.
+        # Every dream recorded before this is searchable: the start of the last
+        # index pass whose stored hashes matched everything, minus the lag
+        # margin (semantic_index.confirmed_complete_as_of). None until then.
         self.index_complete_as_of: datetime | None = None
 
     def _read(self, fn: Callable[[Any], IntrospectResultV1]) -> Any:
@@ -78,7 +85,7 @@ class DreamIntrospectListener:
             elif args.query is not None:
                 if self.search is None or not self.search.enabled:
                     raise SearchUnavailableError("dream search is not configured")
-                async with httpx.AsyncClient(timeout=HTTP_TIMEOUT_SEC) as client:
+                async with self.client_factory() as client:
                     scored = await rank(client, self.search, args.query, kind=args.kind, since=args.since)
                 if not scored:
                     result = IntrospectResultV1(ok=True, operation="dreams", as_of=now, total_available=0)
@@ -127,10 +134,11 @@ class DreamIntrospectListener:
     async def index_once(self):
         started = datetime.now(timezone.utc)
         pairs = await asyncio.to_thread(self._read, index_rows)
-        async with httpx.AsyncClient(timeout=HTTP_TIMEOUT_SEC) as client:
+        async with self.client_factory() as client:
             result = await index_missing(pairs, self.search, client=client, bus=self.bus, source=self.source)
-        if result.pending == 0:
-            self.index_complete_as_of = started
+        confirmed = confirmed_complete_as_of(result, started)
+        if confirmed is not None:
+            self.index_complete_as_of = confirmed
         logger.info("dream_search_index indexed=%d pending=%d", result.indexed, result.pending)
         return result
 

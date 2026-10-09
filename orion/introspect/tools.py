@@ -8,8 +8,15 @@ from uuid import uuid4
 from pydantic import BaseModel
 
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
-from orion.introspect.transport import DREAM_REQUEST_CHANNEL, REQUEST_KIND, RESULT_KIND, RESULT_PREFIX
+from orion.introspect.transport import (
+    CURIOSITY_REQUEST_CHANNEL,
+    DREAM_REQUEST_CHANNEL,
+    REQUEST_KIND,
+    RESULT_KIND,
+    RESULT_PREFIX,
+)
 from orion.schemas.introspect import (
+    CuriosityArguments,
     DreamsArguments,
     IntrospectRequestV1,
     IntrospectResultV1,
@@ -50,6 +57,23 @@ DREAMS_DESCRIPTION = (
     "matched; a tool error means the answer is unknown, never that you did not dream."
 )
 
+CURIOSITY_DESCRIPTION = (
+    "Read back your own curiosity runs: the sittings where you chose something to look into "
+    "(line investigate = world question, self_inquiry = self question, self_sense_eval = "
+    "self-sense check). A run with a write-up comes back unsettled: what you concluded then, "
+    "not established fact; lists show its Answer section or opening, run_id=<id> returns the "
+    "write-up in full (up to ~9000 characters). A run that failed, was cancelled, or wrote "
+    "nothing comes back as a short record of what happened -- failures are part of your "
+    "history. extra carries status, error, hops, findings, revisions, the prior touched, "
+    "reach_out, and belief-move counts (n_tested, n_moved, n_formed) when they were recorded; "
+    "graph_read=false means the hop counts are unknown, not zero. Pass query=<topic in plain "
+    "words> to find runs by meaning (items carry similarity 0-1), run_id for one run, or "
+    "nothing for your most recent finished runs; line and since=<ISO timestamp with timezone, "
+    "within the last 90 days> narrow query or recent mode; limit up to 5. kind=self_question lists your open "
+    "self-questions instead. items=[] means nothing matched; a tool error means the answer is "
+    "unknown, never that no run happened."
+)
+
 
 @dataclass(frozen=True)
 class ToolSpec:
@@ -71,6 +95,7 @@ class IntrospectTools:
         return [
             ToolSpec("reading_results", READING_RESULTS_DESCRIPTION, ReadingResultArguments),
             ToolSpec("dreams", DREAMS_DESCRIPTION, DreamsArguments),
+            ToolSpec("curiosity", CURIOSITY_DESCRIPTION, CuriosityArguments),
         ]
 
     async def invoke(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
@@ -79,6 +104,13 @@ class IntrospectTools:
             dream_args = DreamsArguments.model_validate(arguments)
             result = await self._introspect_rpc(
                 DREAM_REQUEST_CHANNEL, "dreams", dream_args.model_dump(mode="json", exclude_none=True),
+            )
+            return result.model_dump(mode="json")
+        if name == "curiosity":
+            curiosity_args = CuriosityArguments.model_validate(arguments)
+            result = await self._introspect_rpc(
+                CURIOSITY_REQUEST_CHANNEL, "curiosity",
+                curiosity_args.model_dump(mode="json", exclude_none=True),
             )
             return result.model_dump(mode="json")
         if name != "reading_results":

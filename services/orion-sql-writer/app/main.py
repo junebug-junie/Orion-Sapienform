@@ -708,30 +708,6 @@ async def lifespan(app: FastAPI):
             conn.exec_driver_sql(
                 "CREATE INDEX IF NOT EXISTS idx_action_outcomes_correlation_id ON action_outcomes (correlation_id);"
             )
-            # goal_provenance_streak_ticks: debug-tier telemetry (2026-08-11) -- see
-            # services/orion-sql-writer/app/models/dominance_streak_tick.py's docstring and
-            # docs/superpowers/specs/2026-07-30-goal-system-remaining-gaps-design.md Part H.
-            # High-volume (~1 row per real field tick); bounded by
-            # goal_provenance_streak_ticks_retention_days (default 14, applied at boot below;
-            # previously matched the now-removed drive_audits_retention_days' pattern).
-            conn.exec_driver_sql(
-                """
-                CREATE TABLE IF NOT EXISTS goal_provenance_streak_ticks (
-                    tick_telemetry_id TEXT PRIMARY KEY,
-                    target_id TEXT NULL,
-                    streak_count INTEGER NOT NULL,
-                    min_streak_at_tick INTEGER NOT NULL,
-                    qualified BOOLEAN NOT NULL,
-                    source_field_tick_id TEXT NOT NULL,
-                    source_attention_frame_id TEXT NOT NULL,
-                    observed_at TIMESTAMPTZ NOT NULL,
-                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-                );
-                """
-            )
-            conn.exec_driver_sql(
-                "CREATE INDEX IF NOT EXISTS idx_goal_provenance_streak_ticks_observed_at ON goal_provenance_streak_ticks (observed_at DESC);"
-            )
             # drive_audits table (CREATE/ALTER/INDEX boot DDL) removed
             # 2026-08-13, same patch as the Hub Drives Analytics tab removal
             # (docs/superpowers/pr-reports/2026-08-13-remove-hub-drives-
@@ -943,23 +919,6 @@ async def lifespan(app: FastAPI):
     # fully untangled DriveAuditSQL's write path) -- the table and its boot
     # DDL are both gone, so a DELETE against it was dead weight even guarded
     # by the try/except. See settings.py for the matching field removal.
-
-    goal_provenance_streak_ticks_retention_days = int(
-        getattr(settings, "goal_provenance_streak_ticks_retention_days", 0) or 0
-    )
-    if goal_provenance_streak_ticks_retention_days > 0:
-        try:
-            with engine.begin() as conn:
-                conn.exec_driver_sql(
-                    "DELETE FROM goal_provenance_streak_ticks WHERE observed_at < (NOW() - (%s || ' days')::INTERVAL);",
-                    (str(goal_provenance_streak_ticks_retention_days),),
-                )
-            logger.info(
-                "🧹 Applied goal_provenance_streak_ticks retention window=%s days",
-                goal_provenance_streak_ticks_retention_days,
-            )
-        except Exception as exc:
-            logger.warning("goal_provenance_streak_ticks retention startup failed (continuing boot): %s", exc)
 
     # NO STARTUP RETENTION PASS. Deliberate, 2026-08-20 -- this used to be four synchronous
     # blocking blocks here (grammar_events, grammar_edges, grammar_atoms,

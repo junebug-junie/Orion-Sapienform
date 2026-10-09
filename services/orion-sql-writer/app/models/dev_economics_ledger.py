@@ -17,8 +17,7 @@ class DevEconomicsLedgerSQL(Base):
     cocreation-signals tab has real rows to read instead of an empty table.
 
     ``event_id`` (``DevEconomicsLedgerV1.event_id``) is the primary key so a
-    redelivered event upserts idempotently, same pattern as
-    ``DominanceStreakTickSQL.tick_telemetry_id``. Append-only, unconditional
+    redelivered event upserts idempotently. Append-only, unconditional
     (not gated on any threshold) -- same "complete history, not just notable
     moments" reasoning as ``substrate_codebase_delta_log``.
     """

@@ -104,7 +104,6 @@ DEFAULT_ROUTE_MAP: dict[str, str] = {
     "vision.event.v1": "VisionEventSQL",
     "vision.scene.inventory.v1": "VisionSceneInventorySQL",
     "action.outcome.emit.v1": "ActionOutcomeSQL",
-    "debug.attention.streak_tick.v1": "DominanceStreakTickSQL",
     "substrate.dev_economics_ledger.v1": "DevEconomicsLedgerSQL",
     "substrate.doc_semantic_drift.v1": "DocSemanticDriftSQL",
     "juniper.affective_state.v1": "JuniperAffectiveStateSQL",
@@ -231,7 +230,6 @@ class Settings(BaseSettings):
             "orion:chat:history:spark_meta:patch",
             "orion:autonomy:action:outcome",
             "orion:causal_geometry:snapshot",
-            "orion:debug:attention:streak_tick",
             "orion:substrate:dev_economics_ledger",
             "orion:substrate:doc_semantic_drift","orion:substrate:juniper_affective_state",
             "orion:affectgpt:assessment",
@@ -300,21 +298,6 @@ class Settings(BaseSettings):
     # day, so there is nothing left to prune. See docs/superpowers/pr-reports/
     # 2026-08-13-untangle-drive-audit-sql-writer-pr.md.
 
-    # goal_provenance_streak_ticks (2026-08-11, Part H debug telemetry, review fix): unlike
-    # the now-removed drive_audits above, this table has a real, currently-live producer and no natural
-    # ceiling -- ~1 row per real orion-attention-runtime field tick, matching
-    # substrate_attention_frames' cadence (~43k rows/day per that table's own retention
-    # comment). Defaults ON (unlike drive_audits' 0/disabled default) precisely because this
-    # is meant to be temporary, collect-then-decide instrumentation: CLAUDE.md's own
-    # transport_prediction_error incident is the exact "known temporary but nobody removed
-    # it" failure mode this default exists to avoid. 14 days comfortably spans the "collect a
-    # few days, then run measure_goal_provenance_streak_distribution.py and decide" window
-    # this instrumentation exists for, with room to spare if that decision takes longer than
-    # planned. 0 disables pruning.
-    goal_provenance_streak_ticks_retention_days: int = Field(
-        14, alias="GOAL_PROVENANCE_STREAK_TICKS_RETENTION_DAYS"
-    )
-
     # Guardrails: grammar lane is async-isolated; operational writes use concurrent Hunter + pool limits.
     sql_writer_concurrent_handlers: bool = Field(True, alias="SQL_WRITER_CONCURRENT_HANDLERS")
     sql_writer_max_inflight: int = Field(12, alias="SQL_WRITER_MAX_INFLIGHT")
@@ -360,7 +343,7 @@ class Settings(BaseSettings):
     # grammar_edges/grammar_atoms/substrate_organ_emissions had NO retention at all
     # until this patch (confirmed live 2026-08-19: unbounded growth, ~13GB combined,
     # zero deletes ever). Each gets its own retention_days knob, same precedent as
-    # goal_provenance_streak_ticks_retention_days above, but deliberately reuses the
+    # other retention policies, but deliberately reuses the
     # grammar_events batch/cap knobs above rather than adding a near-duplicate set
     # per table -- same scale, same startup-bounded-batch shape, nothing about these
     # three tables needs independently tunable batching.

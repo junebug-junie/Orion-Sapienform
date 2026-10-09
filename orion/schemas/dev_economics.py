@@ -44,8 +44,7 @@ class DevEconomicsLedgerV1(BaseModel):
     # Real, stable per-event id for durable persistence (added when this
     # signal got its first real consumer -- orion-sql-writer's
     # DevEconomicsLedgerSQL table, docs/superpowers/pr-reports/2026-08-12-
-    # dev-economics-hub-observability.md). Same convention as
-    # DominanceStreakTickV1.tick_telemetry_id: a default_factory here means
+    # dev-economics-hub-observability.md). A default_factory here means
     # every event already carries its own idempotency key, so a redelivered
     # message upserts safely instead of duplicating a row. Non-breaking
     # addition -- has a default, so any already-published event without it

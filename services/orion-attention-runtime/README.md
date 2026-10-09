@@ -106,18 +106,56 @@ it is deliberately not a schema field, because `FieldGoalProvenanceV1` is `extra
 three consumers and a producer-first deploy of new fields drops every goal until they are rebuilt. Design:
 `docs/superpowers/specs/2026-09-04-attention-schema-surface-design.md`, "The read side".
 
-`ORION_GOAL_PROVENANCE_MIN_STREAK`'s value (default `3`) is an unmeasured, disclosed
-placeholder debounce. To calibrate it against the true streak-length distribution --
-`orion:memory:goals:proposed` alone is a censored sample that only ever shows streaks that
-already survived the debounce -- this worker also publishes `DominanceStreakTickV1` on
-`orion:debug:attention:streak_tick` on EVERY real tick (not just qualifying emissions),
-gated by `ORION_GOAL_PROVENANCE_STREAK_TICK_TELEMETRY_ENABLED` (default `true`,
-independent of the main producer). `orion-sql-writer` persists these to
-`goal_provenance_streak_ticks` (bounded by `GOAL_PROVENANCE_STREAK_TICKS_RETENTION_DAYS`,
-default 14 days, applied at that service's boot). Once a few days of real data have
-accumulated, run `python scripts/analysis/measure_goal_provenance_streak_distribution.py`
-from repo root to see the real streak-length distribution and candidate `min_streak`
-qualification rates. Meant to be temporary: once calibration is done, retire the channel.
+## Focus history
+
+Each change of the **goal-provenance node winner** closes one `field_dominance_run`
+row, including runs shorter than `ORION_GOAL_PROVENANCE_MIN_STREAK`. This is the
+existing competition-aware internal-signal streak, **not** the frame's overall top
+host/capability target, workspace attention, evidence of work, or a calm/arousal signal.
+No reader changes Orion's decisions in this patch.
+
+Rows contain target id/kind, start and end timestamps, observed tick count, the
+threshold at run start, and first/last attention frame ids. `ended_at` is the next
+winner/no-winner frame's timestamp; the last frame id belongs to the old target.
+No-winner ticks close a run without opening another. The open tail is a checkpoint
+in `substrate_goal_provenance_streak.run_state`, not a completed history row.
+On success frame, checkpoint, existing goal debounce and completed row commit together.
+Recorder failures roll back only the recording savepoint and log frame/tick ids;
+attention still saves its frame and emits the same goals. Recovery detects skipped
+recording ticks from saved frames, discards the incomplete open run, and logs the
+gap rather than inventing uninterrupted focus. Duplicate frame ids cannot count
+twice. Checkpoints survive restarts. Counts cover observed frames, not missed
+polls; wall-clock spans may include downtime and must not be treated as continuous
+activity. A run already underway at installation starts at the first observation
+and is marked `left_censored`; exclude it from complete-duration estimates.
+
+The recorder follows the existing producer enable/bus gates. Disabled/unavailable
+producer periods are unobserved, not proof of idleness. The existing debounce
+counter remains because it controls goal emission; the retired per-tick telemetry
+producer, bus schema/channel, SQL-writer model/routes, retention setting and live
+analysis query are removed. SQL-only `FieldDominanceRunV1` is registered as the row
+contract. No replacement bus event or SQL-writer route exists.
+
+Before deployment apply `services/orion-sql-db/manual_migration_field_dominance_run_v1.sql`.
+After both services are updated and completed rows are verified, the separately
+approved `manual_migration_retire_streak_tick_v1.sql` removes the old table (no
+`CASCADE`). Never drop it while the old SQL writer can recreate it. Rollback:
+revert/redeploy the code and retain new rows; the old writer can recreate its old
+telemetry table, but deleted legacy history cannot be recovered without an export.
+
+Inspect completed history:
+
+```sql
+SELECT target_id, started_at, ended_at, tick_count, left_censored,
+       first_source_attention_frame_id, last_source_attention_frame_id
+FROM field_dominance_run ORDER BY ended_at DESC LIMIT 30;
+```
+
+Read-only replay against an export made before retirement:
+
+```bash
+python services/orion-attention-runtime/evals/replay_focus_runs.py /tmp/orion-focus-history.jsonl
+```
 
 ## Run
 
@@ -152,5 +190,3 @@ Mirrors the identical pattern in `orion-field-digester` (`app/health_monitor.py`
 | `ATTENTION_FRAME_STALL_MULTIPLIER` | `1.5` | Alert if `substrate_attention_frames`'s oldest row exceeds this x retention hours |
 | `NOTIFY_BASE_URL` | `http://orion-athena-notify:7140` | `orion-notify` base URL for health-monitor attention alerts |
 | `NOTIFY_API_TOKEN` | (empty) | `orion-notify` auth token, if configured |
-| `ORION_GOAL_PROVENANCE_STREAK_TICK_TELEMETRY_ENABLED` | `true` | Publish `DominanceStreakTickV1` on every real tick (see above) |
-| `CHANNEL_GOAL_PROVENANCE_STREAK_TICK` | `orion:debug:attention:streak_tick` | Streak-tick telemetry channel |

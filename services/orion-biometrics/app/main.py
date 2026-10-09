@@ -32,6 +32,7 @@ from orion.telemetry.biometrics_pipeline import (
     BiometricsPipeline,
     PipelineConfig,
     aggregate_fleet_measurements,
+    board_temp_c_max,
 )
 from app.settings import settings
 
@@ -244,11 +245,18 @@ def _proxy_measurements() -> Dict[str, Dict[str, float]]:
         watts = detail.get("pdu_watts")
         if isinstance(watts, (int, float)) and not isinstance(watts, bool) and watts >= 0.0:
             out[node] = {"chassis_watts": float(watts), "pdu_watts": float(watts)}
-    # BMC watts fill only a gap: the PDU reading (wall power) wins when both exist.
     for node, poller in _ilo_proxy_pollers.items():
-        watts = poller.details().get("ilo_power_watts")
+        detail = poller.details()
+        values = out.setdefault(node, {})
+        # BMC watts fill only a gap: the PDU reading (wall power) wins when both exist.
+        watts = detail.get("ilo_power_watts")
         if isinstance(watts, (int, float)) and not isinstance(watts, bool) and watts >= 0.0:
-            out.setdefault(node, {"chassis_watts": float(watts)})
+            values.setdefault("chassis_watts", float(watts))
+        board_temp = board_temp_c_max(detail.get("ilo_thermal_c"))
+        if board_temp is not None:
+            values["board_temp_c_max"] = board_temp
+        if not values:
+            del out[node]
     return out
 
 

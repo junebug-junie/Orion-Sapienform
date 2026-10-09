@@ -56,17 +56,25 @@ test("a response without lane_assigned falls back to the unassigned string", () 
   assert.equal(laneBadge({}).text, "unassigned");
 });
 
-// Motherboard heat tile: read from the node's own snapshot measurements, and absent
-// (not 0) when the node has no BMC board sensor -- the tile then renders "—".
+// Motherboard heat tile: read from the node's own snapshot measurements, else from athena's
+// cluster_measurements_by_node (hecate's BMC is polled by athena's proxy), and absent (not 0)
+// when nobody measured it -- the tile then renders "—".
 test("boardTempFor reads board_temp_c_max from the node's own snapshot", () => {
   const snap = { summary: { measurements: { board_temp_c_max: 45.0, temp_c_max: 63.0 } } };
-  assert.equal(biometricsView.boardTempFor(snap), 45.0);
+  const athena = { cluster_measurements_by_node: { circe: { board_temp_c_max: 99.0 } } };
+  assert.equal(biometricsView.boardTempFor("circe", snap, athena), 45.0);
+});
+
+test("boardTempFor falls back to athena's proxied reading (hecate)", () => {
+  const own = { summary: { measurements: { temp_c_max: 63.0 } } };
+  const athena = { cluster_measurements_by_node: { hecate: { chassis_watts: 401, board_temp_c_max: 40.0 } } };
+  assert.equal(biometricsView.boardTempFor("hecate", own, athena), 40.0);
 });
 
 test("boardTempFor is undefined when nothing measured it", () => {
-  assert.equal(biometricsView.boardTempFor({ ok: false }), undefined);
-  assert.equal(biometricsView.boardTempFor({ summary: { measurements: {} } }), undefined);
-  assert.equal(biometricsView.boardTempFor(null), undefined);
+  assert.equal(biometricsView.boardTempFor("hecate", { ok: false }, null), undefined);
+  assert.equal(biometricsView.boardTempFor("hecate", { summary: { measurements: {} } }, {}), undefined);
+  assert.equal(biometricsView.boardTempFor("hecate", null, { cluster_measurements_by_node: { circe: {} } }), undefined);
 });
 
 // Orion's tiredness gauge (dream sleep pressure). Live 2026-10-09: 11.06 / 3.0.

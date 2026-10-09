@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from orion.schemas.telemetry.biometrics import BiometricsSummaryV1, BiometricsInductionV1, BiometricsInductionMetricV1
 from orion.signals.normalization import clamp01, EwmaBand, InductionTracker
@@ -101,6 +101,22 @@ def _sum_of(values: object) -> Optional[Tuple[float, int]]:
 # BMC sensor names for motherboard parts: chipset/PCH and voltage regulators ("VR" as its
 # own token, so it never matches inside another word). See board_temp_c_max below.
 _BOARD_SENSOR_RE = re.compile(r"chipset|pch|(?<![a-z])vr(?![a-z])", re.IGNORECASE)
+
+
+def board_temp_c_max(thermal_map: Any) -> Optional[float]:
+    """Hottest chipset/VR sensor in a BMC `ilo_thermal_c` map, or None when none reports.
+
+    Shared by a node's own summary (extract_measurements) and the cluster aggregator's BMC
+    proxy (hecate's board is read by athena, so it never lands in hecate's own summary).
+    """
+    if not isinstance(thermal_map, dict):
+        return None
+    board = [
+        t
+        for name, t in ((str(k), _as_float(v)) for k, v in thermal_map.items())
+        if t is not None and t > 0.0 and _BOARD_SENSOR_RE.search(name)
+    ]
+    return max(board) if board else None
 
 
 def extract_measurements(sample: Dict[str, object]) -> Dict[str, float]:
@@ -244,15 +260,9 @@ def extract_measurements(sample: Dict[str, object]) -> Dict[str, float]:
     # only visible through the BMC. Names are vendor-specific, confirmed live 2026-10-09:
     # athena's HPE iLO says "22-Chipset", "16-VR P1", "18-VR P1 Mem 1"; circe's AMI BMC says
     # "PCH_TEMP", "VR_VCCIN_P0_TEMP", "VR_DIMMG0_TEMP". Absent when no such sensor reports.
-    thermal_map = ilo.get("ilo_thermal_c")
-    if isinstance(thermal_map, dict):
-        board = [
-            t
-            for name, t in ((str(k), _as_float(v)) for k, v in thermal_map.items())
-            if t is not None and t > 0.0 and _BOARD_SENSOR_RE.search(name)
-        ]
-        if board:
-            out["board_temp_c_max"] = max(board)
+    board_temp = board_temp_c_max(ilo.get("ilo_thermal_c"))
+    if board_temp is not None:
+        out["board_temp_c_max"] = board_temp
 
     put("temp_c_max", _as_float(temps.get("max_c")))
     put("cpu_cores", _as_float(cpu.get("cores")))

@@ -92,13 +92,16 @@
     return (byNode[node] || {}).chassis_watts;
   }
 
-  // Motherboard heat: the hottest chipset / voltage-regulator sensor the node's own BMC
-  // reports (orion/telemetry/biometrics_pipeline.py's board_temp_c_max). Unlike wattage,
-  // every node self-reports this in its own snapshot. undefined when nothing measured it
-  // (no BMC, e.g. hecate) -- never a guessed number.
-  function boardTempFor(snapshot) {
+  // Motherboard heat: the hottest chipset / voltage-regulator sensor a BMC reports
+  // (orion/telemetry/biometrics_pipeline.py's board_temp_c_max). A node with its own BMC
+  // poller self-reports it in its own snapshot; hecate's BMC is polled by athena's proxy,
+  // so its value only exists in athena's cluster_measurements_by_node, like circe's watts.
+  // undefined when nothing measured it -- never a guessed number.
+  function boardTempFor(node, snapshot, athenaSnapshot) {
     var m = (snapshot && snapshot.summary && snapshot.summary.measurements) || {};
-    return m.board_temp_c_max;
+    if (m.board_temp_c_max !== undefined) return m.board_temp_c_max;
+    var byNode = (athenaSnapshot && athenaSnapshot.cluster_measurements_by_node) || {};
+    return (byNode[node] || {}).board_temp_c_max;
   }
 
   // timeoutMs (optional) aborts a hung request so a polled view can't freeze on stale data
@@ -585,7 +588,7 @@
       );
       var watts = chassisWattsFor(node, athenaSnapshot);
       next.appendChild(tile(node + " power", watts !== undefined ? fmt(watts, 0) + " W" : "—", "chassis wattage"));
-      var boardTemp = boardTempFor(payload);
+      var boardTemp = boardTempFor(node, payload, athenaSnapshot);
       next.appendChild(tile(node + " mobo", boardTemp !== undefined ? fmt(boardTemp, 0) + " °C" : "—", "chipset / VR max"));
     });
     replaceChildren(grid, next);
@@ -693,7 +696,7 @@
         var value = isComposite ? composites[ch] : isRaw
           ? ch === "chassis_watts"
             ? chassisWattsFor(node, athenaSnapshot)
-            : boardTempFor(snapshot)
+            : boardTempFor(node, snapshot, athenaSnapshot)
           : pressures[ch];
         if (value === undefined) return null; // absent channel on this node -- omit, never zero-fill
         // (an unreachable node has no composites/pressures at all, so every

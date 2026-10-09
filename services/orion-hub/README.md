@@ -3269,6 +3269,78 @@ Orion's next curiosity run.
 - Checks: `tests/test_orion_day_letter.py`; eval
   `python services/orion-hub/evals/run_orion_day_email_eval.py [--material m.json]`.
 
+### Introspect responder: `curiosity`
+
+**What it does.** Lets Orion read back their own curiosity runs -- what they
+set out to look at, how each run ended, and what they wrote -- instead of
+reconstructing them. It answers the orion-introspect `curiosity` tool from the
+same run join the Curiosity tab shows (`scripts/curiosity_run_store.py` +
+`orion/curiosity/run_story.py`), so the tool and the tab cannot disagree. For
+the whole tool family see the
+[harness-governor overview](../orion-harness-governor/README.md#orion-introspect-orion-reading-back-their-own-records).
+
+- **What Orion can ask.**
+  - Recent runs (default), newest first, over the last 90 days or since
+    `since`; optional `line=investigate|self_inquiry|self_sense_eval`,
+    `limit` ≤ 5. Runs still running are left out.
+  - One run by `run_id`, with its write-up up to 9,000 characters *as
+    serialized JSON* (so quotes and newlines cannot push it past the 12k MCP
+    budget).
+  - Runs by meaning (`query=`), optional `line` and `since`.
+  - Open self-questions (`kind=self_question`), newest first, optional `since`.
+- **Items and labels.**
+  - A run with a write-up (`journal_entries.source_ref = 'curiosity:<run_id>'`,
+    the newest one) is `curiosity_run`, `unsettled`: what Orion concluded
+    then. A list shows its `## Answer` section, else its opening, 900 chars.
+    Live 2026-10-09 only 1 of 371 write-ups has an `## Answer` heading, so
+    lists mostly show the opening.
+  - A run without one -- failed, cancelled, wrote nothing -- is a short
+    `record` sentence (line, status, error or outcome), so failures stay in
+    Orion's view of their history.
+  - `extra`: `line`, `status`, `error`, `hops`, `findings`, `revisions`,
+    `prior_touched` (claim, from, to), `outcome_kind`, `reach_out` decision,
+    `has_write_up`, and from `curiosity_run_outcomes` when a row exists
+    `turn_ok`, `n_tested`, `n_moved`, `n_formed`, `unknown_reason`.
+    `graph_read: false` means the worldview graph was not read, so hop,
+    finding and revision counts are not zeros, they are unknown.
+  - A self-question is `self_question`, `record`, with `family`, `ask_count`,
+    `last_asked_at`, `pinned`.
+- **Transport and trust.**
+  - Requests arrive on `orion:introspect:curiosity:request`
+    (`introspect.tool.request.v1`, `IntrospectRequestV1`), answered by
+    `scripts/curiosity_introspect_listener.py` on the Hub's bus.
+  - The reply goes to exactly `orion:introspect:result:<correlation_id>`
+    (`introspect.tool.result.v1`, `IntrospectResultV1`). Anything else is
+    ignored.
+  - Every Postgres connection, including the run join's own reads, is a
+    READ ONLY transaction (`ReadOnlyPool`).
+- **Empty vs unknown.**
+  - No match: `ok=true, items=[]`. A search is only empty once the index is
+    known to hold every write-up (the dreams `index_complete_as_of` rule);
+    until then an empty search is `curiosity_search_unavailable`.
+  - A request that fails validation returns `invalid curiosity request: …`.
+  - Postgres down, no pool, or a run-store read without Postgres returns
+    `curiosity_unavailable; answer unknown`.
+  - An embedder or Chroma failure, an unbuilt index, or search not configured
+    returns `curiosity_search_unavailable; answer unknown`.
+  - Log line per answer: `introspect op=curiosity corr=<id> mode=<mode>
+    items=<n> total=<n>`.
+- **Search by meaning.**
+  - Every `HUB_CURIOSITY_SEARCH_INDEX_INTERVAL_SEC` a hash-aware loop embeds
+    each run's newest write-up (Answer section or opening, 1,800 chars) via
+    vector-host `/embedding` and upserts it through orion-vector-writer into
+    Chroma `HUB_CURIOSITY_SEARCH_COLLECTION` (`orion_curiosity`), doc id =
+    run id. `HUB_CURIOSITY_SEARCH_INDEX_BATCH` docs per pass: 371 write-ups
+    on 2026-10-09 is about 37 passes (about 3 hours at the defaults) before an
+    empty search can answer "none".
+  - A query embeds only the question, keeps up to 10 hits at or above
+    `HUB_CURIOSITY_SEARCH_MIN_SIMILARITY`, and re-reads each through the run
+    join (`similarity` in `extra`); `line`/`since` apply after the re-read.
+  - Floor 0.65, calibrated 2026-10-09 on 371 live write-ups: related
+    questions' best hits 0.745-0.874, unrelated 0.515-0.626. Recalibrate with
+    `python services/orion-hub/evals/run_curiosity_search_calibration.py`
+    (needs `POSTGRES_URI`; read-only, no Chroma write).
+
 ## Curiosity resource admission
 
 `HUB_CURIOSITY_DURABLE_ADMISSION_ENABLED=true` is the operator-template default.

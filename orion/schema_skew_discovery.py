@@ -101,6 +101,11 @@ DECLARED_WRITERS: dict[str, tuple[Optional[str], str]] = {
         "orion-introspect MCP (spawned by the governor's FCC turns) validates the model's dreams "
         "tool arguments into the bus request; orion-dream's introspect listener validates them back",
     ),
+    "orion.schemas.introspect:CuriosityArguments": (
+        "orion-harness-governor",
+        "orion-introspect MCP (spawned by the governor's FCC turns) validates the model's curiosity "
+        "tool arguments into the bus request; orion-hub's curiosity introspect listener validates them back",
+    ),
     # No cross-service writer.
     "orion.substrate.neighborhood:NeighborhoodRequestV1": (
         None,

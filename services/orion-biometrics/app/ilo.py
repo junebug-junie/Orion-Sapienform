@@ -144,7 +144,7 @@ def fetch_ilo_snapshot(
             controls = power_resp.json().get("PowerControl") or []
             # DMTF says array; hecate's older Inspur firmware returns a bare object.
             control = controls if isinstance(controls, dict) else (controls[0] if controls else {})
-            watts = control.get("PowerConsumedWatts")
+            watts = control.get("PowerConsumedWatts") if isinstance(control, dict) else None
             if watts is not None:
                 power_watts = float(watts)
 

@@ -5,7 +5,7 @@
     "change_count": 1,
     "high_severity_count": 1,
     "changes": [
-      "high   routing_changed metric://bus_channel/orion-gpu-pool/orion:gpu_pool:state (declared_consumers: ['orion-hub'] -> ['orion-hub', 'orion-sql-writer'])"
+      "high   semantics_changed metric://bus_channel/orion-dream/orion:dream:trigger (schema_id: DreamTriggerPayload -> DreamInternalTriggerV1)"
     ]
   },
   "definitions": {
@@ -1227,7 +1227,7 @@
       "registry_source": "orion/bus/channels.yaml"
     },
     "metric://bus_channel/orion-dream/orion:dream:trigger": {
-      "schema_id": "DreamTriggerPayload",
+      "schema_id": "DreamInternalTriggerV1",
       "all_producers": [
         "orion-dream"
       ],

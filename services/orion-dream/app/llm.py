@@ -15,8 +15,17 @@ from orion.core.bus.bus_schemas import BaseEnvelope, ChatRequestPayload, LLMMess
 from app.settings import settings
 
 
+class GatewayRefused(RuntimeError):
+    """The gateway answered with an error instead of text (e.g. the GPU pool shed the call).
+
+    Raised, not returned as "", so recombination counts it as a failed call: an empty
+    string would read as an unparseable answer and mark a sleep with no model work
+    'completed', which advances the replay window past items nothing looked at.
+    """
+
+
 async def complete(bus: Any, prompt: str) -> str:
-    """Return the gateway's text. Raises on transport/decode failure."""
+    """Return the gateway's text. Raises on transport/decode failure or a gateway error reply."""
     rpc_corr = str(uuid4())
     reply_channel = f"orion:exec:result:LLMGatewayService:{rpc_corr}"
     route = settings.DREAM_LLM_ROUTE
@@ -55,4 +64,9 @@ async def complete(bus: Any, prompt: str) -> str:
     if not decoded.ok:
         raise RuntimeError(decoded.error)
     result = decoded.envelope.payload or {}
-    return str(result.get("content") or result.get("text") or "")
+    text = str(result.get("content") or result.get("text") or "")
+    raw = result.get("raw") if isinstance(result.get("raw"), dict) else {}
+    if raw.get("error") or not text.strip():
+        details = raw.get("details") if isinstance(raw.get("details"), dict) else {}
+        raise GatewayRefused(f"{raw.get('error') or 'empty_content'}:{details.get('reason') or ''}")
+    return text

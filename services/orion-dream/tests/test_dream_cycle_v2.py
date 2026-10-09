@@ -326,3 +326,49 @@ def test_process_floors_hold_when_persist_fails(monkeypatch):
     assert deps.load_last_window_start() == NOW  # failed cycle does not advance the window
     assert deps.load_last_attempt_end() == NOW + timedelta(hours=1, minutes=5)
     main._CYCLE_STATE.clear()
+
+
+class _ReplyBus:
+    """Bus fake for app.llm.complete: answers every rpc with one fixed gateway payload."""
+
+    def __init__(self, payload):
+        from types import SimpleNamespace
+
+        self.codec = SimpleNamespace(
+            decode=lambda _data: SimpleNamespace(ok=True, envelope=SimpleNamespace(payload=payload))
+        )
+
+    async def rpc_request(self, *_a, **_k):
+        return {"data": b"-"}
+
+
+# The gateway's own reply when the GPU pool sheds a call (orion-llm-gateway
+# app/main.py _pool_unavailable_result): empty text, raw.error set.
+_SHED_REPLY = {
+    "text": "", "content": "", "spark_meta": {}, "route": "metacog", "served_by": None,
+    "raw": {"error": "gpu_pool_unavailable", "details": {"reason": "shed:cabinet_hot"}},
+}
+
+
+def test_gateway_error_reply_raises_instead_of_returning_empty_text():
+    from app import llm
+
+    with pytest.raises(llm.GatewayRefused, match="shed:cabinet_hot"):
+        asyncio.run(llm.complete(_ReplyBus(_SHED_REPLY), "p"))
+    with pytest.raises(llm.GatewayRefused):
+        asyncio.run(llm.complete(_ReplyBus({"content": "   "}), "p"))
+    assert asyncio.run(llm.complete(_ReplyBus({"content": '{"link": false}'}), "p")) == '{"link": false}'
+
+
+def test_shed_sleep_is_failed_not_completed_so_the_window_does_not_advance():
+    """Live 2026-10-08 06:27/18:27: every call shed for heat, cycle stored 'completed' with
+    4 'unparseable', and the next sleep's replay window started after it."""
+    from app import llm
+    from app.cycle import run_cycle_once
+
+    f = _Fakes(_rows())
+    deps = f.deps()
+    deps.complete = lambda p: llm.complete(_ReplyBus(_SHED_REPLY), p)
+    cycle = asyncio.run(run_cycle_once(deps))
+    assert cycle.status == "failed"
+    assert cycle.unparseable_count == 0 and cycle.llm_failures > 0

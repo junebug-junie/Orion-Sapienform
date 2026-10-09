@@ -114,6 +114,8 @@ def build_cycle_deps():
             raise RuntimeError("bus disabled: no LLM for recombination")
         try:
             return await llm.complete(bus, prompt)
+        except llm.GatewayRefused:
+            raise  # the gateway answered: the connection is fine
         except Exception:
             # A timeout is usually the gateway, not the connection -- but a
             # dead connection looks the same from here, and reconnecting on

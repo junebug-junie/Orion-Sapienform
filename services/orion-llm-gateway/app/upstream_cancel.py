@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import socket
 import threading
+import time
 from typing import Any, Callable, List, Optional, TypeVar
 
 import httpcore
@@ -35,6 +36,12 @@ class UpstreamCancel:
         self._sockets: List[socket.socket] = []
         self.cancelled = threading.Event()
         self.reason: Optional[str] = None
+        # Monotonic clock: when the worker thread started the call (reset by run_cancellable, so
+        # executor queueing is not counted), and when the gateway hung up on it. llm_backend logs
+        # both so a cancelled call's line says how long it ran and how soon after the cancel the
+        # worker thread came out.
+        self.started_at = time.monotonic()
+        self.cancelled_at: Optional[float] = None
 
     def register(self, sock: Optional[socket.socket]) -> None:
         if sock is None:
@@ -50,6 +57,7 @@ class UpstreamCancel:
             if self.cancelled.is_set():
                 return
             self.reason = reason
+            self.cancelled_at = time.monotonic()
             self.cancelled.set()
             sockets, self._sockets = self._sockets, []
         for sock in sockets:
@@ -80,9 +88,22 @@ def current() -> Optional[UpstreamCancel]:
     return getattr(_local, "handle", None)
 
 
+def cancelled_by_gateway() -> Optional[UpstreamCancel]:
+    """The current call's handle if the gateway itself has hung up on it, else None.
+
+    llm_backend asks this before blaming the worker for a failed request: once the gateway has shut
+    the sockets down, the RemoteProtocolError / ReadError / ConnectError that follows is the
+    gateway's own doing, not the upstream's."""
+    handle = current()
+    if handle is not None and handle.cancelled.is_set():
+        return handle
+    return None
+
+
 def run_cancellable(handle: UpstreamCancel, fn: Callable[..., T], *args: Any) -> T:
     """Run ``fn`` in this (worker) thread with ``handle`` as its cancel hook."""
     _local.handle = handle
+    handle.started_at = time.monotonic()
     try:
         return fn(*args)
     finally:

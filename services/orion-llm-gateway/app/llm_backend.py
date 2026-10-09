@@ -4,6 +4,7 @@ import asyncio
 import logging
 import os
 import re
+import time
 
 import httpx
 
@@ -238,6 +239,68 @@ def _upstream_exception_result(
         served_by=served_by, spark_meta=spark_meta, trace_id=trace_id,
         error=error, reason=type(exc).__name__,
     )
+
+
+def _gateway_cancelled_result(
+    exc: BaseException,
+    *,
+    backend_name: str,
+    url: str,
+    route: Optional[str],
+    served_by: Optional[str],
+    spark_meta: Dict[str, Any],
+    trace_id: Optional[str],
+) -> Optional[Dict[str, Any]]:
+    """None unless the gateway itself hung up on this call (upstream_cancel: caller budget
+    exhausted, lease lost/recalled, caller cancelled). Then the exception the request raised --
+    RemoteProtocolError, ReadError, ConnectError on a socket we shut down -- is the gateway's own
+    doing: log it as ``upstream_cancelled`` at WARNING, never ``upstream_failed`` at ERROR, so the
+    worker is not blamed for the gateway's hang-up (2026-10-09: 16/16 upstream_failed
+    RemoteProtocolError lines landed 5-9 ms after gateway_caller_budget_exhausted).
+
+    The returned result does not reach a caller or telemetry: main._run_on_grant replaces any error
+    result of a call it cancelled with its own reply and sets the lease release reason itself.
+    ``raw.error`` is still set (so that replacement keeps happening) and mirrors the class main.py
+    substitutes -- ``gpu_pool_recalled`` for a lease cancel, ``timeout`` otherwise -- so even a
+    future path that forwarded it would count as the cancel, never as an upstream_error.
+
+    Known narrow race: a genuine upstream drop whose exception is caught just after a cancel fires
+    is logged as the cancel. The caller's outcome is identical either way (main.py substitutes its
+    own reply); ``after_cancel_ms`` near 0 marks such a line."""
+    if not isinstance(exc, (httpx.TransportError, OSError)):
+        # Only a transport failure can be the hang-up. A gateway bug (KeyError in post-processing,
+        # ...) that happens to land after a cancel stays gateway_exception at ERROR, traceback kept.
+        return None
+    handle = upstream_cancel.cancelled_by_gateway()
+    if handle is None:
+        return None
+    reason = str(handle.reason or "")
+    error_code = pool_placement.POOL_RECALLED if reason.startswith("lease_") else "timeout"
+    now = time.monotonic()
+    elapsed_ms = int((now - handle.started_at) * 1000)
+    after_cancel_ms = int((now - handle.cancelled_at) * 1000) if handle.cancelled_at is not None else None
+    logger.warning(
+        "[LLM-GW] upstream_cancelled backend=%s reason=%s exc=%s route=%s served_by=%s url=%s corr=%s "
+        "elapsed_ms=%s after_cancel_ms=%s message=%r",
+        backend_name, handle.reason, type(exc).__name__, route, served_by, url, trace_id,
+        elapsed_ms, after_cancel_ms, " ".join(str(exc).split())[:UPSTREAM_ERROR_MESSAGE_MAX_CHARS],
+    )
+    return {
+        "text": "",
+        "spark_meta": spark_meta,
+        "raw": {
+            "error": error_code,
+            "details": {
+                "reason": handle.reason,
+                "cancelled_by": "gateway",
+                "exception": type(exc).__name__,
+                "backend": backend_name,
+                "route": route,
+                "served_by": served_by,
+                "url": url,
+            },
+        },
+    }
 
 
 def _upstream_http_failure(
@@ -903,6 +966,10 @@ def _execute_ollama_chat(
                 "raw": raw_data,
             }
     except httpx.TimeoutException as e:
+        cancelled = _gateway_cancelled_result(e, backend_name="ollama", url=url, route=route,
+                                             served_by=served_by, spark_meta=spark_meta, trace_id=body.trace_id)
+        if cancelled is not None:
+            return cancelled
         logger.error(
             "[LLM-GW] ollama TIMEOUT route=%s served_by=%s url=%s corr=%s timeouts=%s",
             route,
@@ -914,6 +981,10 @@ def _execute_ollama_chat(
         return _upstream_exception_result(e, backend_name="ollama", url=url, route=route, served_by=served_by,
                                           spark_meta=spark_meta, trace_id=body.trace_id)
     except Exception as e:
+        cancelled = _gateway_cancelled_result(e, backend_name="ollama", url=url, route=route,
+                                             served_by=served_by, spark_meta=spark_meta, trace_id=body.trace_id)
+        if cancelled is not None:
+            return cancelled
         logger.error(f"[LLM-GW] ollama error: {e}", exc_info=True)
         return _upstream_exception_result(e, backend_name="ollama", url=url, route=route, served_by=served_by,
                                           spark_meta=spark_meta, trace_id=body.trace_id)
@@ -1067,10 +1138,18 @@ def _execute_llamacpp_native_completion(
             "llm_uncertainty": llm_uncertainty,
         }
     except httpx.TimeoutException as e:
+        cancelled = _gateway_cancelled_result(e, backend_name=backend_name, url=in_flight_url, route=route,
+                                             served_by=served_by, spark_meta=spark_meta, trace_id=body.trace_id)
+        if cancelled is not None:
+            return cancelled
         logger.error("[LLM-GW] %s native completion TIMEOUT corr=%s", backend_name, body.trace_id)
         return _upstream_exception_result(e, backend_name=backend_name, url=in_flight_url, route=route,
                                           served_by=served_by, spark_meta=spark_meta, trace_id=body.trace_id)
     except Exception as e:
+        cancelled = _gateway_cancelled_result(e, backend_name=backend_name, url=in_flight_url, route=route,
+                                             served_by=served_by, spark_meta=spark_meta, trace_id=body.trace_id)
+        if cancelled is not None:
+            return cancelled
         logger.error(f"[LLM-GW] {backend_name} native completion error: {e}", exc_info=True)
         return _upstream_exception_result(e, backend_name=backend_name, url=in_flight_url, route=route,
                                           served_by=served_by, spark_meta=spark_meta, trace_id=body.trace_id)
@@ -1400,6 +1479,10 @@ def _execute_openai_chat(
             }
 
     except httpx.TimeoutException as e:
+        cancelled = _gateway_cancelled_result(e, backend_name=backend_name, url=url, route=route,
+                                             served_by=served_by, spark_meta=spark_meta, trace_id=body.trace_id)
+        if cancelled is not None:
+            return cancelled
         logger.error(
             "[LLM-GW] %s TIMEOUT route=%s served_by=%s url=%s corr=%s timeouts=%s",
             backend_name,
@@ -1412,6 +1495,10 @@ def _execute_openai_chat(
         return _upstream_exception_result(e, backend_name=backend_name, url=url, route=route,
                                           served_by=served_by, spark_meta=spark_meta, trace_id=body.trace_id)
     except Exception as e:
+        cancelled = _gateway_cancelled_result(e, backend_name=backend_name, url=url, route=route,
+                                             served_by=served_by, spark_meta=spark_meta, trace_id=body.trace_id)
+        if cancelled is not None:
+            return cancelled
         logger.error(f"[LLM-GW] {backend_name} error: {e}", exc_info=True)
         return _upstream_exception_result(e, backend_name=backend_name, url=url, route=route,
                                           served_by=served_by, spark_meta=spark_meta, trace_id=body.trace_id)

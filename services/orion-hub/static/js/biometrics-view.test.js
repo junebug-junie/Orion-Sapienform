@@ -171,7 +171,7 @@ test("card poll keeps the old tiles until new readings arrive, then swaps once",
   const { grid, status, doc } = fakeDom();
   const pending = [];
   global.document = doc;
-  global.fetch = (url) =>
+  global.fetch = (url, opts) =>
     new Promise((resolve) => pending.push(() => resolve({ json: async () => ({ ok: true, node: "athena", summary: {} }) })));
   try {
     const old = { old: true };
@@ -186,7 +186,32 @@ test("card poll keeps the old tiles until new readings arrive, then swaps once",
     await poll;
     assert.equal(grid.children.length, 9); // 3 nodes x (strain, power, mobo)
     assert.ok(!grid.children.includes(old));
+    // The guard must release once the round finishes, or the card would freeze forever.
+    const again = biometricsView.loadCardPreview();
+    assert.notEqual(again, poll);
+    pending.splice(0).forEach((go) => go());
+    await again;
   } finally {
+    delete global.document;
+    delete global.fetch;
+  }
+});
+
+test("a hung card request is aborted, so the guard can't freeze the card", async () => {
+  const { grid, status, doc } = fakeDom();
+  global.document = doc;
+  let aborted = 0;
+  global.fetch = (url, opts) =>
+    new Promise((_, reject) => opts.signal.addEventListener("abort", () => { aborted++; reject(new Error("aborted")); }));
+  const realSetTimeout = global.setTimeout;
+  global.setTimeout = (fn) => realSetTimeout(fn, 0); // fire the abort timer immediately
+  try {
+    await biometricsView.loadCardPreview();
+    assert.equal(aborted, 6); // 3 nodes x (snapshot, induction)
+    assert.equal(grid.children.length, 9);
+    assert.equal(status.textContent, "partial");
+  } finally {
+    global.setTimeout = realSetTimeout;
     delete global.document;
     delete global.fetch;
   }

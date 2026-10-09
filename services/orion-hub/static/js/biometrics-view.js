@@ -101,9 +101,18 @@
     return m.board_temp_c_max;
   }
 
-  async function fetchJson(url) {
-    var response = await fetch(url);
-    return response.json();
+  // timeoutMs (optional) aborts a hung request so a polled view can't freeze on stale data
+  // behind its in-flight guard: the abort rejects, the caller's .catch() turns it into an
+  // "unreachable"/"partial" reading -- visible, not a silent stale "live".
+  async function fetchJson(url, timeoutMs) {
+    var ctrl = timeoutMs && typeof AbortController === "function" ? new AbortController() : null;
+    var timer = ctrl ? setTimeout(function () { ctrl.abort(); }, timeoutMs) : null;
+    try {
+      var response = await fetch(url, ctrl ? { signal: ctrl.signal } : undefined);
+      return await response.json();
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
   }
 
   // --- Status color + trend -----------------------------------------------
@@ -548,10 +557,10 @@
     var results = await Promise.all(
       nodes.map(function (n) {
         return Promise.all([
-          fetchJson("/api/biometrics/preview/snapshot?node=" + n).catch(function () {
+          fetchJson("/api/biometrics/preview/snapshot?node=" + n, CARD_POLL_MS).catch(function () {
             return { ok: false, node: n };
           }),
-          fetchJson("/api/biometrics/preview/induction?node=" + n).catch(function () {
+          fetchJson("/api/biometrics/preview/induction?node=" + n, CARD_POLL_MS).catch(function () {
             return { ok: false, metrics: {} };
           }),
         ]);
@@ -862,9 +871,12 @@
     // limit=40 (endpoint max is 60): the default 5-sample buffer read made
     // the "realtime trend" sparkline look almost flat/empty -- 40 samples at
     // orion-biometrics' collection cadence gives a real trend to look at.
-    var payload = await fetchJson("/api/biometrics/preview/gpu?node=" + node + "&limit=40").catch(function () {
+    var payload = await fetchJson("/api/biometrics/preview/gpu?node=" + node + "&limit=40", GPU_POLL_MS).catch(function () {
       return { ok: false, gpus: [] };
     });
+    // The user switched node (or a newer poll owns the grid) while this was in flight --
+    // never draw one node's cards under the other node's active button.
+    if (node !== gpuNode) return;
     var cards = document.createDocumentFragment();
     (payload.gpus || []).forEach(function (gpu) {
       cards.appendChild(gpuCard(gpu));
@@ -889,6 +901,8 @@
       btn.classList.toggle("bg-gray-900", !active);
       btn.classList.toggle("text-gray-400", !active);
     });
+    var status = el("biometricsGpuStatus");
+    if (status) status.textContent = "Loading " + node + "…";
     loadGpu(node);
   }
 

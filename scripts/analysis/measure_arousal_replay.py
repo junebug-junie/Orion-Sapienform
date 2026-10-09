@@ -3,8 +3,8 @@
 
 No text leaves chat storage: export only turn timestamps and the proposed E1
 predicate. Outreach and focus annotate hours but NEVER vote for arousal.
-GPU state snapshots are not persisted by the current SQL writer. Lease events
-support a separate PROVISIONAL replay; they cannot prove 5-second freshness.
+Use --gpu-host to include the new saved GPU snapshots. Older exports have only
+lease events: these support a PROVISIONAL replay, not 5-second freshness.
 """
 from __future__ import annotations
 
@@ -32,12 +32,22 @@ def utc(value):
     return dt.astimezone(timezone.utc)
 
 
-def export_sql(start, end):
+def export_sql(start, end, *, gpu_host=None):
     start, end = utc(start), utc(end)
     if end <= start:
         raise ValueError("end must follow start")
     warm = start - timedelta(hours=1)
     lo, hi = warm.isoformat(), end.isoformat()
+    if gpu_host is not None and (not gpu_host or any(c not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.-" for c in gpu_host)):
+        raise ValueError("GPU host must be a simple host name")
+    gpu_sql = f"""
+SELECT row_to_json(r) FROM (
+ SELECT 'gpu_state' AS kind, generated_at AS at, host, backlog_depth
+ FROM gpu_pool_state_history WHERE host = '{gpu_host}'
+ AND generated_at >= '{lo}'::timestamptz AND generated_at < '{hi}'::timestamptz
+ ORDER BY generated_at
+) r;
+""" if gpu_host else ""
     return f"""BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY;
 SET LOCAL statement_timeout = '60s';
 SET LOCAL TIME ZONE 'UTC';
@@ -75,6 +85,7 @@ SELECT row_to_json(r) FROM (
  SELECT 'focus' AS kind, started_at AS at, ended_at, target_id FROM field_dominance_run
  WHERE started_at < '{hi}'::timestamptz AND ended_at > '{lo}'::timestamptz
 ) r;
+{gpu_sql}
 ROLLBACK;"""
 
 
@@ -123,6 +134,9 @@ def replay(rows, start, end, *, idle_minutes=45):
     allowed = {"chat", "heat", "gpu_event", "gpu_state", "focus", "outreach"}
     if any(r["kind"] not in allowed for _, r in parsed):
         raise ValueError("unknown input kind")
+    hosts = {r.get("host") for _, r in parsed if r["kind"] == "gpu_state"}
+    if len(hosts) > 1:
+        raise ValueError("replay one GPU host at a time; last-arriving host cannot stand for the fleet")
     strict, provisional, all_chat = Classifier(), Classifier(), Classifier()
     warm = start - timedelta(hours=1)
     at, i = warm, 0
@@ -209,7 +223,9 @@ def replay(rows, start, end, *, idle_minutes=45):
         totals=totals, transitions=transitions, provisional_strain_exits_per_day=dict(exits),
         hysteresis_review_days=[day for day, count in exits.items() if count > 12],
         input_counts=dict(Counter(r["kind"] for _, r in parsed)), idle_minutes_assumed=idle_minutes,
-        verdict="UNVERIFIED: provisional labels require human comparison and complete GPU state history",
+        verdict=("Replay available for human comparison; inspect hourly stale-input coverage."
+                 if totals["strict_seconds"]["engaged"]+totals["strict_seconds"]["idle"] > 0 else
+                 "UNVERIFIED: provisional labels require human comparison and complete GPU state history"),
         assumptions=["UTC; five-second grid (transitions may lag by <5s); one-hour warmup.",
                      "Chat query success is evidence of freshness; age of the last turn is not sensor age.",
                      "Strict GPU state is unknown without snapshots <=15s old.",
@@ -226,9 +242,10 @@ def main():
     parser.add_argument("--end", type=utc, required=True)
     parser.add_argument("--idle-minutes", type=float, default=45)
     parser.add_argument("--print-sql", action="store_true")
+    parser.add_argument("--gpu-host", help="include saved GPU snapshots for this host after migration")
     args = parser.parse_args()
     if args.print_sql:
-        print(export_sql(args.start, args.end))
+        print(export_sql(args.start, args.end, gpu_host=args.gpu_host))
         return
     if not args.history:
         parser.error("history export required")

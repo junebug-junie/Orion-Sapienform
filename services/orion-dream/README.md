@@ -262,3 +262,37 @@ tool family (which turns get it, truth rules, search pattern), see the
 ```bash
 docker-compose up -d orion-dream
 ```
+
+
+## Pressure check history (2026-10-09)
+
+Every successful scheduler pressure read now appends a `DreamPressureObservationV1`
+(SQL-only) to `dream_pressure_observation`, including checks skipped for a recent
+attempt, low pressure or activity. The recorded `reading` is the existing
+`SleepPressureV1`, with its formula family, thresholds, prior cycle timestamps,
+check cadence and source-read errors. Neither recording failure nor retention
+changes a scheduling gate. Failed source/clock reads remain the old runtime
+fallback but make the observation unusable as evidence of calm. HTTP pressure
+reads do not create scheduler-check history.
+
+Apply `services/orion-sql-db/manual_migration_regulation_history.sql` before
+restarting dream. Recording failures log `dream_pressure_history_failed` and/or
+`dream_pressure_history_write_failed`; they never stop a dream. The separate
+one-connection history pool bounds connection/pool waits to two seconds,
+statements to two seconds and lock waits to 500 ms. These waits add bounded
+instrumentation latency, not a new gate. Retention deletes at most 1,000 rows
+older than 30 days per check in a separate transaction; failure cannot undo the
+new observation. No prompt, replay text or hypothesis body is copied.
+
+The existing read-only report includes this history with `--with-checks`:
+
+```bash
+python scripts/analysis/measure_dream_pressure_crossings.py --print-sql --with-checks \
+  --start 2026-10-09T06:00:00Z --end 2026-10-10T06:00:00Z
+```
+
+Execute its read-only SQL with `psql -XqAt -v ON_ERROR_STOP=1`, save JSONL, and
+pass that export back to the same script without `--print-sql`. Old cycle-only
+exports remain supported. The report only claims fall-and-rise when real checks
+straddle a stored successful cycle and later rise without a source failure,
+formula change or long sampling gap. A missing check is never interpolated.

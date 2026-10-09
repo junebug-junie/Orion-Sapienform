@@ -478,3 +478,35 @@ existing databases; the standalone additive migration is
 `services/orion-sql-db/manual_migration_action_outcomes_visual_outcome.sql`.
 Apply that migration before deploying producers/writers that use this field.
 This patch does not run the migration or rewrite historical rows.
+
+
+## GPU state history for offline replay (2026-10-09)
+
+`orion:gpu_pool:state` / `gpu_pool.state.v1` now routes through the existing
+`GpuPoolStateV1` validator into `gpu_pool_state_history`. This records the
+broadcast's source time, host, configuration digest, mode, backlog and queue
+counts. Cards, lease bodies and prompts are not stored. No GPU producer or
+scheduler changes. Missing source time/host/depths are rejected rather than
+filled with schema defaults. Host + source time + configuration digest form a
+stable snapshot id, so redelivery is insert-only and idempotent.
+
+`GPU_POOL_STATE_HISTORY_RETENTION_DAYS=30` bounds roughly 518,400 small rows per
+pool at the current five-second cadence. Retention health includes this table.
+`GRAMMAR_RETENTION_PERIODIC_MAX_CYCLE_SEC=70` preserves the existing minimum
+five seconds per managed table now that there are fourteen. Both keys are passed
+through compose; the subscription and route templates include the state channel.
+
+Apply `services/orion-sql-db/manual_migration_regulation_history.sql` before
+restarting the writer (normal SQL model bootstrap can also create the GPU table).
+The dream observation table in that migration is owned by dream, not this writer.
+Use the actual snapshot host, which currently reads `circe`, for offline replay:
+
+```bash
+python scripts/analysis/measure_arousal_replay.py --print-sql --gpu-host circe \
+  --start 2026-10-09T06:00:00Z --end 2026-10-10T06:00:00Z
+```
+
+Export with `psql -XqAt -v ON_ERROR_STOP=1`; give the resulting JSONL back to the
+same report. The report rejects mixed-host histories. A snapshot older than
+15 seconds remains unknown, even if lease events continue arriving. Existing
+lease-event-only exports still produce an explicitly provisional replay.

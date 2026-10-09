@@ -1,11 +1,12 @@
-"""Dream cycle v2 store. Reads four producer tables; writes only v2 tables.
+"""Dream cycle v2 store. Reads four producer tables; writes only v2 cycle/observation tables.
 
 Read-only on every source (orion_metacog, dream_compaction_request_queue,
 substrate_reverie_resonance_alert, memory_crystallizations, chat_history_log).
 Writes exactly CYCLE_WRITE_TABLES -- a test pins that no canonical memory
 table ever appears in a write statement here.
 
-Every loader degrades to empty/None on failure and logs why: a missing table
+Every loader retains the existing empty/None fallback and logs why; source and
+cycle-clock errors also invalidate observation history: a missing table
 (migration not applied yet) must read as "nothing to replay", never raise.
 """
 
@@ -22,7 +23,7 @@ from app.settings import settings
 
 logger = logging.getLogger("orion-dream.cycle_store")
 
-CYCLE_WRITE_TABLES = ("dream_cycle", "dream_replay_item", "dream_hypothesis")
+CYCLE_WRITE_TABLES = ("dream_cycle", "dream_replay_item", "dream_hypothesis", "dream_pressure_observation")
 
 # One row per THING (`dedupe_key`), newest first, in [since, until). The key
 # rule lives here once; app/replay.py row_key only namespaces it.
@@ -107,6 +108,13 @@ _FAR_FUTURE = datetime(9999, 1, 1, tzinfo=timezone.utc)
 _engine = None
 
 
+class SourceRows(dict):
+    """Existing row mapping plus source failures for observation validity only."""
+    def __init__(self):
+        super().__init__()
+        self.read_errors = []
+
+
 def _get_engine():
     global _engine
     if _engine is None:
@@ -123,7 +131,7 @@ def load_source_rows(
     empty and logged, not fatal."""
     from sqlalchemy import text
 
-    out: dict[str, list[dict[str, Any]]] = {}
+    out = SourceRows()
     engine = _get_engine()
     params = {"since": since, "until": until or _FAR_FUTURE, "limit": int(limit_per_source)}
     for kind, sql in SOURCE_QUERIES.items():
@@ -133,8 +141,54 @@ def load_source_rows(
             out[kind] = [dict(r) for r in rows]
         except Exception as exc:
             logger.warning("dream_cycle source read failed kind=%s err=%s", kind, exc)
+            out.read_errors.append(kind)
             out[kind] = []
     return out
+
+
+_history_engine = None
+
+
+def persist_pressure_observation(observation) -> bool:
+    """Append-only, idempotent check history. A missing migration is loud, not fatal.
+
+    A separate small pool bounds instrumentation connection/lock/statement waits.
+    Retention only touches this table, 1,000 expired rows at most per check.
+    """
+    global _history_engine
+    from sqlalchemy import create_engine, text
+
+    try:
+        if _history_engine is None:
+            _history_engine = create_engine(settings.POSTGRES_URI, pool_size=1, max_overflow=0,
+                pool_timeout=2, connect_args={"connect_timeout": 2})
+        with _history_engine.begin() as conn:
+            conn.execute(text("SET LOCAL statement_timeout = '2000ms'"))
+            conn.execute(text("SET LOCAL lock_timeout = '500ms'"))
+            conn.execute(text("""
+                INSERT INTO dream_pressure_observation (check_id, observed_at, observation_json)
+                VALUES (:check_id, :observed_at, CAST(:payload AS jsonb))
+                ON CONFLICT (check_id) DO NOTHING
+            """), dict(check_id=observation.check_id, observed_at=observation.observed_at,
+                       payload=observation.model_dump_json()))
+        # Separate transaction: cleanup cannot roll back the new observation.
+        try:
+            with _history_engine.begin() as conn:
+                conn.execute(text("SET LOCAL statement_timeout = '2000ms'"))
+                conn.execute(text("SET LOCAL lock_timeout = '500ms'"))
+                conn.execute(text("""
+                    DELETE FROM dream_pressure_observation WHERE check_id IN (
+                        SELECT check_id FROM dream_pressure_observation
+                        WHERE created_at < now() - interval '30 days'
+                        ORDER BY created_at LIMIT 1000
+                    )
+                """))
+        except Exception:
+            logger.exception("dream_pressure_history_retention_failed")
+        return True
+    except Exception:
+        logger.exception("dream_pressure_history_write_failed check_id=%s", observation.check_id)
+        return False
 
 
 def load_idle_minutes() -> Optional[float]:
@@ -152,7 +206,7 @@ def load_idle_minutes() -> Optional[float]:
         return None
 
 
-def _load_at(sql: str) -> Optional[datetime]:
+def _load_at(sql: str, *, read_errors=None, source="cycle_clock") -> Optional[datetime]:
     try:
         from sqlalchemy import text
 
@@ -160,16 +214,18 @@ def _load_at(sql: str) -> Optional[datetime]:
             row = conn.execute(text(sql)).mappings().first()
         return row["at"] if row else None
     except Exception as exc:
+        if read_errors is not None:
+            read_errors.append(source)
         logger.warning("dream_cycle last-cycle read failed err=%s", exc)
         return None
 
 
-def load_last_window_start() -> Optional[datetime]:
-    return _load_at(LAST_WINDOW_START_SQL)
+def load_last_window_start(*, read_errors=None) -> Optional[datetime]:
+    return _load_at(LAST_WINDOW_START_SQL, read_errors=read_errors, source="last_window_start")
 
 
-def load_last_attempt_end() -> Optional[datetime]:
-    return _load_at(LAST_ATTEMPT_END_SQL)
+def load_last_attempt_end(*, read_errors=None) -> Optional[datetime]:
+    return _load_at(LAST_ATTEMPT_END_SQL, read_errors=read_errors, source="last_attempt_end")
 
 
 def persist_cycle(cycle: DreamCycleV1) -> bool:

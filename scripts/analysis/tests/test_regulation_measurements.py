@@ -104,6 +104,60 @@ def test_manual_low_pressure_does_not_disprove_automatic_timer_pattern():
     assert result["legacy_timing_consistent_with_timer"]
 
 
+def check(seconds, pressure, *, errors=None, last_start=T, check_id=None):
+    return dict(kind="pressure_check", observation=dict(
+        check_id=check_id or str(seconds), observed_at=(T+timedelta(seconds=seconds)).isoformat(),
+        source_errors=errors or [], formula="novelty.v1", forced=False,
+        last_window_start=last_start.isoformat(), last_attempt_end=(T+timedelta(seconds=10)).isoformat(),
+        min_interval_hours=6, check_interval_sec=600,
+        reading=dict(pressure=pressure, threshold=3, idle_minutes=60, idle_required_minutes=45)))
+
+
+def test_real_check_curve_needs_matched_sleep_and_unbroken_fall_then_rise():
+    rows = [cycle(1, 0, pressure=4, novelty=True),
+            check(0, 4, last_start=T-timedelta(hours=7)), check(600, 0), check(1200, 1)]
+    result = dream.report(rows, T, T+timedelta(days=1))
+    assert result["check_history"]["observed_fall_and_rise"]
+    assert result["check_history"]["zero_samples"] == 1
+    assert result["independent_check_samples"] == 3
+    rows.insert(3, check(900, 0, errors=["current:metacog"]))
+    broken = dream.report(rows, T, T+timedelta(days=1))
+    assert not broken["check_history"]["observed_fall_and_rise"]
+    assert broken["check_history"]["source_failed_samples"] == 1
+
+
+def test_failed_dream_or_cadence_gap_cannot_prove_discharge_and_recovery():
+    rows = [cycle(1, 0, status="failed", novelty=True),
+            check(0, 4, last_start=T-timedelta(hours=7)), check(600, 0), check(1200, 1)]
+    assert not dream.report(rows, T, T+timedelta(days=1))["check_history"]["observed_fall_and_rise"]
+    rows[0]["status"] = "completed"
+    rows[-1] = check(4000, 2)
+    curve = dream.report(rows, T, T+timedelta(days=1))["check_history"]
+    assert not curve["observed_fall_and_rise"] and curve["cadence_gaps"] == 1
+
+
+def test_low_pressure_can_hold_an_otherwise_eligible_check():
+    rows = [check(7*3600, 1)]
+    result = dream.report(rows, T, T+timedelta(days=1))
+    assert result["check_history"]["idle_timer_clear_below_threshold"] == 1
+    assert "dream_pressure_observation" in dream.export_sql(T, T+timedelta(days=1), with_checks=True)
+
+
+def test_arousal_saved_gpu_snapshot_export_is_host_scoped_and_stale_stays_unknown():
+    sql = arousal.export_sql(T, T+timedelta(days=1), gpu_host="athena")
+    assert "gpu_pool_state_history WHERE host = 'athena'" in sql
+    with pytest.raises(ValueError):
+        arousal.export_sql(T, T+timedelta(days=1), gpu_host="athena'; DELETE")
+    rows = [dict(kind="chat", at=T.isoformat(), juniper=True),
+            dict(kind="heat", at=T.isoformat(), temp_c=27),
+            dict(kind="gpu_state", at=T.isoformat(), host="athena", backlog_depth={})]
+    result = arousal.replay(rows, T, T+timedelta(seconds=30))
+    assert result["totals"]["strict_seconds"] == dict(engaged=20, idle=0, strained=0, unknown=10)
+    rows.append(dict(kind="gpu_state", at=T.isoformat(), host="circe", backlog_depth={}))
+    with pytest.raises(ValueError):
+        arousal.replay(rows, T, T+timedelta(seconds=30))
+
+
 def test_arousal_backlog_sustain_clear_hysteresis_and_chat_boundary():
     c = arousal.Classifier()
     def step(seconds, hot=False, backlog=True, last_turn=T):

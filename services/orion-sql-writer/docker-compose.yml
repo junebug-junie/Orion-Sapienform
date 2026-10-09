@@ -15,6 +15,8 @@ services:
       - ${ORION_DATA_ROOT:-/mnt/graphdb}/sql_logs:/app/logs
       # Postgres is external; removing SQLite volume mapping to avoid confusion
     environment:
+      - GPU_POOL_STATE_HISTORY_RETENTION_DAYS=${GPU_POOL_STATE_HISTORY_RETENTION_DAYS:-30}
+      - GRAMMAR_RETENTION_PERIODIC_MAX_CYCLE_SEC=${GRAMMAR_RETENTION_PERIODIC_MAX_CYCLE_SEC:-70}
       - PROJECT=${PROJECT}
       - SERVICE_NAME=${SERVICE_NAME}
       - SERVICE_VERSION=${SERVICE_VERSION}

@@ -71,6 +71,7 @@ from app.models import (
     CuriosityHopReadingSQL,
     DurableRunStateSQL,
     GpuPoolEventSQL,
+    GpuPoolStateSQL,
     TransportBaselineHourlySQL,
     ChatStanceBeliefLogSQL,
     SelfConceptHistorySQL,
@@ -121,7 +122,8 @@ from orion.schemas.attention_schema import AttentionSchemaV1
 from orion.schemas.curiosity_peer import PeerBriefV1
 from orion.schemas.curiosity_supervisor import HopReadingV1
 from orion.schemas.durable_run import DurableRunStateV1
-from orion.schemas.gpu_pool import GpuPoolEventV1
+from orion.schemas.gpu_pool import GpuPoolEventV1, GpuPoolStateV1
+from app.models.gpu_pool_state import state_history_row
 from orion.schemas.telemetry.transport_baseline_hourly import TransportBaselineHourlyV1
 from orion.schemas.chat_stance_belief import ChatStanceBeliefLogV1
 from orion.schemas.self_concept_history import SelfConceptHistoryV1
@@ -255,6 +257,7 @@ SOCIAL_TURN_STORED_KIND = "social.turn.stored.v1"
 INSERT_ONLY_MODELS = {
     JournalEntrySQL,
     GpuPoolEventSQL,
+    GpuPoolStateSQL,
     TransportBaselineHourlySQL,
     DurableRunStateSQL,
     SelfKnowledgeItemLogSQL,
@@ -536,6 +539,7 @@ MODEL_MAP: Dict[str, Tuple[Type[Any], Optional[Type[BaseModel]]]] = {
     "CuriosityHopReadingSQL": (CuriosityHopReadingSQL, HopReadingV1),
     "DurableRunStateSQL": (DurableRunStateSQL, DurableRunStateV1),
     "GpuPoolEventSQL": (GpuPoolEventSQL, GpuPoolEventV1),
+    "GpuPoolStateSQL": (GpuPoolStateSQL, GpuPoolStateV1),
     "TransportBaselineHourlySQL": (TransportBaselineHourlySQL, TransportBaselineHourlyV1),
     "ChatStanceBeliefLogSQL": (ChatStanceBeliefLogSQL, ChatStanceBeliefLogV1),
     "SelfConceptHistorySQL": (SelfConceptHistorySQL, SelfConceptHistoryV1),
@@ -2144,7 +2148,8 @@ async def _write(
                 e,
             )
             raise
-        data = obj.model_dump() if hasattr(obj, "model_dump") else obj.dict()
+        data = (state_history_row(obj) if sql_model_cls is GpuPoolStateSQL else
+                obj.model_dump() if hasattr(obj, "model_dump") else obj.dict())
     else:
         data = payload if isinstance(payload, dict) else {}
 

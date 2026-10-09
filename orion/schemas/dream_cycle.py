@@ -20,7 +20,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
 
 # §cap-all-collections.
 MAX_REPLAY_ITEMS = 24
@@ -72,6 +72,28 @@ class SleepPressureV1(BaseModel):
     @property
     def should_sleep(self) -> bool:
         return self.pressure >= self.threshold and self.is_idle
+
+
+class DreamPressureObservationV1(BaseModel):
+    """SQL-only observation of an actual check, before any scheduling gate.
+
+    source_errors makes degraded source reads unusable as evidence of calm.
+    It never changes the pressure or the decision made from that pressure.
+    """
+    model_config = ConfigDict(extra="forbid")
+
+    check_id: str
+    observed_at: AwareDatetime
+    reading: SleepPressureV1
+    formula: Literal["novelty.v1"] = "novelty.v1"
+    trigger: CycleTrigger
+    forced: bool
+    last_window_start: Optional[AwareDatetime] = None
+    last_attempt_end: Optional[AwareDatetime] = None
+    min_interval_hours: float = Field(ge=0)
+    check_interval_sec: float = Field(gt=0)
+    lookback_hours: float = Field(gt=0)
+    source_errors: list[str] = Field(default_factory=list)
 
 
 class ReplayItemV1(BaseModel):

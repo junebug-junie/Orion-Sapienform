@@ -3366,7 +3366,7 @@ channels:
     schema_id: "GpuPoolStateV1"
     message_kind: "gpu_pool.state.v1"
     producer_services: ["orion-gpu-pool"]
-    consumer_services: ["orion-hub"]
+    consumer_services: ["orion-hub", "orion-sql-writer"]
     stability: "experimental"
     since: "2026-09-24"
     description: "Whole-pool snapshot every few seconds: host (the pool's node), cards (with index = the card's nvidia-smi device number on that host, when the YAML sets it), discovered roles (profile, model file, slots, ctx/slot, confirmed|static|mismatch|silent|down|evicted|unloaded), unclaimed servers, live leases, queue and backlog depth. Hub's biometrics GPU labels join nvidia-smi on host + card index (stage 5.5)."

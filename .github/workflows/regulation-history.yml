@@ -1,0 +1,55 @@
+name: Regulation observation history
+on:
+  pull_request:
+    paths:
+      - 'services/orion-dream/**'
+      - 'services/orion-sql-writer/**'
+      - 'services/orion-sql-db/manual_migration_regulation_history.sql'
+      - 'orion/schemas/dream_cycle.py'
+      - 'orion/bus/channels.yaml'
+      - 'scripts/analysis/measure_dream_pressure_crossings.py'
+      - 'scripts/analysis/measure_arousal_replay.py'
+      - 'scripts/analysis/tests/test_regulation_measurements.py'
+      - '.github/workflows/regulation-history.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  history:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: test-only
+          POSTGRES_DB: regulation_history_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd pg_isready --health-interval 5s
+          --health-timeout 5s --health-retries 10
+    env:
+      POSTGRES_URI: postgresql://postgres:test-only@localhost:5432/regulation_history_test
+      REGULATION_HISTORY_TEST_POSTGRES_URI: postgresql://postgres:test-only@localhost:5432/regulation_history_test
+      ORION_BUS_URL: redis://100.92.216.81:6379/0
+      ORION_BUS_ENABLED: 'false'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -r services/orion-sql-writer/requirements.txt pytest pytest-asyncio httpx PyYAML
+      - name: Dream observations and unchanged decisions, including real Postgres
+        run: >-
+          python -m pytest -q services/orion-dream/tests/test_pressure_history.py
+          services/orion-dream/tests/test_dream_cycle_v2.py
+      - name: Dream behavior evals
+        run: python -m pytest -q services/orion-dream/evals/test_dream_cycle_eval.py
+      - name: GPU consumer and bounded retention, including real Postgres
+        run: >-
+          python -m pytest -q services/orion-sql-writer/tests/test_gpu_pool_state_history.py
+          services/orion-sql-writer/tests/test_gpu_pool_event_sql_shape.py
+          services/orion-sql-writer/tests/test_grammar_retention_periodic.py
+          services/orion-sql-writer/tests/test_route_map_completeness.py
+      - name: Offline history consumers
+        run: python -m pytest -q scripts/analysis/tests/test_regulation_measurements.py

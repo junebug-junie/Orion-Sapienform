@@ -154,6 +154,6 @@ git pull --ff-only && scripts/safe_docker_build.sh orion-cortex-orch up -d --bui
 
 ## PR link
 
-TBD
+https://github.com/junebug-junie/Orion-Sapienform/pull/2565
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

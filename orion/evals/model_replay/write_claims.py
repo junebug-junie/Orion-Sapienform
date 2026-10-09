@@ -33,13 +33,13 @@ from typing import Any, Iterable, Optional
 
 _PRIOR_ID = re.compile(r"\b(?:self|world|juniper|orion|prior|concept)[:][a-z0-9][a-z0-9_\-]{5,}\b", re.I)
 # Confidences are written with a decimal point; bare integers ("times_tested 0→1") are counts.
-_NUM = r"(0?\.\d+|1\.0+)(?![\d.])"
+_NUM = r"(0?\.\d+|1\.0+)(?!\d)(?!\.\d)"   # a sentence-ending period is not part of the number
 _GAP = r"[*_`\s]*(?:[a-z_]+[*_`\s]+){0,2}"          # "→ supported 0.78", "**0.70 → 0.78**"
 _MOVE = re.compile(rf"(?<![\d.]){_NUM}{_GAP}(?:→|->|⟶|=>|—>|\bto\b){_GAP}{_NUM}", re.I)
 # "0.7 → 0.62 → 0.0": history narrated as a chain; only the last link is this turn's move.
 _CHAIN = re.compile(rf"(?<![\d.]){_NUM}(?:{_GAP}(?:→|->|⟶|=>|—>){_GAP}{_NUM}){{2,}}", re.I)
 _FROM_TO = re.compile(rf"\bfrom\s+{_NUM}\s+to\s+{_NUM}", re.I)
-_TO_ONLY = re.compile(rf"\b(?:raised|lowered|dropped|moved|bumped|set|revised|cut)\b(?:\s+\w+){{0,3}}\s+to\s+{_NUM}", re.I)
+_TO_ONLY = re.compile(rf"\b(?:raised|lowered|dropped|moved|bumped|set|revised|cut)\b(?:\s+\S+){{0,3}}?\s+to\s+{_NUM}", re.I)
 _CONF_AFTER_ID = re.compile(rf"(?:confidence\b[^0-9\n]{{0,20}}|\bat\s+[*_]*){_NUM}", re.I)
 _WRITE_VERB = re.compile(
     r"\b(wrote|written|write|writing|revised|revision|revise|moved|move|lowered|raised|dropped|bumped|updated|"
@@ -111,11 +111,22 @@ def _f(x: str) -> float:
     return float(x)
 
 
+_CLAUSE_BREAK = re.compile(r"[;:—()]|,\s|\s-\s")
+
+
+def _hedged(sentence: str, start: int) -> bool:
+    """A hedge (would/if/not/failed to/...) in the claim's own clause, BEFORE its numbers. A "not"
+    after the numbers ("0.80 -> 0.70, not a new prior") does not undo the claim."""
+    clause = _CLAUSE_BREAK.split(sentence[:start])[-1]
+    return bool(_HEDGE.search(clause)) or bool(_HEDGE.search(sentence[:start][-60:]) and
+                                               re.search(r"\b(if|would|could|should|might|will)\b", sentence[:start], re.I))
+
+
 def extract_claims(text: str, known_ids: Iterable[str] = ()) -> list[Claim]:
     pattern = _id_pattern(known_ids)
     claims: list[Claim] = []
     for pos, sent in _sentences(text):
-        if not (_WRITE_VERB.search(sent) or _MOVE.search(sent)) or _HEDGE.search(sent):
+        if not (_WRITE_VERB.search(sent) or _MOVE.search(sent)):
             continue
         spans: list[tuple[int, int]] = []
         moves_found: list[tuple[int, float, float]] = []
@@ -129,15 +140,15 @@ def extract_claims(text: str, known_ids: Iterable[str] = ()) -> list[Claim]:
             spans.append((m.start(), m.end()))
             moves_found.append((m.start(), _f(m.group(1)), _f(m.group(2))))
         for start, a, b in sorted(moves_found):
-            if not (0.0 <= a <= 1.0 and 0.0 <= b <= 1.0) or a == b:
+            if not (0.0 <= a <= 1.0 and 0.0 <= b <= 1.0) or a == b or _hedged(sent, start):
                 continue
             pid, explicit = _nearest_id(pattern, text, pos, sent[:start] or sent)
             if any((c.prior_id, c.before, c.after) == (pid, a, b) for c in claims):
                 continue  # the same move told twice (summary + detail) is one claim
             claims.append(Claim("move", pid, a, b, sent.strip()[:400], explicit))
         for m in _TO_ONLY.finditer(sent):
-            if any(a <= m.start() < b for a, b in spans):
-                continue
+            if any(a <= m.start(1) < b for a, b in spans) or _hedged(sent, m.start()):
+                continue  # its number is already part of a from->to move
             pid, explicit = _nearest_id(pattern, text, pos, sent[: m.start()] or sent)
             claims.append(Claim("move", pid, None, _f(m.group(1)), sent.strip()[:400], explicit))
     # New priors: an id, then "Confidence: x" / "at 0.85" just after it, in a passage that says it formed one.

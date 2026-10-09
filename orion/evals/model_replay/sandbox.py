@@ -15,7 +15,8 @@ HOW WRITES ARE PREVENTED -- by construction, one lane per kind of state, each te
     a write is not sent at all: it is recorded as a stubbed write and answered with an error.
   * HTTP (curl, WebFetch): GET only. Any other method or a body (-X POST, -d, -F, --json, -T) is
     recorded as a stubbed write and never sent.
-  * docker: ps / logs / inspect / images only; everything else (exec, run, compose, rm...) refused.
+  * docker: ps / logs / images only (not inspect: it prints container env); everything else refused.
+  * psql backslash meta-commands (\\! shell, \\c user switch, \\o/\\copy files) are refused outright.
 
 Every call -- executed, stubbed or refused -- is appended to ``ToolLog``; the write-claim check
 reads the stubbed writes and the scratch-graph diff from there.
@@ -40,7 +41,7 @@ from orion.evals.model_replay.command_split import EXTERNAL_TOOLS, Simple, Unspl
 
 OUTPUT_CAP = 30_000
 DEFAULT_SANDBOX_IMAGE = "orion-harness-governor-harness-governor:latest"
-DOCKER_READ_VERBS = frozenset({"ps", "logs", "inspect", "images"})
+DOCKER_READ_VERBS = frozenset({"ps", "logs", "images"})  # not inspect: it prints container env (secrets)
 
 # A Cypher clause that changes the graph. Matched after string literals are blanked.
 _CYPHER_WRITE = re.compile(r"\b(CREATE|MERGE|SET|DELETE|DETACH|REMOVE|DROP)\b|\bCALL\s+db\.idx\.", re.I)
@@ -56,6 +57,22 @@ def strip_literals(text: str) -> str:
 
 def is_cypher_write(query: str) -> bool:
     return bool(_CYPHER_WRITE.search(strip_literals(query)))
+
+
+_PSQL_DESCRIBE = re.compile(r"\s*\\d[a-zA-Z+]*(\s+[\w.*\"]+)?\s*;?\s*")
+
+
+def psql_meta_refusal(sql: str) -> Optional[str]:
+    """psql backslash commands are not SQL: `\\!` runs a shell inside the DB container (where a
+    local `psql -U postgres` is trusted), `\\c` switches user, `\\o`/`\\w`/`\\copy`/`\\g file`
+    write files, `\\gexec`/`\\i` run more. The only one allowed is a lone describe (`\\dt`,
+    `\\d table`). Any other backslash anywhere -- even inside what looks like a string -- refuses
+    the whole call: psql's own lexer, not ours, decides what is a meta-command."""
+    if "\\" not in sql:
+        return None
+    if _PSQL_DESCRIBE.fullmatch(sql):
+        return None
+    return "psql backslash commands are not available here (only a lone \\d describe); send plain SQL"
 
 
 def is_sql_write(sql: str) -> bool:
@@ -119,7 +136,9 @@ class ReadOnlyPsql:
         self.container, self.role, self.db, self.timeout_sec = container, role, db, timeout_sec
 
     def run(self, sql: str, flags: list[str]) -> tuple[str, int]:
-        allowed = [f for f in flags if re.fullmatch(r"-(?:[AtqxH]+|-csv|-html)|-F.|-P.*", f)]
+        if (why := psql_meta_refusal(sql)) is not None:  # defense in depth: Toolbox refuses first
+            return f"psql: {why}\n", 1
+        allowed = [f for f in flags if re.fullmatch(r"-(?:[AtqxH]+|-csv|-html)", f)]
         script = f"BEGIN READ ONLY;\n{sql.rstrip().rstrip(';')};\nROLLBACK;\n"
         try:
             p = subprocess.run(
@@ -133,36 +152,74 @@ class ReadOnlyPsql:
 
 
 class HostHttpGet:
-    """GET only. `host.docker.internal` (what the prompts name) maps to this host."""
+    """GET only, no redirects followed (a 3xx is returned as-is), and no private address except
+    the read-only Hub API the prompts name (`host.docker.internal:8080/api/...` -> this host).
+    Reaching an arbitrary local or tailnet service with a GET that happens to change state would
+    be a write path; public web pages are reads."""
 
-    def __init__(self, host_map: Optional[dict[str, str]] = None, timeout_sec: float = 60.0) -> None:
+    ALLOWED_PRIVATE = (("127.0.0.1", 8080, "/api/"),)
+
+    def __init__(self, host_map: Optional[dict[str, str]] = None, timeout_sec: float = 60.0,
+                 resolve: Optional[Callable[[str], list[str]]] = None) -> None:
         self.host_map = {"host.docker.internal": "127.0.0.1", **(host_map or {})}
         self.timeout_sec = timeout_sec
+        self.resolve = resolve or _resolve
+
+    def refusal(self, url: str) -> Optional[str]:
+        import ipaddress
+
+        parsed = urlparse(url)
+        if parsed.scheme not in ("http", "https"):
+            return f'Protocol "{parsed.scheme}" not supported'
+        host = self.host_map.get(parsed.hostname or "", parsed.hostname or "")
+        port = parsed.port or (443 if parsed.scheme == "https" else 80)
+        try:
+            addrs = self.resolve(host)
+        except Exception as exc:  # noqa: BLE001
+            return f"Could not resolve host: {host} ({type(exc).__name__})"
+        for a in addrs:
+            ip = ipaddress.ip_address(a)
+            if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved or ip.is_multicast \
+                    or ip in ipaddress.ip_network("100.64.0.0/10"):
+                if not any(str(ip) == h and port == p and parsed.path.startswith(pre)
+                           for h, p, pre in self.ALLOWED_PRIVATE):
+                    return f"Failed to connect to {host} port {port}: not reachable from this environment"
+        return None
 
     def get(self, url: str) -> tuple[str, int]:
         import httpx
 
+        if (why := self.refusal(url)) is not None:
+            return f"curl: (7) {why}\n", 7
         parsed = urlparse(url)
-        if parsed.scheme not in ("http", "https"):
-            return f"curl: (1) Protocol \"{parsed.scheme}\" not supported\n", 1
         host = parsed.hostname or ""
         if host in self.host_map:
             netloc = self.host_map[host] + (f":{parsed.port}" if parsed.port else "")
             url = parsed._replace(netloc=netloc).geturl()
         try:
-            with httpx.Client(timeout=self.timeout_sec, follow_redirects=True,
+            with httpx.Client(timeout=self.timeout_sec, follow_redirects=False,
                               headers={"User-Agent": "Mozilla/5.0 (orion-model-replay)"}) as c:
                 r = c.get(url)
+            if 300 <= r.status_code < 400:
+                return f"HTTP {r.status_code} redirect to {r.headers.get('location', '')} (not followed)\n", 0
             return r.text, 0 if r.status_code < 400 else 22
         except Exception as exc:  # noqa: BLE001
             return f"curl: (7) {type(exc).__name__}: {exc}\n", 7
 
 
+def _resolve(host: str) -> list[str]:
+    import socket
+
+    return sorted({ai[4][0] for ai in socket.getaddrinfo(host, None)})
+
+
 class DockerReadOnly:
     def run(self, argv: list[str]) -> tuple[str, int]:
         verb = next((a for a in argv[1:] if not a.startswith("-")), "")
-        if verb not in DOCKER_READ_VERBS or (verb == "logs" and "-f" in argv) or "--follow" in argv:
-            return f"docker: '{verb}' is not available in this environment (read-only: ps, logs, inspect, images)\n", 1
+        follow = verb == "logs" and any(a == "-f" or a.startswith("--follow") or (re.fullmatch(r"-[a-zA-Z]*f[a-zA-Z]*", a) is not None)
+                     for a in argv[2:])
+        if verb not in DOCKER_READ_VERBS or follow:
+            return f"docker: '{verb}' is not available in this environment (read-only: ps, logs, images; no follow)\n", 1
         try:
             p = subprocess.run(["docker", *argv[1:]], capture_output=True, text=True, timeout=60)
         except subprocess.TimeoutExpired:
@@ -218,9 +275,12 @@ class FetchCache:
     http: HttpLane
     pages: dict[str, tuple[str, int]] = field(default_factory=dict)
     _lock: threading.Lock = field(default_factory=threading.Lock)
+    _url_locks: dict[str, threading.Lock] = field(default_factory=dict)
 
     def get(self, url: str) -> tuple[str, int]:
-        with self._lock:  # both models run in threads; the second waits for the first fetch
+        with self._lock:
+            lock = self._url_locks.setdefault(url, threading.Lock())
+        with lock:  # the second model waits for the first fetch of THIS url only
             if url not in self.pages:
                 self.pages[url] = self.http.get(url)
             return self.pages[url]
@@ -247,6 +307,7 @@ class Toolbox:
     fetch_mode: str = "live"
     fetch_fail_error: str = ""
     sandbox_root: str = "/repo"
+    env: dict[str, str] = field(default_factory=dict)   # what the sandbox shell sees; used to expand $VARS
 
     def call(self, name: str, args: dict[str, Any]) -> tuple[str, bool]:
         """(text result, is_error)."""
@@ -332,6 +393,12 @@ class Toolbox:
                 groups[-1].append(c)
             else:
                 groups.append([c])
+        local = dict(self.env)   # `Q='MATCH ...'; redis-cli ... "$Q"` must send the query, not "$Q"
+        for c in cmds:
+            for tok in (c.argv[1:] if c.argv[:1] == ["export"] else c.argv if len(c.argv) == 1 else []):
+                m = re.fullmatch(r"([A-Za-z_][A-Za-z0-9_]*)=(.*)", tok, re.S)
+                if m:
+                    local[m.group(1)] = m.group(2)
         transcript: list[str] = []
         stdin: Optional[str] = None
         rc = 0
@@ -343,7 +410,7 @@ class Toolbox:
                 stdin = None
                 continue
             if g[0].tool in EXTERNAL_TOOLS:
-                out, rc = self._external(g[0], stdin if stdin is not None else g[0].stdin)
+                out, rc = self._external(g[0], stdin if stdin is not None else g[0].stdin, local)
             else:
                 text = " ".join(c.raw + (f" {c.op}" if c.op and c is not g[-1] else "") for c in g)
                 out, rc = self.shell.run(text, stdin=stdin)
@@ -357,9 +424,24 @@ class Toolbox:
                 skip = True
         return _cap("".join(transcript)), rc != 0
 
-    def _external(self, cmd: Simple, stdin: Optional[str]) -> tuple[str, int]:
+    def _external(self, cmd: Simple, stdin: Optional[str], env: Optional[dict[str, str]] = None) -> tuple[str, int]:
         tool = cmd.tool
-        argv = cmd.argv[[i for i, t in enumerate(cmd.argv) if t.rsplit("/", 1)[-1] == tool][0]:]
+        start = [i for i, t in enumerate(cmd.argv) if t.rsplit("/", 1)[-1] == tool][0]
+        literal = (cmd.literal or [False] * len(cmd.argv))[start:]
+        argv = [a if lit else expand_vars(a, env or {}) for a, lit in zip(cmd.argv[start:], literal)]
+        redirect = None
+        for i, a in enumerate(argv):
+            if a in (">", ">>") and i + 1 < len(argv):
+                redirect = (a, argv[i + 1])
+                argv = argv[:i] + argv[i + 2:]
+                break
+        out, rc = self._external_argv(tool, argv, stdin)
+        if redirect is not None:  # `psql ... > /tmp/out`: the output lands in the sandbox, as in bash
+            wout, wrc = self.shell.run(f"cat {redirect[0]} {shlex.quote(redirect[1])}", stdin=out)
+            return wout, rc or wrc
+        return out, rc
+
+    def _external_argv(self, tool: str, argv: list[str], stdin: Optional[str]) -> tuple[str, int]:
         if tool == "redis-cli":
             return self._redis(argv, stdin)
         if tool == "psql":
@@ -418,6 +500,9 @@ class Toolbox:
         sql = "\n".join(sqls) if sqls else (stdin or "")
         if not sql.strip():
             return "psql: no SQL given (interactive psql is not available)\n", 1
+        if (why := psql_meta_refusal(sql)) is not None:
+            self.log.add("Bash", "sql", "refused", sql=sql[:2000], reason="psql_meta_command")
+            return f"psql: {why}\n", 1
         if is_sql_write(sql):
             self.log.add("Bash", "sql", "write_stubbed", sql=sql[:4000])
             return "ERROR:  permission denied: this role is read-only (SELECT only)\n", 1
@@ -436,8 +521,13 @@ class Toolbox:
                 method = argv[i + 1].upper()
                 i += 2
                 continue
-            if a in ("-d", "--data", "--data-raw", "--data-binary", "--data-urlencode", "-F", "--form",
-                     "--json", "-T", "--upload-file") or a.startswith(("--data", "--json", "--form")):
+            if a.startswith("--request="):
+                method = a.split("=", 1)[1].upper()
+            elif re.fullmatch(r"-X.+", a):
+                method = a[2:].upper()
+            elif a in ("-d", "--data", "--data-raw", "--data-binary", "--data-urlencode", "-F", "--form",
+                       "--json", "-T", "--upload-file") or a.startswith(("--data", "--json", "--form", "--upload")) \
+                    or re.fullmatch(r"-[dFT].+", a) or a == "-G":
                 body = True
             elif a in ("-H", "--header", "-o", "--output", "-m", "--max-time", "-u", "--user", "-w",
                        "--write-out", "-A", "--user-agent", "--connect-timeout", "-e", "--referer"):
@@ -454,6 +544,13 @@ class Toolbox:
         out, rc = self.http.get(url)
         self.log.add("Bash", "http", "executed", out, url=url, rc=rc)
         return out, rc
+
+
+def expand_vars(token: str, env: dict[str, str]) -> str:
+    """$NAME / ${NAME} from the sandbox env and earlier assignments in the same command; unknown
+    names expand to empty, as in bash."""
+    return re.sub(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)",
+                  lambda m: env.get(m.group(1) or m.group(2), ""), token)
 
 
 def _cap(text: str) -> str:

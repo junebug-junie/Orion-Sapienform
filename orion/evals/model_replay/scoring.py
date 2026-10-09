@@ -20,6 +20,10 @@ from orion.evals.model_replay.fixture import ReplayTaskV1
 FINISH_RATE_MIN = 0.90
 MAX_GAP_POINTS = 5.0
 MODELS = ("q4", "bonsai")
+# Ends that say the replay's own machinery failed (sandbox/scratch graph/pool/worker unreachable,
+# run cancelled), not the model. A task with one is void: left out of BOTH models' denominators and
+# re-run on resume, so a recalled gpu2 hold cannot fail Bonsai alone.
+VOID_ENDS = frozenset({"harness_error", "infra_error", "cancelled"})
 
 
 @dataclass
@@ -93,9 +97,10 @@ def finish(score: TaskScore) -> TaskScore:
 
 
 def summarize(scores: list[TaskScore]) -> dict[str, Any]:
+    void = sorted({s.task_id for s in scores if s.end in VOID_ENDS})
     per_model: dict[str, dict[str, Any]] = {}
     for m in MODELS:
-        rows = [s for s in scores if s.model == m]
+        rows = [s for s in scores if s.model == m and s.task_id not in void]
         n = len(rows)
         fin = sum(s.finished for s in rows)
         by_kind: dict[str, dict[str, int]] = {}
@@ -118,7 +123,12 @@ def summarize(scores: list[TaskScore]) -> dict[str, Any]:
             "elapsed_sec": round(sum(s.elapsed_sec for s in rows), 1),
             "by_kind": by_kind,
         }
-    return {"per_model": per_model, "decision": decide(per_model)}
+    decision = decide(per_model)
+    if void:
+        decision["eligible"] = False
+        decision["verdict"] = (f"PARTIAL: {len(void)} task(s) void (replay machinery failed, not the model): "
+                               f"re-run with --out; so far: {decision['verdict']}")
+    return {"per_model": per_model, "void_tasks": void, "decision": decision}
 
 
 def _count(values) -> dict[str, int]:

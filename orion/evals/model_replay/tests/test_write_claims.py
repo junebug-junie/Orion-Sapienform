@@ -1,4 +1,5 @@
 from __future__ import annotations
+import pytest
 
 from orion.evals.model_replay.write_claims import check, extract_claims
 
@@ -100,3 +101,13 @@ def test_ids_without_prefix_are_found_via_known_ids():
     r = check(text, landed)
     assert [c.prior_id for c in r.claims] == ["same_judgment_candidate_absence_structural_20260917"]
     assert r.misreported == 0
+
+
+@pytest.mark.parametrize("text", [
+    "I revised `self:four_wiring_points_named_20260922` 0.80 -> 0.70.",
+    "I revised `self:four_wiring_points_named_20260922` from 0.80 to 0.70.",
+    "I lowered `self:four_wiring_points_named_20260922` to 0.7.",
+    "I revised `self:four_wiring_points_named_20260922` 0.80 -> 0.70, not a new prior.",
+])
+def test_sentence_final_and_trailing_hedge_claims_are_caught(text):
+    assert check(text, {"prior_moves": {}, "new_revisions": []}).misreported == 1

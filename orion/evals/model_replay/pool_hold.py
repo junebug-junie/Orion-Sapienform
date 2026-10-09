@@ -8,16 +8,22 @@ WHY OPERATOR HOLDS. A caller cannot ask the pool for a role or a profile, only a
                    the Q4 profile.
   * Bonsai (gpu2): class ``agent`` -> [agent, agent-gpu2, agent-deep, chat]. Taken AFTER the gpu1
                    hold, so agent is full and the class falls through to agent-gpu2. Verified:
-                   grant.role == "agent-gpu2" and grant.profile_name is the Bonsai profile. A second
-                   hold on the same class fills gpu2's other slot (2 slots) so no background call
-                   shares the card; if that second grant lands anywhere else it is released at once.
+                   grant.role == "agent-gpu2" and grant.profile_name is the Bonsai profile. Only one
+                   hold: the pool allows one non-urgent hold per role (stage 7.2), so a second one
+                   would land on hecate or chat. gpu2's other slot can serve one-off calls, as in
+                   production; the replay's own calls ride the hold as attached child leases.
 
-A grant on the wrong role or profile is released immediately and the task is refused (fail
-closed): this never holds chat's card or hecate's.
+A grant on the wrong role or profile is released immediately and the task is retried later
+(runner: the seat check waits until gpu1 and gpu2 carry no other run's hold). Because class
+``agent`` CAN fall through to agent-deep (hecate) or chat when gpu2 is busy, such a grant may
+exist for the length of one RPC round trip before it is given back. An operator-only class
+covering just agent-gpu2 would remove that; it is a config/gpu_pool.yaml change, not made here.
 
 Operator holds have no heartbeat and no expiry (``lease_graph.py``: operator -> expiry None), so a
 leaked hold stays until the role's ``max_hold_sec`` or forever on gpu1. Hence:
-  1. every acquire is appended to ``holds.jsonl`` in the run dir BEFORE anything else happens;
+  1. every hold request is appended to ``holds.jsonl`` BEFORE it is sent, its lease id as soon as the
+     pool answers; a hold RPC that times out (the pool may still have created the lease) triggers a
+     sweep of the pool's own lease table for this holder (``sweep``);
   2. ``PoolHolds`` is an async context manager whose ``__aexit__`` releases everything, and the
      runner turns SIGTERM/SIGHUP into the same unwind;
   3. ``release_leftovers(run_dir)`` (``--release-leftovers``) releases anything a SIGKILL left.
@@ -52,7 +58,7 @@ class SeatSpec:
 
 SEATS: dict[str, SeatSpec] = {
     "q4": SeatSpec("q4", "memory_distill", "agent", Q4_PROFILE),
-    "bonsai": SeatSpec("bonsai", "agent", "agent-gpu2", BONSAI_PROFILE, extra_slot_holds=1),
+    "bonsai": SeatSpec("bonsai", "agent", "agent-gpu2", BONSAI_PROFILE),
 }
 # gpu1 first: with agent's only slot held, class `agent` cannot land on agent.
 ACQUIRE_ORDER = ("q4", "bonsai")
@@ -135,8 +141,12 @@ class PoolHolds:
     models: tuple[str, ...] = ACQUIRE_ORDER
     actor: str = "bonsai-replay-eval"
     grant_timeout_sec: float = 1800.0
+    # Live lease ids the pool itself holds for HOLDER (reads /v1/pool); used when a hold RPC failed
+    # without telling us the lease id. None = no sweep (tests, or no pool HTTP).
+    sweep: Optional[Callable[[], Any]] = None
     seats: dict[str, Grant] = field(default_factory=dict)
     _held: list[str] = field(default_factory=list)
+    _unknown: bool = False
 
     async def __aenter__(self) -> dict[str, Grant]:
         try:
@@ -152,12 +162,29 @@ class PoolHolds:
             raise
         return dict(self.seats)
 
+    async def _sweep_unknown(self) -> None:
+        if self.sweep is None:
+            return
+        try:
+            ids = await self.sweep()
+        except Exception:  # noqa: BLE001 -- nothing better to do; --release-leftovers sweeps again
+            return
+        for lid in ids:
+            if lid not in self._held:
+                self._held.append(lid)
+                self.ledger.append(action="acquired", lease_id=lid, via="sweep")
+
     async def __aexit__(self, *exc: Any) -> None:
         await self.release_all(reason="task_done" if exc[0] is None else f"exit:{exc[0].__name__}")
 
     async def _hold(self, spec: SeatSpec) -> tuple[Optional[str], Optional[dict[str, Any]], str]:
         """(lease_id, grant-or-None, reason). Records the lease in the ledger before waiting."""
-        reply = await self.transport.hold(spec.work_class, self.actor)
+        self.ledger.append(action="requested", model=spec.model_key, work_class=spec.work_class)
+        try:
+            reply = await self.transport.hold(spec.work_class, self.actor)
+        except BaseException:
+            self._unknown = True  # the pool may have created a lease we never heard about
+            raise
         detail = reply.get("detail") or {}
         lease_id = detail.get("lease_id")
         if lease_id:
@@ -212,10 +239,23 @@ class PoolHolds:
             self._held.remove(lease_id)
 
     async def release_all(self, *, reason: str) -> None:
-        # shield: a cancelled task must still give the cards back.
+        """Every hold goes back even if this task is cancelled (again) mid-release: each release is
+        shielded, a CancelledError is held until the loop is done, then re-raised."""
+        pending: Optional[BaseException] = None
+        if self._unknown:
+            self._unknown = False
+            try:
+                await asyncio.shield(self._sweep_unknown())
+            except asyncio.CancelledError as exc:
+                pending = exc
         for lease_id in list(reversed(self._held)):
-            await asyncio.shield(self._release_one(lease_id, reason=reason))
+            try:
+                await asyncio.shield(self._release_one(lease_id, reason=reason))
+            except asyncio.CancelledError as exc:
+                pending = exc
         self.seats.clear()
+        if pending is not None:
+            raise pending
 
 
 _ENDED_STATUSES = ("released", "cancelled", "dead_lettered", "expired", "aborted")
@@ -255,10 +295,35 @@ def attach_factory(bus: Any, model: str, grant: Grant) -> Callable[[float], Any]
     return enter
 
 
-async def release_leftovers(transport: ControlTransport, ledger: HoldLedger, actor: str) -> list[str]:
-    """Release every lease the ledger says was acquired and never released (after a SIGKILL)."""
-    holds = PoolHolds(transport=transport, ledger=ledger, actor=actor)
+LIVE_STATUSES = ("granted", "recalling", "queued", "retry_wait", "backlogged")
+
+
+def live_holder_leases(pool_state: dict[str, Any], holder: str = HOLDER) -> list[str]:
+    """Lease ids the pool's own state (GET /v1/pool) shows live for ``holder``."""
+    return sorted(str(lease["lease_id"]) for lease in pool_state.get("leases") or []
+                  if lease.get("holder") == holder and lease.get("status") in LIVE_STATUSES)
+
+
+def http_sweeper(pool_http: str, holder: str = HOLDER) -> Callable[[], Any]:
+    async def sweep() -> list[str]:
+        import httpx
+
+        async with httpx.AsyncClient(timeout=15) as c:
+            return live_holder_leases((await c.get(f"{pool_http}/v1/pool")).json(), holder)
+
+    return sweep
+
+
+async def release_leftovers(transport: ControlTransport, ledger: HoldLedger, actor: str,
+                            sweep: Optional[Callable[[], Any]] = None) -> list[str]:
+    """Release every lease the ledger says was taken and never released, plus (``sweep``) every live
+    lease the pool itself shows for this holder -- covers a hold whose reply never arrived."""
+    holds = PoolHolds(transport=transport, ledger=ledger, actor=actor, sweep=sweep)
     holds._held = ledger.outstanding()
+    holds._unknown = sweep is not None
+    if sweep is not None:
+        await holds._sweep_unknown()
+        holds._unknown = False
     left = list(holds._held)
     await holds.release_all(reason="leftover")
     return left
@@ -306,7 +371,8 @@ class BusControlTransport:
                 lid = payload.get("lease_id") or ""
                 if payload.get("event") == "granted" and (payload.get("detail") or {}).get("grant"):
                     result: Optional[dict[str, Any]] = payload["detail"]["grant"]
-                elif payload.get("event") in ("unavailable", "backlogged", "cancelled", "dead_lettered"):
+                elif payload.get("event") in ("unavailable", "backlogged", "cancelled", "dead_lettered",
+                                              "expired", "aborted"):
                     result = None
                 else:
                     continue
@@ -352,3 +418,36 @@ class BusControlTransport:
             return await asyncio.wait_for(asyncio.shield(fut), timeout=timeout_sec)
         except asyncio.TimeoutError:
             return None
+
+
+def seat_problem(pool_state: dict[str, Any], models: tuple[str, ...] = ACQUIRE_ORDER, holder: str = HOLDER) -> Optional[str]:
+    """Why the replay should not take holds right now (None = go): a seat is not serving the expected
+    model, or another run already holds it (one hold per role in stage 7.2, so our hold would queue
+    on gpu1 or fall through to hecate/chat for gpu2)."""
+    roles = {r.get("role"): r for r in pool_state.get("roles") or []}
+    for m in models:
+        spec = SEATS[m]
+        r = roles.get(spec.expect_role) or {}
+        if r.get("status") != "confirmed" or r.get("profile_name") != spec.expect_profile:
+            return f"{spec.expect_role} is {r.get('status')}/{r.get('profile_name')}, want {spec.expect_profile}"
+        busy = [lease.get("holder") for lease in pool_state.get("leases") or []
+                if lease.get("role") == spec.expect_role and lease.get("kind") == "hold"
+                and lease.get("status") in ("granted", "recalling") and lease.get("holder") != holder]
+        if busy:
+            return f"{spec.expect_role} is held by {busy[0]}"
+    if pool_state.get("actuation_paused"):
+        return "pool actuation is paused"
+    return None
+
+
+def http_seat_check(pool_http: str) -> Callable[[], Any]:
+    async def check() -> Optional[str]:
+        import httpx
+
+        try:
+            async with httpx.AsyncClient(timeout=15) as c:
+                return seat_problem((await c.get(f"{pool_http}/v1/pool")).json())
+        except Exception as exc:  # noqa: BLE001
+            return f"pool state unreadable: {type(exc).__name__}"
+
+    return check

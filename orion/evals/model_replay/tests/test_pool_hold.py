@@ -62,11 +62,11 @@ def test_both_seats_verified_and_released(tmp_path):
     async def go():
         async with _holds(pool, tmp_path) as seats:
             assert seats["q4"].role == "agent" and seats["bonsai"].role == "agent-gpu2"
-            assert len(pool.live) == 3      # gpu1 + both gpu2 slots
+            assert len(pool.live) == 2      # gpu1 + gpu2 (one hold per role)
 
     asyncio.run(go())
     assert pool.live == set()
-    assert [v[1] for v in pool.verbs if v[0] == "hold"] == ["memory_distill", "agent", "agent"]
+    assert [v[1] for v in pool.verbs if v[0] == "hold"] == ["memory_distill", "agent"]
     assert HoldLedger(tmp_path / "holds.jsonl").outstanding() == []
 
 
@@ -125,18 +125,6 @@ def test_pool_refusal_releases_earlier_holds(tmp_path):
     pool = FakePool(plan=[GRANTS["memory_distill"], {"refuse": True}])
     with pytest.raises(HoldRefused, match="refused"):
         asyncio.run(_holds(pool, tmp_path).__aenter__())
-    assert pool.live == set()
-
-
-def test_extra_slot_landing_elsewhere_is_given_back_immediately(tmp_path):
-    pool = FakePool(plan=[GRANTS["memory_distill"], GRANTS["agent"],
-                          {"role": "chat", "profile_name": "x", "url": "http://c:8011", "cards": ["gpu0"]}])
-
-    async def go():
-        async with _holds(pool, tmp_path) as seats:
-            assert len(pool.live) == 2 and set(seats) == {"q4", "bonsai"}
-
-    asyncio.run(go())
     assert pool.live == set()
 
 
@@ -204,3 +192,77 @@ def test_bus_transport_sends_only_control_envelopes():
     assert [s[0] for s in sent] == [GPU_POOL_CONTROL_REQUEST_CHANNEL] * 3
     assert [s[1]["verb"] for s in sent] == ["hold", "release", "cancel"]
     assert sent[0][1]["work_class"] == "memory_distill" and all(s[2] for s in sent)
+
+
+def test_hold_rpc_timeout_sweeps_the_pool_for_our_lease(tmp_path):
+    """The pool created the lease but the reply never came: the sweep finds and releases it."""
+    pool = FakePool()
+    calls = {"n": 0}
+
+    async def hold(work_class, actor):
+        calls["n"] += 1
+        if work_class == "agent":
+            pool.live.add("GHOST")
+            raise TimeoutError("no reply")
+        return await FakePool.hold(pool, work_class, actor)
+
+    pool.hold = hold
+
+    async def sweep():
+        return sorted(pool.live)
+
+    holds = PoolHolds(transport=pool, ledger=HoldLedger(tmp_path / "h.jsonl"), sweep=sweep)
+    with pytest.raises(TimeoutError):
+        asyncio.run(holds.__aenter__())
+    assert pool.live == set()
+    rows = (tmp_path / "h.jsonl").read_text()
+    assert '"requested"' in rows and '"GHOST"' in rows
+
+
+def test_second_cancel_during_release_still_releases_everything(tmp_path):
+    pool = FakePool()
+    real_release = pool.release
+
+    async def slow_release(lease_id, actor):
+        await asyncio.sleep(0.05)
+        return await real_release(lease_id, actor)
+
+    pool.release = slow_release
+
+    async def main():
+        holds = _holds(pool, tmp_path)
+        await holds.__aenter__()
+        task = asyncio.create_task(holds.release_all(reason="x"))
+        await asyncio.sleep(0.01)
+        task.cancel()                      # cancel while the first release is in flight
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        await asyncio.sleep(0.2)           # shielded releases finish
+
+    asyncio.run(main())
+    assert pool.live == set()
+
+
+def test_seat_problem_reads_pool_state():
+    from orion.evals.model_replay.pool_hold import HOLDER, seat_problem
+
+    roles = [{"role": "agent", "status": "confirmed", "profile_name": Q4_PROFILE},
+             {"role": "agent-gpu2", "status": "confirmed", "profile_name": BONSAI_PROFILE}]
+    assert seat_problem({"roles": roles, "leases": []}) is None
+    busy = [{"role": "agent-gpu2", "kind": "hold", "status": "granted", "holder": "durable-runs:x"}]
+    assert "held by durable-runs:x" in seat_problem({"roles": roles, "leases": busy})
+    ours = [{"role": "agent-gpu2", "kind": "hold", "status": "granted", "holder": HOLDER}]
+    assert seat_problem({"roles": roles, "leases": ours}) is None
+    swapped = [roles[0], {**roles[1], "profile_name": Q4_PROFILE}]
+    assert "want ternary" in seat_problem({"roles": swapped, "leases": []})
+
+
+def test_leftovers_sweep_finds_unledgered_lease(tmp_path):
+    pool = FakePool()
+    pool.live = {"UNSEEN"}
+
+    async def sweep():
+        return sorted(pool.live)
+
+    released = asyncio.run(release_leftovers(pool, HoldLedger(tmp_path / "h.jsonl"), "t", sweep=sweep))
+    assert released == ["UNSEEN"] and pool.live == set()

@@ -9,7 +9,7 @@ summary.json, report.md (verdict first), blind_sheet.md + blind_key.json + hand_
 transcripts/, results.jsonl (resumable with --out <that dir>), holds.jsonl (every pool hold taken).
 
 Per task it holds gpu1 (Q4, class memory_distill -> role agent) and gpu2 (Bonsai, class agent ->
-role agent-gpu2, both slots) through the pool's operator verbs, checks each grant's role and
+role agent-gpu2) through the pool's operator verbs, checks each grant's role and
 profile, runs both models side by side, and releases both holds -- also on error, Ctrl-C,
 SIGTERM and SIGHUP. After a SIGKILL: --release-leftovers <out dir>.
 Design + no-write proof: orion/evals/model_replay/sandbox.py, docs/superpowers/pr-reports/2026-10-09-bonsai-replay-eval-pr.md.
@@ -31,7 +31,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from orion.evals.model_replay import runner  # noqa: E402
 from orion.evals.model_replay.fixture import FIXTURE_PATH, load_tasks  # noqa: E402
 from orion.evals.model_replay.pool_hold import (  # noqa: E402
-    SEATS, BusControlTransport, HoldLedger, attach_factory, release_leftovers,
+    SEATS, BusControlTransport, HoldLedger, attach_factory, http_seat_check, http_sweeper, release_leftovers,
 )
 
 PRIMARY_CHECKOUT = Path("/mnt/scripts/Orion-Sapienform")
@@ -83,6 +83,24 @@ def preflight(pool_http: str, image: str) -> list[str]:
     return problems
 
 
+def snapshot_repo(repo: Path, out: Path) -> dict:
+    """What the model's shell sees: `git archive HEAD` of the repo (tracked files only -- no
+    services/*/.env, no local secrets), extracted once into the results dir. Fixed for the whole run,
+    so a 12 h replay does not read a checkout that moves under it. Reused on resume."""
+    dest = out / "repo_snapshot"
+    head = subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"], check=True, capture_output=True,
+                          text=True).stdout.strip()
+    marker = dest / ".replay_head"
+    if not marker.exists():
+        dest.mkdir(parents=True, exist_ok=True)
+        archive = subprocess.Popen(["git", "-C", str(repo), "archive", "--format=tar", "HEAD"], stdout=subprocess.PIPE)
+        subprocess.run(["tar", "-x", "-C", str(dest)], stdin=archive.stdout, check=True)
+        if archive.wait() != 0:
+            raise RuntimeError("git archive failed")
+        marker.write_text(head)
+    return {"path": str(dest), "head": marker.read_text().strip()}
+
+
 async def live(args: argparse.Namespace, tasks) -> int:
     from orion.evals.model_replay.graph_scratch import COPIED_GRAPHS, ProdGraphSource, prod_falkordb_image
     from orion.evals.model_replay.sandbox import DockerReadOnly, FetchCache, HostHttpGet, ReadOnlyPsql
@@ -101,18 +119,22 @@ async def live(args: argparse.Namespace, tasks) -> int:
     dumps = {g: source.dump(g) for g in COPIED_GRAPHS}
     print("graph copies taken (DUMP): " + ", ".join(f"{g} {len(p)} bytes" for g, p in dumps.items()))
     run_tag = out.name
+    repo = snapshot_repo(args.repo, out)
+    print(f"repo snapshot (tracked files at {repo['head'][:12]}, no .env): {repo['path']}")
     try:
         http = HostHttpGet()
         cfg = runner.ReplayConfig(out_dir=out, tasks=tasks, repo=args.repo, grant_timeout_sec=args.grant_timeout_sec)
+        repo_path = Path(repo["path"])
         async with BusControlTransport(bus_url) as transport:
             loop = asyncio.get_running_loop()
-            factory = runner.LiveRigFactory(repo=args.repo, run_tag=run_tag, sandbox_image=args.sandbox_image,
+            factory = runner.LiveRigFactory(repo=repo_path, run_tag=run_tag, sandbox_image=args.sandbox_image,
                                             graph_image=prod_falkordb_image(), graph_dumps=dumps,
                                             sql=ReadOnlyPsql(), http=http, docker_ro=DockerReadOnly(),
                                             fetch_cache=FetchCache(http),
                                             attach=lambda m, g: attach_factory(transport.bus, m, g), loop=loop)
             runner.install_signal_unwind(loop, asyncio.current_task())
-            summary = await runner.run_replay(cfg, transport, factory)
+            summary = await runner.run_replay(cfg, transport, factory, seat_check=http_seat_check(args.pool_http),
+                                              sweep=http_sweeper(args.pool_http))
     finally:
         leftover = subprocess.run(["docker", "ps", "-aq", "--filter", "label=orion.model_replay=1",
                                    "--filter", f"name=orion-replay-{run_tag}"], capture_output=True, text=True).stdout.split()
@@ -129,7 +151,8 @@ async def leftovers(args: argparse.Namespace) -> int:
         print("ORION_BUS_URL is not set")
         return 2
     async with BusControlTransport(bus_url) as transport:
-        released = await release_leftovers(transport, HoldLedger(args.release_leftovers / "holds.jsonl"), ACTOR)
+        released = await release_leftovers(transport, HoldLedger(args.release_leftovers / "holds.jsonl"), ACTOR,
+                                           sweep=http_sweeper(args.pool_http))
     print(f"released {len(released)} leftover hold(s): {released}")
     return 0
 

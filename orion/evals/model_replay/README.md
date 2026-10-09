@@ -14,8 +14,8 @@ zero misreported writes, and finish rate within 5 points of Q4.
 | file | what |
 |---|---|
 | `fixtures/tasks.v1.jsonl` | 10 curiosity briefs, 4 self-sense questions x 2 snapshots, 6 reading turns (2 with the historical fetch failure), 6 stance_react prompts. Re-extract: `scripts/extract_model_replay_fixture.py` (`--check` diffs). |
-| `pool_hold.py` | operator holds per task: gpu1 via class `memory_distill`, gpu2 via class `agent` (both slots), role+profile verified, released on every exit path; `holds.jsonl` ledger + `--release-leftovers`. |
-| `sandbox.py` | the tool surface and the no-write lanes (shell in a `--network none --read-only` container; SQL as `orion_readonly` in a READ ONLY transaction; HTTP GET only; docker ps/logs/inspect/images only). |
+| `pool_hold.py` | operator holds per task: gpu1 via class `memory_distill`, gpu2 via class `agent`, role+profile verified, waits until no other run holds either card, model calls ride the hold as attached child leases, released on every exit path; `holds.jsonl` ledger + pool sweep + `--release-leftovers`. |
+| `sandbox.py` | the tool surface and the no-write lanes (shell in a `--network none --read-only` container; SQL as `orion_readonly` in a READ ONLY transaction; SQL meta-commands refused; HTTP GET only, no private addresses except the Hub API; docker ps/logs/images only; the shell sees a `git archive` snapshot of the repo, no .env files). |
 | `graph_scratch.py` | graph reads/writes go to a fresh local FalkorDB per (task, model) loaded from a start-of-run DUMP; production FalkorDB only ever sees DUMP/PING/EXISTS. |
 | `agent_loop.py` | Anthropic `/v1/messages` tool loop straight to the granted worker URL. |
 | `write_claims.py` | the write-claim check: write-up vs what landed in the scratch graph (catches d4db8c2bacb4). |

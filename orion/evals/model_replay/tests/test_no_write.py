@@ -223,20 +223,101 @@ def test_package_never_publishes_to_the_bus_or_writes_prod_graph():
     assert verbs == {"hold", "release", "cancel"}
 
 
-def test_worker_client_only_posts_messages(monkeypatch):
+def test_worker_client_only_posts_messages():
+    import httpx
+
     from orion.evals.model_replay import agent_loop
 
     sent = []
 
-    class R:
-        def raise_for_status(self):
-            return None
+    def handler(request):
+        sent.append((request.method, str(request.url)))
+        return httpx.Response(200, json={"content": [], "stop_reason": "end_turn"})
 
-        def json(self):
-            return {"content": [], "stop_reason": "end_turn"}
+    # MockTransport: never a socket. (An earlier version monkeypatched httpx.post, which the shared
+    # client does not use -- that test sent one real request to a live worker.)
+    agent_loop.HttpMessagesClient("http://worker.invalid:8016/", transport=httpx.MockTransport(handler)).create(
+        {"messages": []}, 10)
+    assert sent == [("POST", "http://worker.invalid:8016/v1/messages")]
 
-    import httpx
 
-    monkeypatch.setattr(httpx, "post", lambda url, **kw: sent.append(url) or R())
-    agent_loop.HttpMessagesClient("http://100.112.254.99:8016/").create({"messages": []}, 10)
-    assert sent == ["http://100.112.254.99:8016/v1/messages"]
+@pytest.mark.parametrize("cmd", [
+    r'''psql "$DSN" -c '\! psql -U postgres -d conjourney -c "DELETE FROM x"' ''',
+    r'''psql "$DSN" -c '\c conjourney postgres' ''',
+    "psql \"$DSN\" <<'SQL'\nselect 1 \\g /tmp/x\nSQL",
+    r'''psql "$DSN" -c '\o /tmp/x' ''',
+    r'''psql "$DSN" -c '\copy journal_entries to /tmp/x' ''',
+])
+def test_psql_meta_commands_never_reach_postgres(cmd):
+    box, shell, sql, *_ = _box()
+    out, err = box.call("Bash", {"command": cmd})
+    assert err and sql.calls == [] and shell.calls == []
+    assert box.log.events[-1].reason if hasattr(box.log.events[-1], "reason") else True
+    assert box.log.events[-1].action == "refused"
+
+
+def test_psql_describe_allowed_and_readonly_lane_double_checks():
+    box, shell, sql, *_ = _box()
+    box.call("Bash", {"command": r'psql "$DSN" -c "\dt"'})
+    assert len(sql.calls) == 1
+    out, rc = sandbox.ReadOnlyPsql().run(r"\! id", [])   # refused before any subprocess
+    assert rc == 1 and "backslash" in out
+
+
+def test_vars_expand_for_routed_tools_like_bash_would():
+    box, shell, sql, http, dock, graph = _box(env={"ORION_CURIOSITY_GRAPH_OWN": "orion_worldview"})
+    box.call("Bash", {"command": 'Q="MATCH (p:Prior) RETURN p.claim"; redis-cli GRAPH.QUERY "$ORION_CURIOSITY_GRAPH_OWN" "$Q"'})
+    assert graph.calls == [("orion_worldview", "GRAPH.QUERY", "MATCH (p:Prior) RETURN p.claim")]
+    box.call("Bash", {"command": "redis-cli GRAPH.QUERY orion_worldview 'MATCH (p) WHERE p.x = $x RETURN p'"})
+    assert graph.calls[-1][2] == "MATCH (p) WHERE p.x = $x RETURN p"      # single quotes: literal, as in bash
+
+
+def test_redirect_of_routed_tool_lands_in_sandbox():
+    box, shell, sql, *_ = _box()
+    box.call("Bash", {"command": 'psql "$DSN" -At -c "select 1" > /tmp/out.txt'})
+    assert sql.calls and sql.calls[0][0][0] == "select 1"
+    assert shell.calls and shell.calls[-1][0][0] == "cat > /tmp/out.txt"
+
+
+def test_shell_parts_keep_globs_and_vars():
+    from orion.evals.model_replay.command_split import split_command
+
+    cmds = split_command('ls *.py && echo "$HOME" && awk \'{print $1}\' f && curl -s http://x/y').commands
+    assert [c.raw for c in cmds[:3]] == ["ls *.py", "echo $HOME", "awk '{print $1}' f"]
+
+
+@pytest.mark.parametrize("cmd", ["curl -XPOST http://h/api", "curl -dfoo http://h/api", "curl --request=PUT http://h/x",
+                                 "curl -G -d q=1 http://h/x"])
+def test_curl_write_forms_are_stubbed(cmd):
+    box, shell, sql, http, *_ = _box()
+    box.call("Bash", {"command": cmd})
+    assert http.calls == [] and box.log.events[-1].action == "write_stubbed"
+
+
+@pytest.mark.parametrize("url,ok", [
+    ("http://host.docker.internal:8080/api/substrate/concepts/summary", True),
+    ("http://host.docker.internal:8127/v1/pool", False),
+    ("http://127.0.0.1:8080/admin", False),
+    ("http://100.92.216.81:6379/", False),
+    ("http://10.0.0.5/", False),
+    ("https://www.bbc.co.uk/news", True),
+])
+def test_http_get_blocks_private_addresses(url, ok):
+    fake_dns = {"127.0.0.1": ["127.0.0.1"], "100.92.216.81": ["100.92.216.81"], "10.0.0.5": ["10.0.0.5"],
+                "www.bbc.co.uk": ["151.101.0.81"]}
+    lane = sandbox.HostHttpGet(resolve=lambda h: fake_dns[h])
+    assert (lane.refusal(url) is None) is ok
+
+
+def test_docker_inspect_and_follow_refused():
+    real = sandbox.DockerReadOnly()
+    for argv in (["docker", "inspect", "x"], ["docker", "logs", "--follow=true", "x"], ["docker", "logs", "-tf", "x"]):
+        out, rc = real.run(argv)
+        assert rc == 1 and "not available" in out
+
+
+def test_assignment_tokens_stay_assignments():
+    from orion.evals.model_replay.command_split import split_command
+
+    cmds = split_command('Q="MATCH (p) RETURN p"; echo "$Q"; redis-cli GRAPH.QUERY g "$Q"').commands
+    assert cmds[0].raw == 'Q="MATCH (p) RETURN p"'

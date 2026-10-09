@@ -239,3 +239,56 @@ def test_attach_factory_builds_hold_ref_from_grant():
     g = Grant("L7", "agent-gpu2", "http://c:8016", "p", None, None, ["gpu2"], generation=3)
     cm = attach_factory(object(), "bonsai", g)(100.0)
     assert hasattr(cm, "__aenter__")   # an async context manager (orion.gpu_pool.client.gpu_lease with hold=ref)
+
+
+def test_void_tasks_leave_both_denominators_and_rerun_on_resume(tmp_path):
+    rows = [scoring.TaskScore(task_id="a", kind="curiosity", model="q4", end="finished", finished=True),
+            scoring.TaskScore(task_id="a", kind="curiosity", model="bonsai", end="infra_error"),
+            scoring.TaskScore(task_id="b", kind="curiosity", model="q4", end="finished", finished=True),
+            scoring.TaskScore(task_id="b", kind="curiosity", model="bonsai", end="finished", finished=True)]
+    summ = scoring.summarize(rows)
+    assert summ["void_tasks"] == ["a"] and summ["per_model"]["bonsai"]["tasks"] == 1
+    assert summ["decision"]["verdict"].startswith("PARTIAL")
+    with (tmp_path / "results.jsonl").open("w") as fh:
+        for r in rows:
+            fh.write(json.dumps(r.as_dict()) + "\n")
+    assert runner.done_task_ids(tmp_path) == {"b"}
+
+
+def test_cancel_cuts_calls_and_drains_threads_before_holds_go_back(tmp_path):
+    import threading
+
+    pool = FakePool()
+    started, aborted = threading.Event(), threading.Event()
+
+    class Blocking:
+        def create(self, body, timeout_sec):
+            started.set()
+            aborted.wait(5)
+            raise RuntimeError("client closed")
+
+    def factory(task, model, grant):
+        rig = _rig(Blocking())
+        rig.abort = aborted.set
+        return rig
+
+    cfg = runner.ReplayConfig(out_dir=tmp_path, tasks=[_task(task_id="a", write_claim_check=False)], repo=tmp_path)
+    released_while_running = []
+    real_release = pool.release
+
+    async def release(lease_id, actor):
+        released_while_running.append(not aborted.is_set())
+        return await real_release(lease_id, actor)
+
+    pool.release = release
+
+    async def main():
+        t = asyncio.create_task(runner.run_replay(cfg, pool, factory, log=lambda *_: None))
+        while not started.is_set():
+            await asyncio.sleep(0.01)
+        t.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await t
+
+    asyncio.run(main())
+    assert pool.live == set() and released_while_running and not any(released_while_running)

@@ -20,7 +20,7 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Any, Awaitable, Callable, Optional
 
 from orion.evals.model_replay import agent_loop, scoring, write_claims
 from orion.evals.model_replay.fixture import FIXTURE_PATH, ReplayTaskV1
@@ -35,7 +35,8 @@ EXPECTED_SEC = {"curiosity": 3600.0, "self_sense": 400.0, "reading": 420.0, "sta
 STANCE_PASS_TIMEOUT_SEC = 240.0
 STEP_STALL_SEC = 420.0
 # Set when the run is cancelled (Ctrl-C / SIGTERM / SIGHUP): worker threads stop before their next
-# model call, so nothing keeps generating on a card whose hold was just released.
+# model call, the in-flight call is cut (rig.abort closes its HTTP client), and _run_pair waits up to
+# THREAD_DRAIN_SEC for the threads before the holds are released.
 STOP = threading.Event()
 
 
@@ -59,6 +60,7 @@ class ModelRig:
     toolbox_factory: Callable[[ReplayTaskV1, ToolLog], Toolbox]
     graphs: Any = None              # graph_scratch.ScratchGraphs or None
     cleanup: Callable[[], None] = lambda: None
+    abort: Callable[[], None] = lambda: None   # cut an in-flight model call (run cancelled)
 
 
 RigFactory = Callable[[ReplayTaskV1, str, Grant], ModelRig]
@@ -162,14 +164,16 @@ def run_one(task: ReplayTaskV1, model: str, rig: ModelRig, out_dir: Path) -> sco
         if before is not None:
             from orion.evals.model_replay.graph_scratch import diff_snapshots, prior_snapshot
 
-            score.landed = diff_snapshots(before, prior_snapshot(rig.graphs))
-            wc = write_claims.check(result.final_text, score.landed)
+            after = prior_snapshot(rig.graphs)
+            score.landed = diff_snapshots(before, after)
+            wc = write_claims.check(result.final_text, score.landed,
+                                    known_ids=set(before["priors"]) | set(after["priors"]))
             score.write_claims = wc.as_dict()
             score.misreported_writes = wc.misreported
         score.stubbed_writes = [e.__dict__ for e in log.writes() if e.action == "write_stubbed"]
         transcript["final_text"] = result.final_text
-    except Exception as exc:  # noqa: BLE001 -- one task's crash is a scored failure, not a stopped run
-        score.end = score.end or "harness_error"
+    except Exception as exc:  # noqa: BLE001 -- the replay's own machinery failed: void, re-run on resume
+        score.end = "harness_error"
         score.error = f"{type(exc).__name__}: {exc}"[:800]
     finally:
         try:
@@ -195,22 +199,71 @@ def done_task_ids(out_dir: Path) -> set[str]:
     path = out_dir / "results.jsonl"
     if not path.exists():
         return set()
-    by_task: dict[str, set[str]] = {}
-    for line in path.read_text(encoding="utf-8").splitlines():
-        row = json.loads(line)
-        by_task.setdefault(row["task_id"], set()).add(row["model"])
-    return {t for t, ms in by_task.items() if {"q4", "bonsai"} <= ms}
+    by_task: dict[str, dict[str, str]] = {}
+    for s in load_scores(out_dir):
+        by_task.setdefault(s.task_id, {})[s.model] = s.end
+    # a task with a void end (the replay's machinery failed, not the model) is re-run on resume
+    return {t for t, ends in by_task.items()
+            if {"q4", "bonsai"} <= set(ends) and not any(e in scoring.VOID_ENDS for e in ends.values())}
 
 
 def load_scores(out_dir: Path) -> list[scoring.TaskScore]:
+    """Latest row per (task, model): a resumed re-run of a void task replaces its earlier row."""
     path = out_dir / "results.jsonl"
     if not path.exists():
         return []
-    return [scoring.TaskScore(**json.loads(line)) for line in path.read_text(encoding="utf-8").splitlines()]
+    latest: dict[tuple[str, str], scoring.TaskScore] = {}
+    for line in path.read_text(encoding="utf-8").splitlines():
+        s = scoring.TaskScore(**json.loads(line))
+        latest[(s.task_id, s.model)] = s
+    return list(latest.values())
+
+
+SeatCheck = Callable[[], Awaitable[Optional[str]]]
+THREAD_DRAIN_SEC = 60.0
+
+
+async def wait_for_seats(seat_check: Optional[SeatCheck], max_wait_sec: float, poll_sec: float,
+                         log: Callable[[str], None]) -> Optional[str]:
+    """None once both cards are free of other runs' holds and serve the expected models; else the
+    last problem after ``max_wait_sec``."""
+    if seat_check is None:
+        return None
+    t0 = time.monotonic()
+    problem = await seat_check()
+    while problem is not None and time.monotonic() - t0 < max_wait_sec:
+        log(f"    waiting for seats: {problem}")
+        await asyncio.sleep(poll_sec)
+        problem = await seat_check()
+    return problem
+
+
+async def _run_pair(task: ReplayTaskV1, cfg: ReplayConfig, rigs: dict[str, ModelRig]) -> list[scoring.TaskScore]:
+    """Both models in worker threads. On cancel: STOP, cut in-flight model calls, and wait (bounded)
+    for the threads to finish BEFORE the caller's `async with PoolHolds` hands the cards back."""
+    import concurrent.futures
+
+    pool = concurrent.futures.ThreadPoolExecutor(max_workers=len(rigs), thread_name_prefix="replay")
+    futs = [pool.submit(run_one, task, m, rigs[m], cfg.out_dir) for m in cfg.models]
+    try:
+        return list(await asyncio.gather(*(asyncio.wrap_future(f) for f in futs)))
+    except BaseException:
+        STOP.set()
+        for rig in rigs.values():
+            try:
+                rig.abort()
+            except Exception:  # noqa: BLE001
+                pass
+        await asyncio.shield(asyncio.to_thread(concurrent.futures.wait, futs, THREAD_DRAIN_SEC))
+        raise
+    finally:
+        pool.shutdown(wait=False)
 
 
 async def run_replay(cfg: ReplayConfig, transport: ControlTransport, rig_factory: RigFactory,
-                     *, log: Callable[[str], None] = print) -> dict[str, Any]:
+                     *, log: Callable[[str], None] = print, seat_check: Optional[SeatCheck] = None,
+                     sweep: Optional[Callable[[], Any]] = None, seat_wait_sec: float = 3 * 3600.0,
+                     seat_poll_sec: float = 60.0, max_refusals: int = 3) -> dict[str, Any]:
     STOP.clear()
     cfg.out_dir.mkdir(parents=True, exist_ok=True)
     (cfg.out_dir / "plan.json").write_text(json.dumps(plan(cfg), indent=1), encoding="utf-8")
@@ -220,30 +273,34 @@ async def run_replay(cfg: ReplayConfig, transport: ControlTransport, rig_factory
         if task.task_id in done:
             log(f"[{i}/{len(cfg.tasks)}] {task.task_id}: already scored, skipping")
             continue
-        log(f"[{i}/{len(cfg.tasks)}] {task.task_id} ({task.kind}): taking holds")
-        t0 = time.time()
-        try:
-            async with PoolHolds(transport=transport, ledger=ledger, models=cfg.models,
-                                 grant_timeout_sec=cfg.grant_timeout_sec) as seats:
-                log("    holds: " + ", ".join(f"{m}={g.role}/{g.profile_name}@{g.url}" for m, g in seats.items()))
-                rigs: dict[str, ModelRig] = {}
-                try:
-                    for m in cfg.models:
-                        rigs[m] = rig_factory(task, m, seats[m])
-                except BaseException:
-                    for rig in rigs.values():
-                        rig.cleanup()
-                    raise
-                try:
-                    scores = await asyncio.gather(*(asyncio.to_thread(run_one, task, m, rigs[m], cfg.out_dir)
-                                                    for m in cfg.models))
-                except BaseException:
-                    STOP.set()
-                    raise
-        except HoldRefused as exc:
-            # Every hold is already released. Stop rather than run half a comparison; resume with --out.
-            log(f"    STOPPED: {exc}. Holds released. Resume later with --out {cfg.out_dir}")
-            break
+        scores: Optional[list[scoring.TaskScore]] = None
+        for attempt in range(1, max_refusals + 1):
+            problem = await wait_for_seats(seat_check, seat_wait_sec, seat_poll_sec, log)
+            if problem is not None:
+                log(f"    seats not free after {seat_wait_sec:.0f}s ({problem}); skipping, resume later")
+                break
+            log(f"[{i}/{len(cfg.tasks)}] {task.task_id} ({task.kind}): taking holds (try {attempt})")
+            t0 = time.time()
+            try:
+                async with PoolHolds(transport=transport, ledger=ledger, models=cfg.models,
+                                     grant_timeout_sec=cfg.grant_timeout_sec, sweep=sweep) as seats:
+                    log("    holds: " + ", ".join(f"{m}={g.role}/{g.profile_name}@{g.url}" for m, g in seats.items()))
+                    rigs: dict[str, ModelRig] = {}
+                    try:
+                        for m in cfg.models:
+                            rigs[m] = rig_factory(task, m, seats[m])
+                    except BaseException:
+                        for rig in rigs.values():
+                            rig.cleanup()
+                        raise
+                    scores = await _run_pair(task, cfg, rigs)
+                break
+            except HoldRefused as exc:
+                # Every hold is already released. Wait for the seats and try again.
+                log(f"    hold refused ({exc}); holds released")
+        if scores is None:
+            log(f"    {task.task_id}: not run this time; resume with --out {cfg.out_dir}")
+            continue
         with (cfg.out_dir / "results.jsonl").open("a", encoding="utf-8") as fh:
             for s in scores:
                 fh.write(json.dumps(s.as_dict(), default=str) + "\n")
@@ -329,7 +386,7 @@ class LiveRigFactory:
             if t.tools and not t.reading_only:
                 shell.start()
             holder["shell"] = shell
-            return Toolbox(log=log, shell=shell, graph=graphs, sql=self.sql,
+            return Toolbox(log=log, shell=shell, graph=graphs, sql=self.sql, env=env,
                            http=self.http, docker_ro=self.docker_ro, fetch_cache=self.fetch_cache,
                            allowed=tuple(t.tools), fetch_mode=t.fetch.mode, fetch_fail_error=t.fetch.fail_error)
 
@@ -338,7 +395,14 @@ class LiveRigFactory:
                 if part in holder:
                     holder[part].stop()
 
-        client: agent_loop.MessagesClient = agent_loop.HttpMessagesClient(grant.url)
+        http_client = agent_loop.HttpMessagesClient(grant.url)
+        client: agent_loop.MessagesClient = http_client
         if self.attach is not None:
             client = agent_loop.AttachedClient(client, loop=self.loop, attach=self.attach(model, grant))
-        return ModelRig(client=client, toolbox_factory=toolbox_factory, graphs=graphs, cleanup=cleanup)
+
+        def full_cleanup() -> None:
+            http_client.close()
+            cleanup()
+
+        return ModelRig(client=client, toolbox_factory=toolbox_factory, graphs=graphs, cleanup=full_cleanup,
+                        abort=http_client.close)

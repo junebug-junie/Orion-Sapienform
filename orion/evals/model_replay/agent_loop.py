@@ -62,6 +62,10 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
 }
 
 
+INFRA_ERRORS = frozenset({"LeaseUnavailable", "LeaseBacklogged", "PoolRpcTimeout", "ConnectError",
+                          "ConnectTimeout"})
+
+
 class MessagesClient(Protocol):
     def create(self, body: dict[str, Any], timeout_sec: float) -> dict[str, Any]: ...
 
@@ -69,16 +73,21 @@ class MessagesClient(Protocol):
 class HttpMessagesClient:
     """POST {base}/v1/messages. Nothing else is ever sent to the worker."""
 
-    def __init__(self, base_url: str) -> None:
-        self.base_url = base_url.rstrip("/")
-
-    def create(self, body: dict[str, Any], timeout_sec: float) -> dict[str, Any]:
+    def __init__(self, base_url: str, transport: Any = None) -> None:
         import httpx
 
-        r = httpx.post(f"{self.base_url}/v1/messages", json=body, timeout=max(5.0, timeout_sec),
-                       headers={"anthropic-version": "2023-06-01", "x-api-key": "orion-model-replay"})
+        self.base_url = base_url.rstrip("/")
+        # One client per rig, so close() from another thread cuts an in-flight call (run cancelled).
+        self._client = httpx.Client(headers={"anthropic-version": "2023-06-01", "x-api-key": "orion-model-replay"},
+                                    transport=transport)
+
+    def create(self, body: dict[str, Any], timeout_sec: float) -> dict[str, Any]:
+        r = self._client.post(f"{self.base_url}/v1/messages", json=body, timeout=max(5.0, timeout_sec))
         r.raise_for_status()
         return r.json()
+
+    def close(self) -> None:
+        self._client.close()
 
 
 class AttachedClient:
@@ -164,9 +173,16 @@ def run_loop(
             reply = client.create(body, remaining)
         except Exception as exc:  # noqa: BLE001
             took = clock() - s0
-            timed_out = "timeout" in type(exc).__name__.lower() or clock() >= deadline
-            res.steps.append(Step(s0 - t0, took, None, 0, 0, 0, 0, [], f"{type(exc).__name__}: {exc}"[:500]))
-            res.end = "timeout" if timed_out else "transport_error"
+            name = type(exc).__name__
+            res.steps.append(Step(s0 - t0, took, None, 0, 0, 0, 0, [], f"{name}: {exc}"[:500]))
+            if should_stop():
+                res.end = "cancelled"
+            elif name in INFRA_ERRORS:
+                res.end = "infra_error"      # the hold/attach or the route to the worker failed, not the model
+            elif "timeout" in name.lower() or clock() >= deadline:
+                res.end = "timeout"
+            else:
+                res.end = "transport_error"
             break
         blocks = reply.get("content") or []
         usage = reply.get("usage") or {}

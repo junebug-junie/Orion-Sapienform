@@ -34,6 +34,7 @@ class Simple:
     op: Optional[str] = None
     stdin: Optional[str] = None
     raw: str = ""
+    literal: list[bool] = field(default_factory=list)   # per argv token: written in single quotes (no $ expansion)
 
     @property
     def tool(self) -> str:
@@ -112,8 +113,26 @@ def split_command(command: str) -> Split:
                 kept.append(tok)
         cmd.argv = kept
         cmd.stdin = "".join(stdin_parts) or None
-        cmd.raw = " ".join(t if t in _REDIRECTS else shlex.quote(t) for t in kept)
+        cmd.raw = " ".join(_requote(t, command) for t in kept)
+        cmd.literal = [f"'{t}'" in command for t in kept]
     return out
+
+
+_PLAIN = re.compile(r"[\w@%+=:,./*?~\[\]{}$^!-]+")
+
+
+def _requote(tok: str, original: str) -> str:
+    """Re-emit a token so bash reads it the way the model wrote it: bare when it has no special
+    characters (globs and $VARS keep working), single-quoted when the original had it in single
+    quotes (awk '{print $1}' stays literal), else double-quoted (so "$HOME" still expands)."""
+    if tok in _REDIRECTS or _PLAIN.fullmatch(tok):
+        return tok
+    assign = re.fullmatch(r"([A-Za-z_][A-Za-z0-9_]*)=(.*)", tok, re.S)
+    if assign:  # Q="MATCH ..." -> Q="MATCH ...", not "Q=MATCH ..." (which bash would run as a command)
+        return f"{assign.group(1)}={_requote(assign.group(2), original)}"
+    if f"'{tok}'" in original:
+        return shlex.quote(tok)
+    return '"' + tok.replace("\\", "\\\\").replace('"', '\\"').replace("`", "\\`") + '"'
 
 
 def _unquoted_newlines_to_semicolons(text: str) -> str:

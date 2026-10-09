@@ -1,5 +1,6 @@
 import asyncio
 import time
+from datetime import datetime, timezone
 import uuid
 from collections import defaultdict, deque
 from contextlib import asynccontextmanager
@@ -13,6 +14,7 @@ from pydantic import ValidationError
 
 from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
+from orion.schemas.vision_sighting import IDENTITY_SIGHTING_KIND, IdentitySightingV1
 from orion.core.bus.bus_service_chassis import ChassisConfig, HeartbeatOnly
 from orion.schemas.vision import (
     VisionSceneInventoryV1,
@@ -103,6 +105,7 @@ class WindowService:
         # detection buffer. Read-then-gate-by-age in _flush_and_publish;
         # never grows unbounded (one entry per stream_id, overwritten).
         self._identity_by_stream: Dict[str, Dict[str, Any]] = {}
+        self._last_sighting_at: Dict[str, float] = {}
         self._identity_lock = asyncio.Lock()
         # Running count of identity_face verdicts by outcome (trace only).
         self._identity_checks: Dict[str, int] = defaultdict(int)
@@ -314,6 +317,10 @@ class WindowService:
                     logger.warning(f"[WINDOW] identity_check trace failed: {e}")
                 hint = identity_hint_from_artifact(payload)
                 confidence = identity_confidence_from_artifact(payload)
+                try:
+                    await self._maybe_publish_sighting(payload, hint)
+                except Exception as e:  # a sighting must never kill the identity loop
+                    logger.warning(f"[WINDOW] identity sighting publish failed: {e}")
                 if hint is None and confidence is None:
                     # No usable signal at all (no face detected, or a
                     # gallery-misconfig candidate) -- nothing to store.
@@ -589,6 +596,31 @@ class WindowService:
         except Exception as exc:
             self._m_inventory_failed += 1
             logger.warning(f"[WINDOW] scene inventory publish failed: {exc}")
+
+    async def _maybe_publish_sighting(self, payload: VisionArtifactPayload, hint: Optional[dict]) -> bool:
+        """One IdentitySightingV1 per home camera per sitting, on a "probable" match only.
+        Rate-limited per stream (WINDOW_SIGHTING_MIN_INTERVAL_SEC). True when published."""
+        if not settings.WINDOW_SIGHTING_ENABLED or not self.bus or not hint or hint.get("state") != "probable":
+            return False
+        stream = stream_key_from_artifact(payload)
+        homes = {x.strip() for x in settings.WINDOW_SIGHTING_HOME_STREAMS.split(",") if x.strip()}
+        if stream not in homes:
+            return False
+        now = time.time()
+        last = self._last_sighting_at.get(stream)
+        if last is not None and now - last < settings.WINDOW_SIGHTING_MIN_INTERVAL_SEC:
+            return False
+        sim = hint.get("similarity")
+        sighting = IdentitySightingV1(
+            subject=str(hint.get("subject") or ""), stream_id=stream,
+            seen_at=datetime.now(timezone.utc), similarity=float(sim) if isinstance(sim, (int, float)) else 0.0,
+            correlation_id=str(payload.correlation_id or ""),
+        )
+        await self.bus.publish(settings.CHANNEL_IDENTITY_SIGHTING_PUB, BaseEnvelope(
+            kind=IDENTITY_SIGHTING_KIND, source=_source_ref(), payload=sighting.model_dump(mode="json")))
+        self._last_sighting_at[stream] = now
+        logger.info(f"[WINDOW] identity_sighting stream={stream} similarity={sighting.similarity:.3f}")
+        return True
 
     async def _publish_crop_observation(self, artifact: VisionArtifactPayload, env: BaseEnvelope) -> None:
         """Per-artifact, not per-window: every tracked-label box the host

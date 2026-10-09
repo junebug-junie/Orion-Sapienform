@@ -4025,3 +4025,11 @@ def test_db_is_not_read_when_a_cheap_gate_already_blocks(monkeypatch) -> None:
     monkeypatch.setattr(_eo_mod, "_seconds_since_juniper_spoke", lambda: calls.append(1) or 30.0)
     result = asyncio.run(outreach.maybe_outreach())
     assert result["reason"] == "disabled" and calls == []
+
+
+def test_a_home_camera_sighting_reads_as_seen_not_as_a_stated_stay():
+    sit = _situation(whereabouts={"gist": "I saw Juniper at home on camera cam0.", "until_source": "sighting",
+                                  "valid_from": (_NOW - _td(minutes=20)).isoformat(),
+                                  "valid_until": (_NOW + _td(hours=17)).isoformat()})
+    lines = _eo_mod.situation_lines(sit, _NOW, _DENVER)
+    assert lines[1] == "- I saw Juniper at home on camera cam0. (seen 20 minutes ago)"

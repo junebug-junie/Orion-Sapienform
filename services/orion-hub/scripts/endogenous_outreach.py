@@ -1095,7 +1095,12 @@ def situation_lines(situation: Optional[Dict[str, Any]], now: datetime, tz: Any)
     lines = ["Where Juniper is right now, from your running situation:"]
     here = juniper.get("whereabouts")
     until = _parse_situation_dt(here.get("valid_until")) if here else None
-    if here and until is not None and until > now:
+    if here and until is not None and until > now and here.get("until_source") == "sighting":
+        # A home camera matched her face: evidence, not something she said.
+        seen = _parse_situation_dt(here.get("valid_from"))
+        when = _age_phrase((now - seen).total_seconds()) if seen is not None else "recently"
+        lines.append(f"- {here['gist']} (seen {when})")
+    elif here and until is not None and until > now:
         lines.append(f"- {here['gist']} (holds until {until.astimezone(tz):%a %b %d, %H:%M})")
     else:
         # An end date already passed means the projection has not caught up (the graph writes

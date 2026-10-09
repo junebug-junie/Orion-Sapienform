@@ -86,6 +86,7 @@ class SituationDeps:
     default_ttl: timedelta = timedelta(hours=48)
     prime_timeout_sec: float = 0.4
     reprime_after: timedelta = timedelta(hours=6)
+    sighting_hold: timedelta = timedelta(hours=18)
 
 
 # --- pure helpers (unit-tested directly) ------------------------------------------------------
@@ -165,12 +166,42 @@ def facts_from_rows(rows: list[dict], now: datetime, default_ttl: timedelta) -> 
     return {
         # Every current memory id, before the per-slot display caps: lapsing is judged against
         # this, so a fact pushed out of a full slot is not mistaken for one that stopped being true.
-        "current_ids": sorted(f.memory_id for f in current),
+        "current_ids": sorted(fact_key(f.model_dump(mode="json")) for f in current),
         "whereabouts": whereabouts.model_dump(mode="json") if whereabouts else None,
         "doing": [f.model_dump(mode="json") for f in doing[:MAX_DOING]],
         "waiting_on": [f.model_dump(mode="json") for f in waiting[:MAX_WAITING]],
         "recent": [f.model_dump(mode="json") for f in recent[:MAX_RECENT]],
     }
+
+
+def fact_key(f: dict) -> str:
+    """Identity of a fact across steps: its memory, or (for a sighting) when it was seen."""
+    return f.get("memory_id") or f"sighting:{f.get('valid_from')}"
+
+
+def apply_sighting(facts: dict, sighting: Optional[dict], now: datetime, hold: timedelta) -> dict:
+    """A home-camera sighting of Juniper is positive evidence for where she is.
+
+    It becomes whereabouts for ``hold`` after she was seen, unless a whereabouts fact from her own
+    words is NEWER than the sighting (she said she was leaving after being seen). An away-fact it
+    displaces drops out of current_ids, so the expire step records it as no longer true.
+    """
+    if not sighting:
+        return facts
+    seen = _dt(sighting.get("seen_at"))
+    if seen is None or seen > now or seen + hold <= now:
+        return facts
+    told = facts.get("whereabouts")
+    if told and (_dt(told.get("valid_from")) or seen) > seen:
+        return facts
+    fact = SituationFactV1(
+        memory_id=None, slot="whereabouts",
+        gist=f"I saw Juniper at home on camera {sighting.get('stream_id')}.",
+        valid_from=seen, valid_until=seen + hold, until_source="sighting",
+        voice="orion_observed", confirmation="observed", referents=[],
+    ).model_dump(mode="json")
+    current = [k for k in facts.get("current_ids") or [] if not told or k != fact_key(told)]
+    return {**facts, "whereabouts": fact, "current_ids": sorted(current + [fact_key(fact)])}
 
 
 def _all_facts(juniper: dict) -> list[dict]:
@@ -183,10 +214,13 @@ def lapsed_from(previous: dict, current_ids: list[str], prior_lapsed: list, now:
     the prior list. ``current_ids`` is every current fact, not just the displayed ones."""
     still = set(current_ids)
     gone = [
-        SituationLapsedV1(memory_id=f["memory_id"], slot=f["slot"], gist=f["gist"], lapsed_at=now).model_dump(mode="json")
-        for f in _all_facts(previous) if f["memory_id"] not in still
+        SituationLapsedV1(memory_id=f.get("memory_id"), slot=f["slot"], gist=f["gist"], lapsed_at=now).model_dump(mode="json")
+        for f in _all_facts(previous) if fact_key(f) not in still
     ]
-    kept = [x for x in prior_lapsed if x["memory_id"] not in still and x["memory_id"] not in {g["memory_id"] for g in gone}]
+    def lkey(x: dict) -> str:
+        return x.get("memory_id") or f"gist:{x.get('gist')}"
+    gone_keys = {lkey(g) for g in gone}
+    kept = [x for x in prior_lapsed if (x.get("memory_id") or "") not in still and lkey(x) not in gone_keys]
     return (gone + kept)[:MAX_LAPSED]
 
 
@@ -237,6 +271,10 @@ def build_situation_graph(deps: SituationDeps, checkpointer: Any):
         ev = dict(state.get("event") or {})
         sit = state.get("situation") or empty_situation(state["thread_id"], deps.now())
         last = (sit.get("last_event") or {}).get("event_id")
+        seen = ev.get("sighting")
+        prior = sit.get("last_sighting") or {}
+        if seen and (_dt(seen.get("seen_at")) or deps.now()) > (_dt(prior.get("seen_at")) or datetime.min.replace(tzinfo=timezone.utc)):
+            sit = {**sit, "last_sighting": dict(seen)}
         # Step flags are per step: reset them so a skipped step never reports the last one's.
         return {"workflow": SITUATION_WORKFLOW, "situation": sit, "changed": False, "prime_error": None,
                 "prime_ms": None, "skipped": bool(ev.get("event_id")) and ev.get("event_id") == last}
@@ -246,8 +284,9 @@ def build_situation_graph(deps: SituationDeps, checkpointer: Any):
 
     async def reduce(state: SituationGraphState) -> dict:
         loaded = await deps.load_facts(deps.now())
-        return {"facts": facts_from_rows(loaded.get("rows") or [], deps.now(), deps.default_ttl),
-                "known_keys": list(loaded.get("known_keys") or [])}
+        facts = facts_from_rows(loaded.get("rows") or [], deps.now(), deps.default_ttl)
+        facts = apply_sighting(facts, state["situation"].get("last_sighting"), deps.now(), deps.sighting_hold)
+        return {"facts": facts, "known_keys": list(loaded.get("known_keys") or [])}
 
     async def expire(state: SituationGraphState) -> dict:
         sit = state["situation"]
@@ -272,7 +311,7 @@ def build_situation_graph(deps: SituationDeps, checkpointer: Any):
         if not cues:
             return {**keep, "primed": [], "primed_cues": [], "primed_at": deps.now().isoformat(),
                     "primed_revision": int(sit.get("revision") or 0) + 1}
-        exclude = [f["memory_id"] for f in _all_facts(state["facts"])]
+        exclude = [f["memory_id"] for f in _all_facts(state["facts"]) if f.get("memory_id")]
         t0 = time.monotonic()
         try:
             rows = await asyncio.wait_for(deps.prime(cues, exclude, MAX_PRIMED * 4), timeout=deps.prime_timeout_sec)
@@ -301,6 +340,7 @@ def build_situation_graph(deps: SituationDeps, checkpointer: Any):
                                      primed_at=_dt(state.get("primed_at")),
                                      primed_revision=min(int(state.get("primed_revision") or 0), revision)),
             lapsed=state["lapsed"],
+            last_sighting=sit.get("last_sighting"),
         )
         if changed:
             await deps.project(model)

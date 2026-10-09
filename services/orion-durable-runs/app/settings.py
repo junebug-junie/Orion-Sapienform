@@ -130,6 +130,9 @@ class Settings(BaseSettings):
     situation_retention_days: int = Field(2, ge=1, le=30, alias="SITUATION_RETENTION_DAYS")
     situation_redis_ttl_sec: int = Field(604800, gt=0, alias="SITUATION_REDIS_TTL_SEC")
     chat_history_turn_channel: str = Field("orion:chat:history:turn", alias="CHANNEL_CHAT_HISTORY_TURN")
+    # A home-camera face match holds as Juniper's whereabouts this long (2026-10-09).
+    situation_sighting_hold_hours: float = Field(18.0, gt=0.0, alias="SITUATION_SIGHTING_HOLD_HOURS")
+    identity_sighting_channel: str = Field("orion:vision:identity:sighting", alias="CHANNEL_IDENTITY_SIGHTING")
     request_channel: str = DURABLE_RUN_REQUEST_CHANNEL
     state_channel: str = DURABLE_RUN_STATE_CHANNEL
 

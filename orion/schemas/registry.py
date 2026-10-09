@@ -105,6 +105,7 @@ from orion.schemas.memory_consolidation import (
 from orion.schemas.memory_crystallization import ActiveMemoryPacketV1, MemoryCrystallizationV1
 from orion.schemas.memory_episode import MEMORY_EPISODE_CLOSED_KIND, MemoryEpisodeClosedV1
 from orion.schemas.situation_state import SITUATION_STATE_KIND, SituationStateV1
+from orion.schemas.vision_sighting import IDENTITY_SIGHTING_KIND, IdentitySightingV1
 from orion.schemas.context_exec import (
     BeliefProvenanceReportV1,
     ContextExecBudgetV1,
@@ -1508,6 +1509,7 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     # dict and SCHEMA_REGISTRY below.
     "MemoryEpisodeClosedV1": MemoryEpisodeClosedV1,
     "SituationStateV1": SituationStateV1,
+    "IdentitySightingV1": IdentitySightingV1,
     "ContextExecRequestV1": ContextExecRequestV1,
     "ContextExecRunV1": ContextExecRunV1,
     "ContextExecOperatorSummaryV1": ContextExecOperatorSummaryV1,
@@ -2004,6 +2006,10 @@ SCHEMA_REGISTRY: Dict[str, SchemaRegistration] = {
     "SituationStateV1": SchemaRegistration(
         model=SituationStateV1,
         kind=SITUATION_STATE_KIND,
+    ),
+    "IdentitySightingV1": SchemaRegistration(
+        model=IdentitySightingV1,
+        kind=IDENTITY_SIGHTING_KIND,
     ),
 }
 

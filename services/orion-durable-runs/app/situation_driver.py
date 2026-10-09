@@ -4,7 +4,8 @@ Feeds the ``situation.update`` graph from three sources and never runs two steps
 
 * ``orion:chat:history:turn``  -- a chat turn finished (its prompt cues recall);
 * ``orion:durable:run:state``  -- a ``memory.episode_distill`` run finished (new facts landed);
-* a clock tick every ``SITUATION_TICK_SEC`` -- end dates come due with nobody talking.
+* a clock tick every ``SITUATION_TICK_SEC`` -- end dates come due with nobody talking;
+* ``orion:vision:identity:sighting`` -- a home camera matched Juniper's face (whereabouts).
 
 Events that arrive while a step runs are coalesced into the next one (the newest chat text wins),
 because every step re-derives the facts anyway.
@@ -37,7 +38,7 @@ from app.situation_graph import NODES, SituationDeps, build_situation_graph
 logger = logging.getLogger("orion-durable-runs.situation_driver")
 
 # Coalescing order: the event that names the step when several were pending.
-_PRIORITY = {"chat_turn": 3, "episode_distilled": 2, "tick": 1, "boot": 0}
+_PRIORITY = {"chat_turn": 3, "sighting": 2, "episode_distilled": 2, "tick": 1, "boot": 0}
 TURN_TEXT_CHARS = 4000
 RETIRE_LOOKBACK_DAYS = 31
 
@@ -67,12 +68,30 @@ def event_from_run_state(payload: dict) -> Optional[dict]:
             "correlation_id": p.get("correlation_id"), "text": ""}
 
 
+def event_from_sighting(payload: dict) -> Optional[dict]:
+    """A home-camera face match (IdentitySightingV1) for the enrolled subject."""
+    from orion.schemas.vision_sighting import IdentitySightingV1
+
+    try:
+        s = IdentitySightingV1.model_validate(payload or {})
+    except Exception:  # noqa: BLE001
+        return None
+    if s.subject != "juniper" or s.place != "home":
+        return None
+    return {"event_id": f"sighting:{s.correlation_id}", "kind": "sighting", "correlation_id": s.correlation_id,
+            "text": "", "sighting": {"stream_id": s.stream_id, "seen_at": s.seen_at.isoformat(),
+                                     "similarity": s.similarity, "correlation_id": s.correlation_id}}
+
+
 def coalesce(events: list[dict]) -> dict:
     """One step for a burst: named by the highest-priority kind, carrying the newest chat text."""
     lead = max(events, key=lambda e: _PRIORITY.get(e.get("kind"), 0))
     texts = [e.get("text") for e in events if e.get("kind") == "chat_turn" and e.get("text")]
     merged = dict(lead)
     merged["text"] = texts[-1] if texts else lead.get("text", "")
+    sightings = [e["sighting"] for e in events if e.get("sighting")]
+    if sightings:
+        merged["sighting"] = max(sightings, key=lambda x: str(x.get("seen_at")))
     merged["coalesced"] = len(events)
     return merged
 

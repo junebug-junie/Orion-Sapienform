@@ -25,8 +25,8 @@ SITUATION_STATE_REDIS_KEY = "orion:situation:latest"
 SITUATION_THREAD_PREFIX = "situation:juniper"
 
 FactSlot = Literal["whereabouts", "doing", "waiting_on", "recent"]
-UntilSource = Literal["juniper_words", "default_ttl", "follow_up"]
-EventKind = Literal["chat_turn", "episode_distilled", "tick", "boot"]
+UntilSource = Literal["juniper_words", "default_ttl", "follow_up", "sighting"]
+EventKind = Literal["chat_turn", "episode_distilled", "tick", "boot", "sighting"]
 
 
 class SituationFactV1(BaseModel):
@@ -34,7 +34,8 @@ class SituationFactV1(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    memory_id: str
+    # None for a fact that is not a memory: a home-camera sighting (until_source "sighting").
+    memory_id: Optional[str] = None
     slot: FactSlot
     gist: str = Field(..., max_length=240)
     valid_from: datetime
@@ -65,10 +66,19 @@ class SituationLapsedV1(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    memory_id: str
+    memory_id: Optional[str] = None   # None when the lapsed fact was a sighting
     slot: FactSlot
     gist: str = Field(..., max_length=240)
     lapsed_at: datetime
+
+
+class SituationSightingV1(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    stream_id: str
+    seen_at: datetime
+    similarity: float
+    correlation_id: str
 
 
 class SituationEventRefV1(BaseModel):
@@ -116,3 +126,5 @@ class SituationStateV1(BaseModel):
     juniper: SituationJuniperV1 = Field(default_factory=SituationJuniperV1)
     recall: SituationRecallV1 = Field(default_factory=SituationRecallV1)
     lapsed: List[SituationLapsedV1] = Field(default_factory=list, max_length=3)
+    # The newest home-camera sighting of Juniper (IdentitySightingV1), carried across steps.
+    last_sighting: Optional[SituationSightingV1] = None

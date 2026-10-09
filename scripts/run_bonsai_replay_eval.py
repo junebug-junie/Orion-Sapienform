@@ -56,6 +56,12 @@ def preflight(pool_http: str, image: str) -> list[str]:
     import httpx
 
     problems = []
+    try:  # the production prompt compiler and validators every task needs; fail now, not at task 1
+        import orion.harness.runner  # noqa: F401
+        import orion.schemas.world_pulse_read  # noqa: F401
+        import orion.thought.stance_react  # noqa: F401
+    except Exception as exc:  # noqa: BLE001
+        problems.append(f"cannot import production prompt/validator code ({exc}); run with the repo .venv")
     try:
         state = httpx.get(f"{pool_http}/v1/pool", timeout=10).json()
         roles = {r["role"]: r for r in state.get("roles", [])}

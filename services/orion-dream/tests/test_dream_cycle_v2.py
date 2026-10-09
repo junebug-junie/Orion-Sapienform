@@ -54,12 +54,75 @@ def test_candidates_drop_unusable_rows_and_weight_by_declared_rules():
 
 
 def test_pressure_is_sum_of_weights_and_zero_when_nothing_new():
-    from app.replay import build_candidates, compute_pressure
+    from app.replay import compute_pressure, keyed_candidates
 
-    total, counts = compute_pressure(build_candidates(_rows()))
+    total, counts, new_counts = compute_pressure(keyed_candidates(_rows()))
     assert total == pytest.approx(1.0 + 0.6 + 0.5 + 0.7 + 0.8)
-    assert counts == {"metacog": 2, "compaction_request": 1, "resonance": 1, "crystallization": 1}
-    assert compute_pressure(build_candidates({k: [] for k in _rows()})) == (0.0, {})
+    assert counts == new_counts == {"metacog": 2, "compaction_request": 1, "resonance": 1, "crystallization": 1}
+    assert compute_pressure(keyed_candidates({k: [] for k in _rows()})) == (0.0, {}, {})
+
+
+def _timeouts(n, severity="degraded"):
+    # One event, n rows, model prose reworded every time (live: 222 rows/week of this key).
+    return [{"id": f"t{i}", "summary": f"the gateway timed out again, take {i}", "severity": severity,
+             "trigger_kind": "transport", "tags": [],
+             "dedupe_key": "transport:rpc_timeout:orion:exec:request:llmgatewayservice"} for i in range(n)]
+
+
+def test_repeats_of_one_thing_are_one_candidate_at_their_highest_weight():
+    from app.replay import compute_pressure, keyed_candidates, select_replay
+
+    rows = {"metacog": _timeouts(40) + _timeouts(1, "critical")}
+    keyed = keyed_candidates(rows)
+    assert len(keyed) == 1
+    (item,) = keyed.values()
+    assert item.weight == 1.0 and item.text == "the gateway timed out again, take 0"  # newest text, max weight
+    assert compute_pressure(keyed)[0] == 1.0  # not 41 rows of pressure
+    assert len(select_replay(list(keyed.values()), 12)) == 1
+
+
+def test_a_thing_seen_before_the_window_adds_no_pressure_but_stays_replayable():
+    from app.replay import compute_pressure, keyed_candidates, prior_keys
+
+    keyed = keyed_candidates({**_rows(), "metacog": _rows()["metacog"] + _timeouts(5)})
+    seen = prior_keys({"metacog": _timeouts(1)})
+    total, counts, new_counts = compute_pressure(keyed, seen)
+    assert counts["metacog"] == 3 and new_counts["metacog"] == 2  # the chronic timeout is not new
+    assert total == pytest.approx(1.0 + 0.6 + 0.5 + 0.7 + 0.8)
+    assert any(k.startswith("metacog:transport:") for k in keyed)
+
+
+def test_rows_without_a_key_count_as_their_own_thing_never_one_shared_blank():
+    """Guard for the dangerous failure: a null key collapsing everything into one
+    item would pin pressure near 0 and Orion would stop sleeping."""
+    from app.replay import keyed_candidates
+
+    rows = {"metacog": [{"id": f"m{i}", "summary": "s", "severity": "critical", "trigger_kind": "x",
+                         "dedupe_key": None} for i in range(3)]}
+    assert len(keyed_candidates(rows)) == 3
+
+
+def test_every_source_query_returns_a_key_and_honours_until():
+    from app.cycle_store import SOURCE_QUERIES
+
+    for kind, sql in SOURCE_QUERIES.items():
+        assert "dedupe_key" in sql and ":until" in sql and ":since" in sql, kind
+    # recall rewrites updated_at on ~100 crystallizations per retrieval: not new material
+    assert "memory_crystallization_history" in SOURCE_QUERIES["crystallization"]
+    assert "updated_at" not in SOURCE_QUERIES["crystallization"]
+    assert "trigger_reason" in SOURCE_QUERIES["metacog"]
+
+
+def test_read_pressure_reads_the_lookback_before_the_window():
+    from app.cycle import read_pressure
+    from app.settings import settings
+
+    f = _Fakes({**_rows(), "metacog": _rows()["metacog"] + _timeouts(3)}, prior={"metacog": _timeouts(1)})
+    last = NOW - timedelta(hours=7)
+    pressure, candidates = read_pressure(f.deps(), NOW, last)
+    assert f.reads == [(last, None), (last - timedelta(hours=settings.DREAM_LOOKBACK_HOURS), last)]
+    assert pressure.new_counts["metacog"] == 2 and pressure.counts["metacog"] == 3
+    assert len(candidates) == sum(pressure.counts.values())
 
 
 def test_select_replay_caps_any_one_source():
@@ -159,8 +222,9 @@ def test_recombine_counts_no_link_failures_and_rejects_echo():
 
 
 class _Fakes:
-    def __init__(self, rows, idle=120.0, last_end=None, answer=None, last_start=None):
+    def __init__(self, rows, idle=120.0, last_end=None, answer=None, last_start=None, prior=None):
         self.rows, self.idle, self.last_end, self.last_start = rows, idle, last_end, last_start
+        self.prior, self.reads = prior or {}, []
         self.persisted, self.prompts = [], []
         self.answer = answer or json.dumps(
             {"link": True, "claim": "These two recur together more often than chance would allow", "why": "w"}
@@ -170,7 +234,10 @@ class _Fakes:
     def deps(self):
         from app.cycle import CycleDeps
 
-        def load(since, limit):
+        def load(since, limit, until=None):
+            self.reads.append((since, until))
+            if until is not None:  # the lookback before the window
+                return self.prior
             self.seen_since = since
             return self.rows
 
@@ -407,3 +474,34 @@ def test_gateway_refusal_keeps_the_bus_but_a_transport_error_drops_it(monkeypatc
     with pytest.raises(TimeoutError):
         asyncio.run(complete("p"))
     assert drops == [1]
+
+
+def _all_seen(last_start, idle=120.0):
+    # Every thing in the window was also seen before it: pressure 0, candidates present.
+    return _Fakes(_rows(), idle=idle, last_start=last_start, prior=_rows())
+
+
+def test_overdue_backstop_sleeps_when_nothing_new_but_the_window_hit_its_reach():
+    from app.cycle import run_cycle_once
+    from app.settings import settings
+
+    last = datetime.now(timezone.utc) - timedelta(hours=settings.DREAM_LOOKBACK_HOURS + 1)
+    f = _all_seen(last)
+    cycle = asyncio.run(run_cycle_once(f.deps()))
+    assert cycle is not None and cycle.status == "completed"
+    assert cycle.pressure.pressure == 0.0 and "overdue" in (cycle.note or "")
+
+
+def test_no_backstop_before_the_window_reaches_back_its_full_lookback():
+    from app.cycle import run_cycle_once
+
+    f = _all_seen(datetime.now(timezone.utc) - timedelta(hours=10))
+    assert asyncio.run(run_cycle_once(f.deps())) is None
+
+
+def test_backstop_never_sleeps_through_a_conversation():
+    from app.cycle import run_cycle_once
+    from app.settings import settings
+
+    last = datetime.now(timezone.utc) - timedelta(hours=settings.DREAM_LOOKBACK_HOURS + 1)
+    assert asyncio.run(run_cycle_once(_all_seen(last, idle=5.0).deps())) is None

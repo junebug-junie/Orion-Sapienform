@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Optional
 
 from orion.schemas.dream_cycle import DreamCycleV1
@@ -24,31 +24,64 @@ logger = logging.getLogger("orion-dream.cycle_store")
 
 CYCLE_WRITE_TABLES = ("dream_cycle", "dream_replay_item", "dream_hypothesis")
 
+# One row per THING (`dedupe_key`), newest first, in [since, until). The key
+# rule lives here once; app/replay.py row_key only namespaces it.
+#   metacog          trigger_reason with ids/numbers -> '#': structured, written
+#                    by the producer (`transport:rpc_timeout:<channel>`). Not
+#                    `summary`: model prose, reworded per row for one event.
+#                    No reason -> the row id (counts as its own thing).
+#   compaction       the theme.   resonance  the theme_key.
+#   crystallization  activation events (auto_activate / approve), NOT
+#                    updated_at: recall rewrites updated_at on all ~100
+#                    rendered crystallizations per retrieval (retriever.py
+#                    _apply_recall_boost), which is activity, not new material.
 # `timestamp` on orion_metacog is a producer-written ISO string, not a
 # timestamptz. Cast only well-formed values so one bad row cannot fail the read
 # (CASE, not AND: Postgres does not promise AND short-circuits).
+METACOG_KEY_RE = r"[0-9a-f]{8,}|-?[0-9]+(\.[0-9]+)?"
+
 SOURCE_QUERIES: dict[str, str] = {
-    "metacog": """
-        SELECT id, summary, severity, trigger_kind, tags FROM orion_metacog
-         WHERE severity IN ('degraded', 'critical')
-           AND CASE WHEN timestamp ~ '^\\d{4}-\\d{2}-\\d{2}T'
-                    THEN CAST(timestamp AS timestamptz) END > :since
-         ORDER BY timestamp DESC LIMIT :limit
+    "metacog": f"""
+        SELECT id, summary, severity, trigger_kind, tags, dedupe_key FROM (
+          SELECT DISTINCT ON (dedupe_key) id, summary, severity, trigger_kind, tags, dedupe_key, ts FROM (
+            SELECT id, summary, severity, trigger_kind, tags,
+                   COALESCE(regexp_replace(NULLIF(trigger_reason, ''), '{METACOG_KEY_RE}', '#', 'g'),
+                            'id:' || id) AS dedupe_key,
+                   CASE WHEN timestamp ~ '^\\d{{4}}-\\d{{2}}-\\d{{2}}T'
+                        THEN CAST(timestamp AS timestamptz) END AS ts
+              FROM orion_metacog
+             WHERE severity IN ('degraded', 'critical')
+          ) m WHERE ts > :since AND ts < :until
+          ORDER BY dedupe_key, (severity = 'critical') DESC, ts DESC
+        ) d ORDER BY ts DESC LIMIT :limit
     """,
     "compaction_request": """
-        SELECT request_id, theme, reason FROM dream_compaction_request_queue
-         WHERE created_at > :since
-         ORDER BY created_at DESC LIMIT :limit
+        SELECT request_id, theme, reason, dedupe_key FROM (
+          SELECT DISTINCT ON (lower(theme)) request_id, theme, reason, lower(theme) AS dedupe_key, created_at
+            FROM dream_compaction_request_queue
+           WHERE created_at > :since AND created_at < :until
+           ORDER BY lower(theme), created_at DESC
+        ) d ORDER BY created_at DESC LIMIT :limit
     """,
     "resonance": """
-        SELECT alert_id, theme_key, violation_count FROM substrate_reverie_resonance_alert
-         WHERE created_at > :since
-         ORDER BY created_at DESC LIMIT :limit
+        SELECT alert_id, theme_key, violation_count, dedupe_key FROM (
+          SELECT DISTINCT ON (lower(theme_key)) alert_id, theme_key, violation_count,
+                 lower(theme_key) AS dedupe_key, created_at
+            FROM substrate_reverie_resonance_alert
+           WHERE created_at > :since AND created_at < :until
+           ORDER BY lower(theme_key), violation_count DESC, created_at DESC
+        ) d ORDER BY created_at DESC LIMIT :limit
     """,
     "crystallization": """
-        SELECT crystallization_id, subject, summary, salience, tags FROM memory_crystallizations
-         WHERE status = 'active' AND updated_at > :since
-         ORDER BY salience DESC, updated_at DESC LIMIT :limit
+        SELECT crystallization_id, subject, summary, salience, tags, dedupe_key FROM (
+          SELECT DISTINCT ON (c.crystallization_id) c.crystallization_id, c.subject, c.summary,
+                 c.salience, c.tags, c.crystallization_id::text AS dedupe_key, h.created_at
+            FROM memory_crystallization_history h
+            JOIN memory_crystallizations c USING (crystallization_id)
+           WHERE h.op IN ('auto_activate', 'approve') AND c.status = 'active'
+             AND h.created_at > :since AND h.created_at < :until
+           ORDER BY c.crystallization_id, h.created_at DESC
+        ) d ORDER BY created_at DESC LIMIT :limit
     """,
 }
 
@@ -69,6 +102,8 @@ IDLE_MINUTES_SQL = """
 LAST_WINDOW_START_SQL = "SELECT max(started_at) AS at FROM dream_cycle WHERE status <> 'failed'"
 LAST_ATTEMPT_END_SQL = "SELECT max(ended_at) AS at FROM dream_cycle"
 
+_FAR_FUTURE = datetime(9999, 1, 1, tzinfo=timezone.utc)
+
 _engine = None
 
 
@@ -81,16 +116,20 @@ def _get_engine():
     return _engine
 
 
-def load_source_rows(since: datetime, limit_per_source: int) -> dict[str, list[dict[str, Any]]]:
-    """source_kind -> rows. A failing source is empty and logged, not fatal."""
+def load_source_rows(
+    since: datetime, limit_per_source: int, until: Optional[datetime] = None
+) -> dict[str, list[dict[str, Any]]]:
+    """source_kind -> one row per thing in [since, until). A failing source is
+    empty and logged, not fatal."""
     from sqlalchemy import text
 
     out: dict[str, list[dict[str, Any]]] = {}
     engine = _get_engine()
+    params = {"since": since, "until": until or _FAR_FUTURE, "limit": int(limit_per_source)}
     for kind, sql in SOURCE_QUERIES.items():
         try:
             with engine.connect() as conn:
-                rows = conn.execute(text(sql), {"since": since, "limit": int(limit_per_source)}).mappings().all()
+                rows = conn.execute(text(sql), params).mappings().all()
             out[kind] = [dict(r) for r in rows]
         except Exception as exc:
             logger.warning("dream_cycle source read failed kind=%s err=%s", kind, exc)

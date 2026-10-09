@@ -10,16 +10,25 @@ Candidates are what the day left unprocessed since the last cycle:
   crystallization    active memory crystallizations touched since the last
                      cycle, weighted by their own salience.
 
-Weights are declared heuristics, stated here once. Pressure is the SUM of
-candidate weights -- the same numbers replay ranks on -- so the trigger and the
-selection cannot drift apart. Every source is windowed on `since` (the last
-cycle's end), which gives pressure a true rest point: right after a cycle it
-reads exactly 0.0, and it only rises as new unprocessed rows arrive.
+Weights are declared heuristics, stated here once.
+
+Each candidate has a KEY naming the thing it is about, not the row it came
+from: metacog's normalized `trigger_reason` (its `summary` is model prose,
+reworded every time for the same event), the reverie theme, or the
+crystallization id. Rows sharing a key are one candidate at their highest
+weight, so 222 copies of one gateway timeout are one item to replay.
+
+Pressure counts only NEW keys: keys present since the last sleep and absent
+from the lookback before it (two-process model, Process S, read through the
+synaptic homeostasis hypothesis: new encoding builds sleep need, re-meeting a
+known thing does not). Right after a sleep the window is empty and pressure
+reads exactly 0.0. A chronic problem adds pressure once, on first appearance;
+it stays a replay candidate every window it recurs.
 """
 
 from __future__ import annotations
 
-from typing import Any, Iterable, Optional
+from typing import Any, Iterable, Mapping, Optional
 
 from orion.schemas.dream_cycle import MAX_REPLAY_ITEMS, ReplayItemV1
 
@@ -47,6 +56,21 @@ def _tags(value: Any) -> list[str]:
     if isinstance(value, (list, tuple)):
         return [str(t).strip().lower() for t in value if str(t).strip()][:32]
     return []
+
+
+def row_key(kind: str, row: dict[str, Any]) -> Optional[str]:
+    """`kind:<what this is about>`. SQL supplies `dedupe_key` (cycle_store);
+    without one, fall back to the row's own identity so it counts as new."""
+    key = str(row.get("dedupe_key") or "").strip().lower()
+    if not key:
+        fallback = {
+            "metacog": row.get("id"),
+            "compaction_request": row.get("theme"),
+            "resonance": row.get("theme_key"),
+            "crystallization": row.get("crystallization_id"),
+        }.get(kind)
+        key = " ".join(str(fallback or "").split()).lower()
+    return f"{kind}:{key}" if key else None
 
 
 def candidate_from_metacog(row: dict[str, Any]) -> Optional[ReplayItemV1]:
@@ -128,29 +152,59 @@ _BUILDERS = {
 }
 
 
-def build_candidates(raw: dict[str, Iterable[dict[str, Any]]]) -> list[ReplayItemV1]:
-    """raw: source_kind -> rows. Unusable rows are dropped, never invented."""
-    out: list[ReplayItemV1] = []
-    seen: set[str] = set()
+def keyed_candidates(raw: dict[str, Iterable[dict[str, Any]]]) -> dict[str, ReplayItemV1]:
+    """raw: source_kind -> rows, newest first. key -> one candidate per thing:
+    the first row's text, the highest weight any row carried. Unusable rows
+    are dropped, never invented."""
+    out: dict[str, ReplayItemV1] = {}
     for kind, rows in raw.items():
         builder = _BUILDERS.get(kind)
         if builder is None:
             continue
         for row in rows:
             item = builder(row)
-            if item is not None and item.ref_id not in seen:
-                seen.add(item.ref_id)
-                out.append(item)
+            key = row_key(kind, row)
+            if item is None or key is None:
+                continue
+            kept = out.get(key)
+            if kept is None:
+                out[key] = item
+            elif item.weight > kept.weight:
+                out[key] = kept.model_copy(update={"weight": item.weight})
     return out
 
 
-def compute_pressure(candidates: Iterable[ReplayItemV1]) -> tuple[float, dict[str, int]]:
+def build_candidates(raw: dict[str, Iterable[dict[str, Any]]]) -> list[ReplayItemV1]:
+    return list(keyed_candidates(raw).values())
+
+
+def prior_keys(raw: dict[str, Iterable[dict[str, Any]]]) -> set[str]:
+    """Keys seen in the lookback before the window (same rows, same key rule)."""
+    out: set[str] = set()
+    for kind, rows in raw.items():
+        for row in rows:
+            key = row_key(kind, row)
+            if key is not None:
+                out.add(key)
+    return out
+
+
+def compute_pressure(
+    keyed: Mapping[str, ReplayItemV1], seen_before: Iterable[str] = ()
+) -> tuple[float, dict[str, int], dict[str, int]]:
+    """(pressure, counts, new_counts). counts: distinct things per source in the
+    window. pressure and new_counts: only keys absent from `seen_before`."""
+    before = set(seen_before)
     total = 0.0
     counts: dict[str, int] = {}
-    for c in candidates:
-        total += c.weight
+    new_counts: dict[str, int] = {}
+    for key, c in keyed.items():
         counts[c.source_kind] = counts.get(c.source_kind, 0) + 1
-    return round(total, 6), counts
+        if key in before:
+            continue
+        total += c.weight
+        new_counts[c.source_kind] = new_counts.get(c.source_kind, 0) + 1
+    return round(total, 6), counts, new_counts
 
 
 def select_replay(candidates: Iterable[ReplayItemV1], k: int) -> list[ReplayItemV1]:

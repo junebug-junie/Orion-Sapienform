@@ -62,7 +62,6 @@ class Settings(BaseSettings):
     DREAM_IDLE_MINUTES: float = Field(default=45.0, ge=0.0)
     DREAM_MIN_INTERVAL_HOURS: float = Field(default=6.0, ge=0.0)
     DREAM_LOOKBACK_HOURS: float = Field(default=48.0, gt=0.0)
-    DREAM_CANDIDATES_PER_SOURCE: int = Field(default=50, ge=1)
     DREAM_REPLAY_MAX: int = Field(default=12, ge=0, le=24)
     # Arms: dream pairs come from the replay set; control pairs are random pairs
     # from the whole candidate pool through the same prompt (the baseline).

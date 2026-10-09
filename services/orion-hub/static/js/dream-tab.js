@@ -17,6 +17,9 @@
   function unavailable(id, label, error) {
     if (error.name !== "AbortError") el(id).textContent = `${label} unavailable (${error.message}). Refresh to retry; this is not an empty result.`;
   }
+  function countsText(counts) {
+    return Object.entries(counts || {}).map(([kind,count]) => `${esc(kind.replaceAll("_", " "))}: ${esc(count)}`).join(" · ") || "None";
+  }
   function renderPressure(data) {
     const p = data.pressure;
     const gates = [
@@ -29,7 +32,8 @@
     el("dreamPressure").innerHTML = `<h3 class="font-semibold text-lg ${data.ready ? "text-emerald-300" : "text-gray-200"}">${data.ready ? "Ready for the next sleep check" : data.enabled ? "Not ready · waiting for sleep gates" : "Sleep loop is disabled"}</h3>
       <div class="grid grid-cols-2 lg:grid-cols-5 gap-4 my-3">${gates.map(([name,value]) => `<div><div class="text-xs text-gray-400">${esc(name)}</div><div class="text-sm mt-1">${esc(value)}</div></div>`).join("")}</div>
       <p class="text-xs text-gray-400">Read ${esc(time(p.computed_at))} · Material since ${esc(time(p.since))}</p>
-      <p class="text-xs text-gray-400 mt-1">Candidate counts: ${Object.entries(p.counts || {}).map(([kind,count]) => `${esc(kind.replaceAll("_", " "))}: ${esc(count)}`).join(" · ") || "None reported"}</p>`;
+      <p class="text-xs text-gray-400 mt-1">New since last sleep (drives pressure): ${countsText(p.new_counts)}</p>
+      <p class="text-xs text-gray-400 mt-1">Distinct things to replay: ${countsText(p.counts)}</p>`;
   }
   function renderScore(data) {
     el("dreamScore").innerHTML = `<p class="text-sm text-indigo-200 mb-3">${esc(data.verdict)}</p>

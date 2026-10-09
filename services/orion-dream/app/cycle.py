@@ -24,7 +24,7 @@ from uuid import uuid4
 from orion.schemas.dream_cycle import DreamCycleV1, SleepPressureV1
 
 from app.recombine import Complete, control_pairs, dream_pairs, recombine
-from app.replay import build_candidates, compute_pressure, select_replay
+from app.replay import compute_pressure, keyed_candidates, prior_keys, select_replay
 from app.settings import settings
 
 logger = logging.getLogger("orion-dream.cycle")
@@ -32,7 +32,8 @@ logger = logging.getLogger("orion-dream.cycle")
 
 @dataclass
 class CycleDeps:
-    load_source_rows: Callable[[datetime, int], dict[str, list[dict[str, Any]]]]
+    # (since, limit, until=None) -> one row per thing per source in [since, until)
+    load_source_rows: Callable[..., dict[str, list[dict[str, Any]]]]
     load_idle_minutes: Callable[[], Optional[float]]
     # started_at of the last non-failed cycle -> the replay window start
     load_last_window_start: Callable[[], Optional[datetime]]
@@ -42,6 +43,12 @@ class CycleDeps:
     complete: Complete
     # (cycle_id, window since) -> staged delta id or None
     rem_compaction: Optional[Callable[[str, datetime], Awaitable[Optional[str]]]] = None
+
+
+# Rows are one per thing (cycle_store), ~72 metacog kinds per 48 h live (10-09).
+# A cap near that drops keys silently and makes old ones look new; replay's own
+# DREAM_REPLAY_MAX is what bounds a sleep.
+KEYS_PER_SOURCE = 5000
 
 
 def _utc(dt: Optional[datetime]) -> Optional[datetime]:
@@ -60,18 +67,31 @@ def window_start(now: datetime, last_start: Optional[datetime]) -> datetime:
 def read_pressure(deps: CycleDeps, now: datetime, last_start: Optional[datetime]):
     """(SleepPressureV1, candidates). Blocking (sync DB); call via to_thread."""
     since = window_start(now, last_start)
-    candidates = build_candidates(deps.load_source_rows(since, settings.DREAM_CANDIDATES_PER_SOURCE))
-    total, counts = compute_pressure(candidates)
+    keyed = keyed_candidates(deps.load_source_rows(since, KEYS_PER_SOURCE))
+    lookback = since - timedelta(hours=settings.DREAM_LOOKBACK_HOURS)
+    seen = prior_keys(deps.load_source_rows(lookback, KEYS_PER_SOURCE, until=since))
+    total, counts, new_counts = compute_pressure(keyed, seen)
+    candidates = list(keyed.values())
     pressure = SleepPressureV1(
         since=since,
         computed_at=now,
         pressure=total,
         counts=counts,
+        new_counts=new_counts,
         idle_minutes=deps.load_idle_minutes(),
         threshold=settings.DREAM_SLEEP_PRESSURE_THRESHOLD,
         idle_required_minutes=settings.DREAM_IDLE_MINUTES,
     )
     return pressure, candidates
+
+
+def overdue(now: datetime, last_start: Optional[datetime]) -> bool:
+    """The window has reached DREAM_LOOKBACK_HOURS, the furthest it reaches back.
+    Past this, unreplayed material starts falling out of view. Pressure counts
+    only NEW things, so a repetitive stretch can hold it under threshold
+    indefinitely; this is the backstop that still lets Orion sleep."""
+    last = _utc(last_start)
+    return last is None or now - last >= timedelta(hours=settings.DREAM_LOOKBACK_HOURS)
 
 
 def too_soon(now: datetime, last_end: Optional[datetime]) -> bool:
@@ -90,14 +110,17 @@ async def run_cycle_once(deps: CycleDeps, *, trigger: str = "pressure", force: b
         logger.warning("dream_cycle pressure read failed err=%s", exc)
         return None
 
+    backstop = False
     if not force:
         if too_soon(started, last_end):
             return None
-        if not pressure.should_sleep:
+        backstop = not pressure.should_sleep and pressure.is_idle and bool(candidates) \
+            and overdue(started, last_start)
+        if not pressure.should_sleep and not backstop:
             logger.info(
-                "dream_cycle not due pressure=%.2f/%.2f idle=%s/%s counts=%s",
+                "dream_cycle not due pressure=%.2f/%.2f idle=%s/%s new=%s counts=%s",
                 pressure.pressure, pressure.threshold, pressure.idle_minutes,
-                pressure.idle_required_minutes, pressure.counts,
+                pressure.idle_required_minutes, pressure.new_counts, pressure.counts,
             )
             return None
 
@@ -147,7 +170,8 @@ async def run_cycle_once(deps: CycleDeps, *, trigger: str = "pressure", force: b
         unparseable_count=rem.unparseable,
         llm_failures=rem.failures,
         compaction_delta_id=compaction_delta_id,
-        note=f"pairs dream={len(d_pairs)} control={len(c_pairs)}",
+        note=f"pairs dream={len(d_pairs)} control={len(c_pairs)}"
+        + (f" | overdue: {settings.DREAM_LOOKBACK_HOURS:g} h without crossing threshold" if backstop else ""),
     )
     if not await asyncio.to_thread(deps.persist_cycle, cycle):
         logger.warning("dream_cycle %s ran but was not persisted", cycle_id)

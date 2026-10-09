@@ -31,6 +31,7 @@ Before: story dreams ran about 0 a week unless Juniper started one. After: one s
 
 - `orion/schemas/telemetry/dream.py`: `DreamSleepDigestV1` (cycle_id, started_at, pressure, threshold, overdue, material) and `DreamInternalTriggerV1.sleep`.
 - `orion/schemas/registry.py`: registers `DreamSleepDigestV1`.
+- `config/metrics/metric_definitions.lock.json`: re-locked for the schema_id change, which is stated in the diff.
 - `orion/bus/channels.yaml`: `orion:dream:trigger` schema_id `DreamTriggerPayload` → `DreamInternalTriggerV1`. That is what orch validates first. The old forbid model would reject `sleep`.
 - `orion/cognition/prompts/dream_cycle.j2`: a "TONIGHT'S SLEEP" branch when the trigger carries a sleep. Otherwise it is the old prompt, with the same output contract.
 - `services/orion-dream/app/story.py` (new):
@@ -79,6 +80,9 @@ tests/test_dream_trigger_contract.py, orion/cognition/tests/test_dream_contracts
 Mutation checks:
   story seam disabled                    -> story test fails
   control items dropped from the story   -> exposure test fails
+scripts/check_definition_drift.py --gate -> PASS after --update. The lock records
+the intended orion:dream:trigger schema_id change (DreamTriggerPayload -> DreamInternalTriggerV1).
+scripts/check_metric_lineage.py --gate -> PASS
 Root channel/registry/catalog tests: 168 passed, 5 failed. The same 5 fail on clean origin/main
 (local-environment, pre-existing).
 ```

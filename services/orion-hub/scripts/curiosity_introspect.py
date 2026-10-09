@@ -69,6 +69,20 @@ def occurred_at(run: dict[str, Any]) -> Optional[datetime]:
     return _ms_to_dt(run.get("started_at")) or _ms_to_dt(run.get("finished_at"))
 
 
+def journal_clock(story: dict[str, Any]) -> Optional[datetime]:
+    """When the run's newest write-up was saved, from the story timeline.
+
+    Runs from before the admission path (live: 46 of 371 write-ups,
+    2026-08-26..09-14) have only a graph clock, and some graph nodes carry
+    none; the write-up's own clock keeps such a run from being dropped.
+    """
+    stamps = [
+        it.get("at") for it in (story.get("timeline") or [])
+        if isinstance(it, dict) and it.get("kind") == "journal" and it.get("at") is not None
+    ]
+    return _ms_to_dt(max(stamps)) if stamps else None
+
+
 def _short(value: Any) -> str:
     return clip_text(str(value or ""), SHORT_FIELD_CAP)[0]
 
@@ -98,7 +112,8 @@ def run_item(
     full: bool = False,
     extra: Optional[dict[str, Any]] = None,
 ) -> Optional[IntrospectItemV1]:
-    """One run from a `read_run_payload` story. None when it has no clock.
+    """One run from a `read_run_payload` story. None only when it has no
+    clock at all: no start, no finish, and no write-up.
 
     `full` (one run by id) returns the write-up up to
     CURIOSITY_FULL_JSON_BUDGET serialized characters; a list shows the Answer
@@ -106,6 +121,9 @@ def run_item(
     """
     run = story.get("run") or {}
     when = occurred_at(run)
+    clock_from = None
+    if when is None:
+        when, clock_from = journal_clock(story), "write_up"
     run_id = str(run.get("run_id") or "")
     if when is None or not run_id:
         return None
@@ -135,6 +153,8 @@ def run_item(
         fields.update({k: outcome.get(k) for k in OUTCOME_FIELDS})
         if fields.get("unknown_reason") is not None:
             fields["unknown_reason"] = _short(fields["unknown_reason"])
+    if clock_from is not None:
+        fields["clock_from"] = clock_from
     fields.update(extra or {})
     return IntrospectItemV1(
         id=run_id, occurred_at=when, kind=RUN_KIND, epistemic_status=status,

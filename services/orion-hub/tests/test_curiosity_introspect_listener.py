@@ -213,6 +213,7 @@ def test_recent_honours_limit_since_and_line():
 
 def test_one_run_returns_the_full_write_up_and_unknown_id_is_empty():
     listener, _ = _listener()
+    listener.reader_provider = lambda: _GraphReader({})  # graph read and empty: "not found" is trusted
     one = _ask(listener, {"run_id": "new1"})
     assert [i.id for i in one.items] == ["new1"]
     assert one.items[0].text == "Preamble.\n\n## Answer\n\nThe gate is not algorithmic."
@@ -245,6 +246,7 @@ def test_search_rereads_hits_through_the_run_join_in_ranked_order(monkeypatch):
 
     monkeypatch.setattr(il, "rank", fake_rank)
     listener, _ = _listener()
+    listener.reader_provider = lambda: _GraphReader({})
     result = _ask(listener, {"query": "bees"})
     assert [i.id for i in result.items] == ["old1", "new1"], "ranked order; a non-curiosity hit is dropped"
     assert [i.extra["similarity"] for i in result.items] == [0.81, 0.7]
@@ -308,3 +310,91 @@ def test_index_once_marks_complete_only_when_nothing_is_pending(monkeypatch):
     assert all(pool.conn.readonly_flags)
     none_pool, _ = _listener(pool=None)
     assert asyncio.run(none_pool.index_once()) is None
+
+
+# --- graph-clocked runs (review fix 1) ----------------------------------------
+# 46 of 371 live write-ups (08-26..09-14) predate the admission path: their only
+# start clock is a graph node, and some graph nodes carry no clock at all.
+
+from orion.curiosity.worldview import WorldviewReader, WorldviewUnavailable  # noqa: E402
+
+
+class _GraphReader(WorldviewReader):
+    def __init__(self, answers=None, down=False):
+        super().__init__(host="x", port=1, graph_name="g", client=object())
+        self.answers, self.down = answers or {}, down
+
+    def query(self, cypher):
+        if self.down:
+            raise WorldviewUnavailable("ConnectionError: graph down")
+        hits = [rows for needle, rows in self.answers.items() if needle in cypher]
+        return hits[0] if hits else []
+
+
+def _graph_db(journal_at):
+    db = _db()
+    db["journals"].append(_journal("g1", journal_at - timedelta(minutes=29), "Graph-era prose."))
+    return db
+
+
+def _graph_listener(reader, db=None, **kw):
+    listener, pool = _listener(pool=_Pool(db if db is not None else _graph_db(NOW - timedelta(hours=1))), **kw)
+    listener.reader_provider = lambda: reader
+    return listener, pool
+
+
+CLOCKLESS_GRAPH = _GraphReader({
+    "RETURN DISTINCT n.run_id": [{"run_id": "g1"}],
+    "MATCH (n:InvestigationRole)": [{"run_id": "g1", "choice": "local_crawl", "why": "w", "written_at": None}],
+})
+
+
+def test_one_graph_run_without_a_start_clock_uses_its_write_up_clock():
+    listener, _ = _graph_listener(CLOCKLESS_GRAPH)
+    result = _ask(listener, {"run_id": "g1"})
+    assert [i.id for i in result.items] == ["g1"], "a found run is never dropped as 'nothing matched'"
+    item = result.items[0]
+    assert item.occurred_at == NOW - timedelta(hours=1) and item.extra["clock_from"] == "write_up"
+
+
+def test_recent_includes_a_graph_run_with_only_a_write_up_clock():
+    listener, _ = _graph_listener(CLOCKLESS_GRAPH)
+    result = _ask(listener, {"limit": 5})
+    assert [i.id for i in result.items] == ["g1", "new1", "fail1", "old1"]
+    assert result.total_available == 4
+
+
+def test_graph_clock_is_used_when_the_graph_has_one():
+    start = NOW - timedelta(hours=3)
+    reader = _GraphReader({
+        "RETURN DISTINCT n.run_id": [{"run_id": "g1"}],
+        "MATCH (n:InvestigationRole)": [{"run_id": "g1", "choice": "c", "why": "w",
+                                         "written_at": int(start.timestamp() * 1000)}],
+    })
+    listener, _ = _graph_listener(reader)
+    [item] = _ask(listener, {"run_id": "g1"}).items
+    assert item.occurred_at == start and "clock_from" not in item.extra
+
+
+def test_graph_down_not_found_is_unknown_and_found_uses_the_write_up_clock():
+    listener, _ = _graph_listener(_GraphReader(down=True))
+    assert _ask(listener, {"run_id": "nope"}).error == il.QUERY_UNAVAILABLE, "graph-only runs cannot be ruled out"
+    [item] = _ask(listener, {"run_id": "g1"}).items
+    assert item.extra["graph_read"] is False and item.extra["clock_from"] == "write_up"
+
+
+def test_a_found_run_with_no_clock_at_all_is_unknown_not_empty():
+    db = _db()  # g1 exists only as a clockless graph node: no write-up to borrow a clock from
+    listener, _ = _graph_listener(CLOCKLESS_GRAPH, db=db)
+    assert _ask(listener, {"run_id": "g1"}).error == il.QUERY_UNAVAILABLE
+
+
+def test_search_where_every_hit_was_dropped_for_a_non_filter_reason_is_unknown(monkeypatch):
+    async def stale_hits(client, cfg, query, *, since=None, line=None):
+        return [("gone1", 0.9), ("gone2", 0.8)]
+
+    monkeypatch.setattr(il, "rank", stale_hits)
+    listener, _ = _graph_listener(_GraphReader(down=True))
+    assert _ask(listener, {"query": "bees"}).error == il.QUERY_UNAVAILABLE
+    up, _ = _graph_listener(_GraphReader({}))
+    assert _ask(up, {"query": "bees"}).error == il.QUERY_UNAVAILABLE

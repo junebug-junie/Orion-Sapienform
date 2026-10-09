@@ -53,6 +53,8 @@ CANDIDATES = 10
 _DOC_PREFIX = "curiosity-search"
 _HASH_KEYS = ("occurred_ts",)
 _RUNNING = "running"
+# Recent mode re-reads at most limit * this many listed runs to fill `limit`.
+_REREAD_FACTOR = 3
 
 OUTCOMES_SQL = (
     "SELECT run_id, turn_ok, n_tested, n_moved, n_formed, unknown_reason "
@@ -74,6 +76,10 @@ UNINDEXED_SQL = (
     "SELECT EXISTS (SELECT 1 FROM journal_entries "
     "WHERE source_ref LIKE 'curiosity:%' AND created_at >= $1)"
 )
+
+
+class GraphUnreadError(RuntimeError):
+    """A run is absent from Postgres and the graph could not be read: unknown, not absent."""
 
 
 class ReadOnlyPool:
@@ -208,13 +214,22 @@ class CuriosityIntrospectListener:
     # --- modes -------------------------------------------------------------
 
     async def _story(self, pool: ReadOnlyPool, run_id: str) -> Optional[dict[str, Any]]:
-        """One run through the tab's join. None = no store knows it; raises when unknown."""
+        """One run through the tab's join. None = no store knows it; raises when unknown.
+
+        "Not found" is only trusted when the graph was read too: runs from
+        before the admission path exist only there.
+        """
         payload = await run_store.read_run_payload(pool=pool, reader=self.reader_provider(), run_id=run_id)
         # Postgres holds the admission rows and the write-up; without it a
         # "not found" or a story with no write-up would be a guess.
-        if not payload.get("available") or (payload.get("stores") or {}).get("postgres") != "ok":
-            raise RuntimeError(f"run store unavailable: {payload.get('reason') or payload.get('stores')}")
-        return payload if payload.get("found") else None
+        stores = payload.get("stores") or {}
+        if not payload.get("available") or stores.get("postgres") != "ok":
+            raise RuntimeError(f"run store unavailable: {payload.get('reason') or stores}")
+        if payload.get("found"):
+            return payload
+        if stores.get("graph") != "ok":
+            raise GraphUnreadError(f"run not in postgres and graph unread: {stores.get('graph')}")
+        return None
 
     async def _outcomes(self, pool: ReadOnlyPool, run_ids: list[str]) -> dict[str, dict[str, Any]]:
         if not run_ids:
@@ -243,7 +258,9 @@ class CuriosityIntrospectListener:
         if story is None:
             return _ok(now, [], 0)
         items = await self._items(pool, [story], full=True)
-        return _ok(now, items, max(1, len(items)))
+        if not items:
+            raise RuntimeError("run found but carries no clock")
+        return _ok(now, items, 1)
 
     async def _recent(self, pool: ReadOnlyPool, args: CuriosityArguments, now: datetime) -> IntrospectResultV1:
         payload = await run_store.read_runs_payload(
@@ -260,36 +277,52 @@ class CuriosityIntrospectListener:
             if args.since is not None and when is not None and when < args.since:
                 continue
             runs.append(run)
-        # `runs` is newest first; a clockless run is counted but never returned.
+        # `runs` is newest first with clockless runs last; a clockless run can
+        # still be returned on its write-up's clock after the re-read.
         stories = []
-        for run in [r for r in runs if occurred_at(r) is not None][: args.limit]:
-            story = await self._story(pool, str(run["run_id"]))
+        for run in runs[: args.limit * _REREAD_FACTOR]:
+            if len(stories) >= args.limit:
+                break
+            story = await self._story_or_skip(pool, str(run["run_id"]))
             if story is not None:
                 stories.append(story)
-        items = await self._items(pool, stories, full=False)
+        items = [
+            i for i in await self._items(pool, stories, full=False)
+            if args.since is None or i.occurred_at >= args.since
+        ]
+        items.sort(key=lambda i: i.occurred_at, reverse=True)
         return _ok(now, items, max(len(runs), len(items)))
+
+    async def _story_or_skip(self, pool: ReadOnlyPool, run_id: str) -> Optional[dict[str, Any]]:
+        """Recent mode: the window just listed this run, so a vanished story is skipped."""
+        try:
+            return await self._story(pool, run_id)
+        except GraphUnreadError:
+            return None
 
     async def _search(self, pool: ReadOnlyPool, args: CuriosityArguments, now: datetime) -> IntrospectResultV1:
         if self.search is None or not self.search.enabled:
             raise SearchUnavailableError("curiosity search is not configured")
         async with httpx.AsyncClient(timeout=HTTP_TIMEOUT_SEC) as client:
             scored = await rank(client, self.search, args.query, since=args.since)
-        matched = []
+        matched, dropped = [], 0
         for run_id, score in scored:
             story = await self._story(pool, run_id)
             if story is None:
+                dropped += 1  # indexed, but no store knows the run any more
                 continue
-            run = story["run"]
-            when = occurred_at(run)
-            if args.line is not None and run.get("line") != args.line:
-                continue
-            if args.since is not None and (when is None or when < args.since):
+            if args.line is not None and story["run"].get("line") != args.line:
                 continue
             matched.append({**story, "similarity": score})
-        items = await self._items(pool, matched[: args.limit], full=False)
+        built = await self._items(pool, matched, full=False)
+        dropped += len(matched) - len(built)  # found but carrying no clock at all
+        items = [i for i in built if args.since is None or i.occurred_at >= args.since]
+        if not items and dropped:
+            # A hit lost for a reason other than the filters is not evidence of no match.
+            raise RuntimeError(f"{dropped} search hit(s) could not be read back")
         if not items and await self._unindexed(pool, args.since):
             raise SearchUnavailableError("curiosity index behind the record; empty search is not proof")
-        return _ok(now, items, max(len(matched), len(items)))
+        return _ok(now, items[: args.limit], len(items))
 
     async def _self_questions(self, pool: ReadOnlyPool, args: CuriosityArguments, now: datetime) -> IntrospectResultV1:
         async with pool.acquire() as conn:

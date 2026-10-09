@@ -3318,6 +3318,12 @@ the whole tool family see the
   - No match: `ok=true, items=[]`. A search is only empty once the index is
     known to hold every write-up (the dreams `index_complete_as_of` rule);
     until then an empty search is `curiosity_search_unavailable`.
+  - A run id Postgres does not know is only "not found" when the graph was
+    read too (runs from before 2026-09-14 exist only there); otherwise, or
+    when a found run has no clock at all, or every search hit that passed
+    the filters could not be read back, the answer is unknown. A run whose
+    only clock is its write-up (46 of 371 live, 08-26..09-14) is dated by the
+    write-up and carries `clock_from: "write_up"`.
   - A request that fails validation returns `invalid curiosity request: …`.
   - Postgres down, no pool, or a run-store read without Postgres returns
     `curiosity_unavailable; answer unknown`.

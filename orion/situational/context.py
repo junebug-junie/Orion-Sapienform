@@ -24,6 +24,7 @@ from .perception_reader import (
     presence_fragment,
     presence_row_age_seconds,
 )
+from .cabinet_sound_reader import fetch_cabinet_sound_history
 from .reverie_reader import fetch_recent_reverie_snippets
 from .session_turn_phase import read_session_turn_state, write_session_turn_state
 from orion.curiosity.worldview import (
@@ -39,6 +40,7 @@ from orion.telemetry.cabinet_sensors import (
     compute_cabinet_pressures,
     extract_cabinet_measurements,
 )
+from orion.telemetry.ambient_audio import load_ambient_audio_snapshot, pcm16_to_dbfs
 from orion.telemetry.cabinet_snapshot_merge import (
     device_label_from_sources,
     load_merged_cabinet_sensors,
@@ -183,6 +185,12 @@ class SituationSettings:
     cabinet_sensors_path: str
     cabinet_sensors_b_path: str
     cabinet_stale_after_sec: float
+    # Cabinet USB mic: live snapshot file + the biometrics node whose stored
+    # readings give the 24 h "usual" band. Empty path = no mic for this
+    # process (only Hub mounts /run/orion-audio).
+    ambient_audio_path: str
+    ambient_audio_stale_after_sec: float
+    ambient_audio_history_node: str
     perception_enabled: bool
     perception_max_age_seconds: int
     perception_stream_id: str
@@ -404,6 +412,13 @@ def settings_from_runtime(settings: Any) -> SituationSettings:
         cabinet_stale_after_sec=float(
             getattr(settings, "orion_situation_cabinet_stale_after_sec", 10.0)
         ),
+        ambient_audio_path=str(getattr(settings, "orion_situation_ambient_audio_path", "") or ""),
+        ambient_audio_stale_after_sec=float(
+            getattr(settings, "orion_situation_ambient_audio_stale_after_sec", 5.0)
+        ),
+        ambient_audio_history_node=str(
+            getattr(settings, "orion_situation_ambient_audio_history_node", "athena") or "athena"
+        ),
         runtime_enabled=bool(getattr(settings, "orion_situation_runtime_enabled", True)),
         runtime_route=str(getattr(settings, "orion_situation_runtime_route", "chat")),
         runtime_ttl_seconds=int(getattr(settings, "orion_situation_runtime_ttl_seconds", 120)),
@@ -545,6 +560,17 @@ def hub_settings_to_runtime_namespace(cfg: Any) -> SimpleNamespace:
         orion_situation_cabinet_sensors_b_path=str(getattr(cfg, "CABINET_SENSORS_B_PATH", "")),
         orion_situation_cabinet_stale_after_sec=float(
             getattr(cfg, "CABINET_SENSORS_STALE_AFTER_SEC", 10.0)
+        ),
+        # Cabinet mic: Hub's EXISTING ambient-audio keys (already used by
+        # cabinet_ambient_routes.py), same no-new-keys reuse as the sensors.
+        orion_situation_ambient_audio_path=str(
+            getattr(cfg, "AMBIENT_AUDIO_PATH", "/run/orion-audio/latest.json")
+        ),
+        orion_situation_ambient_audio_stale_after_sec=float(
+            getattr(cfg, "AMBIENT_AUDIO_STALE_AFTER_SEC", 5.0)
+        ),
+        orion_situation_ambient_audio_history_node=str(
+            getattr(cfg, "CABINET_AMBIENT_HISTORY_NODE", "athena")
         ),
         # 2026-10-07: was a literal False. Reads Hub's own
         # ORION_SITUATION_PERCEPTION_* keys (same names and defaults as
@@ -1316,7 +1342,60 @@ def _parse_cabinet_received_at(value: str) -> Optional[datetime]:
     return dt.astimezone(timezone.utc)
 
 
+def _cabinet_sound_fields(cfg: SituationSettings) -> dict[str, Any]:
+    """Cabinet mic loudness for `CabinetContextV1`'s `sound_*` fields, or {}
+    when there is no fresh mic reading.
+
+    Live level comes from the host reader's snapshot file (same loader and
+    staleness rule orion-biometrics uses). "Usual" comes from the last 24 h
+    of stored readings (`cabinet_sound_reader`); if that history is
+    unavailable the live level is still reported, just without a band.
+    """
+    if not cfg.ambient_audio_path:
+        return {}
+    snap = load_ambient_audio_snapshot(
+        cfg.ambient_audio_path, stale_after_sec=cfg.ambient_audio_stale_after_sec
+    )
+    if snap is None or snap.get("stale"):
+        return {}
+    received_dt = _parse_cabinet_received_at(snap.get("received_at"))
+    rms = float(snap["rms"])
+    fields: dict[str, Any] = {
+        "sound_available": True,
+        "sound_age_seconds": float(percept_age_seconds(received_dt)) if received_dt else None,
+        "sound_dbfs": round(pcm16_to_dbfs(rms), 1),
+        "sound_peak_dbfs": round(pcm16_to_dbfs(float(snap["peak"])), 1),
+    }
+    history = fetch_cabinet_sound_history(node=cfg.ambient_audio_history_node)
+    if history is None:
+        return fields
+    fields.update(
+        sound_usual_low_dbfs=round(pcm16_to_dbfs(history.p10_rms), 1),
+        sound_usual_dbfs=round(pcm16_to_dbfs(history.median_rms), 1),
+        sound_usual_high_dbfs=round(pcm16_to_dbfs(history.p90_rms), 1),
+        sound_recent_dbfs=(
+            round(pcm16_to_dbfs(history.recent_median_rms), 1)
+            if history.recent_median_rms is not None
+            else None
+        ),
+        # Compared in raw RMS, not rounded dBFS, so a reading exactly on a
+        # band edge isn't flipped by rounding.
+        sound_vs_usual=(
+            "quieter" if rms < history.p10_rms else "louder" if rms > history.p90_rms else "usual"
+        ),
+    )
+    return fields
+
+
 def _fetch_cabinet_context(cfg: SituationSettings) -> CabinetContextV1:
+    """Nano sensor read plus the cabinet mic. The two sources are
+    independent: a stale Nano frame does not hide a fresh mic reading."""
+    ctx = _fetch_cabinet_sensor_context(cfg)
+    sound = _cabinet_sound_fields(cfg)
+    return ctx.model_copy(update=sound) if sound else ctx
+
+
+def _fetch_cabinet_sensor_context(cfg: SituationSettings) -> CabinetContextV1:
     """Sync read of Orion's own physical cabinet sensors -- called via
     `asyncio.to_thread` below, same reasoning as `_fetch_runtime_context`/
     `_fetch_weather` (blocking file I/O must not run on this module's
@@ -1417,7 +1496,7 @@ async def _build_cabinet_context(
         diagnostics.provider_status["cabinet"] = "disabled"
         return CabinetContextV1(available=False, source="disabled")
 
-    cache_key = f"{cfg.cabinet_sensors_path}:{cfg.cabinet_sensors_b_path}"
+    cache_key = f"{cfg.cabinet_sensors_path}:{cfg.cabinet_sensors_b_path}:{cfg.ambient_audio_path}"
     with _LOCK:
         cached = _CABINET_CACHE.get(cache_key)
         if cached and (datetime.now(timezone.utc) - cached[0]).total_seconds() < cfg.cabinet_ttl_seconds:
@@ -1431,6 +1510,11 @@ async def _build_cabinet_context(
     with _LOCK:
         _CABINET_CACHE[cache_key] = (datetime.now(timezone.utc), ctx)
     diagnostics.provider_status["cabinet"] = "ok" if ctx.available else ctx.source
+    diagnostics.provider_status["cabinet_sound"] = (
+        "ok" if ctx.sound_usual_dbfs is not None
+        else "no_history" if ctx.sound_available
+        else "unavailable"
+    )
     return ctx
 
 
@@ -2311,6 +2395,30 @@ def _build_prompt_fragment(brief: SituationBriefV1, max_chars: int) -> Situation
         if parts:
             seen = _recency_phrase(cab.age_seconds)
             lines.append(f"Your cabinet sensors (read {seen}): " + ", ".join(parts) + ".")
+    # Cabinet mic, independent of the Nano frame above. Omitted (not a
+    # placeholder) when there is no fresh reading, same reasoning as the
+    # sensors. The scale sentence is there because a bare number let Orion
+    # call a fan-roaring cabinet "quiet as a basement" (2026-10-09): dBFS
+    # means nothing without knowing where silence and speech sit.
+    if brief.cabinet.sound_available and brief.cabinet.sound_dbfs is not None:
+        cab = brief.cabinet
+        heard = _recency_phrase(cab.sound_age_seconds)
+        sound_line = f"Your cabinet's sound (mic, heard {heard}): {cab.sound_dbfs:.0f} dBFS"
+        if cab.sound_usual_dbfs is not None:
+            vs = "about usual" if cab.sound_vs_usual == "usual" else f"{cab.sound_vs_usual} than usual"
+            sound_line += (
+                f", {vs} (last 24h ranged {cab.sound_usual_low_dbfs:.0f} to"
+                f" {cab.sound_usual_high_dbfs:.0f}, median {cab.sound_usual_dbfs:.0f}"
+            )
+            if cab.sound_recent_dbfs is not None:
+                sound_line += f"; last 10 min {cab.sound_recent_dbfs:.0f}"
+            sound_line += ")"
+        sound_line += (
+            ". dBFS is level relative to the mic's maximum (0 = maximum), not calibrated loudness."
+            " For scale, on a typical USB mic a quiet room reads around -50 dBFS or lower"
+            " and nearby speech around -30 to -20."
+        )
+        lines.append(sound_line)
     if brief.perception.available and brief.perception.scene_summary:
         seen = _recency_phrase(brief.perception.observation_age_seconds)
         lines.append(f"Room (seen {seen}): {brief.perception.scene_summary}")

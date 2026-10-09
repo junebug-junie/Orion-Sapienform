@@ -262,7 +262,15 @@ def _gateway_cancelled_result(
     result of a call it cancelled with its own reply and sets the lease release reason itself.
     ``raw.error`` is still set (so that replacement keeps happening) and mirrors the class main.py
     substitutes -- ``gpu_pool_recalled`` for a lease cancel, ``timeout`` otherwise -- so even a
-    future path that forwarded it would count as the cancel, never as an upstream_error."""
+    future path that forwarded it would count as the cancel, never as an upstream_error.
+
+    Known narrow race: a genuine upstream drop whose exception is caught just after a cancel fires
+    is logged as the cancel. The caller's outcome is identical either way (main.py substitutes its
+    own reply); ``after_cancel_ms`` near 0 marks such a line."""
+    if not isinstance(exc, (httpx.TransportError, OSError)):
+        # Only a transport failure can be the hang-up. A gateway bug (KeyError in post-processing,
+        # ...) that happens to land after a cancel stays gateway_exception at ERROR, traceback kept.
+        return None
     handle = upstream_cancel.cancelled_by_gateway()
     if handle is None:
         return None
@@ -273,9 +281,9 @@ def _gateway_cancelled_result(
     after_cancel_ms = int((now - handle.cancelled_at) * 1000) if handle.cancelled_at is not None else None
     logger.warning(
         "[LLM-GW] upstream_cancelled backend=%s reason=%s exc=%s route=%s served_by=%s url=%s corr=%s "
-        "elapsed_ms=%s after_cancel_ms=%s",
+        "elapsed_ms=%s after_cancel_ms=%s message=%r",
         backend_name, handle.reason, type(exc).__name__, route, served_by, url, trace_id,
-        elapsed_ms, after_cancel_ms,
+        elapsed_ms, after_cancel_ms, " ".join(str(exc).split())[:UPSTREAM_ERROR_MESSAGE_MAX_CHARS],
     )
     return {
         "text": "",

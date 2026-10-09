@@ -17,6 +17,7 @@ import threading
 import uuid
 from typing import Dict, List
 
+import httpx
 import pytest
 
 from orion.core.bus.bus_schemas import BaseEnvelope, ChatRequestPayload, LLMMessage, ServiceRef
@@ -167,9 +168,9 @@ async def test_bus_call_cancelled_on_budget_is_counted_once_as_upstream_timeout(
     assert totals == {"upstream_timeout": 1}
 
 
-def test_cancelled_handle_is_read_from_the_worker_thread_only():
+def test_no_handle_or_uncancelled_handle_is_a_no_op():
     """Outside a cancellable call, or with a handle nobody cancelled, the check is a no-op."""
-    exc = RuntimeError("x")
+    exc = httpx.RemoteProtocolError("x")
     kw = dict(backend_name="llamacpp", url="u", route="r", served_by="s", spark_meta={}, trace_id="t")
     assert llm_backend._gateway_cancelled_result(exc, **kw) is None
     handle = upstream_cancel.UpstreamCancel()
@@ -194,7 +195,7 @@ def test_cancelled_result_classes_as_the_cancel_never_as_upstream_error(reason, 
     handle = upstream_cancel.UpstreamCancel()
     handle.cancel(reason)
     out = upstream_cancel.run_cancellable(
-        handle, lambda: llm_backend._gateway_cancelled_result(RuntimeError("x"), **kw))
+        handle, lambda: llm_backend._gateway_cancelled_result(httpx.RemoteProtocolError("x"), **kw))
     assert grammar_emit.classify_outcome(out) == cls
 
 
@@ -239,3 +240,68 @@ def test_every_executor_logs_a_gateway_cancel_as_upstream_cancelled(executor, si
     assert [r for r in caplog.records if r.levelno >= logging.ERROR] == []
     (line,) = _lines(caplog, "upstream_cancelled")
     assert line.levelno == logging.WARNING and "reason=caller_budget_exhausted" in line.getMessage()
+
+
+def test_a_handle_cancelled_in_another_thread_is_not_seen_here():
+    kw = dict(backend_name="llamacpp", url="u", route="r", served_by="s", spark_meta={}, trace_id="t")
+    other = upstream_cancel.UpstreamCancel()
+    other.cancel("caller_budget_exhausted")
+    seen: List[object] = []
+    t = threading.Thread(target=lambda: upstream_cancel.run_cancellable(other, lambda: seen.append(
+        llm_backend._gateway_cancelled_result(httpx.RemoteProtocolError("x"), **kw))))
+    t.start()
+    t.join(2)
+    assert seen and seen[0] is not None  # visible in its own thread
+    assert llm_backend._gateway_cancelled_result(httpx.RemoteProtocolError("x"), **kw) is None
+
+
+def test_a_gateway_bug_after_a_cancel_stays_a_gateway_exception():
+    """Only transport failures are the hang-up; a non-transport bug keeps its ERROR + traceback."""
+    kw = dict(backend_name="llamacpp", url="u", route="r", served_by="s", spark_meta={}, trace_id="t")
+    handle = upstream_cancel.UpstreamCancel()
+    handle.cancel("caller_budget_exhausted")
+    assert upstream_cancel.run_cancellable(
+        handle, lambda: llm_backend._gateway_cancelled_result(KeyError("choices"), **kw)) is None
+
+
+def _executors(body: ChatBody, url: str):
+    return {
+        "ollama": lambda: llm_backend._execute_ollama_chat(body, "m", url, route="quick", served_by="w"),
+        "native_completion": lambda: llm_backend._execute_llamacpp_native_completion(
+            body, "m", url, "llamacpp", route="quick", served_by="w"),
+        "openai_chat": lambda: llm_backend._execute_openai_chat(
+            body, "m", url, "llamacpp", route="quick", served_by="w"),
+    }
+
+
+@pytest.mark.parametrize("executor", ["ollama", "native_completion", "openai_chat"])
+def test_a_timeout_raised_after_a_gateway_cancel_is_upstream_cancelled(executor, monkeypatch, caplog):
+    """The ``except httpx.TimeoutException`` branches: no TIMEOUT ERROR, no upstream_failed."""
+    caplog.set_level(logging.DEBUG)
+    handle = upstream_cancel.UpstreamCancel()
+
+    def _post(self, url, **kw):
+        handle.cancel("lease_recalled")
+        raise httpx.ReadTimeout("timed out")
+
+    monkeypatch.setattr(httpx.Client, "post", _post)
+    out = upstream_cancel.run_cancellable(handle, _executors(_body(), "http://w:1")[executor])
+    assert out["raw"]["error"] == "gpu_pool_recalled"
+    assert [r for r in caplog.records if r.levelno >= logging.ERROR] == []
+    (line,) = _lines(caplog, "upstream_cancelled")
+    assert "exc=ReadTimeout" in line.getMessage() and "reason=lease_recalled" in line.getMessage()
+
+
+@pytest.mark.parametrize("executor", ["ollama", "native_completion", "openai_chat"])
+def test_a_genuine_timeout_without_cancel_is_still_upstream_timeout(executor, monkeypatch, caplog):
+    caplog.set_level(logging.DEBUG)
+
+    def _post(self, url, **kw):
+        raise httpx.ReadTimeout("timed out")
+
+    monkeypatch.setattr(httpx.Client, "post", _post)
+    out = upstream_cancel.run_cancellable(upstream_cancel.UpstreamCancel(), _executors(_body(), "http://w:1")[executor])
+    assert out["raw"]["error"] == "upstream_timeout"
+    assert _lines(caplog, "upstream_cancelled") == []
+    (line,) = _lines(caplog, "upstream_failed")
+    assert line.levelno == logging.ERROR

@@ -36,9 +36,10 @@ class UpstreamCancel:
         self._sockets: List[socket.socket] = []
         self.cancelled = threading.Event()
         self.reason: Optional[str] = None
-        # Monotonic clock: when the call began, and when the gateway hung up on it. llm_backend
-        # logs both so a cancelled call's line says how long it ran and how soon after the cancel
-        # the worker thread came out.
+        # Monotonic clock: when the worker thread started the call (reset by run_cancellable, so
+        # executor queueing is not counted), and when the gateway hung up on it. llm_backend logs
+        # both so a cancelled call's line says how long it ran and how soon after the cancel the
+        # worker thread came out.
         self.started_at = time.monotonic()
         self.cancelled_at: Optional[float] = None
 
@@ -102,6 +103,7 @@ def cancelled_by_gateway() -> Optional[UpstreamCancel]:
 def run_cancellable(handle: UpstreamCancel, fn: Callable[..., T], *args: Any) -> T:
     """Run ``fn`` in this (worker) thread with ``handle`` as its cancel hook."""
     _local.handle = handle
+    handle.started_at = time.monotonic()
     try:
         return fn(*args)
     finally:

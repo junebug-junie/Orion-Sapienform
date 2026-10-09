@@ -3773,11 +3773,22 @@ channels:
     since: "2026-09-28"
     description: "orion-introspect dreams tool RPC. Read-only: recent, one by dream_id, or query by meaning over narrative dreams and already-offered sleep-cycle hypotheses (both arms, arm never exposed). Reply on orion:introspect:result:<correlation_id>."
 
+  - name: "orion:introspect:curiosity:request"
+    kind: "request"
+    schema_id: "IntrospectRequestV1"
+    message_kind: "introspect.tool.request.v1"
+    producer_services: ["orion-harness-governor"]
+    consumer_services: ["orion-hub"]
+    single_consumer: true
+    stability: "experimental"
+    since: "2026-10-09"
+    description: "orion-introspect curiosity tool RPC. Read-only: recent runs (failed included), one run by run_id with its write-up, query by meaning over run write-ups, or open self-questions. Answered from the Hub's own run join. Reply on orion:introspect:result:<correlation_id>."
+
   - name: "orion:introspect:result:*"
     kind: "result"
     schema_id: "IntrospectResultV1"
     message_kind: "introspect.tool.result.v1"
-    producer_services: ["orion-dream"]
+    producer_services: ["orion-dream", "orion-hub"]
     consumer_services: ["orion-harness-governor"]
     stability: "experimental"
     since: "2026-09-28"

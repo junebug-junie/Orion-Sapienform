@@ -283,3 +283,103 @@ def test_registry_and_channels_know_the_dream_contract():
     res = by_name["orion:introspect:result:*"]
     assert (res["schema_id"], res["message_kind"]) == ("IntrospectResultV1", "introspect.tool.result.v1")
     assert "orion-dream" in by_name["orion:vector:semantic:upsert"]["producer_services"]
+
+
+from orion.introspect.transport import CURIOSITY_REQUEST_CHANNEL  # noqa: E402
+from orion.schemas.introspect import (  # noqa: E402
+    CURIOSITY_FULL_JSON_BUDGET,
+    CURIOSITY_RUN_ID_PATTERN,
+    CuriosityArguments,
+    clip_json_text,
+)
+
+
+def test_curiosity_run_id_pattern_matches_the_atlas_guard():
+    from orion.curiosity.atlas import _RUN_ID_RE
+
+    assert _RUN_ID_RE.pattern == CURIOSITY_RUN_ID_PATTERN
+
+
+def test_curiosity_arguments_defaults_and_modes():
+    args = CuriosityArguments()
+    assert (args.kind, args.limit, args.line, args.query) == ("run", 5, None, None)
+    assert CuriosityArguments(query="  bees  ").query == "bees"
+    assert CuriosityArguments(run_id="3dc94088912b").run_id == "3dc94088912b"
+    assert CuriosityArguments(run_id="r1", kind="run").kind == "run"
+    assert CuriosityArguments(line="self_inquiry", since=NOW, query="x").line == "self_inquiry"
+    assert CuriosityArguments(kind="self_question", since=NOW, limit=2).kind == "self_question"
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        {"query": "   "},
+        {"query": "x" * 501},
+        {"run_id": "bad id"},
+        {"run_id": "r1' OR 1=1"},
+        {"run_id": "x" * 65},
+        {"run_id": "r1", "query": "bees"},
+        {"run_id": "r1", "since": NOW},
+        {"run_id": "r1", "line": "investigate"},
+        {"run_id": "r1", "kind": "self_question"},
+        {"kind": "self_question", "query": "bees"},
+        {"kind": "self_question", "line": "self_inquiry"},
+        {"kind": "candidate"},
+        {"line": "reflect"},
+        {"limit": 0},
+        {"limit": 6},
+        {"since": NOW.replace(tzinfo=None)},
+        {"status": "failed"},
+    ],
+)
+def test_curiosity_arguments_reject_bad_input(fields):
+    with pytest.raises(ValidationError):
+        CuriosityArguments(**fields)
+
+
+def test_clip_json_text_bounds_the_serialized_length():
+    assert clip_json_text("short", 100) == ("short", False)
+    assert clip_json_text(None, 100) == ("", False)
+    nasty = 'He said "no"\n\\ é ' * 2000
+    body, truncated = clip_json_text(nasty, CURIOSITY_FULL_JSON_BUDGET)
+    assert truncated
+    assert len(json.dumps(body, ensure_ascii=False)) <= CURIOSITY_FULL_JSON_BUDGET
+    # Longest prefix: one more character would not fit.
+    assert len(json.dumps(nasty.strip()[: len(body) + 1], ensure_ascii=False)) > CURIOSITY_FULL_JSON_BUDGET
+
+
+def test_worst_case_full_curiosity_run_fits_the_mcp_tool_result_cap():
+    nasty = '"Answer"\n\tbackslash \\ accent é ' * 1000
+    text, truncated = clip_json_text(nasty, CURIOSITY_FULL_JSON_BUDGET)
+    item = _item(
+        id="x" * 64, kind="curiosity_run", text=text, truncated=truncated,
+        extra={
+            "line": "self_inquiry", "status": "failed", "error": "e" * SHORT_FIELD_CAP,
+            "hops": 12, "findings": 3, "revisions": 2,
+            "prior_touched": {"claim": '"c"\n' * (SHORT_FIELD_CAP // 4), "from": 0.4, "to": 0.7},
+            "outcome_kind": "reached_out_blocked", "reach_out": "blocked:quiet_hours",
+            "turn_ok": True, "n_tested": 4, "n_moved": 2, "n_formed": 1, "unknown_reason": "u" * SHORT_FIELD_CAP,
+        },
+    )
+    result = IntrospectResultV1(ok=True, operation="curiosity", as_of=NOW, total_available=1, items=[item])
+    assert len(json.dumps(result.model_dump(mode="json"))) < MCP_TOOL_RESULT_MAX_CHARS
+    assert len(json.dumps(result.model_dump(mode="json"), ensure_ascii=False)) < MCP_TOOL_RESULT_MAX_CHARS
+
+
+def test_registry_and_channels_know_the_curiosity_contract():
+    import yaml
+    from pathlib import Path
+
+    from orion.schemas.registry import _REGISTRY
+
+    assert CURIOSITY_REQUEST_CHANNEL == "orion:introspect:curiosity:request"
+    assert IntrospectRequestV1(operation="curiosity", binding=_BINDING, args={}).operation == "curiosity"
+    assert _REGISTRY["CuriosityArguments"] is CuriosityArguments
+    channels = yaml.safe_load((Path(__file__).resolve().parents[3] / "orion/bus/channels.yaml").read_text())["channels"]
+    by_name = {c["name"]: c for c in channels}
+    req = by_name[CURIOSITY_REQUEST_CHANNEL]
+    assert (req["schema_id"], req["message_kind"], req["consumer_services"]) == (
+        "IntrospectRequestV1", "introspect.tool.request.v1", ["orion-hub"],
+    )
+    assert "orion-hub" in by_name["orion:introspect:result:*"]["producer_services"]
+    assert "orion-hub" in by_name["orion:vector:semantic:upsert"]["producer_services"]

@@ -201,7 +201,10 @@ Every LLM call -- bus RPC, `/v1/chat/completions`, `/v1/messages` -- goes throug
    free: passthroughs cancel the request or close the stream (503 / an SSE `error` event, type
    `gpu_pool_recalled`); the bus path shuts down the worker thread's upstream sockets
    (`app/upstream_cancel.py`) and returns empty content with `raw.error = "gpu_pool_recalled"`,
-   `raw.details.reason = lease_lost | lease_recalled`.
+   `raw.details.reason = lease_lost | lease_recalled`. The worker thread's own failure from that
+   hang-up (usually `RemoteProtocolError`) is logged as `upstream_cancelled reason=<reason>` at
+   WARNING -- not `upstream_failed` at ERROR, which is kept for genuine worker failures -- for every
+   gateway cancel: lease loss/recall, caller budget exhausted, caller cancelled.
 6. **Context overflow.** If the pool answers `min_ctx_exceeds_class:<max>` (the estimate is bigger
    than every role of the class), the call is re-acquired **once** at `<max>` so it lands on the
    largest role and llama.cpp's real tokenizer decides. If the granted role rejects the prompt as

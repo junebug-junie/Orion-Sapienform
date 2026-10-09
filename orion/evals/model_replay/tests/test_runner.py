@@ -198,3 +198,44 @@ def test_hold_refusal_stops_run_with_partial_verdict(tmp_path):
     cfg = runner.ReplayConfig(out_dir=tmp_path, tasks=[_task(task_id="a")], repo=tmp_path)
     summary = asyncio.run(runner.run_replay(cfg, pool, lambda *a: None, log=lambda *_: None))
     assert summary["decision"]["verdict"].startswith("PARTIAL") and pool.live == set()
+
+
+def test_attached_client_wraps_every_call_in_a_child_lease():
+    import contextlib
+    import threading
+
+    from orion.evals.model_replay.agent_loop import AttachedClient
+
+    events = []
+
+    @contextlib.asynccontextmanager
+    async def attach(timeout_sec):
+        events.append(("enter", timeout_sec))
+        yield
+        events.append(("exit", timeout_sec))
+
+    class Inner:
+        def create(self, body, timeout_sec):
+            events.append(("call", body["n"]))
+            return {"n": body["n"]}
+
+    async def main():
+        loop = asyncio.get_running_loop()
+        client = AttachedClient(Inner(), loop=loop, attach=attach)
+        out = []
+        t = threading.Thread(target=lambda: out.extend(client.create({"n": i}, 9.0) for i in range(2)))
+        t.start()
+        while t.is_alive():
+            await asyncio.sleep(0.01)
+        return out
+
+    assert asyncio.run(main()) == [{"n": 0}, {"n": 1}]
+    assert events == [("enter", 9.0), ("call", 0), ("exit", 9.0), ("enter", 9.0), ("call", 1), ("exit", 9.0)]
+
+
+def test_attach_factory_builds_hold_ref_from_grant():
+    from orion.evals.model_replay.pool_hold import Grant, attach_factory
+
+    g = Grant("L7", "agent-gpu2", "http://c:8016", "p", None, None, ["gpu2"], generation=3)
+    cm = attach_factory(object(), "bonsai", g)(100.0)
+    assert hasattr(cm, "__aenter__")   # an async context manager (orion.gpu_pool.client.gpu_lease with hold=ref)

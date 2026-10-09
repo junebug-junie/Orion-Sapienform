@@ -30,7 +30,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from orion.evals.model_replay import runner  # noqa: E402
 from orion.evals.model_replay.fixture import FIXTURE_PATH, load_tasks  # noqa: E402
-from orion.evals.model_replay.pool_hold import SEATS, BusControlTransport, HoldLedger, release_leftovers  # noqa: E402
+from orion.evals.model_replay.pool_hold import (  # noqa: E402
+    SEATS, BusControlTransport, HoldLedger, attach_factory, release_leftovers,
+)
 
 PRIMARY_CHECKOUT = Path("/mnt/scripts/Orion-Sapienform")
 DEFAULT_POOL_HTTP = "http://100.92.216.81:8127"
@@ -101,14 +103,15 @@ async def live(args: argparse.Namespace, tasks) -> int:
     run_tag = out.name
     try:
         http = HostHttpGet()
-        factory = runner.LiveRigFactory(repo=args.repo, run_tag=run_tag, sandbox_image=args.sandbox_image,
-                                        graph_image=prod_falkordb_image(), graph_dumps=dumps,
-                                        sql=ReadOnlyPsql(), http=http,
-                                        docker_ro=DockerReadOnly(), fetch_cache=FetchCache(http))
         cfg = runner.ReplayConfig(out_dir=out, tasks=tasks, repo=args.repo, grant_timeout_sec=args.grant_timeout_sec)
         async with BusControlTransport(bus_url) as transport:
-            main = asyncio.current_task()
-            runner.install_signal_unwind(asyncio.get_running_loop(), main)
+            loop = asyncio.get_running_loop()
+            factory = runner.LiveRigFactory(repo=args.repo, run_tag=run_tag, sandbox_image=args.sandbox_image,
+                                            graph_image=prod_falkordb_image(), graph_dumps=dumps,
+                                            sql=ReadOnlyPsql(), http=http, docker_ro=DockerReadOnly(),
+                                            fetch_cache=FetchCache(http),
+                                            attach=lambda m, g: attach_factory(transport.bus, m, g), loop=loop)
+            runner.install_signal_unwind(loop, asyncio.current_task())
             summary = await runner.run_replay(cfg, transport, factory)
     finally:
         leftover = subprocess.run(["docker", "ps", "-aq", "--filter", "label=orion.model_replay=1",

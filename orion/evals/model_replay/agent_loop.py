@@ -81,6 +81,23 @@ class HttpMessagesClient:
         return r.json()
 
 
+class AttachedClient:
+    """Run each call inside ``attach(timeout)`` (an async context manager on ``loop``) -- see
+    pool_hold.attach_factory. The worker call itself runs in a thread; the lease heartbeat on the loop."""
+
+    def __init__(self, inner: MessagesClient, *, loop: Any, attach: Callable[[float], Any]) -> None:
+        self.inner, self.loop, self.attach = inner, loop, attach
+
+    def create(self, body: dict[str, Any], timeout_sec: float) -> dict[str, Any]:
+        import asyncio
+
+        async def call() -> dict[str, Any]:
+            async with self.attach(timeout_sec):
+                return await asyncio.to_thread(self.inner.create, body, timeout_sec)
+
+        return asyncio.run_coroutine_threadsafe(call(), self.loop).result()
+
+
 @dataclass
 class Step:
     t_start: float

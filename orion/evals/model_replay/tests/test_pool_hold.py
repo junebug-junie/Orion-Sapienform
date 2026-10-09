@@ -173,3 +173,34 @@ def test_lease_ended_reads_pool_replies():
     assert lease_ended({"ok": False, "reason": "unknown_lease"})
     assert not lease_ended({"ok": False, "reason": "TimeoutError: "})
     assert not lease_ended({"ok": False, "detail": {"status": "granted"}})
+
+
+def test_bus_transport_sends_only_control_envelopes():
+    import json as _json
+
+    from orion.evals.model_replay.pool_hold import BusControlTransport
+    from orion.schemas.gpu_pool import GPU_POOL_CONTROL_REQUEST_CHANNEL
+
+    sent = []
+
+    class Bus:
+        async def rpc_request(self, channel, env, *, reply_channel, timeout_sec):
+            sent.append((channel, env.payload, env.reply_to == reply_channel))
+            reply = {"payload": {"ok": True, "reason": None,
+                                 "detail": {"status": "queued", "lease_id": "L9"}}}
+            return {"data": _json.dumps(reply)}
+
+    t = BusControlTransport("redis://unused")
+    t._bus = Bus()
+
+    async def go():
+        res = await t.hold("memory_distill", "bonsai-replay-eval")
+        await t.release("L9", "bonsai-replay-eval")
+        await t.cancel("L9", "bonsai-replay-eval")
+        return res
+
+    res = asyncio.run(go())
+    assert res["detail"]["lease_id"] == "L9" and "L9" in t._grants
+    assert [s[0] for s in sent] == [GPU_POOL_CONTROL_REQUEST_CHANNEL] * 3
+    assert [s[1]["verb"] for s in sent] == ["hold", "release", "cancel"]
+    assert sent[0][1]["work_class"] == "memory_distill" and all(s[2] for s in sent)

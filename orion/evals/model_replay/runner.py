@@ -306,6 +306,9 @@ class LiveRigFactory:
     http: Any
     docker_ro: Any
     fetch_cache: FetchCache
+    # (model, grant) -> attach(timeout) context factory; None = call the worker without a child lease
+    attach: Optional[Callable[[str, Grant], Callable[[float], Any]]] = None
+    loop: Any = None
 
     def __call__(self, task: ReplayTaskV1, model: str, grant: Grant) -> ModelRig:
         from orion.evals.model_replay.graph_scratch import ScratchGraphs
@@ -335,5 +338,7 @@ class LiveRigFactory:
                 if part in holder:
                     holder[part].stop()
 
-        return ModelRig(client=agent_loop.HttpMessagesClient(grant.url), toolbox_factory=toolbox_factory,
-                        graphs=graphs, cleanup=cleanup)
+        client: agent_loop.MessagesClient = agent_loop.HttpMessagesClient(grant.url)
+        if self.attach is not None:
+            client = agent_loop.AttachedClient(client, loop=self.loop, attach=self.attach(model, grant))
+        return ModelRig(client=client, toolbox_factory=toolbox_factory, graphs=graphs, cleanup=cleanup)

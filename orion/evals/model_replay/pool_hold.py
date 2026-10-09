@@ -33,7 +33,7 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Optional, Protocol
+from typing import Any, Callable, Optional, Protocol
 
 Q4_PROFILE = "qwen3.8-27b-udq4kxl-v100-32gb-circe-agent-flex"
 BONSAI_PROFILE = "ternary-bonsai2-27b-pq2-v100-32gb-circe-agent"
@@ -71,12 +71,14 @@ class Grant:
     model_file: Optional[str]
     ctx_per_slot: Optional[int]
     cards: list[str]
+    generation: int = 1
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> "Grant":
         return cls(lease_id=str(d["lease_id"]), role=str(d.get("role")), url=str(d.get("url")),
                    profile_name=d.get("profile_name"), model_file=d.get("model_file"),
-                   ctx_per_slot=d.get("ctx_per_slot"), cards=list(d.get("cards") or []))
+                   ctx_per_slot=d.get("ctx_per_slot"), cards=list(d.get("cards") or []),
+                   generation=int(d.get("generation") or 1))
 
 
 class ControlTransport(Protocol):
@@ -234,6 +236,25 @@ def lease_ended(reply: dict[str, Any]) -> bool:
     return any(reason == f"not_cancelable_from_{s}" for s in _ENDED_STATUSES)
 
 
+HOLDER = "operator:bonsai-replay-eval"
+
+
+def attach_factory(bus: Any, model: str, grant: Grant) -> Callable[[float], Any]:
+    """Each model call as a child lease of the task's hold (pool verb ``attach``), exactly how a
+    durable run's calls ride its hold. Without it the pool sees an idle hold and lends the slot to
+    one-off calls in the middle of a replayed generation (gap sharing), slowing one model at random."""
+    from orion.gpu_pool.client import gpu_lease
+    from orion.schemas.gpu_pool import GpuLeaseRefV1
+
+    ref = GpuLeaseRefV1(lease_id=grant.lease_id, generation=grant.generation, role=grant.role, holder=HOLDER)
+
+    def enter(timeout_sec: float) -> Any:
+        return gpu_lease(bus, work_class=SEATS[model].work_class, holder=HOLDER, priority="interactive",
+                         kind="request", deadline_sec=max(30.0, min(600.0, timeout_sec)), hold=ref)
+
+    return enter
+
+
 async def release_leftovers(transport: ControlTransport, ledger: HoldLedger, actor: str) -> list[str]:
     """Release every lease the ledger says was acquired and never released (after a SIGKILL)."""
     holds = PoolHolds(transport=transport, ledger=ledger, actor=actor)
@@ -267,6 +288,10 @@ class BusControlTransport:
         if self._listener:
             self._listener.cancel()
         await self._bus.close()
+
+    @property
+    def bus(self) -> Any:
+        return self._bus
 
     async def _listen(self) -> None:
         from orion.schemas.gpu_pool import GPU_POOL_EVENT_CHANNEL

@@ -1095,7 +1095,12 @@ def situation_lines(situation: Optional[Dict[str, Any]], now: datetime, tz: Any)
     lines = ["Where Juniper is right now, from your running situation:"]
     here = juniper.get("whereabouts")
     until = _parse_situation_dt(here.get("valid_until")) if here else None
-    if here and until is not None and until > now:
+    if here and until is not None and until > now and here.get("until_source") == "sighting":
+        # A home camera matched her face: evidence, not something she said.
+        seen = _parse_situation_dt(here.get("valid_from"))
+        when = _age_phrase((now - seen).total_seconds()) if seen is not None else "recently"
+        lines.append(f"- {here['gist']} (seen {when})")
+    elif here and until is not None and until > now:
         lines.append(f"- {here['gist']} (holds until {until.astimezone(tz):%a %b %d, %H:%M})")
     else:
         # An end date already passed means the projection has not caught up (the graph writes
@@ -1103,6 +1108,14 @@ def situation_lines(situation: Optional[Dict[str, Any]], now: datetime, tz: Any)
         lines.append("- Nothing on record says she is away from home right now.")
         if here and until is not None:
             lines.append(f"- No longer true (ended {_age_phrase((now - until).total_seconds())}): {here['gist']}")
+    for fact in juniper.get("doing") or []:
+        # Her own stated plans with an end date -- shown even when a camera sighting outranks
+        # one, so a conflict ("said Denver till Fri", "seen at home") is visible, not hidden.
+        if fact.get("until_source") != "juniper_words":
+            continue
+        end = _parse_situation_dt(fact.get("valid_until"))
+        if end is not None and end > now:
+            lines.append(f"- She said: {fact['gist']} (until {end.astimezone(tz):%a %b %d, %H:%M})")
     for fact in juniper.get("recent") or []:
         # What Juniper herself said lately (the 4:30am flight home sat only here on 10-09).
         if fact.get("voice") != "juniper_said":

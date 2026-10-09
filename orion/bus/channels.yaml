@@ -1957,6 +1957,18 @@ channels:
   # Situation graph step 2 (spec 2026-10-07-situation-graph-design.md, SHADOW): Orion's running
   # situation, published by the situation.update graph in orion-durable-runs when its revision
   # changes. Also written to Redis orion:situation:latest. No consumer until step 3 (chat reads it).
+  # Home-camera face match, one per sitting (2026-10-09). orion-vision-window publishes it only
+  # for configured home streams on a "probable" match; the situation graph uses it as positive
+  # evidence of Juniper's whereabouts (orion/schemas/vision_sighting.py).
+  - name: "orion:vision:identity:sighting"
+    kind: "event"
+    schema_id: "IdentitySightingV1"
+    message_kind: "vision.identity.sighting.v1"
+    producer_services: ["orion-vision-window"]
+    consumer_services: ["orion-durable-runs"]
+    stability: "experimental"
+    since: "2026-10-09"
+
   - name: "orion:situation:state"
     kind: "event"
     schema_id: "SituationStateV1"

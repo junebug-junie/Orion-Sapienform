@@ -21,6 +21,7 @@ from orion.schemas.durable_run import (
     DurableRunStateV1,
 )
 from orion.schemas.situation_state import SITUATION_STATE_CHANNEL, SITUATION_STATE_KIND, SITUATION_STATE_REDIS_KEY
+from orion.schemas.vision_sighting import IDENTITY_SIGHTING_KIND
 from orion.schemas.gpu_pool import GPU_POOL_EVENT_CHANNEL, GPU_POOL_EVENT_KIND
 from orion.schemas.resource_admission import RESOURCE_EVENT_CHANNEL, RESOURCE_EVENT_KIND, ResourceEventV1
 from orion.schemas.memory_episode import MEMORY_EPISODE_CLOSED_KIND
@@ -80,6 +81,12 @@ def _chassis_cfg() -> ChassisConfig:
 
 
 async def _handle_request(env: BaseEnvelope) -> None:
+    if env.kind == IDENTITY_SIGHTING_KIND:
+        if situation is not None and isinstance(env.payload, dict):
+            from app.situation_driver import event_from_sighting
+
+            situation.offer(event_from_sighting(env.payload))
+        return
     if env.kind in (CHAT_HISTORY_TURN_KIND, DURABLE_RUN_STATE_KIND):
         # Situation graph inputs (shadow). Nothing else here consumes these two kinds.
         if situation is not None and isinstance(env.payload, dict):
@@ -235,6 +242,7 @@ def _build_situation(saver: Any):
         now=lambda: datetime.now(timezone.utc),
         default_ttl=ttl,
         prime_timeout_sec=s.situation_prime_timeout_sec,
+        sighting_hold=timedelta(hours=s.situation_sighting_hold_hours),
     )
     return SituationDriver(checkpointer=saver, deps=deps, publish_state=publish_state,
                            tick_sec=s.situation_tick_sec, retention_days=s.situation_retention_days)
@@ -293,7 +301,8 @@ async def lifespan(app: FastAPI):
                 if _settings.memory_episode_writer_enabled:
                     patterns.append(_settings.memory_episode_closed_channel)
             if situation is not None:
-                patterns += [_settings.chat_history_turn_channel, _settings.state_channel]
+                patterns += [_settings.chat_history_turn_channel, _settings.state_channel,
+                             _settings.identity_sighting_channel]
             hunter = Hunter(_chassis_cfg(), handler=_handle_request, patterns=patterns)
             await hunter.start_background()
             logger.info("durable_runs_listening channel=%s", _settings.request_channel)

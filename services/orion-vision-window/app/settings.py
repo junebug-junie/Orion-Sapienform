@@ -64,6 +64,18 @@ class Settings(BaseSettings):
     # between its own refreshes.
     WINDOW_IDENTITY_MAX_AGE_SEC: float = 90.0
 
+    # Home-camera sightings (2026-10-09, IdentitySightingV1): a "probable" face match on one of
+    # these streams is published once per sitting so Orion's situation graph knows Juniper is
+    # home. Never the laptop webcam (carbon) -- it travels with her. "possible" never counts.
+    WINDOW_SIGHTING_ENABLED: bool = True
+    WINDOW_SIGHTING_HOME_STREAMS: str = "cam0"
+    WINDOW_SIGHTING_MIN_INTERVAL_SEC: float = 1800.0
+    # Corroboration: this many "probable" matches on the same stream within the window before a
+    # sighting is published -- one borderline frame (live: 0.56 at detect 0.71) is not enough.
+    WINDOW_SIGHTING_MIN_MATCHES: int = 2
+    WINDOW_SIGHTING_MATCH_WINDOW_SEC: float = 600.0
+    CHANNEL_IDENTITY_SIGHTING_PUB: str = "orion:vision:identity:sighting"
+
     # Per-window scene census -> orion-sql-writer -> vision_scene_inventory.
     # Written on every window because the council only emits an event on a
     # label-SET change, so counts and departures are invisible in the event

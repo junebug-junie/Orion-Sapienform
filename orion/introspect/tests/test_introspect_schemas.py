@@ -1,6 +1,6 @@
 """Introspect contracts: bounded, empty-vs-unknown, caller-bound."""
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
 import pytest
@@ -306,8 +306,9 @@ def test_curiosity_arguments_defaults_and_modes():
     assert CuriosityArguments(query="  bees  ").query == "bees"
     assert CuriosityArguments(run_id="3dc94088912b").run_id == "3dc94088912b"
     assert CuriosityArguments(run_id="r1", kind="run").kind == "run"
-    assert CuriosityArguments(line="self_inquiry", since=NOW, query="x").line == "self_inquiry"
-    assert CuriosityArguments(kind="self_question", since=NOW, limit=2).kind == "self_question"
+    recent = datetime.now(timezone.utc) - timedelta(days=3)
+    assert CuriosityArguments(line="self_inquiry", since=recent, query="x").line == "self_inquiry"
+    assert CuriosityArguments(kind="self_question", since=recent, limit=2).kind == "self_question"
 
 
 @pytest.mark.parametrize(
@@ -319,7 +320,7 @@ def test_curiosity_arguments_defaults_and_modes():
         {"run_id": "r1' OR 1=1"},
         {"run_id": "x" * 65},
         {"run_id": "r1", "query": "bees"},
-        {"run_id": "r1", "since": NOW},
+        {"run_id": "r1", "since": datetime.now(timezone.utc)},
         {"run_id": "r1", "line": "investigate"},
         {"run_id": "r1", "kind": "self_question"},
         {"kind": "self_question", "query": "bees"},
@@ -328,7 +329,7 @@ def test_curiosity_arguments_defaults_and_modes():
         {"line": "reflect"},
         {"limit": 0},
         {"limit": 6},
-        {"since": NOW.replace(tzinfo=None)},
+        {"since": datetime.now().replace(tzinfo=None)},
         {"status": "failed"},
     ],
 )
@@ -383,3 +384,17 @@ def test_registry_and_channels_know_the_curiosity_contract():
     )
     assert "orion-hub" in by_name["orion:introspect:result:*"]["producer_services"]
     assert "orion-hub" in by_name["orion:vector:semantic:upsert"]["producer_services"]
+
+
+def test_curiosity_since_must_fall_inside_the_90_day_window():
+    """The run join keeps 90 days; an older since would silently undercount."""
+    from orion.schemas.introspect import CURIOSITY_WINDOW_DAYS
+
+    now = datetime.now(timezone.utc)
+    assert CURIOSITY_WINDOW_DAYS == 90
+    CuriosityArguments(since=now - timedelta(days=89))
+    for args in ({"since": now - timedelta(days=91)}, {"query": "bees", "since": now - timedelta(days=200)}):
+        with pytest.raises(ValidationError, match="within the last 90 days"):
+            CuriosityArguments(**args)
+    # Open self-questions are not windowed.
+    assert CuriosityArguments(kind="self_question", since=now - timedelta(days=400)).kind == "self_question"

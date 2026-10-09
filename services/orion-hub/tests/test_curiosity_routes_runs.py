@@ -449,3 +449,30 @@ def test_runs_payload_drops_admission_runs_of_other_workflows() -> None:
 
     one = asyncio.run(store.read_run_payload(pool=pool, reader=None, run_id="read1"))
     assert one["found"] is False and one["available"] is True
+
+
+
+def test_self_sense_and_workflow_less_admission_rows_are_kept() -> None:
+    """The other-workflow drop must not take curiosity's own rows with it."""
+    t0 = NOW - timedelta(hours=6)
+
+    def _adm(run_id, request):
+        return {"run_id": run_id, "request": json.dumps(request), "created_at": t0,
+                "control": None, "terminal": "completed", "updated_at": NOW - timedelta(hours=5)}
+
+    pool = _Pool({
+        "FROM durable_admission_runs": [
+            _adm("sense", {"workflow": "self_sense_eval"}),
+            _adm("bare", {"brief": {"line": "investigate"}}),
+            _adm("rev", {"workflow": "reverie.visual"}),
+        ],
+    })
+    payload = asyncio.run(store.read_runs_payload(pool=pool, reader=None, days=90, now=NOW))
+    assert sorted(r["run_id"] for r in payload["runs"]) == ["bare", "sense"]
+    assert {r["run_id"]: r["line"] for r in payload["runs"]}["sense"] == "self_sense_eval"
+
+
+def test_the_introspect_window_matches_the_run_store_window() -> None:
+    from orion.schemas.introspect import CURIOSITY_WINDOW_DAYS
+
+    assert CURIOSITY_WINDOW_DAYS == store.WINDOW_DAYS_MAX

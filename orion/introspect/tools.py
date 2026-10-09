@@ -68,8 +68,8 @@ CURIOSITY_DESCRIPTION = (
     "reach_out, and belief-move counts (n_tested, n_moved, n_formed) when they were recorded; "
     "graph_read=false means the hop counts are unknown, not zero. Pass query=<topic in plain "
     "words> to find runs by meaning (items carry similarity 0-1), run_id for one run, or "
-    "nothing for your most recent finished runs; line and since=<ISO timestamp with timezone> "
-    "narrow query or recent mode; limit up to 5. kind=self_question lists your open "
+    "nothing for your most recent finished runs; line and since=<ISO timestamp with timezone, "
+    "within the last 90 days> narrow query or recent mode; limit up to 5. kind=self_question lists your open "
     "self-questions instead. items=[] means nothing matched; a tool error means the answer is "
     "unknown, never that no run happened."
 )

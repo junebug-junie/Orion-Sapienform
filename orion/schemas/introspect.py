@@ -8,7 +8,7 @@ Design: docs/superpowers/specs/2026-09-28-orion-introspect-mcp-design.md.
 from __future__ import annotations
 
 import json
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import Any, Literal
 from uuid import UUID
 
@@ -34,6 +34,10 @@ DREAM_ID_PATTERN = r"^(dream:[0-9]{1,12}|dh-[0-9a-f]{6,32})$"
 # full item past the 12k MCP budget. Same shape as
 # `orion.curiosity.atlas._RUN_ID_RE`; a test pins the two equal.
 CURIOSITY_FULL_JSON_BUDGET = 9000
+# The run join reads at most this far back (orion-hub curiosity_run_store
+# WINDOW_DAYS_MAX, pinned equal by a Hub test); an older `since` is refused
+# rather than silently answered from a shorter window.
+CURIOSITY_WINDOW_DAYS = 90
 CURIOSITY_RUN_ID_PATTERN = r"^[A-Za-z0-9_.:-]{1,64}$"
 
 IntrospectBusOperation = Literal["dreams", "curiosity"]
@@ -222,6 +226,14 @@ class CuriosityArguments(BaseModel):
             or self.kind != "run"
         ):
             raise ValueError("run_id fetches one run; it cannot be combined with query, since, line or kind")
+        if (
+            self.kind == "run" and self.since is not None
+            and self.since < datetime.now(timezone.utc) - timedelta(days=CURIOSITY_WINDOW_DAYS)
+        ):
+            raise ValueError(
+                f"since must be within the last {CURIOSITY_WINDOW_DAYS} days: curiosity runs are "
+                f"only readable {CURIOSITY_WINDOW_DAYS} days back"
+            )
         if self.kind == "self_question" and (
             self.query is not None or self.run_id is not None or self.line is not None
         ):

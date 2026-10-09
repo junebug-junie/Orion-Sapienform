@@ -16,12 +16,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any, Awaitable, Callable, Optional
 from uuid import uuid4
 
-from orion.schemas.dream_cycle import DreamCycleV1, SleepPressureV1
+from orion.schemas.dream_cycle import DreamCycleV1, DreamPressureObservationV1, SleepPressureV1
 
 from app.recombine import Complete, control_pairs, dream_pairs, recombine
 from app.replay import compute_pressure, keyed_candidates, prior_keys, select_replay
@@ -43,6 +43,10 @@ class CycleDeps:
     complete: Complete
     # (cycle_id, window since) -> staged delta id or None
     rem_compaction: Optional[Callable[[str, datetime], Awaitable[Optional[str]]]] = None
+    persist_pressure_observation: Optional[Callable[[DreamPressureObservationV1], bool]] = None
+    # One deps instance per loop/request. The real clock loaders append failures;
+    # each serialized check clears it before reading. Scheduling still sees None.
+    read_errors: list[str] = field(default_factory=list)
 
 
 # Rows are one per thing (cycle_store), ~72 metacog kinds per 48 h live (10-09).
@@ -64,12 +68,17 @@ def window_start(now: datetime, last_start: Optional[datetime]) -> datetime:
     return max(floor, last) if last else floor
 
 
-def read_pressure(deps: CycleDeps, now: datetime, last_start: Optional[datetime]):
+def read_pressure(deps: CycleDeps, now: datetime, last_start: Optional[datetime], *, read_errors=None):
     """(SleepPressureV1, candidates). Blocking (sync DB); call via to_thread."""
     since = window_start(now, last_start)
-    keyed = keyed_candidates(deps.load_source_rows(since, KEYS_PER_SOURCE))
+    current_rows = deps.load_source_rows(since, KEYS_PER_SOURCE)
+    keyed = keyed_candidates(current_rows)
     lookback = since - timedelta(hours=settings.DREAM_LOOKBACK_HOURS)
-    seen = prior_keys(deps.load_source_rows(lookback, KEYS_PER_SOURCE, until=since))
+    previous_rows = deps.load_source_rows(lookback, KEYS_PER_SOURCE, until=since)
+    seen = prior_keys(previous_rows)
+    if read_errors is not None:
+        read_errors.extend(f"current:{kind}" for kind in getattr(current_rows, "read_errors", ()))
+        read_errors.extend(f"prior:{kind}" for kind in getattr(previous_rows, "read_errors", ()))
     total, counts, new_counts = compute_pressure(keyed, seen)
     candidates = list(keyed.values())
     pressure = SleepPressureV1(
@@ -102,13 +111,33 @@ def too_soon(now: datetime, last_end: Optional[datetime]) -> bool:
 async def run_cycle_once(deps: CycleDeps, *, trigger: str = "pressure", force: bool = False) -> Optional[DreamCycleV1]:
     """Run one sleep if due (or forced). None when not due. Never raises."""
     started = datetime.now(timezone.utc)
+    deps.read_errors.clear()
+    read_errors = []
     try:
         last_start = await asyncio.to_thread(deps.load_last_window_start)
         last_end = await asyncio.to_thread(deps.load_last_attempt_end)
-        pressure, candidates = await asyncio.to_thread(read_pressure, deps, started, last_start)
+        pressure, candidates = await asyncio.to_thread(read_pressure, deps, started, last_start, read_errors=read_errors)
+        read_errors.extend(deps.read_errors)
     except Exception as exc:
         logger.warning("dream_cycle pressure read failed err=%s", exc)
         return None
+
+    if deps.persist_pressure_observation is not None:
+        # Observe every successful read, including refractory, busy and low-pressure
+        # checks. A recording failure must not authorize, suppress or fail a dream.
+        try:
+            observation = DreamPressureObservationV1(
+                check_id=f"dp-{uuid4().hex}", observed_at=started, reading=pressure,
+                trigger=trigger, forced=force, last_window_start=_utc(last_start),
+                last_attempt_end=_utc(last_end), source_errors=read_errors,
+                min_interval_hours=settings.DREAM_MIN_INTERVAL_HOURS,
+                check_interval_sec=settings.DREAM_CYCLE_CHECK_INTERVAL_SEC,
+                lookback_hours=settings.DREAM_LOOKBACK_HOURS,
+            )
+            if not await asyncio.to_thread(deps.persist_pressure_observation, observation):
+                logger.warning("dream_pressure_history_failed check_id=%s observed_at=%s", observation.check_id, started)
+        except Exception:
+            logger.exception("dream_pressure_history_failed observed_at=%s", started)
 
     backstop = False
     if not force:

@@ -3,9 +3,9 @@
   "metric_count": 695,
   "_last_change": {
     "change_count": 1,
-    "high_severity_count": 0,
+    "high_severity_count": 1,
     "changes": [
-      "medium added metric://bus_channel/orion-vision-window/orion:vision:identity:sighting"
+      "high   routing_changed metric://bus_channel/orion-gpu-pool/orion:gpu_pool:state (declared_consumers: ['orion-hub'] -> ['orion-hub', 'orion-sql-writer'])"
     ]
   },
   "definitions": {
@@ -1724,7 +1724,8 @@
         "orion-gpu-pool"
       ],
       "declared_consumers": [
-        "orion-hub"
+        "orion-hub",
+        "orion-sql-writer"
       ],
       "notes": "kind=event stability=experimental",
       "registry_source": "orion/bus/channels.yaml"

@@ -146,11 +146,13 @@ def build_cycle_deps():
             await asyncio.to_thread(rem_store.persist_compaction_delta, d)
         return delta.delta_id if delta is not None else None
 
+    read_errors = []
+
     def _window_start():
-        return _latest(cycle_store.load_last_window_start(), _CYCLE_STATE.get("window_start"))
+        return _latest(cycle_store.load_last_window_start(read_errors=read_errors), _CYCLE_STATE.get("window_start"))
 
     def _attempt_end():
-        return _latest(cycle_store.load_last_attempt_end(), _CYCLE_STATE.get("attempt_end"))
+        return _latest(cycle_store.load_last_attempt_end(read_errors=read_errors), _CYCLE_STATE.get("attempt_end"))
 
     def _persist(cycle) -> bool:
         _CYCLE_STATE["attempt_end"] = cycle.ended_at
@@ -164,6 +166,8 @@ def build_cycle_deps():
         load_last_window_start=_window_start,
         load_last_attempt_end=_attempt_end,
         persist_cycle=_persist,
+        persist_pressure_observation=cycle_store.persist_pressure_observation,
+        read_errors=read_errors,
         complete=_complete,
         rem_compaction=_rem,
     )

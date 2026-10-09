@@ -67,6 +67,7 @@ DEFAULT_ROUTE_MAP: dict[str, str] = {
     "curiosity.supervisor.reading.v1": "CuriosityHopReadingSQL",
     "durable.run.state.v1": "DurableRunStateSQL",
     "gpu_pool.event.v1": "GpuPoolEventSQL",
+    "gpu_pool.state.v1": "GpuPoolStateSQL",
     "transport_baseline.hourly.v1": "TransportBaselineHourlySQL",
     "chat_stance.belief.write.v1": "ChatStanceBeliefLogSQL",
     "self_concept.history.write.v1": "SelfConceptHistorySQL",
@@ -197,6 +198,7 @@ class Settings(BaseSettings):
             "orion:curiosity:supervisor:reading",
             "orion:durable:run:state",
             "orion:gpu_pool:event",
+            "orion:gpu_pool:state",
             "orion:equilibrium:transport_baseline:hourly",
             "orion:chat_stance:belief:write",
             "orion:self_concept:history:write",
@@ -430,6 +432,8 @@ class Settings(BaseSettings):
     # so the busiest new table here. 30 days covers the panel's historical views.
     gpu_pool_events_retention_days: int = Field(30, alias="GPU_POOL_EVENTS_RETENTION_DAYS")
 
+    gpu_pool_state_history_retention_days: int = Field(30, alias="GPU_POOL_STATE_HISTORY_RETENTION_DAYS")
+
     # 15 -> 3 days (2026-08-20, Juniper's call, made against measured numbers).
     #
     # The window was never the reason these tables were 36 GB -- retention could not run
@@ -607,14 +611,9 @@ class Settings(BaseSettings):
     # 7.5s fair share a 45s budget gives the first of six tables. `effective_max_elapsed_sec`
     # on /grammar/truth is what tells you which cap actually bound.
     #
-    # Raised 45.0 -> 66.0 (2026-09-19, curiosity_hop_reading): GRAMMAR_RETENTION_TABLES
-    # had already grown past six with no matching raise here -- test_grammar_retention_
-    # periodic.py's own invariant test (fair_share >= 5.0s) was failing on main before this
-    # table was added (11 tables, 45/11 = 4.09s). Adding a 12th without also raising this
-    # would have pushed it further (3.75s) instead of fixing what the gate was already
-    # flagging. 66/12 = 5.5s, a little headroom over the 5.0s floor for the next table.
+    # Fourteen tables need >=5s each; adding GPU state history raises 66 -> 70.
     grammar_retention_periodic_max_cycle_sec: float = Field(
-        66.0, alias="GRAMMAR_RETENTION_PERIODIC_MAX_CYCLE_SEC"
+        70.0, alias="GRAMMAR_RETENTION_PERIODIC_MAX_CYCLE_SEC"
     )
     sql_writer_allow_accepted_pressure_ingest: bool = Field(
         False,
@@ -762,6 +761,8 @@ class Settings(BaseSettings):
         # Same guarantee, same reason (gpu_pool.event.v1 is a code-default route).
         if "orion:gpu_pool:event" not in channels:
             channels.append("orion:gpu_pool:event")
+        if "orion:gpu_pool:state" not in channels:
+            channels.append("orion:gpu_pool:state")
         # Same guarantee, same reason (transport_baseline.hourly.v1 is a
         # code-default route; SQL_WRITER_SUBSCRIBE_CHANNELS replaces).
         if "orion:equilibrium:transport_baseline:hourly" not in channels:

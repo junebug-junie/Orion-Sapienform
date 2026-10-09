@@ -378,8 +378,8 @@ def test_process_floors_hold_when_persist_fails(monkeypatch):
     from orion.schemas.dream_cycle import DreamCycleV1, SleepPressureV1
 
     main._CYCLE_STATE.clear()
-    monkeypatch.setattr(cycle_store, "load_last_window_start", lambda: None)
-    monkeypatch.setattr(cycle_store, "load_last_attempt_end", lambda: None)
+    monkeypatch.setattr(cycle_store, "load_last_window_start", lambda **kwargs: None)
+    monkeypatch.setattr(cycle_store, "load_last_attempt_end", lambda **kwargs: None)
     monkeypatch.setattr(cycle_store, "persist_cycle", lambda c: False)
     deps = main.build_cycle_deps()
     p = SleepPressureV1(since=NOW, pressure=0, threshold=1, idle_required_minutes=1)

@@ -61,7 +61,7 @@ jobs:
           --health-retries 5
       # Throwaway FalkorDB for the referent projector lane (memory Stage 2).
       falkordb:
-        image: falkordb/falkordb:latest
+        image: ghcr.io/falkordb/falkordb:latest  # GHCR copy: no Docker Hub pull rate limit
         ports:
           - 6380:6379
     env:

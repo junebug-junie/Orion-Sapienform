@@ -135,3 +135,59 @@ test("a sleep line of 0 reads always ready, not unavailable", () => {
   assert.equal(m.level, "Ready to sleep");
   assert.equal(m.lineFraction, 0);
 });
+
+// Flicker regression: a poll must keep the previous tiles on screen until every
+// reading is back, then swap in one step -- never blank the card while fetching.
+function fakeDom() {
+  function node() {
+    return {
+      children: [],
+      classList: { toggle() {}, add() {}, remove() {} },
+      get firstChild() { return this.children[0] || null; },
+      appendChild(c) {
+        if (c && c.isFragment) { this.children.push(...c.children); c.children = []; }
+        else this.children.push(c);
+        return c;
+      },
+      removeChild(c) { this.children.splice(this.children.indexOf(c), 1); },
+      replaceChildren(frag) { this.children = []; this.appendChild(frag); },
+    };
+  }
+  const grid = node();
+  const status = node();
+  return {
+    grid,
+    status,
+    doc: {
+      getElementById: (id) => ({ biometricsPreviewGrid: grid, biometricsPreviewStatus: status })[id] || null,
+      createElement: () => node(),
+      createTextNode: () => node(),
+      createDocumentFragment: () => Object.assign(node(), { isFragment: true }),
+    },
+  };
+}
+
+test("card poll keeps the old tiles until new readings arrive, then swaps once", async () => {
+  const { grid, status, doc } = fakeDom();
+  const pending = [];
+  global.document = doc;
+  global.fetch = (url) =>
+    new Promise((resolve) => pending.push(() => resolve({ json: async () => ({ ok: true, node: "athena", summary: {} }) })));
+  try {
+    const old = { old: true };
+    grid.children = [old];
+    const poll = biometricsView.loadCardPreview();
+    // A second tick while the first is in flight must not start another fetch round.
+    assert.equal(biometricsView.loadCardPreview(), poll);
+    await new Promise((r) => setImmediate(r));
+    assert.deepEqual(grid.children, [old], "card blanked while fetching");
+    assert.notEqual(status.textContent, "Loading…", "status flipped to Loading on a refresh");
+    pending.splice(0).forEach((go) => go());
+    await poll;
+    assert.equal(grid.children.length, 9); // 3 nodes x (strain, power, mobo)
+    assert.ok(!grid.children.includes(old));
+  } finally {
+    delete global.document;
+    delete global.fetch;
+  }
+});

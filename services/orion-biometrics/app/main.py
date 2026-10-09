@@ -26,7 +26,7 @@ from app.ambient_audio_snapshot import load_ambient_audio_snapshot
 from app.ambient_spike_detector import AmbientSpikeDetector, AmbientSpikeDetectorConfig
 from app.cabinet_snapshot import load_cabinet_sensors_snapshot
 from app.metrics import collect_biometrics, collect_disk_capacity
-from app.ilo import IloPoller
+from app.ilo import IloPoller, parse_proxy_bmcs
 from app.pdu import PduPoller, parse_outlets, parse_proxy_outlets
 from orion.telemetry.biometrics_pipeline import (
     BiometricsPipeline,
@@ -218,6 +218,19 @@ _pdu_proxy_pollers: Dict[str, PduPoller] = {
 }
 
 
+# BMCs polled on another node's behalf (hecate's, from athena). Same shape as the PDU proxy.
+_ilo_proxy_pollers: Dict[str, IloPoller] = {
+    node: IloPoller(
+        cfg["host"],
+        cfg["username"],
+        cfg["password"],
+        interval_sec=settings.ILO_POLL_INTERVAL_SEC,
+        timeout_sec=settings.ILO_REQUEST_TIMEOUT_SEC,
+    )
+    for node, cfg in parse_proxy_bmcs(settings.ILO_PROXY_NODES).items()
+}
+
+
 def _proxy_measurements() -> Dict[str, Dict[str, float]]:
     """Per-node measurements this hub read on another node's behalf.
 
@@ -231,6 +244,11 @@ def _proxy_measurements() -> Dict[str, Dict[str, float]]:
         watts = detail.get("pdu_watts")
         if isinstance(watts, (int, float)) and not isinstance(watts, bool) and watts >= 0.0:
             out[node] = {"chassis_watts": float(watts), "pdu_watts": float(watts)}
+    # BMC watts fill only a gap: the PDU reading (wall power) wins when both exist.
+    for node, poller in _ilo_proxy_pollers.items():
+        watts = poller.details().get("ilo_power_watts")
+        if isinstance(watts, (int, float)) and not isinstance(watts, bool) and watts >= 0.0:
+            out.setdefault(node, {"chassis_watts": float(watts)})
     return out
 
 
@@ -642,6 +660,8 @@ async def lifespan(app: FastAPI):
     await _pdu_poller.start_background()
     for _proxy in _pdu_proxy_pollers.values():
         await _proxy.start_background()
+    for _bmc in _ilo_proxy_pollers.values():
+        await _bmc.start_background()
 
     if settings.BIOMETRICS_MODE in {"agent", "both"}:
         metrics_worker = BiometricsWorker(chassis_cfg(), interval_sec=settings.TELEMETRY_INTERVAL)
@@ -686,6 +706,8 @@ async def lifespan(app: FastAPI):
         await _pdu_poller.stop()
         for _proxy in _pdu_proxy_pollers.values():
             await _proxy.stop()
+        for _bmc in _ilo_proxy_pollers.values():
+            await _bmc.stop()
 
 
 app = FastAPI(title=settings.SERVICE_NAME, version=settings.SERVICE_VERSION, lifespan=lifespan)
@@ -753,6 +775,12 @@ def _power_telemetry_health() -> Dict[str, Any]:
 
     return {
         "ilo": _state(_ilo_poller.enabled, ilo_detail, "ilo"),
+        # Per proxied node; carries the BMC's thermal/fan readings too, which the cluster
+        # fill (chassis_watts only) does not forward.
+        "ilo_proxy": {
+            node: {**_state(p.enabled, p.details(), "ilo"), "detail": p.details()}
+            for node, p in _ilo_proxy_pollers.items()
+        },
         "pdu": {
             **_state(_pdu_poller.enabled, pdu_detail, "pdu"),
             # Echoed so a misconfigured outlet map is visible without shelling into the host --

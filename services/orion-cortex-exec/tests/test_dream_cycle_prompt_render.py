@@ -35,17 +35,19 @@ def _render(ctx):
 
 
 SLEEP = {
-    "cycle_id": "dc-abc123", "started_at": "2026-10-09T06:27:00Z", "pressure": 13.26, "overdue": False,
-    "replay": ["metacog: transport:rpc_timeout on the gateway", "resonance: ring_quiet"],
+    "cycle_id": "dc-abc123", "started_at": "2026-10-09T06:27:00Z", "pressure": 13.26, "threshold": 3.0,
+    "overdue": False, "material": ["metacog: transport:rpc_timeout on the gateway", "resonance: ring_quiet"],
 }
 
 
-def test_a_sleep_started_dream_leads_with_the_replay():
+def test_a_sleep_started_dream_leads_with_the_sleep_material():
     prompt = _render({"memory_digest": "MEMORIES", "metadata": {"dream_trigger": {"mode": "standard", "sleep": SLEEP}}})
-    assert "TONIGHT'S SLEEP" in prompt and "dc-abc123" in prompt and "13.26" in prompt
+    assert "TONIGHT'S SLEEP" in prompt and "dc-abc123" in prompt and "13.26 against a sleep line of 3.0" in prompt
     assert "- metacog: transport:rpc_timeout on the gateway" in prompt and "- resonance: ring_quiet" in prompt
     assert prompt.index("TONIGHT'S SLEEP") < prompt.index("MEMORIES")
     assert "overdue" not in prompt.split("TASK")[0]
+    overdue = _render({"metadata": {"dream_trigger": {"sleep": {**SLEEP, "overdue": True}}}})
+    assert "overdue, slept on the 48 h backstop" in overdue
     assert '"narrative"' in prompt  # the output contract is unchanged
 
 

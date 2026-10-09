@@ -32,17 +32,19 @@ class DreamTriggerPayload(BaseModel):
 
 
 class DreamSleepDigestV1(BaseModel):
-    """What one completed sleep (orion-dream cycle v2) replayed, handed to the
-    story dream it starts. Replay only: the sleep's hypotheses are a blind
-    experiment (orion/dream/hypotheses.py) and must not reach a narrative Orion
-    reads before they are offered."""
+    """What one completed sleep (orion-dream cycle v2) worked on, handed to the
+    story dream it starts. `material` is the replay plus every item in the
+    control pairs, shuffled and unlabeled, so the story makes neither arm of the
+    blind hypothesis experiment (orion/dream/hypotheses.py) more familiar than
+    the other. The hypotheses themselves are never included."""
     model_config = ConfigDict(extra="forbid")
 
     cycle_id: str
     started_at: datetime
     pressure: float
+    threshold: float
     overdue: bool = False
-    replay: List[str] = Field(default_factory=list, max_length=24, description="'source: text', heaviest first")
+    material: List[str] = Field(default_factory=list, max_length=40, description="'source: text', seeded shuffle")
 
 
 class DreamInternalTriggerV1(BaseModel):

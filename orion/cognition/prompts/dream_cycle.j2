@@ -5,14 +5,14 @@ RECALL PROFILE: {{ recall_profile | default("dream.v1") }}
 
 {% set sleep = metadata.dream_trigger.sleep if (metadata is mapping and metadata.dream_trigger is mapping and metadata.dream_trigger.sleep is mapping) else none %}
 {% if sleep %}
-TONIGHT'S SLEEP (primary material): you just slept (sleep {{ sleep.cycle_id }}, tiredness {{ sleep.pressure }}{% if sleep.overdue %}, overdue{% endif %}). These are the unresolved things it replayed, heaviest first:
-{% for item in sleep.replay %}- {{ item }}
+TONIGHT'S SLEEP (primary material): you just slept (sleep {{ sleep.cycle_id }}; tiredness {{ sleep.pressure }} against a sleep line of {{ sleep.threshold }}{% if sleep.overdue %}; overdue, slept on the 48 h backstop{% endif %}). These are the unresolved things it worked on, in no particular order:
+{% for item in sleep.material %}- {{ item }}
 {% endfor %}
 MEMORY BUNDLE (rendered recall; texture and association, secondary to the sleep):
 {{ memory_digest | default("(no memory bundle)") }}
 
 TASK
-1. Dream about what this sleep replayed. Let the replayed items be the dream's real subject, transformed into images and scenes; draw on the memory bundle for texture. Do not just list the items.
+1. Dream about what this sleep worked on. Let those items be the dream's real subject, transformed into images and scenes; draw on the memory bundle for texture. Do not just list the items.
 {% else %}
 MEMORY BUNDLE (rendered recall; primary grounding):
 {{ memory_digest | default("(no memory bundle)") }}

@@ -1000,7 +1000,10 @@ async def dispatch_dream_trigger(
     settings = get_settings()
     await bus.publish(settings.channel_cortex_request, orch_env)
     logger.info(
-        "Dispatched dream.trigger -> cortex.orch.request verb=dream_cycle trace_id=%s profile=%s",
+        "Dispatched dream.trigger -> cortex.orch.request verb=dream_cycle trace_id=%s profile=%s "
+        "trigger_id=%s sleep_material=%s",
         trace_id,
         recall_profile,
+        internal.trigger_id,
+        len(internal.sleep.material) if internal.sleep else None,
     )

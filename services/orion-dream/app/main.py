@@ -146,12 +146,7 @@ def build_cycle_deps():
             await asyncio.to_thread(rem_store.persist_compaction_delta, d)
         return delta.delta_id if delta is not None else None
 
-    async def _start_story(cycle):
-        from app.story import story_trigger
-
-        trigger = story_trigger(cycle)
-        if trigger is None:
-            return
+    async def _start_story(trigger):
         bus = await _cycle_bus()
         if bus is None:
             return
@@ -160,10 +155,14 @@ def build_cycle_deps():
             source=ServiceRef(name=settings.SERVICE_NAME, version=settings.SERVICE_VERSION, node=settings.NODE_NAME),
             payload=trigger.model_dump(mode="json"),
         )
-        await bus.publish(settings.CHANNEL_DREAM_TRIGGER, env)
+        try:
+            await bus.publish(settings.CHANNEL_DREAM_TRIGGER, env)
+        except Exception:
+            await _drop_cycle_bus()  # same as _complete: reconnect on the next use
+            raise
         logger.info(
-            "dream_story_started cycle_id=%s trigger_id=%s replay=%d correlation_id=%s",
-            cycle.cycle_id, trigger.trigger_id, len(trigger.sleep.replay), env.correlation_id,
+            "dream_story_started trigger_id=%s material=%d correlation_id=%s",
+            trigger.trigger_id, len(trigger.sleep.material), env.correlation_id,
         )
 
     read_errors = []

@@ -93,14 +93,20 @@ were started by hand, and Orion's journal noticed the silence. Now it runs on th
 same tiredness gate as the sleep (`app/story.py`).
 
 - The sleep publishes `dream.trigger` (`DreamInternalTriggerV1`) with `trigger_id`
-  `sleep:<cycle_id>` and a `sleep` digest: the replayed items, heaviest first.
-- cortex-orch runs the `dream_cycle` verb. `dream_cycle.j2` puts the replay first
-  and uses the recalled memories as texture. A hand-started dream (no `sleep`)
-  gets the old memory-only prompt.
+  `sleep:<cycle_id>` and a `sleep` digest. The digest holds tiredness against the
+  sleep line, whether this was an overdue (backstop) sleep, and `material`: the
+  replayed items plus every item in the control pairs, in a seeded shuffle.
+- cortex-orch runs the `dream_cycle` verb. `dream_cycle.j2` puts that material
+  first and uses the recalled memories as texture. A hand-started dream (no `sleep`)
+  gets the old memory-only prompt. Orch logs `sleep_material=<n>` on dispatch.
 - The trigger, digest included, is saved with the dream in
   `dreams.metrics._dream_audit.trigger`, so each story names the sleep it came from.
-- The sleep's hypotheses are never passed on. They are a blind experiment that
-  Orion is shown later with the arm hidden.
+- Blind experiment: the sleep's hypotheses are shown to Orion later with the arm
+  hidden. Dream pairs come from the replay and control pairs from the whole pool.
+  A story about the replay alone would make the dream-arm items familiar and bias
+  the result, so the story gets both arms' items, unlabeled and unordered, and
+  never the hypotheses themselves.
+- No story for a sleep that was `failed`, `empty`, or not saved.
 - Starting the story is best effort. If the publish fails, the sleep still counts.
 - Off switch: `DREAM_STORY_AFTER_SLEEP_ENABLED=false`.
 

@@ -531,49 +531,77 @@ def _story_fakes(**kw):
     f = _Fakes(_rows(), **kw)
     started = []
 
-    async def start_story(cycle):
-        started.append(cycle)
+    async def start_story(trigger):
+        started.append(trigger)
 
     deps = f.deps()
     deps.start_story = start_story
     return f, deps, started
 
 
-def test_a_completed_sleep_starts_one_story_about_its_replay():
+def _material_text(item):
+    return f"{item.source_kind}: {' '.join(item.text.split())}"[:300]
+
+
+def test_a_completed_sleep_starts_one_story_about_what_it_worked_on():
     from app.cycle import run_cycle_once
-    from app.story import story_trigger
     from orion.schemas.telemetry.dream import DreamInternalTriggerV1
 
     f, deps, started = _story_fakes()
     cycle = asyncio.run(run_cycle_once(deps))
-    assert cycle.status == "completed" and started == [cycle]
-
-    trigger = story_trigger(cycle)
+    assert cycle.status == "completed" and len(started) == 1
+    trigger = started[0]
     assert trigger.trigger_id == f"sleep:{cycle.cycle_id}" and trigger.source == "orion-dream.sleep"
-    assert len(trigger.sleep.replay) == len(cycle.replay) > 0
-    # heaviest first, "source: text"
-    weights = [r.weight for r in sorted(cycle.replay, key=lambda r: r.weight, reverse=True)]
-    assert weights == sorted(weights, reverse=True)
-    assert all(": " in line for line in trigger.sleep.replay)
+    assert trigger.sleep.threshold == cycle.pressure.threshold and not trigger.sleep.overdue
+    for r in cycle.replay:
+        assert any(line.startswith(_material_text(r)[:40]) for line in trigger.sleep.material)
     # What cortex-orch does with the payload: the digest survives the round trip.
     dumped = DreamInternalTriggerV1.model_validate(trigger.model_dump(mode="json")).model_dump(mode="json")
-    assert dumped["sleep"]["cycle_id"] == cycle.cycle_id
+    assert dumped["sleep"]["material"] == trigger.sleep.material
 
 
-def test_the_story_never_sees_the_blind_hypotheses():
+def test_the_story_exposes_both_arms_equally_and_never_the_hypotheses(monkeypatch):
+    """Dream pairs come from replay, control pairs from the whole pool. Every item
+    in either arm's hypotheses must be in the story, or the story primes one arm."""
+    from app.cycle import run_cycle_once
+    from app.replay import keyed_candidates
+    from app.settings import settings
+
+    # Replay of 2 = the one dream pair, which control may not reuse: every control
+    # pair must then reach outside the replay, so this fails if only replay is told.
+    monkeypatch.setattr(settings, "DREAM_REPLAY_MAX", 2)
+    monkeypatch.setattr(settings, "DREAM_HYPOTHESES_PER_CYCLE", 1)
+    f, deps, started = _story_fakes()
+    cycle = asyncio.run(run_cycle_once(deps))
+    assert {h.arm for h in cycle.hypotheses} == {"dream", "control"} and len(started) == 1
+    replay_refs = {r.ref_id for r in cycle.replay}
+    assert any({h.ref_a, h.ref_b} - replay_refs for h in cycle.hypotheses if h.arm == "control")
+    material = started[0].sleep.material
+    pool = {c.ref_id: c for c in keyed_candidates(_rows()).values()}
+    for h in cycle.hypotheses:
+        for ref in (h.ref_a, h.ref_b):
+            assert _material_text(pool[ref]) in material, (h.arm, ref)
+    assert set(started[0].model_dump(mode="json")["sleep"]) == {
+        "cycle_id", "started_at", "pressure", "threshold", "overdue", "material"}
+    blob = started[0].model_dump_json()
+    for h in cycle.hypotheses:
+        assert h.claim not in blob and h.hypothesis_id not in blob
+
+
+def test_control_pair_items_outside_replay_reach_the_story_in_a_fixed_order():
     from app.cycle import run_cycle_once
     from app.story import story_trigger
 
-    f, deps, _ = _story_fakes()
+    _, deps, _ = _story_fakes()
     cycle = asyncio.run(run_cycle_once(deps))
-    assert cycle.hypotheses
-    payload = story_trigger(cycle).model_dump_json()
-    for h in cycle.hypotheses:
-        assert h.claim not in payload and h.hypothesis_id not in payload
-    assert '"arm"' not in payload and "control" not in payload
+    outsider = cycle.replay[0].model_copy(update={"ref_id": "pool-only", "text": "a thing only the control arm drew"})
+    trigger = story_trigger(cycle, control_items=[outsider])
+    assert f"{outsider.source_kind}: a thing only the control arm drew" in trigger.sleep.material
+    assert len(trigger.sleep.material) == len(cycle.replay) + 1
+    assert story_trigger(cycle, control_items=[outsider]).sleep.material == trigger.sleep.material
 
 
-def test_a_failed_or_empty_sleep_starts_no_story():
+def test_a_failed_empty_or_unsaved_sleep_starts_no_story():
     from app.cycle import run_cycle_once
 
     _, deps, started = _story_fakes()
@@ -584,6 +612,11 @@ def test_a_failed_or_empty_sleep_starts_no_story():
     empty_deps = f.deps()
     empty_deps.start_story = deps.start_story
     assert asyncio.run(run_cycle_once(empty_deps, trigger="manual", force=True)).status == "empty"
+
+    _, unsaved, _ = _story_fakes()
+    unsaved.start_story = deps.start_story
+    unsaved.persist_cycle = lambda c: False
+    assert asyncio.run(run_cycle_once(unsaved)).status == "completed"
     assert started == []
 
 
@@ -596,7 +629,7 @@ def test_a_story_that_fails_to_start_does_not_fail_the_sleep():
 
     f, deps, _ = _story_fakes()
 
-    async def broken(cycle):
+    async def broken(trigger):
         raise ConnectionError("bus down")
 
     deps.start_story = broken
@@ -604,22 +637,23 @@ def test_a_story_that_fails_to_start_does_not_fail_the_sleep():
     assert cycle.status == "completed" and f.persisted == [cycle]
 
 
-def test_story_digest_clips_long_replay_text_and_marks_overdue():
-    from app.story import REPLAY_TEXT_CHARS, story_trigger
-    from orion.schemas.dream_cycle import DreamCycleV1, ReplayItemV1, SleepPressureV1
+def test_an_overdue_sleep_tells_the_story_it_was_overdue():
+    from app.cycle import run_cycle_once
+    from app.settings import settings
 
-    now = datetime.now(timezone.utc)
-    cycle = DreamCycleV1(
-        cycle_id="dc-x", trigger="pressure", status="completed", started_at=now, ended_at=now,
-        pressure=SleepPressureV1(since=now, computed_at=now, pressure=1.234, threshold=3.0, idle_required_minutes=45.0),
-        replay=[ReplayItemV1(ref_id="a", source_kind="metacog", text="word\n" * 400, weight=0.4, reason="r"),
-                ReplayItemV1(ref_id="b", source_kind="resonance", text="loud", weight=0.9, reason="r")],
-        note="pairs dream=1 control=1 | overdue: 48 h without crossing threshold",
-    )
-    sleep = story_trigger(cycle).sleep
-    assert sleep.overdue and sleep.pressure == 1.23
-    assert sleep.replay[0] == "resonance: loud"
-    assert len(sleep.replay[1]) <= len("metacog: ") + REPLAY_TEXT_CHARS and "\n" not in sleep.replay[1]
+    f, deps, started = _story_fakes(last_start=datetime.now(timezone.utc) - timedelta(hours=settings.DREAM_LOOKBACK_HOURS + 1),
+                                    prior=_rows())  # everything seen before: pressure 0, backstop sleeps
+    cycle = asyncio.run(run_cycle_once(deps))
+    assert cycle is not None and "overdue" in cycle.note
+    assert started[0].sleep.overdue
+
+
+def test_story_material_clips_long_text():
+    from app.story import ITEM_TEXT_CHARS, story_material
+    from orion.schemas.dream_cycle import ReplayItemV1
+
+    lines = story_material([ReplayItemV1(ref_id="a", source_kind="metacog", text="word\n" * 400, weight=0.4, reason="r")], [], "s")
+    assert len(lines[0]) <= len("metacog: ") + ITEM_TEXT_CHARS and "\n" not in lines[0]
 
 
 def test_story_after_sleep_switch_turns_the_link_off(monkeypatch):

@@ -15,6 +15,7 @@ pytestmark = pytest.mark.skipif(not URI, reason="GPU_POOL_TEST_POSTGRES_URI not 
 SQL_DB = Path(__file__).resolve().parents[3] / "services/orion-sql-db"
 MIGRATION = SQL_DB / "manual_migration_gpu_pool_v1.sql"
 MIGRATION_V2 = SQL_DB / "manual_migration_gpu_pool_v2_holds.sql"   # stage 4.3
+MIGRATION_V3 = SQL_DB / "manual_migration_gpu_pool_v3_actuation_pause.sql"   # stage 5.7
 
 
 async def _apply(conn, path: Path) -> None:
@@ -43,6 +44,7 @@ async def _pool():
                            "public.checkpoint_writes, public.checkpoint_migrations, gpu_pool_leases, gpu_pool_cards")
         await _apply(conn, MIGRATION)
         await _apply(conn, MIGRATION_V2)
+        await _apply(conn, MIGRATION_V3)
         await conn.execute("RESET lock_timeout")
         await AsyncPostgresSaver(conn).setup()          # durable-runs' tables, in public
     await ensure_checkpoint_schema(URI)
@@ -65,7 +67,7 @@ def test_projection_roundtrip_and_single_writer_lock():
         from app.store import PostgresStore
 
         store = PostgresStore(pool)
-        await store.check_schema()
+        assert await store.check_schema() == []
         now = datetime(2026, 9, 24, 12, tzinfo=timezone.utc)
         row = {"lease_id": "a", "request_id": "ra", "holder": "h", "work_class": "fast", "priority": "system",
                "kind": "request", "status": "queued", "created_at": now, "updated_at": now}
@@ -266,9 +268,10 @@ def test_prune_forgets_only_old_ended_leases_in_bounded_batches():
     _run_with_runtime(body)
 
 
-def test_v2_migration_is_additive_idempotent_and_required_at_boot():
-    """Applied to a live-shaped v1 table with rows: nothing lost, re-runnable, and a pool without it
-    refuses to boot (check_schema) instead of failing on its first hold."""
+def test_v2_and_v3_migrations_are_additive_idempotent_and_seen_by_check_schema():
+    """Applied to a live-shaped v1 table with rows: nothing lost, re-runnable, and check_schema names
+    exactly the columns each file still owes (the pool heals those at boot since 2026-09-30:
+    tests/test_schema_self_heal_postgres.py)."""
     async def go():
         import psycopg
         from psycopg.rows import dict_row
@@ -283,8 +286,7 @@ def test_v2_migration_is_additive_idempotent_and_required_at_boot():
             await conn.execute("INSERT INTO gpu_pool_cards (card, swapped_in) VALUES ('gpu2', '{agent-gpu2}')")
         pool = await _v1_only_pool()
         try:
-            with pytest.raises(Exception):
-                await PostgresStore(pool).check_schema()
+            assert len(await PostgresStore(pool).check_schema()) == 9      # all of v2 + v3
         finally:
             await pool.close()
         async with await psycopg.AsyncConnection.connect(URI, autocommit=True, row_factory=dict_row) as conn:
@@ -298,8 +300,20 @@ def test_v2_migration_is_additive_idempotent_and_required_at_boot():
                                             "'gpu_pool_leases_hold_idx'::regclass")).fetchone()
             assert idx["indisvalid"]
         pool = await _v1_only_pool()
+        try:                                                       # stage 5.7: v3 still owed
+            assert await PostgresStore(pool).check_schema() == [
+                ("gpu_pool_cards", "actuation_paused_at"), ("gpu_pool_cards", "actuation_paused_by")]
+        finally:
+            await pool.close()
+        async with await psycopg.AsyncConnection.connect(URI, autocommit=True, row_factory=dict_row) as conn:
+            await _apply(conn, MIGRATION_V3)
+            await _apply(conn, MIGRATION_V3)                      # idempotent
+            card = await (await conn.execute("SELECT * FROM gpu_pool_cards WHERE card='gpu2'")).fetchone()
+            assert card["swapped_in"] == ["agent-gpu2"] and card["actuation_paused_at"] is None \
+                and card["actuation_paused_by"] is None           # additive: not paused by the migration
+        pool = await _v1_only_pool()
         try:
-            await PostgresStore(pool).check_schema()
+            assert await PostgresStore(pool).check_schema() == []
         finally:
             await pool.close()
     asyncio.run(go())
@@ -324,7 +338,7 @@ def test_holds_children_and_a_mid_load_card_survive_a_restart_on_postgres():
     from orion.gpu_pool.config import load_pool_config
     from orion.gpu_pool.discovery import Probe, load_profiles
     from orion.gpu_pool.lease_graph import build_lease_graph
-    from orion.schemas.gpu_pool import GpuActuateV1, GpuLeaseRequestV1
+    from orion.schemas.gpu_pool import GpuActuateV1, GpuLeaseRequestV1, GpuPoolControlV1
 
     class Bus:
         def __init__(self):
@@ -351,8 +365,7 @@ def test_holds_children_and_a_mid_load_card_survive_a_restart_on_postgres():
 
             def runtime(bus):
                 rt = PoolRuntime(cfg=cfg, profiles=load_profiles(), store=PostgresStore(pool),
-                                 graph=build_lease_graph(lambda: cfg, saver), prober=prober, bus=bus,
-                                 actuate_roles=["agent-gpu2"])
+                                 graph=build_lease_graph(lambda: cfg, saver), prober=prober, bus=bus)
                 return rt
 
             rt = runtime(Bus())
@@ -369,8 +382,11 @@ def test_holds_children_and_a_mid_load_card_survive_a_restart_on_postgres():
             # an in-flight load, as the engine persists it
             from orion.gpu_pool.scheduler import SwapLoad
             await rt._begin_actuation(SwapLoad("agent-gpu2", "demand"))
-            [(_, sent)] = [(ch, e) for ch, e in rt.bus.published if ch == "orion:gpu_pool:actuate:request"]
-            load = GpuActuateV1.model_validate(sent.payload)
+            sent = [GpuActuateV1.model_validate(e.payload) for ch, e in rt.bus.published
+                    if ch == "orion:gpu_pool:actuate:request"]
+            # enforce: the boot asked what gpu2 holds (one read-only status), then the load
+            assert [m.action for m in sent] == ["status", "load"]
+            load = sent[1]
 
             bus2 = Bus()
             rt2 = runtime(bus2)
@@ -389,6 +405,20 @@ def test_holds_children_and_a_mid_load_card_survive_a_restart_on_postgres():
             assert {r.lease_id: r.hold_lease_id for r in snap.leases}[c.lease_id] == h.lease_id
             gpu2 = next(x for x in snap.cards if x.card == "gpu2")
             assert gpu2.swap_state == "loading" and gpu2.actuation["action_id"] == load.action_id
+            # stage 5.7: the emergency stop is persisted, so a restarted pool stays paused
+            paused = await rt2.control(GpuPoolControlV1(verb="pause_actuation", actor="juniper"))
+            assert paused.ok and paused.detail["in_flight"] == ["agent-gpu2"]
+            rows = await rt2.store.cards()
+            assert all(r["actuation_paused_at"] is not None and r["actuation_paused_by"] == "juniper" for r in rows)
+            rt3 = runtime(Bus())
+            await rt3.start()
+            assert rt3.paused is not None and rt3.paused["by"] == "juniper"
+            assert (await rt3.snapshot()).actuation_paused["paused"] is True
+            assert (await rt3.control(GpuPoolControlV1(verb="resume_actuation", actor="juniper"))).ok
+            assert all(r["actuation_paused_at"] is None for r in await rt3.store.cards())
+            rt4 = runtime(Bus())
+            await rt4.start()
+            assert rt4.paused is None
         finally:
             await pool.close()
     asyncio.run(go())

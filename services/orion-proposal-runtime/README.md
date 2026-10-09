@@ -131,3 +131,12 @@ Proposal-runtime does not create production schema during a tick, so a missing
 migration fails the baseline read visibly.
 Live receipts and concurrent diffusion behavior remain UNVERIFIED until an operator
 collects the correlated production trace described in the design document.
+
+
+## Workspace-winner world candidates (attend-to-act loop, 2026-10-01)
+
+`ORION_WORKSPACE_WINNER_PROPOSALS_ENABLED` (record-only on its own; ON in .env_example): reads the
+workspace broadcast winner; only when it binds to a `workspace.winner` template (<= 90 s, dwell >= 2,
+node in `binds_to_nodes`) does it read the cabinet history, hardware-watch `/health`
+(`ORION_HARDWARE_WATCH_HEALTH_URL`), pool background occupancy and the episode ledger, and evaluate
+`orion/autonomy/self_shed.py`. Ineligible or unbindable -> a frame warning, never a silent drop.

@@ -10,7 +10,26 @@ from orion.memory.retrieval_intent import derive_retrieval_intent
 from orion.schemas.cortex.schemas import StepExecutionResult
 from orion.schemas.recall_pcr import PcrChatMemoryV1
 
+from orion.cognition.recall_query import retrieval_query_from_ctx
+
 from .executor import _last_user_message, run_recall_step
+
+# ctx key holding the search text PCR phase 0+1 used this turn (None = recall
+# condensed the fragment). Present once phase 0+1 ran, even when it skipped.
+PCR_RETRIEVAL_QUERY_KEY = "pcr_retrieval_query"
+
+
+def pcr_retrieval_query(ctx: Dict[str, Any]) -> str | None:
+    """The search text phase 3 sends: phase 0+1's, else the same derivation.
+
+    Returns "" (not None) when phase 0+1 recorded "no caller query": run_recall_step
+    treats None as "derive from ctx", so None here would let a ctx rewrite between
+    the phases change phase 3's search. "" means "explicitly none" and is sent as None.
+    """
+    if PCR_RETRIEVAL_QUERY_KEY in ctx:
+        value = ctx.get(PCR_RETRIEVAL_QUERY_KEY)
+        return value if isinstance(value, str) and value.strip() else ""
+    return retrieval_query_from_ctx(ctx)
 from .recall_utils import hub_chat_lane_from_ctx
 from .settings import Settings, settings
 
@@ -150,6 +169,10 @@ async def run_pcr_phase0_and_1(
     """Phase 0 skip gate + optional phase 1 continuity recall for chat_general."""
     cfg = exec_settings or settings
     user_message = _last_user_message(ctx) or str(ctx.get("user_message") or "")
+    # One search text per turn: phase 3 reuses exactly this (see
+    # pcr_retrieval_query), so a second recall does not re-derive it.
+    retrieval_query = retrieval_query_from_ctx(ctx)
+    ctx[PCR_RETRIEVAL_QUERY_KEY] = retrieval_query
 
     if cfg.chat_pcr_skip_on_low_info:
         gate = recall_skip_gate(
@@ -185,6 +208,7 @@ async def run_pcr_phase0_and_1(
         step_order=-1,
         recall_phase="continuity",
         retrieval_intent="continuity",
+        retrieval_query=retrieval_query,
     )
     continuity_text = (continuity_digest or "").strip()
     pcr = PcrChatMemoryV1(
@@ -314,6 +338,7 @@ async def run_pcr_phase3(
         retrieval_intent=str(intent),
         task_hints=task_hints,
         seed_crystallization_id=seed_id,
+        retrieval_query=pcr_retrieval_query(ctx),
     )
     belief_text = (belief_digest or "").strip()
     memory_digest = _merge_memory_digest(continuity_text, belief_text)

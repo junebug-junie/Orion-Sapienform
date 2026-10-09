@@ -62,7 +62,6 @@ def _settings():
         brain_frame_sample_edges=60,
         brain_frame_firing_threshold=0.5,
         brain_frame_starving_threshold=0.1,
-        brain_frame_self_state_cadence_sec=30.0,
         brain_frame_spotlight_cadence_sec=30.0,
     )
 
@@ -87,7 +86,6 @@ def test_producer_yields_firing_and_starving_regions_and_samples():
         nodes=nodes,
         edges=[],
         lane_health=lane_health,
-        self_state=None,
         attention=None,
         attention_payload=None,
         settings=_settings(),
@@ -116,7 +114,6 @@ def test_producer_warming_when_graph_dead():
         nodes=[_node("c1", "concept", activation=0.0)],
         edges=[],
         lane_health={"cursor_lag_by_reducer": {}, "pending_backlog_by_reducer": {}, "quarantine_by_reducer": {}},
-        self_state=None,
         attention=None,
         settings=_settings(),
         now=now,
@@ -125,33 +122,29 @@ def test_producer_warming_when_graph_dead():
     assert frame.phase == "warming"
 
 
-def test_self_state_region_marked_stale_when_old():
-    from datetime import datetime, timedelta, timezone
+def test_self_state_dimension_is_retired():
+    """2026-10-07: the self_state brain region was retired with SelfStateV1.
+    assemble_brain_frame() no longer takes a self_state input, and the
+    contract refuses the dimension outright."""
+    import inspect
+    from datetime import datetime, timezone
+
+    import pytest
+    from pydantic import ValidationError
 
     from app.brain_frame_producer import assemble_brain_frame
+    from orion.schemas.brain_frame import BrainRegionV1
 
-    now = datetime(2026, 7, 7, 12, 0, 0, tzinfo=timezone.utc)
-    old = (now - timedelta(seconds=120)).isoformat()
-    self_state = {
-        "generated_at": old,
-        "dimensions": {
-            "execution_pressure": {"score": 0.8, "confidence": 0.7},
-            "coherence": {"score": 0.4, "confidence": 0.6},
-        },
-    }
-    frame = assemble_brain_frame(
-        nodes=[_node("t1", "tension", 0.9, 0.9)],
-        edges=[],
-        lane_health={"cursor_lag_by_reducer": {}, "pending_backlog_by_reducer": {}, "quarantine_by_reducer": {}},
-        self_state=self_state,
-        attention=None,
-        settings=_settings(),
-        now=now,
-        tick_seq=3,
-    )
-    ss = {r.region_id: r for r in frame.regions if r.dimension == "self_state"}
-    assert ss["self_state:execution_pressure"].stale is True
-    assert ss["self_state:execution_pressure"].intensity == 0.8
+    assert "self_state" not in inspect.signature(assemble_brain_frame).parameters
+    with pytest.raises(ValidationError):
+        BrainRegionV1(
+            dimension="self_state",
+            region_id="self_state:coherence",
+            label="Coherence",
+            intensity=0.5,
+            state="steady",
+            as_of=datetime(2026, 10, 7, tzinfo=timezone.utc),
+        )
 
 
 def test_naive_datetimes_do_not_crash_and_compute_staleness():
@@ -160,11 +153,6 @@ def test_naive_datetimes_do_not_crash_and_compute_staleness():
     from app.brain_frame_producer import assemble_brain_frame
 
     now = datetime(2026, 7, 7, 12, 0, 0, tzinfo=timezone.utc)
-    # tz-NAIVE ISO string (no offset) 120s in the past -> should be treated as UTC and stale.
-    self_state = {
-        "generated_at": "2026-07-07T11:58:00",
-        "dimensions": {"coherence": {"score": 0.5, "confidence": 0.6}},
-    }
     # tz-NAIVE attention generated_at, 5s in the past -> fresh (not stale).
     attention = SimpleNamespace(
         generated_at="2026-07-07T11:59:55",
@@ -177,14 +165,11 @@ def test_naive_datetimes_do_not_crash_and_compute_staleness():
         nodes=[_node("t1", "tension", 0.9, 0.9)],
         edges=[],
         lane_health={"cursor_lag_by_reducer": {}, "pending_backlog_by_reducer": {}, "quarantine_by_reducer": {}},
-        self_state=self_state,
         attention=attention,
         settings=_settings(),
         now=now,
         tick_seq=4,
     )
-    ss = {r.region_id: r for r in frame.regions if r.dimension == "self_state"}
-    assert ss["self_state:coherence"].stale is True  # 120s > 30s cadence
     assert frame.spotlight is not None
     assert frame.spotlight.stale is False  # 5s < 30s cadence
     assert frame.spotlight.attended_node_ids == ["t1"]
@@ -207,7 +192,6 @@ def test_edge_sample_cap_zero_yields_no_edges():
         nodes=nodes,
         edges=edges,
         lane_health={"cursor_lag_by_reducer": {}, "pending_backlog_by_reducer": {}, "quarantine_by_reducer": {}},
-        self_state=None,
         attention=None,
         settings=settings,
         now=now,
@@ -259,7 +243,6 @@ def test_activation_read_from_nested_signals_not_flat_attr():
         nodes=[active, flat_liar],
         edges=[],
         lane_health={"cursor_lag_by_reducer": {}, "pending_backlog_by_reducer": {}, "quarantine_by_reducer": {}},
-        self_state=None,
         attention=None,
         settings=_settings(),
         now=now,
@@ -355,7 +338,6 @@ def test_honesty_regions_included_in_frame():
         nodes=[_node("t1", "tension", 0.9, 0.9)],
         edges=[],
         lane_health={"cursor_lag_by_reducer": {}, "pending_backlog_by_reducer": {}, "quarantine_by_reducer": {}},
-        self_state=None,
         attention=None,
         attention_payload=payload,
         settings=_settings(),
@@ -432,7 +414,6 @@ def test_field_anomaly_regions_included_in_frame():
         nodes=[_node("t1", "tension", 0.9, 0.9)],
         edges=[],
         lane_health={"cursor_lag_by_reducer": {}, "pending_backlog_by_reducer": {}, "quarantine_by_reducer": {}},
-        self_state=None,
         attention=None,
         attention_payload=None,
         field_anomaly=_field_anomaly(0.01),
@@ -485,3 +466,78 @@ def test_field_anomaly_regions_omits_threshold_key_when_absent():
     now = datetime(2026, 7, 7, 12, 0, 0, tzinfo=timezone.utc)
     regions = _field_anomaly_regions(_field_anomaly(0.01, threshold=None), now)
     assert "threshold" not in regions[0].detail
+
+
+def test_lane_quarantine_reads_count_from_store_shaped_entry():
+    """Regression (2026-10-02): the first-ever unacknowledged quarantine rows
+    made every brain-frame tick crash with ``float() ... not 'dict'`` because
+    ``quarantine_by_reducer`` entries are dicts from ``store.quarantine_summary``,
+    not bare counts. Every earlier test passed an empty quarantine map."""
+    from app.brain_frame_producer import assemble_brain_frame
+
+    now = datetime(2026, 10, 2, 8, 30, 0, tzinfo=timezone.utc)
+    lane_health = {
+        "cursor_lag_by_reducer": {"storage_write": 2.0, "vision_organ": 3.0},
+        "pending_backlog_by_reducer": {"storage_write": 1, "vision_organ": 0},
+        # Exact shape store.quarantine_summary() returns (live sample 2026-10-02).
+        "quarantine_by_reducer": {
+            "storage_write": {
+                "unacknowledged_count": 1,
+                "recent_examples": [
+                    {
+                        "event_id": "e1",
+                        "trace_id": "t1",
+                        "reason": "boom",
+                        "quarantined_at": "2026-10-02T08:26:13+00:00",
+                    }
+                ],
+            },
+            "vision_organ": {"unacknowledged_count": 3, "recent_examples": []},
+        },
+    }
+    frame = assemble_brain_frame(
+        nodes=[_node("t1", "tension", activation=0.9, pressure=0.8)],
+        edges=[],
+        lane_health=lane_health,
+        attention=None,
+        attention_payload=None,
+        settings=_settings(),
+        now=now,
+        tick_seq=1,
+    )
+    lanes = {r.region_id: r for r in frame.regions if r.dimension == "lane"}
+    assert lanes["lane:storage_write"].detail["quarantine"] == 1.0
+    assert lanes["lane:vision_organ"].detail["quarantine"] == 3.0
+    # Lanes with no quarantine entry still read zero.
+    assert all(
+        r.detail["quarantine"] == 0.0
+        for rid, r in lanes.items()
+        if rid not in {"lane:storage_write", "lane:vision_organ"}
+    )
+
+
+def test_lane_quarantine_only_lane_and_bare_number_fallback():
+    """A lane present only in the quarantine map still renders, and a bare
+    numeric entry (already-reduced caller) is read as the count."""
+    from app.brain_frame_producer import assemble_brain_frame
+
+    frame = assemble_brain_frame(
+        nodes=[_node("t1", "tension", activation=0.9, pressure=0.8)],
+        edges=[],
+        lane_health={
+            "cursor_lag_by_reducer": {},
+            "pending_backlog_by_reducer": {},
+            "quarantine_by_reducer": {
+                "quarantine_only_lane": {"unacknowledged_count": 2, "recent_examples": []},
+                "execution_trajectory": 4,
+            },
+        },
+        attention=None,
+        attention_payload=None,
+        settings=_settings(),
+        now=datetime(2026, 10, 2, 8, 30, 0, tzinfo=timezone.utc),
+        tick_seq=1,
+    )
+    lanes = {r.region_id: r for r in frame.regions if r.dimension == "lane"}
+    assert lanes["lane:quarantine_only_lane"].detail["quarantine"] == 2.0
+    assert lanes["lane:execution_trajectory"].detail["quarantine"] == 4.0

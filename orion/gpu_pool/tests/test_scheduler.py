@@ -20,6 +20,7 @@ def live(**overrides):
         "chat": RoleLive("chat", True, 1, 65536, True),
         "agent": RoleLive("agent", True, 1, 131072, False),
         "agent-gpu2": RoleLive("agent-gpu2", True, 1, 131072, False),
+        "agent-deep": RoleLive("agent-deep", True, 1, 131072, False),
         "metacog": RoleLive("metacog", True, 4, 4096, False),
         "fast": RoleLive("fast", True, 4, 4096, False),
         "world": RoleLive("world", True, 2),
@@ -153,10 +154,11 @@ def test_queued_past_deadline_is_unavailable_not_silent():
 
 
 def test_backlog_when_no_role_can_serve_then_requeue_when_it_returns():
-    down = live(world=RoleLive("world", False, 2))
-    q = lease("world", lease_id="w", retryable=True)
+    # diffusion: a backlog class (world became `wait` in stage 5 -- a stale prediction is useless)
+    down = live(diffusion=RoleLive("diffusion", False, 1))
+    q = lease("diffusion", lease_id="w", retryable=True)
     assert [b.lease_id for b in of(Backlog, run([q], roles=down))] == ["w"]
-    parked = lease("world", "backlogged", lease_id="w", retryable=True)
+    parked = lease("diffusion", "backlogged", lease_id="w", retryable=True)
     assert of(Requeue, run([parked], roles=down)) == []
     assert [r.lease_id for r in of(Requeue, run([parked]))] == ["w"]
 
@@ -234,17 +236,58 @@ def test_idle_seat_unloads():
     assert [(u.role, u.reason) for u in of(SwapUnload, run([], crds=idle))] == [("agent-gpu2", "idle")]
 
 
-def test_experiment_drains_every_card_then_loads():
+def _launchable_experiment():
+    """The experiment seat as it would be once built: with a launch block. ``model_copy`` skips the
+    validator (which would also demand launches on every resident); the scheduler reads only
+    ``launch is None``."""
+    launch = CFG.roles["agent-gpu2"].launch
+    roles = {**CFG.roles, "experiment": CFG.roles["experiment"].model_copy(update={"launch": launch})}
+    return CFG.model_copy(update={"roles": roles})
+
+
+def test_an_actuatable_operator_seat_drains_every_card_then_loads():
+    cfg = _launchable_experiment()
     exp = lease("experiment", lease_id="x", operator=True)
     busy = [lease("chat", "granted", "chat", lease_id="c"), lease("metacog", "granted", "metacog", lease_id="m")]
     new_meta = lease("metacog", lease_id="n")
-    decisions = run(busy + [exp, new_meta])
+    decisions = schedule(cfg, live(), cards(), busy + [exp, new_meta], T0)
     assert {r.lease_id for r in of(Recall, decisions)} == {"c", "m"}
     assert "n" not in grants(decisions) and not of(SwapLoad, decisions)
     # metacog is background-able work: it waits for the drain instead of failing
     assert not of(Backlog, decisions)
-    [s] = of(SwapLoad, run([exp]))
+    [s] = of(SwapLoad, schedule(cfg, live(), cards(), [exp], T0))
     assert s.role == "experiment"
+
+
+def test_experiment_without_a_launch_never_drains_a_resident():
+    """Stage 5.7 (stage 5 spec, "Corrections from building 5.1" item 5): the live experiment seat
+    has no launch block, so nothing can load it. An operator lease on it must not drain everything
+    it evicts -- that would leave every card serving nobody."""
+    assert CFG.roles["experiment"].launch is None
+    exp = lease("experiment", lease_id="x", operator=True)
+    busy = [lease("chat", "granted", "chat", lease_id="c"), lease("metacog", "granted", "metacog", lease_id="m")]
+    new_meta = lease("metacog", lease_id="n")
+    decisions = run(busy + [exp, new_meta])
+    assert not of(Recall, decisions)
+    assert grants(decisions)["n"] in ("metacog", "fast")
+
+
+def test_a_frozen_seat_is_never_drained():
+    """Actuation paused (stage 5.7): the loaded 27B keeps serving. An owner reclaim or max_hold_sec
+    would only empty the card for an unload that cannot happen."""
+    gpu2 = cards(gpu2=CardLive("gpu2", swapped_in={"agent-gpu2"},
+                               loaded_at=T0 - timedelta(seconds=CFG.roles["agent-gpu2"].max_hold_sec + 1)))
+    on_seat = lease("agent", "granted", "agent-gpu2", lease_id="a")
+    reclaim = lease("diffusion", lease_id="d")
+    thawed = schedule(CFG, live(), gpu2, [on_seat, reclaim], T0)
+    assert [r.lease_id for r in of(Recall, thawed)] == ["a"]          # control: it drains when not frozen
+    frozen = schedule(CFG, live(), gpu2, [on_seat, reclaim], T0, frozen={"agent-gpu2"})
+    assert not of(Recall, frozen) and not of(SwapUnload, frozen)
+    nxt = lease("agent", lease_id="n")
+    busy_agent = lease("agent", "granted", "agent", lease_id="b")
+    assert grants(schedule(CFG, live(), gpu2, [on_seat, busy_agent, nxt], T0, frozen={"agent-gpu2"})) == {}
+    idle = schedule(CFG, live(), gpu2, [busy_agent, nxt], T0, frozen={"agent-gpu2"})
+    assert grants(idle) == {"n": "agent-gpu2"}                          # still grantable while frozen
 
 
 def test_experiment_loaded_backlogs_background_and_chat_waits():
@@ -337,13 +380,26 @@ def test_unknown_contexts_never_count_as_too_big():
 
 
 def test_a_down_roles_last_seen_context_only_stops_a_false_too_big():
-    """agent (131072) is restarting and agent-gpu2 is an unloaded swap seat; chat (65536, lent) is
-    the only live role of the agent class. A 100k lease must wait for agent -- not be refused as
-    bigger than the class -- and the remembered size must not trigger a swap load on its own."""
-    down = live(agent=RoleLive("agent", False, 0, None), **{"agent-gpu2": RoleLive("agent-gpu2", False, 0, None)})
+    """agent (131072) is restarting, agent-gpu2 is an unloaded swap seat and agent-deep (hecate) is
+    down; chat (65536, lent) is the only live role of the agent class. A 100k lease must wait for
+    agent -- not be refused as bigger than the class -- and the remembered size must not trigger a
+    swap load on its own."""
+    down = live(agent=RoleLive("agent", False, 0, None), **{"agent-gpu2": RoleLive("agent-gpu2", False, 0, None),
+                                                          "agent-deep": RoleLive("agent-deep", False, 0, None)})
     big = lease("agent", lease_id="a", min_ctx_tokens=100_000)
     refused = schedule(CFG, down, cards(), [big], T0)
     assert [u.reason for u in of(Unavailable, refused)] == ["min_ctx_exceeds_class:65536"]
     waiting = schedule(CFG, down, cards(), [big], T0, seen_ctx={"agent": 131072})
     assert of(Unavailable, waiting) == [] and not grants(waiting)
     assert of(SwapLoad, waiting) == of(SwapLoad, schedule(CFG, down, cards(), [lease("agent")], T0))
+
+
+def test_a_frozen_operator_seat_keeps_its_holders_past_max_hold():
+    """An operator seat loaded while actuation is paused: recalling its holders at max_hold_sec would
+    only lead to an unload that cannot happen."""
+    cfg = _launchable_experiment()
+    loaded = {c: CardLive(c, swapped_in={"experiment"}) for c in cfg.cards}
+    holder = lease("experiment", "granted", "experiment", lease_id="x", operator=True,
+                   granted_at=T0 - timedelta(seconds=cfg.roles["experiment"].max_hold_sec + 1))
+    assert [r.lease_id for r in of(Recall, schedule(cfg, live(), loaded, [holder], T0))] == ["x"]
+    assert not of(Recall, schedule(cfg, live(), loaded, [holder], T0, frozen={"experiment"}))

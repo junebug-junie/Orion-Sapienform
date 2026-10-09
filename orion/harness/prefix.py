@@ -4,6 +4,7 @@ import os
 
 from orion.fcc.github_repo_context import append_github_mcp_harness_brief
 from orion.fcc.self_index_brief import append_self_index_harness_brief
+from orion.gpu_pool.placement import ServingPlacement
 from orion.harness.operator_brief import (
     HARNESS_UNIFIED_OPERATOR_BRIEF,
     harness_motor_instruction as _stance_motor_instruction,
@@ -19,7 +20,22 @@ from orion.schemas.thought import (
     StanceHarnessSliceV1,
     ThoughtEventV1,
 )
+from orion.introspect.binding import introspect_binding_for_turn
+from orion.introspect.brief import append_introspect_harness_brief
 from orion.world_pulse_read.tools import append_reading_mcp_harness_brief
+
+HARNESS_TASK_HEADER = (
+    "TASK THIS TURN (respond to this message, read with the recent conversation above):"
+)
+HARNESS_STANCE_GUIDANCE_HEADER = (
+    "STANCE GUIDANCE (how to approach the task above, not a replacement for it; "
+    "anything here the task did not ask for is optional: do it only if it is cheap "
+    "and directly serves the answer; a follow-up question the guidance asks you to "
+    "pose is not extra work, so ask it after answering):"
+)
+HARNESS_TURN_RULES_HEADER = (
+    "TURN RULES AND TOOLS (binding for the task above; each tool note says when it applies):"
+)
 
 
 def _format_stance_slice(sl: StanceHarnessSliceV1) -> list[str]:
@@ -144,7 +160,7 @@ def compile_harness_prefix(
     answer_contract: AnswerContract | None = None,
     workspace: str | None = None,
     prior_tool_fetch_names: list[str] | None = None,
-    current_served_model: str | None = None,
+    serving_placement: ServingPlacement | None = None,
     recent_turns: list[TurnWindowMessageV1] | None = None,
     situation_prompt_fragment: str | None = None,
     reading_binding: ReadingToolBindingV1 | None = None,
@@ -154,10 +170,12 @@ def compile_harness_prefix(
 
     Deterministically materializes the stance-conditioned context of the FCC
     motor prompt, in render order: the unified operator brief, grounding self
-    block, backend self-context, situation context, Thought imperative and
-    stance slice, autonomy slice, prior tool-fetch line, recent-turn history,
-    user message, repair overlay, enabled MCP tool briefs, and (when a
-    situation fragment was rendered) the canonical Situation-block explainer
+    block, backend self-context, situation context, prior tool-fetch line,
+    recent-turn history, the task header and user message, the stance guidance
+    header with Thought imperative, stance slice, autonomy slice and strain
+    refs, then (under the turn-rules header on user-message turns) the repair
+    overlay, enabled MCP tool briefs (including orion-introspect),
+    and (when a situation fragment was rendered) the canonical Situation-block explainer
     (orion/harness/situation_brief.py). The full `claude -p` prompt is this
     prefix plus the harness_motor_instruction that build_harness_prompt
     (runner.py) appends on user-message turns — check both when chasing
@@ -173,44 +191,39 @@ def compile_harness_prefix(
     if thought.grounding_capsule is not None and thought.grounding_capsule.identity_summary:
         parts.extend(_format_grounding_self_block(thought.grounding_capsule))
 
-    if current_served_model:
-        # Answers "which real backend am I running on right now" -- a fact
-        # that exists (chat_history_log.response_identity, see
-        # orion/harness/fcc_motor.py's probe_current_served_model) but was
-        # previously invisible to Orion itself: no consumer read it back
-        # into a prompt, recall digest, or the 5a substrate appraisal.
-        # Resolved by the caller BEFORE this function runs (compile_harness_
-        # prefix stays a pure/deterministic formatter given its inputs, per
-        # its own docstring above -- the live /routes probe is a network
-        # call and does not belong inside a "deterministically materializes"
-        # function) and passed straight through here. Omitted entirely when
-        # None (discovery/probe failed, or a non-llamacpp backend like
-        # MODEL_HAIKU's route) rather than shown as a placeholder -- an
-        # unknown backend is not the same claim as a known one.
-        parts.append(f"Backend model currently serving this turn: {current_served_model}")
+    serving_line = serving_placement.self_line() if serving_placement is not None else None
+    if serving_line:
+        # Answers "which real backend am I running on right now". Resolved by
+        # the caller BEFORE this function runs (runner.py: the turn's GPU pool
+        # lease role -> the pool's discovered profile for that role, else the
+        # route's default model) so this stays a pure formatter. Never the
+        # route's default stated as fact: under the GPU pool a call
+        # can be served by another role (agent -> agent-gpu2 or chat), and the
+        # old "currently serving this turn" line was then false about Orion
+        # itself (docs/superpowers/specs/2026-09-24-gpu-pool-design.md,
+        # "Transport-metric and reader impacts" item 5). Omitted entirely when
+        # nothing true is known, rather than shown as a placeholder.
+        parts.append(serving_line)
 
     if situation_prompt_fragment:
         # Resolved by orion-hub BEFORE this function runs (turn_orchestrator.py::
         # execute_unified_turn calls orion.situational.context.build_situation_for_ctx),
-        # same treatment as current_served_model above -- this stays a pure
+        # same treatment as serving_placement above -- this stays a pure
         # formatter, no network/DB calls of its own. Omitted entirely when falsy
         # (situation context disabled or failed to build) rather than shown as a
         # placeholder, so a turn with no situation data renders byte-identical to
         # before this parameter existed.
         parts.append(situation_prompt_fragment)
 
-    parts.extend(
-        [
-            f"Imperative: {thought.imperative}",
-            f"Tone: {thought.tone}",
-        ]
-    )
-    parts.extend(_format_stance_slice(thought.stance_harness_slice))
+    stance_lines: list[str] = [
+        f"Imperative: {thought.imperative}",
+        f"Tone: {thought.tone}",
+    ]
+    stance_lines.extend(_format_stance_slice(thought.stance_harness_slice))
     if thought.autonomy_slice is not None:
-        parts.extend(_format_autonomy_slice(thought.autonomy_slice))
-
+        stance_lines.extend(_format_autonomy_slice(thought.autonomy_slice))
     if thought.strain_refs:
-        parts.append(f"Strain refs: {', '.join(thought.strain_refs)}")
+        stance_lines.append(f"Strain refs: {', '.join(thought.strain_refs)}")
 
     if prior_tool_fetch_names:
         # Cross-turn continuity within this same session (see
@@ -226,28 +239,39 @@ def compile_harness_prefix(
     parts.extend(_format_recent_turns(recent_turns or []))
 
     if user_message.strip():
+        parts.append(HARNESS_TASK_HEADER)
         parts.append(f"User message: {user_message.strip()}")
+        parts.append(HARNESS_STANCE_GUIDANCE_HEADER)
+    parts.extend(stance_lines)
 
+    trailing: list[str] = []
     if repair_overlay.mode != "default":
-        parts.append(f"Repair mode: {repair_overlay.mode}")
+        trailing.append(f"Repair mode: {repair_overlay.mode}")
 
     if repair_overlay.prefix_overlay:
-        parts.append(repair_overlay.prefix_overlay)
+        trailing.append(repair_overlay.prefix_overlay)
 
     if repair_overlay.rule_lines:
-        parts.append("Rules: " + "; ".join(repair_overlay.rule_lines))
+        trailing.append("Rules: " + "; ".join(repair_overlay.rule_lines))
 
     append_github_mcp_harness_brief(
-        parts,
+        trailing,
         workspace=workspace or os.environ.get("HARNESS_FCC_WORKSPACE"),
     )
-    append_self_index_harness_brief(parts)
+    append_self_index_harness_brief(trailing)
     append_reading_mcp_harness_brief(
-        parts, reading_binding=reading_binding, reading_only=reading_only
+        trailing, reading_binding=reading_binding, reading_only=reading_only
+    )
+    append_introspect_harness_brief(
+        trailing, binding=introspect_binding_for_turn(reading_binding, reading_only=reading_only)
     )
     append_situation_block_harness_brief(
-        parts,
+        trailing,
         situation_prompt_fragment=situation_prompt_fragment,
     )
+
+    if trailing and user_message.strip():
+        parts.append(HARNESS_TURN_RULES_HEADER)
+    parts.extend(trailing)
 
     return "\n".join(parts)

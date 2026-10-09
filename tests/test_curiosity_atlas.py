@@ -351,9 +351,14 @@ def test_the_operator_surface_exposes_no_write_route() -> None:
     # takes), gated on a CONFIRMED `sent` Door-A outreach decision for that
     # exact run. It is not a memory/prior/finding write any more than
     # `/api/chat` is; Orion still authors everything the turn produces.
+    #
+    # A fourth, 2026-09-28: `/api/urgent` is a CONTROL action too. It publishes
+    # an urgent run request on the bus (Juniper's question plus a hardware
+    # snapshot) and writes nothing to Orion's graph itself; the run's own
+    # incident record is written by `start_urgent`, not by this route.
     assert sorted(r.path for r in writes) == [
         "/curiosity/api/run-now", "/curiosity/api/run/{run_id}/reply",
-        "/curiosity/api/self-inquiry/run-now",
+        "/curiosity/api/self-inquiry/run-now", "/curiosity/api/urgent",
     ], [(r.path, sorted(r.methods)) for r in writes]
     assert all(r.methods == {"POST"} for r in writes)
 
@@ -467,3 +472,14 @@ def test_an_iso_written_at_is_parsed_rather_than_read_as_missing() -> None:
     assert _stamp_ms(None) is None
     assert _stamp_ms("") is None
     assert _stamp_ms("not a date") is None
+
+
+def test_a_long_contractor_brief_summary_reaches_the_page_whole() -> None:
+    from orion.curiosity.atlas import _build_peer_brief
+
+    summary = "the peer read the whole article and said so. " * 40 + "END"
+    refusal = "budget ran out before the peer could start. " * 10 + "END"
+    ok = _build_peer_brief({"brief_id": "b", "summary": summary})
+    refused = _build_peer_brief({"brief_id": "c", "summary": "", "refusal_reason": refusal})
+    assert len(summary) > 800 and ok.summary.endswith("END")
+    assert len(refusal) > 200 and refused.refusal_reason.endswith("END")

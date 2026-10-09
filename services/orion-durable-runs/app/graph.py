@@ -25,6 +25,7 @@ from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable, TypedDict
 from uuid import NAMESPACE_URL, uuid5
 
+from orion.curiosity.incident_report import NO_STRUCTURED_VERDICT
 from orion.curiosity.journal import MaterialCounts, build_investigation_journal_entry
 from orion.schemas.gpu_pool import GpuLeaseRefV1
 from orion.schemas.durable_run import (
@@ -53,6 +54,7 @@ class CuriosityRunState(TypedDict, total=False):
     workflow: str
     brief: dict[str, Any]  # CuriosityRunBriefV1.model_dump()
     attempt: int
+    hold_takebacks: int   # times the pool took the hold back mid-node (never an attempt)
     # harness_turn
     text: str
     debug: dict[str, Any]
@@ -78,6 +80,11 @@ class CuriosityRunState(TypedDict, total=False):
     # self_concept_history. Lived draws write LivedAnswer (not SelfDefinition).
     self_definition: dict[str, Any] | None
     lived_answer: dict[str, Any] | None
+    # Urgent runs only (brief.urgent set): the run's `:IncidentReport` as a
+    # dict, or None with report_flag "no_structured_verdict". Never written
+    # for ordinary runs.
+    incident_report: dict[str, Any] | None
+    report_flag: str | None
     # publish_attention_row / journal
     attention_row_published: bool
     journal_entry_id: str | None
@@ -106,13 +113,38 @@ class HarnessTurnFailed(RuntimeError):
 @dataclass
 class Deps:
     run_turn: Callable[[CuriosityTurnRequestV1], Awaitable[CuriosityTurnResultV1]]
-    read_turn_result: Callable[[str], Awaitable[dict[str, Any]]]
+    # (run_id) for ordinary runs; (run_id, urgent=True) for urgent ones, which
+    # must also return `incident_report` / `report_flag`.
+    read_turn_result: Callable[..., Awaitable[dict[str, Any]]]
     publish_attention_row: Callable[[dict[str, Any]], Awaitable[bool]]
     publish_journal: Callable[[Any], Awaitable[str | None]]
 
 
 def _brief(state: CuriosityRunState) -> CuriosityRunBriefV1:
     return CuriosityRunBriefV1.model_validate(state["brief"])
+
+
+def is_urgent(state: dict[str, Any]) -> bool:
+    """The run carries an urgent seed. Reads the checkpointed brief dict
+    directly, so it never raises on a bare or pre-seed state."""
+    brief = state.get("brief")
+    return isinstance(brief, dict) and bool(brief.get("urgent"))
+
+
+# The seed fields carried on the finish detail. The evidence bundle is left
+# out: Hub already has it (it built the seed) and the event stays small.
+URGENT_DETAIL_KEYS = ("incident_id", "trigger", "subject", "question", "requested_at")
+
+
+def urgent_detail(state: dict[str, Any]) -> dict[str, Any] | None:
+    if not is_urgent(state):
+        return None
+    seed = state["brief"]["urgent"]
+    out: dict[str, Any] = {}
+    for key in URGENT_DETAIL_KEYS:
+        value = seed.get(key)
+        out[key] = value.isoformat() if isinstance(value, datetime) else value
+    return out
 
 
 def _gpu_lease(state: dict[str, Any]) -> GpuLeaseRefV1 | None:
@@ -212,6 +244,17 @@ def failed_turn_meta(state: dict[str, Any]) -> dict[str, Any]:
     return {"harness_turn_meta": {"turn_correlation_id": corr}} if corr else {}
 
 
+def attempt_timeout_sec(state: dict[str, Any], timeout_sec: float, now: datetime | None = None) -> float:
+    """The turn limit Hub is told: the brief's, clamped to the run's deadline -- the same clamp
+    `admission_runtime.execute` applies to the attempt timer, so Hub's finalize reserve and
+    reply deadline line up with when the hold is actually released."""
+    deadline = (state.get("admission") or {}).get("deadline_at")
+    if not deadline:
+        return float(timeout_sec)
+    left = (datetime.fromisoformat(deadline) - (now or datetime.now(timezone.utc))).total_seconds()
+    return max(1.0, min(float(timeout_sec), left))
+
+
 def make_nodes(deps: Deps) -> dict[str, Callable[[CuriosityRunState], Awaitable[dict[str, Any]]]]:
     async def harness_turn(state: CuriosityRunState) -> dict[str, Any]:
         brief = _brief(state)
@@ -221,13 +264,17 @@ def make_nodes(deps: Deps) -> dict[str, Callable[[CuriosityRunState], Awaitable[
             correlation_id=turn_correlation_id(state),
             prompt=brief.prompt,
             fcc_model_label=brief.fcc_model_label,
-            timeout_sec=brief.timeout_sec,
+            timeout_sec=attempt_timeout_sec(state, brief.timeout_sec),
             source_tag=brief.source_tag,
             attempt=attempt,
             # The run's pool hold: Hub fences it with the pool and every LLM call of the turn
             # attaches to it. The hold's role is where the pool put the run, not a route, so it is
             # never sent as ``assigned_lane`` (Hub names the ``agent`` route for a held turn).
             gpu_lease=_gpu_lease(state),
+            urgent=brief.urgent,
+            # What recall searches for (the run's standing question). From the
+            # checkpointed brief, so it survives a Hub restart.
+            retrieval_query=brief.retrieval_query,
         )
         result, meta = await timed_turn(deps.run_turn, request)
         if not result.ok or not result.text.strip():
@@ -238,8 +285,12 @@ def make_nodes(deps: Deps) -> dict[str, Callable[[CuriosityRunState], Awaitable[
         return {"text": result.text, "debug": debug, "attempt": attempt, "harness_turn_meta": meta}
 
     async def read_turn_result(state: CuriosityRunState) -> dict[str, Any]:
-        found = await deps.read_turn_result(state["run_id"])
-        return {
+        urgent = is_urgent(state)
+        if urgent:
+            found = await deps.read_turn_result(state["run_id"], urgent=True)
+        else:
+            found = await deps.read_turn_result(state["run_id"])
+        update = {
             "outcome": found.get("outcome"),
             "footprint": found.get("footprint"),
             "hops": list(found.get("hops") or []),
@@ -248,6 +299,11 @@ def make_nodes(deps: Deps) -> dict[str, Callable[[CuriosityRunState], Awaitable[
             "self_definition": found.get("self_definition"),
             "lived_answer": found.get("lived_answer"),
         }
+        if urgent:
+            report = found.get("incident_report")
+            update["incident_report"] = report
+            update["report_flag"] = None if report else (found.get("report_flag") or NO_STRUCTURED_VERDICT)
+        return update
 
     async def publish_attention_row(state: CuriosityRunState) -> dict[str, Any]:
         ok = await deps.publish_attention_row(
@@ -263,6 +319,10 @@ def make_nodes(deps: Deps) -> dict[str, Callable[[CuriosityRunState], Awaitable[
     async def journal(state: CuriosityRunState) -> dict[str, Any]:
         brief = _brief(state)
         debug = state.get("debug") or {}
+        if debug.get("draft_salvaged"):
+            # An unfinalized draft (never through response repair) is not journaled as a
+            # finished investigation; the urgent report carries it, marked UNFINISHED.
+            return {"journal_entry_id": None}
         hops = [(int(n), str(note)) for n, note in (state.get("hops") or [])]
         entry = build_investigation_journal_entry(
             material=MaterialCounts(
@@ -323,7 +383,10 @@ def finish_detail(state: CuriosityRunState) -> dict[str, Any]:
     """What Hub needs from a completed run to decide outreach, bounded.
     Timing/correlation keys (`turn_correlation_id`, `harness_elapsed_sec`,
     `harness_started_at`, `harness_finished_at`) are present only when the
-    runner recorded them -- see `harness_turn_meta`."""
+    runner recorded them -- see `harness_turn_meta`. `urgent`,
+    `incident_report` and `report_flag` are present only for urgent runs;
+    `incident_report` None always comes with `report_flag`
+    "no_structured_verdict"."""
     outcome = state.get("outcome") or {}
     text = state.get("text") or ""
     brief = state.get("brief") or {}
@@ -352,6 +415,25 @@ def finish_detail(state: CuriosityRunState) -> dict[str, Any]:
             else {}
         ),
         **harness_meta_detail(state),
+        **_urgent_finish_detail(state),
+    }
+
+
+def _urgent_finish_detail(state: dict[str, Any]) -> dict[str, Any]:
+    urgent = urgent_detail(state)
+    if urgent is None:
+        return {}
+    report = state.get("incident_report") or None
+    debug = state.get("debug") if isinstance(state.get("debug"), dict) else {}
+    return {
+        "urgent": urgent,
+        "incident_report": report,
+        "report_flag": None if report else (state.get("report_flag") or NO_STRUCTURED_VERDICT),
+        # Hub handed back Orion's unfinalized draft because the turn ran out of time or
+        # finalize failed (`curiosity_investigation.salvage_urgent_draft`): the report
+        # says so instead of presenting it as a finished answer.
+        **({"draft_salvaged": True, "salvaged_from_error": str(debug.get("salvaged_from_error") or "")[:300]}
+           if debug.get("draft_salvaged") else {}),
     }
 
 

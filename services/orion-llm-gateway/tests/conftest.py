@@ -48,6 +48,8 @@ class FakePool:
     def __init__(self) -> None:
         self.calls: List[Dict[str, Any]] = []
         self.releases: List[str] = []
+        # What the real client would put in the release's detail for a raised block.
+        self.release_details: List[str] = []
         self.leases: List[Any] = []
         self.active = 0
         self.max_active = 0
@@ -141,8 +143,9 @@ class FakePool:
         outcome = "ok"
         try:
             yield lease
-        except BaseException:
+        except BaseException as exc:
             outcome = "upstream_error"
+            self.release_details.append(f"{type(exc).__name__}: {exc}")
             raise
         finally:
             if hold is None:

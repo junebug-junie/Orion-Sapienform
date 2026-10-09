@@ -176,6 +176,7 @@ def compute_h1(substrate: HeartbeatSubstrate) -> H1ResultV1:
 def compute_h1_ensemble(
     ensemble: EnsembleSubstrate,
     fire_counts: dict[str, int] | None = None,
+    fire_snapshot=None,
 ) -> EnsembleH1ResultV1:
     """Ensemble-level H1 reading plus tick-level proprioception.
 
@@ -211,7 +212,9 @@ def compute_h1_ensemble(
         bulk_penetration_depth=bulk_depth,
     )
 
-    proprio = compute_proprioception(fire_counts=fire_counts, mean_profile=mean_profile)
+    proprio = compute_proprioception(
+        fire_counts=fire_counts, mean_profile=mean_profile, fire_snapshot=fire_snapshot
+    )
 
     return EnsembleH1ResultV1(
         mean_ratio=mean_ratio,
@@ -226,6 +229,9 @@ def compute_h1_ensemble(
         organ_distinctness=proprio.organ_distinctness,
         smear=proprio.smear,
         smeared=proprio.smeared,
+        organ_last_fired_at=dict(proprio.organ_last_fired_at),
+        organ_seconds_since_last_fire=dict(proprio.organ_seconds_since_last_fire),
+        fire_window_sec=proprio.fire_window_sec,
     )
 
 

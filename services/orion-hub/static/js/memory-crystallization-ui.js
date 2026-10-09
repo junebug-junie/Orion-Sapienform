@@ -59,6 +59,22 @@
     el.classList.toggle("text-gray-400", !isErr);
   }
 
+  // Graphiti sync failures used to live only in the Hub's warning log: an
+  // approval whose Graphiti write failed (e.g. the adapter's container name not
+  // resolving from the Hub's host network) looked exactly like a success. The
+  // approve response carries them in `projection.errors`, the sync-graphiti
+  // response in `errors`. Returns "" when there is nothing to report.
+  function graphitiFailureNote(res) {
+    if (!res || typeof res !== "object") return "";
+    const errors = []
+      .concat((res.projection && res.projection.errors) || [])
+      .concat(res.errors || [])
+      .map(String)
+      .filter((e) => e.startsWith("graphiti_sync_failed") || e.startsWith("graphiti_projection_failed"));
+    if (!errors.length) return "";
+    return `Graphiti write failed: ${errors.join("; ")}`;
+  }
+
   function chatTurnCount(item) {
     const evidence = Array.isArray(item && item.evidence) ? item.evidence : [];
     const ids = new Set(
@@ -288,13 +304,16 @@
       btn.addEventListener("click", async () => {
         const act = btn.getAttribute("data-act");
         let extraStatus = "";
+        let failureNote = "";
         try {
           if (act === "sync-graphiti") {
-            await apiFetch(`/api/memory/graphiti/sync/${row.crystallization_id}`, { method: "POST", body: "{}" });
+            const res = await apiFetch(`/api/memory/graphiti/sync/${row.crystallization_id}`, { method: "POST", body: "{}" });
+            failureNote = graphitiFailureNote(res);
           } else if (act === "deprecate") {
             await apiFetch(`/api/memory/crystallizations/${row.crystallization_id}/deprecate`, { method: "POST", body: "{}" });
           } else {
             const res = await apiFetch(`/api/memory/crystallizations/proposals/${row.crystallization_id}/${act}`, { method: "POST", body: act === "validate" ? undefined : "{}" });
+            if (act === "approve") failureNote = graphitiFailureNote(res);
             if (act === "validate" && res) {
               // grammar_events is retention-bounded (3 days), so a validated proposal can
               // legitimately have evidence that no longer resolves. That is NOT an error and
@@ -323,6 +342,9 @@
           if (act === "validate") {
             await openDetail(row, listEl, statusEl, detailEl, summarize);
           }
+          // After the reload, which rewrites the status line: the decision
+          // itself succeeded, but the operator must see the Graphiti failure.
+          if (failureNote) setStatus(statusEl, `${act} ok — ${failureNote}`, true);
         } catch (e) {
           setStatus(statusEl, e.message || String(e), true);
         }
@@ -562,5 +584,5 @@
     }
   }
 
-  window.OrionMemoryCrystallizationUI = { activate };
+  window.OrionMemoryCrystallizationUI = { activate, graphitiFailureNote };
 })();

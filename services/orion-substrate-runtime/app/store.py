@@ -63,11 +63,25 @@ from orion.substrate.route_loop.constants import (
 )
 from orion.schemas.route_projection import RouteArbitrationProjectionV1
 from orion.schemas.llm_inference_projection import LlmInferenceProjectionV1
+from orion.schemas.vision_organ_projection import VisionOrganProjectionV1
+from orion.substrate.vision_organ_loop.constants import (
+    VISION_ORGAN_GRAMMAR_CURSOR_NAME,
+    VISION_ORGAN_PROJECTION_ID,
+    VISION_ORGAN_SOURCE_SERVICE,
+    VISION_ORGAN_TRACE_PREFIX,
+)
 from orion.substrate.llm_inference_loop.constants import (
     LLM_INFERENCE_GRAMMAR_CURSOR_NAME,
     LLM_INFERENCE_PROJECTION_ID,
     LLM_INFERENCE_SOURCE_SERVICE,
     LLM_INFERENCE_TRACE_PREFIX,
+)
+from orion.schemas.storage_write_projection import StorageWriteProjectionV1
+from orion.substrate.storage_write_loop.constants import (
+    STORAGE_WRITE_GRAMMAR_CURSOR_NAME,
+    STORAGE_WRITE_PROJECTION_ID,
+    STORAGE_WRITE_SOURCE_SERVICE,
+    STORAGE_WRITE_TRACE_PREFIX,
 )
 
 EXECUTION_GRAMMAR_SOURCE_SERVICES = tuple(EXECUTION_SOURCE_SERVICES)
@@ -79,6 +93,8 @@ GRAMMAR_CURSOR_REGISTRY: dict[str, tuple[tuple[str, ...], str]] = {
     CHAT_GRAMMAR_CURSOR_NAME: ((CHAT_SOURCE_SERVICE,), "hub.chat:"),
     ROUTE_GRAMMAR_CURSOR_NAME: ((ROUTE_SOURCE_SERVICE,), ROUTE_TRACE_PREFIX),
     LLM_INFERENCE_GRAMMAR_CURSOR_NAME: ((LLM_INFERENCE_SOURCE_SERVICE,), LLM_INFERENCE_TRACE_PREFIX),
+    STORAGE_WRITE_GRAMMAR_CURSOR_NAME: ((STORAGE_WRITE_SOURCE_SERVICE,), STORAGE_WRITE_TRACE_PREFIX),
+    VISION_ORGAN_GRAMMAR_CURSOR_NAME: ((VISION_ORGAN_SOURCE_SERVICE,), VISION_ORGAN_TRACE_PREFIX),
 }
 from orion.substrate.biometrics_loop.lineage import emission_touches_node, receipt_touches_node
 from orion.substrate.receipts.retention import (
@@ -174,6 +190,13 @@ def _cursor_lag_seconds(last_created_at: datetime | None) -> float:
 
 
 class BiometricsSubstrateStore:
+    def load_cabinet_points(self, *, since: datetime, until: datetime) -> list:
+        """athena's cabinet_temp_c readings (orion/autonomy/cabinet_heat.py's shared read)."""
+        from orion.autonomy.cabinet_heat import load_cabinet_points
+
+        with self._engine.connect() as conn:
+            return load_cabinet_points(conn, since=since, until=until)
+
     def __init__(self, postgres_uri: str) -> None:
         self._engine: Engine = create_engine(
             postgres_uri,
@@ -459,9 +482,39 @@ class BiometricsSubstrateStore:
             limit=limit,
         )
 
+    def fetch_vision_organ_grammar_events(self, *, limit: int = 200) -> list[GrammarEventV1]:
+        return self._fetch_grammar_events(
+            cursor_name=VISION_ORGAN_GRAMMAR_CURSOR_NAME,
+            source_services=(VISION_ORGAN_SOURCE_SERVICE,),
+            trace_prefix=VISION_ORGAN_TRACE_PREFIX,
+            limit=limit,
+        )
+
+    def advance_vision_organ_cursor(self, *, event_id: str, created_at: datetime) -> None:
+        self._advance_named_cursor(
+            cursor_name=VISION_ORGAN_GRAMMAR_CURSOR_NAME,
+            event_id=event_id,
+            created_at=created_at,
+        )
+
     def advance_llm_inference_cursor(self, *, event_id: str, created_at: datetime) -> None:
         self._advance_named_cursor(
             cursor_name=LLM_INFERENCE_GRAMMAR_CURSOR_NAME,
+            event_id=event_id,
+            created_at=created_at,
+        )
+
+    def fetch_storage_write_grammar_events(self, *, limit: int = 200) -> list[GrammarEventV1]:
+        return self._fetch_grammar_events(
+            cursor_name=STORAGE_WRITE_GRAMMAR_CURSOR_NAME,
+            source_services=(STORAGE_WRITE_SOURCE_SERVICE,),
+            trace_prefix=STORAGE_WRITE_TRACE_PREFIX,
+            limit=limit,
+        )
+
+    def advance_storage_write_cursor(self, *, event_id: str, created_at: datetime) -> None:
+        self._advance_named_cursor(
+            cursor_name=STORAGE_WRITE_GRAMMAR_CURSOR_NAME,
             event_id=event_id,
             created_at=created_at,
         )
@@ -718,6 +771,70 @@ class BiometricsSubstrateStore:
                     """
                 ),
             )
+
+    def save_prediction_error_history_samples(
+        self, samples: list[tuple[str, datetime, float]]
+    ) -> int:
+        """Append (node_id, observed_at, value) readings; idempotent on the PK.
+
+        `substrate_node_prediction_error_history` (manual_migration_node_
+        prediction_error_history_v1.sql) is keyed (node_id, observed_at), so
+        re-recording a node whose observed_at has not moved is a no-op even if
+        the in-process "moved since last sample" check is bypassed (restart,
+        failed write retried next tick).
+        """
+        if not samples:
+            return 0
+        params = [
+            {"node_id": node_id, "observed_at": observed_at, "value": float(value)}
+            for node_id, observed_at, value in samples
+        ]
+        with self._engine.begin() as conn:
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO substrate_node_prediction_error_history (
+                        node_id, observed_at, value
+                    ) VALUES (
+                        :node_id, :observed_at, :value
+                    )
+                    ON CONFLICT (node_id, observed_at) DO NOTHING
+                    """
+                ),
+                params,
+            )
+        return len(params)
+
+    def fetch_prediction_error_history(
+        self, *, since: datetime
+    ) -> list[tuple[str, datetime, float]]:
+        """All readings with observed_at >= since, oldest first."""
+        with self._engine.connect() as conn:
+            rows = conn.execute(
+                text(
+                    """
+                    SELECT node_id, observed_at, value
+                    FROM substrate_node_prediction_error_history
+                    WHERE observed_at >= :since
+                    ORDER BY node_id, observed_at
+                    """
+                ),
+                {"since": since},
+            ).fetchall()
+        return [(str(r[0]), r[1], float(r[2])) for r in rows]
+
+    def prune_prediction_error_history(self, *, older_than: datetime) -> int:
+        with self._engine.begin() as conn:
+            result = conn.execute(
+                text(
+                    """
+                    DELETE FROM substrate_node_prediction_error_history
+                    WHERE observed_at < :older_than
+                    """
+                ),
+                {"older_than": older_than},
+            )
+            return int(result.rowcount or 0)
 
     def save_system_one_appraisal(
         self, frame: SystemOneAppraisalFrameV1, *, retention_hours: float
@@ -1429,6 +1546,30 @@ class BiometricsSubstrateStore:
 
     def save_llm_inference_projection(self, projection: LlmInferenceProjectionV1) -> None:
         self._save_projection("substrate_llm_inference_projection", projection)
+
+    def load_storage_write_projection(
+        self, projection_id: str = STORAGE_WRITE_PROJECTION_ID
+    ) -> StorageWriteProjectionV1 | None:
+        return self._load_projection(
+            "substrate_storage_write_projection",
+            projection_id,
+            StorageWriteProjectionV1,
+        )
+
+    def save_storage_write_projection(self, projection: StorageWriteProjectionV1) -> None:
+        self._save_projection("substrate_storage_write_projection", projection)
+
+    def load_vision_organ_projection(
+        self, projection_id: str = VISION_ORGAN_PROJECTION_ID
+    ) -> VisionOrganProjectionV1 | None:
+        return self._load_projection(
+            "substrate_vision_organ_projection",
+            projection_id,
+            VisionOrganProjectionV1,
+        )
+
+    def save_vision_organ_projection(self, projection: VisionOrganProjectionV1) -> None:
+        self._save_projection("substrate_vision_organ_projection", projection)
 
     def load_transport_bus_projection(
         self, projection_id: str = TRANSPORT_BUS_PROJECTION_ID

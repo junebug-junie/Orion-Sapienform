@@ -107,6 +107,22 @@ def test_control_refuses_cross_site_shaped_requests(client, monkeypatch):
     assert no_header.status_code == 403 and typeless.status_code == 403
 
 
+def test_emergency_stop_verbs_are_forwarded_and_the_pool_reason_comes_back(client, monkeypatch):
+    """Stage 5.7: pause_actuation / resume_actuation reach the pool as themselves; a refused hold's
+    reason (e.g. not_actuatable:experiment) is passed back verbatim for the panel to show."""
+    for verb in ("pause_actuation", "resume_actuation"):
+        bus = RpcBus({"ok": True, "reason": verb.split("_")[0] + "d", "detail": {"paused": verb == "pause_actuation"}})
+        _use_bus(monkeypatch, bus)
+        res = client.post("/api/gpu-pool/control", json={"verb": verb}, headers=HUB_PAGE)
+        assert res.status_code == 200 and res.json()["ok"] is True
+        [(channel, payload, _)] = bus.calls
+        assert channel == GPU_POOL_CONTROL_REQUEST_CHANNEL and payload["verb"] == verb
+        assert payload["actor"] == "hub-operator"
+    _use_bus(monkeypatch, RpcBus({"ok": False, "reason": "not_actuatable:experiment", "detail": {}}))
+    out = client.post("/api/gpu-pool/control", json={"verb": "hold", "work_class": "experiment"}, headers=HUB_PAGE)
+    assert out.json() == {"ok": False, "reason": "not_actuatable:experiment", "detail": {}}
+
+
 def test_control_rejects_unknown_verbs(client, monkeypatch):
     assert client.post("/api/gpu-pool/control", json={"verb": "rm -rf"}, headers=HUB_PAGE).status_code == 422
 

@@ -55,7 +55,8 @@ PSQL() { docker exec orion-athena-sql-db psql -U postgres -d conjourney -Atc "$1
 
 ```bash
 PSQL "SELECT column_name FROM information_schema.columns WHERE table_name='gpu_pool_leases' AND column_name='hold_lease_id'"
-# expect: hold_lease_id   (empty = migration NOT applied -- stop. A 4.3 pool refuses to boot without it)
+# expect: hold_lease_id   (empty = migration NOT applied. Before 2026-09-30 a 4.3 pool refused to boot
+#   without it; a current pool adds it at boot -- see services/orion-gpu-pool/README.md "Boot schema self-heal")
 # (2026-09-25 read: the column is ABSENT on live -- the migration has not been applied yet.)
 
 # [GO] apply it (additive DDL, lock_timeout 5s) if missing:
@@ -350,6 +351,11 @@ Any step can be reversed in reverse order; the later the step, the more has to b
 3. Do not roll back 4.4 consumers: they accept both the old token and the hold ref.
 
 ## After the cutover (PR 4.6, not this runbook)
+
+Done in `chore/gpu-pool-stage4-6-cleanup` (report:
+`docs/superpowers/pr-reports/2026-09-29-gpu-pool-stage4-6-cleanup-pr.md`). The rollback steps above
+that start the pre-4.5 image no longer apply once 4.6 is deployed: the old durable token, the
+controller's `durable` authority and its activate route are gone.
 
 Delete the old `ResourceLeaseV1` / `X-Orion-Resource-Lease` / gateway `LeaseGuard` path across its
 importers, the controller's `durable` authority branch and the gpu2 activate route, the

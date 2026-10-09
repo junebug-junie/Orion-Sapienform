@@ -45,7 +45,6 @@ def _settings(**overrides):
         "orion_situation_runtime_route": "chat",
         "orion_situation_runtime_ttl_seconds": 120,
         "orion_situation_runtime_probe_timeout_sec": 2.0,
-        "cortex_exec_llm_gateway_url": "http://llm-gateway:8210",
         "orion_presence_default_requestor": "Juniper",
         "orion_presence_persist_allowed": False,
     }
@@ -251,8 +250,7 @@ async def test_situation_disabled_returns_no_brief_or_fragment():
 
 
 class _FakeUrlopenResponse:
-    """Mimics the `with urlopen(...) as resp: resp.read()` shape `_fetch_weather`
-    and `_fetch_runtime_context` both use."""
+    """Mimics the `with urlopen(...) as resp: resp.read()` shape `_fetch_weather` uses."""
 
     def __init__(self, payload: dict) -> None:
         self._body = json.dumps(payload).encode("utf-8")
@@ -275,6 +273,27 @@ def _clear_runtime_cache():
     situation._RUNTIME_CACHE.clear()
     yield
     situation._RUNTIME_CACHE.clear()
+
+
+def _pool_view(monkeypatch, routes=None, *, source="gpu_pool", fail=None):
+    """GPU pool stage 6.3: the runtime line reads the pool's route view, not the gateway's
+    GET /routes. Patches that one read; returns a call counter."""
+    import orion.situational.runtime_route_view as store
+
+    calls = {"n": 0}
+
+    async def _read(*, timeout_sec):
+        calls["n"] += 1
+        if fail is not None:
+            raise fail
+        return {"source": source, "routes": list(routes or [])}
+
+    monkeypatch.setattr(store, "read_route_view", _read)
+    return calls
+
+
+def _no_pool_read(monkeypatch):
+    return _pool_view(monkeypatch, fail=AssertionError("the pool route view must not be read"))
 
 
 @pytest.fixture(autouse=True)
@@ -361,23 +380,17 @@ async def test_weather_context_caches_within_ttl(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_runtime_context_reports_live_model_when_route_is_up(monkeypatch):
-    routes_payload = {
-        "default_route": "chat",
-        "routes": [
-            {
-                "id": "chat",
-                "served_by": "circe-worker-1",
-                "backend": "llamacpp",
-                "status": "up",
-                "latency_ms": 12,
-                "last_checked_at": "2026-08-14T00:00:00+00:00",
-                "model": "Qwen3.6-35B-A3B-UD-Q5_K_M.gguf",
-            }
-        ],
-    }
-    monkeypatch.setattr(
-        situation, "urlopen", lambda url, timeout=None: _FakeUrlopenResponse(routes_payload)
-    )
+    _pool_view(monkeypatch, [
+        {
+            "id": "chat",
+            "served_by": "circe-worker-1",
+            "backend": "llamacpp",
+            "status": "up",
+            "last_checked_at": "2026-08-14T00:00:00+00:00",
+            "model": "Qwen3.6-35B-A3B-UD-Q5_K_M.gguf",
+            "role": "chat",
+        }
+    ])
     ctx = {"session_id": "sid-runtime-up", "raw_user_text": "hello"}
     # prompt_max_chars overridden to the real production default (read from
     # situation._DEFAULT_PROMPT_MAX_CHARS rather than a hardcoded literal --
@@ -400,31 +413,135 @@ async def test_runtime_context_reports_live_model_when_route_is_up(monkeypatch):
     assert brief["runtime"]["available"] is True
     assert brief["runtime"]["model_id"] == "Qwen3.6-35B-A3B-UD-Q5_K_M.gguf"
     assert brief["runtime"]["served_by"] == "circe-worker-1"
+    assert brief["runtime"]["source"] == "gpu_pool"
     assert "Qwen3.6-35B-A3B-UD-Q5_K_M.gguf" in fragment["compact_text"]
+    # No lease known: the route view is only the route's default under the GPU pool.
+    assert brief["runtime"]["placement"] == "route_default"
+    assert "Default model for route chat: Qwen3.6-35B-A3B-UD-Q5_K_M.gguf" in fragment["compact_text"]
+    assert "You are running on model" not in fragment["compact_text"]
 
 
 @pytest.mark.asyncio
-async def test_runtime_context_degrades_when_gateway_unreachable(monkeypatch):
-    def _raise(url, timeout=None):
-        raise OSError("connection refused")
+async def test_runtime_context_spilled_lease_names_granted_role_not_route_default(monkeypatch):
+    """GPU pool spill: the turn's hold was granted agent-gpu2. The brief must state the model the
+    pool discovered on agent-gpu2, never the route's default -- and must not even read the route
+    view (the lease is the fact)."""
+    calls = _pool_view(monkeypatch, [
+        {"id": "chat", "status": "up", "model": "Route-Default-35B.gguf", "served_by": "circe-worker-chat"},
+    ])
+    ctx = {
+        "session_id": "sid-runtime-spill",
+        "raw_user_text": "hello",
+        "gpu_placement": {"role": "agent-gpu2", "model": "Spilled-Gpu2-27B.gguf", "profile": "gpu2-flex"},
+    }
+    brief, fragment = await build_situation_for_ctx(
+        ctx,
+        _settings(
+            orion_situation_runtime_enabled=True,
+            orion_situation_prompt_max_chars=situation._DEFAULT_PROMPT_MAX_CHARS,
+        ),
+    )
+    assert calls["n"] == 0
+    rt = brief["runtime"]
+    assert (rt["placement"], rt["granted_role"], rt["model_id"], rt["profile_name"]) == (
+        "lease", "agent-gpu2", "Spilled-Gpu2-27B.gguf", "gpu2-flex"
+    )
+    assert rt["route"] == "agent"  # the lease route, never the configured runtime_route "chat"
+    assert rt["source"] == "gpu_pool_lease"
+    text = fragment["compact_text"]
+    assert "You are running on model: Spilled-Gpu2-27B.gguf (GPU pool role agent-gpu2, profile gpu2-flex" in text
+    assert "Route-Default-35B" not in text
 
-    monkeypatch.setattr(situation, "urlopen", _raise)
-    ctx = {"session_id": "sid-runtime-down", "raw_user_text": "hello"}
+
+@pytest.mark.asyncio
+async def test_runtime_context_lease_without_discovered_model_does_not_guess(monkeypatch):
+    _no_pool_read(monkeypatch)
+    ctx = {"session_id": "sid-runtime-lease-nomodel", "raw_user_text": "hello",
+           "gpu_placement": {"role": "chat", "model": None, "profile": None}}
+    brief, fragment = await build_situation_for_ctx(
+        ctx,
+        _settings(
+            orion_situation_runtime_enabled=True,
+            orion_situation_prompt_max_chars=situation._DEFAULT_PROMPT_MAX_CHARS,
+        ),
+    )
+    assert brief["runtime"]["available"] is False
+    assert brief["runtime"]["granted_role"] == "chat"
+    assert "holds the GPU pool's chat role" in fragment["compact_text"]
+    assert "do not infer or guess a name" in fragment["compact_text"]
+
+
+@pytest.mark.asyncio
+async def test_runtime_context_mismatch_role_says_why_it_names_no_model(monkeypatch):
+    _no_pool_read(monkeypatch)
+    ctx = {"session_id": "sid-runtime-mismatch", "raw_user_text": "hello",
+           "gpu_placement": {"role": "fast", "model": None, "profile": None, "status": "mismatch"}}
+    _, fragment = await build_situation_for_ctx(
+        ctx, _settings(orion_situation_runtime_enabled=True,
+                       orion_situation_prompt_max_chars=situation._DEFAULT_PROMPT_MAX_CHARS))
+    assert "the pool reports that role as mismatch" in fragment["compact_text"]
+    assert "could not be read" not in fragment["compact_text"]
+
+
+@pytest.mark.asyncio
+async def test_runtime_line_is_omitted_when_the_harness_owns_it(monkeypatch):
+    """Unheld unified turn: the harness prompt names its own route's default, so the brief states
+    neither a second route default nor an 'unavailable' placeholder -- and does not read the pool."""
+    _no_pool_read(monkeypatch)
+    ctx = {"session_id": "sid-runtime-harness", "raw_user_text": "hello", "runtime_line_owner": "harness"}
+    brief, fragment = await build_situation_for_ctx(
+        ctx, _settings(orion_situation_runtime_enabled=True,
+                       orion_situation_prompt_max_chars=situation._DEFAULT_PROMPT_MAX_CHARS))
+    assert brief["runtime"]["placement"] == "harness"
+    text = fragment["compact_text"]
+    assert "Default model for route" not in text
+    assert "Current model:" not in text
+
+
+@pytest.mark.asyncio
+async def test_situation_cache_never_replays_another_turns_placement(monkeypatch):
+    """The brief is cached per session; the lease is per turn. Two turns in one session on
+    different roles must each see their own role."""
+    _no_pool_read(monkeypatch)
+    cfg = _settings(
+        orion_situation_runtime_enabled=True,
+        orion_situation_prompt_max_chars=situation._DEFAULT_PROMPT_MAX_CHARS,
+    )
+    base = {"session_id": "sid-runtime-cache", "raw_user_text": "hello"}
+    _, first = await build_situation_for_ctx(
+        {**base, "gpu_placement": {"role": "agent", "model": "A.gguf", "profile": "pa"}}, cfg
+    )
+    _, second = await build_situation_for_ctx(
+        {**base, "gpu_placement": {"role": "chat", "model": "C.gguf", "profile": "pc"}}, cfg
+    )
+    assert "GPU pool role agent" in first["compact_text"]
+    assert "GPU pool role chat" in second["compact_text"]
+    assert "A.gguf" not in second["compact_text"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("unreachable", ["unavailable_view", "raises"])
+async def test_runtime_context_degrades_when_pool_unreachable(monkeypatch, unreachable):
+    """No pool state (unbound bus, RPC timeout) is the all-unknown view: unavailable, never a
+    guessed model, and not cached (the next turn asks again)."""
+    if unreachable == "raises":
+        _pool_view(monkeypatch, fail=OSError("bus down"))
+    else:
+        _pool_view(monkeypatch, [{"id": "chat", "status": "unknown", "model": None}],
+                   source="gpu_pool_unavailable")
+    ctx = {"session_id": f"sid-runtime-down-{unreachable}", "raw_user_text": "hello"}
     brief, fragment = await build_situation_for_ctx(ctx, _settings(orion_situation_runtime_enabled=True))
     assert brief["runtime"]["available"] is False
     assert brief["runtime"]["model_id"] is None
     assert brief["diagnostics"]["provider_status"]["runtime"] == "error"
     assert "unavailable" in fragment["compact_text"].lower()
     assert "Qwen" not in fragment["compact_text"]
+    assert situation._RUNTIME_CACHE == {}
 
 
 @pytest.mark.asyncio
 async def test_runtime_context_degrades_when_route_missing_from_response(monkeypatch):
-    monkeypatch.setattr(
-        situation,
-        "urlopen",
-        lambda url, timeout=None: _FakeUrlopenResponse({"default_route": "chat", "routes": []}),
-    )
+    _pool_view(monkeypatch, [])
     ctx = {"session_id": "sid-runtime-missing-route", "raw_user_text": "hello"}
     brief, _ = await build_situation_for_ctx(ctx, _settings(orion_situation_runtime_enabled=True))
     assert brief["runtime"]["available"] is False
@@ -434,15 +551,9 @@ async def test_runtime_context_degrades_when_route_missing_from_response(monkeyp
 @pytest.mark.asyncio
 async def test_runtime_context_disabled_by_default_in_shared_fixture(monkeypatch):
     # Sanity check on the shared _settings() default itself: it must be
-    # False, or every unrelated situation test would attempt a real network
-    # call to orion-llm-gateway.
-    called = {"n": 0}
-
-    def _raise(url, timeout=None):
-        called["n"] += 1
-        raise AssertionError("urlopen should not be called when runtime context is disabled")
-
-    monkeypatch.setattr(situation, "urlopen", _raise)
+    # False, or every unrelated situation test would attempt a real
+    # read of GPU pool state.
+    called = _no_pool_read(monkeypatch)
     ctx = {"session_id": "sid-runtime-disabled", "raw_user_text": "hello"}
     brief, fragment = await build_situation_for_ctx(ctx, _settings())
     assert called["n"] == 0
@@ -453,23 +564,63 @@ async def test_runtime_context_disabled_by_default_in_shared_fixture(monkeypatch
 
 @pytest.mark.asyncio
 async def test_runtime_context_caches_within_ttl(monkeypatch):
-    calls = {"n": 0}
-
-    def _urlopen(url, timeout=None):
-        calls["n"] += 1
-        return _FakeUrlopenResponse(
-            {
-                "routes": [
-                    {"id": "chat", "served_by": "circe-worker-1", "backend": "llamacpp", "status": "up", "model": "Qwen3.6-35B-A3B-UD-Q5_K_M.gguf"}
-                ]
-            }
-        )
-
-    monkeypatch.setattr(situation, "urlopen", _urlopen)
+    calls = _pool_view(monkeypatch, [
+        {"id": "chat", "served_by": "circe-worker-1", "backend": "llamacpp", "status": "up",
+         "model": "Qwen3.6-35B-A3B-UD-Q5_K_M.gguf"}
+    ])
     cfg = situation.settings_from_runtime(_settings(orion_situation_runtime_enabled=True))
     diagnostics = situation.SituationDiagnosticsV1()
-    # `_build_runtime_context` offloads its blocking urlopen call via
-    # `asyncio.to_thread` now (see context.py) -- it's async, must be awaited.
     await situation._build_runtime_context(cfg, diagnostics)
     await situation._build_runtime_context(cfg, diagnostics)
     assert calls["n"] == 1
+
+
+@pytest.mark.asyncio
+async def test_runtime_context_reads_pool_state_not_the_gateway(monkeypatch):
+    """GPU pool stage 6.3, end to end through the real store and route view: the read is one
+    orion:gpu_pool:state RPC with the pool's config, and no HTTP request is made at all."""
+    import orion.situational.runtime_route_view as store
+    from orion.gpu_pool.config import load_pool_config
+
+    cfg_payload = load_pool_config().model_dump(mode="json", by_alias=True, exclude={"digest"})
+    state = {"generated_at": "2026-09-30T00:00:00Z",
+             "cards": [{"card": "gpu0", "vram_gb": 32, "lendable": True, "lent": False}],
+             "roles": [{"role": "chat", "kind": "llm", "cards": ["gpu0"], "url": "http://h:8011",
+                        "status": "confirmed", "model_file": "Chat-35B.gguf",
+                        "model_path": "/models/gguf/Chat-35B.gguf", "ctx_per_slot": 131072}],
+             "config": cfg_payload}
+    sent = []
+
+    class _Decoded:
+        ok = True
+        envelope = type("E", (), {"payload": state})()
+
+    class _Bus:
+        codec = type("C", (), {"decode": lambda self, data: _Decoded()})()
+
+        async def rpc_request(self, channel, env, **kw):
+            sent.append((channel, env.payload))
+            return {"data": b"raw"}
+
+    def _no_http(url, timeout=None):
+        raise AssertionError(f"no HTTP read expected, got {url}")
+
+    monkeypatch.setattr(situation, "urlopen", _no_http)
+    monkeypatch.setattr(store, "_BUS", _Bus())
+    cfg = situation.settings_from_runtime(_settings(orion_situation_runtime_enabled=True))
+    runtime = await situation._build_runtime_context(cfg, situation.SituationDiagnosticsV1())
+    assert sent == [("orion:gpu_pool:state:request", {"include_leases": False, "include_config": True})]
+    assert (runtime.available, runtime.model_id, runtime.served_by, runtime.source) == (
+        True, "/models/gguf/Chat-35B.gguf", "circe-worker-chat", "gpu_pool")
+
+
+@pytest.mark.asyncio
+async def test_runtime_context_unbound_bus_is_unavailable(monkeypatch):
+    import orion.situational.runtime_route_view as store
+
+    monkeypatch.setattr(store, "_BUS", None)
+    cfg = situation.settings_from_runtime(_settings(orion_situation_runtime_enabled=True))
+    diagnostics = situation.SituationDiagnosticsV1()
+    runtime = await situation._build_runtime_context(cfg, diagnostics)
+    assert runtime.available is False and runtime.model_id is None
+    assert diagnostics.provider_status["runtime"] == "error"

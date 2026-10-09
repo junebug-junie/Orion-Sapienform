@@ -30,7 +30,9 @@
 # delivery_confidence retired with no successor (fix/bus-observer-scope,
 # docs/superpowers/specs/2026-09-25-bus-observer-stream-depth-retirement.md):
 # 48 entries / 47 distinct channels after removal. contract_pressure is now the
-# only node+capability overlap.
+# only node+capability overlap. (2026-10-07: no longer -- node-level
+# contract_pressure retired and the capability-level one renamed to
+# catalog_drift_pressure, which is now the only node+capability overlap.)
 #
 # This is the machine-readable companion to
 # services/orion-field-digester/README.md's "Field channel glossary" section,
@@ -271,30 +273,47 @@ channels:
     meaning: "How much active conversational load (turn volume/complexity) is occurring."
     self_state_dimension: social_pressure
 
-  - channel: contract_pressure
+  # 2026-10-07: node-level contract_pressure retired (the bus observer's
+  # two-stream schema sample; 0.0 on 123,412 of 123,412 ticks). The
+  # capability-level channel that kept that name was catalog drift all along
+  # (node:athena catalog_drift_pressure x 0.85 -> capability:transport) and
+  # was renamed to catalog_drift_pressure the same day (decision D3,
+  # docs/superpowers/specs/2026-10-07-transport-lattice-names-and-contract.md).
+  # The rename does not change any value: collect_field_channel_pressures()
+  # max()-merges both levels by name and the node reading always wins.
+  - channel: catalog_drift_pressure
     level: [node, capability]
     category: infra_transport
-    meaning: "Pressure from bus/schema \"contract\" mismatches (precise real-world condition not otherwise documented in code)."
+    meaning: "Share of bus channels seen live that are missing from the declared catalog (orion/bus/channels.yaml): the bus observer's census, undeclared_active_count / catalog_size, on node:athena (falls back to the observer's own configured-stream check when the census did not run). capability:transport carries 0.85 x the node:athena reading (it was named contract_pressure until 2026-10-07). Not a payload/schema check: OrionBusAsync.publish() validates every payload before sending."
 
-  - channel: catalog_drift_pressure
-    level: [node]
-    category: infra_transport
-    meaning: "Drift/staleness in the bus event \"catalog\" (schema registry) relative to what's actually flowing."
-
-  - channel: observer_failure_pressure
-    level: [node]
-    category: infra_transport
-    meaning: "Pressure from failures of the bus \"observer\" role (monitoring/subscriber-side failures)."
+  # observer_failure_pressure retired 2026-10-07 (#2534 decision 4): 0.0 on
+  # 123,099 of 123,099 ticks; see services/orion-field-digester/app/tensor/
+  # channels.py::RETIRED_NODE_CHANNELS.
 
   - channel: inference_failure_pressure
     level: [node]
     category: task_execution
-    meaning: "Share of the calls the LLM gateway sent to this node's model backends that came back without an answer (timeout, refused connection, HTTP error), per gateway window. Reported by the gateway itself; absent when the node got no calls."
+    meaning: "Share of the calls the LLM gateway sent to this node's model backends that came back without an answer (timeout, refused connection, HTTP error), over the node's last 10 minutes of gateway windows: failures / max(calls, 10), counted only once 2+ failures are in that span (the RPC delivery bridge's rule), and the worse of the whole node and its worst single worker lane (2026-09-29; before that it was one 60 s window with no floor, so one timeout on a quiet minute read 1.0). Reported by the gateway itself; absent when the node got no calls in the span."
+
+  - channel: write_failure_pressure
+    level: [node]
+    category: infra_transport
+    meaning: "Storage writes that did not land, on node:substrate.storage_write: orion-sql-writer's own count of incoming writes that did not reach their Postgres table (schema/validation reject, constraint violation, serialization error, database unavailable or timed out, grammar queue shed), as the worst table family's failed / max(attempted, 10) over the last 10 minutes of writer windows, counted only once a family has 2+ failures. Idempotent duplicates are not failures; unrouted kinds are not counted. 0.0 means every counted write in the span landed; dropped (unmeasured) when no writer window has been reduced for 180 s."
 
   - channel: rpc_timeout_pressure
     level: [node]
     category: infra_transport
     meaning: "Caller-side 'asked and got no answer in time' on node:substrate.rpc_delivery: the worst bus request channel's share of rpc_request() calls that hit the caller's own deadline over the last 10 minutes, timeouts / max(calls, 10), counted only once a channel has 2+ timeouts in the window, summed across every service's rpc-health snapshots. A deadline fires on a lost message and on a slow callee alike; on live data it is mostly slow LLM or cortex work. 0.0 means every counted call was answered in time; dropped (unmeasured) when no reading has arrived for 120 s."
+
+  - channel: vision_frame_staleness
+    level: [node]
+    category: sensor_trust_liveness
+    meaning: "Can Orion see at all, on node:substrate.vision_organ: staleness of the freshest camera stream the vision frame router reports (0.0 while any camera's newest frame is under 15 s old, ramping to 1.0 at 60 s). A configured camera that has sent nothing since the router started is aged from that start, never read as calm. 1.0 when no camera delivers or the router stops reporting for 180 s (written on a clock). Per-camera status lives on the vision organ projection. Dropped (unmeasured) when no reading has arrived for 300 s."
+
+  - channel: vision_processing_failure_pressure
+    level: [node]
+    category: task_execution
+    meaning: "Share of the frames the vision frame router handed to the vision host over the last 10 minutes that came back without a usable answer (timeout, invalid reply, ok=false), failures / max(attempts, 10), counted once 2+ failures are in the span; the worse of the pooled share and the worst single camera's. Absent when nothing was dispatched; dropped (unmeasured) when no reading has arrived for 300 s."
 
   - channel: field_coherence_warning
     level: [node]
@@ -333,18 +352,18 @@ channels:
   - channel: pressure
     level: [capability]
     category: synthesized_rollup
-    meaning: "Overall load/pressure for a given capability (llm_inference, orchestration, storage, graph, memory, transport, vision)."
+    meaning: "Overall load/pressure for a given capability (llm_inference, orchestration, storage, graph, memory, transport, vision). Where an edge feeds it: absent (key and provenance dropped) on a tick when no edge source measured it, never written as a calm 0.0."
     self_state_dimension: resource_pressure
 
   - channel: confidence
     level: [capability]
     category: synthesized_rollup
-    meaning: "How confident the system is that a given capability is currently reliable/available."
+    meaning: "How confident the system is that a given capability is currently reliable/available. Derived as 1 - 0.5 * pressure unless an edge writes it directly; absent when pressure is unmeasured (never a fabricated 1.0)."
 
   - channel: available_capacity
     level: [capability]
     category: synthesized_rollup
-    meaning: "How much spare operating capacity a capability has right now."
+    meaning: "How much spare operating capacity a capability has right now. Derived as 1 - pressure unless an edge writes it directly; absent when pressure is unmeasured (never a fabricated 1.0)."
 
   - channel: execution_pressure
     level: [capability]
@@ -361,7 +380,7 @@ channels:
   - channel: reliability_pressure
     level: [capability]
     category: synthesized_rollup
-    meaning: "Capability-level pressure representing risk to reliability (from execution friction, failures, or observer failures)."
+    meaning: "Capability-level pressure representing risk to reliability (from execution friction, failures, RPC timeouts, storage write failures, inference failures, vision processing failures). Max over the sources that measured it this tick; where an edge feeds it, absent when none did (e.g. every input expired), never a calm 0.0. capability:transport has one source since 2026-10-07 (RPC timeouts; the bus observer's own failure channel was retired), so it is absent whenever the RPC delivery bridge stops reporting. Capabilities with no reliability edge (graph, memory) still carry reconcile's seeded 0.0, which is not a measurement."
     self_state_dimension: reliability_pressure
 
   # 2026-08-16 (docs/superpowers/specs/2026-08-16-tension-driven-mutating-

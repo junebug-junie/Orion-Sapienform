@@ -44,7 +44,7 @@ _RECEIPT_NODE_IDS = {
     "node:substrate.route",
     "node:substrate.bus_synaptic",
     "node:substrate.codebase",
-    "node:substrate.vision",
+    # node:substrate.vision's tick was retired 2026-10-02 (vision_organ lane).
     "node:substrate.perception",
 }
 
@@ -142,7 +142,7 @@ def test_receipt_stamps_the_live_definition_version() -> None:
     pressure_hints, not inside it, so the field digester never makes it a channel."""
     from orion.schemas.prediction_error_definitions import prediction_error_definition_version
 
-    for reducer_key, expected in (("route_arbitration", 2), ("chat_session", 2), ("execution_trajectory", 1)):
+    for reducer_key, expected in (("route_arbitration", 2), ("chat_session", 3), ("execution_trajectory", 1)):
         receipt = worker_module._prediction_error_receipt(
             reducer_key=reducer_key,
             node_id="node:substrate.x",

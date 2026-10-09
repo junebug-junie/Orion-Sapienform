@@ -21,7 +21,7 @@ from orion.schemas.reading import (
     SourceFetchEvidenceV1,
 )
 from orion.world_pulse_read.tools import deterministic_reading_request_id
-from orion.world_pulse_read.urls import normalize_source_url
+from orion.world_pulse_read.urls import normalize_reading_source
 
 _RECOMMEND_TOOL = "mcp__orion-reading__recommend_reading"
 _CONTEXT_FETCH_TOOL = "mcp__plugin_context-mode_context-mode__ctx_fetch_and_index"
@@ -187,7 +187,7 @@ class ReadingReceiptTracker:
             raw_url = str(args.get("url") or "").strip()
             why_now = str(args.get("why_now") or "")
             try:
-                url = normalize_source_url(raw_url)
+                url = normalize_reading_source(raw_url)
             except ValueError:
                 url = raw_url
             expected: UUID | None = None
@@ -276,6 +276,7 @@ class ReadingReceiptTracker:
                         acceptance="accepted",
                         request_id=recommendation.receipt.request_id,
                         status=recommendation.receipt.status,
+                        duplicate=recommendation.receipt.duplicate,
                         source_read=source_read,
                     )
                 )
@@ -291,6 +292,19 @@ class ReadingReceiptTracker:
                     )
                 )
         return outcomes
+
+
+def _receipt_line(item: ReadingRecommendationOutcomeV1) -> str:
+    if item.duplicate == "already_read":
+        return (
+            f"Not read again: `{item.url}` was already read, so this request was blocked "
+            f"as a duplicate by design (request_id `{item.request_id}`; earlier read "
+            f"status: `{item.status}`)."
+        )
+    return (
+        "Reading recommendation accepted with durable request_id "
+        f"`{item.request_id}`; current status: `{item.status}`."
+    )
 
 
 def _unread_caveat(url: str) -> str:
@@ -314,11 +328,7 @@ def enforce_reading_receipt_grounding(
         return text
     unknown = [item for item in outcomes if item.acceptance == "unknown"]
     receipts = [item for item in outcomes if item.acceptance == "accepted"]
-    receipt_lines = [
-        "Reading recommendation accepted with durable request_id "
-        f"`{item.request_id}`; current status: `{item.status}`."
-        for item in receipts
-    ]
+    receipt_lines = [_receipt_line(item) for item in receipts]
     if not unknown:
         footer_lines = [line for line in receipt_lines if line not in text]
         for item in receipts:

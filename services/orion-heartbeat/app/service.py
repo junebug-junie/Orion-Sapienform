@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections import deque
 from dataclasses import asdict
 from datetime import datetime, timezone
 from typing import Any, Optional
 
 from orion.core.bus.bus_service_chassis import BaseChassis, ChassisConfig
 from orion.core.bus.codec import OrionCodec
+from orion.grammar.publish import publish_grammar_event
 
 from .settings import settings
 from .substrate.bus_synaptic import BUS_SYNAPTIC_ZSCORE_SATURATION, query_real_bus_synaptic_raw_mean_abs_z
@@ -16,11 +18,21 @@ from .substrate.reconstruction import compute_h1_ensemble, verdict_thresholds
 from .substrate.proprioception import OrganFireWindow
 from .substrate.routing import (
     ORGAN_SITE_MAP,
+    SELF_SOURCE_SERVICE,
     SITE_ORGAN_MAP,
     SiteAssignment,
     UnroutableAtomTypeError,
     UnroutableOrganError,
+    catalog_grammar_producers,
     route_atom,
+)
+from .substrate.verdict_atoms import (
+    H1Tick,
+    HourlyWindow,
+    VerdictTransitionTracker,
+    build_summary_event,
+    build_transition_event,
+    safe_token,
 )
 
 logger = logging.getLogger("orion-heartbeat.service")
@@ -28,15 +40,21 @@ logger = logging.getLogger("orion-heartbeat.service")
 _GRAMMAR_EVENT_KIND = "grammar.event.v1"  # orion/bus/channels.yaml's
 # orion:grammar:event message_kind -- checked against the live channel
 # registry, not guessed.
+_MAX_UNROUTED_SOURCE_KEYS = 32  # bound on the lifetime per-producer counter
 
 
 class HeartbeatService(BaseChassis):
     """Additive, read-only consumer of the existing orion:grammar:event
     stream (see design doc's "Current architecture" for why this reuses
     orion-substrate-runtime's already-solved standardization work instead of
-    the 2026-05-01 charter's bespoke per-organ reducers). Publishes nothing
-    in v0 -- no downstream consumer, no phi broadcast, ablation-safe by
-    construction (nothing depends on this service's output yet).
+    the 2026-05-01 charter's bespoke per-organ reducers).
+
+    **2026-10-07: publishes bounded H1 verdict atoms back onto
+    orion:grammar:event** (settled class transitions + one summary per
+    window, app/substrate/verdict_atoms.py). Ledger-only: no reducer, field
+    channel or prior consumes them. Its own atoms come back on the same
+    subscription and are skipped by source_service before routing
+    (events_skipped_self), so heartbeat can never feed on itself.
 
     **2026-07-28: single HeartbeatSubstrate replaced with an N-trajectory
     EnsembleSubstrate** (docs/superpowers/specs/2026-07-28-precision-weighted-
@@ -96,7 +114,7 @@ class HeartbeatService(BaseChassis):
             base_seed=settings.substrate_seed,
         )
         self.latest_h1: Optional[EnsembleH1ResultV1] = None
-        self.organ_fires = OrganFireWindow()
+        self.organ_fires = OrganFireWindow(window_sec=settings.organ_fire_window_sec)
         self._absorb_queue: asyncio.Queue[SiteAssignment] = asyncio.Queue(
             maxsize=settings.absorb_queue_maxsize
         )
@@ -113,6 +131,23 @@ class HeartbeatService(BaseChassis):
         self.events_skipped_atom_type = 0
         self.events_skipped_no_atom = 0
         self.events_skipped_malformed = 0
+        self.events_skipped_self = 0
+        # Per-producer count of atoms dropped as UnroutableOrganError --
+        # previously one anonymous total. Bounded (overflow -> "other").
+        self.events_skipped_organ_by_source: dict[str, int] = {}
+        # orion:grammar:event's catalogued producers, read once at boot. Used
+        # only to NAME what heartbeat does not route; routing stays
+        # ORGAN_SITE_MAP (see routing.py for why).
+        self.catalog_producers = catalog_grammar_producers()
+        self.verdict_tracker = VerdictTransitionTracker(settle_ticks=settings.verdict_settle_ticks)
+        self.verdict_window = HourlyWindow(start=datetime.now(timezone.utc))
+        self._transition_times: deque[datetime] = deque()
+        # Transitions capped or failed since the last one that reached the bus
+        # -- carried on the next published atom so its from= is explicable.
+        self._unpublished_transitions = 0
+        self.verdict_atoms_published = 0
+        self.verdict_atoms_publish_failed = 0
+        self.last_verdict_atom: dict[str, Any] | None = None
         # Last real dissipation-tick inputs, recorded by _decay_reheat_loop
         # (2026-07-30). These are the ACTUAL values that loop fed into
         # decay_reheat_tick(), not a re-derivation -- a read-only surface
@@ -152,6 +187,31 @@ class HeartbeatService(BaseChassis):
             "events_skipped_atom_type": self.events_skipped_atom_type,
             "events_skipped_no_atom": self.events_skipped_no_atom,
             "events_skipped_malformed": self.events_skipped_malformed,
+            "events_skipped_self": self.events_skipped_self,
+            "events_skipped_organ_by_source": dict(self.events_skipped_organ_by_source),
+            # Catalogued producers heartbeat does not route, and sources seen
+            # on the wire that the catalog does not list (catalog drift).
+            # None (not []) when channels.yaml could not be read: unknown is
+            # not "nothing unrouted".
+            "catalog_loaded": bool(self.catalog_producers),
+            "catalog_producers_unrouted": (
+                sorted(self.catalog_producers - set(ORGAN_SITE_MAP) - {SELF_SOURCE_SERVICE})
+                if self.catalog_producers
+                else None
+            ),
+            "uncatalogued_sources_seen": sorted(
+                s for s in self.events_skipped_organ_by_source
+                if self.catalog_producers and s not in self.catalog_producers and s != "other"
+            ),
+            "verdict_atoms": {
+                "enabled": settings.verdict_atoms_enabled,
+                "published": self.verdict_atoms_published,
+                "publish_failed": self.verdict_atoms_publish_failed,
+                "confirmed_verdict": self.verdict_tracker.confirmed,
+                "window_start": self.verdict_window.start.isoformat(),
+                "window_h1_ticks": self.verdict_window.h1_ticks,
+                "last": self.last_verdict_atom,
+            },
             **ensemble_stats,
             "absorb_queue_size": self._absorb_queue.qsize(),
             "absorb_queue_maxsize": settings.absorb_queue_maxsize,
@@ -190,6 +250,11 @@ class HeartbeatService(BaseChassis):
         source_service = str(provenance.get("source_service") or "")
         atom_type = str(atom.get("atom_type") or "")
 
+        if source_service == SELF_SOURCE_SERVICE:
+            # Our own verdict atoms echoing back on the shared channel.
+            self.events_skipped_self += 1
+            return
+
         try:
             assignment = route_atom(
                 source_service=source_service,
@@ -200,6 +265,14 @@ class HeartbeatService(BaseChassis):
             )
         except UnroutableOrganError:
             self.events_skipped_organ += 1
+            key = safe_token(source_service)
+            if (
+                key not in self.events_skipped_organ_by_source
+                and len(self.events_skipped_organ_by_source) >= _MAX_UNROUTED_SOURCE_KEYS
+            ):
+                key = "other"
+            self.events_skipped_organ_by_source[key] = self.events_skipped_organ_by_source.get(key, 0) + 1
+            self.verdict_window.record_unrouted(source_service or "unknown")
             return
         except UnroutableAtomTypeError:
             self.events_skipped_atom_type += 1
@@ -357,13 +430,81 @@ class HeartbeatService(BaseChassis):
             except Exception as exc:  # noqa: BLE001 - must not kill the dissipation loop
                 logger.warning("heartbeat_decay_reheat_failed err=%s", exc)
 
+    async def _publish_verdict_event(self, event, kind: str) -> bool:
+        try:
+            await publish_grammar_event(self.bus, event, source_name=settings.service_name)
+        except Exception as exc:  # noqa: BLE001 - a bus hiccup must not kill the H1 loop
+            self.verdict_atoms_publish_failed += 1
+            logger.warning("heartbeat_verdict_atom_publish_failed kind=%s err=%s", kind, exc)
+            return False
+        self.verdict_atoms_published += 1
+        self.last_verdict_atom = {
+            "kind": kind,
+            "trace_id": event.trace_id,
+            "summary": event.atom.summary if event.atom else None,
+            "at": event.emitted_at.isoformat(),
+        }
+        logger.info("heartbeat_verdict_atom_published kind=%s trace_id=%s", kind, event.trace_id)
+        return True
+
+    async def _observe_verdict(self, now: datetime) -> None:
+        """Feed the latest H1 result to the transition tracker and the summary
+        window; publish a settled transition if one confirmed (subject to the
+        per-hour cap)."""
+        h1 = self.latest_h1
+        if h1 is None:
+            return
+        tick = H1Tick(
+            at=now,
+            verdict=h1.verdict,
+            mean_ratio=h1.mean_ratio,
+            std_ratio=h1.std_ratio,
+            bulk_penetration_depth=h1.bulk_penetration_depth,
+        )
+        self.verdict_window.record_tick(tick)
+        transition = self.verdict_tracker.observe(tick)
+        if transition is None:
+            return
+        while self._transition_times and (now - self._transition_times[0]).total_seconds() >= 3600.0:
+            self._transition_times.popleft()
+        if len(self._transition_times) >= settings.verdict_max_transitions_per_hour:
+            self.verdict_window.transitions_suppressed += 1
+            self._unpublished_transitions += 1
+            return
+        event = build_transition_event(
+            node=settings.node_name or "unknown",
+            transition=transition,
+            suppressed_since_last=self._unpublished_transitions,
+        )
+        if await self._publish_verdict_event(event, "transition"):
+            self._transition_times.append(now)
+            self.verdict_window.transitions_emitted += 1
+            self._unpublished_transitions = 0
+        else:
+            self.verdict_window.transitions_publish_failed += 1
+            self._unpublished_transitions += 1
+
+    async def _maybe_flush_summary(self, now: datetime) -> None:
+        window = self.verdict_window
+        if (now - window.start).total_seconds() < settings.verdict_summary_interval_sec:
+            return
+        event = build_summary_event(node=settings.node_name or "unknown", window=window, end=now)
+        # Reset even if the publish fails: the next window must not silently
+        # absorb this one's counts and claim a 2 h span as 1 h.
+        self.verdict_window = HourlyWindow(start=now)
+        await self._publish_verdict_event(event, "summary")
+
     async def _h1_loop(self) -> None:
         while not self._stop.is_set():
             await asyncio.sleep(settings.h1_interval_sec)
+            h1_ok = False
             try:
                 async with self._ensemble_lock:
+                    fire_snapshot = self.organ_fires.snapshot()
                     self.latest_h1 = compute_h1_ensemble(
-                        self.ensemble, fire_counts=self.organ_fires.counts()
+                        self.ensemble,
+                        fire_counts=fire_snapshot.counts,
+                        fire_snapshot=fire_snapshot,
                     )
                 logger.info(
                     "heartbeat_h1_computed tick_count=%d mean_ratio=%.4f std_ratio=%.4f "
@@ -374,8 +515,19 @@ class HeartbeatService(BaseChassis):
                     self.latest_h1.verdict,
                     self.latest_h1.seeds,
                 )
+                h1_ok = True
             except Exception as exc:  # noqa: BLE001 - must not kill the loop
                 logger.warning("heartbeat_h1_computation_failed err=%s", exc)
+                self.verdict_window.h1_failures += 1
+            if not settings.verdict_atoms_enabled:
+                continue
+            try:
+                now = datetime.now(timezone.utc)
+                if h1_ok:
+                    await self._observe_verdict(now)
+                await self._maybe_flush_summary(now)
+            except Exception as exc:  # noqa: BLE001 - must not kill the loop
+                logger.warning("heartbeat_verdict_atom_failed err=%s", exc)
 
     async def _run(self) -> None:
         h1_task = asyncio.create_task(self._h1_loop(), name="heartbeat-h1-loop")

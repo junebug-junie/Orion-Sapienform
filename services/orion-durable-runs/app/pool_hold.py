@@ -27,6 +27,7 @@ from orion.gpu_pool.client import (
 )
 from orion.gpu_pool.config import PoolConfig, load_pool_config
 from orion.schemas.gpu_pool import GpuLeaseRefV1, GpuLeaseReplyV1
+from orion.schemas.gpu_pool import URGENT_PREEMPT as URGENT_PREEMPT  # re-exported for the graphs
 
 # What a checkpointed ``state["lease"]`` holds once the pool granted the run: the GpuLeaseRefV1
 # fields. A pre-cutover checkpoint may still carry a legacy ResourceLeaseV1 dict (lane,
@@ -37,6 +38,8 @@ HOLD_REF_KEYS = ("lease_id", "generation", "role", "holder")
 HELD = frozenset({"granted", "recall"})
 # Still in line (or re-queued after a lost heartbeat): the same lease_id will be granted later.
 WAITING = frozenset({"queued", "backlogged"})
+# URGENT_PREEMPT (imported above): the reason on a queued reply for a hold the pool paused for an
+# urgent run. It went back in line in its original place; the node replays, not a failed attempt.
 
 
 # --- Which pool refusals end a run, and which only mean "the pool cannot answer right now" ------
@@ -124,9 +127,10 @@ def ref_dict(reply: GpuLeaseReplyV1, holder: str) -> dict[str, Any]:
 def hold_placement(cfg: PoolConfig, admission: dict[str, Any]) -> tuple[str, str, int]:
     """(work_class, priority, min_ctx_tokens) for a run's hold. The class comes from the run's
     route in gpu_pool.yaml ``routes``; ResourceRequirementV1.priority overrides the route's
-    (spec Decision 1 rule 1) -- it is always ``background`` today."""
+    (spec Decision 1 rule 1) -- ``background`` or ``urgent``."""
     route = str(admission.get("preferred_lane") or "agent")
-    spec = cfg.routes.get(route)
+    resource = str(admission.get("resource") or "")
+    spec = cfg.hold_routes.get(route) if resource.startswith("service.route.") else cfg.routes.get(route)
     if spec is None:
         raise UnknownRoute(f"unknown_route:{route}")
     priority = str(admission.get("priority") or spec.priority)

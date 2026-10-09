@@ -41,7 +41,10 @@ os.environ.setdefault("ORION_BUS_URL", "redis://localhost:6379/0")
 os.environ.setdefault("ORION_BUS_ENABLED", "false")
 os.environ.setdefault("ORION_BUS_ENFORCE_CATALOG", "false")
 
-from app.current_turn_llm_signals import parse_current_turn_llm_signals  # noqa: E402
+from app.current_turn_llm_signals import (  # noqa: E402
+    parse_current_turn_llm_read,
+    parse_current_turn_llm_signals,
+)
 
 # (label, raw candidates as the model would return them, expected surviving phrases)
 # "garbage_live" entries are the exact real rows confirmed in attention_salience_trace
@@ -124,9 +127,72 @@ _FIXTURES: list[tuple[str, list[dict[str, str]], list[str]]] = [
 ]
 
 
+# Object-shaped reads (the probe's current output contract). Same floor applies
+# inside "items"; wants_direct_answer must survive only as a real bool.
+# (label, raw model text, expected surviving phrases, expected wants_direct_answer,
+#  expected natural_question per survivor)
+_READ_FIXTURES: list[tuple[str, str, list[str], bool | None, list[str | None]]] = [
+    (
+        "read_travel_disclosure_beab81a3",
+        json.dumps(
+            {
+                "wants_direct_answer": False,
+                "items": [{"phrase": "work travel the next few days", "type": "plan", "question": "Where are you headed?"}],
+            }
+        ),
+        ["work travel the next few days"],
+        False,
+        ["Where are you headed?"],
+    ),
+    (
+        "read_floor_applies_inside_object",
+        json.dumps(
+            {
+                "wants_direct_answer": False,
+                "items": [
+                    {"phrase": "lol", "type": "other", "question": "What's funny?"},
+                    {"phrase": "Sarah", "type": "person", "question": "How is she doing?"},
+                ],
+            }
+        ),
+        ["Sarah"],
+        False,
+        ["How is she doing?"],
+    ),
+    (
+        "read_request_with_no_items",
+        json.dumps({"wants_direct_answer": True, "items": []}),
+        [],
+        True,
+        [],
+    ),
+    (
+        "read_prose_wrapped_object",
+        'Here you go: {"wants_direct_answer": true, "items": [{"phrase": "the reactor rollout plan", "type": "plan", "question": "When does it start?"}]} hope that helps',
+        ["the reactor rollout plan"],
+        True,
+        ["When does it start?"],
+    ),
+    (
+        "read_string_bool_is_not_trusted",
+        json.dumps({"wants_direct_answer": "yes", "items": []}),
+        [],
+        None,
+        [],
+    ),
+    (
+        "read_legacy_array_has_no_direct_judgement",
+        json.dumps([{"phrase": "Paris", "type": "place"}]),
+        ["Paris"],
+        None,
+        [None],
+    ),
+]
+
+
 def run() -> int:
     print("\n=== current_turn_llm_signals structural-floor eval ===")
-    total = len(_FIXTURES)
+    total = len(_FIXTURES) + len(_READ_FIXTURES)
     passed = 0
     for label, candidates, expected in _FIXTURES:
         raw = json.dumps(candidates)
@@ -136,6 +202,19 @@ def run() -> int:
         passed += int(ok)
         status = "PASS" if ok else "FAIL"
         print(f"  [{status}] {label}: survivors={survivors!r} expected={expected!r}")
+
+    for label, raw, expected, expected_direct, expected_questions in _READ_FIXTURES:
+        read = parse_current_turn_llm_read(raw)
+        survivors = [s["phrase"] for s in (read or {}).get("signals", [])]
+        questions = [s.get("natural_question") for s in (read or {}).get("signals", [])]
+        direct = (read or {}).get("wants_direct_answer")
+        ok = read is not None and survivors == expected and direct is expected_direct and questions == expected_questions
+        passed += int(ok)
+        status = "PASS" if ok else "FAIL"
+        print(
+            f"  [{status}] {label}: survivors={survivors!r} direct={direct!r} "
+            f"questions={questions!r}"
+        )
 
     print(f"\nRESULT: {passed}/{total} fixtures correct")
     return 0 if passed == total else 1

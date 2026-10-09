@@ -1,0 +1,147 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Reading</title>
+<style>
+/* Theme tokens shared with templates/gpu_pool.html so the tab matches Hub in both modes. */
+:root {
+  color-scheme: light;
+  --plane: #f9f9f7; --surface: #fcfcfb; --ink: #0b0b0b; --ink-2: #52514e; --ink-muted: #898781;
+  --grid: #e1e0d9; --axis: #c3c2b7; --hairline: rgba(11,11,11,0.10);
+  --series-1: #2a78d6; --good: #0ca30c; --warning: #fab219; --critical: #d03b3b; --good-text: #006300;
+  --shadow: 0 1px 2px rgba(11,11,11,0.05), 0 4px 12px rgba(11,11,11,0.04);
+}
+@media (prefers-color-scheme: dark) {
+  :root:where(:not([data-theme="light"])) {
+    color-scheme: dark;
+    --plane: #0d0d0d; --surface: #1a1a19; --ink: #ffffff; --ink-2: #c3c2b7; --ink-muted: #898781;
+    --grid: #2c2c2a; --axis: #383835; --hairline: rgba(255,255,255,0.10);
+    --series-1: #3987e5; --good-text: #0ca30c;
+    --shadow: 0 1px 2px rgba(0,0,0,0.4), 0 4px 12px rgba(0,0,0,0.3);
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --plane: #0d0d0d; --surface: #1a1a19; --ink: #ffffff; --ink-2: #c3c2b7; --ink-muted: #898781;
+  --grid: #2c2c2a; --axis: #383835; --hairline: rgba(255,255,255,0.10);
+  --series-1: #3987e5; --good-text: #0ca30c;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--plane); color: var(--ink); font: 13px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+main { max-width: 1500px; margin: 0 auto; padding: 16px; display: flex; flex-direction: column; gap: 16px; }
+header { display: flex; flex-wrap: wrap; align-items: baseline; gap: 12px; }
+h1 { font-size: 18px; margin: 0; }
+h2 { font-size: 14px; margin: 0 0 8px; }
+h3 { font-size: 13px; margin: 14px 0 6px; }
+a { color: var(--series-1); }
+.muted { color: var(--ink-muted); }
+.panel { background: var(--surface); border: 1px solid var(--hairline); border-radius: 12px; padding: 14px; box-shadow: var(--shadow); }
+.badge { display: inline-block; padding: 1px 8px; border-radius: 999px; border: 1px solid var(--hairline); font-size: 11px; white-space: nowrap; }
+.tone-good { color: var(--good-text); border-color: var(--good); }
+.tone-warn { color: var(--ink); border-color: var(--warning); }
+.tone-bad { color: var(--critical); border-color: var(--critical); }
+.tone-busy { color: var(--series-1); border-color: var(--series-1); }
+.stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 10px; }
+.stat { border: 1px solid var(--axis); border-radius: 10px; padding: 8px 10px; }
+.stat .big { font-size: 16px; font-weight: 600; }
+.row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+button, select, input, textarea { font: inherit; color: var(--ink); background: var(--plane); border: 1px solid var(--axis); border-radius: 8px; padding: 4px 10px; }
+button { cursor: pointer; }
+button:hover { border-color: var(--ink-2); }
+button:disabled { opacity: 0.5; cursor: default; }
+.layout { display: grid; grid-template-columns: minmax(420px, 5fr) 6fr; gap: 16px; align-items: start; }
+@media (max-width: 1100px) { .layout { grid-template-columns: 1fr; } }
+table { width: 100%; border-collapse: collapse; font-size: 12px; }
+th, td { text-align: left; padding: 5px 6px; border-bottom: 1px solid var(--hairline); vertical-align: top; }
+th { color: var(--ink-2); font-weight: 600; }
+tr.clickable { cursor: pointer; }
+tr.clickable:hover, tr.selected { background: var(--hairline); }
+.title-cell { max-width: 360px; }
+.title-cell .t { font-weight: 600; overflow-wrap: anywhere; }
+.title-cell .u { color: var(--ink-muted); font-size: 11px; overflow-wrap: anywhere; }
+.preview { color: var(--ink-2); font-size: 11px; margin-top: 2px; }
+.prose { white-space: pre-wrap; overflow-wrap: anywhere; }
+.rejected { border: 1px dashed var(--critical); border-radius: 10px; padding: 8px 10px; }
+.note { font-size: 12px; color: var(--critical); margin-bottom: 6px; }
+ul.items { margin: 0; padding-left: 18px; }
+ul.items li { margin: 3px 0; overflow-wrap: anywhere; }
+pre { background: var(--plane); border: 1px solid var(--hairline); border-radius: 8px; padding: 10px; overflow: auto; max-height: 420px; font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere; }
+dl.meta { display: grid; grid-template-columns: max-content 1fr; gap: 2px 12px; margin: 8px 0; font-size: 12px; }
+dl.meta dt { color: var(--ink-muted); }
+dl.meta dd { margin: 0; overflow-wrap: anywhere; }
+#actionStatus, #submitStatus { min-height: 1.4em; }
+.pager { margin-top: 8px; }
+textarea { width: 100%; min-height: 3em; }
+input.wide { flex: 1; min-width: 260px; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Reading</h1>
+    <span class="muted">What Orion read, what they took from it, and controls for the reading queue.</span>
+    <span class="muted" id="refreshedAt"></span>
+  </header>
+
+  <section class="panel" aria-labelledby="budgetTitle">
+    <h2 id="budgetTitle">Budget and queue</h2>
+    <div class="stats" id="stats"><span class="muted">loading…</span></div>
+  </section>
+
+  <section class="panel" aria-labelledby="submitTitle">
+    <h2 id="submitTitle">Ask Orion to read something</h2>
+    <form id="submitForm" class="row">
+      <input id="submitUrl" class="wide" type="text" placeholder="https://… or /mnt/scripts/Orion-Sapienform/docs/…/spec.md" required aria-label="URL or document path to read" />
+      <input id="submitReadTitle" placeholder="title (optional)" aria-label="Title" />
+      <textarea id="submitWhy" placeholder="Why now? Orion sees this as your reason for the request (optional)" aria-label="Why now"></textarea>
+      <button id="submitButton" type="submit">Queue read</button>
+    </form>
+    <div class="muted" id="submitStatus" role="status"></div>
+  </section>
+
+  <div class="layout">
+    <section class="panel" aria-labelledby="listTitle">
+      <div class="row" style="justify-content:space-between">
+        <h2 id="listTitle">Reads <span class="muted" id="listTotal"></span></h2>
+        <div class="row">
+          <select id="phase" aria-label="Status filter">
+            <option value="all">all</option>
+            <option value="with_output">has output</option>
+            <option value="active">in progress</option>
+            <option value="done">done</option>
+            <option value="failed">failed</option>
+            <option value="skipped">skipped</option>
+          </select>
+          <select id="kind" aria-label="Source filter">
+            <option value="">any kind</option>
+            <option value="reading">requested reads</option>
+            <option value="finding">World Pulse findings</option>
+            <option value="digest_item">World Pulse digest items</option>
+          </select>
+          <label class="muted"><input type="checkbox" id="includeStale" /> old digest items</label>
+          <button id="refresh" type="button">Refresh</button>
+        </div>
+      </div>
+      <table>
+        <thead><tr><th>Source</th><th>Asked by</th><th>Status</th><th>Updated</th></tr></thead>
+        <tbody id="reads"></tbody>
+      </table>
+      <div class="row pager">
+        <button id="prevPage" type="button">Newer</button>
+        <button id="nextPage" type="button">Older</button>
+        <span class="muted" id="pageInfo"></span>
+      </div>
+    </section>
+
+    <section class="panel" aria-labelledby="detailTitle">
+      <h2 id="detailTitle">Read details</h2>
+      <div class="muted" id="actionStatus" role="status"></div>
+      <div id="detail"><span class="muted">Pick a read on the left to see what Orion took from it.</span></div>
+    </section>
+  </div>
+</main>
+<script src="/static/js/reading.js?v={{HUB_UI_ASSET_VERSION}}"></script>
+</body>
+</html>

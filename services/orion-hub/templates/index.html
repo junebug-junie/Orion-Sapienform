@@ -103,6 +103,13 @@
             role="button"
           >Curiosity</a>
           <a
+            id="readingTabButton"
+            href="#reading"
+            data-hash-target="#reading"
+            class="px-3 py-1.5 text-xs font-semibold rounded-full bg-gray-800 text-gray-200 border border-gray-700 hover:bg-gray-700"
+            role="button"
+          >Reading</a>
+          <a
             id="exoExplorationTabButton"
             href="#exo-exploration"
             data-hash-target="#exo-exploration"
@@ -252,11 +259,44 @@
     <div id="appPanels">
       <section id="hub" data-panel="hub">
         <div id="hubTabPanel" class="flex flex-col gap-6">
+      <!-- Orion is asking: at the top of the Hub home (memory-episode spec section 5,
+           2026-10-06). Open questions from orion_ask via GET /api/asks. Vision cards
+           post /api/asks/{id}/answer|dismiss; memory confirmation cards post
+           Confirm / Revise / Reject to /api/asks/{id}/resolve (scripts/ask_routes.py).
+           Wired by static/js/vision-asks.js. -->
+      <div id="visionAsksCard" class="w-full bg-gray-900 rounded-2xl shadow-lg p-5 space-y-2">
+        <div class="flex items-center justify-between">
+          <h2 class="text-xl font-bold text-white">Orion is asking</h2>
+          <span class="text-[11px] text-gray-500">Things Orion wants to check with you before keeping them</span>
+        </div>
+        <div id="visionAsksStatus" class="text-xs text-gray-400">Loading Orion's questions…</div>
+        <div id="visionAsksList" class="space-y-2 overflow-y-auto pr-1"></div>
+      </div>
       <div class="w-full flex flex-col md:flex-row gap-6 items-stretch">
       
-      <div class="w-full md:w-1/2 bg-gray-900 rounded-2xl shadow-lg p-5 flex flex-col space-y-4 h-[56rem] min-h-0">
-        <div class="flex items-center justify-between mb-1">
+      <!-- Cognitive EKG is a drawer: open by default (as before); collapsing it pans it
+           left into a thin rail and the Oríon + Juniper card takes the freed width.
+           State is remembered in localStorage (static/js/hub-ekg-drawer.js). -->
+      <div id="ekgDrawer" class="hub-ekg-drawer bg-gray-900 rounded-2xl shadow-lg p-5 flex flex-col space-y-4 h-[56rem] min-h-0">
+        <button
+          type="button"
+          id="ekgDrawerRail"
+          class="hub-ekg-drawer__rail"
+          aria-label="Open Cognitive EKG drawer"
+          title="Open Cognitive EKG"
+        ><span>Cognitive EKG</span><span aria-hidden="true">▶</span></button>
+        <div class="flex items-center justify-between mb-1 hub-ekg-drawer__head">
           <h2 id="ekgCardTitle" class="text-xl font-bold text-white">Cognitive EKG</h2>
+          <div class="flex items-center gap-2">
+          <button
+            type="button"
+            id="ekgDrawerToggle"
+            class="px-2 py-1 rounded-lg border border-gray-700 bg-gray-800 text-xs text-gray-300 hover:bg-gray-700 hover:text-white"
+            title="Slide the EKG away and give the chat the full width"
+            aria-label="Collapse Cognitive EKG drawer"
+            aria-expanded="true"
+            aria-controls="ekgDrawer"
+          >◀</button>
           <button
             type="button"
             id="ekgViewToggle"
@@ -264,6 +304,7 @@
             title="Toggle between Substrate Brain State and a Biometrics preview"
             aria-label="Toggle Cognitive EKG / Biometrics view"
           >Biometrics ⇄</button>
+          </div>
         </div>
 
         <div id="stateVisualizerContainer" class="w-full flex-1 bg-gray-800/50 rounded-lg overflow-hidden border border-gray-800 shadow-inner">
@@ -285,23 +326,18 @@
         </div>
       </div>
 
-      <div class="w-full md:w-1/2 bg-gray-900 rounded-2xl shadow-lg p-5 flex flex-col space-y-4 h-[56rem] min-h-0">
+      <div class="hub-chat-card bg-gray-900 rounded-2xl shadow-lg p-5 flex flex-col space-y-4 h-[56rem] min-h-0">
         <div class="flex items-center justify-between border-b border-gray-700 pb-1 mb-1">
           <h3 class="text-lg font-semibold text-white">Oríon + Juniper</h3>
           <div class="flex items-center gap-2">
             <span id="status" class="text-xs text-gray-400">Ready.</span>
-            <span
-              id="chatTurnTimer"
-              class="hidden rounded border border-gray-700 bg-gray-900/70 px-1.5 py-0.5 text-[10px] font-mono tabular-nums text-gray-400"
-              title="Elapsed processing time for this turn"
-            >0.0s</span>
             <button id="interruptButton" class="hidden text-xs bg-red-700 hover:bg-red-600 text-white rounded-lg px-3 py-1 border border-red-500">Interrupt</button>
           </div>
         </div>
 
         <div
           id="visualizerContainer"
-          class="w-full h-28 shrink-0 min-h-0 flex flex-col bg-gray-800/50 rounded-lg border border-gray-800 px-3 py-2"
+          class="hidden w-full h-28 shrink-0 min-h-0 flex flex-col bg-gray-800/50 rounded-lg border border-gray-800 px-3 py-2"
         >
           <span class="shrink-0 text-xs text-gray-400">Oríon’s Voice</span>
           <canvas id="visualizer" class="block w-full flex-1 min-h-0"></canvas>
@@ -644,18 +680,6 @@
         </div>
         <div id="affectAmbientStatusLine" class="hidden text-[11px] text-gray-500"></div>
         <div id="affectCaptureResult" class="hidden rounded-lg border border-gray-700 bg-gray-800/60 px-3 py-2 text-xs text-gray-300 whitespace-pre-wrap"></div>
-        <!-- Orion is asking (walkway camera idea 3). Open questions from
-             orion_ask via GET /api/asks; answers/dismissals POST to
-             /api/asks/{id}/answer|dismiss (scripts/ask_routes.py). Wired by
-             static/js/vision-asks.js. -->
-        <div id="visionAsksCard" class="rounded-lg border border-gray-700 bg-gray-900/60 p-3 space-y-2">
-          <div class="flex items-center justify-between">
-            <h3 class="text-sm font-semibold text-white">Orion is asking</h3>
-            <span class="text-[11px] text-gray-500">Things Orion saw and wants your help naming</span>
-          </div>
-          <div id="visionAsksStatus" class="text-xs text-gray-400">Loading Orion's questions…</div>
-          <div id="visionAsksList" class="space-y-2"></div>
-        </div>
       </div>
 
       <!-- ✅ ADDED: Vision pop-out container (hidden; does not change layout) -->
@@ -1166,6 +1190,24 @@
             loading="lazy"
             title="Self Brain"
           ></iframe>
+        </div>
+      </section>
+
+      <section id="reading" data-panel="reading" class="hidden w-full bg-gray-900 rounded-2xl shadow-lg p-5 flex flex-col gap-4 min-h-[56rem]">
+        <div class="flex items-center justify-between gap-3">
+          <div>
+            <h2 class="text-xl font-bold text-white">Reading</h2>
+            <p class="text-xs text-gray-400 max-w-xl">
+              Every read Orion has done or queued: what they took from each source, which beliefs held up on the follow-up, proof they fetched the page, and controls to queue, cancel or retry a read.
+            </p>
+          </div>
+          <div class="flex items-center gap-2 flex-shrink-0">
+            <button id="readingPanelRefresh" class="text-xs bg-gray-800 hover:bg-gray-700 text-gray-200 rounded-lg px-3 py-1 border border-gray-700" type="button">Refresh</button>
+            <a id="readingPanelStandaloneLink" href="/reading" class="text-xs bg-gray-800 hover:bg-gray-700 text-gray-200 rounded-lg px-3 py-1 border border-gray-700">Open standalone</a>
+          </div>
+        </div>
+        <div class="rounded-xl border border-gray-800 bg-gray-950/40 overflow-hidden flex-1 min-h-[40rem]">
+          <iframe id="readingPanelFrame" src="/reading" class="w-full h-full border-0 min-h-[48rem]" loading="lazy" title="Reading"></iframe>
         </div>
       </section>
 
@@ -2663,7 +2705,7 @@
           <iframe
             id="curiosityAtlasPanelFrame"
             src="/curiosity"
-            class="w-full h-full border-0 min-h-[40rem]"
+            class="w-full h-[calc(100vh-10rem)] border-0 min-h-[40rem]"
             loading="lazy"
             title="Curiosity Atlas"
           ></iframe>
@@ -2993,6 +3035,7 @@
           <div class="text-xs uppercase tracking-[0.24em] text-gray-300 mr-2">Biometrics</div>
           <button type="button" id="biometricsSubtabAthena" class="px-3 py-1.5 text-xs font-semibold rounded-full bg-gray-700 text-gray-100 border border-gray-700">Athena</button>
           <button type="button" id="biometricsSubtabCirce" class="px-3 py-1.5 text-xs font-semibold rounded-full bg-gray-800 text-gray-300 border border-gray-700 hover:bg-gray-700">Circe</button>
+          <button type="button" id="biometricsSubtabHecate" class="px-3 py-1.5 text-xs font-semibold rounded-full bg-gray-800 text-gray-300 border border-gray-700 hover:bg-gray-700">Hecate</button>
           <button type="button" id="biometricsSubtabGpu" class="px-3 py-1.5 text-xs font-semibold rounded-full bg-gray-800 text-gray-300 border border-gray-700 hover:bg-gray-700">GPU</button>
           <button type="button" id="biometricsSubtabCabinet" class="px-3 py-1.5 text-xs font-semibold rounded-full bg-gray-800 text-gray-300 border border-gray-700 hover:bg-gray-700">Cabinet</button>
         </div>
@@ -3050,6 +3093,29 @@
             </p>
           </div>
           <div id="biometricsCirceInduction" class="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs"></div>
+        </div>
+        <div id="biometricsSubviewHecate" class="hidden flex-col gap-4">
+          <h3 class="text-base font-bold text-white">Hecate — current snapshot</h3>
+          <div class="flex flex-wrap items-center gap-3 text-[11px]">
+            <span class="inline-flex items-center gap-1 text-emerald-200 font-semibold">● good</span>
+            <span class="inline-flex items-center gap-1 text-amber-200 font-semibold">▲ warning</span>
+            <span class="inline-flex items-center gap-1 text-red-200 font-semibold">■ critical</span>
+            <span class="text-gray-400">sorted worst-first · ↑/↓ changing (EWMA trend) · → flat</span>
+          </div>
+          <div id="biometricsHecateSnapshot" class="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs"></div>
+          <h3 class="text-base font-bold text-white">Trended (24h)</h3>
+          <div id="biometricsHecateHistory" class="grid grid-cols-1 md:grid-cols-2 gap-3"></div>
+          <div>
+            <h3 class="text-base font-bold text-white">Trend detail (EWMA)</h3>
+            <p class="text-[11px] text-gray-400 mt-0.5 max-w-2xl">
+              How fast and how erratically each channel is moving, from Orion's own EWMA trend
+              tracker — <span class="text-gray-300">level</span> is the smoothed current value,
+              <span class="text-gray-300">volatility</span> is how much it's bouncing around, and
+              <span class="text-gray-300">spikes</span> counts sudden jumps per tick. Same
+              good/warning/critical coloring as the snapshot above.
+            </p>
+          </div>
+          <div id="biometricsHecateInduction" class="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs"></div>
         </div>
         <div id="biometricsSubviewGpu" class="hidden flex-col gap-4">
           <div class="flex items-center gap-2 text-xs">
@@ -3181,6 +3247,49 @@
               <div class="rounded-lg border border-gray-800 bg-gray-950/60 p-3">
                 <div class="text-xs font-semibold text-gray-300 mb-2">cooling watts</div>
                 <div id="cabinetCoolingWattsChart" class="min-h-[8rem]"></div>
+              </div>
+            </div>
+            <div id="energyStrip" role="region" aria-label="House electricity" class="rounded-xl border border-gray-800 bg-gray-950/40 p-4 flex flex-col gap-4">
+              <div class="flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <h3 class="text-sm font-semibold text-gray-100">House electricity — Rocky Mountain Power</h3>
+                  <p class="text-[11px] text-gray-500">
+                    Read-only from orion-energy's Postgres tables. Unknown amounts say "unknown", never $0.
+                  </p>
+                </div>
+                <div class="flex flex-col items-end gap-1">
+                  <span id="energyImporterState" class="text-[11px] font-mono text-gray-400">importer: no status yet</span>
+                  <span id="energyStaleNote" class="text-[11px] font-mono text-amber-400"></span>
+                </div>
+              </div>
+              <div class="grid grid-cols-2 sm:grid-cols-5 gap-2">
+                <div class="rounded-lg border border-gray-800 bg-gray-950/60 px-3 py-2">
+                  <div class="text-[10px] uppercase tracking-wide text-gray-500">Cycle to date</div>
+                  <div id="energyCycleToDate" class="mt-1 font-mono text-sm text-gray-200">unknown</div>
+                  <div id="energyCoveredThrough" class="mt-0.5 font-mono text-[10px] text-gray-500">through unknown</div>
+                </div>
+                <div class="rounded-lg border border-gray-800 bg-gray-950/60 px-3 py-2">
+                  <div class="text-[10px] uppercase tracking-wide text-gray-500">Orion projects</div>
+                  <div id="energyProjected" class="mt-1 font-mono text-sm text-gray-200">unknown</div>
+                </div>
+                <div class="rounded-lg border border-gray-800 bg-gray-950/60 px-3 py-2">
+                  <div class="text-[10px] uppercase tracking-wide text-gray-500">RMP forecast</div>
+                  <div id="energyForecast" class="mt-1 font-mono text-sm text-gray-200">unknown</div>
+                </div>
+                <div class="rounded-lg border border-gray-800 bg-gray-950/60 px-3 py-2">
+                  <div class="text-[10px] uppercase tracking-wide text-gray-500">Next kWh</div>
+                  <div id="energyMarginal" class="mt-1 font-mono text-sm text-gray-200">unknown</div>
+                </div>
+                <div class="rounded-lg border border-gray-800 bg-gray-950/60 px-3 py-2">
+                  <div class="text-[10px] uppercase tracking-wide text-gray-500">Pressure</div>
+                  <div id="energyPressure" class="mt-1 font-mono text-sm text-gray-200">unknown</div>
+                </div>
+              </div>
+              <p id="energyReconcileActual" class="text-[11px] font-mono text-gray-400">No closed bill reconciled yet.</p>
+              <p id="energyReconcileForecast" class="text-[11px] font-mono text-gray-400">No RMP forecast yet.</p>
+              <div class="rounded-lg border border-gray-800 bg-gray-950/60 p-3">
+                <div class="text-xs font-semibold text-gray-300 mb-2">daily house kWh · last 14 days</div>
+                <div id="energyDailyBars" aria-label="Daily house kWh, last 14 days" class="flex items-end gap-1 min-h-[4rem] text-amber-400"></div>
               </div>
             </div>
             <div id="cabinetSensorGrid" class="rounded-xl border border-gray-800 bg-gray-950/40 p-4"></div>
@@ -4226,10 +4335,12 @@
   <script src="/static/js/cocreation-signals.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
   <script src="/static/js/field-attention.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
   <script src="/static/js/cabinet-sensors.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
+  <script src="/static/js/energy-strip.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
   <script src="/static/js/biometrics-view.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
   <script src="/static/js/self_observability.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
   <script src="/static/js/hub_surface_tab.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
   <script src="/static/js/gpu_pool_tab.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
+  <script src="/static/js/reading_tab.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
   <script src="/static/js/runtime-activity.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
   <!--
     Vendored, not CDN. chat-markdown.js is the first place the Hub renders
@@ -4250,7 +4361,9 @@
   <script src="/static/js/chat-markdown.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
   <script src="/static/js/chat-attachments.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
   <script src="/static/js/cognitive-loop-card.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
+  <script src="/static/js/hub-ekg-drawer.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
   <script src="/static/js/turn-timer.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
+  <script src="/static/js/draft-revision.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
   <script src="/static/js/cockpit-hud.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
   <script src="/static/js/hub-tab-launcher.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
   <script src="/static/js/app.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from datetime import datetime, timedelta, time, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Literal
 from zoneinfo import ZoneInfo
 
@@ -10,6 +10,7 @@ from orion.cognition.chat_history_compactor.constants import (
     DEFAULT_LOOKBACK_HOURS,
     DEFAULT_TIMEZONE,
 )
+from orion.cognition.compactor.calendar_day import previous_local_day_window
 from orion.cognition.compactor.index import build_compactor_index
 from orion.schemas.discussion_window import DiscussionWindowResultV1, DiscussionWindowTurnV1
 
@@ -76,24 +77,21 @@ def resolve_chat_compactor_window(
         hours = _parse_lookback_hours_from_text(user_text)
 
     if mode_raw == "day":
-        yesterday = now_local.date() - timedelta(days=1)
-        start_local = datetime.combine(yesterday, time.min, tzinfo=tz)
-        end_local = datetime.combine(yesterday, time.max, tzinfo=tz)
-        calendar_date = yesterday.isoformat()
+        day = previous_local_day_window(now, tz_name=tz_name)
         index = build_compactor_index(
             kind="chat_history_log",
             mode="day",
-            calendar_date=calendar_date,
+            calendar_date=day.calendar_date,
         )
-        lookback_seconds = int((end_local - start_local).total_seconds()) + 1
+        lookback_seconds = int((day.window_end - day.window_start).total_seconds()) + 1
         return ResolvedChatCompactorWindow(
             mode="day",
             compactor_index=index,
-            window_start=start_local.astimezone(timezone.utc),
-            window_end=end_local.astimezone(timezone.utc),
+            window_start=day.window_start,
+            window_end=day.window_end,
             lookback_seconds=lookback_seconds,
             lookback_hours=None,
-            calendar_date=calendar_date,
+            calendar_date=day.calendar_date,
             timezone_name=tz_name,
         )
 

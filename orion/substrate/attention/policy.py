@@ -1,36 +1,49 @@
 from __future__ import annotations
 
-import re
+from typing import Any, Literal
 
 from orion.schemas.attention_frame import CuriosityCandidateActionV1, CuriositySuppressionV1, OpenLoopV1
-from orion.substrate.attention.questions import question_for
+from orion.substrate.attention.questions import NATURAL_QUESTION_KEY, question_for
 from orion.substrate.attention.scoring import score_loop
 
-GENERIC_QUESTION_RE = re.compile(
-    r"\b(how (?:are|was) (?:you|your day)|what about you|and you\??|how about you\??)\b",
-    flags=re.IGNORECASE,
-)
-QUESTION_RE = re.compile(r"\?\s*$")
-DIRECT_WORK_RE = re.compile(
-    r"^\s*(please\s+)?(implement|fix|debug|review|explain|summarize|show|tell|write|add|remove|update|run|paste)\b",
-    flags=re.IGNORECASE,
-)
+DirectAnswerCause = Literal["judged", "unavailable"]
+TURN_READ_UNAVAILABLE_REF = "turn_read_unavailable"
+# Targets Orion's own threads, not the turn: a follow-up on something the user
+# shared can still be the selected ask on a direct turn, and prompts read a
+# suppression aimed at the turn itself as "don't ask".
+BACKGROUND_THREADS_REF = "background_threads"
 
 
-def generic_reversal_present(user_text: str) -> bool:
-    return bool(GENERIC_QUESTION_RE.search(user_text))
+def direct_answer_cause(ctx: dict[str, Any], user_text: str) -> DirectAnswerCause | None:
+    """Whether this chat turn asks Orion to do or answer something, as judged by the
+    same-turn LLM read (`ctx["current_turn_llm_read"]`, populated by cortex-exec's
+    current_turn_llm_signals.py). Replaces the deleted verb-prefix / trailing-"?" /
+    "what about you" regexes, which misread shared news that happened to end in a
+    question and could not tell "tell me about X" from "told my boss about X".
+
+    No user text (substrate/background frames) -> None. A chat turn whose read failed
+    or is missing -> "unavailable", which callers treat as a direct turn: without a
+    read there is no evidence Orion's own threads are welcome, so fail closed.
+    """
+    if not user_text.strip():
+        return None
+    read = ctx.get("current_turn_llm_read")
+    if not isinstance(read, dict) or read.get("ok") is not True:
+        return "unavailable"
+    wants = read.get("wants_direct_answer")
+    if wants is True:
+        return "judged"
+    if wants is False:
+        return None
+    return "unavailable"
 
 
-def direct_work_turn(user_text: str) -> bool:
-    return bool(DIRECT_WORK_RE.search(user_text) or QUESTION_RE.search(user_text))
-
-
-def base_suppressions(*, user_text: str, stale_thread_active: bool) -> list[CuriositySuppressionV1]:
+def base_suppressions(*, direct_cause: DirectAnswerCause | None, stale_thread_active: bool) -> list[CuriositySuppressionV1]:
     suppressions: list[CuriositySuppressionV1] = []
-    if generic_reversal_present(user_text):
-        suppressions.append(CuriositySuppressionV1(reason="generic_reciprocity", target_ref="generic_reversal", rationale="current turn matches a generic reversal pattern", confidence=0.9))
-    if direct_work_turn(user_text):
-        suppressions.append(CuriositySuppressionV1(reason="user_needs_direct_answer", target_ref="current_turn", rationale="current turn asks for work or a direct answer", confidence=0.78))
+    if direct_cause == "judged":
+        suppressions.append(CuriositySuppressionV1(reason="user_needs_direct_answer", target_ref=BACKGROUND_THREADS_REF, rationale="turn read judged the user wants work or a direct answer; answer first and keep Orion's own background threads out of it", confidence=0.78))
+    elif direct_cause == "unavailable":
+        suppressions.append(CuriositySuppressionV1(reason="user_needs_direct_answer", target_ref=TURN_READ_UNAVAILABLE_REF, rationale="no same-turn read available; fail closed on Orion's own background threads", confidence=0.6))
     if stale_thread_active:
         suppressions.append(CuriositySuppressionV1(reason="stale_thread", target_ref="situation.conversation_phase", rationale="conversation phase marks thread as stale", confidence=0.7))
     return suppressions
@@ -42,7 +55,6 @@ def select_actions(
     suppressions: list[CuriositySuppressionV1],
     min_ask: float,
     max_asks: int,
-    generic_reversal: bool,
     stale_thread_active: bool,
 ) -> tuple[list[CuriosityCandidateActionV1], CuriosityCandidateActionV1, list[CuriositySuppressionV1], list[str]]:
     # NOTE (2026-07-31, disclosed not fixed): min_ask (caller-supplied,
@@ -60,19 +72,36 @@ def select_actions(
     # orion/sentience_striving_program/README.md's 2026-07-31 entry) --
     # the new formula needs to run for real before there is a distribution
     # to recalibrate against.
+    #
+    # A loop carrying a natural follow-up question was explicitly judged, by the
+    # same-turn LLM read, as something Juniper shared that a friend would ask
+    # about. That judgment is the salience evidence for it; the relative Borda
+    # score cannot supply it (a lone current-turn loop's n==1 fallback tops out
+    # near 0.5, below min_ask, so a disclosure on a quiet turn could never be
+    # asked). Invited loops also outrank Orion's own background threads when
+    # both are askable: following up on what the person said comes first.
     actions: list[CuriosityCandidateActionV1] = []
+    invited_ids: set[str] = set()
     suppressions = list(suppressions)
     for loop in open_loops:
         score = score_loop(loop)
+        invited = bool(loop.provenance.get(NATURAL_QUESTION_KEY))
+        clears_threshold = score >= min_ask or (score >= (min_ask - 0.08) and loop.autonomy_value >= 0.5 and loop.predictive_value >= 0.5)
         if loop.already_known:
             action_type = "suppress"
             rationale = "already-known target should not be asked about again"
             question = None
             suppressions.append(CuriositySuppressionV1(reason="already_known", target_ref=loop.id, rationale=f"{loop.description} appears in current memory/concept context", confidence=0.78))
-        elif (score >= min_ask or (score >= (min_ask - 0.08) and loop.autonomy_value >= 0.5 and loop.predictive_value >= 0.5)) and loop.askability >= 0.45 and not generic_reversal and not stale_thread_active:
+        elif (clears_threshold or invited) and loop.askability >= 0.45 and not stale_thread_active:
             action_type = "ask"
-            rationale = "highest-value unresolved target is askable in this turn"
+            rationale = (
+                "follow-up on something the user shared this turn"
+                if invited
+                else "highest-value unresolved target is askable in this turn"
+            )
             question = question_for(loop)
+            if invited:
+                invited_ids.add(loop.id)
         elif score >= 0.48:
             action_type = "watch"
             rationale = "target is useful but not worth a question now"
@@ -96,7 +125,11 @@ def select_actions(
             )
         )
 
-    ask_actions = sorted([a for a in actions if a.action_type == "ask"], key=lambda a: a.score, reverse=True)
+    ask_actions = sorted(
+        [a for a in actions if a.action_type == "ask"],
+        key=lambda a: (a.open_loop_id in invited_ids, a.score),
+        reverse=True,
+    )
     selected = ask_actions[0] if ask_actions and max_asks >= 1 else None
     if len(ask_actions) > max_asks:
         for extra in ask_actions[max_asks:]:

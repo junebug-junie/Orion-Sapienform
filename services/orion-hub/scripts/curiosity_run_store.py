@@ -131,7 +131,7 @@ ADMISSION_RUN_SQL = f"SELECT {_ADMISSION_COLS} FROM durable_admission_runs WHERE
 RENDERED_EVENTS = (
     "run.accepted", "run.waiting_resource", "run.admitted", "run.lane_assigned", "run.started",
     "run.running", "run.resumed", "run.retrying", "run.completed", "run.failed", "run.cancelled",
-    "resource.lease_released", "resource.lease_expired",
+    "resource.lease_released", "resource.lease_expired", "run.preempted",
 )
 COUNTED_EVENTS = ("run.checkpoint_resume_failed",)
 EVENTS_SQL = (
@@ -413,7 +413,7 @@ async def read_runs_payload(
         "has_newer": has_newer,
         "line": line,
         "stores": stores.payload(),
-        "runs": [run_to_payload(r) for r in runs],
+        "runs": [run_to_payload(r, list_view=True) for r in runs],
         "reach_outs": reach_out_totals(all_runs),
         "totals": {ln: sum(1 for r in all_runs if r.line == ln) for ln in LINES},
     }

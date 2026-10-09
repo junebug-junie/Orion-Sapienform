@@ -2,23 +2,43 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from contextlib import suppress
 from typing import Any
 from uuid import UUID, uuid4
 
+from pydantic import ValidationError
+
 from orion.cognition.plan_loader import build_plan_for_verb
+from orion.cognition.recall_query import cap_retrieval_query
 from orion.core.bus.async_service import OrionBusAsync
 
 from .rpc_health import fold_bus
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.llm.resource_lease import GPU_LEASE_ROUTE
+from orion.schemas.reverie_visual_run import (
+    REVERIE_VISUAL_STEP_CHANNEL,
+    REVERIE_VISUAL_STEP_REQUEST_KIND,
+    REVERIE_VISUAL_STEP_RESULT_KIND,
+    ReverieVisualStepRequestV1,
+    ReverieVisualStepResultV1,
+)
 from orion.schemas.cortex.schemas import PlanExecutionArgs, PlanExecutionRequest
+from orion.schemas.stance_context_prepare import (
+    STANCE_CONTEXT_PREPARE_REQUEST_KIND,
+    STANCE_CONTEXT_PREPARE_RESULT_PREFIX,
+    STANCE_PREPARE_REQUESTED_CTX_KEY,
+    StanceContextPrepareRequestV1,
+    StanceContextPrepareResultV1,
+    stance_context_prepare_channel,
+)
 from orion.schemas.thought import (
     AutonomySliceV1,
     GroundingCapsuleV1,
     StanceReactRequestV1,
     ThoughtEventV1,
 )
+from orion.thought.coalition import prompt_turn_refs
 from orion.thought.stance_react import (
     apply_stance_react_pipeline,
     build_stance_react_failure_thought,
@@ -36,6 +56,7 @@ from .mind_enrichment import (
     work_shape_from_coloring,
 )
 from .settings import settings
+from .visual_steps import run_visual_step
 
 logger = logging.getLogger("orion-thought.bus")
 
@@ -82,6 +103,15 @@ async def _drain_pending_handler_tasks(*, timeout_sec: float = _HANDLER_DRAIN_TI
     _ = done
 
 
+async def _missing_subscriptions(bus: OrionBusAsync, channels: tuple[str, ...]) -> list[str]:
+    """Channels Redis no longer lists us on. A failed probe (-1) is not evidence of loss."""
+    missing = []
+    for channel in channels:
+        if await _thought_channel_subscribers(bus, channel) == 0:
+            missing.append(channel)
+    return missing
+
+
 async def _thought_channel_subscribers(bus: OrionBusAsync, channel: str) -> int:
     """Return subscriber count for channel, or -1 when the probe itself fails."""
     try:
@@ -118,7 +148,9 @@ def _coalition_projection(request: StanceReactRequestV1) -> dict[str, Any] | Non
     if broadcast is None:
         return None
     return {
-        "attended_node_ids": list(broadcast.attended_node_ids),
+        "attended_node_ids": prompt_turn_refs(
+            list(broadcast.attended_node_ids), request.association.correlation_id
+        ),
         "open_loop_ids": [loop.id for loop in broadcast.frame.open_loops],
         "broadcast_stale": request.association.broadcast_stale,
     }
@@ -128,6 +160,7 @@ def build_stance_react_context(
     request: StanceReactRequestV1,
     *,
     mind_coloring: dict[str, Any] | None = None,
+    stance_prepare_requested: bool = False,
 ) -> dict[str, Any]:
     stance_inputs = (
         dict(request.stance_inputs)
@@ -176,21 +209,27 @@ def build_stance_react_context(
     }
     if isinstance(surface_context, dict) and surface_context:
         context["surface_context"] = surface_context
+    # What recall searches for on both stance recalls (cortex-exec's
+    # run_recall_step reads ctx["retrieval_query"]). Top-level ctx only, never
+    # stance_inputs: stance_react.j2 renders every stance_inputs key into the
+    # stance LLM prompt, and this is recall's search text, not stance context.
+    retrieval_query = cap_retrieval_query(request.retrieval_query)
+    if retrieval_query:
+        context["retrieval_query"] = retrieval_query
     if mind_coloring is not None:
         context["mind_coloring"] = mind_coloring
-    if request.resource_lease is not None:
-        # Stance is part of the already admitted turn, including when admission
-        # assigned a different lane from the original caller's preference.
-        context["resource_lease"] = request.resource_lease.model_dump(mode="json")
-        context["llm_route"] = request.resource_lease.lane
-        context["llm_lane"] = request.resource_lease.lane
+    if stance_prepare_requested:
+        # cortex-exec waits for (and uses) the context it is already building for
+        # this turn instead of building a second one (app/stance_prepare.py).
+        context[STANCE_PREPARE_REQUESTED_CTX_KEY] = True
     if request.gpu_lease is not None:
-        # Stage 4: stance runs under the turn's GPU pool hold; the gateway attaches the call to it.
+        # Stance is part of the already admitted turn: it runs under the turn's GPU pool hold (the
+        # gateway attaches the call to it) and names the hold's work-class route, whatever the
+        # caller preferred.
         context["gpu_lease"] = request.gpu_lease.model_dump(mode="json")
-        if request.resource_lease is None:
-            context["llm_route"] = GPU_LEASE_ROUTE
-            context["llm_lane"] = GPU_LEASE_ROUTE
-    if request.resource_lease is None and request.gpu_lease is None and request.llm_route:
+        context["llm_route"] = GPU_LEASE_ROUTE
+        context["llm_lane"] = GPU_LEASE_ROUTE
+    if request.gpu_lease is None and request.llm_route:
         # Caller-requested gateway route override for stance_react's own LLM
         # call (see StanceReactRequestV1.llm_route's own docstring -- today
         # only orion.hub.turn_orchestrator's agent-lane resolution sets
@@ -207,11 +246,14 @@ def build_stance_react_plan_request(
     request: StanceReactRequestV1,
     *,
     mind_coloring: dict[str, Any] | None = None,
+    stance_prepare_requested: bool = False,
 ) -> PlanExecutionRequest:
     """Build the cortex-exec plan request for the stance_react verb (one attempt, on the turn's own
     route and correlation id; which GPU serves it is orion-gpu-pool's decision)."""
     plan = build_plan_for_verb("stance_react", mode="brain")
-    context = build_stance_react_context(request, mind_coloring=mind_coloring)
+    context = build_stance_react_context(
+        request, mind_coloring=mind_coloring, stance_prepare_requested=stance_prepare_requested
+    )
     return PlanExecutionRequest(
         plan=plan,
         args=PlanExecutionArgs(
@@ -231,6 +273,7 @@ async def execute_stance_react(
     *,
     client: CortexExecClient,
     mind_coloring: dict[str, Any] | None = None,
+    stance_prepare_requested: bool = False,
 ) -> tuple[dict[str, Any], dict[str, Any] | str]:
     """Run the stance_react plan once, on the turn's own route and correlation id, with the whole
     STANCE_REACT_TIMEOUT_SEC budget.
@@ -242,7 +285,9 @@ async def execute_stance_react(
     while it is lent -- and returns a typed "unavailable" instead of a silent shed. A second
     caller-side placement decision on top would only fight the pool, so it is gone.
     """
-    plan_request = build_stance_react_plan_request(request, mind_coloring=mind_coloring)
+    plan_request = build_stance_react_plan_request(
+        request, mind_coloring=mind_coloring, stance_prepare_requested=stance_prepare_requested
+    )
     exec_result = await client.execute_plan(
         source=_source(),
         req=plan_request,
@@ -393,6 +438,90 @@ async def _maybe_build_mind_coloring(
         return None
 
 
+# Bound on how long the background prepare RPC waits for cortex-exec's reply.
+# The reply only feeds the overlap log; stance_react never waits on it here.
+_STANCE_PREPARE_REPLY_TIMEOUT_SEC = 120.0
+
+
+async def send_stance_context_prepare(
+    request: StanceReactRequestV1,
+    *,
+    request_channel: str,
+    bus: OrionBusAsync | None = None,
+) -> StanceContextPrepareResultV1 | None:
+    """Ask cortex-exec to build stance_react's context now (unified-turn latency L4).
+
+    Sent on the prepare channel of the same exec lane stance_react will use
+    (``request_channel``), so the cached context is on the container that serves
+    stance_react. Own bus connection: it runs concurrently with the mind call
+    and the stance RPC. Fail-open: any failure returns None and stance_react
+    builds its own context after a short wait.
+    """
+    channel = stance_context_prepare_channel(request_channel)
+    if channel is None:
+        return None
+    plan_request = build_stance_react_plan_request(request)
+    payload = StanceContextPrepareRequestV1(
+        correlation_id=request.correlation_id, plan_request=plan_request
+    )
+    reply_channel = f"{STANCE_CONTEXT_PREPARE_RESULT_PREFIX}:{uuid4()}"
+    env = BaseEnvelope(
+        kind=STANCE_CONTEXT_PREPARE_REQUEST_KIND,
+        source=_source(),
+        correlation_id=_envelope_correlation_id(request.correlation_id),
+        reply_to=reply_channel,
+        payload=payload.model_dump(mode="json"),
+    )
+    own_bus = bus is None
+    rpc_bus = bus or OrionBusAsync(url=settings.orion_bus_url)
+    try:
+        if own_bus:
+            await rpc_bus.connect()
+        msg = await rpc_bus.rpc_request(
+            channel,
+            env,
+            reply_channel=reply_channel,
+            timeout_sec=_STANCE_PREPARE_REPLY_TIMEOUT_SEC,
+        )
+        decoded = rpc_bus.codec.decode(msg.get("data"))
+        if not decoded.ok or not isinstance(decoded.envelope.payload, dict):
+            return None
+        return StanceContextPrepareResultV1.model_validate(decoded.envelope.payload)
+    except Exception as exc:  # noqa: BLE001 -- the prepare must never fail the turn
+        logger.warning(
+            "stance_prepare_rpc_failed corr=%s channel=%s err=%s: %s",
+            request.correlation_id,
+            channel,
+            type(exc).__name__,
+            exc,
+        )
+        return None
+    finally:
+        if own_bus:
+            fold_bus(rpc_bus)
+            with suppress(Exception):
+                await rpc_bus.close()
+
+
+def _start_stance_prepare(
+    request: StanceReactRequestV1, client: CortexExecClient
+) -> asyncio.Task[StanceContextPrepareResultV1 | None] | None:
+    if not settings.stance_prepare_parallel_enabled:
+        return None
+    exec_channel = getattr(client, "request_channel", None)
+    if not isinstance(exec_channel, str) or stance_context_prepare_channel(exec_channel) is None:
+        logger.info(
+            "stance_prepare_skipped corr=%s reason=no_prepare_channel exec_channel=%s",
+            request.correlation_id,
+            exec_channel,
+        )
+        return None
+    return asyncio.create_task(
+        send_stance_context_prepare(request, request_channel=exec_channel),
+        name=f"stance-prepare-{request.correlation_id}",
+    )
+
+
 async def run_stance_react(
     request: StanceReactRequestV1,
     *,
@@ -414,10 +543,28 @@ async def run_stance_react(
     imperative or stance slice looks wrong before the motor ever ran.
     """
     client = cortex_client or CortexExecClient(bus)
-    mind_coloring = await _maybe_build_mind_coloring(request, bus=bus)
-    exec_result, raw_payload = await execute_stance_react(
-        request, client=client, mind_coloring=mind_coloring
-    )
+    # The stance_react lane is decided once, here: the prepare goes to the
+    # prepare channel of client.request_channel, the stance RPC to that channel.
+    prepare_task = _start_stance_prepare(request, client)
+    mind_started = time.perf_counter()
+    mind_ms: float | None = None
+    exec_result: dict[str, Any] | None = None
+    try:
+        mind_coloring = await _maybe_build_mind_coloring(request, bus=bus)
+        mind_ms = round((time.perf_counter() - mind_started) * 1000.0, 1)
+        exec_result, raw_payload = await execute_stance_react(
+            request,
+            client=client,
+            mind_coloring=mind_coloring,
+            stance_prepare_requested=prepare_task is not None,
+        )
+    finally:
+        if prepare_task is not None:
+            # Also on a mind/stance failure or cancellation: never leave the
+            # prepare RPC task (and its bus connection) orphaned.
+            _log_stance_prepare_overlap(
+                request, prepare_task, mind_ms=mind_ms, exec_result=exec_result
+            )
     thought = parse_stance_react_payload(
         raw_payload,
         correlation_id=request.correlation_id,
@@ -434,6 +581,39 @@ async def run_stance_react(
         update={"mind_work_shape": work_shape_from_coloring(mind_coloring)}
     )
     return enriched
+
+
+def _log_stance_prepare_overlap(
+    request: StanceReactRequestV1,
+    prepare_task: asyncio.Task[StanceContextPrepareResultV1 | None],
+    *,
+    mind_ms: float | None,
+    exec_result: dict[str, Any] | None = None,
+) -> None:
+    """One line per prepared turn: mind time vs build time, and how long
+    stance_react waited for the build. cortex-exec logs its own side
+    (outcome, wait_ms) under the same prefix."""
+    prepare: StanceContextPrepareResultV1 | None = None
+    if prepare_task.done() and not prepare_task.cancelled():
+        prepare = prepare_task.result()
+    else:
+        prepare_task.cancel()
+    metadata = exec_result.get("metadata") if isinstance(exec_result, dict) else None
+    overlap = metadata.get("stance_prepare_overlap") if isinstance(metadata, dict) else None
+    overlap = overlap if isinstance(overlap, dict) else {}
+    build_ms = prepare.build_ms if prepare is not None else None
+    if build_ms is None:
+        build_ms = overlap.get("build_ms")
+    logger.info(
+        "stance_prepare_overlap corr=%s side=orion-thought mind_ms=%s build_ms=%s wait_ms=%s "
+        "outcome=%s prepare_status=%s",
+        request.correlation_id,
+        mind_ms,
+        build_ms,
+        overlap.get("wait_ms"),
+        overlap.get("outcome") or ("stance_failed" if exec_result is None else "unreported"),
+        prepare.status if prepare is not None else "no_reply",
+    )
 
 
 async def handle_stance_react_request(
@@ -467,12 +647,60 @@ async def handle_stance_react_request(
     return thought
 
 
+def _message_channel(raw_msg: dict[str, Any]) -> str:
+    channel = raw_msg.get("channel")
+    return channel.decode() if isinstance(channel, bytes) else str(channel or "")
+
+
+_INVALID_STEP_RETRY_AFTER_SEC = 60.0
+
+
+async def handle_visual_step_request(bus: OrionBusAsync, env: BaseEnvelope, *, reply_to: str) -> None:
+    """One `reverie.visual` stage from orion-durable-runs; replies on `reply_to` under the
+    request envelope's own correlation id (durable-runs fences replies by it)."""
+    payload = env.payload or {}
+    try:
+        request = ReverieVisualStepRequestV1.model_validate(payload)
+    except ValidationError as exc:
+        logger.error("reverie visual step request invalid corr=%s err=%s", env.correlation_id, exc)
+        try:
+            # A retry, never terminal: during a rolling deploy the sender and this worker
+            # can disagree on the schema, and that skew must not kill in-flight runs.
+            # durable-runs fences replies by the envelope correlation, so fill what the
+            # payload lacks.
+            result = ReverieVisualStepResultV1(
+                run_id=str(payload.get("run_id") or "unknown"),
+                correlation_id=str(payload.get("correlation_id") or env.correlation_id),
+                step=payload.get("step"), status="retry", reason="invalid_step_request",
+                retry_after_sec=_INVALID_STEP_RETRY_AFTER_SEC,
+            )
+        except (ValidationError, AttributeError):
+            logger.error("reverie visual step request unanswerable (no valid step) corr=%s reply_to=%s",
+                         env.correlation_id, reply_to)
+            return
+    else:
+        result = await run_visual_step(bus, request)
+        logger.info("reverie visual step run=%s step=%s status=%s reason=%s elapsed=%s",
+                    request.run_id, request.step, result.status, result.reason, result.elapsed_sec)
+    await bus.publish(
+        reply_to,
+        BaseEnvelope(
+            kind=REVERIE_VISUAL_STEP_RESULT_KIND,
+            source=_source(),
+            correlation_id=env.correlation_id,
+            causality_chain=list(env.causality_chain or []),
+            payload=result.model_dump(mode="json"),
+        ),
+    )
+
+
 async def run_bus_worker(stop_event: asyncio.Event | None = None) -> None:
     if not settings.orion_bus_enabled:
         logger.info("Bus disabled; worker not started")
         return
 
     channel = settings.channel_thought_request
+    channels = (channel, REVERIE_VISUAL_STEP_CHANNEL)
     backoff_sec = 1.0
 
     while True:
@@ -485,8 +713,8 @@ async def run_bus_worker(stop_event: asyncio.Event | None = None) -> None:
         idle_polls = 0
         try:
             await bus.connect()
-            logger.info("subscribed channel=%s", channel)
-            async with bus.subscribe(channel) as pubsub:
+            logger.info("subscribed channels=%s", ",".join(channels))
+            async with bus.subscribe(*channels) as pubsub:
                 backoff_sec = 1.0
                 while True:
                     if stop_event is not None and stop_event.is_set():
@@ -500,11 +728,11 @@ async def run_bus_worker(stop_event: asyncio.Event | None = None) -> None:
                         idle_polls += 1
                         if idle_polls >= _PUBSUB_IDLE_POLLS_BEFORE_HEALTH:
                             idle_polls = 0
-                            subs = await _thought_channel_subscribers(bus, channel)
-                            if subs == 0:
+                            missing = await _missing_subscriptions(bus, channels)
+                            if missing:
                                 logger.warning(
-                                    "pubsub subscription missing channel=%s; reconnecting",
-                                    channel,
+                                    "pubsub subscription missing channels=%s; reconnecting",
+                                    ",".join(missing),
                                 )
                                 reconnect = True
                                 break
@@ -554,6 +782,10 @@ async def _handle_bus_message(bus: OrionBusAsync, raw_msg: dict[str, Any]) -> No
     reply_channel = env.reply_to or (env.payload or {}).get("reply_channel")
     if not reply_channel:
         logger.warning("missing reply_to corr=%s", env.correlation_id)
+        return
+
+    if _message_channel(raw_msg) == REVERIE_VISUAL_STEP_CHANNEL or env.kind == REVERIE_VISUAL_STEP_REQUEST_KIND:
+        await handle_visual_step_request(bus, env, reply_to=reply_channel)
         return
 
     kind = env.kind or ""

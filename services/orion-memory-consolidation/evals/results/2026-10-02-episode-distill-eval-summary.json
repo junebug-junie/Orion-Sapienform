@@ -1,0 +1,533 @@
+{
+ "prompt_version": "memory_episode_distill.v2",
+ "route": "agent (27B, same class as memory_distill)",
+ "compare_route": "quick_background (8B)",
+ "episodes": [
+  {
+   "name": "austin",
+   "runs": {
+    "agent": [
+     {
+      "proposed": 6,
+      "kept": 6,
+      "rejections": {},
+      "downgrades": 0,
+      "juniper_said": 4,
+      "juniper_said_grounded": 4,
+      "about_juniper": 1,
+      "about_juniper_with_novel_words": 1,
+      "high_stakes": 1,
+      "statements_naming_orion": 0,
+      "questions": 1,
+      "voices": {
+       "worked_out_together": 1,
+       "juniper_said": 4,
+       "orion_thought": 1
+      },
+      "purposes": {
+       "happened": 4,
+       "about_juniper": 1,
+       "follow_up": 1
+      },
+      "content_turns": 8,
+      "cited_turns": 6,
+      "coverage": 0.75,
+      "prompt_tokens": 3414,
+      "completion_tokens": 2002,
+      "latency_ms": 93621,
+      "model": "/models/gguf/Qwen3.8-27B-UD-Q4_K_XL.gguf",
+      "austin_checks": {
+       "event_referent_with_alias_austin": true,
+       "juniper_said_verified_introvert_quote": true,
+       "follow_up_due_on_or_after_2026_09_30": true,
+       "no_kept_memory_rests_only_on_command_turns": true
+      }
+     },
+     {
+      "proposed": 5,
+      "kept": 5,
+      "rejections": {},
+      "downgrades": 0,
+      "juniper_said": 3,
+      "juniper_said_grounded": 3,
+      "about_juniper": 0,
+      "about_juniper_with_novel_words": 0,
+      "high_stakes": 0,
+      "statements_naming_orion": 0,
+      "questions": 1,
+      "voices": {
+       "worked_out_together": 1,
+       "juniper_said": 3,
+       "orion_thought": 1
+      },
+      "purposes": {
+       "happened": 4,
+       "follow_up": 1
+      },
+      "content_turns": 8,
+      "cited_turns": 4,
+      "coverage": 0.5,
+      "prompt_tokens": 3414,
+      "completion_tokens": 1917,
+      "latency_ms": 99173,
+      "model": "/models/gguf/Qwen3.8-27B-UD-Q4_K_XL.gguf",
+      "austin_checks": {
+       "event_referent_with_alias_austin": true,
+       "juniper_said_verified_introvert_quote": false,
+       "follow_up_due_on_or_after_2026_09_30": true,
+       "no_kept_memory_rests_only_on_command_turns": true
+      }
+     }
+    ],
+    "quick_background": [
+     {
+      "error": "ValueError: distill_json_invalid:Expecting ',' delimiter"
+     }
+    ]
+   },
+   "jaccard_agent": 0.875
+  },
+  {
+   "name": "ep-0911-0340",
+   "runs": {
+    "agent": [
+     {
+      "proposed": 5,
+      "kept": 5,
+      "rejections": {},
+      "downgrades": 0,
+      "juniper_said": 1,
+      "juniper_said_grounded": 1,
+      "about_juniper": 0,
+      "about_juniper_with_novel_words": 0,
+      "high_stakes": 1,
+      "statements_naming_orion": 0,
+      "questions": 0,
+      "voices": {
+       "juniper_said": 1,
+       "orion_thought": 4
+      },
+      "purposes": {
+       "happened": 3,
+       "orion_view": 1,
+       "follow_up": 1
+      },
+      "content_turns": 4,
+      "cited_turns": 4,
+      "coverage": 1.0,
+      "prompt_tokens": 2776,
+      "completion_tokens": 1718,
+      "latency_ms": 87592,
+      "model": "/models/gguf/Qwen3.8-27B-UD-Q4_K_XL.gguf"
+     },
+     {
+      "proposed": 5,
+      "kept": 5,
+      "rejections": {},
+      "downgrades": 0,
+      "juniper_said": 1,
+      "juniper_said_grounded": 1,
+      "about_juniper": 0,
+      "about_juniper_with_novel_words": 0,
+      "high_stakes": 1,
+      "statements_naming_orion": 0,
+      "questions": 1,
+      "voices": {
+       "juniper_said": 1,
+       "orion_thought": 4
+      },
+      "purposes": {
+       "happened": 3,
+       "orion_view": 1,
+       "follow_up": 1
+      },
+      "content_turns": 4,
+      "cited_turns": 4,
+      "coverage": 1.0,
+      "prompt_tokens": 2776,
+      "completion_tokens": 1842,
+      "latency_ms": 95515,
+      "model": "/models/gguf/Qwen3.8-27B-UD-Q4_K_XL.gguf"
+     }
+    ],
+    "quick_background": [
+     {
+      "error": "ValueError: distill_json_invalid:Expecting ',' delimiter"
+     }
+    ]
+   },
+   "jaccard_agent": 0.5
+  },
+  {
+   "name": "ep-0913-0336",
+   "runs": {
+    "agent": [
+     {
+      "proposed": 7,
+      "kept": 7,
+      "rejections": {},
+      "downgrades": 0,
+      "juniper_said": 5,
+      "juniper_said_grounded": 5,
+      "about_juniper": 2,
+      "about_juniper_with_novel_words": 2,
+      "high_stakes": 2,
+      "statements_naming_orion": 0,
+      "questions": 0,
+      "voices": {
+       "juniper_said": 5,
+       "worked_out_together": 1,
+       "orion_thought": 1
+      },
+      "purposes": {
+       "happened": 4,
+       "about_juniper": 2,
+       "follow_up": 1
+      },
+      "content_turns": 8,
+      "cited_turns": 6,
+      "coverage": 0.75,
+      "prompt_tokens": 3339,
+      "completion_tokens": 2124,
+      "latency_ms": 107359,
+      "model": "/models/gguf/Qwen3.8-27B-UD-Q4_K_XL.gguf"
+     },
+     {
+      "proposed": 6,
+      "kept": 6,
+      "rejections": {},
+      "downgrades": 0,
+      "juniper_said": 4,
+      "juniper_said_grounded": 4,
+      "about_juniper": 2,
+      "about_juniper_with_novel_words": 2,
+      "high_stakes": 2,
+      "statements_naming_orion": 0,
+      "questions": 0,
+      "voices": {
+       "juniper_said": 4,
+       "worked_out_together": 1,
+       "orion_thought": 1
+      },
+      "purposes": {
+       "happened": 3,
+       "about_juniper": 2,
+       "follow_up": 1
+      },
+      "content_turns": 8,
+      "cited_turns": 5,
+      "coverage": 0.625,
+      "prompt_tokens": 3339,
+      "completion_tokens": 1793,
+      "latency_ms": 243556,
+      "model": "/models/gguf/Qwen3.8-27B-UD-Q4_K_XL.gguf"
+     }
+    ],
+    "quick_background": [
+     {
+      "error": "ValueError: distill_json_invalid:Expecting ',' delimiter"
+     }
+    ]
+   },
+   "jaccard_agent": 0.625
+  },
+  {
+   "name": "ep-0914-1731",
+   "runs": {
+    "agent": [
+     {
+      "proposed": 7,
+      "kept": 7,
+      "rejections": {},
+      "downgrades": 0,
+      "juniper_said": 2,
+      "juniper_said_grounded": 2,
+      "about_juniper": 1,
+      "about_juniper_with_novel_words": 1,
+      "high_stakes": 1,
+      "statements_naming_orion": 0,
+      "questions": 0,
+      "voices": {
+       "juniper_said": 2,
+       "worked_out_together": 2,
+       "orion_thought": 3
+      },
+      "purposes": {
+       "happened": 4,
+       "about_juniper": 1,
+       "orion_view": 1,
+       "follow_up": 1
+      },
+      "content_turns": 3,
+      "cited_turns": 3,
+      "coverage": 1.0,
+      "prompt_tokens": 3147,
+      "completion_tokens": 2078,
+      "latency_ms": 83611,
+      "model": "/models/gguf/Qwen3.8-27B-UD-Q4_K_XL.gguf"
+     },
+     {
+      "proposed": 11,
+      "kept": 8,
+      "rejections": {
+       "no_verified_quote": 3
+      },
+      "downgrades": 0,
+      "juniper_said": 6,
+      "juniper_said_grounded": 6,
+      "about_juniper": 2,
+      "about_juniper_with_novel_words": 2,
+      "high_stakes": 2,
+      "statements_naming_orion": 0,
+      "questions": 0,
+      "voices": {
+       "juniper_said": 6,
+       "orion_thought": 2
+      },
+      "purposes": {
+       "happened": 5,
+       "about_juniper": 2,
+       "follow_up": 1
+      },
+      "content_turns": 3,
+      "cited_turns": 3,
+      "coverage": 1.0,
+      "prompt_tokens": 3147,
+      "completion_tokens": 3128,
+      "latency_ms": 267054,
+      "model": "/models/gguf/Qwen3.8-27B-UD-Q4_K_XL.gguf"
+     }
+    ],
+    "quick_background": [
+     {
+      "error": "ValueError: distill_json_invalid:Expecting ',' delimiter"
+     }
+    ]
+   },
+   "jaccard_agent": 0.8
+  },
+  {
+   "name": "ep-0917-0503",
+   "runs": {
+    "agent": [
+     {
+      "proposed": 8,
+      "kept": 7,
+      "rejections": {
+       "no_verified_quote": 1
+      },
+      "downgrades": 0,
+      "juniper_said": 4,
+      "juniper_said_grounded": 4,
+      "about_juniper": 1,
+      "about_juniper_with_novel_words": 1,
+      "high_stakes": 2,
+      "statements_naming_orion": 0,
+      "questions": 1,
+      "voices": {
+       "juniper_said": 4,
+       "orion_thought": 3
+      },
+      "purposes": {
+       "happened": 3,
+       "about_juniper": 1,
+       "orion_view": 1,
+       "follow_up": 2
+      },
+      "content_turns": 3,
+      "cited_turns": 2,
+      "coverage": 0.667,
+      "prompt_tokens": 2498,
+      "completion_tokens": 2345,
+      "latency_ms": 181561,
+      "model": "/models/gguf/Qwen3.8-27B-UD-Q4_K_XL.gguf"
+     },
+     {
+      "proposed": 8,
+      "kept": 7,
+      "rejections": {
+       "no_verified_quote": 1
+      },
+      "downgrades": 0,
+      "juniper_said": 4,
+      "juniper_said_grounded": 4,
+      "about_juniper": 1,
+      "about_juniper_with_novel_words": 1,
+      "high_stakes": 2,
+      "statements_naming_orion": 0,
+      "questions": 1,
+      "voices": {
+       "juniper_said": 4,
+       "orion_thought": 3
+      },
+      "purposes": {
+       "happened": 3,
+       "about_juniper": 1,
+       "orion_view": 1,
+       "follow_up": 2
+      },
+      "content_turns": 3,
+      "cited_turns": 2,
+      "coverage": 0.667,
+      "prompt_tokens": 2498,
+      "completion_tokens": 2426,
+      "latency_ms": 184476,
+      "model": "/models/gguf/Qwen3.8-27B-UD-Q4_K_XL.gguf"
+     }
+    ],
+    "quick_background": [
+     {
+      "error": "ValueError: distill_json_invalid:Expecting ',' delimiter"
+     }
+    ]
+   },
+   "jaccard_agent": 0.25
+  },
+  {
+   "name": "ep-0924-0026",
+   "runs": {
+    "agent": [
+     {
+      "error": "RuntimeError: gateway_error:gpu_pool_unavailable:{'reason': 'deadline', 'route': 'agent', 'work_class': 'agent'}"
+     },
+     {
+      "proposed": 7,
+      "kept": 7,
+      "rejections": {},
+      "downgrades": 0,
+      "juniper_said": 3,
+      "juniper_said_grounded": 3,
+      "about_juniper": 1,
+      "about_juniper_with_novel_words": 1,
+      "high_stakes": 1,
+      "statements_naming_orion": 0,
+      "questions": 0,
+      "voices": {
+       "juniper_said": 3,
+       "orion_thought": 4
+      },
+      "purposes": {
+       "happened": 4,
+       "about_juniper": 1,
+       "orion_view": 2
+      },
+      "content_turns": 3,
+      "cited_turns": 3,
+      "coverage": 1.0,
+      "prompt_tokens": 2200,
+      "completion_tokens": 2130,
+      "latency_ms": 165148,
+      "model": "/models/gguf/Qwen3.8-27B-UD-Q4_K_XL.gguf"
+     }
+    ],
+    "quick_background": [
+     {
+      "proposed": 4,
+      "kept": 3,
+      "rejections": {
+       "no_verified_quote": 1
+      },
+      "downgrades": 1,
+      "juniper_said": 2,
+      "juniper_said_grounded": 2,
+      "about_juniper": 1,
+      "about_juniper_with_novel_words": 1,
+      "high_stakes": 1,
+      "statements_naming_orion": 0,
+      "questions": 1,
+      "voices": {
+       "juniper_said": 2,
+       "orion_thought": 1
+      },
+      "purposes": {
+       "about_juniper": 1,
+       "happened": 1,
+       "follow_up": 1
+      },
+      "content_turns": 3,
+      "cited_turns": 1,
+      "coverage": 0.333,
+      "prompt_tokens": 2155,
+      "completion_tokens": 1085,
+      "latency_ms": 13088,
+      "model": "/models/gguf/Qwen_Qwen3-8B-Q4_K_M.gguf"
+     }
+    ]
+   },
+   "jaccard_agent": null
+  }
+ ],
+ "aggregate_agent": {
+  "runs": 11,
+  "kept": 70,
+  "proposed": 75,
+  "rejections": {
+   "no_verified_quote": 5
+  },
+  "downgrades": 0,
+  "juniper_said_grounded": "37/37",
+  "about_juniper_novel_word_rate": "11/11",
+  "statements_naming_orion": 0,
+  "coverage_mean": 0.814,
+  "coverage_min": 0.5,
+  "runs_coverage_ge_0_8": 5,
+  "prompt_tokens_range": [
+   2200,
+   3414
+  ],
+  "completion_tokens_range": [
+   1718,
+   3128
+  ],
+  "latency_ms_p50": 107359,
+  "latency_ms_max": 267054
+ },
+ "aggregate_8b": {
+  "runs": 6,
+  "invalid_json": 5,
+  "kept": 3,
+  "proposed": 4,
+  "rejections": {
+   "no_verified_quote": 1
+  },
+  "downgrades": 1,
+  "juniper_said_grounded": "2/2",
+  "about_juniper_novel_word_rate": "1/1",
+  "statements_naming_orion": 0,
+  "coverage_mean": 0.333,
+  "coverage_min": 0.333,
+  "runs_coverage_ge_0_8": 0,
+  "prompt_tokens_range": [
+   2155,
+   2155
+  ],
+  "completion_tokens_range": [
+   1085,
+   1085
+  ],
+  "latency_ms_p50": 13088,
+  "latency_ms_max": 13088
+ },
+ "jaccard_agent": {
+  "austin": 0.875,
+  "ep-0911-0340": 0.5,
+  "ep-0913-0336": 0.625,
+  "ep-0914-1731": 0.8,
+  "ep-0917-0503": 0.25,
+  "ep-0924-0026": null
+ },
+ "austin_checks": [
+  {
+   "event_referent_with_alias_austin": true,
+   "juniper_said_verified_introvert_quote": true,
+   "follow_up_due_on_or_after_2026_09_30": true,
+   "no_kept_memory_rests_only_on_command_turns": true
+  },
+  {
+   "event_referent_with_alias_austin": true,
+   "juniper_said_verified_introvert_quote": false,
+   "follow_up_due_on_or_after_2026_09_30": true,
+   "no_kept_memory_rests_only_on_command_turns": true
+  }
+ ]
+}

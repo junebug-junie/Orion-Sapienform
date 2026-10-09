@@ -8,10 +8,12 @@ import pytest
 import app.current_turn_llm_signals as signals_module
 from app.current_turn_llm_signals import (
     build_current_turn_llm_prompt,
+    parse_current_turn_llm_read,
     parse_current_turn_llm_signals,
     populate_current_turn_llm_signals,
     reset_current_turn_llm_signals_bus_for_tests,
 )
+from app.settings import settings
 
 
 @pytest.fixture(autouse=True)
@@ -183,7 +185,93 @@ def test_prompt_includes_user_text_and_excludes_filler_instruction() -> None:
     prompt = build_current_turn_llm_prompt("Heck yeah!")
     assert "Heck yeah!" in prompt
     assert "interjection" in prompt.lower()
-    assert "JSON array" in prompt
+    assert '"wants_direct_answer"' in prompt
+    assert '"items"' in prompt
+
+
+# --- parse_current_turn_llm_read (disclosure-aware object shape) ------------
+
+
+def test_parse_read_carries_direct_answer_and_natural_question() -> None:
+    """corr beab81a3 (2026-09-28): Juniper said they'd be busy with work travel.
+    The old probe returned [] -- vague life news had no place in a names/places/
+    concrete-plans contract. The read must carry the follow-up a friend would ask."""
+    raw = json.dumps(
+        {
+            "wants_direct_answer": False,
+            "items": [{"phrase": "work travel", "type": "plan", "question": "Where are you headed?"}],
+        }
+    )
+    assert parse_current_turn_llm_read(raw) == {
+        "wants_direct_answer": False,
+        "signals": [{"phrase": "work travel", "type": "plan", "natural_question": "Where are you headed?"}],
+    }
+
+
+def test_parse_read_empty_items_is_a_clean_empty_result() -> None:
+    assert parse_current_turn_llm_read('{"wants_direct_answer": true, "items": []}') == {
+        "wants_direct_answer": True,
+        "signals": [],
+    }
+
+
+def test_parse_read_tolerates_prose_around_the_object() -> None:
+    raw = 'Here you go:\n{"wants_direct_answer": false, "items": [{"phrase": "pottery class", "type": "activity", "question": "How was the first session?"}]}\n'
+    read = parse_current_turn_llm_read(raw)
+    assert read is not None
+    assert read["signals"][0]["natural_question"] == "How was the first session?"
+
+
+def test_parse_read_legacy_array_leaves_direct_answer_unknown() -> None:
+    assert parse_current_turn_llm_read('[{"phrase": "Sarah", "type": "person"}]') == {
+        "wants_direct_answer": None,
+        "signals": [{"phrase": "Sarah", "type": "person"}],
+    }
+
+
+def test_parse_read_non_boolean_direct_answer_is_unknown_not_truthy() -> None:
+    read = parse_current_turn_llm_read('{"wants_direct_answer": "yes", "items": []}')
+    assert read == {"wants_direct_answer": None, "signals": []}
+
+
+def test_parse_read_bare_word_floor_still_applies_inside_the_object() -> None:
+    raw = json.dumps(
+        {
+            "wants_direct_answer": False,
+            "items": [
+                {"phrase": "lol", "type": "other", "question": "What's funny?"},
+                {"phrase": "my sister's visit", "type": "person", "question": "How long is she staying?"},
+            ],
+        }
+    )
+    read = parse_current_turn_llm_read(raw)
+    assert [s["phrase"] for s in read["signals"]] == ["my sister's visit"]
+
+
+def test_parse_read_blank_question_is_dropped_and_long_question_is_bounded() -> None:
+    raw = json.dumps(
+        {
+            "wants_direct_answer": False,
+            "items": [
+                {"phrase": "repainting the living room", "type": "plan", "question": "   "},
+                {"phrase": "the dentist visit", "type": "activity", "question": "x" * 500},
+            ],
+        }
+    )
+    read = parse_current_turn_llm_read(raw)
+    assert "natural_question" not in read["signals"][0]
+    assert len(read["signals"][1]["natural_question"]) <= 160
+
+
+def test_parse_read_object_without_items_key_falls_back_to_array_scan() -> None:
+    """A bare array response's first `{...}` span is an item, not the read object;
+    it must not be mistaken for one."""
+    raw = '[{"phrase": "Sarah", "type": "person"}]'
+    assert parse_current_turn_llm_read(raw)["wants_direct_answer"] is None
+
+
+def test_parse_read_garbage_returns_none() -> None:
+    assert parse_current_turn_llm_read("I refuse to output JSON today.") is None
 
 
 # --- populate_current_turn_llm_signals --------------------------------------
@@ -312,6 +400,87 @@ async def test_three_failure_modes_use_distinct_log_messages(monkeypatch, caplog
     assert set(unbound_msgs) != set(rpc_failed_msgs) != set(malformed_msgs)
 
 
+def test_non_string_question_is_not_a_natural_question() -> None:
+    raw = json.dumps(
+        {
+            "wants_direct_answer": False,
+            "items": [
+                {"phrase": "work travel", "type": "plan", "question": True},
+                {"phrase": "pottery class", "type": "activity", "question": ["What kind?"]},
+            ],
+        }
+    )
+    read = parse_current_turn_llm_read(raw)
+    assert read is not None
+    assert all("natural_question" not in s for s in read["signals"])
+
+
+@pytest.mark.asyncio
+async def test_populate_records_a_successful_turn_read(monkeypatch) -> None:
+    async def _fake_llm_call(bus, *, prompt):
+        return json.dumps(
+            {
+                "wants_direct_answer": False,
+                "items": [{"phrase": "work travel", "type": "plan", "question": "Where are you headed?"}],
+            }
+        )
+
+    monkeypatch.setattr(signals_module, "_llm_call", _fake_llm_call)
+    signals_module.bind_current_turn_llm_signals_bus(object())
+
+    ctx = {"user_message": "I'll be pretty busy the next few days with work travel."}
+    await populate_current_turn_llm_signals(ctx)
+    assert ctx["current_turn_llm_read"] == {"ok": True, "wants_direct_answer": False}
+    assert ctx["current_turn_llm_signals"] == [
+        {"phrase": "work travel", "type": "plan", "natural_question": "Where are you headed?"}
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["rpc", "malformed", "unbound"])
+async def test_populate_marks_turn_read_unavailable_on_every_failure(monkeypatch, failure) -> None:
+    async def _boom(bus, *, prompt):
+        raise TimeoutError("rpc timed out")
+
+    async def _garbage(bus, *, prompt):
+        return "not json"
+
+    if failure != "unbound":
+        monkeypatch.setattr(signals_module, "_llm_call", _boom if failure == "rpc" else _garbage)
+        signals_module.bind_current_turn_llm_signals_bus(object())
+
+    ctx = {"user_message": "I'm meeting Sarah tomorrow"}
+    await populate_current_turn_llm_signals(ctx)
+    assert ctx["current_turn_llm_read"]["ok"] is False
+    assert ctx["current_turn_llm_read"]["wants_direct_answer"] is None
+
+
+def test_probe_request_pins_temperature_and_token_budget():
+    """Unpinned sampling made the live probe a coin flip: the same prompt and
+    message caught the trip 1/10 at default temperature on the quick lane."""
+    import asyncio
+
+    from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
+    from orion.core.bus.codec import OrionCodec
+
+    seen: dict = {}
+    codec = OrionCodec()
+
+    class _Bus:
+        def __init__(self) -> None:
+            self.codec = codec
+
+        async def rpc_request(self, channel, env, *, reply_channel, timeout_sec, health_label=None):
+            seen["options"] = env.payload["options"]
+            reply = BaseEnvelope(kind="llm.chat.result", source=ServiceRef(name="llm-gateway"), payload={"content": "[]"})
+            return {"data": codec.encode(reply)}
+
+    asyncio.run(signals_module._llm_call(_Bus(), prompt="hi"))
+    assert seen["options"]["temperature"] == settings.current_turn_signal_probe_temperature
+    assert seen["options"]["max_tokens"] == settings.current_turn_signal_probe_max_tokens
+    assert settings.current_turn_signal_probe_max_tokens >= 200
+
+
 def test_probe_rpc_uses_its_own_rpc_health_hop_label():
     """The probe's deliberate 3 s deadline must not be counted as LLMGatewayService
     delivery failure (orion/substrate/rpc_delivery.py excludes this label)."""
@@ -336,3 +505,48 @@ def test_probe_rpc_uses_its_own_rpc_health_hop_label():
     assert asyncio.run(signals_module._llm_call(_Bus(), prompt="hi")) == "[]"
     assert seen["health_label"] == signals_module.PROBE_HEALTH_LABEL == "current_turn_probe"
     assert signals_module.PROBE_HEALTH_LABEL in DEFAULT_EXCLUDE_LABELS
+
+
+# --- human-turn gate --------------------------------------------------------
+
+from app.current_turn_llm_signals import (  # noqa: E402
+    SKIPPED_NOT_HUMAN_TURN,
+    human_chat_turn_reason,
+    mark_current_turn_llm_skipped,
+)
+from orion.substrate.attention.policy import direct_answer_cause  # noqa: E402
+
+
+@pytest.mark.parametrize(
+    "ctx,expected",
+    [
+        ({"verb": "stance_react", "stance_inputs": {"utterance_origin": "juniper"}}, (True, "utterance_origin_juniper")),
+        ({"verb": "chat_general"}, (True, "chat_entry_verb")),
+        ({"verb": "chat_quick", "options": {"chat_quick_full_stance": True}}, (True, "chat_entry_verb")),
+        ({"verb": "stance_react", "stance_inputs": {"utterance_origin": "orion"}}, (False, "utterance_origin_orion")),
+        ({"verb": "stance_react", "stance_inputs": {}}, (False, "unified_turn_without_human_origin")),
+        ({"verb": "journal.compose"}, (False, "non_chat_verb:journal.compose")),
+        ({"verb": "skills.imagination.render_scene.v1"}, (False, "non_chat_verb:skills.imagination.render_scene.v1")),
+        ({}, (False, "non_chat_verb:none")),
+        ({"verb": "chat_general", "options": {"policy_dispatch_only": True}}, (False, "policy_dispatch")),
+        ({"verb": "chat_general", "policy_dispatch_only": True}, (False, "policy_dispatch")),
+    ],
+)
+def test_human_chat_turn_reason(ctx, expected) -> None:
+    assert human_chat_turn_reason(ctx) == expected
+
+
+def test_skipped_state_is_distinct_and_fails_closed() -> None:
+    ctx = {"user_message": "Compose today's journal entry."}
+    mark_current_turn_llm_skipped(ctx, "non_chat_verb:journal.compose")
+    assert ctx["current_turn_llm_signals"] == []
+    read = ctx["current_turn_llm_read"]
+    assert read == {
+        "ok": False,
+        "wants_direct_answer": None,
+        "skipped": SKIPPED_NOT_HUMAN_TURN,
+        "skip_reason": "non_chat_verb:journal.compose",
+    }
+    # Not "found nothing" (that would be ok=True) and not "wants a direct answer"
+    # ("judged"): the policy treats it like any missing read.
+    assert direct_answer_cause(ctx, ctx["user_message"]) == "unavailable"

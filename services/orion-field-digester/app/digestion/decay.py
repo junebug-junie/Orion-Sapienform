@@ -60,10 +60,10 @@ NODE_DECAY_CHANNELS = {
     "compliance_deficit",
     "turn_incompletion",
     "context_gathering_ratio",
-    # transport
-    "contract_pressure",
+    # transport (node-level contract_pressure retired 2026-10-07; the
+    # capability-level catalog_drift_pressure below is a separate decay entry)
     "catalog_drift_pressure",
-    "observer_failure_pressure",
+    # observer_failure_pressure retired 2026-10-07 (channels.py RETIRED_NODE_CHANNELS)
     "reliability_pressure",
     # inference_failure_pressure (gateway-reported) is deliberately NOT here: it is
     # written mode="replace" only when a node got upstream traffic, so decaying it
@@ -78,7 +78,7 @@ CAPABILITY_DECAY_CHANNELS = {
     "execution_pressure",
     "reasoning_pressure",
     "reliability_pressure",
-    "contract_pressure",
+    "catalog_drift_pressure",  # was contract_pressure until 2026-10-07 (D3)
 }
 
 
@@ -89,12 +89,28 @@ CAPABILITY_DECAY_CHANNELS = {
 # measurement to diffusion, capability provenance, and feedback credit's
 # write-backed check (orion/field/credit_integrity.py), none of which can tell
 # it apart from a fresh one. Dropping the key makes every consumer see
-# "unmeasured" instead.
+# "unmeasured" instead -- including one layer up: a capability channel left
+# with no measuring source is dropped by apply_diffusion() too (2026-10-07),
+# rather than written as 0.0 with a fabricated confidence 1.0.
 #
 # rpc_timeout_pressure: the bridge writes every 30 s whenever any bus RPC call
 # happened in the last 10 min; 120 s = four missed ticks.
+#
+# write_failure_pressure: the sql-writer publishes one window every 60 s (an
+# idle window still publishes, and a measured span always yields a reading), so
+# 180 s = three missed windows. A dead writer, a dead reducer, or a Postgres
+# outage long enough that the writer's own report cannot be stored all read as
+# "unmeasured", never as the last calm value.
+# vision_frame_staleness / vision_processing_failure_pressure: the vision_organ
+# reducer writes once per 60 s router window, and its silence path writes
+# staleness 1.0 every <= 60 s while the router is quiet. 300 s = five missed
+# writes, i.e. substrate-runtime itself (or the lane) has stopped -- then the
+# field must read "unmeasured", not the last value.
 EXPIRING_NODE_CHANNELS: dict[str, float] = {
     "rpc_timeout_pressure": 120.0,
+    "write_failure_pressure": 180.0,
+    "vision_frame_staleness": 300.0,
+    "vision_processing_failure_pressure": 300.0,
 }
 
 
@@ -149,6 +165,14 @@ def apply_decay(
             if is_fresh:
                 continue
             vec[ch] = vec[ch] * decay_rate
+    # CORRECTION (2026-10-07): the NOTE below is wrong for capability->
+    # capability edges. apply_diffusion() reads a cap->cap SOURCE from
+    # state.capability_vectors before recomputing it, so this loop's 0.92
+    # does reach capability:orchestration via the llm_inference edge (found
+    # replaying 72h of real ticks: the replay only matched stored
+    # orchestration pressure once this decay step was included). Left as-is;
+    # flagged, not changed, in fix/field-capability-unmeasured-fallback.
+    #
     # NOTE (2026-07-12, found by code review on the diffusion memoryless-
     # recompute fix): this capability_vectors loop -- and its
     # "available_capacity" recompute below -- is currently dead weight for

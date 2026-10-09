@@ -8,6 +8,33 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
+
+@pytest.fixture(autouse=True)
+def held_model_boundary(monkeypatch):
+    """These parsing/wallet tests exercise the relocated model boundary.
+
+    Durable submission, waiting and RPC fencing have separate integration tests.
+    """
+    from scripts.reading_turn_listener import ReadingTurnListener
+    from orion.schemas.reading_turn import ReadingRunBriefV1, ReadingTurnRequestV1
+    from scripts.world_pulse_read_stage2 import GenerateOutcome
+
+    async def generate(pipe, prompt, correlation_id, *, seed_id="test-seed", retrieval_query=None):
+        listener = ReadingTurnListener(pipe._source_ref, pipe._step_relay_provider)
+        listener.bus = pipe._bus
+        listener.rpc_bus = pipe._harness_rpc_bus or pipe._bus
+        result = await listener._execute(ReadingTurnRequestV1(
+            run_id="test-run", correlation_id=correlation_id,
+            brief=ReadingRunBriefV1(seed_id=seed_id, stage=2, prompt=prompt,
+                session_id=pipe.session_id, timeout_sec=pipe.timeout_sec,
+                fcc_model_label=pipe._fcc_model_label, retrieval_query=retrieval_query),
+            gpu_lease={"lease_id": "test-hold", "generation": 1,
+                       "role": "agent", "holder": "durable-runs:test-run"},
+        ))
+        return GenerateOutcome(result.text, result.error)
+
+    monkeypatch.setattr(WorldPulseReadStage2Pipeline, "_generate", generate)
+
 from orion.core.bus.bus_schemas import ServiceRef
 from orion.schemas.reading import SourceFetchEvidenceV1
 from orion.schemas.world_pulse_read import (
@@ -323,8 +350,6 @@ def _pipeline(bus: _FakeBus, conn: _FakeConn, **over) -> WorldPulseReadStage2Pip
     kwargs = dict(
         enabled=True,
         tick_interval_sec=60.0,
-        min_cooldown_sec=0.0,
-        daily_cap=6,
         window_start_hour=0,
         window_end_hour=0,
         timeout_sec=30.0,
@@ -332,8 +357,6 @@ def _pipeline(bus: _FakeBus, conn: _FakeConn, **over) -> WorldPulseReadStage2Pip
         llm_route="agent",
         timezone_name="UTC",
         max_round_trips=5,
-        wallet_a_daily_cap=6,
-        wallet_a_min_cooldown_sec=0.0,
         wallet_a_window_start_hour=0,
         wallet_a_window_end_hour=0,
         pool_provider=lambda: _FakePool(conn),
@@ -351,17 +374,18 @@ async def _ready_stage2(conn: _FakeConn, seed: WorldPulseReadSeedV1 | None = Non
     await mark_seed_done(conn, seed.seed_id, trace_id="tr-pipeline-1", handoff=_handoff(seed))
 
 
-def test_tick_at_wallet_b_cap_does_not_claim() -> None:
+def test_tick_when_wallet_b_disabled_does_not_claim() -> None:
+    """No daily cap since 2026-09-28: a busy day does not block, the switch does."""
     bus = _FakeBus()
     conn = _FakeConn()
-    bus.redis.store[_count_key_b()] = "6"
-    pipe = _pipeline(bus, conn)
+    bus.redis.store[_count_key_b()] = "99"
+    pipe = _pipeline(bus, conn, enabled=False)
 
     async def _run():
         await _ready_stage2(conn)
         return await pipe.tick()
 
-    assert asyncio.run(_run()) == "daily_cap"
+    assert asyncio.run(_run()) == "disabled"
     assert conn.stage2_claimed_ids == []
     assert conn.rows["finding:r1:x"]["stage2_status"] == "pending"
 
@@ -505,6 +529,31 @@ def test_round_trip_ceiling_stops_at_five() -> None:
     assert conn.rows["finding:r1:x"]["stage2_status"] == "done"
 
 
+def test_already_read_followup_is_passed_on_without_stopping_the_rest() -> None:
+    bus = _FakeBus()
+    conn = _FakeConn()
+    pipe = _pipeline(bus, conn, max_round_trips=5)
+    tried: list[str] = []
+
+    async def _pass(handoff):
+        return _result(urls=["https://ex.com/read-before", "https://ex.com/new"])
+
+    async def _reenter(url, *, parent_seed):
+        tried.append(url)
+        return "already_read" if url.endswith("read-before") else None
+
+    pipe._stage2_pass = _pass  # type: ignore[method-assign]
+    pipe._reenter_stage1 = _reenter  # type: ignore[method-assign]
+
+    async def _run():
+        await _ready_stage2(conn)
+        return await pipe.tick(force=True)
+
+    assert asyncio.run(_run()) is None
+    assert tried == ["https://ex.com/read-before", "https://ex.com/new"]
+    assert pipe.last_round_trips == 1
+
+
 def test_reentry_stops_when_wallet_a_blocked() -> None:
     bus = _FakeBus()
     conn = _FakeConn()
@@ -516,7 +565,7 @@ def test_reentry_stops_when_wallet_a_blocked() -> None:
 
     async def _reenter(url, *, parent_seed):
         if reentered:
-            return "daily_cap"
+            return "refund_backoff"
         reentered.append(url)
         return None
 
@@ -971,7 +1020,7 @@ def test_stage2_real_deferred_frame_refunds_wallet_b(monkeypatch: pytest.MonkeyP
     bus = _FakeBus()
     conn = _FakeConn()
     bus.redis.store[_count_key_b()] = "4"
-    pipe = _pipeline(bus, conn, max_attempts=3, min_cooldown_sec=600.0)
+    pipe = _pipeline(bus, conn, max_attempts=3)
     _patch_turn(
         monkeypatch,
         [{"type": "turn_deferred", "reason": "stance_react_failed: agent=gpu_pool_unavailable:deadline"}],
@@ -989,7 +1038,7 @@ def test_stage2_real_turn_error_keeps_wallet_b_charge(monkeypatch: pytest.Monkey
     bus = _FakeBus()
     conn = _FakeConn()
     bus.redis.store[_count_key_b()] = "4"
-    pipe = _pipeline(bus, conn, max_attempts=3, min_cooldown_sec=600.0)
+    pipe = _pipeline(bus, conn, max_attempts=3)
     _patch_turn(monkeypatch, [{"type": "turn_error", "error_code": "fcc_stream_stalled"}])
 
     _stage2_tick(conn, pipe)
@@ -1016,7 +1065,7 @@ def test_stage2_invalid_handoff_is_not_debited() -> None:
 def test_stage2_turn_that_reached_reader_resets_refund_streak(monkeypatch: pytest.MonkeyPatch) -> None:
     bus = _FakeBus()
     conn = _FakeConn()
-    pipe = _pipeline(bus, conn, max_attempts=5, min_cooldown_sec=600.0)
+    pipe = _pipeline(bus, conn, max_attempts=5)
     _patch_turn(
         monkeypatch,
         [{"type": "turn_deferred", "reason": "stance_react_failed: agent=gpu_pool_unavailable:deadline"}],
@@ -1078,3 +1127,43 @@ def test_stage2_skips_unread_handoff_before_wallet_b_debit() -> None:
     # stage2_started (published at claim) is closed by a terminal event.
     stages = [e.payload.get("stage") for c, e in bus.published if c != JOURNAL_WRITE_CHANNEL]
     assert stages[-1] == "stage2_failed"
+
+
+def test_reentry_passes_on_an_already_read_url_even_when_wallet_a_is_backing_off() -> None:
+    bus = _FakeBus()
+    conn = _FakeConn()
+    bus.redis.store[wa.WALLET_A_RETRY_NOT_BEFORE_KEY] = (
+        datetime.now(timezone.utc) + timedelta(hours=1)
+    ).isoformat()
+    pipe = _pipeline(bus, conn)
+
+    async def _run():
+        await _ready_stage2(conn)
+        conn.rows["finding:r1:x"]["handoff_json"] = {
+            "read_evidence": [{"tool_name": "WebFetch", "url": "https://ex.com/a", "content_chars": 900}]
+        }
+        read_before = await pipe._reenter_stage1("https://ex.com/a", parent_seed=_seed())
+        fresh = await pipe._reenter_stage1("https://ex.com/new", parent_seed=_seed())
+        return read_before, fresh
+
+    assert asyncio.run(_run()) == ("already_read", "refund_backoff")
+
+
+def test_stage2_turn_recalls_about_title_and_stage1_claim(monkeypatch) -> None:
+    """Recall retrieval design phase 3: "<source title> — <stage-1 claim>", not the stage-2
+    prompt that embeds the whole stage-1 handoff JSON."""
+    bus, conn = _FakeBus(), _FakeConn()
+    pipe = _pipeline(bus, conn)
+    captured: dict = {}
+
+    async def _turn(**kwargs):
+        captured.update(kwargs)
+        return [{"type": "final", "llm_response": "{}"}]
+
+    monkeypatch.setattr("orion.hub.turn_orchestrator.execute_unified_turn", _turn)
+    try:
+        asyncio.run(pipe._stage2_pass(_handoff()))
+    except Exception:  # noqa: BLE001 -- only the turn's arguments matter here
+        pass
+
+    assert captured["retrieval_query"] == "A — Learned about packaging."

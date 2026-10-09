@@ -1,0 +1,20 @@
+{"depth_target": 8000, "tag": "chain4", "want": "3553", "got": "3553", "ok": true, "finish": "stop", "prompt_tokens": 8871, "gen": 312, "tg": 25.584287311546507, "reasoning_chars": 600, "wall": 41.99}
+{"depth_target": 8000, "tag": "decoy", "want": "1392", "got": "1392", "ok": true, "finish": "stop", "prompt_tokens": 8871, "gen": 292, "tg": 31.520202074720153, "reasoning_chars": 652, "wall": 10.29}
+{"depth_target": 8000, "tag": "arith", "want": "2656", "got": "2656", "ok": true, "finish": "stop", "prompt_tokens": 8878, "gen": 734, "tg": 31.450490179884376, "reasoning_chars": 929, "wall": 24.41}
+{"depth_target": 8000, "tag": "date", "want": "Saturday", "got": "Saturday", "ok": true, "finish": "stop", "prompt_tokens": 8869, "gen": 187, "tg": 31.533229953802977, "reasoning_chars": 461, "wall": 6.96}
+{"depth_target": 8000, "tag": "who", "want": "Mirela Cask", "got": "Mirela Cask", "ok": true, "finish": "stop", "prompt_tokens": 8870, "gen": 307, "tg": 31.24590024781968, "reasoning_chars": 668, "wall": 10.86}
+{"depth_target": 24000, "tag": "chain4", "want": "5493", "got": "5493", "ok": true, "finish": "stop", "prompt_tokens": 25583, "gen": 289, "tg": 24.22655669877705, "reasoning_chars": 512, "wall": 50.8}
+{"depth_target": 24000, "tag": "decoy", "want": "2000", "got": "2000", "ok": true, "finish": "stop", "prompt_tokens": 25583, "gen": 299, "tg": 27.557933873862083, "reasoning_chars": 679, "wall": 12.21}
+{"depth_target": 24000, "tag": "arith", "want": "1616", "got": "1616", "ok": true, "finish": "stop", "prompt_tokens": 25590, "gen": 355, "tg": 26.994325564645248, "reasoning_chars": 453, "wall": 14.46}
+{"depth_target": 24000, "tag": "date", "want": "Thursday", "got": "Thursday", "ok": true, "finish": "stop", "prompt_tokens": 25581, "gen": 295, "tg": 27.655263916995956, "reasoning_chars": 650, "wall": 11.93}
+{"depth_target": 24000, "tag": "who", "want": "Ilse Marr", "got": "Ilse Marr", "ok": true, "finish": "stop", "prompt_tokens": 25582, "gen": 232, "tg": 27.798973163446462, "reasoning_chars": 591, "wall": 9.61}
+{"depth_target": 40000, "tag": "chain4", "want": "2290", "got": "2290", "ok": true, "finish": "stop", "prompt_tokens": 39591, "gen": 276, "tg": 21.38692172688854, "reasoning_chars": 537, "wall": 79.68}
+{"depth_target": 40000, "tag": "decoy", "want": "8944", "got": "8944", "ok": true, "finish": "stop", "prompt_tokens": 39591, "gen": 311, "tg": 25.39243352836518, "reasoning_chars": 694, "wall": 13.72}
+{"depth_target": 40000, "tag": "arith", "want": "2701", "got": "2701", "ok": true, "finish": "stop", "prompt_tokens": 39598, "gen": 548, "tg": 25.0491818745217, "reasoning_chars": 800, "wall": 23.38}
+{"depth_target": 40000, "tag": "date", "want": "Sunday", "got": "Sunday", "ok": true, "finish": "stop", "prompt_tokens": 39589, "gen": 353, "tg": 24.77019851805446, "reasoning_chars": 972, "wall": 15.71}
+{"depth_target": 40000, "tag": "who", "want": "Petra Lume", "got": "Petra Lume", "ok": true, "finish": "stop", "prompt_tokens": 39590, "gen": 249, "tg": 25.497033435519434, "reasoning_chars": 579, "wall": 11.22}
+{"depth_target": 50000, "tag": "chain4", "want": "4671", "got": "4671", "ok": true, "finish": "stop", "prompt_tokens": 48721, "gen": 266, "tg": 20.56860596659689, "reasoning_chars": 516, "wall": 100.39}
+{"depth_target": 50000, "tag": "decoy", "want": "4749", "got": "4749", "ok": true, "finish": "stop", "prompt_tokens": 48721, "gen": 378, "tg": 23.82439079362512, "reasoning_chars": 898, "wall": 17.45}
+{"depth_target": 50000, "tag": "arith", "want": "2388", "got": "2388", "ok": true, "finish": "stop", "prompt_tokens": 48728, "gen": 364, "tg": 23.922762600625116, "reasoning_chars": 482, "wall": 16.85}
+{"depth_target": 50000, "tag": "date", "want": "Tuesday", "got": "Tuesday", "ok": true, "finish": "stop", "prompt_tokens": 48719, "gen": 269, "tg": 24.259967284216607, "reasoning_chars": 771, "wall": 12.68}
+{"depth_target": 50000, "tag": "who", "want": "Oswin Hale", "got": "Oswin Hale", "ok": true, "finish": "stop", "prompt_tokens": 48720, "gen": 238, "tg": 23.943529487512894, "reasoning_chars": 617, "wall": 11.54}

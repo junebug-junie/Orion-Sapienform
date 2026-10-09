@@ -20,6 +20,8 @@ class HomeCoolingSampleSQL(Base):
     cooling_volts = Column(Float, nullable=True)
     cooling_amps = Column(Float, nullable=True)
     switch_on = Column(Boolean, nullable=True)
+    stale = Column(Boolean, nullable=True)
+    sample_age_sec = Column(Float, nullable=True)
     zwave_node_id = Column(Integer, nullable=False)
     controller_ready = Column(Boolean, nullable=False)
     device_online = Column(Boolean, nullable=False)

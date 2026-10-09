@@ -8,7 +8,6 @@ from pydantic import BaseModel, ConfigDict, Field
 from orion.schemas.attention_frame import AttentionBroadcastProjectionV1
 from orion.schemas.pre_turn_appraisal import TurnAppraisalBundleV1
 from orion.schemas.gpu_pool import GpuLeaseRefV1
-from orion.schemas.resource_admission import ResourceLeaseV1
 
 
 class CoalitionSnapshotV1(BaseModel):
@@ -171,11 +170,9 @@ class StanceReactRequestV1(BaseModel):
     # that omits it, or an older consumer reading a payload that carries it,
     # both continue to work unchanged.
     llm_route: str | None = None
-    # The turn's existing reservation owns stance inference too. Producers omit
-    # this field when absent so ordinary requests keep their previous wire shape.
-    resource_lease: ResourceLeaseV1 | None = None
-    # Stage 4: the durable run's GPU pool hold ref. Stance's LLM call attaches to the hold
-    # (options.gpu_lease at the gateway). Producers omit it when absent, like resource_lease.
+    # The durable run's GPU pool hold ref: the turn's reservation owns stance inference too, so
+    # stance's LLM call attaches to the hold (options.gpu_lease at the gateway). Producers omit
+    # it when absent so ordinary requests keep their previous wire shape.
     gpu_lease: GpuLeaseRefV1 | None = None
     # True when the CALLER already runs its own agent-lane-then-chat-lane retry
     # around the whole turn (today: services/orion-hub/scripts/
@@ -187,6 +184,15 @@ class StanceReactRequestV1(BaseModel):
     # (autonomous reading, curiosity) has no fallback of its own and needs
     # orion-thought's.
     caller_handles_lane_fallback: bool = False
+    # What recall should search for on this turn, chosen by the caller: a
+    # self-inquiry run's standing question, a reading's "<title> — <claim>".
+    # None = the caller did not say; recall condenses the turn text itself.
+    # orion-thought copies it into the cortex-exec ctx as ctx["retrieval_query"];
+    # cortex-exec sends it as RecallQueryV1.retrieval_query on both stance
+    # recalls (PCR phase 0+1 and phase 3). Additive on a non-forbid model, so
+    # an old orion-thought silently ignores it: deploy orion-thought (and
+    # orion-recall, PR #2416) before orion-hub starts sending it.
+    retrieval_query: str | None = Field(default=None, max_length=1000)
 
 
 def __getattr__(name: str) -> object:

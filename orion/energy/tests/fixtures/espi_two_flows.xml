@@ -1,0 +1,60 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom" xmlns:espi="http://naesb.org/espi">
+  <id>urn:uuid:feed-1</id>
+  <title>Green Button Usage Feed</title>
+  <entry>
+    <id>urn:uuid:up</id>
+    <link rel="self" href="https://csapps.example/espi/1_1/resource/RetailCustomer/9/UsagePoint/UP123"/>
+    <content><espi:UsagePoint><espi:ServiceCategory><espi:kind>0</espi:kind></espi:ServiceCategory></espi:UsagePoint></content>
+  </entry>
+  <entry>
+    <id>urn:uuid:mr1</id>
+    <link rel="self" href="https://csapps.example/espi/1_1/resource/RetailCustomer/9/UsagePoint/UP123/MeterReading/MR1"/>
+    <link rel="related" href="https://csapps.example/espi/1_1/resource/ReadingType/RT-FWD"/>
+    <content><espi:MeterReading/></content>
+  </entry>
+  <entry>
+    <id>urn:uuid:rtf</id>
+    <link rel="self" href="https://csapps.example/espi/1_1/resource/ReadingType/RT-FWD"/>
+    <content><espi:ReadingType>
+      <espi:flowDirection>1</espi:flowDirection>
+      <espi:intervalLength>3600</espi:intervalLength>
+      <espi:powerOfTenMultiplier>0</espi:powerOfTenMultiplier>
+      <espi:uom>72</espi:uom>
+    </espi:ReadingType></content>
+  </entry>
+  <entry>
+    <id>urn:uuid:ib1</id>
+    <link rel="self" href="https://csapps.example/espi/1_1/resource/RetailCustomer/9/UsagePoint/UP123/MeterReading/MR1/IntervalBlock/IB1"/>
+    <content><espi:IntervalBlock>
+      <espi:interval><espi:duration>10800</espi:duration><espi:start>1789063200</espi:start></espi:interval>
+      <espi:IntervalReading><espi:timePeriod><espi:duration>3600</espi:duration><espi:start>1789063200</espi:start></espi:timePeriod><espi:value>1234</espi:value></espi:IntervalReading>
+      <espi:IntervalReading><espi:timePeriod><espi:duration>3600</espi:duration><espi:start>1789066800</espi:start></espi:timePeriod><espi:value>500</espi:value></espi:IntervalReading>
+      <espi:IntervalReading><espi:timePeriod><espi:duration>3600</espi:duration><espi:start>1789070400</espi:start></espi:timePeriod><espi:value>2000</espi:value></espi:IntervalReading>
+    </espi:IntervalBlock></content>
+  </entry>
+  <entry>
+    <id>urn:uuid:mr2</id>
+    <link rel="self" href="https://csapps.example/espi/1_1/resource/RetailCustomer/9/UsagePoint/UP123/MeterReading/MR2"/>
+    <link rel="related" href="https://csapps.example/espi/1_1/resource/ReadingType/RT-REV"/>
+    <content><espi:MeterReading/></content>
+  </entry>
+  <entry>
+    <id>urn:uuid:rtr</id>
+    <link rel="self" href="https://csapps.example/espi/1_1/resource/ReadingType/RT-REV"/>
+    <content><espi:ReadingType>
+      <espi:flowDirection>19</espi:flowDirection>
+      <espi:intervalLength>3600</espi:intervalLength>
+      <espi:powerOfTenMultiplier>0</espi:powerOfTenMultiplier>
+      <espi:uom>72</espi:uom>
+    </espi:ReadingType></content>
+  </entry>
+  <entry>
+    <id>urn:uuid:ib2</id>
+    <link rel="self" href="https://csapps.example/espi/1_1/resource/RetailCustomer/9/UsagePoint/UP123/MeterReading/MR2/IntervalBlock/IB2"/>
+    <content><espi:IntervalBlock>
+      <espi:interval><espi:duration>3600</espi:duration><espi:start>1789063200</espi:start></espi:interval>
+      <espi:IntervalReading><espi:timePeriod><espi:duration>3600</espi:duration><espi:start>1789063200</espi:start></espi:timePeriod><espi:value>999</espi:value></espi:IntervalReading>
+    </espi:IntervalBlock></content>
+  </entry>
+</feed>

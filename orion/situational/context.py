@@ -208,9 +208,15 @@ class SituationSettings:
     runtime_route: str
     runtime_ttl_seconds: int
     runtime_probe_timeout_sec: float
-    llm_gateway_base_url: str
     default_requestor: str
     presence_persist_allowed: bool
+    home_location: str | None = None
+    physical_location: str | None = None
+
+
+def _clean_optional_str(raw: Any) -> str | None:
+    text = str(raw).strip() if raw is not None else ""
+    return text or None
 
 
 def _split_stream_ids(raw: Any) -> list[str]:
@@ -241,10 +247,12 @@ def settings_from_runtime(settings: Any) -> SituationSettings:
             getattr(settings, "orion_situation_prompt_max_chars", _DEFAULT_PROMPT_MAX_CHARS)
         ),
         timezone=str(getattr(settings, "orion_situation_timezone", "America/Denver")),
-        location_label=str(getattr(settings, "orion_situation_location_label", "Unknown")),
+        location_label=str(getattr(settings, "orion_situation_location_label", None) or "Unknown").strip() or "Unknown",
         locality=getattr(settings, "orion_situation_locality", None),
         region=getattr(settings, "orion_situation_region", None),
         country=getattr(settings, "orion_situation_country", None),
+        home_location=_clean_optional_str(getattr(settings, "orion_situation_home_location", None)),
+        physical_location=_clean_optional_str(getattr(settings, "orion_situation_physical_location", None)),
         location_precision=str(getattr(settings, "orion_situation_location_precision", "city")),
         weather_enabled=bool(getattr(settings, "orion_situation_weather_enabled", True)),
         weather_provider=str(getattr(settings, "orion_situation_weather_provider", "stub")),
@@ -402,9 +410,6 @@ def settings_from_runtime(settings: Any) -> SituationSettings:
         runtime_probe_timeout_sec=float(
             getattr(settings, "orion_situation_runtime_probe_timeout_sec", 2.0)
         ),
-        llm_gateway_base_url=str(
-            getattr(settings, "cortex_exec_llm_gateway_url", "http://llm-gateway:8210")
-        ),
         default_requestor=str(getattr(settings, "orion_presence_default_requestor", "Juniper")),
         presence_persist_allowed=bool(getattr(settings, "orion_presence_persist_allowed", False)),
     )
@@ -426,22 +431,38 @@ def hub_settings_to_runtime_namespace(cfg: Any) -> SimpleNamespace:
     with no visible error. This bridges the two conventions explicitly
     rather than making `settings_from_runtime` guess casings.
 
-    Fields orion-hub does not yet configure (location label/locality/
-    region/country, lab, perception) are turned off here on purpose, not
-    left to `settings_from_runtime`'s own defaults to silently decide: hub
-    has no verified perception/lab runtime dependency yet (no DSN/HTTP
-    egress vetted for its event loop), so wiring those is a follow-up, not
-    an accident of a missing attr. Weather and the runtime probe (which
+    Place fields (location label/locality/region/country/home/physical) are
+    read from orion-hub's own ORION_SITUATION_* settings: before 2026-10-05
+    they were hardcoded "Unknown", so the unified turn carried a timezone
+    but no place and Orion resolved "the camera outside" against a travel
+    city in recent chat (correlation 5063fb71).
+
+    Lab is turned off here on purpose (it has no real provider anywhere), not
+    left to `settings_from_runtime`'s own defaults to silently decide.
+
+    Perception (2026-10-07) IS enabled here now, via Hub's own
+    ORION_SITUATION_PERCEPTION_ENABLED (default ON, Juniper's standing flag
+    rule). It was a literal False while Hub had no vetted DB path for its
+    event loop; every perception read now runs in `asyncio.to_thread`
+    (`_build_room_perception_context`, `_resolve_presence_and_identity_ask`,
+    `_build_street_fields`), and Hub already holds POSTGRES_URI. It is the
+    same builder cortex-exec runs -- not a fork. Privacy: this puts
+    camera-derived text about the home into Hub chat prompts (room
+    narrative, presence fragment, street summary, identity-ask caution);
+    the kill switch is ORION_SITUATION_PERCEPTION_ENABLED=false.
+
+    Weather and the runtime probe (which
     model is currently serving `chat`) ARE enabled -- weather now reads
     orion-hub's own ORION_SITUATION_WEATHER_* fields (added alongside this
     adapter's weather wiring; same provider/coordinates/TTL as cortex-exec's
-    already-configured values), and the runtime probe reuses
-    `HUB_LLM_GATEWAY_URL`, a host orion-hub already calls today (see
-    `/api/llm-routes`). Both `_build_environment_context` and
-    `_build_runtime_context` await their blocking `urlopen` calls via
-    `asyncio.to_thread` so a cache-miss fetch cannot stall the event loop.
+    already-configured values), and the runtime probe reads GPU pool state
+    over the bus RPC orion-hub binds for it (`bind_situation_state_buses`,
+    GPU pool stage 6.3; it no longer calls the gateway's GET /routes).
+    `_build_environment_context` awaits its blocking `urlopen` via
+    `asyncio.to_thread`, and the runtime read is an async RPC, so a cache-miss
+    fetch cannot stall the event loop.
 
-    Affect (2026-08-25) IS enabled here, unlike perception/lab -- orion-hub
+    Affect (2026-08-25) IS enabled here -- orion-hub
     is the MOST verified host for it, not the least: Hub owns the capture
     loop that produces the read in the first place
     (`services/orion-hub/scripts/vision_affect_ambient.py`) and already
@@ -467,7 +488,7 @@ def hub_settings_to_runtime_namespace(cfg: Any) -> SimpleNamespace:
     no new sensor-path keys, just a new `ORION_SITUATION_CABINET_*` on/off +
     TTL pair. This is Orion's own physical housing, not private-home
     content, same "no new dependency, no privacy concern" shape as affect/
-    curiosity/reverie above -- unlike lab/perception, which stay off.
+    curiosity/reverie above -- unlike lab, which stays off.
     """
     return SimpleNamespace(
         orion_situation_enabled=bool(getattr(cfg, "ORION_SITUATION_ENABLED", True)),
@@ -479,11 +500,13 @@ def hub_settings_to_runtime_namespace(cfg: Any) -> SimpleNamespace:
             getattr(cfg, "ORION_SITUATION_PROMPT_MAX_CHARS", _DEFAULT_PROMPT_MAX_CHARS)
         ),
         orion_situation_timezone=str(getattr(cfg, "ORION_SITUATION_TIMEZONE", "America/Denver")),
-        orion_situation_location_label="Unknown",
-        orion_situation_locality=None,
-        orion_situation_region=None,
-        orion_situation_country=None,
-        orion_situation_location_precision="city",
+        orion_situation_location_label=str(getattr(cfg, "ORION_SITUATION_LOCATION_LABEL", None) or "Unknown"),
+        orion_situation_locality=getattr(cfg, "ORION_SITUATION_LOCALITY", None),
+        orion_situation_region=getattr(cfg, "ORION_SITUATION_REGION", None),
+        orion_situation_country=getattr(cfg, "ORION_SITUATION_COUNTRY", None),
+        orion_situation_home_location=getattr(cfg, "ORION_SITUATION_HOME_LOCATION", None),
+        orion_situation_physical_location=getattr(cfg, "ORION_SITUATION_PHYSICAL_LOCATION", None),
+        orion_situation_location_precision=str(getattr(cfg, "ORION_SITUATION_LOCATION_PRECISION", "city")),
         orion_situation_weather_enabled=bool(getattr(cfg, "ORION_SITUATION_WEATHER_ENABLED", True)),
         orion_situation_weather_provider=str(getattr(cfg, "ORION_SITUATION_WEATHER_PROVIDER", "stub")),
         orion_situation_weather_lat=getattr(cfg, "ORION_SITUATION_WEATHER_LAT", None),
@@ -523,9 +546,26 @@ def hub_settings_to_runtime_namespace(cfg: Any) -> SimpleNamespace:
         orion_situation_cabinet_stale_after_sec=float(
             getattr(cfg, "CABINET_SENSORS_STALE_AFTER_SEC", 10.0)
         ),
-        orion_situation_perception_enabled=False,
-        orion_situation_perception_max_age_seconds=900,
+        # 2026-10-07: was a literal False. Reads Hub's own
+        # ORION_SITUATION_PERCEPTION_* keys (same names and defaults as
+        # cortex-exec's) into the SAME shared builder cortex-exec uses --
+        # no forked perception path. Default ON per Juniper's standing flag
+        # rule; ORION_SITUATION_PERCEPTION_ENABLED=false is the kill switch.
+        orion_situation_perception_enabled=bool(
+            getattr(cfg, "ORION_SITUATION_PERCEPTION_ENABLED", True)
+        ),
+        orion_situation_perception_max_age_seconds=int(
+            getattr(cfg, "ORION_SITUATION_PERCEPTION_MAX_AGE_SECONDS", 900)
+        ),
         orion_situation_perception_stream_id="cam0",
+        orion_situation_perception_stream_ids=getattr(
+            cfg, "ORION_SITUATION_PERCEPTION_STREAM_IDS", "carbon,cam0"
+        ),
+        # Plain getattr, no `or` fallback: an explicit "" disables the
+        # Street line (settings_from_runtime's own contract).
+        orion_situation_street_stream_ids=getattr(
+            cfg, "ORION_SITUATION_STREET_STREAM_IDS", "walkway"
+        ),
         orion_situation_identity_ask_cooldown_seconds=1200,
         orion_situation_affect_enabled=bool(getattr(cfg, "ORION_SITUATION_AFFECT_ENABLED", True)),
         orion_situation_affect_max_age_seconds=int(
@@ -564,7 +604,6 @@ def hub_settings_to_runtime_namespace(cfg: Any) -> SimpleNamespace:
         orion_situation_runtime_route="chat",
         orion_situation_runtime_ttl_seconds=120,
         orion_situation_runtime_probe_timeout_sec=2.0,
-        cortex_exec_llm_gateway_url=str(getattr(cfg, "HUB_LLM_GATEWAY_URL", "http://127.0.0.1:8210")),
         orion_presence_default_requestor=str(getattr(cfg, "ORION_PRESENCE_DEFAULT_REQUESTOR", "Juniper")),
         orion_presence_persist_allowed=bool(getattr(cfg, "ORION_PRESENCE_PERSIST_ALLOWED", False)),
     )
@@ -643,6 +682,14 @@ def _situation_cache_key(ctx: dict[str, Any], cfg: SituationSettings) -> str:
     # finding, not a hypothetical.
     modality = _build_surface_context(ctx).input_modality
     key = f"{session_key}:{modality}:{_presence_cache_fingerprint(ctx, cfg)}"
+    # The GPU pool placement is per turn (one turn holds agent, the next agent-gpu2), so a
+    # cached brief must never carry another turn's "you are running on" line.
+    placement = _gpu_placement_from_ctx(ctx)
+    if placement is not None:
+        key = (f"{key}:gpu={placement.get('role')}|{placement.get('model')}|{placement.get('profile')}"
+               f"|{placement.get('status')}")
+    elif _harness_owns_runtime_line(ctx):
+        key = f"{key}:runtime=harness"
     # A read-only build (an Orion-authored unified turn, e.g. outreach) must
     # not share an entry with the user's own turns: a cache hit skips
     # _build_conversation_phase entirely, so an outreach-built entry would
@@ -664,14 +711,87 @@ def _records_user_turn(ctx: dict[str, Any]) -> bool:
     return ctx.get("record_user_turn", True) is not False
 
 
-async def build_situation_for_ctx(ctx: dict[str, Any], runtime_settings: Any) -> tuple[dict[str, Any], dict[str, Any]]:
+def _phase_stamp_from_cached_brief(brief: Any, ctx: dict[str, Any], now_utc: datetime) -> dict[str, Any]:
+    """Re-read the wall clock for a turn served from the situation cache.
+
+    A cache hit skips ``_build_conversation_phase``, so the cached brief's
+    phase is the phase of the turn that BUILT the entry, up to ``ttl_seconds``
+    (300 s live) ago. Stamping that onto this turn would be wrong in the way
+    that matters most for episode boundaries: the morning's first turn reads
+    ``next_day``, and Juniper's second message four minutes later would
+    inherit ``next_day`` and look like a new conversation.
+
+    The cache key splits user turns from Orion-authored turns, so the last
+    user turn is recoverable without another Redis read:
+    - a user-turn entry was built by a user turn that wrote
+      ``last_user_turn_at = generated_at``;
+    - a no-user-turn entry only read the clock, so its own
+      ``last_user_turn_at`` is still the last user turn.
+    """
+    phase = brief.conversation_phase
+    if _records_user_turn(ctx):
+        last_user = brief.generated_at
+    else:
+        last_user = phase.last_user_turn_at
+    return conversation_phase_stamp(
+        classify_conversation_phase(last_user, now_utc, brief.time.timezone),
+        source="situation_cache",
+    )
+
+
+def _cached_percept_outlived_gate(brief: Any, cached_age: float, cfg: SituationSettings) -> bool:
+    """True when a cached brief's room percept has aged past the staleness
+    gate since it was built (review finding, 2026-10-07).
+
+    Without this the effective bound was max_age + ttl: a percept 899 s old
+    at build time kept rendering "seen 15 min ago" for another 300 s of cache
+    hits, the exact stale-scene-as-current failure the gate exists to stop.
+    A miss here just rebuilds, which re-applies the gate fresh.
+    """
+    try:
+        perception = brief.perception
+        if not perception.available or perception.observation_age_seconds is None:
+            return False
+        return perception.observation_age_seconds + cached_age > cfg.perception_max_age_seconds
+    except Exception:  # noqa: BLE001 -- a malformed cache entry is just a miss
+        return True
+
+
+async def build_situation_for_ctx(
+    ctx: dict[str, Any],
+    runtime_settings: Any,
+    *,
+    phase_stamp_out: dict[str, Any] | None = None,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Build (or serve from cache) the situation brief and its prompt fragment.
+
+    ``phase_stamp_out``: optional dict the caller owns. When given, it is filled
+    with this turn's conversation-phase stamp (see ``conversation_phase_stamp``),
+    correct on both a fresh build and a cache hit. The Hub persists it on the
+    chat turn as ``spark_meta.conversation_phase``.
+    """
     cfg = settings_from_runtime(runtime_settings)
     if not cfg.enabled:
         return {}, {}
     cache_key = _situation_cache_key(ctx, cfg)
     with _LOCK:
         cached = _SITUATION_CACHE.get(cache_key)
-        if cached and (datetime.now(timezone.utc) - cached[0]).total_seconds() < cfg.ttl_seconds:
+        cached_age = (
+            (datetime.now(timezone.utc) - cached[0]).total_seconds() if cached else None
+        )
+        if (
+            cached
+            and cached_age is not None
+            and cached_age < cfg.ttl_seconds
+            and not _cached_percept_outlived_gate(cached[1], cached_age, cfg)
+        ):
+            if phase_stamp_out is not None:
+                try:
+                    phase_stamp_out.update(
+                        _phase_stamp_from_cached_brief(cached[1], ctx, datetime.now(timezone.utc))
+                    )
+                except Exception:
+                    phase_stamp_out.clear()
             return cached[1].model_dump(mode="json"), cached[2].model_dump(mode="json")
 
     now = datetime.now(timezone.utc)
@@ -679,16 +799,36 @@ async def build_situation_for_ctx(ctx: dict[str, Any], runtime_settings: Any) ->
     presence = _presence_from_ctx(ctx, cfg, now)
     time_ctx = _build_time_context(cfg, diagnostics)
     phase_ctx = await _build_conversation_phase(ctx, time_ctx, now)
+    if phase_stamp_out is not None:
+        phase_stamp_out.update(
+            conversation_phase_stamp(
+                {
+                    "phase_change": phase_ctx.phase_change,
+                    "delta_user_seconds": phase_ctx.time_since_last_user_turn_seconds,
+                    "crossed_day": phase_ctx.crossed_day_boundary,
+                },
+                source="situation_build",
+            )
+        )
     place_ctx = _build_place_context(cfg)
     env_ctx = await _build_environment_context(cfg, diagnostics)
     agenda_ctx = AgendaContextV1(available=False, source="stub")
     lab_ctx = _build_lab_context(cfg)
     cabinet_ctx = await _build_cabinet_context(cfg, diagnostics)
-    perception_ctx = await _build_perception_context(cfg, diagnostics)
+    # Only a turn Juniper actually took may spend the shared identity-ask
+    # cooldown (review finding, 2026-10-07): Hub also builds briefs for turns
+    # Orion authors itself (endogenous outreach), and claiming the slot there
+    # would open an unprompted message with "is that you?" and burn the ask
+    # her next real turn should get.
+    perception_ctx = await _build_perception_context(
+        cfg, diagnostics, allow_identity_ask=_records_user_turn(ctx)
+    )
     affect_ctx = await _build_affect_context(cfg, diagnostics)
     curiosity_ctx = await _build_curiosity_context(cfg, diagnostics)
     reverie_ctx = await _build_reverie_context(cfg, diagnostics)
-    runtime_ctx = await _build_runtime_context(cfg, diagnostics)
+    runtime_ctx = _runtime_from_gpu_placement(ctx, cfg, diagnostics) or await _build_runtime_context(
+        cfg, diagnostics
+    )
     surface_ctx = _build_surface_context(ctx)
     affordances = _build_affordances(ctx, presence, phase_ctx, env_ctx, lab_ctx, surface_ctx, time_ctx)
     diagnostics.relevance_reasons = [a.kind for a in affordances if a.trigger_relevance == "active"]
@@ -862,21 +1002,28 @@ def _season_label(month: int) -> str:
     return "autumn"
 
 
-async def _build_conversation_phase(ctx: dict[str, Any], time_ctx: TimeContextV1, now_utc: datetime) -> ConversationPhaseContextV1:
-    session_id = str(ctx.get("session_id") or "global")
-    state = await read_session_turn_state(session_id)
-    last_user = state.last_user_turn_at
-    last_orion = state.last_orion_turn_at
-    delta_user = int((now_utc - last_user).total_seconds()) if last_user else None
+def classify_conversation_phase(
+    last_user_turn_at: datetime | None,
+    now_utc: datetime,
+    tz_name: str,
+) -> dict[str, Any]:
+    """The conversation wall clock: bucket the time since Juniper's last turn.
+
+    Pure function, shared by the live situation build and by the
+    ``conversation_phase`` stamp persisted on each chat turn (memory episode
+    boundary Fix 1), so both read the same clock with the same buckets.
+    Returns phase_change, continuity_mode, topic_staleness_risk,
+    response_adjustments, crossed_day and delta_user_seconds.
+    """
+    delta_user = int((now_utc - last_user_turn_at).total_seconds()) if last_user_turn_at else None
     phase = "unknown"
     continuity = "continue_directly"
     risk = "none"
     adjustments: list[str] = []
     crossed_day = False
-    if last_user:
-        crossed_day = last_user.astimezone(ZoneInfo(time_ctx.timezone)).date() != datetime.now(
-            ZoneInfo(time_ctx.timezone)
-        ).date()
+    if last_user_turn_at:
+        tz = ZoneInfo(tz_name)
+        crossed_day = last_user_turn_at.astimezone(tz).date() != now_utc.astimezone(tz).date()
         if delta_user is not None and delta_user < 120:
             phase = "same_breath"
         elif delta_user < 20 * 60:
@@ -900,6 +1047,71 @@ async def _build_conversation_phase(ctx: dict[str, Any], time_ctx: TimeContextV1
             continuity = "reorient"
             risk = "medium"
             adjustments.append("Crossed day boundary; lightly re-anchor timeline.")
+    return {
+        "phase_change": phase,
+        "continuity_mode": continuity,
+        "topic_staleness_risk": risk,
+        "response_adjustments": adjustments,
+        "crossed_day": crossed_day,
+        "delta_user_seconds": delta_user,
+    }
+
+
+def conversation_phase_stamp(
+    phase: dict[str, Any], *, source: str
+) -> dict[str, Any]:
+    """The persisted per-turn form: ``{phase_change, delta_user_seconds, crossed_day, source}``.
+
+    ``source`` says how the stamp was obtained (``situation_build``,
+    ``situation_cache``, ``session_state_read``) so a reader can tell a fresh
+    clock read from a reconstructed one.
+    """
+    return {
+        "phase_change": str(phase.get("phase_change") or "unknown"),
+        "delta_user_seconds": phase.get("delta_user_seconds"),
+        "crossed_day": bool(phase.get("crossed_day")),
+        "source": source,
+    }
+
+
+async def read_conversation_phase_stamp(
+    session_id: str | None,
+    *,
+    tz_name: str,
+    now_utc: datetime | None = None,
+) -> dict[str, Any] | None:
+    """Read-only wall-clock stamp for a turn that does not build a situation brief.
+
+    Used for turns Juniper did not author through the unified lane: Orion's
+    unprompted outreach and legacy-lane workflow commands. Never writes the
+    session clock (same rule as ``_records_user_turn``). Returns None when the
+    session state cannot be read, so a caller never persists a guessed phase.
+    """
+    try:
+        state = await read_session_turn_state(str(session_id or "global"))
+    except Exception:
+        return None
+    if not getattr(state, "ok", False):
+        return None
+    now = now_utc or datetime.now(timezone.utc)
+    return conversation_phase_stamp(
+        classify_conversation_phase(state.last_user_turn_at, now, tz_name),
+        source="session_state_read",
+    )
+
+
+async def _build_conversation_phase(ctx: dict[str, Any], time_ctx: TimeContextV1, now_utc: datetime) -> ConversationPhaseContextV1:
+    session_id = str(ctx.get("session_id") or "global")
+    state = await read_session_turn_state(session_id)
+    last_user = state.last_user_turn_at
+    last_orion = state.last_orion_turn_at
+    clock = classify_conversation_phase(last_user, now_utc, time_ctx.timezone)
+    delta_user = clock["delta_user_seconds"]
+    phase = clock["phase_change"]
+    continuity = clock["continuity_mode"]
+    risk = clock["topic_staleness_risk"]
+    adjustments = list(clock["response_adjustments"])
+    crossed_day = bool(clock["crossed_day"])
     out = ConversationPhaseContextV1(
         last_user_turn_at=last_user,
         last_orion_turn_at=last_orion,
@@ -952,6 +1164,8 @@ def _build_place_context(cfg: SituationSettings) -> PlaceContextV1:
         locality=cfg.locality,
         region=cfg.region,
         country=cfg.country,
+        home_location=cfg.home_location,
+        physical_location=cfg.physical_location,
         timezone=cfg.timezone,
         precision=cfg.location_precision,  # type: ignore[arg-type]
         source="configured_home" if cfg.location_label != "Unknown" else "unknown",
@@ -1220,26 +1434,25 @@ async def _build_cabinet_context(
     return ctx
 
 
-def _fetch_runtime_context(cfg: SituationSettings) -> RuntimeContextV1:
-    """Live read of what model is actually serving `cfg.runtime_route`.
+async def _fetch_runtime_context(cfg: SituationSettings) -> RuntimeContextV1:
+    """What model a call on `cfg.runtime_route` would land on right now, from GPU pool state.
 
-    Hits orion-llm-gateway's GET /routes (already health-cached there 15s;
-    see route_catalog.py's `_probe_model`) rather than probing the backend
-    directly -- the gateway already owns route->backend resolution, so this
-    reuses that instead of re-deriving it. Mirrors `_fetch_weather`'s shape:
-    a plain urlopen with a short timeout, raising on any failure so the
-    caller's try/except degrades to unavailable rather than partial/guessed
-    data.
+    GPU pool stage 6.3: this used to read orion-llm-gateway's GET /routes, a compatibility view
+    the gateway generated from pool state anyway and which stage 6.5 deletes. It now asks the
+    pool directly (`orion.situational.runtime_route_view`: one `orion:gpu_pool:state` RPC with
+    the pool's config) and builds the same per-route view (`orion.gpu_pool.route_view`). Raises
+    when the pool cannot be asked or the route is not in its config, so the caller's except
+    degrades to unavailable (and does not cache it) rather than stating a guessed model.
     """
-    url = f"{cfg.llm_gateway_base_url.rstrip('/')}/routes"
-    with urlopen(url, timeout=cfg.runtime_probe_timeout_sec) as resp:
-        payload = json.loads(resp.read().decode("utf-8"))
-    routes = payload.get("routes") if isinstance(payload, dict) else None
-    if not isinstance(routes, list):
-        raise ValueError("routes payload missing/malformed")
-    entry = next((r for r in routes if isinstance(r, dict) and r.get("id") == cfg.runtime_route), None)
+    from orion.gpu_pool.route_view import SOURCE_UNAVAILABLE, route_entry
+    from orion.situational.runtime_route_view import read_route_view
+
+    view = await read_route_view(timeout_sec=cfg.runtime_probe_timeout_sec)
+    if view.get("source") == SOURCE_UNAVAILABLE:
+        raise ValueError("gpu pool state unavailable")
+    entry = route_entry(view, cfg.runtime_route)
     if entry is None:
-        raise ValueError(f"route {cfg.runtime_route!r} not in /routes response")
+        raise ValueError(f"route {cfg.runtime_route!r} not in the GPU pool's routes")
     model_id = entry.get("model")
     return RuntimeContextV1(
         available=bool(entry.get("status") == "up" and isinstance(model_id, str) and model_id.strip()),
@@ -1247,7 +1460,63 @@ def _fetch_runtime_context(cfg: SituationSettings) -> RuntimeContextV1:
         model_id=model_id if isinstance(model_id, str) and model_id.strip() else None,
         served_by=entry.get("served_by"),
         backend=entry.get("backend"),
-        source="orion-llm-gateway",
+        source="gpu_pool",
+    )
+
+
+def _gpu_placement_from_ctx(ctx: dict[str, Any]) -> Optional[dict[str, Any]]:
+    """``ctx["gpu_placement"]``: ``{"role", "model", "profile"}`` for a turn that holds a GPU pool
+    lease (orion.gpu_pool.placement.ServingPlacement, filled by the caller, e.g. orion-hub's
+    unified turn from the durable run's GpuLeaseRefV1). None when absent or malformed."""
+    raw = ctx.get("gpu_placement")
+    if not isinstance(raw, dict):
+        return None
+    role = str(raw.get("role") or "").strip()
+    if not role:
+        return None
+    model = str(raw.get("model") or "").strip() or None
+    profile = str(raw.get("profile") or "").strip() or None
+    status = str(raw.get("status") or "").strip() or None
+    return {"role": role, "model": model, "profile": profile, "status": status}
+
+
+def _harness_owns_runtime_line(ctx: dict[str, Any]) -> bool:
+    """``ctx["runtime_line_owner"] == "harness"``: the caller's prompt (orion-hub's unified turn
+    -> harness prefix) already states the default model of the route the motor really uses."""
+    return ctx.get("runtime_line_owner") == "harness"
+
+
+def _runtime_from_gpu_placement(
+    ctx: dict[str, Any], cfg: SituationSettings, diagnostics: SituationDiagnosticsV1
+) -> Optional[RuntimeContextV1]:
+    """The model this turn runs on, from the lease it holds -- not the gateway's route table.
+
+    Under the GPU pool a route's default worker is not necessarily where a call runs (an agent
+    call can be served by agent-gpu2 or chat), so ``_fetch_runtime_context``'s route answer is
+    only a default. When the caller knows the turn's granted role, that is the fact; no network
+    read happens here (the caller resolved role -> discovered profile). Spec:
+    docs/superpowers/specs/2026-09-24-gpu-pool-design.md, reader impacts item 5."""
+    if not cfg.runtime_enabled:
+        return None
+    placement = _gpu_placement_from_ctx(ctx)
+    if placement is None:
+        if _harness_owns_runtime_line(ctx):
+            diagnostics.provider_status["runtime"] = "harness"
+            return RuntimeContextV1(available=False, route=cfg.runtime_route, placement="harness",
+                                    source="harness_prompt")
+        return None
+    diagnostics.provider_status["runtime"] = "ok" if placement["model"] else "unavailable"
+    from orion.llm.resource_lease import GPU_LEASE_ROUTE
+
+    return RuntimeContextV1(
+        available=bool(placement["model"]),
+        route=GPU_LEASE_ROUTE,
+        model_id=placement["model"],
+        placement="lease",
+        granted_role=placement["role"],
+        profile_name=placement["profile"],
+        role_status=placement["status"],
+        source="gpu_pool_lease",
     )
 
 
@@ -1261,14 +1530,9 @@ async def _build_runtime_context(cfg: SituationSettings, diagnostics: SituationD
         if cached and (datetime.now(timezone.utc) - cached[0]).total_seconds() < cfg.runtime_ttl_seconds:
             return cached[1]
     try:
-        # `_fetch_runtime_context` is a plain blocking `urlopen` call (up to
-        # `runtime_probe_timeout_sec`). Offloaded to a thread rather than
-        # called inline -- this function runs inside `build_situation_for_ctx`,
-        # which orion-hub's `execute_unified_turn` now awaits directly on its
-        # single shared event loop (unlike cortex-exec, which already
-        # dedicates a worker per chat turn). A cache-miss call here must not
-        # stall every other concurrent WebSocket client's turn.
-        runtime_ctx = await asyncio.to_thread(_fetch_runtime_context, cfg)
+        # An async bus RPC (bounded by `runtime_probe_timeout_sec`), so a cache miss never blocks
+        # the shared event loop orion-hub's `execute_unified_turn` runs every client's turn on.
+        runtime_ctx = await _fetch_runtime_context(cfg)
         with _LOCK:
             _RUNTIME_CACHE[cache_key] = (datetime.now(timezone.utc), runtime_ctx)
         diagnostics.provider_status["runtime"] = "ok" if runtime_ctx.available else "unavailable"
@@ -1295,7 +1559,10 @@ class _PresenceReading:
 
 
 async def _resolve_presence_and_identity_ask(
-    cfg: SituationSettings, diagnostics: SituationDiagnosticsV1
+    cfg: SituationSettings,
+    diagnostics: SituationDiagnosticsV1,
+    *,
+    allow_identity_ask: bool = True,
 ) -> _PresenceReading:
     """Which camera speaks for "where is Juniper", and should Orion ask who
     this is.
@@ -1384,7 +1651,7 @@ async def _resolve_presence_and_identity_ask(
         reason = "no_visual_confirmation"
 
     identity_ask = None
-    if reason is not None:
+    if reason is not None and allow_identity_ask:
         ttl = (
             cfg.identity_ask_cooldown_seconds
             if reason in ("unmatched_face", "identity_unread")
@@ -1453,11 +1720,16 @@ async def _build_street_fields(
 
 
 async def _build_perception_context(
-    cfg: SituationSettings, diagnostics: SituationDiagnosticsV1
+    cfg: SituationSettings,
+    diagnostics: SituationDiagnosticsV1,
+    *,
+    allow_identity_ask: bool = True,
 ) -> PerceptionContextV1:
     """Room percept (below) plus the street summary, which is a different
     camera and so rides on every return path of the room read, stale or not."""
-    room = await _build_room_perception_context(cfg, diagnostics)
+    room = await _build_room_perception_context(
+        cfg, diagnostics, allow_identity_ask=allow_identity_ask
+    )
     if not cfg.perception_enabled or not cfg.street_stream_ids:
         return room
     street = await _build_street_fields(cfg, diagnostics)
@@ -1465,7 +1737,10 @@ async def _build_perception_context(
 
 
 async def _build_room_perception_context(
-    cfg: SituationSettings, diagnostics: SituationDiagnosticsV1
+    cfg: SituationSettings,
+    diagnostics: SituationDiagnosticsV1,
+    *,
+    allow_identity_ask: bool = True,
 ) -> PerceptionContextV1:
     """Most recent camera percept, gated hard on age.
 
@@ -1479,9 +1754,9 @@ async def _build_room_perception_context(
     percept, never an exception into turn assembly.
 
     `async` since 2026-08-26: the identity-uncertain cooldown check below is
-    a Redis round-trip (`identity_ask_cooldown.py`), the one await in this
-    function -- everything else here stays the same synchronous SQLAlchemy
-    reads it always was.
+    a Redis round-trip (`identity_ask_cooldown.py`). Since 2026-10-07 the
+    percept SQL read is awaited via `asyncio.to_thread` too, so no
+    synchronous database call runs on the caller's event loop (Hub's).
     """
     if not cfg.perception_enabled:
         diagnostics.provider_status["perception"] = "disabled"
@@ -1490,11 +1765,18 @@ async def _build_room_perception_context(
     # Resolved first so every return path below carries it -- see
     # _resolve_presence_and_identity_ask's docstring for why this must not
     # live inside the available=True branch.
-    reading = await _resolve_presence_and_identity_ask(cfg, diagnostics)
+    reading = await _resolve_presence_and_identity_ask(
+        cfg, diagnostics, allow_identity_ask=allow_identity_ask
+    )
 
     try:
-        percept = fetch_latest_percept(
-            stream_ids=cfg.perception_stream_ids or [cfg.perception_stream_id]
+        # Off the event loop (2026-10-07): this is a synchronous SQLAlchemy
+        # read, and Hub's chat event loop now runs it too. A slow or
+        # unreachable database must stall a worker thread, not every Hub
+        # websocket. The presence and street reads already do this.
+        percept = await asyncio.to_thread(
+            fetch_latest_percept,
+            stream_ids=cfg.perception_stream_ids or [cfg.perception_stream_id],
         )
     except Exception as exc:  # noqa: BLE001 -- provider contract is fail-open
         diagnostics.provider_status["perception"] = "error"
@@ -1898,12 +2180,51 @@ def _recency_phrase(age_seconds: Optional[float]) -> str:
     return "just now" if age_min < 1 else f"{age_min} min ago"
 
 
+def _runtime_line(runtime: RuntimeContextV1) -> Optional[str]:
+    """What Orion may truthfully say about the model it runs on (GPU pool aware).
+
+    A lease is a fact about this turn; the route table is only a default -- the pool places each
+    unleased call itself, so "you are running on X" from the route view would be a false statement about
+    Orion under spill (spec 2026-09-24-gpu-pool-design.md, reader impacts item 5)."""
+    if runtime.placement == "lease" and runtime.granted_role:
+        if runtime.available and runtime.model_id:
+            profile = f", profile {runtime.profile_name}" if runtime.profile_name else ""
+            return (f"You are running on model: {runtime.model_id} (GPU pool role "
+                    f"{runtime.granted_role}{profile}, held for this turn).")
+        if runtime.role_status and runtime.role_status not in ("confirmed", "static"):
+            why = f"the pool reports that role as {runtime.role_status}, not a confirmed model"
+        else:
+            why = "the model loaded there could not be read"
+        return (f"This turn holds the GPU pool's {runtime.granted_role} role; {why} -- "
+                "do not infer or guess a name.")
+    if runtime.placement == "harness":
+        return None
+    if runtime.available and runtime.model_id:
+        return (f"Default model for route {runtime.route}: {runtime.model_id}. The GPU pool places each "
+                "call itself, so this is the route's default, not a confirmation of this turn.")
+    return "Current model: unavailable; do not infer or guess a name."
+
+
 def _build_prompt_fragment(brief: SituationBriefV1, max_chars: int) -> SituationPromptFragmentV1:
     lines = [
         f"Local context: {brief.time.time_of_day_label.replace('_', ' ')} {brief.time.weekday}, {brief.time.timezone}.",
         f"Conversation phase: {brief.conversation_phase.phase_change}; continuity={brief.conversation_phase.continuity_mode}.",
         f"Presence: requestor={brief.requestor.display_name}, audience_mode={brief.presence.audience_mode}.",
     ]
+    # Fixed home/body location, only when configured. Placed up front so the
+    # budget cap never trims it. Without it, a travel city mentioned in recent
+    # chat is the only place in context (see 2026-10-05, correlation 5063fb71).
+    if brief.place.home_location or brief.place.physical_location:
+        place_parts = []
+        if brief.place.home_location:
+            place_parts.append(f"home_location={brief.place.home_location}")
+        if brief.place.physical_location:
+            place_parts.append(f"Orion physical_location={brief.place.physical_location}")
+        lines.insert(
+            1,
+            "Place: " + "; ".join(place_parts)
+            + " (fixed; independent of where Juniper is right now).",
+        )
     # Only rendered for a non-typed modality. SurfaceContextV1.input_modality
     # has existed since this brief was first built, but nothing ever put it
     # in the prompt -- a schema field with no consumer. It earns a line here
@@ -2028,10 +2349,9 @@ def _build_prompt_fragment(brief: SituationBriefV1, max_chars: int) -> Situation
         # Same honesty rule as Room above -- no recent capture and a
         # deliberately-not-captured mood are different claims.
         lines.append("Juniper's affect: no recent capture; do not infer.")
-    if brief.runtime.available and brief.runtime.model_id:
-        lines.append(f"You are currently running on model: {brief.runtime.model_id} (route={brief.runtime.route}).")
-    else:
-        lines.append("Current model: unavailable; do not infer or guess a name.")
+    runtime_line = _runtime_line(brief.runtime)
+    if runtime_line:
+        lines.append(runtime_line)
     # Curiosity/reverie are deliberately OMITTED rather than rendered as an
     # "unavailable; do not infer" placeholder when there is nothing to show
     # (unlike weather/lab/perception/affect/runtime above, which always emit

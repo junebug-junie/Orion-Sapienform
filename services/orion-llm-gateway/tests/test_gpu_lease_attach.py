@@ -2,8 +2,8 @@
 
 The one correctness rule this file pins: the agent role has one slot and the run's hold occupies
 it, so a call that took a normal lease would queue behind its own run forever. Bus calls carry the
-ref in ``options.gpu_lease``, HTTP passthroughs (FCC) in ``X-Orion-Gpu-Lease``. The old durable
-token (``resource_lease`` / ``X-Orion-Resource-Lease``) keeps working alongside until stage 4.6.
+ref in ``options.gpu_lease``, HTTP passthroughs (FCC) in ``X-Orion-Gpu-Lease``. Since stage 4.6 it is
+the only run lease: the old durable token (``resource_lease`` / ``X-Orion-Resource-Lease``) is gone.
 Spec: docs/superpowers/specs/2026-09-25-gpu-pool-stage4-durable-runs-and-actuation.md, PR 4.4.
 """
 from __future__ import annotations
@@ -108,17 +108,17 @@ async def test_overflow_under_a_hold_is_returned_without_a_re_lease(held, monkey
 
 
 @pytest.mark.asyncio
-async def test_old_token_and_new_ref_coexist(held, monkeypatch):
-    """Until 4.6 both may ride one call: the durable token is still checked, placement attaches."""
-    check = AsyncMock()
-    monkeypatch.setattr(settings, "llm_gateway_lease_validation_enabled", True)
-    monkeypatch.setattr(fencing.LeaseGuard, "check", check)
+async def test_the_durable_token_path_is_gone_and_a_stray_token_is_not_consulted(held, monkeypatch):
+    """Stage 4.6: no LeaseGuard, no broker validation settings; a leftover ``resource_lease`` option
+    changes nothing -- placement attaches by the hold ref alone."""
+    assert not hasattr(fencing, "LeaseGuard")
+    assert not hasattr(wire, "LEASE_HEADER") and not hasattr(wire, "validate_resource_lease")
+    assert not any(name.startswith("llm_gateway_lease_") for name in type(settings).model_fields)
     monkeypatch.setattr(gateway, "run_llm_chat", _ok)
     token = {"lease_id": "legacy", "lane": "agent", "backend_key": "http://agent:8015"}
     result = await gateway._dispatch_chat(
         _body(gpu_lease=REF.model_dump(mode="json"), resource_lease=token), correlation_id="c")
     assert result["text"] == "hello"
-    assert check.await_count >= 2
     assert held.calls[0]["hold"] == REF
 
 

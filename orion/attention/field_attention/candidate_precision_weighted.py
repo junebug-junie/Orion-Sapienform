@@ -154,6 +154,7 @@ reproduce the same failure shape even if this specific baseline fix were somehow
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
 
 from orion.bus.ewma import compute_ewma_update
 
@@ -216,6 +217,46 @@ NODE_TARGET_PREDICTION_ERROR_EWMA_ALPHA: float = 0.2
 # (Feldman & Friston 2010's "high precision" case), not a bug.
 NODE_TARGET_PREDICTION_ERROR_MIN_VARIANCE: float = 1e-5
 
+# 2026-09-29: how long a domain's last prediction-error reading counts as "now".
+# `last_value` is only refreshed when that domain's reducer writes a receipt, and
+# chat (and any other activity-driven domain) writes one only when a turn lands --
+# so a quiet domain's last reading used to stay the "current" error for hours.
+# Replayed 2026-09-22: chat was the top-1 Candidate A target on 1,129 of 1,440
+# minutes, 764 of them on a reading more than 30 minutes old. The reading now fades
+# linearly to 0 over this horizon, measured from the receipt that produced it.
+# Same number and same linear shape the substrate already uses for exactly this
+# question (`PressureConfig.prediction_error_decay_horizon_seconds`, applied in
+# `orion/substrate/pressure.py::prediction_error_pressure`,
+# `endogenous_curiosity._prediction_error_staleness_decay`,
+# `bus_synaptic_surprise.STALENESS_HORIZON_SEC`). Copied rather than imported: the
+# attention runtime does not import `orion.substrate` (its package `__init__` pulls
+# the graph store); `test_staleness_horizon_matches_substrate_pressure_config`
+# keeps the two equal.
+PREDICTION_ERROR_STALENESS_HORIZON_SEC: float = 1800.0
+
+
+def prediction_error_staleness_factor(
+    observed_at: datetime | None,
+    *,
+    now: datetime | None,
+    horizon_sec: float = PREDICTION_ERROR_STALENESS_HORIZON_SEC,
+) -> float:
+    """1.0 for a fresh reading, falling linearly to 0.0 at ``horizon_sec`` old.
+
+    No timestamp or no ``now`` -> 1.0 (unaged), the same convention as
+    `endogenous_curiosity._prediction_error_staleness_decay`: a missing clock is not
+    evidence that the reading is stale. A reading stamped in the future (clock skew)
+    counts as age 0.
+    """
+    if observed_at is None or now is None or horizon_sec <= 0:
+        return 1.0
+    if observed_at.tzinfo is None:
+        observed_at = observed_at.replace(tzinfo=timezone.utc)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
+    age = max(0.0, (now - observed_at).total_seconds())
+    return max(0.0, 1.0 - age / horizon_sec)
+
 
 @dataclass(frozen=True)
 class PrecisionWeightedSalienceResult:
@@ -230,6 +271,13 @@ class PrecisionWeightedSalienceResult:
     current_error: float
     n_samples: int
     variance_floored: bool
+    # 2026-09-29 staleness fade (live path only). `current_error` above is the
+    # faded value that salience is computed from; `raw_error` is the reading as the
+    # reducer wrote it and `staleness_factor` the multiplier between them (1.0 =
+    # fresh or unaged). `reading_age_sec` is None when the reading has no timestamp.
+    raw_error: float = 0.0
+    staleness_factor: float = 1.0
+    reading_age_sec: float | None = None
 
 
 _EMPTY_RESULT = PrecisionWeightedSalienceResult(
@@ -300,6 +348,7 @@ def precision_weighted_salience(
         current_error=current_error,
         n_samples=n,
         variance_floored=variance_floored,
+        raw_error=current_error,
     )
 
 
@@ -344,11 +393,17 @@ def normalize_across_targets(raw_scores: dict[str, float]) -> dict[str, float]:
       "tied for most salient" from "least salient" when every real competitor scored
       identically -- flooring to 0.0 would misrepresent a tie as "nothing here matters,"
       which is not what the data says.
+    - Every raw score zero -> every target gets ``0.0`` (2026-09-29). That is not a
+      tie among salient targets, it is "nothing is surprising right now" -- reachable
+      routinely once the staleness fade takes a quiet domain's reading to exactly 0.
+      Reading it as 1.0 would hand a fully faded set the highest salience.
     """
     if not raw_scores:
         return {}
     values = list(raw_scores.values())
     lo, hi = min(values), max(values)
+    if hi < 1e-12:
+        return {target_id: 0.0 for target_id in raw_scores}
     if (hi - lo) < 1e-12:
         return {target_id: 1.0 for target_id in raw_scores}
     span = hi - lo
@@ -394,6 +449,10 @@ class PrecisionEwmaBaseline:
     variance: float = 0.0
     observation_count: int = 0
     last_value: float | None = None
+    # When the receipt behind `last_value` was written (the store's
+    # `last_receipt_created_at` cursor). Read-side only: it ages `last_value` in
+    # `precision_weighted_salience_from_baseline`, it never enters the EWMA.
+    last_observed_at: datetime | None = None
 
 
 def advance_precision_baseline(
@@ -433,6 +492,7 @@ def advance_precision_baseline(
             variance=update.variance,
             observation_count=result.observation_count + 1,
             last_value=value,
+            last_observed_at=result.last_observed_at,
         )
     return result
 
@@ -441,6 +501,7 @@ def precision_weighted_salience_from_baseline(
     baseline: PrecisionEwmaBaseline,
     *,
     min_variance: float,
+    now: datetime | None = None,
 ) -> PrecisionWeightedSalienceResult:
     """Candidate A salience computed from a persisted, incrementally-updated EWMA
     baseline (`advance_precision_baseline`, above) instead of a freshly recomputed
@@ -461,6 +522,17 @@ def precision_weighted_salience_from_baseline(
     the same zero-everything result as ``precision_weighted_salience([])`` -- "no
     data" and "confidently calm" remain different claims, per that function's own
     documented contract.
+
+    **Staleness fade (2026-09-29).** With ``now`` given, ``current_error`` is
+    ``last_value`` times ``prediction_error_staleness_factor(last_observed_at)``:
+    full weight when fresh, 0 once the reading is
+    ``PREDICTION_ERROR_STALENESS_HORIZON_SEC`` old. A domain that has not reported
+    for half an hour is not "currently surprised" by what it saw back then. The
+    fade is read-side only -- the persisted baseline (``ewma``/``variance``/
+    ``last_value``) is untouched, so the EWMA still learns only from real receipts.
+    A fully faded target stays in the result (``n_samples`` > 0, raw salience 0):
+    it has history, it just has no current surprise. Its normalized score is 0
+    unless it is tied with nonzero competitors (``normalize_across_targets``).
     """
     if baseline.observation_count == 0 or baseline.last_value is None:
         return _EMPTY_RESULT
@@ -468,7 +540,16 @@ def precision_weighted_salience_from_baseline(
     variance_floored = baseline.variance < min_variance
     effective_variance = max(baseline.variance, min_variance)
     precision = 1.0 / effective_variance
-    current_error = baseline.last_value
+    raw_error = baseline.last_value
+    factor = prediction_error_staleness_factor(baseline.last_observed_at, now=now)
+    age: float | None = None
+    if baseline.last_observed_at is not None and now is not None:
+        observed = baseline.last_observed_at
+        if observed.tzinfo is None:
+            observed = observed.replace(tzinfo=timezone.utc)
+        clock = now if now.tzinfo else now.replace(tzinfo=timezone.utc)
+        age = max(0.0, (clock - observed).total_seconds())
+    current_error = raw_error * factor
     salience = precision * abs(current_error)
 
     return PrecisionWeightedSalienceResult(
@@ -478,6 +559,9 @@ def precision_weighted_salience_from_baseline(
         current_error=current_error,
         n_samples=baseline.observation_count,
         variance_floored=variance_floored,
+        raw_error=raw_error,
+        staleness_factor=factor,
+        reading_age_sec=age,
     )
 
 

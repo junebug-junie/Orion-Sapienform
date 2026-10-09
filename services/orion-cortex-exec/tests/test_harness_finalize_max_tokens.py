@@ -113,3 +113,34 @@ def test_orion_response_repair_uses_general_max_tokens_budget(monkeypatch) -> No
     eff, src, _ = _resolve_llm_max_tokens(ctx={}, step=step)
     assert eff == 8000
     assert src == "harness_finalize_default"
+
+
+def test_orion_response_repair_context_budget_wins_and_thinking_is_forwardable(monkeypatch) -> None:
+    """The repair request's own context (orion/harness/finalize.py) carries max_tokens and
+    chat_template_kwargs; ctx.max_tokens must win over the 8000 general budget that let the
+    thinking-on agent lane spend every token reasoning (live 2026-09-28..30)."""
+    import app.executor as executor_mod
+    from orion.harness.finalize import build_response_repair_context
+    from orion.harness.tests.fixtures import make_reflection
+
+    monkeypatch.setattr(
+        executor_mod,
+        "settings",
+        SimpleNamespace(
+            llm_chat_general_max_tokens=8000,
+            llm_chat_max_tokens_default=512,
+            llm_dream_max_tokens=32768,
+            llm_chat_quick_max_tokens=384,
+            llm_memory_graph_suggest_max_tokens=4096,
+        ),
+    )
+    ctx = build_response_repair_context(
+        correlation_id="c-1",
+        draft_text="draft",
+        reflection=make_reflection(alignment_verdict="misaligned"),
+        user_message="hi",
+    )
+    step = _step(verb_name="orion_response_repair", step_name="llm_orion_response_repair")
+    eff, req, src = _resolve_llm_chat_max_tokens(step, ctx)
+    assert (eff, req, src) == (3072, 3072, "ctx.max_tokens")
+    assert ctx["chat_template_kwargs"] == {"enable_thinking": False}

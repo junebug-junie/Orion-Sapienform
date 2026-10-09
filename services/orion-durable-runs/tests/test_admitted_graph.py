@@ -107,10 +107,11 @@ class World:
     async def keep(self, state):
         self.events.append(("kept_for_outreach", state["lease"]))
 
-    def graph(self, saver):
+    def graph(self, saver, max_takebacks=0):
         return build_admitted_graph(Deps(self.turn, self.read, self.row, self.journal),
             AdmissionDeps(self.register, self.lease, self.execute, self.release, self.event,
-                          now=lambda: self.now, max_attempts=2, guard=self.guard, keep_for_outreach=self.keep), saver)
+                          now=lambda: self.now, max_attempts=2, guard=self.guard, keep_for_outreach=self.keep,
+                          max_takebacks=max_takebacks), saver)
 
 
 def initial():
@@ -149,7 +150,7 @@ def test_turn_carries_the_hold_ref_and_never_the_pool_role_as_a_route():
         [req] = world.turn_requests
         assert req.gpu_lease is not None and req.gpu_lease.model_dump() == world.ref()
         # The hold landed on agent-gpu2: that is a pool role, never a route label.
-        assert req.assigned_lane is None and req.lease is None and req.fcc_model_label is None
+        assert req.assigned_lane is None and req.fcc_model_label is None
         assert "agent-gpu2" not in req.model_dump_json(exclude={"gpu_lease"})
     asyncio.run(scenario())
 

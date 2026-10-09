@@ -18,8 +18,7 @@ from orion.substrate.attention.common import compact
 from orion.substrate.attention.detectors import AttentionSignalDetector, default_attention_detectors
 from orion.substrate.attention.policy import (
     base_suppressions,
-    direct_work_turn,
-    generic_reversal_present,
+    direct_answer_cause,
     select_actions,
 )
 from orion.substrate.attention.scoring import autonomy_pressure_from_signals, build_open_loops, merge_signals
@@ -67,6 +66,14 @@ def _detect_signals(
     return signals
 
 
+def _turn_read_skipped(ctx: dict[str, Any]) -> str | None:
+    read = ctx.get("current_turn_llm_read")
+    if not isinstance(read, dict):
+        return None
+    skipped = read.get("skipped")
+    return str(skipped) if skipped else None
+
+
 def build_attention_frame(
     *,
     ctx: dict[str, Any],
@@ -83,24 +90,22 @@ def build_attention_frame(
     signals = _detect_signals(detectors=detector_list, ctx=ctx, inputs=inputs, belief_lineage=lineage)
     merged_signals = merge_signals(signals, limit=max_open * 3)
     stale = _stale_thread_active(inputs)
-    generic = generic_reversal_present(user_text)
-    direct = direct_work_turn(user_text)
+    direct_cause = direct_answer_cause(ctx, user_text)
+    direct = direct_cause is not None
     open_loops = build_open_loops(
         signals=merged_signals,
         ctx=ctx,
         inputs=inputs,
         belief_lineage=lineage,
         direct_turn=direct,
-        generic_reversal=generic,
         stale_thread_active=stale,
         max_open=max_open,
     )
     actions, selected, suppressions, deferred = select_actions(
         open_loops=open_loops,
-        suppressions=base_suppressions(user_text=user_text, stale_thread_active=stale),
+        suppressions=base_suppressions(direct_cause=direct_cause, stale_thread_active=stale),
         min_ask=min_ask,
         max_asks=max_asks,
-        generic_reversal=generic,
         stale_thread_active=stale,
     )
     _autonomy_value, autonomy_signals = autonomy_pressure_from_signals(merged_signals)
@@ -118,7 +123,11 @@ def build_attention_frame(
         debug={
             "enabled": True,
             "direct_turn": direct,
-            "generic_reversal": generic,
+            "direct_turn_cause": direct_cause,
+            # Set when cortex-exec deliberately skipped the same-turn read (no
+            # human message on this turn) -- tells a skipped read apart from a
+            # failed one, both of which make direct_turn_cause "unavailable".
+            "turn_read_skipped": _turn_read_skipped(ctx),
             "max_open_loops": max_open,
             "max_selected_asks": max_asks,
             "min_ask_score": min_ask,

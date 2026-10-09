@@ -11,6 +11,9 @@ priority: normal
 
 requires_gpu: true
 requires_memory: false
+# No user text to search for: recall runs only its "what is going on" feeds
+# (recent chat, recent timeline, bus anomalies), never an empty-query search.
+recall_query_mode: context_only
 timeout_ms: 120000
 
 services:

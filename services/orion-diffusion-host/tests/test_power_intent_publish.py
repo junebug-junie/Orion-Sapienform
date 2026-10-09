@@ -65,6 +65,7 @@ def test_power_intent_is_published_as_an_envelope(monkeypatch):
     bus = _RecordingBus()
     monkeypatch.setattr(main, "_heartbeat_chassis", _Chassis(bus))
     monkeypatch.setattr(main.settings, "DIFFUSION_POWER_INTENT_ENABLED", True)
+    monkeypatch.setattr(main, "_power_intent_gpu_index", 2)
 
     asyncio.run(main._publish_power_intent())
 
@@ -78,7 +79,7 @@ def test_power_intent_is_published_as_an_envelope(monkeypatch):
     # whose node is not its own, so both must survive the envelope round trip.
     intent = PowerIntentV1.model_validate(env.payload)
     assert intent.node == main.settings.NODE_NAME
-    assert intent.gpu_index == main.settings.DIFFUSION_POWER_INTENT_GPU_INDEX
+    assert intent.gpu_index == 2
     assert intent.workload_kind == "reverie_diffusion"
 
 
@@ -102,6 +103,7 @@ def test_bus_failure_is_swallowed_so_generation_survives(monkeypatch):
 
     monkeypatch.setattr(main, "_heartbeat_chassis", _Chassis(_BrokenBus()))
     monkeypatch.setattr(main.settings, "DIFFUSION_POWER_INTENT_ENABLED", True)
+    monkeypatch.setattr(main, "_power_intent_gpu_index", 2)
 
     asyncio.run(main._publish_power_intent())  # must not raise
 
@@ -150,6 +152,7 @@ def test_an_absent_chassis_is_reported_not_silently_skipped(monkeypatch):
     otherwise mute the loop for the container's whole life."""
     monkeypatch.setattr(main, "_heartbeat_chassis", None)
     monkeypatch.setattr(main, "_power_intent_no_bus_warned", False)
+    monkeypatch.setattr(main, "_power_intent_gpu_index", 2)
     monkeypatch.setattr(main.settings, "DIFFUSION_POWER_INTENT_ENABLED", True)
 
     records: list[str] = []
@@ -162,3 +165,63 @@ def test_an_absent_chassis_is_reported_not_silently_skipped(monkeypatch):
 
     hits = [r for r in records if "power_intent_no_bus" in r]
     assert len(hits) == 1, f"expected exactly one latched error, got {len(hits)}"
+
+
+# --- Stage 5.5: the card index is derived, never configured -----------------------------
+
+
+@pytest.mark.parametrize(
+    "visible, order, want",
+    [
+        ("2", "PCI_BUS_ID", 2),
+        (" 2 ", "PCI_BUS_ID", 2),
+        ("0", "PCI_BUS_ID", 0),
+        ("", "PCI_BUS_ID", None),         # unset
+        (None, "PCI_BUS_ID", None),
+        ("2,3", "PCI_BUS_ID", None),      # several cards: which one would the settler watch?
+        ("GPU-1a2b", "PCI_BUS_ID", None),  # a UUID is not an nvidia-smi index
+        ("-1", "PCI_BUS_ID", None),
+        ("2", None, None),                # FASTEST_FIRST order: 2 may not be nvidia-smi's 2
+        ("2", "FASTEST_FIRST", None),
+    ],
+)
+def test_gpu_index_is_derived_from_cuda_visible_devices(visible, order, want):
+    got, why = main.resolve_power_intent_gpu_index(visible, order)
+    assert got == want
+    assert (why is None) == (want is not None)
+
+
+def test_live_circe_env_resolves_to_todays_index():
+    """Metric gate, live check: circe's diffusion-host has CUDA_VISIBLE_DEVICES=2 (docker inspect,
+    2026-09-29) and the image bakes CUDA_DEVICE_ORDER=PCI_BUS_ID -- the derived value must equal
+    the retired DIFFUSION_POWER_INTENT_GPU_INDEX=2 exactly."""
+    assert main.resolve_power_intent_gpu_index("2", "PCI_BUS_ID") == (2, None)
+
+
+def test_unresolved_index_withholds_the_intent_loudly_once(monkeypatch):
+    bus = _RecordingBus()
+    monkeypatch.setattr(main, "_heartbeat_chassis", _Chassis(bus))
+    monkeypatch.setattr(main.settings, "DIFFUSION_POWER_INTENT_ENABLED", True)
+    monkeypatch.setattr(main, "_power_intent_gpu_index", None)
+    monkeypatch.setattr(main, "_power_intent_gpu_index_why", "CUDA_VISIBLE_DEVICES is unset")
+    monkeypatch.setattr(main, "_power_intent_gpu_index_warned", False)
+
+    records: list[str] = []
+    handler_id = main.logger.add(lambda m: records.append(str(m)), level="ERROR")
+    try:
+        asyncio.run(main._publish_power_intent())
+        asyncio.run(main._publish_power_intent())
+        main.warn_on_unresolved_power_intent_gpu_index()
+    finally:
+        main.logger.remove(handler_id)
+
+    assert bus.published == [], "an intent was declared on a guessed card"
+    hits = [r for r in records if "power_intent_gpu_index_unresolved" in r]
+    assert len(hits) == 2, hits  # one latched publish-time line + the boot check
+
+
+def test_the_static_index_key_is_gone():
+    """Kill means kill: no settings fallback for the hand-set index."""
+    assert not hasattr(main.settings, "DIFFUSION_POWER_INTENT_GPU_INDEX")
+    example = (Path(__file__).resolve().parents[1] / ".env_example").read_text()
+    assert "DIFFUSION_POWER_INTENT_GPU_INDEX" not in example

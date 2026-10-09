@@ -5,7 +5,7 @@ import re
 from typing import Any, Callable
 
 from orion.schemas.attention_frame import AttentionSignalV1, OpenLoopV1, SalienceFeaturesV1
-from orion.substrate.attention.common import bounded, compact, stable_id
+from orion.substrate.attention.common import CURRENT_TURN_DETECTOR_ID, bounded, compact, stable_id
 from orion.substrate.attention.salience import borda_coalition_salience, compute_evidence_features
 
 logger = logging.getLogger("orion.substrate.attention.scoring")
@@ -76,7 +76,6 @@ def build_open_loops(
     inputs: dict[str, Any],
     belief_lineage: list[str],
     direct_turn: bool,
-    generic_reversal: bool,
     stale_thread_active: bool,
     max_open: int,
     verdict_lookup: "Callable[[list[str]], set[str]] | None" = None,
@@ -145,8 +144,14 @@ def build_open_loops(
         # candidates and voluntary override could never fire -- see
         # top_down.py::relevance. Report the real number, including 0.0.
         concept_value = concept_pressure_from_signals(signals, phrase)
-        askability = 0.5 if direct_turn else 0.72
-        if generic_reversal or stale_thread_active:
+        # On a direct-request turn only what the user raised this turn stays
+        # askable (below select_actions' 0.45 ask floor otherwise): answer
+        # first, and don't pull the conversation toward Orion's own threads.
+        if direct_turn:
+            askability = 0.5 if signal.source == CURRENT_TURN_DETECTOR_ID else 0.25
+        else:
+            askability = 0.72
+        if stale_thread_active:
             askability = min(askability, 0.25)
         loop = OpenLoopV1(
             id=loop_id,

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from typing import Literal
+from uuid import NAMESPACE_URL, UUID, uuid5
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -10,6 +11,18 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 # probability surface without parsing GrammarAtom.summary JSON.
 SYSTEM_ONE_APPRAISAL_CHANNEL = "orion:system_one:appraisal"
 SYSTEM_ONE_APPRAISAL_KIND = "system_one.appraisal.frame.v1"
+
+
+def system_one_appraisal_correlation_id(frame_id: str) -> UUID:
+    """Envelope correlation id for a frame: deterministic uuid5 of its frame_id.
+
+    ``frame_id`` is ``system-one-appraisal-<24 hex>`` (not a UUID), and
+    ``BaseEnvelope.correlation_id`` is a UUID, so passing frame_id directly
+    fails validation on every publish (live 2026-09-29). uuid5 keeps a retry
+    of the same frame on the same correlation id; frame_id itself stays in the
+    payload.
+    """
+    return uuid5(NAMESPACE_URL, f"orion:system_one:appraisal:{frame_id}")
 
 
 def _utc_now() -> datetime:

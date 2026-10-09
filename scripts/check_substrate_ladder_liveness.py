@@ -9,7 +9,12 @@ silently stopped writing for ~48h while every container was "Up".
 
 Read-only everywhere:
 - Postgres: bounded ``max(ts)`` per rung in a read-only session with a
-  statement timeout.
+  statement timeout, plus catalog reads (information_schema / pg_index /
+  pg_class) for the migrations section: every merged hand-applied
+  ``services/orion-sql-db/*.sql`` changed in the last ``--migration-days``
+  (default 30) must have its tables/columns/indexes/sequences live -- the
+  PR #2400 (missing column) and PR #2424 (missing table, 13x crash loop)
+  incidents. Logic and how it decides: ``orion/sql_migration_drift.py``.
 - docker: ``docker ps`` / ``docker inspect`` / ``docker image inspect``, plus
   one ``docker exec <c> python -c`` per consumer container that hashes its copy
   of the schema file (no writes, no restarts).
@@ -24,19 +29,29 @@ which is the path a human already reads. Debounced per failing key; a key that
 fails to deliver is retried next tick; a key that recovers is forgotten so a
 recurrence alerts again.
 
+If the debounce state cannot be read/written, red keys are carded anyway with
+no dedupe (one card per tick) -- repeated cards beat silence. That was the
+2026-09-26 incident: a root-owned state dir failed every run, 204 red runs
+(~34h) raised zero cards, and the only trace was a log line nobody read.
+
 Exit codes: 0 green, 1 at least one red rung or skewed consumer,
-2 could not complete a check (DB or docker unreachable) and nothing was red.
+2 could not complete a check (DB or docker unreachable) and nothing was red,
+4 --notify could not escalate: dedupe state unusable, or orion-notify did not
+accept a card. Wins over 1/2 because a red nobody was told about is the worse
+failure; the last stdout line still says RED / GREEN / CANNOT CHECK.
 
 Usage:
     python scripts/check_substrate_ladder_liveness.py
     python scripts/check_substrate_ladder_liveness.py --json
     python scripts/check_substrate_ladder_liveness.py --notify
     python scripts/check_substrate_ladder_liveness.py --list-consumers
+    python scripts/check_substrate_ladder_liveness.py --test-escalation   # ONE labelled test card
 """
 
 from __future__ import annotations
 
 import argparse
+import errno
 import fcntl
 import hashlib
 import json
@@ -57,11 +72,14 @@ if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
 from orion import schema_skew_discovery as ssd  # noqa: E402
+from orion import sql_migration_drift as drift  # noqa: E402
 from orion import substrate_ladder_liveness as ll  # noqa: E402
 
 EXIT_OK = 0
 EXIT_RED = 1
 EXIT_CANNOT_CHECK = 2
+# 3 is the disk watchdog's "the script itself crashed"; kept distinct everywhere.
+EXIT_ESCALATION_FAILED = 4
 
 DEFAULT_NOTIFY_BASE_URL = os.getenv("NOTIFY_BASE_URL", "http://localhost:7140")
 STATEMENT_TIMEOUT_MS = 20_000
@@ -294,12 +312,20 @@ def default_state_file() -> str:
 
 
 def _load_state(path: str) -> dict[str, Any]:
+    """A missing, unparseable, or wrong-shaped file reads as empty: the red is
+    re-carded and the file is rewritten, rather than a TypeError killing the
+    send every tick."""
     try:
         with open(path, encoding="utf-8") as fh:
             data = json.load(fh)
-        return data if isinstance(data, dict) else {}
-    except (OSError, json.JSONDecodeError):
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
         return {}
+    if not isinstance(data, dict):
+        return {}
+    keys = data.get("notified_keys", [])
+    if not isinstance(keys, list) or not all(isinstance(k, str) for k in keys):
+        data["notified_keys"] = []
+    return data
 
 
 def _save_state(path: str, state: dict[str, Any]) -> None:
@@ -330,37 +356,93 @@ def carry_notified(notified: list[str], green_keys: list[str]) -> list[str]:
     return [k for k in notified if k not in green]
 
 
-def notify(report: ll.LadderReport, *, state_file: str, base_url: str, token: Optional[str], client=None) -> Optional[bool]:
-    """Returns True/False when a card was attempted, None when nothing was new."""
-    os.makedirs(os.path.dirname(state_file) or ".", exist_ok=True)
-    with open(f"{state_file}.lock", "w") as lock:
+class Escalation(NamedTuple):
+    """What ``--notify`` actually achieved this tick.
+
+    ``sent``: True/False when a card was attempted, None when nothing needed one.
+    ``state_error``: the dedupe state could not be read/written (no memory, so
+    red cards go out undeduped every tick until it is fixed).
+    ``notify_error``: orion-notify did not accept the card (down, 5xx, bad token).
+    """
+
+    sent: Optional[bool] = None
+    state_error: Optional[str] = None
+    notify_error: Optional[str] = None
+    skipped_locked: bool = False
+
+    @property
+    def failed(self) -> bool:
+        return self.state_error is not None or self.sent is False
+
+
+class _StateUnusable(Exception):
+    pass
+
+
+def _send_card(report: ll.LadderReport, *, new: list[str], client, base_url: str, token: Optional[str],
+               state_error: Optional[str] = None) -> tuple[bool, Optional[str]]:
+    """One attention_request. Never raises: (accepted, failure detail)."""
+    red = report.red_keys()
+    message = report.alert_message()
+    if state_error is not None:
+        message = (
+            "The ladder watch cannot remember which cards it already sent "
+            f"({state_error}), so this card repeats every tick until that is fixed.\n\n" + message
+        )
+    try:
+        if client is None:
+            from orion.notify.client import NotifyClient
+
+            client = NotifyClient(base_url=base_url, api_token=token, timeout=10)
+        accepted = client.attention_request(
+            message=message,
+            severity=report.severity(),
+            require_ack=True,
+            context={
+                "source_service": "check_substrate_ladder_liveness",
+                "reason": "substrate_ladder_liveness",
+                "red_keys": red,
+                "new_keys": new,
+                "dedupe_state_error": state_error,
+            },
+        )
+    except Exception as exc:  # noqa: BLE001 - a client bug is a failed send, not a crash
+        return False, f"{exc.__class__.__name__}: {exc}"
+    if bool(getattr(accepted, "ok", False)):
+        return True, None
+    return False, str(getattr(accepted, "detail", None) or "orion-notify returned ok=False")
+
+
+def notify(report: ll.LadderReport, *, state_file: str, base_url: str, token: Optional[str], client=None) -> Escalation:
+    """Debounced card for new red keys. Never silent about its own failure.
+
+    If the dedupe state cannot be used (the 2026-09-26 incident: a root-owned
+    telemetry dir made every run fail before sending anything, for ~34h of red),
+    fall back to carding every current red key with no dedupe: a card per tick
+    is bounded noise a human will act on; no card is silence nobody sees.
+    """
+    try:
+        os.makedirs(os.path.dirname(state_file) or ".", exist_ok=True)
+        lock = open(f"{state_file}.lock", "w")
+    except OSError as exc:
+        return _notify_stateless(report, f"{exc.__class__.__name__}: {exc}", base_url=base_url, token=token, client=client)
+    with lock:
         try:
             fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except OSError:
-            return None
+        except OSError as exc:
+            if exc.errno in (errno.EWOULDBLOCK, errno.EAGAIN):
+                return Escalation(skipped_locked=True)
+            # Not contention (ENOLCK, NFS...): skipping would be silent every tick.
+            return _notify_stateless(report, f"flock {exc.__class__.__name__}: {exc}", base_url=base_url, token=token, client=client)
         state = _load_state(state_file)
         red = report.red_keys()
         # Forget keys that verifiably recovered, so a recurrence alerts again.
         notified = carry_notified(list(state.get("notified_keys", [])), report.green_keys())
         new = keys_to_notify(red, notified)
         sent: Optional[bool] = None
+        notify_error: Optional[str] = None
         if new:
-            if client is None:
-                from orion.notify.client import NotifyClient
-
-                client = NotifyClient(base_url=base_url, api_token=token, timeout=10)
-            accepted = client.attention_request(
-                message=report.alert_message(),
-                severity=report.severity(),
-                require_ack=True,
-                context={
-                    "source_service": "check_substrate_ladder_liveness",
-                    "reason": "substrate_ladder_liveness",
-                    "red_keys": red,
-                    "new_keys": new,
-                },
-            )
-            sent = bool(getattr(accepted, "ok", False))
+            sent, notify_error = _send_card(report, new=new, client=client, base_url=base_url, token=token)
             if sent:
                 notified = sorted(set(notified) | set(new))
         state.update(
@@ -370,8 +452,54 @@ def notify(report: ll.LadderReport, *, state_file: str, base_url: str, token: Op
                 "last_run_at": datetime.now(timezone.utc).isoformat(),
             }
         )
-        _save_state(state_file, state)
-        return sent
+        try:
+            _save_state(state_file, state)
+        except OSError as exc:
+            # The card (if any) already went out this tick; do not send a
+            # second one. Next tick has no memory and will re-card.
+            return Escalation(sent=sent, state_error=f"{exc.__class__.__name__}: {exc}", notify_error=notify_error)
+        return Escalation(sent=sent, notify_error=notify_error)
+
+
+def _notify_stateless(report: ll.LadderReport, state_error: str, *, base_url: str, token: Optional[str], client) -> Escalation:
+    red = report.red_keys()
+    if not red:
+        return Escalation(state_error=state_error)
+    sent, detail = _send_card(report, new=red, client=client, base_url=base_url, token=token, state_error=state_error)
+    return Escalation(sent=sent, state_error=state_error, notify_error=detail)
+
+
+TEST_CARD_TITLE = "TEST: substrate ladder watch escalation check -- safe to dismiss"
+
+
+def send_test_card(*, base_url: str, token: Optional[str], client=None) -> tuple[bool, Optional[str], Optional[str]]:
+    """One labelled card through the real orion-notify path; no state touched.
+
+    Returns (accepted, notification_id, failure detail).
+    """
+    try:
+        if client is None:
+            from orion.notify.client import NotifyClient
+
+            client = NotifyClient(base_url=base_url, api_token=token, timeout=10)
+        accepted = client.attention_request(
+            message=(
+                f"{TEST_CARD_TITLE}\n\nThis is a one-off proof that the substrate ladder watch "
+                "can reach Hub Pending Attention through orion-notify. Nothing is wrong with the ladder."
+            ),
+            severity="warning",
+            require_ack=True,
+            context={
+                "source_service": "check_substrate_ladder_liveness",
+                "reason": "TEST substrate_ladder_liveness escalation check (safe to dismiss)",
+                "test": True,
+            },
+        )
+    except Exception as exc:  # noqa: BLE001
+        return False, None, f"{exc.__class__.__name__}: {exc}"
+    ok = bool(getattr(accepted, "ok", False))
+    nid = getattr(accepted, "notification_id", None)
+    return ok, (str(nid) if nid else None), (None if ok else str(getattr(accepted, "detail", None) or "ok=False"))
 
 
 # ------------------------------------------------------------------------- main
@@ -390,10 +518,12 @@ def build_report(args) -> ll.LadderReport:
             conn.set_session(readonly=True, autocommit=True)
             try:
                 newest, motifs, errors = read_freshness(conn, args.lookback_hours * 3600)
+                report.rungs = ll.evaluate_ladder(newest, now, consolidation_motif_counts=motifs)
+                report.cannot_check += errors
+                if not args.skip_migrations:
+                    check_migrations(conn, args, report)
             finally:
                 conn.close()
-            report.rungs = ll.evaluate_ladder(newest, now, consolidation_motif_counts=motifs)
-            report.cannot_check += errors
         except Exception as exc:  # noqa: BLE001
             report.cannot_check.append(f"postgres: {exc.__class__.__name__}: {str(exc).strip()}")
 
@@ -405,6 +535,34 @@ def build_report(args) -> ll.LadderReport:
         except Exception as exc:  # noqa: BLE001
             report.cannot_check.append(f"skew: {exc.__class__.__name__}: {str(exc).strip()}")
     return report
+
+
+def _delivered_migration_keys(state_file: str) -> list[str]:
+    """Migration keys already carded (read-only, no lock). A carded file stays red until it is
+    actually applied instead of silently ageing out of the window with its card muted. An
+    unreadable state degrades to plain window behaviour; notify() reports the state problem."""
+    try:
+        with open(state_file, encoding="utf-8") as fh:
+            keys = json.load(fh).get("notified_keys", [])
+        return [k for k in keys if isinstance(k, str) and k.startswith("migration:")]
+    except Exception:  # noqa: BLE001
+        return []
+
+
+def check_migrations(conn, args, report: ll.LadderReport) -> None:
+    """Merged hand-applied SQL migrations vs the live schema (PR #2400 / #2424 incidents).
+
+    Same read-only connection; git history of the checkout this runs from (cron: the primary
+    checkout on main, i.e. what was deployed). A failure here is CANNOT CHECK for this section
+    only -- it never hides the rungs or skew results.
+    """
+    try:
+        report.migrations = drift.check_repo(
+            conn, Path(args.repo), ref="HEAD", window_days=args.migration_days or None,
+            sticky_keys=_delivered_migration_keys(getattr(args, "state_file", None) or default_state_file()),
+        )
+    except Exception as exc:  # noqa: BLE001 - one bad section must not hide the rest
+        report.cannot_check.append(f"migrations: {exc.__class__.__name__}: {str(exc).strip()}")
 
 
 def check_skew(args) -> tuple[list[ll.SkewResult], list[str]]:
@@ -494,9 +652,49 @@ def print_human(report: ll.LadderReport, verbose: bool = False) -> None:
         print(f"{mark}skew {s.schema} {s.producer or '?'} -> {s.service_dir} [{s.container or '-'}] {s.status}: {s.detail}")
     if report.skew:
         print("skew rows: " + ", ".join(f"{k}={v}" for k, v in sorted(counts.items())))
+    if report.migrations is not None:
+        m = report.migrations
+        in_window = [f for f in m.files if f.in_window]
+        for f in m.red_files:
+            print(f"RED migration {f.summary()}")
+            print(f"    apply: {f.apply_command()}")
+        for f in m.old_broken():
+            print(f"warn old migration {f.summary()} (last changed {f.changed_at:%Y-%m-%d}, "
+                  f"outside the {m.window_days}-day window, never carded)")
+        for f in m.verify_manually():
+            print(f"warn migration {f.name}: data-only (no schema objects) -- verify manually")
+        for f in in_window:
+            for note in f.info:
+                if "DO block" in note:
+                    print(f"warn migration {f.name}: {note}")
+        if not m.red_files:
+            print(f"ok   migrations: {len(in_window)} file(s) changed in the last {m.window_days or 'all'} days, "
+                  "every declared schema object present")
     for c in report.cannot_check:
         print(f"CANNOT CHECK {c}")
     print("RED" if report.red else ("CANNOT CHECK" if report.cannot_check else "GREEN"))
+
+
+def report_escalation(esc: Escalation, *, red: bool) -> bool:
+    """Print what escalation did; True when it failed (exit EXIT_ESCALATION_FAILED)."""
+    if esc.skipped_locked:
+        print("escalation skipped: another ladder watch run holds the state lock", file=sys.stderr)
+    if esc.sent is True:
+        print("attention card sent" + (" (UNDEDUPED fallback)" if esc.state_error else ""), file=sys.stderr)
+    if esc.state_error:
+        print(
+            f"ESCALATION FAILED: dedupe state unusable ({esc.state_error}). "
+            + ("Red cards are sent every tick with no dedupe until this is fixed."
+               if red else "Nothing is red now, but a red tick will card every run until this is fixed."),
+            file=sys.stderr,
+        )
+    if esc.sent is False:
+        print(
+            f"ESCALATION FAILED: {'RED and ' if red else ''}orion-notify did not accept the attention card "
+            f"({esc.notify_error}); retrying next tick. No human has been told.",
+            file=sys.stderr,
+        )
+    return esc.failed
 
 
 def main(argv: Optional[list[str]] = None) -> int:
@@ -507,6 +705,10 @@ def main(argv: Optional[list[str]] = None) -> int:
     ap.add_argument("--ref", default=None, help="git ref the schema is compared against (default origin/main, else HEAD)")
     ap.add_argument("--skip-db", action="store_true")
     ap.add_argument("--skip-docker", action="store_true")
+    ap.add_argument("--skip-migrations", action="store_true",
+                    help="skip the merged-SQL-migration-applied section")
+    ap.add_argument("--migration-days", type=int, default=drift.DEFAULT_WINDOW_DAYS,
+                    help="alarm only on migrations changed in the last N days (0 = all)")
     ap.add_argument("--json", action="store_true")
     ap.add_argument("--verbose", action="store_true")
     ap.add_argument(
@@ -520,7 +722,17 @@ def main(argv: Optional[list[str]] = None) -> int:
     ap.add_argument("--notify-base-url", default=DEFAULT_NOTIFY_BASE_URL)
     ap.add_argument("--notify-api-token", default=os.getenv("NOTIFY_API_TOKEN"))
     ap.add_argument("--state-file", default=None)
+    ap.add_argument("--test-escalation", action="store_true",
+                    help=f"send ONE card titled '{TEST_CARD_TITLE}' through orion-notify and exit (no checks run)")
     args = ap.parse_args(argv)
+
+    if args.test_escalation:
+        ok, nid, detail = send_test_card(base_url=args.notify_base_url, token=args.notify_api_token)
+        if ok:
+            print(f"test card accepted by orion-notify at {args.notify_base_url} (notification_id={nid})")
+            return EXIT_OK
+        print(f"ESCALATION FAILED: test card not accepted by orion-notify at {args.notify_base_url} ({detail})", file=sys.stderr)
+        return EXIT_ESCALATION_FAILED
 
     if args.list_candidates:
         schemas, disc = ll.discovered_schemas(Path(args.repo))
@@ -546,19 +758,25 @@ def main(argv: Optional[list[str]] = None) -> int:
     else:
         print_human(report, verbose=args.verbose)
 
+    escalation_failed = False
     if args.notify:
         try:
-            sent = notify(
+            esc = notify(
                 report,
                 state_file=args.state_file or default_state_file(),
                 base_url=args.notify_base_url,
                 token=args.notify_api_token,
             )
-            if sent is not None:
-                print(f"attention card {'sent' if sent else 'FAILED to send (will retry next tick)'}", file=sys.stderr)
         except Exception as exc:  # noqa: BLE001 - escalation must never mask the result
-            print(f"escalation failed ({exc.__class__.__name__}: {exc})", file=sys.stderr)
+            # A bug in the dedupe path is treated like unusable state: still card the red.
+            esc = _notify_stateless(
+                report, f"unexpected {exc.__class__.__name__}: {exc}",
+                base_url=args.notify_base_url, token=args.notify_api_token, client=None,
+            )
+        escalation_failed = report_escalation(esc, red=report.red)
 
+    if escalation_failed:
+        return EXIT_ESCALATION_FAILED
     if report.red:
         return EXIT_RED
     if report.cannot_check:

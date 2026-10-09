@@ -13,8 +13,8 @@ class RpcChannelLatencyV1(BaseModel):
     ``orion.core.bus.rpc_health.hop_key`` and the conventions documented there):
     a bus request channel for ``rpc_request()``, ``"<channel>#<health_label>"`` when the
     caller labels the call, or ``verb:<name>`` / ``governor:<mode>`` /
-    ``http:<host><path>`` / ``fcc:<served_model>`` for hand-rolled hops (``http:`` and
-``fcc:`` are reserved conventions with no producer as of 2026-09-24).
+    ``http:<host><path>`` / ``fcc:<role>`` (``fcc:route:<route>`` when the turn held no GPU
+    pool lease) for hand-rolled hops.
 
     ``log_ms_sum``/``log_ms_sumsq`` are sufficient statistics over SUCCESSES only:
     sum of ``ln(elapsed_ms)`` and sum of ``ln(elapsed_ms)**2``. A consumer recovers the

@@ -633,3 +633,64 @@ def test_real_change_still_reads_as_novelty_after_a_steady_run() -> None:
         targets = select_capability_targets(field, POLICY, prev)
         prev = _frame_of(targets, field.tick_id)
     assert targets[0].novelty_score == pytest.approx(0.6)
+
+
+def test_a_quiet_domain_stops_winning_on_its_last_reading() -> None:
+    """2026-09-29: chat reports only when a turn lands. Its last reading used to stay
+    the "current" error for hours and win the competition (replayed: 1,129 of 1,440
+    minutes on 2026-09-22, 764 of them on a reading >30 min old)."""
+    from datetime import timedelta
+
+    now = BASE
+    stale_chat = PrecisionEwmaBaseline(
+        ewma=0.1, variance=0.02, observation_count=300, last_value=0.8,
+        last_observed_at=now - timedelta(minutes=45),
+    )
+    fresh_exec = PrecisionEwmaBaseline(
+        ewma=0.1, variance=0.02, observation_count=300, last_value=0.2,
+        last_observed_at=now - timedelta(seconds=5),
+    )
+    baselines = {"node:substrate.chat": stale_chat, "node:substrate.execution": fresh_exec}
+    unaged = {t.target_id: t for t in select_node_targets(_FIELD_FOR_NODE_TESTS, POLICY, baselines)}
+    assert unaged["node:substrate.chat"].salience_score == 1.0  # the old behaviour
+    aged = {t.target_id: t for t in select_node_targets(_FIELD_FOR_NODE_TESTS, POLICY, baselines, now=now)}
+    assert aged["node:substrate.execution"].salience_score == 1.0
+    assert aged["node:substrate.chat"].salience_score == 0.0
+    assert aged["node:substrate.chat"].dominant_channels == {"prediction_error": 0.0}
+    assert any("stale reading" in r and "45 min old" in r for r in aged["node:substrate.chat"].reasons)
+
+
+def test_build_attention_frame_ages_readings_against_its_own_clock() -> None:
+    from datetime import timedelta
+
+    from orion.attention.field_attention.builder import build_attention_frame
+
+    now = BASE
+    baselines = {
+        "node:substrate.chat": PrecisionEwmaBaseline(
+            ewma=0.1, variance=0.02, observation_count=300, last_value=0.8,
+            last_observed_at=now - timedelta(minutes=15),
+        )
+    }
+    frame = build_attention_frame(
+        field=_FIELD_FOR_NODE_TESTS, policy=POLICY, prediction_error_baselines=baselines, now=now
+    )
+    chat = next(
+        t for t in (*frame.node_targets, *frame.suppressed_targets) if t.target_id == "node:substrate.chat"
+    )
+    assert chat.dominant_channels["prediction_error"] == pytest.approx(0.4)
+
+
+def test_a_fully_faded_set_reads_zero_salience_not_a_tie_at_the_top() -> None:
+    """Review 2026-09-29: every competitor faded to 0 used to normalize to 1.0."""
+    from datetime import timedelta
+
+    now = BASE
+    faded = PrecisionEwmaBaseline(
+        ewma=0.1, variance=0.02, observation_count=300, last_value=0.8,
+        last_observed_at=now - timedelta(minutes=45),
+    )
+    baselines = {"node:substrate.chat": faded, "node:substrate.execution": faded}
+    targets = select_node_targets(_FIELD_FOR_NODE_TESTS, POLICY, baselines, now=now)
+    assert {t.target_id for t in targets} == set(baselines)
+    assert all(t.salience_score == 0.0 for t in targets)

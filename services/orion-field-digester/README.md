@@ -321,14 +321,13 @@ Sources (all SQL counts): `world_pulse_seed_pending`, `durable_demand_pending`, 
 `gpu_pool_waiting` (leases queued/backlogged in `gpu_pool_leases`; replaced the gateway's
 `/admission` waiting sum when the gateway cut over to orion-gpu-pool, 2026-09-24).
 
-GPU pool stage 4.4 (2026-09-25): `durable_demand_pending` counts durable runs waiting for a GPU
-across the move from durable-runs' own broker to pool holds -- pending `durable_resource_demands`
-plus `gpu_pool_leases` holds (`kind='hold'`, holder `durable-runs:<run_id>`) that are queued or
-backlogged, a run with both counted once as its hold (`DURABLE_WAITING_SQL` in `app/store.py`).
-Its oldest wait is the older of a demand's `created_at` and a hold's `queued_since`.
-`gpu_pool_waiting` counts `kind='request'` only, so a hold is never counted twice. Before the
-cutover the hold half is empty (live 2026-09-25: 12 pending demands, 0 holds -- identical to the
-old reading); after the migration the legacy half is, and 4.6 deletes it.
+GPU pool stage 4.4 / 4.6: `durable_demand_pending` counts durable runs waiting for a GPU --
+`gpu_pool_leases` holds (`kind='hold'`, holder `durable-runs:<run_id>`) that are queued or
+backlogged (`DURABLE_WAITING_SQL` in `app/store.py`); its oldest wait is the oldest such hold's
+`queued_since` (`created_at` if unset). Stage 4.4 briefly unioned in durable-runs' own broker queue
+(pending `durable_resource_demands`) across the cutover; stage 4.6 (2026-09-29) dropped that frozen
+legacy half, so the table is no longer read. `gpu_pool_waiting` counts `kind='request'` and
+non-durable (operator) holds only, so a hold is never counted twice.
 
 ## Telemetry-anomaly metacog trigger (2026-07-21)
 
@@ -778,6 +777,68 @@ own failure count (0 for weeks). Gated by `ENABLE_RPC_DELIVERY_FIELD_DIGESTION` 
 in code, on in `.env_example`). Not the same event as `inference_failure_pressure`: that one
 is the gateway's count of backend calls that came back with an error; this one is callers
 whose reply did not arrive before their own deadline, whatever the reason.
+
+## `write_failure_pressure` (2026-10-02)
+
+Storage writes that did not land, written only on `node:substrate.storage_write` by
+orion-substrate-runtime's storage_write reducer (`orion/substrate/storage_write_loop/`) from
+orion-sql-writer's own per-window write outcomes (`services/orion-sql-writer/app/write_health.py`).
+The reading is the worst table family's `failed / max(attempted, 10)` over the last 600 s of
+writer windows, 0.0 until a family has 2+ failures. Failures are writes that did not reach their
+table: validation/schema reject, constraint violation, serialization error, database
+unavailable, timeout, other DB error, grammar-queue shed. Idempotent duplicates are not failures
+and unrouted kinds are not counted (`fallback_watch` owns those). `mode="replace"`, NOT in
+`NODE_DECAY_CHANNELS`, in `EXPIRING_NODE_CHANNELS` at 180 s (three missed 60 s writer windows):
+a dead writer, a stopped reducer, or a Postgres outage long enough that the writer's own report
+cannot be stored all read as unmeasured, never as the last calm value. Single-observer: never
+seeded on any other node. The edge maps it to `capability:storage` `reliability_pressure`, which
+had no input before (athena's disk/memory biometrics only feed `pressure`). Gated by
+`ENABLE_STORAGE_WRITE_FIELD_DIGESTION` (default off in code, on in `.env_example`).
+
+## Unmeasured capability channels are absent (2026-10-07)
+
+When no edge source measured a capability channel this tick, `apply_diffusion()` drops the key
+(and its `capability_provenance` entry) instead of writing 0.0. If `pressure` is unmeasured, the
+derived `confidence` / `available_capacity` are dropped too, instead of being computed as
+`1 - 0` = 1.0. Before this, a capability whose inputs had all expired (`EXPIRING_NODE_CHANNELS`)
+read pressure 0.0, confidence 1.0, capacity 1.0: unmeasured looked perfect, and an eye reporting
+"no camera" (pressure 0.85) flipped to perfect the moment the frame router died.
+
+Reconcile re-seeds the default keys every tick (`_ensure_capability_vector`), so the drop has to
+happen in diffusion, the last writer before the tick is saved. A measured zero still writes 0.0
+with provenance (`measured_zero_source`), so for a channel an edge feeds, "absent" means "nobody
+measured it". Channels no edge ever feeds (e.g. graph/memory `reliability_pressure`, vision
+`contract_pressure`) still carry reconcile's seeded 0.0 with no provenance -- not a measurement;
+left for a follow-up. A capability->capability edge counts its source as measured only when the
+source channel has provenance (reconcile re-seeds the key itself). A derived confidence /
+available_capacity no longer keeps a direct edge's stale provenance: live, `capability:transport`
+confidence named `node:athena` on 123,095 / 123,095 ticks (72 h), left over from the direct
+confidence edge retired 2026-09-25.
+
+What this does not change (simulated outages on 2,051 real ticks, 72 h, against a frozen copy of the
+previous `apply_diffusion`, `scripts/eval_capability_unmeasured_replay.py`; the real 72 h held no
+capability-level outage at all):
+proposal dimensions, feedback credit, merged confidence and the attention pressure proxy read the
+same values and winners as before in every simulated outage, because an unmeasured 0.0 never won a
+max() and a fabricated 1.0 never won a min() while other capabilities were measured. The one
+difference (1 tick in 2,051) is the merged confidence winner's label, from the stale-provenance fix
+above. Partial coverage is not
+"unmeasured": `capability:transport` `reliability_pressure` kept node:athena's
+`observer_failure_pressure` reading (0.0 on every tick in that window) when the RPC bridge expired.
+**Superseded 2026-10-07:** `observer_failure_pressure` is retired (below), so an RPC-bridge outage now
+leaves transport reliability unmeasured (absent).
+
+## Field decisions follow-up (2026-10-07, #2534 decisions 1, 2, 4 and D3)
+
+- **D3:** `capability:transport.contract_pressure` renamed `catalog_drift_pressure` (same values);
+  persisted rows lose the old key on reconcile (`RETIRED_CAPABILITY_CHANNELS`).
+- **Decision 4:** `observer_failure_pressure` retired end to end (bus observer atom, reducer field,
+  node channel, topology edge mapping, glossary, lattice row, hub card). Transport reliability has one
+  source, the RPC delivery bridge, and reads unmeasured when it stops reporting.
+- **Decisions 1 and 2** live outside this service: the feedback credit guard
+  (`orion/field/credit_integrity.py::before_winner_went_unmeasured`) and attention novelty
+  (`orion/attention/field_attention/selectors.py`), both reading the absent-key convention above.
+- Replay: `scripts/eval_field_decisions_replay.py`.
 
 ## Retired: `stream_backlog_pressure` / `stream_backlog_health` / `delivery_confidence` (2026-09-25)
 
@@ -1584,6 +1645,23 @@ follow-up note, and `test_execution_run_fcc_channels_ignored_off_lane` /
   yet wired to replace this channel or feed the field-digester corpus.
 
 #### `contract_pressure`
+> **2026-10-07 update (fix/transport-lattice-names-and-contract,
+> `docs/superpowers/specs/2026-10-07-transport-lattice-names-and-contract.md`):**
+> the **node-level** channel is retired (`RETIRED_NODE_CHANNELS`, no
+> successor). Its last producer was the bus observer's XREVRANGE schema
+> sample of two world_pulse streams: 0.0 on 123,412 of 123,412 ticks, and a
+> mesh-wide version would read 0 by construction because
+> `OrionBusAsync.publish()` validates every payload before sending. The
+> **capability-level** `capability:transport.contract_pressure` was 0.85 x
+> `node:athena` `catalog_drift_pressure` (topology channel_map) under a
+> misleading name. **Renamed to `catalog_drift_pressure` the same day**
+> (decision D3, approved by Juniper 2026-10-07; fix/field-decisions-d3-credit-
+> novelty-observer). Same values; the old key is pruned from persisted rows
+> (`RETIRED_CAPABILITY_CHANNELS`). The rename moved no downstream reading
+> (replay: `scripts/eval_field_decisions_replay.py`), because
+> `collect_field_channel_pressures()` max()-merges both levels by name and the
+> node reading always wins. The history below predates both changes.
+
 - **Meaning**: intended to represent pressure from bus/schema "contract"
   mismatches (the precise real-world condition isn't otherwise documented
   in code — it's perturbed from the same `transport_bus` hint dict as
@@ -1615,6 +1693,11 @@ follow-up note, and `test_execution_run_fcc_channels_ignored_off_lane` /
   confirmed; a separate investigation is tracking the actual root cause.
 
 #### `catalog_drift_pressure`
+> **2026-10-07:** now also a **capability** channel: `capability:transport`
+> carries 0.85 x the `node:athena` reading (formerly named `contract_pressure`,
+> decision D3). It is the only channel name present at both levels; the
+> merged (node + capability) value is always the node's.
+
 - **Meaning**: intended to represent drift/staleness in the bus event
   "catalog" (schema registry) relative to what's actually flowing.
 - **Producer**: `transport_bus` delta, `hints["catalog_drift_pressure"]`,
@@ -1707,6 +1790,9 @@ follow-up note, and `test_execution_run_fcc_channels_ignored_off_lane` /
   above was corrupting.
 
 #### `observer_failure_pressure`
+> **Retired 2026-10-07** (#2534 decision 4): 0.0 on 123,099 of 123,099 ticks; pruned via
+> `RETIRED_NODE_CHANNELS`. History below kept for reference.
+
 - **Meaning**: pressure from failures of the bus "observer" role
   (monitoring/subscriber-side failures).
 - **Producer**: `transport_bus` delta, `hints["observer_failure_pressure"]`,

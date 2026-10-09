@@ -210,7 +210,8 @@ document.addEventListener("DOMContentLoaded", () => {
   const statusDiv = document.getElementById('status');
   const conversationDiv = document.getElementById('conversation');
   const chatInput = document.getElementById('chatInput');
-  const chatTurnTimer = document.getElementById('chatTurnTimer');
+  // The turn clock chip is created per turn inside the user's message (see startTurnTimer).
+let chatTurnTimer = null;
   const operatorToolsOpenBtn = document.getElementById('operatorToolsOpenBtn');
   const operatorToolsModalRoot = document.getElementById('operatorToolsModalRoot');
   const operatorToolsModalBackdrop = document.getElementById('operatorToolsModalBackdrop');
@@ -666,6 +667,13 @@ document.addEventListener("DOMContentLoaded", () => {
   // Visualizers
   const visualizerCanvas = document.getElementById('visualizer');
   const canvasCtx = visualizerCanvas ? visualizerCanvas.getContext('2d') : null;
+  // The voice box is collapsed unless Orion's voice is actually playing, so the
+  // transcript gets the vertical space. The canvas's ResizeObserver re-sizes it
+  // when it reappears.
+  function setVoiceBoxVisible(visible) {
+    const box = visualizerCanvas && visualizerCanvas.parentElement;
+    if (box) box.classList.toggle('hidden', !visible);
+  }
   
   // NOTE: stateVisualizer was replaced by an iframe in the HTML. 
   // We check for its existence to prevent crashes.
@@ -3143,29 +3151,50 @@ document.addEventListener("DOMContentLoaded", () => {
   // turn's timer, and must not report the reconnect gap as its duration.
   let turnTimerOwner = null;
 
+  // The clock lives on the turn itself: a chip in the header of the user message
+  // that started the turn. It ticks while the turn runs and stays frozen at the
+  // final duration afterwards, so every turn keeps its own recorded time.
+  function attachTurnClock() {
+    if (chatTurnTimer && chatTurnTimer.isConnected) return chatTurnTimer;
+    if (!conversationDiv) return null;
+    const users = conversationDiv.querySelectorAll('[data-role="user"]');
+    const host = users.length ? users[users.length - 1] : null;
+    const headerEl = host && host.firstElementChild;
+    if (!headerEl) return null;
+    const chip = document.createElement('span');
+    chip.className = 'om-turn-clock is-running';
+    chip.dataset.turnClock = '1';
+    chip.title = 'Elapsed processing time for this turn';
+    // Right after the sender name, before the hover actions.
+    headerEl.insertBefore(chip, headerEl.children[1] || null);
+    chatTurnTimer = chip;
+    return chip;
+  }
+
   function paintTurnTimer() {
-    if (!chatTurnTimer) return;
     // Formatting lives in turn-timer.js so its minute-rollover edges are
     // unit-testable without a DOM harness. Guarded like every other optional
     // module in this file: a cosmetic chip must not be able to throw out of
     // updateStatusBasedOnState() and abort WebSocket frame handling.
     const format = window.OrionTurnTimer && window.OrionTurnTimer.formatTurnElapsed;
     if (typeof format !== 'function') return;
-    chatTurnTimer.textContent = format(Date.now() - turnTimerStartedAt);
+    // Voice turns can start the clock before the transcript message exists;
+    // keep trying to attach until it does.
+    const chip = attachTurnClock();
+    if (!chip) return;
+    chip.textContent = format(Date.now() - turnTimerStartedAt);
   }
 
   function startTurnTimer(owner) {
-    if (!chatTurnTimer) return;
     // Every start is a fresh turn hand-off, so the clock always restarts. The
     // WS and HTTP lanes are the two branches of one if/else and can never both
     // run for a single turn, so there is no "second lane joining" case to
     // protect -- and keeping a previous turn's start time would report an
     // elapsed time that never happened.
     if (turnTimerHandle) window.clearInterval(turnTimerHandle);
+    chatTurnTimer = null;
     turnTimerOwner = owner || null;
     turnTimerStartedAt = Date.now();
-    chatTurnTimer.classList.remove('hidden', 'text-gray-400');
-    chatTurnTimer.classList.add('text-amber-300');
     paintTurnTimer();
     turnTimerHandle = window.setInterval(paintTurnTimer, 100);
   }
@@ -3176,13 +3205,13 @@ document.addEventListener("DOMContentLoaded", () => {
     window.clearInterval(turnTimerHandle);
     turnTimerHandle = null;
     turnTimerOwner = null;
-    if (!chatTurnTimer) return;
     // repaint:false freezes the chip on its last painted value. Used when the
     // socket dies mid-turn: the turn is over, and the time since is dead air,
     // not thinking time.
-    if (opts.repaint !== false) paintTurnTimer();
-    chatTurnTimer.classList.remove('text-amber-300');
-    chatTurnTimer.classList.add('text-gray-400');
+    if (opts.repaint !== false && chatTurnTimer) paintTurnTimer();
+    if (chatTurnTimer) chatTurnTimer.classList.remove('is-running');
+    // Detach: a later turn must never reuse (and overwrite) this recorded clock.
+    chatTurnTimer = null;
   }
 
   function syncCockpitLiveButton() {
@@ -7588,10 +7617,35 @@ document.addEventListener("DOMContentLoaded", () => {
     const corr = meta.correlationId || meta.correlation_id;
     if (!corr || typeof finalizeLiveClaudeTrace !== 'function') return;
     try {
-      finalizeLiveClaudeTrace(corr, document, messageEl);
+      const panel = finalizeLiveClaudeTrace(corr, document, messageEl);
+      if (panel) addHarnessButton(messageEl, panel);
     } catch (err) {
       console.warn('claude trace finalize failed', err);
     }
+  }
+
+  // Once the turn is done the FCC harness trace is no longer an inline card: it
+  // becomes a hover-revealed button (next to Expand / Copy) that opens the same
+  // card in the message-expand modal.
+  function addHarnessButton(messageEl, panel) {
+    let actions = messageEl.querySelector('.om-msg-copy');
+    if (!actions) {
+      actions = document.createElement('div');
+      actions.className = 'om-msg-copy flex items-center gap-1';
+      const headerEl = messageEl.firstElementChild;
+      if (!headerEl) return;
+      headerEl.appendChild(actions);
+    }
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className =
+      'rounded-md border border-gray-700 bg-gray-900/70 px-1.5 py-0.5 text-[10px] text-gray-300 hover:border-gray-500 hover:text-white';
+    const heading = panel.querySelector('.agent-live-trace__heading');
+    btn.textContent = 'Harness';
+    btn.title = (heading && heading.textContent) || 'FCC harness';
+    btn.setAttribute('aria-label', 'Open FCC harness trace');
+    btn.addEventListener('click', () => openChatMessageExpandModal('FCC harness', [panel], ''));
+    actions.insertBefore(btn, actions.firstChild);
   }
 
   // ── Chat attachments: viewer + per-message thumbnails ──────────────────
@@ -8053,6 +8107,9 @@ document.addEventListener("DOMContentLoaded", () => {
         console.warn('[Hub] Chat stance debug panel failed', err);
       }
     }
+    // Returned so a draft-first turn can move the final into the draft's slot
+    // (draft-revision.js::settleWithFinal). Existing callers ignore it.
+    return div;
   }
 
   function collectConversationTurnsUpTo(anchorEl, maxTurns) {
@@ -10131,6 +10188,7 @@ document.addEventListener("DOMContentLoaded", () => {
       clearAudioWatchdog();
       audioQueue = [];
       isPlayingAudio = false;
+      setVoiceBoxVisible(false);
       updateStatusBasedOnState();
       interruptButton.classList.add('hidden');
     });
@@ -10354,7 +10412,10 @@ document.addEventListener("DOMContentLoaded", () => {
     const entry = ((catalog && catalog.routes) || []).find(
       (r) => String(r.id || '').toLowerCase() === CHAT_LANE_LEND_ROUTE,
     );
-    return entry ? { open: entry.gate_open === true } : null;
+    // Only a real true/false moves the toggle. `gate_open: null` is the pool-unreachable
+    // catalog (GPU pool stage 6.3: every lane unknown) -- rendering that as "closed" would
+    // state a guess, so the toggle keeps its last known state instead.
+    return entry && typeof entry.gate_open === 'boolean' ? { open: entry.gate_open } : null;
   }
 
   async function toggleChatLaneLend() {
@@ -11589,7 +11650,32 @@ document.addEventListener("DOMContentLoaded", () => {
             }
             return;
           }
+          if (d.type === 'draft_preview') {
+            // Draft-first (spec L8): show the reply writer's draft now; the
+            // final frame for the same turn replaces it in place.
+            const draftApi = window.OrionDraftRevision;
+            if (draftApi && conversationDiv) {
+              try {
+                const md = window.ChatMarkdown && typeof window.ChatMarkdown.renderMarkdown === 'function'
+                  ? (t) => window.ChatMarkdown.renderMarkdown(t)
+                  : null;
+                if (draftApi.showDraft(conversationDiv, d, { renderMarkdown: md })) {
+                  conversationDiv.scrollTop = conversationDiv.scrollHeight;
+                }
+              } catch (err) { console.warn('draft_preview render failed', err); }
+            }
+            return;
+          }
+          // Only turn-ending frames can settle a draft; skip the DOM scan for
+          // the many step/hop frames that also carry a correlation id.
+          const pendingDraftNode = (
+            (d.type === 'final' || d.type === 'turn_error' || d.type === 'turn_deferred')
+            && window.OrionDraftRevision && conversationDiv && d.correlation_id
+          )
+            ? window.OrionDraftRevision.findDraft(conversationDiv, d.correlation_id)
+            : null;
           if (d.type === 'turn_deferred') {
+            if (pendingDraftNode) window.OrionDraftRevision.settleWithoutFinal(pendingDraftNode);
             appendMessage(
               'System',
               `Turn deferred: ${d.reason || 'stance unavailable'}`,
@@ -11609,7 +11695,11 @@ document.addEventListener("DOMContentLoaded", () => {
             const phase = d.phase ? ` (${d.phase})` : '';
             const detail = d.error || d.grounding_status || 'turn failed';
             const partialDraft = typeof d.partial_draft === 'string' ? d.partial_draft.trim() : '';
-            if (partialDraft) {
+            if (pendingDraftNode) {
+              // The draft is already on screen; label it unchecked rather
+              // than adding a second copy of the same text.
+              window.OrionDraftRevision.settleWithoutFinal(pendingDraftNode);
+            } else if (partialDraft) {
               appendMessage('Orion', partialDraft, 'text-yellow-200', {
                 correlationId: d.correlation_id,
                 mode: d.mode || 'orion',
@@ -11624,7 +11714,7 @@ document.addEventListener("DOMContentLoaded", () => {
           const displayText = resolveAssistantDisplayText(d);
           if (d.transcript && !d.is_text_input) appendMessage('You', d.transcript);
           if (shouldAppendOrionWsPayload(d)) {
-            appendMessage('Orion', displayText || '', 'text-white', {
+            const finalNode = appendMessage('Orion', displayText || '', 'text-white', {
               raw: d.raw,
               reasoning: d.reasoning,
               reasoningTrace: d.reasoning_trace,
@@ -11665,6 +11755,11 @@ document.addEventListener("DOMContentLoaded", () => {
               situationAffordances: d.situation_affordances,
               substrateEffectSummary: d.substrate_effect_summary || null,
             });
+            if (pendingDraftNode) {
+              try {
+                window.OrionDraftRevision.settleWithFinal(conversationDiv, pendingDraftNode, finalNode, d);
+              } catch (err) { console.warn('draft settle failed', err); }
+            }
             updateMemoryPanelFromResponse(d);
             syncSocialInspectionFromRouteDebug(d.routing_debug);
           }
@@ -12567,6 +12662,9 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 
   function processAudioQueue() {
+    // Every playback exit path (ended, watchdog, error, interrupt) lands here
+    // with nothing left to play: collapse the voice box.
+    if (!isPlayingAudio && !audioQueue.length) setVoiceBoxVisible(false);
     if (isPlayingAudio || !audioQueue.length) return;
     isPlayingAudio = true;
     const item = audioQueue.shift();
@@ -12607,6 +12705,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
         analyser = audioContext.createAnalyser();
         src.connect(analyser);
+        setVoiceBoxVisible(true);
         drawVisualizer();
 
         src.start(0);
@@ -12630,6 +12729,7 @@ document.addEventListener("DOMContentLoaded", () => {
           isPlayingAudio = false;
           cancelAnimationFrame(animationFrameId);
           if (canvasCtx) canvasCtx.clearRect(0, 0, visualizerCanvas.width, visualizerCanvas.height);
+          setVoiceBoxVisible(false);
           processAudioQueue();
         };
     } catch (e) {

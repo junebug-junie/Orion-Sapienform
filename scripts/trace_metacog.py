@@ -47,8 +47,9 @@ async def run() -> int:
     )
     parser.add_argument(
         "--trigger-kind",
-        default="baseline",
-        help="Trigger kind (baseline|dense|manual|pulse).",
+        default="manual",
+        help="Trigger kind (e.g. manual|transport|telemetry_anomaly|chat_turn|flow|insight). "
+        "baseline/dense/pulse were retired 2026-09-29.",
     )
     parser.add_argument(
         "--reason",

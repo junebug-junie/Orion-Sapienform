@@ -105,6 +105,8 @@ def is_capacity_deferral(reason: str | None) -> bool:
     The workers already apply wallet refund backoff to these deferred turns.
     """
     text = str(reason or "").strip()
+    if text.startswith("turn_deferred:reading_admission:"):
+        return True
     if text == "turn_deferred:stance_react_timeout":
         return True
     prefix = "turn_deferred:stance_react_failed:"

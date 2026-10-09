@@ -141,15 +141,17 @@ def test_gpu_pool_panel_shows_swap_fault_guards_and_holds_with_their_calls():
     config = dict(CONFIG, cards={**CONFIG["cards"], "gpu2": {"vram_gb": 32}},
                   roles={**CONFIG["roles"],
                          "agent-gpu2": {"kind": "llm", "cards": ["gpu2"], "owner": ["agent"], "port": 8016,
-                                        "swap": {"evicts": ["diffusion"], "load": "gpu2/agent", "unload": "gpu2/restore"}},
+                                        "swap": {"evicts": ["diffusion"]}},   # stage 5.3: no bridge verbs
                          "diffusion": {"kind": "service", "cards": ["gpu2"], "owner": ["diffusion"], "port": 8014,
                                        "slots": 1, "vram_gb": 24}})
-    state = dict(STATE, config=config, swap_guards={"thermal": None, "visual_baseline": "visual_baseline_urgent"},
+    state = dict(STATE, config=config, swap_guards={"thermal": "hot:temp_over_hot"},
                  cards=STATE["cards"] + [{
                      "card": "gpu2", "vram_gb": 32, "swapped_in": [], "swap_state": "fault", "swap_role": "agent-gpu2",
                      "actuated_roles": ["agent-gpu2"],
                      "actuation": {"action": "load", "role": "agent-gpu2", "generation": 4, "reason": "demand",
-                                   "outcome": "failed", "sent_at": "2026-09-24T11:59:00Z"}}],
+                                   "profile": "qwen3.8-27b-udq4kxl-v100-32gb-circe-agent-flex",
+                                   "phase": "rolling_back", "outcome": "failed",
+                                   "sent_at": "2026-09-24T11:59:00Z"}}],
                  leases=STATE["leases"] + [
                      {"lease_id": "H1holdholdhold", "request_id": "run1:1", "holder": "durable-runs:run1",
                       "work_class": "chat", "priority": "background", "kind": "hold", "status": "granted",
@@ -189,14 +191,95 @@ def test_gpu_pool_panel_shows_swap_fault_guards_and_holds_with_their_calls():
         gpu2 = page.inner_text('[data-card="gpu2"]')
         assert "swap: fault agent-gpu2" in gpu2 and "FAULT" in gpu2 and "pool actuates agent-gpu2" in gpu2
         assert "load agent-gpu2 (g4, demand)" in gpu2 and "failed" in gpu2
+        # stage 5.3: the model the load named, and the phase the controller last reported on the bus
+        assert "model qwen3.8-27b-udq4kxl-v100-32gb-circe-agent-flex" in gpu2 and "phase rolling_back" in gpu2
         assert page.locator('[data-card="gpu2"] button[data-verb="clear_fault"][data-card="gpu2"]').count() == 1
         assert "observe only" in page.inner_text('[data-card="gpu0"]') or "swap:" not in page.inner_text('[data-card="gpu0"]')
         guards = page.inner_text("#swapGuards")
-        assert "thermal: clear" in guards and "visual_baseline: visual_baseline_urgent" in guards
+        assert "thermal: hot:temp_over_hot" in guards and "visual_baseline" not in guards
         holds = page.inner_text("#holds")
         assert "durable-runs:run1" in holds and "0 running · 1 waiting" in holds and "turn-7" in holds
         assert page.locator('#holds tr.child[data-lease="C1callcallcall"]').count() == 1
         # the hold + its (queued) call hold ONE chat slot, together with the ordinary lease L1
         assert "2/1 slots in use" in page.inner_text('[data-role="chat"]')
         assert errors == []
+        browser.close()
+
+
+def test_gpu_pool_panel_emergency_stop_and_hold_refusal():
+    """Stage 5.7: the experiment hold is greyed out with the pool's reason (no launch block: nothing can
+    load it), the emergency stop POSTs pause_actuation, and a paused pool shows the banner, the header
+    badge and a resume control that POSTs resume_actuation."""
+    pytest.importorskip("playwright.sync_api")
+    from playwright.sync_api import sync_playwright
+
+    launch = {"actuator": "circe", "service": "atlas-agent-burst"}
+    config = dict(CONFIG, cards={**CONFIG["cards"], "gpu2": {"vram_gb": 32}},
+                  roles={**CONFIG["roles"],
+                         "experiment": {**CONFIG["roles"]["experiment"], "swap": {"evicts": "all"}, "launch": None},
+                         "agent-gpu2": {"kind": "llm", "cards": ["gpu2"], "owner": ["agent"], "port": 8016,
+                                        "swap": {"evicts": ["diffusion"]}, "launch": launch},
+                         "diffusion": {"kind": "service", "cards": ["gpu2"], "owner": ["diffusion"], "port": 8014,
+                                       "slots": 1, "vram_gb": 24, "launch": launch}})
+    running = dict(STATE, mode="enforce", config=config, actuation_paused=None,
+                   cards=STATE["cards"] + [{"card": "gpu2", "vram_gb": 32, "swapped_in": [], "swap_state": "idle",
+                                            "actuated_roles": ["agent-gpu2"]}])
+    paused = dict(running, actuation_paused={"paused": True, "since": "2026-09-30T07:00:00Z", "by": "hub-operator"})
+    template = (HUB / "templates" / "gpu_pool.html").read_text().replace("{{HUB_UI_ASSET_VERSION}}", "t")
+    script = (HUB / "static" / "js" / "gpu_pool.js").read_text()
+    current = {"state": running}
+    posted: list[dict] = []
+
+    def handle(route):
+        url = route.request.url
+        if url.endswith("/gpu-pool"):
+            return route.fulfill(body=template, content_type="text/html")
+        if "/static/js/gpu_pool.js" in url:
+            return route.fulfill(body=script, content_type="application/javascript")
+        if "/api/gpu-pool/stream" in url:
+            frame = json.dumps({"version": 1, "state": current["state"], "events": []})
+            return route.fulfill(body=f"event: snapshot\ndata: {frame}\n\n", content_type="text/event-stream")
+        if "/api/gpu-pool/state" in url:
+            return route.fulfill(body=json.dumps(current["state"]), content_type="application/json")
+        if "/api/gpu-pool/history" in url:
+            return route.fulfill(body=json.dumps({"by_role": [], "by_class": [], "series": [], "events": [], "minutes": 60}),
+                                 content_type="application/json")
+        if "/api/gpu-pool/control" in url:
+            body = json.loads(route.request.post_data)
+            posted.append(body)
+            current["state"] = paused if body["verb"] == "pause_actuation" else running
+            return route.fulfill(body=json.dumps({"ok": True, "reason": "paused" if body["verb"] == "pause_actuation"
+                                                  else "resumed", "detail": {}}), content_type="application/json")
+        return route.fulfill(status=404, body="")
+
+    with sync_playwright() as p:
+        browser = p.chromium.launch()
+        page = browser.new_page()
+        errors: list[str] = []
+        page.on("pageerror", lambda e: errors.append(str(e)))
+        page.route("http://hub.test/**", handle)
+        page.goto("http://hub.test/gpu-pool")
+        page.wait_for_selector('button[data-verb="pause_actuation"]')
+        refused = page.locator('#holdControls button[data-hold-refused="not_actuatable:experiment"]')
+        assert refused.count() == 1 and refused.is_disabled()
+        assert "nothing can load it" in page.inner_text("#holdControls")
+        assert page.locator('button[data-verb="hold"]').count() == 0
+        assert "pool actuates agent-gpu2" in page.inner_text('[data-card="gpu2"]')
+        assert page.inner_text("#poolMode") == "mode: enforce"
+
+        page.once("dialog", lambda d: d.accept())
+        page.click('button[data-verb="pause_actuation"]')
+        page.wait_for_function("document.getElementById('controlStatus').textContent.includes('pause_actuation: ok')")
+        assert posted == [{"verb": "pause_actuation"}]
+
+        page.reload()                                   # the next state frame carries the pause
+        page.wait_for_selector('[data-actuation="paused"]')
+        assert "PAUSED" in page.inner_text("#actuationControls") and "hub-operator" in page.inner_text("#actuationControls")
+        assert "model loading PAUSED" in page.inner_text("#poolMode")
+        assert "PAUSED: nothing is loaded or unloaded" in page.inner_text('[data-card="gpu2"]')
+        page.once("dialog", lambda d: d.accept())
+        page.click('button[data-verb="resume_actuation"]')
+        page.wait_for_function("document.getElementById('controlStatus').textContent.includes('resume_actuation: ok')")
+        assert posted[-1] == {"verb": "resume_actuation"}
+        assert errors == [], errors
         browser.close()

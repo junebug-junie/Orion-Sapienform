@@ -6,11 +6,13 @@ import os
 import re
 from typing import Any, Dict, List
 
+from orion.cognition.recall_query import RECALL_QUERY_MODE_KEY
 from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import ServiceRef
 
 from .executor import (
     _forward_llm_uncertainty_metadata,
+    brain_reply_context_skipped,
     call_step_services,
     prepare_brain_reply_context,
     prepare_chat_quick_reply_context,
@@ -936,6 +938,22 @@ class PlanRunner:
         ):
             recall_cfg = dict(recall_cfg)
             recall_cfg["enabled"] = False
+        verb_query_mode = (
+            str(plan.metadata.get("recall_query_mode_default") or "").strip().lower()
+            if isinstance(plan.metadata, dict)
+            else ""
+        )
+        if verb_query_mode and RECALL_QUERY_MODE_KEY not in recall_cfg:
+            # Verb YAML `recall_query_mode` (e.g. reverie's context_only).
+            # run_recall_step reads recall_cfg["query_mode"] on every path
+            # (pre-recall, PCR, supervisor); the inline plan step reads
+            # ctx["recall"], so that copy gets it too. Its own key, not "mode":
+            # recall_cfg["mode"] is RecallDirective.mode, which cortex-orch
+            # always sets to "hybrid".
+            recall_cfg = dict(recall_cfg)
+            recall_cfg[RECALL_QUERY_MODE_KEY] = verb_query_mode
+            if isinstance(ctx.get("recall"), dict) and RECALL_QUERY_MODE_KEY not in ctx["recall"]:
+                ctx["recall"] = {**ctx["recall"], RECALL_QUERY_MODE_KEY: verb_query_mode}
         raw_enabled = recall_cfg.get("enabled", True)
         ctx.setdefault("recall", recall_cfg)
         recall_enabled = recall_enabled_value(recall_cfg)
@@ -1025,13 +1043,9 @@ class PlanRunner:
                     prepare_chat_quick_reply_context(ctx)
             elif verb_lc == "chat_kids_story":
                 prepare_chat_quick_reply_context(ctx)
-            elif (
-                ctx.get("skip_brain_reply_context")
-                or str(plan.verb_name or "").strip().lower()
-                in {"introspect_spark", "memory_graph_suggest"}
-            ):
+            elif brain_reply_context_skipped(plan.verb_name, ctx):
                 logger.info(
-                    "router_skip_prepare_brain_reply_context corr=%s verb=%s reason=spark_or_skip_flag",
+                    "router_skip_prepare_brain_reply_context corr=%s verb=%s reason=skip_verb_or_flag",
                     correlation_id,
                     plan.verb_name,
                 )
@@ -1610,6 +1624,8 @@ class PlanRunner:
             metadata["grounding_capsule"] = ctx["grounding_capsule"]
         if isinstance(ctx.get("autonomy_slice"), dict):
             metadata["autonomy_slice"] = ctx["autonomy_slice"]
+        if isinstance(ctx.get("stance_prepare_overlap"), dict):
+            metadata["stance_prepare_overlap"] = ctx["stance_prepare_overlap"]
         # Real served model-card name (e.g. "qwen-36-instruct"), independent of
         # whether a reasoning trace was collected -- see _last_model_used's own
         # docstring. Hub already reads metadata["model"] off CortexClientResult

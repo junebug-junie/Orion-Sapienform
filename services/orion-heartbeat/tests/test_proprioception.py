@@ -12,7 +12,7 @@ import math
 import pytest
 
 from app.substrate.proprioception import (
-    FIRE_WINDOW,
+    FIRE_WINDOW_SEC,
     SMEAR_MIN,
     OrganFireWindow,
     compute_proprioception,
@@ -118,18 +118,137 @@ def test_compute_proprioception_combines_occupancy_and_profile() -> None:
     assert reading.smeared is False
 
 
-def test_organ_fire_window_rolls_and_counts_only_allowlisted_organs() -> None:
-    window = OrganFireWindow(maxlen=3)
+def test_organ_fire_window_counts_only_allowlisted_organs() -> None:
+    window = OrganFireWindow()
     window.record("orion-hub")
     window.record("orion-hub")
     window.record("orion-bus")
     window.record("orion-cortex-exec")
     window.record("not-an-organ")
     counts = window.counts()
-    assert counts["orion-hub"] == 1
+    assert counts["orion-hub"] == 2
     assert counts["orion-bus"] == 1
     assert counts["orion-cortex-exec"] == 1
     assert counts["orion-biometrics"] == 0
-    assert sum(counts.values()) == 3
-    assert FIRE_WINDOW >= 8
+    assert sum(counts.values()) == 4
+    assert FIRE_WINDOW_SEC > 0
     assert math.isfinite(SMEAR_MIN)
+
+
+class _Clock:
+    def __init__(self) -> None:
+        self.t = 1_000_000.0
+
+    def __call__(self) -> float:
+        return self.t
+
+
+def test_rare_organ_not_dark_when_it_fired_inside_window() -> None:
+    clock = _Clock()
+    w = OrganFireWindow(window_sec=300, clock=clock, wall_clock=clock)
+    clock.t += 300  # past warm-up
+    w.record("orion-cortex-orch")
+    for _ in range(500):  # flood from a busy organ; count window of 64 would evict orch
+        w.record("orion-biometrics")
+    clock.t += 120
+    assert "orion-cortex-orch" not in dark_seats(w.counts())
+    assert "orion-hub" in dark_seats(w.counts())
+
+
+def test_organ_flagged_dark_after_window_passes_with_recency() -> None:
+    clock = _Clock()
+    w = OrganFireWindow(window_sec=300, clock=clock, wall_clock=clock)
+    clock.t += 300  # past warm-up
+    w.record("orion-cortex-orch")
+    w.record("orion-bus")
+    clock.t += 200
+    w.record("orion-bus")
+    clock.t += 150  # orch last fired 350s ago, bus 150s ago
+    snap = w.snapshot()
+    reading = compute_proprioception(
+        fire_counts=snap.counts, mean_profile=[1.0] * 9, fire_snapshot=snap
+    )
+    assert "orion-cortex-orch" in reading.dark_seats
+    assert "orion-bus" not in reading.dark_seats
+    assert reading.organ_seconds_since_last_fire["orion-cortex-orch"] == pytest.approx(350)
+    assert reading.organ_seconds_since_last_fire["orion-hub"] is None
+    assert reading.organ_last_fired_at["orion-cortex-orch"].startswith("1970-01-12")
+    assert reading.fire_window_sec == 300
+
+
+def test_empty_window_is_unknown_not_all_dark() -> None:
+    w = OrganFireWindow(window_sec=300, clock=_Clock(), wall_clock=_Clock())
+    snap = w.snapshot()
+    reading = compute_proprioception(
+        fire_counts=snap.counts, mean_profile=[1.0] * 9, fire_snapshot=snap
+    )
+    assert reading.dark_seats == []
+    assert reading.organ_fire_counts == {}
+    assert reading.organ_distinctness is None
+
+
+def test_wall_clock_expiry_with_no_incoming_events() -> None:
+    clock = _Clock()
+    w = OrganFireWindow(window_sec=60, clock=clock, wall_clock=clock)
+    w.record("orion-hub")
+    assert w.counts()["orion-hub"] == 1
+    clock.t += 61  # no record() calls at all
+    assert w.counts()["orion-hub"] == 0
+    snap = w.snapshot()
+    assert sum(snap.counts.values()) == 0
+    reading = compute_proprioception(
+        fire_counts=snap.counts, mean_profile=[1.0] * 9, fire_snapshot=snap
+    )
+    assert reading.dark_seats == []  # whole window empty -> unknown
+    assert reading.organ_distinctness is None
+    # recency survives pruning AND is reported on the empty-window reading
+    assert snap.seconds_since_last_fire["orion-hub"] == pytest.approx(61)
+    assert reading.organ_seconds_since_last_fire["orion-hub"] == pytest.approx(61)
+    assert reading.organ_last_fired_at["orion-hub"] is not None
+
+
+def test_window_memory_is_bounded() -> None:
+    w = OrganFireWindow(window_sec=300, clock=_Clock(), wall_clock=_Clock(), max_events_per_organ=10)
+    for _ in range(1000):
+        w.record("orion-bus")
+    assert w.counts()["orion-bus"] == 10
+
+
+def test_warmup_after_restart_reads_unknown_not_dark() -> None:
+    clock = _Clock()
+    w = OrganFireWindow(window_sec=300, clock=clock, wall_clock=clock)
+    clock.t += 10
+    w.record("orion-biometrics")  # only one organ has spoken since boot
+    snap = w.snapshot()
+    assert snap.warm is False
+    reading = compute_proprioception(
+        fire_counts=snap.counts, mean_profile=[1.0] * 9, fire_snapshot=snap
+    )
+    assert reading.dark_seats == []
+    assert reading.organ_distinctness is None
+    clock.t += 300
+    w.record("orion-biometrics")
+    snap = w.snapshot()
+    assert snap.warm is True
+    reading = compute_proprioception(
+        fire_counts=snap.counts, mean_profile=[1.0] * 9, fire_snapshot=snap
+    )
+    assert "orion-hub" in reading.dark_seats
+
+
+def test_h1_result_carries_recency_fields() -> None:
+    from dataclasses import asdict
+
+    from app.substrate.ensemble import EnsembleConfig, EnsembleSubstrate
+    from app.substrate.reconstruction import compute_h1_ensemble
+
+    clock = _Clock()
+    w = OrganFireWindow(window_sec=300, clock=clock, wall_clock=clock)
+    clock.t += 300
+    w.record("orion-bus")
+    snap = w.snapshot()
+    ens = EnsembleSubstrate(config=EnsembleConfig(n_trajectories=2), base_seed=9)
+    d = asdict(compute_h1_ensemble(ens, fire_counts=snap.counts, fire_snapshot=snap))
+    assert d["fire_window_sec"] == 300
+    assert d["organ_seconds_since_last_fire"]["orion-bus"] == pytest.approx(0)
+    assert d["organ_last_fired_at"]["orion-hub"] is None

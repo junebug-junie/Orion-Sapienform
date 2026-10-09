@@ -43,9 +43,10 @@ same thing everywhere:
   to ``:id`` by ``normalize_id_path``) -- orion-durable-runs (gateway/cabinet/elastic
   controller), orion-thought (thought -> mind)
 - FCC motor leg wall time (``HarnessMotorResult.fcc_elapsed_sec``: served-model probe +
-  claude subprocess + lifecycle publish): ``fcc:<served_model>`` -- orion-harness-governor
-  (success on exit code >= 0, timeout on the motor's own timeout-kill; cancels, pre-spawn
-  refusals and output-limit kills are skipped)
+  claude subprocess + lifecycle publish): ``fcc:<role>`` (the GPU pool role a held turn was
+  granted) or ``fcc:route:<route>`` (no hold: only the requested route is known) --
+  orion-harness-governor (success on exit code >= 0, timeout on the motor's own timeout-kill;
+  cancels, pre-spawn refusals and output-limit kills are skipped)
 
 Short-lived buses (a new ``OrionBusAsync`` per tick or per call, often on another
 thread's event loop -- orion-execution-dispatch-runtime, orion-mind) fold their

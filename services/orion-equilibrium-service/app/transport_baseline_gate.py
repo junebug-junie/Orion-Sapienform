@@ -15,8 +15,9 @@ Two flags, deliberately separate:
   persist state, log per-key z / ratio / calls / open conditions. Publishes
   nothing.
 - ``EQUILIBRIUM_TRANSPORT_BASELINE_EMIT`` (default false): additionally publish
-  the episode triggers. While emitting, the legacy rpc_health timeout branch is
-  not called (the timeout / zero_success episodes replace it).
+  the episode triggers. While emitting, the timeout / zero_success episodes own
+  every timeout they saw, and the per-call rpc_transport_timeout atom for the
+  same timeout is dropped (app/transport_timeout_owner.py).
 
 Keys matching ``EQUILIBRIUM_TRANSPORT_EXCLUDE_LABELS`` (default
 ``log_orion_metacognition``) are baselined and logged but never produce a

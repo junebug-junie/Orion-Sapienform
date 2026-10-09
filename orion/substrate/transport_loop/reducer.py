@@ -27,7 +27,10 @@ TraceEventsLoader = Callable[[str], list[GrammarEventV1]]
 # A bus observer tick is whole only when both ends are present. Every live
 # observer trace carries both (24,634/24,634 bus.transport:athena traces over
 # 2026-09-18..25; services/orion-bus/app/bus_observer.py::run_observer_tick
-# emits tick_started + tick_completed, or tick_started + tick_failed).
+# emits tick_started + tick_completed; until 2026-10-07 a failed tick emitted
+# tick_started + tick_failed. tick_failed stays a terminal role so a pre-deploy
+# failed trace still closes -- extract.py ignores the role, so it reduces to a
+# no-op, never a reading).
 _TICK_STARTED_ROLE = "bus_observer_tick_started"
 _TICK_TERMINAL_ROLES = frozenset({"bus_observer_tick_completed", "bus_observer_tick_failed"})
 
@@ -210,8 +213,6 @@ def reduce_transport_trace_events(
         k: after_payload[k]
         for k in (
             "catalog_drift_pressure",
-            "observer_failure_pressure",
-            "contract_pressure",
             "reliability_pressure",
         )
     }

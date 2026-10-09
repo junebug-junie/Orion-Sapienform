@@ -132,3 +132,10 @@ def reading_dns(monkeypatch):
         return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 443))]
 
     monkeypatch.setattr(asyncio.BaseEventLoop, "getaddrinfo", public_dns)
+
+
+@pytest.fixture(autouse=True)
+def _no_live_transport_threshold_state(monkeypatch):
+    """Unit tests must never read or write the live transport-threshold Redis
+    state. Tests that exercise it patch orion.field.transport_thresholds._client."""
+    monkeypatch.setenv("TRANSPORT_THRESHOLDS_DERIVED_ENABLED", "false")

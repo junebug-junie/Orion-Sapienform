@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import uuid
 from datetime import datetime, timezone
 
 from orion.schemas.attention_frame import (
@@ -20,6 +21,7 @@ from orion.thought.stance_react import (
     IMPERATIVE_MAX_LEN,
     TONE_MAX_LEN,
     apply_stance_react_pipeline,
+    normalize_stance_react_raw,
     parse_stance_react_payload,
 )
 
@@ -89,7 +91,7 @@ def test_coalition_ids_from_association() -> None:
 def test_parse_stance_react_payload_from_dict() -> None:
     raw = _thought().model_dump(mode="json")
     parsed = parse_stance_react_payload(raw)
-    assert parsed.event_id == "t-1"
+    assert parsed.imperative == "Answer directly."
     assert parsed.profile == "stance_react"
 
 
@@ -127,7 +129,7 @@ def test_parse_stance_react_payload_from_markdown_wrapped_json() -> None:
     inner = _thought().model_dump(mode="json")
     wrapped = f"Here is the stance JSON:\n```json\n{json.dumps(inner)}\n```"
     parsed = parse_stance_react_payload(wrapped)
-    assert parsed.event_id == inner["event_id"]
+    assert parsed.imperative == inner["imperative"]
 
 
 def test_parse_stance_react_payload_coerces_false_interaction_regime() -> None:
@@ -137,11 +139,19 @@ def test_parse_stance_react_payload_coerces_false_interaction_regime() -> None:
     assert parsed.stance_harness_slice.interaction_regime is None
 
 
-def test_parse_stance_react_payload_coerces_null_event_id() -> None:
+def test_parse_stance_react_payload_drops_model_null_event_id() -> None:
     raw = _thought().model_dump(mode="json")
     raw["event_id"] = None
     parsed = parse_stance_react_payload(raw)
     assert parsed.event_id
+
+
+def test_normalize_stance_react_raw_coerces_null_event_id() -> None:
+    raw = _thought().model_dump(mode="json")
+    raw["event_id"] = None
+    normalized = normalize_stance_react_raw(raw)
+    assert normalized["event_id"]
+    uuid.UUID(normalized["event_id"])
 
 
 def test_stance_react_clamp_lens_match_schema_max_length() -> None:
@@ -222,3 +232,65 @@ def test_apply_stance_react_pipeline_refuse_trust_rupture() -> None:
     assert result.disposition == "refuse"
     assert result.boundary_register is True
     assert "trust_rupture" in result.disposition_reasons
+
+
+def test_parse_stance_react_payload_stamps_identity_in_code() -> None:
+    """Live 2026-09-28 (corr=f924c7b9...): the stance model wrote event_id,
+    session_id and created_at itself and the parser kept them."""
+    raw = _thought().model_dump(mode="json")
+    raw.update(
+        {
+            "event_id": "evt-9a2b3c4d5e6f7g8h9i0j",
+            "correlation_id": "c-model",
+            "session_id": "sess-orion-main-001",
+            "created_at": "2026-09-28T12:00:00",
+        }
+    )
+    before = datetime.now(timezone.utc)
+    parsed = parse_stance_react_payload(raw, correlation_id="c-real", session_id="sess-real")
+    assert parsed.event_id != "evt-9a2b3c4d5e6f7g8h9i0j"
+    uuid.UUID(parsed.event_id)
+    assert parsed.correlation_id == "c-real"
+    assert parsed.session_id == "sess-real"
+    assert parsed.created_at >= before
+
+
+def test_parse_stance_react_payload_drops_model_session_when_request_has_none() -> None:
+    raw = _thought().model_dump(mode="json")
+    raw["session_id"] = "sess-orion-main-001"
+    parsed = parse_stance_react_payload(raw, correlation_id="c-real", session_id=None)
+    assert parsed.session_id is None
+
+
+def test_apply_stance_react_pipeline_expands_bare_turn_token() -> None:
+    # The prompt asks for `hub:turn`; the model never copies the correlation id.
+    broadcast = _broadcast(attended=["node-a"])
+    req = _request(broadcast=broadcast)
+    thought = _thought(correlation_id="c-1", evidence_refs=["node-a", "hub:turn"], strain_refs=[])
+    result = apply_stance_react_pipeline(thought, req)
+    assert result.disposition == "proceed"
+    assert result.evidence_refs == ["node-a", "hub:turn:c-1"]
+
+
+def test_apply_stance_react_pipeline_garbled_anchor_in_strain_refs_cannot_launder_evidence() -> None:
+    # Live 2026-10-02: the model mis-transcribed the UUID. A garbled anchor in
+    # strain_refs used to widen the allowed set and pass the same garbled evidence.
+    req = _request(broadcast_stale=True)
+    thought = _thought(
+        correlation_id="c-1",
+        evidence_refs=["hub:turn:c-1-garbled"],
+        strain_refs=["hub:turn:c-1-garbled"],
+    )
+    result = apply_stance_react_pipeline(thought, req)
+    assert result.evidence_refs == ["hub:turn:c-1"]
+    assert result.strain_refs == ["hub:turn:c-1"]
+
+
+def test_stance_react_prompt_does_not_ask_model_to_copy_correlation_id() -> None:
+    from pathlib import Path
+
+    template = (
+        Path(__file__).resolve().parents[2] / "cognition" / "prompts" / "stance_react.j2"
+    ).read_text(encoding="utf-8")
+    assert "hub:turn:<correlation_id>" not in template
+    assert "literal `hub:turn`" in template

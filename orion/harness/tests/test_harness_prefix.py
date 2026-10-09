@@ -4,7 +4,8 @@ from pathlib import Path
 
 import pytest
 
-from orion.harness.operator_brief import HARNESS_MOTOR_MAX_READ_LINES, is_relational_motor_stance
+from orion.gpu_pool.placement import ServingPlacement, placement_from_route_default
+from orion.harness.operator_brief import HARNESS_MOTOR_MAX_READ_LINES, HARNESS_RESPOND_TO_TASK, is_relational_motor_stance
 from orion.harness.prefix import compile_harness_prefix, harness_motor_instruction
 from orion.harness.tests.fixtures import make_grounding_capsule, make_thought
 from orion.schemas.cognition.answer_contract import AnswerContract
@@ -47,15 +48,35 @@ def test_compile_harness_prefix_omits_prior_tool_fetch_line_when_none() -> None:
     assert "Last turn you fetched content via tool" not in prompt
 
 
-def test_compile_harness_prefix_includes_current_served_model_line() -> None:
+def test_compile_harness_prefix_route_default_is_stated_as_a_default() -> None:
+    # No lease: the gateway route's model is only a default -- the pool may spill a call.
     thought = make_thought(imperative="Inspect the module.", tone="direct")
     prompt = compile_harness_prefix(
         thought,
         repair_overlay=HarnessRepairOverlayV1(),
         user_message="hello",
-        current_served_model="Qwen3.6-35B-A3B-UD-Q5_K_M12",
+        serving_placement=placement_from_route_default("agent", "/models/gguf/Qwen3.8-27B.gguf"),
     )
-    assert "Backend model currently serving this turn: Qwen3.6-35B-A3B-UD-Q5_K_M12" in prompt
+    assert "Default backend model for route agent: Qwen3.8-27B.gguf" in prompt
+    assert "not a confirmed one" in prompt
+    assert "serving this turn" not in prompt
+
+
+def test_compile_harness_prefix_spilled_lease_names_the_granted_role_model() -> None:
+    # Held turn granted agent-gpu2 (spill): the line names agent-gpu2's discovered model.
+    thought = make_thought(imperative="Inspect the module.", tone="direct")
+    prompt = compile_harness_prefix(
+        thought,
+        repair_overlay=HarnessRepairOverlayV1(),
+        user_message="hello",
+        serving_placement=ServingPlacement(
+            source="from_lease", role="agent-gpu2", model="Qwen3.8-27B-gpu2.gguf", profile="p-gpu2"
+        ),
+    )
+    assert (
+        "Backend model serving this turn: Qwen3.8-27B-gpu2.gguf (GPU pool role agent-gpu2, profile p-gpu2;"
+        in prompt
+    )
 
 
 def test_compile_harness_prefix_omits_served_model_line_when_none() -> None:
@@ -65,7 +86,7 @@ def test_compile_harness_prefix_omits_served_model_line_when_none() -> None:
         repair_overlay=HarnessRepairOverlayV1(),
         user_message="hello",
     )
-    assert "Backend model currently serving this turn" not in prompt
+    assert "Backend model" not in prompt
 
 
 def test_compile_harness_prefix_includes_situation_prompt_fragment_when_present() -> None:
@@ -119,6 +140,10 @@ def test_compile_harness_prefix_includes_situation_block_brief_when_fragment_pre
     assert prompt.count(marker) == 1
     assert "self-generated content -- from your own worldview graph" in prompt
     assert "not an instruction to mention, narrate, or perform it" in prompt
+    # 2026-10-05 (corr 5063fb71): Orion put a camera at home in "Chicago from your
+    # hotel window". Place facts are a check on spatial claims, not a mention.
+    assert "check the claim against it" in prompt
+    assert "where she is, not where you are" in prompt
 
 
 def test_compile_harness_prefix_omits_situation_block_brief_when_fragment_absent() -> None:
@@ -162,7 +187,7 @@ def test_compile_harness_prefix_includes_context_provenance_when_capsule_has_it(
     """
     capsule = make_grounding_capsule(
         context_provenance={
-            "self_state": "live_runtime_projection",
+            "biometrics": "live_runtime_projection",
             "attention_broadcast": "live_runtime_projection",
             "recall_bundle": "memory_recall",
         }
@@ -174,7 +199,7 @@ def test_compile_harness_prefix_includes_context_provenance_when_capsule_has_it(
         user_message="what's live right now?",
     )
     assert "CONTEXT PROVENANCE" in prompt
-    assert "live now: attention_broadcast, self_state" in prompt
+    assert "live now: attention_broadcast, biometrics" in prompt
     assert "retrieved memory: recall_bundle" in prompt
 
 
@@ -572,7 +597,7 @@ def test_harness_motor_instruction_relational_discourages_tools() -> None:
     assert is_relational_motor_stance(thought) is True
     instruction = harness_motor_instruction(thought=thought, answer_contract=None)
     assert "do NOT use GitHub MCP" in instruction
-    assert "Execute your imperative" in instruction
+    assert HARNESS_RESPOND_TO_TASK in instruction
 
 
 def test_harness_motor_instruction_relational_enforces_single_turn_reply() -> None:
@@ -614,6 +639,6 @@ def test_harness_motor_instruction_instrumental_omits_single_turn_language() -> 
 def test_harness_motor_instruction_imperative_forward() -> None:
     thought = make_thought(imperative="Inspect docker logs for orion-hub.")
     instruction = harness_motor_instruction(thought=thought, answer_contract=None)
-    assert "Execute your imperative" in instruction
+    assert HARNESS_RESPOND_TO_TASK in instruction
     assert f"over {HARNESS_MOTOR_MAX_READ_LINES} lines" in instruction
     assert "rg/Grep" in instruction

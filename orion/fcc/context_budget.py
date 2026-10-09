@@ -43,8 +43,9 @@ def max_context_tokens(n_ctx: int | None = None) -> int:
     """Motor context ceiling: the live worker's own window when known, else env.
 
     `n_ctx` is the context size the route's llama.cpp worker was actually
-    STARTED with, read off `GET /routes` (see
-    `orion.harness.fcc_motor.probe_route_runtime`). It wins over the env
+    STARTED with, read from GPU pool state (`ctx_per_slot` of the role the
+    turn lands on, or of its granted role when it holds a lease -- see
+    `orion.harness.fcc_motor.probe_route_runtime` / `held_role_window`). It wins over the env
     ceiling because it is the number the upstream will actually enforce, and
     the env value is a single process-wide constant that cannot be right for
     more than one lane at a time: `chat`/`harness` serve 131072 while `agent`
@@ -193,7 +194,9 @@ def measure_step_payload_chars(step: dict[str, Any]) -> int:
     raw = step.get("raw") if isinstance(step.get("raw"), dict) else step
     if not isinstance(raw, dict):
         return len(json.dumps(step, default=str))
-    if raw.get("type") == "system" and raw.get("subtype") == "thinking_tokens":
+    if raw.get("type") == "system" and raw.get("subtype") in ("thinking_tokens", "compact_boundary"):
+        # Neither is context content: a token-counter tick, and the CLI's marker
+        # that it just compacted (the motor rebases its total on that one).
         return 0
     message = raw.get("message") if isinstance(raw.get("message"), dict) else raw
     content = message.get("content")
@@ -214,6 +217,57 @@ def measure_step_payload_chars(step: dict[str, Any]) -> int:
                 total += len(json.dumps(block.get("input") or {}, default=str))
         return total
     return len(json.dumps(raw, default=str))
+
+
+def is_compact_boundary_event(event: Any) -> bool:
+    """True for the claude CLI's own "I just compacted the conversation" marker.
+
+    Verified against the CLI actually shipped in orion-harness-governor
+    (Claude Code 2.1.287, `/usr/local/bin/claude`, 2026-10-02): its SDK output
+    schema declares `{"type": "system", "subtype": "compact_boundary",
+    "compact_metadata": {"trigger": "manual"|"auto", "pre_tokens": int,
+    "post_tokens": int (optional)}}`, and the print-mode stream serializer
+    emits exactly that object whenever a compaction lands. A captured live
+    turn carries it too: orion/fcc/tests/fixtures/fcc_repeat_failure_a153451fe423.jsonl
+    line 41.
+    """
+    if not isinstance(event, dict):
+        return False
+    raw = event.get("raw") if isinstance(event.get("raw"), dict) else event
+    return raw.get("type") == "system" and raw.get("subtype") == "compact_boundary"
+
+
+def post_compaction_context_chars(event: Any, *, prompt_chars: int) -> int:
+    """Estimated chars still in context right after a `compact_boundary` event.
+
+    The motor's running total (`budget_chars` in orion/harness/fcc_motor.py)
+    counts every tool result, tool input, thinking and text block since the
+    turn started. After the CLI compacts, almost all of that is gone from the
+    model's window -- replaced by a summary -- so carrying the total forward
+    kills turns that are, in fact, well inside the window (live 2026-09-22..
+    10-01: turns whose own drafts began "This session is being continued from
+    a previous conversation that ran out of context" were still killed).
+
+    Uses the CLI's own `post_tokens` when it reports one (its real token
+    count, converted with the same chars/token estimate as the ceiling). When
+    it does not, falls back to the prompt size: the same baseline the running
+    total started from, since the CLI's system prompt was never counted on
+    either side. The summary itself, if the CLI streams it as a user message,
+    is counted by `measure_step_payload_chars` as the next step.
+
+    Known asymmetry: `post_tokens` very likely includes the CLI's own system
+    prompt and tool schemas, which the pre-compaction baseline (`len(prompt)`)
+    never counted. So the post_tokens path is the PESSIMISTIC one (larger
+    estimate, earlier nudge/kill), never the lenient one. Whether live events
+    carry `post_tokens` is UNVERIFIED: the CLI schema marks it optional and the
+    captured live fixture is field-stripped (no `compact_metadata` at all).
+    """
+    raw = event.get("raw") if isinstance(event, dict) and isinstance(event.get("raw"), dict) else event
+    meta = raw.get("compact_metadata") if isinstance(raw, dict) else None
+    post = meta.get("post_tokens") if isinstance(meta, dict) else None
+    if isinstance(post, int) and not isinstance(post, bool) and post > 0:
+        return post * chars_per_token_estimate()
+    return max(0, int(prompt_chars))
 
 
 def context_fill_pct(*, accumulated_chars: int, max_chars: int | None = None) -> int:

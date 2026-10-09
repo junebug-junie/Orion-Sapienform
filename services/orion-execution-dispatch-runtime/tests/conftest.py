@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
@@ -13,3 +14,10 @@ if str(EXECUTION_DISPATCH_RUNTIME_ROOT) not in sys.path:
 # Repo root last so `orion.*` resolves from the repo (not overriding anything above).
 if str(REPO_ROOT) not in sys.path:
     sys.path.append(str(REPO_ROOT))
+
+# The settings default is cwd-relative (the container runs from /app); pin it so
+# a worker built in tests loads the repo's policy from any working directory.
+os.environ.setdefault(
+    "EXECUTION_DISPATCH_POLICY_PATH",
+    str(REPO_ROOT / "config" / "execution_dispatch" / "execution_dispatch_policy.v1.yaml"),
+)

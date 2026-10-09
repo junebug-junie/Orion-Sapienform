@@ -9,9 +9,21 @@ on:
       - "config/llm_profiles.yaml"
       - "services/orion-durable-runs/**"
       - "orion/schemas/durable_run.py"
+      - "orion/schemas/reverie_visual_run.py"
+      - "orion/schemas/compactor_digest_run.py"
+      - "orion/cognition/compactor/**"
+      - "orion/schemas/orion_day.py"
+      - "orion/orion_day/**"
+      - "orion/dream/introspect_sql.py"
+      - "orion/journaler/**"
+      - "orion/world_pulse_read/introspect.py"
+      - "orion/cognition/verbs/orion_day_*.yaml"
+      - "orion/cognition/prompts/orion_day_*.j2"
+      - "services/orion-sql-db/manual_migration_orion_day_letter_v1.sql"
       - "orion/schemas/resource_admission.py"
-      - "orion/durable_admission/**"
-      - "services/orion-sql-db/manual_migration_gpu2_elastic_v1.sql"
+      - "orion/durable_runs/**"
+      - "services/orion-sql-db/manual_migration_gpu_pool_stage5_drop_legacy_tables.sql"
+      - "scripts/gpu_pool_stage5_snapshot_and_drop.sh"
       - "orion/llm/resource_lease.py"
       - "orion/schemas/gpu_pool.py"
       - "orion/schemas/harness_finalize.py"
@@ -27,7 +39,7 @@ on:
       - "orion/schemas/thought.py"
       - "services/orion-thought/app/bus_listener.py"
       - "services/orion-sql-db/manual_migration_durable_resource_admission_v1.sql"
-      - "services/orion-sql-db/manual_migration_gateway_capacity_v1.sql"
+      - "services/orion-sql-db/manual_migration_durable_resource_abandon_pending_v1.sql"
       - "orion/curiosity/journal.py"
       - "orion/curiosity/attention_schema.py"
       - ".github/workflows/orion-durable-runs-tests.yml"
@@ -40,9 +52,21 @@ on:
       - "config/llm_profiles.yaml"
       - "services/orion-durable-runs/**"
       - "orion/schemas/durable_run.py"
+      - "orion/schemas/reverie_visual_run.py"
+      - "orion/schemas/compactor_digest_run.py"
+      - "orion/cognition/compactor/**"
+      - "orion/schemas/orion_day.py"
+      - "orion/orion_day/**"
+      - "orion/dream/introspect_sql.py"
+      - "orion/journaler/**"
+      - "orion/world_pulse_read/introspect.py"
+      - "orion/cognition/verbs/orion_day_*.yaml"
+      - "orion/cognition/prompts/orion_day_*.j2"
+      - "services/orion-sql-db/manual_migration_orion_day_letter_v1.sql"
       - "orion/schemas/resource_admission.py"
-      - "orion/durable_admission/**"
-      - "services/orion-sql-db/manual_migration_gpu2_elastic_v1.sql"
+      - "orion/durable_runs/**"
+      - "services/orion-sql-db/manual_migration_gpu_pool_stage5_drop_legacy_tables.sql"
+      - "scripts/gpu_pool_stage5_snapshot_and_drop.sh"
       - "orion/llm/resource_lease.py"
       - "orion/schemas/gpu_pool.py"
       - "orion/schemas/harness_finalize.py"
@@ -57,7 +81,7 @@ on:
       - "services/orion-cortex-exec/app/executor.py"
       - "orion/schemas/thought.py"
       - "services/orion-thought/app/bus_listener.py"
-      - "services/orion-sql-db/manual_migration_gateway_capacity_v1.sql"
+      - "services/orion-sql-db/manual_migration_durable_resource_abandon_pending_v1.sql"
 
 jobs:
   unit:
@@ -93,6 +117,14 @@ jobs:
           ORION_ADMISSION_TEST_DSN: postgresql://postgres:admission-test@127.0.0.1:5432/admission_test
         run: |
           cd services/orion-durable-runs && python -m pytest tests -q -p no:cacheprovider
+      - name: Pytest orion/orion_day/tests (Orion's Day gather, budget, contracts)
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+        run: python -m pytest orion/orion_day/tests -q -p no:cacheprovider
+      - name: Orion's Day eval (fixture day -- prompt separation, grounding, budget)
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+        run: python orion/orion_day/evals/run_orion_day_eval.py
       - name: Durable-run GPU pool hold fairness eval (home card + gpu2) on isolated Postgres
         env:
           PYTHONPATH: ${{ github.workspace }}
@@ -103,14 +135,12 @@ jobs:
           PYTHONPATH: ${{ github.workspace }}
           ORION_ADMISSION_TEST_DSN: postgresql://postgres:admission-test@127.0.0.1:5432/admission_test
         run: python services/orion-durable-runs/evals/deploy_order_skew.py
-      - name: Gateway capacity contention eval on isolated Postgres
-        env:
-          PYTHONPATH: ${{ github.workspace }}
-          ORION_ADMISSION_TEST_DSN: postgresql://postgres:admission-test@127.0.0.1:5432/admission_test
-        run: python services/orion-durable-runs/evals/gateway_capacity.py
 
   gateway:
-    name: Gateway — shared capacity and transport lifecycle
+    # Renamed in GPU pool stage 6.6: the gateway's /capacity broker and shared-capacity
+    # lifecycle were deleted in stages 4.6/5.6; this job now runs the gateway suite (pool
+    # dispatch, passthrough, transport).
+    name: Gateway — GPU pool dispatch and transport
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:

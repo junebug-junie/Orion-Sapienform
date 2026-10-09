@@ -31,7 +31,7 @@ def _settings():
     return SimpleNamespace(
         brain_frame_sample_nodes=40, brain_frame_sample_edges=60,
         brain_frame_firing_threshold=0.5, brain_frame_starving_threshold=0.1,
-        brain_frame_self_state_cadence_sec=30.0, brain_frame_spotlight_cadence_sec=30.0,
+        brain_frame_spotlight_cadence_sec=30.0,
     )
 
 
@@ -47,7 +47,7 @@ def test_active_and_dormant_graph_yields_firing_and_starving_and_samples():
     frame = assemble_brain_frame(
         nodes=nodes, edges=[],
         lane_health={"cursor_lag_by_reducer": {}, "pending_backlog_by_reducer": {}, "quarantine_by_reducer": {}},
-        self_state=None, attention=None, settings=_settings(), now=now, tick_seq=1,
+        attention=None, settings=_settings(), now=now, tick_seq=1,
     )
     states = [r.state for r in frame.regions if r.dimension == "node_kind"]
     assert "firing" in states, "expected at least one firing node-kind region"
@@ -67,7 +67,7 @@ def test_heavy_tool_turn_shape_execution_lit_concept_dim():
     }
     frame = assemble_brain_frame(
         nodes=nodes, edges=[], lane_health=lane_health,
-        self_state=None, attention=None, settings=_settings(), now=now, tick_seq=1,
+        attention=None, settings=_settings(), now=now, tick_seq=1,
     )
     lanes = {r.region_id: r for r in frame.regions if r.dimension == "lane"}
     kinds = {r.region_id: r for r in frame.regions if r.dimension == "node_kind"}

@@ -96,6 +96,27 @@ Per-stream overrides use the `streams:` block (e.g. `streams.cam0`). Legacy per-
 | `orion:exec:request:VisionHostService` | Publish | `VisionTaskRequestPayload` (`vision.task.request`) |
 | `orion:vision:reply:*` | PSUBSCRIBE | `VisionTaskResultPayload` (`vision.task.result`) |
 | `orion:system:health` | Publish | `SystemHealthV1` router metrics |
+| `orion:grammar:event` | Publish | `GrammarEventV1` vision organ window (`vision.organ:`), when `VISION_ORGAN_GRAMMAR_ENABLED` |
+
+## Vision organ self-report
+
+`app/grammar_emit.py`. Every `VISION_ORGAN_WINDOW_SEC` (60 s) the router publishes one
+grammar trace `vision.organ:<router>:<window_id>` on `orion:grammar:event`: one
+`vision_stream_window_observed` atom per stream and a closing
+`vision_organ_window_completed` atom, sent even when no frame arrived.
+
+Per stream: frames received, age of the newest frame (`none` = nothing since the
+router started), tasks dispatched (primary and identity), ok replies, failures by
+class (`timeout`, `invalid_reply`, host `error_code` or `host_error`), policy skip
+reasons, and yield (detect replies, objects, captions requested vs produced).
+Reported streams = every enabled entry under `streams:` in the policy file, plus
+any other stream seen -- so a configured camera that never sends is reported as
+absent, never as calm. Counts and ages only: no paths, labels, captions or
+identities.
+
+Consumer: orion-substrate-runtime's `vision_organ` reducer
+(`orion/substrate/vision_organ_loop/`) -> `node:substrate.vision_organ` ->
+`capability:vision`. Off in code, on in `.env_example`.
 
 ## Policy file
 
@@ -110,7 +131,7 @@ cd services/orion-vision-frame-router
 cp .env_example .env   # edit ORION_BUS_URL, DRY_RUN, etc.
 ```
 
-Key env vars: `ROUTER_ENABLED`, `DRY_RUN`, `MAX_INFLIGHT_TOTAL`, `TASK_TIMEOUT_SECONDS`, `REQUIRE_IMAGE_PATH_EXISTS`.
+Key env vars: `ROUTER_ENABLED`, `DRY_RUN`, `MAX_INFLIGHT_TOTAL`, `TASK_TIMEOUT_SECONDS`, `REQUIRE_IMAGE_PATH_EXISTS`, `VISION_ORGAN_GRAMMAR_ENABLED`, `VISION_ORGAN_WINDOW_SEC`.
 
 **Deployment:** Vision Host should consume **only** `orion:exec:request:VisionHostService` when this router is enabled — do not also wire Host to auto-subscribe `orion:vision:frames`, or GPU work will bypass policy.
 

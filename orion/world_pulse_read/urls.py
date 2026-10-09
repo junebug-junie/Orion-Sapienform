@@ -43,6 +43,19 @@ def normalize_source_url(value: str) -> str:
         raise ValueError("source must be a public HTTP(S) URL") from exc
 
 
+def normalize_reading_source(value: str) -> str:
+    """A public HTTP(S) URL, or an internal document path (documents.py).
+
+    Pure, like normalize_source_url: allowlist and file checks run only in Hub
+    at acceptance, where the mounted filesystem actually is.
+    """
+    from orion.world_pulse_read.documents import is_document_ref, normalize_document_ref
+
+    if is_document_ref(value):
+        return normalize_document_ref(value)
+    return normalize_source_url(value)
+
+
 def _public(address) -> bool:
     mapped = getattr(address, "ipv4_mapped", None)
     return bool(address.is_global and not address.is_multicast and (mapped is None or mapped.is_global))

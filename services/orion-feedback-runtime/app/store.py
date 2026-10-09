@@ -34,6 +34,11 @@ _PENDING_MARKER_SPEC = PendingMarkerSpec(
 
 logger = logging.getLogger("orion.feedback_runtime.store")
 
+# Render settlement states whose real outcome may still arrive (a pending durable run, or an
+# unconfirmed kickoff whose run may yet turn up). Mirrors
+# orion.execution_dispatch.visual_settlement.SETTLEABLE_STATES (pinned by a test).
+UNSETTLED_RENDER_STATES = frozenset({"pending", "not_submitted"})
+
 
 def _field_from_json(payload) -> FieldStateV1 | None:
     if isinstance(payload, str):
@@ -97,9 +102,27 @@ class FeedbackRuntimeStore:
         LIMIT 1
     """)
 
-    def load_latest_dispatch_frame_without_feedback(self) -> ExecutionDispatchFrameV1 | None:
+    # Same lookup, minus frames the worker has parked while a durable render settles
+    # (worker._tick). A separate statement so the common path keeps the plain index scan.
+    _PENDING_EXCLUDING_SQL = text("""
+        SELECT d.dispatch_frame_json, d.generated_at
+        FROM substrate_execution_dispatch_frames d
+        WHERE d.feedback_pending
+          AND d.frame_id NOT IN :excluded
+        ORDER BY d.generated_at ASC
+        LIMIT 1
+    """).bindparams(bindparam("excluded", expanding=True))
+
+    def load_latest_dispatch_frame_without_feedback(
+        self, *, exclude_frame_ids: list[str] | None = None
+    ) -> ExecutionDispatchFrameV1 | None:
         with self._engine.connect() as conn:
-            row = conn.execute(self._PENDING_SQL).mappings().first()
+            if exclude_frame_ids:
+                row = conn.execute(
+                    self._PENDING_EXCLUDING_SQL, {"excluded": list(exclude_frame_ids)}
+                ).mappings().first()
+            else:
+                row = conn.execute(self._PENDING_SQL).mappings().first()
         if not row:
             return None
         payload = row["dispatch_frame_json"]
@@ -529,11 +552,12 @@ class FeedbackRuntimeStore:
         if not rows:
             return []
 
-        evidence: list[dict[str, object]] = []
-        seen_dispatch_ids: set[str] = set()
+        # dispatch_id -> entry, in first-seen (newest-first) order.
+        chosen: dict[str, dict[str, object]] = {}
         for row in rows:
             dispatch_id = row["dispatch_id"]
-            if dispatch_id in seen_dispatch_ids:
+            previous = chosen.get(dispatch_id)
+            if previous is not None and previous.get("settlement_state") not in UNSETTLED_RENDER_STATES:
                 # Most-recent-first ordering means the first occurrence per
                 # dispatch_id is the latest result; later duplicates are stale.
                 continue
@@ -541,6 +565,16 @@ class FeedbackRuntimeStore:
                 payload = row["result_json"]
                 if isinstance(payload, str):
                     payload = json.loads(payload)
+                settlement = payload.get("settlement") if isinstance(payload, dict) else None
+                settlement_state = (
+                    str(settlement["state"])
+                    if isinstance(settlement, dict) and settlement.get("state")
+                    else None
+                )
+                if previous is not None and settlement_state in UNSETTLED_RENDER_STATES:
+                    # Newest row is a durable render still unsettled; only an older
+                    # SETTLED row for the same dispatch may replace it.
+                    continue
                 evidence_refs = list(payload.get("evidence_refs") or []) if isinstance(payload, dict) else []
                 entry: dict[str, object] = {
                     "result_id": row["result_id"],
@@ -571,8 +605,15 @@ class FeedbackRuntimeStore:
                 latency = row.get("latency_ms")
                 if latency is not None:
                     entry["latency_ms"] = float(latency)
-                evidence.append(entry)
-                seen_dispatch_ids.add(dispatch_id)
+                if settlement_state is not None:
+                    # worker._tick parks the frame while any render is unsettled.
+                    entry["settlement_state"] = settlement_state
+                    if settlement.get("finished_at"):
+                        # When the durable run really ended (queue + hold + GPU);
+                        # latency_ms is GPU seconds only, so the scoring window
+                        # must reach this instead.
+                        entry["settled_finished_at"] = str(settlement["finished_at"])
+                chosen[dispatch_id] = entry
             except (TypeError, ValueError, json.JSONDecodeError):
                 # Malformed result_json on one row shouldn't sink the whole
                 # query -- skip this row and keep the rest, mirroring this
@@ -581,7 +622,7 @@ class FeedbackRuntimeStore:
                     "dispatch_result_incompatible_payload dispatch_id=%s", dispatch_id, exc_info=True
                 )
                 continue
-        return evidence
+        return list(chosen.values())
 
     def load_effect_posteriors(self) -> dict[TreatedCellKey, EffectPosterior]:
         """Current belief about what each action does to each signal.
@@ -768,6 +809,85 @@ class FeedbackRuntimeStore:
                     frame.frame_id,
                     len(control_cells or {}),
                 )
+
+    # --- attend-to-act loop: settle-time world scoring ---------------------------------------
+    def load_world_episodes_due(self, *, now: datetime, limit: int = 20) -> list[dict]:
+        """Unscored episodes whose window has closed. [] while the ledger does not exist yet
+        (execution dispatch creates it on its first world decision)."""
+        from orion.autonomy import world_episodes
+
+        with self._engine.connect() as conn:
+            if conn.execute(text("SELECT to_regclass(:t)"), {"t": world_episodes.TABLE}).scalar() is None:
+                return []
+            rows = world_episodes.due_for_scoring(conn, now=now, limit=limit)
+        for row in rows:
+            for key in ("eligibility", "expected_effect", "settlement", "outcome"):
+                if isinstance(row.get(key), str):
+                    row[key] = json.loads(row[key])
+        return rows
+
+    def load_cabinet_points(self, *, since: datetime, until: datetime) -> list:
+        from orion.autonomy.cabinet_heat import load_cabinet_points
+
+        with self._engine.connect() as conn:
+            return load_cabinet_points(conn, since=since, until=until)
+
+    def load_hardware_incidents_opened(self, *, since: datetime, until: datetime) -> list[dict]:
+        """hardware_watch_incident rows that OPENED in the window (overlap tags). Raises when the
+        table cannot be read: a scorer that cannot see incidents must not score as if none opened."""
+        with self._engine.connect() as conn:
+            rows = conn.execute(text(
+                "SELECT incident_id, rule, subject, opened_at FROM hardware_watch_incident "
+                "WHERE opened_at >= :since AND opened_at <= :until"), {"since": since, "until": until}).mappings().all()
+        return [dict(r) for r in rows]
+
+    def load_loop_salience(self, *, open_loop_id: str, since: datetime) -> float | None:
+        """The loop's salience on the newest broadcast tick that still carries it (the 'next tick')."""
+        with self._engine.connect() as conn:
+            value = conn.execute(text(
+                "SELECT (ol->>'salience')::float FROM substrate_attention_broadcast_log l, "
+                "jsonb_array_elements(l.projection_json->'frame'->'open_loops') ol "
+                "WHERE l.generated_at >= :since AND ol->>'id' = :loop ORDER BY l.generated_at DESC LIMIT 1"),
+                {"since": since, "loop": open_loop_id}).scalar()
+        return None if value is None else float(value)
+
+    def save_world_score(self, *, episode_id: str, score, scored_at: datetime) -> bool:
+        """One transaction: ledger row (+ posterior for a treated, scorable row) or control cell, the
+        episode's score, and Orion's non-final `acted` loop verdict. Idempotent on the episode."""
+        from orion.autonomy import world_episodes
+        from orion.core.ids import stable_hash_id
+
+        outcome = dict(score.outcome)
+        loop_outcome_id = None
+        with self._engine.begin() as conn:
+            if score.record is not None:
+                self._write_action_outcomes(conn, [score.record])
+                outcome["outcome_row_id"] = conn.execute(text(
+                    "SELECT id FROM substrate_action_outcomes WHERE dispatch_id = :d AND signal_id = :s "
+                    "AND dispatch_frame_id = :f"), {"d": score.record.dispatch_id, "s": score.record.signal_id,
+                                                      "f": score.record.dispatch_frame_id}).scalar()
+            if score.control_cell is not None:
+                key, cell = score.control_cell
+                self._write_control_cells(conn, {key: cell}, dispatch_frame_id=f"world_settle:{episode_id}")
+            lo = score.loop_outcome
+            if lo is not None:
+                if lo.get("verdict") != "acted" or lo.get("actor") != "orion":
+                    raise ValueError("the world settle path may only write Orion's non-final 'acted' verdict")
+                loop_outcome_id = stable_hash_id("loopoutcome", [lo["loop_id"], "acted", "orion", episode_id])
+                conn.execute(text(
+                    """
+                    INSERT INTO attention_loop_outcome
+                        (outcome_id, loop_id, theme_key, verdict, actor, note, salience_at_close,
+                         weights_version, features_at_close, created_at)
+                    VALUES (:outcome_id, :loop_id, :loop_id, 'acted', 'orion', :note, :salience,
+                            'gwt-coalition-v1', CAST(:features AS jsonb), :created_at)
+                    ON CONFLICT (outcome_id) DO NOTHING
+                    """), {"outcome_id": loop_outcome_id, "loop_id": lo["loop_id"], "note": lo.get("note", "")[:500],
+                             "salience": max(0.0, min(1.0, float(lo.get("salience_at_close") or 0.0))),
+                             "features": json.dumps(lo.get("features_at_close") or {}, default=str),
+                             "created_at": scored_at})
+            return world_episodes.record_score(conn, episode_id=episode_id, outcome=outcome,
+                                               loop_outcome_id=loop_outcome_id, scored_at=scored_at)
 
     @staticmethod
     def _write_action_outcomes(conn, records: list[ActionOutcomeRecordV1]) -> None:

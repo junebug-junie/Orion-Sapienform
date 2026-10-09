@@ -175,22 +175,16 @@ Every hop degrades honestly rather than fabricating:
 Default-off: `run_visual_chain_worker` is a no-op unless
 ORION_VISUAL_CHAIN_ENABLED.
 
-Patch 9: `call_diffusion_generate`'s call site now wraps the whole
-diffusion-host round trip (elastic-status pre-check plus `/generate`) in a
-`GpuCapacityPermit` (`orion.durable_admission.capacity_client`) before
-attempting it. Live-caught 2026-09-24, same day the freshness-window fix
-(PR #2306) let this chain reach diffusion-host again for the first time
-since 09-14: two back-to-back `CUDA error: CUDA-capable device(s) is/are
-busy or unavailable` failures, because `orion-world-model` shares this same
-physical card (circe GPU2) with zero OS/driver-level arbitration -- the
-existing `visual_elastic_status_enabled` pre-check only asks
-`orion-gpu-lane-controller`, which has no idea world-model exists (it only
-tracks diffusion/agent-burst). The capacity permit is real mutual exclusion
-on the actual hardware, not another status read: see
-`visual_chain_gpu2_capacity_*` in `settings.py` for the backend_key
-reasoning and why diffusion's long acquire budget (vs. world-model's short
-one, `services/orion-world-model/app/settings.py`) is what gives diffusion
-practical precedence on its own native card.
+GPU2 arbitration (GPU pool stage 5.4). `orion-world-model` shares this
+physical card (circe gpu2) with zero OS/driver-level arbitration -- two
+back-to-back `CUDA error: CUDA-capable device(s) is/are busy or unavailable`
+failures on 2026-09-24. The GPU pool is the one arbiter: diffusion work runs
+under a pool `diffusion` lease or hold, and the pool never places a `world`
+lease while one is active (`config/gpu_pool.yaml` `serialize_with`). The
+durable run's hold is the grant for its generate step; `generate_visual_bytes`
+takes its own `diffusion` request lease only when called without one. The old
+durable-runs `/capacity` permit and the gpu-lane-controller slot-status
+pre-check are gone; nothing falls back to them.
 """
 
 from __future__ import annotations
@@ -204,7 +198,8 @@ import logging
 import time
 import urllib.error
 import urllib.request
-from contextlib import suppress
+from contextlib import asynccontextmanager, suppress
+from dataclasses import dataclass, fields
 from datetime import datetime, timezone
 from typing import Any
 from uuid import uuid4
@@ -212,11 +207,19 @@ from uuid import uuid4
 from orion.cognition.plan_loader import build_plan_for_verb
 from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
-from orion.durable_admission.capacity_client import CapacityRejected, GpuCapacityPermit
+from orion.gpu_pool import client as gpu_pool_client
+from orion.gpu_pool.client import LeaseUnavailable, PoolRpcTimeout
 from orion.reverie.visual_storage import StoredVisualArtifact, store_visual_artifact
 from orion.schemas.cortex.schemas import PlanExecutionArgs, PlanExecutionRequest
+from orion.schemas.gpu_pool import GpuLeaseRefV1
 from orion.autonomy.thermal_gate import ThermalVerdict, thermal_state
-from orion.schemas.reverie_visual import ReverieVisualArtifactV1, ReverieVisualChainV1
+from orion.schemas.reverie_visual import (
+    ReverieVisualArtifactV1,
+    ReverieVisualChainV1,
+    VisualExecutionReceiptV1,
+    VisualProductionReceiptV1,
+    VisualRunRequestV1,
+)
 from orion.schemas.vision import VisionTaskRequestPayload, VisionTaskResultPayload
 
 from .cortex_client import CortexExecClient
@@ -267,6 +270,8 @@ _visual_chain_started_at: float | None = None
 # chain_id of the run currently executing in `_run_visual_chain_body`, so an
 # abandoned run's row can point at the row the body may already have written.
 _visual_chain_body_chain_id: str | None = None
+# Budget of the current holder when it is not run-once (the durable generate step).
+_visual_chain_holder_deadline_sec: float | None = None
 # Bound on the abandoned-run persist itself. Short: at this point the run is
 # already over budget and the ONLY thing left to protect is the lock.
 _DEADLINE_PERSIST_TIMEOUT_SEC = 10.0
@@ -331,6 +336,23 @@ async def evaluate_thermal_gate() -> ThermalVerdict:
     temp_c, age_sec = await asyncio.to_thread(read_cabinet_temp_c)
     async with _thermal_state_lock:
         return _apply_thermal_reading(temp_c, age_sec)
+
+
+async def thermal_gate_snapshot() -> dict[str, Any]:
+    """The gate verdict as the dict every chain row records under `thermal_gate`.
+    `allows_gpu_work` is the decision; a disabled gate always allows."""
+    if not settings.thermal_gate_enabled:
+        return {"state": "disabled", "reason": "disabled", "allows_gpu_work": True, "degraded": False}
+    verdict = await evaluate_thermal_gate()
+    if verdict.degraded:
+        logger.warning(
+            "thermal gate degraded (%s): allowing GPU work on no reading",
+            verdict.reason,
+        )
+    return {"state": verdict.state, "temp_c": verdict.temp_c, "age_sec": verdict.age_sec,
+            "hot_c": settings.thermal_hot_c, "hot_rearm_c": settings.thermal_hot_rearm_c,
+            "reason": verdict.reason, "allows_gpu_work": verdict.allows_gpu_work,
+            "degraded": verdict.degraded}
 
 
 def _apply_thermal_reading(temp_c: float | None, age_sec: float | None) -> ThermalVerdict:
@@ -623,19 +645,6 @@ def call_diffusion_generate(prompt: str, *, base_url: str, timeout_sec: float) -
     section 10 -- no dependency for one POST call), same choice
     foveal_probe.py and this service's own cortex_client make elsewhere.
     """
-    if settings.visual_elastic_status_enabled:
-        try:
-            with urllib.request.urlopen(settings.visual_elastic_controller_url.rstrip("/") +
-                    "/v1/gpu-slots/circe-gpu2/status", timeout=3) as response:
-                slot = json.load(response)
-            if slot.get("enabled") and (slot.get("active") != "diffusion" or
-                    slot.get("state") in {"draining", "activating"} or
-                    (slot.get("state") == "failed" and slot.get("restored") is not True)):
-                raise DiffusionResourceDeferred("controller_displacement")
-        except DiffusionResourceDeferred:
-            raise
-        except (urllib.error.URLError, OSError, ValueError):
-            raise DiffusionResourceDeferred("resource_status_unavailable")
     url = str(base_url).rstrip("/") + "/generate"
     body = json.dumps({"prompt": prompt}).encode("utf-8")
     req = urllib.request.Request(url, data=body, method="POST")
@@ -662,9 +671,11 @@ def call_diffusion_generate(prompt: str, *, base_url: str, timeout_sec: float) -
             f"diffusion-host /generate returned HTTP {exc.code}: {exc.reason}"
         ) from exc
     except (urllib.error.URLError, OSError) as exc:
-        if settings.visual_elastic_status_enabled:
-            raise DiffusionResourceDeferred("diffusion_unreachable") from exc
-        raise DiffusionGenerationError(f"diffusion-host /generate failed: {exc}") from exc
+        # Unreachable diffusion-host is a deferral, not an image failure: the card can be mid-swap
+        # (an owner reclaim restarting it) even under a grant. This was the live behaviour through
+        # 2026-09-29 (ORION_VISUAL_ELASTIC_STATUS_ENABLED=true in the thought container); stage 5.4
+        # deleted that flag and its controller pre-check but keeps this outcome unconditionally.
+        raise DiffusionResourceDeferred("diffusion_unreachable") from exc
     if not data:
         raise DiffusionGenerationError("diffusion-host /generate returned empty body")
     return data
@@ -778,12 +789,13 @@ async def run_visual_chain_once(
     """
     if _visual_chain_lock.locked():
         held_for = visual_chain_in_flight_for()
+        holder_deadline = _visual_chain_holder_deadline_sec or settings.visual_chain_run_deadline_sec
         # WARNING, not INFO, once a run has outlived the deadline it is supposed
         # to be bounded by. At that point "already in flight" is not a busy
         # signal, it is a defect report, and it must not sit at the same log
         # level as the ordinary case -- that equivalence is what let the live
         # wedge go unnoticed.
-        if held_for is not None and held_for > settings.visual_chain_run_deadline_sec:
+        if held_for is not None and held_for > holder_deadline:
             logger.warning(
                 "visual chain skipped: run in flight %.1fs, PAST its %.1fs deadline "
                 "-- the deadline should have released this lock. Nothing in the "
@@ -791,7 +803,7 @@ async def run_visual_chain_once(
                 "abandoned-run persist (a starved thread executor or a Postgres "
                 "call with no statement_timeout), not the hop itself",
                 held_for,
-                settings.visual_chain_run_deadline_sec,
+                holder_deadline,
             )
         else:
             logger.info(
@@ -806,40 +818,31 @@ async def run_visual_chain_once(
     # "thermal_refused" rather than returning None, so "Orion declined because
     # the room is hot" is a row someone can find -- an absence would be
     # indistinguishable from the worker having died.
-    thermal_gate = {"state": "disabled", "reason": "disabled", "allows_gpu_work": True, "degraded": False}
-    if settings.thermal_gate_enabled:
-        verdict = await evaluate_thermal_gate()
-        thermal_gate = {"state": verdict.state, "temp_c": verdict.temp_c, "age_sec": verdict.age_sec,
-                        "hot_c": settings.thermal_hot_c, "hot_rearm_c": settings.thermal_hot_rearm_c,
-                        "reason": verdict.reason, "allows_gpu_work": verdict.allows_gpu_work,
-                        "degraded": verdict.degraded}
-        if verdict.degraded:
-            logger.warning(
-                "thermal gate degraded (%s): allowing GPU work on no reading",
-                verdict.reason,
-            )
-        if not verdict.allows_gpu_work:
-            chain_id = attempt_id or f"visual-{uuid4().hex[:12]}"
-            logger.info(
-                "visual chain refused by thermal gate chain=%s state=%s %s",
-                chain_id,
-                verdict.state,
-                verdict.reason,
-            )
-            chain = ReverieVisualChainV1(
-                chain_id=chain_id,
-                created_at=now_fn(),
-                terminal_reason="thermal_refused",
-                chain_json={"thermal_gate": thermal_gate, "run_request": run_request,
-                            "source_selection_status": "source_selection_not_reached"},
-            )
-            # to_thread, matching the other persist site: the store call is
-            # SYNCHRONOUS and blocking, so awaiting it directly would raise
-            # TypeError -- silently, inside this suppress, leaving the refusal
-            # unrecorded and looking exactly like a worker that stopped.
-            with suppress(Exception):
-                await asyncio.to_thread(persist_reverie_visual_chain, chain)
-            return chain
+    # The refusal row carries no continuity keys: store.py's continuity reader
+    # skips it, so a hot room does not reset the streak or the slot rotation.
+    thermal_gate = await thermal_gate_snapshot()
+    if not thermal_gate["allows_gpu_work"]:
+        chain_id = attempt_id or f"visual-{uuid4().hex[:12]}"
+        logger.info(
+            "visual chain refused by thermal gate chain=%s state=%s %s",
+            chain_id,
+            thermal_gate["state"],
+            thermal_gate["reason"],
+        )
+        chain = ReverieVisualChainV1(
+            chain_id=chain_id,
+            created_at=now_fn(),
+            terminal_reason="thermal_refused",
+            chain_json={"thermal_gate": thermal_gate, "run_request": run_request,
+                        "source_selection_status": "source_selection_not_reached"},
+        )
+        # to_thread, matching the other persist site: the store call is
+        # SYNCHRONOUS and blocking, so awaiting it directly would raise
+        # TypeError -- silently, inside this suppress, leaving the refusal
+        # unrecorded and looking exactly like a worker that stopped.
+        with suppress(Exception):
+            await asyncio.to_thread(persist_reverie_visual_chain, chain)
+        return chain
 
 
     # SINGLE-FLIGHT + DEADLINE. The lock prevents overlap; the deadline makes an
@@ -922,73 +925,70 @@ async def run_visual_chain_once(
 
 
 
-async def _run_visual_chain_body(
-    bus: OrionBusAsync, *, now_fn: Any = _now, cortex_client: CortexExecClient | None = None,
-    attempt_id: str | None = None, run_request: dict | None = None, thermal_gate: dict | None = None,
-) -> ReverieVisualChainV1:
-    """The actual run. Called only by `run_visual_chain_once`, which owns the
-    single-flight lock and the deadline around this.
+@dataclass
+class VisualPlan:
+    """Everything one run decides before touching the GPU (context reads, continuity
+    reset, slot selection, interpretation, prompt). `continuity_streak` and
+    `context_slot_rotation` are the NEXT values this run records.
 
-    Split out of `run_visual_chain_once` 2026-08-31 so the lock hold can be
-    bounded by `asyncio.wait_for`. Every hop in here already has its own
-    timeout, but per-hop timeouts do not bound the WHOLE run -- they sum, and
-    a `urlopen` socket timeout is not a total-operation deadline (a peer that
-    dribbles bytes resets it on every chunk). Before the split, a run that
-    outlived its caller kept the lock and every later dispatch got
-    `already_in_flight`, indistinguishable from healthy busy-ness; observed
-    live holding it long enough to need a container restart. `express` is
-    dispatched by the motor allocator, so a held lock silently un-schedules
-    Orion's only outward action, with no error raised anywhere.
+    The legacy run-once body computes this in memory; the durable step path freezes
+    it on the attempt row (`stage_json.plan`) so a replayed prepare returns the same
+    plan -- rotation never advances twice and interpretation never differs.
     """
-    async def _generation_failed(
-        *,
-        chain_id: str,
-        error: BaseException,
-        prompt: str,
-        prior_description: str | None,
-        context_text: str | None,
-        self_study_text: str | None,
-        memory_text: str | None,
-        context_slot_used: str | None,
-        context_slot_rotation: int,
-        context_slot_interpreted: str | None,
-        continuity_streak: int,
-        continuity_reset: bool,
-    ) -> ReverieVisualChainV1:
-        # Review finding: this closure's positional parameter list had grown to 12 args
-        # across Patches 4-8, several adjacent int/bool/str-or-None values with nothing
-        # stopping a future edit from silently transposing two of them (e.g.
-        # continuity_streak/continuity_reset) at a call site -- keyword-only forces every
-        # call site to name each value, so a transposition is a TypeError, not a silent
-        # data-corruption bug in a persisted chain_json row.
-        logger.warning("visual chain generation failed chain=%s err=%s", chain_id, error)
-        chain = ReverieVisualChainV1(
-            chain_id=chain_id,
-            created_at=now_fn(),
-            terminal_reason="generation_failed",
-            context_selection=context_selection,
-            prior_description=prior_description,
-            chain_json={
-                "prompt": prompt,
-                "thermal_gate": thermal_gate, "run_request": run_request,
-                "context_text": context_text,
-                "self_study_text": self_study_text,
-                "memory_text": memory_text,
-                "context_slot_used": context_slot_used,
-                "context_slot_rotation": context_slot_rotation,
-                "context_slot_interpreted": context_slot_interpreted,
-                "continuity_streak": continuity_streak,
-                "continuity_reset": continuity_reset,
-                "error": str(error),
-            },
-        )
-        with suppress(Exception):
-            await asyncio.to_thread(persist_reverie_visual_chain, chain)
-        return chain
 
-    global _visual_chain_body_chain_id
-    chain_id = attempt_id or str(uuid4())
-    _visual_chain_body_chain_id = chain_id
+    prompt: str
+    prior_description: str | None
+    prior_chain_id: str | None
+    effective_prior: str | None
+    continuity_fallback: str | None
+    continuity_streak: int
+    continuity_reset: bool
+    context_slot_used: str | None
+    context_slot_rotation: int
+    context_slot_interpreted: str | None
+    context_text: str | None
+    self_study_text: str | None
+    memory_text: str | None
+    context_selection: VisualContextSelectionV1 | None
+
+    def chain_fields(self) -> dict[str, Any]:
+        """The plan keys every chain row that reached a prompt records in chain_json."""
+        return {
+            "prompt": self.prompt,
+            "context_text": self.context_text,
+            "self_study_text": self.self_study_text,
+            "memory_text": self.memory_text,
+            "context_slot_used": self.context_slot_used,
+            "context_slot_rotation": self.context_slot_rotation,
+            "context_slot_interpreted": self.context_slot_interpreted,
+            "continuity_streak": self.continuity_streak,
+            "continuity_reset": self.continuity_reset,
+        }
+
+    def to_json(self) -> dict[str, Any]:
+        data = {f.name: getattr(self, f.name) for f in fields(self)}
+        data["context_selection"] = (
+            self.context_selection.model_dump(mode="json") if self.context_selection else None
+        )
+        return data
+
+    @classmethod
+    def from_json(cls, data: dict[str, Any]) -> "VisualPlan":
+        values = {f.name: data.get(f.name) for f in fields(cls)}
+        values["continuity_streak"] = int(values["continuity_streak"] or 0)
+        values["context_slot_rotation"] = int(values["context_slot_rotation"] or 0)
+        values["continuity_reset"] = bool(values["continuity_reset"])
+        if not isinstance(values["prompt"], str) or not values["prompt"]:
+            raise ValueError("frozen visual plan has no prompt")
+        if values["context_selection"]:
+            values["context_selection"] = VisualContextSelectionV1.model_validate(values["context_selection"])
+        return cls(**values)
+
+
+async def compute_visual_plan(
+    bus: OrionBusAsync, *, chain_id: str, cortex_client: CortexExecClient | None = None,
+) -> VisualPlan:
+    """Context reads -> continuity reset -> slot select -> interpret -> prompt."""
     # Four independent reads (different tables, no data dependency) --
     # concurrent so the cost is max() of the round trips, not sum()
     # (review finding: this function already makes exactly this
@@ -1087,61 +1087,296 @@ async def _run_visual_chain_body(
     prompt = build_visual_prompt(
         effective_prior, context_slot_used, context_slot_interpreted or context_slot_text
     )
+    return VisualPlan(
+        prompt=prompt,
+        prior_description=prior_description,
+        prior_chain_id=prior_chain_id,
+        effective_prior=effective_prior,
+        continuity_fallback=continuity_fallback,
+        continuity_streak=continuity_streak,
+        continuity_reset=continuity_reset,
+        context_slot_used=context_slot_used,
+        context_slot_rotation=context_slot_rotation,
+        context_slot_interpreted=context_slot_interpreted,
+        context_text=context_text,
+        self_study_text=self_study_text,
+        memory_text=memory_text,
+        context_selection=context_selection,
+    )
 
-    async def _generate() -> bytes:
-        return await asyncio.to_thread(
-            call_diffusion_generate,
-            prompt,
-            base_url=settings.diffusion_host_base_url,
-            timeout_sec=settings.visual_chain_diffusion_timeout_sec,
-        )
 
-    # GPU2 capacity mutex (settings.py docstring on visual_chain_gpu2_capacity_enabled):
-    # real cross-service mutual exclusion with orion-world-model, which shares
-    # this physical card with no OS-level arbitration. Covers the elastic-
-    # status pre-check inside call_diffusion_generate too, not just /generate
-    # itself, since both touch shared GPU state.
-    gpu_permit: GpuCapacityPermit | None = None
+# The lease every generate takes (gpu_pool.yaml class `diffusion`): attached under the run's hold, or its own.
+GPU_LEASE_WORK_CLASS = "diffusion"
+GPU_LEASE_PRIORITY = "background"
+
+
+async def _diffusion_call(prompt: str) -> bytes:
+    """The diffusion POST in a thread, awaited so the GPU lease around it stays held until that
+    thread has really exited. A cancelled caller (step or run deadline) cannot stop the thread,
+    and releasing the lease early would let the pool place a world lease on gpu2 while diffusion
+    is still computing (the 2026-09-24 CUDA-busy overlap). After a cancel it keeps waiting at
+    most one more diffusion timeout (+10 s), then gives the lease back and re-raises."""
+    work = asyncio.ensure_future(asyncio.to_thread(
+        call_diffusion_generate,
+        prompt,
+        base_url=settings.diffusion_host_base_url,
+        timeout_sec=settings.visual_chain_diffusion_timeout_sec,
+    ))
     try:
-        if settings.visual_chain_gpu2_capacity_enabled:
+        return await asyncio.shield(work)
+    except asyncio.CancelledError:
+        loop = asyncio.get_running_loop()
+        until = loop.time() + float(settings.visual_chain_diffusion_timeout_sec) + 10.0
+        while not work.done() and loop.time() < until:
             try:
-                gpu_permit = await GpuCapacityPermit(
-                    capacity_url=settings.visual_chain_gpu2_capacity_url,
-                    lane=settings.visual_chain_gpu2_capacity_lane,
-                    backend_key=settings.visual_chain_gpu2_capacity_backend_key,
-                    correlation_id=chain_id,
-                    max_inflight=settings.visual_chain_gpu2_capacity_max_inflight,
-                    budget_sec=settings.visual_chain_gpu2_capacity_budget_sec,
-                    poll_interval_sec=settings.visual_chain_gpu2_capacity_poll_interval_sec,
-                ).acquire()
-            except CapacityRejected as exc:
-                raise DiffusionResourceDeferred(f"gpu2_capacity:{exc}") from exc
-        png_bytes = await _generate()
+                await asyncio.wait({work}, timeout=until - loop.time())
+            except asyncio.CancelledError:
+                continue
+        if not work.done():
+            logger.error("visual chain: diffusion thread outlived its grace; releasing the GPU lease anyway")
+        work.add_done_callback(lambda t: t.cancelled() or t.exception())
+        raise
+
+
+async def generate_visual_bytes(
+    prompt: str, *, correlation_id: str, bus: Any = None, hold: GpuLeaseRefV1 | None = None,
+) -> bytes:
+    """Diffusion inside a GPU pool lease. Raises `DiffusionResourceDeferred` for every
+    capacity/resource deferral; any other exception is a generation failure.
+
+    ``hold``: the durable run's diffusion hold (already validated by visual_steps.generate_step).
+    The call ATTACHES under it: a child lease that runs in the hold's own slot and jumps its queue,
+    so it is not a second wait -- but it is a lease of its own that lives exactly as long as the
+    diffusion thread, even when the run gives the hold back mid-generate (step deadline, recall).
+    No hold (run-once route, legacy worker): a plain `diffusion` request lease.
+    Refused, late, or pool unreachable -> deferred, never an ungated call."""
+    if bus is None:
+        raise DiffusionResourceDeferred("gpu_pool_unreachable:no_bus")
+    acquired = False
+    try:
+        async with gpu_pool_client.gpu_lease(
+            bus, work_class=GPU_LEASE_WORK_CLASS, holder=settings.service_name,
+            priority=GPU_LEASE_PRIORITY, deadline_sec=float(settings.visual_chain_gpu_lease_deadline_sec),
+            turn_correlation_id=correlation_id, hold=hold,
+        ):
+            acquired = True
+            return await _diffusion_call(prompt)
+    except PoolRpcTimeout as exc:
+        raise DiffusionResourceDeferred("gpu_pool_unreachable") from exc
+    except LeaseUnavailable as exc:
+        raise DiffusionResourceDeferred(f"gpu_pool:{exc.reason}") from exc
+    except Exception as exc:
+        if acquired:
+            raise   # the diffusion call's own failure, unchanged
+        raise DiffusionResourceDeferred(f"gpu_pool_unreachable:{type(exc).__name__}") from exc
+
+
+async def describe_uploaded_visual(
+    bus: OrionBusAsync, upload_result: str | BaseException, *, chain_id: str, sha256: str,
+) -> str | None:
+    """Caption the uploaded percept, or None. A failed upload is logged, never raised:
+    the image is still real and is persisted with description=None."""
+    if isinstance(upload_result, BaseException):
+        logger.warning(
+            "visual chain re-observation failed chain=%s sha=%s err=%s -- "
+            "image stored without a caption",
+            chain_id,
+            sha256[:12],
+            upload_result,
+        )
+        return None
+    return await request_caption(
+        bus, upload_result, timeout_sec=settings.visual_chain_caption_timeout_sec
+    )
+
+
+def build_generation_failed_chain(
+    chain_id: str, plan: VisualPlan, error: BaseException, *,
+    thermal_gate: dict | None, run_request: dict | None, now_fn: Any = _now,
+) -> ReverieVisualChainV1:
+    return ReverieVisualChainV1(
+        chain_id=chain_id,
+        created_at=now_fn(),
+        terminal_reason="generation_failed",
+        context_selection=plan.context_selection,
+        prior_description=plan.continuity_fallback,
+        chain_json={
+            **plan.chain_fields(),
+            "thermal_gate": thermal_gate, "run_request": run_request,
+            "error": str(error),
+        },
+    )
+
+
+def build_resource_deferred_chain(
+    chain_id: str, plan: VisualPlan, reason: str, *,
+    thermal_gate: dict | None, run_request: dict | None, now_fn: Any = _now,
+) -> ReverieVisualChainV1:
+    # No continuity keys on purpose: nothing was generated, so this row must not
+    # become the continuity state the next run reads (store.py's continuity reader
+    # skips rows without them).
+    return ReverieVisualChainV1(
+        chain_id=chain_id, created_at=now_fn(),
+        terminal_reason="resource_deferred", context_selection=plan.context_selection,
+        chain_json={"resource_gate": {"reason": reason}, "thermal_gate": thermal_gate,
+                    "run_request": run_request},
+    )
+
+
+def build_production_chain(
+    chain_id: str, plan: VisualPlan, *, artifact_sha256: str, description: str | None,
+    thermal_gate: dict | None, run_request: dict | None, now_fn: Any = _now,
+) -> ReverieVisualChainV1:
+    # Only advance continuity on a real, non-empty description -- a failed
+    # re-observation forwards `continuity_fallback` (the previous
+    # prior_description unchanged on a normal run, or None on a reset run
+    # -- see compute_visual_plan) rather than propagating a stale value on a
+    # reset run or losing continuity entirely on a normal one.
+    return ReverieVisualChainV1(
+        chain_id=chain_id,
+        created_at=now_fn(),
+        terminal_reason="max_steps",
+        context_selection=plan.context_selection,
+        prior_description=description or plan.continuity_fallback,
+        chain_json={
+            **plan.chain_fields(),
+            "thermal_gate": thermal_gate, "run_request": run_request,
+            "artifact_sha256": artifact_sha256,
+            "production_receipt": None,
+            "description": description,
+        },
+    )
+
+
+async def persist_visual_production(
+    chain: ReverieVisualChainV1, stored: StoredVisualArtifact, description: str | None,
+) -> tuple[bool, VisualProductionReceiptV1 | None]:
+    """Chain row, then artifact row + production acknowledgement. Both idempotent
+    (chain insert is ON CONFLICT DO NOTHING; acknowledgement returns the existing
+    receipt for the same bytes). Returns (chain_persisted, receipt)."""
+    # Chain row before artifact row: reverie_visual_artifact.chain_id is a
+    # real FK (manual_migration_reverie_visual_chain.sql). The artifact
+    # insert is skipped (not just attempted-and-swallowed) when the chain
+    # row itself failed to persist -- review finding: persisting the
+    # artifact unconditionally meant a transient chain-row failure still
+    # attempted the artifact insert, which would then also fail its own
+    # FK check, burying the real cause behind a second, confusing warning.
+    if not await asyncio.to_thread(persist_reverie_visual_chain, chain):
+        logger.warning(
+            "visual chain artifact skipped chain=%s: chain row failed to persist", chain.chain_id
+        )
+        return False, None
+    artifact = ReverieVisualArtifactV1(
+        sha256=stored.sha256,
+        chain_id=chain.chain_id,
+        step_index=0,
+        mime=stored.mime,
+        bytes=stored.bytes,
+        width=stored.width,
+        height=stored.height,
+        path=stored.path,
+        description=description,
+    )
+    receipt = await asyncio.to_thread(acknowledge_visual_production, chain, artifact)
+    if receipt is not None:
+        chain.chain_json["production_receipt"] = receipt.model_dump(mode="json")
+    return True, receipt
+
+
+def visual_outcome_for_chain(chain: ReverieVisualChainV1 | None) -> str:
+    """The typed outcome a run-once result reports for its terminal chain."""
+    production = chain.chain_json.get("production_receipt") if chain else None
+    return ("produced" if production else "deferred_busy" if chain is None else
+            "deferred_thermal" if chain.terminal_reason == "thermal_refused" else
+            "deferred_resource" if chain.terminal_reason == "resource_deferred" else
+            "unknown" if chain.terminal_reason == "run_deadline_exceeded" else "failed")
+
+
+def build_visual_execution_receipt(
+    request: VisualRunRequestV1, attempt_id: str | None, chain: ReverieVisualChainV1 | None, outcome: str,
+) -> VisualExecutionReceiptV1:
+    production = chain.chain_json.get("production_receipt") if chain else None
+    thermal = chain.chain_json.get("thermal_gate") if chain else {"reason": "thermal_not_evaluated"}
+    selection = chain.context_selection if chain else None
+    return VisualExecutionReceiptV1(
+        request=request, attempt_id=attempt_id or (chain.chain_id if chain else None),
+        outcome=outcome, gate_reason=chain.terminal_reason if chain else "already_in_flight",
+        thermal_gate=thermal or {},
+        source_selection_status="selected" if selection else "source_selection_not_reached",
+        source_kind=selection.source_kind if selection else None,
+        source_refs=([selection.reverie.thought_id, selection.reverie.text_chain_id]
+                     if selection and selection.reverie else
+                     [selection.source.source_id] if selection and selection.source else []),
+        artifact_persisted=production is not None,
+        production_receipt=VisualProductionReceiptV1.model_validate(production) if production else None,
+    )
+
+
+@asynccontextmanager
+async def visual_chain_single_flight(*, deadline_sec: float):
+    """Hold the process single-flight lock shared by run-once and the durable
+    generate step. Yields False immediately (no wait) when it is already held.
+    `deadline_sec` is how long this holder may legitimately keep it, so run-once's
+    past-deadline warning judges the holder by its own budget."""
+    global _visual_chain_started_at, _visual_chain_holder_deadline_sec
+    if _visual_chain_lock.locked():
+        yield False
+        return
+    async with _visual_chain_lock:
+        _visual_chain_started_at = time.monotonic()
+        _visual_chain_holder_deadline_sec = deadline_sec
+        try:
+            yield True
+        finally:
+            _visual_chain_started_at = None
+            _visual_chain_holder_deadline_sec = None
+
+
+async def _run_visual_chain_body(
+    bus: OrionBusAsync, *, now_fn: Any = _now, cortex_client: CortexExecClient | None = None,
+    attempt_id: str | None = None, run_request: dict | None = None, thermal_gate: dict | None = None,
+) -> ReverieVisualChainV1:
+    """The actual run. Called only by `run_visual_chain_once`, which owns the
+    single-flight lock and the deadline around this.
+
+    Split out of `run_visual_chain_once` 2026-08-31 so the lock hold can be
+    bounded by `asyncio.wait_for`. Every hop in here already has its own
+    timeout, but per-hop timeouts do not bound the WHOLE run -- they sum, and
+    a `urlopen` socket timeout is not a total-operation deadline (a peer that
+    dribbles bytes resets it on every chunk). Before the split, a run that
+    outlived its caller kept the lock and every later dispatch got
+    `already_in_flight`, indistinguishable from healthy busy-ness; observed
+    live holding it long enough to need a container restart. `express` is
+    dispatched by the motor allocator, so a held lock silently un-schedules
+    Orion's only outward action, with no error raised anywhere.
+
+    The stages are the same functions the durable step path (`visual_steps.py`)
+    runs one at a time; this body runs them back to back in memory.
+    """
+    global _visual_chain_body_chain_id
+    chain_id = attempt_id or str(uuid4())
+    _visual_chain_body_chain_id = chain_id
+    plan = await compute_visual_plan(bus, chain_id=chain_id, cortex_client=cortex_client)
+
+    async def _generation_failed(error: BaseException) -> ReverieVisualChainV1:
+        logger.warning("visual chain generation failed chain=%s err=%s", chain_id, error)
+        chain = build_generation_failed_chain(
+            chain_id, plan, error, thermal_gate=thermal_gate, run_request=run_request, now_fn=now_fn
+        )
+        with suppress(Exception):
+            await asyncio.to_thread(persist_reverie_visual_chain, chain)
+        return chain
+
+    try:
+        png_bytes = await generate_visual_bytes(plan.prompt, correlation_id=chain_id, bus=bus)
     except DiffusionResourceDeferred as exc:
-        chain = ReverieVisualChainV1(chain_id=chain_id, created_at=now_fn(),
-            terminal_reason="resource_deferred", context_selection=context_selection,
-            chain_json={"resource_gate": {"reason": str(exc)}, "thermal_gate": thermal_gate,
-                        "run_request": run_request})
+        chain = build_resource_deferred_chain(
+            chain_id, plan, str(exc), thermal_gate=thermal_gate, run_request=run_request, now_fn=now_fn
+        )
         await asyncio.to_thread(persist_reverie_visual_chain, chain)
         return chain
     except Exception as exc:
-        return await _generation_failed(
-            chain_id=chain_id,
-            error=exc,
-            prompt=prompt,
-            prior_description=continuity_fallback,
-            context_text=context_text,
-            self_study_text=self_study_text,
-            memory_text=memory_text,
-            context_slot_used=context_slot_used,
-            context_slot_rotation=context_slot_rotation,
-            context_slot_interpreted=context_slot_interpreted,
-            continuity_streak=continuity_streak,
-            continuity_reset=continuity_reset,
-        )
-    finally:
-        if gpu_permit is not None:
-            await gpu_permit.close()
+        return await _generation_failed(exc)
 
     # store_visual_artifact (disk write) and upload_to_percept_store (a
     # network round trip) both operate on the same immutable png_bytes
@@ -1165,94 +1400,19 @@ async def _run_visual_chain_body(
     )
 
     if isinstance(store_result, BaseException):
-        return await _generation_failed(
-            chain_id=chain_id,
-            error=store_result,
-            prompt=prompt,
-            prior_description=continuity_fallback,
-            context_text=context_text,
-            self_study_text=self_study_text,
-            memory_text=memory_text,
-            context_slot_used=context_slot_used,
-            context_slot_rotation=context_slot_rotation,
-            context_slot_interpreted=context_slot_interpreted,
-            continuity_streak=continuity_streak,
-            continuity_reset=continuity_reset,
-        )
+        return await _generation_failed(store_result)
     stored: StoredVisualArtifact = store_result
 
-    description: str | None = None
-    if isinstance(upload_result, BaseException):
-        logger.warning(
-            "visual chain re-observation failed chain=%s sha=%s err=%s -- "
-            "image stored without a caption",
-            chain_id,
-            stored.sha256[:12],
-            upload_result,
-        )
-    else:
-        description = await request_caption(
-            bus, upload_result, timeout_sec=settings.visual_chain_caption_timeout_sec
-        )
-
-    # Only advance continuity on a real, non-empty description -- a failed
-    # re-observation forwards `continuity_fallback` (the previous
-    # prior_description unchanged on a normal run, or None on a reset run
-    # -- see continuity_fallback's own comment above) rather than
-    # propagating a stale value on a reset run or losing continuity
-    # entirely on a normal one.
-    next_prior_description = description or continuity_fallback
-
-    chain = ReverieVisualChainV1(
-        chain_id=chain_id,
-        created_at=now_fn(),
-        terminal_reason="max_steps",
-        context_selection=context_selection,
-        prior_description=next_prior_description,
-        chain_json={
-            "prompt": prompt,
-                "thermal_gate": thermal_gate, "run_request": run_request,
-            "context_text": context_text,
-            "self_study_text": self_study_text,
-            "memory_text": memory_text,
-            "context_slot_used": context_slot_used,
-            "context_slot_rotation": context_slot_rotation,
-            "context_slot_interpreted": context_slot_interpreted,
-            "continuity_streak": continuity_streak,
-            "continuity_reset": continuity_reset,
-            "artifact_sha256": stored.sha256,
-            "production_receipt": None,
-            "description": description,
-        },
+    description = await describe_uploaded_visual(
+        bus, upload_result, chain_id=chain_id, sha256=stored.sha256
     )
-    # Chain row before artifact row: reverie_visual_artifact.chain_id is a
-    # real FK (manual_migration_reverie_visual_chain.sql). The artifact
-    # insert is skipped (not just attempted-and-swallowed) when the chain
-    # row itself failed to persist -- review finding: persisting the
-    # artifact unconditionally meant a transient chain-row failure still
-    # attempted the artifact insert, which would then also fail its own
-    # FK check, burying the real cause behind a second, confusing warning.
-    chain_persisted = await asyncio.to_thread(persist_reverie_visual_chain, chain)
+    chain = build_production_chain(
+        chain_id, plan, artifact_sha256=stored.sha256, description=description,
+        thermal_gate=thermal_gate, run_request=run_request, now_fn=now_fn,
+    )
+    chain_persisted, _ = await persist_visual_production(chain, stored, description)
     if not chain_persisted:
-        logger.warning(
-            "visual chain artifact skipped chain=%s: chain row failed to persist", chain_id
-        )
         return chain
-
-    artifact = ReverieVisualArtifactV1(
-        sha256=stored.sha256,
-        chain_id=chain_id,
-        step_index=0,
-        mime=stored.mime,
-        bytes=stored.bytes,
-        width=stored.width,
-        height=stored.height,
-        path=stored.path,
-        description=description,
-    )
-    receipt = await asyncio.to_thread(acknowledge_visual_production, chain, artifact)
-    if receipt is not None:
-        chain.chain_json["production_receipt"] = receipt.model_dump(mode="json")
 
     logger.info(
         "visual chain complete chain=%s sha=%s described=%s",

@@ -343,6 +343,134 @@ def test_induction_no_row_returns_ok_false_not_error(client, monkeypatch):
 
 
 # --- /gpu ------------------------------------------------------------
+# Stage 5.5: GPU lane labels come from the GPU pool's live state (Hub's pool feed),
+# not from the deleted GPU_LANE_MAP_{ATHENA,CIRCE}_JSON keys.
+
+from datetime import datetime, timedelta, timezone  # noqa: E402
+
+_NOW = datetime(2026, 9, 29, 20, 0, 0, tzinfo=timezone.utc)
+
+
+def _pool_state(**over: Any) -> dict[str, Any]:
+    """A GpuPoolStateV1 payload shaped like the live one on 2026-09-29 (gpu2 on diffusion)."""
+    state: dict[str, Any] = {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "mode": "observe",
+        "config_digest": "d",
+        "host": "circe",
+        "cards": [
+            {"card": "gpu0", "index": 0, "lent": True, "swapped_in": [], "swap_state": "idle"},
+            {"card": "gpu1", "index": 1, "swapped_in": [], "swap_state": "idle"},
+            {"card": "gpu2", "index": 2, "swapped_in": [], "swap_state": "idle"},
+            {"card": "gpu3", "index": 3, "swapped_in": [], "swap_state": "idle"},
+        ],
+        "roles": [
+            {"role": "chat", "cards": ["gpu0"], "status": "confirmed"},
+            {"role": "agent", "cards": ["gpu1"], "status": "confirmed"},
+            {"role": "agent-gpu2", "cards": ["gpu2"], "status": "unloaded"},
+            {"role": "metacog", "cards": ["gpu3"], "status": "confirmed"},
+            {"role": "fast", "cards": ["gpu3"], "status": "confirmed"},
+            {"role": "world", "cards": ["gpu2"], "status": "static"},
+            {"role": "diffusion", "cards": ["gpu2"], "status": "static"},
+            {"role": "experiment", "cards": ["gpu0", "gpu1", "gpu2", "gpu3"], "status": "unloaded"},
+        ],
+    }
+    state.update(over)
+    return state
+
+
+def _set_pool_state(monkeypatch, state: Any) -> None:
+    routes = biometrics_preview_routes.gpu_pool_routes
+    feed = routes.GpuPoolFeed()
+    if state is not None:
+        feed.absorb(routes.GPU_POOL_STATE_CHANNEL, state)
+    monkeypatch.setattr(routes, "feed", feed)
+
+
+def test_pool_labels_match_the_live_shape():
+    labels, default = biometrics_preview_routes.lane_map_from_pool_state(
+        "circe", _pool_state(generated_at=_NOW.isoformat()), now=_NOW
+    )
+    assert labels == {"0": "chat (lent)", "1": "agent", "2": "world, diffusion", "3": "metacog, fast"}
+    assert default == "unassigned"
+
+
+def test_multi_host_pool_labels_each_node_only_with_its_own_cards():
+    """hecate's card is index 0 like circe's gpu0: each node gets only the cards whose host it is."""
+    state = _pool_state(generated_at=_NOW.isoformat())
+    state["cards"].append({"card": "hecate-gpu0", "index": 0, "host": "hecate", "lent": True,
+                           "swapped_in": [], "swap_state": "idle"})
+    state["roles"].append({"role": "agent-deep", "cards": ["hecate-gpu0"], "status": "confirmed"})
+    lm = biometrics_preview_routes.lane_map_from_pool_state
+    assert lm("circe", state, now=_NOW)[0]["0"] == "chat (lent)"
+    assert lm("hecate", state, now=_NOW) == ({"0": "agent-deep (lent)"}, "unassigned")
+    assert lm("athena", state, now=_NOW) == ({}, "unassigned")
+
+
+def test_pool_labels_follow_a_swap():
+    """27B loaded on gpu2: diffusion is evicted, so it is not on the card."""
+    state = _pool_state(generated_at=_NOW.isoformat())
+    for role in state["roles"]:
+        if role["role"] == "agent-gpu2":
+            role["status"] = "confirmed"
+        if role["role"] == "diffusion":
+            role["status"] = "evicted"
+    state["cards"][2]["swapped_in"] = ["agent-gpu2"]
+    labels, _ = biometrics_preview_routes.lane_map_from_pool_state("circe", state, now=_NOW)
+    assert labels["2"] == "agent-gpu2, world"
+
+
+def test_pool_labels_mark_unhealthy_and_in_flight_cards():
+    state = _pool_state(generated_at=_NOW.isoformat())
+    state["roles"][6]["status"] = "down"   # diffusion
+    state["cards"][2].update(swap_state="loading", swap_role="agent-gpu2")
+    labels, _ = biometrics_preview_routes.lane_map_from_pool_state("circe", state, now=_NOW)
+    assert labels["2"] == "world, diffusion [down] [loading agent-gpu2]"
+    del state["roles"][5]["status"]   # world: a row without a status is unknown, not "None"
+    labels, _ = biometrics_preview_routes.lane_map_from_pool_state("circe", state, now=_NOW)
+    assert labels["2"].startswith("world [unknown], diffusion [down]")
+
+
+def test_pool_labels_never_guess():
+    fresh = _NOW.isoformat()
+    lm = biometrics_preview_routes.lane_map_from_pool_state
+    # athena has no pool (non-goal): unassigned, as before
+    assert lm("athena", _pool_state(generated_at=fresh), now=_NOW) == ({}, "unassigned")
+    # no state / a pre-5.5 pool (no host, no index) / a stale state: unknown, not "unassigned"
+    assert lm("circe", None, now=_NOW) == ({}, "no pool state")
+    pre55 = _pool_state(generated_at=fresh)
+    del pre55["host"]
+    assert lm("circe", pre55, now=_NOW) == ({}, "no pool state")
+    stale = (_NOW - timedelta(seconds=biometrics_preview_routes.POOL_STATE_MAX_AGE_SEC + 1)).isoformat()
+    assert lm("circe", _pool_state(generated_at=stale), now=_NOW) == ({}, "no pool state")
+    assert lm("circe", _pool_state(generated_at="garbage"), now=_NOW) == ({}, "no pool state")
+    # a card whose YAML has no index is not labelled
+    noidx = _pool_state(generated_at=fresh)
+    del noidx["cards"][1]["index"]
+    assert "1" not in lm("circe", noidx, now=_NOW)[0]
+
+
+def test_gpu_route_without_pool_state_says_so(client, monkeypatch):
+    async def fake_raw_recent(node, *, limit=10):
+        return {"items": [{"timestamp": "t", "raw": {"gpu": {"gpus": [{"index": "2"}]}}}]}
+
+    monkeypatch.setattr(
+        biometrics_preview_routes.biometrics_node_client, "fetch_raw_recent", fake_raw_recent
+    )
+    _set_pool_state(monkeypatch, None)
+    card = client.get("/api/biometrics/preview/gpu?node=circe").json()["gpus"][0]
+    assert card["lane"] == "no pool state"
+    assert card["lane_assigned"] is False
+
+
+def test_static_lane_map_keys_are_gone():
+    """Kill means kill: the hand-maintained keys are not a fallback."""
+    from scripts.settings import settings
+
+    assert not hasattr(settings, "GPU_LANE_MAP_ATHENA_JSON")
+    assert not hasattr(settings, "GPU_LANE_MAP_CIRCE_JSON")
+    assert not hasattr(biometrics_preview_routes, "_parse_lane_map")
+
 
 
 def test_gpu_happy_path_with_lane_map_and_processes(client, monkeypatch):
@@ -377,16 +505,15 @@ def test_gpu_happy_path_with_lane_map_and_processes(client, monkeypatch):
     monkeypatch.setattr(
         biometrics_preview_routes.biometrics_node_client, "fetch_raw_recent", fake_raw_recent
     )
-    monkeypatch.setattr(
-        biometrics_preview_routes.settings, "GPU_LANE_MAP_ATHENA_JSON", '{"0": "orion-vision-host (P4)"}'
-    )
+    _set_pool_state(monkeypatch, _pool_state())
 
-    r = client.get("/api/biometrics/preview/gpu?node=athena")
+    r = client.get("/api/biometrics/preview/gpu?node=circe")
     assert r.status_code == 200
     body = r.json()
     assert body["ok"] is True
     card = body["gpus"][0]
-    assert card["lane"] == "orion-vision-host (P4)"
+    assert card["lane"] == "chat (lent)"
+    assert card["lane_assigned"] is True
     assert card["processes"][0]["process_name"] == "python3"
     assert len(card["trend"]) == 2
     # trend is chronological (oldest first) for charting
@@ -408,11 +535,13 @@ def test_gpu_unmapped_index_renders_unassigned(client, monkeypatch):
     monkeypatch.setattr(
         biometrics_preview_routes.biometrics_node_client, "fetch_raw_recent", fake_raw_recent
     )
-    monkeypatch.setattr(biometrics_preview_routes.settings, "GPU_LANE_MAP_CIRCE_JSON", "{}")
+    _set_pool_state(monkeypatch, _pool_state())
 
     r = client.get("/api/biometrics/preview/gpu?node=circe")
     assert r.status_code == 200
+    # index 6 has no card in the pool YAML: never guessed
     assert r.json()["gpus"][0]["lane"] == "unassigned"
+    assert r.json()["gpus"][0]["lane_assigned"] is False
 
 
 def test_router_registered_on_api_routes():

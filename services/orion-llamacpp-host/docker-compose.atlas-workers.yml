@@ -177,12 +177,17 @@ services:
 
   atlas-agent-burst:
     profiles: ["agent-burst"]
+    # GPU pool stage 7.2: the stock image plus PrismML's llama.cpp fork at /app/prism, so this seat
+    # can serve Ternary-Bonsai-2-27B (llamacpp.server_build: prism) or the Q4 27B (stock binary),
+    # chosen by the profile the pool sends. Its own tag: chat/metacog/fast/agent stay on stock.
+    # The lane controller starts it with `up --no-build`: build it first with
+    # services/orion-llamacpp-host/scripts/build-prism-volta.sh (README, "agent-gpu2 on Bonsai").
     build:
       context: ../..
-      dockerfile: services/orion-llamacpp-host/Dockerfile
+      dockerfile: services/orion-llamacpp-host/Dockerfile.prism
       args:
         - LLAMACPP_IMAGE_TAG=${LLAMACPP_IMAGE_TAG:-server-cuda-b8740}
-    image: orion-llamacpp-host:0.1.0
+    image: orion-llamacpp-host-prism:0.1.0
     container_name: ${PROJECT:-orion}-atlas-llamacpp-agent-burst
     restart: unless-stopped
     environment:
@@ -190,14 +195,17 @@ services:
       - SERVICE_VERSION=${SERVICE_VERSION:-0.1.0}
       - ORION_BUS_URL=${ORION_BUS_URL}
       - LLM_PROFILES_CONFIG_PATH=${LLM_PROFILES_CONFIG_PATH:-/app/config/llm_profiles.yaml}
-      - LLM_PROFILE_NAME=${ATLAS_AGENT_PROFILE_NAME}
+      # GPU pool stage 5: the actuator (orion-gpu-lane-controller) sets these two per load from
+      # config/gpu_pool.yaml (agent-gpu2 launch.profile_var / launch.cuda_env). Defaults = today's
+      # seat, so a plain `up` is unchanged. check_gpu_pool_config.py refuses a literal device here.
+      - LLM_PROFILE_NAME=${ATLAS_AGENT_BURST_PROFILE_NAME:-${ATLAS_AGENT_PROFILE_NAME}}
       - LLM_ROLE=agent-gpu2
       - LLM_ANNOUNCE_PORT=${ATLAS_AGENT_BURST_HOST_PORT:-8016}
       - HF_TOKEN=${HF_TOKEN}
       - hf_token=${hf_token}
       - LLAMACPP_HOST_OVERRIDE=0.0.0.0
       - LLAMACPP_PORT_OVERRIDE=8080
-      - CUDA_VISIBLE_DEVICES_OVERRIDE=2
+      - CUDA_VISIBLE_DEVICES_OVERRIDE=${ATLAS_AGENT_BURST_CUDA_VISIBLE_DEVICES:-2}
     volumes:
       - "${LLM_CACHE_DIR}:/models"
     ports:

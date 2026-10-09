@@ -23,3 +23,7 @@ jobs:
         run: pytest -q services/orion-hub/tests/test_schedule_panel_browser_smoke.py
       - name: Run GPU pool panel browser smoke
         run: pytest -q services/orion-hub/tests/test_gpu_pool_panel_browser_smoke.py
+      - name: Run Reading panel browser smoke
+        run: pytest -q services/orion-hub/tests/test_reading_panel_browser_smoke.py
+      - name: Run "Orion is asking" panel browser smoke
+        run: pytest -q services/orion-hub/tests/test_orion_is_asking_browser_smoke.py

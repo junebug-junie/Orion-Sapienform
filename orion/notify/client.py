@@ -23,7 +23,7 @@ logger = logging.getLogger("orion.notify.client")
 
 
 class NotifyClient:
-    def __init__(self, base_url: str, api_token: Optional[str] = None, timeout: int = 10) -> None:
+    def __init__(self, base_url: str, api_token: Optional[str] = None, timeout: float = 10) -> None:
         self.base_url = base_url.rstrip("/")
         self.api_token = api_token
         self.timeout = timeout

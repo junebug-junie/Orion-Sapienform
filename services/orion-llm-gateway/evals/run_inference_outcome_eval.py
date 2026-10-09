@@ -1,6 +1,11 @@
 #!/usr/bin/env python3
 """What would inference_failure_pressure have read? Replays gateway logs.
 
+2026-09-29: this reports the per-window, unfloored share the lane used before the
+rolling floor (orion/substrate/llm_inference_loop/failure_window.py). For the live
+definition, replay the published grammar instead:
+scripts/analysis/replay_llm_inference_failure_window.py.
+
 Before LLM_GATEWAY_GRAMMAR_ENABLED is flipped there is no grammar to look at,
 but the gateway already logs every reply (gateway_llm_route_selected) and every
 backend timeout/failure. This rebuilds per-window, per-node outcome counts from

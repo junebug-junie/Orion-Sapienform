@@ -554,6 +554,38 @@ def test_an_admission_path_run_reads_its_lifecycle_from_the_events() -> None:
     assert kinds.index("role_choice") > kinds.index("lifecycle")
 
 
+def test_a_pause_for_urgent_work_is_on_the_timeline_and_the_wait_after_it_shows() -> None:
+    rows = _admission_run(bridge=False)
+    run_id = "446ddd7165d5"
+    rows.resource_events[12:12] = [
+        _event(run_id, "run.preempted", 27000, {"lease_id": "L1", "generation": 1, "lane": "agent",
+                                                "reason": "urgent_preempt", "pool_status": "queued"}),
+        _event(run_id, "run.waiting_resource", 27000.1, {"node": "resource_request"}),
+        _event(run_id, "run.lane_assigned", 27300, {"lease": {"lane": "agent", "lease_id": "L1"}}),
+    ]
+    story = build_stories(rows)[run_id]
+    statuses = [it.data.get("status") for it in story.timeline if it.kind == "lifecycle"]
+    at = statuses.index("preempted")
+    assert statuses[at + 1] == "waiting", statuses
+    paused = next(it for it in story.timeline if it.data.get("status") == "preempted")
+    assert paused.data["lane"] == "agent"
+    assert story.run.retries == 0 and story.run.status == STATUS_COMPLETED   # a pause is not a failure
+
+
+def test_every_event_the_story_reads_is_fetched_by_the_hub() -> None:
+    """The Hub fetches events row by row only when listed in RENDERED_EVENTS; one the story reads
+    but the Hub never fetches silently never appears."""
+    from pathlib import Path
+
+    import orion.curiosity.run_story as run_story
+    path = Path(__file__).resolve().parents[1] / "services" / "orion-hub" / "scripts" / "curiosity_run_store.py"
+    source = path.read_text(encoding="utf-8")
+    rendered = source.split("RENDERED_EVENTS = (", 1)[1].split(")", 1)[0]
+    story_events = {v for k, v in vars(run_story).items() if k.startswith("EVENT_") and isinstance(v, str)}
+    missing = {e for e in story_events - set(run_story.ANOMALY_EVENTS) if f'"{e}"' not in rendered}
+    assert not missing, missing
+
+
 def test_the_bridge_row_is_ignored_when_the_admission_path_has_the_run() -> None:
     """The bridge copies the terminal event and mislabels it. With both
     present the story must not show two completions or two starts."""
@@ -845,6 +877,71 @@ def test_about_uses_prior_claim_when_no_help_question() -> None:
     about = build_stories(rows)[run_id].about
     assert about["source"] == "prior"
     assert "who matters" in about["text"]
+
+
+def test_a_long_about_is_not_cut_mid_sentence() -> None:
+    """Reading briefs put the article title after ~550 chars of instructions;
+    the old 600-char cap cut every one of them mid-title."""
+    tail = "title=WHO statement on notification of withdrawal of the United States"
+    brief_prompt = "Fetch the url below with WebFetch. " * 20 + tail
+    claim = "who matters is a singleton, not a crowd; " * 16 + "the end of the claim"
+    brief_id, prior_id = "about-long-brief", "about-long-prior"
+    rows = RunStoryRows(
+        lifecycle=[_completed(brief_id, 10), _completed(prior_id, 10)],
+        admission=[{
+            "run_id": brief_id,
+            "request": json.dumps({"workflow": "curiosity.investigate",
+                                   "brief": {"line": "investigate", "prompt": brief_prompt}}),
+            "created_at": _at(0), "control": None, "terminal": "completed", "updated_at": _at(10),
+        }],
+        help_requests=[{"run_id": prior_id, "help_id": "h1", "prior_id": "p1", "question": "",
+                        "prior_claim": claim, "written_at": _ms(1)}],
+        priors=[{"prior_id": "p1", "claim": claim, "status": "open", "line": "self_inquiry"}],
+    )
+    stories = build_stories(rows)
+    assert len(brief_prompt) > 600 and stories[brief_id].about["text"].endswith(tail)
+    assert len(claim) > 500 and stories[prior_id].about["text"].endswith("the end of the claim")
+
+
+def test_the_runs_list_shortens_prose_but_the_story_carries_it_whole() -> None:
+    """The runs list only shows `about` in a hover line and never reads
+    `finding_text`; shipping both whole for ~300 runs every poll is waste."""
+    run_id = "about-list"
+    prompt = "Fetch the url below with WebFetch. " * 30 + "title=the real subject"
+    finding = "what the sitting found, at length. " * 30 + "END"
+    rows = RunStoryRows(
+        lifecycle=[_completed(run_id, 10, finding_text=finding)],
+        admission=[{
+            "run_id": run_id,
+            "request": json.dumps({"workflow": "curiosity.investigate",
+                                   "brief": {"line": "investigate", "prompt": prompt}}),
+            "created_at": _at(0), "control": None, "terminal": "completed", "updated_at": _at(10),
+        }],
+    )
+    story = build_stories(rows)[run_id]
+    listed = run_to_payload(story.run, list_view=True)
+    assert len(listed["about"]["text"]) == 300 and listed["about"]["text"].endswith("…")
+    assert len(listed["finding_text"]) == 300 and listed["finding_text"].endswith("…")
+    assert story.run.about["text"].endswith("title=the real subject"), "list view must not mutate the run"
+
+    payload = story_to_payload(story)
+    assert payload["about"]["text"].endswith("title=the real subject")
+    assert payload["run"]["finding_text"].endswith("END")
+
+
+def test_a_long_peer_summary_is_the_whole_what_it_found() -> None:
+    run_id = "peer-long"
+    summary = "the peer walked the whole question. " * 50 + "END"
+    rows = RunStoryRows(
+        lifecycle=[_completed(run_id, 10)],
+        help_requests=[{"run_id": run_id, "help_id": "h", "prior_id": "p", "prior_claim": "claim",
+                        "prior_status": "open", "written_at": _ms(1)}],
+        priors=[{"prior_id": "p", "claim": "claim", "status": "open", "line": ""}],
+        peer_briefs=[{"run_id": run_id, "brief_id": "b", "help_id": "h", "peer": "cursor",
+                      "status": "ok", "summary": summary, "written_at": _ms(8)}],
+    )
+    po = build_stories(rows)[run_id].prior_outcome
+    assert len(summary) > 1200 and po["outcome_text"].endswith("END")
 
 
 def test_about_for_self_sense_lists_the_four_fixed_questions() -> None:

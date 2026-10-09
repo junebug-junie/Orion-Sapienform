@@ -33,8 +33,10 @@ from orion.autonomy.contrast import (
 )
 from orion.autonomy.prediction import EffectPosterior, score_observation
 from orion.feedback.extractors import PRESSURE_DELTA_EPSILON, is_visual_candidate, normalize_cortex_result_evidence
+from orion.field.credit_integrity import BEFORE_WINNER_UNMEASURED, before_winner_went_unmeasured
 from orion.field.pressure import field_pressures
 from orion.schemas.action_prediction import (
+    SETTLE_TIME_SIGNALS,
     ActionOutcomeRecordV1,
     PredictableSignal,
 )
@@ -227,6 +229,11 @@ def resolve_action_outcomes(
             if signal not in _PREDICTABLE_SIGNALS:
                 # No action can claim it, so contrast() will never read it.
                 continue
+            if before_winner_went_unmeasured(field_before, field_after, signal):
+                # #2534 decision 1: the vector that set this signal before went
+                # dark, so the delta is an outage, not the weather. Same guard
+                # as the treated arm below, so both arms see the same ticks.
+                continue
             observed_after = float(after[signal])
             baseline = float(baseline)
             bin_index = baseline_bin(baseline)
@@ -294,12 +301,26 @@ def resolve_action_outcomes(
                 skipped[candidate.dispatch_id] = f"visual_non_observation:{visual_outcome or 'unknown'}"
                 continue
         signal = effect.signal_id
+        if signal in SETTLE_TIME_SIGNALS:
+            # A world signal on its own clock (t0 -> t0 + 20 min), scored at settle time by
+            # orion/feedback/world_settlement.py. Scoring it here would fold a ~30 s field window
+            # into the action's belief -- a null by construction (attend-to-act loop D3).
+            skipped[candidate.dispatch_id] = f"settle_time_signal:{signal}"
+            continue
         if not have_window:
             skipped[candidate.dispatch_id] = "missing_field_window"
             continue
         if signal not in before or signal not in after:
             # Real absence, not a zero. See _present_pressures.
             skipped[candidate.dispatch_id] = f"signal_absent_from_field:{signal}"
+            continue
+        if before_winner_went_unmeasured(field_before, field_after, signal):
+            # #2534 decision 1 (2026-10-07): the vector that won this signal
+            # in the before tick no longer measures it, so the signal fell to
+            # another source -- an outage would score as the action's effect.
+            # Key/provenance only (no stamp-age check): the scoring window is
+            # settle-length and has no staleness bar of its own to borrow.
+            skipped[candidate.dispatch_id] = f"{BEFORE_WINNER_UNMEASURED}:{signal}"
             continue
 
         baseline = float(before[signal])

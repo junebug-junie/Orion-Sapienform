@@ -34,7 +34,16 @@ PredictableSignal = Literal[
     "reliability_pressure",
     "deviation_pressure",
     "sustained_load_pressure",
+    # 2026-10-01 (attend-to-act loop A1): the first WORLD signal. Not a field channel: the cabinet's
+    # air temperature level, clamp01((t - 28.0) / (32.0 - 28.0)), read from athena's
+    # orion_biometrics_summary rows (orion/autonomy/cabinet_heat.py). Scored at SETTLE time on a
+    # t0 -> t0 + 20 min window by orion/feedback/world_settlement.py, never in the ~30 s field
+    # window (outcome_resolution skips it there, and the field-window control arm never sees it).
+    "cabinet_heat_pressure",
 ]
+
+# Signals scored at settle time on their own clock, not in the per-tick field window.
+SETTLE_TIME_SIGNALS: frozenset[str] = frozenset({"cabinet_heat_pressure"})
 
 EffectDirection = Literal["increase", "decrease", "no_change"]
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 from datetime import datetime, timedelta, timezone
@@ -21,9 +22,20 @@ def _now_utc() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def _product_from_row(row: Mapping[str, Any]) -> Optional[str]:
+def _payload_dict(row: Mapping[str, Any]) -> Optional[dict[str, Any]]:
+    """``payload_json`` is a Postgres ``json`` column: asyncpg hands it back as text."""
     payload_json = row.get("payload_json")
-    if isinstance(payload_json, dict):
+    if isinstance(payload_json, str):
+        try:
+            payload_json = json.loads(payload_json)
+        except ValueError:
+            return None
+    return payload_json if isinstance(payload_json, dict) else None
+
+
+def _product_from_row(row: Mapping[str, Any]) -> Optional[str]:
+    payload_json = _payload_dict(row)
+    if payload_json is not None:
         device = payload_json.get("device")
         if isinstance(device, dict) and device.get("product"):
             return str(device["product"])
@@ -176,18 +188,35 @@ def _stats(raw_points: Sequence[Mapping[str, Any]], n: int) -> dict[str, Any]:
     }
 
 
+def _payload_freshness(row: Mapping[str, Any]) -> tuple[bool, Optional[float]]:
+    """The producer's own verdict: was this reading real, and how old was it?"""
+    payload_json = _payload_dict(row)
+    if payload_json is None:
+        return False, None
+    state = payload_json.get("state") if isinstance(payload_json.get("state"), dict) else {}
+    provenance = payload_json.get("provenance") if isinstance(payload_json.get("provenance"), dict) else {}
+    age = provenance.get("sample_age_sec")
+    fresh_age = float(age) if isinstance(age, (int, float)) and not isinstance(age, bool) else None
+    return state.get("stale") is True, fresh_age
+
+
 def _load_latest(row: Optional[Mapping[str, Any]], *, stale_after_sec: float, now: datetime) -> dict[str, Any]:
     if row is None:
         return {"ok": False, "age_sec": None, "sample": None}
 
     received_at = _parse_db_timestamp(row["ts"])
     age_sec = (now.astimezone(timezone.utc) - received_at).total_seconds()
-    stale = age_sec > stale_after_sec
-    return {
-        "ok": not stale,
+    sensor_stale, sample_age_sec = _payload_freshness(row)
+    out: dict[str, Any] = {
+        "ok": age_sec <= stale_after_sec and not sensor_stale,
         "age_sec": age_sec,
         "sample": row_to_sample(row),
+        "sensor_stale": sensor_stale,
     }
+    if sample_age_sec is not None:
+        out["sample_age_sec"] = sample_age_sec
+        out["last_fresh_at"] = _iso_utc(received_at - timedelta(seconds=sample_age_sec))
+    return out
 
 
 @router.get("/latest")

@@ -141,11 +141,11 @@ def test_backoff_math():
 
 
 def test_block_reason_refund_backoff_is_last():
-    base = dict(enabled=True, done_today=0, daily_cap=6, seconds_since_last=None, min_cooldown_sec=60)
+    base = dict(enabled=True)
     assert wa.wallet_a_block_reason(wa.WalletAInputs(**base, seconds_until_retry=30)) == "refund_backoff"
     assert wa.wallet_a_block_reason(wa.WalletAInputs(**base, seconds_until_retry=None)) is None
-    capped = dict(base, done_today=6)
-    assert wa.wallet_a_block_reason(wa.WalletAInputs(**capped, seconds_until_retry=30)) == "daily_cap"
+    off = dict(base, enabled=False)
+    assert wa.wallet_a_block_reason(wa.WalletAInputs(**off, seconds_until_retry=30)) == "disabled"
     assert wb.wallet_b_block_reason(wb.WalletBInputs(**base, seconds_until_retry=5)) == "refund_backoff"
 
 

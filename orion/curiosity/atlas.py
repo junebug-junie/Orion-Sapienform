@@ -458,8 +458,8 @@ def _build_peer_brief(row: dict[str, Any]) -> Optional[AtlasPeerBrief]:
         run_id=_text(row.get("run_id"), 40),
         peer=_text(row.get("peer"), 60),
         status=_text(row.get("status"), 60),
-        summary=_text(row.get("summary"), 800),
-        refusal_reason=_text(refusal, 200) if refusal not in (None, "") else None,
+        summary=_text(row.get("summary")),
+        refusal_reason=_text(refusal) if refusal not in (None, "") else None,
     )
 
 

@@ -77,8 +77,20 @@ jobs:
       # from host cron, not here.
       # Includes discovery of every cross-service forbid schema: fails when a
       # strict schema some service validates has no found or declared writer.
+      # Also the merged-SQL-migration-applied section the same watch runs: replays
+      # PR #2424 (missing table) and PR #2400 (missing column) red over the real
+      # services/orion-sql-db corpus, and the data-only reset as verify-manually.
       - name: Substrate ladder liveness logic replays the 09-20 incident red
-        run: python -m pytest tests/scripts/test_substrate_ladder_liveness.py tests/scripts/test_schema_skew_discovery.py -q
+        run: python -m pytest tests/scripts/test_substrate_ladder_liveness.py tests/scripts/test_schema_skew_discovery.py tests/test_sql_migration_drift_gate.py -q
+
+      # Host-cron watchdogs: an escalation failure (unusable dedupe state,
+      # orion-notify refused) must exit 4 and still card, never exit 0/1 with
+      # one log line (2026-09-26: 204 red ladder runs, zero Hub cards).
+      # requests: orion.notify.client imports it at module load.
+      - name: Watchdog escalation failures are loud (exit 4 + fallback card)
+        run: |
+          python -m pip install requests
+          python -m pytest tests/test_disk_threshold_watchdog.py tests/test_check_postgres_connection_headroom.py -q
 
       # orion:grammar:event's producer list in channels.yaml vs a static scan of
       # every GrammarProvenanceV1(source_service=...) call site. The list had
@@ -92,6 +104,12 @@ jobs:
       # months; the test that should have caught drift could not be collected.
       - name: Field topology has no dead cap-cap edges
         run: python -m pytest tests/test_field_topology_edges.py -q -p no:cacheprovider
+
+      # Transport lattice policy rows are labels; each `source:` must name a
+      # reading that exists (a topology-written capability channel or a live
+      # TransportBusStateV1 field). The hub used to keep its own name mapping.
+      - name: Transport lattice policy sources resolve
+        run: python -m pytest tests/test_transport_lattice_policy_sources.py -q -p no:cacheprovider
 
       # A service importing orion.substrate must declare requests (package __init__
       # imports graphdb_store -> requests). 2026-09-25: feedback/policy runtimes
@@ -108,7 +126,8 @@ jobs:
       # producers or consumers changed without config/metrics/
       # metric_definitions.lock.json being regenerated -- the fix is to run
       # `--update` and commit, which writes the change into the lock in plain
-      # English so it lands in the PR diff Juniper reads.
+      # English so it lands in the PR diff Juniper reads. A branch that changes
+      # no definitions never needs to re-lock, even after main moves.
       - name: Metric definition drift (re-lock required on any def change)
         run: python scripts/check_definition_drift.py --gate
 
@@ -198,6 +217,17 @@ jobs:
       # a reason, and a stale allow entry fails too.
       - name: No non-Hub caller defaults onto the reserved chat LLM route
         run: python scripts/check_chat_route_poachers.py
+
+      # GPU pool stage 6.6 port gate (CI layer): only the pool's granted URL may reach a circe
+      # llama.cpp worker, the diffusion host or the lane-controller actuator. Any circe
+      # address:worker-port literal outside the pool / gateway / actuator / worker services must
+      # be allow-listed with a reason; stale allow entries and stale zones fail too. The runtime
+      # layer is the circe firewall (docs/runbooks/2026-10-01-circe-llm-port-firewall.md).
+      - name: No direct circe LLM worker address outside the GPU pool (port gate)
+        run: python scripts/check_circe_worker_refs.py
+
+      - name: Port gate, dead env key tool and circe firewall script tests
+        run: python -m pytest tests/test_check_circe_worker_refs.py tests/test_report_dead_env_keys.py tests/test_circe_llm_port_gate.py -q -p no:cacheprovider
 
       # Hub frontend unit tests. These are plain `node:test` files with no DOM,
       # no network and no service dependencies -- as static as anything else in

@@ -11,6 +11,8 @@ from orion.cognition.recall_query import (
     DEFAULT_RECALL_REPLY_PREFIX,
     build_recall_query_v1,
     last_user_message_from_ctx,
+    recall_query_mode_from_cfg,
+    retrieval_query_from_ctx,
     recall_ctx_merge_from_reply,
 )
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
@@ -130,7 +132,12 @@ async def prefetch_recall_bundle_for_projection(
         return None, diagnostics
 
     fragment_text = last_user_message_from_ctx(ctx)
-    if not fragment_text:
+    # Same rule as build_recall_query_v1: context_only needs no text to search.
+    if (
+        not fragment_text
+        and not retrieval_query_from_ctx(ctx)
+        and recall_query_mode_from_cfg(recall_cfg) != "context_only"
+    ):
         diagnostics["reason"] = "empty_query_text"
         diagnostics["retryable"] = False
         return None, diagnostics
@@ -144,6 +151,7 @@ async def prefetch_recall_bundle_for_projection(
         recall_profile=recall_profile,
         recall_cfg=recall_cfg,
         reply_to=reply_channel,
+        deadline_ms=int(float(timeout_sec) * 1000) if timeout_sec else None,
     )
     if req is None:
         diagnostics["reason"] = "query_build_failed"

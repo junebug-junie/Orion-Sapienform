@@ -10,7 +10,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 
 import pytest
 
@@ -277,9 +277,11 @@ def _loop(bus, *, text: str | None = "found it", conn=None, **over) -> Curiosity
     loop._harness_rpc_bus = bus
 
     async def _fake_generate(
-        prompt, correlation_id, source=None, require_lookup=True, parent_run_id=None, session_id=None
+        prompt, correlation_id, source=None, require_lookup=True, parent_run_id=None, session_id=None,
+        **extra,
     ):
         loop.seen_prompt = prompt
+        loop.seen_generate_kwargs = dict(extra)
         return (text or ""), {
             "elapsed_sec": 1.0,
             "harness_step_count": 14,
@@ -318,7 +320,7 @@ def test_the_journal_records_what_was_offered() -> None:
     bus = _FakeBus()
     assert asyncio.run(_loop(bus).tick()) is None
     body = bus.journal[0][1].payload["body"]
-    assert "Offered 4 of 268 approved concepts" in body
+    assert "Offered 4 of 268 saved concepts" in body
     assert "sampled at random" in body
     assert "14 harness steps" in body
 
@@ -2556,7 +2558,7 @@ def test_completed_run_state_with_reach_out_triggers_outreach_here() -> None:
     loop = _loop(bus, kickoff_via_cortex=True)
     seen = []
 
-    async def fake_reach_out(*, outcome, finding_text, run_id, line=None, resource_lease=None, gpu_lease=None):
+    async def fake_reach_out(*, outcome, finding_text, run_id, line=None, gpu_lease=None):
         seen.append((outcome.reach_out, outcome.reach_out_why, finding_text, run_id))
         return None
 
@@ -2706,3 +2708,148 @@ def test_actual_curiosity_run_id_reaches_reading_binding(monkeypatch):
     assert captured["reading_context"] == "curiosity"
     assert captured["reading_parent_run_id"] == "run-id"
     assert captured["correlation_id"] == "trace-id"
+
+
+# --- energy stakes hold (ORION_ENERGY_STAKES_ENABLED) ------------------------
+
+from orion.schemas.attention_schema import ATTENTION_SCHEMA_CHANNEL  # noqa: E402
+
+
+def _energy_snapshot(pressure="over_forecast", age_sec=60.0) -> dict:
+    return {
+        "as_of": datetime.now(timezone.utc) - timedelta(seconds=age_sec), "pressure": pressure,
+        "pressure_reason": "ratio=1.105", "projected_to_forecast_ratio": 1.105,
+        "orion_projected_total_usd": 88.4, "forecast_total_usd": 80.0,
+        "marginal_usd_per_kwh": 0.12, "importer_state": "healthy", "cycle_start": date(2026, 9, 11),
+    }
+
+
+def _energy_reader(snapshot, calls: list):
+    async def read():
+        calls.append(1)
+        if isinstance(snapshot, Exception):
+            raise snapshot
+        return snapshot
+    return read
+
+
+def test_energy_flag_off_never_reads_the_snapshot() -> None:
+    bus, calls = _FakeBus(), []
+    loop = _loop(bus, energy_stakes_enabled=False, energy_stakes_reader=_energy_reader(_energy_snapshot(), calls))
+    assert asyncio.run(loop.tick()) is None
+    assert calls == []
+    assert len(bus.journal) == 1
+
+
+def test_energy_over_forecast_holds_and_leaves_an_attention_row() -> None:
+    bus = _FakeBus()
+    loop = _loop(bus, energy_stakes_enabled=True, energy_stakes_reader=_energy_reader(_energy_snapshot(), []))
+    assert asyncio.run(loop.tick()) == "held_off:energy_stakes"
+    assert bus.journal == []
+    assert loop._done_today == 0
+    rows = [e.payload for c, e in bus.published if c == ATTENTION_SCHEMA_CHANNEL]
+    assert len(rows) == 1
+    assert rows[0]["attention_reason"] == "held_off:energy_stakes"
+    assert rows[0]["process"] == "curiosity"
+
+
+def test_energy_hold_repeats_one_episode_with_a_deterministic_correlation(caplog) -> None:
+    from uuid import NAMESPACE_URL, uuid5
+
+    bus = _FakeBus()
+    snaps = iter([_energy_snapshot(age_sec=600.0), _energy_snapshot(age_sec=60.0)])
+
+    async def read():
+        return next(snaps)
+
+    loop = _loop(bus, energy_stakes_enabled=True, energy_stakes_reader=read)
+    with caplog.at_level("INFO"):
+        assert asyncio.run(loop.tick()) == "held_off:energy_stakes"
+        assert asyncio.run(loop.tick()) == "held_off:energy_stakes"
+    envs = [e for c, e in bus.published if c == ATTENTION_SCHEMA_CHANNEL]
+    assert len(envs) == 2
+    entry_id = "curiosity:held_off:energy_stakes:2026-09-11:over_forecast"
+    corr = str(uuid5(NAMESPACE_URL, entry_id))
+    for env in envs:
+        assert env.payload["entry_id"] == entry_id
+        assert env.payload["correlation_id"] == corr
+        assert str(env.correlation_id) == corr
+    blocked = [r.getMessage() for r in caplog.records if "reason=held_off:energy_stakes" in r.getMessage()]
+    assert blocked and all(f"correlation_id={corr}" in m for m in blocked)
+
+
+def test_energy_hold_never_blocks_a_forced_run() -> None:
+    bus, calls = _FakeBus(), []
+    loop = _loop(bus, energy_stakes_enabled=True, energy_stakes_reader=_energy_reader(_energy_snapshot(), calls))
+    assert asyncio.run(loop.tick(force=True)) is None
+    assert calls == []
+    assert len(bus.journal) == 1
+
+
+def test_energy_scheduling_block_wins_before_the_snapshot_is_read() -> None:
+    bus, calls = _FakeBus(), []
+    loop = _loop(
+        bus, daily_cap=0, energy_stakes_enabled=True,
+        energy_stakes_reader=_energy_reader(_energy_snapshot(), calls),
+    )
+    assert asyncio.run(loop.tick()) == "daily_cap"
+    assert calls == []
+    assert bus.published == []
+
+
+@pytest.mark.parametrize(
+    "snapshot",
+    [_energy_snapshot("normal"), _energy_snapshot("unknown"), _energy_snapshot(age_sec=7200.0), None, RuntimeError("pg down")],
+)
+def test_energy_no_fresh_pressure_never_holds(snapshot) -> None:
+    bus = _FakeBus()
+    loop = _loop(bus, energy_stakes_enabled=True, energy_stakes_reader=_energy_reader(snapshot, []))
+    assert asyncio.run(loop.tick()) is None
+    assert len(bus.journal) == 1
+
+
+def test_outreach_composition_recalls_about_the_finding_not_the_prompt() -> None:
+    """PR #2423 review: the composition turn (OUTREACH_TAG) used to send the whole
+    composition prompt as recall's search text. It now sends the finding it composes
+    about, capped at RecallQueryV1's 1000 chars, whitespace collapsed."""
+    outreach = _FakeOutreach()
+    loop = _graph_loop(
+        _FakeBus(), reader=_reach_out_reader(None),
+        outreach_enabled=True, outreach_provider=lambda: outreach,
+    )
+    seen: list = []
+
+    async def _gen(prompt, correlation_id, **kw):
+        seen.append((prompt, kw))
+        return "worth saying", {"fcc_model_label": "M"}
+
+    loop._generate = _gen  # type: ignore[assignment]
+    finding = "The route node\n  has no edges.  " + "x" * 3000
+    asyncio.run(
+        loop._maybe_reach_out(
+            outcome=_reach_out_outcome("run-q"), finding_text=finding, run_id="run-q", hop_notes=[],
+        )
+    )
+    prompt, kw = seen[0]
+    assert kw["retrieval_query"].startswith("The route node has no edges. xxx")
+    assert len(kw["retrieval_query"]) == 1000
+    assert kw["retrieval_query"] != prompt
+
+
+def test_outreach_composition_with_no_finding_sends_no_query() -> None:
+    outreach = _FakeOutreach()
+    loop = _graph_loop(
+        _FakeBus(), reader=_reach_out_reader(None),
+        outreach_enabled=True, outreach_provider=lambda: outreach,
+    )
+    seen: list = []
+
+    async def _gen(prompt, correlation_id, **kw):
+        seen.append(kw)
+        return "worth saying", {}
+
+    loop._generate = _gen  # type: ignore[assignment]
+    asyncio.run(
+        loop._maybe_reach_out(outcome=_reach_out_outcome("run-e"), finding_text="  ", run_id="run-e", hop_notes=[])
+    )
+    assert "retrieval_query" not in seen[0]

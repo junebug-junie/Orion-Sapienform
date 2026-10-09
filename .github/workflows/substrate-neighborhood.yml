@@ -1,0 +1,113 @@
+name: Substrate neighborhood reads
+on:
+  pull_request:
+    paths:
+      - 'orion/core/schemas/substrate_graph_journal.py'
+      - 'services/orion-sql-db/manual_migration_substrate_graph_journal_v1*.sql'
+      - 'services/orion-substrate-runtime/app/worker.py'
+      - 'orion/substrate/**'
+      - 'services/*/.env_example'
+      - 'services/*/docker-compose.yml'
+      - 'orion/graph/falkor_client.py'
+      - 'orion/graph/tests/test_falkor_client.py'
+      - 'orion/core/schemas/cognitive_substrate.py'
+      - 'scripts/replay_substrate_neighborhood.py'
+      - 'scripts/replay_substrate_complete_scan.py'
+      - '.github/workflows/substrate-neighborhood.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'orion/core/schemas/substrate_graph_journal.py'
+      - 'services/orion-sql-db/manual_migration_substrate_graph_journal_v1*.sql'
+      - 'services/orion-substrate-runtime/app/worker.py'
+      - 'orion/substrate/**'
+      - 'services/*/.env_example'
+      - 'services/*/docker-compose.yml'
+      - 'orion/graph/falkor_client.py'
+      - 'orion/graph/tests/test_falkor_client.py'
+      - 'orion/core/schemas/cognitive_substrate.py'
+      - 'scripts/replay_substrate_neighborhood.py'
+      - 'scripts/replay_substrate_complete_scan.py'
+      - '.github/workflows/substrate-neighborhood.yml'
+jobs:
+  neighborhood:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # v4.18.11 is production's engine; 6.0.1 is the next major. Both plan
+        # the neighborhood reads differently enough to need a run.
+        falkordb: ['falkordb/falkordb:v4.18.11', 'falkordb/falkordb:6.0.1']
+    services:
+      # Throwaway FalkorDB for the direct-read equivalence lane: the concept
+      # ranking and edge cut run in Cypher, so a fake client cannot prove them.
+      falkordb:
+        image: ${{ matrix.falkordb }}
+        ports:
+          - 6379:6379
+      # Throwaway Postgres for the substrate graph journal + assertion projector lane.
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install 'pydantic>=2' pydantic-settings requests 'redis<6' PyYAML jinja2 pytest 'rdflib>=7' asyncpg==0.29.0
+      - name: Store contract and backend regressions
+        run: >-
+          python -m pytest -q
+          orion/substrate/tests/test_neighborhood.py
+          orion/substrate/tests/test_neighborhood_backends.py
+          orion/substrate/tests/test_neighborhood_batching_oracle.py
+          orion/graph/tests/test_falkor_client.py
+          orion/substrate/tests/test_falkor_store.py
+          orion/substrate/tests/test_complete_hydration.py
+          orion/substrate/tests/test_falkor_store_hydrate_signal.py
+          orion/substrate/tests/test_dynamics.py
+          orion/substrate/tests/test_dynamics_falkor_routed.py
+          orion/substrate/tests/test_dynamics_decay_since_last.py
+          orion/substrate/tests/test_graphdb_store.py
+          orion/substrate/tests/test_routed_store.py
+          orion/substrate/tests/test_phase16_query_planning.py
+          orion/substrate/tests/test_assertion_core.py
+          orion/substrate/tests/test_required_reader_names_match_services.py
+          orion/substrate/tests/test_reader_capability.py
+          orion/substrate/tests/test_reconcile.py
+          orion/substrate/tests/test_attention_broadcast.py
+      - name: Direct concept-region reads equal the hydrated cache (real FalkorDB)
+        env:
+          ORION_TEST_FALKOR_URI: redis://localhost:6379
+        run: python -m pytest -q -rs orion/substrate/tests/test_falkor_direct.py orion/substrate/tests/test_falkor_anchor_store.py
+      - name: Neighborhood reads equal the reference, with index seeks (real FalkorDB)
+        env:
+          ORION_TEST_FALKOR_URI: redis://localhost:6379
+        run: python -m pytest -q -rs orion/substrate/tests/test_neighborhood_falkor_live.py
+      - name: Shared assertion core -- real FalkorDB + Postgres journal (must not skip)
+        env:
+          ORION_TEST_FALKOR_URI: redis://localhost:6379
+          ORION_SUBSTRATE_TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/postgres
+        run: |
+          set -o pipefail
+          python -m pytest -q -rs orion/substrate/tests/test_assertion_core_falkor.py orion/substrate/tests/test_graph_journal_pg.py | tee assertion.out
+          if grep -q "SKIPPED" assertion.out; then
+            echo "assertion-core store tests skipped -- the Falkor/Postgres service wiring is broken" >&2
+            exit 1
+          fi
+      - name: Hub-heavy budget and coverage eval
+        run: python -m orion.substrate.evals.run_neighborhood_eval
+      - name: Complete scan and dynamics equivalence eval
+        run: python -m orion.substrate.evals.run_complete_hydration_eval
+      - name: Activation decay since-last-tick eval (no compounding)
+        run: python -m orion.substrate.evals.run_decay_since_last_eval

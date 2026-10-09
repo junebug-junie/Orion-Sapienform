@@ -11,6 +11,10 @@ from orion.schemas.action_prediction import EffectDirection, PredictableSignal
 _VALID_SIGNALS = frozenset(PredictableSignal.__args__)
 _VALID_DIRECTIONS = frozenset(EffectDirection.__args__)
 
+# 2026-10-01 (attend-to-act loop D1): bind to the WORKSPACE broadcast winner
+# (substrate_attention_broadcast_projection), not the field-attention ranking.
+WORKSPACE_WINNER_BINDING = "workspace.winner"
+
 
 class ProposalLimitsV1(BaseModel):
     max_candidates: int = 10
@@ -65,6 +69,17 @@ class ProposalTemplateV1(BaseModel):
     expected_signal: str | None = None
     expected_direction: str | None = None
 
+    # 2026-10-01 (attend-to-act loop D1): a template with target_binding "workspace.winner" names
+    # the substrate node ids its action can plausibly affect. The builder emits it only when the
+    # workspace broadcast's attended node is in this list. Lives on the template it constrains --
+    # no separate affordance registry. Validated below: a workspace.winner template with an empty
+    # list is refused at load.
+    binds_to_nodes: list[str] = Field(default_factory=list)
+    # Per-template randomized holdback (design D3, amended): the share of ELIGIBLE decisions withheld
+    # as a control. None -> no per-template holdback (only the global per-tick
+    # ORION_DISPATCH_HOLDBACK_FRACTION, which never writes a world control row, still applies).
+    holdback_fraction: float | None = Field(default=None, ge=0.0, le=0.5)
+
     @model_validator(mode="after")
     def _check_expected_effect(self) -> "ProposalTemplateV1":
         """A half-declared prediction is worse than none -- it looks wired.
@@ -84,6 +99,13 @@ class ProposalTemplateV1(BaseModel):
                 f"expected_signal={self.expected_signal!r} is not a measured signal; "
                 f"valid: {sorted(_VALID_SIGNALS)}"
             )
+        if self.target_binding == WORKSPACE_WINNER_BINDING and not self.binds_to_nodes:
+            raise ValueError(
+                "a workspace.winner template must declare binds_to_nodes (the nodes its action "
+                "can plausibly affect); an empty list would bind to any winner"
+            )
+        if self.binds_to_nodes and self.target_binding != WORKSPACE_WINNER_BINDING:
+            raise ValueError("binds_to_nodes is only meaningful with target_binding: workspace.winner")
         if (
             self.expected_direction is not None
             and self.expected_direction not in _VALID_DIRECTIONS

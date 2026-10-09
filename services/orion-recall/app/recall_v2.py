@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+
 import logging
 import re
 import time
@@ -174,7 +176,10 @@ async def run_recall_v2_shadow(
                 }
             )
 
-        rdf_exact = fetch_rdf_chatturn_exact_matches(tokens=list(plan.exact_anchor_tokens), session_id=query.session_id, max_items=8)
+        # Sync HTTP: off the event loop (code review, PR #2416).
+        rdf_exact = await asyncio.to_thread(
+            fetch_rdf_chatturn_exact_matches, tokens=list(plan.exact_anchor_tokens), session_id=query.session_id, max_items=8
+        )
         backend_counts["rdf_exact_anchor"] = len(rdf_exact)
         for row in rdf_exact:
             row = dict(row)
@@ -184,11 +189,11 @@ async def run_recall_v2_shadow(
             row["explain"] = {"exact_anchor": True, "backend": "rdf_chat"}
             candidates.append(row)
 
-    pageindex = _pageindex_candidates(plan, top_k=8)
+    pageindex = await asyncio.to_thread(_pageindex_candidates, plan, top_k=8)
     backend_counts["pageindex_lexical"] = len(pageindex)
     candidates.extend(pageindex)
 
-    rdf = fetch_rdf_fragments(query_text=plan.query_text, max_items=8)
+    rdf = await asyncio.to_thread(fetch_rdf_fragments, query_text=plan.query_text, max_items=8)
     backend_counts["rdf"] = len(rdf)
     for row in rdf:
         item = dict(row)

@@ -61,6 +61,12 @@ from orion.curiosity.worldview import TurnOutcome, WorldviewSnapshot, _clip, nex
 
 DEFAULT_MAX_HOPS = 5
 
+# Expanded by the sandbox shell, not here: the harness stamps these env vars.
+GRAPH_URI = (
+    'redis://$ORION_CURIOSITY_GRAPH_USER:$ORION_CURIOSITY_GRAPH_PASSWORD'
+    '@$ORION_CURIOSITY_GRAPH_HOST:$ORION_CURIOSITY_GRAPH_PORT'
+)
+
 _HEADER = (
     "This is your own time. Nobody asked you anything, and there is no task "
     "here -- this is you looking at what you have been forming, and following "
@@ -318,10 +324,7 @@ def _access_section(
     write-capable only on Orion's own graph -- so every line here is something
     that works, not something that would work if someone built it.
     """
-    graph_uri = (
-        'redis://$ORION_CURIOSITY_GRAPH_USER:$ORION_CURIOSITY_GRAPH_PASSWORD'
-        '@$ORION_CURIOSITY_GRAPH_HOST:$ORION_CURIOSITY_GRAPH_PORT'
-    )
+    graph_uri = GRAPH_URI
     # EVERY LINE BELOW MUST BE SOMETHING THAT ACTUALLY WORKS THIS RUN. A review
     # finding, not a hypothetical: this section used to be emitted whole even
     # when no graph was configured, handing Orion `redis-cli` commands whose env
@@ -808,6 +811,12 @@ def _dream_section(dream_hypotheses: Sequence = ()) -> list[str]:
     return format_dream_section(dream_hypotheses or ())
 
 
+def _carry_forward_section(carry_forward=None) -> list[str]:
+    from orion.orion_day.carry_forward import format_carry_forward_section
+
+    return format_carry_forward_section(carry_forward)
+
+
 def _role_and_help_section(
     *,
     own_graph: str,
@@ -965,8 +974,14 @@ def build_kickoff_prompt(
     contractor_peer_enabled: bool = False,
     peer_briefs: Sequence = (),
     dream_hypotheses: Sequence = (),
+    carry_forward=None,
 ) -> str:
     """Assemble the whole invitation.
+
+    ``carry_forward`` (orion.orion_day.carry_forward.OfferedCarryForward): the threads Orion's
+    Day named for future curiosity. Its own section with its own header, never inside the
+    dream section or the material, and not gated on the graph (it asks for no write). Only
+    the letter's carry-forward text ever arrives here -- never its freeform note.
 
     THREE STATES, NOT TWO, and conflating the last two is a real bug this
     signature exists to prevent (caught by its own test, 2026-08-26):
@@ -1004,6 +1019,7 @@ def build_kickoff_prompt(
         if writable:
             lines += _dream_section(dream_hypotheses)
 
+    lines += _carry_forward_section(carry_forward)
     lines += _material_section(material)
     lines += _access_section(
         own_graph=own_graph,

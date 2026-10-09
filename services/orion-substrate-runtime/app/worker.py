@@ -7,7 +7,7 @@ import os
 from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Sequence
 from uuid import uuid4
 
@@ -60,12 +60,15 @@ from orion.substrate.transport_loop.constants import (
     TRANSPORT_BUS_PROJECTION_ID,
     TRANSPORT_GRAMMAR_CURSOR_NAME,
 )
+from orion.field.transport_thresholds import (
+    DERIVED_CHANNELS as TRANSPORT_DERIVED_CHANNELS,
+    record_sample as record_transport_sample,
+)
 from orion.substrate.prediction_error import (
     CodebaseMassBaseline,
     biometrics_prediction_error,
     bus_synaptic_prediction_error,
     perception_prediction_error,
-    perceptual_yield,
     vision_channel_staleness_pressure,
     chat_prediction_error,
     codebase_prediction_error,
@@ -97,6 +100,28 @@ from orion.substrate.llm_inference_loop.pipeline import (
     empty_llm_inference_projection,
     process_llm_inference_grammar_events,
 )
+from orion.substrate.storage_write_loop.constants import (
+    STORAGE_WRITE_GRAMMAR_CURSOR_NAME,
+    STORAGE_WRITE_PROJECTION_ID,
+    STORAGE_WRITE_SOURCE_SERVICE,
+)
+from orion.substrate.storage_write_loop.pipeline import (
+    empty_storage_write_projection,
+    process_storage_write_grammar_events,
+)
+from orion.substrate.vision_organ_loop.constants import (
+    VISION_ORGAN_GRAMMAR_CURSOR_NAME,
+    VISION_ORGAN_PROJECTION_ID,
+    VISION_ORGAN_SOURCE_SERVICE,
+)
+from orion.substrate.vision_organ_loop.pipeline import (
+    empty_vision_organ_projection,
+    process_vision_organ_grammar_events,
+)
+from orion.substrate.vision_organ_loop.reducer import (
+    silence_age_seconds,
+    vision_organ_silence_receipt,
+)
 
 from .health_monitor import HealthMonitor
 from .publish import publish_accepted_events
@@ -120,13 +145,11 @@ logger = logging.getLogger("orion.substrate.runtime")
 
 _PREDICTION_ERROR_NODE_FLAG = "SUBSTRATE_WRITE_PREDICTION_ERROR_NODES"
 
-# Rolling window of per-artifact detection counts behind `perception_yield`.
-# 60 artifacts is ~5 minutes at the measured live cadence (orion:vision:artifacts
-# every 5.0s, 2026-08-13 pubsub census) -- long enough that one dropped frame or
-# one genuinely empty moment does not move the mean much, short enough that the
-# reading still means "lately" rather than "since boot".
-_VISION_YIELD_WINDOW = 60
 _TRUTHY = {"1", "true", "yes", "on"}
+# How often an idle vision organ poll re-reads its projection to check for router
+# silence. Far below VISION_ORGAN_SILENCE_SEC (180 s), so the alarm is late by
+# at most this much.
+_VISION_ORGAN_SILENCE_CHECK_SEC = 10.0
 # Staleness gate for the cached drive state: a stalled drive publisher must not
 # keep forcing involuntary movement forever off a frozen snapshot. Fail-open
 # toward *not* moving.
@@ -183,8 +206,7 @@ def _prediction_error_nodes_enabled() -> bool:
 # and XLEN is retained length, not backlog.
 _TRANSPORT_INCIDENT_FIELDS = (
     "catalog_drift_pressure",
-    "contract_pressure",
-    "observer_failure_pressure",
+    # observer_failure_pressure retired 2026-10-07 (#2534 decision 4).
     "reliability_pressure",
 )
 
@@ -378,8 +400,27 @@ REDUCER_SPECS: tuple[ReducerSpec, ...] = (
         enabled=lambda s: s.enable_llm_inference_reducer,
         batch_limit=lambda s: s.llm_inference_grammar_batch_limit,
     ),
+    ReducerSpec(
+        reducer_key="storage_write",
+        cursor_name=STORAGE_WRITE_GRAMMAR_CURSOR_NAME,
+        source_service=STORAGE_WRITE_SOURCE_SERVICE,
+        enabled=lambda s: s.enable_storage_write_reducer,
+        batch_limit=lambda s: s.storage_write_grammar_batch_limit,
+    ),
+    ReducerSpec(
+        reducer_key="vision_organ",
+        cursor_name=VISION_ORGAN_GRAMMAR_CURSOR_NAME,
+        source_service=VISION_ORGAN_SOURCE_SERVICE,
+        enabled=lambda s: s.enable_vision_organ_reducer,
+        batch_limit=lambda s: s.vision_organ_grammar_batch_limit,
+    ),
 )
 
+
+# Lanes after the first six look their spec up by reducer_key, not by position:
+# two lanes added in parallel (storage_write, vision_organ) both claimed index 6.
+REDUCER_SPEC_BY_KEY: dict[str, ReducerSpec] = {spec.reducer_key: spec for spec in REDUCER_SPECS}
+assert len(REDUCER_SPEC_BY_KEY) == len(REDUCER_SPECS), "duplicate reducer_key in REDUCER_SPECS"
 
 def _prediction_error_label(node_id: str) -> str:
     """Human-readable label for a substrate prediction-error concept node.
@@ -434,16 +475,17 @@ class BiometricsSubstrateWorker:
         self._pending_system_one_appraisal_frame: Any = None
         self._tasks: list[asyncio.Task[None]] = []
         self._substrate_graph_store: Any = None
-        # Perceptual health state, fed by _vision_artifact_listener_loop and
-        # read on a clock by _vision_channel_tick. Bounded window: this is a
-        # "how is the eye doing lately" reading, not an audit trail.
-        self._last_vision_artifact_at: datetime | None = None
-        self._vision_object_counts: deque[int] = deque(maxlen=_VISION_YIELD_WINDOW)
-        # Bounds the cold-start case: without it, a restart during an ongoing
-        # camera outage would skip the write forever and report silence.
+        # Bounds the cold-start case of every clock-driven reading: without it, a
+        # restart during an ongoing outage would skip the write forever and
+        # report silence (vision organ silence path, perception tick).
         self._process_started_at: datetime = datetime.now(timezone.utc)
         self._sql_engine: Any = None
         self._bus_synaptic_client: Any = None
+        # Wall clock of the vision organ lane's last silence write (rate limit),
+        # and of its last idle silence check (the poll runs every second; the
+        # projection read behind the check does not need to).
+        self._vision_organ_last_silence_write: datetime | None = None
+        self._vision_organ_last_silence_check: datetime | None = None
         # Orion embodiment (C producer): latest drive state cached off the bus,
         # mapped to one involuntary intent per dynamics tick. Default-off.
         self._latest_drive_state: DriveStateV1 | None = None
@@ -547,15 +589,18 @@ class BiometricsSubstrateWorker:
             asyncio.create_task(
                 self._llm_inference_poll_loop(), name="llm-inference-substrate-poll"
             ),
+            asyncio.create_task(
+                self._storage_write_poll_loop(), name="storage-write-substrate-poll"
+            ),
+            asyncio.create_task(
+                self._vision_organ_poll_loop(), name="vision-organ-substrate-poll"
+            ),
             asyncio.create_task(self._prune_loop(), name="substrate-receipt-pruner"),
             asyncio.create_task(self._health_loop(), name="substrate-health-monitor"),
             asyncio.create_task(self._dynamics_tick_loop(), name="substrate-dynamics-tick"),
             asyncio.create_task(self._episodic_tick_loop(), name="substrate-episodic-tick"),
             asyncio.create_task(
                 self._bus_synaptic_tick_loop(), name="substrate-bus-synaptic-tick"
-            ),
-            asyncio.create_task(
-                self._vision_channel_tick_loop(), name="substrate-vision-channel-tick"
             ),
             asyncio.create_task(
                 self._perception_prediction_error_tick_loop(),
@@ -614,24 +659,9 @@ class BiometricsSubstrateWorker:
                     name="substrate-cabinet-ambient-spike-listener",
                 )
             )
-        # Perceptual health: feeds node:substrate.vision -> capability:vision.
-        # Bus-gated like every other listener, and flag-gated on the same
-        # setting as the tick that consumes what it caches -- a listener
-        # filling a window nothing reads is just overhead.
-        if self._bus is not None and s.enable_vision_channel_tick:
-            self._tasks.append(
-                asyncio.create_task(
-                    self._vision_artifact_listener_loop(),
-                    name="substrate-vision-artifact-listener",
-                )
-            )
-        # Perceptual prediction error (P2): own listener, own flag -- not the
-        # same subscription as _vision_artifact_listener_loop above, even
-        # though both read orion:vision:artifacts. Same domain-independence
-        # convention codebase_delta_listener_loop follows relative to the
-        # ticks above it: a shared subscription with two different consumers
-        # folded in would make the domains' flags stop being independent in
-        # practice, defeating the point of giving this its own flag at all.
+        # Perceptual prediction error (P2): own listener, own flag. capability:vision's
+        # availability no longer comes from an artifact listener here at all -- the
+        # frame router reports on the eye itself (vision_organ lane, below).
         if self._bus is not None and s.enable_perception_prediction_error_tick:
             self._tasks.append(
                 asyncio.create_task(
@@ -662,6 +692,12 @@ class BiometricsSubstrateWorker:
             self._tasks.append(
                 asyncio.create_task(
                     self._rpc_delivery_tick_loop(), name="substrate-rpc-delivery-tick"
+                )
+            )
+        if s.enable_cabinet_heat_attention:
+            self._tasks.append(
+                asyncio.create_task(
+                    self._cabinet_heat_tick_loop(), name="substrate-cabinet-heat-tick"
                 )
             )
         # World-model publish tick: the first real producer for
@@ -783,6 +819,12 @@ class BiometricsSubstrateWorker:
     async def _llm_inference_poll_loop(self) -> None:
         await self._grammar_reducer_poll_loop(REDUCER_SPECS[5], self._llm_inference_tick)
 
+    async def _storage_write_poll_loop(self) -> None:
+        await self._grammar_reducer_poll_loop(REDUCER_SPEC_BY_KEY["storage_write"], self._storage_write_tick)
+
+    async def _vision_organ_poll_loop(self) -> None:
+        await self._grammar_reducer_poll_loop(REDUCER_SPEC_BY_KEY["vision_organ"], self._vision_organ_tick)
+
     async def _grammar_reducer_poll_loop(
         self,
         spec: ReducerSpec,
@@ -812,6 +854,10 @@ class BiometricsSubstrateWorker:
                         advance_fn = self._store.advance_route_cursor
                     elif spec.cursor_name == LLM_INFERENCE_GRAMMAR_CURSOR_NAME:
                         advance_fn = self._store.advance_llm_inference_cursor
+                    elif spec.cursor_name == STORAGE_WRITE_GRAMMAR_CURSOR_NAME:
+                        advance_fn = self._store.advance_storage_write_cursor
+                    elif spec.cursor_name == VISION_ORGAN_GRAMMAR_CURSOR_NAME:
+                        advance_fn = self._store.advance_vision_organ_cursor
                     else:
                         advance_fn = self._store.advance_transport_cursor
                     await asyncio.to_thread(
@@ -1281,176 +1327,6 @@ class BiometricsSubstrateWorker:
         "RETURN e.latency_zscore AS zscore",
     )
 
-    def _record_vision_artifact(self, object_count: int, now: datetime) -> None:
-        """Fold one observed vision artifact into the perceptual-health window."""
-        self._last_vision_artifact_at = now
-        self._vision_object_counts.append(max(0, int(object_count)))
-
-    async def _vision_artifact_listener_loop(self) -> None:
-        """Subscribe to orion:vision:artifacts and track the eye's own output.
-
-        Mirrors _field_channel_anomaly_listener_loop's subscribe shape. Reads
-        the detector's real output rather than the bus's cadence: see
-        orion/substrate/prediction_error.py's capability:vision section for why
-        the cadence-based version was deleted rather than tuned.
-        """
-        channel = self._settings.vision_artifacts_channel
-        logger.info("substrate_vision_artifact_listener subscribing channel=%s", channel)
-        try:
-            async with self._bus.subscribe(channel) as pubsub:
-                while not self._stop.is_set():
-                    try:
-                        msg = await asyncio.wait_for(
-                            pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0),
-                            timeout=1.2,
-                        )
-                    except asyncio.TimeoutError:
-                        continue
-                    except asyncio.CancelledError:
-                        break
-                    if not msg or msg.get("type") not in ("message", "pmessage"):
-                        continue
-                    try:
-                        self._handle_vision_artifact_message(msg)
-                    except Exception:
-                        logger.exception("substrate_vision_artifact_handle_failed")
-        except asyncio.CancelledError:
-            raise
-        finally:
-            logger.info("substrate_vision_artifact_listener stopped channel=%s", channel)
-
-    def _handle_vision_artifact_message(self, raw_msg: dict[str, Any]) -> None:
-        decoded = self._bus.codec.decode(raw_msg.get("data"))
-        if not decoded.ok:
-            logger.warning("substrate_vision_artifact_decode_failed: %s", decoded.error)
-            return
-        payload = decoded.envelope.payload or {}
-        outputs = payload.get("outputs") if isinstance(payload, dict) else None
-        objects = (outputs or {}).get("objects") if isinstance(outputs, dict) else None
-        # A missing `objects` key is not an empty detection list -- only a
-        # detect-bearing task carries one, and counting an embed-only artifact
-        # as "saw nothing" would manufacture blindness out of routing.
-        #
-        # It is also not evidence of liveness. Treating any artifact as proof
-        # the eye works means that if detection breaks while embed-only tasks
-        # keep publishing, staleness stays 0.0 forever and yield freezes at its
-        # last healthy value -- both channels missing the exact failure they
-        # exist to catch. Only a detect-bearing artifact refreshes the clock.
-        if objects is None:
-            return
-        self._record_vision_artifact(len(objects), datetime.now(timezone.utc))
-
-    def _vision_channel_tick(self) -> None:
-        """Write node:substrate.vision -- the edge that fills capability:vision.
-
-        Time-triggered on purpose, and that is the whole design point. The
-        deleted EWMA version derived vision health from bus inter-arrival
-        z-scores, which are only recomputed when a message arrives, so silence
-        froze the reading at its last healthy value instead of raising it. A
-        clock-driven tick reads "nothing has arrived for 90s" correctly because
-        it does not need an event to run.
-
-        Two channels:
-          perception_staleness -- availability, mapped to capability:vision
-              pressure. Unambiguous: no artifacts means no sight.
-          perception_yield -- mean objects per artifact, recorded only. NOT
-              mapped to pressure, because sustained zero is equally consistent
-              with a blinded eye and an empty dark room; disambiguating needs
-              the day-shape prior this patch does not build.
-
-        Default-off, fail-open: never raises out of a tick.
-        """
-        if not self._settings.enable_vision_channel_tick:
-            return
-
-        try:
-            now = datetime.now(timezone.utc)
-            last_at = self._last_vision_artifact_at
-            if last_at is None:
-                # Nothing observed since this process started. Measure the age
-                # from process start rather than skipping forever: a host reboot
-                # takes the camera and this service down together, which is the
-                # single most likely correlated failure, and an unbounded skip
-                # would report silence for a real ongoing outage. Inside the
-                # deadband this still declines to write (a normal restart must
-                # not cry outage); past it, "up this long with zero artifacts"
-                # is exactly an availability fault and is reported as one.
-                startup_age = max(0.0, (now - self._process_started_at).total_seconds())
-                if vision_channel_staleness_pressure(startup_age) <= 0.0:
-                    logger.info("substrate_vision_channel_tick_awaiting_first_artifact")
-                    return
-                age_seconds = startup_age
-            else:
-                age_seconds = max(0.0, (now - last_at).total_seconds())
-
-            staleness = vision_channel_staleness_pressure(age_seconds)
-            # Yield describes the artifacts behind it, so it must not outlive
-            # them. Once availability is faulted the window no longer describes
-            # anything current, and continuing to publish the last healthy mean
-            # (6-8 objects/frame) through a blackout is the same
-            # stopped-being-refreshed-reads-as-calm failure this node exists to
-            # avoid -- just on the other channel.
-            if staleness >= 1.0:
-                self._vision_object_counts.clear()
-            counts = list(self._vision_object_counts)
-            yield_value = perceptual_yield(counts)
-
-            # Receipt on EVERY tick (as every domain now does -- see the comment on
-            # _prediction_error_receipt).
-            # The receipt is the only path to the field node vector
-            # (state_deltas.py turns pressure_hints into the perturbation the
-            # digester folds in), and this signal's healthy state is exactly
-            # 0.0. Gating on staleness > 0.0 meant a fault wrote a value that
-            # then never refreshed back down -- confirmed live: the field vector
-            # sat at a stale prediction_error=0.5714 from an earlier build while
-            # the eye was healthy. A high-water mark that can only rise is the
-            # node:substrate.route failure wearing a different hat.
-            self._store.save_receipt(
-                _prediction_error_receipt(
-                    reducer_key="vision_channel",
-                    node_id="node:substrate.vision",
-                    prediction_error=staleness,
-                    now=now,
-                )
-            )
-            # Written every tick, not only on fault -- a node that can only go
-            # up and never refresh back down to a genuine calm reading produces
-            # permanent false alarms in any consumer polling its raw value.
-            self._write_prediction_error_node(
-                node_id="node:substrate.vision",
-                error=staleness,
-                now=now,
-                reducer_key="vision_channel",
-                extra_channels={
-                    "perception_staleness": staleness,
-                    "perception_yield": yield_value,
-                },
-            )
-            logger.info(
-                "substrate_vision_channel_tick_completed age_sec=%.1f staleness=%.3f "
-                "yield=%.2f samples=%d",
-                age_seconds,
-                staleness,
-                yield_value,
-                len(counts),
-            )
-        except Exception:
-            logger.exception("substrate_vision_channel_tick_failed")
-
-    async def _vision_channel_tick_loop(self) -> None:
-        interval = float(self._settings.vision_channel_tick_interval_sec)
-        while not self._stop.is_set():
-            try:
-                await asyncio.to_thread(self._vision_channel_tick)
-            except Exception:
-                logger.exception("substrate_vision_channel_tick_loop_failed")
-            try:
-                await asyncio.wait_for(self._stop.wait(), timeout=interval)
-            except asyncio.TimeoutError:
-                continue
-            except asyncio.CancelledError:
-                break
-
     async def _rpc_health_listener_loop(self) -> None:
         """Subscribe to orion:rpc_health:snapshot and fold each snapshot into
         the RPC delivery window. Same subscribe shape as the vision listener."""
@@ -1538,6 +1414,55 @@ class BiometricsSubstrateWorker:
         except Exception:
             logger.exception("substrate_rpc_delivery_tick_failed")
 
+    def _cabinet_heat_tick(self) -> None:
+        """Write node:substrate.cabinet's prediction_error: the cabinet warming error.
+
+        Clock-driven and written EVERY tick (a calm 0.0 included), same rule as biometrics: a node
+        written only when non-zero would hold its last high-water mark forever. A missing or stale
+        reading writes nothing and says so -- "no reading" is not "calm". Fail-open.
+        """
+        from orion.autonomy.cabinet_heat import CABINET_NODE_ID, read_cabinet_heat
+
+        try:
+            now = datetime.now(timezone.utc)
+            # Two hours of history so the thermal gate's hysteresis state is real, not reset by the
+            # window edge (re-arm at 28.0 C needs to know the cabinet was elevated before).
+            points = self._store.load_cabinet_points(since=now - timedelta(hours=2), until=now)
+            reading = read_cabinet_heat(
+                points, now, rise_threshold_c=float(self._settings.cabinet_heat_rise_threshold_c)
+            )
+            if reading.thermal_state == "unknown":
+                logger.info("substrate_cabinet_heat_tick_unmeasured rows=%d", len(points))
+                return
+            self._write_prediction_error_node(
+                node_id=CABINET_NODE_ID,
+                error=reading.warming_error,
+                now=now,
+                reducer_key="cabinet_heat",
+            )
+            logger.info(
+                "substrate_cabinet_heat_tick_completed temp_c=%.2f state=%s rise_c=%s "
+                "threshold_c=%.2f warming_error=%.3f cabinet_heat_pressure=%s",
+                reading.temp_c, reading.thermal_state, reading.rise_c,
+                reading.rise_threshold_c, reading.warming_error, reading.pressure,
+            )
+        except Exception:
+            logger.exception("substrate_cabinet_heat_tick_failed")
+
+    async def _cabinet_heat_tick_loop(self) -> None:
+        interval = float(self._settings.cabinet_heat_tick_interval_sec)
+        while not self._stop.is_set():
+            try:
+                await asyncio.to_thread(self._cabinet_heat_tick)
+            except Exception:
+                logger.exception("substrate_cabinet_heat_tick_loop_failed")
+            try:
+                await asyncio.wait_for(self._stop.wait(), timeout=interval)
+            except asyncio.TimeoutError:
+                continue
+            except asyncio.CancelledError:
+                break
+
     async def _rpc_delivery_tick_loop(self) -> None:
         interval = float(self._settings.rpc_delivery_tick_interval_sec)
         while not self._stop.is_set():
@@ -1558,7 +1483,7 @@ class BiometricsSubstrateWorker:
         deviation from its own camera stream's running EWMA (P2, docs/
         superpowers/specs/2026-08-12-perception-frontier-design.md).
 
-        A separate subscription from ``_vision_artifact_listener_loop``,
+        A separate subscription from the retired vision-channel artifact listener,
         deliberately -- see this task's own registration comment in
         ``start()`` for why folding this into that listener would defeat the
         point of giving this domain its own independent flag.
@@ -1602,7 +1527,7 @@ class BiometricsSubstrateWorker:
         artifacts are detect-only (``want_embeddings`` unset for that task),
         and even after this patch's config flip, not every task_type routes
         through the baseline tier. Mirrors
-        ``_handle_vision_artifact_message``'s own "missing key is not a
+        the retired vision-channel handler's "missing key is not a
         failure" reasoning for the sibling ``objects`` field.
         """
         decoded = self._bus.codec.decode(raw_msg.get("data"))
@@ -1694,7 +1619,7 @@ class BiometricsSubstrateWorker:
         simply stop arriving) would mean this node is never rewritten again,
         and orion-field-digester's generic per-tick staleness decay would
         multiply whatever value was last written toward 0.0 forever,
-        indistinguishable from genuine calm. Mirrors ``_vision_channel_tick``'s
+        indistinguishable from genuine calm. Mirrors the retired vision-channel tick's
         own reasoning for the identical failure mode on the sibling node.
 
         Default-off, fail-open: never raises out of a tick.
@@ -1706,7 +1631,7 @@ class BiometricsSubstrateWorker:
             last_at = self._last_perception_embedding_at
             if last_at is None:
                 # Nothing observed since this process started -- same startup-
-                # age fallback _vision_channel_tick uses, for the identical
+                # age fallback the retired vision-channel tick used, for the identical
                 # reason: an unbounded skip would report silence for a real
                 # ongoing outage across a restart.
                 startup_age = max(0.0, (now - self._process_started_at).total_seconds())
@@ -1723,7 +1648,7 @@ class BiometricsSubstrateWorker:
             # A stale reading isn't "current calm" either -- once availability
             # has faulted, the last real score no longer describes anything
             # happening now. Same "must not outlive its own evidence" rule
-            # _vision_channel_tick applies to perceptual_yield, applied here
+            # the retired vision-channel tick applied to perceptual_yield, applied here
             # to prediction_error itself.
             #
             # `self._last_perception_prediction_error or 0.0` used to
@@ -1771,7 +1696,7 @@ class BiometricsSubstrateWorker:
 
             # Receipt on EVERY tick, unconditionally -- NOT gated on
             # score > 0.0 the way _bus_synaptic_tick's is. This mirrors
-            # _vision_channel_tick's own receipt (a few hundred lines above
+            # the retired vision-channel tick's receipt (it lived a few hundred lines above
             # in this file), not bus_synaptic's, and for the identical
             # documented reason: the receipt is the ONLY path into
             # orion-field-digester's field-node-vector `prediction_error`
@@ -1779,7 +1704,7 @@ class BiometricsSubstrateWorker:
             # perturbation, a separate write path from the FalkorDB
             # substrate-graph node `_write_prediction_error_node` writes
             # below). Gating this receipt the way bus_synaptic's is would
-            # reproduce the exact bug _vision_channel_tick's own comment
+            # reproduce the exact bug the retired vision-channel tick's comment
             # documents fixing on this same node shape: a real spike writes
             # the field vector high, then a calm tick with score == 0.0 never
             # sends a corrective receipt, so the field vector never refreshes
@@ -1913,6 +1838,15 @@ class BiometricsSubstrateWorker:
                 error=error,
                 now=now,
                 reducer_key="bus_synaptic",
+            )
+            # Fold the reading into the transport lane's EWMA baseline (fast +
+            # slow clocks) that the hub lattice tab and recall resolver read.
+            # Stored on the channel's own scale (capability:transport.pressure).
+            # Fail-open; the tick never depends on it.
+            record_transport_sample(
+                "bus_synaptic_pressure",
+                error * TRANSPORT_DERIVED_CHANNELS["bus_synaptic_pressure"],
+                self._settings.orion_bus_url,
             )
             logger.info(
                 "substrate_bus_synaptic_tick_completed edge_count=%d error=%.3f",
@@ -2281,7 +2215,8 @@ class BiometricsSubstrateWorker:
         Runs SubstrateDynamicsEngine.tick() against the same durable store
         _write_prediction_error_node writes to, so pressure seeded from
         metadata['prediction_error'] actually propagates instead of sitting
-        inert. Default-off, fail-open: never raises out of a tick.
+        inert. Default-on (sole activation-decay writer since 2026-10-06),
+        fail-open: never raises out of a tick.
         """
         if not self._settings.enable_dynamics_tick:
             return
@@ -2295,7 +2230,10 @@ class BiometricsSubstrateWorker:
         try:
             from orion.substrate.dynamics import SubstrateDynamicsEngine
 
-            engine = SubstrateDynamicsEngine(store=store)
+            engine = SubstrateDynamicsEngine(
+                store=store,
+                decay_mode=self._settings.dynamics_decay_mode,
+            )
             result = engine.tick(now=datetime.now(timezone.utc))
             logger.info(
                 "substrate_dynamics_tick_completed activation_updates=%d "
@@ -2891,10 +2829,23 @@ class BiometricsSubstrateWorker:
             )
 
             state = store.snapshot()
+            tick_now = datetime.now(timezone.utc)
+            magnitudes = None
+            if s.pe_history_enabled:
+                try:
+                    magnitudes = self._prediction_error_magnitudes(
+                        nodes=list(state.nodes.values()), now=tick_now
+                    )
+                except Exception:
+                    # Fail-open: a history/magnitude fault must never cost the
+                    # broadcast itself -- loops just carry magnitude=None.
+                    logger.exception("substrate_pe_history_tick_failed")
+                    magnitudes = None
             frame = build_substrate_attention_frame(
                 nodes=list(state.nodes.values()),
                 min_salience=float(s.attention_broadcast_min_salience),
-                now=datetime.now(timezone.utc),
+                now=tick_now,
+                magnitude_by_node_id=magnitudes,
             )
             projection = broadcast_projection_from_frame(frame)
             self._store.save_attention_broadcast(projection)
@@ -2930,10 +2881,158 @@ class BiometricsSubstrateWorker:
         except Exception:
             logger.exception("substrate_attention_broadcast_failed")
 
+    # Prediction-error magnitude history (spec 2026-10-02, step 1). In-memory
+    # per-node window seeded once from Postgres, so the 7-day percentiles do
+    # not re-read ~200k rows every ~35 s tick. Instance attrs are read with
+    # getattr() because tests build the worker via __new__.
+    _PE_HISTORY_NODE_PREFIX = "node:substrate."
+    _PE_HISTORY_PRUNE_INTERVAL = timedelta(hours=1)
+    _PE_HISTORY_SEED_RETRY = timedelta(minutes=5)
+    # A reading stamped further ahead than this is treated as producer clock
+    # skew and not recorded: it would otherwise pin last_observed in the
+    # future and silently drop every correct reading until the clock caught up.
+    _PE_HISTORY_MAX_FUTURE_SKEW = timedelta(minutes=5)
+
+    @staticmethod
+    def _node_prediction_error_reading(node: Any) -> tuple[float, datetime] | None:
+        """(prediction_error, observed_at) for a node, or None if unusable."""
+        metadata = getattr(node, "metadata", None) or {}
+        raw = metadata.get("prediction_error") if isinstance(metadata, dict) else None
+        if raw is None or isinstance(raw, bool):
+            return None
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            return None
+        if not math.isfinite(value):
+            return None
+        observed_at = getattr(getattr(node, "temporal", None), "observed_at", None)
+        if not isinstance(observed_at, datetime):
+            return None
+        if observed_at.tzinfo is None:
+            observed_at = observed_at.replace(tzinfo=timezone.utc)
+        return value, observed_at
+
+    def _prediction_error_magnitudes(
+        self, *, nodes: list[Any], now: datetime
+    ) -> dict[str, Any] | None:
+        """Record new readings, prune, and compute each node's magnitude.
+
+        A node adds a history row only when its observed_at moved past the
+        last recorded sample -- a stale node (harness_closure sitting at 0.65
+        for hours) must not fill its own history with copies of itself, which
+        would drag its percentiles toward the stale value. Returns None (no
+        magnitudes attached this tick) when the seed read fails, e.g. the
+        migration has not been applied yet.
+        """
+        from orion.substrate.prediction_error_magnitude import (
+            WINDOW_7D,
+            compute_prediction_error_magnitude,
+        )
+
+        s = self._settings
+        cache: dict[str, deque] | None = getattr(self, "_pe_history_cache", None)
+        if cache is None:
+            # Back off after a failed seed (e.g. flag on before the migration):
+            # do not re-run a 7-day read and log a traceback every ~35 s tick.
+            failed_at = getattr(self, "_pe_history_seed_failed_at", None)
+            if failed_at is not None and now - failed_at < self._PE_HISTORY_SEED_RETRY:
+                return None
+            try:
+                rows = self._store.fetch_prediction_error_history(since=now - WINDOW_7D)
+            except Exception as exc:
+                if failed_at is None:
+                    logger.exception("substrate_pe_history_seed_failed")
+                else:
+                    logger.warning("substrate_pe_history_seed_failed err=%s", exc)
+                self._pe_history_seed_failed_at = now
+                return None
+            self._pe_history_seed_failed_at = None
+            cache = {}
+            for node_id, observed_at, value in rows:
+                if observed_at.tzinfo is None:
+                    observed_at = observed_at.replace(tzinfo=timezone.utc)
+                cache.setdefault(node_id, deque()).append((observed_at, float(value)))
+            self._pe_history_cache = cache
+            # Kept apart from the 7-day window: trimming can empty a window
+            # whose node has not moved in a week, and that must still read as
+            # "already recorded", not trigger a rewrite every tick.
+            self._pe_history_last_observed = {
+                node_id: window[-1][0] for node_id, window in cache.items() if window
+            }
+        last_observed: dict[str, datetime] = self._pe_history_last_observed
+
+        current: dict[str, tuple[float, datetime]] = {}
+        new_samples: list[tuple[str, datetime, float]] = []
+        for node in nodes:
+            node_id = str(getattr(node, "node_id", "") or "")
+            if not node_id.startswith(self._PE_HISTORY_NODE_PREFIX):
+                continue
+            reading = self._node_prediction_error_reading(node)
+            if reading is None:
+                continue
+            value, observed_at = reading
+            if observed_at > now + self._PE_HISTORY_MAX_FUTURE_SKEW:
+                logger.warning(
+                    "substrate_pe_history_future_reading_skipped node_id=%s observed_at=%s",
+                    node_id,
+                    observed_at.isoformat(),
+                )
+                continue
+            current[node_id] = reading
+            previous = last_observed.get(node_id)
+            if previous is not None and previous >= observed_at:
+                continue  # observed_at has not moved: stale, no new sample
+            new_samples.append((node_id, observed_at, value))
+
+        if new_samples:
+            try:
+                self._store.save_prediction_error_history_samples(new_samples)
+            except Exception:
+                # Not added to the in-memory window either, so the next tick
+                # retries the same reading instead of silently diverging.
+                logger.exception("substrate_pe_history_write_failed")
+            else:
+                for node_id, observed_at, value in new_samples:
+                    cache.setdefault(node_id, deque()).append((observed_at, value))
+                    last_observed[node_id] = observed_at
+
+        horizon = now - WINDOW_7D
+        for window in cache.values():
+            while window and window[0][0] < horizon:
+                window.popleft()
+
+        last_prune = getattr(self, "_pe_history_last_prune_at", None)
+        if last_prune is None or now - last_prune >= self._PE_HISTORY_PRUNE_INTERVAL:
+            self._pe_history_last_prune_at = now
+            try:
+                pruned = self._store.prune_prediction_error_history(
+                    older_than=now - timedelta(hours=float(s.pe_history_retention_hours))
+                )
+                logger.info("substrate_pe_history_pruned rows=%d", pruned)
+            except Exception:
+                logger.exception("substrate_pe_history_prune_failed")
+
+        magnitudes: dict[str, Any] = {}
+        for node_id, (value, observed_at) in current.items():
+            magnitudes[node_id] = compute_prediction_error_magnitude(
+                value=value,
+                observed_at=observed_at,
+                history=list(cache.get(node_id) or ()),
+                now=now,
+                trend_min_delta=float(s.pe_trend_min_delta),
+            )
+        logger.info(
+            "substrate_pe_history_tick nodes=%d new_samples=%d",
+            len(current),
+            len(new_samples),
+        )
+        return magnitudes
+
     def _fetch_heartbeat_h1(self) -> dict | None:
         """One synchronous GET to orion-heartbeat's own `/h1` endpoint, same
         blocking-call-inside-an-async-tick pattern this file's other synchronous
-        SQL reads already use (e.g. `_brain_frame_self_state()` above) --
+        SQL reads already use (e.g. `_brain_frame_lane_health()` above) --
         this tick already does a cross-service Postgres read for the field
         lane, so one more short-timeout cross-service call is not a new kind
         of I/O for it.
@@ -3007,9 +3106,13 @@ class BiometricsSubstrateWorker:
         )
         from orion.substrate.prediction_error_trend import compute_prediction_error_trend
 
-        pe_by_domain, pe_evidence_by_domain = (
-            self._brain_frame_prediction_error_and_evidence_by_domain(state.nodes.values())
+        pe_by_domain, pe_evidence_by_domain, pe_omitted = (
+            self._fresh_prediction_error_and_evidence_by_domain(
+                state.nodes.values(), now=datetime.now(timezone.utc)
+            )
         )
+        # Stale domains are already absent from pe_by_domain, so the trend
+        # buffer is not re-appended with a stale value every tick.
         if pe_by_domain:
             self._attention_self_model_trend_buffer.append(pe_by_domain)
         pe_trend_by_domain = compute_prediction_error_trend(
@@ -3036,6 +3139,7 @@ class BiometricsSubstrateWorker:
             prediction_error_by_domain=pe_by_domain or None,
             prediction_error_evidence_by_domain=pe_evidence_by_domain or None,
             prediction_error_trend_by_domain=pe_trend_by_domain or None,
+            prediction_error_omitted_by_domain=pe_omitted or None,
             heartbeat_h1=heartbeat_h1,
         )
         self._store.save_attention_self_model(
@@ -3129,6 +3233,7 @@ class BiometricsSubstrateWorker:
             from orion.schemas.system_one_appraisal import (
                 SYSTEM_ONE_APPRAISAL_CHANNEL,
                 SYSTEM_ONE_APPRAISAL_KIND,
+                system_one_appraisal_correlation_id,
             )
 
             await publish_with_reconnect(
@@ -3137,7 +3242,9 @@ class BiometricsSubstrateWorker:
                 BaseEnvelope(
                     kind=SYSTEM_ONE_APPRAISAL_KIND,
                     source=self._service_ref(),
-                    correlation_id=frame.frame_id,
+                    correlation_id=system_one_appraisal_correlation_id(
+                        frame.frame_id
+                    ),
                     payload=frame.model_dump(mode="json"),
                 ),
                 log_label="substrate_system_one_appraisal_publish",
@@ -3224,10 +3331,12 @@ class BiometricsSubstrateWorker:
     def _brain_frame_lane_health(self) -> dict:
         """Fetch reducer lane health for lane regions, remapped to friendly lane keys.
 
-        ``build_substrate_grammar_truth`` keys its lag/backlog/quarantine dicts by
-        cursor_name (e.g. ``execution_grammar_reducer``); the brain-frame producer
-        and UI expect the friendly reducer keys (e.g. ``execution_trajectory``).
-        Remap here so no phantom/mislabeled lanes reach the frame. Fail-open to {}.
+        ``build_substrate_grammar_truth`` keys its lag/backlog dicts by cursor_name
+        (e.g. ``execution_grammar_reducer``); the brain-frame producer and UI expect
+        the friendly reducer keys (e.g. ``execution_trajectory``). Quarantine entries
+        are already keyed by reducer_key ({"unacknowledged_count", "recent_examples"}
+        per lane); the remap is a no-op for them. Remap here so no phantom/mislabeled
+        lanes reach the frame. Fail-open to {}.
         """
         try:
             from app.grammar_truth import (
@@ -3251,35 +3360,6 @@ class BiometricsSubstrateWorker:
         except Exception:
             logger.exception("brain_frame_lane_health_failed")
             return {}
-
-    def _brain_frame_self_state(self) -> dict | None:
-        """Latest self-state row payload (dict) or None. Fail-open."""
-        try:
-            from sqlalchemy import text
-
-            engine = self._get_sql_engine()
-            if engine is None:
-                return None
-            with engine.connect() as conn:
-                row = conn.execute(
-                    text(
-                        """
-                        SELECT self_state_json FROM substrate_self_state
-                        ORDER BY generated_at DESC LIMIT 1
-                        """
-                    )
-                ).mappings().first()
-            if not row:
-                return None
-            payload = row["self_state_json"]
-            if isinstance(payload, str):
-                import json as _json
-
-                payload = _json.loads(payload)
-            return payload if isinstance(payload, dict) else None
-        except Exception:
-            logger.exception("brain_frame_self_state_load_failed")
-            return None
 
     def _brain_frame_prediction_error_by_domain(self, nodes: Iterable[Any]) -> dict:
         """Read each Active-Inference domain's latest prediction_error off the
@@ -3364,6 +3444,54 @@ class BiometricsSubstrateWorker:
                 evidence_by_domain[domain] = [str(item) for item in evidence]
         return pe_by_domain, evidence_by_domain
 
+    def _fresh_prediction_error_and_evidence_by_domain(
+        self, nodes: Iterable[Any], *, now: datetime
+    ) -> tuple[dict, dict, dict]:
+        """Same read as `_brain_frame_prediction_error_and_evidence_by_domain()`,
+        minus domains whose node reading is older than the shared horizon.
+
+        Returns ``(pe_by_domain, evidence_by_domain, omitted)`` where
+        ``omitted`` is ``{domain: age_sec | None}`` (None = observed_at
+        missing/unparseable, omitted conservatively). Omit, not fade: a faded
+        value reads as calm. Setting off -> old behavior, omitted == {}.
+        Stored node values are never rewritten.
+        """
+        nodes = list(nodes)
+        pe_by_domain, evidence_by_domain = (
+            self._brain_frame_prediction_error_and_evidence_by_domain(nodes)
+        )
+        settings = getattr(self, "_settings", None)
+        if not bool(getattr(settings, "attention_self_model_omit_stale_pe", True)):
+            return pe_by_domain, evidence_by_domain, {}
+        from orion.substrate.prediction_error_freshness import (
+            STATUS_FRESH,
+            classify_reading,
+        )
+
+        omitted: dict[str, float | None] = {}
+        for node in nodes:
+            domain = _PREDICTION_ERROR_DOMAIN_NODE_IDS.get(
+                str(getattr(node, "node_id", "") or "")
+            )
+            if domain is None or domain not in pe_by_domain:
+                continue
+            status, age = classify_reading(node, now=now)
+            if status != STATUS_FRESH:
+                omitted[domain] = age
+        for domain in omitted:
+            pe_by_domain.pop(domain, None)
+            evidence_by_domain.pop(domain, None)
+        key = tuple(sorted(omitted))
+        if key != getattr(self, "_last_pe_omitted_key", None):
+            self._last_pe_omitted_key = key
+            logger.info(
+                "attention_self_model_pe_omitted domains=%s ages_sec=%s used=%d",
+                list(key),
+                {d: (None if a is None else int(a)) for d, a in omitted.items()},
+                len(pe_by_domain),
+            )
+        return pe_by_domain, evidence_by_domain, omitted
+
     def _brain_frame_tick(self):
         """Assemble + persist one brain frame. Returns the frame or None."""
         s = self._settings
@@ -3380,8 +3508,16 @@ class BiometricsSubstrateWorker:
             if store is not None:
                 try:
                     state = store.snapshot()
-                    nodes = list(state.nodes.values())
-                    edges = list(getattr(state, "edges", []) or [])
+                    # Cognitive subgraph only: assertions, memory referents and
+                    # their provenance edges are not brain regions (eligibility.py).
+                    from orion.substrate.eligibility import cognitive_view
+
+                    raw_edges = getattr(state, "edges", None) or {}
+                    if not isinstance(raw_edges, dict):
+                        raw_edges = {e.edge_id: e for e in raw_edges}
+                    kept_nodes, kept_edges = cognitive_view(state.nodes, raw_edges)
+                    nodes = list(kept_nodes.values())
+                    edges = list(kept_edges.values())
                 except Exception:
                     logger.exception("brain_frame_snapshot_failed")
 
@@ -3408,8 +3544,8 @@ class BiometricsSubstrateWorker:
                     reduce_attention_self_model,
                 )
 
-                pe_by_domain, pe_evidence_by_domain = (
-                    self._brain_frame_prediction_error_and_evidence_by_domain(nodes)
+                pe_by_domain, pe_evidence_by_domain, pe_omitted = (
+                    self._fresh_prediction_error_and_evidence_by_domain(nodes, now=now)
                 )
                 attention_self_model = reduce_attention_self_model(
                     broadcast=attention,
@@ -3417,6 +3553,7 @@ class BiometricsSubstrateWorker:
                     now=now,
                     prediction_error_by_domain=pe_by_domain or None,
                     prediction_error_evidence_by_domain=pe_evidence_by_domain or None,
+                    prediction_error_omitted_by_domain=pe_omitted or None,
                 )
             except Exception:
                 logger.exception("brain_frame_attention_self_model_failed")
@@ -3425,7 +3562,6 @@ class BiometricsSubstrateWorker:
                 nodes=nodes,
                 edges=edges,
                 lane_health=self._brain_frame_lane_health(),
-                self_state=self._brain_frame_self_state(),
                 attention=attention,
                 attention_payload=attention_self_model,
                 field_anomaly=self._latest_field_anomaly,
@@ -4104,6 +4240,100 @@ class BiometricsSubstrateWorker:
             process_batch=process_batch,
         )
 
+    def _storage_write_tick(self) -> str | None:
+        """orion-sql-writer's own per-window write outcomes -> one storage_write
+        delta on node:substrate.storage_write (orion/substrate/storage_write_loop/).
+        The field digester is the only consumer, gated separately by
+        ENABLE_STORAGE_WRITE_FIELD_DIGESTION."""
+        spec = REDUCER_SPEC_BY_KEY["storage_write"]
+        events = self._store.fetch_storage_write_grammar_events(
+            limit=spec.batch_limit(self._settings),
+        )
+        if not events:
+            return None
+        now = datetime.now(timezone.utc)
+
+        def load_projection():
+            loaded = self._store.load_storage_write_projection(STORAGE_WRITE_PROJECTION_ID)
+            return loaded or empty_storage_write_projection(now=now)
+
+        def process_batch(batch: list[GrammarEventV1]) -> None:
+            process_storage_write_grammar_events(
+                events=batch,
+                load_projection=load_projection,
+                save_projection=self._store.save_storage_write_projection,
+                save_receipt=self._store.save_receipt,
+                now=now,
+            )
+
+        return self._process_events_with_poison_isolation(
+            spec=spec,
+            events=events,
+            process_batch=process_batch,
+        )
+
+    def _vision_organ_tick(self) -> str | None:
+        """orion-vision-frame-router's own per-window report on the eye -> one
+        vision_organ delta on node:substrate.vision_organ per completed window
+        (orion/substrate/vision_organ_loop/). The field digester is the only
+        consumer, gated separately by ENABLE_VISION_ORGAN_FIELD_DIGESTION.
+
+        Clock path: with no new windows, once the router has been silent longer
+        than VISION_ORGAN_SILENCE_SEC, write staleness 1.0 (at most once per
+        silence interval / 3). A reading that only moves when reports arrive would
+        hold its last calm value through a router outage."""
+        spec = REDUCER_SPEC_BY_KEY["vision_organ"]
+        events = self._store.fetch_vision_organ_grammar_events(
+            limit=spec.batch_limit(self._settings),
+        )
+        now = datetime.now(timezone.utc)
+
+        def load_projection():
+            loaded = self._store.load_vision_organ_projection(VISION_ORGAN_PROJECTION_ID)
+            return loaded or empty_vision_organ_projection(now=now)
+
+        if not events:
+            last_check = getattr(self, "_vision_organ_last_silence_check", None)
+            if last_check is None or (now - last_check).total_seconds() >= _VISION_ORGAN_SILENCE_CHECK_SEC:
+                self._vision_organ_last_silence_check = now
+                self._vision_organ_silence_check(load_projection(), now=now)
+            return None
+
+        def process_batch(batch: list[GrammarEventV1]) -> None:
+            process_vision_organ_grammar_events(
+                events=batch,
+                load_projection=load_projection,
+                save_projection=self._store.save_vision_organ_projection,
+                save_receipt=self._store.save_receipt,
+                now=now,
+            )
+
+        return self._process_events_with_poison_isolation(
+            spec=spec,
+            events=events,
+            process_batch=process_batch,
+        )
+
+    def _vision_organ_silence_check(self, projection: Any, *, now: datetime) -> None:
+        silence_sec = max(1.0, float(self._settings.vision_organ_silence_sec))
+        age = silence_age_seconds(
+            projection if projection.last_window_end is not None else None,
+            now=now,
+            process_started_at=self._process_started_at,
+        )
+        if age <= silence_sec:
+            return
+        last = self._vision_organ_last_silence_write
+        # Capped at 60 s so the digester's 300 s expiry (decay.py) can never fire
+        # between two silence writes, whatever VISION_ORGAN_SILENCE_SEC is.
+        if last is not None and (now - last).total_seconds() < min(silence_sec / 3.0, 60.0):
+            return
+        updated, receipt = vision_organ_silence_receipt(projection, now=now, silent_for_sec=age)
+        self._store.save_receipt(receipt)
+        self._store.save_vision_organ_projection(updated)
+        self._vision_organ_last_silence_write = now
+        logger.warning("vision_organ_silent silent_for_sec=%.0f", age)
+
     def _transport_tick(self) -> str | None:
         spec = REDUCER_SPECS[2]
         events = self._store.fetch_transport_grammar_events(
@@ -4156,7 +4386,7 @@ class BiometricsSubstrateWorker:
             # already flows into that same consumer automatically -- no new wiring
             # needed there, killing this write is the entire change. Everything
             # else in this reducer (event processing, projection state, incident
-            # logging above, catalog_drift_pressure/observer_failure_pressure via
+            # logging above, catalog_drift_pressure (observer_failure_pressure retired 2026-10-07) via
             # config/field/orion_field_topology.v1.yaml's still-live edge) is
             # unaffected -- confirmed via _grammar_reducer_poll_loop that reducer-
             # health/cursor tracking is driven by last_id, not by this block.

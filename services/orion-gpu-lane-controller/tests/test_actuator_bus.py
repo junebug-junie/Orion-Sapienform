@@ -1,39 +1,38 @@
-"""Stage 4.2: pool actuation bridge (app/actuator_bus.py + app/pool_fence.py).
+"""Pool actuation intake (app/actuator_bus.py + app/pool_fence.py), stage 4.2 onward.
 
 Spec: docs/superpowers/specs/2026-09-25-gpu-pool-stage4-durable-runs-and-actuation.md.
-The Docker/HTTP steps are gpu2's own (covered in test_gpu2.py) and are mocked here; these tests pin
-who may ask, the fence, the refusals and the published result sequence.
+The Docker/HTTP steps are launch_exec's own (covered in test_launch_exec.py) and are mocked here;
+these tests pin who may ask, the fence, the refusals and the published result sequence. Since 5.6
+(bridge deleted) they run on the committed config/gpu_pool.yaml.
 """
 import asyncio
 import json
-import shutil
 from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock
 
 import pytest
+import yaml
 from fastapi.testclient import TestClient
 
 from test_api import REPO_ROOT, main_module
 from orion.gpu_pool.config import launch_digest, load_pool_config
+from orion.gpu_pool.config import PoolConfig
 from orion.schemas.gpu_pool import GpuActuateResultV1
-from orion.schemas.gpu_slot import GpuSlotRequestV1
 
-gpu = main_module.gpu2
 bus = main_module.actuator_bus
+lx = bus.launch_exec
 fence = main_module.pool_fence
 settings = main_module.settings
 
 
 @pytest.fixture
 def repo(tmp_path, monkeypatch):
-    """A private copy of config/gpu_pool.yaml as the controller's own checkout."""
+    """The controller's own checkout: a copy of the committed config/gpu_pool.yaml."""
     root = tmp_path / "repo"
     (root / "config").mkdir(parents=True)
-    shutil.copy(REPO_ROOT / "config" / "gpu_pool.yaml", root / "config" / "gpu_pool.yaml")
+    (root / "config" / "gpu_pool.yaml").write_text((REPO_ROOT / "config" / "gpu_pool.yaml").read_text())
     monkeypatch.setattr(settings, "GPU_LANE_REPO_ROOT", str(root))
-    monkeypatch.setattr(settings, "GPU2_POOL_FENCE_STATE_PATH", str(tmp_path / "state" / "fence.json"))
-    monkeypatch.setattr(settings, "GPU2_AUTHORITY", "pool")
-    monkeypatch.setattr(settings, "GPU2_ENABLED", True)
+    monkeypatch.setattr(settings, "GPU_POOL_FENCE_STATE_PATH", str(tmp_path / "state" / "fence.json"))
     monkeypatch.setattr(settings, "GPU_POOL_ACTUATOR_NAME", "circe")
     monkeypatch.setattr(bus, "_task", None)
     monkeypatch.setattr(bus, "_current", None)
@@ -76,15 +75,15 @@ def run(coro_fn):
     asyncio.run(scenario())
 
 
-def fake_transition(outcome, phases=("draining", "stopping", "starting", "ready_wait"), seen=None):
-    async def transition(req):
+def fake_execute(outcome, phases=("draining", "stopping", "starting", "ready_wait"), seen=None):
+    async def execute(plan, action, intent):
         if seen is not None:
-            seen.append(req)
-        await gpu.authority(req, require_drained=False)  # the real fence, as transition() calls it
+            seen.append((plan, action, intent))
+        await fence.authority(intent, require_drained=False)  # the real fence, as execute() calls it
         for p in phases:
-            await gpu.phase(p)
+            await lx.phase(p)
         return dict(outcome)
-    return transition
+    return execute
 
 
 # --- request validation ------------------------------------------------------------------------
@@ -105,7 +104,7 @@ def test_invalid_request_without_actuator_is_not_answered(repo):
 
 def test_naive_deadline_refused_not_crashed(repo, monkeypatch):
     transition = AsyncMock()
-    monkeypatch.setattr(gpu, "transition", transition)
+    monkeypatch.setattr(lx, "execute", transition)
     sink = Sink()
     naive = (datetime.now(timezone.utc) + timedelta(minutes=5)).replace(tzinfo=None).isoformat()
     run(lambda: bus.handle(payload(repo, deadline_at=naive), sink))
@@ -128,60 +127,26 @@ def test_unaddressable_garbage_publishes_nothing(repo):
     assert sink.results == []
 
 
-# --- authority switch --------------------------------------------------------------------------
+# --- the pool is the only gpu2 authority (stage 4.6) -------------------------------------------
 
-def test_default_authority_is_durable_and_refuses_pool_requests(repo, monkeypatch):
-    monkeypatch.setattr(settings, "GPU2_AUTHORITY", "durable")
-    transition = AsyncMock()
-    monkeypatch.setattr(gpu, "transition", transition)
+def test_the_durable_authority_switch_and_its_callback_url_are_gone():
+    fresh = type(settings)(_env_file=None)
+    assert not hasattr(fresh, "GPU2_AUTHORITY") and not hasattr(fresh, "GPU2_AUTHORITY_URL")
+
+
+def test_stage5_6_no_enable_switch_a_launch_block_is_the_only_gate(repo, monkeypatch):
+    """GPU2_ENABLED (gpu2_disabled) is gone: a role is actuated iff it has a launch block for this
+    actuator; one without is refused by name, never silently run."""
+    assert not hasattr(settings, "GPU2_ENABLED")
+    execute = AsyncMock(return_value={"status": "success"})
+    monkeypatch.setattr(lx, "execute", execute)
     sink = Sink()
     run(lambda: bus.handle(payload(repo), sink))
-    assert sink.statuses == [("refused", None)] and sink.results[0].reason == "authority_durable"
-    transition.assert_not_called()
-    assert not (repo.parent / "state" / "fence.json").exists()  # nothing persisted, nothing fenced
-
-
-def test_settings_default_is_durable():
-    from pydantic_settings import BaseSettings  # noqa: F401 -- settings class, fresh instance
-    assert type(settings)(_env_file=None).GPU2_AUTHORITY == "durable"
-
-
-def test_durable_authority_uses_durable_callback_not_pool_fence(repo, monkeypatch):
-    monkeypatch.setattr(settings, "GPU2_AUTHORITY", "durable")
-    pool = AsyncMock()
-    monkeypatch.setattr(fence, "authority", pool)
-    monkeypatch.setattr(gpu, "request", AsyncMock(return_value={
-        "operation_id": "d:1", "generation": 1, "desired_target": "agent-burst",
-        "can_transition": True, "activation_eligible": True}))
-    req = GpuSlotRequestV1(slot="circe-gpu2", target="agent-burst", operation_id="d:1", generation=1)
-    assert asyncio.run(gpu.authority(req))["can_transition"] is True
-    pool.assert_not_called()
-
-
-def test_pool_authority_refuses_http_activate(repo, monkeypatch):
-    transition = AsyncMock()
-    monkeypatch.setattr(gpu, "transition", transition)
-    body = {"slot": "circe-gpu2", "target": "agent-burst", "operation_id": "d:9", "generation": 9}
-    response = TestClient(main_module.app).post("/v1/gpu-slots/activate", json=body)
-    assert response.status_code == 503 and response.json()["error"] == "authority_pool"
-    transition.assert_not_called()
-
-
-def test_pool_authority_status_never_calls_durable(repo, monkeypatch):
-    request = AsyncMock()
-    monkeypatch.setattr(gpu, "request", request)
-    monkeypatch.setattr(gpu, "snapshots", lambda: {})
-    gpu._state.clear()
-    gpu._state.update(state="neither", error=None)
-    asyncio.run(gpu.status())
-    request.assert_not_called()
-
-
-def test_gpu2_disabled_refuses(repo, monkeypatch):
-    monkeypatch.setattr(settings, "GPU2_ENABLED", False)
-    sink = Sink()
-    run(lambda: bus.handle(payload(repo), sink))
-    assert sink.results[0].reason == "gpu2_disabled"
+    assert sink.results[-1].status == "succeeded" and execute.await_count == 1
+    refused = Sink()
+    run(lambda: bus.handle(payload(repo, role="experiment", action_id="x1", generation=2,
+                                   cards=["gpu0", "gpu1", "gpu2", "gpu3"]), refused))
+    assert refused.results[0].reason == "role_not_on_this_actuator"
 
 
 # --- refusal paths -----------------------------------------------------------------------------
@@ -191,14 +156,14 @@ def test_gpu2_disabled_refuses(repo, monkeypatch):
     ({"role": "agent"}, "role_not_on_this_actuator"),
     ({"launch_digest": "0" * 64}, "launch_digest_mismatch"),
     ({"cards": ["gpu1"]}, "cards_mismatch"),
-    ({"profile": "qwen27b"}, "profile_unsupported"),
-    ({"role": "diffusion"}, "not_a_bridge_role"),
+    ({"profile": "qwen27b"}, "profile_not_allowed"),   # stage 5.2: was profile_unsupported
+    ({"role": "diffusion"}, "not_a_swap_seat"),        # stage 5.2: was not_a_bridge_role
 ])
 def test_refusals(repo, monkeypatch, over, reason):
     if over.get("role") == "diffusion":
         over = {**over, "launch_digest": digest(repo, "diffusion")}
     transition = AsyncMock()
-    monkeypatch.setattr(gpu, "transition", transition)
+    monkeypatch.setattr(lx, "execute", transition)
     sink = Sink()
     run(lambda: bus.handle(payload(repo, **over), sink))
     assert sink.statuses == [("refused", None)]
@@ -208,7 +173,7 @@ def test_refusals(repo, monkeypatch, over, reason):
 
 def test_deadline_passed_refused(repo, monkeypatch):
     transition = AsyncMock()
-    monkeypatch.setattr(gpu, "transition", transition)
+    monkeypatch.setattr(lx, "execute", transition)
     sink = Sink()
     past = (datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat()
     run(lambda: bus.handle(payload(repo, deadline_at=past), sink))
@@ -221,7 +186,8 @@ def test_digest_follows_own_checkout(repo, monkeypatch):
     must be refused -- the controller only starts what its own YAML says."""
     sent = digest(repo)
     path = repo / "config" / "gpu_pool.yaml"
-    path.write_text(path.read_text().replace("ready: /health, timeout_sec: 900", "ready: /health, timeout_sec: 901"))
+    assert path.read_text().count("timeout_sec: 900") == 1   # agent-gpu2 only
+    path.write_text(path.read_text().replace("timeout_sec: 900", "timeout_sec: 901"))
     assert digest(repo) != sent
     sink = Sink()
     run(lambda: bus.handle(payload(repo, launch_digest=sent), sink))
@@ -233,7 +199,7 @@ def test_unreadable_fence_state_fails_closed(repo, monkeypatch):
     state.parent.mkdir(parents=True)
     state.write_text("{not json")
     transition = AsyncMock()
-    monkeypatch.setattr(gpu, "transition", transition)
+    monkeypatch.setattr(lx, "execute", transition)
     sink = Sink()
     run(lambda: bus.handle(payload(repo), sink))
     assert sink.results[0].reason.startswith("fence_state_unreadable")
@@ -245,10 +211,10 @@ def test_unreadable_fence_state_fails_closed(repo, monkeypatch):
 def test_generation_persisted_before_transition_and_stale_refused(repo, monkeypatch):
     persisted = []
 
-    async def transition(req):
+    async def transition(plan, action, intent):
         persisted.append(json.loads((repo.parent / "state" / "fence.json").read_text()))
         return {"status": "success"}
-    monkeypatch.setattr(gpu, "transition", transition)
+    monkeypatch.setattr(lx, "execute", transition)
     sink = Sink()
     run(lambda: bus.handle(payload(repo, generation=5, action_id="a5"), sink))
     assert persisted[0]["generations"] == {"gpu2": 5}
@@ -263,7 +229,7 @@ def test_generation_persisted_before_transition_and_stale_refused(repo, monkeypa
 
 
 def test_generation_survives_controller_restart(repo, monkeypatch):
-    monkeypatch.setattr(gpu, "transition", AsyncMock(return_value={"status": "success"}))
+    monkeypatch.setattr(lx, "execute", AsyncMock(return_value={"status": "success"}))
     run(lambda: bus.handle(payload(repo, generation=3, action_id="a3"), Sink()))
     monkeypatch.setattr(bus, "_task", None)   # a fresh process: only the file remembers
     monkeypatch.setattr(bus, "_current", None)
@@ -273,7 +239,7 @@ def test_generation_survives_controller_restart(repo, monkeypatch):
 
 
 def test_refused_request_does_not_advance_generation(repo, monkeypatch):
-    monkeypatch.setattr(gpu, "transition", AsyncMock(return_value={"status": "success"}))
+    monkeypatch.setattr(lx, "execute", AsyncMock(return_value={"status": "success"}))
     run(lambda: bus.handle(payload(repo, generation=9, launch_digest="bad"), Sink()))
     sink = Sink()
     run(lambda: bus.handle(payload(repo, generation=2, action_id="ok"), sink))
@@ -281,32 +247,32 @@ def test_refused_request_does_not_advance_generation(repo, monkeypatch):
 
 
 def test_pool_fence_rejects_superseded_in_flight(repo):
-    """transition()'s own authority() checkpoints: a request that is not the in-flight generation
+    """execute()'s own authority() checkpoints: a request that is not the in-flight generation
     (e.g. a newer one was persisted) must stop before the next mutation."""
     state = fence._empty()
     state["generations"] = {"gpu2": 7}
     state["in_flight"] = {"action_id": "a7", "generation": 7, "role": "agent-gpu2", "action": "load",
                           "cards": ["gpu2"], "launch_digest": digest(repo)}
     fence.write_state(state)
-    ok = GpuSlotRequestV1(slot="circe-gpu2", target="agent-burst", operation_id="a7", generation=7)
-    assert asyncio.run(gpu.authority(ok))["can_transition"] is True
-    old = GpuSlotRequestV1(slot="circe-gpu2", target="agent-burst", operation_id="a6", generation=6)
+    ok = lx.Intent("a7", 7)
+    assert asyncio.run(fence.authority(ok))["can_transition"] is True
+    old = lx.Intent("a6", 6)
     with pytest.raises(RuntimeError, match="stale_or_unknown_intent"):
-        asyncio.run(gpu.authority(old))
+        asyncio.run(fence.authority(old))
     path = repo / "config" / "gpu_pool.yaml"
     path.write_text(path.read_text().replace("timeout_sec: 900", "timeout_sec: 901"))
     with pytest.raises(RuntimeError, match="launch_digest_changed"):
-        asyncio.run(gpu.authority(ok))
+        asyncio.run(fence.authority(ok))
 
 
 def test_busy_while_transition_running(repo, monkeypatch):
     async def scenario():
         release = asyncio.Event()
 
-        async def transition(req):
+        async def transition(plan, action, intent):
             await release.wait()
             return {"status": "success"}
-        monkeypatch.setattr(gpu, "transition", transition)
+        monkeypatch.setattr(lx, "execute", transition)
         first, second = Sink(), Sink()
         await bus.handle(payload(repo, generation=1, action_id="a1"), first)
         await bus.handle(payload(repo, generation=2, action_id="a2"), second)
@@ -322,14 +288,17 @@ def test_busy_while_transition_running(repo, monkeypatch):
 
 # --- result publishing sequence ----------------------------------------------------------------
 
-def test_success_sequence_and_real_transition_target(repo, monkeypatch):
+def test_success_sequence_and_real_launch_plan(repo, monkeypatch):
     seen = []
-    monkeypatch.setattr(gpu, "transition", fake_transition({"status": "success"}, seen=seen))
+    monkeypatch.setattr(lx, "execute", fake_execute({"status": "success"}, seen=seen))
     sink = Sink()
     run(lambda: bus.handle(payload(repo), sink))
     assert sink.statuses == [("accepted", None), ("progress", "draining"), ("progress", "stopping"),
                              ("progress", "starting"), ("progress", "ready_wait"), ("succeeded", None)]
-    assert seen[0].target == "agent-burst" and seen[0].operation_id == "pool:gpu2:1" and seen[0].generation == 1
+    plan, action, intent = seen[0]
+    assert isinstance(plan, fence.LaunchPlan) and plan.seat.role == "agent-gpu2" and action == "load"
+    assert [p.role for p in plan.evicts] == ["diffusion"]
+    assert intent.operation_id == "pool:gpu2:1" and intent.generation == 1
     final = sink.results[-1]
     assert final.observed == {"agent-gpu2": "running", "diffusion": "exited"}
     assert final.elapsed_ms is not None and final.restored is None
@@ -337,18 +306,19 @@ def test_success_sequence_and_real_transition_target(repo, monkeypatch):
     assert state["in_flight"] is None and state["actions"]["pool:gpu2:1"]["status"] == "succeeded"
 
 
-def test_unload_maps_to_diffusion_restore(repo, monkeypatch):
+def test_unload_runs_the_seat_plan_that_restores_diffusion(repo, monkeypatch):
     seen = []
-    monkeypatch.setattr(gpu, "transition", fake_transition({"status": "noop"}, phases=(), seen=seen))
+    monkeypatch.setattr(lx, "execute", fake_execute({"status": "noop"}, phases=(), seen=seen))
     sink = Sink()
     run(lambda: bus.handle(payload(repo, action="unload", reason="idle"), sink))
-    assert seen[0].target == "diffusion"
+    plan, action, _ = seen[0]
+    assert action == "unload" and plan.seat.role == "agent-gpu2" and [p.role for p in plan.evicts] == ["diffusion"]
     assert sink.statuses == [("accepted", None), ("succeeded", None)] and sink.results[-1].reason == "noop"
 
 
 def test_replayed_action_id_returns_recorded_result_without_second_transition(repo, monkeypatch):
     transition = AsyncMock(return_value={"status": "success"})
-    monkeypatch.setattr(gpu, "transition", transition)
+    monkeypatch.setattr(lx, "execute", transition)
     run(lambda: bus.handle(payload(repo), Sink()))
     replay = Sink()
     run(lambda: bus.handle(payload(repo), replay))
@@ -357,7 +327,7 @@ def test_replayed_action_id_returns_recorded_result_without_second_transition(re
 
 
 def test_status_republishes_last_result_then_observed(repo, monkeypatch):
-    monkeypatch.setattr(gpu, "transition", AsyncMock(return_value={"status": "success"}))
+    monkeypatch.setattr(lx, "execute", AsyncMock(return_value={"status": "success"}))
     run(lambda: bus.handle(payload(repo, generation=4, action_id="a4"), Sink()))
     sink = Sink()
     # status is a read: no digest check, no generation fence, nothing persisted.
@@ -380,7 +350,7 @@ def test_restart_mid_action_is_recorded_as_interrupted(repo, monkeypatch):
     assert recovered["reason"] == "interrupted_by_controller_restart"
     assert recovered["restored"] is False   # a cut-off load may have evicted diffusion: fault, not "untouched"
     transition = AsyncMock()
-    monkeypatch.setattr(gpu, "transition", transition)
+    monkeypatch.setattr(lx, "execute", transition)
     replay = Sink()
     run(lambda: bus.handle(payload(repo, generation=2, action_id="a2"), replay))
     assert replay.statuses == [("failed", None)]
@@ -391,55 +361,8 @@ def test_restart_mid_action_is_recorded_as_interrupted(repo, monkeypatch):
 
 # --- rollback on failed readiness --------------------------------------------------------------
 
-def test_failed_readiness_rolls_back_and_reports_restored(repo, monkeypatch):
-    """Through the real gpu2.transition(): diffusion drained+stopped, the 27B never gets ready,
-    so agent-burst is stopped and diffusion restarted; the pool sees failed + restored=true."""
-    calls = []
-
-    async def record(name):
-        calls.append(name)
-    snap = {"active": "diffusion", "targets": {
-        "diffusion": {"state": "running", "containers": [{"state": "running"}]},
-        "agent-burst": {"state": "exited", "containers": []}}}
-    monkeypatch.setattr(gpu, "status", AsyncMock(return_value=snap))
-    monkeypatch.setattr(gpu, "model_ready", AsyncMock(return_value=False))
-    monkeypatch.setattr(gpu, "drain_diffusion", lambda: record("drain"))
-    monkeypatch.setattr(gpu, "stop", lambda t: record("stop:" + t))
-
-    async def start(target):
-        calls.append("start:" + target)
-        if target == "agent-burst":
-            await gpu.phase("ready_wait")
-            raise RuntimeError("model_readiness_timeout")
-    monkeypatch.setattr(gpu, "start", start)
-    sink = Sink()
-    run(lambda: bus.handle(payload(repo), sink))
-    assert calls == ["drain", "stop:diffusion", "start:agent-burst", "stop:agent-burst", "start:diffusion"]
-    assert sink.statuses == [("accepted", None), ("progress", "draining"), ("progress", "stopping"),
-                             ("progress", "starting"), ("progress", "ready_wait"),
-                             ("progress", "rolling_back"), ("failed", None)]
-    final = sink.results[-1]
-    assert final.restored is True and final.reason == "model_readiness_timeout"
-
-
-def test_failed_rollback_reports_not_restored(repo, monkeypatch):
-    snap = {"active": "diffusion", "targets": {
-        "diffusion": {"state": "running", "containers": [{"state": "running"}]},
-        "agent-burst": {"state": "exited", "containers": []}}}
-    monkeypatch.setattr(gpu, "status", AsyncMock(return_value=snap))
-    monkeypatch.setattr(gpu, "model_ready", AsyncMock(return_value=False))
-    monkeypatch.setattr(gpu, "drain_diffusion", AsyncMock())
-    monkeypatch.setattr(gpu, "stop", AsyncMock())
-    monkeypatch.setattr(gpu, "start", AsyncMock(side_effect=RuntimeError("model_readiness_timeout")))
-    sink = Sink()
-    run(lambda: bus.handle(payload(repo), sink))
-    final = sink.results[-1]
-    assert final.status == "failed" and final.restored is False
-    assert final.reason == "model_readiness_timeout:restoration_failed"
-
-
 def test_failed_unload_never_claims_restored(repo, monkeypatch):
-    monkeypatch.setattr(gpu, "transition", AsyncMock(return_value={"status": "failed", "error": "burst_upstream_not_idle",
+    monkeypatch.setattr(lx, "execute", AsyncMock(return_value={"status": "failed", "error": "burst_upstream_not_idle",
                                                                    "restored": True}))
     sink = Sink()
     run(lambda: bus.handle(payload(repo, action="unload"), sink))
@@ -447,7 +370,7 @@ def test_failed_unload_never_claims_restored(repo, monkeypatch):
 
 
 def test_progress_publish_failure_does_not_change_outcome(repo, monkeypatch):
-    monkeypatch.setattr(gpu, "transition", fake_transition({"status": "success"}))
+    monkeypatch.setattr(lx, "execute", fake_execute({"status": "success"}))
 
     class Flaky(Sink):
         async def __call__(self, result, corr):
@@ -459,21 +382,39 @@ def test_progress_publish_failure_does_not_change_outcome(repo, monkeypatch):
     assert [r.status for r in sink.results] == ["accepted", "succeeded"]
 
 
-def test_real_config_launch_blocks_resolve_to_bridge_targets():
-    """The committed YAML is what circe runs: agent-gpu2 load/unload must map onto the two fixed
-    gpu2 transitions, and diffusion (evicted resident, no swap verbs) is not directly actuatable."""
+def test_real_config_launch_blocks_resolve_to_launch_plans():
+    """Stage 5.3: the committed YAML is what circe runs. agent-gpu2 has no bridge verbs, so load and
+    unload both resolve to a generic LaunchPlan built from its launch block and diffusion's;
+    diffusion (evicted resident) is still not directly actuatable."""
+    from orion.gpu_pool.config import PoolConfig
     cfg = load_pool_config(REPO_ROOT / "config" / "gpu_pool.yaml")
-    assert fence.resolve(cfg, role="agent-gpu2", action="load", cards=["gpu2"], digest=None) == "agent-burst"
-    assert fence.resolve(cfg, role="agent-gpu2", action="unload", cards=["gpu2"], digest=None) == "diffusion"
-    with pytest.raises(fence.Refusal, match="not_a_bridge_role"):
+    profile = cfg.load_profile("agent-gpu2")
+    assert profile == "ternary-bonsai2-27b-pq2-v100-32gb-circe-agent"   # stage 7.2 (Q4 is the 2nd entry)
+    for action in ("load", "unload"):
+        plan = fence.resolve(cfg, role="agent-gpu2", action=action, cards=["gpu2"], digest=None,
+                             profile=profile if action == "load" else None)
+        assert isinstance(plan, fence.LaunchPlan)
+        assert (plan.seat.service, plan.seat.compose_profile) == ("atlas-agent-burst", "agent-burst")
+        assert [p.service for p in plan.evicts] == ["diffusion-host"]
+        assert plan.evicts[0].env == {"CUDA_VISIBLE_DEVICES": "2"}   # the bridge's fixed extra_env, now derived
+    load = fence.resolve(cfg, role="agent-gpu2", action="load", cards=["gpu2"], digest=None, profile=profile)
+    assert load.seat.env == {"ATLAS_AGENT_BURST_CUDA_VISIBLE_DEVICES": "2", "ATLAS_AGENT_BURST_PROFILE_NAME": profile}
+    assert load.seat.timeout_sec == 900.0
+    with pytest.raises(fence.Refusal, match="not_a_swap_seat"):
         fence.resolve(cfg, role="diffusion", action="load", cards=["gpu2"], digest=None)
+    # 5.6: the fixed gpu2 transitions are gone; the old rollback shape (bridge verbs) no longer parses.
+    data = yaml.safe_load((REPO_ROOT / "config" / "gpu_pool.yaml").read_text())
+    data["roles"]["agent-gpu2"]["swap"].update(load="gpu2/agent", unload="gpu2/restore")
+    with pytest.raises(ValueError, match="Extra inputs"):
+        PoolConfig.model_validate(data)
+    assert not hasattr(fence, "BRIDGE_TARGETS")
 
 
 # --- review regressions ------------------------------------------------------------------------
 
 def test_accepted_publish_failure_still_runs_and_clears_in_flight(repo, monkeypatch):
     transition = AsyncMock(return_value={"status": "success"})
-    monkeypatch.setattr(gpu, "transition", transition)
+    monkeypatch.setattr(lx, "execute", transition)
 
     class DropsAck(Sink):
         async def __call__(self, result, corr):
@@ -487,34 +428,6 @@ def test_accepted_publish_failure_still_runs_and_clears_in_flight(repo, monkeypa
     assert fence.read_state()["in_flight"] is None and bus._current is None
 
 
-def test_rollback_not_blocked_by_checkout_edited_mid_load(repo, monkeypatch):
-    """git pull on circe during a load changes the digest: the next forward checkpoint stops, but
-    rollback (require_drained=False) must still put diffusion back."""
-    calls = []
-    snap = {"active": "diffusion", "targets": {
-        "diffusion": {"state": "running", "containers": [{"state": "running"}]},
-        "agent-burst": {"state": "exited", "containers": []}}}
-    monkeypatch.setattr(gpu, "status", AsyncMock(return_value=snap))
-    monkeypatch.setattr(gpu, "model_ready", AsyncMock(return_value=False))
-
-    async def drain():
-        calls.append("drain")
-        path = repo / "config" / "gpu_pool.yaml"
-        path.write_text(path.read_text().replace("timeout_sec: 900", "timeout_sec: 901"))
-    monkeypatch.setattr(gpu, "drain_diffusion", drain)
-    monkeypatch.setattr(gpu, "request", AsyncMock(return_value={}))
-
-    async def stop(t):
-        calls.append("stop:" + t)
-    monkeypatch.setattr(gpu, "stop", stop)
-    sink = Sink()
-    run(lambda: bus.handle(payload(repo), sink))
-    final = sink.results[-1]
-    assert "stop:diffusion" not in calls          # forward progress stopped at the checkpoint
-    assert final.status == "failed" and final.reason == "launch_digest_changed"
-    assert final.restored is True                  # diffusion un-drained, not stranded
-
-
 def test_finished_result_not_erased_by_concurrent_admission(repo, monkeypatch):
     """B reads the fence, awaits config load; A finishes meanwhile and records its result. B must
     not write its older snapshot back over A's record."""
@@ -522,11 +435,11 @@ def test_finished_result_not_erased_by_concurrent_admission(repo, monkeypatch):
         loop = asyncio.get_running_loop()
         release = asyncio.Event()
 
-        async def transition(req):
-            if req.operation_id == "a1":
+        async def transition(plan, action, intent):
+            if intent.operation_id == "a1":
                 await release.wait()
             return {"status": "success"}
-        monkeypatch.setattr(gpu, "transition", transition)
+        monkeypatch.setattr(lx, "execute", transition)
         await bus.handle(payload(repo, generation=1, action_id="a1"), Sink())
         task_a = bus._task
         real_load = fence.load_config
@@ -561,46 +474,45 @@ def test_status_observes_outside_admit_lock(repo, monkeypatch):
     assert held == [False] and sink.results[-1].status == "succeeded"
 
 
-def test_lifespan_runs_one_heartbeat_chassis(monkeypatch):
-    """The actuator Hunter already heartbeats; HeartbeatOnly is only its fallback."""
-    started = []
+def test_lifespan_retries_actuator_start_until_bus_is_up(monkeypatch):
+    """A bus that is slow at boot must not leave the controller permanently deaf: retry with a fresh chassis."""
+    attempts = []
 
     class Fake:
-        def __init__(self, name):
-            self.name = name
+        def __init__(self, ok):
+            self.ok = ok
 
         async def start_background(self):
-            started.append(self.name)
+            attempts.append(self.ok)
+            if not self.ok:
+                raise TimeoutError("bus down")
 
         async def stop(self):
             pass
+    chassis = iter([Fake(False), Fake(False), Fake(True)])
     monkeypatch.setattr(settings, "ORION_BUS_ENABLED", True)
-    monkeypatch.setattr(settings, "GPU2_AUTHORITY", "durable")
-    monkeypatch.setattr(main_module, "build_actuator_chassis", lambda: Fake("actuator"))
-    monkeypatch.setattr(main_module, "build_heartbeat_chassis", lambda: Fake("heartbeat"))
-    with TestClient(main_module.app):
-        pass
-    assert started == ["actuator"]
+    monkeypatch.setattr(main_module, "BUS_RETRY_DELAY_SEC", 0.01)
+    monkeypatch.setattr(main_module, "build_actuator_chassis", lambda: next(chassis))
 
-    started.clear()
-
-    def broken():
-        raise RuntimeError("bus down")
-    monkeypatch.setattr(main_module, "build_actuator_chassis", broken)
-    with TestClient(main_module.app):
-        pass
-    assert started == ["heartbeat"]
+    async def scenario():
+        async with main_module.lifespan(main_module.app):
+            for _ in range(200):
+                if main_module.actuator_chassis is not None:
+                    break
+                await asyncio.sleep(0.01)
+    run(scenario)
+    assert attempts == [False, False, True]
 
 
 def test_status_reports_in_flight_structurally(repo, monkeypatch):
     async def scenario():
         release = asyncio.Event()
 
-        async def transition(req):
-            await gpu.phase("draining")
+        async def transition(plan, action, intent):
+            await lx.phase("draining")
             await release.wait()
             return {"status": "success"}
-        monkeypatch.setattr(gpu, "transition", transition)
+        monkeypatch.setattr(lx, "execute", transition)
         await bus.handle(payload(repo, generation=3, action_id="a3"), Sink())
         await asyncio.sleep(0)
         sink = Sink()
@@ -621,7 +533,7 @@ def test_status_on_fresh_controller_says_nothing_ran(repo):
 
 
 def test_non_status_results_never_carry_status_fields(repo, monkeypatch):
-    monkeypatch.setattr(gpu, "transition", fake_transition({"status": "success"}))
+    monkeypatch.setattr(lx, "execute", fake_execute({"status": "success"}))
     sink = Sink()
     run(lambda: bus.handle(payload(repo), sink))
     assert all(r.in_flight is None and r.last_action_id is None for r in sink.results)

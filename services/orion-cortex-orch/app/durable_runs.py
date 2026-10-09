@@ -84,7 +84,9 @@ async def dispatch_durable_run(
                 channel,
                 BaseEnvelope(kind=DURABLE_RUN_REQUEST_KIND, source=source,
                              correlation_id=_corr(request.correlation_id), reply_to=reply_channel,
-                             payload=request.model_dump(mode="json")),
+                             # Unset additive fields (brief.urgent) stay off the wire, so an
+                             # older durable-runs (extra="forbid") still accepts the request.
+                             payload=request.model_dump(mode="json", exclude_none=True)),
                 reply_channel=reply_channel, timeout_sec=receipt_timeout_sec,
             )
             decoded = bus.codec.decode(raw.get("data") if isinstance(raw, dict) else raw)

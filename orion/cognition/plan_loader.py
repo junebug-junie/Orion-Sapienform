@@ -109,5 +109,10 @@ def build_plan_for_verb(verb_name: str, *, mode: str = "brain") -> ExecutionPlan
             "recall_enabled_default": (
                 "false" if data.get("recall_enabled") is False else ""
             ),
+            # Verb YAML `recall_query_mode: context_only` -> the router puts it in
+            # recall_cfg["query_mode"] (unless the caller set one) and
+            # run_recall_step sends RecallQueryV1.mode. For verbs with no user
+            # text (reverie), which want "what is going on" feeds, not a search.
+            "recall_query_mode_default": str(data.get("recall_query_mode") or "").strip().lower(),
         },
     )

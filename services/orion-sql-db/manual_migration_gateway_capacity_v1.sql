@@ -1,3 +1,6 @@
+-- SUPERSEDED (GPU pool stage 5.6): the table below is dropped by
+-- manual_migration_gpu_pool_stage5_drop_legacy_tables.sql. Do not apply this file; kept as history
+-- (and as the fixture scripts/gpu_pool_stage5_snapshot_and_drop.sh is tested against).
 -- Apply after manual_migration_durable_resource_admission_v1.sql, before
 -- DURABLE_RUNS_CAPACITY_ENABLED=true. No checkpoint/workflow schema changes.
 CREATE TABLE IF NOT EXISTS durable_gateway_permits (

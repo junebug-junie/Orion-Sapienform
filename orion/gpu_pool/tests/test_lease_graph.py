@@ -104,6 +104,58 @@ def test_non_retryable_failure_ends_instead_of_regranting_a_ghost():
     assert s["status"] == "released"
 
 
+def _recalling_hold(retryable=True):
+    return step(fresh("hold", retryable=retryable), ev("grant", role="agent"),
+                ev("recall", 1, recall_by=(T0 + timedelta(seconds=6)).isoformat(), reason="urgent_preempt"))
+
+
+def test_urgent_preempt_requeues_a_retryable_hold_in_place_without_spending_an_attempt():
+    s = step(_recalling_hold(), ev("abort", 6, reason="urgent_preempt"))
+    assert s["status"] == "queued" and s["attempt"] == 1 and s["role"] is None
+    assert s["created_at"] == T0.isoformat() and s["queued_since"] == (T0 + timedelta(seconds=6)).isoformat()
+    assert s["not_before"] is None and s["recall_by"] is None and s["expires_at"] is None
+    assert s["reason"] == "urgent_preempt"
+    assert s["history"][-1] == {"event": "abort", "from": "recalling", "status": "queued",
+                                "at": (T0 + timedelta(seconds=6)).isoformat(), "role": "agent",
+                                "reason": "urgent_preempt", "attempt": 1}
+    s = step(s, ev("grant", 20, role="agent"))                 # back in line, re-granted normally
+    assert s["status"] == "granted" and s["generation"] == 2 and s["attempt"] == 1
+
+
+@pytest.mark.parametrize("recall_reason", ["max_hold", "owner_waiting", "card_unlent", "draining"])
+def test_a_recalled_hold_aborted_past_its_grace_requeues_in_place_every_time(recall_reason):
+    """Live 2026-09-26..28: each abort of a recalled durable-run hold spent a pool attempt, so the
+    third recall (every run longer than gpu2's max_hold_sec) dead-lettered the hold and the run saw
+    ``unavailable:recall_grace_exceeded``. The pool took the seat back; the hold keeps its place."""
+    s = step(fresh("hold"), ev("grant", role="agent-gpu2"))
+    for cycle in range(1, 5):
+        t = cycle * 1000
+        s = step(s, ev("recall", t, recall_by=(T0 + timedelta(seconds=t + 600)).isoformat(), reason=recall_reason),
+                 ev("abort", t + 600, reason="recall_grace_exceeded"))
+        assert s["status"] == "queued" and s["attempt"] == 1, cycle
+        assert s["reason"] == "recall_grace_exceeded" and s["created_at"] == T0.isoformat()
+        assert s["role"] is None and s["not_before"] is None and s["expires_at"] is None
+        s = step(s, ev("grant", t + 700, role="agent"))
+        assert s["status"] == "granted" and s["generation"] == cycle + 1
+
+
+def test_plain_abort_of_a_request_lease_still_spends_an_attempt():
+    s = step(fresh("request"), ev("grant", role="chat"),
+             ev("recall", 1, recall_by=(T0 + timedelta(seconds=61)).isoformat(), reason="owner_waiting"),
+             ev("abort", 61))
+    assert s["status"] == "retry_wait" and s["attempt"] == 2 and s["not_before"] is not None
+
+
+def test_a_lost_hold_heartbeat_still_spends_a_pool_attempt():
+    s = step(fresh("hold"), ev("grant", role="agent"), ev("expire", 91))
+    assert s["status"] == "retry_wait" and s["attempt"] == 2
+
+
+def test_non_retryable_urgent_preempt_ends_like_any_abort():
+    s = step(_recalling_hold(retryable=False), ev("abort", 6, reason="urgent_preempt"))
+    assert s["status"] == "released" and s["reason"] == "abort:urgent_preempt"
+
+
 def test_caller_can_finish_a_lease_from_any_waiting_state():
     for pre in ([], [ev("backlog")], [ev("grant", role="m"), ev("release_failed", 1)]):
         s = step(fresh(), *pre, ev("release_ok", 5))

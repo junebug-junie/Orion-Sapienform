@@ -43,14 +43,20 @@ class RecordingFalkorClient:
     def graph_query(self, cypher: str, params: dict[str, Any] | None = None) -> Any:
         self.calls.append((cypher, params))
         if "WHERE n.payload_json IS NOT NULL" in cypher:
-            return self._hydrate_legacy_node_rows
-        if "WHERE e.payload_json IS NOT NULL" in cypher:
-            return self._hydrate_legacy_edge_rows
-        if "RETURN n.node_id AS node_id" in cypher:
-            return self._hydrate_node_rows
-        if "RETURN e.edge_id AS edge_id" in cypher:
-            return self._hydrate_edge_rows
-        return []
+            rows = self._hydrate_legacy_node_rows
+        elif "WHERE e.payload_json IS NOT NULL" in cypher:
+            rows = self._hydrate_legacy_edge_rows
+        elif "RETURN n.node_id AS node_id" in cypher:
+            rows = self._hydrate_node_rows
+        elif "RETURN e.edge_id AS edge_id" in cypher:
+            rows = self._hydrate_edge_rows
+        else:
+            return []
+        if params is not None and "after_id" in params:
+            numbered = [dict(row, object_id=row.get("object_id", i)) for i, row in enumerate(rows)]
+            return [row for row in numbered if row["object_id"] > params["after_id"]][:params["page_size"]]
+        return rows
+
 
 
 class RedisGraphQueryClient:
@@ -81,16 +87,35 @@ class RedisGraphQueryClient:
     # defined mode instead of raising AttributeError inside graph_query.
     _read_only: bool = False
 
-    def __init__(self, *, uri: str, graph_name: str, read_only: bool = False) -> None:
+    def __init__(
+        self,
+        *,
+        uri: str,
+        graph_name: str,
+        read_only: bool = False,
+        socket_timeout: float | None = None,
+        socket_connect_timeout: float | None = None,
+    ) -> None:
+        """``socket_timeout``/``socket_connect_timeout`` (seconds) are passed
+        to ``redis.Redis`` only when set; the default (None) keeps redis-py's
+        own default of no timeout, i.e. every existing caller is unchanged.
+        A caller on a latency-bounded path (orion-recall's substrate store)
+        opts in so a hung FalkorDB cannot pin its thread forever."""
         import redis
         from redis.commands.graph import Graph
 
         parsed = urlparse(uri or "redis://localhost:6379")
+        timeout_kwargs: dict[str, float] = {}
+        if socket_timeout is not None:
+            timeout_kwargs["socket_timeout"] = float(socket_timeout)
+        if socket_connect_timeout is not None:
+            timeout_kwargs["socket_connect_timeout"] = float(socket_connect_timeout)
         self._r = redis.Redis(
             host=parsed.hostname or "localhost",
             port=int(parsed.port or 6379),
             db=int((parsed.path or "/0").lstrip("/") or 0),
             decode_responses=True,
+            **timeout_kwargs,
         )
         self._graph = Graph(self._r, graph_name)
         self._graph_name = graph_name
@@ -99,6 +124,13 @@ class RedisGraphQueryClient:
     @property
     def read_only(self) -> bool:
         return self._read_only
+
+    def close(self) -> None:
+        """Release this client's connection pool. Safe to call twice and on a
+        client built with __new__ (no ``_r``)."""
+        r = getattr(self, "_r", None)
+        if r is not None:
+            r.close()
 
     def graph_query(self, cypher: str, params: dict[str, Any] | None = None) -> Any:
         """Run Cypher and return rows as name-keyed dicts.
@@ -163,8 +195,8 @@ def _header_field_names(header: Any) -> list[str]:
 
 
 def _rows_from_query_result(header: Any, result_set: Any) -> list[dict[str, Any]]:
-    if result_set is None:
-        return []
+    if not isinstance(result_set, (list, tuple)):
+        raise ValueError("malformed Falkor result set")
     names = _header_field_names(header)
     out: list[dict[str, Any]] = []
     for record in result_set:
@@ -175,4 +207,6 @@ def _rows_from_query_result(header: Any, result_set: Any) -> list[dict[str, Any]
                 out.append(dict(zip(names, record)))
             else:
                 out.append({"_positional": list(record)})
+        else:
+            raise ValueError("malformed Falkor result row")
     return out

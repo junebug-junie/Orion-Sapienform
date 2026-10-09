@@ -24,6 +24,8 @@ docker exec -i orion-athena-sql-db psql -U postgres -d conjourney \
 docker exec -i orion-athena-sql-db psql -U postgres -d conjourney \
   < services/orion-sql-db/manual_migration_node_prediction_error_baseline_v2_definition_version.sql
 docker exec -i orion-athena-sql-db psql -U postgres -d conjourney \
+  < services/orion-sql-db/manual_migration_node_prediction_error_baseline_v3_last_value_observed_at.sql
+docker exec -i orion-athena-sql-db psql -U postgres -d conjourney \
   < services/orion-sql-db/manual_migration_goal_provenance_streak_v1.sql
 ```
 
@@ -59,6 +61,19 @@ averages only over runs a batch touched; chat dropped `topic_coherence`). Look f
 `node_prediction_error_baseline_definition_reset` in the logs. Without the v2 migration the
 store keeps the old behaviour and logs
 `node_prediction_error_baseline_definition_version_column_missing`.
+
+**Staleness fade (2026-09-29).** A domain's last reading only refreshes when its reducer
+writes a receipt, and chat writes one only when a turn lands, so a quiet domain's last
+reading used to stay its "current" error for hours and win the node competition. The
+current error is now faded linearly to 0 over 30 minutes
+(`PREDICTION_ERROR_STALENESS_HORIZON_SEC`, the same horizon as
+`PressureConfig.prediction_error_decay_horizon_seconds`), measured from the receipt behind
+`last_value`, persisted as `last_value_observed_at` (not the `last_receipt_created_at`
+cursor, which also moves over skipped receipts; the cursor is only a fallback before the
+v3 migration). Read-side only: the EWMA baseline still folds only
+real receipt values. A faded target's reasons say `stale reading: ... min old, weighted x`.
+`chat_session` moved to definition v3 the same day (touched turns only), so its baseline
+restarts once more on deploy. Replay: `scripts/analysis/replay_candidate_a_staleness_fade.py`.
 
 ## Node-target dominance streak: restart persistence (2026-07-31 fix)
 

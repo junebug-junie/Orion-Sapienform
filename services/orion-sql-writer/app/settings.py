@@ -34,6 +34,14 @@ DEFAULT_ROUTE_MAP: dict[str, str] = {
     "power.intent.settled.v1": "PowerIntentSettledSQL",
     "cabinet.ambient.spike.v1": "CabinetAmbientSpikeSQL",
     "home.cooling.sample.v1": "HomeCoolingSampleSQL",
+    "energy.usage.observed.v1": "EnergyUsageIntervalSQL",
+    "energy.cost.accrued.v1": "EnergyCostAccruedSQL",
+    "energy.run_cost.estimated.v1": "EnergyRunCostSQL",
+    "energy.bill.actual.v1": "EnergyBillActualSQL",
+    "energy.bill.forecast.v1": "EnergyBillForecastSQL",
+    "energy.reconcile.v1": "EnergyReconcileSQL",
+    "energy.stakes.snapshot.v1": "EnergyStakesSnapshotSQL",
+    "energy.importer.status.v1": "EnergyImporterStatusSQL",
     "biometrics.induction.v1": "BiometricsInductionSQL",
     "causal.geometry.snapshot.v1": "CausalGeometrySnapshotSQL",
     "spark.telemetry": "SparkTelemetrySQL",
@@ -59,6 +67,7 @@ DEFAULT_ROUTE_MAP: dict[str, str] = {
     "curiosity.supervisor.reading.v1": "CuriosityHopReadingSQL",
     "durable.run.state.v1": "DurableRunStateSQL",
     "gpu_pool.event.v1": "GpuPoolEventSQL",
+    "transport_baseline.hourly.v1": "TransportBaselineHourlySQL",
     "chat_stance.belief.write.v1": "ChatStanceBeliefLogSQL",
     "self_concept.history.write.v1": "SelfConceptHistorySQL",
     "self_sense.eval.write.v1": "SelfSenseEvalLogSQL",
@@ -160,6 +169,14 @@ class Settings(BaseSettings):
             "orion:power:intent:settled",
             "orion:cabinet:ambient:spike",
             "orion:home:cooling:sample",
+            "orion:energy:usage:observed",
+            "orion:energy:cost:accrued",
+            "orion:energy:run_cost:estimated",
+            "orion:energy:bill:actual",
+            "orion:energy:bill:forecast",
+            "orion:energy:reconcile",
+            "orion:energy:stakes:snapshot",
+            "orion:energy:importer:status",
             "orion:biometrics:induction",
             "orion:spark:telemetry",
             "orion:cognition:trace",
@@ -181,6 +198,7 @@ class Settings(BaseSettings):
             "orion:curiosity:supervisor:reading",
             "orion:durable:run:state",
             "orion:gpu_pool:event",
+            "orion:equilibrium:transport_baseline:hourly",
             "orion:chat_stance:belief:write",
             "orion:self_concept:history:write",
             "orion:self_sense:eval:write",
@@ -246,6 +264,11 @@ class Settings(BaseSettings):
         alias="SQL_WRITER_SOCIAL_TURN_STORED_CHANNEL",
     )
     sql_writer_emit_memory_turn_persisted: bool = Field(True, alias="SQL_WRITER_EMIT_MEMORY_TURN_PERSISTED")
+    # Seconds an assistant chat.history.message.v1 waits before publishing the turn from the row,
+    # so the turn envelope (which carries spark_meta) can claim it first. One publish per turn.
+    sql_writer_memory_turn_row_emit_delay_sec: float = Field(
+        5.0, ge=0.0, le=60.0, alias="SQL_WRITER_MEMORY_TURN_ROW_EMIT_DELAY_SEC"
+    )
     channel_memory_turn_persisted: str = Field(
         "orion:memory:turn:persisted", alias="CHANNEL_MEMORY_TURN_PERSISTED"
     )
@@ -518,7 +541,8 @@ class Settings(BaseSettings):
     vision_crop_thumb_retention_days: float = Field(10.0, alias="VISION_CROP_THUMB_RETENTION_DAYS")
     # An ask that expired unanswered is not repeated for this long.
     vision_ask_cooldown_days: float = Field(30.0, alias="VISION_ASK_COOLDOWN_DAYS")
-    # Orion's whole daily ask budget (every source_kind), counted from
+    # The walkway camera's daily ask budget: vision_individual asks only (since 2026-10-06; memory
+    # confirmation cards have their own caps in orion-memory-consolidation), counted from
     # orion_ask.created_at since local midnight, so a restart cannot reset it.
     orion_ask_daily_cap: int = Field(2, alias="ORION_ASK_DAILY_CAP")
     # Local clock for "07:40", distinct days, weekday/weekend, and the ask cap day.
@@ -614,6 +638,14 @@ class Settings(BaseSettings):
         alias="SQL_WRITER_ALLOW_ACCEPTED_PRESSURE_INGEST",
     )
     sql_writer_grammar_trace_batch_max: int = Field(64, alias="SQL_WRITER_GRAMMAR_TRACE_BATCH_MAX")
+    # Per-lane grammar queue depth (hardcoded 512 until 2026-09-29). Kept small on purpose: the
+    # queue is in memory and lost on restart. A governor run flushes ~900 events in ~10s onto ONE
+    # lane (722 shed on 2026-09-29); overflow goes straight to durable bus_fallback_log and the
+    # drain below replays it. Raising this trades durability for nothing.
+    sql_writer_grammar_queue_maxsize: int = Field(512, alias="SQL_WRITER_GRAMMAR_QUEUE_MAXSIZE")
+    # Self-healing replay of events shed with error='grammar queue full'. 0 disables.
+    sql_writer_grammar_drain_interval_sec: float = Field(30.0, alias="SQL_WRITER_GRAMMAR_DRAIN_INTERVAL_SEC")
+    sql_writer_grammar_drain_batch: int = Field(200, alias="SQL_WRITER_GRAMMAR_DRAIN_BATCH")
     sql_writer_grammar_trace_batch_timeout_sec: float = Field(45.0, alias="SQL_WRITER_GRAMMAR_TRACE_BATCH_TIMEOUT_SEC")
 
     @property
@@ -665,6 +697,20 @@ class Settings(BaseSettings):
             channels.append("orion:cabinet:ambient:spike")
         if "orion:home:cooling:sample" not in channels:
             channels.append("orion:home:cooling:sample")
+        # Same guarantee as cooling: SQL_WRITER_SUBSCRIBE_CHANNELS replaces rather
+        # than merges, so a pre-energy operator .env would leave these routes inert.
+        for energy_channel in (
+            "orion:energy:usage:observed",
+            "orion:energy:cost:accrued",
+            "orion:energy:run_cost:estimated",
+            "orion:energy:bill:actual",
+            "orion:energy:bill:forecast",
+            "orion:energy:reconcile",
+            "orion:energy:stakes:snapshot",
+            "orion:energy:importer:status",
+        ):
+            if energy_channel not in channels:
+                channels.append(energy_channel)
         # Same guarantee again, same reason, same failure shape review caught
         # before this shipped: self_study.items.write.v1 is a code-default
         # route with no feature toggle, and SQL_WRITER_SUBSCRIBE_CHANNELS
@@ -733,6 +779,10 @@ class Settings(BaseSettings):
         # Same guarantee, same reason (gpu_pool.event.v1 is a code-default route).
         if "orion:gpu_pool:event" not in channels:
             channels.append("orion:gpu_pool:event")
+        # Same guarantee, same reason (transport_baseline.hourly.v1 is a
+        # code-default route; SQL_WRITER_SUBSCRIBE_CHANNELS replaces).
+        if "orion:equilibrium:transport_baseline:hourly" not in channels:
+            channels.append("orion:equilibrium:transport_baseline:hourly")
         # Same guarantee, same reason: walkway camera routes are code
         # defaults with no feature toggle.
         for walkway_channel in ("orion:vision:crops:sql-write", "orion:vision:unresolved:sql-write"):
@@ -772,6 +822,17 @@ class Settings(BaseSettings):
     # Alerts fire at each multiple of this: 5, 10, 15, ...
     sql_writer_fallback_watch_threshold_step: int = Field(
         5, alias="SQL_WRITER_FALLBACK_WATCH_THRESHOLD_STEP"
+    )
+
+    # Storage-write organ (app/write_health.py): the writer counts its own write
+    # outcomes per table family and publishes one grammar trace per window
+    # (sql_writer.storage:) for substrate-runtime's storage_write reducer.
+    # Off in code; on in .env_example.
+    sql_writer_write_health_enabled: bool = Field(
+        False, alias="SQL_WRITER_WRITE_HEALTH_ENABLED"
+    )
+    sql_writer_write_health_window_sec: float = Field(
+        60.0, alias="SQL_WRITER_WRITE_HEALTH_WINDOW_SEC"
     )
 
     # Notify service, used only by the watcher above. This service already

@@ -9,6 +9,8 @@ new Qwen alias, the other doesn't, and half the pipeline silently falls
 back to the wrong prompt format). One function, imported by both.
 """
 
+from orion.vision.caption_echo import CAPTION_PROMPT
+
 # "qwen2.5-vl" does not contain the substring "qwen2-vl", so checking order
 # against QWEN2_VL_MARKERS is not load-bearing -- kept as two explicit tuples
 # anyway so a caller that only cares about one generation doesn't have to
@@ -51,3 +53,19 @@ def is_chat_template_vlm(model_id: str) -> bool:
     second chat-template family in sight.
     """
     return is_qwen2_5_vl_model(model_id) or is_qwen2_vl_model(model_id)
+
+
+def caption_prompt_for(model_id: str) -> str | None:
+    """The text a caption call sends with the frame, chosen by model family.
+
+    Chat-template VLMs follow instructions, so they get ``CAPTION_PROMPT``.
+    Everything else (BLIP/BLIP2 and unknown families on the plain
+    ``processor(images=, text=)`` path) gets no prompt: those models continue
+    the text they are given rather than obeying it. Confirmed live
+    2026-10-08 on cam0 frames: BLIP-base handed ``CAPTION_PROMPT`` returns
+    the prompt itself (the echo filter rejects it, the caption publishes
+    blank); with no prompt it returns "a woman sitting at a desk in an
+    office". See docs/superpowers/specs/2026-10-08-vision-blank-captions-
+    and-on-demand-look-design.md.
+    """
+    return CAPTION_PROMPT if is_chat_template_vlm(model_id) else None

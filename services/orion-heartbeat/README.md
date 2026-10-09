@@ -2,8 +2,9 @@
 
 A small, real tensor-network substrate (matrix product state, via `quimb`) that
 tests whether Orion's grammar-event stream exhibits holographic-style
-boundary/bulk entanglement structure. Read-only, additive, publishes nothing
-to any existing consumer.
+boundary/bulk entanglement structure. Additive. Since 2026-10-07 it publishes
+a bounded H1 verdict trace back onto `orion:grammar:event` (see "What
+heartbeat emits") -- a ledger record only; no reducer or field channel reads it.
 
 Full design record, including the pivots that got here (three prior brainstorm
 rounds, a shelved 2026-05-01 research charter, and why the first two attempts
@@ -95,11 +96,111 @@ starved of a chance to service that socket).
   `orion/spark/orion_tissue.py` — this is a wholly separate, additive
   consumer of an existing stream.
 - No `SelfStateV1` dependency anywhere.
-- No publishing anywhere, still — read-only research consumer, unchanged by
-  the ensemble/dissipation work. Wiring this into any real downstream
-  consumer (e.g. CollapseMirror's "insight" trigger) is explicitly deferred
-  until the verdict thresholds are re-validated against live ensemble
-  behavior, not just offline calibration (see Configuration below).
+- No field channel, substrate node or prior. The only output is the bounded
+  `heartbeat.h1:` grammar trace below (plus the pre-existing `/h1` that
+  orion-substrate-runtime's AST/HOT tick polls). Wiring the verdict into a
+  real downstream consumer is still deferred -- see "Why nothing reaches the
+  field" for the live evidence.
+
+## What heartbeat emits
+
+Two kinds of `GrammarEventV1` atom on `orion:grammar:event`
+(`app/substrate/verdict_atoms.py`), trace prefix `heartbeat.h1:<node>:`,
+`source_service=orion-heartbeat`, persisted to `grammar_events` by sql-writer:
+
+- `h1_verdict_transition` -- the verdict class changed and the new class held
+  for `HEARTBEAT_VERDICT_SETTLE_TICKS` (3) consecutive H1 ticks (~90 s).
+  Summary carries `from`/`to`, `held_ticks`, `held_since`, `mean_ratio`,
+  `std_ratio` (ensemble spread), `mean_std_ratio_while_held`,
+  `bulk_penetration_depth`, `suppressed_since_last`. Capped at
+  `HEARTBEAT_VERDICT_MAX_TRANSITIONS_PER_HOUR` (12) per rolling hour.
+- `h1_hourly_summary` -- one per `HEARTBEAT_VERDICT_SUMMARY_INTERVAL_SEC`
+  (3600): per-class tick counts, raw flips, settled/suppressed/failed
+  transitions, mean/min/max of std_ratio, mean_ratio and bulk depth, and
+  per-producer counts of grammar atoms heartbeat could not route. Sent even
+  when every H1 computation in the window failed (`h1_ticks=0`, confidence 0).
+  A dead H1 loop shows up as missing summary rows.
+
+Why debounce: on 7 days of the verdict as AST/HOT recorded it
+(`substrate_attention_self_model`, 16,642 samples, 2026-09-30..10-07) the class
+changed 31.8 times an hour. `redundant` runs had median length 1 and never
+exceeded 3 samples; `concentrated` median 1, max 6. Emitting on every flip
+would be ~760 atoms/day of threshold noise. Settle ticks 2 -> 5.0/h, 3 ->
+1.1/h, 4 -> 0.24/h on the same history.
+
+Heartbeat subscribes to the same channel, so its own atoms come back; they
+are skipped before routing (`events_skipped_self` on `/health`).
+
+### Why nothing reaches the field
+
+No field channel, substrate reducer or prior was added. Checked against the
+metric gate (CLAUDE.md §0A) on the same 7 days:
+
+- **No rest state.** `mean_ratio` never went below 0.668 (p5 0.80); the
+  "true silence" branch (`mean_ratio <= 0.2`) fired 0 times. Every
+  `concentrated` tick (2,792 of 2,792) came from the bulk-depth band, whose
+  edges are percentiles of heartbeat's own past output -- a self-calibrated
+  quantile, so it reads ~17% concentrated by construction.
+- **No coupling to activity.** `concentrated` share sits at 14-20% in every
+  UTC hour of the day. `std_ratio` vs total organ fires in the window:
+  r = -0.008; bulk depth vs fires: r = 0.022. The verdict is not tracking how
+  busy the organs are.
+- **A third of it is dice.** Replaying the same 3 h of real atoms with only
+  the random seed changed (42 -> 142 / 242) gives a different verdict on 31-35%
+  of ticks (organ-map table below).
+- **Already consumed.** AST/HOT already pulls `/h1` every tick
+  (`SUBSTRATE_HEARTBEAT_H1_URL`), so the verdict is already visible to the
+  self-model; a field channel would be a second copy of a signal that has
+  not yet shown it measures anything.
+
+So the atom is an observable trace and nothing more. Revisit if a
+replay shows the verdict moving with something real (the cabinet crosswalk
+experiment, `docs/superpowers/specs/2026-10-01-heartbeat-cabinet-crosswalk-design.md`).
+
+### Organ map: unrouted producers are counted, not routed
+
+The MPS has 10 fixed sites with the boundary/bulk cut at 5; H1 reads that
+cut. `routing.ORGAN_SITE_MAP` routes 5 organs onto boundary sites 0-4. Six
+newer catalogued producers (gpu-pool, harness-governor, llm-gateway,
+sql-writer, substrate-runtime, vision-frame-router; ~40k atoms/day, ~21% of
+the grammar atoms heartbeat sees) are dropped. They are now **counted per producer**
+(`/health` `events_skipped_organ_by_source`, the hourly atom's
+`unrouted_atoms=`), and the bus catalog names the gap
+(`catalog_producers_unrouted`, `uncatalogued_sources_seen`). The map itself
+is unchanged.
+
+Replay (`evals/replay_organ_map_options.py`, real `grammar_events`, the
+service's own ensemble code, reheat held at 0.0054, first 30 min warm-up
+dropped, ~300 H1 ticks per run):
+
+| Window (3 h) | Option | concentrated | mixed | redundant | ticks agreeing with current |
+| --- | --- | --- | --- | --- | --- |
+| 10-06 21:14 - 10-07 00:15 UTC | current (5 organs, seed 42) | 25.4% | 74.3% | 0.3% | -- |
+| | fold extras onto boundary 0-4 | 20.5% | 71.6% | 7.9% | 62.7% |
+| | extras onto bulk 5-8 | 19.5% | 77.6% | 3.0% | 68.6% |
+| | **control: current, seed 142** | 24.8% | 73.9% | 1.3% | 69.3% |
+| | **control: current, seed 242** | 25.7% | 71.3% | 3.0% | 65.3% |
+| 10-05 21:14 - 10-06 00:13 UTC | current | 28.0% | 70.7% | 1.3% | -- |
+| | fold extras onto boundary 0-4 | 28.0% | 69.3% | 2.7% | 67.3% |
+| | extras onto bulk 5-8 | 24.0% | 74.0% | 2.0% | 69.3% |
+
+Read it this way:
+
+- Changing only the random seed already flips about a third of individual
+  verdicts. Remapping flips about the same share, so per-tick agreement
+  cannot tell the two apart.
+- At distribution level, folding onto the boundary pushed `redundant` from
+  0.3% to 7.9% and `concentrated` from 25% to 20% in one window. That is
+  outside the seed spread (0.3-3.0% and 24.8-25.7%). In the other window it
+  barely moved.
+- Putting organs on the bulk changes what "bulk" means. Bulk is supposed to
+  be reached only through entanglement. Site 9 cannot take an organ at all:
+  `absorb()` needs a right-hand neighbour.
+
+So remapping would change what H1 means in a way the replay cannot rule
+out, and the gain would be organs whose atoms would land on another organ's
+seat. Decision: keep the map, count the drops. A larger N_SITES would be a
+new instrument and needs its own calibration; it is out of scope here.
 
 ## Run
 
@@ -140,15 +241,16 @@ deploying a change):
 | `HEARTBEAT_DECAY_REHEAT_INTERVAL_SEC` | `2.0` | Wall-clock cadence for the dissipation loop, independent of message arrival. |
 | `FALKORDB_URI` / `FALKORDB_BUS_GRAPH` | `redis://orion-athena-falkordb:6379` / `orion_bus_synapse` | Real live reheat driver — same graph `services/orion-substrate-runtime` already reads, additive read-only consumer. |
 | `HEARTBEAT_ABSORB_QUEUE_MAXSIZE` | `10000` | Bound on the message-intake→absorb queue; sustained overflow drops-and-counts (`events_dropped_queue_full`) rather than blocking intake or growing unbounded. |
+| `HEARTBEAT_VERDICT_ATOMS_ENABLED` | `true` | Publish the `heartbeat.h1:` grammar trace (see "What heartbeat emits"). |
+| `HEARTBEAT_VERDICT_SETTLE_TICKS` | `3` | Consecutive H1 ticks a new verdict must hold before a transition atom. |
+| `HEARTBEAT_VERDICT_SUMMARY_INTERVAL_SEC` | `3600.0` | Summary atom cadence. |
+| `HEARTBEAT_VERDICT_MAX_TRANSITIONS_PER_HOUR` | `12` | Rolling-hour cap on transition atoms; extras counted as suppressed. |
 
-**Verdict thresholds (`_HIGH_RATIO`/`_LOW_RATIO` in `app/substrate/
-reconstruction.py`) have not been re-validated against sustained live
-ensemble behavior** — they carry over from offline calibration. Real
-multi-organ silence is rare in current production (a 60h audit found 4 of 5
-organs continuously active regardless of chat activity), so the
-`concentrated` band specifically hasn't been observed live yet, only in
-offline synthetic/replay calibration. Busy-state behavior (`redundant`,
-`mean_ratio~0.79-0.91` observed live) is validated both offline and live.
+**Verdict bands** (`app/substrate/reconstruction.py`) are percentiles of
+heartbeat's own 48 h output (2026-09-01). On 7 days of live AST/HOT samples
+(2026-09-30..10-07): mixed 80%, concentrated 17% (all via the bulk-depth band;
+the `mean_ratio <= 0.2` silence branch never fired), redundant 3%. See "Why
+nothing reaches the field" above.
 
 ## Debug surfaces
 
@@ -156,9 +258,20 @@ offline synthetic/replay calibration. Busy-state behavior (`redundant`,
   (`events_seen`/`events_queued`/`events_absorbed`/
   `events_dropped_queue_full`/`events_skipped_*`), ensemble size and seeds
   (`n_trajectories`/`seeds`, for forensic replay), and substrate health
-  (`max_bond`/`norm`, aggregated across all trajectories).
+  (`max_bond`/`norm`, aggregated across all trajectories). Also
+  `events_skipped_self` (own atoms echoed back), `events_skipped_organ_by_source`
+  (per-producer unrouted counts), `catalog_loaded` /
+  `catalog_producers_unrouted` (channels.yaml producers heartbeat does not
+  route; `null` if the catalog could not be read) / `uncatalogued_sources_seen`
+  (sources on the wire the catalog does not list), and `verdict_atoms`
+  (published / failed counts, confirmed verdict, current window, last atom).
 - `GET /h1` — latest ensemble H1 result. Headline proprioception:
-  `dark_seats` (organs silent in the last 64 absorbs), `smear`/`smeared`
+  `dark_seats` (organs with zero fires in the last `HEARTBEAT_ORGAN_FIRE_WINDOW_SEC`
+  seconds, default 300, pruned by wall clock; an empty window reads unknown --
+  `dark_seats=[]`, `organ_fire_counts={}`, `organ_distinctness=null` -- never
+  all-dark; `organ_last_fired_at` / `organ_seconds_since_last_fire` /
+  `fire_window_sec` tell a dark organ from a merely rare one, null = never seen
+  since boot), `smear`/`smeared`
   (far/near entropy on the current profile), `organ_distinctness` (occupancy
   concentration). Also `verdict`, `mean_ratio`/`std_ratio` (mean saturates
   under real traffic — secondary), `bulk_penetration_depth`, `tick_count`,

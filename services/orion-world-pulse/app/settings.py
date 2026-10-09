@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from pydantic import AliasChoices
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -50,8 +49,6 @@ class Settings(BaseSettings):
     world_pulse_sql_enabled: bool = Field(True, alias="WORLD_PULSE_SQL_ENABLED")
     world_pulse_graph_enabled: bool = Field(False, alias="WORLD_PULSE_GRAPH_ENABLED")
     world_pulse_graph_dry_run: bool = Field(True, alias="WORLD_PULSE_GRAPH_DRY_RUN")
-    world_pulse_email_enabled: bool = Field(False, alias="WORLD_PULSE_EMAIL_ENABLED")
-    world_pulse_email_dry_run: bool = Field(True, alias="WORLD_PULSE_EMAIL_DRY_RUN")
     world_pulse_hub_messages_enabled: bool = Field(True, alias="WORLD_PULSE_HUB_MESSAGES_ENABLED")
     world_pulse_stance_enabled: bool = Field(False, alias="WORLD_PULSE_STANCE_ENABLED")
     world_pulse_schedule_enabled: bool = Field(False, alias="WORLD_PULSE_SCHEDULE_ENABLED")
@@ -139,8 +136,6 @@ class Settings(BaseSettings):
         alias="WORLD_PULSE_SITUATION_CHANGE_CHANNEL",
     )
 
-    notify_url: str = Field("http://notify:7140", validation_alias=AliasChoices("WORLD_PULSE_NOTIFY_URL", "NOTIFY_URL"))
-    notify_api_token: str | None = Field(None, alias="NOTIFY_API_TOKEN")
     actions_url: str = Field("http://actions:8110", alias="ACTIONS_URL")
 
 

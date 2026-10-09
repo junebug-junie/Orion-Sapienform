@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import pytest
 
+import app.llm_profile_resolver as resolver
 from app.llm_profile_resolver import (
-    LLMProfileUnavailableError,
     LLMProfileValidationError,
     normalize_llm_profile,
     resolve_llm_profile,
@@ -18,11 +18,9 @@ def _live_settings():
 
 
 @pytest.fixture(autouse=True)
-def _clear_gateway_url(monkeypatch: pytest.MonkeyPatch) -> None:
+def _defaults(monkeypatch: pytest.MonkeyPatch) -> None:
     cfg = _live_settings()
-    monkeypatch.setattr(cfg, "context_exec_llm_gateway_url", "")
     monkeypatch.setattr(cfg, "context_exec_default_llm_profile", "chat")
-    monkeypatch.setattr(cfg, "context_exec_llm_profile_fallback_enabled", False)
 
 
 def test_normalize_rejects_invalid_profile() -> None:
@@ -43,35 +41,32 @@ async def test_resolve_profile_quick() -> None:
     assert sel.requested == "quick"
     assert sel.selected == "quick"
     assert sel.route_used == "quick"
+    assert sel.fallback_used is False
+
+
+def test_gateway_routes_reader_is_gone() -> None:
+    """GPU pool stage 6.3: context-exec no longer reads the gateway's retiring GET /routes view.
+
+    Pins the deletion so a revert (or a copy-paste from an old branch) cannot quietly put a
+    /routes reader back and hold stage 6.5's zero-read window open."""
+    assert not hasattr(resolver, "fetch_route_status_map")
+    assert not hasattr(resolver, "LLMProfileUnavailableError")
+    import inspect
+
+    source = inspect.getsource(resolver)
+    assert "httpx" not in source and "urlopen" not in source
 
 
 @pytest.mark.asyncio
-async def test_route_unavailable_fails_closed(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_resolve_makes_no_network_call(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A gateway URL being configured must not turn resolution into an HTTP read."""
     cfg = _live_settings()
     monkeypatch.setattr(cfg, "context_exec_llm_gateway_url", "http://gateway.test")
+    import httpx
 
-    async def _down_map(_url: str, *, timeout_sec: float = 1.5) -> dict[str, str]:
-        return {"agent": "down", "chat": "up"}
+    def _boom(*_a, **_k):
+        raise AssertionError("resolve_llm_profile must not open an HTTP client")
 
-    monkeypatch.setattr("app.llm_profile_resolver.fetch_route_status_map", _down_map)
-
-    with pytest.raises(LLMProfileUnavailableError, match="agent"):
-        await resolve_llm_profile("agent")
-
-
-@pytest.mark.asyncio
-async def test_route_unavailable_fallback_when_enabled(monkeypatch: pytest.MonkeyPatch) -> None:
-    cfg = _live_settings()
-    monkeypatch.setattr(cfg, "context_exec_llm_gateway_url", "http://gateway.test")
-    monkeypatch.setattr(cfg, "context_exec_llm_profile_fallback_enabled", True)
-
-    async def _down_map(_url: str, *, timeout_sec: float = 1.5) -> dict[str, str]:
-        return {"quick": "down", "chat": "up"}
-
-    monkeypatch.setattr("app.llm_profile_resolver.fetch_route_status_map", _down_map)
-
-    sel = await resolve_llm_profile("quick")
-    assert sel.selected == "chat"
-    assert sel.route_used == "chat"
-    assert sel.fallback_used is True
-    assert sel.fallback_reason and "quick" in sel.fallback_reason
+    monkeypatch.setattr(httpx, "AsyncClient", _boom)
+    sel = await resolve_llm_profile("agent")
+    assert (sel.selected, sel.route_used, sel.fallback_used) == ("agent", "agent", False)

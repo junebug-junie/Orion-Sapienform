@@ -4,6 +4,8 @@ import hashlib
 import re
 from typing import Any
 
+CURRENT_TURN_DETECTOR_ID = "current_turn_v1"
+
 STOP_PHRASES = {
     "codex",
     "cursor",

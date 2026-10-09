@@ -61,6 +61,62 @@ def request(url="https://example.org/article", **kwargs):
     return ReadingRequestedV1(url=url, requested_by="juniper", invocation_context="unified_chat", why_now="A new context", **kwargs)
 
 
+@pytest.mark.parametrize("stage", [1, 2])
+@pytest.mark.parametrize("reason", ["outside_window", "refund_backoff", "disabled"])
+@pytest.mark.parametrize("active", [False, True, "consumed", "other_stage"])
+def test_admission_gates_only_allow_existing_bindings(local_pg, monkeypatch, stage, reason, active):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+    from orion.schemas.reading import SourceFetchEvidenceV1
+    from orion.schemas.reading_turn import ReadingRunBriefV1
+    from orion.world_pulse_read.durable import bind_turn, ReadingPending
+    from scripts import world_pulse_read_pipeline as s1
+    from scripts import world_pulse_read_stage2 as s2
+
+    async def run():
+        conn, _ = await db(local_pg)
+        await queue.enqueue_reading(conn, request())
+        seed = await queue.claim_next_seed(conn)
+        handoff = WorldPulseReadHandoffV1(
+            seed_ref=seed, what_i_learned="A source-backed finding.",
+            trace_id=str(uuid4()), created_at=datetime.now(timezone.utc),
+            read_evidence=[SourceFetchEvidenceV1(
+                tool_name="WebFetch", url=seed.url, content_chars=500,
+            )],
+        )
+        if stage == 2:
+            await queue.mark_seed_done(conn, seed.seed_id, trace_id=handoff.trace_id, handoff=handoff)
+        else:
+            await conn.execute("UPDATE world_pulse_read_seed SET status='pending', claimed_at=NULL")
+        if active:
+            binding = await bind_turn(conn, ReadingRunBriefV1(
+                seed_id=seed.seed_id, stage=3-stage if active == "other_stage" else stage, prompt="Saved prompt",
+                session_id="reading", timeout_sec=900,
+            ), str(uuid4()))
+            if active == "consumed":
+                await conn.execute("UPDATE reading_durable_turn SET consumed_at=now() WHERE run_id=$1", binding.run_id)
+        module = s1 if stage == 1 else s2
+        cls = s1.WorldPulseReadPipeline if stage == 1 else s2.WorldPulseReadStage2Pipeline
+        monkeypatch.setattr(module, f"wallet_{'a' if stage == 1 else 'b'}_block_reason", lambda _: reason)
+        pipe = cls(enabled=reason != "disabled", tick_interval_sec=60, timeout_sec=900, session_id="reading",
+            pool_provider=lambda: None, source_ref=ServiceRef(name="orion-hub"))
+        async def with_conn(callback):
+            return await callback(conn)
+        pipe._with_conn = with_conn
+        pipe._bus = SimpleNamespace(redis=None, publish=AsyncMock())
+        if stage == 1:
+            pipe._maybe_enqueue_recent = AsyncMock()
+        work = AsyncMock(side_effect=ReadingPending("existing run"))
+        setattr(pipe, "_stage1_read" if stage == 1 else "_stage2_pass", work)
+        expected_poll = active is True and reason != "disabled"
+        assert await pipe.tick() == ("waiting_resource" if expected_poll else reason)
+        assert work.await_count == int(expected_poll)
+        row = await conn.fetchrow("SELECT attempts, stage2_attempts FROM world_pulse_read_seed")
+        assert tuple(row) == (0, 0)
+        await conn.close()
+    asyncio.run(run())
+
+
 def test_migration_is_additive_and_rerunnable(local_pg):
     async def run():
         conn = await asyncpg.connect(**local_pg)
@@ -76,6 +132,8 @@ def test_migration_is_additive_and_rerunnable(local_pg):
         retry_migration = (ROOT / "services/orion-sql-db/manual_migration_world_pulse_read_retry_v1.sql").read_text()
         await conn.execute(retry_migration)
         await conn.execute(retry_migration)
+        from orion.world_pulse_read.durable import READING_DURABLE_SQL
+        await conn.execute(READING_DURABLE_SQL)
         legacy = await queue.claim_next_seed(conn)
         assert legacy.seed_id == "legacy"
         legacy_status = await queue.reading_status(conn, url="https://example.org/old")
@@ -87,6 +145,68 @@ def test_migration_is_additive_and_rerunnable(local_pg):
 
         ReadingStatusReceiptV1.model_validate(legacy_status)
         assert await conn.fetchval("SELECT count(*) FROM world_pulse_read_seed") == 1
+        await conn.close()
+    asyncio.run(run())
+
+
+def test_reading_durable_binding_survives_restart_and_retires_atomically(local_pg):
+    from orion.world_pulse_read.durable import bind_turn, consume_turn, release_claim
+    from orion.schemas.reading_turn import ReadingRunBriefV1
+
+    async def run():
+        conn, schema = await db(local_pg)
+        req = request()
+        await queue.enqueue_reading(conn, req)
+        seed = await queue.claim_next_seed(conn)
+        brief = ReadingRunBriefV1(seed_id=seed.seed_id, stage=1, prompt="Original prompt",
+                                  session_id="reading", timeout_sec=900)
+        first = await bind_turn(conn, brief, str(uuid4()))
+        await release_claim(conn, seed.seed_id, 1)
+        await conn.close()
+        conn = await asyncpg.connect(**local_pg)
+        await conn.execute(f'SET search_path TO "{schema}"')
+        replay = await bind_turn(conn, brief.model_copy(update={"prompt": "Changed prompt"}), str(uuid4()))
+        assert replay == first
+        assert await conn.fetchval("SELECT attempts FROM world_pulse_read_seed") == 0
+        async with conn.transaction():
+            await queue.mark_seed_failed(conn, seed.seed_id,
+                error="turn_deferred:stance_react_timeout", max_attempts=3)
+            await consume_turn(conn, first.run_id)
+        retry = await bind_turn(conn, brief, str(uuid4()))
+        assert retry.run_id != first.run_id
+        assert await conn.fetchval("SELECT attempts FROM world_pulse_read_seed") == 0
+        await conn.close()
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("cancelled", [False, True])
+def test_worker_wait_or_cancel_does_not_charge_or_spend_attempt(local_pg, cancelled):
+    from unittest.mock import AsyncMock
+    from types import SimpleNamespace
+    from fakeredis.aioredis import FakeRedis
+    from scripts.world_pulse_read_pipeline import WorldPulseReadPipeline
+    from orion.world_pulse_read.durable import ReadingPending, ReadingCancelled
+    from orion.world_pulse_read.wallet_a import read_wallet_a_state
+
+    async def run():
+        conn, _ = await db(local_pg)
+        await queue.enqueue_reading(conn, request())
+        redis = FakeRedis()
+        pipe = WorldPulseReadPipeline(enabled=True, tick_interval_sec=60, timeout_sec=900, session_id="reading", pool_provider=lambda: None,
+            source_ref=ServiceRef(name="orion-hub"))
+        async def with_conn(callback):
+            return await callback(conn)
+        pipe._with_conn = with_conn
+        pipe._bus = SimpleNamespace(redis=redis, publish=AsyncMock())
+        pipe._maybe_enqueue_recent = AsyncMock()
+        pipe._generate = AsyncMock(side_effect=ReadingCancelled("run") if cancelled else ReadingPending("queued"))
+        assert await pipe.tick(force=True) == ("cancelled" if cancelled else "waiting_resource")
+        row = await conn.fetchrow("SELECT status, attempts FROM world_pulse_read_seed")
+        assert row["attempts"] == 0
+        assert row["status"] == ("skipped" if cancelled else "pending")
+        _, count = await read_wallet_a_state(redis, now=datetime.now(timezone.utc), timezone_name="UTC")
+        assert count == 0
+        await redis.aclose()
         await conn.close()
     asyncio.run(run())
 
@@ -107,7 +227,9 @@ def test_url_status_selects_latest_alias_and_preserves_earlier_failure(local_pg)
         async with conn.transaction(readonly=True):
             latest = await queue.reading_status(conn, url=url + "#abstract")
             assert latest["request_id"] == str(alias.request_id)
+            # `old` was marked done without fetch evidence, so it is not a read.
             assert latest["duplicate_of"] == "reading:" + str(current.request_id)
+            assert latest["duplicate"] == "already_queued"
             assert latest["status"] == "queued"
             assert latest["queue_position"] == 1
             assert latest["matched_request_count"] == 3
@@ -121,7 +243,7 @@ def test_url_status_selects_latest_alias_and_preserves_earlier_failure(local_pg)
     asyncio.run(run())
 
 
-def test_concurrent_submissions_alias_active_work_and_allow_later_reread(local_pg):
+def test_concurrent_submissions_alias_active_work_and_allow_reread_without_evidence(local_pg):
     async def run():
         conn, schema = await db(local_pg)
         other = await asyncpg.connect(**local_pg)
@@ -135,6 +257,7 @@ def test_concurrent_submissions_alias_active_work_and_allow_later_reread(local_p
         await queue.enqueue_reading(conn, a)
         assert await conn.fetchval("SELECT count(*) FROM world_pulse_read_seed") == 2
         await conn.execute("UPDATE world_pulse_read_seed SET status='done', stage2_status='done' WHERE duplicate_of IS NULL")
+        # Done without fetch evidence (pre-2026-09-25 rows) is not a read.
         assert (await queue.enqueue_reading(conn, request()))["status"] == "queued"
         assert await conn.fetchval("SELECT count(*) FROM world_pulse_read_seed WHERE status='pending'") == 1
         await other.close()
@@ -514,4 +637,211 @@ def test_stale_sweep_keeps_a_digest_item_a_request_is_aliased_to(local_pg):
         got = dict(await conn.fetch("SELECT seed_id, status FROM world_pulse_read_seed WHERE kind = 'digest_item'"))
         assert got == {"digest_item:shared": "pending", "digest_item:alone": "skipped"}
         await conn.close()
+    asyncio.run(run())
+
+
+def test_reading_results_introspection_is_read_only_and_distinguishes_states(local_pg):
+    from orion.schemas.introspect import DEFAULT_TEXT_CAP, URL_CAP
+    from orion.world_pulse_read.introspect import reading_results
+
+    async def run():
+        conn, _ = await db(local_pg)
+        # Production journal_entries (sql-writer) has these columns; the shared
+        # helper's minimal table does not.
+        await conn.execute(
+            "ALTER TABLE journal_entries ADD COLUMN created_at timestamptz NOT NULL DEFAULT now(), "
+            "ADD COLUMN title text"
+        )
+        done = request("https://example.org/done")
+        hollow = request("https://example.org/hollow")
+        queued = request("https://example.org/queued")
+        failed = request("https://example.org/failed")
+        for r in (done, hollow, queued, failed):
+            await queue.enqueue_reading(conn, r)
+        mark_done = """UPDATE world_pulse_read_seed
+               SET status='done', stage2_status='done',
+                   handoff_json=$2::jsonb, stage2_result_json=$3::jsonb,
+                   handoff_at=now(), stage2_completed_at=now(), landing_at=now(),
+                   trace_id='t1', stage2_trace_id='t2'
+               WHERE request_id=$1"""
+        await conn.execute(
+            mark_done,
+            done.request_id,
+            json.dumps({"what_i_learned": "stage one note", "read_evidence": [
+                {"tool_name": "WebFetch", "url": "https://example.org/done", "content_chars": 500},
+            ]}),
+            json.dumps({"summary": "S" * (DEFAULT_TEXT_CAP + 300)}),
+        )
+        # Pre-2026-09-25 shape: marked done with no tool-trace read of the source.
+        await conn.execute(
+            mark_done,
+            hollow.request_id,
+            json.dumps({"what_i_learned": "metadata-only guess"}),
+            json.dumps({"summary": "built on an unread handoff"}),
+        )
+        await conn.execute(
+            "INSERT INTO journal_entries (entry_id, source_ref, body) "
+            "VALUES ('j1', 'world_pulse_read_stage2:t2', 'Journal body about the source')"
+        )
+        await conn.execute(
+            "UPDATE world_pulse_read_seed SET status='failed', last_error='boom', handoff_json=$2::jsonb "
+            "WHERE request_id=$1",
+            failed.request_id, json.dumps({"what_i_learned": "rejected handoff"}),
+        )
+        long_url = "https://example.org/" + "p" * 700
+        await queue.enqueue_reading(conn, request(long_url))
+        before = await conn.fetch("SELECT * FROM world_pulse_read_seed ORDER BY seed_id")
+
+        recent = await reading_results(conn)
+        assert recent.ok and recent.total_available == 1
+        [item] = recent.items
+        assert item.kind == "reading_result" and item.epistemic_status == "unsettled"
+        assert item.extra["url"] == "https://example.org/done"
+        assert item.extra["learned"] is True
+        assert item.extra["source_read"] is True
+        assert item.truncated and len(item.text) == DEFAULT_TEXT_CAP
+        assert "journal_excerpt" not in item.extra
+        assert "url_truncated" not in item.extra
+
+        unread = await reading_results(conn, url="https://example.org/hollow")
+        assert unread.items[0].extra["reading_status"] == "completed"
+        assert unread.items[0].extra["source_read"] is False
+        assert unread.items[0].extra["learned"] is False
+        assert unread.items[0].text == ""
+
+        by_url = await reading_results(conn, url="https://EXAMPLE.org/done#x")
+        assert by_url.total_available == 1
+        assert by_url.items[0].extra["journal_excerpt"] == "Journal body about the source"
+        assert by_url.items[0].extra["request_id"] == str(done.request_id)
+
+        clipped = (await reading_results(conn, url=long_url)).items[0].extra
+        assert len(clipped["url"]) == URL_CAP and clipped["url_truncated"] is True
+
+        pending = await reading_results(conn, request_id=queued.request_id)
+        assert pending.items[0].text == ""
+        assert pending.items[0].extra["learned"] is False
+        assert pending.items[0].extra["reading_status"] == "queued"
+
+        rejected = await reading_results(conn, request_id=failed.request_id)
+        assert rejected.items[0].extra["reading_status"] == "failed"
+        assert rejected.items[0].extra["learned"] is False
+        assert rejected.items[0].text == ""
+
+        missing = await reading_results(conn, url="https://example.org/never")
+        assert missing.ok and missing.items == [] and missing.total_available == 0
+
+        future = await reading_results(conn, since=datetime(2999, 1, 1, tzinfo=timezone.utc))
+        assert future.ok and future.items == [] and future.total_available == 0
+
+        assert await conn.fetch("SELECT * FROM world_pulse_read_seed ORDER BY seed_id") == before
+        await conn.close()
+
+    asyncio.run(run())
+
+
+def test_reading_search_index_and_query_use_real_sql_gate(local_pg):
+    import httpx
+
+    from orion.world_pulse_read.search import (
+        ReadingSearchConfig, index_missing_readings, search_readings, verified_rows,
+    )
+
+    cfg = ReadingSearchConfig(
+        chroma_url="http://chroma.test", embed_url="http://embed.test/embedding",
+        collection="orion_reading_results", min_similarity=0.6,
+    )
+
+    async def run():
+        conn, _ = await db(local_pg)
+        done, hollow, queued, dup = (
+            request(f"https://example.org/{n}") for n in ("done", "hollow", "queued", "dup")
+        )
+        for r in (done, hollow, queued, dup):
+            await queue.enqueue_reading(conn, r)
+        mark = """UPDATE world_pulse_read_seed SET status='done', stage2_status='done',
+                  handoff_json=$2::jsonb, stage2_result_json=$3::jsonb, handoff_at=now(),
+                  stage2_completed_at=now(), landing_at=now() WHERE request_id=$1"""
+        await conn.execute(mark, done.request_id, json.dumps({"read_evidence": [
+            {"tool_name": "WebFetch", "url": "https://example.org/done", "content_chars": 500}]}),
+            json.dumps({"summary": "GPU supply is tight"}))
+        await conn.execute(mark, hollow.request_id, json.dumps({"what_i_learned": "guess"}),
+                           json.dumps({"summary": "built on nothing"}))
+        # A genuinely read, finished duplicate passes the Python gate; only SQL stops it.
+        await conn.execute(mark, dup.request_id, json.dumps({"read_evidence": [
+            {"tool_name": "WebFetch", "url": "https://example.org/dup", "content_chars": 500}]}),
+            json.dumps({"summary": "duplicate of done"}))
+        seeds = {r["url"]: r["seed_id"] for r in await conn.fetch("SELECT url, seed_id FROM world_pulse_read_seed")}
+        await conn.execute(
+            "UPDATE world_pulse_read_seed SET duplicate_of=$1 WHERE seed_id=$2",
+            seeds["https://example.org/done"], seeds["https://example.org/dup"],
+        )
+
+        def handler(req: httpx.Request) -> httpx.Response:
+            if req.url.host == "embed.test":
+                return httpx.Response(200, json={"doc_id": "q", "embedding": [1.0, 0.0], "embedding_dim": 2})
+            if req.url.path.endswith("/orion_reading_results"):
+                return httpx.Response(200, json={"id": "cid", "metadata": None})
+            if req.url.path.endswith("/get"):
+                return httpx.Response(200, json={"ids": [], "metadatas": []})
+            ids = [seeds[f"https://example.org/{n}"] for n in ("done", "hollow", "queued", "dup")]
+            return httpx.Response(200, json={"ids": [ids], "distances": [[0.2] * len(ids)]})
+
+        published = []
+
+        class Bus:
+            async def publish(self, channel, envelope):
+                published.append(envelope.payload["doc_id"])
+
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            rows = await verified_rows(conn)
+            result = await index_missing_readings(rows, cfg, client=client, bus=Bus(), source=ServiceRef(name="orion-hub"))
+            assert (result.indexed, result.pending) == (1, 0)
+            assert published == [seeds["https://example.org/done"]]
+            found = await search_readings(conn, cfg, client=client, query="graphics cards", limit=5)
+            assert found.total_available == 1
+            assert found.items[0].extra["url"] == "https://example.org/done"
+            assert found.items[0].extra["similarity"] == 0.9
+            assert found.items[0].text == "GPU supply is tight"
+            future = await search_readings(conn, cfg, client=client, query="gpus", limit=5,
+                                           since=datetime(2999, 1, 1, tzinfo=timezone.utc))
+            assert future.items == [] and future.total_available == 0
+        await conn.close()
+
+    asyncio.run(run())
+
+
+def test_document_capture_and_path_lookup_on_real_postgres(local_pg, tmp_path):
+    from orion.world_pulse_read.documents import DocumentPolicy, DocumentSourceError
+
+    doc = tmp_path / "spec_100%_done.md"
+    doc.write_text("# Spec\n\nv1 body\n")
+    policy = DocumentPolicy.from_values(roots=str(tmp_path), extensions=None, max_bytes=4096)
+
+    async def run():
+        conn, _ = await db(local_pg)
+        first = await queue.enqueue_reading(conn, request(url=f"file://{doc}"), documents=policy)
+        row = await conn.fetchrow("SELECT url FROM world_pulse_read_seed WHERE seed_id=$1", first["seed_id"])
+        sha = row["url"].rsplit("=", 1)[1]
+        snap = await conn.fetchrow("SELECT content, content_chars, first_source FROM reading_document_snapshot WHERE sha256=$1", sha)
+        assert snap["content"] == "# Spec\n\nv1 body\n" and snap["first_source"] == row["url"]
+        doc.write_text("# Spec\n\nv2 body\n")
+        second = await queue.enqueue_reading(conn, request(url=f"file://{doc}"), documents=policy)
+        assert second["duplicate"] is None
+        # `%` in the path must not act as a LIKE wildcard; split_part is exact.
+        status = await queue.reading_status(conn, url=str(doc))
+        assert status["request_id"] == second["request_id"] and status["matched_request_count"] == 2
+        assert (await queue.reading_status(conn, url=str(tmp_path / "spec_1.md")))["status"] == "not_found"
+        # A pinned source must name a stored snapshot; it is never read from disk.
+        with pytest.raises(DocumentSourceError, match="document_snapshot_missing"):
+            await queue.enqueue_reading(conn, request(url=f"file://{doc}?sha256={'e' * 64}"), documents=policy)
+        # A real snapshot hash cannot vouch for a path it was not captured from.
+        other = tmp_path / "other.md"
+        other.write_text("other")
+        with pytest.raises(DocumentSourceError, match="document_snapshot_missing"):
+            await queue.enqueue_reading(conn, request(url=f"file://{other}?sha256={sha}"), documents=policy)
+        # The exact captured ref is accepted again (folded onto the first read).
+        again = await queue.enqueue_reading(conn, request(url=row["url"]), documents=policy)
+        assert again["duplicate_of"] == first["seed_id"]
+        await conn.close()
+
     asyncio.run(run())

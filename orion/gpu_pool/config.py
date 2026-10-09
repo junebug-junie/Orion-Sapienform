@@ -13,13 +13,13 @@ from pathlib import Path
 from typing import Any, Literal, get_args
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_validator, model_validator
 
 DEFAULT_PATH = Path(__file__).resolve().parents[2] / "config" / "gpu_pool.yaml"
-PRIORITIES = ("interactive", "system", "background")
+PRIORITIES = ("urgent", "interactive", "system", "background")
 # Pool-side swap preconditions (stage 4 spec, "Guards"). A guard named here must be one the
 # scheduler evaluates; the scheduler side lands with the actuation engine (stage 4.3).
-SwapGuard = Literal["thermal", "visual_baseline"]
+SwapGuard = Literal["thermal"]   # visual_baseline deleted in stage 5.4
 SWAP_GUARDS = get_args(SwapGuard)
 
 
@@ -48,11 +48,21 @@ class Defaults(BaseModel):
     hold_clawback_grace_sec: float = Field(600, ge=0)   # a recalled hold finishes its current node within this
     swap_min_residency_sec: float = Field(600, ge=0)    # after a seat unloads, evicted residents stay this long
     actuate_ack_sec: float = Field(10, gt=0)            # no "accepted" within this -> actuator_unreachable
+    # Urgent (docs/superpowers/specs/2026-09-28-urgent-curiosity-and-hardware-watch-design.md).
+    urgent_preempt_grace_sec: float = Field(5, ge=0)    # a hold paused for urgent work gets this long, then is aborted + re-queued in place
+    urgent_max_concurrent: int = Field(3, ge=0)         # active urgent leases at once; 0 = urgent behaves like background (rollback)
 
 
 class HostSpec(BaseModel):
     model_config = ConfigDict(extra="forbid")
     name: str
+    address: str
+
+
+class ExtraHostSpec(BaseModel):
+    """A second GPU node (``hosts:``). Its cards say ``host: <name>``; the pool's own ``host`` stays
+    the default for every card that names none."""
+    model_config = ConfigDict(extra="forbid")
     address: str
 
 
@@ -67,7 +77,8 @@ class CardSpec(BaseModel):
     model_config = ConfigDict(extra="forbid")
     vram_gb: float = Field(gt=0)
     lendable: bool = False
-    index: int | None = Field(None, ge=0)   # the actuator host's CUDA device number for this card
+    index: int | None = Field(None, ge=0)   # the card's host's CUDA device number for this card
+    host: str | None = None                 # a ``hosts:`` name; None = the pool's ``host``
 
 
 def _http_path(value: str) -> str:
@@ -96,7 +107,16 @@ class LaunchSpec(BaseModel):
     env_file: str | None = None            # repo-relative; its committed template is <env_file>_example
     service: str                           # compose service name
     compose_profile: str | None = None
-    cuda_env: str = Field(pattern=r"^[A-Z_][A-Z0-9_]*$")   # env var the actuator sets from the cards' index
+    # Stage 5 meaning: the COMPOSE INTERPOLATION variable the actuator sets from the cards' index.
+    # check_launch requires every device entry of the service to be exactly ${cuda_env} or
+    # ${cuda_env:-<index>}, never a literal, so the actuator can always move the role.
+    cuda_env: str = Field(pattern=r"^[A-Z_][A-Z0-9_]*$")
+    # Stage 5: a model choice per role. profile_var is the compose interpolation variable the
+    # actuator sets to the chosen config/llm_profiles.yaml profile (the service's LLM_PROFILE_NAME
+    # must be ${profile_var} or ${profile_var:-...}); profiles is the allow-list, first = default.
+    # No profiles -> the pool sends profile=None and compose's default fills the seat.
+    profile_var: str | None = Field(None, pattern=r"^[A-Z_][A-Z0-9_]*$")
+    profiles: list[str] = Field(default_factory=list)
     drain: DrainSpec | None = None
     ready: str = "/health"
     timeout_sec: float = Field(600, gt=0)
@@ -113,28 +133,31 @@ class LaunchSpec(BaseModel):
     def _ready_path(cls, value: str) -> str:
         return _http_path(value)
 
+    @model_validator(mode="after")
+    def _profiles_shape(self):
+        if self.profiles and self.profile_var is None:
+            raise ValueError("launch.profiles needs launch.profile_var (the variable the actuator sets)")
+        if len(set(self.profiles)) != len(self.profiles):
+            raise ValueError("launch.profiles has duplicates")
+        if self.profile_var is not None and self.profile_var == self.cuda_env:
+            raise ValueError("launch.profile_var and launch.cuda_env must be different variables")
+        return self
+
 
 class SwapSpec(BaseModel):
     model_config = ConfigDict(extra="forbid")
     evicts: list[str] | Literal["all"]
-    # Stage-4 bridge verbs (the controller maps them to its fixed gpu2 transitions); deleted in
-    # stage 5. A seat without them must carry a `launch` on itself and every role it evicts.
-    load: str | None = None
-    unload: str | None = None
+    # Stage 5.6 deleted the stage-4 bridge verbs (`load`/`unload`); extra="forbid" refuses a YAML
+    # that still carries them. A seat is actuated only through the `launch` on itself and every
+    # role it evicts.
     after_wait_sec: float | None = Field(None, ge=0)   # per-seat override of defaults.swap_after_wait_sec
     guards: list[SwapGuard] = Field(default_factory=list)
 
     @model_validator(mode="after")
-    def _bridge_pair(self):
-        if (self.load is None) != (self.unload is None):
-            raise ValueError("swap.load and swap.unload come as a pair")
+    def _unique_guards(self):
         if len(set(self.guards)) != len(self.guards):
             raise ValueError("swap.guards has duplicates")
         return self
-
-    @property
-    def bridged(self) -> bool:
-        return self.load is not None
 
 
 class RoleSpec(BaseModel):
@@ -150,6 +173,9 @@ class RoleSpec(BaseModel):
     launch: LaunchSpec | None = None
     operator_only: bool = False
     max_hold_sec: float | None = Field(None, gt=0)
+    # Stage 5: roles that must never compute at the same time as this one (same card). Symmetric:
+    # the scheduler places nothing on R while a lease is active on a role R lists or that lists R.
+    serialize_with: list[str] = Field(default_factory=list)
 
     @field_validator("owner", mode="before")
     @classmethod
@@ -172,13 +198,14 @@ class ClassSpec(BaseModel):
 class RouteSpec(BaseModel):
     model_config = ConfigDict(extra="forbid")
     work_class: str = Field(alias="class")
-    priority: Literal["interactive", "system", "background"] = "system"
+    priority: Literal["urgent", "interactive", "system", "background"] = "system"
 
 
 class PoolConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
     version: Literal[1]
     host: HostSpec
+    hosts: dict[str, ExtraHostSpec] = Field(default_factory=dict)   # GPU nodes besides ``host``
     defaults: Defaults = Field(default_factory=Defaults)
     actuators: dict[str, ActuatorSpec] = Field(default_factory=dict)
     priorities: list[str] = Field(default_factory=lambda: list(PRIORITIES))
@@ -186,10 +213,14 @@ class PoolConfig(BaseModel):
     roles: dict[str, RoleSpec]
     classes: dict[str, ClassSpec]
     routes: dict[str, RouteSpec] = Field(default_factory=dict)
+    # Durable-run holds on non-LLM roles (diffusion). Read by durable-runs' hold placement
+    # only; the gateway serves ``routes`` and never lists these as models.
+    hold_routes: dict[str, RouteSpec] = Field(default_factory=dict)
     digest: str = ""
     source_text: str = Field("", exclude=True, repr=False)
+    _serial: dict[str, list[str]] = PrivateAttr(default_factory=dict)   # serialize_with, symmetric
 
-    @field_validator("routes", mode="before")
+    @field_validator("routes", "hold_routes", mode="before")
     @classmethod
     def _route_shorthand(cls, value: Any) -> Any:
         if not isinstance(value, dict):
@@ -201,10 +232,17 @@ class PoolConfig(BaseModel):
         errors: list[str] = []
         if sorted(self.priorities) != sorted(PRIORITIES):
             errors.append(f"priorities must be a permutation of {PRIORITIES}")
+        if self.host.name in self.hosts:
+            errors.append(f"hosts: {self.host.name} is the pool host; list only the other nodes")
+        for card, spec in self.cards.items():
+            if spec.host is not None and spec.host != self.host.name and spec.host not in self.hosts:
+                errors.append(f"card {card}: unknown host {spec.host}")
         for name, role in self.roles.items():
             for card in role.cards:
                 if card not in self.cards:
                     errors.append(f"role {name}: unknown card {card}")
+            if len({self.card_host(c) for c in role.cards if c in self.cards}) > 1:
+                errors.append(f"role {name}: cards span hosts (one server serves a role)")
             for owner in role.owner:
                 if owner not in self.classes:
                     errors.append(f"role {name}: owner {owner} is not a class")
@@ -217,6 +255,16 @@ class PoolConfig(BaseModel):
                         errors.append(f"role {name}: evicts unknown role {evicted}")
                     elif not set(other.cards) & set(role.cards):
                         errors.append(f"role {name}: evicts {evicted}, which shares no card with it")
+            if len(set(role.serialize_with)) != len(role.serialize_with):
+                errors.append(f"role {name}: serialize_with has duplicates")
+            for other_name in role.serialize_with:
+                other = self.roles.get(other_name)
+                if other_name == name:
+                    errors.append(f"role {name}: serialize_with names itself")
+                elif other is None:
+                    errors.append(f"role {name}: serialize_with unknown role {other_name}")
+                elif not set(other.cards) & set(role.cards):
+                    errors.append(f"role {name}: serialize_with {other_name}, which shares no card with it")
             if role.launch is not None:
                 if role.launch.actuator not in self.actuators:
                     errors.append(f"role {name}: launch.actuator {role.launch.actuator} is not in actuators")
@@ -224,22 +272,36 @@ class PoolConfig(BaseModel):
                     if card in self.cards and self.cards[card].index is None:
                         errors.append(f"role {name}: has a launch but card {card} has no index")
         for name, role in self.roles.items():
-            if role.swap is None or role.swap.bridged:
+            if role.swap is None:
+                continue
+            if role.operator_only and role.launch is None:
+                # Operator-only seat nothing can load yet (experiment, stage 5 Decision 3). Stage 5.7:
+                # the pool refuses any operator lease on it (``not_actuatable_reason``), and the
+                # scheduler never drains its residents for one, so nothing can empty its cards.
                 continue
             unlaunched = [r for r in [name, *self.evicted_by(name)] if r in self.roles and self.roles[r].launch is None]
             if unlaunched:
-                errors.append(f"role {name}: swap seat has no load/unload bridge, so it and every role it "
-                              f"evicts need a launch; missing on {unlaunched}")
+                errors.append(f"role {name}: swap seat and every role it evicts need a launch; "
+                              f"missing on {unlaunched}")
         for name, act in self.actuators.items():
-            if act.host != self.host.name:
-                errors.append(f"actuator {name}: host {act.host} is not the pool host {self.host.name}")
-        indices: dict[int, str] = {}
+            if act.host != self.host.name and act.host not in self.hosts:
+                errors.append(f"actuator {name}: host {act.host} is not a known host")
+        for name, role in self.roles.items():
+            if role.launch is None or role.launch.actuator not in self.actuators:
+                continue
+            act_host = self.actuators[role.launch.actuator].host
+            for card in role.cards:
+                if card in self.cards and self.card_host(card) != act_host:
+                    errors.append(f"role {name}: card {card} is on {self.card_host(card)}, "
+                                  f"its actuator {role.launch.actuator} on {act_host}")
+        indices: dict[tuple[str, int], str] = {}
         for card, spec in self.cards.items():
             if spec.index is None:
                 continue
-            if spec.index in indices:
-                errors.append(f"cards {indices[spec.index]} and {card} share index {spec.index}")
-            indices[spec.index] = card
+            key = (self.card_host(card), spec.index)
+            if key in indices:
+                errors.append(f"cards {indices[key]} and {card} share index {spec.index}")
+            indices[key] = card
         for name, cls in self.classes.items():
             for role in cls.roles:
                 if role not in self.roles:
@@ -249,6 +311,11 @@ class PoolConfig(BaseModel):
         for name, route in self.routes.items():
             if route.work_class not in self.classes:
                 errors.append(f"route {name}: unknown class {route.work_class}")
+        for name, route in self.hold_routes.items():
+            if route.work_class not in self.classes:
+                errors.append(f"hold route {name}: unknown class {route.work_class}")
+            if name in self.routes:
+                errors.append(f"hold route {name}: also a gateway route")
         ports: dict[int, str] = {}
         for name, role in self.roles.items():
             if role.port in ports:
@@ -256,14 +323,29 @@ class PoolConfig(BaseModel):
             ports[role.port] = name
         if errors:
             raise ValueError("; ".join(errors))
+        # serialize_with read symmetrically, once: the scheduler asks per placement check.
+        self._serial = {r: sorted(set(spec.serialize_with)
+                                  | {o for o, other in self.roles.items() if r in other.serialize_with})
+                        for r, spec in self.roles.items()}
         return self
 
     # --- derived views -------------------------------------------------------------
     def priority_rank(self, priority: str) -> int:
         return self.priorities.index(priority)
 
+    def card_host(self, card: str) -> str:
+        """The node a card is in: its ``host``, else the pool's own ``host``."""
+        return self.cards[card].host or self.host.name
+
+    def role_host(self, role: str) -> str:
+        """The node serving ``role`` (the validator keeps a role's cards on one node)."""
+        return self.card_host(self.roles[role].cards[0])
+
+    def host_address(self, name: str) -> str:
+        return self.host.address if name == self.host.name else self.hosts[name].address
+
     def url(self, role: str) -> str:
-        return f"http://{self.host.address}:{self.roles[role].port}"
+        return f"http://{self.host_address(self.role_host(role))}:{self.roles[role].port}"
 
     def owns(self, work_class: str, role: str) -> bool:
         return work_class in self.roles[role].owner
@@ -286,13 +368,44 @@ class PoolConfig(BaseModel):
             return swap.after_wait_sec
         return self.defaults.swap_after_wait_sec
 
+    def load_profile(self, role: str) -> str | None:
+        """The profile the pool sends with a ``load`` of ``role``: the first ``launch.profiles``
+        entry (the allow-list's default). None when the role lists no profiles -> the actuator leaves
+        compose's own default. Choosing another entry by vision / per-slot ctx / VRAM is not built
+        yet (stage 5 spec, Decision 2 and "Corrections from building 5.2" 6)."""
+        launch = self.roles[role].launch
+        return launch.profiles[0] if launch is not None and launch.profiles else None
+
+    def actuated_seats(self) -> frozenset[str]:
+        """Stage 5.7: the swap seats the pool loads and unloads itself. A seat is actuated if and only
+        if it has a ``launch`` block (which names its actuator); there is no second list to drift from
+        this YAML (GPU_POOL_ACTUATE_ROLES was deleted). The validator already requires a launch on every
+        non-operator swap seat and on every role a launched seat evicts."""
+        return frozenset(r for r, spec in self.roles.items() if spec.swap is not None and spec.launch is not None)
+
+    def not_actuatable_reason(self, work_class: str) -> str | None:
+        """Why an operator lease on ``work_class`` must be refused, or None. A swap seat without a
+        launch block (``experiment``, deferred) can never be loaded, so granting its lease would only
+        drain every resident it evicts and leave the cards empty (stage 5 "Corrections from building
+        5.1" item 5)."""
+        cls = self.classes.get(work_class)
+        for role in (cls.roles if cls else []):
+            spec = self.roles[role]
+            if spec.swap is not None and spec.launch is None:
+                return f"not_actuatable:{role}"
+        return None
+
+    def serialized_with(self, role: str) -> list[str]:
+        """``serialize_with`` read symmetrically: what ``role`` lists plus every role listing it."""
+        return self._serial.get(role, [])
+
     def resident_roles(self) -> list[str]:
         """Roles loaded when no swap is active: everything without its own swap seat."""
         return [r for r, spec in self.roles.items() if spec.swap is None]
 
 
 def launch_digest(cfg: PoolConfig, role: str) -> str:
-    """sha256 over what an actuation of ``role`` would touch: its launch, its swap bridge, and the
+    """sha256 over what an actuation of ``role`` would touch: its launch, its swap evictions, and the
     launch of every role it evicts. Pool and actuator each compute it from their own copy of
     config/gpu_pool.yaml; GpuActuateV1.launch_digest carries the pool's, and the actuator refuses on
     a mismatch (a stale checkout on one side must not start the wrong thing). Key order, comments
@@ -317,8 +430,11 @@ def launch_digest(cfg: PoolConfig, role: str) -> str:
     spec = cfg.roles[role]
     body = {
         "role": role, **one(role),
-        "swap": ({"load": spec.swap.load, "unload": spec.swap.unload, "evicts": sorted(evicted)}
-                 if spec.swap else None),
+        # "load"/"unload" are the stage-4 bridge verbs, deleted in 5.6 and always null since the 5.3
+        # cutover. The nulls stay in the hashed body so every digest keeps its deployed value: a pool
+        # and an actuator on either side of 5.6 still agree, and 5.6 needs no lockstep deploy
+        # (test_stage5_6_digest_is_unchanged_by_the_bridge_removal pins it).
+        "swap": ({"load": None, "unload": None, "evicts": sorted(evicted)} if spec.swap else None),
         "evicted": {r: one(r) for r in sorted(evicted)},
     }
     return hashlib.sha256(json.dumps(body, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
@@ -357,7 +473,33 @@ def check_vram(cfg: PoolConfig, footprint_gb: dict[str, float]) -> list[str]:
     return problems
 
 
-_SUBST_RE = re.compile(r"^\$\{([A-Za-z_][A-Za-z0-9_]*)(?:(:?-)([^}]*))?\}$")
+_SUBST_HEAD_RE = re.compile(r"^\$\{([A-Za-z_][A-Za-z0-9_]*)(:?-)?")
+# Container variables that pick a GPU. A launch role's service must set each one it uses only
+# through its launch.cuda_env interpolation (stage 5, "Meaning change: cuda_env, plus a gate").
+DEVICE_KEYS = ("CUDA_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES_OVERRIDE", "NVIDIA_VISIBLE_DEVICES")
+
+
+def _parse_subst(value: str) -> tuple[str, str | None, str | None] | None:
+    """``${VAR}``, ``${VAR:-d}`` or ``${VAR-d}`` spanning the WHOLE value -> (VAR, op, d); the
+    default may itself be an interpolation (``${A:-${B}}``, which compose accepts). None otherwise
+    (a literal, or anything mixing text and interpolations)."""
+    match = _SUBST_HEAD_RE.match(value)
+    if match is None:
+        return None
+    depth, i = 1, 2
+    while i < len(value) and depth:
+        if value.startswith("${", i):
+            depth, i = depth + 1, i + 2
+            continue
+        if value[i] == "}":
+            depth -= 1
+        i += 1
+    if depth or i != len(value):
+        return None
+    var, op = match.group(1), match.group(2)
+    if op is None:
+        return (var, None, None) if match.end() == len(value) - 1 else None
+    return var, op, value[match.end():-1]
 
 
 def _env_pairs(environment: Any) -> dict[str, str]:
@@ -390,26 +532,47 @@ def _resolve(value: str, template: dict[str, str]) -> str | None:
     (the operator contract): the env value wins; ``${VAR:-d}`` falls back to d when VAR is unset
     OR empty, ``${VAR-d}`` only when unset. A literal is itself. None when unresolvable."""
     value = value.strip().strip('"').strip("'")
-    match = _SUBST_RE.match(value)
-    if match is None:
+    parsed = _parse_subst(value)
+    if parsed is None:
         return None if "$" in value else value
-    var, op, default = match.groups()
+    var, op, default = parsed
     current = template.get(var)
+    fallback = _resolve(default, template) if default else None
     if op == ":-":
-        return current or default or None
+        return current or fallback
     if op == "-":
-        return current if var in template else (default or None)
+        return current if var in template else fallback
     return current or None
+
+
+def _interpolates(value: str, var: str) -> tuple[bool, str | None]:
+    """Is ``value`` exactly ``${var}`` or ``${var:-<default>}``? -> (ok, default)."""
+    parsed = _parse_subst(value.strip().strip('"').strip("'"))
+    if parsed is None or parsed[0] != var or parsed[1] not in (None, ":-"):
+        return False, None
+    return True, parsed[2]
+
+
+def _known_profiles(root: Path) -> set[str] | None:
+    """The profiles in ``<root>/config/llm_profiles.yaml`` -- the tree being checked, never another."""
+    path = root / "config" / "llm_profiles.yaml"
+    if not path.is_file():
+        return None
+    data = yaml.safe_load(path.read_text()) or {}
+    return set((data.get("profiles") or {}).keys())
 
 
 def check_launch(cfg: PoolConfig, root: str | Path) -> list[str]:
     """Every ``launch`` block must name something real in its compose file (stage 4 spec,
     "Validation additions"): the service exists (under its profile, if one is named), an llm role's
     service announces that role on that port, a service role publishes that host port, the service
-    sets ``cuda_env``, and -- when the compose value resolves from the committed templates -- it
-    points at the cards' ``index``. Static: reads compose + ``.env_example``, never a live ``.env``."""
+    picks its GPU only through ``${cuda_env}`` / ``${cuda_env:-<index>}`` (never a literal), and --
+    when that resolves from the committed templates -- it points at the cards' ``index``. With a
+    ``profile_var``, ``LLM_PROFILE_NAME`` must interpolate it, and every ``profiles`` entry must be a
+    config/llm_profiles.yaml profile. Static: reads compose + ``.env_example``, never a live ``.env``."""
     root = Path(root)
     problems: list[str] = []
+    known_profiles = _known_profiles(root)
     for name, role in cfg.roles.items():
         launch = role.launch
         if launch is None:
@@ -454,12 +617,74 @@ def check_launch(cfg: PoolConfig, root: str | Path) -> list[str]:
                     host_ports.append(_resolve(parts[-2], template))
             if str(role.port) not in host_ports:
                 problems.append(f"{where}: {launch.service} publishes host ports {host_ports}, pool expects {role.port}")
-        if launch.cuda_env not in env:
-            problems.append(f"{where}: {launch.service} does not set {launch.cuda_env}")
-        else:
-            device = _resolve(env[launch.cuda_env], template)
-            want = ",".join(str(cfg.cards[c].index) for c in role.cards if cfg.cards[c].index is not None)
-            if device is not None and want and device != want:
-                problems.append(f"{where}: {launch.service} {launch.cuda_env}={device}, cards {role.cards} "
+        want = ",".join(str(cfg.cards[c].index) for c in role.cards if cfg.cards[c].index is not None)
+        device_keys = [k for k in DEVICE_KEYS if k in env]
+        if not device_keys:
+            problems.append(f"{where}: {launch.service} sets none of {list(DEVICE_KEYS)}, so "
+                            f"{launch.cuda_env} cannot place it")
+        for key in device_keys:
+            ok, default = _interpolates(env[key], launch.cuda_env)
+            if not ok:
+                problems.append(f"{where}: {launch.service} {key}={env[key]} must be ${{{launch.cuda_env}}} or "
+                                f"${{{launch.cuda_env}:-{want}}} (the actuator sets it from the card index; "
+                                f"a literal device cannot move)")
+                continue
+            if default is not None and "$" not in default and want and default != want:
+                problems.append(f"{where}: {launch.service} {key} defaults to {default}, cards {role.cards} "
                                 f"have index {want}")
+            device = _resolve(env[key], template)
+            if device is not None and want and device != want:
+                problems.append(f"{where}: {launch.service} {key}={device} (from templates), cards {role.cards} "
+                                f"have index {want}")
+        pinned = _pinned_device_ids(service, launch.cuda_env)
+        if pinned:
+            problems.append(f"{where}: {launch.service} pins device_ids {pinned}; the GPU must come from "
+                            f"{launch.cuda_env}")
+        if launch.profile_var is not None:
+            ok, _ = _interpolates(env.get("LLM_PROFILE_NAME", ""), launch.profile_var)
+            if not ok:
+                problems.append(f"{where}: {launch.service} LLM_PROFILE_NAME={env.get('LLM_PROFILE_NAME')} must be "
+                                f"${{{launch.profile_var}}} or ${{{launch.profile_var}:-...}}")
+        if launch.profiles and role.kind != "llm":
+            problems.append(f"{where}.profiles: only llm roles load llm_profiles.yaml profiles")
+        if launch.profiles and known_profiles is None:
+            problems.append(f"{where}.profiles: config/llm_profiles.yaml not found to check them against")
+        for profile in launch.profiles if known_profiles is not None else []:
+            if profile not in known_profiles:
+                problems.append(f"{where}.profiles: {profile} is not a profile in config/llm_profiles.yaml")
+                continue
+            # Stage 7.2: a profile on the PrismML fork (llamacpp.server_build: prism) only boots in an
+            # image that carries it; the wrapper refuses otherwise, so a load would fail on circe.
+            build = _profile_server_build(root, profile)
+            dockerfile = str((service.get("build") or {}).get("dockerfile") or "") \
+                if isinstance(service.get("build"), dict) else ""
+            if build == "prism" and not dockerfile.endswith(PRISM_DOCKERFILE):
+                problems.append(f"{where}.profiles: {profile} needs llamacpp.server_build=prism but "
+                                f"{launch.service} builds from {dockerfile or '(no build section)'}, "
+                                f"not {PRISM_DOCKERFILE}")
     return problems
+
+
+PRISM_DOCKERFILE = "Dockerfile.prism"
+
+
+def _profile_server_build(root: Path, profile: str) -> str | None:
+    data = yaml.safe_load((root / "config" / "llm_profiles.yaml").read_text()) or {}
+    llamacpp = ((data.get("profiles") or {}).get(profile) or {}).get("llamacpp") or {}
+    return llamacpp.get("server_build")
+
+
+def _pinned_device_ids(service: dict[str, Any], cuda_env: str) -> list[str]:
+    """``device_ids`` under deploy.resources.reservations.devices (or a ``gpus`` list) that are not
+    ``${cuda_env}``/``${cuda_env:-...}``: a second, compose-level device pin the actuator cannot move."""
+    out: list[str] = []
+    devices = (((service.get("deploy") or {}).get("resources") or {}).get("reservations") or {}).get("devices") or []
+    gpus = service.get("gpus")
+    if isinstance(gpus, list):
+        devices = [*devices, *gpus]
+    for dev in devices:
+        if isinstance(dev, dict):
+            for d in dev.get("device_ids") or []:
+                if not _interpolates(str(d), cuda_env)[0]:
+                    out.append(str(d))
+    return out

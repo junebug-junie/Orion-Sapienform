@@ -447,19 +447,19 @@ def test_notify_debounces_retries_and_rearms(tmp_path):
     state = str(tmp_path / "s" / "state.json")
 
     failing = _FakeClient(ok=False)
-    assert cli.notify(_red_report(), state_file=state, base_url="x", token=None, client=failing) is False
+    assert cli.notify(_red_report(), state_file=state, base_url="x", token=None, client=failing).sent is False
     ok = _FakeClient()
     # Undelivered -> retried next tick.
-    assert cli.notify(_red_report(), state_file=state, base_url="x", token=None, client=ok) is True
+    assert cli.notify(_red_report(), state_file=state, base_url="x", token=None, client=ok).sent is True
     # Delivered and still red -> silent.
-    assert cli.notify(_red_report(), state_file=state, base_url="x", token=None, client=ok) is None
+    assert cli.notify(_red_report(), state_file=state, base_url="x", token=None, client=ok).sent is None
     # A new rung joins -> one more card.
-    assert cli.notify(_red_report(("attention", "proposal")), state_file=state, base_url="x", token=None, client=ok) is True
+    assert cli.notify(_red_report(("attention", "proposal")), state_file=state, base_url="x", token=None, client=ok).sent is True
     assert ok.calls[-1]["context"]["new_keys"] == ["rung:proposal"]
     # Verified recovery (the rungs were checked and are fresh), then recurrence -> alerts again.
     green = ll.LadderReport(rungs=[ll.RungResult(k, "fresh", None, 1.0, 900.0) for k in ("attention", "proposal")])
-    assert cli.notify(green, state_file=state, base_url="x", token=None, client=ok) is None
-    assert cli.notify(_red_report(), state_file=state, base_url="x", token=None, client=ok) is True
+    assert cli.notify(green, state_file=state, base_url="x", token=None, client=ok).sent is None
+    assert cli.notify(_red_report(), state_file=state, base_url="x", token=None, client=ok).sent is True
     assert len(ok.calls) == 3
 
 
@@ -496,10 +496,10 @@ def test_flaky_read_does_not_rearm_a_delivered_card(tmp_path):
     cli = _load_cli()
     state = str(tmp_path / "state.json")
     ok = _FakeClient()
-    assert cli.notify(_red_report(), state_file=state, base_url="x", token=None, client=ok) is True
+    assert cli.notify(_red_report(), state_file=state, base_url="x", token=None, client=ok).sent is True
     errored = ll.LadderReport(cannot_check=["attention: QueryCanceled"])  # rung absent, not green
-    assert cli.notify(errored, state_file=state, base_url="x", token=None, client=ok) is None
-    assert cli.notify(_red_report(), state_file=state, base_url="x", token=None, client=ok) is None
+    assert cli.notify(errored, state_file=state, base_url="x", token=None, client=ok).sent is None
+    assert cli.notify(_red_report(), state_file=state, base_url="x", token=None, client=ok).sent is None
     assert len(ok.calls) == 1
 
 
@@ -562,3 +562,272 @@ def test_a_failed_rung_query_is_cannot_check_not_fresh():
     rungs = ll.evaluate_ladder(newest, datetime.now(timezone.utc), consolidation_motif_counts=motifs)
     assert "grammar:orion-cortex-exec" not in {r.rung for r in rungs}
     assert len(rungs) == len(ll.RUNGS)  # every other rung + motifs
+
+
+# ---------------------------------------- escalation must never be silent
+# Replays of the 2026-09-26/27 incident: /mnt/telemetry/orion-athena was
+# root-owned, so creating substrate-ladder-liveness/ raised PermissionError on
+# every run (572/572). 204 RED runs exited 1 with one "escalation failed" log
+# line and raised zero Hub cards.
+
+
+class _RaisingClient:
+    def attention_request(self, **kw):
+        raise ConnectionError("orion-notify: connection refused")
+
+
+def _unwritable_state(tmp_path):
+    parent = tmp_path / "telemetry" / "orion-athena"
+    parent.mkdir(parents=True)
+    parent.chmod(0o555)  # root-owned in production; read-only here
+    return str(parent / "substrate-ladder-liveness" / "state.json")
+
+
+def _skip_if_root():
+    import os
+
+    if os.geteuid() == 0:
+        pytest.skip("root ignores directory permissions")
+
+
+def test_unwritable_state_dir_still_cards_the_red(tmp_path):
+    _skip_if_root()
+    cli = _load_cli()
+    state = _unwritable_state(tmp_path)
+    ok = _FakeClient()
+    esc = cli.notify(_red_report(), state_file=state, base_url="x", token=None, client=ok)
+    assert esc.state_error and "PermissionError" in esc.state_error
+    assert esc.sent is True and esc.failed
+    assert len(ok.calls) == 1
+    assert ok.calls[0]["context"]["dedupe_state_error"] == esc.state_error
+    assert "repeats every tick" in ok.calls[0]["message"]
+    # No memory: the next tick cards again (bounded repetition, not silence).
+    cli.notify(_red_report(), state_file=state, base_url="x", token=None, client=ok)
+    assert len(ok.calls) == 2
+
+
+def test_incident_replay_red_with_unwritable_state_exits_escalation_failed(tmp_path, monkeypatch, capsys):
+    _skip_if_root()
+    cli = _load_cli()
+    state = _unwritable_state(tmp_path)
+    ok = _FakeClient()
+    real_notify = cli.notify
+    monkeypatch.setattr(cli, "build_report", lambda args: _red_report())
+    monkeypatch.setattr(cli, "notify", lambda report, **kw: real_notify(report, **{**kw, "client": ok}))
+    rc = cli.main(["--notify", "--state-file", state])
+    assert rc == cli.EXIT_ESCALATION_FAILED == 4
+    assert rc not in (cli.EXIT_RED, cli.EXIT_CANNOT_CHECK)
+    err = capsys.readouterr()
+    assert "ESCALATION FAILED: dedupe state unusable" in err.err
+    assert err.out.strip().endswith("RED")
+    assert len(ok.calls) == 1, "the fallback card must still be attempted"
+
+
+def test_green_with_unwritable_state_is_not_exit_zero(tmp_path, monkeypatch, capsys):
+    """368 of the 572 incident runs were GREEN and exited 0: the broken path was invisible."""
+    _skip_if_root()
+    cli = _load_cli()
+    state = _unwritable_state(tmp_path)
+    ok = _FakeClient()
+    real_notify = cli.notify
+    monkeypatch.setattr(cli, "build_report", lambda args: ll.LadderReport())
+    monkeypatch.setattr(cli, "notify", lambda report, **kw: real_notify(report, **{**kw, "client": ok}))
+    assert cli.main(["--notify", "--state-file", state]) == cli.EXIT_ESCALATION_FAILED
+    assert ok.calls == []  # nothing red: no card, but a non-zero exit and a loud line
+    assert "ESCALATION FAILED" in capsys.readouterr().err
+
+
+def test_state_save_failure_after_send_does_not_double_card(tmp_path, monkeypatch):
+    cli = _load_cli()
+    state = str(tmp_path / "state.json")
+
+    def boom(path, st):
+        raise PermissionError(13, "Permission denied", path)
+
+    monkeypatch.setattr(cli, "_save_state", boom)
+    ok = _FakeClient()
+    esc = cli.notify(_red_report(), state_file=state, base_url="x", token=None, client=ok)
+    assert esc.sent is True and esc.state_error and esc.failed
+    assert len(ok.calls) == 1
+
+
+@pytest.mark.parametrize("client", [_FakeClient(ok=False), _RaisingClient()])
+def test_notify_down_exits_escalation_failed(tmp_path, monkeypatch, capsys, client):
+    cli = _load_cli()
+    state = str(tmp_path / "state.json")
+    real_notify = cli.notify
+    monkeypatch.setattr(cli, "build_report", lambda args: _red_report())
+    monkeypatch.setattr(cli, "notify", lambda report, **kw: real_notify(report, **{**kw, "client": client}))
+    assert cli.main(["--notify", "--state-file", state]) == cli.EXIT_ESCALATION_FAILED
+    err = capsys.readouterr().err
+    assert "ESCALATION FAILED: RED and orion-notify did not accept" in err
+    # Undelivered key is not recorded, so the next tick retries.
+    assert json.loads(Path(state).read_text())["notified_keys"] == []
+
+
+def test_red_already_carded_is_plain_red_not_escalation_failure(tmp_path, monkeypatch):
+    cli = _load_cli()
+    state = str(tmp_path / "state.json")
+    ok = _FakeClient()
+    real_notify = cli.notify
+    monkeypatch.setattr(cli, "build_report", lambda args: _red_report())
+    monkeypatch.setattr(cli, "notify", lambda report, **kw: real_notify(report, **{**kw, "client": ok}))
+    assert cli.main(["--notify", "--state-file", state]) == cli.EXIT_RED
+    assert cli.main(["--notify", "--state-file", state]) == cli.EXIT_RED
+    assert len(ok.calls) == 1
+
+
+def test_test_escalation_sends_exactly_one_labelled_card(monkeypatch, capsys):
+    cli = _load_cli()
+    ok = _FakeClient()
+    real = cli.send_test_card
+    monkeypatch.setattr(cli, "send_test_card", lambda **kw: real(**{**kw, "client": ok}))
+    monkeypatch.setattr(cli, "build_report", lambda args: pytest.fail("no checks run"))
+    assert cli.main(["--test-escalation"]) == cli.EXIT_OK
+    assert len(ok.calls) == 1
+    assert ok.calls[0]["message"].startswith("TEST: substrate ladder watch escalation check")
+    assert ok.calls[0]["context"]["test"] is True
+    bad = _FakeClient(ok=False)
+    monkeypatch.setattr(cli, "send_test_card", lambda **kw: real(**{**kw, "client": bad}))
+    assert cli.main(["--test-escalation"]) == cli.EXIT_ESCALATION_FAILED
+
+
+@pytest.mark.parametrize("bad", ['{"notified_keys": 5}', '{"notified_keys": [1, 2]}', '[1]', 'not json'])
+def test_malformed_state_still_cards_the_red_and_is_rewritten(tmp_path, bad):
+    """Review finding: {"notified_keys": 5} raised TypeError before any send, every tick."""
+    cli = _load_cli()
+    state = tmp_path / "state.json"
+    state.write_text(bad)
+    ok = _FakeClient()
+    esc = cli.notify(_red_report(), state_file=str(state), base_url="x", token=None, client=ok)
+    assert esc.sent is True and len(ok.calls) == 1
+    assert json.loads(state.read_text())["notified_keys"] == ["rung:attention"]
+
+
+def test_non_contention_flock_error_cards_instead_of_skipping(tmp_path, monkeypatch):
+    import errno as _errno
+
+    cli = _load_cli()
+
+    def nolck(*a, **k):
+        raise OSError(_errno.ENOLCK, "No locks available")
+
+    monkeypatch.setattr(cli.fcntl, "flock", nolck)
+    ok = _FakeClient()
+    esc = cli.notify(_red_report(), state_file=str(tmp_path / "s.json"), base_url="x", token=None, client=ok)
+    assert not esc.skipped_locked and esc.failed and esc.sent is True
+    assert len(ok.calls) == 1
+
+
+def test_contention_is_a_quiet_skip(tmp_path, monkeypatch):
+    import errno as _errno
+
+    cli = _load_cli()
+
+    def busy(*a, **k):
+        raise BlockingIOError(_errno.EWOULDBLOCK, "busy")
+
+    monkeypatch.setattr(cli.fcntl, "flock", busy)
+    ok = _FakeClient()
+    esc = cli.notify(_red_report(), state_file=str(tmp_path / "s.json"), base_url="x", token=None, client=ok)
+    assert esc.skipped_locked and not esc.failed and ok.calls == []
+
+
+def test_a_crash_inside_the_dedupe_path_still_cards_the_red(monkeypatch, capsys):
+    cli = _load_cli()
+    ok = _FakeClient()
+    monkeypatch.setattr(cli, "build_report", lambda args: _red_report())
+
+    def crash(*a, **k):
+        raise ValueError("bug")
+
+    monkeypatch.setattr(cli, "notify", crash)
+    real_stateless = cli._notify_stateless
+    monkeypatch.setattr(cli, "_notify_stateless", lambda r, e, **kw: real_stateless(r, e, **{**kw, "client": ok}))
+    assert cli.main(["--notify"]) == cli.EXIT_ESCALATION_FAILED
+    assert len(ok.calls) == 1
+    assert "dedupe state unusable (unexpected ValueError: bug)" in capsys.readouterr().err
+
+
+# ------------------------------------------------- merged SQL migration section
+# Incidents: PR #2424 (hardware_watch_incident table never created, orion-hardware-watch
+# crash-looped 13x) and PR #2400 (a column never added, attention silently degraded). The parser
+# and replay are covered in tests/test_sql_migration_drift_gate.py; these pin the WIRING: a
+# missing object becomes a debounced Hub card naming the file and the apply command.
+
+from orion import sql_migration_drift as drift  # noqa: E402
+
+_HW = "manual_migration_hardware_watch_v1.sql"
+
+
+def _migration_report(hw_present: bool) -> drift.DriftReport:
+    now = datetime.now(timezone.utc)
+    f = drift.MigrationFile(_HW, "create table if not exists hardware_watch_incident (id text);",
+                            now - timedelta(days=2), now - timedelta(days=1))
+    tables = {"hardware_watch_incident"} if hw_present else set()
+    return drift.evaluate([f], drift.LiveState(tables, set(), {}, set()), now=now)
+
+
+def test_missing_migration_object_makes_the_ladder_red_with_a_card_naming_the_file(tmp_path):
+    cli = _load_cli()
+    rep = ll.LadderReport(migrations=_migration_report(hw_present=False))
+    assert rep.red
+    assert rep.red_keys() == [f"migration:{_HW}"]
+    assert rep.severity() == "critical"
+    ok = _FakeClient()
+    state = str(tmp_path / "state.json")
+    assert cli.notify(rep, state_file=state, base_url="x", token=None, client=ok).sent is True
+    msg = ok.calls[0]["message"]
+    assert _HW in msg and "hardware_watch_incident" in msg
+    assert f"psql -U postgres -d conjourney -v ON_ERROR_STOP=1 < services/orion-sql-db/{_HW}" in msg
+    # Debounced while still missing; re-arms after a verified apply.
+    assert cli.notify(rep, state_file=state, base_url="x", token=None, client=ok).sent is None
+    applied = ll.LadderReport(migrations=_migration_report(hw_present=True))
+    assert not applied.red and f"migration:{_HW}" in applied.green_keys()
+    assert cli.notify(applied, state_file=state, base_url="x", token=None, client=ok).sent is None
+    assert cli.notify(rep, state_file=state, base_url="x", token=None, client=ok).sent is True
+
+
+def test_migration_section_that_could_not_run_is_cannot_check_not_green(monkeypatch):
+    cli = _load_cli()
+
+    def boom(*a, **k):
+        raise RuntimeError("git log failed")
+
+    monkeypatch.setattr(cli.drift, "check_repo", boom)
+    rep = ll.LadderReport()
+    args = type("A", (), {"repo": str(REPO), "migration_days": 30})()
+    cli.check_migrations(None, args, rep)
+    assert rep.migrations is None
+    assert rep.cannot_check == ["migrations: RuntimeError: git log failed"]
+    assert not any(k.startswith("migration:") for k in rep.green_keys())
+
+
+def test_migration_section_is_in_json_and_human_output(capsys):
+    cli = _load_cli()
+    rep = ll.LadderReport(migrations=_migration_report(hw_present=False))
+    d = rep.to_dict()
+    assert d["red"] and d["migrations"][0]["file"] == _HW and d["migrations"][0]["apply"]
+    cli.print_human(rep)
+    out = capsys.readouterr().out
+    assert f"RED migration {_HW}" in out and "apply:" in out
+    assert out.strip().endswith("RED")
+
+
+def test_the_watch_keeps_a_carded_migration_red_past_the_window(tmp_path, monkeypatch):
+    """Review finding 1: the delivered-card list is passed as sticky keys, so a carded file
+    stays red until applied instead of ageing out with its debounce key stuck."""
+    cli = _load_cli()
+    state = tmp_path / "state.json"
+    state.write_text(json.dumps({"notified_keys": [f"migration:{_HW}", "rung:attention"]}))
+    seen = {}
+
+    def fake_check_repo(conn, repo, **kw):
+        seen.update(kw)
+        return _migration_report(hw_present=True)
+
+    monkeypatch.setattr(cli.drift, "check_repo", fake_check_repo)
+    args = type("A", (), {"repo": str(REPO), "migration_days": 30, "state_file": str(state)})()
+    cli.check_migrations(None, args, ll.LadderReport())
+    assert seen["sticky_keys"] == [f"migration:{_HW}"]
+    assert cli._delivered_migration_keys(str(tmp_path / "absent.json")) == []

@@ -3,7 +3,8 @@ pydantic-settings>=2.4.0
 # Pinned to 5.2.1 (not >=5.0.7): redis-py <5.1.0's redis.commands.graph module
 # imports distutils, removed from Python 3.12's stdlib -- crash-looped
 # orion-bus-mirror/orion-recall/orion-meta-tags/orion-hub earlier this arc
-# (commit 2e1fa7f24) before this service imported the same falkor_client module.
+# (commit 2e1fa7f24). Kept after the 2026-09-30 bus_synaptic retirement removed
+# this service's falkor_client import: bus.redis still depends on it.
 redis==5.2.1
 PyYAML>=6.0.2
 SQLAlchemy>=2.0.36

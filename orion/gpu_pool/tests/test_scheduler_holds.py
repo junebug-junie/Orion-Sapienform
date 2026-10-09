@@ -10,7 +10,7 @@ from orion.gpu_pool.scheduler import (
 )
 from orion.gpu_pool.tests.test_scheduler import CFG, T0, cards, grants, lease, live, of, run
 
-CLEAR = {"thermal": None, "visual_baseline": None}
+CLEAR = {"thermal": None}
 AFTER = CFG.swap_after_wait_sec("agent-gpu2")
 
 
@@ -153,8 +153,8 @@ def test_a_long_hold_on_the_home_seat_is_never_capped():
 
 
 def test_seat_loaded_past_max_hold_drains_recalls_then_unloads():
-    assert CFG.roles["agent-gpu2"].max_hold_sec == 3600
-    loaded = cards(gpu2=CardLive("gpu2", swapped_in={"agent-gpu2"}, loaded_at=T0 - timedelta(seconds=3600)))
+    assert CFG.roles["agent-gpu2"].max_hold_sec == 9000   # ~2.5 h, Juniper 2026-09-29 (stage 5)
+    loaded = cards(gpu2=CardLive("gpu2", swapped_in={"agent-gpu2"}, loaded_at=T0 - timedelta(seconds=9000)))
     h = hold("granted", "agent-gpu2", lease_id="h")
     q = hold(lease_id="q")
     decisions = run([hold("granted", "agent", lease_id="home"), h, q], crds=loaded)
@@ -196,15 +196,14 @@ def test_cooldown_after_failed_load_is_reported():
 
 
 def test_guards_block_loading_by_name_and_fail_closed():
-    hot = {"thermal": "hot", "visual_baseline": None}
+    hot = {"thermal": "hot"}
     [b] = of(SwapBlocked, schedule(CFG, live(), cards(), _demand(), T0, guards=hot))
     assert (b.reason, b.detail) == ("guard:thermal", "hot")
-    urgent = {"thermal": None, "visual_baseline": "visual_baseline_urgent"}
-    assert [b.reason for b in of(SwapBlocked, schedule(CFG, live(), cards(), _demand(), T0, guards=urgent))] \
-        == ["guard:visual_baseline"]
-    unread = {"thermal": None}   # a guard the caller never read fails closed
+    unread: dict = {}   # a guard the caller never read fails closed
     assert [b.reason for b in of(SwapBlocked, schedule(CFG, live(), cards(), _demand(), T0, guards=unread))] \
-        == ["guard:visual_baseline"]
+        == ["guard:thermal"]
+    # stage 5.4: an overdue image baseline no longer blocks the 27B load (visual_baseline deleted)
+    assert CFG.roles["agent-gpu2"].swap.guards == ["thermal"]
 
 
 def test_no_block_reported_without_demand():

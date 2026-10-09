@@ -32,9 +32,6 @@ MIND_ENRICHMENT_MIN_VIABLE_WALL_MS: int = int(
 
 
 class ThoughtSettings(BaseSettings):
-    visual_elastic_status_enabled: bool = Field(False, alias="ORION_VISUAL_ELASTIC_STATUS_ENABLED")
-    visual_elastic_controller_url: str = Field("http://100.112.254.99:8090", alias="ORION_VISUAL_ELASTIC_CONTROLLER_URL")
-
     service_name: str = Field("orion-thought", alias="SERVICE_NAME")
     service_version: str = Field("0.1.0", alias="SERVICE_VERSION")
     node_name: str = Field("athena", alias="NODE_NAME")
@@ -83,6 +80,11 @@ class ThoughtSettings(BaseSettings):
     # completed correctly at 122s was thrown away at 120.006s. Must stay under
     # Hub's own TIMEOUT_SEC=400 outer wait. See services/orion-thought/.env_example.
     stance_react_timeout_sec: float = Field(360.0, alias="STANCE_REACT_TIMEOUT_SEC")
+    # Unified-turn latency L4 (2026-10-06): send cortex-exec a
+    # stance_context_prepare at the same time as the orion-mind call, so the
+    # ~9 s stance context build overlaps mind instead of following it. Off ->
+    # stance_react builds its context after mind, as before.
+    stance_prepare_parallel_enabled: bool = Field(True, alias="ORION_THOUGHT_STANCE_PREPARE_PARALLEL")
 
 
     # --- Reverie: spontaneous-thought mode (Phase A, default-off) ---
@@ -274,60 +276,22 @@ class ThoughtSettings(BaseSettings):
         "http://100.112.254.99:8014", alias="ORION_DIFFUSION_HOST_BASE_URL"
     )
 
-    # GPU2 CAPACITY MUTEX. orion-world-model shares this same physical card
-    # (circe GPU2) with zero OS/driver-level arbitration -- live-confirmed
-    # 2026-09-24, two back-to-back "CUDA error: CUDA-capable device(s)
-    # is/are busy or unavailable" failures. Routed through orion-durable-runs'
-    # existing Gateway capacity-permit authority (orion.durable_admission.
-    # capacity_client.GpuCapacityPermit) -- the same authority orion-llm-
-    # gateway already uses for every outbound call, per docs/architecture/
-    # durable-gateway-capacity.md's own stated pattern for a standalone
-    # GPU-bound HTTP call. NOT the heavier per-run admission/elastic-borrow
-    # system (docs/architecture/gpu2-elastic-admission.md): that one is
-    # scoped to whole cognition runs and already fully owns the diffusion
-    # <-> agent-burst pair; this is a separate, additive layer beside it.
-    # Long budget: this pipeline already treats deferral as a normal,
-    # non-failure outcome (resource_deferred), so diffusion can afford to
-    # camp and wait rather than back off -- that asymmetry against world-
-    # model's own short budget (services/orion-world-model/app/settings.py)
-    # is what gives diffusion practical precedence on its native card
-    # without any new priority concept in the broker itself (confirmed:
-    # orion/durable_admission/capacity.py enforces a plain max_inflight
-    # counter, no priority ordering).
-    visual_chain_gpu2_capacity_enabled: bool = Field(
-        True, alias="ORION_VISUAL_CHAIN_GPU2_CAPACITY_ENABLED"
-    )
-    # orion-durable-runs is on the same docker network as this service (both
-    # athena-resident) -- the internal compose DNS name. (GPU2 permits move to
-    # orion-gpu-pool leases in stage 5 of the GPU pool design.)
-    visual_chain_gpu2_capacity_url: str = Field(
-        "http://durable-runs:8121/capacity", alias="ORION_VISUAL_CHAIN_GPU2_CAPACITY_URL"
-    )
-    # Deliberately diffusion_host_base_url's own value above, not a made-up
-    # logical key -- an opaque shared identifier this service and world-model
-    # both agree on so the broker's max_inflight enforcement crosses the
-    # service boundary. Confirmed this does NOT collide with the existing
-    # GPU2 elastic slot's own reserved backend_key: that one is the
-    # agent-burst llama.cpp URL (port 8016, DURABLE_RUNS_ELASTIC_BACKEND),
-    # not this one.
-    visual_chain_gpu2_capacity_backend_key: str = Field(
-        "http://100.112.254.99:8014", alias="ORION_VISUAL_CHAIN_GPU2_CAPACITY_BACKEND_KEY"
-    )
-    visual_chain_gpu2_capacity_lane: str = Field(
-        "diffusion", alias="ORION_VISUAL_CHAIN_GPU2_CAPACITY_LANE"
-    )
-    visual_chain_gpu2_capacity_max_inflight: int = Field(
-        1, alias="ORION_VISUAL_CHAIN_GPU2_CAPACITY_MAX_INFLIGHT"
-    )
-    # Long: covers the elastic-status pre-check plus the full generate call,
-    # with real margin over visual_chain_diffusion_timeout_sec (120s) below --
-    # diffusion should keep waiting through a world-model burst rather than
-    # give up early and report a false resource_deferred.
-    visual_chain_gpu2_capacity_budget_sec: float = Field(
-        180.0, alias="ORION_VISUAL_CHAIN_GPU2_CAPACITY_BUDGET_SEC"
-    )
-    visual_chain_gpu2_capacity_poll_interval_sec: float = Field(
-        1.0, alias="ORION_VISUAL_CHAIN_GPU2_CAPACITY_POLL_INTERVAL_SEC"
+    # GPU2 MUTEX WITH orion-world-model, via orion-gpu-pool (stage 5.4; replaced the durable-runs
+    # /capacity permit). The two share circe's gpu2 with no OS-level arbitration (two "CUDA-capable
+    # device(s) is/are busy or unavailable" failures, 2026-09-24).
+    # - The durable reverie-visual run already holds a pool `diffusion` hold; the generate step
+    #   validates it, then ATTACHES a child lease under it (runs in the hold's slot, jumps its
+    #   queue: no second wait). The child lives as long as the diffusion thread, so world stays off
+    #   gpu2 even if the run gives the hold back mid-generate.
+    # - A generate outside a durable run (the /visual-chain/run-once route, the legacy worker) has no
+    #   hold, so it takes a plain `diffusion` request lease and waits at most this long.
+    # The pool never places a `world` lease while either is active (gpu_pool.yaml serialize_with).
+    # 90 s, not the old permit's 180: run-once's whole-run deadline (ORION_VISUAL_CHAIN_RUN_DEADLINE_SEC,
+    # 300) must fit this wait + diffusion (120) + prompt/caption, or a long queue ends as a run-deadline
+    # abandon instead of a clean resource_deferred. A deferral is a normal outcome; world-model's own
+    # 2 s deadline still gives diffusion practical precedence on its native card.
+    visual_chain_gpu_lease_deadline_sec: float = Field(
+        90.0, alias="ORION_VISUAL_CHAIN_GPU_LEASE_DEADLINE_SEC"
     )
 
     # AMBIENT THERMAL GATE. GPU work heats the room Juniper sits in, and this is
@@ -387,6 +351,26 @@ class ThoughtSettings(BaseSettings):
     # save a caller 70s of waiting is the wrong trade.
     visual_chain_run_deadline_sec: float = Field(
         300.0, alias="ORION_VISUAL_CHAIN_RUN_DEADLINE_SEC"
+    )
+    # Deadline for ONE durable `reverie.visual` generate step (visual_steps.py):
+    # GPU2 capacity permit wait + diffusion + disk write. Per step, not the whole-run
+    # deadline above. Never effectively below capacity budget + diffusion timeout +
+    # 10s (visual_step_generate_deadline_sec() floors it), and should stay under the
+    # run brief's per-step RPC budget (ReverieVisualRunBriefV1.timeout_sec, 360s) so
+    # the reply lands before durable-runs gives up waiting. A generate still
+    # recorded "generating" within 2x this window blocks a second diffusion call.
+    visual_chain_step_generate_deadline_sec: float = Field(
+        330.0, alias="ORION_VISUAL_CHAIN_STEP_GENERATE_DEADLINE_SEC"
+    )
+    # Backstop for an `active`/`unknown` reverie_visual_attempt nothing ever closed
+    # (lost abandon, process death mid-run): every claim -- durable prepare and legacy
+    # run-once alike -- releases one whose claim started longer ago than this
+    # (result reason `attempt_expired`), unless a production receipt reconciles it to
+    # produced. Must stay above the durable run's 5400s retry window plus margin; a
+    # legacy run-once attempt lives minutes. A generate still inside its in-flight
+    # window is never released by this.
+    visual_chain_attempt_max_age_sec: float = Field(
+        7200.0, alias="ORION_VISUAL_CHAIN_ATTEMPT_MAX_AGE_SEC", gt=0
     )
     # Watchdog for the failure mode visual_chain_run_deadline_sec above cannot
     # catch: the worker's own asyncio task wedged before ever reaching the

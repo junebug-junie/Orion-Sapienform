@@ -1,0 +1,43 @@
+services:
+  orion-energy:
+    container_name: ${PROJECT}-orion-energy
+    build:
+      context: ../..
+      dockerfile: services/orion-energy/Dockerfile
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - ${ENERGY_HOST_DATA_DIR:-/mnt/storage-warm/orion-energy}:/data/energy
+    networks:
+      - app-net
+
+  orion-energy-portal:
+    container_name: ${PROJECT}-orion-energy-portal
+    # Not started by a plain `up`: needs the chmod-600 credentials file first (README "Portal").
+    profiles: ["portal"]
+    build:
+      context: ../..
+      dockerfile: services/orion-energy/Dockerfile.portal
+    restart: unless-stopped
+    env_file:
+      - .env
+    shm_size: "1gb"
+    volumes:
+      - ${ENERGY_HOST_DATA_DIR:-/mnt/storage-warm/orion-energy}:/data/energy
+      # RMP login: portal only, read-only, outside the data dir orion-energy also mounts.
+      # A directory, not the file: an editor that replaces the file is seen at the next attempt,
+      # and a missing file inside it means manual-reauth mode. create_host_path=false: a missing
+      # dir fails the start instead of docker creating a root-owned one.
+      - type: bind
+        source: ${ENERGY_PORTAL_CREDENTIALS_HOST_DIR:-/home/athena/.orion/secrets/rmp}
+        target: /run/secrets/rmp
+        read_only: true
+        bind:
+          create_host_path: false
+    networks:
+      - app-net
+
+networks:
+  app-net:
+    external: true

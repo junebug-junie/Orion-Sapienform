@@ -21,6 +21,10 @@ class ReadingQueueFakeMixin:
         yield self
 
     async def execute(self, sql, *args):
+        if "INSERT INTO reading_document_snapshot" in sql:
+            snapshots = self.__dict__.setdefault("snapshots", {})
+            snapshots.setdefault(args[0], {"content": args[1], "first_source": args[3]})
+            return "INSERT 0 1"
         result = await super().execute(sql, *args)
         if "INSERT INTO world_pulse_read_seed" in sql and result == "INSERT 0 1":
             row = self.rows[args[0]]
@@ -29,7 +33,7 @@ class ReadingQueueFakeMixin:
                        stage2_result_json=None, landing_at=None,
                        attempts=0, stage2_attempts=0)
             if args[11]:
-                row.update(status="skipped", stage2_status="skipped")
+                row.update(status="skipped", stage2_status="skipped", last_error=args[12])
         if "stage2_result_json = COALESCE" in sql and args[0] in self.rows:
             self.rows[args[0]]["stage2_result_json"] = json.loads(args[2]) if args[2] else None
         return result
@@ -63,9 +67,15 @@ class ReadingQueueFakeMixin:
         return {s_key: row[s_key], a_key: attempts}
 
     async def fetchrow(self, sql, *args):
+        if "NOT $1::boolean" in sql and args[0]:
+            # Legacy fixtures have no durable bindings. Real SQL coverage
+            # exercises active-only selection against disposable PostgreSQL.
+            return None
         if "AS matched_request_count" in sql:
+            any_version = len(args) > 1 and args[1]
             matches = sorted(
-                (r for r in self.rows.values() if r["url"] == args[0]),
+                (r for r in self.rows.values() if r["url"] == args[0]
+                 or (any_version and r["url"].split("?", 1)[0] == args[0])),
                 key=lambda r: (r["created_at"], r["seed_id"]), reverse=True,
             )
             if not matches:
@@ -115,6 +125,18 @@ class ReadingQueueFakeMixin:
         return await super().fetchrow(sql, *args)
 
     async def fetchval(self, sql, *args):
+        if "s.first_source = $2" in sql:
+            snap = self.__dict__.get("snapshots", {}).get(args[0])
+            return bool(snap) and (snap["first_source"] == args[1]
+                                   or any(r["url"] == args[1] for r in self.rows.values()))
+        if "FROM reading_document_snapshot" in sql:
+            snap = self.__dict__.get("snapshots", {}).get(args[0])
+            return snap["content"] if snap else None
+        if "r.url = $1 AND r.seed_id <> $2" in sql:
+            return next((r["seed_id"] for r in self.rows.values() if r["url"] == args[0]
+                         and r["seed_id"] != args[1] and not r.get("duplicate_of")
+                         and r["status"] == "done"
+                         and ((r.get("handoff_json") or {}).get("read_evidence") or [])), None)
         return sum(1 for r in self.rows.values() if r.get("root_request_id") == args[0]
                    and r.get("request_id") != args[0] and not r.get("duplicate_of"))
 

@@ -6,6 +6,8 @@ of the day was spent on turns the stance phase refused for GPU capacity
 (``turn_deferred:stance_react_failed: ...capacity...``): six refusals, zero
 reads, then ``world_pulse_read_blocked reason=daily_cap`` for the rest of the
 day. A refusal before any reading must not cost a reading slot.
+(The daily cap and cooldown were removed 2026-09-28; the refund still keeps
+the day counter honest for the status panel and sets the retry backoff.)
 
 A refund does three things:
 
@@ -63,7 +65,10 @@ def _parse_ts(raw: object) -> datetime | None:
     try:
         ts = datetime.fromisoformat(text)
     except ValueError:
-        return None
+        try:
+            return datetime.fromtimestamp(float(text), timezone.utc)
+        except (ValueError, OverflowError, OSError):
+            return None
     if ts.tzinfo is None:
         ts = ts.replace(tzinfo=timezone.utc)
     return ts
@@ -97,6 +102,40 @@ async def record_debit(
         prior_last_at_raw=prior,
         ttl_sec=ttl_sec,
     )
+
+
+async def settle_durable(
+    redis, *, run_id: str, cooldown_key: str, count_key: str, retry_key: str,
+    streak_key: str, now: datetime, ttl_sec: int, refused: bool,
+    backoff_base_sec: float, backoff_cap_sec: float,
+) -> None:
+    """Atomically settle once across replay; never called for queue waiting.
+
+    Markers do not expire: checkpoints may be replayed after daily keys expire.
+    """
+    await redis.eval("""
+        if redis.call('EXISTS', KEYS[1]) == 1 then return 0 end
+        if ARGV[1] == '1' then
+            local streak = redis.call('INCR', KEYS[5])
+            redis.call('EXPIRE', KEYS[5], ARGV[3])
+            local base = tonumber(ARGV[4])
+            local cap = tonumber(ARGV[5])
+            if base <= 0 then base = cap end
+            local delay = math.min(base * (2 ^ math.min(streak - 1, 20)), math.max(base, cap))
+            if delay > 0 then
+                redis.call('SET', KEYS[4], tostring(tonumber(ARGV[6]) + delay), 'EX', ARGV[3])
+            end
+        else
+            redis.call('INCR', KEYS[3])
+            redis.call('EXPIRE', KEYS[3], ARGV[3])
+            redis.call('SET', KEYS[2], ARGV[2], 'EX', ARGV[3])
+            redis.call('DEL', KEYS[4], KEYS[5])
+        end
+        redis.call('SET', KEYS[1], '1')
+        return 1
+    """, 5, f"orion:reading:wallet:settled:{run_id}", cooldown_key, count_key,
+        retry_key, streak_key, "1" if refused else "0", now.isoformat(), ttl_sec,
+        backoff_base_sec, backoff_cap_sec, now.timestamp())
 
 
 def refund_backoff_sec(streak: int, *, base_sec: float, cap_sec: float) -> float:

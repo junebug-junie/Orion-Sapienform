@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -7,12 +8,36 @@ from uuid import NAMESPACE_URL, UUID, uuid5
 from typing import Any, Sequence
 
 from orion.schemas.reading import ReadingRequestedV1
-from orion.world_pulse_read.urls import normalize_source_url, validate_source_url
+from orion.world_pulse_read.documents import (
+    ENSURE_SNAPSHOT_SQL,
+    DocumentPolicy,
+    DocumentSourceError,
+    check_document_path,
+    document_ref,
+    is_document_ref,
+    parse_document_ref,
+    read_document,
+    store_snapshot,
+    unversioned_ref,
+)
+from orion.world_pulse_read.urls import normalize_reading_source, validate_source_url
 from orion.schemas.world_pulse_read import WorldPulseReadHandoffV1, WorldPulseReadSeedV1
 from orion.world_pulse_read.retry import FailureOutcome, is_capacity_deferral, is_transient_failure
 from orion.world_pulse_read.seeds import seeds_from_digest_payload
 
 _PRIORITY = {"finding": 0, "reading": 0, "digest_item": 10}
+
+# Seed rows only ever receive a document ref from accept_source, so an existing
+# row with this exact ref is as good as first_source: Hub captured these bytes
+# from this path.
+PINNED_SNAPSHOT_SQL = """
+SELECT EXISTS (
+    SELECT 1 FROM reading_document_snapshot s
+    WHERE s.sha256 = $1
+      AND (s.first_source = $2
+           OR EXISTS (SELECT 1 FROM world_pulse_read_seed r WHERE r.url = $2))
+)
+"""
 _STAGE1_STATUSES = ("pending", "claimed", "done", "failed", "skipped")
 _STAGE2_STATUSES = ("pending", "claimed", "done", "failed", "skipped")
 
@@ -105,11 +130,11 @@ GENERAL_READING_SQL = "-- Additive general reading ingress; retains the existing
 INSERT_SQL = """
 INSERT INTO world_pulse_read_seed
     (seed_id, kind, run_id, url, title, section, item_id, priority, status,
-     request_id, request_json, root_request_id, duplicate_of, stage2_status)
+     request_id, request_json, root_request_id, duplicate_of, stage2_status, last_error)
 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,
         CASE WHEN $12::text IS NULL THEN 'pending' ELSE 'skipped' END,
         $9,$10::jsonb,$11,$12,
-        CASE WHEN $12::text IS NULL THEN 'pending' ELSE 'skipped' END)
+        CASE WHEN $12::text IS NULL THEN 'pending' ELSE 'skipped' END, $13)
 ON CONFLICT DO NOTHING
 """
 
@@ -120,6 +145,26 @@ WHERE url = $1 AND duplicate_of IS NULL
        (status = 'done' AND stage2_status IN ('pending', 'claimed')))
 ORDER BY created_at, seed_id LIMIT 1
 """
+
+# A URL Orion already read (Stage 1 done with fetch evidence) is never read
+# again, whoever asks: live 2026-09-27 the NVIDIA Rubin page finished Stage 1
+# three times because ACTIVE_URL_SQL only sees rows still in flight. New
+# requests alias onto the earlier read with last_error ALREADY_READ; rows
+# already waiting are passed on by skip_already_read_*. Rows marked done before
+# the read-evidence gate (2026-09-25) may never have fetched anything, so they
+# do not count as a read.
+ALREADY_READ = "already_read"
+
+_HAS_READ_EVIDENCE = "(r.handoff_json->'read_evidence'->0) IS NOT NULL"
+
+_EARLIEST_READ = f"""
+SELECT r.seed_id FROM world_pulse_read_seed r
+WHERE r.url = {{url}} AND r.seed_id <> {{seed_id}} AND r.duplicate_of IS NULL
+  AND r.status = 'done' AND {_HAS_READ_EVIDENCE}
+ORDER BY r.completed_at, r.seed_id LIMIT 1
+"""
+
+READ_URL_SQL = _EARLIEST_READ.format(url="$1", seed_id="$2")
 
 REQUEST_ROW_SQL = "SELECT * FROM world_pulse_read_seed WHERE request_id = $1"
 
@@ -132,7 +177,14 @@ SET status = 'claimed', claimed_at = now()
 WHERE seed_id = (
     SELECT seed_id FROM world_pulse_read_seed
     WHERE status = 'pending'
-    ORDER BY priority ASC, created_at ASC, seed_id ASC
+      AND (NOT $1::boolean OR EXISTS (
+          SELECT 1 FROM reading_durable_turn d
+          WHERE d.seed_id=world_pulse_read_seed.seed_id
+            AND d.stage=1 AND d.consumed_at IS NULL))
+    ORDER BY EXISTS (SELECT 1 FROM reading_durable_turn d
+                     WHERE d.seed_id=world_pulse_read_seed.seed_id
+                       AND d.stage=1 AND d.consumed_at IS NULL) DESC,
+             priority ASC, created_at ASC, seed_id ASC
     FOR UPDATE SKIP LOCKED
     LIMIT 1
 )
@@ -148,7 +200,14 @@ WHERE seed_id = (
     WHERE status = 'done'
       AND handoff_json IS NOT NULL
       AND stage2_status = 'pending'
-    ORDER BY priority ASC, handoff_at ASC NULLS LAST, seed_id ASC
+      AND (NOT $1::boolean OR EXISTS (
+          SELECT 1 FROM reading_durable_turn d
+          WHERE d.seed_id=world_pulse_read_seed.seed_id
+            AND d.stage=2 AND d.consumed_at IS NULL))
+    ORDER BY EXISTS (SELECT 1 FROM reading_durable_turn d
+                     WHERE d.seed_id=world_pulse_read_seed.seed_id
+                       AND d.stage=2 AND d.consumed_at IS NULL) DESC,
+             priority ASC, handoff_at ASC NULLS LAST, seed_id ASC
     FOR UPDATE SKIP LOCKED
     LIMIT 1
 )
@@ -279,6 +338,9 @@ async def ensure_seed_queue_schema(conn: Any) -> None:
     await conn.execute(ENSURE_STAGE2_INDEX_SQL)
     await conn.execute(GENERAL_READING_SQL)
     await conn.execute(WORLD_PULSE_READ_RETRY_SQL)
+    from orion.world_pulse_read.durable import READING_DURABLE_SQL
+    await conn.execute(READING_DURABLE_SQL)
+    await conn.execute(ENSURE_SNAPSHOT_SQL)
 
 
 def request_for_seed(seed: WorldPulseReadSeedV1) -> ReadingRequestedV1:
@@ -291,9 +353,33 @@ def request_for_seed(seed: WorldPulseReadSeedV1) -> ReadingRequestedV1:
     )
 
 
+async def accept_source(conn: Any, value: str, *, documents: DocumentPolicy | None = None) -> str:
+    """Canonical, validated source for a new request.
+
+    URLs pass the public-address check. A document path is captured here,
+    once: the returned ``file://...?sha256=`` names the stored snapshot the
+    reader will see. A source already pinned to a sha256 is never re-read from
+    disk (the file may have changed since), but it still passes the path
+    policy and must name bytes Hub itself captured from that same path.
+    """
+    if not is_document_ref(value):
+        return await validate_source_url(value)
+    path, sha = parse_document_ref(value)
+    policy = documents or DocumentPolicy.from_env()
+    if sha is None:
+        doc = await asyncio.to_thread(read_document, path, policy)
+        await store_snapshot(conn, doc)
+        return doc.ref
+    ref = document_ref(await asyncio.to_thread(check_document_path, path, policy), sha)
+    if not await conn.fetchval(PINNED_SNAPSHOT_SQL, sha, ref):
+        raise DocumentSourceError("document_snapshot_missing")
+    return ref
+
+
 async def enqueue_seeds(
     conn: Any, seeds: Sequence[WorldPulseReadSeedV1], *,
     bus: Any = None, source: Any = None, max_round_trips: int | None = None,
+    documents: DocumentPolicy | None = None,
 ) -> int:
     """One ingress for World Pulse, tools and reentry. Commit before publication.
 
@@ -309,7 +395,7 @@ async def enqueue_seeds(
         # An already accepted request remains retryable even if DNS later fails.
         if await conn.fetchrow("SELECT seed_id FROM world_pulse_read_seed WHERE seed_id = $1", seed.seed_id):
             continue
-        url = await validate_source_url(str(request.url))
+        url = await accept_source(conn, str(request.url), documents=documents)
         request = ReadingRequestedV1.model_validate({**request.model_dump(), "url": url})
         async with conn.transaction():
             if max_round_trips is not None and request.root_request_id:
@@ -321,12 +407,16 @@ async def enqueue_seeds(
                 if count >= max_round_trips:
                     raise ValueError("round_trip_cap")
             await conn.execute("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", url)
-            active = await conn.fetchrow(ACTIVE_URL_SQL, url)
-            duplicate_of = active["seed_id"] if active and active["seed_id"] != seed.seed_id else None
+            duplicate_of = await conn.fetchval(READ_URL_SQL, url, seed.seed_id)
+            reason = ALREADY_READ if duplicate_of else None
+            if duplicate_of is None:
+                active = await conn.fetchrow(ACTIVE_URL_SQL, url)
+                duplicate_of = active["seed_id"] if active and active["seed_id"] != seed.seed_id else None
             status = await conn.execute(
                 INSERT_SQL, seed.seed_id, seed.kind, seed.run_id, url, seed.title,
                 seed.section, seed.item_id, _PRIORITY[seed.kind], request.request_id,
                 request.model_dump_json(), request.root_request_id or request.request_id, duplicate_of,
+                reason,
             )
         if isinstance(status, str) and status.endswith("1"):
             inserted += 1
@@ -351,13 +441,15 @@ async def reading_status(
     if (request_id is None) == (url is None):
         raise ValueError("reading_status requires exactly one of request_id or url")
     if url is not None:
-        lookup_url = normalize_source_url(url)
+        lookup_url = normalize_reading_source(url)
+        # A bare document path matches every captured version of that file.
+        any_version = is_document_ref(lookup_url) and lookup_url == unversioned_ref(lookup_url)
         match = await conn.fetchrow(
             """SELECT *, count(*) OVER () AS matched_request_count
                FROM world_pulse_read_seed
-               WHERE url = $1
+               WHERE url = $1 OR ($2::boolean AND split_part(url, '?', 1) = $1)
                ORDER BY created_at DESC, seed_id DESC LIMIT 1""",
-            lookup_url,
+            lookup_url, any_version,
         )
         if match is None:
             return {
@@ -376,6 +468,25 @@ async def reading_status(
     return await _reading_status_row(conn, row)
 
 
+def derive_reading_status(s1: str, s2: str, landing_at: Any) -> str:
+    """One request-level status from the two stage columns (no alias lookup)."""
+    if s1 == "failed" or (s1 == "done" and s2 == "failed"):
+        return "failed"
+    if s1 == "skipped" or (s1 == "done" and s2 == "skipped"):
+        # Stage 2 skips a Stage 1 handoff with no read evidence; that request
+        # is finished, not waiting at "stage1_completed" forever.
+        return "skipped"
+    if landing_at:
+        return "completed"
+    if s1 == "done" and s2 == "done":
+        return "landing_pending"
+    if s1 == "done":
+        return "stage2_started" if s2 == "claimed" else "stage1_completed"
+    if s1 == "claimed":
+        return "started"
+    return "queued"
+
+
 async def _reading_status_row(conn: Any, row: Any) -> dict[str, Any]:
     request_id = row["request_id"]
     own = row
@@ -384,27 +495,18 @@ async def _reading_status_row(conn: Any, row: Any) -> dict[str, Any]:
         if row is None:
             raise RuntimeError("reading alias target missing")
     s1, s2 = row["status"], row["stage2_status"]
-    status = "queued"
-    if s1 == "failed" or (s1 == "done" and s2 == "failed"):
-        status = "failed"
-    elif s1 == "skipped" or (s1 == "done" and s2 == "skipped"):
-        # Stage 2 skips a Stage 1 handoff with no read evidence; that request
-        # is finished, not waiting at "stage1_completed" forever.
-        status = "skipped"
-    elif row["landing_at"]:
-        status = "completed"
-    elif s1 == "done" and s2 == "done":
-        status = "landing_pending"
-    elif s1 == "done":
-        status = "stage2_started" if s2 == "claimed" else "stage1_completed"
-    elif s1 == "claimed":
-        status = "started"
+    status = derive_reading_status(s1, s2, row["landing_at"])
     handoff = _json_object(row.get("handoff_json"))
     result = _json_object(row.get("stage2_result_json"))
     queue_position: int | None = None
     queue_depth: int | None = None
     if status == "queued":
         queue_position, queue_depth = await _stage1_queue_position(conn, row)
+    duplicate = None
+    if ALREADY_READ in (own["last_error"], own["stage2_error"]):
+        duplicate = ALREADY_READ
+    elif own["duplicate_of"]:
+        duplicate = "already_queued"
     return {
         "request_id": str(request_id) if request_id is not None else None, "status": status,
         "request": _json_object(own["request_json"]),
@@ -421,6 +523,11 @@ async def _reading_status_row(conn: Any, row: Any) -> dict[str, Any]:
         # null otherwise rather than a stale/misleading number.
         "queue_position": queue_position,
         "queue_depth": queue_depth,
+        # already_read: this URL was read before, so it is not read again (by
+        # design); for a folded request, status and summary are the earlier
+        # read's. already_queued: folded into a read that was still in progress
+        # when the request arrived.
+        "duplicate": duplicate,
     }
 
 
@@ -463,8 +570,8 @@ def _seed_from_row(row: Any) -> WorldPulseReadSeedV1:
     )
 
 
-async def claim_next_seed(conn: Any) -> WorldPulseReadSeedV1 | None:
-    row = await conn.fetchrow(CLAIM_SQL)
+async def claim_next_seed(conn: Any, *, active_only: bool = False) -> WorldPulseReadSeedV1 | None:
+    row = await conn.fetchrow(CLAIM_SQL, active_only)
     if not row:
         return None
     return _seed_from_row(row)
@@ -590,6 +697,10 @@ WHERE status = 'pending'
   AND kind = 'digest_item'
   AND created_at < now() - ($1 * interval '1 second')
   AND NOT EXISTS (
+      SELECT 1 FROM reading_durable_turn d
+      WHERE d.seed_id=world_pulse_read_seed.seed_id AND d.consumed_at IS NULL
+  )
+  AND NOT EXISTS (
       SELECT 1 FROM world_pulse_read_seed AS alias
       WHERE alias.duplicate_of = world_pulse_read_seed.seed_id
         AND alias.kind <> 'digest_item'
@@ -609,6 +720,59 @@ async def skip_stale_digest_items(conn: Any, *, max_age_sec: float) -> int:
     return _update_rowcount(status)
 
 
+_SWEEP_EARLIEST_READ = _EARLIEST_READ.format(url="s.url", seed_id="s.seed_id")
+
+# Folds each passed-on row onto the earliest read, and re-points requests that
+# had joined it while it waited, so their status shows that read's result.
+SKIP_ALREADY_READ_STAGE1_SQL = f"""
+WITH swept AS (
+    UPDATE world_pulse_read_seed s
+    SET status = 'skipped', stage2_status = 'skipped', last_error = $1,
+        completed_at = now(), duplicate_of = ({_SWEEP_EARLIEST_READ})
+    WHERE s.status = 'pending' AND s.duplicate_of IS NULL
+      AND NOT EXISTS (
+          SELECT 1 FROM reading_durable_turn d
+          WHERE d.seed_id = s.seed_id AND d.consumed_at IS NULL
+      )
+      AND EXISTS ({_SWEEP_EARLIEST_READ})
+    RETURNING s.seed_id, s.duplicate_of
+), repointed AS (
+    UPDATE world_pulse_read_seed a
+    SET duplicate_of = swept.duplicate_of, last_error = $1
+    FROM swept WHERE a.duplicate_of = swept.seed_id
+    RETURNING a.seed_id
+)
+SELECT (SELECT count(*) FROM swept) AS swept, (SELECT count(*) FROM repointed) AS repointed
+"""
+
+SKIP_ALREADY_READ_STAGE2_SQL = f"""
+UPDATE world_pulse_read_seed s
+SET stage2_status = 'skipped', stage2_error = $1, stage2_completed_at = now()
+WHERE s.status = 'done' AND s.stage2_status = 'pending' AND s.duplicate_of IS NULL
+  AND NOT EXISTS (
+      SELECT 1 FROM reading_durable_turn d
+      WHERE d.seed_id = s.seed_id AND d.consumed_at IS NULL
+  )
+  AND EXISTS (
+      SELECT 1 FROM world_pulse_read_seed r
+      WHERE r.url = s.url AND r.seed_id <> s.seed_id AND r.duplicate_of IS NULL
+        AND r.status = 'done' AND r.stage2_status = 'done' AND {_HAS_READ_EVIDENCE}
+  )
+"""
+
+
+async def skip_already_read_stage1(conn: Any) -> int:
+    """Pass on waiting Stage 1 rows whose URL another row already read.
+    Runs every Stage 1 tick; a row with an open durable run is left to it."""
+    row = await conn.fetchrow(SKIP_ALREADY_READ_STAGE1_SQL, ALREADY_READ)
+    return int(row["swept"]) if row else 0
+
+
+async def skip_already_read_stage2(conn: Any) -> int:
+    """Pass on waiting follow-ups whose URL already had a finished follow-up."""
+    return _update_rowcount(await conn.execute(SKIP_ALREADY_READ_STAGE2_SQL, ALREADY_READ))
+
+
 async def mark_stage2_skipped(conn: Any, seed_id: str, *, reason: str) -> None:
     """Stage 2 sibling of :func:`mark_seed_skipped` -- no Wallet B debit."""
     await conn.execute(
@@ -622,8 +786,8 @@ async def mark_stage2_skipped(conn: Any, seed_id: str, *, reason: str) -> None:
     )
 
 
-async def claim_next_stage2_seed(conn: Any) -> Stage2Claim | None:
-    row = await conn.fetchrow(CLAIM_STAGE2_SQL)
+async def claim_next_stage2_seed(conn: Any, *, active_only: bool = False) -> Stage2Claim | None:
+    row = await conn.fetchrow(CLAIM_STAGE2_SQL, active_only)
     if not row:
         return None
     raw = row["handoff_json"]

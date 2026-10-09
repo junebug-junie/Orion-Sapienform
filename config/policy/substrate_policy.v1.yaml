@@ -67,6 +67,18 @@ proposal_kind_rules:
     max_autonomy_tier: express_bounded
     mutating: true
 
+  # 2026-10-01 (attend-to-act loop A1): a bounded, self-reverting action on Orion's own resources
+  # (the GPU pool's orion_self_shed reason). Its own decision so it can be allowed without
+  # allowing maintain or express. Every review trigger still applies (risk, reversibility,
+  # confidence); the builder sets confidence from a fresh physical reading. What actually lets it
+  # fire is execution dispatch: mode.allow_self_reversible_dispatch AND ORION_WORLD_ACTIONS_ENABLED
+  # AND the template named in ORION_WORLD_ACTIONS_ALLOWED, then the pool's own caps.
+  self_regulate:
+    allowed_scope: self_reversible
+    default_decision: approved_self_reversible
+    max_autonomy_tier: self_reversible
+    mutating: true
+
   maintain:
     allowed_scope: maintenance_bounded
     default_decision: approved_maintenance

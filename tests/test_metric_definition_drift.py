@@ -441,6 +441,7 @@ def _stub_base(
     note="merge base abc123 (origin/main)",
     *,
     on_base_branch=False,
+    base_last_change=None,
 ):
     """Stub the merge base AND whether HEAD is it.
 
@@ -455,6 +456,9 @@ def _stub_base(
     """
     monkeypatch.setattr(mod, "_base_definitions", lambda: (definitions, note))
     monkeypatch.setattr(mod, "_base_is_head", lambda: on_base_branch)
+    # The block committed AT the merge base. Stubbed for the same reason as
+    # _base_is_head: left real, it would read whatever checkout the test runs in.
+    monkeypatch.setattr(mod, "_base_last_change", lambda: base_last_change, raising=False)
 
 
 def _block(mod) -> dict:
@@ -682,3 +686,277 @@ def test_off_the_base_branch_a_hand_edited_alert_still_fails(
     )
 
     assert mod.main(["--gate"]) == 1
+
+
+# ---------------------------------------------- no-op churn (2026-09-29 replay)
+#
+# The incident: `_last_change` carried the merge-base commit hash, and the gate
+# accepted only the block recomputed for THIS branch. So every branch that
+# changed no definitions still had to re-run --update after every main merge
+# (the hash moved; and once main recorded another PR's change, "no definition
+# changes" stopped matching the inherited block). Two such branches then
+# conflicted on the same lines: #2400/#2401/#2402 on 2026-09-29, all
+# `change_count: 0` before and after, and #2325/#2327/#2329 on 2026-09-25.
+#
+# These tests drive the real CLI against a REAL throwaway git repository, so
+# `git merge-base` / `git show <base>:<lock>` run for real. Only the metric
+# registries (build_graph) are stubbed.
+
+
+def _git(repo: Path, *args: str) -> str:
+    result = subprocess.run(
+        [
+            "git",
+            "-c", "core.hooksPath=/dev/null",
+            "-c", "user.name=drift-test",
+            "-c", "user.email=drift-test@example.invalid",
+            "-c", "commit.gpgsign=false",
+            *args,
+        ],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    return result.stdout
+
+
+# Literal, not mod.NO_CHANGES, so these tests also load against the pre-fix
+# script -- that is how they were checked to reproduce the incident.
+NO_CHANGES_SENTENCE = "no definition changes relative to the merge base"
+
+D0 = [
+    _node("chan_a", meaning="a", producer_service="p"),
+    _node("chan_b", meaning="b", producer_service="p"),
+]
+# Another PR's change that lands on main: chan_b removed (high severity).
+D1 = [_node("chan_a", meaning="a", producer_service="p")]
+
+
+@pytest.fixture()
+def git_drift(tmp_path, monkeypatch):
+    """The CLI module pointed at a real git repo whose `main` holds a lock for D0.
+
+    The main lock is written in the pre-fix shape -- a `base` commit hash and a
+    "no definition changes" block -- exactly as main carried it on 2026-09-29.
+    """
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "check_definition_drift_git", REPO_ROOT / "scripts" / "check_definition_drift.py"
+    )
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    # If pytest ever runs inside a git hook these would point git -- ours and
+    # the script's own subprocesses -- at the REAL repo's index.
+    for var in ("GIT_DIR", "GIT_INDEX_FILE", "GIT_WORK_TREE", "GIT_OBJECT_DIRECTORY"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", "/dev/null")
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    monkeypatch.setattr(mod, "REPO_ROOT", repo)
+    monkeypatch.setattr(mod, "LOCK_PATH", repo / "config" / "metrics" / "lock.json")
+    _git(repo, "init", "-q", "-b", "main")
+
+    _stub_graph(mod, monkeypatch, D0)
+    mod._write_lock(
+        mod.build_lock(mod.build_graph()),
+        {
+            "base": "merge base 8de13b688 (origin/main)",
+            "change_count": 0,
+            "high_severity_count": 0,
+            "changes": [NO_CHANGES_SENTENCE],
+        },
+    )
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "main: lock D0")
+    return mod, repo
+
+
+def _branch_with_unrelated_commit(repo: Path, name: str, start: str = "main") -> None:
+    _git(repo, "switch", "-q", "-c", name, start)
+    (repo / f"{name}.txt").write_text(f"{name} work\n", encoding="utf-8")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", f"{name}: unrelated work")
+
+
+def _land_definition_change_on_main(mod, monkeypatch, repo: Path) -> None:
+    """Another PR changes a definition (removes chan_b), re-locks, merges."""
+    _branch_with_unrelated_commit(repo, "other-pr")
+    _stub_graph(mod, monkeypatch, D1)
+    assert mod.main(["--update"]) == 0
+    assert "high" in json.dumps(json.loads(mod.LOCK_PATH.read_text())["_last_change"])
+    _git(repo, "commit", "-q", "-am", "other-pr: remove chan_b, re-lock")
+    assert mod.main(["--gate"]) == 0, "the definition-changing PR must itself pass"
+    _git(repo, "switch", "-q", "main")
+    _git(repo, "merge", "-q", "--no-ff", "-m", "merge other-pr", "other-pr")
+
+
+def test_no_change_branch_passes_after_main_records_another_prs_change(
+    git_drift, monkeypatch
+):
+    """Shape (1): the treadmill. Branch changes no definitions and never touched
+    the lock; main then merges a PR that records a high-severity change. Before
+    the fix the gate failed here until the branch re-locked."""
+    mod, repo = git_drift
+    _branch_with_unrelated_commit(repo, "quiet")
+    _land_definition_change_on_main(mod, monkeypatch, repo)
+
+    _git(repo, "switch", "-q", "quiet")
+    _git(repo, "merge", "-q", "--no-edit", "main")
+    _stub_graph(mod, monkeypatch, D1)  # registries after the merge = main's
+
+    main_lock = _git(repo, "show", "main:config/metrics/lock.json")
+    assert mod.LOCK_PATH.read_text(encoding="utf-8") == main_lock
+    assert mod._base_is_head() is False, "must model a PR branch, not main"
+    assert mod.main(["--gate"]) == 0
+
+    before = mod.LOCK_PATH.read_bytes()
+    assert mod.main(["--update"]) == 0
+    assert mod.LOCK_PATH.read_bytes() == before, "--update must be a no-op here"
+    assert _git(repo, "status", "--porcelain") == ""
+
+
+def test_no_change_branch_passes_before_merging_main_too(git_drift, monkeypatch):
+    """Same branch, main moved but not yet merged in: the merge base is still the
+    old main, and the lock is still exactly the old main's. PASS, no re-lock."""
+    mod, repo = git_drift
+    _branch_with_unrelated_commit(repo, "quiet")
+    _land_definition_change_on_main(mod, monkeypatch, repo)
+    _git(repo, "switch", "-q", "quiet")
+    _stub_graph(mod, monkeypatch, D0)
+    assert mod.main(["--gate"]) == 0
+
+
+def test_real_definition_change_with_stale_lock_fails(git_drift, monkeypatch, capsys):
+    """Shape (2): the point of the lock. A branch that changes a definition and
+    does not re-lock must still fail -- even after main recorded another change."""
+    mod, repo = git_drift
+    _branch_with_unrelated_commit(repo, "sneaky")
+    _land_definition_change_on_main(mod, monkeypatch, repo)
+    _git(repo, "switch", "-q", "sneaky")
+    _git(repo, "merge", "-q", "--no-edit", "main")
+
+    # This branch additionally edits chan_a's meaning without re-locking.
+    _stub_graph(mod, monkeypatch, [_node("chan_a", meaning="CHANGED", producer_service="p")])
+    capsys.readouterr()
+    assert mod.main(["--gate"]) == 1
+    assert "a metric definition changed" in capsys.readouterr().err
+
+
+def test_relocked_definitions_with_main_block_copied_over_still_fail(
+    git_drift, monkeypatch
+):
+    """The new acceptance path (inherit the merge base's block) must not launder
+    a real change: re-lock the definitions but keep main's alert block by hand,
+    and the gate still fails. This is the check that the inherit path is gated
+    on the branch's definitions equalling the base's."""
+    mod, repo = git_drift
+    _branch_with_unrelated_commit(repo, "launder")
+    _land_definition_change_on_main(mod, monkeypatch, repo)
+    _git(repo, "switch", "-q", "launder")
+    _git(repo, "merge", "-q", "--no-edit", "main")
+
+    _stub_graph(mod, monkeypatch, [_node("chan_a", meaning="CHANGED", producer_service="p")])
+    main_block = json.loads(mod.LOCK_PATH.read_text())["_last_change"]
+    mod.main(["--update"])
+    _git(repo, "commit", "-q", "-am", "re-lock")
+    assert mod.main(["--gate"]) == 0, "an honest re-lock passes"
+
+    data = json.loads(mod.LOCK_PATH.read_text())
+    assert "CHANGED" in json.dumps(data["_last_change"])
+    data["_last_change"] = main_block  # erase this branch's alert
+    mod.LOCK_PATH.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    assert mod.main(["--gate"]) == 1
+
+
+def test_two_no_change_branches_produce_no_lock_diff(git_drift, monkeypatch):
+    """Shape (3): two open PRs that change nothing must not both edit the lock.
+    Main here is post-fix (no commit hash in the block); both branches run the
+    old ritual of re-locking after merging main, and neither produces a diff."""
+    mod, repo = git_drift
+    _land_definition_change_on_main(mod, monkeypatch, repo)  # post-fix lock on main
+    main_lock = _git(repo, "show", "main:config/metrics/lock.json")
+    assert '"base"' not in main_lock, "a lock written by this script has no hash"
+
+    for name in ("pr-2401", "pr-2402"):
+        _branch_with_unrelated_commit(repo, name)
+        _stub_graph(mod, monkeypatch, D1)
+        assert mod.main(["--update"]) == 0
+        assert mod.main(["--gate"]) == 0
+        assert _git(repo, "diff", "main", "--", "config/metrics/lock.json") == ""
+        _git(repo, "switch", "-q", "main")
+
+    _git(repo, "merge", "-q", "--no-edit", "pr-2401")
+    _git(repo, "merge", "-q", "--no-edit", "pr-2402")  # raises on conflict
+
+
+def test_legacy_hash_line_is_stripped_identically_on_every_branch(
+    git_drift, monkeypatch
+):
+    """Main still carries the pre-fix `base` hash when a branch first re-locks.
+    Stripping it is the only edit, and it is byte-identical on every branch, so
+    two branches doing it merge cleanly instead of conflicting."""
+    mod, repo = git_drift
+    results = []
+    for name in ("left", "right"):
+        _branch_with_unrelated_commit(repo, name)
+        _stub_graph(mod, monkeypatch, D0)
+        mod.main(["--update"])
+        text = mod.LOCK_PATH.read_text(encoding="utf-8")
+        assert '"base"' not in text
+        results.append(text)
+        _git(repo, "commit", "-q", "-am", f"{name}: re-lock")
+        _git(repo, "switch", "-q", "main")
+    assert results[0] == results[1]
+    _git(repo, "merge", "-q", "--no-edit", "left")
+    _git(repo, "merge", "-q", "--no-edit", "right")
+
+
+def test_committed_zero_change_block_naming_any_base_is_accepted(
+    drift_cli, monkeypatch
+):
+    """Branches locked before this fix carry `"base": "merge base <old sha>"`
+    next to "no definition changes". The hash is informational; the gate must
+    not fail because main moved on since."""
+    mod = drift_cli
+    _stub_graph(mod, monkeypatch, [_node("x", producer_service="p", meaning="m")])
+    defs = mod.build_lock(mod.build_graph())
+    _stub_base(
+        mod,
+        monkeypatch,
+        defs,
+        note="merge base fffffffff (origin/main)",
+        base_last_change={"change_count": 1, "high_severity_count": 1,
+                          "changes": ["high   removed metric://field_channel/p/y"]},
+    )
+    mod._write_lock(defs, {"base": "merge base 000000000 (origin/main)",
+                           "change_count": 0, "high_severity_count": 0,
+                           "changes": [NO_CHANGES_SENTENCE]})
+    assert mod.main(["--gate"]) == 0
+
+
+def test_untouched_lock_inheriting_the_base_block_is_accepted(drift_cli, monkeypatch):
+    """Pins acceptance route 2 directly: the branch changes nothing and its lock
+    still holds the block main committed for ANOTHER PR's high-severity change.
+    The recomputed block ("no definition changes") does not match it, so only
+    the inherit path can pass this -- and it did not exist before the fix."""
+    mod = drift_cli
+    _stub_graph(mod, monkeypatch, [_node("x", producer_service="p", meaning="m")])
+    defs = mod.build_lock(mod.build_graph())
+    main_block = {"change_count": 1, "high_severity_count": 1,
+                  "changes": ["high   removed metric://field_channel/p/y"]}
+    _stub_base(mod, monkeypatch, defs, base_last_change=main_block)
+    mod._write_lock(defs, dict(main_block))
+    assert mod.main(["--gate"]) == 0
+
+    # ...but not with its counts hand-zeroed behind the same sentences.
+    mod._write_lock(defs, {**main_block, "high_severity_count": 0})
+    assert mod.main(["--gate"]) == 1
+
+
+def test_this_repos_lock_carries_no_merge_base_hash():
+    """The committed lock must not reintroduce the churn line."""
+    data = json.loads(LOCK_PATH.read_text(encoding="utf-8"))
+    assert "base" not in data["_last_change"], data["_last_change"]

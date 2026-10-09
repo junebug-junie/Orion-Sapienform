@@ -7,6 +7,33 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
+
+@pytest.fixture(autouse=True)
+def held_model_boundary(monkeypatch):
+    """These parsing/wallet tests exercise the relocated model boundary.
+
+    Durable submission, waiting and RPC fencing have separate integration tests.
+    """
+    from scripts.reading_turn_listener import ReadingTurnListener
+    from orion.schemas.reading_turn import ReadingRunBriefV1, ReadingTurnRequestV1
+    from scripts.world_pulse_read_pipeline import GenerateOutcome
+
+    async def generate(pipe, prompt, correlation_id, *, seed_id="test-seed", retrieval_query=None):
+        listener = ReadingTurnListener(pipe._source_ref, pipe._step_relay_provider)
+        listener.bus = pipe._bus
+        listener.rpc_bus = pipe._harness_rpc_bus or pipe._bus
+        result = await listener._execute(ReadingTurnRequestV1(
+            run_id="test-run", correlation_id=correlation_id,
+            brief=ReadingRunBriefV1(seed_id=seed_id, stage=1, prompt=prompt,
+                session_id=pipe.session_id, timeout_sec=pipe.timeout_sec,
+                fcc_model_label=pipe._fcc_model_label, retrieval_query=retrieval_query),
+            gpu_lease={"lease_id": "test-hold", "generation": 1,
+                       "role": "agent", "holder": "durable-runs:test-run"},
+        ))
+        return GenerateOutcome(result.text, result.error, result.source_fetches, bound_prompt=prompt)
+
+    monkeypatch.setattr(WorldPulseReadPipeline, "_generate", generate)
+
 from orion.core.bus.bus_schemas import ServiceRef
 from orion.schemas.reading import SourceFetchEvidenceV1
 from orion.schemas.world_pulse_read import (
@@ -258,8 +285,6 @@ def _pipeline(
     kwargs = dict(
         enabled=True,
         tick_interval_sec=60.0,
-        min_cooldown_sec=0.0,
-        daily_cap=6,
         window_start_hour=0,
         window_end_hour=0,
         timeout_sec=30.0,
@@ -280,21 +305,44 @@ async def _seed_queue(conn: _FakeConn, seed: WorldPulseReadSeedV1 | None = None)
     await enqueue_seeds(conn, [seed or _seed()])
 
 
-def test_tick_at_daily_cap_does_not_claim_a_seed() -> None:
+def test_no_daily_cap_or_cooldown_a_busy_day_still_reads() -> None:
+    """Budgets removed 2026-09-28: a high day count and a read one second ago
+    no longer block a tick."""
     bus = _FakeBus()
     conn = _FakeConn()
     store = InMemorySubstrateGraphStore()
-    bus.redis.store[_count_key()] = "6"
+    bus.redis.store[_count_key()] = "99"
+    bus.redis.store[wa.WALLET_A_COOLDOWN_KEY] = _now().isoformat()
     pipe = _pipeline(bus, conn, store)
+    handoff = _handoff()
+
+    async def _fake_read(seed):
+        return handoff
+
+    pipe._stage1_read = _fake_read  # type: ignore[method-assign]
 
     async def _run():
         await _seed_queue(conn)
         return await pipe.tick()
 
-    assert asyncio.run(_run()) == "daily_cap"
+    assert asyncio.run(_run()) is None
+    assert conn.rows["finding:r1:x"]["status"] == "done"
+    assert bus.redis.store[_count_key()] == "100"
+
+
+def test_tick_when_disabled_does_not_claim_a_seed() -> None:
+    bus = _FakeBus()
+    conn = _FakeConn()
+    store = InMemorySubstrateGraphStore()
+    pipe = _pipeline(bus, conn, store, enabled=False)
+
+    async def _run():
+        await _seed_queue(conn)
+        return await pipe.tick()
+
+    assert asyncio.run(_run()) == "disabled"
     assert conn.claimed_ids == []
     assert conn.rows["finding:r1:x"]["status"] == "pending"
-    assert bus.redis.store[_count_key()] == "6"
     assert store.snapshot().nodes == {}
     assert bus.journal == []
 
@@ -356,6 +404,7 @@ def test_force_skips_schedule_gate_and_still_debits_wallet_a() -> None:
     conn = _FakeConn()
     store = InMemorySubstrateGraphStore()
     bus.redis.store[_count_key()] = "6"
+    bus.redis.store[wa.WALLET_A_RETRY_NOT_BEFORE_KEY] = (_now() + timedelta(hours=1)).isoformat()
     pipe = _pipeline(bus, conn, store)
     handoff = _handoff()
 
@@ -371,7 +420,7 @@ def test_force_skips_schedule_gate_and_still_debits_wallet_a() -> None:
         return blocked, forced
 
     blocked, forced = asyncio.run(_run())
-    assert blocked == "daily_cap"
+    assert blocked == "refund_backoff"
     assert forced is None
     assert bus.redis.store[_count_key()] == "7"
     assert wa.WALLET_A_COOLDOWN_KEY in bus.redis.store
@@ -920,7 +969,7 @@ def test_real_deferred_frame_refunds_wallet_a_slot(monkeypatch: pytest.MonkeyPat
     bus.redis.store[_count_key()] = "2"
     prior = (_now() - timedelta(hours=10)).isoformat()
     bus.redis.store[wa.WALLET_A_COOLDOWN_KEY] = prior
-    pipe = _pipeline(bus, conn, store, min_cooldown_sec=600.0, max_attempts=3)
+    pipe = _pipeline(bus, conn, store, max_attempts=3)
     _patch_turn(monkeypatch, [{"type": "turn_deferred", "reason": _POOL_STANCE_REASON}])
 
     _tick(pipe, conn)
@@ -928,9 +977,9 @@ def test_real_deferred_frame_refunds_wallet_a_slot(monkeypatch: pytest.MonkeyPat
     assert bus.redis.store[_count_key()] == "2"
     # last_at goes back to the last debit that counted (dashboard stays honest).
     assert bus.redis.store[wa.WALLET_A_COOLDOWN_KEY] == prior
-    # Retry spacing moves to its own key: floor (600s) after the refusal.
+    # Retry spacing moves to its own key: base backoff (1800s) after the refusal.
     wait = asyncio.run(wa.read_wallet_a_retry_wait(bus.redis, now=_now()))
-    assert wait is not None and 590 <= wait <= 600
+    assert wait is not None and 1790 <= wait <= 1800
     # Admission failed before reading, so the seed keeps its attempt budget.
     assert conn.rows["finding:r1:x"]["attempts"] == 0
     assert conn.rows["finding:r1:x"]["status"] == "pending"
@@ -941,7 +990,7 @@ def test_real_turn_error_frame_keeps_wallet_a_charge(monkeypatch: pytest.MonkeyP
     conn = _FakeConn()
     store = InMemorySubstrateGraphStore()
     bus.redis.store[_count_key()] = "2"
-    pipe = _pipeline(bus, conn, store, min_cooldown_sec=600.0, max_attempts=3)
+    pipe = _pipeline(bus, conn, store, max_attempts=3)
     _patch_turn(monkeypatch, [{"type": "turn_error", "error_code": "fcc_stream_stalled"}])
 
     _tick(pipe, conn)
@@ -954,16 +1003,16 @@ def test_refund_backoff_blocks_the_next_tick_then_doubles(monkeypatch: pytest.Mo
     bus = _FakeBus()
     conn = _FakeConn()
     store = InMemorySubstrateGraphStore()
-    pipe = _pipeline(bus, conn, store, min_cooldown_sec=600.0, max_attempts=5)
+    pipe = _pipeline(bus, conn, store, max_attempts=5)
     _patch_turn(monkeypatch, [{"type": "turn_deferred", "reason": _POOL_STANCE_REASON}])
 
     _tick(pipe, conn)
-    # Unforced tick right after: cooldown was refunded, so the backoff is what blocks.
+    # Unforced tick right after: the refund backoff is what blocks.
     assert asyncio.run(pipe.tick()) == "refund_backoff"
     # Second consecutive refusal (forced past the backoff) doubles the wait.
     asyncio.run(pipe.tick(force=True))
     wait = asyncio.run(wa.read_wallet_a_retry_wait(bus.redis, now=_now()))
-    assert 1190 <= wait <= 1200
+    assert 3590 <= wait <= 3600
     assert bus.redis.store[wa.WALLET_A_REFUND_STREAK_KEY] == "2"
 
 
@@ -971,7 +1020,7 @@ def test_turn_that_reached_reader_resets_refund_streak(monkeypatch: pytest.Monke
     bus = _FakeBus()
     conn = _FakeConn()
     store = InMemorySubstrateGraphStore()
-    pipe = _pipeline(bus, conn, store, min_cooldown_sec=600.0, max_attempts=5)
+    pipe = _pipeline(bus, conn, store, max_attempts=5)
     _patch_turn(monkeypatch, [{"type": "turn_deferred", "reason": _POOL_STANCE_REASON}])
     _tick(pipe, conn)
     assert bus.redis.store[wa.WALLET_A_REFUND_STREAK_KEY] == "1"
@@ -996,7 +1045,7 @@ def test_other_stance_deferrals_refund_but_reader_failures_do_not() -> None:
         bus = _FakeBus()
         conn = _FakeConn()
         store = InMemorySubstrateGraphStore()
-        pipe = _pipeline(bus, conn, store, min_cooldown_sec=600.0, max_attempts=3)
+        pipe = _pipeline(bus, conn, store, max_attempts=3)
 
         async def _boom(seed, _r=reason):
             raise ValueError(_r)
@@ -1012,7 +1061,7 @@ def test_forced_tick_overrides_refund_backoff_and_real_turn_clears_it(
     bus = _FakeBus()
     conn = _FakeConn()
     store = InMemorySubstrateGraphStore()
-    pipe = _pipeline(bus, conn, store, min_cooldown_sec=600.0, max_attempts=5)
+    pipe = _pipeline(bus, conn, store, max_attempts=5)
     _patch_turn(monkeypatch, [{"type": "turn_deferred", "reason": _POOL_STANCE_REASON}])
     _tick(pipe, conn)
     assert wa.WALLET_A_RETRY_NOT_BEFORE_KEY in bus.redis.store
@@ -1181,10 +1230,10 @@ def _stale_sql_calls(conn):
 def test_tick_skips_stale_digest_items_with_configured_age() -> None:
     bus = _FakeBus()
     conn = _FakeConn()
-    bus.redis.store[_count_key()] = "6"  # blocked: the sweep must still run
-    pipe = _pipeline(bus, conn, InMemorySubstrateGraphStore(), digest_item_max_age_days=5)
+    pipe = _pipeline(bus, conn, InMemorySubstrateGraphStore(), digest_item_max_age_days=5,
+                     enabled=False)  # blocked: the sweep must still run
 
-    assert asyncio.run(pipe.tick()) == "daily_cap"
+    assert asyncio.run(pipe.tick()) == "disabled"
     assert _stale_sql_calls(conn) == [(5 * 86400.0, "stale_digest_item")]
 
 
@@ -1194,3 +1243,102 @@ def test_zero_max_age_disables_the_stale_sweep() -> None:
     pipe = _pipeline(bus, conn, InMemorySubstrateGraphStore(), digest_item_max_age_days=0)
     asyncio.run(pipe.tick())
     assert _stale_sql_calls(conn) == []
+
+
+# --- Internal documents: captured at acceptance, read from the snapshot -------
+
+_DOC_TEXT = "# Relational stance\n\nThe choke point is enforce_chat_stance_quality.\n" * 8
+
+
+def _queue_document(conn, tmp_path, text=_DOC_TEXT):
+    from orion.schemas.reading import ReadingRequestedV1
+    from orion.world_pulse_read.documents import DocumentPolicy
+
+    doc = tmp_path / "spec.md"
+    doc.write_text(text)
+    policy = DocumentPolicy.from_values(roots=str(tmp_path), extensions=None, max_bytes=49152)
+    request = ReadingRequestedV1(url=f"file://{doc}", requested_by="juniper",
+                                 invocation_context="operator", why_now="review the spec")
+    seed = WorldPulseReadSeedV1(seed_id=f"reading:{request.request_id}", kind="reading",
+                                run_id=str(request.request_id), url=request.url, request=request)
+    asyncio.run(enqueue_seeds(conn, [seed], documents=policy))
+    return conn.rows[seed.seed_id]
+
+
+def test_document_read_embeds_the_snapshot_and_records_hub_evidence(monkeypatch, tmp_path) -> None:
+    import hashlib
+
+    bus, conn, store = _FakeBus(), _FakeConn(), InMemorySubstrateGraphStore()
+    row = _queue_document(conn, tmp_path)
+    sha = hashlib.sha256(_DOC_TEXT.encode()).hexdigest()
+    assert row["url"].endswith(f"spec.md?sha256={sha}")
+    # The file changes after acceptance; the reader must still see the snapshot.
+    (tmp_path / "spec.md").write_text("rewritten later")
+    seen = {}
+
+    async def _turn(**kwargs):
+        seen["prompt"] = kwargs["user_message"]
+        # The model fetched nothing: a document read never needs a web fetch.
+        return [_final_frame("The stance spec names the choke point.", fetches=[])]
+
+    monkeypatch.setattr("orion.hub.turn_orchestrator.execute_unified_turn", _turn)
+    assert asyncio.run(_pipeline(bus, conn, store).tick(force=True)) is None
+
+    assert _DOC_TEXT in seen["prompt"] and "rewritten later" not in seen["prompt"]
+    assert "do not fetch or search for it" in seen["prompt"]
+    assert row["status"] == "done"
+    assert row["handoff_json"]["read_evidence"] == [{
+        "url": row["url"], "tool_name": "orion_document_snapshot",
+        "content_chars": len(_DOC_TEXT), "content_sha256": sha,
+    }]
+    assert len(bus.journal) == 1
+
+
+def test_document_bound_prompt_without_the_snapshot_is_not_a_read(monkeypatch, tmp_path) -> None:
+    from scripts.world_pulse_read_pipeline import GenerateOutcome, NO_READ_EVIDENCE_DOCUMENT_NOT_IN_PROMPT
+
+    bus, conn, store = _FakeBus(), _FakeConn(), InMemorySubstrateGraphStore()
+    row = _queue_document(conn, tmp_path)
+
+    async def generate(pipe, prompt, correlation_id, *, seed_id="test-seed", retrieval_query=None):
+        text = '```json\n{"what_i_learned": "prose", "candidate_priors": []}\n```'
+        return GenerateOutcome(text, None, [], bound_prompt="an older prompt with no document")
+
+    monkeypatch.setattr(WorldPulseReadPipeline, "_generate", generate)
+    assert asyncio.run(_pipeline(bus, conn, store).tick(force=True)) == "no_read_evidence"
+    assert row["status"] == "failed"
+    assert row["last_error"] == NO_READ_EVIDENCE_DOCUMENT_NOT_IN_PROMPT
+    assert bus.journal == []
+
+
+def test_document_with_missing_snapshot_fails_before_any_wallet_debit(monkeypatch, tmp_path) -> None:
+    bus, conn, store = _FakeBus(), _FakeConn(), InMemorySubstrateGraphStore()
+    row = _queue_document(conn, tmp_path)
+    conn.snapshots.clear()
+    _patch_turn(monkeypatch, [_final_frame("never runs", fetches=[])])
+
+    assert asyncio.run(_pipeline(bus, conn, store).tick(force=True)) == "bad_url"
+    assert row["status"] == "failed"
+    assert row["last_error"] == "document_snapshot_missing"
+    assert _count_key() not in bus.redis.store
+
+
+def test_stage1_turn_recalls_about_the_source_title_not_the_prompt(monkeypatch) -> None:
+    """Recall retrieval design phase 3: the reading turn's recall searches the source,
+    carried on the stored brief -> listener -> execute_unified_turn(retrieval_query=...)."""
+    bus, conn, store = _FakeBus(), _FakeConn(), InMemorySubstrateGraphStore()
+    pipe = _pipeline(bus, conn, store)
+    captured: dict = {}
+
+    async def _turn(**kwargs):
+        captured.update(kwargs)
+        return [{"type": "final", "llm_response": '{"what_i_learned": "ok"}'}]
+
+    monkeypatch.setattr("orion.hub.turn_orchestrator.execute_unified_turn", _turn)
+    try:
+        asyncio.run(pipe._stage1_read(_seed()))
+    except Exception:  # noqa: BLE001 -- only the turn's arguments matter here
+        pass
+
+    assert captured["retrieval_query"] == "A"
+    assert captured["user_message"] != captured["retrieval_query"]

@@ -10,11 +10,10 @@
 
 ## Substrate trace stance
 Emit **bounded periodic transport rollups** only:
-health (PING), uncataloged configured streams, the mesh-wide census, and a
-bounded per-stream schema-validation sample (`bus_schema_validation_failed`:
-counts only -- `mismatch_count`/`sampled_count` from a small `XREVRANGE`
-sample of cataloged streams checked against their declared `schema_id`, see
-`BUS_OBSERVER_SCHEMA_SAMPLE_COUNT`).
+health (PING), uncataloged configured streams, and the mesh-wide census.
+The per-stream schema-validation sample (`bus_schema_validation_failed`,
+`BUS_OBSERVER_SCHEMA_SAMPLE_COUNT`) was retired 2026-10-07: see
+`docs/superpowers/specs/2026-10-07-transport-lattice-names-and-contract.md`.
 Never emit full message payloads or per-packet traces.
 
 ## Implementation

@@ -71,3 +71,64 @@ curl -fsS http://127.0.0.1:8082/health
 
 - `GET http://127.0.0.1:8082/health`
 - Admin UI (local): `http://127.0.0.1:8082/admin`
+
+## Messages transport compatibility
+
+The pinned FCC 2.4.4 Messages route always returned SSE, including requests
+with `stream: false`. Claude's WebFetch fallback rejects that HTTP 200 as a
+malformed non-streaming response. Silent upstream waits also exceeded Claude's
+stream-idle watchdog before source summarization could finish.
+
+The image applies `install_transport_patch.py` to the audited upstream route
+and error emitter. SHA-256 guards fail the build if either source changes; an FCC upgrade must
+review/remove the patch explicitly. The adapter leaves provider routing,
+generation settings, recovery, and deadlines unchanged:
+
+- `stream: true`: immediate and 15-second idle SSE `ping` events, with original
+  provider events preserved. Pings are transport liveness, not reading progress.
+- False, null, or omitted `stream`: assemble a complete Anthropic JSON message,
+  preserving content blocks, tool JSON, citations, stop metadata, and usage.
+  Incomplete/error streams return HTTP 502, never a partial successful message.
+- Disconnect: cancel the pending read and finish async provider cleanup under
+  a cancellation shield, including buffered non-streaming requests.
+- Provider failures: emit real SSE errors, not error prose in successful
+  assistant messages. Non-streaming assembly preserves the error payload in a
+  502 response. Existing local optimization responses are unchanged.
+
+There are no new env keys, bus events, or schema registry entries. Upstream
+`config.settings.Settings` still owns FCC settings; this wrapper has no local
+`settings.py` or application bus consumer.
+
+### Checks
+
+Build in a worktree, using a separate Compose project to avoid replacing the
+deployment image tag:
+
+```bash
+scripts/safe_docker_build.sh orion-fcc -p orion-fcc-transport-test build
+docker run --rm --entrypoint python \
+  -v "$PWD/services/orion-fcc/tests:/tests:ro" \
+  orion-fcc-transport-test-fcc -m unittest discover -s /tests -v
+```
+
+`.github/workflows/orion-fcc-tests.yml` also installs the pinned upstream,
+applies the guard, and exercises its real patched route. The route regression
+fails against the original unpatched image.
+
+Opt-in live eval (uses model capacity and public web access; no queue/memory
+writes), after starting an isolated candidate on `app-net`:
+
+```bash
+scripts/safe_docker_build.sh orion-fcc -p orion-fcc-transport-test \
+  run -d --no-deps --name orion-fcc-transport-canary fcc
+docker exec -i orion-athena-harness-governor python3 - \
+  --base-url http://orion-fcc-transport-canary:8082 \
+  < services/orion-fcc/evals/webfetch_smoke.py
+docker stop orion-fcc-transport-canary
+docker rm orion-fcc-transport-canary
+```
+
+The eval permits exactly one WebFetch of arXiv 2310.19279, checks the source
+title in both the tool receipt and final reply, and enforces a 900-second total subprocess deadline.
+This proves the tool path, not Stage 2 journal landing. Use the reading verifier
+after an explicitly approved queue retry to check end-to-end completion.

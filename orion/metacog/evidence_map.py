@@ -833,6 +833,8 @@ def map_llm_surface_instability(reason: str, up: dict[str, Any]) -> EvidenceMapp
 
 
 def map_baseline(reason: str, up: dict[str, Any]) -> EvidenceMapping:
+    """baseline heartbeat -- its producer was retired 2026-09-29; kept only so
+    historical baseline rows still replay (capture_replay / evals)."""
     return EvidenceMapping(
         severity="nominal",
         magnitude=0.0,
@@ -857,31 +859,7 @@ def map_manual(reason: str, up: dict[str, Any]) -> EvidenceMapping:
     )
 
 
-def map_substrate(reason: str, up: dict[str, Any], *, kind: str = "dense") -> EvidenceMapping:
-    """dense / pulse (substrate_metacog_gate.py). Never fired in the live
-    table as of 2026-09-24, but the producer exists, so it is mapped rather
-    than left to fall through to no_evidence. substrate_score is already a
-    0..1 eventfulness score; it is used as the magnitude directly."""
-    score = _num(up.get("substrate_score"))
-    if score is None:
-        return _no_evidence(kind, reason, "missing substrate_score")
-    severity, magnitude = banded(_clip01(score), DEGRADED_FLOOR, CRITICAL_FLOOR, 1.0)
-    reasons = [str(r) for r in (up.get("reasons") or []) if r][:4]
-    evidence = [f"substrate eventfulness {score:.2f}"] + [f"reason {r}" for r in reasons]
-    return _build(
-        kind=kind,
-        severity=severity,
-        magnitude=magnitude,
-        basis=f"substrate_score={score:.3f}",
-        evidence=evidence,
-        touches=["execution_trajectory"],
-        headline=f"execution trajectory eventfulness {score:.2f}" + (f" ({', '.join(reasons)})" if reasons else ""),
-    )
-
-
 _MAPPERS: dict[str, Callable[[str, dict[str, Any]], EvidenceMapping]] = {
-    "dense": lambda r, u: map_substrate(r, u, kind="dense"),
-    "pulse": lambda r, u: map_substrate(r, u, kind="pulse"),
     "transport": map_transport,
     "telemetry_anomaly": map_telemetry_anomaly,
     "chat_turn": map_chat_turn,

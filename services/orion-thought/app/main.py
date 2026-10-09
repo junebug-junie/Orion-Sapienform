@@ -5,7 +5,7 @@ import logging
 from contextlib import asynccontextmanager, suppress
 
 from fastapi import FastAPI, Body
-from orion.schemas.reverie_visual import VisualRunRequestV1, VisualExecutionReceiptV1, VisualProductionReceiptV1
+from orion.schemas.reverie_visual import VisualRunRequestV1
 from fastapi.responses import JSONResponse
 
 from datetime import datetime, timezone
@@ -181,7 +181,8 @@ async def visual_chain_run_once(request: VisualRunRequestV1 | None = Body(defaul
     """Execute a typed request; `ran` is legacy, only `outcome` proves production."""
     from orion.core.bus.async_service import OrionBusAsync
     from orion.reverie.baseline import load_baseline_policy, validate_eligibility
-    from .visual_chain import run_visual_chain_once, visual_chain_in_flight_for
+    from .visual_chain import (build_visual_execution_receipt, run_visual_chain_once,
+                               visual_chain_in_flight_for, visual_outcome_for_chain)
     from .store import claim_visual_attempt, finish_visual_attempt, persist_visual_execution_receipt, replay_visual_attempt
 
     request = request if isinstance(request, VisualRunRequestV1) else VisualRunRequestV1()
@@ -203,9 +204,14 @@ async def visual_chain_run_once(request: VisualRunRequestV1 | None = Body(defaul
             return JSONResponse({"ok": False, "ran": False, "outcome": "failed",
                                  "reason": reason or "legacy_visual_worker_enabled"})
     if policy.enabled:
+        from .visual_steps import _in_flight_window_sec
         try:
+            # Same release rules as the durable prepare claim, so a rollback to this
+            # path is never blocked by attempts a durable run left behind.
             attempt_id, replay = await asyncio.to_thread(
-                claim_visual_attempt, request, retry_sec=policy.retry_sec, now=datetime.now(timezone.utc)
+                claim_visual_attempt, request, retry_sec=policy.retry_sec, now=datetime.now(timezone.utc),
+                abandoned_in_flight_window_sec=_in_flight_window_sec(),
+                attempt_max_age_sec=settings.visual_chain_attempt_max_age_sec,
             )
         except Exception:
             logger.exception("visual execution claim unavailable")
@@ -222,25 +228,9 @@ async def visual_chain_run_once(request: VisualRunRequestV1 | None = Body(defaul
         logger.exception("visual run failed without a terminal chain")
         result = {"ok": False, "ran": False, "outcome": "unknown", "reason": "execution_unresolved", "attempt_id": attempt_id}
     else:
-        production = chain.chain_json.get("production_receipt") if chain else None
-        outcome = ("produced" if production else "deferred_busy" if chain is None else
-                   "deferred_thermal" if chain.terminal_reason == "thermal_refused" else
-                   "deferred_resource" if chain.terminal_reason == "resource_deferred" else
-                   "unknown" if chain.terminal_reason == "run_deadline_exceeded" else "failed")
+        outcome = visual_outcome_for_chain(chain)
         thermal = chain.chain_json.get("thermal_gate") if chain else {"reason": "thermal_not_evaluated"}
-        receipt = VisualExecutionReceiptV1(
-            request=request, attempt_id=attempt_id or (chain.chain_id if chain else None),
-            outcome=outcome, gate_reason=chain.terminal_reason if chain else "already_in_flight",
-            thermal_gate=thermal or {},
-            source_selection_status="selected" if chain and chain.context_selection else "source_selection_not_reached",
-            source_kind=chain.context_selection.source_kind if chain and chain.context_selection else None,
-            source_refs=([chain.context_selection.reverie.thought_id, chain.context_selection.reverie.text_chain_id]
-                         if chain and chain.context_selection and chain.context_selection.reverie else
-                         [chain.context_selection.source.source_id]
-                         if chain and chain.context_selection and chain.context_selection.source else []),
-            artifact_persisted=production is not None,
-            production_receipt=VisualProductionReceiptV1.model_validate(production) if production else None,
-        )
+        receipt = build_visual_execution_receipt(request, attempt_id, chain, outcome)
         result = {"ok": outcome not in {"failed", "unknown"}, "ran": chain is not None,
                   "outcome": outcome, "attempt_id": receipt.attempt_id,
                   "chain_id": chain.chain_id if chain else None,

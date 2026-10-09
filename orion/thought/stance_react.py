@@ -12,6 +12,7 @@ from orion.schemas.thought import StanceHarnessSliceV1, StanceReactRequestV1, Th
 from orion.thought.coalition import (
     align_evidence_refs_to_coalition,
     coalition_ids_from_association,
+    prompt_turn_refs,
 )
 from orion.thought.policy_refusal import evaluate_thought_disposition
 from orion.thought.stance_quality import enforce_thought_stance_quality
@@ -177,12 +178,14 @@ def decode_stance_react_json(raw: str) -> dict[str, Any]:
 
 
 def slim_association_for_prompt(association: HubAssociationBundleV1) -> dict[str, Any]:
+    # No correlation_id and no full `hub:turn:<id>`: the model copying that UUID
+    # is what burned max_tokens live 2026-10-02 (see coalition.HUB_TURN_REF_TOKEN).
     broadcast = association.broadcast
+    attended = list(broadcast.attended_node_ids) if broadcast else []
     return {
-        "correlation_id": association.correlation_id,
         "broadcast_stale": association.broadcast_stale,
         "read_source": association.read_source,
-        "attended_node_ids": list(broadcast.attended_node_ids) if broadcast else [],
+        "attended_node_ids": prompt_turn_refs(attended, association.correlation_id),
         "open_loop_ids": [loop.id for loop in broadcast.frame.open_loops] if broadcast else [],
     }
 
@@ -199,7 +202,6 @@ def slim_repair_bundle_for_prompt(bundle: TurnAppraisalBundleV1 | None) -> dict[
         for name, slice_ in bundle.paradigms.items()
     }
     slim: dict[str, Any] = {
-        "correlation_id": bundle.correlation_id,
         "paradigms": paradigms,
     }
     contract = (bundle.metadata_attachments or {}).get("repair_pressure_contract")
@@ -227,10 +229,13 @@ def parse_stance_react_payload(
     # drive/tension state, assembled deterministically in cortex-exec and mapped on
     # from result metadata — never authored by the stance LLM.
     raw.pop("autonomy_slice", None)
+    # Record identity is owned by the transport, never the stance LLM: it has no
+    # clock and no id source, and invents plausible values when asked.
+    raw.pop("event_id", None)
+    raw.pop("created_at", None)
     if correlation_id:
-        raw.setdefault("correlation_id", correlation_id)
-    if session_id is not None:
-        raw.setdefault("session_id", session_id)
+        raw["correlation_id"] = correlation_id
+    raw["session_id"] = session_id
     return ThoughtEventV1.model_validate(normalize_stance_react_raw(raw))
 
 

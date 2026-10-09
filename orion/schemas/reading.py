@@ -5,9 +5,13 @@ from datetime import datetime, timezone
 from typing import Any, Literal
 from uuid import UUID, uuid4
 
-from pydantic import BaseModel, ConfigDict, Field, HttpUrl, model_validator
+from pydantic import BaseModel, ConfigDict, Field, HttpUrl, TypeAdapter, field_validator, model_serializer, model_validator
 
-ReadingContext = Literal["unified_chat", "curiosity", "world_pulse"]
+from orion.schemas.introspect import MAX_ITEMS, QUERY_CAP, normalize_query
+
+_HTTP_URL = TypeAdapter(HttpUrl)
+
+ReadingContext = Literal["unified_chat", "curiosity", "world_pulse", "operator"]
 ReadingStatus = Literal[
     "queued",
     "started",
@@ -24,7 +28,9 @@ ReadingStatus = Literal[
 class ReadingRequestedV1(BaseModel):
     model_config = ConfigDict(extra="forbid")
     request_id: UUID = Field(default_factory=uuid4)
-    url: HttpUrl
+    # An HTTP(S) URL, or an internal document ``file:///abs/path[?sha256=<hex>]``
+    # (orion/world_pulse_read/documents.py). Hub pins the sha256 at acceptance.
+    url: str = Field(min_length=1, max_length=8192)
     requested_by: Literal["juniper", "orion", "world_pulse"]
     invocation_context: ReadingContext
     why_now: str = Field(default="", max_length=4000)
@@ -35,9 +41,22 @@ class ReadingRequestedV1(BaseModel):
     root_request_id: UUID | None = None
     parent_request_id: UUID | None = None
 
+    @field_validator("url", mode="before")
+    @classmethod
+    def _source(cls, value: Any) -> str:
+        raw = str(value).strip()
+        if raw.lower().startswith("file:"):
+            if not raw.startswith("file:///") or any(ord(c) < 32 or c.isspace() for c in raw):
+                raise ValueError("document source must be file:///<absolute path>")
+            return raw
+        return str(_HTTP_URL.validate_python(raw))
+
     @model_validator(mode="after")
     def coherent_provenance(self):
-        expected = {"unified_chat": "juniper", "curiosity": "orion", "world_pulse": "world_pulse"}
+        expected = {
+            "unified_chat": "juniper", "curiosity": "orion",
+            "world_pulse": "world_pulse", "operator": "juniper",
+        }
         if self.requested_by != expected[self.invocation_context]:
             raise ValueError("requester does not match the runtime binding")
         if self.requested_at.tzinfo is None:
@@ -74,19 +93,54 @@ class ReadingStatusArguments(BaseModel):
 class ReadingToolRequestV1(BaseModel):
     """Internal ephemeral RPC. Only its post-commit reply proves acceptance."""
     model_config = ConfigDict(extra="forbid")
-    operation: Literal["recommend_reading", "reading_status"]
+    operation: Literal["recommend_reading", "reading_status", "reading_result"]
     request: ReadingRequestedV1 | None = None
     request_id: UUID | None = None
     url: str | None = Field(default=None, min_length=1, max_length=8192)
+    query: str | None = Field(default=None, min_length=1, max_length=QUERY_CAP)
+    limit: int | None = Field(default=None, ge=1, le=MAX_ITEMS)
+    since: datetime | None = None
+
+    @field_validator("query", mode="before")
+    @classmethod
+    def _strip_query(cls, value: Any) -> Any:
+        return normalize_query(value)
 
     @model_validator(mode="after")
     def operation_arguments(self):
         if self.operation == "recommend_reading":
             if self.request is None or self.request_id is not None or self.url is not None:
                 raise ValueError("recommend_reading requires only request")
-        elif self.request is not None or (self.request_id is None) == (self.url is None):
-            raise ValueError("reading_status requires exactly one of request_id or url")
+        elif self.operation == "reading_status":
+            if self.request is not None or (self.request_id is None) == (self.url is None):
+                raise ValueError("reading_status requires exactly one of request_id or url")
+        else:
+            if self.request is not None:
+                raise ValueError("reading_result never carries a reading request")
+            if self.request_id is not None and self.url is not None:
+                raise ValueError("reading_result takes at most one of request_id or url")
+            if self.query is not None and (self.request_id is not None or self.url is not None):
+                raise ValueError("reading_result query cannot be combined with request_id or url")
+            if self.since is not None:
+                if self.since.tzinfo is None:
+                    raise ValueError("since must include a timezone")
+                if self.request_id is not None or self.url is not None:
+                    raise ValueError("since applies only to recent reads")
+        if self.operation != "reading_result" and (
+            self.limit is not None or self.since is not None or self.query is not None
+        ):
+            raise ValueError(f"{self.operation} takes no limit, since, or query")
         return self
+
+    @model_serializer(mode="wrap")
+    def _omit_unset_result_selectors(self, handler):
+        # A Hub predating reading_result forbids unknown keys, even null ones;
+        # keep recommend/status payloads byte-compatible with it.
+        data = handler(self)
+        for key in ("limit", "since", "query"):
+            if data.get(key) is None:
+                data.pop(key, None)
+        return data
 
 
 class ReadingToolResultV1(BaseModel):
@@ -103,6 +157,9 @@ class ReadingStatusReceiptV1(BaseModel):
     request_id: UUID | None
     status: ReadingStatus
     seed_id: str | None = Field(default=None, min_length=1)
+    # Set when this request was folded into another read of the same URL.
+    # already_read: that read already finished, so the URL is not read again.
+    duplicate: Literal["already_read", "already_queued"] | None = None
 
     @model_validator(mode="after")
     def found_request_id(self):
@@ -138,6 +195,7 @@ class ReadingRecommendationOutcomeV1(BaseModel):
     acceptance: Literal["accepted", "unknown"]
     request_id: UUID | None = None
     status: ReadingStatus | None = None
+    duplicate: Literal["already_read", "already_queued"] | None = None
     source_read: bool = False
     failure_kind: Literal[
         "tool_error", "rpc_timeout", "malformed_receipt", "missing_result"
@@ -176,6 +234,16 @@ class SourceFetchEvidenceV1(BaseModel):
     url: str = Field(min_length=1)
     tool_name: str = Field(min_length=1)
     content_chars: int = Field(ge=0)
+    # Set only for a Hub-captured document snapshot: the exact bytes read.
+    content_sha256: str | None = None
+
+    @model_serializer(mode="wrap")
+    def _omit_unset_sha(self, handler):
+        # Web-fetch evidence stays byte-identical to what it was before documents.
+        data = handler(self)
+        if data.get("content_sha256") is None:
+            data.pop("content_sha256", None)
+        return data
 
 
 class ReadingLifecycleV1(BaseModel):

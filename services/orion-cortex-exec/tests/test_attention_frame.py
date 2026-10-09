@@ -57,11 +57,152 @@ def test_novel_unresolved_activity_creates_open_loop() -> None:
     assert frame.debug["belief_lineage"] == ["recall:snapshot_ephemeral"]
 
 
-def test_generic_reciprocity_is_suppressed() -> None:
-    frame = build_attention_frame(ctx={"user_message": "What about you?"}, inputs=_inputs())
-    assert any(s.reason == "generic_reciprocity" for s in frame.suppressions)
+_READ_SHARING = {"ok": True, "wants_direct_answer": False}
+_READ_DIRECT = {"ok": True, "wants_direct_answer": True}
+
+
+class _BackgroundDetector:
+    """Stands in for Orion's own background threads (concept/situation detectors),
+    e.g. the "Biometrics prediction error" loop that was the only candidate on
+    corr beab81a3."""
+
+    detector_id = "concept_induction_v1"
+
+    def __init__(self, salience: float = 0.9, confidence: float = 0.9) -> None:
+        self._salience = salience
+        self._confidence = confidence
+
+    def detect(self, ctx, inputs, belief_lineage):
+        return [
+            AttentionSignalV1(
+                signal_id="background-signal-1",
+                source=self.detector_id,
+                target_text="Biometrics prediction error",
+                target_type_hint="anomaly",
+                signal_kind="concept_pressure",
+                salience=self._salience,
+                confidence=self._confidence,
+                evidence_refs=["concept:biometrics", "substrate:biometrics"],
+            )
+        ]
+
+
+def _detectors_with_background(**kw):
+    from orion.substrate.attention.detectors import CurrentTurnSignalDetector
+
+    return [CurrentTurnSignalDetector(), _BackgroundDetector(**kw)]
+
+
+def test_question_to_orion_is_answered_not_deflected_into_curiosity() -> None:
+    """Replaces the generic-reciprocity regex: the turn read judges that the user
+    asked Orion something, so Orion's own background threads are not askable."""
+    frame = build_attention_frame(
+        ctx={"user_message": "What about you?", "current_turn_llm_read": _READ_DIRECT},
+        inputs=_inputs(),
+        detectors=_detectors_with_background(),
+    )
+    assert any(s.reason == "user_needs_direct_answer" for s in frame.suppressions)
     assert frame.selected_action is not None
     assert frame.selected_action.action_type != "ask"
+
+
+def test_shared_life_news_selects_the_natural_follow_up_as_the_ask() -> None:
+    frame = build_attention_frame(
+        ctx={
+            "user_message": "I'll be pretty busy the next few days with work travel.",
+            "current_turn_llm_read": _READ_SHARING,
+            "current_turn_llm_signals": [
+                {"phrase": "work travel", "type": "plan", "natural_question": "Where are you headed?"}
+            ],
+        },
+        inputs=_inputs(),
+        detectors=_detectors_with_background(),
+    )
+    assert frame.selected_action is not None
+    assert frame.selected_action.action_type == "ask"
+    assert frame.selected_action.question_text == "Where are you headed?"
+
+
+def test_shared_life_news_is_askable_even_with_nothing_competing() -> None:
+    """A lone current-turn loop's Borda fallback score tops out near 0.5 -- below
+    min_ask 0.65 -- so on a quiet turn a disclosure could never become a question."""
+    frame = build_attention_frame(
+        ctx={
+            "user_message": "finally signed up for that pottery class",
+            "current_turn_llm_read": _READ_SHARING,
+            "current_turn_llm_signals": [
+                {"phrase": "pottery class", "type": "activity", "natural_question": "What made you finally do it?"}
+            ],
+        },
+        inputs=_inputs(),
+    )
+    assert frame.selected_action.action_type == "ask"
+    assert frame.selected_action.question_text == "What made you finally do it?"
+
+
+def test_follow_up_on_what_juniper_shared_outranks_orions_own_background_thread() -> None:
+    frame = build_attention_frame(
+        ctx={
+            "user_message": "my sister's coming to stay this weekend",
+            "current_turn_llm_read": _READ_SHARING,
+            "current_turn_llm_signals": [
+                {"phrase": "sister's visit", "type": "person", "natural_question": "How long is she staying?"}
+            ],
+        },
+        inputs=_inputs(),
+        detectors=_detectors_with_background(salience=1.0, confidence=1.0),
+    )
+    assert frame.selected_action.question_text == "How long is she staying?"
+
+
+def test_direct_request_still_allows_follow_up_on_what_they_shared() -> None:
+    """'traveling this week, any tips?' -- answer the request, and a friend's
+    follow-up about the trip is still fair game; Orion's background threads are not."""
+    frame = build_attention_frame(
+        ctx={
+            "user_message": "traveling for work this week, any packing tips?",
+            "current_turn_llm_read": _READ_DIRECT,
+            "current_turn_llm_signals": [
+                {"phrase": "work trip this week", "type": "plan", "natural_question": "Where's the trip taking you?"}
+            ],
+        },
+        inputs=_inputs(),
+        detectors=_detectors_with_background(salience=1.0, confidence=1.0),
+    )
+    assert frame.selected_action.action_type == "ask"
+    assert frame.selected_action.question_text == "Where's the trip taking you?"
+    background_loop = next(loop for loop in frame.open_loops if "Biometrics" in loop.description)
+    assert background_loop.askability <= 0.25, "direct turn must make Orion's background thread unaskable"
+    background_action = next(a for a in frame.candidate_actions if a.open_loop_id == background_loop.id)
+    assert background_action.action_type != "ask"
+    assert "at most one selected ask" not in background_action.rationale, (
+        "background loop must be held back by the direct turn, not merely out-competed for the one ask slot"
+    )
+
+
+def test_question_mark_alone_no_longer_suppresses_curiosity() -> None:
+    frame = build_attention_frame(
+        ctx={"user_message": "had the best ramen of my life today, ever been obsessed with a food?", "current_turn_llm_read": _READ_SHARING},
+        inputs=_inputs(),
+    )
+    assert not any(s.reason == "user_needs_direct_answer" for s in frame.suppressions)
+
+
+def test_unavailable_turn_read_fails_closed_for_background_curiosity() -> None:
+    frame = build_attention_frame(
+        ctx={"user_message": "so far so good", "current_turn_llm_read": {"ok": False, "wants_direct_answer": None}},
+        inputs=_inputs(),
+        detectors=_detectors_with_background(salience=1.0, confidence=1.0),
+    )
+    assert any(
+        s.reason == "user_needs_direct_answer" and s.target_ref == "turn_read_unavailable" for s in frame.suppressions
+    )
+    assert frame.selected_action.action_type != "ask"
+
+
+def test_no_user_text_adds_no_turn_read_suppression() -> None:
+    frame = build_attention_frame(ctx={"user_message": ""}, inputs=_inputs(), detectors=[_FakeDetector()])
+    assert not any(s.reason == "user_needs_direct_answer" for s in frame.suppressions)
 
 
 def test_already_known_fact_suppresses_redundant_question() -> None:
@@ -112,7 +253,10 @@ def test_open_loop_without_autonomy_boost_stays_below_ask_threshold() -> None:
 
 
 def test_low_value_open_loop_selects_non_ask() -> None:
-    frame = build_attention_frame(ctx={"user_message": "Please implement this plan for Orion."}, inputs=_inputs())
+    frame = build_attention_frame(
+        ctx={"user_message": "Please implement this plan for Orion.", "current_turn_llm_read": _READ_DIRECT},
+        inputs=_inputs(),
+    )
     assert frame.selected_action is not None
     assert frame.selected_action.action_type in {"watch", "defer", "suppress", "none"}
     assert any(s.reason == "user_needs_direct_answer" for s in frame.suppressions)

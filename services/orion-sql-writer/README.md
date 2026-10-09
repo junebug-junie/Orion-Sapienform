@@ -35,6 +35,8 @@ Configured via `SQL_WRITER_SUBSCRIBE_CHANNELS` (JSON list).
 
 **Drive audit persistence — REMOVED 2026-08-13:** `orion-spark-concept-induction`'s `DriveEngine` (the sole producer of `memory.drives.audit.v1`) was deleted outright 2026-07-30 (`chore/delete-orion-drives`, PR #1486). The `drive_audits` table was dropped 2026-08-13 (snapshotted first, `/tmp/drive_audits_drop_2026-08-13/`) alongside the Hub Drives Analytics tab that read it (docs/superpowers/pr-reports/2026-08-13-remove-hub-drives-analytics-tab-pr.md, which also removed the boot DDL). This service's write-path wiring for it (`DriveAuditSQL` model, `MODEL_MAP`/`INSERT_ONLY_MODELS`/route-map entries, the channel subscription, `DRIVE_AUDITS_RETENTION_DAYS` and its startup prune job) was fully untangled the same day (docs/superpowers/pr-reports/2026-08-13-untangle-drive-audit-sql-writer-pr.md) — an earlier scope note claiming `DriveAuditSQL` shared a `_JSONB` type declaration with other live models was checked and found wrong (every model declares its own private copy), so nothing blocked full removal. `scripts/drive_history_reflection_synthesis.py` and `scripts/analysis/measure_autonomy_gate.py` both still reference the concept but already degrade safely to "insufficient/missing data" — neither is on any cron/scheduler in this repo.
 
+**Transport baseline hourly readings (2026-09-29):** `transport_baseline.hourly.v1` on `orion:equilibrium:transport_baseline:hourly` (produced by `orion-equilibrium-service`'s per-hop transport baseline gate, one row per (service, instance, hop, UTC hour)) is appended to `transport_baseline_hourly` (`TransportBaselineHourlySQL`, PK `summary_id`, insert-only). Created by `Base.metadata.create_all` at boot (new table, no manual migration). This service must be deployed **before** equilibrium publishes, or rows land in the fallback log. Read by `scripts/analysis/grade_transport_baseline.py` (spec 2026-09-24 acceptance check 1). ~1,500 rows/day; no retention policy yet.
+
 **Juniper multimodal affect persistence (2026-08-25):** `orion:affectgpt:assessment` (produced by `orion-juniper-affective-state` after wrapping a real `orion-affectgpt-worker` AffectGPT read) is projected into `juniper_multimodal_affect_log` (`JuniperMultimodalAffectSQL`, PK `event_id` derived from the envelope `correlation_id` -- upserts on redelivery). First real persistence consumer of that channel; previously the only reader was the producer's own `scripts/tap_assessments.py` debug tap, and the live cognition path (`orion/situational/juniper_affect_state.py`, PR #1865) reads a separate 1h-TTL Redis SETEX mirror -- once that key expires, nothing durable recorded a capture ever happened. Deliberately does NOT persist `transcript` (Whisper's verbatim transcription of Juniper's spoken words) -- a privacy-boundary decision documented on the model class, mechanically enforced by `_write_row()`'s column-filter rather than bespoke redaction code. `raw_response` (the model's own generated affect read, already surfaced in the Hub UI and on the bus) is kept in full. **2026-08-26:** added `chat_correlation_id` (boot-time `ALTER TABLE ... ADD COLUMN IF NOT EXISTS`, same convention as the `chat_*` statements) for Hub's per-chat-turn affect bracket -- the `chat_turn_pre`/`chat_turn_post` pair fired around one Orion-mode turn. It is a *separate join axis* from `correlation_id`: that one joins a single capture's retina/worker/event legs, this one joins a capture to the conversation turn that caused it and joins a turn's pre/post pair to each other. Indexed, NULL for `manual`/`ambient` captures. Without the column, `_write_row`'s column-filter would have silently dropped the key and the join would have existed only on the bus and in the 1h Redis mirror -- never durably.
 
 ### Environment Variables
@@ -379,8 +381,10 @@ these rows by that flag. Then: Juniper's answers are applied (`orion_ask`
 answered -> `vision_individual.label`, `applied_at` set), open asks past
 `expires_at` expire, and new asks open for unlabeled individuals with
 >= `VISION_ASK_MIN_SIGHTINGS` sightings over >= `VISION_ASK_MIN_DAYS` local
-days, under `ORION_ASK_DAILY_CAP` counted from `orion_ask.created_at` since
-local midnight (restart-proof). Opened asks are rows only (no bus event);
+days, under `ORION_ASK_DAILY_CAP`, which counts only `vision_individual` asks
+(since 2026-10-06; memory confirmation cards in the same table have their own
+caps in orion-memory-consolidation) from `orion_ask.created_at` since local
+midnight (restart-proof). Opened asks are rows only (no bus event);
 the Hub's ask card reads `orion_ask`. Retention: crops `VISION_CROP_RETENTION_DAYS` (7),
 sightings `VISION_SIGHTING_RETENTION_DAYS` (90); unlabeled individuals unseen
 for the sighting retention are deleted, labeled ones stay.
@@ -425,6 +429,30 @@ Every knob (all `VISION_*`, `ORION_ASK_*` keys) is listed with a comment in
 (read by `orion/vision/zones.py`, not Settings).
 
 Report: `python3 scripts/report_vision_individuals.py [--stream walkway] [--json]`.
+
+## Storage-write organ (2026-10-02)
+
+The writer reports on its own writes (`app/write_health.py`). Every incoming write ends in one
+outcome per envelope: `committed`, `duplicate` (idempotent skip), `skipped` (writer chose not to
+write), `unrouted` (no route; counted, never part of the reading), or a failure class --
+`validation`, `constraint`, `serialization`, `db_unavailable`, `timeout`, `db_error`,
+`backpressure` (grammar queue full), `other`. The class comes from the exception or from the
+error text already written to `bus_fallback_log` (only the head of the message is matched, so
+payload text in `[parameters: ...]` cannot pick a class). Grammar events are counted in the
+persist helpers, one count per event, and the organ never counts its own `sql_writer.storage:`
+events.
+
+Once per `SQL_WRITER_WRITE_HEALTH_WINDOW_SEC` (60) it publishes one trace on
+`orion:grammar:event`: one `storage_write_window_observed` atom per table family that saw traffic
+(at most 32, overflow folded into `_other`) with counts by class and write wall-time p50/p95, and
+one `storage_writer_window_completed` atom with totals and the grammar queue high-water mark.
+Counts only, never payloads or error messages. A publish failure drops that window with a warning
+and never touches the write path. substrate-runtime's storage_write reducer turns it into
+`write_failure_pressure` on `node:substrate.storage_write` -> `capability:storage`
+`reliability_pressure` (see the field-digester README).
+
+Flag: `SQL_WRITER_WRITE_HEALTH_ENABLED` (off in code, on in `.env_example`). Replay real history
+through the emitter and reducer: `python services/orion-sql-writer/evals/storage_write_replay.py --live`.
 
 ## Running & Testing
 

@@ -145,7 +145,7 @@ class OrionBusAsync:
         ``RpcHealthSnapshotV1.channel_latency[hop]``. Pooled fields are untouched.
         Hop key conventions: see orion/core/bus/rpc_health.py's module docstring
         (``verb:<name>``, ``governor:<mode>``, ``http:<host><path>``,
-        ``fcc:<served_model>``). In-memory only, never raises."""
+        ``fcc:<role>``). In-memory only, never raises."""
         self._rpc_health.record_hop_success(hop, elapsed_ms)
 
     def record_hop_timeout(self, hop: str, elapsed_ms: Optional[float] = None) -> None:

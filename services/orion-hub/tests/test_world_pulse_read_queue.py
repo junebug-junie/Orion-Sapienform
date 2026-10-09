@@ -838,3 +838,10 @@ class _FakeConn(ReadingQueueFakeMixin, _LegacyFakeConn):
     pass
 
 pytestmark = pytest.mark.usefixtures("reading_dns")
+
+
+def test_document_snapshot_migration_matches_inline_sql():
+    from orion.world_pulse_read.documents import ENSURE_SNAPSHOT_SQL
+
+    path = _RETRY_MIGRATION.parent / "manual_migration_reading_document_snapshot_v1.sql"
+    assert _sql_statements_only(path.read_text()) == _sql_statements_only(ENSURE_SNAPSHOT_SQL)

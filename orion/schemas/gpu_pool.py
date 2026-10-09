@@ -23,6 +23,10 @@ LLM_WORKER_ANNOUNCE_CHANNEL = "orion:llm:worker:announce"
 GPU_POOL_LEASE_REPLY_PREFIX = "orion:gpu_pool:reply:"
 GPU_POOL_STATE_REPLY_PREFIX = "orion:gpu_pool:state:reply:"
 GPU_POOL_CONTROL_REPLY_PREFIX = "orion:gpu_pool:control:reply:"
+# Orion's learned shed action (attend-to-act loop A1): set/clear/status of the lower-precedence
+# ``orion_self_shed`` reason on the U4 shed lever. Never ``cooling_incident`` (the reflex's).
+GPU_POOL_SHED_REQUEST_CHANNEL = "orion:gpu_pool:shed:request"
+GPU_POOL_SHED_REPLY_PREFIX = "orion:gpu_pool:shed:reply:"
 
 GPU_LEASE_REQUEST_KIND = "gpu_pool.lease.request.v1"
 GPU_LEASE_REPLY_KIND = "gpu_pool.lease.reply.v1"
@@ -34,10 +38,15 @@ GPU_POOL_CONTROL_REPLY_KIND = "gpu_pool.control.reply.v1"
 GPU_ACTUATE_KIND = "gpu_pool.actuate.v1"
 GPU_ACTUATE_RESULT_KIND = "gpu_pool.actuate.result.v1"
 GPU_LEASE_REF_KIND = "gpu_pool.lease.ref.v1"
+GPU_POOL_SHED_REQUEST_KIND = "gpu_pool.shed.request.v1"
+GPU_POOL_SHED_RESULT_KIND = "gpu_pool.shed.result.v1"
 LLM_WORKER_ANNOUNCE_KIND = "llm.worker.announce.v1"
 
-Priority = Literal["interactive", "system", "background"]
+Priority = Literal["urgent", "interactive", "system", "background"]
 LeaseKind = Literal["request", "hold"]
+# Recall/abort/queued reason for a hold paused for urgent work: aborted after
+# urgent_preempt_grace_sec and re-queued in place (orion/gpu_pool/scheduler.py U1/U2).
+URGENT_PREEMPT = "urgent_preempt"
 LeaseStatus = Literal[
     "queued", "backlogged", "granted", "recalling", "retry_wait",
     "released", "unavailable", "aborted", "expired", "dead_letter",
@@ -142,6 +151,8 @@ class GpuPoolEventV1(BaseModel):
         "admitted", "queued", "granted", "backlogged", "recalled", "aborted", "expired",
         "retried", "dead_lettered", "replayed", "released", "unavailable", "cancelled",
         "swap_requested", "swap_started", "swapped", "swap_failed", "actuate_refused", "lent", "unlent", "discovery_mismatch", "discovery_confirmed",
+        # stage 5.7: the emergency stop (control verbs pause_actuation / resume_actuation)
+        "actuation_paused", "actuation_resumed",
     ]
     lease_id: str | None = None
     holder: str | None = None
@@ -182,6 +193,12 @@ class GpuCardStateV1(BaseModel):
 
     card: str
     vram_gb: float
+    # The card's CUDA/nvidia-smi index on the pool host (config ``cards.<c>.index``); None when the
+    # YAML leaves it unset. Stage 5.5: Hub's biometrics GPU labels join nvidia-smi cards on this.
+    index: int | None = None
+    # The node this card is in (config ``cards.<c>.host``, else the pool ``host``). None from a pool
+    # that predates multi-host: read the state's ``host`` then. ``index`` is unique per node only.
+    host: str | None = None
     lendable: bool = False
     lent: bool = False
     swapped_in: list[str] = Field(default_factory=list)
@@ -195,7 +212,8 @@ class GpuCardStateV1(BaseModel):
     loaded_at: datetime | None = None         # when the pool loaded (or adopted) the seat here
     actuated_roles: list[str] = Field(default_factory=list)   # seats on this card the pool may actuate
     # The current or last GpuActuateV1 for this card set: action_id, role, action, generation,
-    # sent_at, acked_at, deadline_at, phase, outcome, reason.
+    # sent_at, acked_at, deadline_at, phase, outcome, reason, profile (stage 5.3: the llm_profiles.yaml
+    # profile a load named, None for unloads and roles without launch.profiles).
     actuation: dict[str, Any] | None = None
 
 
@@ -224,8 +242,9 @@ class GpuPoolStateV1(BaseModel):
 
     schema_version: Literal["gpu_pool.state.v1"] = GPU_POOL_STATE_KIND
     generated_at: datetime = Field(default_factory=_now)
-    mode: Literal["observe", "enforce"] = "observe"
+    mode: Literal["observe", "enforce"] = "enforce"
     config_digest: str
+    host: str | None = None   # config ``host.name``: the node whose cards these are (stage 5.5 labels)
     cards: list[GpuCardStateV1]
     roles: list[DiscoveredRoleV1]
     unclaimed_servers: list[str] = Field(default_factory=list)
@@ -234,6 +253,13 @@ class GpuPoolStateV1(BaseModel):
     backlog_depth: dict[str, int] = Field(default_factory=dict)
     # Swap-load guards as the pool last read them: name -> None when clear, else why it blocks.
     swap_guards: dict[str, str | None] = Field(default_factory=dict)
+    # U4 shed lever (orion/gpu_pool/shed.py ShedView.as_dict): enabled, active_reason, blocked
+    # (priority -> reason), reasons (each with precedence, blocks, active, effective, sources).
+    # Empty from a pool that predates it.
+    shed: dict[str, Any] = Field(default_factory=dict)
+    # Stage 5.7 emergency stop: None while the pool actuates; {"paused": true, "since", "by"} after
+    # control verb pause_actuation (persisted; survives a restart) until resume_actuation.
+    actuation_paused: dict[str, Any] | None = None
     # Filled only on request (GpuPoolStateRequestV1), never on the periodic broadcast:
     config: dict[str, Any] | None = None          # parsed config/gpu_pool.yaml (the Hub picture)
     config_yaml: str | None = None                # the file as written (the Hub "raw YAML" view)
@@ -257,7 +283,10 @@ class GpuPoolControlV1(BaseModel):
 
     # clear_fault (stage 4.3): take `card` out of swap_state=fault. The pool reconciles with the
     # actuator (`status`) and adopts what it reports; with no answer it settles from discovery.
-    verb: Literal["lend", "unlend", "replay", "cancel", "backfill", "hold", "release", "clear_fault"]
+    # pause_actuation / resume_actuation (stage 5.7): the one emergency stop for every model load and
+    # unload, persisted on gpu_pool_cards. An action already in flight finishes; nothing new starts.
+    verb: Literal["lend", "unlend", "replay", "cancel", "backfill", "hold", "release", "clear_fault",
+                  "pause_actuation", "resume_actuation"]
     card: str | None = None
     lease_id: str | None = None
     backfill: dict[str, Any] | None = None
@@ -270,6 +299,57 @@ class GpuPoolControlReplyV1(BaseModel):
 
     ok: bool
     reason: str | None = None
+    detail: dict[str, Any] = Field(default_factory=dict)
+
+
+# The only reason this RPC may touch. The reflex's ``cooling_incident`` is set and cleared by
+# orion-hardware-watch incident events only; the pool refuses any attempt to name it here.
+ORION_SELF_SHED_REASON = "orion_self_shed"
+OrionShedState = Literal["active", "expired", "cancelled", "preempted_by_reflex", "refused"]
+ORION_SHED_TERMINAL_STATES: tuple[str, ...] = ("expired", "cancelled", "preempted_by_reflex", "refused")
+
+
+class GpuPoolShedReasonRequestV1(BaseModel):
+    """Orion's learned shed action -> the pool (attend-to-act loop A1, amended 2026-09-29).
+
+    ``set`` starts one ``orion_self_shed`` for ``ttl_sec`` (capped by the pool); ``clear`` ends it
+    early (settles ``cancelled``); ``status`` reads one shed (by ``shed_id`` or ``dispatch_id``).
+    ``reason`` is a Literal on purpose: a request naming ``cooling_incident`` fails validation."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    action: Literal["set", "clear", "status"]
+    reason: Literal["orion_self_shed"] = ORION_SELF_SHED_REASON
+    dispatch_id: str = Field(..., min_length=1, max_length=256)
+    shed_id: str | None = Field(None, max_length=128)
+    ttl_sec: float | None = Field(None, gt=0, le=3600)
+    actor: str = Field("orion", max_length=64)
+    # The decision context, kept on the shed record so one row joins the whole chain.
+    correlation: dict[str, Any] = Field(default_factory=dict)
+
+
+class GpuPoolShedResultV1(BaseModel):
+    """One ``orion_self_shed`` record as the pool holds it. ``refusal`` is set only for
+    ``state=refused`` (``disabled`` | ``lever_disabled`` | ``reflex_active`` | ``already_active``
+    | ``min_gap`` | ``daily_cap`` | ``ledger_unavailable`` | ``not_found``)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: Literal["gpu_pool.shed.result.v1"] = GPU_POOL_SHED_RESULT_KIND
+    ok: bool
+    shed_id: str | None = None
+    dispatch_id: str | None = None
+    reason: Literal["orion_self_shed"] = ORION_SELF_SHED_REASON
+    state: OrionShedState
+    refusal: str | None = None
+    ttl_sec: float | None = None
+    started_at: datetime | None = None
+    valid_until: datetime | None = None
+    ended_at: datetime | None = None
+    drained_at: datetime | None = None
+    grants_withheld: int = 0
+    delayed_grant_sec: float = 0.0
+    background_live_at_start: int = 0
     detail: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -304,7 +384,7 @@ class GpuActuateV1(BaseModel):
     role: str = Field(min_length=1, max_length=64)
     action: ActuateAction
     cards: list[str] = Field(min_length=1)
-    profile: str | None = None          # llm_profiles.yaml profile; stage 4 always None (compose default)
+    profile: str | None = None          # llm_profiles.yaml profile: launch.profiles[0] on loads since 5.3; None = compose default
     launch_digest: str = Field(min_length=1, max_length=128)
     deadline_at: datetime
     reason: str = Field(min_length=1, max_length=256)    # demand | idle | max_hold | operator | reconcile ...

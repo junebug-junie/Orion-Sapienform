@@ -21,6 +21,16 @@ from orion.core.llm_json import parse_json_object
 from orion.world_pulse_read.journal import publish_journal
 from orion.llm.routes import fcc_model_for_route
 from orion.schemas.reading import ReadingRequestedV1
+from orion.schemas.reading_turn import ReadingRunBriefV1
+from orion.world_pulse_read.durable import (
+    ReadingCancelled,
+    ReadingPending,
+    bind_turn,
+    cancel_claim,
+    poll_turn,
+    reading_retrieval_query,
+    release_claim,
+)
 from orion.world_pulse_read.events import publish_lifecycle
 from orion.world_pulse_read.urls import validate_source_url
 from orion.schemas.world_pulse_read import (
@@ -29,6 +39,8 @@ from orion.schemas.world_pulse_read import (
     WorldPulseReadStage2ResultV1,
 )
 from orion.world_pulse_read.queue import (
+    ALREADY_READ,
+    READ_URL_SQL,
     RECLAIM_REASON_PROCESS_RESTART,
     RECLAIM_REASON_STALE_TIMEOUT,
     claim_next_stage2_seed,
@@ -41,13 +53,13 @@ from orion.world_pulse_read.queue import (
     mark_stage2_skipped,
     mark_stage2_failed,
     reclaim_stale_stage2_claimed,
+    skip_already_read_stage2,
 )
 from orion.world_pulse_read.retry import is_refused_before_work
 from orion.world_pulse_read.read_evidence import NO_READ_EVIDENCE
 from orion.world_pulse_read.wallet_a import (
     WalletAInputs,
     read_wallet_a_retry_wait,
-    read_wallet_a_state,
     wallet_a_block_reason,
 )
 from orion.world_pulse_read.wallet_b import (
@@ -56,8 +68,6 @@ from orion.world_pulse_read.wallet_b import (
     read_wallet_b_retry_wait,
     refund_wallet_b,
     settle_wallet_b,
-    paced_cooldown_sec,
-    read_wallet_b_state,
     wallet_b_block_reason,
     window_is_configured,
 )
@@ -67,12 +77,14 @@ logger = logging.getLogger("orion-hub.world_pulse_read_stage2")
 JOURNAL_WRITE_CHANNEL = "orion:journal:write"
 PIPELINE_TAG = "world_pulse_read_stage2"
 _AUTHOR = "orion"
-_FORCE_OVERRIDE = frozenset({"cooldown", "daily_cap", "outside_window", "refund_backoff"})
-# Refund backoff (a turn refused before reading) doubles from MIN_COOLDOWN_SEC per
-# consecutive refusal up to max(paced cooldown, this many x MIN_COOLDOWN_SEC). Live
-# 1800s floor -> 0.5h, 1h, 2h, 4h, 4h...: a full-day capacity outage costs ~8 stance
-# calls (and seed attempts), close to the old cap of 6, instead of one per tick.
+_FORCE_OVERRIDE = frozenset({"outside_window", "refund_backoff"})
+# Refund backoff (a turn refused before reading) doubles from this base per
+# consecutive refusal up to _REFUND_BACKOFF_CAP_MULTIPLIER x base: 0.5h, 1h, 2h,
+# 4h, 4h... so a full-day capacity outage costs ~8 stance calls instead of one
+# per tick. The only pacing left after daily caps and cooldowns were removed.
+_REFUND_BACKOFF_BASE_SEC = 1800.0
 _REFUND_BACKOFF_CAP_MULTIPLIER = 8
+_REFUND_BACKOFF_CAP_SEC = _REFUND_BACKOFF_CAP_MULTIPLIER * _REFUND_BACKOFF_BASE_SEC
 # Cap on how much of a raw exception message / non-final-frame error string
 # lands in `fail_reason` -- keep it grep-friendly (short label + a hint of
 # context), not a full stack trace stuffed into the `stage2_error` column.
@@ -94,6 +106,7 @@ class GenerateOutcome(NamedTuple):
 
     text: str
     fail_reason: Optional[str] = None
+    trace_id: str | None = None
 
 
 def _reason_from_non_final_frame(frames: list[Any]) -> str:
@@ -228,8 +241,6 @@ class WorldPulseReadStage2Pipeline:
         *,
         enabled: bool,
         tick_interval_sec: float,
-        min_cooldown_sec: float,
-        daily_cap: int,
         window_start_hour: int = 0,
         window_end_hour: int = 0,
         timeout_sec: float,
@@ -238,19 +249,17 @@ class WorldPulseReadStage2Pipeline:
         timezone_name: str = "UTC",
         max_round_trips: int = 5,
         max_attempts: int = 1,
-        wallet_a_daily_cap: int = 6,
-        wallet_a_min_cooldown_sec: float = 1800.0,
         wallet_a_window_start_hour: int = 0,
         wallet_a_window_end_hour: int = 0,
         pool_provider: Callable[[], Any],
         source_ref: ServiceRef,
         step_relay_provider: Optional[Callable[[], Any]] = None,
         store_provider: Optional[Callable[[], Any]] = None,
+        durable_url: str = "http://127.0.0.1:8124",
     ) -> None:
         self.enabled = enabled
+        self.durable_url = durable_url
         self.tick_interval_sec = tick_interval_sec
-        self.min_cooldown_sec = min_cooldown_sec
-        self.daily_cap = daily_cap
         self.window_start_hour = int(window_start_hour)
         self.window_end_hour = int(window_end_hour)
         self.timeout_sec = timeout_sec
@@ -262,8 +271,6 @@ class WorldPulseReadStage2Pipeline:
         # Bounded retry for transient turn failures (orion/world_pulse_read/retry.py).
         # 1 == legacy terminal-on-first-failure.
         self.max_attempts = max(1, int(max_attempts))
-        self.wallet_a_daily_cap = int(wallet_a_daily_cap)
-        self.wallet_a_min_cooldown_sec = float(wallet_a_min_cooldown_sec)
         self.wallet_a_window_start_hour = int(wallet_a_window_start_hour)
         self.wallet_a_window_end_hour = int(wallet_a_window_end_hour)
         try:
@@ -287,15 +294,6 @@ class WorldPulseReadStage2Pipeline:
         # (each is also a WARNING log line naming the keys).
         self.unknown_keys_dropped_total: int = 0
 
-    @property
-    def effective_cooldown_sec(self) -> float:
-        return paced_cooldown_sec(
-            min_cooldown_sec=self.min_cooldown_sec,
-            daily_cap=self.daily_cap,
-            start_hour=self.window_start_hour,
-            end_hour=self.window_end_hour,
-        )
-
     def _redis(self) -> Any:
         bus = self._bus
         if bus is None:
@@ -311,10 +309,8 @@ class WorldPulseReadStage2Pipeline:
         self._stop.clear()
         self._task = asyncio.create_task(self._run())
         logger.info(
-            "world_pulse_read_stage2 started tick=%ss cooldown=%ss cap=%s round_trips=%s max_attempts=%s",
+            "world_pulse_read_stage2 started tick=%ss round_trips=%s max_attempts=%s",
             self.tick_interval_sec,
-            round(self.effective_cooldown_sec),
-            self.daily_cap,
             self.max_round_trips,
             self.max_attempts,
         )
@@ -356,15 +352,17 @@ class WorldPulseReadStage2Pipeline:
         await self._repair_journal_landings()
         for landed in (await self._with_conn(confirm_landings) or []):
             await publish_lifecycle(self._bus, landed, "landing_completed", source=self._source_ref)
+        try:
+            skipped = await self._with_conn(skip_already_read_stage2)
+        except Exception:  # noqa: BLE001
+            logger.warning("world_pulse_read_stage2_skip_already_read_failed", exc_info=True)
+        else:
+            if skipped:
+                logger.info("world_pulse_read_stage2_skipped_already_read n=%s", skipped)
 
         redis = self._redis()
         retry_wait = None
-        if redis is None:
-            since, done_today = None, 0
-        else:
-            since, done_today = await read_wallet_b_state(
-                redis, now=now, timezone_name=self.timezone_name
-            )
+        if redis is not None:
             retry_wait = await read_wallet_b_retry_wait(redis, now=now)
 
         local_hour = None
@@ -373,10 +371,6 @@ class WorldPulseReadStage2Pipeline:
         reason = wallet_b_block_reason(
             WalletBInputs(
                 enabled=self.enabled,
-                done_today=done_today,
-                daily_cap=self.daily_cap,
-                seconds_since_last=since,
-                min_cooldown_sec=self.effective_cooldown_sec,
                 now_hour=local_hour,
                 window_start_hour=self.window_start_hour,
                 window_end_hour=self.window_end_hour,
@@ -385,19 +379,21 @@ class WorldPulseReadStage2Pipeline:
         )
         if force and reason in _FORCE_OVERRIDE:
             logger.warning(
-                "world_pulse_read_stage2_forced overriding=%s done_today=%s cap=%s",
-                reason,
-                done_today,
-                self.daily_cap,
+                "world_pulse_read_stage2_forced overriding=%s", reason,
             )
             reason = None
-        if reason is not None:
+        if reason == "disabled":
             logger.info("world_pulse_read_stage2_blocked reason=%s", reason)
             return reason
 
-        claim = await self._with_conn(claim_next_stage2_seed)
+        # Admission gates must not strand an already-submitted durable result.
+        claim = await self._with_conn(
+            lambda conn: claim_next_stage2_seed(conn, active_only=reason is not None)
+        )
         if claim is None:
-            return "empty_queue"
+            if reason is not None:
+                logger.info("world_pulse_read_stage2_blocked reason=%s", reason)
+            return reason or "empty_queue"
 
         await publish_lifecycle(self._bus, claim.seed, "stage2_started", source=self._source_ref)
 
@@ -432,8 +428,7 @@ class WorldPulseReadStage2Pipeline:
         # Debit only once a turn is actually about to run: an invalid stored
         # handoff never reaches the model and must not spend a Wallet B slot.
         receipt = None
-        if redis is not None:
-            receipt = await debit_wallet_b(redis, now=now, timezone_name=self.timezone_name)
+        self._settlement_run_id = None
 
         try:
             result = _as_stage2_result(
@@ -442,6 +437,13 @@ class WorldPulseReadStage2Pipeline:
                 seed_id=claim.seed.seed_id,
                 on_dropped=self._note_dropped_keys,
             )
+        except ReadingCancelled:
+            await self._with_conn(lambda conn: cancel_claim(conn, claim.seed.seed_id, 2))
+            return "cancelled"
+        except ReadingPending as exc:
+            await self._with_conn(lambda conn: release_claim(conn, claim.seed.seed_id, 2))
+            logger.info("reading_stage2_waiting seed=%s detail=%s", claim.seed.seed_id, exc)
+            return "waiting_resource"
         except Exception as exc:  # noqa: BLE001
             logger.warning(
                 "world_pulse_read_stage2_failed seed=%s err=%s", claim.seed.seed_id, exc
@@ -463,6 +465,13 @@ class WorldPulseReadStage2Pipeline:
                 )
                 break
             reentry_reason = await self._reenter_stage1(url, parent_seed=claim.seed)
+            if reentry_reason == ALREADY_READ:
+                logger.info(
+                    "world_pulse_read_stage2_reentry_already_read seed=%s url=%s",
+                    claim.seed.seed_id,
+                    url,
+                )
+                continue
             if reentry_reason is not None:
                 logger.info(
                     "world_pulse_read_stage2_reentry_stopped reason=%s seed=%s",
@@ -487,7 +496,7 @@ class WorldPulseReadStage2Pipeline:
                 claim.seed.seed_id,
                 exc,
             )
-            await self._fail_stage2(claim.seed.seed_id, str(exc) or "post_failed")
+            await self._fail_stage2(claim.seed.seed_id, str(exc) or "post_failed", consume=False)
             await publish_lifecycle(self._bus, claim.seed, "stage2_failed", source=self._source_ref, error=str(exc))
             return "post_failed"
         await publish_lifecycle(self._bus, claim.seed, "stage2_completed", source=self._source_ref, trace_id=result.trace_id)
@@ -532,9 +541,20 @@ class WorldPulseReadStage2Pipeline:
         (``reason`` None on success, or a real failure) keeps the charge and
         resets the refusal streak. Best-effort: a Redis error here must not
         stop the seed from being marked done/failed."""
-        if receipt is None:
-            return
         try:
+            if receipt is None and getattr(self, "_settlement_run_id", None):
+                from orion.world_pulse_read.wallet_b import settle_durable_turn
+
+                await settle_durable_turn(redis, run_id=self._settlement_run_id,
+                    now=datetime.now(timezone.utc), timezone_name=self.timezone_name,
+                    refused=is_refused_before_work(reason),
+                    backoff_base_sec=_REFUND_BACKOFF_BASE_SEC,
+                    backoff_cap_sec=_REFUND_BACKOFF_CAP_SEC)
+                return
+            if receipt is None:
+                receipt = await debit_wallet_b(
+                    redis, now=datetime.now(timezone.utc), timezone_name=self.timezone_name
+                )
             if not is_refused_before_work(reason):
                 await settle_wallet_b(redis, receipt)
                 return
@@ -542,11 +562,8 @@ class WorldPulseReadStage2Pipeline:
                 redis,
                 receipt,
                 now=datetime.now(timezone.utc),
-                backoff_base_sec=self.min_cooldown_sec,
-                backoff_cap_sec=max(
-                    self.effective_cooldown_sec,
-                    _REFUND_BACKOFF_CAP_MULTIPLIER * self.min_cooldown_sec,
-                ),
+                backoff_base_sec=_REFUND_BACKOFF_BASE_SEC,
+                backoff_cap_sec=_REFUND_BACKOFF_CAP_SEC,
             )
         except Exception:  # noqa: BLE001
             logger.warning("world_pulse_read_stage2_wallet_settle_failed seed=%s", seed_id, exc_info=True)
@@ -559,12 +576,18 @@ class WorldPulseReadStage2Pipeline:
                 str(reason)[:_FAIL_REASON_DETAIL_MAX_LEN],
             )
 
-    async def _fail_stage2(self, seed_id: str, error: str) -> None:
-        outcome = await self._with_conn(
-            lambda conn: mark_stage2_failed(
-                conn, seed_id, error=error, max_attempts=self.max_attempts
-            )
-        )
+    async def _fail_stage2(self, seed_id: str, error: str, *, consume: bool = True) -> None:
+        async def fail(conn):
+            async def mark():
+                return await mark_stage2_failed(conn, seed_id, error=error, max_attempts=self.max_attempts)
+            if consume and getattr(self, "_settlement_run_id", None) and getattr(self, "_settlement_seed_id", None) == seed_id:
+                from orion.world_pulse_read.durable import consume_turn
+                async with conn.transaction():
+                    outcome = await mark()
+                    await consume_turn(conn, self._settlement_run_id)
+                    return outcome
+            return await mark()
+        outcome = await self._with_conn(fail)
         if outcome is not None and outcome.retry_scheduled:
             logger.warning(
                 "world_pulse_read_stage2_retry_scheduled seed=%s attempts=%s max=%s reason=%s",
@@ -602,14 +625,14 @@ class WorldPulseReadStage2Pipeline:
             url = await validate_source_url(url)
         except ValueError:
             return "bad_url"
+        # Before the Wallet A gate: a closed gate must not stop the loop on a
+        # URL that would be passed on anyway.
+        if await self._with_conn(lambda conn: conn.fetchval(READ_URL_SQL, url, "")):
+            return ALREADY_READ
         redis = self._redis()
         now = datetime.now(timezone.utc)
-        since, done_today = None, 0
         retry_wait = None
         if redis is not None:
-            since, done_today = await read_wallet_a_state(
-                redis, now=now, timezone_name=self.timezone_name
-            )
             retry_wait = await read_wallet_a_retry_wait(redis, now=now)
         local_hour = None
         if (
@@ -620,10 +643,6 @@ class WorldPulseReadStage2Pipeline:
         blocked = wallet_a_block_reason(
             WalletAInputs(
                 enabled=True,
-                done_today=done_today,
-                daily_cap=self.wallet_a_daily_cap,
-                seconds_since_last=since,
-                min_cooldown_sec=self.wallet_a_min_cooldown_sec,
                 now_hour=local_hour,
                 window_start_hour=self.wallet_a_window_start_hour,
                 window_end_hour=self.wallet_a_window_end_hour,
@@ -650,13 +669,21 @@ class WorldPulseReadStage2Pipeline:
                 return "queue_unavailable"
         except ValueError as exc:
             return str(exc)
+        if receipt.get("duplicate") == ALREADY_READ:
+            return ALREADY_READ
         return None
 
     async def _stage2_pass(self, handoff: WorldPulseReadHandoffV1) -> WorldPulseReadStage2ResultV1:
         """Production path: unified turn + fenced JSON. Tests replace this."""
         trace_id = str(uuid4())
         created_at = datetime.now(timezone.utc)
-        outcome = await self._generate(_build_stage2_prompt(handoff, trace_id), trace_id)
+        outcome = await self._generate(
+            _build_stage2_prompt(handoff, trace_id), trace_id, seed_id=handoff.seed_ref.seed_id,
+            # Recall searches the source and what stage 1 concluded, not the
+            # stage-2 prompt (which embeds the whole stage-1 handoff JSON).
+            retrieval_query=reading_retrieval_query(handoff.seed_ref, handoff.what_i_learned),
+        )
+        trace_id = outcome.trace_id or trace_id
         if not outcome.text:
             raise ValueError(outcome.fail_reason or "empty_generation")
         parsed = parse_json_object(outcome.text)
@@ -671,52 +698,20 @@ class WorldPulseReadStage2Pipeline:
             on_dropped=self._note_dropped_keys,
         )
 
-    async def _generate(self, prompt: str, correlation_id: str) -> GenerateOutcome:
-        """Real unified-turn generation. Every failure path returns a distinct,
-        short `fail_reason` instead of collapsing to a bare empty string --
-        see `GenerateOutcome` for why that used to make root-causing a stall
-        indistinguishable from five other, very different failures."""
-        if self._bus is None:
-            return GenerateOutcome("", "bus_unavailable")
-        from orion.cognition.cortex_payload_extract import looks_like_error_text
-        from orion.hub.turn_orchestrator import execute_unified_turn
-
+    async def _generate(
+        self, prompt: str, correlation_id: str, *, seed_id: str, retrieval_query: str | None = None,
+    ) -> GenerateOutcome:
+        brief = ReadingRunBriefV1(seed_id=seed_id, stage=2, prompt=prompt,
+            session_id=self.session_id, timeout_sec=self.timeout_sec,
+            fcc_model_label=self._fcc_model_label,
+            retrieval_query=retrieval_query)
         try:
-            frames = await asyncio.wait_for(
-                execute_unified_turn(
-                    reading_only=True,
-                    bus=self._bus,
-                    correlation_id=correlation_id,
-                    session_id=self.session_id,
-                    user_message=prompt,
-                    payload=_turn_payload(PIPELINE_TAG, self._fcc_model_label),
-                    continuity_messages=None,
-                    harness_rpc_bus=self._harness_rpc_bus or self._bus,
-                    harness_step_relay=(
-                        self._step_relay_provider() if self._step_relay_provider else None
-                    ),
-                    harness_step_queue=None,
-                ),
-                timeout=self.timeout_sec,
-            )
-        except (TimeoutError, asyncio.TimeoutError):
-            logger.warning("world_pulse_read_stage2_generate_timeout corr=%s", correlation_id)
-            return GenerateOutcome("", "stage2_turn_timeout")
-        except Exception as exc:  # noqa: BLE001
-            logger.warning(
-                "world_pulse_read_stage2_generate_failed corr=%s err=%s", correlation_id, exc
-            )
-            detail = str(exc)[:_FAIL_REASON_DETAIL_MAX_LEN]
-            return GenerateOutcome("", f"turn_exception:{detail}" if detail else "turn_exception")
-
-        final = next(
-            (f for f in frames if isinstance(f, dict) and f.get("type") == "final"), None
-        )
-        if final is None:
-            return GenerateOutcome("", _reason_from_non_final_frame(frames))
-        text = str(final.get("llm_response") or "").strip()
-        if not text:
-            return GenerateOutcome("", "blank_final_response")
-        if looks_like_error_text(text):
-            return GenerateOutcome("", "looks_like_error_text")
-        return GenerateOutcome(text, None)
+            request = await self._with_conn(lambda conn: bind_turn(conn, brief, correlation_id))
+            if request is None:
+                raise RuntimeError("reading_queue_unavailable")
+        except Exception as exc:
+            raise ReadingPending(f"reading_binding_unavailable:{type(exc).__name__}") from exc
+        self._settlement_run_id = request.run_id
+        self._settlement_seed_id = seed_id
+        result = await poll_turn(request, self.durable_url)
+        return GenerateOutcome(result.text, result.error, result.correlation_id)

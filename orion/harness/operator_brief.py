@@ -65,9 +65,11 @@ HARNESS_SELF_MODEL_ACCESS_BRIEF = _self_model_access_line()
 
 HARNESS_UNIFIED_OPERATOR_BRIEF = f"""\
 Orion harness motor.
-Tools are available from the start. Your imperative states what this turn requires.
-When the imperative calls for facts from the codebase or live runtime, use tools before
-answering. Record each meaningful step. Do not guess repo structure or service state from memory.
+Tools are available from the start. This turn's task is the message labeled
+"User message"; your stance pass (Imperative, Tone, stance fields) is guidance on
+how to approach it, not a replacement for it. When the task calls for facts from
+the codebase or live runtime, use tools before answering. Record each meaningful
+step. Do not guess repo structure or service state from memory.
 {_READ_DISCIPLINE} For live failures, inspect logs, docker, and bus traces before diagnosing.
 Never assert a service is down, unreachable, or that a permission/DB check failed without
 running a real check this turn (docker ps for the container, curl its health endpoint, or the
@@ -78,17 +80,22 @@ nothing was actually checked.
 """
 
 HARNESS_RELATIONAL_TOOL_DISCIPLINE = """\
-Relational/minimal turn: do NOT use GitHub MCP or repo/runtime tools unless the imperative
-explicitly commands verified facts for this turn. Acknowledge and stay present — no task tracking.
+Relational/minimal turn: do NOT use GitHub MCP or repo/runtime tools unless the task
+(the message, read with the recent conversation) needs verified facts this turn. Acknowledge and stay present — no task tracking.
 Produce exactly one reply in your own voice. Never write dialogue, narration, or replies
 attributed to the other person — do not simulate how they might respond or continue the
 conversation on their behalf.
 """
 
 HARNESS_INSTRUMENTAL_TOOL_DISCIPLINE = """\
-Instrumental turn: use tools when the imperative requires verified repo or runtime facts.
+Instrumental turn: use tools when the task (the message, read with the recent conversation)
+requires verified repo or runtime facts.
 Record each meaningful step before answering.
 """
+
+HARNESS_RESPOND_TO_TASK = (
+    "Respond to the User message; use your stance guidance for how, not for what."
+)
 
 
 def _stance_slice(thought: ThoughtEventV1):
@@ -114,9 +121,9 @@ def harness_motor_instruction(*, thought: ThoughtEventV1) -> str:
     if is_relational_motor_stance(thought):
         return (
             f"{HARNESS_RELATIONAL_TOOL_DISCIPLINE.strip()}\n"
-            f"Execute your imperative. {read_cap}"
+            f"{HARNESS_RESPOND_TO_TASK} {read_cap}"
         )
     return (
         f"{HARNESS_INSTRUMENTAL_TOOL_DISCIPLINE.strip()}\n"
-        f"Execute your imperative. {read_cap}"
+        f"{HARNESS_RESPOND_TO_TASK} {read_cap}"
     )

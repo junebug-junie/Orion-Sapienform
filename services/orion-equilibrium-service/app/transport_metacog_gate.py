@@ -5,73 +5,19 @@ from typing import Any
 from orion.schemas.telemetry.metacog_trigger import MetacogTriggerV1
 
 
-def build_transport_metacog_trigger_from_snapshot(
-    payload: dict[str, Any],
-    *,
-    zen_state: str,
-    pressure: float,
-    recall_enabled: bool,
-) -> MetacogTriggerV1 | None:
-    """Option A (legacy): a real RpcHealthSnapshotV1 window from
-    orion:rpc_health:snapshot (docs/superpowers/specs/2026-07-24-transport-metacog-
-    trigger-design.md, PR #1313/#1315).
-
-    **Timeouts only.** Fires when timeout_count > 0: unambiguous evidence real RPC
-    calls failed this window, no threshold needed.
-
-    The pooled-p95 latency branch (``success_latency_ms_p95 >= 5000``) was killed
-    outright on 2026-09-24 (spec 2026-09-24-metacog-capture-and-transport-ewma-
-    baseline-design.md). Verified live: cortex-orch windows averaged 2.1 calls with
-    0 timeouts, and the slow call was metacog's own background LLM draft -- so the
-    branch fired transport, which dispatched a draft, which tripped the branch
-    again (~2,000 junk rows/day). Per-hop latency now lives in
-    ``app/transport_baseline_gate.py``. Do not re-add a pooled latency ceiling.
-
-    This whole function is retired too once EQUILIBRIUM_TRANSPORT_BASELINE_EMIT is
-    on: the baseline gate's timeout/zero_success episodes replace it, and the
-    service stops calling this so the same timeout never fires twice.
-
-    An empty window (no calls at all) does not fire -- absence of traffic is not
-    evidence of transport trouble, same "healthy-by-absence" rule the rpc_health
-    organ adapter already applies (orion/signals/adapters/rpc_health.py).
-    """
-    service = str(payload.get("service") or "unknown")
-    success_count = int(payload.get("success_count") or 0)
-    timeout_count = int(payload.get("timeout_count") or 0)
-    p95 = payload.get("success_latency_ms_p95")
-
-    fired_conditions: list[str] = []
-    if timeout_count > 0:
-        fired_conditions.append(f"timeout_count={timeout_count}")
-
-    if not fired_conditions:
-        return None
-
-    reason = f"transport:{service}:{'+'.join(fired_conditions)}"
-
-    return MetacogTriggerV1(
-        trigger_kind="transport",
-        reason=reason[:500],
-        zen_state=zen_state,
-        pressure=pressure,
-        recall_enabled=recall_enabled,
-        signal_refs=[service] if service else [],
-        upstream={
-            "evidence_source": "rpc_health_snapshot",
-            "fired_conditions": fired_conditions,
-            "service": service,
-            "success_count": success_count,
-            "timeout_count": timeout_count,
-            "success_latency_ms_p50": payload.get("success_latency_ms_p50"),
-            "success_latency_ms_p95": p95,
-            "success_latency_ms_max": payload.get("success_latency_ms_max"),
-            "timeout_elapsed_ms_max": payload.get("timeout_elapsed_ms_max"),
-            "channel_counts": payload.get("channel_counts"),
-            "window_start": payload.get("window_start"),
-            "window_end": payload.get("window_end"),
-            "truncated": payload.get("truncated"),
-        },
-    )
+# The rpc_health "legacy" pooled-timeout builder (Option A,
+# ``build_transport_metacog_trigger_from_snapshot``) was killed outright on
+# 2026-09-29 (docs/superpowers/pr-reports/2026-09-29-transport-gate-dedupe-and-
+# hourly-pr.md). Every timeout it counted is an ``rpc_request()`` timeout, and
+# every one of those also emits the per-call ``rpc_transport_timeout`` atom below
+# (orion/core/bus/rpc_health.py: pooled ``timeout_count`` is only bumped by
+# ``record_timeout()``, which ``rpc_request()`` always pairs with the atom).
+# Live, 48 h to 2026-09-29: 675 of 677 timeouts it counted had a matching atom in
+# the same 30 s window, so it was a second, coarser copy of the atom (one pooled
+# count per window, cortex-exec/cortex-orch only, no request channel) that fired
+# a second transport row for the same LLM-gateway timeouts. The atom is the one
+# owner while the baseline gate is log-only; when the gate emits, see
+# app/transport_timeout_owner.py. Do not re-add a pooled-timeout trigger.
 
 
 def build_transport_metacog_trigger_from_grammar_atom(
@@ -82,7 +28,8 @@ def build_transport_metacog_trigger_from_grammar_atom(
     pressure: float,
     recall_enabled: bool,
 ) -> MetacogTriggerV1 | None:
-    """Option C: a real per-call RPC timeout, emitted as a GrammarEventV1 atom by
+    """The single owner of RPC timeouts while the baseline gate is log-only: a
+    real per-call RPC timeout, emitted as a GrammarEventV1 atom by
     orion/core/bus/async_service.py's _emit_rpc_timeout_grammar() -- generalizes
     chat_turn's own exec_turn_timeout/stance_timeout markers (scoped to one
     harness/thought RPC each) to every rpc_request() timeout across all 37+ real
@@ -119,135 +66,16 @@ def build_transport_metacog_trigger_from_grammar_atom(
     )
 
 
-def build_transport_metacog_trigger_from_bus_synaptic(
-    error: float,
-    *,
-    zen_state: str,
-    pressure: float,
-    recall_enabled: bool,
-    error_threshold: float,
-    previously_above: bool = False,
-    node_age_sec: float | None = None,
-    edge_count: int | None = None,
-) -> MetacogTriggerV1 | None:
-    """Third evidence source: node:substrate.bus_synaptic's prediction_error
-    (bus_synaptic_prediction_error(), orion/substrate/prediction_error.py --
-    PR #1377/#1380), read directly from FalkorDB, not a bus message like
-    Options A/C above.
-
-    Passively covers organs Options A/C structurally cannot see -- neither
-    self-reported RpcHealthSnapshotV1 (Option A) nor OrionBusAsync.rpc_request()
-    instrumentation (Option C) sees orion-harness-governor's bespoke long-poll
-    RPC, but the bus synaptic graph's passive wiretap does (live-verified,
-    docs/superpowers/specs/2026-07-23-transport-domain-rpc-health-redesign.md's
-    2026-07-25 revisions).
-
-    **error_threshold default retuned 1.0 -> 0.15 on 2026-07-30**, because the
-    upstream metric changed shape. `bus_synaptic_prediction_error` used to be a
-    MAGNITUDE (mean |zscore| across edges, saturating at 1.0 once that mean hit
-    3.0); it is now the FRACTION of edges currently anomalous. Under the new
-    definition the old 1.0 default would have required every single edge in the
-    mesh to be at >= 3 sigma simultaneously -- structurally unreachable, i.e. a
-    detector that can no longer detect.
-
-    0.15 is grounded in live measurement, not reused convention:
-
-      - live baseline, 60 samples over 10 min: median 0.026, p95 0.072,
-        max 0.094
-      - 0.15 is ~1.6x that observed max, and zero of the 60 baseline samples
-        would have fired at it (nor at 0.10, 0.20, or 0.25)
-      - the whole mesh anomalous reads 1.0
-
-    **Known structural limits, do not "fix" either by lowering this.**
-
-    A single organ failing entirely reads ~0.051 (the busiest,
-    orion-social-memory, holds 12 of ~235 live edges) -- below the baseline max
-    of 0.094, i.e. inside the noise. Even the three busiest organs failing
-    together reads 0.136, only 1.45x the baseline max and BELOW this threshold:
-    that event deliberately does not fire here. The separation between "a few
-    organs died" and "a noisy Tuesday" is ~1.45x, so no threshold on a
-    mesh-wide fraction separates them cleanly. What this reliably detects is a
-    broad event (>=15-20% of edges at once).
-
-    Resolving a few-organ failure needs a per-organ signal, not a lower bar
-    here; services/orion-hub/scripts/bus_synaptic_graph_routes.py's /propagate
-    route already walks per-organ blast radius and is the right seam. Lowering
-    this into the noise band would recreate the exact false-alert problem the
-    metric change was made to fix.
-    """
-    # --- Why there is NO staleness guard here (2026-07-30) ----------------
-    # A guard on the node's `observed_at` was written, then removed after live
-    # measurement showed the field is not trustworthy: sampling
-    # node:substrate.bus_synaptic every 35s returned observed_at
-    # 03:43:49 -> 04:01:25 -> 03:43:49, i.e. OSCILLATING between a fresh and an
-    # ~18-minutes-stale timestamp, with recency_score doing the same
-    # (0.715 -> 0 -> 0.999). Two writers race on this node and only
-    # `prediction_error`/`contributing_turn_ids` are covered by
-    # falkor_codec.EXTERNALLY_OWNED_METADATA_KEYS -- `observed_at` and
-    # `recency_score` are not, so a second writer keeps re-persisting a stale
-    # snapshot of them. Gating on that field would suppress or admit a real
-    # reading depending on which writer won the last race: non-deterministic
-    # suppression, which is worse than no guard.
-    #
-    # It is also unnecessary. The frozen-node case that motivated it (the node
-    # sat stale at 1.0 for hours while this loop fired every 30s) is already
-    # fully handled by the rising-edge check below: a frozen value fires exactly
-    # once and is then silent for as long as it stays frozen. Edge-triggering
-    # solves staleness spam as a side effect of solving level spam.
-    #
-    # node_age_sec is still accepted and carried into `upstream` for operator
-    # visibility -- reporting the age is useful, gating on it is not. The
-    # corresponding MAX_NODE_AGE_SEC setting was deleted rather than left
-    # unused: a config key with no consumer is one a future patch wires back up
-    # without rediscovering why it was abandoned.
-    if error < error_threshold:
-        return None
-
-    # --- Edge-triggered, not level-triggered (2026-07-30) ------------------
-    # THE fix for this trigger polluting orion_metacog. This was a pure level
-    # check evaluated every poll, so a single sustained condition re-drafted an
-    # LLM reflection on every tick for as long as it lasted. With a 30s poll and
-    # a 30s cooldown lane (i.e. no effective rate limit at all) that is ~2,880
-    # near-identical entries per day; live, transport wrote 1,812 rows in 24h,
-    # ~48% of them from this one branch.
-    #
-    # Metacognition is "something notable HAPPENED", not "something is STILL
-    # the case". A state that persists is one event, not one event per tick.
-    # Firing only on the rising edge -- the transition into anomaly -- is what
-    # makes this an event source instead of a sampler, and it is also what makes
-    # the error_threshold far less load-bearing: a mis-set threshold now costs
-    # one spurious entry per episode instead of one every 30 seconds.
-    #
-    # State is in-process, so a restart mid-episode re-fires once. That is an
-    # accepted, bounded cost (one entry per restart) rather than a reason to
-    # reach for durable checkpointing here.
-    if previously_above:
-        return None
-
-    reason = f"transport:bus_synaptic:episode_start:error={error:.3f}"[:500]
-
-    return MetacogTriggerV1(
-        trigger_kind="transport",
-        reason=reason,
-        zen_state=zen_state,
-        pressure=pressure,
-        recall_enabled=recall_enabled,
-        signal_refs=["node:substrate.bus_synaptic"],
-        upstream={
-            "evidence_source": "bus_synaptic_prediction_error",
-            "fired_conditions": [f"error>={error_threshold}", "rising_edge"],
-            "error": error,
-            "error_threshold": error_threshold,
-            "edge_count": edge_count,
-            # NOTE (review, 2026-07-30): `upstream` does NOT reach the
-            # orion_metacog row -- it feeds the LLM draft prompt only
-            # (orion-cortex-exec/app/executor.py), and is dropped entirely under
-            # budget pressure. Verified live: 0 of 1,248 persisted bus_synaptic
-            # rows carry these keys. The field that actually reaches a future
-            # temporal reducer is `reason`/trigger_reason above, which is why
-            # "episode_start" is encoded there. These stay for prompt context
-            # and operator log reading, not as the reducer's contract.
-            "transition": "below_to_above",
-            "node_age_sec": node_age_sec,
-        },
-    )
+# RETIRED 2026-09-30: the third transport source, a FalkorDB poll of
+# node:substrate.bus_synaptic's prediction_error (fraction of bus-synaptic
+# edges at |z| >= 3), is gone -- builder, poll loop, settings and env keys.
+# Metric-quality-gate findings (docs/superpowers/pr-reports/
+# 2026-09-30-retire-bus-synaptic-transport-trigger-pr.md): the edge z-scores are
+# computed at orion-bus-mirror's *dequeue* time by a single consumer that Redis
+# disconnects for output-buffer overflow ~every 20 min (424 disconnects), so the
+# fraction carries the observer's own lag; its stated purpose (catching one
+# bespoke organ) is below its own noise band by design; and it fired 50-155
+# episodes/day evenly across the clock without tracking real RPC-timeout storms,
+# each drafting a content-free reflection. Do not re-add a mesh-wide fraction
+# threshold here. A per-organ or publish-timestamp-based signal would need its
+# own metric gate first.

@@ -112,17 +112,21 @@ NEVER_SYNC_KEYS = frozenset(
         # Empty in .env_example; --force must never wipe a pasted live value.
         "CURSOR_API_KEY",
         "ORION_CURIOSITY_GRAPH_PASSWORD",
+        # The house meter's Green Button usage point (orion-energy). Empty in
+        # .env_example; the ENERGY_ prefix below would otherwise let --force
+        # flatten a pasted live value back to "guess the meter from the data".
+        "ENERGY_USAGE_POINT_ID",
     }
 )
 
 # Prefixes / exact keys synced after .env_example edits (default mode).
 SYNC_PREFIXES = (
-    # Durable admission spans runner, Orch, Hub and Gateway. Hub's existing
-    # HUB_CURIOSITY_ prefix already covers its side; these three were missing.
+    # Durable admission spans runner, Orch and Hub. Hub's existing HUB_CURIOSITY_
+    # prefix already covers its side. (The Gateway's LLM_GATEWAY_LEASE_ keys were
+    # deleted with the durable lease token in GPU pool stage 4.6; LLM_GATEWAY_CAPACITY_
+    # had no keys left before that. Its pool-placement keys are below.)
     "DURABLE_RUNS_",
     "CORTEX_DURABLE_",
-    "LLM_GATEWAY_LEASE_",
-    "LLM_GATEWAY_CAPACITY_",
     # GPU pool (2026-09-25, stage 3): the pool's own keys and the Gateway's pool-placement keys.
     # Without these the default sync visited both .env files and silently added nothing.
     "GPU_POOL_",
@@ -133,6 +137,16 @@ SYNC_PREFIXES = (
     "POLICY_RECONCILE_",
     "DISPATCH_RECONCILE_",
     "FEEDBACK_RECONCILE_",
+    # Durable visual reverie (2026-09-28): cortex-exec's render_scene kickoff, and the feedback
+    # runtime's park-until-settled bound.
+    "CORTEX_EXEC_RENDER_SCENE_",
+    "FEEDBACK_VISUAL_SETTLE_",
+    # orion-energy (only service with ENERGY_ keys); DEFAULT_SERVICES entry below.
+    "ENERGY_",
+    # Hub's curiosity energy-stakes hold; no HUB_ prefix, so ENERGY_ above misses it.
+    "ORION_ENERGY_STAKES_",
+    # Hub Energy strip (daily-bar timezone); no generic HUB_ prefix is synced.
+    "HUB_ENERGY_",
     # orion-whisper-tts, added 2026-08-29. None of this service's 26 keys
     # matched any prefix below, and the service itself was absent from
     # DEFAULT_SERVICES, so the default invocation considered ZERO of them
@@ -173,10 +187,16 @@ SYNC_PREFIXES = (
     # field-digester gate. None matched an existing prefix.
     "LLM_GATEWAY_GRAMMAR_",
     "ENABLE_LLM_INFERENCE_",
+    # vision_organ lane (2026-10-02): router emitter, substrate reducer,
+    # field-digester gate.
+    "VISION_ORGAN_",
+    "ENABLE_VISION_ORGAN_",
     "LLM_INFERENCE_",
     # rpc delivery field bridge (2026-09-25): substrate-runtime producer keys and
     # the field-digester gate. None matched an existing prefix.
     "SUBSTRATE_RPC_DELIVERY_",
+    # Reverie PE-magnitude history writer (spec 2026-10-02, step 1).
+    "SUBSTRATE_PE_HISTORY_",
     "SUBSTRATE_RPC_HEALTH_",
     "ENABLE_RPC_DELIVERY_",
     "ENABLE_PRE_TURN_",
@@ -189,6 +209,11 @@ SYNC_PREFIXES = (
     "TRANSPORT_SUBSTRATE_",
     # bus_fallback_log backlog watcher (orion-sql-writer)
     "SQL_WRITER_FALLBACK_WATCH_",
+    # storage-write organ (2026-10-02): sql-writer emitter, substrate reducer,
+    # field-digester gate. None matched an existing prefix.
+    "SQL_WRITER_WRITE_HEALTH_",
+    "ENABLE_STORAGE_WRITE_",
+    "STORAGE_WRITE_",
     "HUB_PROPOSAL_REVIEW_",
     # Runtime activity marquee (2026-09-09): its two keys matched no prefix and
     # were silently skipped on first sync; found by grepping the live .env after.
@@ -209,6 +234,7 @@ SYNC_PREFIXES = (
     # without this prefix the default sync reports "no changes" and the keys
     # never land in the live .env.
     "HUB_WORLD_PULSE_READ_",
+    "HUB_READING_",
     "HUB_LLM_GATEWAY_",
     "HUB_CHAT_ATTACHMENT_",
     "HUB_AGENT_CONTEXT_EXEC_",
@@ -286,6 +312,8 @@ SYNC_PREFIXES = (
     "STANCE_REACT_",
     # Mind stance enrichment (unified turn; orion-thought → orion-mind, default-off)
     "ORION_THOUGHT_MIND_",
+    # Unified-turn latency L4: stance context built while orion-mind runs.
+    "ORION_THOUGHT_STANCE_PREPARE_",
     "ORION_MIND_",
     "HARNESS_FCC_",
     "ORION_FCC_",
@@ -352,6 +380,25 @@ SYNC_PREFIXES = (
     # CURIOSITY_PEER_ also covers CURIOSITY_PEER_BRIEF_* (sql-writer) above.
     "CURIOSITY_PEER_",
     "ORION_CURIOSITY_GRAPH_",
+    # orion-dream introspect responder (dreams tool). Same blind spot: without
+    # these, the default sync reported "no changes" and none of the seven keys
+    # reached the live .env.
+    "DREAM_INTROSPECT_",
+    "DREAM_SEARCH_",
+    # Attend-to-act loop (2026-10-01): the world-action switches (dispatch), the workspace-winner
+    # proposals + hardware-watch URL + rise threshold (proposal runtime), settle-time scoring
+    # (feedback runtime) and the cabinet attention bridge (substrate runtime). The pool's own
+    # GPU_POOL_ORION_SHED_* keys are already covered by GPU_POOL_.
+    "ORION_WORLD_ACTION",
+    "ORION_WORLD_SETTLEMENT_",
+    "ORION_WORKSPACE_WINNER_",
+    "ORION_HARDWARE_WATCH_HEALTH_URL",
+    "ORION_SHED_",
+    "ORION_GPU_POOL_SHED_",
+    "SUBSTRATE_CABINET_HEAT_",
+    # Camera perception in the situation brief (Hub + cortex-exec, 2026-10-07).
+    "ORION_SITUATION_PERCEPTION_",
+    "ORION_SITUATION_STREET_",
 )
 
 SYNC_EXACT = frozenset(
@@ -489,6 +536,9 @@ DEFAULT_SERVICES = (
     # requirement as orion-cocreation-signals: DEFAULT_SERVICES visit +
     # CURIOSITY_PEER_ / ORION_CURIOSITY_GRAPH_ prefixes above.
     "orion-curiosity-peer",
+    # Energy watcher (2026-09-27). Same dual-half blind spot: absent here and no
+    # ENERGY_ prefix, so the default run added none of its 14 plan-2 keys.
+    "orion-energy",
 )
 
 
@@ -546,6 +596,30 @@ class SyncResult:
     diverged: list[str] = field(default_factory=list)
 
 
+# Matched against whole "_"-separated key segments so MAX_TOKENS stays visible.
+_SECRET_SEGMENTS = frozenset(
+    {"TOKEN", "SECRET", "PASSWORD", "PASSWD", "PASS", "PWD", "DSN", "CREDENTIAL", "CREDENTIALS"}
+)
+_SECRET_SEGMENT_PAIRS = frozenset(
+    {("API", "KEY"), ("ACCESS", "KEY"), ("ADMIN", "KEY"), ("PRIVATE", "KEY"), ("SECRET", "KEY")}
+)
+_URL_USERINFO_RE = re.compile(r"(?P<head>[a-zA-Z][\w+.-]*://[^:/@\s]*:)[^@\s]+(?P<at>@)")
+
+
+def is_secret_key(key: str) -> bool:
+    parts = key.upper().split("_")
+    return any(p in _SECRET_SEGMENTS for p in parts) or any(
+        pair in _SECRET_SEGMENT_PAIRS for pair in zip(parts, parts[1:])
+    )
+
+
+def display_value(key: str, value: str) -> str:
+    """Report-safe rendering: secret-named keys are masked, URL passwords are starred."""
+    if is_secret_key(key):
+        return f"<redacted len={len(value)}>" if value else "''"
+    return repr(_URL_USERINFO_RE.sub(r"\g<head>***\g<at>", value))
+
+
 def sync_file(
     env_path: Path,
     example_path: Path,
@@ -584,10 +658,15 @@ def sync_file(
         seen.add(key)
         if key in desired and desired[key] != old:
             if force:
-                updated.append(f"{name}: {key} {old!r} -> {desired[key]!r}")
+                updated.append(
+                    f"{name}: {key} {display_value(key, old)} -> {display_value(key, desired[key])}"
+                )
                 out_lines.append(f"{key}={desired[key]}\n")
             else:
-                diverged.append(f"{name}: {key} local={old!r} example={desired[key]!r}")
+                diverged.append(
+                    f"{name}: {key} local={display_value(key, old)} "
+                    f"example={display_value(key, desired[key])}"
+                )
                 out_lines.append(raw if raw.endswith("\n") else raw + "\n")
         else:
             out_lines.append(raw if raw.endswith("\n") else raw + "\n")
@@ -596,7 +675,7 @@ def sync_file(
     if missing:
         out_lines.append("\n# synced from .env_example\n")
         for key in missing:
-            updated.append(f"{name}: +{key}={desired[key]!r}")
+            updated.append(f"{name}: +{key}={display_value(key, desired[key])}")
             out_lines.append(f"{key}={desired[key]}\n")
 
     if updated and not dry_run:

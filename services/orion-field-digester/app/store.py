@@ -76,30 +76,15 @@ class PendingDelta:
     receipt_id: str
 
 
-# Durable runs waiting for a GPU, one row per waiting run, across the stage-4 cutover (GPU pool
-# stage 4.4; spec docs/superpowers/specs/2026-09-25-gpu-pool-stage4-durable-runs-and-actuation.md):
+# Durable runs waiting for a GPU, one row per waiting run: a durable run's hold (kind='hold',
+# holder 'durable-runs:<run_id>', orion.gpu_pool.client.durable_run_holder) while it waits: queued
+# or backlogged. retry_wait / granted / recalling are not waiting, the same rule gpu_pool_waiting
+# uses. Operator holds ('operator:<actor>') are not durable demand; gpu_pool_waiting counts them.
 #
-# * legacy half -- durable-runs' own broker queue (durable_resource_demands pending). Frozen at
-#   cutover (4.5) and deleted in 4.6. A pending demand whose run has ANY pool hold row, in any
-#   status, is left out: no durable-runs hold exists before 4.5 and no legacy demand is written
-#   after it, so a hold proves the demand is superseded. Between 4.5's deploy and the withdrawal of
-#   the frozen demands a resumed run has both and counts once, as its hold -- and a run whose hold
-#   already finished is not resurrected as "waiting" by its frozen days-old demand;
-# * pool half -- a durable run's hold (kind='hold', holder 'durable-runs:<run_id>',
-#   orion.gpu_pool.client.durable_run_holder) while it waits: queued or backlogged. retry_wait /
-#   granted / recalling are not waiting, the same rule gpu_pool_waiting uses. Operator holds
-#   ('operator:<actor>') are not durable demand; gpu_pool_waiting counts them.
-#
-# Before cutover the pool half is empty; after the migration the legacy half is.
+# Pool holds only since GPU pool stage 4.6: durable-runs' own broker queue
+# (durable_resource_demands) has been frozen since the 4.5 cutover and is not read here any more
+# (spec docs/superpowers/specs/2026-09-25-gpu-pool-stage4-durable-runs-and-actuation.md).
 DURABLE_WAITING_SQL = """
-    SELECT d.created_at AS waiting_since
-    FROM durable_resource_demands d
-    WHERE d.status = 'pending'
-      AND NOT EXISTS (
-        SELECT 1 FROM gpu_pool_leases h
-        WHERE h.kind = 'hold' AND h.holder = 'durable-runs:' || d.run_id
-      )
-    UNION ALL
     SELECT coalesce(h.queued_since, h.created_at) AS waiting_since
     FROM gpu_pool_leases h
     WHERE h.kind = 'hold' AND h.holder LIKE 'durable-runs:%' AND h.status IN ('queued', 'backlogged')
@@ -537,7 +522,10 @@ class FieldDigesterStore:
             """
             SELECT EXTRACT(EPOCH FROM now() - created_at)
             FROM world_pulse_read_seed WHERE status = 'pending'
-            ORDER BY priority ASC, created_at ASC, seed_id ASC
+            ORDER BY EXISTS (SELECT 1 FROM reading_durable_turn d
+                             WHERE d.seed_id=world_pulse_read_seed.seed_id
+                               AND d.stage=1 AND d.consumed_at IS NULL) DESC,
+                     priority ASC, created_at ASC, seed_id ASC
             LIMIT 1
             """
         )
@@ -560,8 +548,8 @@ class FieldDigesterStore:
         )
 
     def oldest_durable_demand_pending_age_sec(self) -> float:
-        """Oldest durable run waiting for its GPU, across the stage-4 cutover (see
-        DURABLE_WAITING_SQL): a legacy demand's created_at, or a waiting hold's queued_since."""
+        """Oldest durable run waiting for its GPU (see DURABLE_WAITING_SQL): the longest-waiting
+        hold's queued_since (created_at if unset)."""
         return self._oldest_age_sec(
             f"""
             SELECT EXTRACT(EPOCH FROM now() - min(waiting_since))

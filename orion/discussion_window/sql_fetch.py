@@ -57,6 +57,15 @@ def _trim_contiguous_suffix(
     return cluster
 
 
+def sql_row_limit(max_turns: int) -> int:
+    """Rows to read for `max_turns` kept turns.
+
+    Headroom (2x, floor 500) covers rows dropped afterwards by
+    require_prompt_and_response; ceiling 10000 bounds one read.
+    """
+    return min(10_000, max(500, 2 * int(max_turns)))
+
+
 def _format_transcript(turns: List[DiscussionWindowTurnV1]) -> str:
     lines: List[str] = []
     for t in turns:
@@ -107,8 +116,8 @@ def fetch_discussion_window(database_url: str, request: DiscussionWindowRequestV
         WHERE created_at >= :start_ts AND created_at <= :end_ts
           AND (:user_id IS NULL OR user_id = :user_id)
           AND (:source IS NULL OR source = :source)
-        ORDER BY created_at ASC
-        LIMIT 500
+        ORDER BY created_at DESC
+        LIMIT :row_limit
         """
     )
     params = {
@@ -116,6 +125,7 @@ def fetch_discussion_window(database_url: str, request: DiscussionWindowRequestV
         "end_ts": end,
         "user_id": request.user_id,
         "source": request.source,
+        "row_limit": sql_row_limit(request.max_turns),
     }
 
     engine = create_engine(database_url, pool_pre_ping=True)
@@ -128,6 +138,10 @@ def fetch_discussion_window(database_url: str, request: DiscussionWindowRequestV
     except Exception as exc:
         logger.exception("discussion_window_sql_failed: %s", exc)
         raise
+    # Newest-first so a row cap drops the OLDEST rows (the old ASC + LIMIT 500
+    # kept the oldest 500 and then took the newest max_turns of those, silently
+    # losing the end of a busy window); back to ascending for everything below.
+    raw_rows.reverse()
 
     filtered: List[dict[str, Any]] = []
     for r in raw_rows:

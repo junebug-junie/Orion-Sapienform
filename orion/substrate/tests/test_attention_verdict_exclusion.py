@@ -49,7 +49,6 @@ def _build(signals, verdict_lookup=None):
         inputs={},
         belief_lineage=[],
         direct_turn=False,
-        generic_reversal=False,
         stale_thread_active=False,
         max_open=5,
         verdict_lookup=verdict_lookup,
@@ -113,7 +112,6 @@ def test_excluded_loop_frees_its_slot_for_the_next_best_candidate():
         inputs={},
         belief_lineage=[],
         direct_turn=False,
-        generic_reversal=False,
         stale_thread_active=False,
         max_open=2,
         verdict_lookup=lambda ids: {excluded_id},
@@ -373,3 +371,32 @@ def test_build_substrate_attention_frame_survives_verdict_lookup_db_failure(monk
 
     assert len(frame.open_loops) == 1
     assert frame.open_loops[0].id == _loop_id("substrate:node:substrate.transport")
+
+
+def test_orions_acted_verdict_never_shadows_a_human_dismissal(monkeypatch):
+    """Attend-to-act loop: the latest-verdict query must skip Orion's non-final `acted`, or an
+    `acted` written after Juniper's dismissal would re-arm the loop inside the 48 h window."""
+    seen = {}
+
+    class _Conn:
+        def execute(self, stmt, params):
+            seen["sql"] = str(stmt)
+
+            class _R:
+                def mappings(self):
+                    return self
+
+                def all(self):
+                    return []
+            return _R()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    monkeypatch.setattr(verdicts_mod, "_engine", lambda: type("E", (), {"connect": lambda self: _Conn()})())
+    verdicts_mod.load_terminal_verdict_loop_ids(["open-loop-a"], now=_NOW)
+    assert "verdict <> 'acted'" in seen["sql"]
+    assert "acted" not in verdicts_mod.TERMINAL_VERDICTS

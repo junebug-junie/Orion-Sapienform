@@ -537,9 +537,10 @@ def _delta_to_perturbations(delta: StateDeltaV1) -> list[Perturbation]:
         # (RETIRED_NODE_CHANNELS).
         for channel, key in (
             ("catalog_drift_pressure", "catalog_drift_pressure"),
-            ("observer_failure_pressure", "observer_failure_pressure"),
+            # observer_failure_pressure retired 2026-10-07 (#2534 decision 4):
+            # a pre-deploy receipt still carrying the hint is ignored here and
+            # reconcile prunes the name (RETIRED_NODE_CHANNELS).
             ("reliability_pressure", "reliability_pressure"),
-            ("contract_pressure", "contract_pressure"),
         ):
             if key in hints:
                 out.append(
@@ -572,6 +573,27 @@ def _delta_to_perturbations(delta: StateDeltaV1) -> list[Perturbation]:
                 )
             )
 
+    if delta.target_kind == "vision_organ":
+        # orion-vision-frame-router's own report on the eye, folded by substrate-
+        # runtime's vision_organ reducer (orion/substrate/vision_organ_loop/). One
+        # fresh organ reading per router window (or per silence write), so
+        # mode="replace". A hint the reducer omits (no task dispatched in the
+        # failure span) writes nothing; both channels expire rather than decay
+        # (decay.py EXPIRING_NODE_CHANNELS), so a stopped lane reads unmeasured,
+        # never a fabricated calm 0.0.
+        hints = dict((delta.after or {}).get("pressure_hints") or {})
+        for channel in ("vision_frame_staleness", "vision_processing_failure_pressure"):
+            if channel in hints:
+                out.append(
+                    Perturbation(
+                        node_id=node_id,
+                        channel=channel,
+                        intensity=max(0.0, min(1.0, float(hints[channel]))),
+                        label=delta.delta_id,
+                        mode="replace",
+                    )
+                )
+
     if delta.target_kind == "rpc_delivery":
         # orion-substrate-runtime's RPC delivery bridge (orion/substrate/rpc_delivery.py):
         # the worst bus hop's share of rpc_request() calls that hit their deadline,
@@ -586,6 +608,25 @@ def _delta_to_perturbations(delta: StateDeltaV1) -> list[Perturbation]:
                     node_id=node_id,
                     channel="rpc_timeout_pressure",
                     intensity=max(0.0, min(1.0, float(hints["rpc_timeout_pressure"]))),
+                    label=delta.delta_id,
+                    mode="replace",
+                )
+            )
+
+    if delta.target_kind == "storage_write":
+        # orion-sql-writer's own write outcomes (orion/substrate/storage_write_loop/):
+        # the worst table family's share of writes that did not reach their table,
+        # over a rolling 600 s of writer windows. A fresh full reading per writer
+        # window, so mode="replace". The reducer omits the hint when nothing was
+        # attempted; the channel is in EXPIRING_NODE_CHANNELS, so a silent writer
+        # reads as unmeasured, never as a held or decayed calm value.
+        hints = dict((delta.after or {}).get("pressure_hints") or {})
+        if "write_failure_pressure" in hints:
+            out.append(
+                Perturbation(
+                    node_id=node_id,
+                    channel="write_failure_pressure",
+                    intensity=max(0.0, min(1.0, float(hints["write_failure_pressure"]))),
                     label=delta.delta_id,
                     mode="replace",
                 )

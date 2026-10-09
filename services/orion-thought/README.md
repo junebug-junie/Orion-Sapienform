@@ -14,6 +14,7 @@ Also publishes a bus-native `SystemHealthV1` heartbeat to `orion:system:health` 
 | `CHANNEL_THOUGHT_ARTIFACT` | `orion:thought:artifact` | Audit publish after each thought |
 | `CHANNEL_CORTEX_EXEC_REQUEST` | `orion:cortex:exec:request` | Cortex exec plan RPC |
 | `CHANNEL_CORTEX_EXEC_RESULT_PREFIX` | `orion:exec:result` | Cortex exec reply prefix |
+| (contract constant) | `orion:reverie:visual:step:request` | Durable `reverie.visual` stage intake from orion-durable-runs |
 
 ## Flow
 
@@ -26,14 +27,13 @@ LISTEN orion:thought:request
   → PUBLISH orion:thought:artifact
 ```
 
-An admitted turn supplies optional `StanceReactRequestV1.resource_lease` using
-`ResourceLeaseV1`. Hub sends the same lease ID and generation used by the turn's
-motor; Thought forwards it in the Cortex Exec context and sets both `llm_route`
-and `llm_lane` to the assigned lease lane. Gateway can therefore account for
-stance under the existing reservation. The assigned lane takes precedence over
-the caller's route preference. Requests without a lease keep their prior route
-behavior and Hub omits only the absent `resource_lease` field from the bus payload,
-preserving the existing payload's null fields for rolling upgrades.
+An admitted turn supplies optional `StanceReactRequestV1.gpu_lease` (the durable run's GPU pool
+hold ref, `GpuLeaseRefV1`). Hub sends the same hold the turn's motor runs under; Thought forwards it
+in the Cortex Exec context and sets both `llm_route` and `llm_lane` to `agent` (the hold's work
+class, never its role), so the gateway attaches stance to the existing hold instead of queueing it
+behind the run. The hold takes precedence over the caller's route preference. Requests without a
+hold keep their prior route behavior. The older durable token (`resource_lease` /
+`ResourceLeaseV1`) was deleted in GPU pool stage 4.6.
 
 ## Local checks
 
@@ -658,6 +658,80 @@ changes are needed. See the implementation PR report for evidence and rollout or
 Database integration tests use a disposable PostgreSQL URL:
 `ORION_VISUAL_TEST_DATABASE_URL=... python -m pytest services/orion-thought/tests/test_visual_activity.py -q`.
 They create isolated schemas and never run by default against the operator database.
+
+Continuity (2026-09-28 fix): the next run's `prior_description`, `continuity_streak`
+and `context_slot_rotation` come from the latest chain row that recorded continuity
+state. Thermal refusals, resource deferrals and deadline rows carry none and are
+skipped; before this, one deferral reset all three to a cold start.
+
+## Durable `reverie.visual` steps (orion-durable-runs)
+
+orion-durable-runs can drive a visual reverie as a graph of stages instead of one
+`run-once` call: `prepare -> generate -> caption`, plus `abandon` when the run gives
+up. It sends `ReverieVisualStepRequestV1` on `orion:reverie:visual:step:request`
+(`REVERIE_VISUAL_STEP_CHANNEL`); this worker replies on the request's `reply_to` with
+kind `reverie.visual.step.result.v1` under the request envelope's correlation id.
+Design: `docs/superpowers/specs/2026-09-28-visual-reverie-durable-graph-design.md`.
+Code: `app/visual_steps.py`. `run-once` is unchanged and remains the rollback path;
+both paths write identical chain rows through the same `visual_chain.py` pieces.
+
+- **prepare** claims the attempt for the dispatch and freezes the prompt plan into
+  `reverie_visual_attempt.stage_json`. Before a new claim only, a baseline request is
+  checked structurally (validated at its own `observed_at`, so a run that waited out
+  retries is never ended as stale); the claim's `already_satisfied` check is the real
+  double-image guard. The legacy worker being on is a retry
+  (`legacy_visual_worker_enabled`), not an ending. A replay returns the frozen plan:
+  rotation does not advance and the context is not re-interpreted. No GPU.
+- **generate** is the only GPU stage. It validates the run's diffusion hold
+  (`holder == durable-runs:<run_id>`), then thermal gate, single-flight lock and
+  diffusion under its own deadline (`ORION_VISUAL_CHAIN_STEP_GENERATE_DEADLINE_SEC`,
+  default 330, never below `ORION_VISUAL_CHAIN_GPU_LEASE_DEADLINE_SEC` + diffusion timeout + 10).
+  GPU pool stage 5.4: the diffusion call attaches a child lease under the validated hold (runs
+  in the hold's slot, no second wait; no durable-runs `/capacity` permit). The child lives as
+  long as the diffusion thread -- even past a cancelled step, for up to one more diffusion
+  timeout -- so world-model cannot take gpu2 mid-render even if the run gives its hold back
+  (`config/gpu_pool.yaml` `world.serialize_with: [diffusion]`). A generate outside a durable
+  run (`/visual-chain/run-once`, the legacy worker) has no hold, so it takes a pool `diffusion`
+  lease for the call; refused, late or pool unreachable is `resource_deferred:gpu_pool...`, never
+  an ungated diffusion call. An unreachable diffusion-host is `resource_deferred:diffusion_unreachable`. The image is
+  stored on disk and recorded in `stage_json`; a replay with a recorded image makes no
+  diffusion call. A generate that started less than 2x the deadline ago blocks another
+  (`generate_in_flight`): an abandoned diffusion thread may still be on the card.
+  Refusals and failures are retries recorded in `stage_json.deferrals`, never chain
+  rows (a row keyed by the attempt would make the production row a no-op). Recording
+  a finished render is retried; if the stage store still refuses, the step is a
+  `stage_store_unavailable` retry carrying the image's `artifact_sha256`, and the next
+  generate in the same process adopts the verified file instead of re-rendering.
+- **caption** reloads the image by sha (missing/corrupt -> `needs_generate`),
+  re-observes it (cached, so a retry never recaptions), writes the production chain
+  row with `chain_id == attempt_id`, acknowledges it, persists the execution receipt,
+  and finishes the attempt `produced`.
+- **abandon** closes the attempt. It may omit `attempt_id` (prepare's reply was
+  lost): the attempt is resolved by `dispatch_id`, and no row means nothing to close.
+  Result outcome is `unknown`; the row becomes `abandoned`, which does not block later
+  claims. If a generate started inside the in-flight window the row stays `unknown`
+  until that generate records its exit. A generate past its step deadline is not
+  cancelled: it keeps the lock (inside the run's hold) until diffusion returns (hard ceiling:
+  the in-flight window, then `generate_wedged`) and records its own exit. If the
+  process died instead, the next claim (durable prepare or legacy run-once) releases
+  the row once the window passed.
+
+Backstop for an attempt nothing ever closed (lost abandon, crash mid-run): every
+claim, durable or legacy, releases an `active`/`unknown` attempt claimed longer ago
+than `ORION_VISUAL_CHAIN_ATTEMPT_MAX_AGE_SEC` (default 7200, above the durable 5400s
+retry window) as `abandoned` with result reason `attempt_expired` -- unless a
+production receipt reconciles it to `produced`, or a generate is recorded inside the
+in-flight window.
+
+Every result carries `elapsed_sec` (generate: diffusion + disk write).
+Unexpected errors are retries (`step_exception:<Type>`); a missing stage table or
+column is `stage_store_unavailable`, never a recompute. A step request that fails
+schema validation is a retry (`invalid_step_request`), so schema skew during a
+rolling deploy never ends an in-flight run.
+
+Before routing runs here: apply `manual_migration_reverie_visual_attempt_stage.sql`
+(after `manual_migration_reverie_visual_attempt.sql`). DB tests:
+`ORION_VISUAL_TEST_DATABASE_URL=... python -m pytest services/orion-thought/tests/test_visual_steps_db.py -q`.
 
 
 ## Optional GPU2 elastic admission

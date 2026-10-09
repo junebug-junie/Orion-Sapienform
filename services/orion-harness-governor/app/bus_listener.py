@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from contextlib import suppress
 from datetime import datetime, timezone
 from typing import Any, Callable
@@ -10,9 +11,16 @@ from uuid import UUID, uuid4
 from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.harness.cortex_client import HarnessCortexClient
+from orion.harness.cut_short import (
+    FCC_CONTEXT_CEILING_ERROR_CODE,
+    LEGACY_FCC_CONTEXT_CEILING_ERROR_CODE,
+    ensure_cut_short_marked,
+)
 from orion.harness.finalize import (
     DEFAULT_FINALIZE_INTERLOCUTOR,
     HarnessFinalizeFailedError,
+    draft_preview_display_text,
+    draft_preview_hold_reason,
     emit_post_turn_closure,
     run_harness_finalize_chain,
 )
@@ -24,6 +32,7 @@ from orion.harness.grammar_emit import (
 )
 from orion.harness.repair import map_repair_pressure_contract
 from orion.harness.runner import HarnessRunner, _record_recall_gate_from_debug
+from orion.harness.step_stream import publish_harness_run_draft_preview
 from orion.harness.substrate_client import HarnessSubstrateClient
 from orion.schemas.harness_finalize import HarnessRunRequestV1, HarnessRunV1
 
@@ -34,6 +43,44 @@ logger = logging.getLogger("orion-harness-governor.bus")
 
 class SubstrateAppraisalUnavailableError(Exception):
     """Substrate finalize-appraisal RPC timed out (infra outage, not a content failure)."""
+
+
+class FinalizeReplyDeadlineError(Exception):
+    """The caller's reply budget (``HarnessRunRequestV1.reply_budget_sec``) ran out before
+    finalize could finish. Caught by the generic ``except Exception`` path (not
+    HarnessFinalizeFailedError: the chain was cancelled, so its own failure artifacts and any
+    partial appraisal/reflection are not emitted -- the log line and ``grounding_status`` are
+    the trace), which replies with ``draft_text`` while the caller is still waiting -- and, for a held curiosity turn,
+    while the run still holds its GPU (run a153451fe423 finalized after the hold was gone)."""
+
+
+def finalize_seconds_left(request: HarnessRunRequestV1, received_monotonic: float) -> float | None:
+    """Seconds left of the caller's reply budget, or None when the request set none."""
+    budget = getattr(request, "reply_budget_sec", None)
+    if budget is None:
+        return None
+    return float(budget) - (time.monotonic() - received_monotonic)
+
+
+async def run_bounded_finalize(awaitable: Any, seconds_left: float | None) -> Any:
+    """Await the finalize chain within ``seconds_left``; FinalizeReplyDeadlineError past it.
+    Only the budget's own expiry is renamed: a TimeoutError raised inside the chain
+    (an RPC's own timeout) propagates unchanged."""
+    if seconds_left is None:
+        return await awaitable
+    if seconds_left <= 0:
+        if asyncio.iscoroutine(awaitable):
+            awaitable.close()
+        raise FinalizeReplyDeadlineError("finalize_reply_deadline: no time left after the motor")
+    try:
+        async with asyncio.timeout(seconds_left) as cm:
+            return await awaitable
+    except TimeoutError:
+        if cm.expired():
+            raise FinalizeReplyDeadlineError(
+                f"finalize_reply_deadline: finalize cut after {seconds_left:.0f}s"
+            ) from None
+        raise
 
 
 # User-facing text for a degraded turn -- deliberately generic. The real exception
@@ -50,22 +97,47 @@ _FCC_PRESPAWN_CODES = frozenset({"fcc_bad_model_label", "fcc_lane_context_too_sm
 # The motor's own output guards killing a still-working stream (orion/harness/fcc_motor.py):
 # the elapsed time is truncated by a content limit, neither a round trip nor a
 # deadline -- recording it either way would bias the baseline.
-_FCC_SELF_KILL_CODES = frozenset({"fcc_stream_line_limit", "fcc_draft_length_ceiling_exceeded"})
+# `fcc_draft_length_ceiling_exceeded` is the pre-2026-10-02 name of
+# `fcc_context_ceiling_exceeded`; kept so a mixed-version deploy stays excluded.
+_FCC_SELF_KILL_CODES = frozenset(
+    {"fcc_stream_line_limit", FCC_CONTEXT_CEILING_ERROR_CODE, LEGACY_FCC_CONTEXT_CEILING_ERROR_CODE}
+)
 
 
-def fcc_hop_key(served_model: str | None) -> str:
-    """``fcc:<served_model>`` (orion/core/bus/rpc_health.py hop conventions). served_model
-    values come from the configured lanes, so cardinality is bounded; the aggregator's
-    200-key cap backstops it."""
-    model = str(served_model or "").strip()
-    return f"fcc:{model or 'unknown'}"
+def fcc_hop_key(serving_role: str | None, fcc_route: str | None = None, fcc_backend: str | None = None) -> str:
+    """RPC-health hop key for the FCC motor leg (orion/core/bus/rpc_health.py conventions).
+
+    - ``fcc:<role>``: the turn held a GPU pool lease (a durable run's hold), so every call ran on
+      that granted role -- ``fcc:agent``, ``fcc:agent-gpu2``, ``fcc:chat``.
+    - ``fcc:route:<route>``: no hold. Each call was placed by the pool on its own and the harness
+      never sees those grants, so only the requested gateway route is known. The ``route:`` prefix
+      keeps "asked for agent" from sharing a baseline with "ran on agent".
+    - ``fcc:backend:<backend>``: a non-pool backend (e.g. ``MODEL_HAIKU`` -> ``nvidia_nim``), a
+      remote API with its own latency population.
+    - ``fcc:unknown``: none is known.
+
+    Replaces ``fcc:<served_model>`` (retired 2026-09-29): the model name the CLI echoed split one
+    lane into several keys whenever the pool spilled a call to another card, and also minted
+    junk keys such as ``fcc:<synthetic>`` (the CLI's own label for a message it made up itself,
+    e.g. an API error). Cardinality is now bounded by config/gpu_pool.yaml's roles + routes.
+    Spec: docs/superpowers/specs/2026-09-24-gpu-pool-design.md, reader impacts item 2."""
+    role = str(serving_role or "").strip()
+    if role:
+        return f"fcc:{role}"
+    route = str(fcc_route or "").strip()
+    if route:
+        return f"fcc:route:{route}"
+    backend = str(fcc_backend or "").strip()
+    if backend:
+        return f"fcc:backend:{backend}"
+    return "fcc:unknown"
 
 
 def record_fcc_hop(bus: Any, motor: Any) -> None:
     """Record the FCC motor leg of one run on ``bus`` (the dispatch bus the RPC-health
-    publisher drains) as hop ``fcc:<served_model>``.
+    publisher drains) as hop ``fcc_hop_key(motor.serving_role, motor.fcc_route)``.
 
-    Measures ``fcc_elapsed_sec`` -- the motor leg's wall time (served-model probe, prior
+    Measures ``fcc_elapsed_sec`` -- the motor leg's wall time (placement probe, prior
     tool-fetch read, the claude subprocess, lifecycle grammar publish), not the bare
     subprocess. Success on a normal exit (any exit code >= 0, the round trip completed),
     timeout on the motor's own timeout-kill. Skipped: no elapsed time, pre-spawn refusal,
@@ -73,16 +145,18 @@ def record_fcc_hop(bus: Any, motor: Any) -> None:
     (negative exit code, e.g. a Hub cancel's SIGKILL -- the runner carries that exit code
     from the fcc_nonzero_exit error event).
 
-    Model: the CLI-echoed ``fcc_served_model``, else the gateway model probed before the
-    run (``probed_served_model``) -- a run that stalls before its first assistant event
-    would otherwise land in ``fcc:unknown``, split from its model's successes. Never raises."""
+    The key is known before the subprocess starts (the hold's role, else the requested
+    route), so a run that stalls before its first assistant event keys the same as its
+    successes. Never raises."""
     try:
         elapsed_sec = getattr(motor, "fcc_elapsed_sec", None)
         if elapsed_sec is None:
             return
         code = str(getattr(motor, "grounding_status", "") or "")
         hop = fcc_hop_key(
-            getattr(motor, "fcc_served_model", None) or getattr(motor, "probed_served_model", None)
+            getattr(motor, "serving_role", None),
+            getattr(motor, "fcc_route", None),
+            getattr(motor, "fcc_backend", None),
         )
         elapsed_ms = float(elapsed_sec) * 1000.0
         if code in _FCC_TIMEOUT_CODES:
@@ -253,6 +327,54 @@ def _recall_fields_from_thought(thought: Any) -> tuple[dict[str, Any] | None, st
     return recall_debug, memory_digest
 
 
+async def _maybe_publish_draft_preview(
+    bus: Any,
+    request: HarnessRunRequestV1,
+    motor: Any,
+    *,
+    repair_overlay: Any,
+    corr: str,
+    received_monotonic: float,
+) -> tuple[str | None, str | None]:
+    """Draft-first display (spec L8): publish the grounded draft before the judge.
+
+    Returns (published_text, held_reason). Both None when the caller did not
+    ask. Best-effort: a publish failure costs the early display, never the turn.
+    """
+    if not getattr(request, "draft_preview", False):
+        return None, None
+    held = draft_preview_hold_reason(
+        thought=request.thought_event,
+        repair_overlay=repair_overlay,
+        preserve_structured_output=bool(request.reading_only),
+        cut_short=bool(getattr(motor, "cut_short_reason", None)),
+    )
+    if held is not None:
+        logger.info("harness_draft_preview_held corr=%s reason=%s", corr, held)
+        return None, held
+    text = draft_preview_display_text(motor.draft_text, motor.reading_receipts)
+    if not text.strip():
+        return None, "empty_draft"
+    try:
+        await publish_harness_run_draft_preview(
+            bus,
+            correlation_id=corr,
+            text=text,
+            channel=settings.channel_harness_run_draft_preview,
+            source_name=settings.service_name,
+        )
+    except Exception:  # noqa: BLE001 -- display is optional; the judge still runs
+        logger.warning("harness_draft_preview_publish_failed corr=%s", corr, exc_info=True)
+        return None, "publish_failed"
+    logger.info(
+        "harness_draft_preview_published corr=%s chars=%s since_request_ms=%.0f",
+        corr,
+        len(text),
+        (time.monotonic() - received_monotonic) * 1000.0,
+    )
+    return text, None
+
+
 async def handle_harness_run_request(
     bus: OrionBusAsync,
     request: HarnessRunRequestV1,
@@ -276,6 +398,7 @@ async def handle_harness_run_request(
     plus lifecycle grammar events. Start here when Hub received nothing back,
     or an error frame whose failing phase is unclear.
     """
+    received_monotonic = time.monotonic()
     corr = correlation_id or request.correlation_id or str(uuid4())
     causality = list(causality_chain or [])
     recall_debug, memory_digest = _recall_fields_from_thought(request.thought_event)
@@ -352,6 +475,15 @@ async def handle_harness_run_request(
         await _reply_and_artifact(bus, run, reply_to=reply_to, corr=corr, causality=causality)
         return run
 
+    preview_text, preview_held = await _maybe_publish_draft_preview(
+        bus,
+        request,
+        motor,
+        repair_overlay=repair_overlay,
+        corr=corr,
+        received_monotonic=received_monotonic,
+    )
+
     async def _substrate_client(molecule: Any) -> Any:
         try:
             return await substrate.finalize_appraisal(molecule, correlation_id=corr)
@@ -359,7 +491,7 @@ async def handle_harness_run_request(
             raise SubstrateAppraisalUnavailableError(str(exc)) from exc
 
     try:
-        chain = await run_harness_finalize_chain(
+        chain = await run_bounded_finalize(run_harness_finalize_chain(
             correlation_id=corr,
             draft_text=motor.draft_text,
             draft_molecule=motor.draft_molecule,
@@ -367,9 +499,9 @@ async def handle_harness_run_request(
             grammar_receipts=motor.grammar_receipts,
             reading_receipts=motor.reading_receipts,
             preserve_structured_output=bool(request.reading_only),
-            resource_lease=request.resource_lease,
             gpu_lease=request.gpu_lease,
             fcc_model_label=request.fcc_model_label,
+            cut_short=bool(getattr(motor, "cut_short_reason", None)),
             repair_overlay=repair_overlay,
             user_message=request.user_message,
             voice_contract=request.answer_contract,
@@ -385,7 +517,7 @@ async def handle_harness_run_request(
             grammar_channel=settings.channel_grammar_event,
             closure_channel=settings.channel_post_turn_closure,
             system_error_channel=settings.channel_system_error,
-        )
+        ), finalize_seconds_left(request, received_monotonic))
     except HarnessFinalizeFailedError as exc:
         logger.error("harness finalize chain error corr=%s err=%s", corr, exc)
         partial = exc.partial
@@ -410,6 +542,8 @@ async def handle_harness_run_request(
             fcc_elapsed_sec=motor.fcc_elapsed_sec,
             reading_receipts=motor.reading_receipts,
             source_fetches=motor.source_fetches,
+            draft_preview_text=preview_text,
+            draft_preview_held_reason=preview_held,
         )
         await _reply_and_artifact(bus, run, reply_to=reply_to, corr=corr, causality=causality)
         return run
@@ -459,7 +593,9 @@ async def handle_harness_run_request(
             )
         run = HarnessRunV1(
             correlation_id=corr,
-            final_text=motor.draft_text,
+            # When a grounded draft was already shown, deliver that same text:
+            # swapping it for the raw draft would read as a revision no judge made.
+            final_text=preview_text if preview_text is not None else motor.draft_text,
             draft_text=motor.draft_text,
             finalize_ran=False,
             finalize_degraded_reason=_SUBSTRATE_UNAVAILABLE_USER_REASON,
@@ -478,6 +614,8 @@ async def handle_harness_run_request(
             fcc_elapsed_sec=motor.fcc_elapsed_sec,
             reading_receipts=motor.reading_receipts,
             source_fetches=motor.source_fetches,
+            draft_preview_text=preview_text,
+            draft_preview_held_reason=preview_held,
         )
         await _reply_and_artifact(bus, run, reply_to=reply_to, corr=corr, causality=causality)
         return run
@@ -499,13 +637,21 @@ async def handle_harness_run_request(
             fcc_elapsed_sec=motor.fcc_elapsed_sec,
             reading_receipts=motor.reading_receipts,
             source_fetches=motor.source_fetches,
+            draft_preview_text=preview_text,
+            draft_preview_held_reason=preview_held,
         )
         await _reply_and_artifact(bus, run, reply_to=reply_to, corr=corr, causality=causality)
         return run
 
+    final_text = chain.final_text
+    if getattr(motor, "cut_short_reason", None):
+        # Backstop only: the chain already skips repair for cut-short drafts
+        # (run_harness_finalize_chain(cut_short=True)) and passes the marked
+        # findings through. This keeps the marker if that ever regresses.
+        final_text = ensure_cut_short_marked(final_text)
     run = HarnessRunV1(
         correlation_id=corr,
-        final_text=chain.final_text,
+        final_text=final_text,
         draft_text=motor.draft_text,
         substrate_appraisal=chain.substrate_appraisal,
         reflection=chain.reflection,
@@ -526,7 +672,16 @@ async def handle_harness_run_request(
         fcc_elapsed_sec=motor.fcc_elapsed_sec,
         reading_receipts=motor.reading_receipts,
         source_fetches=motor.source_fetches,
+        draft_preview_text=preview_text,
+        draft_preview_held_reason=preview_held,
     )
+    if preview_text is not None and (run.final_text or "").strip() != preview_text.strip():
+        logger.info(
+            "harness_draft_preview_revised corr=%s reason=%s repair_ran=%s",
+            corr,
+            run.response_repair_reason or "finalize_changed",
+            run.response_repair_ran,
+        )
     if motor.grammar_collector is not None and run.final_text:
         await _emit_finalize_lifecycle_grammar(
             bus,
@@ -697,16 +852,15 @@ async def run_bus_worker(
                     decoded = bus.codec.decode(msg.get("data"))
                     payload = decoded.envelope.payload if decoded.ok else {}
                     body = payload if isinstance(payload, dict) else {}
-                    # A turn under a durable lease (old token) or a GPU pool hold (stage 4) is
-                    # admitted: it runs outside the legacy lock, or it would queue behind
-                    # unrelated turns while its own card sits reserved for it.
-                    admitted = isinstance(body.get("resource_lease"), dict) or isinstance(body.get("gpu_lease"), dict)
+                    # A turn under a GPU pool hold is admitted: it runs outside the legacy lock,
+                    # or it would queue behind unrelated turns while its own card sits reserved for it.
+                    admitted = isinstance(body.get("gpu_lease"), dict)
                     key = None
                     if admitted:
                         # One outstanding motor per fenced turn. Duplicate
                         # pub/sub delivery shares the original reply channel.
                         request = HarnessRunRequestV1.model_validate(payload)
-                        fence = request.resource_lease or request.gpu_lease
+                        fence = request.gpu_lease
                         key = f"{request.correlation_id}:{fence.lease_id}:{fence.generation}"
                         if key in admitted_inflight:
                             continue

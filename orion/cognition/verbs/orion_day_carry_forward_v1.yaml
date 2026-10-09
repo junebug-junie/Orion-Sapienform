@@ -1,0 +1,27 @@
+name: orion_day_carry_forward_v1
+label: Orion's Day -- Carry Forward
+description: >-
+  Given one day's gathered record and the note Orion already wrote about it,
+  list concrete threads and questions to carry forward into future curiosity.
+  Plain text out, no JSON. The second, separate call of the orion_day.letter
+  durable run; its output is stored apart from the note (carry_forward_md).
+category: reflective
+priority: normal
+interruptible: true
+can_interrupt_others: false
+requires_gpu: false
+requires_memory: false
+recall_profile: null
+# Same ordering rule as orion_day_note_v1: above the run's per-call RPC wait.
+timeout_ms: 1900000
+max_recursion_depth: 0
+steps:
+  - name: draft_orion_day_carry_forward
+    description: List grounded threads for future curiosity from the day's record and note; plain text.
+    order: 0
+    services:
+      - LLMGatewayService
+    prompt_template: orion_day_carry_forward_v1.j2
+    requires_gpu: false
+    requires_memory: false
+    timeout_ms: 1900000

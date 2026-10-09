@@ -38,11 +38,16 @@ One write beyond `/api/run-now`: `POST /api/run/{id}/reply` lets Juniper
 answer a run's reach-out from the story itself with an EXPLICIT reply link
 (`client_meta.in_reply_to`, not the time-adjacency heuristic chat replies
 use), gated on a confirmed `sent` outreach decision for that exact run.
+
+`POST /api/urgent` is the "Run urgent" button: it publishes an urgent request
+on the bus (the hardware watcher's path too) and writes nothing itself;
+`GET /api/urgent` lists the incidents `start_urgent` recorded.
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
@@ -594,6 +599,160 @@ async def curiosity_self_inquiry_run_now() -> JSONResponse:
                       "definition appears in self_concept_history once mirrored.",
         },
         headers=_NO_CACHE,
+    )
+
+
+_URGENT_QUESTION_LIMIT = 2000
+_URGENT_LIST_LIMIT = 20
+# The list is a status view; the evidence bundle (up to 32 KB each) stays in Redis.
+_URGENT_LIST_FIELDS = (
+    "incident_id", "run_id", "question", "trigger", "subject", "requested_at", "requested_by", "status",
+)
+
+
+async def _collect_urgent_evidence() -> dict[str, Any]:
+    """Indirection so tests patch this module's name, like `_handle_chat_request`."""
+    from .urgent_evidence import collect_evidence
+
+    return await collect_evidence()
+
+
+def _urgent_source_ref() -> Any:
+    from orion.core.bus.bus_schemas import ServiceRef
+
+    try:
+        from app.settings import get_settings
+
+        cfg = get_settings()
+        return ServiceRef(name=cfg.SERVICE_NAME, version=cfg.SERVICE_VERSION, node=cfg.NODE_NAME)
+    except Exception:  # noqa: BLE001 -- settings env not loaded (bare test process)
+        return ServiceRef(name="orion-hub", version="0.0.0", node="athena")
+
+
+def _urgent_refusal(reason: str, status_code: int) -> JSONResponse:
+    return JSONResponse(content={"ok": False, "reason": reason}, status_code=status_code, headers=_NO_CACHE)
+
+
+@router.post("/api/urgent")
+async def curiosity_urgent_api(payload: dict) -> JSONResponse:
+    """Juniper's "Run urgent": publish a `CuriosityUrgentRequestV1` on the
+    urgent request channel, the same path the hardware watcher uses, so there
+    is one way into `start_urgent`. The run's own refusals (incident already
+    open, admission off, dispatch failure) land later in the urgent-runs list
+    and the critical report; this route only refuses what it can see now,
+    including "nothing is listening" -- a request published with no consumer
+    would read as started and then never run.
+    """
+    question = str((payload or {}).get("question") or "").strip()
+    if not question:
+        return _urgent_refusal("question_required", 400)
+    if len(question) > _URGENT_QUESTION_LIMIT:
+        return _urgent_refusal("question_too_long", 400)
+
+    try:
+        from . import main as hub_main
+
+        loop = getattr(hub_main, "curiosity_investigation", None)
+        bus = getattr(hub_main, "bus", None)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("curiosity_urgent_import_failed err=%s", exc)
+        loop, bus = None, None
+    if loop is None:
+        return _urgent_refusal("loop_not_running", 503)
+    if not getattr(loop, "urgent_enabled", False):
+        return _urgent_refusal("urgent_disabled", 503)
+    if not getattr(loop, "durable_admission_enabled", False):
+        # start_urgent would refuse it anyway; say so now, not in a later email.
+        return _urgent_refusal("durable_admission_disabled", 503)
+    listener = getattr(loop, "urgent_listener_task", None)
+    if listener is None or listener.done():
+        return _urgent_refusal("urgent_listener_not_running", 503)
+    if bus is None or not getattr(bus, "enabled", False):
+        return _urgent_refusal("bus_unavailable", 503)
+    if getattr(bus, "redis", None) is None:
+        return _urgent_refusal("redis_unavailable", 503)
+
+    from uuid import uuid4
+
+    from orion.core.bus.bus_schemas import BaseEnvelope
+    from orion.schemas.curiosity_urgent import (
+        URGENT_REQUEST_CHANNEL,
+        URGENT_REQUEST_KIND,
+        CuriosityUrgentRequestV1,
+    )
+
+    incident = uuid4()
+    try:
+        request = CuriosityUrgentRequestV1(
+            incident_id=incident.hex,
+            question=question,
+            trigger="manual",
+            subject="",
+            evidence=await _collect_urgent_evidence(),
+            requested_at=datetime.now(timezone.utc),
+            requested_by="juniper",
+        )
+        await bus.publish(
+            URGENT_REQUEST_CHANNEL,
+            BaseEnvelope(
+                kind=URGENT_REQUEST_KIND,
+                source=_urgent_source_ref(),
+                correlation_id=incident,
+                payload=request.model_dump(mode="json"),
+            ),
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("curiosity_urgent_publish_failed incident_id=%s err=%s", incident.hex, exc)
+        return _urgent_refusal(f"{type(exc).__name__}: {str(exc)[:160]}", 500)
+    logger.warning(
+        "curiosity_urgent_requested incident_id=%s chars=%s -- operator asked for an urgent run",
+        incident.hex, len(question),
+    )
+    return JSONResponse(content={"ok": True, "incident_id": incident.hex}, headers=_NO_CACHE)
+
+
+def _urgent_sort_key(item: dict[str, Any]) -> float:
+    try:
+        stamp = datetime.fromisoformat(str(item.get("requested_at") or ""))
+    except ValueError:
+        return 0.0
+    if stamp.tzinfo is None:
+        stamp = stamp.replace(tzinfo=timezone.utc)
+    return stamp.timestamp()
+
+
+@router.get("/api/urgent")
+async def curiosity_urgent_list_api() -> JSONResponse:
+    """The newest urgent incidents from the hash `start_urgent` writes, without
+    their evidence bundles. Never 500s."""
+    try:
+        from . import main as hub_main
+        from .curiosity_investigation import URGENT_INCIDENTS_KEY
+
+        redis = getattr(getattr(hub_main, "bus", None), "redis", None)
+        if redis is None:
+            return JSONResponse(
+                content={"available": False, "reason": "redis_unavailable", "incidents": []},
+                headers=_NO_CACHE,
+            )
+        rows = await redis.hgetall(URGENT_INCIDENTS_KEY)
+    except Exception as exc:  # noqa: BLE001 -- a dashboard never 500s
+        logger.warning("curiosity_urgent_list_failed err=%s", exc)
+        return JSONResponse(
+            content={"available": False, "reason": f"{type(exc).__name__}: {str(exc)[:160]}", "incidents": []},
+            headers=_NO_CACHE,
+        )
+    incidents: list[dict[str, Any]] = []
+    for raw in (rows or {}).values():
+        try:
+            record = json.loads(raw)
+        except Exception:  # noqa: BLE001 -- one unreadable row does not hide the rest
+            continue
+        if isinstance(record, dict) and record.get("incident_id"):
+            incidents.append({k: record.get(k) for k in _URGENT_LIST_FIELDS})
+    incidents.sort(key=_urgent_sort_key, reverse=True)
+    return JSONResponse(
+        content={"available": True, "incidents": incidents[:_URGENT_LIST_LIMIT]}, headers=_NO_CACHE
     )
 
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import functools
 import hashlib
 import logging
 import math
@@ -184,10 +185,24 @@ def _rare_tokens(text: str) -> List[str]:
     return [tok for tok in tokens if len(tok) >= 6 or any(ch.isdigit() for ch in tok)]
 
 
+# Query-side tokenization, memoized per query string. fuse_candidates scores
+# every candidate against the same query, and these used to re-tokenize the
+# whole query once per candidate (per helper) -- with a 30k-char query and a
+# few thousand candidates that was the hot loop. Tokenize once, reuse.
+@functools.lru_cache(maxsize=64)
+def _query_token_set(query_text: str) -> frozenset[str]:
+    return frozenset(_tokenize(query_text))
+
+
+@functools.lru_cache(maxsize=64)
+def _query_rare_tokens_lower(query_text: str) -> tuple[str, ...]:
+    return tuple(tok.lower() for tok in _rare_tokens(query_text))
+
+
 def _overlap_count(query_text: str, snippet: str) -> int:
     if not query_text:
         return 0
-    query_tokens = set(_tokenize(query_text))
+    query_tokens = _query_token_set(query_text)
     if not query_tokens:
         return 0
     snippet_tokens = set(_tokenize(snippet))
@@ -195,8 +210,9 @@ def _overlap_count(query_text: str, snippet: str) -> int:
 
 
 def _exact_match_boost(query_text: str, snippet: str) -> float:
-    for token in _rare_tokens(query_text):
-        if token.lower() in (snippet or "").lower():
+    lowered = (snippet or "").lower()
+    for token in _query_rare_tokens_lower(query_text or ""):
+        if token in lowered:
             return 1.0
     return 0.0
 
@@ -242,7 +258,7 @@ def _relevance_cfg(profile: Dict[str, Any]) -> Dict[str, Any]:
 def _text_similarity_signal(query_text: str, *, overlap: int, exact_boost: float) -> float:
     if not query_text:
         return max(0.0, min(1.0, exact_boost))
-    q_tokens = set(_tokenize(query_text))
+    q_tokens = _query_token_set(query_text)
     if not q_tokens:
         return max(0.0, min(1.0, exact_boost))
     overlap_norm = min(1.0, overlap / float(len(q_tokens)))

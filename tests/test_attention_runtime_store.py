@@ -125,6 +125,8 @@ def _mock_engine_for_baseline(
     new_rows: list[dict],
     version_column: bool = False,
     persisted: list[dict] | None = None,
+    observed_column: bool = False,
+    observed_updates: list[dict] | None = None,
 ):
     """``version_column`` answers the definition_version column probe; False keeps
     the pre-2026-09-25 behaviour the older tests below were written against.
@@ -139,7 +141,14 @@ def _mock_engine_for_baseline(
     def execute_side_effect(stmt, params=None):
         sql = str(stmt)
         result = MagicMock()
-        if "information_schema.columns" in sql:
+        if "information_schema.columns" in sql and "last_value_observed_at" in sql:
+            calls.append("probe_observed_column")
+            result.scalar.return_value = observed_column
+        elif "UPDATE substrate_node_prediction_error_baseline" in sql:
+            calls.append("persist_observed_at")
+            if observed_updates is not None:
+                observed_updates.append(dict(params or {}))
+        elif "information_schema.columns" in sql:
             calls.append("probe_version_column")
             result.scalar.return_value = version_column
         elif "substrate_node_prediction_error_baseline" in sql and "SELECT" in sql:
@@ -182,7 +191,10 @@ def test_advance_node_prediction_error_baseline_cold_start_no_prior_row(monkeypa
 
     assert baseline.observation_count == 2
     assert baseline.last_value == pytest.approx(0.9)
-    assert calls == ["probe_version_column", "read_baseline", "fetch_new_rows", "persist_baseline"]
+    assert calls == [
+        "probe_version_column", "read_baseline", "fetch_new_rows", "persist_baseline",
+        "probe_observed_column",  # column absent in this mock: no observed-at write
+    ]
 
 
 def test_advance_node_prediction_error_baseline_no_new_rows_skips_write(monkeypatch) -> None:
@@ -524,3 +536,120 @@ def test_advance_failure_forces_a_column_re_probe() -> None:
     store._engine = fake_engine
     _advance(store, "node:substrate.route", "route_arbitration")
     assert store._definition_version_column is None
+
+
+def test_advance_stamps_when_the_last_folded_receipt_was_written() -> None:
+    """2026-09-29 staleness fade: the baseline carries the receipt time behind
+    `last_value`; the fade is read-side, so the persisted row is unchanged in shape."""
+    store = AttentionRuntimeStore("postgresql://test:test@localhost/test")
+    t1 = datetime(2026, 9, 29, 11, 0, tzinfo=timezone.utc)
+    t2 = datetime(2026, 9, 29, 11, 5, tzinfo=timezone.utc)
+    t3 = datetime(2026, 9, 29, 11, 6, tzinfo=timezone.utc)
+    fake_engine, _conn, _calls = _mock_engine_for_baseline(
+        existing_row=None,
+        new_rows=[
+            {"error": "0.1", "created_at": t1},
+            {"error": "0.3", "created_at": t2},
+            {"error": "not-a-number", "created_at": t3},  # skipped, cursor still moves
+        ],
+    )
+    store._engine = fake_engine
+    baseline = store.advance_node_prediction_error_baseline(
+        target_id="node:substrate.chat", reducer_key="chat_session",
+        alpha=0.2, min_variance=1e-5, fetch_limit=200,
+    )
+    assert baseline.last_value == pytest.approx(0.3)
+    assert baseline.last_observed_at == t2
+
+
+def test_no_new_rows_reads_the_observed_time_from_the_persisted_cursor() -> None:
+    store = AttentionRuntimeStore("postgresql://test:test@localhost/test")
+    cursor = datetime(2026, 9, 29, 9, 0, tzinfo=timezone.utc)
+    existing = {
+        "ewma": 0.1, "variance": 0.02, "observation_count": 10, "last_value": 0.4,
+        "last_receipt_created_at": cursor,
+    }
+    fake_engine, _conn, _calls = _mock_engine_for_baseline(existing_row=existing, new_rows=[])
+    store._engine = fake_engine
+    baseline = store.advance_node_prediction_error_baseline(
+        target_id="node:substrate.chat", reducer_key="chat_session",
+        alpha=0.2, min_variance=1e-5, fetch_limit=200,
+    )
+    assert baseline.last_value == pytest.approx(0.4)
+    assert baseline.last_observed_at == cursor
+
+
+def test_observed_time_survives_a_skipped_receipt_across_ticks() -> None:
+    """Review 2026-09-29: the cursor also moves over skipped receipts, so reloading
+    the reading's time from the cursor made a stale reading look fresh (unbounded
+    during a substrate-only rollback emitting old-version receipts). Tick 1 folds a
+    reading at t2 and skips a malformed row at t3; tick 2 has nothing new and must
+    still age the reading from t2, not t3."""
+    t1 = datetime(2026, 9, 29, 11, 0, tzinfo=timezone.utc)
+    t2 = datetime(2026, 9, 29, 11, 5, tzinfo=timezone.utc)
+    t3 = datetime(2026, 9, 29, 11, 40, tzinfo=timezone.utc)
+    store = AttentionRuntimeStore("postgresql://test:test@localhost/test")
+    persisted: list[dict] = []
+    observed: list[dict] = []
+    store._engine, _conn, calls = _mock_engine_for_baseline(
+        existing_row=None,
+        new_rows=[
+            {"error": "0.1", "created_at": t1},
+            {"error": "0.3", "created_at": t2},
+            {"error": "not-a-number", "created_at": t3},
+        ],
+        persisted=persisted,
+        observed_column=True,
+        observed_updates=observed,
+    )
+    first = _advance(store, "node:substrate.chat", "chat_session")
+    assert first.last_observed_at == t2
+    assert persisted[-1]["last_receipt_created_at"] == t3  # cursor moved past the skip
+    assert observed == [{"observed_at": t2, "target_id": "node:substrate.chat"}]
+
+    # Tick 2: reload the persisted row (to_jsonb renders the column as ISO text).
+    store2 = AttentionRuntimeStore("postgresql://test:test@localhost/test")
+    store2._engine, _conn2, calls2 = _mock_engine_for_baseline(
+        existing_row={
+            "ewma": first.ewma, "variance": first.variance,
+            "observation_count": first.observation_count, "last_value": first.last_value,
+            "last_receipt_created_at": t3,
+            "last_value_observed_at": t2.isoformat(),
+        },
+        new_rows=[],
+        observed_column=True,
+    )
+    second = _advance(store2, "node:substrate.chat", "chat_session")
+    assert second.last_observed_at == t2
+    assert "persist_baseline" not in calls2
+
+
+def test_observed_time_is_not_written_without_the_column() -> None:
+    t1 = datetime(2026, 9, 29, 11, 0, tzinfo=timezone.utc)
+    store = AttentionRuntimeStore("postgresql://test:test@localhost/test")
+    store._engine, _conn, calls = _mock_engine_for_baseline(
+        existing_row=None,
+        new_rows=[{"error": "0.1", "created_at": t1}],
+        observed_column=False,
+    )
+    baseline = _advance(store, "node:substrate.chat", "chat_session")
+    assert baseline.last_observed_at == t1
+    assert "persist_observed_at" not in calls
+
+
+def test_nothing_folded_leaves_the_persisted_observed_time_alone() -> None:
+    """A tick that only skips rows must not overwrite the real reading time."""
+    t0 = datetime(2026, 9, 29, 10, 0, tzinfo=timezone.utc)
+    t1 = datetime(2026, 9, 29, 11, 0, tzinfo=timezone.utc)
+    store = AttentionRuntimeStore("postgresql://test:test@localhost/test")
+    store._engine, _conn, calls = _mock_engine_for_baseline(
+        existing_row={
+            "ewma": 0.1, "variance": 0.02, "observation_count": 10, "last_value": 0.4,
+            "last_receipt_created_at": t0, "last_value_observed_at": t0.isoformat(),
+        },
+        new_rows=[{"error": None, "created_at": t1}],
+        observed_column=True,
+    )
+    baseline = _advance(store, "node:substrate.chat", "chat_session")
+    assert baseline.last_observed_at == t0
+    assert "persist_observed_at" not in calls

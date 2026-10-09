@@ -31,20 +31,45 @@ from langgraph.graph import START
 from langgraph.types import Command
 
 from app.admitted_graph import (
-    GONE, GRANTED, REFUSED, WAITING, AdmissionDeps, HoldRecalled, RunControlPending, WorkflowDeadline,
-    build_admitted_graph,
+    GONE, GRANTED, REFUSED, WAITING, AdmissionDeps, HoldPreempted, HoldRecalled, RunControlPending,
+    WorkflowDeadline, build_admitted_graph,
 )
 from app.admitted_reflect_graph import build_admitted_reflect_graph
+from app.compactor_digest_graph import build_compactor_digest_graph, finish_detail as compactor_digest_finish_detail
+from app.journal_compose_graph import build_journal_compose_graph, finish_detail as journal_compose_finish_detail
+from app.episode_distill_graph import build_episode_distill_graph, finish_detail as episode_distill_finish_detail
+from orion.schemas.memory_episode import MEMORY_EPISODE_DISTILL_WORKFLOW
+from orion.schemas.journal_compose_run import JOURNAL_COMPOSE_WORKFLOW
 from app.admitted_self_sense_graph import build_admitted_self_sense_graph
-from app.graph import failed_turn_meta, finish_detail, recorded_turn_correlation_id, turn_correlation_id
+from app.graph import failed_turn_meta, finish_detail, recorded_turn_correlation_id, turn_correlation_id, urgent_detail
 from app.pool_hold import (
-    HELD, WAITING as POOL_WAITING, PoolHolds, UnknownRoute, is_hold_ref, is_pool_trouble, ref_dict,
-    refusal_is_terminal,
+    HELD, URGENT_PREEMPT, WAITING as POOL_WAITING, PoolHolds, UnknownRoute, is_hold_ref, is_pool_trouble,
+    hold_placement, ref_dict, refusal_is_terminal,
 )
 from app.reflect_graph import finish_detail as reflect_finish_detail
+from app.orion_day_graph import (
+    OrionDayDeps, build_orion_day_graph, finish_detail as orion_day_finish_detail, slim_brief as orion_day_slim_brief,
+)
+from app.orion_day_store import persist_letter as persist_orion_day_letter
+from app.reading_graph import build_reading_graph, finish_detail as reading_finish_detail
+from app.reverie_visual_graph import (
+    RETRY_WINDOW_EXPIRED, abandon_request, build_reverie_visual_graph,
+    finish_detail as reverie_visual_finish_detail, send_abandon,
+    terminal_detail as reverie_visual_terminal_detail,
+)
+from orion.schemas.compactor_digest_run import COMPACTOR_DIGEST_WORKFLOW
+from orion.schemas.reading_turn import READING_WORKFLOW
+from orion.schemas.reverie_visual_run import REVERIE_VISUAL_WORKFLOW
+from orion.schemas.orion_day import ORION_DAY_WORKFLOW, OrionDayRunBriefV1
 from app.self_sense_graph import finish_detail as self_sense_finish_detail
-from orion.durable_admission.store import PostgresAdmissionStore
+from orion.durable_runs.registry_store import (
+    ABANDON_ACKED_EVENT,
+    ABANDON_GIVE_UP_SEC,
+    ABANDON_PENDING_EVENT,
+    DurableRunRegistryStore,
+)
 from orion.gpu_pool.client import DURABLE_RUN_HOLDER_PREFIX, durable_run_holder
+from orion.schemas.gpu_pool import GpuLeaseReplyV1
 from orion.schemas.durable_run import DurableRunRequestV1, DurableRunStateV1, DURABLE_RUN_STATE_KIND
 from orion.schemas.harness_finalize import HarnessRunCancelV1
 from orion.schemas.resource_admission import RESOURCE_EVENT_CHANNEL, RESOURCE_EVENT_KIND, ResourceEventV1
@@ -57,14 +82,36 @@ REFLECT_WORKFLOW = "self_study.reflect"
 # The node of each admitted workflow that does GPU work under the hold. A restarted driver that
 # finds one of these still pending fences the previous attempt and replays it under the same hold.
 WORK_NODES = {DEFAULT_WORKFLOW: {"run_started", "harness_turn"}, SELF_SENSE_WORKFLOW: {"ask_questions"},
-              REFLECT_WORKFLOW: {"llm_call"}}
+              REFLECT_WORKFLOW: {"llm_call"}, READING_WORKFLOW: {"reading_turn"},
+              # Only generate holds the diffusion hold; it releases it before its result is
+              # checkpointed, so a restart after generate resumes at caption with no lease.
+              REVERIE_VISUAL_WORKFLOW: {"generate"},
+              # One LLM call per digest run; finalize lets the hold go before it calls cortex-orch.
+              COMPACTOR_DIGEST_WORKFLOW: {"digest"},
+              # Only compose holds the GPU; publish lets the hold go before it sends the write.
+              JOURNAL_COMPOSE_WORKFLOW: {"compose"},
+              # Both LLM calls run under the hold; a restart replays the first one without a
+              # checkpointed text (a finished note is never regenerated). persist needs no GPU.
+              ORION_DAY_WORKFLOW: {"write_note", "write_carry_forward"}}
+# The DurableRunStateV1.node each admitted terminal is published under (the graph node it ends at).
+TERMINAL_STATE_NODE = {"completed": "finish", "failed": "failed", "cancelled": "finish"}
 # Pool events (for a durable-run holder) after which a waiting run should look at its hold now.
 HINT_EVENTS = frozenset({"granted", "recalled", "aborted", "expired", "retried", "backlogged", "unavailable",
                          "dead_lettered", "released", "cancelled"})
 # A request id already used for an ended hold is skipped (a checkpoint older than the pool's
 # record); bounded so a broken pool cannot spin a run forever.
 HOLD_SEQ_SKIP_MAX = 20
+# A hold recalled for urgent work before its step started is not released (that forfeits its place in
+# line): the driver polls the pool every PREEMPT_POLL_SEC until the pool's abort re-queues it in place,
+# for at most urgent_preempt_grace_sec + PREEMPT_REQUEUE_MARGIN_SEC from first sight (local clock).
+PREEMPT_POLL_SEC = 1.0
+PREEMPT_REQUEUE_MARGIN_SEC = 3.0
+# Background drivers at once. Urgent drivers are outside it, capped at urgent_max_concurrent.
 MAX_CONCURRENT_DRIVERS = 4
+# "system" runs (memory.episode_distill, 2026-10-02) are also outside it, capped here: a system run
+# must not wait behind four background turns before it even asks the pool, where it then ranks
+# above background. One at a time: the distiller is the only system producer (~1-2 episodes/day).
+MAX_CONCURRENT_SYSTEM_DRIVERS = 1
 # Which pool refusals fail the run is decided in one place: ``pool_hold.refusal_is_terminal``.
 # Any other unavailable (dead-lettered after expiries during a durable-runs outage, an abort) is
 # the hold's own history, not the run's: end it and ask again under a new request id. A refusal
@@ -72,19 +119,27 @@ MAX_CONCURRENT_DRIVERS = 4
 # and retries with bounded backoff (``_pool_refused``).
 
 
+def _priority(row: dict) -> str | None:
+    """A pending run's admitted priority (ResourceRequirementV1.priority on the stored request)."""
+    return (((row.get("request") or {}).get("admission")) or {}).get("priority")
+
+
 def _without_backoff(hold: dict) -> dict:
     """The hold minus the pool-refusal backoff fields: the pool answered, the episode is over."""
     return {k: v for k, v in hold.items() if k not in ("retry_at", "refusals")}
 
 
-class HoldLost(RuntimeError):
-    """The pool no longer holds this run's hold at its generation: stop using the GPU now."""
+from app.admitted_graph import HoldLost
+
+# release() reasons of a pool take-back (HoldLost / HoldPreempted): the node goes straight back to
+# resource_wait, so a hold the pool already re-granted is kept for it.
+TAKEBACK_RELEASE_REASONS = frozenset({HoldLost.release_reason, URGENT_PREEMPT})
 
 
 class AdmissionRuntime:
     def __init__(self, settings, runner, pool, *, store=None, clock=None, holds=None):
         self.settings, self.runner, self.pool = settings, runner, pool
-        self.store = store or PostgresAdmissionStore(pool)
+        self.store = store or DurableRunRegistryStore(pool)
         self.now = clock or (lambda: datetime.now(timezone.utc))
         self.holds = holds or PoolHolds(runner._bus, source=settings.service_name)
         if settings.lease_heartbeat_sec * 2 > self.holds.hold_ttl_sec:
@@ -96,7 +151,8 @@ class AdmissionRuntime:
             self.register, self.lease, self.execute, self.release, self.event,
             now=self.now, max_attempts=settings.retry_max_attempts,
             retry_base_seconds=settings.retry_base_sec, retry_max_seconds=settings.retry_max_sec,
-            guard=self.guard, keep_for_outreach=self.keep_for_outreach)
+            guard=self.guard, keep_for_outreach=self.keep_for_outreach, requeued=self.requeued,
+            max_takebacks=settings.hold_max_takebacks)
         self.deps = admission_deps
         # One compiled graph per workflow. Before 2026-09-22 every admitted run shared the
         # curiosity graph; before 4.5 an admitted reflect run still did.
@@ -105,10 +161,33 @@ class AdmissionRuntime:
             SELF_SENSE_WORKFLOW: build_admitted_self_sense_graph(
                 runner._self_sense_deps(), admission_deps, runner._checkpointer),
             REFLECT_WORKFLOW: build_admitted_reflect_graph(runner._reflect_deps(), admission_deps, runner._checkpointer),
+            READING_WORKFLOW: build_reading_graph(lambda request: runner._run_reading_turn(request), admission_deps, runner._checkpointer),
+            REVERIE_VISUAL_WORKFLOW: build_reverie_visual_graph(self._reverie_step, admission_deps, runner._checkpointer),
+            # Late-bound (like reading above): the runner's method is read per call.
+            COMPACTOR_DIGEST_WORKFLOW: build_compactor_digest_graph(
+                lambda payload, **kw: runner._cortex_orch_rpc(payload, **kw), admission_deps, runner._checkpointer),
+            # Late-bound (like reading/reverie above): the runner's methods are read per call.
+            JOURNAL_COMPOSE_WORKFLOW: build_journal_compose_graph(
+                lambda brief, **kw: runner._compose_journal(brief, **kw),
+                lambda write: runner._publish_journal_write(write), admission_deps, runner._checkpointer),
+            # Memory episode distiller (shadow, 2026-10-02). Late-bound like journal.compose.
+            MEMORY_EPISODE_DISTILL_WORKFLOW: build_episode_distill_graph(
+                lambda brief: self._load_episode(brief),
+                lambda prompt, **kw: runner._call_memory_distill_llm(prompt, **kw),
+                lambda **kw: self._persist_episode(**kw), admission_deps, runner._checkpointer),
+            # Bound lazily (like reading's run_turn): resolved on the runner at call time.
+            ORION_DAY_WORKFLOW: build_orion_day_graph(OrionDayDeps(
+                call_verb_text=lambda *args, **kwargs: runner._call_verb_text(*args, **kwargs),
+                persist_letter=lambda row: persist_orion_day_letter(self.pool, row),
+                publish_journal=lambda entry: runner._publish_journal(entry),
+                load_brief=self._orion_day_brief,
+            ), admission_deps, runner._checkpointer),
         }
         # Back-compat alias used by older tests that reach for `.graph`.
         self.graph = self.graphs[DEFAULT_WORKFLOW]
         self.active: dict[str, asyncio.Task] = {}
+        self._urgent_drivers: set[str] = set()   # the runs in ``active`` driven as urgent
+        self._system_drivers: set[str] = set()   # the runs in ``active`` driven as system priority
         self._wake = asyncio.Event()
         self._hints: set[str] = set()           # runs a pool event said something changed for
         self._checked: dict[str, float] = {}    # run -> monotonic time of its last waiting-hold read
@@ -119,6 +198,13 @@ class AdmissionRuntime:
         # until the pool confirms -- a retryable hold left to its TTL is re-queued and re-granted to
         # nobody (review finding, 4.5).
         self._pending_release: dict[str, tuple[str, dict | None, str]] = {}
+        # reverie.visual runs that ended without completing and whose abandon thought has not
+        # confirmed: run -> {"attempt_id", "visual_request", "reason", "failures", "due" (monotonic)}.
+        # A cache of the store's run.abandon_pending records (reloaded every
+        # DURABLE_RUNS_HOLD_STATUS_POLL_SEC, so a restart picks them up); retried from reconcile.
+        self._abandons: dict[str, dict[str, Any]] = {}
+        self._abandons_loaded_at: float | None = None
+        self._abandoning: dict[str, asyncio.Task] = {}
 
     def _graph_for(self, workflow: str | None):
         return self.graphs.get(workflow or DEFAULT_WORKFLOW) or self.graphs[DEFAULT_WORKFLOW]
@@ -129,7 +215,87 @@ class AdmissionRuntime:
             return self_sense_finish_detail(state)
         if workflow == REFLECT_WORKFLOW:
             return reflect_finish_detail(state)
+        if workflow == READING_WORKFLOW:
+            return reading_finish_detail(state)
+        if workflow == REVERIE_VISUAL_WORKFLOW:
+            return reverie_visual_finish_detail(state)
+        if workflow == COMPACTOR_DIGEST_WORKFLOW:
+            return compactor_digest_finish_detail(state)
+        if workflow == JOURNAL_COMPOSE_WORKFLOW:
+            return journal_compose_finish_detail(state)
+        if workflow == ORION_DAY_WORKFLOW:
+            return orion_day_finish_detail(state)
+        if workflow == MEMORY_EPISODE_DISTILL_WORKFLOW:
+            return episode_distill_finish_detail(state)
         return finish_detail(state)
+
+    async def _load_episode(self, brief) -> dict:
+        """memory.episode_distill load_episode: the turns' FULL text from chat_history_log (never a
+        preview -- the validator checks quotes against exactly this), plus candidate referent keys."""
+        from orion.memory.episode.distill import LOAD_TURNS_SQL, turns_from_rows, turns_to_state
+        from orion.memory.episode.store import candidate_referent_keys
+
+        async with self.pool.connection() as conn:
+            rows = await (await conn.execute(LOAD_TURNS_SQL, (list(brief.turn_ids),))).fetchall()
+        turns = turns_from_rows([dict(r) for r in rows])
+        return {"turns": turns_to_state(turns), "candidate_referents": await candidate_referent_keys(self.pool)}
+
+    async def _persist_episode(self, **kwargs) -> dict:
+        from orion.memory.episode.store import persist_episode
+
+        return await persist_episode(self.pool, **kwargs, referent_policy=self._referent_policy())
+
+    def _referent_policy(self):
+        """None when MEMORY_REFERENTS_ENABLED=false (the referent step is skipped)."""
+        if not getattr(self.settings, "memory_referents_enabled", False):
+            return None
+        from orion.memory.referents.resolve import ReferentPolicy
+
+        return ReferentPolicy(
+            grounding_auto_accept=bool(self.settings.memory_alias_grounding_auto_accept),
+            cooccurrence_auto_accept=bool(self.settings.memory_cooccurrence_auto_accept),
+        )
+
+    async def _orion_day_brief(self, state) -> OrionDayRunBriefV1:
+        """The full orion_day.letter brief from the accepted request row (the checkpoint keeps
+        only ``slim_brief``)."""
+        row = await self.store.get_run(state["run_id"])
+        if row is None:
+            raise KeyError(state["run_id"])
+        return OrionDayRunBriefV1.model_validate(row["request"]["brief"])
+
+    @staticmethod
+    def _checkpoint_brief(workflow: str, brief: dict) -> dict:
+        """What the run's checkpoint carries of its brief. orion_day.letter keeps a slim copy: its
+        full brief (material + digest) stays once in durable_admission_runs.request."""
+        return orion_day_slim_brief(brief) if workflow == ORION_DAY_WORKFLOW else brief
+
+    def _reverie_step(self, request, budget_sec=None):
+        return self.runner._run_reverie_visual_step(request, budget_sec)
+
+    @staticmethod
+    def _deadline_error(workflow: str | None) -> str:
+        return RETRY_WINDOW_EXPIRED if workflow == REVERIE_VISUAL_WORKFLOW else "workflow_deadline"
+
+    @staticmethod
+    def _terminal_detail_for(workflow: str, status: str, state: dict) -> dict:
+        """failed/cancelled detail. Only what the graph recorded -- never re-derived here, since by
+        now the lease is cleared and a fresh derivation would name the run's lineage, not the turn
+        that actually failed."""
+        if workflow == REVERIE_VISUAL_WORKFLOW:
+            return reverie_visual_terminal_detail(state, status)
+        # Urgent runs must end in a report, so their failed/cancelled facts say so (Hub keys on it).
+        urgent = urgent_detail(state)
+        if status == "cancelled":
+            # An operator cancel carries no reason of its own (control() records only the action).
+            return {"error": "cancelled", "urgent": urgent} if urgent is not None else {}
+        detail = {"error": state.get("last_error")}
+        corr = recorded_turn_correlation_id(state)
+        if corr:
+            detail["turn_correlation_id"] = corr
+        if urgent is not None:
+            detail["urgent"] = urgent
+        return detail
 
     @staticmethod
     def config(run_id):
@@ -260,6 +426,11 @@ class AdmissionRuntime:
             self._checked[run_id] = time.monotonic()   # just read: the poll fallback starts from here
             return WAITING, waiting
         if reply.status == "recall":
+            if reply.reason == URGENT_PREEMPT and await self._await_requeue(hold["lease_id"], reply):
+                # Paused for an urgent run and back in line in its original place: wait for it again.
+                await self._record_preempted(state, hold["lease_id"], reply.grant.generation if reply.grant else None,
+                                             reply.grant.role if reply.grant else None, reply)
+                return WAITING, waiting
             # Recalled before the run started: give the seat back now and queue afresh.
             await self._end_hold(state, hold["lease_id"], None, "recalled_before_start")
             return GONE, {**waiting, "hold": None}
@@ -282,9 +453,10 @@ class AdmissionRuntime:
         error = "workflow_deadline" if reason == "deadline" else f"gpu_pool_unavailable:{reason}"
         return REFUSED, {"status": "failed", "last_error": error, "lease": None, "hold": None}
 
-    async def _beat(self, lease: dict) -> str | None:
-        """Heartbeat a granted hold; raise HoldLost when the pool no longer holds it at our
-        generation. A failed RPC is tolerated: the TTL is at least two beats."""
+    async def _beat(self, lease: dict, admission: dict | None = None) -> GpuLeaseReplyV1 | None:
+        """Heartbeat a granted hold: the pool's granted/recall reply (None when unanswered). Raise
+        HoldLost when the pool no longer holds it at our generation (``_taken_back``). A failed RPC
+        is tolerated: the TTL is at least two beats."""
         try:
             reply = await self.holds.heartbeat(lease["lease_id"])
         except Exception as exc:  # noqa: BLE001
@@ -298,9 +470,39 @@ class AdmissionRuntime:
             return None
         if reply.status in HELD and reply.grant is not None and reply.grant.generation == lease["generation"]:
             if reply.status == "recall":
-                logger.info("durable_hold_recalled lease=%s recall_by=%s", lease["lease_id"], reply.recall_by)
-            return reply.status
-        raise HoldLost(f"gpu_hold_lost:{reply.status}" + (f":{reply.reason}" if reply.reason else ""))
+                logger.info("durable_hold_recalled lease=%s recall_by=%s reason=%s", lease["lease_id"],
+                            reply.recall_by, reply.reason)
+            return reply
+        raise self._taken_back(lease, reply, admission)
+
+    def _taken_back(self, lease: dict, reply: GpuLeaseReplyV1, admission: dict | None = None) -> Exception:
+        """What a mid-node pool answer that is no longer "yours at this generation" means for the node.
+
+        * re-queued for an urgent run -> HoldPreempted;
+        * re-queued for any other reason (a recall past its grace: max_hold, owner reclaim, unlend;
+          a lost heartbeat), or already re-granted at a newer generation -> HoldLost: same hold,
+          the run waits for it again. Not an attempt;
+        * ended by the pool (dead-lettered, released, unknown) -> HoldLost as well unless the pool's
+          reason is a property of the run itself (``refusal_is_terminal``: deadline, a class nothing
+          serves, ...): the run asks afresh, as ``lease`` does for the same answer before a node.
+          A terminal reason is a plain error: the node's own failure handling decides.
+        """
+        detail = f"{reply.status}" + (f":{reply.reason}" if reply.reason else "")
+        if reply.status in POOL_WAITING and reply.reason == URGENT_PREEMPT:
+            return HoldPreempted(f"gpu_hold_preempted:{lease['lease_id']}")
+        if reply.status in POOL_WAITING or reply.status in HELD:
+            return HoldLost(f"gpu_hold_lost:{detail}")
+        reason = str(reply.reason or reply.status)
+        if reason == "deadline":
+            return WorkflowDeadline("workflow_deadline")
+        work_class = ""
+        try:
+            work_class = hold_placement(self.holds.cfg, admission or {})[0]
+        except UnknownRoute:
+            pass
+        if refusal_is_terminal(self.holds.cfg, reason, work_class):
+            return RuntimeError(f"gpu_pool_unavailable:{reason}")
+        return HoldLost(f"gpu_hold_lost:{detail}")
 
     async def execute(self, state, node):
         lease = state.get("lease")
@@ -309,16 +511,21 @@ class AdmissionRuntime:
         row = await self.store.get_run(state["run_id"])
         if row.get("control"):
             raise RunControlPending(row["control"])
-        if await self._beat(lease) == "recall":
-            # Already being recalled: never start a long turn on it. Give it back now and queue
-            # afresh; this is not a failed attempt.
+        beat = await self._beat(lease, state.get("admission"))
+        if beat is not None and beat.status == "recall":
+            # Already being recalled: never start a long turn on it. Not a failed attempt either way.
+            if beat.reason == URGENT_PREEMPT and await self._await_requeue(lease["lease_id"], beat):
+                raise HoldPreempted(f"gpu_hold_preempted_before_start:{lease['lease_id']}")
+            # Any other recall (or a pool that never re-queued it): give it back now, queue afresh.
             await self._end_hold(state, lease["lease_id"], lease, "recalled_before_start")
             raise HoldRecalled("gpu_hold_recalled_before_start")
         detail = {"lease": lease, "lane": lease["role"]}
-        if (state.get("workflow") or DEFAULT_WORKFLOW) == DEFAULT_WORKFLOW:
+        if (state.get("workflow") or DEFAULT_WORKFLOW) in {DEFAULT_WORKFLOW, READING_WORKFLOW}:
             # Joinable to the pool's child leases (acceptance check 2: no un-attached agent lease
             # under a turn whose run holds a hold).
             detail["turn_correlation_id"] = turn_correlation_id(state)
+        elif state.get("workflow") == REVERIE_VISUAL_WORKFLOW and state.get("step_correlation_id"):
+            detail["step_correlation_id"] = state["step_correlation_id"]
         await self.event(state, "run.started", detail)
         work = asyncio.create_task(node(state))
         timeout = float(state["brief"]["timeout_sec"])
@@ -328,15 +535,27 @@ class AdmissionRuntime:
         try:
             # Timeout starts only after the hold is confirmed. Each heartbeat re-reads the operator
             # control row and asks the pool whether the hold is still ours at this generation.
+            # Paused for urgent work: this run's in-flight call keeps the slot the urgent run waits for
+            # until the harness is cancelled, so beat every PREEMPT_POLL_SEC to see the re-queue soon.
+            # While urgent is enabled, beat within the grace so the recall is seen before the abort.
+            steady = self.settings.lease_heartbeat_sec
+            defaults = self.holds.cfg.defaults
+            if int(defaults.urgent_max_concurrent) > 0:
+                steady = min(steady, float(defaults.urgent_preempt_grace_sec))
+            wait = steady
             async with asyncio.timeout(timeout):
                 while True:
-                    done, _ = await asyncio.wait({work}, timeout=self.settings.lease_heartbeat_sec)
+                    done, _ = await asyncio.wait({work}, timeout=wait)
                     if done:
-                        return await work
+                        break
                     row = await self.store.get_run(state["run_id"])
                     if row.get("control"):
                         raise RuntimeError(f"run_control:{row['control']}")
-                    await self._beat(lease)
+                    beat = await self._beat(lease, state.get("admission"))
+                    if beat is not None:
+                        wait = min(PREEMPT_POLL_SEC, steady) \
+                            if beat.status == "recall" and beat.reason == URGENT_PREEMPT \
+                            else steady
         except TimeoutError as exc:
             if deadline and self.now() >= datetime.fromisoformat(deadline):
                 raise WorkflowDeadline("workflow_deadline") from exc
@@ -349,6 +568,98 @@ class AdmissionRuntime:
                 await self._cancel_harness(state, "durable_attempt_stopped")
                 work.cancel()
                 await asyncio.gather(work, return_exceptions=True)
+        # Outside the turn's time budget: a slow preempt check must not replace the work's own error.
+        try:
+            return await self._settled(work, lease, state.get("admission"))
+        except TimeoutError as exc:
+            if deadline and self.now() >= datetime.fromisoformat(deadline):
+                raise WorkflowDeadline("workflow_deadline") from exc
+            raise
+
+    def _requeue_wait_sec(self, recall: GpuLeaseReplyV1) -> float:
+        """How long to wait for the re-queue, from first sight. recall_by is the pool's clock: it
+        only shortens the local grace when it is sane (in the future, sooner than the grace)."""
+        grace = float(self.holds.cfg.defaults.urgent_preempt_grace_sec)
+        wait = grace
+        if recall.recall_by is not None:
+            left = (recall.recall_by - self.now()).total_seconds()
+            if 0 < left < grace:
+                wait = left
+        return wait + PREEMPT_REQUEUE_MARGIN_SEC
+
+    async def _await_requeue(self, lease_id: str, recall: GpuLeaseReplyV1) -> bool:
+        """A hold recalled for urgent work before its step started: wait (bounded) for the pool's
+        abort to put it back in line in its original place. True once the pool says queued; False if
+        it said something else (a re-queue for another reason included) or the wait ran out -- the
+        caller then releases it as before."""
+        end = time.monotonic() + self._requeue_wait_sec(recall)
+        while True:
+            try:
+                reply = await asyncio.wait_for(self.holds.status(lease_id), max(0.1, end - time.monotonic()))
+            except Exception as exc:  # noqa: BLE001 -- timeout / RPC failure: not re-queued yet
+                logger.warning("durable_hold_status_failed lease=%s err=%s", lease_id, exc)
+                reply = None
+            if reply is not None and not is_pool_trouble(reply):
+                if reply.status in POOL_WAITING:
+                    return reply.reason == URGENT_PREEMPT
+                if reply.status != "recall":
+                    return False
+            left = end - time.monotonic()
+            if left <= 0:
+                logger.warning("durable_hold_urgent_requeue_timeout lease=%s", lease_id)
+                return False
+            await asyncio.sleep(min(PREEMPT_POLL_SEC, left))
+
+    async def _record_preempted(self, state, lease_id: str, generation: int | None, role: str | None,
+                                reply: GpuLeaseReplyV1) -> None:
+        """``run.preempted``: the pool paused this run's hold for an urgent run and kept its place."""
+        await self.store.record_event(state["run_id"], "run.preempted", {
+            "lease_id": lease_id, "generation": generation, "lane": role, "reason": URGENT_PREEMPT,
+            "pool_status": reply.status, "position": reply.position},
+            event_id=f"preempted:{lease_id}:{generation}")
+
+    async def _settled(self, work: asyncio.Task, lease: dict, admission: dict | None = None):
+        """The finished work's result. A work failure is checked against the pool once: a turn whose
+        hold the pool took back (urgent pause, recall past its grace) often fails on its own before
+        the next heartbeat sees it (its next LLM call cannot attach to the aborted hold) -- that is
+        the pool's doing, not an attempt."""
+        try:
+            return work.result()
+        except (HoldLost, RunControlPending, WorkflowDeadline):
+            raise
+        except Exception as exc:
+            reply = await self._requeued_reply(lease)
+            if reply is not None:
+                raise self._taken_back(lease, reply, admission) from exc
+            raise
+
+    async def _requeued_reply(self, lease: dict) -> GpuLeaseReplyV1 | None:
+        """The pool's status reply when it re-queued this hold (still ours, but no longer granted at
+        this generation); None when it still grants it, ended it, or cannot be read."""
+        try:
+            reply = await self.holds.status(lease["lease_id"])
+        except Exception as exc:  # noqa: BLE001 -- cannot tell: the failure stands as it is
+            logger.warning("durable_hold_status_failed lease=%s err=%s", lease["lease_id"], exc)
+            return None
+        if is_pool_trouble(reply):
+            return None
+        if reply.status in POOL_WAITING:
+            return reply
+        if reply.status in HELD and reply.grant is not None and reply.grant.generation != lease["generation"]:
+            return reply
+        return None
+
+    async def requeued(self, state) -> str | None:
+        """AdmissionDeps.requeued: for a node whose failed turn is a returned result -- the release
+        reason when the pool took the hold back, else None."""
+        lease = state.get("lease")
+        if not is_hold_ref(lease):
+            return None
+        reply = await self._requeued_reply(lease)
+        if reply is None:
+            return None
+        return getattr(self._taken_back(lease, reply, state.get("admission")), "release_reason",
+                       HoldLost.release_reason)
 
     async def guard(self, state):
         """Node boundary: deadline and operator control, then the hold. Returns the lease while
@@ -377,6 +688,8 @@ class AdmissionRuntime:
         if reply.status == "recall" and same:
             await self._end_hold(state, lease["lease_id"], lease, "recalled")
             return None
+        # Also a hold re-queued for urgent work (queued, urgent_preempt): the tail needs no GPU, and a
+        # kept re-queued hold would be granted to a run that no longer uses it.
         await self._record_lost(state, lease, reply.status, reply.reason)
         await self._end_hold(state, lease["lease_id"], lease, "lost")
         return None
@@ -397,8 +710,17 @@ class AdmissionRuntime:
                 reply = await self.holds.status(lease_id)
             except Exception:  # noqa: BLE001 -- unknown: hand it back rather than strand a slot
                 reply = None
-            if reply is not None and reply.status in POOL_WAITING and not is_pool_trouble(reply):
-                if lease:
+            # Also a hold the pool already re-granted at a newer generation (re-queued and granted
+            # again before this node noticed), but only on a take-back, which goes straight back to
+            # resource_wait: ending it would lose the grant resource_wait is about to read. After a
+            # failed attempt a backoff follows with nothing heartbeating it, so it is handed back.
+            regranted = reason in TAKEBACK_RELEASE_REASONS and reply is not None \
+                and reply.status in HELD and reply.grant is not None \
+                and lease is not None and reply.grant.generation != lease["generation"]
+            if reply is not None and (reply.status in POOL_WAITING or regranted) and not is_pool_trouble(reply):
+                if lease and reply.status in POOL_WAITING and reply.reason == URGENT_PREEMPT:
+                    await self._record_preempted(state, lease_id, lease["generation"], lease.get("role"), reply)
+                elif lease:
                     await self._record_lost(state, lease, reply.status, reply.reason)
                 return {"lease": None, "hold": {**_without_backoff(hold), "lease_id": lease_id}}
         await self._end_hold(state, lease_id, lease, reason)
@@ -480,9 +802,9 @@ class AdmissionRuntime:
             entry["beat"] = time.monotonic()
             try:
                 await self._beat(lease)
-            except HoldLost as exc:
+            except (HoldLost, WorkflowDeadline, RuntimeError) as exc:  # a take-back or a refusal: gone either way
                 logger.warning("durable_outreach_hold_lost run=%s lease=%s %s", run_id, lease["lease_id"], exc)
-                await self._record_lost(state, lease, str(exc), None)
+                await self._record_lost(state, lease, type(exc).__name__, str(exc)[:200])
                 # Re-queued holds would be granted to a finished run: end it.
                 await self._end_hold(state, lease["lease_id"], lease, "lost")
 
@@ -556,6 +878,14 @@ class AdmissionRuntime:
     async def _cancel_harness(self, state, reason):
         # Curiosity: hold-derived turn id. Self-sense: each question is a fresh uuid4 -- cancel
         # those from answers + any still in-flight.
+        if state.get("workflow") == COMPACTOR_DIGEST_WORKFLOW:
+            # No harness turn: each digest call is a plain cortex-orch verb RPC; a replay re-asks.
+            return
+        if state.get("workflow") in (REVERIE_VISUAL_WORKFLOW, ORION_DAY_WORKFLOW):
+            # No harness turn: generate runs in orion-thought, whose replay is idempotent (the
+            # recorded artifact, or a generate_in_flight retry); orion_day.letter's calls are plain
+            # cortex verbs, never a harness run, so there is nothing to cancel by turn id.
+            return
         ids: list[str] = []
         try:
             ids.append(turn_correlation_id(state))
@@ -644,7 +974,7 @@ class AdmissionRuntime:
                 state = {
                     "run_id": run_id,
                     "correlation_id": request["correlation_id"],
-                    "brief": request["brief"],
+                    "brief": self._checkpoint_brief(workflow, request["brief"]),
                     "admission": request["admission"],
                     "requested_at": request["requested_at"],
                     "attempt": 0,
@@ -671,9 +1001,10 @@ class AdmissionRuntime:
             deadline = state["admission"].get("deadline_at")
             if deadline and self.now() >= datetime.fromisoformat(deadline):
                 released = await self.release(state, "deadline")
-                await graph.aupdate_state(cfg, {**released, "status": "failed", "last_error": "workflow_deadline"},
+                error = self._deadline_error(workflow)
+                await graph.aupdate_state(cfg, {**released, "status": "failed", "last_error": error},
                                           as_node="failed")
-                await self._terminal(run_id, "failed", {**state, "last_error": "workflow_deadline"}, workflow=workflow)
+                await self._terminal(run_id, "failed", {**state, "last_error": error}, workflow=workflow)
                 return
             if not snap.next:
                 await self._terminal(run_id, state.get("status", "failed"), state, workflow=workflow)
@@ -707,9 +1038,10 @@ class AdmissionRuntime:
                 return
             except WorkflowDeadline:
                 released = await self.release(state, "workflow_deadline")
-                await graph.aupdate_state(cfg, {**released, "status": "failed", "last_error": "workflow_deadline"},
+                error = self._deadline_error(workflow)
+                await graph.aupdate_state(cfg, {**released, "status": "failed", "last_error": error},
                                           as_node="failed")
-                await self._terminal(run_id, "failed", {**state, "last_error": "workflow_deadline"}, workflow=workflow)
+                await self._terminal(run_id, "failed", {**state, "last_error": error}, workflow=workflow)
             except Exception as exc:
                 # The checkpoint retains the failing node. Reconciliation is
                 # allowed to retry persistence/transport, never an empty result
@@ -745,14 +1077,19 @@ class AdmissionRuntime:
         if status == "completed":
             detail = self._finish_detail_for(wf, state)
         else:
-            # Only what the graph recorded -- never re-derived here, since by
-            # now the lease is cleared and a fresh derivation would name the
-            # run's lineage, not the turn that actually failed.
-            detail = {"error": state.get("last_error")}
-            corr = recorded_turn_correlation_id(state)
-            if corr:
-                detail["turn_correlation_id"] = corr
-        actual = await self.store.finish_projection(run_id, status, detail)
+            detail = self._terminal_detail_for(wf, status, state)
+        abandon = None
+        if wf == REVERIE_VISUAL_WORKFLOW:
+            if status != "completed":
+                abandon = await self._record_reverie_abandon(run_id, state)
+            # A cancel that wins the race against this projection still says which dispatch it was.
+            actual = await self.store.finish_projection(
+                run_id, status, detail, cancelled_detail=self._terminal_detail_for(wf, "cancelled", state))
+        elif (cancelled := self._terminal_detail_for(wf, "cancelled", state)):
+            # Urgent runs: a cancel winning the race must still name the incident.
+            actual = await self.store.finish_projection(run_id, status, detail, cancelled_detail=cancelled)
+        else:
+            actual = await self.store.finish_projection(run_id, status, detail)
         if actual is not None and actual != status:
             await self._graph_for(wf).aupdate_state(self.config(run_id), {"status": actual}, as_node="finish")
         if actual is not None and actual != "completed" and run_id in self.outreach:
@@ -764,6 +1101,98 @@ class AdmissionRuntime:
             self._hints.discard(run_id)
             self._checked.pop(run_id, None)
         self._wake.set()
+        if abandon is not None and actual in ("failed", "cancelled"):
+            # Last, after every terminal fact: the run is terminal whether or not thought answers.
+            # One try now, in the background (never holds this run's claim or driver slot); a
+            # failed one stays pending and reconcile retries it (_retry_abandons).
+            self._abandons[run_id] = {**abandon, "failures": 0, "due": 0.0, "pending_since": time.time()}
+            self._spawn_abandon(run_id)
+
+    async def _record_reverie_abandon(self, run_id: str, state: dict) -> dict | None:
+        """A reverie.visual run is about to end without completing (graph ``failed``, run deadline
+        noticed by the driver, operator cancel, resume-failure bound). Before the terminal projection,
+        durably record that thought must still be told to abandon the attempt, so a crash anywhere
+        after the projection still sends it (``run.abandon_pending``, read back by reconcile).
+        ``attempt_id`` may be unknown: thought resolves the attempt by dispatch_id. Skipped while
+        paused (the projection will not go terminal) or once completed. Never raises: the terminal
+        transition must not wait on it."""
+        row = None
+        try:
+            row = await self.store.get_run(run_id)
+        except Exception:  # noqa: BLE001
+            logger.exception("reverie_visual_abandon_row_read_failed run=%s", run_id)
+        if row is not None and (row.get("terminal") == "completed" or row.get("control") == "paused"):
+            return None
+        brief = state.get("brief") or ((row or {}).get("request") or {}).get("brief") or {}
+        entry = {"attempt_id": state.get("attempt_id"), "reason": state.get("last_error") or "terminal"}
+        try:
+            await self.store.record_event(run_id, ABANDON_PENDING_EVENT, entry, event_id=f"abandon_pending:{run_id}")
+        except Exception:  # noqa: BLE001 -- still tried (and retried) from memory; not durable
+            logger.exception("reverie_visual_abandon_record_failed run=%s", run_id)
+        return {**entry, "visual_request": brief.get("visual_request")}
+
+    def _spawn_abandon(self, run_id: str) -> asyncio.Task:
+        """At most one abandon RPC in flight per run, off the reconcile loop's critical path."""
+        task = self._abandoning.get(run_id)
+        if task is None:
+            task = asyncio.create_task(self._send_reverie_abandon(run_id), name=f"abandon-{run_id}")
+            self._abandoning[run_id] = task
+            task.add_done_callback(lambda t, key=run_id: self._abandoning.pop(key, None))
+        return task
+
+    async def _send_reverie_abandon(self, run_id: str) -> bool:
+        """One abandon try. Thought's ``done``/``terminal`` answer is recorded as ``run.abandon_acked``
+        (clears the pending record); anything else backs off base * 2^(n-1), capped at
+        DURABLE_RUNS_RETRY_MAX_SEC, and stays pending. Never raises."""
+        entry = self._abandons.get(run_id)
+        if entry is None:
+            return False
+        ok, req = False, None
+        try:
+            req = abandon_request(run_id, entry["visual_request"], entry.get("attempt_id"))
+            ok = await send_abandon(self._reverie_step, req, reason=entry["reason"])
+            if ok:
+                await self.store.record_event(run_id, ABANDON_ACKED_EVENT, {
+                    "attempt_id": req.attempt_id, "dispatch_id": req.visual_request.dispatch_id,
+                    "reason": entry["reason"], "tries": int(entry["failures"]) + 1},
+                    event_id=f"abandon_acked:{run_id}")
+        except Exception:  # noqa: BLE001 -- unbuildable request or the ack write failed: retry later
+            logger.exception("reverie_visual_abandon_try_failed run=%s", run_id)
+            ok = False
+        if ok:
+            self._abandons.pop(run_id, None)
+            return True
+        failures = int(entry["failures"]) + 1
+        if time.time() - float(entry.get("pending_since") or time.time()) > ABANDON_GIVE_UP_SEC:
+            # Thought's max-age sweep has released the attempt by now; stop asking.
+            self._abandons.pop(run_id, None)
+            logger.error("reverie_visual_abandon_given_up run=%s dispatch=%s failures=%s", run_id,
+                         req.visual_request.dispatch_id if req else None, failures)
+            return False
+        delay = min(self.settings.retry_max_sec, self.settings.retry_base_sec * 2 ** min(failures - 1, 30))
+        entry.update(failures=failures, due=time.monotonic() + delay)
+        logger.warning("reverie_visual_abandon_pending run=%s dispatch=%s failures=%s retry_in=%.1fs", run_id,
+                       req.visual_request.dispatch_id if req else None, failures, delay)
+        return False
+
+    async def _retry_abandons(self) -> None:
+        """Reconcile: re-send every due pending abandon. The store's pending records are re-read
+        every DURABLE_RUNS_HOLD_STATUS_POLL_SEC, so a restarted process adopts its predecessor's."""
+        if self._abandons_loaded_at is None or \
+                time.monotonic() - self._abandons_loaded_at >= self.settings.hold_status_poll_sec:
+            for row in await self.store.abandons_pending():
+                detail = row.get("detail") or {}
+                brief = (row.get("request") or {}).get("brief") or {}
+                generated_at = row.get("generated_at")
+                self._abandons.setdefault(row["run_id"], {
+                    "attempt_id": detail.get("attempt_id"), "reason": detail.get("reason") or "terminal",
+                    "visual_request": brief.get("visual_request"), "failures": 0, "due": 0.0,
+                    "pending_since": generated_at.timestamp() if isinstance(generated_at, datetime) else time.time()})
+            self._abandons_loaded_at = time.monotonic()
+        now = time.monotonic()
+        for run_id, entry in list(self._abandons.items()):
+            if run_id not in self._abandoning and now >= entry["due"]:
+                self._spawn_abandon(run_id)
 
     async def reconcile(self):
         try:
@@ -771,10 +1200,24 @@ class AdmissionRuntime:
         except Exception:  # noqa: BLE001
             logger.exception("durable_hold_release_retry_failed")
         try:
+            await self._retry_abandons()
+        except Exception:  # noqa: BLE001 -- abandon upkeep must not stop the run loop
+            logger.exception("reverie_visual_abandon_retry_failed")
+        try:
             await self._beat_outreach()
         except Exception:  # noqa: BLE001 -- Door-A upkeep must not stop the run loop
             logger.exception("durable_outreach_hold_upkeep_failed")
-        for row in await self.store.list_pending():
+        rows = await self.store.list_pending()
+        urgent = {row["run_id"] for row in rows if _priority(row) == "urgent"}
+        urgent_cap = int(self.holds.cfg.defaults.urgent_max_concurrent) if urgent else 0
+        if urgent_cap <= 0:
+            urgent = set()   # rollback switch: the pool treats urgent as background, and so do we
+        system = {row["run_id"] for row in rows if _priority(row) == "system"} - urgent
+        # Urgent first, then system (stable otherwise): an urgent run must not wait behind long
+        # background turns before it even asks the pool, so it is exempt from
+        # MAX_CONCURRENT_DRIVERS, capped instead at the pool's own urgent_max_concurrent. A system
+        # run is exempt the same way, capped at MAX_CONCURRENT_SYSTEM_DRIVERS.
+        for row in sorted(rows, key=lambda r: (r["run_id"] not in urgent, r["run_id"] not in system)):
             run_id = row["run_id"]
             if run_id in self.active:
                 if row.get("control"):
@@ -784,24 +1227,44 @@ class AdmissionRuntime:
                 # The pausing replica released the hold (control()); re-driving a paused run every
                 # tick would only repeat pool RPCs. Resume clears control and it is driven again.
                 continue
-            if len(self.active) >= MAX_CONCURRENT_DRIVERS:
+            if run_id in urgent:
+                if len(self._urgent_drivers & self.active.keys()) >= urgent_cap:
+                    continue
+            elif run_id in system:
+                if len(self._system_drivers & self.active.keys()) >= MAX_CONCURRENT_SYSTEM_DRIVERS:
+                    continue
+            elif len(self.active.keys() - self._urgent_drivers - self._system_drivers) >= MAX_CONCURRENT_DRIVERS:
                 break
             task = asyncio.create_task(self._drive(row), name=f"admitted-{run_id}")
             self.active[run_id] = task
+            if run_id in urgent:
+                self._urgent_drivers.add(run_id)
+            elif run_id in system:
+                self._system_drivers.add(run_id)
             def finished(t, key=run_id):
                 self.active.pop(key, None)
+                self._urgent_drivers.discard(key)
+                self._system_drivers.discard(key)
                 if not t.cancelled() and t.exception():
                     logger.error("durable_driver_failed run=%s error=%s", key, t.exception())
             task.add_done_callback(finished)
+        await self._publish_outbox()
+
+    async def _publish_outbox(self) -> None:
         for raw in await self.store.pending_outbox():
             event = ResourceEventV1.model_validate(raw)
-            if event.event == "run.completed" and event.entry_id == f"{event.run_id}:terminal:completed":
+            terminal = event.event.removeprefix("run.")
+            if terminal in TERMINAL_STATE_NODE and event.entry_id == f"{event.run_id}:terminal:{terminal}":
+                # Every admitted terminal (completed, failed, cancelled) is also a DurableRunStateV1:
+                # waiters (cortex-exec reflect, dispatch settlement) must see failures end the run.
+                # At-least-once: acked only after both publishes; sql-writer dedupes on entry_id.
                 row = await self.store.get_run(event.run_id)
                 workflow = ((row or {}).get("request") or {}).get("workflow") or DEFAULT_WORKFLOW
-                completion = DurableRunStateV1(entry_id=event.entry_id+":state", run_id=event.run_id,
-                    workflow=workflow, thread_id=event.thread_id, node="finish", status="completed",
-                    correlation_id=event.correlation_id, generated_at=event.generated_at, detail=event.detail)
-                if not await self.runner._publish(self.settings.state_channel, DURABLE_RUN_STATE_KIND, completion,
+                state_event = DurableRunStateV1(entry_id=event.entry_id+":state", run_id=event.run_id,
+                    workflow=workflow, thread_id=event.thread_id, node=TERMINAL_STATE_NODE[terminal],
+                    status=terminal, correlation_id=event.correlation_id, generated_at=event.generated_at,
+                    detail=event.detail)
+                if not await self.runner._publish(self.settings.state_channel, DURABLE_RUN_STATE_KIND, state_event,
                         self.runner._corr_for_admission(event.correlation_id)):
                     continue
             if await self.runner._publish(RESOURCE_EVENT_CHANNEL, RESOURCE_EVENT_KIND, event,
@@ -872,10 +1335,37 @@ class AdmissionRuntime:
                 "status": row.get("terminal") or row.get("control") or values.get("status", "waiting_resource"),
                 "requested_resource": row["request"]["admission"]["resource"], "lease": lease, "hold": hold,
                 "pool": pool, "next": list(snap.next), "created_at": row["created_at"], "history": history,
-                "queue_wait_seconds": max(0, (wait_end-row["created_at"]).total_seconds())}
+                "queue_wait_seconds": max(0, (wait_end-row["created_at"]).total_seconds()),
+                **({"reading_result": values.get("result"), "error": values.get("last_error"),
+                    "work_started": await self.store.first_event_at(run_id, "run.started") is not None}
+                   if workflow == READING_WORKFLOW else {}),
+                **({"reverie_visual": {
+                    "attempt_id": values.get("attempt_id"), "chain_id": values.get("chain_id"),
+                    "outcome": values.get("outcome"), "reason": values.get("reason"),
+                    "retries": int(values.get("retries") or 0), "retry_at": values.get("retry_at"),
+                    "retry_node": values.get("retry_node"), "artifact_sha256": values.get("artifact_sha256"),
+                    "generate_elapsed_sec": values.get("generate_elapsed_sec"),
+                    "visual_elapsed_sec": values.get("visual_elapsed_sec"),
+                    "started_at": values.get("started_at"), "finished_at": values.get("finished_at"),
+                    "deadline_at": (row["request"]["admission"] or {}).get("deadline_at")},
+                    "error": values.get("last_error"),
+                    "work_started": await self.store.first_event_at(run_id, "run.started") is not None}
+                   if workflow == REVERIE_VISUAL_WORKFLOW else {}),
+                **({"orion_day": {
+                    "letter_date": (values.get("brief") or {}).get("letter_date"),
+                    "note_ready": bool(values.get("note_md")),
+                    "carry_forward_ready": bool(values.get("carry_forward_md")),
+                    "persisted": bool(values.get("persisted")),
+                    "persist_outcome": values.get("persist_outcome"),
+                    "llm_attempts": dict(values.get("llm_attempts") or {}),
+                    "retry_at": values.get("retry_at"),
+                    "deadline_at": (row["request"]["admission"] or {}).get("deadline_at")},
+                    "error": values.get("last_error")}
+                   if workflow == ORION_DAY_WORKFLOW else {})}
 
     async def close(self):
-        tasks = list(self.active.values())
+        # Pending abandons are durable (run.abandon_pending): the next process retries them.
+        tasks = list(self.active.values()) + list(self._abandoning.values())
         for task in tasks:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)

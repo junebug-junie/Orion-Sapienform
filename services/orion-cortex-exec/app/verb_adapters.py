@@ -34,7 +34,11 @@ from orion.schemas.self_study import (
 )
 from orion.notify.client import NotifyClient
 from orion.cognition.compactor.truncate import truncate_at_word_boundary
-from orion.cognition.github_compactor.constants import PR_BODY_MAX_CHARS
+from orion.cognition.github_compactor.constants import (
+    GITHUB_PULLS_MAX_PAGES,
+    GITHUB_PULLS_PER_PAGE,
+    PR_BODY_MAX_CHARS,
+)
 
 from .router import PlanRouter
 from . import self_study as self_study_module
@@ -987,6 +991,19 @@ def _normalize_nvme_smart_log(*, node_name: str, device: str, payload: Dict[str,
     }
 
 
+def _parse_skill_utc(value: object) -> datetime | None:
+    """ISO timestamp (skill arg or GitHub field) -> aware UTC datetime, else None."""
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
 def _truncate_pr_body(body: object, *, max_chars: int = PR_BODY_MAX_CHARS) -> str | None:
     text = str(body or "").strip()
     if not text:
@@ -1271,6 +1288,11 @@ class RenderSceneVerb(BaseVerb[PlanExecutionRequest, SkillVerbOutput]):
     `refused` says what happened. Reporting a thermal refusal as an error would
     make Orion's own restraint look like a broken service, and would poison the
     action's measured effect posterior with failures that never ran.
+
+    Dispatched runs (a `dispatch_id` is present) go through the admitted
+    `reverie.visual` durable workflow when CORTEX_EXEC_RENDER_SCENE_DURABLE_ENABLED
+    is on: this verb only submits, and execution-dispatch settles the real
+    outcome from the run's terminal state. Manual runs keep the direct call.
     """
 
     input_model = PlanExecutionRequest
@@ -1285,6 +1307,8 @@ class RenderSceneVerb(BaseVerb[PlanExecutionRequest, SkillVerbOutput]):
             **{key: skill_args[key] for key in ("dispatch_id", "proposal_id", "decision_id", "visual_baseline") if key in skill_args},
             "correlation_id": str(ctx.meta.get("correlation_id") or payload.args.request_id or "unknown"),
         })
+        if settings.render_scene_durable_enabled and request.dispatch_id:
+            return await _submit_render_scene_durable(ctx, request), []
         try:
             raw = await asyncio.to_thread(
                 _http_json_post,
@@ -1325,6 +1349,107 @@ class RenderSceneVerb(BaseVerb[PlanExecutionRequest, SkillVerbOutput]):
             result=result,
             status="refused" if result["refused"] else "ok",
         ), []
+
+
+RENDER_SCENE_SKILL = "skills.imagination.render_scene.v1"
+
+
+def _render_scene_retry_window_sec() -> float:
+    from orion.schemas.reverie_visual_run import REVERIE_VISUAL_MAX_RETRY_WINDOW_SEC
+
+    configured = float(settings.render_scene_retry_window_sec or 0.0)
+    if configured <= 0:
+        from orion.reverie.baseline import load_baseline_policy
+
+        configured = float(load_baseline_policy().interval_sec)
+    return min(configured, REVERIE_VISUAL_MAX_RETRY_WINDOW_SEC)
+
+
+async def _submit_render_scene_durable(ctx: VerbContext, request: Any) -> SkillVerbOutput:
+    """Submit one `reverie.visual` run and return as soon as the receipt proves it
+    exists. The result is `outcome="unknown"` plus a pending settlement: the verb
+    has not made an image yet, and saying anything else would be a guess.
+
+    No fallback to the direct call on a failed submit. The run id is deterministic
+    per dispatch, so an accepted-but-unconfirmed submit may still be running; a
+    direct call on top of it could render the same dispatch twice.
+    """
+    from orion.schemas.durable_run import DurableRunRequestV1
+    from orion.schemas.resource_admission import ResourceRequirementV1
+    from orion.schemas.reverie_visual_run import (
+        REVERIE_VISUAL_HOLD_LANE,
+        REVERIE_VISUAL_WORKFLOW,
+        ReverieVisualRunBriefV1,
+        reverie_visual_run_id,
+    )
+
+    from .durable_kickoff import receipt_mismatch, submit_durable_run
+
+    dispatch_id = str(request.dispatch_id)
+    run_id = reverie_visual_run_id(dispatch_id)
+    correlation_id = str(request.correlation_id or ctx.meta.get("correlation_id") or dispatch_id)
+    submitted_at = datetime.now(timezone.utc)
+    deadline_at = submitted_at + timedelta(seconds=_render_scene_retry_window_sec())
+    base = {"outcome": "unknown", "ran": False, "refused": False, "durable_run_id": run_id}
+
+    def _not_submitted(reason: str) -> SkillVerbOutput:
+        logger.warning("render_scene_durable_not_submitted dispatch=%s run=%s reason=%s", dispatch_id, run_id, reason)
+        return _skill_result_output(
+            skill_name=RENDER_SCENE_SKILL,
+            result={**base, "reason": reason, "settlement": {"state": "not_submitted", "durable_run_id": run_id, "reason": reason}},
+            ok=False,
+            status="unavailable",
+            error={"message": reason},
+        )
+
+    bus = ctx.meta.get("bus")
+    if bus is None:
+        return _not_submitted("missing_bus")
+    try:
+        durable_request = DurableRunRequestV1(
+            run_id=run_id,
+            workflow=REVERIE_VISUAL_WORKFLOW,
+            correlation_id=correlation_id,
+            requested_at=submitted_at,
+            brief=ReverieVisualRunBriefV1(visual_request=request),
+            admission=ResourceRequirementV1(
+                resource=f"service.route.{REVERIE_VISUAL_HOLD_LANE}",
+                preferred_lane=REVERIE_VISUAL_HOLD_LANE,
+                deadline_at=deadline_at,
+            ),
+        )
+    except Exception as exc:  # noqa: BLE001
+        return _not_submitted(f"invalid_request:{exc}")
+
+    reply = await submit_durable_run(
+        bus=bus,
+        source=_actions_source(ctx.meta.get("source")),
+        request=durable_request,
+        request_channel=self_study_module.CORTEX_ORCH_REQUEST_CHANNEL,
+        reply_channel=f"orion:cortex:result:reverie-visual-kickoff:{run_id}:{uuid4().hex[:8]}",
+        envelope_correlation_id=self_study_module._as_envelope_correlation_id(correlation_id),
+        session_id="reverie-visual",
+        user_message=REVERIE_VISUAL_WORKFLOW,
+    )
+    mismatch = receipt_mismatch(reply, durable_request)
+    if mismatch is not None:
+        return _not_submitted(mismatch)
+    logger.info("render_scene_durable_submitted dispatch=%s run=%s deadline_at=%s", dispatch_id, run_id, deadline_at.isoformat())
+    return _skill_result_output(
+        skill_name=RENDER_SCENE_SKILL,
+        result={
+            **base,
+            "reason": "durable_run_pending",
+            "settlement": {
+                "state": "pending",
+                "durable_run_id": run_id,
+                "workflow": REVERIE_VISUAL_WORKFLOW,
+                "submitted_at": submitted_at.isoformat(),
+                "deadline_at": deadline_at.isoformat(),
+            },
+        },
+        status="ok",
+    )
 
 
 @verb("skills.perception.ask_camera.v1")
@@ -1542,31 +1667,60 @@ class GithubRecentPullRequestsVerb(BaseVerb[PlanExecutionRequest, SkillVerbOutpu
             result = {"available": False, "reason": "github_repo_not_configured", "items": [], "lookback_days": lookback_days}
             return _skill_result_output(skill_name="skills.repo.github_recent_prs.v1", result=result, ok=False, status="unavailable", error={"message": result["reason"]}), []
 
-        cutoff = datetime.now(timezone.utc) - timedelta(days=lookback_days)
+        now_utc = datetime.now(timezone.utc)
+        window_start = _parse_skill_utc(skill_args.get("window_start_utc"))
+        window_end = _parse_skill_utc(skill_args.get("window_end_utc"))
+        window_mode = "window" if window_start is not None else "rolling"
+        if window_start is None:
+            window_start = now_utc - timedelta(days=lookback_days)
         headers = {"Accept": "application/vnd.github+json", "User-Agent": "orion-cortex-exec"}
         if settings.github_token:
             headers["Authorization"] = f"Bearer {settings.github_token}"
         base = str(settings.github_api_url or "https://api.github.com").rstrip("/")
-        # GitHub max per_page is 100. Keep this at/above MAX_DIGEST_INPUT_PRS (32)
-        # so a ~30-merge day is not silently truncated at fetch before digest.
-        pulls_url = f"{base}/repos/{quote(owner)}/{quote(repo)}/pulls?state=closed&sort=updated&direction=desc&per_page=100"
+        pulls_base = (
+            f"{base}/repos/{quote(owner)}/{quote(repo)}/pulls"
+            f"?state=closed&sort=updated&direction=desc&per_page={GITHUB_PULLS_PER_PAGE}"
+        )
+        # Paginate newest-updated first until a page's oldest updated_at is before
+        # the window start: a PR merged in the window has updated_at >= merged_at
+        # >= window start, so nothing older can qualify. The old single-page fetch
+        # silently dropped merges past the 100th most-recently-updated closed PR.
+        pull_rows: List[Dict[str, Any]] = []
+        pages_fetched = 0
+        page_cap_hit = False
         try:
-            request = Request(pulls_url, headers=headers)
-            with urlopen(request, timeout=float(settings.skills_mesh_ops_timeout_sec)) as response:  # noqa: S310
-                payload_json = json.loads(response.read().decode("utf-8"))
+            for page in range(1, GITHUB_PULLS_MAX_PAGES + 1):
+                request = Request(f"{pulls_base}&page={page}", headers=headers)
+                with urlopen(request, timeout=float(settings.skills_mesh_ops_timeout_sec)) as response:  # noqa: S310
+                    page_json = json.loads(response.read().decode("utf-8"))
+                pages_fetched += 1
+                rows = [row for row in page_json if isinstance(row, dict)] if isinstance(page_json, list) else []
+                pull_rows.extend(rows)
+                if len(rows) < GITHUB_PULLS_PER_PAGE:
+                    break
+                oldest_updated = _parse_skill_utc(rows[-1].get("updated_at"))
+                if oldest_updated is not None and oldest_updated < window_start:
+                    break
+            else:
+                page_cap_hit = True
         except Exception as exc:
             result = {"available": False, "reason": str(exc), "items": [], "lookback_days": lookback_days}
             return _skill_result_output(skill_name="skills.repo.github_recent_prs.v1", result=result, ok=False, status="unavailable", error={"message": str(exc)}), []
         items: List[Dict[str, Any]] = []
-        for pr in payload_json if isinstance(payload_json, list) else []:
-            if not isinstance(pr, dict):
-                continue
+        seen_numbers: set = set()
+        for pr in pull_rows:
             merged_at = pr.get("merged_at")
             if not merged_at:
                 continue
-            merged_dt = datetime.fromisoformat(str(merged_at).replace("Z", "+00:00"))
-            if merged_dt < cutoff:
+            # A PR updated between page reads can shift pages and appear twice.
+            if pr.get("number") in seen_numbers:
                 continue
+            merged_dt = datetime.fromisoformat(str(merged_at).replace("Z", "+00:00"))
+            if merged_dt < window_start:
+                continue
+            if window_end is not None and merged_dt > window_end:
+                continue
+            seen_numbers.add(pr.get("number"))
             touched_paths: List[str] = []
             changed_files_count = int(pr.get("changed_files") or 0)
             files_url = pr.get("url")
@@ -1597,11 +1751,18 @@ class GithubRecentPullRequestsVerb(BaseVerb[PlanExecutionRequest, SkillVerbOutpu
                 "inferred_services": _infer_services_from_paths(touched_paths),
                 "body": _truncate_pr_body(pr.get("body")),
             }
+            if len(str(pr.get("body") or "").strip()) > PR_BODY_MAX_CHARS:
+                item["body_truncated"] = True
             items.append(item)
         result = {
             "available": True,
             "repo": f"{owner}/{repo}",
             "lookback_days": lookback_days,
+            "window_mode": window_mode,
+            "window_start_utc": window_start.isoformat(),
+            "window_end_utc": (window_end or now_utc).isoformat(),
+            "pages_fetched": pages_fetched,
+            "page_cap_hit": page_cap_hit,
             "merged_pr_count": len(items),
             "items": items,
             "grouped_summary": _summarize_prs_by_service(items),

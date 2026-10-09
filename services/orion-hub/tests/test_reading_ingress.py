@@ -76,6 +76,34 @@ def test_real_tool_and_listener_share_queue_and_emit_typed_acceptance(context, r
     asyncio.run(run())
 
 
+@pytest.mark.usefixtures("reading_dns")
+def test_chat_ask_for_an_already_read_url_is_blocked_and_the_receipt_says_so():
+    from orion.world_pulse_read.tools import RECOMMEND_DESCRIPTION, reading_brief_lines
+
+    conn = _FakeConn()
+    bus = RpcBus(conn)
+    tools = ReadingTools(bus, ReadingToolBindingV1(invocation_context="unified_chat", parent_run_id="r", parent_trace_id="t"))
+    url = "https://example.org/rubin"
+
+    async def run():
+        first = (await tools.invoke("recommend_reading", {"url": url, "why_now": "GPU roadmap"}))["result"]
+        assert first["duplicate"] is None
+        conn.rows[first["seed_id"]].update(status="done", stage2_status="done", handoff_json={
+            "read_evidence": [{"tool_name": "WebFetch", "url": url, "content_chars": 900}]})
+        again = (await tools.invoke("recommend_reading", {"url": url, "why_now": "Read it again"}))["result"]
+        assert again["duplicate"] == "already_read"
+        assert again["duplicate_of"] == first["seed_id"]
+        assert again["request_id"] != first["request_id"]
+        # Nothing new waits to be read.
+        assert [r["seed_id"] for r in conn.rows.values() if r["status"] == "pending"] == []
+
+    asyncio.run(run())
+    # The model is told to report the block, not to quietly re-queue.
+    for text in (RECOMMEND_DESCRIPTION, " ".join(reading_brief_lines())):
+        assert "duplicate='already_read'" in text
+        assert "duplicate by design" in text
+
+
 @pytest.mark.parametrize("selectors", [{}, {"url": "https://example.org/a", "request_id": str(uuid4())}])
 def test_status_requires_exactly_one_selector(selectors):
     with pytest.raises(ValidationError):
@@ -265,3 +293,293 @@ def test_new_bus_subjects_resolve_registered_contracts():
         enforcer.validate(channel)
         assert enforcer.entry_for(channel)["schema_id"] == schema
         assert resolve(schema) is not None
+
+
+def _introspect_tools(bus):
+    from orion.introspect.tools import IntrospectTools
+    from orion.schemas.introspect import IntrospectToolBindingV1
+
+    return IntrospectTools(
+        bus,
+        IntrospectToolBindingV1(
+            invocation_context="unified_chat",
+            parent_run_id="r",
+            parent_trace_id="t",
+            memory_allowed=True,
+        ),
+    )
+
+
+def test_reading_result_round_trips_through_real_listener(monkeypatch, caplog):
+    import logging
+    from datetime import datetime, timezone
+
+    from orion.schemas.introspect import IntrospectResultV1
+
+    seen = {}
+
+    async def fake_results(conn, **kwargs):
+        seen.update(kwargs)
+        return IntrospectResultV1(
+            ok=True,
+            operation="reading_result",
+            as_of=datetime.now(timezone.utc),
+            total_available=0,
+        )
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("reading_result must never enqueue")
+
+    monkeypatch.setitem(ReadingListener.handle.__globals__, "reading_results", fake_results)
+    monkeypatch.setitem(ReadingListener.handle.__globals__, "enqueue_reading", forbidden)
+    bus = RpcBus(_FakeConn())
+    caplog.set_level(logging.INFO, logger="scripts.reading_listener")
+    out = asyncio.run(
+        _introspect_tools(bus).invoke(
+            "reading_results",
+            {"url": "https://EXAMPLE.org/a#frag", "limit": 3},
+        )
+    )
+    assert out["ok"] is True and out["items"] == [] and out["total_available"] == 0
+    assert seen == {"request_id": None, "url": "https://example.org/a", "limit": 3, "since": None}
+    assert "introspect op=reading_result" in caplog.text
+    assert f"corr={bus.commands[0].correlation_id}" in caplog.text
+
+
+def test_reading_result_failure_is_unknown_and_sanitized(monkeypatch, caplog):
+    from orion.introspect.tools import IntrospectUnknownError
+
+    async def boom(conn, **kwargs):
+        raise RuntimeError("lost postgres://orion:hunter2@db/orion")
+
+    monkeypatch.setitem(ReadingListener.handle.__globals__, "reading_results", boom)
+    bus = RpcBus(_FakeConn())
+    with pytest.raises(IntrospectUnknownError, match="answer unknown"):
+        asyncio.run(_introspect_tools(bus).invoke("reading_results", {}))
+    assert "hunter2" not in caplog.text
+    assert "category=reading_result_failure phase=reading_result" in caplog.text
+
+
+def _search_cfg(**overrides):
+    from orion.world_pulse_read.search import ReadingSearchConfig
+
+    base = dict(chroma_url="http://chroma.test", embed_url="http://embed.test/embedding",
+                collection="orion_reading_results", min_similarity=0.6)
+    base.update(overrides)
+    return ReadingSearchConfig(**base)
+
+
+def test_query_ranks_before_taking_a_connection(monkeypatch, caplog):
+    import logging
+    from datetime import datetime, timezone
+
+    from orion.schemas.introspect import IntrospectResultV1
+
+    events = []
+    seen = {}
+
+    async def fake_rank(client, cfg, query):
+        events.append("rank")
+        seen["query"] = query
+        return [("seed-a", 0.8)]
+
+    async def fake_gate(conn, scored, **kwargs):
+        events.append("gate")
+        seen.update(kwargs, scored=scored)
+        return IntrospectResultV1(ok=True, operation="reading_result",
+                                  as_of=datetime.now(timezone.utc), total_available=0)
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("query mode must not use exact lookup")
+
+    monkeypatch.setitem(ReadingListener.handle.__globals__, "rank_readings", fake_rank)
+    monkeypatch.setitem(ReadingListener.handle.__globals__, "gated_results", fake_gate)
+    monkeypatch.setitem(ReadingListener.handle.__globals__, "reading_results", forbidden)
+    bus = RpcBus(_FakeConn())
+    conn = bus.conn
+
+    class RecordingPool:
+        def acquire(self):
+            events.append("acquire")
+            return conn
+
+    bus.listener.pool_provider = lambda: RecordingPool()
+    bus.listener.search = _search_cfg()
+    with caplog.at_level(logging.INFO):
+        out = asyncio.run(_introspect_tools(bus).invoke("reading_results", {"query": "graphics cards", "limit": 2}))
+    assert out["ok"] is True and out["items"] == []
+    assert events == ["rank", "acquire", "gate"]
+    assert seen["query"] == "graphics cards" and seen["limit"] == 2
+    assert seen["scored"] == [("seed-a", 0.8)]
+    assert "introspect op=reading_result" in caplog.text and "mode=query" in caplog.text
+
+
+@pytest.mark.parametrize("configured", [False, True])
+def test_query_without_working_search_is_unknown(monkeypatch, configured):
+    from orion.introspect.tools import IntrospectUnknownError
+    from orion.world_pulse_read.search import SearchUnavailableError
+
+    async def down(client, cfg, query):
+        raise SearchUnavailableError("reading index not built yet")
+
+    monkeypatch.setitem(ReadingListener.handle.__globals__, "rank_readings", down)
+    bus = RpcBus(_FakeConn())
+    bus.listener.search = _search_cfg() if configured else _search_cfg(chroma_url="")
+    with pytest.raises(IntrospectUnknownError, match="answer unknown"):
+        asyncio.run(_introspect_tools(bus).invoke("reading_results", {"query": "gpus"}))
+
+
+def test_index_once_uses_released_rows_and_logs(monkeypatch, caplog):
+    import logging
+
+    from orion.world_pulse_read.search import IndexPass
+
+    calls = {}
+
+    async def fake_rows(conn, *args, **kwargs):
+        return ["row"]
+
+    async def fake_index(rows, cfg, **kwargs):
+        calls["rows"] = rows
+        calls["source"] = kwargs["source"]
+        return IndexPass(indexed=1, pending=2)
+
+    monkeypatch.setitem(ReadingListener.index_once.__globals__, "verified_rows", fake_rows)
+    monkeypatch.setitem(ReadingListener.index_once.__globals__, "index_missing_readings", fake_index)
+    bus = RpcBus(_FakeConn())
+    bus.listener.search = _search_cfg()
+    with caplog.at_level(logging.INFO):
+        result = asyncio.run(bus.listener.index_once())
+    assert result == IndexPass(indexed=1, pending=2)
+    assert calls["rows"] == ["row"] and calls["source"].name == "orion-hub"
+    assert "reading_search_index indexed=1 pending=2" in caplog.text
+
+
+def test_index_loop_starts_only_when_search_enabled():
+    async def run(search):
+        listener = ReadingListener(lambda: None, ServiceRef(name="orion-hub"), search=search)
+
+        class Bus:
+            async def publish(self, *a):
+                pass
+
+        listener._run = lambda: asyncio.sleep(3600)
+        await listener.start(Bus())
+        started = listener.index_task is not None
+        await listener.stop()
+        return started
+
+    assert asyncio.run(run(_search_cfg())) is True
+    assert asyncio.run(run(_search_cfg(chroma_url=""))) is False
+    assert asyncio.run(run(None)) is False
+
+
+def test_index_once_without_pool_says_so(caplog):
+    import logging
+
+    listener = ReadingListener(lambda: None, ServiceRef(name="orion-hub"), search=_search_cfg())
+    with caplog.at_level(logging.INFO):
+        assert asyncio.run(listener.index_once()) is None
+    assert "reading_search_index skipped reason=no_pool" in caplog.text
+
+
+@pytest.mark.parametrize("pool_ready,expected", [(False, 15.0), (True, 300.0)])
+def test_index_loop_retries_soon_only_while_pool_is_missing(monkeypatch, pool_ready, expected):
+    from orion.world_pulse_read.search import IndexPass
+
+    delays = []
+
+    async def fake_sleep(delay):
+        delays.append(delay)
+        raise asyncio.CancelledError
+
+    async def fake_index_once(self):
+        return IndexPass(indexed=0, pending=0) if pool_ready else None
+
+    monkeypatch.setattr(ReadingListener, "index_once", fake_index_once)
+    monkeypatch.setattr(ReadingListener._index_loop.__globals__["asyncio"], "sleep", fake_sleep)
+    listener = ReadingListener(lambda: None, ServiceRef(name="orion-hub"), search=_search_cfg())
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(listener._index_loop())
+    assert delays == [expected]
+
+
+def test_chat_recommends_a_document_path_and_versions_dedup(tmp_path):
+    from orion.world_pulse_read.documents import DocumentPolicy
+
+    conn = _FakeConn()
+    bus = RpcBus(conn)
+    bus.listener.documents = DocumentPolicy.from_values(roots=str(tmp_path), extensions=None, max_bytes=4096)
+    tools = ReadingTools(bus, ReadingToolBindingV1(invocation_context="unified_chat", parent_run_id="r", parent_trace_id="t"))
+    doc = tmp_path / "spec.md"
+    doc.write_text("# Spec v1\n\nFirst version of the design.\n")
+
+    async def run():
+        first = await tools.invoke("recommend_reading", {"url": str(doc), "why_now": "Review the spec"})
+        assert first["ok"] is True
+        row = conn.rows[first["result"]["seed_id"]]
+        assert row["url"].startswith(f"file://{doc}?sha256=")
+        assert conn.snapshots[row["url"].rsplit("=", 1)[1]]["content"].startswith("# Spec v1")
+        event = next(e for c, e in bus.published if c == REQUESTED_CHANNEL)
+        assert resolve("ReadingRequestedV1").model_validate(event.payload).url == row["url"]
+
+        # Unchanged file: joins the read already waiting, not a second read.
+        same = await tools.invoke("recommend_reading", {"url": f"file://{doc}", "why_now": "Again, please"})
+        assert same["result"]["duplicate"] == "already_queued"
+        assert same["result"]["duplicate_of"] == first["result"]["seed_id"]
+
+        # Edited file: a new version is a new read.
+        doc.write_text("# Spec v2\n\nThe design changed.\n")
+        edited = await tools.invoke("recommend_reading", {"url": str(doc), "why_now": "It changed"})
+        assert edited["result"]["duplicate"] is None
+        assert conn.rows[edited["result"]["seed_id"]]["url"] != row["url"]
+
+        # A bare path looks up the latest captured version of that file.
+        status = await tools.invoke("reading_status", {"url": str(doc)})
+        assert status["result"]["request_id"] == edited["result"]["request_id"]
+        assert status["result"]["matched_request_count"] == 3
+
+        outside = tmp_path.parent / "elsewhere.md"
+        outside.write_text("not allowed")
+        before = len(conn.rows)
+        with pytest.raises(RuntimeError, match="document_outside_allowed_roots"):
+            await tools.invoke("recommend_reading", {"url": str(outside), "why_now": "Try it"})
+        assert len(conn.rows) == before
+
+    asyncio.run(run())
+
+
+def test_a_pinned_document_ref_still_needs_policy_and_provenance(tmp_path):
+    from orion.world_pulse_read.documents import DocumentPolicy
+
+    conn = _FakeConn()
+    bus = RpcBus(conn)
+    bus.listener.documents = DocumentPolicy.from_values(roots=str(tmp_path), extensions=None, max_bytes=4096)
+    tools = ReadingTools(bus, ReadingToolBindingV1(invocation_context="unified_chat", parent_run_id="r", parent_trace_id="t"))
+    doc, other = tmp_path / "spec.md", tmp_path / "other.md"
+    doc.write_text("# Spec\n\nThe real design.\n")
+    other.write_text("# Other\n")
+
+    async def run():
+        first = await tools.invoke("recommend_reading", {"url": str(doc), "why_now": "Review"})
+        pinned = conn.rows[first["result"]["seed_id"]]["url"]
+        sha = pinned.rsplit("=", 1)[1]
+        # The exact ref Hub captured is accepted again without touching the file.
+        doc.write_text("# Spec\n\nEdited after capture.\n")
+        again = await tools.invoke("recommend_reading", {"url": pinned, "why_now": "Again"})
+        assert again["result"]["duplicate_of"] == first["result"]["seed_id"]
+        before = len(conn.rows)
+        # Someone else's hash cannot vouch for a different path.
+        for forged, code in [
+            (f"file:///etc/shadow?sha256={sha}", "document_outside_allowed_roots"),
+            (f"file://{other}?sha256={sha}", "document_snapshot_missing"),
+        ]:
+            with pytest.raises(RuntimeError, match=code):
+                await tools.invoke("recommend_reading", {"url": forged, "why_now": "Forged"})
+        # The kill switch covers pinned refs too.
+        bus.listener.documents = DocumentPolicy.from_values(roots="", extensions=None, max_bytes=4096)
+        with pytest.raises(RuntimeError, match="document_reading_disabled"):
+            await tools.invoke("recommend_reading", {"url": pinned, "why_now": "Disabled"})
+        assert len(conn.rows) == before
+
+    asyncio.run(run())

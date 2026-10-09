@@ -1,38 +1,52 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
+import math
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Iterable, List, Literal, Tuple
 from uuid import NAMESPACE_URL, uuid4, uuid5
 
 from orion.cognition.workflows import get_workflow_definition, workflow_registry_payload
-from orion.cognition.chat_history_compactor.constants import DEFAULT_MAX_TURNS
+from orion.cognition.chat_history_compactor.constants import COMPACTOR_MAX_TURNS
 from orion.cognition.chat_history_compactor.digest import (
-    fit_chat_compactor_digest_within_budget,
+    build_chat_history_compactor_digest_inputs,
     build_quiet_day_chat_digest,
-    parse_chat_history_compactor_digest_json,
     stable_chat_compactor_journal_entry_id,
-    trim_chat_history_compactor_input,
 )
 from orion.cognition.chat_history_compactor.window import (
+    ResolvedChatCompactorWindow,
     exclude_workflow_notification_turns,
     resolve_chat_compactor_window,
 )
+from orion.cognition.compactor.constants import (
+    COMPACTOR_MAX_RUN_GENERATIONS,
+    COMPACTOR_RUN_DEADLINE_AFTER_WINDOW_SEC,
+    DIGEST_LLM_ROUTE,
+    DIGEST_ORCH_RPC_TIMEOUT_SEC,
+)
 from orion.cognition.github_compactor.constants import (
     DEFAULT_LOOKBACK_DAYS,
-    DIGEST_ORCH_RPC_TIMEOUT_SEC,
     GITHUB_FETCH_ORCH_RPC_TIMEOUT_SEC,
 )
 from orion.cognition.github_compactor.digest import (
-    fit_digest_within_budget,
+    build_github_compactor_digest_inputs,
+    filter_items_to_window,
     build_quiet_day_digest,
-    parse_github_compactor_digest_json,
     stable_github_compactor_journal_entry_id,
-    trim_github_compactor_input,
 )
+from orion.schemas.compactor_digest_run import (
+    COMPACTOR_DIGEST_WORKFLOW,
+    DURABLE_DIGEST_KEY,
+    CompactorDigestResultV1,
+    CompactorDigestRunBriefV1,
+)
+from orion.schemas.durable_run import DurableRunRequestV1
+from orion.schemas.resource_admission import ResourceRequirementV1
+from orion.cognition.github_compactor.window import resolve_github_compactor_window
 from orion.schemas.actions.chat_history_compactor import ChatHistoryCompactorDigestV1
 from orion.schemas.actions.github_compactor import GithubCompactorDigestV1
 from orion.core.bus.async_service import OrionBusAsync
@@ -58,6 +72,7 @@ from orion.spark.concept_induction.profile_repository import build_concept_profi
 from orion.spark.concept_induction.settings import DEFAULT_CONCEPT_STORE_PATH
 from .chat_history_compactor_memory import persist_chat_history_compactor_memory_card
 from .concept_profile_config import build_orch_concept_profile_settings
+from .durable_runs import DURABLE_RUN_METADATA_KEY, dispatch_durable_run
 from .github_compactor_memory import persist_github_compactor_memory_card
 from .settings import get_settings
 from orion.notify.client import NotifyClient
@@ -1952,135 +1967,228 @@ def _resolve_github_compactor_lookback_days(req: CortexClientRequest) -> int:
     return DEFAULT_LOOKBACK_DAYS
 
 
-def _build_compactor_digest_request(
-    *,
-    req: CortexClientRequest,
-    correlation_id: str,
-    workflow_id: str,
-    verb: str,
-    prompt: str,
-    input_key: str,
-    input_payload: Dict[str, Any],
-    llm_route: str | None = None,
-) -> CortexClientRequest:
-    """Shared brain-lane digest request shape for compactor workflows."""
-    synth_req = req.model_copy(deep=True)
-    synth_req.mode = "brain"
-    synth_req.route_intent = "none"
-    synth_req.verb = verb
-    synth_req.packs = []
-    synth_req.context.messages = []
-    synth_req.context.raw_user_text = prompt
-    synth_req.context.user_message = prompt
-    synth_req.context.metadata = dict(synth_req.context.metadata or {})
-    synth_req.context.metadata["workflow_subverb"] = verb
-    synth_req.context.metadata["workflow_id"] = workflow_id
-    synth_req.context.metadata[input_key] = input_payload
-    synth_req.context.metadata.update(
-        _workflow_execution_envelope(
-            req=req,
-            correlation_id=correlation_id,
-            workflow_id=workflow_id,
-            workflow_subverb=verb,
-        )
-    )
-    synth_req.recall.enabled = False
-    synth_req.recall.required = False
-    synth_req.recall.max_items = 0
-    synth_req.options = dict(synth_req.options or {})
-    synth_req.options.update(
-        {
-            "workflow_execution": True,
-            "response_format": {"type": "json_object"},
-            "return_json": True,
-            "reasoning": {"effort": "none"},
-        }
-    )
-    if verb == "github_compactor_digest_v1":
-        # Must cover the 10-minute verb budget; default orch wait used to be 120s.
-        synth_req.options["timeout_sec"] = float(DIGEST_ORCH_RPC_TIMEOUT_SEC)
-    if llm_route is not None:
-        synth_req.options["llm_route"] = llm_route
-    return synth_req
-
-
-def _compactor_digest_from_payload(
-    payload: Dict[str, Any],
-    *,
-    metadata_key: str,
-    model_cls,
-    parse_json,
-    error_prefix: str,
-):
-    """Validate a digest verb payload and extract the parsed digest.
-
-    Returns ``(digest, None)`` on success, ``(None, error_token)`` on failure so
-    callers choose between fail-loud (github) and route retry (chat).
-    """
-    if payload.get("ok") is False:
-        return None, f"{error_prefix}:{payload.get('error') or payload.get('status')}"
-    result_metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
-    if result_metadata.get("structured_output_rejected"):
-        return None, f"{error_prefix}:structured_output_rejected"
-    digest_raw = result_metadata.get(metadata_key)
+def _durable_digest_from_request(req: CortexClientRequest, workflow_id: str) -> CompactorDigestResultV1 | None:
+    """The finished digest a ``compactor.digest`` durable run sent back (finalize path), or None
+    on a normal dispatch. A present-but-invalid one fails loudly: the durable run retries finalize."""
+    raw = _workflow_request(req).get(DURABLE_DIGEST_KEY)
+    if raw is None:
+        return None
     try:
-        if isinstance(digest_raw, dict):
-            return model_cls.model_validate(digest_raw), None
-        return parse_json(str(payload.get("final_text") or "")), None
-    except (ValueError, TypeError) as exc:
-        return None, f"{error_prefix}:invalid_json:{exc}"
+        result = CompactorDigestResultV1.model_validate(raw)
+    except Exception as exc:
+        raise WorkflowExecutionError(f"compactor_durable_digest_invalid:{exc}") from exc
+    if result.workflow_id != workflow_id:
+        raise WorkflowExecutionError(f"compactor_durable_digest_workflow_mismatch:{result.workflow_id}")
+    return result
 
 
-async def _run_github_compactor_digest(
+def _request_for_metadata(request: Dict[str, Any]) -> Dict[str, Any]:
+    """The workflow request echoed into result metadata, minus a durable digest payload (the
+    digest is reported field by field; echoing it would double the reply)."""
+    echoed = dict(request)
+    durable = echoed.pop(DURABLE_DIGEST_KEY, None)
+    if isinstance(durable, dict):
+        echoed[DURABLE_DIGEST_KEY] = {"run_id": durable.get("run_id")}
+    return echoed
+
+
+def _compactor_finalize_policy(req: CortexClientRequest, workflow_id: str) -> Dict[str, Any]:
+    """The notify policy the durable run hands back to finalize. Deterministic (no schedule spec,
+    no dispatch ids), so re-dispatching the same window yields the same run_id."""
+    policy = _execution_policy(req, workflow_id).model_dump(mode="json")
+    policy["invocation_mode"] = "immediate"
+    policy.pop("schedule", None)
+    return policy
+
+
+def _compactor_deadline_at(window_end: datetime) -> datetime:
+    """Window end + COMPACTOR_RUN_DEADLINE_AFTER_WINDOW_SEC: derived from the window, never from
+    now, so re-dispatching the same window builds a byte-identical request (same run_id)."""
+    return window_end.astimezone(timezone.utc) + timedelta(seconds=COMPACTOR_RUN_DEADLINE_AFTER_WINDOW_SEC)
+
+
+def _compactor_run_id_base(brief: CompactorDigestRunBriefV1, body: Dict[str, Any]) -> str:
+    """``compactor:<workflow>:<window>[:<repo>]:<input hash>``. Same window + same input (same
+    items, same notify policy, same deadline) -> same run_id, so a re-dispatch finds the existing
+    run (in flight or completed) instead of starting a second one. Changed input -> a new run."""
+    digest = hashlib.sha256(json.dumps(body, sort_keys=True, default=str).encode("utf-8")).hexdigest()[:12]
+    parts = ["compactor", brief.workflow_id, brief.window_label]
+    repo = brief.finalize.get("repo") if brief.kind == "github" else None
+    if repo:
+        parts.append(re.sub(r"[^A-Za-z0-9._-]+", "-", str(repo)))
+    parts.append(digest)
+    return ":".join(parts)
+
+
+async def _submit_compactor_digest_run(
     *,
-    call_verb_runtime,
     bus: OrionBusAsync,
     source: ServiceRef,
     correlation_id: str,
-    causality_chain: list | None,
-    trace: dict | None,
-    req: CortexClientRequest,
-    workflow_id: str,
-    fetch_payload: Dict[str, Any],
-) -> GithubCompactorDigestV1:
-    synth_req = _build_compactor_digest_request(
-        req=req,
-        correlation_id=correlation_id,
-        workflow_id=workflow_id,
-        verb="github_compactor_digest_v1",
-        prompt="Compact merged PR activity into repo development digest.",
-        input_key="github_compactor_input",
-        input_payload=trim_github_compactor_input(fetch_payload),
+    brief: CompactorDigestRunBriefV1,
+    deadline_at: datetime,
+) -> Dict[str, Any]:
+    """Submit the day's digest calls as an admitted ``compactor.digest`` durable run (agent class,
+    background priority) and return once orion-durable-runs has durably registered it.
+
+    Receipt status decides: in flight -> ``accepted``; already ``completed`` (this window was
+    finalized before; a re-dispatch after a missed completion event) -> ``completed``; ended
+    ``failed``/``cancelled`` -> the next generation (``<run_id>:g2``...) is submitted, bounded by
+    COMPACTOR_MAX_RUN_GENERATIONS. No receipt (durable-runs down, admission disabled at orch) raises:
+    the scheduler records a failed dispatch and retries with its own backoff. Nothing runs in-process.
+    """
+    settings = get_settings()
+    # Past the window's deadline a NEW run could only fail at once, but an existing one may have
+    # completed (its terminal row missed by orion-actions): still submit -- the identical request is
+    # idempotent and reports that run -- and refuse only when the receipt shows a fresh row (which
+    # the durable driver fails on its first deadline check).
+    expired = deadline_at <= datetime.now(timezone.utc)
+    admission = ResourceRequirementV1(
+        resource=f"llm.route.{brief.llm_route}",
+        preferred_lane=brief.llm_route,
+        priority="background",
+        deadline_at=deadline_at,
     )
-    verb_result = await call_verb_runtime(
-        bus,
-        source=source,
-        client_request=synth_req,
-        correlation_id=correlation_id,
-        causality_chain=causality_chain,
-        trace=_ensure_trace(trace, correlation_id=correlation_id, workflow_id=workflow_id),
-        timeout_sec=float((synth_req.options or {}).get("timeout_sec", DIGEST_ORCH_RPC_TIMEOUT_SEC)),
-    )
-    if not verb_result.ok:
-        raise WorkflowExecutionError(f"github_compactor_digest_failed:{verb_result.error or 'verb_failed'}")
-    digest, error = _compactor_digest_from_payload(
-        _extract_result_payload(verb_result),
-        metadata_key="github_compactor_digest",
-        model_cls=GithubCompactorDigestV1,
-        parse_json=parse_github_compactor_digest_json,
-        error_prefix="github_compactor_digest_failed",
-    )
-    if error:
-        raise WorkflowExecutionError(error)
-    digest, trimmed_fields = fit_digest_within_budget(digest)
-    if trimmed_fields:
-        logger.info(
-            "compactor_digest_trimmed_to_budget corr=%s workflow_id=%s fields=%s",
-            correlation_id,
-            workflow_id,
-            ",".join(trimmed_fields),
+    body = {"brief": brief.model_dump(mode="json"), "admission": admission.model_dump(mode="json")}
+    base = _compactor_run_id_base(brief, body)
+    for generation in range(1, int(COMPACTOR_MAX_RUN_GENERATIONS) + 1):
+        run_id = base if generation == 1 else f"{base}:g{generation}"
+        request = DurableRunRequestV1(
+            run_id=run_id,
+            workflow=COMPACTOR_DIGEST_WORKFLOW,
+            correlation_id=str(uuid5(NAMESPACE_URL, f"orion:durable:{run_id}")),
+            brief=brief,
+            admission=admission,
         )
-    return digest
+        kickoff = CortexClientRequest(
+            mode="brain",
+            route_intent="none",
+            verb=None,
+            packs=[],
+            options={"source": "cortex-orch-workflow"},
+            recall=RecallDirective(enabled=False, required=False, profile=None),
+            context=CortexClientContext(
+                messages=[],
+                raw_user_text=f"{brief.workflow_id} digest ({brief.window_label})",
+                user_message=f"{brief.workflow_id} digest ({brief.window_label})",
+                session_id=brief.session_id,
+                user_id=brief.user_id,
+                trace_id=correlation_id,
+                metadata={DURABLE_RUN_METADATA_KEY: request.model_dump(mode="json", exclude_none=True)},
+            ),
+        )
+        result = await dispatch_durable_run(
+            bus=bus,
+            source=source,
+            req=kickoff,
+            correlation_id=correlation_id,
+            admission_enabled=settings.durable_admission_enabled,
+            receipt_timeout_sec=settings.durable_receipt_timeout_sec,
+        )
+        if not result.ok:
+            message = (result.error or {}).get("message") if isinstance(result.error, dict) else result.error
+            raise WorkflowExecutionError(f"compactor_durable_submit_failed:{run_id}:{message}")
+        receipt_status = str(((result.metadata or {}).get("durable_run") or {}).get("status") or "")
+        logger.info(
+            "compactor_durable_run_submitted corr=%s workflow_id=%s run_id=%s generation=%s receipt_status=%s chunks=%s",
+            correlation_id,
+            brief.workflow_id,
+            run_id,
+            generation,
+            receipt_status,
+            len(brief.inputs),
+        )
+        if receipt_status in ("failed", "cancelled"):
+            continue
+        if expired and receipt_status != "completed":
+            raise WorkflowExecutionError(f"compactor_window_deadline_passed:{deadline_at.isoformat()}:{run_id}")
+        return {
+            "run_id": run_id,
+            "status": "completed" if receipt_status == "completed" else "accepted",
+            "receipt_status": receipt_status,
+            "generation": generation,
+            "deadline_at": deadline_at.isoformat(),
+            "chunk_count": len(brief.inputs),
+        }
+    raise WorkflowExecutionError(f"compactor_durable_generations_exhausted:{base}")
+
+
+def _compactor_submitted_result(
+    *,
+    req: CortexClientRequest,
+    correlation_id: str,
+    workflow_id: str,
+    display_name: str,
+    submission: Dict[str, Any],
+    window_fields: Dict[str, Any],
+    coverage: Dict[str, Any],
+) -> CortexClientResult:
+    """The workflow result when the digest runs durably: ``accepted`` (in flight; the durable run
+    finalizes and notifies) or ``completed`` (this exact window was already finalized)."""
+    status = submission["status"]
+    if status == "completed":
+        main_result = (
+            f"{display_name} for {window_fields.get('window_label')} was already finalized by durable run "
+            f"{submission['run_id']}; nothing re-run."
+        )
+    else:
+        main_result = (
+            f"{display_name} for {window_fields.get('window_label')}: {submission['chunk_count']} digest call(s) "
+            f"submitted as durable run {submission['run_id']} (waits for a GPU pool hold; deadline "
+            f"{submission['deadline_at']})."
+        )
+    request = _workflow_request(req)
+    metadata = _workflow_metadata_base(request=_request_for_metadata(request), status=status)
+    metadata["workflow"] = {
+        "workflow_id": workflow_id,
+        "display_name": display_name,
+        "status": status,
+        "executed": status == "completed",
+        "persisted": [],
+        "scheduled": [],
+        "main_result": main_result,
+        "durable_run": dict(submission),
+        **window_fields,
+        "total_count": int(coverage.get("total_count") or 0),
+        "covered_count": int(coverage.get("covered_count") or 0),
+        "input_truncated": bool(coverage.get("input_truncated")),
+    }
+    return CortexClientResult(
+        ok=True,
+        mode="brain",
+        verb=workflow_id,
+        status="success" if status == "completed" else "accepted",
+        final_text=_workflow_summary_text(title=display_name, status=status, main_result=main_result, persisted=[]),
+        memory_used=False,
+        recall_debug={},
+        steps=[],
+        error=None,
+        correlation_id=correlation_id,
+        metadata=metadata,
+    )
+
+
+def _digest_run_fields(durable: CompactorDigestResultV1 | None) -> Dict[str, Any]:
+    """Evidence for how the digest was made (both passes' result metadata)."""
+    if durable is None:
+        return {
+            "digest_chunk_count": 0,
+            "digest_merge_mode": None,
+            "digest_merge_skipped_reason": None,
+            "digest_llm_route": None,
+            "digest_attempts": [],
+            "digest_gpu_roles": [],
+            "durable_run_id": None,
+        }
+    return {
+        "digest_chunk_count": durable.chunk_count,
+        "digest_merge_mode": durable.merge_mode,
+        "digest_merge_skipped_reason": durable.merge_skipped_reason,
+        "digest_llm_route": durable.llm_route,
+        "digest_attempts": list(durable.attempts),
+        "digest_gpu_roles": list(durable.gpu_roles),
+        "durable_run_id": durable.run_id,
+    }
 
 
 async def _execute_github_compactor_pass(
@@ -2093,10 +2201,47 @@ async def _execute_github_compactor_pass(
     req: CortexClientRequest,
     call_verb_runtime,
 ) -> CortexClientResult:
+    """Fetch + chunk here; the LLM digest runs as an admitted ``compactor.digest`` durable run,
+    which calls back with ``workflow_request.durable_digest`` to finalize (card + journal).
+    A quiet day needs no LLM and finalizes inline."""
     workflow_id = "github_compactor_pass"
+    durable = _durable_digest_from_request(req, workflow_id)
+    if durable is not None:
+        return await _finalize_github_compactor(
+            bus=bus,
+            source=source,
+            correlation_id=correlation_id,
+            causality_chain=causality_chain,
+            trace=trace,
+            req=req,
+            ctx=dict(durable.finalize),
+            digest=GithubCompactorDigestV1.model_validate(durable.digest),
+            durable=durable,
+        )
     lookback_days = _resolve_github_compactor_lookback_days(req)
-    window_label = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    skill_args = {"lookback_days": lookback_days}
+    try:
+        window = resolve_github_compactor_window(
+            workflow_request=_workflow_request(req),
+            now=datetime.now(timezone.utc),
+            lookback_days=lookback_days,
+        )
+    except ValueError as exc:
+        raise WorkflowExecutionError(f"github_compactor_window_invalid:{exc}") from exc
+    window_label = window.window_label
+    fetch_lookback_days = lookback_days
+    if window.mode == "day":
+        # An exec that predates window-bounded fetch ignores window_start_utc and
+        # fetches now - lookback_days; at 06:10 the day starts ~30h back, so a
+        # 1-day rolling fetch would silently miss yesterday's first hours.
+        fetch_lookback_days = max(
+            lookback_days,
+            math.ceil((datetime.now(timezone.utc) - window.window_start).total_seconds() / 86400.0),
+        )
+    skill_args = {
+        "lookback_days": fetch_lookback_days,
+        "window_start_utc": window.window_start.isoformat(),
+        "window_end_utc": window.window_end.isoformat(),
+    }
     fetch_req = CortexClientRequest(
         mode="brain",
         route_intent="none",
@@ -2152,24 +2297,131 @@ async def _execute_github_compactor_pass(
         raise WorkflowExecutionError(f"github_fetch_unavailable:{reason}")
 
     repo = str(fetch_payload.get("repo") or "unknown repo").strip()
-    merged_pr_count = int(fetch_payload.get("merged_pr_count") or 0)
-    card_id: str | None = None
-    card_persist_skipped_reason: str | None = None
-
-    if merged_pr_count == 0:
-        digest = build_quiet_day_digest(repo=repo, window_label=window_label)
+    fetch_payload = dict(fetch_payload)
+    if window.mode == "day":
+        # Re-apply the calendar day here: an exec that predates window-bounded
+        # fetch returns a rolling now-N-days list, which must not leak into (or
+        # fall short of) the day. Rolling windows stay owned by the fetch.
+        fetch_payload["items"] = filter_items_to_window(
+            list(fetch_payload.get("items") or []),
+            window_start=window.window_start,
+            window_end=window.window_end,
+        )
     else:
-        digest = await _run_github_compactor_digest(
-            call_verb_runtime=call_verb_runtime,
+        fetch_payload["items"] = list(fetch_payload.get("items") or [])
+    fetch_window_echo = fetch_payload.get("window_mode")
+    fetch_payload["window_mode"] = window.mode
+    fetch_payload["window_start_utc"] = window.window_start.isoformat()
+    fetch_payload["window_end_utc"] = window.window_end.isoformat()
+    if window.calendar_date:
+        fetch_payload["calendar_date"] = window.calendar_date
+    merged_pr_count = len(fetch_payload["items"])
+    digest_inputs, coverage = build_github_compactor_digest_inputs(fetch_payload)
+    if fetch_payload.get("page_cap_hit"):
+        # The GitHub walk stopped at GITHUB_PULLS_MAX_PAGES before reaching the
+        # window start: merges may be missing, so coverage is not complete.
+        coverage["input_truncated"] = True
+    if window.mode == "day" and fetch_window_echo != "window":
+        # Old exec (no window echo): single page, rolling. The widened
+        # lookback above usually covers the day, but pagination is absent.
+        coverage["input_truncated"] = True
+        coverage["fetch_window_unconfirmed"] = True
+    ctx: Dict[str, Any] = {
+        "repo": repo,
+        "window_label": window_label,
+        "window_mode": window.mode,
+        "window_start_utc": window.window_start.isoformat(),
+        "window_end_utc": window.window_end.isoformat(),
+        "calendar_date": window.calendar_date,
+        "timezone_name": window.timezone_name,
+        "lookback_days": lookback_days,
+        "merged_pr_count": merged_pr_count,
+        "coverage": {
+            "total_count": int(coverage.get("total_count") or 0),
+            "covered_count": int(coverage.get("covered_count") or 0),
+            "input_truncated": bool(coverage.get("input_truncated")),
+            "truncated_pr_numbers": list(coverage.get("truncated_pr_numbers") or []),
+            "fetch_window_unconfirmed": bool(coverage.get("fetch_window_unconfirmed")),
+        },
+        "github_pages_fetched": fetch_payload.get("pages_fetched"),
+        "github_page_cap_hit": bool(fetch_payload.get("page_cap_hit")),
+        "author": req.context.user_id or "orion",
+        "execution_policy": _compactor_finalize_policy(req, workflow_id),
+    }
+    if merged_pr_count == 0:
+        return await _finalize_github_compactor(
             bus=bus,
             source=source,
             correlation_id=correlation_id,
             causality_chain=causality_chain,
             trace=trace,
             req=req,
-            workflow_id=workflow_id,
-            fetch_payload=fetch_payload,
+            ctx=ctx,
+            digest=build_quiet_day_digest(repo=repo, window_label=window_label),
+            durable=None,
         )
+    brief = CompactorDigestRunBriefV1(
+        kind="github",
+        workflow_id=workflow_id,
+        window_label=window_label,
+        inputs=digest_inputs,
+        llm_route=DIGEST_LLM_ROUTE,
+        timeout_sec=float(DIGEST_ORCH_RPC_TIMEOUT_SEC),
+        session_id=req.context.session_id or workflow_id,
+        user_id=req.context.user_id,
+        finalize=ctx,
+    )
+    submission = await _submit_compactor_digest_run(
+        bus=bus,
+        source=source,
+        correlation_id=correlation_id,
+        brief=brief,
+        deadline_at=_compactor_deadline_at(window.window_end),
+    )
+    return _compactor_submitted_result(
+        req=req,
+        correlation_id=correlation_id,
+        workflow_id=workflow_id,
+        display_name="GitHub Compactor",
+        submission=submission,
+        window_fields={
+            "repo": repo,
+            "window_label": window_label,
+            "window_mode": window.mode,
+            "window_start_utc": window.window_start.isoformat(),
+            "window_end_utc": window.window_end.isoformat(),
+            "merged_pr_count": merged_pr_count,
+        },
+        coverage=coverage,
+    )
+
+
+async def _finalize_github_compactor(
+    *,
+    bus: OrionBusAsync,
+    source: ServiceRef,
+    correlation_id: str,
+    causality_chain: list | None,
+    trace: dict | None,
+    req: CortexClientRequest,
+    ctx: Dict[str, Any],
+    digest: GithubCompactorDigestV1,
+    durable: CompactorDigestResultV1 | None,
+) -> CortexClientResult:
+    """Memory card + journal entry + result for a digested (or quiet) GitHub day. Runs inline for a
+    quiet day and on the durable run's finalize call; both ids are stable per day, so a replayed
+    finalize upserts rather than duplicates."""
+    workflow_id = "github_compactor_pass"
+    repo = str(ctx.get("repo") or "unknown repo")
+    window_label = str(ctx.get("window_label") or "")
+    window_mode = str(ctx.get("window_mode") or "rolling")
+    merged_pr_count = int(ctx.get("merged_pr_count") or 0)
+    lookback_days = int(ctx.get("lookback_days") or DEFAULT_LOOKBACK_DAYS)
+    coverage = dict(ctx.get("coverage") or {})
+    card_id: str | None = None
+    card_persist_skipped_reason: str | None = None
+
+    if merged_pr_count > 0:
         try:
             persisted_card_id = await persist_github_compactor_memory_card(
                 digest=digest,
@@ -2206,7 +2458,7 @@ async def _execute_github_compactor_pass(
         draft,
         trigger=trigger,
         correlation_id=correlation_id,
-        author=req.context.user_id or "orion",
+        author=str(ctx.get("author") or req.context.user_id or "orion"),
         entry_id=entry_id,
     )
     await _publish_journal_entry_write_or_fail(
@@ -2223,9 +2475,14 @@ async def _execute_github_compactor_pass(
     if card_id:
         persisted.insert(0, f"memory_card:{card_id}")
 
+    window_phrase = (
+        f"on {ctx.get('calendar_date')} ({ctx.get('timezone_name')})"
+        if window_mode == "day"
+        else f"in the last {lookback_days} day(s)"
+    )
     if merged_pr_count == 0:
         main_result = (
-            f"No merged PRs for {repo} in the last {lookback_days} day(s). "
+            f"No merged PRs for {repo} {window_phrase}. "
             f"Journal entry {write.entry_id} recorded; repo snapshot card unchanged."
         )
     else:
@@ -2236,7 +2493,7 @@ async def _execute_github_compactor_pass(
         if card_id:
             main_result = f"{main_result} Memory card {card_id}."
 
-    metadata = _workflow_metadata_base(request=_workflow_request(req), status="completed")
+    metadata = _workflow_metadata_base(request=_request_for_metadata(_workflow_request(req)), status="completed")
     metadata["workflow"] = {
         "workflow_id": workflow_id,
         "display_name": "GitHub Compactor",
@@ -2250,6 +2507,18 @@ async def _execute_github_compactor_pass(
         "lookback_days": lookback_days,
         "repo": repo,
         "window_label": window_label,
+        "window_mode": window_mode,
+        "window_start_utc": ctx.get("window_start_utc"),
+        "window_end_utc": ctx.get("window_end_utc"),
+        "total_count": int(coverage.get("total_count") or 0),
+        "covered_count": int(coverage.get("covered_count") or 0),
+        "input_truncated": bool(coverage.get("input_truncated")),
+        "truncated_pr_numbers": list(coverage.get("truncated_pr_numbers") or []),
+        "fetch_window_unconfirmed": bool(coverage.get("fetch_window_unconfirmed")),
+        "github_pages_fetched": ctx.get("github_pages_fetched"),
+        "github_page_cap_hit": bool(ctx.get("github_page_cap_hit")),
+        **_digest_run_fields(durable),
+        "journal_body_chars": len(digest.journal_body or ""),
         "card_id": card_id,
         "card_summary_preview": digest.card_summary[:200],
         "journal_entry": write.model_dump(mode="json"),
@@ -2276,66 +2545,30 @@ async def _execute_github_compactor_pass(
     )
 
 
-async def _run_chat_history_compactor_digest(
-    *,
-    call_verb_runtime,
-    bus: OrionBusAsync,
-    source: ServiceRef,
-    correlation_id: str,
-    causality_chain: list | None,
-    trace: dict | None,
-    req: CortexClientRequest,
-    workflow_id: str,
-    window: DiscussionWindowResultV1,
-) -> Tuple[ChatHistoryCompactorDigestV1, str]:
-    last_error: str | None = None
-    digest_input = trim_chat_history_compactor_input(window)
-    for route in ("chat", "quick"):
-        synth_req = _build_compactor_digest_request(
-            req=req,
-            correlation_id=correlation_id,
-            workflow_id=workflow_id,
-            verb="chat_history_compactor_digest_v1",
-            prompt="Compact recent Hub chat into a durable memory digest.",
-            input_key="chat_history_compactor_input",
-            input_payload=digest_input,
-            llm_route=route,
-        )
-        verb_result = await call_verb_runtime(
-            bus,
-            source=source,
-            client_request=synth_req,
-            correlation_id=correlation_id,
-            causality_chain=causality_chain,
-            trace=_ensure_trace(trace, correlation_id=correlation_id, workflow_id=workflow_id),
-            timeout_sec=float((synth_req.options or {}).get("timeout_sec", 120.0)),
-        )
-        if not verb_result.ok:
-            last_error = f"chat_compactor_digest_failed:{verb_result.error or 'verb_failed'}"
-            continue
-        digest, error = _compactor_digest_from_payload(
-            _extract_result_payload(verb_result),
-            metadata_key="chat_history_compactor_digest",
-            model_cls=ChatHistoryCompactorDigestV1,
-            parse_json=parse_chat_history_compactor_digest_json,
-            error_prefix="chat_compactor_digest_failed",
-        )
-        if error:
-            last_error = error
-            continue
-        # Over-budget prose is repaired here, not retried: the "quick" route would
-        # re-run the whole digest for a formatting miss on already-valid content.
-        digest, trimmed_fields = fit_chat_compactor_digest_within_budget(digest)
-        if trimmed_fields:
-            logger.info(
-                "compactor_digest_trimmed_to_budget corr=%s workflow_id=%s route=%s fields=%s",
-                correlation_id,
-                workflow_id,
-                route,
-                ",".join(trimmed_fields),
-            )
-        return digest, route
-    raise WorkflowExecutionError(last_error or "chat_compactor_digest_failed:exhausted")
+def _chat_window_to_ctx(window_spec: ResolvedChatCompactorWindow) -> Dict[str, Any]:
+    return {
+        "mode": window_spec.mode,
+        "compactor_index": window_spec.compactor_index,
+        "window_start": window_spec.window_start.isoformat(),
+        "window_end": window_spec.window_end.isoformat(),
+        "lookback_seconds": int(window_spec.lookback_seconds),
+        "lookback_hours": window_spec.lookback_hours,
+        "calendar_date": window_spec.calendar_date,
+        "timezone_name": window_spec.timezone_name,
+    }
+
+
+def _chat_window_from_ctx(raw: Dict[str, Any]) -> ResolvedChatCompactorWindow:
+    return ResolvedChatCompactorWindow(
+        mode=raw["mode"],
+        compactor_index=str(raw["compactor_index"]),
+        window_start=datetime.fromisoformat(str(raw["window_start"])),
+        window_end=datetime.fromisoformat(str(raw["window_end"])),
+        lookback_seconds=int(raw["lookback_seconds"]),
+        lookback_hours=raw.get("lookback_hours"),
+        calendar_date=raw.get("calendar_date"),
+        timezone_name=str(raw.get("timezone_name") or "UTC"),
+    )
 
 
 async def _execute_chat_history_compactor_pass(
@@ -2348,7 +2581,23 @@ async def _execute_chat_history_compactor_pass(
     req: CortexClientRequest,
     call_verb_runtime,
 ) -> CortexClientResult:
+    """Fetch + chunk here; the LLM digest runs as an admitted ``compactor.digest`` durable run,
+    which calls back with ``workflow_request.durable_digest`` to finalize (card + journal).
+    A quiet window needs no LLM and finalizes inline."""
     workflow_id = "chat_history_compactor_pass"
+    durable = _durable_digest_from_request(req, workflow_id)
+    if durable is not None:
+        return await _finalize_chat_history_compactor(
+            bus=bus,
+            source=source,
+            correlation_id=correlation_id,
+            causality_chain=causality_chain,
+            trace=trace,
+            req=req,
+            ctx=dict(durable.finalize),
+            digest=ChatHistoryCompactorDigestV1.model_validate(durable.digest),
+            durable=durable,
+        )
     user_text = (req.context.raw_user_text or req.context.user_message or "").strip()
     request = _workflow_request(req)
     try:
@@ -2367,7 +2616,9 @@ async def _execute_chat_history_compactor_pass(
         end_time_utc=window_spec.window_end,
         user_id=None,
         source=None,
-        max_turns=DEFAULT_MAX_TURNS,
+        # Every turn in the window, not a trailing slice (digest is embedded
+        # verbatim in the daily letter). Hitting the ceiling -> input_truncated.
+        max_turns=COMPACTOR_MAX_TURNS,
         require_prompt_and_response=True,
         # "Compact the last N hours" means everything organic in that window, not
         # just the trailing unbroken session — a quiet gap (idle overnight, a burst
@@ -2437,34 +2688,101 @@ async def _execute_chat_history_compactor_pass(
     window = DiscussionWindowResultV1.model_validate(skill_blob)
     window = exclude_workflow_notification_turns(window)
 
-    card_id: str | None = None
-    card_persist_skipped_reason: str | None = None
-    digest_route: str | None = None
-    persisted: List[str] = []
-    journal_entry: dict | None = None
-
+    window_label = window_spec.calendar_date or window_spec.compactor_index
+    digest_inputs, coverage = build_chat_history_compactor_digest_inputs(
+        window, fetch_limit=COMPACTOR_MAX_TURNS
+    )
     quiet = window.turn_count <= 0 or not (window.transcript_text or "").strip()
+    ctx: Dict[str, Any] = {
+        "window": _chat_window_to_ctx(window_spec),
+        "window_label": window_label,
+        "turn_count": int(window.turn_count),
+        "selection_strategy": window.selection_strategy,
+        "coverage": {
+            "total_count": int(coverage.get("total_count") or 0),
+            "covered_count": int(coverage.get("covered_count") or 0),
+            "input_truncated": bool(coverage.get("input_truncated")),
+        },
+        "author": req.context.user_id or "orion",
+        "execution_policy": _compactor_finalize_policy(req, workflow_id),
+    }
     if quiet:
-        digest = build_quiet_day_chat_digest(
-            window_label=window_spec.calendar_date or window_spec.compactor_index
-        )
-    else:
-        digest, digest_route = await _run_chat_history_compactor_digest(
-            call_verb_runtime=call_verb_runtime,
+        return await _finalize_chat_history_compactor(
             bus=bus,
             source=source,
             correlation_id=correlation_id,
             causality_chain=causality_chain,
             trace=trace,
             req=req,
-            workflow_id=workflow_id,
-            window=window,
+            ctx=ctx,
+            digest=build_quiet_day_chat_digest(window_label=window_label),
+            durable=None,
         )
+    brief = CompactorDigestRunBriefV1(
+        kind="chat",
+        workflow_id=workflow_id,
+        window_label=window_label,
+        inputs=digest_inputs,
+        llm_route=DIGEST_LLM_ROUTE,
+        timeout_sec=float(DIGEST_ORCH_RPC_TIMEOUT_SEC),
+        session_id=req.context.session_id or workflow_id,
+        user_id=req.context.user_id,
+        finalize=ctx,
+    )
+    submission = await _submit_compactor_digest_run(
+        bus=bus,
+        source=source,
+        correlation_id=correlation_id,
+        brief=brief,
+        deadline_at=_compactor_deadline_at(window_spec.window_end),
+    )
+    return _compactor_submitted_result(
+        req=req,
+        correlation_id=correlation_id,
+        workflow_id=workflow_id,
+        display_name="Chat History Compactor",
+        submission=submission,
+        window_fields={
+            "window_label": window_label,
+            "compactor_index": window_spec.compactor_index,
+            "window_mode": window_spec.mode,
+            "lookback_hours": window_spec.lookback_hours,
+            "turn_count": int(window.turn_count),
+        },
+        coverage=coverage,
+    )
+
+
+async def _finalize_chat_history_compactor(
+    *,
+    bus: OrionBusAsync,
+    source: ServiceRef,
+    correlation_id: str,
+    causality_chain: list | None,
+    trace: dict | None,
+    req: CortexClientRequest,
+    ctx: Dict[str, Any],
+    digest: ChatHistoryCompactorDigestV1,
+    durable: CompactorDigestResultV1 | None,
+) -> CortexClientResult:
+    """Memory card + journal entry + result for a digested (or quiet) chat window. Runs inline for
+    a quiet window and on the durable run's finalize call (stable ids: a replay upserts)."""
+    workflow_id = "chat_history_compactor_pass"
+    window_spec = _chat_window_from_ctx(dict(ctx.get("window") or {}))
+    turn_count = int(ctx.get("turn_count") or 0)
+    coverage = dict(ctx.get("coverage") or {})
+    quiet = durable is None
+    card_id: str | None = None
+    card_persist_skipped_reason: str | None = None
+    persisted: List[str] = []
+    journal_entry: dict | None = None
+
+    if not quiet:
         try:
             persisted_card_id = await persist_chat_history_compactor_memory_card(
                 digest=digest,
                 window=window_spec,
-                turn_count=window.turn_count,
+                turn_count=turn_count,
             )
             card_id = str(persisted_card_id) if persisted_card_id is not None else None
         except Exception as exc:
@@ -2482,7 +2800,12 @@ async def _execute_chat_history_compactor_pass(
                 exc_info=True,
             )
 
-    # Spec: journal append fires only for non-quiet windows (no empty-shell stubs).
+    # Quiet-window behavior (kept deliberately): a window with no organic turns
+    # writes NO journal entry and NO memory card -- only the workflow result
+    # records the quiet day. This differs from github_compactor_pass, which does
+    # journal its quiet day. Consumers (the daily letter) must treat a missing
+    # chat entry for a date as "no Hub chat that day", confirmed by this run's
+    # workflow metadata (turn_count=0), not as a failed run.
     if not quiet and (digest.journal_body or "").strip():
         draft = JournalEntryDraftV1(
             mode="digest",
@@ -2500,7 +2823,7 @@ async def _execute_chat_history_compactor_pass(
                 source_ref=f"chat_history_compactor_pass:{window_spec.compactor_index}",
             ),
             correlation_id=correlation_id,
-            author=req.context.user_id or "orion",
+            author=str(ctx.get("author") or req.context.user_id or "orion"),
             entry_id=entry_id,
         )
         await _publish_journal_entry_write_or_fail(
@@ -2524,9 +2847,7 @@ async def _execute_chat_history_compactor_pass(
             "Indexed chat digest card and journal entry skipped."
         )
     else:
-        main_result = (
-            f"Compacted {window.turn_count} chat turn(s) for {window_spec.compactor_index}."
-        )
+        main_result = f"Compacted {turn_count} chat turn(s) for {window_spec.compactor_index}."
         if digest.card_summary:
             main_result = f"{main_result}\n\n{digest.card_summary}"
         if journal_entry:
@@ -2534,7 +2855,7 @@ async def _execute_chat_history_compactor_pass(
         if card_id:
             main_result = f"{main_result} Memory card {card_id}."
 
-    metadata = _workflow_metadata_base(request=request, status="completed")
+    metadata = _workflow_metadata_base(request=_request_for_metadata(_workflow_request(req)), status="completed")
     metadata["workflow"] = {
         "workflow_id": workflow_id,
         "display_name": "Chat History Compactor",
@@ -2546,14 +2867,18 @@ async def _execute_chat_history_compactor_pass(
         "persisted": persisted,
         "scheduled": [],
         "main_result": main_result,
-        "turn_count": int(window.turn_count),
+        "turn_count": turn_count,
         "compactor_index": window_spec.compactor_index,
         "card_id": card_id,
         "card_summary_preview": digest.card_summary[:200],
-        "digest_llm_route": digest_route,
+        **_digest_run_fields(durable),
+        "total_count": int(coverage.get("total_count") or 0),
+        "covered_count": int(coverage.get("covered_count") or 0),
+        "input_truncated": bool(coverage.get("input_truncated")),
+        "journal_body_chars": len(digest.journal_body or "") if not quiet else 0,
         "window_mode": window_spec.mode,
         "lookback_hours": window_spec.lookback_hours,
-        "selection_strategy": window.selection_strategy,
+        "selection_strategy": ctx.get("selection_strategy"),
     }
     if journal_entry is not None:
         metadata["workflow"]["journal_entry"] = journal_entry
@@ -2690,6 +3015,7 @@ async def execute_chat_workflow(
             raise WorkflowExecutionError(f"unimplemented_workflow:{workflow_id}")
     except Exception:
         logger.exception("workflow_failed corr=%s workflow_id=%s", correlation_id, workflow_id)
+        finalize_retry = DURABLE_DIGEST_KEY in request
         logger.info(
             "workflow_execution_truth %s",
             json.dumps(
@@ -2704,6 +3030,11 @@ async def execute_chat_workflow(
                 default=str,
             ),
         )
+        if finalize_retry:
+            # A durable run's finalize call failed: the durable driver retries it (bounded), so a
+            # notice per try would spam. The run's terminal failure is reported once, by
+            # orion-actions when it settles the schedule run.
+            raise
         await _emit_workflow_notify(
             source=source,
             req=req,
@@ -2717,18 +3048,26 @@ async def execute_chat_workflow(
             execution_source="immediate",
         )
         raise
-    await _emit_workflow_notify(
-        source=source,
-        req=req,
-        workflow_id=workflow_id,
-        workflow_name=definition.display_name,
-        correlation_id=correlation_id,
-        ok=result.ok,
-        final_text=result.final_text or "",
-        notify_on=policy.notify_on,
-        recipient_group=policy.recipient_group,
-        execution_source="immediate",
-    )
+    submitted = ((result.metadata or {}).get("workflow") or {}).get("durable_run") if isinstance(result.metadata, dict) else None
+    if submitted:
+        # Handed to a durable run (compactor.digest). Accepted: it has not finished, and its
+        # finalize call re-enters this function with the real result and notifies then. Receipt
+        # "completed": that finalize already notified -- a second notice would duplicate it.
+        logger.info("workflow_durable_submitted corr=%s workflow_id=%s status=%s",
+                    correlation_id, workflow_id, result.status)
+    else:
+        await _emit_workflow_notify(
+            source=source,
+            req=req,
+            workflow_id=workflow_id,
+            workflow_name=definition.display_name,
+            correlation_id=correlation_id,
+            ok=result.ok,
+            final_text=result.final_text or "",
+            notify_on=policy.notify_on,
+            recipient_group=policy.recipient_group,
+            execution_source="immediate",
+        )
     logger.info("workflow_completed corr=%s workflow_id=%s ok=%s", correlation_id, workflow_id, result.ok)
     workflow_meta = (result.metadata or {}).get("workflow") if isinstance(result.metadata, dict) else {}
     usefulness = _shape_workflow_result_summary(workflow_meta=workflow_meta if isinstance(workflow_meta, dict) else {}, result=result)

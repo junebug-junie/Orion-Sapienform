@@ -168,6 +168,7 @@ def test_runs_payload_reads_the_admission_path_and_counts_its_anomalies() -> Non
     assert events_call[1][0] == ["adm"]
     assert "run.checkpoint_resume_failed" not in events_call[1][1], "noisy events are counted, not fetched"
     assert "run.lane_swap_suppressed" not in events_call[1][1]
+    assert "run.preempted" in events_call[1][1], "a pause for urgent work is part of the story"
 
 
 def test_runs_payload_filters_by_line_but_tallies_across_all() -> None:

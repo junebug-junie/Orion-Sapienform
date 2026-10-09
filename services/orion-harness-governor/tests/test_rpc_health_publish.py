@@ -1,6 +1,6 @@
 """RPC-health coverage for orion-harness-governor: the dispatch bus is what gets
 published, cortex-exec :background RPC outcomes land on it, and the FCC motor's
-subprocess wall time lands as hop fcc:<served_model> (success / timeout / skipped)."""
+subprocess wall time lands as hop fcc:<role> / fcc:route:<route> (success / timeout / skipped)."""
 from __future__ import annotations
 
 import asyncio
@@ -56,7 +56,8 @@ def _plan() -> PlanExecutionRequest:
 
 
 def _motor(**kw):
-    base = dict(fcc_elapsed_sec=12.5, grounding_status="grounded", fcc_served_model="qwen3.5-27b", exit_code=0)
+    base = dict(fcc_elapsed_sec=12.5, grounding_status="grounded", fcc_served_model="qwen3.5-27b", exit_code=0,
+                serving_role="agent", fcc_route="agent")
     base.update(kw)
     return SimpleNamespace(**base)
 
@@ -89,7 +90,7 @@ def test_fcc_hop_success_on_normal_exit() -> None:
 
     bus = _bus()
     record_fcc_hop(bus, _motor())
-    hop = _hops(bus)["fcc:qwen3.5-27b"]
+    hop = _hops(bus)["fcc:agent"]
     assert (hop.success_count, hop.timeout_count) == (1, 0)
     assert hop.max_ms == pytest.approx(12500.0)
 
@@ -100,17 +101,53 @@ def test_fcc_hop_timeout_on_timeout_kill(code: str) -> None:
 
     bus = _bus()
     record_fcc_hop(bus, _motor(grounding_status=code, fcc_elapsed_sec=7200.0, exit_code=None))
-    hop = _hops(bus)["fcc:qwen3.5-27b"]
+    hop = _hops(bus)["fcc:agent"]
     assert (hop.success_count, hop.timeout_count) == (0, 1)
     assert hop.max_ms is None  # a timeout's ceiling never enters latency stats
 
 
-def test_fcc_hop_nonzero_exit_is_still_a_round_trip_and_missing_model_falls_back() -> None:
+def test_fcc_hop_nonzero_exit_is_still_a_round_trip_and_missing_placement_falls_back() -> None:
     from app.bus_listener import record_fcc_hop
 
     bus = _bus()
-    record_fcc_hop(bus, _motor(grounding_status="fcc_nonzero_exit", exit_code=1, fcc_served_model=None))
+    record_fcc_hop(bus, _motor(grounding_status="fcc_nonzero_exit", exit_code=1, serving_role=None, fcc_route=None))
     assert _hops(bus)["fcc:unknown"].success_count == 1
+
+
+def test_fcc_hop_keys_by_granted_role_not_served_model_under_spill() -> None:
+    """Two held agent-class turns: one granted agent, one spilled to chat. The key follows the
+    granted role; the model the CLI echoed (which differs under spill) never mints a key."""
+    from app.bus_listener import record_fcc_hop
+
+    bus = _bus()
+    record_fcc_hop(bus, _motor(serving_role="agent", fcc_served_model="Qwen3.8-27B-UD-Q4_K_XL"))
+    record_fcc_hop(bus, _motor(serving_role="agent", fcc_served_model="<synthetic>"))
+    record_fcc_hop(bus, _motor(serving_role="chat", fcc_served_model="Qwen3.6-35B-A3B-UD-Q5_K_M"))
+    hops = _hops(bus)
+    assert set(hops) == {"fcc:agent", "fcc:chat"}
+    assert hops["fcc:agent"].success_count == 2
+
+
+def test_fcc_hop_unheld_turn_keys_by_requested_route() -> None:
+    """No hold: per-call grants are invisible to the harness, so only the route is known --
+    and it must not share a baseline with a turn that really ran on that role."""
+    from app.bus_listener import fcc_hop_key, record_fcc_hop
+
+    bus = _bus()
+    record_fcc_hop(bus, _motor(serving_role=None, fcc_route="agent"))
+    assert set(_hops(bus)) == {"fcc:route:agent"}
+    assert fcc_hop_key("agent", "agent") == "fcc:agent"
+    assert fcc_hop_key(None, None) == "fcc:unknown"
+
+
+def test_fcc_hop_non_pool_backend_keeps_its_own_key() -> None:
+    """MODEL_HAIKU -> nvidia_nim is a remote API with its own latency; it must not share
+    fcc:unknown with genuinely unresolvable runs."""
+    from app.bus_listener import record_fcc_hop
+
+    bus = _bus()
+    record_fcc_hop(bus, _motor(serving_role=None, fcc_route=None, fcc_backend="nvidia-nim"))
+    assert set(_hops(bus)) == {"fcc:backend:nvidia-nim"}
 
 
 @pytest.mark.parametrize(
@@ -159,6 +196,8 @@ async def test_handle_run_records_fcc_hop_on_the_bus_it_was_given() -> None:
                 grounding_status="fcc_timeout",
                 grammar_receipts=[],
                 fcc_served_model="m1",
+                serving_role="agent-gpu2",
+                fcc_route="agent",
                 fcc_elapsed_sec=30.0,
                 reading_receipts=[],
                 source_fetches=[],
@@ -173,7 +212,7 @@ async def test_handle_run_records_fcc_hop_on_the_bus_it_was_given() -> None:
             bus, req, reply_to="orion:harness:run:result:c-9", runner=runner,
             cortex_client=AsyncMock(), substrate_client=AsyncMock(),
         )
-    assert _hops(bus)["fcc:m1"].timeout_count == 1
+    assert _hops(bus)["fcc:agent-gpu2"].timeout_count == 1
 
 
 @pytest.mark.asyncio
@@ -223,22 +262,21 @@ async def test_publisher_built_from_settings_publishes_dispatch_bus_window() -> 
     assert payload["channel_latency"]["fcc:m1"]["success_count"] == 1
 
 
-def test_fcc_hop_timeout_before_first_assistant_event_keys_by_probed_model() -> None:
-    """A stall before the CLI echoes a model leaves fcc_served_model None; the timeout
-    must still land under the model's key (probed pre-run), not fcc:unknown."""
+def test_fcc_hop_timeout_before_first_assistant_event_keys_by_role() -> None:
+    """A stall before the CLI echoes a model leaves fcc_served_model None; the role is known
+    before the subprocess starts, so the timeout lands under the same key as the successes."""
     from app.bus_listener import record_fcc_hop
 
     bus = _bus()
-    record_fcc_hop(
-        bus,
-        _motor(grounding_status="fcc_stream_stalled", fcc_served_model=None, probed_served_model="qwen3.5-27b"),
-    )
+    record_fcc_hop(bus, _motor(grounding_status="fcc_stream_stalled", fcc_served_model=None))
     hops = _hops(bus)
     assert "fcc:unknown" not in hops
-    assert hops["fcc:qwen3.5-27b"].timeout_count == 1
+    assert hops["fcc:agent"].timeout_count == 1
 
 
-@pytest.mark.parametrize("code", ["fcc_stream_line_limit", "fcc_draft_length_ceiling_exceeded"])
+@pytest.mark.parametrize(
+    "code", ["fcc_stream_line_limit", "fcc_context_ceiling_exceeded", "fcc_draft_length_ceiling_exceeded"]
+)
 def test_fcc_hop_skips_motor_output_limit_kills(code: str) -> None:
     from app.bus_listener import record_fcc_hop
 
@@ -281,7 +319,6 @@ async def test_hub_cancel_through_real_runner_is_not_recorded_as_success() -> No
     probe = AsyncMock(return_value="qwen3.5-27b")
     motor = await HarnessRunner(AsyncMock(), fcc_runner=_cancelled, served_model_probe=probe).run(request)
     assert motor.exit_code == -9
-    assert motor.probed_served_model == "qwen3.5-27b"
 
     bus = _bus()
     record_fcc_hop(bus, motor)

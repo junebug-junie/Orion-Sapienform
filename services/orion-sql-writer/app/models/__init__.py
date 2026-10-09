@@ -17,6 +17,16 @@ from .biometrics_cluster import BiometricsClusterSQL
 from .power_intent_settled import PowerIntentSettledSQL
 from .cabinet_ambient_spike import CabinetAmbientSpikeSQL
 from .home_cooling_sample import HomeCoolingSampleSQL
+from .energy import (
+    EnergyBillActualSQL,
+    EnergyBillForecastSQL,
+    EnergyCostAccruedSQL,
+    EnergyImporterStatusSQL,
+    EnergyReconcileSQL,
+    EnergyRunCostSQL,
+    EnergyStakesSnapshotSQL,
+    EnergyUsageIntervalSQL,
+)
 from .biometrics_summary import BiometricsSummarySQL
 from .biometrics_induction import BiometricsInductionSQL
 from .causal_geometry_snapshot import CausalGeometrySnapshotSQL
@@ -44,6 +54,7 @@ from .curiosity_peer_brief import CuriosityPeerBriefSQL
 from .curiosity_hop_reading import CuriosityHopReadingSQL
 from .durable_run_state import DurableRunStateSQL
 from .gpu_pool_event import GpuPoolEventSQL
+from .transport_baseline_hourly import TransportBaselineHourlySQL
 from .chat_stance_belief import ChatStanceBeliefLogSQL
 from .self_concept_history import SelfConceptHistorySQL
 from .self_sense_eval_log import SelfSenseEvalLogSQL
@@ -115,6 +126,14 @@ __all__ = [
     "PowerIntentSettledSQL",
     "CabinetAmbientSpikeSQL",
     "HomeCoolingSampleSQL",
+    "EnergyUsageIntervalSQL",
+    "EnergyCostAccruedSQL",
+    "EnergyRunCostSQL",
+    "EnergyBillActualSQL",
+    "EnergyBillForecastSQL",
+    "EnergyReconcileSQL",
+    "EnergyStakesSnapshotSQL",
+    "EnergyImporterStatusSQL",
     "BiometricsSummarySQL",
     "BiometricsInductionSQL",
     "CausalGeometrySnapshotSQL",
@@ -134,6 +153,7 @@ __all__ = [
     "CuriosityHopReadingSQL",
     "DurableRunStateSQL",
     "GpuPoolEventSQL",
+    "TransportBaselineHourlySQL",
     "JournalEntryIndexSQL",
     "ChatStanceBeliefLogSQL",
     "SelfConceptHistorySQL",

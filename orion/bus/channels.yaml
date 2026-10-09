@@ -102,7 +102,7 @@ channels:
   - name: "orion:cortex:request"
     kind: "request"
     schema_id: "CortexClientRequest"
-    producer_services: ["orion-hub", "orion-cortex-gateway", "orion-actions", "orion-memory-consolidation", "orion-cortex-exec"]
+    producer_services: ["orion-hub", "orion-cortex-gateway", "orion-actions", "orion-memory-consolidation", "orion-cortex-exec", "orion-durable-runs"]
     consumer_services: ["orion-cortex-orch"]
     single_consumer: true
     stability: "experimental"
@@ -120,7 +120,7 @@ channels:
     kind: "result"
     schema_id: "CortexClientResult"
     producer_services: ["orion-cortex-orch"]
-    consumer_services: ["orion-hub", "orion-cortex-gateway"]
+    consumer_services: ["orion-hub", "orion-cortex-gateway", "orion-durable-runs"]
     stability: "experimental"
     since: "2026-01-08"
 
@@ -198,6 +198,60 @@ channels:
     stability: "experimental"
     since: "2026-05-13"
 
+  # Unified-turn latency L4 (2026-10-06): orion-thought asks cortex-exec to
+  # build stance_react's brain reply context while orion-mind runs. One channel
+  # per exec lane, derived from the exec request channel
+  # (orion.schemas.stance_context_prepare.stance_context_prepare_channel) so the
+  # prepare lands on the same container as the later stance_react.
+  - name: "orion:cortex:exec:stance_prepare"
+    kind: "request"
+    schema_id: "StanceContextPrepareRequestV1"
+    message_kind: "cortex.stance_context_prepare.request.v1"
+    producer_services: ["orion-thought"]
+    consumer_services: ["orion-cortex-exec"]
+    single_consumer: true
+    stability: "experimental"
+    since: "2026-10-06"
+
+  - name: "orion:cortex:exec:stance_prepare:chat"
+    kind: "request"
+    schema_id: "StanceContextPrepareRequestV1"
+    message_kind: "cortex.stance_context_prepare.request.v1"
+    producer_services: ["orion-thought"]
+    consumer_services: ["orion-cortex-exec"]
+    single_consumer: true
+    stability: "experimental"
+    since: "2026-10-06"
+
+  - name: "orion:cortex:exec:stance_prepare:spark"
+    kind: "request"
+    schema_id: "StanceContextPrepareRequestV1"
+    message_kind: "cortex.stance_context_prepare.request.v1"
+    producer_services: ["orion-thought"]
+    consumer_services: ["orion-cortex-exec"]
+    single_consumer: true
+    stability: "experimental"
+    since: "2026-10-06"
+
+  - name: "orion:cortex:exec:stance_prepare:background"
+    kind: "request"
+    schema_id: "StanceContextPrepareRequestV1"
+    message_kind: "cortex.stance_context_prepare.request.v1"
+    producer_services: ["orion-thought"]
+    consumer_services: ["orion-cortex-exec"]
+    single_consumer: true
+    stability: "experimental"
+    since: "2026-10-06"
+
+  - name: "orion:cortex:exec:stance_prepare_result:*"
+    kind: "result"
+    schema_id: "StanceContextPrepareResultV1"
+    message_kind: "cortex.stance_context_prepare.result.v1"
+    producer_services: ["orion-cortex-exec"]
+    consumer_services: ["orion-thought"]
+    stability: "experimental"
+    since: "2026-10-06"
+
   - name: "orion:cortex:pre_turn_appraisal:request"
     kind: "request"
     schema_id: "PreTurnAppraisalRequestV1"
@@ -266,6 +320,9 @@ channels:
       # orion-affectgpt-worker. See services/orion-juniper-affective-state/
       # app/vision_backend.py.
       - "orion-juniper-affective-state"
+      # Added 2026-10-02: memory.episode_distill calls the gateway directly under its GPU
+      # pool hold (route memory_distill). services/orion-durable-runs/app/runner.py
+      - "orion-durable-runs"
     consumer_services: ["orion-llm-gateway"]
     single_consumer: true
     stability: "experimental"
@@ -291,7 +348,7 @@ channels:
     kind: "result"
     schema_id: "ChatResultPayload"
     producer_services: ["orion-llm-gateway"]
-    consumer_services: ["orion-cortex-exec", "orion-hub", "orion-memory-consolidation", "orion-dream"]
+    consumer_services: ["orion-cortex-exec", "orion-hub", "orion-memory-consolidation", "orion-dream", "orion-durable-runs"]
     stability: "experimental"
     since: "2026-01-08"
 
@@ -1149,6 +1206,16 @@ channels:
     stability: "experimental"
     since: "2026-03-29"
 
+  - name: "orion:equilibrium:transport_baseline:hourly"
+    kind: "event"
+    schema_id: "TransportBaselineHourlyV1"
+    message_kind: "transport_baseline.hourly.v1"
+    producer_services: ["orion-equilibrium-service"]
+    consumer_services: ["orion-sql-writer"]
+    stability: "experimental"
+    since: "2026-09-29"
+    description: "One row per (service, instance, hop, UTC hour) of the per-hop transport baseline gate's readings (windows seen/evaluated, z p50/p90, saturation ratio p50, baseline/floor ms, would-emit counts). Durable evidence for the gate's log-only week; sql-writer -> transport_baseline_hourly; graded by scripts/analysis/grade_transport_baseline.py."
+
   - name: "orion:equilibrium:metacog:trigger"
     kind: "event"
     schema_id: "MetacogTriggerV1"
@@ -1327,7 +1394,7 @@ channels:
     producer_services: ["orion-hub", "orion-embodiment"]
     # orion-vector-writer removed 2026-08-14: same stale-consumer correction
     # as orion:chat:history:log above.
-    consumer_services: ["orion-sql-writer", "orion-vector-host", "orion-spark-concept-induction"]
+    consumer_services: ["orion-sql-writer", "orion-vector-host", "orion-spark-concept-induction", "orion-durable-runs"]
     stability: "experimental"
     since: "2026-01-10"
 
@@ -1874,6 +1941,31 @@ channels:
     stability: "experimental"
     since: "2026-06-16"
 
+  # Memory episode redesign Stage 1 (spec 2026-09-30-memory-episode-redesign-design.md).
+  # Shadow episodes closed under boundary Rule 3. Consumer: orion-durable-runs
+  # submits one memory.episode_distill run per closed episode
+  # (services/orion-durable-runs/app/main.py, MEMORY_EPISODE_WRITER_ENABLED).
+  - name: "orion:memory:episode:closed"
+    kind: "event"
+    schema_id: "MemoryEpisodeClosedV1"
+    message_kind: "memory.episode.closed.v1"
+    producer_services: ["orion-memory-consolidation"]
+    consumer_services: ["orion-durable-runs"]
+    stability: "experimental"
+    since: "2026-10-02"
+
+  # Situation graph step 2 (spec 2026-10-07-situation-graph-design.md, SHADOW): Orion's running
+  # situation, published by the situation.update graph in orion-durable-runs when its revision
+  # changes. Also written to Redis orion:situation:latest. No consumer until step 3 (chat reads it).
+  - name: "orion:situation:state"
+    kind: "event"
+    schema_id: "SituationStateV1"
+    message_kind: "situation.state.v1"
+    producer_services: ["orion-durable-runs"]
+    consumer_services: []
+    stability: "experimental"
+    since: "2026-10-07"
+
   - name: "orion:chat:history:spark_meta:patch"
     kind: "event"
     schema_id: "ChatHistorySparkMetaPatchV1"
@@ -1888,7 +1980,7 @@ channels:
   - name: "orion:vector:semantic:upsert"
     kind: "event"
     schema_id: "VectorUpsertV1"
-    producer_services: ["orion-vector-host"]
+    producer_services: ["orion-vector-host", "orion-hub", "orion-dream"]
     consumer_services: ["orion-vector-writer"]
     stability: "experimental"
     since: "2026-01-16"
@@ -1993,6 +2085,89 @@ channels:
     stability: "experimental"
     since: "2026-09-25"
     description: "Read-only portable AC / cabinet cooling watts from Athena Z-Wave Shelly Wave plug."
+
+  # House-level electricity (docs/superpowers/specs/2026-09-26-orion-energy-watcher-design.md).
+  # Whole-house Green Button intervals, priced by a versioned tariff, joined to settled
+  # power intents. Unknown is never zero: run cost carries a gap reason instead.
+  - name: "orion:energy:usage:observed"
+    kind: "event"
+    schema_id: "EnergyUsageIntervalV1"
+    message_kind: "energy.usage.observed.v1"
+    producer_services: ["orion-energy"]
+    consumer_services: ["orion-sql-writer"]
+    stability: "experimental"
+    since: "2026-09-26"
+    description: "Whole-house metered kWh per interval from Rocky Mountain Power Green Button (file drop in Plan 1)."
+
+  - name: "orion:energy:cost:accrued"
+    kind: "event"
+    schema_id: "EnergyCostAccruedV1"
+    message_kind: "energy.cost.accrued.v1"
+    producer_services: ["orion-energy"]
+    consumer_services: ["orion-sql-writer"]
+    stability: "experimental"
+    since: "2026-09-26"
+    description: "Usage interval priced at its billing-cycle block position (pre-tax, versioned tariff)."
+
+  - name: "orion:energy:run_cost:estimated"
+    kind: "event"
+    schema_id: "EnergyRunCostEstimatedV1"
+    message_kind: "energy.run_cost.estimated.v1"
+    producer_services: ["orion-energy"]
+    consumer_services: ["orion-sql-writer"]
+    stability: "experimental"
+    since: "2026-09-26"
+    description: "Dollar cost of a settled power intent: meter-side estimate plus separately labeled house share."
+
+  - name: "orion:energy:bill:actual"
+    kind: "event"
+    schema_id: "EnergyBillActualV1"
+    message_kind: "energy.bill.actual.v1"
+    producer_services: ["orion-energy"]
+    consumer_services: ["orion-sql-writer"]
+    stability: "experimental"
+    since: "2026-09-27"
+    description: "Closed Rocky Mountain Power billing period (portal scrape or hand-entered bill JSON)."
+
+  - name: "orion:energy:bill:forecast"
+    kind: "event"
+    schema_id: "EnergyBillForecastV1"
+    message_kind: "energy.bill.forecast.v1"
+    producer_services: ["orion-energy"]
+    consumer_services: ["orion-sql-writer"]
+    stability: "experimental"
+    since: "2026-09-27"
+    description: "RMP's in-cycle bill projection; rejected when it carries no projected number."
+
+  - name: "orion:energy:reconcile"
+    kind: "event"
+    schema_id: "EnergyReconcileV1"
+    message_kind: "energy.reconcile.v1"
+    producer_services: ["orion-energy"]
+    consumer_services: ["orion-sql-writer"]
+    stability: "experimental"
+    since: "2026-09-27"
+    description: "Orion tariff estimate vs RMP bill/forecast; deltas are Orion minus utility, gap when usage is incomplete."
+
+  - name: "orion:energy:stakes:snapshot"
+    kind: "event"
+    schema_id: "EnergyStakesSnapshotV1"
+    message_kind: "energy.stakes.snapshot.v1"
+    producer_services: ["orion-energy"]
+    consumer_services: ["orion-sql-writer"]
+    stability: "experimental"
+    since: "2026-09-27"
+    description: "Cycle-to-date cost, marginal rate, and projected-vs-forecast pressure for spend gates (Hub reads the SQL row)."
+
+  - name: "orion:energy:importer:status"
+    kind: "event"
+    schema_id: "EnergyImporterStatusV1"
+    message_kind: "energy.importer.status.v1"
+    producer_services: ["orion-energy"]
+    consumer_services: ["orion-sql-writer"]
+    stability: "experimental"
+    since: "2026-09-27"
+    description: "healthy / stale / reauth_required / degraded for house usage ingest."
 
   - name: "orion:exec:request:MetaTagsService"
     kind: "request"
@@ -2757,7 +2932,7 @@ channels:
     schema_id: "PowerIntentSettledV1"
     message_kind: "power.intent.settled.v1"
     producer_services: ["orion-biometrics"]
-    consumer_services: ["orion-sql-writer"]
+    consumer_services: ["orion-sql-writer", "orion-energy"]
     stability: "experimental"
     since: "2026-08-28"
 
@@ -2844,11 +3019,24 @@ channels:
       - orion-cortex-orch
       - orion-gpu-pool
       - orion-harness-governor
+      # settled H1 verdict transitions + one summary per hour (trace prefix
+      # heartbeat.h1:), gated by HEARTBEAT_VERDICT_ATOMS_ENABLED --
+      # services/orion-heartbeat/app/substrate/verdict_atoms.py. Ledger-only:
+      # no substrate reducer or field channel reads these.
+      - orion-heartbeat
       - orion-hub
       # per-window inference outcome traces (llm_gateway.inference:), gated by
       # LLM_GATEWAY_GRAMMAR_ENABLED -- services/orion-llm-gateway/app/grammar_emit.py
       - orion-llm-gateway
       - orion-substrate-runtime
+      # per-window storage-write outcome traces (sql_writer.storage:), gated by
+      # SQL_WRITER_WRITE_HEALTH_ENABLED -- services/orion-sql-writer/app/write_health.py.
+      # The writer is also this channel's persister; it never counts its own
+      # sql_writer.storage: events (write_health.counts_grammar_event).
+      - orion-sql-writer
+      # per-window vision organ traces (vision.organ:), gated by
+      # VISION_ORGAN_GRAMMAR_ENABLED -- services/orion-vision-frame-router/app/grammar_emit.py
+      - orion-vision-frame-router
     # orion-equilibrium-service added for the chat_turn metacog trigger's
     # correlator, which filters this stream to semantic_role=="exec_turn_timeout"
     # only (services/orion-hub/scripts/grammar_emit.py::build_turn_timeout_grammar_events,
@@ -2860,8 +3048,8 @@ channels:
     # holographic-lattice-design.md) added as a read-only research consumer:
     # filters to atom_emitted events from five organs (orion-hub/orion-
     # biometrics/orion-cortex-exec/orion-bus/orion-cortex-orch) and feeds a
-    # small tensor-network substrate. Publishes nothing back to this or any
-    # other channel.
+    # small tensor-network substrate. Skips its own heartbeat.h1: atoms
+    # (source_service orion-heartbeat) so it never absorbs its own output.
     consumer_services: ["orion-sql-writer", "orion-equilibrium-service", "orion-heartbeat"]
     stability: "experimental"
     since: "2026-05-23"
@@ -3057,8 +3245,12 @@ channels:
     kind: "event"
     schema_id: "AttentionLoopOutcomeV1"
     message_kind: "attention.loop.outcome.v1"
+    # 2026-10-06: also the memory confirmation loop's one resolution record. orion-hub publishes it
+    # after the "Orion is asking" Confirm/Revise/Reject commit (loop_id memory-confirm-<memory_id>);
+    # orion-memory-consolidation applies it to the shadow memory and catches up from the
+    # attention_loop_outcome table, so a lost publish delays an answer but never drops it.
     producer_services: ["orion-hub"]
-    consumer_services: []
+    consumer_services: ["orion-memory-consolidation"]
     stability: "experimental"
     since: "2026-07-07"
 
@@ -3100,10 +3292,10 @@ channels:
     schema_id: "DurableRunStateV1"
     message_kind: "durable.run.state.v1"
     producer_services: ["orion-durable-runs"]
-    consumer_services: ["orion-sql-writer", "orion-hub"]
+    consumer_services: ["orion-sql-writer", "orion-hub", "orion-actions", "orion-durable-runs"]
     stability: "experimental"
     since: "2026-09-06"
-    description: "One row per node transition of a durable run -> substrate_durable_run_state (sql-writer). Hub consumes `completed` to run outreach, which only Hub can deliver."
+    description: "One row per node transition of a durable run -> substrate_durable_run_state (sql-writer). Hub consumes `completed` to run outreach, which only Hub can deliver. orion-actions consumes the terminal row of a `compactor.digest` run to settle the scheduled compactor run that submitted it."
 
   - name: "orion:durable:run:reply:*"
     kind: "result"
@@ -3154,14 +3346,14 @@ channels:
     consumer_services: ["orion-llm-gateway", "orion-durable-runs", "orion-world-model", "orion-thought", "orion-hub", "orion-sql-writer"]
     stability: "experimental"
     since: "2026-09-24"
-    description: "Lease lifecycle facts (admitted, queued, granted w/ waited_ms, backlogged, recalled, aborted, expired, retried, dead_lettered, replayed, released, unavailable), swap requests, lend/unlend, discovery confirm/mismatch. Callers wake on 'granted'; sql-writer persists."
+    description: "Lease lifecycle facts (admitted, queued, granted w/ waited_ms, backlogged, recalled, aborted, expired, retried, dead_lettered, replayed, released, unavailable), swap requests, lend/unlend, discovery confirm/mismatch, actuation_paused/actuation_resumed (stage 5.7 emergency stop; sql-writer must be redeployed before a pool that emits them). Callers wake on 'granted'; sql-writer persists."
 
   - name: "orion:gpu_pool:state:reply:*"
     kind: "result"
     schema_id: "GpuPoolStateV1"
     message_kind: "gpu_pool.state.v1"
     producer_services: ["orion-gpu-pool"]
-    consumer_services: ["orion-hub", "orion-llm-gateway"]
+    consumer_services: ["orion-hub", "orion-llm-gateway", "orion-harness-governor", "orion-cortex-exec"]
     stability: "experimental"
     since: "2026-09-24"
     description: "Per-request reply to orion:gpu_pool:state:request (orion.schemas.gpu_pool.GPU_POOL_STATE_REPLY_PREFIX)."
@@ -3184,17 +3376,17 @@ channels:
     consumer_services: ["orion-hub"]
     stability: "experimental"
     since: "2026-09-24"
-    description: "Whole-pool snapshot every few seconds: cards, discovered roles (profile, model file, slots, ctx/slot, confirmed|mismatch|silent|down), unclaimed servers, live leases, queue and backlog depth."
+    description: "Whole-pool snapshot every few seconds: host (the pool's node), cards (with index = the card's nvidia-smi device number on that host, when the YAML sets it), discovered roles (profile, model file, slots, ctx/slot, confirmed|static|mismatch|silent|down|evicted|unloaded), unclaimed servers, live leases, queue and backlog depth. Hub's biometrics GPU labels join nvidia-smi on host + card index (stage 5.5)."
 
   - name: "orion:gpu_pool:state:request"
     kind: "request"
     schema_id: "GpuPoolStateRequestV1"
     message_kind: "gpu_pool.state.request.v1"
-    producer_services: ["orion-hub", "orion-llm-gateway"]
+    producer_services: ["orion-hub", "orion-llm-gateway", "orion-harness-governor", "orion-cortex-exec"]
     consumer_services: ["orion-gpu-pool"]
     stability: "experimental"
     since: "2026-09-24"
-    description: "On-demand GpuPoolStateV1 read; reply on orion:gpu_pool:state:reply:*."
+    description: "On-demand GpuPoolStateV1 read; reply on orion:gpu_pool:state:reply:*. orion-harness-governor reads it (include_leases=false, include_config=true) once per turn to name the model on its granted role or its route's landing role and to size the motor window (orion.gpu_pool.placement / route_view). GPU pool stage 6.3: the Hub Compute catalog and the situation brief's runtime line (orion-hub and orion-cortex-exec, orion.situational.runtime_route_view) read it with include_config=true instead of the gateway's retiring GET /routes."
 
   - name: "orion:gpu_pool:control:request"
     kind: "request"
@@ -3204,7 +3396,27 @@ channels:
     consumer_services: ["orion-gpu-pool"]
     stability: "experimental"
     since: "2026-09-24"
-    description: "Operator verbs (lend, unlend, replay, cancel, backfill) checked against GPU_POOL_OPERATOR_TOKEN; fail closed when unset. Reply GpuPoolControlReplyV1 on orion:gpu_pool:control:reply:*."
+    description: "Operator verbs (lend, unlend, hold, release, replay, cancel, backfill, clear_fault, pause_actuation, resume_actuation). No token: the pool trusts the bus; every verb is logged with its actor. pause_actuation is the one emergency stop for model loads/unloads (persisted; stage 5.7). Reply GpuPoolControlReplyV1 on orion:gpu_pool:control:reply:*."
+
+  - name: "orion:gpu_pool:shed:request"
+    kind: "request"
+    schema_id: "GpuPoolShedReasonRequestV1"
+    message_kind: "gpu_pool.shed.request.v1"
+    producer_services: ["orion-execution-dispatch-runtime"]
+    consumer_services: ["orion-gpu-pool"]
+    stability: "experimental"
+    since: "2026-10-01"
+    description: "Orion's learned shed action (attend-to-act loop A1): set / clear / status of the lower-precedence orion_self_shed reason on the pool's U4 shed lever (no NEW background grants; running work finishes; never system/interactive/urgent). The schema's reason Literal refuses cooling_incident. Caps (TTL, per-day, gap) are enforced by the pool. Off unless GPU_POOL_ORION_SHED_ENABLED. Reply GpuPoolShedResultV1 on orion:gpu_pool:shed:reply:*."
+
+  - name: "orion:gpu_pool:shed:reply:*"
+    kind: "result"
+    schema_id: "GpuPoolShedResultV1"
+    message_kind: "gpu_pool.shed.result.v1"
+    producer_services: ["orion-gpu-pool"]
+    consumer_services: ["orion-execution-dispatch-runtime"]
+    stability: "experimental"
+    since: "2026-10-01"
+    description: "Per-request reply to orion:gpu_pool:shed:request (orion.schemas.gpu_pool.GPU_POOL_SHED_REPLY_PREFIX): the shed record (state active|expired|cancelled|preempted_by_reflex|refused, refusal, TTL, drained_at, grants_withheld, delayed_grant_sec)."
 
   - name: "orion:gpu_pool:actuate:request"
     kind: "request"
@@ -3236,6 +3448,48 @@ channels:
     since: "2026-09-24"
     description: "Each llama.cpp worker says which gpu_pool.yaml role and llm_profiles.yaml profile it serves (every 30s). The pool confirms it against the server's /props before granting anything."
 
+  - name: "orion:reading:turn:request"
+    kind: "request"
+    schema_id: "ReadingTurnRequestV1"
+    message_kind: "reading.turn.request.v1"
+    producer_services: ["orion-durable-runs"]
+    consumer_services: ["orion-hub"]
+    single_consumer: true
+    stability: "experimental"
+    since: "2026-09-26"
+    description: "Admitted reading-only turn. Required GPU hold is validated by Hub; reply uses the correlation ID."
+
+  - name: "orion:reading:turn:reply:*"
+    kind: "result"
+    schema_id: "ReadingTurnResultV1"
+    message_kind: "reading.turn.result.v1"
+    producer_services: ["orion-hub"]
+    consumer_services: ["orion-durable-runs"]
+    stability: "experimental"
+    since: "2026-09-26"
+    description: "Reading turn result with source-fetch receipts, checkpointed before Hub landing."
+
+  - name: "orion:reverie:visual:step:request"
+    kind: "request"
+    schema_id: "ReverieVisualStepRequestV1"
+    message_kind: "reverie.visual.step.request.v1"
+    producer_services: ["orion-durable-runs"]
+    consumer_services: ["orion-thought"]
+    single_consumer: true
+    stability: "experimental"
+    since: "2026-09-28"
+    description: "One stage (prepare, generate, caption, abandon) of an admitted reverie.visual run. Only generate carries the run's diffusion hold, which thought validates before touching the GPU; reply uses the correlation ID."
+
+  - name: "orion:reverie:visual:step:reply:*"
+    kind: "result"
+    schema_id: "ReverieVisualStepResultV1"
+    message_kind: "reverie.visual.step.result.v1"
+    producer_services: ["orion-thought"]
+    consumer_services: ["orion-durable-runs"]
+    stability: "experimental"
+    since: "2026-09-28"
+    description: "Stage result: done (advance), retry (deferral; resume the same stage, no attempt spent) or terminal (finish with the named outcome). Checkpointed by the run."
+
   - name: "orion:curiosity:turn:request"
     kind: "request"
     schema_id: "CuriosityTurnRequestV1"
@@ -3256,6 +3510,37 @@ channels:
     stability: "experimental"
     since: "2026-09-06"
     description: "Missing from the initial patch (2026-09-06): Hub's ORION_BUS_ENFORCE_CATALOG=true made every reply publish here raise ValueError, so no harness turn could ever complete -- the runner retried the same run for a full RPC timeout, forever, wasting a real generation each cycle. See orion:curiosity:turn:request above."
+
+  - name: "orion:curiosity:urgent:request"
+    kind: "request"
+    schema_id: "CuriosityUrgentRequestV1"
+    message_kind: "curiosity.urgent.request.v1"
+    producer_services: ["orion-hub", "orion-hardware-watch"]
+    consumer_services: ["orion-hub"]
+    single_consumer: true
+    stability: "experimental"
+    since: "2026-09-28"
+    description: "Start an urgent, seeded curiosity run (manual from Hub, heat/cooling from the hardware watcher); Hub dispatches it at priority urgent, at most one open run per incident_id. docs/superpowers/specs/2026-09-28-urgent-curiosity-and-hardware-watch-design.md"
+
+  - name: "orion:hardware:watch:incident"
+    kind: "event"
+    schema_id: "HardwareWatchIncidentV1"
+    message_kind: "hardware.watch.incident.v1"
+    producer_services: ["orion-hardware-watch"]
+    consumer_services: ["orion-gpu-pool"]
+    stability: "experimental"
+    since: "2026-09-29"
+    description: "Hardware watcher incident facts (cooling / cpu_heat / gpu_heat): opened, resolved, and a refresh of every open incident each minute. Cooling incidents carry the shed request the GPU pool reads as shed reason cooling_incident (scheduler U4). docs/superpowers/plans/2026-09-29-urgent-curiosity-plan-4-5-hardware-watch-and-shedding.md"
+
+  - name: "orion:hardware:watch:reflex_shed"
+    kind: "event"
+    schema_id: "HardwareWatchReflexShedV1"
+    message_kind: "hardware.watch.reflex_shed.v1"
+    producer_services: ["orion-hardware-watch"]
+    consumer_services: ["orion-gpu-pool"]
+    stability: "experimental"
+    since: "2026-10-06"
+    description: "Thermal controller v2 reflex (HARDWARE_WATCH_HEAT_CONTROLLER=v2): re-sent every tick while the cabinet is critical (>=34 C, shed reason cabinet_hot: background+system) or unreadable past grace (cabinet_unknown: background), valid_until = now + 3 ticks; one active=false clear when it drops. Deploy the pool consumer first. docs/superpowers/specs/2026-10-06-thermal-controller-redesign-design.md (D2)"
 
   - name: "orion:curiosity:help:request"
     kind: "event"
@@ -3347,6 +3632,19 @@ channels:
     consumer_services: ["orion-hub"]
     stability: "experimental"
     since: "2026-07-05"
+
+  # Draft-first display (spec L8). The reply writer's draft, after
+  # deterministic grounding, published before the finalize judge runs. The Hub
+  # shows it and later replaces it in place with the final text. Display only:
+  # nothing persists this as a turn (bus-mirror copies it like other events).
+  - name: "orion:harness:run:draft_preview"
+    kind: "event"
+    schema_id: "HarnessRunDraftPreviewV1"
+    message_kind: "harness.run.draft_preview.v1"
+    producer_services: ["orion-harness-governor"]
+    consumer_services: ["orion-hub"]
+    stability: "experimental"
+    since: "2026-10-06"
 
   - name: "orion:cockpit:hop"
     kind: "event"
@@ -3452,7 +3750,7 @@ channels:
     consumer_services: ["orion-hub"]
     stability: "experimental"
     since: "2026-09-10"
-    description: "Ephemeral internal tool RPC; no acceptance until a durable queue receipt arrives. Status accepts exactly one request_id or url; URL selects the newest matching request without enqueueing."
+    description: "Ephemeral internal tool RPC; no acceptance until a durable queue receipt arrives. Status accepts exactly one request_id or url; URL selects the newest matching request without enqueueing. reading_result (orion-introspect) is read-only: one read by request_id or url, or recent finished reads (limit, since)."
 
   - name: "orion:reading:tool:result:*"
     kind: "result"
@@ -3462,7 +3760,28 @@ channels:
     consumer_services: ["orion-harness-governor"]
     stability: "experimental"
     since: "2026-09-10"
-    description: "Durable queue receipt or durable status. A timeout means acceptance is unknown."
+    description: "Durable queue receipt, durable status, or an IntrospectResultV1 for reading_result. A timeout means acceptance (or the introspection answer) is unknown."
+
+  - name: "orion:introspect:dream:request"
+    kind: "request"
+    schema_id: "IntrospectRequestV1"
+    message_kind: "introspect.tool.request.v1"
+    producer_services: ["orion-harness-governor"]
+    consumer_services: ["orion-dream"]
+    single_consumer: true
+    stability: "experimental"
+    since: "2026-09-28"
+    description: "orion-introspect dreams tool RPC. Read-only: recent, one by dream_id, or query by meaning over narrative dreams and already-offered sleep-cycle hypotheses (both arms, arm never exposed). Reply on orion:introspect:result:<correlation_id>."
+
+  - name: "orion:introspect:result:*"
+    kind: "result"
+    schema_id: "IntrospectResultV1"
+    message_kind: "introspect.tool.result.v1"
+    producer_services: ["orion-dream"]
+    consumer_services: ["orion-harness-governor"]
+    stability: "experimental"
+    since: "2026-09-28"
+    description: "Owning-service answer to an introspect request. ok=true with items=[] means nothing matched; ok=false or a timeout means the answer is unknown."
 
   - name: "orion:reading:requested"
     kind: "event"

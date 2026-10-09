@@ -1490,39 +1490,27 @@ async def _dispatch_reflect_durable_run(
             llm_route=llm_route,
         ),
         admission=ResourceRequirementV1(
-            allow_elastic_activation=True,
             preferred_lane=llm_route or "agent",
             resource=f"llm.route.{llm_route or 'agent'}",
         ),
     )
-    payload = {
-        "mode": "brain",
-        "context": {
-            "messages": [{"role": "user", "content": "self_study.reflect"}],
-            "user_message": "self_study.reflect",
-            "session_id": "self-study-reflect",
-            "metadata": {"durable_run": request.model_dump(mode="json", exclude_none=True)},
-        },
-    }
-    reply_channel = f"orion:cortex:result:self-study-reflect-kickoff:{run_id}"
-    envelope = BaseEnvelope(
-        kind="cortex.orch.request",
+    from .durable_kickoff import submit_durable_run
+
+    reply = await submit_durable_run(
+        bus=bus,
         source=source,
-        correlation_id=_as_envelope_correlation_id(f"self-study-reflect-kickoff:{run_id}"),
-        reply_to=reply_channel,
-        payload=payload,
+        request=request,
+        request_channel=CORTEX_ORCH_REQUEST_CHANNEL,
+        reply_channel=f"orion:cortex:result:self-study-reflect-kickoff:{run_id}",
+        envelope_correlation_id=_as_envelope_correlation_id(f"self-study-reflect-kickoff:{run_id}"),
+        session_id="self-study-reflect",
+        user_message="self_study.reflect",
+        timeout_sec=20.0,
     )
-    try:
-        raw = await bus.rpc_request(CORTEX_ORCH_REQUEST_CHANNEL, envelope, reply_channel=reply_channel, timeout_sec=20.0)
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("self_study_reflect_durable_dispatch_failed run=%s err=%s", run_id, exc)
+    if reply.result is None and reply.error and not reply.error.startswith("undecodable_reply"):
+        logger.warning("self_study_reflect_durable_dispatch_failed run=%s err=%s", run_id, reply.error)
         return False, run_id
-    try:
-        decoded = bus.codec.decode(raw.get("data") if isinstance(raw, dict) else raw)
-        result = decoded.envelope.payload if decoded.ok else None
-    except Exception:  # noqa: BLE001
-        result = None
-    status = str((result or {}).get("status") or "")
+    status = reply.status
     accepted = status == "accepted"
     logger.info("self_study_reflect_durable_dispatched run=%s corr=%s status=%s", run_id, correlation_id, status or "no_reply")
     return accepted, run_id

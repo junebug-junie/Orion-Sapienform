@@ -6,7 +6,6 @@ from pathlib import Path
 
 from orion.schemas.metacog_patches import (
     MetacogDraftTextPatchV1,
-    MetacogDraftWhatChangedV1,
 )
 
 
@@ -57,8 +56,7 @@ def test_draft_prompt_requires_patch_only():
     assert "FULL CollapseMirrorEntryV2" not in text
     example_payload = json.loads(example)
     assert set(example_payload.keys()) <= _allowed_keys(MetacogDraftTextPatchV1)
-    what_changed = example_payload.get("what_changed") or {}
-    assert set(what_changed.keys()) <= _allowed_keys(MetacogDraftWhatChangedV1)
+    assert "what_changed" not in _allowed_keys(MetacogDraftTextPatchV1)
 
 
 def test_enrich_step_and_template_removed():

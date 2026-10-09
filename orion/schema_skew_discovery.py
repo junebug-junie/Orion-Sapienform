@@ -81,11 +81,32 @@ DECLARED_WRITERS: dict[str, tuple[Optional[str], str]] = {
         "orion-memory-consolidation",
         "validates the LLM draft, insert_pending_draft() stores it; hub routes validate it back",
     ),
-    "orion.schemas.resource_admission:CapacityPermitV1": (
+    "orion.schemas.orion_day:OrionDayLetterV1": (
         "orion-durable-runs",
-        "built from a SQL row in orion.durable_admission.capacity, served by /capacity/acquire; capacity_client validates it",
+        "orion_day graph persist node inserts the orion_day_letter row (app/orion_day_store.py); "
+        "hub reads it back via orion.orion_day.store.fetch_letter",
+    ),
+    "orion.core.schemas.substrate_graph_journal:SubstrateGraphProposalV1": (
+        "orion-durable-runs",
+        "memory referent persist (orion/memory/referents/store.py) inserts journal rows; the "
+        "orion-memory-consolidation referent projector reads them back via SubstrateGraphJournal",
+    ),
+    "orion.core.schemas.substrate_graph_journal:SubstrateGraphDecisionV1": (
+        "orion-durable-runs",
+        "memory referent persist inserts source_cooccurrence_v1 decisions; the consolidation "
+        "projector (AssertionProjector) reads them back via SubstrateGraphJournal",
+    ),
+    "orion.schemas.introspect:DreamsArguments": (
+        "orion-harness-governor",
+        "orion-introspect MCP (spawned by the governor's FCC turns) validates the model's dreams "
+        "tool arguments into the bus request; orion-dream's introspect listener validates them back",
     ),
     # No cross-service writer.
+    "orion.substrate.neighborhood:NeighborhoodRequestV1": (
+        None,
+        "in-process query-plan arguments / explicit diagnostic request JSON; "
+        "no bus payload or cross-service writer",
+    ),
     "orion/attention/field_attention/policy.py": (None, "policy YAML the reader loads itself"),
     "orion.autonomy.models:CapabilityPolicyV1": (None, "capability policy YAML the reader loads itself"),
     "orion.autonomy.models:CapabilityPolicyRuleV1": (None, "capability policy YAML the reader loads itself"),

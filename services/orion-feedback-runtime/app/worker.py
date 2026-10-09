@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime, timezone
+import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -14,12 +15,23 @@ from orion.feedback.outcome_resolution import (
     summarize_control_observations,
 )
 from orion.feedback.policy import load_feedback_policy
+from orion.feedback.world_settlement import CONTROL_ARM, score_world_episode
+from orion.autonomy.cabinet_heat import CABINET_HEAT_SIGNAL, cabinet_heat_pressure, minute_mean
+from orion.autonomy.contrast import baseline_bin
 from orion.schemas.feedback_frame import FeedbackFrameV1
 
 from app.settings import get_settings
-from app.store import FeedbackRuntimeStore
+from app.store import UNSETTLED_RENDER_STATES, FeedbackRuntimeStore
 
 logger = logging.getLogger("orion.feedback.runtime")
+
+# Parked frames (durable render still settling) are re-read at most this often.
+_VISUAL_PARK_RECHECK_SEC = 30.0
+# Past this many parked frames the head defers in place instead (still bounded by
+# FEEDBACK_VISUAL_SETTLE_MAX_SEC); keeps the exclusion list and the query small.
+_VISUAL_PARK_MAX_FRAMES = 256
+# A parked entry whose recheck came due this long ago was consumed some other way.
+_VISUAL_PARK_FORGET_SEC = 3600.0
 
 
 class FeedbackRuntimeWorker:
@@ -34,6 +46,7 @@ class FeedbackRuntimeWorker:
         )
         self._policy = load_feedback_policy(Path(self._settings.feedback_policy_path))
         self._stop = asyncio.Event()
+        self._visual_parked: dict[str, float] = {}
         self._bus = OrionBusAsync(
             self._settings.bus_url,
             enabled=self._settings.bus_enabled,
@@ -62,6 +75,10 @@ class FeedbackRuntimeWorker:
                     await self._publish_feedback_frame(frame)
             except Exception:
                 logger.exception("feedback_runtime_tick_failed")
+            try:
+                await asyncio.to_thread(self._score_world_episodes)
+            except Exception:
+                logger.exception("feedback_world_settlement_failed")
             try:
                 await asyncio.wait_for(
                     self._stop.wait(),
@@ -92,7 +109,19 @@ class FeedbackRuntimeWorker:
         # Rate-limited internally (default once per 15 min); safe to call every tick.
         self._store.reconcile_feedback_pending()
 
-        dispatch = self._store.load_latest_dispatch_frame_without_feedback()
+        parked = self._visual_parked_frames()
+        now_mono = time.monotonic()
+        for frame_id, recheck_at in list(parked.items()):
+            if now_mono - recheck_at > _VISUAL_PARK_FORGET_SEC:
+                # Scored or requeued elsewhere since; never picked back up here.
+                parked.pop(frame_id, None)
+        excluded = [fid for fid, recheck_at in parked.items() if recheck_at > now_mono]
+        if excluded:
+            dispatch = self._store.load_latest_dispatch_frame_without_feedback(
+                exclude_frame_ids=excluded
+            )
+        else:
+            dispatch = self._store.load_latest_dispatch_frame_without_feedback()
         if dispatch is None:
             return None
         if self._store.load_feedback_frame_for_dispatch(dispatch.frame_id) is not None:
@@ -109,6 +138,41 @@ class FeedbackRuntimeWorker:
         # measured rather than assumed.
         cortex_results = self._store.load_cortex_result_evidence(dispatch)
 
+        pending_renders = _pending_render_dispatch_ids(cortex_results)
+        if pending_renders:
+            visual_age_sec = (datetime.now(timezone.utc) - dispatch.generated_at).total_seconds()
+            max_sec = float(self._settings.feedback_visual_settle_max_sec)
+            # Negative age scores as-is, for the same stuck-head reason as the settle defer below.
+            if 0.0 <= visual_age_sec < max_sec:
+                # A durable render has not settled yet: scoring now would fold
+                # "unknown" for an image that may still arrive. Park the frame and
+                # let the FIFO move on (utilization is ~95%, so holding the head
+                # for up to max_sec would build a backlog); it comes back as the
+                # oldest pending frame once its recheck time passes.
+                if dispatch.frame_id in parked or len(parked) < _VISUAL_PARK_MAX_FRAMES:
+                    parked[dispatch.frame_id] = now_mono + min(
+                        _VISUAL_PARK_RECHECK_SEC, max_sec - visual_age_sec
+                    )
+                logger.info(
+                    "feedback_frame_parked_visual_settlement dispatch_frame_id=%s age_sec=%.1f "
+                    "max_sec=%.1f pending_dispatch_ids=%s parked=%d",
+                    dispatch.frame_id,
+                    visual_age_sec,
+                    max_sec,
+                    sorted(pending_renders),
+                    len(parked),
+                )
+                return None
+            (logger.warning if max_sec > 0 else logger.debug)(
+                "feedback_visual_settlement_bound_expired dispatch_frame_id=%s age_sec=%.1f "
+                "max_sec=%.1f pending_dispatch_ids=%s -- scoring visual as-is (unknown)",
+                dispatch.frame_id,
+                visual_age_sec,
+                max_sec,
+                sorted(pending_renders),
+            )
+        parked.pop(dispatch.frame_id, None)
+
         # THE WINDOW HAS TO CONTAIN THE ACTION, AND ACTIONS NO LONGER SHARE ONE
         # DURATION. `action_settle_sec` was a single 15s constant sized against
         # a population of 1.2-5.4s actions (see store.load_action_scoring_
@@ -120,7 +184,9 @@ class FeedbackRuntimeWorker:
         # written to fix, re-created for a slower action by a constant that
         # could not follow it. The action was then retired below the
         # information floor on evidence that was null by construction.
-        settle_sec, settle_clamped = self._scoring_settle_sec(cortex_results)
+        settle_sec, settle_clamped = self._scoring_settle_sec(
+            cortex_results, dispatched_at=dispatch.generated_at
+        )
         age_sec = (datetime.now(timezone.utc) - dispatch.generated_at).total_seconds()
         # `0.0 <=` is the retirement path, not a tidiness guard. The defer
         # clears itself only because wall-clock age grows; a NEGATIVE age never
@@ -256,9 +322,69 @@ class FeedbackRuntimeWorker:
             )
         return frame
 
+    def _score_world_episodes(self, now: datetime | None = None) -> int:
+        """Settle-time scoring for world actions (both arms). Rate limited; returns rows scored."""
+        if not getattr(self._settings, "world_settlement_scoring_enabled", False):
+            return 0
+        mono = time.monotonic()
+        next_at = getattr(self, "_world_next_at", None)
+        if next_at is not None and mono < next_at:
+            return 0
+        self._world_next_at = mono + float(self._settings.world_settlement_interval_sec)
+        now = now or datetime.now(timezone.utc)
+        episodes = self._store.load_world_episodes_due(now=now)
+        if not episodes:
+            return 0
+        posteriors = self._store.load_effect_posteriors()
+        controls = self._store.load_control_posteriors()
+        scored = 0
+        for ep in episodes:
+            t0 = ep["decided_at"]
+            ttl = float((ep.get("settlement") or {}).get("ttl_sec") or 900.0)
+            end = t0 + timedelta(seconds=ttl + 300.0)
+            try:
+                points = self._store.load_cabinet_points(since=t0 - timedelta(minutes=2), until=end + timedelta(minutes=2))
+                incidents = self._store.load_hardware_incidents_opened(since=t0, until=end)
+            except Exception:
+                logger.warning("world_settlement_inputs_unavailable episode_id=%s", ep.get("episode_id"), exc_info=True)
+                continue
+            bin_index = baseline_bin(float(cabinet_heat_pressure(minute_mean(points, t0)) or 0.0)) if points else 0
+            prior = posteriors.get((ep.get("dispatch_kind"), ep.get("target_id"), CABINET_HEAT_SIGNAL, bin_index))
+            control = controls.get((CABINET_HEAT_SIGNAL, CONTROL_ARM, bin_index))
+            score = score_world_episode(episode=ep, points=points, incidents=incidents, prior=prior,
+                                        control_prior=control, now=now)
+            if score is None:
+                continue
+            if score.loop_outcome is not None:
+                try:
+                    sal = self._store.load_loop_salience(open_loop_id=score.loop_outcome["loop_id"], since=end)
+                except Exception:
+                    sal = None
+                score.loop_outcome["salience_at_close"] = sal or 0.0
+                score.loop_outcome["features_at_close"]["next_tick_salience"] = sal
+            if self._store.save_world_score(episode_id=str(ep["episode_id"]), score=score, scored_at=now):
+                scored += 1
+                logger.info("world_episode_scored episode_id=%s arm=%s terminal=%s delta=%s excluded=%s overlap=%s "
+                            "posterior_updated=%s loop_outcome=%s before_c=%s after_c=%s",
+                            ep["episode_id"], ep.get("arm"), score.outcome.get("terminal"),
+                            score.outcome.get("observed_delta"), score.outcome.get("excluded_reason"),
+                            score.outcome.get("overlap"), score.outcome.get("posterior_updated"),
+                            bool(score.loop_outcome), score.outcome.get("before_temp_c"),
+                            score.outcome.get("after_temp_c"))
+        return scored
+
+    def _visual_parked_frames(self) -> dict[str, float]:
+        """dispatch frame_id -> monotonic time it may be looked at again."""
+        parked = getattr(self, "_visual_parked", None)
+        if parked is None:
+            parked = self._visual_parked = {}
+        return parked
 
     def _scoring_settle_sec(
-        self, cortex_results: list[dict[str, object]] | None
+        self,
+        cortex_results: list[dict[str, object]] | None,
+        *,
+        dispatched_at: datetime | None = None,
     ) -> tuple[float, bool]:
         """How long to wait before sampling the field, for THIS frame.
 
@@ -286,9 +412,15 @@ class FeedbackRuntimeWorker:
         was free" and silently reproduce the too-narrow window this exists to
         fix. Clamped at `action_settle_max_sec` so one pathological latency
         cannot park the FIFO head for hours.
+
+        A durable render's latency_ms is its GPU seconds, not when the image
+        existed: the run may have queued for the diffusion lane first. For those
+        the window reaches the run's own finished_at instead, so a render that
+        ended minutes after dispatch clamps (and is refused) rather than being
+        scored from a sample taken before its image existed.
         """
         base = float(self._settings.action_settle_sec)
-        latencies = _latencies(cortex_results)
+        latencies = _window_latencies(cortex_results, dispatched_at)
         if not latencies:
             return base, False
         worst_sec = max(latencies.values()) / 1000.0
@@ -300,6 +432,41 @@ class FeedbackRuntimeWorker:
             # already knows is null by construction.
             return ceiling, True
         return wanted, False
+
+
+def _pending_render_dispatch_ids(cortex_results: list[dict[str, object]] | None) -> set[str]:
+    return {
+        str(raw.get("dispatch_id") or "")
+        for raw in cortex_results or []
+        if raw.get("settlement_state") in UNSETTLED_RENDER_STATES
+    }
+
+
+def _window_latencies(
+    cortex_results: list[dict[str, object]] | None, dispatched_at: datetime | None
+) -> dict[str, float]:
+    """Per-dispatch ms the scoring window must cover: measured latency, widened to
+    the durable run's real end (finished_at - dispatch time) for settled renders."""
+    out = _latencies(cortex_results)
+    if dispatched_at is None:
+        return out
+    if dispatched_at.tzinfo is None:
+        dispatched_at = dispatched_at.replace(tzinfo=timezone.utc)
+    for raw in cortex_results or []:
+        dispatch_id = str(raw.get("dispatch_id") or "")
+        finished_raw = raw.get("settled_finished_at")
+        if not dispatch_id or not finished_raw:
+            continue
+        try:
+            finished = datetime.fromisoformat(str(finished_raw))
+        except ValueError:
+            continue
+        if finished.tzinfo is None:
+            finished = finished.replace(tzinfo=timezone.utc)
+        elapsed_ms = (finished - dispatched_at).total_seconds() * 1000.0
+        if elapsed_ms > out.get(dispatch_id, 0.0):
+            out[dispatch_id] = elapsed_ms
+    return out
 
 
 def _latencies(cortex_results: list[dict[str, object]] | None) -> dict[str, float]:

@@ -21,11 +21,14 @@ from collections import deque
 from datetime import datetime, timezone
 from typing import Any, Sequence
 
+from orion.substrate.eligibility import is_cognitive_node
 from orion.schemas.attention_frame import (
     VOLUNTARY_OVERRIDE_ABSENT_REASON_KEY,
     AttentionBroadcastProjectionV1,
     AttentionFrameV1,
     AttentionSignalV1,
+    OpenLoopV1,
+    PredictionErrorMagnitudeV1,
     VoluntaryOverrideAbsentReasonV1,
 )
 from orion.substrate.attention.common import compact, stable_id
@@ -125,6 +128,10 @@ def substrate_pressure_signals(
     signals: list[AttentionSignalV1] = []
     for node in nodes:
         try:
+            if not is_cognitive_node(node):
+                # Assertions and memory referents/evidence never compete for the
+                # workspace (orion/substrate/eligibility.py, #2497 rule 8).
+                continue
             metadata = dict(getattr(node, "metadata", None) or {})
             salience, kind = _node_salience(metadata)
             if salience < min_salience:
@@ -170,8 +177,15 @@ def build_substrate_attention_frame(
     max_signals: int = DEFAULT_MAX_SIGNALS,
     max_open: int = 5,
     now: datetime | None = None,
+    magnitude_by_node_id: dict[str, PredictionErrorMagnitudeV1] | None = None,
 ) -> AttentionFrameV1:
     """One workspace competition over the substrate graph; always one winner.
+
+    ``magnitude_by_node_id`` (substrate-runtime passes it only when
+    ``SUBSTRATE_PE_HISTORY_ENABLED`` is on) attaches each loop's
+    prediction-error size/range/direction as ``OpenLoopV1.magnitude``. It is
+    descriptive only: it is attached after ``build_open_loops`` and never
+    read by scoring or ``select_actions``, so it cannot change who wins.
 
     Same pipeline as the chat-scoped ``build_attention_frame`` but with empty
     chat context and ``max_asks=0``: high-pressure loops may score as asks and
@@ -190,7 +204,6 @@ def build_substrate_attention_frame(
         inputs={},
         belief_lineage=lineage,
         direct_turn=False,
-        generic_reversal=False,
         stale_thread_active=False,
         max_open=max_open,
         # Substrate broadcast is rung-3's continuous re-broadcast, the exact
@@ -210,12 +223,13 @@ def build_substrate_attention_frame(
         # blocking a loop 2026-08-19 with no way to lapse.
         verdict_lookup=lambda ids: load_terminal_verdict_loop_ids(ids, now=resolved_now),
     )
+    if magnitude_by_node_id:
+        _attach_magnitudes(open_loops, magnitude_by_node_id)
     actions, selected, suppressions, deferred = select_actions(
         open_loops=open_loops,
         suppressions=[],
         min_ask=0.65,
         max_asks=0,
-        generic_reversal=False,
         stale_thread_active=False,
     )
     frame = AttentionFrameV1(
@@ -239,6 +253,24 @@ def build_substrate_attention_frame(
 
 
 logger = logging.getLogger(__name__)
+
+
+def _attach_magnitudes(
+    loops: Sequence[OpenLoopV1],
+    magnitude_by_node_id: dict[str, PredictionErrorMagnitudeV1],
+) -> None:
+    """Set ``loop.magnitude`` from the first ``source_refs`` node that has one.
+
+    ``source_refs[0]`` is the originating ``node:substrate.*`` id (seeded by
+    ``substrate_pressure_signals``); later refs are contributing turn ids,
+    which never match. Loops without a matching node stay ``None``.
+    """
+    for loop in loops:
+        for ref in loop.source_refs:
+            mag = magnitude_by_node_id.get(ref)
+            if mag is not None:
+                loop.magnitude = mag
+                break
 
 
 def _classify_override_absence(

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Literal
 
 from orion.attention.field_attention.candidate_precision_weighted import (
@@ -127,6 +128,28 @@ def _current_pressure_proxy(vector: dict[str, float]) -> float:
     return max(values) if values else 0.0
 
 
+def _measurement_change_free_novelty(
+    current: dict[str, float], previous: dict[str, float]
+) -> float | None:
+    """#2534 decision 2 (approved 2026-10-07): novelty that does not count a
+    channel going dark or coming back as a change.
+
+    A channel absent from a vector is unmeasured (decay.py
+    expire_unrefreshed_channels for nodes, diffusion.apply_diffusion for
+    capabilities). When the set of measured channels differs between the two
+    ticks, both proxies are taken over the channels measured in BOTH, so the
+    vision router dying (pressure 0.85 -> key gone) is not news, while a real
+    move on a channel measured in both still is. None when the sets are equal:
+    the caller keeps the ordinary diff, which is then the same number.
+    """
+    if set(current) == set(previous):
+        return None
+    common = set(current) & set(previous)
+    now = _current_pressure_proxy({k: current[k] for k in common})
+    before = _current_pressure_proxy({k: previous[k] for k in common})
+    return clamp01(abs(now - before))
+
+
 def _novelty_targets(
     field: FieldStateV1,
     policy: FieldAttentionPolicyV1,
@@ -134,6 +157,7 @@ def _novelty_targets(
     *,
     vectors: dict[str, dict[str, float]],
     target_kind: str,
+    previous_vectors: dict[str, dict[str, float]] | None = None,
 ) -> list[FieldAttentionTargetV1]:
     """Shared implementation for host and capability targets: Candidate B's
     `novelty_scorer()` (Global Workspace/Society-of-Mind, Baars 1988 /
@@ -182,6 +206,25 @@ def _novelty_targets(
         return []
     current_pressure = {tid: _current_pressure_proxy(vectors[tid]) for tid in target_ids}
     novelty_scores = novelty_scorer(target_ids, current_pressure, previous_frame)
+    # previous_vectors: the previous frame's own field tick (caller checks the
+    # tick id matches). Only targets that had a real prior entry are adjusted;
+    # a first appearance stays "real news" as documented above.
+    adjusted_reason: dict[str, str] = {}
+    if previous_vectors is not None and previous_frame is not None:
+        for tid in target_ids:
+            prev = previous_vectors.get(tid)
+            if prev is None or not target_had_real_prior_entry(tid, previous_frame):
+                continue
+            adjusted = _measurement_change_free_novelty(vectors[tid], prev)
+            if adjusted is not None:
+                novelty_scores[tid] = adjusted
+                # Recorded on the frame so the live path is checkable from
+                # stored rows (review finding, 2026-10-07).
+                adjusted_reason[tid] = (
+                    "novelty_common_channels_only "
+                    f"went_dark={sorted(set(prev) - set(vectors[tid]))} "
+                    f"came_back={sorted(set(vectors[tid]) - set(prev))}"
+                )
 
     targets: list[FieldAttentionTargetV1] = []
     for target_id in target_ids:
@@ -203,7 +246,8 @@ def _novelty_targets(
                     f"(novelty={novelty:.4f}); magnitude/dwell scorers not applied "
                     "(no real data for this target universe / near-always-empty "
                     "coalition, respectively -- see selector docstring)"
-                ],
+                ]
+                + ([adjusted_reason[target_id]] if target_id in adjusted_reason else []),
                 evidence_refs=[f"field:{field.tick_id}"],
                 suggested_observation_mode=observation_mode_for(novelty, policy),
             )
@@ -226,6 +270,7 @@ def select_node_targets(
     field: FieldStateV1,
     policy: FieldAttentionPolicyV1,
     prediction_error_baselines: dict[str, PrecisionEwmaBaseline],
+    now: datetime | None = None,
 ) -> list[FieldAttentionTargetV1]:
     """Real, precision-weighted node targets only (Candidate A -- Feldman &
     Friston 2010, "Attention, Uncertainty, and Free-Energy":
@@ -269,6 +314,11 @@ def select_node_targets(
     data" and "confidently calm" are different claims, same discipline as
     before, just keyed off a real cumulative count instead of a
     window-bounded one.
+
+    2026-09-29: ``now`` ages each target's last reading
+    (`precision_weighted_salience_from_baseline`'s staleness fade). Without it a
+    domain that only reports on activity (chat) kept its last reading as the
+    "current" error for hours and won this competition on it.
     """
     results: dict[str, PrecisionWeightedSalienceResult] = {}
     raw_scores: dict[str, float] = {}
@@ -285,7 +335,7 @@ def select_node_targets(
             min_variance=NODE_TARGET_PREDICTION_ERROR_MIN_VARIANCE,
         )
         result = precision_weighted_salience_from_baseline(
-            baseline, min_variance=min_variance
+            baseline, min_variance=min_variance, now=now
         )
         if result.n_samples == 0:
             continue
@@ -302,6 +352,12 @@ def select_node_targets(
             f"precision-weighted prediction-error salience (current error "
             f"{result.current_error:.4f}, precision {result.precision:.2f}, n={result.n_samples})"
         ]
+        if result.staleness_factor < 1.0 and result.reading_age_sec is not None:
+            reasons.append(
+                f"stale reading: last error {result.raw_error:.4f} is "
+                f"{result.reading_age_sec / 60.0:.0f} min old, weighted "
+                f"{result.staleness_factor:.2f}"
+            )
         if result.variance_floored:
             reasons.append("variance-floor instability: near-constant recent error history")
         targets.append(
@@ -326,6 +382,7 @@ def select_host_targets(
     field: FieldStateV1,
     policy: FieldAttentionPolicyV1,
     previous_frame: FieldAttentionFrameV1 | None,
+    previous_field: FieldStateV1 | None = None,
 ) -> list[FieldAttentionTargetV1]:
     """Physical host nodes (`node:athena`/`circe`/`prometheus`,
     or any `field.node_vectors` key not in `PREDICTION_ERROR_
@@ -339,7 +396,12 @@ def select_host_targets(
         tid: v for tid, v in field.node_vectors.items() if tid not in PREDICTION_ERROR_NATIVE_TARGETS
     }
     return _novelty_targets(
-        field, policy, previous_frame, vectors=host_vectors, target_kind="node"
+        field,
+        policy,
+        previous_frame,
+        vectors=host_vectors,
+        target_kind="node",
+        previous_vectors=None if previous_field is None else previous_field.node_vectors,
     )
 
 
@@ -347,6 +409,7 @@ def select_capability_targets(
     field: FieldStateV1,
     policy: FieldAttentionPolicyV1,
     previous_frame: FieldAttentionFrameV1 | None,
+    previous_field: FieldStateV1 | None = None,
 ) -> list[FieldAttentionTargetV1]:
     """2026-07-30: was killed outright (always `[]`) when Candidate A's
     live-wiring shipped -- no capability target had a real prediction-error
@@ -358,7 +421,12 @@ def select_capability_targets(
     `_novelty_targets()`'s own docstring for the full scoring contract.
     """
     return _novelty_targets(
-        field, policy, previous_frame, vectors=dict(field.capability_vectors), target_kind="capability"
+        field,
+        policy,
+        previous_frame,
+        vectors=dict(field.capability_vectors),
+        target_kind="capability",
+        previous_vectors=None if previous_field is None else previous_field.capability_vectors,
     )
 
 

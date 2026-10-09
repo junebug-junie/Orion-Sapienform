@@ -224,6 +224,33 @@ class Settings(BaseSettings):
     orion_dispatch_holdback_fraction: float = Field(
         0.0, alias="ORION_DISPATCH_HOLDBACK_FRACTION", ge=0.0, le=0.5
     )
+    # 2026-10-01 -- attend-to-act loop (docs/superpowers/specs/2026-09-29-attend-to-act-loop-design.md
+    # D5). The MASTER switch for world actions (SELF_REVERSIBLE_SCOPE routes, today only
+    # shed_background_gpu). false -> every such candidate is blocked `world_actions_disabled`, visibly.
+    # OFF in code AND in .env_example: Juniper flips it. Kill: set false and restart this service.
+    orion_world_actions_enabled: bool = Field(False, alias="ORION_WORLD_ACTIONS_ENABLED")
+    # Comma-separated template keys that may dispatch while the master switch is on. Empty = none.
+    orion_world_actions_allowed_raw: str = Field("", alias="ORION_WORLD_ACTIONS_ALLOWED")
+    # A world candidate whose eligibility snapshot (taken at proposal time) is older than this at send
+    # time is blocked `world_eligibility_stale` instead of acting on a stale view of the room.
+    orion_world_action_eligibility_max_age_sec: float = Field(
+        120.0, gt=0, alias="ORION_WORLD_ACTION_ELIGIBILITY_MAX_AGE_SEC"
+    )
+    # The shed RPC (orion:gpu_pool:shed:request) and the TTL it asks for (the pool caps it anyway).
+    orion_gpu_pool_shed_rpc_timeout_sec: float = Field(5.0, gt=0, alias="ORION_GPU_POOL_SHED_RPC_TIMEOUT_SEC")
+    orion_shed_ttl_sec: float = Field(900.0, gt=0, le=3600, alias="ORION_SHED_TTL_SEC")
+    # Mirrors of the pool's caps (GPU_POOL_ORION_SHED_MIN_GAP_SEC / _MAX_SEC_PER_DAY), applied BEFORE the
+    # randomized draw so both arms come from the same population: a decision the pool would refuse is
+    # neither treated nor control. The pool still enforces its own values; keep the two equal.
+    orion_shed_min_gap_sec: float = Field(900.0, ge=0, alias="ORION_SHED_MIN_GAP_SEC")
+    orion_shed_max_sec_per_day: float = Field(3600.0, ge=0, alias="ORION_SHED_MAX_SEC_PER_DAY")
+
+    @property
+    def world_actions_allowed(self) -> frozenset[str] | None:
+        """None while the master switch is off (builder blocks everything); else the allowlist."""
+        if not self.orion_world_actions_enabled:
+            return None
+        return frozenset(k.strip() for k in self.orion_world_actions_allowed_raw.split(",") if k.strip())
     # 2026-07-29: enforcement is back ON (default flipped True -> False).
     # Real sequence, not "we always knew this": ORION_DISPATCH_MAX_RISK_PER_DAY
     # was a fixed 10.0 constant, ENFORCED, from 2026-07-26 through 2026-07-27

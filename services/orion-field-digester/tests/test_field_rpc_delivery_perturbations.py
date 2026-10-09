@@ -67,8 +67,9 @@ def test_pseudo_node_survives_reconcile_and_reaches_transport_reliability():
     cap = state.capability_vectors["capability:transport"]
     assert cap["reliability_pressure"] == 0.85  # edge weight
     assert state.capability_provenance["capability:transport"]["reliability_pressure"] == NODE
-    # delivery failures are not load
-    assert cap["pressure"] == 0.0
+    # delivery failures are not load: with no bus_synaptic node in this
+    # fixture nothing measured pressure, so the key is absent, not 0.0.
+    assert "pressure" not in cap
 
 
 def test_calm_reading_is_a_measured_zero_attributed_to_the_bridge():
@@ -122,7 +123,7 @@ def test_stopped_bridge_expires_to_unmeasured_not_held():
     assert state.capability_provenance["capability:transport"]["reliability_pressure"] == NODE
     tick(NOW + timedelta(seconds=121))
     assert "rpc_timeout_pressure" not in state.node_vectors[NODE]
-    assert state.capability_vectors["capability:transport"]["reliability_pressure"] == 0.0
+    assert "reliability_pressure" not in state.capability_vectors["capability:transport"]
     assert "reliability_pressure" not in state.capability_provenance["capability:transport"]
 
 

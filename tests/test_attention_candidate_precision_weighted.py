@@ -451,3 +451,86 @@ class TestCrossDomainVarianceFloor:
         )
         # median of {1e-9, 0.02, 0.05, 0.1} = (0.02+0.05)/2
         assert floor == pytest.approx((0.02 + 0.05) / 2.0)
+
+
+# -- 2026-09-29 staleness fade -------------------------------------------------
+
+from datetime import datetime, timedelta, timezone  # noqa: E402
+
+from orion.attention.field_attention.candidate_precision_weighted import (  # noqa: E402
+    PREDICTION_ERROR_STALENESS_HORIZON_SEC,
+    prediction_error_staleness_factor,
+)
+
+_T = datetime(2026, 9, 29, 12, 0, tzinfo=timezone.utc)
+
+
+def test_staleness_horizon_matches_substrate_pressure_config() -> None:
+    """Copied, not imported (the attention runtime does not import orion.substrate);
+    this keeps the two from drifting apart."""
+    from orion.substrate.pressure import PressureConfig
+
+    assert PREDICTION_ERROR_STALENESS_HORIZON_SEC == PressureConfig().prediction_error_decay_horizon_seconds
+
+
+def test_staleness_factor_is_linear_to_zero_at_the_horizon() -> None:
+    h = PREDICTION_ERROR_STALENESS_HORIZON_SEC
+    assert prediction_error_staleness_factor(_T, now=_T) == 1.0
+    assert prediction_error_staleness_factor(_T - timedelta(seconds=h / 2), now=_T) == pytest.approx(0.5)
+    assert prediction_error_staleness_factor(_T - timedelta(seconds=h), now=_T) == 0.0
+    assert prediction_error_staleness_factor(_T - timedelta(hours=5), now=_T) == 0.0
+    # future stamp (clock skew) is age 0; missing clock is unaged
+    assert prediction_error_staleness_factor(_T + timedelta(seconds=30), now=_T) == 1.0
+    assert prediction_error_staleness_factor(None, now=_T) == 1.0
+    assert prediction_error_staleness_factor(_T, now=None) == 1.0
+    # naive timestamps are read as UTC
+    assert prediction_error_staleness_factor(
+        _T.replace(tzinfo=None) - timedelta(seconds=h / 4), now=_T
+    ) == pytest.approx(0.75)
+
+
+def test_salience_from_baseline_fades_a_stale_reading() -> None:
+    base = PrecisionEwmaBaseline(
+        ewma=0.1, variance=0.01, observation_count=50, last_value=0.4,
+        last_observed_at=_T - timedelta(seconds=PREDICTION_ERROR_STALENESS_HORIZON_SEC * 0.75),
+    )
+    fresh = precision_weighted_salience_from_baseline(base, min_variance=1e-5)
+    faded = precision_weighted_salience_from_baseline(base, min_variance=1e-5, now=_T)
+    assert fresh.current_error == pytest.approx(0.4)  # no clock -> unaged, as before
+    assert faded.raw_error == pytest.approx(0.4)
+    assert faded.staleness_factor == pytest.approx(0.25)
+    assert faded.current_error == pytest.approx(0.1)
+    assert faded.salience == pytest.approx(fresh.salience * 0.25)
+    assert faded.reading_age_sec == pytest.approx(PREDICTION_ERROR_STALENESS_HORIZON_SEC * 0.75)
+    # precision/variance/n untouched: the fade is about "now", not history
+    assert (faded.precision, faded.variance, faded.n_samples) == (fresh.precision, fresh.variance, 50)
+
+
+def test_fully_faded_target_is_still_present_with_zero_salience() -> None:
+    base = PrecisionEwmaBaseline(
+        ewma=0.1, variance=0.01, observation_count=50, last_value=0.9,
+        last_observed_at=_T - timedelta(hours=3),
+    )
+    r = precision_weighted_salience_from_baseline(base, min_variance=1e-5, now=_T)
+    assert r.n_samples == 50 and r.salience == 0.0 and r.current_error == 0.0
+
+
+def test_advance_never_folds_the_faded_value_or_moves_the_observed_clock() -> None:
+    """The EWMA must learn only from real receipts: advancing a stale baseline with a
+    new receipt folds that receipt's raw value, and the observed-at stamp is the
+    caller's (store's) job, carried through unchanged here."""
+    stamp = _T - timedelta(hours=2)
+    base = PrecisionEwmaBaseline(ewma=0.2, variance=0.01, observation_count=5, last_value=0.2, last_observed_at=stamp)
+    advanced = advance_precision_baseline(base, [0.6], alpha=0.2, min_variance=1e-5)
+    assert advanced.last_value == 0.6
+    assert advanced.ewma == pytest.approx(0.2 * 0.6 + 0.8 * 0.2)
+    assert advanced.last_observed_at == stamp
+
+
+def test_normalize_across_targets_all_zero_reads_zero_not_a_tie() -> None:
+    """Review 2026-09-29: once the staleness fade takes every quiet domain to exactly
+    0, the old tie rule read the whole set as salience 1.0."""
+    assert normalize_across_targets({"a": 0.0, "b": 0.0}) == {"a": 0.0, "b": 0.0}
+    assert normalize_across_targets({"a": 0.0}) == {"a": 0.0}
+    # A nonzero tie is still a tie at the top.
+    assert normalize_across_targets({"a": 2.0, "b": 2.0}) == {"a": 1.0, "b": 1.0}

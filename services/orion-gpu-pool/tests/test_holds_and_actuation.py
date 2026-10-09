@@ -9,7 +9,7 @@ from datetime import datetime, timedelta
 import pytest
 from langgraph.checkpoint.memory import MemorySaver
 
-from app.runtime import STATUS_POLL_SEC, STATUS_REPLY_SEC, PoolRuntime, validate_actuate_roles
+from app.runtime import STATUS_POLL_SEC, STATUS_REPLY_SEC, PoolRuntime
 from app.store import MemoryStore
 from orion.gpu_pool.config import launch_digest
 from orion.gpu_pool.discovery import Probe
@@ -30,7 +30,10 @@ class World:
         self.up = set(LIVE) | {"world", "diffusion"}
 
 
-def make(actuate=(SEAT,), store=None, saver=None, clock=None, world=None, bus=None, guards=CLEAR_GUARDS):
+def make(store=None, saver=None, clock=None, world=None, bus=None, guards=CLEAR_GUARDS, mode="observe"):
+    """mode=observe by default: these tests pin the actuation engine itself, and several adopt a seat
+    "loaded by the old path" through observe's liveness shortcut. Stage 5.7's enforce behaviour (boot
+    reconcile, operator holds, the pause) is in tests/test_stage5_7_enforce.py."""
     clock = clock or Clock()
     world = world or World()
 
@@ -46,7 +49,7 @@ def make(actuate=(SEAT,), store=None, saver=None, clock=None, world=None, bus=No
 
     rt = PoolRuntime(cfg=CFG, profiles=PROFILES, store=store or MemoryStore(),
                      graph=build_lease_graph(lambda: CFG, saver or MemorySaver()), bus=bus or FakeBus(),
-                     prober=prober, now=clock, probe_interval_sec=0, actuate_roles=actuate)
+                     prober=prober, now=clock, probe_interval_sec=0, mode=mode)
     rt.guard_states = dict(guards)
     rt._world = world
     return rt, clock
@@ -100,7 +103,7 @@ async def result(rt, msg, status, **kw):
 # --- holds ------------------------------------------------------------------------------------
 def test_hold_is_granted_with_the_hold_ttl_and_status_reads_it():
     async def go():
-        rt, clock = make(actuate=())
+        rt, clock = make()
         await boot(rt)
         h = await rt.acquire(hold("run1:1"))
         assert h.status == "granted" and h.grant.role == "agent"
@@ -115,7 +118,7 @@ def test_hold_is_granted_with_the_hold_ttl_and_status_reads_it():
 
 def test_attach_runs_in_the_holds_slot_and_never_takes_a_second():
     async def go():
-        rt, _ = make(actuate=())
+        rt, _ = make()
         await boot(rt)
         h = await rt.acquire(hold("run1:1"))
         c = await rt.attach(attach(h, "call-1", turn_correlation_id="t1"))
@@ -135,7 +138,7 @@ def test_attach_runs_in_the_holds_slot_and_never_takes_a_second():
 
 def test_attach_refuses_a_stale_or_missing_hold():
     async def go():
-        rt, _ = make(actuate=())
+        rt, _ = make()
         await boot(rt)
         h = await rt.acquire(hold("run1:1"))
         stale = await rt.attach(attach(h, "c-stale", generation=h.grant.generation + 1))
@@ -155,7 +158,7 @@ def test_attach_refuses_a_stale_or_missing_hold():
 
 def test_gap_sharing_is_by_priority():
     async def go():
-        rt, _ = make(actuate=())
+        rt, _ = make()
         await boot(rt)
         h = await rt.acquire(hold("run1:1"))            # background hold, no call in flight
         bg = await rt.acquire(acq("agent", priority="background"))
@@ -173,7 +176,7 @@ def test_gap_sharing_is_by_priority():
 
 def test_recall_gives_the_hold_grace_then_aborts_and_requeues_the_same_lease():
     async def go():
-        rt, clock = make(actuate=())
+        rt, clock = make()
         await boot(rt)
         await rt.control(GpuPoolControlV1(verb="lend", card="gpu0"))
         home = await rt.acquire(hold("run-home:1"))
@@ -189,7 +192,9 @@ def test_recall_gives_the_hold_grace_then_aborts_and_requeues_the_same_lease():
         assert (await rt.store.lease(borrowed.lease_id))["status"] == "recalling"   # still inside the grace
         await step(rt, clock, 60, beat=[home.lease_id, borrowed.lease_id])
         names = [e["event"] for e in rt.bus.events() if e.get("lease_id") == borrowed.lease_id]
-        assert names.index("aborted") < len(names) - 1 and "queued" in names[names.index("aborted"):]
+        assert "aborted" in names and "retried" not in names and "dead_lettered" not in names
+        row = await rt.store.lease(borrowed.lease_id)
+        assert row["attempt"] == 1                        # the pool took its seat back: not an attempt
         st = await rt.status(borrowed.lease_id)
         assert st.status in ("queued", "granted") and st.lease_id == borrowed.lease_id   # same lease id
     run(go())
@@ -197,7 +202,7 @@ def test_recall_gives_the_hold_grace_then_aborts_and_requeues_the_same_lease():
 
 def test_hold_expires_after_missed_heartbeats_then_is_regranted_with_a_new_generation():
     async def go():
-        rt, clock = make(actuate=())
+        rt, clock = make()
         await boot(rt)
         h = await rt.acquire(hold("run1:1"))
         await step(rt, clock, CFG.defaults.hold_lease_ttl_sec + 1)      # durable-runs is dead
@@ -214,10 +219,10 @@ def test_hold_expires_after_missed_heartbeats_then_is_regranted_with_a_new_gener
 def test_restart_resumes_a_hold_by_lease_id():
     async def go():
         store, saver, clock = MemoryStore(), MemorySaver(), Clock()
-        rt1, _ = make(actuate=(), store=store, saver=saver, clock=clock)
+        rt1, _ = make(store=store, saver=saver, clock=clock)
         await boot(rt1)
         h = await rt1.acquire(hold("run1:1"))
-        rt2, _ = make(actuate=(), store=store, saver=saver, clock=clock)
+        rt2, _ = make(store=store, saver=saver, clock=clock)
         await boot(rt2)
         st = await rt2.status(h.lease_id)
         assert st.status == "granted" and st.grant.generation == h.grant.generation
@@ -236,22 +241,27 @@ async def demand_gpu2(rt, clock):
     return home, waiting
 
 
-def test_actuation_is_off_unless_the_role_is_listed():
+def test_paused_actuation_reports_the_load_instead_of_sending_it():
     async def go():
-        rt, clock = make(actuate=())
+        rt, clock = make()
         await boot(rt)
+        assert (await rt.control(GpuPoolControlV1(verb="pause_actuation", actor="juniper"))).ok
         await demand_gpu2(rt, clock)
         assert actuations(rt) == []
         [s] = rt.bus.events("swap_requested")
-        assert s["detail"]["actuated"] is False and rt.cards["gpu2"].swap_state == "idle"
+        assert s["reason"] == "actuation_paused" and s["detail"]["wanted"] == "demand"
+        assert s["detail"]["actuated"] is False and s["detail"]["paused"] is True
+        assert rt.cards["gpu2"].swap_state == "idle"
     run(go())
 
 
-def test_actuate_roles_are_validated_at_boot():
-    assert validate_actuate_roles(CFG, ["agent-gpu2", " "]) == frozenset({"agent-gpu2"})
-    for bad in (["agent"], ["experiment"], ["nope"]):
-        with pytest.raises(ValueError):
-            validate_actuate_roles(CFG, bad)
+def test_the_actuated_seats_come_from_launch_blocks_alone():
+    """Stage 5.7: no GPU_POOL_ACTUATE_ROLES list -- a seat is actuated iff it has a launch block."""
+    rt, _ = make()
+    assert rt.actuated == frozenset({SEAT}) == CFG.actuated_seats()
+    assert "experiment" not in rt.actuated and CFG.roles["experiment"].launch is None
+    with pytest.raises(ValueError):
+        make(mode="observ")
 
 
 def test_load_success_path_then_grant_on_the_seat():
@@ -261,8 +271,11 @@ def test_load_success_path_then_grant_on_the_seat():
         home, waiting = await demand_gpu2(rt, clock)
         [msg] = actuations(rt)
         assert (msg.role, msg.action, msg.actuator, msg.cards, msg.generation) == (SEAT, "load", "circe", ["gpu2"], 1)
-        assert msg.launch_digest == launch_digest(CFG, SEAT) and msg.profile is None
-        assert rt.cards["gpu2"].swap_state == "loading" and rt.bus.events("swap_started")
+        # 5.3: a load names the seat's default profile (launch.profiles[0]); detail.profile records it
+        assert msg.launch_digest == launch_digest(CFG, SEAT) and msg.profile == CFG.load_profile(SEAT) is not None
+        assert rt.cards["gpu2"].swap_state == "loading"
+        assert [e["detail"]["profile"] for e in rt.bus.events("swap_started")] == [msg.profile]
+        assert rt.cards["gpu2"].swap_action["profile"] == msg.profile
         stored = (await rt.store.cards())
         assert {c["card"]: c["swap_state"] for c in stored}["gpu2"] == "loading"   # persisted before sending
         await result(rt, msg, "accepted")
@@ -279,7 +292,7 @@ def test_load_success_path_then_grant_on_the_seat():
         await result(rt, msg, "succeeded", elapsed_ms=120000, observed={SEAT: "running", "diffusion": "exited"})
         assert SEAT in rt.cards["gpu2"].swapped_in and rt.cards["gpu2"].loaded_at == clock()
         [sw] = rt.bus.events("swapped")
-        assert sw["detail"]["action_id"] == msg.action_id
+        assert sw["detail"]["action_id"] == msg.action_id and sw["detail"]["profile"] == msg.profile
         await step(rt, clock, 30, beat=[home.lease_id, waiting.lease_id])   # discovery confirms the 27B
         assert (await rt.store.lease(waiting.lease_id))["role"] == SEAT
     run(go())
@@ -403,16 +416,19 @@ def test_unanswered_status_faults_the_card():
     run(go())
 
 
-def test_pool_restart_mid_load_sends_status_never_a_second_transition():
+@pytest.mark.parametrize("mode", ["observe", "enforce"])
+def test_pool_restart_mid_load_sends_status_never_a_second_transition(mode):
+    """enforce too (stage 5.7): the idle-seat boot reconcile leaves a card mid-action to the pending
+    reconcile -- still exactly one status on the restart, never a second transition."""
     async def go():
         store, saver, clock = MemoryStore(), MemorySaver(), Clock()
-        rt1, _ = make(store=store, saver=saver, clock=clock)
+        rt1, _ = make(store=store, saver=saver, clock=clock, mode=mode)
         await boot(rt1)
         await demand_gpu2(rt1, clock)
-        [msg] = actuations(rt1)
+        [msg] = [m for m in actuations(rt1) if m.action == "load"]
         await result(rt1, msg, "accepted")
         bus2 = FakeBus()
-        rt2, _ = make(store=store, saver=saver, clock=clock, bus=bus2)
+        rt2, _ = make(store=store, saver=saver, clock=clock, bus=bus2, mode=mode)
         await rt2.start()
         sent = actuations(rt2)
         assert [(m.action, m.role) for m in sent] == [("status", SEAT)]
@@ -458,6 +474,62 @@ def test_idle_unload_then_min_residency_blocks_reload():
     run(go())
 
 
+def test_max_hold_recall_past_its_grace_requeues_the_hold_in_place_without_spending_an_attempt():
+    """Live 2026-09-26..28: a durable run on the gpu2 27B seat was recalled once the seat had been
+    loaded max_hold_sec (3600 s), aborted after the 600 s grace, and the abort spent a pool attempt
+    (retry_wait). Three of those dead-lettered the hold: ``unavailable:recall_grace_exceeded``. The
+    pool took its seat back; the hold must go back in line in its original place, attempt untouched,
+    and be re-granted (any eligible role) under the same lease id."""
+    async def go():
+        rt, clock = make()
+        await boot(rt)
+        home, waiting = await demand_gpu2(rt, clock)
+        [load] = actuations(rt)
+        await result(rt, load, "accepted")
+        rt._world.up.add(SEAT)
+        rt._world.up.discard("diffusion")
+        await result(rt, load, "succeeded", observed={SEAT: "running", "diffusion": "exited"})
+        await step(rt, clock, 30, beat=[home.lease_id, waiting.lease_id])
+        row = await rt.store.lease(waiting.lease_id)
+        assert row["role"] == SEAT and row["generation"] == 1
+        await step(rt, clock, CFG.roles[SEAT].max_hold_sec, beat=[home.lease_id, waiting.lease_id])
+        row = await rt.store.lease(waiting.lease_id)
+        assert row["status"] == "recalling" and row["reason"] == "max_hold"
+        await step(rt, clock, CFG.defaults.hold_clawback_grace_sec + 30, beat=[home.lease_id, waiting.lease_id])
+        row = await rt.store.lease(waiting.lease_id)
+        assert row["status"] == "queued" and row["attempt"] == 1 and row["reason"] == "recall_grace_exceeded"
+        st = await rt.status(waiting.lease_id)
+        assert st.status == "queued" and st.reason == "recall_grace_exceeded" and st.lease_id == waiting.lease_id
+        await rt.release(home.lease_id, "ok")             # the home card frees up: re-granted there
+        await step(rt, clock, 30, beat=[waiting.lease_id])
+        row = await rt.store.lease(waiting.lease_id)
+        assert (row["status"], row["role"], row["generation"], row["attempt"]) == ("granted", "agent", 2, 1)
+    run(go())
+
+
+def test_three_owner_recalls_past_grace_never_dead_letter_a_hold():
+    async def go():
+        rt, clock = make()
+        await boot(rt)
+        await rt.control(GpuPoolControlV1(verb="lend", card="gpu0"))
+        home = await rt.acquire(hold("run-home:1"))
+        borrowed = await rt.acquire(hold("run-b:1"))
+        assert borrowed.grant.role == "chat"
+        for cycle in range(1, 4):
+            owner = await rt.acquire(acq("chat", priority="interactive", deadline_at=clock() + timedelta(hours=2)))
+            assert owner.status == "granted"
+            await step(rt, clock, CFG.defaults.hold_clawback_grace_sec + 30,
+                       beat=[home.lease_id, borrowed.lease_id, owner.lease_id])
+            st = await rt.status(borrowed.lease_id)
+            assert st.status == "queued" and st.reason == "recall_grace_exceeded", (cycle, st)
+            assert (await rt.store.lease(borrowed.lease_id))["attempt"] == 1
+            await rt.release(owner.lease_id, "ok")
+            await step(rt, clock, 30, beat=[home.lease_id, borrowed.lease_id])
+            row = await rt.store.lease(borrowed.lease_id)
+            assert (row["status"], row["role"], row["generation"]) == ("granted", "chat", cycle + 1), cycle
+    run(go())
+
+
 def test_min_residency_is_reported_when_demand_arrives_inside_it():
     async def go():
         rt, clock = make()
@@ -471,15 +543,12 @@ def test_min_residency_is_reported_when_demand_arrives_inside_it():
 
 def test_guards_block_an_armed_load_and_say_which():
     async def go():
-        rt, clock = make(guards={"thermal": "hot:temp_over_hot", "visual_baseline": None})
+        rt, clock = make(guards={"thermal": "hot:temp_over_hot"})
         await boot(rt)
         await demand_gpu2(rt, clock)
         assert actuations(rt) == []
         [s] = rt.bus.events("swap_requested")
         assert s["reason"] == "guard:thermal" and s["detail"]["guard_state"] == "hot:temp_over_hot"
-        rt.guard_states = {"thermal": None, "visual_baseline": "visual_baseline_urgent"}
-        await step(rt, clock, 1)
-        assert rt.bus.events("swap_requested")[-1]["reason"] == "guard:visual_baseline"
         rt.guard_states = dict(CLEAR_GUARDS)
         await step(rt, clock, 1)
         assert [m.action for m in actuations(rt)] == ["load"]
@@ -488,7 +557,7 @@ def test_guards_block_an_armed_load_and_say_which():
 
 def test_an_unread_guard_blocks_loading():
     async def go():
-        rt, clock = make(guards={"thermal": "unread", "visual_baseline": "unread"})
+        rt, clock = make(guards={"thermal": "unread"})
         await boot(rt)
         await demand_gpu2(rt, clock)
         assert actuations(rt) == [] and rt.bus.events("swap_requested")[0]["reason"] == "guard:thermal"
@@ -604,14 +673,15 @@ async def overdue(rt, clock, home):
     return msg
 
 
-def test_restart_before_the_ack_with_a_running_actuator_is_not_unreachable():
+@pytest.mark.parametrize("mode", ["observe", "enforce"])
+def test_restart_before_the_ack_with_a_running_actuator_is_not_unreachable(mode):
     async def go():
         store, saver, clock = MemoryStore(), MemorySaver(), Clock()
-        rt1, _ = make(store=store, saver=saver, clock=clock)
+        rt1, _ = make(store=store, saver=saver, clock=clock, mode=mode)
         await boot(rt1)
         home, _ = await demand_gpu2(rt1, clock)
-        [load] = actuations(rt1)                                  # no ack before the pool dies
-        rt2, _ = make(store=store, saver=saver, clock=clock, bus=FakeBus())
+        [load] = [m for m in actuations(rt1) if m.action == "load"]   # no ack before the pool dies
+        rt2, _ = make(store=store, saver=saver, clock=clock, bus=FakeBus(), mode=mode)
         rt2._world.up.discard("diffusion")
         await rt2.start()
         [status] = actuations(rt2)
@@ -729,7 +799,7 @@ def test_operator_clear_of_a_fault_whose_seat_left_the_yaml_settles_from_discove
 
 def test_attach_never_hands_back_another_lease_and_is_never_retryable():
     async def go():
-        rt, _ = make(actuate=())
+        rt, _ = make()
         await boot(rt)
         h = await rt.acquire(hold("run1:1"))
         clash = await rt.attach(attach(h, "run1:1"))           # the hold's own request_id
@@ -772,4 +842,95 @@ def test_min_ctx_hold_loads_gpu2_once_seen_even_after_a_pool_restart():
         await step(rt2, clock, SEAT_WAIT + 1, beat=[home.lease_id])
         [load] = actuations(rt2)
         assert (load.role, load.action) == (SEAT, "load")
+    run(go())
+
+
+# --- stage 6.1: a blocked swap is reported once per episode -----------------------------------
+async def loaded_idle_seat_with_a_refused_unload(rt, clock):
+    """The 2026-09-30 08:45 shape: agent-gpu2 loaded and idle, its idle unload refused by the
+    actuator, so every tick the scheduler asks for the unload again while the card cools down."""
+    home, waiting = await demand_gpu2(rt, clock)
+    [load] = actuations(rt)
+    await result(rt, load, "accepted")
+    rt._world.up.add(SEAT)
+    rt._world.up.discard("diffusion")
+    await result(rt, load, "succeeded", observed={SEAT: "running", "diffusion": "exited"})
+    await step(rt, clock, 30, beat=[home.lease_id, waiting.lease_id])
+    await rt.release(waiting.lease_id, "ok")
+    await step(rt, clock, CFG.defaults.swap_idle_unload_sec + 5, beat=[home.lease_id], every=10)
+    unload = actuations(rt)[-1]
+    assert unload.action == "unload"
+    await result(rt, unload, "refused", reason="upstream_not_idle:agent-gpu2")
+    assert rt.cards["gpu2"].cooldown_until > clock()
+    return home
+
+
+def blocked(rt):
+    return [(e["reason"], e["detail"]["action"]) for e in rt.bus.events("swap_requested")]
+
+
+def test_cooldown_blocked_unload_is_reported_once_per_episode_not_every_tick():
+    """Live 2026-09-30 08:45-08:55 UTC: 628 swap_requested{reason=cooldown} rows, one per 1 s tick.
+    The runtime rewrote the scheduler's SwapUnload into SwapBlocked(cooldown) and remembered it
+    under the rewritten key, but the tick's keep-set used the original SwapUnload key, so the
+    memory was wiped every tick and the next tick reported it again."""
+    async def go():
+        rt, clock = make()
+        await boot(rt)
+        home = await loaded_idle_seat_with_a_refused_unload(rt, clock)
+        grammar_before = len(rt.bus.grammar())
+        await step(rt, clock, 60, beat=[home.lease_id], every=1)        # 60 ticks inside the cooldown
+        assert blocked(rt) == [("cooldown", "unload")]                 # one episode, one event
+        assert len(rt.bus.grammar()) - grammar_before == 1              # and one grammar atom
+        n_actuations = len(actuations(rt))
+
+        # reason change inside the block is a new episode: pause, then resume while still cooling
+        await rt.control(GpuPoolControlV1(verb="pause_actuation", actor="juniper"))
+        await step(rt, clock, 5, beat=[home.lease_id], every=1)
+        assert blocked(rt) == [("cooldown", "unload"), ("actuation_paused", "unload")]
+        await rt.control(GpuPoolControlV1(verb="resume_actuation", actor="juniper"))
+        await step(rt, clock, 5, beat=[home.lease_id], every=1)
+        assert blocked(rt) == [("cooldown", "unload"), ("actuation_paused", "unload"), ("cooldown", "unload")]
+        assert len(actuations(rt)) == n_actuations                     # nothing was sent while blocked
+
+        # the block clears: the unload really goes out (never suppressed), is refused again, and
+        # the new cooldown is a new episode -> reported again, once
+        started = len(rt.bus.events("swap_started"))
+        await step(rt, clock, CFG.defaults.swap_cooldown_sec, beat=[home.lease_id], every=10)
+        assert len(rt.bus.events("swap_started")) == started + 1
+        again = actuations(rt)[-1]
+        assert again.action == "unload" and len(actuations(rt)) == n_actuations + 1
+        await result(rt, again, "refused", reason="upstream_not_idle:agent-gpu2")
+        await step(rt, clock, 30, beat=[home.lease_id], every=1)
+        assert blocked(rt).count(("cooldown", "unload")) == 3
+    run(go())
+
+
+def test_scheduler_blocked_load_is_still_reported_once_per_episode():
+    """The scheduler's own SwapBlocked(cooldown) after a refused load stays edge-triggered."""
+    async def go():
+        rt, clock = make()
+        await boot(rt)
+        home, _ = await demand_gpu2(rt, clock)
+        [msg] = actuations(rt)
+        await result(rt, msg, "refused", reason="launch_digest_mismatch")
+        await step(rt, clock, 60, beat=[home.lease_id], every=1)
+        assert blocked(rt) == [("cooldown", "load")]
+    run(go())
+
+
+def test_a_paused_swap_whose_wanted_reason_changes_is_a_new_episode():
+    """The episode key is the reason actually reported plus the scheduler's own reason: while paused,
+    an idle unload that becomes a max_hold unload is new information, a repeat is not."""
+    from orion.gpu_pool.scheduler import SwapUnload
+    async def go():
+        rt, _ = make()
+        await boot(rt)
+        await rt.control(GpuPoolControlV1(verb="pause_actuation", actor="juniper"))
+        k1 = await rt._swap(SwapUnload(SEAT, "idle"))
+        assert await rt._swap(SwapUnload(SEAT, "idle")) == k1
+        await rt._swap(SwapUnload(SEAT, "max_hold"))
+        got = [(e["reason"], e["detail"]["wanted"]) for e in rt.bus.events("swap_requested")]
+        assert got == [("actuation_paused", "idle"), ("actuation_paused", "max_hold")]
+        assert actuations(rt) == []
     run(go())

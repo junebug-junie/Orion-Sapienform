@@ -26,7 +26,7 @@ This module implements a bus-first, machine-generated logging system ("Metacogni
 | Variable | Default | Description |
 | :--- | :--- | :--- |
 | `EQUILIBRIUM_METACOG_ENABLE` | `False` | Master toggle for metacognition features. |
-| `EQUILIBRIUM_METACOG_BASELINE_INTERVAL_SEC` | `60.0` | Seconds between baseline "zen check" triggers. |
+| ~~`EQUILIBRIUM_METACOG_BASELINE_INTERVAL_SEC`~~ | — | Retired 2026-09-29 with the baseline heartbeat (see `services/orion-equilibrium-service/README.md`). |
 | `EQUILIBRIUM_METACOG_COOLDOWN_SEC` | `30.0` | Minimum seconds between any two triggers. |
 | `EQUILIBRIUM_METACOG_PAD_PULSE_THRESHOLD` | `0.8` | Salience threshold (0.0-1.0) to trigger on Landing Pad signal. |
 

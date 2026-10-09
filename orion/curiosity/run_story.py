@@ -148,6 +148,8 @@ EVENT_FAILED = "run.failed"
 EVENT_CANCELLED = "run.cancelled"
 EVENT_LEASE_RELEASED = "resource.lease_released"
 EVENT_LEASE_EXPIRED = "resource.lease_expired"
+# The GPU pool paused the run's hold for an urgent run; it kept its place in line (not a failure).
+EVENT_PREEMPTED = "run.preempted"
 EVENT_CHECKPOINT_RESUME_FAILED = "run.checkpoint_resume_failed"
 ANOMALY_EVENTS = (EVENT_CHECKPOINT_RESUME_FAILED,)
 WORKFLOW_REFLECT = "self_study.reflect"
@@ -164,6 +166,7 @@ OUTCOME_FINISHED = "finished"
 
 _TEXT_LIMIT = 4000
 _NOTE_LIMIT = 2000
+_LIST_PROSE_LIMIT = 300
 
 
 def outreach_key(run_id: str) -> str:
@@ -209,6 +212,10 @@ def _iso(ms: Optional[int]) -> Optional[str]:
 
 def _text(value: Any, limit: int = _TEXT_LIMIT) -> str:
     return str(value or "").strip()[:limit]
+
+
+def _ellipsize(value: str, limit: int) -> str:
+    return value if len(value) <= limit else value[: limit - 1] + "…"
 
 
 def _obj(value: Any) -> dict[str, Any]:
@@ -562,6 +569,9 @@ def _lifecycle_from_events(slot: dict[str, Any]) -> _Lifecycle:
         elif kind == EVENT_LEASE_EXPIRED:
             out.items.append(TimelineItem(at=at, kind="lifecycle", data={
                 "node": "", "status": "lease_expired", "lane": _event_lane(detail), "next_node": "", "resumed_from": "", "error": ""}))
+        elif kind == EVENT_PREEMPTED:
+            out.items.append(TimelineItem(at=at, kind="lifecycle", data={
+                "node": "", "status": "preempted", "lane": _event_lane(detail), "next_node": "", "resumed_from": "", "error": ""}))
         elif kind in (EVENT_COMPLETED, EVENT_FAILED, EVENT_CANCELLED):
             status = {EVENT_COMPLETED: STATUS_COMPLETED, EVENT_FAILED: STATUS_FAILED, EVENT_CANCELLED: STATUS_CANCELLED}[kind]
             out.status, out.finished_at = status, at
@@ -872,8 +882,8 @@ def _prior_outcome_block(
         peer = {
             "status": _text(latest.get("status"), 60),
             "peer": _text(latest.get("peer"), 80),
-            "summary": _text(latest.get("summary"), 1200),
-            "refusal_reason": _text(latest.get("refusal_reason"), 240) or None,
+            "summary": _text(latest.get("summary")),
+            "refusal_reason": _text(latest.get("refusal_reason")) or None,
             "help_id": _text(latest.get("help_id"), 200) or None,
         }
         if not outcome_text and peer["summary"]:
@@ -960,11 +970,11 @@ def _about_for(
         if isinstance(raw_qs, list) and raw_qs:
             for item in raw_qs:
                 if isinstance(item, (list, tuple)) and len(item) >= 2:
-                    detail.append(_text(item[1], 400))
+                    detail.append(_text(item[1]))
                 elif isinstance(item, dict):
-                    detail.append(_text(item.get("question"), 400))
+                    detail.append(_text(item.get("question")))
                 elif isinstance(item, str):
-                    detail.append(_text(item, 400))
+                    detail.append(_text(item))
             detail = [d for d in detail if d]
         if not detail:
             detail = [text for _, text in SELF_SENSE_QUESTIONS]
@@ -976,7 +986,7 @@ def _about_for(
         }
 
     for h in sorted(slot.get("help_requests") or [], key=lambda r: _ms(r.get("written_at")) or 0):
-        question = _text(h.get("question"), 500)
+        question = _text(h.get("question"))
         if question:
             return {
                 "text": question,
@@ -985,7 +995,7 @@ def _about_for(
                 "prior_id": _text(h.get("prior_id"), 200) or None,
             }
 
-    claim = _text((starting_prior or {}).get("claim"), 500)
+    claim = _text((starting_prior or {}).get("claim"))
     if claim:
         return {
             "text": claim,
@@ -994,7 +1004,7 @@ def _about_for(
             "prior_id": _text((starting_prior or {}).get("prior_id"), 200) or None,
         }
 
-    prompt = _text(brief.get("prompt"), 600)
+    prompt = _text(brief.get("prompt"))
     if prompt and prompt.strip().lower() not in _PLACEHOLDER_PROMPTS:
         return {
             "text": prompt,
@@ -1011,7 +1021,7 @@ def _about_for(
             "prior_id": None,
         }
 
-    lived = _text((self_written or {}).get("text"), 500)
+    lived = _text((self_written or {}).get("text"))
     if lived:
         return {
             "text": lived,
@@ -1311,7 +1321,7 @@ def build_stories(rows: RunStoryRows) -> dict[str, RunStory]:
 
         wrote = (len(slot["hops"]) + len(slot["findings"]) + len(revisions)
                  + len(sense_rows) + len(self_writes))
-        finding_text = _text(detail.get("finding_text"), 600)
+        finding_text = _text(detail.get("finding_text"))
         about = _about_for(
             line=line,
             slot=slot,
@@ -1442,7 +1452,15 @@ def _reach_payload(r: ReachOut) -> dict[str, Any]:
     }
 
 
-def run_to_payload(r: RunSummary) -> dict[str, Any]:
+def run_to_payload(r: RunSummary, *, list_view: bool = False) -> dict[str, Any]:
+    """`list_view` shortens the prose the runs list only uses for a hover line;
+    the story endpoint always carries it whole."""
+    about = r.about
+    finding_text = r.finding_text
+    if list_view:
+        finding_text = _ellipsize(finding_text, _LIST_PROSE_LIMIT)
+        if about and about.get("text"):
+            about = {**about, "text": _ellipsize(about["text"], _LIST_PROSE_LIMIT)}
     return {
         "run_id": r.run_id,
         "line": r.line,
@@ -1470,12 +1488,12 @@ def run_to_payload(r: RunSummary) -> dict[str, Any]:
         "prior_touched": r.prior_touched,
         "reach_out": _reach_payload(r.reach_out),
         "journal_entry_id": r.journal_entry_id,
-        "finding_text": r.finding_text,
+        "finding_text": finding_text,
         "self_written": r.self_written,
         "self_sense": r.self_sense,
         "harness": r.harness,
         "outcome_kind": r.outcome_kind,
-        "about": r.about,
+        "about": about,
     }
 
 

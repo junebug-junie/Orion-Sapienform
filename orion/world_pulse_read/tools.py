@@ -10,16 +10,22 @@ from orion.schemas.reading import (
     ReadingToolResultV1, RecommendReadingArguments,
 )
 from orion.world_pulse_read.events import TOOL_CHANNEL, TOOL_RESULT_PREFIX
-from orion.world_pulse_read.urls import normalize_source_url
+from orion.world_pulse_read.urls import normalize_reading_source
 
 RECOMMEND_DESCRIPTION = (
-    "Asynchronously recommend a public HTTP(S) source for deliberate reading, preservation, "
+    "Asynchronously recommend a public HTTP(S) source, or an internal document by absolute path "
+    "on the mesh (e.g. /mnt/scripts/Orion-Sapienform/docs/.../spec.md), for deliberate reading, preservation, "
     "follow-up and integration through Orion's reading pipeline. Use WebFetch/search for "
     "information needed immediately in this turn. Supply why this source matters now. "
     "Acceptance exists only when the response has ok=true and result contains a request_id; "
     "errors or malformed results mean acceptance is unknown. Returns a durable queue receipt, "
     "not an article summary or a promise of future processing. Reading creates source-attributed "
-    "candidates, not settled beliefs. Report request_id and status so reading_status can inspect it later."
+    "candidates, not settled beliefs. Report request_id and status so reading_status can inspect it later. "
+    "A URL Orion already read is never read again, even when the user asks: if the result has "
+    "duplicate='already_read', tell the user it was blocked as a duplicate by design and share "
+    "the earlier read's summary instead. duplicate='already_queued' means it joined a read that was "
+    "still in progress when you asked. A document path is captured when accepted; an edited file "
+    "is a new read, an unchanged one is already_read. A path outside the allowed roots is refused."
 )
 STATUS_DESCRIPTION = (
     "Read durable reading status by url or request_id (supply exactly one). Use the supplied "
@@ -36,16 +42,20 @@ STATUS_DESCRIPTION = (
 def reading_brief_lines() -> list[str]:
     return [
         (
-            "Reading MCP is available: recommend_reading queues a public HTTP(S) source for "
+            "Reading MCP is available: recommend_reading queues a public HTTP(S) source (or an "
+            "internal document by absolute path) for "
             "durable async processing, and reading_status looks up a previously queued source "
-            "by URL or request_id. If asked about the status of something already queued for "
+            "by URL, document path, or request_id. If asked about the status of something already queued for "
             "reading, ToolSearch and call reading_status with the supplied URL directly (or "
             "request_id if provided). Do not ask for an ID when a link is available; do "
             "not guess Postgres table names, grep the repo for the id, or invent a status. A "
             "'queued' result includes queue_position/queue_depth (e.g. '13th of 121') -- use "
             "them, don't just report 'queued' with no sense of scale. Tool discovery is not "
             "a status check: report status only after a successful tool call. URL lookup "
-            "selects the latest request; queued does not establish that no earlier attempt ran."
+            "selects the latest request; queued does not establish that no earlier attempt ran. "
+            "An already-read URL is not read twice: a recommend_reading result with "
+            "duplicate='already_read' means it was blocked as a duplicate by design -- say so "
+            "plainly and give the earlier read's summary."
         ),
     ]
 
@@ -87,7 +97,7 @@ class ReadingTools:
         # Validate before transport: extra provenance fields are rejected, never ignored.
         if name == "recommend_reading":
             args = RecommendReadingArguments.model_validate(arguments)
-            url = normalize_source_url(args.url)
+            url = normalize_reading_source(args.url)
             request = ReadingRequestedV1(
                 # Stable across retries/restarts within this turn, new on a later turn.
                 request_id=deterministic_reading_request_id(
@@ -104,7 +114,7 @@ class ReadingTools:
             args = ReadingStatusArguments.model_validate(arguments)
             command = ReadingToolRequestV1(
                 operation=name, request_id=args.request_id,
-                url=normalize_source_url(args.url) if args.url is not None else None,
+                url=normalize_reading_source(args.url) if args.url is not None else None,
             )
         else:
             raise ValueError("unknown reading tool")

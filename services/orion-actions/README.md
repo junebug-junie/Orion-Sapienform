@@ -55,6 +55,7 @@ Important clarification:
 ### What Actions owns
 
 - Durable schedule persistence (`ACTIONS_WORKFLOW_SCHEDULE_STORE_PATH`).
+- **World-pulse journal as a durable run** (2026-09-30): on `orion:world_pulse:run:result` this service no longer composes the world-news journal in-process. It submits an admitted `journal.compose` durable run through cortex-orch's durable ingress (run_id `world-pulse-journal:<world-pulse run_id>`, route `ACTIONS_JOURNAL_LLM_ROUTE` as the pool hold's route, priority background, `deadline_at` = next local midnight in `ACTIONS_DAILY_TIMEZONE`). orion-durable-runs holds a GPU pool hold, composes, and publishes the journal write with a fixed entry_id; the post-persist email path and daily cap below are unchanged. Before this, a busy fast lane at 06:00 (`gpu_pool_unavailable:deadline`) failed the compose with no retry and the daily world-news email stopped after 2026-09-24. A redelivered run result resubmits the identical request (durable-runs answers with the existing run). Submission is one receipt RPC, tried 5 times over ~6.5 minutes; the run result is pub/sub and never redelivered, so if every try fails that day's journal is lost -- audited (`status=failed`, `reason=durable_submit_failed:...`) and logged at ERROR. Requires orion-durable-runs, orion-cortex-orch and orion-sql-writer deployed first.
 - Durable **built-in daily scheduler cursors** (`ACTIONS_SCHEDULER_CURSOR_STORE_PATH`): last completed local calendar date per daily job so process restart alone does not re-eligible the same day after a successful run.
 - Schedule lifecycle state (`scheduled`, `paused`, `cancelled`, `completed`, etc.).
 - Due claiming and scheduler wakeup loop.
@@ -67,6 +68,8 @@ Important clarification:
 
 ### Daily scheduler and restarts
 
+Daily Pulse and Daily Metacog generation is **paused** as of 2026-09-30: `ACTIONS_DAILY_PULSE_ENABLED` and `ACTIONS_DAILY_METACOG_ENABLED` default to `false` until they have a real consumer (the only live one was orion-self-experiments' `skill_probe` experiments from `focus_skill_id` — 6 created in 8 days, none observed concluding). Set either back to `true` to resume; when enabled they land in-app (Hub notification + async chat message). Their raw-JSON **emails are retired** as of 2026-09-30: `ACTIONS_DAILY_EMAIL_ENABLED` defaults to `false` and gates only those two emails (not Journal Pass, `world_pulse_digest`, workflow schedule alerts, or error/critical notifies). Note: the daily journal trigger reuses `ACTIONS_DAILY_PULSE_HOUR_LOCAL`/`_MINUTE_LOCAL` rather than its own window.
+
 Built-in daily triggers (daily pulse, world pulse, daily metacog, daily journal) compare local wall time in `ACTIONS_DAILY_TIMEZONE` to configured hour/minute windows. **Before durable cursors**, in-memory `last_*` maps reset on restart; if local time is already past the cutoff, the same calendar day can be **eligible again**, which can queue duplicate downstream work and notify/email bursts. **With cursors** (default path next to the workflow schedule JSON under the mounted `/data/orion-actions/` volume), a successful completion is persisted per job; restart hydrates from disk before the first scheduler tick. `ACTIONS_DAILY_RUN_ON_STARTUP` still allows an initial run when no completion is recorded for the process session, but **does not** bypass a cursor that already marks today complete. Tune `ACTIONS_DAILY_TIMEZONE`, per-job hours, and `ACTIONS_DAILY_RUN_ONCE_DATE` for operator overrides.
 
 ### State persistence volume (fixes restart-driven re-fires)
@@ -74,6 +77,16 @@ Built-in daily triggers (daily pulse, world pulse, daily metacog, daily journal)
 Scheduler cursors (`ACTIONS_SCHEDULER_CURSOR_STORE_PATH`) and workflow schedules (`ACTIONS_WORKFLOW_SCHEDULE_STORE_PATH`) now persist under a host bind mount (`${ORION_DATA_ROOT:-/mnt/graphdb}/orion-actions/state` on the host, `/data/orion-actions` in the container) instead of ephemeral `/tmp`. `docker-compose.yml` previously had no `volumes:` entry at all, so every container recreate wiped both files; `SchedulerCursorStore._load()` treats a missing file as "nothing ran today" with no error, so the 3 built-in daily jobs (`daily_journal`, `daily_pulse_v1`, `world_pulse`) re-fired on every restart within the same calendar day. Confirmed live 2026-07-13 via cursor-file mtime matching a duplicate journal fire and `journal_entry_index` fire counts climbing from 1/day to 6-17/day as restarts became more frequent.
 
 Cursor JSON keys match the scheduler store: `daily_pulse_v1`, `world_pulse`, `daily_metacog_v1`, `daily_journal`, `autonomy_goal_archive`. **Single writer:** assume one `orion-actions` replica (same as the workflow schedule store); multiple replicas would race on the same cursor file unless you add coordination or split paths in a follow-up.
+
+**Bounded nightly retries for Daily Pulse / Daily Metacog** (2026-10-01): before this, a failed scheduled run re-ran on every 45s tick until local midnight (230-280 runs a night for metacog, 2026-09-03 to 09-30). Retries now depend on the kind of failure (`app/daily_retry_gate.py`, `classify_daily_failure`, built from real error strings):
+
+- deterministic (prompt over limit, JSON parse/validation errors, truncated output): at most 3 tries per scheduled local date, 10 then 30 minutes apart, then give up for that date;
+- transient (timeouts, `gpu_pool_unavailable`, `gateway_capacity_rejected`, notify down): one retry an hour until the local date ends, so an outage at 20:15 does not cost the night;
+- unknown: hourly, capped at 6 tries.
+
+Giving up writes one audit row (`status=gave_up`, `reason` = the real error, `failure_class`) and sends one `severity=warning` notification (`event_kind=orion.daily.failed`, durable in `notify_requests`). A date that ends in transient failures is recorded the same way on the next date's first tick. The done-today cursor is still set only on success. The attempt state (counts per class, last failure time, gave_up) is persisted in `daily_attempts.json` next to the scheduler cursors, so a restart neither resets the counts nor reopens a date that gave up. Note: with `ACTIONS_DAILY_RUN_ON_STARTUP=true` and no completion recorded, a run is due immediately at startup, so those startup tries spend the same per-date budget before the scheduled hour. When a cortex-exec step fails, the error now names the step (`cortex_exec_missing_final_text step=... error=...`) instead of only `cortex_exec_missing_final_text`.
+
+**Daily Metacog skills catalog** (2026-10-01): daily_metacog_v1 gets one line per read-only skill (`skill_id: purpose`, purpose <= 60 chars), sized from the prompt template and the recall profile's max digest (`orion/cognition/daily_metacog_budget.py`), because cortex-exec refuses that prompt over `CORTEX_DAILY_METACOG_PROMPT_MAX_CHARS`. Daily Pulse still gets the JSON catalog.
 
 **Code-level fallback defaults intentionally stay `/tmp`, not `/data/orion-actions`.** `settings.py`'s `actions_workflow_schedule_store_path` Field default, `workflow_schedule_store.py`'s `_resolve_path` blank-path fallback, and `scheduler_cursor_store.py`'s degenerate-path fallback all still resolve to `/tmp/orion-actions/...` when the env var is genuinely unset. This was tried the other way (defaulting the code-level fallback to `/data/orion-actions/...` to match `.env_example`) and reverted after it produced a real `FileNotFoundError` in a bare test run: `/data` only exists inside this container's bind mount, and a non-root process can't create a new top-level `/data` directory on a host that doesn't already have it. `/tmp` always exists and is always writable, so it's the correct last-resort default — it just means a genuinely-unset env var silently loses cursor durability again rather than crashing. The actual fix for the container-bounce bug is `.env_example` + the `docker-compose.yml` volume mount above; don't "fix" the code-level fallback to match it again without reading this note.
 
@@ -660,3 +673,26 @@ conventions: `orion/core/bus/rpc_health.py` module docstring.
   - `services/orion-hub/scripts/api_routes.py`
   - `services/orion-hub/static/js/workflow-schedule-ui.js`
   - `services/orion-hub/templates/index.html`
+
+### Scheduled workflow dispatch timeout
+
+`ACTIONS_WORKFLOW_DISPATCH_TIMEOUT_SECONDS` (default 600) is how long the scheduler waits for
+cortex-orch to answer a scheduled compactor dispatch (`LONG_RUNNING_SCHEDULED_WORKFLOWS` in `app/main.py`;
+every other scheduled workflow keeps `ACTIONS_EXEC_TIMEOUT_SECONDS`). It covers only the synchronous part:
+the GitHub fetch (<=300s) or chat discussion window, then registering the `compactor.digest` durable run.
+The workflow claim TTL is this value + 60s. The scheduler loop is serial, so this is also the longest one
+stuck workflow can delay the next due job.
+
+### Scheduled compactors settle from their durable run
+
+The compactors' LLM digest calls run as an admitted `compactor.digest` durable run in
+`orion-durable-runs` (each chunk digest and the merge is a checkpointed node holding a GPU pool hold;
+a busy pool at 06:00 is a wait, not a failure). cortex-orch replies `status="accepted"` with
+`metadata.workflow.durable_run` once the run is registered, and the scheduler marks the schedule run
+awaiting that durable run (`mark_awaiting_durable`: still `dispatched`, so attention stays quiet and no
+retry is armed). orion-actions subscribes to `orion:durable:run:state`; the run's terminal row
+(`completed` / `failed` / `cancelled`) settles the schedule run through the normal success/failure
+paths (`settle_durable_run`: retry budget, attention, next occurrence). If no terminal row arrives by
+the run's admission deadline + 15 min (e.g. orion-actions was down when it was published), the reaper
+fails it as `durable_run_completion_unobserved`; the retry re-dispatches the same window, which finds the
+run by its deterministic id and reports it without re-running any LLM call.

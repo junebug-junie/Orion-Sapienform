@@ -62,6 +62,48 @@ class Settings(BaseSettings):
         default=400, alias="MEMORY_GRAPH_SUGGEST_MIN_PROMPT_TOKENS_ESTIMATE"
     )
     MEMORY_WINDOW_FALLBACK_GAP_SEC: int = Field(default=5400, alias="MEMORY_WINDOW_FALLBACK_GAP_SEC")
+    # Memory episode redesign Stage 1 (2026-10-02): boundary Rule 3 runs in
+    # SHADOW beside the live windows and writes memory_episode_shadow, then
+    # publishes memory.episode.closed.v1. Kill switch: false stops both; the
+    # live windows are unaffected either way.
+    MEMORY_EPISODE_SHADOW_ENABLED: bool = Field(default=True, alias="MEMORY_EPISODE_SHADOW_ENABLED")
+    # Whether the LIVE (legacy) window rule and the turn classify prompt see the
+    # Hub's new spark_meta.conversation_phase stamp (boundary Fix 1). Default
+    # false keeps live window closing exactly as it was: the stamp is recorded
+    # and drives the Rule 3 shadow only. Turning it on changes live windows
+    # (30-day replay: ~98 windows -> ~33-35) and the classify prompt's phase
+    # line; see the Stage 1 PR report before flipping it.
+    MEMORY_LEGACY_BOUNDARY_USE_PHASE: bool = Field(default=False, alias="MEMORY_LEGACY_BOUNDARY_USE_PHASE")
+    # Daily old-vs-new memory report (Stage 1 PR 2): yesterday's shadow episodes, legacy
+    # crystallization rows next to the shadow distiller's memories, as markdown on a named
+    # volume. Read-only; no notification. Quotes Juniper's conversation: never commit it.
+    MEMORY_EPISODE_REPORT_ENABLED: bool = Field(default=True, alias="MEMORY_EPISODE_REPORT_ENABLED")
+    MEMORY_EPISODE_REPORT_DIR: str = Field(
+        default="/data/memory-episode-reports", alias="MEMORY_EPISODE_REPORT_DIR"
+    )
+    MEMORY_EPISODE_REPORT_TZ: str = Field(default="America/Denver", alias="MEMORY_EPISODE_REPORT_TZ")
+
+    # Memory Stage 2 (2026-10-06): project referent nodes, memory evidence and accepted
+    # co-occurrences from Postgres into the substrate graph (app/referent_projector.py).
+    MEMORY_REFERENT_PROJECTOR_ENABLED: bool = Field(default=True, alias="MEMORY_REFERENT_PROJECTOR_ENABLED")
+    MEMORY_REFERENT_PROJECTOR_TICK_SEC: float = Field(default=30.0, gt=0.0, alias="MEMORY_REFERENT_PROJECTOR_TICK_SEC")
+    FALKORDB_URI: str = Field(default="", alias="FALKORDB_URI")
+    FALKORDB_SUBSTRATE_GRAPH: str = Field(default="orion_substrate", alias="FALKORDB_SUBSTRATE_GRAPH")
+    # Memory confirmation loop (2026-10-06): open "Orion is asking" cards for high-stakes shadow
+    # memories (max 5 open, 7-day expiry) and apply Juniper's answers from
+    # orion:attention:loop_outcome plus a table catch-up. Kill switch: false stops all three.
+    MEMORY_CONFIRMATION_LOOP_ENABLED: bool = Field(default=True, alias="MEMORY_CONFIRMATION_LOOP_ENABLED")
+    MEMORY_CONFIRMATION_TICK_SEC: float = Field(default=60.0, gt=0.0, alias="MEMORY_CONFIRMATION_TICK_SEC")
+    # At most this many NEW cards per local day (MEMORY_CONFIRMATION_TZ), on top of the 5-open cap,
+    # so prompt answers do not let the queue refill all day.
+    MEMORY_CONFIRMATION_DAILY_CAP: int = Field(default=3, ge=0, alias="MEMORY_CONFIRMATION_DAILY_CAP")
+    MEMORY_CONFIRMATION_TZ: str = Field(default="America/Denver", alias="MEMORY_CONFIRMATION_TZ")
+    CHANNEL_ATTENTION_LOOP_OUTCOME: str = Field(
+        default="orion:attention:loop_outcome", alias="CHANNEL_ATTENTION_LOOP_OUTCOME"
+    )
+    CHANNEL_MEMORY_EPISODE_CLOSED: str = Field(
+        default="orion:memory:episode:closed", alias="CHANNEL_MEMORY_EPISODE_CLOSED"
+    )
     MEMORY_FAILED_RETRY_INTERVAL_SEC: int = Field(default=1800, alias="MEMORY_FAILED_RETRY_INTERVAL_SEC")
     MEMORY_CLASSIFY_RETRY_INTERVAL_SEC: int = Field(default=120, alias="MEMORY_CLASSIFY_RETRY_INTERVAL_SEC")
     MEMORY_CONSOLIDATION_OUTPUT: str = Field(

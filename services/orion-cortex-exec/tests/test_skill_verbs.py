@@ -838,7 +838,7 @@ def test_github_recent_prs_includes_truncated_body(monkeypatch):
             "head": {"ref": "feat/compactor"},
             "html_url": "https://github.com/acme/widgets/pull/42",
             "changed_files": 3,
-            "body": "x" * 2500,
+            "body": "x" * 30500,
             "url": "https://api.github.com/repos/acme/widgets/pulls/42",
         }
     ]
@@ -858,7 +858,7 @@ def test_github_recent_prs_includes_truncated_body(monkeypatch):
 
     def _urlopen(request, timeout=0):
         url = request.full_url
-        if url.endswith("/pulls?state=closed&sort=updated&direction=desc&per_page=100"):
+        if url.endswith("/pulls?state=closed&sort=updated&direction=desc&per_page=100&page=1"):
             return _Resp(sample_prs)
         if url.endswith("/files?per_page=100"):
             return _Resp([{"filename": "services/orion-hub/app/main.py"}])
@@ -879,7 +879,82 @@ def test_github_recent_prs_includes_truncated_body(monkeypatch):
     # Word-boundary truncation: an unbroken run of "x" has no whitespace to
     # break on, so it hard-cuts at the cap and appends the truncation marker
     # (rather than silently returning a body that looks complete).
-    assert data["items"][0]["body"] == ("x" * 2000) + "…"
+    # Safety cap only (30k), not the old 2000-char summarization cap.
+    assert data["items"][0]["body"] == ("x" * 30000) + "…"
+    assert data["items"][0]["body_truncated"] is True
+    assert data["pages_fetched"] == 1
+
+
+def test_github_recent_prs_paginates_until_window_start_and_filters_merged_at(monkeypatch):
+    """A day with >100 recently-updated closed PRs must not lose merges past page 1."""
+    monkeypatch.setattr(
+        verb_adapters.GithubRecentPullRequestsVerb,
+        "execute",
+        _GITHUB_RECENT_PRS_EXECUTE,
+    )
+    start = datetime(2026, 9, 28, 6, 0, tzinfo=timezone.utc)
+    end = datetime(2026, 9, 29, 5, 59, 59, tzinfo=timezone.utc)
+
+    def _pr(number, updated, merged):
+        return {
+            "number": number, "title": f"PR {number}", "state": "closed",
+            "merged_at": merged, "updated_at": updated, "created_at": updated,
+            "body": f"body {number}", "html_url": f"https://x/{number}",
+        }
+
+    inside = "2026-09-28T18:00:00Z"
+    # page 1: 100 PRs updated inside the window (60 merged in-window, 40 closed unmerged)
+    page1 = [_pr(i, inside, inside if i < 60 else None) for i in range(100)]
+    # page 2: 100 more, still updated in-window; one merged in-window, one merged the day before
+    page2 = [_pr(100 + i, inside, None) for i in range(100)]
+    page2[0]["merged_at"] = inside
+    page2[1]["merged_at"] = "2026-09-27T12:00:00Z"
+    # PR 0 was updated between page reads and shifted onto page 2 as well.
+    page2[2] = dict(page1[0])
+    # page 3: oldest updated_at before the window start -> stop after this page
+    page3 = [_pr(200 + i, "2026-09-27T00:00:00Z", None) for i in range(100)]
+    page3[0]["merged_at"] = "2026-09-28T07:00:00Z"
+    page3[0]["updated_at"] = "2026-09-28T07:00:00Z"
+    pages = {1: page1, 2: page2, 3: page3}
+    requested = []
+
+    class _Resp:
+        def __init__(self, payload):
+            self._payload = payload
+
+        def read(self):
+            return json.dumps(self._payload).encode("utf-8")
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+    def _urlopen(request, timeout=0):
+        url = request.full_url
+        if "/pulls?" in url:
+            page = int(url.rsplit("page=", 1)[1])
+            requested.append(page)
+            return _Resp(pages.get(page, []))
+        return _Resp([])
+
+    monkeypatch.setattr(verb_adapters, "urlopen", _urlopen)
+    monkeypatch.setattr(verb_adapters.settings, "github_owner", "acme")
+    monkeypatch.setattr(verb_adapters.settings, "github_repo", "widgets")
+    req = _plan_request(
+        "skills.repo.github_recent_prs.v1",
+        skill_args={"lookback_days": 1, "window_start_utc": start.isoformat(), "window_end_utc": end.isoformat()},
+    )
+    out, _ = asyncio.run(verb_adapters.GithubRecentPullRequestsVerb().execute(VerbContext(meta={}), req))
+    data = json.loads(out.final_text)
+    assert requested == [1, 2, 3]
+    assert data["pages_fetched"] == 3
+    assert data["page_cap_hit"] is False
+    assert data["window_mode"] == "window"
+    numbers = sorted(item["number"] for item in data["items"])
+    assert numbers == list(range(60)) + [100, 200]
+    assert data["merged_pr_count"] == 62
 
 
 def test_mesh_ops_round_partial_failure_without_journal():

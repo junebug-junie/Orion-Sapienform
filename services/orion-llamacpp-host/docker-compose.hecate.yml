@@ -1,0 +1,55 @@
+# hecate's one V100-SXM2-32GB as the GPU pool's `agent-deep` role (config/gpu_pool.yaml:
+# card hecate-gpu0, port 8021, lendable like circe's gpu0). A fixed resident: no lane controller
+# runs on hecate; lending is a pool flag. Bring-up (from a worktree, on hecate):
+#
+#   docker compose --env-file .env --env-file services/orion-llamacpp-host/.env \
+#     -f services/orion-llamacpp-host/docker-compose.hecate.yml up -d --build
+#
+# Its own image tag so this build never replaces circe's orion-llamacpp-host:0.1.0.
+services:
+  hecate-agent-deep:
+    build:
+      context: ../..
+      dockerfile: services/orion-llamacpp-host/Dockerfile
+      args:
+        - LLAMACPP_IMAGE_TAG=${HECATE_LLAMACPP_IMAGE_TAG:-server-cuda-b10398}
+    image: orion-llamacpp-host:hecate-0.1.0
+    container_name: ${PROJECT:-orion}-hecate-llamacpp-agent-deep
+    restart: unless-stopped
+    environment:
+      - SERVICE_NAME=hecate-worker-agent-deep
+      - SERVICE_VERSION=${SERVICE_VERSION:-0.1.0}
+      - ORION_BUS_URL=${ORION_BUS_URL}
+      - LLM_PROFILES_CONFIG_PATH=${LLM_PROFILES_CONFIG_PATH:-/app/config/llm_profiles.yaml}
+      - LLM_PROFILE_NAME=${HECATE_AGENT_DEEP_PROFILE_NAME:-qwen3.8-27b-udq4kxl-v100-32gb-circe-agent-flex}
+      # Discovery joins this announcement to the pool role by role + port.
+      - LLM_ROLE=agent-deep
+      - LLM_ANNOUNCE_HOST=hecate
+      - LLM_ANNOUNCE_PORT=${HECATE_AGENT_DEEP_HOST_PORT:-8021}
+      - HF_TOKEN=${HF_TOKEN}
+      - hf_token=${hf_token}
+      - LLAMACPP_HOST_OVERRIDE=0.0.0.0
+      - LLAMACPP_PORT_OVERRIDE=8080
+      - CUDA_VISIBLE_DEVICES_OVERRIDE=${HECATE_AGENT_DEEP_CUDA_VISIBLE_DEVICES:-0}
+    volumes:
+      - "${LLM_CACHE_DIR}:/models"
+    ports:
+      - "${HECATE_AGENT_DEEP_HOST_PORT:-8021}:8080"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8080/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 600s
+    networks:
+      - app-net
+    runtime: nvidia
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - capabilities: [gpu]
+
+networks:
+  app-net:
+    external: true

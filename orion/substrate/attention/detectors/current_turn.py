@@ -3,7 +3,8 @@ from __future__ import annotations
 from typing import Any
 
 from orion.schemas.attention_frame import AttentionSignalV1
-from orion.substrate.attention.common import STOP_PHRASES, bounded, compact, stable_id
+from orion.substrate.attention.common import CURRENT_TURN_DETECTOR_ID, STOP_PHRASES, bounded, compact, stable_id
+from orion.substrate.attention.questions import NATURAL_QUESTION_KEY
 
 
 class CurrentTurnSignalDetector:
@@ -35,7 +36,7 @@ class CurrentTurnSignalDetector:
     detector already had for empty `user_text`.
     """
 
-    detector_id = "current_turn_v1"
+    detector_id = CURRENT_TURN_DETECTOR_ID
 
     def detect(
         self,
@@ -60,6 +61,10 @@ class CurrentTurnSignalDetector:
             hint = str(item.get("type") or "other").strip().lower() or "other"
             confidence_raw = item.get("confidence")
             confidence = bounded(confidence_raw) if confidence_raw is not None else 0.68
+            provenance: dict[str, Any] = {"detector": self.detector_id, "belief_lineage": list(belief_lineage or [])[:8]}
+            natural_question = compact(item.get(NATURAL_QUESTION_KEY), 160)
+            if natural_question:
+                provenance[NATURAL_QUESTION_KEY] = natural_question
             out.append(
                 AttentionSignalV1(
                     signal_id=stable_id("attention-signal", f"{self.detector_id}:{key}"),
@@ -70,7 +75,7 @@ class CurrentTurnSignalDetector:
                     salience=0.72,
                     confidence=confidence,
                     evidence_refs=["ctx.user_message"],
-                    provenance={"detector": self.detector_id, "belief_lineage": list(belief_lineage or [])[:8]},
+                    provenance=provenance,
                 )
             )
         return out

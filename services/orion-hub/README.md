@@ -1333,6 +1333,27 @@ content hash changed, and an open run story survives a poll unless its own
 summary changed -- the previous page rewrote all eight sections from scratch
 every minute and lost every open disclosure and scroll position doing it.
 
+#### 4.2.4 Energy stakes hold (house bill vs RMP forecast)
+
+`ORION_ENERGY_STAKES_ENABLED` (default **false**) lets a *scheduled* curiosity
+investigation stand down when the house bill is trending at or over Rocky Mountain
+Power's own forecast. Off, curiosity is unchanged and the snapshot is never read.
+On, each scheduled tick reads the newest `energy_stakes_snapshot` row (Hub's
+`DATABASE_URL`) and holds only if that row is fresh (younger than
+`ORION_ENERGY_STAKES_MAX_AGE_SEC`, default 1800), came from a `healthy` importer, and
+says `near_forecast` or `over_forecast` (ratios set by `ENERGY_STAKES_NEAR_RATIO` /
+`ENERGY_STAKES_OVER_RATIO` in `orion-energy`). Missing, stale, unknown, unhealthy, or
+unreadable never holds -- a broken meter must not silence curiosity -- and a forced
+(operator) run is never held. Scheduling blocks (daily cap, window) still win first.
+
+A hold logs `curiosity_investigation_blocked reason=held_off:energy_stakes ...
+correlation_id=<uuid>` and publishes one `AttentionSchemaV1` row per hold *episode*:
+`entry_id = curiosity:held_off:energy_stakes:<cycle_start>:<pressure>` with
+`correlation_id = uuid5(NAMESPACE_URL, entry_id)`. Repeat ticks in the same episode are
+an ON CONFLICT no-op; a new cycle or a pressure change is a new row. Only
+`estimated_run_cost_usd` is a run cost autonomy may read; this gate never reads
+`house_share_cost_usd`. (`scripts/energy_stakes_gate.py`, `scripts/curiosity_investigation.py`.)
+
 ### 3. Speech-to-Text (ASR)
 
 *   **Note**: Hub no longer performs local ASR.
@@ -1583,7 +1604,7 @@ tab (`GET /concept-atlas`, backed by `GET /api/substrate/concepts/summary` and `
 | Stage | Where | Flag (default) |
 |---|---|---|
 | Seed golden concepts at startup | `api_routes.py::seed_golden_concepts_at_startup()` | `SUBSTRATE_CONCEPT_SEED_ENABLED` (`true`) |
-| Live activation decay | `api_routes.py::decay_concept_activations()`, ticked by `main.py`'s `substrate_decay_task` | `SUBSTRATE_DECAY_SCHEDULER_ENABLED` (`true`), interval `SUBSTRATE_DECAY_SCHEDULER_INTERVAL_SEC` (`120`) |
+| Live activation decay | **Not in the Hub.** orion-substrate-runtime's `SubstrateDynamicsEngine.tick()` is the single owner (every 30 s). The Hub scheduler (`decay_concept_activations`, `SUBSTRATE_DECAY_SCHEDULER_*`) was removed 2026-10-06: two processes decaying the same Falkor nodes landed writes out of order | n/a |
 | Manual topic-foundry ingestion | `POST /api/substrate/concepts/ingest-topic-foundry` (`concept_atlas_routes.py`) | operator-triggered, no flag |
 | Typed relation classification (supports/contradicts/refines) | `concept_atlas_routes.py::_classify_typed_concept_relations()`, called from the ingestion route above | runs automatically as part of ingestion, capped at `_RELATION_CLASSIFICATION_PAIR_CAP=10` pairs/call — see `services/orion-hub/scripts/concept_relation_classifier.py` for the real LLM classifier |
 | Autonomous scheduled training + ingestion | `main.py`'s `substrate_topic_foundry_scheduler_task`, calling `concept_atlas_routes.py::trigger_topic_foundry_training_run()` then the ingestion route above | `SUBSTRATE_TOPIC_FOUNDRY_SCHEDULER_ENABLED` (**`true`** — flipped on live 2026-07-17; shipped disabled by default, real compute cost), interval `SUBSTRATE_TOPIC_FOUNDRY_SCHEDULER_INTERVAL_SEC` (`86400`), window `SUBSTRATE_TOPIC_FOUNDRY_WINDOW_DAYS` (`30`) |
@@ -1662,22 +1683,15 @@ salient:
   `concept_region` collector (see `services/orion-recall/README.md` § 15, PR #1133) — a
   cheap label-substring match against the current turn's text, empty when nothing matches.
 
-**Decay math, if you're debugging why an activation value looks wrong:**
-`decay_concept_activations()` takes an explicit `elapsed_seconds` parameter from its caller
-(the scheduler passes true wall-clock time since the previous tick, tracked via
-`time.monotonic()`) rather than deriving elapsed time from `node.temporal.observed_at`
-internally — the latter is only a documented one-shot fallback for ad-hoc/manual invocation.
-A function called repeatedly on a loop that re-derives elapsed time from a never-advancing
-`observed_at` on every call compounds: each tick re-decays an already-shrunk value against
-an ever-growing elapsed-since-creation window, collapsing activation to `decay_floor` within
-roughly one configured half-life regardless of the half-life value (a real bug caught in
-review during PR #1131 — see that PR's description for the numeric trace).
+**Decay math, if you're debugging why an activation value looks wrong:** see
+`orion/substrate/dynamics.py` (`since_last` mode, `activation_decayed_at` stamp). The Hub no
+longer decays anything (removed 2026-10-06, see the table above).
 
 **Activation was seeded at 0.0 with no half-life until 2026-07-17 (fixed):** decay math
 being correct is meaningless if there's nothing to decay. No `ConceptNodeV1` producer ever
 set `signals.activation` when constructing a node — every concept was born at the schema
 default (`activation=0.0`, `decay_half_life_seconds=None`), and `decay_activation()` treats
-a falsy half-life as "clamp to floor, don't decay." So the live scheduler above was decaying
+a falsy half-life as "clamp to floor, don't decay." So the live scheduler (since removed) was decaying
 an input that was permanently `(0.0, None)` — 120s ticks that correctly computed nothing,
 forever. This was not limited to the two organic-growth adapters (`topic_foundry.py`,
 `concept_induction.py`) — a code-review pass on the first version of this fix found 16+ live
@@ -1823,6 +1837,28 @@ Topic Studio relies on the Topic Foundry `/capabilities` endpoint to configure s
 
 ---
 
+## Draft-first chat replies (spec L8)
+
+`HUB_UNIFIED_DRAFT_FIRST_ENABLED=true` (default): on Unified Chat turns the
+Hub shows Orion's draft as soon as the reply writer finishes, while the
+finalize judge is still checking it. If the judge rewrites it, the message is
+replaced in place and marked "revised: <reason>"; if not, the draft is swapped
+for the identical final message with no mark. Sensitive turns (boundary,
+trust rupture, repair pressure) are never shown early. `false` restores
+judge-before-display for every turn.
+
+- Wire: governor publishes `HarnessRunDraftPreviewV1` on
+  `orion:harness:run:draft_preview` (`CHANNEL_HARNESS_RUN_DRAFT_PREVIEW`);
+  `HarnessStepRelay` subscribes alongside the step channel and queues it to
+  the turn; `run_unified_turn` sends `{"type": "draft_preview", "draft_text"}`
+  and annotates the `final` frame with `replaces_draft`, `revised`,
+  `revised_reason`. Browser: `static/js/draft-revision.js`.
+- Only the final text is persisted (chat history, memory, TTS); the draft
+  never is, so a revision cannot create a duplicate turn.
+- Measure: `unified_turn_first_visible corr=... kind=draft_preview|final
+  elapsed_ms=...`, `unified_turn_final_visible`, `unified_turn_revision
+  corr=... reason=...` in Hub logs.
+
 ## Voice debugging
 
 Hub records PCM in the browser, resamples to 16 kHz WAV, and sends `client_audio_meta` with peak, RMS, duration, and chunk count. Low peak warns in the UI but still sends audio. STT silence rejection is configured in `orion-whisper-tts` via `STT_NEAR_SILENT_PEAK_INT16` (default `50`).
@@ -1869,10 +1905,10 @@ producer -- these are facts Hub already sees):
   evidence the governor started the turn; before that the turn is *queued*).
   The lane is derived from the same `fcc_model_label` predicate
   `HarnessGovernorClient.run()` uses to pick the queue, so it cannot disagree.
-- **LLM gateway lanes** -- polled from orion-llm-gateway's `GET /admission`
-  (per-upstream inflight / waiting / shed gauges) joined to `GET /routes` by
-  the catalog's `upstream` field, so each worker's queue is labelled with the
-  route names that dispatch to it (`metacog`, `quick_background`, ...).
+- **LLM gateway lanes** -- one record per GPU pool role, built from the Hub's
+  live pool feed (`scripts/runtime_activity_routes.py` `pool_lanes`). The old
+  `GET /admission` + `GET /routes` join is gone (the admission ledger was
+  deleted in pool stage 5; `/routes` is retiring in stage 6).
 
 Endpoints: `GET /api/runtime-activity` (snapshot) and
 `GET /api/runtime-activity/stream` (SSE, one frame per change). Reducer:
@@ -2000,7 +2036,7 @@ Then open the Hub Memory tab → **Review queue**, or `GET /api/memory/cards?sta
 
 **Proposal review (attention + review decisions):** Hub main tab → **Pending Decisions** lists decision-worthy `pending_review` proposals from the context-exec proposal review API. Enabled in Athena `.env_example` (`HUB_PROPOSAL_REVIEW_ENABLED=true`); panel and script are omitted from the page when false. Hub calls `GET /health`, `GET /proposals`, detail, eligibility, and `POST /proposals/{id}/review` only — it does not read JSON ledger files, does not POST triage, and does not execute proposals directly. Approval creates future execution eligibility only. See [docs/proposal-review-api.md](../../docs/proposal-review-api.md).
 
-**Compute lane override (mode vs compute):** Hub chat UI exposes **Mode** and **Compute** dropdowns. Mode decides behavior (`Auto`, `Grounded Small`, `Brain`, `Quick`, `Story`, `Agent`, `Council`); **Compute** selects the GPU/model lane (`chat`, `quick`, `agent`, `metacog`). Default compute is `quick`. Hub proxies `GET /api/llm-routes` from `HUB_LLM_GATEWAY_URL` (`GET /routes` on orion-llm-gateway) and polls every 30s. Selected lane is sent as `llm_route` on chat payloads (wired into cortex `options.llm_route`). **Mode: Agent now routes through FCC (see below), not context-exec** — `llm_route`/**Compute** is independent of Mode and unaffected by this: it's still the plain-completion lane picker used by Quick/Story/auto-escalated turns via `orion-llm-gateway`, not something FCC (Orion or Agent mode) ever consults. Down lanes warn with explicit **Use quick / Try anyway / Cancel** — no silent fallback.
+**Compute lane override (mode vs compute):** Hub chat UI exposes **Mode** and **Compute** dropdowns. Mode decides behavior (`Auto`, `Grounded Small`, `Brain`, `Quick`, `Story`, `Agent`, `Council`); **Compute** selects the GPU/model lane (`chat`, `quick`, `agent`, `metacog`). Default compute is `quick`. Hub serves `GET /api/llm-routes` from GPU pool state (`orion:gpu_pool:state` RPC with the pool's config, built by `orion/gpu_pool/route_view.py`, cached 10s; GPU pool stage 6.3 -- it no longer calls orion-llm-gateway's retiring `GET /routes`) and polls every 30s. When the pool cannot be asked, every lane is `unknown` (`source: gpu_pool_unavailable`), never a guessed `up`. Selected lane is sent as `llm_route` on chat payloads (wired into cortex `options.llm_route`). **Mode: Agent now routes through FCC (see below), not context-exec** — `llm_route`/**Compute** is independent of Mode and unaffected by this: it's still the plain-completion lane picker used by Quick/Story/auto-escalated turns via `orion-llm-gateway`, not something FCC (Orion or Agent mode) ever consults. Down lanes warn with explicit **Use quick / Try anyway / Cancel** — no silent fallback.
 
 **Social room toggle vs Mode vs Compute:**
 
@@ -2789,10 +2825,10 @@ state.
   deleted 2026-07-28) plus whether `docs/superpowers/specs/2026-08-21-phi-v2-design.md`'s
   successor pieces (`scripts/fit_phi_encoder.py`) exist on disk. phi-v2 itself is not implemented.
 - **`GET /api/self-brain/region-provenance`** (`scripts/self_brain_routes.py`): which service
-  actually backs each of `BrainRegionV1.dimension`'s 6 values (`orion.metrics.lineage
+  actually backs each of `BrainRegionV1.dimension`'s 5 values (`orion.metrics.lineage
   ::resolve_brain_regions()`), for the Self tab's Self-Observability EKG region-click detail panel
-  (see that section above) — `field_anomaly` names `orion-field-digester`; the other 5 name
-  `orion-substrate-runtime`. Static (6 entries, computed once via `lru_cache`), not per-tick.
+  (see that section above) — `field_anomaly` names `orion-field-digester`; the other 4 name
+  `orion-substrate-runtime`. Static (5 entries, computed once via `lru_cache`), not per-tick.
 
 ## Cabinet tab
 
@@ -2859,6 +2895,35 @@ scripts/safe_docker_build.sh orion-hub up -d --build
 API: `GET /api/cabinet/ambient/latest`, `GET /api/cabinet/ambient/history?window=24h|3d|7d`
 (`scripts/cabinet_ambient_routes.py`, `/static/js/cabinet-sensors.js`). Latest polls ~1s only
 while `#cabinet` is visible; history fetches on tab activation, window toggle, or Refresh.
+
+### House electricity (Energy strip)
+
+Below the cooling strip, **House electricity — Rocky Mountain Power** shows what the house
+bill looks like right now, read-only from the tables `orion-energy` writes through
+sql-writer (Hub's `DATABASE_URL`). Spec:
+`docs/superpowers/specs/2026-09-26-orion-energy-watcher-design.md`.
+
+- Tiles: cycle to date (with "through <time>" -- the end of the newest metered interval the
+  total covers), Orion's projected cycle total, RMP's own forecast, the price of the next
+  kWh, and pressure (under / near / over RMP forecast, or `unknown (<reason>)`).
+- Importer state (`healthy` / `stale` / `reauth_required` / `degraded`), the last closed
+  bill's reconcile (Orion vs RMP), and 14 days of daily kWh bars.
+- **Unknown is never $0.** A null amount renders "unknown". A stakes snapshot older than
+  `ORION_ENERGY_STAKES_MAX_AGE_SEC` comes back `stale: true`; the strip then shows every
+  tile as unknown with an amber "stale since <as_of>" note instead of old numbers. A
+  failed or unparseable fetch blanks the tiles and bars the same way; each endpoint
+  renders on its own, so one failing does not freeze the other.
+
+| Key | Default | What it does |
+|---|---|---|
+| `HUB_ENERGY_TIMEZONE` | `America/Denver` | Local day boundary for the daily kWh bars (Postgres `AT TIME ZONE` name). |
+| `ORION_ENERGY_STAKES_MAX_AGE_SEC` | `1800` | Snapshot age past which the strip reads stale (and curiosity never holds -- section 4.2.4). |
+
+API: `GET /api/energy/latest` (stakes, importer, reconcile, `stale`, `as_of`,
+`covered_through`), `GET /api/energy/usage/daily?days=1..90` (`scripts/energy_routes.py`,
+`/static/js/energy-strip.js`). Polls every 60s while `#cabinet` is visible. Needs
+`orion-energy` running; restart Hub after env changes with
+`scripts/safe_docker_build.sh orion-hub up -d --build`.
 
 ## Reverie tab
 
@@ -3043,6 +3108,47 @@ past each loop's own decay threshold, not a heartbeat file).
 
 ## Deliberate reading from Unified Chat and curiosity
 
+Admission windows and retry backoff gate new bindings,
+not recovery of already-bound durable work. Both workers continue polling an
+unconsumed binding for their own stage while those gates are closed; disabled
+workers still stop. This also retries delivery of the same immutable request
+if its original acceptance was uncertain. It never creates a fresh binding
+under a closed gate. Both stages default to around-the-clock reading (window
+hours 0/0). Existing installations with explicit window overrides must set
+both pairs to 0/0 and recreate Hub. Once-per-run settlement remains unchanged.
+
+**No reading budgets (2026-09-28).** There is no daily cap and no cooldown
+between reads. Each stage reads one source at a time, paced by durable-runs
+GPU admission and by the refund backoff (30 minutes after a turn refused before
+reading, doubling to a 4-hour ceiling). The day counter and last-read time are
+still kept and shown on the Reading tab. The retired keys
+(`HUB_WORLD_PULSE_READ_DAILY_CAP`, `HUB_WORLD_PULSE_READ_WALLET_B_DAILY_CAP`,
+`HUB_WORLD_PULSE_READ_MIN_COOLDOWN_SEC`,
+`HUB_WORLD_PULSE_READ_STAGE2_MIN_COOLDOWN_SEC`) are ignored if still set.
+
+**Internal documents (2026-09-28).** Orion can also read a text file by absolute path, for example a markdown spec. Juniper can paste the path into the Reading tab, or Orion can pass it to `recommend_reading` in chat. When the request is accepted, Hub reads the file once. The contents are stored by hash in `reading_document_snapshot`, and the source becomes `file:///abs/path?sha256=<hex>`. Stage 1 hands those exact bytes to the reader inside the prompt and tells it not to fetch anything. The read-evidence record is then written by Hub with `tool_name="orion_document_snapshot"`, and only after checking that the text really is in the bound prompt. A model tool call cannot forge that record. Because each version is pinned by hash, an unchanged file comes back as `already_read`. An edited file counts as a new read. A status lookup by the bare path finds any version. Limits:
+- only files under `HUB_READING_DOCUMENT_ROOTS` (default: the repo checkout plus Orion's copy at `/mnt/orion-fcc/repo`, both already mounted into Hub);
+- only `HUB_READING_DOCUMENT_EXTENSIONS` types;
+- at most `HUB_READING_DOCUMENT_MAX_BYTES` (49152). Anything larger is refused, never truncated.
+
+Hub also refuses `.git`, `.ssh`, `.env*`, key files, symlinks that point outside the roots, and non-UTF-8 files. Each refusal comes back as a short code such as `document_outside_allowed_roots` or `document_too_large`. Setting the roots to an empty string turns document reading off. Stage 2 stays web-only. Measure how much of the spec corpus is readable with `pytest services/orion-hub/evals/test_reading_document_eval.py -s`.
+
+**A URL is read once (2026-09-28).** Live 2026-09-27 the same NVIDIA page
+finished Stage 1 three times, because the ingress only folded new requests onto
+reads still in flight. Now a request for a URL whose Stage 1 already finished
+is folded onto that earlier read with `last_error=already_read`, whoever asks:
+World Pulse, curiosity, or Juniper through chat or the Hub. The receipt carries
+`duplicate: "already_read"` (or `"already_queued"` for a read still in
+progress) plus the earlier read's status and summary; the chat tool description
+tells Orion to say the URL was blocked as a duplicate by design. Rows already
+waiting when this shipped are passed on by a sweep each tick
+(`skip_already_read_stage1` / `_stage2` in `orion/world_pulse_read/queue.py`;
+log lines `world_pulse_read_skipped_already_read` and
+`world_pulse_read_stage2_skipped_already_read`), and the operator retry refuses
+with `already_read`. Stage 2 follow-up links that were already read are logged
+(`world_pulse_read_stage2_reentry_already_read`) and skipped without using a
+round trip.
+
 The model can call `recommend_reading(url, why_now)` to preserve a public source for asynchronous reading, or `reading_status(url=...)` / `reading_status(request_id=...)` to inspect existing work. Status requires exactly one selector. Use a supplied link directly without asking the user to remember a UUID. URL lookup uses the same normalization as ingress (including fragment removal), selects the newest matching request by creation time then seed ID, resolves duplicate aliases, and reports `lookup_url`, `matched_request_count`, and `selection=latest_request`. It does not fetch, enqueue, or retry. A missing URL returns `status=not_found`, `request_id=null`, and count zero. Different paths, queries, and arXiv versions remain distinct. Existing ID lookups are unchanged. A queued latest request does not imply earlier requests never ran; returned attempt counts and match count must not be flattened into that claim. Tool discovery alone is not evidence of status. WebFetch/search remain the tools for facts needed immediately. URL presence never automatically submits work.
 
 Deploy Hub's URL-aware listener before the governor/tool producer. Old ID callers remain compatible; an old listener rejects the new URL selector rather than fabricating status. No queue migration or env change is required.
@@ -3051,7 +3157,9 @@ Legacy World Pulse rows without request IDs are included in URL lookup and match
 
 Both turn types receive a caller-bound stdio MCP tool through the existing harness. Hub accepts its internal bus RPC into the existing Postgres `world_pulse_read_seed` queue, commits, then emits `orion:reading:requested` and returns durable state. Pub/Sub publication alone is not acceptance. World Pulse discovery/backfill, recommendations and capped Stage 2 reentry share this queue; Wallet A/B and curiosity run accounting retain their roles.
 
-**Wallet refunds.** Both reading loops debit their wallet (daily count + cooldown) right after claiming a seed, before the turn runs. A turn the stance phase deferred or refused (`turn_deferred:*` -- where a GPU capacity refusal such as `stance_react_failed: agent=gpu_pool_unavailable:deadline` lands, and also Orion's own stance defer/refuse) never reached the reader, so it gets its daily slot back on the day it was charged and the cooldown timestamp (`last_at`, shown as `last_read_at` / `wallet_*.last_at`) goes back to the last debit that counted. Retry spacing then comes from a separate `retry_not_before` key (block reason `refund_backoff`, visible in the world-pulse-read `/api/status` payload as `wallet_*.retry_not_before`) that doubles per consecutive refusal from `HUB_WORLD_PULSE_READ_MIN_COOLDOWN_SEC` (Stage 2: `HUB_WORLD_PULSE_READ_STAGE2_MIN_COOLDOWN_SEC`) up to max(paced cooldown, 8x that floor), and resets once a turn reaches the reader. Turns that reached the reader (`turn_error:*`, timeouts, exceptions, parse failures) keep their charge. Known pre-reader GPU admission failures, stance RPC timeouts, and stance caller-budget exhaustion do not spend a seed attempt; genuine stance refusals and unknown failures retain bounded retries. Historical attempt counts are not rewritten. Log lines: `world_pulse_read_wallet_refunded` / `world_pulse_read_stage2_wallet_refunded`. Policies: `orion/world_pulse_read/retry.py::is_refused_before_work` and `is_capacity_deferral`; mechanics: `orion/world_pulse_read/wallet_refund.py`.
+**Durable admission and wallets.** Both stages submit `reading.turn` to `HUB_READING_DURABLE_URL` (host-network default `http://127.0.0.1:8124`). They no longer start unheld unified turns. An immutable Postgres binding preserves the prompt/run ID while the existing graph checkpoints GPU waiting, heartbeats the hold, fences recovery and releases it. Hub validates the hold and keeps `reading_only=True` / `no_write=True`; parsing, evidence checks and landing stay here. Waiting or a lost acceptance reply spends neither wallet slots nor failed attempts. Settled work charges once per durable run via an atomic Redis settlement marker; pre-reader refusals instead set the existing exponential retry backoff. Markers deliberately do not expire because checkpoint replay has no fixed expiry. Operator cancellation stops the seed without an automatic retry or wallet charge. Known admission refusals do not spend a seed failure attempt. Actual reader errors retain bounded retries. A post-processing retry reuses the saved result and charge.
+
+Deploy `manual_migration_reading_durable_turn.sql`, the updated admitted durable runner, and Hub together with reading workers paused. Then re-enable the workers. There is no direct-turn fallback if the runner is unavailable. Existing wallet caps/windows govern submission; queued admission may occur after the submission window closes. Active bindings take precedence over fresh seeds and are protected from stale-digest cleanup. To inspect a wait, look up `reading_durable_turn.run_id` for the seed and `GET /runs/{run_id}`; it includes checkpoint status, pool state, actual turn result and whether a `run.started` event exists. This does not change thermal policy or GPU capacity.
 
 **Progress and acceptance.** Both queues are FIFO within priority, including retries; new feed arrivals cannot indefinitely jump ahead of an older retry. The existing wallet backoff still controls admission retry rate. FIFO does not supply GPU capacity, and a persistently deferred oldest item can hold up younger same-priority work. To verify one source using stored artifacts, run inside Hub:
 
@@ -3067,13 +3175,99 @@ The check uses `POSTGRES_URI` and a read-only transaction, resolves the latest U
 
 The MCP response preserves the full `{ok, result, error}` envelope. Only `ok=true` plus a row-backed `result.request_id` proves acceptance. The Harness Governor correlates raw FCC `tool_use.id` / `tool_result.tool_use_id` pairs, validates the deterministic request ID, records the outcomes on `HarnessRunV1.reading_receipts`, and applies the same deterministic truth gate before the draft and final voice response leave the service. Failed, timed-out, missing, or malformed receipts produce `acceptance is unknown`; model-authored persistence/future-work claims and unfetched summaries are discarded rather than phrase-matched.
 
-Hub logs `reading_tool_failed` with the RPC correlation ID, operation phase, exception type, SQLSTATE and one of `no_pool`, `connection_failure`, `schema_incompatible`, `enqueue_failure`, or `status_failure`. Exception detail is bounded and credential-bearing Postgres URLs/password parameters are redacted. The model-visible failure remains intentionally generic.
+Hub logs `reading_tool_failed` with the RPC correlation ID, operation phase, exception type, SQLSTATE and one of `no_pool`, `connection_failure`, `schema_incompatible`, `enqueue_failure`, `status_failure`, `reading_result_failure`, or `reading_search_failure`. Exception detail is bounded and credential-bearing Postgres URLs/password parameters are redacted. The model-visible failure remains intentionally generic.
 
 Apply `services/orion-sql-db/manual_migration_general_reading_v1.sql` after the two existing World Pulse read migrations, then rebuild/restart Hub and harness governor from a worktree. No new operator env keys or HTTP submission endpoints are required. Existing reading enable flags stop consumption; queued state remains inspectable. Rolling back the code can leave the additive columns in place; pause the workers first if general `reading` rows remain, because the older seed model cannot parse that new kind.
 
 A completed source can be reread in a later turn. Concurrent requests for an active URL retain their own provenance as aliases without another active read. Final `completed` requires the existing SQL journal rows; missed journal commands are replayed from saved artifacts without another model call or wallet debit. Reading stages have only WebFetch/WebSearch and produce attributed candidates through the existing server-owned adapter.
 
 See [implementation, exact checks and runtime limits](../../docs/superpowers/pr-reports/2026-09-10-general-reading-pr.md). The dedicated local/CI gate installs `tests/requirements-reading.txt`; `RUN_READING_POSTGRES=1` enables disposable local PostgreSQL integration tests, never a production DSN.
+
+**Reading tab (operator).** Hub's **Reading** tab (`#reading`, standalone at `/reading`) lists every read newest-first and shows what each produced: Stage 1's `what_i_learned`, candidate priors, concept candidates, open threads and `read_evidence`; Stage 2's summary, priors tested, hops and round trips; matching journal entries; durable runs and duplicate requests. A handoff on a row whose Stage 1 did not finish is labelled rejected, never shown as learning. Old skipped digest items are hidden unless asked for. Endpoints (under `/world-pulse-read`):
+
+- `GET /api/reads?phase=all|active|done|failed|skipped|with_output&kind=&include_stale=&limit=&offset=`
+- `GET /api/reads/{seed_id}`
+- `POST /api/reads` `{url, why_now, title}` -- the same `enqueue_reading` ingress as `recommend_reading`, with provenance `invocation_context="operator"`, `requested_by="juniper"`.
+- `POST /api/reads/{seed_id}/cancel` -- a stage with an open durable binding is cancelled at `HUB_READING_DURABLE_URL` and finished by the worker's existing cancel path; a waiting stage with no binding is skipped here. Both use `reading_cancelled_by_operator` and never charge a wallet. `run_already_finished: true` means the run had already completed or failed, so the cancel changed nothing.
+- `POST /api/reads/{seed_id}/retry` `{stage: 1|2}` -- terminal (`failed`/`skipped`) stages only, not aliases, no open binding; Stage 1 also refuses a URL already active elsewhere and any digest item older than `HUB_WORLD_PULSE_READ_DIGEST_ITEM_MAX_AGE_DAYS` (the stale sweep would skip it again next tick; the tab's **Read this URL again** button queues it as a new read instead); Stage 2 needs Stage 1 `done` with read evidence. Both refuse `already_read` when another row already finished that stage for the same URL. Resets that stage's attempts. The **Read this URL again** button is hidden once Stage 1 is done (a new request would be blocked as a duplicate).
+
+Controls require `X-Requested-With: orion-hub` with a JSON body (same cross-site guard as the GPU pool panel); there is no operator token. Refusals return a short code (for example `url_already_active`) that the tab explains in plain words. Logs: `reading_operator_submit`, `reading_operator_cancel`, `reading_operator_retry`. Query/control code: `orion/world_pulse_read/operator.py`.
+
+### Introspect responder: `reading_results`
+
+**What it does.** Answers Orion's question "what did I actually learn from
+reading?" for the orion-introspect `reading_results` tool. It returns only
+what the reading pipeline really produced. For the whole tool family (which
+turns get it, truth rules, search pattern, how to add a tool), see the
+[harness-governor overview](../orion-harness-governor/README.md#orion-introspect-orion-reading-back-their-own-records).
+
+- **Transport.**
+  - The request arrives on the existing reading RPC channel
+    `orion:reading:tool:request`, operation `reading_result`, from
+    orion-harness-governor.
+  - `ReadingListener` replies on `orion:reading:tool:result:<correlation_id>`
+    with an `IntrospectResultV1` inside `ReadingToolResultV1.result`.
+- **Modes.**
+  - Recent finished reads (optional `since`, `limit` ≤ 5).
+  - One read by `request_id` or `url`, even an unfinished one, so its
+    status can be reported.
+  - `query=` by meaning (below).
+- **The gate: only verified reads count.**
+  - A reading appears in recent or search results only when it is not a
+    duplicate alias, Stage 1 is `done`, and its handoff carries tool-trace
+    `read_evidence` that the source was actually fetched.
+  - The item's text is the Stage 2 summary, falling back to Stage 1's
+    `what_i_learned`.
+  - The SQL filter only requires non-empty `read_evidence`; the
+    same-source check runs per row (`_source_read`). A recent or single
+    lookup whose evidence does not match its source, or an unfinished row,
+    reports `learned=false` and empty text, never model prose. Search drops
+    such rows.
+  - Code: `orion/world_pulse_read/introspect.py` (`_VERIFIED_WHERE`,
+    `_learned`).
+- **Label.** Every item is `epistemic_status="unsettled"`: source-attributed
+  candidates, not settled beliefs.
+- **Logs.**
+  - Success: `introspect op=reading_result corr=<id> items=<n> total=<n>
+    mode=recent|lookup|query`.
+  - Failure: `reading_tool_failed correlation_id=<id>
+    category=reading_result_failure|reading_search_failure|connection_failure|no_pool|...`.
+  - The model gets a generic error, never SQL or exception text. The MCP
+    wraps it as a tool error, e.g. `reading_results: answer unknown
+    (reading_search_unavailable; answer unknown)`. Non-search failures reuse
+    the reading queue's `reading_queue_unavailable; acceptance unknown, retry
+    the same request` text; its retry hint is harmless for a read-only
+    lookup.
+
+**Reading search (orion-introspect `reading_results query=...`).** A loop in `ReadingListener` embeds each verified reading once (title + learned text, via vector-host HTTP `/embedding`) and publishes `VectorUpsertV1` on `orion:vector:semantic:upsert`; orion-vector-writer stores it in Chroma `HUB_READING_SEARCH_COLLECTION`. The loop is hash-aware, so a Stage 2 summary replacing Stage 1 text is re-indexed, and it doubles as the backfill (`reading_search_index indexed=N pending=M` every `HUB_READING_SEARCH_INDEX_INTERVAL_SEC`). A query embeds only the question, keeps Chroma hits at or above `HUB_READING_SEARCH_MIN_SIMILARITY`, and re-reads each hit from Postgres through the same verified-reading gate. Embedder/Chroma failure or a not-yet-built index is logged as `reading_search_failure` and reported to the model as "answer unknown", never as no results. Recalibrate the floor with `python services/orion-hub/evals/run_reading_search_calibration.py`.
+
+## Orion's Day (daily letter)
+
+Once a day Hub writes Juniper a letter about what Orion thought about yesterday
+(one America/Denver calendar day), and hands a short list of threads to
+Orion's next curiosity run.
+
+- **Scheduling** (`scripts/orion_day_letter.py`): after 08:30 local
+  (`HUB_ORION_DAY_HOUR_LOCAL`/`_MINUTE_LOCAL`) Hub gathers the day and submits an
+  admitted `orion_day.letter` durable run to orion-durable-runs
+  (`HUB_ORION_DAY_DURABLE_URL`). The run writes the `orion_day_letter` row. Hub keeps
+  no state of its own: the attempt number comes from `GET /runs/orion-day-<date>-<n>`,
+  a failed/abandoned attempt is retried as `n+1` up to `HUB_ORION_DAY_MAX_ATTEMPTS`
+  (then one in-app notice), an operator cancel is not retried, and the letter is
+  abandoned at the next day's slot. An empty day sends nothing.
+- **Email** (`scripts/orion_day_email.py`, `templates/orion_day_letter.html.j2`): a row
+  with `emailed_at IS NULL` is rendered (HTML with inline styles + a full plain-text
+  part, nothing truncated, up to `HUB_ORION_DAY_MAX_IMAGES` reverie images inline as
+  `cid:reverieN@orion`) and sent through orion-notify. `emailed_at` /
+  `email_notification_id` (uuid5 of the date) are stamped only when notify answers
+  `email_status == "sent"`. Kill switch: `HUB_ORION_DAY_EMAIL_ENABLED`.
+- **Carry-forward** (`orion/orion_day/carry_forward.py`): the regular investigate
+  line claims the freshest unexpired, unoffered `carry_forward_md` once and shows it
+  under its own header in the kickoff prompt; a cancelled turn gives it back. The
+  letter's note never reaches curiosity. Kill switch:
+  `HUB_CURIOSITY_CARRY_FORWARD_ENABLED`; freshness `HUB_ORION_DAY_CARRY_FORWARD_TTL_HOURS`.
+- Checks: `tests/test_orion_day_letter.py`; eval
+  `python services/orion-hub/evals/run_orion_day_email_eval.py [--material m.json]`.
 
 ## Curiosity resource admission
 
@@ -3084,28 +3278,117 @@ investigation and self-inquiry submissions. An uncertain receipt never triggers
 an unleased direct fallback or a budget refund: inspect/retry the same run ID.
 Set the flag false to preserve the prior non-admitted durable kickoff.
 
-Hub validates admitted turn fences using `HUB_CURIOSITY_LEASE_VALIDATION_URL`
-(default `http://127.0.0.1:8124/leases/validate`, since Hub uses host networking).
-Each admitted turn uses its lease's assigned lane and request's inference timeout; concurrent
-admitted lanes bypass the legacy local turn lock. Duplicate turns coalesce by
-run ID plus lease identity/generation, and even cached results require a current
-fence. Shutdown cancels and joins active turn tasks. The typed lease passes
-through the unified turn and Harness request into FCC's per-process
-`X-Orion-Resource-Lease` header; it never enters the prompt or a global env value.
-Stance, reflection, re-reflection, and conditional response repair use the same lease and
-assigned lane through their Cortex requests. Ordinary turns keep their existing
-routes; Hub omits an absent lease from the legacy stance bus payload.
+An admitted run waits in orion-durable-runs for one GPU pool hold (GPU pool stage 4). Hub
+validates each turn's hold ref (`gpu_lease`) with the pool's `status` verb before spending a turn
+on it, and every LLM call of the turn (FCC via `X-Orion-Gpu-Lease`, stance/reflection/repair via
+`options.gpu_lease`) attaches to that hold. Duplicate turns coalesce by run ID plus hold
+identity/generation. For Door-A, durable-runs keeps the hold past finish; Hub composes under it,
+then posts `/runs/{id}/release-outreach-lease` to `HUB_CURIOSITY_DURABLE_RUNS_URL` (the durable-runs
+base URL, default `http://127.0.0.1:8124`). The old durable lease token (`X-Orion-Resource-Lease`,
+`HUB_CURIOSITY_LEASE_VALIDATION_URL`) was deleted in stage 4.6.
 Full ownership and activation: `docs/architecture/durable-resource-admission.md`.
 
+## Urgent curiosity runs
 
-## Optional GPU2 elastic admission
+An urgent run is an investigation someone asked for right now, instead of one Orion
+picked. Requests arrive on `orion:curiosity:urgent:request` (`CuriosityUrgentRequestV1`,
+`orion/schemas/curiosity_urgent.py`); the Hub button and the hardware watcher both
+publish there. `scripts/curiosity_urgent.py` validates each one (an invalid payload is
+logged as `urgent_request_invalid`; when it still names a usable incident id it also gets a
+`failed` notice, `refused: invalid_request`) and calls
+`CuriosityInvestigation.start_urgent`, which:
 
-GPU2 diffusion/agent-burst borrowing is additive and defaults off. See the
-[ownership ADR](../../docs/architecture/gpu2-elastic-admission.md),
-[pre-edit repository/live evidence](../../docs/architecture/gpu2-elastic-evidence.md),
-and [consumer-first rollout and rollback](../../docs/runbooks/gpu2-elastic-admission.md)
-for this service's exact flags, HTTP contracts and operator commands.
-No production env sync, migration, GPU transition or deployment was performed.
+- refuses with `urgent_disabled`, `curiosity_disabled`, `durable_admission_disabled`
+  (an urgent run never runs at background priority), `redis_unavailable` or `incident_already_open`
+  (Redis NX key `orion:curiosity:urgent:open:{incident_id}` holding the run id, TTL
+  `HUB_CURIOSITY_URGENT_TIMEOUT_SEC + 2 × HUB_CURIOSITY_URGENT_TURN_TIMEOUT_SEC + 610`).
+  Every refusal except `incident_already_open` (the open run reports) sends one `failed`
+  notice and records a `refused:<reason>` stub, never over a still-open run's record;
+- builds the urgent prompt (`orion/curiosity/urgent_prompt.py`) and dispatches the
+  curiosity durable run with the seed on the brief, `timeout_sec =
+  HUB_CURIOSITY_URGENT_TURN_TIMEOUT_SEC`, and GPU admission `priority: urgent` with
+  `deadline_at = now + HUB_CURIOSITY_URGENT_TIMEOUT_SEC` (durable-runs fails the run with
+  `workflow_deadline` there, queued or mid-turn). The prompt's only sources are `psql`
+  queries (biometrics per minute, the cabinet AC plug, and who held which GPU card from
+  `gpu_pool_events` joined to the `durable_run_workflow` view); it names no HTTP URLs,
+  because the harness blocks curl/wget in the sandbox. They are offered only when the
+  `HUB_CURIOSITY_PG_READONLY_ROLE` role exists (or the check is off); otherwise the
+  prompt says the evidence bundle is all the run has. The grants are
+  `scripts/sql/2026-09-28_grant_orion_readonly_hardware.sql` and
+  `scripts/sql/2026-10-02_grant_orion_readonly_gpu_pool.sql`;
+- skips the run lock, cooldown, daily cap and waking window, and spends none of them;
+- records the incident in the Redis hash `orion:curiosity:urgent:incidents` (newest 50 by
+  `requested_at`; an incident whose open key is held is never evicted);
+- hands the incident to the urgent reporter: `watch` after dispatch, `dispatch_failed`
+  only when dispatch raised (that also releases the NX key so the incident can be
+  retried). When cortex did not confirm (rejected, timed out, receipt lost) the run may
+  still have registered, so the key is kept, the incident is `dispatch_unconfirmed`, the
+  run is watched, and the result carries `"unconfirmed": true`. If there is still no run
+  record at the grant wait, that is one `failed` notice ("cortex never registered the run")
+  and the key is released (only while it still holds this run id).
+
+Every urgent run ends in a critical Hub + email notice (`scripts/urgent_report.py`,
+`event_kind=curiosity.urgent.report`, channels `in_app` + `email`):
+
+- `final` on `completed`: verdict / operator action / likely cause / cited evidence
+  from the run's `:IncidentReport`, then Orion's prose. No usable report shows the
+  `no_structured_verdict` flag with the prose and the evidence bundle.
+- `failed` on a terminal `failed` or `cancelled` state (reason = `detail.error`), when
+  dispatch raised, on a refusal, or when an unconfirmed run never registered: the reason
+  plus the evidence bundle.
+- `no_gpu` when the run has not got past resource wait by
+  `HUB_CURIOSITY_URGENT_GRANT_WAIT_SEC` (no grant/admit/start event in
+  `durable_resource_events`, or no run record at all): "not investigated".
+- `timeout` when no terminal state by `HUB_CURIOSITY_URGENT_TIMEOUT_SEC`: INCOMPLETE; the
+  run is being stopped at its admission deadline and its final/failed notice follows. If the
+  run store shows it already ended but Hub missed the bus event, the final/failed notice is
+  sent from the store instead (detail from the run-state row, or the terminal outbox event
+  when that lags; a completed run with unreadable detail is re-read once after 60 s, and if
+  still unreadable logs `urgent_report_missed_terminal_unreadable` rather than send an empty
+  final). Either way the incident's open key is released.
+
+orion-notify never enforces `dedupe_key`, so Hub dedupes itself with
+`orion:curiosity:urgent:sent:{incident_id}:{kind}` (7 days; the value is the run id, so a
+retried run for the same incident is still reported) and retries a refused send
+(2, 4, 8, 16, 32, 60, 60 … s) for up to 30 minutes, then logs `urgent_report_undelivered`
+and sets the incident status `report_undelivered`. Urgent runs never go through
+reach-out. The two watchdog timers are in-process: a Hub restart mid-run loses them, but
+the final/failed notice still rides the durable run-state event.
+
+The evidence bundle (`scripts/urgent_evidence.py`, `collect_evidence()`) is hardware
+and GPU-pool state only, read with the same readers the Hub panels use: cabinet AC plug
+latest sample, the last hour of `cabinet_temp_c`, each node's biometrics measurements,
+per-GPU cards, and active/queued pool leases. Each section has its own timeout; a failing
+section becomes `{"error": ...}`. The bundle is trimmed (oldest trend points first) to fit
+the seed's 32 000-byte cap.
+
+The Curiosity panel's "Run urgent" box (`templates/curiosity_atlas.html`) posts
+`{"question": ...}` to `POST /curiosity/api/urgent`, which collects the bundle and publishes
+a `manual` request (`requested_by="juniper"`, incident id `uuid4().hex`) on the channel
+above; it returns `{"ok": true, "incident_id"}`. It refuses up front with 400
+`question_required` / `question_too_long` (over 2000 chars) and 503 `loop_not_running`,
+`urgent_disabled`, `durable_admission_disabled`, `urgent_listener_not_running`,
+`bus_unavailable` or `redis_unavailable` -- a request with no
+consumer would read as started and never run. `GET /curiosity/api/urgent` lists the newest
+20 incidents from the hash, without their evidence bundles.
+
+Orion's sandbox reads the hardware tables through `orion_readonly`; the grant is
+`scripts/sql/2026-09-28_grant_orion_readonly_hardware.sql` (an operator step, apply
+command in the file).
+
+Env: `HUB_CURIOSITY_URGENT_ENABLED` (default true), `HUB_CURIOSITY_URGENT_TURN_TIMEOUT_SEC`
+(900), `HUB_CURIOSITY_URGENT_TIMEOUT_SEC` (1200), `HUB_CURIOSITY_URGENT_GRANT_WAIT_SEC` (120).
+Rollback: `HUB_CURIOSITY_URGENT_ENABLED=false` and restart Hub (the button refuses, the
+listener does not start). Eval: `python services/orion-hub/evals/run_urgent_report_eval.py`
+replays every outcome (valid / malformed / evidence-less report, failed, cancelled, timeout,
+no GPU, unconfirmed dispatch) through the real reader, run-state handler and composer.
+Plan: `docs/superpowers/plans/2026-09-28-urgent-curiosity-plan-3-seeded-urgent-runs.md`.
+
+
+## GPU2 (agent-gpu2)
+
+gpu2 is loaded and unloaded only by orion-gpu-pool (GPU pool stage 4). The old per-run
+`HUB_CURIOSITY_ELASTIC_ACTIVATION_ENABLED` permission was deleted in stage 4.6.
 
 ## Lend chat GPU (gpu0 in orion-gpu-pool)
 
@@ -3138,12 +3421,20 @@ snapshots feed only the per-hop EWMA baseline gate
 
 ## Orion is asking (open questions to Juniper)
 
-Walkway camera idea 3 (`docs/superpowers/specs/2026-09-22-walkway-camera-busy-world-design.md`). A card in the Vision panel ("Orion is asking", `#visionAsksCard`, `static/js/vision-asks.js`) lists Orion's open questions and lets Juniper answer or dismiss them. Routes in `scripts/ask_routes.py`, on the Hub's asyncpg pool (`RECALL_PG_DSN`, `conjourney`):
+Walkway camera idea 3 (`docs/superpowers/specs/2026-09-22-walkway-camera-busy-world-design.md`). The "Orion is asking" panel (`#visionAsksCard`, `static/js/vision-asks.js`; since 2026-10-06 the first card on the Hub home, no longer inside Vision) lists Orion's open questions and lets Juniper answer or dismiss them. Routes in `scripts/ask_routes.py`, on the Hub's asyncpg pool (`RECALL_PG_DSN`, `conjourney`):
 
 - `GET /api/asks?status=open` -- open, unexpired `orion_ask` rows, newest first.
 - `POST /api/asks/{ask_id}/answer` with `{"answer": "..."}` and `POST /api/asks/{ask_id}/dismiss` -- only an open, unexpired row moves (409 otherwise, 404 if unknown). Sets `status`, `answer`, `answered_at`, then publishes `OrionAskAnsweredV1` on `orion:ask:answered` (consumed by `orion-substrate-runtime`). If the publish fails the answer is still saved (`published: false` in the response); `orion-sql-writer` applies labels from the row itself.
 
-Asks are opened by `orion-sql-writer`'s individuals loop (row insert only, no bus event); the card polls every 60s. Needs `services/orion-sql-db/manual_migration_walkway_camera_v1.sql` applied, otherwise the routes return 503 `ask_schema_missing`. Pictures: a `thumb:<sha256>` ref is served by `GET /api/vision/crop-thumbs/{sha256}` from the read-only `HUB_VISION_CROP_THUMB_DIR` mount (hex-only ids, regular files only, size-capped); an http(s) URL is shown as-is; anything else is shown as text.
+Asks are opened by `orion-sql-writer`'s individuals loop (row insert only, no bus event); the card polls every 60s.
+
+**Memory confirmation cards (2026-10-06).** `orion-memory-consolidation` also opens cards here (`source_kind=memory_confirmation`, `source_ref=memory-confirm-<memory_id>`) for high-stakes shadow memories: at most 5 open, 7-day expiry. These cards show **Confirm / Revise / Reject** instead of Answer / Dismiss, and cannot be closed through `/answer` or `/dismiss` (409 `ask_needs_resolution`), because a close without an outcome would orphan the memory.
+
+- `POST /api/asks/{ask_id}/resolve` with `{"resolution": "confirmed"|"revised"|"rejected", "note": "..."}`. `revised` needs a note that is new wording: at least 6 words and different from the current statement (422 `revised_needs_note` / `revised_too_short` / `revised_unchanged`; the "unchanged" check reads the memory inside the same transaction, so a refusal leaves the card open). There is no word list: a note that only says "no" is refused as too short, and the box tells her to press Reject. The panel's Revise box starts from the memory's current statement (`memory_statement`, added to these cards by `GET /api/asks`). In ONE transaction it closes the card (`answered`, or `dismissed` for a rejection) and inserts the `attention_loop_outcome` row (`outcome_id = uuid5(ask_id)`, `verdict` resolved/dismissed, `features_at_close = {resolution, ask_id, via: "orion_is_asking", memory_id, ...}`). After the commit it publishes `AttentionLoopOutcomeV1` on `orion:attention:loop_outcome` and the usual `OrionAskAnsweredV1`. A failed publish is reported (`published_outcome: false`) and recovered by the consumer's table catch-up.
+- Privacy: the Hub has no authentication. These cards quote family and health memories, sit first on the Hub home, and are visible to anyone who can reach the Hub on the tailnet.
+- Kill switch: `MEMORY_CONFIRMATION_LOOP_ENABLED=false` makes `/resolve` return 404 (cards stay open).
+- `orion-sql-writer`'s vision daily ask cap now counts only `vision_individual` asks, so memory cards do not use up the camera's budget.
+- Tests: `tests/test_ask_routes.py`, `tests/test_ask_resolve_pg.py` (real Postgres, end to end with the memory consumer), `tests/test_orion_is_asking_browser_smoke.py` (Chromium), `static/js/vision-asks.test.js`. Needs `services/orion-sql-db/manual_migration_walkway_camera_v1.sql` applied, otherwise the routes return 503 `ask_schema_missing`. Pictures: a `thumb:<sha256>` ref is served by `GET /api/vision/crop-thumbs/{sha256}` from the read-only `HUB_VISION_CROP_THUMB_DIR` mount (hex-only ids, regular files only, size-capped); an http(s) URL is shown as-is; anything else is shown as text.
 
 ## Dream operator surface
 

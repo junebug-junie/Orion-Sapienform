@@ -80,15 +80,31 @@ def compute_stale_channel_candidates(
     return candidates
 
 
-def _fetch_channel_rows(client: RedisGraphQueryClient) -> list[dict]:
-    rows = client.graph_query(
-        """
-        MATCH (ch:Channel)
-        OPTIONAL MATCH ()-[e:PUBLISHES]->(ch)
-        RETURN ch.channel AS channel, count(e) AS edge_count
-        """
-    )
-    return [{"channel": r["channel"], "edge_count": int(r["edge_count"])} for r in rows]
+def _fetch_channel_rows(client: RedisGraphQueryClient, *, page_size: int = 5000) -> list[dict]:
+    # Paged, not one query: FalkorDB's RESULTSET_SIZE (default 10000) silently
+    # truncates a larger result. Live 2026-10-02 the graph held 117k Channel
+    # nodes (GPU-pool per-request reply channels) and one query saw 10,000.
+    # Keyset-paged on node id, edges counted only for the page: a SKIP page
+    # that aggregated every node's edges first exceeded FalkorDB's 1s query
+    # TIMEOUT on 118k nodes (~94ms per page this way), and id keys don't shift
+    # when the live mirror adds or deletes nodes mid-fetch.
+    out: list[dict] = []
+    after = -1
+    while True:
+        rows = client.graph_query(
+            """
+            MATCH (ch:Channel) WHERE id(ch) > $after
+            WITH ch ORDER BY id(ch) LIMIT $limit
+            OPTIONAL MATCH ()-[e:PUBLISHES]->(ch)
+            RETURN id(ch) AS nid, ch.channel AS channel, count(e) AS edge_count
+            ORDER BY nid
+            """,
+            {"after": after, "limit": page_size},
+        )
+        out.extend({"channel": r["channel"], "edge_count": int(r["edge_count"])} for r in rows)
+        if len(rows) < page_size:
+            return out
+        after = int(rows[-1]["nid"])
 
 
 def _delete_channels(client: RedisGraphQueryClient, channel_names: list[str], *, batch_size: int) -> int:

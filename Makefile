@@ -158,6 +158,13 @@ check-metric-lineage-gate:
 #   make check-definition-drift GATE=1       # exit 1 on drift (what CI runs)
 #   make check-definition-drift UPDATE=1     # re-lock and print the deltas
 #
+# Re-lock ONLY when your branch changes a metric definition. A branch that
+# changes none never needs to touch the lock, and does not fail the gate just
+# because main moved (even if main recorded another PR's change): the gate
+# accepts the lock exactly as the merge base committed it, and UPDATE=1 on such
+# a branch leaves the file byte-identical. The lock holds no merge-base commit
+# hash, so two no-change PRs can never conflict on it.
+#
 # GATE/UPDATE use the same explicit-true matching as UPDATE_BASELINE above,
 # for the same reason: UPDATE=0 must not rewrite the lock.
 #
@@ -407,16 +414,21 @@ attention-outcome-coverage:
 #
 # services/orion-sql-db/*.sql is applied BY HAND. There is no migration table, no version
 # stamp, and no ordering guarantee, so a migration that was written, reviewed, merged and
-# never applied looks identical in git to one that is live.
+# never applied looks identical in git to one that is live (PR #2400, PR #2424).
+#
+# The whole corpus is replayed in commit order (a later DROP explains an earlier CREATE);
+# only files changed in the last DAYS (default 30, 0 = all) can be red. Data-only files are
+# listed as "verify manually". The same check runs every 10 minutes inside
+# substrate-ladder-watch and cards Hub. Logic: orion/sql_migration_drift.py.
 #
 # Needs a reachable Postgres, so this is an operator/agent command rather than a CI gate.
 # Exit 1 = drift found; exit 2 = could not connect (deliberately distinct, so an infra
 # failure cannot be mistaken for a pass).
 check-sql-migrations-applied:
-	python3 scripts/check_sql_migrations_applied.py
+	$(METRIC_PYTHON) scripts/check_sql_migrations_applied.py $(if $(DAYS),--since-days $(DAYS),)
 
 check-sql-migrations-applied-quiet:
-	python3 scripts/check_sql_migrations_applied.py --quiet
+	$(METRIC_PYTHON) scripts/check_sql_migrations_applied.py --quiet $(if $(DAYS),--since-days $(DAYS),)
 
 # Postgres connection headroom. Needs a reachable Postgres AND psycopg2, so like
 # check-sql-migrations-applied this is an operator/agent command, not a CI gate.
@@ -471,8 +483,13 @@ postgres-headroom-watch:
 # schema another service writes can read what that writer's container writes
 # (orion/schema_skew_discovery.py finds every forbid-model (file, writer,
 # readers) triple from call sites; `--list-candidates` shows them; one docker
-# exec per container reads its copies, fields compared on the host). Read-only
-# against Postgres, docker, and git. Exit 1 = red, 2 = could not check.
+# exec per container reads its copies, fields compared on the host). Third: every
+# merged services/orion-sql-db migration changed in the last 30 days has its
+# tables/columns/indexes/sequences live (PR #2400/#2424; same logic as
+# check-sql-migrations-applied; --skip-migrations / --migration-days N). Read-only
+# against Postgres, docker, and git. Exit 1 = red, 2 = could not check,
+# 4 = --notify could not escalate (state unusable or orion-notify refused; red is
+# then carded every tick undeduped). Same exit-4 contract as disk/headroom watches.
 # substrate-ladder-watch adds a debounced Hub Pending Attention card via
 # orion-notify, the same path disk-threshold-watchdog/postgres-headroom-watch use
 # from host cron. See scripts/check_substrate_ladder_liveness.py.

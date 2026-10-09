@@ -51,7 +51,7 @@ def test_attributed_learning_survives_all_ingresses(context, requester):
     seed = WorldPulseReadSeedV1(seed_id="reading:" + str(req.request_id), kind="reading", run_id="parent-run",
                                url=str(req.url), request=req)
     pipe = object.__new__(WorldPulseReadPipeline)
-    async def generate(prompt, trace):
+    async def generate(prompt, trace, *, seed_id, **_kw):
         assert "world-pulse article" not in prompt
         assert req.why_now in prompt
         return GenerateOutcome(json.dumps({
@@ -79,7 +79,7 @@ def test_attributed_learning_survives_all_ingresses(context, requester):
 def test_empty_or_direct_graph_output_is_rejected(response):
     seed = WorldPulseReadSeedV1(seed_id="s", kind="finding", run_id="r", url="https://example.org/source")
     pipe = object.__new__(WorldPulseReadPipeline)
-    async def generate(prompt, trace):
+    async def generate(prompt, trace, *, seed_id, **_kw):
         return GenerateOutcome(json.dumps(response), None, _fetched(seed.url))
     pipe._generate = generate
     with pytest.raises(ValueError) as caught:
@@ -110,7 +110,7 @@ def test_schema_valid_handoff_without_a_source_fetch_is_not_a_read(fetches, labe
     url = "https://www.networkworld.com/article/3562856/nvidia-latest-news-and-insights.html"
     seed = WorldPulseReadSeedV1(seed_id="finding:r:x", kind="finding", run_id="r", url=url)
     pipe = object.__new__(WorldPulseReadPipeline)
-    async def generate(prompt, trace):
+    async def generate(prompt, trace, *, seed_id, **_kw):
         return GenerateOutcome(json.dumps(_LIVE_HOLLOW), None, fetches)
     pipe._generate = generate
     with pytest.raises(NoReadEvidenceError) as caught:

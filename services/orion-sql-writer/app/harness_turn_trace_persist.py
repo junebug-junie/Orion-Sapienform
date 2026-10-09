@@ -15,6 +15,7 @@ from typing import Any
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
+from app import write_health
 from app.models.harness_turn_trace import HarnessTurnTraceSQL
 
 # schema_version on the wire payload -> column this write should fill.
@@ -37,6 +38,8 @@ def upsert_harness_turn_trace(sess: Session, payload: dict[str, Any]) -> bool:
     corr_id = payload.get("correlation_id")
     column = column_for_schema_version(payload.get("schema_version"))
     if not corr_id or column is None:
+        # No fallback row for this reject: tell the storage-write organ it was lost.
+        write_health.mark_failed("validation error for harness turn trace: missing correlation_id or unknown schema_version")
         return False
 
     now = datetime.now(timezone.utc)

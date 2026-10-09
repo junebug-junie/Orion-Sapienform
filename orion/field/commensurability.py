@@ -322,6 +322,15 @@ def observe_source_to_channel(
                 resolved = field.capability_provenance.get(capability_id, {}).get(
                     channel, capability_id
                 )
+                # A capability value can resolve to a node that ALSO carries a
+                # node-level channel of the same name (catalog_drift_pressure
+                # since the 2026-10-07 D3 rename: node raw vs capability 0.85x,
+                # both resolving to node:athena). Overwriting would report the
+                # 0.85x value as athena's contribution while the merge keeps the
+                # node's own; keep the value the merge itself would keep.
+                prior = per_channel[channel].get(resolved)
+                if prior is not None:
+                    v = min(prior, v) if channel in HIGHER_IS_BETTER_CHANNELS else max(prior, v)
                 per_channel[channel][resolved] = v
 
     out: dict[str, tuple[str | None, dict[str, float]]] = {}

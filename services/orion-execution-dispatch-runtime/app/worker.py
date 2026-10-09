@@ -38,7 +38,23 @@ from orion.execution_dispatch.builder import (
     build_unevaluable_execution_dispatch_frame,
 )
 from orion.execution_dispatch.cortex_client import ExecutionDispatchCortexClient
-from orion.execution_dispatch.policy import load_execution_dispatch_policy
+from orion.execution_dispatch.policy import SHED_EXECUTOR_VERB, load_execution_dispatch_policy
+from orion.execution_dispatch.shed_settlement import SHED_PENDING, settle_shed_result
+from orion.schemas.gpu_pool import (
+    GPU_POOL_SHED_REPLY_PREFIX, GPU_POOL_SHED_REQUEST_CHANNEL, GPU_POOL_SHED_REQUEST_KIND,
+    GpuPoolShedReasonRequestV1, GpuPoolShedResultV1,
+)
+from orion.execution_dispatch.visual_settlement import (
+    RENDER_SCENE_VERB,
+    SETTLEMENT_NOT_SUBMITTED,
+    is_pending as _is_pending_settlement,
+    is_unsettled as _is_unsettled_settlement,
+    normalize_visual_outcome,
+    settle_visual_result,
+    settlement_of,
+    verb_settlement,
+)
+from orion.schemas.reverie_visual_run import REVERIE_VISUAL_WORKFLOW, reverie_visual_run_id
 from orion.execution_dispatch.result_extraction import (
     RESULT_KIND_EMPTY,
     RESULT_KIND_STRUCTURED,
@@ -62,6 +78,17 @@ logger = logging.getLogger("orion.execution_dispatch.runtime")
 # that bus's rpc_request() outcomes (orion:cortex:exec:request:background) were thrown
 # away with it. app.main's RpcHealthPublisher drains this sink into its long-lived bus.
 RPC_HEALTH_SINK = SharedRpcHealthSink()
+
+# Durable render settlement (docs/superpowers/specs/2026-09-28-visual-reverie-
+# durable-graph-design.md). A render verb that only SUBMITTED a reverie.visual
+# run is recorded with this status: the motor answered, but nothing has been
+# produced yet, so it is not a "success" to the theater tripwire either.
+DISPATCH_STATUS_PENDING = "pending"
+# A render whose kickoff was never confirmed made no image: stored with the
+# same non-failure status settlement gives a run that ended without one.
+DISPATCH_STATUS_NOT_PRODUCED = "empty"
+VISUAL_SETTLEMENT_RECONCILE_INTERVAL_SEC = 30.0
+VISUAL_SETTLEMENT_BATCH = 20
 
 THEATER_TRIPWIRE_WINDOW = 10
 # Renamed from THEATER_TRIPWIRE_EMPTY_THRESHOLD 2026-08-13: the predicate it
@@ -321,6 +348,8 @@ class ExecutionDispatchRuntimeWorker:
         # mid-process), just a tripwire whose restart-to-re-arm contract
         # actually holds now.
         self._recent_dispatch_statuses: deque[str] = deque(maxlen=THEATER_TRIPWIRE_WINDOW)
+        # Monotonic time of the next durable-render settlement pass.
+        self._visual_settlement_next_at: float | None = None
 
     async def start(self) -> None:
         asyncio.create_task(self._poll_loop(), name="execution-dispatch-runtime-poll")
@@ -334,6 +363,14 @@ class ExecutionDispatchRuntimeWorker:
                 await asyncio.to_thread(self._tick)
             except Exception:
                 logger.exception("execution_dispatch_runtime_tick_failed")
+            try:
+                await self._reconcile_visual_settlements()
+            except Exception:
+                logger.exception("execution_dispatch_visual_settlement_failed")
+            try:
+                await self._reconcile_shed_settlements()
+            except Exception:
+                logger.exception("execution_dispatch_shed_settlement_failed")
             try:
                 await asyncio.wait_for(
                     self._stop.wait(),
@@ -582,6 +619,9 @@ class ExecutionDispatchRuntimeWorker:
             # {} -- cold priors, honestly flagged via ExpectedEffectV1.
             # cold_start -- and never stalls a dispatch tick.
             effect_posteriors=self._load_effect_posteriors(),
+            # Attend-to-act loop: None while ORION_WORLD_ACTIONS_ENABLED is off -> every
+            # SELF_REVERSIBLE_SCOPE candidate is blocked `world_actions_disabled` on the frame.
+            world_actions_allowed=getattr(self._settings, "world_actions_allowed", None),
             # NOTE: updated_baseline deliberately does NOT carry
             # starvation_counts -- this frame computes its own fresh map and
             # model_copy would otherwise stamp the previous tick's map back
@@ -1271,6 +1311,11 @@ class ExecutionDispatchRuntimeWorker:
                 }
             )
 
+        # WORLD ACTIONS (attend-to-act loop): eligibility freshness, then the per-template randomized
+        # holdback -- drawn ONLY here, among decisions that already passed every gate (eligibility,
+        # policy, allocator, risk budget), so treated and control rows come from one population.
+        to_send, frame = self._world_action_holdback(frame, to_send)
+
         if not to_send:
             return self._abandon_tick_without_sending(frame, baseline_fields)
 
@@ -1764,6 +1809,8 @@ class ExecutionDispatchRuntimeWorker:
         candidate: ExecutionDispatchCandidateV1,
     ) -> ExecutionDispatchCandidateV1:
         now = datetime.now(timezone.utc)
+        if candidate.cortex_verb == SHED_EXECUTOR_VERB:
+            return await self._send_shed(bus, frame, candidate, now=now)
         if candidate.cortex_verb == "skills.imagination.render_scene.v1":
             candidate = candidate.model_copy(update={"visual_outcome": "unknown"})
         result_id = f"result:{candidate.dispatch_id}"
@@ -1778,7 +1825,9 @@ class ExecutionDispatchRuntimeWorker:
         existing = self._store.load_dispatch_result_by_dispatch_id(candidate.dispatch_id)
         if existing is not None:
             if candidate.visual_outcome is not None:
-                candidate = candidate.model_copy(update={"visual_outcome": existing["result_json"].get("visual_outcome") or "unknown"})
+                candidate = candidate.model_copy(
+                    update={"visual_outcome": normalize_visual_outcome(existing["result_json"].get("visual_outcome"))}
+                )
             logger.info(
                 "execution_dispatch_result_replayed dispatch_id=%s status=%s",
                 candidate.dispatch_id,
@@ -1796,6 +1845,17 @@ class ExecutionDispatchRuntimeWorker:
             # save_dispatch_result and save_dispatch_frame) but real, and a
             # probe is precisely the tick where being wrong matters most.
             self._record_dispatch_status(existing["status"], live=False)
+            if _is_unsettled_settlement(existing["result_json"]):
+                # The durable render is still in flight (or its kickoff was never
+                # confirmed): its outcome is emitted once, at settlement
+                # (_reconcile_visual_settlements), never here.
+                return candidate.model_copy(
+                    update={
+                        "dispatch_status": "dispatched",
+                        "dispatched_at": now,
+                        "result_ref": existing["result_id"],
+                    }
+                )
             # Re-emit on replay too: action_outcomes.action_id is the SQL
             # primary key and sql-writer's route upserts by merge(), so a
             # repeat emit for the same dispatch_id idempotently overwrites
@@ -1895,6 +1955,21 @@ class ExecutionDispatchRuntimeWorker:
             logger.warning(
                 "execution_dispatch_send_failed dispatch_id=%s error=%s", candidate.dispatch_id, exc
             )
+            if candidate.cortex_verb == RENDER_SCENE_VERB:
+                # cortex-exec may still have submitted the run (its id is
+                # deterministic per dispatch), so it settles if that run ends.
+                reason = f"send_error:{exc.__class__.__name__}: {exc}"[:2000]
+                return await self._record_unsubmitted_render(
+                    frame=frame, candidate=candidate, result_id=result_id,
+                    observation_data={},
+                    settlement={
+                        "state": SETTLEMENT_NOT_SUBMITTED,
+                        "durable_run_id": reverie_visual_run_id(candidate.dispatch_id),
+                        "workflow": REVERIE_VISUAL_WORKFLOW,
+                        "reason": reason,
+                    },
+                    submit_latency_ms=latency_ms, now=now,
+                )
             self._store.save_dispatch_result(
                 result_id=result_id,
                 dispatch_id=candidate.dispatch_id,
@@ -1937,6 +2012,19 @@ class ExecutionDispatchRuntimeWorker:
         # grades a failure as a success, with a stored summary reading
         # "failed: Command 'docker builder prune' timed out after 600 seconds".
         plan_status, plan_reason = plan_execution_status(payload)
+        if candidate.cortex_verb == RENDER_SCENE_VERB:
+            # Before the plan verdict: a kickoff cortex-exec could not confirm is
+            # reported ok=False by the verb (honest about the submit), but it
+            # made no image, so it must not be scored or charged as a failure.
+            observation_data = parse_structured_observation(extract_final_text(payload))
+            settlement = verb_settlement(observation_data.get("structured_result"))
+            if settlement is not None and settlement.get("state") == SETTLEMENT_NOT_SUBMITTED:
+                return await self._record_unsubmitted_render(
+                    frame=frame, candidate=candidate, result_id=result_id,
+                    observation_data={**observation_data, "plan_status": plan_status},
+                    settlement=dict(settlement),
+                    submit_latency_ms=(perf_counter() - send_started) * 1000.0, now=now,
+                )
         if is_failed_plan_status(plan_status):
             latency_ms = (perf_counter() - send_started) * 1000.0
             reason = plan_reason or f"plan status={plan_status}"
@@ -1946,6 +2034,19 @@ class ExecutionDispatchRuntimeWorker:
                 plan_status,
                 reason,
             )
+            structured_result = parse_structured_observation(extract_final_text(payload))["structured_result"]
+            failed_json = {
+                "visual_outcome": candidate.visual_outcome,
+                "error": reason[:2000],
+                "plan_status": plan_status,
+                # The verb's own payload is still preserved -- a failed
+                # prune's disk/cache measurements are real observations of
+                # the host and must not be discarded just because the
+                # action did not complete.
+                "structured_result": structured_result,
+                "evidence_refs": [result_id],
+                "latency_ms": latency_ms,
+            }
             self._store.save_dispatch_result(
                 result_id=result_id,
                 dispatch_id=candidate.dispatch_id,
@@ -1956,20 +2057,7 @@ class ExecutionDispatchRuntimeWorker:
                 # "unknown", which would silently drop these from scoring
                 # entirely.
                 status="failed",
-                result_json={
-                    "visual_outcome": candidate.visual_outcome,
-                    "error": reason[:2000],
-                    "plan_status": plan_status,
-                    # The verb's own payload is still preserved -- a failed
-                    # prune's disk/cache measurements are real observations of
-                    # the host and must not be discarded just because the
-                    # action did not complete.
-                    "structured_result": parse_structured_observation(
-                        extract_final_text(payload)
-                    )["structured_result"],
-                    "evidence_refs": [result_id],
-                    "latency_ms": latency_ms,
-                },
+                result_json=failed_json,
                 raw_len=0,
                 latency_ms=latency_ms,
                 dispatch_kind=candidate.dispatch_kind,
@@ -1998,14 +2086,23 @@ class ExecutionDispatchRuntimeWorker:
         latency_ms = (perf_counter() - send_started) * 1000.0
         final_text = extract_final_text(payload)
         observation_data = parse_structured_observation(final_text)
-        if candidate.cortex_verb == "skills.imagination.render_scene.v1":
+        pending_settlement: dict | None = None
+        if candidate.cortex_verb == RENDER_SCENE_VERB:
             structured = observation_data.get("structured_result") or {}
             visual = structured.get("result", structured)
-            outcome = visual.get("outcome", "unknown") if isinstance(visual, dict) else "unknown"
-            if outcome not in {"produced", "deferred_thermal", "deferred_busy", "already_satisfied", "failed", "unknown"}:
-                outcome = "unknown"
+            # The allowlist IS the schema's VisualRunOutcome; a hand-copied set
+            # here once dropped deferred_resource to "unknown".
+            outcome = normalize_visual_outcome(visual.get("outcome") if isinstance(visual, dict) else None)
             candidate = candidate.model_copy(update={"visual_outcome": outcome})
             observation_data["visual_outcome"] = outcome
+            if _is_pending_settlement(visual):
+                pending_settlement = dict(settlement_of(visual) or {})
+        if pending_settlement is not None:
+            return await self._record_pending_render(
+                bus, frame=frame, candidate=candidate, result_id=result_id,
+                observation_data=observation_data, settlement=pending_settlement,
+                submit_latency_ms=latency_ms, now=now,
+            )
         raw_len = len(observation_data["observation"])
         # Success is decided by `result_kind`, NOT by `len(observation)`.
         #
@@ -2072,6 +2169,426 @@ class ExecutionDispatchRuntimeWorker:
             }
         )
 
+    async def _record_pending_render(
+        self,
+        bus: OrionBusAsync,
+        *,
+        frame: ExecutionDispatchFrameV1,
+        candidate: ExecutionDispatchCandidateV1,
+        result_id: str,
+        observation_data: dict,
+        settlement: dict,
+        submit_latency_ms: float,
+        now: datetime,
+    ) -> ExecutionDispatchCandidateV1:
+        """A render that only submitted its durable run. Nothing has been made
+        yet, so: no latency (motor seconds and cost samples come from the run's
+        own GPU time at settlement, and only for a produced image), no action
+        outcome (emitted once, at settlement), and status "pending" -- the motor
+        answered, but a submit is not a product, so the theater tripwire must
+        not read it as productive success."""
+        self._store.save_dispatch_result(
+            result_id=result_id,
+            dispatch_id=candidate.dispatch_id,
+            frame_id=frame.frame_id,
+            status=DISPATCH_STATUS_PENDING,
+            result_json={
+                "visual_outcome": candidate.visual_outcome,
+                **observation_data,
+                "settlement": settlement,
+                "submit_latency_ms": submit_latency_ms,
+                "evidence_refs": [result_id],
+                "latency_ms": None,
+            },
+            raw_len=len(observation_data.get("observation") or ""),
+            latency_ms=None,
+            dispatch_kind=candidate.dispatch_kind,
+            target_id=candidate.target_id,
+        )
+        self._record_dispatch_status(DISPATCH_STATUS_PENDING)
+        logger.info(
+            "execution_dispatch_render_pending dispatch_id=%s durable_run_id=%s deadline_at=%s submit_ms=%.0f",
+            candidate.dispatch_id,
+            settlement.get("durable_run_id"),
+            settlement.get("deadline_at"),
+            submit_latency_ms,
+        )
+        return candidate.model_copy(
+            update={
+                "dispatch_status": "dispatched",
+                "dispatched_at": now,
+                "result_ref": result_id,
+            }
+        )
+
+    async def _record_unsubmitted_render(
+        self,
+        *,
+        frame: ExecutionDispatchFrameV1,
+        candidate: ExecutionDispatchCandidateV1,
+        result_id: str,
+        observation_data: dict,
+        settlement: dict,
+        submit_latency_ms: float,
+        now: datetime,
+    ) -> ExecutionDispatchCandidateV1:
+        """A render whose kickoff was never confirmed (the verb could not prove
+        the submit, or the RPC to cortex-exec itself failed). No image was made,
+        so it is not Orion failing: visual outcome unknown, a non-failure status,
+        no latency (no motor seconds, no cost sample) and no action outcome. The
+        run may still have been admitted, so the row keeps its not_submitted
+        settlement and settles -- emitting its one outcome -- if that run ends."""
+        candidate = candidate.model_copy(update={"visual_outcome": "unknown"})
+        self._store.save_dispatch_result(
+            result_id=result_id,
+            dispatch_id=candidate.dispatch_id,
+            frame_id=frame.frame_id,
+            status=DISPATCH_STATUS_NOT_PRODUCED,
+            result_json={
+                **observation_data,
+                "visual_outcome": "unknown",
+                "settlement": settlement,
+                "submit_latency_ms": submit_latency_ms,
+                "evidence_refs": [result_id],
+                "latency_ms": None,
+            },
+            raw_len=len(observation_data.get("observation") or ""),
+            latency_ms=None,
+            dispatch_kind=candidate.dispatch_kind,
+            target_id=candidate.target_id,
+        )
+        self._record_dispatch_status(DISPATCH_STATUS_NOT_PRODUCED)
+        logger.warning(
+            "execution_dispatch_render_not_submitted dispatch_id=%s durable_run_id=%s reason=%s submit_ms=%.0f",
+            candidate.dispatch_id,
+            settlement.get("durable_run_id"),
+            settlement.get("reason"),
+            submit_latency_ms,
+        )
+        return candidate.model_copy(
+            update={
+                "dispatch_status": "dispatched",
+                "dispatched_at": now,
+                "result_ref": result_id,
+            }
+        )
+
+    async def _reconcile_visual_settlements(self, *, now: datetime | None = None) -> int:
+        """Settle pending render results whose reverie.visual run reached a
+        terminal state (or orphaned past its deadline). Bounded batch, rate
+        limited, idempotent: the outcome is published BEFORE the conditional
+        row update, so a crash in between re-publishes next pass (sql-writer
+        upserts action_outcomes by action_id) instead of losing it, and a row
+        already settled is never selected again. Returns rows settled."""
+        if not self._settings.enable_execution_dispatch_runtime:
+            return 0
+        mono = self._monotonic()
+        next_at = getattr(self, "_visual_settlement_next_at", None)
+        if next_at is not None and mono < next_at:
+            return 0
+        self._visual_settlement_next_at = mono + VISUAL_SETTLEMENT_RECONCILE_INTERVAL_SEC
+        rows = await asyncio.to_thread(
+            self._store.load_pending_visual_settlements,
+            limit=VISUAL_SETTLEMENT_BATCH,
+            workflow=REVERIE_VISUAL_WORKFLOW,
+        )
+        now = now or datetime.now(timezone.utc)
+        decided = []
+        for row in rows:
+            settled = settle_visual_result(
+                result_json=row.get("result_json") or {},
+                run_status=row.get("run_status"),
+                run_detail=row.get("run_detail"),
+                created_at=row.get("created_at"),
+                now=now,
+                dispatch_kind=row.get("dispatch_kind"),
+                target_id=row.get("target_id"),
+            )
+            if settled is not None:
+                decided.append((row, settled))
+        if not decided:
+            return 0
+
+        bus = OrionBusAsync(url=self._settings.orion_bus_url, enabled=self._settings.orion_bus_enabled)
+        await bus.connect()
+        settled_count = 0
+        try:
+            for row, settled in decided:
+                published = await self._publish_action_outcome(
+                    bus,
+                    action_id=str(row["dispatch_id"]),
+                    kind=str(row.get("dispatch_kind") or "express"),
+                    summary=settled.summary,
+                    success=settled.success,
+                    visual_outcome=settled.visual_outcome,
+                    observed_at=now,
+                )
+                if not published:
+                    continue
+                if not await asyncio.to_thread(
+                    self._store.settle_dispatch_result,
+                    result_id=str(row["result_id"]),
+                    status=settled.status,
+                    result_json=settled.result_json,
+                    latency_ms=settled.latency_ms,
+                ):
+                    continue
+                settled_count += 1
+                logger.info(
+                    "execution_dispatch_render_settled dispatch_id=%s visual_outcome=%s durable_status=%s "
+                    "reason=%s latency_ms=%s",
+                    row["dispatch_id"],
+                    settled.visual_outcome,
+                    settled.result_json["settlement"].get("durable_status"),
+                    settled.result_json["settlement"].get("reason"),
+                    settled.latency_ms,
+                )
+        finally:
+            await bus.close()
+        return settled_count
+
+    # --- attend-to-act loop: world actions ------------------------------------------------------
+    WORLD_HOLDBACK_REASON = "world_action_holdback"
+    # t0 -> t0 + TTL + 5 min: both arms score on this clock (design, "Settle rule").
+    WORLD_SCORING_TAIL_SEC = 300.0
+
+    def _world_episode_row(self, frame, candidate, *, arm: str, now: datetime) -> dict:
+        world = dict(candidate.world_action or {})
+        winner = dict(world.get("attention_winner") or {})
+        ttl = float(self._settings.orion_shed_ttl_sec)
+        return {
+            "episode_id": candidate.dispatch_id, "template": world.get("template") or "",
+            "dispatch_kind": candidate.dispatch_kind, "target_id": candidate.target_id, "arm": arm,
+            "decided_at": now, "open_loop_id": winner.get("open_loop_id"),
+            "broadcast_log_id": winner.get("broadcast_log_id"), "node_id": winner.get("node_id"),
+            "proposal_id": candidate.source_proposal_id, "decision_id": candidate.source_decision_id,
+            "dispatch_frame_id": frame.frame_id, "eligibility": world.get("eligibility") or {},
+            "expected_effect": candidate.expected_effect.model_dump(mode="json") if candidate.expected_effect else None,
+            "settlement": {"ttl_sec": ttl},
+            "scoring_due_at": now + timedelta(seconds=ttl + self.WORLD_SCORING_TAIL_SEC),
+        }
+
+    @staticmethod
+    def _stable_draw(dispatch_id: str) -> float:
+        """Uniform [0, 1) from the dispatch id: a crash-and-replay of the same decision always lands in
+        the same arm (a re-roll could send a shed on a row already recorded as control)."""
+        import hashlib
+
+        return int(hashlib.sha256(dispatch_id.encode()).hexdigest()[:13], 16) / float(16 ** 13)
+
+    def _world_admission_refusal(self, template: str, now: datetime) -> str | None:
+        """Arm-symmetric admission, BEFORE the draw: anything the pool would refuse, and anything
+        still in flight, is neither treated nor control. Fails closed on a read error."""
+        try:
+            in_flight, treated = self._store.load_world_admission_inputs(template=template, now=now)
+        except Exception:
+            logger.warning("world_action_admission_unreadable template=%s", template, exc_info=True)
+            return "world_ledger_unavailable"
+        if in_flight:
+            return "world_action_in_flight"
+        ttl = float(self._settings.orion_shed_ttl_sec)
+        used, last_end, last_refusal = 0.0, None, None
+        for row in treated:
+            state = str(row.get("settlement_state") or "")
+            if state.startswith("refused"):
+                last_refusal = (row["decided_at"], state)
+                continue
+            settlement = row.get("settlement") or {}
+            check = settlement.get("manipulation_check") or {}
+            start = datetime.fromisoformat(check["started_at"]) if check.get("started_at") else row["decided_at"]
+            end = datetime.fromisoformat(check["ended_at"]) if check.get("ended_at") else start + timedelta(seconds=ttl)
+            used += max(0.0, (min(end, now) - start).total_seconds())
+            last_end = end if last_end is None else max(last_end, end)
+        if last_refusal and (now - last_refusal[0]).total_seconds() < 3600 and last_refusal[1].split(":", 1)[-1] in (
+                "disabled", "lever_disabled", "ledger_unavailable"):
+            return f"pool_refusing:{last_refusal[1].split(':', 1)[-1]}"
+        if last_end is not None and (now - last_end).total_seconds() < float(self._settings.orion_shed_min_gap_sec):
+            return "pool_gap"
+        if float(self._settings.orion_shed_max_sec_per_day) - used < min(ttl, 300.0):
+            return "pool_daily_cap"
+        return None
+
+    def _world_action_holdback(self, frame, to_send):
+        """Freshness gate + per-template holdback for world candidates. Returns (to_send, frame)."""
+        world = [c for c in to_send if c.world_action]
+        if not world:
+            return to_send, frame
+        now = datetime.now(timezone.utc)
+        max_age = float(self._settings.orion_world_action_eligibility_max_age_sec)
+        withheld: list = []
+        # At most one world decision per template per tick (in flight is re-checked below too).
+        seen: set[str] = set()
+        for c in world:
+            template = str((c.world_action or {}).get("template") or "")
+            if template in seen:
+                withheld.append((c, "world_action_in_flight", "second_world_candidate_this_tick"))
+                continue
+            seen.add(template)
+            eligibility = dict((c.world_action or {}).get("eligibility") or {})
+            evaluated = eligibility.get("evaluated_at")
+            try:
+                age = (now - datetime.fromisoformat(str(evaluated))).total_seconds()
+            except (TypeError, ValueError):
+                age = float("inf")
+            if age > max_age:
+                withheld.append((c, "world_eligibility_stale", f"world_eligibility_age_sec:{age:.0f}"))
+                continue
+            refusal = self._world_admission_refusal(template, now)
+            if refusal is not None:
+                withheld.append((c, refusal, "world_admission"))
+                continue
+            fraction = float((c.world_action or {}).get("holdback_fraction") or 0.0)
+            if fraction > 0.0 and self._stable_draw(c.dispatch_id) < fraction:
+                # The control arm. Its precommit row is the ONLY record a held-back decision leaves,
+                # so a failed write means this is not a control -- say so instead of pretending.
+                try:
+                    self._store.insert_world_episode(self._world_episode_row(frame, c, arm="control", now=now))
+                    withheld.append((c, self.WORLD_HOLDBACK_REASON, f"holdback_fraction:{fraction:.2f}"))
+                except Exception:
+                    logger.warning("world_action_control_unrecorded dispatch_id=%s", c.dispatch_id, exc_info=True)
+                    withheld.append((c, "world_action_holdback_unrecorded", f"holdback_fraction:{fraction:.2f}"))
+                logger.info("world_action_holdback dispatch_id=%s fraction=%.2f", c.dispatch_id, fraction)
+        if not withheld:
+            return to_send, frame
+        ids = {c.dispatch_id for c, _, _ in withheld}
+        blocked = [c.model_copy(update={"dispatch_status": "blocked", "blocked_by": [reason],
+                                        "reasons": list(c.reasons) + [reason, note]})
+                   for c, reason, note in withheld]
+        frame = frame.model_copy(update={
+            "candidates": [c for c in frame.candidates if c.dispatch_id not in ids],
+            "blocked_candidates": list(frame.blocked_candidates) + blocked,
+            "blocked_count": len(frame.blocked_candidates) + len(blocked),
+        })
+        return [c for c in to_send if c.dispatch_id not in ids], frame
+
+    async def _shed_rpc(self, bus, req: GpuPoolShedReasonRequestV1) -> GpuPoolShedResultV1:
+        reply_channel = f"{GPU_POOL_SHED_REPLY_PREFIX}{uuid4().hex}"
+        env = BaseEnvelope(kind=GPU_POOL_SHED_REQUEST_KIND, source=ServiceRef(name=self._settings.service_name),
+                           correlation_id=str(uuid4()), reply_to=reply_channel,
+                           payload=req.model_dump(mode="json"))
+        raw = await bus.rpc_request(GPU_POOL_SHED_REQUEST_CHANNEL, env, reply_channel=reply_channel,
+                                    timeout_sec=float(self._settings.orion_gpu_pool_shed_rpc_timeout_sec))
+        decoded = bus.codec.decode(raw.get("data") if isinstance(raw, dict) else raw)
+        if not decoded.ok:
+            raise RuntimeError(f"shed_reply_decode_failed:{decoded.error}")
+        return GpuPoolShedResultV1.model_validate(decoded.envelope.payload)
+
+    async def _send_shed(self, bus, frame, candidate, *, now: datetime):
+        """Treated arm: precommit (episode row + shed_pending result) BEFORE the RPC, then one shed RPC.
+        Idempotent: a replayed tick finds its result row and sends nothing (the pool is idempotent per
+        dispatch_id too). The outcome is emitted once, at settlement (_reconcile_shed_settlements)."""
+        result_id = f"result:{candidate.dispatch_id}"
+        existing = self._store.load_dispatch_result_by_dispatch_id(candidate.dispatch_id)
+        if existing is not None:
+            self._record_dispatch_status(existing["status"], live=False)
+            return candidate.model_copy(update={"dispatch_status": "dispatched", "dispatched_at": now,
+                                                "result_ref": existing["result_id"]})
+        ttl = float(self._settings.orion_shed_ttl_sec)
+        try:
+            inserted = self._store.insert_world_episode(self._world_episode_row(frame, candidate, arm="treated", now=now))
+            if not inserted and self._store.world_episode_arm(candidate.dispatch_id) != "treated":
+                # A replay of a decision already recorded as control: never shed on a control row.
+                return candidate.model_copy(update={"dispatch_status": "dispatched", "dispatched_at": now,
+                                                    "dispatch_error": "world_episode_recorded_as_control"})
+        except Exception as exc:
+            # No precommit, no action: an unrecorded treatment cannot be learned from.
+            logger.warning("world_action_precommit_failed dispatch_id=%s", candidate.dispatch_id, exc_info=True)
+            return candidate.model_copy(update={"dispatch_status": "dispatched", "dispatched_at": now,
+                                                "dispatch_error": f"world_episode_precommit_failed:{exc}"[:500]})
+        settlement = {"state": SHED_PENDING, "kind": "orion_self_shed", "decided_at": now.isoformat(),
+                      "ttl_sec": ttl, "episode_id": candidate.dispatch_id}
+        self._store.save_dispatch_result(
+            result_id=result_id, dispatch_id=candidate.dispatch_id, frame_id=frame.frame_id, status="pending",
+            result_json={"settlement": settlement, "evidence_refs": [result_id], "latency_ms": None,
+                         "expected_effect": candidate.expected_effect.model_dump(mode="json") if candidate.expected_effect else None},
+            raw_len=0, latency_ms=None, dispatch_kind=candidate.dispatch_kind, target_id=candidate.target_id)
+        world = dict(candidate.world_action or {})
+        winner = dict(world.get("attention_winner") or {})
+        req = GpuPoolShedReasonRequestV1(
+            action="set", dispatch_id=candidate.dispatch_id, ttl_sec=ttl,
+            correlation={"open_loop_id": winner.get("open_loop_id"), "broadcast_log_id": winner.get("broadcast_log_id"),
+                         "proposal_id": candidate.source_proposal_id, "decision_id": candidate.source_decision_id,
+                         "dispatch_frame_id": frame.frame_id})
+        started = perf_counter()
+        error: str | None = None
+        out: GpuPoolShedResultV1 | None = None
+        try:
+            out = await self._shed_rpc(bus, req)
+        except Exception as exc:
+            error = f"{type(exc).__name__}: {exc}"[:500]
+            logger.warning("world_action_shed_rpc_failed dispatch_id=%s error=%s", candidate.dispatch_id, error)
+        # The motor cost the allocator charges: the executor's wall time (one RPC), never the TTL.
+        latency_ms = (perf_counter() - started) * 1000.0
+        settlement = {**settlement, "rpc_ms": round(latency_ms, 1)}
+        if out is not None:
+            settlement.update({"shed_id": out.shed_id, "pool_state": out.state, "refusal": out.refusal,
+                               "valid_until": out.valid_until.isoformat() if out.valid_until else None})
+        if error:
+            settlement["rpc_error"] = error   # the pool may still have started it: settle from its ledger
+        self._store.save_dispatch_result(
+            result_id=result_id, dispatch_id=candidate.dispatch_id, frame_id=frame.frame_id, status="pending",
+            result_json={"settlement": settlement, "evidence_refs": [result_id], "latency_ms": latency_ms,
+                         "expected_effect": candidate.expected_effect.model_dump(mode="json") if candidate.expected_effect else None},
+            raw_len=0, latency_ms=latency_ms, dispatch_kind=candidate.dispatch_kind, target_id=candidate.target_id)
+        try:
+            self._store.record_world_settlement(episode_id=candidate.dispatch_id, shed_id=out.shed_id if out else None,
+                                                state=(out.state if out else "rpc_error"), settlement=settlement)
+        except Exception:
+            logger.warning("world_action_settlement_record_failed dispatch_id=%s", candidate.dispatch_id, exc_info=True)
+        self._record_dispatch_status("pending")
+        logger.info("world_action_shed_sent dispatch_id=%s shed_id=%s state=%s refusal=%s rpc_ms=%.0f open_loop_id=%s",
+                    candidate.dispatch_id, out.shed_id if out else None, out.state if out else "rpc_error",
+                    out.refusal if out else error, latency_ms, winner.get("open_loop_id"))
+        update = {"dispatch_status": "dispatched", "dispatched_at": now, "result_ref": result_id}
+        if error:
+            update["dispatch_error"] = error
+        return candidate.model_copy(update=update)
+
+    async def _reconcile_shed_settlements(self, *, now: datetime | None = None) -> int:
+        """Settle shed_pending results from the pool's ledger (or orphan them). Outcome published
+        BEFORE the conditional update, same crash-safety rule as the render path."""
+        if not self._settings.enable_execution_dispatch_runtime:
+            return 0
+        mono = self._monotonic()
+        next_at = getattr(self, "_shed_settlement_next_at", None)
+        if next_at is not None and mono < next_at:
+            return 0
+        self._shed_settlement_next_at = mono + VISUAL_SETTLEMENT_RECONCILE_INTERVAL_SEC
+        rows = await asyncio.to_thread(self._store.load_pending_shed_settlements, limit=VISUAL_SETTLEMENT_BATCH)
+        now = now or datetime.now(timezone.utc)
+        decided = [(row, s) for row in rows
+                   if (s := settle_shed_result(result_json=row.get("result_json") or {}, pool_row=row.get("pool_row"),
+                                               now=now)) is not None]
+        if not decided:
+            return 0
+        bus = OrionBusAsync(url=self._settings.orion_bus_url, enabled=self._settings.orion_bus_enabled)
+        await bus.connect()
+        settled_count = 0
+        try:
+            for row, settled in decided:
+                if not await self._publish_action_outcome(
+                        bus, action_id=str(row["dispatch_id"]), kind=str(row.get("dispatch_kind") or "self_regulate"),
+                        summary=settled.summary, success=settled.success, visual_outcome=None, observed_at=now):
+                    continue
+                if not await asyncio.to_thread(self._store.settle_shed_dispatch_result, result_id=str(row["result_id"]),
+                                               status=settled.status, result_json=settled.result_json):
+                    continue
+                try:
+                    await asyncio.to_thread(
+                        self._store.record_world_settlement, episode_id=str(row["dispatch_id"]),
+                        shed_id=(row.get("pool_row") or {}).get("shed_id"), state=settled.terminal,
+                        settlement=settled.result_json["settlement"])
+                except Exception:
+                    logger.warning("world_action_settlement_record_failed dispatch_id=%s", row["dispatch_id"], exc_info=True)
+                settled_count += 1
+                logger.info("world_action_shed_settled dispatch_id=%s terminal=%s drain=%s withheld=%s",
+                            row["dispatch_id"], settled.terminal,
+                            settled.result_json["settlement"]["manipulation_check"].get("drain"),
+                            settled.result_json["settlement"]["manipulation_check"].get("grants_withheld"))
+        finally:
+            await bus.close()
+        return settled_count
+
     async def _emit_action_outcome(
         self,
         bus: OrionBusAsync,
@@ -2100,23 +2617,46 @@ class ExecutionDispatchRuntimeWorker:
         upgrade, not a new hard dependency; a fetch failure here must not
         block emitting the outcome itself.
         """
+        await self._publish_action_outcome(
+            bus,
+            action_id=candidate.dispatch_id,
+            kind=candidate.dispatch_kind,
+            summary=summary,
+            success=success if candidate.visual_outcome is None else candidate.visual_outcome == "produced",
+            visual_outcome=candidate.visual_outcome,
+            observed_at=observed_at,
+        )
+
+    async def _publish_action_outcome(
+        self,
+        bus: OrionBusAsync,
+        *,
+        action_id: str,
+        kind: str,
+        summary: str,
+        success: bool,
+        visual_outcome: str | None,
+        observed_at: datetime,
+    ) -> bool:
+        """The one ActionOutcomeEmitV1 publish. True only when the publish went
+        out; never raises."""
         try:
             surprise = self._store.latest_bus_synaptic_prediction_error()
         except Exception:
             logger.warning(
                 "execution_dispatch_bus_synaptic_surprise_fetch_failed dispatch_id=%s",
-                candidate.dispatch_id,
+                action_id,
                 exc_info=True,
             )
             surprise = None
         try:
             emit = ActionOutcomeEmitV1(
                 subject=ACTION_OUTCOME_SUBJECT,
-                action_id=candidate.dispatch_id,
-                kind=candidate.dispatch_kind,
+                action_id=action_id,
+                kind=kind,
                 summary=summary[:ACTION_OUTCOME_SUMMARY_MAX_CHARS],
-                success=success if candidate.visual_outcome is None else candidate.visual_outcome == "produced",
-                visual_outcome=candidate.visual_outcome,
+                success=success,
+                visual_outcome=visual_outcome,
                 surprise=surprise if surprise is not None else 0.0,
                 observed_at=observed_at,
             )
@@ -2130,9 +2670,11 @@ class ExecutionDispatchRuntimeWorker:
         except Exception:
             logger.warning(
                 "execution_dispatch_action_outcome_emit_failed dispatch_id=%s",
-                candidate.dispatch_id,
+                action_id,
                 exc_info=True,
             )
+            return False
+        return True
 
     def _notify_tripwire(self, empty_count: int, window: int) -> None:
         try:

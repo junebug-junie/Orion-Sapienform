@@ -1,0 +1,14 @@
+FROM mcr.microsoft.com/playwright/python:v1.49.0-noble
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+
+WORKDIR /app
+
+COPY services/orion-energy/requirements-portal.txt ./requirements-portal.txt
+RUN pip install --no-cache-dir -r requirements-portal.txt
+
+COPY services/orion-energy/portal /app/portal
+COPY orion /app/orion
+
+CMD ["python", "-m", "portal.main"]

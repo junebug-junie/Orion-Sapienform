@@ -36,7 +36,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from typing import Any, Callable
 from uuid import UUID, uuid4
@@ -48,6 +48,7 @@ from orion.curiosity.attention_schema import (
     read_attended_priors,
     to_attention_schema as curiosity_to_attention_schema,
 )
+from orion.curiosity.incident_report import NO_STRUCTURED_VERDICT, IncidentReport, read_incident_report
 from orion.curiosity.self_inquiry import (
     lived_answer_to_detail,
     read_lived_answer,
@@ -62,7 +63,8 @@ from orion.curiosity.worldview import (
     read_run_footprint,
     read_turn_outcome,
 )
-from orion.journaler.schemas import JournalEntryWriteV1
+from orion.journaler.schemas import JournalEntryDraftV1, JournalEntryWriteV1
+from orion.schemas.journal_compose_run import JournalComposeRunBriefV1
 from orion.schemas.attention_schema import (
     ATTENTION_SCHEMA_CHANNEL,
     ATTENTION_SCHEMA_KIND,
@@ -70,6 +72,7 @@ from orion.schemas.attention_schema import (
     bind_correlation,
 )
 from orion.schemas.cortex.contracts import CortexClientContext, CortexClientRequest, RecallDirective
+from orion.schemas.situation_state import SITUATION_WORKFLOW
 from orion.schemas.durable_run import (
     CURIOSITY_NODES,
     CURIOSITY_TURN_REPLY_PREFIX,
@@ -99,6 +102,14 @@ from app.reflect_graph import (
     parse_reflect_findings,
 )
 from app.settings import Settings
+from orion.schemas.reading_turn import (
+    READING_TURN_CHANNEL, READING_TURN_REPLY_PREFIX, READING_TURN_REQUEST_KIND,
+    READING_TURN_RESULT_KIND, ReadingTurnRequestV1, ReadingTurnResultV1,
+)
+from orion.schemas.reverie_visual_run import (
+    REVERIE_VISUAL_STEP_CHANNEL, REVERIE_VISUAL_STEP_REPLY_PREFIX, REVERIE_VISUAL_STEP_REQUEST_KIND,
+    REVERIE_VISUAL_STEP_RESULT_KIND, ReverieVisualStepRequestV1, ReverieVisualStepResultV1,
+)
 
 logger = logging.getLogger("orion-durable-runs.runner")
 
@@ -107,6 +118,17 @@ JOURNAL_WRITE_CHANNEL = "orion:journal:write"
 DEFAULT_WORKFLOW = "curiosity.investigate"
 SELF_SENSE_EVAL_WORKFLOW = "self_sense_eval"
 SELF_STUDY_REFLECT_WORKFLOW = "self_study.reflect"
+
+
+def incident_report_to_detail(report: IncidentReport | None) -> dict[str, Any] | None:
+    if report is None:
+        return None
+    return {**asdict(report), "evidence": list(report.evidence)}
+
+
+# Workflows whose threads have their own single writer and finish every step; the resume sweep
+# skips them without the unknown-workflow warning.
+SELF_DRIVEN_WORKFLOWS = frozenset({SITUATION_WORKFLOW})
 
 
 def _corr_uuid(raw: str) -> UUID:
@@ -132,6 +154,50 @@ class WorkflowSpec:
     # the node; reflect has no harness turn).
     failed_turn_correlation_id: Callable[[dict[str, Any]], str | None] | None = None
 
+
+
+def _finish_reasons(payload: dict[str, Any]) -> list[str]:
+    """Every provider finish_reason reported in a cortex result's step blocks."""
+    out: list[str] = []
+    for step in list(payload.get("steps") or payload.get("step_results") or []):
+        if not isinstance(step, dict):
+            continue
+        for container_key in ("result", "detail"):
+            container = step.get(container_key)
+            if not isinstance(container, dict):
+                continue
+            for block in container.values():
+                if not isinstance(block, dict):
+                    continue
+                if isinstance(block.get("finish_reason"), str):
+                    out.append(block["finish_reason"])
+                raw = block.get("raw") if isinstance(block.get("raw"), dict) else {}
+                for choice in raw.get("choices") or []:
+                    if isinstance(choice, dict) and isinstance(choice.get("finish_reason"), str):
+                        out.append(choice["finish_reason"])
+    return out
+
+
+def strict_final_text(payload: dict[str, Any], verb: str) -> str:
+    """The model's final answer and nothing else, for a freeform (non-JSON) verb.
+
+    Deliberately NOT ``extract_cortex_payload_text``: when ``final_text`` is empty that falls back
+    to step candidates including ``reasoning_content`` / think blocks, so a reasoning model that
+    spent its whole budget thinking (the self_study.reflect incident) would hand back its
+    reasoning as the answer -- a JSON verb's parser rejects that, a freeform one would store it.
+    Raises (an attempt, never a success) on: empty final text, error text framed as prose
+    (``looks_like_error_text``), and a completion cut off at max_tokens (finish_reason=length)."""
+    from orion.cognition.cortex_payload_extract import looks_like_error_text
+
+    text = str(payload.get("final_text") or "").strip()
+    if not text:
+        raise RuntimeError(f"verb_empty_final_text:{verb}")
+    if looks_like_error_text(text):
+        raise RuntimeError(f"verb_error_text:{verb}:{text[:120]}")
+    diagnostics = (payload.get("metadata") or {}).get("runtime_response_diagnostics") or {}
+    if "length" in _finish_reasons(payload) or diagnostics.get("truncation_detected") is True:
+        raise RuntimeError(f"verb_truncated_at_max_tokens:{verb}")
+    return text
 
 class DurableRunner:
     _corr_for_admission = staticmethod(_corr_uuid)
@@ -311,6 +377,131 @@ class DurableRunner:
             return None
         return findings
 
+    async def _cortex_orch_rpc(self, request_payload: dict[str, Any], *, timeout_sec: float, label: str) -> dict[str, Any]:
+        """compactor.digest (admitted): one cortex-orch request -- a digest verb call carrying the
+        run's hold as ``options.gpu_lease``, or the finalize workflow request -- and its decoded
+        ``CortexClientResult`` payload. Validated as a ``CortexClientRequest`` before it leaves, so
+        a malformed request fails here, not as an opaque orch validation error. Raises on transport
+        or decode failure; the graph decides what a non-ok payload means."""
+        if self._bus is None:
+            raise RuntimeError("no_bus")
+        request = CortexClientRequest.model_validate(request_payload)
+        rpc_correlation_id = uuid4()
+        reply_channel = f"orion:cortex:result:compactor-digest:{rpc_correlation_id}"
+        envelope = BaseEnvelope(kind="cortex.orch.request", source=self._source(), correlation_id=rpc_correlation_id,
+                                reply_to=reply_channel, payload=request.model_dump(mode="json"))
+        msg = await self._bus.rpc_request(self._settings.cortex_request_channel, envelope,
+                                          reply_channel=reply_channel, timeout_sec=float(timeout_sec))
+        decoded = self._bus.codec.decode(msg.get("data"))
+        if not decoded.ok or decoded.envelope is None:
+            raise RuntimeError(f"cortex_orch_decode_failed:{decoded.error}")
+        payload = decoded.envelope.payload if isinstance(decoded.envelope.payload, dict) else {}
+        logger.info("compactor_digest_cortex_reply step=%s rpc=%s ok=%s status=%s",
+                    label, rpc_correlation_id, payload.get("ok"), payload.get("status"))
+        return payload
+
+    async def _compose_journal(
+        self, brief: "JournalComposeRunBriefV1", *, run_id: str, correlation_id: str, gpu_lease: GpuLeaseRefV1,
+    ) -> "JournalEntryDraftV1":
+        """journal.compose (admitted): the same ``journal.compose`` cortex verb orion-actions sent
+        directly before (``orion.journaler.build_compose_request``), now attached to the run's GPU
+        pool hold via ``options.gpu_lease``. Raises on ANY failure -- transport, non-ok result,
+        empty or unparseable draft -- so the graph counts one bounded attempt; waiting for the hold
+        is never one. ``llm_route`` stays the brief's route (the hold's role is never a route)."""
+        from orion.journaler import append_unless_present, build_compose_request, draft_from_cortex_result
+
+        if self._bus is None:
+            raise RuntimeError("no_bus")
+        request = build_compose_request(
+            brief.trigger,
+            session_id=brief.session_id,
+            user_id=brief.user_id,
+            trace_id=correlation_id,
+            recall_profile=brief.recall_profile,
+            options={
+                "source": self._settings.service_name,
+                "timeout_sec": float(brief.timeout_sec),
+                **({"llm_route": brief.llm_route} if brief.llm_route else {}),
+                "gpu_lease": gpu_lease.model_dump(mode="json"),
+            },
+        )
+        rpc_correlation_id = uuid4()
+        reply_channel = f"orion:cortex:result:journal-compose:{rpc_correlation_id}"
+        envelope = BaseEnvelope(kind="cortex.orch.request", source=self._source(), correlation_id=rpc_correlation_id,
+                                reply_to=reply_channel, payload=request.model_dump(mode="json"))
+        msg = await self._bus.rpc_request(self._settings.cortex_request_channel, envelope,
+                                          reply_channel=reply_channel, timeout_sec=float(brief.timeout_sec))
+        decoded = self._bus.codec.decode(msg.get("data"))
+        if not decoded.ok or decoded.envelope is None:
+            raise RuntimeError(f"cortex_orch_decode_failed:{decoded.error}")
+        payload = decoded.envelope.payload if isinstance(decoded.envelope.payload, dict) else {}
+        if not payload.get("ok", False):
+            raise RuntimeError(f"journal_compose_failed:{payload.get('error') or payload.get('status')}")
+        draft = append_unless_present(draft_from_cortex_result(payload), brief.body_appendix,
+                                      brief.body_appendix_markers)
+        logger.info("journal_compose_drafted run=%s trigger_kind=%s", run_id, brief.trigger.trigger_kind)
+        return draft
+
+    async def _call_memory_distill_llm(
+        self, prompt: str, *, brief: Any, run_id: str, correlation_id: str, gpu_lease: GpuLeaseRefV1,
+    ) -> dict[str, Any]:
+        """memory.episode_distill: ONE direct LLM gateway call under the run's GPU pool hold.
+
+        Direct, not through cortex-orch: orch would run recall and mix retrieved memories into
+        what the distiller treats as evidence (spec section A). ``options.gpu_lease`` attaches the
+        call to the hold; the route stays the brief's (``memory_distill``). JSON-object output,
+        thinking off (Qwen thinking spends max_tokens before the answer). Raises on transport,
+        a gateway error, or empty text -- each is one bounded attempt for the graph.
+        """
+        import time
+
+        from orion.core.bus.bus_schemas import ChatRequestPayload, LLMMessage
+
+        if self._bus is None:
+            raise RuntimeError("no_bus")
+        timeout = float(brief.timeout_sec)
+        payload = ChatRequestPayload(
+            messages=[LLMMessage(role="user", content=prompt)],
+            route=brief.llm_route,
+            options={
+                "llm_route": brief.llm_route,
+                "max_tokens": int(brief.max_tokens),
+                "temperature": 0.2,
+                "purpose": "memory_episode_distill",
+                "structured_output_method": "json_object_only",
+                "chat_template_kwargs": {"enable_thinking": False},
+                "skip_spark_candidate_publish": True,
+                "gateway_read_timeout_sec": timeout,
+                "gpu_lease": gpu_lease.model_dump(mode="json"),
+            },
+        )
+        rpc_correlation_id = uuid4()
+        reply_channel = f"orion:exec:result:LLMGatewayService:{rpc_correlation_id}"
+        envelope = BaseEnvelope(kind="llm.chat.request", source=self._source(), correlation_id=rpc_correlation_id,
+                                reply_to=reply_channel, payload=payload.model_dump(mode="json"))
+        started = time.monotonic()
+        msg = await self._bus.rpc_request(self._settings.llm_intake_channel, envelope,
+                                          reply_channel=reply_channel, timeout_sec=timeout + 30.0)
+        decoded = self._bus.codec.decode(msg.get("data"))
+        if not decoded.ok or decoded.envelope is None:
+            raise RuntimeError(f"gateway_decode_failed:{decoded.error}")
+        result = decoded.envelope.payload if isinstance(decoded.envelope.payload, dict) else {}
+        raw = result.get("raw") if isinstance(result.get("raw"), dict) else {}
+        if raw.get("error"):
+            raise RuntimeError(f"gateway_error:{raw.get('error')}")
+        text = str(result.get("content") or result.get("text") or "")
+        if not text.strip():
+            raise RuntimeError("gateway_empty_text")
+        usage = raw.get("usage") if isinstance(raw.get("usage"), dict) else {}
+        logger.info("memory_episode_distilled run=%s episode=%s chars=%s usage=%s", run_id, brief.episode_id,
+                    len(text), usage)
+        return {"text": text, "usage": {k: usage.get(k) for k in ("prompt_tokens", "completion_tokens")},
+                "model": raw.get("model") or result.get("model"),
+                "latency_ms": int((time.monotonic() - started) * 1000)}
+
+    async def _publish_journal_write(self, entry: JournalEntryWriteV1) -> bool:
+        return await self._publish_journal(entry) is not None
+
     def _source(self) -> ServiceRef:
         s = self._settings
         return ServiceRef(name=s.service_name, version=s.service_version, node=s.node_name)
@@ -334,7 +525,7 @@ class DurableRunner:
             # turn that valid long attempt into an early retry. Queue waiting
             # never reaches this RPC at all.
             rpc_timeout = self._settings.turn_rpc_timeout_sec
-            admitted = request.lease is not None or request.gpu_lease is not None
+            admitted = request.gpu_lease is not None
             if admitted:
                 rpc_timeout = max(rpc_timeout, request.timeout_sec)
             raw = await self._bus.rpc_request(
@@ -364,9 +555,59 @@ class DurableRunner:
         except Exception as exc:  # noqa: BLE001
             return CuriosityTurnResultV1(run_id=request.run_id, correlation_id=request.correlation_id, ok=False, error=f"bad_reply:{exc}")
 
-    async def _read_turn_result(self, run_id: str) -> dict[str, Any]:
+    async def _run_reading_turn(self, request: ReadingTurnRequestV1) -> ReadingTurnResultV1:
+        reply = f"{READING_TURN_REPLY_PREFIX}:{request.correlation_id}"
+        envelope = BaseEnvelope(kind=READING_TURN_REQUEST_KIND, source=self._source(),
+            correlation_id=_corr_uuid(request.correlation_id), reply_to=reply,
+            payload=request.model_dump(mode="json"))
+        raw = await self._bus.rpc_request(READING_TURN_CHANNEL, envelope,
+            reply_channel=reply, timeout_sec=max(self._settings.turn_rpc_timeout_sec, request.brief.timeout_sec))
+        decoded = self._bus.codec.decode(raw.get("data") if isinstance(raw, dict) else raw)
+        if not decoded.ok or decoded.envelope is None:
+            raise ValueError("invalid reading turn reply envelope")
+        if decoded.envelope.kind != READING_TURN_RESULT_KIND or decoded.envelope.correlation_id != envelope.correlation_id:
+            raise ValueError("reading turn reply identity mismatch")
+        result = ReadingTurnResultV1.model_validate(decoded.envelope.payload)
+        if result.run_id != request.run_id or result.correlation_id != request.correlation_id:
+            raise ValueError("reading turn result identity mismatch")
+        return result
+
+    async def _run_reverie_visual_step(
+        self, request: ReverieVisualStepRequestV1, budget_sec: float | None = None,
+    ) -> ReverieVisualStepResultV1:
+        """One reverie.visual stage, executed by orion-thought. Raises on transport or identity
+        trouble; the graph treats that as a retry, never a failed attempt. ``budget_sec`` is the
+        run's brief.timeout_sec, passed for the held generate step (permit wait + diffusion)."""
+        if self._bus is None:
+            raise RuntimeError("no_bus")
+        reply = f"{REVERIE_VISUAL_STEP_REPLY_PREFIX}:{request.correlation_id}"
+        envelope = BaseEnvelope(kind=REVERIE_VISUAL_STEP_REQUEST_KIND, source=self._source(),
+            correlation_id=_corr_uuid(request.correlation_id), reply_to=reply,
+            payload=request.model_dump(mode="json"))
+        timeout = self._settings.reverie_visual_step_timeout_sec
+        if request.step == "generate" and budget_sec:
+            timeout = max(timeout, float(budget_sec))
+        elif request.step == "abandon":
+            timeout = min(timeout, 30.0)
+        raw = await self._bus.rpc_request(REVERIE_VISUAL_STEP_CHANNEL, envelope, reply_channel=reply, timeout_sec=timeout)
+        decoded = self._bus.codec.decode(raw.get("data") if isinstance(raw, dict) else raw)
+        if not decoded.ok or decoded.envelope is None:
+            raise ValueError("invalid reverie visual step reply envelope")
+        if (decoded.envelope.kind != REVERIE_VISUAL_STEP_RESULT_KIND
+                or decoded.envelope.correlation_id != envelope.correlation_id):
+            raise ValueError("reverie visual step reply identity mismatch")
+        result = ReverieVisualStepResultV1.model_validate(decoded.envelope.payload)
+        if (result.run_id != request.run_id or result.correlation_id != request.correlation_id
+                or result.step != request.step):
+            raise ValueError("reverie visual step result identity mismatch")
+        return result
+
+    async def _read_turn_result(self, run_id: str, *, urgent: bool = False) -> dict[str, Any]:
+        """Never raises. Urgent runs also get `incident_report` (dict or None)
+        and `report_flag` ("no_structured_verdict" whenever the report is None,
+        including an unreadable graph); ordinary runs never query it."""
         reader = self._reader
-        empty = {
+        empty: dict[str, Any] = {
             "outcome": None,
             "footprint": None,
             "hops": [],
@@ -375,6 +616,8 @@ class DurableRunner:
             "self_definition": None,
             "lived_answer": None,
         }
+        if urgent:
+            empty.update(incident_report=None, report_flag=NO_STRUCTURED_VERDICT)
         if reader is None:
             return empty
 
@@ -389,6 +632,13 @@ class DurableRunner:
             # Lived self-inquiry writes `:LivedAnswer` instead of `:SelfDefinition`.
             self_definition = read_self_definition(reader, run_id)
             lived_answer = read_lived_answer(reader, run_id)
+            urgent_found: dict[str, Any] = {}
+            if urgent:
+                report, flag = read_incident_report(reader, run_id)
+                urgent_found = {
+                    "incident_report": incident_report_to_detail(report),
+                    "report_flag": flag if report is None else None,
+                }
             return {
                 "outcome": (
                     {
@@ -407,6 +657,7 @@ class DurableRunner:
                 "graph_readable": footprint is not None,
                 "self_definition": self_definition_to_detail(self_definition),
                 "lived_answer": lived_answer_to_detail(lived_answer),
+                **urgent_found,
             }
 
         try:
@@ -446,6 +697,55 @@ class DurableRunner:
         ok = await self._publish(JOURNAL_WRITE_CHANNEL, "journal.entry.write.v1", entry, _corr_uuid(entry.correlation_id or ""))
         return entry.entry_id if ok else None
 
+    async def _call_verb_text(
+        self,
+        verb: str,
+        metadata: dict[str, Any],
+        llm_route: str,
+        *,
+        gpu_lease: GpuLeaseRefV1 | None = None,
+        timeout_sec: float,
+        user_text: str,
+    ) -> str:
+        """One cortex verb call returning the model's final answer text (no JSON parsing), over
+        ``_cortex_orch_rpc`` (shared with compactor.digest).
+
+        Same request shape as ``_call_reflect_llm`` (``policy_dispatch_only``; the verb's prompt
+        reads ``context.metadata``), but it RAISES on every failure -- RPC error/timeout,
+        undecodable reply, non-ok result, and anything ``strict_final_text`` refuses -- so an
+        admitted graph node counts it as an attempt instead of finishing on it. ``gpu_lease``
+        attaches the call to the run's pool hold (``options.gpu_lease``); ``llm_route`` stays the
+        brief's route.
+
+        Thinking is OFF (``chat_template_kwargs.enable_thinking=False``, the repo's standard
+        switch): these are prose verbs whose answer IS the output, and hidden reasoning counts
+        against ``max_tokens``. Live 2026-09-30, the first orion_day note spent all 12000 tokens
+        (32k chars) planning and emitted no note -> ``verb_truncated_at_max`` on every attempt.
+        A future caller that needs reasoning must not reuse this helper as is."""
+        request = CortexClientRequest(
+            mode="brain",
+            route_intent="none",
+            verb=verb,
+            options={
+                "policy_dispatch_only": True,
+                "chat_template_kwargs": {"enable_thinking": False},
+                **({"llm_route": llm_route} if llm_route else {}),
+                **({"gpu_lease": gpu_lease.model_dump(mode="json")} if gpu_lease is not None else {}),
+            },
+            recall=RecallDirective(enabled=False, required=False),
+            context=CortexClientContext(
+                messages=[LLMMessage(role="user", content=user_text)],
+                raw_user_text=user_text,
+                metadata=metadata,
+            ),
+        )
+        payload = await self._cortex_orch_rpc(request.model_dump(mode="json"), timeout_sec=timeout_sec, label=verb)
+        if not payload.get("ok", False):
+            raise RuntimeError(f"verb_not_ok:{verb}:{payload.get('status')}:{str(payload.get('error'))[:200]}")
+        text = strict_final_text(payload, verb)
+        logger.info("durable_verb_text_ok verb=%s chars=%d", verb, len(text))
+        return text
+
     async def _publish(self, channel: str, kind: str, model: Any, corr: UUID) -> bool:
         try:
             await publish_with_reconnect(
@@ -470,13 +770,16 @@ class DurableRunner:
         status: str,
         detail: dict[str, Any] | None = None,
         resumed_from: str | None = None,
+        terminal: bool = False,
     ) -> None:
+        """``terminal``: the graph reached END and reported its own failure -- nothing to resume
+        (a ``failed`` without it means a node raised and the thread resumes at ``node``)."""
         run_id = state["run_id"]
         nodes = spec.nodes
         idx = nodes.index(node) if node in nodes else -1
         next_node = nodes[idx + 1] if 0 <= idx < len(nodes) - 1 else None
         if status in ("completed", "failed", "abandoned"):
-            next_node = None if status != "failed" else node
+            next_node = None if status != "failed" or terminal else node
         event = DurableRunStateV1(
             run_id=run_id,
             workflow=spec.workflow,
@@ -588,8 +891,12 @@ class DurableRunner:
                     snap = await graph.aget_state(config)
                     last_state = dict(snap.values) if snap and snap.values else last_state
                     if node == nodes[-1]:
+                        # A graph whose last node says it failed (self_sense_eval with no answers)
+                        # is reported failed; every other graph's finish returns "completed".
+                        final = "failed" if last_state.get("status") == "failed" else "completed"
                         await self._emit_state(
-                            last_state, spec=spec, node=node, status="completed", detail=spec.finish_detail(last_state)
+                            last_state, spec=spec, node=node, status=final, detail=spec.finish_detail(last_state),
+                            terminal=True,
                         )
                     else:
                         status = "resumed" if run_id in self._resumed_from else "running"
@@ -664,11 +971,22 @@ class DurableRunner:
                 except ValueError:
                     ts = None
             values = checkpoint.get("channel_values") or {}
+            if values.get("admission"):
+                # The admission runtime owns admitted threads (including workflows this runner
+                # never registers, e.g. reading.turn / reverie.visual): not even a skip warning.
+                newest[thread_id] = (None, "")
+                continue
             workflow_raw = values.get("workflow")
+            if workflow_raw in SELF_DRIVEN_WORKFLOWS:
+                # Driven by their own writer (app/situation_driver.py), never resumed by this sweep.
+                newest[thread_id] = (None, "")
+                continue
             workflow = str(workflow_raw) if isinstance(workflow_raw, str) and workflow_raw else DEFAULT_WORKFLOW
             newest[thread_id] = (ts, workflow)
         out: list[tuple[str, str, datetime | None, str]] = []
         for thread_id, (ts, workflow) in newest.items():
+            if not workflow:
+                continue
             spec = self._spec_for(workflow)
             if spec is None:
                 logger.warning("durable_run_resume_unknown_workflow thread=%s workflow=%s -- skipped", thread_id, workflow)

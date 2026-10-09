@@ -195,3 +195,29 @@ def test_bus_synaptic_client_is_cached_across_ticks(monkeypatch):
     # second tick's two graph_query calls must have actually run (not just
     # silently no-op'd on a cached-but-broken client).
     assert client_cls.return_value.graph_query.call_count == 4
+
+
+def _patched_globals(overrides):
+    # conftest re-imports `app` per test, so patch the globals the tick actually uses.
+    return patch.dict(BiometricsSubstrateWorker._bus_synaptic_tick.__globals__, overrides)
+
+
+def test_bus_synaptic_tick_feeds_transport_threshold_baseline_on_channel_scale(monkeypatch):
+    """The tick folds error x 0.85 (capability:transport.pressure scale) into the
+    EWMA baseline the hub and recall resolver read; a Redis failure never breaks
+    the tick."""
+    worker = _make_worker(monkeypatch, enabled=True)
+    # 2 anomalous of 4 edges -> error 0.5 -> channel value 0.425
+    worker._bus_synaptic_client = _client_returning(
+        [{"zscore": 5.0}, {"zscore": 5.0}, {"zscore": 0.1}, {"zscore": 0.1}], []
+    )
+    with patch.object(worker, "_write_prediction_error_node"), _patched_globals({"record_transport_sample": (rec := MagicMock())}):
+        worker._bus_synaptic_tick()
+    rec.assert_called_once()
+    channel, value, _url = rec.call_args.args
+    assert channel == "bus_synaptic_pressure"
+    assert value == pytest.approx(0.425)
+
+    with patch.object(worker, "_write_prediction_error_node") as write_node, _patched_globals({"record_transport_sample": MagicMock(side_effect=RuntimeError("redis down"))}):
+        worker._bus_synaptic_tick()  # tick's own fail-open except swallows; node already written
+    write_node.assert_called_once()

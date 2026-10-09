@@ -34,9 +34,16 @@ from datetime import datetime, timezone
 from typing import Any, Literal
 from uuid import uuid4
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_serializer, model_validator
+from orion.schemas.compactor_digest_run import COMPACTOR_DIGEST_WORKFLOW, CompactorDigestRunBriefV1
+from orion.schemas.curiosity_urgent import CuriosityUrgentSeedV1
+from orion.schemas.journal_compose_run import JOURNAL_COMPOSE_WORKFLOW, JournalComposeRunBriefV1
+from orion.schemas.memory_episode import MEMORY_EPISODE_DISTILL_WORKFLOW, EpisodeDistillBriefV1
+from orion.schemas.reading_turn import ReadingRunBriefV1, READING_WORKFLOW
+from orion.schemas.reverie_visual_run import REVERIE_VISUAL_WORKFLOW, ReverieVisualRunBriefV1
 from orion.schemas.gpu_pool import GpuLeaseRefV1
-from orion.schemas.resource_admission import ResourceLeaseV1, ResourceRequirementV1
+from orion.schemas.orion_day import ORION_DAY_WORKFLOW, OrionDayRunBriefV1
+from orion.schemas.resource_admission import ResourceRequirementV1
 
 DURABLE_RUN_REQUEST_CHANNEL = "orion:durable:run:request"
 DURABLE_RUN_STATE_CHANNEL = "orion:durable:run:state"
@@ -50,7 +57,29 @@ DURABLE_RUN_REPLY_PREFIX = "orion:durable:run:reply"
 CURIOSITY_TURN_REQUEST_KIND = "curiosity.turn.request.v1"
 CURIOSITY_TURN_RESULT_KIND = "curiosity.turn.result.v1"
 
-DurableWorkflowV1 = Literal["curiosity.investigate", "self_sense_eval", "self_study.reflect"]
+# ADDITIVE VALUES on a Literal every durable-run reader validates: deploy orion-durable-runs
+# (and anything else that parses DurableRunRequestV1/DurableRunStateV1) before a producer
+# submits the new workflow. orion_day.letter: orion/schemas/orion_day.py.
+DurableWorkflowV1 = Literal[
+    "curiosity.investigate", "self_sense_eval", "self_study.reflect", "reading.turn", "reverie.visual",
+    # ADDITIVE on extra="forbid"/Literal models: deploy orion-durable-runs before cortex-orch (orch
+    # submits these), or an old validator rejects the request.
+    "compactor.digest",
+    # ADDITIVE on extra="forbid"/Literal models. Deploy orion-durable-runs first, then
+    # orion-cortex-orch (validates the request) and orion-sql-writer (validates DurableRunStateV1
+    # rows for this workflow), then the producer (orion-actions); an old validator rejects it.
+    "journal.compose",
+    "orion_day.letter",
+    # Memory episode redesign Stage 1 (2026-10-02, shadow). ADDITIVE on Literal/forbid models,
+    # consumer-first: deploy orion-sql-writer (validates DurableRunStateV1 rows) and
+    # orion-llm-gateway + orion-gpu-pool (know the memory_distill route) BEFORE orion-durable-runs,
+    # which both produces these runs (it subscribes orion:memory:episode:closed) and runs them.
+    "memory.episode_distill",
+    # Situation graph step 2 (2026-10-07, shadow): self-driven by its own driver in
+    # orion-durable-runs, never submitted. ADDITIVE on Literal/forbid: deploy orion-sql-writer
+    # (validates DurableRunStateV1 rows) BEFORE orion-durable-runs.
+    "situation.update",
+]
 
 # The runner's node names, in order. `attention_reason` on the surface lane
 # walks this list for a run; `DurableRunStateV1.node` is always one of them.
@@ -149,6 +178,27 @@ class CuriosityRunBriefV1(BaseModel):
     # rest itself, same as it always has.
     self_study_reflect_input: dict[str, Any] | None = None
     llm_route: str | None = None
+    # Additive, investigate only: set for an urgent run (orion/schemas/curiosity_urgent.py).
+    # Producers dump with exclude_none=True, so an unset seed never reaches an old runner.
+    urgent: CuriosityUrgentSeedV1 | None = None
+    # Additive: what recall searches for during this run's turn -- the run's
+    # standing question (self-inquiry: the picked question; urgent: the seed's
+    # question; investigate: the continuation note). Carried on the brief so it
+    # survives a Hub restart (the checkpointed brief is the durable copy); the
+    # runner forwards it on CuriosityTurnRequestV1. ADDITIVE ON A `forbid`
+    # MODEL: deploy orion-durable-runs before orion-hub.
+    retrieval_query: str | None = Field(default=None, max_length=1000)
+
+    @model_serializer(mode="wrap")
+    def _omit_unset_retrieval_query(self, handler):
+        # An older reader of this model forbids unknown keys, even null ones
+        # (same rule as orion/schemas/reading.py's result selectors). Unset, the
+        # key is absent from EVERY dump -- wire, stored request_json, checkpoint
+        # -- so a new producer stays byte-compatible with an old consumer.
+        data = handler(self)
+        if isinstance(data, dict) and data.get("retrieval_query") is None:
+            data.pop("retrieval_query", None)
+        return data
 
 
 class DurableRunRequestV1(BaseModel):
@@ -159,8 +209,26 @@ class DurableRunRequestV1(BaseModel):
     workflow: DurableWorkflowV1
     correlation_id: str
     requested_at: datetime = Field(default_factory=_utc_now)
-    brief: CuriosityRunBriefV1
+    brief: CuriosityRunBriefV1 | ReadingRunBriefV1 | ReverieVisualRunBriefV1 | CompactorDigestRunBriefV1 | JournalComposeRunBriefV1 | OrionDayRunBriefV1 | EpisodeDistillBriefV1
     admission: ResourceRequirementV1 | None = None
+
+    @model_validator(mode="after")
+    def reading_requires_admission(self):
+        if (self.workflow == READING_WORKFLOW) != isinstance(self.brief, ReadingRunBriefV1):
+            raise ValueError("workflow and reading brief must agree")
+        if (self.workflow == REVERIE_VISUAL_WORKFLOW) != isinstance(self.brief, ReverieVisualRunBriefV1):
+            raise ValueError("workflow and reverie.visual brief must agree")
+        if (self.workflow == COMPACTOR_DIGEST_WORKFLOW) != isinstance(self.brief, CompactorDigestRunBriefV1):
+            raise ValueError("workflow and compactor.digest brief must agree")
+        if (self.workflow == JOURNAL_COMPOSE_WORKFLOW) != isinstance(self.brief, JournalComposeRunBriefV1):
+            raise ValueError("workflow and journal.compose brief must agree")
+        if (self.workflow == ORION_DAY_WORKFLOW) != isinstance(self.brief, OrionDayRunBriefV1):
+            raise ValueError("workflow and orion_day.letter brief must agree")
+        if (self.workflow == MEMORY_EPISODE_DISTILL_WORKFLOW) != isinstance(self.brief, EpisodeDistillBriefV1):
+            raise ValueError("workflow and memory.episode_distill brief must agree")
+        if self.workflow in (READING_WORKFLOW, REVERIE_VISUAL_WORKFLOW, COMPACTOR_DIGEST_WORKFLOW, JOURNAL_COMPOSE_WORKFLOW, ORION_DAY_WORKFLOW, MEMORY_EPISODE_DISTILL_WORKFLOW) and self.admission is None:
+            raise ValueError(f"{self.workflow} runs require durable resource admission")
+        return self
 
 
 class DurableRunReceiptV1(BaseModel):
@@ -217,11 +285,9 @@ class CuriosityTurnRequestV1(BaseModel):
     timeout_sec: float = Field(gt=0.0)
     source_tag: str = "curiosity_investigation"
     attempt: int = Field(default=1, ge=1)
-    lease: ResourceLeaseV1 | None = None
     assigned_lane: str | None = None
-    # Stage 4: the run's GPU pool hold. Hub validates it with the pool's ``status`` verb and runs
-    # the turn under it (every LLM call attaches to the hold). Consumer first: Hub must accept this
-    # before durable-runs 4.5 sends it (extra="forbid").
+    # The run's GPU pool hold. Hub validates it with the pool's ``status`` verb and runs the turn
+    # under it (every LLM call attaches to the hold).
     gpu_lease: GpuLeaseRefV1 | None = None
     # Additive: an explicit session to run this turn under, distinct from
     # curiosity's own shared investigation session. self_sense_eval needs
@@ -234,6 +300,23 @@ class CuriosityTurnRequestV1(BaseModel):
     # behavior unchanged -- Hub's `_turn_result_for` falls back to its own
     # shared session when this is absent.
     session_id: str | None = None
+    # Additive: the run brief's urgent seed, forwarded so Hub runs the investigation turn.
+    # Omitted on the wire when None (runner dumps with exclude_none=True).
+    urgent: CuriosityUrgentSeedV1 | None = None
+    # Additive: the brief's retrieval_query (what recall searches for). Omitted
+    # on the wire when None, so a runner only sends it once Hub put it on the brief.
+    retrieval_query: str | None = Field(default=None, max_length=1000)
+
+    @model_serializer(mode="wrap")
+    def _omit_unset_retrieval_query(self, handler):
+        # An older reader of this model forbids unknown keys, even null ones
+        # (same rule as orion/schemas/reading.py's result selectors). Unset, the
+        # key is absent from EVERY dump -- wire, stored request_json, checkpoint
+        # -- so a new producer stays byte-compatible with an old consumer.
+        data = handler(self)
+        if isinstance(data, dict) and data.get("retrieval_query") is None:
+            data.pop("retrieval_query", None)
+        return data
 
 
 class CuriosityTurnResultV1(BaseModel):

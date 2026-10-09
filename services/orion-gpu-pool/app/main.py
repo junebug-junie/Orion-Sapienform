@@ -25,11 +25,20 @@ from orion.gpu_pool.lease_graph import build_lease_graph
 from orion.schemas.gpu_pool import (
     GPU_LEASE_REPLY_KIND, GPU_POOL_ACTUATE_RESULT_CHANNEL, GPU_POOL_CONTROL_REPLY_KIND,
     GPU_POOL_CONTROL_REQUEST_CHANNEL, GPU_POOL_LEASE_REQUEST_CHANNEL, GPU_POOL_STATE_KIND,
-    GPU_POOL_STATE_REQUEST_CHANNEL, LLM_WORKER_ANNOUNCE_CHANNEL, GpuActuateResultV1, GpuLeaseReplyV1,
-    GpuLeaseRequestV1, GpuPoolControlReplyV1, GpuPoolControlV1, GpuPoolStateRequestV1, LlmWorkerAnnounceV1,
+    GPU_POOL_SHED_REQUEST_CHANNEL, GPU_POOL_SHED_RESULT_KIND, GPU_POOL_STATE_REQUEST_CHANNEL,
+    LLM_WORKER_ANNOUNCE_CHANNEL, GpuActuateResultV1, GpuLeaseReplyV1, GpuLeaseRequestV1, GpuPoolControlReplyV1,
+    GpuPoolControlV1, GpuPoolShedReasonRequestV1, GpuPoolShedResultV1, GpuPoolStateRequestV1,
+    LlmWorkerAnnounceV1,
+)
+from orion.gpu_pool.orion_shed import OrionShedCaps
+
+from orion.schemas.hardware_watch import (
+    HARDWARE_WATCH_INCIDENT_CHANNEL, HARDWARE_WATCH_REFLEX_SHED_CHANNEL, HardwareWatchIncidentV1,
+    HardwareWatchReflexShedV1,
 )
 
 from app.guards import GuardReader
+from app.orion_shed_store import PostgresOrionShedLedger
 from app.runtime import SLOW_LOCK_MS, PoolRuntime
 from app.settings import get_settings
 from app.store import CHECKPOINT_SCHEMA, PostgresStore, ensure_checkpoint_schema, pool_kwargs
@@ -122,6 +131,19 @@ async def _on_control(env: BaseEnvelope) -> BaseEnvelope | None:
     return _reply(env, GPU_POOL_CONTROL_REPLY_KIND, out)
 
 
+async def _on_shed(env: BaseEnvelope) -> BaseEnvelope | None:
+    """Orion's learned shed action (orion_self_shed only; the schema refuses cooling_incident)."""
+    try:
+        req = GpuPoolShedReasonRequestV1.model_validate(env.payload or {})
+    except Exception as exc:  # noqa: BLE001
+        return _reply(env, GPU_POOL_SHED_RESULT_KIND, GpuPoolShedResultV1(
+            ok=False, state="refused", refusal=f"invalid:{exc}"[:300]))
+    out = await runtime.orion_shed_request(req)
+    logger.info("gpu_pool_orion_shed_rpc action=%s dispatch_id=%s state=%s refusal=%s shed_id=%s",
+                req.action, req.dispatch_id, out.state, out.refusal, out.shed_id)
+    return _reply(env, GPU_POOL_SHED_RESULT_KIND, out)
+
+
 async def _on_actuate_result(env: BaseEnvelope) -> None:
     try:
         res = GpuActuateResultV1.model_validate(env.payload or {})
@@ -137,7 +159,7 @@ async def _guards_forever(reader: GuardReader) -> None:
     async with httpx.AsyncClient(timeout=3) as client:
         while not _stop.is_set():
             try:
-                runtime.guard_states = await reader.read(client, datetime.now(timezone.utc))
+                runtime.guard_states = await reader.read(client)
             except Exception as exc:  # noqa: BLE001 -- a guard that cannot be read blocks loads
                 runtime.guard_states = {g: f"unavailable:{type(exc).__name__}" for g in SWAP_GUARDS}
                 logger.warning("gpu_pool_guard_read_failed err=%s", exc)
@@ -145,6 +167,32 @@ async def _guards_forever(reader: GuardReader) -> None:
                 await asyncio.wait_for(_stop.wait(), timeout=_settings.guard_refresh_sec)
             except asyncio.TimeoutError:
                 pass
+
+
+async def _on_incident(env: BaseEnvelope) -> None:
+    """orion-hardware-watch incident -> the cooling_incident shed signal (U4)."""
+    try:
+        ev = HardwareWatchIncidentV1.model_validate(env.payload or {})
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("gpu_pool_incident_invalid err=%s", str(exc)[:300])
+        return
+    did = await runtime.handle_incident(ev)
+    if did != "ignored" and did != "noop":
+        logger.info("gpu_pool_shed_signal %s incident=%s rule=%s transition=%s shed=%s", did, ev.incident_id,
+                    ev.rule, ev.transition, ev.shed.reason if ev.shed else None)
+
+
+async def _on_reflex_shed(env: BaseEnvelope) -> None:
+    """orion-hardware-watch v2 reflex -> cabinet_hot / cabinet_unknown on the shed board (D2)."""
+    try:
+        sig = HardwareWatchReflexShedV1.model_validate(env.payload or {})
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("gpu_pool_reflex_shed_invalid err=%s", str(exc)[:300])
+        return
+    did = await runtime.handle_reflex_shed(sig)
+    if did not in ("refreshed", "noop"):
+        logger.warning("gpu_pool_reflex_shed %s source=%s reason=%s active=%s temp_c=%s", did, sig.source_id,
+                       sig.reason, sig.active, sig.cabinet.get("temp_c"))
 
 
 async def _on_announce(env: BaseEnvelope) -> None:
@@ -219,10 +267,16 @@ async def lifespan(app: FastAPI):
     saver = AsyncPostgresSaver(_pool)
     await saver.setup()
     _store = PostgresStore(_pool, conninfo=_settings.postgres_uri)
-    await _store.check_schema()
     logger.info("gpu_pool_waiting_for_leader_lock")
     await _store.leader()
     logger.info("gpu_pool_leader_acquired")
+    # Only now (single writer): add any missing additive projection columns. A lock it cannot get
+    # in time leaves the pool SERVING degraded (see PostgresStore.heal_schema), never exiting --
+    # the pool is the only path for every LLM call. Raises only for a missing table/non-additive
+    # column (SchemaNotHealable): that one still needs the operator migration.
+    schema = await _store.heal_schema()
+    logger.info("gpu_pool_schema state=%s applied=%s missing=%s", schema["state"], schema["applied"],
+                schema["missing"])
     moved = await _store.adopt_public_checkpoints()  # only now: the previous writer has exited
     if moved:
         logger.info("gpu_pool_checkpoints_adopted rows=%s schema=%s", moved, CHECKPOINT_SCHEMA)
@@ -246,8 +300,13 @@ async def lifespan(app: FastAPI):
         service_name=_settings.service_name, announce_stale_sec=_settings.announce_stale_sec,
         probe_interval_sec=_settings.probe_interval_sec, state_publish_sec=_settings.state_publish_sec,
         replay_payload_max_bytes=_settings.replay_payload_max_bytes,
-        actuate_roles=_settings.actuate_role_list)
-    logger.info("gpu_pool_actuation roles=%s", sorted(runtime.actuate_roles) or "off")
+        shed_enabled=_settings.shed_enabled, orion_shed_enabled=_settings.orion_shed_enabled,
+        orion_shed_caps=OrionShedCaps(max_ttl_sec=_settings.orion_shed_max_ttl_sec,
+                                      max_sec_per_day=_settings.orion_shed_max_sec_per_day,
+                                      min_gap_sec=_settings.orion_shed_min_gap_sec),
+        orion_shed_ledger=PostgresOrionShedLedger(_pool))
+    # Stage 5.7: every swap seat with a launch block is actuated; pause_actuation is the only stop.
+    logger.info("gpu_pool_actuation mode=%s seats=%s", _settings.mode, sorted(runtime.actuated) or "none")
     # The actuator's replies are subscribed BEFORE start(): start() asks about a swap the previous
     # process left in flight, and the answer must not arrive to nobody. Lease RPCs start after it.
     results = Hunter(_cfg(), handler=_on_actuate_result, patterns=[GPU_POOL_ACTUATE_RESULT_CHANNEL])
@@ -257,25 +316,35 @@ async def lifespan(app: FastAPI):
 
     for channel, handler in ((GPU_POOL_LEASE_REQUEST_CHANNEL, _on_lease),
                              (GPU_POOL_STATE_REQUEST_CHANNEL, _on_state),
-                             (GPU_POOL_CONTROL_REQUEST_CHANNEL, _on_control)):
+                             (GPU_POOL_CONTROL_REQUEST_CHANNEL, _on_control),
+                             (GPU_POOL_SHED_REQUEST_CHANNEL, _on_shed)):
         rabbit = Rabbit(_cfg(), request_channel=channel, handler=handler, concurrent_handlers=True)
         await rabbit.start_background()
         _chassis.append(rabbit)
     hunter = Hunter(_cfg(), handler=_on_announce, patterns=[LLM_WORKER_ANNOUNCE_CHANNEL])
     await hunter.start_background()
     _chassis.append(hunter)
+    incidents = Hunter(_cfg(), handler=_on_incident, patterns=[HARDWARE_WATCH_INCIDENT_CHANNEL])
+    await incidents.start_background()
+    _chassis.append(incidents)
+    reflex = Hunter(_cfg(), handler=_on_reflex_shed, patterns=[HARDWARE_WATCH_REFLEX_SHED_CHANNEL])
+    await reflex.start_background()
+    _chassis.append(reflex)
+    logger.info("gpu_pool_shed enabled=%s orion_shed_enabled=%s channels=%s", _settings.shed_enabled,
+                _settings.orion_shed_enabled, [HARDWARE_WATCH_INCIDENT_CHANNEL, HARDWARE_WATCH_REFLEX_SHED_CHANNEL])
     _stop.clear()
     if any(spec.swap and spec.swap.guards for spec in cfg.roles.values()):
-        _tasks.append(asyncio.create_task(_guards_forever(GuardReader(
-            cabinet_url=_settings.cabinet_url, visual_activity_url=_settings.visual_activity_url,
-            clock=lambda: datetime.now(timezone.utc)))))
+        _tasks.append(asyncio.create_task(_guards_forever(GuardReader(cabinet_url=_settings.cabinet_url))))
     else:
         runtime.guard_states = {g: None for g in SWAP_GUARDS}
     _tasks.append(asyncio.create_task(_tick_forever()))
     _tasks.append(asyncio.create_task(_prune_forever()))
+    if _store.schema_degraded:
+        _tasks.append(asyncio.create_task(_store.heal_forever(_stop)))
     logger.info("gpu_pool_ready channels=%s", [GPU_POOL_LEASE_REQUEST_CHANNEL, GPU_POOL_STATE_REQUEST_CHANNEL,
                                               GPU_POOL_CONTROL_REQUEST_CHANNEL, LLM_WORKER_ANNOUNCE_CHANNEL,
-                                              GPU_POOL_ACTUATE_RESULT_CHANNEL])
+                                              GPU_POOL_ACTUATE_RESULT_CHANNEL, HARDWARE_WATCH_INCIDENT_CHANNEL,
+                                              HARDWARE_WATCH_REFLEX_SHED_CHANNEL, GPU_POOL_SHED_REQUEST_CHANNEL])
     try:
         yield
     finally:
@@ -305,7 +374,13 @@ app = FastAPI(title="orion-gpu-pool", lifespan=lifespan)
 @app.get("/health")
 async def health() -> dict[str, Any]:
     return {"ok": runtime is not None, "service": _settings.service_name, "mode": _settings.mode,
-            "config_digest": runtime.cfg.digest if runtime else None}
+            "config_digest": runtime.cfg.digest if runtime else None,
+            # state=degraded: serving, but the listed columns are held in memory only (lost on a
+            # restart) -- apply the named operator migration or let the background retry heal it.
+            "schema": _store.schema_status() if _store is not None else None,
+            "actuation": ({"seats": sorted(runtime.actuated), **runtime._paused_detail()} if runtime else None),
+            "shed": ({**runtime.shed_board.view(runtime.now(), runtime.shed_enabled).as_dict(),
+                      "orion_self_shed": runtime.orion_shed.health()} if runtime else None)}
 
 
 @app.get("/v1/lock-stats")

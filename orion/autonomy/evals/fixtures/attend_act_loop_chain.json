@@ -1,0 +1,47 @@
+{
+  "_comment": "Synthetic, metadata-only chains for orion/autonomy/evals/run_attend_act_loop_eval.py: one treated shed_background_gpu episode and one randomized-holdback control, every hop present. t0 = 2026-10-01T12:00:00Z; winner logged 30 s earlier; TTL 900 s; score at t0 + 20 min.",
+  "treated": {
+    "episode": {
+      "episode_id": "dispatch:shed:1", "arm": "treated", "template": "shed_background_gpu",
+      "decided_at": "2026-10-01T12:00:00+00:00", "created_at": "2026-10-01T12:00:00+00:00",
+      "open_loop_id": "open-loop-cabinet00001", "broadcast_log_id": "broadcast-aaaa",
+      "expected_effect": {"signal_id": "cabinet_heat_pressure", "direction": "decrease", "predicted_delta": 0.0},
+      "eligibility": {"eligible": true, "refusals": [], "hardware_watch": {"open_incident_ids": []}},
+      "settlement_state": "expired",
+      "outcome": {"observed_delta": -0.04, "overlap": [], "excluded_reason": null, "posterior_updated": true,
+                  "manipulation_check": {"drain": "drained", "grants_withheld": 3}},
+      "scored_at": "2026-10-01T12:20:30+00:00"
+    },
+    "broadcast_row": {"generated_at": "2026-10-01T11:59:30+00:00", "selected_open_loop_id": "open-loop-cabinet00001", "dwell_ticks": 3},
+    "proposal": {"proposal_id": "proposal:shed_background_gpu:tick:broadcast-aaaa"},
+    "decision": {"decision": "approved_self_reversible"},
+    "dispatch": {"dispatched_at": "2026-10-01T12:00:01+00:00"},
+    "pool_shed": {"reason": "orion_self_shed", "state": "expired", "started_at": "2026-10-01T12:00:01+00:00",
+                  "ended_at": "2026-10-01T12:15:01+00:00"},
+    "result": {"result_id": "result:dispatch:shed:1"},
+    "outcome_row": {"id": 1},
+    "loop_outcomes": [{"verdict": "acted", "actor": "orion"}],
+    "incidents": []
+  },
+  "control": {
+    "episode": {
+      "episode_id": "dispatch:shed:2", "arm": "control", "template": "shed_background_gpu",
+      "decided_at": "2026-10-01T14:00:00+00:00", "created_at": "2026-10-01T14:00:00+00:00",
+      "open_loop_id": "open-loop-cabinet00001", "broadcast_log_id": "broadcast-bbbb",
+      "expected_effect": {"signal_id": "cabinet_heat_pressure", "direction": "decrease", "predicted_delta": 0.0},
+      "eligibility": {"eligible": true, "refusals": [], "hardware_watch": {"open_incident_ids": []}},
+      "settlement_state": null,
+      "outcome": {"observed_delta": 0.01, "overlap": [], "excluded_reason": null, "posterior_updated": false},
+      "scored_at": "2026-10-01T14:20:30+00:00"
+    },
+    "broadcast_row": {"generated_at": "2026-10-01T13:59:40+00:00", "selected_open_loop_id": "open-loop-cabinet00001", "dwell_ticks": 4},
+    "proposal": {"proposal_id": "proposal:shed_background_gpu:tick2:broadcast-bbbb"},
+    "decision": {"decision": "approved_self_reversible"},
+    "dispatch": {"dispatched_at": null},
+    "pool_shed": null,
+    "result": null,
+    "outcome_row": {"id": 2},
+    "loop_outcomes": [],
+    "incidents": []
+  }
+}

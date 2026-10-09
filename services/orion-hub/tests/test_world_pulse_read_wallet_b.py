@@ -25,30 +25,12 @@ class _FakeRedis:
 def _inputs(**over) -> wb.WalletBInputs:
     base = dict(
         enabled=True,
-        done_today=0,
-        daily_cap=6,
-        seconds_since_last=99999,
-        min_cooldown_sec=60,
         now_hour=12,
         window_start_hour=8,
         window_end_hour=22,
     )
     base.update(over)
     return wb.WalletBInputs(**base)
-
-
-def test_block_reason_daily_cap():
-    inp = wb.WalletBInputs(
-        enabled=True,
-        done_today=6,
-        daily_cap=6,
-        seconds_since_last=99999,
-        min_cooldown_sec=60,
-        now_hour=12,
-        window_start_hour=8,
-        window_end_hour=22,
-    )
-    assert wb.wallet_b_block_reason(inp) == "daily_cap"
 
 
 def test_debit_uses_wallet_b_keys_only():
@@ -100,34 +82,26 @@ def test_debit_does_not_touch_preexisting_wallet_a_keys():
     assert r.store[wa.WALLET_A_COUNT_KEY_PREFIX + "2026-09-06"] == "4"
 
 
-def test_gate_order_disabled_beats_daily_cap():
-    assert wb.wallet_b_block_reason(_inputs(enabled=False, done_today=6)) == "disabled"
+def test_gate_order_disabled_beats_outside_window():
+    assert wb.wallet_b_block_reason(_inputs(enabled=False, now_hour=3)) == "disabled"
 
 
-def test_gate_order_daily_cap_beats_outside_window():
-    assert wb.wallet_b_block_reason(_inputs(done_today=6, now_hour=3)) == "daily_cap"
-
-
-def test_gate_order_outside_window_beats_cooldown():
-    assert wb.wallet_b_block_reason(
-        _inputs(now_hour=3, seconds_since_last=1)
-    ) == "outside_window"
-
-
-def test_block_reason_cooldown():
-    assert wb.wallet_b_block_reason(_inputs(seconds_since_last=10)) == "cooldown"
+def test_gate_order_outside_window_beats_refund_backoff():
+    assert wb.wallet_b_block_reason(_inputs(now_hour=3, seconds_until_retry=30)) == "outside_window"
 
 
 def test_block_reason_clear():
     assert wb.wallet_b_block_reason(_inputs()) is None
 
 
-def test_negative_daily_cap_disables_the_cap():
-    assert wb.wallet_b_block_reason(_inputs(daily_cap=-1, done_today=999)) is None
+def test_no_daily_cap_or_cooldown_fields():
+    """Budgets removed 2026-09-28: the only gates are the switch, the window
+    and the refund backoff."""
+    import dataclasses
 
-
-def test_first_debit_is_not_blocked_by_cooldown():
-    assert wb.wallet_b_block_reason(_inputs(seconds_since_last=None)) is None
+    fields = {f.name for f in dataclasses.fields(wb.WalletBInputs)}
+    assert fields.isdisjoint({"done_today", "daily_cap", "seconds_since_last", "min_cooldown_sec"})
+    assert wb.wallet_b_block_reason(_inputs(window_start_hour=0, window_end_hour=0, now_hour=None)) is None
 
 
 def test_read_wallet_b_state_after_debit():

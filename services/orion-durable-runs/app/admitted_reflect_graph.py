@@ -14,7 +14,10 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.admitted_graph import AdmissionDeps, HoldRecalled, RunControlPending, WorkflowDeadline, resource_nodes
+from app.admitted_graph import (
+    AdmissionDeps, HoldLost, HoldRecalled, RunControlPending, WorkflowDeadline, replay_if_requeued,
+    resource_nodes, taken_back,
+)
 from app.reflect_graph import Deps, ReflectRunState, make_nodes
 
 
@@ -27,6 +30,11 @@ def build_admitted_reflect_graph(deps: Deps, admission: AdmissionDeps, checkpoin
     async def llm_call(state: ReflectRunState) -> dict:
         try:
             result = await admission.execute(dict(state), original["llm_call"])
+            if result.get("llm_call_ok") is False:
+                # No findings may be the preemption's (the call could not attach): replay, don't finish empty.
+                replay = await replay_if_requeued(admission, dict(state), {"status": "waiting_resource"})
+                if replay is not None:
+                    return replay
             return {**result, "status": "running", "last_error": None}
         except WorkflowDeadline:
             released = await admission.release(dict(state), "workflow_deadline")
@@ -35,7 +43,12 @@ def build_admitted_reflect_graph(deps: Deps, admission: AdmissionDeps, checkpoin
             raise
         except HoldRecalled:
             return {"status": "waiting_resource", "lease": None, "hold": None}
-        except Exception as exc:  # noqa: BLE001 -- transport failure / lost hold: bounded re-try
+        except HoldLost as exc:
+            # The pool took the hold back (urgent pause, recall past its grace, lost heartbeat): wait
+            # for the same hold (or a fresh one if the pool ended it) and replay. Not an attempt.
+            return await taken_back(admission, dict(state), exc.release_reason, f"{type(exc).__name__}: {exc}",
+                                    {"status": "waiting_resource"})
+        except Exception as exc:  # noqa: BLE001 -- transport failure: bounded re-try
             attempt = int(state.get("attempt") or 0) + 1
             error = f"{type(exc).__name__}: {exc}"[:500]
             if attempt >= admission.max_attempts:

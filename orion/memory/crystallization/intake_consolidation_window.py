@@ -74,12 +74,31 @@ def _evidence_note_for_turn(turn: dict[str, Any]) -> str | None:
     return "; ".join(parts) if parts else None
 
 
-def _window_summary(turns: list[dict[str, Any]]) -> str:
+def _window_summary_turn(turns: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """The turn whose prompt becomes the row's summary.
+
+    Still the raw last prompt (Stage 1 replaces this with a real writer), but
+    never a greeting or Hub command when the window holds something real: the
+    gate keeps a window like ["Headed to Austin...", "sup yo"] for the Austin
+    line, and taking the last prompt blindly saved it as "sup yo".
+    """
+    from orion.memory.intake_junk import prompt_junk_reason
+
     for turn in reversed(turns):
         prompt = str(turn.get("prompt") or "").strip()
-        if prompt:
-            return prompt[:500]
-    return "Consolidated chat window"
+        if prompt and prompt_junk_reason(prompt) is None:
+            return turn
+    for turn in reversed(turns):
+        if str(turn.get("prompt") or "").strip():
+            return turn
+    return None
+
+
+def _window_summary(turns: list[dict[str, Any]]) -> str:
+    turn = _window_summary_turn(turns)
+    if turn is None:
+        return "Consolidated chat window"
+    return str(turn.get("prompt") or "").strip()[:500]
 
 
 def _window_source_platform(turns: list[dict[str, Any]]) -> str | None:

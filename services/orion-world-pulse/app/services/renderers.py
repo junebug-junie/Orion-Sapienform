@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 
-from orion.schemas.world_pulse import DailyWorldPulseV1, EmailWorldPulseRenderV1, HubWorldPulseMessageV1
+from orion.schemas.world_pulse import DailyWorldPulseV1, HubWorldPulseMessageV1
 
 
 def render_plaintext_digest(digest: DailyWorldPulseV1) -> str:
@@ -75,20 +75,6 @@ def render_plaintext_digest(digest: DailyWorldPulseV1) -> str:
                 lines.append(f"  • [{art.salience:.2f}] {title} — {art.url}")
         lines.append("")
     return "\n".join(lines).strip()
-
-
-def render_email_digest(digest: DailyWorldPulseV1, *, subject_prefix: str, to: list[str], from_email: str | None, dry_run: bool) -> EmailWorldPulseRenderV1:
-    body = render_plaintext_digest(digest)
-    return EmailWorldPulseRenderV1(
-        run_id=digest.run_id,
-        subject=f"{subject_prefix} — {digest.date}",
-        opening="Good morning, Juniper.",
-        plaintext_body=body,
-        to=to,
-        from_email=from_email,
-        dry_run=dry_run,
-        created_at=digest.created_at,
-    )
 
 
 def _normalized_structured_payload(digest: DailyWorldPulseV1) -> dict:

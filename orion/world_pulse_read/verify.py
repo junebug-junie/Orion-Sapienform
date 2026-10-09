@@ -15,7 +15,8 @@ from typing import Any
 
 from orion.schemas.world_pulse_read import WorldPulseReadHandoffV1, WorldPulseReadStage2ResultV1
 from orion.world_pulse_read.read_evidence import source_read_evidence
-from orion.world_pulse_read.urls import normalize_source_url
+from orion.world_pulse_read.documents import is_document_ref, unversioned_ref
+from orion.world_pulse_read.urls import normalize_reading_source
 
 
 def completion_gaps(row: dict[str, Any], journal_bodies: dict[str, str]) -> list[str]:
@@ -50,10 +51,12 @@ def completion_gaps(row: dict[str, Any], journal_bodies: dict[str, str]) -> list
 
 
 async def inspect_reading(conn: Any, url: str) -> dict[str, Any]:
-    url = normalize_source_url(url)
+    url = normalize_reading_source(url)
+    any_version = is_document_ref(url) and url == unversioned_ref(url)
     async with conn.transaction(readonly=True, isolation="repeatable_read"):
         selected = await conn.fetchrow(
-            "SELECT * FROM world_pulse_read_seed WHERE url=$1 ORDER BY created_at DESC, seed_id DESC LIMIT 1", url,
+            "SELECT * FROM world_pulse_read_seed WHERE url=$1 OR ($2::boolean AND split_part(url, '?', 1) = $1) "
+            "ORDER BY created_at DESC, seed_id DESC LIMIT 1", url, any_version,
         )
         if selected is None:
             return {"url": url, "verified_complete": False, "gaps": ["not_found"]}

@@ -27,7 +27,7 @@ class HarnessGovernorSettings(BaseSettings):
     heartbeat_interval_sec: float = Field(10.0, alias="HEARTBEAT_INTERVAL_SEC")
     # RPC-health snapshot publish (orion:rpc_health:snapshot) from the shared dispatch
     # bus: cortex-exec :background / substrate finalize RPCs plus the FCC motor's
-    # subprocess wall time as hop fcc:<served_model>. channel_latency needs
+    # subprocess wall time as hop fcc:<role> (bus_listener.fcc_hop_key). channel_latency needs
     # orion-signal-gateway + orion-equilibrium-service on a build that knows the field
     # (RpcHealthSnapshotV1 is extra="forbid") -- rebuild those first.
     rpc_health_publish_enabled: bool = Field(True, alias="RPC_HEALTH_PUBLISH_ENABLED")
@@ -96,13 +96,19 @@ class HarnessGovernorSettings(BaseSettings):
         "orion:harness:run:cancel",
         alias="CHANNEL_HARNESS_RUN_CANCEL",
     )
+    # Draft-first display (spec L8): the grounded draft, published before the
+    # finalize judge when the Hub asks (HarnessRunRequestV1.draft_preview).
+    channel_harness_run_draft_preview: str = Field(
+        "orion:harness:run:draft_preview",
+        alias="CHANNEL_HARNESS_RUN_DRAFT_PREVIEW",
+    )
 
     # orion-llm-gateway base URL, read directly from the environment by
-    # orion.harness.fcc_motor.probe_current_served_model (the pre-turn
-    # "what backend am I about to run on" GET /routes read); mirrored here
-    # so operators see the effective value. Same default as the identical
-    # setting in orion-cortex-exec/.env_example -- both reach the same
-    # gateway on the shared app-net bridge network.
+    # orion.harness.fcc_motor.run_fcc_turn: a turn holding a GPU pool lease sends
+    # its Anthropic-compatible calls straight to the gateway (ANTHROPIC_BASE_URL)
+    # so the lease header is honoured. Mirrored here so operators see the
+    # effective value. (GPU pool stage 6.3 removed its other use, the pre-turn
+    # GET /routes read: the runner now reads pool state over the bus.)
     harness_llm_gateway_url: str = Field(
         "http://llm-gateway:8210", alias="HARNESS_LLM_GATEWAY_URL"
     )
@@ -150,6 +156,8 @@ class HarnessGovernorSettings(BaseSettings):
     harness_fcc_context_mode_hooks_enabled: bool = Field(
         False, alias="HARNESS_FCC_CONTEXT_MODE_HOOKS_ENABLED"
     )
+    # orion-introspect MCP; read at spawn time by orion/introspect/binding.py.
+    harness_fcc_introspect_enabled: bool = Field(True, alias="HARNESS_FCC_INTROSPECT_ENABLED")
     # Opt-in CLAUDE_CONFIG_DIR override for the FCC claude subprocess, read
     # directly from the environment by
     # orion.fcc.context_budget.orion_fcc_claude_config_dir; mirrored here so
@@ -166,6 +174,51 @@ class HarnessGovernorSettings(BaseSettings):
     # turn, not a safety regression since the repo mount here is read-only).
     harness_fcc_setting_sources: str = Field(
         "user,local", alias="HARNESS_FCC_SETTING_SOURCES"
+    )
+    # Auto-memory off for Hub chat-reply turns only, read directly from the
+    # environment by orion.harness.fcc_motor.chat_auto_memory_disabled;
+    # mirrored here so operators see the effective value.
+    harness_fcc_chat_disable_auto_memory: bool = Field(
+        True, alias="HARNESS_FCC_CHAT_DISABLE_AUTO_MEMORY"
+    )
+    # Repeat-failing-call breaker threshold, read directly from the environment
+    # by orion.harness.fcc_motor.repeat_failure_threshold; mirrored here so
+    # operators see the effective value. 0 disables.
+    # str, not int: an empty value means "default" to the motor and must not
+    # fail settings validation at boot.
+    harness_fcc_repeat_failure_threshold: str = Field(
+        "3", alias="HARNESS_FCC_REPEAT_FAILURE_THRESHOLD"
+    )
+
+    # Warm Claude Code pool for Hub chat replies (spec L5; orion/harness/fcc_warm_pool.py).
+    # Chat-reply turns borrow a long-lived claude process instead of spawning one,
+    # skipping ~3.4 s of MCP server start-up. Any pool failure falls back to the
+    # per-turn spawn. false = every turn spawns, as before.
+    harness_fcc_chat_warm_pool_enabled: bool = Field(True, alias="HARNESS_FCC_CHAT_WARM_POOL_ENABLED")
+    # Processes kept warm. 1 = observed chat concurrency (220 chat turns over 30
+    # days, never two at once). Each one keeps its own MCP servers running.
+    harness_fcc_chat_warm_pool_size: int = Field(1, ge=1, le=8, alias="HARNESS_FCC_CHAT_WARM_POOL_SIZE")
+    # Recycle a process after this many turns or this many seconds (bounds memory growth).
+    harness_fcc_chat_warm_pool_max_turns: int = Field(50, ge=1, alias="HARNESS_FCC_CHAT_WARM_POOL_MAX_TURNS")
+    harness_fcc_chat_warm_pool_max_age_sec: float = Field(
+        3600.0, gt=0.0, alias="HARNESS_FCC_CHAT_WARM_POOL_MAX_AGE_SEC"
+    )
+    # Model label warmed at governor start (a ~/.fcc/.env key or "<backend>/<route>").
+    # The first chat turn asking for another model/window retargets the slot.
+    harness_fcc_chat_warm_pool_model_label: str = Field(
+        "MODEL_SONNET", alias="HARNESS_FCC_CHAT_WARM_POOL_MODEL_LABEL"
+    )
+    # Container-local relay port (bound to 127.0.0.1, never published).
+    harness_fcc_chat_warm_pool_relay_port: int = Field(
+        7157, ge=1, le=65535, alias="HARNESS_FCC_CHAT_WARM_POOL_RELAY_PORT"
+    )
+    # How long a fresh process may take to start its MCP servers.
+    harness_fcc_chat_warm_pool_spawn_timeout_sec: float = Field(
+        90.0, gt=0.0, alias="HARNESS_FCC_CHAT_WARM_POOL_SPAWN_TIMEOUT_SEC"
+    )
+    # Per-turn /clear handshake budget; on overrun the turn spawns instead.
+    harness_fcc_chat_warm_pool_clear_timeout_sec: float = Field(
+        5.0, gt=0.0, alias="HARNESS_FCC_CHAT_WARM_POOL_CLEAR_TIMEOUT_SEC"
     )
 
     # (D) embodiment: publish a deliberate approach intent on the turn correlation_id

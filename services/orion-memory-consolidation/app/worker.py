@@ -13,7 +13,8 @@ from orion.memory_graph.draft_sanitize import sanitize_suggest_draft_dict
 from orion.memory_graph.suggest_runner import suggest_once, suggest_with_escalation
 from orion.memory_graph.suggest_token_budget import suggest_token_budget_config_from_mapping
 
-from app.window_fetch import should_close_turn
+from app.boundary import legacy_view
+from app.window_fetch import legacy_close_decision
 from app.classify import classify_turn
 from app.settings import settings
 from app.window_state import WindowStore
@@ -22,6 +23,7 @@ from orion.schemas.memory_consolidation import (
     ChatHistorySparkMetaPatchV1,
     MemoryTurnPersistedV1,
 )
+from orion.schemas.memory_episode import MEMORY_EPISODE_CLOSED_KIND, MemoryEpisodeClosedV1
 
 logger = logging.getLogger(__name__)
 
@@ -289,12 +291,77 @@ async def _maybe_publish_turn_change_signal(
     await bus.publish(channel, env)
 
 
+async def publish_episode_closed(bus: OrionBusAsync, event: MemoryEpisodeClosedV1) -> None:
+    env = BaseEnvelope(
+        kind=MEMORY_EPISODE_CLOSED_KIND,
+        correlation_id=event.episode_id,
+        source=ServiceRef(
+            name=settings.SERVICE_NAME,
+            version=settings.SERVICE_VERSION,
+            node=settings.NODE_NAME,
+        ),
+        payload=event.model_dump(mode="json"),
+    )
+    await bus.publish(settings.CHANNEL_MEMORY_EPISODE_CLOSED, env)
+
+
+async def observe_shadow_episode(
+    bus: OrionBusAsync,
+    episode_store: Any,
+    *,
+    turn: MemoryTurnPersistedV1,
+    scores: dict[str, Any],
+    legacy_close_reason: str | None,
+) -> MemoryEpisodeClosedV1 | None:
+    """Run boundary Rule 3 in shadow on this turn and publish any episode it closes.
+
+    Fail-open by construction: any error here is logged and swallowed, so the
+    live window path never depends on the shadow tracker (or on its migration
+    having been applied). AI Town and other discard platforms are excluded --
+    episodes are Juniper's conversation, the spec's privacy boundary.
+    """
+    if episode_store is None or not settings.MEMORY_EPISODE_SHADOW_ENABLED:
+        return None
+    if turn.source_platform and turn.source_platform in settings.discard_platforms:
+        return None
+    try:
+        event = await episode_store.observe_turn(
+            turn, scores, legacy_close_reason=legacy_close_reason
+        )
+    except Exception:
+        logger.exception("memory_episode_shadow_observe_failed corr=%s", turn.correlation_id)
+        return None
+    pending: list[MemoryEpisodeClosedV1] = [event] if event is not None else []
+    try:
+        for backlog in await episode_store.unpublished_closed(limit=5):
+            if not any(p.episode_id == backlog.episode_id for p in pending):
+                pending.append(backlog)
+    except Exception:
+        logger.exception("memory_episode_shadow_backlog_failed")
+    for ev in pending:
+        try:
+            await publish_episode_closed(bus, ev)
+            await episode_store.mark_published(ev.episode_id)
+            logger.info(
+                "memory_episode_closed episode=%s status=%s reason=%s turns=%s close_lag_sec=%s",
+                ev.episode_id,
+                ev.episode_status,
+                ev.close_reason,
+                len(ev.turn_ids),
+                ev.close_lag_sec,
+            )
+        except Exception:
+            logger.exception("memory_episode_closed_publish_failed episode=%s", ev.episode_id)
+    return event
+
+
 async def handle_memory_turn_persisted(
     env: BaseEnvelope,
     *,
     bus: OrionBusAsync,
     window_store: WindowStore,
     suggest_runner: ConsolidationSuggestRunner,
+    episode_store: Any = None,
 ) -> None:
     turn = MemoryTurnPersistedV1.model_validate(env.payload)
     assert str(env.correlation_id) == turn.correlation_id, "correlation_id mismatch"
@@ -303,6 +370,23 @@ async def handle_memory_turn_persisted(
         isinstance(existing_appraisal, dict)
         and existing_appraisal.get("turn_change_status") == "ok"
     ):
+        return
+    # Boundary Fix 2: classify each turn once. sql-writer publishes this event
+    # twice per turn; the second copy used to be re-classified against a
+    # window that already held the turn, so it compared the turn with itself
+    # and its (low) score overwrote chat_history_log while the first (high)
+    # score had already closed the window. See WindowStore.find_windowed_turn.
+    try:
+        already = await window_store.find_windowed_turn(turn.correlation_id)
+    except Exception:
+        logger.exception("memory_turn_dedup_lookup_failed corr=%s", turn.correlation_id)
+        already = None
+    if isinstance(already, dict):
+        logger.info(
+            "memory_turn_duplicate_skipped corr=%s window=%s",
+            turn.correlation_id,
+            already.get("memory_window_id"),
+        )
         return
     # Prior turns for classification come from this turn's OWN platform window.
     # Classifying a Juniper turn against a backdrop of NPC dialogue (or the
@@ -315,7 +399,8 @@ async def handle_memory_turn_persisted(
         if open_row is not None
         else []
     )
-    patch_fields = await classify_turn(bus, turn=turn, prior_turns=prior_turns, settings=settings)
+    live_turn = legacy_view(turn, settings)
+    patch_fields = await classify_turn(bus, turn=live_turn, prior_turns=prior_turns, settings=settings)
     await publish_spark_meta_patch(bus, turn.correlation_id, patch_fields)
     try:
         await _maybe_publish_turn_change_signal(
@@ -332,9 +417,30 @@ async def handle_memory_turn_persisted(
         if open_row is not None
         else []
     )
-    if should_close_turn(turn, patch_fields, window_turns=window_turns):
+    legacy_reason = legacy_close_decision(live_turn, patch_fields, window_turns=window_turns)
+    await observe_shadow_episode(
+        bus,
+        episode_store,
+        turn=turn,
+        scores=patch_fields,
+        legacy_close_reason=legacy_reason,
+    )
+    if legacy_reason is not None:
         closed = await window_store.close_current_window(
             turn.correlation_id, source_platform=turn.source_platform
         )
         if closed.get("turn_correlation_ids"):
+            try:
+                score = patch_fields.get("conversation_boundary_score")
+                await window_store.record_close_audit(
+                    closed["memory_window_id"],
+                    close_reason=legacy_reason,
+                    boundary_score_at_close=float(score) if isinstance(score, (int, float)) else None,
+                )
+            except Exception:
+                logger.warning(
+                    "memory_window_close_audit_failed window=%s (migration applied?)",
+                    closed.get("memory_window_id"),
+                    exc_info=True,
+                )
             await suggest_runner.consolidate_window(closed, bus=bus)

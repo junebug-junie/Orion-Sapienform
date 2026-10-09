@@ -993,9 +993,15 @@ def _typed_relation_classification_candidates(store: Any) -> tuple[dict[str, Any
         for e in snapshot.edges.values()
         if isinstance(e.metadata, dict) and e.metadata.get("source_edge_id")
     }
+    # Cognitive view only (orion/substrate/eligibility.py): never classify a projection,
+    # a structure or provenance edge, or anything touching an assertion or a memory referent,
+    # into a new legacy typed edge.
+    from orion.substrate.eligibility import cognitive_view
+
+    _nodes, cognitive_edges = cognitive_view(snapshot.nodes, snapshot.edges)
     co_occurs_edges = [
         e
-        for e in snapshot.edges.values()
+        for e in cognitive_edges.values()
         if e.predicate == "co_occurs_with"
         and e.source.node_id in concept_nodes
         and e.target.node_id in concept_nodes
@@ -1075,8 +1081,9 @@ def _at_risk_concepts(
     back when every ConceptNodeV1 was born with the exact same schema
     default (activation=0.0, decay_half_life_seconds=None), same-value
     across the board really did mean no real signal existed yet. Two fixes
-    landed since (services/orion-hub/scripts/api_routes.py::decay_concept_activations,
-    a live 120s scheduler; and ConceptNodeV1's own activation=salience
+    landed since (a live decay writer -- since 2026-10-06 solely
+    orion-substrate-runtime's dynamics tick, orion/substrate/dynamics.py;
+    and ConceptNodeV1's own activation=salience
     auto-seed at construction time) mean activation is now a real signal
     from the moment a node is created, so the variance proxy is retired --
     it would otherwise misfire the other way, hiding genuinely-at-risk nodes
@@ -1085,7 +1092,7 @@ def _at_risk_concepts(
     What replaces it: a concept born with low salience is not yet
     meaningfully "at risk of decaying" -- it just started low, it hasn't
     lost anything. So nodes younger than ``_AT_RISK_MIN_AGE_SECONDS`` (one
-    hour -- comfortably more than one 120s decay tick, giving real decay a
+    hour -- comfortably more than one 30s decay tick, giving real decay a
     chance to actually run) are excluded regardless of how low their
     activation already is. This is still a real, non-fabricated filter, not
     a returned-empty placeholder.

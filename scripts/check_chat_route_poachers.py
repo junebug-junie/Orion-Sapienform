@@ -88,6 +88,13 @@ ALLOW: dict[str, str] = {
     "orion/harness/finalize.py:resolve_finalize_llm_lane": (
         "owner rule: the harness finalize route is owned by the Hub turn"
     ),
+    "services/orion-cortex-exec/.env_example:CURRENT_TURN_SIGNAL_PROBE_ROUTE": (
+        "Hub-turn step, approved by Juniper 2026-09-28 (PR #2380): the same-turn read runs "
+        "serially inside Juniper's own turn before stance; quick/metacog 8B failed "
+        "evals/run_current_turn_disclosure_live_eval.py (4-5/9 work commands read as news, "
+        "direct-answer accuracy ~0.4) while chat 35B passed; a busy lane times out after 3 s "
+        "and fails closed (no ask)"
+    ),
     # ---- lane-class axis (chat vs background), not the gateway route --------
     "services/orion-cortex-orch/app/conversation_front.py:handle_chat_turn": (
         "payload.lane is the lane-class axis for recall injection inside the Hub chat turn, "
@@ -100,10 +107,6 @@ ALLOW: dict[str, str] = {
     # ---- long-context callers: only fixable through durable admission --------
     "orion/curiosity/supervisor.py:<module>": (
         "long-context batch (6000 tokens, 180 s); needs durable admission (follow-up)"
-    ),
-    "services/orion-cortex-orch/app/workflow_runtime.py:_run_chat_history_compactor_digest": (
-        "digest input is up to 30 turns x 3200 chars (~24k tokens), over quick (4k) and "
-        "metacog (16k); needs durable admission"
     ),
     "services/orion-context-exec/**:*": (
         "CONTEXT_EXEC_DEFAULT_LLM_PROFILE=chat: long-context investigations; needs durable admission"
@@ -125,7 +128,9 @@ ALLOW: dict[str, str] = {
         "not where to send a request"
     ),
     "services/orion-cortex-exec/app/settings.py:<module>": (
-        "ORION_SITUATION_RUNTIME_ROUTE code default: catalog lookup, not a dispatch"
+        "ORION_SITUATION_RUNTIME_ROUTE code default: catalog lookup, not a dispatch; and "
+        "current_turn_signal_probe_route: Hub-turn step approved by Juniper (PR #2380), see the "
+        ".env_example:CURRENT_TURN_SIGNAL_PROBE_ROUTE entry"
     ),
     "services/orion-cortex-exec/.env_example:ORION_SITUATION_RUNTIME_ROUTE": (
         "catalog lookup, not a dispatch"

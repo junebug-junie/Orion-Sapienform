@@ -88,7 +88,7 @@ def test_tick_reduces_a_window_and_returns_last_event_id():
     worker._settings.reducer_poison_max_retries = 99
     worker._store = MagicMock()
     events = [
-        _ev(0, ROLE_NODE_WINDOW, "node=circe calls=4 served=3 upstream_failed=1 refused=0 request_invalid=0 workers=circe-worker-2 classes=served:3|upstream_timeout:1"),
+        _ev(0, ROLE_NODE_WINDOW, "node=circe calls=4 served=2 upstream_failed=2 refused=0 request_invalid=0 workers=circe-worker-2 classes=served:2|upstream_timeout:2"),
         _ev(1, ROLE_WINDOW_COMPLETED, "gateway=athena calls=4 nodes=1 window_sec=60.0"),
     ]
     worker._store.fetch_llm_inference_grammar_events.return_value = events
@@ -99,9 +99,11 @@ def test_tick_reduces_a_window_and_returns_last_event_id():
     worker._store.fetch_llm_inference_grammar_events.assert_called_once_with(limit=200)
     receipt = worker._store.save_receipt.call_args.args[0]
     assert [d.target_id for d in receipt.state_deltas] == ["llm_node:circe"]
-    assert receipt.state_deltas[0].after["pressure_hints"] == {"inference_failure_pressure": 0.25}
+    # 2 failures / max(4 attempts, 10) -- the rolling floor (failure_window.py)
+    assert receipt.state_deltas[0].after["pressure_hints"] == {"inference_failure_pressure": 0.2}
     saved = worker._store.save_llm_inference_projection.call_args.args[0]
-    assert saved.nodes["llm_node:circe"].upstream_failed == 1
+    assert saved.nodes["llm_node:circe"].upstream_failed == 2
+    assert len(saved.recent_windows["llm_node:circe"]) == 1
 
 
 def test_tick_with_no_events_does_nothing():

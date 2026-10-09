@@ -81,6 +81,11 @@ def build_heartbeat_chassis() -> HeartbeatOnly:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global _finalize_listener_task, _closure_listener_task, _goal_context_listener_task, _ask_answered_listener_task, heartbeat_chassis
+    # Advertise that this process reads the assertion-core graph shapes, so the referent/
+    # assertion projectors' readiness gate can open. Background thread; never blocks or raises.
+    from orion.substrate.reader_capability import advertise_at_startup
+
+    advertise_at_startup()
     await worker.start()
     if worker.bus is not None:
         _finalize_listener_task = await start_finalize_appraisal_listener(

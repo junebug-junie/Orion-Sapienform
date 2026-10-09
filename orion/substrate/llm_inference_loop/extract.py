@@ -10,11 +10,16 @@ from orion.schemas.llm_inference_projection import (
     ROLE_NODE_WINDOW,
     ROLE_WINDOW_COMPLETED,
     LlmInferenceNodeStateV1,
+    LlmInferenceRoleStateV1,
+    LlmInferenceWindowCountV1,
 )
 
 from .constants import KNOWN_FIELD_NODES, LLM_INFERENCE_SOURCE_SERVICE, LLM_INFERENCE_TRACE_PREFIX
 
 _KV_RE = re.compile(r"(\w+)=([^,;\s]+)")
+# ``roles=chat[calls:3|served:3|wait_p50_ms:40|...]metacog[...]`` (grammar_emit._RoleBucket.summary)
+_ROLE_RE = re.compile(r"([a-z0-9_.-]+)\[([^\]]*)\]")
+_MAX_ROLES = 16
 
 
 def _utc_now(now: datetime | None) -> datetime:
@@ -79,17 +84,60 @@ def _parse_classes(raw: str | None) -> dict[str, int]:
     return out
 
 
+def _opt_tps(kv: dict[str, str], key: str) -> float | None:
+    try:
+        tps = float(kv[key]) if key in kv else None
+    except ValueError:
+        return None
+    if tps is None or not (tps > 0.0 and tps != float("inf")):
+        return None
+    return tps
+
+
+def _parse_roles(raw: str | None) -> dict[str, LlmInferenceRoleStateV1]:
+    """Per-role clocks from the node atom. A malformed role entry is dropped, never guessed;
+    an absent ``roles=`` (a gateway from before stage 6.2) yields ``{}``."""
+    out: dict[str, LlmInferenceRoleStateV1] = {}
+    for role, body in _ROLE_RE.findall(raw or ""):
+        if role in out or len(out) >= _MAX_ROLES:
+            continue
+        kv: dict[str, str] = {}
+        for part in body.split("|"):
+            key, sep, value = part.partition(":")
+            if sep and key.strip():
+                kv[key.strip()] = value.strip()
+        try:
+            out[role] = LlmInferenceRoleStateV1(
+                calls=_int(kv, "calls"),
+                http_calls=_int(kv, "http_calls"),
+                served=_int(kv, "served"),
+                upstream_failed=_int(kv, "upstream_failed"),
+                refused=_int(kv, "refused"),
+                request_invalid=_int(kv, "request_invalid"),
+                wait_p50_ms=_opt_int(kv, "wait_p50_ms"),
+                wait_p95_ms=_opt_int(kv, "wait_p95_ms"),
+                model_p50_ms=_opt_int(kv, "model_p50_ms"),
+                model_p95_ms=_opt_int(kv, "model_p95_ms"),
+                decode_tps_p50=_opt_tps(kv, "decode_tps_p50"),
+                decode_tps_samples=_int(kv, "decode_tps_n"),
+                decode_tps_solo_p50=_opt_tps(kv, "decode_tps_solo_p50"),
+                decode_tps_solo_samples=_int(kv, "decode_tps_solo_n"),
+                decode_tps_shared_p50=_opt_tps(kv, "decode_tps_shared_p50"),
+                decode_tps_shared_samples=_int(kv, "decode_tps_shared_n"),
+                busy_p50=_opt_int(kv, "busy_p50"),
+                busy_max=_opt_int(kv, "busy_max"),
+                slots=_opt_int(kv, "slots"),
+                prompt_n=_opt_int(kv, "prompt_n"),
+                cache_n=_opt_int(kv, "cache_n"),
+                cache_reports=_int(kv, "cache_reports"),
+            )
+        except ValueError:
+            continue
+    return out
+
+
 def _parse_labels(raw: str | None) -> list[str]:
     return [p.strip() for p in (raw or "").split("|") if p.strip() and p.strip() != "none"]
-
-
-def inference_failure_pressure(*, served: int, upstream_failed: int) -> float | None:
-    """Share of the calls the gateway actually sent upstream that came back without
-    an answer. None when nothing went upstream: absence of traffic is not calm."""
-    attempted = served + upstream_failed
-    if attempted <= 0:
-        return None
-    return min(1.0, upstream_failed / attempted)
 
 
 def extract_llm_inference_states_from_events(
@@ -98,6 +146,21 @@ def extract_llm_inference_states_from_events(
     now: datetime | None = None,
 ) -> tuple[dict[str, LlmInferenceNodeStateV1], int]:
     """Returns (states keyed by target_id, unattributed_calls)."""
+    states, unattributed, _windows = extract_llm_inference_windows(events, now=now)
+    return states, unattributed
+
+
+def extract_llm_inference_windows(
+    events: list[GrammarEventV1],
+    *,
+    now: datetime | None = None,
+) -> tuple[dict[str, LlmInferenceNodeStateV1], int, dict[str, LlmInferenceWindowCountV1]]:
+    """Returns (states, unattributed_calls, this window's counts keyed by target_id).
+
+    States carry no ``inference_failure_pressure``: that reading spans several
+    windows and is set by the reducer (``failure_window.py``). Each window count is
+    placed at its atom's ``emitted_at`` (the gateway's window end), falling back to
+    ``now`` for a hand-built atom without one."""
     clock = _utc_now(now)
     if not events:
         raise ValueError("events must not be empty")
@@ -108,7 +171,7 @@ def extract_llm_inference_states_from_events(
     gateway_node, window_id = parsed
 
     window_sec = 0.0
-    node_rows: list[tuple[str, dict[str, str]]] = []
+    node_rows: list[tuple[str, datetime, dict[str, str]]] = []
     for event in events:
         if event.provenance.source_service != LLM_INFERENCE_SOURCE_SERVICE:
             continue
@@ -123,11 +186,12 @@ def extract_llm_inference_states_from_events(
             except ValueError:
                 window_sec = 0.0
         elif role == ROLE_NODE_WINDOW:
-            node_rows.append((event.event_id, kv))
+            node_rows.append((event.event_id, _utc_now(event.emitted_at or clock), kv))
 
     states: dict[str, LlmInferenceNodeStateV1] = {}
+    windows: dict[str, LlmInferenceWindowCountV1] = {}
     unattributed = 0
-    for event_id, kv in node_rows:
+    for event_id, emitted_at, kv in node_rows:
         node = known_field_node(kv.get("node"))
         if node is None:
             unattributed += _int(kv, "calls")
@@ -152,14 +216,21 @@ def extract_llm_inference_states_from_events(
             request_invalid=_int(kv, "request_invalid"),
             prompt_tokens=_int(kv, "prompt_tokens"),
             completion_tokens=_int(kv, "completion_tokens"),
-            latency_p50_ms=_opt_int(kv, "p50_ms"),
-            latency_p95_ms=_opt_int(kv, "p95_ms"),
+            by_role=_parse_roles(kv.get("roles")),
             served_by_labels=_parse_labels(kv.get("workers")),
             outcome_classes=_parse_classes(kv.get("classes")),
-            inference_failure_pressure=inference_failure_pressure(served=served, upstream_failed=failed),
+            inference_failure_pressure=None,
             evidence_event_ids=[event_id],
             observed_at=clock,
         )
+        windows[target_id] = LlmInferenceWindowCountV1(
+            window_id=f"{gateway_node}:{window_id}",
+            window_end=emitted_at,
+            served=served,
+            upstream_failed=failed,
+            worker_attempted=_parse_classes(kv.get("worker_attempted")),
+            worker_failed=_parse_classes(kv.get("worker_failed")),
+        )
     for state in states.values():
         state.window_sec = window_sec
-    return states, unattributed
+    return states, unattributed, windows

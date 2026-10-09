@@ -73,6 +73,19 @@ class Settings(BaseSettings):
     DREAM_LLM_ROUTE: str = Field(default="metacog_background")
     DREAM_LLM_TIMEOUT_SEC: float = Field(default=90.0, gt=0.0)
 
+    # --- Introspect responder (orion-introspect `dreams` tool; read-only) ---
+    # Answers orion:introspect:dream:request. Empty search URLs keep recent/one
+    # working and make query= answer "unknown".
+    DREAM_INTROSPECT_ENABLED: bool = Field(default=True)
+    DREAM_SEARCH_CHROMA_URL: str = Field(default="")
+    DREAM_SEARCH_EMBED_URL: str = Field(default="")
+    DREAM_SEARCH_COLLECTION: str = Field(default="orion_dreams")
+    DREAM_SEARCH_MIN_SIMILARITY: float = Field(
+        default=0.65, ge=0.0, le=1.0, alias="DREAM_SEARCH_MIN_SIMILARITY"
+    )
+    DREAM_SEARCH_INDEX_INTERVAL_SEC: float = Field(default=300.0, gt=0.0)
+    DREAM_SEARCH_INDEX_BATCH: int = Field(default=10, ge=1, le=50)
+
     # --- Stores ---
     POSTGRES_URI: str = Field(default="postgresql://postgres:postgres@postgres:5432/conjourney")
 

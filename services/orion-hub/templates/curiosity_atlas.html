@@ -270,12 +270,14 @@ h2 {
 .reach-block .dec.unknown { color: var(--ink-muted); }
 .reply-box { margin-top: 10px; padding-top: 10px; border-top: 1px dashed var(--axis); }
 .reply-box .lbl { font-weight: 620; display: block; margin-bottom: 4px; }
-.reply-text {
+.reply-text, .urgent-text {
   width: 100%; box-sizing: border-box; resize: vertical; min-height: 60px;
   font: inherit; font-size: 13px; padding: 8px 10px; border-radius: 8px;
   border: 1px solid var(--hairline); background: var(--plane); color: var(--ink);
 }
-.reply-actions { display: flex; align-items: center; gap: 10px; margin-top: 6px; }
+.reply-actions, .urgent-actions { display: flex; align-items: center; gap: 10px; margin-top: 6px; }
+.urgent-box { margin-bottom: 12px; }
+.urgent-q { white-space: pre-wrap; max-width: 60ch; }
 .story .none { font-size: 12px; color: var(--ink-2); background: var(--plane); border: 1px dashed var(--axis); border-radius: 8px; padding: 9px 11px; }
 .story-card {
   margin: 10px 0 14px; padding: 12px 14px; border-radius: 10px;
@@ -333,6 +335,8 @@ details.journal summary:hover { color: var(--ink); }
 .prior { padding: 14px 15px 12px; display: flex; flex-direction: column; gap: 8px; }
 .prior.closed { opacity: 0.75; }
 .prior .claim { font-size: 13px; line-height: 1.45; display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden; }
+.prior .claim.is-open { display: block; -webkit-line-clamp: unset; overflow: visible; white-space: pre-wrap; }
+.prior .claim-toggle { align-self: flex-start; font: inherit; font-size: 11.5px; color: var(--ink-2); background: none; border: none; padding: 0; cursor: pointer; text-decoration: underline; }
 .prior .sub { font-size: 11.5px; color: var(--ink-muted); font-variant-numeric: tabular-nums; display: flex; gap: 8px; flex-wrap: wrap; }
 .prior .sub .status { font-weight: 620; color: var(--ink-2); }
 .prior .sub .status.closed { color: var(--critical); }
@@ -370,6 +374,24 @@ tr:last-child td { border-bottom: none; }
   </div>
 
   <div id="banners"></div>
+
+  <section>
+    <h2>Urgent runs</h2>
+    <p class="section-note">
+      Ask Orion to look at something now. The question goes with a snapshot of the
+      hardware readings, jumps the GPU queue, and skips the daily budget. However it
+      ends, you get a critical Hub notice and an email.
+    </p>
+    <div class="urgent-box">
+      <textarea id="urgent-question" class="urgent-text" rows="3" maxlength="2000"
+        placeholder="What should Orion look into right now?"></textarea>
+      <div class="urgent-actions">
+        <button class="ghost run-now" id="urgent-run" type="button">Run urgent</button>
+        <span id="urgent-run-msg" class="run-msg"></span>
+      </div>
+    </div>
+    <div class="card table-wrap" id="urgent-list"><p class="dim">Loading…</p></div>
+  </section>
 
   <section>
     <h2>Today's budget</h2>
@@ -478,6 +500,7 @@ const GLYPH = {
 };
 const POLL_MS = 60000;
 const DAYS = 14;
+const PRIOR_CLAMP_CHARS = 160;  // roughly what four clamped lines hold at the narrowest (300px) prior card
 const LINE_FILTERS = [
   { id: "all", label: "All" },
   { id: "investigate", label: "World question" },
@@ -547,10 +570,11 @@ function payloadHash(obj) {
 
 /* ---- state -------------------------------------------------------------- */
 const state = {
-  runsHash: null, atlasHash: null,
+  runsHash: null, atlasHash: null, urgentHash: null,
   runs: null, atlas: null,
   tileSource: null,  // last live-window payload; budget/reach-out tiles never page
   openRunId: null, openRunSummaryHash: null,
+  openPriors: new Set(),  // prior ids whose claim Juniper opened; survives re-renders
   showClosed: false, filter: "",
   line: "all",
   untilMs: null,  // null = live window (now)
@@ -797,6 +821,7 @@ function timelineRow(it, run) {
           break;
         case "lease_released": what = `<span class="dim">released the ${esc(it.lane || "agent")} lane${it.reason ? ` (${esc(it.reason)})` : ""}</span>`; break;
         case "lease_expired": cls += " k-failed"; what = `<span class="flag">lane lease expired</span>`; break;
+        case "preempted": what = `<span class="dim">paused for urgent work, kept its place for the ${esc(it.lane || "agent")} lane</span>`; break;
         case "failed": cls += " k-failed"; what = `<span class="flag">died</span> at ${esc(it.node)}${it.error ? `: <span class="txt">${esc(it.error)}</span>` : ""}`; break;
         case "cancelled": cls += " k-failed"; what = `<span class="flag">cancelled</span>`; break;
         case "completed": what = `<span class="lbl">done</span>${run.attempts > 1 ? ` after ${run.attempts} attempts` : ""}`; break;
@@ -816,7 +841,7 @@ function timelineRow(it, run) {
     case "self_sense_answer":
       what = `<span class="lbl">${esc(it.question || it.question_key)}</span> ` +
              `<span class="dim">self-label ${it.self_label_score ?? "—"} · grounded ${it.grounded_record_score ?? "—"} · ${esc(it.answer_source)}</span>` +
-             (it.answer_text ? `<div class="txt">${esc(clip(it.answer_text, 600))}</div>` : "");
+             (it.answer_text ? `<div class="txt">${esc(it.answer_text)}</div>` : "");
       break;
     case "self_write": {
       const writeKind = it.write_kind || "";
@@ -824,16 +849,16 @@ function timelineRow(it, run) {
       what = `<span class="lbl">wrote ${lived ? "a lived answer" : "a self-definition"}</span>` +
              `${it.question_id ? ` <span class="dim">(${esc(it.question_id)})</span>` : ""}` +
              (it.text ? `<div class="txt">${esc(it.text)}</div>` : "") +
-             (it.evidence ? `<div class="sub">evidence: ${esc(clip(it.evidence, 300))}</div>` : "");
+             (it.evidence ? `<div class="sub">evidence: ${esc(it.evidence)}</div>` : "");
       break;
     }
     case "finding":
       what = `<span class="lbl">finding</span><div class="txt">${esc(it.text)}</div>` +
-             (it.evidence ? `<div class="sub">evidence: ${esc(clip(it.evidence, 300))}</div>` : "");
+             (it.evidence ? `<div class="sub">evidence: ${esc(it.evidence)}</div>` : "");
       break;
     case "revision":
       what = `<span class="lbl">prior ${conf(it.from)} → ${conf(it.to)}</span>, ${esc(it.from_status)} → ${esc(it.to_status)}` +
-             `<div class="txt">${esc(clip(it.claim || it.prior_id, 300))}</div>`;
+             `<div class="txt">${esc(it.claim || it.prior_id)}</div>`;
       break;
     case "outcome":
       what = `<span class="lbl">end of turn</span>` +
@@ -959,7 +984,7 @@ function renderStory(d) {
         ${sum.active_sec != null ? `<span>active <b>${esc(fmtDuration(sum.active_sec))}</b></span>` : ""}
         ${sum.lane_wait_sec != null ? `<span>lane wait <b>${esc(fmtDuration(sum.lane_wait_sec))}</b></span>` : ""}
       </div>
-      ${sum.role && sum.role.why ? `<div class="dim" style="font-size:12px;margin-top:4px">${esc(clip(sum.role.why, 280))}</div>` : ""}
+      ${sum.role && sum.role.why ? `<div class="dim" style="font-size:12px;margin-top:4px">${esc(sum.role.why)}</div>` : ""}
     </div>`;
 
   const po = d.prior_outcome;
@@ -1107,8 +1132,11 @@ function renderPriors(d) {
     const traj = p.trajectory || [];
     const rec = traj.filter((t) => t.recorded).length;
     const lastRun = p.last_run_id || p.created_by_run;
+    const long = (p.claim || "").length > PRIOR_CLAMP_CHARS;
+    const open = long && state.openPriors.has(p.prior_id);
     return `<div class="card prior${p.is_closed ? " closed" : ""}">
-      <div class="claim" title="${esc(p.claim)}">${esc(p.claim)}</div>
+      <div class="claim${open ? " is-open" : ""}" title="${esc(p.claim)}">${esc(p.claim)}</div>
+      ${long ? `<button class="claim-toggle" type="button" data-prior-claim="${esc(p.prior_id)}" aria-expanded="${open}">${open ? "show less" : "read it all"}</button>` : ""}
       <div class="sub">
         <span class="status${p.is_closed ? " closed" : ""}">${esc(p.status)}</span>
         <span>${conf(p.confidence)}</span>
@@ -1121,6 +1149,11 @@ function renderPriors(d) {
   }).join("") : `<p class="dim">${all.length ? "Nothing matches." : "Orion has not written a prior yet."}</p>`;
 }
 
+function togglePriorClaim(id) {
+  if (state.openPriors.has(id)) state.openPriors.delete(id); else state.openPriors.add(id);
+  renderPriors(state.atlas);
+}
+
 /* ---- contractor briefs -------------------------------------------------- */
 function renderPeerBriefs(d) {
   const el = $("peer-briefs-table");
@@ -1130,7 +1163,7 @@ function renderPeerBriefs(d) {
   el.innerHTML = `<thead><tr><th>Status</th><th>Peer</th><th>Summary</th><th>Run</th><th>Help</th></tr></thead>
     <tbody>${briefs.length ? briefs.map((b) => {
       const refused = b.status === "refused_budget";
-      const summary = refused ? (b.refusal_reason ? `refused: ${clip(b.refusal_reason, 120)}` : "refused_budget") : clip(b.summary, 160);
+      const summary = refused ? (b.refusal_reason ? `refused: ${b.refusal_reason}` : "refused_budget") : (b.summary || "");
       return `<tr><td><span class="mono">${esc(b.status || "—")}</span></td><td>${esc(b.peer || "—")}</td><td>${esc(summary)}</td>` +
              `<td><a class="runlink" data-run="${esc(b.run_id)}">${esc(b.run_id || "—")}</a></td><td class="mono">${esc(b.help_id || "—")}</td></tr>`;
     }).join("") : `<tr><td colspan="5" class="dim">No contractor briefs yet.</td></tr>`}</tbody>`;
@@ -1178,6 +1211,65 @@ function applyAtlas(d) {
   renderPeerBriefs(d);
   renderBanners(state.runs, d);
   return true;
+}
+
+/* ---- urgent runs --------------------------------------------------------- */
+function renderUrgent(d) {
+  const h = payloadHash(d);
+  if (h === state.urgentHash) return false;
+  state.urgentHash = h;
+  const el = $("urgent-list");
+  if (!d || d.available === false) {
+    el.innerHTML = `<p class="dim">Urgent runs could not be read: ${esc((d && d.reason) || "unknown")}</p>`;
+    return true;
+  }
+  const rows = d.incidents || [];
+  if (!rows.length) {
+    el.innerHTML = `<p class="dim">No urgent runs yet.</p>`;
+    return true;
+  }
+  el.innerHTML = `<table><thead><tr><th>When</th><th>Question</th><th>Trigger</th><th>Status</th><th>Run</th></tr></thead><tbody>` +
+    rows.map((r) => `<tr><td class="dim">${esc(fmtStamp(r.requested_at))}</td>` +
+      `<td class="urgent-q">${esc(r.question)}</td>` +
+      `<td>${esc(r.trigger)}${r.subject ? ` <span class="dim">${esc(r.subject)}</span>` : ""}</td>` +
+      `<td class="mono">${esc(r.status)}</td>` +
+      `<td>${r.run_id ? `<a class="runlink" data-run="${esc(r.run_id)}" title="Open this run's story">${esc(r.run_id)}</a>` : "—"}</td></tr>`
+    ).join("") + `</tbody></table>`;
+  return true;
+}
+async function loadUrgent() {
+  try {
+    renderUrgent(await fetchJson("/curiosity/api/urgent"));
+  } catch (err) {
+    renderUrgent({ available: false, reason: String(err) });
+  }
+}
+async function runUrgent() {
+  const btn = $("urgent-run"), msg = $("urgent-run-msg"), ta = $("urgent-question");
+  const question = ((ta && ta.value) || "").trim();
+  if (!question) { msg.className = "run-msg bad"; msg.textContent = "Write a question first."; return; }
+  if (!window.confirm("Start an urgent run now?\n\nIt jumps the GPU queue, skips the daily budget, and always ends in a critical Hub notice and an email.")) return;
+  btn.disabled = true;
+  msg.className = "run-msg";
+  msg.textContent = "Requesting…";
+  try {
+    const res = await fetch("/curiosity/api/urgent", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ question }),
+    });
+    const d = await res.json();
+    if (d.ok) {
+      msg.textContent = `incident ${d.incident_id} started`;
+      ta.value = "";
+      setTimeout(() => loadUrgent(), 3000);
+    } else {
+      msg.className = "run-msg bad";
+      msg.textContent = `Refused: ${d.reason || res.status}`;
+    }
+  } catch (err) { msg.className = "run-msg bad"; msg.textContent = `Failed: ${String(err)}`; }
+  // Re-armed, unlike run-now: each press is its own incident.
+  btn.disabled = false;
 }
 
 /* ---- loading ------------------------------------------------------------- */
@@ -1282,7 +1374,7 @@ async function loadAtlas() {
 }
 async function load({ fromPoll = false } = {}) {
   try {
-    await Promise.all([loadRuns({ fromPoll }), loadAtlas()]);
+    await Promise.all([loadRuns({ fromPoll }), loadAtlas(), loadUrgent()]);
     $("updated").textContent = `Updated ${new Date().toLocaleTimeString()}`;
   } catch (err) {
     $("banners").innerHTML = banner("critical", "⚠", "Could not load the page", esc(String(err)));
@@ -1327,6 +1419,8 @@ function wire() {
   document.addEventListener("click", (e) => {
     const lineBtn = e.target.closest && e.target.closest("[data-line]");
     if (lineBtn) { e.preventDefault(); setLine(lineBtn.getAttribute("data-line")); return; }
+    const claim = e.target.closest && e.target.closest("[data-prior-claim]");
+    if (claim) { togglePriorClaim(claim.getAttribute("data-prior-claim")); return; }
     const t = e.target.closest && e.target.closest("[data-run]");
     if (t) { e.preventDefault(); openRun(t.getAttribute("data-run")); }
     const replyBtn = e.target.closest && e.target.closest("[data-reply-send]");
@@ -1354,6 +1448,7 @@ function wire() {
   });
   $("toggle-closed").addEventListener("click", () => { state.showClosed = !state.showClosed; renderPriors(state.atlas); });
   $("prior-filter").addEventListener("input", (e) => { state.filter = e.target.value || ""; renderPriors(state.atlas); });
+  $("urgent-run").addEventListener("click", () => runUrgent());
   const arm = (btnId, msgId, url, confirmText) => {
     $(btnId).addEventListener("click", async (e) => {
       const btn = e.currentTarget, msg = $(msgId);

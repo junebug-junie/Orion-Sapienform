@@ -55,13 +55,19 @@ else
   fail "orch cannot reach orion-mind:6611"
 fi
 
-# Routes come from config/gpu_pool.yaml since the GPU pool cutover; /routes is generated from it.
-GW_ROUTES=$(curl -sf http://127.0.0.1:8210/routes 2>/dev/null || true)
+# Route catalog from GPU pool state, via the Hub (stage 6.3: nothing reads the gateway's
+# retiring GET /routes any more -- a read here would hold stage 6.5's zero-read window open).
+HUB_ROUTES=$(curl -sf "$HUB_BASE/api/llm-routes" 2>/dev/null || true)
+if echo "$HUB_ROUTES" | grep -q '"source": *"gpu_pool"'; then
+  pass "hub route catalog built from GPU pool state"
+else
+  fail "hub route catalog not from GPU pool state (pool unreachable?)"
+fi
 for route in quick metacog chat; do
-  if echo "$GW_ROUTES" | grep -q "\"id\": *\"$route\""; then
-    pass "gateway /routes includes $route"
+  if echo "$HUB_ROUTES" | grep -q "\"id\": *\"$route\""; then
+    pass "route catalog includes $route"
   else
-    fail "gateway /routes missing $route"
+    fail "route catalog missing $route"
   fi
 done
 

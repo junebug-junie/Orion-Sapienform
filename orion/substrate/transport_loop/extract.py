@@ -25,6 +25,17 @@ _IGNORED_ROLES = frozenset(
         # skipped on purpose, not by falling through ATOM_ROLES.
         "bus_stream_depth_observed",
         "bus_backpressure_observed",
+        # Retired 2026-10-07 (fix/transport-lattice-names-and-contract): the
+        # schema sample behind contract_pressure.
+        "bus_schema_validation_failed",
+        # Retired 2026-10-07 (fix/field-decisions-d3-credit-novelty-observer,
+        # #2534 decision 4): the observer's own tick failure, behind
+        # observer_failure_pressure (0.0 on 123,099 of 123,099 field ticks, no
+        # tick_failed atom in the 72 h retained). The bus observer no longer
+        # emits it; a pre-deploy failed trace now reduces to "no evidence"
+        # (a no-op receipt) instead of fabricating ping-unknown 0.5 and a
+        # census-off 0.0 drift.
+        "bus_observer_tick_failed",
     }
 )
 
@@ -32,8 +43,6 @@ ATOM_ROLES = frozenset(
     {
         "bus_health_observed",
         "bus_configured_stream_uncataloged",
-        "bus_schema_validation_failed",
-        "bus_observer_tick_failed",
         "bus_observer_tick_completed",
         "bus_census_computed",
     }
@@ -95,7 +104,6 @@ def compute_transport_pressures(state: TransportBusStateV1) -> dict[str, float]:
     else:
         ping_pressure = 0.5
 
-    observer_failure_pressure = 1.0 if state.observer_failure_count > 0 else 0.0
     denom = max(state.streams_observed, 1)
     # Fixed 2026-07-25 (docs/superpowers/specs/2026-07-25-catalog-drift-
     # pressure-mesh-wide-fix.md): was uncataloged_stream_count/denom, capped
@@ -115,20 +123,16 @@ def compute_transport_pressures(state: TransportBusStateV1) -> dict[str, float]:
         # repo's own "no empty-shell cognition" rule). Once the census flag
         # is the live default, this branch only fires on a real scan failure.
         catalog_drift_pressure = min(state.uncataloged_stream_count / denom, 1.0)
-    # Genuinely independent of catalog_drift_pressure: this counts cataloged
-    # streams whose sampled traffic failed schema validation, not streams
-    # missing from the catalog. Same "count of affected streams / denom"
-    # shape as catalog_drift_pressure on purpose -- keeps both channels'
-    # dynamic range comparable under the shared watch_at thresholds in
-    # config/substrate-lattice/transport_lattice_policy.v1.yaml.
-    contract_pressure = min(state.schema_mismatch_stream_count / denom, 1.0)
-    # Same values as the old max(observer_failure, 1 - delivery_confidence).
-    reliability_pressure = max(observer_failure_pressure, ping_pressure)
+    # contract_pressure (two-stream schema sample) retired 2026-10-07
+    # (fix/transport-lattice-names-and-contract): 0 on every live tick.
+    # observer_failure_pressure retired 2026-10-07 (#2534 decision 4): it was
+    # max()'d in here and read 0 on every live tick, so reliability_pressure
+    # keeps the same live values. The observer failing is not a bus reading:
+    # its own heartbeat (orion:system:health) and logs carry that.
+    reliability_pressure = ping_pressure
 
     return {
         "catalog_drift_pressure": catalog_drift_pressure,
-        "observer_failure_pressure": observer_failure_pressure,
-        "contract_pressure": contract_pressure,
         "reliability_pressure": reliability_pressure,
     }
 
@@ -152,8 +156,6 @@ def extract_transport_bus_state_from_events(
 
     streams_observed = 0
     uncataloged_stream_count = 0
-    observer_failure_count = 0
-    schema_mismatch_stream_count = 0
     undeclared_active_count: int | None = None
     catalog_size = 0
     redis_ping_ok: bool | None = None
@@ -178,10 +180,6 @@ def extract_transport_bus_state_from_events(
             redis_ping_ok = _boolish(kv.get("redis_ping_ok"))
         elif role == "bus_configured_stream_uncataloged":
             uncataloged_stream_count += 1
-        elif role == "bus_schema_validation_failed":
-            schema_mismatch_stream_count += 1
-        elif role == "bus_observer_tick_failed":
-            observer_failure_count += 1
         elif role == "bus_observer_tick_completed":
             try:
                 streams_observed = int(kv.get("streams_observed", streams_observed) or streams_observed)
@@ -203,8 +201,6 @@ def extract_transport_bus_state_from_events(
         redis_ping_ok=redis_ping_ok,
         streams_observed=streams_observed,
         uncataloged_stream_count=uncataloged_stream_count,
-        observer_failure_count=observer_failure_count,
-        schema_mismatch_stream_count=schema_mismatch_stream_count,
         undeclared_active_count=undeclared_active_count,
         catalog_size=catalog_size,
         evidence_event_ids=evidence_event_ids,

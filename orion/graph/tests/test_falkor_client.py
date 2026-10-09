@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from orion.graph.falkor_client import (
     FalkorGraphClient,
     RecordingFalkorClient,
@@ -56,7 +58,8 @@ def test_rows_from_query_result_falls_back_to_positional() -> None:
 
 
 def test_rows_from_query_result_none_result_set() -> None:
-    assert _rows_from_query_result([[1, "x"]], None) == []
+    with pytest.raises(ValueError, match="malformed Falkor result set"):
+        _rows_from_query_result([[1, "x"]], None)
 
 
 def test_redis_graph_query_client_constructs_from_uri() -> None:

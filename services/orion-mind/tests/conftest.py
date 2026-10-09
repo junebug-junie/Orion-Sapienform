@@ -20,3 +20,10 @@ def _mind_app_before_each_test() -> None:
     _guard_mod.ensure_orion_mind_app()
     yield
 
+
+
+@pytest.fixture(autouse=True)
+def _no_live_transport_threshold_state(monkeypatch):
+    """Unit tests must never read or write the live transport-threshold Redis
+    state. Tests that exercise it patch orion.field.transport_thresholds._client."""
+    monkeypatch.setenv("TRANSPORT_THRESHOLDS_DERIVED_ENABLED", "false")

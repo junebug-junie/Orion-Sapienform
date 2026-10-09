@@ -69,7 +69,9 @@ def _build_node_field_projection(state: FieldStateV1, node_id: str) -> dict[str,
         connected.append(
             {
                 "capability_id": cap,
-                "pressure": state.capability_vectors.get(edge.target_id, {}).get("pressure", 0.0),
+                # None (JSON null) when the digester dropped the key because
+                # nothing measured it -- not 0.0, which reads as measured calm.
+                "pressure": state.capability_vectors.get(edge.target_id, {}).get("pressure"),
                 "edge_weight": edge.weight,
             }
         )

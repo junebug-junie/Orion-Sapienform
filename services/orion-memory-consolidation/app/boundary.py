@@ -20,18 +20,84 @@ _LABEL_SUFFIX = {
 }
 
 
-def should_close_window(turn: MemoryTurnPersistedV1, scores: dict, settings) -> bool:
-    phase = (
-        (turn.spark_meta.get("conversation_phase") or {}).get("phase_change") or "unknown"
-    )
+_REORIENT_PHASES = frozenset({"long_gap", "next_day", "stale_thread"})
+_ACTIVE_PHASES = frozenset({"same_breath", "short_pause"})
+
+
+def legacy_view(turn: MemoryTurnPersistedV1, settings) -> MemoryTurnPersistedV1:
+    """The turn as the live legacy path saw it before boundary Fix 1.
+
+    With MEMORY_LEGACY_BOUNDARY_USE_PHASE off (default), the conversation_phase
+    stamp is hidden from the legacy window rule and from the classify prompt,
+    so live window closing is unchanged while Rule 3 runs in shadow.
+    """
+    if getattr(settings, "MEMORY_LEGACY_BOUNDARY_USE_PHASE", False):
+        return turn
+    if "conversation_phase" not in turn.spark_meta:
+        return turn
+    meta = {k: v for k, v in turn.spark_meta.items() if k != "conversation_phase"}
+    return turn.model_copy(update={"spark_meta": meta})
+
+
+def turn_phase(turn: MemoryTurnPersistedV1) -> str | None:
+    """The wall-clock phase stamped on the turn (Fix 1), or None if absent."""
+    phase = (turn.spark_meta.get("conversation_phase") or {}).get("phase_change")
+    return str(phase) if phase else None
+
+
+def legacy_close_reason(turn: MemoryTurnPersistedV1, scores: dict, settings) -> str | None:
+    """Why the legacy rule closes the window on this turn, or None.
+
+    Unchanged behavior; this only names the branch so the window can record it.
+    """
+    phase = turn_phase(turn) or "unknown"
     bnd = float(scores.get("conversation_boundary_score") or 0.0)
-    if phase in {"long_gap", "next_day", "stale_thread"} and bnd >= settings.MEMORY_BOUNDARY_SCORE_THRESHOLD:
-        return True
+    if phase in _REORIENT_PHASES and bnd >= settings.MEMORY_BOUNDARY_SCORE_THRESHOLD:
+        return f"legacy:phase_{phase}+llm"
     if phase == "unknown" and bnd >= settings.MEMORY_BOUNDARY_LLM_ONLY_THRESHOLD:
-        return True
+        return "legacy:unknown_phase+llm"
     # Active chat phases: quick-lane BOUNDARY:YES is too noisy to close windows.
     # Rely on long_gap/stale_thread/unknown signals and time-gap fallback instead.
-    return False
+    return None
+
+
+def should_close_window(turn: MemoryTurnPersistedV1, scores: dict, settings) -> bool:
+    return legacy_close_reason(turn, scores, settings) is not None
+
+
+def rule3_boundary(
+    *,
+    phase: str | None,
+    boundary_score: float | None,
+    gap_sec: float | None,
+    settings,
+) -> tuple[bool, str]:
+    """Episode boundary Rule 3 (Juniper, 2026-10-01), evaluated when a turn arrives.
+
+    - long_gap / next_day / stale_thread -> boundary (the wall clock alone;
+      its meaning for these phases is "reorient").
+    - resumed_thread -> boundary only if the LLM boundary score is
+      >= MEMORY_BOUNDARY_OVERRIDE_THRESHOLD (0.92).
+    - same_breath / short_pause -> never a boundary.
+    - no phase (absent or "unknown") -> the existing fallback: a gap of
+      >= MEMORY_WINDOW_FALLBACK_GAP_SEC between this turn and the previous one.
+
+    Returns (is_boundary, reason). The reason names the branch taken whether
+    or not it closes, so a shadow record can show why a turn did NOT split.
+    """
+    if phase in _REORIENT_PHASES:
+        return True, f"v2:phase_{phase}"
+    if phase == "resumed_thread":
+        threshold = float(settings.MEMORY_BOUNDARY_OVERRIDE_THRESHOLD)
+        if boundary_score is not None and float(boundary_score) >= threshold:
+            return True, "v2:resumed_thread+llm"
+        return False, "v2:resumed_thread_below_llm_threshold"
+    if phase in _ACTIVE_PHASES:
+        return False, f"v2:phase_{phase}"
+    fallback = float(settings.MEMORY_WINDOW_FALLBACK_GAP_SEC)
+    if gap_sec is not None and gap_sec >= fallback:
+        return True, "v2:no_phase_time_gap"
+    return False, "v2:no_phase_no_gap"
 
 
 def _normalize_token(token: str) -> str:

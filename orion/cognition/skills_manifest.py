@@ -46,6 +46,29 @@ HOST_MUTATING_SKILL_MARKERS = (
     "refresh_service_envs",
 )
 
+# 2026-10-01: skills that change the world but are not in the host-mutating
+# list above. Both fell through to the `read_only` default, so the daily
+# selector could offer them as "read-only skill probes" (daily pulse picked
+# compose_service_bringup as one on 2026-08-30).
+#
+# STATE_CHANGING: changes host/runtime state. compose_service_bringup runs
+# `docker compose build` + `up -d`. Deliberately NOT added to
+# HOST_MUTATING_SKILL_MARKERS: that would also move its family to
+# runtime_housekeeping and change which skill cortex-exec's capability bridge
+# resolves for the system_inspection family (assess_runtime_state). The real
+# runtime gate stays SKILLS_ALLOW_DOCKER_COMPOSE_BRINGUP in cortex-exec.
+STATE_CHANGING_SKILL_MARKERS = (
+    "compose_service_bringup",
+)
+
+# ACTUATING: acts outward without mutating the host. render_scene spends GPU
+# watts on circe and persists a new image through orion-thought's chain; it is
+# not an observation, so it is neither read-only nor idempotent.
+ACTUATING_SKILL_MARKERS = (
+    "notify",
+    "render_scene",
+)
+
 
 def _is_host_mutating_skill(skill_id: str) -> bool:
     sid = str(skill_id or "").lower()
@@ -108,7 +131,9 @@ def _risk_for_skill(skill_id: str) -> tuple[str, bool, bool]:
     # traces normalized as non-side-effecting too.
     if _is_host_mutating_skill(sid):
         return "high_impact", False, False
-    if "notify" in sid:
+    if any(marker in sid for marker in STATE_CHANGING_SKILL_MARKERS):
+        return "state_change", False, False
+    if any(marker in sid for marker in ACTUATING_SKILL_MARKERS):
         return "benign_actuation", False, False
     return "read_only", True, True
 
@@ -156,3 +181,75 @@ def build_compact_skill_catalog(*, verbs_dir: Path | None = None) -> str:
         for item in load_skill_manifest(verbs_dir=verbs_dir)
     ]
     return json.dumps(payload, ensure_ascii=True, sort_keys=True)
+
+
+def _short_purpose(entry: SkillManifestEntry, *, max_chars: int) -> str:
+    """First sentence of the description (falling back to the label), cut to max_chars."""
+    text = " ".join(str(entry.description or "").split())
+    if not text or text == f"Skill {entry.skill_id}":
+        text = str(entry.label or "").replace("Skills — ", "").strip()
+    for stop in (". ", "; ", " — ", " -- "):
+        idx = text.find(stop)
+        if idx > 0:
+            text = text[:idx]
+            break
+    text = text.rstrip(". ")
+    if len(text) > max_chars:
+        text = text[: max(0, max_chars - 3)].rstrip() + "..."
+    return text
+
+
+def build_bounded_skill_catalog(
+    *,
+    max_chars: int,
+    entries: list[SkillManifestEntry] | None = None,
+    read_only_only: bool = True,
+    purpose_chars: int = 60,
+    verbs_dir: Path | None = None,
+) -> tuple[str, int]:
+    """One line per skill (``skill_id: purpose``), total length <= max_chars.
+
+    Built for prompts with a hard char budget (daily_metacog_v1). The full JSON
+    catalog from ``build_compact_skill_catalog`` grows ~300 chars per skill and
+    pushed that prompt over its limit on 2026-09-03; this form grows ~100 chars
+    per skill and degrades in steps instead of failing:
+
+    1. ``skill_id: purpose`` for every skill, if it fits;
+    2. otherwise bare ``skill_id`` lines (ids are what the model must copy);
+    3. otherwise as many ids as fit, plus a ``(+N more not listed)`` line.
+
+    Returns ``(text, listed_count)`` where listed_count is how many skill ids the
+    text actually names, so a caller can report the true count to the model.
+    ``read_only_only`` defaults True because the daily selectors reject any
+    non-read-only id anyway (orion-actions ``_normalize_daily_skill_selection``).
+    """
+    items = entries if entries is not None else load_skill_manifest(verbs_dir=verbs_dir)
+    if read_only_only:
+        items = [item for item in items if item.read_only]
+    items = sorted(items, key=lambda item: item.skill_id)
+    budget = max(0, int(max_chars))
+
+    full = "\n".join(f"{item.skill_id}: {_short_purpose(item, max_chars=purpose_chars)}" for item in items)
+    if len(full) <= budget:
+        return full, len(items)
+
+    ids_only = "\n".join(item.skill_id for item in items)
+    if len(ids_only) <= budget:
+        return ids_only, len(items)
+
+    lines: list[str] = []
+    for idx, item in enumerate(items):
+        remaining = len(items) - idx - 1
+        tail = f"(+{remaining} more not listed)" if remaining else ""
+        candidate = "\n".join([*lines, item.skill_id, *([tail] if tail else [])])
+        if len(candidate) > budget:
+            break
+        lines.append(item.skill_id)
+    omitted = len(items) - len(lines)
+    if omitted:
+        lines.append(f"(+{omitted} more not listed)")
+    text = "\n".join(lines)
+    if len(text) > budget:
+        # Budget too small for even the overflow note: list nothing rather than overrun.
+        return "", 0
+    return text, len(lines) - (1 if omitted else 0)

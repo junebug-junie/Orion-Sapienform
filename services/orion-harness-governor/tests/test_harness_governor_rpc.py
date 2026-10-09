@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from uuid import uuid4
-from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -20,7 +19,7 @@ from orion.harness.tests.fixtures import (
 from orion.schemas.cognition.answer_contract import AnswerContract
 from orion.schemas.context_exec import ContextExecPermissionV1
 from orion.schemas.harness_finalize import HarnessRunRequestV1, HarnessRunV1
-from orion.schemas.resource_admission import ResourceLeaseV1
+from orion.schemas.gpu_pool import GpuLeaseRefV1
 
 
 def _motor_result(thought) -> HarnessMotorResult:
@@ -49,11 +48,8 @@ async def test_harness_run_artifact_published(admitted) -> None:
     from app import bus_listener
 
     thought = make_thought()
-    now = datetime.now(timezone.utc)
-    lease = ResourceLeaseV1(
-        run_id="r-1", demand_id="r-1:turn", lease_id="lease-1", generation=7,
-        lane="metacog", resource_key="llm.route.metacog", backend_key="http://worker:8000",
-        granted_at=now, heartbeat_at=now, expires_at=now + timedelta(seconds=60),
+    lease = GpuLeaseRefV1(
+        lease_id="lease-1", generation=7, role="agent", holder="durable-runs:r-1",
     ) if admitted else None
     req = HarnessRunRequestV1(
         correlation_id="c-1",
@@ -61,7 +57,7 @@ async def test_harness_run_artifact_published(admitted) -> None:
         user_message="hello",
         permissions=ContextExecPermissionV1(),
         answer_contract=AnswerContract(),
-        resource_lease=lease,
+        gpu_lease=lease,
     )
     appraisal = make_appraisal()
     reflection = make_reflection()
@@ -120,7 +116,8 @@ async def test_harness_run_artifact_published(admitted) -> None:
     assert run.final_text == "final for juniper"
     assert run.draft_text == "internal draft"
     assert finalize_kwargs["preserve_structured_output"] is False
-    assert finalize_kwargs["resource_lease"] == lease
+    assert finalize_kwargs["gpu_lease"] == lease
+    assert "resource_lease" not in finalize_kwargs
     assert bus.publish.await_count >= 2
     channels = [call.args[0] for call in bus.publish.await_args_list]
     assert "orion:harness:run:result:c-1" in channels
@@ -938,3 +935,59 @@ async def test_harness_run_carries_source_fetches_from_the_motor() -> None:
         )
 
     assert run.source_fetches == motor.source_fetches
+
+
+@pytest.mark.asyncio
+async def test_cut_short_turn_keeps_its_marker_through_repair() -> None:
+    """A motor-cut-short draft (orion/harness/cut_short.py) is rewritten by response
+    repair into prose that reads finished. The governor must re-attach the marker so
+    the turn is never presented as a full answer (live 2026-10-01: "I cannot complete
+    this investigation... hit a context wall" shipped as Orion's answer)."""
+    from app import bus_listener
+    from orion.harness.cut_short import CUT_SHORT_MARKER
+
+    thought = make_thought()
+    req = HarnessRunRequestV1(
+        correlation_id="c-1",
+        thought_event=thought,
+        user_message="investigate",
+        permissions=ContextExecPermissionV1(),
+        answer_contract=AnswerContract(),
+    )
+    motor = _motor_result(thought)
+    motor.draft_text = f"{CUT_SHORT_MARKER}\n- Read returned: real evidence"
+    motor.compliance_verdict = "partial"
+    motor.grounding_status = "fcc_context_ceiling_exceeded"
+    motor.cut_short_reason = "fcc_context_ceiling_exceeded"
+    reflection = make_reflection()
+    appraisal = make_appraisal()
+
+    async def _fake_finalize_chain(**kwargs: object) -> HarnessFinalizeChainResult:
+        return HarnessFinalizeChainResult(
+            final_text="Here is the complete answer.",
+            substrate_appraisal=appraisal,
+            reflection=reflection,
+            verdict_molecule=None,
+            outcome_molecule=None,
+            finalize_changed=True,
+            quick_lane_skipped_5b=False,
+            verdict_molecule_id="verdict-1",
+        )
+
+    with patch.object(
+        bus_listener,
+        "HarnessRunner",
+        return_value=AsyncMock(run=AsyncMock(return_value=motor)),
+    ), patch.object(bus_listener, "run_harness_finalize_chain", _fake_finalize_chain), patch.object(
+        bus_listener,
+        "emit_post_turn_closure",
+        AsyncMock(return_value=AsyncMock()),
+    ):
+        run = await bus_listener.handle_harness_run_request(
+            AsyncMock(), req, reply_to="orion:harness:run:result:c-1"
+        )
+
+    assert run.final_text.startswith(CUT_SHORT_MARKER)
+    assert "Here is the complete answer." in run.final_text
+    assert run.compliance_verdict == "partial"
+    assert run.grounding_status == "fcc_context_ceiling_exceeded"

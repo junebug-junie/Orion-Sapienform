@@ -115,6 +115,9 @@ class Settings(BaseSettings):
     )
     # dream_cycle / dream_synthesis only (does not affect chat_quick / chat_general budgets)
     llm_dream_max_tokens: int = Field(32768, alias="LLM_DREAM_MAX_TOKENS")
+    # Orion's Day letter verbs (orion_day_note_v1 / orion_day_carry_forward_v1) only.
+    llm_orion_day_note_max_tokens: int = Field(12000, alias="LLM_ORION_DAY_NOTE_MAX_TOKENS")
+    llm_orion_day_carry_forward_max_tokens: int = Field(4000, alias="LLM_ORION_DAY_CARRY_FORWARD_MAX_TOKENS")
     atlas_metacog_profile_name: str | None = Field(None, alias="ATLAS_METACOG_PROFILE_NAME")
     cortex_chat_return_logprobs: bool = Field(
         False,
@@ -172,6 +175,8 @@ class Settings(BaseSettings):
     orion_situation_locality: str | None = Field(None, alias="ORION_SITUATION_LOCALITY")
     orion_situation_region: str | None = Field(None, alias="ORION_SITUATION_REGION")
     orion_situation_country: str | None = Field(None, alias="ORION_SITUATION_COUNTRY")
+    orion_situation_home_location: str | None = Field(None, alias="ORION_SITUATION_HOME_LOCATION")
+    orion_situation_physical_location: str | None = Field(None, alias="ORION_SITUATION_PHYSICAL_LOCATION")
     orion_situation_location_precision: str = Field("city", alias="ORION_SITUATION_LOCATION_PRECISION")
     orion_situation_weather_enabled: bool = Field(True, alias="ORION_SITUATION_WEATHER_ENABLED")
     orion_situation_weather_provider: str = Field("stub", alias="ORION_SITUATION_WEATHER_PROVIDER")
@@ -281,15 +286,13 @@ class Settings(BaseSettings):
     # 2026-08-14: "does Orion know what model it's running on" (Juniper).
     # Default ON -- unlike perception, this carries no private-home content,
     # just a route name and a model id already visible in orion-llm-gateway's
-    # own logs. Probes orion-llm-gateway's GET /routes (already cached there
-    # 15s) for the `orion_situation_runtime_route`'s live model id; never
+    # own logs. Reads GPU pool state (orion:gpu_pool:state RPC with the pool's
+    # config; GPU pool stage 6.3 -- no longer the gateway's GET /routes) for the
+    # model a call on `orion_situation_runtime_route` would land on; never
     # infers, degrades to unavailable on any failure. See RuntimeContextV1
     # in orion/schemas/situation.py.
     orion_situation_runtime_enabled: bool = Field(True, alias="ORION_SITUATION_RUNTIME_ENABLED")
     orion_situation_runtime_route: str = Field("chat", alias="ORION_SITUATION_RUNTIME_ROUTE")
-    cortex_exec_llm_gateway_url: str = Field(
-        "http://llm-gateway:8210", alias="CORTEX_EXEC_LLM_GATEWAY_URL"
-    )
     # ROADMAP A5: read orion-gpu-pool's lease history (gpu_pool_events) and put "was my background
     # thinking made to wait, and for how long" into the metacog cue. Default ON, but the cue key is
     # simply absent whenever the history cannot be read -- unknown never renders as calm.
@@ -309,9 +312,8 @@ class Settings(BaseSettings):
         2.0, alias="ORION_SITUATION_RUNTIME_PROBE_TIMEOUT_SEC"
     )
     # Shorter than weather_ttl_seconds (600s): a model swap on the chat route
-    # is an operator action Orion should reflect fairly promptly, and the
-    # underlying orion-llm-gateway /routes read is already cached there 15s,
-    # so this cache is a second, cheap layer on top, not the only one.
+    # is an operator action Orion should reflect fairly promptly; each miss
+    # is one bus RPC to the GPU pool.
     orion_situation_runtime_ttl_seconds: int = Field(
         120, alias="ORION_SITUATION_RUNTIME_TTL_SECONDS"
     )
@@ -389,6 +391,18 @@ class Settings(BaseSettings):
         "http://orion-athena-thought:7155", alias="ORION_THOUGHT_SERVICE_URL"
     )
     thought_http_timeout_sec: float = Field(150.0, alias="ORION_THOUGHT_HTTP_TIMEOUT_SEC")
+    # render_scene as an admitted `reverie.visual` durable run (docs/superpowers/
+    # specs/2026-09-28-visual-reverie-durable-graph-design.md). The verb submits
+    # through cortex-orch's durable ingress and returns once the receipt confirms;
+    # execution-dispatch settles the real outcome from the run's terminal state.
+    # false = the direct blocking /visual-chain/run-once call above (rollback).
+    render_scene_durable_enabled: bool = Field(True, alias="CORTEX_EXEC_RENDER_SCENE_DURABLE_ENABLED")
+    # The run's retry window (admission.deadline_at = submit + this). 0 = the visual
+    # baseline interval (orion/reverie/baseline.py, 5400s): a run that cannot make
+    # its image before the next scheduled need gives way to it.
+    render_scene_retry_window_sec: float = Field(
+        0.0, ge=0.0, alias="CORTEX_EXEC_RENDER_SCENE_RETRY_WINDOW_SEC"
+    )
     # skills.perception.ask_camera.v1 -- the "direct vision-host RPC" the
     # comment above named as out of scope for look_at_camera's first cut.
     # Posts task_type=vqa straight to vision-host's own HTTP endpoint,
@@ -476,11 +490,21 @@ class Settings(BaseSettings):
     # Same-turn LLM novelty/salience judgment for the chat-scoped attention/
     # curiosity pipeline (app/current_turn_llm_signals.py), replacing the
     # deleted LegacyRegexSignalDetector's "any capitalized word" regex.
-    # Quick-lane classification call, not a generation call -- see that
+    # Short classification call, not a generation call -- see that
     # module's docstring for the full rationale.
-    current_turn_signal_probe_route: str = Field("quick", alias="CURRENT_TURN_SIGNAL_PROBE_ROUTE")
+    # "chat" (35B), not "quick" (8B): on evals/run_current_turn_disclosure_live_eval.py
+    # the 8B read work commands as shared news ("restart cortex-exec please" ->
+    # "Why do you need to restart cortex-exec?", 4/9 controls) and judged
+    # wants_direct_answer at 0.37; the 35B scored 13/13 recall, 0/9 false alarms,
+    # 19/19 direct, p95 ~2s. A lane outage times out and fails closed (no ask).
+    current_turn_signal_probe_route: str = Field("chat", alias="CURRENT_TURN_SIGNAL_PROBE_ROUTE")
     current_turn_signal_probe_timeout_sec: float = Field(3.0, alias="CURRENT_TURN_SIGNAL_PROBE_TIMEOUT_SEC")
-    current_turn_signal_probe_max_tokens: int = Field(80, alias="CURRENT_TURN_SIGNAL_PROBE_MAX_TOKENS")
+    # 256: the read carries a follow-up question per item (up to 3) plus
+    # wants_direct_answer; 80 truncated that shape mid-object.
+    current_turn_signal_probe_max_tokens: int = Field(256, alias="CURRENT_TURN_SIGNAL_PROBE_MAX_TOKENS")
+    # Pinned: at the backend default the same prompt and message flipped
+    # between [] and a real candidate run to run (1/10 on corr beab81a3's text).
+    current_turn_signal_probe_temperature: float = Field(0.0, alias="CURRENT_TURN_SIGNAL_PROBE_TEMPERATURE")
     enable_pre_turn_appraisal_handler: bool = Field(
         True,
         alias="ENABLE_PRE_TURN_APPRAISAL_HANDLER",

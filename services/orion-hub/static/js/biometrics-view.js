@@ -2,11 +2,11 @@
  * Biometrics view -- drives two related surfaces from one module:
  *
  * 1. The Cognitive EKG card's toggle (landing "hub" tab): swaps between the
- *    /spark/ui Substrate Brain State iframe and a compact Athena+Circe
+ *    /spark/ui Substrate Brain State iframe and a compact Athena+Circe+Hecate
  *    biometrics preview, in the same card slot. Clicking the preview opens
  *    the full modal.
- * 2. The near-fullscreen Biometrics modal: 4 sub-tabs (Athena / Circe / GPU /
- *    Cabinet). Modal open/close/Escape/backdrop mechanics live in app.js
+ * 2. The near-fullscreen Biometrics modal: 5 sub-tabs (Athena / Circe / Hecate /
+ *    GPU / Cabinet). Modal open/close/Escape/backdrop mechanics live in app.js
  *    (openBiometricsModal/closeBiometricsModal, matching every other Hub
  *    modal); this module owns subview switching and data loading only, and
  *    is told about open/close via onModalOpen()/onModalClose().
@@ -42,10 +42,10 @@
 
   var cardView = "brain"; // "brain" | "biometrics"
   var modalOpen = false;
-  var modalSubview = "athena"; // "athena" | "circe" | "gpu" | "cabinet"
+  var modalSubview = "athena"; // "athena" | "circe" | "hecate" | "gpu" | "cabinet"
   var gpuNode = "athena"; // "athena" | "circe"
 
-  var loaded = { cardPreview: false, athena: false, circe: false, gpu: { athena: false, circe: false } };
+  var loaded = { cardPreview: false, athena: false, circe: false, hecate: false, gpu: { athena: false, circe: false } };
   var cardPollTimer = null;
   var gpuPollTimer = null;
 
@@ -290,7 +290,7 @@
     if (!grid) return;
     if (status) status.textContent = "Loading…";
     clear(grid);
-    var nodes = ["athena", "circe"];
+    var nodes = ["athena", "circe", "hecate"];
     var results = await Promise.all(
       nodes.map(function (n) {
         return Promise.all([
@@ -512,6 +512,26 @@
 
   // --- Modal: GPU subview -------------------------------------------------
 
+  // The card's lane badge. `lane` is derived by Hub from the GPU pool's live state
+  // (stage 5.5): the roles on that card right now, "unassigned" for a card the pool
+  // does not manage, or "no pool state" when the pool's feed is absent or stale.
+  // `lane_assigned` is the server's own verdict; a response without it falls back to
+  // the old "unassigned" string check so a stale cached page still greys correctly.
+  function laneBadge(gpu) {
+    var text = gpu && gpu.lane ? String(gpu.lane) : "unassigned";
+    var assigned =
+      gpu && typeof gpu.lane_assigned === "boolean" ? gpu.lane_assigned : text !== "unassigned";
+    return {
+      text: text,
+      assigned: assigned,
+      className:
+        "text-[11px] uppercase tracking-wide px-2 py-0.5 rounded-full border " +
+        (assigned
+          ? "border-indigo-700 bg-indigo-950/60 text-indigo-200"
+          : "border-gray-700 bg-gray-900 text-gray-500"),
+    };
+  }
+
   function gpuCard(gpu) {
     var box = document.createElement("div");
     box.className = "rounded-xl border border-gray-800 bg-gray-950/40 p-3 flex flex-col gap-2";
@@ -521,13 +541,11 @@
     var title = document.createElement("div");
     title.className = "text-sm font-semibold text-gray-100";
     title.textContent = "#" + gpu.index + " " + (gpu.name || "?");
+    var badge = laneBadge(gpu);
     var lane = document.createElement("span");
-    lane.className =
-      "text-[11px] uppercase tracking-wide px-2 py-0.5 rounded-full border " +
-      (gpu.lane === "unassigned"
-        ? "border-gray-700 bg-gray-900 text-gray-500"
-        : "border-indigo-700 bg-indigo-950/60 text-indigo-200");
-    lane.textContent = gpu.lane;
+    lane.className = badge.className;
+    lane.textContent = badge.text;
+    lane.title = "From the GPU pool's live state (roles on this card now)";
     head.appendChild(title);
     head.appendChild(lane);
     box.appendChild(head);
@@ -618,12 +636,14 @@
     var panels = {
       athena: el("biometricsSubviewAthena"),
       circe: el("biometricsSubviewCirce"),
+      hecate: el("biometricsSubviewHecate"),
       gpu: el("biometricsSubviewGpu"),
       cabinet: el("cabinet"),
     };
     var buttons = {
       athena: el("biometricsSubtabAthena"),
       circe: el("biometricsSubtabCirce"),
+      hecate: el("biometricsSubtabHecate"),
       gpu: el("biometricsSubtabGpu"),
       cabinet: el("biometricsSubtabCabinet"),
     };
@@ -645,6 +665,9 @@
     if (window.OrionCabinetSensors && typeof window.OrionCabinetSensors.deactivate === "function") {
       window.OrionCabinetSensors.deactivate();
     }
+    if (window.OrionEnergyStrip && typeof window.OrionEnergyStrip.deactivate === "function") {
+      window.OrionEnergyStrip.deactivate();
+    }
 
     if (name === "athena" && !loaded.athena) {
       loaded.athena = true;
@@ -652,6 +675,9 @@
     } else if (name === "circe" && !loaded.circe) {
       loaded.circe = true;
       loadNodeDetail("circe");
+    } else if (name === "hecate" && !loaded.hecate) {
+      loaded.hecate = true;
+      loadNodeDetail("hecate");
     } else if (name === "gpu") {
       if (!loaded.gpu[gpuNode]) loadGpu(gpuNode);
       gpuPollTimer = setInterval(function () {
@@ -660,6 +686,9 @@
     } else if (name === "cabinet") {
       if (window.OrionCabinetSensors && typeof window.OrionCabinetSensors.activate === "function") {
         window.OrionCabinetSensors.activate();
+      }
+      if (window.OrionEnergyStrip && typeof window.OrionEnergyStrip.activate === "function") {
+        window.OrionEnergyStrip.activate();
       }
     }
   }
@@ -688,6 +717,9 @@
     if (window.OrionCabinetSensors && typeof window.OrionCabinetSensors.deactivate === "function") {
       window.OrionCabinetSensors.deactivate();
     }
+    if (window.OrionEnergyStrip && typeof window.OrionEnergyStrip.deactivate === "function") {
+      window.OrionEnergyStrip.deactivate();
+    }
   }
 
   // --- Wiring ---------------------------------------------------------
@@ -707,6 +739,7 @@
     [
       ["biometricsSubtabAthena", "athena"],
       ["biometricsSubtabCirce", "circe"],
+      ["biometricsSubtabHecate", "hecate"],
       ["biometricsSubtabGpu", "gpu"],
       ["biometricsSubtabCabinet", "cabinet"],
     ].forEach(function (pair) {
@@ -757,6 +790,7 @@
     onModalClose,
     showModalSubview,
     shouldPoll,
+    laneBadge,
   };
 
   // Guarded so the module can be require()d under node:test for the pure

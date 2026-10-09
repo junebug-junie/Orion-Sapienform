@@ -25,7 +25,10 @@ from pathlib import Path
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(_REPO_ROOT))
 
-from orion.cognition.github_compactor.constants import MAX_DIGEST_INPUT_PRS  # noqa: E402
+# The github compactor's old 32-PR digest-input cap (removed 2026-09-29, when the
+# compactor moved to full-day map-reduce). Kept here as the historical reference
+# point this acceptance check was written against.
+MAX_DIGEST_INPUT_PRS = 32
 from orion.structural_mass.pr_lifecycle import (  # noqa: E402
     fetch_recent_prs,
     pr_lifecycle_delta,

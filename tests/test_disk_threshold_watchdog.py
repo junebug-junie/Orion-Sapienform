@@ -173,7 +173,7 @@ def test_run_fires_notify_once_on_new_breach_and_writes_state(tmp_path):
     notify = _fake_notify()
 
     # threshold_pct=0 guarantees a breach against any real filesystem usage.
-    state, any_bad = watchdog.run([str(small_dir)], 0.0, state_file, notify, now=_now())
+    state, any_bad, _ = watchdog.run([str(small_dir)], 0.0, state_file, notify, now=_now())
 
     assert any_bad is True
     assert notify.attention_request.call_count == 1
@@ -246,7 +246,7 @@ def test_run_does_not_fire_notify_when_under_threshold(tmp_path):
     state_file = tmp_path / "state.json"
     notify = _fake_notify()
 
-    state, any_bad = watchdog.run([str(small_dir)], 100.0, state_file, notify, now=_now())
+    state, any_bad, _ = watchdog.run([str(small_dir)], 100.0, state_file, notify, now=_now())
 
     assert any_bad is False
     assert notify.attention_request.call_count == 0
@@ -256,7 +256,7 @@ def test_run_fires_error_severity_for_missing_path(tmp_path):
     state_file = tmp_path / "state.json"
     notify = _fake_notify()
 
-    state, any_bad = watchdog.run(
+    state, any_bad, _ = watchdog.run(
         ["/nonexistent/definitely/not/real"], 90.0, state_file, notify, now=_now()
     )
 
@@ -284,7 +284,7 @@ def test_run_checks_multiple_paths_independently(tmp_path):
 
     watchdog.measure_path = fake_measure
     try:
-        state, any_bad = watchdog.run(
+        state, any_bad, _ = watchdog.run(
             [str(breached_dir), str(ok_dir)], 90.0, state_file, notify, now=_now()
         )
     finally:
@@ -305,7 +305,7 @@ def test_run_notify_failure_does_not_crash_watchdog(tmp_path):
     notify.attention_request.side_effect = RuntimeError("orion-notify unreachable")
 
     # Must not raise even though the notify call inside failed.
-    state, any_bad = watchdog.run([str(small_dir)], 0.0, state_file, notify, now=_now())
+    state, any_bad, _ = watchdog.run([str(small_dir)], 0.0, state_file, notify, now=_now())
     assert any_bad is True
     assert state_file.exists()
 
@@ -398,7 +398,9 @@ def test_main_exits_one_when_a_path_is_breached(tmp_path, monkeypatch):
     assert rc == 1
 
 
-def test_main_exits_two_on_state_write_permission_error(tmp_path, monkeypatch):
+def test_main_exits_four_on_state_write_permission_error(tmp_path, monkeypatch, capsys):
+    """Formerly exit 2. A broken debounce state is an escalation failure: it gets
+    the shared escalation-failed code, never 0/1."""
     small_dir = tmp_path / "mount"
     small_dir.mkdir()
     unwritable_state_file = tmp_path / "no_such_parent" / "state.json"
@@ -412,7 +414,56 @@ def test_main_exits_two_on_state_write_permission_error(tmp_path, monkeypatch):
     rc = watchdog.main(
         ["--paths", str(small_dir), "--threshold-pct", "100", "--state-file", str(unwritable_state_file)]
     )
-    assert rc == 2
+    assert rc == watchdog.EXIT_ESCALATION_FAILED == 4
+    assert "ESCALATION FAILED -- dedupe state unusable" in capsys.readouterr().err
+
+
+def _read_only_state(tmp_path):
+    parent = tmp_path / "telemetry" / "orion-athena"
+    parent.mkdir(parents=True)
+    parent.chmod(0o555)  # root-owned in production (the 2026-09-26 ladder-watch incident)
+    return parent / "disk-watchdog" / "state.json"
+
+
+def test_breach_with_unwritable_state_dir_still_cards_every_tick(tmp_path, monkeypatch):
+    """Before: the lock's mkdir raised before any path was measured -> exit 2, no
+    card, so a full disk on a host with a root-owned telemetry tree was silent."""
+    import os
+
+    if os.geteuid() == 0:
+        pytest.skip("root ignores directory permissions")
+    small_dir = tmp_path / "mount"
+    small_dir.mkdir()
+    state_file = _read_only_state(tmp_path)
+    notify = _fake_notify()
+    monkeypatch.setattr(watchdog, "NotifyClient", lambda **kw: notify)
+    argv = ["--paths", str(small_dir), "--threshold-pct", "0", "--state-file", str(state_file)]
+    assert watchdog.main(argv) == watchdog.EXIT_ESCALATION_FAILED
+    assert watchdog.main(argv) == watchdog.EXIT_ESCALATION_FAILED
+    assert notify.attention_request.call_count == 2, "no memory -> card every tick, not silence"
+    kw = notify.attention_request.call_args.kwargs
+    assert "repeats every tick" in kw["message"]
+    assert "PermissionError" in kw["context"]["dedupe_state_error"]
+
+
+def test_main_exits_four_when_orion_notify_refuses_the_card(tmp_path, monkeypatch, capsys):
+    small_dir = tmp_path / "mount"
+    small_dir.mkdir()
+    monkeypatch.setattr(watchdog, "NotifyClient", lambda **kw: _fake_notify(ok=False))
+    rc = watchdog.main(
+        ["--paths", str(small_dir), "--threshold-pct", "0", "--state-file", str(tmp_path / "s.json")]
+    )
+    assert rc == watchdog.EXIT_ESCALATION_FAILED
+    assert "orion-notify did not accept" in capsys.readouterr().err
+
+
+def test_main_exits_one_on_a_breach_already_carded(tmp_path, monkeypatch):
+    small_dir = tmp_path / "mount"
+    small_dir.mkdir()
+    monkeypatch.setattr(watchdog, "NotifyClient", lambda **kw: _fake_notify())
+    argv = ["--paths", str(small_dir), "--threshold-pct", "0", "--state-file", str(tmp_path / "s.json")]
+    assert watchdog.main(argv) == 1
+    assert watchdog.main(argv) == 1
 
 
 def test_main_exits_three_on_unexpected_exception(tmp_path, monkeypatch):
@@ -444,3 +495,30 @@ def test_default_paths_include_all_eight_host_mounts():
 def test_default_state_file_lives_under_telemetry_root():
     path = watchdog.default_state_file("/mnt/telemetry", "orion-athena")
     assert str(path) == "/mnt/telemetry/orion-athena/disk-watchdog/state.json"
+
+
+def test_wrong_shaped_path_entry_does_not_kill_the_card(tmp_path, monkeypatch):
+    small_dir = tmp_path / "mount"
+    small_dir.mkdir()
+    state_file = tmp_path / "s.json"
+    state_file.write_text(json.dumps({"paths": {str(small_dir): "garbage"}}))
+    notify = _fake_notify()
+    monkeypatch.setattr(watchdog, "NotifyClient", lambda **kw: notify)
+    rc = watchdog.main(["--paths", str(small_dir), "--threshold-pct", "0", "--state-file", str(state_file)])
+    assert rc == 1
+    assert notify.attention_request.call_count == 1
+
+
+def test_non_contention_flock_error_takes_the_stateless_path(tmp_path, monkeypatch):
+    import errno as _errno
+
+    small_dir = tmp_path / "mount"
+    small_dir.mkdir()
+    notify = _fake_notify()
+
+    def nolck(*a, **k):
+        raise OSError(_errno.ENOLCK, "No locks available")
+
+    monkeypatch.setattr(watchdog.fcntl, "flock", nolck)
+    state, any_bad, failures = watchdog.run([str(small_dir)], 0.0, tmp_path / "s.json", notify, now=_now())
+    assert any_bad and failures and notify.attention_request.call_count == 1

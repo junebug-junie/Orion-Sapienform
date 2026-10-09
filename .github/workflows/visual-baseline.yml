@@ -4,6 +4,8 @@ on:
     paths:
       - 'orion/reverie/**'
       - 'orion/schemas/reverie_visual.py'
+      - 'orion/schemas/reverie_visual_run.py'
+      - 'orion/schemas/durable_run.py'
       - 'orion/schemas/*frame.py'
       - 'orion/proposals/**'
       - 'orion/policy/**'
@@ -16,8 +18,13 @@ on:
       - 'services/orion-execution-dispatch-runtime/**'
       - 'services/orion-feedback-runtime/**'
       - 'services/orion-cortex-exec/app/verb_adapters.py'
+      - 'services/orion-cortex-exec/app/durable_kickoff.py'
+      - 'services/orion-cortex-exec/tests/test_render_scene_durable_kickoff.py'
       - 'services/orion-sql-db/manual_migration_reverie_visual*.sql'
       - 'tests/test_visual_baseline_pipeline.py'
+      - 'services/orion-analytics/models/marts/dim_reverie_outcomes.sql'
+      - 'tests/test_dim_reverie_outcomes_covers_terminal_reasons.py'
+      - 'orion/gpu_pool/client.py'
       - '.github/workflows/visual-baseline.yml'
 jobs:
   contracts:
@@ -48,12 +55,26 @@ jobs:
           tests/test_policy_decision_builder.py tests/test_execution_dispatch_builder.py
           tests/test_action_outcome_resolution.py tests/test_feedback_runtime_store.py
           tests/test_express_outward_action.py
+          tests/test_dim_reverie_outcomes_covers_terminal_reasons.py
       - name: Thought storage, source, HTTP and replica contracts
         run: >-
           python -m pytest -q services/orion-thought/tests/test_visual_activity.py
           services/orion-thought/tests/test_store.py services/orion-thought/tests/test_visual_chain.py
           services/orion-thought/tests/test_visual_chain_thermal_gate.py
+          services/orion-thought/tests/test_visual_chain_gpu_lease.py
           services/orion-thought/tests/test_visual_chain_run_deadline.py
+          services/orion-thought/tests/test_visual_steps.py
+          services/orion-thought/tests/test_visual_steps_db.py
+          services/orion-thought/tests/test_bus_listener_visual_step.py
+      # One process per service: both services' tests import a top-level `app` package.
+      - name: Durable render settlement contracts (execution-dispatch)
+        run: python -m pytest -q services/orion-execution-dispatch-runtime/tests/test_visual_settlement.py
+      - name: Durable render parking contracts (feedback-runtime)
+        run: python -m pytest -q services/orion-feedback-runtime/tests/test_visual_settlement_parking.py
+      - name: Durable render kickoff (cortex-exec)
+        run: |
+          pip install -r services/orion-cortex-exec/requirements.txt
+          PYTHONPATH=services/orion-cortex-exec:. python -m pytest -q services/orion-cortex-exec/tests/test_render_scene_durable_kickoff.py
       - name: Scheduling replay eval
         run: python -m pytest -q services/orion-proposal-runtime/evals/test_baseline_replay.py
       - name: Image degradation eval

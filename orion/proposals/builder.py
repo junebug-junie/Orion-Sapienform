@@ -7,7 +7,11 @@ from orion.schemas.reverie_visual import VisualBaselineEligibilityV1
 
 from orion.field.action_warrant import action_warrant
 from orion.field.pressure import field_pressures as compute_field_pressures
-from orion.proposals.policy import ProposalPolicyV1, ProposalTemplateV1
+from dataclasses import dataclass, field as dc_field
+from typing import Any, Mapping
+
+from orion.autonomy.self_shed import bind_workspace_winner
+from orion.proposals.policy import WORKSPACE_WINNER_BINDING, ProposalPolicyV1, ProposalTemplateV1
 from orion.proposals.scoring import (
     clamp01,
     proposal_confidence,
@@ -158,6 +162,89 @@ def _build_candidate(
     )
 
 
+@dataclass(frozen=True)
+class WorkspaceWinnerContext:
+    """Inputs for ``workspace.winner`` templates (attend-to-act loop D1), read by the runtime.
+
+    ``projection``: the substrate_attention_broadcast_projection row's JSON; ``broadcast_log_id``: the
+    substrate_attention_broadcast_log row for the same tick; ``eligibility``: template key ->
+    eligibility snapshot (orion.autonomy.self_shed.evaluate_shed_eligibility). A template with no
+    snapshot is never emitted (fail closed)."""
+
+    projection: Mapping[str, Any] | None
+    broadcast_log_id: str | None
+    eligibility: Mapping[str, Mapping[str, Any]] = dc_field(default_factory=dict)
+
+
+def _build_workspace_candidates(
+    *,
+    policy: ProposalPolicyV1,
+    workspace: WorkspaceWinnerContext | None,
+    field_tick_id: str,
+    now: datetime,
+    warnings: list[str],
+) -> list[ProposalCandidateV1]:
+    """World actions bound to the workspace winner. Each is emitted only when the winner binds AND
+    the world is in the state the action is for; otherwise the frame records why, never silently.
+
+    These bypass the tick-level ``action_warrant`` gate on purpose, like the visual baseline: that gate
+    asks whether Orion's INTERNAL state is busier than a median day, while a world action carries its
+    own stricter, physical trigger (elevated AND rising, reflex idle, background work present), all
+    recorded on ``world_eligibility``. They still pass policy, the allocator floor and the pool's caps."""
+    out: list[ProposalCandidateV1] = []
+    for key, template in policy.proposal_templates.items():
+        if template.target_binding != WORKSPACE_WINNER_BINDING:
+            continue
+        if workspace is None:
+            warnings.append(f"winner_unbindable:no_workspace_input:{key}")
+            continue
+        winner, why = bind_workspace_winner(
+            workspace.projection, broadcast_log_id=workspace.broadcast_log_id,
+            binds_to_nodes=template.binds_to_nodes, now=now)
+        if winner is None:
+            warnings.append(f"{why}:{key}")
+            continue
+        snapshot = workspace.eligibility.get(key)
+        if not snapshot or not snapshot.get("eligible"):
+            refusals = ",".join((snapshot or {}).get("refusals") or ["no_eligibility_snapshot"])
+            warnings.append(f"world_action_ineligible:{key}:{refusals}")
+            continue
+        urgency = clamp01(float(((snapshot.get("cabinet") or {}).get("warming_error")) or 0.0))
+        title, description, reasons = template_title_description(key, target_id=template.target_id)
+        out.append(ProposalCandidateV1(
+            proposal_id=stable_proposal_id(template_key=key, field_tick_id=field_tick_id,
+                                           attention_frame_id=winner.broadcast_log_id),
+            proposal_kind=cast_proposal_kind(template.kind),
+            title=title,
+            description=description,
+            target_id=template.target_id,
+            target_kind=cast_target_kind(template.target_kind),
+            priority_score=clamp01(max(template.base_priority, policy.thresholds.min_priority)),
+            urgency_score=urgency,
+            # The trigger is a fresh physical reading checked against fixed rules, not a field
+            # estimate: confidence is the reading's, and an unfresh reading never gets here.
+            confidence_score=1.0,
+            risk_score=clamp01(template.base_risk),
+            reversibility_score=clamp01(template.reversibility),
+            expected_signal=template.expected_signal,
+            expected_direction=template.expected_direction,  # type: ignore[arg-type]
+            motivating_dimensions={},
+            motivating_targets=[winner.node_id],
+            evidence_refs=sorted({f"field:{field_tick_id}", f"broadcast:{winner.broadcast_log_id}",
+                                  f"open_loop:{winner.open_loop_id}"}),
+            reasons=[*reasons, f"workspace_winner:{winner.node_id}"],
+            proposed_effect=cast_proposed_effect(template.proposed_effect),
+            required_policy_gate=cast_policy_gate(template.required_policy_gate),
+            execution_intent={"mode": "world_action", "template": key,
+                              "policy_gate": template.required_policy_gate,
+                              "open_loop_id": winner.open_loop_id},
+            binding_resolved_from=WORKSPACE_WINNER_BINDING,
+            attention_winner=winner,
+            world_eligibility={**dict(snapshot), "holdback_fraction": template.holdback_fraction},
+        ))
+    return out
+
+
 def _overall_action_pressure(candidates: list[ProposalCandidateV1]) -> float:
     if not candidates:
         return 0.0
@@ -199,6 +286,7 @@ def build_proposal_frame(
     now: datetime | None = None,
     external_candidates: list[ProposalCandidateV1] | None = None,
     baseline_eligibility: VisualBaselineEligibilityV1 | None = None,
+    workspace: WorkspaceWinnerContext | None = None,
 ) -> ProposalFrameV1:
     """Build a ProposalFrameV1 directly from FieldStateV1 + FieldAttentionFrameV1.
 
@@ -221,6 +309,8 @@ def build_proposal_frame(
 
     built: list[ProposalCandidateV1] = []
     for template_key, template in policy.proposal_templates.items():
+        if template.target_binding == WORKSPACE_WINNER_BINDING:
+            continue  # built by _build_workspace_candidates, never from the field ranking
         built.append(
             _build_candidate(
                 template_key=template_key,
@@ -321,7 +411,11 @@ def build_proposal_frame(
             else:
                 active.append(candidate)
 
-    active = (baseline + active)[: max(0, policy.limits.max_candidates)]
+    world = _build_workspace_candidates(
+        policy=policy, workspace=workspace, field_tick_id=field.tick_id, now=generated_at, warnings=warnings)
+    # World candidates ride OUTSIDE max_candidates: proposing one must never push an existing field
+    # candidate out of the frame (the proposal flag is meant to be record-only on its own).
+    active = (baseline + active)[: max(0, policy.limits.max_candidates)] + world
     suppressed = suppressed[: policy.limits.max_suppressed]
 
     overall_risk = _overall_risk(active)

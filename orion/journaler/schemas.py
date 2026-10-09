@@ -22,6 +22,10 @@ JournalTriggerKind = Literal[
     # services/orion-actions/app/walkway_forecast.py.
     "walkway_forecast",
     "walkway_grade",
+    # Orion's Day (orion/schemas/orion_day.py): the daily note about yesterday,
+    # written by the orion_day.letter durable run. Hub emails it (pretty HTML);
+    # the journal row is the durable record, so no journal email (dispatch_registry).
+    "orion_day_letter",
 ]
 JournalSourceKind = Literal[
     "autonomy_episode",
@@ -34,6 +38,7 @@ JournalSourceKind = Literal[
     "self_reflection",
     "world_pulse",
     "embodiment",
+    "orion_day",
 ]
 JournalMode = Literal["daily", "response", "digest", "manual"]
 

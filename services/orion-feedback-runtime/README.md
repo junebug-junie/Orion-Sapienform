@@ -79,6 +79,24 @@ exist -- it can only add work, never remove it. Shared implementation:
 Before this, the sweep was an unbounded anti-join UPDATE every 15 min and was one of the three
 top I/O statements on athena's Postgres while never finding anything.
 
+## Durable render settlement (2026-09-28)
+
+A durable `render_scene` result is written as `settlement.state="pending"` and settled in place later
+by execution-dispatch (see its README). A dispatch frame holding any pending render is **parked**, not
+scored: its marker stays set, it is left out of the oldest-first lookup for up to 30s at a time, and the
+FIFO keeps draining the frames behind it. It is re-read each time the recheck comes due and scored once
+nothing in it is pending, or once it is `FEEDBACK_VISUAL_SETTLE_MAX_SEC` (900; 0 = off) old -- then the
+visual is scored as-is (`unknown`, logged `feedback_visual_settlement_bound_expired`). Parking is in
+memory; a restart simply re-parks. Evidence prefers the newest *settled* row per dispatch.
+
+A settled render's `latency_ms` is GPU seconds only; the run may have queued for the diffusion lane
+first. The scoring window therefore reaches the run's own `settlement.finished_at` (measured from the
+dispatch), so a render that ended minutes after dispatch clamps at `ORION_ACTION_SETTLE_MAX_SEC` and is
+refused, instead of being scored from a field sample taken before its image existed.
+
+A render without an image (a failed graph, a busy GPU, a timed-out run) maps to feedback kind `unknown`,
+never `failed`, and is skipped by the posterior update as `visual_non_observation:*`.
+
 ## Run
 
 ```bash
@@ -127,3 +145,13 @@ This service has no periodic eval harness; follow-up: replay recorded visual
 outcome sequences through feedback after an approved deployment and confirm no
 posterior changes on non-observations. The visual-baseline integration eval is
 owned by the visual producer/dispatch patch.
+
+
+## Settle-time world scoring (attend-to-act loop, 2026-10-01)
+
+`ORION_WORLD_SETTLEMENT_SCORING_ENABLED` (record-only, ON in .env_example): every 30 s,
+`substrate_world_action_episodes` rows whose window closed (t0 + TTL + 5 min) are scored by
+`orion/feedback/world_settlement.py` on `cabinet_heat_pressure` minute means: treated `expired` ->
+ledger row + posterior; control -> `randomized_holdback` row + control cell; `overlap:reflex` ->
+excluded in both arms; Orion's non-final `acted` loop verdict when the shed actually started. The
+field-window path skips `cabinet_heat_pressure` (`settle_time_signal:*`).

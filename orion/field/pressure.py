@@ -236,7 +236,31 @@ def collect_field_channel_pressures(
     *,
     staleness_threshold_sec: float | None = MERGE_STALENESS_THRESHOLD_SEC,
 ) -> tuple[dict[str, float], dict[str, str]]:
-    """Merge node_vectors + capability_vectors into one channel-name-keyed
+    """See `collect_field_channel_pressures_with_holders()`: the same merge,
+    without the per-channel holder record. The single implementation lives
+    there so the two can never disagree about a value or a winner."""
+    out, provenance, _holders = collect_field_channel_pressures_with_holders(
+        field, staleness_threshold_sec=staleness_threshold_sec
+    )
+    return out, provenance
+
+
+def collect_field_channel_pressures_with_holders(
+    field: FieldStateV1,
+    *,
+    staleness_threshold_sec: float | None = MERGE_STALENESS_THRESHOLD_SEC,
+) -> tuple[dict[str, float], dict[str, str], dict[str, tuple[str, str]]]:
+    """The merge, plus `holders[channel] = (level, vector_id)`: which vector
+    ("node" + node_id, or "capability" + capability_id) held the winning value.
+
+    Provenance alone cannot say that: a capability winner's provenance
+    resolves to the node that fed it (e.g. node:athena), which may also carry
+    a node-level channel of the same name (catalog_drift_pressure,
+    reliability_pressure). The feedback credit guard
+    (credit_integrity.before_winner_went_unmeasured, 2026-10-07) needs the
+    holder to ask "is the vector that won this before still measuring it".
+
+    Merge node_vectors + capability_vectors into one channel-name-keyed
     pressure dict, plus a parallel provenance dict recording which source_id
     "won" the merge for each channel this tick.
 
@@ -274,6 +298,7 @@ def collect_field_channel_pressures(
     )
     out: dict[str, float] = {}
     provenance: dict[str, str] = {}
+    holders: dict[str, tuple[str, str]] = {}
     for source_id, vector in field.node_vectors.items():
         for channel, value in vector.items():
             if (source_id, channel) in stale_pairs:
@@ -283,9 +308,11 @@ def collect_field_channel_pressures(
                 if v <= out.get(channel, 1.0):
                     out[channel] = v
                     provenance[channel] = source_id
+                    holders[channel] = ("node", source_id)
             elif (channel in PRESSURE_CHANNELS or v > 0) and v >= out.get(channel, 0.0):
                 out[channel] = v
                 provenance[channel] = source_id
+                holders[channel] = ("node", source_id)
     for capability_id, vector in field.capability_vectors.items():
         for channel, value in vector.items():
             v = clamp01(float(value))
@@ -296,9 +323,11 @@ def collect_field_channel_pressures(
                 if v <= out.get(channel, 1.0):
                     out[channel] = v
                     provenance[channel] = resolved_provenance
+                    holders[channel] = ("capability", capability_id)
             elif (channel in PRESSURE_CHANNELS or v > 0) and v >= out.get(channel, 0.0):
                 out[channel] = v
                 provenance[channel] = resolved_provenance
+                holders[channel] = ("capability", capability_id)
     # recent_perturbation_count (context_channel, not scored into any
     # dimension): 2026-07-22 correction -- this block was accidentally
     # dropped from the "moved verbatim" copy of this function (confirmed via
@@ -333,7 +362,7 @@ def collect_field_channel_pressures(
         out["recent_perturbation_count"] = clamp01(
             max(0.0, field.recent_perturbation_zscore) / RECENT_PERTURBATION_ZSCORE_SATURATION
         )
-    return out, provenance
+    return out, provenance, holders
 
 
 @dataclass(frozen=True)

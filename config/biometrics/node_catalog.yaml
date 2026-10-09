@@ -88,3 +88,25 @@ nodes:
       metrics: true
       orchestration: false
       local_llm_heavy: false
+
+  hecate:
+    # Added 2026-10-03: Inspur NF5288M5 (8-GPU) server, LAN 192.168.1.62, tailscale 100.87.202.68.
+    # Power comes from the Panduit PDU, outlets 19 and 25 (2 PSUs), polled ON ITS BEHALF by
+    # athena's PDU_PROXY_OUTLETS -- the PDU's SNMP Manager allow-list only admits athena, so
+    # hecate cannot self-poll. Outlet map is physical cabling (re-cabling needs a manual edit).
+    # expected_online is false until orion-biometrics is actually running on hecate: with no
+    # service there, its silence is not an outage and pressure_organ must not treat it as one.
+    # Flip to true when HECATE_BIOMETRICS_BASE_URL answers.
+    aliases:
+      - hecate
+      - hecate.tail348bbe.ts.net
+    role: gpu_server
+    expected_online: false
+    capabilities:
+      local_llm_heavy: false
+      local_llm_quick: false
+      batch_inference: false
+      graphdb: false
+      postgres: false
+      hub: false
+      monitoring: false

@@ -70,8 +70,17 @@ def fetch_ilo_snapshot(
     session.headers.update(
         {"Accept-Encoding": "identity", "Connection": "close", "OData-Version": "4.0"}
     )
+
+    def get(path: str):
+        # Slash convention differs by firmware: athena's iLO and circe's AMI want the
+        # trailing slash, hecate's older AMI 404s on it Try the slashed form, retry once slashless on 404.
+        resp = session.get(f"{base}{path}/", timeout=timeout_sec)
+        if resp.status_code == 404:
+            resp = session.get(f"{base}{path}", timeout=timeout_sec)
+        return resp
+
     try:
-        chassis_resp = session.get(f"{base}/redfish/v1/Chassis/", timeout=timeout_sec)
+        chassis_resp = get("/redfish/v1/Chassis")
         chassis_resp.raise_for_status()
         members = chassis_resp.json().get("Members") or []
         if not members:
@@ -82,7 +91,7 @@ def fetch_ilo_snapshot(
         fan_pct: Dict[str, float] = {}
         power_watts: Optional[float] = None
 
-        thermal_resp = session.get(f"{base}{chassis_path}/Thermal/", timeout=timeout_sec)
+        thermal_resp = get(f"{chassis_path}/Thermal")
         if thermal_resp.ok:
             data = thermal_resp.json()
             for t in data.get("Temperatures") or []:
@@ -125,7 +134,7 @@ def fetch_ilo_snapshot(
                         fan_pct[name] = max(0.0, min(100.0, pct))
                 # Any other/unknown unit: skip rather than mislabel.
 
-        power_resp = session.get(f"{base}{chassis_path}/Power/", timeout=timeout_sec)
+        power_resp = get(f"{chassis_path}/Power")
         if power_resp.ok:
             controls = power_resp.json().get("PowerControl") or []
             if controls:

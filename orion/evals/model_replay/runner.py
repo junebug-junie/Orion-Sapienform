@@ -211,6 +211,7 @@ def load_scores(out_dir: Path) -> list[scoring.TaskScore]:
 
 async def run_replay(cfg: ReplayConfig, transport: ControlTransport, rig_factory: RigFactory,
                      *, log: Callable[[str], None] = print) -> dict[str, Any]:
+    STOP.clear()
     cfg.out_dir.mkdir(parents=True, exist_ok=True)
     (cfg.out_dir / "plan.json").write_text(json.dumps(plan(cfg), indent=1), encoding="utf-8")
     ledger = HoldLedger(cfg.out_dir / "holds.jsonl")

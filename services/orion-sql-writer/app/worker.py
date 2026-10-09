@@ -2343,6 +2343,18 @@ def _chat_source_platform(client_meta: Any) -> str | None:
     return str(platform) if platform else None
 
 
+def _memory_turn_initiator(prompt: str, client_meta: Any) -> str | None:
+    """Who opened a turn, or None when the turn is not memory: "juniper" when she wrote a
+    prompt; "orion" only for Orion's own outreach (client_meta.unsolicited, the flag the
+    outreach path writes). Other prompt-less rows -- e.g. Claude speaking in the room
+    (client_meta.room_claude, 17 live rows) -- stay out of memory, as before 2026-10-09."""
+    if prompt:
+        return "juniper"
+    if isinstance(client_meta, dict) and client_meta.get("unsolicited") is True:
+        return "orion"
+    return None
+
+
 def _fetch_chat_turn_for_memory_emit(corr_id: str) -> dict | None:
     if not corr_id:
         return None
@@ -2375,7 +2387,8 @@ def _fetch_chat_turn_for_memory_emit(corr_id: str) -> dict | None:
             return None
         prompt = str(getattr(row, "prompt", "") or "").strip()
         response = str(getattr(row, "response", "") or "").strip()
-        if not prompt or not response:
+        initiated_by = _memory_turn_initiator(prompt, getattr(row, "client_meta", None))
+        if not response or initiated_by is None:
             return None
         spark_meta = getattr(row, "spark_meta", None)
         if not isinstance(spark_meta, dict):
@@ -2390,6 +2403,7 @@ def _fetch_chat_turn_for_memory_emit(corr_id: str) -> dict | None:
             "spark_meta": spark_meta,
             "session_id": getattr(row, "session_id", None),
             "source_platform": _chat_source_platform(getattr(row, "client_meta", None)),
+            "initiated_by": initiated_by,
         }
     finally:
         sess.close()
@@ -2422,6 +2436,7 @@ async def _emit_memory_turn_persisted(
         spark_meta=turn.get("spark_meta") if isinstance(turn.get("spark_meta"), dict) else {},
         session_id=turn.get("session_id"),
         source_platform=turn.get("source_platform"),
+        initiated_by=turn.get("initiated_by") or "juniper",
     )
     out_env = parent_env.derive_child(
         kind=MEMORY_TURN_PERSISTED_KIND,
@@ -3134,7 +3149,8 @@ async def _handle_envelope_body(env: BaseEnvelope, *, bus: Any | None = None) ->
                     corr = str(env.correlation_id or extra_sql_fields.get("correlation_id") or "")
                     prompt = str(data_to_process.get("prompt") or "").strip()
                     response = str(data_to_process.get("response") or "").strip()
-                    if corr and prompt and response:
+                    initiated_by = _memory_turn_initiator(prompt, payload.get("client_meta"))
+                    if corr and response and initiated_by is not None:
                         await _emit_memory_turn_from_envelope_once(
                             bus,
                             parent_env=env,
@@ -3142,6 +3158,7 @@ async def _handle_envelope_body(env: BaseEnvelope, *, bus: Any | None = None) ->
                                 "correlation_id": corr,
                                 "prompt": prompt,
                                 "response": response,
+                                "initiated_by": initiated_by,
                                 "spark_meta": data_to_process.get("spark_meta")
                                 if isinstance(data_to_process.get("spark_meta"), dict)
                                 else {},

@@ -127,3 +127,31 @@ async def test_redelivered_turn_envelope_publishes_once(harness):
     await worker.handle_envelope(_turn(corr), bus=bus)
     await _settle()
     assert len(published) == 1
+
+
+
+def _bare_turn(corr, client_meta):
+    return BaseEnvelope(kind="chat.history", correlation_id=corr, source=_src(), payload={
+        "prompt": "", "response": "Morning! I kept thinking about the porch camera.", "session_id": "s",
+        "client_meta": client_meta})
+
+
+@pytest.mark.asyncio
+async def test_outreach_turn_envelope_publishes_as_orion(harness):
+    """2026-10-09: Orion's own outreach (empty prompt, client_meta.unsolicited) now reaches memory."""
+    bus, published = harness
+    corr = str(uuid4())
+    await worker.handle_envelope(_bare_turn(corr, {"unsolicited": True}), bus=bus)
+    await _settle()
+    assert [e.payload["initiated_by"] for e in published] == ["orion"]
+
+
+@pytest.mark.asyncio
+async def test_other_promptless_turn_envelope_is_not_memory(harness, monkeypatch):
+    """Claude speaking in the room (client_meta.room_claude) also has no prompt; not Orion. The
+    row read-back fallback finds nothing for such a row (test_fetch_chat_turn_for_memory_emit)."""
+    bus, published = harness
+    monkeypatch.setattr(worker, "_fetch_chat_turn_for_memory_emit", lambda corr: None)
+    await worker.handle_envelope(_bare_turn(str(uuid4()), {"room_claude": True}), bus=bus)
+    await _settle()
+    assert published == []

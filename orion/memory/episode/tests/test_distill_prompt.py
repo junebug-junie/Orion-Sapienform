@@ -87,7 +87,7 @@ def test_template_states_its_version_and_matches_the_schema_default():
     from orion.memory.episode.distill import UNMARKED_TEMPLATE_VERSION, template_prompt_version
     from orion.schemas.memory_episode import MEMORY_EPISODE_DISTILL_PROMPT_VERSION
 
-    assert template_prompt_version() == MEMORY_EPISODE_DISTILL_PROMPT_VERSION == "memory_episode_distill.v5"
+    assert template_prompt_version() == MEMORY_EPISODE_DISTILL_PROMPT_VERSION == "memory_episode_distill.v6"
     assert "prompt_version" not in render_prompt(episode_id="e", turns=turns_from_rows(ROWS))  # a comment
     assert UNMARKED_TEMPLATE_VERSION == "memory_episode_distill.v2"
 
@@ -113,3 +113,14 @@ def test_report_never_prints_high_none():
                                    [], {"run_id": "r"}, ZoneInfo("UTC")))
     assert "high: None" not in out
     assert "high: no category" in out and "high: unjudged" in out
+
+
+def test_orion_initiated_turn_renders_as_orion_first():
+    rows = [{"correlation_id": "o1", "prompt": "", "response": "Morning! I kept thinking about the porch camera.",
+             "created_at": ROWS[0]["created_at"]},
+            {"correlation_id": "j1", "prompt": "ha yes, mounting it today", "response": "Nice.",
+             "created_at": ROWS[0]["created_at"]}]
+    prompt = render_prompt(episode_id="ep-o", turns=turns_from_rows(rows))
+    first = prompt.split("[t1]")[1].split("[t2]")[0]
+    assert "ORION FIRST" in first and "Orion (wrote on their own):" in first and "Juniper (prompt):" not in first
+    assert "Juniper (prompt):\nha yes, mounting it today" in prompt.split("[t2]")[1]

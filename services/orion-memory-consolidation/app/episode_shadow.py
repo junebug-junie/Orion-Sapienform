@@ -31,6 +31,7 @@ from orion.schemas.memory_episode import MemoryEpisodeClosedV1
 logger = logging.getLogger(__name__)
 
 SKIP_COMMAND_ONLY = "command_only"
+SKIP_NO_JUNIPER_TURN = "no_juniper_turn"  # only Orion's own messages, no reply from Juniper
 
 
 def is_workflow_command_turn(response: str | None) -> bool:
@@ -65,6 +66,7 @@ class ShadowTurn:
     boundary_score: Optional[float]
     is_command: bool
     legacy_close_reason: Optional[str]
+    initiated_by: str = "juniper"
 
     @classmethod
     def from_turn(
@@ -88,6 +90,7 @@ class ShadowTurn:
             boundary_score=float(score) if isinstance(score, (int, float)) else None,
             is_command=is_workflow_command_turn(turn.response),
             legacy_close_reason=legacy_close_reason,
+            initiated_by=turn.initiated_by,
         )
 
     def entry(self, *, v2_boundary: bool, v2_reason: str) -> dict[str, Any]:
@@ -100,9 +103,37 @@ class ShadowTurn:
             "boundary_score": self.boundary_score,
             "is_command": self.is_command,
             "legacy_close_reason": self.legacy_close_reason,
+            "initiated_by": self.initiated_by,
             "v2_boundary": v2_boundary,
             "v2_reason": v2_reason,
         }
+
+
+def _juniper_turns(turns: list[Any]) -> int:
+    return sum(1 for t in turns if isinstance(t, dict) and not t.get("is_command")
+               and t.get("initiated_by", "juniper") != "orion")
+
+
+def episode_boundary(turns: list[Any], shadow: "ShadowTurn", gap_sec: float, settings) -> tuple[bool, str]:
+    """Rule 3, plus where Orion's own messages fall (2026-10-09):
+
+    * an Orion turn closes the open episode only after MEMORY_EPISODE_ORION_CLOSE_GAP_SEC of
+      silence; otherwise it joins the conversation it follows;
+    * a Juniper turn joins an episode that holds only Orion's messages when it arrives within
+      MEMORY_EPISODE_ORION_REPLY_WINDOW_SEC of the last one: she is answering Orion, even though
+      her own phase stamp (measured from HER last turn) says long_gap;
+    * everything else is Rule 3 unchanged.
+    """
+    if shadow.initiated_by == "orion":
+        if gap_sec >= float(settings.MEMORY_EPISODE_ORION_CLOSE_GAP_SEC):
+            return True, "v2:orion_after_silence"
+        return False, "v2:orion_joins"
+    orion_only = bool(turns) and _juniper_turns(turns) == 0 and any(
+        isinstance(t, dict) and t.get("initiated_by") == "orion" for t in turns)
+    if orion_only and gap_sec <= float(settings.MEMORY_EPISODE_ORION_REPLY_WINDOW_SEC):
+        return False, "v2:reply_to_orion"
+    return rule3_boundary(phase=shadow.phase_change, boundary_score=shadow.boundary_score,
+                          gap_sec=gap_sec, settings=settings)
 
 
 def build_closed_event(
@@ -118,8 +149,11 @@ def build_closed_event(
     real_turns = [t for t in turns if isinstance(t, dict)]
     ended_at = max((_parse_ts(t.get("at")) for t in real_turns if _parse_ts(t.get("at"))), default=started_at)
     commands = sum(1 for t in real_turns if t.get("is_command"))
-    juniper = len(real_turns) - commands
+    orion_only = sum(1 for t in real_turns if not t.get("is_command") and t.get("initiated_by") == "orion")
+    juniper = len(real_turns) - commands - orion_only
     status = "skipped" if real_turns and juniper == 0 else "closed"
+    # An episode of only Orion's own messages (no reply from Juniper) is not distilled.
+    skip_reason = (SKIP_COMMAND_ONLY if not orion_only else SKIP_NO_JUNIPER_TURN) if status == "skipped" else None
     return MemoryEpisodeClosedV1(
         episode_id=episode_id,
         source_platform=source_platform,
@@ -135,7 +169,7 @@ def build_closed_event(
         close_lag_sec=max(0.0, (closing.at - ended_at).total_seconds()),
         closing_turn_id=closing.correlation_id,
         episode_status=status,  # type: ignore[arg-type]
-        skip_reason=SKIP_COMMAND_ONLY if status == "skipped" else None,
+        skip_reason=skip_reason,
     )
 
 
@@ -181,13 +215,20 @@ class EpisodeShadowStore:
                 turns = turns if isinstance(turns, list) else []
                 if any(isinstance(t, dict) and t.get("correlation_id") == shadow.correlation_id for t in turns):
                     return None  # duplicate publish of a turn already placed
+                if shadow.initiated_by == "orion" and await conn.fetchval(
+                    """
+                    SELECT 1 FROM memory_episode_shadow
+                    WHERE status = 'closed' AND closed_at > now() - interval '3 days'
+                      AND turns @> $1::jsonb
+                    LIMIT 1
+                    """,
+                    json.dumps([{"correlation_id": shadow.correlation_id}]),
+                ):
+                    # Orion turns skip the window dedup, so a late duplicate of one already
+                    # placed in an episode that has since closed must not land in a second one.
+                    return None
                 gap = (shadow.at - _as_utc(row["last_turn_at"])).total_seconds()
-                is_boundary, reason = rule3_boundary(
-                    phase=shadow.phase_change,
-                    boundary_score=shadow.boundary_score,
-                    gap_sec=gap,
-                    settings=self._settings,
-                )
+                is_boundary, reason = episode_boundary(turns, shadow, gap, self._settings)
                 if not is_boundary:
                     turns.append(shadow.entry(v2_boundary=False, v2_reason=reason))
                     await conn.execute(

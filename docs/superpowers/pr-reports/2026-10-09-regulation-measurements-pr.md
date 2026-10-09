@@ -85,7 +85,7 @@ docker exec -i orion-athena-sql-db psql -XqAt -v ON_ERROR_STOP=1 \
 python SCRIPT /tmp/measurement.jsonl --start START_ISO --end END_ISO
 ```
 
-Add `--runs` for the focus report. The focus report and dream report use the standard library; the arousal report also needs the repository's existing Pydantic dependency through the pure cabinet rule. Report thresholds are explicit assumptions: dream `--interval-hours 6 --check-seconds 600 --legacy-cap 50`, arousal `--idle-minutes 45`. No current setting is silently applied to history. Arousal uses a five-second grid, 5-minute sustained backlog, 10 clear minutes to leave strain, cabinet freshness 90 seconds, and GPU freshness 15 seconds. Missing intervals reset continuity; fresh positive strain can win despite other missing inputs.
+Add `--runs` for the focus report. All three report modes use the standard library and existing pure arithmetic rules. The legacy focus recorder replay and its schema tests require the repository's existing Pydantic dependency. Report thresholds are explicit assumptions: dream `--interval-hours 6 --check-seconds 600 --legacy-cap 50`, arousal `--idle-minutes 45`. No current setting is silently applied to history. Arousal uses a five-second grid, 5-minute sustained backlog, 10 clear minutes to leave strain, cabinet freshness 90 seconds, and GPU freshness 15 seconds. Missing intervals reset continuity; fresh positive strain can win despite other missing inputs.
 
 ## Docker/build/smoke checks
 
@@ -97,7 +97,7 @@ Only `docker exec ... psql` reads were used. Runtime builds/restarts are not app
   - Fix: threshold consistency now counts only comparable automatic cycles; manual attempts still appear and reset the refractory clock.
   - Evidence: regression test plus independent reviewer rerun, 18 passed.
 
-The required requesting-code-review skill ran in a separate reviewer agent. Its preliminary GPU queued-event concern was withdrawn after checking the actual scheduler transitions.
+The required requesting-code-review skill ran in a separate reviewer agent. Final review verified all 336 hourly rows against the totals and the findings against the evidence; no material findings remain. Its preliminary GPU queued-event concern was withdrawn after checking the actual scheduler transitions.
 
 ## Restart required
 
@@ -111,4 +111,4 @@ No restart required.
 
 ## PR link
 
-Pending creation.
+https://github.com/junebug-junie/Orion-Sapienform/pull/2561

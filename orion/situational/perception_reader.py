@@ -354,6 +354,9 @@ def reset_perception_reader_engine_for_tests() -> None:
     _ENGINE_URL = None
 
 
+_NOT_A_NAME = frozenset({"", "unknown", "none", "null", "n/a", "unknown_person"})
+
+
 def presence_fragment(
     state: str | None, since_sec: float | None, subject: str | None = None
 ) -> str | None:
@@ -381,8 +384,9 @@ def presence_fragment(
     if state not in ("present", "recent") or since_sec is None or since_sec < 0:
         return None
     duration = coarse_duration(since_sec)
-    name = str(subject or "").strip()
-    if name.lower() in ("", "unknown", "none"):
+    # Enrolled label from the DB: one line, bounded, and placeholders are not names.
+    name = " ".join(str(subject or "").split())[:40]
+    if name.lower() in _NOT_A_NAME:
         who, tag = "Someone", ""
     else:
         who, tag = name[:1].upper() + name[1:], " (matched by face)"

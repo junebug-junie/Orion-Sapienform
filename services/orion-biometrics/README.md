@@ -154,6 +154,13 @@ Key convention:
   anywhere. Uses standard DMTF RedFish (`/redfish/v1/Chassis/` -> first chassis's `/Thermal/` and
   `/Power/`), confirmed live against athena's HPE iLO; unverified so far against Circe's Gigabyte
   BMC.
+- **Polling another node's BMC (`ILO_PROXY_NODES`).** `ILO_HOST` is one slot for this node's own
+  BMC. To read a different machine's BMC (athena polling hecate's AMI MegaRAC at
+  `https://192.168.1.75`), set `ILO_PROXY_NODES` in the polling node's local `.env` as one-line
+  JSON: `{"hecate":{"host":"https://192.168.1.75","username":"<ro-user>","password":"<pw>"}}`.
+  The BMC's watts fill that node's `chassis_watts` only where the node has no report of its own
+  and the PDU proxy has none (PDU wins). Thermal/fan readings are not forwarded into the
+  cluster; read them from `GET /health` -> `ilo_proxy.<node>.detail`. Use a read-only BMC account.
 - Cross-node: because this same `services/orion-biometrics` codebase runs independently on
   athena/atlas/circe (each with its own `NODE_NAME`), redeploying this patch on each node gives
   real disk-capacity visibility per node with no new SSH/credential surface -- the bus already

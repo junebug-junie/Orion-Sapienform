@@ -107,6 +107,11 @@ class Settings(BaseSettings):
     ILO_PASSWORD: str = Field(default="")
     ILO_POLL_INTERVAL_SEC: float = Field(default=60.0)
     ILO_REQUEST_TIMEOUT_SEC: float = Field(default=8.0)
+    # BMCs this node polls on ANOTHER node's behalf (JSON: node -> {host, username, password}).
+    # ILO_HOST above is the single slot for this node's own BMC; athena's is taken, so hecate's
+    # rides here. Secret: real value only in the local .env. A proxied watts reading fills
+    # `chassis_watts` only where neither the node's own report nor the PDU proxy has one.
+    ILO_PROXY_NODES: str = Field(default="")
 
     # Rack PDU per-outlet power (SNMP, read-only GETs). PER-NODE, exactly like ILO_HOST above.
     #

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import time
 from dataclasses import dataclass, field
@@ -230,3 +231,37 @@ class IloPoller:
         if snap.error:
             result["ilo_error"] = snap.error
         return result
+
+
+def parse_proxy_bmcs(raw: str) -> Dict[str, Dict[str, str]]:
+    """`'{"hecate": {"host": "https://192.168.1.75", "username": "u", "password": "p"}}'`
+    -> `{"hecate": {...}}`. Empty/garbage -> {}.
+
+    BMCs this node polls ON BEHALF OF another node, same idea as PDU_PROXY_OUTLETS. The
+    single ILO_HOST slot is this node's own BMC; a second machine's BMC needs its own entry.
+    An entry missing host/username/password is dropped (a half-configured poller would only
+    ever report `not_configured`). Raises nothing -- bad input disables proxying, never the
+    collector.
+    """
+    raw = (raw or "").strip()
+    if not raw:
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        logger.warning("ilo_proxy_nodes_unparseable")  # never log raw: it holds a password
+        return {}
+    if not isinstance(parsed, dict):
+        logger.warning("ilo_proxy_nodes_not_an_object type=%s", type(parsed).__name__)
+        return {}
+    out: Dict[str, Dict[str, str]] = {}
+    for node, cfg in parsed.items():
+        node = str(node).strip().lower()
+        if not node or not isinstance(cfg, dict):
+            continue
+        host, user, pw = (str(cfg.get(k) or "").strip() for k in ("host", "username", "password"))
+        if host and user and pw:
+            out[node] = {"host": host, "username": user, "password": pw}
+        else:
+            logger.warning("ilo_proxy_incomplete node=%s", node)
+    return out

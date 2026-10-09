@@ -193,3 +193,28 @@ async def test_ilo_poller_start_background_noop_when_disabled() -> None:
     await poller.start_background()
     assert poller._task is None
     await poller.stop()
+
+
+def test_fetch_ilo_snapshot_retries_slashless_when_bmc_404s_trailing_slash(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """hecate's AMI BMC 404s `/Chassis/` but serves `/Chassis` (live 2026-10-09)."""
+    seen = []
+
+    def fake_get(self, url: str, timeout: float = 8.0):  # noqa: ANN001
+        seen.append(url)
+        if url.endswith("/"):
+            return _FakeResponse({}, ok=False, status=404)
+        if url.endswith("/Chassis"):
+            return _FakeResponse({"Members": [{"@odata.id": "/redfish/v1/Chassis/1"}]})
+        if url.endswith("/Thermal"):
+            return _FakeResponse(
+                {"Temperatures": [{"Name": "CPU", "ReadingCelsius": 41, "Status": {"State": "Enabled"}}]}
+            )
+        return _FakeResponse({}, ok=False, status=500)  # Power: BMC-side psu failure, non-fatal
+
+    monkeypatch.setattr("requests.Session.get", fake_get, raising=True)
+    snap = fetch_ilo_snapshot("https://bmc", "u", "p")
+    assert snap.error is None
+    assert snap.thermal_c == {"CPU": 41.0}
+    assert snap.power_watts is None

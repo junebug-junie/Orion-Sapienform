@@ -1839,7 +1839,7 @@ async def _build_room_perception_context(
         presence_state = presence.get("state")
         presence_since_sec = presence.get("since_sec")
         presence_subject = presence.get("subject")
-        fragment = presence_fragment(presence_state, presence_since_sec)
+        fragment = presence_fragment(presence_state, presence_since_sec, subject=presence_subject)
         if fragment:
             scene_summary = f"{fragment} {scene_summary}"
             diagnostics.provider_status["perception_presence"] = presence_state or "unknown"
@@ -2169,6 +2169,10 @@ async def _build_reverie_context(
     return ctx
 
 
+# A visual read older than this is described as a snapshot, never as live sight.
+_STALE_VISUAL_READ_SECONDS = 60.0
+
+
 def _recency_phrase(age_seconds: Optional[float]) -> str:
     """"just now" / "N min ago" -- shared by every section below that reads
     an observation's age (perception/affect/cabinet). Extracted (review
@@ -2441,6 +2445,15 @@ def _build_prompt_fragment(brief: SituationBriefV1, max_chars: int) -> Situation
                 "safe to ask now; do not repeat it again this conversation once asked."
             )
         cautions.insert(0, ask_caution)
+    # A scene description is a snapshot, not a live view. Without this, a turn
+    # that asks "can you see me?" gets "Room (seen 7 min ago): ..." and answers
+    # "Right here, right now" (2026-10-09).
+    _age = brief.perception.observation_age_seconds
+    if brief.perception.available and _age is not None and _age > _STALE_VISUAL_READ_SECONDS:
+        cautions.append(
+            f"Your last visual read of the room is {_recency_phrase(_age)}, not live. "
+            "Do not say you see anyone or anything right now; say what you last saw and when."
+        )
     # The cautions are appended AFTER truncation, never inside it.
     #
     # This used to be one flat join sliced from the tail, which meant the

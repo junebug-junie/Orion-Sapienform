@@ -354,13 +354,26 @@ def reset_perception_reader_engine_for_tests() -> None:
     _ENGINE_URL = None
 
 
-def presence_fragment(state: str | None, since_sec: float | None) -> str | None:
+_NOT_A_NAME = frozenset({"", "unknown", "none", "null", "n/a", "unknown_person"})
+
+
+def presence_fragment(
+    state: str | None, since_sec: float | None, subject: str | None = None
+) -> str | None:
     """One clause, or None. Never mentions 'absent' -- an empty room is the
     default expectation for most rooms most of the time, and saying so every
     turn would be noise, not care. Only `present`/`recent` are worth a word.
 
     `since_sec` renders coarse on purpose: a felt-sense duration ("about 3
     hours") is the actual payload here, not a precise timer.
+
+    `subject`, when it is a real name (not "unknown"/"none"), is the enrolled
+    person identity_face matched to this camera's presence -- the clause then
+    names them and says the name came from a face match, so the model has
+    evidence to cite instead of filling "Someone" in from the chat. Callers
+    pass it only for a FRESH row (2026-10-09: a turn that asked "can you see
+    me?" was handed "Someone has been in view for 7 minutes" while the camera
+    had matched Juniper at 0.70 a minute earlier).
 
     Public (promoted from `orion.situational.context`'s own private copy,
     2026-08-25) so a second caller -- `endogenous_outreach.py`'s presence-
@@ -371,9 +384,15 @@ def presence_fragment(state: str | None, since_sec: float | None) -> str | None:
     if state not in ("present", "recent") or since_sec is None or since_sec < 0:
         return None
     duration = coarse_duration(since_sec)
+    # Enrolled label from the DB: one line, bounded, and placeholders are not names.
+    name = " ".join(str(subject or "").split())[:40]
+    if name.lower() in _NOT_A_NAME:
+        who, tag = "Someone", ""
+    else:
+        who, tag = name[:1].upper() + name[1:], " (matched by face)"
     if state == "present":
-        return f"Someone has been in view for {duration}."
-    return f"Someone stepped out of view {duration} ago."
+        return f"{who} has been in view for {duration}{tag}."
+    return f"{who} stepped out of view {duration} ago{tag}."
 
 
 def coarse_duration(seconds: float) -> str:

@@ -291,6 +291,170 @@
     return wrap;
   }
 
+
+  // --- Orion's tiredness (dream sleep pressure) --------------------------
+  // /api/dream/pressure proxies orion-dream's SleepPressureV1. Tiredness moves
+  // slowly and each read runs the dream service's source queries twice
+  // (window + lookback), so it refreshes at its own slower cadence.
+  var TIREDNESS_POLL_MS = 60000;
+  var tirednessFetchedAt = 0;
+  var tirednessData = null;
+
+  var TIREDNESS_SOURCE_LABELS = {
+    metacog: ["self-noticed problem", "self-noticed problems"],
+    compaction_request: ["daydream theme to compress", "daydream themes to compress"],
+    resonance: ["daydream theme on repeat", "daydream themes on repeat"],
+    crystallization: ["new memory", "new memories"],
+  };
+
+  var TIREDNESS_EXPLAINER =
+    "Tiredness is how much new, unfinished material Orion has picked up since their last sleep: " +
+    "new kinds of problems they noticed about themselves, new themes their daydreams keep circling, " +
+    "and newly formed memories. Repeats don't count — the same problem coming back adds nothing. " +
+    "When tiredness reaches the line, Orion sleeps at the next chance (at least 6 h since the last " +
+    "sleep, and no chat for a while). Sleep replays the leftovers and looks for real links between " +
+    "them. If nothing new turns up, Orion still sleeps after 48 h.";
+
+  // Pure: the pressure payload -> what the gauge shows. The scale runs to twice
+  // the sleep line so the line sits mid-track; anything past that pins the fill
+  // and says so instead of rescaling under the reader.
+  function tirednessModel(data) {
+    var p = data && data.pressure;
+    if (!p || typeof p.pressure !== "number" || typeof p.threshold !== "number" || p.threshold <= 0) {
+      return { available: false };
+    }
+    var scaleMax = p.threshold * 2;
+    var value = Math.max(0, p.pressure);
+    var level = value === 0 ? "Rested" : value < p.threshold ? "Getting tired" : "Ready to sleep";
+    var waiting;
+    if (!data.enabled) waiting = "Sleep loop is off";
+    else if (data.ready) waiting = "Will sleep at the next check";
+    else if (value < p.threshold) waiting = "Not tired enough to sleep yet";
+    else if (data.too_soon) waiting = "Slept recently — waiting out the 6 h minimum";
+    else if (!data.is_idle) waiting = "Waiting for " + Math.round(p.idle_required_minutes || 0) + " min with no chat";
+    else waiting = "Will sleep at the next check";
+    var parts = [];
+    var counts = p.new_counts || {};
+    Object.keys(TIREDNESS_SOURCE_LABELS).forEach(function (kind) {
+      var n = counts[kind];
+      if (n) parts.push(n + " " + TIREDNESS_SOURCE_LABELS[kind][n === 1 ? 0 : 1]);
+    });
+    return {
+      available: true,
+      value: value,
+      threshold: p.threshold,
+      fraction: Math.min(1, value / scaleMax),
+      lineFraction: 0.5,
+      overflow: value > scaleMax,
+      level: level,
+      waiting: waiting,
+      newText: parts.length ? "New since last sleep: " + parts.join(" · ") : "Nothing new since last sleep",
+    };
+  }
+
+  function renderTiredness(model) {
+    var host = el("orionTiredness");
+    if (!host) return;
+    clear(host);
+    var head = document.createElement("div");
+    head.className = "flex items-center justify-between text-[11px] mb-1";
+    var title = document.createElement("div");
+    title.className = "flex items-center gap-1.5 text-gray-300 font-semibold";
+    title.appendChild(document.createTextNode("Orion's tiredness"));
+
+    var tipWrap = document.createElement("span");
+    tipWrap.className = "relative group";
+    var tipButton = document.createElement("button");
+    tipButton.type = "button";
+    tipButton.className =
+      "w-4 h-4 rounded-full border border-gray-500 text-[10px] leading-none text-gray-300 hover:text-white focus:outline-none focus:ring-1 focus:ring-indigo-400";
+    tipButton.textContent = "?";
+    tipButton.setAttribute("aria-label", "What does tiredness mean?");
+    tipButton.setAttribute("aria-describedby", "orionTirednessTip");
+    var tip = document.createElement("span");
+    tip.id = "orionTirednessTip";
+    tip.setAttribute("role", "tooltip");
+    tip.className =
+      "hidden group-hover:block group-focus-within:block absolute left-0 top-5 z-30 w-72 rounded-lg border border-gray-600 bg-gray-950 p-2.5 text-[11px] font-normal leading-snug text-gray-200 shadow-xl";
+    tip.textContent = TIREDNESS_EXPLAINER;
+    // The preview card opens the Biometrics modal on click; the help button must not.
+    tipButton.addEventListener("click", function (event) {
+      event.stopPropagation();
+      tip.classList.toggle("hidden");
+    });
+    tipWrap.appendChild(tipButton);
+    tipWrap.appendChild(tip);
+    title.appendChild(tipWrap);
+    head.appendChild(title);
+
+    var reading = document.createElement("span");
+    reading.className = "font-mono text-gray-300";
+    head.appendChild(reading);
+    host.appendChild(head);
+
+    if (!model.available) {
+      reading.textContent = "unavailable";
+      return;
+    }
+    reading.textContent = model.level + " · " + fmt(model.value, 1) + " / " + fmt(model.threshold, 1);
+
+    var track = document.createElement("div");
+    track.className = "relative h-2 rounded-full bg-indigo-950 border border-indigo-900/60";
+    track.setAttribute("role", "meter");
+    track.setAttribute("aria-label", "Orion's tiredness");
+    track.setAttribute("aria-valuemin", "0");
+    track.setAttribute("aria-valuemax", String(model.threshold * 2));
+    track.setAttribute("aria-valuenow", String(Math.min(model.value, model.threshold * 2)));
+    track.setAttribute("aria-valuetext", model.level + ", " + fmt(model.value, 1) + " of " + fmt(model.threshold, 1) + " needed to sleep");
+    track.title = fmt(model.value, 2) + " now · sleep line " + fmt(model.threshold, 1);
+    var fill = document.createElement("div");
+    fill.className = "absolute inset-y-0 left-0 rounded-full bg-indigo-400";
+    fill.style.width = (model.fraction * 100).toFixed(1) + "%";
+    track.appendChild(fill);
+    var line = document.createElement("div");
+    line.className = "absolute -top-1 -bottom-1 w-0.5 bg-gray-200";
+    line.style.left = (model.lineFraction * 100).toFixed(1) + "%";
+    track.appendChild(line);
+    host.appendChild(track);
+
+    var scale = document.createElement("div");
+    scale.className = "relative h-3 text-[10px] text-gray-500 mt-0.5";
+    var zero = document.createElement("span");
+    zero.className = "absolute left-0";
+    zero.textContent = "rested";
+    var mid = document.createElement("span");
+    mid.className = "absolute -translate-x-1/2";
+    mid.style.left = "50%";
+    mid.textContent = "sleep line";
+    var end = document.createElement("span");
+    end.className = "absolute right-0";
+    end.textContent = model.overflow ? "off the scale →" : "";
+    scale.appendChild(zero);
+    scale.appendChild(mid);
+    scale.appendChild(end);
+    host.appendChild(scale);
+
+    var detail = document.createElement("div");
+    detail.className = "text-[11px] text-gray-400 mt-1";
+    detail.textContent = model.waiting + " · " + model.newText;
+    host.appendChild(detail);
+  }
+
+  async function loadTiredness() {
+    var now = Date.now();
+    if (tirednessData !== null && now - tirednessFetchedAt < TIREDNESS_POLL_MS) {
+      renderTiredness(tirednessModel(tirednessData));
+      return;
+    }
+    tirednessFetchedAt = now;
+    try {
+      tirednessData = await fetchJson("/api/dream/pressure");
+    } catch (_err) {
+      tirednessData = {};
+    }
+    renderTiredness(tirednessModel(tirednessData));
+  }
+
   // --- Cognitive EKG card toggle ---------------------------------------
 
   async function loadCardPreview() {
@@ -299,6 +463,7 @@
     if (!grid) return;
     if (status) status.textContent = "Loading…";
     clear(grid);
+    loadTiredness();
     var nodes = ["athena", "circe", "hecate"];
     var results = await Promise.all(
       nodes.map(function (n) {
@@ -808,6 +973,7 @@
     shouldPoll,
     boardTempFor,
     laneBadge,
+    tirednessModel,
   };
 
   // Guarded so the module can be require()d under node:test for the pure

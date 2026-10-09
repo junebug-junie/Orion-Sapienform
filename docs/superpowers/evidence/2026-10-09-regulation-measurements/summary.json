@@ -1,0 +1,1569 @@
+{
+  "focus": {
+    "start": "2026-10-08T05:00:00+00:00",
+    "end": "2026-10-09T05:00:00+00:00",
+    "scope": "goal-provenance node winner; not overall attention",
+    "caveats": [
+      "Wall spans can include downtime; they are not continuous activity.",
+      "Open tail, no-winner and recorder-off periods are unaccounted, not idle.",
+      "Tick share excludes runs clipped by the window; duration excludes left censoring."
+    ],
+    "completed_runs": 18,
+    "targets": {
+      "node:substrate.biometrics": {
+        "runs": 8,
+        "wall_span_seconds": 611.056803,
+        "full_window_ticks": 288,
+        "complete_duration_count": 7,
+        "median_complete_seconds": 59.188836,
+        "longest_complete_seconds": 184.094496,
+        "share_of_recorded_span": 0.6365376037890197,
+        "share_of_window": 0.007072416701388889
+      },
+      "node:substrate.bus_synaptic": {
+        "runs": 7,
+        "wall_span_seconds": 301.082239,
+        "full_window_ticks": 16,
+        "complete_duration_count": 6,
+        "median_complete_seconds": 4.091976000000001,
+        "longest_complete_seconds": 16.352517,
+        "share_of_recorded_span": 0.3136372363675214,
+        "share_of_window": 0.0034847481365740743
+      },
+      "node:substrate.execution": {
+        "runs": 3,
+        "wall_span_seconds": 47.830643,
+        "full_window_ticks": 22,
+        "complete_duration_count": 3,
+        "median_complete_seconds": 4.108748,
+        "longest_complete_seconds": 41.664045,
+        "share_of_recorded_span": 0.04982515984345902,
+        "share_of_window": 0.0005535954050925927
+      }
+    },
+    "days": [
+      {
+        "day": "2026-10-08",
+        "window_seconds": 68400.0,
+        "wall_span_seconds": {
+          "node:substrate.biometrics": 0,
+          "node:substrate.bus_synaptic": 0,
+          "node:substrate.execution": 0
+        },
+        "share_of_utc_day": {
+          "node:substrate.biometrics": 0.0,
+          "node:substrate.bus_synaptic": 0.0,
+          "node:substrate.execution": 0.0
+        },
+        "unaccounted_seconds": 68400.0
+      },
+      {
+        "day": "2026-10-09",
+        "window_seconds": 18000.0,
+        "wall_span_seconds": {
+          "node:substrate.biometrics": 611.056803,
+          "node:substrate.bus_synaptic": 301.082239,
+          "node:substrate.execution": 47.830643
+        },
+        "share_of_utc_day": {
+          "node:substrate.biometrics": 0.007072416701388889,
+          "node:substrate.bus_synaptic": 0.0034847481365740743,
+          "node:substrate.execution": 0.0005535954050925927
+        },
+        "unaccounted_seconds": 17040.030315
+      }
+    ],
+    "other_winner_runs": 3,
+    "other_run_share": 0.16666666666666666,
+    "full_window_winner_ticks": 326,
+    "other_winner_ticks": 22,
+    "other_tick_share": 0.06748466257668712,
+    "unaccounted_seconds": 85440.030315,
+    "verdict": "UNVERIFIED: habituation needs seven post-change days and overall-winner coverage",
+    "input_sha256": "92db0abf0619610584c6078920a80f9ad7db76925cba16e13c8ba53812a1fe47"
+  },
+  "dream": {
+    "start": "2026-09-25T05:00:00+00:00",
+    "end": "2026-10-09T05:00:00+00:00",
+    "cycles": [
+      {
+        "cycle_id": "dc-bf0c1b1a6ce6",
+        "started_at": "2026-09-26T03:05:39.279671+00:00",
+        "ended_at": "2026-09-26T03:05:45.499637+00:00",
+        "status": "completed",
+        "trigger": "pressure",
+        "formula": "legacy",
+        "pressure": 102.531,
+        "threshold": 3.0,
+        "threshold_ratio": 34.177,
+        "counts": {
+          "metacog": 50,
+          "resonance": 2,
+          "crystallization": 50,
+          "compaction_request": 50
+        },
+        "new_counts": null,
+        "idle_minutes": 49.893403666666664,
+        "hours_since_previous_attempt_end": null,
+        "seconds_after_timer": null,
+        "timer_aligned": null,
+        "legacy_ceiling": 175.0,
+        "fraction_of_legacy_ceiling": 0.5858914285714286,
+        "legacy_sources_at_cap": [
+          "metacog",
+          "crystallization",
+          "compaction_request"
+        ]
+      },
+      {
+        "cycle_id": "dc-91e687f4785a",
+        "started_at": "2026-09-26T09:05:53.657576+00:00",
+        "ended_at": "2026-09-26T09:06:01.799940+00:00",
+        "status": "completed",
+        "trigger": "pressure",
+        "formula": "legacy",
+        "pressure": 99.131,
+        "threshold": 3.0,
+        "threshold_ratio": 33.04366666666667,
+        "counts": {
+          "metacog": 50,
+          "resonance": 9,
+          "crystallization": 50,
+          "compaction_request": 37
+        },
+        "new_counts": null,
+        "idle_minutes": 156.53206988333332,
+        "hours_since_previous_attempt_end": 6.002266094166667,
+        "seconds_after_timer": 8.157939000000624,
+        "timer_aligned": true,
+        "legacy_ceiling": 175.0,
+        "fraction_of_legacy_ceiling": 0.5664628571428572,
+        "legacy_sources_at_cap": [
+          "metacog",
+          "crystallization"
+        ]
+      },
+      {
+        "cycle_id": "dc-3010aa53213d",
+        "started_at": "2026-09-26T15:36:06.867680+00:00",
+        "ended_at": "2026-09-26T15:36:12.011787+00:00",
+        "status": "completed",
+        "trigger": "pressure",
+        "formula": "legacy",
+        "pressure": 97.431,
+        "threshold": 3.0,
+        "threshold_ratio": 32.477,
+        "counts": {
+          "metacog": 50,
+          "resonance": 1,
+          "crystallization": 50,
+          "compaction_request": 36
+        },
+        "new_counts": null,
+        "idle_minutes": 50.30698,
+        "hours_since_previous_attempt_end": 6.501407705555555,
+        "seconds_after_timer": 1805.0677399999986,
+        "timer_aligned": false,
+        "legacy_ceiling": 175.0,
+        "fraction_of_legacy_ceiling": 0.5567485714285714,
+        "legacy_sources_at_cap": [
+          "metacog",
+          "crystallization"
+        ]
+      },
+      {
+        "cycle_id": "dc-1a5d26a75af3",
+        "started_at": "2026-09-26T21:36:16.415110+00:00",
+        "ended_at": "2026-09-26T21:36:21.723455+00:00",
+        "status": "completed",
+        "trigger": "pressure",
+        "formula": "legacy",
+        "pressure": 96.731,
+        "threshold": 3.0,
+        "threshold_ratio": 32.24366666666666,
+        "counts": {
+          "metacog": 32,
+          "resonance": 10,
+          "crystallization": 50,
+          "compaction_request": 48
+        },
+        "new_counts": null,
+        "idle_minutes": 255.16915338333334,
+        "hours_since_previous_attempt_end": 6.001223145277778,
+        "seconds_after_timer": 4.403322999998636,
+        "timer_aligned": true,
+        "legacy_ceiling": 175.0,
+        "fraction_of_legacy_ceiling": 0.5527485714285714,
+        "legacy_sources_at_cap": [
+          "crystallization"
+        ]
+      },
+      {
+        "cycle_id": "dc-f9da1814c6b0",
+        "started_at": "2026-09-27T03:36:26.192347+00:00",
+        "ended_at": "2026-09-27T03:36:32.165586+00:00",
+        "status": "completed",
+        "trigger": "pressure",
+        "formula": "legacy",
+        "pressure": 100.831,
+        "threshold": 3.0,
+        "threshold_ratio": 33.61033333333334,
+        "counts": {
+          "metacog": 50,
+          "resonance": 3,
+          "crystallization": 50,
+          "compaction_request": 44
+        },
+        "new_counts": null,
+        "idle_minutes": 615.3320280666667,
+        "hours_since_previous_attempt_end": 6.0012413588888895,
+        "seconds_after_timer": 4.468892000000778,
+        "timer_aligned": true,
+        "legacy_ceiling": 175.0,
+        "fraction_of_legacy_ceiling": 0.5761771428571428,
+        "legacy_sources_at_cap": [
+          "metacog",
+          "crystallization"
+        ]
+      },
+      {
+        "cycle_id": "dc-4923042e89b6",
+        "started_at": "2026-09-27T09:36:37.074716+00:00",
+        "ended_at": "2026-09-27T09:36:43.139334+00:00",
+        "status": "completed",
+        "trigger": "pressure",
+        "formula": "legacy",
+        "pressure": 103.531,
+        "threshold": 3.0,
+        "threshold_ratio": 34.510333333333335,
+        "counts": {
+          "metacog": 50,
+          "resonance": 8,
+          "crystallization": 50,
+          "compaction_request": 42
+        },
+        "new_counts": null,
+        "idle_minutes": 975.5135372833333,
+        "hours_since_previous_attempt_end": 6.001363647222222,
+        "seconds_after_timer": 4.909130000000005,
+        "timer_aligned": true,
+        "legacy_ceiling": 175.0,
+        "fraction_of_legacy_ceiling": 0.5916057142857143,
+        "legacy_sources_at_cap": [
+          "metacog",
+          "crystallization"
+        ]
+      },
+      {
+        "cycle_id": "dc-a37663927058",
+        "started_at": "2026-09-27T15:36:47.445815+00:00",
+        "ended_at": "2026-09-27T15:36:52.322611+00:00",
+        "status": "completed",
+        "trigger": "pressure",
+        "formula": "legacy",
+        "pressure": 99.431,
+        "threshold": 3.0,
+        "threshold_ratio": 33.14366666666667,
+        "counts": {
+          "metacog": 50,
+          "crystallization": 50,
+          "compaction_request": 37
+        },
+        "new_counts": null,
+        "idle_minutes": 45.83158721666667,
+        "hours_since_previous_attempt_end": 6.001196244722222,
+        "seconds_after_timer": 4.306480999999621,
+        "timer_aligned": true,
+        "legacy_ceiling": 175.0,
+        "fraction_of_legacy_ceiling": 0.5681771428571428,
+        "legacy_sources_at_cap": [
+          "metacog",
+          "crystallization"
+        ]
+      },
+      {
+        "cycle_id": "dc-f301e8522af3",
+        "started_at": "2026-09-27T21:36:56.670036+00:00",
+        "ended_at": "2026-09-27T21:37:02.177051+00:00",
+        "status": "completed",
+        "trigger": "pressure",
+        "formula": "legacy",
+        "pressure": 79.531,
+        "threshold": 3.0,
+        "threshold_ratio": 26.510333333333335,
+        "counts": {
+          "metacog": 22,
+          "crystallization": 50,
+          "compaction_request": 38
+        },
+        "new_counts": null,
+        "idle_minutes": 242.75691836666667,
+        "hours_since_previous_attempt_end": 6.001207618055555,
+        "seconds_after_timer": 4.34742499999993,
+        "timer_aligned": true,
+        "legacy_ceiling": 175.0,
+        "fraction_of_legacy_ceiling": 0.45446285714285717,
+        "legacy_sources_at_cap": [
+          "crystallization"
+        ]
+      },
+      {
+        "cycle_id": "dc-e42a4c6652cd",
+        "started_at": "2026-09-28T03:37:06.338828+00:00",
+        "ended_at": "2026-09-28T03:37:12.409703+00:00",
+        "status": "completed",
+        "trigger": "pressure",
+        "formula": "legacy",
+        "pressure": 83.731,
+        "threshold": 3.0,
+        "threshold_ratio": 27.91033333333333,
+        "counts": {
+          "metacog": 47,
+          "crystallization": 50,
+          "compaction_request": 18
+        },
+        "new_counts": null,
+        "idle_minutes": 602.9180092833333,
+        "hours_since_previous_attempt_end": 6.001156049166667,
+        "seconds_after_timer": 4.161777000001166,
+        "timer_aligned": true,
+        "legacy_ceiling": 175.0,
+        "fraction_of_legacy_ceiling": 0.47846285714285713,
+        "legacy_sources_at_cap": [
+          "crystallization"
+        ]
+      },
+      {
+        "cycle_id": "dc-81538b088a73",
+        "started_at": "2026-09-28T10:47:28.697920+00:00",
+        "ended_at": "2026-09-28T10:47:33.470475+00:00",
+        "status": "completed",
+        "trigger": "pressure",
+        "formula": "legacy",
+        "pressure": 99.231,
+        "threshold": 3.0,
+        "threshold_ratio": 33.077,
+        "counts": {
+          "metacog": 50,
+          "crystallization": 50,
+          "compaction_request": 43
+        },
+        "new_counts": null,
+        "idle_minutes": 51.44125676666667,
+        "hours_since_previous_attempt_end": 7.171191171388889,
+        "seconds_after_timer": 4216.288217000001,
+        "timer_aligned": false,
+        "legacy_ceiling": 175.0,
+        "fraction_of_legacy_ceiling": 0.5670342857142857,
+        "legacy_sources_at_cap": [
+          "metacog",
+          "crystallization"
+        ]
+      },
+      {
+        "cycle_id": "dc-4440f64c9cbd",
+        "started_at": "2026-09-28T16:47:38.315165+00:00",
+        "ended_at": "2026-09-28T16:47:44.092674+00:00",
+        "status": "completed",
+        "trigger": "pressure",
+        "formula": "legacy",
+        "pressure": 105.031,
+        "threshold": 3.0,
+        "threshold_ratio": 35.010333333333335,
+        "counts": {
+          "metacog": 50,
+          "resonance": 5,
+          "crystallization": 50,
+          "compaction_request": 40
+        },
+        "new_counts": null,
+        "idle_minutes": 88.05877616666666,
+        "hours_since_previous_attempt_end": 6.0013457472222225,
+        "seconds_after_timer": 4.8446900000017195,
+        "timer_aligned": true,
+        "legacy_ceiling": 175.0,
+        "fraction_of_legacy_ceiling": 0.6001771428571429,
+        "legacy_sources_at_cap": [
+          "metacog",
+          "crystallization"
+        ]
+      },
+      {
+        "cycle_id": "dc-63828fa3e3f6",
+        "started_at": "2026-09-28T22:47:48.831236+00:00",
+        "ended_at": "2026-09-28T22:47:53.985243+00:00",
+        "status": "completed",
+        "trigger": "pressure",
+        "formula": "legacy",
+        "pressure": 105.731,
+        "threshold": 3.0,
+        "threshold_ratio": 35.24366666666666,
+        "counts": {
+          "metacog": 50,
+          "resonance": 15,
+          "crystallization": 50,
+          "compaction_request": 37
+        },
+        "new_counts": null,
+        "idle_minutes": 186.40961668333333,
+        "hours_since_previous_attempt_end": 6.001316267222222,
+        "seconds_after_timer": 4.7385619999986375,
+        "timer_aligned": true,
+        "legacy_ceiling": 175.0,
+        "fraction_of_legacy_ceiling": 0.6041771428571429,
+        "legacy_sources_at_cap": [
+          "metacog",
+          "crystallization"
+        ]
+      },
+      {
+        "cycle_id": "dc-d5a8ea74dc6b",
+        "started_at": "2026-09-29T04:58:04.978539+00:00",
+        "ended_at": "2026-09-29T04:58:12.052050+00:00",
+        "status": "completed",
+        "trigger": "pressure",
+        "formula": "legacy",
+        "pressure": 99.468,
+        "threshold": 3.0,
+        "threshold_ratio": 33.156,
+        "counts": {
+          "metacog": 50,
+          "resonance": 4,
+          "crystallization": 50,
+          "compaction_request": 40
+        },
+        "new_counts": null,
+        "idle_minutes": 47.08343536666667,
+        "hours_since_previous_attempt_end": 6.16972036,
+        "seconds_after_timer": 610.9932960000006,
+        "timer_aligned": false,
+        "legacy_ceiling": 175.0,
+        "fraction_of_legacy_ceiling": 0.5683885714285715,
+        "legacy_sources_at_cap": [
+          "metacog",
+          "crystallization"
+        ]
+      },
+      {
+        "cycle_id": "dc-07b5a223c6e3",
+        "started_at": "2026-09-29T10:58:17.621032+00:00",
+        "ended_at": "2026-09-29T10:58:22.580321+00:00",
+        "status": "completed",
+        "trigger": "pressure",
+        "formula": "legacy",
+        "pressure": 103.468,
+        "threshold": 3.0,
+        "threshold_ratio": 34.489333333333335,
+        "counts": {
+          "metacog": 50,
+          "crystallization": 50,
+          "compaction_request": 44
+        },
+        "new_counts": null,
+        "idle_minutes": 407.29367275,
+        "hours_since_previous_attempt_end": 6.001546939444444,
+        "seconds_after_timer": 5.5689820000006875,
+        "timer_aligned": true,
+        "legacy_ceiling": 175.0,
+        "fraction_of_legacy_ceiling": 0.5912457142857143,
+        "legacy_sources_at_cap": [
+          "metacog",
+          "crystallization"
+        ]
+      },
+      {
+        "cycle_id": "dc-0a0b086dc5ac",
+        "started_at": "2026-09-29T17:28:27.776105+00:00",
+        "ended_at": "2026-09-29T17:28:33.152112+00:00",
+        "status": "completed",
+        "trigger": "pressure",
+        "formula": "legacy",
+        "pressure": 104.468,
+        "threshold": 3.0,
+        "threshold_ratio": 34.82266666666667,
+        "counts": {
+          "metacog": 50,
+          "crystallization": 50,
+          "compaction_request": 50
+        },
+        "new_counts": null,
+        "idle_minutes": 49.01273825,
+        "hours_since_previous_attempt_end": 6.501443273333333,
+        "seconds_after_timer": 1805.1957839999995,
+        "timer_aligned": false,
+        "legacy_ceiling": 175.0,
+        "fraction_of_legacy_ceiling": 0.59696,
+        "legacy_sources_at_cap": [
+          "metacog",
+          "crystallization",
+          "compaction_request"
+        ]
+      },
+      {
+        "cycle_id": "dc-654c1229fa4c",
+        "started_at": "2026-09-29T23:28:38.380663+00:00",
+        "ended_at": "2026-09-29T23:28:43.129982+00:00",
+        "status": "completed",
+        "trigger": "pressure",
+        "formula": "legacy",
+        "pressure": 104.268,
+        "threshold": 3.0,
+        "threshold_ratio": 34.756,
+        "counts": {
+          "metacog": 50,
+          "resonance": 1,
+          "crystallization": 50,
+          "compaction_request": 47
+        },
+        "new_counts": null,
+        "idle_minutes": 357.0826576333333,
+        "hours_since_previous_attempt_end": 6.001452375277778,
+        "seconds_after_timer": 5.228551000000152,
+        "timer_aligned": true,
+        "legacy_ceiling": 175.0,
+        "fraction_of_legacy_ceiling": 0.5958171428571428,
+        "legacy_sources_at_cap": [
+          "metacog",
+          "crystallization"
+        ]
+      },
+      {
+        "cycle_id": "dc-e6743e465fea",
+        "started_at": "2026-09-30T05:28:56.784617+00:00",
+        "ended_at": "2026-09-30T05:29:02.592694+00:00",
+        "status": "completed",
+        "trigger": "pressure",
+        "formula": "legacy",
+        "pressure": 96.268,
+        "threshold": 3.0,
+        "threshold_ratio": 32.089333333333336,
+        "counts": {
+          "metacog": 50,
+          "resonance": 1,
+          "crystallization": 50,
+          "compaction_request": 39
+        },
+        "new_counts": null,
+        "idle_minutes": 717.3882037666667,
+        "hours_since_previous_attempt_end": 6.003792954166666,
+        "seconds_after_timer": 13.654634999998962,
+        "timer_aligned": true,
+        "legacy_ceiling": 175.0,
+        "fraction_of_legacy_ceiling": 0.5501028571428571,
+        "legacy_sources_at_cap": [
+          "metacog",
+          "crystallization"
+        ]
+      },
+      {
+        "cycle_id": "dc-afcf961a1166",
+        "started_at": "2026-09-30T11:29:14.931115+00:00",
+        "ended_at": "2026-09-30T11:29:20.676080+00:00",
+        "status": "completed",
+        "trigger": "pressure",
+        "formula": "legacy",
+        "pressure": 104.493,
+        "threshold": 3.0,
+        "threshold_ratio": 34.830999999999996,
+        "counts": {
+          "metacog": 50,
+          "resonance": 4,
+          "crystallization": 50,
+          "compaction_request": 43
+        },
+        "new_counts": null,
+        "idle_minutes": 1077.6907175333333,
+        "hours_since_previous_attempt_end": 6.003427339166667,
+        "seconds_after_timer": 12.33842100000038,
+        "timer_aligned": true,
+        "legacy_ceiling": 175.0,
+        "fraction_of_legacy_ceiling": 0.5971028571428572,
+        "legacy_sources_at_cap": [
+          "metacog",
+          "crystallization"
+        ]
+      },
+      {
+        "cycle_id": "dc-c3a188e64378",
+        "started_at": "2026-09-30T17:29:25.397789+00:00",
+        "ended_at": "2026-09-30T17:29:32.286794+00:00",
+        "status": "completed",
+        "trigger": "pressure",
+        "formula": "legacy",
+        "pressure": 102.993,
+        "threshold": 3.0,
+        "threshold_ratio": 34.330999999999996,
+        "counts": {
+          "metacog": 50,
+          "resonance": 5,
+          "crystallization": 50,
+          "compaction_request": 43
+        },
+        "new_counts": null,
+        "idle_minutes": 107.46169636666667,
+        "hours_since_previous_attempt_end": 6.001311585833334,
+        "seconds_after_timer": 4.721709000001283,
+        "timer_aligned": true,
+        "legacy_ceiling": 175.0,
+        "fraction_of_legacy_ceiling": 0.5885314285714286,
+        "legacy_sources_at_cap": [
+          "metacog",
+          "crystallization"
+        ]
+      },
+      {
+        "cycle_id": "dc-84e71f6be0f5",
+        "started_at": "2026-09-30T23:29:36.916612+00:00",
+        "ended_at": "2026-09-30T23:29:43.445990+00:00",
+        "status": "completed",
+        "trigger": "pressure",
+        "formula": "legacy",
+        "pressure": 110.693,
+        "threshold": 3.0,
+        "threshold_ratio": 36.897666666666666,
+        "counts": {
+          "metacog": 50,
+          "resonance": 11,
+          "crystallization": 50,
+          "compaction_request": 50
+        },
+        "new_counts": null,
+        "idle_minutes": 214.1789244,
+        "hours_since_previous_attempt_end": 6.001286060555556,
+        "seconds_after_timer": 4.629818000001251,
+        "timer_aligned": true,
+        "legacy_ceiling": 175.0,
+        "fraction_of_legacy_ceiling": 0.6325314285714285,
+        "legacy_sources_at_cap": [
+          "metacog",
+          "crystallization",
+          "compaction_request"
+        ]
+      },
+      {
+        "cycle_id": "dc-373211fe18d3",
+        "started_at": "2026-10-01T05:30:05.144369+00:00",
+        "ended_at": "2026-10-01T05:30:10.000873+00:00",
+        "status": "completed",
+        "trigger": "pressure",
+        "formula": "legacy",
+        "pressure": 70.093,
+        "threshold": 3.0,
+        "threshold_ratio": 23.364333333333335,
+        "counts": {
+          "metacog": 16,
+          "resonance": 1,
+          "crystallization": 50,
+          "compaction_request": 26
+        },
+        "new_counts": null,
+        "idle_minutes": 574.6492686833334,
+        "hours_since_previous_attempt_end": 6.0060273275,
+        "seconds_after_timer": 21.698379000001296,
+        "timer_aligned": true,
+        "legacy_ceiling": 175.0,
+        "fraction_of_legacy_ceiling": 0.4005314285714286,
+        "legacy_sources_at_cap": [
+          "crystallization"
+        ]
+      },
+      {
+        "cycle_id": "dc-ae0422c2c258",
+        "started_at": "2026-10-01T11:30:17.279560+00:00",
+        "ended_at": "2026-10-01T11:30:23.430958+00:00",
+        "status": "completed",
+        "trigger": "pressure",
+        "formula": "legacy",
+        "pressure": 96.493,
+        "threshold": 3.0,
+        "threshold_ratio": 32.16433333333333,
+        "counts": {
+          "metacog": 35,
+          "resonance": 7,
+          "crystallization": 50,
+          "compaction_request": 38
+        },
+        "new_counts": null,
+        "idle_minutes": 934.8519526,
+        "hours_since_previous_attempt_end": 6.002021857500001,
+        "seconds_after_timer": 7.27868700000181,
+        "timer_aligned": true,
+        "legacy_ceiling": 175.0,
+        "fraction_of_legacy_ceiling": 0.5513885714285715,
+        "legacy_sources_at_cap": [
+          "crystallization"
+        ]
+      },
+      {
+        "cycle_id": "dc-e1e27960a62e",
+        "started_at": "2026-10-01T17:40:28.345868+00:00",
+        "ended_at": "2026-10-01T17:40:33.116129+00:00",
+        "status": "completed",
+        "trigger": "pressure",
+        "formula": "legacy",
+        "pressure": 105.393,
+        "threshold": 3.0,
+        "threshold_ratio": 35.131,
+        "counts": {
+          "metacog": 50,
+          "resonance": 2,
+          "crystallization": 50,
+          "compaction_request": 50
+        },
+        "new_counts": null,
+        "idle_minutes": 51.23242441666667,
+        "hours_since_previous_attempt_end": 6.168031919444444,
+        "seconds_after_timer": 604.9149099999995,
+        "timer_aligned": false,
+        "legacy_ceiling": 175.0,
+        "fraction_of_legacy_ceiling": 0.6022457142857143,
+        "legacy_sources_at_cap": [
+          "metacog",
+          "crystallization",
+          "compaction_request"
+        ]
+      },
+      {
+        "cycle_id": "dc-3d01440e2617",
+        "started_at": "2026-10-01T23:40:37.811283+00:00",
+        "ended_at": "2026-10-01T23:40:42.415262+00:00",
+        "status": "completed",
+        "trigger": "pressure",
+        "formula": "legacy",
+        "pressure": 74.193,
+        "threshold": 3.0,
+        "threshold_ratio": 24.730999999999998,
+        "counts": {
+          "metacog": 14,
+          "crystallization": 50,
+          "compaction_request": 36
+        },
+        "new_counts": null,
+        "idle_minutes": 411.3901907,
+        "hours_since_previous_attempt_end": 6.001304209444445,
+        "seconds_after_timer": 4.695154000000912,
+        "timer_aligned": true,
+        "legacy_ceiling": 175.0,
+        "fraction_of_legacy_ceiling": 0.42396,
+        "legacy_sources_at_cap": [
+          "crystallization"
+        ]
+      },
+      {
+        "cycle_id": "dc-3f25a33e2283",
+        "started_at": "2026-10-02T05:41:00.829361+00:00",
+        "ended_at": "2026-10-02T05:41:04.728923+00:00",
+        "status": "completed",
+        "trigger": "pressure",
+        "formula": "legacy",
+        "pressure": 58.793,
+        "threshold": 3.0,
+        "threshold_ratio": 19.597666666666665,
+        "counts": {
+          "metacog": 2,
+          "crystallization": 50,
+          "compaction_request": 22
+        },
+        "new_counts": null,
+        "idle_minutes": 90.67592675,
+        "hours_since_previous_attempt_end": 6.0051150275000005,
+        "seconds_after_timer": 18.414099000001443,
+        "timer_aligned": true,
+        "legacy_ceiling": 175.0,
+        "fraction_of_legacy_ceiling": 0.33596,
+        "legacy_sources_at_cap": [
+          "crystallization"
+        ]
+      },
+      {
+        "cycle_id": "dc-f4937e36bf4e",
+        "started_at": "2026-10-02T11:41:11.847690+00:00",
+        "ended_at": "2026-10-02T11:41:17.604319+00:00",
+        "status": "completed",
+        "trigger": "pressure",
+        "formula": "legacy",
+        "pressure": 94.393,
+        "threshold": 3.0,
+        "threshold_ratio": 31.464333333333332,
+        "counts": {
+          "metacog": 50,
+          "crystallization": 50,
+          "compaction_request": 22
+        },
+        "new_counts": null,
+        "idle_minutes": 172.26129071666668,
+        "hours_since_previous_attempt_end": 6.0019774352777775,
+        "seconds_after_timer": 7.118766999999934,
+        "timer_aligned": true,
+        "legacy_ceiling": 175.0,
+        "fraction_of_legacy_ceiling": 0.5393885714285714,
+        "legacy_sources_at_cap": [
+          "metacog",
+          "crystallization"
+        ]
+      },
+      {
+        "cycle_id": "dc-fcef92133547",
+        "started_at": "2026-10-02T17:41:21.938360+00:00",
+        "ended_at": "2026-10-02T17:41:27.449746+00:00",
+        "status": "completed",
+        "trigger": "pressure",
+        "formula": "legacy",
+        "pressure": 78.093,
+        "threshold": 3.0,
+        "threshold_ratio": 26.031000000000002,
+        "counts": {
+          "metacog": 25,
+          "crystallization": 50,
+          "compaction_request": 29
+        },
+        "new_counts": null,
+        "idle_minutes": 64.40774091666667,
+        "hours_since_previous_attempt_end": 6.001203900277777,
+        "seconds_after_timer": 4.334040999998251,
+        "timer_aligned": true,
+        "legacy_ceiling": 175.0,
+        "fraction_of_legacy_ceiling": 0.4462457142857143,
+        "legacy_sources_at_cap": [
+          "crystallization"
+        ]
+      },
+      {
+        "cycle_id": "dc-f4f91647eb9a",
+        "started_at": "2026-10-02T23:41:31.724819+00:00",
+        "ended_at": "2026-10-02T23:41:37.715605+00:00",
+        "status": "completed",
+        "trigger": "pressure",
+        "formula": "legacy",
+        "pressure": 63.393,
+        "threshold": 3.0,
+        "threshold_ratio": 21.131,
+        "counts": {
+          "metacog": 8,
+          "crystallization": 50,
+          "compaction_request": 24
+        },
+        "new_counts": null,
+        "idle_minutes": 424.57082388333333,
+        "hours_since_previous_attempt_end": 6.001187520277778,
+        "seconds_after_timer": 4.2750730000007025,
+        "timer_aligned": true,
+        "legacy_ceiling": 175.0,
+        "fraction_of_legacy_ceiling": 0.3622457142857143,
+        "legacy_sources_at_cap": [
+          "crystallization"
+        ]
+      },
+      {
+        "cycle_id": "dc-2e75d9d7672a",
+        "started_at": "2026-10-03T05:41:47.966397+00:00",
+        "ended_at": "2026-10-03T05:41:52.831891+00:00",
+        "status": "completed",
+        "trigger": "pressure",
+        "formula": "legacy",
+        "pressure": 61.293,
+        "threshold": 3.0,
+        "threshold_ratio": 20.431,
+        "counts": {
+          "metacog": 6,
+          "crystallization": 50,
+          "compaction_request": 19
+        },
+        "new_counts": null,
+        "idle_minutes": 784.8418629666667,
+        "hours_since_previous_attempt_end": 6.0028474422222216,
+        "seconds_after_timer": 10.25079199999891,
+        "timer_aligned": true,
+        "legacy_ceiling": 175.0,
+        "fraction_of_legacy_ceiling": 0.35024571428571427,
+        "legacy_sources_at_cap": [
+          "crystallization"
+        ]
+      },
+      {
+        "cycle_id": "dc-3ad839c18270",
+        "started_at": "2026-10-03T11:41:57.552820+00:00",
+        "ended_at": "2026-10-03T11:42:02.856797+00:00",
+        "status": "completed",
+        "trigger": "pressure",
+        "formula": "legacy",
+        "pressure": 71.293,
+        "threshold": 3.0,
+        "threshold_ratio": 23.764333333333337,
+        "counts": {
+          "metacog": 19,
+          "crystallization": 50,
+          "compaction_request": 25
+        },
+        "new_counts": null,
+        "idle_minutes": 1145.0013379833333,
+        "hours_since_previous_attempt_end": 6.001311369166666,
+        "seconds_after_timer": 4.72092899999916,
+        "timer_aligned": true,
+        "legacy_ceiling": 175.0,
+        "fraction_of_legacy_ceiling": 0.4073885714285715,
+        "legacy_sources_at_cap": [
+          "crystallization"
+        ]
+      },
+      {
+        "cycle_id": "dc-9328cd0deb75",
+        "started_at": "2026-10-03T17:42:07.187068+00:00",
+        "ended_at": "2026-10-03T17:42:12.715372+00:00",
+        "status": "completed",
+        "trigger": "pressure",
+        "formula": "legacy",
+        "pressure": 82.893,
+        "threshold": 3.0,
+        "threshold_ratio": 27.631,
+        "counts": {
+          "metacog": 29,
+          "crystallization": 50,
+          "compaction_request": 33
+        },
+        "new_counts": null,
+        "idle_minutes": 72.2559562,
+        "hours_since_previous_attempt_end": 6.001202853055555,
+        "seconds_after_timer": 4.330270999998902,
+        "timer_aligned": true,
+        "legacy_ceiling": 175.0,
+        "fraction_of_legacy_ceiling": 0.4736742857142857,
+        "legacy_sources_at_cap": [
+          "crystallization"
+        ]
+      },
+      {
+        "cycle_id": "dc-e2a6eacb139f",
+        "started_at": "2026-10-03T23:43:21.853273+00:00",
+        "ended_at": "2026-10-03T23:46:32.345356+00:00",
+        "status": "completed",
+        "trigger": "pressure",
+        "formula": "legacy",
+        "pressure": 93.093,
+        "threshold": 3.0,
+        "threshold_ratio": 31.031000000000002,
+        "counts": {
+          "metacog": 50,
+          "crystallization": 50,
+          "compaction_request": 13
+        },
+        "new_counts": null,
+        "idle_minutes": 433.50022536666665,
+        "hours_since_previous_attempt_end": 6.0192049725,
+        "seconds_after_timer": 69.13790099999824,
+        "timer_aligned": true,
+        "legacy_ceiling": 175.0,
+        "fraction_of_legacy_ceiling": 0.53196,
+        "legacy_sources_at_cap": [
+          "metacog",
+          "crystallization"
+        ]
+      },
+      {
+        "cycle_id": "dc-6c84e6fbc168",
+        "started_at": "2026-10-04T05:46:46.044328+00:00",
+        "ended_at": "2026-10-04T05:46:51.643293+00:00",
+        "status": "completed",
+        "trigger": "pressure",
+        "formula": "legacy",
+        "pressure": 46.962,
+        "threshold": 3.0,
+        "threshold_ratio": 15.654000000000002,
+        "counts": {
+          "metacog": 50,
+          "resonance": 7,
+          "crystallization": 1,
+          "compaction_request": 17
+        },
+        "new_counts": null,
+        "idle_minutes": 257.19858738333335,
+        "hours_since_previous_attempt_end": 6.00380527,
+        "seconds_after_timer": 13.69897199999832,
+        "timer_aligned": true,
+        "legacy_ceiling": 175.0,
+        "fraction_of_legacy_ceiling": 0.2683542857142857,
+        "legacy_sources_at_cap": [
+          "metacog"
+        ]
+      },
+      {
+        "cycle_id": "dc-b78199cb9c68",
+        "started_at": "2026-10-04T11:46:56.478367+00:00",
+        "ended_at": "2026-10-04T11:47:01.834245+00:00",
+        "status": "completed",
+        "trigger": "pressure",
+        "formula": "legacy",
+        "pressure": 32.3,
+        "threshold": 3.0,
+        "threshold_ratio": 10.766666666666666,
+        "counts": {
+          "metacog": 25,
+          "resonance": 10,
+          "compaction_request": 19
+        },
+        "new_counts": null,
+        "idle_minutes": 617.3725812333333,
+        "hours_since_previous_attempt_end": 6.001343076111111,
+        "seconds_after_timer": 4.835073999998713,
+        "timer_aligned": true,
+        "legacy_ceiling": 175.0,
+        "fraction_of_legacy_ceiling": 0.18457142857142855,
+        "legacy_sources_at_cap": []
+      },
+      {
+        "cycle_id": "dc-7d8054bb9591",
+        "started_at": "2026-10-04T17:47:06.374966+00:00",
+        "ended_at": "2026-10-04T17:47:11.823861+00:00",
+        "status": "completed",
+        "trigger": "pressure",
+        "formula": "legacy",
+        "pressure": 50.3,
+        "threshold": 3.0,
+        "threshold_ratio": 16.766666666666666,
+        "counts": {
+          "metacog": 41,
+          "resonance": 12,
+          "compaction_request": 29
+        },
+        "new_counts": null,
+        "idle_minutes": 80.96973285,
+        "hours_since_previous_attempt_end": 6.001261311388889,
+        "seconds_after_timer": 4.540721000001213,
+        "timer_aligned": true,
+        "legacy_ceiling": 175.0,
+        "fraction_of_legacy_ceiling": 0.2874285714285714,
+        "legacy_sources_at_cap": []
+      },
+      {
+        "cycle_id": "dc-bc20f8e471e0",
+        "started_at": "2026-10-04T23:47:16.174856+00:00",
+        "ended_at": "2026-10-04T23:47:21.500182+00:00",
+        "status": "completed",
+        "trigger": "pressure",
+        "formula": "legacy",
+        "pressure": 14.2,
+        "threshold": 3.0,
+        "threshold_ratio": 4.733333333333333,
+        "counts": {
+          "metacog": 8,
+          "resonance": 5,
+          "compaction_request": 11
+        },
+        "new_counts": null,
+        "idle_minutes": 441.13300606666667,
+        "hours_since_previous_attempt_end": 6.001208609722222,
+        "seconds_after_timer": 4.350995000000694,
+        "timer_aligned": true,
+        "legacy_ceiling": 175.0,
+        "fraction_of_legacy_ceiling": 0.08114285714285714,
+        "legacy_sources_at_cap": []
+      },
+      {
+        "cycle_id": "dc-d91a9ac12727",
+        "started_at": "2026-10-05T05:47:31.104384+00:00",
+        "ended_at": "2026-10-05T05:47:35.630229+00:00",
+        "status": "completed",
+        "trigger": "pressure",
+        "formula": "legacy",
+        "pressure": 36.786,
+        "threshold": 3.0,
+        "threshold_ratio": 12.262,
+        "counts": {
+          "metacog": 22,
+          "resonance": 9,
+          "crystallization": 6,
+          "compaction_request": 23
+        },
+        "new_counts": null,
+        "idle_minutes": 86.6183196,
+        "hours_since_previous_attempt_end": 6.002667833888888,
+        "seconds_after_timer": 9.604201999998622,
+        "timer_aligned": true,
+        "legacy_ceiling": 175.0,
+        "fraction_of_legacy_ceiling": 0.2102057142857143,
+        "legacy_sources_at_cap": []
+      },
+      {
+        "cycle_id": "dc-562ecdf33416",
+        "started_at": "2026-10-05T11:47:39.832295+00:00",
+        "ended_at": "2026-10-05T11:47:45.321194+00:00",
+        "status": "completed",
+        "trigger": "pressure",
+        "formula": "legacy",
+        "pressure": 40.1,
+        "threshold": 3.0,
+        "threshold_ratio": 13.366666666666667,
+        "counts": {
+          "metacog": 28,
+          "resonance": 9,
+          "compaction_request": 26
+        },
+        "new_counts": null,
+        "idle_minutes": 446.7642043166667,
+        "hours_since_previous_attempt_end": 6.001167240555556,
+        "seconds_after_timer": 4.2020660000016505,
+        "timer_aligned": true,
+        "legacy_ceiling": 175.0,
+        "fraction_of_legacy_ceiling": 0.22914285714285715,
+        "legacy_sources_at_cap": []
+      },
+      {
+        "cycle_id": "dc-2ed935d0f98a",
+        "started_at": "2026-10-05T17:47:49.503509+00:00",
+        "ended_at": "2026-10-05T17:47:54.745356+00:00",
+        "status": "completed",
+        "trigger": "pressure",
+        "formula": "legacy",
+        "pressure": 38.5,
+        "threshold": 3.0,
+        "threshold_ratio": 12.833333333333334,
+        "counts": {
+          "metacog": 30,
+          "resonance": 10,
+          "compaction_request": 23
+        },
+        "new_counts": null,
+        "idle_minutes": 78.65318438333334,
+        "hours_since_previous_attempt_end": 6.001161754166666,
+        "seconds_after_timer": 4.182314999998198,
+        "timer_aligned": true,
+        "legacy_ceiling": 175.0,
+        "fraction_of_legacy_ceiling": 0.22,
+        "legacy_sources_at_cap": []
+      },
+      {
+        "cycle_id": "dc-5960b2b0eb3a",
+        "started_at": "2026-10-05T23:47:58.889922+00:00",
+        "ended_at": "2026-10-05T23:48:04.419481+00:00",
+        "status": "completed",
+        "trigger": "pressure",
+        "formula": "legacy",
+        "pressure": 12.9,
+        "threshold": 3.0,
+        "threshold_ratio": 4.3,
+        "counts": {
+          "metacog": 5,
+          "resonance": 5,
+          "compaction_request": 12
+        },
+        "new_counts": null,
+        "idle_minutes": 438.80954836666666,
+        "hours_since_previous_attempt_end": 6.0011512683333335,
+        "seconds_after_timer": 4.144565999999031,
+        "timer_aligned": true,
+        "legacy_ceiling": 175.0,
+        "fraction_of_legacy_ceiling": 0.07371428571428572,
+        "legacy_sources_at_cap": []
+      },
+      {
+        "cycle_id": "dc-e1ebe6f51fe0",
+        "started_at": "2026-10-06T05:48:12.579935+00:00",
+        "ended_at": "2026-10-06T05:48:29.523768+00:00",
+        "status": "completed",
+        "trigger": "pressure",
+        "formula": "legacy",
+        "pressure": 49.862,
+        "threshold": 3.0,
+        "threshold_ratio": 16.62066666666667,
+        "counts": {
+          "metacog": 50,
+          "resonance": 10,
+          "crystallization": 1,
+          "compaction_request": 18
+        },
+        "new_counts": null,
+        "idle_minutes": 147.75563685,
+        "hours_since_previous_attempt_end": 6.002266792777778,
+        "seconds_after_timer": 8.160454000000755,
+        "timer_aligned": true,
+        "legacy_ceiling": 175.0,
+        "fraction_of_legacy_ceiling": 0.2849257142857143,
+        "legacy_sources_at_cap": [
+          "metacog"
+        ]
+      },
+      {
+        "cycle_id": "dc-f0a9293f1085",
+        "started_at": "2026-10-06T11:48:36.686571+00:00",
+        "ended_at": "2026-10-06T11:48:42.522631+00:00",
+        "status": "completed",
+        "trigger": "pressure",
+        "formula": "legacy",
+        "pressure": 94.268,
+        "threshold": 3.0,
+        "threshold_ratio": 31.422666666666668,
+        "counts": {
+          "metacog": 37,
+          "resonance": 5,
+          "crystallization": 50,
+          "compaction_request": 35
+        },
+        "new_counts": null,
+        "idle_minutes": 220.85115466666667,
+        "hours_since_previous_attempt_end": 6.0019896675,
+        "seconds_after_timer": 7.162802999999258,
+        "timer_aligned": true,
+        "legacy_ceiling": 175.0,
+        "fraction_of_legacy_ceiling": 0.5386742857142858,
+        "legacy_sources_at_cap": [
+          "crystallization"
+        ]
+      },
+      {
+        "cycle_id": "dc-85c9e77a2258",
+        "started_at": "2026-10-06T17:48:47.317687+00:00",
+        "ended_at": "2026-10-06T17:48:52.759965+00:00",
+        "status": "completed",
+        "trigger": "pressure",
+        "formula": "legacy",
+        "pressure": 86.568,
+        "threshold": 3.0,
+        "threshold_ratio": 28.855999999999998,
+        "counts": {
+          "metacog": 20,
+          "crystallization": 50,
+          "compaction_request": 50
+        },
+        "new_counts": null,
+        "idle_minutes": 80.50371046666666,
+        "hours_since_previous_attempt_end": 6.00133196,
+        "seconds_after_timer": 4.795055999999022,
+        "timer_aligned": true,
+        "legacy_ceiling": 175.0,
+        "fraction_of_legacy_ceiling": 0.4946742857142857,
+        "legacy_sources_at_cap": [
+          "crystallization",
+          "compaction_request"
+        ]
+      },
+      {
+        "cycle_id": "dc-0d5b32054ba1",
+        "started_at": "2026-10-07T00:18:57.979098+00:00",
+        "ended_at": "2026-10-07T00:19:03.256679+00:00",
+        "status": "completed",
+        "trigger": "pressure",
+        "formula": "legacy",
+        "pressure": 71.868,
+        "threshold": 3.0,
+        "threshold_ratio": 23.956,
+        "counts": {
+          "metacog": 11,
+          "crystallization": 50,
+          "compaction_request": 33
+        },
+        "new_counts": null,
+        "idle_minutes": 53.1343844,
+        "hours_since_previous_attempt_end": 6.5014497591666665,
+        "seconds_after_timer": 1805.2191329999987,
+        "timer_aligned": false,
+        "legacy_ceiling": 175.0,
+        "fraction_of_legacy_ceiling": 0.41067428571428566,
+        "legacy_sources_at_cap": [
+          "crystallization"
+        ]
+      },
+      {
+        "cycle_id": "dc-a84ae68abab0",
+        "started_at": "2026-10-07T06:26:55.515335+00:00",
+        "ended_at": "2026-10-07T06:27:00.664507+00:00",
+        "status": "completed",
+        "trigger": "pressure",
+        "formula": "legacy",
+        "pressure": 75.068,
+        "threshold": 3.0,
+        "threshold_ratio": 25.022666666666666,
+        "counts": {
+          "metacog": 16,
+          "crystallization": 50,
+          "compaction_request": 35
+        },
+        "new_counts": null,
+        "idle_minutes": 161.0701262,
+        "hours_since_previous_attempt_end": 6.13118296,
+        "seconds_after_timer": 472.2586560000018,
+        "timer_aligned": true,
+        "legacy_ceiling": 175.0,
+        "fraction_of_legacy_ceiling": 0.42896,
+        "legacy_sources_at_cap": [
+          "crystallization"
+        ]
+      },
+      {
+        "cycle_id": "dc-e3e32fbb4643",
+        "started_at": "2026-10-07T12:27:05.794410+00:00",
+        "ended_at": "2026-10-07T12:27:11.077172+00:00",
+        "status": "completed",
+        "trigger": "pressure",
+        "formula": "legacy",
+        "pressure": 86.968,
+        "threshold": 3.0,
+        "threshold_ratio": 28.989333333333335,
+        "counts": {
+          "metacog": 19,
+          "crystallization": 50,
+          "compaction_request": 48
+        },
+        "new_counts": null,
+        "idle_minutes": 521.2416358833333,
+        "hours_since_previous_attempt_end": 6.001424973055556,
+        "seconds_after_timer": 5.1299030000009225,
+        "timer_aligned": true,
+        "legacy_ceiling": 175.0,
+        "fraction_of_legacy_ceiling": 0.49696,
+        "legacy_sources_at_cap": [
+          "crystallization"
+        ]
+      },
+      {
+        "cycle_id": "dc-3948d2fd04fe",
+        "started_at": "2026-10-07T18:27:15.678054+00:00",
+        "ended_at": "2026-10-07T18:27:20.143285+00:00",
+        "status": "completed",
+        "trigger": "pressure",
+        "formula": "legacy",
+        "pressure": 90.968,
+        "threshold": 3.0,
+        "threshold_ratio": 30.322666666666667,
+        "counts": {
+          "metacog": 33,
+          "crystallization": 50,
+          "compaction_request": 40
+        },
+        "new_counts": null,
+        "idle_minutes": 113.71023245,
+        "hours_since_previous_attempt_end": 6.001278022777777,
+        "seconds_after_timer": 4.600881999998819,
+        "timer_aligned": true,
+        "legacy_ceiling": 175.0,
+        "fraction_of_legacy_ceiling": 0.5198171428571429,
+        "legacy_sources_at_cap": [
+          "crystallization"
+        ]
+      },
+      {
+        "cycle_id": "dc-b5e13a4ce24d",
+        "started_at": "2026-10-08T00:27:24.584240+00:00",
+        "ended_at": "2026-10-08T00:27:30.449526+00:00",
+        "status": "completed",
+        "trigger": "pressure",
+        "formula": "legacy",
+        "pressure": 79.368,
+        "threshold": 3.0,
+        "threshold_ratio": 26.456,
+        "counts": {
+          "metacog": 16,
+          "crystallization": 50,
+          "compaction_request": 42
+        },
+        "new_counts": null,
+        "idle_minutes": 473.85868646666665,
+        "hours_since_previous_attempt_end": 6.001233598611111,
+        "seconds_after_timer": 4.440954999998212,
+        "timer_aligned": true,
+        "legacy_ceiling": 175.0,
+        "fraction_of_legacy_ceiling": 0.45353142857142853,
+        "legacy_sources_at_cap": [
+          "crystallization"
+        ]
+      },
+      {
+        "cycle_id": "dc-85f9b9ad721e",
+        "started_at": "2026-10-08T06:27:39.354252+00:00",
+        "ended_at": "2026-10-08T06:27:40.159453+00:00",
+        "status": "completed",
+        "trigger": "pressure",
+        "formula": "legacy",
+        "pressure": 69.968,
+        "threshold": 3.0,
+        "threshold_ratio": 23.322666666666667,
+        "counts": {
+          "metacog": 6,
+          "crystallization": 50,
+          "compaction_request": 36
+        },
+        "new_counts": null,
+        "idle_minutes": 224.2903083,
+        "hours_since_previous_attempt_end": 6.002473535,
+        "seconds_after_timer": 8.904726000000664,
+        "timer_aligned": true,
+        "legacy_ceiling": 175.0,
+        "fraction_of_legacy_ceiling": 0.39981714285714287,
+        "legacy_sources_at_cap": [
+          "crystallization"
+        ]
+      },
+      {
+        "cycle_id": "dc-843514c49fc0",
+        "started_at": "2026-10-08T12:27:44.410321+00:00",
+        "ended_at": "2026-10-08T12:27:50.086713+00:00",
+        "status": "completed",
+        "trigger": "pressure",
+        "formula": "legacy",
+        "pressure": 93.068,
+        "threshold": 3.0,
+        "threshold_ratio": 31.022666666666666,
+        "counts": {
+          "metacog": 44,
+          "resonance": 4,
+          "crystallization": 50,
+          "compaction_request": 31
+        },
+        "new_counts": null,
+        "idle_minutes": 584.37474405,
+        "hours_since_previous_attempt_end": 6.001180796666667,
+        "seconds_after_timer": 4.250867999999173,
+        "timer_aligned": true,
+        "legacy_ceiling": 175.0,
+        "fraction_of_legacy_ceiling": 0.5318171428571429,
+        "legacy_sources_at_cap": [
+          "crystallization"
+        ]
+      },
+      {
+        "cycle_id": "dc-f4b079db88f7",
+        "started_at": "2026-10-08T18:27:54.336507+00:00",
+        "ended_at": "2026-10-08T18:27:55.071969+00:00",
+        "status": "completed",
+        "trigger": "pressure",
+        "formula": "legacy",
+        "pressure": 89.568,
+        "threshold": 3.0,
+        "threshold_ratio": 29.855999999999998,
+        "counts": {
+          "metacog": 50,
+          "resonance": 6,
+          "crystallization": 50,
+          "compaction_request": 12
+        },
+        "new_counts": null,
+        "idle_minutes": 944.5400507333334,
+        "hours_since_previous_attempt_end": 6.0011804983333334,
+        "seconds_after_timer": 4.249793999999383,
+        "timer_aligned": true,
+        "legacy_ceiling": 175.0,
+        "fraction_of_legacy_ceiling": 0.5118171428571429,
+        "legacy_sources_at_cap": [
+          "metacog",
+          "crystallization"
+        ]
+      },
+      {
+        "cycle_id": "dc-cedcbe832500",
+        "started_at": "2026-10-09T00:27:59.265633+00:00",
+        "ended_at": "2026-10-09T00:28:03.764872+00:00",
+        "status": "completed",
+        "trigger": "pressure",
+        "formula": "legacy",
+        "pressure": 128.968,
+        "threshold": 3.0,
+        "threshold_ratio": 42.98933333333333,
+        "counts": {
+          "metacog": 50,
+          "resonance": 18,
+          "crystallization": 50,
+          "compaction_request": 50
+        },
+        "new_counts": null,
+        "idle_minutes": 1304.6223218166667,
+        "hours_since_previous_attempt_end": 6.001164906666666,
+        "seconds_after_timer": 4.193663999998535,
+        "timer_aligned": true,
+        "legacy_ceiling": 175.0,
+        "fraction_of_legacy_ceiling": 0.73696,
+        "legacy_sources_at_cap": [
+          "metacog",
+          "crystallization",
+          "compaction_request"
+        ]
+      }
+    ],
+    "by_formula": {
+      "legacy": {
+        "cycles": 52,
+        "statuses": {
+          "completed": 52
+        },
+        "min_pressure": 12.9,
+        "max_pressure": 128.968,
+        "below_threshold_at_cycle": 0,
+        "comparable_automatic_cycles": 51,
+        "comparable_automatic_below_threshold": 0,
+        "timer_aligned_cycles": 45,
+        "median_gap_hours": 6.0013457472222225
+      },
+      "novelty": {
+        "cycles": 0,
+        "statuses": {},
+        "min_pressure": null,
+        "max_pressure": null,
+        "below_threshold_at_cycle": 0,
+        "comparable_automatic_cycles": 0,
+        "comparable_automatic_below_threshold": 0,
+        "timer_aligned_cycles": 0,
+        "median_gap_hours": null
+      }
+    },
+    "interval_hours_assumed": 6,
+    "check_seconds_assumed": 600,
+    "legacy_candidate_cap_assumed": 50,
+    "legacy_timing_consistent_with_timer": false,
+    "independent_check_samples": 0,
+    "verdict": "UNVERIFIED: cycle-only history cannot show pressure falling and rising between dreams",
+    "calibration": "No threshold recommendation: samples are conditioned on a dream running.",
+    "limits": [
+      "Do not interpolate missing checks or call cycle-to-cycle variation discharge/recovery.",
+      "Manual and failed cycles remain visible; every attempt end affects the timer.",
+      "new_counts distinguishes formula families, not every deployed revision.",
+      "Timer/cadence and legacy cap are explicit assumptions; historical settings were not saved."
+    ],
+    "input_sha256": "3ae9dd5da5d0a288215684db765a385cb93c40545163e6026052072853e1d626"
+  },
+  "arousal": {
+    "start": "2026-09-25T05:00:00+00:00",
+    "end": "2026-10-09T05:00:00+00:00",
+    "totals": {
+      "strict_seconds": {
+        "engaged": 0,
+        "idle": 0,
+        "strained": 18770.0,
+        "unknown": 1190830.0
+      },
+      "provisional_seconds": {
+        "engaged": 58050.0,
+        "idle": 1121295.0,
+        "strained": 24940.0,
+        "unknown": 5315.0
+      },
+      "all_chat_provisional_seconds": {
+        "engaged": 210490.0,
+        "idle": 968855.0,
+        "strained": 24940.0,
+        "unknown": 5315.0
+      }
+    },
+    "provisional_strain_exits_per_day": {
+      "2026-10-03": 1,
+      "2026-10-08": 2
+    },
+    "hysteresis_review_days": [],
+    "input_counts": {
+      "chat": 107,
+      "heat": 38662,
+      "outreach": 56,
+      "gpu_event": 401,
+      "focus": 18
+    },
+    "idle_minutes_assumed": 45,
+    "verdict": "UNVERIFIED: provisional labels require human comparison and complete GPU state history",
+    "assumptions": [
+      "UTC; five-second grid (transitions may lag by <5s); one-hour warmup.",
+      "Chat query success is evidence of freshness; age of the last turn is not sensor age.",
+      "Strict GPU state is unknown without snapshots <=15s old.",
+      "Provisional GPU starts clear at warmup and assumes complete ordered lease transitions.",
+      "Heat uses the current pure cabinet verdict; historical AC-low fallback is unavailable.",
+      "Outreach and focus annotate hours, never change labels; focus spans may include downtime.",
+      "All-chat comparison includes every chat row, isolating the old idle-query contamination."
+    ],
+    "input_sha256": "53a06ff674163dd0939cacd58cf73f7fbf3f2de207e7ee4ed213402bfaf84675"
+  }
+}

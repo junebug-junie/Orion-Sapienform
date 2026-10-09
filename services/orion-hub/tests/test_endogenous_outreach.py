@@ -3987,3 +3987,41 @@ def test_prompt_puts_the_situation_before_the_dated_history():
     prompt = build_outreach_prompt(ctx, _DENVER)
     assert prompt.index("Where Juniper is right now") < prompt.index("The last thing the two of you said")
     assert "Juniper: (2 days ago) Nope, still in Chicago" in prompt
+
+
+
+def test_whereabouts_past_its_end_is_never_shown_as_current():
+    """Review finding: the projection writes only on change; a stale key must not say she is
+    still away once the end date passed."""
+    sit = _situation(whereabouts={"gist": "Juniper is in Chicago for a team meeting.",
+                                  "valid_until": (_NOW - _td(hours=5)).isoformat()})
+    lines = _eo_mod.situation_lines(sit, _NOW, _DENVER)
+    assert lines[1] == "- Nothing on record says she is away from home right now."
+    assert lines[2] == "- No longer true (ended 5 hours ago): Juniper is in Chicago for a team meeting."
+
+
+def test_what_she_said_recently_is_listed_with_its_age():
+    sit = _situation(recent=[
+        {"gist": "Juniper told me she has a 4:30am CDT wakeup for a 7:30am flight home.", "voice": "juniper_said",
+         "valid_from": (_NOW - _td(hours=22)).isoformat()},
+        {"gist": "I noted that 12 PRs landed in quick succession.", "voice": "orion_thought",
+         "valid_from": (_NOW - _td(hours=2)).isoformat()}])
+    lines = _eo_mod.situation_lines(sit, _NOW, _DENVER)
+    assert "- She said 22 hours ago: Juniper told me she has a 4:30am CDT wakeup for a 7:30am flight home." in lines
+    assert not any("12 PRs" in line for line in lines)
+
+
+def test_status_reports_recent_chat_from_the_last_read(monkeypatch) -> None:
+    outreach = _outreach()
+    _stub_context(monkeypatch)
+    monkeypatch.setattr(_eo_mod, "_seconds_since_juniper_spoke", lambda: 30.0)
+    asyncio.run(outreach.maybe_outreach())
+    assert outreach.status()["block_reason"] == "recent_chat"
+
+
+def test_db_is_not_read_when_a_cheap_gate_already_blocks(monkeypatch) -> None:
+    outreach = _outreach(enabled=False)
+    calls = []
+    monkeypatch.setattr(_eo_mod, "_seconds_since_juniper_spoke", lambda: calls.append(1) or 30.0)
+    result = asyncio.run(outreach.maybe_outreach())
+    assert result["reason"] == "disabled" and calls == []

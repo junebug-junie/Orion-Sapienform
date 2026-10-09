@@ -505,3 +505,20 @@ def test_backstop_never_sleeps_through_a_conversation():
 
     last = datetime.now(timezone.utc) - timedelta(hours=settings.DREAM_LOOKBACK_HOURS + 1)
     assert asyncio.run(run_cycle_once(_all_seen(last, idle=5.0).deps())) is None
+
+
+def test_pressure_endpoint_reports_the_overdue_backstop(monkeypatch):
+    """The Hub gauge reads this to say "will sleep once quiet" below the line,
+    instead of "not tired enough" right before a backstop sleep."""
+    from app import main
+    from app.settings import settings
+
+    last = datetime.now(timezone.utc) - timedelta(hours=settings.DREAM_LOOKBACK_HOURS + 1)
+    monkeypatch.setattr(main, "build_cycle_deps", lambda: _all_seen(last).deps())
+    out = asyncio.run(main.cycle_pressure_endpoint())
+    assert out["overdue"] is True and out["lookback_hours"] == settings.DREAM_LOOKBACK_HOURS
+    assert out["pressure"]["pressure"] == 0.0 and out["candidates"] > 0
+
+    recent = datetime.now(timezone.utc) - timedelta(hours=2)
+    monkeypatch.setattr(main, "build_cycle_deps", lambda: _all_seen(recent).deps())
+    assert asyncio.run(main.cycle_pressure_endpoint())["overdue"] is False

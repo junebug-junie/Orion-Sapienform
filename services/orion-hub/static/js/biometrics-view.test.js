@@ -73,7 +73,7 @@ test("boardTempFor is undefined when nothing measured it", () => {
 const { tirednessModel } = biometricsView;
 const reading = (pressure, extra = {}) => ({
   enabled: true, ready: false, too_soon: false, is_idle: true,
-  pressure: { pressure, threshold: 3, idle_required_minutes: 45, new_counts: {}, ...extra.p },
+  pressure: { pressure, threshold: 3, idle_minutes: 30, idle_required_minutes: 45, new_counts: {}, ...extra.p },
   ...extra.flags,
 });
 
@@ -96,7 +96,9 @@ test("tiredness past twice the line pins the fill and says it is off the scale",
 
 test("zero tiredness reads rested, and the reason it is not asleep follows the gates", () => {
   assert.equal(tirednessModel(reading(0)).level, "Rested");
-  assert.match(tirednessModel(reading(4, { flags: { is_idle: false } })).waiting, /45 min with no chat/);
+  assert.equal(tirednessModel(reading(4, { flags: { is_idle: false } })).waiting, "Waiting for 15 more min with no chat");
+  assert.equal(tirednessModel(reading(4, { flags: { is_idle: false }, p: { idle_minutes: null } })).waiting,
+    "Can't tell how long since the last chat");
   assert.equal(tirednessModel(reading(4, { flags: { ready: true } })).waiting, "Will sleep at the next check");
   assert.equal(tirednessModel(reading(4, { flags: { enabled: false } })).waiting, "Sleep loop is off");
 });
@@ -111,5 +113,25 @@ test("new material is named in plain words, in a fixed order", () => {
 test("a missing or malformed reading is unavailable, never rested", () => {
   assert.equal(tirednessModel({}).available, false);
   assert.equal(tirednessModel({ pressure: { pressure: 0 } }).available, false);
-  assert.equal(tirednessModel({ pressure: { pressure: 1, threshold: 0 } }).available, false);
+  assert.equal(tirednessModel({ pressure: { pressure: 1, threshold: -1 } }).available, false);
+});
+
+// Below the line but overdue: run_cycle_once's backstop sleeps once idle, so the
+// gauge must not say "not tired enough" right before a sleep (review, 2026-10-09).
+test("the overdue backstop is named instead of 'not tired enough'", () => {
+  const overdue = { overdue: true, candidates: 12, lookback_hours: 48 };
+  assert.equal(tirednessModel(reading(0.4, { flags: { ...overdue, is_idle: false } })).waiting,
+    "Overdue (48 h since last sleep), waiting for 15 more min with no chat");
+  assert.equal(tirednessModel(reading(0.4, { flags: overdue })).waiting, "Overdue \u2014 will sleep at the next check");
+  // nothing to replay: the backstop does not fire
+  assert.equal(tirednessModel(reading(0.4, { flags: { ...overdue, candidates: 0 } })).waiting, "Not tired enough to sleep yet");
+  // the 6 h minimum still comes first
+  assert.match(tirednessModel(reading(0.4, { flags: { ...overdue, too_soon: true } })).waiting, /6 h minimum/);
+});
+
+test("a sleep line of 0 reads always ready, not unavailable", () => {
+  const m = tirednessModel(reading(0, { p: { threshold: 0 } }));
+  assert.equal(m.available, true);
+  assert.equal(m.level, "Ready to sleep");
+  assert.equal(m.lineFraction, 0);
 });

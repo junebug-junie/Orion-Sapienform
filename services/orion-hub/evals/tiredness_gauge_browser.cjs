@@ -65,11 +65,25 @@ let pressure = {enabled: true, ready: false, too_soon: true, is_idle: false, sho
     assert.equal(await tipVisible(), false);
     await page.focus('#orionTiredness button');
     assert.equal(await tipVisible(), true);
+    await page.keyboard.press('Escape');
+    assert.equal(await tipVisible(), false, 'Escape did not close the tooltip');
 
-    // The card opens the Biometrics modal on click; the help button must not.
+    // Click pins it open; it must survive the card's 10 s refresh with focus intact.
     await page.click('#orionTiredness button');
-    const modalHidden = await page.$eval('#biometricsModalRoot', e => e.classList.contains('hidden'));
-    assert.equal(modalHidden, true, 'help button opened the Biometrics modal');
+    assert.equal(await tipVisible(), true);
+    await page.mouse.move(0, 0);
+    await new Promise(r => setTimeout(r, 11000));
+    assert.equal(await tipVisible(), true, 'card refresh closed the pinned tooltip');
+    assert.equal(await page.evaluate(() => document.activeElement && document.activeElement.textContent), '?',
+      'card refresh dropped keyboard focus');
+
+    // The card opens the Biometrics modal on click; the help button and tooltip text must not.
+    const modalHidden = () => page.$eval('#biometricsModalRoot', e => e.classList.contains('hidden'));
+    await page.click('#orionTirednessTip');
+    assert.equal(await modalHidden(), true, 'clicking the tooltip text opened the Biometrics modal');
+    await page.click('#orionTiredness button');
+    assert.equal(await tipVisible(), false, 'second click did not close the tooltip');
+    assert.equal(await modalHidden(), true, 'help button opened the Biometrics modal');
 
     // A rested reading, and an unavailable one that must not look rested.
     pressure = {...pressure, too_soon: false, pressure: {...pressure.pressure, pressure: 0, new_counts: {}}};
@@ -82,6 +96,7 @@ let pressure = {enabled: true, ready: false, too_soon: true, is_idle: false, sho
     assert.ok(requests.length >= 1);
     console.log(JSON.stringify({passed: true, checks: ['renders in preview card', 'reading and level', 'off-scale overflow',
       'waiting reason', 'plain-word new material', 'meter aria + geometry', 'tooltip hover', 'tooltip keyboard focus',
-      'help click does not open modal', 'rested', 'unavailable is not rested'], pressureRequests: requests.length}));
+      'Escape closes', 'pinned tooltip survives 10 s refresh', 'focus survives refresh', 'tooltip text click does not open modal',
+      'second click closes', 'help click does not open modal', 'rested', 'unavailable is not rested'], pressureRequests: requests.length}));
   } finally { await browser.close(); }
 })().catch(e => { console.error(e); process.exitCode = 1; });

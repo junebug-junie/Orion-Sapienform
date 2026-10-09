@@ -55,3 +55,16 @@ test("a response without lane_assigned falls back to the unassigned string", () 
   assert.equal(laneBadge({ lane: "chat" }).assigned, true);
   assert.equal(laneBadge({}).text, "unassigned");
 });
+
+// Motherboard heat tile: read from the node's own snapshot measurements, and absent
+// (not 0) when the node has no BMC board sensor -- the tile then renders "—".
+test("boardTempFor reads board_temp_c_max from the node's own snapshot", () => {
+  const snap = { summary: { measurements: { board_temp_c_max: 45.0, temp_c_max: 63.0 } } };
+  assert.equal(biometricsView.boardTempFor(snap), 45.0);
+});
+
+test("boardTempFor is undefined when nothing measured it", () => {
+  assert.equal(biometricsView.boardTempFor({ ok: false }), undefined);
+  assert.equal(biometricsView.boardTempFor({ summary: { measurements: {} } }), undefined);
+  assert.equal(biometricsView.boardTempFor(null), undefined);
+});

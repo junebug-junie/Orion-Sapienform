@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Dict, Iterable, List, Optional, Tuple
@@ -95,6 +96,11 @@ def _sum_of(values: object) -> Optional[Tuple[float, int]]:
     if any(f is None for f in parsed):
         return None
     return sum(parsed), len(parsed)  # type: ignore[arg-type]
+
+
+# BMC sensor names for motherboard parts: chipset/PCH and voltage regulators ("VR" as its
+# own token, so it never matches inside another word). See board_temp_c_max below.
+_BOARD_SENSOR_RE = re.compile(r"chipset|pch|(?<![a-z])vr(?![a-z])", re.IGNORECASE)
 
 
 def extract_measurements(sample: Dict[str, object]) -> Dict[str, float]:
@@ -231,6 +237,22 @@ def extract_measurements(sample: Dict[str, object]) -> Dict[str, float]:
         fan_values = [f for f in (_as_float(v) for v in fan_map.values()) if f is not None]
         if fan_values:
             out["fan_pct_max"] = max(fan_values)
+
+    # Motherboard heat: the hottest chipset or voltage-regulator sensor the BMC reports.
+    # Not `temp_c_max` -- that is lm-sensors' hottest reading, which is the CPU package on
+    # every node we run. The board's own parts (PCH/chipset, CPU/DIMM voltage regulators) are
+    # only visible through the BMC. Names are vendor-specific, confirmed live 2026-10-09:
+    # athena's HPE iLO says "22-Chipset", "16-VR P1", "18-VR P1 Mem 1"; circe's AMI BMC says
+    # "PCH_TEMP", "VR_VCCIN_P0_TEMP", "VR_DIMMG0_TEMP". Absent when no such sensor reports.
+    thermal_map = ilo.get("ilo_thermal_c")
+    if isinstance(thermal_map, dict):
+        board = [
+            t
+            for name, t in ((str(k), _as_float(v)) for k, v in thermal_map.items())
+            if t is not None and t > 0.0 and _BOARD_SENSOR_RE.search(name)
+        ]
+        if board:
+            out["board_temp_c_max"] = max(board)
 
     put("temp_c_max", _as_float(temps.get("max_c")))
     put("cpu_cores", _as_float(cpu.get("cores")))

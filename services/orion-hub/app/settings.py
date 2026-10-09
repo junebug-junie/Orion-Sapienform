@@ -1234,6 +1234,12 @@ class Settings(BaseSettings):
     HUB_ENDOGENOUS_OUTREACH_MIN_COOLDOWN_SEC: float = Field(
         default=2700.0, alias="HUB_ENDOGENOUS_OUTREACH_MIN_COOLDOWN_SEC"
     )
+    # Background outreach waits this long after Juniper's last saved message (read from
+    # chat_history_log, so a Hub restart cannot reset it). 2026-10-09: a fresh restart forgot
+    # she was mid-conversation and Orion spoke over her. 0 disables.
+    HUB_ENDOGENOUS_OUTREACH_RECENT_CHAT_SEC: float = Field(
+        default=900.0, alias="HUB_ENDOGENOUS_OUTREACH_RECENT_CHAT_SEC"
+    )
     # Max outreaches per local calendar day; -1 disables the cap.
     HUB_ENDOGENOUS_OUTREACH_DAILY_CAP: int = Field(
         default=4, alias="HUB_ENDOGENOUS_OUTREACH_DAILY_CAP"

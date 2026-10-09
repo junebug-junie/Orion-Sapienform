@@ -436,6 +436,11 @@ class OutreachGateInputs:
     min_cooldown_sec: float
     sent_today: int
     daily_cap: int
+    # Seconds since Juniper's last saved message (chat_history_log, any session), or None when
+    # unknown. Read from Postgres, not Hub memory, so a Hub restart cannot make her look absent
+    # (2026-10-09: outreach fired 15 s after a restart, mid-conversation).
+    seconds_since_juniper_spoke: Optional[float] = None
+    recent_chat_sec: float = 0.0
 
 
 def in_quiet_hours(local_hour: int, start_hour: int, end_hour: int) -> bool:
@@ -469,6 +474,13 @@ def outreach_block_reason(
         return "disabled"
     if inp.turn_in_flight:
         return "turn_in_flight"
+    if (
+        inp.recent_chat_sec > 0
+        and inp.seconds_since_juniper_spoke is not None
+        and inp.seconds_since_juniper_spoke < inp.recent_chat_sec
+        and not skip_schedule_gates
+    ):
+        return "recent_chat"
     if in_quiet_hours(inp.local_hour, inp.quiet_start_hour, inp.quiet_end_hour):
         if not skip_schedule_gates:
             return "quiet_hours"
@@ -526,6 +538,10 @@ class OutreachContext:
     # NOT FrontierInvocationSignalV1.signal_id (reminted every curiosity tick).
     open_prior_ids: List[str] = field(default_factory=list)
     curiosity_content_ids: List[str] = field(default_factory=list)
+    # Orion's running situation (orion:situation:latest, the situation.update graph): where
+    # Juniper is and which away-facts have ended. Enrichment only (not in is_empty()); it is
+    # what stops a two-day-old "I'm in Chicago" turn from reading as tonight.
+    situation: Optional[Dict[str, Any]] = None
 
     def is_empty(self) -> bool:
         return (
@@ -994,6 +1010,116 @@ def _daydream_age_phrase(age_sec: float) -> str:
     return f"about {hours} hour{'' if hours == 1 else 's'} ago"
 
 
+def _age_phrase(seconds: float) -> str:
+    """How long ago, in words the prompt can lean on ("2 days ago", never a bare timestamp)."""
+    s = max(0.0, float(seconds))
+    if s < 600:
+        return "just now"
+    if s < 5400:
+        return f"{int(round(s / 60))} minutes ago"
+    if s < 129600:
+        hours = int(round(s / 3600))
+        return f"{hours} hour{'s' if hours != 1 else ''} ago"
+    days = int(round(s / 86400))
+    return f"{days} day{'s' if days != 1 else ''} ago"
+
+
+# Sources of a message Juniper typed in Hub. Rows with other sources (NULL: dream-cycle and
+# Collapse Mirror automation; collapse_mirror_reply) have a prompt but are not her talking now.
+_JUNIPER_CHAT_SOURCES = ("hub_orion", "hub_ws", "hub_http")
+_JUNIPER_SOURCE_SQL = "source IN ('hub_orion', 'hub_ws', 'hub_http')"
+
+
+def _seconds_since_juniper_spoke() -> Optional[float]:
+    """Seconds since Juniper's newest saved message, any session (she is one person). None if
+    unreadable. chat_history_log.created_at is naive UTC."""
+    from scripts.pg_engine import get_engine
+    from sqlalchemy import text
+
+    engine = get_engine()
+    if engine is None:
+        return None
+    with engine.connect() as conn:
+        value = conn.execute(text(
+            "SELECT EXTRACT(EPOCH FROM ((now() AT TIME ZONE 'UTC') - max(created_at))) "
+            "FROM chat_history_log WHERE COALESCE(prompt, '') <> '' AND " + _JUNIPER_SOURCE_SQL
+        )).scalar()
+    return None if value is None else float(value)
+
+
+def _juniper_spoke_since(epoch: float) -> bool:
+    """True when a message from Juniper was saved after ``epoch`` (unix seconds)."""
+    from scripts.pg_engine import get_engine
+    from sqlalchemy import text
+
+    engine = get_engine()
+    if engine is None:
+        return False
+    with engine.connect() as conn:
+        row = conn.execute(text(
+            "SELECT 1 FROM chat_history_log WHERE COALESCE(prompt, '') <> '' AND " + _JUNIPER_SOURCE_SQL +
+            " AND created_at > (to_timestamp(:t) AT TIME ZONE 'UTC') LIMIT 1"
+        ), {"t": float(epoch)}).first()
+    return row is not None
+
+
+async def _read_situation(bus: Any) -> Optional[Dict[str, Any]]:
+    """The situation graph's projection, or None (no bus, no key, unparseable)."""
+    redis = getattr(bus, "redis", None)
+    if redis is None:
+        return None
+    from orion.schemas.situation_state import SITUATION_STATE_REDIS_KEY, SituationStateV1
+
+    raw = await redis.get(SITUATION_STATE_REDIS_KEY)
+    if not raw:
+        return None
+    return SituationStateV1.model_validate_json(raw).model_dump(mode="json")
+
+
+_LAPSED_WHEREABOUTS_SHOWN_SEC = 7 * 86400
+
+
+def _parse_situation_dt(value: Any) -> Optional[datetime]:
+    try:
+        d = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    return d if d.tzinfo else d.replace(tzinfo=timezone.utc)
+
+
+def situation_lines(situation: Optional[Dict[str, Any]], now: datetime, tz: Any) -> List[str]:
+    """Prompt lines for where Juniper is now, from the running situation. Empty when absent."""
+    if not situation:
+        return []
+    juniper = situation.get("juniper") or {}
+    lines = ["Where Juniper is right now, from your running situation:"]
+    here = juniper.get("whereabouts")
+    until = _parse_situation_dt(here.get("valid_until")) if here else None
+    if here and until is not None and until > now:
+        lines.append(f"- {here['gist']} (holds until {until.astimezone(tz):%a %b %d, %H:%M})")
+    else:
+        # An end date already passed means the projection has not caught up (the graph writes
+        # only on change); never present it as current.
+        lines.append("- Nothing on record says she is away from home right now.")
+        if here and until is not None:
+            lines.append(f"- No longer true (ended {_age_phrase((now - until).total_seconds())}): {here['gist']}")
+    for fact in juniper.get("recent") or []:
+        # What Juniper herself said lately (the 4:30am flight home sat only here on 10-09).
+        if fact.get("voice") != "juniper_said":
+            continue
+        said = _parse_situation_dt(fact.get("valid_from"))
+        if said is not None:
+            lines.append(f"- She said {_age_phrase((now - said).total_seconds())}: {fact['gist']}")
+    for gone in situation.get("lapsed") or []:
+        if gone.get("slot") != "whereabouts":
+            continue
+        ended = _parse_situation_dt(gone.get("lapsed_at"))
+        if ended is not None and (now - ended).total_seconds() <= _LAPSED_WHEREABOUTS_SHOWN_SEC:
+            lines.append(f"- No longer true (ended {_age_phrase((now - ended).total_seconds())}): {gone['gist']}")
+    lines.append("Trust this over anything older in the conversation history below.")
+    return lines
+
+
 def _fetch_recent_turns(session_id: Optional[str]) -> List[Tuple[str, str]]:
     """Last few (role, text) pairs from ``chat_history_log``, oldest first.
 
@@ -1018,7 +1144,9 @@ def _fetch_recent_turns(session_id: Optional[str]) -> List[Tuple[str, str]]:
             rows = conn.execute(
                 text(
                     """
-                    SELECT prompt, response FROM chat_history_log
+                    SELECT prompt, response,
+                           EXTRACT(EPOCH FROM ((now() AT TIME ZONE 'UTC') - created_at)) AS age_sec
+                    FROM chat_history_log
                     WHERE session_id = :sid
                     ORDER BY created_at DESC LIMIT :lim
                     """
@@ -1029,7 +1157,9 @@ def _fetch_recent_turns(session_id: Optional[str]) -> List[Tuple[str, str]]:
             rows = conn.execute(
                 text(
                     """
-                    SELECT prompt, response FROM chat_history_log
+                    SELECT prompt, response,
+                           EXTRACT(EPOCH FROM ((now() AT TIME ZONE 'UTC') - created_at)) AS age_sec
+                    FROM chat_history_log
                     ORDER BY created_at DESC LIMIT :lim
                     """
                 ),
@@ -1038,13 +1168,17 @@ def _fetch_recent_turns(session_id: Optional[str]) -> List[Tuple[str, str]]:
 
     turns: List[Tuple[str, str]] = []
     for row in reversed(list(rows)):  # oldest first
+        # Dated (2026-10-09): undated two-day-old turns ("still in Chicago for another night")
+        # read as tonight and Orion wrote to her as if she were still there.
+        age = row.get("age_sec")
+        when = f"({_age_phrase(float(age))}) " if age is not None else ""
         for role, raw in (("Juniper", row.get("prompt")), ("Orion", row.get("response"))):
             body = str(raw or "").strip()
             if not body:
                 continue
             if len(body) > _MAX_TURN_CHARS:
                 body = body[: _MAX_TURN_CHARS - 1] + "…"
-            turns.append((role, body))
+            turns.append((role, when + body))
     return turns
 
 
@@ -1078,6 +1212,7 @@ def grounding_summary(ctx: OutreachContext) -> Dict[str, Any]:
         "recent_turns": len(ctx.recent_turns),
         "tension": ctx.tension_reason is not None,
         "chat_presence": ctx.presence is not None,
+        "situation": ctx.situation is not None,
         # Reports the RENDERED fragment, not the fetched row. `presence_fragment`
         # returns None for any state that is not present/recent (an empty room is
         # the default expectation most of the time), so `fetch_presence` handing
@@ -1157,7 +1292,7 @@ def _recent_turns_include_juniper(turns: Sequence[Tuple[str, str]]) -> bool:
     return False
 
 
-def build_outreach_prompt(ctx: OutreachContext) -> str:
+def build_outreach_prompt(ctx: OutreachContext, tz: Any = timezone.utc) -> str:
     """Render the generation prompt from real context.
 
     Returns a prompt only when there is something concrete to speak from — a
@@ -1274,6 +1409,12 @@ def build_outreach_prompt(ctx: OutreachContext) -> str:
             "That is yours, not something Juniper showed you. You may draw on it "
             "if it connects to anything above; do not just describe it back."
         )
+        lines.append("")
+
+    now_utc = datetime.now(timezone.utc)
+    sit_lines = situation_lines(ctx.situation, now_utc, tz)
+    if sit_lines:
+        lines.extend(sit_lines)
         lines.append("")
 
     if ctx.recent_turns:
@@ -1416,8 +1557,12 @@ class EndogenousOutreach:
         timezone_name: str = "UTC",
         trigger_evaluator: Optional[Callable[[], Any]] = None,
         agent_lane_timeout_sec: float = 210.0,
+        recent_chat_sec: float = 900.0,
     ) -> None:
         self.enabled = enabled
+        self.recent_chat_sec = max(0.0, float(recent_chat_sec))
+        self._last_spoke_ago: Optional[float] = None
+        self._last_spoke_read_at: Optional[float] = None
         self.tick_interval_sec = max(5.0, float(tick_interval_sec))
         self.min_cooldown_sec = max(0.0, float(min_cooldown_sec))
         self.daily_cap = int(daily_cap)
@@ -1652,6 +1797,11 @@ class EndogenousOutreach:
 
     def _gate_inputs(self, now: Optional[float] = None) -> OutreachGateInputs:
         ts = float(now if now is not None else time.time())
+        # Last DB read of "seconds since Juniper spoke", aged to now, so status() and
+        # blocked_reason() report recent_chat too (review finding).
+        spoke_ago = None
+        if self._last_spoke_ago is not None and self._last_spoke_read_at is not None:
+            spoke_ago = self._last_spoke_ago + max(0.0, ts - self._last_spoke_read_at)
         local = datetime.fromtimestamp(ts, tz=self._tz)
         self._roll_daily_counter(local.date())
         return OutreachGateInputs(
@@ -1666,6 +1816,8 @@ class EndogenousOutreach:
             min_cooldown_sec=self.min_cooldown_sec,
             sent_today=self._sent_today,
             daily_cap=self.daily_cap,
+            seconds_since_juniper_spoke=spoke_ago,
+            recent_chat_sec=self.recent_chat_sec,
         )
 
     def status(self) -> Dict[str, Any]:
@@ -1820,8 +1972,21 @@ class EndogenousOutreach:
         async with self._send_lock:
             return await self._outreach_once(force=force)
 
+    async def _spoke_ago(self) -> Optional[float]:
+        self._last_spoke_read_at = time.time()
+        try:
+            return await asyncio.to_thread(_seconds_since_juniper_spoke)
+        except Exception as exc:  # noqa: BLE001 - unknown, so this gate does not block
+            logger.warning("endogenous_outreach_last_spoke_read_failed err=%s", exc)
+            return None
+
     async def _outreach_once(self, *, force: bool) -> Dict[str, Any]:
+        compose_started_at = time.time()
+        # Cheap gates first: the DB read for recent_chat only happens when nothing else blocks.
         blocked = outreach_block_reason(self._gate_inputs())
+        if not blocked:
+            self._last_spoke_ago = await self._spoke_ago()
+            blocked = outreach_block_reason(self._gate_inputs())
         if blocked:
             # Same staleness reasoning as the `force` branch below: this
             # tick never reached `_should_roll()`, so whatever reason the
@@ -1928,7 +2093,7 @@ class EndogenousOutreach:
                 tension_reason=tension_reason,
                 grounding=grounding_summary(ctx),
             )
-        prompt = build_outreach_prompt(ctx)
+        prompt = build_outreach_prompt(ctx, self._tz)
         if not prompt:
             # No `grounding` on this row on purpose: the key means "lanes that
             # reached the prompt", and there is no prompt. `is_empty()`
@@ -2014,6 +2179,15 @@ class EndogenousOutreach:
         # inside that window -- a gate checked only at the top of the tick would
         # let outreach talk straight over a turn that began mid-generation.
         blocked_now = outreach_block_reason(self._gate_inputs())
+        if not blocked_now:
+            # Composing can take minutes (agent lane, then a chat-lane fallback). If Juniper
+            # spoke meanwhile, this message answers a conversation that has moved on: drop it.
+            # Live 2026-10-09: composed 01:58:20, she wrote 01:58:27-01:59:56, sent 02:04:07.
+            try:
+                if await asyncio.to_thread(_juniper_spoke_since, compose_started_at):
+                    blocked_now = "juniper_spoke"
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("endogenous_outreach_spoke_since_read_failed err=%s", exc)
         if blocked_now:
             logger.info(
                 "endogenous_outreach_dropped_after_generation corr=%s reason=%s chars=%d",
@@ -2361,6 +2535,12 @@ class EndogenousOutreach:
         else:
             curiosity_ids, summaries = [], list(curiosity or []) if curiosity else []
 
+        situation = None
+        try:
+            situation = await _read_situation(self._bus)
+        except Exception as exc:  # noqa: BLE001 - enrichment only
+            logger.warning("endogenous_outreach_situation_read_failed err=%s", exc)
+
         presence = None
         try:
             from scripts.hub_presence import presence_snapshot
@@ -2374,6 +2554,7 @@ class EndogenousOutreach:
             curiosity_content_ids=curiosity_ids,
             recent_turns=list(turns or []),
             presence=presence,
+            situation=situation,
             # Set by _should_roll() just before this is called; None on a
             # forced (force=True) debug trigger, which never calls it.
             tension_reason=self._last_tension_reason,

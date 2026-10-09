@@ -3354,6 +3354,7 @@ def test_grounding_summary_reports_each_lane() -> None:
         "recent_turns": 2,
         "tension": False,
         "chat_presence": True,
+        "situation": False,
         "embodied_presence": True,
         "priors_count": 1,
         "prior_ids": ["prior-xyz"],
@@ -3610,6 +3611,7 @@ def test_a_completed_cycle_records_which_lanes_it_saw(monkeypatch) -> None:
         "recent_turns": 1,
         "tension": True,
         "chat_presence": False,
+        "situation": False,
         "embodied_presence": False,
         "priors_count": 0,
         "prior_ids": [],
@@ -3890,3 +3892,136 @@ def test_real_generate_threads_retrieval_query_into_both_lane_attempts(monkeypat
     text, _debug = asyncio.run(outreach._generate("prompt", "sess", "corr-1", retrieval_query="the subject"))
     assert text == "hello"
     assert [c["retrieval_query"] for c in calls] == ["the subject", "the subject"]
+
+
+# --- 2026-10-09: stale "Chicago tonight" outreach composed across a restart ----------------------
+
+import scripts.endogenous_outreach as _eo_mod  # noqa: E402
+from datetime import datetime as _dt, timedelta as _td, timezone as _tz  # noqa: E402
+from zoneinfo import ZoneInfo as _Zone  # noqa: E402
+
+
+def test_recent_chat_gate_blocks_background_outreach_but_not_door_a() -> None:
+    base = dict(enabled=True, turn_in_flight=False, local_hour=12, quiet_start_hour=-1, quiet_end_hour=-1,
+                seconds_since_last_outreach=None, min_cooldown_sec=0.0, sent_today=0, daily_cap=4,
+                recent_chat_sec=900.0)
+    from scripts.endogenous_outreach import OutreachGateInputs as _G
+    assert outreach_block_reason(_G(**base, seconds_since_juniper_spoke=120.0)) == "recent_chat"
+    assert outreach_block_reason(_G(**base, seconds_since_juniper_spoke=120.0), skip_schedule_gates=True) is None
+    assert outreach_block_reason(_G(**base, seconds_since_juniper_spoke=3600.0)) is None
+    assert outreach_block_reason(_G(**base, seconds_since_juniper_spoke=None)) is None   # unknown never blocks
+
+
+def test_recent_chat_gate_reads_saved_messages_so_a_restart_cannot_reset_it(monkeypatch) -> None:
+    outreach = _outreach()
+    _stub_context(monkeypatch)
+    monkeypatch.setattr(_eo_mod, "_seconds_since_juniper_spoke", lambda: 30.0)
+    result = asyncio.run(outreach.maybe_outreach())
+    assert (result["outreach"], result["reason"]) == (False, "recent_chat")
+
+
+def test_juniper_speaking_while_it_composes_drops_the_outreach(monkeypatch) -> None:
+    """Live 2026-10-09: composed 01:58:20, Juniper wrote 01:58:27-01:59:56, sent 02:04:07 with a
+    prompt that never saw her message. Her turn had finished, so turn_in_flight was clear."""
+    outreach = _outreach()
+    queue: asyncio.Queue = asyncio.Queue()
+    outreach.register_connection("c1", queue, {"correlation_id": None, "kind": None})
+    _stub_context(monkeypatch)
+    spoke = {"value": False}
+    monkeypatch.setattr(_eo_mod, "_juniper_spoke_since", lambda epoch: spoke["value"])
+
+    async def generate_while_she_talks(self, prompt, session_id, correlation_id, **_kw):
+        spoke["value"] = True   # her whole turn starts and finishes inside generation
+        return "something I was thinking about", {"stub": True}
+
+    monkeypatch.setattr(EndogenousOutreach, "_generate", generate_while_she_talks)
+    result = asyncio.run(outreach.maybe_outreach())
+    assert (result["outreach"], result["reason"]) == (False, "juniper_spoke_after_generation")
+    assert queue.empty() and outreach.status()["sent_today"] == 0
+
+
+def test_age_phrase_reads_like_a_person_would_say_it() -> None:
+    assert _eo_mod._age_phrase(30) == "just now"
+    assert _eo_mod._age_phrase(45 * 60) == "45 minutes ago"
+    assert _eo_mod._age_phrase(3 * 3600) == "3 hours ago"
+    assert _eo_mod._age_phrase(2 * 86400 + 3600) == "2 days ago"
+
+
+_NOW = _dt(2026, 10, 9, 2, 0, tzinfo=_tz.utc)
+_DENVER = _Zone("America/Denver")
+
+
+def _situation(**juniper):
+    return {"juniper": {"whereabouts": None, "doing": [], "waiting_on": [], "recent": [], **juniper},
+            "lapsed": [], "revision": 9}
+
+
+def test_situation_lines_say_a_trip_has_ended():
+    sit = _situation()
+    sit["lapsed"] = [{"memory_id": "m", "slot": "whereabouts", "lapsed_at": (_NOW - _td(days=1, hours=11)).isoformat(),
+                      "gist": "Juniper told me she is staying in Chicago for another night and will fly back to SLC at 7:30am."}]
+    lines = _eo_mod.situation_lines(sit, _NOW, _DENVER)
+    assert lines[1] == "- Nothing on record says she is away from home right now."
+    assert lines[2].startswith("- No longer true (ended 35 hours ago): Juniper told me she is staying in Chicago")
+
+
+def test_situation_lines_show_current_whereabouts_with_local_end():
+    sit = _situation(whereabouts={"gist": "Juniper is in Tucson visiting her aunt.",
+                                  "valid_until": "2026-10-12T05:59:00+00:00"})
+    lines = _eo_mod.situation_lines(sit, _NOW, _DENVER)
+    assert lines[1] == "- Juniper is in Tucson visiting her aunt. (holds until Sun Oct 11, 23:59)"
+
+
+def test_old_ended_trips_and_other_slots_are_not_listed():
+    sit = _situation()
+    sit["lapsed"] = [{"memory_id": "a", "slot": "whereabouts", "lapsed_at": (_NOW - _td(days=9)).isoformat(), "gist": "old trip"},
+                     {"memory_id": "b", "slot": "recent", "lapsed_at": _NOW.isoformat(), "gist": "a recent event"}]
+    assert len(_eo_mod.situation_lines(sit, _NOW, _DENVER)) == 3   # header, "nothing says away", trust line
+    assert _eo_mod.situation_lines(None, _NOW, _DENVER) == []
+
+
+def test_prompt_puts_the_situation_before_the_dated_history():
+    ctx = OutreachContext(curiosity_summaries=["sustained prediction error on node:x"],
+                          recent_turns=[("Juniper", "(2 days ago) Nope, still in Chicago for another night.")],
+                          presence=None, situation=_situation())
+    prompt = build_outreach_prompt(ctx, _DENVER)
+    assert prompt.index("Where Juniper is right now") < prompt.index("The last thing the two of you said")
+    assert "Juniper: (2 days ago) Nope, still in Chicago" in prompt
+
+
+
+def test_whereabouts_past_its_end_is_never_shown_as_current():
+    """Review finding: the projection writes only on change; a stale key must not say she is
+    still away once the end date passed."""
+    sit = _situation(whereabouts={"gist": "Juniper is in Chicago for a team meeting.",
+                                  "valid_until": (_NOW - _td(hours=5)).isoformat()})
+    lines = _eo_mod.situation_lines(sit, _NOW, _DENVER)
+    assert lines[1] == "- Nothing on record says she is away from home right now."
+    assert lines[2] == "- No longer true (ended 5 hours ago): Juniper is in Chicago for a team meeting."
+
+
+def test_what_she_said_recently_is_listed_with_its_age():
+    sit = _situation(recent=[
+        {"gist": "Juniper told me she has a 4:30am CDT wakeup for a 7:30am flight home.", "voice": "juniper_said",
+         "valid_from": (_NOW - _td(hours=22)).isoformat()},
+        {"gist": "I noted that 12 PRs landed in quick succession.", "voice": "orion_thought",
+         "valid_from": (_NOW - _td(hours=2)).isoformat()}])
+    lines = _eo_mod.situation_lines(sit, _NOW, _DENVER)
+    assert "- She said 22 hours ago: Juniper told me she has a 4:30am CDT wakeup for a 7:30am flight home." in lines
+    assert not any("12 PRs" in line for line in lines)
+
+
+def test_status_reports_recent_chat_from_the_last_read(monkeypatch) -> None:
+    outreach = _outreach()
+    _stub_context(monkeypatch)
+    monkeypatch.setattr(_eo_mod, "_seconds_since_juniper_spoke", lambda: 30.0)
+    asyncio.run(outreach.maybe_outreach())
+    assert outreach.status()["block_reason"] == "recent_chat"
+
+
+def test_db_is_not_read_when_a_cheap_gate_already_blocks(monkeypatch) -> None:
+    outreach = _outreach(enabled=False)
+    calls = []
+    monkeypatch.setattr(_eo_mod, "_seconds_since_juniper_spoke", lambda: calls.append(1) or 30.0)
+    result = asyncio.run(outreach.maybe_outreach())
+    assert result["reason"] == "disabled" and calls == []

@@ -162,3 +162,14 @@ def test_leftovers_after_sigkill_are_released(tmp_path):
     pool.live = {"B"}
     released = asyncio.run(release_leftovers(pool, ledger, "t"))
     assert released == ["B"] and pool.live == set() and ledger.outstanding() == []
+
+
+def test_lease_ended_reads_pool_replies():
+    from orion.evals.model_replay.pool_hold import lease_ended
+
+    assert lease_ended({"ok": True})
+    assert lease_ended({"ok": False, "detail": {"status": "unavailable", "reason": "cancelled"}})   # release of a queued lease
+    assert lease_ended({"ok": False, "reason": "not_cancelable_from_released"})
+    assert lease_ended({"ok": False, "reason": "unknown_lease"})
+    assert not lease_ended({"ok": False, "reason": "TimeoutError: "})
+    assert not lease_ended({"ok": False, "detail": {"status": "granted"}})

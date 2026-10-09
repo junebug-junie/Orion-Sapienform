@@ -200,7 +200,7 @@ class PoolHolds:
         for verb in ("release", "cancel"):
             try:
                 res = await getattr(self.transport, verb)(lease_id, self.actor)
-                ok = bool(res.get("ok"))
+                ok = lease_ended(res)
             except Exception as exc:  # noqa: BLE001 -- keep going; the ledger keeps the id
                 res = {"ok": False, "reason": f"{type(exc).__name__}: {exc}"}
             if ok:
@@ -214,6 +214,24 @@ class PoolHolds:
         for lease_id in list(reversed(self._held)):
             await asyncio.shield(self._release_one(lease_id, reason=reason))
         self.seats.clear()
+
+
+_ENDED_STATUSES = ("released", "cancelled", "dead_lettered", "expired", "aborted")
+
+
+def lease_ended(reply: dict[str, Any]) -> bool:
+    """Did this control reply leave the lease ended? `release` on a queued lease ends it as cancelled
+    and answers ok=False/status=unavailable (runtime._reply_for); `cancel` on an already-ended lease
+    answers `not_cancelable_from_<status>`. Both mean: nothing is held any more."""
+    if reply.get("ok"):
+        return True
+    detail = reply.get("detail") or {}
+    reason = str(reply.get("reason") or detail.get("reason") or "")
+    if detail.get("status") in ("ok", "unknown_lease") or reason == "unknown_lease":
+        return True
+    if detail.get("status") == "unavailable" and any(s in reason for s in _ENDED_STATUSES + ("cancel",)):
+        return True
+    return any(reason == f"not_cancelable_from_{s}" for s in _ENDED_STATUSES)
 
 
 async def release_leftovers(transport: ControlTransport, ledger: HoldLedger, actor: str) -> list[str]:

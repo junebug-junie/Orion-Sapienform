@@ -287,6 +287,22 @@ class CabinetContextV1(BaseModel):
     uv_activity: Optional[float] = None
     vibration_activity: Optional[float] = None
     proximity_activity: Optional[float] = None
+    # Cabinet USB mic (Athena host reader, `orion/telemetry/ambient_audio.py`).
+    # Independent of the Nano frame: `available` above can be False while the
+    # mic is fresh, and vice versa. Levels are dBFS (relative to the 16-bit
+    # full scale, 0 = clipping), NOT calibrated dB SPL. `sound_usual_*` are
+    # the 10th/50th/90th percentiles of the stored ~30 s readings over the
+    # last 24 h; `sound_recent_dbfs` is the median of the last 10 min.
+    # `sound_vs_usual` compares the live reading to that 24 h band.
+    sound_available: bool = False
+    sound_age_seconds: Optional[float] = None
+    sound_dbfs: Optional[float] = None
+    sound_peak_dbfs: Optional[float] = None
+    sound_recent_dbfs: Optional[float] = None
+    sound_usual_low_dbfs: Optional[float] = None
+    sound_usual_dbfs: Optional[float] = None
+    sound_usual_high_dbfs: Optional[float] = None
+    sound_vs_usual: Optional[Literal["quieter", "usual", "louder"]] = None
 
 
 class RuntimeContextV1(BaseModel):

@@ -151,3 +151,16 @@ def test_brief_covers_dreams_as_experiences_not_facts():
     assert "'pull requests', not 'a dream about pull requests'" in dreams_line
     assert "kind=narrative returns the nightly dream narratives" in dreams_line
     assert "kind=hypothesis the offered sleep-cycle hypotheses" in dreams_line
+
+
+def test_brief_covers_curiosity_runs_and_unknown():
+    from orion.introspect.brief import introspect_brief_lines
+    from orion.schemas.introspect import IntrospectToolBindingV1
+
+    binding = IntrospectToolBindingV1(
+        invocation_context="curiosity", parent_run_id="r", parent_trace_id="t", memory_allowed=False,
+    )
+    text = " ".join(introspect_brief_lines(binding))
+    assert "curiosity reads back your own curiosity runs" in text
+    assert "before describing a past run" in text and "not settled fact" in text
+    assert "failed and empty runs are listed" in text and "never report it as no run having happened" in text

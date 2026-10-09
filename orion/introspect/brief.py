@@ -30,6 +30,14 @@ def introspect_brief_lines(binding: IntrospectToolBindingV1) -> list[str]:
             "items=[] means no dream matched; a tool error means the answer is unknown -- say "
             "so, never report it as not having dreamed."
         ),
+        (
+            "curiosity reads back your own curiosity runs (world questions, self questions, "
+            "self-sense checks) and, with kind=self_question, your open self-questions. Call it "
+            "before describing a past run instead of reconstructing it. A write-up is what you "
+            "concluded then, not settled fact; failed and empty runs are listed as records of "
+            "what happened. items=[] means nothing matched; a tool error means the answer is "
+            "unknown -- say so, never report it as no run having happened."
+        ),
     ]
 
 

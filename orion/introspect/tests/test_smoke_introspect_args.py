@@ -21,6 +21,11 @@ def _dream(text="a story"):
 @pytest.mark.parametrize("argv", [
     ["--tool", "dreams", "--url", "https://example.org/a"],
     ["--tool", "dreams", "--query", "vision", "--dream-id", "dream:19"],
+    ["--tool", "dreams", "--run-id", "r1"],
+    ["--self-questions"],
+    ["--tool", "curiosity", "--dream-id", "dream:19"],
+    ["--tool", "curiosity", "--query", "x", "--run-id", "r1"],
+    ["--tool", "curiosity", "--run-id", "r1", "--self-questions"],
 ])
 def test_bad_dreams_arg_combos_exit_via_argparse(argv, capsys):
     with pytest.raises(SystemExit) as exc:
@@ -35,6 +40,10 @@ def test_bad_dreams_arg_combos_exit_via_argparse(argv, capsys):
     ([], {"limit": 3}),
     (["--tool", "dreams", "--dream-id", "dream:19"], {"dream_id": "dream:19"}),
     (["--tool", "dreams", "--query", "vision"], {"query": "vision", "limit": 3}),
+    (["--tool", "curiosity"], {"limit": 3}),
+    (["--tool", "curiosity", "--run-id", "71238de8f271"], {"run_id": "71238de8f271"}),
+    (["--tool", "curiosity", "--query", "stance gate"], {"query": "stance gate", "limit": 3}),
+    (["--tool", "curiosity", "--self-questions", "--limit", "2"], {"kind": "self_question", "limit": 2}),
 ])
 def test_arguments_built_per_tool(argv, expected):
     _, arguments = smoke.parse_args(argv)
@@ -63,3 +72,17 @@ def test_empty_recent_window_is_degenerate():
     args, _ = smoke.parse_args(["--tool", "dreams"])
     code, _ = smoke.verdict(_result(), args)
     assert code == 1
+
+
+def _run(status="unsettled", text="I concluded"):
+    return {"id": "71238de8f271", "epistemic_status": status, "text": text, "extra": {}}
+
+
+def test_curiosity_named_run_missing_or_hollow_is_degenerate():
+    args, _ = smoke.parse_args(["--tool", "curiosity", "--run-id", "71238de8f271"])
+    assert smoke.verdict(_result(), args)[0] == 1
+    assert smoke.verdict(_result([_run(text="")], total=1), args)[0] == 1
+    assert smoke.verdict(_result([_run()], total=1), args)[0] == 0
+    recent, _ = smoke.parse_args(["--tool", "curiosity"])
+    assert smoke.verdict(_result(), recent)[0] == 1
+    assert smoke.verdict(_result([_run(status="record", text="World question run failed.")], total=1), recent)[0] == 0

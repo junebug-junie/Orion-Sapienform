@@ -292,9 +292,9 @@ Rebuild this service and Hub after applying the additive queue migration. See th
 **What it is.** A read-only tool server Orion gets during a harness turn. With
 it, Orion can look up what actually happened to them instead of reconstructing
 it from impression.
-- Live today: what they learned from reading (`reading_results`) and their
-  dreams (`dreams`).
-- Planned for later slices: reveries, curiosity runs and memories.
+- Live today: what they learned from reading (`reading_results`), their
+  dreams (`dreams`), and their curiosity runs (`curiosity`).
+- Planned for later slices: reveries and memories.
 
 Every answer comes from the service that owns the data, over the bus, under a
 correlation ID, so any claim Orion makes from it can be traced back to a stored
@@ -311,7 +311,7 @@ Search by meaning: [`2026-09-28-orion-introspect-slice1b-semantic-search.md`](..
 | `reading_results` | What a reading actually taught them: recent finished reads, one read by `url`/`request_id`, or `query=` by meaning | orion-hub ([responder](../orion-hub/README.md#introspect-responder-reading_results)) | `orion:reading:tool:request`, operation `reading_result` | Live (slices 1 + 1b) |
 | `dreams` | Narrative dreams and the sleep-cycle hypotheses they have already been offered, recent / one / by meaning | orion-dream ([responder](../orion-dream/README.md#introspect-responder-dreams)) | `orion:introspect:dream:request` | Live (slice 2) |
 | `reveries` | Their spontaneous-thought chains | orion-thought | `orion:introspect:reverie:request` | Planned |
-| `curiosity` | What their curiosity runs set out to do and what came of it | orion-substrate-runtime | `orion:introspect:curiosity:request` | Planned |
+| `curiosity` | Their curiosity runs (failed ones included) and open self-questions: recent / one by `run_id` with the full write-up / by meaning | orion-hub ([responder](../orion-hub/README.md#introspect-responder-curiosity)) | `orion:introspect:curiosity:request` | Live (slice 3) |
 | `memories` | Memory cards by meaning, with sensitivity labels | orion-recall | `orion:introspect:memory:request` | Planned; never listed when an outward-facing tool is attached |
 
 `orion/introspect/tests/test_readme_coverage.py` fails when a tool the server
@@ -358,12 +358,16 @@ claude -p (FCC motor)
 
 - **Read-only.** SELECTs only. Nothing is queued, retried, charged or written.
 - **Bounded.** At most 5 items, 900-char text per item, `truncated` set when
-  cut. One exception: fetching a single dream by `dream_id` returns that one
-  item with up to 4,000 chars (`FULL_TEXT_CAP`).
+  cut. Two exceptions: fetching a single dream by `dream_id` returns that one
+  item with up to 4,000 chars (`FULL_TEXT_CAP`), and a single curiosity run by
+  `run_id` returns its write-up up to 9,000 chars *as serialized JSON*
+  (`CURIOSITY_FULL_JSON_BUDGET`, `clip_json_text`), so escaping cannot push it
+  past the budget.
   - Every shape stays under the 12,000-char MCP result budget
     (`ORION_FCC_MCP_TOOL_RESULT_MAX_CHARS`). Tests pin the worst case for
     readings (`orion/introspect/tests`) and for dreams, including the
-    single 4,000-char dream (`services/orion-dream/tests/test_introspect_dreams.py`).
+    single 4,000-char dream (`services/orion-dream/tests/test_introspect_dreams.py`),
+    and for a single worst-case curiosity run (quotes, newlines, accents).
   - The proxy that enforces that budget does not wrap this server today;
     the bound keeps wrapping it later safe.
 - **Scaled.** Every success carries `as_of` and `total_available`, so "5 of
@@ -375,8 +379,9 @@ claude -p (FCC motor)
     an empty list.
   - The brief tells Orion to say "unknown", never "nothing happened".
 - **Labeled.** Each item's `epistemic_status` is `record` (it happened, e.g.
-  a memory card or a run outcome) or `unsettled` (something Orion had or read,
-  not a settled fact: readings, dreams, reveries).
+  a memory card, a curiosity run that failed or wrote nothing, an open
+  self-question) or `unsettled` (something Orion had, read or concluded, not a
+  settled fact: readings, dreams, reveries, a curiosity run's write-up).
 - **Trusted reply path.** Responders answer only when `reply_to` is exactly
   the channel derived from the request's correlation ID and the message kind
   matches. They never reply to a model-supplied subject.

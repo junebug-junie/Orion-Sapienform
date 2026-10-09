@@ -51,8 +51,10 @@ def _invoke(bus, name="reading_results", args=None):
     return asyncio.run(IntrospectTools(bus, BINDING).invoke(name, args or {}))
 
 
-def test_tool_specs_list_reading_results_then_dreams():
-    assert [s.name for s in IntrospectTools(ReplyBus(), BINDING).tool_specs()] == ["reading_results", "dreams"]
+def test_tool_specs_list_reading_results_then_dreams_then_curiosity():
+    assert [s.name for s in IntrospectTools(ReplyBus(), BINDING).tool_specs()] == [
+        "reading_results", "dreams", "curiosity",
+    ]
 
 
 def test_reading_results_uses_reading_channel_with_normalized_url():
@@ -209,3 +211,52 @@ def test_dreams_corrupt_reply_bytes_are_unknown():
         _invoke(bus, "dreams", {})
     [(channel, _, _, _)] = bus.sent
     assert channel == DREAM_REQUEST_CHANNEL
+
+
+from orion.introspect.transport import CURIOSITY_REQUEST_CHANNEL  # noqa: E402
+
+
+def _curiosity_ok(**kw):
+    return IntrospectResultV1(ok=True, operation="curiosity", as_of=NOW, total_available=0, **kw).model_dump(mode="json")
+
+
+def test_curiosity_uses_its_channel_with_binding_and_clean_args():
+    bus = DreamBus(_curiosity_ok())
+    out = _invoke(bus, "curiosity", {"query": " stance gate ", "line": "investigate", "limit": 2})
+    assert out["ok"] is True and out["operation"] == "curiosity"
+    [(channel, envelope, reply_channel, timeout)] = bus.sent
+    assert channel == CURIOSITY_REQUEST_CHANNEL and envelope.kind == REQUEST_KIND
+    assert envelope.reply_to == reply_channel == f"{RESULT_PREFIX}{envelope.correlation_id}"
+    assert timeout == RPC_TIMEOUT_SEC
+    assert envelope.payload["operation"] == "curiosity"
+    assert envelope.payload["args"] == {"query": "stance gate", "line": "investigate", "limit": 2, "kind": "run"}
+
+
+def test_curiosity_rejects_bad_args_before_transport():
+    bus = DreamBus(_curiosity_ok())
+    for bad in ({"run_id": "r1", "query": "x"}, {"kind": "self_question", "line": "investigate"}, {"status": "failed"}):
+        with pytest.raises(ValidationError):
+            _invoke(bus, "curiosity", bad)
+    assert bus.sent == []
+
+
+@pytest.mark.parametrize(
+    "bus",
+    [
+        DreamBus(raise_exc=TimeoutError()),
+        DreamBus(_curiosity_ok(), wrong_correlation=True),
+        DreamBus({"ok": True}),
+        DreamBus(IntrospectResultV1(ok=False, operation="curiosity", as_of=NOW, error="curiosity_unavailable; answer unknown").model_dump(mode="json")),
+        DreamBus(_dream_ok()),
+    ],
+)
+def test_curiosity_failures_are_unknown_never_empty(bus):
+    with pytest.raises(IntrospectUnknownError, match="curiosity: answer unknown"):
+        _invoke(bus, "curiosity", {})
+
+
+def test_curiosity_description_names_failures_labels_and_unknown():
+    [spec] = [s for s in IntrospectTools(ReplyBus(), BINDING).tool_specs() if s.name == "curiosity"]
+    for phrase in ("failures are part of your history", "not established fact", "kind=self_question",
+                   "graph_read=false means the hop counts are unknown", "never that no run happened"):
+        assert phrase in spec.description

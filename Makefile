@@ -520,3 +520,11 @@ eval-self-sense:
 	if [ -f .env ]; then . ./.env; elif [ -f "$$_root/.env" ]; then . "$$_root/.env"; fi; \
 	set +a; \
 	$(METRIC_PYTHON) services/orion-hub/evals/run_self_sense_eval.py $(ARGS)
+
+# Bonsai (gpu2) vs Q4 (gpu1) replay quality test: 30 real tasks, both models, writes stubbed,
+# verdict printed at the end. Holds gpu1+gpu2 per task through the pool's operator verbs and
+# releases them between tasks; ~12 h expected. `ARGS=--dry-run` shows the plan and touches nothing.
+# Design: orion/evals/model_replay/, docs/superpowers/pr-reports/2026-10-09-bonsai-replay-eval-pr.md.
+.PHONY: eval-bonsai-replay
+eval-bonsai-replay:
+	@ORION_BUS_URL=$${ORION_BUS_URL:-redis://100.92.216.81:6379/0} PYTHONPATH=. $(METRIC_PYTHON) scripts/run_bonsai_replay_eval.py $(ARGS)

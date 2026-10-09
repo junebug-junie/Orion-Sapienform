@@ -357,12 +357,15 @@ def test_gateway_error_reply_raises_instead_of_returning_empty_text():
         asyncio.run(llm.complete(_ReplyBus(_SHED_REPLY), "p"))
     with pytest.raises(llm.GatewayRefused):
         asyncio.run(llm.complete(_ReplyBus({"content": "   "}), "p"))
+    with pytest.raises(llm.GatewayRefused, match="upstream_error"):
+        asyncio.run(llm.complete(_ReplyBus({"content": "[Error: llamacpp URL not configured]", "raw": {}}), "p"))
     assert asyncio.run(llm.complete(_ReplyBus({"content": '{"link": false}'}), "p")) == '{"link": false}'
 
 
-def test_shed_sleep_is_failed_not_completed_so_the_window_does_not_advance():
+def test_all_shed_sleep_is_stored_failed_not_completed():
     """Live 2026-10-08 06:27/18:27: every call shed for heat, cycle stored 'completed' with
-    4 'unparseable', and the next sleep's replay window started after it."""
+    4 'unparseable', and the next sleep's replay window started after it (the window
+    starts at the last non-failed cycle, cycle_store.LAST_WINDOW_START_SQL)."""
     from app import llm
     from app.cycle import run_cycle_once
 
@@ -372,3 +375,35 @@ def test_shed_sleep_is_failed_not_completed_so_the_window_does_not_advance():
     cycle = asyncio.run(run_cycle_once(deps))
     assert cycle.status == "failed"
     assert cycle.unparseable_count == 0 and cycle.llm_failures > 0
+
+
+def test_gateway_refusal_keeps_the_bus_but_a_transport_error_drops_it(monkeypatch):
+    from app import llm, main
+
+    drops = []
+
+    async def bus():
+        return object()
+
+    async def drop():
+        drops.append(1)
+
+    monkeypatch.setattr(main, "_cycle_bus", bus)
+    monkeypatch.setattr(main, "_drop_cycle_bus", drop)
+    complete = main.build_cycle_deps().complete
+
+    async def refused(_bus, _p):
+        raise llm.GatewayRefused("gpu_pool_unavailable:shed:cabinet_hot")
+
+    monkeypatch.setattr(llm, "complete", refused)
+    with pytest.raises(llm.GatewayRefused):
+        asyncio.run(complete("p"))
+    assert drops == []
+
+    async def timeout(_bus, _p):
+        raise TimeoutError("rpc")
+
+    monkeypatch.setattr(llm, "complete", timeout)
+    with pytest.raises(TimeoutError):
+        asyncio.run(complete("p"))
+    assert drops == [1]

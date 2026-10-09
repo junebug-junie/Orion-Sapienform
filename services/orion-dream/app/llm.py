@@ -66,7 +66,10 @@ async def complete(bus: Any, prompt: str) -> str:
     result = decoded.envelope.payload or {}
     text = str(result.get("content") or result.get("text") or "")
     raw = result.get("raw") if isinstance(result.get("raw"), dict) else {}
-    if raw.get("error") or not text.strip():
+    # Same three failure signals the gateway's own _result_error reads: raw.error, or an
+    # upstream "[Error: ...]" text (e.g. backend URL unset), plus no text at all.
+    if raw.get("error") or not text.strip() or text.startswith("[Error:"):
         details = raw.get("details") if isinstance(raw.get("details"), dict) else {}
-        raise GatewayRefused(f"{raw.get('error') or 'empty_content'}:{details.get('reason') or ''}")
+        reason = raw.get("error") or ("upstream_error" if text.strip() else "empty_content")
+        raise GatewayRefused(f"{reason}:{details.get('reason') or ''}")
     return text

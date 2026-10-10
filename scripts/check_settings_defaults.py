@@ -159,24 +159,13 @@ HOST_SPECIFIC_EXAMPLE_KEYS: dict[str, frozenset[str]] = {
 # Same staleness rule as above: once aligned, the entry must be removed.
 REASONED_DRIFT: dict[str, dict[str, str]] = {
     "orion-hub": {
-        "HUB_PROPOSAL_REVIEW_ENABLED": (
-            "on in .env_example and live, but its API (orion-context-exec :8096) "
-            "is not deployed -- nothing listens on 8096 (2026-10-10). Live value "
-            "looks like a mistake; code default left False pending Juniper."
-        ),
         "CHAT_HISTORY_LOG_CHANNEL": (
             "equivalent: None is an override slot that falls back to "
             "CHANNEL_CHAT_HISTORY_LOG (default 'orion:chat:history:log', same "
             "as .env_example); a non-None default would disable that fallback."
         ),
     },
-    "orion-gpu-pool": {
-        "GPU_POOL_ORION_SHED_ENABLED": (
-            "Orion's own self-shed. On in .env_example and live since 2026-10-01, but "
-            ".env_example records that as Juniper's call with 'code default stays off'. "
-            "A recorded decision, not drift to auto-fix; left for Juniper."
-        ),
-    },
+    "orion-gpu-pool": {},
 }
 
 

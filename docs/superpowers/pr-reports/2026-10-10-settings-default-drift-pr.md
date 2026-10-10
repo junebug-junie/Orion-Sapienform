@@ -3,8 +3,8 @@
 - Orion's autonomy knobs in Hub and the GPU pool had one value written in code and a different one in the config template (`.env_example`) and in production. If a key ever went missing from a live `.env`, Orion's behaviour would silently change (for example the curiosity daily cap would fall from 7 to 3, the cooldown would jump from 30 minutes to 4 hours, and the GPU shed lever would quietly disarm).
 - Every behavioural code default in `services/orion-hub/app/settings.py` and `services/orion-gpu-pool/app/settings.py` now equals `.env_example`, which equals the live `.env` and the running container. Same for docker-compose `${KEY:-x}` fallbacks, which are the *real* default for any key compose lists explicitly.
 - `scripts/check_settings_defaults.py` gains `--example-drift`; CI (`orion-static-gates.yml`) now fails when a Hub or GPU-pool default drifts from its template again.
-- Three keys were deliberately not decided (see Risks): `HUB_PROPOSAL_REVIEW_ENABLED`, `GPU_POOL_ORION_SHED_ENABLED`, and `CHAT_HISTORY_LOG_CHANNEL` (equivalent by construction).
-- No live behaviour changes: every value written into code is the value production already runs.
+- Juniper decided the two keys the first pass refused to guess at (2026-10-10). `HUB_PROPOSAL_REVIEW_ENABLED` is now false everywhere: orion-context-exec is retired, so there is no review API to call. `GPU_POOL_ORION_SHED_ENABLED` now defaults to true in code, matching the template and production. `CHAT_HISTORY_LOG_CHANNEL` stays exempt because it is equivalent by construction.
+- One live change: Hub's proposal-review panel turns off once Hub is restarted. Nothing else changes for production.
 
 ## Outcome moved
 
@@ -29,7 +29,8 @@ Failure mode closed: "a missing `.env` key silently changes an autonomy knob". B
 - `.github/workflows/orion-static-gates.yml`: runs the tests and the check for both services.
 - `services/orion-hub/app/settings.py`: 36 defaults aligned (list below); stale "off by default" comments updated.
 - `services/orion-hub/docker-compose.yml`: 18 fallbacks aligned.
-- `services/orion-gpu-pool/app/settings.py`, `docker-compose.yml`, `.env_example`: `GPU_POOL_SHED_ENABLED` default true; comment no longer claims "code default false".
+- `services/orion-gpu-pool/app/settings.py`, `docker-compose.yml`, `.env_example`: `GPU_POOL_SHED_ENABLED` and `GPU_POOL_ORION_SHED_ENABLED` default to true in code and in the compose fallbacks. Comments no longer say "code default false/off".
+- `services/orion-hub/.env_example`: `HUB_PROPOSAL_REVIEW_ENABLED=false`, with a comment saying context-exec is retired.
 - `services/orion-hub/README.md`: `ENABLE_PRE_TURN_APPRAISAL` default `true`.
 - `services/orion-hub/tests/conftest.py` + 5 test files: new `pre_turn_appraisal_off` fixture for tests that drive the legacy post-turn substrate path with fakes that have no appraisal RPC (they silently depended on the old `false` default).
 - `services/orion-hub/tests/test_curiosity_contractor_peer_flag.py`: asserts the new `True` default.
@@ -56,7 +57,9 @@ orion-hub Settings:
 
 orion-hub compose fallbacks: the curiosity contractor/dream/durable-admission flags, `HUB_AGENT_CLAUDE(_MCP)_ENABLED`, `HUB_AITOWN_ENABLED`, `GRAPHITI_ENABLED`, `AUTONOMY_GOAL_EXECUTION_ENABLED`, the four `SUBSTRATE_AUTONOMY_*` flags, `SUBSTRATE_REVIEW_SCHEDULER_ENABLED`, `WORLD_PULSE_UI_FIXTURE_RUN_ENABLED` false -> true; `HUB_AGENT_CONTEXT_EXEC_ENABLED` true -> false (orion-context-exec is not deployed; settings, template, and live were already false); `ORION_SITUATION_WEATHER_PROVIDER` stub -> openmeteo; `CORTEX_GATEWAY_REQUEST_CHANNEL` / `CORTEX_GATEWAY_RESULT_PREFIX` `orion-cortex-gateway:*` -> `orion:cortex:gateway:*`.
 
-orion-gpu-pool: `GPU_POOL_SHED_ENABLED` false -> true (settings and compose).
+orion-gpu-pool: `GPU_POOL_SHED_ENABLED` and `GPU_POOL_ORION_SHED_ENABLED` false -> true (settings and compose).
+
+Decided by Juniper: `HUB_PROPOSAL_REVIEW_ENABLED` changed in `.env_example` from true to false. The code default and the compose fallback were already false. The primary checkout's live `services/orion-hub/.env` was edited for that one key only; a line-by-line comparison confirmed line 42 was the only line changed.
 
 Live-value evidence: for every key above, a script compared the primary checkout's `services/<svc>/.env` and `docker exec orion-athena-{hub,gpu-pool} env` against `.env_example` and printed only equality booleans (no values, so no secrets); all were equal.
 
@@ -73,8 +76,8 @@ Live-value evidence: for every key above, a script compared the primary checkout
 - Added keys: none
 - Removed keys: none
 - Renamed keys: none
-- `.env_example` updated: `services/orion-gpu-pool/.env_example` (comment only)
-- local `.env` synced with `python scripts/sync_local_env_from_example.py`: yes, run from the primary checkout root; no keys added for hub or gpu-pool; no keys skipped. (Its pre-existing "diverged" list for other services is unrelated and untouched.)
+- `.env_example` updated: `services/orion-gpu-pool/.env_example` (comments only); `services/orion-hub/.env_example` (`HUB_PROPOSAL_REVIEW_ENABLED` true -> false, plus its comment)
+- local `.env` synced with `python scripts/sync_local_env_from_example.py`: yes, run from the primary checkout root. No keys were added and none skipped. The sync script never overwrites an existing value, so `HUB_PROPOSAL_REVIEW_ENABLED=false` was set in the live hub `.env` by hand. Until this merges, the sync script reports that key as diverged, because the primary checkout's template (main) still says true.
 - skipped keys requiring operator action: none
 
 ## Tests run
@@ -132,19 +135,15 @@ Review ran in a subagent against `origin/main...HEAD`. It found no blocking issu
 
 ## Restart required
 
-```text
-No restart required. Production already runs every value now written into code.
+Hub needs a restart so it picks up `HUB_PROPOSAL_REVIEW_ENABLED=false`, which is already in the live `.env`. Run it from the primary checkout on main after merge:
+
+```bash
+cd /mnt/scripts/Orion-Sapienform && git pull --ff-only && scripts/safe_docker_build.sh orion-hub up -d --build orion-hub
 ```
 
+No other service needs a restart. The GPU pool already runs both shed flags as true.
+
 ## Risks / concerns
-
-- Severity: medium
-- Concern: `HUB_PROPOSAL_REVIEW_ENABLED` is on in `.env_example` and live, but its API (orion-context-exec, :8096) is not deployed and nothing listens on 8096. That looks like a mistake, so its code default stays `false` and it is listed in `REASONED_DRIFT` for Juniper to decide (turn the live flag off, or redeploy context-exec).
-- Mitigation: the gate prints it on every run; once decided, the stale-exemption rule forces the entry out.
-
-- Severity: medium
-- Concern: `GPU_POOL_ORION_SHED_ENABLED` (Orion's own self-shed) is on in `.env_example` and live, but `.env_example` records it as "Juniper's call; code default stays off". A recorded decision, so not auto-flipped.
-- Mitigation: listed in `REASONED_DRIFT` with that reason.
 
 - Severity: low
 - Concern: with no `.env` at all, Hub now defaults to production autonomy (substrate autonomy apply, curiosity outreach, unified turn). That is the intended "flags ship ON" posture, but anyone booting Hub without a `.env` gets live behaviour, not a quiet one.
@@ -157,6 +156,17 @@ No restart required. Production already runs every value now written into code.
 - Severity: low
 - Concern: `tests/test_substrate_effect_pipeline.py::test_pipeline_handles_internal_failure_without_raising` fails on main and on this branch (pre-existing). With appraisal defaulting on it briefly passed for the wrong reason; the new fixture pins appraisal off so it fails honestly again.
 - Mitigation: follow-up, out of scope.
+
+- Severity: low
+- Concern: context-exec is retired, but code and config still wire it in. Follow-up only; nothing removed here.
+  - In Hub, the flags are off live: `HUB_AGENT_CONTEXT_EXEC_ENABLED=false` and `CONTEXT_EXEC_INVESTIGATION_V2_ENABLED=false`. The supporting pieces are still present:
+    - `HUB_CONTEXT_EXEC_API_URL` / `_TIMEOUT_SEC` / `_EVENT_CHANNEL`
+    - `HUB_PROPOSAL_REVIEW_API_URL` (:8096)
+    - `scripts/context_exec_agent_bridge.py`, `context_exec_client.py`, `agent_step_relay.py`
+    - the `api_routes.py` Agent-lane branch
+  - orion-cortex-exec runs `CONTEXT_EXEC_ENABLED=true` and `CONTEXT_EXEC_LEGACY_FALLBACK=true` live, even though its code default is false. It still routes over the bus to a service that doesn't exist and then falls back.
+  - Elsewhere: the `services/orion-context-exec/` tree itself; channel entries in `orion/bus/channels.yaml`; `orion/schemas/context_exec.py`, `proposal_ledger.py`, `proposal_lifecycle.py` and their `orion/schemas/registry.py` entries; `orion/cognition/verbs/context_exec_trace_autopsy.yaml`.
+- Mitigation: separate retirement PR, with Juniper's go-ahead.
 
 ## PR link
 

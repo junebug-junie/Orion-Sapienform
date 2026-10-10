@@ -50,9 +50,10 @@ class Settings(BaseSettings):
     # receives and shows shed signals (orion-hardware-watch cooling incidents) but blocks nothing.
     shed_enabled: bool = Field(True, alias="GPU_POOL_SHED_ENABLED")
     # Orion's learned shed (attend-to-act loop A1): the lower-precedence ``orion_self_shed`` reason.
-    # OFF in code AND in .env_example -- Juniper flips it. false refuses every set and settles any
-    # active Orion shed ``cancelled`` at boot; it never touches the reflex's cooling_incident.
-    orion_shed_enabled: bool = Field(False, alias="GPU_POOL_ORION_SHED_ENABLED")
+    # ON in code, .env_example and production (Juniper turned it on; code default aligned 2026-10-10).
+    # false refuses every set and settles any active Orion shed ``cancelled`` at boot; it never
+    # touches the reflex's cooling_incident.
+    orion_shed_enabled: bool = Field(True, alias="GPU_POOL_ORION_SHED_ENABLED")
     # Caps, enforced in the pool (no caller can exceed them); orion_self_shed only, never the reflex.
     orion_shed_max_ttl_sec: float = Field(900.0, gt=0, le=3600, alias="GPU_POOL_ORION_SHED_MAX_TTL_SEC")
     orion_shed_max_sec_per_day: float = Field(3600.0, ge=0, alias="GPU_POOL_ORION_SHED_MAX_SEC_PER_DAY")

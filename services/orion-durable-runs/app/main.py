@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from contextlib import asynccontextmanager
-from typing import Any
+from typing import Any, Optional
 
 from fastapi import FastAPI, HTTPException
 
@@ -44,6 +44,7 @@ _admission_task: asyncio.Task | None = None
 _reconcile_task: asyncio.Task | None = None
 situation: Any = None
 temporal_self: Any = None
+chronicle: Any = None
 rpc_health_publisher: RpcHealthPublisher | None = None
 
 
@@ -295,9 +296,13 @@ def _build_temporal_self(saver: Any):
         return await regulation_store.record_transition(
             _checkpointer_cm, regulation_store.transition_row(prev, new, day_id))
 
+    global chronicle
+    chronicle = _build_chronicle() if s.temporal_self_chronicle_enabled else None
+
     deps = TemporalSelfDeps(
         read_inputs=read_inputs, read_drives=read_drives, project=project,
         record_transition=record_transition, now=lambda: datetime.now(timezone.utc),
+        chronicle=chronicle.step if chronicle is not None else None,
         arousal_enabled=s.regulation_arousal_enabled, engaged_minutes=s.dream_idle_minutes,
         gpu_queue_floor=s.regulation_strained_gpu_queue_min,
         gpu_sustain_sec=s.regulation_strained_gpu_queue_sec,
@@ -307,6 +312,29 @@ def _build_temporal_self(saver: Any):
     return TemporalSelfDriver(checkpointer=saver, deps=deps,
                               timezone_name=s.orion_situation_timezone, tick_sec=s.temporal_self_tick_sec,
                               retention_days=s.temporal_self_retention_days)
+
+
+def _build_chronicle():
+    """Temporal Self patch 3: the chronology reducer, live, on the checkpointer's pool."""
+    from datetime import datetime, timezone
+
+    from app.temporal_self_chronicle import ChronicleConfig, Chronicler
+    from app.temporal_self_sources import SourceReader
+    from app.temporal_self_store import ChronicleStore
+    from orion.temporal_self import ReducerConfig
+
+    s = _settings
+    reducer = ReducerConfig(
+        tz_name=s.orion_situation_timezone, arc_min_ticks=s.temporal_self_arc_min_ticks,
+        return_window_sec=60.0 * s.temporal_self_return_window_min,
+        conversation_return_window_sec=60.0 * s.temporal_self_conversation_return_window_min)
+    cfg = ChronicleConfig(
+        reducer=reducer, read_lag_sec=s.temporal_self_read_lag_sec, backfill_days=s.temporal_self_backfill_days,
+        event_retention_days=s.temporal_self_event_retention_days,
+        arc_retention_days=s.temporal_self_arc_retention_days,
+        day_retention_days=s.temporal_self_day_retention_days)
+    return Chronicler(store=ChronicleStore(_checkpointer_cm), reader=SourceReader(_checkpointer_cm, reducer.tz_name),
+                      cfg=cfg, now=lambda: datetime.now(timezone.utc))
 
 
 @asynccontextmanager
@@ -427,6 +455,7 @@ async def health() -> dict[str, Any]:
         "admitted_active_runs": sorted(admission.active) if admission is not None else [],
         "situation": situation.health() if situation is not None else None,
         "temporal_self": temporal_self.health() if temporal_self is not None else None,
+        "temporal_self_chronicle": chronicle.health() if chronicle is not None else None,
     }
 
 
@@ -438,6 +467,82 @@ async def regulation_state():
     if temporal_self.latest is None:
         raise HTTPException(404, "no regulation step has completed yet")
     return temporal_self.latest.model_dump(mode="json")
+
+
+def _chronicle_store():
+    if chronicle is None or _checkpointer_cm is None:
+        raise HTTPException(503, "temporal self chronicle is disabled (TEMPORAL_SELF_CHRONICLE_ENABLED)")
+    from app.temporal_self_store import ChronicleStore
+
+    return ChronicleStore(_checkpointer_cm)
+
+
+@app.get("/temporal-self/frame")
+async def temporal_self_frame():
+    """The current-day TemporalSelfFrameV1, verbatim (singleton ``current_day``)."""
+    frame = await _chronicle_store().frame()
+    if frame is None:
+        raise HTTPException(404, "no chronicle window has committed yet")
+    return frame
+
+
+@app.get("/temporal-self/day/{day_id}")
+async def temporal_self_day(day_id: str):
+    """A closed local day (final frame + every arc in full), or 404."""
+    day = await _chronicle_store().day(day_id)
+    if day is None:
+        raise HTTPException(404, f"day {day_id} is not closed (or not chronicled)")
+    return day
+
+
+@app.get("/temporal-self/arcs")
+async def temporal_self_arcs(day_id: Optional[str] = None, kind: Optional[str] = None, limit: int = 500):
+    """Arcs of one local day (default: the current frame's day), oldest first."""
+    store = _chronicle_store()
+    if day_id is None:
+        frame = await store.frame()
+        if frame is None:
+            raise HTTPException(404, "no chronicle window has committed yet")
+        day_id = frame["day_id"]
+    arcs = await store.arcs(day_id, kind=kind, limit=max(1, min(limit, 2000)))
+    return {"day_id": day_id, "count": len(arcs), "arcs": arcs}
+
+
+@app.get("/temporal-self/threads")
+async def temporal_self_threads():
+    """Open threads: concern loops raised in conversation with no verdict yet (from the frame)."""
+    frame = await _chronicle_store().frame()
+    if frame is None:
+        raise HTTPException(404, "no chronicle window has committed yet")
+    return {"day_id": frame["day_id"], "as_of": frame["as_of"], "open_threads": frame.get("open_threads") or []}
+
+
+@app.get("/temporal-self/cursors")
+async def temporal_self_cursors():
+    """Per-source cursors (last folded row) and the read watermark, with lag in seconds. The
+    watermark lagging more than 10 ticks past the configured read lag is named in ``warnings``."""
+    from datetime import datetime, timedelta, timezone
+
+    from app.temporal_self_store import READ_WATERMARK
+
+    store = _chronicle_store()
+    now = datetime.now(timezone.utc)
+    rows = await store.cursors()
+    late = await store.late_counts(now - timedelta(days=1))
+    out, warnings = [], []
+    budget = _settings.temporal_self_read_lag_sec + 10.0 * _settings.temporal_self_tick_sec
+    for r in rows:
+        at = r["last_occurred_at"]
+        lag = round((now - at).total_seconds(), 1) if at else None
+        out.append({"source_kind": r["source_kind"], "last_occurred_at": at.isoformat() if at else None,
+                    "last_source_ref": r["last_source_ref"], "lag_sec": lag,
+                    "updated_at": r["updated_at"].isoformat() if r["updated_at"] else None})
+        if r["source_kind"] == READ_WATERMARK and (lag is None or lag > budget):
+            warnings.append(f"read watermark {lag} s behind (budget {budget:.0f} s)")
+    if not any(r["source_kind"] == READ_WATERMARK for r in rows):
+        warnings.append("no chronicle window has committed yet")
+    return {"as_of": now.isoformat(), "cursors": out, "late_rows_last_24h": late, "warnings": warnings,
+            "chronicle": chronicle.health() if chronicle is not None else None}
 
 
 @app.get("/runs/unfinished")

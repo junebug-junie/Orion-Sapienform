@@ -168,6 +168,26 @@ class Settings(BaseSettings):
     regulation_strained_clear_sec: float = Field(600.0, ge=0.0, alias="ORION_REGULATION_STRAINED_CLEAR_SEC")
     # Redis TTL of orion:regulation:latest: 3 ticks. A missing key reads as unknown.
     regulation_redis_ttl_sec: int = Field(360, gt=0, alias="ORION_REGULATION_REDIS_TTL_SEC")
+    # Temporal Self patch 3 (PR #2369 rev 4): the `chronicle` node runs the pure chronology reducer
+    # (orion/temporal_self) live on the same thread, after `regulate`. Kill switch:
+    # TEMPORAL_SELF_CHRONICLE_ENABLED (regulation keeps running). Tables:
+    # services/orion-sql-db/manual_migration_temporal_self_v1.sql.
+    temporal_self_chronicle_enabled: bool = Field(True, alias="TEMPORAL_SELF_CHRONICLE_ENABLED")
+    # K: consecutive broadcast ticks that open or resume an attention arc (~110 s live). PR #2597 sweep.
+    temporal_self_arc_min_ticks: int = Field(3, ge=1, alias="TEMPORAL_SELF_ARC_MIN_TICKS")
+    # R: a suspended arc may return within this window, else it closes (PR #2597 sweep: 30, not 180).
+    temporal_self_return_window_min: float = Field(30.0, gt=0.0, alias="TEMPORAL_SELF_RETURN_WINDOW_MIN")
+    # Conversations suspend after 45 min idle, so their return window must be longer than that.
+    temporal_self_conversation_return_window_min: float = Field(
+        180.0, gt=0.0, alias="TEMPORAL_SELF_CONVERSATION_RETURN_WINDOW_MIN")
+    # Rows are read up to now minus this. Covers sql-writer landing a chat row after its salience
+    # trace (live max 141 s) and metacog rows after their trigger (live p99 13 s, max 532 s).
+    temporal_self_read_lag_sec: float = Field(300.0, ge=0.0, alias="TEMPORAL_SELF_READ_LAG_SEC")
+    # First boot (no stored state) starts reading at local midnight this many days ago.
+    temporal_self_backfill_days: int = Field(1, ge=0, le=6, alias="TEMPORAL_SELF_BACKFILL_DAYS")
+    temporal_self_event_retention_days: int = Field(30, ge=1, alias="TEMPORAL_SELF_EVENT_RETENTION_DAYS")
+    temporal_self_arc_retention_days: int = Field(90, ge=1, alias="TEMPORAL_SELF_ARC_RETENTION_DAYS")
+    temporal_self_day_retention_days: int = Field(365, ge=1, alias="TEMPORAL_SELF_DAY_RETENTION_DAYS")
     request_channel: str = DURABLE_RUN_REQUEST_CHANNEL
     state_channel: str = DURABLE_RUN_STATE_CHANNEL
 

@@ -128,6 +128,18 @@ class FieldChannelGlossaryEntry:
     # history (not just its latest value) -- informational, never parsed.
     node: str | None = None
     trend_source: str | None = None
+    # Rest semantics (2026-10-10, orion/metrics/semantics.py): the entry's
+    # `semantics:` mapping as sorted (key, value) pairs, list values as tuples
+    # so the frozen entry stays hashable.
+    semantics: tuple[tuple[str, Any], ...] = ()
+
+
+def _freeze_semantics(raw: Any) -> tuple[tuple[str, Any], ...]:
+    if not isinstance(raw, dict):
+        return ()
+    return tuple(
+        sorted((k, tuple(v) if isinstance(v, list) else v) for k, v in raw.items())
+    )
 
 
 @functools.lru_cache(maxsize=1)
@@ -150,6 +162,7 @@ def load_glossary(path: Path | None = None) -> dict[str, Any]:
             evidence_dimension=e.get("evidence_dimension"),
             node=e.get("node"),
             trend_source=e.get("trend_source"),
+            semantics=_freeze_semantics(e.get("semantics")),
         )
         for e in raw.get("channels", [])
     )

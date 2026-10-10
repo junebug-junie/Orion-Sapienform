@@ -51,6 +51,10 @@ VALUE_KINDS: frozenset[str] = frozenset(
 # per_tick         a reading every producer tick; long zero runs mean calm
 # event_gated      a reading only when an event happens; silence is normal
 # designed_sparse  mostly exact zeros by construction (e.g. negatives clipped)
+# Precedence when both apply: designed_sparse wins if the zeros are the
+# point (a reader would otherwise call the metric dead); write cadence then
+# goes in absent_means. Applied to every entry populated 2026-10-10 except
+# where noted in the entry's own comment.
 SPARSITIES: frozenset[str] = frozenset({"per_tick", "event_gated", "designed_sparse"})
 
 POLARITIES: frozenset[str] = frozenset({"higher_is_better", "higher_is_worse"})
@@ -61,6 +65,12 @@ POLARITIES: frozenset[str] = frozenset({"higher_is_better", "higher_is_worse"})
 # real change, and it must edit this set in the same diff, where review sees
 # it. Inventory: docs/superpowers/specs/2026-10-07-orion-self-calibration-
 # design.md (rev 1, "What reaches Orion's prompts"), re-verified 2026-10-10.
+#
+# LIMIT, stated: the gate checks that each prompt site exists, not that it
+# reads this metric or renders a template (it cannot: the AST consumer scan
+# does not read .j2 files or follow context dicts). The pin below is the
+# guard against a marker being dropped; the reverse check (a marker on an
+# unpinned URN fails) keeps the pin growing with the markers.
 #
 # Inventory items with NO URN, so this gate cannot see them (listed so the
 # gap is a recorded decision, not an oversight):
@@ -134,16 +144,30 @@ class MetricSemantics:
         )
 
 
-def derived_channel_polarity(channel: str) -> str:
-    """Polarity of a field channel, from the one set that already decides it.
+def derived_channel_polarity(channel: str, value_kind: str | None = None) -> str | None:
+    """Polarity of a field channel, from the two sets that already decide it.
 
-    orion.field.pressure merges HIGHER_IS_BETTER_CHANNELS with min() and every
-    other channel with max(); that merge IS the repo's polarity decision, so
-    this reads it rather than keeping a second list that could drift.
+    orion.field.pressure merges HIGHER_IS_BETTER_CHANNELS with min() and
+    PRESSURE_CHANNELS with max() (keeping a calm 0.0); those two sets ARE the
+    repo's polarity decision. Every other channel is max-merged only because
+    max() is the default, which says nothing about whether more is worse
+    (expected_offline_suppression is a suppression flag; cabinet_*_activity and
+    context_gathering_ratio are neutral), so they get None rather than an
+    invented label. A trigger has no polarity either: its value is "it fired".
     """
-    from orion.field.pressure import HIGHER_IS_BETTER_CHANNELS
+    from orion.field.pressure import HIGHER_IS_BETTER_CHANNELS, PRESSURE_CHANNELS
 
-    return "higher_is_better" if channel in HIGHER_IS_BETTER_CHANNELS else "higher_is_worse"
+    if value_kind == "trigger":
+        return None
+    if channel in HIGHER_IS_BETTER_CHANNELS:
+        return "higher_is_better"
+    if channel in PRESSURE_CHANNELS:
+        return "higher_is_worse"
+    return None
+
+
+def _is_text(value: Any) -> bool:
+    return isinstance(value, str) and bool(value.strip())
 
 
 def check_prompt_inventory(
@@ -167,6 +191,13 @@ def check_prompt_inventory(
                 f"{urn} is pinned as prompt-reaching but declares no prompt_sites "
                 "-- restore them, or remove it from PROMPT_INVENTORY_URNS in the "
                 "same diff if it really stopped reaching a prompt."
+            )
+    for node in by_urn.values():
+        if node.prompt_sites and node.urn not in inventory:
+            failures.append(
+                f"{node.urn} declares prompt_sites but is not in "
+                "PROMPT_INVENTORY_URNS -- pin it in the same diff so the marker "
+                "cannot later be dropped silently."
             )
     return failures
 
@@ -193,7 +224,7 @@ def check_node_semantics(nodes: Iterable[Any]) -> list[str]:
             failures.append(f"{urn}: polarity {node.polarity!r} not in {sorted(POLARITIES)}")
         if not node.prompt_sites:
             continue
-        missing = [f for f in REQUIRED_FOR_PROMPT if not getattr(node, f, None)]
+        missing = [f for f in REQUIRED_FOR_PROMPT if not _is_text(getattr(node, f, None))]
         if missing:
             failures.append(
                 f"{urn} reaches an Orion prompt ({', '.join(node.prompt_sites)}) "

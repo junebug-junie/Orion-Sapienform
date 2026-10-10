@@ -991,7 +991,14 @@ REGISTRY: tuple[InnerStateSignal, ...] = (
                 ),
             ),
         ),
-        notes="Also emitted by orion/spark/concept_induction and frontier_curiosity.py with fixed/affine strengths.",
+        notes=(
+            "Declared consumer reads ONLY signal_type == 'world_coverage_gap' "
+            "(orion/autonomy/policy_act.py:43-47); the endogenous "
+            "curiosity_candidate sources described in the semantics are "
+            "persisted to substrate_endogenous_curiosity_candidates and are not "
+            "read by it. Also emitted by orion/spark/concept_induction and "
+            "frontier_curiosity.py with fixed/affine strengths."
+        ),
     ),
     InnerStateSignal(
         signal_id="repair_pressure_appraisal.v1",
@@ -1005,7 +1012,9 @@ REGISTRY: tuple[InnerStateSignal, ...] = (
             "not a self-state dimension."
         ),
         cognition_consumers=(
-            "orion.substrate.appraisal.contract:apply_repair_pressure_contract",
+            # Subscribes to the published repair_pressure appraisal channel and
+            # runs the relational metacog trigger (service.py:1261/:1328).
+            "services.orion-equilibrium-service.app.service:EquilibriumService",
         ),
         semantics=(
             # orion/substrate/appraisal/paradigms/repair_pressure_v2.py:203-205
@@ -1044,6 +1053,8 @@ REGISTRY: tuple[InnerStateSignal, ...] = (
             ),
         ),
         notes=(
+            "Hub publishes; the level is computed by the repair_pressure_v2 "
+            "paradigm (orion/substrate/appraisal/paradigms/). "
             "Distinct from the curiosity repair_pressure path: "
             "services/orion-substrate-runtime/app/worker.py::"
             "_repair_appraisal_from_chat reads ChatTurnStateV1."
@@ -1076,7 +1087,8 @@ REGISTRY: tuple[InnerStateSignal, ...] = (
                     rest=(
                         "0.0 = every tracked service heartbeating within grace. "
                         "Mean partial downtime across services, so one dead "
-                        "service among 40 reads 0.025."
+                        "service among N reads 1/N (live median 0.025, "
+                        "2026-10-07)."
                     ),
                     sparsity="per_tick",
                     absent_means=(

@@ -77,6 +77,12 @@ def test_metric_not_reaching_a_prompt_may_omit_semantics():
     assert check_node_semantics([_node()]) == []
 
 
+@pytest.mark.parametrize("bad", ["   ", 0.0])
+def test_whitespace_or_non_string_rest_counts_as_missing(bad):
+    failures = check_node_semantics([dataclasses.replace(_complete(), rest=bad)])
+    assert failures and "rest" in failures[0]
+
+
 def test_absent_means_and_polarity_are_not_required():
     assert check_node_semantics([_complete()]) == []  # neither set
 
@@ -124,6 +130,12 @@ def test_dropping_a_pinned_prompt_marker_fails():
     node = _node(urn=urn)  # same URN, prompt_sites removed
     failures = check_prompt_inventory([node], frozenset({urn}))
     assert failures and "declares no prompt_sites" in failures[0]
+
+
+def test_prompt_marker_on_unpinned_urn_fails():
+    node = _complete(urn="metric://inner_state/svc/sig#unpinned")
+    failures = check_prompt_inventory([node], frozenset())
+    assert failures and "not in PROMPT_INVENTORY_URNS" in failures[0]
 
 
 def test_renaming_away_a_pinned_urn_fails():
@@ -182,15 +194,34 @@ def test_vision_organ_has_no_prediction_error_entry():
 # ------------------------------------------------------------ polarity is derived
 
 
-def test_field_channel_polarity_derives_from_pressure_merge_set():
-    from orion.field.pressure import HIGHER_IS_BETTER_CHANNELS
+def test_field_channel_polarity_derives_from_pressure_merge_sets():
+    from orion.field.pressure import HIGHER_IS_BETTER_CHANNELS, PRESSURE_CHANNELS
 
     for channel in HIGHER_IS_BETTER_CHANNELS:
         assert derived_channel_polarity(channel) == "higher_is_better"
-    assert derived_channel_polarity("cpu_pressure") == "higher_is_worse"
+    for channel in PRESSURE_CHANNELS:
+        assert derived_channel_polarity(channel) == "higher_is_worse"
     nodes = {n.name: n for n in resolve_field_channels()}
     assert nodes["stability"].polarity == "higher_is_better"
     assert nodes["cpu_pressure"].polarity == "higher_is_worse"
+
+
+@pytest.mark.parametrize(
+    "channel", ["expected_offline_suppression", "context_gathering_ratio", "cabinet_climate_activity"]
+)
+def test_channel_in_neither_merge_set_gets_no_polarity(channel):
+    # Review finding: max() is merely the default merge; it is not a claim
+    # that more is worse. expected_offline_suppression is a suppression flag.
+    nodes = {n.name: n for n in resolve_field_channels()}
+    assert derived_channel_polarity(channel) is None
+    assert nodes[channel].polarity is None
+
+
+def test_trigger_gets_no_polarity():
+    assert derived_channel_polarity("prediction_error", "trigger") is None
+    nodes = {n.name: n for n in resolve_field_channels()}
+    assert nodes["node:substrate.cabinet.prediction_error"].polarity is None
+    assert nodes["node:substrate.execution.prediction_error"].polarity == "higher_is_worse"
 
 
 def test_glossary_entry_declaring_polarity_is_rejected(tmp_path):

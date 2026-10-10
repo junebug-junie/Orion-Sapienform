@@ -478,6 +478,7 @@ channels:
     trend_source: "substrate_node_prediction_error_history WHERE node_id = 'node:substrate.execution'"
     consumers:
       - "orion.attention.field_attention.selectors:select_node_targets"
+      - "orion.substrate.endogenous_curiosity:_prediction_error_candidates"
       - "orion.substrate.metacog_trend_signals:latest_node_prediction_errors"
     semantics:
       value_kind: level
@@ -500,10 +501,11 @@ channels:
     trend_source: "substrate_node_prediction_error_history WHERE node_id = 'node:substrate.chat'"
     consumers:
       - "orion.attention.field_attention.selectors:select_node_targets"
+      - "orion.substrate.endogenous_curiosity:_prediction_error_candidates"
     semantics:
       value_kind: level
       rest: "0.0 = at or below the usual turn-to-turn movement, or no baseline yet. Mostly zero by design (69% live)."
-      sparsity: event_gated
+      sparsity: designed_sparse
       absent_means: "only written when chat turns were touched; carried forward in node_vectors between turns, dropped from the self-model after 1800 s."
 
   # orion/substrate/prediction_error.py:293 codebase: per sub-domain (git,
@@ -523,7 +525,7 @@ channels:
     semantics:
       value_kind: level
       rest: "0.0 = no sub-domain above its usual. Mostly zero by design (91% live)."
-      sparsity: event_gated
+      sparsity: designed_sparse
       absent_means: "only written on a codebase delta event; carried forward in node_vectors between events."
 
   # orion/substrate/prediction_error.py:717 route_prediction_error(): per
@@ -541,10 +543,11 @@ channels:
     trend_source: "substrate_node_prediction_error_history WHERE node_id = 'node:substrate.route'"
     consumers:
       - "orion.attention.field_attention.selectors:select_node_targets"
+      - "orion.substrate.endogenous_curiosity:_prediction_error_candidates"
     semantics:
       value_kind: count
       rest: "0.0 = routing made the same decision as last time (or no decided run this batch). Mostly zero by design (87% live)."
-      sparsity: event_gated
+      sparsity: designed_sparse
       absent_means: "only written when routing runs were touched; carried forward in node_vectors, dropped from the self-model after 1800 s."
 
   # orion/substrate/prediction_error.py:567-604 biometrics: min(1, mean
@@ -560,6 +563,7 @@ channels:
     trend_source: "substrate_node_prediction_error_history WHERE node_id = 'node:substrate.biometrics'"
     consumers:
       - "orion.attention.field_attention.selectors:select_node_targets"
+      - "orion.substrate.endogenous_curiosity:_prediction_error_candidates"
       - "orion.substrate.metacog_trend_signals:latest_node_prediction_errors"
     semantics:
       value_kind: level

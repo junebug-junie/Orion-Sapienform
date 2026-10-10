@@ -195,7 +195,7 @@ def resolve_field_channels(path: Path | None = None) -> list[MetricNode]:
                 rest=sem.rest,
                 sparsity=sem.sparsity,
                 absent_means=sem.absent_means,
-                polarity=derived_channel_polarity(channel),
+                polarity=derived_channel_polarity(channel, sem.value_kind),
                 prompt_sites=sem.prompt_sites,
             )
         )

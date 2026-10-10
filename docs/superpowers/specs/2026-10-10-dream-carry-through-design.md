@@ -1,6 +1,6 @@
 # Dream carry-through: text → image → text → image → text → image
 
-Status: proposal (cognition loop change; needs Juniper's yes before implementation)
+Status: approved 2026-10-10 (Juniper: "surprise me, do it" — recommended answers: replace the story, end on a picture, yield to the cabinet). Implementing.
 Date: 2026-10-10
 Follows: PR #2565 (every sleep ends in a story dream; live since 10-10 01:02 UTC)
 
@@ -44,6 +44,24 @@ still keeps every hop it made and says where it stopped.
 - **Hub:** `GET /api/reverie/visual/image/{sha256}` already serves paintings by hash.
 
 ## Design
+
+### As built (changes from the first draft)
+
+- **Image hops are child `reverie.visual` runs.** No second copy of the painter's hold, heat
+  retry, abandon and fence machinery. The carry submits one child per image hop
+  (dispatch `dream-carry:<run>:<hop>`, inside durable-runs) and waits for its terminal
+  detail without holding anything.
+- **The dream flag is on the painting run, not the request.** `ReverieVisualRunBriefV1.dream_hop`
+  and `ReverieVisualStepRequestV1.dream_hop` (`DreamHopImageV1`) carry it; `VisualRunRequestV1`
+  is unchanged, so waking receipts and every reader of them are untouched.
+- **No new table or migration.** `dreams.fragments` is stored as sent (sql-writer copies
+  `DreamResultV1.fragments`), so each hop is a fragment. The Hub image route authorizes a dream
+  picture's sha by finding it in a dream's fragments.
+- **Text hops run under the run's own LLM hold** (`llm.route.metacog_background`); orion-dream
+  passes it as `options.gpu_lease`, the same way journal.compose attaches to its hold.
+- **Spacing comes free.** thought allows one open painting attempt at a time and a 600 s
+  cooldown after each (`claim_visual_attempt`), so dream pictures interleave with waking ones
+  and never stack up. That is the "yield to the cabinet" answer, enforced by existing code.
 
 ### The run: `dream.carry` (orion-durable-runs)
 

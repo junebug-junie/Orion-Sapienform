@@ -41,6 +41,7 @@ from orion.schemas.journal_compose_run import JOURNAL_COMPOSE_WORKFLOW, JournalC
 from orion.schemas.memory_episode import MEMORY_EPISODE_DISTILL_WORKFLOW, EpisodeDistillBriefV1
 from orion.schemas.reading_turn import ReadingRunBriefV1, READING_WORKFLOW
 from orion.schemas.reverie_visual_run import REVERIE_VISUAL_WORKFLOW, ReverieVisualRunBriefV1
+from orion.schemas.dream_carry import DREAM_CARRY_WORKFLOW, DreamCarryBriefV1
 from orion.schemas.gpu_pool import GpuLeaseRefV1
 from orion.schemas.orion_day import ORION_DAY_WORKFLOW, OrionDayRunBriefV1
 from orion.schemas.resource_admission import ResourceRequirementV1
@@ -79,6 +80,10 @@ DurableWorkflowV1 = Literal[
     # orion-durable-runs, never submitted. ADDITIVE on Literal/forbid: deploy orion-sql-writer
     # (validates DurableRunStateV1 rows) BEFORE orion-durable-runs.
     "situation.update",
+    # Dream carry-through (2026-10-10): submitted by orion-dream at the end of a sleep through
+    # cortex-orch's durable ingress. ADDITIVE on Literal/forbid, consumer-first: deploy
+    # orion-sql-writer and orion-durable-runs, then orion-cortex-orch, then orion-dream.
+    "dream.carry",
 ]
 
 # The runner's node names, in order. `attention_reason` on the surface lane
@@ -209,7 +214,7 @@ class DurableRunRequestV1(BaseModel):
     workflow: DurableWorkflowV1
     correlation_id: str
     requested_at: datetime = Field(default_factory=_utc_now)
-    brief: CuriosityRunBriefV1 | ReadingRunBriefV1 | ReverieVisualRunBriefV1 | CompactorDigestRunBriefV1 | JournalComposeRunBriefV1 | OrionDayRunBriefV1 | EpisodeDistillBriefV1
+    brief: CuriosityRunBriefV1 | ReadingRunBriefV1 | ReverieVisualRunBriefV1 | CompactorDigestRunBriefV1 | JournalComposeRunBriefV1 | OrionDayRunBriefV1 | EpisodeDistillBriefV1 | DreamCarryBriefV1
     admission: ResourceRequirementV1 | None = None
 
     @model_validator(mode="after")
@@ -226,7 +231,9 @@ class DurableRunRequestV1(BaseModel):
             raise ValueError("workflow and orion_day.letter brief must agree")
         if (self.workflow == MEMORY_EPISODE_DISTILL_WORKFLOW) != isinstance(self.brief, EpisodeDistillBriefV1):
             raise ValueError("workflow and memory.episode_distill brief must agree")
-        if self.workflow in (READING_WORKFLOW, REVERIE_VISUAL_WORKFLOW, COMPACTOR_DIGEST_WORKFLOW, JOURNAL_COMPOSE_WORKFLOW, ORION_DAY_WORKFLOW, MEMORY_EPISODE_DISTILL_WORKFLOW) and self.admission is None:
+        if (self.workflow == DREAM_CARRY_WORKFLOW) != isinstance(self.brief, DreamCarryBriefV1):
+            raise ValueError("dream.carry requires DreamCarryBriefV1")
+        if self.workflow in (READING_WORKFLOW, REVERIE_VISUAL_WORKFLOW, COMPACTOR_DIGEST_WORKFLOW, JOURNAL_COMPOSE_WORKFLOW, ORION_DAY_WORKFLOW, MEMORY_EPISODE_DISTILL_WORKFLOW, DREAM_CARRY_WORKFLOW) and self.admission is None:
             raise ValueError(f"{self.workflow} runs require durable resource admission")
         return self
 

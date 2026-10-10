@@ -136,7 +136,7 @@ channels:
   - name: "orion:dream:log"
     kind: "event"
     schema_id: "DreamResultV1"
-    producer_services: ["orion-cortex-exec"]
+    producer_services: ["orion-cortex-exec", "orion-dream"]
     consumer_services: ["orion-sql-writer", "orion-dream"]
     stability: "stable"
     since: "2026-03-23"
@@ -3482,6 +3482,27 @@ channels:
     stability: "experimental"
     since: "2026-09-28"
     description: "Stage result: done (advance), retry (deferral; resume the same stage, no attempt spent) or terminal (finish with the named outcome). Checkpointed by the run."
+
+  - name: "orion:dream:carry:step:request"
+    kind: "request"
+    schema_id: "DreamCarryStepRequestV1"
+    message_kind: "dream.carry.step.request.v1"
+    producer_services: ["orion-durable-runs"]
+    consumer_services: ["orion-dream"]
+    single_consumer: true
+    stability: "experimental"
+    since: "2026-10-10"
+    description: "One step of an admitted dream.carry run: text (write the next dream passage and picture prompt under the run's LLM hold) or finish (publish the carried dream). Reply uses the correlation ID."
+
+  - name: "orion:dream:carry:step:reply:*"
+    kind: "result"
+    schema_id: "DreamCarryStepResultV1"
+    message_kind: "dream.carry.step.result.v1"
+    producer_services: ["orion-dream"]
+    consumer_services: ["orion-durable-runs"]
+    stability: "experimental"
+    since: "2026-10-10"
+    description: "Carry step result: done (advance), retry (back off, same step, no attempt spent) or terminal. Checkpointed by the run."
 
   - name: "orion:curiosity:turn:request"
     kind: "request"

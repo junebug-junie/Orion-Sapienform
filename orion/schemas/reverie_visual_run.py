@@ -62,6 +62,19 @@ def reverie_visual_run_id(dispatch_id: str) -> str:
     return "reverie-visual-" + uuid5(NAMESPACE_URL, f"reverie.visual:{dispatch_id}").hex
 
 
+class DreamHopImageV1(BaseModel):
+    """A dream image hop (orion/schemas/dream_carry.py): paint ``prompt`` verbatim.
+
+    Thought skips baseline eligibility, continuity, slot rotation and interpret, and writes no
+    chain row, production acknowledgement or execution receipt: a dream picture is not a waking
+    painting and must not count toward or continue them. Caption done returns what was seen."""
+    model_config = ConfigDict(extra="forbid")
+
+    carry_run_id: str = Field(min_length=1)
+    hop_index: int = Field(ge=1)
+    prompt: str = Field(min_length=1, max_length=1000)
+
+
 class ReverieVisualRunBriefV1(BaseModel):
     """What the durable run needs to drive thought's stages. No context text, ever:
     context selection (including memory crystallizations) stays inside thought."""
@@ -73,6 +86,8 @@ class ReverieVisualRunBriefV1(BaseModel):
     # held generate step). Covers diffusion under the run's hold (no separate GPU wait since stage 5.4).
     timeout_sec: float = Field(default=360.0, gt=0)
     session_id: str | None = None
+    # Set only by a dream.carry run for its image hops; None for every waking painting.
+    dream_hop: DreamHopImageV1 | None = None
 
     @model_validator(mode="after")
     def dispatch_identity(self):
@@ -94,6 +109,8 @@ class ReverieVisualStepRequestV1(BaseModel):
     # Required for generate only. Never forwarded to interpret/caption calls: the pool
     # attaches a child call to the hold's own role.
     gpu_lease: GpuLeaseRefV1 | None = None
+    # Copied from the brief on every step of a dream image hop.
+    dream_hop: DreamHopImageV1 | None = None
 
     @model_validator(mode="after")
     def step_shape(self):
@@ -129,6 +146,8 @@ class ReverieVisualStepResultV1(BaseModel):
     # Seconds to wait before retrying, when thought knows better than the backoff.
     retry_after_sec: float | None = Field(default=None, ge=0)
     execution_receipt: dict[str, Any] | None = None
+    # Caption done of a dream hop only: what thought saw in the painting.
+    caption: str | None = None
 
     @model_validator(mode="after")
     def status_shape(self):

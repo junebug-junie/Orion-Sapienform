@@ -471,6 +471,12 @@ from orion.schemas.energy import (
     EnergyStakesSnapshotV1,
     EnergyUsageIntervalV1,
 )
+from orion.schemas.dream_carry import (
+    DreamCarryBriefV1,
+    DreamCarryHopV1,
+    DreamCarryStepRequestV1,
+    DreamCarryStepResultV1,
+)
 from orion.schemas.telemetry.dream import (
     DreamInternalTriggerV1,
     DreamSleepDigestV1,
@@ -1352,6 +1358,10 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "DreamTriggerPayload": DreamTriggerPayload,
     "DreamInternalTriggerV1": DreamInternalTriggerV1,
     "DreamSleepDigestV1": DreamSleepDigestV1,
+    "DreamCarryBriefV1": DreamCarryBriefV1,
+    "DreamCarryHopV1": DreamCarryHopV1,
+    "DreamCarryStepRequestV1": DreamCarryStepRequestV1,
+    "DreamCarryStepResultV1": DreamCarryStepResultV1,
     "DreamResultV1": DreamResultV1,
     "MetaTagsRequestV1": MetaTagsRequestV1,
     "MetaTagsResultV1": MetaTagsResultV1,
@@ -1952,6 +1962,8 @@ SCHEMA_REGISTRY: Dict[str, SchemaRegistration] = {
     "ReadingTurnRequestV1": SchemaRegistration(model=ReadingTurnRequestV1, kind="reading.turn.request.v1"),
     "ReadingTurnResultV1": SchemaRegistration(model=ReadingTurnResultV1, kind="reading.turn.result.v1"),
     "ReverieVisualStepRequestV1": SchemaRegistration(model=ReverieVisualStepRequestV1, kind="reverie.visual.step.request.v1"),
+    "DreamCarryStepRequestV1": SchemaRegistration(model=DreamCarryStepRequestV1, kind="dream.carry.step.request.v1"),
+    "DreamCarryStepResultV1": SchemaRegistration(model=DreamCarryStepResultV1, kind="dream.carry.step.result.v1"),
     "ReverieVisualStepResultV1": SchemaRegistration(model=ReverieVisualStepResultV1, kind="reverie.visual.step.result.v1"),
     "CuriosityTurnResultV1": SchemaRegistration(model=CuriosityTurnResultV1, kind="curiosity.turn.result.v1"),
     "CuriosityUrgentRequestV1": SchemaRegistration(model=CuriosityUrgentRequestV1, kind=URGENT_REQUEST_KIND),

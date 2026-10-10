@@ -3,6 +3,12 @@ from __future__ import annotations
 from scripts.substrate_effect_cache import SubstrateEffectCache
 from scripts.substrate_effect_pipeline import run_substrate_effect_pipeline
 
+import pytest
+
+
+# See conftest.pre_turn_appraisal_off: these tests assume pre-turn appraisal is off.
+pytestmark = pytest.mark.usefixtures("pre_turn_appraisal_off")
+
 
 def test_high_pressure_prompt_yields_repair_concrete_summary():
     cache = SubstrateEffectCache(max_entries=8)

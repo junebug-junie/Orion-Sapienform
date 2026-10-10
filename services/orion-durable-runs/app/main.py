@@ -43,6 +43,7 @@ admission: Any = None
 _admission_task: asyncio.Task | None = None
 _reconcile_task: asyncio.Task | None = None
 situation: Any = None
+temporal_self: Any = None
 rpc_health_publisher: RpcHealthPublisher | None = None
 
 
@@ -88,7 +89,9 @@ async def _handle_request(env: BaseEnvelope) -> None:
             situation.offer(event_from_sighting(env.payload))
         return
     if env.kind in (CHAT_HISTORY_TURN_KIND, DURABLE_RUN_STATE_KIND):
-        # Situation graph inputs (shadow). Nothing else here consumes these two kinds.
+        # Situation graph inputs (shadow), and a Juniper turn wakes the regulate step.
+        if env.kind == CHAT_HISTORY_TURN_KIND and temporal_self is not None and isinstance(env.payload, dict):
+            temporal_self.offer_chat_turn(env.payload)
         if situation is not None and isinstance(env.payload, dict):
             from app.situation_driver import event_from_chat_turn, event_from_run_state
 
@@ -248,10 +251,68 @@ def _build_situation(saver: Any):
                            tick_sec=s.situation_tick_sec, retention_days=s.situation_retention_days)
 
 
+def _build_temporal_self(saver: Any):
+    """The temporal_self.update writer (regulate node): reads chat/cabinet/GPU history on the
+    checkpointer's pool, the rest drive from Redis, projects RegulationStateV1 to Redis."""
+    from datetime import datetime, timezone
+
+    from app import regulation_store
+    from app.temporal_self_driver import TemporalSelfDriver
+    from app.temporal_self_graph import TemporalSelfDeps
+    from orion.regulation.rest_drive import rest_drive_view
+    from orion.schemas.drive_reading import REST_DRIVE_REDIS_KEY, parse_drive_reading
+    from orion.schemas.regulation import REGULATION_STATE_REDIS_KEY
+
+    s = _settings
+
+    async def read_inputs(now, prev, last_turn_at):
+        return await regulation_store.read_arousal_inputs(
+            _checkpointer_cm, now, prev, last_turn_event_at=last_turn_at,
+            gpu_queue_floor=s.regulation_strained_gpu_queue_min,
+            gpu_sustain_sec=s.regulation_strained_gpu_queue_sec)
+
+    async def read_drives(now):
+        """The rest drive verbatim from its owner's Redis key (orion-dream, 1800 s TTL). Trace only:
+        arousal never reads it. Absent/stale/unparseable is a warning, never a fabricated reading."""
+        if rpc_bus is None:
+            return [], ["rest_drive:no_bus"]
+        try:
+            raw = await asyncio.wait_for(rpc_bus.redis.get(REST_DRIVE_REDIS_KEY), timeout=1.0)
+        except Exception:  # noqa: BLE001
+            return [], ["rest_drive:read_failed"]
+        reading = parse_drive_reading(raw)
+        if reading is None:
+            return [], [f"rest_drive:{'absent' if raw is None else 'unparseable'}"]
+        view = rest_drive_view(reading, now=now, max_age_sec=1800.0)
+        return [reading], ([f"rest_drive:{view.reason}"] if view.verdict == "unknown" else [])
+
+    async def project(model) -> None:
+        if rpc_bus is None:
+            raise RuntimeError("no bus")
+        await rpc_bus.redis.setex(REGULATION_STATE_REDIS_KEY, s.regulation_redis_ttl_sec, model.model_dump_json())
+
+    async def record_transition(prev, new, day_id) -> bool:
+        return await regulation_store.record_transition(
+            _checkpointer_cm, regulation_store.transition_row(prev, new, day_id))
+
+    deps = TemporalSelfDeps(
+        read_inputs=read_inputs, read_drives=read_drives, project=project,
+        record_transition=record_transition, now=lambda: datetime.now(timezone.utc),
+        arousal_enabled=s.regulation_arousal_enabled, engaged_minutes=s.dream_idle_minutes,
+        gpu_queue_floor=s.regulation_strained_gpu_queue_min,
+        gpu_sustain_sec=s.regulation_strained_gpu_queue_sec,
+        clear_sec=s.regulation_strained_clear_sec,
+        max_prev_gap_sec=3.0 * s.temporal_self_tick_sec,
+    )
+    return TemporalSelfDriver(checkpointer=saver, deps=deps,
+                              timezone_name=s.orion_situation_timezone, tick_sec=s.temporal_self_tick_sec,
+                              retention_days=s.temporal_self_retention_days)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global runner, rpc_bus, hunter, heartbeat, _sweep_task, admission, _admission_task, _reconcile_task
-    global rpc_health_publisher, situation
+    global rpc_health_publisher, situation, temporal_self
     from app.runner import DurableRunner
 
     try:
@@ -287,6 +348,9 @@ async def lifespan(app: FastAPI):
         if _settings.situation_graph_enabled and _settings.orion_bus_enabled:
             situation = _build_situation(saver)
             await situation.start(_stop)
+        if _settings.temporal_self_enabled and _settings.orion_bus_enabled:
+            temporal_self = _build_temporal_self(saver)
+            await temporal_self.start(_stop)
         if admission is not None:
             _admission_task = asyncio.create_task(admission.run(_stop))
             if _settings.memory_episode_writer_enabled:
@@ -303,6 +367,8 @@ async def lifespan(app: FastAPI):
             if situation is not None:
                 patterns += [_settings.chat_history_turn_channel, _settings.state_channel,
                              _settings.identity_sighting_channel]
+            if temporal_self is not None and _settings.chat_history_turn_channel not in patterns:
+                patterns.append(_settings.chat_history_turn_channel)
             hunter = Hunter(_chassis_cfg(), handler=_handle_request, patterns=patterns)
             await hunter.start_background()
             logger.info("durable_runs_listening channel=%s", _settings.request_channel)
@@ -319,6 +385,8 @@ async def lifespan(app: FastAPI):
             _reconcile_task.cancel()
         if situation is not None:
             await situation.close()
+        if temporal_self is not None:
+            await temporal_self.close()
         if _admission_task is not None:
             _admission_task.cancel()
             await asyncio.gather(_admission_task, return_exceptions=True)
@@ -358,7 +426,18 @@ async def health() -> dict[str, Any]:
         "admission_enabled": admission is not None,
         "admitted_active_runs": sorted(admission.active) if admission is not None else [],
         "situation": situation.health() if situation is not None else None,
+        "temporal_self": temporal_self.health() if temporal_self is not None else None,
     }
+
+
+@app.get("/regulation/state")
+async def regulation_state():
+    """The latest RegulationStateV1, verbatim (the same body as Redis orion:regulation:latest)."""
+    if temporal_self is None:
+        raise HTTPException(503, "temporal_self thread is disabled")
+    if temporal_self.latest is None:
+        raise HTTPException(404, "no regulation step has completed yet")
+    return temporal_self.latest.model_dump(mode="json")
 
 
 @app.get("/runs/unfinished")

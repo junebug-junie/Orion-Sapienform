@@ -6,6 +6,7 @@ on:
       - 'services/orion-sql-writer/**'
       - 'services/orion-sql-db/manual_migration_regulation_history.sql'
       - 'orion/schemas/dream_cycle.py'
+      - 'orion/regulation/**'
       - 'orion/bus/channels.yaml'
       - 'scripts/analysis/measure_dream_pressure_crossings.py'
       - 'scripts/analysis/measure_arousal_replay.py'
@@ -43,6 +44,7 @@ jobs:
         run: >-
           python -m pytest -q services/orion-dream/tests/test_pressure_history.py
           services/orion-dream/tests/test_dream_cycle_v2.py
+          services/orion-dream/tests/test_idle_counts_only_juniper.py
       - name: Dream behavior evals
         run: python -m pytest -q services/orion-dream/evals/test_dream_cycle_eval.py
       - name: GPU consumer and bounded retention, including real Postgres

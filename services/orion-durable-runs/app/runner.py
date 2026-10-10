@@ -72,6 +72,7 @@ from orion.schemas.attention_schema import (
     bind_correlation,
 )
 from orion.schemas.cortex.contracts import CortexClientContext, CortexClientRequest, RecallDirective
+from orion.schemas.regulation import TEMPORAL_SELF_WORKFLOW
 from orion.schemas.situation_state import SITUATION_WORKFLOW
 from orion.schemas.durable_run import (
     CURIOSITY_NODES,
@@ -132,7 +133,7 @@ def incident_report_to_detail(report: IncidentReport | None) -> dict[str, Any] |
 
 # Workflows whose threads have their own single writer and finish every step; the resume sweep
 # skips them without the unknown-workflow warning.
-SELF_DRIVEN_WORKFLOWS = frozenset({SITUATION_WORKFLOW})
+SELF_DRIVEN_WORKFLOWS = frozenset({SITUATION_WORKFLOW, TEMPORAL_SELF_WORKFLOW})
 
 
 def _corr_uuid(raw: str) -> UUID:

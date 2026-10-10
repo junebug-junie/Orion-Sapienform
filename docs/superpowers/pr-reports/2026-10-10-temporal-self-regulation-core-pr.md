@@ -137,6 +137,9 @@ Review: orion-repo-agent subagent, read-only, target `origin/main...feat/tempora
   - Evidence: replay numbers unchanged; tests updated.
 - Finding (nit): the docs said "each level change is one row", but a restart after a gap also writes one.
   - Fix: reworded in the README, `.env_example`, schema docstring, and driver docstring.
+- Finding (CI, Static repo gates / contracts-and-lifecycle): `test_schema_skew_discovery` required a declared writer for the forbid model `ArousalInputsV1`.
+  - Fix: declared in `orion/schema_skew_discovery.py` DECLARED_WRITERS (orion-durable-runs: built from its own reads, read back from its own checkpoint).
+  - Evidence: 18 passed locally; CI 15/15 green.
 - Finding (nit, not changed): each boot issues about 30 idempotent `adelete_thread` calls (the retention sweep's memory is in-process). It is harmless and cheap, and noted here so it is not mistaken for a leak.
 
 ## Restart required

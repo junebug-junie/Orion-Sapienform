@@ -108,6 +108,13 @@ def test_profile_smear_dead_cut_sits_at_live_distribution_trough() -> None:
     assert profile_smear(past_edge) == (None, None)
 
 
+def test_profile_smear_nan_or_negative_is_absent_not_local() -> None:
+    nan = float("nan")
+    assert profile_smear([nan, nan, 0.3, 0.5, 0.6, 0.6, 0.5, 0.4, 0.4]) == (None, None)
+    assert profile_smear([0.5, 0.5, 0.3, 0.5, 0.6, 0.6, 0.5, nan, nan]) == (None, None)
+    assert profile_smear([0.5, 0.5, 0.3, 0.5, 0.6, 0.6, 0.5, -0.4, -0.4]) == (None, None)
+
+
 def test_compute_proprioception_nearly_dead_near_leaves_smear_absent() -> None:
     reading = compute_proprioception(
         fire_counts={name: 3 for name in ORGAN_SITE_MAP},

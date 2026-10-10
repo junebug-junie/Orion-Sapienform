@@ -34,13 +34,15 @@ NEAR_FLOOR = 1e-6
 # the far end's entanglement, i.e. far/near > SMEAR_DEAD_RATIO. Derived from
 # the live distribution, not picked: 7 days of persisted heartbeat_smear
 # (substrate_attention_self_model, 2026-10-03..10, n=14,668) is bimodal on a
-# log10 axis. Alive body: 94% of rows in 0.56..4.54 (median 2.62, p90 3.18),
-# nothing between 4.54 and 5.12. Collapsed population: ~830 rows from ~18 up
-# to 1.46e6, i.e. near ~ far/1e6. The least-populated log10 quarter-decade bin
-# between them is [10, 17.8) with 9 rows (0.06%), so its lower edge, 10, is
-# the cut. Scale-free on purpose: the absolute entropy scale moves with
-# BOND_DIM/PHYS_DIM, the ratio does not. Re-derive from the same query if
-# the lattice dimensions or dissipation change.
+# log10 axis. Alive body: 94% of rows in 0.94..5.5 (median 2.62, p90 3.18)
+# with a sparse shoulder to 9.5 (19 rows). Collapsed population: ~820 rows
+# from ~18 up to 1.46e6, i.e. near ~ far/1e6. The least-populated log10
+# quarter-decade bin between them is [10, 17.8) with 9 rows (0.06%), so its
+# lower edge, 10, is the cut. The trough is shallow (19 / 9 / 35 rows), so
+# treat 10 as an order-of-magnitude edge, not a precise one. Scale-free on
+# purpose: the absolute entropy scale moves with BOND_DIM/PHYS_DIM, the ratio
+# does not. Re-derive from the same query if the lattice dimensions or
+# dissipation change.
 SMEAR_DEAD_RATIO = 10.0
 _NEAR_CUTS = (0, 1)
 _FAR_CUTS = (7, 8)
@@ -116,7 +118,9 @@ def profile_smear(mean_profile: list[float]) -> tuple[float | None, bool | None]
         raise ValueError(f"kick profiles must be 9-cut ratio vectors, got {len(mean_profile)}")
     near = (float(mean_profile[_NEAR_CUTS[0]]) + float(mean_profile[_NEAR_CUTS[1]])) / 2.0
     far = (float(mean_profile[_FAR_CUTS[0]]) + float(mean_profile[_FAR_CUTS[1]])) / 2.0
-    if near < NEAR_FLOOR or far > SMEAR_DEAD_RATIO * near:
+    # Written fail-closed: NaN or negative entropy (unphysical) also lands
+    # here instead of leaking smeared=False ("local") downstream.
+    if not (near >= NEAR_FLOOR and 0.0 <= far <= SMEAR_DEAD_RATIO * near):
         return None, None
     smear = far / near
     return smear, smear >= SMEAR_MIN

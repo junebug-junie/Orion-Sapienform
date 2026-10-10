@@ -27,6 +27,21 @@ from pydantic import BaseModel, ConfigDict, Field
 from orion.schemas.attention_frame import PredictionErrorMagnitudeV1
 
 AttentionSourceKindV1 = Literal["internal", "external"]
+
+# World sources. Kept in this light schema module so thin consumers (reverie
+# proposals) can recognise a world target without importing the ranking code.
+WORLD_CHAT_SOURCE_ID = "world:chat"
+PERCEPTION_NODE_ID = "node:substrate.perception"
+WORLD_SOURCE_PREFIX = "world:"
+
+
+def is_world_source_id(source_id: str | None) -> bool:
+    """True for an external (world) source id: chat, camera surprise, or any
+    future ``world:*`` source. Everything else is the body."""
+    sid = str(source_id or "")
+    return sid.startswith(WORLD_SOURCE_PREFIX) or sid == PERCEPTION_NODE_ID
+
+
 # Polarity comes from the semantic layer (orion.metrics.semantics.
 # derived_channel_polarity), never invented per candidate. None = the layer
 # declares no direction (e.g. a trigger, whose value is "it fired").
@@ -46,6 +61,11 @@ class AttentionCandidateV1(BaseModel):
     source_kind: AttentionSourceKindV1
     label: str
     unusualness: PredictionErrorMagnitudeV1
+    # Mid-rank percentile (share below + half the share equal) in the RAW
+    # value direction, when the builder had the history. Ranking key only:
+    # eligibility uses unusualness.percentile_now (strict-below) so an
+    # all-zero history with a current 0 still reads as rest.
+    rank_percentile: float | None = Field(default=None, ge=0.0, le=1.0)
     observed_at: datetime | None = None
     # Silence is not calm: True when the source could not measure this tick.
     absent: bool = False

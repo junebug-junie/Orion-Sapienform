@@ -19,8 +19,9 @@ from orion.attention.world_first import (
     judge_candidate,
     node_candidate,
     node_prediction_error_semantics,
+    midrank_percentile,
+    perception_absent_reason,
     rank_candidates,
-    world_first_enabled,
 )
 from orion.schemas.attention_candidate import AttentionCandidateV1
 from orion.schemas.attention_frame import PredictionErrorMagnitudeV1
@@ -65,11 +66,6 @@ def test_schema_is_registered_in_both_registries() -> None:
     assert SCHEMA_REGISTRY["AttentionCandidateV1"].model is AttentionCandidateV1
 
 
-def test_flag_defaults_on_and_false_turns_it_off() -> None:
-    assert world_first_enabled({}) is True
-    assert world_first_enabled({"ATTENTION_WORLD_FIRST_ENABLED": "false"}) is False
-
-
 def test_calm_body_and_quiet_world_is_an_explicit_no_winner() -> None:
     ranking = rank_candidates(
         [
@@ -96,14 +92,29 @@ def test_internal_at_high_or_unusual_enters(pct: float) -> None:
     assert v.eligible and v.band in {"high", "unusual"}
 
 
-def test_external_enters_when_fresh_and_busier_than_usual() -> None:
-    assert judge_candidate(world(0.5)).eligible
+def test_external_enters_when_fresh_and_busy_for_itself() -> None:
+    assert judge_candidate(world(0.9)).eligible
     assert judge_candidate(world(0.93)).eligible
 
 
-def test_external_at_or_below_its_median_does_not_enter() -> None:
-    assert not judge_candidate(world(0.0)).eligible
-    assert not judge_candidate(world(0.49)).eligible
+@pytest.mark.parametrize("pct", [0.0, 0.49, 0.5, 0.74, 0.89])
+def test_external_below_its_top_decile_does_not_enter(pct: float) -> None:
+    """Review 2026-10-10: a 'usual' floor let any nonzero camera reading win."""
+    assert not judge_candidate(world(pct)).eligible
+
+
+def test_tiny_nonzero_camera_reading_on_a_zero_heavy_week_is_not_eligible() -> None:
+    """Live shape: perception is 74% exact zeros, so a 5e-05 reading sits at
+    percentile ~0.74 against its own week. That is noise, not a busy world."""
+    from orion.substrate.prediction_error_magnitude import compute_prediction_error_magnitude
+
+    hist = [(NOW - timedelta(minutes=i), 0.0) for i in range(740)] + [
+        (NOW - timedelta(minutes=740 + i), 0.01 + i / 1000) for i in range(260)
+    ]
+    m = compute_prediction_error_magnitude(value=5e-05, observed_at=NOW, history=hist, now=NOW)
+    cand = node_candidate(node_id=PERCEPTION_NODE_ID, label="cam", magnitude=m, observed_at=NOW, now=NOW)
+    assert 0.7 < m.percentile_now < 0.75
+    assert not judge_candidate(cand).eligible
 
 
 def test_world_beats_a_usual_body_but_an_unusual_body_interrupts() -> None:
@@ -152,8 +163,16 @@ def test_perception_absence_comes_from_staleness_not_value() -> None:
 def test_perception_is_external_everything_else_internal() -> None:
     assert body(PERCEPTION_NODE_ID, 0.6).source_kind == "external"
     assert body("node:substrate.chat", 0.6).source_kind == "internal"
-    assert judge_candidate(body(PERCEPTION_NODE_ID, 0.6)).eligible  # world: usual is enough
-    assert not judge_candidate(body("node:substrate.chat", 0.6)).eligible  # body: not
+    assert judge_candidate(body(PERCEPTION_NODE_ID, 0.95)).eligible
+    # A body node needs no polarity check to fail here: usual is not enough.
+    assert not judge_candidate(body("node:substrate.chat", 0.6)).eligible
+
+
+def test_one_definition_of_camera_absence() -> None:
+    assert perception_absent_reason(embedding_staleness=0.0, vision_frame_staleness=0.0) is None
+    assert "embeddings" in perception_absent_reason(embedding_staleness=1.0)
+    assert "frames" in perception_absent_reason(vision_frame_staleness=1.0)
+    assert "unmeasured" in perception_absent_reason(vision_measured=False)
 
 
 def test_insufficient_history_never_enters() -> None:
@@ -234,3 +253,52 @@ def test_chat_ignores_turns_after_now_and_older_than_a_week() -> None:
     history = _turns(*[60 * 24 * d + 30 for d in range(1, 7)], 60 * 24 * 9, -5)
     m = chat_rate_magnitude(history, now=NOW)
     assert m.value == 0.0
+
+
+def test_ceiling_ties_rank_by_mid_rank_not_strict_below() -> None:
+    """Execution sits at exactly 1.0 for ~3.5% of its week, so its strict-below
+    percentile caps at ~0.965 and it lost to any rare-fire node (codebase at
+    0.91+, cabinet at 0.955+). Mid-rank breaks the tie; eligibility is unchanged."""
+    history = [0.0] * 900 + [0.5] * 65 + [1.0] * 35
+    m = PredictionErrorMagnitudeV1(
+        value=1.0, age_sec=10, percentile_now=0.965, n_readings_7d=1000, band="high", trend="flat"
+    )
+    execution = node_candidate(
+        node_id="node:substrate.execution", label="x", magnitude=m, observed_at=NOW, now=NOW,
+        history_values=history,
+    )
+    assert execution.rank_percentile == pytest.approx(midrank_percentile(1.0, history))
+    cabinet = body("node:substrate.cabinet", 0.975)
+    ranking = rank_candidates([cabinet, execution])
+    assert ranking.winner.candidate.source_id == "node:substrate.execution"
+    assert judge_candidate(execution).band == "high"  # eligibility still strict-below
+
+
+def test_all_zero_history_with_current_zero_is_still_rest() -> None:
+    assert midrank_percentile(0.0, [0.0] * 50) == 0.5  # why mid-rank never gates
+    m = PredictionErrorMagnitudeV1(value=0.0, age_sec=1, percentile_now=0.0, n_readings_7d=500, band="quiet")
+    c = node_candidate(node_id="node:substrate.route", label="r", magnitude=m, observed_at=NOW, now=NOW,
+                       history_values=[0.0] * 500)
+    assert not judge_candidate(c).eligible
+
+
+def test_glossary_failure_is_not_cached(monkeypatch) -> None:
+    import orion.attention.world_first as wf
+    import orion.field.channel_glossary as cg
+
+    wf._SEMANTICS_CACHE.pop("node:substrate.cabinet", None)
+    real = cg.resolve_channel_entry
+
+    def boom(*a, **k):
+        raise OSError("glossary unreadable")
+
+    monkeypatch.setattr(cg, "resolve_channel_entry", boom)
+    assert wf.node_prediction_error_semantics("node:substrate.cabinet")[0] is None
+    monkeypatch.setattr(cg, "resolve_channel_entry", real)
+    assert wf.node_prediction_error_semantics("node:substrate.cabinet") == ("trigger", None)
+
+
+def test_trace_lists_absent_sources_so_failure_is_not_calm() -> None:
+    r = rank_candidates([chat_candidate(None, now=NOW), body("node:substrate.route", 0.1)])
+    assert r.no_winner and r.trace()["absent_sources"] == [WORLD_CHAT_SOURCE_ID]
+

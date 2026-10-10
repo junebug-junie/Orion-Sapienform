@@ -108,7 +108,7 @@ def test_perception_is_external_and_absent_when_embeddings_stale() -> None:
     (c,) = frame.debug["world_first"]["candidates"]
     assert c["source_kind"] == "external" and c["absent"] is True
     fresh = _node("node:substrate.perception", "Perception PE", pe=0.4, embedding_staleness=0.0)
-    frame = _frame([fresh], {"node:substrate.perception": _mag(0.7)})
+    frame = _frame([fresh], {"node:substrate.perception": _mag(0.95)})
     assert frame.open_loops and frame.open_loops[0].provenance["source_kind"] == "external"
 
 
@@ -143,3 +143,33 @@ def test_real_coalition_still_activates_and_decays_across_empty_ticks() -> None:
     for _ in range(3):
         proj = ab.broadcast_projection_from_frame(calm)
     assert proj.coalition_history[-1]["event"] == "decayed" and proj.dwell_ticks == 0
+
+
+def test_camera_noise_at_its_median_does_not_win() -> None:
+    fresh = _node("node:substrate.perception", "Perception PE", pe=0.01, embedding_staleness=0.0)
+    assert _frame([fresh], {"node:substrate.perception": _mag(0.75)}).open_loops == []
+
+
+def test_mid_rank_breaks_a_ceiling_tie_in_the_broadcast() -> None:
+    nodes = [_node("node:substrate.execution", "Execution PE"), _node("node:substrate.codebase", "Codebase PE")]
+    frame = ab.build_substrate_attention_frame(
+        nodes=nodes, now=NOW, world_first=True,
+        magnitude_by_node_id={"node:substrate.execution": _mag(0.965), "node:substrate.codebase": _mag(0.97)},
+        rank_percentile_by_node_id={"node:substrate.execution": 0.982},
+    )
+    assert ab.broadcast_projection_from_frame(frame).attended_node_ids == ["node:substrate.execution"]
+
+
+def test_no_winner_tick_reports_no_dwell_while_the_old_coalition_decays() -> None:
+    hot = _frame([_node("node:substrate.execution", "Execution PE")], {"node:substrate.execution": _mag(0.995)})
+    calm = _frame([_node("node:substrate.execution", "Execution PE")], {"node:substrate.execution": _mag(0.2)})
+    ab.broadcast_projection_from_frame(hot)
+    ab.broadcast_projection_from_frame(hot)
+    proj = ab.broadcast_projection_from_frame(calm)
+    assert proj.attended_node_ids == [] and proj.dwell_ticks == 0
+    assert proj.coalition_stability_score == 0.3
+
+
+def test_unreadable_sources_are_named_in_the_trace() -> None:
+    frame = _frame([_node("node:substrate.execution", "Execution PE")], {})
+    assert frame.debug["world_first"]["absent_sources"] == ["node:substrate.execution"]

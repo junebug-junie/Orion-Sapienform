@@ -48,7 +48,7 @@ The spec quoted 49% calm winners. That figure came from an earlier 3-day window.
 - **Execution readings ≥ 0.9:** 51 of 86 won. The other 35 were eligible but outranked:
   - The execution signal saturates at 1.0 (3 sigma), and 4% of its week sits at exactly 1.0. So a maximal execution reading is only at about the 96th percentile ("high", not "unusual").
   - A camera blip or bus reading above the 96th percentile of its own week ranks above it. See Risks.
-- **Synthetic 5-hour storm.** This is a stand-in for the 2026-09-28 timeout-storm class, which predates the stored PE history (that history starts 2026-10-03). The storm injects execution readings of 1.0 every 135 s, replacing the real readings in its window. STORM_RESULT
+- **Synthetic 5-hour storm.** This is a stand-in for the 2026-09-28 timeout-storm class, which predates the stored PE history (that history starts 2026-10-03). The storm injects execution readings of 1.0 every 135 s, replacing the real readings in its window. The node stayed eligible (band "high") on **60 of 60** replayed ticks across the 5 hours, so its own baseline did not absorb the storm. It was the outright winner on 63% of those ticks. The rest went to other sources at a higher percentile of their own week.
 
 ## Current architecture
 
@@ -281,7 +281,10 @@ Static gates: check_metric_lineage --gate PASS, --prompt-semantics PASS, check_d
 services/orion-attention-runtime/evals (pytest): 3 passed (focus-run replay + world-first replay arithmetic)
 Live read-only replay: python services/orion-attention-runtime/evals/replay_world_first.py --days 3 --step-sec 60
   -> numbers in "Outcome moved"; variant below
-VARIANT_RESULT
+Variant, internal band "unusual" only (5-minute grid, 865 ticks):
+  no-winner 58.4%, body winners 6.4%, camera 34.2%, chat 1.0%
+  BUT execution spikes >= 0.9 win 0 of 85 (saturated readings never reach "unusual")
+  -> rejected as the default; it suppresses real alarms. Kept the spec's high/unusual.
 ```
 
 ## Docker/build/smoke checks
@@ -345,7 +348,7 @@ Other services that import the changed shared code pick it up on their next rebu
 - **Severity: major. The body still interrupts on 42% of ticks.**
   - **What happens:** each body node is in its own top decile ("high") 10% of the time by definition. With about 9 nodes, the union is large.
   - **Why it still passes:** the spec's acceptance metric (calm winners under 5%) is met at 0.28%. Those interruptions are not calm in raw terms either.
-  - **The knob:** the internal band. Variant: VARIANT_SHORT.
+  - **The knob:** the internal band. Variant: an "unusual"-only body band cuts body winners to 6.4% but makes every execution spike lose (0 of 85), so it is rejected.
   - **Mitigation:** band cuts are knobs to grade on 48 h of live data. Not changed here.
 - **Severity: major. Camera surprise wins 24% of ticks.**
   - **What happens:** the "usual" floor (at or above its own median) admits any nonzero reading.

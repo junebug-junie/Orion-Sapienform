@@ -173,3 +173,26 @@ def test_proposal_unmarked_pre_world_first_frame_binds_as_before() -> None:
         overall_salience=1.0, dominant_targets=[t],
     )
     assert _proposal_resolve(frame)[0] == "node:substrate.route"
+
+
+def test_goal_set_is_not_widened_beyond_the_native_five() -> None:
+    """Cabinet is a body node that can win world-first attention, but a goal
+    on it would bias the broadcast toward a node a real self-reversible
+    action binds to. Widening the goal set is a separate decision."""
+    frame = _frame([_node("node:substrate.cabinet", 0.99), _node("node:substrate.codebase", 0.98)])
+    assert {t.target_id for t in frame.node_targets} == {"node:substrate.cabinet", "node:substrate.codebase"}
+    assert qualified_node_targets(frame) == []
+
+
+def test_goal_refuses_a_native_id_marked_external() -> None:
+    """Defense in depth: the internal marker is checked, not just the id list."""
+    t = FieldAttentionTargetV1(
+        target_id="node:substrate.execution", target_kind="node", salience_score=0.99,
+        pressure_score=0.9, novelty_score=0.0, urgency_score=0.99, confidence_score=1.0,
+        evidence_refs=["source_kind:external"],
+    )
+    frame = FieldAttentionFrameV1(
+        frame_id="f", generated_at=NOW, source_field_tick_id="t", source_field_generated_at=NOW,
+        overall_salience=0.99, dominant_targets=[t], node_targets=[t],
+    )
+    assert qualified_node_targets(frame) == []

@@ -761,9 +761,21 @@ def reduce_attention_self_model(
             # A no-winner tick (world-first: a calm body and a quiet world;
             # before it, nothing above the pressure floor -- ~42% of ticks
             # live). Used to read "Pure bottom-up dispatch: 'None' selected".
+            absent = []
+            try:
+                wf = (broadcast.frame.debug or {}).get("world_first") or {}
+                absent = list(wf.get("absent_sources") or [])
+            except Exception:
+                absent = []
+            # A tick where sources could not be read is not a calm tick.
+            unread = (
+                f" ({len(absent)} source(s) could not be read: {', '.join(absent[:4])})"
+                if absent
+                else ""
+            )
             model.reason_narrative = (
                 "No winner this tick: nothing in the workspace competition "
-                "qualified for attention; " + describe_override_absence(model)
+                f"qualified for attention{unread}; " + describe_override_absence(model)
             )
         else:
             model.reason_narrative = (

@@ -6,9 +6,17 @@ and computes magnitudes for the broadcast. orion-attention-runtime runs the
 field contest in another process and has no magnitudes, so it reads the same
 table (spec: "the runtime can compute them itself"). Seeded once with the
 7-day window, then topped up incrementally on ``observed_at`` (indexed), with
-an overlap so a row committed slightly late is not missed; the
-(node_id, observed_at) primary key makes the overlap a dedupe, not a double
-count. The newest row per node is that node's current reading.
+a 30-minute overlap so a row committed late is not missed (live max lag
+between observed_at and recorded_at was 355 s on 2026-10-10, so 5x margin;
+recorded_at has no index, and a full scan every ~2 s tick is not worth the
+last bit of certainty). The (node_id, observed_at) primary key makes the
+overlap a dedupe, not a double count. The newest row per node is that node's
+current reading.
+
+Magnitudes are memoized per node on (newest reading, window size, minute):
+the field contest ticks every ~2 s, the readings move every ~35 s, so only
+the reading's age is refreshed in between (review 2026-10-10: 9 nodes x 15k
+rows was ~120 ms per tick).
 """
 
 from __future__ import annotations
@@ -27,8 +35,8 @@ Row = tuple[str, datetime, float]
 FetchSince = Callable[[datetime], Iterable[Row]]
 
 # substrate-runtime records readings on its ~35 s broadcast tick, so a row's
-# observed_at can trail its commit by a tick or two.
-_OVERLAP = timedelta(minutes=10)
+# observed_at can trail its commit (live max 355 s).
+_OVERLAP = timedelta(minutes=30)
 
 
 def _aware(ts: datetime) -> datetime:
@@ -40,6 +48,7 @@ class NodePeHistoryCache:
         self._windows: dict[str, deque[tuple[datetime, float]]] = {}
         self._seen: set[tuple[str, datetime]] = set()
         self._max_observed: datetime | None = None
+        self._memo: dict[str, tuple[tuple, PredictionErrorMagnitudeV1, float | None]] = {}
 
     @property
     def seeded(self) -> bool:
@@ -95,16 +104,26 @@ class NodePeHistoryCache:
 
     def magnitudes(
         self, *, now: datetime
-    ) -> dict[str, tuple[PredictionErrorMagnitudeV1, datetime]]:
-        out: dict[str, tuple[PredictionErrorMagnitudeV1, datetime]] = {}
+    ) -> dict[str, tuple[PredictionErrorMagnitudeV1, datetime, float | None]]:
+        """node_id -> (magnitude, observed_at, mid-rank percentile)."""
+        from orion.attention.world_first import midrank_percentile
+
+        now = _aware(now)
+        bucket = now.replace(second=0, microsecond=0)
+        out: dict[str, tuple[PredictionErrorMagnitudeV1, datetime, float | None]] = {}
         for node_id, (value, observed_at) in self.current().items():
-            out[node_id] = (
-                compute_prediction_error_magnitude(
-                    value=value,
-                    observed_at=observed_at,
-                    history=list(self._windows[node_id]),
-                    now=now,
-                ),
-                observed_at,
+            window = self._windows[node_id]
+            key = (observed_at, len(window), bucket)
+            memo = self._memo.get(node_id)
+            if memo is not None and memo[0] == key:
+                age = max(0.0, (now - observed_at).total_seconds())
+                out[node_id] = (memo[1].model_copy(update={"age_sec": round(age, 3)}), observed_at, memo[2])
+                continue
+            history = list(window)
+            mag = compute_prediction_error_magnitude(
+                value=value, observed_at=observed_at, history=history, now=now
             )
+            mid = midrank_percentile(value, [v for ts, v in history if ts >= now - WINDOW_7D])
+            self._memo[node_id] = (key, mag, mid)
+            out[node_id] = (mag, observed_at, mid)
         return out

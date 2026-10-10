@@ -80,3 +80,12 @@ def test_derive_salience_zero_can_be_a_real_outranked_loop_not_only_no_evidence(
     # derive_salience() cannot tell "real but outranked" from "no evidence"
     # -- it falls back to the coalition's stability score either way.
     assert derive_salience(b) == pytest.approx(0.3)
+
+
+def test_derive_salience_keeps_borda_meaning_under_world_first():
+    """World-first stamps each source's own-history percentile on
+    loop.salience and parks the Borda value in provenance; reverie salience
+    (and the proposal floor calibrated on it) keeps reading Borda."""
+    loop = OpenLoopV1(id="loop-a", description="a", salience=0.97,
+                      provenance={"borda_salience": 0.42, "source_kind": "internal"})
+    assert derive_salience(_broadcast("loop-a", [loop])) == pytest.approx(0.42)

@@ -159,6 +159,14 @@ def derive_salience(broadcast: AttentionBroadcastProjectionV1 | None) -> float:
     )
     if loop is None:
         return fallback
+    # World-first broadcasts rank by each source's own-history percentile and
+    # stamp it on loop.salience; the coalition-relative Borda value this
+    # function has always reported is kept in provenance["borda_salience"].
+    # Read that, so reverie salience (and the proposal floor calibrated on it)
+    # keeps one meaning across the flag.
+    borda = (loop.provenance or {}).get("borda_salience")
+    if isinstance(borda, (int, float)) and not isinstance(borda, bool):
+        return _bounded(float(borda)) if borda else fallback
     return _bounded(float(loop.salience)) if loop.salience else fallback
 
 

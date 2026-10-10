@@ -35,22 +35,18 @@ _VISION_ORGAN_NODE = "node:substrate.vision_organ"
 
 
 def _camera_absent_reason(field: FieldStateV1) -> str | None:
-    """Perception writes 0.0 while its frames are stale (glossary), so its
-    absence must come from camera staleness, never from the value. The field
-    carries the vision organ's `vision_frame_staleness` (1.0 = no camera
-    delivering; key dropped = unmeasured). Embedding-only staleness is not
-    visible here: perception then reads 0 = quiet, which is not eligible
-    either, so it cannot win on a stale value."""
+    """The field carries the vision organ's `vision_frame_staleness` (1.0 = no
+    camera delivering; key dropped = unmeasured); the rule itself is the one
+    shared with the broadcast (`perception_absent_reason`). Embedding-only
+    staleness is not visible here: perception then writes 0.0, reads quiet,
+    and cannot win either."""
+    from orion.attention.world_first import perception_absent_reason
+
     vec = field.node_vectors.get(_VISION_ORGAN_NODE) or {}
-    staleness = vec.get("vision_frame_staleness")
-    if staleness is None:
-        return "camera health unmeasured (vision_frame_staleness absent)"
-    try:
-        if float(staleness) >= 1.0:
-            return "camera frames stale (vision_frame_staleness 1.0)"
-    except (TypeError, ValueError):
-        return "camera health unreadable"
-    return None
+    return perception_absent_reason(
+        vision_frame_staleness=vec.get("vision_frame_staleness"),
+        vision_measured="vision_frame_staleness" in vec,
+    )
 
 
 class AttentionRuntimeWorker:
@@ -271,7 +267,7 @@ class AttentionRuntimeWorker:
         }
         candidates = []
         for node_id in sorted(node_ids):
-            mag, observed_at = magnitudes.get(node_id, (None, None))
+            mag, observed_at, mid = magnitudes.get(node_id, (None, None, None))
             absent = history_error
             if node_id == PERCEPTION_NODE_ID and absent is None:
                 absent = _camera_absent_reason(field)
@@ -283,6 +279,7 @@ class AttentionRuntimeWorker:
                     observed_at=observed_at,
                     now=now,
                     absent_reason=absent,
+                    rank_percentile=mid,
                 )
             )
         try:

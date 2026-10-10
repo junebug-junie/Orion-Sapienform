@@ -52,15 +52,20 @@ MIN_CONFIDENCE_FOR_GOAL_PROVENANCE: float = 1.0
 
 
 def _goal_eligible_node(t: FieldAttentionTargetV1) -> bool:
-    """A world-first frame marks every target internal/external: a goal may
-    name only an INTERNAL ``node:substrate.*`` target (a body signal that was
-    unusual for itself). A world winner (chat, camera surprise) is attention,
-    not a goal for the body. A frame without markers (world-first off, or
-    built before it) keeps the original five-node list exactly."""
+    """A goal may name only one of the five native prediction-error domains
+    (``PREDICTION_ERROR_NATIVE_TARGETS``), and under world-first only when the
+    frame marks it INTERNAL (a body signal that was unusual for itself). A
+    world winner (chat, camera surprise) is attention, not a goal for the
+    body. World-first adds other body nodes to the contest (cabinet,
+    codebase, ...) but deliberately does NOT widen the goal set to them
+    (review 2026-10-10): a cabinet goal would bias the broadcast toward a node
+    a real self-reversible action binds to (shed_background_gpu). Widening it
+    is a separate, spec-level decision. A frame without markers keeps the
+    original rule exactly."""
+    if t.target_id not in PREDICTION_ERROR_NATIVE_TARGETS:
+        return False
     kind = field_target_source_kind(t)
-    if kind is None:
-        return t.target_id in PREDICTION_ERROR_NATIVE_TARGETS
-    return kind == "internal" and t.target_id.startswith("node:substrate.")
+    return kind is None or kind == "internal"
 
 
 def qualified_node_targets(frame: FieldAttentionFrameV1) -> list[FieldAttentionTargetV1]:

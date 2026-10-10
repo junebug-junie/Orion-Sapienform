@@ -184,6 +184,7 @@ def build_substrate_attention_frame(
     magnitude_by_node_id: dict[str, PredictionErrorMagnitudeV1] | None = None,
     world_first: bool = False,
     external_candidates: Sequence[Any] | None = None,
+    rank_percentile_by_node_id: dict[str, float | None] | None = None,
 ) -> AttentionFrameV1:
     """One workspace competition over the substrate graph.
 
@@ -220,6 +221,7 @@ def build_substrate_attention_frame(
             nodes,
             magnitude_by_node_id=magnitude_by_node_id or {},
             external_candidates=external_candidates or [],
+            rank_percentile_by_node_id=rank_percentile_by_node_id or {},
             now=resolved_now,
             min_salience=min_salience,
             limit=max_signals,
@@ -290,6 +292,7 @@ def world_first_signals(
     magnitude_by_node_id: dict[str, PredictionErrorMagnitudeV1],
     external_candidates: Sequence[Any],
     now: datetime,
+    rank_percentile_by_node_id: dict[str, float | None] | None = None,
     min_salience: float = DEFAULT_MIN_SALIENCE,
     limit: int = DEFAULT_MAX_SIGNALS,
 ) -> tuple[list[AttentionSignalV1], dict[str, Any], dict[str, float]]:
@@ -313,8 +316,16 @@ def world_first_signals(
         SOURCE_KIND_KEY,
         SUBSTRATE_NODE_PREFIX,
         node_candidate,
+        perception_absent_reason,
         rank_candidates,
     )
+
+    ranks = rank_percentile_by_node_id or {}
+    vision_organ_md: dict[str, Any] = {}
+    for node in nodes:
+        if str(getattr(node, "node_id", "") or "") == "node:substrate.vision_organ":
+            vision_organ_md = dict(getattr(node, "metadata", None) or {})
+            break
 
     candidates: list[Any] = []
     node_by_id: dict[str, Any] = {}
@@ -328,11 +339,10 @@ def world_first_signals(
             if node_id.startswith(SUBSTRATE_NODE_PREFIX) and metadata.get("prediction_error") is not None:
                 absent = None
                 if node_id == PERCEPTION_NODE_ID:
-                    try:
-                        if float(metadata.get("embedding_staleness", 0.0)) >= 1.0:
-                            absent = "camera embeddings stale (embedding_staleness 1.0)"
-                    except (TypeError, ValueError):
-                        absent = "camera staleness unreadable"
+                    absent = perception_absent_reason(
+                        embedding_staleness=metadata.get("embedding_staleness"),
+                        vision_frame_staleness=vision_organ_md.get("vision_frame_staleness"),
+                    )
                 observed_at = getattr(getattr(node, "temporal", None), "observed_at", None)
                 label = compact(str(getattr(node, "label", "") or node_id), 120)
                 candidates.append(
@@ -343,6 +353,7 @@ def world_first_signals(
                         observed_at=observed_at if isinstance(observed_at, datetime) else None,
                         now=now,
                         absent_reason=absent,
+                        rank_percentile=ranks.get(node_id),
                     )
                 )
                 node_by_id[node_id] = node
@@ -357,7 +368,9 @@ def world_first_signals(
     scores: dict[str, float] = {}
     for verdict in ranking.eligible:
         cand = verdict.candidate
-        score = max(0.0, min(1.0, float(verdict.score or 0.0)))
+        # Ranking key: mid-rank when known (ceiling ties), else strict-below.
+        key = verdict.rank_score if verdict.rank_score is not None else verdict.score
+        score = max(0.0, min(1.0, float(key or 0.0)))
         node = node_by_id.get(cand.source_id)
         metadata = dict(getattr(node, "metadata", None) or {}) if node is not None else {}
         confidence = 1.0
@@ -698,12 +711,21 @@ def broadcast_projection_from_frame(frame: AttentionFrameV1) -> AttentionBroadca
 
     # Compute stability score from recent salience consistency
     # (simplified: high if dwell_ticks > 3, medium if transitioning, low if flickering)
-    if _dwell_ticks > 3:
+    # A no-winner tick reports no dwell even while the previous coalition is
+    # still inside the decay window (review 2026-10-10: A, A, empty, empty
+    # reported dwell 2 / stability 0.6 with nothing selected). The hysteresis
+    # state itself is untouched, so a returning coalition resumes as before.
+    if not coalition:
+        reported_dwell = 0
+        stability_score = 0.3
+    elif _dwell_ticks > 3:
         stability_score = 0.9
     elif _dwell_ticks > 0:
         stability_score = 0.6
     else:
         stability_score = 0.3
+    if coalition:
+        reported_dwell = _dwell_ticks
 
     return AttentionBroadcastProjectionV1(
         generated_at=frame.generated_at,
@@ -712,7 +734,7 @@ def broadcast_projection_from_frame(frame: AttentionFrameV1) -> AttentionBroadca
         selected_open_loop_id=selected.open_loop_id if selected is not None else None,
         selected_description=selected_loop.description if selected_loop is not None else None,
         attended_node_ids=attended_node_ids,
-        dwell_ticks=_dwell_ticks,
+        dwell_ticks=reported_dwell,
         coalition_stability_score=stability_score,
         coalition_history=list(_transition_history),
     )

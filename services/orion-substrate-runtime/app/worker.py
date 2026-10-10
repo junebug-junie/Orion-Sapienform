@@ -2851,6 +2851,9 @@ class BiometricsSubstrateWorker:
                 external_candidates=(
                     self._world_first_external_candidates(tick_now) if world_first else None
                 ),
+                rank_percentile_by_node_id=(
+                    getattr(self, "_pe_rank_percentiles", None) if magnitudes else None
+                ),
             )
             projection = broadcast_projection_from_frame(frame)
             self._store.save_attention_broadcast(projection)
@@ -3035,14 +3038,22 @@ class BiometricsSubstrateWorker:
                 logger.exception("substrate_pe_history_prune_failed")
 
         magnitudes: dict[str, Any] = {}
+        # World-first ranking key (mid-rank: share below + half the share
+        # equal), computed from the same window so ceiling ties rank fairly.
+        rank_percentiles: dict[str, float | None] = {}
+        from orion.attention.world_first import midrank_percentile
+
         for node_id, (value, observed_at) in current.items():
+            history = list(cache.get(node_id) or ())
             magnitudes[node_id] = compute_prediction_error_magnitude(
                 value=value,
                 observed_at=observed_at,
-                history=list(cache.get(node_id) or ()),
+                history=history,
                 now=now,
                 trend_min_delta=float(s.pe_trend_min_delta),
             )
+            rank_percentiles[node_id] = midrank_percentile(value, [v for _, v in history])
+        self._pe_rank_percentiles = rank_percentiles
         logger.info(
             "substrate_pe_history_tick nodes=%d new_samples=%d",
             len(current),

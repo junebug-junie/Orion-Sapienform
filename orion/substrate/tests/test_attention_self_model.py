@@ -937,3 +937,16 @@ def test_no_winner_broadcast_does_not_narrate_a_dispatch() -> None:
     assert model.reason_narrative.startswith("No winner this tick")
     assert "'None'" not in model.reason_narrative
 
+
+def test_no_winner_with_unreadable_sources_says_so() -> None:
+    frame = AttentionFrameV1(
+        generated_at=NOW,
+        debug={"world_first": {"absent_sources": ["node:substrate.execution", "world:chat"]}},
+    )
+    broadcast = AttentionBroadcastProjectionV1(
+        generated_at=NOW, frame=frame, selected_action_type="none",
+        selected_open_loop_id=None, attended_node_ids=[], dwell_ticks=0,
+        coalition_stability_score=0.3,
+    )
+    model = reduce_attention_self_model(broadcast, _field_frame(), now=NOW)
+    assert "2 source(s) could not be read" in model.reason_narrative

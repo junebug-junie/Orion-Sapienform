@@ -1318,6 +1318,15 @@ async def test_run_visual_chain_once_skips_interpretation_when_no_slot_available
 
 
 # --- run_visual_chain_watchdog (2026-09-04 wedge fix) -----------------------
+def _stub_painting_gap(monkeypatch):
+    """Keep the loop tests off the real DB and real orion-notify for the
+    painting-gap check that rides the same tick (2026-10-10)."""
+    monkeypatch.setattr("app.store.visual_last_painting_age_hours", lambda: 1.0)
+    monkeypatch.setattr(
+        "app.visual_chain_health_monitor.check_visual_painting_gap", lambda age_hours: None
+    )
+
+
 # Independent of run_visual_chain_once/run_visual_chain_worker above: this
 # loop must keep checking staleness even when the worker itself is fully
 # wedged, since a wedged worker can never report on its own staleness.
@@ -1382,6 +1391,7 @@ async def test_watchdog_reports_db_age_to_health_check_each_tick(monkeypatch):
     monkeypatch.setattr(
         "app.visual_chain_health_monitor.check_visual_chain_staleness", _fake_check
     )
+    _stub_painting_gap(monkeypatch)
 
     await visual_chain.run_visual_chain_watchdog(stop_event)
 
@@ -1415,10 +1425,46 @@ async def test_watchdog_tick_failure_does_not_kill_the_loop(monkeypatch):
     monkeypatch.setattr(
         "app.visual_chain_health_monitor.check_visual_chain_staleness", lambda age_min: None
     )
+    _stub_painting_gap(monkeypatch)
 
     await visual_chain.run_visual_chain_watchdog(stop_event)
 
     assert calls["n"] == 2  # survived the first tick's exception and ran again
+
+
+@pytest.mark.asyncio
+async def test_watchdog_also_reports_painting_gap_each_tick_independently(monkeypatch):
+    """2026-10-10: the second check (hours since the last produced painting)
+    rides the same tick, and still runs when the staleness check raises."""
+    import asyncio
+
+    from app import visual_chain
+
+    monkeypatch.setattr(visual_chain.settings, "visual_chain_enabled", True)
+    monkeypatch.setattr(visual_chain.settings, "visual_chain_watchdog_check_interval_sec", 0.01)
+
+    stop_event = asyncio.Event()
+    gaps = iter([2.0, 13.0])
+    reported = []
+
+    def _boom(age_min):
+        raise RuntimeError("staleness check blew up")
+
+    def _fake_gap_check(age_hours):
+        reported.append(age_hours)
+        if len(reported) >= 2:
+            stop_event.set()
+
+    monkeypatch.setattr("app.store.visual_chain_age_minutes", lambda: 5.0)
+    monkeypatch.setattr("app.visual_chain_health_monitor.check_visual_chain_staleness", _boom)
+    monkeypatch.setattr("app.store.visual_last_painting_age_hours", lambda: next(gaps))
+    monkeypatch.setattr(
+        "app.visual_chain_health_monitor.check_visual_painting_gap", _fake_gap_check
+    )
+
+    await visual_chain.run_visual_chain_watchdog(stop_event)
+
+    assert reported == [2.0, 13.0]
 
 
 @pytest.mark.asyncio

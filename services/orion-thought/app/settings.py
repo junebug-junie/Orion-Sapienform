@@ -381,6 +381,13 @@ class ThoughtSettings(BaseSettings):
     visual_chain_staleness_threshold_min: float = Field(
         45.0, alias="ORION_VISUAL_CHAIN_STALENESS_THRESHOLD_MIN", gt=0
     )
+    # Second watchdog check (2026-10-10): hours since the last PRODUCED painting
+    # (production receipt), which deferral rows cannot reset. 21 days live: p95
+    # gap 2.9 h, only the three real outages exceeded 8 h (27.6/17.8/16.0 h), so
+    # 12 h fires on exactly those. Fires orion-notify severity "error".
+    visual_painting_gap_threshold_hours: float = Field(
+        12.0, alias="ORION_VISUAL_PAINTING_GAP_THRESHOLD_HOURS", gt=0
+    )
     # How often the watchdog re-checks reverie_visual_chain's newest row age.
     # 600s (not field-digester's own 900s precedent -- review finding, fixed:
     # that comment previously named 900s but this field's default was always

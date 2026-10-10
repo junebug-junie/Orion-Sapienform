@@ -254,6 +254,6 @@ cd /mnt/scripts/Orion-Sapienform && git pull --ff-only && for s in orion-substra
 
 ## PR link
 
-PR_LINK_PLACEHOLDER
+https://github.com/junebug-junie/Orion-Sapienform/pull/2591
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

@@ -223,28 +223,33 @@ hop stage: retry_wait -> same stage;  deadline / terminal -> finish_dream (parti
 - **Image hop:** a child `reverie.visual` run submitted inside durable-runs
   (`AdmissionRuntime.submit`), run id `reverie_visual_run_id(dream_hop_dispatch_id(carry, hop))`,
   painting the previous text hop's `image_prompt`, diffusion hold, deadline
-  `min(carry deadline, now + 6600 s)`. The carry holds nothing: `image_wait` re-reads the child's
-  terminal fact (`DurableRunRegistryStore.terminal_detail`) every 30 s.
+  `min(carry deadline, now + DREAM_CARRY_CHILD_WINDOW_SEC)` (default 2400, never above 6600), so a
+  hot cabinet cannot keep thought's single painting slot on a dream picture for hours. No child
+  (first or replacement) is submitted with less than `DREAM_CARRY_CHILD_MIN_WINDOW_SEC` of the carry
+  left: the carry finishes partial (`image hop N: only Ns left`). The carry holds nothing:
+  `image_wait` re-reads the child's terminal fact (`DurableRunRegistryStore.terminal_detail`) every
+  30 s (one checkpoint per poll: LangGraph has no checkpoint-free wait in this runtime).
   - A child that ends without a picture for a **retryable** reason (failed with
     `retry_window_expired` / `workflow_deadline`, or completed `deferred_thermal` /
-    `deferred_busy` / `deferred_resource` / `unknown`) is replaced, after the admission backoff
-    (`DURABLE_RUNS_RETRY_BASE_SEC * 2^(n-1)`, capped), by a fresh child for the same hop with dispatch
+    `deferred_busy` / `deferred_resource` / `unknown`) is replaced, after
+    `max(admission backoff, DREAM_CARRY_CHILD_RETRY_GAP_SEC)` (default 900: thought's 600 s cooldown
+    plus a baseline tick, so a waking painting can claim the slot in between), by a fresh child for the same hop with dispatch
     `dream-carry:<run>:<hop>:r<n>`, at most `DREAM_CARRY_CHILD_MAX_ATTEMPTS` (3) children per hop and
     only while `DREAM_CARRY_CHILD_MIN_WINDOW_SEC` (900) of the carry is left. Live reason: most
     waking paintings end `retry_window_expired` after `thermal_refused`.
   - Anything else (cancelled, a terminal failure, a non-deferral outcome), or attempts / window
     exhausted, stops the carry (`image hop N: <why>`, e.g. `image hop 3: thermal_refused x3`).
-  - Every child id is kept in `child_run_ids`; a carry that ends failed/cancelled cancels the current
-    attempt's child.
+  - Every child id is kept in `child_run_ids`; a carry that ends (any terminal, completed-partial
+    included) cancels the current attempt's child if it is still running.
 - **Finish:** `step="finish"` with every hop made and `stopped_reason`; orion-dream writes the
   dream. It keeps retrying for `DREAM_CARRY_FINISH_GRACE_SEC` (default 1800) past the deadline so
   a partial carry is still written; after that the run fails with the last finish error.
 - **Deadline** (`admission.deadline_at`, required: `AdmissionRuntime.submit` refuses a carry
   without one, since text/finish retries never spend attempts): any hop stage past it finishes **partial** with
-  `stopped_reason="deadline at hop N: <last reason>"`. A carry that made no hop at all fails
-  instead (nothing to write). The driver does not fail a pending carry at its deadline (the graph
+  `stopped_reason="deadline at hop N: <last reason>"`. A carry that made no hop at all still calls
+  finish with `hops=[]`: orion-dream answers done with `dream_id="story-fallback:<trigger_id>"` (the
+  sleep's one-paragraph story) or terminal for a hand-started carry (run failed). The driver does not fail a pending carry at its deadline (the graph
   owns it); it only backstops it after deadline + grace + `DURABLE_RUNS_RETRY_MAX_SEC`.
-- A carry that ends failed/cancelled cancels its in-flight child run.
 - Hops in the checkpoint are never redone (the next hop index is `len(hops)`); a replayed image
   submit dedupes on the deterministic child run id.
 

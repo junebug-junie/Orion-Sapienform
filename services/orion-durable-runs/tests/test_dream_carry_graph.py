@@ -23,7 +23,8 @@ from app.dream_carry_graph import (
     CHILD_POLL_SEC, DreamCarryDeps, build_dream_carry_graph, finish_detail, terminal_detail,
 )
 from orion.schemas.dream_carry import (
-    DREAM_CARRY_WORKFLOW, DreamCarryBriefV1, DreamCarryStepResultV1, dream_hop_dispatch_id,
+    DREAM_CARRY_WORKFLOW, IMAGE_PROMPT_MAX_WORDS, DreamCarryBriefV1, DreamCarryStepResultV1,
+    dream_hop_dispatch_id,
 )
 from orion.schemas.reverie_visual_run import REVERIE_VISUAL_WORKFLOW, reverie_visual_run_id
 
@@ -74,7 +75,7 @@ class Dream:
             base["hop"] = {"index": req.hop_index, "kind": "text", "passage": f"passage {req.hop_index} from {seen}",
                            "image_prompt": f"prompt {req.hop_index} " + "word " * 80, "elapsed_sec": 4.0}
         if status == "done" and req.step == "finish":
-            base["dream_id"] = "dream-42"
+            base["dream_id"] = "dream-42" if req.hops else f"story-fallback:{req.brief.trigger_id}"
         return DreamCarryStepResultV1(**{**base, **extra})
 
 
@@ -88,6 +89,8 @@ class Children:
         self.reads = []
         self.crash_reads = 0
         self.crash_submits = 0   # die right after a submit lands (before the carry checkpoints it)
+        self.clock = None        # with ready_at: a child reads as still running until clock() >= ready_at
+        self.ready_at = None
 
     def hop_of(self, run_id):
         for req in self.submitted:
@@ -115,6 +118,8 @@ class Children:
             self.crash_reads -= 1
             raise Crash()
         hop = self.hop_of(run_id)
+        if self.ready_at is not None and self.clock() < self.ready_at:
+            return None
         default = ("completed", {"outcome": "produced", "artifact_sha256": SHA, "caption": f"seen {hop}",
                                  "visual_elapsed_sec": 50.0})
         got = self.outcome.get(f"h{hop}", default)
@@ -179,7 +184,7 @@ def test_six_hops_alternate_text_and_image_and_finish_gets_all_six():
         # T2 dreams from what I1's painting turned out to show.
         assert texts[1].hops[-1].caption == "seen 1" and hops[2]["passage"] == "passage 2 from seen 1"
         # The image prompt is clipped to what CLIP reads.
-        assert len(hops[0]["image_prompt"].split()) == 60
+        assert len(hops[0]["image_prompt"].split()) == IMAGE_PROMPT_MAX_WORDS
         # Image hops: one child reverie.visual run each, deterministic per (carry, hop), painting the
         # previous text hop's prompt, on a diffusion hold, never past the carry's deadline.
         assert [c.brief.dream_hop.hop_index for c in children.submitted] == [1, 3, 5]
@@ -392,7 +397,7 @@ def test_finish_past_the_grace_fails_with_the_last_finish_error():
     asyncio.run(run())
 
 
-def test_a_carry_that_made_no_hop_fails_instead_of_writing_an_empty_dream():
+def test_a_carry_that_made_no_hop_still_calls_finish_and_gets_the_story_fallback():
     async def run():
         world, saver = CarryWorld(auto_grant=False), InMemorySaver()
         dream, children = Dream(), Children()
@@ -400,8 +405,26 @@ def test_a_carry_that_made_no_hop_fails_instead_of_writing_an_empty_dream():
         await g.ainvoke(initial(world, deadline=timedelta(minutes=5)), CFG)
         world.now += timedelta(minutes=10)
         result = await g.ainvoke(Command(resume=True), CFG)
-        assert result["status"] == "failed" and result["last_error"].startswith("deadline at hop 0")
-        assert dream.calls == []
+        assert result["status"] == "completed" and result["dream_id"] == "story-fallback:sleep-1"
+        [fin] = dream.calls
+        assert fin.step == "finish" and fin.hops == []
+        assert fin.stopped_reason == "deadline at hop 0: waiting for the LLM hold"
+        detail = finish_detail(result)
+        assert detail["hops_made"] == 0 and detail["dream_id"] == "story-fallback:sleep-1"
+        assert detail["stopped_reason"] == fin.stopped_reason
+    asyncio.run(run())
+
+
+def test_a_hand_started_carry_with_no_hop_fails_on_finish_terminal():
+    async def run():
+        world, saver = CarryWorld(auto_grant=False), InMemorySaver()
+        dream = Dream(finish=[("terminal", {"reason": "no_sleep_to_fall_back_to"})])
+        g = graph(world, saver, dream, Children())
+        await g.ainvoke(initial(world, deadline=timedelta(minutes=5)), CFG)
+        world.now += timedelta(minutes=10)
+        result = await g.ainvoke(Command(resume=True), CFG)
+        assert result["status"] == "failed" and result["last_error"] == "finish:no_sleep_to_fall_back_to"
+        assert terminal_detail(result, "failed")["stopped_reason"].startswith("deadline at hop 0")
     asyncio.run(run())
 
 
@@ -576,9 +599,10 @@ def test_the_deadline_inside_a_text_hop_releases_the_hold_and_finishes_partial_o
         world, saver = TakeBackWorld(WorkflowDeadline("workflow_deadline")), InMemorySaver()
         dream, children = Dream(), Children()
         result = await drive(graph(world, saver, dream, children), world, initial(world))
-        # Nothing made yet: no empty dream, but the hold is handed back.
-        assert result["status"] == "failed" and result["last_error"].startswith("deadline at hop 0")
-        assert world.releases == ["workflow_deadline"] and dream.calls == []
+        # Nothing made yet: the hold is handed back and finish asks for the story fallback.
+        assert result["status"] == "completed" and result["dream_id"] == "story-fallback:sleep-1"
+        assert result["stopped_reason"].startswith("deadline at hop 0")
+        assert world.releases == ["workflow_deadline"] and [r.step for r in dream.calls] == ["finish"]
     asyncio.run(run())
 
 
@@ -599,7 +623,12 @@ def test_a_carry_cancelled_mid_submit_still_cancels_the_deterministic_child():
     asyncio.run(rt._terminal(RUN, "cancelled", state, workflow=DREAM_CARRY_WORKFLOW))
     assert cancelled == [reverie_visual_run_id(dream_hop_dispatch_id(RUN, 1))]
     cancelled.clear()
-    asyncio.run(rt._terminal(RUN, "completed", state, workflow=DREAM_CARRY_WORKFLOW))
+    # A completed-partial carry (stopped with a picture still being painted) cancels it too.
+    asyncio.run(rt._terminal(RUN, "completed", {**state, "child_run_id": "child-x"}, workflow=DREAM_CARRY_WORKFLOW))
+    assert cancelled == ["child-x"]
+    cancelled.clear()
+    full = {**state, "hops": [{}] * 6}   # every hop made: no child to name
+    asyncio.run(rt._terminal(RUN, "completed", full, workflow=DREAM_CARRY_WORKFLOW))
     assert cancelled == []
 
 
@@ -638,7 +667,9 @@ def test_a_child_that_ran_out_of_window_on_heat_is_replaced_and_the_carry_reache
         # Backed off before the fresh child (the admission backoff, never immediate).
         [(state, at)] = waits
         assert state["child_attempt"] == 1 and state["reason"] == "child_retry:thermal_refused"
-        assert datetime.fromisoformat(state["retry_at"]) - at == timedelta(seconds=30)
+        # max(admission backoff 30 s, DREAM_CARRY_CHILD_RETRY_GAP_SEC 900 s): a waking painting can
+        # claim thought's slot in between.
+        assert datetime.fromisoformat(state["retry_at"]) - at == timedelta(seconds=900)
         assert result["child_attempt"] == 0   # reset for the next hop
         assert finish_detail(result)["child_run_ids"] == result["child_run_ids"]
     asyncio.run(run())
@@ -661,10 +692,47 @@ def test_no_fresh_child_without_enough_carry_left():
     async def run():
         world, saver = CarryWorld(), InMemorySaver()
         dream, children = Dream(), Children(h1=HOT)
-        g = graph(world, saver, dream, children, child_min_window_sec=5 * 3600)   # more than the 4 h carry
-        result = await drive(g, world, initial(world))
+        start = world.now
+        children.clock, children.ready_at = (lambda: world.now), start + timedelta(minutes=50)
+        result = await drive(graph(world, saver, dream, children), world, initial(world, deadline=timedelta(hours=1)))
         assert result["status"] == "completed" and len(result["hops"]) == 1 and len(children.submitted) == 1
         assert result["stopped_reason"].startswith("image hop 1: thermal_refused (only ")
+    asyncio.run(run())
+
+
+def test_no_first_child_without_enough_carry_left():
+    async def run():
+        world, saver = CarryWorld(), InMemorySaver()
+        dream, children = Dream(), Children()
+        g = graph(world, saver, dream, children, child_min_window_sec=5 * 3600)   # more than the 4 h carry
+        result = await drive(g, world, initial(world))
+        assert result["status"] == "completed" and len(result["hops"]) == 1 and children.submitted == []
+        assert result["stopped_reason"].startswith("image hop 1: only ") and result["stopped_reason"].endswith("s left")
+    asyncio.run(run())
+
+
+def test_a_dream_child_window_is_short_so_it_cannot_hog_the_painting_slot():
+    async def run():
+        world, saver = CarryWorld(), InMemorySaver()
+        dream, children = Dream(), Children()
+        await drive(graph(world, saver, dream, children), world, initial(world))
+        for child in children.submitted:
+            assert child.admission.deadline_at - child.requested_at == timedelta(seconds=2400)
+        world2, children2 = CarryWorld(), Children()   # a carry with less than 2400 s left: its deadline wins
+        carry_deadline = world2.now + timedelta(minutes=20)
+        await drive(graph(world2, InMemorySaver(), Dream(), children2), world2,
+                    initial(world2, deadline=timedelta(minutes=20)))
+        assert children2.submitted[0].admission.deadline_at == carry_deadline
+    asyncio.run(run())
+
+
+def test_a_carry_stopped_by_its_deadline_keeps_the_running_child_for_the_terminal_cancel():
+    async def run():
+        world, saver = CarryWorld(), InMemorySaver()
+        children = Children(h1=None)
+        result = await drive(graph(world, saver, Dream(), children), world, initial(world, deadline=timedelta(hours=1)))
+        assert result["status"] == "completed" and result["stopped_reason"].startswith("deadline at hop 1")
+        assert result["child_run_id"] == children.submitted[0].run_id   # _terminal cancels it (L2)
     asyncio.run(run())
 
 

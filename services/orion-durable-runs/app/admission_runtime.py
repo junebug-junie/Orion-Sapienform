@@ -40,6 +40,8 @@ from app.journal_compose_graph import build_journal_compose_graph, finish_detail
 from app.dream_carry_graph import (
     DEFAULT_CHILD_MAX_ATTEMPTS as DREAM_CARRY_DEFAULT_CHILD_MAX_ATTEMPTS,
     DEFAULT_CHILD_MIN_WINDOW_SEC as DREAM_CARRY_DEFAULT_CHILD_MIN_WINDOW_SEC,
+    DEFAULT_CHILD_RETRY_GAP_SEC as DREAM_CARRY_DEFAULT_CHILD_RETRY_GAP_SEC,
+    DEFAULT_CHILD_WINDOW_SEC as DREAM_CARRY_DEFAULT_CHILD_WINDOW_SEC,
     DEFAULT_FINISH_GRACE_SEC as DREAM_CARRY_DEFAULT_FINISH_GRACE_SEC, DreamCarryDeps, build_dream_carry_graph,
     finish_detail as dream_carry_finish_detail, terminal_detail as dream_carry_terminal_detail,
 )
@@ -206,6 +208,10 @@ class AdmissionRuntime:
                                                DREAM_CARRY_DEFAULT_CHILD_MAX_ATTEMPTS)),
                 child_min_window_sec=float(getattr(settings, "dream_carry_child_min_window_sec",
                                                    DREAM_CARRY_DEFAULT_CHILD_MIN_WINDOW_SEC)),
+                child_window_sec=float(getattr(settings, "dream_carry_child_window_sec",
+                                               DREAM_CARRY_DEFAULT_CHILD_WINDOW_SEC)),
+                child_retry_gap_sec=float(getattr(settings, "dream_carry_child_retry_gap_sec",
+                                                  DREAM_CARRY_DEFAULT_CHILD_RETRY_GAP_SEC)),
             ), admission_deps, runner._checkpointer),
         }
         # Back-compat alias used by older tests that reach for `.graph`.
@@ -1161,7 +1167,9 @@ class AdmissionRuntime:
         if actual is not None:
             self._hints.discard(run_id)
             self._checked.pop(run_id, None)
-        if wf == DREAM_CARRY_WORKFLOW and actual in ("failed", "cancelled"):
+        if wf == DREAM_CARRY_WORKFLOW and actual in TERMINAL:
+            # Any carry terminal, completed-partial included (a deadline stop with a picture still being
+            # painted): nobody reads that child any more. _cancel_carry_child skips ended/unknown ones.
             child = state.get("child_run_id")
             made = len(state.get("hops") or [])
             if not child and made % 2:

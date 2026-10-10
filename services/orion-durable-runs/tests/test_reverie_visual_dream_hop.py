@@ -140,3 +140,29 @@ def test_a_carry_that_ends_failed_cancels_its_in_flight_child():
     asyncio.run(rt._cancel_carry_child("carry-1", "child-1"))
     asyncio.run(rt._cancel_carry_child("carry-1", "never-submitted"))
     assert cancelled == [("child-1", "cancel")]
+
+
+def test_a_terminal_that_names_the_painting_keeps_its_sha_and_caption():
+    """A replayed dream child whose prepare answers terminal ``produced`` with the recorded picture
+    must not be reported as image-less (the carry would stop on it)."""
+    async def run():
+        world, saver = World(), InMemorySaver()
+        thought = Thought(world, prepare=[("terminal", {"outcome": "produced", "artifact_sha256": "d" * 64,
+                                                        "caption": "Already painted: a porch."})])
+        result = await graph(world, saver, thought).ainvoke(dream_initial(world), CFG)
+        assert result["status"] == "completed" and thought.steps() == ["prepare"]
+        detail = finish_detail(result)
+        assert detail["artifact_sha256"] == "d" * 64 and detail["caption"] == "Already painted: a porch."
+    asyncio.run(run())
+
+
+def test_a_generate_terminal_that_names_the_painting_keeps_its_sha_and_caption():
+    async def run():
+        world, saver = World(), InMemorySaver()
+        thought = Thought(world, generate=[("terminal", {"outcome": "produced", "artifact_sha256": "e" * 64,
+                                                         "caption": "Seen."})])
+        world.grant()
+        result = await graph(world, saver, thought).ainvoke(dream_initial(world), CFG)
+        detail = finish_detail(result)
+        assert detail["artifact_sha256"] == "e" * 64 and detail["caption"] == "Seen."
+    asyncio.run(run())

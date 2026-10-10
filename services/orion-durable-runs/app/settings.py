@@ -107,6 +107,10 @@ class Settings(BaseSettings):
     # and the least carry time left worth a fresh child.
     dream_carry_child_max_attempts: int = Field(3, ge=1, le=10, alias="DREAM_CARRY_CHILD_MAX_ATTEMPTS")
     dream_carry_child_min_window_sec: float = Field(900.0, ge=0.0, alias="DREAM_CARRY_CHILD_MIN_WINDOW_SEC")
+    # One dream child's window (capped at REVERIE_VISUAL_MAX_RETRY_WINDOW_SEC), and the least wait
+    # before a replacement child, so waking paintings get thought's single slot in between.
+    dream_carry_child_window_sec: float = Field(2400.0, gt=0.0, alias="DREAM_CARRY_CHILD_WINDOW_SEC")
+    dream_carry_child_retry_gap_sec: float = Field(900.0, ge=0.0, alias="DREAM_CARRY_CHILD_RETRY_GAP_SEC")
 
     # Memory episode redesign Stage 1 (2026-10-02, SHADOW): subscribe orion:memory:episode:closed
     # and distill each closed episode into episode_memory* tables. Kill switch: false stops new

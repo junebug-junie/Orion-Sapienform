@@ -179,7 +179,7 @@ When `ENABLE_PRE_TURN_APPRAISAL=true`, Hub appraises repair pressure **before** 
 
 | Variable | Default | Description |
 | :--- | :--- | :--- |
-| `ENABLE_PRE_TURN_APPRAISAL` | `false` | Master enable for pre-turn appraisal v2. |
+| `ENABLE_PRE_TURN_APPRAISAL` | `true` | Master enable for pre-turn appraisal v2. |
 | `PRE_TURN_APPRAISAL_PARADIGMS` | `repair_pressure` | Comma-separated paradigm names (resolved on cortex-exec via `PARADIGM_REGISTRY`). |
 | `PRE_TURN_APPRAISAL_TIMEOUT_MS` | `180000` | RPC timeout (ms), capped at 180000 by `PreTurnAppraisalOptionsV1`. Reused as-is at every nested layer (Hub's own RPC wait, cortex-exec's paradigm `wait_for`, the paradigm's own LLM-gateway probe call) with no slack between them, so it has to cover the slowest of those, not just the outer one. Raised from 60000 (2026-09-10) after live-confirmed timeouts on a starved small-model lane (`REPAIR_PRESSURE_PROBE_ROUTE=quick`, 8B model, 4 slots). |
 | `CHANNEL_PRE_TURN_APPRAISAL_REQUEST` | `orion:cortex:pre_turn_appraisal:request` | Bus request channel. |
@@ -1513,8 +1513,8 @@ cycle can currently act on. Turning `ROUTING_PROPOSALS_ENABLED` or
 disables the real graph_consolidation autonomy loop):
 
 - `SUBSTRATE_AUTONOMY_ROUTING_PROPOSALS_ENABLED` (default `true`)
-- `SUBSTRATE_AUTONOMY_COGNITIVE_PROPOSALS_ENABLED` (default `false`)
-- `SUBSTRATE_AUTONOMY_ROUTING_APPLY_ENABLED` (default `false`)
+- `SUBSTRATE_AUTONOMY_COGNITIVE_PROPOSALS_ENABLED` (default `true`)
+- `SUBSTRATE_AUTONOMY_ROUTING_APPLY_ENABLED` (default `true`)
 - `SUBSTRATE_AUTONOMY_ROUTING_ROLLBACK_DELTA_THRESHOLD` (default `-0.05`)
 
 ### 5.3 Self-Observability panel (`Self` tab)
@@ -1529,7 +1529,7 @@ section degrades to `null` independently (missing table, unset
   `substrate_hub_presence` (`HUB_PRESENCE_WRITER_ENABLED`, default on;
   apply `services/orion-sql-db/manual_migration_hub_presence_v1.sql`).
 - The Agent lane can prepend a one-line curiosity focus hint from fresh
-  endogenous candidates (`HUB_AGENT_CURIOSITY_HINT_ENABLED`, default off;
+  endogenous candidates (`HUB_AGENT_CURIOSITY_HINT_ENABLED`, default on;
   advisory only, structural gate, no keyword classification).
 
 ### 5.4 Drives Analytics panel — REMOVED 2026-08-13

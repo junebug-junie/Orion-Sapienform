@@ -63,11 +63,18 @@ def read_falkor_neighborhood(store, request: NeighborhoodRequestV1):
 
     def where(ids, group=None):
         params = {"ids": ids, "states": list(request.semantic_states),
+                  "projection_states": list(request.projection_states()),
                   "scopes": list(request.anchor_scopes)}
+        # Per-edge endpoint rule (NeighborhoodRequestV1.endpoint_eligible): any
+        # walkable edge between semantic_states nodes, or a semantic_projection
+        # edge between projection_states nodes. _WALKABLE_EDGE_TAIL then demands
+        # the projection's Assertion be accepted at the projected revision.
         condition = ("e.substrate_edge = true "
             "AND source.node_kind IN ['concept', 'entity'] "
             "AND target.node_kind IN ['concept', 'entity'] "
-            "AND source.promotion_state IN $states AND target.promotion_state IN $states "
+            "AND ((source.promotion_state IN $states AND target.promotion_state IN $states) "
+            "OR (e.edge_role = 'semantic_projection' AND source.promotion_state IN $projection_states "
+            "AND target.promotion_state IN $projection_states)) "
             "AND source.anchor_scope IN $scopes AND target.anchor_scope IN $scopes ")
         if group is None:
             condition += "AND source.node_id IN $ids AND target.node_id IN $ids "
@@ -151,8 +158,10 @@ def read_sparql_neighborhood(store, request: NeighborhoodRequestV1):
         return sparql_nodes(store, ids)
 
     def pattern(ids, group=None):
-        # Empty IN lists are not portable SPARQL. The driver has no eligible
-        # focal nodes when states/scopes are empty, so this path is not entered.
+        # Empty IN lists are not portable SPARQL. With empty states/scopes the
+        # driver has no eligible focal nodes, except a projection-only focal's
+        # anchor probe (groups([id])), which can then fail as `unavailable:`
+        # instead of `missing`. Both are fail-closed; rdflib accepts `IN ()`.
         clause = ("?edge a orion:SubstrateEdge ; orion:edgeId ?edge_id ; "
             "orion:sourceNodeId ?source_id ; orion:targetNodeId ?target_id ; "
             "orion:predicate ?predicate ; orion:payloadJson ?payload_json . "
@@ -163,6 +172,9 @@ def read_sparql_neighborhood(store, request: NeighborhoodRequestV1):
             'FILTER(?source_kind IN ("concept", "entity") && ?target_kind IN ("concept", "entity")) '
             # This backend stores no Assertion nodes, so it cannot verify a
             # semantic projection: it walks legacy edges only (fail closed).
+            # Consequently projection_endpoint_states never admits anything
+            # here: a proposed focal finds no projection edge and stays
+            # filtered, and node states below stay strictly semantic_states.
             "OPTIONAL { ?edge orion:edgeRole ?edge_role . } "
             'FILTER(!BOUND(?edge_role) || ?edge_role = "legacy_unreviewed") '
             f"FILTER(?source_state IN ({values(request.semantic_states)}) && "

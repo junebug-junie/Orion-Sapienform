@@ -280,6 +280,7 @@ class AttentionRuntimeWorker:
                     now=now,
                     absent_reason=absent,
                     rank_percentile=mid,
+                    event_decay=bool(getattr(self._settings, "attention_event_decay_enabled", True)),
                 )
             )
         try:

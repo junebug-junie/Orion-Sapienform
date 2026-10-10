@@ -250,3 +250,33 @@ def test_no_hub_queue_pressure_ewma_keys() -> None:
             text = path.read_text(encoding="utf-8", errors="replace")
             for needle in forbidden:
                 assert needle not in text, f"{path} contains {needle}"
+
+
+def test_gather_carries_peer_refusal_reason_into_line() -> None:
+    """2026-10-10: the line Orion reads names the real cause, not a generic 'spent'."""
+    reason = (
+        "Cursor unavailable: it hit its usage limit (resets 2026-10-14). "
+        "Claude fallback refused: this service cannot see Claude's usage meter, "
+        "so it refuses rather than spend blind. "
+        "[cursor_token_unavailable:usage_limit; claude_budget_unobserved] "
+        "cursor said: cursor agent exited 1: You've hit your usage limit."
+    )
+    with patch(
+        "orion.hub.queue_contention_field_read.read_latest_queue_contention",
+        side_effect=RuntimeError("no field"),
+    ):
+        lines = _gather_role_teach_progress_lines(
+            {
+                "role_teach_peer_brief": {
+                    "status": "refused_budget",
+                    "next_hop_n": 4,
+                    "refusal_reason": reason,
+                },
+            }
+        )
+    text = "\n".join(lines)
+    assert "usage limit (resets 2026-10-14)" in text
+    assert "Claude fallback refused" in text
+    assert "Cursor budget is spent" not in text
+    assert "cursor said" not in text
+    assert "hop 4" in text

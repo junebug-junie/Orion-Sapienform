@@ -78,3 +78,29 @@ def test_flag_off_never_reads_chat_and_keeps_the_pressure_winner(monkeypatch) ->
     w._store.fetch_chat_turn_times.assert_not_called()
     assert proj.attended_node_ids == ["node:concept.hot"]
     assert "world_first" not in proj.frame.debug
+
+
+def test_event_decay_setting_reaches_the_broadcast(monkeypatch) -> None:
+    """ATTENTION_EVENT_DECAY_ENABLED is passed into the competition (default on)."""
+    import orion.substrate.attention_broadcast as ab
+
+    seen: list[bool] = []
+    real = ab.build_substrate_attention_frame
+
+    def spy(*a, **kw):
+        seen.append(kw.get("event_decay"))
+        return real(*a, **kw)
+
+    for env, expected in ((None, True), ("false", False), ("true", True)):
+        if env is None:
+            monkeypatch.delenv("ATTENTION_EVENT_DECAY_ENABLED", raising=False)
+        else:
+            monkeypatch.setenv("ATTENTION_EVENT_DECAY_ENABLED", env)
+        w = _worker(monkeypatch, world_first=True)
+        w._world_first_external_candidates = lambda now: []
+        fake_store = MagicMock()
+        fake_store.snapshot.return_value = _snapshot()
+        with patch("orion.substrate.graphdb_store.build_substrate_store_from_env", return_value=fake_store), \
+                patch.object(ab, "build_substrate_attention_frame", spy):
+            w._attention_broadcast_tick()
+        assert seen[-1] is expected, env

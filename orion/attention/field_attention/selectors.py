@@ -537,7 +537,8 @@ def world_first_targets(
     for verdict in (*ranking.eligible, *ranking.ineligible):
         cand = verdict.candidate
         mag = cand.unusualness
-        salience = clamp01(verdict.score or 0.0) if verdict.eligible else 0.0
+        # Faded by event age for event-written sources (verdict.salience).
+        salience = clamp01(verdict.salience) if verdict.eligible else 0.0
         value = float(mag.value)
         is_chat = cand.source_id == WORLD_CHAT_SOURCE_ID
         target = FieldAttentionTargetV1(

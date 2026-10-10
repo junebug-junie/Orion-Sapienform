@@ -45,9 +45,10 @@ class Settings(BaseSettings):
     # Swap-load guards (read outside the runtime lock, every guard_refresh_sec).
     cabinet_url: str = Field("http://100.92.216.81:8080/api/cabinet/sensors/latest", alias="GPU_POOL_CABINET_URL")
     guard_refresh_sec: float = Field(30.0, gt=0, alias="GPU_POOL_GUARD_REFRESH_SEC")
-    # U4 shed lever kill switch (orion/gpu_pool/shed.py). OFF in code: the pool still receives and
-    # shows shed signals (orion-hardware-watch cooling incidents) but blocks nothing. ON in .env_example.
-    shed_enabled: bool = Field(False, alias="GPU_POOL_SHED_ENABLED")
+    # U4 shed lever kill switch (orion/gpu_pool/shed.py). ON in code, .env_example and production
+    # (aligned 2026-10-10, scripts/check_settings_defaults.py --example-drift). false = the pool still
+    # receives and shows shed signals (orion-hardware-watch cooling incidents) but blocks nothing.
+    shed_enabled: bool = Field(True, alias="GPU_POOL_SHED_ENABLED")
     # Orion's learned shed (attend-to-act loop A1): the lower-precedence ``orion_self_shed`` reason.
     # OFF in code AND in .env_example -- Juniper flips it. false refuses every set and settles any
     # active Orion shed ``cancelled`` at boot; it never touches the reflex's cooling_incident.
@@ -56,6 +57,13 @@ class Settings(BaseSettings):
     orion_shed_max_ttl_sec: float = Field(900.0, gt=0, le=3600, alias="GPU_POOL_ORION_SHED_MAX_TTL_SEC")
     orion_shed_max_sec_per_day: float = Field(3600.0, ge=0, alias="GPU_POOL_ORION_SHED_MAX_SEC_PER_DAY")
     orion_shed_min_gap_sec: float = Field(900.0, ge=0, alias="GPU_POOL_ORION_SHED_MIN_GAP_SEC")
+
+    # Controller-health alert (orion/gpu_pool/controller_health.py): a Hub attention card when a seat's lane
+    # controller keeps refusing with a reason a retry cannot fix (config_unloadable, digest mismatch,
+    # ...). /health and the state payload show it regardless; this only gates the card.
+    controller_alert_enabled: bool = Field(True, alias="GPU_POOL_CONTROLLER_ALERT_ENABLED")
+    notify_base_url: str = Field("http://orion-athena-notify:7140", alias="NOTIFY_BASE_URL")
+    notify_api_token: str | None = Field(None, alias="NOTIFY_API_TOKEN")
 
 
 @lru_cache

@@ -35,6 +35,34 @@ Requirements:
 - Redis: PING + `PUBSUB NUMSUB` on intake channels
 - Equilibrium: snapshot layer for degraded/down beyond grace
 
+## GPU actuation watch
+
+Added after the 2026-10-09/10 incident: circe's `orion-gpu-lane-controller` ran an image older than
+`config/gpu_pool.yaml`, could not parse its own config, and refused every GPU swap
+(`config_unloadable:ValidationError`, 155 times in 25.7 h). Its `/health` stayed ok and nothing alerted.
+
+`app/gpu_watch.py` (pure) + `_gpu_loop` / `_gpu_event_loop` in `app/service.py`:
+
+- **Active**, every `MESH_GUARDIAN_GPU_PROBE_INTERVAL_SEC` (300): for each role with a `launch` block in
+  the live `<ORION_REPO_ROOT>/config/gpu_pool.yaml`, asks its controller `status` then `digest`
+  (`orion/gpu_pool/actuator_probe.py`, the same read-only probe as `scripts/gpu_pool_actuator_probe.py`;
+  each waits up to `MESH_GUARDIAN_GPU_PROBE_WAIT_SEC`, 90). Own loop, so it never delays the 60 s stability loop.
+  Cards: config unloadable -> critical; launch digest mismatch -> error; no answer on 2 cycles in a row -> error.
+  Busy / deadline_passed refusals do not alert.
+- **Passive**: listens on `orion:gpu_pool:event`. A pool `actuate_refused` whose reason is
+  `config_unloadable:*` or `launch_digest_mismatch` -> critical at once; any 3 refusals for one role
+  within 60 min -> error.
+- Both go through the same `AlertGate` as the stability checks (key per role + kind, shared by both views):
+  one card per 6 h while the condition lasts. If the guardian itself cannot parse the live YAML (its own
+  image is older), it raises a card saying so instead of going blind.
+- Probes use their own `probe-*` action_ids: the controller's `status` writes no fence state and the digest
+  `load` is refused before any docker call or generation; the pool drops results for action_ids it did not
+  issue (see `orion/gpu_pool/actuator_probe.py` docstring for the one replay side effect).
+- Disable with `MESH_GUARDIAN_GPU_WATCH_ENABLED=false`.
+
+Eval: `evals/test_gpu_incident_replay.py` replays the real 155 refusals (exported from `gpu_pool_events`):
+first card within 0 s of the first refused swap, worst case 295 s from probes alone; 5 cards over 25.7 h.
+
 ## Tests
 
 ```bash

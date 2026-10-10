@@ -24,91 +24,48 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import json
 import os
 import sys
-import uuid
-from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from orion.gpu_pool.config import PoolConfig, launch_digest, load_pool_config  # noqa: E402
-from orion.schemas.gpu_pool import (  # noqa: E402
-    GPU_ACTUATE_KIND, GPU_POOL_ACTUATE_REQUEST_CHANNEL, GPU_POOL_ACTUATE_RESULT_CHANNEL, GpuActuateV1,
-)
+from orion.gpu_pool import actuator_probe  # noqa: E402
+from orion.gpu_pool.actuator_probe import PROBE_PROFILE  # noqa: E402,F401  (re-exported for callers)
+from orion.gpu_pool.config import PoolConfig, load_pool_config  # noqa: E402
+from orion.schemas.gpu_pool import GpuActuateV1  # noqa: E402
 
-# Never a config/llm_profiles.yaml name, so never in a launch.profiles allow-list.
-PROBE_PROFILE = "gpu-pool-actuator-probe-not-a-profile"
-SOURCE = "operator:gpu-pool-actuator-probe"
+# The probe core lives in orion/gpu_pool/actuator_probe.py (shared with orion-mesh-guardian's GPU
+# watch); this file is the operator CLI over it.
+SOURCE = actuator_probe.DEFAULT_SOURCE
 
 
-def build(cfg: PoolConfig, role: str, check: str, *, now: datetime | None = None) -> GpuActuateV1:
-    """The request for one check. ``status`` carries profile None; ``digest`` is a ``load`` with
-    PROBE_PROFILE and THIS checkout's launch digest."""
-    spec = cfg.roles[role]
-    if spec.launch is None:
-        raise SystemExit(f"{role} has no launch block: no actuator to ask")
-    now = now or datetime.now(timezone.utc)
-    return GpuActuateV1(
-        action_id=f"probe-{check}:{role}:{uuid.uuid4().hex[:8]}", generation=1, actuator=spec.launch.actuator,
-        role=role, action="status" if check == "status" else "load", cards=list(spec.cards),
-        profile=None if check == "status" else PROBE_PROFILE, launch_digest=launch_digest(cfg, role),
-        deadline_at=now + timedelta(seconds=120), reason="operator_probe")
+def build(cfg: PoolConfig, role: str, check: str, *, now=None) -> GpuActuateV1:
+    """The request for one check (see actuator_probe.build_request)."""
+    try:
+        return actuator_probe.build_request(cfg, role, check, now=now)
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from None
 
 
 def verdict(check: str, results: list[dict]) -> str:
     """One line a human can act on, from the results carrying this probe's action_id."""
-    final = [r for r in results if r.get("status") in ("succeeded", "failed", "refused")]
-    if not final:
-        return "NO ANSWER (controller down, wrong actuator name, or bus unreachable)"
-    last = final[-1]
-    reason = last.get("reason") or ""
-    if check == "digest":
-        if reason == "profile_not_allowed":
-            return "OK: launch digests agree"
-        if reason == "launch_digest_mismatch":
-            return "MISMATCH: controller checkout/image is not on this commit"
-        return f"UNEXPECTED: {last.get('status')} {reason}"
-    if last.get("status") == "succeeded":
-        return (f"OK: observed={last.get('observed')} in_flight={last.get('in_flight')} "
-                f"last_action_id={last.get('last_action_id')}")
-    return f"NOT OK: {last.get('status')} {reason}"
+    return actuator_probe.classify(check, results).line
 
 
 async def probe(role: str, checks: list[str], wait_sec: float, config: str | None = None) -> int:
     from orion.core.bus.async_service import OrionBusAsync
-    from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 
     cfg = load_pool_config(config) if config else load_pool_config()
+    build(cfg, role, checks[0])  # a role with no launch block exits before touching the bus
     bus = OrionBusAsync(url=os.environ["ORION_BUS_URL"])
     await bus.connect()
     bad = 0
     try:
-        async with bus.subscribe(GPU_POOL_ACTUATE_RESULT_CHANNEL) as pubsub:
-            for check in checks:
-                msg = build(cfg, role, check)
-                await bus.publish(GPU_POOL_ACTUATE_REQUEST_CHANNEL, BaseEnvelope(
-                    kind=GPU_ACTUATE_KIND, source=ServiceRef(name=SOURCE), correlation_id=uuid.uuid4(),
-                    payload=msg.model_dump(mode="json")))
-                got: list[dict] = []
-                deadline = asyncio.get_running_loop().time() + wait_sec
-                while asyncio.get_running_loop().time() < deadline:
-                    m = await pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0)
-                    if not m:
-                        continue
-                    try:
-                        env = json.loads(m["data"])
-                    except (TypeError, ValueError):
-                        continue
-                    payload = env.get("payload") if isinstance(env, dict) else None
-                    if isinstance(payload, dict) and payload.get("action_id") == msg.action_id:
-                        got.append(payload)
-                        if payload.get("status") in ("succeeded", "failed", "refused"):
-                            break
-                line = verdict(check, got)
-                bad += not line.startswith("OK")
-                print(f"{check:7s} {role} digest={msg.launch_digest[:16]} -> {line}")
+        for check in checks:
+            got = await actuator_probe.probe(bus, cfg, role, check, wait_sec, SOURCE)
+            bad += not got.ok
+            print(f"{check:7s} {role} digest={got.launch_digest[:16]} -> {got.line}")
     finally:
         await bus.close()
     return 1 if bad else 0

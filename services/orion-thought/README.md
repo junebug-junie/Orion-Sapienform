@@ -511,7 +511,9 @@ Flags:
 | `ORION_VISUAL_CHAIN_ENABLED` | `true` | Master switch |
 | `ORION_VISUAL_CHAIN_INTERVAL_SEC` | `600` | Trigger cadence (real cadence is `max(this, run duration)`) |
 | `ORION_VISUAL_CHAIN_STALENESS_THRESHOLD_MIN` | `45` | Watchdog threshold (2026-09-04): if the newest `reverie_visual_chain` row is older than this, fire an orion-notify `critical` attention request (email + Hub attention item) -- catches the worker wedging before ever reaching the run-deadline/single-flight lock below, which a live 24h+ silent wedge with zero errors proved possible |
-| `ORION_VISUAL_PAINTING_GAP_THRESHOLD_HOURS` | `12` | Second watchdog check (2026-10-10): if no real painting (a `reverie_visual_chain` row with a `production_receipt`, timed by its `produced_at`) has landed in this many hours, fire an orion-notify `error` attention request (emails if left unacked). Deferral/failure rows reset the staleness clock above but not this one -- the GPU lane controller refused every swap for 27.6 h on 2026-10-09/10 while staleness stayed green. 21-day live p95 gap 2.9 h; 12 h fires on exactly the three real outages |
+| `ORION_VISUAL_PAINTING_GAP_CHECK_ENABLED` | `true` | Painting-gap check (2026-10-10), own loop, not gated on `ORION_VISUAL_CHAIN_ENABLED` (off in production, which is why the staleness watchdog never ran during the 27.6 h 2026-10-09/10 outage) |
+| `ORION_VISUAL_PAINTING_GAP_THRESHOLD_HOURS` | `12` | If no real painting (a `reverie_visual_chain` row with a `production_receipt`, timed by its `produced_at`) has landed in this many hours, fire an orion-notify `error` attention request (emails if left unacked). Calibrated in-sample on 2026-09-14..10-10: no gap fell between 7.6 h and 14.7 h |
+| `ORION_VISUAL_PAINTING_GAP_CHECK_INTERVAL_SEC` | `600` | How often the painting-gap loop re-reads the last painting's age |
 | `ORION_VISUAL_CHAIN_WATCHDOG_CHECK_INTERVAL_SEC` | `600` | How often the watchdog re-checks that staleness, independently of the worker's own loop |
 | `ORION_DIFFUSION_HOST_BASE_URL` | `http://100.112.254.99:8014` | circe's diffusion host |
 | `ORION_VISUAL_CHAIN_DIFFUSION_TIMEOUT_SEC` | `120` | `/generate` HTTP timeout (raised from `30` 2026-08-28 -- tuned for sdxl-turbo's near-instant single step; FLUX.1-schnell's real generation measured 49-56s live, timing out every tick until fixed) |
@@ -621,19 +623,25 @@ independently found to be hitting. Worth revisiting whether this watchdog's
 "staleness" threshold makes sense once that upstream problem is understood,
 rather than assuming a wedge every time render_scene goes quiet for a while.
 
-**Painting-gap check (2026-10-10).** The same watchdog tick runs a second,
-independent check, `visual_painting_gap`: hours since the last painting
-Orion actually produced (`store.visual_last_painting_age_hours()`, production
-receipts only). The staleness check above answers "is the worker loop alive?"
-and stays green as long as deferral rows keep landing; this one answers "did
-a picture come out?". Over `ORION_VISUAL_PAINTING_GAP_THRESHOLD_HOURS`
-(default 12) it raises an `error`-severity attention item whose message lists
-the likely causes in order: GPU lane controller refusing swaps (check the
-mesh-guardian GPU cards / `scripts/gpu_pool_actuator_probe.py`), long thermal
-refusals, worker wedged. A recovery note follows once a painting lands. Each
-check keeps its own edge-triggered state, so one never flips the other. Dream
-carry pictures (`brief.dream_hop`) write no chain row and never count.
-Calibration replay: `evals/test_painting_gap_replay.py`.
+**Painting-gap check (2026-10-10).** A second, independent check,
+`visual_painting_gap`: hours since the last painting Orion actually produced
+(`store.visual_last_painting_age_hours()`, production receipts only). It runs
+in its own loop (`run_visual_painting_gap_watchdog`, started from `main.py`'s
+lifespan), gated only on `ORION_VISUAL_PAINTING_GAP_CHECK_ENABLED` (default
+on) -- deliberately NOT on `ORION_VISUAL_CHAIN_ENABLED`. That legacy flag is
+off in production (paintings come from the durable visual-baseline path), so
+the staleness watchdog above never starts there; that, not fresh rows, is why
+nothing alerted during the 27.6 h no-painting outage of 2026-10-09/10 (GPU
+lane controller refusing every swap). Over
+`ORION_VISUAL_PAINTING_GAP_THRESHOLD_HOURS` (default 12) it raises an
+`error`-severity attention item whose message lists the likely causes in
+order: GPU lane controller refusing swaps (check the mesh-guardian GPU cards
+/ `scripts/gpu_pool_actuator_probe.py`), long thermal refusals, worker
+wedged. A recovery note follows once a painting lands; a failed DB read is
+treated as no observation, not as recovery. Dream carry pictures
+(`brief.dream_hop`) write no chain row and never count. The threshold is
+calibrated in-sample on 2026-09-14..10-10 (no gap fell between 7.6 h and
+14.7 h); replay: `evals/test_painting_gap_replay.py`.
 
 ## Acknowledged visual activity and baseline execution
 

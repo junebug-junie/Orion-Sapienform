@@ -381,12 +381,21 @@ class ThoughtSettings(BaseSettings):
     visual_chain_staleness_threshold_min: float = Field(
         45.0, alias="ORION_VISUAL_CHAIN_STALENESS_THRESHOLD_MIN", gt=0
     )
-    # Second watchdog check (2026-10-10): hours since the last PRODUCED painting
-    # (production receipt), which deferral rows cannot reset. 21 days live: p95
-    # gap 2.9 h, only the three real outages exceeded 8 h (27.6/17.8/16.0 h), so
-    # 12 h fires on exactly those. Fires orion-notify severity "error".
+    # Painting-gap check (2026-10-10): hours since the last PRODUCED painting
+    # (production receipt). Own loop started from main.py, NOT gated on
+    # visual_chain_enabled (legacy worker flag, off in production -- which is
+    # why the staleness watchdog above never ran during the 27.6 h 10-09/10
+    # outage). Fires orion-notify severity "error". Threshold picked in-sample
+    # on 2026-09-14..10-10: no gap between 7.6 h and 14.7 h, see
+    # evals/test_painting_gap_replay.py.
+    visual_painting_gap_check_enabled: bool = Field(
+        True, alias="ORION_VISUAL_PAINTING_GAP_CHECK_ENABLED"
+    )
     visual_painting_gap_threshold_hours: float = Field(
         12.0, alias="ORION_VISUAL_PAINTING_GAP_THRESHOLD_HOURS", gt=0
+    )
+    visual_painting_gap_check_interval_sec: float = Field(
+        600.0, alias="ORION_VISUAL_PAINTING_GAP_CHECK_INTERVAL_SEC", gt=0
     )
     # How often the watchdog re-checks reverie_visual_chain's newest row age.
     # 600s (not field-digester's own 900s precedent -- review finding, fixed:

@@ -20,13 +20,16 @@ uses error and escalates if unacked" -- this wedge is proven non-self-healing
 (the 2026-08-31 precedent needed a container restart), so it gets the
 immediate-email tier rather than the wait-for-an-unacked-deadline tier.
 
-Second, independent check (2026-10-10): `visual_painting_gap`. The staleness
-check above only proves the worker loop is alive -- deferral/failure rows
-(resource_deferred, run_deadline_exceeded, generation_failed, ...) count as
-fresh. 2026-10-09 02:12 -> 10-10 06:02 the GPU lane controller refused every
-swap and Orion produced no painting for 27.6 h while the staleness check
-stayed green the whole time. This check reads `store.visual_last_painting_
-age_hours()` (production receipts only) instead. Severity "error", not
+Second, independent check (2026-10-10): `visual_painting_gap` -- "has a
+real painting come out in the last N hours?". 2026-10-09 02:12 -> 10-10 06:02
+the GPU lane controller refused every swap and Orion produced no painting
+for 27.6 h with no alert at all. The staleness check above was silent because
+it never ran: its loop (`visual_chain.run_visual_chain_watchdog`) is gated on
+the legacy `visual_chain_enabled` flag, which is off in production -- live
+paintings come from the durable visual-baseline path instead. So this check
+has its own loop (`run_visual_painting_gap_watchdog` below, started from
+main.py's lifespan) gated only on its own flag, and reads `store.visual_last_
+painting_age_hours()` (production receipts only). Severity "error", not
 "critical": a gap can be heat or a held GPU that clears on its own, so it
 escalates by email only if left unacked. Each check key has its own edge-
 triggered state, so one check going unhealthy never flips the other.
@@ -34,6 +37,7 @@ triggered state, so one check going unhealthy never flips the other.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from dataclasses import dataclass
 from typing import Literal
@@ -92,12 +96,16 @@ def _check(*, age_min: float | None, threshold_min: float) -> HealthCheck:
 
 
 def _painting_gap_check(*, age_hours: float | None, threshold_hours: float) -> HealthCheck:
-    """age_hours=None (no painting ever, or the DB read failed) is NOT
-    flagged -- same "only judge a real number" rule as `_check` above.
+    """Pure threshold judgement on a real number. `record_painting_gap`
+    never passes None here (None = no observation, state left untouched);
+    None is still treated as healthy for direct callers.
 
-    Calibration (21 days live, 175 paintings): p95 gap 2.9 h; the only gaps
-    over 8 h were the three real outages (27.6 h, 17.8 h, 16.0 h), so the
-    12 h default fires on exactly those. See evals/test_painting_gap_replay.py.
+    Calibration, in-sample (the same data the threshold was picked on): every
+    produced painting 2026-09-14 -> 2026-10-10 06:02Z, 170 paintings. Gaps
+    over 12 h: 247 h (09-14 -> 09-25, cause unknown), 27.6 h (the 10-09/10
+    lane-controller incident, the only one with a confirmed cause), 17.8 h,
+    16.0 h and 14.7 h (causes unknown; the 14.7 h one is the pipeline's first
+    day). The next-longest gap is 7.6 h. See evals/test_painting_gap_replay.py.
     """
     gap = age_hours is not None and age_hours > threshold_hours
     return HealthCheck(
@@ -106,9 +114,7 @@ def _painting_gap_check(*, age_hours: float | None, threshold_hours: float) -> H
         severity="error",
         message=(
             f"Orion has not produced a painting in {age_hours:.1f} hours "
-            f"(threshold {threshold_hours:g} h). The worker may still be "
-            "writing deferral rows, so the visual-chain staleness check can "
-            "stay green through this. Likely causes, most likely first: "
+            f"(threshold {threshold_hours:g} h). Likely causes, most likely first: "
             "(1) the GPU lane controller is refusing swaps -- check the "
             "mesh-guardian GPU cards or run scripts/gpu_pool_actuator_probe.py "
             "(2026-10-09 precedent, 27.6 h); (2) long thermal refusals on the "
@@ -162,7 +168,14 @@ class VisualChainHealthMonitor:
 
     def record_painting_gap(self, *, age_hours: float | None) -> None:
         """Call once per watchdog tick with hours since the last produced
-        painting. Never raises."""
+        painting. Never raises.
+
+        age_hours=None means "no observation" (DB read failed, or no painting
+        was ever produced): state is left untouched, so a read failure in the
+        middle of a gap neither sends a false recovery note nor re-alerts.
+        """
+        if age_hours is None:
+            return
         try:
             self._run_tick_for_check(
                 _painting_gap_check(
@@ -271,7 +284,7 @@ def check_visual_chain_staleness(age_min: float | None) -> None:
 def check_visual_painting_gap(age_hours: float | None) -> None:
     """Module-level entrypoint for the painting-gap check, sharing the same
     singleton (state is per key, so the two checks stay independent). Called
-    from the watchdog loop in visual_chain.py. Never raises."""
+    from `run_visual_painting_gap_watchdog` below. Never raises."""
     global _MONITOR
     try:
         if _MONITOR is None:
@@ -279,6 +292,48 @@ def check_visual_painting_gap(age_hours: float | None) -> None:
         _MONITOR.record_painting_gap(age_hours=age_hours)
     except Exception:
         logger.exception("visual_painting_gap_check_failed")
+
+
+async def run_visual_painting_gap_watchdog(
+    stop_event: asyncio.Event | None = None,
+    *,
+    settings_obj: ThoughtSettings | None = None,
+) -> None:
+    """Own loop for the painting-gap check, started from main.py's lifespan.
+
+    Deliberately NOT gated on `visual_chain_enabled` (the legacy worker's
+    flag, off in production) or on the bus (alerts go to orion-notify over
+    HTTP). Only `visual_painting_gap_check_enabled` turns it off.
+    """
+    cfg = settings_obj or _default_settings
+    if not cfg.visual_painting_gap_check_enabled:
+        logger.info("visual painting gap check disabled; watchdog not started")
+        return
+    from .store import visual_last_painting_age_hours
+
+    logger.info(
+        "visual painting gap watchdog started interval=%ss threshold_h=%s",
+        cfg.visual_painting_gap_check_interval_sec,
+        cfg.visual_painting_gap_threshold_hours,
+    )
+    while True:
+        if stop_event is not None and stop_event.is_set():
+            break
+        try:
+            age_h = await asyncio.to_thread(visual_last_painting_age_hours)
+            # to_thread: the notify calls are synchronous requests (up to ~20 s).
+            await asyncio.to_thread(check_visual_painting_gap, age_h)
+        except Exception:
+            logger.exception("visual_painting_gap_watchdog_tick_failed")
+        try:
+            if stop_event is not None:
+                await asyncio.wait_for(
+                    stop_event.wait(), timeout=cfg.visual_painting_gap_check_interval_sec
+                )
+                break
+            await asyncio.sleep(cfg.visual_painting_gap_check_interval_sec)
+        except asyncio.TimeoutError:
+            continue
 
 
 def reset_monitor_for_tests() -> None:

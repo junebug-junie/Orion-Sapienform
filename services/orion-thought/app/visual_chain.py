@@ -1496,17 +1496,13 @@ async def run_visual_chain_watchdog(stop_event: asyncio.Event | None = None) -> 
         logger.info("bus disabled; visual chain watchdog not started")
         return
 
-    from .store import visual_chain_age_minutes, visual_last_painting_age_hours
-    from .visual_chain_health_monitor import (
-        check_visual_chain_staleness,
-        check_visual_painting_gap,
-    )
+    from .store import visual_chain_age_minutes
+    from .visual_chain_health_monitor import check_visual_chain_staleness
 
     logger.info(
-        "visual chain watchdog started interval=%ss threshold_min=%s painting_gap_threshold_h=%s",
+        "visual chain watchdog started interval=%ss threshold_min=%s",
         settings.visual_chain_watchdog_check_interval_sec,
         settings.visual_chain_staleness_threshold_min,
-        settings.visual_painting_gap_threshold_hours,
     )
     while True:
         if stop_event is not None and stop_event.is_set():
@@ -1523,14 +1519,6 @@ async def run_visual_chain_watchdog(stop_event: asyncio.Event | None = None) -> 
             await asyncio.to_thread(check_visual_chain_staleness, age_min)
         except Exception:
             logger.exception("visual_chain_watchdog_tick_failed")
-        # Separate try: the painting-gap check must still run if the staleness
-        # check above blew up, and vice versa (2026-10-10: deferral rows kept
-        # staleness green through a 27.6 h no-painting outage).
-        try:
-            gap_h = await asyncio.to_thread(visual_last_painting_age_hours)
-            await asyncio.to_thread(check_visual_painting_gap, gap_h)
-        except Exception:
-            logger.exception("visual_painting_gap_watchdog_tick_failed")
         try:
             if stop_event is not None:
                 await asyncio.wait_for(

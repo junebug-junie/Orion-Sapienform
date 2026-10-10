@@ -29,6 +29,9 @@ async def test_lifespan_creates_and_cancels_pool_warmup_task(monkeypatch) -> Non
         warmed.append(True)
 
     monkeypatch.setattr(main_module, "warm_pool", _fake_warm_pool)
+    # Painting-gap loop is not behind the flags above; keep it off the real
+    # DB and real orion-notify.
+    monkeypatch.setattr(settings, "visual_painting_gap_check_enabled", False)
 
     app = SimpleNamespace(state=SimpleNamespace())
     async with main_module.lifespan(app):

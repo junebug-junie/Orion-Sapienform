@@ -203,6 +203,6 @@ cd /mnt/scripts/Orion-Sapienform && ORION_ALLOW_SHARED_CHECKOUT_WRITE=1 scripts/
 
 ## PR link
 
-(filled in after push)
+https://github.com/junebug-junie/Orion-Sapienform/pull/2598
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

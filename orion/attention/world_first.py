@@ -37,10 +37,10 @@ else:
   decay"): a source the semantic layer marks as written once per event and
   carried forward until the next one is news only for
   ``EVENT_ORIENTING_WINDOW_SEC`` after the event that wrote it (its reading's
-  ``age_sec``). Inside the window it is judged as usual and its rank fades
-  linearly to the rest percentile (0: every selected source rests at 0.0 on
-  a mostly-zero week); at the window it stops competing even though the
-  carried value is unchanged. A new event re-arms it, so a storm that keeps
+  ``age_sec``). Inside the window it is judged as usual; after
+  ``EVENT_FADE_GRACE_SEC`` its rank fades linearly to the rest percentile (0:
+  every selected source rests at 0.0 on a mostly-zero week); at the window
+  it stops competing even though the carried value is unchanged. A new event re-arms it, so a storm that keeps
   writing stays eligible. Live case: one codebase event (0.988, 05:51:03)
   held every field frame for 18 minutes because the value sat in the top
   percentile of a mostly-zero week until the next poll wrote 0.
@@ -119,6 +119,15 @@ PERCEPTION_MAX_AGE_SEC: float = 180.0
 # next write lands at p50 68 s / p90 160 s. Shorter than, and so tighter
 # than, the 1800 s PE staleness horizon, which stays the outer bound.
 EVENT_ORIENTING_WINDOW_SEC: float = 300.0
+# Full strength for the first 60 s, then a linear fade to 0 at the window.
+# Why a grace at all: a per-tick level competitor's reading is itself up to
+# one write interval old and is never faded -- p90 gap between writes over the
+# same 7 days: biometrics 62.6 s, bus_synaptic 60.7 s, perception 60.5 s,
+# cabinet 60.6 s. Fading an event reading inside that interval penalises it
+# for an age its rivals carry for free; with no grace a fresh execution spike
+# lost near-ties it had won before (replay: 47 of 86 spikes won vs 60 of 86
+# without decay). The biometrics response is also strongest in 0-60 s.
+EVENT_FADE_GRACE_SEC: float = 60.0
 
 _INTERNAL_ELIGIBLE_BANDS = frozenset({"high", "unusual"})
 EXTERNAL_ELIGIBLE_BANDS = frozenset({"high", "unusual"})
@@ -172,6 +181,17 @@ def node_prediction_error_semantics(node_id: str) -> tuple[str | None, str | Non
     result = (value_kind, derived_channel_polarity("prediction_error", value_kind))
     _SEMANTICS_CACHE[node_id] = result
     return result
+
+
+def event_fade(age_sec: float, window_sec: float, grace_sec: float | None = None) -> float:
+    """1.0 through the grace period, then linear to 0 at the window."""
+    grace = EVENT_FADE_GRACE_SEC if grace_sec is None else grace_sec
+    grace = max(0.0, min(grace, window_sec))
+    if age_sec <= grace:
+        return 1.0
+    if window_sec <= grace:
+        return 0.0
+    return max(0.0, 1.0 - (age_sec - grace) / (window_sec - grace))
 
 
 _EVENT_WRITTEN_CACHE: dict[str, bool] = {}
@@ -344,7 +364,7 @@ def judge_candidate(
                 f"(value carried forward since)",
                 score, band, None, 0.0, event_age,
             )
-        decay = max(0.0, 1.0 - event_age / window)
+        decay = event_fade(event_age, window)
         if rank_score is not None:
             rank_score *= decay
         suffix = f", event {event_age:.0f}s old (fade {decay:.2f})"

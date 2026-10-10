@@ -79,11 +79,7 @@ def test_magnitude_now_decides_who_wins() -> None:
     proj = ab.broadcast_projection_from_frame(frame)
     assert proj.attended_node_ids == ["node:substrate.execution"]
     loop = frame.open_loops[0]
-    # Execution is event-written: its 30 s-old reading fades over the window.
-    from orion.attention.world_first import EVENT_ORIENTING_WINDOW_SEC
-
-    assert abs(loop.salience - 0.995 * (1 - 30.0 / EVENT_ORIENTING_WINDOW_SEC)) < 1e-9
-    assert loop.provenance["source_kind"] == "internal"
+    assert loop.salience == 0.995 and loop.provenance["source_kind"] == "internal"
     assert "borda_salience" in loop.provenance
 
 

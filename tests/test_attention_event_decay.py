@@ -17,7 +17,9 @@ import pytest
 
 import orion.attention.world_first as wf
 from orion.attention.world_first import (
+    EVENT_FADE_GRACE_SEC,
     EVENT_ORIENTING_WINDOW_SEC,
+    event_fade,
     judge_candidate,
     node_candidate,
     node_prediction_error_event_written,
@@ -138,11 +140,33 @@ def test_rank_strength_fades_with_event_age() -> None:
     b = judge_candidate(_codebase_at(NOW + timedelta(seconds=150)))
     c = judge_candidate(_codebase_at(NOW + timedelta(seconds=290)))
     assert a.rank_score > b.rank_score > c.rank_score > 0.0
-    assert b.event_decay == pytest.approx(0.5)
-    assert b.salience == pytest.approx(b.score * 0.5)
+    # Full strength through the grace, then linear to 0 at the window.
+    assert a.event_decay == 1.0
+    expected = 1 - (150 - EVENT_FADE_GRACE_SEC) / (EVENT_ORIENTING_WINDOW_SEC - EVENT_FADE_GRACE_SEC)
+    assert b.event_decay == pytest.approx(expected)
+    assert b.salience == pytest.approx(b.score * expected)
     trace = b.trace()
     assert trace["event_age_sec"] == pytest.approx(150.0)
     assert trace["event_window_sec"] == EVENT_ORIENTING_WINDOW_SEC
+
+
+def test_fade_curve() -> None:
+    assert event_fade(0, 300, 60) == 1.0 and event_fade(60, 300, 60) == 1.0
+    assert event_fade(180, 300, 60) == pytest.approx(0.5)
+    assert event_fade(300, 300, 60) == 0.0 and event_fade(900, 300, 60) == 0.0
+    assert event_fade(500, 300, 900) == 0.0  # grace clamped to the window
+
+
+def test_a_fresh_event_is_not_penalised_against_a_per_tick_rival() -> None:
+    """Inside the grace an execution spike keeps its full rank: a per-tick
+    rival's reading is itself up to ~60 s old and never faded."""
+    m = PredictionErrorMagnitudeV1(
+        value=1.0, age_sec=30, percentile_now=0.965, n_readings_7d=1000, band="high", trend="flat"
+    )
+    ex = node_candidate(node_id="node:substrate.execution", label="x", magnitude=m, observed_at=NOW, now=NOW,
+                        history_values=[0.0] * 900 + [0.5] * 65 + [1.0] * 35)
+    rival = _level(BUS, 0.975)
+    assert rank_candidates([rival, ex]).winner.candidate.source_id == "node:substrate.execution"
 
 
 def test_a_fading_event_yields_to_a_fresh_body_alarm() -> None:

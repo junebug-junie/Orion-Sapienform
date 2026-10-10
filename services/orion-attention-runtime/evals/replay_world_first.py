@@ -95,7 +95,8 @@ def tick(series, turns, staleness_points, t):
             elif st >= 1.0:
                 absent = "camera frames stale"
         cands.append(node_candidate(node_id=node_id, label=node_id, magnitude=mag,
-                                    observed_at=observed_at, now=t, absent_reason=absent))
+                                    observed_at=observed_at, now=t, absent_reason=absent,
+                                    history_values=[v for _, v in hist]))
     cands.append(chat_candidate([x for x in turns if x <= t], now=t))
     return rank_candidates(cands)
 

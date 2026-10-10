@@ -36,6 +36,13 @@ Defaults only. No new key, no change to the schema or the bus, no change to work
 - `orion/substrate/tests/test_attention_broadcast.py`: the "calm" fixture goes from 0.05 to `DEFAULT_MIN_SALIENCE / 5`, so it always stays below the floor.
 - `docs/superpowers/pr-reports/2026-10-10-attention-broadcast-floor-drift-pr.md`: this report.
 
+## Metric semantic layer lineage (checked before calling this a bug)
+
+Ran `.venv/bin/python scripts/check_metric_lineage.py` (`--metric <token>`, `--drift`, `--unwritten`) on 2026-10-10 against main, and read the matching `orion/inner_state_registry.py` and `config/field/field_channel_glossary.v1.yaml` entries. Nothing in the semantic layer marks this behaviour as designed.
+
+- `--metric min_salience` and `--metric attention_broadcast_min_salience` both return **UNREGISTERED**. The floor is a config knob, not a registered metric, so this PR changes no metric definition and needs no re-lock.
+- The related registered signal `attention_broadcast_projection.v1` (`--drift`) has declared consumers `orion-thought broadcast_reader:read_latest_broadcast` and `chain:run_reverie_chain`. Those read whatever the broadcast admits. Live already runs at 0.05, so their inputs do not change on deploy.
+
 ## Schema / bus / API changes
 
 - Added: none

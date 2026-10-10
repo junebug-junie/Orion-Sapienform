@@ -155,11 +155,12 @@ def test_every_source_kind_has_an_adapter_and_no_dead_kind_is_declared():
         assert dead not in S.ADAPTERS
 
 
-def test_reducer_package_does_no_io_and_names_no_observational_question():
+def test_reducer_package_does_no_io():
+    # System One's observational questions are guarded repo-wide by
+    # tests/test_system_one_observational_no_consumers.py, which covers this package too.
     root = Path(__file__).resolve().parents[1]
     banned_imports = {"sqlalchemy", "asyncpg", "psycopg", "psycopg2", "redis", "requests", "httpx", "socket", "urllib",
                       "subprocess", "os", "shutil", "pathlib"}
-    observational = ("deliberation_need", "reverie_fit", "attention_interrupt")
     for path in root.glob("*.py"):
         text = path.read_text()
         tree = ast.parse(text)
@@ -171,5 +172,4 @@ def test_reducer_package_does_no_io_and_names_no_observational_question():
             else:
                 continue
             assert not banned_imports.intersection(names), f"{path.name} imports I/O: {names}"
-        assert not any(q in text for q in observational), path.name
         assert "open(" not in text, f"{path.name} opens a file"

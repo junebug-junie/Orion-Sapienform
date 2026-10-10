@@ -50,11 +50,11 @@ def _replay(*, phase: float, passive: bool, active: bool = True, broken: bool = 
             alerts = []
             for role, target in TARGETS.items():
                 bad = broken and role == "agent-gpu2"
-                status = classify("status", [{"status": "refused", "reason": REASON}] if bad
-                                  else [{"status": "succeeded"}], role=role)
+                # The guardian sends only the digest probe; during the incident the controller's
+                # load path refused config_unloadable (the same path as the 155 real refusals).
                 digest = classify("digest", [{"status": "refused", "reason": REASON if bad else "profile_not_allowed"}],
                                   role=role)
-                alerts += tracker.observe(target, status) + tracker.observe(target, digest)
+                alerts += tracker.observe(target, digest)
         else:
             alerts = refusals.observe({"event": "actuate_refused", "role": "agent-gpu2", "reason": REASON}, now, TARGETS)
         cards += [(now, a.key) for a in gate.admit(alerts, now)]

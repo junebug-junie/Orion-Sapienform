@@ -68,6 +68,24 @@ class TestActive:
         assert [(a.kind, a.severity) for a in alerts] == [("gpu_controller_no_answer", "error")]
         assert "not answering" in alerts[0].message and "circe" in alerts[0].message
 
+    def test_persistent_refusal_alerts_on_second_cycle_transients_never(self) -> None:
+        tracker = ActiveProbeTracker()
+        assert tracker.observe(TARGET, _v("digest", "refused", "role_not_on_this_actuator")) == []
+        alerts = tracker.observe(TARGET, _v("digest", "refused", "role_not_on_this_actuator"))
+        assert [(a.key, a.severity) for a in alerts] == [("gpu_controller_refusing:agent-gpu2", "error")]
+        for _ in range(3):
+            assert tracker.observe(TARGET, _v("digest", "refused", "busy")) == []
+
+    def test_a_transient_resets_the_refusing_streak(self) -> None:
+        tracker = ActiveProbeTracker()
+        assert tracker.observe(TARGET, _v("digest", "refused", "cards_mismatch")) == []
+        assert tracker.observe(TARGET, _v("digest", "refused", "busy")) == []
+        assert tracker.observe(TARGET, _v("digest", "refused", "cards_mismatch")) == []
+
+    def test_probe_digest_mismatch_does_not_blame_only_the_controller(self) -> None:
+        alerts = ActiveProbeTracker().observe(TARGET, _v("digest", "refused", "launch_digest_mismatch"))
+        assert "rebuild orion-mesh-guardian" in alerts[0].message
+
     def test_an_answer_resets_the_no_answer_streak(self) -> None:
         tracker = ActiveProbeTracker()
         assert tracker.observe(TARGET, _v("status", None)) == []
@@ -190,11 +208,10 @@ HEALTHY = {("agent-gpu2", "status"): ("succeeded", None), ("agent-gpu2", "load")
 
 @pytest.mark.asyncio
 async def test_gpu_probe_cycle_publishes_one_critical_card_through_the_gate() -> None:
-    answers = {**HEALTHY, ("agent-gpu2", "status"): ("refused", "config_unloadable:ValidationError"),
-               ("agent-gpu2", "load"): ("refused", "config_unloadable:ValidationError")}
+    answers = {**HEALTHY, ("agent-gpu2", "load"): ("refused", "config_unloadable:ValidationError")}
     service, cards = _service(answers)
     await service.run_gpu_probes(T0)
-    assert len(service.bus.published) == 4  # 2 roles x (status, digest)
+    assert len(service.bus.published) == 2  # 2 roles x digest
     assert [(c["service_id"], c["event"]["severity"]) for c in cards] == [("gpu-lane:agent-gpu2", "critical")]
     assert cards[0]["heartbeat_name"] == "gpu_watch"
     assert cards[0]["event"]["context"]["event"] == "gpu_controller_config_unloadable"
@@ -211,11 +228,11 @@ async def test_healthy_cycle_is_silent() -> None:
 
 @pytest.mark.asyncio
 async def test_one_failing_probe_does_not_skip_the_others() -> None:
-    answers = {**HEALTHY, ("agent-gpu2", "status"): RuntimeError("bus hiccup"),
+    answers = {**HEALTHY, ("agent-gpu2", "load"): RuntimeError("bus hiccup"),
                ("diffusion", "load"): ("refused", "launch_digest_mismatch")}
     service, cards = _service(answers)
     await service.run_gpu_probes(T0)
-    assert len(service.bus.published) == 4
+    assert len(service.bus.published) == 2
     assert [c["event"]["context"]["event"] for c in cards] == ["gpu_controller_digest_mismatch"]
 
 
@@ -241,7 +258,7 @@ async def test_gpu_loop_survives_a_cycle_that_raises() -> None:
 
 @pytest.mark.asyncio
 async def test_pool_refusal_event_and_active_probe_share_one_card() -> None:
-    answers = {**HEALTHY, ("agent-gpu2", "status"): ("refused", "config_unloadable:ValidationError")}
+    answers = {**HEALTHY, ("agent-gpu2", "load"): ("refused", "config_unloadable:ValidationError")}
     service, cards = _service(answers)
     await service.handle_gpu_pool_event(_refused("config_unloadable:ValidationError"), T0)
     assert len(cards) == 1 and cards[0]["event"]["context"]["source"] == "pool_event"
@@ -280,6 +297,52 @@ async def test_stability_cycle_still_publishes_through_shared_path() -> None:
     service._check_falkordb = nothing
     await service.run_stability_checks(T0)
     assert [(c["service_id"], c["heartbeat_name"]) for c in cards] == [("s", "stability")]
+
+
+@pytest.mark.asyncio
+async def test_guardian_never_sends_status_probes() -> None:
+    """status makes the controller replay its last result under the pool's action_id, which can
+    flip the pool's belief (late_result); the periodic watch sends only the digest load."""
+    from orion.gpu_pool.actuator_probe import PROBE_PROFILE
+
+    service, _ = _service(HEALTHY)
+    await service.run_gpu_probes(T0)
+    assert service.bus.published
+    assert {(r["action"], r["profile"]) for _, r in service.bus.published} == {("load", PROBE_PROFILE)}
+
+
+def test_alert_gate_escalates_severity_inside_the_window() -> None:
+    from app.stability import StabilityAlert
+
+    gate = AlertGate()
+    err = StabilityAlert(key="k", subject="s", kind="x", severity="error", message="m")
+    crit = StabilityAlert(key="k", subject="s", kind="x", severity="critical", message="m")
+    assert gate.admit([err], T0) == [err]
+    assert gate.admit([err], T0 + 60) == []
+    assert gate.admit([crit], T0 + 120) == [crit]
+    assert gate.admit([crit, err], T0 + 180) == []
+
+
+@pytest.mark.asyncio
+async def test_unparseable_config_is_retried_at_most_once_per_interval(tmp_path) -> None:
+    (tmp_path / "config").mkdir()
+    (tmp_path / "config" / "gpu_pool.yaml").write_text("roles: {x: {unknown_field: 1}}\n")
+    service, _ = _service(HEALTHY)
+    service.settings = Settings(ORION_REPO_ROOT=str(tmp_path))
+    loads = 0
+    real = service._load_gpu_config
+
+    async def counting(now):
+        nonlocal loads
+        loads += 1
+        return await real(now)
+
+    service._load_gpu_config = counting
+    for i in range(20):
+        await service.handle_gpu_pool_event(_refused("busy"), T0 + i)
+    assert loads == 1
+    await service.handle_gpu_pool_event(_refused("busy"), T0 + service.settings.gpu_probe_interval_sec)
+    assert loads == 2
 
 
 def test_settings_ship_gpu_watch_on() -> None:

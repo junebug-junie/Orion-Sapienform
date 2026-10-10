@@ -20,11 +20,15 @@ Why a foreign action_id is harmless (read from code, 2026-10-10):
   services/orion-gpu-pool/tests/test_stage5_3_cutover_e2e.py (no docker call, no generation).
 - pool (services/orion-gpu-pool/app/runtime.py ``on_actuate_result``): a result whose action_id
   is not the seat's pending action is logged ``*_stale`` and dropped, so a probe's refusal never
-  becomes an ``actuate_refused`` event. One side effect: ``status`` makes the controller
-  re-publish the last result it recorded for the card set under the POOL's action_id. The pool
-  already sees that replay on its own reconcile polls; it changes pool state only via the
-  ``late_result`` branch, i.e. when that recorded result's observed containers disagree with the
-  pool's current belief for a card it considers idle.
+  becomes an ``actuate_refused`` event.
+- EXCEPT ``status``: it makes the controller re-publish the last result it recorded for the card
+  set under the POOL's action_id. Outside the pool's own reconcile, that replay reaches the
+  ``late_result`` branch and can flip the pool's belief back to an old action's outcome (e.g.
+  load, pause, hand unload, resume-reconcile, then a status probe replays the old load). So
+  ``status`` is for an operator by hand only; anything periodic must use ``digest``, which
+  replays nothing, writes nothing, and still answers ``config_unloadable:*`` (the load path
+  parses the controller's config before ``resolve``) -- the incident's 155 real refusals were
+  exactly that path.
 """
 from __future__ import annotations
 

@@ -44,20 +44,25 @@ Added after the 2026-10-09/10 incident: circe's `orion-gpu-lane-controller` ran 
 `app/gpu_watch.py` (pure) + `_gpu_loop` / `_gpu_event_loop` in `app/service.py`:
 
 - **Active**, every `MESH_GUARDIAN_GPU_PROBE_INTERVAL_SEC` (300): for each role with a `launch` block in
-  the live `<ORION_REPO_ROOT>/config/gpu_pool.yaml`, asks its controller `status` then `digest`
-  (`orion/gpu_pool/actuator_probe.py`, the same read-only probe as `scripts/gpu_pool_actuator_probe.py`;
-  each waits up to `MESH_GUARDIAN_GPU_PROBE_WAIT_SEC`, 90). Own loop, so it never delays the 60 s stability loop.
-  Cards: config unloadable -> critical; launch digest mismatch -> error; no answer on 2 cycles in a row -> error.
-  Busy / deadline_passed refusals do not alert.
+  the live `<ORION_REPO_ROOT>/config/gpu_pool.yaml`, sends its controller the `digest` probe
+  (`orion/gpu_pool/actuator_probe.py`, shared with `scripts/gpu_pool_actuator_probe.py`; waits up to
+  `MESH_GUARDIAN_GPU_PROBE_WAIT_SEC`, 90). Never `status`: it makes the controller replay its last result
+  under the pool's action_id, which can flip the pool's belief about a card (operator CLI only).
+  Own loop, so it never delays the 60 s stability loop.
+  Cards: config unloadable -> critical; launch digest mismatch -> error (may be the guardian's own image);
+  no answer, or a non-transient refusal (anything but busy / deadline_passed / stale_generation), on
+  2 cycles in a row -> error.
 - **Passive**: listens on `orion:gpu_pool:event`. A pool `actuate_refused` whose reason is
   `config_unloadable:*` or `launch_digest_mismatch` -> critical at once; any 3 refusals for one role
   within 60 min -> error.
 - Both go through the same `AlertGate` as the stability checks (key per role + kind, shared by both views):
-  one card per 6 h while the condition lasts. If the guardian itself cannot parse the live YAML (its own
+  one card per 6 h while the condition lasts, except that a higher severity on the same key goes out at once. If the guardian itself cannot parse the live YAML (its own
   image is older), it raises a card saying so instead of going blind.
 - Probes use their own `probe-*` action_ids: the controller's `status` writes no fence state and the digest
   `load` is refused before any docker call or generation; the pool drops results for action_ids it did not
   issue (see `orion/gpu_pool/actuator_probe.py` docstring for the one replay side effect).
+- The event watch re-subscribes 5 s after an error; events in that gap are lost (the probes cover the
+  same failures).
 - Disable with `MESH_GUARDIAN_GPU_WATCH_ENABLED=false`.
 
 Eval: `evals/test_gpu_incident_replay.py` replays the real 155 refusals (exported from `gpu_pool_events`):

@@ -10,10 +10,11 @@ pool only logs and emits ``actuate_refused`` on ``orion:gpu_pool:event``. In the
 
 Two views, both feeding the guardian's AlertGate (one card per key per window):
 
-- ACTIVE (``ActiveProbeTracker``): every MESH_GUARDIAN_GPU_PROBE_INTERVAL_SEC, ask
-  each actuated role's controller ``status`` then ``digest``
-  (orion/gpu_pool/actuator_probe.py; read-only). Catches the breakage even when
-  the pool asks for nothing.
+- ACTIVE (``ActiveProbeTracker``): every MESH_GUARDIAN_GPU_PROBE_INTERVAL_SEC, send
+  each actuated role's controller the ``digest`` probe
+  (orion/gpu_pool/actuator_probe.py). Never ``status``: its replay can move the
+  pool's belief (see that module's docstring). Catches the breakage even when the
+  pool asks for nothing.
 - PASSIVE (``RefusalWatch``): the pool's own ``actuate_refused`` events, so a real
   refused swap raises a card within seconds, between probe cycles.
 
@@ -33,6 +34,11 @@ from orion.gpu_pool.actuator_probe import Verdict
 from .stability import StabilityAlert
 
 NO_ANSWER_STREAK = 2              # consecutive cycles before "not answering" (one miss is a blip)
+REFUSING_STREAK = 2               # same, for a refusal that is not a known transient
+# Refusals that are the pool's business, not a broken controller. Any other refusal of the probe
+# (unknown_role, role_not_on_this_actuator, cards_mismatch, fence_state_unreadable:*, ...) means
+# the controller refuses every request, the incident's class.
+TRANSIENT_REFUSALS = ("busy", "deadline_passed", "stale_generation")
 REFUSAL_BURST = 3                 # refusals for one role ...
 REFUSAL_WINDOW_SEC = 60 * 60      # ... within this window
 CONTROLLER_SERVICE = "orion-gpu-lane-controller"
@@ -75,6 +81,7 @@ def _unloadable_alert(target: RoleTarget, reason: str, context: dict[str, Any]) 
 
 
 def _mismatch_alert(target: RoleTarget, severity: str, context: dict[str, Any]) -> StabilityAlert:
+    """From the pool's own refusal: the pool and the controller disagree."""
     return StabilityAlert(
         key=f"gpu_digest_mismatch:{target.role}",
         subject=f"gpu-lane:{target.role}",
@@ -92,22 +99,67 @@ def _mismatch_alert(target: RoleTarget, severity: str, context: dict[str, Any]) 
     )
 
 
+def _probe_mismatch_alert(target: RoleTarget, context: dict[str, Any]) -> StabilityAlert:
+    """From the guardian's probe: the GUARDIAN and the controller disagree. launch_digest hashes
+    the parsed model, so a stale guardian image can be the odd one out. Same key as the pool-side
+    alert, so a later pool refusal (critical) escalates it."""
+    return StabilityAlert(
+        key=f"gpu_digest_mismatch:{target.role}",
+        subject=f"gpu-lane:{target.role}",
+        kind="gpu_controller_digest_mismatch",
+        severity="error",
+        message=(
+            f"The GPU lane controller on {target.host} and the mesh guardian compute different launch "
+            f"digests for role {target.role}: one of them is on a different commit. Usually the "
+            f"controller (pull main on {target.host}, rebuild {CONTROLLER_SERVICE}); if the controller "
+            f"is current, rebuild orion-mesh-guardian. If the pool is also on another commit, its "
+            f"swaps for {target.role} are refused."
+        ),
+        context={"role": target.role, "actuator": target.actuator, "host": target.host,
+                 "reason": "launch_digest_mismatch", **context},
+    )
+
+
 class ActiveProbeTracker:
     """Turns probe verdicts into alerts. A no-answer streak is per role + check and resets on any
     answer; config_unloadable / digest_mismatch alert on the first verdict."""
 
     def __init__(self) -> None:
         self._no_answer: dict[tuple[str, str], int] = {}
+        self._refusing: dict[tuple[str, str], int] = {}
 
     def observe(self, target: RoleTarget, verdict: Verdict) -> list[StabilityAlert]:
         streak_key = (target.role, verdict.check)
         if verdict.kind != "no_answer":
             self._no_answer.pop(streak_key, None)
-        ctx = {"check": verdict.check, "verdict": verdict.kind, "source": "active_probe"}
+        persistent_refusal = verdict.kind == "other_refusal" and verdict.reason not in TRANSIENT_REFUSALS
+        if not persistent_refusal:
+            self._refusing.pop(streak_key, None)
+        ctx = {"check": verdict.check, "verdict": verdict.kind, "source": "active_probe",
+               "launch_digest": verdict.launch_digest}
         if verdict.kind == "config_unloadable":
             return [_unloadable_alert(target, verdict.reason, ctx)]
         if verdict.kind == "digest_mismatch":
-            return [_mismatch_alert(target, "error", ctx)]
+            return [_probe_mismatch_alert(target, ctx)]
+        if persistent_refusal:
+            streak = self._refusing.get(streak_key, 0) + 1
+            self._refusing[streak_key] = streak
+            if streak < REFUSING_STREAK:
+                return []
+            return [StabilityAlert(
+                key=f"gpu_controller_refusing:{target.role}",
+                subject=f"gpu-lane:{target.role}",
+                kind="gpu_controller_refusing",
+                severity="error",
+                message=(
+                    f"The GPU lane controller on {target.host} refused the guardian's probe for role "
+                    f"{target.role} with '{verdict.reason}' {streak} cycles in a row. That refusal is not "
+                    f"a transient (busy/deadline/stale generation): it would refuse the pool's swaps too. "
+                    f"Check {CONTROLLER_SERVICE} logs on {target.host} for gpu_actuate_refused."
+                ),
+                context={"role": target.role, "actuator": target.actuator, "host": target.host,
+                         "reason": verdict.reason, "refusing_streak": streak, **ctx},
+            )]
         if verdict.kind == "no_answer":
             streak = self._no_answer.get(streak_key, 0) + 1
             self._no_answer[streak_key] = streak

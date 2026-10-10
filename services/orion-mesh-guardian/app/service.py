@@ -34,6 +34,7 @@ from .state_machine import ServiceState, TransitionInput, transition
 from .state_store import load_all, save_one
 
 logger = logging.getLogger("orion.mesh.guardian")
+GPU_WATCH_CHECKS = ("digest",)
 
 
 class MeshGuardianService:
@@ -57,6 +58,7 @@ class MeshGuardianService:
         self._gpu_refusals = RefusalWatch()
         self._gpu_targets: dict[str, RoleTarget] = {}
         self._gpu_cycles = 0
+        self._gpu_config_failed_at: float | None = None
 
     async def start(self) -> None:
         if not self.settings.enabled:
@@ -322,6 +324,7 @@ class MeshGuardianService:
         try:
             cfg = await asyncio.to_thread(load_pool_config, path)
         except Exception as exc:
+            self._gpu_config_failed_at = now
             logger.warning("gpu watch cannot load %s: %s", path, exc)
             await self._publish_alerts([StabilityAlert(
                 key="gpu_watch_config_unloadable",
@@ -336,6 +339,7 @@ class MeshGuardianService:
                 context={"path": str(path), "error": f"{type(exc).__name__}: {exc}"[:500]},
             )], now, heartbeat_name="gpu_watch")
             return None
+        self._gpu_config_failed_at = None
         self._gpu_targets = role_targets(cfg)
         return cfg
 
@@ -350,7 +354,8 @@ class MeshGuardianService:
             await asyncio.sleep(self.settings.gpu_probe_interval_sec)
 
     async def run_gpu_probes(self, now: float) -> list[StabilityAlert]:
-        """One ACTIVE cycle: status then digest for every role with a launch block. Each probe is
+        """One ACTIVE cycle: the digest probe for every role with a launch block. Never ``status``
+        (its replay can move the pool's belief; orion/gpu_pool/actuator_probe.py). Each probe is
         isolated: one failing probe must not skip the others."""
         cfg = await self._load_gpu_config(now)
         if cfg is None:
@@ -358,7 +363,7 @@ class MeshGuardianService:
         alerts: list[StabilityAlert] = []
         summary: dict[str, str] = {}
         for role, target in self._gpu_targets.items():
-            for check in ("status", "digest"):
+            for check in GPU_WATCH_CHECKS:
                 try:
                     verdict = await actuator_probe.probe(
                         self.bus, cfg, role, check, self.settings.gpu_probe_wait_sec,
@@ -396,7 +401,8 @@ class MeshGuardianService:
     async def handle_gpu_pool_event(self, payload: dict, now: float) -> list[StabilityAlert]:
         if payload.get("event") != "actuate_refused":
             return []
-        if not self._gpu_targets:
+        failed = self._gpu_config_failed_at
+        if not self._gpu_targets and (failed is None or now - failed >= self.settings.gpu_probe_interval_sec):
             await self._load_gpu_config(now)  # host names for the card; alerts still fire without
         alerts = self._gpu_refusals.observe(payload, now, self._gpu_targets)
         await self._publish_alerts(alerts, now, heartbeat_name="gpu_watch")

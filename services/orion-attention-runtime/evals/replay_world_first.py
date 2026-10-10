@@ -11,6 +11,11 @@ and compares with what the stored frames (substrate_attention_frames) actually
 crowned under the old ranking. It also re-checks real body spikes in the window
 and injects a synthetic sustained storm to see whether the baseline absorbs it.
 
+Event decay (2026-10-10): ``--no-event-decay`` replays world-first without
+the event-age fade, so the two can be compared on the same data; each replay
+also reports every source's longest unbroken run as winner (``hold``).
+``--start/--end`` replay a specific window (e.g. the 05:51-06:09 codebase hold).
+
 SELECT only. Usage:
     python services/orion-attention-runtime/evals/replay_world_first.py \
         --dsn postgresql://postgres:postgres@localhost:55432/conjourney --days 3
@@ -79,7 +84,7 @@ def staleness_at(points: list[tuple[datetime, float | None]], t: datetime) -> fl
     return points[i - 1][1] if i else None
 
 
-def tick(series, turns, staleness_points, t):
+def tick(series, turns, staleness_points, t, *, event_decay: bool = True):
     cands = []
     for node_id, s in series.items():
         got = s.at(t)
@@ -96,12 +101,13 @@ def tick(series, turns, staleness_points, t):
                 absent = "camera frames stale"
         cands.append(node_candidate(node_id=node_id, label=node_id, magnitude=mag,
                                     observed_at=observed_at, now=t, absent_reason=absent,
-                                    history_values=[v for _, v in hist]))
+                                    history_values=[v for _, v in hist], event_decay=event_decay))
     cands.append(chat_candidate([x for x in turns if x <= t], now=t))
     return rank_candidates(cands)
 
 
-def replay(pe_rows, turns, staleness_points, *, start: datetime, end: datetime, step: timedelta) -> dict:
+def replay(pe_rows, turns, staleness_points, *, start: datetime, end: datetime, step: timedelta,
+           event_decay: bool = True) -> dict:
     series = build_series(pe_rows)
     turns = sorted(_aware(t) for t in turns)
     n = 0
@@ -109,10 +115,20 @@ def replay(pe_rows, turns, staleness_points, *, start: datetime, end: datetime, 
     internal_calm = 0
     winners: Counter = Counter()
     kinds: Counter = Counter()
+    # Longest unbroken run as winner per source, in ticks and seconds.
+    longest: dict[str, tuple[int, str]] = {}
+    run_src, run_len, run_start = None, 0, start
     t = start
     while t <= end:
-        r = tick(series, turns, staleness_points, t)
+        r = tick(series, turns, staleness_points, t, event_decay=event_decay)
         n += 1
+        src = r.winner.candidate.source_id if r.winner else None
+        if src is not None and src == run_src:
+            run_len += 1
+        else:
+            run_src, run_len, run_start = src, 1, t
+        if src is not None and run_len > longest.get(src, (0, ""))[0]:
+            longest[src] = (run_len, run_start.isoformat())
         if r.winner is None:
             no_winner += 1
         else:
@@ -123,6 +139,11 @@ def replay(pe_rows, turns, staleness_points, *, start: datetime, end: datetime, 
                 internal_calm += 1
         t += step
     return {
+        "event_decay": event_decay,
+        "longest_hold": {
+            k: {"ticks": v[0], "seconds": round(v[0] * step.total_seconds()), "from": v[1]}
+            for k, v in sorted(longest.items(), key=lambda kv: -kv[1][0])
+        },
         "ticks": n,
         "no_winner_share": round(no_winner / n, 4) if n else None,
         "internal_winner_raw_lt_0_05_share": round(internal_calm / n, 4) if n else None,
@@ -131,7 +152,8 @@ def replay(pe_rows, turns, staleness_points, *, start: datetime, end: datetime, 
     }
 
 
-def spike_check(pe_rows, turns, staleness_points, *, start, end, node_id, min_value) -> dict:
+def spike_check(pe_rows, turns, staleness_points, *, start, end, node_id, min_value,
+                event_decay: bool = True) -> dict:
     """Every real reading of `node_id` >= min_value in the window: does it win
     on the tick right after it lands?"""
     series = build_series(pe_rows)
@@ -141,7 +163,7 @@ def spike_check(pe_rows, turns, staleness_points, *, start, end, node_id, min_va
     for ts, v in zip(s.times, s.values):
         if not (start <= ts <= end) or v < min_value:
             continue
-        r = tick(series, turns, staleness_points, ts + timedelta(seconds=30))
+        r = tick(series, turns, staleness_points, ts + timedelta(seconds=30), event_decay=event_decay)
         w = r.winner.candidate.source_id if r.winner else None
         verdict = next((x for x in (*r.eligible, *r.ineligible) if x.candidate.source_id == node_id), None)
         out.append({"at": ts.isoformat(), "value": v, "winner": w,
@@ -152,7 +174,8 @@ def spike_check(pe_rows, turns, staleness_points, *, start, end, node_id, min_va
 
 
 def storm_check(pe_rows, turns, staleness_points, *, node_id, storm_start, hours=5.0,
-                every=timedelta(seconds=135), value=1.0, step=timedelta(minutes=5)) -> dict:
+                every=timedelta(seconds=135), value=1.0, step=timedelta(minutes=5),
+                event_decay: bool = True) -> dict:
     """Inject a sustained storm (readings of `value` every `every` for `hours`)
     and report how much of it the body node still wins as its own baseline
     absorbs the storm -- the "real alarm suppressed" failure mode."""
@@ -174,7 +197,7 @@ def storm_check(pe_rows, turns, staleness_points, *, node_id, storm_start, hours
     bands: Counter = Counter()
     t = storm_start + timedelta(seconds=30)
     while t <= end:
-        r = tick(series, turns, staleness_points, t)
+        r = tick(series, turns, staleness_points, t, event_decay=event_decay)
         n += 1
         wins += int(r.winner is not None and r.winner.candidate.source_id == node_id)
         v = next((x for x in (*r.eligible, *r.ineligible) if x.candidate.source_id == node_id), None)
@@ -215,9 +238,14 @@ def main() -> None:
     ap.add_argument("--days", type=float, default=3.0)
     ap.add_argument("--step-sec", type=float, default=60.0)
     ap.add_argument("--out", default="")
+    ap.add_argument("--no-event-decay", action="store_true")
+    ap.add_argument("--start", default="", help="ISO start (UTC); overrides --days")
+    ap.add_argument("--end", default="", help="ISO end (UTC); default now")
     a = ap.parse_args()
-    end = datetime.now(timezone.utc).replace(microsecond=0)
-    start = end - timedelta(days=a.days)
+    decay = not a.no_event_decay
+    end = (_aware(datetime.fromisoformat(a.end)) if a.end
+           else datetime.now(timezone.utc).replace(microsecond=0))
+    start = _aware(datetime.fromisoformat(a.start)) if a.start else end - timedelta(days=a.days)
     pe, turns, st, old, old_w = _load(a.dsn, start - WINDOW_7D)
     turns = [_aware(t) for t in turns]
     total, calm, empty = old
@@ -230,13 +258,16 @@ def main() -> None:
             "no_winner_share": round((empty or 0) / total, 4) if total else None,
             "winner_share_by_source": {str(k): round(v / total, 4) for k, v in old_w},
         },
-        "world_first_replay": replay(pe, turns, st, start=start, end=end, step=timedelta(seconds=a.step_sec)),
+        "world_first_replay": replay(pe, turns, st, start=start, end=end, step=timedelta(seconds=a.step_sec),
+                                     event_decay=decay),
         "body_spikes": [
-            spike_check(pe, turns, st, start=start, end=end, node_id="node:substrate.execution", min_value=0.9),
-            spike_check(pe, turns, st, start=start, end=end, node_id="node:substrate.biometrics", min_value=0.25),
+            spike_check(pe, turns, st, start=start, end=end, node_id="node:substrate.execution", min_value=0.9,
+                        event_decay=decay),
+            spike_check(pe, turns, st, start=start, end=end, node_id="node:substrate.biometrics", min_value=0.25,
+                        event_decay=decay),
         ],
         "synthetic_storm": storm_check(pe, turns, st, node_id="node:substrate.execution",
-                                       storm_start=end - timedelta(hours=5)),
+                                       storm_start=end - timedelta(hours=5), event_decay=decay),
     }
     text_out = json.dumps(report, indent=1, default=str)
     if a.out:

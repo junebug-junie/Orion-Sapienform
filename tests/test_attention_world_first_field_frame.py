@@ -82,7 +82,11 @@ def test_body_alarm_wins_with_its_own_percentile_as_salience() -> None:
     frame = _frame([_node("node:substrate.execution", 0.995, 0.9), _node("node:substrate.biometrics", 0.6)])
     top = frame.dominant_targets[0]
     assert top.target_id == "node:substrate.execution"
-    assert top.salience_score == 0.995
+    # Execution is event-written (glossary): its 20 s-old reading fades
+    # linearly over the orienting window (tests/test_attention_event_decay.py).
+    from orion.attention.world_first import EVENT_ORIENTING_WINDOW_SEC
+
+    assert abs(top.salience_score - 0.995 * (1 - 20.0 / EVENT_ORIENTING_WINDOW_SEC)) < 1e-9
     assert field_target_source_kind(top) == "internal"
     assert frame.node_targets == [top]
 

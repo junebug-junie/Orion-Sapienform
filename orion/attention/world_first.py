@@ -33,6 +33,18 @@ else:
 - An empty eligible set is an explicit **no-winner** result. A calm body
   stays silent.
 
+- **Event-written** sources (2026-10-10, Juniper: "let event type signals
+  decay"): a source the semantic layer marks as written once per event and
+  carried forward until the next one is news only for
+  ``EVENT_ORIENTING_WINDOW_SEC`` after the event that wrote it (its reading's
+  ``age_sec``). Inside the window it is judged as usual and its rank fades
+  linearly to the rest percentile (0: every selected source rests at 0.0 on
+  a mostly-zero week); at the window it stops competing even though the
+  carried value is unchanged. A new event re-arms it, so a storm that keeps
+  writing stays eligible. Live case: one codebase event (0.988, 05:51:03)
+  held every field frame for 18 minutes because the value sat in the top
+  percentile of a mostly-zero week until the next poll wrote 0.
+
 Band cut points are ``prediction_error_magnitude.DEFAULT_BAND_CUTS`` -- knobs
 to be graded on live data, not findings.
 
@@ -93,6 +105,21 @@ CHAT_MIN_TURNS_7D = 5
 # Perception's tick writes every ~10 s; a reading older than this is stale.
 PERCEPTION_MAX_AGE_SEC: float = 180.0
 
+# How long one event's reading stays news. Derived 2026-10-10 from 7 days of
+# substrate_node_prediction_error_history (225 isolated onsets -- top-decile,
+# nonzero, no prior onset on the same node within 30 min -- across the four
+# event-written nodes): the body's response in node:substrate.biometrics'
+# own percentile is +0.087 (0-60 s), +0.067 (60-120), +0.040 (120-180),
+# +0.054 (180-240), then +0.029 +/- 0.037 (240-300, no longer distinguishable
+# from zero) and -0.006 (300-420); bus_synaptic is back by 120 s. The source's
+# own next reading is back at its pre-event level by 60-180 s (execution
+# 0.823 -> 0.203 vs 0.210 before; chat 0.944 -> 0.046; route 0.880 -> 0.161
+# by 180-300 s). So one event's consequence is gone by 300 s. A sustained
+# storm still re-arms well inside it: after an elevated execution reading the
+# next write lands at p50 68 s / p90 160 s. Shorter than, and so tighter
+# than, the 1800 s PE staleness horizon, which stays the outer bound.
+EVENT_ORIENTING_WINDOW_SEC: float = 300.0
+
 _INTERNAL_ELIGIBLE_BANDS = frozenset({"high", "unusual"})
 EXTERNAL_ELIGIBLE_BANDS = frozenset({"high", "unusual"})
 _NEVER_A_MEASUREMENT = frozenset({"placeholder", "bucket"})
@@ -147,6 +174,52 @@ def node_prediction_error_semantics(node_id: str) -> tuple[str | None, str | Non
     return result
 
 
+_EVENT_WRITTEN_CACHE: dict[str, bool] = {}
+
+# A reading only when an event happens (orion/metrics/semantics.py SPARSITIES).
+_EVENT_SPARSITY = "event_gated"
+# designed_sparse wins over event_gated when the zeros are the point, and the
+# write cadence then goes in absent_means (the precedence rule stated with
+# SPARSITIES in orion/metrics/semantics.py). Every such entry that is written
+# per event says so as "only written ..." (execution, chat, codebase, route);
+# per-tick writers say "written as 0.0 every tick" (perception) or describe a
+# skipped tick (cabinet). "carried forward" alone is NOT the test: per-tick
+# biometrics and bus_synaptic are carried forward between ticks too.
+_EVENT_CADENCE_PREFIX = "only written"
+
+
+def prediction_error_is_event_written(sparsity: str | None, absent_means: str | None) -> bool:
+    """True when the semantic layer says a reading is written once per event
+    and carried forward until the next one (so its age is the event's age)."""
+    if sparsity == _EVENT_SPARSITY:
+        return True
+    if sparsity == "designed_sparse":
+        return str(absent_means or "").strip().lower().startswith(_EVENT_CADENCE_PREFIX)
+    return False
+
+
+def node_prediction_error_event_written(node_id: str) -> bool:
+    """``prediction_error_is_event_written`` over the node's glossary entry.
+
+    An unreadable glossary reads False (no decay: the pre-decay behaviour,
+    never a silently dropped source) and is not cached, same rule as
+    ``node_prediction_error_semantics``."""
+    cached = _EVENT_WRITTEN_CACHE.get(node_id)
+    if cached is not None:
+        return cached
+    try:
+        from orion.field.channel_glossary import resolve_channel_entry
+
+        entry = resolve_channel_entry("prediction_error", node=node_id)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("world_first_glossary_unreadable node_id=%s err=%s", node_id, exc)
+        return False
+    sem = dict(entry.semantics) if entry is not None and entry.node == node_id else {}
+    result = prediction_error_is_event_written(sem.get("sparsity"), sem.get("absent_means"))
+    _EVENT_WRITTEN_CACHE[node_id] = result
+    return result
+
+
 def bad_direction_percentile(
     candidate: AttentionCandidateV1, *, for_ranking: bool = False
 ) -> float | None:
@@ -190,6 +263,17 @@ class CandidateVerdict:
     score: float | None  # bad-direction percentile (strict-below): the band
     band: str
     rank_score: float | None = None  # mid-rank when available: the ranking key
+    # Event-written sources only: seconds since the event that wrote the
+    # reading, and the linear fade (1.0 at onset, 0 at the window) applied
+    # to rank_score and salience. 1.0 / None for everything else.
+    event_decay: float = 1.0
+    event_age_sec: float | None = None
+
+    @property
+    def salience(self) -> float:
+        """Band percentile faded by event age: what a frame reports as the
+        target's strength. Equal to ``score`` for non-event sources."""
+        return float(self.score or 0.0) * self.event_decay
 
     def trace(self) -> dict:
         mag = self.candidate.unusualness
@@ -208,6 +292,9 @@ class CandidateVerdict:
             "absent": self.candidate.absent,
             "value_kind": self.candidate.value_kind,
             "polarity": self.candidate.polarity,
+            "event_window_sec": self.candidate.event_window_sec,
+            "event_age_sec": self.event_age_sec,
+            "event_decay": round(self.event_decay, 6),
         }
 
 
@@ -243,17 +330,41 @@ def judge_candidate(
         )
     band = _band_for(score, band_cuts)
     rank_score = bad_direction_percentile(candidate, for_ranking=True)
+    decay, event_age, suffix = 1.0, None, ""
+    window = candidate.event_window_sec
+    if window is not None:
+        # The reading is carried forward unchanged between events, so its age
+        # is the event's age. Past the window it is old news, whatever its
+        # percentile: one event orients, it does not hold.
+        event_age = float(mag.age_sec)
+        if event_age >= window:
+            return CandidateVerdict(
+                candidate, False,
+                f"event {event_age:.0f}s old: past the {window:.0f}s orienting window "
+                f"(value carried forward since)",
+                score, band, None, 0.0, event_age,
+            )
+        decay = max(0.0, 1.0 - event_age / window)
+        if rank_score is not None:
+            rank_score *= decay
+        suffix = f", event {event_age:.0f}s old (fade {decay:.2f})"
     if candidate.source_kind == "internal":
         if band in _INTERNAL_ELIGIBLE_BANDS:
             return CandidateVerdict(
-                candidate, True, f"body unusual for itself ({band})", score, band, rank_score
+                candidate, True, f"body unusual for itself ({band}){suffix}", score, band,
+                rank_score, decay, event_age,
             )
-        return CandidateVerdict(candidate, False, f"body {band} for itself", score, band)
+        return CandidateVerdict(
+            candidate, False, f"body {band} for itself", score, band, None, decay, event_age
+        )
     if band in EXTERNAL_ELIGIBLE_BANDS:
         return CandidateVerdict(
-            candidate, True, f"world busy for itself ({band})", score, band, rank_score
+            candidate, True, f"world busy for itself ({band}){suffix}", score, band,
+            rank_score, decay, event_age,
         )
-    return CandidateVerdict(candidate, False, f"world {band} for itself: not busy", score, band)
+    return CandidateVerdict(
+        candidate, False, f"world {band} for itself: not busy", score, band, None, decay, event_age
+    )
 
 
 @dataclass
@@ -303,7 +414,7 @@ def rank_candidates(
         (ranking.eligible if verdict.eligible else ranking.ineligible).append(verdict)
     ranking.eligible.sort(
         key=lambda v: (
-            -(v.rank_score if v.rank_score is not None else (v.score or 0.0)),
+            -(v.rank_score if v.rank_score is not None else v.salience),
             -tb.get(v.candidate.source_id, 0.0),
             v.candidate.source_id,
         )
@@ -381,8 +492,13 @@ def node_candidate(
     absent_reason: str | None = None,
     history_values: Sequence[float] | None = None,
     rank_percentile: float | None = None,
+    event_decay: bool = True,
 ) -> AttentionCandidateV1:
     """A ``node:substrate.*`` prediction-error node as a candidate.
+
+    ``event_decay`` (``ATTENTION_EVENT_DECAY_ENABLED``, default on): when the
+    glossary marks the node event-written, the candidate carries
+    ``event_window_sec`` and fades with the age of the event that wrote it.
 
     ``history_values`` (the node's 7-day readings) lets the candidate carry a
     mid-rank ``rank_percentile`` for ranking ceiling ties.
@@ -414,6 +530,11 @@ def node_candidate(
         absent_reason=absent_reason,
         value_kind=value_kind,
         polarity=polarity,  # type: ignore[arg-type]
+        event_window_sec=(
+            EVENT_ORIENTING_WINDOW_SEC
+            if event_decay and node_prediction_error_event_written(node_id)
+            else None
+        ),
         evidence_refs=[node_id],
     )
 

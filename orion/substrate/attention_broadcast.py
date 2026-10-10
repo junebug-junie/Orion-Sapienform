@@ -185,8 +185,13 @@ def build_substrate_attention_frame(
     world_first: bool = False,
     external_candidates: Sequence[Any] | None = None,
     rank_percentile_by_node_id: dict[str, float | None] | None = None,
+    event_decay: bool = True,
 ) -> AttentionFrameV1:
     """One workspace competition over the substrate graph.
+
+    ``event_decay`` (``ATTENTION_EVENT_DECAY_ENABLED``, world-first only):
+    an event-written node fades with its event's age and stops competing
+    after ``orion.attention.world_first.EVENT_ORIENTING_WINDOW_SEC``.
 
     ``world_first`` (substrate-runtime passes ``ATTENTION_WORLD_FIRST_ENABLED``;
     spec docs/superpowers/specs/2026-10-07-orion-self-calibration-design.md,
@@ -222,6 +227,7 @@ def build_substrate_attention_frame(
             magnitude_by_node_id=magnitude_by_node_id or {},
             external_candidates=external_candidates or [],
             rank_percentile_by_node_id=rank_percentile_by_node_id or {},
+            event_decay=event_decay,
             now=resolved_now,
             min_salience=min_salience,
             limit=max_signals,
@@ -295,6 +301,7 @@ def world_first_signals(
     rank_percentile_by_node_id: dict[str, float | None] | None = None,
     min_salience: float = DEFAULT_MIN_SALIENCE,
     limit: int = DEFAULT_MAX_SIGNALS,
+    event_decay: bool = True,
 ) -> tuple[list[AttentionSignalV1], dict[str, Any], dict[str, float]]:
     """World-first candidates -> eligible workspace signals, plus the trace.
 
@@ -354,6 +361,7 @@ def world_first_signals(
                         now=now,
                         absent_reason=absent,
                         rank_percentile=ranks.get(node_id),
+                        event_decay=event_decay,
                     )
                 )
                 node_by_id[node_id] = node
@@ -369,7 +377,7 @@ def world_first_signals(
     for verdict in ranking.eligible:
         cand = verdict.candidate
         # Ranking key: mid-rank when known (ceiling ties), else strict-below.
-        key = verdict.rank_score if verdict.rank_score is not None else verdict.score
+        key = verdict.rank_score if verdict.rank_score is not None else verdict.salience
         score = max(0.0, min(1.0, float(key or 0.0)))
         node = node_by_id.get(cand.source_id)
         metadata = dict(getattr(node, "metadata", None) or {}) if node is not None else {}

@@ -68,6 +68,15 @@ jobs:
       - name: Env sync preserves overrides and reaches admission templates
         run: python -m pytest tests/scripts/test_sync_local_env_from_example.py scripts/tests/test_check_env_template_parity.py -q
 
+      # Code defaults and compose ${KEY:-x} fallbacks must equal .env_example, so a
+      # key missing from a live .env cannot silently change behaviour (2026-10-09:
+      # hub curiosity cap 3 in code vs 7 live; gpu-pool shed lever off in code).
+      - name: Settings defaults match .env_example
+        run: |
+          python -m pytest tests/test_check_settings_defaults.py -q
+          python scripts/check_settings_defaults.py orion-hub --example-drift
+          python scripts/check_settings_defaults.py orion-gpu-pool --example-drift
+
       - name: Bus schema lookup and kind registry agree
         run: python -m pytest tests/test_agent_trace_schema_registry.py -q
 

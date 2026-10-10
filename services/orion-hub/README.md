@@ -179,7 +179,7 @@ When `ENABLE_PRE_TURN_APPRAISAL=true`, Hub appraises repair pressure **before** 
 
 | Variable | Default | Description |
 | :--- | :--- | :--- |
-| `ENABLE_PRE_TURN_APPRAISAL` | `false` | Master enable for pre-turn appraisal v2. |
+| `ENABLE_PRE_TURN_APPRAISAL` | `true` | Master enable for pre-turn appraisal v2. |
 | `PRE_TURN_APPRAISAL_PARADIGMS` | `repair_pressure` | Comma-separated paradigm names (resolved on cortex-exec via `PARADIGM_REGISTRY`). |
 | `PRE_TURN_APPRAISAL_TIMEOUT_MS` | `180000` | RPC timeout (ms), capped at 180000 by `PreTurnAppraisalOptionsV1`. Reused as-is at every nested layer (Hub's own RPC wait, cortex-exec's paradigm `wait_for`, the paradigm's own LLM-gateway probe call) with no slack between them, so it has to cover the slowest of those, not just the outer one. Raised from 60000 (2026-09-10) after live-confirmed timeouts on a starved small-model lane (`REPAIR_PRESSURE_PROBE_ROUTE=quick`, 8B model, 4 slots). |
 | `CHANNEL_PRE_TURN_APPRAISAL_REQUEST` | `orion:cortex:pre_turn_appraisal:request` | Bus request channel. |

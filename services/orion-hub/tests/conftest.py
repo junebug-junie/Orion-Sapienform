@@ -139,3 +139,36 @@ def _no_live_transport_threshold_state(monkeypatch):
     """Unit tests must never read or write the live transport-threshold Redis
     state. Tests that exercise it patch orion.field.transport_thresholds._client."""
     monkeypatch.setenv("TRANSPORT_THRESHOLDS_DERIVED_ENABLED", "false")
+
+
+@pytest.fixture
+def pre_turn_appraisal_off(monkeypatch, request):
+    """Pin ENABLE_PRE_TURN_APPRAISAL off for tests that drive the chat path with
+    fakes that have no pre-turn appraisal RPC, or that assert on the legacy
+    post-turn substrate pipeline (which only runs while appraisal is off).
+
+    The code default is True (aligned with .env_example and production
+    2026-10-10). Every live Settings instance is patched, not just one:
+    ``_hub_service_isolation`` purges ``scripts.*``/``app.*`` per test, so a test
+    module's import-time ``api_routes.settings`` (a module no longer in
+    sys.modules) and a call-time ``from scripts.settings import settings`` are
+    different objects. So: every module in sys.modules, plus every module or
+    function the test module imported. The env var covers any instance built
+    later. A test that wants v2 sets it itself.
+    """
+    import types
+
+    monkeypatch.setenv("ENABLE_PRE_TURN_APPRAISAL", "false")
+    candidates = [getattr(m, "settings", None) for m in list(sys.modules.values())]
+    for value in vars(request.module).values():
+        if isinstance(value, types.ModuleType):
+            candidates.append(getattr(value, "settings", None))
+        elif isinstance(value, types.FunctionType):
+            candidates.append(value.__globals__.get("settings"))
+    seen: set[int] = set()
+    for candidate in candidates:
+        if candidate is None or id(candidate) in seen:
+            continue
+        seen.add(id(candidate))
+        if hasattr(candidate, "ENABLE_PRE_TURN_APPRAISAL"):
+            monkeypatch.setattr(candidate, "ENABLE_PRE_TURN_APPRAISAL", False)

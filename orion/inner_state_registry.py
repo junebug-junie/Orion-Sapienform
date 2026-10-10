@@ -42,14 +42,20 @@ from typing import Optional, Type
 
 from pydantic import BaseModel
 
+from orion.metrics.semantics import MetricSemantics
+
 from orion.autonomy.models import AutonomyStateV2
 from orion.core.schemas.drives import DriveStateV1
 from orion.schemas.attention_frame import AttentionBroadcastProjectionV1
+from orion.core.schemas.frontier_curiosity import FrontierInvocationSignalV1
+from orion.schemas.attention_salience import AttentionSalienceTraceV1
 from orion.schemas.attention_self_model import AttentionSelfModelV1
 from orion.schemas.attention_schema import AttentionSchemaV1
 from orion.schemas.field_attention_frame import FieldAttentionFrameV1
 from orion.schemas.field_state import FieldStateV1
+from orion.schemas.repair_pressure_appraisal import RepairPressureAppraisalV1
 from orion.schemas.telemetry.biometrics import BiometricsClusterV1
+from orion.schemas.telemetry.system_health import EquilibriumSnapshotV1
 from orion.schemas.telemetry.field_channel_corpus import FieldChannelCorpusRowV1
 from orion.schemas.telemetry.mood_arc import MoodArcCorpusRowV1, MoodArcEncoderManifestV1
 
@@ -94,6 +100,19 @@ class InnerStateSignal:
     duplicate_of: Optional[str] = None
     shadow_reason: Optional[str] = None
     notes: str = ""
+    # "Why is it in this state" semantics per scalar field (2026-10-10; see
+    # orion/metrics/semantics.py). Keys are float field names on `schema`;
+    # the key "" describes the signal-level node itself. Each entry cites the
+    # producer line it was read from in a comment beside it.
+    semantics: tuple[tuple[str, MetricSemantics], ...] = ()
+
+    def semantics_by_key(self) -> dict[str, MetricSemantics]:
+        out: dict[str, MetricSemantics] = {}
+        for key, sem in self.semantics:
+            if key in out:
+                raise ValueError(f"{self.signal_id}: duplicate semantics key {key!r}")
+            out[key] = sem
+        return out
 
     def __post_init__(self) -> None:
         if self.composition_status is CompositionStatus.DUPLICATE and not self.duplicate_of:
@@ -109,6 +128,56 @@ REGISTRY: tuple[InnerStateSignal, ...] = (
         producer_service="orion-field-digester",
         cadence=Cadence.PER_TICK,
         composition_status=CompositionStatus.COMPOSED,
+        # Semantics (2026-10-10, orion/metrics/semantics.py), read from code:
+        semantics=(
+            # orion/field/significance.py:205 sustained_load_pressure(): max
+            # pressure_equivalent_level over loaded_steady ballots, else 0.0;
+            # recomputed every 30 s over 900 s, carried forward between
+            # recomputes with no decay (services/orion-field-digester/app/
+            # digestion/significance.py:40-64).
+            (
+                "sustained_load_pressure",
+                MetricSemantics(
+                    value_kind="level",
+                    rest=(
+                        "0.0 = no (channel, node) is loaded AND steady this "
+                        "window; otherwise the highest such level, continuous in "
+                        "(0, 1] -- not two-valued."
+                    ),
+                    sparsity="designed_sparse",
+                    absent_means=(
+                        "carried forward unchanged between 30 s recomputes and "
+                        "on a failed window read (no decay)."
+                    ),
+                    polarity="higher_is_worse",
+                ),
+            ),
+            # orion/schemas/field_state.py:250-261 + orion/field/
+            # queue_contention.py: 0-10 max of per-source subs (depth vs own
+            # EWMA, oldest wait vs expected wait). Disclosed to Orion only at
+            # >= 0.5 (orion/curiosity/queue_contention_disclosure.py:68).
+            (
+                "queue_contention_score",
+                MetricSemantics(
+                    value_kind="level",
+                    rest=(
+                        "0.0 = every queue at or below its recent normal depth "
+                        "and nothing waited past its expected wait. Scale is "
+                        "0-10, not 0-1; below 0.5 it is never shown."
+                    ),
+                    sparsity="per_tick",
+                    absent_means=(
+                        "schema default 0.0 -- a row from before the producer "
+                        "ran reads the same as calm."
+                    ),
+                    polarity="higher_is_worse",
+                    prompt_sites=(
+                        "orion.curiosity.queue_contention_disclosure:"
+                        "format_queue_contention_progress",
+                    ),
+                ),
+            ),
+        ),
         cognition_consumers=(),
         scalar_cognition_consumers=(
             (
@@ -160,6 +229,30 @@ REGISTRY: tuple[InnerStateSignal, ...] = (
         producer_service="orion-substrate-runtime",
         cadence=Cadence.PER_TICK,
         composition_status=CompositionStatus.SHADOW,
+        semantics=(
+            # orion/substrate/attention_broadcast.py:534-539: 0.9 if
+            # dwell_ticks > 3, 0.6 if > 0, else 0.3. Live 3 days to
+            # 2026-10-10: only those three values (as self-model confidence).
+            (
+                "coalition_stability_score",
+                MetricSemantics(
+                    value_kind="bucket",
+                    rest=(
+                        "0.3 = no settled coalition (flickering). 0.6 = "
+                        "transitioning, 0.9 = held > 3 ticks. Three tiers, not "
+                        "a measured stability; the schema default 1.0 is never "
+                        "produced."
+                    ),
+                    sparsity="per_tick",
+                    absent_means=(
+                        "dwell history is in-process, so it resets to 0.3 on a "
+                        "substrate-runtime restart."
+                    ),
+                    polarity="higher_is_better",
+                    prompt_sites=("services.orion-thought.app.reverie:build_reverie_context",),
+                ),
+            ),
+        ),
         shadow_reason=(
             "Not composed into self_state.v1, and cannot be: that producer "
             "(orion-self-state-runtime) was removed in PR #1266, so "
@@ -197,6 +290,83 @@ REGISTRY: tuple[InnerStateSignal, ...] = (
         producer_service="orion-substrate-runtime",
         cadence=Cadence.PER_TICK,
         composition_status=CompositionStatus.SHADOW,
+        semantics=(
+            # orion/substrate/attention_self_model.py:746/:758 copy
+            # broadcast.coalition_stability_score (3 tiers); :768/:772
+            # (field_salience_only branch) are continuous. Live 3 days to
+            # 2026-10-10: 0.9 x3721, 0.6 x1708, 0.3 x504, nothing else.
+            (
+                "confidence",
+                MetricSemantics(
+                    value_kind="bucket",
+                    rest=(
+                        "0.3 = no settled coalition. In practice a 3-tier dwell "
+                        "bucket (0.9/0.6/0.3) named 'confidence'; continuous "
+                        "only on the rare field-salience-only branch."
+                    ),
+                    sparsity="per_tick",
+                    absent_means="schema allows None; never None in 5,933 live rows (3 days to 2026-10-10).",
+                    polarity="higher_is_better",
+                ),
+            ),
+            # :727 from frame.effort_budget_used = sum(applied_bias) in
+            # [0, effort_max * agency] (orion/substrate/attention/
+            # top_down.py:229-233); 0.0 with no goal or no loops (:193).
+            # Code is continuous; live 3 days: 0.0 x3959, 1.0 x1591, ~30
+            # other values -- binary in practice.
+            (
+                "top_down_effort_used",
+                MetricSemantics(
+                    value_kind="binary",
+                    rest=(
+                        "0.0 = no goal or no open loops, so attention ran "
+                        "bottom-up. When top-down fires it almost always spends "
+                        "the full budget (1.0)."
+                    ),
+                    sparsity="per_tick",
+                    absent_means="None when the broadcast lane is stale.",
+                ),
+            ),
+            # :175-217 _unconditional_prediction_error_confidence = 1 - mean
+            # PE over active domains; None with no active domain. Live 3
+            # days: median 0.977, p5 0.79.
+            (
+                "prediction_error_confidence",
+                MetricSemantics(
+                    value_kind="level",
+                    rest=(
+                        "about 0.97-0.99: near-ceiling because most domain "
+                        "prediction errors rest at or near 0. 1 - mean error, so "
+                        "only a broad surprise moves it."
+                    ),
+                    sparsity="per_tick",
+                    absent_means=(
+                        "None when no active domain has a fresh reading (each "
+                        "drops after 1800 s, orion/substrate/"
+                        "prediction_error_freshness.py:26)."
+                    ),
+                    polarity="higher_is_better",
+                ),
+            ),
+            # services/orion-heartbeat/app/substrate/proprioception.py:89-105:
+            # far/near (mean of cuts 7-8 over mean of cuts 0-1); None when
+            # near < 1e-6 (:30). Live 3 days: median 2.6, max 1,459,596,
+            # 278 nulls -- a nearly-dead near end above the floor explodes.
+            (
+                "heartbeat_smear",
+                MetricSemantics(
+                    value_kind="level",
+                    rest=(
+                        "about 2-3 (far end of the heartbeat profile twice the "
+                        "near end); 'smeared' at >= 0.5. Unbounded: a near end "
+                        "just above 1e-6 yields values in the millions, which "
+                        "means 'near end nearly dead', not a huge smear."
+                    ),
+                    sparsity="per_tick",
+                    absent_means="None when the near end is below 1e-6.",
+                ),
+            ),
+        ),
         shadow_reason=(
             "Same as attention_broadcast_projection.v1: self_state.v1's "
             "producer no longer exists, so composition into it is not a "
@@ -731,6 +901,214 @@ REGISTRY: tuple[InnerStateSignal, ...] = (
             "disposition-inner-state-path.md -- none chosen yet. REHEARSAL "
             "is the honest status: real, computed, no cognition consumer, "
             "not a gap to silently close."
+        ),
+    ),
+    # ------------------------------------------------------------------
+    # Registered 2026-10-10 to carry rest semantics (spec
+    # docs/superpowers/specs/2026-10-07-orion-self-calibration-design.md
+    # section B). Each was already a live, persisted signal; none was in
+    # this registry, so the semantic layer could not say what its rest is.
+    # ------------------------------------------------------------------
+    InnerStateSignal(
+        signal_id="attention_salience_trace.v1",
+        schema=AttentionSalienceTraceV1,
+        producer_service="orion-cortex-exec",
+        cadence=Cadence.EVENT_GATED,
+        composition_status=CompositionStatus.SHADOW,
+        shadow_reason=(
+            "Persisted log of the per-loop salience stamped on OpenLoopV1 "
+            "(orion/substrate/attention/scoring.py:192-200). The same value "
+            "reaches the stance prompt through the chat attention frame; the "
+            "trace table itself is read by Hub's attention-loops view."
+        ),
+        cognition_consumers=(
+            "services.orion-cortex-exec.app.chat_stance:build_chat_stance_inputs",
+            "services.orion-thought.app.reverie:build_reverie_context",
+        ),
+        semantics=(
+            # orion/substrate/attention/salience.py:128-178
+            # borda_coalition_salience(): two voters' Borda points / (n - 1),
+            # averaged; ties share points (orion/attention/rank_aggregation.py
+            # :60-103); n = 1 -> mean(evidence_strength, evidence_breadth).
+            (
+                "salience",
+                MetricSemantics(
+                    value_kind="bucket",
+                    rest=(
+                        "none: this is a RANK among the loops scored together, "
+                        "not a magnitude. Steps of 1/(2(n-1)); every loop tied "
+                        "-> 0.5. Calm and crisis can read the same."
+                    ),
+                    sparsity="event_gated",
+                    absent_means="no row when no loop was scored (one row per scored loop).",
+                    prompt_sites=(
+                        "services.orion-cortex-exec.app.chat_stance:build_chat_stance_inputs",
+                    ),
+                ),
+            ),
+        ),
+        notes=(
+            "Writers: services/orion-cortex-exec/app/"
+            "chat_attention_salience_trace.py (chat lane) and services/"
+            "orion-thought/app/store.py:284-305 (reverie lane), table "
+            "attention_salience_trace."
+        ),
+    ),
+    InnerStateSignal(
+        signal_id="frontier_invocation_signal.v1",
+        schema=FrontierInvocationSignalV1,
+        producer_service="orion-substrate-runtime",
+        cadence=Cadence.PER_TICK,
+        composition_status=CompositionStatus.SHADOW,
+        shadow_reason=(
+            "Curiosity candidates ranked by signal_strength (top 3 kept, "
+            "orion/substrate/endogenous_curiosity.py:391) and persisted to "
+            "substrate_endogenous_curiosity_candidates; not a self-state "
+            "dimension."
+        ),
+        cognition_consumers=(
+            "orion.autonomy.policy_act:curiosity_strength_from_signals",
+        ),
+        semantics=(
+            # Per source, orion/substrate/endogenous_curiosity.py:
+            # prediction_error :202-219 (node PE x linear age decay over
+            # 1800 s, emitted >= 0.55); repair_pressure :241-253 (appraisal
+            # level, emitted >= 0.6); attention_open_loop :278-292 (loop
+            # novelty, >= 0.5); world_coverage_gap :323 (upstream constant
+            # 0.65 / 0.45, orion/autonomy/substrate_metabolism.py:18-19).
+            (
+                "signal_strength",
+                MetricSemantics(
+                    value_kind="level",
+                    rest=(
+                        "none: a candidate exists only above its source's floor "
+                        "(prediction_error >= 0.55, repair_pressure >= 0.6, "
+                        "open loop >= 0.5). Meaning differs by source: a decayed "
+                        "node prediction error, a repair appraisal level, loop "
+                        "novelty, or a fixed 0.65/0.45 coverage-gap bucket."
+                    ),
+                    sparsity="designed_sparse",
+                    absent_means="no candidate (not a 0.0) when nothing clears its floor.",
+                ),
+            ),
+        ),
+        notes=(
+            "Declared consumer reads ONLY signal_type == 'world_coverage_gap' "
+            "(orion/autonomy/policy_act.py:43-47); the endogenous "
+            "curiosity_candidate sources described in the semantics are "
+            "persisted to substrate_endogenous_curiosity_candidates and are not "
+            "read by it. Also emitted by orion/spark/concept_induction and "
+            "frontier_curiosity.py with fixed/affine strengths."
+        ),
+    ),
+    InnerStateSignal(
+        signal_id="repair_pressure_appraisal.v1",
+        schema=RepairPressureAppraisalV1,
+        producer_service="orion-hub",
+        cadence=Cadence.CHAT_TURN_GATED,
+        composition_status=CompositionStatus.SHADOW,
+        shadow_reason=(
+            "Pre-turn repair appraisal, logged to repair_pressure_appraisal_log "
+            "by orion-sql-writer; gates behaviour through the repair contract, "
+            "not a self-state dimension."
+        ),
+        cognition_consumers=(
+            # Subscribes to the published repair_pressure appraisal channel and
+            # runs the relational metacog trigger (service.py:1261/:1328).
+            "services.orion-equilibrium-service.app.service:EquilibriumService",
+        ),
+        semantics=(
+            # orion/substrate/appraisal/paradigms/repair_pressure_v2.py:203-205
+            # text fallback NO = (-2.5, -0.15) -> e^-2.5/(e^-2.5+e^-0.15) =
+            # 0.0871 per kind; weights sum to 1.00 (config/substrate/
+            # repair_pressure_weights.v2.yaml), so all-NO level = 0.087.
+            (
+                "level",
+                MetricSemantics(
+                    value_kind="level",
+                    rest=(
+                        "0.087 = the classifier's confident all-NO floor (every "
+                        "repair kind answered NO); never exactly 0 on the "
+                        "classifier path. 0.45 is the contract's mid."
+                    ),
+                    sparsity="event_gated",
+                    absent_means="no row on a turn the appraisal did not run.",
+                    polarity="higher_is_worse",
+                ),
+            ),
+            # repair_pressure_v2.py:146-158: with no kind above 0.5,
+            # contribution-weighted mean confidence -> 0.65 on the text
+            # fallback (_TEXT_FALLBACK_CONFIDENCE, :204).
+            (
+                "confidence",
+                MetricSemantics(
+                    value_kind="level",
+                    rest=(
+                        "0.65 at rest on the text-fallback path (a constant, "
+                        "not a measured confidence); min of the active kinds' "
+                        "confidences once any kind fires."
+                    ),
+                    sparsity="event_gated",
+                    absent_means="no row on a turn the appraisal did not run.",
+                ),
+            ),
+        ),
+        notes=(
+            "Hub publishes; the level is computed by the repair_pressure_v2 "
+            "paradigm (orion/substrate/appraisal/paradigms/). "
+            "Distinct from the curiosity repair_pressure path: "
+            "services/orion-substrate-runtime/app/worker.py::"
+            "_repair_appraisal_from_chat reads ChatTurnStateV1."
+            "repair_pressure_level with its own 0.6 fallback confidence."
+        ),
+    ),
+    InnerStateSignal(
+        signal_id="equilibrium_snapshot.v1",
+        schema=EquilibriumSnapshotV1,
+        producer_service="orion-equilibrium-service",
+        cadence=Cadence.PER_TICK,
+        composition_status=CompositionStatus.SHADOW,
+        shadow_reason=(
+            "Mesh-health snapshot. Redesign PARKED by Juniper (2026-10-10); "
+            "registered only so its semantics are recorded."
+        ),
+        cognition_consumers=(
+            "orion.signals.adapters.equilibrium:EquilibriumAdapter",
+        ),
+        semantics=(
+            # services/orion-equilibrium-service/app/service.py:617-621:
+            # distress = mean over tracked services of (1 - uptime_pct in the
+            # smallest window); uptime is graded (:526-532); a never-seen
+            # expected service counts as uptime 0 (:600-612); a long-silent
+            # one is purged from the denominator (:583-597).
+            (
+                "distress_score",
+                MetricSemantics(
+                    value_kind="level",
+                    rest=(
+                        "0.0 = every tracked service heartbeating within grace. "
+                        "Mean partial downtime across services, so one dead "
+                        "service among N reads 1/N (live median 0.025, "
+                        "2026-10-07)."
+                    ),
+                    sparsity="per_tick",
+                    absent_means=(
+                        "a service silent past state_retention_sec is purged "
+                        "and stops counting -- a long outage can read calmer."
+                    ),
+                    polarity="higher_is_worse",
+                ),
+            ),
+            (
+                "zen_score",
+                MetricSemantics(
+                    value_kind="level",
+                    rest="1.0; zen = 1 - distress exactly (not independent).",
+                    sparsity="per_tick",
+                    absent_means="same purge rule as distress_score.",
+                    polarity="higher_is_better",
+                ),
+            ),
         ),
     ),
 )

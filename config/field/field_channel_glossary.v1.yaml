@@ -309,11 +309,29 @@ channels:
     level: [node]
     category: sensor_trust_liveness
     meaning: "Can Orion see at all, on node:substrate.vision_organ: staleness of the freshest camera stream the vision frame router reports (0.0 while any camera's newest frame is under 15 s old, ramping to 1.0 at 60 s). A configured camera that has sent nothing since the router started is aged from that start, never read as calm. 1.0 when no camera delivers or the router stops reporting for 180 s (written on a clock). Per-camera status lives on the vision organ projection. Dropped (unmeasured) when no reading has arrived for 300 s."
+    # Semantics (2026-10-10): the vision_organ node's health signal
+    # (successor of the retired node:substrate.vision prediction_error,
+    # services/orion-field-digester/app/tensor/channels.py RETIRED_PSEUDO_NODES).
+    # orion/substrate/prediction_error.py:948-990 (grace 15 s, saturation
+    # 60 s); expiry 300 s in services/orion-field-digester/app/digestion/decay.py.
+    semantics:
+      value_kind: level
+      rest: "0.0 = at least one camera delivered a frame in the last 15 s."
+      sparsity: per_tick
+      absent_means: "dropped (unmeasured) after 300 s without a reading; 1.0 (not absent) when the router itself is silent for 180 s."
 
   - channel: vision_processing_failure_pressure
     level: [node]
     category: task_execution
     meaning: "Share of the frames the vision frame router handed to the vision host over the last 10 minutes that came back without a usable answer (timeout, invalid reply, ok=false), failures / max(attempts, 10), counted once 2+ failures are in the span; the worse of the pooled share and the worst single camera's. Absent when nothing was dispatched; dropped (unmeasured) when no reading has arrived for 300 s."
+    # Semantics (2026-10-10): failures / max(attempts, 10), counted once 2+
+    # failures fall in the 10-minute span (orion/substrate/vision_organ_loop/
+    # reducer.py); expiry 300 s (field-digester digestion/decay.py).
+    semantics:
+      value_kind: level
+      rest: "0.0 = every frame dispatched in the last 10 minutes came back usable, or fewer than 2 failed."
+      sparsity: event_gated
+      absent_means: "absent when nothing was dispatched; dropped (unmeasured) after 300 s without a reading."
 
   - channel: field_coherence_warning
     level: [node]
@@ -348,6 +366,212 @@ channels:
     category: infra_transport
     meaning: "Fraction of live bus-synaptic edges currently anomalous (|z| >= 3.0) -- mesh-wide transport health, not a single-organ fault signal."
     trend_source: "substrate_field_state.field_json -> node_vectors -> 'node:substrate.bus_synaptic' -> prediction_error"
+    # Semantics (2026-10-10): orion/substrate/prediction_error.py:826
+    # bus_synaptic_prediction_error() = anomalous / len(edges), 0.0 for an
+    # empty edge list; clock tick in services/orion-substrate-runtime/app/
+    # worker.py::_bus_synaptic_tick. Live 3 days to 2026-10-10: 0% exact
+    # zeros, median 0.033 (substrate_node_prediction_error_history).
+    semantics:
+      value_kind: level
+      rest: "about 0.01-0.03: a few edges are always over |z| 3. 0.0 means no edge anomalous OR no live edges at all (an empty mesh reads calm)."
+      sparsity: per_tick
+      absent_means: "carried forward in node_vectors (prediction_error is not a decayed or expiring channel, services/orion-field-digester/app/digestion/decay.py); the self-model drops the domain after 1800 s without a fresh observed_at (orion/substrate/prediction_error_freshness.py:26)."
+      prompt_sites:
+        - "services.orion-mind.app.recall_signal_resolver:render_bus_synaptic_digest_line"
+
+  # ---------------------------------------------------------------------
+  # Node-qualified prediction_error entries, added 2026-10-10 (spec
+  # docs/superpowers/specs/2026-10-07-orion-self-calibration-design.md,
+  # section B). Each records WHY the node reads what it reads: a sweep on
+  # 2026-10-07 called seven of these "dead" because 70-97% of their history
+  # is exact zeros, which is their design. Every claim below was checked
+  # against producer code (cited per entry) and against
+  # substrate_node_prediction_error_history over the 3 days to 2026-10-10.
+  #
+  # `producer:` is orion-substrate-runtime, which computes every one of
+  # these (orion-field-digester only ingests the receipt). The older
+  # bus_synaptic entry above keeps its digester URN; renaming it is a
+  # separate definition change.
+  #
+  # Two of these never reach FieldStateV1 node_vectors at all
+  # (harness_closure, cabinet): they live only on the FalkorDB substrate
+  # node (`metadata.prediction_error`) and in
+  # substrate_node_prediction_error_history. Their trend_source says so.
+  #
+  # There is deliberately NO node:substrate.vision_organ prediction_error
+  # entry: that node carries vision_frame_staleness and
+  # vision_processing_failure_pressure only
+  # (orion/substrate/vision_organ_loop/reducer.py); see those entries.
+  # ---------------------------------------------------------------------
+
+  # services/orion-substrate-runtime/app/worker.py:158
+  # _HARNESS_CLOSURE_UNRESOLVED_ERROR = 0.65, written by
+  # handle_post_turn_closure (:2172) only when closure.surprise_unresolved.
+  # Never written back down. Live: 113 rows, 1 distinct value (0.650).
+  - node: "node:substrate.harness_closure"
+    producer: orion-substrate-runtime
+    channel: prediction_error
+    level: [node]
+    category: self_monitoring
+    meaning: "PLACEHOLDER: a fixed 0.65 written each time a harness turn closes with its surprise unresolved -- a yes/no shown as a size, until HarnessPostTurnClosureV1 carries surprise_level_at_draft. FalkorDB node only; not in FieldStateV1 node_vectors."
+    trend_source: "substrate_node_prediction_error_history WHERE node_id = 'node:substrate.harness_closure'"
+    consumers:
+      - "orion.substrate.attention_self_model:reduce_attention_self_model"
+      - "orion.substrate.endogenous_curiosity:_prediction_error_candidates"
+    semantics:
+      value_kind: placeholder
+      rest: "none designed: the node holds 0.65 after the first unresolved closure and nothing writes it lower. 0.65 is not a measured surprise level."
+      sparsity: event_gated
+      absent_means: "the node keeps its last 0.65; endogenous curiosity decays its use linearly to 0 over 1800 s of age (orion/substrate/endogenous_curiosity.py:129)."
+
+  # orion/autonomy/cabinet_heat.py:176 cabinet_warming_error(): only when
+  # the thermal state is 'elevated' (not 'hot', not 'unknown') AND the rise
+  # over 900 s (:77) is >= 0.5 C (:76) -> clamp01(rise / 1.0 C); else 0.0.
+  # Written by worker.py::_cabinet_heat_tick (:1417) every 30 s, FalkorDB
+  # node only. Live: 97% exact zeros, max 1.0.
+  - node: "node:substrate.cabinet"
+    producer: orion-substrate-runtime
+    channel: prediction_error
+    level: [node]
+    category: physical_substrate
+    meaning: "TRIGGER: cabinet is warming unexpectedly -- fires only while the cabinet thermal state is 'elevated' (never while 'hot') and the temperature rose at least 0.5 C in the last 15 minutes; value is rise/1.0 C, so 0.5-1.0 when it fires. FalkorDB node only; not in FieldStateV1 node_vectors."
+    trend_source: "substrate_node_prediction_error_history WHERE node_id = 'node:substrate.cabinet'"
+    consumers:
+      - "orion.substrate.endogenous_curiosity:_prediction_error_candidates"
+    semantics:
+      value_kind: trigger
+      rest: "0.0 = not elevated, or elevated but not rising >= 0.5 C in 15 min. Mostly zero by design (97% live)."
+      sparsity: designed_sparse
+      absent_means: "when the thermal reading is 'unknown' (older than the 300 s grace) the tick writes nothing and the node keeps its last value (worker.py:1434)."
+
+  # orion/substrate/prediction_error.py:1354 -- stage 1: 1 - cos(embedding,
+  # stream EWMA) (:1451); stage 2: z of that vs its own EWMA, negatives
+  # clipped (:290), score = min(1, z/3) (:1478). worker.py:1683-1694 writes
+  # 0.0 (not nothing) while warming and when the frame is stale. Live: 61%
+  # exact zeros.
+  - node: "node:substrate.perception"
+    producer: orion-substrate-runtime
+    channel: prediction_error
+    level: [node]
+    category: self_monitoring
+    meaning: "How surprising the camera scene is versus that stream's own recent normal: embedding distance from its running average, z-scored against its own history, negatives clipped, 3 sigma = 1.0."
+    trend_source: "substrate_node_prediction_error_history WHERE node_id = 'node:substrate.perception'"
+    consumers:
+      - "orion.substrate.endogenous_curiosity:_prediction_error_candidates"
+    semantics:
+      value_kind: level
+      rest: "0.0 = at or below this stream's usual surprise. Also 0.0 while the baseline is still warming (fewer than 2 surprise samples) and when the frame is stale -- so 0 here does NOT prove the camera is working; node:substrate.vision_organ's vision_frame_staleness carries that."
+      sparsity: designed_sparse
+      absent_means: "written as 0.0 every tick rather than dropped; nothing written until 15 s after process start before the first embedding arrives."
+
+  # orion/substrate/prediction_error.py:409-453
+  # _score_and_update_ewma_prediction_error: :452 returns 0.0 with no z yet
+  # (cold start); :453 min(1, max(0, z)/3). Execution input (:456): mean
+  # |delta| of 4 pressure hints. Written only when a batch had events
+  # (worker.py:3991). Live: 72% exact zeros.
+  - node: "node:substrate.execution"
+    producer: orion-substrate-runtime
+    channel: prediction_error
+    level: [node]
+    category: self_monitoring
+    meaning: "How much more execution pressure changed this batch than it usually does: z-score of the mean change in 4 execution pressure hints versus its own running average, negatives clipped, 3 sigma = 1.0."
+    trend_source: "substrate_node_prediction_error_history WHERE node_id = 'node:substrate.execution'"
+    consumers:
+      - "orion.attention.field_attention.selectors:select_node_targets"
+      - "orion.substrate.endogenous_curiosity:_prediction_error_candidates"
+      - "orion.substrate.metacog_trend_signals:latest_node_prediction_errors"
+    semantics:
+      value_kind: level
+      rest: "0.0 = change at or below its usual (negative z clipped), or no baseline yet. Mostly zero by design (72% live)."
+      sparsity: designed_sparse
+      absent_means: "only written when a batch carried execution events; between batches the last value is carried forward in node_vectors, and the self-model drops the domain after 1800 s."
+      prompt_sites:
+        - "services.orion-cortex-exec.app.metacog_trend_reader:fetch_recent_trend_signals"
+
+  # Same helper as execution (prediction_error.py:452-453); chat input
+  # (:607, v3) = mean |delta| of conversation_load and repair_pressure over
+  # touched turns only (:692-703). Event-gated (worker.py:4080). Live: 69%
+  # exact zeros.
+  - node: "node:substrate.chat"
+    producer: orion-substrate-runtime
+    channel: prediction_error
+    level: [node]
+    category: social_conversational
+    meaning: "How much more the chat's load and repair pressure moved on the turns touched this batch than they usually move: clipped z-score versus its own running average, 3 sigma = 1.0."
+    trend_source: "substrate_node_prediction_error_history WHERE node_id = 'node:substrate.chat'"
+    consumers:
+      - "orion.attention.field_attention.selectors:select_node_targets"
+      - "orion.substrate.endogenous_curiosity:_prediction_error_candidates"
+    semantics:
+      value_kind: level
+      rest: "0.0 = at or below the usual turn-to-turn movement, or no baseline yet. Mostly zero by design (69% live)."
+      sparsity: designed_sparse
+      absent_means: "only written when chat turns were touched; carried forward in node_vectors between turns, dropped from the self-model after 1800 s."
+
+  # orion/substrate/prediction_error.py:293 codebase: per sub-domain (git,
+  # pr, graph) _domain_zscore with negatives clipped (:290), score =
+  # min(1, mean(z)/3) (:366); 0.0 when no sub-domain fires (:363). One write
+  # per delta event (worker.py:2621). Excluded from the self-model domains
+  # (worker.py:163-174). Live: 91% exact zeros.
+  - node: "node:substrate.codebase"
+    producer: orion-substrate-runtime
+    channel: prediction_error
+    level: [node]
+    category: self_monitoring
+    meaning: "How unusual the latest codebase change event (git, PR, graph) was versus each source's own history: mean clipped z-score across the sub-domains, 3 sigma = 1.0."
+    trend_source: "substrate_node_prediction_error_history WHERE node_id = 'node:substrate.codebase'"
+    consumers:
+      - "orion.substrate.endogenous_curiosity:_prediction_error_candidates"
+    semantics:
+      value_kind: level
+      rest: "0.0 = no sub-domain above its usual. Mostly zero by design (91% live)."
+      sparsity: designed_sparse
+      absent_means: "only written on a codebase delta event; carried forward in node_vectors between events."
+
+  # orion/substrate/prediction_error.py:717 route_prediction_error(): per
+  # touched decided run, the share of 4 decision fields (lane, lane_reason,
+  # output_mode, mind_requested, :805) that changed versus the previous
+  # decided run -> {0, .25, .5, .75, 1}; mean over runs in the batch (:823),
+  # so a multi-run batch can land between steps. Live: 87% zeros, 4
+  # distinct values, max 0.75.
+  - node: "node:substrate.route"
+    producer: orion-substrate-runtime
+    channel: prediction_error
+    level: [node]
+    category: task_execution
+    meaning: "COUNT: how many of the 4 routing decisions (lane, lane reason, output mode, mind requested) changed versus the previous decided run, as a share (0, 0.25, 0.5, 0.75, 1); averaged when a batch holds several runs."
+    trend_source: "substrate_node_prediction_error_history WHERE node_id = 'node:substrate.route'"
+    consumers:
+      - "orion.attention.field_attention.selectors:select_node_targets"
+      - "orion.substrate.endogenous_curiosity:_prediction_error_candidates"
+    semantics:
+      value_kind: count
+      rest: "0.0 = routing made the same decision as last time (or no decided run this batch). Mostly zero by design (87% live)."
+      sparsity: designed_sparse
+      absent_means: "only written when routing runs were touched; carried forward in node_vectors, dropped from the self-model after 1800 s."
+
+  # orion/substrate/prediction_error.py:567-604 biometrics: min(1, mean
+  # |delta pressure_hints| / 0.30) over the union of keys -- a FIXED
+  # threshold (:18), not an EWMA. Written on biometrics batches
+  # (worker.py:1227-1265). Live: 0% exact zeros, median 0.026.
+  - node: "node:substrate.biometrics"
+    producer: orion-substrate-runtime
+    channel: prediction_error
+    level: [node]
+    category: physical_substrate
+    meaning: "How much the machines' pressure readings moved since the last sample: mean absolute change across pressure hints, 0.30 of change = 1.0 (a fixed scale, not versus its own history)."
+    trend_source: "substrate_node_prediction_error_history WHERE node_id = 'node:substrate.biometrics'"
+    consumers:
+      - "orion.attention.field_attention.selectors:select_node_targets"
+      - "orion.substrate.endogenous_curiosity:_prediction_error_candidates"
+      - "orion.substrate.metacog_trend_signals:latest_node_prediction_errors"
+    semantics:
+      value_kind: level
+      rest: "about 0.02-0.03 (sensor jitter); 0.0 = nothing moved at all."
+      sparsity: per_tick
+      absent_means: "carried forward in node_vectors between biometrics samples; dropped from the self-model after 1800 s."
+      prompt_sites:
+        - "services.orion-cortex-exec.app.metacog_trend_reader:fetch_recent_trend_signals"
 
   - channel: pressure
     level: [capability]

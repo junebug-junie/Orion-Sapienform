@@ -12,7 +12,6 @@ from orion.core.schemas.cognitive_substrate import SubstrateAnchorScopeV1
 from orion.core.schemas.frontier_expansion import FrontierExpansionRequestV1, FrontierTargetZoneV1, FrontierTaskTypeV1
 
 FrontierInvocationSignalTypeV1 = Literal[
-    "ontology_sparse_region",
     "concept_instability",
     "contradiction_hotspot",
     "evidence_gap_cluster",

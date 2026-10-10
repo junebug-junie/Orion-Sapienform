@@ -25,6 +25,8 @@ Both were checked against live data on 2026-09-08 and both are unusable:
   **one distinct value across all 1,382: exactly 1.0**. It is a pinned
   constant, not a signal -- keying on it means "fire every tick", which
   carries no information about whether Orion wants anything.
+  (That candidate was retired 2026-10-10; see
+  docs/superpowers/pr-reports/2026-10-10-retire-ontology-sparse-region-pr.md.)
 
 What is left is the mechanism that already produces the outcome a peer is for.
 `orion_worldview` is a FalkorDB graph Orion writes itself, in-turn, with real

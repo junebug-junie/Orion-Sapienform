@@ -100,25 +100,13 @@ class FrontierCuriosityEvaluator:
 
     def _derive_signals(self, *, anchor_scope: str, subject_ref: str | None, all_nodes: list[BaseSubstrateNodeV1], query_coordinator: SubstrateSemanticReadCoordinator, cognition_report: GraphCognitionReportV1, perception_brief: MetacogPerceptionBriefV1, operator_requested: bool) -> list[FrontierInvocationSignalV1]:
         signals: list[FrontierInvocationSignalV1] = []
-        concepts = [n for n in all_nodes if n.node_kind == "concept"]
-        ontology_branches = [n for n in all_nodes if n.node_kind == "ontology_branch"]
 
-        if concepts and len(ontology_branches) == 0:
-            node_refs, edge_refs = self._select_region(zone="world_ontology", preferred_node_ids=[n.node_id for n in concepts], query_coordinator=query_coordinator)
-            signals.append(
-                FrontierInvocationSignalV1(
-                    signal_type="ontology_sparse_region",
-                    anchor_scope=anchor_scope,
-                    subject_ref=subject_ref,
-                    target_zone="world_ontology",
-                    task_type_candidate="ontology_expand",
-                    focal_node_refs=node_refs,
-                    focal_edge_refs=edge_refs,
-                    signal_strength=min(1.0, 0.55 + (0.03 * len(concepts))),
-                    evidence_summary="concept-dense area with no ontology_branch nodes",
-                    confidence=0.72,
-                )
-            )
+        # `ontology_sparse_region` (-> `ontology_expand`) was retired 2026-10-10.
+        # It fired whenever the read slice held concepts but no ontology_branch
+        # nodes; nothing in Orion creates ontology_branch nodes, so it read a
+        # constant 1.0 and won every evaluator decision with a task nothing
+        # executes. Kill means kill: no flag, no fallback. See
+        # docs/superpowers/pr-reports/2026-10-10-retire-ontology-sparse-region-pr.md.
 
         if cognition_report.contradiction_candidates.candidates:
             contradiction_ids = [c.node_id for c in cognition_report.contradiction_candidates.candidates]

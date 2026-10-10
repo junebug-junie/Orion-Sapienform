@@ -15,7 +15,6 @@ from orion.core.schemas.cognitive_substrate import (
 )
 
 FrontierTaskTypeV1 = Literal[
-    "ontology_expand",
     "concept_expand",
     "relation_discovery",
     "contradiction_discovery",

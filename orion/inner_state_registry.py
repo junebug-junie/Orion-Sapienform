@@ -42,6 +42,8 @@ from typing import Optional, Type
 
 from pydantic import BaseModel
 
+from orion.metrics.semantics import MetricSemantics
+
 from orion.autonomy.models import AutonomyStateV2
 from orion.core.schemas.drives import DriveStateV1
 from orion.schemas.attention_frame import AttentionBroadcastProjectionV1
@@ -94,6 +96,19 @@ class InnerStateSignal:
     duplicate_of: Optional[str] = None
     shadow_reason: Optional[str] = None
     notes: str = ""
+    # "Why is it in this state" semantics per scalar field (2026-10-10; see
+    # orion/metrics/semantics.py). Keys are float field names on `schema`;
+    # the key "" describes the signal-level node itself. Each entry cites the
+    # producer line it was read from in a comment beside it.
+    semantics: tuple[tuple[str, MetricSemantics], ...] = ()
+
+    def semantics_by_key(self) -> dict[str, MetricSemantics]:
+        out: dict[str, MetricSemantics] = {}
+        for key, sem in self.semantics:
+            if key in out:
+                raise ValueError(f"{self.signal_id}: duplicate semantics key {key!r}")
+            out[key] = sem
+        return out
 
     def __post_init__(self) -> None:
         if self.composition_status is CompositionStatus.DUPLICATE and not self.duplicate_of:

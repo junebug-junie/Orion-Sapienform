@@ -277,7 +277,8 @@ def orphan_nodes(graph: MetricGraph, scan, repo_root: Path) -> list[MetricNode]:
 
 
 def _has_surviving_declared_consumer(node: MetricNode, repo_root: Path) -> bool:
-    for consumer in node.declared_consumers:
+    # A prompt site is a consumer too: it reads the number and renders it.
+    for consumer in (*node.declared_consumers, *node.prompt_sites):
         target = _resolve_consumer_path(consumer, repo_root)
         # A wildcard consumer ("*") is unverifiable but is a real claim of
         # consumption, so it counts as declared rather than as an orphan.
@@ -354,6 +355,58 @@ def write_baseline(
         encoding="utf-8",
     )
     return target
+
+
+def check_prompt_semantics(graph: MetricGraph, repo_root: Path) -> list[str]:
+    """Semantic-layer gate (2026-10-10, closes R6 with a gate).
+
+    A metric that reaches an Orion LLM prompt must say what its resting value
+    is, what shape the number has, and how often a real reading is expected
+    -- otherwise a reader (Orion included) cannot tell "calm" from "dead".
+    Juniper's 2026-10-10 decision scopes enforcement to prompt-reaching
+    metrics only; everything else may carry the fields but is not required
+    to.
+
+    Also verifies each declared prompt site exists on disk at BOTH the module
+    and the callable level, with the same resolution the declared-consumer
+    check uses -- a prompt site that was renamed away would otherwise keep
+    the requirement switched on (or off) for a site that no longer exists.
+    """
+    from orion.metrics.semantics import check_node_semantics
+
+    failures = check_node_semantics(graph.nodes.values())
+    seen: set[str] = set()
+    for node in graph.nodes.values():
+        for site in node.prompt_sites:
+            if site in seen:
+                continue
+            seen.add(site)
+            target = _resolve_consumer_path(site, repo_root)
+            if target is not None and not target.exists():
+                failures.append(
+                    f"{node.registry_source} declares prompt site {site!r} but "
+                    f"{target.relative_to(repo_root)} does not exist"
+                )
+                continue
+            problem = _declared_callable_missing(site, repo_root)
+            if problem:
+                failures.append(f"{node.registry_source} prompt site {problem}")
+    return sorted(failures)
+
+
+def run_prompt_semantics_gate() -> GateResult:
+    """Standalone entry for the prompt-semantics check. No repo scan needed,
+    so it runs in about a second and gets its own CI step."""
+    graph = build_graph()
+    result = GateResult()
+    result.failures.extend(check_prompt_semantics(graph, REPO_ROOT))
+    prompt_nodes = [n for n in graph.nodes.values() if n.reaches_prompt]
+    with_rest = [n for n in graph.nodes.values() if n.rest]
+    result.notes.append(
+        f"{len(prompt_nodes)} prompt-reaching metrics; "
+        f"{len(with_rest)} metrics carry rest semantics; {len(graph.nodes)} URNs"
+    )
+    return result
 
 
 def run_gate(baseline_path: Path | None = None) -> GateResult:

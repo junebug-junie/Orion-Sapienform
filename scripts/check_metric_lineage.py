@@ -374,6 +374,21 @@ def cmd_gate(update_baseline: bool = False) -> int:
     return 1
 
 
+def cmd_prompt_semantics() -> int:
+    from orion.metrics.gate import run_prompt_semantics_gate
+
+    result = run_prompt_semantics_gate()
+    for note in result.notes:
+        print(f"  {note}")
+    if result.ok:
+        print("\nprompt semantics gate: PASS")
+        return 0
+    print(f"\nprompt semantics gate: FAIL ({len(result.failures)})\n")
+    for failure in result.failures:
+        print(f"  - {failure}")
+    return 1
+
+
 def cmd_unwritten(graph, scan) -> int:
     """Metrics with a declaration and no discovered write site.
 
@@ -482,6 +497,11 @@ def main() -> int:
         help="CI gate: registry integrity, declared-consumer existence, orphan ratchet",
     )
     ap.add_argument(
+        "--prompt-semantics",
+        action="store_true",
+        help="CI gate: metrics that reach an Orion prompt must declare value_kind/rest/sparsity",
+    )
+    ap.add_argument(
         "--update-baseline",
         action="store_true",
         help="rewrite the orphan ratchet baseline (deliberate; run when a decrease is real)",
@@ -490,6 +510,9 @@ def main() -> int:
 
     if args.gate or args.update_baseline:
         return cmd_gate(update_baseline=args.update_baseline)
+
+    if args.prompt_semantics:
+        return cmd_prompt_semantics()
 
     if args.generic_consumers:
         return cmd_generic_consumers()

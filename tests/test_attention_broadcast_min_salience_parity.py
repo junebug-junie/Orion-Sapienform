@@ -35,7 +35,10 @@ def _settings_default() -> float:
     for node in ast.walk(tree):
         if not (isinstance(node, ast.Call) and getattr(node.func, "id", None) == "Field"):
             continue
-        if any(kw.arg == "alias" and ast.literal_eval(kw.value) == KEY for kw in node.keywords):
+        if any(
+            kw.arg == "alias" and isinstance(kw.value, ast.Constant) and kw.value.value == KEY
+            for kw in node.keywords
+        ):
             return float(ast.literal_eval(node.args[0]))
     raise AssertionError(f"Field(alias={KEY!r}) not found in settings.py")
 

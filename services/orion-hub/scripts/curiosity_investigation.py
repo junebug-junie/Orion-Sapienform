@@ -3316,6 +3316,8 @@ class CuriosityInvestigation:
                 payload["role_teach_peer_brief"] = {
                     "status": "refused_budget",
                     "next_hop_n": next_hop_n(hops) if hops else None,
+                    # Newest first (REFUSED_OR_FAILED_RECENT_CYPHER orders DESC).
+                    "refusal_reason": getattr(refused[0], "refusal_reason", None),
                 }
         except Exception as exc:  # noqa: BLE001
             logger.warning(

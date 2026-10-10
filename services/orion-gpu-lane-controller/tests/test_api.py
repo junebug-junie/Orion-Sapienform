@@ -56,10 +56,25 @@ def client(monkeypatch):
         yield c
 
 
-def test_health(client):
+def test_health(client, monkeypatch):
+    # This checkout's real config/gpu_pool.yaml, read by the same loader actuations use.
+    monkeypatch.setattr(main_module.settings, "GPU_LANE_REPO_ROOT", str(REPO_ROOT))
     resp = client.get("/health")
     assert resp.status_code == 200
-    assert resp.json()["ok"] is True
+    assert resp.json()["ok"] is True and resp.json()["config_loadable"] is True
+
+
+def test_health_is_503_when_the_config_every_actuation_reads_cannot_load(client, monkeypatch):
+    """2026-10-10: image older than gpu_pool.yaml -> every actuation refused, /health said ok for 28 h."""
+    def unloadable():
+        raise ValueError("roles.agent-gpu2.max_holds Extra inputs are not permitted")
+
+    monkeypatch.setattr(main_module.pool_fence, "load_config", unloadable)
+    resp = client.get("/health")
+    assert resp.status_code == 503
+    body = resp.json()
+    assert body["ok"] is False and body["config_loadable"] is False
+    assert "max_holds" in body["config_error"] and "rebuild" in body["fix"]
 
 
 @pytest.mark.parametrize("method,path", [

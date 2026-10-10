@@ -4,6 +4,7 @@ import asyncio
 from contextlib import asynccontextmanager, suppress
 
 from fastapi import FastAPI
+from fastapi.responses import JSONResponse
 from loguru import logger
 
 from orion.core.bus.bus_service_chassis import ChassisConfig, Hunter
@@ -96,4 +97,18 @@ app = FastAPI(title="Orion GPU Lane Controller", version=settings.SERVICE_VERSIO
 
 @app.get("/health")
 async def health():
-    return {"ok": True, "service": settings.SERVICE_NAME, "version": settings.SERVICE_VERSION}
+    """Healthy only if this controller can read the config every actuation reads.
+
+    It was a constant ``ok`` until 2026-10-10: the image predated a new gpu_pool.yaml field
+    for 28 h, every load/unload was refused ``config_unloadable``, and /health said ok throughout.
+    Same loader as the actuator (``pool_fence.load_config``, the live checkout)."""
+    body = {"service": settings.SERVICE_NAME, "version": settings.SERVICE_VERSION}
+    try:
+        await asyncio.to_thread(pool_fence.load_config)
+    except Exception as exc:  # noqa: BLE001 -- any parse failure means every actuation is refused
+        return JSONResponse(status_code=503, content={
+            **body, "ok": False, "config_loadable": False,
+            "config_error": f"{type(exc).__name__}: {str(exc)[:300]}",
+            "fix": "rebuild orion-gpu-lane-controller on this host from main: its image predates config/gpu_pool.yaml",
+        })
+    return {**body, "ok": True, "config_loadable": True}

@@ -1399,7 +1399,7 @@ def test_model_written_future_created_at_is_overwritten_with_server_time(
         assert before <= node.temporal.observed_at <= after
     # The journal row sorts by the same server time, not the model's.
     (_, envelope), = bus.journal
-    assert datetime.fromisoformat(envelope.payload["created_at"]) <= after
+    assert before <= datetime.fromisoformat(envelope.payload["created_at"]) <= after
 
 
 def test_stage1_prompt_no_longer_asks_the_model_for_created_at() -> None:

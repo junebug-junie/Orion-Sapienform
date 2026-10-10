@@ -246,7 +246,8 @@ def _as_stage2_result(
         if on_dropped is not None:
             on_dropped(unknown)
     parsed.setdefault("trace_id", fallback_trace)
-    parsed.setdefault("created_at", datetime.now(timezone.utc).isoformat())
+    # Never trust a model-written time, whichever caller handed us raw JSON.
+    stamp_server_created_at(parsed, seed_id=seed_id, stage="stage2")
     parsed.setdefault("seed_id", seed_id)
     parsed["producer_hint"] = "world_pulse_read_stage2"
     return WorldPulseReadStage2ResultV1.model_validate(parsed)

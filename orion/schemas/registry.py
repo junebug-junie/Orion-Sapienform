@@ -106,6 +106,7 @@ from orion.schemas.memory_crystallization import ActiveMemoryPacketV1, MemoryCry
 from orion.schemas.memory_episode import MEMORY_EPISODE_CLOSED_KIND, MemoryEpisodeClosedV1
 from orion.schemas.situation_state import SITUATION_STATE_KIND, SituationStateV1
 from orion.schemas.drive_reading import DriveReadingV1
+from orion.schemas.regulation import REGULATION_STATE_KIND, RegulationStateV1
 from orion.schemas.vision_sighting import IDENTITY_SIGHTING_KIND, IdentitySightingV1
 from orion.schemas.context_exec import (
     BeliefProvenanceReportV1,
@@ -1531,6 +1532,9 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     # Rest drive (Temporal Self rev 4, 2026-10-10). Redis-only (orion:drive:rest:latest),
     # not a bus payload: no bus subscriber exists, and an unconsumed channel is an orphan.
     "DriveReadingV1": DriveReadingV1,
+    # Regulation state (Temporal Self rev 4 R3, 2026-10-10). Redis orion:regulation:latest and
+    # GET /regulation/state only; no bus channel until a bus consumer exists. Also in SCHEMA_REGISTRY.
+    "RegulationStateV1": RegulationStateV1,
     "IdentitySightingV1": IdentitySightingV1,
     "ContextExecRequestV1": ContextExecRequestV1,
     "ContextExecRunV1": ContextExecRunV1,
@@ -2041,6 +2045,10 @@ SCHEMA_REGISTRY: Dict[str, SchemaRegistration] = {
     "IdentitySightingV1": SchemaRegistration(
         model=IdentitySightingV1,
         kind=IDENTITY_SIGHTING_KIND,
+    ),
+    "RegulationStateV1": SchemaRegistration(
+        model=RegulationStateV1,
+        kind=REGULATION_STATE_KIND,
     ),
 }
 

@@ -258,8 +258,12 @@ ORGAN_REGISTRY: Dict[str, OrionOrganRegistryEntry] = {
         signal_kinds=["state_frame", "state_transition"],
         canonical_dimensions=["level", "coherence", "confidence"],
         causal_parent_organs=["autonomy", "equilibrium", "recall"],
-        bus_channels=["orion:spark:state:snapshot", "orion:equilibrium:snapshot"],
-        notes=[]
+        bus_channels=[],
+        notes=[
+            "2026-10-10: spark-state rollup retired; orion-state-journaler no longer "
+            "subscribes to orion:spark:state:snapshot or orion:equilibrium:snapshot "
+            "and only publishes its heartbeat. spark_state_rollups is frozen.",
+        ]
     ),
     "dream": OrionOrganRegistryEntry(
         organ_id="dream",

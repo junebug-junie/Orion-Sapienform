@@ -72,5 +72,7 @@ jobs:
             services/orion-substrate-runtime/tests/test_store_system_one_appraisal.py \
             services/orion-substrate-runtime/tests/test_system_one_appraisal_endpoint.py \
             services/orion-substrate-runtime/tests/test_worker_endogenous_curiosity_tick.py \
+            services/orion-substrate-runtime/tests/test_curiosity_reading_link_seeds.py \
+            services/orion-substrate-runtime/evals/test_curiosity_seed_neighborhood_eval.py \
             services/orion-substrate-runtime/tests/test_store_observability_writers.py \
             services/orion-substrate-runtime/tests/test_worker_attention_broadcast_tick.py

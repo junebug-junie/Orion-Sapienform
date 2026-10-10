@@ -43,6 +43,21 @@ def _make_prov() -> SubstrateProvenanceV1:
     )
 
 
+def _known(item: dict[str, Any]) -> dict[str, Any]:
+    """Drop keys this build's model does not know before validating.
+
+    The model is extra="forbid". Stored candidate rows come from
+    substrate-runtime, which can be newer than this process (e.g. the
+    2026-10-10 neighborhood fields). Without this, one additive producer field
+    made every curiosity signal vanish from chat with only a debug log.
+    """
+    unknown = set(item) - set(FrontierInvocationSignalV1.model_fields)
+    if not unknown:
+        return item
+    logger.info("curiosity_adapter_dropped_unknown_fields fields=%s", sorted(unknown))
+    return {k: v for k, v in item.items() if k not in unknown}
+
+
 def _coerce(raw: Any) -> list[FrontierInvocationSignalV1] | None:
     """Coerce raw input to list of FrontierInvocationSignalV1.
 
@@ -83,10 +98,11 @@ def _coerce(raw: Any) -> list[FrontierInvocationSignalV1] | None:
                 if isinstance(item, FrontierInvocationSignalV1):
                     signals.append(item)
                 elif isinstance(item, str) and item.strip():
-                    sig = FrontierInvocationSignalV1.model_validate_json(item)
-                    signals.append(sig)
+                    parsed_item = json.loads(item)
+                    if isinstance(parsed_item, dict):
+                        signals.append(FrontierInvocationSignalV1.model_validate(_known(parsed_item)))
                 elif isinstance(item, dict):
-                    sig = FrontierInvocationSignalV1.model_validate(item)
+                    sig = FrontierInvocationSignalV1.model_validate(_known(item))
                     signals.append(sig)
             except Exception as exc:
                 logger.debug("curiosity_adapter_coerce_item_failed error=%s", exc)
@@ -134,8 +150,11 @@ def map_curiosity_ctx_to_substrate(ctx: dict[str, Any]) -> SubstrateGraphRecordV
         if signal.evidence_summary:
             evidence_summaries.append(signal.evidence_summary)
 
-        # Confidence and signal type
-        confidences.append(signal.confidence)
+        # Confidence and signal type. An unscored event seed (an accepted
+        # reading link, orion/substrate/link_accepted_seeds.py) carries 0.0 as
+        # "no score", not "no confidence": it does not lower the average.
+        if "strength:unscored_event" not in (signal.notes or []):
+            confidences.append(signal.confidence)
         signal_types.append(signal.signal_type)
 
     # Calculate average confidence

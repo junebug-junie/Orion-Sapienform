@@ -1240,6 +1240,34 @@ class BiometricsSubstrateStore:
                 ),
             )
 
+    def load_unseeded_accepted_reading_links(
+        self, *, lookback_hours: float, limit: int
+    ) -> list[dict[str, Any]]:
+        """Accepted, applied reading links with no stored link-accepted seed yet.
+
+        Read-only. Joins ``substrate_graph_journal`` (same database) to this
+        service's own candidate table for idempotency; see
+        orion/substrate/link_accepted_seeds.py. Raises on DB errors so the
+        caller can record why no link seeds were minted.
+        """
+        from orion.substrate.link_accepted_seeds import (
+            ACCEPTED_UNSEEDED_LINKS_SQL,
+            accepted_links_params,
+        )
+
+        with self._engine.connect() as conn:
+            rows = conn.execute(
+                text(ACCEPTED_UNSEEDED_LINKS_SQL),
+                accepted_links_params(lookback_hours=lookback_hours, limit=limit),
+            ).mappings().all()
+        out: list[dict[str, Any]] = []
+        for row in rows:
+            item = dict(row)
+            if isinstance(item.get("edge_ids"), str):
+                item["edge_ids"] = json.loads(item["edge_ids"])
+            out.append(item)
+        return out
+
     def save_endogenous_curiosity_candidates(
         self,
         signals: list[Any],

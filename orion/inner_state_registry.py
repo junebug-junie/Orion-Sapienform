@@ -994,7 +994,13 @@ REGISTRY: tuple[InnerStateSignal, ...] = (
                         "novelty, or a fixed 0.65/0.45 coverage-gap bucket."
                     ),
                     sparsity="designed_sparse",
-                    absent_means="no candidate (not a 0.0) when nothing clears its floor.",
+                    absent_means=(
+                        "no candidate (not a 0.0) when nothing clears its floor. "
+                        "Exception: a seed noted strength:unscored_event "
+                        "(source:reading_link_accepted, an accepted reading link, "
+                        "orion/substrate/link_accepted_seeds.py) is an event with "
+                        "no score and carries exactly 0.0; it is not a level."
+                    ),
                 ),
             ),
         ),

@@ -107,6 +107,23 @@ class FrontierCuriosityEvaluator:
         # constant 1.0 and won every evaluator decision with a task nothing
         # executes. Kill means kill: no flag, no fallback. See
         # docs/superpowers/pr-reports/2026-10-10-retire-ontology-sparse-region-pr.md.
+        #
+        # If you are waiting for a reading link to show up in focal_edge_refs on
+        # these rows: it will not, they are gone. A reading link now shows up on
+        # stored ENDOGENOUS seeds, filled after this decision by
+        # orion/substrate/curiosity_seed_neighborhood.py (accepted claims only):
+        # - an accepted reading claim mints a seed on its two ends (note
+        #   source:reading_link_accepted), so the link is an internal edge ->
+        #   focal_edge_refs (orion/substrate/link_accepted_seeds.py);
+        # - any other seed touching one end -> boundary_edge_refs, with
+        #   projection_endpoint_node_refs naming the linked reading concept.
+        # Proving SQL (substrate_endogenous_curiosity_candidates):
+        #   select c.generated_at, s->'focal_node_refs', s->'focal_edge_refs'
+        #   from substrate_endogenous_curiosity_candidates c,
+        #        jsonb_array_elements(c.candidates_json) s
+        #   where s->'notes' ? 'source:reading_link_accepted'
+        #     and jsonb_array_length(coalesce(s->'focal_edge_refs','[]')) > 0
+        #   order by c.generated_at desc limit 10;
 
         if cognition_report.contradiction_candidates.candidates:
             contradiction_ids = [c.node_id for c in cognition_report.contradiction_candidates.candidates]

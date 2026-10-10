@@ -41,9 +41,10 @@ Identity fields (surface/producer/name/field) form the URN and so cannot
 "change" -- a changed identity is a removal plus an addition, which is exactly
 what the rename pass below reassembles.
 
-    semantics   meaning, schema_id
-    routing     declared_consumers, feeds_dimensions, upstream,
-                upstream_organs, all_producers
+    semantics   meaning, schema_id, value_kind, rest, sparsity,
+                absent_means, polarity
+    routing     declared_consumers, feeds_dimensions, prompt_sites,
+                upstream, upstream_organs, all_producers
     annotation  notes, registry_source
 
 `registry_source` sits under annotation on purpose: moving a declaration
@@ -59,11 +60,24 @@ from orion.metrics.lineage import MetricGraph, MetricNode
 
 # Ordered so the emitted lock is stable and its diffs read top-to-bottom in the
 # same shape every time.
-SEMANTIC_FIELDS: tuple[str, ...] = ("meaning", "schema_id")
+# value_kind/rest/sparsity/absent_means/polarity (2026-10-10, R6): what a
+# number's resting state and silence mean. Changing one changes how every
+# reader must interpret the value, so they are `semantics` (high), same as
+# `meaning`. prompt_sites is routing: it says where the number GOES.
+SEMANTIC_FIELDS: tuple[str, ...] = (
+    "meaning",
+    "schema_id",
+    "value_kind",
+    "rest",
+    "sparsity",
+    "absent_means",
+    "polarity",
+)
 ROUTING_FIELDS: tuple[str, ...] = (
     "all_producers",
     "declared_consumers",
     "feeds_dimensions",
+    "prompt_sites",
     "upstream",
     "upstream_organs",
 )

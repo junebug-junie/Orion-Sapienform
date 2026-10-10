@@ -1,8 +1,9 @@
 # Phase 5 — signal semantics: provenance, window, commensurability
 
 **Mode:** Was design/scoping. **R1–R5b are all shipped and merged. The
-fourth-axis question (R6) is resolved: investigated, no live victim found,
-no rung, no code.** See "Open decisions". Kept as the arc's record rather
+fourth-axis question (R6) is closed with a gate (2026-10-10, see "Open
+decisions" item 2); it was first resolved 2026-08-19 as "no live victim found,
+no rung, no code".** See "Open decisions". Kept as the arc's record rather
 than closed, because most of what it now says was learned by building it.
 
 **Date:** 2026-08-13, revised same day, 2026-08-15 with shipped status and
@@ -408,7 +409,23 @@ critical path.
 
 1. ~~**R5 scope.**~~ **RESOLVED 2026-08-16, see above.** R5a shipped without
    waiting on `expected_offline_suppression`.
-2. ~~**The fourth axis.**~~ **RESOLVED 2026-08-19 -- no rung, no code, park it.**
+2. ~~**The fourth axis.**~~ **CLOSED WITH A GATE 2026-10-10** (supersedes the
+   2026-08-19 "no rung, no code" resolution below). The 2026-08-19 pass found
+   no live victim; the 2026-10-07 self-calibration sweep found seven -- designed
+   signals (70-97% exact zeros, a 0.65 placeholder, 3-tier buckets) called
+   "dead" because nothing recorded what their rest looks like
+   (`docs/superpowers/specs/2026-10-07-orion-self-calibration-design.md`,
+   section B). The answer is now on the registry entries themselves:
+   `value_kind`, `rest`, `sparsity`, `absent_means`, `polarity` (derived from
+   `HIGHER_IS_BETTER_CHANNELS`) and `prompt_sites`, projected onto
+   `MetricNode` (`orion/metrics/semantics.py`, `orion/metrics/lineage.py`),
+   recorded in the metric lock, and printed on every lineage card.
+   `scripts/check_metric_lineage.py --prompt-semantics` (orion-static-gates)
+   fails when a metric that reaches an Orion prompt lacks
+   value_kind/rest/sparsity -- Juniper's 2026-10-10 scope. See the semantic
+   layer spec's "Rest semantics" section for what is and is not covered.
+
+   Original 2026-08-19 resolution, kept for the record: **no rung, no code, park it.**
    Investigated properly (`scripts/check_metric_lineage.py` blast radius +
    direct Postgres history, then a full adversarial pass after the first
    pass's headline instance turned out to be wrong) before deciding, per this

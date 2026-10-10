@@ -198,6 +198,24 @@ def build_channel_series(
 @router.get("/channels")
 async def channels() -> dict[str, Any]:
     glossary = load_glossary()
+    # Node-qualified entries (e.g. node:substrate.execution's
+    # prediction_error) describe one node's meaning of a channel. This panel's
+    # series are per channel (max-merged across nodes), so they are not rows
+    # of their own -- listing them repeated the bare row. They are nested
+    # under the bare row as `node_variants`, so each node's meaning and rest
+    # semantics (e.g. "0 here does NOT prove the camera works") stay visible.
+    variants: dict[str, list[dict[str, Any]]] = {}
+    for e in glossary["entries"]:
+        if e.node is not None:
+            variants.setdefault(e.channel, []).append(
+                {
+                    "node": e.node,
+                    "meaning": e.meaning,
+                    "semantics": {
+                        k: list(v) if isinstance(v, tuple) else v for k, v in e.semantics
+                    },
+                }
+            )
     return {
         "categories": glossary["categories"],
         "channels": [
@@ -208,8 +226,13 @@ async def channels() -> dict[str, Any]:
                 "meaning": e.meaning,
                 "self_state_dimension": e.self_state_dimension,
                 "evidence_dimension": e.evidence_dimension,
+                "semantics": {
+                    k: list(v) if isinstance(v, tuple) else v for k, v in e.semantics
+                },
+                "node_variants": variants.get(e.channel, []),
             }
             for e in glossary["entries"]
+            if e.node is None
         ],
     }
 
@@ -306,13 +329,15 @@ def _health_sync(hours: int) -> dict[str, Any]:
 
     row_count = len(payloads)
     glossary = load_glossary()
-    known_channels = [e.channel for e in glossary["entries"]]
+    known_channels = [e.channel for e in glossary["entries"] if e.node is None]
     series, stamps, tick_times, unparsable_count = build_channel_series(
         payloads, known_channels
     )
 
     out = []
     for entry in glossary["entries"]:
+        if entry.node is not None:  # per-node semantics, no distinct series
+            continue
         values = series.get(entry.channel, [])
         verdict = classify_channel_series(values)
         regime = _regime_for(

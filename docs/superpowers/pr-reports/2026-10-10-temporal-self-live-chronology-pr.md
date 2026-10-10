@@ -18,7 +18,7 @@ The live code path reproduces patch 2's 10-09 day exactly:
 | Run | Steps | Closed 10-09 equals the pure one-pass fold | Patch-2 gates | Late / skipped rows |
 |---|---|---|---|---|
 | fixture in throwaway Postgres, 600 s steps, restart mid-afternoon | 289 (92 s) | yes | all pass | 0 / 0 |
-| fixture in throwaway Postgres, 120 s steps (the live tick) | 1,441 (448 s) | yes | all pass | 0 / 0 |
+| fixture in throwaway Postgres, 120 s steps (the live tick) | 1,441 (405 s) | yes | all pass | 0 / 0 |
 | **production tables read-only** (`--source-dsn`), 600 s steps | 289 (160 s) | yes | all pass | 0 / 0 |
 
 On all three runs: evidence precision is 2,103 / 2,103. Arcs by kind are 49 attention, 44 interoception, 184 reverie, 8 curiosity, 2 conversation, 2 concern and 2 sleep. Process recall is exact. The labels pass 6/6. Returns, dwell, rest share (30.6%) and the frame at close all match #2597.
@@ -164,6 +164,7 @@ git diff --check                                                               c
 python orion/temporal_self/evals/run_arc_precision_eval.py                       passed: true (unchanged)
 ORION_ADMISSION_TEST_DSN=<throwaway> python services/orion-durable-runs/evals/temporal_self_live_replay.py
   --step-sec 600: passed (289 steps, restart mid-afternoon)   --step-sec 120: passed (1,441 steps)
+  (all three re-run after the review fixes; numbers above are the post-fix runs)
   --source-dsn <production, READ ONLY transactions>:            passed (bodies: 105 compared, 2 outside the export window)
 ```
 
@@ -273,6 +274,6 @@ docker exec -i orion-athena-sql-db psql -U postgres -d conjourney -v ON_ERROR_ST
 
 ## PR link
 
-PR_LINK_PLACEHOLDER
+https://github.com/junebug-junie/Orion-Sapienform/pull/2605
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

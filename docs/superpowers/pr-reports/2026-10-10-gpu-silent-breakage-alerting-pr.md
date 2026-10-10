@@ -191,6 +191,6 @@ git pull --ff-only && scripts/safe_docker_build.sh orion-mesh-guardian up -d --b
 
 ## PR link
 
-TBD
+https://github.com/junebug-junie/Orion-Sapienform/pull/2595
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

@@ -159,7 +159,13 @@ def pre_turn_appraisal_off(monkeypatch, request):
     import types
 
     monkeypatch.setenv("ENABLE_PRE_TURN_APPRAISAL", "false")
-    candidates = [getattr(m, "settings", None) for m in list(sys.modules.values())]
+    # Only our own packages: getattr on arbitrary third-party modules can trigger
+    # a lazy module's __getattr__.
+    candidates = [
+        vars(m).get("settings")
+        for name, m in list(sys.modules.items())
+        if m is not None and name.split(".", 1)[0] in {"scripts", "app", "orion"}
+    ]
     for value in vars(request.module).values():
         if isinstance(value, types.ModuleType):
             candidates.append(getattr(value, "settings", None))

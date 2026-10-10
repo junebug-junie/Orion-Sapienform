@@ -90,6 +90,13 @@ REQUIRED_NO_DEFAULT: dict[str, frozenset[str]] = {
 #
 # Scoped per service, like the pilot above. Add a service only after aligning
 # it (or listing its remaining drift below with a reason).
+#
+# Out of scope (known gaps, not covered by this check):
+# - a bare compose `${KEY}` with no `:-` fallback: if KEY is missing from the
+#   interpolation env, compose passes "" and that overrides the Settings default
+#   (orion-hub has ~50 such keys as of 2026-10-10; follow-up).
+# - code that reads os.getenv("KEY", default) directly instead of Settings
+#   (e.g. SUBSTRATE_STORE_BACKEND in orion/substrate/*_store.py).
 _EXAMPLE_DRIFT_SETTINGS_PATHS: dict[str, str] = {
     "orion-hub": "app/settings.py",
     "orion-gpu-pool": "app/settings.py",
@@ -269,8 +276,10 @@ _COMPOSE_FALLBACK = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*):-((?:[^{}$]|\$(?!\
 
 def _unquote(raw: str) -> str:
     s = raw.strip()
-    if len(s) >= 2 and s[0] == s[-1] and s[0] in "'\"":
-        return s[1:-1]
+    if s[:1] in ("'", '"'):
+        end = s.find(s[0], 1)
+        if end > 0:
+            return s[1:end]  # quoted token; anything after it (e.g. ` # note`) is dropped
     # Unquoted values: compose and python-dotenv both drop a ` #` inline comment.
     hash_at = s.find(" #")
     return s[:hash_at].rstrip() if hash_at >= 0 else s
@@ -290,20 +299,35 @@ def _parse_env_example(path: Path) -> dict[str, str]:
     return out
 
 
-def _compose_fallbacks(path: Path) -> dict[str, str]:
-    """`${KEY:-fallback}` literals in a compose file. Nested `${A:-${B}}`
-    fallbacks are skipped -- their effective value is another variable."""
+def _compose_fallbacks(path: Path) -> dict[str, list[str]]:
+    """Every `${KEY:-fallback}` literal in a compose file, per key, in order.
+    YAML comment lines are skipped; nested `${A:-${B}}` fallbacks are skipped --
+    their effective value is another variable. Every occurrence is compared, so
+    a drifted first use cannot hide behind a matching later one."""
     if not path.is_file():
         return {}
-    out: dict[str, str] = {}
-    for m in _COMPOSE_FALLBACK.finditer(path.read_text(encoding="utf-8")):
-        out[m.group(1)] = _unquote(m.group(2))
+    out: dict[str, list[str]] = {}
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if line.lstrip().startswith("#"):
+            continue
+        for m in _COMPOSE_FALLBACK.finditer(line):
+            out.setdefault(m.group(1), []).append(_unquote(m.group(2)))
     return out
 
 
-def _field_env_name(field_name: str, field_info) -> str:
+def _field_env_names(field_name: str, field_info, env_prefix: str) -> list[str]:
+    """Candidate env names for a field, the way pydantic-settings resolves them:
+    a string alias / each string AliasChoices entry is used as-is; otherwise
+    env_prefix + attribute name."""
     alias = field_info.validation_alias or field_info.alias
-    return alias if isinstance(alias, str) else field_name
+    if isinstance(alias, str):
+        return [alias]
+    choices = getattr(alias, "choices", None)
+    if choices:
+        names = [c for c in choices if isinstance(c, str)]
+        if names:
+            return names
+    return [f"{env_prefix}{field_name}"]
 
 
 def _coerce(adapter, raw: str):
@@ -314,12 +338,16 @@ def _coerce(adapter, raw: str):
         return adapter.validate_json(raw)
 
 
+def _is_unset(value) -> bool:
+    return value is None or (isinstance(value, str) and value == "")
+
+
 def _same(left, right) -> bool:
     if left == right:
         return True
     # An empty env string and a None default both mean "unset" to every reader
     # in these services; do not report that as drift.
-    return {left, right} <= {None, ""} if not isinstance(left, (list, dict)) and not isinstance(right, (list, dict)) else False
+    return _is_unset(left) and _is_unset(right)
 
 
 def _same_text(left: str, right: str) -> bool:
@@ -359,6 +387,22 @@ def find_example_drift(service: str) -> dict:
     if settings_cls is None or getattr(settings_cls, "model_fields", None) is None:
         raise SettingsCheckError(f"{service}'s settings module has no pydantic `Settings` class")
 
+    config = getattr(settings_cls, "model_config", {}) or {}
+    env_prefix = config.get("env_prefix", "") or ""
+    case_sensitive = bool(config.get("case_sensitive", False))
+    if not case_sensitive:
+        # Upper-case lookup keys so an un-aliased lowercase field (`foo: int`)
+        # still finds `FOO=` in the template instead of silently dropping out.
+        upper: dict[str, str] = {}
+        for key, value in example.items():
+            upper[key.upper()] = value
+        example_lookup = upper
+    else:
+        example_lookup = example
+
+    def _lookup(name: str) -> str | None:
+        return example_lookup.get(name if case_sensitive else name.upper())
+
     host_specific = HOST_SPECIFIC_EXAMPLE_KEYS.get(service, frozenset())
     reasoned = REASONED_DRIFT.get(service, {})
     exempt = set(host_specific) | set(reasoned)
@@ -366,14 +410,16 @@ def find_example_drift(service: str) -> dict:
     raw_drift: list[dict] = []
     adapters: dict[str, object] = {}
     for field_name, field_info in settings_cls.model_fields.items():
-        env_name = _field_env_name(field_name, field_info)
+        names = _field_env_names(field_name, field_info, env_prefix)
         adapter = TypeAdapter(field_info.annotation)
-        adapters[env_name] = adapter
-        if env_name not in example or field_info.is_required():
+        for name in names:
+            adapters[name if case_sensitive else name.upper()] = adapter
+        env_name = next((n for n in names if _lookup(n) is not None), None)
+        if env_name is None or field_info.is_required():
             continue
         default = field_info.get_default(call_default_factory=True)
         try:
-            example_value = _coerce(adapter, example[env_name])
+            example_value = _coerce(adapter, _lookup(env_name))
         except Exception:  # noqa: BLE001
             raw_drift.append({"key": env_name, "surface": "settings", "default": repr(default),
                               "example": "<unparseable for field type>"})
@@ -382,20 +428,22 @@ def find_example_drift(service: str) -> dict:
             raw_drift.append({"key": env_name, "surface": "settings", "default": repr(default),
                               "example": repr(example_value)})
 
-    for key, fallback in sorted(_compose_fallbacks(service_dir / "docker-compose.yml").items()):
+    for key, fallbacks in sorted(_compose_fallbacks(service_dir / "docker-compose.yml").items()):
+        # Compose interpolation is case-sensitive; the template key must match exactly.
         if key not in example:
             continue
-        adapter = adapters.get(key)
-        if adapter is not None:
-            try:
-                equal = _same(_coerce(adapter, fallback), _coerce(adapter, example[key]))
-            except Exception:  # noqa: BLE001 - fall back to a textual compare
+        adapter = adapters.get(key if case_sensitive else key.upper())
+        for fallback in fallbacks:
+            if adapter is not None:
+                try:
+                    equal = _same(_coerce(adapter, fallback), _coerce(adapter, example[key]))
+                except Exception:  # noqa: BLE001 - fall back to a textual compare
+                    equal = _same_text(fallback, example[key])
+            else:
                 equal = _same_text(fallback, example[key])
-        else:
-            equal = _same_text(fallback, example[key])
-        if not equal:
-            raw_drift.append({"key": key, "surface": "docker-compose", "default": repr(fallback),
-                              "example": repr(example[key])})
+            if not equal:
+                raw_drift.append({"key": key, "surface": "docker-compose", "default": repr(fallback),
+                                  "example": repr(example[key])})
 
     drifted_keys = {item["key"] for item in raw_drift}
     return {

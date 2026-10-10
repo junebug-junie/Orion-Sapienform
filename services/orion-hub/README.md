@@ -1513,8 +1513,8 @@ cycle can currently act on. Turning `ROUTING_PROPOSALS_ENABLED` or
 disables the real graph_consolidation autonomy loop):
 
 - `SUBSTRATE_AUTONOMY_ROUTING_PROPOSALS_ENABLED` (default `true`)
-- `SUBSTRATE_AUTONOMY_COGNITIVE_PROPOSALS_ENABLED` (default `false`)
-- `SUBSTRATE_AUTONOMY_ROUTING_APPLY_ENABLED` (default `false`)
+- `SUBSTRATE_AUTONOMY_COGNITIVE_PROPOSALS_ENABLED` (default `true`)
+- `SUBSTRATE_AUTONOMY_ROUTING_APPLY_ENABLED` (default `true`)
 - `SUBSTRATE_AUTONOMY_ROUTING_ROLLBACK_DELTA_THRESHOLD` (default `-0.05`)
 
 ### 5.3 Self-Observability panel (`Self` tab)
@@ -1529,7 +1529,7 @@ section degrades to `null` independently (missing table, unset
   `substrate_hub_presence` (`HUB_PRESENCE_WRITER_ENABLED`, default on;
   apply `services/orion-sql-db/manual_migration_hub_presence_v1.sql`).
 - The Agent lane can prepend a one-line curiosity focus hint from fresh
-  endogenous candidates (`HUB_AGENT_CURIOSITY_HINT_ENABLED`, default off;
+  endogenous candidates (`HUB_AGENT_CURIOSITY_HINT_ENABLED`, default on;
   advisory only, structural gate, no keyword classification).
 
 ### 5.4 Drives Analytics panel — REMOVED 2026-08-13

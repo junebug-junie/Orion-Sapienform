@@ -320,3 +320,80 @@ def test_real_services_have_no_example_drift(service):
     """Regression: the curiosity caps/cooldown and the gpu-pool shed lever
     drifted from .env_example (found 2026-10-09). Real files must stay aligned."""
     assert gate.main([service, "--example-drift"]) == 0
+
+
+def test_example_drift_lowercase_unaliased_field_is_compared(tmp_path, monkeypatch, capsys):
+    """case_sensitive=False (pydantic-settings' default): `foo_cap: int` reads
+    FOO_CAP. It must be compared, not silently skipped."""
+    settings = textwrap.dedent(
+        """
+        from pydantic_settings import BaseSettings
+
+
+        class Settings(BaseSettings):
+            foo_cap: int = 3
+        """
+    )
+    _setup_drift(tmp_path, monkeypatch, settings, "FOO_CAP=7\n")
+    assert gate.main(["orion-fake", "--example-drift"]) == 1
+    assert "FOO_CAP" in capsys.readouterr().out.upper()
+
+
+def test_example_drift_env_prefix_and_alias_choices(tmp_path, monkeypatch, capsys):
+    settings = textwrap.dedent(
+        """
+        from pydantic import AliasChoices, Field
+        from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+        class Settings(BaseSettings):
+            model_config = SettingsConfigDict(env_prefix="PFX_")
+
+            cap: int = 3
+            other: int = Field(5, validation_alias=AliasChoices("NEW_OTHER", "OLD_OTHER"))
+        """
+    )
+    _setup_drift(tmp_path, monkeypatch, settings, "PFX_CAP=3\nOLD_OTHER=9\n")
+    assert gate.main(["orion-fake", "--example-drift"]) == 1
+    out = capsys.readouterr().out
+    assert "OLD_OTHER" in out and "CAP" not in out.replace("OLD_OTHER", "")
+
+
+def test_example_drift_default_factory_and_none_vs_empty(tmp_path, monkeypatch):
+    settings = textwrap.dedent(
+        """
+        from pydantic import Field
+        from pydantic_settings import BaseSettings
+
+
+        class Settings(BaseSettings):
+            items: list[str] = Field(default_factory=lambda: ["a", "b"], alias="FAKE_ITEMS")
+            maybe: str | None = Field(default=None, alias="FAKE_MAYBE")
+            flag: bool = Field(default=False, alias="FAKE_FLAG")
+        """
+    )
+    _setup_drift(tmp_path, monkeypatch, settings,
+                 "FAKE_ITEMS='[\"a\", \"b\"]'\nFAKE_MAYBE=\nFAKE_FLAG=false # inline note\n")
+    assert gate.main(["orion-fake", "--example-drift"]) == 0
+
+
+def test_example_drift_false_is_not_unset(tmp_path, monkeypatch):
+    """None/"" equivalence must not swallow a real False/0 vs empty mismatch."""
+    assert gate._same(None, "") and not gate._same(False, None) and not gate._same(0, "")
+
+
+def test_example_drift_compose_comment_and_duplicate_occurrences(tmp_path, monkeypatch, capsys):
+    """A commented-out fallback is ignored; a drifted FIRST occurrence is not
+    hidden by a matching later one."""
+    compose = (
+        "environment:\n"
+        "  # - FAKE_DAILY_CAP=${FAKE_DAILY_CAP:-99}\n"
+        "  - FAKE_DAILY_CAP=${FAKE_DAILY_CAP:-3}\n"
+        "  - FAKE_ENABLED=${FAKE_ENABLED:-true}\n"
+        "  - FAKE_ENABLED_AGAIN=${FAKE_ENABLED:-false}\n"
+    )
+    _setup_drift(tmp_path, monkeypatch, _DRIFT_SETTINGS, _ALIGNED_EXAMPLE, compose=compose)
+    assert gate.main(["orion-fake", "--example-drift"]) == 1
+    out = capsys.readouterr().out
+    assert "FAKE_ENABLED [docker-compose]" in out and "'true'" in out
+    assert "FAKE_DAILY_CAP" not in out

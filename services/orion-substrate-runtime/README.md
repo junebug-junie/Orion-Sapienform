@@ -287,6 +287,37 @@ SUBSTRATE_SYSTEM_ONE_CURIOSITY_GATE_KILL_SWITCH=true
 
 Default is live (`false`). Endogenous curiosity kill switch remains superior authority.
 
+### Curiosity seeds carry accepted reading links (2026-10-10)
+
+Two additions to the endogenous curiosity tick, both after the frontier decision or
+outside its ranking (design: `docs/plans/substrate/2026-10-10-curiosity-seed-neighborhood-design.md`):
+
+- **Neighborhood attach** (`ORION_ENDOGENOUS_CURIOSITY_SEED_NEIGHBORHOOD_ENABLED=true`):
+  every stored seed gets the accepted-claim links touching its focal nodes
+  (`focal_edge_refs` internal, `boundary_edge_refs`, `neighbor_node_refs`,
+  `projection_endpoint_node_refs`; budgets 12/16/16; legacy unreviewed edges dropped).
+  Keys are omitted when empty. Receipt per tick in `gate_json->'neighborhood'`.
+- **Link-accepted seeds** (`ORION_ENDOGENOUS_CURIOSITY_LINK_SEEDS_ENABLED=true`,
+  `..._LINK_SEED_CAP=2`, `..._LINK_SEED_LOOKBACK_HOURS=168`): an accepted, applied
+  reading claim (`substrate_graph_journal`, proposal actor `world_pulse_read_stage2`)
+  mints one unscored seed (strength 0.0, note `source:reading_link_accepted`) on its
+  two endpoints, once per assertion revision, stored in addition to the scored seeds.
+  Receipt in `gate_json->'link_seeds'`.
+
+**Deploy order:** cortex-exec (and Hub, for the new self-question) before
+substrate-runtime. cortex-exec's chat stance validates stored seeds with an
+`extra="forbid"` model; an older build drops seeds that carry the new keys.
+
+Proving SQL (empty until a reading claim is accepted):
+
+```sql
+select c.generated_at, s->'focal_node_refs', s->'focal_edge_refs', s->'projection_endpoint_node_refs'
+from substrate_endogenous_curiosity_candidates c, jsonb_array_elements(c.candidates_json) s
+where s->'notes' ? 'source:reading_link_accepted'
+  and jsonb_array_length(coalesce(s->'focal_edge_refs','[]')) > 0
+order by c.generated_at desc limit 10;
+```
+
 ```bash
 # bring up Kev (GPU Docker; survives reboot via restart: unless-stopped)
 scripts/safe_docker_build.sh orion-kev up -d --build

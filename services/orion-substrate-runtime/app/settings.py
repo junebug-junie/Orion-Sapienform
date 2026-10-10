@@ -341,6 +341,27 @@ class Settings(BaseSettings):
     endogenous_curiosity_candidate_retention_hours: float = Field(
         720.0, gt=0.0, alias="ORION_ENDOGENOUS_CURIOSITY_CANDIDATE_RETENTION_HOURS"
     )
+    # After the curiosity decision, attach each stored seed's accepted-claim
+    # links (focal_edge_refs / boundary_edge_refs / neighbor_node_refs /
+    # projection_endpoint_node_refs) plus a gate_json.neighborhood receipt.
+    # Never changes ranking. False = rows exactly as before 2026-10-10.
+    endogenous_curiosity_seed_neighborhood_enabled: bool = Field(
+        True, alias="ORION_ENDOGENOUS_CURIOSITY_SEED_NEIGHBORHOOD_ENABLED"
+    )
+    # An accepted reading link (journal, world_pulse_read_stage2) mints one
+    # unscored curiosity seed on its two endpoints, once per assertion revision.
+    endogenous_curiosity_link_seeds_enabled: bool = Field(
+        True, alias="ORION_ENDOGENOUS_CURIOSITY_LINK_SEEDS_ENABLED"
+    )
+    # Per-tick cap, clamped to HARD_LINK_SEED_CEILING (4) in code.
+    endogenous_curiosity_link_seed_cap: int = Field(
+        2, ge=0, alias="ORION_ENDOGENOUS_CURIOSITY_LINK_SEED_CAP"
+    )
+    # Only links applied within this window are seeded. Clamped to the
+    # candidate retention so the idempotency check can still see old seeds.
+    endogenous_curiosity_link_seed_lookback_hours: float = Field(
+        168.0, gt=0.0, alias="ORION_ENDOGENOUS_CURIOSITY_LINK_SEED_LOOKBACK_HOURS"
+    )
     # Self-tab brain-EKG frame producer. Enabled by default (operator directive).
     brain_frame_enabled: bool = Field(True, alias="SUBSTRATE_BRAIN_FRAME_ENABLED")
     brain_frame_interval_sec: float = Field(5.0, alias="BRAIN_FRAME_INTERVAL_SEC")

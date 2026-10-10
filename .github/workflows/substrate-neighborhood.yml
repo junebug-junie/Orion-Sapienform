@@ -11,6 +11,8 @@ on:
       - 'orion/graph/falkor_client.py'
       - 'orion/graph/tests/test_falkor_client.py'
       - 'orion/core/schemas/cognitive_substrate.py'
+      - 'orion/core/schemas/frontier_curiosity.py'
+      - 'services/orion-substrate-runtime/evals/**'
       - 'scripts/replay_substrate_neighborhood.py'
       - 'scripts/replay_substrate_complete_scan.py'
       - '.github/workflows/substrate-neighborhood.yml'
@@ -26,6 +28,8 @@ on:
       - 'orion/graph/falkor_client.py'
       - 'orion/graph/tests/test_falkor_client.py'
       - 'orion/core/schemas/cognitive_substrate.py'
+      - 'orion/core/schemas/frontier_curiosity.py'
+      - 'services/orion-substrate-runtime/evals/**'
       - 'scripts/replay_substrate_neighborhood.py'
       - 'scripts/replay_substrate_complete_scan.py'
       - '.github/workflows/substrate-neighborhood.yml'
@@ -73,7 +77,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - run: python -m pip install 'pydantic>=2' pydantic-settings requests 'redis<6' PyYAML jinja2 pytest 'rdflib>=7' asyncpg==0.29.0
+      - run: python -m pip install 'pydantic>=2' pydantic-settings requests 'redis<6' PyYAML jinja2 pytest 'rdflib>=7' asyncpg==0.29.0 sqlalchemy==2.0.36 psycopg2-binary==2.9.10
       - name: Store contract and backend regressions
         run: >-
           python -m pytest -q
@@ -96,6 +100,7 @@ jobs:
           orion/substrate/tests/test_reader_capability.py
           orion/substrate/tests/test_reconcile.py
           orion/substrate/tests/test_attention_broadcast.py
+          orion/substrate/relational/tests/test_curiosity_ctx_reading_link_compat.py
       - name: Direct concept-region reads equal the hydrated cache (real FalkorDB)
         env:
           ORION_TEST_FALKOR_URI: redis://localhost:6379
@@ -110,11 +115,13 @@ jobs:
           ORION_SUBSTRATE_TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/postgres
         run: |
           set -o pipefail
-          python -m pytest -q -rs orion/substrate/tests/test_assertion_core_falkor.py orion/substrate/tests/test_graph_journal_pg.py | tee assertion.out
+          python -m pytest -q -rs orion/substrate/tests/test_assertion_core_falkor.py orion/substrate/tests/test_graph_journal_pg.py orion/substrate/tests/test_link_accepted_seeds_pg.py | tee assertion.out
           if grep -q "SKIPPED" assertion.out; then
             echo "assertion-core store tests skipped -- the Falkor/Postgres service wiring is broken" >&2
             exit 1
           fi
+      - name: Curiosity seeds pick up accepted reading links only (fixture eval)
+        run: python services/orion-substrate-runtime/evals/run_curiosity_seed_neighborhood_eval.py
       - name: Hub-heavy budget and coverage eval
         run: python -m orion.substrate.evals.run_neighborhood_eval
       - name: Complete scan and dynamics equivalence eval

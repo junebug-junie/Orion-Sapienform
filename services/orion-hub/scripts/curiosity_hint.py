@@ -53,12 +53,23 @@ def _fetch_fresh_candidates(*, max_age_sec: float = _MAX_AGE_SEC) -> list[dict[s
         engine.dispose()
     if not row:
         return []
-    candidates = row["candidates_json"]
+    return usable_candidates(row["candidates_json"])
+
+
+def usable_candidates(candidates: Any) -> list[dict[str, Any]]:
+    """Stored candidates_json -> the dict candidates a hint/outreach may show.
+
+    Unscored event seeds (an accepted reading link, note strength:unscored_event)
+    are not "gaps" and have no strength to rank by: they stay out of the agent
+    hint and outreach topics. Orion still sees them in raw self-inquiry rows.
+    """
+    from orion.core.schemas.frontier_curiosity import is_unscored_event
+
     if isinstance(candidates, str):
         candidates = json.loads(candidates)
     if not isinstance(candidates, list):
         return []
-    return [c for c in candidates if isinstance(c, dict)]
+    return [c for c in candidates if isinstance(c, dict) and not is_unscored_event(c.get("notes"))]
 
 
 def format_curiosity_hint(candidates: list[dict[str, Any]]) -> str | None:

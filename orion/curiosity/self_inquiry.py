@@ -125,7 +125,12 @@ SELF_INQUIRY_PG_TABLES: tuple[tuple[str, str], ...] = (
     ("chat_stance_belief_log", "the stance you computed before each chat turn"),
     ("self_knowledge_items", "facts about your own code, hardware and behaviour"),
     ("self_concept_history", "your previous self-definitions and induced self-concepts"),
-    ("substrate_endogenous_curiosity_candidates", "what your substrate flagged as worth curiosity"),
+    (
+        "substrate_endogenous_curiosity_candidates",
+        "what your substrate flagged as worth curiosity; a seed noted "
+        "source:reading_link_accepted is an accepted reading link, and the link "
+        "sits in its focal_edge_refs",
+    ),
     # Added 2026-09-10: run 20260910T022934Z-e863f0 answered "what can't you
     # do" with generic-assistant framing the identity card already bans
     # ("customer-support tone") -- a real instance of the failure this whole

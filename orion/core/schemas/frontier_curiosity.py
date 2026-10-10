@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Literal, Optional
 from uuid import uuid4
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_serializer
 
 from orion.core.schemas.cognitive_substrate import SubstrateAnchorScopeV1
 from orion.core.schemas.frontier_expansion import FrontierExpansionRequestV1, FrontierTargetZoneV1, FrontierTaskTypeV1
@@ -23,6 +23,16 @@ FrontierInvocationSignalTypeV1 = Literal[
 
 FrontierInvocationOutcomeV1 = Literal["invoke", "defer", "noop", "blocked", "operator_only"]
 
+# Note on a signal that is an EVENT with no score (signal_strength/confidence are 0.0
+# placeholders, not measurements), e.g. an accepted reading link
+# (orion/substrate/link_accepted_seeds.py). Readers that rank or average strength,
+# or present "gaps", skip these; raw-row readers (self-inquiry SQL) still see them.
+UNSCORED_EVENT_NOTE = "strength:unscored_event"
+
+
+def is_unscored_event(notes: Any) -> bool:
+    return UNSCORED_EVENT_NOTE in (notes or [])
+
 
 class FrontierInvocationSignalV1(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -34,11 +44,43 @@ class FrontierInvocationSignalV1(BaseModel):
     target_zone: FrontierTargetZoneV1
     task_type_candidate: FrontierTaskTypeV1
     focal_node_refs: List[str] = Field(default_factory=list, max_length=32)
+    # Edges with BOTH ends in focal_node_refs ("internal"). For stored endogenous
+    # seeds this is filled after the decision by the neighborhood read
+    # (orion/substrate/curiosity_seed_neighborhood.py) with accepted-claim links
+    # only (edge_role=semantic_projection). Where a reading link shows up:
+    # - a seed noted `source:reading_link_accepted` has the link's two ends as
+    #   its focal nodes, so the link is here, in focal_edge_refs;
+    # - any other seed touching one end sees it in boundary_edge_refs, with the
+    #   proposed endpoint(s) in projection_endpoint_node_refs.
+    # Proving SQL: docs/superpowers/pr-reports/2026-10-10-curiosity-reading-link-seeds-pr.md
     focal_edge_refs: List[str] = Field(default_factory=list, max_length=64)
     signal_strength: float = Field(ge=0.0, le=1.0)
     evidence_summary: str = Field(default="")
     confidence: float = Field(ge=0.0, le=1.0)
     notes: List[str] = Field(default_factory=list, max_length=16)
+    # Accepted-claim links with exactly one end in focal_node_refs.
+    boundary_edge_refs: List[str] = Field(default_factory=list, max_length=16)
+    # The outside ends of boundary_edge_refs.
+    neighbor_node_refs: List[str] = Field(default_factory=list, max_length=16)
+    # Nodes (usually `proposed` reading concepts) present only because an
+    # accepted claim's semantic_projection edge touches them. Non-empty means
+    # "an accepted link reached this seed".
+    projection_endpoint_node_refs: List[str] = Field(default_factory=list, max_length=16)
+
+    @model_serializer(mode="wrap")
+    def _omit_empty_neighborhood(self, handler):  # type: ignore[no-untyped-def]
+        # The three neighborhood lists are omitted when empty so stored rows stay
+        # byte-identical to the pre-2026-10-10 shape until a real link appears,
+        # and an older extra="forbid" reader never sees an unknown empty key.
+        data = handler(self)
+        if isinstance(data, dict):
+            for key in _OMIT_WHEN_EMPTY:
+                if key in data and not data[key]:
+                    del data[key]
+        return data
+
+
+_OMIT_WHEN_EMPTY = ("boundary_edge_refs", "neighbor_node_refs", "projection_endpoint_node_refs")
 
 
 class FrontierInvocationDecisionV1(BaseModel):

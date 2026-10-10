@@ -108,6 +108,7 @@ from orion.curiosity.investigation_subject import build_investigation_subject
 from orion.curiosity.kickoff_prompt import (
     DEFAULT_MAX_HOPS,
     build_kickoff_prompt,
+    build_prior_drift_preamble,
     build_resume_preamble,
 )
 from orion.orion_day.carry_forward import release_carry_forward, take_carry_forward
@@ -125,6 +126,7 @@ from orion.curiosity.self_inquiry import (
     LEDGER_TS_COLUMNS,
     LINE_INVESTIGATE,
     LINE_SELF_INQUIRY,
+    LIVED_OPEN_QUESTIONS_CAP,
     LIVE_SELF_PRIORS_CYPHER,
     SELF_COUNTS_CYPHER,
     SELF_INQUIRY_GRANTS_SQL,
@@ -133,13 +135,17 @@ from orion.curiosity.self_inquiry import (
     SELF_INQUIRY_TAG,
     LedgerRow,
     LivedAnswer,
+    OpenLivedQuestion,
     SelfDefinition,
     build_lived_answer_history_write,
     build_self_definition_history_write,
     lived_answer_from_detail,
     lived_concept_id,
     read_latest_self_definition,
+    read_current_lived_answers,
+    valid_question_id,
     read_lived_answer,
+    read_lived_answers_for_run,
     read_self_definition,
     read_self_definition_count,
     read_self_question_mints,
@@ -317,6 +323,7 @@ _SENSE_EVAL_LAST_RUN_KEY = "orion:curiosity:self_sense_eval:last_run_id"
 # orion/bus/channels.yaml; orion-sql-writer subscribes.
 SELF_CONCEPT_HISTORY_WRITE_CHANNEL = "orion:self_concept:history:write"
 SELF_CONCEPT_HISTORY_WRITE_KIND = "self_concept.history.write.v1"
+SELF_CONCEPT_ENTRY_EXISTS_SQL = "SELECT 1 FROM self_concept_history WHERE entry_id = $1"
 SELF_CONCEPT_VERSION_SQL = (
     "SELECT COALESCE(MAX(version), 0) + 1 FROM self_concept_history WHERE concept_id = $1"
 )
@@ -383,6 +390,28 @@ MIN_HARNESS_STEPS = 3
 PG_ROLE_EXISTS_SQL = "SELECT 1 FROM pg_roles WHERE rolname = $1"
 
 _RUN_ID_RE = re.compile(r"^[0-9a-f]{6,32}$")
+
+
+async def prior_drift_preamble(reader: Optional[WorldviewReader], request: CuriosityTurnRequestV1) -> str:
+    """Empty unless an offered prior moved since the brief was built. One RO
+    read of current prior state; never raises into the turn."""
+    if reader is None or "prior_id: " not in request.prompt:
+        return ""
+    try:
+        states = await asyncio.to_thread(read_prior_states, reader)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("curiosity_prior_drift_read_failed run=%s err=%s", request.run_id, exc)
+        return ""
+    if states is None:
+        logger.info("curiosity_prior_drift_unknown run=%s -- prior state unreadable", request.run_id)
+        return ""
+    drift = build_prior_drift_preamble(request.prompt, states, attempt=request.attempt)
+    if drift:
+        logger.info(
+            "curiosity_prior_drift_preamble run=%s attempt=%s moved=%s",
+            request.run_id, request.attempt, drift.count("  - prior_id: "),
+        )
+    return drift
 
 
 @dataclass(frozen=True)
@@ -521,6 +550,29 @@ class SignalGateInputs:
 
 
 REST_DRIVE_BLOCK_REASON = "rest_drive_cooldown"
+# Earlier investigation briefs still waiting for a GPU hold: a brief admitted
+# behind a backlog is built now and read hours later (live 2026-10-09: seven
+# briefs, 8-12 h in the queue). Checked on scheduled ticks only.
+QUEUE_BACKLOG_BLOCK_REASON = "queue_backlog"
+# Investigation-line runs orion-durable-runs accepted and has not yet admitted
+# (no `run.admitted` event) or finished. Read-only, through Hub's own pool; the
+# table is orion-durable-runs' run registry (`orion/durable_runs/registry_store.py`).
+# 24 h bound: a registry row that never terminated (a crashed runner) must not
+# block the line forever -- it stops counting after a day.
+# Deliberately NOT counted: a run admitted once and re-queued for a retry, and
+# self-inquiry briefs. Both still read a frozen brief; the turn-start drift
+# block (`prior_drift_preamble`) is what corrects those.
+QUEUED_INVESTIGATIONS_SQL = (
+    "SELECT count(*) FROM durable_admission_runs r "
+    "WHERE r.request->>'workflow' = 'curiosity.investigate' "
+    "AND COALESCE(r.request->'brief'->>'line', 'investigate') = 'investigate' "
+    "AND COALESCE(r.request->'brief'->>'urgent', '') = '' "
+    "AND r.terminal IS NULL "
+    "AND r.control IS DISTINCT FROM 'cancelled' "
+    "AND r.created_at > now() - interval '24 hours' "
+    "AND NOT EXISTS (SELECT 1 FROM durable_resource_events e "
+    "WHERE e.run_id = r.run_id AND e.event = 'run.admitted')"
+)
 # Reasons an operator's forced run overrides: pacing, never "can this work".
 FORCE_OVERRIDABLE_REASONS = frozenset({"cooldown", "daily_cap", "outside_window", REST_DRIVE_BLOCK_REASON})
 
@@ -684,6 +736,9 @@ class CuriosityInvestigation:
         reader: Optional[WorldviewReader] = None,
         kickoff_via_cortex: bool = False,
         durable_admission_enabled: bool = False,
+        # Stop admitting investigation briefs while this many earlier ones are
+        # still waiting for a GPU hold. 0 = no cap. See QUEUE_BACKLOG_BLOCK_REASON.
+        max_queued_investigations: int = 0,
         # Base URL of orion-durable-runs (same service the reading loop submits to); Hub posts
         # ``/runs/{id}/release-outreach-lease`` there when Door-A composition is done.
         durable_runs_url: str = "http://127.0.0.1:8124",
@@ -733,6 +788,7 @@ class CuriosityInvestigation:
         # reports completion on `orion:durable:run:state` (outreach stays here).
         self.kickoff_via_cortex = bool(kickoff_via_cortex)
         self.durable_admission_enabled = bool(durable_admission_enabled)
+        self.max_queued_investigations = max(0, int(max_queued_investigations))
         if self.durable_admission_enabled and not self.kickoff_via_cortex:
             raise ValueError("durable admission requires kickoff_via_cortex")
         self.durable_runs_url = durable_runs_url
@@ -1540,6 +1596,38 @@ class CuriosityInvestigation:
         except Exception:  # noqa: BLE001
             logger.warning("curiosity_state_write_failed", exc_info=True)
 
+    async def _queued_investigations(self) -> Optional[int]:
+        """Investigation briefs accepted by orion-durable-runs and still waiting
+        for a GPU hold, or None when it could not be read."""
+        pool = self._pool_provider()
+        if pool is None:
+            return None
+        try:
+            async with pool.acquire() as conn:
+                return int(await conn.fetchval(QUEUED_INVESTIGATIONS_SQL) or 0)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("curiosity_queue_backlog_unreadable err=%s", str(exc)[:200])
+            return None
+
+    async def _queue_backlog_blocks(self) -> bool:
+        """True when admitting a new brief would put it behind the cap.
+
+        Only on the admitted durable path -- in-process runs never queue. Fails
+        OPEN on an unreadable count, loudly: the cap protects prompt freshness,
+        which the turn-start drift preamble also covers, so a broken read must
+        not silence the line."""
+        cap = self.max_queued_investigations
+        if cap <= 0 or not (self.kickoff_via_cortex and self.durable_admission_enabled):
+            return False
+        queued = await self._queued_investigations()
+        if queued is None or queued < cap:
+            return False
+        logger.info(
+            "curiosity_investigation_blocked reason=%s queued=%s cap=%s",
+            QUEUE_BACKLOG_BLOCK_REASON, queued, cap,
+        )
+        return True
+
     async def _read_cooldown_stamp(self, line: str = LINE_INVESTIGATE) -> Optional[str]:
         """The persisted cooldown stamp as written, or None."""
         redis = getattr(self._bus, "redis", None)
@@ -1728,6 +1816,10 @@ class CuriosityInvestigation:
             logger.info("curiosity_investigation_blocked reason=%s", reason)
             return reason
 
+        # Scheduled ticks only: an operator's forced run is their call.
+        if not force and await self._queue_backlog_blocks():
+            return QUEUE_BACKLOG_BLOCK_REASON
+
         # Discretionary spend only: a forced run is an operator's call, not curiosity's.
         if self.energy_stakes_enabled and not force:
             if await self._energy_stakes_hold(now) is not None:
@@ -1906,6 +1998,7 @@ class CuriosityInvestigation:
             peer_briefs = await self._read_peer_briefs_for_nudge()
         dream_hypotheses = await self._take_dream_hypotheses(view, run_id)
         carry_forward = await self._take_carry_forward(run_id)
+        open_lived_questions = await self._read_open_lived_questions(run_id)
         prompt = build_kickoff_prompt(
             material,
             view=view,
@@ -1924,7 +2017,13 @@ class CuriosityInvestigation:
             peer_briefs=peer_briefs,
             dream_hypotheses=dream_hypotheses,
             carry_forward=carry_forward,
+            open_lived_questions=open_lived_questions,
         )
+        if open_lived_questions:
+            logger.info(
+                "curiosity_open_lived_questions_offered run=%s ids=%s",
+                run_id, ",".join(q.question_id for q in open_lived_questions),
+            )
         if carry_forward is not None:
             logger.info(
                 "curiosity_carry_forward_offered run=%s letter_date=%s chars=%s",
@@ -2041,6 +2140,7 @@ class CuriosityInvestigation:
             hop_notes=hops,
         )
         await self._enqueue_help_requests_after_run(run_id)
+        await self._mirror_investigation_lived_answers(run_id, correlation_id)
         # `evidence=` is OPERATOR TELEMETRY and stays out of the journal on
         # purpose. The journal is Orion's own written result; an orphan-rate
         # statistic there would be a health check wearing Orion's voice, and
@@ -2498,6 +2598,47 @@ class CuriosityInvestigation:
             return
         self._self_questions_seed_ensured = True
 
+    async def _read_open_lived_questions(self, run_id: str) -> list[OpenLivedQuestion]:
+        """Open lived questions with the answer each holds now, unanswered
+        first, then oldest answer first, capped. Empty on any read failure --
+        the section is an offer, not a dependency of the run."""
+        if self._reader is None or not self.graph_enabled:
+            return []
+        try:
+            pool = merge_seed_with_rows(load_seed_questions(), await self._fetch_self_questions())
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("curiosity_open_lived_questions_pool_failed err=%s", exc)
+            return []
+        open_lived = [q for q in pool if q.family == "lived" and q.status == "open"]
+        # Orion mints question ids; one that cannot be spliced into the shown
+        # MERGE is dropped here, loudly, rather than shown with no answer.
+        dropped = [q.question_id for q in open_lived if valid_question_id(q.question_id) is None]
+        if dropped:
+            logger.warning("curiosity_open_lived_questions_invalid_ids ids=%r", dropped[:5])
+            open_lived = [q for q in open_lived if valid_question_id(q.question_id) is not None]
+        if not open_lived:
+            return []
+        try:
+            current = await asyncio.to_thread(
+                read_current_lived_answers, self._reader, [q.question_id for q in open_lived],
+                exclude_run_id=run_id,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("curiosity_open_lived_questions_read_failed err=%s", exc)
+            return []
+        if current is None:
+            return []
+        rows = [
+            OpenLivedQuestion(question_id=q.question_id, text=q.text, current=current.get(q.question_id))
+            for q in open_lived
+        ]
+        rows.sort(key=lambda r: (
+            r.current is not None,
+            (r.current.written_at or 0) if r.current is not None else 0,
+            r.question_id,
+        ))
+        return rows[:LIVED_OPEN_QUESTIONS_CAP]
+
     async def _fetch_self_questions(self) -> list[dict]:
         pool = self._pool_provider()
         if pool is None:
@@ -2647,7 +2788,34 @@ class CuriosityInvestigation:
             logger.warning("curiosity_self_context_read_failed err=%s", exc)
             return None, None
 
-    async def _read_previous_lived(self, question_id: str) -> Optional[PreviousLivedAnswer]:
+    async def _read_previous_lived(
+        self, question_id: str, *, run_id: str = ""
+    ) -> Optional[PreviousLivedAnswer]:
+        """The most recent answer to one lived question -- the one a new answer
+        revises. Graph first: the mirror table skips evidence-less drafts, so
+        it named a 10-01 answer as "previous" while a 10-04 one existed, and
+        the 10-09 answer recorded `revises` against the older one. The mirror
+        is the fallback when the graph cannot answer or holds nothing."""
+        if self._reader is not None:
+            try:
+                current = await asyncio.to_thread(
+                    read_current_lived_answers, self._reader, [question_id],
+                    exclude_run_id=run_id,
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "curiosity_previous_lived_graph_read_failed question_id=%s err=%s",
+                    question_id, exc,
+                )
+                current = None
+            answer = (current or {}).get(question_id)
+            if answer is not None:
+                return PreviousLivedAnswer(
+                    content=answer.text, evidence=list(answer.evidence), run_id=answer.run_id
+                )
+        return await self._read_previous_lived_mirror(question_id)
+
+    async def _read_previous_lived_mirror(self, question_id: str) -> Optional[PreviousLivedAnswer]:
         """Latest mirrored answer for one lived draw from self_concept_history."""
         pool = self._pool_provider()
         if pool is None:
@@ -2742,7 +2910,7 @@ class CuriosityInvestigation:
             peer_briefs = await self._read_peer_briefs_for_nudge()
         previous_lived = None
         if picked.family == "lived":
-            previous_lived = await self._read_previous_lived(picked.question_id)
+            previous_lived = await self._read_previous_lived(picked.question_id, run_id=run_id)
         prompt = build_self_inquiry_prompt(
             view=view,
             latest=latest,
@@ -2987,15 +3155,17 @@ class CuriosityInvestigation:
         *,
         run_id: str,
         correlation_id: str,
+        per_question: bool = False,
     ) -> bool:
-        """Append the run's `:LivedAnswer` to self_concept_history, or say why not."""
+        """Append the run's `:LivedAnswer` to self_concept_history, or say why not.
+        `per_question` for an investigation run, which may answer several."""
         if self._bus is None:
             return False
         if answer is None:
             logger.info("curiosity_lived_answer_not_mirrored run=%s reason=absent", run_id)
             return False
         version = await self._next_self_concept_version(lived_concept_id(answer.question_id))
-        row = build_lived_answer_history_write(answer, version=version)
+        row = build_lived_answer_history_write(answer, version=version, per_question=per_question)
         if row is None:
             logger.warning(
                 "curiosity_lived_answer_not_mirrored run=%s reason=no_evidence "
@@ -3011,7 +3181,11 @@ class CuriosityInvestigation:
                 BaseEnvelope(
                     kind=SELF_CONCEPT_HISTORY_WRITE_KIND,
                     source=self._source_ref,
-                    correlation_id=uuid5(NAMESPACE_URL, f"{SELF_INQUIRY_TAG}:lived:{run_id}"),
+                    correlation_id=uuid5(
+                        NAMESPACE_URL,
+                        f"{SELF_INQUIRY_TAG}:lived:{run_id}"
+                        + (f":{answer.question_id}" if per_question else ""),
+                    ),
                     payload=row.model_dump(mode="json"),
                 ),
             )
@@ -3032,6 +3206,48 @@ class CuriosityInvestigation:
             correlation_id,
         )
         return True
+
+    async def _self_concept_entry_exists(self, entry_id: str) -> bool:
+        """True when this row is already mirrored. False on any read failure:
+        the write is keyed on entry_id (primary key), so a repeat is refused
+        downstream anyway -- this only keeps the version number honest."""
+        pool = self._pool_provider()
+        if pool is None:
+            return False
+        try:
+            async with pool.acquire() as conn:
+                return bool(await conn.fetchval(SELF_CONCEPT_ENTRY_EXISTS_SQL, entry_id))
+        except Exception as exc:  # noqa: BLE001
+            logger.info("curiosity_self_concept_entry_lookup_failed entry=%s err=%s", entry_id, exc)
+            return False
+
+    async def _mirror_investigation_lived_answers(self, run_id: str, correlation_id: str) -> int:
+        """Mirror every `:LivedAnswer` an investigation run revised. Returns
+        how many were published. Never raises into the completion path."""
+        if self._reader is None:
+            return 0
+        try:
+            answers = await asyncio.to_thread(read_lived_answers_for_run, self._reader, run_id)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("curiosity_investigation_lived_read_failed run=%s err=%s", run_id, exc)
+            return 0
+        mirrored = 0
+        for answer in answers:
+            # A redelivered completion event must not republish at version+1.
+            if await self._self_concept_entry_exists(
+                f"self-lived:{answer.run_id}:{answer.question_id}"
+            ):
+                continue
+            if await self._mirror_lived_answer(
+                answer, run_id=run_id, correlation_id=correlation_id, per_question=True
+            ):
+                mirrored += 1
+        if answers:
+            logger.info(
+                "curiosity_investigation_lived_answers run=%s written=%s mirrored=%s",
+                run_id, len(answers), mirrored,
+            )
+        return mirrored
 
     async def _mirror_self_inquiry_write(
         self,
@@ -4056,18 +4272,28 @@ class CuriosityInvestigation:
             )
 
     async def _prompt_for_attempt(self, request: CuriosityTurnRequestV1) -> str:
-        """The frozen brief prompt, with a resume preamble on a retry.
+        """The frozen brief prompt, with a drift preamble when an offered prior
+        moved since the brief was built, and a resume preamble on a retry.
+
+        Drift, every attempt: the brief is built at admission and can wait
+        hours for a GPU hold (live 2026-10-09: 8-12 h), so the confidences it
+        prints can be several revisions old. One RO read of current prior
+        state, compared against the numbers the prompt itself prints.
 
         durable-runs re-sends `CuriosityRunBriefV1.prompt` byte-for-byte on
         every attempt of the same run_id, and that prompt says "n: 1" -- so
         before this, a retried sitting renumbered its hops from 1 on top of
         the first attempt's and redid its work blind (`Hop.n` collision,
-        design doc "Two data defects"). One RO graph read on `attempt > 1`,
-        nothing on the first attempt: a fresh run_id holds nothing to resume.
+        design doc "Two data defects"). The hop read runs on `attempt > 1`
+        only: a fresh run_id holds nothing to resume. The drift read runs
+        whenever the prompt shows a prior.
         """
-        if request.attempt <= 1 or self._reader is None:
+        if self._reader is None:
             return request.prompt
         reader = self._reader
+        drift = await prior_drift_preamble(reader, request)
+        if request.attempt <= 1:
+            return drift + request.prompt
         hops = await asyncio.to_thread(read_hop_notes, reader, request.run_id)
         preamble = build_resume_preamble(hops, run_id=request.run_id)
         if not preamble:
@@ -4075,12 +4301,12 @@ class CuriosityInvestigation:
                 "curiosity_resume_no_prior_hops run=%s attempt=%s",
                 request.run_id, request.attempt,
             )
-            return request.prompt
+            return drift + request.prompt
         logger.info(
             "curiosity_resume_preamble run=%s attempt=%s prior_hops=%s next_n=%s",
             request.run_id, request.attempt, len(hops), next_hop_n(hops),
         )
-        return preamble + request.prompt
+        return drift + preamble + request.prompt
 
     async def _turn_result_for(
         self, request: CuriosityTurnRequestV1, *, hold_lock: bool
@@ -4269,6 +4495,10 @@ class CuriosityInvestigation:
         # Same completion hook as SelfDefinition / outreach: durable admission
         # never reaches the in-process journal enqueue.
         await self._enqueue_help_requests_after_run(state.run_id)
+        if str(detail.get("line") or LINE_INVESTIGATE) == LINE_INVESTIGATE:
+            # An investigation may revise lived answers it was shown
+            # (`_lived_questions_section`); Hub owns the mirror, same as below.
+            await self._mirror_investigation_lived_answers(state.run_id, state.correlation_id)
         if str(detail.get("line") or LINE_INVESTIGATE) == LINE_SELF_INQUIRY:
             # Hub owns the mirror because Hub has the memory pool for the version
             # lookup. Prefer detail when the runner carried it; otherwise read

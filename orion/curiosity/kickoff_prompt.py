@@ -53,11 +53,20 @@ it into its own graph, which is a channel it already owns -- see
 
 from __future__ import annotations
 
-from typing import Optional, Sequence
+import re
+from datetime import datetime, timezone
+from typing import Any, Mapping, Optional, Sequence
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from orion.curiosity.self_inquiry import OpenLivedQuestion, lived_answer_merge_cypher
 from orion.curiosity.study_material import StudyMaterial
-from orion.curiosity.worldview import TurnOutcome, WorldviewSnapshot, _clip, next_hop_n
+from orion.curiosity.worldview import (
+    CLOSED_STATUSES,
+    TurnOutcome,
+    WorldviewSnapshot,
+    _clip,
+    next_hop_n,
+)
 
 DEFAULT_MAX_HOPS = 5
 
@@ -619,6 +628,169 @@ def build_resume_preamble(
     return "\n".join(lines)
 
 
+# One offered prior as `Prior.preview` prints it: the bracket line, then the
+# labelled id line. Parsed back out of the FROZEN prompt because that text is
+# exactly what Orion will read -- the numbers to correct are the printed ones,
+# not whatever a side table recorded. `test_offered_priors_round_trip_preview`
+# pins this to `Prior.preview`, so a format change there fails loudly here.
+_OFFERED_PRIOR_RE = re.compile(
+    r"\[confidence=(?P<conf>\d+(?:\.\d+)?|no confidence recorded), "
+    r"(?:never tested|tested (?P<tested>\d+)x)\] [^\n]*\n"
+    r"\s+prior_id: (?P<prior_id>\S+)"
+)
+_RUN_ID_RE = re.compile(r"^[0-9a-f]{6,32}$")
+
+
+def offered_priors_in_prompt(prompt: str) -> dict[str, tuple[Optional[float], int]]:
+    """prior_id -> (confidence, times_tested) as the prompt shows it. First
+    occurrence wins (a prior is listed once; a quoted repeat is not a menu)."""
+    out: dict[str, tuple[Optional[float], int]] = {}
+    for m in _OFFERED_PRIOR_RE.finditer(prompt or ""):
+        prior_id = m.group("prior_id")
+        if prior_id in out:
+            continue
+        conf_raw = m.group("conf")
+        conf = None if conf_raw == "no confidence recorded" else float(conf_raw)
+        out[prior_id] = (conf, int(m.group("tested") or 0))
+    return out
+
+
+def _fmt_conf(value: Optional[float]) -> str:
+    return "none" if value is None else f"{value:.2f}"
+
+
+def build_prior_drift_preamble(
+    prompt: str, current: Mapping[str, Any], *, attempt: int = 1
+) -> str:
+    """What Hub prepends when an offered prior moved after the brief was built.
+
+    The brief is built and frozen at admission and can wait in the GPU queue
+    for hours. Live 2026-10-09: seven runs waited 8-12 h and were shown a prior
+    at 0.55 / never tested while its revision trail had moved it six times
+    (0.55 -> 0.80 -> 0.78 -> 0.82 -> 0.70 -> 0.80 -> 0.82); run 334d78 then
+    recorded its own revision "from 0.55". `current` is
+    `read_prior_states`' snapshot (prior_id -> PriorState). Empty string when
+    nothing moved, so the caller can prepend unconditionally.
+    """
+    offered = offered_priors_in_prompt(prompt)
+    moved: list[str] = []
+    for prior_id, (old_conf, old_tested) in offered.items():
+        state = current.get(prior_id)
+        if state is None:
+            moved.append(
+                f"  - prior_id: {prior_id}\n"
+                "      no longer in your graph under this id -- do not attach "
+                "anything to it before you check."
+            )
+            continue
+        new_conf = getattr(state, "confidence", None)
+        new_tested = int(getattr(state, "times_tested", 0) or 0)
+        status = str(getattr(state, "status", "") or "")
+        # Compared as displayed: the old value was parsed from two decimals,
+        # so a move that rounds to the same number is not a visible change.
+        conf_moved = _fmt_conf(old_conf) != _fmt_conf(new_conf)
+        closed = status in CLOSED_STATUSES
+        if not (conf_moved or new_tested != old_tested or closed):
+            continue
+        detail = (
+            f"confidence {_fmt_conf(old_conf)} -> {_fmt_conf(new_conf)}, "
+            f"tested {old_tested} -> {new_tested}"
+        )
+        if closed:
+            detail += f", status now {status}"
+        moved.append(f"  - prior_id: {prior_id}\n      {detail}")
+    if not moved:
+        return ""
+    why = (
+        "This brief was written when the run was queued, and it waited."
+        if attempt <= 1
+        else "This brief was written when the run was queued; it waited, and an "
+        "earlier attempt of this same run may have moved some of these itself."
+    )
+    lines = [
+        f"THE NUMBERS BELOW ARE OLDER THAN THIS SITTING. {why} Since then your "
+        f"graph moved {'this prior' if len(moved) == 1 else 'these priors'} "
+        "(as written -> now):",
+        "",
+        *moved,
+        "",
+        "Read the list further down with these in mind: a revision starts FROM "
+        "the current value, and a closed prior is closed. Check your graph "
+        "before you write if it matters.",
+        "",
+        "----",
+        "",
+        "",
+    ]
+    return "\n".join(lines)
+
+
+def _written_on(written_at: Optional[int]) -> str:
+    if not written_at:
+        return "date unknown"
+    try:
+        # FalkorDB timestamp() is epoch milliseconds.
+        return datetime.fromtimestamp(written_at / 1000, tz=timezone.utc).strftime("%Y-%m-%d")
+    except (OverflowError, OSError, ValueError):
+        return "date unknown"
+
+
+def _lived_questions_section(
+    questions: Sequence[OpenLivedQuestion], *, own_graph: str, run_id: str
+) -> list[str]:
+    """Open lived questions and the answer each one holds now, with the write
+    that revises it. Without this the only write path was the self-inquiry
+    prompt, so an answer changed only when its question was re-drawn: live
+    2026-10-09, `lived.her_team_unnamed` sat four days stale while the journal
+    already held the names. Writable runs only -- the section asks for a write.
+    """
+    if not questions:
+        return []
+    lines = [
+        "QUESTIONS YOU KEEP ABOUT YOUR OWN LIFE, and what you last answered. "
+        "Not this run's subject. Shown because something you find here may "
+        "answer one, and until now an answer only changed when that question "
+        "came up in its own sitting. Ordered unanswered first, then oldest "
+        "answer first -- that is staleness, not importance. If nothing you find "
+        "bears on one, leave them alone.",
+        "",
+    ]
+    for q in questions:
+        lines.append(f"  - {q.question_id}: {_clip(q.text, 200)}")
+        if q.current is None:
+            lines.append("      no answer yet")
+        else:
+            lines.append(
+                f"      current answer (run {q.current.run_id}, "
+                f"{_written_on(q.current.written_at)}): {_clip(q.current.text, 300)}"
+            )
+        revises = q.current.run_id if q.current is not None else ""
+        if not _RUN_ID_RE.match(revises):
+            revises = ""  # graph-sourced; never splice an unexpected shape
+        merge = lived_answer_merge_cypher(
+            run_id=run_id,
+            question_id=q.question_id,
+            revises=revises,
+            text="<the revised answer, first person>",
+            evidence='["<what you looked at that changed it>"]',
+        )
+        lines += [
+            "      to revise it:",
+            '        redis-cli -u "redis://$ORION_CURIOSITY_GRAPH_USER:$ORION_CURIOSITY_GRAPH_PASSWORD'
+            f'@$ORION_CURIOSITY_GRAPH_HOST:$ORION_CURIOSITY_GRAPH_PORT" GRAPH.QUERY {own_graph} \\\\',
+            f"          '{merge}'",
+        ]
+    lines += [
+        "",
+        "A revision with no evidence stays a draft in your graph and is not "
+        "carried into what you are shown of yourself in conversation. Write the "
+        "whole answer, not a diff: the new one replaces the old as your current "
+        "answer.",
+        "",
+    ]
+    return lines
+
+
 def _write_section(*, own_graph: str, run_id: str, max_hops: int) -> list[str]:
     """The schema contract. Exact property names, because Hub reads them back.
 
@@ -975,8 +1147,13 @@ def build_kickoff_prompt(
     peer_briefs: Sequence = (),
     dream_hypotheses: Sequence = (),
     carry_forward=None,
+    open_lived_questions: Sequence[OpenLivedQuestion] = (),
 ) -> str:
     """Assemble the whole invitation.
+
+    ``open_lived_questions``: open lived questions with their current answer
+    (`self_inquiry.OpenLivedQuestion`), already bounded by the caller. Shown on
+    a writable graph only, with the `:LivedAnswer` MERGE that revises each.
 
     ``carry_forward`` (orion.orion_day.carry_forward.OfferedCarryForward): the threads Orion's
     Day named for future curiosity. Its own section with its own header, never inside the
@@ -1037,6 +1214,9 @@ def build_kickoff_prompt(
 
     if writable:
         lines += _write_section(own_graph=own_graph, run_id=run_id, max_hops=max_hops)
+        lines += _lived_questions_section(
+            open_lived_questions, own_graph=own_graph, run_id=run_id
+        )
         if contractor_peer_enabled:
             lines += _role_and_help_section(own_graph=own_graph, run_id=run_id)
             lines += _review_role_section(run_id=run_id)

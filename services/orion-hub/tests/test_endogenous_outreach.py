@@ -3355,6 +3355,7 @@ def test_grounding_summary_reports_each_lane() -> None:
         "tension": False,
         "chat_presence": True,
         "situation": False,
+        "situation_status": None,
         "embodied_presence": True,
         "priors_count": 1,
         "prior_ids": ["prior-xyz"],
@@ -3612,6 +3613,7 @@ def test_a_completed_cycle_records_which_lanes_it_saw(monkeypatch) -> None:
         "tension": True,
         "chat_presence": False,
         "situation": False,
+        "situation_status": None,
         "embodied_presence": False,
         "priors_count": 0,
         "prior_ids": [],
@@ -4045,3 +4047,82 @@ def test_a_stated_stay_outranked_by_a_sighting_is_still_shown():
     lines = _eo_mod.situation_lines(sit, _NOW, _DENVER)
     assert lines[1] == "- I saw Juniper at home on camera cam0. (seen 10 minutes ago)"
     assert "- She said: Juniper told me she is in Denver for work until Friday. (until Fri Oct 09, 23:59)" in lines
+
+
+
+class _SituationRedisStub:
+    def __init__(self, value=None, exc=None):
+        self.value, self.exc = value, exc
+
+    async def get(self, key):
+        if self.exc:
+            raise self.exc
+        return self.value
+
+
+class _SituationBusStub:
+    def __init__(self, redis=None, connected=True):
+        self._redis, self._connected = redis, connected
+
+    @property
+    def redis(self):
+        if not self._connected:
+            raise RuntimeError("OrionBusAsync not connected. Call await connect().")
+        return self._redis
+
+
+def test_situation_read_always_says_why():
+    """2026-10-09: five outreaches went out without the situation block and nothing recorded
+    why. Every outcome now carries a reason into the decision's grounding."""
+    from orion.schemas.situation_state import SituationStateV1
+    good = SituationStateV1(thread_id="situation:juniper:2026-10-10", updated_at=_NOW).model_dump_json()
+    assert asyncio.run(_eo_mod._read_situation(None)) == (None, "no_bus")
+    assert asyncio.run(_eo_mod._read_situation(_SituationBusStub(connected=False))) == (None, "bus_not_connected")
+    assert asyncio.run(_eo_mod._read_situation(_SituationBusStub(_SituationRedisStub(None)))) == (None, "no_key")
+    data, why = asyncio.run(_eo_mod._read_situation(_SituationBusStub(_SituationRedisStub(good))))
+    assert why == "ok" and data["thread_id"] == "situation:juniper:2026-10-10"
+    data, why = asyncio.run(_eo_mod._read_situation(_SituationBusStub(_SituationRedisStub(b'{"schema_version": "situation.state.v1", "extra": 1}'))))
+    assert data is None and why.startswith("error:ValidationError")
+    data, why = asyncio.run(_eo_mod._read_situation(_SituationBusStub(_SituationRedisStub(exc=ConnectionError("redis down")))))
+    assert data is None and why == "error:ConnectionError: redis down"
+
+
+def test_situation_status_reaches_the_grounding_record():
+    ctx = OutreachContext(curiosity_summaries=["x"], recent_turns=[], presence=None, situation=None,
+                          situation_status="no_key")
+    assert grounding_summary(ctx)["situation_status"] == "no_key"
+
+
+
+def test_novelty_filter_keeps_every_other_field():
+    """Root cause of 10-09: apply_content_novelty rebuilt the context field by field and dropped
+    `situation`, so every non-forced outreach lost the block."""
+    from scripts.endogenous_outreach import apply_content_novelty
+    ctx = OutreachContext(curiosity_summaries=["a", "b"], curiosity_content_ids=["c1", "c2"], recent_turns=[],
+                          presence=None, situation={"juniper": {}}, situation_status="ok")
+    out = apply_content_novelty(ctx, used_prior_ids=set(), used_curiosity_ids={"c1"})
+    assert out.curiosity_content_ids == ["c2"]
+    assert (out.situation, out.situation_status) == ({"juniper": {}}, "ok")
+
+
+def test_a_normal_outreach_cycle_carries_the_situation_block(monkeypatch) -> None:
+    outreach = _outreach()
+    sit = _situation()
+
+    async def gather(self, session_id, open_prior_previews=None, open_prior_ids=None):
+        return OutreachContext(curiosity_summaries=["sustained prediction error on node:x"], recent_turns=[],
+                               presence=None, curiosity_content_ids=["cid-1"], situation=sit,
+                               situation_status="ok")
+
+    seen = {}
+
+    async def generate(self, prompt, session_id, correlation_id, **_kw):
+        seen["prompt"] = prompt
+        return "something I was thinking about", {"stub": True}
+
+    monkeypatch.setattr(EndogenousOutreach, "_gather_context", gather)
+    monkeypatch.setattr(EndogenousOutreach, "_generate", generate)
+    result = asyncio.run(outreach.maybe_outreach())          # not forced: the novelty filter runs
+    assert result["outreach"] is True and "Where Juniper is right now" in seen["prompt"]
+    assert result["grounding"]["situation"] is True and result["grounding"]["situation_status"] == "ok"
+    assert result["provenance"]["lanes"]["situation_status"] == "ok"

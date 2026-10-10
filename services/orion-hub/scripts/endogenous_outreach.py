@@ -265,7 +265,7 @@ import asyncio
 import logging
 import re
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date, datetime, timezone
 from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 from uuid import UUID, uuid4
@@ -542,6 +542,8 @@ class OutreachContext:
     # Juniper is and which away-facts have ended. Enrichment only (not in is_empty()); it is
     # what stops a two-day-old "I'm in Chicago" turn from reading as tonight.
     situation: Optional[Dict[str, Any]] = None
+    # Why the situation block is or isn't there ("ok", "no_key", "bus_not_connected", "error:...").
+    situation_status: Optional[str] = None
 
     def is_empty(self) -> bool:
         return (
@@ -633,14 +635,14 @@ def apply_content_novelty(
         list(ctx.curiosity_summaries),
         used=used_curiosity_ids,
     )
-    return OutreachContext(
+    # dataclasses.replace, not a field-by-field rebuild: the rebuild silently dropped every field
+    # it did not list. Live 2026-10-09: it dropped `situation`, so every non-forced outreach went
+    # out without the "Where Juniper is right now" block (5/5 that day).
+    return replace(
+        ctx,
         curiosity_summaries=curiosity_summaries,
         curiosity_content_ids=curiosity_ids,
         recent_turns=list(ctx.recent_turns),
-        presence=ctx.presence,
-        tension_reason=ctx.tension_reason,
-        embodied_presence=ctx.embodied_presence,
-        daydream=ctx.daydream,
         open_prior_previews=prior_previews,
         open_prior_ids=prior_ids,
     )
@@ -1063,17 +1065,28 @@ def _juniper_spoke_since(epoch: float) -> bool:
     return row is not None
 
 
-async def _read_situation(bus: Any) -> Optional[Dict[str, Any]]:
-    """The situation graph's projection, or None (no bus, no key, unparseable)."""
-    redis = getattr(bus, "redis", None)
-    if redis is None:
-        return None
-    from orion.schemas.situation_state import SITUATION_STATE_REDIS_KEY, SituationStateV1
+async def _read_situation(bus: Any) -> Tuple[Optional[Dict[str, Any]], str]:
+    """(the situation graph's projection or None, why). ``why`` is "ok", "no_bus",
+    "bus_not_connected", "no_key", or "error:<Type>: <message>" -- recorded on every outreach
+    decision, because on 2026-10-09 five outreaches went out without the block and nothing said
+    why. Never raises."""
+    if bus is None:
+        return None, "no_bus"
+    try:
+        redis = bus.redis           # OrionBusAsync.redis raises RuntimeError when not connected
+    except RuntimeError:
+        return None, "bus_not_connected"
+    except AttributeError:
+        return None, "no_bus"
+    try:
+        from orion.schemas.situation_state import SITUATION_STATE_REDIS_KEY, SituationStateV1
 
-    raw = await redis.get(SITUATION_STATE_REDIS_KEY)
-    if not raw:
-        return None
-    return SituationStateV1.model_validate_json(raw).model_dump(mode="json")
+        raw = await redis.get(SITUATION_STATE_REDIS_KEY)
+        if not raw:
+            return None, "no_key"
+        return SituationStateV1.model_validate_json(raw).model_dump(mode="json"), "ok"
+    except Exception as exc:  # noqa: BLE001 - enrichment only; the reason is the record
+        return None, f"error:{type(exc).__name__}: {str(exc)[:200]}"
 
 
 _LAPSED_WHEREABOUTS_SHOWN_SEC = 7 * 86400
@@ -1226,6 +1239,7 @@ def grounding_summary(ctx: OutreachContext) -> Dict[str, Any]:
         "tension": ctx.tension_reason is not None,
         "chat_presence": ctx.presence is not None,
         "situation": ctx.situation is not None,
+        "situation_status": ctx.situation_status,
         # Reports the RENDERED fragment, not the fetched row. `presence_fragment`
         # returns None for any state that is not present/recent (an empty room is
         # the default expectation most of the time), so `fetch_presence` handing
@@ -2548,11 +2562,9 @@ class EndogenousOutreach:
         else:
             curiosity_ids, summaries = [], list(curiosity or []) if curiosity else []
 
-        situation = None
-        try:
-            situation = await _read_situation(self._bus)
-        except Exception as exc:  # noqa: BLE001 - enrichment only
-            logger.warning("endogenous_outreach_situation_read_failed err=%s", exc)
+        situation, situation_status = await _read_situation(self._bus)
+        if situation_status != "ok":
+            logger.warning("endogenous_outreach_situation_unavailable status=%s", situation_status)
 
         presence = None
         try:
@@ -2568,6 +2580,7 @@ class EndogenousOutreach:
             recent_turns=list(turns or []),
             presence=presence,
             situation=situation,
+            situation_status=situation_status,
             # Set by _should_roll() just before this is called; None on a
             # forced (force=True) debug trigger, which never calls it.
             tension_reason=self._last_tension_reason,

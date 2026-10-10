@@ -32,21 +32,47 @@ def test_chassis_is_heartbeat_only() -> None:
     assert type(chassis) is HeartbeatOnly
 
 
-def test_run_loop_never_subscribes_or_touches_postgres() -> None:
-    chassis = build_chassis()
-    chassis.bus = MagicMock()
+class _FakeBus:
+    """Records every bus call; enough surface for BaseChassis.start_background()."""
+
+    def __init__(self) -> None:
+        self.published: list[tuple[str, object]] = []
+        self.subscribe = MagicMock(name="subscribe")
+
+    async def connect(self) -> None:
+        return None
+
+    async def close(self) -> None:
+        return None
+
+    async def reconnect(self) -> None:
+        return None
+
+    async def publish(self, channel: str, env: object) -> None:
+        self.published.append((channel, env))
+
+
+def test_running_service_heartbeats_and_never_subscribes() -> None:
+    """Drive the real start_background() path: the one job left is the
+    SystemHealthV1 heartbeat; no subscription may come back."""
+    with patch("app.service.settings.heartbeat_interval_sec", 0.01):
+        chassis = build_chassis()
+    assert chassis.cfg.heartbeat_interval_sec == 0.01
+    bus = _FakeBus()
+    chassis.bus = bus
 
     async def _drive() -> None:
-        task = asyncio.create_task(chassis._run())
-        await asyncio.sleep(0.05)
-        chassis._stop.set()
-        await asyncio.wait_for(task, timeout=1.0)
+        await chassis.start_background()
+        await asyncio.sleep(0.1)
+        await chassis.stop()
 
-    with patch.dict("sys.modules", {"asyncpg": MagicMock()}) as mods:
-        asyncio.run(_drive())
-        assert not mods["asyncpg"].connect.called
-    assert not chassis.bus.subscribe.called
-    assert not chassis.bus.publish.called
+    asyncio.run(_drive())
+    assert not bus.subscribe.called
+    channels = {ch for ch, _ in bus.published}
+    assert channels == {chassis.cfg.health_channel}, channels
+    env = bus.published[0][1]
+    assert env.kind == "system.health.v1"
+    assert env.payload["service"] == "state-journaler"
 
 
 def test_settings_carry_no_rollup_or_spark_keys() -> None:

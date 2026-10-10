@@ -5,12 +5,16 @@ on:
     paths:
       - "services/orion-state-journaler/**"
       - "orion/core/bus/bus_service_chassis.py"
+      - "orion/core/bus/async_service.py"
+      - "orion/schemas/telemetry/system_health.py"
       - ".github/workflows/orion-state-journaler-tests.yml"
   push:
     branches: [main]
     paths:
       - "services/orion-state-journaler/**"
       - "orion/core/bus/bus_service_chassis.py"
+      - "orion/core/bus/async_service.py"
+      - "orion/schemas/telemetry/system_health.py"
       - ".github/workflows/orion-state-journaler-tests.yml"
 
 jobs:

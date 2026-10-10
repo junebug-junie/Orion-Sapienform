@@ -358,12 +358,17 @@ REGISTRY: tuple[InnerStateSignal, ...] = (
                     value_kind="level",
                     rest=(
                         "about 2-3 (far end of the heartbeat profile twice the "
-                        "near end); 'smeared' at >= 0.5. Unbounded: a near end "
-                        "just above 1e-6 yields values in the millions, which "
-                        "means 'near end nearly dead', not a huge smear."
+                        "near end); 'smeared' at >= 0.5. Bounded at "
+                        "SMEAR_DEAD_RATIO=10 since PR #2571 (orion-heartbeat "
+                        "proprioception.py:46,123): healthy readings sit at "
+                        "0.94-5.5, so a value near 10 is the edge of 'alive'."
                     ),
                     sparsity="per_tick",
-                    absent_means="None when the near end is below 1e-6.",
+                    absent_means=(
+                        "None when the near end is dead: below the 1e-6 floor or "
+                        "far/near > 10 (near end carries < 1/10 of the far "
+                        "end's entanglement). Before #2571 this read 1e4-1.5e6."
+                    ),
                 ),
             ),
         ),

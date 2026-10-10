@@ -120,6 +120,19 @@ def _dream_hop(state: dict):
     return ReverieVisualRunBriefV1.model_validate(state["brief"]).dream_hop
 
 
+def _artifacts(result: ReverieVisualStepResultV1) -> dict:
+    """What a result that ends the run says was painted and seen. Only the fields it actually set, so
+    a terminal that names none leaves the run's own (and a waking run's detail) unchanged; a replayed
+    dream child whose prepare answers terminal ``produced`` with the recorded sha/caption is not
+    reported as image-less."""
+    out: dict = {}
+    if result.artifact_sha256:
+        out["artifact_sha256"] = result.artifact_sha256
+    if result.caption is not None:
+        out["caption"] = result.caption
+    return out
+
+
 def _expired(state: dict, now: datetime) -> bool:
     deadline = (state.get("admission") or {}).get("deadline_at")
     return bool(deadline) and now >= datetime.fromisoformat(str(deadline))
@@ -243,7 +256,7 @@ def build_reverie_visual_graph(run_step: RunStep, admission: AdmissionDeps, chec
             return {**started, **calls, "status": "running", "route": "finish", "outcome": result.outcome,
                     "reason": result.reason, "attempt_id": result.attempt_id or state.get("attempt_id"),
                     "chain_id": result.chain_id or state.get("chain_id"),
-                    "execution_receipt": result.execution_receipt, "last_error": None}
+                    "execution_receipt": result.execution_receipt, "last_error": None, **_artifacts(result)}
         return {**started, **calls, **done_update(state, result), "status": "running",
                 "route": "resource_request", "attempt_id": result.attempt_id, "hold": None, "lease": None}
 
@@ -292,7 +305,7 @@ def build_reverie_visual_graph(run_step: RunStep, admission: AdmissionDeps, chec
         return {**released, **calls, "status": "running", "route": "finish", "outcome": result.outcome,
                 "reason": result.reason, "attempt_id": result.attempt_id or state.get("attempt_id"),
                 "chain_id": result.chain_id or state.get("chain_id"),
-                "execution_receipt": result.execution_receipt, "last_error": None}
+                "execution_receipt": result.execution_receipt, "last_error": None, **_artifacts(result)}
 
     async def caption(state):
         state = dict(state)
@@ -320,11 +333,10 @@ def build_reverie_visual_graph(run_step: RunStep, admission: AdmissionDeps, chec
             return retry(state, node, result.reason or "retry", result.retry_after_sec, **calls)
         update = {**calls, "status": "running", "route": "finish", "outcome": result.outcome,
                   "chain_id": result.chain_id or state.get("chain_id"),
-                  "execution_receipt": result.execution_receipt, "reason": result.reason, "last_error": None}
+                  "execution_receipt": result.execution_receipt, "reason": result.reason, "last_error": None,
+                  **_artifacts(result)}
         if result.status == "done":
             update.update(done_update(state, result))
-            if result.caption is not None:
-                update["caption"] = result.caption
         return update
 
     async def retry_wait(state):

@@ -65,6 +65,8 @@ CHILD_POLL_SEC = 30.0
 DEFAULT_FINISH_GRACE_SEC = 1800.0
 DEFAULT_CHILD_MAX_ATTEMPTS = 3
 DEFAULT_CHILD_MIN_WINDOW_SEC = 900.0
+DEFAULT_CHILD_WINDOW_SEC = 2400.0
+DEFAULT_CHILD_RETRY_GAP_SEC = 900.0
 # A child that ended without a picture for one of these may be replaced by a fresh child: its window
 # ran out deferring (reverie.visual's only failure is its deadline), or thought deferred the run.
 RETRYABLE_CHILD_ERRORS = frozenset({"retry_window_expired", "workflow_deadline"})
@@ -95,6 +97,12 @@ class DreamCarryDeps:
     child_max_attempts: int = DEFAULT_CHILD_MAX_ATTEMPTS
     # A fresh child is only worth submitting with at least this much of the carry left.
     child_min_window_sec: float = DEFAULT_CHILD_MIN_WINDOW_SEC
+    # One child's own window (capped at REVERIE_VISUAL_MAX_RETRY_WINDOW_SEC): a hot cabinet must not
+    # keep thought's single painting slot on a dream picture for hours.
+    child_window_sec: float = DEFAULT_CHILD_WINDOW_SEC
+    # Least wait before a replacement child (thought's 600 s cooldown + a baseline tick), so a waking
+    # painting can claim the slot in between.
+    child_retry_gap_sec: float = DEFAULT_CHILD_RETRY_GAP_SEC
 
 
 class DreamCarryState(TypedDict, total=False):
@@ -179,13 +187,14 @@ def _deadline_reason(state: dict, waiting_on: str = "no reason recorded") -> str
     return f"deadline at hop {len(state.get('hops') or [])}: {last}"
 
 
-def child_request(state: dict, hop_index: int, prompt: str, now: datetime) -> DurableRunRequestV1:
+def child_request(state: dict, hop_index: int, prompt: str, now: datetime,
+                  window_sec: float = DEFAULT_CHILD_WINDOW_SEC) -> DurableRunRequestV1:
     """The child reverie.visual run for one image hop (its current attempt). A pure function of
     checkpointed state (plus ``requested_at``/``deadline_at``, which the store ignores on a
     resubmit), so a replay dedupes."""
     run_id = state["run_id"]
     dispatch_id = dream_hop_dispatch_id(run_id, hop_index, int(state.get("child_attempt") or 0))
-    window_end = now + timedelta(seconds=REVERIE_VISUAL_MAX_RETRY_WINDOW_SEC)
+    window_end = now + timedelta(seconds=min(float(window_sec), REVERIE_VISUAL_MAX_RETRY_WINDOW_SEC))
     deadline = _deadline(state)
     child_deadline = min(deadline, window_end) if deadline is not None else window_end
     return DurableRunRequestV1(
@@ -389,8 +398,14 @@ def build_dream_carry_graph(carry: DreamCarryDeps, admission: AdmissionDeps, che
             return {"status": "running", "route": "next_hop"}
         if _expired(state, admission.now()):
             return _stop(_deadline_reason(state))
+        deadline = _deadline(state)
+        left = None if deadline is None else (deadline - admission.now()).total_seconds()
+        if left is not None and left < carry.child_min_window_sec:
+            # Not worth a painting (first child or a replacement): finish with what was made.
+            after = f" (after {state['reason']})" if int(state.get("child_attempt") or 0) and state.get("reason") else ""
+            return _stop(f"image hop {idx}: only {int(left)}s left{after}")
         try:
-            request = child_request(state, idx, hops[-1].image_prompt or "", admission.now())
+            request = child_request(state, idx, hops[-1].image_prompt or "", admission.now(), carry.child_window_sec)
         except ValueError as exc:   # an unbuildable brief: deterministic, retrying cannot fix it
             return _stop(f"image hop {idx}: invalid_child_request: {exc}")
         try:
@@ -449,7 +464,8 @@ def build_dream_carry_graph(carry: DreamCarryDeps, admission: AdmissionDeps, che
             if left is None or left >= carry.child_min_window_sec:
                 # A fresh child for the same hop, after the admission backoff on this hop's misses
                 # (never immediate). child_attempt is checkpointed here, before image_submit runs.
-                delay = min(admission.retry_max_seconds, admission.retry_base_seconds * 2 ** (made - 1))
+                delay = max(carry.child_retry_gap_sec,
+                            min(admission.retry_max_seconds, admission.retry_base_seconds * 2 ** (made - 1)))
                 return retry(state, "image_submit", f"child_retry:{why}", delay, child_run_id=None,
                              child_hop=None, child_attempt=made)
             label += f" (only {int(left)}s left)"
@@ -472,10 +488,8 @@ def build_dream_carry_graph(carry: DreamCarryDeps, admission: AdmissionDeps, che
         state = dict(state)
         released = await admission.release(state, "completed")   # nothing should be held here
         hops = _hops(state)
-        if not hops:
-            # Nothing was made: an empty dream is not a dream. Fail with why it stopped.
-            return {**released, "status": "failed", "route": "failed",
-                    "last_error": state.get("stopped_reason") or state.get("last_error") or "no_hops"}
+        # Zero hops still calls finish (contract): orion-dream falls back to the sleep's one-paragraph
+        # story (done, dream_id "story-fallback:<trigger_id>") or answers terminal for a hand-started carry.
         bound = hard_deadline(state)
         if bound is not None and admission.now() >= bound:
             return {**released, "status": "failed", "route": "failed",

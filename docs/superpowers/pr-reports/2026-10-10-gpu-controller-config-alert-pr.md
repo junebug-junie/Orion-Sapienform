@@ -163,6 +163,6 @@ Hub: no restart. `services/orion-hub/static` is bind-mounted from the primary ch
 
 ## PR link
 
-PR_LINK_PLACEHOLDER
+https://github.com/junebug-junie/Orion-Sapienform/pull/2588
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

@@ -17,7 +17,8 @@ from typing import Any, AsyncIterator, Dict, List, Mapping, Optional, Tuple
 from orion.fcc.claude_spawn import claude_permission_argv, extend_mcp_argv, setting_sources_argv
 from orion.fcc.turn_lock import turn_in_progress
 from orion.curiosity.write_stamp import WriteStamper, completed_tool_use_ids, graph_write_tool_use_ids
-from orion.core.redact import redact_secrets, redact_secrets_deep
+from orion.core.redact import redact_secrets, redact_secrets_deep, remember_secret_env
+from orion.fcc import mcp_names
 from orion.fcc.context_budget import (
     annotate_harness_step,
     apply_context_overflow_hint,
@@ -408,6 +409,8 @@ def load_fcc_env(path: Path | str) -> Dict[str, str]:
             continue
         key, _, value = stripped.partition("=")
         out[key.strip()] = value.strip().strip('"').strip("'")
+    # These become the Claude subprocess env; its trace must not echo them.
+    remember_secret_env(out)
     return out
 
 
@@ -1253,7 +1256,7 @@ def build_claude_argv(
             # Claude Code 2.1 pre-approval pattern is the bare server name,
             # mirroring mcp_allowed_tool_patterns; the plugin-owned server is
             # not in the rendered config, so pre-approve it explicitly.
-            extra_allowed_tools = ["mcp__plugin_context-mode_context-mode"]
+            extra_allowed_tools = [f"mcp__{mcp_names.CONTEXT_MODE_PLUGIN}"]
         extend_mcp_argv(argv, mcp_config_path, extra_allowed_tools=extra_allowed_tools)
     if _should_skip_claude_permissions():
         perm = claude_permission_argv(auto_approve=True)

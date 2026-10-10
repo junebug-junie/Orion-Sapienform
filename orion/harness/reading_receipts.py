@@ -20,11 +20,12 @@ from orion.schemas.reading import (
     ReadingToolResultV1,
     SourceFetchEvidenceV1,
 )
+from orion.fcc.mcp_names import CONTEXT_MODE_PLUGIN, ORION_READING, mcp_tool
 from orion.world_pulse_read.tools import deterministic_reading_request_id
 from orion.world_pulse_read.urls import normalize_reading_source
 
-_RECOMMEND_TOOL = "mcp__orion-reading__recommend_reading"
-_CONTEXT_FETCH_TOOL = "mcp__plugin_context-mode_context-mode__ctx_fetch_and_index"
+_RECOMMEND_TOOL = mcp_tool(ORION_READING, "recommend_reading")
+_CONTEXT_FETCH_TOOL = mcp_tool(CONTEXT_MODE_PLUGIN, "ctx_fetch_and_index")
 _FETCH_TOOLS = {
     "WebFetch",
     "mcp__firecrawl__scrape",

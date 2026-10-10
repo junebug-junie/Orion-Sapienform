@@ -69,3 +69,40 @@ def test_secret_env_values_pick_credential_names_only():
 
 def test_deep_redaction_leaves_non_strings_alone():
     assert redact_secrets_deep({"n": 3, "b": None, "l": [1, "x"]}, ()) == {"n": 3, "b": None, "l": [1, "x"]}
+
+
+def test_fcc_env_file_secrets_are_redacted(tmp_path, monkeypatch):
+    """The subprocess's credentials come from ~/.fcc/.env, never os.environ."""
+    from orion.harness.fcc_motor import load_fcc_env
+
+    monkeypatch.setattr(redact, "_remembered", set())
+    monkeypatch.setattr(redact, "_cached", None)
+    env_file = tmp_path / ".env"
+    env_file.write_text("ORION_CURIOSITY_GRAPH_PASSWORD=graphpassw0rd\nGITHUB_PAT=ghp_patvalue123\nMODEL=qwen\n")
+    load_fcc_env(env_file)
+    text = build_step_frame(_tool_result_event("graphpassw0rd ghp_patvalue123 qwen"))["raw"]["message"]["content"][0]["content"]
+    assert text == "[REDACTED] [REDACTED] qwen"
+
+
+def test_prefixed_password_assignments_are_redacted():
+    for line in ("PGPASSWORD=hunter2xyz psql -h db", "export ORION_CURIOSITY_GRAPH_PASSWORD=abcdefgh"):
+        out = redact_secrets(line, ())
+        assert "hunter2xyz" not in out and "abcdefgh" not in out, out
+
+
+def test_empty_username_and_at_in_password():
+    assert redact_secrets("redis://:pw@host:6379/0", ()) == "redis://[REDACTED]@host:6379/0"
+    assert redact_secrets("postgresql://u:p@ss@h/db", ()) == "postgresql://[REDACTED]@h/db"
+
+
+def test_password_value_keeps_closing_syntax():
+    assert redact_secrets('{"note": "password=abc"}', ()) == '{"note": "password=[REDACTED]"}'
+    assert redact_secrets("connect(host=h, password=pw)", ()) == "connect(host=h, password=[REDACTED])"
+
+
+def test_long_dotted_or_hyphenated_run_is_linear():
+    import time
+
+    start = time.perf_counter()
+    redact_secrets("a-a." * 50_000 + " http://x", ())
+    assert time.perf_counter() - start < 0.5

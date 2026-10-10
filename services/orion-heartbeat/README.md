@@ -272,7 +272,10 @@ nothing reaches the field" above.
   all-dark; `organ_last_fired_at` / `organ_seconds_since_last_fire` /
   `fire_window_sec` tell a dark organ from a merely rare one, null = never seen
   since boot), `smear`/`smeared`
-  (far/near entropy on the current profile), `organ_distinctness` (occupancy
+  (far/near entropy on the current profile; both null when the near end is
+  dead -- carries less than a tenth of the far end's entanglement,
+  `SMEAR_DEAD_RATIO` in `app/substrate/proprioception.py`, derived from the
+  live distribution's trough -- rather than a 1e4..1e6 ratio), `organ_distinctness` (occupancy
   concentration). Also `verdict`, `mean_ratio`/`std_ratio` (mean saturates
   under real traffic — secondary), `bulk_penetration_depth`, `tick_count`,
   and the seeds that produced this reading.

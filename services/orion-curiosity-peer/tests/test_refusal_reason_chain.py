@@ -178,3 +178,59 @@ def test_orion_facing_surfaces_show_the_reason() -> None:
     assert "Claude fallback refused" in line
     assert "cursor said" not in line  # codes + raw text stay out of the short line
     assert "hop 2" in line
+
+
+# --- review findings (2026-10-10) -------------------------------------------
+
+
+def test_rate_limit_is_not_reported_as_the_monthly_cap() -> None:
+    reason = _run(RuntimeError("rate limit exceeded, retry in 30s")).refusal_reason or ""
+    assert "rate-limiting requests" in reason
+    assert "usage limit" not in reason.split("cursor said:")[0]
+    assert "cursor_token_unavailable:rate_limit" in reason
+
+
+def test_insufficient_permissions_is_not_a_usage_limit() -> None:
+    assert cursor_token_cause(RuntimeError("insufficient permissions to read file")) == "unknown"
+    assert cursor_token_cause(RuntimeError("insufficient credit on account")) == "usage_limit"
+
+
+def test_bare_401_substring_is_not_auth() -> None:
+    assert cursor_token_cause(TokenUnavailable("error 401 at line 4012")) == "auth"
+    assert cursor_token_cause(TokenUnavailable("error at line 4012")) == "unknown"
+
+
+def test_resets_spelling_parses() -> None:
+    assert parse_cursor_reset_date("Your usage resets on 10/14/2026.") == "2026-10-14"
+
+
+def test_long_claude_exception_keeps_codes_inside_nudge_clip() -> None:
+    def boom(*_a: Any, **_k: Any) -> Any:
+        raise RuntimeError("Traceback " + "x" * 5000 + ".")
+
+    brief = _run(
+        RuntimeError(REAL_CURSOR_ERROR),
+        claude_limit=_ClaudeLimit(observed=True, state="clear", staleness_sec=1.0),
+        claude=boom,
+    )
+    nudge = "\n".join(format_soft_nudge([brief]))
+    assert "claude_failed]" in nudge
+    assert "..." not in (brief.refusal_reason or "").split("[")[0]
+
+
+def test_role_teach_bare_code_keeps_plain_sentence() -> None:
+    for bare in ("budget_limited", "claude_budget_unobserved"):
+        line = "\n".join(
+            format_budget_spent_progress(status="refused_budget", next_hop_n=1, reason=bare)
+        )
+        assert "Cursor budget is spent." in line
+        assert bare not in line
+
+
+def test_nudge_clips_non_chained_reasons_short() -> None:
+    other = PeerBriefV1(
+        brief_id="b-other", help_id="h", run_id="abcd1234abcd", peer="cursor_auto",
+        status="failed", summary="", refusal_reason="cursor_other: " + "y" * 2000,
+    )
+    line = [ln for ln in format_soft_nudge([other]) if "b-other" in ln][0]
+    assert len(line.split("Why: ", 1)[1]) <= 300

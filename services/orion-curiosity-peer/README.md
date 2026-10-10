@@ -62,7 +62,7 @@ spend blind. [cursor_token_unavailable:usage_limit; claude_budget_unobserved]
 cursor said: <first 400 chars of Cursor's own error>
 ```
 
-The Cursor cause is one of `usage_limit`, `auth`, `binary_missing`, or
+The Cursor cause is one of `usage_limit`, `rate_limit`, `auth`, `binary_missing`, or
 `unknown`, matched on Cursor's error text (`app/cursor_errors.py`). The reset
 date is parsed only from an explicit `reset ... on M/D/YYYY`; otherwise the
 brief says `reset date unknown`. Orion reads this text in the kickoff "COULD

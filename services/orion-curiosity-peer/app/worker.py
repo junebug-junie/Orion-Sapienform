@@ -31,6 +31,7 @@ from orion.dev_economics.cursor_limit_events import (
 )
 from orion.dev_economics.rate_limit_events import LimitObservation, observe
 from orion.schemas.curiosity_peer import (
+    clip,
     PEER_BRIEF_CONSUMED_KIND,
     HelpRequestV1,
     PeerBriefConsumedV1,
@@ -593,7 +594,10 @@ def handle_help_request(
             peer="claude_room",
             reason=cursor_token_reason(
                 cursor_error,
-                after_text=f"Claude fallback was tried and failed: {claude_exc}.",
+                after_text=(
+                    "Claude fallback was tried and failed: "
+                    f"{clip(str(claude_exc), 200).rstrip('.')}."
+                ),
                 after_code="claude_failed",
             ),
         )

@@ -68,12 +68,14 @@ def format_budget_spent_progress(
     # for every refusal, including Claude-side ones, and hid the real cause
     # (e.g. Cursor's monthly usage limit + reset date). Only the plain part
     # before the "[codes]" block is shown here.
-    plain = (reason or "").split(" [", 1)[0].strip()
-    head = (
-        f"Peer hire refused: {plain[:BUDGET_REASON_CHARS]}"
-        if plain
-        else "Cursor budget is spent."
-    )
+    # Only the chained format ("<sentences> [codes] cursor said: ...") has a
+    # plain part; bare codes (pre-Cursor gate, pre-2026-10-10 briefs) keep the
+    # old sentence rather than leak jargon.
+    reason = reason or ""
+    plain = reason.split(" [", 1)[0].strip() if " [" in reason else ""
+    if plain:
+        plain = plain[:BUDGET_REASON_CHARS].rstrip(".") + "."
+    head = f"Peer hire refused: {plain}" if plain else "Cursor budget is spent."
     return [
         f"{head} Do not open another HelpRequest until budget is clear. "
         f"Resume from {hop} / continue local crawl from what you already wrote."

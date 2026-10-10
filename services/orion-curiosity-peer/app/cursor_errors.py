@@ -68,17 +68,27 @@ def classify_cursor_failure(exc: BaseException) -> CursorFailureKind:
 # second link of the chain). Orion built a "regime break" theory around what
 # was a billing cap. These helpers name the first link too.
 
-CursorTokenCause = Literal["usage_limit", "auth", "binary_missing", "unknown"]
+CursorTokenCause = Literal["usage_limit", "rate_limit", "auth", "binary_missing", "unknown"]
 
 # Each group reuses markers already in `_TOKEN_MARKERS`; no new vocabulary.
 _USAGE_LIMIT_MARKERS = (
     "usage limit",
     "quota",
-    "rate limit",
-    "ratelimit",
-    "insufficient",
+    "insufficient funds",
+    "insufficient credit",
+    "insufficient balance",
     "billing",
     "payment required",
+)
+# A short throttle, not the monthly cap — must not be reported as one.
+_RATE_LIMIT_MARKERS = ("rate limit", "ratelimit", "too many requests")
+# Cause step only: bare "401"/"403" substrings (e.g. "line 4012") are not auth.
+_AUTH_CODE_RX = re.compile(r"\b40[13]\b")
+_AUTH_WORD_MARKERS = tuple(
+    m for m in _TOKEN_MARKERS
+    if m not in ("401", "403", "quota", "rate limit", "ratelimit", "usage limit",
+                 "insufficient", "billing", "payment required",
+                 "cursor agent binary not found")
 )
 _BINARY_MISSING_MARKERS = (
     "cursor agent binary not found",
@@ -88,7 +98,7 @@ _BINARY_MISSING_MARKERS = (
 # Cursor CLI: "Your usage limits will reset when your monthly cycle ends on
 # 10/14/2026." Only an explicit M/D/YYYY after "reset ... on" counts.
 _RESET_DATE_RX = re.compile(
-    r"\breset\b[^.\n]{0,120}?\bon\s+(\d{1,2})/(\d{1,2})/(\d{4})\b",
+    r"\bresets?\b[^.\n]{0,120}?\bon\s+(\d{1,2})/(\d{1,2})/(\d{4})\b",
     re.IGNORECASE,
 )
 
@@ -114,10 +124,14 @@ def cursor_token_cause(exc: BaseException) -> CursorTokenCause:
         return "binary_missing"
     if any(marker in msg for marker in _USAGE_LIMIT_MARKERS):
         return "usage_limit"
+    if any(marker in msg for marker in _RATE_LIMIT_MARKERS):
+        return "rate_limit"
     # Text match only: a bare TokenUnavailable("...") classifies as
     # token_unavailable by type, but its text may name no cause at all.
-    if any(marker in msg for marker in _TOKEN_MARKERS) or any(
-        rx.search(msg) for rx in _TOKEN_REGEXES
+    if (
+        any(marker in msg for marker in _AUTH_WORD_MARKERS)
+        or _AUTH_CODE_RX.search(msg)
+        or any(rx.search(msg) for rx in _TOKEN_REGEXES)
     ):
         return "auth"
     return "unknown"
@@ -130,6 +144,8 @@ def describe_cursor_unavailable(exc: BaseException) -> str:
         reset = parse_cursor_reset_date(str(exc or ""))
         when = f"resets {reset}" if reset else "reset date unknown"
         return f"Cursor unavailable: it hit its usage limit ({when})."
+    if cause == "rate_limit":
+        return "Cursor unavailable: it is rate-limiting requests (usually temporary)."
     if cause == "binary_missing":
         return "Cursor unavailable: the Cursor agent program is not installed in this service."
     if cause == "auth":

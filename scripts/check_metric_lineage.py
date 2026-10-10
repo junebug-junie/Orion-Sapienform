@@ -211,6 +211,18 @@ def cmd_metric(graph, scan, token: str, as_json: bool = False) -> int:
             print(f"  declared svcs  {', '.join(node.declared_consumers)}")
         if node.feeds_dimensions:
             print(f"  feeds dims     {', '.join(node.feeds_dimensions)}")
+        # Rest semantics (R6): read these before calling a quiet metric dead.
+        # Printed even when absent, because "nobody recorded what rest looks
+        # like" is itself the thing a reader needs to know.
+        print(f"  value kind     {node.value_kind or '(not recorded)'}")
+        print(f"  rest           {node.rest or '(not recorded)'}")
+        print(f"  sparsity       {node.sparsity or '(not recorded)'}")
+        if node.absent_means:
+            print(f"  absent means   {node.absent_means}")
+        if node.polarity:
+            print(f"  polarity       {node.polarity}")
+        if node.prompt_sites:
+            print(f"  prompt sites   {', '.join(node.prompt_sites)}")
         print()
 
     prod = scan.consumers_for(

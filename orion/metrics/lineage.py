@@ -170,11 +170,16 @@ def resolve_field_channels(path: Path | None = None) -> list[MetricNode]:
                 "polarity is derived from orion.field.pressure."
                 "HIGHER_IS_BETTER_CHANNELS, never declared"
             )
+        # `producer:` (2026-10-10) names the service that actually computes
+        # a node-qualified value when it is not the digester -- e.g. every
+        # node:substrate.* prediction_error is computed by
+        # orion-substrate-runtime, and two of them never reach the digester.
+        producer = entry.get("producer") or FIELD_DIGESTER
         nodes.append(
             MetricNode(
-                urn=_urn("field_channel", FIELD_DIGESTER, name),
+                urn=_urn("field_channel", producer, name),
                 surface="field_channel",
-                producer_service=FIELD_DIGESTER,
+                producer_service=producer,
                 name=name,
                 registry_source=source,
                 meaning=entry.get("meaning"),

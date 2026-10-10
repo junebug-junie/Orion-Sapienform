@@ -82,7 +82,8 @@ DurableWorkflowV1 = Literal[
     "situation.update",
     # Dream carry-through (2026-10-10): submitted by orion-dream at the end of a sleep through
     # cortex-orch's durable ingress. ADDITIVE on Literal/forbid, consumer-first: deploy
-    # orion-sql-writer and orion-durable-runs, then orion-cortex-orch, then orion-dream.
+    # orion-sql-writer, orion-hub, orion-actions (they validate state rows), orion-thought (accepts
+    # dream_hop steps), orion-durable-runs, orion-cortex-orch, then orion-dream last.
     "dream.carry",
 ]
 

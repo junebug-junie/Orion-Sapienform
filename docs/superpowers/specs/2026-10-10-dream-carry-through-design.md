@@ -63,94 +63,56 @@ still keeps every hop it made and says where it stopped.
   cooldown after each (`claim_visual_attempt`), so dream pictures interleave with waking ones
   and never stack up. That is the "yield to the cabinet" answer, enforced by existing code.
 
-### The run: `dream.carry` (orion-durable-runs)
+### The run: `dream.carry` (orion-durable-runs, `app/dream_carry_graph.py`)
 
 ```text
-text_hop(0) → image_prepare(1) → resource_request → resource_wait → generate(1) → see(1)
-  → text_hop(2) → image_prepare(3) → … → see(5) → finish
-        ↑ any image stage: retry_wait (thermal / busy / transport) → same stage
+next_hop ─┬─ even hops done → resource_request → resource_wait → text_hop (LLM hold) → next_hop
+          ├─ odd hops done  → image_submit (child reverie.visual) → image_wait (polls, holds nothing) → next_hop
+          └─ all done / past deadline → finish_dream → finish | failed
+   retry_wait: text retries (no attempt spent), replacement children, finish retries within grace
 ```
 
-- **Hop count:** `DREAM_CARRY_HOPS=6` (T, I, T, I, T, I). It ends on an image, so that
-  image's caption, what Orion *saw*, is the dream's last word.
-- **Checkpoints:** after every hop. A replayed hop returns its recorded result: no second
-  LLM call, no second painting.
-- **Diffusion hold:** taken per image hop and released right after `generate`, the same as
-  `reverie.visual`. Text hops and `see` never carry it.
-- **Retries:** heat, busy and transport problems retry with backoff and never spend the
-  run's attempt budget (the same rule as `reverie.visual`).
-- **Deadline:** `DREAM_CARRY_DEADLINE_SEC=14400` (4 h). When it passes, the run finishes
-  **partial**, keeping every hop it made, with `stopped_reason` (e.g.
-  `thermal_refused at hop 3`). It is never `failed` with nothing to show.
+- **Hops:** `DreamCarryBriefV1.hops` (default 6, even, ends on an image).
+- **Text hop:** an RPC to orion-dream under the run's `llm.route.metacog_background` hold, which is
+  released as soon as the hop is checkpointed. Retries never spend attempts.
+- **Image hop:** one child `reverie.visual` run per attempt, with dispatch
+  `dream-carry:<run>:<hop>[:r<n>]` and `brief.dream_hop` set.
+  - **Painting:** thought paints the prompt verbatim and captions it. It skips baseline,
+    continuity, slot rotation and interpret, and writes no chain row, artifact row or receipt.
+  - **Heat-type misses** (window expired, deferred thermal/busy/resource/unknown) get a
+    replacement child, bounded by `DREAM_CARRY_CHILD_MAX_ATTEMPTS` (3) and
+    `DREAM_CARRY_CHILD_MIN_WINDOW_SEC` (900).
+- **Deadline:** 4 h (`DREAM_CARRY_DEADLINE_SEC`). Past it the carry finishes partial with
+  `stopped_reason`; finish keeps retrying for `DREAM_CARRY_FINISH_GRACE_SEC` (1800).
+- **Zero hops:** finish still runs, and orion-dream falls back to the one-paragraph story for that
+  sleep.
 
-### Who does each hop
+### Contract changes (as built)
 
-| Hop | Service | What it does |
-|---|---|---|
-| text | **orion-dream** (new step handler, `orion:dream:carry:step:request`) | One gateway call (background lane, like the sleep's own calls). Returns `{passage, image_prompt}`. |
-| image prepare / generate / see | **orion-thought** (existing visual step handlers, new `mode="dream_hop"`) | Paint the given prompt, then caption it. |
-| finish | **orion-dream** | Publishes one `dream.result.v1` so the carry lands in `dreams` like any other dream. |
-
-orion-dream owns dream meaning; orion-thought owns pixels. Neither reads the other's tables.
-
-### Text hop prompt (orion-dream)
-
-- **T0** is today's story prompt, with the same sleep material (replay plus both
-  hypothesis arms, shuffled; #2565). It returns a passage plus an image prompt.
-- **T2 and T4** get:
-  - the previous passage;
-  - "the dream turned into a picture; looking at it you see: <caption>";
-  - instructions to continue the dream from what was *seen*, letting the picture change
-    the story.
-- **Output contract:** JSON `{"passage": str, "image_prompt": str}`.
-  - `image_prompt` is ≤ 60 words, because the diffusion model's CLIP encoder silently
-    drops everything past 77 tokens (`visual_chain.select_context_slot`).
-  - An empty, unparseable, or refused reply is a hop **retry**, never a blank hop. It
-    reuses `llm.GatewayRefused` from #2549.
-
-### Image hop (orion-thought, `mode="dream_hop"`)
-
-- **prepare:**
-  - Takes the hop's `image_prompt` verbatim.
-  - Skips the baseline schedule, continuity, slot rotation and interpret.
-  - Freezes the prompt on its own attempt row.
-- **generate / see:** the same code as waking paintings: thermal gate, diffusion,
-  content-addressed file, vision caption.
-- **Isolation:** dream images never count toward the waking painting allowance, and never
-  advance waking continuity (`prior_description`, rotation). Artifacts are stored with
-  `source="dream"` and the carry's `run_id`.
-
-### Contract changes
-
-- `orion/schemas/durable_run.py`: `DurableWorkflowV1` adds `"dream.carry"` (additive
-  Literal; consumer-first deploy).
-- New `orion/schemas/dream_carry.py`:
-  - `DreamCarryBriefV1` (trigger: sleep `cycle_id` + digest, or manual; hops; deadline).
-  - `DreamCarryHopV1` (index, kind `text|image`, passage, image_prompt, sha256, caption,
-    elapsed_sec, deferrals).
-  - `DreamCarryStepRequestV1` / `ResultV1` (status `done|retry|terminal`, mirroring
-    reverie.visual).
-- `VisualRunRequestV1` gains optional `mode: "waking" | "dream_hop"` and
-  `dream_prompt: str | None`. `dream_prompt` is required when `mode="dream_hop"` and
-  forbidden otherwise.
-- Channels: `orion:dream:carry:step:request` and the reply prefix, registered.
-- Storage:
-  - New table `dream_carry_hop` (orion-dream writes; migration file).
-  - The final `dreams` row has `narrative` = the passages in order, and `fragments` = one
-    entry per hop (`kind: text|image`, `sha256`, `caption`).
-  - `metrics._dream_audit.trigger` keeps the sleep link.
+- `orion/schemas/dream_carry.py`: brief, hop, step request/result, run/dispatch id helpers,
+  prompt clip (45 words).
+- `orion/schemas/reverie_visual_run.py`: `DreamHopImageV1` on `ReverieVisualRunBriefV1.dream_hop`
+  and `ReverieVisualStepRequestV1.dream_hop`; `ReverieVisualStepResultV1.caption`.
+  `VisualRunRequestV1` is unchanged.
+- `orion/schemas/durable_run.py`: `"dream.carry"` workflow and brief.
+- Channels: `orion:dream:carry:step:request` and `orion:dream:carry:step:reply:*`. orion-dream is
+  added as a producer of `orion:dream:log` and `orion:cortex:request`, and as a consumer of
+  `orion:cortex:result*`.
+- **No table or migration:** each hop is a fragment of the carry's `dreams` row (profile
+  `dream.carry`).
 
 ### Trigger
 
-- `story_trigger` (#2565) starts a `dream.carry` run instead of the one-shot
-  `dream_cycle` verb when `DREAM_CARRY_ENABLED=true` (shipped **on**). T0 *is* the story,
-  so it is still one dream per sleep, now carried through.
-- `POST /dreams/carry/run` (orion-dream) starts one by hand, for trying it out.
+- A completed, saved sleep submits `dream.carry` through cortex-orch's durable ingress when
+  `DREAM_CARRY_ENABLED=true` (shipped on).
+- If the submit fails, the sleep falls back to the one-paragraph story (#2565 path, kept intact).
+- `POST /dreams/carry/run` starts a hand-started carry.
 
 ### Hub
 
-The Dream tab shows each carry as a strip: passage, picture (by sha), what Orion saw,
-passage… and so on. Unfinished carries show where they stopped and why.
+The Dream tab's "Carried dreams" section shows each carry as passage → picture → "Orion saw:" → …,
+with the sleep it came from and any early stop. `/api/dream/carry/image/{sha}` serves only
+pictures a carried dream names.
 
 ## Missing questions (for Juniper)
 
@@ -192,7 +154,7 @@ passage… and so on. Unfinished carries show where they stopped and why.
   previous caption, so the drift is grounded in what was seen.
 - **Live proof after deploy:**
   - A `dream.carry` row in `substrate_durable_run_state` with 6 hops.
-  - Three images with `source="dream"`.
+  - Three images whose painting attempts record `stage_json.dream_hop`, with no waking chain rows.
   - A `dreams` row whose fragments list them.
   - The strip in Hub.
   - Waking painting count and continuity unchanged.
@@ -202,7 +164,7 @@ passage… and so on. Unfinished carries show where they stopped and why.
 - **Capability change:** the dream after each sleep becomes a 6-hop word/picture chain
   instead of one paragraph.
 - **Data touched:**
-  - New `dream_carry_hop` rows and new dream-sourced image files.
+  - Dream painting attempts (`reverie_visual_attempt`) and image files; no new table.
   - One `dreams` row per carry.
   - Durable run state.
 - **Privacy boundary:** hop text (derived from the sleep's material, which can include chat
@@ -226,7 +188,6 @@ passage… and so on. Unfinished carries show where they stopped and why.
 - `services/orion-dream/app/carry.py` (new: text hop, finish), `main.py`, `story.py`,
   `settings.py`, `.env_example`, `docker-compose.yml`
 - `services/orion-thought/app/visual_steps.py`, `visual_chain.py` (`dream_hop` mode)
-- `services/orion-sql-db/manual_migration_dream_carry_hop.sql`
 - `services/orion-hub/static/js/dream-tab.js`, `scripts/dream_routes.py`
 - Tests in each service, plus `services/orion-dream/evals/test_dream_carry_eval.py`
 

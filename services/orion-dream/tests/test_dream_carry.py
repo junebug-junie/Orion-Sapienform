@@ -10,6 +10,7 @@ import pytest
 
 from orion.schemas.dream_carry import (
     DREAM_CARRY_LLM_ROUTE,
+    IMAGE_PROMPT_MAX_WORDS,
     DREAM_CARRY_STEP_REPLY_PREFIX,
     DREAM_CARRY_STEP_REQUEST_KIND,
     DREAM_CARRY_STEP_RESULT_KIND,
@@ -67,7 +68,7 @@ def test_first_prompt_carries_the_sleep_material_and_never_a_hypothesis():
     assert "tiredness 13.26 against a sleep line of 3.0" in prompt and "dc-abc123" in prompt
     assert "overdue" not in prompt
     assert HYPOTHESIS not in prompt and "hypothes" not in prompt.lower()
-    assert '"passage"' in prompt and '"image_prompt"' in prompt and "60 words" in prompt
+    assert '"passage"' in prompt and '"image_prompt"' in prompt and "45 words" in prompt
     assert "no text, letters" in prompt
 
 
@@ -120,7 +121,7 @@ def test_good_reply_is_a_done_hop_with_the_prompt_clipped_to_60_words():
     result = asyncio.run(handle_text(_req(), _complete(reply, calls)))
     assert result.status == "done" and result.hop.kind == "text" and result.hop.index == 0
     assert result.hop.passage == "A long corridor of lamps."
-    assert result.hop.image_prompt.split() == [f"w{i}" for i in range(60)]
+    assert result.hop.image_prompt.split() == [f"w{i}" for i in range(IMAGE_PROMPT_MAX_WORDS)]
     assert calls[0]["gpu_lease"] == LEASE  # the run's hold, forwarded
     assert result.run_id == "dream-carry-run1" and result.step == "text"
 

@@ -12,7 +12,10 @@ terminal detail without holding anything. **finish** (step="finish") hands every
 orion-dream, which publishes one `dream.result.v1` (hops in `fragments`) to the `dreams` table.
 
 A carry past its deadline still finishes, with the hops it made and `stopped_reason`: partial,
-never empty-and-failed.
+never empty-and-failed. A carry that made **zero** hops still calls finish: orion-dream then
+falls back to the one-paragraph story for that sleep (`dream.trigger` with the brief's sleep
+digest) and answers done with `dream_id = "story-fallback:<trigger_id>"`, so a sleep never ends
+with no dream. A hand-started carry with zero hops has nothing to fall back to: terminal.
 """
 from __future__ import annotations
 
@@ -31,8 +34,9 @@ DREAM_CARRY_STEP_REQUEST_KIND = "dream.carry.step.request.v1"
 DREAM_CARRY_STEP_RESULT_KIND = "dream.carry.step.result.v1"
 DREAM_CARRY_LLM_ROUTE = "metacog_background"
 # The diffusion model's CLIP encoder silently drops everything past 77 tokens
-# (orion-thought visual_chain.select_context_slot); 60 words stays inside it.
-IMAGE_PROMPT_MAX_WORDS = 60
+# (orion-thought visual_chain.select_context_slot). English runs ~1.3-1.5 CLIP tokens
+# per word once punctuation and word pieces count, so 45 words stays inside it.
+IMAGE_PROMPT_MAX_WORDS = 45
 
 HopKind = Literal["text", "image"]
 DreamCarryStep = Literal["text", "finish"]

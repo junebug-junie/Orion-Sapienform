@@ -168,8 +168,9 @@ def _usable_fetch_result(tool_name: str, body: str) -> bool:
 class ReadingReceiptTracker:
     """Collect and aggregate recommendation attempts from raw FCC steps."""
 
-    def __init__(self, binding: ReadingToolBindingV1 | None) -> None:
+    def __init__(self, binding: ReadingToolBindingV1 | None, *, retain_text: bool = False) -> None:
         self.binding = binding
+        self.retain_text = retain_text
         self._pending: dict[str, _PendingCall] = {}
         self._recommendations: dict[str, _Recommendation] = {}
         self._successful_fetch_urls: list[str] = []
@@ -241,7 +242,7 @@ class ReadingReceiptTracker:
                         tool_name=pending.tool_name,
                         content_chars=len(body.strip()),
                         # The raw tool_result, never model prose (#2497 evidence).
-                        content_text=retained_fetch_text(body),
+                        content_text=retained_fetch_text(body) if self.retain_text else None,
                     )
                 )
             return

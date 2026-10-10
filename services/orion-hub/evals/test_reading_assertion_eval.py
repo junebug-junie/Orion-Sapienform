@@ -59,6 +59,8 @@ CASES = [
                              quote="A heat pump transfers heat using a refrigeration cycle"), False),
     ("operational_predicate", dict(predicate="activates", object_id=OBJECT_ID,
                                    quote="A heat pump transfers heat using a refrigeration cycle"), False),
+    ("quote_about_something_else", dict(predicate="causes", object_id=UNRELATED_ID,
+                                        quote="A heat pump transfers heat using a refrigeration cycle"), False),
     ("one_word_quote", dict(predicate="co_occurs_with", object_id=OBJECT_ID, quote="refrigeration"), False),
 ]
 REFUSED = {"invented_object", "operational_predicate"}

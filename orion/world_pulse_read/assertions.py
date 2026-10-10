@@ -16,7 +16,9 @@ Flow, all deterministic except the model's proposal:
    edge): a predicate outside the reader allowlist, an id not in the lists Hub offered,
    the same id on both ends. Otherwise a ``SubstrateGraphProposalV1`` is journalled, and
    ``reading_quote_rule_v1`` ACCEPTS it to ``provisional`` only when all hold:
-   (a) the quote is found verbatim in a text Hub retained for this read;
+   (a) the quote (4+ words) is found verbatim in a text Hub retained for this read and
+       names the object by its stored label (a page sentence about something else is
+       not evidence for this link);
    (b) both endpoints resolved to stored Concept/Entity ids (step 1);
    (c) the predicate passes its domain rule.
    Anything else stays ``proposed``: journalled, no link. Juniper can reject later.
@@ -97,7 +99,8 @@ def _stored_endpoint(store: Any, node_id: Optional[str]) -> Optional[EndpointV1]
     if not node_id:
         return None
     node = store.get_node_by_id(node_id)
-    if node is None or node.node_kind not in _SEMANTIC_KINDS:
+    if node is None or node.node_kind not in _SEMANTIC_KINDS or is_identity_fenced(node):
+        # A fenced node is a private memory referent: never an endpoint of a reading claim.
         return None
     return EndpointV1(node_id=node.node_id, kind=node.node_kind, label=str(getattr(node, "label", "") or ""))
 
@@ -228,7 +231,7 @@ def claim_prompt_section(ctx: ClaimContextV1) -> str:
         "only that the source mentions both, never causation. If no predicate fits without "
         "distortion, propose nothing.\n"
         "quote: copy the supporting sentence EXACTLY, character for character, from the text "
-        "below. A paraphrased quote is not accepted.\n"
+        "below; it must name the object. A paraphrased quote is not accepted.\n"
         'Add the key "relationship_claims": [{"subject_id": "...", "predicate": "...", '
         '"object_id": "...", "statement_text": "one plain sentence", "quote": "exact text"}]\n'
         + "\n".join(excerpts)
@@ -320,8 +323,9 @@ def plan_claims(
             anchor_scope="orion", subject_ref="reading", authority="local_inferred",
             supporting_evidence_ids=[], recorded_at=recorded_at,
         )
-        quote_ok = len(claim.quote.strip()) >= MIN_QUOTE_CHARS and len(claim.quote.split()) >= MIN_QUOTE_WORDS
-        found = find_quote(ctx.texts, claim.quote) if quote_ok else None
+        quote = claim.quote.strip()
+        quote_ok = len(quote) >= MIN_QUOTE_CHARS and len(quote.split()) >= MIN_QUOTE_WORDS
+        found = find_quote(ctx.texts, quote) if quote_ok else None
         span = {}
         if found is not None:
             text, start, end = found
@@ -330,6 +334,10 @@ def plan_claims(
         reason = (
             "quote_too_short" if not quote_ok
             else "quote_not_found" if found is None
+            # The quote must be ABOUT the object: any sentence lifted from the page is
+            # not evidence for a link to an arbitrary offered concept. (The subject may
+            # appear as a pronoun, so only the object's stored label is required.)
+            else "quote_not_about_endpoints" if obj.label.strip().lower() not in quote.lower()
             else domain_violation(claim.predicate, sub.kind, obj.kind)
         )
         decision = None
@@ -391,8 +399,8 @@ async def journal_claims(journal: Any | None, plans: list[ClaimPlanV1]) -> Journ
         report.proposals += 1
         if plan.decision is not None:
             try:
-                await journal.append(plan.decision)
-                report.accepted += 1
+                if await journal.append(plan.decision):
+                    report.accepted += 1
             except RevisionConflict:
                 claim = amend(claim, outcome="proposed", reason="already_decided", decision_id=None)
             except Exception as exc:  # noqa: BLE001

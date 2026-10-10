@@ -414,7 +414,7 @@ def test_source_fetches_carry_the_raw_tool_result_text_for_retention():
     from orion.harness.reading_receipts import MAX_RETAINED_FETCH_CHARS
 
     body = "  A heat pump transfers heat using a refrigeration cycle. " * 5
-    tracker = ReadingReceiptTracker(None)
+    tracker = ReadingReceiptTracker(None, retain_text=True)
     tracker.observe(_tool_use("f-1", name="WebFetch", url=URL))
     tracker.observe(_tool_result("f-1", body))
     tracker.observe(_tool_use("big-1", name="WebFetch", url="https://example.org/huge"))
@@ -423,6 +423,14 @@ def test_source_fetches_carry_the_raw_tool_result_text_for_retention():
     assert small.content_text == body.strip() and small.content_chars == len(body.strip())
     # Over the cap: the read still counts, but nothing truncated is retained as evidence.
     assert big.content_text is None and big.content_chars == MAX_RETAINED_FETCH_CHARS + 1
+
+
+def test_non_reading_turns_never_carry_fetched_text():
+    tracker = ReadingReceiptTracker(None)  # chat / outreach / curiosity turns
+    tracker.observe(_tool_use("f-1", name="WebFetch", url=URL))
+    tracker.observe(_tool_result("f-1", "Body of the source. " * 20))
+    (fetch,) = tracker.source_fetches()
+    assert fetch.content_text is None and fetch.content_chars > 0
 
 
 def test_source_fetches_empty_when_turn_made_no_tool_calls():

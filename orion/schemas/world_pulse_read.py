@@ -3,9 +3,13 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Literal
 
+import logging
+
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from orion.schemas.reading import ReadingRequestedV1, SourceFetchEvidenceV1
+
+_log = logging.getLogger(__name__)
 
 
 class _Base(BaseModel):
@@ -235,6 +239,7 @@ class WorldPulseReadClaimReceiptV1(_Base):
     # accepted_provisional: journalled proposal + accepting decision. proposed: journalled
     # proposal only, no link. rejected: refused by validation or not journalled at all.
     # reason, a short machine label: accepted | quote_not_found | quote_too_short |
+    # quote_not_about_endpoints |
     # domain_rule:<predicate> | already_decided | decision_journal_failed |
     # predicate_not_allowed | unknown_subject | unknown_object | same_endpoint | duplicate |
     # journal_unavailable
@@ -262,12 +267,34 @@ class WorldPulseReadRelationshipClaimV1(_Base):
     receipt: WorldPulseReadClaimReceiptV1 | None = None
 
 
+_CLAIM_FIELDS = frozenset(WorldPulseReadRelationshipClaimV1.model_fields)
+
+
 def _coerce_claim_list(value: Any) -> list[Any]:
-    """Keep only object-shaped claims. Receipts are kept here (a stored row carries
-    real ones); the Stage 2 loop strips any receipt from raw model output."""
+    """Claims are optional: one malformed claim (an empty statement, an invented key)
+    must not throw away the whole Stage 2 read. Each claim is validated on its own,
+    unknown keys dropped, invalid claims dropped with a warning. Receipts are kept here
+    (a stored row carries real ones); the Stage 2 loop strips any from raw model output."""
     if not isinstance(value, list):
         return []
-    return [item for item in value if isinstance(item, (dict, WorldPulseReadRelationshipClaimV1))]
+    out: list[Any] = []
+    for item in value:
+        if isinstance(item, WorldPulseReadRelationshipClaimV1):
+            out.append(item)
+            continue
+        if not isinstance(item, dict):
+            _log.warning("world_pulse_read_claim_dropped reason=not_object")
+            continue
+        unknown = sorted(k for k in item if k not in _CLAIM_FIELDS)
+        try:
+            out.append(WorldPulseReadRelationshipClaimV1.model_validate(
+                {k: v for k, v in item.items() if k in _CLAIM_FIELDS}))
+        except ValueError as exc:
+            _log.warning("world_pulse_read_claim_dropped reason=invalid errors=%d", len(getattr(exc, "errors", lambda: [])()))
+            continue
+        if unknown:
+            _log.warning("world_pulse_read_claim_keys_dropped keys=%s", ",".join(unknown))
+    return out
 
 
 def strip_model_claim_receipts(parsed: dict[str, Any]) -> dict[str, Any]:

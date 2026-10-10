@@ -359,3 +359,36 @@ def test_success_frames_carry_fetch_text_only_for_reading_turns(retain):
     final = next(f for f in _success_frames(run, correlation_id="c", retain_fetch_text=retain)
                  if f.get("type") == "final")
     assert ("content_text" in final["harness_source_fetches"][0]) is retain
+
+
+def test_a_real_quote_that_does_not_name_the_object_stays_proposed():
+    store, subject_id, ctx, _, _ = _setup()
+    journal, report, projected = _run(store, ctx, [_claim(subject_id=subject_id, predicate="causes",
+                                                          object_id=UNRELATED_ID)])
+    assert (report.claims[0].receipt.outcome, report.claims[0].receipt.reason) == (
+        "proposed", "quote_not_about_endpoints")
+    assert journal.decisions() == [] and projected.applied == []
+
+
+def test_one_bad_claim_does_not_discard_the_stage2_read():
+    raw = {"summary": "kept", "relationship_claims": [
+        {"subject_id": "a", "predicate": "causes", "object_id": "b", "statement_text": "", "quote": "q"},
+        {"subject_id": "a", "predicate": "causes", "object_id": "b", "statement_text": "ok", "quote": "q",
+         "confidence": 0.9},
+        "not an object",
+    ]}
+    result = _as_stage2_result(raw, fallback_trace="t", seed_id="s")
+    assert result.summary == "kept"
+    assert [c.statement_text for c in result.relationship_claims] == ["ok"]
+
+
+def test_a_fenced_memory_node_is_never_a_subject():
+    from orion.substrate.reconcile import IDENTITY_FENCED_PRODUCERS
+    from orion.world_pulse_read.assertions import _stored_endpoint
+
+    store, subject_id, _, _, _ = _setup()
+    node = store.get_node_by_id(subject_id)
+    fenced = node.model_copy(update={"provenance": node.provenance.model_copy(
+        update={"producer": next(iter(IDENTITY_FENCED_PRODUCERS))})})
+    store.upsert_node(identity_key=store.get_identity_key_by_node_id(subject_id), node=fenced)
+    assert _stored_endpoint(store, subject_id) is None

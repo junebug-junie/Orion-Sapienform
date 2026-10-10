@@ -541,6 +541,13 @@ class WorldPulseReadStage2Pipeline:
         store = self._store_provider() if self._store_provider else None
         if store is None:
             return ClaimContextV1()
+        unretained = [e for e in handoff.read_evidence if not e.content_sha256]
+        if unretained:
+            # A web read with no retained text: an old read (expected) or a governor /
+            # durable-runs still on code that drops SourceFetchEvidenceV1.content_text.
+            logger.info("reading_claim_text_missing seed=%s fetches=%d tools=%s",
+                        handoff.seed_ref.seed_id, len(unretained),
+                        ",".join(sorted({e.tool_name for e in unretained})))
         try:
             texts = await self._with_conn(lambda conn: load_retained_texts(conn, handoff.read_evidence)) or []
             ctx = await asyncio.to_thread(build_claim_context, store, handoff, texts)

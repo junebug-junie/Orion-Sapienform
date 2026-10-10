@@ -301,3 +301,21 @@ def test_reducer_updates_projection_turns():
     assert receipt.accepted_event_ids  # non-empty
     assert receipt.state_deltas[0].target_kind == "chat_turn"
     assert receipt.state_deltas[0].operation == "create"
+
+
+def test_reducer_keeps_first_observed_at_on_re_reduction():
+    """A reprocess/late event for an old turn must not re-freshen its age:
+    endogenous curiosity decays repair pressure by observed_at (2026-10-10)."""
+    from datetime import timedelta
+
+    trace_id = "hub.chat:athena:turn-77"
+    events = [
+        _atom_event(trace_id, "repair_signal", "signal", "repair", salience=0.913, confidence=0.65),
+    ]
+    t0 = datetime(2026, 10, 6, 2, 0, tzinfo=timezone.utc)
+    t1 = t0 + timedelta(days=3)
+    first, _ = reduce_chat_trace_events(events=events, projection=_fresh_projection(), now=t0)
+    second, receipt = reduce_chat_trace_events(events=events, projection=first, now=t1)
+    assert receipt.state_deltas[0].operation == "update"
+    assert second.turns["turn-77"].observed_at == t0
+    assert second.turns["turn-77"].last_updated_at == t1

@@ -157,6 +157,7 @@ def _gather_role_teach_progress_lines(payload: Mapping[str, Any]) -> list[str]:
     if not isinstance(brief, Mapping):
         brief = {}
     peer_status = brief.get("status")
+    peer_reason = brief.get("refusal_reason")
     next_hop_n = brief.get("next_hop_n")
     if next_hop_n is not None:
         try:
@@ -180,6 +181,7 @@ def _gather_role_teach_progress_lines(payload: Mapping[str, Any]) -> list[str]:
             hop_note_texts=hop_texts,
             peer_brief_status=str(peer_status) if peer_status is not None else None,
             peer_brief_next_hop_n=next_hop_n,
+            peer_brief_reason=str(peer_reason) if peer_reason else None,
             queue_score=queue_score,
             queue_driver=queue_driver,
         )

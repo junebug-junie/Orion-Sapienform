@@ -201,6 +201,12 @@ class Settings(BaseSettings):
     # Needs SUBSTRATE_PE_HISTORY_ENABLED (without magnitudes every body node is
     # absent). false = the previous dynamic-pressure Borda competition exactly.
     attention_world_first_enabled: bool = Field(True, alias="ATTENTION_WORLD_FIRST_ENABLED")
+    # Event-written body nodes (glossary semantics: one reading per event,
+    # carried forward) compete only for 300 s after the event that wrote
+    # them, fading in rank (orion.attention.world_first.
+    # EVENT_ORIENTING_WINDOW_SEC). World-first only. false = world-first
+    # without the fade. Ships on (Juniper's rule).
+    attention_event_decay_enabled: bool = Field(True, alias="ATTENTION_EVENT_DECAY_ENABLED")
 
     # System One / Kev appraisal. Rides the attention-broadcast cadence,
     # persists a compiled frame, emits a grammar shadow, and publishes the

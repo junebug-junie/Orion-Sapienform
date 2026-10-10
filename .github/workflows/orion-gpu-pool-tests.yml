@@ -6,6 +6,8 @@ on:
       - "services/orion-gpu-pool/**"
       - "orion/gpu_pool/**"
       - "orion/schemas/gpu_pool.py"
+      # the controller-health alert builds orion-notify's ChatAttentionRequest
+      - "orion/schemas/notify.py"
       # U4 shed lever: the pool consumes hardware-watch incidents (cooling_incident)
       - "orion/schemas/hardware_watch.py"
       - "config/gpu_pool.yaml"
@@ -81,6 +83,8 @@ on:
       - "services/orion-gpu-pool/**"
       - "orion/gpu_pool/**"
       - "orion/schemas/gpu_pool.py"
+      # the controller-health alert builds orion-notify's ChatAttentionRequest
+      - "orion/schemas/notify.py"
       # U4 shed lever: the pool consumes hardware-watch incidents (cooling_incident)
       - "orion/schemas/hardware_watch.py"
       - "config/gpu_pool.yaml"
@@ -193,6 +197,8 @@ jobs:
           python -m pytest tests/test_biometrics_view_ui.py -k lane_badge -q -p no:cacheprovider
       - name: Policy eval (owner starvation, lost leases, spill-down violations)
         run: python services/orion-gpu-pool/evals/run_pool_day_eval.py
+      - name: Stale-controller incident replay (2026-10-09, config_unloadable -> alert within ~10 min)
+        run: python services/orion-gpu-pool/evals/run_controller_stale_eval.py
 
   consumers:
     name: gpu-pool stage 4.4 — callers carry the lease ref (gateway attach is in durable-runs' gateway job)

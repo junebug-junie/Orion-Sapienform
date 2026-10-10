@@ -43,18 +43,18 @@ class Settings(BaseSettings):
     PROJECT: str = Field(default="orion-janus", alias="PROJECT")
     SERVICE_NAME: str = Field(default="hub", alias="SERVICE_NAME")
     NODE_NAME: str = Field(default="athena", alias="ORION_NODE_NAME")
-    SERVICE_VERSION: str = Field(default="0.3.0", alias="SERVICE_VERSION")
+    SERVICE_VERSION: str = Field(default="0.4.0", alias="SERVICE_VERSION")
     HUB_PORT: int = Field(default=8080, alias="HUB_PORT")
     HUB_API_BASE_OVERRIDE: str = Field(default="", alias="HUB_API_BASE_OVERRIDE")
     HUB_WS_BASE_OVERRIDE: str = Field(default="", alias="HUB_WS_BASE_OVERRIDE")
     # --- Whisper Transcription Settings (LEGACY/UNUSED - Hub uses Bus RPC now) ---
-    WHISPER_MODEL_SIZE: str = Field(default="distil-medium.en", alias="WHISPER_MODEL_SIZE")
+    WHISPER_MODEL_SIZE: str = Field(default="distil-small.en", alias="WHISPER_MODEL_SIZE")
     WHISPER_DEVICE: str = Field(default="cuda", alias="WHISPER_DEVICE")
-    WHISPER_COMPUTE_TYPE: str = Field(default="float16", alias="WHISPER_COMPUTE_TYPE")
+    WHISPER_COMPUTE_TYPE: str = Field(default="float32", alias="WHISPER_COMPUTE_TYPE")
 
     # --- Orion Bus Integration ---
     ORION_BUS_ENABLED: bool = Field(default=True, alias="ORION_BUS_ENABLED")
-    ORION_BUS_ENFORCE_CATALOG: bool = Field(default=False, alias="ORION_BUS_ENFORCE_CATALOG")
+    ORION_BUS_ENFORCE_CATALOG: bool = Field(default=True, alias="ORION_BUS_ENFORCE_CATALOG")
     ORION_BUS_URL: str = Field(
         default="redis://100.92.216.81:6379/0",
         alias="ORION_BUS_URL",
@@ -211,7 +211,7 @@ class Settings(BaseSettings):
     CHANNEL_ROOM_CLAUDE_UTTERANCE: str = Field(default="orion:room:claude:utterance")
 
     HUB_AGENT_CLAUDE_ENABLED: bool = Field(
-        default=False,
+        default=True,
         alias="HUB_AGENT_CLAUDE_ENABLED",
     )
     HUB_FCC_ENV_PATH: str = Field(
@@ -264,11 +264,11 @@ class Settings(BaseSettings):
         alias="HUB_AGENT_CLAUDE_MAX_CONCURRENT",
     )
     HUB_AGENT_CLAUDE_MCP_ENABLED: bool = Field(
-        default=False,
+        default=True,
         alias="HUB_AGENT_CLAUDE_MCP_ENABLED",
     )
     HUB_AITOWN_ENABLED: bool = Field(
-        default=False,
+        default=True,
         alias="HUB_AITOWN_ENABLED",
     )
     HUB_AITOWN_UI_URL: str = Field(
@@ -328,12 +328,12 @@ class Settings(BaseSettings):
         alias="HUB_PRESENCE_WRITER_ENABLED",
     )
     HUB_AGENT_CURIOSITY_HINT_ENABLED: bool = Field(
-        default=False,
+        default=True,
         alias="HUB_AGENT_CURIOSITY_HINT_ENABLED",
     )
 
     WORLD_PULSE_UI_FIXTURE_RUN_ENABLED: bool = Field(
-        default=False,
+        default=True,
         alias="WORLD_PULSE_UI_FIXTURE_RUN_ENABLED",
     )
     SOCIAL_MEMORY_BASE_URL: str = Field(
@@ -637,10 +637,11 @@ class Settings(BaseSettings):
     # what it worked out in its OWN FalkorDB graph so the next run is less
     # ignorant than this one. See scripts/curiosity_investigation.py for the
     # loop and the safety posture.
-    # Default False so an absent key can never start it; the live value lives
-    # in .env_example / .env like every other Hub loop.
+    # Default True, matching .env_example and production (aligned 2026-10-10:
+    # feature flags ship ON, and scripts/check_settings_defaults.py
+    # --example-drift fails CI if a code default drifts from .env_example).
     HUB_CURIOSITY_INVESTIGATION_ENABLED: bool = Field(
-        default=False, alias="HUB_CURIOSITY_INVESTIGATION_ENABLED"
+        default=True, alias="HUB_CURIOSITY_INVESTIGATION_ENABLED"
     )
     # How often the loop wakes to consider investigating. Cheap: the corpus is
     # only read once the cooldown/cap gates pass (that read is ~7.8s of
@@ -652,11 +653,11 @@ class Settings(BaseSettings):
     # turn on the same pipeline that serves Juniper, and an Orion that
     # investigates hourly is not curious, it is noisy.
     HUB_CURIOSITY_INVESTIGATION_MIN_COOLDOWN_SEC: float = Field(
-        default=14400.0, alias="HUB_CURIOSITY_INVESTIGATION_MIN_COOLDOWN_SEC"
+        default=1800.0, alias="HUB_CURIOSITY_INVESTIGATION_MIN_COOLDOWN_SEC"
     )
     # Max investigations per day; -1 disables the cap.
     HUB_CURIOSITY_INVESTIGATION_DAILY_CAP: int = Field(
-        default=3, alias="HUB_CURIOSITY_INVESTIGATION_DAILY_CAP"
+        default=7, alias="HUB_CURIOSITY_INVESTIGATION_DAILY_CAP"
     )
     # The hours, in HUB_ENDOGENOUS_OUTREACH_TZ, that the cap is spread across.
     # The cap alone was a budget and never a pace: it frees at local midnight,
@@ -671,11 +672,11 @@ class Settings(BaseSettings):
     # be dead with nothing saying so. `ge=-1` keeps -1 available as the disable
     # sentinel the sibling quiet-hours keys already use. A review finding.
     HUB_CURIOSITY_INVESTIGATION_WINDOW_START_HOUR: int = Field(
-        default=8, ge=-1, le=23,
+        default=-1, ge=-1, le=23,
         alias="HUB_CURIOSITY_INVESTIGATION_WINDOW_START_HOUR",
     )
     HUB_CURIOSITY_INVESTIGATION_WINDOW_END_HOUR: int = Field(
-        default=22, ge=-1, le=23,
+        default=-1, ge=-1, le=23,
         alias="HUB_CURIOSITY_INVESTIGATION_WINDOW_END_HOUR",
     )
     # Budgeted from the harness's OWN ceilings, not copied from outreach.
@@ -982,18 +983,19 @@ class Settings(BaseSettings):
     HUB_CURIOSITY_PG_READONLY_ROLE: str = Field(
         default="orion_readonly", alias="HUB_CURIOSITY_PG_READONLY_ROLE"
     )
-    # May a finding turn into an unprompted message to Juniper? Off by default:
-    # this is the only part of the feature that reaches her, and it inherits
+    # May a finding turn into an unprompted message to Juniper? On by default,
+    # matching .env_example and production (aligned 2026-10-10). This is the only part of the feature that reaches her, and it inherits
     # every endogenous-outreach gate (quiet hours, daily cap, cooldown) rather
     # than having its own.
     HUB_CURIOSITY_OUTREACH_ENABLED: bool = Field(
-        default=False, alias="HUB_CURIOSITY_OUTREACH_ENABLED"
+        default=True, alias="HUB_CURIOSITY_OUTREACH_ENABLED"
     )
     # Orion contractor peer (HelpRequest -> Cursor/Claude PeerBrief soft-nudge
-    # on kickoff / self-inquiry). Off by default — kill switch for the peer
+    # on kickoff / self-inquiry). On by default (matches .env_example and
+    # production, aligned 2026-10-10) — kill switch for the peer
     # hire path; when false, prompts never mention HelpRequest or load briefs.
     HUB_CURIOSITY_CONTRACTOR_PEER_ENABLED: bool = Field(
-        default=False,
+        default=True,
         alias="HUB_CURIOSITY_CONTRACTOR_PEER_ENABLED",
     )
     # Dream cycle v2 hypotheses on the world-curiosity kickoff. Each is shown
@@ -1006,7 +1008,7 @@ class Settings(BaseSettings):
     )
 
     HUB_CURIOSITY_DREAM_HYPOTHESES_ENABLED: bool = Field(
-        default=False,
+        default=True,
         alias="HUB_CURIOSITY_DREAM_HYPOTHESES_ENABLED",
     )
     HUB_CURIOSITY_DREAM_HYPOTHESES_PER_RUN: int = Field(
@@ -1071,7 +1073,7 @@ class Settings(BaseSettings):
         default=True, alias="HUB_CURIOSITY_KICKOFF_VIA_CORTEX"
     )
     HUB_CURIOSITY_DURABLE_ADMISSION_ENABLED: bool = Field(
-        default=False, alias="HUB_CURIOSITY_DURABLE_ADMISSION_ENABLED"
+        default=True, alias="HUB_CURIOSITY_DURABLE_ADMISSION_ENABLED"
     )
     # orion-durable-runs base URL for curiosity's Door-A: Hub posts
     # /runs/{id}/release-outreach-lease here when outreach composition under the run's
@@ -1116,10 +1118,10 @@ class Settings(BaseSettings):
     # scripts/sql/2026-09-08_grant_orion_readonly_self_inquiry.sql applied,
     # or every tick blocks with `pg_grants_missing`.
     HUB_CURIOSITY_SELF_INQUIRY_ENABLED: bool = Field(
-        default=False, alias="HUB_CURIOSITY_SELF_INQUIRY_ENABLED"
+        default=True, alias="HUB_CURIOSITY_SELF_INQUIRY_ENABLED"
     )
     HUB_CURIOSITY_SELF_INQUIRY_DAILY_CAP: int = Field(
-        default=3, alias="HUB_CURIOSITY_SELF_INQUIRY_DAILY_CAP"
+        default=7, alias="HUB_CURIOSITY_SELF_INQUIRY_DAILY_CAP"
     )
     HUB_CURIOSITY_SELF_INQUIRY_MIN_COOLDOWN_SEC: float = Field(
         default=7200.0, alias="HUB_CURIOSITY_SELF_INQUIRY_MIN_COOLDOWN_SEC"
@@ -1162,7 +1164,7 @@ class Settings(BaseSettings):
     )
 
     HUB_ENDOGENOUS_OUTREACH_ENABLED: bool = Field(
-        default=False, alias="HUB_ENDOGENOUS_OUTREACH_ENABLED"
+        default=True, alias="HUB_ENDOGENOUS_OUTREACH_ENABLED"
     )
     # How often the loop wakes to consider reaching out.
     #
@@ -1280,10 +1282,10 @@ class Settings(BaseSettings):
     # IANA zone for quiet hours and the daily-cap reset. Hub's container sets no
     # TZ, so the process timezone is UTC -- this must name the operator's real
     # zone or the quiet window silences the wrong nine hours. The Field default
-    # stays UTC (a safe, always-resolvable zone) rather than duplicating the
-    # deployment's answer; .env_example carries the real one.
+    # matches .env_example and production (aligned 2026-10-10; it was UTC, so a
+    # missing key would have shifted Juniper's quiet hours by six-plus hours).
     HUB_ENDOGENOUS_OUTREACH_TZ: str = Field(
-        default="UTC", alias="HUB_ENDOGENOUS_OUTREACH_TZ"
+        default="America/Denver", alias="HUB_ENDOGENOUS_OUTREACH_TZ"
     )
     # 2026-08-19: HUB_ENDOGENOUS_OUTREACH_LLM_ROUTE removed -- killed, not
     # deprecated. Generation now goes through orion.hub.turn_orchestrator.
@@ -1447,7 +1449,7 @@ class Settings(BaseSettings):
     RECALL_DEFAULT_MODE: str = Field(default="hybrid", alias="RECALL_DEFAULT_MODE")
     HUB_RECALL_SERVICE_URL: str = Field(default="", alias="HUB_RECALL_SERVICE_URL")
     RECALL_SERVICE_URL: str = Field(default="http://orion-recall:8090", alias="RECALL_SERVICE_URL")
-    HUB_RECALL_SHADOW_EVAL_TIMEOUT_SEC: float = Field(default=20.0, alias="HUB_RECALL_SHADOW_EVAL_TIMEOUT_SEC")
+    HUB_RECALL_SHADOW_EVAL_TIMEOUT_SEC: float = Field(default=45.0, alias="HUB_RECALL_SHADOW_EVAL_TIMEOUT_SEC")
     HUB_RECALL_SHADOW_EVAL_MAX_ROWS_PER_RUN: int = Field(default=128, alias="HUB_RECALL_SHADOW_EVAL_MAX_ROWS_PER_RUN")
     HUB_RECALL_SHADOW_EVAL_DEFAULT_CORPUS_LIMIT: int = Field(default=24, alias="HUB_RECALL_SHADOW_EVAL_DEFAULT_CORPUS_LIMIT")
 
@@ -1455,7 +1457,7 @@ class Settings(BaseSettings):
     RECALL_PG_DSN: str = Field(default="", alias="RECALL_PG_DSN")
 
     # --- Memory crystallization Graphiti/FalkorDB (additive temporal projection) ---
-    GRAPHITI_ENABLED: bool = Field(default=False, alias="GRAPHITI_ENABLED")
+    GRAPHITI_ENABLED: bool = Field(default=True, alias="GRAPHITI_ENABLED")
     GRAPHITI_URL: str = Field(default="", alias="GRAPHITI_URL")
     FALKORDB_URI: str = Field(default="", alias="FALKORDB_URI")
     # Graph name for the bus synaptic graph debug routes (bus_synaptic_graph_routes.py).
@@ -1614,7 +1616,7 @@ class Settings(BaseSettings):
     ORION_SITUATION_LOCATION_PRECISION: str = Field(default="city", alias="ORION_SITUATION_LOCATION_PRECISION")
     ORION_SITUATION_HOME_LOCATION: str | None = Field(default=None, alias="ORION_SITUATION_HOME_LOCATION")
     ORION_SITUATION_PHYSICAL_LOCATION: str | None = Field(default=None, alias="ORION_SITUATION_PHYSICAL_LOCATION")
-    ORION_SITUATION_WEATHER_PROVIDER: str = Field(default="stub", alias="ORION_SITUATION_WEATHER_PROVIDER")
+    ORION_SITUATION_WEATHER_PROVIDER: str = Field(default="openmeteo", alias="ORION_SITUATION_WEATHER_PROVIDER")
     # Added alongside ORION_SITUATION_WEATHER_PROVIDER above (that field
     # shipped in an earlier, never-finished wiring attempt -- see
     # orion.situational.context.hub_settings_to_runtime_namespace()) so the
@@ -1737,14 +1739,14 @@ class Settings(BaseSettings):
         alias="ENABLE_REPAIR_PRESSURE_SPEECH_WIRING",
     )
     # --- Unified Orion turn (orion-thought + harness governor) ---
-    ORION_UNIFIED_TURN_ENABLED: bool = Field(default=False, alias="ORION_UNIFIED_TURN_ENABLED")
+    ORION_UNIFIED_TURN_ENABLED: bool = Field(default=True, alias="ORION_UNIFIED_TURN_ENABLED")
     # Draft-first display (spec L8, 2026-10-06): on interactive unified chat
     # turns, show the reply writer's draft as soon as it exists, then let the
     # finalize judge replace it in place (marked "revised") if it repairs it.
     # Sensitive turns stay judge-first in the governor regardless.
     # False restores judge-before-display for every turn.
     HUB_UNIFIED_DRAFT_FIRST_ENABLED: bool = Field(default=True, alias="HUB_UNIFIED_DRAFT_FIRST_ENABLED")
-    ORION_HARNESS_GOVERNOR_ENABLED: bool = Field(default=False, alias="ORION_HARNESS_GOVERNOR_ENABLED")
+    ORION_HARNESS_GOVERNOR_ENABLED: bool = Field(default=True, alias="ORION_HARNESS_GOVERNOR_ENABLED")
     # 8300, raised from 2960 on 2026-09-19 alongside the motor's own
     # HARNESS_FCC_TIMEOUT_SEC 2400 -> 7200. Finalize is now substrate 5 +
     # reflect 480 + repair 540 = 1025 (reflect/repair raised 2026-09-15).
@@ -1860,7 +1862,7 @@ class Settings(BaseSettings):
         alias="CHANNEL_HARNESS_RUN_DRAFT_PREVIEW",
     )
 
-    ENABLE_PRE_TURN_APPRAISAL: bool = Field(default=False, alias="ENABLE_PRE_TURN_APPRAISAL")
+    ENABLE_PRE_TURN_APPRAISAL: bool = Field(default=True, alias="ENABLE_PRE_TURN_APPRAISAL")
     PRE_TURN_APPRAISAL_PARADIGMS: str = Field(default="repair_pressure", alias="PRE_TURN_APPRAISAL_PARADIGMS")
     # 60s -> 180s (2026-09-10). This one value is reused as the timeout at
     # every nested layer of the appraisal call -- Hub's own RPC wait
@@ -1909,7 +1911,7 @@ class Settings(BaseSettings):
     # scheduler that consumes the review runtime's telemetry. Interval is far
     # slower than SUBSTRATE_AUTONOMY_INTERVAL_SEC (30s) because each tick can
     # run semantic graph queries against the substrate store.
-    SUBSTRATE_REVIEW_SCHEDULER_ENABLED: bool = Field(default=False, alias="SUBSTRATE_REVIEW_SCHEDULER_ENABLED")
+    SUBSTRATE_REVIEW_SCHEDULER_ENABLED: bool = Field(default=True, alias="SUBSTRATE_REVIEW_SCHEDULER_ENABLED")
     SUBSTRATE_REVIEW_SCHEDULER_INTERVAL_SEC: float = Field(default=420.0, alias="SUBSTRATE_REVIEW_SCHEDULER_INTERVAL_SEC")
     SUBSTRATE_REVIEW_SCHEDULER_BOOTSTRAP_LIMIT: int = Field(default=12, alias="SUBSTRATE_REVIEW_SCHEDULER_BOOTSTRAP_LIMIT")
     # How long a suppressed/terminated queue item rests before prune_finished
@@ -2052,7 +2054,8 @@ class Settings(BaseSettings):
             )
         return value
     # Own gate, separate from SUBSTRATE_TOPIC_FOUNDRY_SCHEDULER_ENABLED above --
-    # ships disabled by default, matching this repo's established convention
+    # code default now ON to match .env_example and production (aligned
+    # 2026-10-10). Originally shipped disabled, following this repo's then convention
     # for a new dispatch path with a real side effect (LLM enrichment calls
     # cost real compute, unlike the pure clustering the training step already
     # does) -- same pattern as EQUILIBRIUM_METACOG_TRANSPORT_BUS_SYNAPTIC_POLL_ENABLE
@@ -2061,7 +2064,7 @@ class Settings(BaseSettings):
     # Added 2026-07-28 because topic_foundry_segments had 0/22 rows enriched
     # in production -- nothing has ever called POST /runs/{run_id}/enrich.
     SUBSTRATE_TOPIC_FOUNDRY_ENRICH_ENABLE: bool = Field(
-        default=False, alias="SUBSTRATE_TOPIC_FOUNDRY_ENRICH_ENABLE"
+        default=True, alias="SUBSTRATE_TOPIC_FOUNDRY_ENRICH_ENABLE"
     )
     # Bounds worst-case LLM calls per scheduler tick -- _run_enrichment only
     # processes segments with enriched_at IS NULL (force=False), so this caps
@@ -2069,20 +2072,20 @@ class Settings(BaseSettings):
     SUBSTRATE_TOPIC_FOUNDRY_ENRICH_LIMIT: int = Field(
         default=200, alias="SUBSTRATE_TOPIC_FOUNDRY_ENRICH_LIMIT"
     )
-    SUBSTRATE_AUTONOMY_ENABLED: bool = Field(default=False, alias="SUBSTRATE_AUTONOMY_ENABLED")
+    SUBSTRATE_AUTONOMY_ENABLED: bool = Field(default=True, alias="SUBSTRATE_AUTONOMY_ENABLED")
     SUBSTRATE_AUTONOMY_PROPOSALS_ENABLED: bool = Field(default=True, alias="SUBSTRATE_AUTONOMY_PROPOSALS_ENABLED")
-    SUBSTRATE_AUTONOMY_APPLY_ENABLED: bool = Field(default=False, alias="SUBSTRATE_AUTONOMY_APPLY_ENABLED")
+    SUBSTRATE_AUTONOMY_APPLY_ENABLED: bool = Field(default=True, alias="SUBSTRATE_AUTONOMY_APPLY_ENABLED")
     SUBSTRATE_AUTONOMY_MONITOR_ENABLED: bool = Field(default=True, alias="SUBSTRATE_AUTONOMY_MONITOR_ENABLED")
     SUBSTRATE_AUTONOMY_ROUTING_PROPOSALS_ENABLED: bool = Field(
         default=True,
         alias="SUBSTRATE_AUTONOMY_ROUTING_PROPOSALS_ENABLED",
     )
     SUBSTRATE_AUTONOMY_COGNITIVE_PROPOSALS_ENABLED: bool = Field(
-        default=False,
+        default=True,
         alias="SUBSTRATE_AUTONOMY_COGNITIVE_PROPOSALS_ENABLED",
     )
     SUBSTRATE_AUTONOMY_ROUTING_APPLY_ENABLED: bool = Field(
-        default=False,
+        default=True,
         alias="SUBSTRATE_AUTONOMY_ROUTING_APPLY_ENABLED",
     )
     SUBSTRATE_AUTONOMY_ROUTING_ROLLBACK_DELTA_THRESHOLD: float = Field(
@@ -2097,7 +2100,7 @@ class Settings(BaseSettings):
     RDF_STORE_BASE_URL: str = Field(default="", alias="RDF_STORE_BASE_URL")
     RDF_STORE_DATASET: str = Field(default="orion", alias="RDF_STORE_DATASET")
     RDF_STORE_QUERY_URL: str = Field(default="", alias="RDF_STORE_QUERY_URL")
-    SUBSTRATE_STORE_BACKEND: str = Field(default="sparql", alias="SUBSTRATE_STORE_BACKEND")
+    SUBSTRATE_STORE_BACKEND: str = Field(default="falkor", alias="SUBSTRATE_STORE_BACKEND")
     # SUBSTRATE_GRAPH_*/SUBSTRATE_GRAPHDB_* (SPARQL/GraphDB substrate backend
     # config) removed 2026-07-23: confirmed zero real consumers in Hub's own
     # code, and Hub's live SUBSTRATE_STORE_BACKEND=falkor means

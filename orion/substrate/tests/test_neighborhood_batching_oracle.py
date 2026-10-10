@@ -4,6 +4,10 @@ The live algorithm is driven through the same in-memory callbacks as the
 frozen #2497 version (neighborhood_oracle.py), over the hub fixture, seeded
 random graphs and requests, and injected node-read faults. Every receipt
 field except the read timestamps must match.
+
+These graphs hold no semantic_projection edges, so the 2026-10-10 projection
+endpoint rule is never exercised here (the frozen oracle predates it). That rule
+is covered by test_neighborhood_projection_endpoints.py and the real-Falkor parity tests.
 """
 from __future__ import annotations
 

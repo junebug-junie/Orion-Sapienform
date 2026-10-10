@@ -80,6 +80,7 @@ jobs:
           orion/substrate/tests/test_neighborhood.py
           orion/substrate/tests/test_neighborhood_backends.py
           orion/substrate/tests/test_neighborhood_batching_oracle.py
+          orion/substrate/tests/test_neighborhood_projection_endpoints.py
           orion/graph/tests/test_falkor_client.py
           orion/substrate/tests/test_falkor_store.py
           orion/substrate/tests/test_complete_hydration.py

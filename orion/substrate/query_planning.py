@@ -198,6 +198,7 @@ class SubstrateSemanticReadCoordinator:
                          "neighbor_node_refs": [n.node_id for n in result.neighbor_nodes],
                          "focal_edge_refs": [e.edge_id for e in result.internal_edges],
                          "boundary_edge_refs": [e.edge_id for e in result.boundary_edges],
+                         "projection_endpoint_node_refs": list(result.projection_endpoint_node_ids),
                          "complete_for_request": result.complete_for_request,
                          "read_started_at": result.read_started_at,
                          "read_finished_at": result.read_finished_at,

@@ -110,3 +110,20 @@ def test_tick_saves_a_world_first_frame_and_logs_no_winner(monkeypatch) -> None:
     w._tick()
     frame = w._store.save_attention_frame.call_args[0][0]
     assert frame.dominant_targets == [] and frame.warnings == ["world_first_no_winner"]
+
+
+def test_event_decay_setting_reaches_the_candidates() -> None:
+    """ATTENTION_EVENT_DECAY_ENABLED: execution is event-written (glossary), so
+    with the flag on it carries the orienting window; off, it does not.
+    Per-tick biometrics never does."""
+    from app.settings import Settings
+    from orion.attention.world_first import EVENT_ORIENTING_WINDOW_SEC
+
+    assert Settings.model_fields["attention_event_decay_enabled"].default is True
+    rows = _history("node:substrate.execution", 0.0, 0.9) + _history("node:substrate.biometrics", 0.02, 0.02)
+    for flag, expected in ((True, EVENT_ORIENTING_WINDOW_SEC), (False, None)):
+        w = _worker(pe_rows=rows)
+        w._settings = SimpleNamespace(attention_world_first_enabled=True, attention_event_decay_enabled=flag)
+        cands = _by_id(w._world_first_candidates(_field(), NOW))
+        assert cands["node:substrate.execution"].event_window_sec == expected
+        assert cands["node:substrate.biometrics"].event_window_sec is None

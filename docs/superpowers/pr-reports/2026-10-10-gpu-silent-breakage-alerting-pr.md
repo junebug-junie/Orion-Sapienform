@@ -13,8 +13,10 @@
   - A Hub attention card goes out, critical for "can't read config", which also emails at once.
 - **The controller's `/health`** answers 503 with the error when its config won't load. It was a
   constant `ok` through the whole incident.
-- **The painter has a second check, "no real painting in 12 hours".** The existing staleness check
-  stayed green because deferred and failed attempts counted as activity.
+- **The painter has a second check, "no real painting in 12 hours"**, in its own loop.
+  - The old staleness check never ran in production: it lives in the legacy worker's watchdog,
+    which is off because paintings now come through the durable path.
+  - The new loop does not depend on that worker's flag.
 
 ## Outcome moved
 
@@ -23,8 +25,10 @@
   - after: **0 s** from the first refused swap via the pool-event path, ≤ 295 s worst case via the
     probe alone.
 - **Card count:** 5 over the incident instead of 155, with dedup at one card per problem per 6 h.
-- **No-painting check on 21 days of real history:** alerts on exactly the 3 real outages
-  (27.6 h, 17.8 h, 16.0 h) and nothing else.
+- **No-painting check on every painting with a receipt** (09-14 → 10-10, 26 days, 169 gaps): at
+  12 h it alerts on 5 gaps: 247 h (09-14 → 09-25, **a 10-day stretch with no paintings that nobody
+  noticed**), 27.6 h (this incident), 17.8 h, 16.0 h and 14.7 h. Only the 27.6 h gap has a known
+  cause. The next-longest gap is 7.6 h. The threshold was picked on this same data.
 
 ## Current architecture
 
@@ -46,7 +50,8 @@
   - `AlertGate` lets a higher severity through inside the window.
 - orion-gpu-lane-controller: `/health` reads the config the same way actuation does.
 - orion-thought:
-  - `visual_painting_gap` check (severity error);
+  - `visual_painting_gap` check (severity error) in its own lifespan loop,
+    `run_visual_painting_gap_watchdog`;
   - per-key edge state in `VisualChainHealthMonitor`;
   - `store.visual_last_painting_age_hours()`;
   - watchdog wiring.
@@ -81,7 +86,8 @@ See `git diff --stat origin/main...HEAD`. The new tests and evals:
 - **Added:**
   - orion-mesh-guardian: `MESH_GUARDIAN_GPU_WATCH_ENABLED=true`, `MESH_GUARDIAN_GPU_PROBE_INTERVAL_SEC=300`,
     `MESH_GUARDIAN_GPU_PROBE_WAIT_SEC=90`
-  - orion-thought: `ORION_VISUAL_PAINTING_GAP_THRESHOLD_HOURS=12`
+  - orion-thought: `ORION_VISUAL_PAINTING_GAP_THRESHOLD_HOURS=12`,
+    `ORION_VISUAL_PAINTING_GAP_CHECK_ENABLED=true`, `ORION_VISUAL_PAINTING_GAP_CHECK_INTERVAL_SEC=600`
 - **`.env_example`, settings, compose and README:** updated.
 - **Local `.env` synced:** yes, `--all-keys` per service, run from the branch copies. No keys skipped.
 
@@ -89,14 +95,15 @@ See `git diff --stat origin/main...HEAD`. The new tests and evals:
 
 ```text
 orion-mesh-guardian tests+evals          108 passed
-orion-gpu-lane-controller                 80 passed
-orion-thought tests+evals                552 passed, 1 failed
+orion-gpu-lane-controller                 81 passed
+orion-thought tests+evals                558 passed, 1 failed
   pre-existing on main: test_settings_mind_enrichment default URL
-tests/test_gpu_pool_actuator_probe.py     11 passed
+tests/test_gpu_pool_actuator_probe.py     15 passed
 gpu-pool e2e incl. probe                   5 passed
 check_definition_drift --gate PASS · check_metric_lineage --gate PASS · env parity PASS · diff --check clean
 Mutation checks, each one reverted and caught by a test:
-  guardian 14/14; painting-gap 8/8; /health config read.
+  guardian 14/14; painting-gap 8/8 + 6/6 (loop not gated on the legacy flag, None not a reading);
+  /health config read.
 ```
 
 ## Evals run
@@ -108,9 +115,10 @@ services/orion-mesh-guardian/evals/test_gpu_incident_replay.py
     probe-only worst case 295 s, swept across every phase;
     5 cards total; healthy baseline silent.
 services/orion-thought/evals/test_painting_gap_replay.py
-  Replays the 174 real gaps at 10-minute ticks:
-    at 12 h exactly 3 alerts and 3 recoveries;
-    sensitivity: 6 h is noisy, 20 h catches only the incident.
+  Replays all 169 real gaps (09-14 → 10-10) at 10-minute ticks:
+    at 12 h exactly 5 alerts and 5 recoveries;
+    sensitivity: 6 h is noisy, 20 h catches only the 247 h and 27.6 h gaps.
+  Calibrated in-sample on the same data, so it confirms the separation; it does not predict.
 ```
 
 ## Docker/build/smoke checks
@@ -120,11 +128,41 @@ Not deployed: live path UNVERIFIED. After deploy:
   guardian log "gpu probe cycle {...}"
   orion:gpu_pool:actuate:request traffic from orion-mesh-guardian:gpu-watch
   curl circe:8090/health -> 200 config_loadable=true
+  thought log "visual painting gap watchdog started"
 ```
 
 ## Review findings fixed
 
-TBD
+- **Guardian (its own review):**
+  - Blocker: the periodic `status` probe could replay an old result into the pool.
+    - Fix: digest-only probing, pinned by a test.
+  - Persistent non-transient refusals were silent.
+    - Fix: a refusal streak alerts.
+  - An early error card could mask a later critical on the same key.
+    - Fix: AlertGate severity escalation.
+  - Probe-side mismatch wording always blamed the controller.
+    - Fix: the wording now says either side may be stale.
+  - The guardian re-read an unparseable config on every event.
+    - Fix: throttled.
+- **High: the painting-gap check never ran in production.** It sat inside the legacy watchdog,
+  which is off live (`visual chain disabled; watchdog not started`).
+  - Fix: its own loop, started in the lifespan, gated only on its own flag.
+  - Evidence: tests with the legacy flag and the bus off; mutation-checked.
+- **Medium: wrong rationale.** The docs said deferral rows kept the staleness check green. Live,
+  the chain table held only 2 real paintings in the window; the check was silent because it never
+  ran.
+  - Fix: corrected in all five places.
+- **Medium: a failed DB read mid-gap sent a false "recovered", then re-alerted.**
+  - Fix: None is no observation.
+  - Evidence: an unhealthy → None → unhealthy test.
+- **Medium: the eval overstated its window and its causes.**
+  - Fix: the full receipt history (26 days) with in-sample calibration stated and unknown causes
+    marked. This surfaced the 10-day 09-14 → 09-25 gap.
+- **Low: the "rebuild" hint was given for every config failure.**
+  - Fix: `config_fix_hint` by exception type (rebuild only for `ValidationError`; mount/path;
+    YAML syntax), shared by `/health` and the guardian card.
+- **Low: stale docs** (guardian docstring, controller README).
+  - Fix: updated.
 
 ## Restart required
 

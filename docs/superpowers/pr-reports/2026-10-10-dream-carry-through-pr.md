@@ -226,6 +226,6 @@ git pull --ff-only && for s in orion-sql-writer orion-hub orion-actions orion-th
 
 ## PR link
 
-TBD
+https://github.com/junebug-junie/Orion-Sapienform/pull/2586
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

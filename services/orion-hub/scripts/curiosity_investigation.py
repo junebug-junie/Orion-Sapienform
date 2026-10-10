@@ -143,6 +143,7 @@ from orion.curiosity.self_inquiry import (
     lived_concept_id,
     read_latest_self_definition,
     read_current_lived_answers,
+    valid_question_id,
     read_lived_answer,
     read_lived_answers_for_run,
     read_self_definition,
@@ -322,6 +323,7 @@ _SENSE_EVAL_LAST_RUN_KEY = "orion:curiosity:self_sense_eval:last_run_id"
 # orion/bus/channels.yaml; orion-sql-writer subscribes.
 SELF_CONCEPT_HISTORY_WRITE_CHANNEL = "orion:self_concept:history:write"
 SELF_CONCEPT_HISTORY_WRITE_KIND = "self_concept.history.write.v1"
+SELF_CONCEPT_ENTRY_EXISTS_SQL = "SELECT 1 FROM self_concept_history WHERE entry_id = $1"
 SELF_CONCEPT_VERSION_SQL = (
     "SELECT COALESCE(MAX(version), 0) + 1 FROM self_concept_history WHERE concept_id = $1"
 )
@@ -403,7 +405,7 @@ async def prior_drift_preamble(reader: Optional[WorldviewReader], request: Curio
     if states is None:
         logger.info("curiosity_prior_drift_unknown run=%s -- prior state unreadable", request.run_id)
         return ""
-    drift = build_prior_drift_preamble(request.prompt, states)
+    drift = build_prior_drift_preamble(request.prompt, states, attempt=request.attempt)
     if drift:
         logger.info(
             "curiosity_prior_drift_preamble run=%s attempt=%s moved=%s",
@@ -557,6 +559,9 @@ QUEUE_BACKLOG_BLOCK_REASON = "queue_backlog"
 # table is orion-durable-runs' run registry (`orion/durable_runs/registry_store.py`).
 # 24 h bound: a registry row that never terminated (a crashed runner) must not
 # block the line forever -- it stops counting after a day.
+# Deliberately NOT counted: a run admitted once and re-queued for a retry, and
+# self-inquiry briefs. Both still read a frozen brief; the turn-start drift
+# block (`prior_drift_preamble`) is what corrects those.
 QUEUED_INVESTIGATIONS_SQL = (
     "SELECT count(*) FROM durable_admission_runs r "
     "WHERE r.request->>'workflow' = 'curiosity.investigate' "
@@ -2605,6 +2610,12 @@ class CuriosityInvestigation:
             logger.warning("curiosity_open_lived_questions_pool_failed err=%s", exc)
             return []
         open_lived = [q for q in pool if q.family == "lived" and q.status == "open"]
+        # Orion mints question ids; one that cannot be spliced into the shown
+        # MERGE is dropped here, loudly, rather than shown with no answer.
+        dropped = [q.question_id for q in open_lived if valid_question_id(q.question_id) is None]
+        if dropped:
+            logger.warning("curiosity_open_lived_questions_invalid_ids ids=%r", dropped[:5])
+            open_lived = [q for q in open_lived if valid_question_id(q.question_id) is not None]
         if not open_lived:
             return []
         try:
@@ -3196,6 +3207,20 @@ class CuriosityInvestigation:
         )
         return True
 
+    async def _self_concept_entry_exists(self, entry_id: str) -> bool:
+        """True when this row is already mirrored. False on any read failure:
+        the write is keyed on entry_id (primary key), so a repeat is refused
+        downstream anyway -- this only keeps the version number honest."""
+        pool = self._pool_provider()
+        if pool is None:
+            return False
+        try:
+            async with pool.acquire() as conn:
+                return bool(await conn.fetchval(SELF_CONCEPT_ENTRY_EXISTS_SQL, entry_id))
+        except Exception as exc:  # noqa: BLE001
+            logger.info("curiosity_self_concept_entry_lookup_failed entry=%s err=%s", entry_id, exc)
+            return False
+
     async def _mirror_investigation_lived_answers(self, run_id: str, correlation_id: str) -> int:
         """Mirror every `:LivedAnswer` an investigation run revised. Returns
         how many were published. Never raises into the completion path."""
@@ -3208,6 +3233,11 @@ class CuriosityInvestigation:
             return 0
         mirrored = 0
         for answer in answers:
+            # A redelivered completion event must not republish at version+1.
+            if await self._self_concept_entry_exists(
+                f"self-lived:{answer.run_id}:{answer.question_id}"
+            ):
+                continue
             if await self._mirror_lived_answer(
                 answer, run_id=run_id, correlation_id=correlation_id, per_question=True
             ):

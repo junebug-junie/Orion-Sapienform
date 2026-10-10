@@ -638,8 +638,7 @@ _OFFERED_PRIOR_RE = re.compile(
     r"(?:never tested|tested (?P<tested>\d+)x)\] [^\n]*\n"
     r"\s+prior_id: (?P<prior_id>\S+)"
 )
-# Two-decimal display: a move smaller than this is not visible in the brief.
-_CONFIDENCE_EPSILON = 0.005
+_RUN_ID_RE = re.compile(r"^[0-9a-f]{6,32}$")
 
 
 def offered_priors_in_prompt(prompt: str) -> dict[str, tuple[Optional[float], int]]:
@@ -660,7 +659,9 @@ def _fmt_conf(value: Optional[float]) -> str:
     return "none" if value is None else f"{value:.2f}"
 
 
-def build_prior_drift_preamble(prompt: str, current: Mapping[str, Any]) -> str:
+def build_prior_drift_preamble(
+    prompt: str, current: Mapping[str, Any], *, attempt: int = 1
+) -> str:
     """What Hub prepends when an offered prior moved after the brief was built.
 
     The brief is built and frozen at admission and can wait in the GPU queue
@@ -685,10 +686,9 @@ def build_prior_drift_preamble(prompt: str, current: Mapping[str, Any]) -> str:
         new_conf = getattr(state, "confidence", None)
         new_tested = int(getattr(state, "times_tested", 0) or 0)
         status = str(getattr(state, "status", "") or "")
-        conf_moved = (old_conf is None) != (new_conf is None) or (
-            old_conf is not None and new_conf is not None
-            and abs(old_conf - new_conf) >= _CONFIDENCE_EPSILON
-        )
+        # Compared as displayed: the old value was parsed from two decimals,
+        # so a move that rounds to the same number is not a visible change.
+        conf_moved = _fmt_conf(old_conf) != _fmt_conf(new_conf)
         closed = status in CLOSED_STATUSES
         if not (conf_moved or new_tested != old_tested or closed):
             continue
@@ -701,10 +701,16 @@ def build_prior_drift_preamble(prompt: str, current: Mapping[str, Any]) -> str:
         moved.append(f"  - prior_id: {prior_id}\n      {detail}")
     if not moved:
         return ""
+    why = (
+        "This brief was written when the run was queued, and it waited."
+        if attempt <= 1
+        else "This brief was written when the run was queued; it waited, and an "
+        "earlier attempt of this same run may have moved some of these itself."
+    )
     lines = [
-        "THE NUMBERS BELOW ARE OLDER THAN THIS SITTING. This brief was written "
-        "when the run was queued, and it waited. Since then your graph moved "
-        f"{'this prior' if len(moved) == 1 else 'these priors'} (as written -> now):",
+        f"THE NUMBERS BELOW ARE OLDER THAN THIS SITTING. {why} Since then your "
+        f"graph moved {'this prior' if len(moved) == 1 else 'these priors'} "
+        "(as written -> now):",
         "",
         *moved,
         "",
@@ -758,10 +764,13 @@ def _lived_questions_section(
                 f"      current answer (run {q.current.run_id}, "
                 f"{_written_on(q.current.written_at)}): {_clip(q.current.text, 300)}"
             )
+        revises = q.current.run_id if q.current is not None else ""
+        if not _RUN_ID_RE.match(revises):
+            revises = ""  # graph-sourced; never splice an unexpected shape
         merge = lived_answer_merge_cypher(
             run_id=run_id,
             question_id=q.question_id,
-            revises=q.current.run_id if q.current is not None else "",
+            revises=revises,
             text="<the revised answer, first person>",
             evidence='["<what you looked at that changed it>"]',
         )

@@ -254,3 +254,64 @@ def test_investigation_mirror_entry_ids_do_not_collide_across_questions():
     assert ids == {f"self-lived:{RUN}:lived.a", f"self-lived:{RUN}:lived.b"}
     # A self-inquiry run keeps its historical id.
     assert build_lived_answer_history_write(a).entry_id == f"self-lived:{RUN}"
+
+
+def test_retry_puts_drift_before_resume_and_names_the_earlier_attempt():
+    prompt = _brief_prompt()
+
+    def rows(cypher):
+        if "Hop" in cypher:
+            return [{"n": 1, "note": "first stop", "written_at": 1}]
+        return [{"prior_id": PRIOR_ID, "confidence": 0.82, "times_tested": 4, "status": "open"}]
+
+    request = CuriosityTurnRequestV1(
+        run_id=RUN, correlation_id="00000000-0000-0000-0000-000000000001",
+        prompt=prompt, timeout_sec=10.0, attempt=2,
+    )
+    text = asyncio.run(
+        CuriosityInvestigation._prompt_for_attempt(SimpleNamespace(_reader=_Reader(rows=rows)), request)
+    )
+    assert text.index("THE NUMBERS BELOW") < text.index("RESUMED SITTING") < text.index(prompt)
+    assert "earlier attempt of this same run" in text
+
+
+def test_rounding_to_the_same_display_is_not_drift():
+    prompt = _stale_prior().preview()
+    same = {PRIOR_ID: PriorState(prior_id=PRIOR_ID, confidence=0.5549, times_tested=0, status="open")}
+    assert build_prior_drift_preamble(prompt, same) == ""
+
+
+def test_invalid_graph_run_id_is_not_spliced_into_revises():
+    q = OpenLivedQuestion(
+        question_id="lived.x", text="Q?",
+        current=LivedAnswer("bad'id", "lived.x", "lived", "a", [], "", 1),
+    )
+    text = build_kickoff_prompt(
+        StudyMaterial(generated_at=datetime(2026, 10, 9, tzinfo=timezone.utc)),
+        view=WorldviewSnapshot(), run_id=RUN, graph_enabled=True, open_lived_questions=[q],
+    )
+    assert "bad'id\"" not in text.split("to revise it:")[1]
+
+
+def test_redelivered_completion_does_not_republish_mirrored_answers():
+    published: list = []
+    answer = LivedAnswer(RUN, "lived.a", "lived", "x", ["journal:1"], "", 1)
+
+    async def exists(entry_id):
+        return entry_id == f"self-lived:{RUN}:lived.a"
+
+    async def mirror(a, **kw):
+        published.append(a)
+        return True
+
+    stub = SimpleNamespace(
+        _reader=_Reader(rows=[]), _self_concept_entry_exists=exists, _mirror_lived_answer=mirror,
+    )
+    import scripts.curiosity_investigation as ci
+    orig = ci.read_lived_answers_for_run
+    ci.read_lived_answers_for_run = lambda reader, run_id: [answer]
+    try:
+        n = asyncio.run(CuriosityInvestigation._mirror_investigation_lived_answers(stub, RUN, "c"))
+    finally:
+        ci.read_lived_answers_for_run = orig
+    assert n == 0 and published == []

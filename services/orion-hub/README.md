@@ -3392,7 +3392,9 @@ admitted and can wait hours for a GPU hold. Two guards:
   ones are still waiting (`curiosity_investigation_blocked reason=queue_backlog`).
   Counted read-only from orion-durable-runs' `durable_admission_runs` (no
   `run.admitted` event, not terminal, last 24 h). An unreadable count fails
-  open with `curiosity_queue_backlog_unreadable`.
+  open with `curiosity_queue_backlog_unreadable`. Not counted (by design):
+  self-inquiry briefs, and runs re-queued for a retry after a first admission;
+  the drift block below covers both.
 - At turn start Hub re-reads every prior the prompt shows and prepends a short
   block naming any whose confidence, test count or closed status moved since
   the brief was written (`curiosity_prior_drift_preamble run=... moved=N`).

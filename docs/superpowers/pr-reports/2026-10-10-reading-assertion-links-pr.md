@@ -148,6 +148,6 @@ Production deploys from the primary checkout on main, after merge, in this order
 
 ## PR link
 
-(pending)
+https://github.com/junebug-junie/Orion-Sapienform/pull/2581
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

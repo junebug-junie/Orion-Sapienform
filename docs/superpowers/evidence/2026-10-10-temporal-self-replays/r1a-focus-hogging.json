@@ -1,0 +1,186 @@
+{
+  "start": "2026-10-09T04:00:00+00:00",
+  "end": "2026-10-10T01:50:00+00:00",
+  "completed_runs": 415,
+  "recorded_hours": 21.020806914722222,
+  "unaccounted_hours": 0.8125264186111114,
+  "instrument_since": null,
+  "days_on_instrument": 0.0,
+  "hog_rule": {
+    "share_above": 0.5,
+    "longer_than_hours": 2.0,
+    "window_minutes": 30,
+    "step_minutes": 5
+  },
+  "hog_stretches": [
+    {
+      "target_id": "node:substrate.bus_synaptic",
+      "first_window_start": "2026-10-09T04:50:00+00:00",
+      "last_window_end": "2026-10-09T08:15:00+00:00",
+      "windows": 36,
+      "peak_share": 0.9943416788888889,
+      "seconds": 10800.0,
+      "covered_wall_seconds": 12300.0
+    },
+    {
+      "target_id": "node:substrate.bus_synaptic",
+      "first_window_start": "2026-10-09T18:25:00+00:00",
+      "last_window_end": "2026-10-09T21:20:00+00:00",
+      "windows": 30,
+      "peak_share": 1.0,
+      "seconds": 9000.0,
+      "covered_wall_seconds": 10500.0
+    },
+    {
+      "target_id": "node:substrate.bus_synaptic",
+      "first_window_start": "2026-10-09T15:05:00+00:00",
+      "last_window_end": "2026-10-09T17:50:00+00:00",
+      "windows": 28,
+      "peak_share": 0.82704415,
+      "seconds": 8400.0,
+      "covered_wall_seconds": 9900.0
+    },
+    {
+      "target_id": "node:substrate.bus_synaptic",
+      "first_window_start": "2026-10-09T21:25:00+00:00",
+      "last_window_end": "2026-10-10T00:10:00+00:00",
+      "windows": 28,
+      "peak_share": 0.9785635888888888,
+      "seconds": 8400.0,
+      "covered_wall_seconds": 9900.0
+    }
+  ],
+  "longest_majority_stretch_seconds_by_target": {
+    "node:substrate.bus_synaptic": 10800.0,
+    "node:substrate.biometrics": 3000.0,
+    "node:substrate.route": 2100.0,
+    "node:substrate.chat": 1500.0,
+    "node:substrate.execution": 300.0
+  },
+  "share_of_recorded_span": {
+    "node:substrate.biometrics": 0.18343579734427987,
+    "node:substrate.bus_synaptic": 0.5751548521605884,
+    "node:substrate.execution": 0.1332314091607484,
+    "node:substrate.chat": 0.07043181267999218,
+    "node:substrate.route": 0.03774612865439125
+  },
+  "run_ticks": {
+    "n": 415,
+    "p50": 28,
+    "p90": 227,
+    "p99": 749,
+    "max": 1024
+  },
+  "complete_run_seconds": {
+    "n": 414,
+    "p50": 59.075826,
+    "p90": 476.535524,
+    "max": 2158.741216
+  },
+  "share_runs_reaching_min_streak": 0.9012048192771084,
+  "min_streak_assumed": 3,
+  "stuck_runs": [],
+  "return_window_probe": [
+    {
+      "return_minutes": 1,
+      "arcs": 264,
+      "arcs_by_target": {
+        "node:substrate.biometrics": 89,
+        "node:substrate.bus_synaptic": 78,
+        "node:substrate.execution": 78,
+        "node:substrate.chat": 13,
+        "node:substrate.route": 6
+      },
+      "returns_by_target": {
+        "node:substrate.biometrics": 41,
+        "node:substrate.bus_synaptic": 65,
+        "node:substrate.execution": 28,
+        "node:substrate.chat": 17
+      },
+      "mean_returns_per_arc": 0.571969696969697
+    },
+    {
+      "return_minutes": 2,
+      "arcs": 224,
+      "arcs_by_target": {
+        "node:substrate.biometrics": 79,
+        "node:substrate.bus_synaptic": 61,
+        "node:substrate.execution": 67,
+        "node:substrate.chat": 11,
+        "node:substrate.route": 6
+      },
+      "returns_by_target": {
+        "node:substrate.biometrics": 51,
+        "node:substrate.bus_synaptic": 82,
+        "node:substrate.execution": 39,
+        "node:substrate.chat": 19
+      },
+      "mean_returns_per_arc": 0.8526785714285714
+    },
+    {
+      "return_minutes": 5,
+      "arcs": 142,
+      "arcs_by_target": {
+        "node:substrate.biometrics": 49,
+        "node:substrate.bus_synaptic": 37,
+        "node:substrate.execution": 41,
+        "node:substrate.chat": 10,
+        "node:substrate.route": 5
+      },
+      "returns_by_target": {
+        "node:substrate.biometrics": 81,
+        "node:substrate.bus_synaptic": 106,
+        "node:substrate.execution": 65,
+        "node:substrate.chat": 20,
+        "node:substrate.route": 1
+      },
+      "mean_returns_per_arc": 1.9225352112676057
+    },
+    {
+      "return_minutes": 10,
+      "arcs": 87,
+      "arcs_by_target": {
+        "node:substrate.biometrics": 34,
+        "node:substrate.bus_synaptic": 13,
+        "node:substrate.execution": 25,
+        "node:substrate.chat": 10,
+        "node:substrate.route": 5
+      },
+      "returns_by_target": {
+        "node:substrate.biometrics": 96,
+        "node:substrate.bus_synaptic": 130,
+        "node:substrate.execution": 81,
+        "node:substrate.chat": 20,
+        "node:substrate.route": 1
+      },
+      "mean_returns_per_arc": 3.7701149425287355
+    },
+    {
+      "return_minutes": 30,
+      "arcs": 38,
+      "arcs_by_target": {
+        "node:substrate.biometrics": 11,
+        "node:substrate.bus_synaptic": 3,
+        "node:substrate.execution": 14,
+        "node:substrate.chat": 7,
+        "node:substrate.route": 3
+      },
+      "returns_by_target": {
+        "node:substrate.biometrics": 119,
+        "node:substrate.bus_synaptic": 140,
+        "node:substrate.execution": 92,
+        "node:substrate.chat": 23,
+        "node:substrate.route": 3
+      },
+      "mean_returns_per_arc": 9.921052631578947
+    }
+  ],
+  "verdict": "BASELINE_ONLY: R1a judges the post-#2528 instrument after 7 live days; 0.00 days available. A pre-#2528 target exceeded the hog bar.",
+  "caveats": [
+    "Wall spans can include downtime; they are not continuous activity.",
+    "Open tail, no-winner and recorder-off periods are unaccounted, not idle.",
+    "Tick share excludes runs clipped by the window; duration excludes left censoring.",
+    "Share denominator is the full 30-minute window; unaccounted time never counts toward a hog.",
+    "Runs before and after a scoring change are different instruments; pass instrument_since."
+  ]
+}

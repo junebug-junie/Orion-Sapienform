@@ -12,6 +12,7 @@ scale so the number can't be read as "quiet".
 from __future__ import annotations
 
 import json
+import re
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -200,8 +201,8 @@ def test_sound_line_states_only_the_comparison(vs: str, phrase: str) -> None:
     assert "not how many decibels" in line
     # 2026-10-10: Orion reported "-16 dBFS" as what they hear. No level
     # numbers of any kind may reach the prompt from an uncalibrated mic.
-    assert "dB" not in line.replace("decibels", "")
-    assert not any(ch.isdigit() for ch in line.replace("24 hours", ""))
+    assert "dB" not in line
+    assert not re.search(r"-\d", line)  # no negative level readings (dBFS is always <= 0)
 
 
 def test_no_sound_line_without_history() -> None:

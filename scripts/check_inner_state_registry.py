@@ -93,6 +93,7 @@ _EXTRA_COVERED_SCHEMA_NAMES: dict[str, str] = {
     #     state signals, not attention-allocation mechanics -- flagged as
     #     worth its own future audit, not silently dismissed.
     "AttentionFrameV1": "sub-object of the registered attention_broadcast_projection.v1 entry (AttentionBroadcastProjectionV1.frame, orion/schemas/attention_frame.py) -- covered transitively, no entry of its own",
+    "AttentionCandidateV1": "sub-object of the registered field_attention_frame.v1 and attention_broadcast_projection.v1 entries -- one source's bid in the world-first contest (orion/schemas/attention_candidate.py), traced inside those frames (target reasons/evidence_refs; frame.debug['world_first']), never persisted standalone. Its unusualness is the already-registered PredictionErrorMagnitudeV1 shape",
     "AttentionSignalV1": "distinct conversational-attention/curiosity subsystem (orion/schemas/attention_frame.py), not audited by this registry pass",
     "AttentionSalienceTraceV1": "distinct conversational-attention/curiosity subsystem (orion/schemas/attention_salience.py), not audited by this registry pass",
     "AttentionLoopOutcomeV1": "distinct conversational-attention/curiosity subsystem (orion/schemas/attention_salience.py), not audited by this registry pass",

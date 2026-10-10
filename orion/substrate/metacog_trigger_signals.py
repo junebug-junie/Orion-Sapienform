@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import math
-import statistics
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Mapping, Sequence
@@ -81,14 +80,19 @@ def compute_substrate_eventfulness(
 
 
 # ===========================================================================
-# Generative (non-rupture) trigger detectors over AttentionSelfModelV1's
+# Generative (non-rupture) trigger detector over AttentionSelfModelV1's
 # `prediction_error_confidence` history.
 #
-# Both read the same live field -- persisted every ~30s to the
+# Reads the live field persisted every ~30s to the
 # `substrate_attention_self_model` table by orion-substrate-runtime's
-# _attention_self_model_tick() (PR #1459) -- as two different windowing
-# functions, per docs/superpowers/specs/2026-07-28-collapse-mirror-generative-
-# triggers-design.md (Missing Questions 2/3). Pure: no I/O, no settings reads.
+# _attention_self_model_tick() (PR #1459), per docs/superpowers/specs/
+# 2026-07-28-collapse-mirror-generative-triggers-design.md (Missing Questions
+# 2/3). Pure: no I/O, no settings reads.
+#
+# The sibling "flow" detector (`detect_flow_regime` / `FlowRegime`, a sustained
+# high plateau) was RETIRED 2026-10-10: on live data the plateau was the field's
+# idle rest state, not a distinct state. See docs/superpowers/pr-reports/
+# 2026-10-10-metacog-flow-trigger-calibration-pr.md.
 #
 # Thresholds are deliberately *required* keyword args rather than module
 # defaults: the live values are calibrated constants owned by
@@ -127,28 +131,13 @@ class ConfidenceRecovery:
     window_ticks: int
 
 
-@dataclass(frozen=True)
-class FlowRegime:
-    """A sustained high-confidence, low-variance regime -- the "flow" condition."""
-
-    started_at: datetime
-    ended_at: datetime
-    tick_count: int
-    # Real wall-clock seconds the window covers. Recorded so a stored row can be
-    # audited for whether `tick_count` ticks really were consecutive.
-    span_sec: float
-    min_value: float
-    mean_value: float
-    stdev_value: float
-
-
 def _window_values(samples: Sequence[ConfidenceSample]) -> list[float] | None:
     """Return the window's values, or None if any is non-finite.
 
     Fails closed rather than dropping bad samples: a NaN silently compares
     False against every threshold, so a window containing one would otherwise
     be silently mis-evaluated instead of skipped. Dropping it instead would
-    also break the "N *consecutive* ticks" semantics both detectors rely on.
+    also break the "N *consecutive* ticks" semantics the detector relies on.
     Same guard rationale as scripts/analysis/measure_attention_self_model_
     confidence_baseline.py::_finite_float_or_none.
     """
@@ -256,85 +245,6 @@ def detect_confidence_recovery(
         cross_span_sec=cross_span_sec,
         confirm_ticks=confirm_ticks,
         window_ticks=len(values),
-    )
-
-
-def detect_flow_regime(
-    samples: Sequence[ConfidenceSample],
-    *,
-    floor: float,
-    max_stdev: float,
-    min_ticks: int,
-    max_span_sec: float,
-) -> FlowRegime | None:
-    """Detect a sustained high-confidence, low-variance regime ("flow").
-
-    `samples` must be ordered oldest -> newest; only the trailing `min_ticks`
-    are evaluated. "Sustained" means the last N *genuinely consecutive* ticks,
-    which `max_span_sec` is what actually enforces: row adjacency alone does not
-    imply tick adjacency, because the caller's reader drops rows with a
-    missing/non-finite confidence. Review finding 2026-07-30, reproduced against
-    the real detector: without this bound, 20 rows spanning 6.08 hours fired
-    while reporting `tick_count=20` as though it were 10 minutes of calm, and a
-    window of 20 rows that were all 3 days old also fired (the writing tick is
-    flag-gated, so it can simply stop).
-
-    Statistic choice (two explicit conjunct conditions rather than one compound
-    score): `min(window) >= floor` AND `stdev(window) <= max_stdev`.
-
-    Why not `mean - k*stdev >= floor`: that collapses level and variance into a
-    single number, so a window containing a real dip can still pass as long as
-    the mean is high enough -- which is exactly the claim "sustained" is
-    supposed to rule out. A hard floor on the *minimum* cannot be averaged away,
-    and keeping variance as its own separate ceiling makes both halves of the
-    claim independently falsifiable, independently tunable, and separately
-    visible as their own numbers in the trigger's `upstream` evidence.
-
-    Live-data calibration note (2026-07-30, 2246 real 20-tick windows over
-    ~20.6h of `substrate_attention_self_model`): rolling 20-tick stdev ran
-    p10=0.016 / p50=0.037 / p90=0.059, and rolling 20-tick min had p50=0.791.
-    At floor=0.90 the variance ceiling is currently **non-binding** -- 71
-    windows (3.2%) qualify, and that count is identical at max_stdev 0.02, 0.03
-    and 0.05, because the field's observed ceiling (~0.977) mathematically
-    squeezes any window with min>=0.90 into a band narrower than 0.08. The
-    variance ceiling is kept anyway: it is the condition that stays meaningful
-    if the floor is ever lowered (at floor=0.85, 426 windows pass the floor
-    alone) or if the field's upper range shifts. Disclosed rather than silently
-    shipped as though it were doing work today. floor=0.92 was measured as
-    degenerate (0 qualifying windows) and must not be used.
-    """
-    if min_ticks < 2 or max_span_sec < 0:
-        return None
-    if len(samples) < min_ticks:
-        return None
-
-    window = list(samples[-min_ticks:])
-    values = _window_values(window)
-    if values is None:
-        return None
-
-    # Contiguity first: a window that isn't really N consecutive ticks cannot
-    # support a claim about sustained calm, whatever its values look like.
-    span_sec = (window[-1].generated_at - window[0].generated_at).total_seconds()
-    if span_sec > max_span_sec:
-        return None
-
-    minimum = min(values)
-    if minimum < floor:
-        return None
-
-    stdev_value = statistics.stdev(values)
-    if stdev_value > max_stdev:
-        return None
-
-    return FlowRegime(
-        started_at=window[0].generated_at,
-        ended_at=window[-1].generated_at,
-        tick_count=len(values),
-        span_sec=span_sec,
-        min_value=minimum,
-        mean_value=statistics.fmean(values),
-        stdev_value=stdev_value,
     )
 
 

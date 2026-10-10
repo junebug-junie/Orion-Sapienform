@@ -140,10 +140,9 @@ class Settings(BaseSettings):
     # lane, every time -- the exact `chat_turn` bug (2026-07-23, see
     # `_PER_KIND_COOLDOWN_SETTINGS_ATTR` in service.py) recurring in a new
     # place. Once `is_sustained_trend` goes true it typically STAYS true for
-    # many subsequent messages while the elevated run continues (same shape
-    # as `flow`'s sustained-plateau regime, not a per-turn event) -- 1800s
-    # default matches `metacog_flow_cooldown_sec`'s own reasoning exactly:
-    # re-announcing the same ongoing elevated regime every 30s would be noise.
+    # many subsequent messages while the elevated run continues (a sustained
+    # regime, not a per-turn event) -- 1800s: re-announcing the same ongoing
+    # elevated regime every 30s would be noise.
     metacog_repair_pressure_trend_cooldown_sec: float = Field(
         1800.0, alias="EQUILIBRIUM_METACOG_REPAIR_PRESSURE_TREND_COOLDOWN_SEC"
     )
@@ -286,16 +285,20 @@ class Settings(BaseSettings):
         True, alias="EQUILIBRIUM_TRANSPORT_BASELINE_HOURLY_PUBLISH_ENABLE"
     )
     # ---------------------------------------------------------------------
-    # Generative (non-rupture) metacog triggers: insight + flow.
+    # Generative (non-rupture) metacog trigger: insight.
     # docs/superpowers/specs/2026-07-28-collapse-mirror-generative-triggers-design.md
     #
-    # Both read one already-live field, AttentionSelfModelV1.prediction_error_
+    # Reads one already-live field, AttentionSelfModelV1.prediction_error_
     # confidence, from `substrate_attention_self_model` (written every ~30s by
-    # orion-substrate-runtime's _attention_self_model_tick, PR #1459) as two
-    # different windowing functions -- insight looks for a low->high transition,
-    # flow looks for a sustained plateau. No new producer, reducer or schema.
+    # orion-substrate-runtime's _attention_self_model_tick, PR #1459) and looks
+    # for a low->high transition. No new producer, reducer or schema.
     #
-    # Both ship DISABLED. Matching the (since retired) bus_synaptic precedent (PR #1385 ->
+    # The sibling "flow" (sustained-plateau) trigger was RETIRED 2026-10-10:
+    # its plateau turned out to be the field's idle rest state, not a distinct
+    # state -- see docs/superpowers/pr-reports/2026-10-10-metacog-flow-trigger-
+    # calibration-pr.md. All EQUILIBRIUM_METACOG_FLOW_* keys are gone.
+    #
+    # Ships DISABLED in code. Matching the (since retired) bus_synaptic precedent (PR #1385 ->
     # #1387): a gate that dispatches a real MetacogTriggerV1 into orion_metacog
     # gets flipped on by a human only after its own post-merge live-data check,
     # separately from "is the underlying signal worth reading."
@@ -303,10 +306,7 @@ class Settings(BaseSettings):
     metacog_insight_trigger_enable: bool = Field(
         False, alias="EQUILIBRIUM_METACOG_INSIGHT_TRIGGER_ENABLE"
     )
-    metacog_flow_trigger_enable: bool = Field(
-        False, alias="EQUILIBRIUM_METACOG_FLOW_TRIGGER_ENABLE"
-    )
-    # One poll serves both gates -- same table, same row window, evaluated twice.
+    # One poll per interval; reads the trailing row window once.
     # Matches the ~30s cadence of the tick that writes the rows.
     metacog_generative_poll_interval_sec: float = Field(
         30.0, alias="EQUILIBRIUM_METACOG_GENERATIVE_POLL_INTERVAL_SEC"
@@ -315,16 +315,11 @@ class Settings(BaseSettings):
         "postgresql://postgres:postgres@orion-athena-sql-db:5432/conjourney",
         alias="EQUILIBRIUM_METACOG_GENERATIVE_POSTGRES_URI",
     )
-    # Own cooldown lanes, from day one. chat_turn shipped the shared-lane bug
+    # Own cooldown lane, from day one. chat_turn shipped the shared-lane bug
     # once already (a burst of one kind silently starved every other kind);
-    # see _PER_KIND_COOLDOWN_SETTINGS_ATTR in service.py. Generous defaults:
-    # both of these describe slow-moving regimes, not per-turn events, so
-    # re-announcing the same calm every 30s would be noise.
+    # see _PER_KIND_COOLDOWN_SETTINGS_ATTR in service.py.
     metacog_insight_cooldown_sec: float = Field(
         300.0, alias="EQUILIBRIUM_METACOG_INSIGHT_COOLDOWN_SEC"
-    )
-    metacog_flow_cooldown_sec: float = Field(
-        1800.0, alias="EQUILIBRIUM_METACOG_FLOW_COOLDOWN_SEC"
     )
     # PROVISIONAL thresholds, pending the longer-window re-run scheduled
     # 2026-08-02. Picked in PR #1463's baseline pass to match this metric's real
@@ -339,26 +334,25 @@ class Settings(BaseSettings):
     metacog_insight_high_threshold: float = Field(
         0.90, alias="EQUILIBRIUM_METACOG_INSIGHT_HIGH_THRESHOLD"
     )
-    # Trailing rows fetched per poll. Must cover the widest window either
-    # detector needs (insight's max_ticks_to_cross + confirm, flow's min_ticks) --
-    # enforced in the poll loop rather than trusted, since setting this below
-    # flow's min_ticks would otherwise make flow a silent permanent no-op.
+    # Trailing rows fetched per poll. Must cover insight's max_ticks_to_cross +
+    # confirm_ticks -- enforced in the poll loop rather than trusted.
     metacog_generative_window_ticks: int = Field(
         20, alias="EQUILIBRIUM_METACOG_GENERATIVE_WINDOW_TICKS"
     )
     # Staleness guard. The tick that writes these rows is itself flag-gated
     # (SUBSTRATE_ATTENTION_SELF_MODEL_TICK_ENABLED), so it can simply stop --
-    # and a frozen window still satisfies both gate conditions forever.
-    # Reproduced pre-fix: 20 rows all 3 days old fired the flow gate. 120s:
+    # and a frozen window can keep satisfying a gate condition forever.
+    # Reproduced pre-fix: 20 rows all 3 days old fired the (since retired)
+    # flow gate. 120s:
     # a few multiples of the write cadence, not a tight bound.
     metacog_generative_max_age_sec: float = Field(
         120.0, alias="EQUILIBRIUM_METACOG_GENERATIVE_MAX_AGE_SEC"
     )
-    # Real cadence of the writing tick, used to convert both detectors' tick
+    # Real cadence of the writing tick, used to convert the detector's tick
     # windows into wall-clock bounds. Row adjacency is NOT tick adjacency: the
     # reader drops rows with a missing/non-finite confidence, so 20 "consecutive"
     # rows can span hours (reproduced pre-fix: a 20-row window covering 6.08h
-    # fired flow while reporting tick_count=20 as if it were 10 minutes).
+    # fired the since-retired flow gate as if it were 10 minutes).
     metacog_generative_expected_tick_sec: float = Field(
         30.0, alias="EQUILIBRIUM_METACOG_GENERATIVE_EXPECTED_TICK_SEC"
     )
@@ -381,21 +375,6 @@ class Settings(BaseSettings):
     metacog_insight_confirm_ticks: int = Field(
         2, alias="EQUILIBRIUM_METACOG_INSIGHT_CONFIRM_TICKS"
     )
-    # Flow: min over the window >= floor AND stdev <= max_stdev. Calibrated
-    # 2026-07-30 against 2246 real 20-tick windows: at floor=0.90, 71 windows
-    # (3.2%) qualify -- selective but non-degenerate. floor=0.92 measured 0
-    # qualifying windows (degenerate, do not use). The variance ceiling is
-    # currently non-binding at floor=0.90 (identical 71 windows at 0.02/0.03/
-    # 0.05, since the field's ~0.977 ceiling squeezes any min>=0.90 window into
-    # a <0.08 band) and is kept for when the floor is lowered or the field's
-    # range shifts -- see detect_flow_regime's docstring. Provisional.
-    metacog_flow_floor: float = Field(0.90, alias="EQUILIBRIUM_METACOG_FLOW_FLOOR")
-    metacog_flow_max_stdev: float = Field(
-        0.02, alias="EQUILIBRIUM_METACOG_FLOW_MAX_STDEV"
-    )
-    # ~10 minutes of consecutive calm at a ~30s tick cadence.
-    metacog_flow_min_ticks: int = Field(20, alias="EQUILIBRIUM_METACOG_FLOW_MIN_TICKS")
-
     channel_metacog_trigger: str = Field("orion:equilibrium:metacog:trigger", alias="CHANNEL_EQUILIBRIUM_METACOG_TRIGGER")
     channel_transport_baseline_hourly: str = Field(
         "orion:equilibrium:transport_baseline:hourly", alias="CHANNEL_TRANSPORT_BASELINE_HOURLY"

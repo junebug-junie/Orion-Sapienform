@@ -2,65 +2,22 @@
   "_comment": "Definition lock for scripts/check_definition_drift.py. Generated, never hand-edited. Regenerate with --update; the resulting diff IS the definition-change alert. Unlike the *_baseline.json ratchets this tracks current truth in both directions -- a definition change is an event, not a defect.",
   "metric_count": 715,
   "_last_change": {
-    "change_count": 56,
-    "high_severity_count": 36,
+    "change_count": 13,
+    "high_severity_count": 13,
     "changes": [
-      "high   routing_changed metric://field_channel/orion-field-digester/node:substrate.bus_synaptic.prediction_error (prompt_sites: - -> ['services.orion-mind.app.recall_signal_resolver:render_bus\u2026)",
-      "high   routing_changed metric://inner_state/orion-field-digester/field_state.v1#queue_contention_score (prompt_sites: - -> ['orion.curiosity.queue_contention_disclosure:format_queue_\u2026)",
-      "high   routing_changed metric://inner_state/orion-substrate-runtime/attention_broadcast_projection.v1#coalition_stability_score (prompt_sites: - -> ['services.orion-thought.app.reverie:build_reverie_context'])",
-      "high   semantics_changed metric://field_channel/orion-field-digester/availability (polarity: - -> higher_is_better)",
-      "high   semantics_changed metric://field_channel/orion-field-digester/available_capacity (polarity: - -> higher_is_better)",
-      "high   semantics_changed metric://field_channel/orion-field-digester/confidence (polarity: - -> higher_is_better)",
-      "high   semantics_changed metric://field_channel/orion-field-digester/conversation_load (polarity: - -> higher_is_worse)",
-      "high   semantics_changed metric://field_channel/orion-field-digester/cortex_exec_step_load (polarity: - -> higher_is_worse)",
-      "high   semantics_changed metric://field_channel/orion-field-digester/cpu_pressure (polarity: - -> higher_is_worse)",
-      "high   semantics_changed metric://field_channel/orion-field-digester/disk_pressure (polarity: - -> higher_is_worse)",
-      "high   semantics_changed metric://field_channel/orion-field-digester/egress_confidence_deficit (polarity: - -> higher_is_worse)",
-      "high   semantics_changed metric://field_channel/orion-field-digester/execution_friction (polarity: - -> higher_is_worse)",
-      "high   semantics_changed metric://field_channel/orion-field-digester/execution_pressure (polarity: - -> higher_is_worse)",
-      "high   semantics_changed metric://field_channel/orion-field-digester/failure_pressure (polarity: - -> higher_is_worse)",
-      "high   semantics_changed metric://field_channel/orion-field-digester/field_coherence_warning (polarity: - -> higher_is_worse)",
-      "high   semantics_changed metric://field_channel/orion-field-digester/gpu_pressure (polarity: - -> higher_is_worse)",
-      "high   semantics_changed metric://field_channel/orion-field-digester/memory_pressure (polarity: - -> higher_is_worse)",
-      "high   semantics_changed metric://field_channel/orion-field-digester/node:substrate.bus_synaptic.prediction_error (absent_means: - -> carried forward in node_vectors (prediction_error is not a \u2026, polarity: - -> higher_is_worse, rest: - -> about 0.01-0.03: a few edges are always over |z| 3. 0.0 mea\u2026, sparsity: - -> per_tick, value_kind: - -> level)",
-      "high   semantics_changed metric://field_channel/orion-field-digester/prediction_error (polarity: - -> higher_is_worse)",
-      "high   semantics_changed metric://field_channel/orion-field-digester/pressure (polarity: - -> higher_is_worse)",
-      "high   semantics_changed metric://field_channel/orion-field-digester/reasoning_load (polarity: - -> higher_is_worse)",
-      "high   semantics_changed metric://field_channel/orion-field-digester/reasoning_pressure (polarity: - -> higher_is_worse)",
-      "high   semantics_changed metric://field_channel/orion-field-digester/reliability_pressure (polarity: - -> higher_is_worse)",
-      "high   semantics_changed metric://field_channel/orion-field-digester/repair_pressure (polarity: - -> higher_is_worse)",
-      "high   semantics_changed metric://field_channel/orion-field-digester/stability (polarity: - -> higher_is_better)",
-      "high   semantics_changed metric://field_channel/orion-field-digester/staleness (polarity: - -> higher_is_worse)",
-      "high   semantics_changed metric://field_channel/orion-field-digester/thermal_pressure (polarity: - -> higher_is_worse)",
-      "high   semantics_changed metric://field_channel/orion-field-digester/vision_frame_staleness (absent_means: - -> dropped (unmeasured) after 300 s without a reading; 1.0 (no\u2026, rest: - -> 0.0 = at least one camera delivered a frame in the last 15 \u2026, sparsity: - -> per_tick, value_kind: - -> level)",
-      "high   semantics_changed metric://field_channel/orion-field-digester/vision_processing_failure_pressure (absent_means: - -> absent when nothing was dispatched; dropped (unmeasured) af\u2026, rest: - -> 0.0 = every frame dispatched in the last 10 minutes came ba\u2026, sparsity: - -> event_gated, value_kind: - -> level)",
-      "high   semantics_changed metric://inner_state/orion-field-digester/field_state.v1#queue_contention_score (absent_means: - -> schema default 0.0 -- a row from before the producer ran re\u2026, polarity: - -> higher_is_worse, rest: - -> 0.0 = every queue at or below its recent normal depth and n\u2026, sparsity: - -> per_tick, value_kind: - -> level)",
-      "high   semantics_changed metric://inner_state/orion-field-digester/field_state.v1#sustained_load_pressure (absent_means: - -> carried forward unchanged between 30 s recomputes and on a \u2026, polarity: - -> higher_is_worse, rest: - -> 0.0 = no (channel, node) is loaded AND steady this window; \u2026, sparsity: - -> designed_sparse, value_kind: - -> level)",
-      "high   semantics_changed metric://inner_state/orion-substrate-runtime/attention_broadcast_projection.v1#coalition_stability_score (absent_means: - -> dwell history is in-process, so it resets to 0.3 on a subst\u2026, polarity: - -> higher_is_better, rest: - -> 0.3 = no settled coalition (flickering). 0.6 = transitionin\u2026, sparsity: - -> per_tick, value_kind: - -> bucket)",
-      "high   semantics_changed metric://inner_state/orion-substrate-runtime/attention_self_model.v1#confidence (absent_means: - -> schema allows None; never None in 5,933 live rows (3 days t\u2026, polarity: - -> higher_is_better, rest: - -> 0.3 = no settled coalition. In practice a 3-tier dwell buck\u2026, sparsity: - -> per_tick, value_kind: - -> bucket)",
-      "high   semantics_changed metric://inner_state/orion-substrate-runtime/attention_self_model.v1#heartbeat_smear (absent_means: - -> None when the near end is below 1e-6., rest: - -> about 2-3 (far end of the heartbeat profile twice the near \u2026, sparsity: - -> per_tick, value_kind: - -> level)",
-      "high   semantics_changed metric://inner_state/orion-substrate-runtime/attention_self_model.v1#prediction_error_confidence (absent_means: - -> None when no active domain has a fresh reading (each drops \u2026, polarity: - -> higher_is_better, rest: - -> about 0.97-0.99: near-ceiling because most domain predictio\u2026, sparsity: - -> per_tick, value_kind: - -> level)",
-      "high   semantics_changed metric://inner_state/orion-substrate-runtime/attention_self_model.v1#top_down_effort_used (absent_means: - -> None when the broadcast lane is stale., rest: - -> 0.0 = no goal or no open loops, so attention ran bottom-up.\u2026, sparsity: - -> per_tick, value_kind: - -> binary)",
-      "medium added metric://field_channel/orion-substrate-runtime/node:substrate.biometrics.prediction_error",
-      "medium added metric://field_channel/orion-substrate-runtime/node:substrate.cabinet.prediction_error",
-      "medium added metric://field_channel/orion-substrate-runtime/node:substrate.chat.prediction_error",
-      "medium added metric://field_channel/orion-substrate-runtime/node:substrate.codebase.prediction_error",
-      "medium added metric://field_channel/orion-substrate-runtime/node:substrate.execution.prediction_error",
-      "medium added metric://field_channel/orion-substrate-runtime/node:substrate.harness_closure.prediction_error",
-      "medium added metric://field_channel/orion-substrate-runtime/node:substrate.perception.prediction_error",
-      "medium added metric://field_channel/orion-substrate-runtime/node:substrate.route.prediction_error",
-      "medium added metric://inner_state/orion-cortex-exec/attention_salience_trace.v1",
-      "medium added metric://inner_state/orion-cortex-exec/attention_salience_trace.v1#salience",
-      "medium added metric://inner_state/orion-equilibrium-service/equilibrium_snapshot.v1",
-      "medium added metric://inner_state/orion-equilibrium-service/equilibrium_snapshot.v1#distress_score",
-      "medium added metric://inner_state/orion-equilibrium-service/equilibrium_snapshot.v1#grace_multiplier",
-      "medium added metric://inner_state/orion-equilibrium-service/equilibrium_snapshot.v1#zen_score",
-      "medium added metric://inner_state/orion-hub/repair_pressure_appraisal.v1",
-      "medium added metric://inner_state/orion-hub/repair_pressure_appraisal.v1#confidence",
-      "medium added metric://inner_state/orion-hub/repair_pressure_appraisal.v1#level",
-      "medium added metric://inner_state/orion-substrate-runtime/frontier_invocation_signal.v1",
-      "medium added metric://inner_state/orion-substrate-runtime/frontier_invocation_signal.v1#confidence",
-      "medium added metric://inner_state/orion-substrate-runtime/frontier_invocation_signal.v1#signal_strength"
+      "high   routing_changed metric://inner_state/orion-substrate-runtime/attention_self_model.v1 (declared_consumers: \u2026service.app.flow_metacog_gate:build_flow_metacog_trigger', \u2026\u2026 -> \u2026service.app.insight_meta\u2026)",
+      "high   routing_changed metric://inner_state/orion-substrate-runtime/attention_self_model.v1#broadcast_lane_age_sec (declared_consumers: \u2026service.app.flow_metacog_gate:build_flow_metacog_trigger', \u2026\u2026 -> \u2026service.app.insight_meta\u2026)",
+      "high   routing_changed metric://inner_state/orion-substrate-runtime/attention_self_model.v1#confidence (declared_consumers: \u2026service.app.flow_metacog_gate:build_flow_metacog_trigger', \u2026\u2026 -> \u2026service.app.insight_meta\u2026)",
+      "high   routing_changed metric://inner_state/orion-substrate-runtime/attention_self_model.v1#field_overall_salience (declared_consumers: \u2026service.app.flow_metacog_gate:build_flow_metacog_trigger', \u2026\u2026 -> \u2026service.app.insight_meta\u2026)",
+      "high   routing_changed metric://inner_state/orion-substrate-runtime/attention_self_model.v1#heartbeat_bulk_penetration_depth (declared_consumers: \u2026service.app.flow_metacog_gate:build_flow_metacog_trigger', \u2026\u2026 -> \u2026service.app.insight_meta\u2026)",
+      "high   routing_changed metric://inner_state/orion-substrate-runtime/attention_self_model.v1#heartbeat_mean_ratio (declared_consumers: \u2026service.app.flow_metacog_gate:build_flow_metacog_trigger', \u2026\u2026 -> \u2026service.app.insight_meta\u2026)",
+      "high   routing_changed metric://inner_state/orion-substrate-runtime/attention_self_model.v1#heartbeat_organ_distinctness (declared_consumers: \u2026service.app.flow_metacog_gate:build_flow_metacog_trigger', \u2026\u2026 -> \u2026service.app.insight_meta\u2026)",
+      "high   routing_changed metric://inner_state/orion-substrate-runtime/attention_self_model.v1#heartbeat_smear (declared_consumers: \u2026service.app.flow_metacog_gate:build_flow_metacog_trigger', \u2026\u2026 -> \u2026service.app.insight_meta\u2026)",
+      "high   routing_changed metric://inner_state/orion-substrate-runtime/attention_self_model.v1#heartbeat_std_ratio (declared_consumers: \u2026service.app.flow_metacog_gate:build_flow_metacog_trigger', \u2026\u2026 -> \u2026service.app.insight_meta\u2026)",
+      "high   routing_changed metric://inner_state/orion-substrate-runtime/attention_self_model.v1#prediction_error_confidence (declared_consumers: \u2026service.app.flow_metacog_gate:build_flow_metacog_trigger', \u2026\u2026 -> \u2026service.app.insight_meta\u2026)",
+      "high   routing_changed metric://inner_state/orion-substrate-runtime/attention_self_model.v1#top_down_bias_max (declared_consumers: \u2026service.app.flow_metacog_gate:build_flow_metacog_trigger', \u2026\u2026 -> \u2026service.app.insight_meta\u2026)",
+      "high   routing_changed metric://inner_state/orion-substrate-runtime/attention_self_model.v1#top_down_effort_used (declared_consumers: \u2026service.app.flow_metacog_gate:build_flow_metacog_trigger', \u2026\u2026 -> \u2026service.app.insight_meta\u2026)",
+      "high   semantics_changed metric://inner_state/orion-substrate-runtime/attention_self_model.v1#heartbeat_smear (absent_means: \u2026near end is below 1e-6. -> \u2026near end is dead: below the 1e-6 floor or far/near > 10 (ne\u2026, rest: \u2026 at >= 0.5. Unbounded: a near end just above 1e-6 yields va\u2026 -> \u2026 at >= 0.5. Bounded at SMEAR_DEAD_RATIO=10 since PR #2571 (\u2026)"
     ]
   },
   "definitions": {
@@ -4901,7 +4858,6 @@
     "metric://inner_state/orion-substrate-runtime/attention_self_model.v1": {
       "schema_id": "AttentionSelfModelV1",
       "declared_consumers": [
-        "services.orion-equilibrium-service.app.flow_metacog_gate:build_flow_metacog_trigger",
         "services.orion-equilibrium-service.app.insight_metacog_gate:build_insight_metacog_trigger"
       ],
       "notes": "cadence=per_tick composition=shadow_declared_not_composed",
@@ -4910,7 +4866,6 @@
     "metric://inner_state/orion-substrate-runtime/attention_self_model.v1#broadcast_lane_age_sec": {
       "schema_id": "AttentionSelfModelV1",
       "declared_consumers": [
-        "services.orion-equilibrium-service.app.flow_metacog_gate:build_flow_metacog_trigger",
         "services.orion-equilibrium-service.app.insight_metacog_gate:build_insight_metacog_trigger"
       ],
       "upstream": [
@@ -4927,7 +4882,6 @@
       "absent_means": "schema allows None; never None in 5,933 live rows (3 days to 2026-10-10).",
       "polarity": "higher_is_better",
       "declared_consumers": [
-        "services.orion-equilibrium-service.app.flow_metacog_gate:build_flow_metacog_trigger",
         "services.orion-equilibrium-service.app.insight_metacog_gate:build_insight_metacog_trigger"
       ],
       "upstream": [
@@ -4939,7 +4893,6 @@
     "metric://inner_state/orion-substrate-runtime/attention_self_model.v1#field_overall_salience": {
       "schema_id": "AttentionSelfModelV1",
       "declared_consumers": [
-        "services.orion-equilibrium-service.app.flow_metacog_gate:build_flow_metacog_trigger",
         "services.orion-equilibrium-service.app.insight_metacog_gate:build_insight_metacog_trigger"
       ],
       "upstream": [
@@ -4951,7 +4904,6 @@
     "metric://inner_state/orion-substrate-runtime/attention_self_model.v1#heartbeat_bulk_penetration_depth": {
       "schema_id": "AttentionSelfModelV1",
       "declared_consumers": [
-        "services.orion-equilibrium-service.app.flow_metacog_gate:build_flow_metacog_trigger",
         "services.orion-equilibrium-service.app.insight_metacog_gate:build_insight_metacog_trigger"
       ],
       "upstream": [
@@ -4963,7 +4915,6 @@
     "metric://inner_state/orion-substrate-runtime/attention_self_model.v1#heartbeat_mean_ratio": {
       "schema_id": "AttentionSelfModelV1",
       "declared_consumers": [
-        "services.orion-equilibrium-service.app.flow_metacog_gate:build_flow_metacog_trigger",
         "services.orion-equilibrium-service.app.insight_metacog_gate:build_insight_metacog_trigger"
       ],
       "upstream": [
@@ -4975,7 +4926,6 @@
     "metric://inner_state/orion-substrate-runtime/attention_self_model.v1#heartbeat_organ_distinctness": {
       "schema_id": "AttentionSelfModelV1",
       "declared_consumers": [
-        "services.orion-equilibrium-service.app.flow_metacog_gate:build_flow_metacog_trigger",
         "services.orion-equilibrium-service.app.insight_metacog_gate:build_insight_metacog_trigger"
       ],
       "upstream": [
@@ -4987,11 +4937,10 @@
     "metric://inner_state/orion-substrate-runtime/attention_self_model.v1#heartbeat_smear": {
       "schema_id": "AttentionSelfModelV1",
       "value_kind": "level",
-      "rest": "about 2-3 (far end of the heartbeat profile twice the near end); 'smeared' at >= 0.5. Unbounded: a near end just above 1e-6 yields values in the millions, which means 'near end nearly dead', not a huge smear.",
+      "rest": "about 2-3 (far end of the heartbeat profile twice the near end); 'smeared' at >= 0.5. Bounded at SMEAR_DEAD_RATIO=10 since PR #2571 (orion-heartbeat proprioception.py:46,123): healthy readings sit at 0.94-5.5, so a value near 10 is the edge of 'alive'.",
       "sparsity": "per_tick",
-      "absent_means": "None when the near end is below 1e-6.",
+      "absent_means": "None when the near end is dead: below the 1e-6 floor or far/near > 10 (near end carries < 1/10 of the far end's entanglement). Before #2571 this read 1e4-1.5e6.",
       "declared_consumers": [
-        "services.orion-equilibrium-service.app.flow_metacog_gate:build_flow_metacog_trigger",
         "services.orion-equilibrium-service.app.insight_metacog_gate:build_insight_metacog_trigger"
       ],
       "upstream": [
@@ -5003,7 +4952,6 @@
     "metric://inner_state/orion-substrate-runtime/attention_self_model.v1#heartbeat_std_ratio": {
       "schema_id": "AttentionSelfModelV1",
       "declared_consumers": [
-        "services.orion-equilibrium-service.app.flow_metacog_gate:build_flow_metacog_trigger",
         "services.orion-equilibrium-service.app.insight_metacog_gate:build_insight_metacog_trigger"
       ],
       "upstream": [
@@ -5020,7 +4968,6 @@
       "absent_means": "None when no active domain has a fresh reading (each drops after 1800 s, orion/substrate/prediction_error_freshness.py:26).",
       "polarity": "higher_is_better",
       "declared_consumers": [
-        "services.orion-equilibrium-service.app.flow_metacog_gate:build_flow_metacog_trigger",
         "services.orion-equilibrium-service.app.insight_metacog_gate:build_insight_metacog_trigger"
       ],
       "upstream": [
@@ -5032,7 +4979,6 @@
     "metric://inner_state/orion-substrate-runtime/attention_self_model.v1#top_down_bias_max": {
       "schema_id": "AttentionSelfModelV1",
       "declared_consumers": [
-        "services.orion-equilibrium-service.app.flow_metacog_gate:build_flow_metacog_trigger",
         "services.orion-equilibrium-service.app.insight_metacog_gate:build_insight_metacog_trigger"
       ],
       "upstream": [
@@ -5048,7 +4994,6 @@
       "sparsity": "per_tick",
       "absent_means": "None when the broadcast lane is stale.",
       "declared_consumers": [
-        "services.orion-equilibrium-service.app.flow_metacog_gate:build_flow_metacog_trigger",
         "services.orion-equilibrium-service.app.insight_metacog_gate:build_insight_metacog_trigger"
       ],
       "upstream": [

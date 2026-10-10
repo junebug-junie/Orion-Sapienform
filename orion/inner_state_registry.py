@@ -358,12 +358,17 @@ REGISTRY: tuple[InnerStateSignal, ...] = (
                     value_kind="level",
                     rest=(
                         "about 2-3 (far end of the heartbeat profile twice the "
-                        "near end); 'smeared' at >= 0.5. Unbounded: a near end "
-                        "just above 1e-6 yields values in the millions, which "
-                        "means 'near end nearly dead', not a huge smear."
+                        "near end); 'smeared' at >= 0.5. Bounded at "
+                        "SMEAR_DEAD_RATIO=10 since PR #2571 (orion-heartbeat "
+                        "proprioception.py:46,123): healthy readings sit at "
+                        "0.94-5.5, so a value near 10 is the edge of 'alive'."
                     ),
                     sparsity="per_tick",
-                    absent_means="None when the near end is below 1e-6.",
+                    absent_means=(
+                        "None when the near end is dead: below the 1e-6 floor or "
+                        "far/near > 10 (near end carries < 1/10 of the far "
+                        "end's entanglement). Before #2571 this read 1e4-1.5e6."
+                    ),
                 ),
             ),
         ),
@@ -373,7 +378,6 @@ REGISTRY: tuple[InnerStateSignal, ...] = (
             "reachable status. Real live consumers are listed below."
         ),
         cognition_consumers=(
-            "services.orion-equilibrium-service.app.flow_metacog_gate:build_flow_metacog_trigger",
             "services.orion-equilibrium-service.app.insight_metacog_gate:build_insight_metacog_trigger",
         ),
         notes=(
@@ -385,10 +389,12 @@ REGISTRY: tuple[InnerStateSignal, ...] = (
             "consumed by any live decision path -- that wiring is explicitly "
             "future work (Phase 3+)'. That is STALE. "
             "orion-equilibrium-service's generative_metacog_poll_loop reads it "
-            "via AttentionSelfModelReader.fetch_recent_samples and feeds both "
-            "metacog gates above; EQUILIBRIUM_METACOG_INSIGHT_TRIGGER_ENABLE "
-            "and EQUILIBRIUM_METACOG_FLOW_TRIGGER_ENABLE are both true in "
-            ".env_example, so the path is live by default, not future work."
+            "via AttentionSelfModelReader.fetch_recent_samples and feeds the "
+            "insight metacog gate above; EQUILIBRIUM_METACOG_INSIGHT_TRIGGER_ENABLE "
+            "is true in .env_example, so the path is live by default, not future "
+            "work. The flow gate consumer was retired 2026-10-10 (its plateau was "
+            "the idle rest state; see docs/superpowers/pr-reports/"
+            "2026-10-10-metacog-flow-trigger-calibration-pr.md)."
         ),
     ),
     InnerStateSignal(

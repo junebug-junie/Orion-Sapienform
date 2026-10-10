@@ -15,7 +15,7 @@ from pathlib import Path
 import pytest
 
 from orion.metacog.evidence_map import map_trigger
-from orion.substrate.metacog_trigger_signals import ConfidenceRecovery, FlowRegime
+from orion.substrate.metacog_trigger_signals import ConfidenceRecovery
 
 ROOT = Path(__file__).resolve().parents[3]
 GATES = ROOT / "services" / "orion-equilibrium-service" / "app"
@@ -126,18 +126,10 @@ def test_relational_gate():
     _assert_mapped(t, severity="critical")
 
 
-def test_flow_and_insight_gates():
+def test_insight_gate():
+    # The flow gate was retired 2026-10-10; map_flow survives only for
+    # historical rows and is covered by test_evidence_map.py.
     now = datetime.now(timezone.utc)
-    flow = _gate("flow_metacog_gate").build_flow_metacog_trigger(
-        FlowRegime(
-            started_at=now, ended_at=now, tick_count=20, span_sec=800.0,
-            min_value=0.92, mean_value=0.97, stdev_value=0.015,
-        ),
-        floor=0.9,
-        max_stdev=0.02,
-        **COMMON,
-    )
-    _assert_mapped(flow, severity="nominal")
     insight = _gate("insight_metacog_gate").build_insight_metacog_trigger(
         ConfidenceRecovery(
             low_at=now, high_at=now, low_value=0.69, high_value=0.93,

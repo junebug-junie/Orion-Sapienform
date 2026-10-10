@@ -26,6 +26,9 @@ OBSERVED = (datetime.now(timezone.utc) - timedelta(minutes=1)).replace(microseco
 
 def _make_worker(monkeypatch, *, history_enabled: bool) -> BiometricsSubstrateWorker:
     monkeypatch.setenv("POSTGRES_URI", "postgresql://unused/unused")
+    # Pins the pre-world-first competition (flag off). World-first is pinned
+    # in test_worker_world_first_broadcast.py.
+    monkeypatch.setenv("ATTENTION_WORLD_FIRST_ENABLED", "false")
     monkeypatch.setenv("ORION_ATTENTION_BROADCAST_ENABLED", "true")
     monkeypatch.setenv("ORION_ATTENTION_BROADCAST_MIN_SALIENCE", "0.05")
     monkeypatch.setenv("SUBSTRATE_PE_HISTORY_ENABLED", "true" if history_enabled else "false")

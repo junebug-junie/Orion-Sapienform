@@ -358,6 +358,10 @@ def _attention_loop_candidates(
                 if strength < min_salience:
                     continue
                 refs = [str(r) for r in (getattr(loop, "source_refs", None) or [])][:8]
+                if not any(r.startswith("node:") for r in refs):
+                    # A world-first external loop (e.g. "world:chat") names no
+                    # graph node: a concept_expand over it would match nothing.
+                    continue
                 candidates.append(
                     FrontierInvocationSignalV1(
                         signal_type="curiosity_candidate",

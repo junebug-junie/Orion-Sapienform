@@ -2841,11 +2841,19 @@ class BiometricsSubstrateWorker:
                     # broadcast itself -- loops just carry magnitude=None.
                     logger.exception("substrate_pe_history_tick_failed")
                     magnitudes = None
+            world_first = bool(getattr(s, "attention_world_first_enabled", False))
             frame = build_substrate_attention_frame(
                 nodes=list(state.nodes.values()),
                 min_salience=float(s.attention_broadcast_min_salience),
                 now=tick_now,
                 magnitude_by_node_id=magnitudes,
+                world_first=world_first,
+                external_candidates=(
+                    self._world_first_external_candidates(tick_now) if world_first else None
+                ),
+                rank_percentile_by_node_id=(
+                    getattr(self, "_pe_rank_percentiles", None) if magnitudes else None
+                ),
             )
             projection = broadcast_projection_from_frame(frame)
             self._store.save_attention_broadcast(projection)
@@ -2880,6 +2888,22 @@ class BiometricsSubstrateWorker:
                     logger.exception("substrate_system_one_appraisal_tick_failed")
         except Exception:
             logger.exception("substrate_attention_broadcast_failed")
+
+    def _world_first_external_candidates(self, now: datetime) -> list[Any]:
+        """World sources that are not graph nodes (spec 2026-10-07 section A):
+        chat activity, Juniper's turns in the last 15 min against the same
+        count over her last 7 days. A failed read is an ABSENT candidate,
+        never a calm one. (Camera surprise competes as the
+        ``node:substrate.perception`` graph node.)"""
+        from orion.attention.world_first import CHAT_RATE_WINDOW, chat_candidate
+        from orion.substrate.prediction_error_magnitude import WINDOW_7D
+
+        try:
+            turns = self._store.fetch_chat_turn_times(since=now - WINDOW_7D - CHAT_RATE_WINDOW)
+        except Exception as exc:  # noqa: BLE001 -- absent, not calm
+            logger.warning("substrate_world_first_chat_read_failed err=%s", exc)
+            turns = None
+        return [chat_candidate(turns, now=now)]
 
     # Prediction-error magnitude history (spec 2026-10-02, step 1). In-memory
     # per-node window seeded once from Postgres, so the 7-day percentiles do
@@ -3014,14 +3038,22 @@ class BiometricsSubstrateWorker:
                 logger.exception("substrate_pe_history_prune_failed")
 
         magnitudes: dict[str, Any] = {}
+        # World-first ranking key (mid-rank: share below + half the share
+        # equal), computed from the same window so ceiling ties rank fairly.
+        rank_percentiles: dict[str, float | None] = {}
+        from orion.attention.world_first import midrank_percentile
+
         for node_id, (value, observed_at) in current.items():
+            history = list(cache.get(node_id) or ())
             magnitudes[node_id] = compute_prediction_error_magnitude(
                 value=value,
                 observed_at=observed_at,
-                history=list(cache.get(node_id) or ()),
+                history=history,
                 now=now,
                 trend_min_delta=float(s.pe_trend_min_delta),
             )
+            rank_percentiles[node_id] = midrank_percentile(value, [v for _, v in history])
+        self._pe_rank_percentiles = rank_percentiles
         logger.info(
             "substrate_pe_history_tick nodes=%d new_samples=%d",
             len(current),

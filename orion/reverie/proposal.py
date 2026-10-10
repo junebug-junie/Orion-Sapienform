@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from orion.schemas.attention_candidate import is_world_source_id
 from orion.schemas.proposal_frame import ProposalCandidateV1
 
 if TYPE_CHECKING:
@@ -55,6 +56,14 @@ def spontaneous_thought_to_candidate(
     if thought is None or thought.hollow:
         return None
     if thought.salience < min_salience:
+        return None
+    # World-first attention (2026-10-10): a reverie can narrate a WORLD winner
+    # (Juniper talking, a camera surprise). That is a thought, not a reason to
+    # review Orion's own policy: a proposal targets self_state, so a coalition
+    # made only of world sources never becomes one.
+    coalition = thought.coalition
+    attended = list(getattr(coalition, "attended_node_ids", None) or []) if coalition else []
+    if attended and all(is_world_source_id(a) for a in attended):
         return None
 
     target_id = (

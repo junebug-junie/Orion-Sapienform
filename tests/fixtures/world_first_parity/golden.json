@@ -1,0 +1,709 @@
+{
+ "broadcast": {
+  "mixed": {
+   "candidate_actions": [
+    {
+     "action_type": "watch",
+     "open_loop_id": "open-loop-7376a3da4050",
+     "provenance": {
+      "min_ask_score": 0.65,
+      "policy": "deterministic_attention_frame_v1"
+     },
+     "question_text": null,
+     "rationale": "ask suppressed because policy allows at most one selected ask",
+     "score": 0.75
+    },
+    {
+     "action_type": "watch",
+     "open_loop_id": "open-loop-40a4146e59fb",
+     "provenance": {
+      "min_ask_score": 0.65,
+      "policy": "deterministic_attention_frame_v1"
+     },
+     "question_text": null,
+     "rationale": "target is useful but not worth a question now",
+     "score": 0.583
+    },
+    {
+     "action_type": "defer",
+     "open_loop_id": "open-loop-e91fa7e1c61e",
+     "provenance": {
+      "min_ask_score": 0.65,
+      "policy": "deterministic_attention_frame_v1"
+     },
+     "question_text": null,
+     "rationale": "target is unresolved but low priority",
+     "score": 0.417
+    },
+    {
+     "action_type": "none",
+     "open_loop_id": "open-loop-5cb6cd032923",
+     "provenance": {
+      "min_ask_score": 0.65,
+      "policy": "deterministic_attention_frame_v1"
+     },
+     "question_text": null,
+     "rationale": "target below curiosity threshold",
+     "score": 0.25
+    }
+   ],
+   "correlation_id": null,
+   "debug": {
+    "belief_lineage": [],
+    "enabled": true,
+    "merged_signal_count": 4,
+    "min_salience": 0.05,
+    "mode": "substrate_broadcast",
+    "signal_count": 4,
+    "voluntary_override_absent_reason": "top_down_disabled"
+   },
+   "deferred_items": [
+    "open-loop-7376a3da4050",
+    "open-loop-40a4146e59fb",
+    "open-loop-e91fa7e1c61e"
+   ],
+   "effort_budget_used": 0.0,
+   "generated_at": "2026-10-09T12:00:00Z",
+   "live_unknowns": [
+    "Execution prediction error",
+    "unresolved contradiction",
+    "Perception prediction error",
+    "Biometrics prediction error"
+   ],
+   "open_loops": [
+    {
+     "already_known": false,
+     "askability": 0.72,
+     "autonomy_value": 0.0,
+     "combined_salience": 0.0,
+     "concept_value": 0.0,
+     "confidence": 0.8,
+     "continuity_relevance": 0.25,
+     "description": "Execution prediction error",
+     "id": "open-loop-7376a3da4050",
+     "magnitude": null,
+     "novelty": 0.35,
+     "predictive_value": 0.72,
+     "provenance": {
+      "autonomy_signals": [],
+      "belief_lineage": [],
+      "detector": "substrate_pressure",
+      "extractor": "attention_signal_pipeline_v1",
+      "signal_driver": "prediction_error",
+      "signal_id": "substrate-signal-a2e9211f51a2",
+      "signal_kind": "substrate_prediction_error",
+      "signal_source": "substrate_broadcast"
+     },
+     "relational_relevance": 0.18,
+     "salience": 0.75,
+     "salience_features": {
+      "evidence_breadth": 0.5,
+      "evidence_strength": 0.248,
+      "schema_version": "attention.salience.features.v1"
+     },
+     "source_refs": [
+      "node:substrate.execution"
+     ],
+     "source_text": "",
+     "target_type": "anomaly",
+     "top_down_bias": 0.0,
+     "why_it_matters": "novel or unresolved current-turn target with substrate pressure"
+    },
+    {
+     "already_known": false,
+     "askability": 0.72,
+     "autonomy_value": 0.0,
+     "combined_salience": 0.0,
+     "concept_value": 0.0,
+     "confidence": 0.8,
+     "continuity_relevance": 0.25,
+     "description": "unresolved contradiction",
+     "id": "open-loop-40a4146e59fb",
+     "magnitude": null,
+     "novelty": 0.35,
+     "predictive_value": 0.22,
+     "provenance": {
+      "autonomy_signals": [],
+      "belief_lineage": [],
+      "detector": "substrate_pressure",
+      "extractor": "attention_signal_pipeline_v1",
+      "signal_driver": "pressure",
+      "signal_id": "substrate-signal-85cfe5b4cb01",
+      "signal_kind": "substrate_pressure",
+      "signal_source": "substrate_broadcast"
+     },
+     "relational_relevance": 0.18,
+     "salience": 0.583,
+     "salience_features": {
+      "evidence_breadth": 0.5,
+      "evidence_strength": 0.16,
+      "schema_version": "attention.salience.features.v1"
+     },
+     "source_refs": [
+      "node:concept.x"
+     ],
+     "source_text": "",
+     "target_type": "concept",
+     "top_down_bias": 0.0,
+     "why_it_matters": "novel or unresolved current-turn target with substrate pressure"
+    },
+    {
+     "already_known": false,
+     "askability": 0.72,
+     "autonomy_value": 0.0,
+     "combined_salience": 0.0,
+     "concept_value": 0.0,
+     "confidence": 0.8,
+     "continuity_relevance": 0.25,
+     "description": "Perception prediction error",
+     "id": "open-loop-e91fa7e1c61e",
+     "magnitude": null,
+     "novelty": 0.35,
+     "predictive_value": 0.72,
+     "provenance": {
+      "autonomy_signals": [],
+      "belief_lineage": [],
+      "detector": "substrate_pressure",
+      "extractor": "attention_signal_pipeline_v1",
+      "signal_driver": "prediction_error",
+      "signal_id": "substrate-signal-f768c2284bcc",
+      "signal_kind": "substrate_prediction_error",
+      "signal_source": "substrate_broadcast"
+     },
+     "relational_relevance": 0.18,
+     "salience": 0.417,
+     "salience_features": {
+      "evidence_breadth": 0.5,
+      "evidence_strength": 0.096,
+      "schema_version": "attention.salience.features.v1"
+     },
+     "source_refs": [
+      "node:substrate.perception"
+     ],
+     "source_text": "",
+     "target_type": "anomaly",
+     "top_down_bias": 0.0,
+     "why_it_matters": "novel or unresolved current-turn target with substrate pressure"
+    },
+    {
+     "already_known": false,
+     "askability": 0.72,
+     "autonomy_value": 0.0,
+     "combined_salience": 0.0,
+     "concept_value": 0.0,
+     "confidence": 0.8,
+     "continuity_relevance": 0.25,
+     "description": "Biometrics prediction error",
+     "id": "open-loop-5cb6cd032923",
+     "magnitude": null,
+     "novelty": 0.35,
+     "predictive_value": 0.72,
+     "provenance": {
+      "autonomy_signals": [],
+      "belief_lineage": [],
+      "detector": "substrate_pressure",
+      "extractor": "attention_signal_pipeline_v1",
+      "signal_driver": "prediction_error",
+      "signal_id": "substrate-signal-dcf6e4a800e2",
+      "signal_kind": "substrate_prediction_error",
+      "signal_source": "substrate_broadcast"
+     },
+     "relational_relevance": 0.18,
+     "salience": 0.25,
+     "salience_features": {
+      "evidence_breadth": 0.5,
+      "evidence_strength": 0.064,
+      "schema_version": "attention.salience.features.v1"
+     },
+     "source_refs": [
+      "node:substrate.biometrics"
+     ],
+     "source_text": "",
+     "target_type": "anomaly",
+     "top_down_bias": 0.0,
+     "why_it_matters": "novel or unresolved current-turn target with substrate pressure"
+    }
+   ],
+   "schema_version": "attention.frame.v1",
+   "selected_action": {
+    "action_type": "watch",
+    "open_loop_id": "open-loop-7376a3da4050",
+    "provenance": {
+     "min_ask_score": 0.65,
+     "policy": "deterministic_attention_frame_v1"
+    },
+    "question_text": null,
+    "rationale": "ask suppressed because policy allows at most one selected ask",
+    "score": 0.75
+   },
+   "session_id": null,
+   "suppressions": [
+    {
+     "confidence": 0.95,
+     "rationale": "policy allows at most one selected ask",
+     "reason": "too_many_questions",
+     "target_ref": "open-loop-7376a3da4050"
+    }
+   ],
+   "turn_id": null,
+   "voluntary_override": null
+  }
+ },
+ "field": {
+  "all_calm": {
+   "attention_policy_id": "field_attention_policy.v1",
+   "capability_targets": [],
+   "dominant_targets": [
+    {
+     "confidence_score": 1.0,
+     "dominant_channels": {
+      "prediction_error": 0.031
+     },
+     "evidence_refs": [
+      "field:tick_parity_2"
+     ],
+     "novelty_score": 0.0,
+     "pressure_score": 0.031,
+     "reasons": [
+      "precision-weighted prediction-error salience (current error 0.0310, precision 39558.14, n=30)",
+      "variance-floor instability: near-constant recent error history"
+     ],
+     "salience_score": 1.0,
+     "suggested_observation_mode": "inspect",
+     "target_id": "node:substrate.bus_synaptic",
+     "target_kind": "node",
+     "urgency_score": 0.031
+    }
+   ],
+   "frame_id": "attention.frame:tick_parity_2:field_attention_policy.v1",
+   "generated_at": "2026-10-09T12:00:00Z",
+   "node_targets": [
+    {
+     "confidence_score": 1.0,
+     "dominant_channels": {
+      "prediction_error": 0.031
+     },
+     "evidence_refs": [
+      "field:tick_parity_2"
+     ],
+     "novelty_score": 0.0,
+     "pressure_score": 0.031,
+     "reasons": [
+      "precision-weighted prediction-error salience (current error 0.0310, precision 39558.14, n=30)",
+      "variance-floor instability: near-constant recent error history"
+     ],
+     "salience_score": 1.0,
+     "suggested_observation_mode": "inspect",
+     "target_id": "node:substrate.bus_synaptic",
+     "target_kind": "node",
+     "urgency_score": 0.031
+    }
+   ],
+   "overall_salience": 1.0,
+   "recent_perturbations": [
+    "state_delta:a"
+   ],
+   "schema_version": "field.attention.frame.v1",
+   "source_field_generated_at": "2026-10-09T12:00:00Z",
+   "source_field_tick_id": "tick_parity_2",
+   "suppressed_targets": [
+    {
+     "confidence_score": 1.0,
+     "dominant_channels": {
+      "prediction_error": 0.01
+     },
+     "evidence_refs": [
+      "field:tick_parity_2"
+     ],
+     "novelty_score": 0.0,
+     "pressure_score": 0.01,
+     "reasons": [
+      "precision-weighted prediction-error salience (current error 0.0100, precision 39558.14, n=30)"
+     ],
+     "salience_score": 0.0,
+     "suggested_observation_mode": "ignore",
+     "target_id": "node:substrate.biometrics",
+     "target_kind": "node",
+     "urgency_score": 0.01
+    },
+    {
+     "confidence_score": 1.0,
+     "dominant_channels": {},
+     "evidence_refs": [
+      "field:tick_parity_2"
+     ],
+     "novelty_score": 0.0,
+     "pressure_score": 0.8,
+     "reasons": [
+      "Candidate B novelty-only salience: current-tick pressure proxy 0.8000 vs. prior frame (novelty=0.0000); magnitude/dwell scorers not applied (no real data for this target universe / near-always-empty coalition, respectively -- see selector docstring)"
+     ],
+     "salience_score": 0.0,
+     "suggested_observation_mode": "ignore",
+     "target_id": "node:athena",
+     "target_kind": "node",
+     "urgency_score": 0.0
+    },
+    {
+     "confidence_score": 1.0,
+     "dominant_channels": {},
+     "evidence_refs": [
+      "field:tick_parity_2"
+     ],
+     "novelty_score": 0.0,
+     "pressure_score": 0.4,
+     "reasons": [
+      "Candidate B novelty-only salience: current-tick pressure proxy 0.4000 vs. prior frame (novelty=0.0000); magnitude/dwell scorers not applied (no real data for this target universe / near-always-empty coalition, respectively -- see selector docstring)"
+     ],
+     "salience_score": 0.0,
+     "suggested_observation_mode": "ignore",
+     "target_id": "node:circe",
+     "target_kind": "node",
+     "urgency_score": 0.0
+    },
+    {
+     "confidence_score": 1.0,
+     "dominant_channels": {},
+     "evidence_refs": [
+      "field:tick_parity_2"
+     ],
+     "novelty_score": 0.0,
+     "pressure_score": 0.2,
+     "reasons": [
+      "Candidate B novelty-only salience: current-tick pressure proxy 0.2000 vs. prior frame (novelty=0.0000); magnitude/dwell scorers not applied (no real data for this target universe / near-always-empty coalition, respectively -- see selector docstring)"
+     ],
+     "salience_score": 0.0,
+     "suggested_observation_mode": "ignore",
+     "target_id": "node:substrate.perception",
+     "target_kind": "node",
+     "urgency_score": 0.0
+    },
+    {
+     "confidence_score": 1.0,
+     "dominant_channels": {},
+     "evidence_refs": [
+      "field:tick_parity_2"
+     ],
+     "novelty_score": 0.0,
+     "pressure_score": 0.7,
+     "reasons": [
+      "Candidate B novelty-only salience: current-tick pressure proxy 0.7000 vs. prior frame (novelty=0.0000); magnitude/dwell scorers not applied (no real data for this target universe / near-always-empty coalition, respectively -- see selector docstring)"
+     ],
+     "salience_score": 0.0,
+     "suggested_observation_mode": "ignore",
+     "target_id": "capability:orchestration",
+     "target_kind": "capability",
+     "urgency_score": 0.0
+    },
+    {
+     "confidence_score": 1.0,
+     "dominant_channels": {},
+     "evidence_refs": [
+      "field:tick_parity_2"
+     ],
+     "novelty_score": 0.0,
+     "pressure_score": 0.2,
+     "reasons": [
+      "Candidate B novelty-only salience: current-tick pressure proxy 0.2000 vs. prior frame (novelty=0.0000); magnitude/dwell scorers not applied (no real data for this target universe / near-always-empty coalition, respectively -- see selector docstring)"
+     ],
+     "salience_score": 0.0,
+     "suggested_observation_mode": "ignore",
+     "target_id": "capability:vision",
+     "target_kind": "capability",
+     "urgency_score": 0.0
+    }
+   ],
+   "system_targets": [],
+   "warnings": []
+  },
+  "calm_and_spike": {
+   "attention_policy_id": "field_attention_policy.v1",
+   "capability_targets": [],
+   "dominant_targets": [
+    {
+     "confidence_score": 1.0,
+     "dominant_channels": {
+      "prediction_error": 0.20833333333333334
+     },
+     "evidence_refs": [
+      "field:tick_parity_1"
+     ],
+     "novelty_score": 0.0,
+     "pressure_score": 0.20833333333333334,
+     "reasons": [
+      "precision-weighted prediction-error salience (current error 0.2083, precision 51.78, n=24)",
+      "stale reading: last error 0.2500 is 5 min old, weighted 0.83"
+     ],
+     "salience_score": 1.0,
+     "suggested_observation_mode": "inspect",
+     "target_id": "node:substrate.route",
+     "target_kind": "node",
+     "urgency_score": 0.20833333333333334
+    },
+    {
+     "confidence_score": 1.0,
+     "dominant_channels": {
+      "prediction_error": 0.5866666666666667
+     },
+     "evidence_refs": [
+      "field:tick_parity_1"
+     ],
+     "novelty_score": 0.0,
+     "pressure_score": 0.5866666666666667,
+     "reasons": [
+      "precision-weighted prediction-error salience (current error 0.5867, precision 14.60, n=31)",
+      "stale reading: last error 0.6000 is 1 min old, weighted 0.98"
+     ],
+     "salience_score": 0.7939142322237546,
+     "suggested_observation_mode": "inspect",
+     "target_id": "node:substrate.execution",
+     "target_kind": "node",
+     "urgency_score": 0.5866666666666667
+    },
+    {
+     "confidence_score": 1.0,
+     "dominant_channels": {
+      "prediction_error": 0.03933333333333333
+     },
+     "evidence_refs": [
+      "field:tick_parity_1"
+     ],
+     "novelty_score": 0.0,
+     "pressure_score": 0.03933333333333333,
+     "reasons": [
+      "precision-weighted prediction-error salience (current error 0.0393, precision 38.98, n=30)",
+      "stale reading: last error 0.0400 is 0 min old, weighted 0.98",
+      "variance-floor instability: near-constant recent error history"
+     ],
+     "salience_score": 0.14211677293085453,
+     "suggested_observation_mode": "watch",
+     "target_id": "node:substrate.bus_synaptic",
+     "target_kind": "node",
+     "urgency_score": 0.03933333333333333
+    },
+    {
+     "confidence_score": 1.0,
+     "dominant_channels": {
+      "prediction_error": 0.029666666666666668
+     },
+     "evidence_refs": [
+      "field:tick_parity_1"
+     ],
+     "novelty_score": 0.0,
+     "pressure_score": 0.029666666666666668,
+     "reasons": [
+      "precision-weighted prediction-error salience (current error 0.0297, precision 38.98, n=31)",
+      "stale reading: last error 0.0300 is 0 min old, weighted 0.99",
+      "variance-floor instability: near-constant recent error history"
+     ],
+     "salience_score": 0.10718976941394961,
+     "suggested_observation_mode": "watch",
+     "target_id": "node:substrate.biometrics",
+     "target_kind": "node",
+     "urgency_score": 0.029666666666666668
+    }
+   ],
+   "frame_id": "attention.frame:tick_parity_1:field_attention_policy.v1",
+   "generated_at": "2026-10-09T12:00:00Z",
+   "node_targets": [
+    {
+     "confidence_score": 1.0,
+     "dominant_channels": {
+      "prediction_error": 0.20833333333333334
+     },
+     "evidence_refs": [
+      "field:tick_parity_1"
+     ],
+     "novelty_score": 0.0,
+     "pressure_score": 0.20833333333333334,
+     "reasons": [
+      "precision-weighted prediction-error salience (current error 0.2083, precision 51.78, n=24)",
+      "stale reading: last error 0.2500 is 5 min old, weighted 0.83"
+     ],
+     "salience_score": 1.0,
+     "suggested_observation_mode": "inspect",
+     "target_id": "node:substrate.route",
+     "target_kind": "node",
+     "urgency_score": 0.20833333333333334
+    },
+    {
+     "confidence_score": 1.0,
+     "dominant_channels": {
+      "prediction_error": 0.5866666666666667
+     },
+     "evidence_refs": [
+      "field:tick_parity_1"
+     ],
+     "novelty_score": 0.0,
+     "pressure_score": 0.5866666666666667,
+     "reasons": [
+      "precision-weighted prediction-error salience (current error 0.5867, precision 14.60, n=31)",
+      "stale reading: last error 0.6000 is 1 min old, weighted 0.98"
+     ],
+     "salience_score": 0.7939142322237546,
+     "suggested_observation_mode": "inspect",
+     "target_id": "node:substrate.execution",
+     "target_kind": "node",
+     "urgency_score": 0.5866666666666667
+    },
+    {
+     "confidence_score": 1.0,
+     "dominant_channels": {
+      "prediction_error": 0.03933333333333333
+     },
+     "evidence_refs": [
+      "field:tick_parity_1"
+     ],
+     "novelty_score": 0.0,
+     "pressure_score": 0.03933333333333333,
+     "reasons": [
+      "precision-weighted prediction-error salience (current error 0.0393, precision 38.98, n=30)",
+      "stale reading: last error 0.0400 is 0 min old, weighted 0.98",
+      "variance-floor instability: near-constant recent error history"
+     ],
+     "salience_score": 0.14211677293085453,
+     "suggested_observation_mode": "watch",
+     "target_id": "node:substrate.bus_synaptic",
+     "target_kind": "node",
+     "urgency_score": 0.03933333333333333
+    },
+    {
+     "confidence_score": 1.0,
+     "dominant_channels": {
+      "prediction_error": 0.029666666666666668
+     },
+     "evidence_refs": [
+      "field:tick_parity_1"
+     ],
+     "novelty_score": 0.0,
+     "pressure_score": 0.029666666666666668,
+     "reasons": [
+      "precision-weighted prediction-error salience (current error 0.0297, precision 38.98, n=31)",
+      "stale reading: last error 0.0300 is 0 min old, weighted 0.99",
+      "variance-floor instability: near-constant recent error history"
+     ],
+     "salience_score": 0.10718976941394961,
+     "suggested_observation_mode": "watch",
+     "target_id": "node:substrate.biometrics",
+     "target_kind": "node",
+     "urgency_score": 0.029666666666666668
+    }
+   ],
+   "overall_salience": 1.0,
+   "recent_perturbations": [
+    "state_delta:a"
+   ],
+   "schema_version": "field.attention.frame.v1",
+   "source_field_generated_at": "2026-10-09T12:00:00Z",
+   "source_field_tick_id": "tick_parity_1",
+   "suppressed_targets": [
+    {
+     "confidence_score": 1.0,
+     "dominant_channels": {
+      "prediction_error": 0.0
+     },
+     "evidence_refs": [
+      "field:tick_parity_1"
+     ],
+     "novelty_score": 0.0,
+     "pressure_score": 0.0,
+     "reasons": [
+      "precision-weighted prediction-error salience (current error 0.0000, precision 31.25, n=26)",
+      "stale reading: last error 0.4000 is 180 min old, weighted 0.00"
+     ],
+     "salience_score": 0.0,
+     "suggested_observation_mode": "ignore",
+     "target_id": "node:substrate.chat",
+     "target_kind": "node",
+     "urgency_score": 0.0
+    },
+    {
+     "confidence_score": 0.0,
+     "dominant_channels": {},
+     "evidence_refs": [
+      "field:tick_parity_1"
+     ],
+     "novelty_score": 0.0,
+     "pressure_score": 0.8,
+     "reasons": [
+      "Candidate B novelty-only salience: current-tick pressure proxy 0.8000 vs. prior frame (novelty=0.0000); magnitude/dwell scorers not applied (no real data for this target universe / near-always-empty coalition, respectively -- see selector docstring)"
+     ],
+     "salience_score": 0.0,
+     "suggested_observation_mode": "ignore",
+     "target_id": "node:athena",
+     "target_kind": "node",
+     "urgency_score": 0.0
+    },
+    {
+     "confidence_score": 0.0,
+     "dominant_channels": {},
+     "evidence_refs": [
+      "field:tick_parity_1"
+     ],
+     "novelty_score": 0.0,
+     "pressure_score": 0.4,
+     "reasons": [
+      "Candidate B novelty-only salience: current-tick pressure proxy 0.4000 vs. prior frame (novelty=0.0000); magnitude/dwell scorers not applied (no real data for this target universe / near-always-empty coalition, respectively -- see selector docstring)"
+     ],
+     "salience_score": 0.0,
+     "suggested_observation_mode": "ignore",
+     "target_id": "node:circe",
+     "target_kind": "node",
+     "urgency_score": 0.0
+    },
+    {
+     "confidence_score": 0.0,
+     "dominant_channels": {},
+     "evidence_refs": [
+      "field:tick_parity_1"
+     ],
+     "novelty_score": 0.0,
+     "pressure_score": 0.2,
+     "reasons": [
+      "Candidate B novelty-only salience: current-tick pressure proxy 0.2000 vs. prior frame (novelty=0.0000); magnitude/dwell scorers not applied (no real data for this target universe / near-always-empty coalition, respectively -- see selector docstring)"
+     ],
+     "salience_score": 0.0,
+     "suggested_observation_mode": "ignore",
+     "target_id": "node:substrate.perception",
+     "target_kind": "node",
+     "urgency_score": 0.0
+    },
+    {
+     "confidence_score": 0.0,
+     "dominant_channels": {},
+     "evidence_refs": [
+      "field:tick_parity_1"
+     ],
+     "novelty_score": 0.0,
+     "pressure_score": 0.7,
+     "reasons": [
+      "Candidate B novelty-only salience: current-tick pressure proxy 0.7000 vs. prior frame (novelty=0.0000); magnitude/dwell scorers not applied (no real data for this target universe / near-always-empty coalition, respectively -- see selector docstring)"
+     ],
+     "salience_score": 0.0,
+     "suggested_observation_mode": "ignore",
+     "target_id": "capability:orchestration",
+     "target_kind": "capability",
+     "urgency_score": 0.0
+    },
+    {
+     "confidence_score": 0.0,
+     "dominant_channels": {},
+     "evidence_refs": [
+      "field:tick_parity_1"
+     ],
+     "novelty_score": 0.0,
+     "pressure_score": 0.2,
+     "reasons": [
+      "Candidate B novelty-only salience: current-tick pressure proxy 0.2000 vs. prior frame (novelty=0.0000); magnitude/dwell scorers not applied (no real data for this target universe / near-always-empty coalition, respectively -- see selector docstring)"
+     ],
+     "salience_score": 0.0,
+     "suggested_observation_mode": "ignore",
+     "target_id": "capability:vision",
+     "target_kind": "capability",
+     "urgency_score": 0.0
+    }
+   ],
+   "system_targets": [],
+   "warnings": []
+  }
+ }
+}

@@ -44,9 +44,12 @@ def dream_carry_run_id(trigger_id: str) -> str:
     return "dream-carry-" + uuid5(NAMESPACE_URL, f"dream.carry:{trigger_id}").hex
 
 
-def dream_hop_dispatch_id(run_id: str, hop_index: int) -> str:
-    """The child reverie.visual run's dispatch id (and so its attempt row) for one image hop."""
-    return f"dream-carry:{run_id}:{hop_index}"
+def dream_hop_dispatch_id(run_id: str, hop_index: int, attempt: int = 0) -> str:
+    """The child reverie.visual run's dispatch id (and so its attempt row) for one image hop.
+    ``attempt`` > 0 names a fresh child for the same hop after a retryable miss (heat, busy):
+    ``dream-carry:<run>:<hop>:r<attempt>``. Attempt 0 is the first child, unchanged."""
+    base = f"dream-carry:{run_id}:{hop_index}"
+    return base if attempt == 0 else f"{base}:r{attempt}"
 
 
 def clip_image_prompt(text: str) -> str:

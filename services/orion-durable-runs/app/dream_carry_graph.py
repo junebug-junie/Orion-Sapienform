@@ -17,7 +17,10 @@ Contract: orion/schemas/dream_carry.py.
   store, not the bus) with ``dream_hop`` set: it paints the previous text hop's ``image_prompt`` and
   captions it. Its run id is deterministic per (carry, hop), so a replayed submit dedupes. The carry
   holds nothing while it waits: ``image_wait`` re-reads the child's terminal fact every
-  ``child_poll_sec`` (an interrupt, woken by the driver at ``retry_at``).
+  ``child_poll_sec`` (an interrupt, woken by the driver at ``retry_at``). A child that ends without a
+  picture for a retryable reason (its window ran out deferring to heat, busy, resource) is replaced
+  by a fresh child for the same hop (dispatch ``...:r<n>``) after a backoff, at most
+  ``child_max_attempts`` per hop and only while ``child_min_window_sec`` of the carry is left.
 * **finish_dream**: ``step="finish"`` with every hop made and ``stopped_reason``; orion-dream
   publishes the dream. It keeps retrying for ``finish_grace_sec`` past the deadline so a partial
   carry is still written; after that the run fails with the last error.
@@ -60,6 +63,12 @@ from orion.schemas.reverie_visual_run import (
 # How often a waiting image hop re-reads its child's terminal fact (one indexed row read).
 CHILD_POLL_SEC = 30.0
 DEFAULT_FINISH_GRACE_SEC = 1800.0
+DEFAULT_CHILD_MAX_ATTEMPTS = 3
+DEFAULT_CHILD_MIN_WINDOW_SEC = 900.0
+# A child that ended without a picture for one of these may be replaced by a fresh child: its window
+# ran out deferring (reverie.visual's only failure is its deadline), or thought deferred the run.
+RETRYABLE_CHILD_ERRORS = frozenset({"retry_window_expired", "workflow_deadline"})
+RETRYABLE_CHILD_OUTCOMES = frozenset({"deferred_thermal", "deferred_busy", "deferred_resource", "unknown"})
 # Floor for any backoff, including an orion-dream retry_after_sec of 0.
 MIN_BACKOFF_SEC = 1.0
 # The child outcome that means "a picture was painted and seen".
@@ -82,6 +91,10 @@ class DreamCarryDeps:
     child_terminal: ChildTerminal
     finish_grace_sec: float = DEFAULT_FINISH_GRACE_SEC
     child_poll_sec: float = CHILD_POLL_SEC
+    # Children per image hop (the first one included) before a retryable miss stops the carry.
+    child_max_attempts: int = DEFAULT_CHILD_MAX_ATTEMPTS
+    # A fresh child is only worth submitting with at least this much of the carry left.
+    child_min_window_sec: float = DEFAULT_CHILD_MIN_WINDOW_SEC
 
 
 class DreamCarryState(TypedDict, total=False):
@@ -114,6 +127,9 @@ class DreamCarryState(TypedDict, total=False):
     # The image hop currently waited on, and every child submitted.
     child_run_id: str | None
     child_hop: int | None
+    # Which child of the current image hop is (or will be) submitted: 0 first, then 1, 2, ...
+    # Bumped in image_wait before image_submit runs again, so a replayed submit dedupes.
+    child_attempt: int
     child_run_ids: list
     dream_id: str | None
     started_at: str | None
@@ -164,10 +180,11 @@ def _deadline_reason(state: dict, waiting_on: str = "no reason recorded") -> str
 
 
 def child_request(state: dict, hop_index: int, prompt: str, now: datetime) -> DurableRunRequestV1:
-    """The child reverie.visual run for one image hop. A pure function of checkpointed state (plus
-    ``requested_at``/``deadline_at``, which the store ignores on a resubmit), so a replay dedupes."""
+    """The child reverie.visual run for one image hop (its current attempt). A pure function of
+    checkpointed state (plus ``requested_at``/``deadline_at``, which the store ignores on a
+    resubmit), so a replay dedupes."""
     run_id = state["run_id"]
-    dispatch_id = dream_hop_dispatch_id(run_id, hop_index)
+    dispatch_id = dream_hop_dispatch_id(run_id, hop_index, int(state.get("child_attempt") or 0))
     window_end = now + timedelta(seconds=REVERIE_VISUAL_MAX_RETRY_WINDOW_SEC)
     deadline = _deadline(state)
     child_deadline = min(deadline, window_end) if deadline is not None else window_end
@@ -183,6 +200,22 @@ def child_request(state: dict, hop_index: int, prompt: str, now: datetime) -> Du
             resource=f"service.route.{REVERIE_VISUAL_HOLD_LANE}", preferred_lane=REVERIE_VISUAL_HOLD_LANE,
             deadline_at=child_deadline),
     )
+
+
+def child_miss(status: str, detail: dict) -> tuple[bool, str]:
+    """(retryable, label) for a child that ended without a picture. The label prefers the stage
+    reason the child was deferring on (thermal_refused) over the generic window error."""
+    error = str(detail.get("last_error") or detail.get("error") or "")
+    outcome = detail.get("outcome")
+    if status == "failed" and error.split(":", 1)[0] in RETRYABLE_CHILD_ERRORS:
+        return True, str(detail.get("reason") or error)
+    if status == "completed" and outcome in RETRYABLE_CHILD_OUTCOMES:
+        return True, str(detail.get("reason") or f"outcome:{outcome}")
+    if status != "completed":
+        return False, error or str(detail.get("reason") or status)
+    if outcome != PRODUCED:
+        return False, f"outcome:{outcome}" + (f" ({detail['reason']})" if detail.get("reason") else "")
+    return False, "completed without an image or caption"
 
 
 def _common_detail(state: dict) -> dict[str, Any]:
@@ -374,7 +407,7 @@ def build_dream_carry_graph(carry: DreamCarryDeps, admission: AdmissionDeps, che
         if request.run_id not in children:
             children.append(request.run_id)
         return {"status": "running", "route": "image_wait", "child_run_id": request.run_id,
-                "child_hop": idx, "child_run_ids": children, "retry_streak": 0,
+                "child_hop": idx, "child_run_ids": children,
                 "retry_at": poll_at(state)}
 
     async def image_wait(state):
@@ -405,14 +438,22 @@ def build_dream_carry_graph(carry: DreamCarryDeps, admission: AdmissionDeps, che
             if len(hops) == idx:
                 hops.append(hop.model_dump(mode="json"))
             return {"hops": hops, "status": "running", "route": "next_hop", "child_run_id": None,
-                    "child_hop": None, "reason": None, "last_error": None, "retry_at": None}
-        if status != "completed":
-            why = detail.get("last_error") or detail.get("error") or detail.get("reason") or status
-        elif detail.get("outcome") != PRODUCED:
-            why = f"outcome:{detail.get('outcome')}" + (f" ({detail['reason']})" if detail.get("reason") else "")
-        else:
-            why = "completed without an image or caption"
-        return {**_stop(f"image hop {idx}: {why}"), "child_run_id": None, "child_hop": None}
+                    "child_hop": None, "child_attempt": 0, "retry_streak": 0, "reason": None,
+                    "last_error": None, "retry_at": None}
+        retryable, why = child_miss(status, detail)
+        made = int(state.get("child_attempt") or 0) + 1   # children tried for this hop, this one included
+        label = f"image hop {idx}: {why}" + (f" x{made}" if made > 1 else "")
+        if retryable and made < carry.child_max_attempts:
+            deadline = _deadline(state)
+            left = None if deadline is None else (deadline - admission.now()).total_seconds()
+            if left is None or left >= carry.child_min_window_sec:
+                # A fresh child for the same hop, after the admission backoff on this hop's misses
+                # (never immediate). child_attempt is checkpointed here, before image_submit runs.
+                delay = min(admission.retry_max_seconds, admission.retry_base_seconds * 2 ** (made - 1))
+                return retry(state, "image_submit", f"child_retry:{why}", delay, child_run_id=None,
+                             child_hop=None, child_attempt=made)
+            label += f" (only {int(left)}s left)"
+        return {**_stop(label), "child_run_id": None, "child_hop": None}
 
     async def retry_wait(state):
         state = dict(state)
@@ -486,7 +527,7 @@ def build_dream_carry_graph(carry: DreamCarryDeps, admission: AdmissionDeps, che
     graph.add_conditional_edges("resource_wait", after_wait, ["text_hop", "resource_request", "finish_dream"])
     graph.add_conditional_edges("text_hop", route, ["next_hop", "retry_wait", "resource_request", "finish_dream"])
     graph.add_conditional_edges("image_submit", route, ["image_wait", "retry_wait", "finish_dream", "next_hop"])
-    graph.add_conditional_edges("image_wait", route, ["image_wait", "next_hop", "finish_dream"])
+    graph.add_conditional_edges("image_wait", route, ["image_wait", "next_hop", "retry_wait", "finish_dream"])
     graph.add_conditional_edges("retry_wait", route, ["resource_request", "image_submit", "finish_dream"])
     graph.add_conditional_edges("finish_dream", route, ["finish", "retry_wait", "failed"])
     graph.add_edge("finish", END)

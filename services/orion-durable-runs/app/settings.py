@@ -103,6 +103,10 @@ class Settings(BaseSettings):
     # dream.carry: how long past the carry's deadline the finish step (orion-dream writes the dream
     # with the hops made so far) keeps retrying, so a partial carry is still written.
     dream_carry_finish_grace_sec: float = Field(1800.0, ge=0.0, alias="DREAM_CARRY_FINISH_GRACE_SEC")
+    # dream.carry image hops: children per hop (first included) after retryable misses (heat, busy),
+    # and the least carry time left worth a fresh child.
+    dream_carry_child_max_attempts: int = Field(3, ge=1, le=10, alias="DREAM_CARRY_CHILD_MAX_ATTEMPTS")
+    dream_carry_child_min_window_sec: float = Field(900.0, ge=0.0, alias="DREAM_CARRY_CHILD_MIN_WINDOW_SEC")
 
     # Memory episode redesign Stage 1 (2026-10-02, SHADOW): subscribe orion:memory:episode:closed
     # and distill each closed episode into episode_memory* tables. Kill switch: false stops new

@@ -84,9 +84,10 @@ class Children:
 
     def __init__(self, **outcome):
         self.submitted = []   # DurableRunRequestV1
-        self.outcome = outcome
+        self.outcome = outcome   # f"h{hop}" -> terminal, or a list of terminals by attempt (last repeats)
         self.reads = []
         self.crash_reads = 0
+        self.crash_submits = 0   # die right after a submit lands (before the carry checkpoints it)
 
     def hop_of(self, run_id):
         for req in self.submitted:
@@ -94,8 +95,18 @@ class Children:
                 return req.brief.dream_hop.hop_index
         raise KeyError(run_id)
 
+    def attempt_of(self, run_id):
+        for req in self.submitted:
+            if req.run_id == run_id:
+                tail = req.brief.visual_request.dispatch_id.rsplit(":", 1)[-1]
+                return int(tail[1:]) if tail.startswith("r") else 0
+        raise KeyError(run_id)
+
     async def submit(self, request):
         self.submitted.append(request)
+        if self.crash_submits:
+            self.crash_submits -= 1
+            raise Crash()
         return {"run_id": request.run_id}
 
     async def terminal(self, run_id):
@@ -106,7 +117,10 @@ class Children:
         hop = self.hop_of(run_id)
         default = ("completed", {"outcome": "produced", "artifact_sha256": SHA, "caption": f"seen {hop}",
                                  "visual_elapsed_sec": 50.0})
-        return self.outcome.get(f"h{hop}", default)
+        got = self.outcome.get(f"h{hop}", default)
+        if isinstance(got, list):
+            got = got[min(self.attempt_of(run_id), len(got) - 1)]
+        return got
 
 
 def initial(world, hops=6, deadline=timedelta(hours=4)):
@@ -117,10 +131,11 @@ def initial(world, hops=6, deadline=timedelta(hours=4)):
             "brief": brief.model_dump(mode="json")}
 
 
-def graph(world, saver, dream, children, grace=1800.0):
+def graph(world, saver, dream, children, grace=1800.0, child_max_attempts=3, child_min_window_sec=900.0):
     return build_dream_carry_graph(
         DreamCarryDeps(run_step=dream, submit_child=children.submit, child_terminal=children.terminal,
-                       finish_grace_sec=grace),
+                       finish_grace_sec=grace, child_max_attempts=child_max_attempts,
+                       child_min_window_sec=child_min_window_sec),
         AdmissionDeps(world.register, world.lease, world.execute, world.release, world.event,
                       now=lambda: world.now, max_attempts=1, retry_base_seconds=30.0, retry_max_seconds=300.0,
                       guard=world.guard), saver)
@@ -277,15 +292,17 @@ def test_child_failure_finishes_partial_with_the_reason():
     async def run():
         world, saver = CarryWorld(), InMemorySaver()
         dream = Dream()
-        children = Children(h3=("failed", {"error": "retry_window_expired", "reason": "thermal_refused"}))
+        children = Children(h3=("failed", {"error": "checkpoint_resume_failed: boom", "reason": "thermal_refused"}))
         g = graph(world, saver, dream, children)
         result = await drive(g, world, initial(world))
         assert result["status"] == "completed"
         assert [h["kind"] for h in result["hops"]] == ["text", "image", "text"]
         [fin] = [r for r in dream.calls if r.step == "finish"]
-        assert len(fin.hops) == 3 and fin.stopped_reason == "image hop 3: retry_window_expired"
+        reason = "image hop 3: checkpoint_resume_failed: boom"
+        assert len(fin.hops) == 3 and fin.stopped_reason == reason   # not retryable: no second child
         detail = finish_detail(result)
-        assert detail["hops_made"] == 3 and detail["stopped_reason"] == "image hop 3: retry_window_expired"
+        assert detail["hops_made"] == 3 and detail["stopped_reason"] == reason
+        assert len(children.submitted) == 2
         assert [r.hop_index for r in dream.calls if r.step == "text"] == [0, 2]   # no hop after the stop
     asyncio.run(run())
 
@@ -294,10 +311,11 @@ def test_a_child_that_completed_without_a_picture_stops_the_carry():
     async def run():
         world, saver = CarryWorld(), InMemorySaver()
         dream = Dream()
-        children = Children(h1=("completed", {"outcome": "deferred_thermal", "reason": "thermal_refused"}))
+        children = Children(h1=("completed", {"outcome": "already_satisfied", "reason": "dispatch_request_mismatch"}))
         result = await drive(graph(world, saver, dream, children), world, initial(world))
         assert result["status"] == "completed" and len(result["hops"]) == 1
-        assert result["stopped_reason"] == "image hop 1: outcome:deferred_thermal (thermal_refused)"
+        assert result["stopped_reason"] == "image hop 1: outcome:already_satisfied (dispatch_request_mismatch)"
+        assert len(children.submitted) == 1   # not a deferral: no fresh child
     asyncio.run(run())
 
 
@@ -583,3 +601,110 @@ def test_a_carry_cancelled_mid_submit_still_cancels_the_deterministic_child():
     cancelled.clear()
     asyncio.run(rt._terminal(RUN, "completed", state, workflow=DREAM_CARRY_WORKFLOW))
     assert cancelled == []
+
+
+# --- fresh child after a retryable miss (heat / busy) ---------------------------------------------
+
+HOT = ("failed", {"error": "retry_window_expired", "last_error": "retry_window_expired", "reason": "thermal_refused"})
+
+
+def test_dispatch_id_attempt_zero_is_unchanged_and_retries_are_suffixed():
+    assert dream_hop_dispatch_id("run", 3) == dream_hop_dispatch_id("run", 3, 0) == "dream-carry:run:3"
+    assert dream_hop_dispatch_id("run", 3, 2) == "dream-carry:run:3:r2"
+
+
+def test_a_child_that_ran_out_of_window_on_heat_is_replaced_and_the_carry_reaches_six_hops():
+    async def run():
+        world, saver = CarryWorld(), InMemorySaver()
+        dream, children = Dream(), Children(h3=[HOT, ("completed", {"outcome": "produced", "artifact_sha256": SHA,
+                                                                     "caption": "seen 3 again",
+                                                                     "visual_elapsed_sec": 50.0})])
+        waits = []
+
+        def watch(snap):
+            if snap.next == ("retry_wait",) and snap.values.get("retry_node") == "image_submit":
+                waits.append((dict(snap.values), world.now))
+
+        result = await drive(graph(world, saver, dream, children), world, initial(world), on_wait=watch)
+        assert result["status"] == "completed" and len(result["hops"]) == 6 and result["stopped_reason"] is None
+        hop3 = [c for c in children.submitted if c.brief.dream_hop.hop_index == 3]
+        assert [c.brief.visual_request.dispatch_id for c in hop3] == [dream_hop_dispatch_id(RUN, 3),
+                                                                      dream_hop_dispatch_id(RUN, 3, 1)]
+        assert hop3[1].run_id == reverie_visual_run_id(dream_hop_dispatch_id(RUN, 3, 1))
+        assert hop3[1].brief.dream_hop.prompt == hop3[0].brief.dream_hop.prompt
+        assert result["hops"][3]["child_run_id"] == hop3[1].run_id
+        assert result["hops"][3]["caption"] == "seen 3 again"
+        assert result["child_run_ids"] == [c.run_id for c in children.submitted] and len(children.submitted) == 4
+        # Backed off before the fresh child (the admission backoff, never immediate).
+        [(state, at)] = waits
+        assert state["child_attempt"] == 1 and state["reason"] == "child_retry:thermal_refused"
+        assert datetime.fromisoformat(state["retry_at"]) - at == timedelta(seconds=30)
+        assert result["child_attempt"] == 0   # reset for the next hop
+        assert finish_detail(result)["child_run_ids"] == result["child_run_ids"]
+    asyncio.run(run())
+
+
+def test_retryable_misses_are_bounded_per_hop_and_then_finish_partial():
+    async def run():
+        world, saver = CarryWorld(), InMemorySaver()
+        dream = Dream()
+        children = Children(h1=("completed", {"outcome": "deferred_thermal", "reason": "thermal_refused"}))
+        result = await drive(graph(world, saver, dream, children), world, initial(world))
+        assert result["status"] == "completed" and len(result["hops"]) == 1
+        assert result["stopped_reason"] == "image hop 1: thermal_refused x3"
+        assert [c.brief.visual_request.dispatch_id for c in children.submitted] == [
+            dream_hop_dispatch_id(RUN, 1, n) for n in range(3)]
+    asyncio.run(run())
+
+
+def test_no_fresh_child_without_enough_carry_left():
+    async def run():
+        world, saver = CarryWorld(), InMemorySaver()
+        dream, children = Dream(), Children(h1=HOT)
+        g = graph(world, saver, dream, children, child_min_window_sec=5 * 3600)   # more than the 4 h carry
+        result = await drive(g, world, initial(world))
+        assert result["status"] == "completed" and len(result["hops"]) == 1 and len(children.submitted) == 1
+        assert result["stopped_reason"].startswith("image hop 1: thermal_refused (only ")
+    asyncio.run(run())
+
+
+def test_a_restart_mid_resubmit_replays_the_same_child_never_a_new_one():
+    async def run():
+        world, saver = CarryWorld(), InMemorySaver()
+        dream, children = Dream(), Children(h1=[HOT, None])
+        g = graph(world, saver, dream, children)
+
+        def arm(snap):
+            if snap.next == ("retry_wait",) and snap.values.get("child_attempt") == 1:
+                children.crash_submits = 1   # the r1 submit lands, then the process dies
+
+        with pytest.raises(Crash):
+            await drive(g, world, initial(world), on_wait=arm)
+        snap = await g.aget_state(CFG)
+        assert snap.next == ("image_submit",) and snap.values["child_attempt"] == 1
+        await graph(world, saver, dream, children).ainvoke(None, CFG)   # restarted driver replays the node
+        ids = [c.run_id for c in children.submitted]
+        r1 = reverie_visual_run_id(dream_hop_dispatch_id(RUN, 1, 1))
+        assert ids == [reverie_visual_run_id(dream_hop_dispatch_id(RUN, 1)), r1, r1]   # same id: store dedupes
+        snap = await g.aget_state(CFG)
+        assert snap.next == ("image_wait",) and snap.values["child_run_id"] == r1
+        assert snap.values["child_run_ids"] == ids[:2]
+    asyncio.run(run())
+
+
+def test_cancel_cancels_the_current_attempts_child():
+    rt = _runtime()
+    cancelled = []
+
+    async def finish_projection(run_id, status, detail, **_):
+        return status
+
+    async def cancel_child(run_id, child):
+        cancelled.append(child)
+
+    rt.store = SimpleNamespace(finish_projection=finish_projection)
+    rt._cancel_carry_child = cancel_child
+    state = {"workflow": DREAM_CARRY_WORKFLOW, "hops": [{}, {}, {}], "child_attempt": 2,
+             "brief": {"trigger_id": "s", "hops": 6}}
+    asyncio.run(rt._terminal(RUN, "cancelled", state, workflow=DREAM_CARRY_WORKFLOW))
+    assert cancelled == [reverie_visual_run_id(dream_hop_dispatch_id(RUN, 3, 2))]

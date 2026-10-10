@@ -38,6 +38,8 @@ from app.admitted_reflect_graph import build_admitted_reflect_graph
 from app.compactor_digest_graph import build_compactor_digest_graph, finish_detail as compactor_digest_finish_detail
 from app.journal_compose_graph import build_journal_compose_graph, finish_detail as journal_compose_finish_detail
 from app.dream_carry_graph import (
+    DEFAULT_CHILD_MAX_ATTEMPTS as DREAM_CARRY_DEFAULT_CHILD_MAX_ATTEMPTS,
+    DEFAULT_CHILD_MIN_WINDOW_SEC as DREAM_CARRY_DEFAULT_CHILD_MIN_WINDOW_SEC,
     DEFAULT_FINISH_GRACE_SEC as DREAM_CARRY_DEFAULT_FINISH_GRACE_SEC, DreamCarryDeps, build_dream_carry_graph,
     finish_detail as dream_carry_finish_detail, terminal_detail as dream_carry_terminal_detail,
 )
@@ -200,6 +202,10 @@ class AdmissionRuntime:
                 submit_child=lambda request: self.submit(request),
                 child_terminal=lambda run_id: self.store.terminal_detail(run_id),
                 finish_grace_sec=self._carry_grace_sec(),
+                child_max_attempts=int(getattr(settings, "dream_carry_child_max_attempts",
+                                               DREAM_CARRY_DEFAULT_CHILD_MAX_ATTEMPTS)),
+                child_min_window_sec=float(getattr(settings, "dream_carry_child_min_window_sec",
+                                                   DREAM_CARRY_DEFAULT_CHILD_MIN_WINDOW_SEC)),
             ), admission_deps, runner._checkpointer),
         }
         # Back-compat alias used by older tests that reach for `.graph`.
@@ -1161,7 +1167,8 @@ class AdmissionRuntime:
             if not child and made % 2:
                 # A cancel can land after the child submit but before its checkpoint: the child id is
                 # deterministic, so name it from the hop that was being painted.
-                child = reverie_visual_run_id(dream_hop_dispatch_id(run_id, made))
+                child = reverie_visual_run_id(
+                    dream_hop_dispatch_id(run_id, made, int(state.get("child_attempt") or 0)))
             if child:
                 await self._cancel_carry_child(run_id, child)
         self._wake.set()

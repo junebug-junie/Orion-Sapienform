@@ -1,7 +1,9 @@
-"""Service-layer behavior of the two generative gates.
+"""Service-layer behavior of the generative insight gate (and the shared
+poll-loop freshness / fetch-limit guards). The sibling flow gate was retired
+2026-10-10 -- see test_flow_trigger_retired.py.
 
 Review finding S3 (2026-07-30): the de-dupe / staleness / cooldown-retry logic in
-`_evaluate_insight_gate` / `_evaluate_flow_gate` / `_generative_samples_are_fresh`
+`_evaluate_insight_gate` / `_generative_samples_are_fresh`
 is the load-bearing correctness claim of this feature and originally had no test
 at all -- every test was pure-detector or pure-builder. These are the tests that
 would have caught the double-fire bug (M2) and the stale-window bug (M1).
@@ -46,8 +48,8 @@ def _now_series(values: list[float]) -> list[ConfidenceSample]:
 
 # A real-shaped recovery: drops into the low band, climbs, holds high.
 _RECOVERY_VALUES = [0.95, 0.66, 0.80, 0.91, 0.92, 0.93]
-# 20 ticks of tight calm at/above the 0.90 floor.
-_FLOW_VALUES = [0.93, 0.94, 0.93, 0.95, 0.94] * 4
+# 20 ticks of tight calm -- a fresh, contiguous window with nothing to detect.
+_CALM_VALUES = [0.93, 0.94, 0.93, 0.95, 0.94] * 4
 
 
 @pytest.fixture(autouse=True)
@@ -55,7 +57,6 @@ def _open_cooldowns(monkeypatch):
     for attr in (
         "metacog_cooldown_sec",
         "metacog_insight_cooldown_sec",
-        "metacog_flow_cooldown_sec",
     ):
         monkeypatch.setattr(settings, attr, 0.0)
 
@@ -143,67 +144,13 @@ async def test_insight_does_not_fire_on_a_calm_window() -> None:
 
 
 # ===========================================================================
-# flow
-# ===========================================================================
-
-
-@pytest.mark.asyncio
-async def test_flow_fires_on_a_sustained_plateau() -> None:
-    svc = _service()
-    await svc._evaluate_flow_gate(
-        _now_series(_FLOW_VALUES), zen_state="zen", pressure=0.1
-    )
-    assert svc.bus.publish.call_count == 1
-    published = svc.bus.publish.call_args[0][1]
-    assert published.payload["trigger_kind"] == "flow"
-
-
-@pytest.mark.asyncio
-async def test_flow_dedupes_the_same_newest_row() -> None:
-    """Poll cadence and write cadence drift, so the same newest row is polled
-    twice; that must not double-publish."""
-    svc = _service()
-    samples = _now_series(_FLOW_VALUES)
-
-    await svc._evaluate_flow_gate(samples, zen_state="zen", pressure=0.1)
-    await svc._evaluate_flow_gate(samples, zen_state="zen", pressure=0.1)
-
-    assert svc.bus.publish.call_count == 1
-
-
-@pytest.mark.asyncio
-async def test_cooldown_suppressed_flow_stays_retryable(monkeypatch) -> None:
-    monkeypatch.setattr(settings, "metacog_flow_cooldown_sec", 9999.0)
-    svc = _service()
-    samples = _now_series(_FLOW_VALUES)
-
-    svc._last_trigger_ts_by_kind["flow"] = datetime.now().timestamp()
-    await svc._evaluate_flow_gate(samples, zen_state="zen", pressure=0.1)
-    assert svc.bus.publish.call_count == 0
-    assert svc._last_flow_ended_at is None
-
-    monkeypatch.setattr(settings, "metacog_flow_cooldown_sec", 0.0)
-    await svc._evaluate_flow_gate(samples, zen_state="zen", pressure=0.1)
-    assert svc.bus.publish.call_count == 1
-
-
-@pytest.mark.asyncio
-async def test_flow_does_not_fire_when_a_tick_dips_below_the_floor() -> None:
-    svc = _service()
-    values = list(_FLOW_VALUES)
-    values[7] = 0.85
-    await svc._evaluate_flow_gate(_now_series(values), zen_state="zen", pressure=0.1)
-    assert svc.bus.publish.call_count == 0
-
-
-# ===========================================================================
 # Freshness guard (M1 regression at the service layer)
 # ===========================================================================
 
 
 def test_stale_window_is_rejected() -> None:
-    """A frozen window keeps satisfying both conditions forever, so the poll
-    loop must reject it before either gate sees it."""
+    """A frozen window can keep satisfying a gate condition forever, so the
+    poll loop must reject it before the gate sees it."""
     svc = _service()
     old_end = datetime.now(timezone.utc) - timedelta(days=3)
     stale = [
@@ -215,7 +162,7 @@ def test_stale_window_is_rejected() -> None:
 
 def test_fresh_window_is_accepted() -> None:
     svc = _service()
-    assert svc._generative_samples_are_fresh(_now_series(_FLOW_VALUES)) is True
+    assert svc._generative_samples_are_fresh(_now_series(_CALM_VALUES)) is True
 
 
 def test_empty_window_is_rejected() -> None:
@@ -260,7 +207,7 @@ def test_stale_counter_resets_when_the_window_recovers() -> None:
         svc._generative_samples_are_fresh(stale)
     assert svc._stale_window_polls == 3
 
-    assert svc._generative_samples_are_fresh(_now_series(_FLOW_VALUES)) is True
+    assert svc._generative_samples_are_fresh(_now_series(_CALM_VALUES)) is True
     assert svc._stale_window_polls == 0
 
 
@@ -280,18 +227,8 @@ def test_window_just_past_max_age_is_rejected(monkeypatch) -> None:
 # ===========================================================================
 
 
-def test_fetch_limit_covers_flow_min_ticks_even_if_window_is_set_lower(monkeypatch) -> None:
-    """Setting WINDOW_TICKS below FLOW_MIN_TICKS would otherwise make the flow
-    gate a silent permanent no-op."""
-    monkeypatch.setattr(settings, "metacog_generative_window_ticks", 5)
-    monkeypatch.setattr(settings, "metacog_flow_min_ticks", 40)
-    svc = _service()
-    assert svc._generative_fetch_limit() >= 40
-
-
 def test_fetch_limit_covers_insight_cross_plus_confirm(monkeypatch) -> None:
     monkeypatch.setattr(settings, "metacog_generative_window_ticks", 5)
-    monkeypatch.setattr(settings, "metacog_flow_min_ticks", 5)
     monkeypatch.setattr(settings, "metacog_insight_max_ticks_to_cross", 30)
     monkeypatch.setattr(settings, "metacog_insight_confirm_ticks", 3)
     svc = _service()
@@ -303,7 +240,7 @@ def test_fetch_limit_covers_insight_cross_plus_confirm(monkeypatch) -> None:
 # ===========================================================================
 
 
-def test_both_generative_flags_default_to_disabled() -> None:
+def test_insight_flag_defaults_to_disabled_in_code() -> None:
     """Hard acceptance criterion, not a preference: these gates dispatch real
     MetacogTriggerV1 events into orion_metacog and are flipped on by a human
     after a post-merge live-data check. A deterministic gate, so an accidental
@@ -312,4 +249,3 @@ def test_both_generative_flags_default_to_disabled() -> None:
 
     fresh = Settings(_env_file=None)
     assert fresh.metacog_insight_trigger_enable is False
-    assert fresh.metacog_flow_trigger_enable is False

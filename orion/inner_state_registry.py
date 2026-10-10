@@ -203,7 +203,6 @@ REGISTRY: tuple[InnerStateSignal, ...] = (
             "reachable status. Real live consumers are listed below."
         ),
         cognition_consumers=(
-            "services.orion-equilibrium-service.app.flow_metacog_gate:build_flow_metacog_trigger",
             "services.orion-equilibrium-service.app.insight_metacog_gate:build_insight_metacog_trigger",
         ),
         notes=(
@@ -215,10 +214,12 @@ REGISTRY: tuple[InnerStateSignal, ...] = (
             "consumed by any live decision path -- that wiring is explicitly "
             "future work (Phase 3+)'. That is STALE. "
             "orion-equilibrium-service's generative_metacog_poll_loop reads it "
-            "via AttentionSelfModelReader.fetch_recent_samples and feeds both "
-            "metacog gates above; EQUILIBRIUM_METACOG_INSIGHT_TRIGGER_ENABLE "
-            "and EQUILIBRIUM_METACOG_FLOW_TRIGGER_ENABLE are both true in "
-            ".env_example, so the path is live by default, not future work."
+            "via AttentionSelfModelReader.fetch_recent_samples and feeds the "
+            "insight metacog gate above; EQUILIBRIUM_METACOG_INSIGHT_TRIGGER_ENABLE "
+            "is true in .env_example, so the path is live by default, not future "
+            "work. The flow gate consumer was retired 2026-10-10 (its plateau was "
+            "the idle rest state; see docs/superpowers/pr-reports/"
+            "2026-10-10-metacog-flow-trigger-calibration-pr.md)."
         ),
     ),
     InnerStateSignal(

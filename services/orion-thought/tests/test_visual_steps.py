@@ -840,3 +840,193 @@ async def test_unexpected_exception_is_a_retry(env, monkeypatch):
     result = await _run(env, _req("caption", attempt_id="attempt-1"))
     assert (result.status, result.reason) == ("retry", "step_exception:KeyError")
     assert isinstance(result, ReverieVisualStepResultV1)
+
+
+# ── dream hop mode (design 2026-10-10-dream-carry-through) ──────────────────
+
+from orion.schemas.reverie_visual_run import DreamHopImageV1  # noqa: E402
+
+DREAM_PROMPT = "a staircase of moths climbing into a lantern that is also the moon"
+DREAM_HOP = DreamHopImageV1(carry_run_id="dream-carry-abc", hop_index=1, prompt=DREAM_PROMPT)
+DREAM_REQUEST = VisualRunRequestV1(dispatch_id="dream-carry:dream-carry-abc:1")
+
+
+def _dream_req(step, *, attempt_id=None, hop=DREAM_HOP, correlation_id="dream-corr-1"):
+    req = _req(step, attempt_id=attempt_id, request=DREAM_REQUEST, correlation_id=correlation_id)
+    return req.model_copy(update={"dream_hop": hop})
+
+
+def _forbid_waking_planning(env, monkeypatch):
+    """A dream hop must never read or advance waking continuity, rotation or interpret."""
+    def boom(*a, **kw):
+        raise AssertionError("dream hop read waking planning state")
+
+    monkeypatch.setattr(env.vc, "compute_visual_plan", AsyncMock(side_effect=AssertionError("compute_visual_plan")))
+    monkeypatch.setattr(env.vc, "interpret_context_for_visual", AsyncMock(side_effect=AssertionError("interpret")))
+    for name in ("load_latest_visual_chain_continuity_state", "load_latest_reverie_interpretation",
+                 "load_latest_self_study_reflection", "load_latest_memory_crystallization"):
+        monkeypatch.setattr(env.vc, name, boom)
+
+
+def _forbid_production_writes(env, monkeypatch):
+    def boom(*a, **kw):
+        raise AssertionError("dream hop wrote a waking production/chain row")
+
+    monkeypatch.setattr(env.vc, "persist_reverie_visual_chain", boom)
+    monkeypatch.setattr(env.vc, "acknowledge_visual_production", boom)
+    monkeypatch.setattr(env.vc, "build_production_chain", boom)
+    monkeypatch.setattr(env.vc, "upload_to_percept_store", lambda data, **kw: "e" * 64)
+
+
+async def _dream_generated(env):
+    prepared = await _run(env, _dream_req("prepare"))
+    assert prepared.status == "done", prepared
+    generated = await _run(env, _dream_req("generate", attempt_id=prepared.attempt_id))
+    assert generated.status == "done", generated
+    return prepared.attempt_id, generated
+
+
+@pytest.mark.asyncio
+async def test_dream_hop_prepare_freezes_the_prompt_verbatim_without_waking_planning(env, monkeypatch):
+    _forbid_waking_planning(env, monkeypatch)
+    result = await _run(env, _dream_req("prepare"))
+    assert result.status == "done", result
+    stage = env.store.rows[result.attempt_id]["stage_json"]
+    plan = stage["plan"]
+    assert plan["prompt"] == DREAM_PROMPT  # verbatim: no continuity prefix, no context slot
+    assert (plan["prior_description"], plan["prior_chain_id"], plan["effective_prior"]) == (None, None, None)
+    assert (plan["continuity_streak"], plan["context_slot_rotation"]) == (0, 0)
+    assert (plan["context_slot_used"], plan["context_slot_interpreted"], plan["context_text"]) == (None, None, None)
+    assert plan["context_selection"] is None
+    assert stage["dream_hop"] == {"carry_run_id": "dream-carry-abc", "hop_index": 1}
+    assert env.store.claims == [result.attempt_id]  # the same claim (one open attempt, cooldown)
+    # Generate paints exactly that prompt.
+    generated = await _run(env, _dream_req("generate", attempt_id=result.attempt_id))
+    assert generated.status == "done"
+    assert env.generate_calls == [DREAM_PROMPT]
+
+
+@pytest.mark.asyncio
+async def test_dream_hop_caption_returns_what_was_seen_and_writes_no_waking_rows(env, monkeypatch):
+    attempt_id, generated = await _dream_generated(env)
+    _forbid_production_writes(env, monkeypatch)
+    captioner = _caption(env, monkeypatch, "moths settling on a pale lamp")
+    result = await _run(env, _dream_req("caption", attempt_id=attempt_id))
+
+    assert result.status == "done", result
+    assert (result.outcome, result.caption) == ("produced", "moths settling on a pale lamp")
+    assert result.artifact_sha256 == generated.artifact_sha256
+    assert result.chain_id is None and result.execution_receipt is None
+    assert env.store.execution_receipts == []
+    [(finished_id, finished)] = env.store.finished
+    assert finished_id == attempt_id
+    assert finished["outcome"] == "produced" and finished["caption"] == "moths settling on a pale lamp"
+    assert finished["artifact_sha256"] == generated.artifact_sha256
+    assert finished["dream_hop"] == {"carry_run_id": "dream-carry-abc", "hop_index": 1}
+    assert finished["durable_run_id"] == RUN_ID and "execution_receipt" not in finished
+
+    # Replay (lost reply): same caption, no second caption call.
+    replay = await _run(env, _dream_req("caption", attempt_id=attempt_id, correlation_id="dream-corr-2"))
+    assert (replay.status, replay.outcome, replay.caption) == ("done", "produced", "moths settling on a pale lamp")
+    assert replay.artifact_sha256 == generated.artifact_sha256 and replay.chain_id is None
+    captioner.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_waking_painting_after_a_dream_hop_sees_unchanged_continuity(env, monkeypatch):
+    chains: list = []
+
+    def continuity(**kw):
+        if not chains:
+            return ("a fox by the fire", 1, 4, "prior-chain")
+        last = chains[-1]
+        return (last.prior_description, last.chain_json["continuity_streak"],
+                last.chain_json["context_slot_rotation"], last.chain_id)
+
+    monkeypatch.setattr(env.vc, "load_latest_visual_chain_continuity_state", continuity)
+    _capture_production(env, monkeypatch)
+    monkeypatch.setattr(env.vc, "persist_reverie_visual_chain", lambda c: chains.append(c) or True)
+    _caption(env, monkeypatch, "moths settling on a pale lamp")
+
+    attempt_id, _ = await _dream_generated(env)
+    dream = await _run(env, _dream_req("caption", attempt_id=attempt_id))
+    assert (dream.status, dream.outcome) == ("done", "produced")
+    assert chains == []  # the dream hop wrote no chain row
+
+    waking = await _run(env, _req("prepare"))
+    plan = env.store.rows[waking.attempt_id]["stage_json"]["plan"]
+    assert plan["prior_description"] == "a fox by the fire"  # not the dream's caption
+    assert plan["prior_chain_id"] == "prior-chain"
+    assert (plan["continuity_streak"], plan["context_slot_rotation"]) == (2, 5)
+    assert "dream_hop" not in env.store.rows[waking.attempt_id]["stage_json"]
+
+
+@pytest.mark.asyncio
+async def test_dream_hop_empty_caption_is_a_retry_and_recaptions(env, monkeypatch):
+    attempt_id, _ = await _dream_generated(env)
+    _forbid_production_writes(env, monkeypatch)
+    _caption(env, monkeypatch, "   ")
+    first = await _run(env, _dream_req("caption", attempt_id=attempt_id))
+    assert (first.status, first.reason, first.caption) == ("retry", "caption_empty", None)
+    assert env.store.finished == []
+    stage = env.store.rows[attempt_id]["stage_json"]
+    assert "caption" not in stage  # never cached
+    assert stage["deferrals"][-1]["reason"] == "caption_empty"
+
+    recaption = _caption(env, monkeypatch, "a lantern full of wings")
+    second = await _run(env, _dream_req("caption", attempt_id=attempt_id, correlation_id="dream-corr-2"))
+    assert (second.status, second.caption) == ("done", "a lantern full of wings")
+    recaption.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_dream_hop_cached_empty_caption_is_recaptioned(env, monkeypatch):
+    attempt_id, _ = await _dream_generated(env)
+    _forbid_production_writes(env, monkeypatch)
+    env.store.rows[attempt_id]["stage_json"]["caption"] = {"description": None, "captioned_at": NOW.isoformat()}
+    recaption = _caption(env, monkeypatch, "a lantern full of wings")
+    result = await _run(env, _dream_req("caption", attempt_id=attempt_id))
+    assert (result.status, result.caption) == ("done", "a lantern full of wings")
+    recaption.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_dream_hop_request_for_a_different_hop_is_dispatch_request_mismatch(env, monkeypatch):
+    attempt_id, _ = await _dream_generated(env)
+    _forbid_production_writes(env, monkeypatch)
+    _caption(env, monkeypatch, "x")
+    other = DreamHopImageV1(carry_run_id="dream-carry-abc", hop_index=3, prompt=DREAM_PROMPT)
+    reprompt = DREAM_HOP.model_copy(update={"prompt": "a different picture"})
+    for hop in (other, reprompt, None):
+        for step in ("prepare", "generate", "caption"):
+            req = _dream_req(step, attempt_id=None if step == "prepare" else attempt_id, hop=hop)
+            result = await _run(env, req)
+            assert (result.status, result.outcome, result.reason) == (
+                "terminal", "failed", "dispatch_request_mismatch"), (hop, step, result)
+    assert env.store.finished == []
+    # Still mismatched once produced: another hop never receives this hop's picture.
+    done = await _run(env, _dream_req("caption", attempt_id=attempt_id))
+    assert done.status == "done"
+    late = await _run(env, _dream_req("caption", attempt_id=attempt_id, hop=other))
+    assert (late.status, late.reason) == ("terminal", "dispatch_request_mismatch")
+
+
+@pytest.mark.asyncio
+async def test_dream_hop_closed_attempt_replays_its_caption(env, monkeypatch):
+    attempt_id, _ = await _dream_generated(env)
+    _forbid_production_writes(env, monkeypatch)
+    _caption(env, monkeypatch, "moths settling on a pale lamp")
+    await _run(env, _dream_req("caption", attempt_id=attempt_id))
+    replay = await _run(env, _dream_req("generate", attempt_id=attempt_id))
+    assert (replay.status, replay.outcome, replay.caption, replay.chain_id) == (
+        "terminal", "produced", "moths settling on a pale lamp", None)
+
+
+def test_waking_step_reply_omits_dream_only_fields():
+    result = ReverieVisualStepResultV1(run_id=RUN_ID, correlation_id="c", step="caption", status="done",
+                                       outcome="produced", chain_id="a-1", attempt_id="a-1",
+                                       execution_receipt={"gate_reason": "max_steps", "detail": None})
+    payload = result.model_dump(mode="json", exclude_none=True)
+    assert "caption" not in payload
+    assert payload["execution_receipt"] == {"gate_reason": "max_steps", "detail": None}  # nested Nones kept
+    assert ReverieVisualStepResultV1.model_validate(payload) == result

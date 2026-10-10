@@ -19,6 +19,13 @@ body runs back to back, so both paths write identical chain rows and receipts.
     caption                cached re-observation so a caption retry never recaptions
     deferrals              the last _DEFERRAL_HISTORY retries {at, step, reason}
     abandoned_at, abandon_reason
+    dream_hop              {carry_run_id, hop_index} of a dream.carry image hop (prepare)
+
+Dream hop mode (`req.dream_hop`, design 2026-10-10-dream-carry-through): the same claim,
+generate and caption, but prepare freezes the hop's prompt verbatim (no context, continuity,
+slot rotation or interpret, read or advanced) and caption writes no chain row, production
+acknowledgement or execution receipt -- a dream picture neither counts as nor continues a
+waking painting. Caption done returns what was seen (`caption`); an empty caption is a retry.
 
 Step mode never writes a deferral chain row: a row with chain_id == attempt_id would
 make the eventual production row a no-op (`ON CONFLICT DO NOTHING`). Deferrals are
@@ -41,6 +48,7 @@ from orion.schemas.gpu_pool import GpuLeaseRefV1
 from orion.schemas.reverie_visual import VisualRunOutcome
 from orion.schemas.reverie_visual_run import (
     NEEDS_GENERATE,
+    DreamHopImageV1,
     ReverieVisualStepRequestV1,
     ReverieVisualStepResultV1,
 )
@@ -110,6 +118,30 @@ class _Step:
         return self.result("terminal", outcome=outcome, reason=reason, **fields)
 
 
+def _dream_hop_identity(hop: DreamHopImageV1 | None) -> dict | None:
+    return None if hop is None else {"carry_run_id": hop.carry_run_id, "hop_index": hop.hop_index}
+
+
+def _dream_plan(hop: DreamHopImageV1) -> vc.VisualPlan:
+    """The hop's prompt verbatim with neutral continuity: nothing read, nothing advanced."""
+    return vc.VisualPlan(
+        prompt=hop.prompt, prior_description=None, prior_chain_id=None, effective_prior=None,
+        continuity_fallback=None, continuity_streak=0, continuity_reset=False,
+        context_slot_used=None, context_slot_rotation=0, context_slot_interpreted=None,
+        context_text=None, self_study_text=None, memory_text=None, context_selection=None,
+    )
+
+
+def _dream_hop_mismatch(req: ReverieVisualStepRequestV1, stage: dict) -> bool:
+    """True when the attempt's frozen plan was made for a different hop (or mode) than `req`."""
+    plan = _frozen_plan(stage)
+    if plan is None:
+        return False
+    if stage.get("dream_hop") != _dream_hop_identity(req.dream_hop):
+        return True
+    return req.dream_hop is not None and plan.prompt != req.dream_hop.prompt
+
+
 def _frozen_plan(stage: dict) -> vc.VisualPlan | None:
     raw = stage.get("plan")
     if not isinstance(raw, dict):
@@ -164,9 +196,10 @@ def _closed_attempt(step: _Step, row: dict) -> ReverieVisualStepResultV1:
         sha = result.get("artifact_sha256")
         return step.terminal(
             "produced", result.get("reason") or "attempt_produced", attempt_id=attempt_id,
-            chain_id=result.get("chain_id") or attempt_id,
+            chain_id=_result_chain_id(row),
             artifact_sha256=sha if isinstance(sha, str) and len(sha) == 64 else None,
             execution_receipt=result.get("execution_receipt"),
+            caption=_result_caption(row),
         )
     if row["outcome"] == store.VISUAL_ATTEMPT_ABANDONED:
         return step.terminal("unknown", result.get("reason") or "run_abandoned", attempt_id=attempt_id)
@@ -174,10 +207,33 @@ def _closed_attempt(step: _Step, row: dict) -> ReverieVisualStepResultV1:
     return step.terminal(outcome, result.get("reason") or "attempt_closed", attempt_id=attempt_id)
 
 
+def _result_chain_id(row: dict) -> str | None:
+    """A dream hop writes no chain row, so it has no chain id; a waking attempt's is its id."""
+    result = row.get("result_json") or {}
+    if result.get("dream_hop") is not None:
+        return None
+    return result.get("chain_id") or row["attempt_id"]
+
+
+def _result_caption(row: dict) -> str | None:
+    """What a produced dream hop saw; None for every waking painting."""
+    result = row.get("result_json") or {}
+    if result.get("dream_hop") is None:
+        return None
+    caption = result.get("caption")
+    if not caption:
+        caption = ((row.get("stage_json") or {}).get("caption") or {}).get("description")
+    return caption or None
+
+
 def _attempt_guard(step: _Step, row: dict | None) -> ReverieVisualStepResultV1 | None:
     """None when `row` is this request's open attempt; otherwise the result to return."""
     if row is None or row["dispatch_id"] != step.req.visual_request.dispatch_id:
         return step.terminal("failed", "attempt_mismatch")
+    if _dream_hop_mismatch(step.req, row["stage_json"]):
+        # Same dispatch, different hop (or a waking request on a dream attempt): never
+        # report another hop's picture as this one's.
+        return step.terminal("failed", "dispatch_request_mismatch")
     if row["outcome"] not in _OPEN_OUTCOMES:
         return _closed_attempt(step, row)
     return None
@@ -248,6 +304,8 @@ async def prepare_step(bus, req: ReverieVisualStepRequestV1, *,
                 return step.retry("attempt_missing")
     if row.get("request_mismatch"):
         return step.terminal("failed", "dispatch_request_mismatch")
+    if _dream_hop_mismatch(req, row["stage_json"]):
+        return step.terminal("failed", "dispatch_request_mismatch")
     if row["outcome"] not in _OPEN_OUTCOMES:
         return _closed_attempt(step, row)
     attempt_id = row["attempt_id"]
@@ -256,7 +314,13 @@ async def prepare_step(bus, req: ReverieVisualStepRequestV1, *,
         return step.result("done", attempt_id=attempt_id,
                            elapsed_sec=float(stage.get("prepare_elapsed_sec") or 0.0))
 
-    plan = await vc.compute_visual_plan(bus, chain_id=attempt_id, cortex_client=cortex_client)
+    if req.dream_hop is not None:
+        # Never compute_visual_plan: a dream picture neither reads nor advances waking
+        # continuity or slot rotation, and its prompt is the dream's, not interpreted.
+        plan = _dream_plan(req.dream_hop)
+    else:
+        plan = await vc.compute_visual_plan(bus, chain_id=attempt_id, cortex_client=cortex_client)
+    dream_hop = _dream_hop_identity(req.dream_hop)
     elapsed = time.monotonic() - step.started
     now = now_fn()
 
@@ -265,6 +329,8 @@ async def prepare_step(bus, req: ReverieVisualStepRequestV1, *,
             return None
         current.update(plan=plan.to_json(), prepared_at=now.isoformat(),
                        prepare_elapsed_sec=round(elapsed, 3))
+        if dream_hop is not None:
+            current["dream_hop"] = dream_hop
         # Re-freezing an unreadable plan must not rewind a generating/generated attempt:
         # that would skip the in-flight guard or discard a recorded image.
         current.setdefault("stage", "prepared")
@@ -277,6 +343,9 @@ async def prepare_step(bus, req: ReverieVisualStepRequestV1, *,
         return _closed_attempt(step, frozen)
     if _frozen_plan(frozen["stage_json"]) is None:
         return step.retry("plan_not_frozen")
+    if _dream_hop_mismatch(req, frozen["stage_json"]):
+        # A concurrent prepare for this dispatch froze a plan for a different hop.
+        return step.terminal("failed", "dispatch_request_mismatch")
     return step.result("done", attempt_id=attempt_id,
                        elapsed_sec=float(frozen["stage_json"].get("prepare_elapsed_sec") or elapsed))
 
@@ -520,9 +589,9 @@ def _produced_result(step: _Step, row: dict) -> ReverieVisualStepResultV1:
     sha = result.get("artifact_sha256")
     return step.result(
         "done", outcome="produced", reason=result.get("reason") or "max_steps",
-        attempt_id=row["attempt_id"], chain_id=result.get("chain_id") or row["attempt_id"],
+        attempt_id=row["attempt_id"], chain_id=_result_chain_id(row),
         artifact_sha256=sha if isinstance(sha, str) and len(sha) == 64 else None,
-        execution_receipt=result.get("execution_receipt"),
+        execution_receipt=result.get("execution_receipt"), caption=_result_caption(row),
         elapsed_sec=float(row["stage_json"].get("caption_elapsed_sec") or 0.0),
     )
 
@@ -533,7 +602,8 @@ async def caption_step(bus, req: ReverieVisualStepRequestV1, *, now_fn: Any = _n
     attempt_id = req.attempt_id
     request = req.visual_request
     row = await asyncio.to_thread(store.load_visual_attempt, attempt_id)
-    if row is not None and row["dispatch_id"] == request.dispatch_id and row["outcome"] == "produced":
+    if (row is not None and row["dispatch_id"] == request.dispatch_id and row["outcome"] == "produced"
+            and (row.get("result_json") or {}).get("dream_hop") == _dream_hop_identity(req.dream_hop)):
         return _produced_result(step, row)
     refused = _attempt_guard(step, row)
     if refused is not None:
@@ -560,7 +630,8 @@ async def caption_step(bus, req: ReverieVisualStepRequestV1, *, now_fn: Any = _n
     stored, png_bytes = recorded
 
     cached = stage.get("caption")
-    if isinstance(cached, dict) and "description" in cached:
+    if isinstance(cached, dict) and "description" in cached and (
+            req.dream_hop is None or _has_text(cached["description"])):
         description = cached["description"]
     else:
         try:
@@ -577,12 +648,20 @@ async def caption_step(bus, req: ReverieVisualStepRequestV1, *, now_fn: Any = _n
             bus, upload_result, chain_id=attempt_id, sha256=stored.sha256
         )
         captioned_at = now_fn()
+        if req.dream_hop is not None and not _has_text(description):
+            # The carry continues from what was seen: no caption is a retry, never a blank
+            # hop, and it is not cached, so the retry captions again.
+            await _record_deferral(attempt_id, "caption", "caption_empty", captioned_at)
+            return step.retry("caption_empty")
 
         def cache(current: dict, _row: dict) -> dict:
             current["caption"] = {"description": description, "captioned_at": captioned_at.isoformat()}
             return current
 
         await asyncio.to_thread(store.update_visual_stage, attempt_id, cache)
+
+    if req.dream_hop is not None:
+        return await _finish_dream_hop(step, attempt_id, stored, description)
 
     thermal_gate = stage["artifact"].get("thermal_gate")
     chain = vc.build_production_chain(
@@ -616,6 +695,35 @@ async def caption_step(bus, req: ReverieVisualStepRequestV1, *, now_fn: Any = _n
     return step.result("done", outcome="produced", reason=receipt.gate_reason,
                        chain_id=attempt_id, artifact_sha256=stored.sha256,
                        execution_receipt=result["execution_receipt"], elapsed_sec=elapsed)
+
+
+def _has_text(description: Any) -> bool:
+    return isinstance(description, str) and bool(description.strip())
+
+
+async def _finish_dream_hop(step: _Step, attempt_id: str, stored: StoredVisualArtifact,
+                            description: str) -> ReverieVisualStepResultV1:
+    """Close a dream hop's attempt with what was painted and seen. No chain row, production
+    acknowledgement or execution receipt: a dream picture is not a waking painting."""
+    req = step.req
+    elapsed = time.monotonic() - step.started
+    result = {"ok": True, "ran": True, "outcome": "produced", "attempt_id": attempt_id,
+              "chain_id": None, "reason": "dream_hop_seen", "artifact_persisted": True,
+              "artifact_sha256": stored.sha256, "caption": description, "mime": stored.mime,
+              "width": stored.width, "height": stored.height, "durable_run_id": req.run_id,
+              "dream_hop": _dream_hop_identity(req.dream_hop)}
+
+    def record_elapsed(current: dict, _row: dict) -> dict:
+        current["caption_elapsed_sec"] = round(elapsed, 3)
+        return current
+
+    await asyncio.to_thread(store.update_visual_stage, attempt_id, record_elapsed)
+    await asyncio.to_thread(store.finish_visual_attempt, attempt_id, result)
+    logger.info("visual step dream hop seen attempt=%s carry=%s hop=%d sha=%s",
+                attempt_id, req.dream_hop.carry_run_id, req.dream_hop.hop_index, stored.sha256[:12])
+    return step.result("done", outcome="produced", reason="dream_hop_seen", chain_id=None,
+                       artifact_sha256=stored.sha256, caption=description,
+                       execution_receipt=None, elapsed_sec=elapsed)
 
 
 # ── abandon ─────────────────────────────────────────────────────────────────

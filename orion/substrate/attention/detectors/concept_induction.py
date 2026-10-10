@@ -6,6 +6,13 @@ from orion.schemas.attention_frame import AttentionSignalV1
 from orion.substrate.attention.common import compact, stable_id, unique
 
 
+# Fixed rank priors, not measurements: see the world-first audit note in
+# detectors/base.py. A tension in Orion's own concept profile outranks a
+# plain concept; both rank below a current-turn phrase.
+CONCEPT_SALIENCE_DEFAULT = 0.5
+CONCEPT_SALIENCE_TENSION = 0.62
+
+
 class ConceptInductionSignalDetector:
     detector_id = "concept_induction_attention_v1"
 
@@ -34,10 +41,16 @@ class ConceptInductionSignalDetector:
                     target_text=target,
                     target_type_hint="relation" if bucket == "relationship" else "concept",
                     signal_kind=f"concept_{bucket}",
-                    salience=0.5 if bucket != "tension" else 0.62,
+                    salience=CONCEPT_SALIENCE_DEFAULT if bucket != "tension" else CONCEPT_SALIENCE_TENSION,
                     confidence=0.68,
                     evidence_refs=["inputs.concept_induction"],
-                    provenance={"detector": self.detector_id, "bucket": bucket, "belief_lineage": list(belief_lineage or [])[:8]},
+                    provenance={
+                        "detector": self.detector_id,
+                        "bucket": bucket,
+                        # Orion's own concept profile: the body/mind side.
+                        "source_kind": "internal",
+                        "belief_lineage": list(belief_lineage or [])[:8],
+                    },
                 )
             )
         return out

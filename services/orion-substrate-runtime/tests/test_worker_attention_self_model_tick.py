@@ -34,6 +34,9 @@ from app.worker import BiometricsSubstrateWorker
 def _make_worker(
     monkeypatch, *, broadcast_enabled: bool = True, self_model_enabled: bool = True
 ) -> BiometricsSubstrateWorker:
+    # Pins the pre-world-first competition (flag off). World-first is pinned
+    # in test_worker_world_first_broadcast.py.
+    monkeypatch.setenv("ATTENTION_WORLD_FIRST_ENABLED", "false")
     monkeypatch.setenv("POSTGRES_URI", "postgresql://unused/unused")
     monkeypatch.setenv(
         "ORION_ATTENTION_BROADCAST_ENABLED", "true" if broadcast_enabled else "false"

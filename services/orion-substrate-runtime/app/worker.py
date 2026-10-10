@@ -2841,11 +2841,16 @@ class BiometricsSubstrateWorker:
                     # broadcast itself -- loops just carry magnitude=None.
                     logger.exception("substrate_pe_history_tick_failed")
                     magnitudes = None
+            world_first = bool(getattr(s, "attention_world_first_enabled", False))
             frame = build_substrate_attention_frame(
                 nodes=list(state.nodes.values()),
                 min_salience=float(s.attention_broadcast_min_salience),
                 now=tick_now,
                 magnitude_by_node_id=magnitudes,
+                world_first=world_first,
+                external_candidates=(
+                    self._world_first_external_candidates(tick_now) if world_first else None
+                ),
             )
             projection = broadcast_projection_from_frame(frame)
             self._store.save_attention_broadcast(projection)
@@ -2880,6 +2885,22 @@ class BiometricsSubstrateWorker:
                     logger.exception("substrate_system_one_appraisal_tick_failed")
         except Exception:
             logger.exception("substrate_attention_broadcast_failed")
+
+    def _world_first_external_candidates(self, now: datetime) -> list[Any]:
+        """World sources that are not graph nodes (spec 2026-10-07 section A):
+        chat activity, Juniper's turns in the last 15 min against the same
+        count over her last 7 days. A failed read is an ABSENT candidate,
+        never a calm one. (Camera surprise competes as the
+        ``node:substrate.perception`` graph node.)"""
+        from orion.attention.world_first import CHAT_RATE_WINDOW, chat_candidate
+        from orion.substrate.prediction_error_magnitude import WINDOW_7D
+
+        try:
+            turns = self._store.fetch_chat_turn_times(since=now - WINDOW_7D - CHAT_RATE_WINDOW)
+        except Exception as exc:  # noqa: BLE001 -- absent, not calm
+            logger.warning("substrate_world_first_chat_read_failed err=%s", exc)
+            turns = None
+        return [chat_candidate(turns, now=now)]
 
     # Prediction-error magnitude history (spec 2026-10-02, step 1). In-memory
     # per-node window seeded once from Postgres, so the 7-day percentiles do

@@ -483,3 +483,107 @@ def select_system_targets(
             suggested_observation_mode=observation_mode_for(salience, policy),
         )
     ]
+
+
+# ---------------------------------------------------------------------------
+# World-first selection (spec 2026-10-07 self-calibration, section A).
+# ---------------------------------------------------------------------------
+
+WORLD_FIRST_ATTENDED_REASON = "world-first: attended"
+WORLD_FIRST_OBSERVED_REASON = (
+    "world-first: body signal with no calibrated unusualness against its own "
+    "history -- observed (kept for next tick's novelty diff), not attended"
+)
+
+
+def field_target_source_kind(target: FieldAttentionTargetV1) -> str | None:
+    """``internal``/``external`` from the step-1 marker in ``evidence_refs``,
+    or None for a frame built before world-first (or with it off)."""
+    from orion.attention.world_first import SOURCE_KIND_REF_PREFIX
+
+    for ref in target.evidence_refs:
+        if ref.startswith(SOURCE_KIND_REF_PREFIX):
+            return ref[len(SOURCE_KIND_REF_PREFIX):]
+    return None
+
+
+def world_first_targets(
+    field: FieldStateV1,
+    policy: FieldAttentionPolicyV1,
+    candidates: list,
+) -> tuple[list[FieldAttentionTargetV1], list[FieldAttentionTargetV1]]:
+    """Rank ``AttentionCandidateV1``s world-first; return (attended, observed).
+
+    Replaces ``select_node_targets``' hardcoded five-node list and its
+    ``normalize_across_targets`` min-max, the line that guaranteed a winner
+    at 1.0 on every frame. ``salience_score`` is the candidate's
+    bad-direction percentile against its OWN 7-day history, so 0.95 means
+    "higher than 95% of this source's last week", comparable across sources.
+    An empty ``attended`` list is a valid, explicit no-winner frame.
+
+    Every target carries ``source_kind:<internal|external>`` in
+    ``evidence_refs`` (no schema change: FieldAttentionTargetV1 is
+    extra="forbid") and its band/percentile/reason in ``reasons``.
+    """
+    from orion.attention.world_first import (
+        SOURCE_KIND_REF_PREFIX,
+        WORLD_CHAT_SOURCE_ID,
+        rank_candidates,
+    )
+
+    ranking = rank_candidates(candidates)
+    attended: list[FieldAttentionTargetV1] = []
+    observed: list[FieldAttentionTargetV1] = []
+    for verdict in (*ranking.eligible, *ranking.ineligible):
+        cand = verdict.candidate
+        mag = cand.unusualness
+        salience = clamp01(verdict.score or 0.0) if verdict.eligible else 0.0
+        value = float(mag.value)
+        is_chat = cand.source_id == WORLD_CHAT_SOURCE_ID
+        target = FieldAttentionTargetV1(
+            target_id=cand.source_id,
+            # chat is not a field node; "channel" also keeps it out of
+            # proposals' bindable kinds (orion/proposals/builder.py).
+            target_kind="channel" if is_chat else "node",
+            salience_score=salience,
+            pressure_score=0.0 if is_chat else clamp01(abs(value)),
+            novelty_score=0.0,
+            urgency_score=salience,
+            confidence_score=0.0 if mag.band == "insufficient_history" else 1.0,
+            dominant_channels={} if is_chat else {"prediction_error": value},
+            reasons=[
+                f"{WORLD_FIRST_ATTENDED_REASON if verdict.eligible else 'world-first: not attended'}"
+                f" -- {verdict.reason}; {cand.label}; value {value:.4f}, "
+                f"percentile {mag.percentile_now if mag.percentile_now is not None else 'n/a'} "
+                f"of own 7d (n={mag.n_readings_7d}), band {verdict.band}, trend {mag.trend}"
+            ],
+            evidence_refs=[
+                f"{SOURCE_KIND_REF_PREFIX}{cand.source_kind}",
+                *cand.evidence_refs,
+                f"field:{field.tick_id}",
+            ],
+            suggested_observation_mode=observation_mode_for(salience, policy),
+        )
+        (attended if verdict.eligible else observed).append(target)
+    return attended, observed
+
+
+def mark_observed_not_attended(
+    targets: list[FieldAttentionTargetV1],
+) -> list[FieldAttentionTargetV1]:
+    """Host/capability/system targets under world-first: still computed (the
+    novelty diff needs a prior entry), recorded as internal and suppressed --
+    novelty against the previous tick is not unusualness against their own
+    history, so they cannot interrupt."""
+    from orion.attention.world_first import SOURCE_KIND_REF_PREFIX
+
+    return [
+        t.model_copy(
+            update={
+                "reasons": [*t.reasons, WORLD_FIRST_OBSERVED_REASON],
+                "evidence_refs": [f"{SOURCE_KIND_REF_PREFIX}internal", *t.evidence_refs],
+                "suggested_observation_mode": "ignore",
+            }
+        )
+        for t in targets
+    ]

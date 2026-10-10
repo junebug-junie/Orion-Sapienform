@@ -655,6 +655,7 @@ from orion.schemas.attention_frame import (
     VoluntaryOverrideV1,
 )
 from orion.schemas.attention_self_model import AttentionSelfModelV1
+from orion.schemas.attention_candidate import AttentionCandidateV1
 from orion.schemas.attention_schema import AttentionSchemaV1
 # Additive expectation and run-completion fields retain these registrations;
 # deploy peer consumers before Hub producers (docs/peer-ask-episodes.md).
@@ -1032,6 +1033,7 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "AttentionSignalV1": AttentionSignalV1,
     "SalienceFeaturesV1": SalienceFeaturesV1,
     "PredictionErrorMagnitudeV1": PredictionErrorMagnitudeV1,
+    "AttentionCandidateV1": AttentionCandidateV1,
     "AttentionBroadcastProjectionV1": AttentionBroadcastProjectionV1,
     "VoluntaryOverrideV1": VoluntaryOverrideV1,
     "AttentionSelfModelV1": AttentionSelfModelV1,
@@ -1900,6 +1902,12 @@ SCHEMA_REGISTRY: Dict[str, SchemaRegistration] = {
     "AttentionBroadcastProjectionV1": SchemaRegistration(
         model=AttentionBroadcastProjectionV1,
         kind="attention.broadcast.projection.v1",
+    ),
+    # World-first attention seam (spec 2026-10-07 self-calibration, section A).
+    # Not on the bus: persisted inside attention frames' debug/reasons.
+    "AttentionCandidateV1": SchemaRegistration(
+        model=AttentionCandidateV1,
+        kind="attention.candidate.v1",
     ),
     "EquilibriumServiceTransitionV1": SchemaRegistration(
         model=EquilibriumServiceTransitionV1,

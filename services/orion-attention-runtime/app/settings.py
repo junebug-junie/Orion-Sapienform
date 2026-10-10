@@ -42,6 +42,13 @@ class Settings(BaseSettings):
         200, alias="ATTENTION_PREDICTION_ERROR_HISTORY_LIMIT"
     )
     log_level: str = Field("INFO", alias="LOG_LEVEL")
+    # World-first attention (spec docs/superpowers/specs/2026-10-07-orion-self-
+    # calibration-design.md, section A; Juniper 2026-10-10). On: the field
+    # contest attends to the world (chat, camera surprise) by default and to
+    # a body signal only when it is high/unusual against its own 7 days; a
+    # calm tick has no winner. false = the previous five-node min-max ranking
+    # exactly. Ships on (Juniper's rule).
+    attention_world_first_enabled: bool = Field(True, alias="ATTENTION_WORLD_FIRST_ENABLED")
 
     # Field-native goal-provenance producer (Sentience Striving Program sec6
     # Objective 3, 2026-07-30) -- see docs/superpowers/specs/2026-07-30-goal-

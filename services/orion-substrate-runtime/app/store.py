@@ -823,6 +823,23 @@ class BiometricsSubstrateStore:
             ).fetchall()
         return [(str(r[0]), r[1], float(r[2])) for r in rows]
 
+    def fetch_chat_turn_times(self, *, since: datetime) -> list[datetime]:
+        """Juniper's chat turns since `since`, for world-first attention's
+        chat source (query shared via orion.attention.world_first so every
+        contest counts the same turns). chat_history_log.created_at is naive
+        UTC."""
+        from orion.attention.world_first import CHAT_TURN_TIMES_SQL
+
+        with self._engine.connect() as conn:
+            rows = conn.execute(
+                text(CHAT_TURN_TIMES_SQL),
+                {"since": since.astimezone(timezone.utc).replace(tzinfo=None)},
+            ).fetchall()
+        return [
+            r[0] if r[0].tzinfo is not None else r[0].replace(tzinfo=timezone.utc)
+            for r in rows
+        ]
+
     def prune_prediction_error_history(self, *, older_than: datetime) -> int:
         with self._engine.begin() as conn:
             result = conn.execute(

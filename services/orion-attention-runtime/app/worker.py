@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
 
@@ -18,6 +19,7 @@ from orion.attention.field_attention.goal_provenance import (
     update_dominance_streak,
 )
 from orion.attention.field_attention.policy import load_attention_policy
+from orion.attention.pe_history_cache import NodePeHistoryCache
 from orion.attention.field_attention.selectors import PREDICTION_ERROR_NATIVE_TARGETS
 from orion.schemas.field_attention_frame import FieldAttentionFrameV1
 from orion.schemas.field_state import FieldStateV1
@@ -28,6 +30,27 @@ from app.settings import get_settings
 from app.store import AttentionRuntimeStore
 
 logger = logging.getLogger("orion.attention.runtime")
+
+_VISION_ORGAN_NODE = "node:substrate.vision_organ"
+
+
+def _camera_absent_reason(field: FieldStateV1) -> str | None:
+    """Perception writes 0.0 while its frames are stale (glossary), so its
+    absence must come from camera staleness, never from the value. The field
+    carries the vision organ's `vision_frame_staleness` (1.0 = no camera
+    delivering; key dropped = unmeasured). Embedding-only staleness is not
+    visible here: perception then reads 0 = quiet, which is not eligible
+    either, so it cannot win on a stale value."""
+    vec = field.node_vectors.get(_VISION_ORGAN_NODE) or {}
+    staleness = vec.get("vision_frame_staleness")
+    if staleness is None:
+        return "camera health unmeasured (vision_frame_staleness absent)"
+    try:
+        if float(staleness) >= 1.0:
+            return "camera frames stale (vision_frame_staleness 1.0)"
+    except (TypeError, ValueError):
+        return "camera health unreadable"
+    return None
 
 
 class AttentionRuntimeWorker:
@@ -48,6 +71,10 @@ class AttentionRuntimeWorker:
         self._node_streak: DominanceStreak | None = None
         # The field tick the last saved frame was built from (#2534 decision 2).
         self._last_field: FieldStateV1 | None = None
+        # World-first attention (spec 2026-10-07 section A): this process has
+        # no magnitudes of its own, so it keeps a 7-day window of the
+        # substrate's stored prediction-error readings.
+        self._pe_history = NodePeHistoryCache()
         self._bus = None
         self._poll_task: asyncio.Task[None] | None = None
 
@@ -184,22 +211,87 @@ class AttentionRuntimeWorker:
             )
             for node_id, reducer_key in PREDICTION_ERROR_NATIVE_TARGETS.items()
         }
+        now = datetime.now(timezone.utc)
+        candidates = (
+            self._world_first_candidates(field, now)
+            if self._settings.attention_world_first_enabled
+            else None
+        )
         frame = build_attention_frame(
             field=field,
             policy=self._policy,
             prediction_error_baselines=baselines,
             previous_frame=previous,
             previous_field=previous_field,
+            now=now,
+            world_first_candidates=candidates,
         )
         goal = self._maybe_build_goal(frame)
         self._last_field = field
+        winner = frame.dominant_targets[0] if frame.dominant_targets else None
         logger.info(
-            "attention_frame_saved frame_id=%s tick_id=%s salience=%.3f",
+            "attention_frame_saved frame_id=%s tick_id=%s salience=%.3f world_first=%s "
+            "winner=%s",
             frame.frame_id,
             field.tick_id,
             frame.overall_salience,
+            candidates is not None,
+            winner.target_id if winner is not None else "none",
         )
         return goal
+
+    def _world_first_candidates(self, field: FieldStateV1, now: datetime) -> list:
+        """Every source's bid this tick, each scored against its own 7 days.
+
+        Never raises: a source that cannot be read becomes an ABSENT
+        candidate (silence is not calm), never a calm one and never a
+        fallback to the old ranking.
+        """
+        from orion.attention.world_first import (
+            CHAT_RATE_WINDOW,
+            PERCEPTION_NODE_ID,
+            SUBSTRATE_NODE_PREFIX,
+            chat_candidate,
+            node_candidate,
+        )
+        from orion.substrate.prediction_error_magnitude import WINDOW_7D
+
+        magnitudes: dict = {}
+        history_error: str | None = None
+        try:
+            self._pe_history.refresh(self._store.fetch_node_prediction_error_history, now=now)
+            magnitudes = self._pe_history.magnitudes(now=now)
+        except Exception as exc:  # noqa: BLE001
+            history_error = f"prediction-error history unreadable ({type(exc).__name__})"
+            logger.warning("attention_world_first_pe_history_failed err=%s", exc)
+
+        node_ids = set(magnitudes) | {
+            k for k in field.node_vectors if k.startswith(SUBSTRATE_NODE_PREFIX)
+            and "prediction_error" in field.node_vectors[k]
+        }
+        candidates = []
+        for node_id in sorted(node_ids):
+            mag, observed_at = magnitudes.get(node_id, (None, None))
+            absent = history_error
+            if node_id == PERCEPTION_NODE_ID and absent is None:
+                absent = _camera_absent_reason(field)
+            candidates.append(
+                node_candidate(
+                    node_id=node_id,
+                    label=f"{node_id.removeprefix(SUBSTRATE_NODE_PREFIX)} prediction error",
+                    magnitude=mag,
+                    observed_at=observed_at,
+                    now=now,
+                    absent_reason=absent,
+                )
+            )
+        try:
+            turns = self._store.fetch_chat_turn_times(now - WINDOW_7D - CHAT_RATE_WINDOW)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("attention_world_first_chat_read_failed err=%s", exc)
+            turns = None
+        candidates.append(chat_candidate(turns, now=now))
+        return candidates
 
     def _maybe_build_goal(
         self, frame: FieldAttentionFrameV1

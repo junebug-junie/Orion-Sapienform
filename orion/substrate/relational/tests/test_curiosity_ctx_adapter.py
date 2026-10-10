@@ -13,7 +13,7 @@ from orion.substrate.relational.adapters.curiosity_ctx import (
 def _make_signal(
     *,
     signal_id: str = "sig-1",
-    signal_type: str = "ontology_sparse_region",
+    signal_type: str = "evidence_gap_cluster",
     signal_strength: float = 0.8,
     confidence: float = 0.7,
     evidence_summary: str = "Some evidence",
@@ -26,7 +26,7 @@ def _make_signal(
         anchor_scope="orion",
         subject_ref="entity:orion",
         target_zone="world_ontology",
-        task_type_candidate="ontology_expand",
+        task_type_candidate="evidence_gap_scan",
         signal_strength=signal_strength,
         confidence=confidence,
         evidence_summary=evidence_summary,
@@ -81,9 +81,9 @@ def test_top_3_signals_by_strength():
     node = record.nodes[0]
     assert node.metadata["gap_count"] == 3
     assert node.metadata["signal_types"] == [
-        "ontology_sparse_region",
-        "ontology_sparse_region",
-        "ontology_sparse_region",
+        "evidence_gap_cluster",
+        "evidence_gap_cluster",
+        "evidence_gap_cluster",
     ]
 
 
@@ -133,11 +133,11 @@ def test_accepts_dict_version():
     """coerce dict version of FrontierInvocationSignalV1."""
     signal_dict = {
         "signal_id": "sig-1",
-        "signal_type": "ontology_sparse_region",
+        "signal_type": "evidence_gap_cluster",
         "anchor_scope": "orion",
         "subject_ref": "entity:orion",
         "target_zone": "world_ontology",
-        "task_type_candidate": "ontology_expand",
+        "task_type_candidate": "evidence_gap_scan",
         "signal_strength": 0.8,
         "confidence": 0.7,
         "evidence_summary": "Some evidence",
@@ -281,7 +281,7 @@ def test_evidence_summaries_collected():
 def test_signal_types_preserved():
     """signal_types from top 3 signals preserved in metadata."""
     signals = [
-        _make_signal(signal_id="sig-1", signal_strength=0.9, signal_type="ontology_sparse_region"),
+        _make_signal(signal_id="sig-1", signal_strength=0.9, signal_type="evidence_gap_cluster"),
         _make_signal(signal_id="sig-2", signal_strength=0.8, signal_type="concept_instability"),
         _make_signal(signal_id="sig-3", signal_strength=0.7, signal_type="contradiction_hotspot"),
     ]
@@ -292,7 +292,7 @@ def test_signal_types_preserved():
     node = record.nodes[0]
     signal_types = node.metadata["signal_types"]
     assert signal_types == [
-        "ontology_sparse_region",
+        "evidence_gap_cluster",
         "concept_instability",
         "contradiction_hotspot",
     ]
@@ -328,3 +328,27 @@ def test_persisted_candidates_round_trip_through_adapter():
     assert node.label == "curiosity:unresolved_gaps"
     assert node.metadata["gap_count"] == 2
     assert node.metadata["evidence_summaries"] == ["gap a", "gap b"]
+
+
+def test_pre_retirement_stored_row_is_skipped_not_fatal():
+    """A candidate row persisted before `ontology_sparse_region` was retired
+    (2026-10-10) no longer validates; the adapter must skip that item and keep
+    the valid ones, not drop the whole lane or raise."""
+    retired = {
+        "signal_id": "old",
+        "signal_type": "ontology_sparse_region",
+        "anchor_scope": "orion",
+        "subject_ref": "entity:orion",
+        "target_zone": "world_ontology",
+        "task_type_candidate": "ontology_expand",
+        "signal_strength": 1.0,
+        "confidence": 0.72,
+        "evidence_summary": "concept-dense area with no ontology_branch nodes",
+    }
+    valid = _make_signal(signal_id="new", signal_strength=0.6).model_dump(mode="json")
+
+    record = map_curiosity_ctx_to_substrate({"curiosity_signals": [retired, valid]})
+
+    assert record is not None
+    assert record.nodes[0].metadata["signal_types"] == ["evidence_gap_cluster"]
+    assert record.nodes[0].metadata["gap_count"] == 1

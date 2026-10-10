@@ -515,7 +515,7 @@ def test_system_one_curiosity_gate_kill_switch_falls_back(monkeypatch):
         signal_strength=0.85,
         confidence=0.7,
     )
-    decision = SimpleNamespace(outcome="invoke", chosen_task_type="ontology_expand", decision_id="d")
+    decision = SimpleNamespace(outcome="invoke", chosen_task_type="evidence_gap_scan", decision_id="d")
     run_result = SimpleNamespace(signals=[seed], decision=decision)
     # Even with a level-0 frame, kill switch must admit evaluator.
     worker._store.load_latest_system_one_appraisal.return_value = _curiosity_frame("0")

@@ -1,5 +1,9 @@
 services:
   orion-bus-mirror:
+    logging:
+      driver: journald
+      options:
+        tag: "{{.Name}}"
     build:
       context: ../..
       dockerfile: services/orion-bus-mirror/Dockerfile

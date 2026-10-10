@@ -3,6 +3,10 @@
 
 services:
   orion-llamacpp-host:
+    logging:
+      driver: journald
+      options:
+        tag: "{{.Name}}"
     build:
       context: ../..
       dockerfile: services/orion-llamacpp-host/Dockerfile

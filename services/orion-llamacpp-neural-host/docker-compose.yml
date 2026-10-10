@@ -2,6 +2,10 @@
 
 services:
   llamacpp-neural-host:
+    logging:
+      driver: journald
+      options:
+        tag: "{{.Name}}"
     build:
       context: ../..
       dockerfile: services/orion-llamacpp-neural-host/Dockerfile

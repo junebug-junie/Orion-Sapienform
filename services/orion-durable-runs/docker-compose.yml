@@ -1,5 +1,9 @@
 services:
   durable-runs:
+    logging:
+      driver: journald
+      options:
+        tag: "{{.Name}}"
     build:
       context: ../..
       dockerfile: services/orion-durable-runs/Dockerfile

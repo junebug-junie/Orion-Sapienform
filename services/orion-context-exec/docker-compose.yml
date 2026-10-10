@@ -1,5 +1,9 @@
 services:
   context-exec:
+    logging:
+      driver: journald
+      options:
+        tag: "{{.Name}}"
     container_name: ${PROJECT}-context-exec
     build:
       context: ../..

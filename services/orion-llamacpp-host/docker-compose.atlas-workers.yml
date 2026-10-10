@@ -1,5 +1,9 @@
 services:
   atlas-chat:
+    logging:
+      driver: journald
+      options:
+        tag: "{{.Name}}"
     # Atlas multi-worker pattern:
     # - one compose service per physical worker lane
     # - one profile per container
@@ -48,6 +52,10 @@ services:
             - capabilities: [gpu]
 
   atlas-metacog:
+    logging:
+      driver: journald
+      options:
+        tag: "{{.Name}}"
     build:
       context: ../..
       dockerfile: services/orion-llamacpp-host/Dockerfile
@@ -90,6 +98,10 @@ services:
             - capabilities: [gpu]
 
   atlas-fast:
+    logging:
+      driver: journald
+      options:
+        tag: "{{.Name}}"
     build:
       context: ../..
       dockerfile: services/orion-llamacpp-host/Dockerfile
@@ -132,6 +144,10 @@ services:
             - capabilities: [gpu]
 
   atlas-agent:
+    logging:
+      driver: journald
+      options:
+        tag: "{{.Name}}"
     profiles: ["agent-split"]
     build:
       context: ../..
@@ -176,6 +192,10 @@ services:
             - capabilities: [gpu]
 
   atlas-agent-burst:
+    logging:
+      driver: journald
+      options:
+        tag: "{{.Name}}"
     profiles: ["agent-burst"]
     # GPU pool stage 7.2: the stock image plus PrismML's llama.cpp fork at /app/prism, so this seat
     # can serve Ternary-Bonsai-2-27B (llamacpp.server_build: prism) or the Q4 27B (stock binary),

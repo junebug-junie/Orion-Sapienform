@@ -1,5 +1,9 @@
 services:
   power-guard:
+    logging:
+      driver: journald
+      options:
+        tag: "{{.Name}}"
     container_name: ${PROJECT}-power-guard
     build:
       context: ../..

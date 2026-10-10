@@ -121,6 +121,6 @@ Then check: `curl -s localhost:8635/health`. Expect `"degraded": true` with `chr
 
 ## PR link
 
-(filled in after `gh pr create`)
+https://github.com/junebug-junie/Orion-Sapienform/pull/2600
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

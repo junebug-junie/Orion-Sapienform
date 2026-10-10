@@ -229,7 +229,8 @@ hop stage: retry_wait -> same stage;  deadline / terminal -> finish_dream (parti
 - **Finish:** `step="finish"` with every hop made and `stopped_reason`; orion-dream writes the
   dream. It keeps retrying for `DREAM_CARRY_FINISH_GRACE_SEC` (default 1800) past the deadline so
   a partial carry is still written; after that the run fails with the last finish error.
-- **Deadline** (`admission.deadline_at`): any hop stage past it finishes **partial** with
+- **Deadline** (`admission.deadline_at`, required: `AdmissionRuntime.submit` refuses a carry
+  without one, since text/finish retries never spend attempts): any hop stage past it finishes **partial** with
   `stopped_reason="deadline at hop N: <last reason>"`. A carry that made no hop at all fails
   instead (nothing to write). The driver does not fail a pending carry at its deadline (the graph
   owns it); it only backstops it after deadline + grace + `DURABLE_RUNS_RETRY_MAX_SEC`.

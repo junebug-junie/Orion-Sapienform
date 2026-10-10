@@ -483,3 +483,103 @@ def test_runner_sends_the_carry_step_on_its_channel_with_its_reply_prefix():
     assert holder["channel"] == DREAM_CARRY_STEP_CHANNEL
     assert holder["reply"] == f"{DREAM_CARRY_STEP_REPLY_PREFIX}:c-1" and holder["timeout"] == 7.0
     assert holder["envelope"].payload["gpu_lease"]["lease_id"] == "hold-1"
+
+
+# --- review follow-ups ---------------------------------------------------------------------------
+
+def test_submit_refuses_a_carry_without_a_deadline():
+    from orion.schemas.durable_run import DurableRunRequestV1
+
+    rt = _runtime()
+    req = DurableRunRequestV1(run_id="dream-carry-x", workflow=DREAM_CARRY_WORKFLOW, correlation_id="c",
+                              brief=DreamCarryBriefV1(trigger_id="s"),
+                              admission={"resource": "llm.route.metacog_background",
+                                         "preferred_lane": "metacog_background"})
+    with pytest.raises(ValueError, match="deadline_at"):
+        asyncio.run(rt.submit(req))
+
+
+def test_an_unspaced_image_prompt_is_clipped_to_what_the_child_brief_accepts():
+    async def run():
+        world, saver = CarryWorld(), InMemorySaver()
+        dream = Dream(text=[("done", {"hop": {"index": 0, "kind": "text", "passage": "p",
+                                              "image_prompt": "x" * 5000}}), ("done", {})])
+        children = Children()
+        result = await drive(graph(world, saver, dream, children), world, initial(world, hops=2))
+        assert result["status"] == "completed" and len(result["hops"]) == 2
+        assert len(children.submitted[0].brief.dream_hop.prompt) == 1000
+    asyncio.run(run())
+
+
+def test_a_text_answer_for_the_wrong_hop_is_retried_not_checkpointed():
+    async def run():
+        world, saver = CarryWorld(), InMemorySaver()
+        bad = {"index": 1, "kind": "text", "passage": "p", "image_prompt": "q"}
+        dream = Dream(text=[("done", {"hop": bad}), ("done", {})])
+        children = Children()
+        result = await drive(graph(world, saver, dream, children), world, initial(world, hops=2))
+        assert result["status"] == "completed" and [h["index"] for h in result["hops"]] == [0, 1]
+        assert result["retries"] == 1 and [r.hop_index for r in dream.calls if r.step == "text"] == [0, 0]
+    asyncio.run(run())
+
+
+class TakeBackWorld(CarryWorld):
+    """execute raises ``exc`` once, as the runtime does for a pool take-back or the run deadline."""
+
+    def __init__(self, exc):
+        super().__init__()
+        self.exc = exc
+
+    async def execute(self, state, node):
+        if self.exc is not None:
+            exc, self.exc = self.exc, None
+            raise exc
+        return await super().execute(state, node)
+
+
+def test_a_pool_take_back_mid_text_hop_replays_it_without_a_retry_or_attempt():
+    from app.admitted_graph import HoldLost
+
+    async def run():
+        world, saver = TakeBackWorld(HoldLost("gpu_hold_lost:queued")), InMemorySaver()
+        dream, children = Dream(), Children()
+        result = await drive(graph(world, saver, dream, children), world, initial(world, hops=2))
+        assert result["status"] == "completed" and len(result["hops"]) == 2
+        assert result["attempt"] == 0 and int(result.get("retries") or 0) == 0
+        assert result["hold_takebacks"] == 1 and "hold_lost" in world.releases
+        assert result["lease"] is None and result["hold"] is None
+    asyncio.run(run())
+
+
+def test_the_deadline_inside_a_text_hop_releases_the_hold_and_finishes_partial_or_fails_empty():
+    from app.admitted_graph import WorkflowDeadline
+
+    async def run():
+        world, saver = TakeBackWorld(WorkflowDeadline("workflow_deadline")), InMemorySaver()
+        dream, children = Dream(), Children()
+        result = await drive(graph(world, saver, dream, children), world, initial(world))
+        # Nothing made yet: no empty dream, but the hold is handed back.
+        assert result["status"] == "failed" and result["last_error"].startswith("deadline at hop 0")
+        assert world.releases == ["workflow_deadline"] and dream.calls == []
+    asyncio.run(run())
+
+
+def test_a_carry_cancelled_mid_submit_still_cancels_the_deterministic_child():
+    """The child submit landed but the driver was cancelled before child_run_id was checkpointed."""
+    rt = _runtime()
+    cancelled = []
+
+    async def finish_projection(run_id, status, detail, **_):
+        return status
+
+    async def cancel_child(run_id, child):
+        cancelled.append(child)
+
+    rt.store = SimpleNamespace(finish_projection=finish_projection)
+    rt._cancel_carry_child = cancel_child
+    state = {"workflow": DREAM_CARRY_WORKFLOW, "hops": [{"index": 0}], "brief": {"trigger_id": "s", "hops": 6}}
+    asyncio.run(rt._terminal(RUN, "cancelled", state, workflow=DREAM_CARRY_WORKFLOW))
+    assert cancelled == [reverie_visual_run_id(dream_hop_dispatch_id(RUN, 1))]
+    cancelled.clear()
+    asyncio.run(rt._terminal(RUN, "completed", state, workflow=DREAM_CARRY_WORKFLOW))
+    assert cancelled == []

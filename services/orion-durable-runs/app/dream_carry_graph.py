@@ -64,6 +64,8 @@ DEFAULT_FINISH_GRACE_SEC = 1800.0
 MIN_BACKOFF_SEC = 1.0
 # The child outcome that means "a picture was painted and seen".
 PRODUCED = "produced"
+# DreamHopImageV1.prompt's max_length: a text hop's image_prompt is clipped to it as well as to words.
+IMAGE_PROMPT_MAX_CHARS = 1000
 
 # (request, budget_sec) -> result. Raises on transport/identity trouble (a retry, never an attempt).
 CarryStep = Callable[[DreamCarryStepRequestV1, float | None], Awaitable[DreamCarryStepResultV1]]
@@ -152,7 +154,7 @@ def _bumped(state: dict, step: str, hop: int) -> dict:
 
 def _stop(reason: str) -> dict:
     """Go to finish_dream with the hops made so far and why the carry stopped."""
-    return {"status": "stopping", "route": "finish_dream", "stopped_reason": reason[:500],
+    return {"status": "running", "route": "finish_dream", "stopped_reason": reason[:500],
             "retry_at": None, "retry_node": None, "lease": None}
 
 
@@ -233,6 +235,14 @@ def build_dream_carry_graph(carry: DreamCarryDeps, admission: AdmissionDeps, che
                 "retries": int(state.get("retries") or 0) + 1,
                 "retry_streak": int(state.get("retry_streak") or 0) + 1}
 
+    def poll_at(state: dict) -> str:
+        """The next child read, never past the deadline (so the stop is noticed on time)."""
+        at = admission.now() + timedelta(seconds=carry.child_poll_sec)
+        deadline = _deadline(state)
+        if deadline is not None and deadline > admission.now():
+            at = min(at, deadline)
+        return at.isoformat()
+
     async def call(req: DreamCarryStepRequestV1, budget_sec: float | None) -> DreamCarryStepResultV1:
         result = await carry.run_step(req, budget_sec)
         if (result.run_id, result.correlation_id, result.step) != (req.run_id, req.correlation_id, req.step):
@@ -275,7 +285,7 @@ def build_dream_carry_graph(carry: DreamCarryDeps, admission: AdmissionDeps, che
     def after_wait(state) -> str:
         if state.get("lease"):
             return "text_hop"
-        return "finish_dream" if state.get("status") == "stopping" else "resource_request"
+        return "finish_dream" if state.get("route") == "finish_dream" else "resource_request"
 
     async def text_hop(state):
         state = dict(state)
@@ -321,10 +331,13 @@ def build_dream_carry_graph(carry: DreamCarryDeps, admission: AdmissionDeps, che
         if result.status == "done":
             released = await admission.release(state, "text_done")
             hop = result.hop
-            if hop is None or hop.index != idx:
-                return retry(state, "resource_request", f"hop_index_mismatch:{getattr(hop, 'index', None)}!={idx}",
+            if hop is None or hop.index != idx or hop.kind != "text":
+                return retry(state, "resource_request",
+                             f"hop_mismatch:{getattr(hop, 'kind', None)}:{getattr(hop, 'index', None)}!=text:{idx}",
                              None, **released, **calls)
-            hop = hop.model_copy(update={"image_prompt": clip_image_prompt(hop.image_prompt or "")})
+            # Words for CLIP, characters for the child brief (DreamHopImageV1.prompt max_length).
+            prompt = clip_image_prompt(hop.image_prompt or "")[:IMAGE_PROMPT_MAX_CHARS]
+            hop = hop.model_copy(update={"image_prompt": prompt})
             return {**released, **calls, "hops": hops + [hop.model_dump(mode="json")], "status": "running",
                     "route": "next_hop", "retry_streak": 0, "reason": None, "last_error": None}
         if result.status == "retry":
@@ -343,21 +356,26 @@ def build_dream_carry_graph(carry: DreamCarryDeps, admission: AdmissionDeps, che
             return {"status": "running", "route": "next_hop"}
         if _expired(state, admission.now()):
             return _stop(_deadline_reason(state))
-        request = child_request(state, idx, hops[-1].image_prompt or "", admission.now())
+        try:
+            request = child_request(state, idx, hops[-1].image_prompt or "", admission.now())
+        except ValueError as exc:   # an unbuildable brief: deterministic, retrying cannot fix it
+            return _stop(f"image hop {idx}: invalid_child_request: {exc}")
         try:
             await carry.submit_child(request)
         except Exception as exc:  # noqa: BLE001
             from orion.durable_runs.registry_store import SubmissionConflict
 
-            if isinstance(exc, SubmissionConflict):   # deterministic: retrying cannot fix it
+            # Deterministic, retrying cannot fix it. Rare: only if a deploy between a submit and its replay
+            # changed ReverieVisualRunBriefV1's dump (e.g. a new defaulted field).
+            if isinstance(exc, SubmissionConflict):
                 return _stop(f"image hop {idx}: child_submission_conflict")
             return retry(state, "image_submit", f"child_submit:{type(exc).__name__}: {exc}")
         children = list(state.get("child_run_ids") or [])
         if request.run_id not in children:
             children.append(request.run_id)
-        return {"status": "waiting_child", "route": "image_wait", "child_run_id": request.run_id,
+        return {"status": "running", "route": "image_wait", "child_run_id": request.run_id,
                 "child_hop": idx, "child_run_ids": children, "retry_streak": 0,
-                "retry_at": (admission.now() + timedelta(seconds=carry.child_poll_sec)).isoformat()}
+                "retry_at": poll_at(state)}
 
     async def image_wait(state):
         state = dict(state)
@@ -375,8 +393,8 @@ def build_dream_carry_graph(carry: DreamCarryDeps, admission: AdmissionDeps, che
         if terminal is None:
             if _expired(state, admission.now()):
                 return _stop(f"deadline at hop {idx}: image hop still running ({child})")
-            return {"status": "waiting_child", "route": "image_wait", "reason": read_error or state.get("reason"),
-                    "retry_at": (admission.now() + timedelta(seconds=carry.child_poll_sec)).isoformat()}
+            return {"status": "running", "route": "image_wait", "reason": read_error or state.get("reason"),
+                    "retry_at": poll_at(state)}
         status, detail = terminal
         detail = detail or {}
         sha, caption = detail.get("artifact_sha256"), (detail.get("caption") or "").strip()
@@ -460,9 +478,10 @@ def build_dream_carry_graph(carry: DreamCarryDeps, admission: AdmissionDeps, che
     route = lambda s: s.get("route") or "failed"  # noqa: E731
     graph.add_edge(START, "next_hop")
     graph.add_conditional_edges("next_hop", route, ["resource_request", "image_submit", "finish_dream"])
-    # By status, not route: the runtime's restart fence re-enters here via aupdate_state(as_node=...).
+    # The restart fence re-enters here via aupdate_state(as_node=...) with status waiting_resource;
+    # route is finish_dream only after a _stop, which never re-enters resource_request.
     graph.add_conditional_edges("resource_request",
-                                lambda s: "finish_dream" if s.get("status") == "stopping" else "resource_wait",
+                                lambda s: "finish_dream" if s.get("route") == "finish_dream" else "resource_wait",
                                 ["resource_wait", "finish_dream"])
     graph.add_conditional_edges("resource_wait", after_wait, ["text_hop", "resource_request", "finish_dream"])
     graph.add_conditional_edges("text_hop", route, ["next_hop", "retry_wait", "resource_request", "finish_dream"])

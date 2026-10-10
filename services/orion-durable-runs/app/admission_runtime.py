@@ -41,7 +41,7 @@ from app.dream_carry_graph import (
     DEFAULT_FINISH_GRACE_SEC as DREAM_CARRY_DEFAULT_FINISH_GRACE_SEC, DreamCarryDeps, build_dream_carry_graph,
     finish_detail as dream_carry_finish_detail, terminal_detail as dream_carry_terminal_detail,
 )
-from orion.schemas.dream_carry import DREAM_CARRY_WORKFLOW
+from orion.schemas.dream_carry import DREAM_CARRY_WORKFLOW, dream_hop_dispatch_id
 from app.episode_distill_graph import build_episode_distill_graph, finish_detail as episode_distill_finish_detail
 from orion.schemas.memory_episode import MEMORY_EPISODE_DISTILL_WORKFLOW
 from orion.schemas.journal_compose_run import JOURNAL_COMPOSE_WORKFLOW
@@ -64,7 +64,7 @@ from app.reverie_visual_graph import (
 )
 from orion.schemas.compactor_digest_run import COMPACTOR_DIGEST_WORKFLOW
 from orion.schemas.reading_turn import READING_WORKFLOW
-from orion.schemas.reverie_visual_run import REVERIE_VISUAL_WORKFLOW
+from orion.schemas.reverie_visual_run import REVERIE_VISUAL_WORKFLOW, reverie_visual_run_id
 from orion.schemas.orion_day import ORION_DAY_WORKFLOW, OrionDayRunBriefV1
 from app.self_sense_graph import finish_detail as self_sense_finish_detail
 from orion.durable_runs.registry_store import (
@@ -348,6 +348,9 @@ class AdmissionRuntime:
     async def submit(self, request: DurableRunRequestV1) -> dict:
         if request.admission is None:
             raise ValueError("resource admission is required on this endpoint")
+        if request.workflow == DREAM_CARRY_WORKFLOW and request.admission.deadline_at is None:
+            # Text/finish retries never spend attempts: the deadline is the carry's only bound.
+            raise ValueError("dream.carry runs require admission.deadline_at")
         row = await self.store.submit(request.model_dump(mode="json"))
         self._wake.set()
         return {"run_id": request.run_id, "status": row.get("terminal") or "waiting_resource",
@@ -1062,7 +1065,9 @@ class AdmissionRuntime:
                     if snap.next == ("resource_wait",) and not self._carry_past_deadline(workflow, state) \
                             and not await self._hold_ready(run_id, state):
                         return
-                    if len(snap.next) == 1 and snap.next[0] in TIMED_WAIT_NODES and state.get("retry_at") \
+                    if snap.next == ("retry_wait",) and self.now() < datetime.fromisoformat(state["retry_at"]):
+                        return
+                    if snap.next == ("image_wait",) and state.get("retry_at") \
                             and self.now() < datetime.fromisoformat(state["retry_at"]):
                         return
                     resume = Command(resume=True)
@@ -1150,8 +1155,15 @@ class AdmissionRuntime:
         if actual is not None:
             self._hints.discard(run_id)
             self._checked.pop(run_id, None)
-        if wf == DREAM_CARRY_WORKFLOW and actual in ("failed", "cancelled") and state.get("child_run_id"):
-            await self._cancel_carry_child(run_id, state["child_run_id"])
+        if wf == DREAM_CARRY_WORKFLOW and actual in ("failed", "cancelled"):
+            child = state.get("child_run_id")
+            made = len(state.get("hops") or [])
+            if not child and made % 2:
+                # A cancel can land after the child submit but before its checkpoint: the child id is
+                # deterministic, so name it from the hop that was being painted.
+                child = reverie_visual_run_id(dream_hop_dispatch_id(run_id, made))
+            if child:
+                await self._cancel_carry_child(run_id, child)
         self._wake.set()
         if abandon is not None and actual in ("failed", "cancelled"):
             # Last, after every terminal fact: the run is terminal whether or not thought answers.
@@ -1165,7 +1177,8 @@ class AdmissionRuntime:
         read that painting, so the child is cancelled (its own abandon then closes thought's attempt).
         Never raises: the carry is terminal either way."""
         try:
-            if await self.store.terminal_detail(child_run_id) is None:
+            row = await self.store.get_run(child_run_id)
+            if row is not None and not row.get("terminal"):   # never submitted, or already ended: nothing to do
                 await self.control(child_run_id, "cancel")
         except Exception:  # noqa: BLE001
             logger.exception("dream_carry_child_cancel_failed run=%s child=%s", run_id, child_run_id)

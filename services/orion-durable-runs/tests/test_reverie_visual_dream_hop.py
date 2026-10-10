@@ -129,13 +129,14 @@ def test_a_carry_that_ends_failed_cancels_its_in_flight_child():
     cancelled = []
     rt = object.__new__(AdmissionRuntime)
 
-    async def terminal_detail(run_id):
-        return None
+    async def get_run(run_id):
+        return {"terminal": None} if run_id == "child-1" else None
 
     async def control(run_id, action):
         cancelled.append((run_id, action))
 
-    rt.store = SimpleNamespace(terminal_detail=terminal_detail)
+    rt.store = SimpleNamespace(get_run=get_run)
     rt.control = control
     asyncio.run(rt._cancel_carry_child("carry-1", "child-1"))
+    asyncio.run(rt._cancel_carry_child("carry-1", "never-submitted"))
     assert cancelled == [("child-1", "cancel")]

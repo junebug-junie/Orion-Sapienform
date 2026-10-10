@@ -41,6 +41,7 @@ from orion.regulation.arousal import (  # noqa: E402
     DEFAULT_ENGAGED_MINUTES,
     DEFAULT_GPU_QUEUE_FLOOR,
     DEFAULT_GPU_SUSTAIN_SEC,
+    GPU_STATE_STALE_SEC,
     classify_arousal,
     gpu_queue_evidence,
 )
@@ -118,6 +119,8 @@ def replay(rows, start, end, *, tick_sec=120.0, engaged_minutes=DEFAULT_ENGAGED_
         hi = bisect.bisect_right(heat_ts, now)
         points = [TempPoint(ts=ts, value=v) for ts, v in heat[lo:hi]]
         seed = None
+        if prev_inputs is not None and (now - prev_inputs.observed_at).total_seconds() > 3 * tick_sec:
+            prev_inputs = None
         if prev_inputs is not None and prev_inputs.cabinet_thermal_state not in (None, "unknown"):
             seed = dataclasses.replace(read_cabinet_heat([], now), thermal_state=prev_inputs.cabinet_thermal_state,
                                        critical=prev_inputs.cabinet_critical)
@@ -129,7 +132,7 @@ def replay(rows, start, end, *, tick_sec=120.0, engaged_minutes=DEFAULT_ENGAGED_
             age, depth, sustained = gpu_queue_evidence(snaps[a:b], now, floor=floor)
             if age is None:
                 continue
-            key = (sustained or 0.0, -age)
+            key = (age <= GPU_STATE_STALE_SEC, sustained or 0.0, -age)
             if best is None or key > best[0]:
                 best = (key, age, depth, sustained)
         inputs = ArousalInputsV1(

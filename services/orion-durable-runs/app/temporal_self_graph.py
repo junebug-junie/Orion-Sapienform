@@ -111,8 +111,14 @@ def build_temporal_self_graph(deps: TemporalSelfDeps, checkpointer: Any):
     async def regulate(state: TemporalSelfGraphState) -> dict:
         now = deps.now()
         prev = _prev_reading(state.get("regulation"))
-        inputs = await deps.read_inputs(now, _prev_inputs(state.get("last_inputs")),
-                                        _dt(state.get("last_juniper_turn_at")))
+        # The cabinet reflex's hysteresis seed obeys the same gap rule as the previous reading:
+        # after an outage, an old "hot" must not hold the reflex hot (review finding).
+        prev_inputs = _prev_inputs(state.get("last_inputs"))
+        if prev_inputs is not None:
+            gap = (now - prev_inputs.observed_at).total_seconds()
+            if gap < 0 or gap > deps.max_prev_gap_sec:
+                prev_inputs = None
+        inputs = await deps.read_inputs(now, prev_inputs, _dt(state.get("last_juniper_turn_at")))
         reading = classify_arousal(
             prev, inputs, enabled=deps.arousal_enabled, engaged_minutes=deps.engaged_minutes,
             gpu_queue_floor=deps.gpu_queue_floor, gpu_sustain_sec=deps.gpu_sustain_sec,

@@ -12,7 +12,7 @@ Rule, evaluated in this order (spec R3):
 2. Strain latched earlier holds until every strain input reads fresh AND clear for ``clear_sec``
    (default 10 min). Stale time never earns clear time: a latched step with a stale strain input
    reads ``unknown`` and restarts the clear clock.
-3. Any input older than 3x its cadence -> unknown. Unknown is never idle.
+3. Any stale input (S1 past its own 300 s grace, S2 past 30 s, E1 query failed) -> unknown. Unknown is never idle.
 4. A Juniper turn within ``engaged_minutes`` (the dream's DREAM_IDLE_MINUTES, 45) -> engaged.
 5. Otherwise idle.
 
@@ -32,9 +32,12 @@ from orion.autonomy.cabinet_heat import REFLEX_CABINET_HOT, REFLEX_CABINET_UNKNO
 from orion.schemas.regulation import ArousalInputsV1, ArousalReadingV1
 
 # GPU pool publishes GpuPoolStateV1 every 5 s; sql-writer lands each in ~10 ms (live 10-10).
+# The spec's generic rule is 3x cadence (15 s), but live gaps between saved snapshots reach
+# 20-40 s a few times a day (max 39.8 s over 6 h, 10-10), and a step landing in one would read
+# unknown and restart a latched strain's clear clock. 30 s absorbs those gaps and is still
+# 10x shorter than the 300 s sustain window (review finding).
 GPU_STATE_CADENCE_SEC = 5.0
-STALE_FACTOR = 3.0
-GPU_STATE_STALE_SEC = GPU_STATE_CADENCE_SEC * STALE_FACTOR
+GPU_STATE_STALE_SEC = 30.0
 
 DEFAULT_ENGAGED_MINUTES = 45.0
 DEFAULT_GPU_QUEUE_FLOOR = 2
@@ -123,7 +126,7 @@ def classify_arousal(
     clear_since = _utc(usable.strain_clear_since) if usable else None
 
     # Freshness per input. S1's own module owns what a missing reading means (unknown past its
-    # 300 s grace); S2 is 3x the pool's 5 s cadence; E1 is fresh whenever its query succeeded.
+    # 300 s grace); S2 is GPU_STATE_STALE_SEC (30 s); E1 is fresh whenever its query succeeded.
     s1_fresh = (inputs.cabinet_read_ok and inputs.cabinet_reflex != REFLEX_CABINET_UNKNOWN
                 and inputs.cabinet_thermal_state not in (None, "unknown"))
     s1_hot = s1_fresh and inputs.cabinet_reflex == REFLEX_CABINET_HOT

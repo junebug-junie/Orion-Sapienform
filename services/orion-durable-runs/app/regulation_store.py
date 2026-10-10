@@ -24,7 +24,7 @@ from typing import Any, Optional
 
 from orion.autonomy.cabinet_heat import CABINET_NODE, CABINET_POINTS_SQL, _ts_key, read_cabinet_heat
 from orion.hardware_watch.rules import TempPoint
-from orion.regulation.arousal import gpu_queue_evidence
+from orion.regulation.arousal import GPU_STATE_STALE_SEC, gpu_queue_evidence
 from orion.regulation.juniper_turns import JUNIPER_IDLE_MINUTES_SQL
 from orion.schemas.regulation import ArousalInputsV1, ArousalReadingV1
 
@@ -101,13 +101,14 @@ async def _gpu(pool: Any, now: datetime, *, floor: int, sustain_sec: float) -> d
             except ValueError:
                 continue
         by_host.setdefault(r["host"], []).append((r["generated_at"], depth))
-    # One evidence run per pool host; the most strained fresh host speaks for the fleet.
+    # One evidence run per pool host; the most strained FRESH host speaks for the fleet. A host
+    # that stopped publishing must not outrank a fresh one and turn S2 stale (review finding).
     best: Optional[tuple] = None
     for snaps in by_host.values():
         age, depth, sustained = gpu_queue_evidence(snaps, now, floor=floor)
         if age is None:
             continue
-        key = (sustained or 0.0, -age)
+        key = (age <= GPU_STATE_STALE_SEC, sustained or 0.0, -age)
         if best is None or key > best[0]:
             best = (key, age, depth, sustained)
     if best is None:

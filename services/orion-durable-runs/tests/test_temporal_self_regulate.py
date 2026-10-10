@@ -201,6 +201,57 @@ def test_drive_reading_is_embedded_verbatim():
     assert w.projected[-1].drives == w.drives
 
 
+def test_old_cabinet_seed_is_dropped_after_an_outage():
+    """Review finding: a stored hot/critical cabinet state must not seed the reflex after a gap."""
+    w = World()
+    seen = []
+
+    async def read_inputs(now, prev, last_turn_at):
+        seen.append(prev)
+        return await World.read_inputs(w, now, prev, last_turn_at)
+
+    w.read_inputs = read_inputs
+    w.reflex, w.thermal = "cabinet_hot", "hot"
+    d = driver(w)
+    tick(d)
+    w.now += timedelta(seconds=120)
+    tick(d)
+    assert seen[-1] is not None and seen[-1].cabinet_thermal_state == "hot"     # short gap: seeded
+    w.now += timedelta(hours=1)
+    tick(d)
+    assert seen[-1] is None                                                     # outage: not seeded
+
+
+def test_stale_gpu_host_does_not_outrank_a_fresh_one():
+    from app import regulation_store
+
+    class Conn:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def execute(self, sql, params=None):
+            now = T0
+            rows = [{"host": "old", "generated_at": now - timedelta(seconds=60 + 5 * i), "queue_depth": {"agent": 9}}
+                    for i in range(60)]
+            rows += [{"host": "circe", "generated_at": now - timedelta(seconds=5 * i), "queue_depth": {}}
+                     for i in range(5)]
+
+            class R:
+                async def fetchall(self_inner):
+                    return rows
+            return R()
+
+    class Pool:
+        def connection(self):
+            return Conn()
+
+    out = asyncio.run(regulation_store._gpu(Pool(), T0, floor=2, sustain_sec=300.0))
+    assert out["gpu_queue_depth"] == 0 and out["gpu_state_age_sec"] == 0.0
+
+
 # --- store SQL on real Postgres -------------------------------------------------------------
 
 DSN = os.getenv("ORION_ADMISSION_TEST_DSN")

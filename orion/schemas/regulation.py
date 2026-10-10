@@ -5,8 +5,9 @@ Temporal Self rev 4 (PR #2369), section R3, order 3 ("R2/R3 core").
 One writer: the ``regulate`` node of the ``temporal_self.update`` durable graph in
 orion-durable-runs (thread ``temporal_self:orion:<local date>``), every 120 s and on every
 chat turn. The latest state is in Redis ``orion:regulation:latest`` (TTL) and at
-``GET /regulation/state``. Not a bus channel: no bus consumer exists yet. Every level change
-is one ``arousal_transition`` row in ``temporal_self_event``.
+``GET /regulation/state``. Not a bus channel: no bus consumer exists yet. Every new level
+episode (a level change, or a restart after a gap) is one ``arousal_transition`` row in
+``temporal_self_event``.
 
 NO READER YET. Spec order 6 wires the dials one PR at a time. A reader must treat a missing,
 expired, unparseable, stale or ``unknown`` state as "arousal unavailable" and behave exactly as

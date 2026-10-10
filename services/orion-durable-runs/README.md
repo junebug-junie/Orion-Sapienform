@@ -561,7 +561,8 @@ on a Juniper chat turn (`orion:chat:history:turn`; Orion's own outreach does not
 Result: `engaged` (turn within `DREAM_IDLE_MINUTES`), `idle`, `strained` (leaves only after
 `ORION_REGULATION_STRAINED_CLEAR_SEC` of fresh, clear inputs), or `unknown` (any stale input;
 never idle). Written to Redis `orion:regulation:latest` (TTL `ORION_REGULATION_REDIS_TTL_SEC`,
-360 s) and `GET /regulation/state`; each level change is one `arousal_transition` row in
+360 s) and `GET /regulation/state`; each new level episode (a level change, or a restart after a
+gap longer than three ticks) is one `arousal_transition` row in
 `temporal_self_event` (`services/orion-sql-db/manual_migration_temporal_self_event_v1.sql`,
 hand-applied). The latest rest-drive reading (`orion:drive:rest:latest`) is embedded verbatim
 for the trace; arousal never reads it. No dial reads arousal yet (spec order 6).

@@ -38,7 +38,7 @@ def step(prev, **kw):
     (dict(cab_ok=False, reflex=None, thermal=None), "stale:cabinet"),
     (dict(reflex="cabinet_unknown", thermal="unknown"), "stale:cabinet"),
     (dict(gpu_age=None, depth=None, sustained=None), "stale:gpu_state"),
-    (dict(gpu_age=16.0), "stale:gpu_state"),
+    (dict(gpu_age=31.0), "stale:gpu_state"),
 ])
 def test_any_stale_input_reads_unknown_never_idle(kw, stale):
     r = step(None, **kw)

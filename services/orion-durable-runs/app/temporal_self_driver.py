@@ -12,7 +12,7 @@ The first step of a day seeds the new thread from the previous day's last state 
 the strain latch carry over midnight), and threads past TEMPORAL_SELF_RETENTION_DAYS are deleted
 with the saver's own ``adelete_thread``.
 
-A step whose arousal level changed is logged (``arousal_transition``) and recorded as one row
+A step that starts a new level episode (level change, or restart after a gap) is logged (``arousal_transition``) and recorded as one row
 in ``temporal_self_event`` by the graph. It does NOT publish a ``DurableRunStateV1`` row: that
 model's ``workflow`` is a closed Literal read by sql-writer and Hub, and widening it would need a
 consumer-first rollout for a trace the event table already holds.

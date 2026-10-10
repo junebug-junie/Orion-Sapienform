@@ -280,12 +280,16 @@
       const seats = c.roles.filter((r) => r.swap).map((r) => r.name);
       if (!seats.length && sw.swapState === "idle" && !sw.action) return "";
       const a = sw.action;
+      // The pool's controller-health tracker (orion/gpu_pool/controller_health.py): the seat's lane
+      // controller keeps refusing with a reason a retry cannot fix -- say so above everything else.
+      const broken = a && a.controller_degraded
+        ? Object.entries(a.controller_degraded).map(([seat, b]) => ({ seat, ...b })) : [];
       const lines = [];
       const paused = actuationModel(null, view.state).paused;
       lines.push(sw.actuatedRoles.length
         ? `pool actuates ${esc(sw.actuatedRoles.join(", "))}${paused ? " · PAUSED: nothing is loaded or unloaded" : ""}`
         : "no seat here the pool can load: swaps are reported, not actuated");
-      if (a) {
+      if (a && a.action) {   // controller_degraded alone (no action record yet) is not an action
         lines.push(`${esc(a.action)} ${esc(a.role)} (g${esc(a.generation)}, ${esc(a.reason)})`
           + (a.profile ? ` · model ${esc(a.profile)}` : "")
           + (a.phase ? ` · phase ${esc(a.phase)}` : "") + (a.outcome ? ` · ${esc(a.outcome)}` : " · in flight")
@@ -298,6 +302,7 @@
         <span class="badge swapstate">swap: ${esc(sw.swapState)}${sw.swapState !== "idle" && sw.swapRole ? ` ${esc(sw.swapRole)}` : ""}</span>
         ${sw.swapState === "fault" ? `<div class="meta"><strong>FAULT</strong>: no grants on any role of this card until discovery sees it consistent again, or an operator clears it.</div>
           <button type="button" data-verb="clear_fault" data-card="${esc(c.card)}">Clear fault on ${esc(c.card)} (ask the actuator, adopt what it reports)</button>` : ""}
+        ${broken.map((b) => `<div class="meta controller-degraded" data-controller-degraded="${esc(b.seat)}"><strong>CONTROLLER BROKEN</strong>: ${esc(b.advice)} · refusing since ${esc(fmtAt(b.first_seen))} (${esc(b.refusals)} refusals, last ${esc(b.reason)})</div>`).join("")}
         ${lines.map((l) => `<div class="meta">${l}</div>`).join("")}
       </div>`;
     };

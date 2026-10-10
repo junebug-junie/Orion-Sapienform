@@ -24,7 +24,12 @@ const cycle = id => ({cycle_id:id,started_at:now,ended_at:now,status:'completed'
         requests.push({path:url.pathname,search:url.search,method:req.method()});
         let data;
         if (mode === 'unavailable') return req.respond({status:503,contentType:'application/json',body:'{"detail":"unavailable"}'});
-        if (url.pathname.endsWith('/pressure')) data = pressure;
+        if (url.pathname.startsWith('/api/dream/carry/image/')) return req.respond({status:200,contentType:'image/png',body:Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==','base64')});
+        if (url.pathname.endsWith('/carries')) data = mode === 'empty' ? {carries:[]} : {carries:[{id:22,created_at:now,tldr:'t',trigger_id:'sleep:dc-new',sleep_cycle_id:'dc-new',stopped_reason:'deadline at hop 3: thermal_refused',hops:[
+          {index:0,kind:'text',passage:'Machines hum in a basement.',image_prompt:'a humming basement'},
+          {index:1,kind:'image',sha256:'a'.repeat(64),caption:'<img src=x onerror="window.injected=2"> a dim room with cables'},
+          {index:2,kind:'text',passage:'The cables become roots.',image_prompt:'roots in a dim room'}]}]};
+        else if (url.pathname.endsWith('/pressure')) data = pressure;
         else if (url.pathname.endsWith('/scorecard')) data = score;
         else if (url.pathname.endsWith('/cycles')) data = mode === 'empty' ? {cycles:[],has_more:false} : {cycles:[cycle(url.search ? 'dc-old' : 'dc-new')],has_more:!url.search,next_cursor:{before:now,before_id:'dc-new'}};
         else data = {cycle:cycle(url.pathname.split('/').pop()),hypotheses:[{hypothesis_id:'dh-1',arm:'control',claim:'<img src=x onerror="window.injected=1"> A testable link',why:'Specific shared mechanism',ref_a:'metacog:1',ref_b:'crystallization:2',offered_at:null,expired:false}]};
@@ -44,6 +49,13 @@ const cycle = id => ({cycle_id:id,started_at:now,ended_at:now,status:'completed'
     assert.match(await page.$eval('#dreamDetail', e => e.textContent), /<img src=x/);
     assert.equal(await page.evaluate(() => window.injected), undefined);
     assert.equal(await page.$('#dreamDetail img'), null);
+    await page.waitForFunction(() => document.getElementById('dreamCarries').textContent.includes('Orion saw:'));
+    const carryText = await page.$eval('#dreamCarries', e => e.textContent);
+    assert.match(carryText, /Machines hum in a basement\..*Orion saw:.*a dim room with cables.*The cables become roots\./s);
+    assert.match(carryText, /After sleep dc-new.*stopped early: deadline at hop 3/s);
+    assert.match(carryText, /<img src=x/);
+    assert.deepEqual(await page.$$eval('#dreamCarries img', imgs => imgs.map(i => i.getAttribute('src'))), ['/api/dream/carry/image/' + 'a'.repeat(64)]);
+    assert.equal(await page.evaluate(() => window.injected), undefined);
     await page.click('#dreamOlder');
     await page.waitForFunction(() => document.getElementById('dreamDetail').textContent.includes('dc-old'));
     await page.click('#dreamNewer');
@@ -65,12 +77,13 @@ const cycle = id => ({cycle_id:id,started_at:now,ended_at:now,status:'completed'
     mode = 'empty';
     await page.click('#dreamRefresh');
     await page.waitForFunction(() => document.getElementById('dreamCycles').textContent.includes('No sleep cycles'));
+    await page.waitForFunction(() => document.getElementById('dreamCarries').textContent.includes('No carried dreams yet'));
     mode = 'unavailable';
     await page.click('#dreamRefresh');
-    await page.waitForFunction(() => ['dreamPressure','dreamCycles','dreamScore'].every(id => document.getElementById(id).textContent.includes('unavailable')));
+    await page.waitForFunction(() => ['dreamPressure','dreamCycles','dreamScore','dreamCarries'].every(id => document.getElementById(id).textContent.includes('unavailable')));
     assert(!await page.$('#dreamDetail [data-cycle]'));
     assert(requests.every(r => r.method === 'GET'), 'operator view issued a write');
     assert(requests.some(r => r.search.includes('before_id=dc-new')));
-    console.log(JSON.stringify({passed:true,checks:['deep link','navigation','all sleep gates','new vs distinct counts','cycle selection','compound cursor pagination','safe claim rendering','hidden tab quiet','single refresh listener','empty state','unavailable state','GET only'],requests:requests.length}));
+    console.log(JSON.stringify({passed:true,checks:['deep link','navigation','all sleep gates','new vs distinct counts','cycle selection','compound cursor pagination','safe claim rendering','hidden tab quiet','single refresh listener','carried dream strip','carry caption escaped','carry empty state','empty state','unavailable state','GET only'],requests:requests.length}));
   } finally { await browser.close(); }
 })().catch(e => {console.error(e);process.exitCode=1;});

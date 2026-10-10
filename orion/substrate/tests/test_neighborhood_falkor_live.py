@@ -248,3 +248,50 @@ def test_projections_walk_only_while_their_claim_is_accepted_on_real_falkor(stor
     assert accepted <= walked or actual.truncated
     assert not (refused & walked)
     assert not any(e.edge_role == "assertion_structure" for e in actual.boundary_edges)
+
+
+def test_accepted_projection_admits_proposed_endpoints_on_real_falkor():
+    """2026-10-10: a default read admits proposed endpoints of a walkable semantic_projection
+    (the Cypher OR-branch in neighborhood_backends.where()), and nothing else proposed."""
+    from orion.graph.falkor_client import RedisGraphQueryClient
+    from orion.substrate.tests.test_neighborhood_projection_endpoints import (
+        claim, concept, edge, projection, proposed, receipt,
+    )
+
+    nodes = [proposed("read-a"), proposed("read-b"), proposed("read-c"), proposed("lonely"), concept("seed"),
+             claim("claim-ok"), claim("claim-rejected", state="rejected"), claim("claim-stale", revision=2)]
+    edges = [projection("proj-ok", "read-a", "read-b", claim_id="claim-ok"),
+             projection("proj-rejected", "read-a", "read-c", claim_id="claim-rejected"),
+             projection("proj-stale", "read-b", "read-c", claim_id="claim-stale", revision=1),
+             edge("legacy-lonely", "lonely", "seed"), edge("legacy-a", "read-a", "seed")]
+    name = f"test_nbhd_projection_{uuid.uuid4().hex[:10]}"
+    client = RedisGraphQueryClient(uri=URI, graph_name=name)
+    writer = FalkorSubstrateStore(FalkorSubstrateStoreConfig(uri=URI, graph_name=name), client=client, hydrate=False)
+    memory = InMemorySubstrateGraphStore()
+    for node in nodes:
+        writer.upsert_node(identity_key=node.node_id, node=node)
+        memory.upsert_node(identity_key=node.node_id, node=node)
+    for item in edges:
+        writer.upsert_edge(identity_key=item.edge_id, edge=item)
+        memory.upsert_edge(identity_key=item.edge_id, edge=item)
+    reader = FalkorSubstrateStore(FalkorSubstrateStoreConfig(uri=URI, graph_name=name),
+        client=RedisGraphQueryClient(uri=URI, graph_name=name, read_only=True), hydrate=False)
+    reader.snapshot = lambda: pytest.fail("hydration forbidden")
+    try:
+        expected = {
+            ("read-a",): (["read-a"], ["read-b"], [], ["proj-ok"]),
+            ("read-b",): (["read-b"], ["read-a"], [], ["proj-ok"]),
+            ("read-c",): ([], [], [], []),          # only rejected/stale projections
+            ("lonely",): ([], [], [], []),          # only a legacy edge
+            ("seed",): (["seed"], [], [], []),      # legacy edges never reach proposed nodes
+            ("read-a", "read-b"): (["read-a", "read-b"], [], ["proj-ok"], []),
+        }
+        for focal, want in expected.items():
+            request = NeighborhoodRequestV1(focal_node_ids=focal)
+            actual = reader.read_neighborhood(request)
+            assert not actual.degraded or actual.missing_focal_node_ids, actual.reason
+            assert receipt(actual) == want, focal
+            assert _neighborhood_receipt(actual) == _neighborhood_receipt(memory.read_neighborhood(request))
+            assert actual.projection_endpoint_node_ids == memory.read_neighborhood(request).projection_endpoint_node_ids
+    finally:
+        client._r.execute_command("GRAPH.DELETE", name)

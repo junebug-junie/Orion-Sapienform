@@ -92,13 +92,39 @@ class NeighborhoodRequestV1(BaseModel):
     internal_edge_limit: int = Field(default=12, ge=0, le=256)
     boundary_edge_limit: int = Field(default=16, ge=0, le=256)
     neighbor_node_limit: int = Field(default=16, ge=0, le=256)
+    # Nodes in these states are admitted ONLY as an endpoint of a walkable
+    # semantic_projection edge: the edge's accepted Assertion (walkable_edge) is
+    # what authorizes the read, not the node's own state. Almost every live
+    # concept is `proposed`, so without this an accepted reading link
+    # (world_pulse_read, #2581) is invisible to a default read. A proposed node
+    # never walks a legacy edge and never appears without such an edge. Set to
+    # () for the pre-2026-10-10 behavior. Note: semantic_states therefore no
+    # longer means "only these states" on its own; e.g. semantic_states=() still
+    # admits proposed projection endpoints unless this is also ().
+    projection_endpoint_states: tuple[SubstratePromotionStateV1, ...] = ("proposed",)
     # No stable snapshot token exists yet. Never silently reuse a mutable cursor.
     continuation: str | None = None
 
+    def _kind_and_scope(self, node: BaseSubstrateNodeV1) -> bool:
+        return node.node_kind in {"concept", "entity"} and node.anchor_scope in self.anchor_scopes
+
     def eligible(self, node: BaseSubstrateNodeV1) -> bool:
-        return (node.node_kind in {"concept", "entity"}
-                and node.promotion_state in self.semantic_states
-                and node.anchor_scope in self.anchor_scopes)
+        """Admitted on its own state: may be an endpoint of any walkable edge."""
+        return self._kind_and_scope(node) and node.promotion_state in self.semantic_states
+
+    def projection_only(self, node: BaseSubstrateNodeV1) -> bool:
+        """Admitted only as an endpoint of a walkable semantic_projection edge."""
+        return (self._kind_and_scope(node) and node.promotion_state not in self.semantic_states
+                and node.promotion_state in self.projection_endpoint_states)
+
+    def endpoint_eligible(self, node: BaseSubstrateNodeV1, edge_role: str | None) -> bool:
+        """Node-state half of the per-edge rule. The edge half (assertion accepted at
+        the projected revision) is walkable_edge(), enforced by every backend."""
+        return self.eligible(node) or (edge_role == "semantic_projection" and self.projection_only(node))
+
+    def projection_states(self) -> tuple[str, ...]:
+        """States an endpoint of a walkable semantic_projection edge may be in."""
+        return tuple(dict.fromkeys(self.semantic_states + self.projection_endpoint_states))
 
 
 @dataclass(frozen=True)
@@ -115,6 +141,10 @@ class NeighborhoodResultV1:
     degraded: bool = False
     reason: str | None = None
     missing_focal_node_ids: tuple[str, ...] = ()
+    # Returned nodes whose own state is outside semantic_states; each is present
+    # only because a walkable semantic_projection edge in this result touches it
+    # (the driver drops a projection-only focal whose edges were all budget-cut).
+    projection_endpoint_node_ids: tuple[str, ...] = ()
     continuations: tuple[str, ...] = ()
     consistency: str = "best_effort_non_atomic"
 
@@ -145,7 +175,23 @@ def read_neighborhood(
         focal = _unique_nodes(nodes(requested)) if requested else {}
         if not set(focal) <= set(requested):
             raise ValueError("unexpected_focal_node")
-        focal = {key: node for key, node in focal.items() if request.eligible(node)}
+        # A projection-only focal (e.g. a proposed concept) is admitted only if it
+        # has at least one walkable semantic_projection edge in the requested
+        # direction. Backends admit an edge only when both endpoints pass
+        # endpoint_eligible() for that edge, so groups([key]) for such a node
+        # lists projection edges only. Self-loops are not counted.
+        conditional = sorted(key for key, node in focal.items()
+                             if not request.eligible(node) and request.projection_only(node))
+        anchored = set()
+        for key in conditional:
+            for focus, direction, predicate in groups([key]):
+                if (focus != key or direction not in {"incoming", "outgoing"}
+                        or predicate not in get_args(SubstrateEdgePredicateV1)):
+                    raise ValueError("invalid_boundary_group")
+                if request.direction in {"both", direction}:
+                    anchored.add(key)
+                    break
+        focal = {key: node for key, node in focal.items() if request.eligible(node) or key in anchored}
         missing = tuple(sorted(set(requested) - set(focal)))
         ids = sorted(focal)
         if not ids:
@@ -241,20 +287,37 @@ def read_neighborhood(
                 neighbor_ids.append(outside)
             boundary.append(edge)
         found = _unique_nodes(nodes(neighbor_ids)) if neighbor_ids else {}
-        if set(found) != admitted or not all(request.eligible(node) for node in found.values()):
+        if set(found) != admitted:
             raise ValueError("endpoint_changed_or_unavailable")
         neighbors = {key: found[key] for key in neighbor_ids}
         all_nodes = {**focal, **neighbors}
+        # Per-edge endpoint rule: a projection-only node may sit only on a
+        # semantic_projection edge. Anything else fails the read closed.
         for edge in internal + boundary:
             for ref in (edge.source, edge.target):
-                if all_nodes[ref.node_id].node_kind != ref.node_kind:
+                node = all_nodes[ref.node_id]
+                if not request.endpoint_eligible(node, edge.edge_role):
+                    raise ValueError("endpoint_changed_or_unavailable")
+                if node.node_kind != ref.node_kind:
                     raise ValueError("endpoint_kind_mismatch")
+        # A projection-only focal must leave with an edge that vouches for it. If
+        # budgets cut every such edge (truncated is already set), it is reported
+        # missing rather than returned bare. A requested id that comes back as a
+        # neighbor (e.g. anchored only against the requested direction) is
+        # available, so it is not reported missing.
+        touched = {ref.node_id for edge in internal + boundary for ref in (edge.source, edge.target)}
+        for key in [k for k in ids if not request.eligible(focal[k]) and k not in touched]:
+            del focal[key]
+        ids = sorted(focal)
+        missing = tuple(sorted(set(requested) - set(focal) - set(neighbors)))
+        all_nodes = {**focal, **neighbors}
+        projection_only_ids = tuple(sorted(key for key, node in all_nodes.items() if not request.eligible(node)))
         return NeighborhoodResultV1(
             focal_nodes=[focal[key] for key in ids], neighbor_nodes=list(neighbors.values()),
             internal_edges=internal, boundary_edges=boundary, source_kind=source_kind,
             read_started_at=started, read_finished_at=now(), truncated=truncated,
             complete_for_request=not truncated and not missing, degraded=bool(missing),
-            missing_focal_node_ids=missing,
+            missing_focal_node_ids=missing, projection_endpoint_node_ids=projection_only_ids,
             reason="focal_unavailable_or_filtered" if missing else "budget_exhausted" if truncated else None,
         )
     except Exception as exc:
@@ -278,8 +341,9 @@ def read_memory_neighborhood(store, request: NeighborhoodRequestV1) -> Neighborh
         for edge in store._edges.values():
             src, dst = store._nodes.get(edge.source.node_id), store._nodes.get(edge.target.node_id)
             assertion = store._nodes.get(edge.assertion_id) if edge.assertion_id else None
-            if (src and dst and request.eligible(src) and request.eligible(dst)
-                    and walkable_edge(edge, assertion)):
+            if (src and dst and walkable_edge(edge, assertion)
+                    and request.endpoint_eligible(src, edge.edge_role)
+                    and request.endpoint_eligible(dst, edge.edge_role)):
                 if src.node_id in ids or dst.node_id in ids:
                     yield edge
 

@@ -139,6 +139,6 @@ cd /mnt/scripts/Orion-Sapienform && git pull --ff-only && docker compose --env-f
 
 ## PR link
 
-PR_LINK_PLACEHOLDER
+https://github.com/junebug-junie/Orion-Sapienform/pull/2577
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

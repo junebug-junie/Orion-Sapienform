@@ -224,8 +224,18 @@ hop stage: retry_wait -> same stage;  deadline / terminal -> finish_dream (parti
   (`AdmissionRuntime.submit`), run id `reverie_visual_run_id(dream_hop_dispatch_id(carry, hop))`,
   painting the previous text hop's `image_prompt`, diffusion hold, deadline
   `min(carry deadline, now + 6600 s)`. The carry holds nothing: `image_wait` re-reads the child's
-  terminal fact (`DurableRunRegistryStore.terminal_detail`) every 30 s. A child that fails, is
-  cancelled, or completes without an image + caption stops the carry (`image hop N: <why>`).
+  terminal fact (`DurableRunRegistryStore.terminal_detail`) every 30 s.
+  - A child that ends without a picture for a **retryable** reason (failed with
+    `retry_window_expired` / `workflow_deadline`, or completed `deferred_thermal` /
+    `deferred_busy` / `deferred_resource` / `unknown`) is replaced, after the admission backoff
+    (`DURABLE_RUNS_RETRY_BASE_SEC * 2^(n-1)`, capped), by a fresh child for the same hop with dispatch
+    `dream-carry:<run>:<hop>:r<n>`, at most `DREAM_CARRY_CHILD_MAX_ATTEMPTS` (3) children per hop and
+    only while `DREAM_CARRY_CHILD_MIN_WINDOW_SEC` (900) of the carry is left. Live reason: most
+    waking paintings end `retry_window_expired` after `thermal_refused`.
+  - Anything else (cancelled, a terminal failure, a non-deferral outcome), or attempts / window
+    exhausted, stops the carry (`image hop N: <why>`, e.g. `image hop 3: thermal_refused x3`).
+  - Every child id is kept in `child_run_ids`; a carry that ends failed/cancelled cancels the current
+    attempt's child.
 - **Finish:** `step="finish"` with every hop made and `stopped_reason`; orion-dream writes the
   dream. It keeps retrying for `DREAM_CARRY_FINISH_GRACE_SEC` (default 1800) past the deadline so
   a partial carry is still written; after that the run fails with the last finish error.

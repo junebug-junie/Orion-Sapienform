@@ -50,6 +50,30 @@ off: `COCREATION_SIGNALS_CLAUDE_LIMIT_ENABLED=false`), or accept that it stays
 off. D2 in `docs/superpowers/specs/2026-09-25-attention-with-stakes-design.md`
 has the full account.
 
+### What the refusal says
+
+When Cursor is out and Claude is refused (or fails, or is not wired), the
+brief's `refusal_reason` names the whole chain, plain sentences first:
+
+```text
+Cursor unavailable: it hit its usage limit (resets 2026-10-14). Claude fallback
+refused: this service cannot see Claude's usage meter, so it refuses rather than
+spend blind. [cursor_token_unavailable:usage_limit; claude_budget_unobserved]
+cursor said: <first 400 chars of Cursor's own error>
+```
+
+The Cursor cause is one of `usage_limit`, `auth`, `binary_missing`, or
+`unknown`, matched on Cursor's error text (`app/cursor_errors.py`). The reset
+date is parsed only from an explicit `reset ... on M/D/YYYY`; otherwise the
+brief says `reset date unknown`. Orion reads this text in the kickoff "COULD
+NOT HIRE" section (`format_soft_nudge`) and, for `refused_budget`, in the
+role-teach progress line. Until 2026-10-10 the brief carried only
+`claude_budget_unobserved`, and Orion built a "regime break" theory around what
+was Cursor's monthly billing cap.
+
+Non-token Cursor failures are unchanged: `failed` with
+`cursor_other: <error>`.
+
 ## Why this is a separate service
 
 Cursor desktop CLI auth (`agent login` → `~/.config/cursor/auth.json`)

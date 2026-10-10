@@ -55,12 +55,27 @@ def format_access_refusal_progress(count: int) -> list[str]:
     ]
 
 
-def format_budget_spent_progress(*, status: str, next_hop_n: int | None = None) -> list[str]:
+BUDGET_REASON_CHARS = 320
+
+
+def format_budget_spent_progress(
+    *, status: str, next_hop_n: int | None = None, reason: str | None = None
+) -> list[str]:
     if status != "refused_budget":
         return []
     hop = f"hop {next_hop_n}" if next_hop_n is not None else "your last hop notes"
+    # Prefer the brief's own refusal_reason: "Cursor budget is spent" was said
+    # for every refusal, including Claude-side ones, and hid the real cause
+    # (e.g. Cursor's monthly usage limit + reset date). Only the plain part
+    # before the "[codes]" block is shown here.
+    plain = (reason or "").split(" [", 1)[0].strip()
+    head = (
+        f"Peer hire refused: {plain[:BUDGET_REASON_CHARS]}"
+        if plain
+        else "Cursor budget is spent."
+    )
     return [
-        f"Cursor budget is spent. Do not open another HelpRequest until budget is clear. "
+        f"{head} Do not open another HelpRequest until budget is clear. "
         f"Resume from {hop} / continue local crawl from what you already wrote."
     ]
 

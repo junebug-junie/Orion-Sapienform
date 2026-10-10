@@ -12,7 +12,12 @@ import uuid
 from typing import Any, Callable, Optional, Union
 
 from app.claude_fallback import DEFAULT_TIMEOUT_SEC, run_claude_fallback
-from app.cursor_errors import TokenUnavailable, classify_cursor_failure
+from app.cursor_errors import (
+    TokenUnavailable,
+    classify_cursor_failure,
+    cursor_token_reason,
+    describe_claude_refusal,
+)
 from app.cursor_invoker import build_sealed_prompt, parse_peer_brief_body, run_cursor_job
 from app.settings import Settings
 from orion.autonomy.ask_claude_trigger import _budget_refusal
@@ -532,8 +537,17 @@ def handle_help_request(
     claude_limit = claude_observe()
     claude_refusal = _budget_refusal(claude_limit)
     if claude_refusal is not None:
+        # Name the whole chain: Cursor's own reason first (e.g. its monthly
+        # usage limit + reset date), then why Claude was not tried. A bare
+        # `claude_budget_unobserved` hid a billing cap from Orion (2026-10-10).
         brief = _refused_budget_brief(
-            help_req, f"claude_{claude_refusal}", peer="claude_room"
+            help_req,
+            cursor_token_reason(
+                cursor_error,
+                after_text=describe_claude_refusal(claude_refusal),
+                after_code=f"claude_{claude_refusal}",
+            ),
+            peer="claude_room",
         )
         logger.warning(
             "curiosity_peer_claude_budget_refused help_id=%s reason=%s "
@@ -551,9 +565,10 @@ def handle_help_request(
             brief = _failed_brief(
                 help_req,
                 peer="claude_room",
-                reason=(
-                    f"cursor_token_unavailable: {cursor_error}; "
-                    "claude_unwired (no bus / no claude callable)"
+                reason=cursor_token_reason(
+                    cursor_error,
+                    after_text="Claude fallback not wired in this process (no bus / no claude callable).",
+                    after_code="claude_unwired",
                 ),
             )
             _persist(brief)
@@ -576,9 +591,10 @@ def handle_help_request(
         brief = _failed_brief(
             help_req,
             peer="claude_room",
-            reason=(
-                f"cursor_token_unavailable: {cursor_error}; "
-                f"claude_failed: {claude_exc}"
+            reason=cursor_token_reason(
+                cursor_error,
+                after_text=f"Claude fallback was tried and failed: {claude_exc}.",
+                after_code="claude_failed",
             ),
         )
         _persist(brief)

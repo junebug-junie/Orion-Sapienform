@@ -176,3 +176,65 @@ def test_pressure_endpoint_shows_the_same_drive_reading(monkeypatch):
     monkeypatch.setattr(main, "build_cycle_deps", lambda: _Fakes(_rows()).deps())
     out = asyncio.run(main.cycle_pressure_endpoint())
     assert out["rest_drive"]["state"] == "due" and out["rest_drive"]["level"] == out["pressure"]["pressure"]
+
+
+def test_post_sleep_reading_is_marked_and_comes_after_the_story():
+    from app.cycle import run_cycle_once
+
+    f = _Fakes(_rows())
+    deps, published = _with_publisher(f)
+    order = []
+
+    async def start_story(trigger):
+        order.append(("story", len(published)))
+
+    deps.start_story = start_story
+    cycle = asyncio.run(run_cycle_once(deps))
+    assert cycle.status == "completed"
+    assert order == [("story", 1)]  # only the pre-sleep reading was out when the story started
+    assert published[0].source_ref.startswith("dp-") and not published[0].source_ref.startswith("dp-postsleep-")
+    assert published[1].source_ref.startswith("dp-postsleep-")
+
+
+def test_a_hung_publisher_cannot_hold_up_the_sleep_decision(monkeypatch):
+    import app.cycle as cycle_mod
+    from app.cycle import run_cycle_once
+
+    monkeypatch.setattr(cycle_mod, "PUBLISH_TIMEOUT_SEC", 0.05)
+    f = _Fakes(_rows())
+    deps = f.deps()
+
+    async def hang(reading):
+        await asyncio.sleep(3600)
+
+    deps.publish_drive_reading = hang
+    cycle = asyncio.run(asyncio.wait_for(run_cycle_once(deps), timeout=5))
+    assert cycle is not None and cycle.status == "completed"
+
+
+def test_a_reading_that_fails_to_build_never_kills_the_loop(monkeypatch):
+    import app.cycle as cycle_mod
+    from app.cycle import run_cycle_once
+
+    def boom(*a, **k):
+        raise ValueError("bad reading")
+
+    monkeypatch.setattr(cycle_mod, "read_rest_drive", boom)
+    deps, published = _with_publisher(_Fakes(_rows()))
+    cycle = asyncio.run(run_cycle_once(deps))
+    assert cycle is not None and cycle.status == "completed" and published == []
+
+
+def test_pressure_endpoint_folds_in_source_errors(monkeypatch):
+    from app import main
+
+    class _Partial(dict):
+        read_errors = ("metacog",)
+
+    f = _Fakes(_rows())
+    deps = f.deps()
+    inner = deps.load_source_rows
+    deps.load_source_rows = lambda *a, **k: _Partial(inner(*a, **k))
+    monkeypatch.setattr(main, "build_cycle_deps", lambda: deps)
+    out = asyncio.run(main.cycle_pressure_endpoint())
+    assert out["rest_drive"]["state"] == "no_reading"

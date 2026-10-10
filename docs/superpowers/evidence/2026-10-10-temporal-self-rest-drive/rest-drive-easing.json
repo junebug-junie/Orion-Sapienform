@@ -5,14 +5,14 @@
   "curiosity_base_cooldown_sec": 1800.0,
   "outreach_base_cooldown_sec": 2700.0,
   "saved": {
-    "checks": 125,
+    "checks": 127,
     "span": [
       "2026-10-09T06:53:30.453138+00:00",
-      "2026-10-10T03:32:08.080872+00:00"
+      "2026-10-10T03:52:08.597707+00:00"
     ],
     "tired_minutes_per_day": {
       "2026-10-09": 0.0,
-      "2026-10-10": 30.1
+      "2026-10-10": 20.1
     },
     "states_per_day": {
       "2026-10-09": {
@@ -23,19 +23,19 @@
       "2026-10-10": {
         "building": 4,
         "due": 3,
-        "refractory": 15
+        "refractory": 17
       }
     },
-    "tired_minutes_total": 30.1,
+    "tired_minutes_total": 20.1,
     "curiosity": {
       "per_day": {
         "2026-10-09": {
-          "events": 8,
+          "events": 7,
           "while_tired": 0,
           "held": 0
         }
       },
-      "events": 8,
+      "events": 7,
       "while_tired": 0,
       "held": 0,
       "examples": []
@@ -52,7 +52,8 @@
       "while_tired": 0,
       "held": 0,
       "examples": []
-    }
+    },
+    "door_a_outreach_excluded": 0
   },
   "replay": {
     "checks": 2016,
@@ -61,26 +62,26 @@
       "2026-10-10T03:50:00+00:00"
     ],
     "tired_minutes_per_day": {
-      "2026-09-26": 110.0,
-      "2026-09-27": 20.0,
+      "2026-09-26": 106.0,
+      "2026-09-27": 12.0,
       "2026-09-28": 0.0,
-      "2026-09-29": 10.0,
-      "2026-09-30": 50.0,
-      "2026-10-01": 50.0,
-      "2026-10-02": 190.0,
-      "2026-10-03": 20.0,
-      "2026-10-04": 10.0,
-      "2026-10-05": 240.0,
-      "2026-10-06": 20.0,
+      "2026-09-29": 6.0,
+      "2026-09-30": 42.0,
+      "2026-10-01": 38.0,
+      "2026-10-02": 182.0,
+      "2026-10-03": 12.0,
+      "2026-10-04": 6.0,
+      "2026-10-05": 232.0,
+      "2026-10-06": 12.0,
       "2026-10-07": 0.0,
-      "2026-10-08": 70.0,
-      "2026-10-09": 60.0,
-      "2026-10-10": 30.0
+      "2026-10-08": 58.0,
+      "2026-10-09": 56.0,
+      "2026-10-10": 26.0
     },
     "states_per_day": {
       "2026-09-26": {
-        "refractory": 68,
-        "building": 41,
+        "refractory": 67,
+        "building": 42,
         "due": 11
       },
       "2026-09-27": {
@@ -153,16 +154,16 @@
         "refractory": 17
       }
     },
-    "tired_minutes_total": 880.0,
+    "tired_minutes_total": 788.0,
     "curiosity": {
       "per_day": {
         "2026-09-26": {
-          "events": 5,
+          "events": 7,
           "while_tired": 1,
           "held": 0
         },
         "2026-09-27": {
-          "events": 9,
+          "events": 7,
           "while_tired": 0,
           "held": 0
         },
@@ -217,12 +218,12 @@
           "held": 0
         },
         "2026-10-08": {
-          "events": 6,
+          "events": 7,
           "while_tired": 0,
           "held": 0
         },
         "2026-10-09": {
-          "events": 8,
+          "events": 7,
           "while_tired": 0,
           "held": 0
         }
@@ -235,7 +236,7 @@
     "outreach": {
       "per_day": {
         "2026-09-26": {
-          "events": 5,
+          "events": 4,
           "while_tired": 2,
           "held": 2
         },
@@ -261,8 +262,8 @@
         },
         "2026-10-01": {
           "events": 4,
-          "while_tired": 1,
-          "held": 1
+          "while_tired": 0,
+          "held": 0
         },
         "2026-10-02": {
           "events": 4,
@@ -300,9 +301,9 @@
           "held": 0
         }
       },
-      "events": 56,
-      "while_tired": 9,
-      "held": 9,
+      "events": 55,
+      "while_tired": 8,
+      "held": 8,
       "examples": [
         {
           "at": "2026-09-26T16:28:41.006562+00:00",
@@ -317,11 +318,6 @@
         {
           "at": "2026-09-27T15:43:43.786295+00:00",
           "gap_sec": 3166,
-          "state_ref": "replay"
-        },
-        {
-          "at": "2026-10-01T16:49:14.531899+00:00",
-          "gap_sec": 3597,
           "state_ref": "replay"
         },
         {
@@ -351,12 +347,14 @@
         }
       ]
     },
+    "door_a_outreach_excluded": 1,
     "simulated_sleeps": 23
   },
   "input": {
-    "rows_jsonl_sha256": "7b87282e28a7b65778925a53ea6e42d322603018bee9cfbbd8cc0f411713e650",
-    "exported_at": "2026-10-10T03:38Z",
+    "rows_jsonl_sha256": "0d7b983719ee4ff8bf7ff6d44317776689fdb38d2af83f4caeb59ea8d9468b34",
+    "rows": 12951,
+    "exported_at": "2026-10-10T04:2xZ (one READ ONLY transaction, conjourney)",
     "command": "python scripts/analysis/measure_rest_drive_easing.py rows.jsonl --start 2026-09-26T04:00:00Z --end 2026-10-10T04:00:00Z",
-    "note": "rows.jsonl not committed (source keys are md5, no text, but 12.9k rows); regenerate with --print-sql"
+    "note": "rows.jsonl not committed (12.9k rows; source keys are md5, no text); regenerate with --print-sql"
   }
 }

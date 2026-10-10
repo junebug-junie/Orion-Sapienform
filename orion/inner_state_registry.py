@@ -1166,7 +1166,8 @@ REGISTRY: tuple[InnerStateSignal, ...] = (
             "discharge action (sleep) from the same values its own gate uses. "
             "state: resting / building / due / refractory / no_reading. "
             "Transport: Redis orion:drive:rest:latest (TTL 1800 s); history "
-            "is dream_pressure_observation (check_id = source_ref). No bus "
+            "is dream_pressure_observation (check_id = source_ref, except the "
+            "post-sleep dp-postsleep-* reading). No bus "
             "channel (no subscriber). Distinct from the retired "
             "drive_state.v1 entry above."
         ),

@@ -15,7 +15,9 @@ Transport: the latest reading in Redis `orion:drive:rest:latest`, with a TTL
 equal to the readers' staleness bound (Hub curiosity and outreach, which ease
 off when the drive is `due`). Not a bus channel: nothing subscribes, and an
 unconsumed channel is an orphan. History is the dream's own per-check row,
-`dream_pressure_observation`, whose `check_id` is this reading's `source_ref`. A missing, expired, unparseable or `no_reading` value is
+`dream_pressure_observation`, whose `check_id` is this reading's `source_ref`
+(except the reading published right after a sleep, `dp-postsleep-*`, which
+has no row). A missing, expired, unparseable or `no_reading` value is
 UNKNOWN, and every reader then behaves exactly as it did before this drive
 existed. Missing is never read as rested, and never as tired.
 
@@ -61,7 +63,8 @@ class DriveReadingV1(BaseModel):
     # End of the last sleep attempt (dream_cycle.ended_at), the refractory clock.
     last_discharge_at: Optional[AwareDatetime] = None
     refractory_until: Optional[AwareDatetime] = None
-    # Joins to dream_pressure_observation.check_id for the same check.
+    # Joins to dream_pressure_observation.check_id for the same check; the
+    # post-sleep reading (`dp-postsleep-*`) has no observation row.
     source_ref: str = Field(min_length=1, max_length=200)
     no_reading_reason: Optional[str] = Field(default=None, max_length=200)
 

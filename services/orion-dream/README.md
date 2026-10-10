@@ -95,7 +95,8 @@ States: `resting` (0.0), `building`, `due` (crossed the threshold, or the 48 h
 overdue backstop), `refractory` (inside the 6 h minimum), `no_reading` (a source
 read failed). Hub curiosity and outreach stretch their cooldowns only while it
 reads `due`; anything else, or no key at all, changes nothing for them.
-`source_ref` is the `dream_pressure_observation.check_id` of the same check.
+`source_ref` is the `dream_pressure_observation.check_id` of the same check (the
+reading published right after a sleep is `dp-postsleep-*` and has no row).
 `GET /dreams/cycle/pressure` shows the reading as `rest_drive`.
 Off switch: `DREAM_REST_DRIVE_PUBLISH_ENABLED=false`. Eval:
 `scripts/analysis/measure_rest_drive_easing.py`.

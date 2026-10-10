@@ -14,12 +14,16 @@ production reader rule (rest_drive_view: only a fresh `due` is tired):
              order (all-chat idle, 6 h minimum, 48 h overdue backstop). Counter-
              factual before #2557; validated exact against saved checks after.
 
-Consumer impact, per day: real curiosity runs (curiosity_run_outcomes.completed_at)
-and real endogenous outreach sends (endogenous_outreach_decisions, outreach and
-not forced) that happened while the drive read tired AND inside the stretched
-cooldown (base <= gap since the previous one < base x multiplier). Those are the
-events the drive would have held back. First-order only: a held event would have
-shifted the ones after it, which this does not simulate.
+Consumer impact, per day: real curiosity investigation turns
+(curiosity_offer_decisions.turn_started_at -- the same start the live cooldown
+is stamped from) and real outreach sends (endogenous_outreach_decisions,
+outreach and not forced) that happened while the drive read tired AND inside the
+stretched cooldown (base <= gap since the previous one < base x multiplier).
+Those are the events the drive would have held back. Door-A sends
+(source=curiosity_outreach) skip the drive, so they are never counted as held,
+but they still reset outreach's clock. Limits: curiosity rows do not record
+whether a run was forced; a held event would have shifted the ones after it,
+which this does not simulate (first order only).
 
 Usage:
   python scripts/analysis/measure_rest_drive_easing.py --print-sql --start S --end E > export.sql
@@ -66,11 +70,11 @@ def export_sql(start, end):
         raise ValueError("expected the crossings export to end its read-only transaction with ROLLBACK")
     consumers = f"""
 SELECT row_to_json(r) FROM (
- SELECT 'consumer' AS kind, 'curiosity' AS consumer, completed_at AS at
-   FROM curiosity_run_outcomes
-  WHERE completed_at >= '{start.isoformat()}'::timestamptz AND completed_at < '{end.isoformat()}'::timestamptz
+ SELECT 'consumer' AS kind, 'curiosity' AS consumer, turn_started_at AS at, false AS exempt
+   FROM curiosity_offer_decisions
+  WHERE turn_started_at >= '{start.isoformat()}'::timestamptz AND turn_started_at < '{end.isoformat()}'::timestamptz
  UNION ALL
- SELECT 'consumer', 'outreach', decided_at
+ SELECT 'consumer', 'outreach', decided_at, coalesce(result_json->>'source', '') = 'curiosity_outreach'
    FROM endogenous_outreach_decisions
   WHERE outreach AND NOT forced
     AND decided_at >= '{start.isoformat()}'::timestamptz AND decided_at < '{end.isoformat()}'::timestamptz
@@ -126,7 +130,10 @@ def replay_timeline(rows, start, end, *, threshold=3.0, check_seconds=600.0, loo
                     key=lambda r: utc(r["started_at"]))
     good_starts = [utc(c["started_at"]) for c in cycles if c["status"] != "failed"]
     last_start = next((s for s in reversed(good_starts) if s <= start), None)
-    last_end = last_start + timedelta(minutes=cycle_minutes) if last_start else None
+    # The live refractory clock is the last attempt of ANY status (cycle_store
+    # LAST_ATTEMPT_END), not the last good one.
+    ends = [utc(c["ended_at"]) for c in cycles if c.get("ended_at") and utc(c["started_at"]) <= start]
+    last_end = max(ends) if ends else None
     out, sleeps, t = [], [], start
     while t < end:
         floor = t - timedelta(hours=lookback_hours)
@@ -140,23 +147,38 @@ def replay_timeline(rows, start, end, *, threshold=3.0, check_seconds=600.0, loo
         is_idle = idle is not None and idle >= idle_required
         refractory = last_end is not None and t - last_end < timedelta(hours=interval_hours)
         if not refractory and is_idle and reading.state == "due":
-            sleeps.append(t)
             last_start, last_end = t, t + timedelta(minutes=cycle_minutes)
+            sleeps.append(last_end)
         t += timedelta(seconds=check_seconds)
-    return out, sleeps
+    return out, sleeps  # sleeps = simulated sleep END times
+
+
+def saved_sleep_ends(rows):
+    """Real sleep attempt ends: where the live post-sleep publish replaces `due`."""
+    return sorted(utc(r["ended_at"]) for r in rows
+                  if r.get("kind") not in {"source", "chat", "pressure_check", "consumer"} and r.get("ended_at"))
 
 
 # --- per-day tallies --------------------------------------------------------------
 
 
-def tired_minutes_per_day(timeline, *, max_age_sec=1800.0):
-    """Minutes per UTC day a reader would have judged Orion tired. Each reading
-    holds until the next one, but never past the reader's staleness bound."""
+def _hold_until(timeline, i, sleep_ends, max_age_sec):
+    """A reading holds until the next check, the reader's staleness bound, or the
+    next sleep end (the dream publishes a fresh reading right after each sleep)."""
+    at = timeline[i][0]
+    nxt = timeline[i + 1][0] if i + 1 < len(timeline) else at + timedelta(seconds=600)
+    j = bisect.bisect_right(sleep_ends, at)
+    cut = sleep_ends[j] if j < len(sleep_ends) else nxt
+    return min(nxt, at + timedelta(seconds=max_age_sec), cut)
+
+
+def tired_minutes_per_day(timeline, *, max_age_sec=1800.0, sleep_ends=()):
+    """Minutes per UTC day a reader would have judged Orion tired."""
+    sleep_ends = sorted(sleep_ends)
     per_day = defaultdict(float)
     states = defaultdict(Counter)
     for i, (at, reading) in enumerate(timeline):
-        nxt = timeline[i + 1][0] if i + 1 < len(timeline) else at + timedelta(seconds=600)
-        hold_until = min(nxt, at + timedelta(seconds=max_age_sec))
+        hold_until = _hold_until(timeline, i, sleep_ends, max_age_sec)
         states[at.date().isoformat()][reading.state] += 1
         if rest_drive_view(reading, now=at, max_age_sec=max_age_sec).verdict != "tired":
             continue
@@ -169,18 +191,27 @@ def tired_minutes_per_day(timeline, *, max_age_sec=1800.0):
     return {d: round(per_day.get(d, 0.0), 1) for d in sorted(states)}, {d: dict(c) for d, c in sorted(states.items())}
 
 
-def held_events(timeline, events, *, base_sec, multiplier, max_age_sec=1800.0):
+def held_events(timeline, events, *, base_sec, multiplier, max_age_sec=1800.0, sleep_ends=()):
     """Per day: events total, events while tired, and events the drive would have
-    held (tired AND inside the stretched-but-not-the-base cooldown; first order)."""
+    held (tired AND inside the stretched-but-not-the-base cooldown; first order).
+
+    `events` are datetimes or (datetime, exempt) pairs. An exempt event (Door-A)
+    resets the clock but is never counted: the drive does not gate it."""
     times = [t for t, _ in timeline]
+    sleep_ends = sorted(sleep_ends)
     total, during, held = Counter(), Counter(), Counter()
     examples = []
     prev = None
-    for at in sorted(events):
+    norm = sorted((e, False) if isinstance(e, datetime) else (e[0], bool(e[1])) for e in events)
+    for at, exempt in norm:
+        if exempt:
+            prev = at
+            continue
         day = at.date().isoformat()
         total[day] += 1
         i = bisect.bisect_right(times, at) - 1
-        tired = i >= 0 and rest_drive_view(timeline[i][1], now=at, max_age_sec=max_age_sec).verdict == "tired"
+        tired = (i >= 0 and at < _hold_until(timeline, i, sleep_ends, max_age_sec)
+                 and rest_drive_view(timeline[i][1], now=at, max_age_sec=max_age_sec).verdict == "tired")
         during[day] += tired
         if tired and prev is not None:
             gap = (at - prev).total_seconds()
@@ -199,24 +230,26 @@ def evaluate(rows, start, end, *, curiosity_base_sec=1800.0, outreach_base_sec=2
     consumers = defaultdict(list)
     for r in rows:
         if r.get("kind") == "consumer":
-            consumers[r["consumer"]].append(utc(r["at"]))
+            consumers[r["consumer"]].append((utc(r["at"]), bool(r.get("exempt"))))
     saved = saved_timeline(rows)
     replay, sleeps = replay_timeline(rows, start, end)
+    ends = {"saved": saved_sleep_ends(rows), "replay": sleeps}
     out = {"start": start.isoformat(), "end": end.isoformat(), "multiplier": multiplier,
            "curiosity_base_cooldown_sec": curiosity_base_sec, "outreach_base_cooldown_sec": outreach_base_sec}
     for name, timeline in (("saved", saved), ("replay", replay)):
-        minutes, states = tired_minutes_per_day(timeline)
+        minutes, states = tired_minutes_per_day(timeline, sleep_ends=ends[name])
         span = (timeline[0][0].isoformat(), timeline[-1][0].isoformat()) if timeline else (None, None)
         lo = timeline[0][0] if timeline else None
         hi = timeline[-1][0] + timedelta(seconds=600) if timeline else None
-        in_span = {k: [t for t in v if lo and lo <= t < hi] for k, v in consumers.items()}
+        in_span = {k: [e for e in v if lo and lo <= e[0] < hi] for k, v in consumers.items()}
         out[name] = dict(
             checks=len(timeline), span=span, tired_minutes_per_day=minutes, states_per_day=states,
             tired_minutes_total=round(sum(minutes.values()), 1),
             curiosity=held_events(timeline, in_span.get("curiosity", []), base_sec=curiosity_base_sec,
-                                  multiplier=multiplier),
+                                  multiplier=multiplier, sleep_ends=ends[name]),
             outreach=held_events(timeline, in_span.get("outreach", []), base_sec=outreach_base_sec,
-                                 multiplier=multiplier),
+                                 multiplier=multiplier, sleep_ends=ends[name]),
+            door_a_outreach_excluded=sum(1 for e in in_span.get("outreach", []) if e[1]),
         )
     out["replay"]["simulated_sleeps"] = len(sleeps)
     return out

@@ -46,7 +46,7 @@ def test_tired_minutes_hold_until_next_check_and_never_past_staleness():
 
 
 def test_held_events_need_tired_and_the_stretched_window():
-    timeline = m.saved_timeline([check(0, 0.0), check(10000, 3.3), check(20000, 3.3)])
+    timeline = m.saved_timeline([check(0, 0.0), check(10000, 3.3), check(20000, 3.3), check(30000, 0.0)])
     events = [T + timedelta(seconds=s) for s in (5000, 10500, 21000, 21500, 22000)]
     out = m.held_events(timeline, events, base_sec=2700, multiplier=2.0)
     # 5000: rested. 10500: tired, gap 5500 >= 5400 -> not held. 21000: tired, gap 10500 -> not held.
@@ -68,5 +68,24 @@ def test_export_stays_inside_one_read_only_transaction():
     sql = m.export_sql(T, T + timedelta(days=1))
     assert sql.startswith("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY;")
     assert sql.rstrip().endswith("ROLLBACK;") and sql.count("ROLLBACK;") == 1
-    assert "curiosity_run_outcomes" in sql and "endogenous_outreach_decisions" in sql
-    assert "NOT forced" in sql
+    assert "curiosity_offer_decisions" in sql and "turn_started_at" in sql and "endogenous_outreach_decisions" in sql
+    assert "NOT forced" in sql and "curiosity_outreach" in sql
+
+
+def test_a_sleep_end_cuts_the_tired_hold_like_the_post_sleep_publish():
+    timeline = m.saved_timeline([check(0, 3.3), check(600, 0.0, last_end_s=130)])
+    sleep_ends = [T + timedelta(seconds=130)]
+    minutes, _ = m.tired_minutes_per_day(timeline, sleep_ends=sleep_ends)
+    assert minutes["2026-10-08"] == 2.2  # 130 s, cut at the sleep end, not the 600 s slot
+    # A send after the sleep ended is not "while tired", even within the 600 s slot.
+    out = m.held_events(timeline, [T - timedelta(seconds=3000), T + timedelta(seconds=300)],
+                        base_sec=2700, multiplier=2.0, sleep_ends=sleep_ends)
+    assert out["while_tired"] == 0 and out["held"] == 0
+
+
+def test_door_a_sends_reset_the_clock_but_are_never_counted():
+    timeline = m.saved_timeline([check(0, 3.3)])
+    events = [(T - timedelta(seconds=4000), False), (T - timedelta(seconds=3500), True), (T + timedelta(seconds=10), False)]
+    out = m.held_events(timeline, events, base_sec=2700, multiplier=2.0)
+    # Door-A at -3500 resets the clock: gap 3510 -> held; the Door-A row itself is not counted.
+    assert out["events"] == 2 and out["held"] == 1 and out["examples"][0]["gap_sec"] == 3510

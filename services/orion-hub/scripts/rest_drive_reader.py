@@ -17,6 +17,7 @@ refreshed decays to UNKNOWN on its own instead of staying tired.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import datetime, timezone
 from typing import Any, Optional
@@ -30,6 +31,9 @@ from orion.regulation.rest_drive import (
 from orion.schemas.drive_reading import REST_DRIVE_REDIS_KEY
 
 logger = logging.getLogger("orion-hub.rest-drive")
+
+# One Redis GET must not stall a tick: the bus socket timeout is 60 s.
+READ_TIMEOUT_SEC = 2.0
 
 
 class RestDriveReader:
@@ -45,14 +49,17 @@ class RestDriveReader:
         if not self.enabled:
             self._raw = None
             return UNKNOWN_DISABLED
-        redis = getattr(bus, "redis", None)
         raw = None
-        if redis is not None:
-            try:
-                raw = await redis.get(REST_DRIVE_REDIS_KEY)
-            except Exception:  # noqa: BLE001 -- unreadable is unknown, never tired
-                logger.warning("rest_drive_read_failed reader=%s -- treating as unknown", self.name, exc_info=True)
-                raw = None
+        try:
+            # Inside the try: OrionBusAsync.redis is a property that RAISES
+            # (RuntimeError) on a bus that is not connected, which getattr's
+            # default does not catch.
+            redis = getattr(bus, "redis", None)
+            if redis is not None:
+                raw = await asyncio.wait_for(redis.get(REST_DRIVE_REDIS_KEY), timeout=READ_TIMEOUT_SEC)
+        except Exception:  # noqa: BLE001 -- unreadable is unknown, never tired
+            logger.warning("rest_drive_read_failed reader=%s -- treating as unknown", self.name, exc_info=True)
+            raw = None
         self._raw = raw
         return self.view(now)
 

@@ -169,7 +169,7 @@ def build_cycle_deps():
     async def _publish_drive_reading(reading):
         # Redis, read by Hub curiosity/outreach. TTL = their staleness bound,
         # so an expired key reads as unknown. Best effort; run_cycle_once logs
-        # a failure. History is dream_pressure_observation (same check_id).
+        # a failure. History: dream_pressure_observation (same check_id; none for dp-postsleep-*).
         bus = await _cycle_bus()
         if bus is None:
             return
@@ -340,12 +340,15 @@ async def cycle_pressure_endpoint():
     now = datetime.now(timezone.utc)
     last_start = await asyncio.to_thread(deps.load_last_window_start)
     last_end = await asyncio.to_thread(deps.load_last_attempt_end)
-    pressure, candidates = await asyncio.to_thread(read_pressure, deps, now, last_start)
+    errors: list[str] = []
+    pressure, candidates = await asyncio.to_thread(read_pressure, deps, now, last_start, read_errors=errors)
     from app.cycle import drive_reading_for
 
+    # Same source errors the loop folds in, so this cannot show `due` where the
+    # loop would publish `no_reading`.
     drive = drive_reading_for(
         pressure, now=now, check_id="pressure-endpoint", last_start=last_start, last_end=last_end,
-        has_candidates=bool(candidates), source_errors=list(deps.read_errors),
+        has_candidates=bool(candidates), source_errors=errors + list(deps.read_errors),
     )
     return {
         # The same reading the sleep loop publishes for Hub curiosity/outreach.

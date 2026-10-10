@@ -38,7 +38,10 @@ defaults:
       want_embeddings: true
 
 global:
-  max_inflight_total: 2
+  # 3, was 2 (2026-10-10): cam0 face checks went from every 30s to every 5s, and an identity job
+  # counts toward this cap. At 2, cam0's detection + its identity job filled both slots and
+  # carbon/walkway frames dropped with global_inflight_limit about half the time cam0 saw a person.
+  max_inflight_total: 3
   # When true, frames at global inflight cap skip with reason global_inflight_limit.
   # When false, same drop behavior but reason global_inflight_backpressure (no queue in MVP).
   drop_when_busy: true
@@ -67,7 +70,10 @@ streams:
         want_embeddings: true
       identity_dispatch:
         enabled: true
-        min_seconds_between_dispatch: 30
+        # 5s, was 30s (2026-10-10, Juniper: "we need to loosen that"): at 30s a 45-second wave
+        # at the camera got exactly one face check. identity_face inference is 0.06-0.14 s on
+        # cuda:0, so ~9 checks per short visit is cheap.
+        min_seconds_between_dispatch: 5
 
   carbon:
     enabled: true
@@ -92,7 +98,7 @@ streams:
     # field), so every sibling field is repeated here on purpose -- same
     # reason cam0's block below repeats them.
     #
-    # min_seconds_between_dispatch is 60 here, not cam0's 30: carbon is a
+    # min_seconds_between_dispatch is 60 here, not cam0's 5: carbon is a
     # webcam pointed at one seated person for hours, so a face that matched
     # once is overwhelmingly likely to still match; cam0 is a room camera
     # where a genuinely new person can walk in.

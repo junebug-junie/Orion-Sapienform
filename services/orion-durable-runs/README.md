@@ -541,6 +541,34 @@ Orion's running situation, per the spec `docs/superpowers/specs/2026-10-07-situa
 - **Health:** `/health` -> `situation: {steps, revision, queued, last_error}`.
 - **Kill switch:** `SITUATION_GRAPH_ENABLED=false`.
 
+## Regulation: `temporal_self.update` / `regulate` (2026-10-10, no reader yet)
+
+Temporal Self rev 4 (PR #2369) order 3. A second self-driven thread, `temporal_self:orion:<local
+date>` (`ORION_SITUATION_TIMEZONE`), steps every `TEMPORAL_SELF_TICK_SEC` (120 s) and immediately
+on a Juniper chat turn (`orion:chat:history:turn`; Orion's own outreach does not wake it):
+
+    ingest -> regulate -> done
+
+`regulate` reads three inputs and folds them through the pure reducer
+`orion.regulation.arousal.classify_arousal` (hysteresis carried by the checkpoint):
+
+- E1, minutes since Juniper's last turn (`orion.regulation.juniper_turns`: a row with a prompt
+  that is not `client_meta.unsolicited`; the same rule the dream's idle gate now uses);
+- S1, the cabinet reflex (`orion.autonomy.cabinet_heat`, `cabinet_hot` only, immediate);
+- S2, GPU pool `queue_depth` summed, `>= ORION_REGULATION_STRAINED_GPU_QUEUE_MIN` (2) for
+  `ORION_REGULATION_STRAINED_GPU_QUEUE_SEC` (300 s), from `gpu_pool_state_history`.
+
+Result: `engaged` (turn within `DREAM_IDLE_MINUTES`), `idle`, `strained` (leaves only after
+`ORION_REGULATION_STRAINED_CLEAR_SEC` of fresh, clear inputs), or `unknown` (any stale input;
+never idle). Written to Redis `orion:regulation:latest` (TTL `ORION_REGULATION_REDIS_TTL_SEC`,
+360 s) and `GET /regulation/state`; each level change is one `arousal_transition` row in
+`temporal_self_event` (`services/orion-sql-db/manual_migration_temporal_self_event_v1.sql`,
+hand-applied). The latest rest-drive reading (`orion:drive:rest:latest`) is embedded verbatim
+for the trace; arousal never reads it. No dial reads arousal yet (spec order 6).
+
+Kill switches: `TEMPORAL_SELF_ENABLED=false` (no thread), `ORION_REGULATION_AROUSAL_ENABLED=false`
+(reads `unknown`). Health: `/health` -> `temporal_self`.
+
 ## Deploy order
 
 Stage 4.5 is a cutover: follow `docs/runbooks/2026-09-25-gpu-pool-stage4-cutover.md` exactly

@@ -38,6 +38,10 @@ OWNERS: dict[str, str] = {
     "HUB_READING_SEARCH_MIN_SIMILARITY": "services/orion-hub/.env_example",
     "DREAM_SEARCH_MIN_SIMILARITY": "services/orion-dream/.env_example",
     "HUB_CURIOSITY_SEARCH_MIN_SIMILARITY": "services/orion-hub/.env_example",
+    # The engaged/idle boundary. Read by the dream's idle gate AND by arousal in
+    # orion-durable-runs (Temporal Self rev 4 R3: "reuses the dream setting's existing
+    # meaning, so the threshold is not copied"). Two services need the env key; one owns it.
+    "DREAM_IDLE_MINUTES": "services/orion-dream/.env_example",
 }
 
 # Line-level opt-out for text that quotes a value deliberately.

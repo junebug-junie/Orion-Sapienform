@@ -1,0 +1,11 @@
+# Sustained summed queue_depth >= floor for 300 s (no clear hysteresis), gpu_pool_state_history host=circe.
+# columns: key(s=all classes, nodiff=without diffusion) floor window (strained_hours, observed_hours, entries, gap_hours)
+# 'post-recovery' = from 2026-10-10T03:00Z, after the 10-09 config_unloadable queue jam cleared.
+s 1 all (24.12, 35.64, 12, 0.01) post-recovery (3.98, 15.42, 11, 0.01)
+s 2 all (20.71, 35.64, 8, 0.01) post-recovery (0.96, 15.42, 6, 0.01)
+s 3 all (20.13, 35.64, 5, 0.01) post-recovery (0.39, 15.42, 3, 0.01)
+s 5 all (19.36, 35.64, 2, 0.01) post-recovery (0.0, 15.42, 0, 0.01)
+nodiff 1 all (21.33, 35.64, 14, 0.01) post-recovery (1.58, 15.42, 12, 0.01)
+nodiff 2 all (20.44, 35.64, 7, 0.01) post-recovery (0.71, 15.42, 5, 0.01)
+nodiff 3 all (20.04, 35.64, 4, 0.01) post-recovery (0.31, 15.42, 2, 0.01)
+nodiff 5 all (19.28, 35.64, 2, 0.01) post-recovery (0.0, 15.42, 0, 0.01)

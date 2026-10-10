@@ -32,6 +32,11 @@ from orion.schemas.drive_reading import DriveReadingV1
 
 REGULATION_STATE_KIND = "regulation.state.v1"
 REGULATION_STATE_REDIS_KEY = "orion:regulation:latest"
+# The self-driven durable-runs thread that hosts the regulate node (spec Missing question 1).
+# Patch 3 adds the Temporal Self nodes to the same thread. Bucketed by Orion's LOCAL date
+# (ORION_SITUATION_TIMEZONE), so it is never compared with the UTC-bucketed situation threads.
+TEMPORAL_SELF_WORKFLOW = "temporal_self.update"
+TEMPORAL_SELF_THREAD_PREFIX = "temporal_self:orion"
 
 ArousalLevel = Literal["engaged", "idle", "strained", "unknown"]
 
@@ -124,6 +129,8 @@ __all__ = [
     "ArousalReadingV1",
     "REGULATION_STATE_KIND",
     "REGULATION_STATE_REDIS_KEY",
+    "TEMPORAL_SELF_THREAD_PREFIX",
+    "TEMPORAL_SELF_WORKFLOW",
     "RegulationStateV1",
     "parse_regulation_state",
 ]

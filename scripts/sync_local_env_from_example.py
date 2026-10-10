@@ -399,6 +399,9 @@ SYNC_PREFIXES = (
     # Camera perception in the situation brief (Hub + cortex-exec, 2026-10-07).
     "ORION_SITUATION_PERCEPTION_",
     "ORION_SITUATION_STREET_",
+    # Temporal Self rev 4 regulation (orion-durable-runs regulate node, 2026-10-10).
+    "TEMPORAL_SELF_",
+    "ORION_REGULATION_",
 )
 
 SYNC_EXACT = frozenset(
@@ -433,6 +436,10 @@ SYNC_EXACT = frozenset(
         "HARNESS_AITOWN_CONVEX_URL",
         # Embodiment master switch (prefix is EMBODIMENT_, so the ORION_ master flag needs an exact entry).
         "ORION_EMBODIMENT_ENABLED",
+        # Orion's local day (cortex-exec, Hub, durable-runs) and the engaged/idle boundary
+        # (orion-dream owns it; durable-runs reads the same key for arousal).
+        "ORION_SITUATION_TIMEZONE",
+        "DREAM_IDLE_MINUTES",
         # Reverie/dream weave — Phase F (orion-dream REM compaction, default-off).
         "ORION_DREAM_REM_ENABLED",
         "CHANNEL_DREAM_COMPACTION_DELTA",

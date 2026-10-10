@@ -184,6 +184,6 @@ Then verify within 10 minutes: the key `orion:drive:rest:latest` exists on the b
 
 ## PR link
 
-PR_LINK_PLACEHOLDER
+https://github.com/junebug-junie/Orion-Sapienform/pull/2584
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

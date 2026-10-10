@@ -3626,31 +3626,22 @@ class BiometricsSubstrateWorker:
             except asyncio.CancelledError:
                 break
 
-    def _repair_appraisal_from_chat(self) -> Any | None:
-        """Best-effort repair-pressure input for endogenous curiosity seeds."""
+    def _repair_appraisal_from_chat(self, *, now: datetime | None = None) -> Any | None:
+        """Best-effort *recent* repair-pressure input for endogenous curiosity seeds.
+
+        Staleness-decayed per turn (``repair_appraisal_from_chat_turns``), not the
+        all-time max over the projection -- see that function for the live replay
+        bug this fixes.
+        """
         try:
+            from orion.substrate.endogenous_curiosity import repair_appraisal_from_chat_turns
+
             projection = self._store.load_chat_session_projection(CHAT_SESSION_PROJECTION_ID)
             if projection is None or not projection.turns:
                 return None
-            best_level = 0.0
-            best_conf = 0.0
-            evidence_ids: list[str] = []
-            for turn in projection.turns.values():
-                level = float(getattr(turn, "repair_pressure_level", 0.0) or 0.0)
-                if level <= best_level:
-                    continue
-                best_level = level
-                best_conf = float(getattr(turn, "repair_pressure_confidence", 0.0) or 0.0)
-                evidence_ids = list(getattr(turn, "evidence_event_ids", None) or [])[:8]
-            if best_level <= 0.0:
-                return None
-            from types import SimpleNamespace
-
-            return SimpleNamespace(
-                dimensions={"level": best_level},
-                causal_molecule_ids=evidence_ids,
-                summary=f"chat repair pressure level={best_level:.2f}",
-                confidence=best_conf or 0.6,
+            return repair_appraisal_from_chat_turns(
+                list(projection.turns.values()),
+                now=now or datetime.now(timezone.utc),
             )
         except Exception:
             logger.exception("substrate_endogenous_curiosity_repair_load_failed")
@@ -3762,11 +3753,13 @@ class BiometricsSubstrateWorker:
         except Exception:
             logger.exception("substrate_endogenous_curiosity_broadcast_load_failed")
 
+        tick_now = datetime.now(timezone.utc)
         seeds = endogenous_curiosity_candidates(
             nodes=nodes,
-            repair_appraisal=self._repair_appraisal_from_chat(),
+            repair_appraisal=self._repair_appraisal_from_chat(now=tick_now),
             attention_frame=attention_frame,
             config=config,
+            now=tick_now,
         )
         if seeds:
             # Visibility, 2026-07-26: which source/node actually won a budget

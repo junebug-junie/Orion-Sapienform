@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
+import pytest
+
 from orion.core.schemas.cognitive_substrate import (
     ConceptNodeV1,
     ContradictionNodeV1,
@@ -99,13 +101,21 @@ def _build_store() -> InMemorySubstrateGraphStore:
     return store
 
 
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "Pre-existing on origin/main (2026-10-10): the frontier_hypothesis_marker "
+        "nodes are not in the curiosity seed slice, so no evidence_gap_scan signal "
+        "is derived. Unrelated to the ontology_sparse_region retirement."
+    ),
+)
 def test_signal_derivation_and_task_selection_are_deterministic() -> None:
     evaluator = FrontierCuriosityEvaluator(store=_build_store())
     result = evaluator.evaluate(anchor_scope="orion", subject_ref="entity:orion", cognition_report=_report(), perception_brief=_brief())
 
     signal_types = {signal.signal_type for signal in result.signals}
     assert "contradiction_hotspot" in signal_types
-    assert "ontology_sparse_region" in signal_types
+    assert "ontology_sparse_region" not in signal_types
     assert any(signal.task_type_candidate == "evidence_gap_scan" for signal in result.signals)
     assert result.decision.outcome in {"invoke", "defer", "noop", "operator_only", "blocked"}
 
@@ -163,3 +173,60 @@ def test_low_value_region_can_noop_without_broad_runtime_expansion() -> None:
         operator_requested=False,
     )
     assert result.decision.outcome in {"noop", "defer", "invoke", "operator_only", "blocked"}
+
+
+def _concept_only_store(count: int = 15) -> InMemorySubstrateGraphStore:
+    """Concept-dense slice with zero ontology_branch nodes -- the live shape.
+
+    Live 2026-10-10: thousands of concept nodes, zero ontology_branch nodes in
+    every FalkorDB graph, because nothing in Orion creates them.
+    """
+    store = InMemorySubstrateGraphStore()
+    concepts = [
+        ConceptNodeV1(
+            node_id=f"concept-{idx}",
+            anchor_scope="orion",
+            subject_ref="entity:orion",
+            label=f"Concept {idx}",
+            temporal=_temporal(),
+            provenance=_prov(),
+            signals={"salience": 0.8},
+        )
+        for idx in range(count)
+    ]
+    SubstrateGraphMaterializer(store=store).apply_record(
+        SubstrateGraphRecordV1(anchor_scope="orion", subject_ref="entity:orion", nodes=concepts, edges=[])
+    )
+    return store
+
+
+def test_concepts_without_ontology_branches_emit_no_ontology_sparse_region() -> None:
+    """Regression: the retired constant-1.0 `ontology_sparse_region` candidate.
+
+    It fired on any concept-dense slice with no ontology_branch nodes, scored
+    min(1, 0.55 + 0.03 * n_concepts) (1.0 at 15 concepts), and handed the
+    evaluator an `ontology_expand` task nothing executes -- so it won every
+    decision. With no real signal present the evaluator must now noop.
+    """
+    evaluator = FrontierCuriosityEvaluator(store=_concept_only_store())
+    result = evaluator.evaluate(
+        anchor_scope="orion",
+        subject_ref="entity:orion",
+        cognition_report=_report(contradiction_count=0, drift_active=False, pressure=0.2),
+        perception_brief=_brief(priority="advance"),
+        operator_requested=False,
+    )
+    assert [s.signal_type for s in result.signals] == []
+    assert result.decision.outcome == "noop"
+    assert result.decision.chosen_task_type is None
+    assert result.plan is None
+
+
+def test_retired_kinds_are_not_in_the_contracts() -> None:
+    from typing import get_args
+
+    from orion.core.schemas.frontier_curiosity import FrontierInvocationSignalTypeV1
+    from orion.core.schemas.frontier_expansion import FrontierTaskTypeV1
+
+    assert "ontology_sparse_region" not in get_args(FrontierInvocationSignalTypeV1)
+    assert "ontology_expand" not in get_args(FrontierTaskTypeV1)

@@ -9,7 +9,8 @@ trigger:
   staleness-decayed by node age so "sustained" means currently still
   surprising, not merely surprising once (see
   ``_prediction_error_staleness_decay`` below);
-- repair-pressure appraisals (``appraisal/repair_pressure.py``);
+- repair-pressure appraisals from recent chat turns, decayed by turn age
+  with the same horizon (``repair_appraisal_from_chat_turns`` below);
 - unresolved open-loops from the rung-3 attention broadcast.
 
 Guardrails (all load-bearing, do not relax casually):
@@ -27,6 +28,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from types import SimpleNamespace
 from datetime import datetime, timezone
 from typing import Any, Sequence
 
@@ -137,13 +139,88 @@ def _prediction_error_staleness_decay(node: Any, *, now: datetime) -> float:
     observed = getattr(getattr(node, "temporal", None), "observed_at", None)
     if observed is None:
         return 1.0
+    return _linear_staleness_decay(observed, now=now)
+
+
+def _age_seconds(observed: datetime, *, now: datetime) -> float:
+    """Non-negative age; naive datetimes are read as UTC (hosts run UTC).
+
+    A future-dated ``observed`` clamps to age 0 (decay factor 1.0) -- same as
+    prediction-error sources; the producer stamps the reducer's own clock.
+    """
     if observed.tzinfo is None:
         observed = observed.replace(tzinfo=timezone.utc)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
+    return max(0.0, (now - observed).total_seconds())
+
+
+def _linear_staleness_decay(observed: datetime, *, now: datetime) -> float:
+    """Shared linear decay-to-zero over ``_PREDICTION_ERROR_DECAY_HORIZON_SECONDS``."""
     horizon = _PREDICTION_ERROR_DECAY_HORIZON_SECONDS
     if horizon <= 0:
         return 1.0
-    age_seconds = max(0.0, (now - observed).total_seconds())
-    return max(0.0, 1.0 - (age_seconds / horizon))
+    return max(0.0, 1.0 - (_age_seconds(observed, now=now) / horizon))
+
+
+def repair_appraisal_from_chat_turns(turns: Sequence[Any], *, now: datetime) -> Any | None:
+    """Recent chat repair pressure, staleness-decayed per turn; None if nothing current.
+
+    Each turn's ``repair_pressure_level`` is multiplied by the same linear
+    staleness decay prediction-error sources use (``_linear_staleness_decay``,
+    horizon ``PressureConfig().prediction_error_decay_horizon_seconds`` = 1800 s),
+    measured from the turn's own ``observed_at`` (its first-reduction time; the chat reducer
+    keeps it on re-reduction so a reprocess cannot re-freshen an old turn); the strongest *decayed* level
+    wins. A repair turn is therefore a candidate only while it is recent, then
+    lets go -- the same "surprising once must not win the budget forever" rule
+    the module docstring states for prediction error.
+
+    Bug this replaces (live 2026-10-06..10-09): the worker took the all-time MAX
+    level across every turn in the chat projection (turns retained since July)
+    with no age term, so one 0.913 HIGH repair turn from 2026-10-06 02:02 was
+    re-emitted as a curiosity candidate on every tick for days -- about half of
+    all candidates (10-09: 1,175 of 2,345). Real repair episodes are single
+    turns (repair_pressure_appraisal_log: each HIGH is followed by NONE/LOW on
+    the next turn), so a 30-minute horizon covers the episode with margin;
+    a 0.913 spike crosses the default 0.6 min_repair_level after ~617 s.
+
+    Turns with no parseable ``observed_at`` are skipped (cannot show they are
+    recent -- treating them as fresh is exactly the replay this fixes).
+    """
+    best_level = 0.0
+    best_raw = 0.0
+    best_conf = 0.0
+    best_age: float | None = None
+    evidence_ids: list[str] = []
+    for turn in turns:
+        try:
+            raw = float(getattr(turn, "repair_pressure_level", 0.0) or 0.0)
+            if raw <= 0.0:
+                continue
+            observed = getattr(turn, "observed_at", None)
+            if not isinstance(observed, datetime):
+                continue
+            level = raw * _linear_staleness_decay(observed, now=now)
+            if level <= best_level:
+                continue
+            best_level = level
+            best_raw = raw
+            best_conf = float(getattr(turn, "repair_pressure_confidence", 0.0) or 0.0)
+            best_age = _age_seconds(observed, now=now)
+            evidence_ids = list(getattr(turn, "evidence_event_ids", None) or [])[:8]
+        except (TypeError, ValueError):
+            continue
+    if best_level <= 0.0:
+        return None
+    return SimpleNamespace(
+        dimensions={"level": best_level},
+        causal_molecule_ids=evidence_ids,
+        summary=(
+            f"chat repair pressure level={best_level:.2f} "
+            f"(raw={best_raw:.2f}, age={int(best_age or 0)}s)"
+        ),
+        confidence=best_conf or 0.6,
+    )
 
 
 def _env_flag(name: str) -> bool:

@@ -10,7 +10,6 @@ flowchart TD
     EQ -->|equilibrium.snapshot.v1| SNAP[orion:equilibrium:snapshot channel]
     EQ -->|spark.signal.v1 (equilibrium)| SIG[orion:spark:signal channel]
     SIG -->|bias φ| SPARK[Spark ingestors\n(gateway + introspector)]
-    SNAP --> JR[state-journaler\n(Postgres rollups)]
     SPARK --> STATE[state-service / UI]
 ```
 
@@ -45,5 +44,5 @@ flowchart TD
 3. **Spark signal impact**
    - Subscribe to `orion:spark:signal` and confirm `spark.signal.v1` frames include `signal_type: equilibrium` and the computed `intensity`.
    - Spark introspector snapshots (`spark.state.snapshot.v1`) should reflect the deltas (valence/coherence bias) in subsequent φ values.
-4. **Rollup visibility**
-   - Call `GET /rollups?window=300&hours=24` on `state-journaler` to see averaged φ + distress rollups for dashboards.
+4. **Rollup visibility (retired 2026-10-10)**
+   - `state-journaler`'s φ + distress rollups are retired; `GET /rollups` returns `410 Gone`. `spark_state_rollups` is a frozen historical table (last real φ row 2026-07-28), not live state.

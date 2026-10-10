@@ -996,23 +996,22 @@ def _fallback_metacog_draft(ctx: Dict[str, Any]) -> CollapseMirrorEntryV2:
     # docs/superpowers/specs/2026-07-28-collapse-mirror-generative-triggers-design.md):
     # before this, the guess was keyed only on phi bands and ignored trigger_kind
     # entirely, so its only reachable outputs were idle/turbulence/flow and
-    # "epiphany" was dead code no branch could produce. The two generative
-    # trigger kinds carry a far more direct claim about what the entry *is* than
-    # a phi-band coincidence does, so they win. Both target types already have
-    # real change_type mappings in DEFAULT_CHANGE_TYPE_BY_ENTRY_TYPE
+    # "epiphany" was dead code no branch could produce. The generative insight
+    # kind carries a far more direct claim about what the entry *is* than a
+    # phi-band coincidence does, so it wins. Its target type already has a
+    # real change_type mapping in DEFAULT_CHANGE_TYPE_BY_ENTRY_TYPE
     # (orion/schemas/collapse_mirror.py) -- no schema change needed.
     #
-    # Note "flow" was already reachable from the phi-band guess below by band
-    # coincidence; a trigger_kind=="flow" entry now lands there for a real
-    # reason instead.
+    # A trigger_kind=="flow" branch lived here until 2026-10-10, when its only
+    # producer (orion-equilibrium-service's flow gate) was retired -- its
+    # plateau was the field's idle rest state. type="flow" is still reachable
+    # from the phi-band guess below, as it always was.
     # Normalized on the comparison side: _metacog_trigger_kind returns the raw
     # string unstripped/uncased, so " Insight" from any future producer would
     # otherwise silently miss and fall through to the phi-band guess.
     normalized_kind = trigger_kind.strip().lower()
     if normalized_kind == "insight":
         typ = "epiphany"
-    elif normalized_kind == "flow":
-        typ = "flow"
     else:
         # crude but stable type guess (unchanged fallback for every other kind)
         typ = "idle"

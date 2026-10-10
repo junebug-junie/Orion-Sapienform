@@ -1,6 +1,7 @@
 """Read-only focus exposure report, or legacy winner-sequence recorder replay.
 
 Completed rows: history.jsonl --runs --start ISO --end ISO.
+R1a hogging check (PR #2369 rev 4): history.jsonl --r1a --start ISO --end ISO.
 Use --print-sql --start ISO --end ISO to print the bounded read-only export.
 
 Usage: python services/orion-attention-runtime/evals/replay_focus_runs.py history.jsonl
@@ -117,6 +118,142 @@ def exposure(rows, start, end):
                 verdict="UNVERIFIED: habituation needs seven post-change days and overall-winner coverage")
 
 
+def _percentile(sorted_values, q):
+    if not sorted_values:
+        return None
+    return sorted_values[min(len(sorted_values) - 1, int(q * len(sorted_values)))]
+
+
+def hogging_stretches(rolling, *, share=0.5):
+    """Consecutive rolling windows in which one target held MORE than `share`.
+
+    `seconds` is how long the 30-minute share series stayed above the bar:
+    last qualifying window end - first qualifying window end + one 5-minute step.
+    The covered wall span is reported separately. Missing/unaccounted seconds count against the share (never as the
+    target's), so a recorder outage can only shorten a stretch, never make one.
+    """
+    out, open_ = [], {}
+    for i, w in enumerate(rolling):
+        end = utc(w["ended_at"])
+        hogs = {t for t, v in w["share_of_window"].items() if v > share}
+        contiguous = i > 0 and (end - utc(rolling[i - 1]["ended_at"])) <= timedelta(minutes=5)
+        for target in list(open_):
+            if target not in hogs or not contiguous:
+                out.append(open_.pop(target))
+        for target in hogs:
+            peak = w["share_of_window"][target]
+            if target in open_:
+                item = open_[target]
+                item.update(last_window_end=end, windows=item["windows"] + 1,
+                            peak_share=max(item["peak_share"], peak))
+            else:
+                open_[target] = dict(target_id=target, first_window_start=end - timedelta(minutes=30),
+                                     last_window_end=end, windows=1, peak_share=peak)
+    out.extend(open_.values())
+    for item in out:
+        first_end = item["first_window_start"] + timedelta(minutes=30)
+        item["seconds"] = (item["last_window_end"] - first_end).total_seconds() + 300
+        item["covered_wall_seconds"] = (item["last_window_end"] - item["first_window_start"]).total_seconds()
+        item["first_window_start"] = item["first_window_start"].isoformat()
+        item["last_window_end"] = item["last_window_end"].isoformat()
+    return sorted(out, key=lambda r: -r["seconds"])
+
+
+def merged_arcs(rows, start, end, return_minutes):
+    """Patch-1 arc rule probe: same-target runs whose gap is <= R merge as returns."""
+    start, end = utc(start), utc(end)
+    runs = sorted((r for r in rows if utc(r["ended_at"]) > start and utc(r["started_at"]) < end),
+                  key=lambda r: utc(r["started_at"]))
+    last_end, arcs = {}, Counter()
+    returns = Counter()
+    for r in runs:
+        t, a = r["target_id"], utc(r["started_at"])
+        if t in last_end and (a - last_end[t]).total_seconds() <= return_minutes * 60:
+            returns[t] += 1
+        else:
+            arcs[t] += 1
+        last_end[t] = max(last_end.get(t, a), utc(r["ended_at"]))
+    total_arcs = sum(arcs.values())
+    return dict(return_minutes=return_minutes, arcs=total_arcs, arcs_by_target=dict(arcs),
+                returns_by_target=dict(returns),
+                mean_returns_per_arc=sum(returns.values()) / total_arcs if total_arcs else None)
+
+
+def r1a_report(rows, start, end, *, share=0.5, hog_hours=2.0, min_streak=3,
+               stuck_hours=4.0, return_minutes=(1, 2, 5, 10, 30), instrument_since=None,
+               min_coverage=0.8):
+    """R1a: does any target hold > `share` of 30-minute windows for > `hog_hours`?
+
+    Also the patch-1 interoception-lane distributions computed from the same
+    rows: run lengths, share of runs reaching the arc's minimum streak, runs
+    longer than `stuck_hours`, and arc counts under candidate return windows R.
+    `instrument_since` marks the first instant of the instrument R1a is meant to
+    judge (#2528 live); without it, or with too little history after it, the
+    verdict is a baseline only and never a build/no-build decision.
+    """
+    base = exposure(rows, start, end)
+    start, end = utc(start), utc(end)
+    inside = [r for r in rows if utc(r["started_at"]) >= start and utc(r["ended_at"]) <= end]
+    ticks = sorted(r["tick_count"] for r in inside)
+    complete = sorted((utc(r["ended_at"]) - utc(r["started_at"])).total_seconds()
+                      for r in inside if not r["left_censored"])
+    stretches = hogging_stretches(base["rolling_30_minutes"], share=share)
+    longest = {}
+    for s in stretches:
+        longest[s["target_id"]] = max(longest.get(s["target_id"], 0), s["seconds"])
+    hogs = [s for s in stretches if s["seconds"] > hog_hours * 3600]
+    recorded = (end - start).total_seconds() - base["unaccounted_seconds"]
+    judged_from = utc(instrument_since) if instrument_since else None
+    days_on_instrument = ((end - max(start, judged_from)).total_seconds() / 86400
+                          if judged_from and judged_from < end else 0.0)
+    # The decision only looks at the judged instrument: hogs before it never count.
+    judged_hogs, judged_coverage = [], None
+    if judged_from and judged_from < end:
+        judged = exposure(rows, max(start, judged_from), end)
+        span = (end - max(start, judged_from)).total_seconds()
+        judged_coverage = (span - judged["unaccounted_seconds"]) / span
+        judged_hogs = [s for s in hogging_stretches(judged["rolling_30_minutes"], share=share)
+                       if s["seconds"] > hog_hours * 3600]
+    if base["completed_runs"] == 0:
+        verdict = "NO_DATA: no completed focus runs in the window"
+    elif days_on_instrument < 7:
+        verdict = ("BASELINE_ONLY: R1a judges the post-#2528 instrument after 7 live days; "
+                   f"{days_on_instrument:.2f} days available. "
+                   + ("A pre-#2528 target exceeded the hog bar." if hogs else
+                      "No target exceeded the hog bar in this baseline."))
+    elif judged_hogs:
+        verdict = "BUILD_R1: a target hogged attention on the judged instrument"
+    elif judged_coverage < min_coverage:
+        verdict = (f"INSUFFICIENT_COVERAGE: completed runs cover {judged_coverage:.1%} of the judged "
+                   f"window (< {min_coverage:.0%}); missing time is not calm")
+    else:
+        verdict = "DO_NOT_BUILD_R1: no target hogged attention (open tail at export is UNVERIFIED)"
+    return dict(start=start.isoformat(), end=end.isoformat(), completed_runs=base["completed_runs"],
+                recorded_hours=recorded / 3600, unaccounted_hours=base["unaccounted_seconds"] / 3600,
+                instrument_since=judged_from.isoformat() if judged_from else None,
+                days_on_instrument=days_on_instrument, judged_coverage=judged_coverage,
+                judged_hog_stretches=judged_hogs,
+                hog_rule=dict(share_above=share, longer_than_hours=hog_hours, window_minutes=30, step_minutes=5),
+                hog_stretches=hogs, longest_majority_stretch_seconds_by_target=longest,
+                share_of_recorded_span={k: v["share_of_recorded_span"] for k, v in base["targets"].items()},
+                run_ticks=dict(n=len(ticks), p50=_percentile(ticks, .5), p90=_percentile(ticks, .9),
+                               p99=_percentile(ticks, .99), max=ticks[-1] if ticks else None),
+                complete_run_seconds=dict(n=len(complete), p50=_percentile(complete, .5),
+                                          p90=_percentile(complete, .9), max=complete[-1] if complete else None),
+                share_runs_reaching_min_streak=(sum(t >= min_streak for t in ticks) / len(ticks)) if ticks else None,
+                min_streak_assumed=min_streak,
+                stuck_runs=[dict(target_id=r["target_id"], started_at=r["started_at"], ended_at=r["ended_at"],
+                                 tick_count=r["tick_count"]) for r in inside
+                            if (utc(r["ended_at"]) - utc(r["started_at"])).total_seconds() > stuck_hours * 3600],
+                return_window_probe=[merged_arcs(rows, start, end, m) for m in return_minutes],
+                verdict=verdict,
+                caveats=base["caveats"] + [
+                    "Share denominator is the full 30-minute window; unaccounted time never counts toward a hog.",
+                    "Runs before and after a scoring change are different instruments; pass instrument_since.",
+                    "Only completed runs are stored: a run still open at export (a live hog) is invisible.",
+                    "Percentiles use the upper index (p50 of [1, 2] is 2)."])
+
+
 def export_sql(start, end):
     start, end = utc(start), utc(end)
     if end <= start:
@@ -174,9 +311,11 @@ def main():
     parser.add_argument("--runs", action="store_true", help="report completed focus rows instead of legacy ticks")
     parser.add_argument("--start", type=utc)
     parser.add_argument("--end", type=utc)
+    parser.add_argument("--r1a", action="store_true", help="R1a hogging verdict plus run-length distributions")
+    parser.add_argument("--instrument-since", type=utc, help="first instant of the instrument R1a judges (#2528 live)")
     parser.add_argument("--print-sql", action="store_true", help="print a read-only JSONL export query")
     args = parser.parse_args()
-    if (args.runs or args.print_sql) and not (args.start and args.end):
+    if (args.runs or args.r1a or args.print_sql) and not (args.start and args.end):
         parser.error("--start and --end are required for a bounded report")
     if args.print_sql:
         print(export_sql(args.start, args.end))
@@ -184,7 +323,11 @@ def main():
     if not args.history:
         parser.error("history export required")
     rows = [json.loads(line) for line in args.history.read_text().splitlines() if line.strip()]
-    print(json.dumps(exposure(rows, args.start, args.end) if args.runs else replay(rows), indent=2))
+    if args.r1a:
+        result = r1a_report(rows, args.start, args.end, instrument_since=args.instrument_since)
+    else:
+        result = exposure(rows, args.start, args.end) if args.runs else replay(rows)
+    print(json.dumps(result, indent=2))
 
 
 if __name__ == "__main__":

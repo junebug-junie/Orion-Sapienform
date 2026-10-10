@@ -515,7 +515,7 @@ def test_system_one_curiosity_gate_kill_switch_falls_back(monkeypatch):
         signal_strength=0.85,
         confidence=0.7,
     )
-    decision = SimpleNamespace(outcome="invoke", chosen_task_type="ontology_expand", decision_id="d")
+    decision = SimpleNamespace(outcome="invoke", chosen_task_type="evidence_gap_scan", decision_id="d")
     run_result = SimpleNamespace(signals=[seed], decision=decision)
     # Even with a level-0 frame, kill switch must admit evaluator.
     worker._store.load_latest_system_one_appraisal.return_value = _curiosity_frame("0")
@@ -561,3 +561,43 @@ def test_system_one_cannot_mint_candidates(monkeypatch):
     args, kwargs = worker._store.save_endogenous_curiosity_candidates.call_args
     assert args == ([],)
     assert "retention_hours" in kwargs
+
+
+def test_repair_appraisal_from_chat_ignores_replayed_old_spike(monkeypatch):
+    """Regression (live 2026-10-06..10-09): a days-old 0.913 repair turn must
+    not be re-read as current repair pressure on every tick."""
+    from datetime import datetime, timedelta, timezone
+
+    from orion.schemas.chat_projection import ChatSessionProjectionV1, ChatTurnStateV1
+
+    now = datetime(2026, 10, 9, 12, 0, tzinfo=timezone.utc)
+
+    def turn(tid: str, level: float, at: datetime) -> ChatTurnStateV1:
+        return ChatTurnStateV1(
+            trace_id=f"n:{tid}", turn_id=tid, session_id="s", node_id="n",
+            observed_at=at, repair_pressure_level=level,
+            repair_pressure_confidence=0.65, evidence_event_ids=[f"ev-{tid}"],
+            last_updated_at=at,
+        )
+
+    worker = _make_worker(monkeypatch, enabled=True)
+    projection = ChatSessionProjectionV1(
+        projection_id="chat",
+        generated_at=now,
+        turns={
+            "spike": turn("spike", 0.9129342275597288, now - timedelta(days=3)),
+            "calm": turn("calm", 0.087, now - timedelta(minutes=5)),
+        },
+    )
+    worker._store.load_chat_session_projection.return_value = projection
+    appraisal = worker._repair_appraisal_from_chat(now=now)
+    assert appraisal is not None
+    assert appraisal.dimensions["level"] < 0.1
+    assert appraisal.causal_molecule_ids == ["ev-calm"]
+
+    fresh = dict(projection.turns)
+    fresh["new"] = turn("new", 0.9129342275597288, now - timedelta(seconds=30))
+    worker._store.load_chat_session_projection.return_value = projection.model_copy(update={"turns": fresh})
+    appraisal = worker._repair_appraisal_from_chat(now=now)
+    assert appraisal.dimensions["level"] > 0.6
+    assert appraisal.causal_molecule_ids == ["ev-new"]

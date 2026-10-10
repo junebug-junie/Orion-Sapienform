@@ -106,7 +106,7 @@ class WindowService:
         # never grows unbounded (one entry per stream_id, overwritten).
         self._identity_by_stream: Dict[str, Dict[str, Any]] = {}
         self._last_sighting_at: Dict[str, float] = {}
-        self._probable_at: Dict[str, List[float]] = {}
+        self._match_at: Dict[Tuple[str, str], List[float]] = {}
         self._identity_lock = asyncio.Lock()
         # Running count of identity_face verdicts by outcome (trace only).
         self._identity_checks: Dict[str, int] = defaultdict(int)
@@ -599,19 +599,28 @@ class WindowService:
             logger.warning(f"[WINDOW] scene inventory publish failed: {exc}")
 
     async def _maybe_publish_sighting(self, payload: VisionArtifactPayload, hint: Optional[dict]) -> bool:
-        """One IdentitySightingV1 per home camera per sitting, on a "probable" match only.
-        Rate-limited per stream (WINDOW_SIGHTING_MIN_INTERVAL_SEC). True when published."""
-        if not settings.WINDOW_SIGHTING_ENABLED or not self.bus or not hint or hint.get("state") != "probable":
+        """One IdentitySightingV1 per home camera per sitting: on one "probable" match, or on
+        WINDOW_SIGHTING_MIN_MATCHES "possible"-or-better matches within the window. Rate-limited
+        per stream (WINDOW_SIGHTING_MIN_INTERVAL_SEC). True when published."""
+        state = (hint or {}).get("state")
+        if not settings.WINDOW_SIGHTING_ENABLED or not self.bus or state not in ("probable", "possible"):
             return False
         stream = stream_key_from_artifact(payload)
         homes = {x.strip() for x in settings.WINDOW_SIGHTING_HOME_STREAMS.split(",") if x.strip()}
         if stream not in homes:
             return False
         now = time.time()
-        recent = [t for t in self._probable_at.get(stream, []) if now - t <= settings.WINDOW_SIGHTING_MATCH_WINDOW_SEC]
+        # Keyed by (camera, person): matches for different gallery subjects never corroborate.
+        key = (stream, str((hint or {}).get("subject") or ""))
+        recent = [t for t in self._match_at.get(key, []) if now - t <= settings.WINDOW_SIGHTING_MATCH_WINDOW_SEC]
         recent.append(now)
-        self._probable_at[stream] = recent[-20:]
-        if len(recent) < max(1, int(settings.WINDOW_SIGHTING_MIN_MATCHES)):
+        self._match_at[key] = recent[-20:]
+        # One "probable" is enough on its own; "possible" needs company (2026-10-10 loosening).
+        if state == "probable":
+            outcome = "probable"
+        elif len(recent) >= max(1, int(settings.WINDOW_SIGHTING_MIN_MATCHES)):
+            outcome = "corroborated"
+        else:
             return False
         last = self._last_sighting_at.get(stream)
         if last is not None and now - last < settings.WINDOW_SIGHTING_MIN_INTERVAL_SEC:
@@ -623,12 +632,13 @@ class WindowService:
         sighting = IdentitySightingV1(
             subject=str(hint.get("subject") or ""), stream_id=stream,
             seen_at=seen_at, similarity=float(sim) if isinstance(sim, (int, float)) else 0.0,
-            correlation_id=str(payload.correlation_id or ""),
+            correlation_id=str(payload.correlation_id or ""), outcome=outcome,
         )
         await self.bus.publish(settings.CHANNEL_IDENTITY_SIGHTING_PUB, BaseEnvelope(
             kind=IDENTITY_SIGHTING_KIND, source=_source_ref(), payload=sighting.model_dump(mode="json")))
         self._last_sighting_at[stream] = now
-        logger.info(f"[WINDOW] identity_sighting stream={stream} similarity={sighting.similarity:.3f}")
+        logger.info(f"[WINDOW] identity_sighting stream={stream} outcome={outcome} "
+                    f"similarity={sighting.similarity:.3f} matches_in_window={len(recent)}")
         return True
 
     async def _publish_crop_observation(self, artifact: VisionArtifactPayload, env: BaseEnvelope) -> None:

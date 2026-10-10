@@ -165,7 +165,7 @@ class Settings(BaseSettings):
         30.0, alias="ORION_ATTENTION_BROADCAST_INTERVAL_SEC"
     )
     attention_broadcast_min_salience: float = Field(
-        0.2, alias="ORION_ATTENTION_BROADCAST_MIN_SALIENCE"
+        0.05, alias="ORION_ATTENTION_BROADCAST_MIN_SALIENCE"
     )
     # Append-only companion log to the singleton substrate_attention_broadcast_
     # projection table (see manual_migration_attention_broadcast_log_v1.sql).

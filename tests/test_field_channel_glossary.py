@@ -52,10 +52,13 @@ def test_load_glossary_has_48_channels_matching_field_digester_channels_py():
     catalog_drift_pressure entry (now level [node, capability]): 52 -> 51
     entries, 51 -> 50 names.
     - observer_failure_pressure retired 2026-10-07 (#2534 decision 4, 0.0 on
-    123,099 of 123,099 ticks): 51 -> 50 entries, 50 -> 49 names."""
+    123,099 of 123,099 ticks): 51 -> 50 entries, 50 -> 49 names.
+    + 8 node-qualified prediction_error entries added 2026-10-10 (rest
+    semantics, R6: harness_closure, cabinet, perception, execution, chat,
+    codebase, route, biometrics): 50 -> 58 entries, names unchanged at 49."""
     glossary = load_glossary()
     entries = glossary["entries"]
-    assert len(entries) == 50
+    assert len(entries) == 58
     names = {e.channel for e in entries}
     for retired in (
         "stream_backlog_pressure",
@@ -133,11 +136,10 @@ def test_resolve_channel_entry_falls_back_to_bare_entry():
     assert entry.node is None
 
     # A node given, but no qualified entry exists for it -- falls back to
-    # bare, does not raise or return None. node:substrate.vision is
-    # deliberately still unqualified as of this patch (see that entry's own
-    # comment in the glossary YAML) -- this is the real, current case for
-    # it, not a placeholder.
-    for node in ("node:substrate.chat", "node:substrate.vision"):
+    # bare, does not raise or return None. node:substrate.vision is retired
+    # and node:substrate.vision_organ deliberately has no prediction_error
+    # entry (it carries no such channel) -- real, current cases.
+    for node in ("node:substrate.vision_organ", "node:substrate.vision"):
         entry = resolve_channel_entry("prediction_error", node)
         assert entry is not None
         assert entry.node is None

@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from types import SimpleNamespace
 
 from orion.substrate.attention_broadcast import (
+    DEFAULT_MIN_SALIENCE,
     attention_broadcast_enabled,
     broadcast_projection_from_frame,
     build_substrate_attention_frame,
@@ -31,7 +32,8 @@ def test_flag_default_off(monkeypatch) -> None:
 
 def test_high_pressure_node_wins_over_calm() -> None:
     nodes = [
-        _node("node:calm", "calm background concept", dynamic_pressure=0.05),
+        # Derived from the floor so it stays below it if the floor moves.
+        _node("node:calm", "calm background concept", dynamic_pressure=DEFAULT_MIN_SALIENCE / 5),
         _node("node:hot", "unresolved execution contradiction", dynamic_pressure=0.9),
         _node("node:mild", "mildly active concept", dynamic_pressure=0.3),
     ]

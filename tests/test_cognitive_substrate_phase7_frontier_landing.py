@@ -34,7 +34,7 @@ def _bundle(*, zone: str, confidence: float, node=None, contradiction: bool = Fa
         request_id="req-1",
         response_id="res-1",
         target_zone=zone,
-        task_type="ontology_expand" if zone == "world_ontology" else "concept_expand",
+        task_type="taxonomy_proposal" if zone == "world_ontology" else "concept_expand",
         suggested_landing_posture="fast_track_proposal" if zone == "world_ontology" else "strict_proposal_only" if zone == "self_relationship_graph" else "moderate_proposal",
         candidate_nodes=[node] if node is not None else [],
         contradiction_candidates=["contradiction?"] if contradiction else [],

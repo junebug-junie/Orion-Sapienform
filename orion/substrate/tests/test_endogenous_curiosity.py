@@ -238,3 +238,95 @@ def test_world_coverage_gap_passes_through_as_curiosity_seed() -> None:
     assert candidates[0].signal_type == "curiosity_candidate"
     assert "hardware_compute_gpu" in candidates[0].focal_node_refs[0]
     assert "world_coverage_gap" in candidates[0].notes
+
+
+# --- Repair-pressure replay fix (2026-10-10) -------------------------------
+# Live bug: the worker took the all-time max repair_pressure_level across every
+# chat-projection turn, so one 0.913 HIGH turn was replayed as a candidate on
+# every tick for days. These tests build real ChatTurnStateV1 rows.
+
+from orion.schemas.chat_projection import ChatTurnStateV1  # noqa: E402
+from orion.substrate.endogenous_curiosity import repair_appraisal_from_chat_turns  # noqa: E402
+
+_LIVE_SPIKE = 0.9129342275597288
+_LIVE_REST = 0.087
+
+
+def _turn(level: float, observed_at: datetime, *, turn_id: str = "t") -> ChatTurnStateV1:
+    return ChatTurnStateV1(
+        trace_id=f"node:{turn_id}",
+        turn_id=turn_id,
+        session_id="s",
+        node_id="node",
+        observed_at=observed_at,
+        repair_pressure_level=level,
+        repair_pressure_confidence=0.65,
+        has_repair_signal=level >= 0.6,
+        evidence_event_ids=[f"ev-{turn_id}"],
+        last_updated_at=observed_at,
+    )
+
+
+def _repair_seeds(turns, *, now=_NOW):
+    appraisal = repair_appraisal_from_chat_turns(turns, now=now)
+    return [
+        s
+        for s in endogenous_curiosity_candidates(repair_appraisal=appraisal, config=_enabled(), now=now)
+        if "source:repair_pressure" in s.notes
+    ]
+
+
+def test_fresh_repair_spike_still_produces_candidate() -> None:
+    seeds = _repair_seeds([_turn(_LIVE_SPIKE, _NOW - timedelta(seconds=60))])
+    assert len(seeds) == 1
+    assert seeds[0].focal_node_refs == ["ev-t"]
+    assert 0.6 < seeds[0].signal_strength < _LIVE_SPIKE
+
+
+def test_old_repair_spike_decays_below_min_and_stops_emitting() -> None:
+    # 0.913 * (1 - age/1800) < 0.6 once age > ~617s.
+    assert _repair_seeds([_turn(_LIVE_SPIKE, _NOW - timedelta(seconds=700))]) == []
+    assert repair_appraisal_from_chat_turns(
+        [_turn(_LIVE_SPIKE, _NOW - timedelta(seconds=_PREDICTION_ERROR_DECAY_HORIZON_SECONDS + 1))],
+        now=_NOW,
+    ) is None
+
+
+def test_live_shape_old_spike_plus_calm_turns_emits_no_repair_candidate() -> None:
+    """Regression: the exact live shape -- a 0.913 spike four days old followed
+    by many calm 0.087 turns. Old code returned level=0.913 forever."""
+    spike_at = _NOW - timedelta(days=4)
+    turns = [_turn(_LIVE_SPIKE, spike_at, turn_id="spike")]
+    turns += [
+        _turn(_LIVE_REST, spike_at + timedelta(hours=h), turn_id=f"calm{h}")
+        for h in range(1, 96)
+    ]
+    turns.append(_turn(_LIVE_REST, _NOW - timedelta(minutes=5), turn_id="calm_now"))
+    appraisal = repair_appraisal_from_chat_turns(turns, now=_NOW)
+    # The surviving reading is a recent calm turn, not the replayed spike.
+    assert appraisal is not None
+    assert appraisal.dimensions["level"] < _LIVE_REST + 1e-9
+    assert appraisal.causal_molecule_ids == ["ev-calm_now"]
+    assert _repair_seeds(turns) == []
+
+
+def test_turn_without_timestamp_is_not_treated_as_fresh() -> None:
+    stale = SimpleNamespace(repair_pressure_level=_LIVE_SPIKE, observed_at=None)
+    assert repair_appraisal_from_chat_turns([stale], now=_NOW) is None
+
+
+def test_recent_spike_beats_older_bigger_spike() -> None:
+    turns = [
+        _turn(0.99, _NOW - timedelta(seconds=1500), turn_id="old"),
+        _turn(0.8, _NOW - timedelta(seconds=10), turn_id="new"),
+    ]
+    appraisal = repair_appraisal_from_chat_turns(turns, now=_NOW)
+    assert appraisal.causal_molecule_ids == ["ev-new"]
+
+
+def test_future_dated_turn_is_treated_as_age_zero_and_naive_is_utc() -> None:
+    future = _turn(0.8, _NOW + timedelta(seconds=120), turn_id="future")
+    assert repair_appraisal_from_chat_turns([future], now=_NOW).dimensions["level"] == 0.8
+    naive = _turn(0.8, (_NOW - timedelta(seconds=900)).replace(tzinfo=None), turn_id="naive")
+    level = repair_appraisal_from_chat_turns([naive], now=_NOW.replace(tzinfo=None)).dimensions["level"]
+    assert abs(level - 0.4) < 1e-9

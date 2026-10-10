@@ -5,7 +5,7 @@ possible), but the match only lived in the camera's presence row while she was i
 rewritten to "unknown" when she stepped away. Nothing durable recorded "Juniper was seen at home".
 
 Producer: orion-vision-window, only for streams it is configured to treat as home cameras and
-only on a corroborated "probable" match (two within 10 min; never "possible"; never the laptop
+on one "probable" match, or two "possible"-or-better matches within 10 min (never the laptop
 webcam, which travels with her).
 Consumer: the situation.update graph in orion-durable-runs, where it is positive evidence for
 Juniper's whereabouts.
@@ -30,6 +30,9 @@ class IdentitySightingV1(BaseModel):
     stream_id: str                    # camera stream, e.g. "cam0"
     place: Literal["home"] = "home"   # the producer only emits for configured home cameras
     seen_at: datetime
-    outcome: Literal["probable"] = "probable"
+    # Which rule qualified: one "probable" match, or two "possible"-or-better matches within the
+    # window ("corroborated"). Loosened 2026-10-10 from probable x2 (a wave at the camera got one
+    # check and never qualified).
+    outcome: Literal["probable", "corroborated"] = "probable"
     similarity: float = Field(..., ge=-1.0, le=1.0)
     correlation_id: str               # the identity artifact that matched

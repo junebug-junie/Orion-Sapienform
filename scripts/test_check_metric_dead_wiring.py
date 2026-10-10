@@ -62,7 +62,7 @@ def test_reuses_consumers_is_test_path_not_a_second_copy():
     assert _is_test_path("scripts/test_check_metric_lineage_liveness_wiring.py")
     assert _is_test_path("services/orion-x/evals/run_thing_eval.py")
     assert not _is_test_path("orion/metrics/liveness.py")
-    assert not _is_test_path("services/orion-equilibrium-service/app/flow_metacog_gate.py")
+    assert not _is_test_path("services/orion-equilibrium-service/app/insight_metacog_gate.py")
 
 
 def test_added_line_numbers_tracks_a_simple_added_line():

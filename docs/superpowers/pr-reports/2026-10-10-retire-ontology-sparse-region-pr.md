@@ -43,6 +43,13 @@ After: the evaluator only invokes on a real signal (contradiction, drift, eviden
 - `services/orion-substrate-runtime/tests/test_store_observability_writers.py`, `.../test_worker_endogenous_curiosity_tick.py`, `tests/test_cognitive_substrate_phase6_frontier_expansion.py`, `tests/test_cognitive_substrate_phase7_frontier_landing.py`: fixtures moved off the retired values.
 - `docs/architecture/unified_cognitive_substrate_phase8_frontier_invocation.md`: removed the ontology-sparsity rule, noted the retirement.
 
+## Metric semantic layer lineage (checked before calling this a bug)
+
+Ran `.venv/bin/python scripts/check_metric_lineage.py` (`--metric <token>`, `--drift`, `--unwritten`) on 2026-10-10 against main, and read the matching `orion/inner_state_registry.py` and `config/field/field_channel_glossary.v1.yaml` entries. Nothing in the semantic layer marks this behaviour as designed.
+
+- `--metric ontology_sparse_region` and `--metric frontier_curiosity` both return **UNREGISTERED**: neither resolves to a URN in any registry. So no registry, glossary or lock entry declares this candidate or its constant 1.0 as a designed signal, and there is no declared consumer to protect.
+- Blast radius therefore came from grep plus the live tables (see above): the evaluator in orion-substrate-runtime, the curiosity ctx adapter, the hub, and self-inquiry, all covered in this PR.
+
 ## Schema / bus / API changes
 
 - Added: none

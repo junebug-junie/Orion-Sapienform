@@ -40,6 +40,14 @@
   - New: `tests/test_flow_trigger_retired.py`, plus the fixture `tests/fixtures/prediction_error_confidence_live_2026-10-03.json` (240 real ticks).
   - Insight-only tests renamed or trimmed: `test_insight_metacog_gate.py`, `test_insight_separate_cooldown.py`, `test_generative_metacog_gate_evaluation.py`, `tests/test_metacog_generative_trigger_signals.py`, `orion/metacog/tests/test_evidence_map_producer_contract.py`, `services/orion-cortex-exec/tests/test_metacog_draft_trigger_kind_type_mapping.py`, `scripts/test_check_metric_dead_wiring.py`.
 
+## Metric semantic layer lineage (checked before calling this a bug)
+
+Ran `.venv/bin/python scripts/check_metric_lineage.py` (`--metric <token>`, `--drift`, `--unwritten`) on 2026-10-10 against main, and read the matching `orion/inner_state_registry.py` and `config/field/field_channel_glossary.v1.yaml` entries. Nothing in the semantic layer marks this behaviour as designed.
+
+- `--metric prediction_error_confidence` resolves to `metric://inner_state/orion-substrate-runtime/attention_self_model.v1#prediction_error_confidence`, a scalar on `AttentionSelfModelV1`. Declared consumers: `flow_metacog_gate:build_flow_metacog_trigger` and `insight_metacog_gate:build_insight_metacog_trigger`.
+- Discovered blast radius: 21 non-test sites (`attention_self_model.py:827`, `brain_frame_producer.py`, `attention_organ_routes.py`, and analysis scripts). None of them depend on the flow gate, so retiring the gate leaves the metric itself in place for all of them.
+- Registry note (`orion/inner_state_registry.py`, attention_self_model.v1): it names both gates as the live cognition consumers. Nothing there or in the glossary says a near-1.0 idle plateau is meant to read as "flow". This PR removes the flow gate from that declared-consumer list (the reason the registry and metric lock are touched here).
+
 ## Schema / bus / API changes
 
 - Added: none

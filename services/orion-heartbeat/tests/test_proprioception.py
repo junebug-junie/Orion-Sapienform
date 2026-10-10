@@ -13,6 +13,7 @@ import pytest
 
 from app.substrate.proprioception import (
     FIRE_WINDOW_SEC,
+    SMEAR_DEAD_RATIO,
     SMEAR_MIN,
     OrganFireWindow,
     compute_proprioception,
@@ -82,6 +83,46 @@ def test_profile_smear_dead_near_is_absent_not_infinite() -> None:
     smear, smeared = profile_smear(profile)
     assert smear is None
     assert smeared is None
+
+
+def test_profile_smear_nearly_dead_near_is_absent_not_huge() -> None:
+    # Regression, 2026-10-10: near end at 1e-5 bits cleared the old 1e-6
+    # floor, so far/near read 4e4 -- live rows reached 1.46e6. A near end that
+    # carries < 1/SMEAR_DEAD_RATIO of the far end is dead: absent, not huge.
+    profile = [1e-5, 1e-5, 0.3, 0.5, 0.6, 0.6, 0.5, 0.4, 0.4]
+    smear, smeared = profile_smear(profile)
+    assert smear is None
+    assert smeared is None
+
+
+def test_profile_smear_dead_cut_sits_at_live_distribution_trough() -> None:
+    # Alive body tops out at 4.54 live; the cut is the trough edge at 10.
+    assert SMEAR_DEAD_RATIO == pytest.approx(10.0)
+    alive = [0.2, 0.2, 0.3, 0.5, 0.6, 0.6, 0.5, 0.9, 0.9]  # far/near = 4.5
+    smear, smeared = profile_smear(alive)
+    assert smear == pytest.approx(4.5)
+    assert smeared is True
+    at_edge = [0.1, 0.1, 0.3, 0.5, 0.6, 0.6, 0.5, 1.0, 1.0]  # far/near = 10
+    assert profile_smear(at_edge)[0] == pytest.approx(10.0)
+    past_edge = [0.09, 0.09, 0.3, 0.5, 0.6, 0.6, 0.5, 1.0, 1.0]  # ~11.1
+    assert profile_smear(past_edge) == (None, None)
+
+
+def test_profile_smear_nan_or_negative_is_absent_not_local() -> None:
+    nan = float("nan")
+    assert profile_smear([nan, nan, 0.3, 0.5, 0.6, 0.6, 0.5, 0.4, 0.4]) == (None, None)
+    assert profile_smear([0.5, 0.5, 0.3, 0.5, 0.6, 0.6, 0.5, nan, nan]) == (None, None)
+    assert profile_smear([0.5, 0.5, 0.3, 0.5, 0.6, 0.6, 0.5, -0.4, -0.4]) == (None, None)
+
+
+def test_compute_proprioception_nearly_dead_near_leaves_smear_absent() -> None:
+    reading = compute_proprioception(
+        fire_counts={name: 3 for name in ORGAN_SITE_MAP},
+        mean_profile=[1e-5, 1e-5, 0.3, 0.5, 0.6, 0.6, 0.5, 0.4, 0.4],
+    )
+    assert reading.smear is None
+    assert reading.smeared is None
+    assert reading.organ_distinctness is not None
 
 
 def test_profile_smear_rejects_wrong_cut_count() -> None:

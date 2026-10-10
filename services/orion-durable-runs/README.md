@@ -196,6 +196,67 @@ done steps -- dispatch's cost; never queue or hold-wait time), `started_at`,
 `reverie_visual` block (attempt, outcome, retries, retry_at, elapsed, deadline),
 `error` and `work_started`.
 
+A **dream image hop** is a `reverie.visual` run whose brief carries `dream_hop`
+(`DreamHopImageV1`, submitted by a `dream.carry` run below). Every step request it sends
+(prepare/generate/caption/abandon) carries the same `dream_hop`, and its `run.completed`
+detail adds `caption` (what thought saw). A waking painting is unchanged: its step payloads
+omit `dream_hop` entirely (an older orion-thought keeps accepting them during a rolling
+deploy) and its detail has no `caption` key.
+
+### Admitted dream carry-through (`dream.carry`, 2026-10-10)
+
+Spec: `docs/superpowers/specs/2026-10-10-dream-carry-through-design.md`. Contract:
+`orion/schemas/dream_carry.py`. Graph: `app/dream_carry_graph.py`.
+
+```text
+next_hop -> resource_request -> resource_wait -> text_hop -> next_hop      (even hop: text)
+next_hop -> image_submit -> image_wait (polls itself) -> next_hop          (odd hop: image)
+next_hop -> finish_dream -> finish                                         (all hops made)
+hop stage: retry_wait -> same stage;  deadline / terminal -> finish_dream (partial)
+```
+
+- **Text hop:** one `DreamCarryStepRequestV1(step="text")` RPC to orion-dream on
+  `orion:dream:carry:step:request`, under the run's own hold (admission
+  `llm.route.metacog_background`, class metacog, background); the hold is released as soon as
+  the hop is checkpointed. `retry` (or transport trouble) hands the hold back and backs off: never
+  an attempt. `terminal` stops the carry.
+- **Image hop:** a child `reverie.visual` run submitted inside durable-runs
+  (`AdmissionRuntime.submit`), run id `reverie_visual_run_id(dream_hop_dispatch_id(carry, hop))`,
+  painting the previous text hop's `image_prompt`, diffusion hold, deadline
+  `min(carry deadline, now + DREAM_CARRY_CHILD_WINDOW_SEC)` (default 2400, never above 6600), so a
+  hot cabinet cannot keep thought's single painting slot on a dream picture for hours. No child
+  (first or replacement) is submitted with less than `DREAM_CARRY_CHILD_MIN_WINDOW_SEC` of the carry
+  left: the carry finishes partial (`image hop N: only Ns left`). The carry holds nothing:
+  `image_wait` re-reads the child's terminal fact (`DurableRunRegistryStore.terminal_detail`) every
+  30 s (one checkpoint per poll: LangGraph has no checkpoint-free wait in this runtime).
+  - A child that ends without a picture for a **retryable** reason (failed with
+    `retry_window_expired` / `workflow_deadline`, or completed `deferred_thermal` /
+    `deferred_busy` / `deferred_resource` / `unknown`) is replaced, after
+    `max(admission backoff, DREAM_CARRY_CHILD_RETRY_GAP_SEC)` (default 900: thought's 600 s cooldown
+    plus a baseline tick, so a waking painting can claim the slot in between), by a fresh child for the same hop with dispatch
+    `dream-carry:<run>:<hop>:r<n>`, at most `DREAM_CARRY_CHILD_MAX_ATTEMPTS` (3) children per hop and
+    only while `DREAM_CARRY_CHILD_MIN_WINDOW_SEC` (900) of the carry is left. Live reason: most
+    waking paintings end `retry_window_expired` after `thermal_refused`.
+  - Anything else (cancelled, a terminal failure, a non-deferral outcome), or attempts / window
+    exhausted, stops the carry (`image hop N: <why>`, e.g. `image hop 3: thermal_refused x3`).
+  - Every child id is kept in `child_run_ids`; a carry that ends (any terminal, completed-partial
+    included) cancels the current attempt's child if it is still running.
+- **Finish:** `step="finish"` with every hop made and `stopped_reason`; orion-dream writes the
+  dream. It keeps retrying for `DREAM_CARRY_FINISH_GRACE_SEC` (default 1800) past the deadline so
+  a partial carry is still written; after that the run fails with the last finish error.
+- **Deadline** (`admission.deadline_at`, required: `AdmissionRuntime.submit` refuses a carry
+  without one, since text/finish retries never spend attempts): any hop stage past it finishes **partial** with
+  `stopped_reason="deadline at hop N: <last reason>"`. A carry that made no hop at all still calls
+  finish with `hops=[]`: orion-dream answers done with `dream_id="story-fallback:<trigger_id>"` (the
+  sleep's one-paragraph story) or terminal for a hand-started carry (run failed). The driver does not fail a pending carry at its deadline (the graph
+  owns it); it only backstops it after deadline + grace + `DURABLE_RUNS_RETRY_MAX_SEC`.
+- Hops in the checkpoint are never redone (the next hop index is `len(hops)`); a replayed image
+  submit dedupes on the deterministic child run id.
+
+`run.completed` detail: `trigger_id`, `hops_planned`, `hops_made`, `stopped_reason`, `dream_id`,
+`child_run_ids`, `retries`. `run.failed` / `run.cancelled` add `error` / `last_error` and the
+in-flight `child_run_id`. The status API adds a `dream_carry` block.
+
 ### Admitted compactor digest (`compactor.digest`, 2026-09-30)
 
 The LLM half of cortex-orch's daily `github_compactor_pass` / `chat_history_compactor_pass`

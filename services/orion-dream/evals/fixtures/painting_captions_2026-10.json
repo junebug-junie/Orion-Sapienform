@@ -1,0 +1,23 @@
+{
+  "_source": "Live reverie_visual_attempt rows (conjourney), stage_json.caption.description and result_json.artifact_sha256, pulled 2026-10-10. Real captions orion-thought's vision step wrote for three of Orion's own waking paintings.",
+  "paintings": [
+    {
+      "durable_run_id": "reverie-visual-d505bc9f527d5ffea6b4c6b51cf12c36",
+      "captioned_at": "2026-10-01T23:11:11.905942+00:00",
+      "sha256": "e257eee86491274226a1b1d404cfa3cea9efb53684fd0b6367d2cd6ae106149f",
+      "caption": "The image shows two light bulbs hanging from wires against a dark background. The light bulbs are glowing, and the wires are visible."
+    },
+    {
+      "durable_run_id": "reverie-visual-a31ff8d868915cc9891d36a713c30de5",
+      "captioned_at": "2026-10-02T02:17:03.009642+00:00",
+      "sha256": "ccd942937bbbbc23b1f0f2653d20786c390336a79d9df71b0424c907d5d808ad",
+      "caption": "The image depicts a workspace with a desk, laptop, smartphone, and a book. There is a whiteboard with a red neon sign that reads \"UNsowied.\" The room has a warm, dim lighting, and a black lamp is visible on the left side of the desk."
+    },
+    {
+      "durable_run_id": "reverie-visual-c8f2372bfd535e11bf4a3f3e7df336c0",
+      "captioned_at": "2026-10-09T02:24:07.650708+00:00",
+      "sha256": "7d34d59801ca6cca8ec82dc3316893984f498cb49abe59e252ad1daaf3cb5659",
+      "caption": "The image shows a porch with a white railing, a black light fixture mounted on a pole, and a sunset in the background. The sky is clear with a gradient of colors from blue to orange and yellow, indicating the time is either sunrise or sunset."
+    }
+  ]
+}

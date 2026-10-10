@@ -689,7 +689,9 @@ async def handle_visual_step_request(bus: OrionBusAsync, env: BaseEnvelope, *, r
             source=_source(),
             correlation_id=env.correlation_id,
             causality_chain=list(env.causality_chain or []),
-            payload=result.model_dump(mode="json"),
+            # exclude_none: a waking reply never carries the dream-only `caption: null`;
+            # every result field defaults to None, so the receiver reads the same model.
+            payload=result.model_dump(mode="json", exclude_none=True),
         ),
     )
 

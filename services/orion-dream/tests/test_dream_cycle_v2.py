@@ -664,3 +664,181 @@ def test_story_after_sleep_switch_turns_the_link_off(monkeypatch):
     assert main.build_cycle_deps().start_story is None
     monkeypatch.setattr(settings, "DREAM_STORY_AFTER_SLEEP_ENABLED", True)
     assert main.build_cycle_deps().start_story is not None
+
+
+# --- sleep -> carried dream (dream.carry) ----------------------------------------------------
+
+
+class _CarryBus:
+    """Stands in for the cycle bus: records cortex RPCs and publishes."""
+
+    def __init__(self, fail=False):
+        from orion.core.bus.codec import OrionCodec
+
+        self.codec = OrionCodec()
+        self.rpcs, self.published, self.fail = [], [], fail
+
+    async def rpc_request(self, channel, env, *, reply_channel, timeout_sec):
+        from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
+
+        self.rpcs.append((channel, env))
+        if self.fail:
+            raise TimeoutError("cortex-orch did not answer")
+        durable = env.payload["context"]["metadata"]["durable_run"]
+        return {"data": self.codec.encode(BaseEnvelope(
+            kind="cortex.orch.result", source=ServiceRef(name="orion-cortex-orch"),
+            payload={"status": "accepted", "metadata": {"durable_run": {
+                "run_id": durable["run_id"], "workflow_kind": durable["workflow"],
+                "requested_resource": durable["admission"]["resource"]}}}))}
+
+    async def publish(self, channel, env):
+        self.published.append((channel, env))
+
+
+def _carry_deps(monkeypatch, *, carry_enabled, fail=False):
+    from app import cycle as cycle_mod
+    from app import main
+    from app.settings import settings
+
+    monkeypatch.setattr(settings, "DREAM_STORY_AFTER_SLEEP_ENABLED", True)
+    monkeypatch.setattr(settings, "DREAM_CARRY_ENABLED", carry_enabled)
+    monkeypatch.setattr(settings, "ORION_BUS_ENABLED", True)
+    bus, dropped, built = _CarryBus(fail=fail), [], []
+
+    async def fake_bus():
+        return bus
+
+    async def fake_drop():
+        dropped.append(True)
+
+    real_story_trigger = cycle_mod.story_trigger
+
+    def recording_story_trigger(*a, **kw):
+        t = real_story_trigger(*a, **kw)
+        built.append(t)
+        return t
+
+    monkeypatch.setattr(main, "_cycle_bus", fake_bus)
+    monkeypatch.setattr(main, "_drop_cycle_bus", fake_drop)
+    monkeypatch.setattr(cycle_mod, "story_trigger", recording_story_trigger)
+    f, deps, _ = _story_fakes()
+    deps.start_story = main.build_cycle_deps().start_story
+    return f, deps, bus, dropped, built
+
+
+def test_with_carry_on_a_completed_sleep_submits_one_dream_carry_and_no_story(monkeypatch):
+    from app.cycle import run_cycle_once
+    from app.settings import settings
+    from orion.schemas.dream_carry import dream_carry_run_id
+    from orion.schemas.durable_run import DurableRunRequestV1
+
+    f, deps, bus, _, built = _carry_deps(monkeypatch, carry_enabled=True)
+    cycle = asyncio.run(run_cycle_once(deps))
+    assert cycle.status == "completed" and len(built) == 1
+    assert bus.published == []  # no dream.trigger
+    (channel, env), = bus.rpcs
+    assert channel == settings.CHANNEL_CORTEX_REQUEST and env.kind == "cortex.orch.request"
+    request = DurableRunRequestV1.model_validate(env.payload["context"]["metadata"]["durable_run"])
+    assert request.workflow == "dream.carry"
+    assert request.run_id == dream_carry_run_id(f"sleep:{cycle.cycle_id}")
+    assert request.brief.trigger_id == f"sleep:{cycle.cycle_id}"
+    assert request.brief.sleep == built[0].sleep  # the digest story_trigger built, unchanged
+    assert request.admission.resource == "llm.route.metacog_background"
+
+
+def test_with_carry_off_a_completed_sleep_still_publishes_the_story(monkeypatch):
+    from app.cycle import run_cycle_once
+    from app.settings import settings
+
+    f, deps, bus, _, built = _carry_deps(monkeypatch, carry_enabled=False)
+    cycle = asyncio.run(run_cycle_once(deps))
+    assert cycle.status == "completed" and bus.rpcs == []
+    (channel, env), = bus.published
+    assert channel == settings.CHANNEL_DREAM_TRIGGER and env.kind == "dream.trigger"
+    assert env.payload["sleep"]["material"] == built[0].sleep.material
+
+
+def test_a_carry_that_fails_to_submit_falls_back_to_the_story_and_keeps_the_sleep(monkeypatch):
+    """Transport failure: the bus is dropped for reconnect, and the sleep still gets its dream
+    (the one-shot story), so a carry that cannot start never costs the sleep its dream."""
+    from app.cycle import run_cycle_once
+    from app.settings import settings
+
+    f, deps, bus, dropped, built = _carry_deps(monkeypatch, carry_enabled=True, fail=True)
+    cycle = asyncio.run(run_cycle_once(deps))
+    assert cycle.status == "completed" and f.persisted == [cycle]
+    assert len(bus.rpcs) == 2 and dropped == [True, True]  # resubmitted once before falling back
+    (channel, env), = bus.published
+    assert channel == settings.CHANNEL_DREAM_TRIGGER and env.payload["sleep"]["material"] == built[0].sleep.material
+
+
+def test_a_carry_cortex_refuses_falls_back_to_the_story_without_dropping_the_bus(monkeypatch):
+    from app.cycle import run_cycle_once
+
+    f, deps, bus, dropped, _ = _carry_deps(monkeypatch, carry_enabled=True)
+
+    async def refusing(channel, env, *, reply_channel, timeout_sec):
+        from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
+
+        bus.rpcs.append((channel, env))
+        return {"data": bus.codec.encode(BaseEnvelope(kind="cortex.orch.result", source=ServiceRef(name="o"),
+                                                      payload={"status": "fail", "error": {"type": "AdmissionUnconfirmed"}}))}
+
+    bus.rpc_request = refusing
+    cycle = asyncio.run(run_cycle_once(deps))
+    assert cycle.status == "completed" and len(bus.rpcs) == 2 and dropped == []
+    assert [env.kind for _, env in bus.published] == ["dream.trigger"]
+
+
+def test_a_carry_submit_that_times_out_once_is_resubmitted_not_doubled_with_a_story(monkeypatch):
+    """A timeout can land after durable-runs already took the run: resubmit (same run_id,
+    dedupes) instead of also publishing the story, which would give the sleep two dreams."""
+    from app.cycle import run_cycle_once
+
+    f, deps, bus, dropped, _ = _carry_deps(monkeypatch, carry_enabled=True)
+    accept = bus.rpc_request
+    attempts = []
+
+    async def flaky(channel, env, *, reply_channel, timeout_sec):
+        attempts.append(env.payload["context"]["metadata"]["durable_run"]["run_id"])
+        if len(attempts) == 1:
+            bus.rpcs.append((channel, env))
+            raise TimeoutError("receipt late")
+        return await accept(channel, env, reply_channel=reply_channel, timeout_sec=timeout_sec)
+
+    bus.rpc_request = flaky
+    cycle = asyncio.run(run_cycle_once(deps))
+    assert cycle.status == "completed"
+    assert len(attempts) == 2 and attempts[0] == attempts[1]  # same deterministic run_id
+    assert bus.published == [] and dropped == [True]
+
+
+def test_the_carry_step_responder_runs_even_with_new_carries_off(monkeypatch):
+    """DREAM_CARRY_ENABLED gates new carries only; in-flight carries must still get answers."""
+    from app import carry_listener, main
+    from app.settings import settings
+
+    started = []
+
+    class FakeListener:
+        async def start(self):
+            started.append("start")
+
+        async def stop(self):
+            started.append("stop")
+
+    monkeypatch.setattr(carry_listener, "build_carry_listener", lambda: FakeListener())
+    monkeypatch.setattr(settings, "DREAM_INTROSPECT_ENABLED", False)
+    monkeypatch.setattr(settings, "ORION_DREAM_CYCLE_ENABLED", False)
+    monkeypatch.setattr(settings, "ORION_BUS_ENABLED", True)
+    for enabled in (False, True):
+        monkeypatch.setattr(settings, "DREAM_CARRY_ENABLED", enabled)
+
+        async def run():
+            async with main.lifespan(main.app):
+                pass
+        asyncio.run(run())
+    assert started == ["start", "stop", "start", "stop"]
+    monkeypatch.setattr(settings, "ORION_BUS_ENABLED", False)
+    asyncio.run(run())
+    assert started == ["start", "stop", "start", "stop"]  # no bus, no responder

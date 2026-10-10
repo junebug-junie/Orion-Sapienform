@@ -1,14 +1,15 @@
 {
   "_comment": "Definition lock for scripts/check_definition_drift.py. Generated, never hand-edited. Regenerate with --update; the resulting diff IS the definition-change alert. Unlike the *_baseline.json ratchets this tracks current truth in both directions -- a definition change is an event, not a defect.",
-  "metric_count": 719,
+  "metric_count": 721,
   "_last_change": {
-    "change_count": 4,
-    "high_severity_count": 0,
+    "change_count": 5,
+    "high_severity_count": 3,
     "changes": [
-      "medium added metric://inner_state/orion-dream/drive_reading.rest.v1",
-      "medium added metric://inner_state/orion-dream/drive_reading.rest.v1#level",
-      "medium added metric://inner_state/orion-dream/drive_reading.rest.v1#rest_level",
-      "medium added metric://inner_state/orion-dream/drive_reading.rest.v1#threshold"
+      "high   routing_changed metric://bus_channel/orion-actions/orion:cortex:request (all_producers: \u2026y', 'orion-durable-runs'\u2026 -> \u2026y', 'orion-dream', 'orion-durable-runs'\u2026)",
+      "high   routing_changed metric://bus_channel/orion-cortex-exec/orion:dream:log (all_producers: ['orion-cortex-exec'] -> ['orion-cortex-exec', 'orion-dream'])",
+      "high   routing_changed metric://bus_channel/orion-cortex-orch/orion:cortex:result* (declared_consumers: \u2026y', 'orion-durable-runs'\u2026 -> \u2026y', 'orion-dream', 'orion-durable-runs'\u2026)",
+      "medium added metric://bus_channel/orion-dream/orion:dream:carry:step:reply:*",
+      "medium added metric://bus_channel/orion-durable-runs/orion:dream:carry:step:request"
     ]
   },
   "definitions": {
@@ -325,6 +326,7 @@
         "orion-actions",
         "orion-cortex-exec",
         "orion-cortex-gateway",
+        "orion-dream",
         "orion-durable-runs",
         "orion-hub",
         "orion-memory-consolidation"
@@ -837,7 +839,8 @@
     "metric://bus_channel/orion-cortex-exec/orion:dream:log": {
       "schema_id": "DreamResultV1",
       "all_producers": [
-        "orion-cortex-exec"
+        "orion-cortex-exec",
+        "orion-dream"
       ],
       "declared_consumers": [
         "orion-dream",
@@ -1157,6 +1160,7 @@
       ],
       "declared_consumers": [
         "orion-cortex-gateway",
+        "orion-dream",
         "orion-durable-runs",
         "orion-hub"
       ],
@@ -1221,6 +1225,17 @@
       "notes": "kind=event stability=experimental",
       "registry_source": "orion/bus/channels.yaml"
     },
+    "metric://bus_channel/orion-dream/orion:dream:carry:step:reply:*": {
+      "schema_id": "DreamCarryStepResultV1",
+      "all_producers": [
+        "orion-dream"
+      ],
+      "declared_consumers": [
+        "orion-durable-runs"
+      ],
+      "notes": "kind=result stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
     "metric://bus_channel/orion-dream/orion:dream:compaction-delta": {
       "schema_id": "MemoryCompactionDeltaV1",
       "all_producers": [
@@ -1272,6 +1287,17 @@
       ],
       "declared_consumers": [
         "orion-hub"
+      ],
+      "notes": "kind=request stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-durable-runs/orion:dream:carry:step:request": {
+      "schema_id": "DreamCarryStepRequestV1",
+      "all_producers": [
+        "orion-durable-runs"
+      ],
+      "declared_consumers": [
+        "orion-dream"
       ],
       "notes": "kind=request stability=experimental",
       "registry_source": "orion/bus/channels.yaml"

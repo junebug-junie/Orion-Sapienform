@@ -125,6 +125,61 @@ same tiredness gate as the sleep (`app/story.py`).
 - No story for a sleep that was `failed`, `empty`, or not saved.
 - Starting the story is best effort. If the publish fails, the sleep still counts.
 - Off switch: `DREAM_STORY_AFTER_SLEEP_ENABLED=false`.
+- With `DREAM_CARRY_ENABLED=true` (the default) the story is carried instead of
+  published as one paragraph; see the next section. The story path above is what
+  `DREAM_CARRY_ENABLED=false` returns to.
+
+### Every sleep ends in a carried dream
+
+Since 2026-10-10 the dream a sleep ends in is carried through words and pictures:
+Orion writes a passage, it is painted, Orion looks at the painting, and the dream
+continues from what was *seen*. Six hops (text, picture, text, picture, text,
+picture), so the last picture's caption is the dream's last word. Design:
+`docs/superpowers/specs/2026-10-10-dream-carry-through-design.md`.
+
+- **Start.** A completed, saved sleep submits one `dream.carry` durable run
+  through cortex-orch's durable ingress (`CHANNEL_CORTEX_REQUEST`,
+  `metadata.durable_run`) instead of publishing `dream.trigger`. The brief is the
+  same `sleep` digest the story would have had, and the run id is derived from
+  `sleep:<cycle_id>`, so one sleep is one carry. The submit counts only when the
+  receipt names this run, workflow and resource (`app/carry_submit.py`). A failed
+  submit is logged (`dream_carry_submit_failed`) and never fails the sleep. It is
+  tried once more (the run id dedupes, so a timeout after durable-runs already took
+  the run cannot start a second dream); if that fails too, it falls back to the
+  one-shot story (`dream_carry_fallback_story`) so the sleep keeps its dream.
+- **Who does what.** orion-durable-runs runs the hops and checkpoints each one.
+  orion-thought paints and captions the pictures. orion-dream answers the run's
+  text and finish steps on `orion:dream:carry:step:request` (`app/carry_listener.py`,
+  `app/carry.py`).
+- **Text hop.** One gateway call on the `metacog_background` route, attached to
+  the run's own LLM hold (`options.gpu_lease`). Hop 0 gets the sleep's material
+  under the same blind-experiment rule as the story (both arms, unlabeled, never
+  the hypotheses). Hops 2 and 4 get the previous passage and "the dream turned into
+  a picture; looking at it you see: <caption>", and are told to follow the picture.
+  The reply must be JSON `{"passage", "image_prompt"}`; the image prompt is clipped
+  to 60 words (the painter's text encoder drops everything past 77 tokens). An
+  empty, unparseable or refused reply, or a timeout, answers `retry`, never a
+  blank hop. Refusals and timeouts retry until the deadline; a hop whose replies
+  are unparseable 3 times (or whose handler crashes 3 times) answers `terminal`, so
+  a model that keeps answering badly cannot burn the whole 4 h window.
+- **Finish.** One `dream.result.v1` on `CHANNEL_DREAM_LOG`, so the carry lands in
+  `dreams` like any other dream: `mode=carry`, `narrative` = the passages with each
+  caption between them as `[picture] <caption>`, one `fragments` entry per hop
+  (passage and image prompt, or sha256 and caption). The trigger (sleep digest,
+  run id, `stopped_reason`) is in `metrics._dream_audit.trigger`. A carry that hit
+  its deadline (`DREAM_CARRY_DEADLINE_SEC`, 4 h) publishes the hops it made with
+  `stopped_reason`. A sleep's carry that made no hops falls back to the one-shot
+  story (`dream.trigger` with the same digest) and answers `done` with dream id
+  `story-fallback:<trigger_id>`, published once per run; a hand-started carry with
+  no hops answers `terminal` and publishes nothing.
+- **Replays.** The dream id is derived from the run id. A finish that was already
+  published (remembered in-process, or found in `dreams` by that id) is answered
+  `done` again without a second row.
+- **By hand.** `POST /dreams/carry/run` starts a carry with no sleep behind it
+  (trigger `manual:<uuid>`); it dreams from a free seed and returns `{run_id, status}`.
+- Off switch: `DREAM_CARRY_ENABLED=false` stops new carries (sleeps go back to the
+  one-shot story, and the endpoint refuses). The step responder keeps running so
+  carries already in flight still finish.
 
 ### HTTP / bus behavior
 

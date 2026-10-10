@@ -81,6 +81,20 @@ class Settings(BaseSettings):
     DREAM_REST_DRIVE_PUBLISH_ENABLED: bool = Field(default=True)
     DREAM_REST_DRIVE_REDIS_TTL_SEC: float = Field(default=1800.0, gt=0.0)
 
+    # --- Dream carry-through (dream.carry durable run) ---
+    # On: the dream a completed sleep ends in is a carried dream (text -> picture ->
+    # text ... six hops, run by orion-durable-runs), submitted through cortex-orch's
+    # durable ingress, instead of the one-shot story on CHANNEL_DREAM_TRIGGER, and
+    # allows POST /dreams/carry/run. Off: the #2565 one-paragraph story for new sleeps.
+    # The step responder (orion:dream:carry:step:request) runs regardless, so carries
+    # already in flight still finish.
+    DREAM_CARRY_ENABLED: bool = Field(default=True)
+    # The run finishes partial (keeping every hop it made) once this passes.
+    DREAM_CARRY_DEADLINE_SEC: float = Field(default=14400.0, gt=0.0)
+    CHANNEL_CORTEX_REQUEST: str = Field(default="orion:cortex:request")
+    # sql-writer reads dream.result.v1 here into the dreams table.
+    CHANNEL_DREAM_LOG: str = Field(default="orion:dream:log")
+
     # --- Introspect responder (orion-introspect `dreams` tool; read-only) ---
     # Answers orion:introspect:dream:request. Empty search URLs keep recent/one
     # working and make query= answer "unknown".

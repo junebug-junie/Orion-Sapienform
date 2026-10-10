@@ -81,6 +81,18 @@
       if (error.name !== "AbortError") el("dreamDetail").textContent = "Sleep history unavailable. Refresh to retry.";
     }
   }
+  function renderCarries(data) {
+    const carries = data.carries || [];
+    el("dreamCarries").innerHTML = carries.map(c => {
+      const hops = c.hops.map(h => h.kind === "text"
+        ? `<article class="rounded-lg bg-gray-950/60 p-3"><div class="text-xs text-indigo-300">Hop ${esc(h.index)} · dream</div><p class="text-sm my-1 whitespace-pre-wrap">${esc(h.passage)}</p><p class="text-xs text-gray-500">Painted from: ${esc(h.image_prompt)}</p></article>`
+        : `<figure class="rounded-lg border border-gray-700 p-3 flex flex-col sm:flex-row gap-3"><img src="/api/dream/carry/image/${esc(h.sha256)}" alt="${esc(h.caption)}" loading="lazy" class="w-full sm:w-56 rounded"><figcaption class="text-sm"><div class="text-xs text-indigo-300">Hop ${esc(h.index)} · picture</div><span class="text-gray-400">Orion saw:</span> ${esc(h.caption)}</figcaption></figure>`).join("");
+      const made = c.hops.length;
+      return `<section><h4 class="font-semibold text-gray-100">${esc(time(c.created_at))} · ${esc(made)} hop${made === 1 ? "" : "s"}</h4>
+        <p class="text-xs text-gray-400 mb-2">${c.sleep_cycle_id ? `After sleep ${esc(c.sleep_cycle_id)}` : "Started by hand"}${c.stopped_reason ? ` · <span class="text-amber-300">stopped early: ${esc(c.stopped_reason)}</span>` : ""}</p>
+        <div class="flex flex-col gap-2">${hops}</div></section>`;
+    }).join("") || '<p class="text-sm text-gray-400">No carried dreams yet. The first one comes after the next completed sleep.</p>';
+  }
   async function refresh() {
     if (!active) return;
     controller?.abort(); detailController?.abort();
@@ -90,10 +102,12 @@
     el("dreamPressure").textContent = "Reading sleep readiness…";
     el("dreamScore").textContent = "Reading both groups…";
     el("dreamDetail").textContent = "Loading sleep history…";
+    el("dreamCarries").textContent = "Loading carried dreams…";
     await Promise.all([
       read("pressure", signal).then(renderPressure).catch(e => unavailable("dreamPressure", "Readiness", e)),
       read("scorecard", signal).then(renderScore).catch(e => unavailable("dreamScore", "Scorecard", e)),
       loadCycles(signal),
+      read("carries", signal).then(renderCarries).catch(e => unavailable("dreamCarries", "Carried dreams", e)),
     ]);
   }
   function activate() {

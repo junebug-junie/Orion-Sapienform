@@ -55,6 +55,7 @@ from orion.world_pulse_read.documents import (
 from orion.world_pulse_read.events import publish_lifecycle
 from orion.world_pulse_read.retry import is_refused_before_work
 from orion.world_pulse_read.fetch_text import retain_fetch_texts
+from orion.world_pulse_read.timestamps import stamp_server_created_at
 from orion.world_pulse_read.read_evidence import (
     NO_READ_EVIDENCE,
     document_snapshot_evidence,
@@ -215,12 +216,11 @@ def _stage1_json_contract(trace_id: str) -> str:
         '  "candidate_priors": [{"claim": "string", "confidence": 0.5}],\n'
         '  "concept_candidates": [{"label": "string", "definition": "optional"}],\n'
         '  "open_threads": ["string"],\n'
-        f'  "trace_id": {trace_id!r},\n'
-        '  "created_at": "ISO-8601 UTC"\n'
+        f'  "trace_id": {trace_id!r}\n'
         "}\n"
         "candidate_priors MUST be objects with claim (not bare strings). "
         "If the fetched page is thin/teaser-only, still return the JSON with low-confidence "
-        "priors and note gaps in open_threads. producer_hint and read_evidence are "
+        "priors and note gaps in open_threads. producer_hint, read_evidence and created_at are "
         "set server-side."
     )
 
@@ -596,7 +596,6 @@ class WorldPulseReadPipeline:
     async def _stage1_read(self, seed: WorldPulseReadSeedV1) -> WorldPulseReadHandoffV1:
         """Production path: unified turn + fenced JSON. Tests replace this."""
         trace_id = str(uuid4())
-        created_at = datetime.now(timezone.utc)
         document = await self._document_snapshot(seed)
         if document is None:
             prompt = _build_stage1_prompt(seed, trace_id)
@@ -614,7 +613,10 @@ class WorldPulseReadPipeline:
         parsed = parse_json_object(outcome.text)
         parsed["trace_id"] = trace_id
         parsed["seed_ref"] = seed.model_dump(mode="json")
-        parsed.setdefault("created_at", created_at.isoformat())
+        # Server clock at receipt, overwriting anything the model wrote: a
+        # model-authored time put future observed_at on wp-read concept nodes
+        # (substrate adapter) and journal rows.
+        stamp_server_created_at(parsed, seed_id=seed.seed_id, stage="stage1")
         parsed["producer_hint"] = "world_pulse_read_pipeline"
         if document is None:
             fetches = outcome.source_fetches

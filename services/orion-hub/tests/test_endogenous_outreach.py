@@ -4091,3 +4091,38 @@ def test_situation_status_reaches_the_grounding_record():
     ctx = OutreachContext(curiosity_summaries=["x"], recent_turns=[], presence=None, situation=None,
                           situation_status="no_key")
     assert grounding_summary(ctx)["situation_status"] == "no_key"
+
+
+
+def test_novelty_filter_keeps_every_other_field():
+    """Root cause of 10-09: apply_content_novelty rebuilt the context field by field and dropped
+    `situation`, so every non-forced outreach lost the block."""
+    from scripts.endogenous_outreach import apply_content_novelty
+    ctx = OutreachContext(curiosity_summaries=["a", "b"], curiosity_content_ids=["c1", "c2"], recent_turns=[],
+                          presence=None, situation={"juniper": {}}, situation_status="ok")
+    out = apply_content_novelty(ctx, used_prior_ids=set(), used_curiosity_ids={"c1"})
+    assert out.curiosity_content_ids == ["c2"]
+    assert (out.situation, out.situation_status) == ({"juniper": {}}, "ok")
+
+
+def test_a_normal_outreach_cycle_carries_the_situation_block(monkeypatch) -> None:
+    outreach = _outreach()
+    sit = _situation()
+
+    async def gather(self, session_id, open_prior_previews=None, open_prior_ids=None):
+        return OutreachContext(curiosity_summaries=["sustained prediction error on node:x"], recent_turns=[],
+                               presence=None, curiosity_content_ids=["cid-1"], situation=sit,
+                               situation_status="ok")
+
+    seen = {}
+
+    async def generate(self, prompt, session_id, correlation_id, **_kw):
+        seen["prompt"] = prompt
+        return "something I was thinking about", {"stub": True}
+
+    monkeypatch.setattr(EndogenousOutreach, "_gather_context", gather)
+    monkeypatch.setattr(EndogenousOutreach, "_generate", generate)
+    result = asyncio.run(outreach.maybe_outreach())          # not forced: the novelty filter runs
+    assert result["outreach"] is True and "Where Juniper is right now" in seen["prompt"]
+    assert result["grounding"]["situation"] is True and result["grounding"]["situation_status"] == "ok"
+    assert result["provenance"]["lanes"]["situation_status"] == "ok"

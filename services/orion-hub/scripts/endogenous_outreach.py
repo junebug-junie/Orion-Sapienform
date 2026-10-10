@@ -265,7 +265,7 @@ import asyncio
 import logging
 import re
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date, datetime, timezone
 from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 from uuid import UUID, uuid4
@@ -635,14 +635,14 @@ def apply_content_novelty(
         list(ctx.curiosity_summaries),
         used=used_curiosity_ids,
     )
-    return OutreachContext(
+    # dataclasses.replace, not a field-by-field rebuild: the rebuild silently dropped every field
+    # it did not list. Live 2026-10-09: it dropped `situation`, so every non-forced outreach went
+    # out without the "Where Juniper is right now" block (5/5 that day).
+    return replace(
+        ctx,
         curiosity_summaries=curiosity_summaries,
         curiosity_content_ids=curiosity_ids,
         recent_turns=list(ctx.recent_turns),
-        presence=ctx.presence,
-        tension_reason=ctx.tension_reason,
-        embodied_presence=ctx.embodied_presence,
-        daydream=ctx.daydream,
         open_prior_previews=prior_previews,
         open_prior_ids=prior_ids,
     )

@@ -538,9 +538,24 @@ def _fold_process(state: TemporalSelfStateV1, e: TemporalSelfEventV1, cfg: Reduc
     state.arcs[arc_id] = arc
     if e.source_kind == "reverie_chain":
         state.arc_correlations[arc_id] = list(e.related_refs)[:CORRELATION_CAP]
+    for event_id in state.awaiting_arc.pop(f"{kind}|{e.subject_ref}", []):
+        _add_capped(arc.expectation_event_ids, event_id, CONTEXT_CAP)
     # Bind what happened inside the process, inclusive of its end, then close it.
     _retro_bind(state, arc, start, end + timedelta(microseconds=1))
     _close(arc, "process_ended", end)
+
+
+def _attach_by_ref(state: TemporalSelfStateV1, kind: str, e: TemporalSelfEventV1) -> None:
+    """Attach ``e`` to the ``kind`` arc whose subject is one of its related refs; if that arc
+    does not exist yet, park the link until it does (``_fold_process`` claims it)."""
+    found = False
+    for arc in state.arcs.values():
+        if arc.kind == kind and arc.subject_ref in e.related_refs:
+            _add_capped(arc.expectation_event_ids, e.event_id, CONTEXT_CAP)
+            found = True
+    if not found:
+        for ref in e.related_refs:
+            _add_capped(state.awaiting_arc.setdefault(f"{kind}|{ref}", []), e.event_id, CONTEXT_CAP)
 
 
 def _fold_expectation(state: TemporalSelfStateV1, e: TemporalSelfEventV1) -> None:
@@ -550,9 +565,7 @@ def _fold_expectation(state: TemporalSelfStateV1, e: TemporalSelfEventV1) -> Non
             event_id=e.event_id, source_kind=e.source_kind, committed_at=e.occurred_at,
             expires_at=datetime.fromisoformat(expires) if expires else None,
         )
-        for arc in state.arcs.values():
-            if arc.kind == "sleep" and arc.subject_ref in e.related_refs:
-                _add_capped(arc.expectation_event_ids, e.event_id, CONTEXT_CAP)
+        _attach_by_ref(state, "sleep", e)
         return
     if e.source_kind == "expectation_verdict":
         committed = e.payload.get("committed_at")
@@ -562,9 +575,7 @@ def _fold_expectation(state: TemporalSelfStateV1, e: TemporalSelfEventV1) -> Non
             resolved_at=e.occurred_at, verdict=e.verdict,
         )
         # Late evidence attaches by reference and never reopens a closed arc.
-        for arc in state.arcs.values():
-            if arc.kind == "reverie" and arc.subject_ref in e.related_refs:
-                _add_capped(arc.expectation_event_ids, e.event_id, CONTEXT_CAP)
+        _attach_by_ref(state, "reverie", e)
     elif e.source_kind == "action_outcome":
         state.expectations[e.event_id] = ExpectationRefV1(
             event_id=e.event_id, source_kind=e.source_kind, committed_at=e.occurred_at,
@@ -691,6 +702,7 @@ def _roll_day(state: TemporalSelfStateV1, cfg: ReducerConfig) -> None:
     state.constraint_event_ids = []
     state.self_change_overflow = 0
     state.constraint_overflow = 0
+    state.awaiting_arc = {}
     state.expectations = {
         k: v for k, v in state.expectations.items()
         if v.resolved_at is None and (v.expires_at is None or v.expires_at > day_end)

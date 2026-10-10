@@ -36,8 +36,8 @@ def test_metacog_only_degraded_or_critical():
 def test_concern_raise_requires_a_real_chat_turn():
     row = {"trace_id": "t", "loop_id": "l", "scope": "chat", "created_at": T, "description": "her words"}
     assert S.attention_loop_raised(row) is None  # scorer re-emission, not a raise
-    e = S.attention_loop_raised({**row, "chat_turn": True})
-    assert e.subject_ref == "l" and e.privacy_class == "juniper_chat"
+    e = S.attention_loop_raised({**row, "chat_turn": True, "raised_by": "orion"})
+    assert e.subject_ref == "l" and e.privacy_class == "juniper_chat" and e.payload["raised_by"] == "orion"
     assert S.attention_loop_raised({**row, "chat_turn": True, "scope": "reverie"}) is None
 
 

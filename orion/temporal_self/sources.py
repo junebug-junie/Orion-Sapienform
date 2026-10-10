@@ -306,11 +306,13 @@ def attention_loop_raised(row: Row, tz_name: str = DEFAULT_TZ) -> TemporalSelfEv
     Juniper's turn text, so it is marked juniper_chat (outward boundary only)."""
     if row.get("scope") != "chat" or not row.get("loop_id") or not row.get("chat_turn"):
         return None
+    # Who wrote the turn that raised it (``raised_by``: juniper / orion). Live 10-09: one loop
+    # Juniper raised on 10-08 was raised again four times by Orion's own outreach.
     return _event(
         kind="attention_loop_raised", table="attention_salience_trace", ref=row.get("trace_id"),
         at=row.get("created_at"), tz_name=tz_name, subject_ref=str(row["loop_id"]),
         correlation_id=row.get("correlation_id") or None, label=clip(row.get("description")),
-        privacy_class="juniper_chat",
+        privacy_class="juniper_chat", payload={"raised_by": row.get("raised_by")},
     )
 
 

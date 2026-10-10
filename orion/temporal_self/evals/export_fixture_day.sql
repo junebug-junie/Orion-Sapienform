@@ -86,7 +86,9 @@ FROM substrate_attention_schema WHERE generated_at >= :start AND generated_at < 
 
 SELECT json_build_object('k','attention_loop_raised','trace_id',trace_id,'loop_id',loop_id,'scope',scope,
   'correlation_id',correlation_id,'created_at',created_at,
-  'chat_turn',EXISTS (SELECT 1 FROM chat_history_log c WHERE c.correlation_id = t.correlation_id))
+  'chat_turn',EXISTS (SELECT 1 FROM chat_history_log c WHERE c.correlation_id = t.correlation_id),
+  'raised_by',(SELECT CASE WHEN btrim(coalesce(c.prompt,'')) <> '' THEN 'juniper' ELSE 'orion' END
+               FROM chat_history_log c WHERE c.correlation_id = t.correlation_id LIMIT 1))
 FROM attention_salience_trace t WHERE scope = 'chat' AND created_at >= :start AND created_at < :end;
 
 SELECT json_build_object('k','attention_loop_verdict','outcome_id',outcome_id,'loop_id',loop_id,'verdict',verdict,

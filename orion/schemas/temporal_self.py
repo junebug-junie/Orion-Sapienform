@@ -307,6 +307,9 @@ class TemporalSelfStateV1(_Forbid):
     day_context_event_ids: list[str] = Field(default_factory=list)  # bound to no arc
     day_context_overflow: int = 0
     expectations: dict[str, ExpectationRefV1] = Field(default_factory=dict)
+    # By-reference attachments that arrived before their process arc (a dream hypothesis is
+    # written seconds before its cycle row's ended_at): f"{kind}|{subject_ref}" -> event ids.
+    awaiting_arc: dict[str, list[str]] = Field(default_factory=dict)
     self_change_event_ids: list[str] = Field(default_factory=list)
     self_change_overflow: int = 0
     constraint_event_ids: list[str] = Field(default_factory=list)

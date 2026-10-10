@@ -202,6 +202,13 @@ def evaluate(cfg: ReducerConfig, rows, ticks, events) -> dict:
         return {"n": len(vals), "min": round(min(vals), 3), "median": round(statistics.median(vals), 3),
                 "max": round(max(vals), 3), "distinct": len({round(v, 3) for v in vals})}
 
+    # Every hypothesis made on the day hangs off its own sleep arc (by cycle id, never time).
+    hyp_by_cycle: dict[str, set[str]] = defaultdict(set)
+    for r in rows["dream_hypothesis"]:
+        hyp_by_cycle[r["cycle_id"]].add(f"dream_hypothesis:{r['hypothesis_id']}")
+    sleep_hyp_fail = [a.subject_ref for a in arcs if a.kind == "sleep"
+                      if set(a.expectation_event_ids) != hyp_by_cycle.get(a.subject_ref, set())]
+
     labels = json.loads(LABELS.read_text()) if LABELS.exists() else {}
     label_failures = check_labels(labels, arcs)
 
@@ -238,12 +245,13 @@ def evaluate(cfg: ReducerConfig, rows, ticks, events) -> dict:
             "entered_day_with": len(day.frame.entered_day_with),
         },
         "label_failures": label_failures,
+        "sleep_hypothesis_mismatch": sleep_hyp_fail,
         "timeline": timeline(arcs, cfg),
     }
     report["passed"] = bool(
         total and matched == total and not impure and identical
         and all(r["exact"] for r in recall.values())
-        and report["rest"]["foreground_covered_share"] < 1.0 and not label_failures
+        and report["rest"]["foreground_covered_share"] < 1.0 and not label_failures and not sleep_hyp_fail
     )
     return report
 

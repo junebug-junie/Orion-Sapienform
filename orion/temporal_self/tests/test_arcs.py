@@ -296,3 +296,15 @@ def test_unscored_reverie_verdict_is_resolved_but_not_a_self_change():
     frame = build_frame(fold(initial_state(), events=[v], cfg=CFG), at(6), CFG)
     assert [x.verdict for x in frame.expectations_resolved_today] == ["unscored"]
     assert frame.self_change_event_ids == [] and frame.expectations_resolved_total == 1
+
+
+def test_hypothesis_written_before_its_cycle_row_completes_still_attaches():
+    # Live 10-09: dream_hypothesis.created_at is ~5 s before dream_cycle.ended_at, so the
+    # hypothesis is folded first. The link is parked and claimed when the sleep arc appears.
+    hyp = ev("dream_hypothesis", "h1", at(0.5), table="dream_hypothesis", related_refs=["cy1"],
+             payload={"expires_at": at(72 * 60).isoformat()})
+    cycle = ev("dream_cycle", "cy1", at(0), ended=at(1), subject="cy1", table="dream_cycle")
+    s = fold(initial_state(), events=[hyp, cycle], cfg=CFG)
+    (arc,) = arcs_of(s, "sleep")
+    assert arc.expectation_event_ids == ["dream_hypothesis:h1"]
+    assert s.awaiting_arc == {}

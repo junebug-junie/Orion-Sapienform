@@ -9,10 +9,16 @@ import subprocess
 from pathlib import Path
 from typing import Tuple
 
+from orion.fcc.mcp_names import GITHUB, mcp_tool
+
 logger = logging.getLogger("orion.fcc.github_repo_context")
 
 _GIT_SSH = re.compile(r"^git@[^:]+:(?P<owner>[^/]+)/(?P<repo>[^/]+?)(?:\.git)?$")
 _GIT_HTTPS = re.compile(r"^https?://[^/]+/(?P<owner>[^/]+)/(?P<repo>[^/]+?)(?:\.git)?$")
+
+_GH_LIST_PRS = mcp_tool(GITHUB, "list_pull_requests")
+_GH_GET_PR = mcp_tool(GITHUB, "get_pull_request")
+_GH_SEARCH_PRS = mcp_tool(GITHUB, "search_pull_requests")
 
 
 def harness_mcp_enabled() -> bool:
@@ -82,24 +88,25 @@ def github_mcp_brief_lines(*, workspace: Path | str | None = None) -> list[str]:
     owner, repo = coord
     return [
         (
-            f"GitHub MCP is available (owner={owner!r}, repo={repo!r}). "
+            f"GitHub MCP is available (owner={owner!r}, repo={repo!r}); its tools are named "
+            f"mcp__{GITHUB}__<tool>. "
             "Use it only when this turn's task needs PR/issue/repo facts and you judge "
             "it appropriate — do not fetch GitHub data for unrelated turns."
         ),
         (
-            "If you do query PRs: list_pull_requests requires both owner and repo (never use "
+            f"If you do query PRs: {_GH_LIST_PRS} requires both owner and repo (never use "
             "the repo name as owner). For the latest PR, pass state=all, sort=updated, "
             "direction=desc, perPage=1 (default state=open returns [] when nothing is open). "
-            "Avoid search_pull_requests (blows ~65k ctx). Report the PR title only; never paste "
+            f"Avoid {_GH_SEARCH_PRS} (blows ~65k ctx). Report the PR title only; never paste "
             "raw MCP JSON into the reply."
         ),
         (
             "When a PR number is already known (user message or imperative), prefer "
-            f"get_pull_request(owner={owner!r}, repo={repo!r}, pullNumber=N) — never "
-            "list_pull_requests to discover a single named PR."
+            f"{_GH_GET_PR}(owner={owner!r}, repo={repo!r}, pullNumber=N) — never "
+            f"{_GH_LIST_PRS} to discover a single named PR."
         ),
         (
-            "Never call list_pull_requests without repo= set. Never omit perPage on list calls; "
+            f"Never call {_GH_LIST_PRS} without repo= set. Never omit perPage on list calls; "
             "default perPage=1 unless the task explicitly needs a short ranked list."
         ),
         (

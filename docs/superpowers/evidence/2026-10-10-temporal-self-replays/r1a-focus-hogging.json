@@ -6,6 +6,8 @@
   "unaccounted_hours": 0.8125264186111114,
   "instrument_since": null,
   "days_on_instrument": 0.0,
+  "judged_coverage": null,
+  "judged_hog_stretches": [],
   "hog_rule": {
     "share_above": 0.5,
     "longer_than_hours": 2.0,
@@ -181,6 +183,8 @@
     "Open tail, no-winner and recorder-off periods are unaccounted, not idle.",
     "Tick share excludes runs clipped by the window; duration excludes left censoring.",
     "Share denominator is the full 30-minute window; unaccounted time never counts toward a hog.",
-    "Runs before and after a scoring change are different instruments; pass instrument_since."
+    "Runs before and after a scoring change are different instruments; pass instrument_since.",
+    "Only completed runs are stored: a run still open at export (a live hog) is invisible.",
+    "Percentiles use the upper index (p50 of [1, 2] is 2)."
   ]
 }

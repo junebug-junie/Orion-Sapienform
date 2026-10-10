@@ -255,10 +255,12 @@ def test_r1a_three_hour_hold_is_a_hog_but_only_baseline_before_the_instrument_we
 
 
 def test_r1a_even_alternation_and_downtime_never_make_a_hog():
-    rows = [run(i, "A" if i % 2 else "B", i*60, (i+1)*60, ticks=30) for i in range(240)]
+    rows = [run(i, "A" if i % 2 else "B", i*600, (i+1)*600, ticks=300) for i in range(8*144)]
     result = focus.r1a_report(rows, T, T+timedelta(days=8), instrument_since=T)
-    assert result["hog_stretches"] == []
+    assert result["hog_stretches"] == [] and result["judged_coverage"] == 1
     assert result["verdict"].startswith("DO_NOT_BUILD_R1")
+    sparse = focus.r1a_report(rows[:24], T, T+timedelta(days=8), instrument_since=T)
+    assert sparse["verdict"].startswith("INSUFFICIENT_COVERAGE")
     # A wins every recorded second, but the recorder is off half of each window.
     gappy = [run(i, "A", i*1800, i*1800+840, ticks=420) for i in range(12)]
     assert focus.r1a_report(gappy, T, T+timedelta(hours=6))["hog_stretches"] == []
@@ -271,6 +273,16 @@ def test_r1a_left_censored_run_counts_as_span_not_complete_duration_and_stuck_ru
     assert result["stuck_runs"][0]["target_id"] == "A"
     # Share series is above 50% from the window ending 0:30 to the one ending 5:10.
     assert result["longest_majority_stretch_seconds_by_target"]["A"] == hours(4) + 45*60
+
+
+def test_r1a_hog_before_the_instrument_does_not_decide_and_thin_coverage_is_not_calm():
+    rows = [run(1, "A", 0, hours(3), ticks=5400)]
+    early = focus.r1a_report(rows + [run(2, "B", hours(5), hours(5.1), ticks=180)],
+                             T, T+timedelta(days=9), instrument_since=T+timedelta(hours=4))
+    assert early["judged_hog_stretches"] == [] and early["hog_stretches"]
+    assert early["verdict"].startswith("INSUFFICIENT_COVERAGE")
+    outside = focus.r1a_report([run(1, "A", -hours(5), -hours(4))], T, T+timedelta(days=1))
+    assert outside["verdict"].startswith("NO_DATA")
 
 
 def test_r1a_return_window_merges_same_target_runs_only_within_r():
@@ -319,12 +331,33 @@ def r2a_rows(sources, chat_seconds=()):
     return [sleep] + sources + chat
 
 
+def test_r2a_row_kept_per_key_is_derived_not_hand_picked():
+    # Newest degraded vs older critical: the service keeps critical (weight 1.0).
+    rows = [src("metacog", 10, "k", "critical"), src("metacog", 20, "k", "degraded")]
+    items = dream.prepare_items(rows)
+    assert dream.pressure_at(items, [x[0] for x in items], T+timedelta(minutes=1), T)[0] == 1.0
+    # Kept row rejected by its builder: the key adds nothing, even though another row is valid.
+    rows = [src("metacog", 10, "k", "degraded"), src("metacog", 20, "k", "critical", has_text=False)]
+    items = dream.prepare_items(rows)
+    assert dream.pressure_at(items, [x[0] for x in items], T+timedelta(minutes=1), T)[0] == 0
+    # A row exactly at `since` is in neither window (both bounds are open).
+    items = dream.prepare_items([src("metacog", 0, "k", "critical")])
+    assert dream.pressure_at(items, [x[0] for x in items], T+timedelta(minutes=1), T)[0] == 0
+
+
+def test_r2a_export_seeds_latest_chat_and_last_good_cycle_before_window():
+    sql = dream.export_sql(T, T+timedelta(days=1), with_sources=True)
+    assert "AND status <> 'failed' ORDER BY started_at DESC LIMIT 1" in sql
+    assert sql.count("FROM chat_history_log WHERE created_at < '2026-10-04") == 2
+
+
 def test_r2a_empty_sources_read_zero_and_unknown_idle_never_sleeps():
     result = dream.replay_novelty(r2a_rows([]), T, T+timedelta(hours=12), thresholds=(3,))
     window = result["sleep_windows"][0]
     assert window["max_pressure"] == 0 and window["zero_checks"] == window["checks"]
     assert window["hours_to_first_crossing"] == {"3": None}
-    # One new thing an hour, but no chat row ever: idle is unknown, so no sleep.
+    # One new thing an hour, but no chat row ever (the export seeds the latest
+    # row before the window, so this means the table is empty): unknown, no sleep.
     sources = [src("metacog", hours(h), f"k{h}", "critical") for h in range(12)]
     sim = dream.replay_novelty(r2a_rows(sources), T, T+timedelta(hours=12), thresholds=(3,))
     assert sim["simulated_schedules"]["all_chat_idle"][0]["sleeps"] == 0
@@ -336,7 +369,7 @@ def test_r2a_slow_accrual_makes_a_sleep_wait_past_the_clock():
                                   thresholds=(3,), formula_boundary=T-timedelta(days=1))
     sim = result["simulated_schedules"]["all_chat_idle"][0]
     assert sim["sleeps"] >= 2 and sim["sleeps_later_than_clock"] >= 1
-    assert sim["timer_clear_checks_held_below_threshold"] > 0
+    assert sim["idle_timer_clear_checks_held_below_threshold"] > 0
     assert result["sleep_windows"][0]["era"] == "after_2557"
     assert result["sleep_windows"][0]["hours_to_first_crossing"]["3"] > 7
 
@@ -353,8 +386,18 @@ def test_r2a_export_mirrors_the_service_source_queries_and_carries_no_text():
     store = (ROOT / "services/orion-dream/app/cycle_store.py").read_text()
     assert f'METACOG_KEY_RE = r"{dream.METACOG_KEY_RE}"' in store
     for fragment in ["severity IN ('degraded', 'critical')", "h.op IN ('auto_activate', 'approve')",
-                     "c.status = 'active'", "DISTINCT ON (lower(theme))", "DISTINCT ON (lower(theme_key))"]:
+                     "c.status = 'active'", "DISTINCT ON (lower(theme))", "DISTINCT ON (lower(theme_key))",
+                     # the row kept per key, which prepare_items' rank mirrors
+                     "ORDER BY dedupe_key, (severity = 'critical') DESC, ts DESC",
+                     "ORDER BY lower(theme), created_at DESC",
+                     "ORDER BY lower(theme_key), violation_count DESC, created_at DESC",
+                     "ORDER BY c.crystallization_id, h.created_at DESC",
+                     # open window bounds, which pressure_at's bisect mirrors
+                     "ts > :since AND ts < :until", "created_at > :since AND created_at < :until",
+                     "h.created_at > :since AND h.created_at < :until"]:
         assert fragment in store
+    cycle_src = (ROOT / "services/orion-dream/app/cycle.py").read_text()
+    assert f"KEYS_PER_SOURCE = {dream.KEYS_PER_SOURCE}" in cycle_src
     sql = dream.export_sql(T, T+timedelta(days=1), with_sources=True)
     assert "h.op IN ('auto_activate', 'approve') AND c.status = 'active'" in sql
     assert "2026-10-04" in sql  # two 48 h lookbacks before the start

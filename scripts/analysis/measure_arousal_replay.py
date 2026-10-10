@@ -228,7 +228,8 @@ def replay(rows, start, end, *, idle_minutes=45):
         input_counts=dict(Counter(r["kind"] for _, r in parsed)), idle_minutes_assumed=idle_minutes,
         # Metric-gate step 4: an S2 input that is never non-zero cannot make strain.
         gpu_state_nonzero_backlog_snapshots=sum(
-            1 for _, r in parsed if r["kind"] == "gpu_state" and sum(r["backlog_depth"].values()) > 0),
+            1 for ts, r in parsed if r["kind"] == "gpu_state" and start <= ts < end
+            and isinstance(r["backlog_depth"], dict) and sum(r["backlog_depth"].values()) > 0),
         verdict=("Replay available for human comparison; inspect hourly stale-input coverage."
                  if totals["strict_seconds"]["engaged"]+totals["strict_seconds"]["idle"] > 0 else
                  "UNVERIFIED: provisional labels require human comparison and complete GPU state history"),

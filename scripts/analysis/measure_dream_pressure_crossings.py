@@ -60,7 +60,9 @@ SELECT row_to_json(r) FROM (
  WHERE started_at < '{end.isoformat()}'::timestamptz
    AND (started_at >= '{start.isoformat()}'::timestamptz OR cycle_id = (
      SELECT cycle_id FROM dream_cycle WHERE started_at < '{start.isoformat()}'::timestamptz
-     ORDER BY started_at DESC LIMIT 1))
+     ORDER BY started_at DESC LIMIT 1) OR cycle_id = (
+     SELECT cycle_id FROM dream_cycle WHERE started_at < '{start.isoformat()}'::timestamptz
+       AND status <> 'failed' ORDER BY started_at DESC LIMIT 1))
  ORDER BY started_at, cycle_id
 ) r;
 {checks_sql}{sources_sql}
@@ -104,7 +106,13 @@ def source_export_sql(lo, hi):
 SELECT row_to_json(r) FROM (
  SELECT 'chat' AS kind, created_at AT TIME ZONE 'UTC' AS at,
         source = 'hub_orion' AND btrim(coalesce(prompt, '')) <> '' AS juniper
-   FROM chat_history_log WHERE created_at >= '{lo}'::timestamptz AND created_at < '{hi}'::timestamptz
+   FROM chat_history_log WHERE created_at < '{hi}'::timestamptz
+    AND (created_at >= '{lo}'::timestamptz
+         OR id IN (SELECT id FROM chat_history_log WHERE created_at < '{lo}'::timestamptz
+                   ORDER BY created_at DESC LIMIT 1)
+         OR id IN (SELECT id FROM chat_history_log WHERE created_at < '{lo}'::timestamptz
+                   AND source = 'hub_orion' AND btrim(coalesce(prompt, '')) <> ''
+                   ORDER BY created_at DESC LIMIT 1))
 ) r;
 """
 
@@ -294,6 +302,9 @@ class _Keyed:
         self.source_kind, self.weight = kind, weight
 
 
+KEYS_PER_SOURCE = 5000  # services/orion-dream/app/cycle.py; live SQL keeps the newest this many
+
+
 def pressure_at(items, times, now, since, lookback_hours=48.0):
     """compute_pressure exactly as read_pressure calls it: one kept row per key in
     (since, now) by the SQL's DISTINCT ON order, minus keys seen in the lookback before."""
@@ -305,6 +316,9 @@ def pressure_at(items, times, now, since, lookback_hours=48.0):
         best = kept.get(key)
         if best is None or (rank, ts) >= (best[0], best[1]):
             kept[key] = (rank, ts, kind, weight)
+    per_source = Counter(kind for _, _, kind, _ in kept.values())
+    if any(n > KEYS_PER_SOURCE for n in per_source.values()):
+        raise ValueError("a source exceeds KEYS_PER_SOURCE; the live LIMIT would drop keys this replay keeps")
     keyed = {k: _Keyed(kind, w) for k, (_, _, kind, w) in kept.items() if w is not None}
     seen = {key for _, key, _, _, _ in rows(since - timedelta(hours=lookback_hours), since)}
     return svc.compute_pressure(keyed, seen)
@@ -379,7 +393,7 @@ def replay_novelty(rows, start, end, *, thresholds=(1, 2, 3, 4, 5, 8, 13, 21), c
     def simulate(threshold, chat_times):
         last_start = next((s for s in reversed(good_starts) if s <= start), None)
         last_end = last_start + timedelta(minutes=cycle_minutes) if last_start else None
-        sleeps, held_low, gaps = [], 0, []
+        sleeps, held_low, held_not_idle, gaps = [], 0, 0, []
         for t in grid:
             if last_end and t - last_end < timedelta(hours=interval_hours):
                 continue
@@ -391,7 +405,8 @@ def replay_novelty(rows, start, end, *, thresholds=(1, 2, 3, 4, 5, 8, 13, 21), c
             due = value >= threshold and is_idle
             backstop = not due and is_idle and bool(counts) and overdue
             if not (due or backstop):
-                held_low += value < threshold
+                held_low += value < threshold and is_idle
+                held_not_idle += not is_idle
                 continue
             if last_start:
                 gaps.append((t - last_start).total_seconds() / 3600)
@@ -399,7 +414,8 @@ def replay_novelty(rows, start, end, *, thresholds=(1, 2, 3, 4, 5, 8, 13, 21), c
             last_start, last_end = t, t + timedelta(minutes=cycle_minutes)
         clock = interval_hours + (cycle_minutes + check_seconds / 60) / 60
         return dict(threshold=threshold, sleeps=len(sleeps), backstop_sleeps=sum(s["backstop"] for s in sleeps),
-                    timer_clear_checks_held_below_threshold=held_low,
+                    idle_timer_clear_checks_held_below_threshold=held_low,
+                    timer_clear_checks_held_not_idle=held_not_idle,
                     median_gap_hours=median(gaps) if gaps else None, max_gap_hours=max(gaps) if gaps else None,
                     sleeps_later_than_clock=sum(g > clock for g in gaps),
                     share_later_than_clock=(sum(g > clock for g in gaps) / len(gaps)) if gaps else None)
@@ -427,7 +443,9 @@ def replay_novelty(rows, start, end, *, thresholds=(1, 2, 3, 4, 5, 8, 13, 21), c
                 assumptions=[f"checks every {check_seconds:.0f}s from start; cycle lasts {cycle_minutes} min",
                              f"min interval {interval_hours} h, lookback/overdue {lookback_hours} h, idle {idle_required} min",
                              "current novelty formula applied to the whole window, including before #2557",
-                             "sources as they stand at export: later deletes/deactivations are invisible"])
+                             "sources as they stand at export: later deletes, deactivations and salience edits are invisible",
+                             "simulated attempt end = simulated start + cycle_minutes; failed attempts are not simulated",
+                             "only saved checks after #2557 validate the replay; earlier windows are counterfactual"])
 
 
 def main():

@@ -180,7 +180,8 @@ def merged_arcs(rows, start, end, return_minutes):
 
 
 def r1a_report(rows, start, end, *, share=0.5, hog_hours=2.0, min_streak=3,
-               stuck_hours=4.0, return_minutes=(1, 2, 5, 10, 30), instrument_since=None):
+               stuck_hours=4.0, return_minutes=(1, 2, 5, 10, 30), instrument_since=None,
+               min_coverage=0.8):
     """R1a: does any target hold > `share` of 30-minute windows for > `hog_hours`?
 
     Also the patch-1 interoception-lane distributions computed from the same
@@ -205,19 +206,33 @@ def r1a_report(rows, start, end, *, share=0.5, hog_hours=2.0, min_streak=3,
     judged_from = utc(instrument_since) if instrument_since else None
     days_on_instrument = ((end - max(start, judged_from)).total_seconds() / 86400
                           if judged_from and judged_from < end else 0.0)
-    if not rows:
+    # The decision only looks at the judged instrument: hogs before it never count.
+    judged_hogs, judged_coverage = [], None
+    if judged_from and judged_from < end:
+        judged = exposure(rows, max(start, judged_from), end)
+        span = (end - max(start, judged_from)).total_seconds()
+        judged_coverage = (span - judged["unaccounted_seconds"]) / span
+        judged_hogs = [s for s in hogging_stretches(judged["rolling_30_minutes"], share=share)
+                       if s["seconds"] > hog_hours * 3600]
+    if base["completed_runs"] == 0:
         verdict = "NO_DATA: no completed focus runs in the window"
     elif days_on_instrument < 7:
         verdict = ("BASELINE_ONLY: R1a judges the post-#2528 instrument after 7 live days; "
                    f"{days_on_instrument:.2f} days available. "
                    + ("A pre-#2528 target exceeded the hog bar." if hogs else
                       "No target exceeded the hog bar in this baseline."))
+    elif judged_hogs:
+        verdict = "BUILD_R1: a target hogged attention on the judged instrument"
+    elif judged_coverage < min_coverage:
+        verdict = (f"INSUFFICIENT_COVERAGE: completed runs cover {judged_coverage:.1%} of the judged "
+                   f"window (< {min_coverage:.0%}); missing time is not calm")
     else:
-        verdict = "BUILD_R1: a target hogged attention" if hogs else "DO_NOT_BUILD_R1: no target hogged attention"
+        verdict = "DO_NOT_BUILD_R1: no target hogged attention (open tail at export is UNVERIFIED)"
     return dict(start=start.isoformat(), end=end.isoformat(), completed_runs=base["completed_runs"],
                 recorded_hours=recorded / 3600, unaccounted_hours=base["unaccounted_seconds"] / 3600,
                 instrument_since=judged_from.isoformat() if judged_from else None,
-                days_on_instrument=days_on_instrument,
+                days_on_instrument=days_on_instrument, judged_coverage=judged_coverage,
+                judged_hog_stretches=judged_hogs,
                 hog_rule=dict(share_above=share, longer_than_hours=hog_hours, window_minutes=30, step_minutes=5),
                 hog_stretches=hogs, longest_majority_stretch_seconds_by_target=longest,
                 share_of_recorded_span={k: v["share_of_recorded_span"] for k, v in base["targets"].items()},
@@ -234,7 +249,9 @@ def r1a_report(rows, start, end, *, share=0.5, hog_hours=2.0, min_streak=3,
                 verdict=verdict,
                 caveats=base["caveats"] + [
                     "Share denominator is the full 30-minute window; unaccounted time never counts toward a hog.",
-                    "Runs before and after a scoring change are different instruments; pass instrument_since."])
+                    "Runs before and after a scoring change are different instruments; pass instrument_since.",
+                    "Only completed runs are stored: a run still open at export (a live hog) is invisible.",
+                    "Percentiles use the upper index (p50 of [1, 2] is 2)."])
 
 
 def export_sql(start, end):

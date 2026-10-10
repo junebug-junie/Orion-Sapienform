@@ -1,23 +1,15 @@
 {
   "_comment": "Definition lock for scripts/check_definition_drift.py. Generated, never hand-edited. Regenerate with --update; the resulting diff IS the definition-change alert. Unlike the *_baseline.json ratchets this tracks current truth in both directions -- a definition change is an event, not a defect.",
-  "metric_count": 715,
+  "metric_count": 717,
   "_last_change": {
-    "change_count": 13,
-    "high_severity_count": 13,
+    "change_count": 5,
+    "high_severity_count": 3,
     "changes": [
-      "high   routing_changed metric://inner_state/orion-substrate-runtime/attention_self_model.v1 (declared_consumers: \u2026service.app.flow_metacog_gate:build_flow_metacog_trigger', \u2026\u2026 -> \u2026service.app.insight_meta\u2026)",
-      "high   routing_changed metric://inner_state/orion-substrate-runtime/attention_self_model.v1#broadcast_lane_age_sec (declared_consumers: \u2026service.app.flow_metacog_gate:build_flow_metacog_trigger', \u2026\u2026 -> \u2026service.app.insight_meta\u2026)",
-      "high   routing_changed metric://inner_state/orion-substrate-runtime/attention_self_model.v1#confidence (declared_consumers: \u2026service.app.flow_metacog_gate:build_flow_metacog_trigger', \u2026\u2026 -> \u2026service.app.insight_meta\u2026)",
-      "high   routing_changed metric://inner_state/orion-substrate-runtime/attention_self_model.v1#field_overall_salience (declared_consumers: \u2026service.app.flow_metacog_gate:build_flow_metacog_trigger', \u2026\u2026 -> \u2026service.app.insight_meta\u2026)",
-      "high   routing_changed metric://inner_state/orion-substrate-runtime/attention_self_model.v1#heartbeat_bulk_penetration_depth (declared_consumers: \u2026service.app.flow_metacog_gate:build_flow_metacog_trigger', \u2026\u2026 -> \u2026service.app.insight_meta\u2026)",
-      "high   routing_changed metric://inner_state/orion-substrate-runtime/attention_self_model.v1#heartbeat_mean_ratio (declared_consumers: \u2026service.app.flow_metacog_gate:build_flow_metacog_trigger', \u2026\u2026 -> \u2026service.app.insight_meta\u2026)",
-      "high   routing_changed metric://inner_state/orion-substrate-runtime/attention_self_model.v1#heartbeat_organ_distinctness (declared_consumers: \u2026service.app.flow_metacog_gate:build_flow_metacog_trigger', \u2026\u2026 -> \u2026service.app.insight_meta\u2026)",
-      "high   routing_changed metric://inner_state/orion-substrate-runtime/attention_self_model.v1#heartbeat_smear (declared_consumers: \u2026service.app.flow_metacog_gate:build_flow_metacog_trigger', \u2026\u2026 -> \u2026service.app.insight_meta\u2026)",
-      "high   routing_changed metric://inner_state/orion-substrate-runtime/attention_self_model.v1#heartbeat_std_ratio (declared_consumers: \u2026service.app.flow_metacog_gate:build_flow_metacog_trigger', \u2026\u2026 -> \u2026service.app.insight_meta\u2026)",
-      "high   routing_changed metric://inner_state/orion-substrate-runtime/attention_self_model.v1#prediction_error_confidence (declared_consumers: \u2026service.app.flow_metacog_gate:build_flow_metacog_trigger', \u2026\u2026 -> \u2026service.app.insight_meta\u2026)",
-      "high   routing_changed metric://inner_state/orion-substrate-runtime/attention_self_model.v1#top_down_bias_max (declared_consumers: \u2026service.app.flow_metacog_gate:build_flow_metacog_trigger', \u2026\u2026 -> \u2026service.app.insight_meta\u2026)",
-      "high   routing_changed metric://inner_state/orion-substrate-runtime/attention_self_model.v1#top_down_effort_used (declared_consumers: \u2026service.app.flow_metacog_gate:build_flow_metacog_trigger', \u2026\u2026 -> \u2026service.app.insight_meta\u2026)",
-      "high   semantics_changed metric://inner_state/orion-substrate-runtime/attention_self_model.v1#heartbeat_smear (absent_means: \u2026near end is below 1e-6. -> \u2026near end is dead: below the 1e-6 floor or far/near > 10 (ne\u2026, rest: \u2026 at >= 0.5. Unbounded: a near end just above 1e-6 yields va\u2026 -> \u2026 at >= 0.5. Bounded at SMEAR_DEAD_RATIO=10 since PR #2571 (\u2026)"
+      "high   routing_changed metric://bus_channel/orion-actions/orion:cortex:request (all_producers: \u2026y', 'orion-durable-runs'\u2026 -> \u2026y', 'orion-dream', 'orion-durable-runs'\u2026)",
+      "high   routing_changed metric://bus_channel/orion-cortex-exec/orion:dream:log (all_producers: ['orion-cortex-exec'] -> ['orion-cortex-exec', 'orion-dream'])",
+      "high   routing_changed metric://bus_channel/orion-cortex-orch/orion:cortex:result* (declared_consumers: \u2026y', 'orion-durable-runs'\u2026 -> \u2026y', 'orion-dream', 'orion-durable-runs'\u2026)",
+      "medium added metric://bus_channel/orion-dream/orion:dream:carry:step:reply:*",
+      "medium added metric://bus_channel/orion-durable-runs/orion:dream:carry:step:request"
     ]
   },
   "definitions": {
@@ -334,6 +326,7 @@
         "orion-actions",
         "orion-cortex-exec",
         "orion-cortex-gateway",
+        "orion-dream",
         "orion-durable-runs",
         "orion-hub",
         "orion-memory-consolidation"
@@ -846,7 +839,8 @@
     "metric://bus_channel/orion-cortex-exec/orion:dream:log": {
       "schema_id": "DreamResultV1",
       "all_producers": [
-        "orion-cortex-exec"
+        "orion-cortex-exec",
+        "orion-dream"
       ],
       "declared_consumers": [
         "orion-dream",
@@ -1166,6 +1160,7 @@
       ],
       "declared_consumers": [
         "orion-cortex-gateway",
+        "orion-dream",
         "orion-durable-runs",
         "orion-hub"
       ],
@@ -1230,6 +1225,17 @@
       "notes": "kind=event stability=experimental",
       "registry_source": "orion/bus/channels.yaml"
     },
+    "metric://bus_channel/orion-dream/orion:dream:carry:step:reply:*": {
+      "schema_id": "DreamCarryStepResultV1",
+      "all_producers": [
+        "orion-dream"
+      ],
+      "declared_consumers": [
+        "orion-durable-runs"
+      ],
+      "notes": "kind=result stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
     "metric://bus_channel/orion-dream/orion:dream:compaction-delta": {
       "schema_id": "MemoryCompactionDeltaV1",
       "all_producers": [
@@ -1281,6 +1287,17 @@
       ],
       "declared_consumers": [
         "orion-hub"
+      ],
+      "notes": "kind=request stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-durable-runs/orion:dream:carry:step:request": {
+      "schema_id": "DreamCarryStepRequestV1",
+      "all_producers": [
+        "orion-durable-runs"
+      ],
+      "declared_consumers": [
+        "orion-dream"
       ],
       "notes": "kind=request stability=experimental",
       "registry_source": "orion/bus/channels.yaml"

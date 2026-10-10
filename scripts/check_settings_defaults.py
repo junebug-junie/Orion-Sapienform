@@ -27,6 +27,10 @@ Usage:
     python scripts/check_settings_defaults.py orion-actions
     python scripts/check_settings_defaults.py orion-actions --json
     python scripts/check_settings_defaults.py orion-actions --report-only
+    python scripts/check_settings_defaults.py orion-hub --example-drift
+        (separate check: every Settings default and docker-compose ${KEY:-x}
+        fallback must equal the service's .env_example -- see
+        _EXAMPLE_DRIFT_SETTINGS_PATHS below; gated in orion-static-gates.yml)
 
 Exit codes: 0 = every Settings field has a real default or is on the service's
                  REQUIRED_NO_DEFAULT allowlist.
@@ -40,6 +44,7 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
+import re
 import sys
 from pathlib import Path
 from types import ModuleType
@@ -71,12 +76,116 @@ REQUIRED_NO_DEFAULT: dict[str, frozenset[str]] = {
 }
 
 
+# --- --example-drift mode -------------------------------------------------
+#
+# A second, separate claim about the same Settings class: every field's code
+# default must equal the value the service's checked-in `.env_example` sets for
+# it, and so must any `${KEY:-fallback}` in the service's docker-compose.yml.
+# Otherwise a key that goes missing from a live `.env` silently changes
+# behaviour. Found 2026-10-09: orion-hub's curiosity daily cap defaulted to 3 in
+# code while `.env_example` and production ran 7; the cooldown was 14400s vs
+# 1800s live; orion-gpu-pool's shed lever was False in code and in compose's
+# fallback while `.env_example` and production ran true. 2026-10-10 sweep found
+# 73 drifted Settings fields in orion-hub alone.
+#
+# Scoped per service, like the pilot above. Add a service only after aligning
+# it (or listing its remaining drift below with a reason).
+#
+# Out of scope (known gaps, not covered by this check):
+# - a bare compose `${KEY}` with no `:-` fallback: if KEY is missing from the
+#   interpolation env, compose passes "" and that overrides the Settings default
+#   (orion-hub has ~50 such keys as of 2026-10-10; follow-up).
+# - code that reads os.getenv("KEY", default) directly instead of Settings
+#   (e.g. SUBSTRATE_STORE_BACKEND in orion/substrate/*_store.py).
+_EXAMPLE_DRIFT_SETTINGS_PATHS: dict[str, str] = {
+    "orion-hub": "app/settings.py",
+    "orion-gpu-pool": "app/settings.py",
+}
+
+# Keys whose `.env_example` value describes THIS host's topology (loopback /
+# tailnet URLs, filesystem paths, DSNs, geographic location, node project name).
+# Their code/compose default deliberately stays portable (docker DNS name or
+# empty = feature unconfigured) instead of baking one machine's address into
+# code. An entry here that is no longer drifted on any surface fails the check,
+# so the list cannot rot into a blanket exemption.
+HOST_SPECIFIC_EXAMPLE_KEYS: dict[str, frozenset[str]] = {
+    "orion-hub": frozenset({
+        "PROJECT",
+        "TOPIC_FOUNDRY_BASE_URL",
+        "WORLD_PULSE_BASE_URL",
+        "FIELD_DIGESTER_BASE_URL",
+        "HUB_EXO_EXPLORATION_BASE_URL",
+        "HUB_PROPOSAL_REVIEW_API_URL",
+        "HUB_CONTEXT_EXEC_API_URL",
+        "HUB_FCC_ENV_PATH",
+        "HUB_AITOWN_UI_URL",
+        "HUB_AITOWN_CONVEX_URL",
+        "SOCIAL_MEMORY_BASE_URL",
+        "SELF_EXPERIMENTS_BASE_URL",
+        "JUNIPER_AFFECTIVE_STATE_BASE_URL",
+        "PERCEPT_STORE_BASE_URL",
+        "CABINET_SENSORS_B_PATH",
+        "CABINET_BOOT_B_PATH",
+        "NOTIFY_BASE_URL",
+        "HUB_READING_SEARCH_CHROMA_URL",
+        "HUB_READING_SEARCH_EMBED_URL",
+        "HUB_RECALL_SERVICE_URL",
+        "RECALL_SERVICE_URL",
+        "RECALL_PG_DSN",
+        "FALKORDB_URI",
+        "CRYSTALLIZER_EMBED_HOST_URL",
+        "GRAPHITI_ADAPTER_URL",
+        "ORION_SITUATION_LOCATION_LABEL",
+        "ORION_SITUATION_LOCALITY",
+        "ORION_SITUATION_REGION",
+        "ORION_SITUATION_COUNTRY",
+        "ORION_SITUATION_HOME_LOCATION",
+        "ORION_SITUATION_PHYSICAL_LOCATION",
+        "ORION_SITUATION_WEATHER_LAT",
+        "ORION_SITUATION_WEATHER_LON",
+        "RDF_STORE_BASE_URL",
+        "RDF_STORE_QUERY_URL",
+        "RDF_STORE_PASS",
+        "MEMORY_GRAPH_DEFAULT_NAMED_GRAPH",
+        "FIELD_PLASTICITY_SQL_DB_PATH",
+        "AUTONOMY_GRAPH_QUERY_URL",
+        "AUTONOMY_GRAPH_UPDATE_URL",
+    }),
+    "orion-gpu-pool": frozenset(),
+}
+
+# Behavioural keys still drifted on purpose, each with its reason: either
+# waiting on a human decision, or behaviourally equivalent by construction.
+# Same staleness rule as above: once aligned, the entry must be removed.
+REASONED_DRIFT: dict[str, dict[str, str]] = {
+    "orion-hub": {
+        "HUB_PROPOSAL_REVIEW_ENABLED": (
+            "on in .env_example and live, but its API (orion-context-exec :8096) "
+            "is not deployed -- nothing listens on 8096 (2026-10-10). Live value "
+            "looks like a mistake; code default left False pending Juniper."
+        ),
+        "CHAT_HISTORY_LOG_CHANNEL": (
+            "equivalent: None is an override slot that falls back to "
+            "CHANNEL_CHAT_HISTORY_LOG (default 'orion:chat:history:log', same "
+            "as .env_example); a non-None default would disable that fallback."
+        ),
+    },
+    "orion-gpu-pool": {
+        "GPU_POOL_ORION_SHED_ENABLED": (
+            "Orion's own self-shed. On in .env_example and live since 2026-10-01, but "
+            ".env_example records that as Juniper's call with 'code default stays off'. "
+            "A recorded decision, not drift to auto-fix; left for Juniper."
+        ),
+    },
+}
+
+
 class SettingsCheckError(ValueError):
     """Raised when the target service's Settings class can't be loaded/introspected."""
 
 
-def _load_settings_module(service: str) -> ModuleType:
-    rel_path = _SETTINGS_MODULE_PATHS.get(service)
+def _load_settings_module(service: str, paths: dict[str, str] | None = None) -> ModuleType:
+    rel_path = (_SETTINGS_MODULE_PATHS if paths is None else paths).get(service)
     if rel_path is None:
         raise SettingsCheckError(
             f"'{service}' is not in check_settings_defaults.py's _SETTINGS_MODULE_PATHS "
@@ -94,6 +203,10 @@ def _load_settings_module(service: str) -> ModuleType:
         raise SettingsCheckError(f"could not build an import spec for {settings_path}")
 
     module = importlib.util.module_from_spec(spec)
+    # Registered before exec so pydantic can resolve `from __future__ import
+    # annotations` string annotations (e.g. Literal[...]) against the module --
+    # without it TypeAdapter(field.annotation) cannot rebuild the type.
+    sys.modules[module_name] = module
     try:
         spec.loader.exec_module(module)
     except Exception as exc:  # noqa: BLE001 - see fallback below before treating this as fatal
@@ -157,6 +270,231 @@ def _find_missing_defaults(service: str) -> list[str]:
     return sorted(missing)
 
 
+_ENV_KEY_LINE = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)=(.*)$")
+_COMPOSE_FALLBACK = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*):-((?:[^{}$]|\$(?!\{))*)\}")
+
+
+def _unquote(raw: str) -> str:
+    s = raw.strip()
+    if s[:1] in ("'", '"'):
+        end = s.find(s[0], 1)
+        if end > 0:
+            return s[1:end]  # quoted token; anything after it (e.g. ` # note`) is dropped
+    # Unquoted values: compose and python-dotenv both drop a ` #` inline comment.
+    hash_at = s.find(" #")
+    return s[:hash_at].rstrip() if hash_at >= 0 else s
+
+
+def _parse_env_example(path: Path) -> dict[str, str]:
+    out: dict[str, str] = {}
+    for line in path.read_text(encoding="utf-8").splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if stripped.startswith("export "):
+            stripped = stripped[len("export "):].lstrip()
+        m = _ENV_KEY_LINE.match(stripped)
+        if m:
+            out[m.group(1)] = _unquote(m.group(2))  # last assignment wins, like dotenv
+    return out
+
+
+def _compose_fallbacks(path: Path) -> dict[str, list[str]]:
+    """Every `${KEY:-fallback}` literal in a compose file, per key, in order.
+    YAML comment lines are skipped; nested `${A:-${B}}` fallbacks are skipped --
+    their effective value is another variable. Every occurrence is compared, so
+    a drifted first use cannot hide behind a matching later one."""
+    if not path.is_file():
+        return {}
+    out: dict[str, list[str]] = {}
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if line.lstrip().startswith("#"):
+            continue
+        for m in _COMPOSE_FALLBACK.finditer(line):
+            out.setdefault(m.group(1), []).append(_unquote(m.group(2)))
+    return out
+
+
+def _field_env_names(field_name: str, field_info, env_prefix: str) -> list[str]:
+    """Candidate env names for a field, the way pydantic-settings resolves them:
+    a string alias / each string AliasChoices entry is used as-is; otherwise
+    env_prefix + attribute name."""
+    alias = field_info.validation_alias or field_info.alias
+    if isinstance(alias, str):
+        return [alias]
+    choices = getattr(alias, "choices", None)
+    if choices:
+        names = [c for c in choices if isinstance(c, str)]
+        if names:
+            return names
+    return [f"{env_prefix}{field_name}"]
+
+
+def _coerce(adapter, raw: str):
+    """Parse an env string the way pydantic-settings would for this field type."""
+    try:
+        return adapter.validate_python(raw)
+    except Exception:  # noqa: BLE001 - complex types arrive as JSON text
+        return adapter.validate_json(raw)
+
+
+def _is_unset(value) -> bool:
+    return value is None or (isinstance(value, str) and value == "")
+
+
+def _same(left, right) -> bool:
+    if left == right:
+        return True
+    # An empty env string and a None default both mean "unset" to every reader
+    # in these services; do not report that as drift.
+    return _is_unset(left) and _is_unset(right)
+
+
+def _same_text(left: str, right: str) -> bool:
+    a, b = left.strip(), right.strip()
+    if a.lower() == b.lower() and a.lower() in {"true", "false"}:
+        return True
+    if a == b:
+        return True
+    try:
+        return float(a) == float(b)
+    except ValueError:
+        return False
+
+
+def find_example_drift(service: str) -> dict:
+    """Compare Settings defaults and compose fallbacks against `.env_example`.
+
+    Returns {"drift": [...], "stale_exemptions": [...], "reasoned": [...],
+    "host_specific": [...]}; each drift item is a dict with key/surface/default/
+    example. Only `drift` and `stale_exemptions` fail the check.
+    """
+    from pydantic import TypeAdapter
+
+    if service not in _EXAMPLE_DRIFT_SETTINGS_PATHS:
+        raise SettingsCheckError(
+            f"'{service}' is not in _EXAMPLE_DRIFT_SETTINGS_PATHS -- align it (or list "
+            f"its remaining drift with a reason) and add an entry first."
+        )
+    service_dir = _REPO_ROOT / "services" / service
+    example_path = service_dir / ".env_example"
+    if not example_path.is_file():
+        raise SettingsCheckError(f".env_example not found at {example_path}")
+    example = _parse_env_example(example_path)
+
+    module = _load_settings_module(service, _EXAMPLE_DRIFT_SETTINGS_PATHS)
+    settings_cls = getattr(module, "Settings", None)
+    if settings_cls is None or getattr(settings_cls, "model_fields", None) is None:
+        raise SettingsCheckError(f"{service}'s settings module has no pydantic `Settings` class")
+
+    config = getattr(settings_cls, "model_config", {}) or {}
+    env_prefix = config.get("env_prefix", "") or ""
+    case_sensitive = bool(config.get("case_sensitive", False))
+    if not case_sensitive:
+        # Upper-case lookup keys so an un-aliased lowercase field (`foo: int`)
+        # still finds `FOO=` in the template instead of silently dropping out.
+        upper: dict[str, str] = {}
+        for key, value in example.items():
+            upper[key.upper()] = value
+        example_lookup = upper
+    else:
+        example_lookup = example
+
+    def _lookup(name: str) -> str | None:
+        return example_lookup.get(name if case_sensitive else name.upper())
+
+    host_specific = HOST_SPECIFIC_EXAMPLE_KEYS.get(service, frozenset())
+    reasoned = REASONED_DRIFT.get(service, {})
+    exempt = set(host_specific) | set(reasoned)
+
+    raw_drift: list[dict] = []
+    adapters: dict[str, object] = {}
+    for field_name, field_info in settings_cls.model_fields.items():
+        names = _field_env_names(field_name, field_info, env_prefix)
+        adapter = TypeAdapter(field_info.annotation)
+        for name in names:
+            adapters[name if case_sensitive else name.upper()] = adapter
+        env_name = next((n for n in names if _lookup(n) is not None), None)
+        if env_name is None or field_info.is_required():
+            continue
+        default = field_info.get_default(call_default_factory=True)
+        try:
+            example_value = _coerce(adapter, _lookup(env_name))
+        except Exception:  # noqa: BLE001
+            raw_drift.append({"key": env_name, "surface": "settings", "default": repr(default),
+                              "example": "<unparseable for field type>"})
+            continue
+        if not _same(default, example_value):
+            raw_drift.append({"key": env_name, "surface": "settings", "default": repr(default),
+                              "example": repr(example_value)})
+
+    for key, fallbacks in sorted(_compose_fallbacks(service_dir / "docker-compose.yml").items()):
+        # Compose interpolation is case-sensitive; the template key must match exactly.
+        if key not in example:
+            continue
+        adapter = adapters.get(key if case_sensitive else key.upper())
+        for fallback in fallbacks:
+            if adapter is not None:
+                try:
+                    equal = _same(_coerce(adapter, fallback), _coerce(adapter, example[key]))
+                except Exception:  # noqa: BLE001 - fall back to a textual compare
+                    equal = _same_text(fallback, example[key])
+            else:
+                equal = _same_text(fallback, example[key])
+            if not equal:
+                raw_drift.append({"key": key, "surface": "docker-compose", "default": repr(fallback),
+                                  "example": repr(example[key])})
+
+    drifted_keys = {item["key"] for item in raw_drift}
+    return {
+        "drift": [item for item in raw_drift if item["key"] not in exempt],
+        "stale_exemptions": sorted(exempt - drifted_keys),
+        "reasoned": [item for item in raw_drift if item["key"] in reasoned],
+        "host_specific": sorted(drifted_keys & set(host_specific)),
+    }
+
+
+def _main_example_drift(service: str, as_json: bool, report_only: bool) -> int:
+    try:
+        result = find_example_drift(service)
+    except SettingsCheckError as exc:
+        print(f"check_settings_defaults: {exc}", file=sys.stderr)
+        return 2
+    failing = bool(result["drift"] or result["stale_exemptions"])
+    if as_json:
+        print(json.dumps({"service": service, **result}))
+    else:
+        # Values are host/config literals from a committed template, never the
+        # live .env, so printing them is safe -- except values on keys that look
+        # secret-shaped, which are masked anyway.
+        def _show(item: dict) -> str:
+            secretish = any(t in item["key"] for t in ("PASS", "TOKEN", "SECRET", "KEY", "DSN"))
+            ex = "<masked>" if secretish else item["example"]
+            df = "<masked>" if secretish else item["default"]
+            return f"    {item['key']} [{item['surface']}]: default={df} .env_example={ex}"
+
+        if result["drift"]:
+            print(f"check_settings_defaults: {service} has {len(result['drift'])} default(s) "
+                  f"that differ from .env_example (a missing .env key would silently change behaviour):")
+            for item in result["drift"]:
+                print(_show(item))
+        if result["stale_exemptions"]:
+            print(f"check_settings_defaults: {service} exemption(s) no longer drifted -- remove them "
+                  f"from HOST_SPECIFIC_EXAMPLE_KEYS / REASONED_DRIFT:")
+            for key in result["stale_exemptions"]:
+                print(f"    {key}")
+        if result["reasoned"]:
+            print(f"check_settings_defaults: {service} drift left open on purpose:")
+            for item in result["reasoned"]:
+                print(_show(item) + f"  -- {REASONED_DRIFT[service][item['key']]}")
+        if not failing:
+            print(f"check_settings_defaults: {service} OK -- settings defaults and compose fallbacks "
+                  f"match .env_example ({len(result['host_specific'])} host-specific key(s) exempt).")
+    if failing and not report_only:
+        return 1
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("service", help="service directory name under services/, e.g. orion-actions")
@@ -166,7 +504,15 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="always exit 0, even if fields are missing defaults (report but don't gate).",
     )
+    parser.add_argument(
+        "--example-drift",
+        action="store_true",
+        help="instead: fail when a Settings default or compose ${KEY:-x} fallback differs from .env_example.",
+    )
     args = parser.parse_args(argv)
+
+    if args.example_drift:
+        return _main_example_drift(args.service, args.json, args.report_only)
 
     try:
         missing = _find_missing_defaults(args.service)

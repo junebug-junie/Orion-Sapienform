@@ -153,6 +153,6 @@ cortex-exec only lost a branch that nothing will reach after the equilibrium res
 
 ## PR link
 
-(pending)
+https://github.com/junebug-junie/Orion-Sapienform/pull/2578
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

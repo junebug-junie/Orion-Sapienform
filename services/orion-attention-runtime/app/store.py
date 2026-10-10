@@ -259,6 +259,42 @@ class AttentionRuntimeStore:
             payload = json.loads(payload)
         return FieldStateV1.model_validate(payload)
 
+    def fetch_node_prediction_error_history(
+        self, since: datetime
+    ) -> list[tuple[str, datetime, float]]:
+        """World-first (spec 2026-10-07 section A): every node's stored
+        prediction-error readings with observed_at >= since, written by
+        orion-substrate-runtime (substrate_node_prediction_error_history).
+        Read-only here. Feeds orion.attention.pe_history_cache."""
+        with self._engine.connect() as conn:
+            rows = conn.execute(
+                text(
+                    """
+                    SELECT node_id, observed_at, value
+                    FROM substrate_node_prediction_error_history
+                    WHERE observed_at >= :since
+                    ORDER BY observed_at
+                    """
+                ),
+                {"since": since},
+            ).fetchall()
+        return [(str(r[0]), r[1], float(r[2])) for r in rows]
+
+    def fetch_chat_turn_times(self, since: datetime) -> list[datetime]:
+        """Juniper's chat turns since `since` (world-first chat source; the
+        query lives in orion.attention.world_first so every contest counts
+        the same turns). chat_history_log.created_at is naive UTC."""
+        from orion.attention.world_first import CHAT_TURN_TIMES_SQL
+
+        with self._engine.connect() as conn:
+            rows = conn.execute(
+                text(CHAT_TURN_TIMES_SQL), {"since": since.astimezone(timezone.utc).replace(tzinfo=None)}
+            ).fetchall()
+        return [
+            r[0] if r[0].tzinfo is not None else r[0].replace(tzinfo=timezone.utc)
+            for r in rows
+        ]
+
     def load_prediction_error_history(self, *, reducer_key: str, limit: int) -> list[float]:
         """Real, ASC-by-time prediction-error history for one reducer (oldest
         first, most recent/"current" last), for Candidate A

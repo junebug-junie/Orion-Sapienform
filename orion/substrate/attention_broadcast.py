@@ -182,14 +182,28 @@ def build_substrate_attention_frame(
     max_open: int = 5,
     now: datetime | None = None,
     magnitude_by_node_id: dict[str, PredictionErrorMagnitudeV1] | None = None,
+    world_first: bool = False,
+    external_candidates: Sequence[Any] | None = None,
+    rank_percentile_by_node_id: dict[str, float | None] | None = None,
 ) -> AttentionFrameV1:
-    """One workspace competition over the substrate graph; always one winner.
+    """One workspace competition over the substrate graph.
 
-    ``magnitude_by_node_id`` (substrate-runtime passes it only when
-    ``SUBSTRATE_PE_HISTORY_ENABLED`` is on) attaches each loop's
-    prediction-error size/range/direction as ``OpenLoopV1.magnitude``. It is
-    descriptive only: it is attached after ``build_open_loops`` and never
-    read by scoring or ``select_actions``, so it cannot change who wins.
+    ``world_first`` (substrate-runtime passes ``ATTENTION_WORLD_FIRST_ENABLED``;
+    spec docs/superpowers/specs/2026-10-07-orion-self-calibration-design.md,
+    section A) CHANGES WHO WINS, on purpose: magnitude moves from description
+    to gate. Only candidates ``orion.attention.world_first`` judges eligible
+    compete -- the world (``external_candidates``, e.g. chat activity; camera
+    surprise from ``node:substrate.perception``) when busier than its own
+    usual, a body node only when its prediction error is high/unusual against
+    its own 7 days -- ranked by that percentile, Borda kept as the tie-break
+    (``provenance["borda_salience"]``). A calm tick has NO winner
+    (``selected_action`` is the "none" action, ``attended_node_ids`` empty).
+    Every candidate's verdict is traced in ``frame.debug["world_first"]``.
+
+    ``world_first=False`` is the previous competition exactly: winner by
+    Borda over ``dynamic_pressure``, and ``magnitude_by_node_id`` (attached
+    as ``OpenLoopV1.magnitude`` when ``SUBSTRATE_PE_HISTORY_ENABLED`` is on)
+    is descriptive only, never read by scoring.
 
     Same pipeline as the chat-scoped ``build_attention_frame`` but with empty
     chat context and ``max_asks=0``: high-pressure loops may score as asks and
@@ -200,7 +214,20 @@ def build_substrate_attention_frame(
     # generated_at is stamped from this same resolved value below, keeping
     # the frame's own timestamp internally consistent.
     resolved_now = now or datetime.now(timezone.utc)
-    signals = substrate_pressure_signals(nodes, min_salience=min_salience, limit=max_signals)
+    world_first_trace: dict[str, Any] | None = None
+    world_first_scores: dict[str, float] = {}
+    if world_first:
+        signals, world_first_trace, world_first_scores = world_first_signals(
+            nodes,
+            magnitude_by_node_id=magnitude_by_node_id or {},
+            external_candidates=external_candidates or [],
+            rank_percentile_by_node_id=rank_percentile_by_node_id or {},
+            now=resolved_now,
+            min_salience=min_salience,
+            limit=max_signals,
+        )
+    else:
+        signals = substrate_pressure_signals(nodes, min_salience=min_salience, limit=max_signals)
     merged = merge_signals(signals, limit=max_open * 3)
     open_loops = build_open_loops(
         signals=merged,
@@ -229,6 +256,8 @@ def build_substrate_attention_frame(
     )
     if magnitude_by_node_id:
         _attach_magnitudes(open_loops, magnitude_by_node_id)
+    if world_first:
+        open_loops = _rank_loops_world_first(open_loops, world_first_scores)
     actions, selected, suppressions, deferred = select_actions(
         open_loops=open_loops,
         suppressions=[],
@@ -251,9 +280,150 @@ def build_substrate_attention_frame(
             "merged_signal_count": len(merged),
             "min_salience": min_salience,
             "belief_lineage": lineage[:8],
+            **({"world_first": world_first_trace} if world_first_trace is not None else {}),
         },
     )
     return _apply_voluntary_attention(frame)
+
+
+def world_first_signals(
+    nodes: Sequence[Any],
+    *,
+    magnitude_by_node_id: dict[str, PredictionErrorMagnitudeV1],
+    external_candidates: Sequence[Any],
+    now: datetime,
+    rank_percentile_by_node_id: dict[str, float | None] | None = None,
+    min_salience: float = DEFAULT_MIN_SALIENCE,
+    limit: int = DEFAULT_MAX_SIGNALS,
+) -> tuple[list[AttentionSignalV1], dict[str, Any], dict[str, float]]:
+    """World-first candidates -> eligible workspace signals, plus the trace.
+
+    Candidates: every cognitive ``node:substrate.*`` node carrying a
+    prediction error (magnitude from the stored history; perception is
+    external and absent while its embeddings are stale -- it writes 0.0 then,
+    so absence comes from ``embedding_staleness``, never from the value) and
+    the caller's ``external_candidates`` (chat). Any other graph node with
+    pressure has no calibrated unusualness against its own history, so it
+    cannot interrupt: listed in the trace as ``uncalibrated``, not ranked
+    (live 2026-10-03..10: no non-``node:substrate.*`` node ever reached the
+    broadcast, so this removes no observed winner).
+
+    Signal ``salience`` is the candidate's bad-direction percentile against
+    its own 7 days. Never raises per node.
+    """
+    from orion.attention.world_first import (
+        PERCEPTION_NODE_ID,
+        SOURCE_KIND_KEY,
+        SUBSTRATE_NODE_PREFIX,
+        node_candidate,
+        perception_absent_reason,
+        rank_candidates,
+    )
+
+    ranks = rank_percentile_by_node_id or {}
+    vision_organ_md: dict[str, Any] = {}
+    for node in nodes:
+        if str(getattr(node, "node_id", "") or "") == "node:substrate.vision_organ":
+            vision_organ_md = dict(getattr(node, "metadata", None) or {})
+            break
+
+    candidates: list[Any] = []
+    node_by_id: dict[str, Any] = {}
+    uncalibrated: list[str] = []
+    for node in nodes:
+        try:
+            if not is_cognitive_node(node):
+                continue
+            node_id = str(getattr(node, "node_id", "") or "")
+            metadata = dict(getattr(node, "metadata", None) or {})
+            if node_id.startswith(SUBSTRATE_NODE_PREFIX) and metadata.get("prediction_error") is not None:
+                absent = None
+                if node_id == PERCEPTION_NODE_ID:
+                    absent = perception_absent_reason(
+                        embedding_staleness=metadata.get("embedding_staleness"),
+                        vision_frame_staleness=vision_organ_md.get("vision_frame_staleness"),
+                    )
+                observed_at = getattr(getattr(node, "temporal", None), "observed_at", None)
+                label = compact(str(getattr(node, "label", "") or node_id), 120)
+                candidates.append(
+                    node_candidate(
+                        node_id=node_id,
+                        label=label,
+                        magnitude=magnitude_by_node_id.get(node_id),
+                        observed_at=observed_at if isinstance(observed_at, datetime) else None,
+                        now=now,
+                        absent_reason=absent,
+                        rank_percentile=ranks.get(node_id),
+                    )
+                )
+                node_by_id[node_id] = node
+            elif _node_salience(metadata)[0] >= min_salience and node_id:
+                uncalibrated.append(node_id)
+        except Exception:
+            continue
+    candidates.extend(external_candidates)
+    ranking = rank_candidates(candidates)
+
+    signals: list[AttentionSignalV1] = []
+    scores: dict[str, float] = {}
+    for verdict in ranking.eligible:
+        cand = verdict.candidate
+        # Ranking key: mid-rank when known (ceiling ties), else strict-below.
+        key = verdict.rank_score if verdict.rank_score is not None else verdict.score
+        score = max(0.0, min(1.0, float(key or 0.0)))
+        node = node_by_id.get(cand.source_id)
+        metadata = dict(getattr(node, "metadata", None) or {}) if node is not None else {}
+        confidence = 1.0
+        node_signals = getattr(node, "signals", None) if node is not None else None
+        if node_signals is not None:
+            try:
+                confidence = max(0.0, min(1.0, float(node_signals.confidence)))
+            except (AttributeError, TypeError, ValueError):
+                pass
+        internal = cand.source_kind == "internal"
+        scores[cand.source_id] = score
+        signals.append(
+            AttentionSignalV1(
+                signal_id=stable_id("substrate-signal", f"{cand.source_id}|world_first"),
+                source="substrate_broadcast",
+                target_text=cand.label,
+                target_type_hint="anomaly" if internal else "other",
+                signal_kind="substrate_prediction_error" if node is not None else "world_activity",
+                salience=score,
+                confidence=confidence,
+                evidence_refs=(
+                    [cand.source_id]
+                    + [str(t) for t in metadata.get("contributing_turn_ids") or []]
+                ),
+                provenance={
+                    "detector": "world_first",
+                    "signal_driver": "prediction_error" if node is not None else "world_activity",
+                    SOURCE_KIND_KEY: cand.source_kind,
+                    "world_first_band": verdict.band,
+                    "world_first_score": round(score, 6),
+                    "world_first_reason": verdict.reason,
+                },
+            )
+        )
+    trace = ranking.trace()
+    trace["uncalibrated"] = sorted(uncalibrated)[:24]
+    return signals[: max(1, limit)], trace, scores
+
+
+def _rank_loops_world_first(
+    loops: Sequence[OpenLoopV1], scores: dict[str, float]
+) -> list[OpenLoopV1]:
+    """Percentile is the ranking key; Borda (``build_open_loops``' salience)
+    survives only as the tie-break, kept in ``provenance["borda_salience"]``."""
+    ranked: list[tuple[float, float, OpenLoopV1]] = []
+    for loop in loops:
+        score = next((scores[r] for r in loop.source_refs if r in scores), 0.0)
+        borda = float(loop.salience)
+        loop.provenance["borda_salience"] = round(borda, 6)
+        loop.salience = score
+        ranked.append((score, borda, loop))
+    ranked.sort(key=lambda x: (x[0], x[1]), reverse=True)
+    return [loop for _, _, loop in ranked]
 
 
 logger = logging.getLogger(__name__)
@@ -504,9 +674,15 @@ def broadcast_projection_from_frame(frame: AttentionFrameV1) -> AttentionBroadca
     # Hysteresis: 2-tick activation, 3-tick decay
     _coalition_history.append(coalition)
 
-    # Soft activation: coalition must appear in 2+ of last 3 ticks to become active
+    # Soft activation: coalition must appear in 2+ of last 3 ticks to become active.
+    # An EMPTY coalition (a no-winner tick) is never activatable: "nothing
+    # attended" twice in a row is not a coalition that dwells. Before
+    # 2026-10-10 two empty ticks "activated" a size-0 coalition and counted
+    # dwell on it (live: ~42% of broadcast ticks were already empty; world-first
+    # makes calm no-winner ticks the norm). Empty ticks still enter the history,
+    # so a real coalition decays across them as before.
     coalition_count = sum(1 for c in _coalition_history if c == coalition)
-    if coalition_count >= 2:
+    if coalition and coalition_count >= 2:
         if _current_active_coalition != coalition:
             _current_active_coalition = coalition
             _dwell_ticks = 0  # reset on transition
@@ -535,12 +711,21 @@ def broadcast_projection_from_frame(frame: AttentionFrameV1) -> AttentionBroadca
 
     # Compute stability score from recent salience consistency
     # (simplified: high if dwell_ticks > 3, medium if transitioning, low if flickering)
-    if _dwell_ticks > 3:
+    # A no-winner tick reports no dwell even while the previous coalition is
+    # still inside the decay window (review 2026-10-10: A, A, empty, empty
+    # reported dwell 2 / stability 0.6 with nothing selected). The hysteresis
+    # state itself is untouched, so a returning coalition resumes as before.
+    if not coalition:
+        reported_dwell = 0
+        stability_score = 0.3
+    elif _dwell_ticks > 3:
         stability_score = 0.9
     elif _dwell_ticks > 0:
         stability_score = 0.6
     else:
         stability_score = 0.3
+    if coalition:
+        reported_dwell = _dwell_ticks
 
     return AttentionBroadcastProjectionV1(
         generated_at=frame.generated_at,
@@ -549,7 +734,7 @@ def broadcast_projection_from_frame(frame: AttentionFrameV1) -> AttentionBroadca
         selected_open_loop_id=selected.open_loop_id if selected is not None else None,
         selected_description=selected_loop.description if selected_loop is not None else None,
         attended_node_ids=attended_node_ids,
-        dwell_ticks=_dwell_ticks,
+        dwell_ticks=reported_dwell,
         coalition_stability_score=stability_score,
         coalition_history=list(_transition_history),
     )

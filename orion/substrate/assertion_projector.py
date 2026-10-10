@@ -85,8 +85,10 @@ class ProjectionReportV1:
 
 class AssertionProjector:
     def __init__(self, *, journal: SubstrateGraphJournal, materializer: SubstrateGraphMaterializer,
-                 readiness: ReadinessCheck) -> None:
+                 readiness: ReadinessCheck, proposal_actors: tuple[str, ...] | None = None) -> None:
+        """``proposal_actors``: apply only claims proposed by these producers (None = all)."""
         self._readiness = readiness
+        self._proposal_actors = proposal_actors
         self._journal = journal
         self._materializer = materializer
         self._store = materializer.store
@@ -99,7 +101,7 @@ class AssertionProjector:
             report.blocked = ready
             logger.info("assertion_projector_waiting reason=%s missing=%s", ready.reason, list(ready.missing))
             return report
-        for decision in await self._journal.pending_decisions(limit=limit):
+        for decision in await self._journal.pending_decisions(limit=limit, proposal_actors=self._proposal_actors):
             if decision.proposal_kind != "relationship_assertion":
                 continue
             applied_revision = await self._journal.latest_applied_revision(decision.target_id)

@@ -54,6 +54,9 @@ WHERE d.event_kind = 'decision'
       WHERE x.event_kind = 'materialization' AND x.outcome = 'applied' AND x.decision_id = d.decision_id)
   AND d.revision - 1 <= COALESCE(a.revision, 0)
   AND NOT (m.reason IS NOT NULL AND split_part(m.reason, ':', 1) = ANY($2::text[]))
+  AND ($3::text[] IS NULL OR EXISTS (
+      SELECT 1 FROM substrate_graph_journal p
+      WHERE p.event_kind = 'proposal' AND p.proposal_id = d.proposal_id AND p.actor = ANY($3::text[])))
 ORDER BY (m.decision_id IS NOT NULL), m.recorded_at NULLS FIRST, d.recorded_at, d.target_id, d.revision
 LIMIT $1
 """
@@ -128,9 +131,16 @@ class SubstrateGraphJournal:
             ) from exc
         return status.endswith(" 1")
 
-    async def pending_decisions(self, *, limit: int = 100) -> list[SubstrateGraphDecisionV1]:
+    async def pending_decisions(
+        self, *, limit: int = 100, proposal_actors: tuple[str, ...] | None = None
+    ) -> list[SubstrateGraphDecisionV1]:
+        """``proposal_actors``: only decisions on proposals by these producers (None = all).
+        Each projector applies only the claims whose endpoints its own store can see: the
+        memory projector primes only memory nodes, so a reading claim there would fail
+        ``endpoint_missing`` forever and be retried every tick."""
+        actors = list(proposal_actors) if proposal_actors is not None else None
         async with self._pool.acquire() as conn:
-            rows = await conn.fetch(_PENDING_DECISIONS, int(limit), list(TERMINAL_FAILURE_REASONS))
+            rows = await conn.fetch(_PENDING_DECISIONS, int(limit), list(TERMINAL_FAILURE_REASONS), actors)
         return [SubstrateGraphDecisionV1.model_validate(_payload(row)) for row in rows]
 
     async def proposal(self, proposal_id: str) -> SubstrateGraphProposalV1 | None:

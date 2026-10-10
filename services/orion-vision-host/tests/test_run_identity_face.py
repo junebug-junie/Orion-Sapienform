@@ -174,3 +174,29 @@ def test_run_identity_face_never_returns_raw_embedding(monkeypatch, tmp_path):
     assert "embedding" not in result_str.lower()
     for candidate in result["identities"]["candidates"]:
         assert set(candidate.keys()) <= {"subject", "similarity", "state", "reason", "detect_confidence"}
+
+
+
+def test_a_detected_face_keeps_its_frame_and_no_face_keeps_nothing(monkeypatch, tmp_path):
+    """2026-10-10: frames behind face checks were lost to the ~65 s frame buffer."""
+    runner = _runner()
+    profile = runner.profiles.get_profile("identity_face")
+    frames = tmp_path / "face_frames"
+    settings = MagicMock(MODEL_CACHE_DIR="/tmp", IDENTITY_ENROLLED_SUBJECT="juniper", IDENTITY_GALLERY_DIR=str(tmp_path),
+                         VISION_FACE_FRAMES_DIR=str(frames), VISION_FACE_FRAMES_RETENTION_DAYS=14.0,
+                         VISION_FACE_FRAMES_MIN_INTERVAL_SEC=0.0)
+    monkeypatch.setattr(runner_module, "settings", settings)
+    monkeypatch.setattr(runner_module, "_FACE_FRAMES", None)
+
+    no_face = MagicMock(return_value=(None, [None]))
+    monkeypatch.setattr(runner.models, "load_face_identity_models", lambda **kw: (MagicMock(), no_face))
+    runner._run_identity_face(profile, {"image_path": _image_path(tmp_path), "stream_id": "cam0"}, "cpu", [])
+    assert not frames.exists() or not list(frames.rglob("*.jpg"))
+
+    face = MagicMock(return_value=(torch.zeros((1, 3, 4, 4)), [0.99]))
+    monkeypatch.setattr(runner.models, "load_face_identity_models",
+                        lambda **kw: (MagicMock(return_value=torch.zeros((1, 512))), face))
+    warnings = []
+    runner._run_identity_face(profile, {"image_path": _image_path(tmp_path), "stream_id": "cam0"}, "cpu", warnings)
+    saved = list(frames.rglob("*.jpg"))
+    assert len(saved) == 1 and saved[0].parts[-3] == "cam0" and not any("face_frame_save_failed" in w for w in warnings)

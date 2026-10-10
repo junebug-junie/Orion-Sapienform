@@ -193,6 +193,14 @@ class Settings(BaseSettings):
     # (the effective threshold is max(this, 0.5 * (p90_7d - p50_7d))). A knob,
     # not a finding.
     pe_trend_min_delta: float = Field(0.01, alias="ORION_REVERIE_PE_TREND_MIN_DELTA")
+    # World-first attention (docs/superpowers/specs/2026-10-07-orion-self-
+    # calibration-design.md, section A; Juniper 2026-10-10). On: the broadcast
+    # competition attends to the world (chat activity, camera surprise) when it
+    # is busier than its own usual, and to a body node only when its prediction
+    # error is high/unusual against its own 7 days; a calm tick has no winner.
+    # Needs SUBSTRATE_PE_HISTORY_ENABLED (without magnitudes every body node is
+    # absent). false = the previous dynamic-pressure Borda competition exactly.
+    attention_world_first_enabled: bool = Field(True, alias="ATTENTION_WORLD_FIRST_ENABLED")
 
     # System One / Kev appraisal. Rides the attention-broadcast cadence,
     # persists a compiled frame, emits a grammar shadow, and publishes the

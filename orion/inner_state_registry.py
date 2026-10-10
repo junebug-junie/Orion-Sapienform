@@ -51,6 +51,7 @@ from orion.core.schemas.frontier_curiosity import FrontierInvocationSignalV1
 from orion.schemas.attention_salience import AttentionSalienceTraceV1
 from orion.schemas.attention_self_model import AttentionSelfModelV1
 from orion.schemas.attention_schema import AttentionSchemaV1
+from orion.schemas.drive_reading import DriveReadingV1
 from orion.schemas.field_attention_frame import FieldAttentionFrameV1
 from orion.schemas.field_state import FieldStateV1
 from orion.schemas.repair_pressure_appraisal import RepairPressureAppraisalV1
@@ -1114,6 +1115,61 @@ REGISTRY: tuple[InnerStateSignal, ...] = (
                     polarity="higher_is_better",
                 ),
             ),
+        ),
+    ),
+    InnerStateSignal(
+        signal_id="drive_reading.rest.v1",
+        schema=DriveReadingV1,
+        producer_service="orion-dream",
+        cadence=Cadence.PER_TICK,
+        composition_status=CompositionStatus.SHADOW,
+        semantics=(
+            # orion/regulation/rest_drive.py read_rest_drive(): level is the
+            # dream's SleepPressureV1.pressure (services/orion-dream/app/
+            # replay.py compute_pressure, novelty.v1 since #2557), published
+            # by services/orion-dream/app/cycle.py run_cycle_once every 600 s
+            # check and right after each sleep.
+            (
+                "level",
+                MetricSemantics(
+                    value_kind="level",
+                    rest=(
+                        "0.0 = nothing new since the last sleep began; reached "
+                        "live at the first check after every sleep (2026-10-10 "
+                        "01:32 UTC). Rises in steps of one new thing's replay "
+                        "weight; due at >= threshold (3.0)."
+                    ),
+                    sparsity="per_tick",
+                    absent_means=(
+                        "Redis key expired (TTL 1800 s) or state no_reading: "
+                        "UNKNOWN, and every reader behaves as before the drive "
+                        "existed. Never read as rested or tired."
+                    ),
+                    polarity="higher_is_worse",
+                ),
+            ),
+        ),
+        shadow_reason=(
+            "Not composed into self_state.v1 (that producer was removed in PR "
+            "#1266, so no signal registered after 2026-07-23 can be). SHADOW in "
+            "the literal sense only: it has live readers listed below."
+        ),
+        cognition_consumers=(
+            "services.orion-hub.scripts.curiosity_investigation:"
+            "CuriosityInvestigation.tick (cooldown stretched while due)",
+            "services.orion-hub.scripts.endogenous_outreach:"
+            "EndogenousOutreach._gate_inputs (cooldown stretched while due)",
+        ),
+        notes=(
+            "Temporal Self rev 4 (PR #2369) R2, the one drive admitted. The "
+            "dream sleep pressure, published by the service that owns the "
+            "discharge action (sleep) from the same values its own gate uses. "
+            "state: resting / building / due / refractory / no_reading. "
+            "Transport: Redis orion:drive:rest:latest (TTL 1800 s); history "
+            "is dream_pressure_observation (check_id = source_ref, except the "
+            "post-sleep dp-postsleep-* reading). No bus "
+            "channel (no subscriber). Distinct from the retired "
+            "drive_state.v1 entry above."
         ),
     ),
 )

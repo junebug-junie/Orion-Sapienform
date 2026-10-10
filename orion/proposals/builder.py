@@ -50,6 +50,14 @@ ATTENTION_FIRST_TARGET_BINDING = "attention.dominant_targets[0]"
 _ATTENTION_BOUND_TARGET_KINDS = frozenset({"node", "capability", "field", "system"})
 
 
+def _is_internal_target(target: FieldAttentionTargetV1) -> bool:
+    """False for a world-first external target. Frames built before
+    world-first (no marker) only ever held internal targets."""
+    from orion.attention.field_attention.selectors import field_target_source_kind
+
+    return field_target_source_kind(target) != "external"
+
+
 def stable_proposal_frame_id(*, field_tick_id: str, attention_frame_id: str, policy_id: str) -> str:
     return f"proposal.frame:{field_tick_id}:{attention_frame_id}:{policy_id}"
 
@@ -71,9 +79,19 @@ def _resolve_binding_target(
     """
     if template.target_binding != ATTENTION_FIRST_TARGET_BINDING:
         return template.target_id, template.target_kind, None
-    if attention is None or not attention.dominant_targets:
+    if attention is None:
         return template.target_id, template.target_kind, None
-    resolved: FieldAttentionTargetV1 = attention.dominant_targets[0]
+    # World-first attention (spec 2026-10-07 self-calibration, section A):
+    # the frame's winner may be the WORLD (chat, camera surprise). A
+    # self-modification proposal must only ever bind to an internal target,
+    # so external winners are skipped and the first internal one is used.
+    # No internal target (a world-only or no-winner frame) fails closed to
+    # the template's literal target, same as an empty frame always did.
+    resolved: FieldAttentionTargetV1 | None = next(
+        (t for t in attention.dominant_targets if _is_internal_target(t)), None
+    )
+    if resolved is None:
+        return template.target_id, template.target_kind, None
     if resolved.target_kind not in _ATTENTION_BOUND_TARGET_KINDS:
         return template.target_id, template.target_kind, None
     return resolved.target_id, resolved.target_kind, template.target_binding

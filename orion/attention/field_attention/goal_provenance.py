@@ -14,7 +14,10 @@ from __future__ import annotations
 from collections.abc import Collection
 from dataclasses import dataclass
 
-from orion.attention.field_attention.selectors import PREDICTION_ERROR_NATIVE_TARGETS
+from orion.attention.field_attention.selectors import (
+    PREDICTION_ERROR_NATIVE_TARGETS,
+    field_target_source_kind,
+)
 from orion.schemas.field_attention_frame import FieldAttentionFrameV1, FieldAttentionTargetV1
 
 # 2026-07-30 fix (Sentience Striving Program officer review -- see
@@ -48,16 +51,34 @@ from orion.schemas.field_attention_frame import FieldAttentionFrameV1, FieldAtte
 MIN_CONFIDENCE_FOR_GOAL_PROVENANCE: float = 1.0
 
 
+def _goal_eligible_node(t: FieldAttentionTargetV1) -> bool:
+    """A goal may name only one of the five native prediction-error domains
+    (``PREDICTION_ERROR_NATIVE_TARGETS``), and under world-first only when the
+    frame marks it INTERNAL (a body signal that was unusual for itself). A
+    world winner (chat, camera surprise) is attention, not a goal for the
+    body. World-first adds other body nodes to the contest (cabinet,
+    codebase, ...) but deliberately does NOT widen the goal set to them
+    (review 2026-10-10): a cabinet goal would bias the broadcast toward a node
+    a real self-reversible action binds to (shed_background_gpu). Widening it
+    is a separate, spec-level decision. A frame without markers keeps the
+    original rule exactly."""
+    if t.target_id not in PREDICTION_ERROR_NATIVE_TARGETS:
+        return False
+    kind = field_target_source_kind(t)
+    return kind is None or kind == "internal"
+
+
 def qualified_node_targets(frame: FieldAttentionFrameV1) -> list[FieldAttentionTargetV1]:
     """The candidates a goal may name: Candidate A's real ``node:substrate.*``
     domains with enough observations to be trusted (see
     ``MIN_CONFIDENCE_FOR_GOAL_PROVENANCE``). Exposed so the producer can skip
     the competition read when fewer than two qualify -- with 0 or 1 candidate
-    no competition set can change the answer."""
+    no competition set can change the answer. Under world-first only
+    internal targets qualify, and a no-winner frame yields none."""
     return [
         t
         for t in frame.node_targets
-        if t.target_id in PREDICTION_ERROR_NATIVE_TARGETS
+        if _goal_eligible_node(t)
         and t.confidence_score >= MIN_CONFIDENCE_FOR_GOAL_PROVENANCE
     ]
 

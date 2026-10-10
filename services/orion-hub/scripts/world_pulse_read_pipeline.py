@@ -54,6 +54,7 @@ from orion.world_pulse_read.documents import (
 )
 from orion.world_pulse_read.events import publish_lifecycle
 from orion.world_pulse_read.retry import is_refused_before_work
+from orion.world_pulse_read.fetch_text import retain_fetch_texts
 from orion.world_pulse_read.read_evidence import (
     NO_READ_EVIDENCE,
     document_snapshot_evidence,
@@ -626,6 +627,9 @@ class WorldPulseReadPipeline:
                 seed.url, content_sha256=sha256, content_chars=len(text),
             )]
         evidence = source_read_evidence(seed.url, fetches or [])
+        # Retain the fetched text by hash and drop it from the evidence (fetch_text.py),
+        # so the stored handoff links to it without carrying a page.
+        evidence = await self._retain_fetch_texts(evidence)
         # Server-side, overwriting anything the model wrote under this key.
         parsed["read_evidence"] = [f.model_dump(mode="json") for f in evidence]
         # Schema errors first: a malformed handoff is a parse failure, not an
@@ -642,6 +646,18 @@ class WorldPulseReadPipeline:
         if fetches is None or not handoff.read_evidence:
             raise NoReadEvidenceError(no_evidence_reason(seed.url, fetches))
         return handoff
+
+    async def _retain_fetch_texts(self, evidence: list[SourceFetchEvidenceV1]) -> list[SourceFetchEvidenceV1]:
+        if not any(e.content_text for e in evidence):
+            return evidence
+        try:
+            kept = await self._with_conn(lambda conn: retain_fetch_texts(conn, evidence))
+        except Exception:  # noqa: BLE001 - never fail a real read over evidence capture
+            logger.warning("world_pulse_read_fetch_text_retain_failed", exc_info=True)
+            kept = None
+        if kept is None:
+            return [e.model_copy(update={"content_text": None}) for e in evidence]
+        return kept
 
     async def _generate(
         self, prompt: str, correlation_id: str, *, seed_id: str, retrieval_query: str | None = None,

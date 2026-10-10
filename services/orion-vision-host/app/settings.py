@@ -182,6 +182,11 @@ class Settings(BaseSettings):
     VISION_CROP_THUMB_RETENTION_DAYS: float = 10.0
     # At most one thumbnail per stream per this many seconds.
     VISION_CROP_THUMB_MIN_INTERVAL_SEC: float = 10.0
+    # Frames where a face check found a face (app/face_frames.py, 2026-10-10): the frame buffer
+    # rolls over in ~65 s, so frames behind matches and misses were lost. Empty dir disables.
+    VISION_FACE_FRAMES_DIR: str = "/mnt/telemetry/orion-vision-host/face_frames"
+    VISION_FACE_FRAMES_RETENTION_DAYS: float = 14.0
+    VISION_FACE_FRAMES_MIN_INTERVAL_SEC: float = 5.0
 
     @property
     def enabled_profiles(self) -> List[str]:

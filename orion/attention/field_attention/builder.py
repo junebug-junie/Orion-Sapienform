@@ -6,10 +6,12 @@ from orion.attention.field_attention.candidate_precision_weighted import Precisi
 from orion.attention.field_attention.policy import FieldAttentionPolicyV1
 from orion.attention.field_attention.scoring import clamp01
 from orion.attention.field_attention.selectors import (
+    mark_observed_not_attended,
     select_capability_targets,
     select_host_targets,
     select_node_targets,
     select_system_targets,
+    world_first_targets,
 )
 from orion.schemas.field_attention_frame import FieldAttentionFrameV1, FieldAttentionTargetV1
 from orion.schemas.field_state import FieldStateV1
@@ -33,8 +35,15 @@ def build_attention_frame(
     previous_frame: FieldAttentionFrameV1 | None = None,
     now: datetime | None = None,
     previous_field: FieldStateV1 | None = None,
+    world_first_candidates: list | None = None,
 ) -> FieldAttentionFrameV1:
-    """2026-07-30: `previous_frame` is used by `select_host_targets`/
+    """``world_first_candidates`` (a list of ``AttentionCandidateV1``; the
+    worker passes it when ``ATTENTION_WORLD_FIRST_ENABLED`` is on) switches
+    this frame to world-first ranking (``_build_world_first_frame``): the
+    world by default, the body only when unusual for itself, and no winner
+    on a calm tick. None keeps the previous ranking below, byte for byte.
+
+    2026-07-30: `previous_frame` is used by `select_host_targets`/
     `select_capability_targets` (Candidate B's `novelty_scorer()`, real
     theory-grounded coverage for targets Candidate A's precision-weighting
     can't reach -- no real prediction-error history exists for physical
@@ -66,6 +75,16 @@ def build_attention_frame(
         and (previous_frame is None or previous_field.tick_id != previous_frame.source_field_tick_id)
     ):
         previous_field = None
+
+    if world_first_candidates is not None:
+        return _build_world_first_frame(
+            field=field,
+            policy=policy,
+            previous_frame=previous_frame,
+            previous_field=previous_field,
+            generated_at=generated_at,
+            candidates=world_first_candidates,
+        )
 
     node_targets = select_node_targets(
         field, policy, prediction_error_baselines or {}, now=generated_at
@@ -123,4 +142,62 @@ def build_attention_frame(
         suppressed_targets=suppressed,
         recent_perturbations=list(field.recent_perturbations),
         warnings=[],
+    )
+
+
+def _build_world_first_frame(
+    *,
+    field: FieldStateV1,
+    policy: FieldAttentionPolicyV1,
+    previous_frame: FieldAttentionFrameV1 | None,
+    previous_field: FieldStateV1 | None,
+    generated_at: datetime,
+    candidates: list,
+) -> FieldAttentionFrameV1:
+    """World-first frame. Attended targets are only the eligible candidates
+    (world fresh and busier than usual; body high/unusual in its bad
+    direction), best first by percentile against their own history.
+    Host/capability/system novelty targets are still computed so the next
+    tick's novelty diff has a prior, but are recorded as observed, not
+    attended. No eligible candidate -> empty ``dominant_targets`` and
+    ``overall_salience`` 0.0: an explicit no-winner frame."""
+    attended, observed = world_first_targets(field, policy, candidates)
+    candidate_ids = {getattr(c, "source_id", None) for c in candidates}
+    host_field = field.model_copy(
+        update={
+            "node_vectors": {
+                k: v for k, v in field.node_vectors.items() if k not in candidate_ids
+            }
+        }
+    )
+    body_novelty = (
+        select_host_targets(host_field, policy, previous_frame, previous_field)
+        + select_capability_targets(field, policy, previous_frame, previous_field)
+        + select_system_targets(field, policy)
+    )
+    suppressed = observed + mark_observed_not_attended(body_novelty)
+    suppressed.sort(key=lambda t: t.salience_score, reverse=True)
+
+    capped = attended[: policy.limits.max_targets_total]
+    over = attended[policy.limits.max_targets_total:]
+    suppressed = [
+        *(t.model_copy(update={"reasons": [*t.reasons, _OVER_CAP_REASON]}) for t in over),
+        *suppressed,
+    ]
+    nodes = [t for t in capped if t.target_kind == "node"]
+    overall = clamp01(max((t.salience_score for t in capped), default=0.0))
+    return FieldAttentionFrameV1(
+        frame_id=stable_frame_id(tick_id=field.tick_id, policy_id=policy.policy_id),
+        generated_at=generated_at,
+        source_field_tick_id=field.tick_id,
+        source_field_generated_at=field.generated_at,
+        attention_policy_id=policy.policy_id,
+        overall_salience=overall,
+        dominant_targets=capped,
+        node_targets=nodes,
+        capability_targets=[],
+        system_targets=[],
+        suppressed_targets=suppressed,
+        recent_perturbations=list(field.recent_perturbations),
+        warnings=[] if capped else ["world_first_no_winner"],
     )

@@ -757,10 +757,31 @@ def reduce_attention_self_model(
         model.attention_reason = "bottom_up_salience"
         model.confidence = _round_or_none(broadcast.coalition_stability_score)
         model.confidence_basis = "broadcast.coalition_stability_score (fresh, bottom-up)"
-        model.reason_narrative = (
-            f"Pure bottom-up dispatch: '{model.broadcast_selected_open_loop_id}' "
-            f"selected by salience alone; {describe_override_absence(model)}"
-        )
+        if model.broadcast_selected_open_loop_id is None:
+            # A no-winner tick (world-first: a calm body and a quiet world;
+            # before it, nothing above the pressure floor -- ~42% of ticks
+            # live). Used to read "Pure bottom-up dispatch: 'None' selected".
+            absent = []
+            try:
+                wf = (broadcast.frame.debug or {}).get("world_first") or {}
+                absent = list(wf.get("absent_sources") or [])
+            except Exception:
+                absent = []
+            # A tick where sources could not be read is not a calm tick.
+            unread = (
+                f" ({len(absent)} source(s) could not be read: {', '.join(absent[:4])})"
+                if absent
+                else ""
+            )
+            model.reason_narrative = (
+                "No winner this tick: nothing in the workspace competition "
+                f"qualified for attention{unread}; " + describe_override_absence(model)
+            )
+        else:
+            model.reason_narrative = (
+                f"Pure bottom-up dispatch: '{model.broadcast_selected_open_loop_id}' "
+                f"selected by salience alone; {describe_override_absence(model)}"
+            )
     elif model.field_lane_present or prediction_error_by_domain or prediction_error_trend_by_domain:
         model.attention_reason = "field_salience_only"
         if prediction_error_by_domain:

@@ -870,6 +870,11 @@ class Settings(BaseSettings):
     HUB_WORLD_PULSE_READ_STAGE2_MAX_ROUND_TRIPS: int = Field(
         default=5, alias="HUB_WORLD_PULSE_READ_STAGE2_MAX_ROUND_TRIPS"
     )
+    # Kill switch for reading relationship claims (orion/world_pulse_read/assertions.py):
+    # the Stage 2 prompt block, journal writes, and Hub's reading assertion projector.
+    HUB_WORLD_PULSE_READ_ASSERTIONS_ENABLED: bool = Field(
+        default=True, alias="HUB_WORLD_PULSE_READ_ASSERTIONS_ENABLED"
+    )
 
     # --- Orion's own graph ------------------------------------------------
     # `orion_worldview` is Orion's alone: it reads AND writes there, nothing in
@@ -1233,6 +1238,26 @@ class Settings(BaseSettings):
     )
     HUB_ENDOGENOUS_OUTREACH_MIN_COOLDOWN_SEC: float = Field(
         default=2700.0, alias="HUB_ENDOGENOUS_OUTREACH_MIN_COOLDOWN_SEC"
+    )
+    # Orion's rest drive (Temporal Self rev 4; orion-dream writes Redis
+    # orion:drive:rest:latest every 600 s). While it reads `due` -- tired,
+    # waiting to sleep -- each reader multiplies its own cooldown. A reading
+    # older than ORION_REST_DRIVE_MAX_AGE_SEC (3 dream checks), absent, or
+    # no_reading is unknown and changes nothing. One flag per reader.
+    ORION_REST_DRIVE_MAX_AGE_SEC: float = Field(
+        default=1800.0, gt=0.0, alias="ORION_REST_DRIVE_MAX_AGE_SEC"
+    )
+    HUB_ENDOGENOUS_OUTREACH_REST_DRIVE_ENABLED: bool = Field(
+        default=True, alias="HUB_ENDOGENOUS_OUTREACH_REST_DRIVE_ENABLED"
+    )
+    HUB_ENDOGENOUS_OUTREACH_REST_DRIVE_COOLDOWN_MULTIPLIER: float = Field(
+        default=2.0, ge=1.0, alias="HUB_ENDOGENOUS_OUTREACH_REST_DRIVE_COOLDOWN_MULTIPLIER"
+    )
+    HUB_CURIOSITY_REST_DRIVE_ENABLED: bool = Field(
+        default=True, alias="HUB_CURIOSITY_REST_DRIVE_ENABLED"
+    )
+    HUB_CURIOSITY_REST_DRIVE_COOLDOWN_MULTIPLIER: float = Field(
+        default=2.0, ge=1.0, alias="HUB_CURIOSITY_REST_DRIVE_COOLDOWN_MULTIPLIER"
     )
     # Background outreach waits this long after Juniper's last saved message (read from
     # chat_history_log, so a Hub restart cannot reset it). 2026-10-09: a fresh restart forgot

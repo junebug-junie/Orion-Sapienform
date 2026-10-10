@@ -1,15 +1,14 @@
 {
   "_comment": "Definition lock for scripts/check_definition_drift.py. Generated, never hand-edited. Regenerate with --update; the resulting diff IS the definition-change alert. Unlike the *_baseline.json ratchets this tracks current truth in both directions -- a definition change is an event, not a defect.",
-  "metric_count": 717,
+  "metric_count": 719,
   "_last_change": {
-    "change_count": 5,
-    "high_severity_count": 3,
+    "change_count": 4,
+    "high_severity_count": 0,
     "changes": [
-      "high   routing_changed metric://bus_channel/orion-actions/orion:cortex:request (all_producers: \u2026y', 'orion-durable-runs'\u2026 -> \u2026y', 'orion-dream', 'orion-durable-runs'\u2026)",
-      "high   routing_changed metric://bus_channel/orion-cortex-exec/orion:dream:log (all_producers: ['orion-cortex-exec'] -> ['orion-cortex-exec', 'orion-dream'])",
-      "high   routing_changed metric://bus_channel/orion-cortex-orch/orion:cortex:result* (declared_consumers: \u2026y', 'orion-durable-runs'\u2026 -> \u2026y', 'orion-dream', 'orion-durable-runs'\u2026)",
-      "medium added metric://bus_channel/orion-dream/orion:dream:carry:step:reply:*",
-      "medium added metric://bus_channel/orion-durable-runs/orion:dream:carry:step:request"
+      "medium added metric://inner_state/orion-dream/drive_reading.rest.v1",
+      "medium added metric://inner_state/orion-dream/drive_reading.rest.v1#level",
+      "medium added metric://inner_state/orion-dream/drive_reading.rest.v1#rest_level",
+      "medium added metric://inner_state/orion-dream/drive_reading.rest.v1#threshold"
     ]
   },
   "definitions": {
@@ -326,7 +325,6 @@
         "orion-actions",
         "orion-cortex-exec",
         "orion-cortex-gateway",
-        "orion-dream",
         "orion-durable-runs",
         "orion-hub",
         "orion-memory-consolidation"
@@ -839,8 +837,7 @@
     "metric://bus_channel/orion-cortex-exec/orion:dream:log": {
       "schema_id": "DreamResultV1",
       "all_producers": [
-        "orion-cortex-exec",
-        "orion-dream"
+        "orion-cortex-exec"
       ],
       "declared_consumers": [
         "orion-dream",
@@ -1160,7 +1157,6 @@
       ],
       "declared_consumers": [
         "orion-cortex-gateway",
-        "orion-dream",
         "orion-durable-runs",
         "orion-hub"
       ],
@@ -1225,17 +1221,6 @@
       "notes": "kind=event stability=experimental",
       "registry_source": "orion/bus/channels.yaml"
     },
-    "metric://bus_channel/orion-dream/orion:dream:carry:step:reply:*": {
-      "schema_id": "DreamCarryStepResultV1",
-      "all_producers": [
-        "orion-dream"
-      ],
-      "declared_consumers": [
-        "orion-durable-runs"
-      ],
-      "notes": "kind=result stability=experimental",
-      "registry_source": "orion/bus/channels.yaml"
-    },
     "metric://bus_channel/orion-dream/orion:dream:compaction-delta": {
       "schema_id": "MemoryCompactionDeltaV1",
       "all_producers": [
@@ -1287,17 +1272,6 @@
       ],
       "declared_consumers": [
         "orion-hub"
-      ],
-      "notes": "kind=request stability=experimental",
-      "registry_source": "orion/bus/channels.yaml"
-    },
-    "metric://bus_channel/orion-durable-runs/orion:dream:carry:step:request": {
-      "schema_id": "DreamCarryStepRequestV1",
-      "all_producers": [
-        "orion-durable-runs"
-      ],
-      "declared_consumers": [
-        "orion-dream"
       ],
       "notes": "kind=request stability=experimental",
       "registry_source": "orion/bus/channels.yaml"
@@ -4611,6 +4585,56 @@
         "metric://inner_state/orion-cortex-exec/attention_salience_trace.v1"
       ],
       "notes": "scalar field on AttentionSalienceTraceV1",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-dream/drive_reading.rest.v1": {
+      "schema_id": "DriveReadingV1",
+      "declared_consumers": [
+        "services.orion-hub.scripts.curiosity_investigation:CuriosityInvestigation.tick (cooldown stretched while due)",
+        "services.orion-hub.scripts.endogenous_outreach:EndogenousOutreach._gate_inputs (cooldown stretched while due)"
+      ],
+      "notes": "cadence=per_tick composition=shadow_declared_not_composed",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-dream/drive_reading.rest.v1#level": {
+      "schema_id": "DriveReadingV1",
+      "value_kind": "level",
+      "rest": "0.0 = nothing new since the last sleep began; reached live at the first check after every sleep (2026-10-10 01:32 UTC). Rises in steps of one new thing's replay weight; due at >= threshold (3.0).",
+      "sparsity": "per_tick",
+      "absent_means": "Redis key expired (TTL 1800 s) or state no_reading: UNKNOWN, and every reader behaves as before the drive existed. Never read as rested or tired.",
+      "polarity": "higher_is_worse",
+      "declared_consumers": [
+        "services.orion-hub.scripts.curiosity_investigation:CuriosityInvestigation.tick (cooldown stretched while due)",
+        "services.orion-hub.scripts.endogenous_outreach:EndogenousOutreach._gate_inputs (cooldown stretched while due)"
+      ],
+      "upstream": [
+        "metric://inner_state/orion-dream/drive_reading.rest.v1"
+      ],
+      "notes": "scalar field on DriveReadingV1",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-dream/drive_reading.rest.v1#rest_level": {
+      "schema_id": "DriveReadingV1",
+      "declared_consumers": [
+        "services.orion-hub.scripts.curiosity_investigation:CuriosityInvestigation.tick (cooldown stretched while due)",
+        "services.orion-hub.scripts.endogenous_outreach:EndogenousOutreach._gate_inputs (cooldown stretched while due)"
+      ],
+      "upstream": [
+        "metric://inner_state/orion-dream/drive_reading.rest.v1"
+      ],
+      "notes": "scalar field on DriveReadingV1",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-dream/drive_reading.rest.v1#threshold": {
+      "schema_id": "DriveReadingV1",
+      "declared_consumers": [
+        "services.orion-hub.scripts.curiosity_investigation:CuriosityInvestigation.tick (cooldown stretched while due)",
+        "services.orion-hub.scripts.endogenous_outreach:EndogenousOutreach._gate_inputs (cooldown stretched while due)"
+      ],
+      "upstream": [
+        "metric://inner_state/orion-dream/drive_reading.rest.v1"
+      ],
+      "notes": "scalar field on DriveReadingV1",
       "registry_source": "orion/inner_state_registry.py"
     },
     "metric://inner_state/orion-equilibrium-service/equilibrium_snapshot.v1": {

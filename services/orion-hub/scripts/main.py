@@ -54,6 +54,7 @@ from scripts.curiosity_urgent import urgent_request_loop
 from scripts.urgent_report import UrgentReporter, read_urgent_run_progress
 from orion.notify.client import NotifyClient
 from scripts.energy_stakes_gate import read_latest_energy_stakes
+from scripts.rest_drive_reader import RestDriveReader
 from orion.world_pulse_read.search import ReadingSearchConfig
 from orion.introspect.semantic_index import SearchConfig
 from scripts.reading_listener import ReadingListener
@@ -579,6 +580,13 @@ async def startup_event():
                 tick_interval_sec=settings.HUB_ENDOGENOUS_OUTREACH_TICK_SEC,
                 min_cooldown_sec=settings.HUB_ENDOGENOUS_OUTREACH_MIN_COOLDOWN_SEC,
                 recent_chat_sec=settings.HUB_ENDOGENOUS_OUTREACH_RECENT_CHAT_SEC,
+                # Orion's rest drive: stretch the cooldown while tired (scripts/rest_drive_reader.py).
+                rest_drive_reader=RestDriveReader(
+                    enabled=settings.HUB_ENDOGENOUS_OUTREACH_REST_DRIVE_ENABLED,
+                    multiplier=settings.HUB_ENDOGENOUS_OUTREACH_REST_DRIVE_COOLDOWN_MULTIPLIER,
+                    max_age_sec=settings.ORION_REST_DRIVE_MAX_AGE_SEC,
+                    name="outreach",
+                ),
                 daily_cap=settings.HUB_ENDOGENOUS_OUTREACH_DAILY_CAP,
                 quiet_start_hour=settings.HUB_ENDOGENOUS_OUTREACH_QUIET_START_HOUR,
                 quiet_end_hour=settings.HUB_ENDOGENOUS_OUTREACH_QUIET_END_HOUR,
@@ -656,6 +664,12 @@ async def startup_event():
                 energy_stakes_enabled=settings.ORION_ENERGY_STAKES_ENABLED,
                 energy_stakes_reader=lambda: read_latest_energy_stakes(os.getenv("DATABASE_URL", "").strip()),
                 energy_stakes_max_age_sec=settings.ORION_ENERGY_STAKES_MAX_AGE_SEC,
+                rest_drive_reader=RestDriveReader(
+                    enabled=settings.HUB_CURIOSITY_REST_DRIVE_ENABLED,
+                    multiplier=settings.HUB_CURIOSITY_REST_DRIVE_COOLDOWN_MULTIPLIER,
+                    max_age_sec=settings.ORION_REST_DRIVE_MAX_AGE_SEC,
+                    name="curiosity",
+                ),
                 max_hops=settings.HUB_CURIOSITY_MAX_HOPS,
                 pg_readonly_role=settings.HUB_CURIOSITY_PG_READONLY_ROLE,
                 # A finding Orion judges worth saying goes through a SECOND
@@ -805,6 +819,7 @@ async def startup_event():
                 ),
                 step_relay_provider=lambda: harness_step_relay,
                 store_provider=concept_atlas_routes_runtime._get_substrate_store,
+                assertions_enabled=settings.HUB_WORLD_PULSE_READ_ASSERTIONS_ENABLED,
             )
             await world_pulse_read_stage2.start(bus, harness_rpc_bus=rpc_bus)
 

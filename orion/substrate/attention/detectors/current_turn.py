@@ -7,6 +7,11 @@ from orion.substrate.attention.common import CURRENT_TURN_DETECTOR_ID, STOP_PHRA
 from orion.substrate.attention.questions import NATURAL_QUESTION_KEY
 
 
+# Fixed rank prior, not a measurement: see the world-first audit note in
+# detectors/base.py for why this is not a calibrated candidate.
+CURRENT_TURN_SALIENCE = 0.72
+
+
 class CurrentTurnSignalDetector:
     """Current user-turn detector.
 
@@ -61,7 +66,11 @@ class CurrentTurnSignalDetector:
             hint = str(item.get("type") or "other").strip().lower() or "other"
             confidence_raw = item.get("confidence")
             confidence = bounded(confidence_raw) if confidence_raw is not None else 0.68
-            provenance: dict[str, Any] = {"detector": self.detector_id, "belief_lineage": list(belief_lineage or [])[:8]}
+            provenance: dict[str, Any] = {
+                "detector": self.detector_id,
+                "source_kind": "external",
+                "belief_lineage": list(belief_lineage or [])[:8],
+            }
             natural_question = compact(item.get(NATURAL_QUESTION_KEY), 160)
             if natural_question:
                 provenance[NATURAL_QUESTION_KEY] = natural_question
@@ -72,7 +81,7 @@ class CurrentTurnSignalDetector:
                     target_text=phrase,
                     target_type_hint=hint,
                     signal_kind="llm_novelty_v1",
-                    salience=0.72,
+                    salience=CURRENT_TURN_SALIENCE,
                     confidence=confidence,
                     evidence_refs=["ctx.user_message"],
                     provenance=provenance,

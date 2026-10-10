@@ -119,8 +119,11 @@ class ReferentProjector:
         self._store = materializer.store
         self._readiness = readiness
         self.last_readiness: ReadinessV1 | None = None
+        # Only memory's own claims: this store primes memory nodes only, so it cannot
+        # see a reading claim's endpoints (the Hub applies those; see
+        # orion/world_pulse_read/assertions.py).
         self._assertions = AssertionProjector(journal=SubstrateGraphJournal(pool), materializer=materializer,
-                                              readiness=readiness)
+                                              readiness=readiness, proposal_actors=(REFERENT_PRODUCER,))
 
     async def run_once(self, *, now: datetime | None = None) -> ProjectionTickV1:
         now = now or datetime.now(timezone.utc)

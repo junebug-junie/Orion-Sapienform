@@ -105,6 +105,7 @@ from orion.schemas.memory_consolidation import (
 from orion.schemas.memory_crystallization import ActiveMemoryPacketV1, MemoryCrystallizationV1
 from orion.schemas.memory_episode import MEMORY_EPISODE_CLOSED_KIND, MemoryEpisodeClosedV1
 from orion.schemas.situation_state import SITUATION_STATE_KIND, SituationStateV1
+from orion.schemas.drive_reading import DriveReadingV1
 from orion.schemas.vision_sighting import IDENTITY_SIGHTING_KIND, IdentitySightingV1
 from orion.schemas.context_exec import (
     BeliefProvenanceReportV1,
@@ -661,6 +662,7 @@ from orion.schemas.attention_frame import (
     VoluntaryOverrideV1,
 )
 from orion.schemas.attention_self_model import AttentionSelfModelV1
+from orion.schemas.attention_candidate import AttentionCandidateV1
 from orion.schemas.attention_schema import AttentionSchemaV1
 # Additive expectation and run-completion fields retain these registrations;
 # deploy peer consumers before Hub producers (docs/peer-ask-episodes.md).
@@ -804,10 +806,12 @@ from orion.schemas.introspect import (
     ReadingResultArguments,
 )
 from orion.schemas.world_pulse_read import (
+    WorldPulseReadClaimReceiptV1,
     WorldPulseReadConceptCandidateV1,
     WorldPulseReadHandoffV1,
     WorldPulseReadPriorCandidateV1,
     WorldPulseReadPriorTestV1,
+    WorldPulseReadRelationshipClaimV1,
     WorldPulseReadSeedV1,
     WorldPulseReadStage2ResultV1,
 )
@@ -1038,6 +1042,7 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "AttentionSignalV1": AttentionSignalV1,
     "SalienceFeaturesV1": SalienceFeaturesV1,
     "PredictionErrorMagnitudeV1": PredictionErrorMagnitudeV1,
+    "AttentionCandidateV1": AttentionCandidateV1,
     "AttentionBroadcastProjectionV1": AttentionBroadcastProjectionV1,
     "VoluntaryOverrideV1": VoluntaryOverrideV1,
     "AttentionSelfModelV1": AttentionSelfModelV1,
@@ -1502,6 +1507,8 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "WorldPulseReadConceptCandidateV1": WorldPulseReadConceptCandidateV1,
     "WorldPulseReadPriorCandidateV1": WorldPulseReadPriorCandidateV1,
     "WorldPulseReadPriorTestV1": WorldPulseReadPriorTestV1,
+    "WorldPulseReadRelationshipClaimV1": WorldPulseReadRelationshipClaimV1,
+    "WorldPulseReadClaimReceiptV1": WorldPulseReadClaimReceiptV1,
     "WorldContextCapsuleV1": WorldContextCapsuleV1,
     "WorldPulseRunV1": WorldPulseRunV1,
     "WorldPulseRunResultV1": WorldPulseRunResultV1,
@@ -1521,6 +1528,9 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     # dict and SCHEMA_REGISTRY below.
     "MemoryEpisodeClosedV1": MemoryEpisodeClosedV1,
     "SituationStateV1": SituationStateV1,
+    # Rest drive (Temporal Self rev 4, 2026-10-10). Redis-only (orion:drive:rest:latest),
+    # not a bus payload: no bus subscriber exists, and an unconsumed channel is an orphan.
+    "DriveReadingV1": DriveReadingV1,
     "IdentitySightingV1": IdentitySightingV1,
     "ContextExecRequestV1": ContextExecRequestV1,
     "ContextExecRunV1": ContextExecRunV1,
@@ -1910,6 +1920,12 @@ SCHEMA_REGISTRY: Dict[str, SchemaRegistration] = {
     "AttentionBroadcastProjectionV1": SchemaRegistration(
         model=AttentionBroadcastProjectionV1,
         kind="attention.broadcast.projection.v1",
+    ),
+    # World-first attention seam (spec 2026-10-07 self-calibration, section A).
+    # Not on the bus: persisted inside attention frames' debug/reasons.
+    "AttentionCandidateV1": SchemaRegistration(
+        model=AttentionCandidateV1,
+        kind="attention.candidate.v1",
     ),
     "EquilibriumServiceTransitionV1": SchemaRegistration(
         model=EquilibriumServiceTransitionV1,

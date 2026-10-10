@@ -83,8 +83,10 @@ _EXTRA_COVERED_SCHEMA_NAMES: dict[str, str] = {
     "FieldAttentionTargetV1": "field_attention_frame.v1 (per-target row, orion/schemas/field_attention_frame.py)",
     "DriveAuditV1": "drive_state.v1 (audit-trail companion, orion/core/schemas/drives.py)",
     "DriveNodeV1": "drive_state.v1 (cognitive-substrate graph-node projection, orion/core/schemas/cognitive_substrate.py -- static drive-kind node, not a live per-tick pressure reading)",
+    "ArcAttentionSummaryV1": "sub-object of TemporalSelfArcV1 (orion/schemas/temporal_self.py): per-arc row counts and reason words of the already-registered attention_schema.v1 entry; no new sensor",
     # --- genuine keyword-collision false positives, unrelated domain ---
     "ArticleClusterV1": "false positive -- orion/schemas/world_pulse.py, news-article clustering, unrelated to node-health 'cluster'",
+    "TemporalSelfStateV1": "false positive on 'selfstate' -- the Temporal Self chronology reducer's serialisable working state (orion/temporal_self/arcs.py), not the retired felt-state SelfStateV1; it reads no inner-state scalar",
     # --- a distinct, real, adjacent subsystem NOT audited by this registry pass:
     #     conversational curiosity/attention-allocation (open loops, curiosity
     #     candidate actions, voluntary override), structurally different from

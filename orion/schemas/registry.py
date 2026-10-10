@@ -735,6 +735,18 @@ from orion.schemas.situation import (
 from orion.schemas.field_attention_frame import FieldAttentionFrameV1, FieldAttentionTargetV1
 from orion.schemas.field_goal import FieldGoalProvenanceV1
 from orion.schemas.field_dominance_run import FieldDominanceRunV1
+from orion.schemas.temporal_self import (
+    ArcAttentionSummaryV1,
+    ArcBodySummaryV1,
+    ArcSummaryV1,
+    ExpectationRefV1,
+    OpenThreadV1,
+    TemporalSelfArcV1,
+    TemporalSelfDayV1,
+    TemporalSelfEventV1,
+    TemporalSelfFrameV1,
+    TemporalSelfStateV1,
+)
 from orion.schemas.field_state import FieldEdgeV1, FieldStateV1
 from orion.schemas.causal_geometry import (
     CausalGeometryDivergenceEntryV1,
@@ -1439,6 +1451,17 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "FieldAttentionFrameV1": FieldAttentionFrameV1,
     "FieldGoalProvenanceV1": FieldGoalProvenanceV1,
     "FieldDominanceRunV1": FieldDominanceRunV1,
+    # Temporal Self (PR #2369 rev 4, patch 2): stored models, not bus payloads in v1.
+    "TemporalSelfEventV1": TemporalSelfEventV1,
+    "TemporalSelfArcV1": TemporalSelfArcV1,
+    "TemporalSelfFrameV1": TemporalSelfFrameV1,
+    "TemporalSelfDayV1": TemporalSelfDayV1,
+    "TemporalSelfStateV1": TemporalSelfStateV1,
+    "ArcSummaryV1": ArcSummaryV1,
+    "ArcAttentionSummaryV1": ArcAttentionSummaryV1,
+    "ArcBodySummaryV1": ArcBodySummaryV1,
+    "OpenThreadV1": OpenThreadV1,
+    "ExpectationRefV1": ExpectationRefV1,
     "PolicyDecisionV1": PolicyDecisionV1,
     "PolicyDecisionFrameV1": PolicyDecisionFrameV1,
     "ProposalCandidateV1": ProposalCandidateV1,

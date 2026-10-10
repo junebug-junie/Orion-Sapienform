@@ -1,0 +1,35 @@
+name: Temporal Self reducer
+on:
+  pull_request:
+    paths:
+      - 'orion/temporal_self/**'
+      - 'orion/schemas/temporal_self.py'
+      - 'orion/schemas/registry.py'
+      - 'orion/orion_day/window.py'
+      - 'orion/situational/context.py'
+      - 'scripts/check_inner_state_registry.py'
+      - '.github/workflows/temporal-self-tests.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'orion/temporal_self/**'
+      - 'orion/schemas/temporal_self.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  reducer:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      PYTHONPATH: ${{ github.workspace }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install pytest pydantic==2.10.3 PyYAML
+      - name: Gate tests (pure reducer, no I/O)
+        run: python -m pytest -q orion/temporal_self/tests
+      - name: Arc-precision eval on the exported 10-09 fixture day
+        run: python orion/temporal_self/evals/run_arc_precision_eval.py

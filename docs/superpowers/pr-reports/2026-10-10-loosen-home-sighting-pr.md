@@ -15,7 +15,7 @@ No threshold fixes a 0.20 score. That is the same range as a stranger's face. Th
 
 ## Files changed
 
-- `config/vision_frame_router.yaml`: cam0 `identity_dispatch.min_seconds_between_dispatch` 30 → 5.
+- `config/vision_frame_router.yaml`: cam0 `identity_dispatch.min_seconds_between_dispatch` 30 → 5; `global.max_inflight_total` 2 → 3.
 - `orion/schemas/vision_sighting.py`: `outcome: "probable" | "corroborated"`.
 - `services/orion-vision-window/app/main.py`, `app/settings.py`, `.env_example`: the rule.
 - Tests: `services/orion-vision-window/tests/test_identity_sighting.py`, `services/orion-durable-runs/tests/test_situation_graph.py`.
@@ -34,12 +34,32 @@ No threshold fixes a 0.20 score. That is the same range as a stranger's face. Th
 ## Tests run
 
 ```text
-orion-vision-window        pytest tests -q                       113 passed
+orion-vision-window        pytest tests -q                       116 passed
 orion-durable-runs         pytest tests/test_situation_graph.py   33 passed
 orion-vision-frame-router  pytest tests -q                       81 passed
 ```
 
+## Review findings fixed
+
+- Finding (medium): an identity job counts toward the router's global cap of 2 jobs. With cam0 checking faces every 5 s, cam0's detection plus its face check would fill both slots, and carbon and walkway frames would drop (`global_inflight_limit`) about half the time cam0 sees a person.
+  - Fix: `max_inflight_total` 2 → 3.
+  - Watch after deploy: router skip counts for carbon and walkway.
+- Finding (low): matches were keyed by camera only, so a near-match for another person could corroborate one for Juniper.
+  - Fix: matches are keyed by (camera, person).
+  - Evidence: `test_matches_for_different_people_do_not_corroborate`.
+- Finding (low): the outcome wasn't logged anywhere.
+  - Fix: the `identity_sighting` log now carries the outcome and the number of matches in the window.
+- Finding (low): untested edges.
+  - Fix: added `test_after_the_hold_the_next_probable_publishes_again` and `test_possible_matches_further_apart_than_the_window_do_not_corroborate`.
+- Finding (low): stale "30s" comments in the router config and the vision-window settings.
+  - Fix: updated.
+
 ## Risks / concerns
+
+- **Low: more load on vision-host.**
+  - Concern: with 3 jobs allowed at once instead of 2, vision-host can be asked for more work at the same time. Each identity job is 0.06–0.14 s of inference, and queue wait is already about 2.4 s.
+  - Mitigation: watch `queue_wait_est_s` after deploy.
+
 
 - **Medium: more chance of mistaking someone else for Juniper.**
   - Concern: a single 0.55 match, or two 0.35+ matches, could come from another household member. Nobody has measured how others score against Juniper's gallery.

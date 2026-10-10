@@ -94,3 +94,32 @@ def test_seen_at_is_the_frame_time_when_known():
     asyncio.run(svc._maybe_publish_sighting(art, PROBABLE))
     s = IdentitySightingV1.model_validate(svc.bus.publish.await_args.args[1].payload)
     assert s.seen_at.timestamp() == 1_791_500_000.0
+
+
+
+def test_after_the_hold_the_next_probable_publishes_again(monkeypatch):
+    svc = _svc()
+    clock = {"t": 1_000.0}
+    monkeypatch.setattr(app_main.time, "time", lambda: clock["t"])
+    assert asyncio.run(svc._maybe_publish_sighting(_artifact("cam0"), PROBABLE)) is True
+    clock["t"] += 600
+    assert asyncio.run(svc._maybe_publish_sighting(_artifact("cam0"), PROBABLE)) is False   # inside the 30-min hold
+    clock["t"] += app_main.settings.WINDOW_SIGHTING_MIN_INTERVAL_SEC
+    assert asyncio.run(svc._maybe_publish_sighting(_artifact("cam0"), PROBABLE)) is True
+
+
+def test_possible_matches_further_apart_than_the_window_do_not_corroborate(monkeypatch):
+    svc = _svc()
+    clock = {"t": 1_000.0}
+    monkeypatch.setattr(app_main.time, "time", lambda: clock["t"])
+    assert asyncio.run(svc._maybe_publish_sighting(_artifact("cam0"), POSSIBLE)) is False
+    clock["t"] += app_main.settings.WINDOW_SIGHTING_MATCH_WINDOW_SEC + 1
+    assert asyncio.run(svc._maybe_publish_sighting(_artifact("cam0"), POSSIBLE)) is False
+    svc.bus.publish.assert_not_awaited()
+
+
+def test_matches_for_different_people_do_not_corroborate():
+    svc = _svc()
+    assert asyncio.run(svc._maybe_publish_sighting(_artifact("cam0"), {**POSSIBLE, "subject": "someone"})) is False
+    assert asyncio.run(svc._maybe_publish_sighting(_artifact("cam0"), POSSIBLE)) is False
+    svc.bus.publish.assert_not_awaited()

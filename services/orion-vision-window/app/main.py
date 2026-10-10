@@ -106,7 +106,7 @@ class WindowService:
         # never grows unbounded (one entry per stream_id, overwritten).
         self._identity_by_stream: Dict[str, Dict[str, Any]] = {}
         self._last_sighting_at: Dict[str, float] = {}
-        self._probable_at: Dict[str, List[float]] = {}
+        self._match_at: Dict[Tuple[str, str], List[float]] = {}
         self._identity_lock = asyncio.Lock()
         # Running count of identity_face verdicts by outcome (trace only).
         self._identity_checks: Dict[str, int] = defaultdict(int)
@@ -610,9 +610,11 @@ class WindowService:
         if stream not in homes:
             return False
         now = time.time()
-        recent = [t for t in self._probable_at.get(stream, []) if now - t <= settings.WINDOW_SIGHTING_MATCH_WINDOW_SEC]
+        # Keyed by (camera, person): matches for different gallery subjects never corroborate.
+        key = (stream, str((hint or {}).get("subject") or ""))
+        recent = [t for t in self._match_at.get(key, []) if now - t <= settings.WINDOW_SIGHTING_MATCH_WINDOW_SEC]
         recent.append(now)
-        self._probable_at[stream] = recent[-20:]
+        self._match_at[key] = recent[-20:]
         # One "probable" is enough on its own; "possible" needs company (2026-10-10 loosening).
         if state == "probable":
             outcome = "probable"
@@ -635,7 +637,8 @@ class WindowService:
         await self.bus.publish(settings.CHANNEL_IDENTITY_SIGHTING_PUB, BaseEnvelope(
             kind=IDENTITY_SIGHTING_KIND, source=_source_ref(), payload=sighting.model_dump(mode="json")))
         self._last_sighting_at[stream] = now
-        logger.info(f"[WINDOW] identity_sighting stream={stream} similarity={sighting.similarity:.3f}")
+        logger.info(f"[WINDOW] identity_sighting stream={stream} outcome={outcome} "
+                    f"similarity={sighting.similarity:.3f} matches_in_window={len(recent)}")
         return True
 
     async def _publish_crop_observation(self, artifact: VisionArtifactPayload, env: BaseEnvelope) -> None:

@@ -59,7 +59,7 @@ class Settings(BaseSettings):
     # gate (a stale observation rendered as current is worse than none).
     # Identity dispatch is rate-limited to roughly once per
     # min_seconds_between_dispatch (config/vision_frame_router.yaml's
-    # identity_dispatch block, live default 30s) per camera, so this must
+    # identity_dispatch block, cam0 live 5s since 2026-10-10) per camera, so this must
     # comfortably exceed that cadence or a hypothesis would read as stale
     # between its own refreshes.
     WINDOW_IDENTITY_MAX_AGE_SEC: float = 90.0

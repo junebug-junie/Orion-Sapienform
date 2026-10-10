@@ -37,6 +37,11 @@ from app.admitted_graph import (
 from app.admitted_reflect_graph import build_admitted_reflect_graph
 from app.compactor_digest_graph import build_compactor_digest_graph, finish_detail as compactor_digest_finish_detail
 from app.journal_compose_graph import build_journal_compose_graph, finish_detail as journal_compose_finish_detail
+from app.dream_carry_graph import (
+    DEFAULT_FINISH_GRACE_SEC as DREAM_CARRY_DEFAULT_FINISH_GRACE_SEC, DreamCarryDeps, build_dream_carry_graph,
+    finish_detail as dream_carry_finish_detail, terminal_detail as dream_carry_terminal_detail,
+)
+from orion.schemas.dream_carry import DREAM_CARRY_WORKFLOW
 from app.episode_distill_graph import build_episode_distill_graph, finish_detail as episode_distill_finish_detail
 from orion.schemas.memory_episode import MEMORY_EPISODE_DISTILL_WORKFLOW
 from orion.schemas.journal_compose_run import JOURNAL_COMPOSE_WORKFLOW
@@ -92,7 +97,13 @@ WORK_NODES = {DEFAULT_WORKFLOW: {"run_started", "harness_turn"}, SELF_SENSE_WORK
               JOURNAL_COMPOSE_WORKFLOW: {"compose"},
               # Both LLM calls run under the hold; a restart replays the first one without a
               # checkpointed text (a finished note is never regenerated). persist needs no GPU.
-              ORION_DAY_WORKFLOW: {"write_note", "write_carry_forward"}}
+              ORION_DAY_WORKFLOW: {"write_note", "write_carry_forward"},
+              # Only a text hop holds the LLM hold; it releases it before its hop is checkpointed.
+              # Image hops are child reverie.visual runs and hold nothing in the carry.
+              DREAM_CARRY_WORKFLOW: {"text_hop"}}
+# Interrupt nodes the driver resumes only once the run's checkpointed ``retry_at`` has passed, and
+# whose loop iterations are not lifecycle facts (no run.<status> / run.resumed event per wake).
+TIMED_WAIT_NODES = frozenset({"retry_wait", "image_wait"})
 # The DurableRunStateV1.node each admitted terminal is published under (the graph node it ends at).
 TERMINAL_STATE_NODE = {"completed": "finish", "failed": "failed", "cancelled": "finish"}
 # Pool events (for a durable-run holder) after which a waiting run should look at its hold now.
@@ -182,6 +193,14 @@ class AdmissionRuntime:
                 publish_journal=lambda entry: runner._publish_journal(entry),
                 load_brief=self._orion_day_brief,
             ), admission_deps, runner._checkpointer),
+            # Dream carry-through (2026-10-10). Late-bound: text/finish steps go to orion-dream through
+            # the runner; image hops are child reverie.visual runs submitted to this same runtime.
+            DREAM_CARRY_WORKFLOW: build_dream_carry_graph(DreamCarryDeps(
+                run_step=lambda request, budget_sec=None: runner._run_dream_carry_step(request, budget_sec),
+                submit_child=lambda request: self.submit(request),
+                child_terminal=lambda run_id: self.store.terminal_detail(run_id),
+                finish_grace_sec=self._carry_grace_sec(),
+            ), admission_deps, runner._checkpointer),
         }
         # Back-compat alias used by older tests that reach for `.graph`.
         self.graph = self.graphs[DEFAULT_WORKFLOW]
@@ -206,6 +225,27 @@ class AdmissionRuntime:
         self._abandons_loaded_at: float | None = None
         self._abandoning: dict[str, asyncio.Task] = {}
 
+    def _carry_grace_sec(self) -> float:
+        return float(getattr(self.settings, "dream_carry_finish_grace_sec", DREAM_CARRY_DEFAULT_FINISH_GRACE_SEC))
+
+    def _carry_past_deadline(self, workflow: str | None, state: dict) -> bool:
+        """A dream.carry run past its deadline: the graph routes it to finish (partial), so the driver
+        must wake it rather than wait on the pool or fail it."""
+        deadline = (state.get("admission") or {}).get("deadline_at")
+        return workflow == DREAM_CARRY_WORKFLOW and bool(deadline) and self.now() >= datetime.fromisoformat(deadline)
+
+    def _driver_deadline(self, workflow: str | None, state: dict) -> datetime | None:
+        """When the driver itself fails a run that is still pending. dream.carry's graph owns its
+        deadline (a partial finish, then finish retries for the grace); the driver only backstops it
+        once the graph's own bound (deadline + grace) is well past."""
+        deadline = (state.get("admission") or {}).get("deadline_at")
+        if not deadline:
+            return None
+        at = datetime.fromisoformat(deadline)
+        if workflow == DREAM_CARRY_WORKFLOW:
+            at += timedelta(seconds=self._carry_grace_sec() + float(self.settings.retry_max_sec))
+        return at
+
     def _graph_for(self, workflow: str | None):
         return self.graphs.get(workflow or DEFAULT_WORKFLOW) or self.graphs[DEFAULT_WORKFLOW]
 
@@ -227,6 +267,8 @@ class AdmissionRuntime:
             return orion_day_finish_detail(state)
         if workflow == MEMORY_EPISODE_DISTILL_WORKFLOW:
             return episode_distill_finish_detail(state)
+        if workflow == DREAM_CARRY_WORKFLOW:
+            return dream_carry_finish_detail(state)
         return finish_detail(state)
 
     async def _load_episode(self, brief) -> dict:
@@ -284,6 +326,8 @@ class AdmissionRuntime:
         that actually failed."""
         if workflow == REVERIE_VISUAL_WORKFLOW:
             return reverie_visual_terminal_detail(state, status)
+        if workflow == DREAM_CARRY_WORKFLOW:
+            return dream_carry_terminal_detail(state, status)
         # Urgent runs must end in a report, so their failed/cancelled facts say so (Hub keys on it).
         urgent = urgent_detail(state)
         if status == "cancelled":
@@ -524,7 +568,8 @@ class AdmissionRuntime:
             # Joinable to the pool's child leases (acceptance check 2: no un-attached agent lease
             # under a turn whose run holds a hold).
             detail["turn_correlation_id"] = turn_correlation_id(state)
-        elif state.get("workflow") == REVERIE_VISUAL_WORKFLOW and state.get("step_correlation_id"):
+        elif state.get("workflow") in (REVERIE_VISUAL_WORKFLOW, DREAM_CARRY_WORKFLOW) \
+                and state.get("step_correlation_id"):
             detail["step_correlation_id"] = state["step_correlation_id"]
         await self.event(state, "run.started", detail)
         work = asyncio.create_task(node(state))
@@ -881,7 +926,7 @@ class AdmissionRuntime:
         if state.get("workflow") == COMPACTOR_DIGEST_WORKFLOW:
             # No harness turn: each digest call is a plain cortex-orch verb RPC; a replay re-asks.
             return
-        if state.get("workflow") in (REVERIE_VISUAL_WORKFLOW, ORION_DAY_WORKFLOW):
+        if state.get("workflow") in (REVERIE_VISUAL_WORKFLOW, ORION_DAY_WORKFLOW, DREAM_CARRY_WORKFLOW):
             # No harness turn: generate runs in orion-thought, whose replay is idempotent (the
             # recorded artifact, or a generate_in_flight retry); orion_day.letter's calls are plain
             # cortex verbs, never a harness run, so there is nothing to cancel by turn id.
@@ -998,10 +1043,12 @@ class AdmissionRuntime:
                 await self._recover(graph, cfg, workflow, state, snap)
                 snap = await graph.aget_state(cfg)
                 state = dict(snap.values)
-            deadline = state["admission"].get("deadline_at")
-            if deadline and self.now() >= datetime.fromisoformat(deadline):
+            deadline = self._driver_deadline(workflow, state)
+            if deadline and self.now() >= deadline:
                 released = await self.release(state, "deadline")
                 error = self._deadline_error(workflow)
+                if workflow == DREAM_CARRY_WORKFLOW and state.get("last_error"):
+                    error = f"{error}: {state['last_error']}"[:500]
                 await graph.aupdate_state(cfg, {**released, "status": "failed", "last_error": error},
                                           as_node="failed")
                 await self._terminal(run_id, "failed", {**state, "last_error": error}, workflow=workflow)
@@ -1012,12 +1059,15 @@ class AdmissionRuntime:
             try:
                 resume = None
                 if any(t.interrupts for t in snap.tasks):
-                    if snap.next == ("resource_wait",) and not await self._hold_ready(run_id, state):
+                    if snap.next == ("resource_wait",) and not self._carry_past_deadline(workflow, state) \
+                            and not await self._hold_ready(run_id, state):
                         return
-                    if snap.next == ("retry_wait",) and self.now() < datetime.fromisoformat(state["retry_at"]):
+                    if len(snap.next) == 1 and snap.next[0] in TIMED_WAIT_NODES and state.get("retry_at") \
+                            and self.now() < datetime.fromisoformat(state["retry_at"]):
                         return
                     resume = Command(resume=True)
-                    await self.event(state, "run.resumed", {"node": snap.next[0]})
+                    if snap.next != ("image_wait",):   # a child poll is not a lifecycle fact
+                        await self.event(state, "run.resumed", {"node": snap.next[0]})
                 async for update in graph.astream(resume, cfg, stream_mode="updates", durability="sync"):
                     snap = await graph.aget_state(cfg)
                     state = dict(snap.values)
@@ -1025,7 +1075,7 @@ class AdmissionRuntime:
                         if node == "__interrupt__":
                             continue
                         status = state.get("status", "running")
-                        if status in TERMINAL or node == "retry_wait":
+                        if status in TERMINAL or node in TIMED_WAIT_NODES:
                             continue  # Atomic terminal projection owns terminal lifecycle facts.
                         checkpoint = snap.config["configurable"].get("checkpoint_id", "")
                         await self.store.record_event(run_id, "run."+status, {"node": node},
@@ -1100,6 +1150,8 @@ class AdmissionRuntime:
         if actual is not None:
             self._hints.discard(run_id)
             self._checked.pop(run_id, None)
+        if wf == DREAM_CARRY_WORKFLOW and actual in ("failed", "cancelled") and state.get("child_run_id"):
+            await self._cancel_carry_child(run_id, state["child_run_id"])
         self._wake.set()
         if abandon is not None and actual in ("failed", "cancelled"):
             # Last, after every terminal fact: the run is terminal whether or not thought answers.
@@ -1107,6 +1159,16 @@ class AdmissionRuntime:
             # failed one stays pending and reconcile retries it (_retry_abandons).
             self._abandons[run_id] = {**abandon, "failures": 0, "due": 0.0, "pending_since": time.time()}
             self._spawn_abandon(run_id)
+
+    async def _cancel_carry_child(self, run_id: str, child_run_id: str) -> None:
+        """A dream.carry run ended without completing while an image hop was in flight: nobody will
+        read that painting, so the child is cancelled (its own abandon then closes thought's attempt).
+        Never raises: the carry is terminal either way."""
+        try:
+            if await self.store.terminal_detail(child_run_id) is None:
+                await self.control(child_run_id, "cancel")
+        except Exception:  # noqa: BLE001
+            logger.exception("dream_carry_child_cancel_failed run=%s child=%s", run_id, child_run_id)
 
     async def _record_reverie_abandon(self, run_id: str, state: dict) -> dict | None:
         """A reverie.visual run is about to end without completing (graph ``failed``, run deadline
@@ -1129,7 +1191,7 @@ class AdmissionRuntime:
             await self.store.record_event(run_id, ABANDON_PENDING_EVENT, entry, event_id=f"abandon_pending:{run_id}")
         except Exception:  # noqa: BLE001 -- still tried (and retried) from memory; not durable
             logger.exception("reverie_visual_abandon_record_failed run=%s", run_id)
-        return {**entry, "visual_request": brief.get("visual_request")}
+        return {**entry, "visual_request": brief.get("visual_request"), "dream_hop": brief.get("dream_hop")}
 
     def _spawn_abandon(self, run_id: str) -> asyncio.Task:
         """At most one abandon RPC in flight per run, off the reconcile loop's critical path."""
@@ -1149,7 +1211,7 @@ class AdmissionRuntime:
             return False
         ok, req = False, None
         try:
-            req = abandon_request(run_id, entry["visual_request"], entry.get("attempt_id"))
+            req = abandon_request(run_id, entry["visual_request"], entry.get("attempt_id"), entry.get("dream_hop"))
             ok = await send_abandon(self._reverie_step, req, reason=entry["reason"])
             if ok:
                 await self.store.record_event(run_id, ABANDON_ACKED_EVENT, {
@@ -1186,7 +1248,8 @@ class AdmissionRuntime:
                 generated_at = row.get("generated_at")
                 self._abandons.setdefault(row["run_id"], {
                     "attempt_id": detail.get("attempt_id"), "reason": detail.get("reason") or "terminal",
-                    "visual_request": brief.get("visual_request"), "failures": 0, "due": 0.0,
+                    "visual_request": brief.get("visual_request"), "dream_hop": brief.get("dream_hop"),
+                    "failures": 0, "due": 0.0,
                     "pending_since": generated_at.timestamp() if isinstance(generated_at, datetime) else time.time()})
             self._abandons_loaded_at = time.monotonic()
         now = time.monotonic()
@@ -1361,7 +1424,18 @@ class AdmissionRuntime:
                     "retry_at": values.get("retry_at"),
                     "deadline_at": (row["request"]["admission"] or {}).get("deadline_at")},
                     "error": values.get("last_error")}
-                   if workflow == ORION_DAY_WORKFLOW else {})}
+                   if workflow == ORION_DAY_WORKFLOW else {}),
+                **({"dream_carry": {
+                    "hops_made": len(values.get("hops") or []),
+                    "hops_planned": (values.get("brief") or {}).get("hops"),
+                    "stopped_reason": values.get("stopped_reason"),
+                    "child_run_id": values.get("child_run_id"),
+                    "child_run_ids": list(values.get("child_run_ids") or []),
+                    "dream_id": values.get("dream_id"),
+                    "retry_at": values.get("retry_at"),
+                    "deadline_at": (row["request"]["admission"] or {}).get("deadline_at")},
+                    "error": values.get("last_error")}
+                   if workflow == DREAM_CARRY_WORKFLOW else {})}
 
     async def close(self):
         # Pending abandons are durable (run.abandon_pending): the next process retries them.

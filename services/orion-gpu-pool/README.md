@@ -341,7 +341,11 @@ loads nothing -- 136 refusals over 26 h went unnoticed. Now (`app/controller_hea
 - Two refusals in a row whose reason a retry cannot fix (`config_unloadable`, `fence_state_unreadable`,
   `launch_digest_mismatch` and the other config disagreements, `invalid_request`) mark the seat
   **degraded**. Retryable refusals (`busy`, `deadline_passed`, `upstream_not_idle:*`,
-  `stale_generation`) neither trip nor clear it. At the 600 s cooldown that is ~10 min.
+  `stale_generation`) neither trip nor clear it. The two must be >= 60 s apart (a boot reconcile and
+  the first load can both hit one mid-`git pull` read). At the 600 s cooldown that is ~10 min.
+- A succeeded `status` clears only "can't read config"/"rejects requests" (the controller's status path
+  skips the digest/profile/launch checks); a config mismatch clears only when a load/unload is admitted.
+- Memory only: a pool restart forgets it (a still-broken controller re-alerts ~10 min later).
 - `/health` -> `degraded: [seat]` and `actuation.controller.<seat>` (reason, refusals, first/last seen,
   plain advice: "rebuild the controller on circe"). The state payload carries the same on the seat's
   card under `actuation.controller_degraded` (not persisted); the Hub GPU pool panel shows it as

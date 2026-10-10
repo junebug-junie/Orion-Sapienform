@@ -990,7 +990,7 @@ class PoolRuntime:
                 if res.status == "refused":
                     self._controller_refused(seat, res.reason)
                 elif res.status == "succeeded":
-                    self._controller_answered(seat)
+                    self._controller_answered(seat, via_status=True)
                 if res.status != "succeeded":
                     await self._finish(seat, state="fault", loaded=None, outcome=f"status_{res.status}",
                                        event="swap_failed", reason=f"status_{res.status}:{res.reason}")
@@ -1095,8 +1095,8 @@ class PoolRuntime:
                      seat, t.host, t.kind, t.reason, t.count, view["first_seen"], view["advice"])
         self._fire_controller_alert(seat, "degraded", view)
 
-    def _controller_answered(self, seat: str) -> None:
-        t = self.controller_health.on_answered(seat)
+    def _controller_answered(self, seat: str, *, via_status: bool = False) -> None:
+        t = self.controller_health.on_answered(seat, via_status=via_status)
         if t is None:
             return
         view = {**t.view(), "degraded": False, "recovered_at": self.now().isoformat()}
@@ -1118,6 +1118,16 @@ class PoolRuntime:
         task = asyncio.create_task(send())
         self._alert_tasks.add(task)
         task.add_done_callback(self._alert_tasks.discard)
+
+    async def drain_alerts(self, timeout: float = 5.0) -> None:
+        """Shutdown: let an in-flight alert POST finish (bounded), then cancel what is left."""
+        tasks = list(self._alert_tasks)
+        if not tasks:
+            return
+        _, pending = await asyncio.wait(tasks, timeout=timeout)
+        for t in pending:
+            t.cancel()
+        await asyncio.gather(*pending, return_exceptions=True)
 
     def _card_actuation(self, c: CardLive) -> dict[str, Any] | None:
         """The card's action record, plus ``controller_degraded`` (not persisted) for a degraded seat on
@@ -1197,7 +1207,7 @@ class PoolRuntime:
         if res.status == "refused":
             self._controller_refused(seat, res.reason)
         elif res.status == "succeeded":
-            self._controller_answered(seat)
+            self._controller_answered(seat, via_status=True)
         if res.status != "succeeded":
             logger.warning("gpu_pool_reconcile_refused seat=%s status=%s reason=%s -- keeping the persisted "
                            "card state", seat, res.status, res.reason)

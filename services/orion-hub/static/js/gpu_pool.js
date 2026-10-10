@@ -289,7 +289,7 @@
       lines.push(sw.actuatedRoles.length
         ? `pool actuates ${esc(sw.actuatedRoles.join(", "))}${paused ? " · PAUSED: nothing is loaded or unloaded" : ""}`
         : "no seat here the pool can load: swaps are reported, not actuated");
-      if (a) {
+      if (a && a.action) {   // controller_degraded alone (no action record yet) is not an action
         lines.push(`${esc(a.action)} ${esc(a.role)} (g${esc(a.generation)}, ${esc(a.reason)})`
           + (a.profile ? ` · model ${esc(a.profile)}` : "")
           + (a.phase ? ` · phase ${esc(a.phase)}` : "") + (a.outcome ? ` · ${esc(a.outcome)}` : " · in flight")

@@ -50,6 +50,7 @@ async def refuse_next_load(rt, clock, home, reason):
 def test_classify_names_only_reasons_a_retry_cannot_fix():
     assert classify(STALE) == "config_unreadable"
     assert classify("fence_state_unreadable:OSError") == "config_unreadable"
+    assert classify("fence_state_unwritable:PermissionError") == "state_unwritable"
     assert classify("launch_digest_mismatch") == "config_mismatch"
     assert classify("no_launch_block:agent-gpu2") == "config_mismatch"
     assert classify("invalid_request:('max_holds',)") == "request_rejected"
@@ -78,6 +79,7 @@ def test_build_request_is_an_error_card_with_the_fix_and_recovery_is_ack_free():
     h = ControllerHealth()
     clock = Clock()
     h.on_refused(SEAT, STALE, host="circe", now=clock())
+    clock.advance(600)
     t = h.on_refused(SEAT, STALE, host="circe", now=clock())
     req = build_request(SEAT, "degraded", t.view(), source="orion-gpu-pool")
     assert req.severity == "error" and req.require_ack
@@ -222,3 +224,91 @@ def test_health_reports_the_degraded_seat_plainly():
     c = body["actuation"]["controller"][SEAT]
     assert c["degraded"] and c["kind"] == "config_unreadable" and c["first_seen"]
     assert "can't read its config" in c["advice"] and "Rebuild the controller on circe" in c["advice"]
+
+
+def test_two_refusals_seconds_apart_do_not_degrade_until_the_span_floor():
+    """A boot reconcile refusal and the first load refusal can land in one mid-pull window."""
+    clock = Clock()
+    h = ControllerHealth()
+    h.on_refused(SEAT, STALE, host="circe", now=clock())
+    clock.advance(5)
+    assert h.on_refused(SEAT, STALE, host="circe", now=clock()) is None
+    clock.advance(600)
+    assert h.on_refused(SEAT, STALE, host="circe", now=clock()) is not None
+
+
+def test_a_status_answer_cannot_clear_a_config_mismatch():
+    """The controller's status path resolves with digest=None: it never checks the digest, profile or
+    launch block, so a succeeded status proves nothing about them."""
+    clock = Clock()
+    h = ControllerHealth()
+    for _ in range(2):
+        h.on_refused(SEAT, "launch_digest_mismatch", host="circe", now=clock())
+        clock.advance(600)
+    assert h.on_answered(SEAT, via_status=True) is None and SEAT in h.degraded()
+    assert h.on_answered(SEAT) is not None and h.degraded() == {}
+    # config_unreadable IS cleared by a status: the status path loads the config first
+    for _ in range(2):
+        h.on_refused(SEAT, STALE, host="circe", now=clock())
+        clock.advance(600)
+    assert h.on_answered(SEAT, via_status=True) is not None
+
+
+def test_reconcile_status_does_not_clear_a_digest_mismatch_through_the_runtime():
+    async def go():
+        rt, clock = enforce()
+        alerts = wire(rt)
+        await boot(rt)
+        [st] = statuses(rt)
+        await result(rt, st, "succeeded", observed={SEAT: "exited", "diffusion": "running"}, in_flight=False)
+        home, _ = await demand_gpu2(rt, clock)
+        await result(rt, actuations(rt)[-1], "refused", reason="launch_digest_mismatch")
+        await refuse_next_load(rt, clock, home, "launch_digest_mismatch")
+        assert [s for _, s, _ in alerts.sent] == ["degraded"]
+        from orion.schemas.gpu_pool import GpuPoolControlV1
+        await rt.control(GpuPoolControlV1(verb="pause_actuation", actor="juniper"))
+        await rt.control(GpuPoolControlV1(verb="resume_actuation", actor="juniper"))   # resume reconciles
+        [*_, again] = statuses(rt)
+        await result(rt, again, "succeeded", observed={SEAT: "exited", "diffusion": "running"}, in_flight=False)
+        await settle()
+        assert SEAT in rt.controller_health.degraded() and [s for _, s, _ in alerts.sent] == ["degraded"]
+    run(go())
+
+
+def test_a_stale_replayed_result_does_not_clear_the_seat():
+    async def go():
+        rt, clock = make()
+        alerts = wire(rt)
+        await boot(rt)
+        home, _ = await demand_gpu2(rt, clock)
+        old = actuations(rt)[-1]
+        await result(rt, old, "refused", reason=STALE)
+        await refuse_next_load(rt, clock, home, STALE)
+        await result(rt, old, "succeeded", observed={SEAT: "exited", "diffusion": "running"})   # a replay
+        await settle()
+        assert SEAT in rt.controller_health.degraded() and [s for _, s, _ in alerts.sent] == ["degraded"]
+    run(go())
+
+
+def test_drain_alerts_waits_for_an_in_flight_post_then_cancels_the_rest():
+    async def go():
+        rt, clock = make()
+        done = []
+
+        async def slow(seat, state, view):
+            await asyncio.sleep(0.01)
+            done.append(state)
+
+        async def hang(seat, state, view):
+            await asyncio.sleep(3600)
+
+        rt.controller_alert = slow
+        rt._fire_controller_alert(SEAT, "degraded", {})
+        await rt.drain_alerts(timeout=1)
+        assert done == ["degraded"] and not rt._alert_tasks
+        rt.controller_alert = hang
+        rt._fire_controller_alert(SEAT, "degraded", {})
+        await rt.drain_alerts(timeout=0.01)
+        await settle()
+        assert not rt._alert_tasks
+    run(go())

@@ -13,6 +13,9 @@ seat degraded after ``DEGRADE_AFTER`` in a row, and clears it the moment the con
 anything that proves it read its config (a succeeded or failed action, a succeeded status).
 Refusals that a retry does fix (``busy``, ``deadline_passed``, ``upstream_not_idle:*``, ...)
 neither trip nor clear it. Pure: no clock, no I/O; the runtime calls it and does the alerting.
+
+Memory only: a pool restart forgets the count (a still-broken controller re-alerts ~10 min after
+the restart; a recovery that happens across a restart sends no "recovered" card).
 """
 from __future__ import annotations
 
@@ -21,9 +24,12 @@ from datetime import datetime
 from typing import Any
 
 # Two in a row, not one: a controller reading the YAML in the middle of a `git pull` can fail
-# once and be fine on the next read. With the pool's swap_cooldown_sec (600) between attempts,
-# the second refusal -- and the alert -- lands ~10 min after the first.
+# once and be fine on the next read. And at least DEGRADE_MIN_SPAN_SEC apart: a boot/resume
+# reconcile `status` refusal followed seconds later by the first load refusal could both land in
+# that same mid-pull window. With the pool's swap_cooldown_sec (600) between attempts, the alert
+# lands ~10 min after the first refusal.
 DEGRADE_AFTER = 2
+DEGRADE_MIN_SPAN_SEC = 60.0
 
 # Refusal reason -> kind. Prefix match on the part before ':' (the controller appends the
 # exception type or role name). Explicit on purpose: an unknown reason is neutral, never a page.
@@ -31,6 +37,7 @@ DEGRADE_AFTER = 2
 _KINDS: dict[str, str] = {
     "config_unloadable": "config_unreadable",
     "fence_state_unreadable": "config_unreadable",
+    "fence_state_unwritable": "state_unwritable",
     "launch_digest_mismatch": "config_mismatch",
     "profile_not_allowed": "config_mismatch",
     "unknown_role": "config_mismatch",
@@ -38,9 +45,16 @@ _KINDS: dict[str, str] = {
     "cards_mismatch": "config_mismatch",
     "no_launch_block": "config_mismatch",
     "not_a_swap_seat": "config_mismatch",
-    # The controller's GpuActuateV1 rejected the pool's request: its schema is older than the pool's.
+    # The controller's GpuActuateV1 rejected the pool's request: usually its schema is older than
+    # the pool's (invalid_request:deadline_at_naive is a pool-side bug; the advice says both).
     "invalid_request": "request_rejected",
 }
+
+# What a successful `status` proves. The controller's status path loads its config and resolves
+# the role with digest=None (pool_fence.resolve): it never checks the digest, profile or launch
+# block, and never writes the fence file. So a status answer clears only the kinds it exercises;
+# the rest clear on a load/unload the controller admits.
+_STATUS_CLEARS = {"config_unreadable", "request_rejected"}
 
 
 def classify(reason: str | None) -> str | None:
@@ -57,9 +71,14 @@ def advice(kind: str, *, seat: str, host: str, reason: str) -> str:
                 f"than the checkout it reads. Rebuild the controller on {host}. Until then the pool "
                 f"cannot load or unload {seat}.")
     if kind == "request_rejected":
-        return (f"The GPU lane controller on {host} rejects the pool's requests ({reason}): its code is "
-                f"older than the pool's. Rebuild the controller on {host}. Until then the pool cannot "
-                f"load or unload {seat}.")
+        return (f"The GPU lane controller on {host} rejects the pool's requests ({reason}): usually its "
+                f"code is older than the pool's -- rebuild the controller on {host}; if it is already "
+                f"current, the pool is sending a bad request. Until then the pool cannot load or "
+                f"unload {seat}.")
+    if kind == "state_unwritable":
+        return (f"The GPU lane controller on {host} can't write its fence state file ({reason}): check "
+                f"its mount, disk space and permissions on {host}, then restart it. Until then the pool "
+                f"cannot load or unload {seat}.")
     return (f"The GPU lane controller on {host} and the pool disagree about {seat}'s config ({reason}). "
             f"Pull the same commit on both hosts, then rebuild the controller on {host}. Until then "
             f"the pool cannot load or unload {seat}.")
@@ -89,6 +108,7 @@ class SeatTrouble:
 @dataclass
 class ControllerHealth:
     threshold: int = DEGRADE_AFTER
+    min_span_sec: float = DEGRADE_MIN_SPAN_SEC
     seats: dict[str, SeatTrouble] = field(default_factory=dict)
 
     def on_refused(self, seat: str, reason: str | None, *, host: str, now: datetime) -> SeatTrouble | None:
@@ -103,16 +123,21 @@ class ControllerHealth:
                                                count=0, first_seen=now, last_seen=now)
         t.count += 1
         t.last_seen, t.kind, t.reason, t.host = now, kind, reason or "", host
-        if t.degraded_since is None and t.count >= self.threshold:
+        if t.degraded_since is None and t.count >= self.threshold \
+                and (now - t.first_seen).total_seconds() >= self.min_span_sec:
             t.degraded_since = now
             return t
         return None
 
-    def on_answered(self, seat: str) -> SeatTrouble | None:
-        """The controller read its config and acted (or reported). Returns the record it clears when
-        the seat WAS degraded (the caller logs the recovery), else None."""
-        t = self.seats.pop(seat, None)
-        return t if t is not None and t.degraded_since is not None else None
+    def on_answered(self, seat: str, *, via_status: bool = False) -> SeatTrouble | None:
+        """The controller read its config and acted (or, ``via_status``, reported). Returns the record
+        it clears when the seat WAS degraded (the caller logs the recovery), else None. A status
+        answer leaves the kinds it cannot prove fixed (_STATUS_CLEARS) in place."""
+        t = self.seats.get(seat)
+        if t is None or (via_status and t.kind not in _STATUS_CLEARS):
+            return None
+        del self.seats[seat]
+        return t if t.degraded_since is not None else None
 
     def degraded(self) -> dict[str, SeatTrouble]:
         return {s: t for s, t in self.seats.items() if t.degraded_since is not None}

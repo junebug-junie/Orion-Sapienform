@@ -353,6 +353,8 @@ async def lifespan(app: FastAPI):
         yield
     finally:
         _stop.set()
+        if runtime is not None:
+            await runtime.drain_alerts()
         for task in _tasks:
             task.cancel()
         await asyncio.gather(*_tasks, return_exceptions=True)

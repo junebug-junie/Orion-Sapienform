@@ -235,7 +235,13 @@ def test_gpu_pool_panel_emergency_stop_and_hold_refusal():
                                        "slots": 1, "vram_gb": 24, "launch": launch}})
     running = dict(STATE, mode="enforce", config=config, actuation_paused=None,
                    cards=STATE["cards"] + [{"card": "gpu2", "vram_gb": 32, "swapped_in": [], "swap_state": "idle",
-                                            "actuated_roles": ["agent-gpu2"]}])
+                                            "actuated_roles": ["agent-gpu2"],
+                                            # degraded by boot-reconcile refusals alone: no action record yet
+                                            "actuation": {"controller_degraded": {"agent-gpu2": {
+                                                "degraded": True, "kind": "config_unreadable",
+                                                "reason": "config_unloadable:ValidationError", "refusals": 2,
+                                                "first_seen": "2026-09-30T06:00:00Z", "host": "circe",
+                                                "advice": "Rebuild the controller on circe."}}}}])
     paused = dict(running, actuation_paused={"paused": True, "since": "2026-09-30T07:00:00Z", "by": "hub-operator"})
     template = (HUB / "templates" / "gpu_pool.html").read_text().replace("{{HUB_UI_ASSET_VERSION}}", "t")
     script = (HUB / "static" / "js" / "gpu_pool.js").read_text()
@@ -277,6 +283,8 @@ def test_gpu_pool_panel_emergency_stop_and_hold_refusal():
         assert "nothing can load it" in page.inner_text("#holdControls")
         assert page.locator('button[data-verb="hold"]').count() == 0
         assert "pool actuates agent-gpu2" in page.inner_text('[data-card="gpu2"]')
+        gpu2 = page.inner_text('[data-card="gpu2"]')
+        assert "CONTROLLER BROKEN" in gpu2 and "in flight" not in gpu2   # no fake action line
         assert page.inner_text("#poolMode") == "mode: enforce"
 
         page.once("dialog", lambda d: d.accept())

@@ -545,3 +545,16 @@ def test_listener_zero_hop_finish_publishes_the_story_trigger_on_the_story_chann
     assert story_channel == "orion:dream:trigger" and story_env.kind == "dream.trigger"
     assert story_env.payload["sleep"]["material"] == MATERIAL and story_env.payload["trigger_id"] == "sleep:dc-abc123"
     assert reply.payload["status"] == "done" and reply.payload["dream_id"] == "story-fallback:sleep:dc-abc123"
+
+
+def test_building_the_carry_responder_needs_no_database_driver(monkeypatch):
+    """CI has no psycopg: the dreams lookup engine is built on first use, never at startup."""
+    import sqlalchemy
+
+    from app import carry_listener as cl
+
+    def boom(*a, **k):
+        raise AssertionError("engine created at startup")
+
+    monkeypatch.setattr(sqlalchemy, "create_engine", boom)
+    cl.build_carry_listener()  # must not touch the database

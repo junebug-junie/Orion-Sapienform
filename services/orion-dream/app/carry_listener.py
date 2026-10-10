@@ -201,12 +201,15 @@ def _already_recorded_factory(postgres_uri: str) -> carry.AlreadyRecorded:
     """dreams row exists for this dream_id? sql-writer stores it in metrics._dream_audit.dream_id."""
     from sqlalchemy import create_engine, text
 
-    engine = create_engine(postgres_uri, pool_pre_ping=True, pool_size=1, max_overflow=1)
     # Unindexed JSONB lookup: a full scan of dreams, fine at its size (tens of rows a month).
     query = text("SELECT 1 FROM dreams WHERE metrics->'_dream_audit'->>'dream_id' = :id LIMIT 1")
+    engines: list = []
 
     def _check(dream_id: str) -> bool:
-        with engine.connect() as conn:
+        # Built on first use: starting the responder must not need the DB driver (or the DB).
+        if not engines:
+            engines.append(create_engine(postgres_uri, pool_pre_ping=True, pool_size=1, max_overflow=1))
+        with engines[0].connect() as conn:
             return conn.execute(query, {"id": dream_id}).first() is not None
 
     async def already_recorded(dream_id: str) -> bool:

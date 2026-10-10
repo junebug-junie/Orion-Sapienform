@@ -399,6 +399,17 @@ def test_lifespan_starts_and_stops_the_responder_only_when_enabled(monkeypatch):
             events.append("stop")
 
     monkeypatch.setattr(live_il, "build_listener", Stub)
+    # The carry step responder also starts whenever the bus is on; stub it out of this test.
+    from app import carry_listener as live_cl
+
+    class CarryStub:
+        async def start(self):
+            events.append("carry-start")
+
+        async def stop(self):
+            events.append("carry-stop")
+
+    monkeypatch.setattr(live_cl, "build_carry_listener", CarryStub)
     monkeypatch.setattr(main.settings, "ORION_DREAM_CYCLE_ENABLED", False)
     monkeypatch.setattr(main.settings, "ORION_BUS_ENABLED", True)
 
@@ -408,12 +419,12 @@ def test_lifespan_starts_and_stops_the_responder_only_when_enabled(monkeypatch):
 
     monkeypatch.setattr(main.settings, "DREAM_INTROSPECT_ENABLED", True)
     asyncio.run(run_lifespan())
-    assert events == ["start", "serving", "stop"]
+    assert [e for e in events if not e.startswith("carry-")] == ["start", "serving", "stop"]
 
     events.clear()
     monkeypatch.setattr(main.settings, "DREAM_INTROSPECT_ENABLED", False)
     asyncio.run(run_lifespan())
-    assert events == ["serving"]
+    assert [e for e in events if not e.startswith("carry-")] == ["serving"]
 
 
 def test_build_listener_with_default_settings_has_search_off(monkeypatch):

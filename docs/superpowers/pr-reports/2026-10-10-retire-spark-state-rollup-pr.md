@@ -52,6 +52,14 @@ Bus check (read-only, 30s `SUBSCRIBE` against `ORION_BUS_URL`): 0 messages on `o
 - `docs/equilibrium_service.md`: diagram edge and `/rollups` step updated.
 - `orion/signals/registry.py`: see above.
 
+## Metric semantic layer lineage (checked before calling this a bug)
+
+Ran `.venv/bin/python scripts/check_metric_lineage.py` (`--metric <token>`, `--drift`, `--unwritten`) on 2026-10-10 against main, and read the matching `orion/inner_state_registry.py` and `config/field/field_channel_glossary.v1.yaml` entries. Nothing in the semantic layer marks this behaviour as designed.
+
+- `--metric spark_state_rollups`, `--metric avg_valence`, `--metric arousal` and `--metric spark_state` all return **UNREGISTERED**. The rollup table and its columns are not declared metrics, so no registered consumer depends on them.
+- `--metric valence` resolves to a different signal, `metric://inner_state/orion-spark-introspector/mood_arc_corpus.v1#valence`, whose producer `orion-spark-introspector` is the one deleted 2026-07-28. Its 58-site blast radius is generic `valence` dimension reads (signals adapters, collapse mirror, turn_effect). None of them read `spark_state_rollups` or the journaler's `/rollups` endpoint. Checked: `orion/signals/adapters/journaler.py:61` is the chat-history journaler organ, unrelated to this service.
+- The registry notes at `orion/inner_state_registry.py` (spark-introspector entries) already record the 07-28 deletion. This PR finishes the retirement on the journaler side.
+
 ## Schema / bus / API changes
 
 - Added: none.

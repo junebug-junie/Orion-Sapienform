@@ -2854,6 +2854,7 @@ class BiometricsSubstrateWorker:
                 rank_percentile_by_node_id=(
                     getattr(self, "_pe_rank_percentiles", None) if magnitudes else None
                 ),
+                event_decay=bool(getattr(s, "attention_event_decay_enabled", True)),
             )
             projection = broadcast_projection_from_frame(frame)
             self._store.save_attention_broadcast(projection)

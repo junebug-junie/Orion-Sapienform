@@ -74,4 +74,11 @@ class AttentionCandidateV1(BaseModel):
     # here so a stored frame says why a candidate was or was not eligible.
     value_kind: str | None = None
     polarity: AttentionPolarityV1 | None = None
+    # Set when the semantic layer says this source is EVENT-WRITTEN: one
+    # reading per event, carried forward unchanged until the next event
+    # (orion.attention.world_first.prediction_error_is_event_written). The
+    # reading is news for this many seconds after the event that wrote it
+    # (its unusualness.age_sec), then stops competing even though the carried
+    # value is unchanged. None = a level read every tick, or decay disabled.
+    event_window_sec: float | None = Field(default=None, gt=0.0)
     evidence_refs: list[str] = Field(default_factory=list)

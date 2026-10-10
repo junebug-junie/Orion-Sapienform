@@ -100,6 +100,6 @@ orion-durable-runs needs no restart (no change in what it consumes).
 
 ## PR link
 
-(filled in after opening)
+https://github.com/junebug-junie/Orion-Sapienform/pull/2601
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

@@ -37,6 +37,12 @@ class Settings(BaseSettings):
     stability_interval_sec: int = Field(60, alias="MESH_GUARDIAN_STABILITY_INTERVAL_SEC")
     falkordb_uri: str = Field("redis://orion-athena-falkordb:6379", alias="FALKORDB_URI")
     falkordb_bus_graph: str = Field("orion_bus_synapse", alias="FALKORDB_BUS_GRAPH")
+    # GPU actuation watch (app/gpu_watch.py): probes every actuated role's GPU lane controller
+    # (status + digest, read-only) and watches the pool's actuate_refused events. Own loop: one
+    # probe can wait up to gpu_probe_wait_sec, so it must not share the stability loop.
+    gpu_watch_enabled: bool = Field(True, alias="MESH_GUARDIAN_GPU_WATCH_ENABLED")
+    gpu_probe_interval_sec: int = Field(300, alias="MESH_GUARDIAN_GPU_PROBE_INTERVAL_SEC")
+    gpu_probe_wait_sec: float = Field(90.0, alias="MESH_GUARDIAN_GPU_PROBE_WAIT_SEC")
 
     class Config:
         env_file = ".env"

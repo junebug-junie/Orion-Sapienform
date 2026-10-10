@@ -2,14 +2,12 @@
   "_comment": "Definition lock for scripts/check_definition_drift.py. Generated, never hand-edited. Regenerate with --update; the resulting diff IS the definition-change alert. Unlike the *_baseline.json ratchets this tracks current truth in both directions -- a definition change is an event, not a defect.",
   "metric_count": 721,
   "_last_change": {
-    "change_count": 5,
+    "change_count": 3,
     "high_severity_count": 3,
     "changes": [
-      "high   routing_changed metric://bus_channel/orion-actions/orion:cortex:request (all_producers: \u2026y', 'orion-durable-runs'\u2026 -> \u2026y', 'orion-dream', 'orion-durable-runs'\u2026)",
-      "high   routing_changed metric://bus_channel/orion-cortex-exec/orion:dream:log (all_producers: ['orion-cortex-exec'] -> ['orion-cortex-exec', 'orion-dream'])",
-      "high   routing_changed metric://bus_channel/orion-cortex-orch/orion:cortex:result* (declared_consumers: \u2026y', 'orion-durable-runs'\u2026 -> \u2026y', 'orion-dream', 'orion-durable-runs'\u2026)",
-      "medium added metric://bus_channel/orion-dream/orion:dream:carry:step:reply:*",
-      "medium added metric://bus_channel/orion-durable-runs/orion:dream:carry:step:request"
+      "high   routing_changed metric://bus_channel/orion-gpu-lane-controller/orion:gpu_pool:actuate:result (declared_consumers: ['orion-gpu-pool'] -> ['orion-gpu-pool', 'orion-mesh-guardian'])",
+      "high   routing_changed metric://bus_channel/orion-gpu-pool/orion:gpu_pool:actuate:request (all_producers: ['orion-gpu-pool'] -> ['orion-gpu-pool', 'orion-mesh-guardian'])",
+      "high   routing_changed metric://bus_channel/orion-gpu-pool/orion:gpu_pool:event (declared_consumers: \u2026ay', 'orion-sql-writer',\u2026 -> \u2026ay', 'orion-mesh-guardian', 'orion-sql-writer',\u2026)"
     ]
   },
   "definitions": {
@@ -1678,7 +1676,8 @@
         "orion-gpu-lane-controller"
       ],
       "declared_consumers": [
-        "orion-gpu-pool"
+        "orion-gpu-pool",
+        "orion-mesh-guardian"
       ],
       "notes": "kind=result stability=experimental",
       "registry_source": "orion/bus/channels.yaml"
@@ -1686,7 +1685,8 @@
     "metric://bus_channel/orion-gpu-pool/orion:gpu_pool:actuate:request": {
       "schema_id": "GpuActuateV1",
       "all_producers": [
-        "orion-gpu-pool"
+        "orion-gpu-pool",
+        "orion-mesh-guardian"
       ],
       "declared_consumers": [
         "orion-gpu-lane-controller"
@@ -1714,6 +1714,7 @@
         "orion-durable-runs",
         "orion-hub",
         "orion-llm-gateway",
+        "orion-mesh-guardian",
         "orion-sql-writer",
         "orion-thought",
         "orion-world-model"

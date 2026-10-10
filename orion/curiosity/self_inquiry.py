@@ -404,19 +404,28 @@ def build_lived_answer(row: dict[str, Any]) -> Optional[LivedAnswer]:
     )
 
 
-def lived_answer_evidence_cypher(run_id: str) -> str:
-    """One row per evidence entry. Same FalkorDB list-string issue as SelfDefinition."""
+def lived_answer_evidence_cypher(run_id: str, question_id: Optional[str] = None) -> str:
+    """One row per evidence entry. Same FalkorDB list-string issue as SelfDefinition.
+    `question_id` narrows to one answer when a run wrote several."""
     rid = _check_run_id(run_id)
+    where = f"a.run_id = '{rid}'"
+    if question_id is not None:
+        qid = valid_question_id(question_id)
+        if qid is None:
+            raise ValueError(f"refusing to build Cypher for question_id {question_id!r}")
+        where += f" AND a.question_id = '{qid}'"
     return (
-        f"MATCH (a:{LABEL_LIVED_ANSWER}) WHERE a.run_id = '{rid}' "
+        f"MATCH (a:{LABEL_LIVED_ANSWER}) WHERE {where} "
         "WITH a ORDER BY a.written_at DESC LIMIT 1 "
         "UNWIND a.evidence AS e RETURN e"
     )
 
 
-def _read_lived_evidence_rows(reader: WorldviewReader, run_id: str) -> Optional[list[str]]:
+def _read_lived_evidence_rows(
+    reader: WorldviewReader, run_id: str, *, question_id: Optional[str] = None
+) -> Optional[list[str]]:
     try:
-        rows = reader.query(lived_answer_evidence_cypher(run_id))
+        rows = reader.query(lived_answer_evidence_cypher(run_id, question_id))
     except (WorldviewUnavailable, ValueError):
         return None
     out: list[str] = []
@@ -448,6 +457,147 @@ def read_lived_answer(reader: WorldviewReader, run_id: str) -> Optional[LivedAns
             written_at=answer.written_at,
         )
     return answer
+
+
+# --- the LivedAnswer write template, and "the current answer" per question ---
+#
+# ONE template, two prompts. The self-inquiry prompt teaches it for the drawn
+# question; the investigation kickoff shows it per open lived question, so an
+# investigation whose findings bear on one can revise its answer. Before this,
+# the self-inquiry MERGE was the only write path and an answer changed only
+# when `pick_question` happened to re-draw its question (live 2026-10-09:
+# `lived.her_team_unnamed` sat four days stale while the journal knew).
+#
+# Keyed on (run_id, question_id), not run_id alone: an investigation may
+# revise several answers in one sitting, and run_id alone would fold them into
+# one node. A self-inquiry run writes one question, so the key is equivalent
+# there, and an older node (run_id key, question_id SET) still matches.
+
+LIVED_REVISES_PLACEHOLDER = "<the run_id of the answer you are revising, or empty>"
+LIVED_OPEN_QUESTIONS_CAP = 5
+LIVED_CURRENT_ANSWERS_LIMIT = 500
+_QUESTION_ID_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,120}$")
+
+
+@dataclass(frozen=True)
+class OpenLivedQuestion:
+    """An open lived question and the answer it holds now (None: unanswered)."""
+
+    question_id: str
+    text: str
+    current: Optional["LivedAnswer"] = None
+
+
+def valid_question_id(question_id: Any) -> Optional[str]:
+    """The id when it is safe to splice into Cypher, else None."""
+    text = str(question_id or "").strip()
+    return text if _QUESTION_ID_RE.match(text) else None
+
+
+def lived_answer_merge_lines(
+    *,
+    question_id: str,
+    revises: str = "",
+    run_id: str = "<RUN_ID>",
+    text: str = "<your answer, in your own words>",
+    evidence: str = '["journal_entries:1", "dreams: 17 rows, last 2026-09-06", "..."]',
+) -> list[str]:
+    """The `:LivedAnswer` MERGE, one clause per line. `revises` is filled in
+    when the caller knows the current answer's run_id -- Orion copying it off a
+    different line of the prompt is how the 2026-10-09 answer revised a
+    10-01 answer instead of the 10-04 one."""
+    return [
+        f'MERGE (a:{LABEL_LIVED_ANSWER} {{run_id: "{run_id}", question_id: "{question_id}"}})',
+        "SET",
+        '  a.family = "lived",',
+        f'  a.text = "{text}",',
+        f"  a.evidence = {evidence},",
+        f'  a.revises = "{revises or LIVED_REVISES_PLACEHOLDER}",',
+        "  a.written_at = timestamp()",
+    ]
+
+
+def lived_answer_merge_cypher(**kwargs: Any) -> str:
+    """The same MERGE on one line, for a `redis-cli ... GRAPH.QUERY` argument."""
+    return " ".join(line.strip() for line in lived_answer_merge_lines(**kwargs))
+
+
+def current_lived_answers_cypher(question_ids: list[str]) -> str:
+    """Every answer to these questions, newest first. Ids are validated; an
+    invalid one is dropped rather than spliced."""
+    ids = [q for q in (valid_question_id(x) for x in question_ids) if q]
+    if not ids:
+        raise ValueError("no valid question ids")
+    quoted = ", ".join(f"'{q}'" for q in ids)
+    return (
+        f"MATCH (a:{LABEL_LIVED_ANSWER}) WHERE a.question_id IN [{quoted}] "
+        f"RETURN {_LIVED_ANSWER_FIELDS} ORDER BY a.written_at DESC "
+        f"LIMIT {LIVED_CURRENT_ANSWERS_LIMIT}"
+    )
+
+
+def read_current_lived_answers(
+    reader: WorldviewReader,
+    question_ids: list[str],
+    *,
+    exclude_run_id: str = "",
+) -> Optional[dict[str, LivedAnswer]]:
+    """question_id -> its MOST RECENT `:LivedAnswer` in the graph, draft or
+    not. This is the answer a new one revises. The mirror table is not the
+    source: it skips evidence-less drafts, so it named the 10-01 answer as the
+    latest when a 10-04 draft existed. None when the graph could not answer."""
+    try:
+        cypher = current_lived_answers_cypher(question_ids)
+    except ValueError:
+        return {}
+    try:
+        rows = reader.query(cypher)
+    except WorldviewUnavailable:
+        return None
+    built = [a for a in (build_lived_answer(r) for r in rows) if a is not None]
+    # Sorted here as well as in Cypher: a node with no written_at sorts
+    # unpredictably in FalkorDB, and "newest" must not depend on read order.
+    built.sort(key=lambda a: (a.written_at or 0, a.run_id), reverse=True)
+    out: dict[str, LivedAnswer] = {}
+    for answer in built:
+        if exclude_run_id and answer.run_id == exclude_run_id:
+            continue
+        out.setdefault(answer.question_id, answer)
+    return out
+
+
+def lived_answers_for_run_cypher(run_id: str) -> str:
+    """Every `:LivedAnswer` this run wrote -- an investigation may write several."""
+    rid = _check_run_id(run_id)
+    return (
+        f"MATCH (a:{LABEL_LIVED_ANSWER}) WHERE a.run_id = '{rid}' "
+        f"RETURN {_LIVED_ANSWER_FIELDS} ORDER BY a.written_at DESC "
+        f"LIMIT {LIVED_OPEN_QUESTIONS_CAP * 4}"
+    )
+
+
+def read_lived_answers_for_run(reader: WorldviewReader, run_id: str) -> list[LivedAnswer]:
+    """One answer per question this run wrote, newest write wins, evidence
+    read with UNWIND (see `lived_answer_evidence_cypher`). Never raises."""
+    try:
+        rows = reader.query(lived_answers_for_run_cypher(run_id))
+    except (WorldviewUnavailable, ValueError):
+        return []
+    seen: dict[str, LivedAnswer] = {}
+    for answer in (build_lived_answer(r) for r in rows):
+        if answer is not None:
+            seen.setdefault(answer.question_id, answer)
+    out: list[LivedAnswer] = []
+    for answer in seen.values():
+        unwound = _read_lived_evidence_rows(reader, run_id, question_id=answer.question_id)
+        if unwound:
+            answer = LivedAnswer(
+                run_id=answer.run_id, question_id=answer.question_id, family=answer.family,
+                text=answer.text, evidence=unwound, revises=answer.revises,
+                written_at=answer.written_at,
+            )
+        out.append(answer)
+    return out
 
 
 _SELF_QUESTION_MINT_FIELDS = (
@@ -571,17 +721,24 @@ def self_definition_to_detail(definition: Optional[SelfDefinition]) -> Optional[
 
 
 def build_lived_answer_history_write(
-    answer: Optional[LivedAnswer], *, version: int = 1
+    answer: Optional[LivedAnswer], *, version: int = 1, per_question: bool = False
 ) -> Optional[SelfConceptHistoryV1]:
-    """The append-only row, or None when there is nothing substantive to append."""
+    """The append-only row, or None when there is nothing substantive to append.
+
+    `per_question=True` for an investigation run, which may answer several
+    questions: the entry id then carries the question so the rows do not
+    collide. A self-inquiry run answers one, and keeps its historical id."""
     if answer is None or not answer.is_substantive:
         return None
     evidence = list(answer.evidence)
     own_ref = lived_worldview_evidence_ref(answer.run_id)
     if own_ref not in evidence:
         evidence.append(own_ref)
+    entry_id = f"self-lived:{answer.run_id}"
+    if per_question:
+        entry_id += f":{answer.question_id}"
     return SelfConceptHistoryV1(
-        entry_id=f"self-lived:{answer.run_id}",
+        entry_id=entry_id,
         concept_id=lived_concept_id(answer.question_id),
         version=max(1, int(version)),
         content=answer.text[:SELF_DEFINITION_TEXT_CAP],

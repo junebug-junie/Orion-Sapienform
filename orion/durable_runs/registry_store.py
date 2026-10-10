@@ -171,6 +171,19 @@ class DurableRunRegistryStore:
             await conn.execute("UPDATE durable_admission_runs SET terminal=%s,updated_at=%s WHERE run_id=%s", (status, await self.now(conn), run_id))
             return status
 
+    async def terminal_detail(self, run_id: str) -> tuple[str, dict[str, Any]] | None:
+        """(terminal status, terminal detail) of a run, or None while it is not terminal (or unknown).
+        The detail is the one ``finish_projection`` wrote on the ``<run_id>:terminal:<status>`` event
+        (dream.carry reads its child reverie.visual runs' outcome, sha and caption from it)."""
+        async with self.pool.connection() as conn:
+            row = await (await conn.execute(
+                "SELECT r.terminal, e.payload->'detail' AS detail FROM durable_admission_runs r "
+                "LEFT JOIN durable_resource_events e ON e.entry_id = r.run_id || ':terminal:' || r.terminal "
+                "WHERE r.run_id=%s", (run_id,))).fetchone()
+        if row is None or not row["terminal"]:
+            return None
+        return row["terminal"], dict(row["detail"] or {})
+
     async def first_event_at(self, run_id: str, event: str) -> datetime | None:
         """When ``event`` first happened for this run (e.g. the first pool grant: queue wait ends)."""
         async with self.pool.connection() as conn:

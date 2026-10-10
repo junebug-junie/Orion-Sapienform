@@ -106,6 +106,10 @@ from orion.schemas.reading_turn import (
     READING_TURN_CHANNEL, READING_TURN_REPLY_PREFIX, READING_TURN_REQUEST_KIND,
     READING_TURN_RESULT_KIND, ReadingTurnRequestV1, ReadingTurnResultV1,
 )
+from orion.schemas.dream_carry import (
+    DREAM_CARRY_STEP_CHANNEL, DREAM_CARRY_STEP_REPLY_PREFIX, DREAM_CARRY_STEP_REQUEST_KIND,
+    DREAM_CARRY_STEP_RESULT_KIND, DreamCarryStepRequestV1, DreamCarryStepResultV1,
+)
 from orion.schemas.reverie_visual_run import (
     REVERIE_VISUAL_STEP_CHANNEL, REVERIE_VISUAL_STEP_REPLY_PREFIX, REVERIE_VISUAL_STEP_REQUEST_KIND,
     REVERIE_VISUAL_STEP_RESULT_KIND, ReverieVisualStepRequestV1, ReverieVisualStepResultV1,
@@ -581,9 +585,12 @@ class DurableRunner:
         if self._bus is None:
             raise RuntimeError("no_bus")
         reply = f"{REVERIE_VISUAL_STEP_REPLY_PREFIX}:{request.correlation_id}"
+        # A waking step omits ``dream_hop`` entirely: it is byte-identical to what it was before the
+        # dream.carry contract, so an orion-thought still on the older (extra="forbid") schema keeps
+        # accepting it during a rolling deploy.
+        payload = request.model_dump(mode="json", exclude={"dream_hop"} if request.dream_hop is None else None)
         envelope = BaseEnvelope(kind=REVERIE_VISUAL_STEP_REQUEST_KIND, source=self._source(),
-            correlation_id=_corr_uuid(request.correlation_id), reply_to=reply,
-            payload=request.model_dump(mode="json"))
+            correlation_id=_corr_uuid(request.correlation_id), reply_to=reply, payload=payload)
         timeout = self._settings.reverie_visual_step_timeout_sec
         if request.step == "generate" and budget_sec:
             timeout = max(timeout, float(budget_sec))
@@ -600,6 +607,32 @@ class DurableRunner:
         if (result.run_id != request.run_id or result.correlation_id != request.correlation_id
                 or result.step != request.step):
             raise ValueError("reverie visual step result identity mismatch")
+        return result
+
+    async def _run_dream_carry_step(
+        self, request: DreamCarryStepRequestV1, budget_sec: float | None = None,
+    ) -> DreamCarryStepResultV1:
+        """One dream.carry step (text hop or finish), executed by orion-dream. Raises on transport or
+        identity trouble; the graph treats that as a retry, never a failed attempt. ``budget_sec`` is
+        the carry brief's timeout_sec (a text hop's LLM call under the run's hold)."""
+        if self._bus is None:
+            raise RuntimeError("no_bus")
+        reply = f"{DREAM_CARRY_STEP_REPLY_PREFIX}:{request.correlation_id}"
+        envelope = BaseEnvelope(kind=DREAM_CARRY_STEP_REQUEST_KIND, source=self._source(),
+            correlation_id=_corr_uuid(request.correlation_id), reply_to=reply,
+            payload=request.model_dump(mode="json"))
+        timeout = float(budget_sec or request.brief.timeout_sec)
+        raw = await self._bus.rpc_request(DREAM_CARRY_STEP_CHANNEL, envelope, reply_channel=reply, timeout_sec=timeout)
+        decoded = self._bus.codec.decode(raw.get("data") if isinstance(raw, dict) else raw)
+        if not decoded.ok or decoded.envelope is None:
+            raise ValueError("invalid dream carry step reply envelope")
+        if (decoded.envelope.kind != DREAM_CARRY_STEP_RESULT_KIND
+                or decoded.envelope.correlation_id != envelope.correlation_id):
+            raise ValueError("dream carry step reply identity mismatch")
+        result = DreamCarryStepResultV1.model_validate(decoded.envelope.payload)
+        if (result.run_id != request.run_id or result.correlation_id != request.correlation_id
+                or result.step != request.step):
+            raise ValueError("dream carry step result identity mismatch")
         return result
 
     async def _read_turn_result(self, run_id: str, *, urgent: bool = False) -> dict[str, Any]:

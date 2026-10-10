@@ -100,6 +100,9 @@ class Settings(BaseSettings):
     # interpret, caption runs the vision caption). generate waits max(this, brief.timeout_sec).
     # A timeout is a retry (backoff, no attempt spent), bounded only by the run's deadline.
     reverie_visual_step_timeout_sec: float = Field(600.0, gt=0.0, alias="DURABLE_RUNS_REVERIE_VISUAL_STEP_TIMEOUT_SEC")
+    # dream.carry: how long past the carry's deadline the finish step (orion-dream writes the dream
+    # with the hops made so far) keeps retrying, so a partial carry is still written.
+    dream_carry_finish_grace_sec: float = Field(1800.0, ge=0.0, alias="DREAM_CARRY_FINISH_GRACE_SEC")
 
     # Memory episode redesign Stage 1 (2026-10-02, SHADOW): subscribe orion:memory:episode:closed
     # and distill each closed episode into episode_memory* tables. Kill switch: false stops new

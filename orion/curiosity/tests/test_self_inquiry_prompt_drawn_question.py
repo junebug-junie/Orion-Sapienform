@@ -47,8 +47,7 @@ def test_prompt_falls_back_to_standing_question_when_question_is_none() -> None:
 def test_lived_prompt_teaches_lived_answer_merge_not_self_definition() -> None:
     q = _lived_question()
     text = build_self_inquiry_prompt(question=q, run_id=RUN, graph_enabled=True)
-    assert f'MERGE (a:LivedAnswer {{run_id: "{RUN}"}})' in text
-    assert 'a.question_id = "lived.who_matters"' in text
+    assert f'MERGE (a:LivedAnswer {{run_id: "{RUN}", question_id: "lived.who_matters"}})' in text
     assert f'MERGE (s:SelfDefinition {{run_id: "{RUN}"}})' not in text
 
 
@@ -89,3 +88,13 @@ def test_lived_prompt_shows_previous_lived_answer() -> None:
     assert "You last wrote about this question:" in text
     assert "Juniper matters most." in text
     assert "journal_entries:1" in text
+
+
+def test_lived_prompt_prefills_revises_with_the_previous_answer() -> None:
+    prev = PreviousLivedAnswer(content="Juniper matters most.", evidence=[], run_id="e511d15b9534")
+    text = build_self_inquiry_prompt(
+        question=_lived_question(), previous_lived=prev, run_id=RUN, graph_enabled=True
+    )
+    # Both the early write and the full template carry it -- the early one
+    # used to hard-code an empty revises.
+    assert text.count('a.revises = "e511d15b9534"') == 2

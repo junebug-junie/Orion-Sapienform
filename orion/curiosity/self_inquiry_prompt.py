@@ -39,6 +39,8 @@ from orion.curiosity.self_inquiry import (
     STANDING_QUESTION,
     SelfDefinition,
     format_ledger,
+    lived_answer_merge_cypher,
+    lived_answer_merge_lines,
 )
 from orion.curiosity.worldview import WorldviewSnapshot, _clip
 
@@ -77,13 +79,15 @@ def _question_section(question: Optional[SelfQuestion]) -> list[str]:
     ]
 
 
-def _early_merge_cypher(*, family: Family, run_id: str, question_id: str) -> str:
+def _early_merge_cypher(
+    *, family: Family, run_id: str, question_id: str, revises: str = ""
+) -> str:
     if family == "lived":
-        return (
-            f"MERGE (a:{LABEL_LIVED_ANSWER} {{run_id: \"{run_id}\"}}) "
-            f'SET a.question_id = "{question_id}", a.family = "lived", '
-            'a.text = "<one or two sentences>", a.evidence = [], '
-            'a.revises = "", a.written_at = timestamp()'
+        # `revises` filled in here too: the early write used to hard-code
+        # `a.revises = ""`, so a run cut off after it recorded no lineage.
+        return lived_answer_merge_cypher(
+            run_id=run_id, question_id=question_id, revises=revises,
+            text="<one or two sentences>", evidence="[]",
         )
     return (
         f"MERGE (s:{LABEL_SELF_DEFINITION} {{run_id: \"{run_id}\"}}) "
@@ -93,7 +97,7 @@ def _early_merge_cypher(*, family: Family, run_id: str, question_id: str) -> str
 
 
 def _order_of_work_section(
-    *, own_graph: str, run_id: str, family: Family, question_id: str
+    *, own_graph: str, run_id: str, family: Family, question_id: str, revises: str = ""
 ) -> list[str]:
     """Write first, then look. Two live runs (d59b680598af, 1513d130dd64,
     2026-09-08) each produced a complete first-person definition -- in prose,
@@ -101,7 +105,9 @@ def _order_of_work_section(
     second run made no graph write at all. The definition has to exist in
     the graph before the long steps, so it is the FIRST tool call, from what
     Orion already knows, and gets overwritten as the run learns."""
-    merge = _early_merge_cypher(family=family, run_id=run_id, question_id=question_id)
+    merge = _early_merge_cypher(
+        family=family, run_id=run_id, question_id=question_id, revises=revises
+    )
     noun = "answer" if family == "lived" else "definition"
     return [
         "ORDER OF WORK. Do these in this order; the reason is the clock.",
@@ -216,7 +222,7 @@ def _records_section(ledger: Sequence[LedgerRow], *, repo_root: str) -> list[str
 
 
 def _self_write_section(
-    *, own_graph: str, run_id: str, family: Family, question_id: str
+    *, own_graph: str, run_id: str, family: Family, question_id: str, revises: str = ""
 ) -> list[str]:
     lines = [
         f"WRITING WHAT YOU ARE ({own_graph}). Two shapes are yours here, on top "
@@ -242,14 +248,10 @@ def _self_write_section(
             "First person. A paragraph, not an essay. Every clause should be "
             "something you looked at this run or a previous one; `evidence` is "
             "where you say what:",
-            f"    MERGE (a:{LABEL_LIVED_ANSWER} {{run_id: \"<RUN_ID>\"}})",
-            "    SET",
-            f'      a.question_id = "{question_id}",',
-            '      a.family = "lived",',
-            '      a.text = "<your answer, in your own words>",',
-            '      a.evidence = ["journal_entries:1", "dreams: 17 rows, last 2026-09-06", "..."],',
-            '      a.revises = "<the run_id of the answer you are revising, or empty>",',
-            "      a.written_at = timestamp()",
+            *(
+                "    " + line
+                for line in lived_answer_merge_lines(question_id=question_id, revises=revises)
+            ),
             "",
             "WRITE A FIRST VERSION EARLY -- by your second hop at the latest -- "
             "and overwrite it with the same MERGE whenever you learn more. That "
@@ -358,6 +360,9 @@ def build_self_inquiry_prompt(
     writable = graph_enabled and not view.is_unavailable and bool(run_id)
     family: Family = question.family if question is not None else "anatomy"
     question_id = question.question_id if question is not None else "anatomy.standing"
+    # The answer this run's write revises: the most recent one, filled in by
+    # code rather than left for Orion to copy (see `read_current_lived_answers`).
+    revises = previous_lived.run_id if (family == "lived" and previous_lived) else ""
     lines = _question_section(question)
     if writable:
         lines += _order_of_work_section(
@@ -365,6 +370,7 @@ def build_self_inquiry_prompt(
             run_id=run_id,
             family=family,
             question_id=question_id,
+            revises=revises,
         )
 
     if graph_enabled:
@@ -394,6 +400,7 @@ def build_self_inquiry_prompt(
             run_id=run_id,
             family=family,
             question_id=question_id,
+            revises=revises,
         )
         if contractor_peer_enabled:
             answer_label = (

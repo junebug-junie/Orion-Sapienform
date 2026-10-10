@@ -714,7 +714,7 @@ that reason. Each registry entry may now carry:
 | `rest` | prose | the designed resting value and what 0 means |
 | `sparsity` | per_tick, event_gated, designed_sparse | how often a real reading is expected |
 | `absent_means` | prose | what happens when there is no reading |
-| `polarity` | higher_is_better, higher_is_worse | **derived** for field channels from `orion.field.pressure.HIGHER_IS_BETTER_CHANNELS` (the pressure merge's own min/max choice); declared only on inner-state fields |
+| `polarity` | higher_is_better, higher_is_worse, none | **derived** for field channels from `orion.field.pressure`'s two merge sets: `HIGHER_IS_BETTER_CHANNELS` (min-merged) and `PRESSURE_CHANNELS` (max-merged, calm 0.0 kept). Any other channel, and any trigger, gets none -- max() is only the default merge, not a claim that more is worse. Declared only on inner-state fields |
 | `prompt_sites` | `dotted.module:callable` | where the number is put into an Orion LLM prompt |
 
 Where they live (no new registry):
@@ -727,7 +727,7 @@ Where they live (no new registry):
 
 `MetricNode` carries all six; the definition lock records them
 (`semantics` class, high severity, except `prompt_sites` which is `routing`);
-`--metric <token>` prints them, including "(not recorded)".
+`--metric <token>` prints them, including "(not recorded)". Hub's Field Channel Glossary nests node-qualified entries under their bare channel as `node_variants` (meaning + semantics) instead of listing duplicate rows.
 
 **Gate:** `scripts/check_metric_lineage.py --prompt-semantics`, its own step in
 `.github/workflows/orion-static-gates.yml`. Fails when a metric with

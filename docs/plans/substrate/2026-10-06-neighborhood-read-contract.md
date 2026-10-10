@@ -33,6 +33,20 @@ and other nonsemantic endpoint kinds do not compete for budgets. This contract
 must be extended with assertion acceptance/edge-role filtering when that schema
 lands. No new cognitive metric is introduced.
 
+**Amendment 2026-10-10 (proposed endpoints of accepted claims).** Edge roles and
+assertion acceptance have landed (#2515, `walkable_edge`). Eligibility is now
+per edge: a legacy edge needs both endpoints in `semantic_states`; a walkable
+`semantic_projection` edge (its Assertion is `provisional`/`canonical` at the
+projected revision) may also have endpoints in `projection_endpoint_states`
+(default `("proposed",)`). The claim's acceptance authorizes the read, not the
+node's state. A proposed focal is admitted only if it has such an edge in the
+requested direction; otherwise it is reported missing exactly as before. Such
+nodes are listed in `projection_endpoint_node_ids` (planner detail
+`projection_endpoint_node_refs`). `projection_endpoint_states=()` restores the
+node-state-only rule. Rejected/deprecated nodes are never admitted this way.
+The SPARQL/GraphDB backend stores no Assertion nodes, so it still walks legacy
+edges only and stays fail-closed: it never admits a projection endpoint.
+
 Anchor scope is a subject filter, **not an ACL**. This is an internal store API
 under the caller's existing graph access boundary. It is not a public endpoint or
 an implementation of the future reading-source visibility contract.

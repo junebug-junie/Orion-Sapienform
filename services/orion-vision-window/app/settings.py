@@ -70,8 +70,9 @@ class Settings(BaseSettings):
     WINDOW_SIGHTING_ENABLED: bool = True
     WINDOW_SIGHTING_HOME_STREAMS: str = "cam0"
     WINDOW_SIGHTING_MIN_INTERVAL_SEC: float = 1800.0
-    # Corroboration: this many "probable" matches on the same stream within the window before a
-    # sighting is published -- one borderline frame (live: 0.56 at detect 0.71) is not enough.
+    # One "probable" match publishes on its own. "possible" (0.35-0.55) needs this many
+    # possible-or-better matches on the same stream within the window (2026-10-10 loosening:
+    # Juniper's wave at cam0 got one 30s-gated check and never qualified).
     WINDOW_SIGHTING_MIN_MATCHES: int = 2
     WINDOW_SIGHTING_MATCH_WINDOW_SEC: float = 600.0
     CHANNEL_IDENTITY_SIGHTING_PUB: str = "orion:vision:identity:sighting"

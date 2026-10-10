@@ -599,9 +599,11 @@ class WindowService:
             logger.warning(f"[WINDOW] scene inventory publish failed: {exc}")
 
     async def _maybe_publish_sighting(self, payload: VisionArtifactPayload, hint: Optional[dict]) -> bool:
-        """One IdentitySightingV1 per home camera per sitting, on a "probable" match only.
-        Rate-limited per stream (WINDOW_SIGHTING_MIN_INTERVAL_SEC). True when published."""
-        if not settings.WINDOW_SIGHTING_ENABLED or not self.bus or not hint or hint.get("state") != "probable":
+        """One IdentitySightingV1 per home camera per sitting: on one "probable" match, or on
+        WINDOW_SIGHTING_MIN_MATCHES "possible"-or-better matches within the window. Rate-limited
+        per stream (WINDOW_SIGHTING_MIN_INTERVAL_SEC). True when published."""
+        state = (hint or {}).get("state")
+        if not settings.WINDOW_SIGHTING_ENABLED or not self.bus or state not in ("probable", "possible"):
             return False
         stream = stream_key_from_artifact(payload)
         homes = {x.strip() for x in settings.WINDOW_SIGHTING_HOME_STREAMS.split(",") if x.strip()}
@@ -611,7 +613,12 @@ class WindowService:
         recent = [t for t in self._probable_at.get(stream, []) if now - t <= settings.WINDOW_SIGHTING_MATCH_WINDOW_SEC]
         recent.append(now)
         self._probable_at[stream] = recent[-20:]
-        if len(recent) < max(1, int(settings.WINDOW_SIGHTING_MIN_MATCHES)):
+        # One "probable" is enough on its own; "possible" needs company (2026-10-10 loosening).
+        if state == "probable":
+            outcome = "probable"
+        elif len(recent) >= max(1, int(settings.WINDOW_SIGHTING_MIN_MATCHES)):
+            outcome = "corroborated"
+        else:
             return False
         last = self._last_sighting_at.get(stream)
         if last is not None and now - last < settings.WINDOW_SIGHTING_MIN_INTERVAL_SEC:
@@ -623,7 +630,7 @@ class WindowService:
         sighting = IdentitySightingV1(
             subject=str(hint.get("subject") or ""), stream_id=stream,
             seen_at=seen_at, similarity=float(sim) if isinstance(sim, (int, float)) else 0.0,
-            correlation_id=str(payload.correlation_id or ""),
+            correlation_id=str(payload.correlation_id or ""), outcome=outcome,
         )
         await self.bus.publish(settings.CHANNEL_IDENTITY_SIGHTING_PUB, BaseEnvelope(
             kind=IDENTITY_SIGHTING_KIND, source=_source_ref(), payload=sighting.model_dump(mode="json")))

@@ -499,7 +499,8 @@ def test_only_juniper_at_home_is_a_sighting_event():
     ok = {"subject": "juniper", "stream_id": "cam0", "seen_at": T0.isoformat(), "similarity": 0.7, "correlation_id": "c"}
     assert event_from_sighting(ok)["kind"] == "sighting"
     assert event_from_sighting({**ok, "subject": "someone"}) is None
-    assert event_from_sighting({**ok, "outcome": "possible"}) is None     # the contract only allows probable
+    assert event_from_sighting({**ok, "outcome": "corroborated"})["kind"] == "sighting"
+    assert event_from_sighting({**ok, "outcome": "possible"}) is None     # not a qualifying rule
     assert event_from_sighting({"nope": 1}) is None
 
 

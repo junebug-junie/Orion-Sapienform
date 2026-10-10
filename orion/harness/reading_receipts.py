@@ -127,6 +127,19 @@ def _has_source_content(value: Any) -> bool:
 # the page. It must not count as having read the source.
 _WEBFETCH_NON_CONTENT_PREFIXES = ("redirect detected",)
 
+# Largest tool_result text carried to Hub for retention (Python chars). A
+# longer body is not retained at all rather than cut: a truncated text would
+# hash and quote-check as if it were what the model saw. WebFetch digests are
+# a few KB; this bounds a large firecrawl scrape on the bus and in the durable
+# run state.
+MAX_RETAINED_FETCH_CHARS = 65536
+
+
+def retained_fetch_text(body: str) -> str | None:
+    """The exact text to retain for a usable fetch, or None when over the cap."""
+    text = body.strip()
+    return text if 0 < len(text) <= MAX_RETAINED_FETCH_CHARS else None
+
 
 def _usable_fetch_result(tool_name: str, body: str) -> bool:
     if not body.strip():
@@ -155,8 +168,9 @@ def _usable_fetch_result(tool_name: str, body: str) -> bool:
 class ReadingReceiptTracker:
     """Collect and aggregate recommendation attempts from raw FCC steps."""
 
-    def __init__(self, binding: ReadingToolBindingV1 | None) -> None:
+    def __init__(self, binding: ReadingToolBindingV1 | None, *, retain_text: bool = False) -> None:
         self.binding = binding
+        self.retain_text = retain_text
         self._pending: dict[str, _PendingCall] = {}
         self._recommendations: dict[str, _Recommendation] = {}
         self._successful_fetch_urls: list[str] = []
@@ -227,6 +241,8 @@ class ReadingReceiptTracker:
                         url=pending.url,
                         tool_name=pending.tool_name,
                         content_chars=len(body.strip()),
+                        # The raw tool_result, never model prose (#2497 evidence).
+                        content_text=retained_fetch_text(body) if self.retain_text else None,
                     )
                 )
             return

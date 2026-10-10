@@ -37,7 +37,19 @@ from orion.schemas.world_pulse_read import (
     WorldPulseReadHandoffV1,
     WorldPulseReadSeedV1,
     WorldPulseReadStage2ResultV1,
+    strip_model_claim_receipts,
 )
+from orion.world_pulse_read.assertions import (
+    READING_ACTOR,
+    ClaimContextV1,
+    build_claim_context,
+    claim_prompt_section,
+    journal_claims,
+    plan_claims,
+    stored_object_lookup,
+)
+from orion.substrate.graph_journal import SubstrateGraphJournal
+from orion.world_pulse_read.fetch_text import load_retained_texts
 from orion.world_pulse_read.queue import (
     ALREADY_READ,
     READ_URL_SQL,
@@ -151,7 +163,9 @@ def _turn_payload(source: str, fcc_model_label: Optional[str]) -> dict:
     return payload
 
 
-def _build_stage2_prompt(handoff: WorldPulseReadHandoffV1, trace_id: str) -> str:
+def _build_stage2_prompt(
+    handoff: WorldPulseReadHandoffV1, trace_id: str, claim_context: ClaimContextV1 | None = None
+) -> str:
     """Prompt and schema must agree, the way Stage 1's prompt already does.
 
     Before this the prompt said "form/test priors, note hops" but listed only
@@ -184,6 +198,9 @@ def _build_stage2_prompt(handoff: WorldPulseReadHandoffV1, trace_id: str) -> str
         "}\n"
         "candidate_priors MUST be objects with claim (not bare strings). "
         "priors_tested MUST be objects with claim_ref. producer_hint is forced server-side."
+        # Only when this read has retained text, stored concepts and existing candidates
+        # (orion/world_pulse_read/assertions.py); otherwise the prompt is unchanged.
+        + claim_prompt_section(claim_context or ClaimContextV1())
     )
 
 
@@ -218,7 +235,7 @@ def _as_stage2_result(
         return raw
     if not isinstance(raw, dict):
         raise ValueError("stage2_result_not_object")
-    parsed, unknown = _split_unknown_top_level_keys(dict(raw))
+    parsed, unknown = _split_unknown_top_level_keys(strip_model_claim_receipts(dict(raw)))
     if unknown:
         logger.warning(
             "world_pulse_read_stage2_unknown_keys_dropped seed=%s n=%s keys=%s",
@@ -256,8 +273,16 @@ class WorldPulseReadStage2Pipeline:
         step_relay_provider: Optional[Callable[[], Any]] = None,
         store_provider: Optional[Callable[[], Any]] = None,
         durable_url: str = "http://127.0.0.1:8124",
+        assertions_enabled: bool = True,
+        projector_readiness: Optional[Callable[[], Any]] = None,
     ) -> None:
         self.enabled = enabled
+        # HUB_WORLD_PULSE_READ_ASSERTIONS_ENABLED: kill switch for relationship claims
+        # (prompt block, journal writes, and Hub's reading assertion projector).
+        self.assertions_enabled = bool(assertions_enabled)
+        self._projector_readiness = projector_readiness
+        self._assertion_projector: Any = None
+        self._claim_context: ClaimContextV1 = ClaimContextV1()
         self.durable_url = durable_url
         self.tick_interval_sec = tick_interval_sec
         self.window_start_hour = int(window_start_hour)
@@ -350,6 +375,9 @@ class WorldPulseReadStage2Pipeline:
         self.last_round_trips = 0
         await self._reclaim_stale_claimed()
         await self._repair_journal_landings()
+        # Every tick, not only after a read: retries decisions whose endpoints or
+        # readers were not ready yet.
+        await self._project_assertions()
         for landed in (await self._with_conn(confirm_landings) or []):
             await publish_lifecycle(self._bus, landed, "landing_completed", source=self._source_ref)
         try:
@@ -429,6 +457,7 @@ class WorldPulseReadStage2Pipeline:
         # handoff never reaches the model and must not spend a Wallet B slot.
         receipt = None
         self._settlement_run_id = None
+        self._claim_context = await self._build_claim_context(handoff)
 
         try:
             result = _as_stage2_result(
@@ -482,6 +511,7 @@ class WorldPulseReadStage2Pipeline:
             round_trips += 1
         self.last_round_trips = round_trips
         result.round_trips = round_trips
+        result = await self._record_claims(claim.seed.seed_id, result)
 
         try:
             await self._journal(handoff, result)
@@ -500,7 +530,99 @@ class WorldPulseReadStage2Pipeline:
             await publish_lifecycle(self._bus, claim.seed, "stage2_failed", source=self._source_ref, error=str(exc))
             return "post_failed"
         await publish_lifecycle(self._bus, claim.seed, "stage2_completed", source=self._source_ref, trace_id=result.trace_id)
+        await self._project_assertions()
         return None
+
+    async def _build_claim_context(self, handoff: WorldPulseReadHandoffV1) -> ClaimContextV1:
+        """Subjects, existing candidates and retained text for this read's claims. Empty
+        (no prompt block, no claims) when disabled, or anything needed is missing."""
+        if not self.assertions_enabled:
+            return ClaimContextV1()
+        store = self._store_provider() if self._store_provider else None
+        if store is None:
+            return ClaimContextV1()
+        unretained = [e for e in handoff.read_evidence if not e.content_sha256]
+        if unretained:
+            # A web read with no retained text: an old read (expected) or a governor /
+            # durable-runs still on code that drops SourceFetchEvidenceV1.content_text.
+            logger.info("reading_claim_text_missing seed=%s fetches=%d tools=%s",
+                        handoff.seed_ref.seed_id, len(unretained),
+                        ",".join(sorted({e.tool_name for e in unretained})))
+        try:
+            texts = await self._with_conn(lambda conn: load_retained_texts(conn, handoff.read_evidence)) or []
+            ctx = await asyncio.to_thread(build_claim_context, store, handoff, texts)
+        except Exception:  # noqa: BLE001 - a read without claims is still a read
+            logger.warning("reading_claim_context_failed seed=%s", handoff.seed_ref.seed_id, exc_info=True)
+            return ClaimContextV1()
+        logger.info(
+            "reading_claim_context seed=%s texts=%d subjects=%d objects=%d usable=%s",
+            handoff.seed_ref.seed_id, len(ctx.texts), len(ctx.subjects), len(ctx.objects), ctx.usable,
+        )
+        return ctx
+
+    async def _record_claims(
+        self, seed_id: str, result: WorldPulseReadStage2ResultV1
+    ) -> WorldPulseReadStage2ResultV1:
+        """Validate the model's claims, journal them, and put a receipt on each."""
+        if not self.assertions_enabled:
+            return result.model_copy(update={"relationship_claims": []})
+        if not result.relationship_claims:
+            return result
+        store = self._store_provider() if self._store_provider else None
+        ctx = self._claim_context
+        # Not ctx.usable: the offered object list may have emptied since the prompt was bound.
+        lookup = stored_object_lookup(store, ctx) if store is not None and ctx.subjects and ctx.texts else None
+        plans = await asyncio.to_thread(
+            lambda: plan_claims(result.relationship_claims, ctx, seed_id=seed_id,
+                                recorded_at=datetime.now(timezone.utc), object_lookup=lookup))
+        pool = self._pool_provider() if self._pool_provider else None
+        report = await journal_claims(SubstrateGraphJournal(pool) if pool is not None else None, plans)
+        outcomes: dict[str, int] = {}
+        for c in report.claims:
+            outcomes[c.receipt.reason] = outcomes.get(c.receipt.reason, 0) + 1
+        logger.info("reading_claims_recorded seed=%s claims=%d proposals=%d accepted=%d reasons=%s",
+                    seed_id, len(report.claims), report.proposals, report.accepted,
+                    ",".join(f"{k}:{v}" for k, v in sorted(outcomes.items())))
+        return result.model_copy(update={"relationship_claims": report.claims})
+
+    def _build_projector(self) -> Any:
+        store = self._store_provider() if self._store_provider else None
+        pool = self._pool_provider() if self._pool_provider else None
+        if store is None or pool is None:
+            return None
+        from orion.substrate.assertion_projector import AssertionProjector
+        from orion.substrate.materializer import SubstrateGraphMaterializer
+
+        readiness = self._projector_readiness
+        if readiness is None:
+            import os
+            from orion.substrate.reader_capability import readiness as reader_readiness, required_readers_from_env
+
+            uri = str(os.getenv("FALKORDB_URI", "") or "").strip()
+            required = required_readers_from_env()
+            readiness = lambda: reader_readiness(uri, required)  # noqa: E731
+        return AssertionProjector(
+            journal=SubstrateGraphJournal(pool), materializer=SubstrateGraphMaterializer(store=store),
+            readiness=readiness, proposal_actors=(READING_ACTOR,),
+        )
+
+    async def _project_assertions(self) -> None:
+        """Apply pending reading decisions to the graph Hub reads and writes (the store the
+        reading concepts live in). Memory's projector applies only memory's own claims."""
+        if not self.assertions_enabled:
+            return
+        try:
+            if self._assertion_projector is None:
+                self._assertion_projector = self._build_projector()
+            if self._assertion_projector is None:
+                return
+            report = await self._assertion_projector.run_once()
+        except Exception:  # noqa: BLE001 - one bad pass must not stop reading
+            logger.warning("reading_assertion_projection_failed", exc_info=True)
+            return
+        if report.applied or report.failed:
+            logger.info("reading_assertions_projected applied=%d failed=%s waiting=%d",
+                        len(report.applied), dict(report.failed), len(report.waiting))
 
     async def _reclaim_stale_claimed(self) -> None:
         older = 0.0 if not self._startup_reclaim_done else float(self.timeout_sec)
@@ -678,7 +800,8 @@ class WorldPulseReadStage2Pipeline:
         trace_id = str(uuid4())
         created_at = datetime.now(timezone.utc)
         outcome = await self._generate(
-            _build_stage2_prompt(handoff, trace_id), trace_id, seed_id=handoff.seed_ref.seed_id,
+            _build_stage2_prompt(handoff, trace_id, self._claim_context), trace_id,
+            seed_id=handoff.seed_ref.seed_id,
             # Recall searches the source and what stage 1 concluded, not the
             # stage-2 prompt (which embeds the whole stage-1 handoff JSON).
             retrieval_query=reading_retrieval_query(handoff.seed_ref, handoff.what_i_learned),

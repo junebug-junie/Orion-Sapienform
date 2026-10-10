@@ -501,6 +501,7 @@ def _success_frames(
     correlation_id: str,
     fcc_model_label: str | None = None,
     mode_tag: str = "orion",
+    retain_fetch_text: bool = False,
 ) -> list[dict[str, Any]]:
     frames: list[dict[str, Any]] = []
     if run.substrate_appraisal is not None:
@@ -542,8 +543,12 @@ def _success_frames(
         # predates the field, so a consumer can tell "not reported" from
         # "reported, nothing fetched" -- world_pulse_read_pipeline.py gates
         # a Stage 1 `done` on this.
+        # The fetched text rides only on a reading turn's frame, whose
+        # consumer retains it (orion/world_pulse_read/fetch_text.py); a chat
+        # frame never carries page text to the browser.
         final_frame["harness_source_fetches"] = [
-            item.model_dump(mode="json") for item in run.source_fetches
+            item.model_dump(mode="json", exclude=None if retain_fetch_text else {"content_text"})
+            for item in run.source_fetches
         ]
     if fcc_model_label:
         # The identity that actually produced this response -- previously not
@@ -1724,6 +1729,7 @@ async def execute_unified_turn(
                 correlation_id=correlation_id,
                 fcc_model_label=resolved_model_label,
                 mode_tag=mode_tag,
+                retain_fetch_text=reading_only,
             ),
         ]
     if not run.finalize_ran or not run.final_text:
@@ -1751,6 +1757,7 @@ async def execute_unified_turn(
         correlation_id=correlation_id,
         fcc_model_label=resolved_model_label,
         mode_tag=mode_tag,
+        retain_fetch_text=reading_only,
     )
 
 

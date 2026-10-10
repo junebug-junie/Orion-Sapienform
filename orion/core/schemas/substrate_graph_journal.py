@@ -11,8 +11,10 @@ payloads. #2497 also proposed ``orion:*:graph:*`` bus channels; none ship here
 because nothing subscribes to them yet.
 
 Producer -> consumer:
-- Proposal: whoever proposes a claim (memory referents, PR B; the reading pipeline,
-  later) -> ``AssertionProjector`` reads it to build the Assertion node and edges.
+- Proposal: whoever proposes a claim (memory referents, PR B; reading Stage 2,
+  orion/world_pulse_read/assertions.py) -> ``AssertionProjector`` reads it to build the
+  Assertion node and edges. Each projector applies only its own producers' claims
+  (``proposal_actors``).
 - Decision: the acceptance step (a named policy such as ``source_cooccurrence_v1``,
   or a reviewer) -> ``AssertionProjector`` applies it as the assertion's new state
   and revision.

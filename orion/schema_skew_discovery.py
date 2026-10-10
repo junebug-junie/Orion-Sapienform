@@ -86,16 +86,11 @@ DECLARED_WRITERS: dict[str, tuple[Optional[str], str]] = {
         "orion_day graph persist node inserts the orion_day_letter row (app/orion_day_store.py); "
         "hub reads it back via orion.orion_day.store.fetch_letter",
     ),
-    "orion.core.schemas.substrate_graph_journal:SubstrateGraphProposalV1": (
-        "orion-durable-runs",
-        "memory referent persist (orion/memory/referents/store.py) inserts journal rows; the "
-        "orion-memory-consolidation referent projector reads them back via SubstrateGraphJournal",
-    ),
-    "orion.core.schemas.substrate_graph_journal:SubstrateGraphDecisionV1": (
-        "orion-durable-runs",
-        "memory referent persist inserts source_cooccurrence_v1 decisions; the consolidation "
-        "projector (AssertionProjector) reads them back via SubstrateGraphJournal",
-    ),
+    # SubstrateGraphProposalV1 / SubstrateGraphDecisionV1 were declared here (writer
+    # orion-durable-runs, memory referent persist) until 2026-10-10, when Hub's reading
+    # claims (orion/world_pulse_read/assertions.py) became a writer code can see. A
+    # declaration only applies to a model with NO discovered writer, so it went stale;
+    # the durable-runs writer is now uncovered by this check (single-writer limit).
     "orion.schemas.introspect:DreamsArguments": (
         "orion-harness-governor",
         "orion-introspect MCP (spawned by the governor's FCC turns) validates the model's dreams "

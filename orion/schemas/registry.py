@@ -798,10 +798,12 @@ from orion.schemas.introspect import (
     ReadingResultArguments,
 )
 from orion.schemas.world_pulse_read import (
+    WorldPulseReadClaimReceiptV1,
     WorldPulseReadConceptCandidateV1,
     WorldPulseReadHandoffV1,
     WorldPulseReadPriorCandidateV1,
     WorldPulseReadPriorTestV1,
+    WorldPulseReadRelationshipClaimV1,
     WorldPulseReadSeedV1,
     WorldPulseReadStage2ResultV1,
 )
@@ -1492,6 +1494,8 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "WorldPulseReadConceptCandidateV1": WorldPulseReadConceptCandidateV1,
     "WorldPulseReadPriorCandidateV1": WorldPulseReadPriorCandidateV1,
     "WorldPulseReadPriorTestV1": WorldPulseReadPriorTestV1,
+    "WorldPulseReadRelationshipClaimV1": WorldPulseReadRelationshipClaimV1,
+    "WorldPulseReadClaimReceiptV1": WorldPulseReadClaimReceiptV1,
     "WorldContextCapsuleV1": WorldContextCapsuleV1,
     "WorldPulseRunV1": WorldPulseRunV1,
     "WorldPulseRunResultV1": WorldPulseRunResultV1,

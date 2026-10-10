@@ -504,7 +504,10 @@ class HarnessRunner:
         # doesn't get treated as clean for cross-turn continuity purposes.
         error_path_taken = False
         reading_tracker = ReadingReceiptTracker(
-            getattr(request, "reading_binding", None)
+            getattr(request, "reading_binding", None),
+            # Only a reading turn's fetched text is retained (Hub's reading pipeline);
+            # chat/outreach/curiosity turns never ship page text over the bus.
+            retain_text=bool(getattr(request, "reading_only", False)),
         )
         turn_findings = TurnFindings()
         cut_short_reason: str | None = None

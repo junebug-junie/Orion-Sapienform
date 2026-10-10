@@ -3,9 +3,13 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Literal
 
+import logging
+
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from orion.schemas.reading import ReadingRequestedV1, SourceFetchEvidenceV1
+
+_log = logging.getLogger(__name__)
 
 
 class _Base(BaseModel):
@@ -219,6 +223,91 @@ class WorldPulseReadHandoffV1(_Base):
         return _coerce_thread_list(value)
 
 
+# #2497 reader allowlist: the existing semantic predicates a reading may claim.
+# Operational predicates (activates, suppresses, seeks...) are never emitted by a reader.
+READING_CLAIM_PREDICATES: tuple[str, ...] = (
+    "subtype_of", "part_of", "refines", "associated_with", "causes", "co_occurs_with",
+)
+ReadingClaimOutcomeV1 = Literal["accepted_provisional", "proposed", "rejected"]
+
+
+class WorldPulseReadClaimReceiptV1(_Base):
+    """What deterministic code did with one relationship claim. Always server-set
+    (orion/world_pulse_read/assertions.py); anything the model writes here is discarded."""
+
+    outcome: ReadingClaimOutcomeV1
+    # accepted_provisional: journalled proposal + accepting decision. proposed: journalled
+    # proposal only, no link. rejected: refused by validation or not journalled at all.
+    # reason, a short machine label: accepted | quote_not_found | quote_too_short |
+    # quote_not_about_endpoints |
+    # domain_rule:<predicate> | already_decided | decision_journal_failed |
+    # predicate_not_allowed | unknown_subject | unknown_object | same_endpoint | duplicate |
+    # journal_unavailable
+    reason: str = Field(min_length=1)
+    proposal_id: str | None = None
+    assertion_id: str | None = None
+    decision_id: str | None = None
+    # The retained text the quote was found in, and where (half-open UTF-8 byte range).
+    content_sha256: str | None = None
+    representation: Literal["source_text", "tool_digest"] | None = None
+    span_start: int | None = Field(default=None, ge=0)
+    span_end: int | None = Field(default=None, ge=0)
+
+
+class WorldPulseReadRelationshipClaimV1(_Base):
+    """Stage 2's proposed relationship between a concept this read produced
+    (``subject_id``) and an existing atlas concept (``object_id``), both chosen
+    from id lists Hub put in the prompt. The model proposes; code decides."""
+
+    subject_id: str = Field(min_length=1)
+    predicate: str = Field(min_length=1)
+    object_id: str = Field(min_length=1)
+    statement_text: str = Field(min_length=1)
+    quote: str = ""
+    receipt: WorldPulseReadClaimReceiptV1 | None = None
+
+
+_CLAIM_FIELDS = frozenset(WorldPulseReadRelationshipClaimV1.model_fields)
+
+
+def _coerce_claim_list(value: Any) -> list[Any]:
+    """Claims are optional: one malformed claim (an empty statement, an invented key)
+    must not throw away the whole Stage 2 read. Each claim is validated on its own,
+    unknown keys dropped, invalid claims dropped with a warning. Receipts are kept here
+    (a stored row carries real ones); the Stage 2 loop strips any from raw model output."""
+    if not isinstance(value, list):
+        return []
+    out: list[Any] = []
+    for item in value:
+        if isinstance(item, WorldPulseReadRelationshipClaimV1):
+            out.append(item)
+            continue
+        if not isinstance(item, dict):
+            _log.warning("world_pulse_read_claim_dropped reason=not_object")
+            continue
+        unknown = sorted(k for k in item if k not in _CLAIM_FIELDS)
+        try:
+            out.append(WorldPulseReadRelationshipClaimV1.model_validate(
+                {k: v for k, v in item.items() if k in _CLAIM_FIELDS}))
+        except ValueError as exc:
+            _log.warning("world_pulse_read_claim_dropped reason=invalid errors=%d", len(getattr(exc, "errors", lambda: [])()))
+            continue
+        if unknown:
+            _log.warning("world_pulse_read_claim_keys_dropped keys=%s", ",".join(unknown))
+    return out
+
+
+def strip_model_claim_receipts(parsed: dict[str, Any]) -> dict[str, Any]:
+    """Raw model output only: a model cannot author a receipt (it is code's verdict)."""
+    claims = parsed.get("relationship_claims")
+    if isinstance(claims, list):
+        parsed["relationship_claims"] = [
+            {k: v for k, v in item.items() if k != "receipt"} if isinstance(item, dict) else item
+            for item in claims
+        ]
+    return parsed
+
+
 class WorldPulseReadStage2ResultV1(_Base):
     """Stage 2 FCC result. ``need_stage1_urls`` may trigger Stage 1 re-entry.
 
@@ -237,6 +326,9 @@ class WorldPulseReadStage2ResultV1(_Base):
     concept_candidates: list[WorldPulseReadConceptCandidateV1] = Field(default_factory=list)
     open_threads: list[str] = Field(default_factory=list)
     hops: list[str] = Field(default_factory=list)
+    # Model-proposed relationship claims; each gets a server-set receipt before the
+    # result is stored. Older rows have none.
+    relationship_claims: list[WorldPulseReadRelationshipClaimV1] = Field(default_factory=list)
     round_trips: int = Field(default=0, ge=0)
     trace_id: str = Field(min_length=1)
     created_at: datetime
@@ -270,3 +362,8 @@ class WorldPulseReadStage2ResultV1(_Base):
     @classmethod
     def _string_lists_before(cls, value: Any) -> list[str]:
         return _coerce_thread_list(value)
+
+    @field_validator("relationship_claims", mode="before")
+    @classmethod
+    def _claims_before(cls, value: Any) -> list[Any]:
+        return _coerce_claim_list(value)

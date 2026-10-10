@@ -805,6 +805,7 @@ async def startup_event():
                 ),
                 step_relay_provider=lambda: harness_step_relay,
                 store_provider=concept_atlas_routes_runtime._get_substrate_store,
+                assertions_enabled=settings.HUB_WORLD_PULSE_READ_ASSERTIONS_ENABLED,
             )
             await world_pulse_read_stage2.start(bus, harness_rpc_bus=rpc_bus)
 

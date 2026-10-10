@@ -14,7 +14,9 @@ evaluator's invoke threshold (0.5) on its own. No metric is introduced.
 
 Guardrails:
 - once per assertion revision: the seed carries ``link_assertion:<id>@<rev>``; a link
-  already present in a stored candidate set is never minted again (the SQL below);
+  already present in a stored candidate set is never minted again (the SQL below). A
+  later accepted revision of the same assertion (e.g. provisional -> canonical after
+  review) is a new decision and mints one more seed, by design;
 - only the LATEST decision per assertion counts, so a later rejected/deprecated decision
   stops the seed even if an older accepted projection was applied;
 - per-tick cap (``HARD_LINK_SEED_CEILING``), oldest first, appended after the scored
@@ -23,11 +25,12 @@ Guardrails:
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Iterable, Mapping
 
-from orion.core.schemas.frontier_curiosity import FrontierInvocationSignalV1
+from orion.core.schemas.frontier_curiosity import UNSCORED_EVENT_NOTE, FrontierInvocationSignalV1
 from orion.substrate.assertion_projector import _edge_id as _projector_edge_id
 from orion.substrate.neighborhood import ACCEPTED_ASSERTION_STATES
 
@@ -35,7 +38,7 @@ from orion.substrate.neighborhood import ACCEPTED_ASSERTION_STATES
 # whole reading stack into substrate-runtime). A test pins the two equal.
 READING_PROPOSAL_ACTORS: tuple[str, ...] = ("world_pulse_read_stage2",)
 SOURCE_NOTE = "source:reading_link_accepted"
-UNSCORED_NOTE = "strength:unscored_event"
+UNSCORED_NOTE = UNSCORED_EVENT_NOTE
 HARD_LINK_SEED_CEILING = 4
 # The idempotency check looks for an existing seed in candidate sets stored since the
 # projection was applied, minus this slack for clock skew between the Hub (which stamps
@@ -52,16 +55,36 @@ def projection_edge_id(assertion_id: str) -> str:
     return _projector_edge_id(assertion_id, "semantic_projection")
 
 
-# One round trip. Latest decision per assertion -> must be accepted, applied, proposed by
-# a reading actor, applied within the lookback, and not already in a stored seed.
+# One round trip, bounded by the lookback on both tables:
+# - recent:  applied materializations inside the lookback;
+# - latest:  the newest decision of those assertions only (a later rejection or
+#            deprecation wins even before it is projected);
+# - seeded:  link keys already stored, collected in ONE pass over candidate rows
+#            that hold a link seed (jsonb containment), not one scan per link.
 ACCEPTED_UNSEEDED_LINKS_SQL = """
-WITH latest AS (
+WITH recent AS (
+    SELECT m.decision_id, m.target_id, m.payload->'edge_ids' AS edge_ids, m.recorded_at
+    FROM substrate_graph_journal m
+    WHERE m.event_kind = 'materialization' AND m.outcome = 'applied'
+      AND m.recorded_at >= now() - (:lookback_hours * interval '1 hour')
+),
+latest AS (
     SELECT DISTINCT ON (d.target_id)
            d.target_id, d.revision, d.decision_id, d.proposal_id,
            d.payload->>'resulting_state' AS state
     FROM substrate_graph_journal d
     WHERE d.event_kind = 'decision' AND d.proposal_kind = 'relationship_assertion'
+      AND d.target_id IN (SELECT target_id FROM recent)
     ORDER BY d.target_id, d.revision DESC, d.recorded_at DESC
+),
+seeded AS (
+    SELECT DISTINCT n.note
+    FROM substrate_endogenous_curiosity_candidates c
+    CROSS JOIN LATERAL jsonb_array_elements(c.candidates_json) s
+    CROSS JOIN LATERAL jsonb_array_elements_text(s->'notes') AS n(note)
+    WHERE c.generated_at >= now() - ((:lookback_hours + :skew_hours) * interval '1 hour')
+      AND c.candidates_json @> CAST(:seed_marker AS jsonb)
+      AND left(n.note, 15) = 'link_assertion:'
 )
 SELECT l.target_id AS assertion_id,
        l.revision AS revision,
@@ -70,22 +93,17 @@ SELECT l.target_id AS assertion_id,
        p.payload->>'object_node_id' AS object_node_id,
        p.payload->>'predicate' AS predicate,
        p.payload->>'statement_text' AS statement_text,
-       m.payload->'edge_ids' AS edge_ids,
+       m.edge_ids AS edge_ids,
        m.recorded_at AS materialized_at
 FROM latest l
-JOIN substrate_graph_journal m
-  ON m.event_kind = 'materialization' AND m.outcome = 'applied' AND m.decision_id = l.decision_id
+JOIN recent m ON m.decision_id = l.decision_id
 JOIN substrate_graph_journal p
   ON p.event_kind = 'proposal' AND p.proposal_id = l.proposal_id
 WHERE p.actor = ANY(:actors)
   AND l.state = ANY(:accepted_states)
-  AND m.recorded_at >= now() - (:lookback_hours * interval '1 hour')
   AND NOT EXISTS (
-      SELECT 1
-      FROM substrate_endogenous_curiosity_candidates c
-      CROSS JOIN LATERAL jsonb_array_elements(c.candidates_json) s
-      WHERE c.generated_at >= m.recorded_at - (:skew_hours * interval '1 hour')
-        AND s->'notes' @> jsonb_build_array('link_assertion:' || l.target_id || '@' || l.revision::text)
+      SELECT 1 FROM seeded
+      WHERE seeded.note = 'link_assertion:' || l.target_id || '@' || l.revision::text
   )
 ORDER BY m.recorded_at, l.target_id
 LIMIT :limit
@@ -98,6 +116,7 @@ def accepted_links_params(*, lookback_hours: float, limit: int) -> dict[str, Any
         "accepted_states": list(ACCEPTED_ASSERTION_STATES),
         "lookback_hours": float(lookback_hours),
         "skew_hours": CLOCK_SKEW_SLACK_HOURS,
+        "seed_marker": json.dumps([{"notes": [SOURCE_NOTE]}]),
         "limit": int(limit),
     }
 

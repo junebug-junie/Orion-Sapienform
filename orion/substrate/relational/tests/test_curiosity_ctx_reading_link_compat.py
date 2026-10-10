@@ -88,9 +88,14 @@ def test_reader_tolerates_fields_newer_than_its_own_model(monkeypatch):
     assert signals is not None and len(signals) == 2
 
 
-def test_unscored_link_seed_does_not_lower_aggregate_confidence():
+def test_unscored_link_seed_is_not_a_gap_in_chat():
     rows = _producer_rows()
-    record = map_curiosity_ctx_to_substrate({"curiosity_signals": rows})
-    node = record.nodes[0]
-    assert node.metadata["aggregate_confidence"] == 0.6  # the scored seed's, not (0.6 + 0.0) / 2
-    assert node.metadata["gap_count"] == 2
+    node = map_curiosity_ctx_to_substrate({"curiosity_signals": rows}).nodes[0]
+    assert node.metadata["gap_count"] == 1
+    assert node.metadata["aggregate_confidence"] == 0.6
+    assert not any("reading link was accepted" in e for e in node.metadata["evidence_summaries"])
+
+
+def test_only_link_seeds_produce_no_gap_node():
+    link_only = [r for r in _producer_rows() if "strength:unscored_event" in r["notes"]]
+    assert map_curiosity_ctx_to_substrate({"curiosity_signals": link_only}) is None

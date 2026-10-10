@@ -22,7 +22,7 @@ from orion.core.schemas.cognitive_substrate import (
     SubstrateProvenanceV1,
     SubstrateSignalBundleV1,
 )
-from orion.core.schemas.frontier_curiosity import FrontierInvocationSignalV1
+from orion.core.schemas.frontier_curiosity import FrontierInvocationSignalV1, is_unscored_event
 from orion.substrate.adapters._common import make_temporal
 
 logger = logging.getLogger("orion.substrate.relational.adapters.curiosity_ctx")
@@ -54,8 +54,14 @@ def _known(item: dict[str, Any]) -> dict[str, Any]:
     unknown = set(item) - set(FrontierInvocationSignalV1.model_fields)
     if not unknown:
         return item
-    logger.info("curiosity_adapter_dropped_unknown_fields fields=%s", sorted(unknown))
+    key = tuple(sorted(unknown))
+    if key not in _LOGGED_UNKNOWN:  # once per field set, not once per chat turn
+        _LOGGED_UNKNOWN.add(key)
+        logger.info("curiosity_adapter_dropped_unknown_fields fields=%s", list(key))
     return {k: v for k, v in item.items() if k not in unknown}
+
+
+_LOGGED_UNKNOWN: set[tuple[str, ...]] = set()
 
 
 def _coerce(raw: Any) -> list[FrontierInvocationSignalV1] | None:
@@ -125,6 +131,9 @@ def map_curiosity_ctx_to_substrate(ctx: dict[str, Any]) -> SubstrateGraphRecordV
     raw_signals = ctx.get("curiosity_signals")
 
     signals = _coerce(raw_signals)
+    # An unscored event seed (an accepted reading link) is not an unresolved gap
+    # and has no strength or confidence to rank or average: leave it out.
+    signals = [s for s in signals or [] if not is_unscored_event(s.notes)]
     if not signals:
         return None
 
@@ -150,11 +159,8 @@ def map_curiosity_ctx_to_substrate(ctx: dict[str, Any]) -> SubstrateGraphRecordV
         if signal.evidence_summary:
             evidence_summaries.append(signal.evidence_summary)
 
-        # Confidence and signal type. An unscored event seed (an accepted
-        # reading link, orion/substrate/link_accepted_seeds.py) carries 0.0 as
-        # "no score", not "no confidence": it does not lower the average.
-        if "strength:unscored_event" not in (signal.notes or []):
-            confidences.append(signal.confidence)
+        # Confidence and signal type
+        confidences.append(signal.confidence)
         signal_types.append(signal.signal_type)
 
     # Calculate average confidence

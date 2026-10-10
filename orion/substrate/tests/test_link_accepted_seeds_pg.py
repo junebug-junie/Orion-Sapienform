@@ -12,7 +12,6 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-import re
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -44,25 +43,26 @@ READER = "world_pulse_read_stage2"
 NOW = datetime.now(timezone.utc) - timedelta(minutes=30)
 
 
-def _asyncpg(sql: str, params: dict) -> tuple[str, list]:
-    """SQLAlchemy ``:name`` binds -> asyncpg ``$n`` (``::type`` casts left alone)."""
-    order: list[str] = []
+_DSN: dict[str, str] = {}
 
-    def repl(match: re.Match) -> str:
-        name = match.group(1)
-        if name not in order:
-            order.append(name)
-        return f"${order.index(name) + 1}"
 
-    return re.sub(r"(?<!:):([a-z_]+)", repl, sql), [params[n] for n in order]
+def _links_sync(lookback_hours: float, limit: int) -> list[dict]:
+    """Exactly the store's path: SQLAlchemy text() + psycopg2 binds + mappings()."""
+    from sqlalchemy import create_engine, text
+
+    engine = create_engine(_DSN["current"].replace("postgresql://", "postgresql+psycopg2://", 1))
+    try:
+        with engine.connect() as conn:
+            rows = conn.execute(text(ACCEPTED_UNSEEDED_LINKS_SQL),
+                                accepted_links_params(lookback_hours=lookback_hours, limit=limit)).mappings().all()
+    finally:
+        engine.dispose()
+    return [{**dict(r), "edge_ids": json.loads(r["edge_ids"]) if isinstance(r["edge_ids"], str) else r["edge_ids"]}
+            for r in rows]
 
 
 async def _links(pool, *, lookback_hours: float = 24.0, limit: int = 10):
-    sql, args = _asyncpg(ACCEPTED_UNSEEDED_LINKS_SQL, accepted_links_params(lookback_hours=lookback_hours, limit=limit))
-    async with pool.acquire() as conn:
-        rows = await conn.fetch(sql, *args)
-    return [{**dict(r), "edge_ids": json.loads(r["edge_ids"]) if isinstance(r["edge_ids"], str) else r["edge_ids"]}
-            for r in rows]
+    return await asyncio.to_thread(_links_sync, lookback_hours, limit)
 
 
 async def _store_seed_row(pool, seeds) -> None:
@@ -80,7 +80,8 @@ async def _with_db(fn):
     admin = await asyncpg.connect(ADMIN_DSN)
     await admin.execute(f'CREATE DATABASE "{name}"')
     await admin.close()
-    pool = await asyncpg.create_pool(dsn=ADMIN_DSN.rsplit("/", 1)[0] + f"/{name}", min_size=1, max_size=2)
+    _DSN["current"] = ADMIN_DSN.rsplit("/", 1)[0] + f"/{name}"
+    pool = await asyncpg.create_pool(dsn=_DSN["current"], min_size=1, max_size=2)
     try:
         async with pool.acquire() as conn:
             for path in ("manual_migration_substrate_graph_journal_v1.sql",
@@ -230,4 +231,17 @@ def test_lookback_excludes_old_links():
                                " WHERE event_kind = 'materialization'")
         assert await _links(pool, lookback_hours=24.0) == []
         assert len(await _links(pool, lookback_hours=24.0 * 30)) == 1
+    asyncio.run(_with_db(body))
+
+
+def test_a_seed_row_without_the_link_note_does_not_count_as_seeded():
+    async def body(pool):
+        store = _store("read-a", "read-b", "read-c")
+        journal, projector = _projector(pool, store)
+        first, second = Claim("read-a", "read-b"), Claim("read-b", "read-c")
+        await _accept(journal, projector, first)
+        await _accept(journal, projector, second)
+        links, _ = links_from_rows(await _links(pool))
+        await _store_seed_row(pool, link_accepted_seeds(links[:1], cap=1))   # only the first stored
+        assert [r["assertion_id"] for r in await _links(pool)] == [second.target]
     asyncio.run(_with_db(body))

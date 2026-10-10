@@ -121,3 +121,19 @@ def test_apply_hint_prepends_and_degrades():
 
     with patch.object(curiosity_hint, "_fetch_fresh_candidates", return_value=[]):
         assert curiosity_hint.apply_curiosity_hint("prompt") == "prompt"
+
+
+def test_unscored_link_seed_never_becomes_a_curiosity_hint_or_outreach_topic() -> None:
+    """An accepted-reading-link seed (strength 0.0, note strength:unscored_event)
+    is an event, not a gap: Hub's hint and outreach readers drop it (2026-10-10)."""
+    stored = [
+        {"signal_strength": 0.0, "evidence_summary": "a reading link was accepted: a associated_with b",
+         "notes": ["endogenous_seed", "source:reading_link_accepted", "strength:unscored_event"]},
+        {"signal_strength": 0.7, "evidence_summary": "sustained prediction error on node:x",
+         "notes": ["endogenous_seed"]},
+    ]
+    usable = curiosity_hint.usable_candidates(stored)
+    assert [c["evidence_summary"] for c in usable] == ["sustained prediction error on node:x"]
+    assert curiosity_hint.usable_candidates(stored[:1]) == []
+    import json as _json
+    assert curiosity_hint.usable_candidates(_json.dumps(stored[:1])) == []

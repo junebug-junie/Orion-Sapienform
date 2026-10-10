@@ -3747,6 +3747,7 @@ class BiometricsSubstrateWorker:
         if not s.endogenous_curiosity_link_seeds_enabled:
             return [], None
         from orion.substrate.link_accepted_seeds import (
+            CLOCK_SKEW_SLACK_HOURS,
             HARD_LINK_SEED_CEILING,
             link_accepted_seeds,
             links_from_rows,
@@ -3756,10 +3757,12 @@ class BiometricsSubstrateWorker:
         receipt: dict[str, Any] = {"cap": cap, "minted": 0, "keys": [], "skipped": 0}
         if cap == 0:
             return [], receipt
-        lookback = min(
+        # Inside retention minus the skew slack, so a stored seed is never pruned
+        # while its link is still in the window (that would re-mint it).
+        lookback = max(1.0, min(
             float(s.endogenous_curiosity_link_seed_lookback_hours),
-            float(s.endogenous_curiosity_candidate_retention_hours),
-        )
+            float(s.endogenous_curiosity_candidate_retention_hours) - 2 * CLOCK_SKEW_SLACK_HOURS,
+        ))
         try:
             rows = self._store.load_unseeded_accepted_reading_links(
                 # A few extra rows so a malformed one cannot hold the queue.
@@ -3773,6 +3776,12 @@ class BiometricsSubstrateWorker:
             return [], receipt
         receipt["minted"] = len(seeds)
         receipt["skipped"] = skipped
+        if skipped:
+            logger.warning(
+                "substrate_endogenous_curiosity_link_rows_skipped count=%d "
+                "(accepted+applied but projection edge missing from the materialization)",
+                skipped,
+            )
         receipt["keys"] = [
             next((n for n in sig.notes if n.startswith("link_assertion:")), "") for sig in seeds
         ]
@@ -3862,13 +3871,11 @@ class BiometricsSubstrateWorker:
             config=config,
             now=tick_now,
         )
-        # Appended AFTER the scored, budget-capped seeds and stored in addition to
-        # them (cap below grows by len(link_seeds)), so a link seed never displaces
-        # a scored one. Unscored (strength 0.0): never outranks one either.
+        # Link-accepted seeds are events, not candidates for the decision: they
+        # never pass System One admission or the evaluator, never count in
+        # seed_count/evidence_refs, and are appended only to the list being
+        # stored, after the scored seeds (so they never displace one).
         link_seeds, link_receipt = self._link_accepted_curiosity_seeds()
-        if link_seeds:
-            seeds = list(seeds) + list(link_seeds)
-        stored_cap = 8 + len(link_seeds)
         if seeds:
             # Visibility, 2026-07-26: which source/node actually won a budget
             # slot this tick. _prediction_error_candidates() (orion/substrate/
@@ -3892,14 +3899,33 @@ class BiometricsSubstrateWorker:
             except Exception:
                 logger.exception("substrate_endogenous_curiosity_seed_source_log_failed")
         if not seeds:
-            try:
-                self._store.save_endogenous_curiosity_candidates(
-                    [],
-                    retention_hours=float(s.endogenous_curiosity_candidate_retention_hours),
+            link_gate: dict[str, Any] | None = None
+            stored_links: list[Any] = []
+            if link_seeds:
+                # Idle tick that still has a new accepted link: store just the
+                # event seeds, with a gate that says no decision ran.
+                link_gate = {"link_only": True, "link_seeds": link_receipt}
+                stored_links = self._attach_curiosity_seed_neighborhood(
+                    list(link_seeds), store, link_gate
                 )
+            try:
+                if link_gate is not None:
+                    self._store.save_endogenous_curiosity_candidates(
+                        stored_links,
+                        gate=link_gate,
+                        retention_hours=float(s.endogenous_curiosity_candidate_retention_hours),
+                    )
+                else:
+                    self._store.save_endogenous_curiosity_candidates(
+                        [],
+                        retention_hours=float(s.endogenous_curiosity_candidate_retention_hours),
+                    )
             except Exception:
                 logger.exception("substrate_endogenous_curiosity_persist_failed")
-            logger.info("substrate_endogenous_curiosity_tick_completed seeds=0 outcome=noop")
+            logger.info(
+                "substrate_endogenous_curiosity_tick_completed seeds=0 outcome=noop link_seeds=%d",
+                len(stored_links),
+            )
             return
 
         if store is None:
@@ -3939,7 +3965,7 @@ class BiometricsSubstrateWorker:
             lineage_ok = False
             try:
                 vetoed = self._attach_curiosity_seed_neighborhood(
-                    list(seeds)[:stored_cap], store, gate_telemetry
+                    list(seeds)[:8] + list(link_seeds), store, gate_telemetry
                 )
                 persist = self._store.save_endogenous_curiosity_candidates(
                     vetoed,
@@ -4008,7 +4034,7 @@ class BiometricsSubstrateWorker:
                 rest = [
                     sig for sig in result.signals if "endogenous_seed" not in (sig.notes or [])
                 ]
-                persisted = (preferred + rest)[:stored_cap]
+                persisted = (preferred + rest)[:8] + list(link_seeds)
                 # After _decide: edge fields never feed the decision above.
                 persisted = self._attach_curiosity_seed_neighborhood(
                     persisted, store, gate_telemetry

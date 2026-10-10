@@ -77,7 +77,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - run: python -m pip install 'pydantic>=2' pydantic-settings requests 'redis<6' PyYAML jinja2 pytest 'rdflib>=7' asyncpg==0.29.0
+      - run: python -m pip install 'pydantic>=2' pydantic-settings requests 'redis<6' PyYAML jinja2 pytest 'rdflib>=7' asyncpg==0.29.0 sqlalchemy==2.0.36 psycopg2-binary==2.9.10
       - name: Store contract and backend regressions
         run: >-
           python -m pytest -q

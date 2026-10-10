@@ -23,6 +23,16 @@ FrontierInvocationSignalTypeV1 = Literal[
 
 FrontierInvocationOutcomeV1 = Literal["invoke", "defer", "noop", "blocked", "operator_only"]
 
+# Note on a signal that is an EVENT with no score (signal_strength/confidence are 0.0
+# placeholders, not measurements), e.g. an accepted reading link
+# (orion/substrate/link_accepted_seeds.py). Readers that rank or average strength,
+# or present "gaps", skip these; raw-row readers (self-inquiry SQL) still see them.
+UNSCORED_EVENT_NOTE = "strength:unscored_event"
+
+
+def is_unscored_event(notes: Any) -> bool:
+    return UNSCORED_EVENT_NOTE in (notes or [])
+
 
 class FrontierInvocationSignalV1(BaseModel):
     model_config = ConfigDict(extra="forbid")

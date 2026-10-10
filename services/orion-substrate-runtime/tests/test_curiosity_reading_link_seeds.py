@@ -189,10 +189,44 @@ def test_flags_off_rows_and_gate_have_the_pre_change_shape(monkeypatch):
     worker._store.load_unseeded_accepted_reading_links.assert_not_called()
 
 
-def test_link_seed_alone_runs_the_evaluator_and_never_invokes(monkeypatch):
-    stored, gate = _tick(_worker(monkeypatch, rows=[_row()]), _graph(), [])
+def test_idle_tick_stores_only_the_link_seed_and_runs_no_decision(monkeypatch):
+    worker = _worker(monkeypatch, rows=[_row()])
+    with patch("orion.substrate.frontier_curiosity.FrontierCuriosityEvaluator") as evaluator_cls, \
+            patch("orion.substrate.system_one_access.decide_curiosity_admission") as admission:
+        stored, gate = _tick(worker, _graph(), [])
+    evaluator_cls.assert_not_called()
+    admission.assert_not_called()
+    (link,) = _link_rows(stored)
+    assert len(stored) == 1 and link["focal_edge_refs"] == [EDGE]
+    assert gate["link_only"] is True and gate["link_seeds"]["minted"] == 1
+    assert "evaluator_outcome" not in gate and "seed_count" not in gate
+
+
+def test_idle_tick_without_links_is_unchanged(monkeypatch):
+    worker = _worker(monkeypatch, rows=[])
+    with patch("orion.substrate.graphdb_store.build_substrate_store_from_env", return_value=_graph()), \
+            patch("orion.substrate.endogenous_curiosity.endogenous_curiosity_candidates", return_value=[]):
+        worker._endogenous_curiosity_tick()
+    call = worker._store.save_endogenous_curiosity_candidates.call_args
+    assert call.args[0] == [] and "gate" not in call.kwargs
+
+
+def test_link_seeds_never_reach_admission_or_the_evaluator(monkeypatch):
+    scored = [_scored(0.8)]
+    worker = _worker(monkeypatch, rows=[_row()])
+    real = __import__("orion.substrate.frontier_curiosity", fromlist=["x"]).FrontierCuriosityEvaluator
+    seen = {}
+
+    class Spy(real):
+        def evaluate(self, **kwargs):
+            seen["endogenous"] = list(kwargs["endogenous_signals"])
+            return super().evaluate(**kwargs)
+
+    with patch("orion.substrate.frontier_curiosity.FrontierCuriosityEvaluator", Spy):
+        stored, gate = _tick(worker, _graph(), scored)
+    assert [s.signal_id for s in seen["endogenous"]] == [s.signal_id for s in scored]
+    assert gate["seed_count"] == 1 and "read-a" not in gate["evidence_refs"]
     assert len(_link_rows(stored)) == 1
-    assert gate["evaluator_outcome"] == "noop"  # strength 0.0 < invoke threshold
 
 
 def test_legacy_edges_are_dropped_and_counted(monkeypatch):

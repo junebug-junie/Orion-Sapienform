@@ -238,16 +238,20 @@ Placeholders that should be marked, not fixed here: harness_closure 0.65, self-m
 buckets. Also a side finding: repair confidence is only ever {0, 0.65}, so its logprob path never
 runs live.
 
-## Missing questions (for Juniper)
+## Decisions (Juniper, 2026-10-10)
 
-1. **Chat's "unusual" signal** (needed for the seam's first external source): message-rate
-   percentile, turn novelty, or both?
-2. **Bug fixes 1–6:** one PR each, before or alongside the seam? Bug 1 directly distorts attention,
-   so the proposal is that it goes first.
-3. **The metric-lock semantic fields:** CI-enforced only for metrics that reach a prompt (proposed),
-   or for every metric?
+1. **Chat's "unusual":** message rate plus turn novelty, each against chat's own 7-day history. Presence
+   and the home-camera Juniper sighting (#2558) come next as external sources, scored by how often they
+   change against their own normal. The cabinet mic loudness line (#2569) is a candidate world source
+   too. Each still clears metric-gate step 4 on live data before it ships.
+2. **Bug order:** the repair replay (#1) goes first. Bugs 2–6 ship as small, separate PRs alongside the
+   semantic-layer work.
+3. **Metric-lock semantic fields:** CI-enforced only for metrics that reach an Orion prompt.
 
 Parked: the distress/zen redesign (bus-heartbeat uptime of tracked services).
+
+**Dependents:** Temporal Self rev 4 (#2369). Its habituation step waits on this seam being live, and
+its immune sweep waits on the §B lock fields.
 
 ## Non-goals
 

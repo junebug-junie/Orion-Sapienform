@@ -16,6 +16,14 @@ from app import concept_relation_readiness as readiness
 from orion.memory.crystallization import candidate_retrieval
 
 
+@pytest.fixture(autouse=True)
+def _reset_status():
+    saved = dict(readiness.READINESS_STATUS)
+    yield
+    readiness.READINESS_STATUS.clear()
+    readiness.READINESS_STATUS.update(saved)
+
+
 def _settings(**kw):
     base = dict(
         CONCEPT_RELATION_RESOLUTION_ENABLED=True,
@@ -48,8 +56,8 @@ def test_unreachable_hosts_are_degraded(monkeypatch):
     async def bad_embed(url):
         return "embed_host_unreachable:ConnectError"
 
-    async def bad_chroma(host, port):
-        return "chroma_unreachable:ConnectError"
+    async def bad_chroma(host, port, collection, min_docs):
+        return "chroma_unreachable:ConnectError", None
 
     monkeypatch.setattr(readiness, "_probe_embed", bad_embed)
     monkeypatch.setattr(readiness, "_probe_chroma", bad_chroma)
@@ -59,13 +67,51 @@ def test_unreachable_hosts_are_degraded(monkeypatch):
 
 
 def test_reachable_hosts_are_ok(monkeypatch):
-    async def ok(*a):
+    async def ok_embed(url):
         return None
 
-    monkeypatch.setattr(readiness, "_probe_embed", ok)
-    monkeypatch.setattr(readiness, "_probe_chroma", ok)
+    monkeypatch.setattr(readiness, "_probe_embed", ok_embed)
+    monkeypatch.setattr(readiness, "_probe_chroma_sync", lambda host, port, coll: 760)
     out = asyncio.run(readiness.check_concept_relation_readiness(_settings()))
     assert out["status"] == "ok"
+    assert out["chroma_collection_count"] == 760
+
+
+def test_sparse_collection_is_degraded(monkeypatch):
+    """Live 2026-10-10: hosts reachable but the collection held 1 doc for 760 actives."""
+    async def ok_embed(url):
+        return None
+
+    monkeypatch.setattr(readiness, "_probe_embed", ok_embed)
+    monkeypatch.setattr(readiness, "_probe_chroma_sync", lambda host, port, coll: 1)
+    out = asyncio.run(readiness.check_concept_relation_readiness(_settings(CONCEPT_RELATION_CANDIDATE_LIMIT=5)))
+    assert out["status"] == "degraded"
+    assert out["problems"] == ["chroma_collection_sparse:1"]
+
+
+def test_probe_embed_against_real_http_shape(monkeypatch):
+    import httpx
+
+    seen = {}
+
+    def handler(request):
+        seen["url"] = str(request.url)
+        return httpx.Response(200, json={"doc_id": "p", "embedding": [0.1, 0.2], "embedding_dim": 2})
+
+    real = httpx.AsyncClient
+    monkeypatch.setattr(httpx, "AsyncClient", lambda **kw: real(transport=httpx.MockTransport(handler), **kw))
+    assert asyncio.run(readiness._probe_embed("http://embed:8320/embedding/")) is None
+    assert seen["url"] == "http://embed:8320/embedding"
+
+    monkeypatch.setattr(
+        httpx, "AsyncClient", lambda **kw: real(transport=httpx.MockTransport(lambda r: httpx.Response(200, json={})), **kw)
+    )
+    assert asyncio.run(readiness._probe_embed("http://embed:8320/embedding")) == "embed_host_returned_no_embedding"
+
+    monkeypatch.setattr(
+        httpx, "AsyncClient", lambda **kw: real(transport=httpx.MockTransport(lambda r: httpx.Response(503)), **kw)
+    )
+    assert asyncio.run(readiness._probe_embed("http://embed:8320/embedding")).startswith("embed_host_unreachable:")
 
 
 def test_health_reports_degraded(monkeypatch):

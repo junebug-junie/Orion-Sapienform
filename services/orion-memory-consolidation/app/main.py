@@ -13,7 +13,7 @@ from orion.core.bus.bus_service_chassis import ChassisConfig, Hunter
 from app.retry_degraded_classifies import run_classify_retry_loop
 from app.retry_failed_windows import run_retry_loop
 from app.settings import settings
-from app.concept_relation_readiness import READINESS_STATUS, check_concept_relation_readiness
+from app.concept_relation_readiness import READINESS_STATUS, check_concept_relation_readiness, run_readiness_loop
 from app.confirmation_loop import LOOP_OUTCOME_KIND, handle_loop_outcome, run_confirmation_loop
 from app.episode_shadow import EpisodeShadowStore
 from app.window_state import WindowStore
@@ -30,6 +30,7 @@ _classify_retry_task: Optional[asyncio.Task] = None
 _report_task: Optional[asyncio.Task] = None
 _referent_task: Optional[asyncio.Task] = None
 _confirmation_task: Optional[asyncio.Task] = None
+_readiness_task: Optional[asyncio.Task] = None
 
 
 def _cfg() -> ChassisConfig:
@@ -49,6 +50,7 @@ async def lifespan(app: FastAPI):
     global bus_hunter, pg_pool, grammar_pg_pool, bus_client, _retry_task, _classify_retry_task, _report_task
     global _referent_task
     global _confirmation_task
+    global _readiness_task
 
     dsn = (settings.POSTGRES_URI or "").strip()
     if dsn:
@@ -64,6 +66,8 @@ async def lifespan(app: FastAPI):
     # Loud, not silent: warn at boot if concept-relation resolution is on but cannot
     # reach its embed/Chroma hosts (it silently wrote nothing 2026-09-07..10-10).
     await check_concept_relation_readiness(settings)
+    if settings.CONCEPT_RELATION_RESOLUTION_ENABLED:
+        _readiness_task = asyncio.create_task(run_readiness_loop(settings))
 
     window_store = WindowStore(pg_pool) if pg_pool is not None else None
     episode_store = EpisodeShadowStore(pg_pool, settings) if pg_pool is not None else None
@@ -145,6 +149,8 @@ async def lifespan(app: FastAPI):
         _referent_task.cancel()
     if _confirmation_task is not None:
         _confirmation_task.cancel()
+    if _readiness_task is not None:
+        _readiness_task.cancel()
     if bus_hunter is not None:
         await bus_hunter.stop()
     if bus_client is not None:

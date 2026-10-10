@@ -17,7 +17,9 @@ logger = logging.getLogger(__name__)
 
 _PROBE_TIMEOUT_SEC = 5.0
 
-# Last readiness result, surfaced by /health. Written at boot.
+# Last readiness result, surfaced by /health. Written at boot and every
+# READINESS_RECHECK_SEC by run_readiness_loop (see checked_at).
+READINESS_RECHECK_SEC = 600.0
 READINESS_STATUS: dict[str, Any] = {"status": "unchecked", "problems": []}
 
 
@@ -50,18 +52,31 @@ async def _probe_embed(url: str) -> str | None:
     return None
 
 
-def _probe_chroma_sync(host: str, port: int) -> None:
+def _probe_chroma_sync(host: str, port: int, collection: str) -> int:
+    """Heartbeat + document count of the candidate collection (0 if it does not exist)."""
     import chromadb  # type: ignore
 
-    chromadb.HttpClient(host=host, port=port).heartbeat()
-
-
-async def _probe_chroma(host: str, port: int) -> str | None:
+    client = chromadb.HttpClient(host=host, port=port)
+    client.heartbeat()
     try:
-        await asyncio.wait_for(asyncio.to_thread(_probe_chroma_sync, host, port), timeout=_PROBE_TIMEOUT_SEC)
+        return int(client.get_collection(collection).count())
+    except Exception:
+        return 0
+
+
+async def _probe_chroma(host: str, port: int, collection: str, min_docs: int) -> tuple[str | None, int | None]:
+    """Returns (problem, collection_count). A collection with fewer docs than the candidate
+    limit cannot fill a candidate set -- e.g. 1 doc vs 760 active crystallizations on
+    2026-10-10 -- so it is reported as degraded rather than ok."""
+    try:
+        count = await asyncio.wait_for(
+            asyncio.to_thread(_probe_chroma_sync, host, port, collection), timeout=_PROBE_TIMEOUT_SEC
+        )
     except Exception as exc:
-        return f"chroma_unreachable:{type(exc).__name__}"
-    return None
+        return f"chroma_unreachable:{type(exc).__name__}", None
+    if count < max(1, min_docs):
+        return f"chroma_collection_sparse:{count}", count
+    return None, count
 
 
 async def check_concept_relation_readiness(settings: Any, *, probe: bool = True) -> dict[str, Any]:
@@ -87,14 +102,24 @@ async def check_concept_relation_readiness(settings: Any, *, probe: bool = True)
 
     problems = config_problems(settings)
     if probe:
-        if "embed_host_url_empty" not in problems:
-            p = await _probe_embed(result["embed_host_url"])
-            if p:
-                problems.append(p)
-        if "chroma_host_empty" not in problems:
-            p = await _probe_chroma(result["chroma_host"], result["chroma_port"])
-            if p:
-                problems.append(p)
+        collection = getattr(settings, "CRYSTALLIZER_VECTOR_COLLECTION", "orion_memory_crystallizations") or "orion_memory_crystallizations"
+        min_docs = int(getattr(settings, "CONCEPT_RELATION_CANDIDATE_LIMIT", 5))
+
+        async def _none() -> None:
+            return None
+
+        async def _none_pair() -> tuple[None, None]:
+            return None, None
+
+        embed_p, (chroma_p, count) = await asyncio.gather(
+            _probe_embed(result["embed_host_url"]) if "embed_host_url_empty" not in problems else _none(),
+            _probe_chroma(result["chroma_host"], result["chroma_port"], collection, min_docs)
+            if "chroma_host_empty" not in problems
+            else _none_pair(),
+        )
+        result["chroma_collection"] = collection
+        result["chroma_collection_count"] = count
+        problems.extend(p for p in (embed_p, chroma_p) if p)
 
     result["problems"] = problems
     result["status"] = "degraded" if problems else "ok"
@@ -112,3 +137,15 @@ async def check_concept_relation_readiness(settings: Any, *, probe: bool = True)
     READINESS_STATUS.clear()
     READINESS_STATUS.update(result)
     return result
+
+
+async def run_readiness_loop(settings: Any, *, interval_sec: float = READINESS_RECHECK_SEC) -> None:
+    """Re-probe on a slow interval so /health tracks hosts going down after boot."""
+    while True:
+        await asyncio.sleep(interval_sec)
+        try:
+            await check_concept_relation_readiness(settings)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # never kill the loop
+            logger.warning("concept_relation_readiness_loop_error error=%s", exc)

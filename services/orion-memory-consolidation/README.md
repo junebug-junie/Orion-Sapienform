@@ -28,7 +28,7 @@ Grammar repair evidence (read-only): `MEMORY_CONSOLIDATION_FETCH_GRAMMAR_EVIDENC
 
 **Note:** Proposed crystallization IDs are stored in `memory_consolidation_windows.draft_id` until a dedicated `crystallization_id` column migration lands.
 
-## Cross-window concept-relation resolution (off by default)
+## Cross-window concept-relation resolution (on by default)
 
 Same-window duplicate detection (`orion.memory.crystallization.detection.detect_duplicates`) requires `scope_overlap`, which is structurally always `False` across two different consolidation windows — every crystallization gets a unique per-window `scope`, so two windows can never share one. `orion.memory.crystallization.concept_relation` adds a second, cross-window path: vector-similarity candidate retrieval (`candidate_retrieval.fetch_similar_candidates`, not scope-gated) followed by one bounded, structured-output LLM call that judges `same` / `refines` / `contradicts` / `unrelated` against the nearest existing active crystallizations of the same `kind`.
 
@@ -36,7 +36,7 @@ Dispatch is deliberately conservative: `same` reinforces the existing target (id
 
 **Decision log + belief-revision digest.** Every real LLM decision — including `unrelated` and sub-floor `contradicts`/`refines` that the dispatch above discards — is written to `memory_concept_relation_decisions` (`orion.memory.crystallization.repository.insert_concept_relation_decision`, guarded to never raise). `scripts/concept_relation_digest.py` (repo root, run on demand or via cron — not a live service loop) reads undigested rows and reports call volume / relation distribution / near-miss counts under `CONCEPT_RELATION_CONFIDENCE_FLOOR`, and marks them digested. **As of 2026-08-20 it no longer also writes a `reflection`-kind crystallization per decision** — that mirrored `memory_concept_relation_decisions` (already the real, durable, queryable trace) into `memory_crystallizations` a second time, auto-approved and bypassing manual review, and had grown to 356/620 (57%) of all active crystallizations before it was removed. `memory_concept_relation_decisions` remains the belief-revision trace; query it directly rather than expecting crystallizations for it.
 
-Ships flag-gated off; flipping the flag alone does not activate anything without also configuring the embed/chroma hosts (both default to empty string):
+Ships on (2026-10-10). Defaults point the embed host and Chroma at the athena containers on `app-net`:
 
 | Env | Default | Purpose |
 |-----|---------|---------|
@@ -47,9 +47,9 @@ Ships flag-gated off; flipping the flag alone does not activate anything without
 | `CRYSTALLIZER_EMBED_HOST_URL` | `http://orion-athena-vector-host:8320/embedding` | Embedding HTTP endpoint for candidate retrieval and for projecting new crystallizations into Chroma |
 | `CRYSTALLIZER_EMBED_TIMEOUT_MS` | `8000` | Embed call timeout |
 | `CHROMA_HOST` / `CHROMA_PORT` | `orion-athena-vector-db` / `8000` | Chroma vector store for candidate retrieval |
-
-If resolution is enabled but either host is empty or unreachable, boot logs `concept_relation_resolution_degraded` (WARNING) and `/health` returns `"degraded": true` with the reason under `concept_relation.problems`. This replaced a silent no-op that let the writer produce zero decisions from 2026-09-07 to 2026-10-10.
 | `CRYSTALLIZER_VECTOR_COLLECTION` | `orion_memory_crystallizations` | Chroma collection name (matches Hub's projection collection) |
+
+**Readiness (boot + every 10 min).** If resolution is enabled but either host is empty or unreachable, or the collection holds fewer documents than `CONCEPT_RELATION_CANDIDATE_LIMIT`, the service logs `concept_relation_resolution_degraded` (WARNING) and `/health` returns `"degraded": true` with reasons under `concept_relation.problems` and the probe time in `concept_relation.checked_at`. This replaced a silent no-op that let the writer produce zero decisions from 2026-09-07 to 2026-10-10.
 
 ### Scheduled maintenance (Athena cron)
 

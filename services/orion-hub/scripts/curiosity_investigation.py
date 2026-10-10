@@ -86,6 +86,7 @@ from uuid import NAMESPACE_URL, uuid4, uuid5
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 
 from .endogenous_outreach import in_quiet_hours
+from .rest_drive_reader import RestDriveReader
 from .energy_stakes_gate import (
     HOLD_REASON as ENERGY_HOLD_REASON,
     EnergyHold,
@@ -399,6 +400,10 @@ class SchedulingGateInputs:
     local_hour: Optional[int] = None
     window_start_hour: int = 0
     window_end_hour: int = 0
+    # The rest drive (scripts/rest_drive_reader.py): the longer cooldown kept
+    # while Orion is tired, or None when the drive is not `due`, unknown, or
+    # switched off -- None is exactly the behaviour before the drive existed.
+    rest_drive_cooldown_sec: Optional[float] = None
 
 
 def window_is_configured(start_hour: int, end_hour: int) -> bool:
@@ -515,6 +520,11 @@ class SignalGateInputs:
     stores_not_ready: bool = False
 
 
+REST_DRIVE_BLOCK_REASON = "rest_drive_cooldown"
+# Reasons an operator's forced run overrides: pacing, never "can this work".
+FORCE_OVERRIDABLE_REASONS = frozenset({"cooldown", "daily_cap", "outside_window", REST_DRIVE_BLOCK_REASON})
+
+
 def scheduling_block_reason(inp: SchedulingGateInputs) -> Optional[str]:
     """First scheduling reason this tick must not investigate, or None.
 
@@ -537,6 +547,14 @@ def scheduling_block_reason(inp: SchedulingGateInputs) -> Optional[str]:
         and inp.seconds_since_last < inp.min_cooldown_sec
     ):
         return "cooldown"
+    # After `cooldown`, so this names only the stretch tiredness added: the
+    # plain cooldown has already passed, the tired one has not.
+    if (
+        inp.rest_drive_cooldown_sec is not None
+        and inp.seconds_since_last is not None
+        and inp.seconds_since_last < inp.rest_drive_cooldown_sec
+    ):
+        return REST_DRIVE_BLOCK_REASON
     return None
 
 
@@ -701,6 +719,8 @@ class CuriosityInvestigation:
         energy_stakes_enabled: bool = False,
         energy_stakes_reader: Optional[Callable[[], Awaitable[Optional[Mapping[str, Any]]]]] = None,
         energy_stakes_max_age_sec: float = 1800.0,
+        # --- rest drive (HUB_CURIOSITY_REST_DRIVE_*): cooldowns stretch while tired ---
+        rest_drive_reader: Optional[RestDriveReader] = None,
         # --- urgent runs (start_urgent; HUB_CURIOSITY_URGENT_*) --------------
         urgent_enabled: bool = False,
         urgent_turn_timeout_sec: float = 900.0,
@@ -896,6 +916,9 @@ class CuriosityInvestigation:
         self.energy_stakes_enabled = bool(energy_stakes_enabled)
         self.energy_stakes_reader = energy_stakes_reader
         self.energy_stakes_max_age_sec = float(energy_stakes_max_age_sec)
+        # Orion's rest drive: while it reads `due`, every line's cooldown is
+        # multiplied. Unknown/off leaves every gate exactly as it was.
+        self.rest_drive_reader = rest_drive_reader
         # Urgent runs: a seeded investigation Juniper or the hardware watcher
         # asks for. `urgent_reporter` is set by main.py; `urgent_listener_task`
         # is the bus consumer main.py starts (scripts/curiosity_urgent.py).
@@ -1345,6 +1368,11 @@ class CuriosityInvestigation:
             end_hour=self.window_end_hour,
         )
 
+    def _rest_drive_cooldown(self, base_sec: float, now: datetime) -> Optional[float]:
+        if self.rest_drive_reader is None:
+            return None
+        return self.rest_drive_reader.cooldown_sec(base_sec, now)
+
     @property
     def window_configured(self) -> bool:
         return window_is_configured(self.window_start_hour, self.window_end_hour)
@@ -1623,6 +1651,9 @@ class CuriosityInvestigation:
         """
         now = datetime.now(timezone.utc)
         self._roll_daily_counter(now)
+        if self.rest_drive_reader is not None:
+            # One Redis GET per tick; the three lines below judge it at `now`.
+            await self.rest_drive_reader.refresh(self._bus, now)
 
         # The self-inquiry line gets first refusal on every scheduled tick
         # (never on a forced investigation run). It is the rarer line and it
@@ -1663,6 +1694,7 @@ class CuriosityInvestigation:
                 enabled=self.enabled,
                 seconds_since_last=since_last,
                 min_cooldown_sec=self.effective_cooldown_sec,
+                rest_drive_cooldown_sec=self._rest_drive_cooldown(self.effective_cooldown_sec, now),
                 done_today=done_today,
                 daily_cap=self.daily_cap,
                 # `None` disables the window for this tick. A zone that failed
@@ -1678,7 +1710,7 @@ class CuriosityInvestigation:
                 window_end_hour=self.window_end_hour,
             )
         )
-        if force and reason in {"cooldown", "daily_cap", "outside_window"}:
+        if force and reason in FORCE_OVERRIDABLE_REASONS:
             logger.warning(
                 "curiosity_investigation_forced overriding=%s since_last=%.0fs "
                 "done_today=%s cap=%s -- an operator asked for this run; it "
@@ -2338,6 +2370,7 @@ class CuriosityInvestigation:
                 enabled=self.self_inquiry_enabled,
                 seconds_since_last=since_last,
                 min_cooldown_sec=self.effective_self_inquiry_cooldown_sec,
+                rest_drive_cooldown_sec=self._rest_drive_cooldown(self.effective_self_inquiry_cooldown_sec, now),
                 done_today=done_today,
                 daily_cap=self.self_inquiry_daily_cap,
                 local_hour=(
@@ -2349,7 +2382,7 @@ class CuriosityInvestigation:
                 window_end_hour=self.window_end_hour,
             )
         )
-        if force and reason in {"cooldown", "daily_cap", "outside_window"}:
+        if force and reason in FORCE_OVERRIDABLE_REASONS:
             logger.warning(
                 "curiosity_self_inquiry_forced overriding=%s since_last=%.0fs "
                 "done_today=%s cap=%s -- an operator asked for this run; it "
@@ -3059,6 +3092,7 @@ class CuriosityInvestigation:
                 enabled=self.self_sense_eval_enabled,
                 seconds_since_last=since_last,
                 min_cooldown_sec=self.effective_self_sense_eval_cooldown_sec,
+                rest_drive_cooldown_sec=self._rest_drive_cooldown(self.effective_self_sense_eval_cooldown_sec, now),
                 done_today=done_today,
                 daily_cap=self.self_sense_eval_daily_cap,
                 local_hour=(
@@ -3070,7 +3104,7 @@ class CuriosityInvestigation:
                 window_end_hour=self.window_end_hour,
             )
         )
-        if force and reason in {"cooldown", "daily_cap", "outside_window"}:
+        if force and reason in FORCE_OVERRIDABLE_REASONS:
             logger.warning(
                 "curiosity_self_sense_eval_forced overriding=%s since_last=%.0fs "
                 "done_today=%s cap=%s -- an operator asked for this run; it "

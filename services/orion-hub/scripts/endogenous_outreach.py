@@ -275,6 +275,7 @@ from orion.cognition.cortex_payload_extract import looks_like_error_text
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.schemas.notify import HubNotificationEvent
 from orion.situational.perception_reader import fetch_presence, presence_fragment
+from scripts.rest_drive_reader import RestDriveReader
 from scripts.outreach_vocabulary import (
     find_ungrounded_signal_mentions,
     grounded_signal_names,
@@ -441,6 +442,14 @@ class OutreachGateInputs:
     # (2026-10-09: outreach fired 15 s after a restart, mid-conversation).
     seconds_since_juniper_spoke: Optional[float] = None
     recent_chat_sec: float = 0.0
+    # The rest drive (scripts/rest_drive_reader.py): the longer cooldown kept
+    # while Orion is tired, or None when not `due`, unknown, or switched off --
+    # None is exactly the behaviour before the drive existed. The cap, quiet
+    # hours, recent_chat and turn_in_flight never read it.
+    rest_drive_cooldown_sec: Optional[float] = None
+
+
+REST_DRIVE_BLOCK_REASON = "rest_drive_cooldown"
 
 
 def in_quiet_hours(local_hour: int, start_hour: int, end_hour: int) -> bool:
@@ -493,6 +502,16 @@ def outreach_block_reason(
     ):
         if not skip_schedule_gates:
             return "cooldown"
+    # After `cooldown`, so it names only the stretch tiredness added. A
+    # schedule gate: Door-A (a finished curiosity run with something to say)
+    # skips it like the plain cooldown.
+    if (
+        inp.rest_drive_cooldown_sec is not None
+        and inp.seconds_since_last_outreach is not None
+        and inp.seconds_since_last_outreach < inp.rest_drive_cooldown_sec
+        and not skip_schedule_gates
+    ):
+        return REST_DRIVE_BLOCK_REASON
     return None
 
 
@@ -1571,8 +1590,11 @@ class EndogenousOutreach:
         trigger_evaluator: Optional[Callable[[], Any]] = None,
         agent_lane_timeout_sec: float = 210.0,
         recent_chat_sec: float = 900.0,
+        rest_drive_reader: Optional[RestDriveReader] = None,
     ) -> None:
         self.enabled = enabled
+        # Orion's rest drive: while it reads `due`, the cooldown is multiplied.
+        self.rest_drive_reader = rest_drive_reader
         self.recent_chat_sec = max(0.0, float(recent_chat_sec))
         self._last_spoke_ago: Optional[float] = None
         self._last_spoke_read_at: Optional[float] = None
@@ -1831,6 +1853,13 @@ class EndogenousOutreach:
             daily_cap=self.daily_cap,
             seconds_since_juniper_spoke=spoke_ago,
             recent_chat_sec=self.recent_chat_sec,
+            rest_drive_cooldown_sec=(
+                None
+                if self.rest_drive_reader is None
+                else self.rest_drive_reader.cooldown_sec(
+                    self.min_cooldown_sec, datetime.fromtimestamp(ts, tz=timezone.utc)
+                )
+            ),
         )
 
     def status(self) -> Dict[str, Any]:
@@ -1861,6 +1890,10 @@ class EndogenousOutreach:
             "sent_today_recovered": self._sent_today_recovered,
             "sent_today_recovery_failures": self._recovery_failures,
             "seconds_since_last_outreach": inputs.seconds_since_last_outreach,
+            "rest_drive": (
+                None if self.rest_drive_reader is None else self.rest_drive_reader.view().as_dict()
+            ),
+            "rest_drive_cooldown_sec": inputs.rest_drive_cooldown_sec,
             "block_reason": outreach_block_reason(inputs),
             "last_result": dict(self._last_result),
         }
@@ -1995,6 +2028,8 @@ class EndogenousOutreach:
 
     async def _outreach_once(self, *, force: bool) -> Dict[str, Any]:
         compose_started_at = time.time()
+        if self.rest_drive_reader is not None:
+            await self.rest_drive_reader.refresh(self._bus)
         # Cheap gates first: the DB read for recent_chat only happens when nothing else blocks.
         blocked = outreach_block_reason(self._gate_inputs())
         if not blocked:

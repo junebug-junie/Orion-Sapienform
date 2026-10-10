@@ -21,7 +21,9 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Awaitable, Callable, Optional
 from uuid import uuid4
 
+from orion.regulation.rest_drive import no_rest_reading, read_rest_drive
 from orion.schemas.dream_cycle import DreamCycleV1, DreamPressureObservationV1, SleepPressureV1
+from orion.schemas.drive_reading import DriveReadingV1
 from orion.schemas.telemetry.dream import DreamInternalTriggerV1
 
 from app.recombine import Complete, control_pairs, dream_pairs, recombine
@@ -49,6 +51,10 @@ class CycleDeps:
     # A completed, saved sleep ends in a story dream: publishes the trigger
     # app/story.py builds. Best effort: a failure never fails or undoes the sleep.
     start_story: Optional[Callable[[DreamInternalTriggerV1], Awaitable[None]]] = None
+    # The rest drive (Temporal Self rev 4, R2): this check's pressure as a
+    # DriveReadingV1 for readers outside the dream (Hub curiosity/outreach).
+    # Best effort: a publish failure never changes or fails a sleep decision.
+    publish_drive_reading: Optional[Callable[[DriveReadingV1], Awaitable[None]]] = None
     # One deps instance per loop/request. The real clock loaders append failures;
     # each serialized check clears it before reading. Scheduling still sees None.
     read_errors: list[str] = field(default_factory=list)
@@ -113,9 +119,58 @@ def too_soon(now: datetime, last_end: Optional[datetime]) -> bool:
     return last is not None and now - last < timedelta(hours=settings.DREAM_MIN_INTERVAL_HOURS)
 
 
+async def _publish_drive(deps: CycleDeps, reading: DriveReadingV1) -> None:
+    if deps.publish_drive_reading is None:
+        return
+    try:
+        await deps.publish_drive_reading(reading)
+    except Exception:
+        logger.warning("rest_drive_publish_failed source_ref=%s state=%s", reading.source_ref, reading.state, exc_info=True)
+
+
+def drive_reading_for(
+    pressure: SleepPressureV1, *, now: datetime, check_id: str, last_start: Optional[datetime],
+    last_end: Optional[datetime], has_candidates: bool, source_errors,
+) -> DriveReadingV1:
+    """This check as a rest-drive reading, from the same gates run_cycle_once applies."""
+    return read_rest_drive(
+        pressure, now=now, source_ref=check_id, last_attempt_end=last_end,
+        min_interval_hours=settings.DREAM_MIN_INTERVAL_HOURS,
+        overdue=overdue(now, last_start), has_candidates=has_candidates,
+        source_errors=list(source_errors),
+    )
+
+
+async def _publish_after_sleep(deps: CycleDeps, cycle: DreamCycleV1, last_start: Optional[datetime]) -> None:
+    """A sleep just discharged the drive: publish the post-sleep reading now
+    rather than leaving the pre-sleep `due` up for another whole check."""
+    if deps.publish_drive_reading is None:
+        return
+    now = datetime.now(timezone.utc)
+    check_id = f"dp-{uuid4().hex}"
+    # A failed sleep does not close the window (the backlog stays); any sleep
+    # attempt restarts the refractory clock -- the same rule the floors in
+    # main.build_cycle_deps apply.
+    window = cycle.started_at if cycle.status != "failed" else last_start
+    errors: list[str] = []
+    try:
+        pressure, candidates = await asyncio.to_thread(read_pressure, deps, now, window, read_errors=errors)
+        reading = drive_reading_for(
+            pressure, now=now, check_id=check_id, last_start=window, last_end=cycle.ended_at,
+            has_candidates=bool(candidates), source_errors=errors,
+        )
+    except Exception as exc:
+        reading = no_rest_reading(
+            now=now, source_ref=check_id, threshold=settings.DREAM_SLEEP_PRESSURE_THRESHOLD,
+            reason=f"pressure_read_failed:{type(exc).__name__}",
+        )
+    await _publish_drive(deps, reading)
+
+
 async def run_cycle_once(deps: CycleDeps, *, trigger: str = "pressure", force: bool = False) -> Optional[DreamCycleV1]:
     """Run one sleep if due (or forced). None when not due. Never raises."""
     started = datetime.now(timezone.utc)
+    check_id = f"dp-{uuid4().hex}"
     deps.read_errors.clear()
     read_errors = []
     try:
@@ -125,14 +180,26 @@ async def run_cycle_once(deps: CycleDeps, *, trigger: str = "pressure", force: b
         read_errors.extend(deps.read_errors)
     except Exception as exc:
         logger.warning("dream_cycle pressure read failed err=%s", exc)
+        # Unknown, said explicitly, so readers drop back to their own behaviour
+        # now instead of trusting the last reading until it ages out.
+        await _publish_drive(deps, no_rest_reading(
+            now=started, source_ref=check_id, threshold=settings.DREAM_SLEEP_PRESSURE_THRESHOLD,
+            reason=f"pressure_read_failed:{type(exc).__name__}",
+        ))
         return None
+
+    # Published for every successful read, forced or not, before any gate.
+    await _publish_drive(deps, drive_reading_for(
+        pressure, now=started, check_id=check_id, last_start=last_start, last_end=last_end,
+        has_candidates=bool(candidates), source_errors=read_errors,
+    ))
 
     if deps.persist_pressure_observation is not None:
         # Observe every successful read, including refractory, busy and low-pressure
         # checks. A recording failure must not authorize, suppress or fail a dream.
         try:
             observation = DreamPressureObservationV1(
-                check_id=f"dp-{uuid4().hex}", observed_at=started, reading=pressure,
+                check_id=check_id, observed_at=started, reading=pressure,
                 trigger=trigger, forced=force, last_window_start=_utc(last_start),
                 last_attempt_end=_utc(last_end), source_errors=read_errors,
                 min_interval_hours=settings.DREAM_MIN_INTERVAL_HOURS,
@@ -166,6 +233,7 @@ async def run_cycle_once(deps: CycleDeps, *, trigger: str = "pressure", force: b
             note="nothing unprocessed since last sleep",
         )
         await asyncio.to_thread(deps.persist_cycle, cycle)
+        await _publish_after_sleep(deps, cycle, last_start)
         return cycle
 
     replay = select_replay(candidates, settings.DREAM_REPLAY_MAX)
@@ -218,6 +286,7 @@ async def run_cycle_once(deps: CycleDeps, *, trigger: str = "pressure", force: b
         sum(1 for h in rem.hypotheses if h.arm == "control"),
         rem.no_link, rem.unparseable, rem.failures,
     )
+    await _publish_after_sleep(deps, cycle, last_start)
     # No story for an unsaved sleep: its audit would point at a cycle that doesn't exist.
     if deps.start_story is not None and persisted:
         story = story_trigger(

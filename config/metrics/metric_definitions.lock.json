@@ -1,23 +1,14 @@
 {
   "_comment": "Definition lock for scripts/check_definition_drift.py. Generated, never hand-edited. Regenerate with --update; the resulting diff IS the definition-change alert. Unlike the *_baseline.json ratchets this tracks current truth in both directions -- a definition change is an event, not a defect.",
-  "metric_count": 715,
+  "metric_count": 719,
   "_last_change": {
-    "change_count": 13,
-    "high_severity_count": 13,
+    "change_count": 4,
+    "high_severity_count": 0,
     "changes": [
-      "high   routing_changed metric://inner_state/orion-substrate-runtime/attention_self_model.v1 (declared_consumers: \u2026service.app.flow_metacog_gate:build_flow_metacog_trigger', \u2026\u2026 -> \u2026service.app.insight_meta\u2026)",
-      "high   routing_changed metric://inner_state/orion-substrate-runtime/attention_self_model.v1#broadcast_lane_age_sec (declared_consumers: \u2026service.app.flow_metacog_gate:build_flow_metacog_trigger', \u2026\u2026 -> \u2026service.app.insight_meta\u2026)",
-      "high   routing_changed metric://inner_state/orion-substrate-runtime/attention_self_model.v1#confidence (declared_consumers: \u2026service.app.flow_metacog_gate:build_flow_metacog_trigger', \u2026\u2026 -> \u2026service.app.insight_meta\u2026)",
-      "high   routing_changed metric://inner_state/orion-substrate-runtime/attention_self_model.v1#field_overall_salience (declared_consumers: \u2026service.app.flow_metacog_gate:build_flow_metacog_trigger', \u2026\u2026 -> \u2026service.app.insight_meta\u2026)",
-      "high   routing_changed metric://inner_state/orion-substrate-runtime/attention_self_model.v1#heartbeat_bulk_penetration_depth (declared_consumers: \u2026service.app.flow_metacog_gate:build_flow_metacog_trigger', \u2026\u2026 -> \u2026service.app.insight_meta\u2026)",
-      "high   routing_changed metric://inner_state/orion-substrate-runtime/attention_self_model.v1#heartbeat_mean_ratio (declared_consumers: \u2026service.app.flow_metacog_gate:build_flow_metacog_trigger', \u2026\u2026 -> \u2026service.app.insight_meta\u2026)",
-      "high   routing_changed metric://inner_state/orion-substrate-runtime/attention_self_model.v1#heartbeat_organ_distinctness (declared_consumers: \u2026service.app.flow_metacog_gate:build_flow_metacog_trigger', \u2026\u2026 -> \u2026service.app.insight_meta\u2026)",
-      "high   routing_changed metric://inner_state/orion-substrate-runtime/attention_self_model.v1#heartbeat_smear (declared_consumers: \u2026service.app.flow_metacog_gate:build_flow_metacog_trigger', \u2026\u2026 -> \u2026service.app.insight_meta\u2026)",
-      "high   routing_changed metric://inner_state/orion-substrate-runtime/attention_self_model.v1#heartbeat_std_ratio (declared_consumers: \u2026service.app.flow_metacog_gate:build_flow_metacog_trigger', \u2026\u2026 -> \u2026service.app.insight_meta\u2026)",
-      "high   routing_changed metric://inner_state/orion-substrate-runtime/attention_self_model.v1#prediction_error_confidence (declared_consumers: \u2026service.app.flow_metacog_gate:build_flow_metacog_trigger', \u2026\u2026 -> \u2026service.app.insight_meta\u2026)",
-      "high   routing_changed metric://inner_state/orion-substrate-runtime/attention_self_model.v1#top_down_bias_max (declared_consumers: \u2026service.app.flow_metacog_gate:build_flow_metacog_trigger', \u2026\u2026 -> \u2026service.app.insight_meta\u2026)",
-      "high   routing_changed metric://inner_state/orion-substrate-runtime/attention_self_model.v1#top_down_effort_used (declared_consumers: \u2026service.app.flow_metacog_gate:build_flow_metacog_trigger', \u2026\u2026 -> \u2026service.app.insight_meta\u2026)",
-      "high   semantics_changed metric://inner_state/orion-substrate-runtime/attention_self_model.v1#heartbeat_smear (absent_means: \u2026near end is below 1e-6. -> \u2026near end is dead: below the 1e-6 floor or far/near > 10 (ne\u2026, rest: \u2026 at >= 0.5. Unbounded: a near end just above 1e-6 yields va\u2026 -> \u2026 at >= 0.5. Bounded at SMEAR_DEAD_RATIO=10 since PR #2571 (\u2026)"
+      "medium added metric://inner_state/orion-dream/drive_reading.rest.v1",
+      "medium added metric://inner_state/orion-dream/drive_reading.rest.v1#level",
+      "medium added metric://inner_state/orion-dream/drive_reading.rest.v1#rest_level",
+      "medium added metric://inner_state/orion-dream/drive_reading.rest.v1#threshold"
     ]
   },
   "definitions": {
@@ -4594,6 +4585,56 @@
         "metric://inner_state/orion-cortex-exec/attention_salience_trace.v1"
       ],
       "notes": "scalar field on AttentionSalienceTraceV1",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-dream/drive_reading.rest.v1": {
+      "schema_id": "DriveReadingV1",
+      "declared_consumers": [
+        "services.orion-hub.scripts.curiosity_investigation:CuriosityInvestigation.tick (cooldown stretched while due)",
+        "services.orion-hub.scripts.endogenous_outreach:EndogenousOutreach._gate_inputs (cooldown stretched while due)"
+      ],
+      "notes": "cadence=per_tick composition=shadow_declared_not_composed",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-dream/drive_reading.rest.v1#level": {
+      "schema_id": "DriveReadingV1",
+      "value_kind": "level",
+      "rest": "0.0 = nothing new since the last sleep began; reached live at the first check after every sleep (2026-10-10 01:32 UTC). Rises in steps of one new thing's replay weight; due at >= threshold (3.0).",
+      "sparsity": "per_tick",
+      "absent_means": "Redis key expired (TTL 1800 s) or state no_reading: UNKNOWN, and every reader behaves as before the drive existed. Never read as rested or tired.",
+      "polarity": "higher_is_worse",
+      "declared_consumers": [
+        "services.orion-hub.scripts.curiosity_investigation:CuriosityInvestigation.tick (cooldown stretched while due)",
+        "services.orion-hub.scripts.endogenous_outreach:EndogenousOutreach._gate_inputs (cooldown stretched while due)"
+      ],
+      "upstream": [
+        "metric://inner_state/orion-dream/drive_reading.rest.v1"
+      ],
+      "notes": "scalar field on DriveReadingV1",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-dream/drive_reading.rest.v1#rest_level": {
+      "schema_id": "DriveReadingV1",
+      "declared_consumers": [
+        "services.orion-hub.scripts.curiosity_investigation:CuriosityInvestigation.tick (cooldown stretched while due)",
+        "services.orion-hub.scripts.endogenous_outreach:EndogenousOutreach._gate_inputs (cooldown stretched while due)"
+      ],
+      "upstream": [
+        "metric://inner_state/orion-dream/drive_reading.rest.v1"
+      ],
+      "notes": "scalar field on DriveReadingV1",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-dream/drive_reading.rest.v1#threshold": {
+      "schema_id": "DriveReadingV1",
+      "declared_consumers": [
+        "services.orion-hub.scripts.curiosity_investigation:CuriosityInvestigation.tick (cooldown stretched while due)",
+        "services.orion-hub.scripts.endogenous_outreach:EndogenousOutreach._gate_inputs (cooldown stretched while due)"
+      ],
+      "upstream": [
+        "metric://inner_state/orion-dream/drive_reading.rest.v1"
+      ],
+      "notes": "scalar field on DriveReadingV1",
       "registry_source": "orion/inner_state_registry.py"
     },
     "metric://inner_state/orion-equilibrium-service/equilibrium_snapshot.v1": {

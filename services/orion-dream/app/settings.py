@@ -74,6 +74,12 @@ class Settings(BaseSettings):
     # A completed sleep starts one narrative dream (cortex-orch dream_cycle verb,
     # `dreams` table) fed that sleep's replay, on CHANNEL_DREAM_TRIGGER.
     DREAM_STORY_AFTER_SLEEP_ENABLED: bool = Field(default=True)
+    # The rest drive (Temporal Self rev 4, R2): every check's pressure as a
+    # DriveReadingV1, to Redis orion:drive:rest:latest (readers: Hub curiosity
+    # and outreach). The TTL is the readers' staleness bound: 3 checks. Off =
+    # no reading, and every reader behaves exactly as before the drive existed.
+    DREAM_REST_DRIVE_PUBLISH_ENABLED: bool = Field(default=True)
+    DREAM_REST_DRIVE_REDIS_TTL_SEC: float = Field(default=1800.0, gt=0.0)
 
     # --- Introspect responder (orion-introspect `dreams` tool; read-only) ---
     # Answers orion:introspect:dream:request. Empty search URLs keep recent/one

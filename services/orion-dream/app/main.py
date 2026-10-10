@@ -11,6 +11,7 @@ from contextlib import asynccontextmanager
 from orion.core.bus.bus_service_chassis import OrionBusAsync
 from orion.core.bus.enforce import enforcer
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
+from orion.schemas.drive_reading import REST_DRIVE_REDIS_KEY
 from orion.schemas.telemetry.dream import DreamTriggerPayload
 from app.settings import settings
 from app.dream_api import router as dream_router
@@ -165,6 +166,25 @@ def build_cycle_deps():
             trigger.trigger_id, len(trigger.sleep.material), env.correlation_id,
         )
 
+    async def _publish_drive_reading(reading):
+        # Redis, read by Hub curiosity/outreach. TTL = their staleness bound,
+        # so an expired key reads as unknown. Best effort; run_cycle_once logs
+        # a failure. History is dream_pressure_observation (same check_id).
+        bus = await _cycle_bus()
+        if bus is None:
+            return
+        try:
+            await bus.redis.setex(
+                REST_DRIVE_REDIS_KEY, int(settings.DREAM_REST_DRIVE_REDIS_TTL_SEC), reading.model_dump_json(),
+            )
+        except Exception:
+            await _drop_cycle_bus()
+            raise
+        logger.info(
+            "rest_drive_reading state=%s level=%s threshold=%s due_reason=%s source_ref=%s",
+            reading.state, reading.level, reading.threshold, reading.due_reason, reading.source_ref,
+        )
+
     read_errors = []
 
     def _window_start():
@@ -190,6 +210,7 @@ def build_cycle_deps():
         complete=_complete,
         rem_compaction=_rem,
         start_story=_start_story if settings.DREAM_STORY_AFTER_SLEEP_ENABLED else None,
+        publish_drive_reading=_publish_drive_reading if settings.DREAM_REST_DRIVE_PUBLISH_ENABLED else None,
     )
 
 
@@ -320,7 +341,15 @@ async def cycle_pressure_endpoint():
     last_start = await asyncio.to_thread(deps.load_last_window_start)
     last_end = await asyncio.to_thread(deps.load_last_attempt_end)
     pressure, candidates = await asyncio.to_thread(read_pressure, deps, now, last_start)
+    from app.cycle import drive_reading_for
+
+    drive = drive_reading_for(
+        pressure, now=now, check_id="pressure-endpoint", last_start=last_start, last_end=last_end,
+        has_candidates=bool(candidates), source_errors=list(deps.read_errors),
+    )
     return {
+        # The same reading the sleep loop publishes for Hub curiosity/outreach.
+        "rest_drive": drive.model_dump(mode="json"),
         "enabled": settings.ORION_DREAM_CYCLE_ENABLED,
         "pressure": pressure.model_dump(mode="json"),
         "is_idle": pressure.is_idle,

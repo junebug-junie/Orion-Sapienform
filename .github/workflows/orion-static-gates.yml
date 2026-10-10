@@ -117,6 +117,12 @@ jobs:
       - name: Services using orion.substrate declare requests
         run: python -m pytest tests/test_substrate_services_declare_requests.py -q -p no:cacheprovider
 
+      # The attention salience floor default must match across the module
+      # constant, settings.py, compose fallback and .env_example. It drifted
+      # (0.05 in .env_example, 0.2 in code) from 2026-09-05 to 2026-10-10.
+      - name: Attention broadcast salience floor default has one value
+        run: python -m pytest tests/test_attention_broadcast_min_salience_parity.py -q -p no:cacheprovider
+
       # Each gate is its own step so a failure names itself in the UI rather
       # than surfacing as one opaque red block.
       - name: Metric lineage gate (consumer existence, orphan ratchet)

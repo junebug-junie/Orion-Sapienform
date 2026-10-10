@@ -31,7 +31,8 @@ def test_flag_default_off(monkeypatch) -> None:
 
 def test_high_pressure_node_wins_over_calm() -> None:
     nodes = [
-        _node("node:calm", "calm background concept", dynamic_pressure=0.05),
+        # Below DEFAULT_MIN_SALIENCE (0.05, the live floor since 2026-09-05).
+        _node("node:calm", "calm background concept", dynamic_pressure=0.01),
         _node("node:hot", "unresolved execution contradiction", dynamic_pressure=0.9),
         _node("node:mild", "mildly active concept", dynamic_pressure=0.3),
     ]

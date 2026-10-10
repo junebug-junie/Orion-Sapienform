@@ -40,7 +40,11 @@ _TRUTHY = {"1", "true", "yes", "on"}
 
 BROADCAST_FLAG = "ORION_ATTENTION_BROADCAST_ENABLED"
 BROADCAST_PROJECTION_ID = "substrate.attention.broadcast.v1"
-DEFAULT_MIN_SALIENCE = 0.2
+# Must equal ORION_ATTENTION_BROADCAST_MIN_SALIENCE's default in
+# services/orion-substrate-runtime (settings.py, docker-compose.yml, .env_example);
+# tests/test_attention_broadcast_min_salience_parity.py enforces it. 0.2 -> 0.05
+# on 2026-09-05 (commit 263b762d6): the measured salience sits below 0.2.
+DEFAULT_MIN_SALIENCE = 0.05
 DEFAULT_MAX_SIGNALS = 24
 
 # Hysteresis state: sliding window of recent coalition node IDs

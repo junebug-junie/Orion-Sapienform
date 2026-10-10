@@ -85,6 +85,22 @@ Writes nothing to canonical memory. The dream never writes a belief.
 The legacy direct-gather path (`dream_cycle.py`, `aggregators_*`, `memory_listener.py`)
 was deleted in the same patch.
 
+### The rest drive: tiredness other parts of Orion can read (2026-10-10)
+
+Every check (and right after every sleep) the loop turns its pressure into a
+`DriveReadingV1` (`orion/schemas/drive_reading.py`, built by
+`orion/regulation/rest_drive.py::read_rest_drive` from the same values the sleep
+gate uses) and writes it to Redis `orion:drive:rest:latest` with a 1800 s TTL.
+States: `resting` (0.0), `building`, `due` (crossed the threshold, or the 48 h
+overdue backstop), `refractory` (inside the 6 h minimum), `no_reading` (a source
+read failed). Hub curiosity and outreach stretch their cooldowns only while it
+reads `due`; anything else, or no key at all, changes nothing for them.
+`source_ref` is the `dream_pressure_observation.check_id` of the same check (the
+reading published right after a sleep is `dp-postsleep-*` and has no row).
+`GET /dreams/cycle/pressure` shows the reading as `rest_drive`.
+Off switch: `DREAM_REST_DRIVE_PUBLISH_ENABLED=false`. Eval:
+`scripts/analysis/measure_rest_drive_easing.py`.
+
 ### Every sleep ends in a story
 
 A completed sleep (not `failed`, not `empty`) starts one narrative dream, the kind

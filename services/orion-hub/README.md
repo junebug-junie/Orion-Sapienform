@@ -897,6 +897,21 @@ provenance-injection block (`turn_orchestrator._situation_with_outreach_provenan
 will start actually reaching Orion's next turn after an endogenous message —
 the behavior it was built for, never live before this fix.
 
+#### 4.1.x Tired Orion eases off (rest drive, 2026-10-10)
+
+Both loops below read Orion's rest drive (`scripts/rest_drive_reader.py`, Redis
+`orion:drive:rest:latest`, written by orion-dream every 600 s). While it reads
+`due` -- tired and waiting to sleep -- outreach's cooldown is multiplied by
+`HUB_ENDOGENOUS_OUTREACH_REST_DRIVE_COOLDOWN_MULTIPLIER` and each curiosity
+line's cooldown by `HUB_CURIOSITY_REST_DRIVE_COOLDOWN_MULTIPLIER` (both 2.0),
+and a refusal logs `reason=rest_drive_cooldown`. Nothing else moves: daily caps,
+quiet hours, recent-chat, turn-in-flight, waking windows, forced runs and Door-A
+are untouched. A reading older than `ORION_REST_DRIVE_MAX_AGE_SEC` (1800), a
+missing key, `no_reading`, or a Redis error is unknown and changes nothing.
+Per-reader off switches: `HUB_ENDOGENOUS_OUTREACH_REST_DRIVE_ENABLED`,
+`HUB_CURIOSITY_REST_DRIVE_ENABLED`. The outreach status endpoint shows
+`rest_drive` and `rest_drive_cooldown_sec`.
+
 ### 4.2 Curiosity investigation — Orion's own time, and its own graph
 
 `scripts/curiosity_investigation.py`. Code decides only **when** Orion gets

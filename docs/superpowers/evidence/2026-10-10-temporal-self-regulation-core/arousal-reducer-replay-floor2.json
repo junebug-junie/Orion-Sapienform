@@ -1,0 +1,96 @@
+{
+  "steps": 1052,
+  "minutes_per_day": {
+    "2026-10-09": {
+      "engaged": 0.0,
+      "idle": 0.0,
+      "strained": 1020.0,
+      "unknown": 0.0
+    },
+    "2026-10-10": {
+      "engaged": 0.0,
+      "idle": 770.0,
+      "strained": 310.0,
+      "unknown": 0.0
+    }
+  },
+  "total_minutes": {
+    "engaged": 0.0,
+    "idle": 770.0,
+    "strained": 1330.0,
+    "unknown": 0.0
+  },
+  "share_of_known": {
+    "engaged": 0.0,
+    "idle": 0.3667,
+    "strained": 0.6333
+  },
+  "acceptance_bar_every_level_between_0_and_100pct": false,
+  "transitions_per_day": {
+    "2026-10-10": 11
+  },
+  "strained_exits_per_day": {
+    "2026-10-10": 6
+  },
+  "hysteresis_review_days": [],
+  "unknown_step_reasons": {},
+  "strained_spans": [
+    {
+      "from": "2026-10-09T07:00:00+00:00",
+      "to": "2026-10-10T02:52:00+00:00",
+      "minutes": 1192.0,
+      "reasons": [
+        "strain_clearing"
+      ]
+    },
+    {
+      "from": "2026-10-10T03:52:00+00:00",
+      "to": "2026-10-10T04:16:00+00:00",
+      "minutes": 24.0,
+      "reasons": [
+        "strain_clearing"
+      ]
+    },
+    {
+      "from": "2026-10-10T04:46:00+00:00",
+      "to": "2026-10-10T05:12:00+00:00",
+      "minutes": 26.0,
+      "reasons": [
+        "strain_clearing"
+      ]
+    },
+    {
+      "from": "2026-10-10T06:18:00+00:00",
+      "to": "2026-10-10T06:32:00+00:00",
+      "minutes": 14.0,
+      "reasons": [
+        "strain_clearing"
+      ]
+    },
+    {
+      "from": "2026-10-10T09:56:00+00:00",
+      "to": "2026-10-10T10:10:00+00:00",
+      "minutes": 14.0,
+      "reasons": [
+        "strain_clearing"
+      ]
+    },
+    {
+      "from": "2026-10-10T10:28:00+00:00",
+      "to": "2026-10-10T11:28:00+00:00",
+      "minutes": 60.0,
+      "reasons": [
+        "strain_clearing"
+      ]
+    }
+  ],
+  "start": "2026-10-09T07:00:00+00:00",
+  "end": "2026-10-10T18:00:00+00:00",
+  "tick_sec": 120.0,
+  "gpu_queue_floor": 2,
+  "input_counts": {
+    "turn": 3,
+    "heat": 4154,
+    "gpu_state": 21392
+  }
+}

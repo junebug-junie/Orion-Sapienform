@@ -1,0 +1,106 @@
+{
+  "input_sha256": "255884d9958162ba17970e5cf862dbb52071458e9c4e0a940c5ab03c4bc05ec4",
+  "input_rows": 25553,
+  "floors": {
+    "1": {
+      "total_minutes": {
+        "engaged": 0.0,
+        "idle": 562.0,
+        "strained": 1538.0,
+        "unknown": 0.0
+      },
+      "minutes_per_day": {
+        "2026-10-09": {
+          "engaged": 0.0,
+          "idle": 0.0,
+          "strained": 1020.0,
+          "unknown": 0.0
+        },
+        "2026-10-10": {
+          "engaged": 0.0,
+          "idle": 562.0,
+          "strained": 518.0,
+          "unknown": 0.0
+        }
+      },
+      "share_of_known": {
+        "engaged": 0.0,
+        "idle": 0.2676,
+        "strained": 0.7324
+      },
+      "transitions_per_day": {
+        "2026-10-10": 9
+      },
+      "strained_exits_per_day": {
+        "2026-10-10": 5
+      }
+    },
+    "2": {
+      "total_minutes": {
+        "engaged": 0.0,
+        "idle": 770.0,
+        "strained": 1330.0,
+        "unknown": 0.0
+      },
+      "minutes_per_day": {
+        "2026-10-09": {
+          "engaged": 0.0,
+          "idle": 0.0,
+          "strained": 1020.0,
+          "unknown": 0.0
+        },
+        "2026-10-10": {
+          "engaged": 0.0,
+          "idle": 770.0,
+          "strained": 310.0,
+          "unknown": 0.0
+        }
+      },
+      "share_of_known": {
+        "engaged": 0.0,
+        "idle": 0.3667,
+        "strained": 0.6333
+      },
+      "transitions_per_day": {
+        "2026-10-10": 11
+      },
+      "strained_exits_per_day": {
+        "2026-10-10": 6
+      }
+    },
+    "3": {
+      "total_minutes": {
+        "engaged": 0.0,
+        "idle": 830.0,
+        "strained": 1270.0,
+        "unknown": 0.0
+      },
+      "minutes_per_day": {
+        "2026-10-09": {
+          "engaged": 0.0,
+          "idle": 0.0,
+          "strained": 1020.0,
+          "unknown": 0.0
+        },
+        "2026-10-10": {
+          "engaged": 0.0,
+          "idle": 830.0,
+          "strained": 250.0,
+          "unknown": 0.0
+        }
+      },
+      "share_of_known": {
+        "engaged": 0.0,
+        "idle": 0.3952,
+        "strained": 0.6048
+      },
+      "transitions_per_day": {
+        "2026-10-10": 7
+      },
+      "strained_exits_per_day": {
+        "2026-10-10": 4
+      }
+    }
+  },
+  "queue_depth_distribution_note": "gpu_pool_state_history host=circe 2026-10-09T06:46Z..2026-10-10T18:24Z, 21,629 snapshots; summed queue_depth 0 in 5,839 (27%), range 0..21"
+}

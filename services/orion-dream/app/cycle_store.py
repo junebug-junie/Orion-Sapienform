@@ -17,6 +17,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Any, Optional
 
+from orion.regulation.juniper_turns import JUNIPER_IDLE_MINUTES_SQL
 from orion.schemas.dream_cycle import DreamCycleV1
 
 from app.settings import settings
@@ -86,12 +87,11 @@ SOURCE_QUERIES: dict[str, str] = {
     """,
 }
 
-# chat_history_log.created_at is `timestamp without time zone` defaulted by the
-# server's now(), so compare against LOCALTIMESTAMP on the same server clock.
-IDLE_MINUTES_SQL = """
-    SELECT EXTRACT(EPOCH FROM (LOCALTIMESTAMP - max(created_at))) / 60.0 AS idle
-      FROM chat_history_log
-"""
+# Minutes since JUNIPER's last turn (Temporal Self rev 4, R2 repair 1). Before
+# 2026-10-10 this read max(created_at) over every row, so Orion's own outreach
+# (promptless rows, client_meta.unsolicited) reset Orion's own idle clock. The
+# rule lives in orion.regulation.juniper_turns, shared with arousal E1.
+IDLE_MINUTES_SQL = JUNIPER_IDLE_MINUTES_SQL
 
 # Two different clocks, on purpose (review finding, 2026-09-25):
 #   window start = the last NON-failed cycle's started_at. started_at, not
@@ -192,7 +192,9 @@ def persist_pressure_observation(observation) -> bool:
 
 
 def load_idle_minutes() -> Optional[float]:
-    """Minutes since the last chat turn. None = unknown (treated as NOT idle)."""
+    """Minutes since Juniper's last turn (never Orion's outreach). None = unknown
+    (treated as NOT idle). A log with no Juniper turn at all also reads None,
+    exactly as an empty log did before this fix."""
     try:
         from sqlalchemy import text
 

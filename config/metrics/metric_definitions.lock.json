@@ -1,15 +1,11 @@
 {
   "_comment": "Definition lock for scripts/check_definition_drift.py. Generated, never hand-edited. Regenerate with --update; the resulting diff IS the definition-change alert. Unlike the *_baseline.json ratchets this tracks current truth in both directions -- a definition change is an event, not a defect.",
-  "metric_count": 721,
+  "metric_count": 722,
   "_last_change": {
-    "change_count": 5,
-    "high_severity_count": 3,
+    "change_count": 1,
+    "high_severity_count": 0,
     "changes": [
-      "high   routing_changed metric://bus_channel/orion-actions/orion:cortex:request (all_producers: \u2026y', 'orion-durable-runs'\u2026 -> \u2026y', 'orion-dream', 'orion-durable-runs'\u2026)",
-      "high   routing_changed metric://bus_channel/orion-cortex-exec/orion:dream:log (all_producers: ['orion-cortex-exec'] -> ['orion-cortex-exec', 'orion-dream'])",
-      "high   routing_changed metric://bus_channel/orion-cortex-orch/orion:cortex:result* (declared_consumers: \u2026y', 'orion-durable-runs'\u2026 -> \u2026y', 'orion-dream', 'orion-durable-runs'\u2026)",
-      "medium added metric://bus_channel/orion-dream/orion:dream:carry:step:reply:*",
-      "medium added metric://bus_channel/orion-durable-runs/orion:dream:carry:step:request"
+      "medium added metric://inner_state/orion-durable-runs/regulation.state.v1"
     ]
   },
   "definitions": {
@@ -4661,6 +4657,15 @@
         "metric://inner_state/orion-dream/drive_reading.rest.v1"
       ],
       "notes": "scalar field on DriveReadingV1",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-durable-runs/regulation.state.v1": {
+      "schema_id": "RegulationStateV1",
+      "value_kind": "bucket",
+      "rest": "idle = Juniper quiet >= DREAM_IDLE_MINUTES (45) and no fresh strain input. The common state: 770 of 1080 min on 2026-10-10 in the shipped-reducer replay over saved history (docs/superpowers/evidence/2026-10-10-temporal-self-regulation-core/).",
+      "sparsity": "per_tick",
+      "absent_means": "Redis orion:regulation:latest expired (TTL 360 s, three ticks) or arousal_level unknown (a stale input, or ORION_REGULATION_AROUSAL_ENABLED=false): arousal unavailable, and every reader keeps its pre-arousal behaviour. Never read as idle.",
+      "notes": "cadence=per_tick composition=shadow_declared_not_composed",
       "registry_source": "orion/inner_state_registry.py"
     },
     "metric://inner_state/orion-equilibrium-service/equilibrium_snapshot.v1": {

@@ -52,6 +52,7 @@ from orion.schemas.attention_salience import AttentionSalienceTraceV1
 from orion.schemas.attention_self_model import AttentionSelfModelV1
 from orion.schemas.attention_schema import AttentionSchemaV1
 from orion.schemas.drive_reading import DriveReadingV1
+from orion.schemas.regulation import RegulationStateV1
 from orion.schemas.field_attention_frame import FieldAttentionFrameV1
 from orion.schemas.field_state import FieldStateV1
 from orion.schemas.repair_pressure_appraisal import RepairPressureAppraisalV1
@@ -1170,6 +1171,54 @@ REGISTRY: tuple[InnerStateSignal, ...] = (
             "post-sleep dp-postsleep-* reading). No bus "
             "channel (no subscriber). Distinct from the retired "
             "drive_state.v1 entry above."
+        ),
+    ),
+    InnerStateSignal(
+        signal_id="regulation.state.v1",
+        schema=RegulationStateV1,
+        producer_service="orion-durable-runs",
+        cadence=Cadence.PER_TICK,
+        composition_status=CompositionStatus.SHADOW,
+        semantics=(
+            # orion/regulation/arousal.py classify_arousal(): arousal.arousal_level
+            # is one of engaged / idle / strained / unknown, computed by the
+            # regulate node (services/orion-durable-runs/app/temporal_self_graph.py)
+            # every 120 s and on each Juniper turn.
+            (
+                "",
+                MetricSemantics(
+                    value_kind="bucket",
+                    rest=(
+                        "idle = Juniper quiet >= DREAM_IDLE_MINUTES (45) and no "
+                        "fresh strain input. The common state: 770 of 1080 min "
+                        "on 2026-10-10 in the shipped-reducer replay over saved "
+                        "history (docs/superpowers/evidence/2026-10-10-temporal-"
+                        "self-regulation-core/)."
+                    ),
+                    sparsity="per_tick",
+                    absent_means=(
+                        "Redis orion:regulation:latest expired (TTL 360 s, three "
+                        "ticks) or arousal_level unknown (a stale input, or "
+                        "ORION_REGULATION_AROUSAL_ENABLED=false): arousal "
+                        "unavailable, and every reader keeps its pre-arousal "
+                        "behaviour. Never read as idle."
+                    ),
+                ),
+            ),
+        ),
+        shadow_reason=(
+            "No reader yet by design: Temporal Self rev 4 order 3 ships the "
+            "reading alone; order 6 wires each dial in its own PR with a "
+            "flag-off and a must-not test."
+        ),
+        cognition_consumers=(),
+        notes=(
+            "Temporal Self rev 4 (PR #2369) R3. Inputs: E1 Juniper turns "
+            "(orion.regulation.juniper_turns), S1 cabinet reflex "
+            "(orion.autonomy.cabinet_heat), S2 GPU pool queue_depth sustained "
+            "(gpu_pool_state_history). Transport: Redis orion:regulation:latest "
+            "+ GET /regulation/state; history: temporal_self_event "
+            "arousal_transition rows. No bus channel (no subscriber)."
         ),
     ),
 )

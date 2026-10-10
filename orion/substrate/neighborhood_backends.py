@@ -158,8 +158,10 @@ def read_sparql_neighborhood(store, request: NeighborhoodRequestV1):
         return sparql_nodes(store, ids)
 
     def pattern(ids, group=None):
-        # Empty IN lists are not portable SPARQL. The driver has no eligible
-        # focal nodes when states/scopes are empty, so this path is not entered.
+        # Empty IN lists are not portable SPARQL. With empty states/scopes the
+        # driver has no eligible focal nodes, except a projection-only focal's
+        # anchor probe (groups([id])), which can then fail as `unavailable:`
+        # instead of `missing`. Both are fail-closed; rdflib accepts `IN ()`.
         clause = ("?edge a orion:SubstrateEdge ; orion:edgeId ?edge_id ; "
             "orion:sourceNodeId ?source_id ; orion:targetNodeId ?target_id ; "
             "orion:predicate ?predicate ; orion:payloadJson ?payload_json . "

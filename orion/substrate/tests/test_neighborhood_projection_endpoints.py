@@ -141,8 +141,43 @@ def test_budgets_and_truncation_still_bind_projection_neighbors():
     assert result.truncated and not result.complete_for_request and result.reason == "budget_exhausted"
     result = store.read_neighborhood(NeighborhoodRequestV1(focal_node_ids=("read-a",), boundary_edge_limit=3))
     assert len(result.boundary_edges) == 3 and result.truncated
+    # Every vouching edge cut by the budget: the proposed focal is reported missing, not returned bare.
     result = store.read_neighborhood(NeighborhoodRequestV1(focal_node_ids=("read-a",), boundary_edge_limit=0))
-    assert not result.boundary_edges and result.truncated
+    assert receipt(result) == ([], [], [], []) and result.truncated
+    assert result.missing_focal_node_ids == ("read-a",) and not result.projection_endpoint_node_ids
+
+
+def test_a_proposed_focal_never_leaves_without_a_vouching_edge():
+    # "seed" sorts before "zprop", so round-robin spends the one neighbor slot on seed's edge.
+    store = graph([concept("seed"), concept("nbr"), proposed("zprop"), proposed("zfar"), claim()],
+                  [edge("seed-nb", "seed", "nbr"), projection("prop-far", "zprop", "zfar")])
+    result = store.read_neighborhood(NeighborhoodRequestV1(focal_node_ids=("seed", "zprop"), neighbor_node_limit=1))
+    assert receipt(result) == (["seed"], ["nbr"], [], ["seed-nb"])
+    assert result.truncated and result.missing_focal_node_ids == ("zprop",)
+    assert not result.projection_endpoint_node_ids
+    # Internal budget 0: the only vouching edge is internal, so the proposed focal goes.
+    store = graph([proposed("prop"), concept("seed"), claim()], [projection("p-s", "prop", "seed")])
+    result = store.read_neighborhood(NeighborhoodRequestV1(focal_node_ids=("prop", "seed"), internal_edge_limit=0))
+    assert receipt(result) == (["seed"], [], [], []) and result.missing_focal_node_ids == ("prop",)
+    for item in (store.read_neighborhood(NeighborhoodRequestV1(focal_node_ids=f, **kw)) for f, kw in [
+            (("prop", "seed"), {}), (("prop",), {"boundary_edge_limit": 0})]):
+        touched = {r.node_id for e in item.internal_edges + item.boundary_edges for r in (e.source, e.target)}
+        assert set(item.projection_endpoint_node_ids) <= touched
+
+
+def test_a_requested_id_returned_as_a_neighbor_is_not_reported_missing():
+    # read-a -> read-b, direction outgoing: read-b anchors only on its incoming side, so it
+    # comes back as read-a's neighbor rather than as a focal. It is available, not missing.
+    result = reading_store().read_neighborhood(NeighborhoodRequestV1(focal_node_ids=("read-a", "read-b"),
+                                                                     direction="outgoing"))
+    assert receipt(result) == (["read-a"], ["read-b"], [], ["proj"])
+    assert result.missing_focal_node_ids == () and not result.degraded and result.complete_for_request
+
+
+def test_self_loop_projection_does_not_anchor_a_proposed_focal():
+    store = graph([proposed("loop"), claim()], [projection("self", "loop", "loop")])
+    result = store.read_neighborhood(NeighborhoodRequestV1(focal_node_ids=("loop",)))
+    assert receipt(result) == ([], [], [], []) and result.missing_focal_node_ids == ("loop",)
 
 
 def test_a_backend_returning_a_legacy_edge_into_a_proposed_node_fails_closed():

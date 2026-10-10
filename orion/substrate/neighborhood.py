@@ -98,7 +98,9 @@ class NeighborhoodRequestV1(BaseModel):
     # concept is `proposed`, so without this an accepted reading link
     # (world_pulse_read, #2581) is invisible to a default read. A proposed node
     # never walks a legacy edge and never appears without such an edge. Set to
-    # () for the pre-2026-10-10 behavior.
+    # () for the pre-2026-10-10 behavior. Note: semantic_states therefore no
+    # longer means "only these states" on its own; e.g. semantic_states=() still
+    # admits proposed projection endpoints unless this is also ().
     projection_endpoint_states: tuple[SubstratePromotionStateV1, ...] = ("proposed",)
     # No stable snapshot token exists yet. Never silently reuse a mutable cursor.
     continuation: str | None = None
@@ -140,7 +142,8 @@ class NeighborhoodResultV1:
     reason: str | None = None
     missing_focal_node_ids: tuple[str, ...] = ()
     # Returned nodes whose own state is outside semantic_states; each is present
-    # only because a walkable semantic_projection edge in this result touches it.
+    # only because a walkable semantic_projection edge in this result touches it
+    # (the driver drops a projection-only focal whose edges were all budget-cut).
     projection_endpoint_node_ids: tuple[str, ...] = ()
     continuations: tuple[str, ...] = ()
     consistency: str = "best_effort_non_atomic"
@@ -297,6 +300,17 @@ def read_neighborhood(
                     raise ValueError("endpoint_changed_or_unavailable")
                 if node.node_kind != ref.node_kind:
                     raise ValueError("endpoint_kind_mismatch")
+        # A projection-only focal must leave with an edge that vouches for it. If
+        # budgets cut every such edge (truncated is already set), it is reported
+        # missing rather than returned bare. A requested id that comes back as a
+        # neighbor (e.g. anchored only against the requested direction) is
+        # available, so it is not reported missing.
+        touched = {ref.node_id for edge in internal + boundary for ref in (edge.source, edge.target)}
+        for key in [k for k in ids if not request.eligible(focal[k]) and k not in touched]:
+            del focal[key]
+        ids = sorted(focal)
+        missing = tuple(sorted(set(requested) - set(focal) - set(neighbors)))
+        all_nodes = {**focal, **neighbors}
         projection_only_ids = tuple(sorted(key for key, node in all_nodes.items() if not request.eligible(node)))
         return NeighborhoodResultV1(
             focal_nodes=[focal[key] for key in ids], neighbor_nodes=list(neighbors.values()),

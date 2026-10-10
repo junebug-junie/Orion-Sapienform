@@ -3,7 +3,7 @@
 Arc: #2581 lets world-pulse readings create accepted relationship claims between concepts. Almost every concept is still `proposed`, so the standard neighborhood read hid those links. This patch makes the read show them.
 
 - A neighborhood read now decides "may this node be shown?" per edge, not per node. On an ordinary (legacy) edge, both nodes still need to be `provisional`/`canonical`. On a link backed by an accepted claim (a walkable `semantic_projection` edge: the claim is `provisional`/`canonical` and at the revision the link was built from), a `proposed` node may also be shown. The claim vouches for the link; the concept's own state does not have to.
-- A `proposed` starting node is accepted only if it has at least one such link in the requested direction. Otherwise it is reported missing exactly as before.
+- A `proposed` starting node is accepted only if it has at least one such link in the requested direction, and it must leave the read with at least one of those links. If the size limits cut every link it has, the node is reported missing (with `truncated`) instead of being returned on its own. Otherwise it is reported missing exactly as before.
 - Rejected/deprecated nodes are never let in this way. Rejected, deprecated, never-accepted or out-of-date claims let nothing in. Provenance and claim-wiring edges still never walk.
 - Nodes shown only because of a claim are listed in the new result field `projection_endpoint_node_ids` (planner detail `projection_endpoint_node_refs`).
 - In-memory and Falkor backends match exactly, checked on real FalkorDB 4.18.11 and 6.0.1. The SPARQL/GraphDB backend stays fail-closed: it stores no claim nodes, so it still walks legacy edges only.
@@ -53,9 +53,12 @@ A default `read_neighborhood` from a reading concept that has an accepted link n
 ```text
 pytest orion/substrate/tests services/orion-hub/tests/test_world_pulse_read_assertion_links.py \
   services/orion-memory-consolidation/evals/test_referent_graph_discipline_eval.py
-  -> 1115 passed, 39 skipped, 3 failed. The 3 failures are in test_felt_state_self_definition_lane.py
+  -> 1120 passed, 39 skipped, 3 failed. The 3 failures are in test_felt_state_self_definition_lane.py
      and also fail on unmodified main (self_concept_history SQL shape); this patch does not touch that code.
-pytest orion/substrate/tests/test_neighborhood_projection_endpoints.py -> 18 passed (9 fail on main)
+pytest orion/substrate/tests/test_neighborhood_projection_endpoints.py -> 21 passed (11 fail on main; 3 fail on the
+  pre-review commit 0291e95cb, i.e. they pin both review fixes)
+reviewer's differential script (90 focal/direction/state combos incl. self-loops, proposed<->proposed,
+  rejected claims) memory vs real Falkor 4.18.11 and 6.0.1 -> 0 diffs on both, re-run after review fixes
 ORION_TEST_FALKOR_URI=<throwaway 4.18.11> pytest test_neighborhood_falkor_live.py test_falkor_direct.py \
   test_falkor_anchor_store.py test_assertion_core_falkor.py -> 48 passed
 same against throwaway 6.0.1 -> 48 passed
@@ -98,7 +101,21 @@ What would make it true: the seed producer would have to attach accepted links t
 
 ## Review findings fixed
 
-(filled in after review)
+Review by an orion-repo-agent subagent. It found no must-fix issues and confirmed exact memory/Falkor parity and an intact index seek (EXPLAIN on both engines).
+
+- Finding (should-fix): a proposed starting node could be returned with no link vouching for it once budgets cut its only link (for example `boundary_edge_limit=0`). That contradicted the documented rule.
+  - Fix: after edge selection, the driver drops a projection-only focal that no kept edge touches and reports it in `missing_focal_node_ids` (`truncated` is already set).
+  - Evidence: `test_a_proposed_focal_never_leaves_without_a_vouching_edge`, plus the updated `boundary_edge_limit=0` case in `test_budgets_and_truncation_still_bind_projection_neighbors` (both fail on 0291e95cb).
+- Finding (should-fix): with `direction="outgoing"` and focals P->Q (both proposed), Q was listed in `missing_focal_node_ids` (degraded) while also being returned as P's neighbor.
+  - Fix: `missing_focal_node_ids` now excludes requested ids that come back as neighbors.
+  - Evidence: `test_a_requested_id_returned_as_a_neighbor_is_not_reported_missing`.
+- Finding (nit): `semantic_states` no longer means "only these states" on its own.
+  - Fix: documented in the field comment (`projection_endpoint_states=()` is the strict mode).
+- Finding (nit): the SPARQL comment claiming the empty `IN ()` path is never entered is now false.
+  - Fix: the comment is corrected. That path is still fail-closed (`unavailable:` at worst).
+- Finding (nit): the batching oracle never exercises projections.
+  - Fix: a docstring note points to the tests that do. Self-loop case added (`test_self_loop_projection_does_not_anchor_a_proposed_focal`).
+- Not changed (nit): the Falkor anchor probe pages all predicates rather than doing a LIMIT-1 existence check. It is bounded by 16 focals and listed under risks.
 
 ## Restart required
 

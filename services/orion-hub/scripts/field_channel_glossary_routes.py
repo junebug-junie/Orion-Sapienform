@@ -210,6 +210,12 @@ async def channels() -> dict[str, Any]:
                 "evidence_dimension": e.evidence_dimension,
             }
             for e in glossary["entries"]
+            # Node-qualified entries (e.g. node:substrate.execution's
+            # prediction_error) describe one node's meaning of a channel;
+            # this panel's series are per channel (max-merged across nodes),
+            # so listing them would repeat the bare channel's row with no
+            # distinct data. They stay in the glossary for the semantic layer.
+            if e.node is None
         ],
     }
 
@@ -306,13 +312,15 @@ def _health_sync(hours: int) -> dict[str, Any]:
 
     row_count = len(payloads)
     glossary = load_glossary()
-    known_channels = [e.channel for e in glossary["entries"]]
+    known_channels = [e.channel for e in glossary["entries"] if e.node is None]
     series, stamps, tick_times, unparsable_count = build_channel_series(
         payloads, known_channels
     )
 
     out = []
     for entry in glossary["entries"]:
+        if entry.node is not None:  # per-node semantics, no distinct series
+            continue
         values = series.get(entry.channel, [])
         verdict = classify_channel_series(values)
         regime = _regime_for(

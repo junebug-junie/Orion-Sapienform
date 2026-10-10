@@ -82,7 +82,12 @@ def test_channels_endpoint_returns_38_raw_channels_plus_1_derived(client):
     # 2026-10-07: the 39 above went stale long ago (this failed on main at 52).
     # Pinned to the glossary file itself, which tests/test_field_channel_glossary.py
     # already counts (50 entries after D3 + the observer_failure_pressure retirement).
-    assert len(body["channels"]) == 50
+    # 2026-10-10: node-qualified entries (9 prediction_error variants) are
+    # per-node semantics, not distinct series, and are no longer listed --
+    # this is the 49 bare channels, one row per channel name.
+    assert len(body["channels"]) == 49
+    names = [c["channel"] for c in body["channels"]]
+    assert len(names) == len(set(names)), "a channel must not appear twice"
     assert "contract_pressure" not in {c["channel"] for c in body["channels"]}
     assert "observer_failure_pressure" not in {c["channel"] for c in body["channels"]}
     assert len(body["categories"]) == 7

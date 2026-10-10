@@ -372,9 +372,10 @@ def check_prompt_semantics(graph: MetricGraph, repo_root: Path) -> list[str]:
     check uses -- a prompt site that was renamed away would otherwise keep
     the requirement switched on (or off) for a site that no longer exists.
     """
-    from orion.metrics.semantics import check_node_semantics
+    from orion.metrics.semantics import check_node_semantics, check_prompt_inventory
 
     failures = check_node_semantics(graph.nodes.values())
+    failures.extend(check_prompt_inventory(graph.nodes.values()))
     seen: set[str] = set()
     for node in graph.nodes.values():
         for site in node.prompt_sites:

@@ -55,6 +55,40 @@ SPARSITIES: frozenset[str] = frozenset({"per_tick", "event_gated", "designed_spa
 
 POLARITIES: frozenset[str] = frozenset({"higher_is_better", "higher_is_worse"})
 
+# Metrics the 2026-10-07 code trace found reaching an Orion prompt, that have
+# a URN in the lineage graph. Pinned so the prompt gate cannot be passed by
+# deleting a `prompt_sites` marker: dropping one of these from a prompt is a
+# real change, and it must edit this set in the same diff, where review sees
+# it. Inventory: docs/superpowers/specs/2026-10-07-orion-self-calibration-
+# design.md (rev 1, "What reaches Orion's prompts"), re-verified 2026-10-10.
+#
+# Inventory items with NO URN, so this gate cannot see them (listed so the
+# gap is a recorded decision, not an oversight):
+#   - mind frontier score / appraisal confidence (SelectedFrontierMatterV1.
+#     score, AppraisalFeatureVectorV1.confidence -> stance_react.j2:44,51):
+#     LLM-assigned, no registry entry.
+#   - curiosity prior confidence (CuriosityPriorSummaryV1.confidence ->
+#     orion/situational/context.py:2513): LLM-written belief, no entry.
+#   - metacog biometrics cue strain/homeostasis/stability and fleet_watts
+#     (BiometricsClusterV1.composites / .measurements dicts ->
+#     executor.py:_metacog_biometrics_cue): dict-valued, not enumerable as
+#     scalar URNs. peak_pressure has a URN but is NOT in that cue today.
+#   - metacog transport severity (orion/metacog/evidence_map.py banding):
+#     computed per trigger, no schema field.
+#   - attended prediction-error node LABELS (reverie coalition_projection):
+#     a string chosen by ranking; the node-qualified PE entries carry the
+#     numbers behind it.
+PROMPT_INVENTORY_URNS: frozenset[str] = frozenset(
+    {
+        "metric://field_channel/orion-field-digester/node:substrate.bus_synaptic.prediction_error",
+        "metric://field_channel/orion-substrate-runtime/node:substrate.execution.prediction_error",
+        "metric://field_channel/orion-substrate-runtime/node:substrate.biometrics.prediction_error",
+        "metric://inner_state/orion-field-digester/field_state.v1#queue_contention_score",
+        "metric://inner_state/orion-substrate-runtime/attention_broadcast_projection.v1#coalition_stability_score",
+        "metric://inner_state/orion-cortex-exec/attention_salience_trace.v1#salience",
+    }
+)
+
 # The three fields the prompt gate requires. absent_means and polarity are
 # recorded and drift-tracked but not required: a number can reach a prompt
 # without ever being absent, and polarity is meaningless for a trigger.
@@ -110,6 +144,31 @@ def derived_channel_polarity(channel: str) -> str:
     from orion.field.pressure import HIGHER_IS_BETTER_CHANNELS
 
     return "higher_is_better" if channel in HIGHER_IS_BETTER_CHANNELS else "higher_is_worse"
+
+
+def check_prompt_inventory(
+    nodes: Iterable[Any], inventory: frozenset[str] = PROMPT_INVENTORY_URNS
+) -> list[str]:
+    """Every pinned prompt-reaching URN must still exist and still declare a
+    prompt site. A missing URN means a rename or removal that left this pin
+    stale; a URN with no prompt_sites means the marker that switches the gate
+    on was dropped."""
+    by_urn = {n.urn: n for n in nodes}
+    failures: list[str] = []
+    for urn in sorted(inventory):
+        node = by_urn.get(urn)
+        if node is None:
+            failures.append(
+                f"{urn} is pinned as prompt-reaching (PROMPT_INVENTORY_URNS) but "
+                "no longer resolves -- renamed or removed? Update the pin."
+            )
+        elif not node.prompt_sites:
+            failures.append(
+                f"{urn} is pinned as prompt-reaching but declares no prompt_sites "
+                "-- restore them, or remove it from PROMPT_INVENTORY_URNS in the "
+                "same diff if it really stopped reaching a prompt."
+            )
+    return failures
 
 
 def check_node_semantics(nodes: Iterable[Any]) -> list[str]:

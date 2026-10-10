@@ -184,24 +184,31 @@ def test_hub_adapter_reuses_existing_ambient_audio_keys() -> None:
 # --- render ---------------------------------------------------------------
 
 
-def test_sound_line_states_level_band_and_scale() -> None:
+@pytest.mark.parametrize("vs,phrase", [
+    ("usual", "about as loud as usual"),
+    ("louder", "louder than usual"),
+    ("quieter", "quieter than usual"),
+])
+def test_sound_line_states_only_the_comparison(vs: str, phrase: str) -> None:
     text = _build_prompt_fragment(_brief(CabinetContextV1(
-        sound_available=True, sound_age_seconds=1.0, sound_dbfs=-10.2, sound_peak_dbfs=-4.0,
+        sound_available=True, sound_age_seconds=1.0, sound_dbfs=-16.2, sound_peak_dbfs=-4.0,
         sound_recent_dbfs=-11.0, sound_usual_low_dbfs=-16.6, sound_usual_dbfs=-12.6,
-        sound_usual_high_dbfs=-11.3, sound_vs_usual="louder",
+        sound_usual_high_dbfs=-11.3, sound_vs_usual=vs,
     )), 7200).compact_text
-    assert "Your cabinet's sound (mic" in text
-    assert "-10 dBFS, louder than usual (last 24h ranged -17 to -11, median -13; last 10 min -11)" in text
-    assert "not calibrated" in text and "own range" in text
-    assert "-50" not in text  # no unverified absolute anchors
-    assert "Your cabinet sensors" not in text  # Nano unavailable, still no Nano line
+    line = next(l for l in text.splitlines() if "cabinet's sound" in l)
+    assert f"{phrase} for your cabinet" in line
+    assert "not how many decibels" in line
+    # 2026-10-10: Orion reported "-16 dBFS" as what they hear. No level
+    # numbers of any kind may reach the prompt from an uncalibrated mic.
+    assert "dB" not in line.replace("decibels", "")
+    assert not any(ch.isdigit() for ch in line.replace("24 hours", ""))
 
 
-def test_sound_line_without_history_has_no_band() -> None:
+def test_no_sound_line_without_history() -> None:
     text = _build_prompt_fragment(_brief(CabinetContextV1(
         sound_available=True, sound_age_seconds=1.0, sound_dbfs=-16.0,
     )), 7200).compact_text
-    assert "-16 dBFS." in text and "usual" not in text
+    assert "cabinet's sound" not in text
 
 
 def test_no_sound_line_when_mic_unavailable() -> None:

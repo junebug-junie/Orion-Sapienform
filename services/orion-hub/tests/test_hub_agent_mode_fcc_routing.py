@@ -12,10 +12,8 @@ backend.
 Fix: `client_mode in ("orion", "agent")` now takes the same
 run_unified_turn branch in websocket_handler.py, tagged by client_mode
 (not a hardcoded "orion" literal) for tracing/cancellation/TTS lane.
-HUB_AGENT_CONTEXT_EXEC_ENABLED defaults to False now, so the old
-context-exec bridge is unreachable by default (not deleted -- an
-operator can still flip it back on if orion-context-exec is ever
-redeployed).
+2026-10-10: the old context-exec bridge, its HUB_AGENT_CONTEXT_EXEC_ENABLED
+gate, and orion-context-exec itself were deleted outright (kill means kill).
 
 This repo has no full WebSocket TestClient harness for
 websocket_handler.py (see test_orion_unified_turn_tts.py's own
@@ -45,27 +43,6 @@ def test_agent_mode_shares_the_orion_fcc_branch():
     assert 'if client_mode in ("orion", "agent") and settings.ORION_UNIFIED_TURN_ENABLED:' in source
 
 
-def test_agent_mode_never_reaches_should_use_context_exec_agent_lane_via_ws():
-    """The FCC branch must `continue` before the classic/general lane's own
-    context_exec_agent_bridge check -- confirming "agent" mode structurally
-    cannot reach the dead orion-context-exec HTTP call anymore, not just
-    that the branch condition looks right in isolation."""
-    source = _ws_source()
-    branch_marker = 'if client_mode in ("orion", "agent") and settings.ORION_UNIFIED_TURN_ENABLED:'
-    idx = source.index(branch_marker)
-    bridge_marker = "should_use_context_exec_agent_lane"
-    bridge_idx = source.index(bridge_marker, idx)
-    # Everything between the branch start and the bridge call must contain
-    # this branch's own `continue` (its exit), proving the bridge call sits
-    # in a structurally later/separate code path this branch never reaches.
-    between = source[idx:bridge_idx]
-    assert "\n                continue\n" in between, (
-        "the FCC branch must exit (continue) before the context-exec bridge "
-        "check -- if this assertion fails, 'agent' mode may have started "
-        "falling through into the dead context-exec path again"
-    )
-
-
 def test_active_turn_kind_is_tagged_by_client_mode_not_hardcoded_orion():
     """Regression guard for the old hardcoded `active_turn["kind"] = "orion"`
     -- an Agent-mode turn tagged "orion" would misdirect
@@ -85,19 +62,6 @@ def test_cancel_and_tts_calls_are_also_tagged_by_client_mode():
     # agent-claude branch's own unrelated tagging, not this one.
     assert 'kind="orion",' not in source
     assert 'lane="orion",' not in source
-
-
-def test_hub_agent_context_exec_enabled_defaults_off():
-    """The old bridge's own gate (context_exec_agent_bridge.py's
-    agent_lane_enabled()) must default to disabled -- this is what makes the
-    dead orion-context-exec path unreachable by default without deleting
-    context_exec_agent_bridge.py/context_exec_client.py outright."""
-    settings_source = SETTINGS_PATH.read_text(encoding="utf-8")
-    marker = 'HUB_AGENT_CONTEXT_EXEC_ENABLED: bool = Field('
-    assert marker in settings_source
-    idx = settings_source.index(marker)
-    following = settings_source[idx : idx + 200]
-    assert "default=False" in following
 
 
 def _api_routes_source() -> str:
@@ -120,27 +84,6 @@ def test_http_fallback_agent_mode_also_shares_the_fcc_branch():
     # earlier draft could satisfy the assertion above while ALSO leaving a
     # stale `== "orion"` check reachable first.
     assert 'str(payload.get("mode") or "").strip().lower() == "orion"' not in source
-
-
-def test_http_agent_mode_never_reaches_should_use_context_exec_agent_lane():
-    """Same structural guarantee as the WebSocket test above, for the HTTP
-    transport: the FCC branch must return before
-    should_use_context_exec_agent_lane's check, so "agent" mode cannot fall
-    through to the dead context-exec bridge via this path either."""
-    source = _api_routes_source()
-    branch_marker = (
-        'if str(payload.get("mode") or "").strip().lower() in ("orion", "agent") '
-        "and settings.ORION_UNIFIED_TURN_ENABLED:"
-    )
-    idx = source.index(branch_marker)
-    bridge_marker = "should_use_context_exec_agent_lane"
-    bridge_idx = source.index(bridge_marker, idx)
-    between = source[idx:bridge_idx]
-    assert "return {**final_frame, \"chat_route\": CHAT_ROUTE_UNIFIED_TURN_HARNESS}" in between, (
-        "the FCC branch must return before the context-exec bridge check -- "
-        "if this fails, HTTP 'agent' mode may be falling through to the dead "
-        "context-exec path again"
-    )
 
 
 def test_success_frames_and_chat_history_tag_the_real_mode_not_a_hardcoded_orion():
@@ -166,9 +109,20 @@ def test_success_frames_and_chat_history_tag_the_real_mode_not_a_hardcoded_orion
     assert source.count("mode_tag=mode_tag,") >= 1
 
 
-def test_env_example_matches_the_new_default():
-    """CLAUDE.md env parity: the checked-in .env_example must reflect the
-    real intended default, not the old, now-wrong `true`."""
+def test_context_exec_agent_lane_is_deleted_not_just_gated():
+    """2026-10-10 retirement: the Hub must have no path back into
+    orion-context-exec -- not a default-off flag, not an unreachable branch.
+    The bridge/client modules are gone and neither transport references them."""
+    scripts_dir = HUB_ROOT / "scripts"
+    for gone in ("context_exec_agent_bridge.py", "context_exec_client.py", "agent_step_relay.py",
+                 "proposal_review_client.py", "proposal_review_routes.py"):
+        assert not (scripts_dir / gone).exists(), gone
+    for source in (_ws_source(), _api_routes_source()):
+        assert "context_exec" not in source
+        assert "should_use_context_exec_agent_lane" not in source
+    settings_source = SETTINGS_PATH.read_text(encoding="utf-8")
     env_source = ENV_EXAMPLE_PATH.read_text(encoding="utf-8")
-    assert "HUB_AGENT_CONTEXT_EXEC_ENABLED=false" in env_source
-    assert "HUB_AGENT_CONTEXT_EXEC_ENABLED=true" not in env_source
+    for key in ("HUB_AGENT_CONTEXT_EXEC_ENABLED", "HUB_CONTEXT_EXEC_API_URL", "HUB_CONTEXT_EXEC_EVENT_CHANNEL",
+                "HUB_PROPOSAL_REVIEW_ENABLED", "HUB_PROPOSAL_REVIEW_API_URL", "CONTEXT_EXEC_INVESTIGATION_V2_ENABLED"):
+        assert key not in settings_source, key
+        assert key not in env_source, key

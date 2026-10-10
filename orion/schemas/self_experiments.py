@@ -137,21 +137,6 @@ class SelfExperimentRecordV1(BaseModel):
     completed_at_utc: str | None = None
 
 
-class SelfExperimentDispatchRequestV1(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-
-class SelfExperimentDispatchResponseV1(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    ok: bool
-    experiment_id: str
-    status: SelfExperimentStatus
-    context_exec_mode: str | None = None
-    expected_artifact_type: str | None = None
-    message: str | None = None
-
-
 class SelfExperimentListResponseV1(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

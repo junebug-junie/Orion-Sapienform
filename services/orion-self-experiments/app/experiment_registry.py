@@ -1,211 +1,49 @@
-"""Deterministic experiment type → context-exec compile registry."""
+"""Deterministic experiment-type registry and create-request validation.
+
+Experiments used to compile to a ContextExecRequestV1 and dispatch to
+orion-context-exec; that service and the dispatch path were retired 2026-10-10.
+What remains is intake: type/mutation-policy validation and dedupe.
+"""
 
 from __future__ import annotations
 
 import hashlib
 import json
-from typing import Any
 
 from orion.cognition.skills_manifest import load_skill_manifest
-from orion.schemas.context_exec import (
-    ContextExecBudgetV1,
-    ContextExecPermissionV1,
-    ContextExecRequestV1,
-)
 from orion.schemas.self_experiments import (
     SelfExperimentCreateRequestV1,
-    SelfExperimentMutationPolicy,
-    SelfExperimentRecordV1,
     SelfExperimentSource,
     SelfExperimentSpecV1,
-    SelfExperimentType,
 )
 
 EXPERIMENT_REGISTRY: dict[str, dict[str, str]] = {
     "skill_probe": {
-        "context_exec_mode": "investigation_v2",
-        "expected_artifact_type": "InvestigationReportV2",
-        "permission_profile": "read_only_skill_probe",
-        "budget_profile": "small",
         "mutation_policy": "forbidden",
     },
     "runtime_drift_check": {
-        "context_exec_mode": "investigation_v2",
-        "expected_artifact_type": "InvestigationReportV2",
-        "permission_profile": "runtime_read_only",
-        "budget_profile": "standard",
         "mutation_policy": "forbidden",
     },
     "belief_origin_check": {
-        "context_exec_mode": "belief_provenance",
-        "expected_artifact_type": "BeliefProvenanceReportV1",
-        "permission_profile": "memory_trace_read_only",
-        "budget_profile": "standard",
         "mutation_policy": "forbidden",
     },
     "trace_failure_autopsy": {
-        "context_exec_mode": "trace_autopsy",
-        "expected_artifact_type": "TraceAutopsyReportV1",
-        "permission_profile": "trace_runtime_read_only",
-        "budget_profile": "standard",
         "mutation_policy": "forbidden",
     },
     "repo_change_probe": {
-        "context_exec_mode": "repo_impact_analysis",
-        "expected_artifact_type": "RepoImpactAnalysisReportV1",
-        "permission_profile": "repo_read_only",
-        "budget_profile": "standard",
         "mutation_policy": "forbidden",
     },
     "daily_focus_grounding_check": {
-        "context_exec_mode": "investigation_v2",
-        "expected_artifact_type": "InvestigationReportV2",
-        "permission_profile": "recall_memory_read_only",
-        "budget_profile": "small",
         "mutation_policy": "forbidden",
     },
     "memory_correction_candidate": {
-        "context_exec_mode": "memory_correction_proposal",
-        "expected_artifact_type": "ProposalEnvelopeV1",
-        "permission_profile": "memory_trace_read_only",
-        "budget_profile": "standard",
         "mutation_policy": "proposal_only",
     },
     "patch_proposal_candidate": {
-        "context_exec_mode": "patch_proposal",
-        "expected_artifact_type": "ProposalEnvelopeV1",
-        "permission_profile": "repo_read_only",
-        "budget_profile": "standard",
         "mutation_policy": "proposal_only",
     },
     "manual_review_candidate": {
-        "context_exec_mode": "investigation_v2",
-        "expected_artifact_type": "InvestigationReportV2",
-        "permission_profile": "minimal_read_only",
-        "budget_profile": "small",
         "mutation_policy": "forbidden",
-    },
-}
-
-PERMISSION_PROFILES: dict[str, dict[str, bool]] = {
-    "minimal_read_only": {
-        "read_memory": False,
-        "read_graph": False,
-        "read_recall": True,
-        "read_repo": False,
-        "read_runtime_logs": False,
-        "read_redis_traces": False,
-        "write_memory": False,
-        "write_graph": False,
-        "write_repo": False,
-        "mutate_runtime": False,
-        "network_enabled": False,
-        "shell_enabled": False,
-    },
-    "read_only_skill_probe": {
-        "read_memory": False,
-        "read_graph": False,
-        "read_recall": True,
-        "read_repo": False,
-        "read_runtime_logs": False,
-        "read_redis_traces": False,
-        "write_memory": False,
-        "write_graph": False,
-        "write_repo": False,
-        "mutate_runtime": False,
-        "network_enabled": False,
-        "shell_enabled": False,
-    },
-    "runtime_read_only": {
-        "read_memory": False,
-        "read_graph": False,
-        "read_recall": True,
-        "read_repo": False,
-        "read_runtime_logs": True,
-        "read_redis_traces": True,
-        "write_memory": False,
-        "write_graph": False,
-        "write_repo": False,
-        "mutate_runtime": False,
-        "network_enabled": False,
-        "shell_enabled": False,
-    },
-    "memory_trace_read_only": {
-        "read_memory": True,
-        "read_graph": True,
-        "read_recall": True,
-        "read_repo": False,
-        "read_runtime_logs": False,
-        "read_redis_traces": True,
-        "write_memory": False,
-        "write_graph": False,
-        "write_repo": False,
-        "mutate_runtime": False,
-        "network_enabled": False,
-        "shell_enabled": False,
-    },
-    "trace_runtime_read_only": {
-        "read_memory": False,
-        "read_graph": False,
-        "read_recall": True,
-        "read_repo": False,
-        "read_runtime_logs": True,
-        "read_redis_traces": True,
-        "write_memory": False,
-        "write_graph": False,
-        "write_repo": False,
-        "mutate_runtime": False,
-        "network_enabled": False,
-        "shell_enabled": False,
-    },
-    "repo_read_only": {
-        "read_memory": False,
-        "read_graph": False,
-        "read_recall": True,
-        "read_repo": True,
-        "read_runtime_logs": False,
-        "read_redis_traces": False,
-        "write_memory": False,
-        "write_graph": False,
-        "write_repo": False,
-        "mutate_runtime": False,
-        "network_enabled": False,
-        "shell_enabled": False,
-    },
-    "recall_memory_read_only": {
-        "read_memory": True,
-        "read_graph": True,
-        "read_recall": True,
-        "read_repo": False,
-        "read_runtime_logs": False,
-        "read_redis_traces": False,
-        "write_memory": False,
-        "write_graph": False,
-        "write_repo": False,
-        "mutate_runtime": False,
-        "network_enabled": False,
-        "shell_enabled": False,
-    },
-}
-
-BUDGET_PROFILES: dict[str, dict[str, float | int]] = {
-    "small": {
-        "max_seconds": 30,
-        "max_hops": 4,
-        "max_subcalls": 4,
-        "max_depth": 1,
-    },
-    "standard": {
-        "max_seconds": 60,
-        "max_hops": 8,
-        "max_subcalls": 8,
-        "max_depth": 1,
-    },
-    "deep_read_only": {
-        "max_seconds": 120,
-        "max_hops": 12,
-        "max_subcalls": 12,
-        "max_depth": 2,
     },
 }
 
@@ -348,81 +186,3 @@ def normalize_create_request(
         created_at_utc=created_at_utc,
     )
     return spec, None
-
-
-def validate_spec_for_compile(spec: SelfExperimentSpecV1) -> None:
-    if spec.experiment_type not in EXPERIMENT_REGISTRY:
-        raise ExperimentValidationError("unknown_experiment_type")
-
-    config = EXPERIMENT_REGISTRY[spec.experiment_type]
-    registry_mode = config["context_exec_mode"]
-    if spec.requested_context_exec_mode and spec.requested_context_exec_mode != registry_mode:
-        raise ExperimentValidationError("context_exec_mode_override_rejected")
-
-    registry_policy = config["mutation_policy"]
-    if _MUTATION_RANK[spec.mutation_policy] > _MUTATION_RANK[registry_policy]:
-        raise ExperimentValidationError("mutation_policy_widen_rejected")
-
-
-def compile_experiment_to_context_exec_request(
-    record: SelfExperimentRecordV1,
-) -> ContextExecRequestV1:
-    validate_spec_for_compile(record.spec)
-    config = EXPERIMENT_REGISTRY[record.spec.experiment_type]
-    permissions = ContextExecPermissionV1(**PERMISSION_PROFILES[config["permission_profile"]])
-    budget = ContextExecBudgetV1(**BUDGET_PROFILES[config["budget_profile"]])
-
-    return ContextExecRequestV1(
-        request_id=record.experiment_id,
-        text=record.spec.question,
-        mode=config["context_exec_mode"],  # type: ignore[arg-type]
-        correlation_id=record.spec.correlation_id or record.experiment_id,
-        session_id=record.spec.session_id,
-        user_id=record.spec.user_id,
-        scopes={
-            **record.spec.scopes,
-            "experiment_id": record.experiment_id,
-            "experiment_type": record.spec.experiment_type,
-            "source": record.spec.source,
-            "source_ref": record.spec.source_ref,
-            "requested_skill_id": record.spec.requested_skill_id,
-        },
-        permissions=permissions,
-        budget=budget,
-        expected_artifact_type=config["expected_artifact_type"],
-        llm_profile=record.spec.args.get("llm_profile", "agent"),
-    )
-
-
-def registry_config_for_type(experiment_type: str) -> dict[str, str]:
-    return dict(EXPERIMENT_REGISTRY[experiment_type])
-
-
-def parse_context_exec_result(run_payload: dict[str, Any]) -> dict[str, Any]:
-    runtime_debug = run_payload.get("runtime_debug") if isinstance(run_payload.get("runtime_debug"), dict) else {}
-    operator_summary = run_payload.get("operator_summary")
-    summary_text: str | None = None
-    if isinstance(operator_summary, dict):
-        summary_text = str(operator_summary.get("summary") or operator_summary.get("headline") or "")
-    elif operator_summary is not None:
-        summary_text = str(operator_summary)
-
-    proposal_id = runtime_debug.get("proposal_id") or runtime_debug.get("ledger_proposal_id")
-    ledger_status = runtime_debug.get("ledger_status") or runtime_debug.get("proposal_status")
-    attention_required = bool(runtime_debug.get("attention_required", False))
-
-    artifact = run_payload.get("artifact") if isinstance(run_payload.get("artifact"), dict) else {}
-    if not proposal_id and isinstance(artifact, dict):
-        proposal_id = artifact.get("proposal_id")
-
-    return {
-        "context_exec_run_id": run_payload.get("run_id"),
-        "status": run_payload.get("status"),
-        "artifact_type": run_payload.get("artifact_type"),
-        "operator_summary": summary_text,
-        "runtime_debug": runtime_debug,
-        "proposal_id": proposal_id,
-        "ledger_status": ledger_status,
-        "attention_required": attention_required,
-        "artifact_payload": artifact if artifact else None,
-    }

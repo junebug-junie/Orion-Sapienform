@@ -1,7 +1,7 @@
 """Every branch of handle_chat_request must stamp an explicit chat_route tag.
 
-Ground truth: the four branches (classic PlanRunner RPC, unified-turn harness,
-agent-claude, context-exec agent lane) were previously distinguished only by
+Ground truth: the branches (classic PlanRunner RPC, unified-turn harness,
+agent-claude; a fourth context-exec agent lane was deleted 2026-10-10) were previously distinguished only by
 which response fields happened to be populated -- no explicit tag. This is
 the first slice of Runtime-Trace-Nexus/Grammar-Atlas fusion work: a later
 correlation-keyed trace lookup needs chat_route to tell "no stance row
@@ -23,7 +23,6 @@ os.environ.setdefault("CHANNEL_COLLAPSE_TRIAGE", "orion:collapse:triage")
 from orion.hub.chat_route import (
     CHAT_ROUTE_AGENT_CLAUDE,
     CHAT_ROUTE_CLASSIC_PLANRUNNER,
-    CHAT_ROUTE_CONTEXT_EXEC_AGENT,
     CHAT_ROUTE_UNIFIED_TURN_HARNESS,
 )
 from orion.schemas.cortex.contracts import CortexChatResult, CortexClientResult
@@ -108,26 +107,3 @@ def test_agent_claude_path_tags_chat_route(monkeypatch) -> None:
     payload = {"mode": "agent-claude", "messages": [{"role": "user", "content": "hello"}]}
     out = asyncio.run(handle_chat_request(object(), payload, "sid-agent-claude", no_write=True))
     assert out["chat_route"] == CHAT_ROUTE_AGENT_CLAUDE
-
-
-def test_context_exec_agent_lane_tags_chat_route(monkeypatch) -> None:
-    monkeypatch.setattr(api_routes, "should_use_context_exec_agent_lane", lambda req: True)
-
-    async def _fake_run_hub_agent_via_context_exec(*, req, prompt, correlation_id, route_debug):
-        return {
-            "llm_response": "context-exec answer",
-            "agent_trace": None,
-            "raw": {},
-            "routing_debug": route_debug,
-            "context_exec_run": {"status": "ok"},
-            "operator_summary": None,
-        }
-
-    monkeypatch.setattr(
-        api_routes, "run_hub_agent_via_context_exec", _fake_run_hub_agent_via_context_exec
-    )
-
-    payload = {"mode": "brain", "messages": [{"role": "user", "content": "hello"}]}
-    out = asyncio.run(handle_chat_request(object(), payload, "sid-context-exec", no_write=True))
-    assert out["chat_route"] == CHAT_ROUTE_CONTEXT_EXEC_AGENT
-    assert out["context_exec_lane"] is True

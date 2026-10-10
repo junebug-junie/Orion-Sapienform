@@ -1,11 +1,10 @@
-"""Hub LLM route selector and context-exec agent lane tests."""
+"""Hub LLM route selector tests."""
 
 from __future__ import annotations
 
 import os
 import sys
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -24,19 +23,7 @@ for key, value in {
 }.items():
     os.environ.setdefault(key, value)
 
-from scripts.context_exec_agent_bridge import (
-    build_context_exec_request,
-    format_agent_operator_inline,
-    normalize_llm_profile,
-    should_use_context_exec_agent_lane,
-)
 from scripts.cortex_request_builder import build_chat_request
-from orion.schemas.context_exec import (
-    ContextExecOperatorSummaryV1,
-    ContextExecRunV1,
-    ContextExecSafetySummaryV1,
-)
-from orion.schemas.cortex.contracts import CortexChatRequest
 
 INDEX_HTML = HUB_ROOT / "templates" / "index.html"
 APP_JS = HUB_ROOT / "static" / "js" / "app.js"
@@ -105,12 +92,6 @@ def test_regression_no_route_radiogroup_chip_row() -> None:
     assert 'role="radiogroup" aria-label="LLM route"' not in html
 
 
-def test_normalize_llm_profile_defaults_to_quick() -> None:
-    assert normalize_llm_profile(None) == "quick"
-    assert normalize_llm_profile("AGENT") == "agent"
-    assert normalize_llm_profile("bogus") == "quick"
-
-
 def test_build_chat_request_includes_llm_route_in_options() -> None:
     req, debug, _ = build_chat_request(
         payload={"mode": "brain", "llm_route": "quick"},
@@ -143,22 +124,6 @@ def test_build_chat_request_defaults_llm_route_to_quick() -> None:
     assert debug.get("llm_route") == "quick"
 
 
-def test_should_use_context_exec_agent_lane_when_enabled() -> None:
-    req = CortexChatRequest(prompt="x", mode="agent")
-    with patch("scripts.context_exec_agent_bridge.agent_lane_enabled", return_value=True):
-        assert should_use_context_exec_agent_lane(req) is True
-    with patch("scripts.context_exec_agent_bridge.agent_lane_enabled", return_value=False):
-        assert should_use_context_exec_agent_lane(req) is False
-
-
-def test_build_context_exec_request_sets_llm_profile() -> None:
-    req = CortexChatRequest(prompt="trace autopsy corr abc", mode="agent", trace_id="corr-1")
-    with patch("scripts.context_exec_agent_bridge.agent_repl_enabled", return_value=False):
-        body = build_context_exec_request(req=req, prompt=req.prompt, llm_profile="chat")
-    assert body.llm_profile == "chat"
-    assert body.mode == "trace_autopsy"
-
-
 @pytest.mark.asyncio
 async def test_fetch_routes_normalizes_catalog(monkeypatch) -> None:
     """The Compute catalog comes from GPU pool state (stage 6.3), not the gateway's GET /routes."""
@@ -188,121 +153,6 @@ async def test_fetch_routes_normalizes_catalog(monkeypatch) -> None:
     assert by_id["chat"]["status"] == "up"
     assert by_id["agent"]["status"] == "down"
     assert "quick" in by_id and "metacog" in by_id
-
-
-@pytest.mark.asyncio
-async def test_run_hub_agent_via_context_exec_uses_quick_profile() -> None:
-    from scripts.context_exec_agent_bridge import run_hub_agent_via_context_exec
-
-    fake_run = ContextExecRunV1(
-        run_id="run1",
-        status="ok",
-        mode="belief_provenance",
-        text="Where did the Denver belief come from?",
-        final_text="Insufficient evidence for Denver belief.",
-        runtime_debug={
-            "llm_profile_selected": "quick",
-            "route_used": "quick",
-            "model_synthesis_used": False,
-        },
-        operator_summary=ContextExecOperatorSummaryV1(
-            title="Belief provenance complete",
-            summary="Insufficient evidence for Denver belief.",
-            agent_mode="belief_provenance",
-            route_used="quick",
-            model_synthesis_used=False,
-            safety=ContextExecSafetySummaryV1(),
-        ),
-    )
-
-    with patch(
-        "scripts.context_exec_agent_bridge.run_context_exec",
-        new=AsyncMock(return_value=fake_run),
-    ):
-        out = await run_hub_agent_via_context_exec(
-            req=CortexChatRequest(
-                prompt="Where did the Denver belief come from?",
-                mode="agent",
-                options={"llm_route": "quick"},
-            ),
-            prompt="Where did the Denver belief come from?",
-            correlation_id="corr-1",
-            route_debug={"llm_route": "quick"},
-        )
-    assert "Agent run complete" in out.get("llm_response", "")
-    assert "Route: quick" in out.get("llm_response", "")
-    assert out.get("operator_summary", {}).get("route_used") == "quick"
-    assert out.get("routing_debug", {}).get("context_exec_lane") is True
-
-
-@pytest.mark.asyncio
-async def test_run_hub_agent_via_context_exec_uses_agent_profile() -> None:
-    from scripts.context_exec_agent_bridge import run_hub_agent_via_context_exec
-
-    fake_run = ContextExecRunV1(
-        run_id="run-agent",
-        status="ok",
-        mode="general_investigation",
-        text="inspect",
-        final_text="done",
-        runtime_debug={
-            "llm_profile_selected": "agent",
-            "route_used": "agent",
-            "model_synthesis_used": True,
-        },
-        operator_summary=ContextExecOperatorSummaryV1(
-            title="Investigation complete",
-            summary="done",
-            agent_mode="general_investigation",
-            route_used="agent",
-            model_synthesis_used=True,
-            safety=ContextExecSafetySummaryV1(),
-        ),
-    )
-
-    with patch(
-        "scripts.context_exec_agent_bridge.run_context_exec",
-        new=AsyncMock(return_value=fake_run),
-    ) as mock_run:
-        await run_hub_agent_via_context_exec(
-            req=CortexChatRequest(
-                prompt="inspect repo",
-                mode="agent",
-                options={"llm_route": "agent"},
-            ),
-            prompt="inspect repo",
-            correlation_id="corr-agent",
-            route_debug={"llm_route": "agent"},
-        )
-    body = mock_run.await_args.args[0]
-    assert body.llm_profile == "agent"
-
-
-def test_format_agent_operator_inline_renders_proposal_link() -> None:
-    run = ContextExecRunV1(
-        run_id="run2",
-        status="ok",
-        mode="memory_correction_proposal",
-        text="correct denver",
-        final_text="proposal",
-        runtime_debug={"route_used": "agent", "model_synthesis_used": True},
-        operator_summary=ContextExecOperatorSummaryV1(
-            title="Memory correction proposal drafted",
-            summary="Denver claim should be marked uncertain.",
-            agent_mode="memory_correction_proposal",
-            route_used="agent",
-            model_synthesis_used=True,
-            proposal_id="prop_denver_1",
-            proposal_status="pending_review",
-            safety=ContextExecSafetySummaryV1(),
-        ),
-    )
-    inline = format_agent_operator_inline(run)
-    assert "Route: agent" in inline
-    assert "Synthesis: used" in inline
-    assert "prop_denver_1" in inline
-    assert "Pending Decisions" in inline
-    assert "Mutation: none" in inline
 
 
 def test_thought_process_syncs_lane_from_mode_dropdown() -> None:

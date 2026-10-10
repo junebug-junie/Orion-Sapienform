@@ -453,7 +453,9 @@ async def handle(env: BaseEnvelope) -> BaseEnvelope:
             if orch_route_metadata:
                 final_meta["route_metadata"] = orch_route_metadata
 
-        # Answer-depth: surface runtime_debug from context-exec or legacy agent-chain payloads
+        # Answer-depth: surface runtime_debug from the bound-capability/agent payload
+        # (still keyed "ContextExecService" by cortex-exec even though orion-context-exec
+        # itself was retired 2026-10-10) or legacy agent-chain payloads
         for s in steps:
             if not isinstance(s.result, dict):
                 continue

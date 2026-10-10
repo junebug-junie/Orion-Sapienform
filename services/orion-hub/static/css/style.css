@@ -159,7 +159,7 @@ input[type=range]::-moz-range-thumb {
   flex-direction: column;
 }
 
-/* Live context-exec / agent_repl steps streamed into the Oríon + Juniper chat column */
+/* Live harness (claude_step) reasoning steps streamed into the Oríon + Juniper chat column (agent-claude-trace.js) */
 .agent-live-trace {
   display: flex;
   flex-direction: column;

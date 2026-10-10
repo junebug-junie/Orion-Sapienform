@@ -11275,115 +11275,10 @@ let chatTurnTimer = null;
     }
   }
 
-  function agentAnswerHeadline(answerStatus) {
-    const status = String(answerStatus || '').trim();
-    if (status === 'answered_grounded') return 'Agent investigation complete';
-    if (status === 'partial_grounding') return 'Partially grounded investigation';
-    if (status === 'dependency_unavailable') return 'Investigation blocked by unavailable dependencies';
-    if (status === 'failed_fake_engine_selected') return 'Blocked: fake engine selected';
-    if (status === 'failed_grounding_preflight') return 'Runtime completed, but no real investigation occurred';
-    if (status === 'no_reliable_evidence') return 'No reliable grounded answer found';
-    if (['failed_fake_engine_selected', 'failed_grounding_preflight', 'no_reliable_evidence', 'failed'].includes(status)) {
-      return 'Runtime complete';
-    }
-    return 'Runtime complete';
-  }
-
-  function formatInvestigationV2Report(artifact) {
-    if (!artifact || typeof artifact !== 'object') return '';
-    const answerStatus = String(artifact.answer_status || 'unknown');
-    const lines = [
-      agentAnswerHeadline(answerStatus),
-      `Answer status: ${answerStatus}`,
-      `Summary: ${artifact.summary || 'No summary.'}`,
-    ];
-    const sections = artifact.sections && typeof artifact.sections === 'object' ? artifact.sections : {};
-    const order = ['repo', 'traces', 'recall', 'memory', 'runtime', 'health'];
-    const sectionLines = [];
-    order.forEach((name) => {
-      const sec = sections[name];
-      if (!sec || typeof sec !== 'object') return;
-      const title = sec.title || name;
-      const status = sec.status || 'unknown';
-      const summary = sec.summary || '';
-      sectionLines.push(`  - ${title} [${status}]: ${summary}`);
-    });
-    if (sectionLines.length) {
-      lines.push('Sections:');
-      lines.push(...sectionLines);
-    }
-    [
-      ['Unavailable', 'unavailable_sources'],
-      ['Failed', 'failed_sources'],
-      ['Blocked', 'blocked_sources'],
-    ].forEach(([label, key]) => {
-      const items = artifact[key];
-      if (Array.isArray(items) && items.length) {
-        lines.push(`${label} sources: ${items.join(', ')}`);
-      }
-    });
-    const limitations = artifact.limitations;
-    if (Array.isArray(limitations) && limitations.length) {
-      lines.push('Limitations:');
-      limitations.slice(0, 6).forEach((item) => lines.push(`  - ${item}`));
-    }
-    return lines.join('\n');
-  }
-
-  function recallFailureLine(organStatus) {
-    if (!organStatus || typeof organStatus !== 'object') return null;
-    const recall = organStatus.recall;
-    if (!recall || typeof recall !== 'object' || !recall.attempted || !recall.error) return null;
-    const errText = String(recall.error);
-    if (/redis|timeout/i.test(errText)) return `Recall failed: Redis timeout (${errText})`;
-    return `Recall failed: ${errText}`;
-  }
-
   function resolveAssistantDisplayText(d) {
     if (!d || typeof d !== 'object') return '';
     const userFacing = String(d.llm_response ?? d.text ?? '').trim();
     if (userFacing) return userFacing;
-    if (d.mode === 'agent' && d.operator_summary && typeof d.operator_summary === 'object') {
-      const op = d.operator_summary;
-      const dbg = d.routing_debug && typeof d.routing_debug === 'object' ? d.routing_debug : {};
-      const answerStatus = String(dbg.answer_status || '').trim();
-      const synthesis = dbg.model_synthesis_used ? 'used'
-        : (dbg.synthesis_fallback_used || String(dbg.synthesis_fallback_reason || '').startsWith('synthesis') ? 'fallback' : 'skipped');
-      const organStatus = dbg.organ_status
-        || (d.agent_trace && d.agent_trace.raw && d.agent_trace.raw.organ_status)
-        || (d.context_exec_run && d.context_exec_run.runtime_debug && d.context_exec_run.runtime_debug.organ_status)
-        || null;
-      const ctxRun = d.context_exec_run && typeof d.context_exec_run === 'object' ? d.context_exec_run : null;
-      const v2Artifact = ctxRun && ctxRun.mode === 'investigation_v2' && ctxRun.artifact
-        ? ctxRun.artifact
-        : (op.agent_mode === 'investigation_v2' && d.raw && d.raw.metadata && d.raw.metadata.context_exec
-          ? d.raw.metadata.context_exec.artifact
-          : null);
-      if (v2Artifact && typeof v2Artifact === 'object') {
-        return formatInvestigationV2Report(v2Artifact);
-      }
-      const headline = agentAnswerHeadline(answerStatus);
-      const lines = [
-        headline,
-        `Mode: ${op.agent_mode || dbg.context_exec_mode || 'unknown'}`,
-        `Route: ${op.route_used || dbg.route_used || dbg.llm_profile || 'chat'}`,
-        `Synthesis: ${synthesis}`,
-        `Result: ${op.summary || ''}`,
-      ];
-      if (answerStatus) {
-        lines.splice(1, 0, `Answer status: ${answerStatus}`);
-      }
-      const recallLine = recallFailureLine(organStatus);
-      if (recallLine) {
-        lines.splice(answerStatus ? 2 : 1, 0, recallLine);
-      }
-      if (op.proposal_id) {
-        lines.push(`Proposal: ${op.proposal_id} ${op.proposal_status || 'pending_review'}`);
-        lines.push('Open Pending Decisions to review.');
-      }
-      lines.push('Mutation: none');
-      return lines.join('\n');
-    }
     const top = String(d.llm_response ?? d.text ?? '').trim();
     const raw = d.raw && typeof d.raw === 'object' ? d.raw : {};
     const nested = String(raw.final_text ?? '').trim();
@@ -11719,10 +11614,6 @@ let chatTurnTimer = null;
           }
           if (d.kind === 'notification' && d.notification) {
             addNotification(d.notification);
-          }
-          if (d.kind === 'agent_step' && d.step) {
-            try { appendLiveAgentStep(d.correlation_id, d.step); } catch (err) { console.warn('agent_step render failed', err); }
-            return;
           }
           if (d.kind === 'claude_step' && d.step) {
             // Belt-and-suspenders: if turn_started was missed, first claude_step

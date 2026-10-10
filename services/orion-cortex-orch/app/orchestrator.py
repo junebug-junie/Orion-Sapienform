@@ -77,12 +77,18 @@ _DIRECT_VERB_TRIGGERS = {
 }
 
 def build_agent_plan(verb_name: str | None) -> ExecutionPlan:
-    """Agent plan: delegate depth work to context-exec (planner-react/agent-chain removed)."""
+    """Agent plan for depth-2 work.
+
+    There is no depth-2 runtime behind this plan: planner-react/agent-chain were
+    removed, and orion-context-exec (their replacement) was retired 2026-10-10.
+    cortex-exec's Supervisor answers mode=agent with a fast, explicit
+    ``agent_runtime_unavailable`` failure step.
+    """
     resolved_verb = verb_name or "agent_runtime"
     return ExecutionPlan(
         verb_name=resolved_verb,
         label=f"{resolved_verb}-agent",
-        description="Agent execution via ContextExecService",
+        description="Depth-2 agent execution (no runtime; see docstring)",
         category="agentic",
         priority="normal",
         interruptible=True,
@@ -92,10 +98,10 @@ def build_agent_plan(verb_name: str | None) -> ExecutionPlan:
         steps=[
             ExecutionStep(
                 verb_name=resolved_verb,
-                step_name="context_exec",
-                description="Delegate to ContextExecService",
+                step_name="agent_runtime",
+                description="Depth-2 agent runtime (unavailable)",
                 order=0,
-                services=["ContextExecService"],
+                services=[],
                 prompt_template=None,
                 requires_gpu=False,
                 requires_memory=True,

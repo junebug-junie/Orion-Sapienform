@@ -92,13 +92,14 @@ DEFAULT_BUS_URL = "redis://100.92.216.81:6379/0"
 DEFAULT_REQUEST_CHANNEL = "orion:cortex:exec:request:background"
 DEFAULT_RESULT_PREFIX = "orion:exec:result"
 
-# The four never-executed verbs named in the plan. Each is defined in
-# orion/cognition/verbs/ and GPU-backed.
+# The never-executed verbs named in the plan. Each is defined in
+# orion/cognition/verbs/ and GPU-backed. The plan's fourth,
+# context_exec_memory_contradiction_review, was deleted with orion-context-exec
+# (retired 2026-10-10).
 E0_VERBS = (
     "goal_formulate",
     "counterfactual",
     "dream_cycle",
-    "context_exec_memory_contradiction_review",
 )
 
 # The plan's kill gate A, in one place so the report and the verdict cannot

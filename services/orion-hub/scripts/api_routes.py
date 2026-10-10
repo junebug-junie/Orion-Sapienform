@@ -25,7 +25,6 @@ import requests
 from orion.hub.chat_route import (
     CHAT_ROUTE_AGENT_CLAUDE,
     CHAT_ROUTE_CLASSIC_PLANRUNNER,
-    CHAT_ROUTE_CONTEXT_EXEC_AGENT,
     CHAT_ROUTE_UNIFIED_TURN_HARNESS,
 )
 from .settings import settings
@@ -56,7 +55,6 @@ from .cortex_request_builder import (
     validate_single_verb_override,
 )
 from .mutation_cognition_context import build_mutation_cognition_context
-from .context_exec_agent_bridge import run_hub_agent_via_context_exec, should_use_context_exec_agent_lane
 from .agent_claude_input import prepare_agent_claude_input
 from .fcc_claude_bridge import build_harness_reasoning_trace, run_turn_from_settings
 from .fcc_env_catalog import catalog_from_settings
@@ -3117,9 +3115,10 @@ async def handle_chat_request(
 
     # "agent" joined this branch 2026-09-02, same reasoning and same
     # widened condition as websocket_handler.py's "orion"/"agent" FCC
-    # branch: Agent mode used to fall through to should_use_context_exec_
-    # agent_lane() below, which called orion-context-exec directly (zero
-    # containers deployed on athena, always failed). Review finding: an
+    # branch: Agent mode used to fall through to a context-exec agent lane
+    # below, which called orion-context-exec directly (zero containers
+    # deployed on athena, always failed; the lane and the service were
+    # deleted 2026-10-10). Review finding: an
     # earlier version of this fix only widened the WebSocket handler's
     # condition, silently leaving this HTTP fallback path routing "agent"
     # through the plain cortex_client.chat() path below instead (a
@@ -3413,47 +3412,6 @@ async def handle_chat_request(
         user_head=(user_prompt or "")[:80],
         no_write=no_write,
     )
-
-    if should_use_context_exec_agent_lane(req):
-        ctx_result = await run_hub_agent_via_context_exec(
-            req=req,
-            prompt=user_prompt,
-            correlation_id=corr_id,
-            route_debug=route_debug if isinstance(route_debug, dict) else {},
-        )
-        if ctx_result.get("error"):
-            return {
-                "error": ctx_result.get("error"),
-                "error_code": ctx_result.get("error_code"),
-                "mode": "agent",
-                "correlation_id": corr_id,
-                "routing_debug": ctx_result.get("routing_debug") or route_debug,
-                "chat_route": CHAT_ROUTE_CONTEXT_EXEC_AGENT,
-            }
-        text = str(ctx_result.get("llm_response") or "")
-        agent_trace = ctx_result.get("agent_trace")
-        raw_result = ctx_result.get("raw") if isinstance(ctx_result.get("raw"), dict) else {}
-        route_debug = ctx_result.get("routing_debug") or route_debug
-        result = {
-            "session_id": session_id,
-            "mode": "agent",
-            "use_recall": use_recall,
-            "text": text,
-            "llm_response": text,
-            "tokens": len(text.split()),
-            "raw": raw_result,
-            "agent_trace": agent_trace,
-            "correlation_id": corr_id,
-            "routing_debug": route_debug,
-            "no_write": no_write,
-            "context_exec_lane": True,
-            "context_exec_run": ctx_result.get("context_exec_run"),
-            "operator_summary": ctx_result.get("operator_summary"),
-            "chat_route": CHAT_ROUTE_CONTEXT_EXEC_AGENT,
-        }
-        if substrate_summary is not None:
-            result["substrate_effect_summary"] = substrate_summary
-        return result
 
     try:
         # Call Bus RPC - Hub/Client generates correlation_id internally for RPC

@@ -20,25 +20,6 @@ class Settings(BaseSettings):
     # docs/superpowers/specs/2026-07-24-service-heartbeat-node-telemetry-design.md.
     heartbeat_interval_sec: float = Field(10.0, alias="HEARTBEAT_INTERVAL_SEC")
 
-    self_experiments_dispatch_enabled: bool = Field(False, alias="SELF_EXPERIMENTS_DISPATCH_ENABLED")
-    self_experiments_context_exec_dispatch_transport: str = Field(
-        "bus",
-        alias="SELF_EXPERIMENTS_CONTEXT_EXEC_DISPATCH_TRANSPORT",
-    )
-    self_experiments_context_exec_url: str = Field(
-        "http://context-exec:8096",
-        alias="SELF_EXPERIMENTS_CONTEXT_EXEC_URL",
-    )
-    self_experiments_context_exec_request_channel: str = Field(
-        "orion:exec:request:ContextExecService",
-        alias="SELF_EXPERIMENTS_CONTEXT_EXEC_REQUEST_CHANNEL",
-    )
-    self_experiments_context_exec_timeout_seconds: float = Field(
-        90.0,
-        alias="SELF_EXPERIMENTS_CONTEXT_EXEC_TIMEOUT_SECONDS",
-    )
-    self_experiments_max_dispatch_attempts: int = Field(2, alias="SELF_EXPERIMENTS_MAX_DISPATCH_ATTEMPTS")
-
     class Config:
         env_file = ".env"
         extra = "ignore"

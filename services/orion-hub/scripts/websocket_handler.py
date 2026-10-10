@@ -38,7 +38,6 @@ from scripts.social_room import (
 )
 from scripts import social_room_inspection_cache
 from scripts.cortex_chat_display import hub_effective_chat_text
-from scripts.context_exec_agent_bridge import run_hub_agent_via_context_exec, should_use_context_exec_agent_lane
 from scripts.agent_claude_input import prepare_agent_claude_input
 from scripts.outreach_provenance import reply_stamp_for_session
 from scripts.utils import split_sentences
@@ -1034,7 +1033,6 @@ async def websocket_endpoint(websocket: WebSocket):
     tts_client = scripts.main.tts_client
     biometrics_cache = scripts.main.biometrics_cache
     notification_cache = scripts.main.notification_cache
-    agent_step_relay = scripts.main.agent_step_relay
     harness_step_relay = scripts.main.harness_step_relay
     rpc_bus = scripts.main.rpc_bus
     presence_state = scripts.main.presence_state
@@ -1375,14 +1373,12 @@ async def websocket_endpoint(websocket: WebSocket):
             # run_unified_turn plumbing, just tagged differently below for
             # tracing (active_turn["kind"], cancellation, TTS lane). This
             # replaced Hub's Agent Mode calling into orion-context-exec
-            # directly (context_exec_agent_bridge.py), a service that has
-            # zero containers deployed on athena -- confirmed live
-            # 2026-09-02, every Agent-mode turn failed with "context-exec
-            # run unreachable". Juniper: "context exec is failed prototype";
-            # she asked for Agent mode to route through FCC like Orion does,
-            # not a different backend. See HUB_AGENT_CONTEXT_EXEC_ENABLED in
-            # app/settings.py (now defaults off) for why the old path is
-            # naturally unreachable now rather than deleted outright.
+            # directly, a service that had zero containers deployed on
+            # athena -- confirmed live 2026-09-02, every Agent-mode turn
+            # failed with "context-exec run unreachable". Juniper: "context
+            # exec is failed prototype"; she asked for Agent mode to route
+            # through FCC like Orion does. The old lane and orion-context-exec
+            # itself were deleted outright 2026-10-10.
             #
             # Reply stamp (2026-09-22), computed ONCE here, before the lane
             # split, because both lanes below publish this turn's history
@@ -1880,7 +1876,6 @@ async def websocket_endpoint(websocket: WebSocket):
             inline_think_content: Optional[str] = None
             thinking_source: str = "none"
             explicit_reasoning_trace: Optional[Dict[str, Any]] = None
-            used_context_exec_lane = False
             used_agent_claude_lane = False
             workflow_metadata_only = False
             resp = None
@@ -1930,83 +1925,18 @@ async def websocket_endpoint(websocket: WebSocket):
                         explicit_reasoning_trace = harness_trace
                         thinking_source = "agent_claude_harness"
                 else:
-                    used_context_exec_lane = should_use_context_exec_agent_lane(chat_req)
-                    if used_context_exec_lane:
-                        step_queue: asyncio.Queue = asyncio.Queue(maxsize=256)
-                        relay = agent_step_relay
-                        drain_task = None
-                        if relay is None:
-                            logger.warning(
-                                "agent_step_relay unavailable; live step streaming disabled corr=%s",
-                                trace_id,
-                            )
-                        if relay is not None:
-                            relay.register_queue(trace_id, step_queue)
-
-                            async def _drain_steps() -> None:
-                                try:
-                                    while True:
-                                        item = await step_queue.get()
-                                        await _safe_ws_send_json(websocket, item)
-                                except asyncio.CancelledError:
-                                    pass
-
-                            drain_task = asyncio.create_task(_drain_steps(), name=f"agent-steps-{trace_id}")
-                        try:
-                            ctx_out = await run_hub_agent_via_context_exec(
-                                req=chat_req,
-                                prompt=transcript or prompt_with_ctx,
-                                correlation_id=trace_id,
-                                route_debug=route_debug if isinstance(route_debug, dict) else {},
-                            )
-                        finally:
-                            if relay is not None:
-                                while not step_queue.empty():
-                                    try:
-                                        item = step_queue.get_nowait()
-                                    except asyncio.QueueEmpty:
-                                        break
-                                    await _safe_ws_send_json(websocket, item)
-                            if drain_task is not None:
-                                drain_task.cancel()
-                                try:
-                                    await drain_task
-                                except asyncio.CancelledError:
-                                    pass
-                            if relay is not None:
-                                relay.unregister_queue(trace_id, step_queue)
-                        if ctx_out.get("error"):
-                            await websocket.send_json(
-                                await _with_biometrics(
-                                    {
-                                        "error": ctx_out.get("error"),
-                                        "error_code": ctx_out.get("error_code"),
-                                        "mode": "agent",
-                                        "correlation_id": trace_id,
-                                        "routing_debug": ctx_out.get("routing_debug") or route_debug,
-                                    },
-                                    cache=biometrics_cache,
-                                )
-                            )
-                            continue
-                        orion_response_text = str(ctx_out.get("llm_response") or "")
-                        agent_trace = ctx_out.get("agent_trace")
-                        cortex_result_dump = ctx_out.get("raw") if isinstance(ctx_out.get("raw"), dict) else {}
-                        route_debug = ctx_out.get("routing_debug") or route_debug
-                        resp = None
-                    else:
-                        resp: CortexChatResult = await cortex_client.chat(chat_req, correlation_id=trace_id)
-                        orion_response_text = hub_effective_chat_text(resp)
-                        if resp.cortex_result and isinstance(resp.cortex_result.recall_debug, dict):
-                            recall_debug = resp.cortex_result.recall_debug
-                            memory_digest = recall_debug.get("memory_digest")
-                        agent_trace = extract_agent_trace_payload(resp.cortex_result)
-                        cortex_result_dump = (
-                            resp.cortex_result.model_dump(mode="json")
-                            if getattr(resp, "cortex_result", None) is not None and hasattr(resp.cortex_result, "model_dump")
-                            else {}
-                        )
-                if not used_context_exec_lane and not used_agent_claude_lane:
+                    resp: CortexChatResult = await cortex_client.chat(chat_req, correlation_id=trace_id)
+                    orion_response_text = hub_effective_chat_text(resp)
+                    if resp.cortex_result and isinstance(resp.cortex_result.recall_debug, dict):
+                        recall_debug = resp.cortex_result.recall_debug
+                        memory_digest = recall_debug.get("memory_digest")
+                    agent_trace = extract_agent_trace_payload(resp.cortex_result)
+                    cortex_result_dump = (
+                        resp.cortex_result.model_dump(mode="json")
+                        if getattr(resp, "cortex_result", None) is not None and hasattr(resp.cortex_result, "model_dump")
+                        else {}
+                    )
+                if not used_agent_claude_lane:
                     raw_traces = getattr(resp.cortex_result, "metacog_traces", None)
                     if isinstance(raw_traces, list):
                         metacog_traces = [t for t in raw_traces if isinstance(t, dict)]
@@ -2165,13 +2095,9 @@ async def websocket_endpoint(websocket: WebSocket):
                 memory_used = bool(getattr(cortex_res, "memory_used", False))
             if not memory_used:
                 memory_used = bool(recall_count)
-            ingress_status = (
-                getattr(cortex_res, "status", None)
-                if cortex_res is not None
-                else ("ok" if used_context_exec_lane else None)
-            )
+            ingress_status = getattr(cortex_res, "status", None) if cortex_res is not None else None
             logger.info(
-                "hub_ingress_result corr=%s sid=%s mode=%s status=%s final_len=%s memory_used=%s recall_count=%s context_exec_lane=%s",
+                "hub_ingress_result corr=%s sid=%s mode=%s status=%s final_len=%s memory_used=%s recall_count=%s",
                 trace_id,
                 session_id,
                 mode,
@@ -2179,7 +2105,6 @@ async def websocket_endpoint(websocket: WebSocket):
                 len(orion_response_text or ""),
                 memory_used,
                 recall_count,
-                used_context_exec_lane,
             )
             _rec_tape_rsp(
                 corr_id=trace_id,
@@ -2233,7 +2158,6 @@ async def websocket_endpoint(websocket: WebSocket):
                 "workflow_metadata_only": workflow_metadata_only,
                 "no_write": no_write,
                 "routing_debug": route_debug,
-                "context_exec_lane": used_context_exec_lane,
                 "metacog_traces": metacog_traces,
                 "reasoning_content": reasoning_content,
                 "inline_think_content": inline_think_content,
@@ -2246,7 +2170,6 @@ async def websocket_endpoint(websocket: WebSocket):
             if used_agent_claude_lane:
                 agent_meta = route_debug.get("agent_claude") if isinstance(route_debug, dict) else {}
                 ws_payload["metadata"] = agent_meta if isinstance(agent_meta, dict) else {}
-                ws_payload["context_exec_lane"] = False
             if mode == "council" or settings.HUB_DEBUG_COUNCIL:
                 council_debug = _extract_council_debug_from_result(resp)
                 if council_debug:

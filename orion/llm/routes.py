@@ -42,11 +42,8 @@ than on a hardcoded name list, so a background lane is visible to operators in t
 staying unpickable by a human who would only get a yielding lane's latency. That is a policy
 difference expressed as a property, not another list to drift.
 
-Two neighbouring vocabularies are NOT this axis and must not be folded in here:
+A neighbouring vocabulary is NOT this axis and must not be folded in here:
 
-    orion/schemas/context_exec.py:13   ALLOWED_CONTEXT_EXEC_LLM_PROFILES -- a narrower
-        investigation-profile allow-list that RAISES rather than degrading. Deliberately
-        separate; widening it is a schema decision, not a routing one.
     "brain"  -- MEMORY_GRAPH_SUGGEST_ESCALATION_ROUTE's vocabulary
         (services/orion-hub/scripts/memory_graph_suggest.py:47) is mode, not route.
         `normalize_llm_route("brain")` returns None BY DESIGN; never route that path

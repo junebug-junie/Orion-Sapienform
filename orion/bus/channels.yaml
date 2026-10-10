@@ -376,7 +376,7 @@ channels:
   - name: "orion:exec:request:RecallService"
     kind: "request"
     schema_id: "RecallQueryV1"
-    producer_services: ["orion-cortex-exec", "orion-cortex-orch", "orion-hub", "orion-context-exec", "orion-spark-concept-induction"]
+    producer_services: ["orion-cortex-exec", "orion-cortex-orch", "orion-hub", "orion-spark-concept-induction"]
     consumer_services: ["orion-recall"]
     single_consumer: true
     stability: "experimental"
@@ -417,48 +417,6 @@ channels:
     consumer_services: ["orion-cortex-exec"]
     stability: "experimental"
     since: "2026-08-12"
-
-  - name: "orion:exec:request:ContextExecService"
-    kind: "request"
-    schema_id: "ContextExecRequestV1"
-    producer_services: ["orion-cortex-exec", "orion-self-experiments"]
-    consumer_services: ["orion-context-exec"]
-    single_consumer: true
-    stability: "experimental"
-    since: "2026-06-10"
-
-  - name: "orion:exec:result:ContextExecService"
-    kind: "result"
-    schema_id: "ContextExecRunV1"
-    producer_services: ["orion-context-exec"]
-    consumer_services: ["orion-cortex-exec"]
-    stability: "experimental"
-    since: "2026-06-10"
-
-  - name: "orion:exec:result:ContextExecService:*"
-    kind: "result"
-    schema_id: "ContextExecRunV1"
-    producer_services: ["orion-context-exec"]
-    consumer_services: ["orion-cortex-exec"]
-    stability: "experimental"
-    since: "2026-06-10"
-
-  - name: "orion:self_experiments:context_exec:reply:*"
-    kind: "result"
-    schema_id: "ContextExecRunV1"
-    producer_services: ["orion-context-exec"]
-    consumer_services: ["orion-self-experiments"]
-    stability: "experimental"
-    since: "2026-06-10"
-    description: "Found unregistered by scripts/check_bus_reply_channels.py (added 2026-09-07, the same gap class as orion:curiosity:turn:reply:*): orion-self-experiments' bus-transport dispatch (context_exec_client.py) replies here, distinct from orion:exec:result:ContextExecService:* above."
-
-  - name: "orion:context_exec:event"
-    kind: "event"
-    schema_id: "GenericPayloadV1"
-    producer_services: ["orion-context-exec"]
-    consumer_services: ["*"]
-    stability: "experimental"
-    since: "2026-06-10"
 
   - name: "orion:exec:request:CouncilService"
     kind: "request"

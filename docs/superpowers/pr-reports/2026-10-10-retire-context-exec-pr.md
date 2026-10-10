@@ -158,10 +158,11 @@ All runs used `/mnt/scripts/Orion-Sapienform/.venv/bin/python` with `PYTHONWARNI
 
 | Suite | Baseline (main) | Branch | Notes |
 | --- | --- | --- | --- |
-| cortex-exec, run per file (whole-suite collection collides on "Verb already registered") | 1342 passed / 10 failing | 1344 passed / same 10 failing | 0 new failures; adds `test_agent_runtime_retired.py` (5) |
-| cortex-orch, run per file | 250 passed / 3 failing | 3 failing, all on main too | 0 new failures |
+| cortex-exec, run per file (whole-suite collection collides on "Verb already registered") | 1342 passed / 10 failing | 1346 passed / same 10 failing | 0 new failures; adds `test_agent_runtime_retired.py` (5) |
+| cortex-orch, run per file | 250 passed / 3 failing | 245 passed / same 3 failing | 0 new failures (the 2 deleted context-exec router test files account for the drop) |
 | hub, `pytest services/orion-hub/tests` | 36 failed / 3379 passed | 33 failed / 3330 passed | 0 new failures. The 3 that dropped out were failing context-exec bridge tests, now deleted. |
 | harness-governor | 77 passed | 77 passed | |
+| shared: `orion/schemas/tests orion/harness/tests orion/bus/tests orion/hub tests` (`--continue-on-collection-errors`) | 79 failed / 61 errors / 5188 passed | 75 failed / 42 errors / 5160 passed | 0 failures or errors appear only on the branch; the passed count drops because tests for deleted code were removed |
 | self-experiments | — | 17 passed | |
 | `tests/test_report_dead_env_keys.py`, `tests/test_agent_trace_js.py`, `tests/scripts/test_schema_skew_discovery.py` | — | pass | |
 
@@ -240,4 +241,4 @@ Optional operator cleanup. These steps are destructive and need Juniper's approv
 
 ## PR link
 
-See the PR that carries this report (branch `chore/retire-context-exec`).
+https://github.com/junebug-junie/Orion-Sapienform/pull/2603

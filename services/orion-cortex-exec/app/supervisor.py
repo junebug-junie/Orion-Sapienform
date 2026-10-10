@@ -1871,9 +1871,9 @@ class Supervisor:
         preserve_bound_capability_text = _bound_capability_succeeded(step_results)
         # The "no depth-2 runtime" text is the true cause; the drift rewrite below
         # would replace it with "could you restate the key constraint", hiding it.
-        preserve_runtime_unavailable_text = any(
-            s.step_name == "agent_runtime_unavailable" for s in step_results
-        )
+        # Only while the stub text is still the answer: a council checkpoint that ran after
+        # the stub and replaced final_text must still face the drift check.
+        preserve_runtime_unavailable_text = (final_text or "").strip() == _AGENT_RUNTIME_UNAVAILABLE_TEXT
         output_mode_lane = str(ctx.get("output_mode") or "").strip() == "implementation_guide"
         if (
             not verdict["anchored"]

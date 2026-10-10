@@ -459,7 +459,7 @@ async def handle(env: BaseEnvelope) -> BaseEnvelope:
         for s in steps:
             if not isinstance(s.result, dict):
                 continue
-            ac = s.result.get("ContextExecService") or s.result.get("AgentChainService")
+            ac = s.result.get("ContextExecService") or s.result.get("AgentRuntime") or s.result.get("AgentChainService")
             if isinstance(ac, dict) and ac.get("runtime_debug"):
                 rd = ac["runtime_debug"]
                 if isinstance(final_meta, dict):

@@ -66,6 +66,9 @@ class SelfExperimentSpecV1(BaseModel):
     priority: SelfExperimentPriority = "normal"
 
     requested_skill_id: str | None = None
+    # Ignored since orion-context-exec's 2026-10-10 retirement (nothing compiles or
+    # dispatches experiments any more). Kept only so existing producers/stored rows still
+    # validate under extra="forbid"; remove in a follow-up contract migration.
     requested_context_exec_mode: str | None = None
 
     scopes: dict[str, Any] = Field(default_factory=dict)
@@ -93,6 +96,9 @@ class SelfExperimentCreateRequestV1(BaseModel):
     user_id: str | None = None
     priority: SelfExperimentPriority = "normal"
     requested_skill_id: str | None = Field(default=None, min_length=1, max_length=120)
+    # Ignored since orion-context-exec's 2026-10-10 retirement (nothing compiles or
+    # dispatches experiments any more). Kept only so existing producers/stored rows still
+    # validate under extra="forbid"; remove in a follow-up contract migration.
     requested_context_exec_mode: str | None = None
     scopes: dict[str, Any] = Field(default_factory=dict)
     args: dict[str, Any] = Field(default_factory=dict)
@@ -121,6 +127,8 @@ class SelfExperimentRecordV1(BaseModel):
     dedupe_key: str
     dispatch_attempts: int = 0
 
+    # Legacy dispatch fields, never written since the 2026-10-10 context-exec retirement;
+    # kept so stored rows / Hub readers still validate. Remove in a follow-up migration.
     context_exec_request: dict[str, Any] | None = None
     context_exec_run_id: str | None = None
     context_exec_status: str | None = None

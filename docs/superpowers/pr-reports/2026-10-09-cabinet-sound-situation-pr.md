@@ -94,7 +94,7 @@ No eval harness exists for the situation brief line. The live smoke above is the
 Hub only (one line, from primary checkout on main after merge):
 
 ```bash
-scripts/safe_docker_build.sh orion-hub up -d --build
+ORION_ALLOW_SHARED_CHECKOUT_WRITE=1 scripts/safe_docker_build.sh orion-hub up -d --build
 ```
 
 ## Risks / concerns

@@ -50,6 +50,7 @@ from orion.world_pulse_read.assertions import (
 )
 from orion.substrate.graph_journal import SubstrateGraphJournal
 from orion.world_pulse_read.fetch_text import load_retained_texts
+from orion.world_pulse_read.timestamps import stamp_server_created_at
 from orion.world_pulse_read.queue import (
     ALREADY_READ,
     READ_URL_SQL,
@@ -193,11 +194,10 @@ def _build_stage2_prompt(
         '  "hops": ["what you fetched/searched and what came back"],\n'
         '  "need_stage1_urls": ["http(s) URLs that still need a heavy Stage 1 read, or empty"],\n'
         f'  "trace_id": {trace_id!r},\n'
-        '  "created_at": "ISO-8601 UTC",\n'
         f'  "seed_id": {handoff.seed_ref.seed_id!r}\n'
         "}\n"
         "candidate_priors MUST be objects with claim (not bare strings). "
-        "priors_tested MUST be objects with claim_ref. producer_hint is forced server-side."
+        "priors_tested MUST be objects with claim_ref. producer_hint and created_at are forced server-side."
         # Only when this read has retained text, stored concepts and existing candidates
         # (orion/world_pulse_read/assertions.py); otherwise the prompt is unchanged.
         + claim_prompt_section(claim_context or ClaimContextV1())
@@ -798,7 +798,6 @@ class WorldPulseReadStage2Pipeline:
     async def _stage2_pass(self, handoff: WorldPulseReadHandoffV1) -> WorldPulseReadStage2ResultV1:
         """Production path: unified turn + fenced JSON. Tests replace this."""
         trace_id = str(uuid4())
-        created_at = datetime.now(timezone.utc)
         outcome = await self._generate(
             _build_stage2_prompt(handoff, trace_id, self._claim_context), trace_id,
             seed_id=handoff.seed_ref.seed_id,
@@ -811,7 +810,8 @@ class WorldPulseReadStage2Pipeline:
             raise ValueError(outcome.fail_reason or "empty_generation")
         parsed = parse_json_object(outcome.text)
         parsed["trace_id"] = trace_id
-        parsed.setdefault("created_at", created_at.isoformat())
+        # Server clock at receipt, never the model's text (see stamp_server_created_at).
+        stamp_server_created_at(parsed, seed_id=handoff.seed_ref.seed_id, stage="stage2")
         parsed["seed_id"] = handoff.seed_ref.seed_id
         parsed["request"] = request_for_seed(handoff.seed_ref).model_dump(mode="json")
         return _as_stage2_result(

@@ -1363,3 +1363,48 @@ def test_stage1_turn_recalls_about_the_source_title_not_the_prompt(monkeypatch) 
 
     assert captured["retrieval_query"] == "A"
     assert captured["user_message"] != captured["retrieval_query"]
+
+
+# --- created_at is the server clock, never the model's text. Live 2026-10-10:
+# wp-read concept nodes carried observed_at 2026-10-11T02:30Z (a round, future
+# time the model wrote under "created_at") while the DB write was 22:36Z.
+
+
+def test_model_written_future_created_at_is_overwritten_with_server_time(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bus = _FakeBus()
+    conn = _FakeConn()
+    store = InMemorySubstrateGraphStore()
+    pipe = _pipeline(bus, conn, store)
+    text = "Advanced packaging stacks dies to shorten interconnects. " * 6
+    fetched = {"url": "https://ex.com/a", "tool_name": "WebFetch", "content_chars": len(text),
+               "content_text": text}
+    future = (datetime.now(timezone.utc) + timedelta(hours=4)).replace(minute=30, second=0, microsecond=0)
+    _patch_turn(monkeypatch, [_final_frame(
+        "Packaging is the new scaling lever.", fetches=[fetched],
+        concept_candidates=[{"label": "advanced packaging"}],
+        created_at=future.isoformat(),
+    )])
+
+    before = datetime.now(timezone.utc)
+    assert _tick(pipe, conn) is None
+    after = datetime.now(timezone.utc)
+
+    stored = datetime.fromisoformat(conn.rows["finding:r1:x"]["handoff_json"]["created_at"])
+    assert before <= stored <= after
+    nodes = list(store.snapshot().nodes.values())
+    assert nodes, "concept node should materialize"
+    for node in nodes:
+        assert before <= node.temporal.observed_at <= after
+    # The journal row sorts by the same server time, not the model's.
+    (_, envelope), = bus.journal
+    assert datetime.fromisoformat(envelope.payload["created_at"]) <= after
+
+
+def test_stage1_prompt_no_longer_asks_the_model_for_created_at() -> None:
+    from scripts.world_pulse_read_pipeline import _stage1_json_contract
+
+    contract = _stage1_json_contract("tr-1")
+    assert '"created_at":' not in contract
+    assert "created_at are set server-side" in contract

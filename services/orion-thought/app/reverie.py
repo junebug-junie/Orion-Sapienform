@@ -557,6 +557,14 @@ async def run_reverie_once(
     if broadcast is None or coalition is None:
         logger.info("reverie tick skipped: no current coalition")
         return None
+    if not coalition.attended_node_ids and coalition.selected_open_loop_id is None:
+        # A no-winner broadcast tick (world-first: a calm body and a quiet
+        # world). There is no coalition to narrate, and narrating one anyway
+        # produced fixation on stale prediction-error loops (live 2026-10-07..10:
+        # 438 of 2,251 stored reveries were over an empty coalition). Spec
+        # 2026-10-07 self-calibration: calm-tick narration is dropped.
+        logger.info("reverie tick skipped: no winner this tick (calm)")
+        return None
 
     correlation_id = str(uuid4())
     concern_cards: list[ConcernCardV1] | None = None

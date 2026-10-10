@@ -190,6 +190,17 @@ def test_attention_open_loops_seed_candidates() -> None:
     assert "source:attention_open_loop" in candidates[0].notes
 
 
+def test_world_only_attention_loop_seeds_no_concept_expand() -> None:
+    """A world-first external loop ("world:chat") names no graph node, so a
+    concept_expand over it would match nothing."""
+    world = SimpleNamespace(
+        id="open-loop-w", description="Juniper is talking", already_known=False,
+        novelty=0.9, confidence=0.9, source_refs=["world:chat"],
+    )
+    frame = SimpleNamespace(open_loops=[world], deferred_items=[])
+    assert endogenous_curiosity_candidates(attention_frame=frame, config=_enabled()) == []
+
+
 def test_candidates_never_target_strict_or_autonomy_zones() -> None:
     nodes = [_node(f"node:{i}", 0.9) for i in range(5)]
     appraisal = SimpleNamespace(dimensions={"level": 0.9}, causal_molecule_ids=[], summary="s", confidence=0.9)

@@ -922,3 +922,18 @@ class TestHeartbeatH1:
         assert model.heartbeat_organ_distinctness is None
         assert model.heartbeat_smear is None
         assert model.heartbeat_smeared is None
+
+
+def test_no_winner_broadcast_does_not_narrate_a_dispatch() -> None:
+    """Used to read "Pure bottom-up dispatch: 'None' selected by salience alone"."""
+    frame = AttentionFrameV1(generated_at=NOW)
+    broadcast = AttentionBroadcastProjectionV1(
+        generated_at=NOW, frame=frame, selected_action_type="none",
+        selected_open_loop_id=None, attended_node_ids=[], dwell_ticks=0,
+        coalition_stability_score=0.3,
+    )
+    model = reduce_attention_self_model(broadcast, _field_frame(), now=NOW)
+    assert model.attention_reason == "bottom_up_salience"
+    assert model.reason_narrative.startswith("No winner this tick")
+    assert "'None'" not in model.reason_narrative
+

@@ -35,7 +35,7 @@ sys.path.insert(0, str(REPO))
 
 from orion.temporal_self import ReducerConfig, advance_clock, drain_closed_days, fold, initial_state  # noqa: E402
 from orion.temporal_self.body import summarize_body  # noqa: E402
-from orion.temporal_self.broadcast import BroadcastTickView  # noqa: E402
+from orion.temporal_self.broadcast import tick_from_log_row  # noqa: E402
 from orion.temporal_self.day import as_utc, day_window  # noqa: E402
 from orion.temporal_self.sources import ADAPTERS  # noqa: E402
 
@@ -58,7 +58,7 @@ def load(path: Path = FIXTURE) -> dict[str, list[dict]]:
 
 
 def build_inputs(rows: dict[str, list[dict]]):
-    ticks = [BroadcastTickView(r["log_id"], as_utc(r["generated_at"]), r.get("ref"), r.get("label") or "") for r in rows["broadcast"]]
+    ticks = [tick_from_log_row(r) for r in rows["broadcast"]]  # the real extraction path
     events = []
     for kind, adapter in ADAPTERS.items():
         for r in rows.get(kind, []):
@@ -72,8 +72,8 @@ def oracle(rows: dict[str, list[dict]]) -> dict[str, str]:
     """``<table>:<pk>`` -> subject, read straight from raw columns."""
     out: dict[str, str] = {}
     for r in rows["broadcast"]:
-        if r.get("ref"):
-            out[f"substrate_attention_broadcast_log:{r['log_id']}"] = r["ref"]
+        if r.get("oracle_ref"):  # computed in SQL, not by broadcast.py
+            out[f"substrate_attention_broadcast_log:{r['log_id']}"] = r["oracle_ref"]
     for r in rows["chat_turn"]:
         if r.get("has_prompt"):  # only Juniper's turns can be conversation evidence
             out[f"chat_history_log:{r['id']}"] = r.get("session_id")
@@ -87,8 +87,9 @@ def oracle(rows: dict[str, list[dict]]) -> dict[str, str]:
         out[f"curiosity_run_outcomes:{r['run_id']}"] = r["run_id"]
     for r in rows["reverie_chain"]:
         out[f"substrate_reverie_chain:{r['chain_id']}"] = r["chain_id"]
-        for t in r.get("thoughts") or []:
-            out[f"substrate_reverie_thought:{t['thought_id']}"] = r["chain_id"]
+    for r in rows["oracle_thought_chain"]:  # its own query, not the adapter's nested list
+        if r.get("chain_id"):
+            out[f"substrate_reverie_thought:{r['thought_id']}"] = r["chain_id"]
     for r in rows["visual_run"]:
         out[f"reverie_visual_chain:{r['chain_id']}"] = r["chain_id"]
     for r in rows["dream_cycle"]:
@@ -124,14 +125,17 @@ def evaluate(cfg: ReducerConfig, rows, ticks, events) -> dict:
     arcs = day.arcs
     total = matched = unresolved = 0
     mismatches = []
+    per_kind: dict[str, list[int]] = defaultdict(lambda: [0, 0])
     for a in arcs:
         for ref in a.evidence_refs:
             total += 1
+            per_kind[a.kind][1] += 1
             if ref not in subjects:
                 unresolved += 1
                 mismatches.append((a.arc_id, ref, "unresolved"))
             elif subjects[ref] == a.subject_ref:
                 matched += 1
+                per_kind[a.kind][0] += 1
             else:
                 mismatches.append((a.arc_id, ref, subjects[ref]))
     juniper_turns = {f"chat_turn:{r['id']}" for r in rows["chat_turn"] if r.get("has_prompt")}
@@ -181,6 +185,7 @@ def evaluate(cfg: ReducerConfig, rows, ticks, events) -> dict:
         covered += (cur_b - cur_a).total_seconds()
     day_sec = (d1 - d0).total_seconds()
     day_ticks = [r for r in rows["broadcast"] if in_day(r["generated_at"])]
+    tick_extraction_disagree = sum(1 for t, r in zip(ticks, rows["broadcast"]) if t.ref != r.get("oracle_ref"))
 
     # Body summaries per non-reverie arc (metric gate step 4).
     body_rows = {k: [dict(r, _t=as_utc(r.get("observed_at") or r.get("timestamp") or r.get("ts"))) for r in rows[k]]
@@ -217,7 +222,9 @@ def evaluate(cfg: ReducerConfig, rows, ticks, events) -> dict:
         "config": {"K": cfg.arc_min_ticks, "R_sec": cfg.return_window_sec, "conversation_R_sec": cfg.conversation_return_window_sec},
         "arcs_by_kind": dict(sorted(by_kind.items())),
         "evidence": {"total": total, "matched": matched, "unresolved": unresolved,
-                     "precision": round(matched / total, 6) if total else None, "mismatches": mismatches[:10]},
+                     "precision": round(matched / total, 6) if total else None, "mismatches": mismatches[:10],
+                     "by_kind": {k: f"{m}/{n}" for k, (m, n) in sorted(per_kind.items())},
+                     "tick_extraction_disagreements": tick_extraction_disagree},
         "context_impure": impure[:10],
         "process_recall": recall,
         "replay_identical": identical,
@@ -225,7 +232,7 @@ def evaluate(cfg: ReducerConfig, rows, ticks, events) -> dict:
                         "max": max(v)} for k, v in sorted(returns.items())},
         "dwell_sec": {k: dist(v) for k, v in sorted(dwell.items())},
         "rest": {"foreground_covered_share": round(covered / day_sec, 4),
-                 "ticks": len(day_ticks), "no_winner_tick_share": round(sum(1 for r in day_ticks if not r.get("ref")) / max(1, len(day_ticks)), 4)},
+                 "ticks": len(day_ticks), "no_winner_tick_share": round(sum(1 for r in day_ticks if not r.get("oracle_ref")) / max(1, len(day_ticks)), 4)},
         "warnings": day.frame.warnings,
         "body": {
             "arcs": len(bodies),
@@ -249,7 +256,7 @@ def evaluate(cfg: ReducerConfig, rows, ticks, events) -> dict:
         "timeline": timeline(arcs, cfg),
     }
     report["passed"] = bool(
-        total and matched == total and not impure and identical
+        total and matched == total and not impure and identical and tick_extraction_disagree == 0
         and all(r["exact"] for r in recall.values())
         and report["rest"]["foreground_covered_share"] < 1.0 and not label_failures and not sleep_hyp_fail
     )

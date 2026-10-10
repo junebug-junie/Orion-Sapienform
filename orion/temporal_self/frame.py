@@ -13,7 +13,7 @@ what Orion was on.
 from __future__ import annotations
 
 import hashlib
-from datetime import datetime
+from datetime import datetime, timezone
 
 from orion.schemas.temporal_self import (
     ARCS_IN_FRAME_CAP,
@@ -39,10 +39,11 @@ def summarize(arc: TemporalSelfArcV1) -> ArcSummaryV1:
 
 
 def _frame_id(day_id: str, as_of: datetime) -> str:
-    return hashlib.sha256(f"{day_id}|{as_of.isoformat()}".encode()).hexdigest()[:16]
+    return hashlib.sha256(f"{day_id}|{as_of.astimezone(timezone.utc).isoformat()}".encode()).hexdigest()[:16]
 
 
 def build_frame(state: TemporalSelfStateV1, now: datetime, cfg: ReducerConfig = ReducerConfig()) -> TemporalSelfFrameV1:
+    now = now.astimezone(timezone.utc)
     day_id = state.day_id or ""
     arcs = sorted((a for a in state.arcs.values() if a.day_id == day_id), key=lambda a: (a.began_at, a.arc_id))
 
@@ -64,8 +65,7 @@ def build_frame(state: TemporalSelfStateV1, now: datetime, cfg: ReducerConfig = 
             last_returned=a.last_seen_at, returns_today=a.attention_returns,
             carried_from_previous_day=a.carried_from_previous_day,
         )
-        # Still open, or open at midnight (the closed day's final frame keeps them).
-        for a in arcs if a.kind == "concern" and (a.status != "closed" or a.closed_reason == "day_boundary")
+        for a in arcs if a.kind == "concern" and a.status != "closed"
     ]
 
     start, _ = day_window(day_id, cfg.tz_name) if day_id else (now, now)
@@ -105,6 +105,7 @@ def build_frame(state: TemporalSelfStateV1, now: datetime, cfg: ReducerConfig = 
         unbound_context_overflow=state.day_context_overflow + max(0, len(unbound_sorted) - DAY_LIST_CAP),
         entered_day_with=list(state.entered_day_with),
         source_cursors=dict(sorted(state.cursors.items())),
+        skipped_at_or_before_watermark=state.skipped_today,
         warnings=_warnings(state, arcs, now, cfg),
     )
 
@@ -113,6 +114,10 @@ def _warnings(state: TemporalSelfStateV1, arcs: list[TemporalSelfArcV1], now: da
     out: list[str] = []
     if len(state.tick_winner_refs_today) == 1 and state.tick_winner_count_today >= cfg.unchanged_winner_min_ticks:
         out.append(f"broadcast winner unchanged all day: {state.tick_winner_refs_today[0]}")
+    if state.skipped_today:
+        out.append(f"{state.skipped_today} rows at or before the watermark were not folded (re-read or late)")
+    if state.correlation_overflow:
+        out.append(f"{state.correlation_overflow} chat correlation ids over the per-arc cap (consolidation closes may fall to the day)")
     if state.tick_source_gaps_today:
         out.append(f"broadcast log gaps today: {state.tick_source_gaps_today} (recorder outage or restart)")
     if state.tick_prev_at is not None and (now - state.tick_prev_at).total_seconds() > cfg.max_tick_gap_sec:

@@ -11,6 +11,9 @@ Contract (Temporal Self spec rev 4, "The reducer contract"):
   it expires suspended arcs, suspends a silent attention lane, and closes any day that
   ended. The driver must call it only with its read watermark (rows are read up to it).
 * Closed days queue in ``state.pending_closed_days``; ``drain_closed_days`` hands them out.
+* Ticks and events for one watermark MUST go through ONE ``fold`` call. The spec's separate
+  ``fold_broadcast_ticks``/``fold_events`` were not built: called one after the other, the
+  second call would skip everything at or before the first call's last key.
 
 Identity is an exact reference, never a label or an embedding (rule 6): returns are
 counted on ``subject_ref`` equality within one lane. Every arc carries the refs that built
@@ -27,13 +30,14 @@ from __future__ import annotations
 
 import hashlib
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Iterable, Sequence
 
 from orion.schemas.temporal_self import (
     CONTEXT_CAP,
     EVIDENCE_CAP,
     PERCEPT_CAP,
+    SEGMENTS_CAP,
     ArcAttentionSummaryV1,
     ArcSegmentV1,
     ExpectationRefV1,
@@ -81,7 +85,10 @@ class ReducerConfig:
     # A conversation suspends after 45 min idle, so its return window must be longer than
     # that or it could never return. The spec's default R (180 min) is kept for this lane.
     conversation_return_window_sec: float = 10800.0
-    # A pause in field-attention runs longer than this suspends the interoception arc.
+    # A pause between two runs of the same target longer than this is a break (a return).
+    # It is judged when the next run arrives: S2 writes a run only when it ENDS, so a long
+    # run in progress is invisible until then, and an open interoception arc means "the
+    # last completed focus", not "focus right now".
     interoception_gap_sec: float = 180.0
     # How long subject-less context waits for a process arc that completes later.
     context_buffer_sec: float = 6 * 3600.0
@@ -107,7 +114,7 @@ LANE_RULES = {
 
 
 def _iso(dt: datetime) -> str:
-    return dt.strftime("%Y-%m-%dT%H:%M:%S.%f+00:00")
+    return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f+00:00")
 
 
 def arc_id_for(day_id: str, kind: str, subject_ref: str, first_ref: str) -> str:
@@ -162,14 +169,25 @@ def _ref(e: TemporalSelfEventV1) -> str:
 # --------------------------------------------------------------------------- arc lifecycle
 
 
-def _suspend(state: TemporalSelfStateV1, arc: TemporalSelfArcV1, by: str | None) -> None:
+def _suspend(state: TemporalSelfStateV1, arc: TemporalSelfArcV1, by: str | None, *, gap: bool = False) -> None:
+    """``gap`` marks a broadcast-recorder outage: coming back from it is not a return."""
     if arc.status != "open":
         return
     arc.status = "suspended"
-    if by:
-        _add_capped(arc.interruptions, by, INTERRUPTIONS_CAP)
+    arc.suspended_by_gap = gap
+    if by and not _add_capped(arc.interruptions, by, INTERRUPTIONS_CAP):
+        arc.interruptions_overflow += 1
     if state.active.get(arc.kind) == arc.arc_id:
         del state.active[arc.kind]
+
+
+def _add_segment(arc: TemporalSelfArcV1, began: datetime, ended: datetime) -> None:
+    """Append a segment; past the cap, fold the newest into its neighbour (counted)."""
+    arc.segments.append(ArcSegmentV1(began_at=began, ended_at=ended))
+    if len(arc.segments) > SEGMENTS_CAP:
+        last = arc.segments.pop()
+        arc.segments[-1].ended_at = max(arc.segments[-1].ended_at, last.ended_at)
+        arc.segments_merged += 1
 
 
 def _close(arc: TemporalSelfArcV1, reason: str, at: datetime) -> None:
@@ -217,8 +235,12 @@ def _open_or_resume(
         if current is not None and current is not target:
             _suspend(state, current, by=target.arc_id)
         target.status = "open"
-        target.attention_returns += 1
-        target.segments.append(ArcSegmentV1(began_at=began, ended_at=now))
+        if target.suspended_by_gap:
+            target.source_gap_resumes += 1
+        else:
+            target.attention_returns += 1
+        target.suspended_by_gap = False
+        _add_segment(target, began, now)
         target.cumulative_dwell_sec += max(0.0, _secs(began, now))
         target.last_seen_at = now
         if label and not target.subject_label:
@@ -247,6 +269,11 @@ def _open_or_resume(
         state.arcs[arc_id] = arc
     if exclusive:
         state.active[kind] = arc.arc_id
+        # Real attention now happened in this lane: an arc parked by a recorder gap that
+        # comes back later was interrupted, so its return counts.
+        for other in state.arcs.values():
+            if other.kind == kind and other is not arc and other.suspended_by_gap:
+                other.suspended_by_gap = False
     _retro_bind(state, arc, began, now)
     return arc
 
@@ -257,7 +284,7 @@ def _extend(arc: TemporalSelfArcV1, now: datetime, ref: str | None, *, accrue: b
         arc.cumulative_dwell_sec += max(0.0, _secs(seg.ended_at, now))
         seg.ended_at = now
     elif arc.segments:
-        arc.segments.append(ArcSegmentV1(began_at=now, ended_at=now))
+        _add_segment(arc, now, now)
     arc.last_seen_at = now
     if ref:
         _add_evidence(arc, ref)
@@ -277,12 +304,16 @@ def _forward_reach(arc: TemporalSelfArcV1, cfg: "ReducerConfig") -> float:
     return cfg.max_tick_gap_sec if arc.kind == "attention" else cfg.conversation_idle_sec
 
 
-def _covers(arc: TemporalSelfArcV1, at: datetime, cfg: "ReducerConfig") -> bool:
+def _covers(state: TemporalSelfStateV1, arc: TemporalSelfArcV1, at: datetime, cfg: "ReducerConfig") -> bool:
     if arc.kind == "concern" or at < arc.began_at:
         return False
     if (
         arc.status == "open" and arc.kind in _FORWARD_KINDS and arc.segments
         and at >= arc.segments[-1].began_at and _secs(arc.last_seen_at, at) <= _forward_reach(arc, cfg)
+        # An attention arc reaches forward only while its subject won the latest tick. Once
+        # another subject (or none) wins, those minutes belong to whoever opens next, so the
+        # same context is never credited to two attention arcs.
+        and (arc.kind != "attention" or state.tick_prev_ref == arc.subject_ref)
     ):
         return True
     return any(s.began_at <= at <= s.ended_at for s in arc.segments)
@@ -296,7 +327,7 @@ def _by_ref(item: TemporalSelfContextItemV1) -> bool:
 def _bindable(state: TemporalSelfStateV1, arc: TemporalSelfArcV1, item: TemporalSelfContextItemV1, cfg: "ReducerConfig") -> bool:
     if _by_ref(item):
         return arc.kind == "reverie" and item.correlation_id in state.arc_correlations.get(arc.arc_id, [])
-    return _covers(arc, item.at, cfg)
+    return _covers(state, arc, item.at, cfg)
 
 
 def _bind_item(arc: TemporalSelfArcV1, item: TemporalSelfContextItemV1) -> None:
@@ -321,9 +352,11 @@ def _bind_item(arc: TemporalSelfArcV1, item: TemporalSelfContextItemV1) -> None:
         arc.percept_entities.sort()
         _add_context(arc, item.event_id)
     elif item.constraint:
-        _add_capped(arc.constraint_event_ids, item.event_id, CONTEXT_CAP)
+        if not _add_capped(arc.constraint_event_ids, item.event_id, CONTEXT_CAP):
+            arc.constraint_overflow += 1
     elif kind in SELF_CHANGE_KINDS:
-        _add_capped(arc.expectation_event_ids, item.event_id, CONTEXT_CAP)
+        if not _add_capped(arc.expectation_event_ids, item.event_id, CONTEXT_CAP):
+            arc.expectation_overflow += 1
     else:
         _add_context(arc, item.event_id)
 
@@ -387,7 +420,7 @@ def _fold_tick(state: TemporalSelfStateV1, tick: BroadcastTickView, cfg: Reducer
     if state.tick_prev_at is not None and _secs(state.tick_prev_at, t) > cfg.max_tick_gap_sec:
         state.tick_source_gaps_today += 1
         if active is not None:
-            _suspend(state, active, by=None)
+            _suspend(state, active, by=None, gap=True)
             active = None
         _reset_candidate(state)
         state.tick_prev_ref = None
@@ -471,8 +504,9 @@ def _fold_chat_turn(state: TemporalSelfStateV1, e: TemporalSelfEventV1, cfg: Red
             state, cfg, kind="conversation", subject=e.subject_ref, label="",
             began=t, now=t, evidence=[_ref(e)],
         )
-    if e.correlation_id:
-        _add_capped(state.arc_correlations.setdefault(arc.arc_id, []), e.correlation_id, CORRELATION_CAP)
+    arc.privacy_class = "juniper_chat"  # subject is Juniper's session
+    if e.correlation_id and not _add_capped(state.arc_correlations.setdefault(arc.arc_id, []), e.correlation_id, CORRELATION_CAP):
+        state.correlation_overflow += 1
 
 
 def _concern_arc(state: TemporalSelfStateV1, loop_id: str) -> TemporalSelfArcV1 | None:
@@ -492,6 +526,7 @@ def _fold_loop_raised(state: TemporalSelfStateV1, e: TemporalSelfEventV1, cfg: R
             arc_id=arc_id_for(state.day_id, "concern", e.subject_ref, _ref(e)), day_id=state.day_id,
             kind="concern", subject_ref=e.subject_ref, subject_label=e.label, began_at=t,
             last_seen_at=t, status="open", segments=[ArcSegmentV1(began_at=t, ended_at=t)],
+            privacy_class=e.privacy_class,  # the label is cut from the raising turn's text
         )
         state.arcs[arc.arc_id] = arc
         _add_evidence(arc, _ref(e))
@@ -539,7 +574,8 @@ def _fold_process(state: TemporalSelfStateV1, e: TemporalSelfEventV1, cfg: Reduc
     if e.source_kind == "reverie_chain":
         state.arc_correlations[arc_id] = list(e.related_refs)[:CORRELATION_CAP]
     for event_id in state.awaiting_arc.pop(f"{kind}|{e.subject_ref}", []):
-        _add_capped(arc.expectation_event_ids, event_id, CONTEXT_CAP)
+        if not _add_capped(arc.expectation_event_ids, event_id, CONTEXT_CAP):
+            arc.expectation_overflow += 1
     # Bind what happened inside the process, inclusive of its end, then close it.
     _retro_bind(state, arc, start, end + timedelta(microseconds=1))
     _close(arc, "process_ended", end)
@@ -551,7 +587,8 @@ def _attach_by_ref(state: TemporalSelfStateV1, kind: str, e: TemporalSelfEventV1
     found = False
     for arc in state.arcs.values():
         if arc.kind == kind and arc.subject_ref in e.related_refs:
-            _add_capped(arc.expectation_event_ids, e.event_id, CONTEXT_CAP)
+            if not _add_capped(arc.expectation_event_ids, e.event_id, CONTEXT_CAP):
+                arc.expectation_overflow += 1
             found = True
     if not found:
         for ref in e.related_refs:
@@ -641,6 +678,11 @@ def _fold_event(state: TemporalSelfStateV1, e: TemporalSelfEventV1, cfg: Reducer
 
 
 def _expire(state: TemporalSelfStateV1, at: datetime, cfg: ReducerConfig) -> None:
+    """Time-driven transitions, applied identically by ``fold`` (at each item), by
+    ``advance_clock`` and at midnight, so where a chunk boundary falls never matters."""
+    active = state.arcs.get(state.active.get("attention", ""))
+    if active is not None and state.tick_prev_at is not None and _secs(state.tick_prev_at, at) > cfg.max_tick_gap_sec:
+        _suspend(state, active, by=None, gap=True)  # the broadcast log went silent
     for arc in state.arcs.values():
         if arc.status == "closed":
             continue
@@ -659,6 +701,9 @@ def _roll_day(state: TemporalSelfStateV1, cfg: ReducerConfig) -> None:
     carried: list[str] = []
     continuations: list[TemporalSelfArcV1] = []
     next_day = day_id_for(day_end, cfg.tz_name)
+    _flush_buffer(state, before=None)
+    # The final frame is the day as of the instant before midnight: what was active then.
+    frame = build_frame(state, day_end, cfg)
     for arc in list(state.arcs.values()):
         if arc.day_id != old_day or arc.status == "closed":
             continue
@@ -668,16 +713,16 @@ def _roll_day(state: TemporalSelfStateV1, cfg: ReducerConfig) -> None:
             cont = TemporalSelfArcV1(
                 arc_id=arc_id_for(next_day, "concern", arc.subject_ref, arc.arc_id), day_id=next_day,
                 kind="concern", subject_ref=arc.subject_ref, subject_label=arc.subject_label,
-                began_at=day_end, last_seen_at=day_end, status="open",
+                # last_seen keeps the real last raise, so a return is measured from it.
+                began_at=day_end, last_seen_at=arc.last_seen_at, status="open",
                 segments=[ArcSegmentV1(began_at=day_end, ended_at=day_end)],
                 carried_from_previous_day=True, carried_from_arc_id=arc.arc_id,
+                privacy_class=arc.privacy_class,
             )
             continuations.append(cont)
         else:
             state.carry[f"{arc.kind}|{arc.subject_ref}"] = {"arc_id": arc.arc_id, "last_seen": arc.last_seen_at.isoformat()}
     state.active = {}
-    _flush_buffer(state, before=None)
-    frame = build_frame(state, day_end, cfg)
     day_arcs = sorted((a for a in state.arcs.values() if a.day_id == old_day), key=lambda a: (a.began_at, a.arc_id))
     state.pending_closed_days.append(
         TemporalSelfDayV1(day_id=old_day, closed_at=day_end, frame=frame, arcs=[a.model_copy(deep=True) for a in day_arcs])
@@ -702,7 +747,10 @@ def _roll_day(state: TemporalSelfStateV1, cfg: ReducerConfig) -> None:
     state.constraint_event_ids = []
     state.self_change_overflow = 0
     state.constraint_overflow = 0
-    state.awaiting_arc = {}
+    state.skipped_today = 0
+    # A parked hypothesis waits for a cycle that completes seconds later, possibly after
+    # midnight; reverie links to a previous day's chain can never be claimed, so drop them.
+    state.awaiting_arc = {k: v for k, v in state.awaiting_arc.items() if k.startswith("sleep|")}
     state.expectations = {
         k: v for k, v in state.expectations.items()
         if v.resolved_at is None and (v.expires_at is None or v.expires_at > day_end)
@@ -746,6 +794,7 @@ def fold(
     items.sort(key=lambda x: x[0])
     for key, at, item in items:
         if s.last_key and key <= s.last_key:
+            s.skipped_today += 1  # a re-read or a late row: counted, never folded
             continue
         _roll_to(s, at, cfg)
         _expire(s, at, cfg)
@@ -762,32 +811,23 @@ def fold(
     return s
 
 
-def fold_broadcast_ticks(state, ticks, cfg: ReducerConfig = ReducerConfig()) -> TemporalSelfStateV1:
-    return fold(state, ticks=ticks, cfg=cfg)
-
-
-def fold_events(state, events, cfg: ReducerConfig = ReducerConfig()) -> TemporalSelfStateV1:
-    return fold(state, events=events, cfg=cfg)
-
-
 def advance_clock(state: TemporalSelfStateV1, now: datetime, cfg: ReducerConfig = ReducerConfig()) -> TemporalSelfStateV1:
     """Declare that nothing strictly before ``now`` will arrive; expire, roll days.
 
     ``now`` must be the driver's read watermark. Rows stamped before it that are written
     later are dropped as late (the driver should read with a small lag)."""
     s = state.model_copy(deep=True)
+    now = now.astimezone(timezone.utc)
     if s.watermark is not None and now < s.watermark:
         return s
     _roll_to(s, now, cfg)
     _expire(s, now, cfg)
     _flush_buffer(s, before=now - timedelta(seconds=cfg.context_buffer_sec))
-    active = s.arcs.get(s.active.get("attention", ""))
-    if active is not None and s.tick_prev_at is not None and _secs(s.tick_prev_at, now) > cfg.max_tick_gap_sec:
-        _suspend(s, active, by=None)
     s.watermark = now
     # Strictly before now is in the past; an item stamped exactly ``now`` may still arrive
-    # (rank "" sorts before every real rank).
-    s.last_key = [_iso(now), "", ""]
+    # (rank "" sorts before every real rank). Never move the key backwards: an item already
+    # folded at ``now`` must not be folded again.
+    s.last_key = max(s.last_key, [_iso(now), "", ""]) if s.last_key else [_iso(now), "", ""]
     return s
 
 

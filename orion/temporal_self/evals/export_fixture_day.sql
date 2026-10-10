@@ -9,10 +9,15 @@
 --     < orion/temporal_self/evals/export_fixture_day.sql | gzip -n > orion/temporal_self/evals/fixtures/day.jsonl.gz
 BEGIN TRANSACTION READ ONLY;
 
+-- 'projection_json' is the raw projection cut down to what tick_from_log_row reads (the
+-- reducer's input); 'oracle_ref' is the subject computed independently in SQL (the grader).
 SELECT json_build_object('k','broadcast','log_id',log_id,'generated_at',generated_at,
-  'ref',(SELECT l->'source_refs'->>0 FROM jsonb_array_elements(projection_json->'frame'->'open_loops') l
-         WHERE l->>'id' = projection_json->>'selected_open_loop_id' LIMIT 1),
-  'label',(SELECT l->>'description' FROM jsonb_array_elements(projection_json->'frame'->'open_loops') l
+  'projection_json',json_build_object(
+     'selected_open_loop_id',projection_json->'selected_open_loop_id',
+     'frame',json_build_object('open_loops',COALESCE((SELECT json_agg(json_build_object(
+         'id',l->'id','source_refs',l->'source_refs','description',l->'description'))
+       FROM jsonb_array_elements(projection_json->'frame'->'open_loops') l), '[]'::json))),
+  'oracle_ref',(SELECT l->'source_refs'->>0 FROM jsonb_array_elements(projection_json->'frame'->'open_loops') l
          WHERE l->>'id' = projection_json->>'selected_open_loop_id' LIMIT 1))
 FROM substrate_attention_broadcast_log WHERE generated_at >= :start AND generated_at < :end;
 
@@ -33,6 +38,10 @@ SELECT json_build_object('k','reverie_chain','chain_id',c.chain_id,'created_at',
       'correlation_id',t.correlation_id) ORDER BY t.created_at)
     FROM substrate_reverie_thought t WHERE t.thought_json->>'chain_id' = c.chain_id), '[]'::json))
 FROM substrate_reverie_chain c WHERE c.created_at >= :start AND c.created_at < :end;
+
+-- Oracle-only: each thought's chain, read on its own query path (the adapter gets the nested list).
+SELECT json_build_object('k','oracle_thought_chain','thought_id',thought_id,'chain_id',thought_json->>'chain_id')
+FROM substrate_reverie_thought WHERE created_at >= (:start)::timestamptz - interval '1 hour' AND created_at < :end;
 
 SELECT json_build_object('k','expectation_verdict','thought_id',thought_id,'correlation_id',correlation_id,
   'chain_id',thought_json->>'chain_id','created_at',created_at,'expectation_verdict',expectation_verdict,
@@ -86,9 +95,7 @@ FROM substrate_attention_schema WHERE generated_at >= :start AND generated_at < 
 
 SELECT json_build_object('k','attention_loop_raised','trace_id',trace_id,'loop_id',loop_id,'scope',scope,
   'correlation_id',correlation_id,'created_at',created_at,
-  'chat_turn',EXISTS (SELECT 1 FROM chat_history_log c WHERE c.correlation_id = t.correlation_id),
-  'raised_by',(SELECT CASE WHEN btrim(coalesce(c.prompt,'')) <> '' THEN 'juniper' ELSE 'orion' END
-               FROM chat_history_log c WHERE c.correlation_id = t.correlation_id LIMIT 1))
+  'chat_turn',EXISTS (SELECT 1 FROM chat_history_log c WHERE c.correlation_id = t.correlation_id))
 FROM attention_salience_trace t WHERE scope = 'chat' AND created_at >= :start AND created_at < :end;
 
 SELECT json_build_object('k','attention_loop_verdict','outcome_id',outcome_id,'loop_id',loop_id,'verdict',verdict,

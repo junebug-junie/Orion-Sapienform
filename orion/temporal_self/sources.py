@@ -135,8 +135,10 @@ def curiosity_run(row: Row, tz_name: str = DEFAULT_TZ) -> TemporalSelfEventV1 | 
 
 def reverie_chain(row: Row, tz_name: str = DEFAULT_TZ) -> TemporalSelfEventV1 | None:
     """substrate_reverie_chain plus its thoughts (``row['thoughts']``: thought_id, created_at,
-    correlation_id; linked by thought_json.chain_id). A chain with no thoughts has no content
-    and is not an arc. Time: first thought .. max(last thought, chain created_at)."""
+    correlation_id; linked by thought_json.chain_id). Emitted only once ``terminal_reason`` is
+    set. A chain with no thoughts has no content and is not an arc. Time: first thought .. max(last thought, chain created_at)."""
+    if not row.get("terminal_reason"):
+        return None  # still running: emitting now would freeze a partial chain into a closed arc
     thoughts = sorted(
         (t for t in (row.get("thoughts") or []) if t.get("thought_id") and t.get("created_at")),
         key=lambda t: (as_utc(t["created_at"]), str(t["thought_id"])),
@@ -306,13 +308,11 @@ def attention_loop_raised(row: Row, tz_name: str = DEFAULT_TZ) -> TemporalSelfEv
     Juniper's turn text, so it is marked juniper_chat (outward boundary only)."""
     if row.get("scope") != "chat" or not row.get("loop_id") or not row.get("chat_turn"):
         return None
-    # Who wrote the turn that raised it (``raised_by``: juniper / orion). Live 10-09: one loop
-    # Juniper raised on 10-08 was raised again four times by Orion's own outreach.
     return _event(
         kind="attention_loop_raised", table="attention_salience_trace", ref=row.get("trace_id"),
         at=row.get("created_at"), tz_name=tz_name, subject_ref=str(row["loop_id"]),
         correlation_id=row.get("correlation_id") or None, label=clip(row.get("description")),
-        privacy_class="juniper_chat", payload={"raised_by": row.get("raised_by")},
+        privacy_class="juniper_chat",
     )
 
 

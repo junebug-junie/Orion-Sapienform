@@ -98,8 +98,59 @@ def test_broadcast_gap_suspends_without_accruing_dwell_and_resume_is_one_arc():
     s = fold(initial_state(), before + after, cfg=CFG)
     (arc,) = arcs_of(s, "attention")
     assert s.tick_source_gaps_today == 1
-    assert arc.attention_returns == 1
+    # A recorder outage is not attention: coming back from it is not a return.
+    assert arc.attention_returns == 0 and arc.source_gap_resumes == 1
     assert arc.cumulative_dwell_sec == 90.0 + 60.0  # the 10 minute outage is not dwell
+
+
+def test_gap_then_another_subject_then_return_is_a_real_return():
+    before = ticks([A] * 4)
+    after = ticks([B] * 3 + [A] * 3, start=before[-1].generated_at + timedelta(minutes=10), prefix="R")
+    s = fold(initial_state(), before + after, cfg=CFG)
+    a_arc = [a for a in arcs_of(s, "attention") if a.subject_ref == A][0]
+    assert a_arc.attention_returns == 1 and a_arc.source_gap_resumes == 0
+
+
+def test_context_while_another_subject_builds_is_not_credited_to_two_arcs():
+    # A holds, then B wins 3 ticks (opens backdated to its first tick). A metacog row 5 s
+    # after B's first tick belongs to B only.
+    tk = ticks([A] * 4 + [B] * 3)
+    m = metacog("m1", tk[4].generated_at + timedelta(seconds=5))
+    s = fold(initial_state(), tk, [m], cfg=CFG)
+    a_arc, b_arc = arcs_of(s, "attention")
+    assert a_arc.context_event_ids == [] and b_arc.context_event_ids == ["metacog_observation:m1"]
+
+
+def test_flicker_minutes_belong_to_no_attention_arc():
+    tk = ticks([A] * 4 + [B] + [A] * 2)
+    m = metacog("m1", tk[4].generated_at + timedelta(seconds=5))
+    s = fold(initial_state(), tk, [m], cfg=CFG)
+    (arc,) = arcs_of(s, "attention")
+    assert arc.context_event_ids == []
+    s = advance_clock(s, at(7 * 60), CFG)
+    assert "metacog_observation:m1" in s.day_context_event_ids
+
+
+def test_segments_are_capped_and_merges_counted():
+    s = fold(initial_state(), ticks([A] * 3 + [A, B] * 400), cfg=CFG)
+    (arc,) = arcs_of(s, "attention")
+    assert len(arc.segments) == 256 and arc.segments_merged > 0
+    type(arc).model_validate_json(arc.model_dump_json())
+
+
+def test_expectation_overflow_is_counted_on_the_arc():
+    cycle = ev("dream_cycle", "cy1", at(0), ended=at(1), subject="cy1", table="dream_cycle")
+    hyps = [ev("dream_hypothesis", f"h{i:03d}", at(2), table="dream_hypothesis", related_refs=["cy1"]) for i in range(70)]
+    (arc,) = arcs_of(fold(initial_state(), events=[cycle, *hyps], cfg=CFG), "sleep")
+    assert len(arc.expectation_event_ids) == 64 and arc.expectation_overflow == 6
+
+
+def test_juniper_derived_arcs_carry_the_outward_privacy_mark():
+    raised = ev("attention_loop_raised", "t1", at(0), subject="loop-1", table="attention_salience_trace",
+                label="her words", privacy_class="juniper_chat")
+    s = fold(initial_state(), events=[raised, chat("1", "s1", at(1))], cfg=CFG)
+    assert {a.kind: a.privacy_class for a in s.arcs.values()} == {"concern": "juniper_chat", "conversation": "juniper_chat"}
+    assert all(a.privacy_class == "orion_internal" for a in fold(initial_state(), ticks([A] * 3), cfg=CFG).arcs.values())
 
 
 # ---------------------------------------------------------------- interoception

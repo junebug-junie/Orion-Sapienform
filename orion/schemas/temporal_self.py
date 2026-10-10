@@ -22,9 +22,10 @@ no producer (see docs/superpowers/pr-reports/2026-10-10-temporal-self-chronology
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Any, Literal
 
-from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, model_validator
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, field_validator, model_validator
 
 TEMPORAL_SELF_REDUCER_VERSION = "temporal_self.reducer.v1"
 
@@ -71,6 +72,7 @@ PrivacyClass = Literal["orion_internal", "juniper_chat"]
 LABEL_MAX = 300
 EVIDENCE_CAP = 256
 CONTEXT_CAP = 64
+SEGMENTS_CAP = 256
 PERCEPT_CAP = 16
 ARCS_IN_FRAME_CAP = 64
 
@@ -100,6 +102,12 @@ class TemporalSelfEventV1(_Forbid):
     privacy_class: PrivacyClass = "orion_internal"
     verdict: str | None = None  # the source's own word, never normalised
     payload: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("occurred_at", "ended_at")
+    @classmethod
+    def _utc(cls, v: datetime | None) -> datetime | None:
+        # One clock for ordering keys and ids: any aware input is converted to UTC.
+        return v.astimezone(timezone.utc) if v is not None else None
 
     @model_validator(mode="after")
     def _check(self) -> "TemporalSelfEventV1":
@@ -155,9 +163,16 @@ class TemporalSelfArcV1(_Forbid):
     status: ArcStatus
     closed_reason: ClosedReason | None = None
     attention_returns: int = 0  # resumes after a suspension, same day
+    # Resumes after a broadcast RECORDER gap (outage/restart): not attention, so not a return.
+    source_gap_resumes: int = 0
+    suspended_by_gap: bool = False
     cumulative_dwell_sec: float = 0.0
     segments: list[ArcSegmentV1] = Field(default_factory=list)
+    segments_merged: int = 0  # point segments folded into their neighbour past the cap
     interruptions: list[str] = Field(default_factory=list)  # arc_ids that suspended this one
+    interruptions_overflow: int = 0
+    # OUTWARD boundary only: juniper_chat when the label or subject comes from Juniper's turns.
+    privacy_class: PrivacyClass = "orion_internal"
     carried_from_previous_day: bool = False
     carried_from_arc_id: str | None = None
     related_refs: list[str] = Field(default_factory=list)  # e.g. offered prior ids
@@ -166,7 +181,9 @@ class TemporalSelfArcV1(_Forbid):
     context_event_ids: list[str] = Field(default_factory=list)  # subject-less, bound by time/ref
     context_overflow: int = 0
     expectation_event_ids: list[str] = Field(default_factory=list)
+    expectation_overflow: int = 0
     constraint_event_ids: list[str] = Field(default_factory=list)
+    constraint_overflow: int = 0
     body: ArcBodySummaryV1 | None = None
     attention: ArcAttentionSummaryV1 | None = None
     percept_entities: list[str] = Field(default_factory=list)  # distinct, capped
@@ -179,6 +196,8 @@ class TemporalSelfArcV1(_Forbid):
             raise ValueError("evidence_refs over cap")
         if len(self.context_event_ids) > CONTEXT_CAP:
             raise ValueError("context_event_ids over cap")
+        if len(self.segments) > SEGMENTS_CAP:
+            raise ValueError("segments over cap")
         if self.status == "closed" and (self.closed_reason is None or self.ended_at is None):
             raise ValueError("a closed arc needs closed_reason and ended_at")
         if self.status != "closed" and self.closed_reason is not None:
@@ -246,6 +265,9 @@ class TemporalSelfFrameV1(_Forbid):
     unbound_context_overflow: int = 0
     entered_day_with: list[str] = Field(default_factory=list)
     source_cursors: dict[str, str] = Field(default_factory=dict)
+    # Items that sorted at or before the fold's watermark and were not folded (a driver
+    # re-read, or a row committed late with an older timestamp). Visible, never silent.
+    skipped_at_or_before_watermark: int = 0
     warnings: list[str] = Field(default_factory=list)
     reducer_version: str = TEMPORAL_SELF_REDUCER_VERSION
 
@@ -316,6 +338,8 @@ class TemporalSelfStateV1(_Forbid):
     constraint_overflow: int = 0
     # Idempotence: items sorting at or before this key were already folded.
     last_key: list[str] = Field(default_factory=list)
+    skipped_today: int = 0
+    correlation_overflow: int = 0
     cursors: dict[str, str] = Field(default_factory=dict)
     pending_closed_days: list[TemporalSelfDayV1] = Field(default_factory=list)
     reducer_version: str = TEMPORAL_SELF_REDUCER_VERSION

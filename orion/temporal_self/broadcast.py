@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Mapping
 
 from orion.temporal_self.day import as_utc
@@ -25,9 +25,15 @@ from orion.temporal_self.day import as_utc
 @dataclass(frozen=True)
 class BroadcastTickView:
     log_id: str
-    generated_at: datetime  # UTC
+    generated_at: datetime  # normalised to UTC on construction
     ref: str | None  # selected loop's source_refs[0]; None = no winner this tick
     label: str = ""  # the selected loop's own description (system-written, not chat text)
+
+    def __post_init__(self) -> None:
+        if self.generated_at.tzinfo is None:
+            raise ValueError("generated_at must be timezone-aware")
+        object.__setattr__(self, "generated_at", self.generated_at.astimezone(timezone.utc))
+        object.__setattr__(self, "label", (self.label or "")[:300])
 
 
 def tick_from_log_row(row: Mapping[str, Any]) -> BroadcastTickView:
@@ -43,7 +49,7 @@ def tick_from_log_row(row: Mapping[str, Any]) -> BroadcastTickView:
             if isinstance(loop, dict) and loop.get("id") == selected:
                 refs = loop.get("source_refs") or []
                 ref = str(refs[0]) if refs else None
-                label = str(loop.get("description") or "")[:300]
+                label = str(loop.get("description") or "")
                 break
     at = as_utc(row.get("generated_at"))
     assert at is not None, "broadcast row without generated_at"

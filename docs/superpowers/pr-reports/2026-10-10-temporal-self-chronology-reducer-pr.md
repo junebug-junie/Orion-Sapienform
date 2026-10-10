@@ -4,8 +4,8 @@ This is patch 2 of Temporal Self ([PR #2369](https://github.com/junebug-junie/Or
 
 - `orion/schemas/temporal_self.py` adds the event, arc, frame, closed-day and state models. They are registered in `_REGISTRY` and checked through `resolve()`.
 - `orion/temporal_self/` is the reducer itself, with no I/O and no LLM. It has eight arc lanes, one source adapter per live source, one shared "which day is it" helper, and a per-arc body summary.
-- 62 gate tests cover each lane's rules, the source filters, midnight and timestamp casts, replay identity, a restart, and frames with no winner.
-- An arc-precision eval runs on real rows from 10-09 (read-only export, 880 KB gzipped, text-free). It covers evidence precision, process recall, replay identity, rest state, and six hand labels.
+- 73 gate tests cover each lane's rules, the source filters, midnight and timestamp casts, replay identity (including broadcast silence before midnight and an exact-watermark re-read), a restart, and frames with no winner.
+- An arc-precision eval runs on real rows from 10-09 (read-only export, 980 KB gzipped, text-free). It covers evidence precision per kind, graded by an oracle that never uses the reducer's own extraction; process recall; replay identity; rest state; and six hand labels.
 - K (ticks to open an arc) and R (the return window) were picked from a sweep over that real day. The metric gate was run for every number the frame exposes, and two body numbers failed it and were not built.
 
 ## Outcome moved
@@ -34,7 +34,8 @@ Orion's day on 10-09 looked like this:
 
 | Gate | Result |
 |---|---|
-| Evidence precision (every `evidence_ref` resolves to a raw row with the same subject) | **2,103 / 2,103 = 1.0**, 0 unresolved |
+| Evidence precision (every `evidence_ref` resolves to a raw row with the same subject) | **2,103 / 2,103 = 1.0**, 0 unresolved. By kind: attention 728/728, reverie 902/902, interoception 455/455, concern 6/6, curiosity 8/8, conversation 2/2, sleep 2/2 |
+| Tick extraction (`tick_from_log_row` on the raw projection) vs the subject computed in SQL | 0 disagreements over 3,952 ticks |
 | Context purity (only subject-less kinds in `context_event_ids`; no Juniper turn) | 0 violations |
 | Process recall: sleep / curiosity / reverie / imagery | 2/2, 8/8, 184/184, 0/0, all exact |
 | Each dream hypothesis attached to its own sleep arc by cycle id | exact for both sleeps |
@@ -103,7 +104,7 @@ The chosen values are **K = 3 ticks and R = 30 min**:
 
 ### Spec drift found live (the spec is stale against main and data)
 
-1. **Chat-scope salience traces are not chat raises.** On 10-09 one loop got 381 `scope='chat'` traces, each with a distinct correlation id, spread across all 24 hours. Only 6 of them resolve to a chat turn. A concern raise now requires the trace's correlation id to exist in `chat_history_log`. Without that rule, concern dwell would measure the scorer's cadence. Each raise also records who wrote the turn (`raised_by`). On 10-09, 4 of the 5 raises came from Orion's own outreach.
+1. **Chat-scope salience traces are not chat raises.** On 10-09 one loop got 381 `scope='chat'` traces, each with a distinct correlation id, spread across all 24 hours. Only 6 of them resolve to a chat turn. A concern raise now requires the trace's correlation id to exist in `chat_history_log`. Without that rule, concern dwell would measure the scorer's cadence. A SQL check of who wrote the raising turns found that on 10-09, 4 of the 5 raises came from Orion's own outreach. That is recorded here only; no field stores it, because nothing would read it yet.
 2. **Orion's outreach looked like a conversation.** On 10-09 the only "conversation" session held four unsolicited outreach messages and no reply. The session named `orion_journal` is where Juniper actually talked. Conversation arcs now open only on Juniper's turns (non-empty prompt, the same rule as `measure_arousal_replay.py`). Orion's rows are context. This is the same failure class as spec danger mode 9.
 3. **Curiosity attention rows carry a uuid5 `correlation_id` that matches no `run_id`** (0 of 41 over 3 days). Rule 8 cannot bind them by reference, so they bind to curiosity arcs by time. Reverie rows *do* bind by reference, through the thought's `correlation_id`. Thoughts link to chains by `thought_json.chain_id`, not by `correlation_id`.
 4. **Visual attempt outcomes** add `abandoned`, the only deferral word seen in the last 7 days. Over 30 days, 12 `deferred_thermal` attempts exist.
@@ -140,12 +141,15 @@ The chosen values are **K = 3 ticks and R = 30 min**:
   - **Fields added:**
     - `ended_at` on events (process rows are emitted once complete);
     - `segments` and `last_seen_at` on arcs (dwell and returns need them);
-    - `warnings` on arcs;
+    - `source_gap_resumes` on arcs (a broadcast recorder outage is not a return);
+    - `privacy_class` on arcs (outward boundary for concern and conversation arcs);
+    - `warnings` and per-list `*_overflow` counters on arcs;
     - `expires_at` on expectations;
-    - `active_by_kind`, `arcs_today_total`, `unbound_context_*`, `*_overflow` and `expectations_resolved_total` on the frame (caps never hide a drop).
+    - `active_by_kind`, `arcs_today_total`, `unbound_context_*`, `*_overflow`, `expectations_resolved_total` and `skipped_at_or_before_watermark` on the frame (caps and late rows never hide a drop).
   - **Not built:**
     - `ArcSelfModelSummaryV1` (see above);
     - the stance cue and curiosity facts projections (they land with their consumers in patch 4, so they are not ornaments here);
+    - `fold_broadcast_ticks` / `fold_events` as separate calls (called one after the other, the second would skip everything at or before the first call's last key; ticks and events go through one `fold` per watermark);
     - `peak_pressure_max` and `cooling_switch_changes` (they failed the metric gate).
 - **Compatibility:** new tables in patch 3 store these by `schema_version`.
 
@@ -183,9 +187,10 @@ Step 6, reversibility: no consumer, no table, no env key. Removing it means dele
 
 ```text
 /mnt/scripts/Orion-Sapienform/.venv/bin/python -m pytest -q orion/temporal_self/tests
-62 passed in 4.4s
+73 passed in 3.8s
 PYTHONPATH=. /tmp/orion-focus-runs-venv/bin/python -m pytest -q orion/temporal_self/tests   # CI-like: pytest + pydantic 2.10.3 only
-61 passed (before the last test was added)
+73 passed
+python scripts/check_metric_lineage.py --gate                         metric lineage gate: PASS
 python -m pytest -q tests/test_inner_state_registry_gate.py           9 passed
 python scripts/check_inner_state_registry.py                          inner_state_registry gate OK (20 entries checked)
 python -m pytest -q <30 tests/ files that import the schema registry> 335 passed, 2 failed
@@ -215,7 +220,51 @@ None. No service, image or runtime path changed. Only read-only psql exports wer
 
 ## Review findings fixed
 
-(Filled in from the code-review subagent below.)
+A code-review subagent reviewed `feat/temporal-self-chronology-reducer` at 2daa0aedf plus the working copy, with probe scripts. It found 2 blockers, 8 should-fix and 6 nits.
+
+- **Finding (blocker):** one-pass and chunked folds disagreed when the broadcast log went quiet before midnight. Only `advance_clock` suspended a silent attention arc, so one pass closed it `day_boundary` and the chunked fold closed it `return_window_expired`.
+  - Fix: the silence rule now lives in `_expire`, which `fold`, `advance_clock` and the midnight roll all apply.
+  - Evidence: `test_broadcast_silence_before_midnight_replays_identically`.
+- **Finding (blocker):** `advance_clock(now == watermark)` moved `last_key` backwards, so a row stamped exactly `now` was folded twice.
+  - Fix: `last_key` never moves backwards.
+  - Evidence: `test_advance_at_the_exact_watermark_never_refolds`.
+- **Finding:** calling `fold_broadcast_ticks` and then `fold_events` silently dropped the events.
+  - Fix: both wrappers are removed. One `fold` per watermark is the documented contract.
+- **Finding:** late or re-read rows were dropped with no trace.
+  - Fix: `skipped_today` counts them, shown as `frame.skipped_at_or_before_watermark` with a warning.
+  - Evidence: the updated refold and restart tests assert the count.
+- **Finding:** timestamps not in UTC broke the sort key and `frame_id`.
+  - Fix: events, ticks, `advance_clock` and `build_frame` all normalise to UTC.
+  - Evidence: `test_non_utc_inputs_order_by_instant`.
+- **Finding:** one piece of context was credited to two attention arcs while a new subject was building its K ticks.
+  - Fix: an open attention arc reaches forward only while its subject won the latest tick. Flicker minutes belong to no arc and fall to the day.
+  - Evidence: `test_context_while_another_subject_builds_is_not_credited_to_two_arcs`, `test_flicker_minutes_belong_to_no_attention_arc`.
+- **Finding:** recorder outages counted as attention returns.
+  - Fix: a resume after a gap increments `source_gap_resumes`, not `attention_returns`. A real interruption after the gap still counts.
+  - Evidence: the updated gap and restart tests, plus `test_gap_then_another_subject_then_return_is_a_real_return`. The 10-09 numbers are unchanged.
+- **Finding:** the reverie adapter emitted chains still running.
+  - Fix: it requires `terminal_reason`.
+  - Evidence: the adapter test.
+- **Finding:** caps dropped data with no counter.
+  - Fix: `expectation_overflow`, `constraint_overflow`, `interruptions_overflow` and `segments_merged` on arcs, and `correlation_overflow` in state with a frame warning. Segments are capped at 256.
+  - Evidence: `test_expectation_overflow_is_counted_on_the_arc`, `test_segments_are_capped_and_merges_counted`.
+- **Nits fixed:**
+  - A concern continuation measures returns from the real last raise.
+  - The closed day's final frame shows what was active at midnight.
+  - Concern and conversation arcs carry `privacy_class=juniper_chat`.
+  - The I/O ban in the purity test now also covers `os`, `subprocess`, `pathlib` and `open(`.
+  - The CI push paths are widened.
+  - Tick labels are clipped on construction.
+  - Parked sleep links survive midnight.
+  - `raised_by` was removed: nothing read it.
+- **Eval independence:**
+  - Ticks are now built by `tick_from_log_row` from the raw projection, graded against an SQL-computed `oracle_ref`.
+  - The thought-to-chain oracle uses its own query.
+  - Precision is reported per kind.
+- **Declined: auto-suspending an interoception arc on silence.**
+  - `field_dominance_run` writes a run only when it ends, so while a long run is in progress nothing is known yet.
+  - Suspending on silence would turn an uninterrupted 30-minute run into a fake return.
+  - An open interoception arc therefore means "the last completed focus". This is documented on `ReducerConfig.interoception_gap_sec`.
 
 ## Restart required
 
@@ -226,13 +275,14 @@ No restart required.
 ## Risks / concerns
 
 - **Medium: the eval covers one real day.** 10-09 had only two Juniper turns, so conversation returns and dwell read 0. The rules are pinned by fixtures, but a busy chat day has not been replayed.
+- **Low: interoception "active" lags by one run.** S2 writes a run only when it ends, so the frame's interoception arc is the last completed focus, not the focus right now.
 - **Medium: dwell for arcs crossing midnight.** A process arc that began before midnight belongs to the day it completed (`began_at` stays truthful). The pre-midnight context buffer is flushed at the day roll, so such an arc cannot bind context from before midnight.
 - **Low: late rows.** `advance_clock(now)` declares nothing strictly before `now` will arrive. Patch 3's driver must read with a small lag, or a row committed late with an older timestamp is dropped by design.
-- **Low: fixture size** is 880 KB gzipped. There is precedent (`services/orion-substrate-runtime/evals/fixtures/*.jsonl.gz`).
+- **Low: fixture size** is 980 KB gzipped. There is precedent (`services/orion-substrate-runtime/evals/fixtures/*.jsonl.gz`).
 
 ## What patch 3 needs
 
-- A durable-runs self-driven thread that:
+- A durable-runs self-driven thread that calls ONE `fold` per watermark with both ticks and events. It:
   - reads each bound source by keyset cursor, with a lag;
   - shapes rows with `sources.py` and `broadcast.py`;
   - calls `fold` → `advance_clock` → `build_frame`;

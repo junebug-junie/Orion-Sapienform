@@ -14,6 +14,10 @@ on:
     paths:
       - 'orion/temporal_self/**'
       - 'orion/schemas/temporal_self.py'
+      - 'orion/schemas/registry.py'
+      - 'orion/orion_day/window.py'
+      - 'orion/situational/context.py'
+      - 'scripts/check_inner_state_registry.py'
   workflow_dispatch:
 permissions:
   contents: read

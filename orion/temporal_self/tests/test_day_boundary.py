@@ -108,3 +108,18 @@ def test_close_day_without_new_rows_and_restart_at_midnight():
     s2 = fold(s2, ticks([A] * 3, start=MIDNIGHT + timedelta(seconds=40), prefix="P"), cfg=CFG)
     (arc,) = s2.arcs.values()
     assert arc.carried_from_previous_day
+
+
+def test_concern_return_after_midnight_is_measured_from_the_real_last_raise():
+    r1 = ev("attention_loop_raised", "t1", LATE, subject="loop-1", table="attention_salience_trace")
+    r2 = ev("attention_loop_raised", "t2", MIDNIGHT + timedelta(minutes=10), subject="loop-1", table="attention_salience_trace")
+    s = fold(initial_state(), events=[r1, r2], cfg=CFG)
+    (cont,) = [a for a in s.arcs.values() if a.day_id == "2026-10-10"]
+    assert cont.attention_returns == 0  # 12 minutes after the last raise is not a return
+
+
+def test_closed_days_final_frame_shows_what_was_active_at_midnight():
+    s = fold(initial_state(), ticks([A] * 4, start=LATE), cfg=CFG)
+    s, day = close_day(s, "2026-10-09", CFG)
+    assert day.frame.active_arc is not None and day.frame.active_arc.subject_ref == A
+    assert day.arcs[0].closed_reason == "day_boundary"

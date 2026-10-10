@@ -36,8 +36,8 @@ def test_metacog_only_degraded_or_critical():
 def test_concern_raise_requires_a_real_chat_turn():
     row = {"trace_id": "t", "loop_id": "l", "scope": "chat", "created_at": T, "description": "her words"}
     assert S.attention_loop_raised(row) is None  # scorer re-emission, not a raise
-    e = S.attention_loop_raised({**row, "chat_turn": True, "raised_by": "orion"})
-    assert e.subject_ref == "l" and e.privacy_class == "juniper_chat" and e.payload["raised_by"] == "orion"
+    e = S.attention_loop_raised({**row, "chat_turn": True})
+    assert e.subject_ref == "l" and e.privacy_class == "juniper_chat"
     assert S.attention_loop_raised({**row, "chat_turn": True, "scope": "reverie"}) is None
 
 
@@ -50,7 +50,7 @@ def test_chat_turn_copies_no_text():
 def test_incomplete_processes_are_not_emitted():
     assert S.curiosity_run({"run_id": "r", "turn_started_at": T, "completed_at": None}) is None
     assert S.dream_cycle({"cycle_id": "c", "status": "running", "started_at": T, "ended_at": None}) is None
-    assert S.reverie_chain({"chain_id": "c", "created_at": T, "thoughts": []}) is None
+    assert S.reverie_chain({"chain_id": "c", "created_at": T, "thoughts": [], "terminal_reason": "x"}) is None
 
 
 def test_curiosity_run_carries_offered_priors_and_its_interval():
@@ -60,9 +60,11 @@ def test_curiosity_run_carries_offered_priors_and_its_interval():
 
 
 def test_reverie_chain_window_and_thought_correlations():
-    e = S.reverie_chain({"chain_id": "c", "created_at": T, "theme_key": "open-loop-x",
-                         "thoughts": [{"thought_id": "t2", "created_at": T.replace(minute=2), "correlation_id": "k2"},
-                                      {"thought_id": "t1", "created_at": T.replace(minute=1), "correlation_id": "k1"}]})
+    row = {"chain_id": "c", "created_at": T, "theme_key": "open-loop-x",
+           "thoughts": [{"thought_id": "t2", "created_at": T.replace(minute=2), "correlation_id": "k2"},
+                        {"thought_id": "t1", "created_at": T.replace(minute=1), "correlation_id": "k1"}]}
+    assert S.reverie_chain(row) is None  # still running: no terminal_reason yet
+    e = S.reverie_chain({**row, "terminal_reason": "max_steps"})
     assert e.occurred_at.minute == 1 and e.ended_at.minute == 2
     assert e.payload["thought_ids"] == ["t1", "t2"] and e.related_refs == ["k1", "k2"]
 
@@ -155,7 +157,8 @@ def test_every_source_kind_has_an_adapter_and_no_dead_kind_is_declared():
 
 def test_reducer_package_does_no_io_and_names_no_observational_question():
     root = Path(__file__).resolve().parents[1]
-    banned_imports = {"sqlalchemy", "asyncpg", "psycopg", "psycopg2", "redis", "requests", "httpx", "socket", "urllib"}
+    banned_imports = {"sqlalchemy", "asyncpg", "psycopg", "psycopg2", "redis", "requests", "httpx", "socket", "urllib",
+                      "subprocess", "os", "shutil", "pathlib"}
     observational = ("deliberation_need", "reverie_fit", "attention_interrupt")
     for path in root.glob("*.py"):
         text = path.read_text()
@@ -169,3 +172,4 @@ def test_reducer_package_does_no_io_and_names_no_observational_question():
                 continue
             assert not banned_imports.intersection(names), f"{path.name} imports I/O: {names}"
         assert not any(q in text for q in observational), path.name
+        assert "open(" not in text, f"{path.name} opens a file"

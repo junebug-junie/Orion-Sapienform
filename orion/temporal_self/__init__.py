@@ -11,8 +11,6 @@ from orion.temporal_self.arcs import (
     close_day,
     drain_closed_days,
     fold,
-    fold_broadcast_ticks,
-    fold_events,
     initial_state,
 )
 from orion.temporal_self.frame import build_frame
@@ -24,7 +22,5 @@ __all__ = [
     "close_day",
     "drain_closed_days",
     "fold",
-    "fold_broadcast_ticks",
-    "fold_events",
     "initial_state",
 ]

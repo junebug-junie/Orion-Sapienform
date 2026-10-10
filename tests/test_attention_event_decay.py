@@ -88,6 +88,9 @@ def test_carried_forward_alone_does_not_make_a_signal_event_written() -> None:
     # bus_synaptic / biometrics say "carried forward" too, but are per_tick.
     assert not prediction_error_is_event_written("per_tick", "carried forward in node_vectors")
     assert not prediction_error_is_event_written("designed_sparse", "written as 0.0 every tick")
+    assert not prediction_error_is_event_written(
+        "designed_sparse", "rewritten every 30 s tick; carried forward in node_vectors between ticks"
+    )
     assert prediction_error_is_event_written("designed_sparse", "Only written on an event; carried forward")
     assert prediction_error_is_event_written("event_gated", None)
     assert not prediction_error_is_event_written(None, None)
@@ -278,3 +281,28 @@ def test_broadcast_threads_the_kill_switch() -> None:
     )
     assert on.debug["world_first"]["no_winner"] is True
     assert off.debug["world_first"]["winner"] == CODEBASE
+
+
+def test_field_frame_reports_the_faded_salience() -> None:
+    """The field contest's target salience (what goal provenance and the frame's
+    overall_salience read) is the faded strength, not the onset band."""
+    from pathlib import Path
+
+    from orion.attention.field_attention.builder import build_attention_frame
+    from orion.attention.field_attention.policy import load_attention_policy
+    from orion.schemas.field_state import FieldStateV1
+
+    repo = Path(__file__).resolve().parents[1]
+    policy = load_attention_policy(repo / "config" / "attention" / "field_attention_policy.v1.yaml")
+    now = NOW + timedelta(seconds=200)
+    cand = _codebase_at(now)
+    field = FieldStateV1(generated_at=now, tick_id="t_decay", node_vectors={})
+    frame = build_attention_frame(
+        field=field, policy=policy, prediction_error_baselines={}, previous_frame=None,
+        now=now, world_first_candidates=[cand],
+    )
+    top = frame.dominant_targets[0]
+    v = judge_candidate(cand)
+    assert top.target_id == CODEBASE and v.event_decay < 1.0
+    assert top.salience_score == pytest.approx(v.score * v.event_decay)
+    assert frame.overall_salience == pytest.approx(v.score * v.event_decay)

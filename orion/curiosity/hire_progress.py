@@ -17,6 +17,7 @@ def build_role_teach_progress_lines(
     hop_note_texts: Sequence[str] = (),
     peer_brief_status: str | None = None,
     peer_brief_next_hop_n: int | None = None,
+    peer_brief_reason: str | None = None,
     queue_score: float | None = None,
     queue_driver: str | None = None,
 ) -> list[str]:
@@ -41,6 +42,7 @@ def build_role_teach_progress_lines(
                 format_budget_spent_progress(
                     status=str(peer_brief_status),
                     next_hop_n=peer_brief_next_hop_n,
+                    reason=peer_brief_reason,
                 )
             )
     except Exception:  # noqa: BLE001 — fail-open per source

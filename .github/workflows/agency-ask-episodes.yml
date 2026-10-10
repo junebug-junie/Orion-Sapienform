@@ -12,6 +12,9 @@ on:
       - 'services/orion-hub/scripts/curiosity_investigation.py'
       - 'services/orion-hub/tests/test_curiosity_help_request_enqueue.py'
       - 'tests/test_curiosity_peer*.py'
+      - 'orion/hub/turn_orchestrator.py'
+      - 'tests/test_role_teach_disclosure.py'
+      - 'services/orion-hub/tests/test_turn_orchestrator_role_teach_disclosure.py'
       - '.github/workflows/agency-ask-episodes.yml'
   workflow_dispatch:
 permissions:
@@ -24,10 +27,12 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - run: pip install -r services/orion-curiosity-peer/requirements.txt pytest pytest-asyncio psycopg2-binary sqlalchemy httpx
+      - run: pip install -r services/orion-curiosity-peer/requirements.txt pytest pytest-asyncio psycopg2-binary sqlalchemy httpx requests
       # Separate service invocations avoid colliding top-level app packages.
       - run: PYTHONPATH=services/orion-curiosity-peer:. python -m pytest services/orion-curiosity-peer/tests -q
       - run: python -m pytest services/orion-hub/tests/test_curiosity_help_request_enqueue.py -q
+      # Orion-facing refusal text: role-teach progress line (2026-10-10).
+      - run: python -m pytest tests/test_role_teach_disclosure.py services/orion-hub/tests/test_turn_orchestrator_role_teach_disclosure.py -q
       - run: >-
           python -m pytest tests/test_curiosity_peer_schema.py tests/test_curiosity_peer_registry.py
           tests/test_curiosity_peer_briefs.py tests/test_curiosity_peer_brief_persist.py

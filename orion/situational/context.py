@@ -2425,30 +2425,26 @@ def _build_prompt_fragment(brief: SituationBriefV1, max_chars: int) -> Situation
         if parts:
             seen = _recency_phrase(cab.age_seconds)
             lines.append(f"Your cabinet sensors (read {seen}): " + ", ".join(parts) + ".")
-    # Cabinet mic, independent of the Nano frame above. Omitted (not a
-    # placeholder) when there is no fresh reading, same reasoning as the
-    # sensors. No absolute "quiet room / speech" anchors (review finding,
-    # 2026-10-09): the mic's gain is uncalibrated, so generic dBFS reference
-    # points would be stated as fact without evidence. The 24 h band is the
-    # honest comparison until a reference is measured on this mic.
-    if brief.cabinet.sound_available and brief.cabinet.sound_dbfs is not None:
-        cab = brief.cabinet
+    # Cabinet mic, independent of the Nano frame above. Only the comparison
+    # against the cabinet's own last 24 h reaches the prompt -- no dBFS
+    # numbers (2026-10-10). The mic is uncalibrated, so dBFS is "how close to
+    # this mic's maximum", not decibels; leading with "-16 dBFS" made Orion
+    # report it as how loud they hear the cabinet. The raw dBFS fields stay
+    # on CabinetContextV1 for debugging. Omitted entirely when there is no
+    # fresh reading or no 24 h history, since a bare level means nothing.
+    cab = brief.cabinet
+    if cab.sound_available and cab.sound_vs_usual is not None:
         heard = _recency_phrase(cab.sound_age_seconds)
-        sound_line = f"Your cabinet's sound (mic, heard {heard}): {cab.sound_dbfs:.0f} dBFS"
-        if cab.sound_usual_dbfs is not None:
-            vs = "about usual" if cab.sound_vs_usual == "usual" else f"{cab.sound_vs_usual} than usual"
-            sound_line += (
-                f", {vs} (last 24h ranged {cab.sound_usual_low_dbfs:.0f} to"
-                f" {cab.sound_usual_high_dbfs:.0f}, median {cab.sound_usual_dbfs:.0f}"
-            )
-            if cab.sound_recent_dbfs is not None:
-                sound_line += f"; last 10 min {cab.sound_recent_dbfs:.0f}"
-            sound_line += ")"
-        sound_line += (
-            ". dBFS is level relative to the mic's maximum (0 = maximum); the mic is not"
-            " calibrated, so judge it against your cabinet's own range, not as absolute loudness."
+        vs = {
+            "usual": "about as loud as usual",
+            "louder": "louder than usual",
+            "quieter": "quieter than usual",
+        }[cab.sound_vs_usual]
+        lines.append(
+            f"Your cabinet's sound (mic, heard {heard}): {vs} for your cabinet, compared with"
+            " the last 24 hours. The mic isn't calibrated, so this tells you louder or quieter"
+            " than usual, not how many decibels it is."
         )
-        lines.append(sound_line)
     if brief.perception.available and brief.perception.scene_summary:
         seen = _recency_phrase(brief.perception.observation_age_seconds)
         lines.append(f"Room (seen {seen}): {brief.perception.scene_summary}")

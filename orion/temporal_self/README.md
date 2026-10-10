@@ -3,7 +3,9 @@
 A pure reducer that turns rows Orion already writes into one chronology of **arcs**: stretches
 of the day Orion kept returning to one subject, or one bounded process. Spec:
 `docs/superpowers/specs/2026-09-26-temporal-self-design.md` (PR #2369, rev 4). No I/O, no LLM,
-no narrative. Nothing runs it yet: the durable-runs driver is patch 3.
+no narrative. Patch 3 runs it live: the `chronicle` node of orion-durable-runs'
+`temporal_self.update` thread (`services/orion-durable-runs/app/temporal_self_chronicle.py`, see
+that service's README).
 
 ```python
 from orion.temporal_self import ReducerConfig, fold, advance_clock, build_frame, drain_closed_days

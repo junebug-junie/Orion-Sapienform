@@ -148,3 +148,21 @@ async def probe(bus, cfg: PoolConfig, role: str, check: str, wait_sec: float,
                 if payload.get("status") in TERMINAL:
                     break
     return classify(check, got, role=role, digest=msg.launch_digest)
+
+
+_PATH_ERRORS = frozenset({"FileNotFoundError", "IsADirectoryError", "NotADirectoryError", "PermissionError", "OSError"})
+_YAML_ERRORS = frozenset({"YAMLError", "ScannerError", "ParserError", "ComposerError", "ConstructorError"})
+
+
+def config_fix_hint(error_name: str, *, host: str = "this host", service: str = "orion-gpu-lane-controller") -> str:
+    """What fixes an unloadable gpu_pool.yaml, by the exception class the controller reported
+    (``config_unloadable:<ExceptionName>``). A rebuild fixes only the 2026-10-09 kind."""
+    if error_name == "ValidationError":
+        return (f"rebuild {service} on {host} from main: its image predates a field in config/gpu_pool.yaml "
+                "(the YAML is newer than the code validating it)")
+    if error_name in _PATH_ERRORS:
+        return (f"the checkout {service} reads on {host} is missing or unmounted: check GPU_LANE_REPO_ROOT and "
+                "the /repo bind mount; a rebuild will not help")
+    if error_name in _YAML_ERRORS:
+        return "config/gpu_pool.yaml itself does not parse: fix the YAML on main and pull; a rebuild will not help"
+    return f"{service} on {host} cannot load config/gpu_pool.yaml ({error_name}): read its logs before rebuilding"

@@ -164,3 +164,16 @@ def test_cli_output_and_exit_code(monkeypatch, capsys) -> None:
     answers["status"] = lambda req: [{"action_id": req["action_id"], "status": "succeeded",
                                       "observed": {}, "in_flight": False, "last_action_id": None}]
     assert asyncio.run(cli.probe(ROLE, ["status", "digest"], 1.0, str(REPO / "config" / "gpu_pool.yaml"))) == 0
+
+
+@pytest.mark.parametrize("error,expect,not_expect", [
+    ("ValidationError", "rebuild", "will not help"),
+    ("FileNotFoundError", "unmounted", "rebuild orion"),
+    ("ScannerError", "fix the YAML", "rebuild orion"),
+    ("KeyError", "read its logs", "rebuild orion"),
+])
+def test_config_fix_hint_names_the_fix_for_the_failure(error, expect, not_expect):
+    from orion.gpu_pool.actuator_probe import config_fix_hint
+
+    hint = config_fix_hint(error, host="circe")
+    assert expect in hint and not_expect not in hint

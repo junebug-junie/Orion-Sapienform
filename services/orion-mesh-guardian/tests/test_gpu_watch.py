@@ -47,7 +47,7 @@ class TestActive:
         msg = alerts[0].message
         assert "circe" in msg and "agent-gpu2" in msg
         assert "rebuild orion-gpu-lane-controller on circe from main" in msg
-        assert "predates config/gpu_pool.yaml" in msg
+        assert "image predates a field in config/gpu_pool.yaml" in msg
 
     def test_digest_mismatch_is_error(self) -> None:
         alerts = ActiveProbeTracker().observe(TARGET, _v("digest", "refused", "launch_digest_mismatch"))

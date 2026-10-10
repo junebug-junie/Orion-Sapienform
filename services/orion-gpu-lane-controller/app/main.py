@@ -8,6 +8,7 @@ from fastapi.responses import JSONResponse
 from loguru import logger
 
 from orion.core.bus.bus_service_chassis import ChassisConfig, Hunter
+from orion.gpu_pool.actuator_probe import config_fix_hint
 from orion.schemas.gpu_pool import GPU_POOL_ACTUATE_REQUEST_CHANNEL
 
 from . import actuator_bus, pool_fence
@@ -109,6 +110,6 @@ async def health():
         return JSONResponse(status_code=503, content={
             **body, "ok": False, "config_loadable": False,
             "config_error": f"{type(exc).__name__}: {str(exc)[:300]}",
-            "fix": "rebuild orion-gpu-lane-controller on this host from main: its image predates config/gpu_pool.yaml",
+            "fix": config_fix_hint(type(exc).__name__),
         })
     return {**body, "ok": True, "config_loadable": True}

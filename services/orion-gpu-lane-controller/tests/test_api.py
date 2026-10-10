@@ -74,7 +74,20 @@ def test_health_is_503_when_the_config_every_actuation_reads_cannot_load(client,
     assert resp.status_code == 503
     body = resp.json()
     assert body["ok"] is False and body["config_loadable"] is False
-    assert "max_holds" in body["config_error"] and "rebuild" in body["fix"]
+    assert "max_holds" in body["config_error"] and "read its logs" in body["fix"]  # ValueError: not a rebuild
+
+
+def test_health_names_a_rebuild_only_for_image_skew(client, monkeypatch):
+    from pydantic import BaseModel
+
+    class M(BaseModel):
+        x: int
+
+    def skewed():
+        M.model_validate({"x": "no"})
+
+    monkeypatch.setattr(main_module.pool_fence, "load_config", skewed)
+    assert "rebuild" in client.get("/health").json()["fix"]
 
 
 @pytest.mark.parametrize("method,path", [

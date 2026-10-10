@@ -4,7 +4,8 @@ On 2026-10-09/10 circe's orion-gpu-lane-controller ran an image older than a new
 field in config/gpu_pool.yaml (``roles.agent-gpu2.max_holds``). Its own config no
 longer parsed, so it refused every actuation ``config_unloadable:ValidationError``
 for 28 h (155 refusals, role agent-gpu2). The diffusion card never swapped, no
-painting was made, and nothing alerted: the controller's /health stays ok and the
+painting was made, and nothing alerted: the controller's /health was a constant ok
+(now 503 when its config won't load) and the
 pool only logs and emits ``actuate_refused`` on ``orion:gpu_pool:event``. In the
 16 days before, there were zero ``actuate_refused`` events.
 
@@ -29,7 +30,7 @@ from collections import deque
 from dataclasses import dataclass
 from typing import Any
 
-from orion.gpu_pool.actuator_probe import Verdict
+from orion.gpu_pool.actuator_probe import Verdict, config_fix_hint
 
 from .stability import StabilityAlert
 
@@ -72,8 +73,8 @@ def _unloadable_alert(target: RoleTarget, reason: str, context: dict[str, Any]) 
         message=(
             f"The GPU lane controller on {target.host} cannot read its own config/gpu_pool.yaml "
             f"({reason}), so it refuses every request to move role {target.role} onto its card. "
-            f"Nothing on that card will swap until it is fixed. Fix: rebuild {CONTROLLER_SERVICE} "
-            f"on {target.host} from main; its image predates config/gpu_pool.yaml."
+            f"Nothing on that card will swap until it is fixed. Fix: "
+            f"{config_fix_hint(reason.split(':', 1)[-1], host=target.host, service=CONTROLLER_SERVICE)}."
         ),
         context={"role": target.role, "actuator": target.actuator, "host": target.host,
                  "reason": reason, **context},

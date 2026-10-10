@@ -4,6 +4,7 @@ The GPU pool's actuator on **circe**. When the pool (`orion-gpu-pool`, athena) d
 hold a different model, it sends a `GpuActuateV1` on the bus; this service runs that role's `launch:`
 block from `config/gpu_pool.yaml` against circe's own docker daemon (drain, stop, start, wait for
 ready, roll back on failure) and answers on the bus. It has no HTTP control surface: `GET /health`
+(503 when it cannot load its own `config/gpu_pool.yaml`, with the error and the fix)
 is the only route.
 
 ## Why this exists
@@ -124,7 +125,7 @@ by hand on circe would.
 ```bash
 git -C /mnt/scripts/Orion-Sapienform pull --ff-only     # the same commit athena's pool runs
 scripts/safe_docker_build.sh orion-gpu-lane-controller up -d --build
-curl http://localhost:8090/health
+curl http://localhost:8090/health   # 200 {"ok": true, "config_loadable": true}; 503 + config_error + fix when gpu_pool.yaml will not load
 ```
 
 **Fence file operations.** It lives on the pinned volume `orion-gpu-lane-controller-state`

@@ -105,7 +105,7 @@ See `git diff --stat origin/main...HEAD`. The main ones:
 ## Tests run
 
 ```text
-orion-dream tests+evals                                   190 passed, 1 skipped
+orion-dream tests+evals                                   191 passed, 1 skipped
 orion-durable-runs (PYTHONPATH=repo)                      350 passed, 74 skipped
   with a throwaway postgres (builder run)                 423 passed, 1 skipped
   incl. a real carry driven end to end through _drive: three child paintings,
@@ -185,6 +185,10 @@ merged branch and found no high-severity problems.
 - **Note: the spec described things that were not built.**
   - Fix: the spec was rewritten as built (no table, child runs, the dream flag on the painting
     run).
+- **CI: the always-on carry responder created a Postgres engine at startup.** That broke an
+  existing lifespan test on a runner without psycopg.
+  - Fix: the engine is built on first lookup; the lifespan test stubs the responder.
+  - Evidence: `test_building_the_carry_responder_needs_no_database_driver`; all 21 CI checks green.
 - **Not fixed:**
   - L8: one checkpoint per 30 s child poll. The runtime has no way to wait without writing one;
     it costs storage only.

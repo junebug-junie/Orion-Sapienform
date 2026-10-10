@@ -127,7 +127,8 @@ picture), so the last picture's caption is the dream's last word. Design:
   same `sleep` digest the story would have had, and the run id is derived from
   `sleep:<cycle_id>`, so one sleep is one carry. The submit counts only when the
   receipt names this run, workflow and resource (`app/carry_submit.py`). A failed
-  submit is logged (`dream_carry_submit_failed`) and never fails the sleep.
+  submit is logged (`dream_carry_submit_failed`), never fails the sleep, and falls
+  back to the one-shot story (`dream_carry_fallback_story`) so the sleep keeps its dream.
 - **Who does what.** orion-durable-runs runs the hops and checkpoints each one.
   orion-thought paints and captions the pictures. orion-dream answers the run's
   text and finish steps on `orion:dream:carry:step:request` (`app/carry_listener.py`,
@@ -140,7 +141,9 @@ picture), so the last picture's caption is the dream's last word. Design:
   The reply must be JSON `{"passage", "image_prompt"}`; the image prompt is clipped
   to 60 words (the painter's text encoder drops everything past 77 tokens). An
   empty, unparseable or refused reply, or a timeout, answers `retry`, never a
-  blank hop.
+  blank hop. Refusals and timeouts retry until the deadline; a hop whose replies
+  are unparseable 3 times (or whose handler crashes 3 times) answers `terminal`, so
+  a model that keeps answering badly cannot burn the whole 4 h window.
 - **Finish.** One `dream.result.v1` on `CHANNEL_DREAM_LOG`, so the carry lands in
   `dreams` like any other dream: `mode=carry`, `narrative` = the passages with each
   caption between them as `[picture] <caption>`, one `fragments` entry per hop

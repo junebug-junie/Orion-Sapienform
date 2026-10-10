@@ -397,7 +397,9 @@ def _cortex_bus(receipt=None, status="accepted"):
 
     class Bus:
         codec = OrionCodec()
-        calls = []
+
+        def __init__(self):
+            self.calls = []
 
         async def rpc_request(self, channel, env, *, reply_channel, timeout_sec):
             self.calls.append((channel, env))
@@ -427,3 +429,66 @@ def test_submit_verifies_the_receipt_names_this_run():
     refused = _cortex_bus(status="fail")
     assert asyncio.run(submit_via_cortex(bus=refused, source=ServiceRef(name="orion-dream"), request=req,
                                          request_channel="c")).startswith("not_accepted:fail")
+
+
+def test_a_hop_that_keeps_answering_badly_turns_terminal_after_the_cap():
+    from app.carry import MAX_REPLY_FAILURES, ReplyFailures, handle_text
+
+    failures, calls = ReplyFailures(), []
+    statuses = [asyncio.run(handle_text(_req(), _complete("not json", calls), failures=failures)).status
+                for _ in range(MAX_REPLY_FAILURES)]
+    assert statuses == ["retry"] * (MAX_REPLY_FAILURES - 1) + ["terminal"]
+    # a different hop (or run) has its own count; a good reply clears it
+    assert asyncio.run(handle_text(_req(run_id="dream-carry-run2"), _complete("x", []), failures=failures)).status == "retry"
+    good = json.dumps({"passage": "p", "image_prompt": "a door"})
+    assert asyncio.run(handle_text(_req(run_id="dream-carry-run2"), _complete(good, []), failures=failures)).status == "done"
+    assert asyncio.run(handle_text(_req(run_id="dream-carry-run2"), _complete("x", []), failures=failures)).status == "retry"
+
+
+def test_refusals_never_turn_terminal():
+    from app import llm
+    from app.carry import MAX_REPLY_FAILURES, ReplyFailures, handle_text
+
+    failures = ReplyFailures()
+    for _ in range(MAX_REPLY_FAILURES + 2):
+        r = asyncio.run(handle_text(_req(), _complete(llm.GatewayRefused("busy:"), []), failures=failures))
+        assert r.status == "retry"
+
+
+def test_a_text_step_queued_past_its_budget_retries_without_calling_the_llm():
+    from app.carry import handle_text
+
+    calls = []
+    result = asyncio.run(handle_text(_req(), _complete("{}", calls), waited_sec=170.0))
+    assert result.status == "retry" and "queued_past_budget" in result.reason and calls == []
+    asyncio.run(handle_text(_req(), _complete(json.dumps({"passage": "p", "image_prompt": "d"}), calls), waited_sec=20.0))
+    assert calls[0]["timeout"] == 180.0 - 15.0 - 20.0
+
+
+def test_finished_dream_is_always_timestamped():
+    from app.carry import build_carry_dream
+
+    dream = build_carry_dream(_req("finish", hops=_six()))
+    assert dream.created_at is not None and dream.created_at.tzinfo is not None
+    assert dream.dream_date == dream.created_at.date()
+
+
+def test_a_listener_handler_bug_retries_then_turns_terminal():
+    from app import carry as carry_mod
+
+    bus = _Bus()
+    lst = _listener(bus, "")
+
+    async def boom(*a, **kw):
+        raise KeyError("bug")
+
+    import pytest as _pt
+    mp = _pt.MonkeyPatch()
+    mp.setattr(carry_mod, "handle_step", boom)
+    try:
+        for _ in range(carry_mod.MAX_REPLY_FAILURES):
+            asyncio.run(lst.handle(_env(_req())))
+    finally:
+        mp.undo()
+    statuses = [env.payload["status"] for _, env in bus.published]
+    assert statuses == ["retry"] * (carry_mod.MAX_REPLY_FAILURES - 1) + ["terminal"]

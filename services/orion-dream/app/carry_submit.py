@@ -22,6 +22,8 @@ from orion.schemas.durable_run import DurableRunRequestV1
 from orion.schemas.resource_admission import ResourceRequirementV1
 from orion.schemas.telemetry.dream import DreamSleepDigestV1
 
+# A reason starting with this is bus trouble (timeout, dead connection), not a cortex answer.
+TRANSPORT_PREFIX = "transport_"
 CARRY_PROMPT = "Carry tonight's dream through words and pictures."
 
 
@@ -64,7 +66,7 @@ async def submit_via_cortex(
         decoded = bus.codec.decode(raw.get("data") if isinstance(raw, dict) else raw)
         result = decoded.envelope.payload if decoded.ok and decoded.envelope is not None else None
     except Exception as exc:  # noqa: BLE001
-        return f"{type(exc).__name__}: {exc}"[:300]
+        return f"{TRANSPORT_PREFIX}{type(exc).__name__}: {exc}"[:300]
     if not isinstance(result, dict):
         return "undecodable_reply"
     if result.get("status") != "accepted":

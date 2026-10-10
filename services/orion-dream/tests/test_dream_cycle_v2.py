@@ -758,10 +758,33 @@ def test_with_carry_off_a_completed_sleep_still_publishes_the_story(monkeypatch)
     assert env.payload["sleep"]["material"] == built[0].sleep.material
 
 
-def test_a_carry_that_fails_to_submit_does_not_fail_the_sleep(monkeypatch):
+def test_a_carry_that_fails_to_submit_falls_back_to_the_story_and_keeps_the_sleep(monkeypatch):
+    """Transport failure: the bus is dropped for reconnect, and the sleep still gets its dream
+    (the one-shot story), so a carry that cannot start never costs the sleep its dream."""
     from app.cycle import run_cycle_once
+    from app.settings import settings
 
-    f, deps, bus, dropped, _ = _carry_deps(monkeypatch, carry_enabled=True, fail=True)
+    f, deps, bus, dropped, built = _carry_deps(monkeypatch, carry_enabled=True, fail=True)
     cycle = asyncio.run(run_cycle_once(deps))
     assert cycle.status == "completed" and f.persisted == [cycle]
-    assert len(bus.rpcs) == 1 and bus.published == [] and dropped == [True]
+    assert len(bus.rpcs) == 1 and dropped == [True]
+    (channel, env), = bus.published
+    assert channel == settings.CHANNEL_DREAM_TRIGGER and env.payload["sleep"]["material"] == built[0].sleep.material
+
+
+def test_a_carry_cortex_refuses_falls_back_to_the_story_without_dropping_the_bus(monkeypatch):
+    from app.cycle import run_cycle_once
+
+    f, deps, bus, dropped, _ = _carry_deps(monkeypatch, carry_enabled=True)
+
+    async def refusing(channel, env, *, reply_channel, timeout_sec):
+        from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
+
+        bus.rpcs.append((channel, env))
+        return {"data": bus.codec.encode(BaseEnvelope(kind="cortex.orch.result", source=ServiceRef(name="o"),
+                                                      payload={"status": "fail", "error": {"type": "AdmissionUnconfirmed"}}))}
+
+    bus.rpc_request = refusing
+    cycle = asyncio.run(run_cycle_once(deps))
+    assert cycle.status == "completed" and len(bus.rpcs) == 1 and dropped == []
+    assert [env.kind for _, env in bus.published] == ["dream.trigger"]

@@ -182,9 +182,13 @@ def build_cycle_deps():
             return
         try:
             await submit_carry(bus, trigger.trigger_id, trigger.sleep)
-        except Exception:
-            await _drop_cycle_bus()  # same as _complete: reconnect on the next use
-            raise
+        except Exception as exc:
+            if not isinstance(exc, CarryNotAccepted):
+                await _drop_cycle_bus()  # transport trouble: reconnect on the next use
+            # A carry that was not started must not cost the sleep its dream: fall back to the
+            # one-shot story (e.g. durable-runs/cortex not ready for dream.carry yet).
+            logger.warning("dream_carry_fallback_story trigger_id=%s err=%s", trigger.trigger_id, exc)
+            await _start_story(trigger)
 
     read_errors = []
 
@@ -217,10 +221,14 @@ def build_cycle_deps():
     )
 
 
+class CarryNotAccepted(RuntimeError):
+    """cortex-orch answered, but did not accept the carry (the bus itself is fine)."""
+
+
 async def submit_carry(bus, trigger_id: str, sleep) -> str:
     """Submit one dream.carry run; returns its run_id. Raises with the reason when cortex-orch
     did not accept it (the sleep's caller logs that and carries on)."""
-    from app.carry_submit import build_carry_request, submit_via_cortex
+    from app.carry_submit import TRANSPORT_PREFIX, build_carry_request, submit_via_cortex
 
     request = build_carry_request(trigger_id, sleep, deadline_sec=settings.DREAM_CARRY_DEADLINE_SEC)
     reason = await submit_via_cortex(
@@ -231,7 +239,9 @@ async def submit_carry(bus, trigger_id: str, sleep) -> str:
     )
     if reason is not None:
         logger.warning("dream_carry_submit_failed trigger_id=%s run_id=%s reason=%s", trigger_id, request.run_id, reason)
-        raise RuntimeError(f"dream_carry_submit_failed: {reason}")
+        if reason.startswith(TRANSPORT_PREFIX):
+            raise RuntimeError(f"dream_carry_submit_failed: {reason}")
+        raise CarryNotAccepted(f"dream_carry_submit_failed: {reason}")
     logger.info(
         "dream_carry_submitted trigger_id=%s run_id=%s material=%d correlation_id=%s",
         trigger_id, request.run_id, len(sleep.material) if sleep is not None else 0, request.correlation_id,
@@ -371,7 +381,8 @@ async def carry_run_endpoint():
         bus = await _cycle_bus()
         run_id = await submit_carry(bus, trigger_id, None)
     except Exception as exc:
-        await _drop_cycle_bus()
+        if not isinstance(exc, CarryNotAccepted):
+            await _drop_cycle_bus()
         return {"run_id": dream_carry_run_id(trigger_id), "status": "submit_failed", "reason": str(exc)[:300]}
     return {"run_id": run_id, "status": "accepted", "trigger_id": trigger_id}
 

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from contextlib import suppress
 from typing import Any, Callable, Optional
 
@@ -49,6 +50,8 @@ class DreamCarryListener:
         self.bus_factory = bus_factory
         self.bus: Any = None
         self.ledger = carry.FinishLedger()
+        self.failures = carry.ReplyFailures()
+        self._handler_errors: dict[tuple[str, str, int | None], int] = {}
         self._finish_lock = asyncio.Lock()
         self._slots = asyncio.Semaphore(MAX_CONCURRENT_STEPS)
         self._inflight: set[asyncio.Task] = set()
@@ -69,6 +72,7 @@ class DreamCarryListener:
 
     # --- one request ----------------------------------------------------------------
     async def handle(self, envelope: BaseEnvelope) -> Optional[DreamCarryStepResultV1]:
+        received = time.monotonic()
         reply_to = envelope.reply_to or ""
         if envelope.kind != DREAM_CARRY_STEP_REQUEST_KIND or not reply_to.startswith(f"{DREAM_CARRY_STEP_REPLY_PREFIX}:"):
             return None
@@ -81,29 +85,39 @@ class DreamCarryListener:
                 return None
         else:
             async with self._slots:
+                waited = time.monotonic() - received
                 if request.step == "finish":
                     # One finish at a time: the ledger check and the publish must not interleave.
                     async with self._finish_lock:
-                        result = await self._step(request)
+                        result = await self._step(request, waited)
                 else:
-                    result = await self._step(request)
+                    result = await self._step(request, waited)
         await self.bus.publish(reply_to, BaseEnvelope(
             kind=DREAM_CARRY_STEP_RESULT_KIND, source=self.source, correlation_id=envelope.correlation_id,
             payload=result.model_dump(mode="json"),
         ))
         return result
 
-    async def _step(self, request: DreamCarryStepRequestV1) -> DreamCarryStepResultV1:
+    async def _step(self, request: DreamCarryStepRequestV1, waited_sec: float = 0.0) -> DreamCarryStepResultV1:
         try:
             return await carry.handle_step(
                 request, complete=self.complete, publish=self.publish_dream,
                 ledger=self.ledger, already_recorded=self.already_recorded,
+                failures=self.failures, waited_sec=waited_sec,
             )
-        except Exception as exc:  # a handler bug answers retry, never silence
+        except Exception as exc:  # a handler bug answers retry (then terminal), never silence
             logger.exception("dream_carry_step_failed run=%s step=%s", request.run_id, request.step)
+            key = (request.run_id, request.step, request.hop_index)
+            self._handler_errors[key] = self._handler_errors.get(key, 0) + 1
+            reason = f"handler_{type(exc).__name__}"[:280]
+            if self._handler_errors[key] >= carry.MAX_REPLY_FAILURES:
+                return DreamCarryStepResultV1(
+                    run_id=request.run_id, correlation_id=request.correlation_id, step=request.step,
+                    status="terminal", reason=f"{reason} x{carry.MAX_REPLY_FAILURES}",
+                )
             return DreamCarryStepResultV1(
                 run_id=request.run_id, correlation_id=request.correlation_id, step=request.step,
-                status="retry", reason=f"handler_{type(exc).__name__}"[:300], retry_after_sec=carry.RETRY_AFTER_SEC,
+                status="retry", reason=reason, retry_after_sec=carry.RETRY_AFTER_SEC,
             )
 
     def _spawn(self, envelope: BaseEnvelope) -> None:
@@ -178,6 +192,7 @@ def _already_recorded_factory(postgres_uri: str) -> carry.AlreadyRecorded:
     from sqlalchemy import create_engine, text
 
     engine = create_engine(postgres_uri, pool_pre_ping=True, pool_size=1, max_overflow=1)
+    # Unindexed JSONB lookup: a full scan of dreams, fine at its size (tens of rows a month).
     query = text("SELECT 1 FROM dreams WHERE metrics->'_dream_audit'->>'dream_id' = :id LIMIT 1")
 
     def _check(dream_id: str) -> bool:

@@ -45,6 +45,13 @@ CARRY_PURPOSE = "dream_carry"
 CARRY_MODE = "carry"
 CARRY_PROFILE = "dream.carry"
 RETRY_AFTER_SEC = 30.0
+# Reply-shape failures (unparseable / empty JSON) are retried this many times per hop, then the
+# hop is terminal: a model that keeps answering badly would otherwise burn ~480 background calls
+# before the 4 h deadline. Capacity trouble (GatewayRefused, timeouts) is not counted: it retries
+# until the deadline, the same no-attempt-spent rule as reverie.visual.
+MAX_REPLY_FAILURES = 3
+# Below this much remaining step budget, don't start an LLM call the run has stopped waiting for.
+MIN_LLM_BUDGET_SEC = 30.0
 TLDR_MAX_CHARS = 400
 PICTURE_MARK = "[picture]"
 
@@ -170,12 +177,31 @@ def _result(request: DreamCarryStepRequestV1, status: str, **kw: Any) -> DreamCa
     )
 
 
-def _llm_timeout(brief: DreamCarryBriefV1) -> float:
-    # Inside the run's own RPC budget for the step, so the gateway gives up before the run does.
-    return max(30.0, float(brief.timeout_sec) - 15.0)
+def _llm_timeout(brief: DreamCarryBriefV1, waited_sec: float = 0.0) -> float:
+    # Inside the run's own RPC budget for the step (less any time this request sat queued here),
+    # so the gateway gives up before the run does.
+    return float(brief.timeout_sec) - 15.0 - max(0.0, waited_sec)
 
 
-async def handle_text(request: DreamCarryStepRequestV1, complete: CarryComplete) -> DreamCarryStepResultV1:
+class ReplyFailures:
+    """In-process count of reply-shape failures per (run_id, hop_index)."""
+
+    def __init__(self) -> None:
+        self._n: dict[tuple[str, int], int] = {}
+
+    def bump(self, run_id: str, index: int) -> int:
+        key = (run_id, index)
+        self._n[key] = self._n.get(key, 0) + 1
+        return self._n[key]
+
+    def clear(self, run_id: str, index: int) -> None:
+        self._n.pop((run_id, index), None)
+
+
+async def handle_text(
+    request: DreamCarryStepRequestV1, complete: CarryComplete, *,
+    failures: Optional[ReplyFailures] = None, waited_sec: float = 0.0,
+) -> DreamCarryStepResultV1:
     started = time.monotonic()
     index = int(request.hop_index or 0)
     try:
@@ -183,8 +209,13 @@ async def handle_text(request: DreamCarryStepRequestV1, complete: CarryComplete)
     except ValueError as exc:
         return _result(request, "terminal", reason=f"missing_prior_hops: {exc}"[:300])
     assert request.gpu_lease is not None  # DreamCarryStepRequestV1 requires it for text
+    budget = _llm_timeout(request.brief, waited_sec)
+    if budget < MIN_LLM_BUDGET_SEC:
+        # The run's RPC has (nearly) timed out while this sat queued: it will re-send the step.
+        return _result(request, "retry", reason=f"queued_past_budget waited={waited_sec:.0f}s",
+                       retry_after_sec=RETRY_AFTER_SEC)
     try:
-        raw = await complete(prompt, request.gpu_lease.model_dump(mode="json"), _llm_timeout(request.brief))
+        raw = await complete(prompt, request.gpu_lease.model_dump(mode="json"), budget)
     except Exception as exc:  # GatewayRefused, timeout, dead connection: all retry
         reason = f"llm_{type(exc).__name__}: {exc}"[:300]
         logger.warning("dream_carry_text_retry run=%s hop=%d reason=%s", request.run_id, index, reason)
@@ -196,8 +227,13 @@ async def handle_text(request: DreamCarryStepRequestV1, complete: CarryComplete)
         reason = f"reply_{exc}"
         logger.warning("dream_carry_text_retry run=%s hop=%d reason=%s raw_len=%d",
                        request.run_id, index, reason, len(raw or ""))
+        if failures is not None and failures.bump(request.run_id, index) >= MAX_REPLY_FAILURES:
+            return _result(request, "terminal", reason=f"{reason} x{MAX_REPLY_FAILURES} at hop {index}",
+                           elapsed_sec=round(time.monotonic() - started, 3))
         return _result(request, "retry", reason=reason, retry_after_sec=RETRY_AFTER_SEC,
                        elapsed_sec=round(time.monotonic() - started, 3))
+    if failures is not None:
+        failures.clear(request.run_id, index)
     elapsed = round(time.monotonic() - started, 3)
     hop = DreamCarryHopV1(kind="text", index=index, passage=passage, image_prompt=image_prompt, elapsed_sec=elapsed)
     logger.info("dream_carry_text_done run=%s hop=%d passage_chars=%d image_prompt_words=%d elapsed=%.1fs",
@@ -246,9 +282,11 @@ def build_carry_dream(request: DreamCarryStepRequestV1, *, now: Optional[datetim
              for h in hops]
     brief = request.brief
     stopped = request.stopped_reason
+    # Always stamped: sql-writer passes created_at through, so None would insert NULL, not now().
+    now = now or datetime.now(timezone.utc)
     return DreamResultV1(
         dream_id=carry_dream_id(request.run_id),
-        dream_date=(now or datetime.now(timezone.utc)).date(),
+        dream_date=now.date(),
         mode=CARRY_MODE,
         profile=CARRY_PROFILE,
         trigger={
@@ -270,7 +308,11 @@ def build_carry_dream(request: DreamCarryStepRequestV1, *, now: Optional[datetim
 class FinishLedger:
     """In-process record of carries already published, so a replayed finish (durable-runs
     re-sends it when the reply was lost) does not write a second `dreams` row: sql-writer
-    keys dreams by an autoincrement id, so it would."""
+    keys dreams by an autoincrement id, so it would.
+
+    Residual: publish succeeds, the reply is lost, and orion-dream restarts before sql-writer
+    writes the row. Neither this ledger nor the dreams-row lookup sees it, so a second row is
+    possible. Closing that needs a unique index on the audit dream_id in sql-writer."""
 
     def __init__(self) -> None:
         self._done: dict[str, str] = {}
@@ -323,7 +365,9 @@ async def handle_step(
     publish: PublishDream,
     ledger: FinishLedger,
     already_recorded: Optional[AlreadyRecorded] = None,
+    failures: Optional[ReplyFailures] = None,
+    waited_sec: float = 0.0,
 ) -> DreamCarryStepResultV1:
     if request.step == "text":
-        return await handle_text(request, complete)
+        return await handle_text(request, complete, failures=failures, waited_sec=waited_sec)
     return await handle_finish(request, publish, ledger, already_recorded)

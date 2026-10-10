@@ -234,16 +234,57 @@ def test_partial_carry_publishes_what_it_made_with_the_stopped_reason():
     assert dream.source_context["stopped_reason"] == "thermal_refused at hop 3"
 
 
-def test_zero_hops_is_terminal_and_publishes_nothing():
+def test_zero_hops_hand_started_is_terminal_and_publishes_nothing():
     from app.carry import FinishLedger, handle_finish
 
-    published = []
+    published, stories = [], []
 
     async def publish(d):
         published.append(d)
 
-    result = asyncio.run(handle_finish(_req("finish", stopped_reason="deadline at hop 0"), publish, FinishLedger()))
-    assert result.status == "terminal" and result.reason == "no_hops" and published == []
+    async def start_story(t):
+        stories.append(t)
+
+    req = _req("finish", brief=DreamCarryBriefV1(trigger_id="manual:x"), stopped_reason="deadline at hop 0")
+    result = asyncio.run(handle_finish(req, publish, FinishLedger(), start_story=start_story))
+    assert result.status == "terminal" and result.reason == "no_hops" and published == [] and stories == []
+
+
+def test_zero_hops_after_a_sleep_falls_back_to_the_story_once():
+    """Contract (orion/schemas/dream_carry.py): a sleep never ends with no dream."""
+    from app.carry import FinishLedger, handle_finish
+    from app.story import STORY_SOURCE
+
+    published, stories, ledger = [], [], FinishLedger()
+
+    async def publish(d):
+        published.append(d)
+
+    async def start_story(t):
+        stories.append(t)
+
+    req = _req("finish", stopped_reason="thermal_refused at hop 1")
+    first = asyncio.run(handle_finish(req, publish, ledger, start_story=start_story))
+    again = asyncio.run(handle_finish(req, publish, ledger, start_story=start_story))
+    for r in (first, again):
+        assert r.status == "done" and r.dream_id == "story-fallback:sleep:dc-abc123" and r.reason == "story_fallback"
+    assert published == [] and len(stories) == 1
+    (story,) = stories
+    assert story.trigger_id == "sleep:dc-abc123" and story.source == STORY_SOURCE and story.sleep == _sleep()
+
+
+def test_a_story_fallback_that_fails_to_publish_retries_and_is_not_ledgered():
+    from app.carry import FinishLedger, handle_finish
+
+    async def broken(_):
+        raise ConnectionError("bus down")
+
+    async def publish(_):
+        raise AssertionError("no dream to publish")
+
+    ledger = FinishLedger()
+    result = asyncio.run(handle_finish(_req("finish"), publish, ledger, start_story=broken))
+    assert result.status == "retry" and ledger.get("dream-carry-run1") is None
 
 
 def test_a_replayed_finish_publishes_once():
@@ -493,3 +534,14 @@ def test_a_listener_handler_bug_retries_then_turns_terminal():
         mp.undo()
     statuses = [env.payload["status"] for _, env in bus.published]
     assert statuses == ["retry"] * (carry_mod.MAX_REPLY_FAILURES - 1) + ["terminal"]
+
+
+def test_listener_zero_hop_finish_publishes_the_story_trigger_on_the_story_channel():
+    bus = _Bus()
+    lst = _listener(bus, "")
+    lst.story_channel = "orion:dream:trigger"
+    asyncio.run(lst.handle(_env(_req("finish"))))
+    (story_channel, story_env), (_, reply) = bus.published
+    assert story_channel == "orion:dream:trigger" and story_env.kind == "dream.trigger"
+    assert story_env.payload["sleep"]["material"] == MATERIAL and story_env.payload["trigger_id"] == "sleep:dc-abc123"
+    assert reply.payload["status"] == "done" and reply.payload["dream_id"] == "story-fallback:sleep:dc-abc123"

@@ -78,9 +78,10 @@ class Settings(BaseSettings):
     # --- Dream carry-through (dream.carry durable run) ---
     # On: the dream a completed sleep ends in is a carried dream (text -> picture ->
     # text ... six hops, run by orion-durable-runs), submitted through cortex-orch's
-    # durable ingress, instead of the one-shot story on CHANNEL_DREAM_TRIGGER. Also
-    # starts the step responder (orion:dream:carry:step:request) and allows
-    # POST /dreams/carry/run. Off: the #2565 one-paragraph story, unchanged.
+    # durable ingress, instead of the one-shot story on CHANNEL_DREAM_TRIGGER, and
+    # allows POST /dreams/carry/run. Off: the #2565 one-paragraph story for new sleeps.
+    # The step responder (orion:dream:carry:step:request) runs regardless, so carries
+    # already in flight still finish.
     DREAM_CARRY_ENABLED: bool = Field(default=True)
     # The run finishes partial (keeping every hop it made) once this passes.
     DREAM_CARRY_DEADLINE_SEC: float = Field(default=14400.0, gt=0.0)

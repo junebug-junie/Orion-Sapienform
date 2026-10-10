@@ -127,8 +127,10 @@ picture), so the last picture's caption is the dream's last word. Design:
   same `sleep` digest the story would have had, and the run id is derived from
   `sleep:<cycle_id>`, so one sleep is one carry. The submit counts only when the
   receipt names this run, workflow and resource (`app/carry_submit.py`). A failed
-  submit is logged (`dream_carry_submit_failed`), never fails the sleep, and falls
-  back to the one-shot story (`dream_carry_fallback_story`) so the sleep keeps its dream.
+  submit is logged (`dream_carry_submit_failed`) and never fails the sleep. It is
+  tried once more (the run id dedupes, so a timeout after durable-runs already took
+  the run cannot start a second dream); if that fails too, it falls back to the
+  one-shot story (`dream_carry_fallback_story`) so the sleep keeps its dream.
 - **Who does what.** orion-durable-runs runs the hops and checkpoints each one.
   orion-thought paints and captions the pictures. orion-dream answers the run's
   text and finish steps on `orion:dream:carry:step:request` (`app/carry_listener.py`,
@@ -150,13 +152,18 @@ picture), so the last picture's caption is the dream's last word. Design:
   (passage and image prompt, or sha256 and caption). The trigger (sleep digest,
   run id, `stopped_reason`) is in `metrics._dream_audit.trigger`. A carry that hit
   its deadline (`DREAM_CARRY_DEADLINE_SEC`, 4 h) publishes the hops it made with
-  `stopped_reason`; one with no hops answers `terminal` and publishes nothing.
+  `stopped_reason`. A sleep's carry that made no hops falls back to the one-shot
+  story (`dream.trigger` with the same digest) and answers `done` with dream id
+  `story-fallback:<trigger_id>`, published once per run; a hand-started carry with
+  no hops answers `terminal` and publishes nothing.
 - **Replays.** The dream id is derived from the run id. A finish that was already
   published (remembered in-process, or found in `dreams` by that id) is answered
   `done` again without a second row.
 - **By hand.** `POST /dreams/carry/run` starts a carry with no sleep behind it
   (trigger `manual:<uuid>`); it dreams from a free seed and returns `{run_id, status}`.
-- Off switch: `DREAM_CARRY_ENABLED=false` (also stops the step responder).
+- Off switch: `DREAM_CARRY_ENABLED=false` stops new carries (sleeps go back to the
+  one-shot story, and the endpoint refuses). The step responder keeps running so
+  carries already in flight still finish.
 
 ### HTTP / bus behavior
 

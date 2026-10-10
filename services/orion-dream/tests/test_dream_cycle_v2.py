@@ -767,7 +767,7 @@ def test_a_carry_that_fails_to_submit_falls_back_to_the_story_and_keeps_the_slee
     f, deps, bus, dropped, built = _carry_deps(monkeypatch, carry_enabled=True, fail=True)
     cycle = asyncio.run(run_cycle_once(deps))
     assert cycle.status == "completed" and f.persisted == [cycle]
-    assert len(bus.rpcs) == 1 and dropped == [True]
+    assert len(bus.rpcs) == 2 and dropped == [True, True]  # resubmitted once before falling back
     (channel, env), = bus.published
     assert channel == settings.CHANNEL_DREAM_TRIGGER and env.payload["sleep"]["material"] == built[0].sleep.material
 
@@ -786,5 +786,59 @@ def test_a_carry_cortex_refuses_falls_back_to_the_story_without_dropping_the_bus
 
     bus.rpc_request = refusing
     cycle = asyncio.run(run_cycle_once(deps))
-    assert cycle.status == "completed" and len(bus.rpcs) == 1 and dropped == []
+    assert cycle.status == "completed" and len(bus.rpcs) == 2 and dropped == []
     assert [env.kind for _, env in bus.published] == ["dream.trigger"]
+
+
+def test_a_carry_submit_that_times_out_once_is_resubmitted_not_doubled_with_a_story(monkeypatch):
+    """A timeout can land after durable-runs already took the run: resubmit (same run_id,
+    dedupes) instead of also publishing the story, which would give the sleep two dreams."""
+    from app.cycle import run_cycle_once
+
+    f, deps, bus, dropped, _ = _carry_deps(monkeypatch, carry_enabled=True)
+    accept = bus.rpc_request
+    attempts = []
+
+    async def flaky(channel, env, *, reply_channel, timeout_sec):
+        attempts.append(env.payload["context"]["metadata"]["durable_run"]["run_id"])
+        if len(attempts) == 1:
+            bus.rpcs.append((channel, env))
+            raise TimeoutError("receipt late")
+        return await accept(channel, env, reply_channel=reply_channel, timeout_sec=timeout_sec)
+
+    bus.rpc_request = flaky
+    cycle = asyncio.run(run_cycle_once(deps))
+    assert cycle.status == "completed"
+    assert len(attempts) == 2 and attempts[0] == attempts[1]  # same deterministic run_id
+    assert bus.published == [] and dropped == [True]
+
+
+def test_the_carry_step_responder_runs_even_with_new_carries_off(monkeypatch):
+    """DREAM_CARRY_ENABLED gates new carries only; in-flight carries must still get answers."""
+    from app import carry_listener, main
+    from app.settings import settings
+
+    started = []
+
+    class FakeListener:
+        async def start(self):
+            started.append("start")
+
+        async def stop(self):
+            started.append("stop")
+
+    monkeypatch.setattr(carry_listener, "build_carry_listener", lambda: FakeListener())
+    monkeypatch.setattr(settings, "DREAM_INTROSPECT_ENABLED", False)
+    monkeypatch.setattr(settings, "ORION_DREAM_CYCLE_ENABLED", False)
+    monkeypatch.setattr(settings, "ORION_BUS_ENABLED", True)
+    for enabled in (False, True):
+        monkeypatch.setattr(settings, "DREAM_CARRY_ENABLED", enabled)
+
+        async def run():
+            async with main.lifespan(main.app):
+                pass
+        asyncio.run(run())
+    assert started == ["start", "stop", "start", "stop"]
+    monkeypatch.setattr(settings, "ORION_BUS_ENABLED", False)
+    asyncio.run(run())
+    assert started == ["start", "stop", "start", "stop"]  # no bus, no responder

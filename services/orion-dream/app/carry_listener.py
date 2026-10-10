@@ -40,12 +40,14 @@ DREAM_RESULT_KIND = "dream.result.v1"
 class DreamCarryListener:
     def __init__(
         self, *, bus_url: str, source: Any, dream_log_channel: str,
+        story_channel: str = "orion:dream:trigger",
         already_recorded: Optional[carry.AlreadyRecorded] = None,
         bus_factory: Callable[[str], Any] = OrionBusAsync,
     ):
         self.bus_url = bus_url
         self.source = source
         self.dream_log_channel = dream_log_channel
+        self.story_channel = story_channel
         self.already_recorded = already_recorded
         self.bus_factory = bus_factory
         self.bus: Any = None
@@ -69,6 +71,14 @@ class DreamCarryListener:
             kind=DREAM_RESULT_KIND, source=self.source, correlation_id=_corr(dream.correlation_id),
             payload=dream.model_dump(mode="json"),
         ))
+
+    async def start_story(self, trigger) -> None:
+        from app.story import story_envelope
+
+        env = story_envelope(trigger, self.source)
+        await self.bus.publish(self.story_channel, env)
+        logger.info("dream_story_started trigger_id=%s material=%d correlation_id=%s (carry fallback)",
+                    trigger.trigger_id, len(trigger.sleep.material), env.correlation_id)
 
     # --- one request ----------------------------------------------------------------
     async def handle(self, envelope: BaseEnvelope) -> Optional[DreamCarryStepResultV1]:
@@ -103,7 +113,7 @@ class DreamCarryListener:
             return await carry.handle_step(
                 request, complete=self.complete, publish=self.publish_dream,
                 ledger=self.ledger, already_recorded=self.already_recorded,
-                failures=self.failures, waited_sec=waited_sec,
+                failures=self.failures, waited_sec=waited_sec, start_story=self.start_story,
             )
         except Exception as exc:  # a handler bug answers retry (then terminal), never silence
             logger.exception("dream_carry_step_failed run=%s step=%s", request.run_id, request.step)
@@ -214,5 +224,6 @@ def build_carry_listener() -> DreamCarryListener:
         bus_url=settings.ORION_BUS_URL,
         source=ServiceRef(name="orion-dream", version=settings.SERVICE_VERSION, node=settings.NODE_NAME),
         dream_log_channel=settings.CHANNEL_DREAM_LOG,
+        story_channel=settings.CHANNEL_DREAM_TRIGGER,
         already_recorded=_already_recorded_factory(settings.POSTGRES_URI),
     )

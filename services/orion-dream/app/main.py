@@ -39,7 +39,10 @@ async def lifespan(app: FastAPI):
         await introspect.start()
         logger.info("dream introspect responder started")
     carry_listener = None
-    if settings.DREAM_CARRY_ENABLED and settings.ORION_BUS_ENABLED:
+    # Always answer carry steps when the bus is up: DREAM_CARRY_ENABLED gates only NEW carries
+    # (the sleep switch and POST /dreams/carry/run). Turning it off must not strand carries
+    # already in flight, whose text/finish steps would otherwise time out and lose their hops.
+    if settings.ORION_BUS_ENABLED:
         from app.carry_listener import build_carry_listener
 
         carry_listener = build_carry_listener()
@@ -159,10 +162,10 @@ def build_cycle_deps():
         bus = await _cycle_bus()
         if bus is None:
             return
-        env = BaseEnvelope(
-            kind="dream.trigger",
-            source=ServiceRef(name=settings.SERVICE_NAME, version=settings.SERVICE_VERSION, node=settings.NODE_NAME),
-            payload=trigger.model_dump(mode="json"),
+        from app.story import story_envelope
+
+        env = story_envelope(
+            trigger, ServiceRef(name=settings.SERVICE_NAME, version=settings.SERVICE_VERSION, node=settings.NODE_NAME),
         )
         try:
             await bus.publish(settings.CHANNEL_DREAM_TRIGGER, env)
@@ -177,18 +180,27 @@ def build_cycle_deps():
     async def _start_carry(trigger):
         # The sleep ends in a carried dream instead of the one-shot story: same trigger id,
         # same digest (T0 *is* the story), one durable run per sleep (deterministic run_id).
-        bus = await _cycle_bus()
-        if bus is None:
-            return
-        try:
-            await submit_carry(bus, trigger.trigger_id, trigger.sleep)
-        except Exception as exc:
-            if not isinstance(exc, CarryNotAccepted):
-                await _drop_cycle_bus()  # transport trouble: reconnect on the next use
-            # A carry that was not started must not cost the sleep its dream: fall back to the
-            # one-shot story (e.g. durable-runs/cortex not ready for dream.carry yet).
-            logger.warning("dream_carry_fallback_story trigger_id=%s err=%s", trigger.trigger_id, exc)
-            await _start_story(trigger)
+        # A failed submit is tried once more before falling back: a timeout can arrive after
+        # durable-runs already registered the run, and falling straight back would give the
+        # sleep two dreams. The run_id is deterministic, so the resubmit dedupes at the store.
+        last_exc = None
+        for attempt in (1, 2):
+            try:
+                bus = await _cycle_bus()
+                if bus is None:
+                    return
+                await submit_carry(bus, trigger.trigger_id, trigger.sleep)
+                return
+            except Exception as exc:
+                last_exc = exc
+                if not isinstance(exc, CarryNotAccepted):
+                    await _drop_cycle_bus()  # transport trouble: reconnect on the next use
+                logger.warning("dream_carry_submit_attempt_failed trigger_id=%s attempt=%d err=%s",
+                               trigger.trigger_id, attempt, exc)
+        # Twice not started: the sleep must not lose its dream, so fall back to the one-shot story
+        # (e.g. durable-runs/cortex not ready for dream.carry yet).
+        logger.warning("dream_carry_fallback_story trigger_id=%s err=%s", trigger.trigger_id, last_exc)
+        await _start_story(trigger)
 
     read_errors = []
 

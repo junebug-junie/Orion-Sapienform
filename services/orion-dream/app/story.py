@@ -51,3 +51,11 @@ def story_trigger(
             material=story_material(cycle.replay, control_items, cycle.cycle_id),
         ),
     )
+
+
+def story_envelope(trigger: DreamInternalTriggerV1, source):
+    """The `dream.trigger` envelope cortex-orch turns into the one-shot story (dream_cycle verb).
+    One builder for every publisher: the sleep's story path and the carry's zero-hop fallback."""
+    from orion.core.bus.bus_schemas import BaseEnvelope
+
+    return BaseEnvelope(kind="dream.trigger", source=source, payload=trigger.model_dump(mode="json"))

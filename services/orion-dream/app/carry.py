@@ -36,7 +36,7 @@ from orion.schemas.dream_carry import (
     DreamCarryStepResultV1,
     clip_image_prompt,
 )
-from orion.schemas.telemetry.dream import DreamResultV1
+from orion.schemas.telemetry.dream import DreamInternalTriggerV1, DreamResultV1
 
 logger = logging.getLogger("orion-dream.carry")
 
@@ -61,6 +61,10 @@ CarryComplete = Callable[[str, dict, float], Awaitable[str]]
 PublishDream = Callable[[DreamResultV1], Awaitable[None]]
 # dream_id -> True when a dreams row for it is already recorded. Best effort.
 AlreadyRecorded = Callable[[str], Awaitable[bool]]
+# DreamInternalTriggerV1 -> None: publishes the one-shot story (dream.trigger). Raises on failure.
+StartStory = Callable[[DreamInternalTriggerV1], Awaitable[None]]
+STORY_FALLBACK_PREFIX = "story-fallback:"
+STORY_FALLBACK_REASON = "story_fallback"
 
 _OUTPUT_CONTRACT = f"""OUTPUT
 Output **only** valid JSON (no markdown fences, no commentary) with exactly these keys:
@@ -329,15 +333,17 @@ async def handle_finish(
     publish: PublishDream,
     ledger: FinishLedger,
     already_recorded: Optional[AlreadyRecorded] = None,
+    start_story: Optional[StartStory] = None,
 ) -> DreamCarryStepResultV1:
     started = time.monotonic()
     prior = ledger.get(request.run_id)
     if prior is not None:
         logger.info("dream_carry_finish_replayed run=%s dream_id=%s (already published)", request.run_id, prior)
-        return _result(request, "done", dream_id=prior, elapsed_sec=0.0)
+        reason = STORY_FALLBACK_REASON if prior.startswith(STORY_FALLBACK_PREFIX) else None
+        return _result(request, "done", dream_id=prior, reason=reason, elapsed_sec=0.0)
     dream = build_carry_dream(request)
     if dream is None:
-        return _result(request, "terminal", reason="no_hops")
+        return await _story_fallback(request, ledger, start_story)
     if already_recorded is not None:
         try:
             if await already_recorded(dream.dream_id):
@@ -358,6 +364,38 @@ async def handle_finish(
     return _result(request, "done", dream_id=dream.dream_id, elapsed_sec=round(time.monotonic() - started, 3))
 
 
+def story_fallback_trigger(brief: DreamCarryBriefV1) -> DreamInternalTriggerV1:
+    """The one-shot story the sleep would have had (app/story.py's trigger, same digest)."""
+    from app.story import STORY_SOURCE
+
+    assert brief.sleep is not None
+    return DreamInternalTriggerV1(
+        trigger_id=brief.trigger_id, source=STORY_SOURCE,
+        reason=f"end of sleep {brief.sleep.cycle_id} (carried dream made no hops)", sleep=brief.sleep,
+    )
+
+
+async def _story_fallback(
+    request: DreamCarryStepRequestV1, ledger: FinishLedger, start_story: Optional[StartStory],
+) -> DreamCarryStepResultV1:
+    """Zero hops: a sleep still ends in a dream (the one-paragraph story). A hand-started carry
+    has no sleep to tell a story about: terminal, nothing published."""
+    brief = request.brief
+    if brief.sleep is None or start_story is None:
+        return _result(request, "terminal", reason="no_hops")
+    try:
+        await start_story(story_fallback_trigger(brief))
+    except Exception as exc:
+        reason = f"story_publish_{type(exc).__name__}: {exc}"[:300]
+        logger.warning("dream_carry_story_fallback_retry run=%s reason=%s", request.run_id, reason)
+        return _result(request, "retry", reason=reason, retry_after_sec=RETRY_AFTER_SEC)
+    dream_id = f"{STORY_FALLBACK_PREFIX}{brief.trigger_id}"
+    ledger.record(request.run_id, dream_id)
+    logger.info("dream_carry_story_fallback run=%s trigger_id=%s stopped_reason=%s",
+                request.run_id, brief.trigger_id, request.stopped_reason)
+    return _result(request, "done", dream_id=dream_id, reason=STORY_FALLBACK_REASON)
+
+
 async def handle_step(
     request: DreamCarryStepRequestV1,
     *,
@@ -367,7 +405,8 @@ async def handle_step(
     already_recorded: Optional[AlreadyRecorded] = None,
     failures: Optional[ReplyFailures] = None,
     waited_sec: float = 0.0,
+    start_story: Optional[StartStory] = None,
 ) -> DreamCarryStepResultV1:
     if request.step == "text":
         return await handle_text(request, complete, failures=failures, waited_sec=waited_sec)
-    return await handle_finish(request, publish, ledger, already_recorded)
+    return await handle_finish(request, publish, ledger, already_recorded, start_story)

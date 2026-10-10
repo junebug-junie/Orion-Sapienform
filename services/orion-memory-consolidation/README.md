@@ -40,13 +40,15 @@ Ships flag-gated off; flipping the flag alone does not activate anything without
 
 | Env | Default | Purpose |
 |-----|---------|---------|
-| `CONCEPT_RELATION_RESOLUTION_ENABLED` | `false` | Master flag for this path |
+| `CONCEPT_RELATION_RESOLUTION_ENABLED` | `true` | Master flag for this path |
 | `CONCEPT_RELATION_CONFIDENCE_FLOOR` | `0.6` | Minimum LLM decision confidence to act; below this, falls through to the normal formation-policy path unchanged |
 | `CONCEPT_RELATION_CANDIDATE_LIMIT` | `5` | Max vector-similar candidates fetched and sent to the LLM prompt |
 | `CONCEPT_RELATION_TIMEOUT_SEC` | `8.0` | RPC timeout for the relation-judgment call |
-| `CRYSTALLIZER_EMBED_HOST_URL` | *(empty)* | Embedding HTTP endpoint for candidate retrieval — must be set for this feature to do anything |
+| `CRYSTALLIZER_EMBED_HOST_URL` | `http://orion-athena-vector-host:8320/embedding` | Embedding HTTP endpoint for candidate retrieval and for projecting new crystallizations into Chroma |
 | `CRYSTALLIZER_EMBED_TIMEOUT_MS` | `8000` | Embed call timeout |
-| `CHROMA_HOST` / `CHROMA_PORT` | *(empty)* / `8000` | Chroma vector store for candidate retrieval — must be set alongside the embed host |
+| `CHROMA_HOST` / `CHROMA_PORT` | `orion-athena-vector-db` / `8000` | Chroma vector store for candidate retrieval |
+
+If resolution is enabled but either host is empty or unreachable, boot logs `concept_relation_resolution_degraded` (WARNING) and `/health` returns `"degraded": true` with the reason under `concept_relation.problems`. This replaced a silent no-op that let the writer produce zero decisions from 2026-09-07 to 2026-10-10.
 | `CRYSTALLIZER_VECTOR_COLLECTION` | `orion_memory_crystallizations` | Chroma collection name (matches Hub's projection collection) |
 
 ### Scheduled maintenance (Athena cron)

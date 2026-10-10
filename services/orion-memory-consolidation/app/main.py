@@ -13,6 +13,7 @@ from orion.core.bus.bus_service_chassis import ChassisConfig, Hunter
 from app.retry_degraded_classifies import run_classify_retry_loop
 from app.retry_failed_windows import run_retry_loop
 from app.settings import settings
+from app.concept_relation_readiness import READINESS_STATUS, check_concept_relation_readiness
 from app.confirmation_loop import LOOP_OUTCOME_KIND, handle_loop_outcome, run_confirmation_loop
 from app.episode_shadow import EpisodeShadowStore
 from app.window_state import WindowStore
@@ -59,6 +60,10 @@ async def lifespan(app: FastAPI):
 
     bus_client = OrionBusAsync(url=settings.ORION_BUS_URL, enabled=settings.ORION_BUS_ENABLED)
     await bus_client.connect()
+
+    # Loud, not silent: warn at boot if concept-relation resolution is on but cannot
+    # reach its embed/Chroma hosts (it silently wrote nothing 2026-09-07..10-10).
+    await check_concept_relation_readiness(settings)
 
     window_store = WindowStore(pg_pool) if pg_pool is not None else None
     episode_store = EpisodeShadowStore(pg_pool, settings) if pg_pool is not None else None
@@ -171,4 +176,6 @@ async def health() -> dict:
         "referent_projector_enabled": settings.MEMORY_REFERENT_PROJECTOR_ENABLED,
         "referent_projector": _referent_status(),
         "confirmation_loop_enabled": settings.MEMORY_CONFIRMATION_LOOP_ENABLED,
+        "concept_relation": dict(READINESS_STATUS),
+        "degraded": READINESS_STATUS.get("status") == "degraded",
     }

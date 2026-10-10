@@ -487,6 +487,61 @@ def visual_chain_age_minutes() -> float | None:
         return None
 
 
+# Bounded look-back for the cheap first pass of visual_last_painting_age_hours:
+# lets Postgres walk idx_reverie_visual_chain_created_at instead of seq-scanning
+# every row's chain_json (measured live 2026-10-10: ~1.7 ms index scan vs ~11 ms
+# seq scan). Only when nothing turns up inside the window does it fall back to
+# the unbounded scan, so a >7-day outage still reports its real age, not None.
+_PAINTING_AGE_LOOKBACK_DAYS = 7
+
+_PAINTING_AGE_SQL = (
+    "SELECT EXTRACT(EPOCH FROM (now() - max("
+    "(chain_json->'production_receipt'->>'produced_at')::timestamptz))) / 3600.0 "
+    "FROM reverie_visual_chain "
+    "WHERE chain_json ? 'production_receipt'"
+)
+
+
+def visual_last_painting_age_hours() -> float | None:
+    """Hours since Orion last actually produced a painting, or None if no
+    painting was ever produced (or the DB read failed). Never raises.
+
+    "Produced" means a `reverie_visual_chain` row carrying a `production_
+    receipt` -- timestamped by the receipt's own `produced_at`, not the row's
+    `created_at`. Deferral/failure rows (resource_deferred, run_deadline_
+    exceeded, generation_failed, ...) carry no receipt, so they do NOT reset
+    this clock -- unlike `visual_chain_age_minutes()` above, which treats any
+    row as proof the worker is alive. That difference is the whole point:
+    2026-10-09/10 the GPU lane controller refused every swap for 27.6 h and
+    the worker kept writing fresh deferral rows, so the staleness check stayed
+    green while no painting landed.
+
+    Dream carry pictures (brief.dream_hop) deliberately write NO chain row,
+    so they never count here -- this measures the reverie painting pipeline
+    only.
+    """
+    try:
+        from sqlalchemy import text
+
+        engine = _get_engine()
+        with engine.connect() as conn:
+            row = conn.execute(
+                text(
+                    _PAINTING_AGE_SQL
+                    + " AND created_at > now() - make_interval(days => :days)"
+                ),
+                {"days": _PAINTING_AGE_LOOKBACK_DAYS},
+            ).first()
+            age = row[0] if row else None
+            if age is None:
+                row = conn.execute(text(_PAINTING_AGE_SQL)).first()
+                age = row[0] if row else None
+        return None if age is None else float(age)
+    except Exception as exc:
+        logger.warning("visual_last_painting_age_hours query failed err=%s", exc)
+        return None
+
+
 def load_latest_visual_chain_continuity_state(*, with_identity: bool = False):
     """Most recent visual-chain row's `prior_description`, `continuity_
     streak`, AND `context_slot_rotation`, in ONE round trip (review finding

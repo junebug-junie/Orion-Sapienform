@@ -19,6 +19,17 @@ README convention, "unhealable failures use severity=critical... transient
 uses error and escalates if unacked" -- this wedge is proven non-self-healing
 (the 2026-08-31 precedent needed a container restart), so it gets the
 immediate-email tier rather than the wait-for-an-unacked-deadline tier.
+
+Second, independent check (2026-10-10): `visual_painting_gap`. The staleness
+check above only proves the worker loop is alive -- deferral/failure rows
+(resource_deferred, run_deadline_exceeded, generation_failed, ...) count as
+fresh. 2026-10-09 02:12 -> 10-10 06:02 the GPU lane controller refused every
+swap and Orion produced no painting for 27.6 h while the staleness check
+stayed green the whole time. This check reads `store.visual_last_painting_
+age_hours()` (production receipts only) instead. Severity "error", not
+"critical": a gap can be heat or a held GPU that clears on its own, so it
+escalates by email only if left unacked. Each check key has its own edge-
+triggered state, so one check going unhealthy never flips the other.
 """
 
 from __future__ import annotations
@@ -39,7 +50,12 @@ logger = logging.getLogger("orion-thought.visual_chain_health_monitor")
 
 _SOURCE_SERVICE = "orion-thought"
 _CHECK_KEY = "visual_chain_stale"
-Severity = Literal["info", "critical"]
+_PAINTING_GAP_CHECK_KEY = "visual_painting_gap"
+_EVENT_KINDS = {
+    _CHECK_KEY: "orion.reverie.visual_chain_stale.health.attention.v1",
+    _PAINTING_GAP_CHECK_KEY: "orion.reverie.visual_painting_gap.health.attention.v1",
+}
+Severity = Literal["info", "error", "critical"]
 
 
 @dataclass(frozen=True)
@@ -48,6 +64,9 @@ class HealthCheck:
     healthy: bool
     severity: Severity
     message: str = ""
+    # Empty -> the generic "recovered: <key>" note (the staleness check's
+    # original wording, kept byte-identical).
+    recovery_message: str = ""
 
 
 def _check(*, age_min: float | None, threshold_min: float) -> HealthCheck:
@@ -72,9 +91,45 @@ def _check(*, age_min: float | None, threshold_min: float) -> HealthCheck:
     )
 
 
+def _painting_gap_check(*, age_hours: float | None, threshold_hours: float) -> HealthCheck:
+    """age_hours=None (no painting ever, or the DB read failed) is NOT
+    flagged -- same "only judge a real number" rule as `_check` above.
+
+    Calibration (21 days live, 175 paintings): p95 gap 2.9 h; the only gaps
+    over 8 h were the three real outages (27.6 h, 17.8 h, 16.0 h), so the
+    12 h default fires on exactly those. See evals/test_painting_gap_replay.py.
+    """
+    gap = age_hours is not None and age_hours > threshold_hours
+    return HealthCheck(
+        key=_PAINTING_GAP_CHECK_KEY,
+        healthy=not gap,
+        severity="error",
+        message=(
+            f"Orion has not produced a painting in {age_hours:.1f} hours "
+            f"(threshold {threshold_hours:g} h). The worker may still be "
+            "writing deferral rows, so the visual-chain staleness check can "
+            "stay green through this. Likely causes, most likely first: "
+            "(1) the GPU lane controller is refusing swaps -- check the "
+            "mesh-guardian GPU cards or run scripts/gpu_pool_actuator_probe.py "
+            "(2026-10-09 precedent, 27.6 h); (2) long thermal refusals on the "
+            "painting GPU; (3) the visual-chain worker is wedged."
+            if gap
+            else ""
+        ),
+        recovery_message=(
+            f"[Orion reverie] recovered: {_PAINTING_GAP_CHECK_KEY} -- a painting "
+            f"landed (latest {age_hours:.1f} hours ago)."
+            if (not gap and age_hours is not None)
+            else ""
+        ),
+    )
+
+
 class VisualChainHealthMonitor:
-    """Edge-triggered single-check monitor: healthy unless the newest
-    `reverie_visual_chain` row is older than the configured threshold.
+    """Edge-triggered monitor with independent state per check key:
+    `visual_chain_stale` (newest `reverie_visual_chain` row older than the
+    staleness threshold) and `visual_painting_gap` (no produced painting in
+    the gap threshold).
 
     A transition is only considered "handled" (in-memory state updated) once
     orion-notify actually confirms delivery -- if it is unreachable at the
@@ -89,7 +144,8 @@ class VisualChainHealthMonitor:
             api_token=self._settings.notify_api_token,
             timeout=10,
         )
-        self._last_healthy: bool | None = None
+        # Per check key; a missing key means "no observation yet".
+        self._last_healthy: dict[str, bool] = {}
 
     def record_check(self, *, age_min: float | None) -> None:
         """Call once per watchdog tick with the current DB-reported age.
@@ -104,33 +160,47 @@ class VisualChainHealthMonitor:
         except Exception:
             logger.exception("visual_chain_health_check_failed")
 
+    def record_painting_gap(self, *, age_hours: float | None) -> None:
+        """Call once per watchdog tick with hours since the last produced
+        painting. Never raises."""
+        try:
+            self._run_tick_for_check(
+                _painting_gap_check(
+                    age_hours=age_hours,
+                    threshold_hours=self._settings.visual_painting_gap_threshold_hours,
+                )
+            )
+        except Exception:
+            logger.exception("visual_painting_gap_check_failed")
+
     def _run_tick_for_check(self, check: HealthCheck) -> None:
-        previous = self._last_healthy
+        key = check.key
+        previous = self._last_healthy.get(key)
 
         if previous is None:
             if check.healthy:
-                self._last_healthy = True
+                self._last_healthy[key] = True
                 return
             # First observation since this process started, and already
             # unhealthy: consult orion-notify itself (not just local memory,
             # which a restart would have wiped) for an already-open alert.
-            if self._has_open_alert() or self._publish(check, recovered=False):
-                self._last_healthy = False
+            if self._has_open_alert(key) or self._publish(check, recovered=False):
+                self._last_healthy[key] = False
             # else: leave unset so the next tick retries.
             return
 
         if previous and not check.healthy:
             if self._publish(check, recovered=False):
-                self._last_healthy = False
+                self._last_healthy[key] = False
             # else: leave `previous=True` so the next tick retries the alert.
         elif not previous and check.healthy:
             if self._publish(check, recovered=True):
-                self._last_healthy = True
+                self._last_healthy[key] = True
             # else: leave `previous=False` so the next tick retries the note.
         else:
-            self._last_healthy = check.healthy
+            self._last_healthy[key] = check.healthy
 
-    def _has_open_alert(self) -> bool:
+    def _has_open_alert(self, key: str = _CHECK_KEY) -> bool:
         headers = {}
         if self._settings.notify_api_token:
             headers["X-Orion-Notify-Token"] = self._settings.notify_api_token
@@ -154,13 +224,13 @@ class VisualChainHealthMonitor:
         return any(
             isinstance(item, dict)
             and item.get("source_service") == _SOURCE_SERVICE
-            and item.get("reason") == _CHECK_KEY
+            and item.get("reason") == key
             for item in items
         )
 
     def _publish(self, check: HealthCheck, *, recovered: bool) -> bool:
         if recovered:
-            message = f"[Orion reverie] recovered: {check.key}"
+            message = check.recovery_message or f"[Orion reverie] recovered: {check.key}"
             severity: Severity = "info"
         else:
             message = f"[Orion reverie] {check.message}"
@@ -173,7 +243,7 @@ class VisualChainHealthMonitor:
                 context={
                     "source_service": _SOURCE_SERVICE,
                     "reason": check.key,
-                    "event_kind": "orion.reverie.visual_chain_stale.health.attention.v1",
+                    "event_kind": _EVENT_KINDS[check.key],
                     "correlation_id": str(uuid4()),
                 },
             )
@@ -196,6 +266,19 @@ def check_visual_chain_staleness(age_min: float | None) -> None:
         _MONITOR.record_check(age_min=age_min)
     except Exception:
         logger.exception("visual_chain_health_check_failed")
+
+
+def check_visual_painting_gap(age_hours: float | None) -> None:
+    """Module-level entrypoint for the painting-gap check, sharing the same
+    singleton (state is per key, so the two checks stay independent). Called
+    from the watchdog loop in visual_chain.py. Never raises."""
+    global _MONITOR
+    try:
+        if _MONITOR is None:
+            _MONITOR = VisualChainHealthMonitor()
+        _MONITOR.record_painting_gap(age_hours=age_hours)
+    except Exception:
+        logger.exception("visual_painting_gap_check_failed")
 
 
 def reset_monitor_for_tests() -> None:

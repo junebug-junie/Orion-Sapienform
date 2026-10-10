@@ -160,6 +160,6 @@ No restart required. Production already runs every value now written into code.
 
 ## PR link
 
-PR_LINK_PLACEHOLDER
+https://github.com/junebug-junie/Orion-Sapienform/pull/2592
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

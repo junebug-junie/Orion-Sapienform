@@ -57,6 +57,13 @@ class Settings(BaseSettings):
     orion_shed_max_sec_per_day: float = Field(3600.0, ge=0, alias="GPU_POOL_ORION_SHED_MAX_SEC_PER_DAY")
     orion_shed_min_gap_sec: float = Field(900.0, ge=0, alias="GPU_POOL_ORION_SHED_MIN_GAP_SEC")
 
+    # Controller-health alert (app/controller_health.py): a Hub attention card when a seat's lane
+    # controller keeps refusing with a reason a retry cannot fix (config_unloadable, digest mismatch,
+    # ...). /health and the state payload show it regardless; this only gates the card.
+    controller_alert_enabled: bool = Field(True, alias="GPU_POOL_CONTROLLER_ALERT_ENABLED")
+    notify_base_url: str = Field("http://orion-athena-notify:7140", alias="NOTIFY_BASE_URL")
+    notify_api_token: str | None = Field(None, alias="NOTIFY_API_TOKEN")
+
 
 @lru_cache
 def get_settings() -> Settings:

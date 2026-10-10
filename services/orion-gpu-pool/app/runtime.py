@@ -44,6 +44,7 @@ from orion.gpu_pool.orion_shed import (
 from orion.gpu_pool.shed import REFLEX_REASONS, ShedBoard, ShedSignal
 from orion.schemas.hardware_watch import HardwareWatchIncidentV1, HardwareWatchReflexShedV1
 from orion.gpu_pool.config import SWAP_GUARDS
+from app.controller_health import ControllerHealth
 from orion.schemas.gpu_pool import (
     GPU_ACTUATE_KIND, GPU_POOL_ACTUATE_REQUEST_CHANNEL, GPU_POOL_EVENT_CHANNEL, GPU_POOL_EVENT_KIND,
     GPU_POOL_STATE_CHANNEL, GPU_POOL_STATE_KIND,
@@ -156,7 +157,8 @@ class PoolRuntime:
                  announce_stale_sec: float = 120.0, probe_interval_sec: float = 15.0,
                  state_publish_sec: float = 5.0, replay_payload_max_bytes: int = 262144,
                  shed_enabled: bool = False, orion_shed_enabled: bool = False,
-                 orion_shed_caps: OrionShedCaps | None = None, orion_shed_ledger: OrionShedLedger | None = None):
+                 orion_shed_caps: OrionShedCaps | None = None, orion_shed_ledger: OrionShedLedger | None = None,
+                 controller_alert: Callable[[str, str, dict[str, Any]], Awaitable[Any]] | None = None):
         if mode not in POOL_MODES:
             raise ValueError(f"GPU_POOL_MODE must be one of {POOL_MODES}, got {mode!r}")
 
@@ -206,6 +208,12 @@ class PoolRuntime:
             board=self.shed_board, ledger=orion_shed_ledger or MemoryOrionShedLedger(),
             caps=orion_shed_caps or OrionShedCaps(), enabled=orion_shed_enabled,
             lever_enabled=lambda: self.shed_enabled, now=lambda: self.now())
+        # Can each seat's actuator act on what the pool asks? (app/controller_health.py; the
+        # 2026-10-09 stale-controller incident.) controller_alert(seat, "degraded"|"recovered", view)
+        # is fired once per transition, outside the lock (main.py wires it to a Hub attention card).
+        self.controller_health = ControllerHealth()
+        self.controller_alert = controller_alert
+        self._alert_tasks: set[asyncio.Task] = set()
         self._started = False
         self._recent_actions: dict[str, list[str]] = {}
         self._ctx_saved: dict[str, int] = {}
@@ -979,6 +987,10 @@ class PoolRuntime:
                     return
                 if res.status in ("accepted", "progress"):
                     return
+                if res.status == "refused":
+                    self._controller_refused(seat, res.reason)
+                elif res.status == "succeeded":
+                    self._controller_answered(seat)
                 if res.status != "succeeded":
                     await self._finish(seat, state="fault", loaded=None, outcome=f"status_{res.status}",
                                        event="swap_failed", reason=f"status_{res.status}:{res.reason}")
@@ -1035,6 +1047,12 @@ class PoolRuntime:
                             seat, res.action_id, res.status)
                 return
 
+            # Our own action's answer: anything but a refusal means the controller read its config
+            # (it admits, i.e. resolves against the config, before it says accepted).
+            if res.status == "refused":
+                self._controller_refused(seat, res.reason)
+            else:
+                self._controller_answered(seat)
             if res.status in ("accepted", "progress"):
                 self._set_action(seat, acked_at=act.get("acked_at") or now.isoformat(), phase=res.phase)
                 await self._save_cards(cards, "actuate_progress")
@@ -1062,6 +1080,53 @@ class PoolRuntime:
                                    reason=res.reason or "failed",
                                    detail={"restored": res.restored, "phase": res.phase,
                                            "observed": dict(res.observed)})
+
+    # --- controller health (app/controller_health.py) ---------------------------------------
+    def _controller_host(self, seat: str) -> str:
+        launch = self.cfg.roles[seat].launch
+        return launch.actuator if launch else "unknown"
+
+    def _controller_refused(self, seat: str, reason: str | None) -> None:
+        t = self.controller_health.on_refused(seat, reason, host=self._controller_host(seat), now=self.now())
+        if t is None:
+            return
+        view = t.view()
+        logger.error("gpu_pool_controller_degraded seat=%s host=%s kind=%s reason=%s refusals=%s first_seen=%s -- %s",
+                     seat, t.host, t.kind, t.reason, t.count, view["first_seen"], view["advice"])
+        self._fire_controller_alert(seat, "degraded", view)
+
+    def _controller_answered(self, seat: str) -> None:
+        t = self.controller_health.on_answered(seat)
+        if t is None:
+            return
+        view = {**t.view(), "degraded": False, "recovered_at": self.now().isoformat()}
+        logger.warning("gpu_pool_controller_recovered seat=%s host=%s kind=%s refusals=%s degraded_since=%s",
+                       seat, t.host, t.kind, t.count, view["degraded_since"])
+        self._fire_controller_alert(seat, "recovered", view)
+
+    def _fire_controller_alert(self, seat: str, state: str, view: dict[str, Any]) -> None:
+        """Fire-and-forget: the alert does HTTP and must never hold the lease lock or fail a result."""
+        if self.controller_alert is None:
+            return
+
+        async def send() -> None:
+            try:
+                await self.controller_alert(seat, state, view)
+            except Exception:  # noqa: BLE001
+                logger.exception("gpu_pool_controller_alert_failed seat=%s state=%s", seat, state)
+
+        task = asyncio.create_task(send())
+        self._alert_tasks.add(task)
+        task.add_done_callback(self._alert_tasks.discard)
+
+    def _card_actuation(self, c: CardLive) -> dict[str, Any] | None:
+        """The card's action record, plus ``controller_degraded`` (not persisted) for a degraded seat on
+        it: the state payload's card ``actuation`` is a free dict, so old consumers just carry it."""
+        bad = {s: t.view() for s, t in self.controller_health.degraded().items()
+               if c.card in self.cfg.roles[s].cards}
+        if not bad:
+            return c.swap_action
+        return {**(c.swap_action or {}), "controller_degraded": bad}
 
     async def _check_actuation(self) -> None:
         """Timeouts (spec "Timeouts"): no accepted within actuate_ack_sec -> actuator_unreachable;
@@ -1129,6 +1194,10 @@ class PoolRuntime:
         if res.status in ("accepted", "progress"):
             self._reconciling[seat] = rec   # not the answer yet
             return
+        if res.status == "refused":
+            self._controller_refused(seat, res.reason)
+        elif res.status == "succeeded":
+            self._controller_answered(seat)
         if res.status != "succeeded":
             logger.warning("gpu_pool_reconcile_refused seat=%s status=%s reason=%s -- keeping the persisted "
                            "card state", seat, res.status, res.reason)
@@ -1475,7 +1544,7 @@ class PoolRuntime:
                                   residency_until=c.residency_until, loaded_at=c.loaded_at,
                                   actuated_roles=sorted(r for r in self.actuated
                                                         if c.card in self.cfg.roles[r].cards),
-                                  actuation=c.swap_action) for c in self.cards.values()],
+                                  actuation=self._card_actuation(c)) for c in self.cards.values()],
             roles=self.discovered, unclaimed_servers=self.unclaimed,
             leases=[GpuLeaseRowV1(
                 lease_id=r["lease_id"], request_id=r["request_id"], holder=r["holder"],

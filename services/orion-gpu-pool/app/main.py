@@ -37,6 +37,7 @@ from orion.schemas.hardware_watch import (
     HardwareWatchReflexShedV1,
 )
 
+from app.controller_alert import make_notify_alert
 from app.guards import GuardReader
 from app.orion_shed_store import PostgresOrionShedLedger
 from app.runtime import SLOW_LOCK_MS, PoolRuntime
@@ -304,7 +305,10 @@ async def lifespan(app: FastAPI):
         orion_shed_caps=OrionShedCaps(max_ttl_sec=_settings.orion_shed_max_ttl_sec,
                                       max_sec_per_day=_settings.orion_shed_max_sec_per_day,
                                       min_gap_sec=_settings.orion_shed_min_gap_sec),
-        orion_shed_ledger=PostgresOrionShedLedger(_pool))
+        orion_shed_ledger=PostgresOrionShedLedger(_pool),
+        controller_alert=(make_notify_alert(_settings.notify_base_url, _settings.notify_api_token,
+                                            source=_settings.service_name)
+                          if _settings.controller_alert_enabled else None))
     # Stage 5.7: every swap seat with a launch block is actuated; pause_actuation is the only stop.
     logger.info("gpu_pool_actuation mode=%s seats=%s", _settings.mode, sorted(runtime.actuated) or "none")
     # The actuator's replies are subscribed BEFORE start(): start() asks about a swap the previous
@@ -378,7 +382,12 @@ async def health() -> dict[str, Any]:
             # state=degraded: serving, but the listed columns are held in memory only (lost on a
             # restart) -- apply the named operator migration or let the background retry heal it.
             "schema": _store.schema_status() if _store is not None else None,
-            "actuation": ({"seats": sorted(runtime.actuated), **runtime._paused_detail()} if runtime else None),
+            # degraded: seats whose lane controller keeps refusing with a reason a retry cannot fix
+            # (app/controller_health.py) -- the pool serves, but cannot load/unload them. Each entry
+            # in actuation.controller says why, since when, and what to do.
+            "degraded": sorted(runtime.controller_health.degraded()) if runtime else [],
+            "actuation": ({"seats": sorted(runtime.actuated), **runtime._paused_detail(),
+                           "controller": runtime.controller_health.view()} if runtime else None),
             # Stage 7.3: roles above one hold -- configured max_holds, discovered slots, the limit in
             # force and why it is lower (scheduler.hold_cap). Pool state/Hub get holds/max_holds in 7.4.
             "holds": runtime.hold_limits() if runtime else None,

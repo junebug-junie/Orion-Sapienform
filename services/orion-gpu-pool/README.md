@@ -331,6 +331,29 @@ tick. A new reason, or the block clearing and recurring, is a new episode and is
 The Hub GPU-pool panel shows each card's `swap_state` (fault in red), the action in flight or last
 finished, cooldown/residency, which guard blocks, and every hold with the calls running in it.
 
+### When the controller can't act (controller health)
+
+The lane controller on circe reads `config/gpu_pool.yaml` from its bind-mounted checkout but runs the
+code baked into its image. When the checkout moves ahead of the image (2026-10-09: stage 7.3's
+`max_holds`), the controller refuses every request `config_unloadable:ValidationError` and the seat
+loads nothing -- 136 refusals over 26 h went unnoticed. Now (`app/controller_health.py`):
+
+- Two refusals in a row whose reason a retry cannot fix (`config_unloadable`, `fence_state_unreadable`,
+  `launch_digest_mismatch` and the other config disagreements, `invalid_request`) mark the seat
+  **degraded**. Retryable refusals (`busy`, `deadline_passed`, `upstream_not_idle:*`,
+  `stale_generation`) neither trip nor clear it. At the 600 s cooldown that is ~10 min.
+- `/health` -> `degraded: [seat]` and `actuation.controller.<seat>` (reason, refusals, first/last seen,
+  plain advice: "rebuild the controller on circe"). The state payload carries the same on the seat's
+  card under `actuation.controller_degraded` (not persisted); the Hub GPU pool panel shows it as
+  **CONTROLLER BROKEN** on the card.
+- One Hub Pending Attention card (orion-notify `/attention/request`, severity error; unacked 60 min ->
+  email) when the seat turns degraded, one ack-free info card when it recovers.
+  `GPU_POOL_CONTROLLER_ALERT_ENABLED=false` drops the cards only.
+- The pool keeps retrying at the cooldown: the first retry the rebuilt controller accepts clears it.
+- Fix: rebuild the controller on circe (`services/orion-gpu-lane-controller`); confirm with
+  `python3 scripts/gpu_pool_actuator_probe.py`.
+- Replay: `python services/orion-gpu-pool/evals/run_controller_stale_eval.py`.
+
 ## Deploy (athena)
 
 ```bash

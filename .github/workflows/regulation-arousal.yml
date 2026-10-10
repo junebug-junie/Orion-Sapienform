@@ -1,0 +1,49 @@
+name: Regulation arousal
+
+# Temporal Self rev 4, order 3 (R2/R3 core): the pure arousal reducer, its
+# schema/registry entries, and the shipped-reducer replay eval. The regulate
+# node and its SQL run in orion-durable-runs-tests.yml (isolated Postgres);
+# the dream idle fix runs in regulation-history.yml (isolated Postgres).
+
+on:
+  pull_request:
+    paths:
+      - "orion/regulation/**"
+      - "orion/schemas/regulation.py"
+      - "orion/schemas/drive_reading.py"
+      - "orion/schemas/registry.py"
+      - "orion/autonomy/cabinet_heat.py"
+      - "tests/test_regulation_arousal.py"
+      - "scripts/analysis/measure_arousal_reducer_replay.py"
+      - "scripts/analysis/tests/test_measure_arousal_reducer_replay.py"
+      - "scripts/check_env_key_single_source.py"
+      - ".github/workflows/regulation-arousal.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  arousal:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      ORION_BUS_URL: redis://100.92.216.81:6379/0
+      ORION_BUS_ENABLED: "false"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: python -m pip install -r services/orion-sql-writer/requirements.txt pytest pytest-asyncio
+      - name: Reducer, Juniper-turn rule, schema registry
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+        run: python -m pytest -q -p no:cacheprovider tests/test_regulation_arousal.py
+      - name: Shipped-reducer replay eval
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+        run: python -m pytest -q -p no:cacheprovider scripts/analysis/tests/test_measure_arousal_reducer_replay.py
+      - name: DREAM_IDLE_MINUTES has one owner
+        run: python scripts/check_env_key_single_source.py

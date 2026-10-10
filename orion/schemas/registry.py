@@ -106,6 +106,7 @@ from orion.schemas.memory_crystallization import ActiveMemoryPacketV1, MemoryCry
 from orion.schemas.memory_episode import MEMORY_EPISODE_CLOSED_KIND, MemoryEpisodeClosedV1
 from orion.schemas.situation_state import SITUATION_STATE_KIND, SituationStateV1
 from orion.schemas.drive_reading import DriveReadingV1
+from orion.schemas.regulation import REGULATION_STATE_KIND, RegulationStateV1
 from orion.schemas.vision_sighting import IDENTITY_SIGHTING_KIND, IdentitySightingV1
 from orion.schemas.context_exec import (
     BeliefProvenanceReportV1,
@@ -735,6 +736,18 @@ from orion.schemas.situation import (
 from orion.schemas.field_attention_frame import FieldAttentionFrameV1, FieldAttentionTargetV1
 from orion.schemas.field_goal import FieldGoalProvenanceV1
 from orion.schemas.field_dominance_run import FieldDominanceRunV1
+from orion.schemas.temporal_self import (
+    ArcAttentionSummaryV1,
+    ArcBodySummaryV1,
+    ArcSummaryV1,
+    ExpectationRefV1,
+    OpenThreadV1,
+    TemporalSelfArcV1,
+    TemporalSelfDayV1,
+    TemporalSelfEventV1,
+    TemporalSelfFrameV1,
+    TemporalSelfStateV1,
+)
 from orion.schemas.field_state import FieldEdgeV1, FieldStateV1
 from orion.schemas.causal_geometry import (
     CausalGeometryDivergenceEntryV1,
@@ -1439,6 +1452,17 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "FieldAttentionFrameV1": FieldAttentionFrameV1,
     "FieldGoalProvenanceV1": FieldGoalProvenanceV1,
     "FieldDominanceRunV1": FieldDominanceRunV1,
+    # Temporal Self (PR #2369 rev 4, patch 2): stored models, not bus payloads in v1.
+    "TemporalSelfEventV1": TemporalSelfEventV1,
+    "TemporalSelfArcV1": TemporalSelfArcV1,
+    "TemporalSelfFrameV1": TemporalSelfFrameV1,
+    "TemporalSelfDayV1": TemporalSelfDayV1,
+    "TemporalSelfStateV1": TemporalSelfStateV1,
+    "ArcSummaryV1": ArcSummaryV1,
+    "ArcAttentionSummaryV1": ArcAttentionSummaryV1,
+    "ArcBodySummaryV1": ArcBodySummaryV1,
+    "OpenThreadV1": OpenThreadV1,
+    "ExpectationRefV1": ExpectationRefV1,
     "PolicyDecisionV1": PolicyDecisionV1,
     "PolicyDecisionFrameV1": PolicyDecisionFrameV1,
     "ProposalCandidateV1": ProposalCandidateV1,
@@ -1531,6 +1555,9 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     # Rest drive (Temporal Self rev 4, 2026-10-10). Redis-only (orion:drive:rest:latest),
     # not a bus payload: no bus subscriber exists, and an unconsumed channel is an orphan.
     "DriveReadingV1": DriveReadingV1,
+    # Regulation state (Temporal Self rev 4 R3, 2026-10-10). Redis orion:regulation:latest and
+    # GET /regulation/state only; no bus channel until a bus consumer exists. Also in SCHEMA_REGISTRY.
+    "RegulationStateV1": RegulationStateV1,
     "IdentitySightingV1": IdentitySightingV1,
     "ContextExecRequestV1": ContextExecRequestV1,
     "ContextExecRunV1": ContextExecRunV1,
@@ -2041,6 +2068,10 @@ SCHEMA_REGISTRY: Dict[str, SchemaRegistration] = {
     "IdentitySightingV1": SchemaRegistration(
         model=IdentitySightingV1,
         kind=IDENTITY_SIGHTING_KIND,
+    ),
+    "RegulationStateV1": SchemaRegistration(
+        model=RegulationStateV1,
+        kind=REGULATION_STATE_KIND,
     ),
 }
 

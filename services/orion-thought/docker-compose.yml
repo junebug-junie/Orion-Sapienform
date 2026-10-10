@@ -38,6 +38,9 @@ services:
       - CHANNEL_MIND_ARTIFACT=${CHANNEL_MIND_ARTIFACT:-orion:mind:artifact}
       - NOTIFY_BASE_URL=${NOTIFY_BASE_URL:-http://orion-athena-notify:7140}
       - NOTIFY_API_TOKEN=${NOTIFY_API_TOKEN:-}
+      - ORION_VISUAL_PAINTING_GAP_CHECK_ENABLED=${ORION_VISUAL_PAINTING_GAP_CHECK_ENABLED:-true}
+      - ORION_VISUAL_PAINTING_GAP_THRESHOLD_HOURS=${ORION_VISUAL_PAINTING_GAP_THRESHOLD_HOURS:-12}
+      - ORION_VISUAL_PAINTING_GAP_CHECK_INTERVAL_SEC=${ORION_VISUAL_PAINTING_GAP_CHECK_INTERVAL_SEC:-600}
     volumes:
       # Reverie VISUAL chain (Patch 2, default-off): store_visual_artifact
       # writes real generated-image bytes here. Missing entirely until now --

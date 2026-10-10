@@ -91,6 +91,11 @@ DECLARED_WRITERS: dict[str, tuple[Optional[str], str]] = {
     # claims (orion/world_pulse_read/assertions.py) became a writer code can see. A
     # declaration only applies to a model with NO discovered writer, so it went stale;
     # the durable-runs writer is now uncovered by this check (single-writer limit).
+    "orion.schemas.regulation:ArousalInputsV1": (
+        "orion-durable-runs",
+        "the regulate node builds it from its own DB reads (app/regulation_store.py) and reads it back "
+        "from its own LangGraph checkpoint (app/temporal_self_graph.py); no other service touches it",
+    ),
     "orion.schemas.introspect:DreamsArguments": (
         "orion-harness-governor",
         "orion-introspect MCP (spawned by the governor's FCC turns) validates the model's dreams "

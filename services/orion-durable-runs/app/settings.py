@@ -145,6 +145,29 @@ class Settings(BaseSettings):
     # purpose: she can leave without saying so, and after this Orion claims nothing.
     situation_sighting_hold_hours: float = Field(2.0, gt=0.0, alias="SITUATION_SIGHTING_HOLD_HOURS")
     identity_sighting_channel: str = Field("orion:vision:identity:sighting", alias="CHANNEL_IDENTITY_SIGHTING")
+    # Temporal Self rev 4, order 3 "R2/R3 core" (PR #2369): a second self-driven thread
+    # (temporal_self:orion:<local date>) whose `regulate` node classifies arousal (engaged / idle /
+    # strained / unknown) every TEMPORAL_SELF_TICK_SEC and on each Juniper turn, and writes Redis
+    # orion:regulation:latest. No dial reads it yet (spec order 6). Kill switch: TEMPORAL_SELF_ENABLED.
+    temporal_self_enabled: bool = Field(True, alias="TEMPORAL_SELF_ENABLED")
+    temporal_self_tick_sec: float = Field(120.0, gt=0.0, alias="TEMPORAL_SELF_TICK_SEC")
+    temporal_self_retention_days: int = Field(2, ge=1, le=30, alias="TEMPORAL_SELF_RETENTION_DAYS")
+    # Orion's local day for the thread bucket; same key and default as cortex-exec and Hub.
+    orion_situation_timezone: str = Field("America/Denver", alias="ORION_SITUATION_TIMEZONE")
+    # Off: arousal reads `unknown` (reason "disabled"), which every future reader treats as
+    # "arousal unavailable" -> its pre-arousal behaviour.
+    regulation_arousal_enabled: bool = Field(True, alias="ORION_REGULATION_AROUSAL_ENABLED")
+    # Engaged/idle boundary: the dream's own DREAM_IDLE_MINUTES (owner services/orion-dream/
+    # .env_example; scripts/check_env_key_single_source.py fails if this copy drifts).
+    dream_idle_minutes: float = Field(45.0, ge=0.0, alias="DREAM_IDLE_MINUTES")
+    # S2: summed GPU pool queue depth at or above this floor for this long is strain. Floor 2, not
+    # 1: a single stuck queued lease (live 10-09: {"diffusion": 1} for ~2 h) is not load.
+    regulation_strained_gpu_queue_min: int = Field(2, ge=1, alias="ORION_REGULATION_STRAINED_GPU_QUEUE_MIN")
+    regulation_strained_gpu_queue_sec: float = Field(300.0, ge=0.0, alias="ORION_REGULATION_STRAINED_GPU_QUEUE_SEC")
+    # Leaving strained needs every strain input fresh and clear this long.
+    regulation_strained_clear_sec: float = Field(600.0, ge=0.0, alias="ORION_REGULATION_STRAINED_CLEAR_SEC")
+    # Redis TTL of orion:regulation:latest: 3 ticks. A missing key reads as unknown.
+    regulation_redis_ttl_sec: int = Field(360, gt=0, alias="ORION_REGULATION_REDIS_TTL_SEC")
     request_channel: str = DURABLE_RUN_REQUEST_CHANNEL
     state_channel: str = DURABLE_RUN_STATE_CHANNEL
 

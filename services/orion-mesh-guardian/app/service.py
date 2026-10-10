@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import time
 from typing import Any
@@ -9,9 +10,13 @@ from pathlib import Path
 
 from orion.bus.census import load_channel_catalog_names
 from orion.core.bus.async_service import OrionBusAsync
+from orion.gpu_pool import actuator_probe
+from orion.gpu_pool.config import load_pool_config
+from orion.schemas.gpu_pool import GPU_POOL_EVENT_CHANNEL
 
 from .attention import AttentionPublisher
 from .equilibrium_watch import equilibrium_status_for_service, watch_equilibrium
+from .gpu_watch import ActiveProbeTracker, RefusalWatch, RoleTarget, role_targets
 from .probe import run_probe
 from .remediator import docker_cli_selfcheck, execute_remediation
 from .roster import NEVER_REMEDIATE_IDS, RosterDocument, RosterEntry, load_roster, validate_roster
@@ -29,6 +34,7 @@ from .state_machine import ServiceState, TransitionInput, transition
 from .state_store import load_all, save_one
 
 logger = logging.getLogger("orion.mesh.guardian")
+GPU_WATCH_CHECKS = ("digest",)
 
 
 class MeshGuardianService:
@@ -48,6 +54,11 @@ class MeshGuardianService:
         self._alert_gate = AlertGate()
         self._stability_cycles = 0
         self._falkordb = None
+        self._gpu_active = ActiveProbeTracker()
+        self._gpu_refusals = RefusalWatch()
+        self._gpu_targets: dict[str, RoleTarget] = {}
+        self._gpu_cycles = 0
+        self._gpu_config_failed_at: float | None = None
 
     async def start(self) -> None:
         if not self.settings.enabled:
@@ -79,6 +90,9 @@ class MeshGuardianService:
         ]
         if self.settings.stability_enabled:
             self._tasks.append(asyncio.create_task(self._stability_loop(), name="mesh-guardian-stability"))
+        if self.settings.gpu_watch_enabled:
+            self._tasks.append(asyncio.create_task(self._gpu_loop(), name="mesh-guardian-gpu-probe"))
+            self._tasks.append(asyncio.create_task(self._gpu_event_loop(), name="mesh-guardian-gpu-events"))
 
     async def stop(self) -> None:
         self._stop.set()
@@ -275,18 +289,123 @@ class MeshGuardianService:
         if self._stability_cycles % 60 == 0 or alerts:
             logger.info("stability cycle %s alerts=%d", summary, len(alerts))
         self._stability_cycles += 1
+        await self._publish_alerts(alerts, now, heartbeat_name="stability")
+        return alerts
+
+    async def _publish_alerts(self, alerts: list[StabilityAlert], now: float, *, heartbeat_name: str) -> None:
+        """The one path to a Hub card for host-wide checks: AlertGate dedup, then notify. Shared
+        by the stability and GPU loops, so a key seen by both still yields one card per window
+        (admit() never awaits, so concurrent loops cannot interleave inside it)."""
         for alert in self._alert_gate.admit(alerts, now):
-            logger.warning("stability alert kind=%s subject=%s: %s", alert.kind, alert.subject, alert.message)
+            logger.warning("%s alert kind=%s subject=%s: %s", heartbeat_name, alert.kind, alert.subject, alert.message)
             await asyncio.to_thread(
                 self.attention.publish_transition,
                 service_id=alert.subject,
-                heartbeat_name="stability",
+                heartbeat_name=heartbeat_name,
                 event={
                     "severity": alert.severity,
                     "message": alert.message,
                     "context": {"event": alert.kind, **alert.context},
                 },
             )
+
+    # --- GPU actuation watch (see app/gpu_watch.py) --------------------------
+
+    def _gpu_config_path(self) -> Path:
+        # The live repo checkout, not the copy baked into this image: the controller is compared
+        # against what main says now.
+        return Path(self.settings.orion_repo_root) / "config" / "gpu_pool.yaml"
+
+    async def _load_gpu_config(self, now: float):
+        """The live pool config, or None after raising a card. This image's own orion package
+        parses it, so a guardian image older than the YAML fails here the same way the controller
+        did -- say so instead of going quietly blind."""
+        path = self._gpu_config_path()
+        try:
+            cfg = await asyncio.to_thread(load_pool_config, path)
+        except Exception as exc:
+            self._gpu_config_failed_at = now
+            logger.warning("gpu watch cannot load %s: %s", path, exc)
+            await self._publish_alerts([StabilityAlert(
+                key="gpu_watch_config_unloadable",
+                subject="orion-mesh-guardian",
+                kind="gpu_watch_config_unloadable",
+                severity="error",
+                message=(
+                    f"The mesh guardian cannot read {path} ({type(exc).__name__}), so it cannot check "
+                    f"the GPU lane controllers. If the file exists, this guardian's image predates it: "
+                    f"rebuild orion-mesh-guardian from main."
+                ),
+                context={"path": str(path), "error": f"{type(exc).__name__}: {exc}"[:500]},
+            )], now, heartbeat_name="gpu_watch")
+            return None
+        self._gpu_config_failed_at = None
+        self._gpu_targets = role_targets(cfg)
+        return cfg
+
+    async def _gpu_loop(self) -> None:
+        while not self._stop.is_set():
+            try:
+                await self.run_gpu_probes(time.time())
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("gpu probe cycle error")
+            await asyncio.sleep(self.settings.gpu_probe_interval_sec)
+
+    async def run_gpu_probes(self, now: float) -> list[StabilityAlert]:
+        """One ACTIVE cycle: the digest probe for every role with a launch block. Never ``status``
+        (its replay can move the pool's belief; orion/gpu_pool/actuator_probe.py). Each probe is
+        isolated: one failing probe must not skip the others."""
+        cfg = await self._load_gpu_config(now)
+        if cfg is None:
+            return []
+        alerts: list[StabilityAlert] = []
+        summary: dict[str, str] = {}
+        for role, target in self._gpu_targets.items():
+            for check in GPU_WATCH_CHECKS:
+                try:
+                    verdict = await actuator_probe.probe(
+                        self.bus, cfg, role, check, self.settings.gpu_probe_wait_sec,
+                        source=f"{self.settings.service_name}:gpu-watch",
+                    )
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    summary[f"{role}/{check}"] = f"error:{type(exc).__name__}"
+                    logger.warning("gpu probe %s %s failed: %s", role, check, exc)
+                    continue
+                summary[f"{role}/{check}"] = verdict.kind if verdict.ok else f"{verdict.kind}:{verdict.reason}"
+                alerts.extend(self._gpu_active.observe(target, verdict))
+        if self._gpu_cycles % 12 == 0 or alerts:  # first cycle, then hourly at the default interval
+            logger.info("gpu probe cycle %s alerts=%d", summary, len(alerts))
+        self._gpu_cycles += 1
+        await self._publish_alerts(alerts, now, heartbeat_name="gpu_watch")
+        return alerts
+
+    async def _gpu_event_loop(self) -> None:
+        """PASSIVE: the pool's actuate_refused events. Re-subscribes after any error."""
+        while not self._stop.is_set():
+            try:
+                async with self.bus.subscribe(GPU_POOL_EVENT_CHANNEL) as pubsub:
+                    async for raw in self.bus.iter_messages(pubsub):
+                        payload = _envelope_payload(raw)
+                        if payload is not None:
+                            await self.handle_gpu_pool_event(payload, time.time())
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("gpu pool event watch failed; re-subscribing")
+            await asyncio.sleep(5.0)
+
+    async def handle_gpu_pool_event(self, payload: dict, now: float) -> list[StabilityAlert]:
+        if payload.get("event") != "actuate_refused":
+            return []
+        failed = self._gpu_config_failed_at
+        if not self._gpu_targets and (failed is None or now - failed >= self.settings.gpu_probe_interval_sec):
+            await self._load_gpu_config(now)  # host names for the card; alerts still fire without
+        alerts = self._gpu_refusals.observe(payload, now, self._gpu_targets)
+        await self._publish_alerts(alerts, now, heartbeat_name="gpu_watch")
         return alerts
 
     async def _check_crash_loops(self, now: float) -> tuple[list[StabilityAlert], object]:
@@ -337,6 +456,19 @@ class MeshGuardianService:
             info["graph"] = f"error:{type(exc).__name__}"
             logger.warning("stability graph-inflation check failed: %s", exc)
         return alerts, info
+
+
+def _envelope_payload(raw) -> dict | None:
+    """A pub/sub message -> its envelope's payload dict, or None."""
+    data = raw.get("data") if isinstance(raw, dict) else raw
+    if isinstance(data, (bytes, bytearray)):
+        data = data.decode("utf-8", "replace")
+    try:
+        env = json.loads(data) if isinstance(data, str) else data
+    except (TypeError, ValueError):
+        return None
+    payload = env.get("payload") if isinstance(env, dict) else None
+    return payload if isinstance(payload, dict) else None
 
 
 async def _save_config(redis) -> str:

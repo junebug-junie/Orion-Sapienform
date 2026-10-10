@@ -1,11 +1,15 @@
 {
   "_comment": "Definition lock for scripts/check_definition_drift.py. Generated, never hand-edited. Regenerate with --update; the resulting diff IS the definition-change alert. Unlike the *_baseline.json ratchets this tracks current truth in both directions -- a definition change is an event, not a defect.",
-  "metric_count": 721,
+  "metric_count": 722,
   "_last_change": {
-    "change_count": 1,
-    "high_severity_count": 1,
+    "change_count": 5,
+    "high_severity_count": 4,
     "changes": [
-      "high   semantics_changed metric://inner_state/orion-substrate-runtime/frontier_invocation_signal.v1#signal_strength (absent_means: \u2026s its floor. -> \u2026s its floor. Exception: a seed noted strength:unscored_even\u2026)"
+      "high   routing_changed metric://bus_channel/orion-gpu-lane-controller/orion:gpu_pool:actuate:result (declared_consumers: ['orion-gpu-pool'] -> ['orion-gpu-pool', 'orion-mesh-guardian'])",
+      "high   routing_changed metric://bus_channel/orion-gpu-pool/orion:gpu_pool:actuate:request (all_producers: ['orion-gpu-pool'] -> ['orion-gpu-pool', 'orion-mesh-guardian'])",
+      "high   routing_changed metric://bus_channel/orion-gpu-pool/orion:gpu_pool:event (declared_consumers: \u2026ay', 'orion-sql-writer',\u2026 -> \u2026ay', 'orion-mesh-guardian', 'orion-sql-writer',\u2026)",
+      "high   semantics_changed metric://inner_state/orion-substrate-runtime/frontier_invocation_signal.v1#signal_strength (absent_means: \u2026s its floor. -> \u2026s its floor. Exception: a seed noted strength:unscored_even\u2026)",
+      "medium added metric://inner_state/orion-durable-runs/regulation.state.v1"
     ]
   },
   "definitions": {
@@ -1674,7 +1678,8 @@
         "orion-gpu-lane-controller"
       ],
       "declared_consumers": [
-        "orion-gpu-pool"
+        "orion-gpu-pool",
+        "orion-mesh-guardian"
       ],
       "notes": "kind=result stability=experimental",
       "registry_source": "orion/bus/channels.yaml"
@@ -1682,7 +1687,8 @@
     "metric://bus_channel/orion-gpu-pool/orion:gpu_pool:actuate:request": {
       "schema_id": "GpuActuateV1",
       "all_producers": [
-        "orion-gpu-pool"
+        "orion-gpu-pool",
+        "orion-mesh-guardian"
       ],
       "declared_consumers": [
         "orion-gpu-lane-controller"
@@ -1710,6 +1716,7 @@
         "orion-durable-runs",
         "orion-hub",
         "orion-llm-gateway",
+        "orion-mesh-guardian",
         "orion-sql-writer",
         "orion-thought",
         "orion-world-model"
@@ -4657,6 +4664,15 @@
         "metric://inner_state/orion-dream/drive_reading.rest.v1"
       ],
       "notes": "scalar field on DriveReadingV1",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-durable-runs/regulation.state.v1": {
+      "schema_id": "RegulationStateV1",
+      "value_kind": "bucket",
+      "rest": "idle = Juniper quiet >= DREAM_IDLE_MINUTES (45) and no fresh strain input. The common state: 770 of 1080 min on 2026-10-10 in the shipped-reducer replay over saved history (docs/superpowers/evidence/2026-10-10-temporal-self-regulation-core/).",
+      "sparsity": "per_tick",
+      "absent_means": "Redis orion:regulation:latest expired (TTL 360 s, three ticks) or arousal_level unknown (a stale input, or ORION_REGULATION_AROUSAL_ENABLED=false): arousal unavailable, and every reader keeps its pre-arousal behaviour. Never read as idle.",
+      "notes": "cadence=per_tick composition=shadow_declared_not_composed",
       "registry_source": "orion/inner_state_registry.py"
     },
     "metric://inner_state/orion-equilibrium-service/equilibrium_snapshot.v1": {

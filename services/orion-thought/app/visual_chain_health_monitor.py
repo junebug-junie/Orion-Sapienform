@@ -19,10 +19,25 @@ README convention, "unhealable failures use severity=critical... transient
 uses error and escalates if unacked" -- this wedge is proven non-self-healing
 (the 2026-08-31 precedent needed a container restart), so it gets the
 immediate-email tier rather than the wait-for-an-unacked-deadline tier.
+
+Second, independent check (2026-10-10): `visual_painting_gap` -- "has a
+real painting come out in the last N hours?". 2026-10-09 02:12 -> 10-10 06:02
+the GPU lane controller refused every swap and Orion produced no painting
+for 27.6 h with no alert at all. The staleness check above was silent because
+it never ran: its loop (`visual_chain.run_visual_chain_watchdog`) is gated on
+the legacy `visual_chain_enabled` flag, which is off in production -- live
+paintings come from the durable visual-baseline path instead. So this check
+has its own loop (`run_visual_painting_gap_watchdog` below, started from
+main.py's lifespan) gated only on its own flag, and reads `store.visual_last_
+painting_age_hours()` (production receipts only). Severity "error", not
+"critical": a gap can be heat or a held GPU that clears on its own, so it
+escalates by email only if left unacked. Each check key has its own edge-
+triggered state, so one check going unhealthy never flips the other.
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from dataclasses import dataclass
 from typing import Literal
@@ -39,7 +54,12 @@ logger = logging.getLogger("orion-thought.visual_chain_health_monitor")
 
 _SOURCE_SERVICE = "orion-thought"
 _CHECK_KEY = "visual_chain_stale"
-Severity = Literal["info", "critical"]
+_PAINTING_GAP_CHECK_KEY = "visual_painting_gap"
+_EVENT_KINDS = {
+    _CHECK_KEY: "orion.reverie.visual_chain_stale.health.attention.v1",
+    _PAINTING_GAP_CHECK_KEY: "orion.reverie.visual_painting_gap.health.attention.v1",
+}
+Severity = Literal["info", "error", "critical"]
 
 
 @dataclass(frozen=True)
@@ -48,6 +68,9 @@ class HealthCheck:
     healthy: bool
     severity: Severity
     message: str = ""
+    # Empty -> the generic "recovered: <key>" note (the staleness check's
+    # original wording, kept byte-identical).
+    recovery_message: str = ""
 
 
 def _check(*, age_min: float | None, threshold_min: float) -> HealthCheck:
@@ -72,9 +95,47 @@ def _check(*, age_min: float | None, threshold_min: float) -> HealthCheck:
     )
 
 
+def _painting_gap_check(*, age_hours: float | None, threshold_hours: float) -> HealthCheck:
+    """Pure threshold judgement on a real number. `record_painting_gap`
+    never passes None here (None = no observation, state left untouched);
+    None is still treated as healthy for direct callers.
+
+    Calibration, in-sample (the same data the threshold was picked on): every
+    produced painting 2026-09-14 -> 2026-10-10 06:02Z, 170 paintings. Gaps
+    over 12 h: 247 h (09-14 -> 09-25, cause unknown), 27.6 h (the 10-09/10
+    lane-controller incident, the only one with a confirmed cause), 17.8 h,
+    16.0 h and 14.7 h (causes unknown; the 14.7 h one is the pipeline's first
+    day). The next-longest gap is 7.6 h. See evals/test_painting_gap_replay.py.
+    """
+    gap = age_hours is not None and age_hours > threshold_hours
+    return HealthCheck(
+        key=_PAINTING_GAP_CHECK_KEY,
+        healthy=not gap,
+        severity="error",
+        message=(
+            f"Orion has not produced a painting in {age_hours:.1f} hours "
+            f"(threshold {threshold_hours:g} h). Likely causes, most likely first: "
+            "(1) the GPU lane controller is refusing swaps -- check the "
+            "mesh-guardian GPU cards or run scripts/gpu_pool_actuator_probe.py "
+            "(2026-10-09 precedent, 27.6 h); (2) long thermal refusals on the "
+            "painting GPU; (3) the visual-chain worker is wedged."
+            if gap
+            else ""
+        ),
+        recovery_message=(
+            f"[Orion reverie] recovered: {_PAINTING_GAP_CHECK_KEY} -- a painting "
+            f"landed (latest {age_hours:.1f} hours ago)."
+            if (not gap and age_hours is not None)
+            else ""
+        ),
+    )
+
+
 class VisualChainHealthMonitor:
-    """Edge-triggered single-check monitor: healthy unless the newest
-    `reverie_visual_chain` row is older than the configured threshold.
+    """Edge-triggered monitor with independent state per check key:
+    `visual_chain_stale` (newest `reverie_visual_chain` row older than the
+    staleness threshold) and `visual_painting_gap` (no produced painting in
+    the gap threshold).
 
     A transition is only considered "handled" (in-memory state updated) once
     orion-notify actually confirms delivery -- if it is unreachable at the
@@ -89,7 +150,8 @@ class VisualChainHealthMonitor:
             api_token=self._settings.notify_api_token,
             timeout=10,
         )
-        self._last_healthy: bool | None = None
+        # Per check key; a missing key means "no observation yet".
+        self._last_healthy: dict[str, bool] = {}
 
     def record_check(self, *, age_min: float | None) -> None:
         """Call once per watchdog tick with the current DB-reported age.
@@ -104,33 +166,54 @@ class VisualChainHealthMonitor:
         except Exception:
             logger.exception("visual_chain_health_check_failed")
 
+    def record_painting_gap(self, *, age_hours: float | None) -> None:
+        """Call once per watchdog tick with hours since the last produced
+        painting. Never raises.
+
+        age_hours=None means "no observation" (DB read failed, or no painting
+        was ever produced): state is left untouched, so a read failure in the
+        middle of a gap neither sends a false recovery note nor re-alerts.
+        """
+        if age_hours is None:
+            return
+        try:
+            self._run_tick_for_check(
+                _painting_gap_check(
+                    age_hours=age_hours,
+                    threshold_hours=self._settings.visual_painting_gap_threshold_hours,
+                )
+            )
+        except Exception:
+            logger.exception("visual_painting_gap_check_failed")
+
     def _run_tick_for_check(self, check: HealthCheck) -> None:
-        previous = self._last_healthy
+        key = check.key
+        previous = self._last_healthy.get(key)
 
         if previous is None:
             if check.healthy:
-                self._last_healthy = True
+                self._last_healthy[key] = True
                 return
             # First observation since this process started, and already
             # unhealthy: consult orion-notify itself (not just local memory,
             # which a restart would have wiped) for an already-open alert.
-            if self._has_open_alert() or self._publish(check, recovered=False):
-                self._last_healthy = False
+            if self._has_open_alert(key) or self._publish(check, recovered=False):
+                self._last_healthy[key] = False
             # else: leave unset so the next tick retries.
             return
 
         if previous and not check.healthy:
             if self._publish(check, recovered=False):
-                self._last_healthy = False
+                self._last_healthy[key] = False
             # else: leave `previous=True` so the next tick retries the alert.
         elif not previous and check.healthy:
             if self._publish(check, recovered=True):
-                self._last_healthy = True
+                self._last_healthy[key] = True
             # else: leave `previous=False` so the next tick retries the note.
         else:
-            self._last_healthy = check.healthy
+            self._last_healthy[key] = check.healthy
 
-    def _has_open_alert(self) -> bool:
+    def _has_open_alert(self, key: str = _CHECK_KEY) -> bool:
         headers = {}
         if self._settings.notify_api_token:
             headers["X-Orion-Notify-Token"] = self._settings.notify_api_token
@@ -154,13 +237,13 @@ class VisualChainHealthMonitor:
         return any(
             isinstance(item, dict)
             and item.get("source_service") == _SOURCE_SERVICE
-            and item.get("reason") == _CHECK_KEY
+            and item.get("reason") == key
             for item in items
         )
 
     def _publish(self, check: HealthCheck, *, recovered: bool) -> bool:
         if recovered:
-            message = f"[Orion reverie] recovered: {check.key}"
+            message = check.recovery_message or f"[Orion reverie] recovered: {check.key}"
             severity: Severity = "info"
         else:
             message = f"[Orion reverie] {check.message}"
@@ -173,7 +256,7 @@ class VisualChainHealthMonitor:
                 context={
                     "source_service": _SOURCE_SERVICE,
                     "reason": check.key,
-                    "event_kind": "orion.reverie.visual_chain_stale.health.attention.v1",
+                    "event_kind": _EVENT_KINDS[check.key],
                     "correlation_id": str(uuid4()),
                 },
             )
@@ -196,6 +279,61 @@ def check_visual_chain_staleness(age_min: float | None) -> None:
         _MONITOR.record_check(age_min=age_min)
     except Exception:
         logger.exception("visual_chain_health_check_failed")
+
+
+def check_visual_painting_gap(age_hours: float | None) -> None:
+    """Module-level entrypoint for the painting-gap check, sharing the same
+    singleton (state is per key, so the two checks stay independent). Called
+    from `run_visual_painting_gap_watchdog` below. Never raises."""
+    global _MONITOR
+    try:
+        if _MONITOR is None:
+            _MONITOR = VisualChainHealthMonitor()
+        _MONITOR.record_painting_gap(age_hours=age_hours)
+    except Exception:
+        logger.exception("visual_painting_gap_check_failed")
+
+
+async def run_visual_painting_gap_watchdog(
+    stop_event: asyncio.Event | None = None,
+    *,
+    settings_obj: ThoughtSettings | None = None,
+) -> None:
+    """Own loop for the painting-gap check, started from main.py's lifespan.
+
+    Deliberately NOT gated on `visual_chain_enabled` (the legacy worker's
+    flag, off in production) or on the bus (alerts go to orion-notify over
+    HTTP). Only `visual_painting_gap_check_enabled` turns it off.
+    """
+    cfg = settings_obj or _default_settings
+    if not cfg.visual_painting_gap_check_enabled:
+        logger.info("visual painting gap check disabled; watchdog not started")
+        return
+    from .store import visual_last_painting_age_hours
+
+    logger.info(
+        "visual painting gap watchdog started interval=%ss threshold_h=%s",
+        cfg.visual_painting_gap_check_interval_sec,
+        cfg.visual_painting_gap_threshold_hours,
+    )
+    while True:
+        if stop_event is not None and stop_event.is_set():
+            break
+        try:
+            age_h = await asyncio.to_thread(visual_last_painting_age_hours)
+            # to_thread: the notify calls are synchronous requests (up to ~20 s).
+            await asyncio.to_thread(check_visual_painting_gap, age_h)
+        except Exception:
+            logger.exception("visual_painting_gap_watchdog_tick_failed")
+        try:
+            if stop_event is not None:
+                await asyncio.wait_for(
+                    stop_event.wait(), timeout=cfg.visual_painting_gap_check_interval_sec
+                )
+                break
+            await asyncio.sleep(cfg.visual_painting_gap_check_interval_sec)
+        except asyncio.TimeoutError:
+            continue
 
 
 def reset_monitor_for_tests() -> None:

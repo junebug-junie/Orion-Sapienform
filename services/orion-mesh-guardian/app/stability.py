@@ -193,17 +193,22 @@ def graph_inflation_alert(graph: str, channel_nodes: int, catalog_size: int) -> 
     ]
 
 
+SEVERITY_RANK = {"info": 0, "warning": 1, "error": 2, "critical": 3}
+
+
 class AlertGate:
-    """One card per alert key per REALERT_AFTER_SEC while the condition persists."""
+    """One card per alert key per REALERT_AFTER_SEC while the condition persists. A higher
+    severity on the same key is admitted at once (an early error must not hide a critical)."""
 
     def __init__(self) -> None:
-        self._last_sent: dict[str, float] = {}
+        self._last_sent: dict[str, tuple[float, int]] = {}
 
     def admit(self, alerts: list[StabilityAlert], now: float) -> list[StabilityAlert]:
         out = []
         for alert in alerts:
+            rank = SEVERITY_RANK.get(alert.severity, 2)
             last = self._last_sent.get(alert.key)
-            if last is None or now - last >= REALERT_AFTER_SEC:
-                self._last_sent[alert.key] = now
+            if last is None or now - last[0] >= REALERT_AFTER_SEC or rank > last[1]:
+                self._last_sent[alert.key] = (now, rank)
                 out.append(alert)
         return out

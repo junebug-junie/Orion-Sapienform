@@ -3336,7 +3336,7 @@ channels:
     schema_id: "GpuPoolEventV1"
     message_kind: "gpu_pool.event.v1"
     producer_services: ["orion-gpu-pool"]
-    consumer_services: ["orion-llm-gateway", "orion-durable-runs", "orion-world-model", "orion-thought", "orion-hub", "orion-sql-writer"]
+    consumer_services: ["orion-llm-gateway", "orion-durable-runs", "orion-world-model", "orion-thought", "orion-hub", "orion-sql-writer", "orion-mesh-guardian"]
     stability: "experimental"
     since: "2026-09-24"
     description: "Lease lifecycle facts (admitted, queued, granted w/ waited_ms, backlogged, recalled, aborted, expired, retried, dead_lettered, replayed, released, unavailable), swap requests, lend/unlend, discovery confirm/mismatch, actuation_paused/actuation_resumed (stage 5.7 emergency stop; sql-writer must be redeployed before a pool that emits them). Callers wake on 'granted'; sql-writer persists."
@@ -3415,7 +3415,7 @@ channels:
     kind: "request"
     schema_id: "GpuActuateV1"
     message_kind: "gpu_pool.actuate.v1"
-    producer_services: ["orion-gpu-pool"]
+    producer_services: ["orion-gpu-pool", "orion-mesh-guardian"]
     consumer_services: ["orion-gpu-lane-controller"]
     stability: "experimental"
     since: "2026-09-25"
@@ -3426,7 +3426,7 @@ channels:
     schema_id: "GpuActuateResultV1"
     message_kind: "gpu_pool.actuate.result.v1"
     producer_services: ["orion-gpu-lane-controller"]
-    consumer_services: ["orion-gpu-pool"]
+    consumer_services: ["orion-gpu-pool", "orion-mesh-guardian"]
     stability: "experimental"
     since: "2026-09-25"
     description: "Stage 4: host actuator -> pool, per action_id: accepted (within defaults.actuate_ack_sec), progress (phase), then one terminal succeeded|failed|refused with restored (failed loads) and the observed container state per role. Contract only in 4.1: no producer until 4.2, no consumer until 4.3."

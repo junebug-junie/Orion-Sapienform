@@ -21,6 +21,7 @@ from .rpc_health import build_publisher, fold_bus
 from .settings import settings
 from .store import warm_pool
 from .visual_chain import run_visual_chain_watchdog, run_visual_chain_worker
+from .visual_chain_health_monitor import run_visual_painting_gap_watchdog
 
 logging.basicConfig(
     level=logging.INFO,
@@ -94,6 +95,14 @@ async def lifespan(app: FastAPI):
     app.state.visual_chain_watchdog_task = asyncio.create_task(
         run_visual_chain_watchdog(app.state.visual_chain_watchdog_stop_event)
     )
+    # Painting-gap check (2026-10-10): its own task, NOT behind
+    # visual_chain_enabled like the legacy watchdog above -- that flag is off in
+    # production, so the legacy watchdog never runs there. No-op unless
+    # ORION_VISUAL_PAINTING_GAP_CHECK_ENABLED (default on).
+    app.state.visual_painting_gap_stop_event = asyncio.Event()
+    app.state.visual_painting_gap_task = asyncio.create_task(
+        run_visual_painting_gap_watchdog(app.state.visual_painting_gap_stop_event)
+    )
     # Warm store.py's shared Postgres pool so the first real caller of any
     # kind (reverie/salience/etc. writes) doesn't pay a cold TCP+auth
     # handshake cost -- unconditional since every store.py consumer shares
@@ -134,6 +143,7 @@ async def lifespan(app: FastAPI):
     app.state.reasoning_stop_event.set()
     app.state.visual_chain_stop_event.set()
     app.state.visual_chain_watchdog_stop_event.set()
+    app.state.visual_painting_gap_stop_event.set()
     with suppress(asyncio.TimeoutError):
         await asyncio.wait_for(app.state.bus_task, timeout=125.0)
     if not app.state.bus_task.done():
@@ -146,6 +156,7 @@ async def lifespan(app: FastAPI):
         app.state.reasoning_task,
         app.state.visual_chain_task,
         app.state.visual_chain_watchdog_task,
+        app.state.visual_painting_gap_task,
         app.state.pool_warmup_task,
     ):
         task.cancel()

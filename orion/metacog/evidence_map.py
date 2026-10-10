@@ -742,7 +742,7 @@ def map_flow(reason: str, up: dict[str, Any]) -> EvidenceMapping:
     # Historical rows only: the flow trigger's producer (orion-equilibrium-
     # service's flow gate) was RETIRED 2026-10-10, so nothing emits new
     # trigger_kind="flow" rows. Kept so capture replay / the capture eval can
-    # still map the ~250 pre-retirement rows already stored in metacog_trigger
+    # still map the 872 pre-retirement rows already stored in metacog_trigger
     # (and the stratified fixture) instead of dropping them to no_evidence.
     mean = _num(up.get("mean_value"))
     floor = _num(up.get("floor"))

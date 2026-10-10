@@ -43,7 +43,9 @@ def _live_series() -> list[float]:
 
 
 def test_live_series_reproduces_the_drift_under_the_old_calibration() -> None:
-    """The bug, on real data: a 2h slice of live ticks (2026-10-03) qualifies
+    """Documents the bug on frozen real data (an oracle over the fixture, NOT
+    coverage of any code -- the old rule is re-implemented inline because the
+    gate is deleted): a 2h slice of live ticks (2026-10-03) qualifies
     ~40% of 20-tick windows under the old floor/stdev rule, versus the 3.2%
     it was calibrated to. Most windows qualified, so the 1800s cooldown, not
     the data, set the firing rate."""
@@ -59,10 +61,16 @@ def test_live_series_reproduces_the_drift_under_the_old_calibration() -> None:
 
 
 @pytest.mark.asyncio
-async def test_poll_loop_publishes_no_flow_trigger_on_the_live_series(monkeypatch) -> None:
+async def test_poll_loop_publishes_no_flow_trigger_on_the_live_series(monkeypatch, caplog) -> None:
     """Drive the real generative poll loop over every trailing 20-tick window of
-    the live slice. Pre-retirement this published trigger_kind="flow" on the
-    first qualifying window; now nothing in the loop can produce that kind."""
+    the live slice and assert no trigger_kind="flow" is published.
+
+    Scope, stated plainly: on main the flow flag defaulted False in code, so this
+    test alone would also pass there -- it guards against flow being re-added
+    to the loop (mutation-checked: injecting the old floor/stdev publish into the
+    loop makes it fail), not against the old default config. Positive controls
+    below prove every window was actually evaluated rather than silently
+    swallowed by the loop's catch-all."""
     from app.service import EquilibriumService, settings
     from orion.substrate.metacog_trigger_signals import ConfidenceSample
 
@@ -78,7 +86,8 @@ async def test_poll_loop_publishes_no_flow_trigger_on_the_live_series(monkeypatc
         ConfidenceSample(generated_at=end - (len(values) - 1 - i) * timedelta(seconds=30), value=v)
         for i, v in enumerate(values)
     ]
-    windows = [samples[i - 19 : i + 1] for i in range(19, len(samples))]
+    n = _OLD_MIN_TICKS
+    windows = [samples[i - n + 1 : i + 1] for i in range(n - 1, len(samples))]
     # Re-stamp each window so it is fresh at poll time (the freshness guard is
     # not what this test is about).
     shift = [end - w[-1].generated_at for w in windows]
@@ -91,9 +100,11 @@ async def test_poll_loop_publishes_no_flow_trigger_on_the_live_series(monkeypatc
     svc.bus = MagicMock()
     svc.bus.publish = AsyncMock()
     it = iter(windows)
+    calls = {"n": 0}
 
     class _Reader:
         def fetch_recent_samples(self, *, limit: int):
+            calls["n"] += 1
             try:
                 return next(it)
             except StopIteration:
@@ -101,7 +112,24 @@ async def test_poll_loop_publishes_no_flow_trigger_on_the_live_series(monkeypatc
                 return []
 
     svc._attention_self_model_reader = _Reader()
-    await asyncio.wait_for(svc._generative_metacog_poll_loop(), timeout=30)
+    evaluated = {"n": 0}
+    real_eval = svc._evaluate_insight_gate
+
+    async def _counting_eval(*a, **kw):
+        evaluated["n"] += 1
+        return await real_eval(*a, **kw)
+
+    svc._evaluate_insight_gate = _counting_eval
+    import logging
+
+    with caplog.at_level(logging.ERROR):
+        await asyncio.wait_for(svc._generative_metacog_poll_loop(), timeout=30)
+
+    # Positive controls: every window was read, passed freshness, and evaluated,
+    # with no exception swallowed by the loop.
+    assert calls["n"] == len(windows) + 1
+    assert evaluated["n"] == len(windows)
+    assert not [r for r in caplog.records if "poll_loop_failed" in r.getMessage()]
 
     kinds = [call.args[1].payload["trigger_kind"] for call in svc.bus.publish.call_args_list]
     assert "flow" not in kinds, kinds

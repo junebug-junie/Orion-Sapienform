@@ -102,7 +102,7 @@ channels:
   - name: "orion:cortex:request"
     kind: "request"
     schema_id: "CortexClientRequest"
-    producer_services: ["orion-hub", "orion-cortex-gateway", "orion-actions", "orion-memory-consolidation", "orion-cortex-exec", "orion-durable-runs"]
+    producer_services: ["orion-hub", "orion-cortex-gateway", "orion-actions", "orion-memory-consolidation", "orion-cortex-exec", "orion-durable-runs", "orion-dream"]
     consumer_services: ["orion-cortex-orch"]
     single_consumer: true
     stability: "experimental"
@@ -120,7 +120,7 @@ channels:
     kind: "result"
     schema_id: "CortexClientResult"
     producer_services: ["orion-cortex-orch"]
-    consumer_services: ["orion-hub", "orion-cortex-gateway", "orion-durable-runs"]
+    consumer_services: ["orion-hub", "orion-cortex-gateway", "orion-durable-runs", "orion-dream"]
     stability: "experimental"
     since: "2026-01-08"
 

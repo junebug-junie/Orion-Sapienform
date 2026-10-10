@@ -24,24 +24,41 @@ class GatewayRefused(RuntimeError):
     """
 
 
-async def complete(bus: Any, prompt: str) -> str:
-    """Return the gateway's text. Raises on transport/decode failure or a gateway error reply."""
+async def complete(
+    bus: Any,
+    prompt: str,
+    *,
+    max_tokens: int = 320,
+    purpose: str = "dream_recombine",
+    route: str | None = None,
+    gpu_lease: dict[str, Any] | None = None,
+    timeout_sec: float | None = None,
+) -> str:
+    """Return the gateway's text. Raises on transport/decode failure or a gateway error reply.
+
+    `gpu_lease` (a GpuLeaseRefV1 dump) attaches the call to a durable run's existing hold
+    (options.gpu_lease) instead of the gateway taking a lease of its own: the dream.carry text
+    hop runs under its run's LLM hold."""
     rpc_corr = str(uuid4())
     reply_channel = f"orion:exec:result:LLMGatewayService:{rpc_corr}"
-    route = settings.DREAM_LLM_ROUTE
+    route = route or settings.DREAM_LLM_ROUTE
+    timeout = float(timeout_sec if timeout_sec is not None else settings.DREAM_LLM_TIMEOUT_SEC)
+    options: dict[str, Any] = {
+        "max_tokens": int(max_tokens),
+        "llm_route": route,
+        "llm_lane": "background",
+        "allow_chat_fallback": False,
+        "purpose": purpose,
+        "skip_spark_candidate_publish": True,
+        "chat_template_kwargs": {"enable_thinking": False},
+        "gateway_read_timeout_sec": timeout,
+    }
+    if gpu_lease is not None:
+        options["gpu_lease"] = gpu_lease
     payload = ChatRequestPayload(
         messages=[LLMMessage(role="user", content=prompt)],
         route=route,
-        options={
-            "max_tokens": 320,
-            "llm_route": route,
-            "llm_lane": "background",
-            "allow_chat_fallback": False,
-            "purpose": "dream_recombine",
-            "skip_spark_candidate_publish": True,
-            "chat_template_kwargs": {"enable_thinking": False},
-            "gateway_read_timeout_sec": float(settings.DREAM_LLM_TIMEOUT_SEC),
-        },
+        options=options,
     )
     env = BaseEnvelope(
         kind="llm.chat.request",
@@ -58,7 +75,7 @@ async def complete(bus: Any, prompt: str) -> str:
         settings.CHANNEL_LLM_INTAKE,
         env,
         reply_channel=reply_channel,
-        timeout_sec=float(settings.DREAM_LLM_TIMEOUT_SEC),
+        timeout_sec=timeout,
     )
     decoded = bus.codec.decode(msg.get("data"))
     if not decoded.ok:

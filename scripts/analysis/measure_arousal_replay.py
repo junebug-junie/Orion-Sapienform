@@ -143,7 +143,7 @@ def replay(rows, start, end, *, idle_minutes=45):
     last_turn = last_chat = latest_heat = latest_gpu = None
     heat_verdict = None
     backlogged = set()
-    hourly, transitions, exits = {}, [], Counter()
+    hourly, transitions, exits, strict_exits = {}, [], Counter(), Counter()
     previous = None
     while at < end:
         while i < len(parsed) and parsed[i][0] <= at:
@@ -199,6 +199,8 @@ def replay(rows, start, end, *, idle_minutes=45):
                 transitions.append(dict(at=at.isoformat(), strict=label, provisional=approx))
                 if previous and previous[1] == "strained" and approx in {"idle", "engaged"}:
                     exits[at.date().isoformat()] += 1
+                if previous and previous[0] == "strained" and label in {"idle", "engaged"}:
+                    strict_exits[at.date().isoformat()] += 1
                 previous = (label, approx)
         at = min(next_at, start) if at < start else next_at
     for ts, row in parsed:
@@ -221,8 +223,13 @@ def replay(rows, start, end, *, idle_minutes=45):
               for lane in ("strict_seconds", "provisional_seconds", "all_chat_provisional_seconds")}
     return dict(start=start.isoformat(), end=end.isoformat(), hours=list(hourly.values()),
         totals=totals, transitions=transitions, provisional_strain_exits_per_day=dict(exits),
+        strict_strain_exits_per_day=dict(strict_exits), summary=summarize(hourly.values()),
         hysteresis_review_days=[day for day, count in exits.items() if count > 12],
         input_counts=dict(Counter(r["kind"] for _, r in parsed)), idle_minutes_assumed=idle_minutes,
+        # Metric-gate step 4: an S2 input that is never non-zero cannot make strain.
+        gpu_state_nonzero_backlog_snapshots=sum(
+            1 for ts, r in parsed if r["kind"] == "gpu_state" and start <= ts < end
+            and isinstance(r["backlog_depth"], dict) and sum(r["backlog_depth"].values()) > 0),
         verdict=("Replay available for human comparison; inspect hourly stale-input coverage."
                  if totals["strict_seconds"]["engaged"]+totals["strict_seconds"]["idle"] > 0 else
                  "UNVERIFIED: provisional labels require human comparison and complete GPU state history"),
@@ -235,6 +242,62 @@ def replay(rows, start, end, *, idle_minutes=45):
                      "All-chat comparison includes every chat row, isolating the old idle-query contamination."])
 
 
+def hour_label(seconds_by_level):
+    """The level holding the most of the hour; ties and empty hours read unknown."""
+    ranked = sorted(seconds_by_level.items(), key=lambda kv: -kv[1])
+    if not ranked or ranked[0][1] <= 0 or (len(ranked) > 1 and ranked[0][1] == ranked[1][1]):
+        return "unknown"
+    return ranked[0][0]
+
+
+def summarize(hours):
+    """Per-day seconds, hour-label counts, and the R3 acceptance bar per lane.
+
+    The bar (spec R3a): over time where a label is KNOWN, no level of engaged,
+    idle or strained sits at 0% or 100%. Unknown time is reported, never folded
+    into idle; a lane with no known time fails the bar as NO_KNOWN_TIME.
+    """
+    hours = list(hours)
+    lanes = ("strict_seconds", "provisional_seconds", "all_chat_provisional_seconds")
+    days, label_counts, bar = {}, {lane: Counter() for lane in lanes}, {}
+    for h in hours:
+        day = days.setdefault(h["hour"][:10], {lane: {k: 0 for k in LEVELS} for lane in lanes})
+        for lane in lanes:
+            for level, sec in h[lane].items():
+                day[lane][level] += sec
+            label_counts[lane][hour_label(h[lane])] += 1
+    for lane in lanes:
+        known = {k: sum(h[lane][k] for h in hours) for k in ("engaged", "idle", "strained")}
+        total = sum(known.values())
+        shares = {k: v / total for k, v in known.items()} if total else None
+        bar[lane] = dict(known_hours=total / 3600,
+                         unknown_hours=sum(h[lane]["unknown"] for h in hours) / 3600,
+                         share_of_known=shares,
+                         passes=bool(shares) and all(0 < v < 1 for v in shares.values()),
+                         result=("NO_KNOWN_TIME" if not shares else
+                                 "PASS" if all(0 < v < 1 for v in shares.values()) else
+                                 "FAIL: a level sits at 0% or 100% of known time"))
+    return dict(per_day_seconds=days, hour_label_counts={k: dict(v) for k, v in label_counts.items()},
+                acceptance_bar=bar)
+
+
+def write_hourly_csv(result, path):
+    import csv
+    lanes = ("strict_seconds", "provisional_seconds", "all_chat_provisional_seconds")
+    with open(path, "w", newline="") as fh:
+        w = csv.writer(fh)
+        w.writerow(["hour_utc", "seconds"] + [f"{lane[:-8]}_label" for lane in lanes]
+                   + [f"strict_{k}_min" for k in LEVELS] + [f"provisional_{k}_min" for k in LEVELS]
+                   + ["gpu_state_missing_min", "cabinet_missing_min", "juniper_turns", "other_chat_rows",
+                      "outreach_sent"])
+        for h in result["hours"]:
+            w.writerow([h["hour"], h["seconds"]] + [hour_label(h[lane]) for lane in lanes]
+                       + [round(h["strict_seconds"][k] / 60, 2) for k in LEVELS]
+                       + [round(h["provisional_seconds"][k] / 60, 2) for k in LEVELS]
+                       + [round(h["gpu_state_missing_seconds"] / 60, 2), round(h["cabinet_missing_seconds"] / 60, 2),
+                          h["juniper_turns"], h["other_chat_rows"], h["outreach_sent"]])
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("history", type=Path, nargs="?")
@@ -243,6 +306,7 @@ def main():
     parser.add_argument("--idle-minutes", type=float, default=45)
     parser.add_argument("--print-sql", action="store_true")
     parser.add_argument("--gpu-host", help="include saved GPU snapshots for this host after migration")
+    parser.add_argument("--hourly-csv", type=Path, help="also write one row per hour with labels and evidence")
     args = parser.parse_args()
     if args.print_sql:
         print(export_sql(args.start, args.end, gpu_host=args.gpu_host))
@@ -250,7 +314,10 @@ def main():
     if not args.history:
         parser.error("history export required")
     rows = [json.loads(line) for line in args.history.read_text().splitlines() if line.strip()]
-    print(json.dumps(replay(rows, args.start, args.end, idle_minutes=args.idle_minutes), indent=2))
+    result = replay(rows, args.start, args.end, idle_minutes=args.idle_minutes)
+    if args.hourly_csv:
+        write_hourly_csv(result, args.hourly_csv)
+    print(json.dumps(result, indent=2))
 
 
 if __name__ == "__main__":

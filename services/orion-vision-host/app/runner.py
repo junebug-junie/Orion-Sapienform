@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import threading
+
 import hashlib
 import json
 import time
@@ -31,6 +33,7 @@ _safe_when = safe_when
 
 _THUMB_STORE: ThumbStore | None = None
 _FACE_FRAMES: "FaceFrameStore | None" = None
+_FACE_FRAMES_LOCK = threading.Lock()   # tasks run via asyncio.to_thread, up to VISION_MAX_INFLIGHT at once
 
 
 def _face_frame_store():
@@ -43,14 +46,17 @@ def _face_frame_store():
     root = raw.strip() if isinstance(raw, str) else ""
     if not root:
         return None
-    if _FACE_FRAMES is None or str(_FACE_FRAMES.root) != root:
-        _FACE_FRAMES = FaceFrameStore(
-            root,
-            retention_days=float(getattr(settings, "VISION_FACE_FRAMES_RETENTION_DAYS", 14.0)),
-            min_interval_sec=float(getattr(settings, "VISION_FACE_FRAMES_MIN_INTERVAL_SEC", 5.0)),
-        )
-        _FACE_FRAMES.start_pruner()
-    return _FACE_FRAMES
+    with _FACE_FRAMES_LOCK:
+        if _FACE_FRAMES is None or str(_FACE_FRAMES.root) != root:
+            if _FACE_FRAMES is not None:
+                _FACE_FRAMES.stop_pruner()
+            _FACE_FRAMES = FaceFrameStore(
+                root,
+                retention_days=float(getattr(settings, "VISION_FACE_FRAMES_RETENTION_DAYS", 14.0)),
+                min_interval_sec=float(getattr(settings, "VISION_FACE_FRAMES_MIN_INTERVAL_SEC", 5.0)),
+            )
+            _FACE_FRAMES.start_pruner()
+        return _FACE_FRAMES
 _THUMB_LIMITER = ThumbRateLimiter(float(getattr(settings, "VISION_CROP_THUMB_MIN_INTERVAL_SEC", 10.0)))
 
 

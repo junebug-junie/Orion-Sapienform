@@ -27,13 +27,27 @@
 ## Tests run
 
 ```text
-vision-host tests (in the orion-vision-host image, torch available)   236 passed, 4 failed, 1 skipped
+vision-host tests (in the orion-vision-host image, torch available)   237 passed, 4 failed, 1 skipped
 main checkout, same image                                             231 passed, 4 failed (same 4: heartbeat chassis, broadcast suppression)
 ```
 
 ## Schema / bus / API changes
 
 None. Files only.
+
+## Review findings fixed
+
+The code review found nothing blocking. Measured cost: about 31 ms to encode one 1080p frame, at most once per camera every 5 s, so there was no need to offload it. Sidecars hold no embeddings (`match_embedding` returns only subject, similarity and state). Small fixes:
+
+- Finding (low): the lazy store setup could race. Tasks run through `asyncio.to_thread`, up to 4 at once, so two stores and two prune threads could be created.
+  - Fix: a lock around the setup, and the old pruner is stopped when the store is rebuilt.
+- Finding (low): the hourly prune could remove an empty day folder between `mkdir` and the write.
+  - Fix: one retry on `FileNotFoundError`.
+  - Evidence: `test_save_retries_once_when_the_pruner_removes_the_day_folder`.
+- Finding (nit): the sidecar wasn't written atomically.
+  - Fix: both the `.jpg` and the `.json` now go through a temp file and rename.
+- Finding (cosmetic): the compose env lines split the `VISION_CROP_THUMB_*` group.
+  - Fix: regrouped.
 
 ## Risks / concerns
 

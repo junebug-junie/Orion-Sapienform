@@ -75,15 +75,25 @@ class FaceFrameStore:
         stem = f"{now:%H%M%S_%f}_{_safe(best.get('state') or 'none')}_{float(sim):.3f}" if isinstance(sim, (int, float)) \
             else f"{now:%H%M%S_%f}_{_safe(best.get('state') or 'none')}"
         folder = self.root / stream / f"{now:%Y-%m-%d}"
-        folder.mkdir(parents=True, exist_ok=True)
         frame = img.convert("RGB")
         frame.thumbnail((FRAME_MAX_SIDE, FRAME_MAX_SIDE))
-        tmp = folder / f".{stem}.{os.getpid()}.tmp"
-        frame.save(tmp, format="JPEG", quality=FRAME_QUALITY)
-        os.replace(tmp, folder / f"{stem}.jpg")
-        (folder / f"{stem}.json").write_text(json.dumps({"stream_id": stream_id, "saved_at": now.isoformat(), **meta},
-                                                        default=str, indent=1))
+        sidecar = json.dumps({"stream_id": stream_id, "saved_at": now.isoformat(), **meta}, default=str, indent=1)
+        for attempt in range(2):
+            try:
+                folder.mkdir(parents=True, exist_ok=True)
+                self._atomic(folder / f"{stem}.jpg", lambda t: frame.save(t, format="JPEG", quality=FRAME_QUALITY))
+                self._atomic(folder / f"{stem}.json", lambda t: t.write_text(sidecar))
+                break
+            except FileNotFoundError:
+                if attempt:     # the pruner removed the (empty) day folder in between; one retry
+                    raise
         return str((folder / f"{stem}.jpg").relative_to(self.root))
+
+    @staticmethod
+    def _atomic(path: Path, write: Callable[[Path], Any]) -> None:
+        tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+        write(tmp)
+        os.replace(tmp, path)
 
     def prune(self, now: Optional[float] = None) -> int:
         now = self._clock() if now is None else now
@@ -122,3 +132,6 @@ class FaceFrameStore:
 
         self._pruner = threading.Thread(target=_loop, name="face-frames-prune", daemon=True)
         self._pruner.start()
+
+    def stop_pruner(self) -> None:
+        self._stop.set()

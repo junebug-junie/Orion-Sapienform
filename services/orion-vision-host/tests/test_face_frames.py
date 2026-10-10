@@ -56,3 +56,22 @@ def test_prune_removes_only_old_files_and_empty_folders(tmp_path):
     fresh = store.save("cam0", Image.new("RGB", (16, 16)), {"candidates": CANDS})
     assert store.prune() == 2
     assert not old.exists() and (tmp_path / fresh).exists()
+
+
+
+def test_save_retries_once_when_the_pruner_removes_the_day_folder(tmp_path, monkeypatch):
+    t = {"now": 1_000_000.0}
+    store = _store(tmp_path, t, min_interval_sec=0.0)
+    real = FaceFrameStore._atomic
+    calls = {"n": 0}
+
+    def flaky(path, write):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise FileNotFoundError(path)
+        return real(path, write)
+
+    monkeypatch.setattr(FaceFrameStore, "_atomic", staticmethod(flaky))
+    rel = store.save("cam0", Image.new("RGB", (16, 16)), {"candidates": CANDS})
+    assert (tmp_path / rel).exists() and (tmp_path / rel).with_suffix(".json").exists()
+    assert not list(tmp_path.rglob("*.tmp"))

@@ -532,7 +532,7 @@ input[type=range]::-moz-range-thumb {
   border-color: #34d399;
   box-shadow: 0 0 12px rgba(16, 185, 129, 0.45);
 }
-.gpu-lease-switch:disabled { opacity: 0.6; cursor: progress; }
+.gpu-lease-switch[aria-disabled="true"] { opacity: 0.6; cursor: progress; }
 .gpu-lease-knob {
   position: absolute;
   top: 0.1875rem;

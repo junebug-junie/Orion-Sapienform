@@ -46,19 +46,26 @@ def test_gpu_leases_modal_switches_flip_and_settle_on_the_pool_reply():
     page_html = f"<!doctype html><html><head><style>{css}</style></head><body>{_fragments()}<script>{script}</script></body></html>"
     posted: list[dict] = []
     refuse = {"card": None}
+    timeout = {"card": None}
+    state = json.loads(json.dumps(STATE))
 
     def handle(route):
         url = route.request.url
         if url.endswith("/page"):
             return route.fulfill(status=200, content_type="text/html", body=page_html)
         if "/api/gpu-pool/state" in url:
-            return route.fulfill(status=200, content_type="application/json", body=json.dumps(STATE))
+            return route.fulfill(status=200, content_type="application/json", body=json.dumps(state))
         if url.endswith("/api/gpu-pool/control"):
             body = json.loads(route.request.post_data or "{}")
             posted.append({**body, "xrw": route.request.headers.get("x-requested-with")})
+            if body["card"] == timeout["card"]:   # the pool applied it, then the reply timed out
+                next(c for c in state["cards"] if c["card"] == body["card"])["lent"] = body["verb"] == "lend"
+                return route.fulfill(status=504, content_type="application/json",
+                                     body=json.dumps({"detail": "gpu_pool_rpc_timeout"}))
             if body["card"] == refuse["card"]:
                 return route.fulfill(status=200, content_type="application/json",
                                      body=json.dumps({"ok": False, "reason": "unknown_card"}))
+            next(c for c in state["cards"] if c["card"] == body["card"])["lent"] = body["verb"] == "lend"
             return route.fulfill(status=200, content_type="application/json",
                                  body=json.dumps({"ok": True, "detail": {"card": body["card"], "lent": body["verb"] == "lend"}}))
         return route.fulfill(status=404, body="")
@@ -79,14 +86,14 @@ def test_gpu_leases_modal_switches_flip_and_settle_on_the_pool_reply():
 
         sw = page.locator('[data-lease-card="hecate-gpu0"]')
         sw.click()
-        page.wait_for_function('document.querySelector(\'[data-lease-card="hecate-gpu0"]\').getAttribute("aria-checked") === "true" && !document.querySelector(\'[data-lease-card="hecate-gpu0"]\').disabled')
+        page.wait_for_function('document.querySelector(\'[data-lease-card="hecate-gpu0"]\').getAttribute("aria-checked") === "true" && document.querySelector(\'[data-lease-card="hecate-gpu0"]\').getAttribute("aria-disabled") === null')
         knob = page.eval_on_selector('[data-lease-card="hecate-gpu0"] .gpu-lease-knob', "e => getComputedStyle(e).transform")
         assert knob not in ("none", "")   # the knob actually slid
         assert page.text_content("#gpuLeasesBadge") == "1 lent"
         assert page.is_visible("#gpuLeasesBadge")
 
         sw.click()
-        page.wait_for_function('document.querySelector(\'[data-lease-card="hecate-gpu0"]\').getAttribute("aria-checked") === "false" && !document.querySelector(\'[data-lease-card="hecate-gpu0"]\').disabled')
+        page.wait_for_function('document.querySelector(\'[data-lease-card="hecate-gpu0"]\').getAttribute("aria-checked") === "false" && document.querySelector(\'[data-lease-card="hecate-gpu0"]\').getAttribute("aria-disabled") === null')
         assert page.is_hidden("#gpuLeasesBadge")
 
         refuse["card"] = "gpu0"
@@ -94,9 +101,28 @@ def test_gpu_leases_modal_switches_flip_and_settle_on_the_pool_reply():
         page.wait_for_function('document.getElementById("gpuLeasesStatus").textContent.includes("unknown_card")')
         assert page.get_attribute('[data-lease-card="gpu0"]', "aria-checked") == "false"   # snapped back
 
+        # Keyboard: Space flips the focused switch and focus stays on it (not dropped to <body>).
+        page.focus('[data-lease-card="hecate-gpu0"]')
+        page.keyboard.press("Space")
+        page.wait_for_function('document.querySelector(\'[data-lease-card="hecate-gpu0"]\').getAttribute("aria-disabled") === null')
+        assert page.evaluate("document.activeElement.dataset.leaseCard") == "hecate-gpu0"
+        assert page.get_attribute('[data-lease-card="hecate-gpu0"]', "aria-checked") == "true"
+        # Tab stays inside the dialog.
+        for _ in range(4):
+            page.keyboard.press("Tab")
+            assert page.evaluate("!!document.activeElement.closest('#gpuLeasesModal')")
+
+        # A timeout after the pool applied the flip shows the pool's real state, not the old one.
+        timeout["card"] = "gpu0"
+        page.click('[data-lease-card="gpu0"]')
+        page.wait_for_function('document.getElementById("gpuLeasesStatus").textContent.includes("did apply")')
+        assert page.get_attribute('[data-lease-card="gpu0"]', "aria-checked") == "true"
+        assert page.text_content("#gpuLeasesBadge") == "2 lent"
+
         page.keyboard.press("Escape")
         assert page.is_hidden("#gpuLeasesModal")
         browser.close()
 
-    assert [(b["verb"], b["card"]) for b in posted] == [("lend", "hecate-gpu0"), ("unlend", "hecate-gpu0"), ("lend", "gpu0")]
+    assert [(b["verb"], b["card"]) for b in posted] == [
+        ("lend", "hecate-gpu0"), ("unlend", "hecate-gpu0"), ("lend", "gpu0"), ("lend", "hecate-gpu0"), ("lend", "gpu0")]
     assert all(b["xrw"] == "orion-hub" for b in posted)

@@ -74,3 +74,11 @@ test("the modal root in index.html carries no display utility that would defeat 
     assert.ok(!cls.includes(bad), `modal root has "${bad}", which overrides hidden`);
   }
 });
+
+test("a healthy service role (status static) counts as serving, not down", () => {
+  const rows = leaseRows({
+    cards: [{ card: "gpu2", lendable: true }],
+    roles: [{ role: "world", cards: ["gpu2"], status: "static" }],
+  });
+  assert.equal(rows[0].serving, true);
+});

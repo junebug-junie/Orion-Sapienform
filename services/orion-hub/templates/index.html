@@ -445,11 +445,12 @@
               <option value="quick">quick — loading…</option>
             </select>
             <button
-              id="chatLaneLendToggle"
+              id="gpuLeasesOpen"
               type="button"
-              class="shrink-0 text-xs bg-gray-800 hover:bg-gray-700 text-gray-200 rounded-lg px-3 py-1 border border-gray-700"
-              title="Lend chat's GPU (gpu0) in the GPU pool. While on, other work (agent, metacog, fast) may borrow gpu0 when chat is idle; chat still owns it and takes it back when you send a message. Nothing is held or emailed."
-            >Lend chat GPU: off</button>
+              class="shrink-0 flex items-center gap-1.5 text-xs bg-gray-800 hover:bg-gray-700 text-gray-200 rounded-lg px-3 py-1 border border-gray-700"
+              title="Lend GPUs in the GPU pool: while a card is lent, other work (agent, metacog, fast) may borrow it when its owner is idle. The owner still takes it back."
+              aria-haspopup="dialog"
+            >GPU leases <span id="gpuLeasesBadge" class="rounded-full bg-emerald-700 px-1.5 text-[10px] text-white" hidden></span></button>
           </div>
           <div class="flex flex-wrap items-center gap-x-3 gap-y-2 pt-1 border-t border-gray-700/80">
             <div class="flex flex-wrap items-center gap-x-2.5 gap-y-1">
@@ -1727,6 +1728,22 @@
           <div class="text-xs uppercase tracking-wide text-gray-500">Recent run history</div>
           <div id="scheduleModalHistory" class="mt-3 space-y-2 text-xs text-gray-300"></div>
         </section>
+      </div>
+    </div>
+  </div>
+
+  <div id="gpuLeasesModal" class="fixed inset-0 z-[75] overflow-y-auto bg-black/70 p-4" role="dialog" aria-modal="true" aria-labelledby="gpuLeasesTitle" hidden>
+    <div class="mx-auto mt-[12vh] w-full max-w-md rounded-2xl border border-gray-700 bg-gray-950 shadow-2xl">
+      <div class="flex items-start justify-between gap-4 border-b border-gray-800 px-5 py-4">
+        <div>
+          <h2 id="gpuLeasesTitle" class="text-lg font-semibold text-white">GPU leases</h2>
+          <p class="mt-1 text-[11px] text-gray-400">Lent cards may run other work while their owner is idle. The owner always takes its card back. Full detail is on the GPU pool tab.</p>
+        </div>
+        <button id="gpuLeasesClose" type="button" class="rounded-full border border-gray-700 bg-gray-900 px-3 py-1 text-sm text-gray-300 hover:bg-gray-800 hover:text-white">Close</button>
+      </div>
+      <div class="space-y-2 px-5 py-4">
+        <div id="gpuLeasesList" class="space-y-2"></div>
+        <div id="gpuLeasesStatus" class="text-xs text-gray-400" role="status"></div>
       </div>
     </div>
   </div>
@@ -4367,6 +4384,7 @@
   <script src="/static/js/draft-revision.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
   <script src="/static/js/cockpit-hud.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
   <script src="/static/js/hub-tab-launcher.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
+  <script src="/static/js/gpu_pool_leases.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
   <script src="/static/js/app.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
 </body>
 </html>

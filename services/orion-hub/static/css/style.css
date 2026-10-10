@@ -512,3 +512,39 @@ input[type=range]::-moz-range-thumb {
   color: rgb(156 163 175);
 }
 .om-turn-clock.is-running { color: rgb(252 211 77); }
+
+/* GPU leases modal (gpu_pool_leases.js): the lend switch. The knob slides and the track turns
+   green on aria-checked, so the flip is visible before and after the pool answers. */
+.gpu-lease-switch {
+  position: relative;
+  flex-shrink: 0;
+  width: 3rem;
+  height: 1.75rem;
+  border-radius: 9999px;
+  border: 1px solid #4b5563;
+  background: #374151;
+  cursor: pointer;
+  transition: background-color 200ms ease, border-color 200ms ease, box-shadow 200ms ease;
+}
+.gpu-lease-switch:focus-visible { outline: 2px solid #818cf8; outline-offset: 2px; }
+.gpu-lease-switch[aria-checked="true"] {
+  background: #10b981;
+  border-color: #34d399;
+  box-shadow: 0 0 12px rgba(16, 185, 129, 0.45);
+}
+.gpu-lease-switch:disabled { opacity: 0.6; cursor: progress; }
+.gpu-lease-knob {
+  position: absolute;
+  top: 0.1875rem;
+  left: 0.1875rem;
+  width: 1.3125rem;
+  height: 1.3125rem;
+  border-radius: 9999px;
+  background: #f9fafb;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
+  transition: transform 220ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+.gpu-lease-switch[aria-checked="true"] .gpu-lease-knob { transform: translateX(1.25rem); }
+@media (prefers-reduced-motion: reduce) {
+  .gpu-lease-switch, .gpu-lease-knob { transition: none; }
+}

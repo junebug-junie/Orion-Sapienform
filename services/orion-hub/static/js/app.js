@@ -10390,66 +10390,6 @@ let chatTurnTimer = null;
     return null;
   }
 
-  // "Lend chat GPU" button: lends / takes back gpu0 (chat's card) in orion-gpu-pool.
-  // While lent, other work may borrow gpu0 when chat is idle. Chat still owns the card:
-  // a chat message recalls any borrower (grace period, then it runs). Nothing is held or
-  // emailed any more. State is read from the gateway's route catalog (chat-burst gate_open
-  // mirrors the pool's gpu0 lent flag).
-  const CHAT_LANE_LEND_ROUTE = 'chat-burst';
-  const chatLaneLendToggle = document.getElementById('chatLaneLendToggle');
-  let chatLaneLendOpen = false;
-
-  function renderChatLaneLend(gate) {
-    if (!chatLaneLendToggle) return;
-    const on = !!(gate && (gate.open === true || gate.gate_open === true));
-    chatLaneLendOpen = on;
-    chatLaneLendToggle.textContent = on ? 'Lend chat GPU: on' : 'Lend chat GPU: off';
-    chatLaneLendToggle.classList.toggle('bg-emerald-700', on);
-    chatLaneLendToggle.classList.toggle('border-emerald-500', on);
-  }
-
-  function chatBurstGateFromCatalog(catalog) {
-    const entry = ((catalog && catalog.routes) || []).find(
-      (r) => String(r.id || '').toLowerCase() === CHAT_LANE_LEND_ROUTE,
-    );
-    // Only a real true/false moves the toggle. `gate_open: null` is the pool-unreachable
-    // catalog (GPU pool stage 6.3: every lane unknown) -- rendering that as "closed" would
-    // state a guess, so the toggle keeps its last known state instead.
-    return entry && typeof entry.gate_open === 'boolean' ? { open: entry.gate_open } : null;
-  }
-
-  async function toggleChatLaneLend() {
-    if (!chatLaneLendToggle) return;
-    const wantOpen = !chatLaneLendOpen;
-    chatLaneLendToggle.disabled = true;
-    try {
-      const res = await fetch(`${API_BASE_URL}/api/gpu-pool/control`, {
-        method: 'POST',
-        credentials: 'same-origin',
-        // X-Requested-With: the pool control route refuses requests without it (CSRF guard).
-        headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'orion-hub' },
-        body: JSON.stringify({ verb: wantOpen ? 'lend' : 'unlend', card: 'gpu0' }),
-      });
-      const body = await res.json().catch(() => null);
-      if (!res.ok || !(body && body.ok)) {
-        const detail = body && (body.detail || body.reason) ? (body.detail || body.reason) : `HTTP ${res.status}`;
-        throw new Error(String(typeof detail === 'string' ? detail : JSON.stringify(detail)));
-      }
-      renderChatLaneLend({ open: !!(body.detail && body.detail.lent) });
-      updateStatus(chatLaneLendOpen
-        ? 'Chat GPU lent: other work may use it while chat is idle. Your chat still takes it back.'
-        : 'Chat GPU taken back: only chat uses it.');
-    } catch (err) {
-      appendMessage('System', `Lend chat GPU failed: ${err && err.message ? err.message : err}`, 'text-red-400');
-    } finally {
-      chatLaneLendToggle.disabled = false;
-    }
-  }
-
-  if (chatLaneLendToggle) {
-    chatLaneLendToggle.addEventListener('click', () => { toggleChatLaneLend(); });
-  }
-
   async function loadLlmRouteCatalog() {
     try {
       const res = await fetch(`${API_BASE_URL}/api/llm-routes`);
@@ -10459,10 +10399,6 @@ let chatTurnTimer = null;
       if (!known.has(String(selectedLlmRoute || '').toLowerCase())) {
         selectedLlmRoute = HUB_COMPUTE_DEFAULT;
       }
-      // The catalog already polls every 30 s; piggyback the gate state on it so the
-      // button follows a flip made from another tab without its own timer.
-      const gate = chatBurstGateFromCatalog(llmRouteCatalog);
-      if (gate) renderChatLaneLend(gate);
     } catch (err) {
       console.warn('[Compute lanes] catalog load failed', err);
     }

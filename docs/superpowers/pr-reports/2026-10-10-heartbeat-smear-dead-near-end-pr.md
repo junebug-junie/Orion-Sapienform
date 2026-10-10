@@ -66,6 +66,16 @@ A finer view of 3..33 shows the alive body ending at 4.536, nothing between 4.53
 - `services/orion-equilibrium-service` flow/insight metacog gates: listed in the metric lock as consumers of the whole self-model row, but they read only `prediction_error_confidence`, never smear.
 - `lattice_probe.score_kick` uses the same 1e-6 pattern (and returns +inf). It is the pre-registered offline probe, not a live reading, so it is left unchanged and out of scope.
 
+## Metric semantic layer lineage (checked before calling this a bug)
+
+Ran `.venv/bin/python scripts/check_metric_lineage.py` (`--metric <token>`, `--drift`, `--unwritten`) on 2026-10-10 against main, and read the matching `orion/inner_state_registry.py` and `config/field/field_channel_glossary.v1.yaml` entries. Nothing in the semantic layer marks this behaviour as designed.
+
+- `--metric heartbeat_smear` resolves to `metric://inner_state/orion-substrate-runtime/attention_self_model.v1#heartbeat_smear`, a scalar field on `AttentionSelfModelV1` produced by orion-substrate-runtime. There is no glossary entry, and the registry note says nothing about a valid range or about huge ratios being intended.
+- Declared consumers are inherited from the whole `attention_self_model.v1` signal: the equilibrium flow and insight metacog gates. Both read `prediction_error_confidence` only, never the smear, so null does not reach them.
+- Discovered blast radius (non-test, 3 sites): `services/orion-hub/scripts/attention_organ_routes.py:240` and `:592`. Both pass the value through, and the hub JS renders null as "—". That matches the consumers checked above.
+- `WRITTEN BY: 0`, because the field is written by a whole-model construction the scan cannot see. Producer traced by hand: `proprioception.py` to `_heartbeat_h1_fields`.
+- `--drift`: the declared flow/insight gates are not among the discovered consumers, which is consistent with the gates never reading this field.
+
 ## Schema / bus / API changes
 
 - Added: none

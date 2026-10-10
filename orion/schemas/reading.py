@@ -234,15 +234,26 @@ class SourceFetchEvidenceV1(BaseModel):
     url: str = Field(min_length=1)
     tool_name: str = Field(min_length=1)
     content_chars: int = Field(ge=0)
-    # Set only for a Hub-captured document snapshot: the exact bytes read.
+    # sha256 of the exact text Hub retained for this read, a key into
+    # ``reading_document_snapshot``. A Hub-captured document snapshot (source
+    # text) since documents shipped; a web fetch's tool_result text (the fetch
+    # tool's digest, never the verbatim page) since 2026-10-10 -- see
+    # ``fetch_representation`` for which is which. Always computed by Hub.
     content_sha256: str | None = None
+    # TRANSPORT ONLY, harness -> Hub: the tool_result text the model received
+    # (orion/harness/reading_receipts.py), so Hub can retain it. Hub stores it
+    # content-addressed and drops it before persisting the handoff
+    # (orion/world_pulse_read/fetch_text.py); it never rides in a stored
+    # handoff or a Stage 2 prompt's handoff JSON.
+    content_text: str | None = None
 
     @model_serializer(mode="wrap")
     def _omit_unset_sha(self, handler):
         # Web-fetch evidence stays byte-identical to what it was before documents.
         data = handler(self)
-        if data.get("content_sha256") is None:
-            data.pop("content_sha256", None)
+        for key in ("content_sha256", "content_text"):
+            if data.get(key) is None:
+                data.pop(key, None)
         return data
 
 

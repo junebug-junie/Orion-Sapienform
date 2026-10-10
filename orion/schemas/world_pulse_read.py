@@ -219,6 +219,68 @@ class WorldPulseReadHandoffV1(_Base):
         return _coerce_thread_list(value)
 
 
+# #2497 reader allowlist: the existing semantic predicates a reading may claim.
+# Operational predicates (activates, suppresses, seeks...) are never emitted by a reader.
+READING_CLAIM_PREDICATES: tuple[str, ...] = (
+    "subtype_of", "part_of", "refines", "associated_with", "causes", "co_occurs_with",
+)
+ReadingClaimOutcomeV1 = Literal["accepted_provisional", "proposed", "rejected"]
+
+
+class WorldPulseReadClaimReceiptV1(_Base):
+    """What deterministic code did with one relationship claim. Always server-set
+    (orion/world_pulse_read/assertions.py); anything the model writes here is discarded."""
+
+    outcome: ReadingClaimOutcomeV1
+    # accepted_provisional: journalled proposal + accepting decision. proposed: journalled
+    # proposal only, no link. rejected: refused by validation or not journalled at all.
+    # reason, a short machine label: accepted | quote_not_found | quote_too_short |
+    # domain_rule:<predicate> | already_decided | decision_journal_failed |
+    # predicate_not_allowed | unknown_subject | unknown_object | same_endpoint | duplicate |
+    # journal_unavailable
+    reason: str = Field(min_length=1)
+    proposal_id: str | None = None
+    assertion_id: str | None = None
+    decision_id: str | None = None
+    # The retained text the quote was found in, and where (half-open UTF-8 byte range).
+    content_sha256: str | None = None
+    representation: Literal["source_text", "tool_digest"] | None = None
+    span_start: int | None = Field(default=None, ge=0)
+    span_end: int | None = Field(default=None, ge=0)
+
+
+class WorldPulseReadRelationshipClaimV1(_Base):
+    """Stage 2's proposed relationship between a concept this read produced
+    (``subject_id``) and an existing atlas concept (``object_id``), both chosen
+    from id lists Hub put in the prompt. The model proposes; code decides."""
+
+    subject_id: str = Field(min_length=1)
+    predicate: str = Field(min_length=1)
+    object_id: str = Field(min_length=1)
+    statement_text: str = Field(min_length=1)
+    quote: str = ""
+    receipt: WorldPulseReadClaimReceiptV1 | None = None
+
+
+def _coerce_claim_list(value: Any) -> list[Any]:
+    """Keep only object-shaped claims. Receipts are kept here (a stored row carries
+    real ones); the Stage 2 loop strips any receipt from raw model output."""
+    if not isinstance(value, list):
+        return []
+    return [item for item in value if isinstance(item, (dict, WorldPulseReadRelationshipClaimV1))]
+
+
+def strip_model_claim_receipts(parsed: dict[str, Any]) -> dict[str, Any]:
+    """Raw model output only: a model cannot author a receipt (it is code's verdict)."""
+    claims = parsed.get("relationship_claims")
+    if isinstance(claims, list):
+        parsed["relationship_claims"] = [
+            {k: v for k, v in item.items() if k != "receipt"} if isinstance(item, dict) else item
+            for item in claims
+        ]
+    return parsed
+
+
 class WorldPulseReadStage2ResultV1(_Base):
     """Stage 2 FCC result. ``need_stage1_urls`` may trigger Stage 1 re-entry.
 
@@ -237,6 +299,9 @@ class WorldPulseReadStage2ResultV1(_Base):
     concept_candidates: list[WorldPulseReadConceptCandidateV1] = Field(default_factory=list)
     open_threads: list[str] = Field(default_factory=list)
     hops: list[str] = Field(default_factory=list)
+    # Model-proposed relationship claims; each gets a server-set receipt before the
+    # result is stored. Older rows have none.
+    relationship_claims: list[WorldPulseReadRelationshipClaimV1] = Field(default_factory=list)
     round_trips: int = Field(default=0, ge=0)
     trace_id: str = Field(min_length=1)
     created_at: datetime
@@ -270,3 +335,8 @@ class WorldPulseReadStage2ResultV1(_Base):
     @classmethod
     def _string_lists_before(cls, value: Any) -> list[str]:
         return _coerce_thread_list(value)
+
+    @field_validator("relationship_claims", mode="before")
+    @classmethod
+    def _claims_before(cls, value: Any) -> list[Any]:
+        return _coerce_claim_list(value)

@@ -1133,6 +1133,27 @@ def test_near_empty_fetch_result_is_not_evidence(monkeypatch: pytest.MonkeyPatch
     assert conn.rows["finding:r1:x"]["last_error"] == "no_read_evidence:thin_fetch"
 
 
+def test_fetched_text_is_retained_by_hash_and_never_stored_in_the_handoff(monkeypatch: pytest.MonkeyPatch) -> None:
+    """#2497 evidence: the tool_result text the reader got is kept content-addressed in
+    reading_document_snapshot, linked from read_evidence by sha256; the handoff (and so
+    the Stage 2 prompt's handoff JSON) never carries the page."""
+    import hashlib
+
+    bus = _FakeBus()
+    conn = _FakeConn()
+    pipe = _pipeline(bus, conn, InMemorySubstrateGraphStore())
+    text = "A heat pump transfers heat using a refrigeration cycle. " * 6
+    fetched = {"url": "https://ex.com/a", "tool_name": "WebFetch", "content_chars": len(text),
+               "content_text": text}
+    _patch_turn(monkeypatch, [_final_frame("Heat pumps move heat.", fetches=[fetched])])
+
+    assert _tick(pipe, conn) is None
+    sha = hashlib.sha256(text.encode()).hexdigest()
+    (evidence,) = conn.rows["finding:r1:x"]["handoff_json"]["read_evidence"]
+    assert evidence["content_sha256"] == sha and "content_text" not in evidence
+    assert conn.snapshots[sha]["content"] == text
+
+
 def test_fetch_of_the_sites_homepage_is_not_evidence(monkeypatch: pytest.MonkeyPatch) -> None:
     bus = _FakeBus()
     conn = _FakeConn()

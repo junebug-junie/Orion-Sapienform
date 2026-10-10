@@ -870,6 +870,11 @@ class Settings(BaseSettings):
     HUB_WORLD_PULSE_READ_STAGE2_MAX_ROUND_TRIPS: int = Field(
         default=5, alias="HUB_WORLD_PULSE_READ_STAGE2_MAX_ROUND_TRIPS"
     )
+    # Kill switch for reading relationship claims (orion/world_pulse_read/assertions.py):
+    # the Stage 2 prompt block, journal writes, and Hub's reading assertion projector.
+    HUB_WORLD_PULSE_READ_ASSERTIONS_ENABLED: bool = Field(
+        default=True, alias="HUB_WORLD_PULSE_READ_ASSERTIONS_ENABLED"
+    )
 
     # --- Orion's own graph ------------------------------------------------
     # `orion_worldview` is Orion's alone: it reads AND writes there, nothing in

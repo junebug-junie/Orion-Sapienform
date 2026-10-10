@@ -322,3 +322,34 @@ def test_a_held_id_is_refused_before_anything_is_written():
         assert report.failed == {"dec-1": "canonical_id_mismatch"}
         assert store.get_node_by_id(TARGET) is None and len(store._edges) == 0
     asyncio.run(_with_db(body))
+
+
+def test_pending_decisions_filter_by_the_proposing_producer():
+    """Each projector applies only claims its own store can see (the memory projector
+    primes memory nodes only; Hub applies reading claims). The filter is on the PROPOSAL's
+    actor, so a later reviewer decision on a reading claim still reaches Hub's projector."""
+    async def body(pool):
+        journal = SubstrateGraphJournal(pool)
+        await journal.append(_proposal())
+        await journal.append(_decision("dec-1", 0, "provisional"))
+        reading_key = "heat-pump|associated_with|refrigeration-cycle|"
+        reading_target = assertion_node_id(reading_key)
+        await journal.append(SubstrateGraphProposalV1(
+            proposal_id="reading-prop", proposal_kind="relationship_assertion", target_id=reading_target,
+            actor="world_pulse_read_stage2", subject_node_id="heat-pump", subject_kind="concept",
+            object_node_id="refrigeration-cycle", object_kind="concept", predicate="associated_with",
+            statement_key=reading_key, statement_text="A heat pump runs a refrigeration cycle",
+            anchor_scope="orion", authority="local_inferred", recorded_at=NOW))
+        await journal.append(SubstrateGraphDecisionV1(
+            proposal_id="reading-prop", proposal_kind="relationship_assertion", target_id=reading_target,
+            actor="operator_review", decision_id="reading-dec", expected_prior_revision=0,
+            resulting_state="provisional", policy="operator_review", authority="local_inferred", recorded_at=NOW))
+
+        async def ids(actors):
+            return sorted(d.decision_id for d in await journal.pending_decisions(proposal_actors=actors))
+
+        assert await ids(None) == ["dec-1", "reading-dec"]
+        assert await ids((FENCED,)) == ["dec-1"]
+        assert await ids(("world_pulse_read_stage2",)) == ["reading-dec"]
+        assert await ids(()) == []
+    asyncio.run(_with_db(body))

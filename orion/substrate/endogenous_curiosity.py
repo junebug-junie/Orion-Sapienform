@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from types import SimpleNamespace
 from datetime import datetime, timezone
 from typing import Any, Sequence
 
@@ -141,15 +142,25 @@ def _prediction_error_staleness_decay(node: Any, *, now: datetime) -> float:
     return _linear_staleness_decay(observed, now=now)
 
 
-def _linear_staleness_decay(observed: datetime, *, now: datetime) -> float:
-    """Shared linear decay-to-zero over ``_PREDICTION_ERROR_DECAY_HORIZON_SECONDS``."""
+def _age_seconds(observed: datetime, *, now: datetime) -> float:
+    """Non-negative age; naive datetimes are read as UTC (hosts run UTC).
+
+    A future-dated ``observed`` clamps to age 0 (decay factor 1.0) -- same as
+    prediction-error sources; the producer stamps the reducer's own clock.
+    """
     if observed.tzinfo is None:
         observed = observed.replace(tzinfo=timezone.utc)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
+    return max(0.0, (now - observed).total_seconds())
+
+
+def _linear_staleness_decay(observed: datetime, *, now: datetime) -> float:
+    """Shared linear decay-to-zero over ``_PREDICTION_ERROR_DECAY_HORIZON_SECONDS``."""
     horizon = _PREDICTION_ERROR_DECAY_HORIZON_SECONDS
     if horizon <= 0:
         return 1.0
-    age_seconds = max(0.0, (now - observed).total_seconds())
-    return max(0.0, 1.0 - (age_seconds / horizon))
+    return max(0.0, 1.0 - (_age_seconds(observed, now=now) / horizon))
 
 
 def repair_appraisal_from_chat_turns(turns: Sequence[Any], *, now: datetime) -> Any | None:
@@ -158,7 +169,8 @@ def repair_appraisal_from_chat_turns(turns: Sequence[Any], *, now: datetime) -> 
     Each turn's ``repair_pressure_level`` is multiplied by the same linear
     staleness decay prediction-error sources use (``_linear_staleness_decay``,
     horizon ``PressureConfig().prediction_error_decay_horizon_seconds`` = 1800 s),
-    measured from the turn's own ``observed_at``; the strongest *decayed* level
+    measured from the turn's own ``observed_at`` (its first-reduction time; the chat reducer
+    keeps it on re-reduction so a reprocess cannot re-freshen an old turn); the strongest *decayed* level
     wins. A repair turn is therefore a candidate only while it is recent, then
     lets go -- the same "surprising once must not win the budget forever" rule
     the module docstring states for prediction error.
@@ -194,15 +206,12 @@ def repair_appraisal_from_chat_turns(turns: Sequence[Any], *, now: datetime) -> 
             best_level = level
             best_raw = raw
             best_conf = float(getattr(turn, "repair_pressure_confidence", 0.0) or 0.0)
-            obs = observed if observed.tzinfo else observed.replace(tzinfo=timezone.utc)
-            best_age = max(0.0, (now - obs).total_seconds())
+            best_age = _age_seconds(observed, now=now)
             evidence_ids = list(getattr(turn, "evidence_event_ids", None) or [])[:8]
-        except Exception:
+        except (TypeError, ValueError):
             continue
     if best_level <= 0.0:
         return None
-    from types import SimpleNamespace
-
     return SimpleNamespace(
         dimensions={"level": best_level},
         causal_molecule_ids=evidence_ids,

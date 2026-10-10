@@ -322,3 +322,11 @@ def test_recent_spike_beats_older_bigger_spike() -> None:
     ]
     appraisal = repair_appraisal_from_chat_turns(turns, now=_NOW)
     assert appraisal.causal_molecule_ids == ["ev-new"]
+
+
+def test_future_dated_turn_is_treated_as_age_zero_and_naive_is_utc() -> None:
+    future = _turn(0.8, _NOW + timedelta(seconds=120), turn_id="future")
+    assert repair_appraisal_from_chat_turns([future], now=_NOW).dimensions["level"] == 0.8
+    naive = _turn(0.8, (_NOW - timedelta(seconds=900)).replace(tzinfo=None), turn_id="naive")
+    level = repair_appraisal_from_chat_turns([naive], now=_NOW.replace(tzinfo=None)).dimensions["level"]
+    assert abs(level - 0.4) < 1e-9

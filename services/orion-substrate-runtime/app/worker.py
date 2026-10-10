@@ -3753,11 +3753,13 @@ class BiometricsSubstrateWorker:
         except Exception:
             logger.exception("substrate_endogenous_curiosity_broadcast_load_failed")
 
+        tick_now = datetime.now(timezone.utc)
         seeds = endogenous_curiosity_candidates(
             nodes=nodes,
-            repair_appraisal=self._repair_appraisal_from_chat(),
+            repair_appraisal=self._repair_appraisal_from_chat(now=tick_now),
             attention_frame=attention_frame,
             config=config,
+            now=tick_now,
         )
         if seeds:
             # Visibility, 2026-07-26: which source/node actually won a budget

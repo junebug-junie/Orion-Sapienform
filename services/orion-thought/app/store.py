@@ -508,13 +508,21 @@ def visual_last_painting_age_hours() -> float | None:
 
     "Produced" means a `reverie_visual_chain` row carrying a `production_
     receipt` -- timestamped by the receipt's own `produced_at`, not the row's
-    `created_at`. Deferral/failure rows (resource_deferred, run_deadline_
-    exceeded, generation_failed, ...) carry no receipt, so they do NOT reset
-    this clock -- unlike `visual_chain_age_minutes()` above, which treats any
-    row as proof the worker is alive. That difference is the whole point:
-    2026-10-09/10 the GPU lane controller refused every swap for 27.6 h and
-    the worker kept writing fresh deferral rows, so the staleness check stayed
-    green while no painting landed.
+    `created_at`. Read by the painting-gap check, which caught nothing during
+    the 2026-10-09/10 outage only because it did not exist yet; the staleness
+    check (`visual_chain_age_minutes()`) was silent because its watchdog is
+    gated on the legacy `visual_chain_enabled` flag and never ran. (Deferrals
+    land in `reverie_visual_attempt`, not this table -- live, only the two
+    real paintings bracketing the 27.6 h gap were in it.)
+
+    Deliberately receipt-only, not `_VISUAL_PRODUCTION_SQL` below (the
+    canonical "produced" definition, which also joins `reverie_visual_
+    artifact` and accepts pre-receipt historical rows). That join would make
+    this per-tick read touch a second table and give up the created_at index;
+    every painting since receipts shipped carries one. Checked live
+    2026-10-10: both give the same latest painting (17:58:31Z); the canonical
+    one's extra 1,433 receipt-less paintings all fall 08-25 -> 09-08, before
+    the first receipt (09-14), so they never affect "how long since the last".
 
     Dream carry pictures (brief.dream_hop) deliberately write NO chain row,
     so they never count here -- this measures the reverie painting pipeline

@@ -1,9 +1,11 @@
 """Second watchdog check: `visual_painting_gap` (no produced painting in N hours).
 
-Incident 2026-10-09/10: the GPU lane controller refused every swap for 27.6 h;
-deferral rows kept `visual_chain_stale` green the whole time. These tests pin
-that the gap check fires on its own, that the two checks keep independent
-edge-triggered state, and that the open-alert lookup is per key. `app.*`
+Incident 2026-10-09/10: the GPU lane controller refused every swap for 27.6 h
+and nothing alerted -- the legacy staleness watchdog is gated on
+visual_chain_enabled (off in production) and never ran. These tests pin that
+the gap check fires on its own (own loop, own flag), that the two checks keep
+independent edge-triggered state, that a failed read is no observation, and
+that the open-alert lookup is per key. `app.*`
 imports stay inside each test (conftest purges `app.*` between tests).
 """
 from __future__ import annotations
@@ -97,7 +99,7 @@ def test_gap_alerts_once_on_transition_and_recovers_once():
 
 
 def test_checks_are_independent_gap_bad_while_staleness_green():
-    """The incident shape: fresh deferral rows (staleness healthy) + no painting."""
+    """Staleness healthy while no painting comes out: only the gap check fires."""
     with patch("app.visual_chain_health_monitor.NotifyClient") as client_cls, patch(
         "app.visual_chain_health_monitor.requests.get", return_value=_pending([])
     ):
@@ -251,3 +253,171 @@ def test_store_painting_age_none_when_never_painted_and_never_raises():
         from app.store import visual_last_painting_age_hours
 
         assert visual_last_painting_age_hours() is None
+
+
+def test_db_read_failure_mid_gap_is_no_observation_not_recovery():
+    """None (DB read failed) mid-gap must not send a recovery note and then
+    re-alert on the next real reading."""
+    with patch("app.visual_chain_health_monitor.NotifyClient") as client_cls, patch(
+        "app.visual_chain_health_monitor.requests.get", return_value=_pending([])
+    ):
+        from app.visual_chain_health_monitor import VisualChainHealthMonitor
+
+        client_cls.return_value.attention_request.return_value = MagicMock(ok=True)
+        monitor = VisualChainHealthMonitor(settings_obj=_settings())
+        monitor.record_painting_gap(age_hours=1.0)
+        monitor.record_painting_gap(age_hours=13.0)  # alert
+        monitor.record_painting_gap(age_hours=None)  # read failed
+        monitor.record_painting_gap(age_hours=None)
+        monitor.record_painting_gap(age_hours=14.0)  # still the same gap
+        assert _reasons(client_cls) == [("visual_painting_gap", "error")]
+
+
+def test_none_before_any_reading_leaves_state_unset():
+    with patch("app.visual_chain_health_monitor.NotifyClient") as client_cls, patch(
+        "app.visual_chain_health_monitor.requests.get", return_value=_pending([])
+    ):
+        from app.visual_chain_health_monitor import VisualChainHealthMonitor
+
+        client_cls.return_value.attention_request.return_value = MagicMock(ok=True)
+        monitor = VisualChainHealthMonitor(settings_obj=_settings())
+        monitor.record_painting_gap(age_hours=None)
+        assert "visual_painting_gap" not in monitor._last_healthy
+        monitor.record_painting_gap(age_hours=13.0)  # first real obs, unhealthy
+        assert _reasons(client_cls) == [("visual_painting_gap", "error")]
+
+
+# --- run_visual_painting_gap_watchdog: own loop, not behind visual_chain_enabled ---
+
+
+def _loop_settings(**overrides):
+    from app.settings import ThoughtSettings
+
+    values = dict(
+        ORION_VISUAL_CHAIN_ENABLED=False,
+        ORION_BUS_ENABLED=False,
+        ORION_VISUAL_PAINTING_GAP_CHECK_ENABLED=True,
+        ORION_VISUAL_PAINTING_GAP_CHECK_INTERVAL_SEC=0.01,
+    )
+    values.update(overrides)
+    return ThoughtSettings(**values)
+
+
+def test_gap_check_settings_defaults_on():
+    from app.settings import ThoughtSettings
+
+    s = ThoughtSettings()
+    assert s.visual_painting_gap_check_enabled is True
+    assert s.visual_painting_gap_check_interval_sec == 600.0
+
+
+@pytest.mark.asyncio
+async def test_gap_loop_runs_with_legacy_visual_chain_and_bus_disabled(monkeypatch):
+    """Production shape: ORION_VISUAL_CHAIN_ENABLED=false. The legacy
+    watchdog returns early there; this loop must still tick."""
+    import asyncio
+
+    from app import visual_chain_health_monitor as mon
+
+    cfg = _loop_settings()
+    assert cfg.visual_chain_enabled is False
+    stop = asyncio.Event()
+    gaps = iter([2.0, 13.0])
+    reported = []
+
+    def _fake_check(age_hours):
+        reported.append(age_hours)
+        if len(reported) >= 2:
+            stop.set()
+
+    monkeypatch.setattr("app.store.visual_last_painting_age_hours", lambda: next(gaps))
+    monkeypatch.setattr(mon, "check_visual_painting_gap", _fake_check)
+    await asyncio.wait_for(mon.run_visual_painting_gap_watchdog(stop, settings_obj=cfg), 2.0)
+    assert reported == [2.0, 13.0]
+
+
+@pytest.mark.asyncio
+async def test_gap_loop_noop_when_its_own_flag_is_off(monkeypatch):
+    from app import visual_chain_health_monitor as mon
+
+    calls = []
+    monkeypatch.setattr("app.store.visual_last_painting_age_hours", lambda: calls.append(1) or 1.0)
+    import asyncio
+
+    # Must return on its own; a loop that ignored the flag would never end
+    # (stop is never set), so wait_for turns that into a fast failure.
+    await asyncio.wait_for(
+        mon.run_visual_painting_gap_watchdog(
+            asyncio.Event(),
+            settings_obj=_loop_settings(ORION_VISUAL_PAINTING_GAP_CHECK_ENABLED=False),
+        ),
+        1.0,
+    )
+    assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_gap_loop_survives_a_failing_tick(monkeypatch):
+    import asyncio
+
+    from app import visual_chain_health_monitor as mon
+
+    stop = asyncio.Event()
+    n = {"v": 0}
+
+    def _age():
+        n["v"] += 1
+        if n["v"] == 1:
+            raise RuntimeError("boom")
+        stop.set()
+        return 1.0
+
+    monkeypatch.setattr("app.store.visual_last_painting_age_hours", _age)
+    monkeypatch.setattr(mon, "check_visual_painting_gap", lambda age_hours: None)
+    await asyncio.wait_for(
+        mon.run_visual_painting_gap_watchdog(stop, settings_obj=_loop_settings()), 2.0
+    )
+    assert n["v"] == 2
+
+
+@pytest.mark.asyncio
+async def test_lifespan_starts_and_stops_painting_gap_task(monkeypatch):
+    import asyncio
+    from types import SimpleNamespace
+
+    import app.main as main_module
+    from app.settings import settings
+
+    async def _noop(*_a, **_k):
+        return None
+
+    for name in (
+        "run_bus_worker",
+        "run_reverie_worker",
+        "run_reverie_chain_worker",
+        "run_reasoning_worker",
+        "run_visual_chain_worker",
+        "run_visual_chain_watchdog",
+        "warm_pool",
+    ):
+        monkeypatch.setattr(main_module, name, _noop)
+    monkeypatch.setattr(settings, "rpc_health_publish_enabled", False)
+    monkeypatch.setattr(settings, "visual_chain_enabled", False)
+    monkeypatch.setattr(
+        main_module, "build_heartbeat_chassis", lambda: (_ for _ in ()).throw(RuntimeError("no hb"))
+    )
+    started = asyncio.Event()
+    seen = {}
+
+    async def _fake_gap_loop(stop_event):
+        seen["stop"] = stop_event
+        started.set()
+        await stop_event.wait()
+
+    monkeypatch.setattr(main_module, "run_visual_painting_gap_watchdog", _fake_gap_loop)
+    app = SimpleNamespace(state=SimpleNamespace())
+    async with main_module.lifespan(app):
+        await asyncio.wait_for(started.wait(), 2.0)
+        assert not app.state.visual_painting_gap_task.done()
+    assert seen["stop"].is_set()
+    assert app.state.visual_painting_gap_task.done()

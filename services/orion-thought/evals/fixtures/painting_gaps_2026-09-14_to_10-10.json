@@ -1,8 +1,17 @@
 {
- "source": "reverie_visual_chain production_receipt.produced_at, live conjourney, queried 2026-10-10",
- "window_days": 21,
- "painting_count": 175,
+ "source": "every reverie_visual_chain row with a production_receipt, timed by production_receipt.produced_at; live conjourney Postgres, queried 2026-10-10. Spans the first receipt-bearing painting (2026-09-14 02:23Z) through the end of the 2026-10-09/10 incident (10-10 06:02Z), ~26.2 days. 1,433 earlier paintings (2026-08-25 -> 09-08) predate production receipts and are not included; none exist after 09-14.",
+ "first_painting": "2026-09-14T02:23:26Z",
+ "last_painting": "2026-10-10T06:02:52Z",
+ "painting_count": 170,
  "gaps": [
+  {
+   "ended_at": "2026-09-14T17:07:18Z",
+   "hours": 14.731
+  },
+  {
+   "ended_at": "2026-09-25T00:04:26Z",
+   "hours": 246.952
+  },
   {
    "ended_at": "2026-09-25T01:37:46Z",
    "hours": 1.555
@@ -670,34 +679,6 @@
   {
    "ended_at": "2026-10-10T06:02:52Z",
    "hours": 27.646
-  },
-  {
-   "ended_at": "2026-10-10T07:36:16Z",
-   "hours": 1.557
-  },
-  {
-   "ended_at": "2026-10-10T09:58:15Z",
-   "hours": 2.367
-  },
-  {
-   "ended_at": "2026-10-10T11:34:01Z",
-   "hours": 1.596
-  },
-  {
-   "ended_at": "2026-10-10T13:07:37Z",
-   "hours": 1.56
-  },
-  {
-   "ended_at": "2026-10-10T14:51:13Z",
-   "hours": 1.727
-  },
-  {
-   "ended_at": "2026-10-10T16:24:50Z",
-   "hours": 1.56
-  },
-  {
-   "ended_at": "2026-10-10T17:58:31Z",
-   "hours": 1.561
   }
  ]
 }

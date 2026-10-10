@@ -273,17 +273,6 @@ def test_hub_no_longer_reads_the_gateway_routes_endpoint():
     assert "aiohttp" not in source and "HUB_LLM_GATEWAY_URL" not in source
 
 
-def test_lend_toggle_ignores_an_unknown_gate_instead_of_rendering_closed():
-    """Pool unreachable -> `gate_open: null` on every lane. The composer's lend toggle must keep
-    its last known state, not flip to "closed" (a guess). Source-level: the Hub has no JS runner."""
-    from pathlib import Path
-
-    js = (Path(__file__).resolve().parents[1] / "static" / "js" / "app.js").read_text()
-    body = js.split("function chatBurstGateFromCatalog(catalog) {", 1)[1].split("\n  }\n", 1)[0]
-    assert "typeof entry.gate_open === 'boolean'" in body
-    assert "entry.gate_open === true" not in body
-
-
 def test_default_route_is_the_hubs_own_constant_matching_the_composer(monkeypatch):
     """Pool state carries no gateway LLM_ROUTE_DEFAULT; the payload states the Hub's constant, and
     that constant must agree with the composer's HUB_COMPUTE_DEFAULT."""

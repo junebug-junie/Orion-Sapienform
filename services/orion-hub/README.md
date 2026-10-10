@@ -3477,16 +3477,18 @@ Plan: `docs/superpowers/plans/2026-09-28-urgent-curiosity-plan-3-seeded-urgent-r
 gpu2 is loaded and unloaded only by orion-gpu-pool (GPU pool stage 4). The old per-run
 `HUB_CURIOSITY_ELASTIC_ACTIVATION_ENABLED` permission was deleted in stage 4.6.
 
-## Lend chat GPU (gpu0 in orion-gpu-pool)
+## GPU leases (lend cards in orion-gpu-pool)
 
-The **Lend chat GPU** button in the composer control strip lends or takes back gpu0, chat's card,
-in orion-gpu-pool (`POST /api/gpu-pool/control` with `verb` lend or unlend; same control as the GPU
-pool tab). While lent, other work (agent, metacog, fast) may borrow gpu0 when chat is idle. Chat
-still owns the card: a chat message recalls any borrower (grace period, then it runs), so nothing
-is held or emailed any more. The old chat-burst gate, hold-and-email path, and
-`/api/llm-routes/{id}/gate` were removed when the gateway cut over to the pool (2026-09-24). The
-button's state comes from the route catalog: `chat-burst.gate_open` mirrors the pool's gpu0 lent
-flag.
+The **GPU leases** button in the composer control strip opens a small modal with one switch per
+lendable card in `config/gpu_pool.yaml` (today circe's gpu0, chat's card, and hecate-gpu0,
+agent-deep's card). The list comes from `GET /api/gpu-pool/state`, so a new lendable card appears
+with no Hub change. A flip posts `POST /api/gpu-pool/control` with `verb` lend or unlend (same
+control as the GPU pool tab) and the switch settles on the pool's reply. While lent, other work
+(agent, metacog, fast) may borrow the card when its owner is idle; the owner still takes it back
+(grace period, then it runs). The button's badge shows how many cards are lent, refreshed once a
+minute while the page is visible; if the pool is unreachable the badge keeps its last known value
+and the modal shows the error instead of guessing. A card whose server is down is marked so:
+lending it does nothing until it answers. Code: `static/js/gpu_pool_leases.js`.
 
 ## RPC-health snapshot publish (default on)
 

@@ -108,12 +108,17 @@ So one event's consequence is gone by about 300 s. That is the window. It is tig
   - the `node_candidate(event_decay=)` parameter.
 - `orion/schemas/attention_candidate.py`: optional `event_window_sec` (default None). The model is registered and not on the bus; it only travels in frame traces.
 - `orion/attention/field_attention/selectors.py`: target salience is the faded strength.
-- `orion/substrate/attention_broadcast.py`: `event_decay` threaded through `build_substrate_attention_frame` → `world_first_signals`. The loop score falls back to the faded salience.
+- `orion/substrate/attention_broadcast.py`:
+  - `event_decay` is threaded through `build_substrate_attention_frame` → `world_first_signals`;
+  - the loop score falls back to the faded salience;
+  - `provenance["world_first_event_decay"]` is added.
 - `services/orion-attention-runtime/app/{settings,worker}.py` and `services/orion-substrate-runtime/app/{settings,worker}.py`: the flag. Each service's `.env_example` and `docker-compose.yml` exposes it.
 - `services/orion-attention-runtime/evals/replay_world_first.py`: adds `--no-event-decay`, `--start/--end`, and a longest-hold metric per source.
 - Tests:
-  - `tests/test_attention_event_decay.py` (new, 20 tests);
-  - `services/orion-attention-runtime/tests/test_world_first_worker.py` (+1 flag-wiring test).
+  - `tests/test_attention_event_decay.py` (new, 21 tests);
+  - `services/orion-attention-runtime/tests/test_world_first_worker.py` (+1 flag-wiring test);
+  - `services/orion-substrate-runtime/tests/test_worker_world_first_broadcast.py` (+1);
+  - `services/orion-attention-runtime/evals/test_world_first_replay.py` (+1).
 
 Temporal Self (#2369) habituation code is not touched.
 
@@ -141,17 +146,19 @@ Temporal Self (#2369) habituation code is not touched.
 
 ```text
 /mnt/scripts/Orion-Sapienform/.venv/bin/python -m pytest -q -p no:cacheprovider -W ignore ...
-tests/test_attention_*.py tests/test_voluntary_attention_wiring.py orion/substrate/tests/test_attention_broadcast*.py
-  services/orion-attention-runtime/evals orion/reverie/tests/test_proposal_world_winner.py      PASS (incl. flag-off golden parity, unchanged)
-services/orion-attention-runtime/tests + evals + tests/test_attention_event_decay.py          77 passed, 5 skipped
-orion/substrate/tests/test_attention_self_model.py test_endogenous_curiosity.py, tests/test_proposal_*.py   161 passed
-services/orion-substrate-runtime/tests      17 failed + 1 collection error: the identical pre-existing set on origin/main (cursor/quarantine/reducer/self-model-tick)
+tests/test_attention_*.py (incl. new test_attention_event_decay.py, flag-off golden parity unchanged) tests/test_voluntary_attention_wiring.py
+  orion/substrate/tests/test_attention_broadcast*.py test_attention_self_model.py test_endogenous_curiosity.py
+  test_prediction_error_magnitude.py orion/reverie/tests/test_proposal_world_winner.py           434 passed
+tests/test_proposal_*.py                                                                          73 passed
+services/orion-attention-runtime/tests + evals                                                    59 passed, 5 skipped
+services/orion-substrate-runtime/tests      420 passed; 17 failed + 1 collection error = the identical pre-existing set on origin/main
+                                            (cursor/quarantine/reducer/self-model-tick); new wiring test passes
 Static gates: check_definition_drift --gate PASS (0 changed, no re-lock), check_metric_lineage --gate PASS,
   --prompt-semantics PASS, check_inner_state_registry OK, check_env_template_parity PASS,
-  check_service_env_compose_parity: attention-runtime OK; substrate-runtime same 17 pre-existing gaps
+  check_service_env_compose_parity: attention-runtime OK; substrate-runtime same 17 pre-existing gaps; git diff --check clean
 ```
 
-**Mutation check: 15 of 15 killed.** Each mutant was applied to the real file, its tests were run, and the file was restored.
+**Mutation check: 17 of 17 killed.** Each mutant was applied to the real file, its tests were run, and the file was restored.
 
 | Group | Mutants killed |
 |---|---|
@@ -160,7 +167,7 @@ Static gates: check_definition_drift --gate PASS (0 changed, no re-lock), check_
 | Semantic predicate | "carried forward" text match; any designed_sparse; event_gated ignored |
 | Glossary | a glossary failure gets cached |
 | Kill switch | `node_candidate` ignores it; the broadcast drops it; the worker ignores the setting |
-| Wiring | field salience unfaded; decay applied to level signals |
+| Wiring | field salience unfaded; decay applied to level signals; substrate worker ignores the setting; replay ignores the decay flag |
 
 The first run left two mutants alive: the "carried forward" text match, and unfaded field salience. Two tests were added to kill them.
 
@@ -189,7 +196,28 @@ The deployed path has not been checked (**UNVERIFIED**). After deploy, look for:
 
 ## Review findings fixed
 
-REVIEW_PLACEHOLDER
+The code review ran as a subagent against `origin/main...HEAD`. It found no blockers and no majors. It did verify the following:
+- **The selected node set is right.** It was checked against the glossary.
+- **Event age really is the write's age in both contests.** `_write_prediction_error_node` is the only thing that stamps `observed_at`, and the execution, chat and codebase writers return early when there are no events. So nothing re-arms a carried value without a new event.
+- **Flag-off parity holds.**
+
+Findings and what was done:
+
+- **Finding (minor):** eligibility is judged on the event's own band, so with nothing else eligible a fading event still "wins" (at low salience) until 300 s, instead of producing a no-winner frame.
+  - **Fix:** kept on purpose, and now stated. The alternative, dropping it once faded salience < 0.9, shrinks the window to about 80 s whatever the data say. The frame's `overall_salience` and the target salience report the fade, so a consumer can see a weak winner. Goal provenance only takes the native five; codebase is not one of them.
+  - **Evidence:** `test_a_fading_event_yields_to_a_fresh_body_alarm` pins both halves. See also Risks.
+- **Finding (minor):** the storm test checked eligibility, not winning.
+  - **Fix:** added `test_a_storm_still_wins_against_a_per_tick_rival_after_every_write`. Against a rival sitting in its own top decile all the time, the storm wins every probe inside the 60 s grace after each write and at least half overall, and it never loses eligibility. Replay storm with decay on vs off: 87% vs 85% won.
+- **Finding (minor):** the field contest sees an event only once substrate-runtime commits its history row. The live max lag is 355 s, so in the worst case the field contest never sees the event as eligible while the broadcast did.
+  - **Fix:** not code. It is disclosed under Risks. The trace's `event_age_sec` shows it.
+- **Finding (minor):** the predicate is a prose-prefix match.
+  - **Fix:** disclosed under Risks, with a structured cadence field proposed as a follow-up. The pinned classification test catches drift.
+- **Finding (nit):** broadcast provenance mixed the unfaded band with the faded score.
+  - **Fix:** added `provenance["world_first_event_decay"]`.
+- **Finding (nit):** nothing tested the substrate-runtime wiring.
+  - **Fix:** added `test_event_decay_setting_reaches_the_broadcast`. It covers default on, false and true, and kills the "substrate worker ignores setting" mutant.
+- **Finding (nit):** the replay eval's new output was not tested.
+  - **Fix:** added `test_one_carried_event_holds_at_most_the_orienting_window_with_decay`. It kills the "replay ignores decay flag" mutant.
 
 ## Proposal-mode items (CLAUDE.md §0A)
 
@@ -216,6 +244,10 @@ cd /mnt/scripts/Orion-Sapienform && git pull --ff-only && for s in orion-substra
   - Longest holds in the replay: bus_synaptic 1,860 s, biometrics 1,200 s.
   - These are per-tick readings that really are in their top decile, so they are out of scope here: the request was carried-forward single events.
   - If they need limiting, habituation is the tool, and that belongs to Temporal Self (#2369). Not touched here.
+- **Severity: low. With nothing else eligible, a fading event still wins, faintly, until 300 s.**
+  - It is not a no-winner frame. Salience falls to about 0.01 by the end, and the frame's `overall_salience` shows that.
+  - This is the "look up, then fade" shape. A hard drop at the band cut would shrink the window to about 80 s whatever the data say.
+- **Severity: low. The two contests can disagree on an event.** The field contest sees it only after substrate-runtime commits the history row. That is usually ≤ 35 s, inside the grace, but the live max is 355 s, and in that case the field contest never sees the event as eligible while the broadcast does.
 - **Severity: low. The window and grace are knobs, measured on 7 days of history.** Next step: re-grade them on 48 h of live frames.
 - **Severity: low. The predicate reads prose.** It checks `absent_means` for "only written", which is where `orion/metrics/semantics.py` puts the write cadence. A structured `write_cadence` field would be cleaner, but it is a definition change across the lock. The pinned classification test fails if any node-qualified PE entry is added or reclassified.
 - **Severity: low. Chat-rate holds up to 15 minutes per message.** This is by its own windowed definition, and it is not carried forward.

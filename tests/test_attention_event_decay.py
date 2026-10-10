@@ -208,6 +208,34 @@ def test_a_storm_that_keeps_writing_stays_eligible() -> None:
         t += timedelta(seconds=135)
 
 
+def test_a_storm_still_wins_against_a_per_tick_rival_after_every_write() -> None:
+    """Against a body rival sitting in its own top decile all the time, the
+    storm wins the first minute after every write (full strength through the
+    grace), then shares the frame as it fades -- both are real alarms. It
+    never drops out of eligibility."""
+    hist = [(NOW - timedelta(minutes=5 * i), 0.0) for i in range(1, 2000)]
+    rival = _level(BIOMETRICS, 0.95)
+    t = NOW
+    wins = 0
+    probes = 0
+    for k in range(20):
+        hist.append((t, 1.0))
+        for probe in range(5, 135, 10):
+            now = t + timedelta(seconds=probe)
+            m = compute_prediction_error_magnitude(value=1.0, observed_at=t, history=hist, now=now)
+            c = node_candidate(node_id="node:substrate.execution", label="e", magnitude=m,
+                               observed_at=t, now=now, history_values=[v for _, v in hist])
+            r = rank_candidates([c, rival])
+            assert any(v.candidate is c for v in r.eligible)
+            won = r.winner.candidate is c
+            if probe <= EVENT_FADE_GRACE_SEC:
+                assert won, (k, probe)
+            wins += won
+            probes += 1
+        t += timedelta(seconds=135)
+    assert wins / probes >= 0.5
+
+
 # --- continuous level signals are unaffected -----------------------------------
 
 

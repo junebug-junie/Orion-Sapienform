@@ -410,6 +410,9 @@ def world_first_signals(
                     "world_first_band": verdict.band,
                     "world_first_score": round(score, 6),
                     "world_first_reason": verdict.reason,
+                    # 1.0 unless an event-written source is fading; the band
+                    # above is the event's own (unfaded) band.
+                    "world_first_event_decay": round(verdict.event_decay, 6),
                 },
             )
         )

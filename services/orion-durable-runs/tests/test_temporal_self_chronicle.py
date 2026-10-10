@@ -268,3 +268,88 @@ def test_thread_without_chronicle_is_unchanged():
     rw, d = _driver(None)
     out = asyncio.run(d.step({"event_id": "tick:1", "kind": "tick"}))
     assert out["chronicle"] is None and rw.projected
+
+
+# --- review findings (2026-10-10) ------------------------------------------------------------
+
+
+def test_abandoned_deferral_finalised_ninety_minutes_later_is_counted_late():
+    """`abandoned` lands ~5,400 s after started_at (live): beyond a 30-min probe it vanished."""
+    w, store = scenario(), FakeStore()
+    w.add("visual_deferral", {"attempt_id": "att-9", "started_at": T0 + timedelta(minutes=10), "outcome": "abandoned",
+                              "result_json": {"reason": "timeout", "detail": {"state": "normal"}}},
+          delay=timedelta(seconds=5400))
+    run(chronicler(w, store), w, T0 + timedelta(hours=2, minutes=30))
+    assert "visual_deferral:att-9" in event_ids(store, late=True)
+    assert json.loads(store.frame)["skipped_at_or_before_watermark"] == 1
+
+
+def test_a_row_whose_available_time_moves_later_is_not_folded_twice():
+    """An upsert that rewrites completed_at (curiosity_offer_decisions.py's outcome upsert) makes
+    the same run available again later; it must not become a second arc."""
+    def run_row(done):
+        return {"run_id": "run-x", "decided_at": T0, "turn_started_at": T0 + timedelta(minutes=1), "arm": "a",
+                "offered": [], "completed_at": done, "turn_ok": True, "n_tested": 1, "n_moved": 0, "n_formed": 0}
+
+    w, store = scenario(), FakeStore()
+    w.add("curiosity_run", run_row(T0 + timedelta(minutes=20)))
+    ch = chronicler(w, store)
+    run(ch, w, T0 + timedelta(minutes=40))
+    w.rows = [r for r in w.rows if r.row.get("run_id") != "run-x"]
+    w.add("curiosity_run", run_row(T0 + timedelta(minutes=50)))
+    run(ch, w, T0 + timedelta(hours=1, minutes=30))
+    assert [json.loads(v)["kind"] for v in store.arcs.values()].count("curiosity") == 1
+    assert ch.moved_total == 1 and ch.health()["moved_total"] == 1
+
+
+def test_reset_refold_still_folds_rows_it_had_stored():
+    w1, s1 = scenario(), FakeStore()
+    run(chronicler(w1, s1), w1, T0 + timedelta(hours=2))
+
+    w2, s2 = scenario(), FakeStore()
+    run(chronicler(w2, s2), w2, T0 + timedelta(hours=1))
+    wm, origin, _ = s2.state_row
+    s2.state_row = (wm, origin, b"stale shape")                  # e.g. a reducer version bump
+    ch = chronicler(w2, s2)
+    run(ch, w2, T0 + timedelta(hours=2))
+    assert ch.reset_reason and ch.moved_total == 0
+    assert s2.arcs == s1.arcs and s2.frame == s1.frame
+
+
+def test_step_budget_spreads_a_long_catch_up_over_steps(monkeypatch):
+    import app.temporal_self_chronicle as mod
+
+    monkeypatch.setattr(mod, "STEP_BUDGET_SEC", 0.0)
+    w, store = World(utc(2026, 10, 10, 18, 0)), FakeStore()
+    ch = chronicler(w, store, backfill_days=1)
+    first = asyncio.run(ch.step())
+    assert first["windows"] == 1 and first["error"] is None       # progress, but one window only
+    while ch.watermark < w.now - timedelta(seconds=300):
+        asyncio.run(ch.step())
+    assert ch.days_closed == ["2026-10-09"]
+
+
+def test_a_hung_chronicle_times_out_and_regulation_still_steps():
+    async def hang():
+        await asyncio.sleep(5)
+
+    from langgraph.checkpoint.memory import InMemorySaver
+
+    from app.temporal_self_driver import TemporalSelfDriver
+    from test_temporal_self_regulate import World as RegWorld
+
+    rw = RegWorld()
+    d = TemporalSelfDriver(checkpointer=InMemorySaver(), deps=rw.deps(chronicle=hang, chronicle_timeout_sec=0.05), tick_sec=120.0)
+    out = asyncio.run(d.step({"event_id": "tick:1", "kind": "tick"}))
+    assert "timeout" in out["chronicle"]["error"] and "chronicle_failed" in out["warnings"]
+    assert rw.projected and rw.projected[-1].arousal.arousal_level == "idle"
+
+
+def test_late_deferrals_count_in_the_body_thermal_refusals():
+    w, store = scenario(), FakeStore()
+    w.add("visual_deferral", {"attempt_id": "att-hot", "started_at": T0 + timedelta(minutes=2), "outcome": "deferred_thermal",
+                              "result_json": {"reason": "hot", "detail": {"state": "hot"}}})
+    run(chronicler(w, store), w, T0 + timedelta(hours=2))
+    first_a = min((json.loads(v) for v in store.arcs.values() if json.loads(v)["subject_ref"] == "A"),
+                  key=lambda a: a["began_at"])
+    assert first_a["body"]["thermal_refusals"] == 1

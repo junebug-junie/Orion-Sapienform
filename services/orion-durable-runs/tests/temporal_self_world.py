@@ -105,8 +105,8 @@ class FakeStore:
         except Exception as exc:  # noqa: BLE001
             return LoadedState(None, wm, origin, error=type(exc).__name__)
 
-    async def unseen(self, ids):
-        return set(ids) - set(self.events)
+    async def stored_available(self, ids):
+        return {i: available_at(self.events[i][0]) for i in ids if i in self.events}
 
     async def deferrals(self, lo, hi):
         return [e for e, _ in self.events.values() if e.source_kind == "visual_deferral" and lo <= e.occurred_at <= hi]
@@ -118,8 +118,9 @@ class FakeStore:
         if self.fail_next:
             self.fail_next -= 1
             raise ConnectionError("commit failed")
-        for e in w.events:
-            self.events.setdefault(e.event_id, (e, False))
+        for e in w.events:   # ON CONFLICT: keep the stored row, only clear a late flag
+            prev = self.events.get(e.event_id)
+            self.events[e.event_id] = (e, False) if prev is None else (prev[0], False)
         for e in w.late_events:
             self.events.setdefault(e.event_id, (e, True))
         for a in w.arcs:

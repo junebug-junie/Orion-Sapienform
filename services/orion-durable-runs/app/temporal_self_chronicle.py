@@ -23,7 +23,9 @@ No LLM, no bus publish, no consumer (patch 4 adds the stance cue and the metacog
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import time
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Callable, Optional
@@ -33,15 +35,25 @@ from orion.temporal_self import ReducerConfig, advance_clock, build_frame, drain
 from orion.temporal_self.body import NO_BODY_KINDS, body_window, summarize_body
 from orion.temporal_self.day import day_id_for, day_window
 
-from app.temporal_self_store import StaleWriterError, WindowWrite
+from app.temporal_self_sources import available_at
+from app.temporal_self_store import StaleWriterError, WindowWrite, pack_state
 
 logger = logging.getLogger("orion-durable-runs.temporal_self_chronicle")
 
 MAX_WINDOW_SEC = 3600.0       # one window reads at most an hour of rows
 MAX_WINDOWS_PER_STEP = 48     # first-boot backfill (~1.5 days) finishes in one step
 LATE_PROBE_SEC = 1800.0       # rows written up to 30 min after their window was read are counted
-# episode_memory rows land a median 13 h after occurred_at (live 10-10): probed 3 days back.
-LATE_PROBE_OVERRIDES = {"memory_episode": 3 * 86400.0}
+LATE_PROBE_OVERRIDES = {
+    # episode_memory rows land a median 13 h (max 48 h) after occurred_at (live 10-10).
+    "memory_episode": 3 * 86400.0,
+    # A visual attempt reads `active` until it finishes; `abandoned` lands a median 5,398 s
+    # (max 5,408 s, 31 of 31 live) after started_at, its time column. Review finding: with a
+    # 30-min probe these vanished uncounted.
+    "visual_deferral": 3 * 3600.0,
+}
+# Stop starting new windows after this much wall time in one step (first-boot backfill then
+# spans several steps instead of holding the regulate thread).
+STEP_BUDGET_SEC = 30.0
 BODY_GROUP_SPAN = timedelta(hours=6)  # one body read covers arcs within six hours of each other
 RETENTION_EVERY = timedelta(hours=6)
 
@@ -83,6 +95,7 @@ class Chronicler:
         self.steps = 0
         self.windows = 0
         self.late_total = 0
+        self.moved_total = 0
         self.days_closed: list[str] = []
         self.reset_reason: Optional[str] = None
         self.last_error: Optional[str] = None
@@ -129,7 +142,9 @@ class Chronicler:
                 await self._load(now)
             target = now - timedelta(seconds=self._cfg.read_lag_sec)
             n = 0
-            while self._watermark < target and n < self._cfg.max_windows_per_step:
+            started = time.monotonic()
+            while (self._watermark < target and n < self._cfg.max_windows_per_step
+                   and (n == 0 or time.monotonic() - started < STEP_BUDGET_SEC)):
                 hi = min(target, self._watermark + timedelta(seconds=self._cfg.max_window_sec))
                 await self._window(self._watermark, hi, now)
                 n += 1
@@ -158,26 +173,51 @@ class Chronicler:
                 found.update((e.event_id, e) for e in cands)
         if not found:
             return []
-        unseen = await self._store.unseen(found)
-        return [found[i] for i in sorted(unseen)]
+        stored = await self._store.stored_available(found)
+        return [found[i] for i in sorted(set(found) - set(stored))]
+
+    async def _drop_moved(self, events: list[TemporalSelfEventV1]) -> list[TemporalSelfEventV1]:
+        """An in-window event that is already stored had its available time moved later after it
+        was folded (e.g. an upsert that rewrites ``completed_at``): folding it again would count
+        it twice under a new order key. A re-fold after a reset reads the same rows at the SAME
+        available time, so those still fold."""
+        if not events:
+            return events
+        stored = await self._store.stored_available(e.event_id for e in events)
+        moved = [e for e in events if e.event_id in stored and stored[e.event_id] != available_at(e)]
+        if moved:
+            self.moved_total += len(moved)
+            logger.warning("temporal_self_moved_rows count=%d ids=%s", len(moved),
+                           ",".join(e.event_id for e in moved[:5]))
+            ids = {e.event_id for e in moved}
+            events = [e for e in events if e.event_id not in ids]
+        return events
 
     async def _window(self, lo: datetime, hi: datetime, now: datetime) -> None:
         cfg = self._cfg.reducer
         prev = self._state
         assert prev is not None
         ticks, events = await self._reader.read(lo, hi)
+        events = await self._drop_moved(events)
         late = await self._late(lo)
-        s = fold(prev, ticks, events + late, cfg)
-        s = advance_clock(s, hi, cfg)
-        frame = build_frame(s, hi, cfg)
-        s, days = drain_closed_days(s)
-        arcs: dict[str, TemporalSelfArcV1] = {a.arc_id: a for a in _changed(prev, s)}
+
+        def reduce():
+            # Pure and CPU-bound (deep copies of a state up to ~1.2 MB, p95 0.23 s per window
+            # measured on 10-09): off the event loop the admission runtime and /health share.
+            s = advance_clock(fold(prev, ticks, events + late, cfg), hi, cfg)
+            frame = build_frame(s, hi, cfg)
+            s, days = drain_closed_days(s)
+            return s, frame, days, _changed(prev, s)
+
+        s, frame, days, changed = await asyncio.to_thread(reduce)
+        arcs: dict[str, TemporalSelfArcV1] = {a.arc_id: a for a in changed}
         for d in days:
             arcs.update((a.arc_id, a) for a in d.arcs)
-        await self._attach_bodies([a for a in arcs.values() if _needs_body(a)], events)
+        await self._attach_bodies([a for a in arcs.values() if _needs_body(a)], events + late)
+        state_gz = await asyncio.to_thread(pack_state, s)
         await self._store.commit_window(WindowWrite(
             state=s, watermark=hi, frame=frame, events=events, late_events=late, arcs=list(arcs.values()),
-            days=days, now=now, origin=self._origin, expected_prev=self._stored_watermark))
+            days=days, now=now, origin=self._origin, expected_prev=self._stored_watermark, state_gz=state_gz))
         self._state, self._watermark, self._stored_watermark = s, hi, hi
         self.frame = frame
         self.windows += 1
@@ -246,5 +286,5 @@ class Chronicler:
     def health(self) -> dict:
         now = self._now().astimezone(timezone.utc)
         return dict(self.summary(now, windows=self.windows), steps=self.steps, windows_total=self.windows,
-                    late_total=self.late_total, days_closed=self.days_closed[-7:], reset_reason=self.reset_reason,
+                    late_total=self.late_total, moved_total=self.moved_total, days_closed=self.days_closed[-7:], reset_reason=self.reset_reason,
                     origin=self._origin.isoformat() if self._origin else None, last_retention=self.last_retention)

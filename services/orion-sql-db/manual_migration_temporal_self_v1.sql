@@ -13,7 +13,8 @@
 --   docker exec -i orion-athena-sql-db psql -U postgres -d conjourney -v ON_ERROR_STOP=1 \
 --     < services/orion-sql-db/manual_migration_temporal_self_v1.sql
 -- Check: python3 scripts/check_sql_migrations_applied.py --file manual_migration_temporal_self_v1.sql
--- Additive and idempotent; re-running is safe. Rollback: TEMPORAL_SELF_CHRONICLE_ENABLED=false
+-- Additive and idempotent; re-running is safe. If an index build is interrupted, drop the INVALID
+-- index it leaves and re-run (CREATE INDEX CONCURRENTLY cannot clean up after itself). Rollback: TEMPORAL_SELF_CHRONICLE_ENABLED=false
 -- (the tables can stay; nothing else reads them).
 BEGIN;
 
@@ -72,8 +73,15 @@ CREATE TABLE IF NOT EXISTS temporal_self_state (
     updated_at      timestamptz NOT NULL DEFAULT now()
 );
 
--- The attention_row read is by generated_at every step; the table had no index on it
--- (149k rows live on 10-10, seq-scanned twice per 2-minute step without this).
-CREATE INDEX IF NOT EXISTS idx_substrate_attention_schema_generated_at ON substrate_attention_schema (generated_at);
-
 COMMIT;
+
+-- Indexes on source tables the chronicle reads every step (window + late probe). CONCURRENTLY,
+-- outside the transaction, so their writers are never blocked while these build.
+-- substrate_attention_schema: 149k rows / 92 MB on 10-10, read by generated_at.
+CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_substrate_attention_schema_generated_at
+    ON substrate_attention_schema (generated_at);
+-- orion_metacog: 611 MB on 10-10, read by its TEXT timestamp's prefix.
+CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_orion_metacog_timestamp ON orion_metacog (timestamp);
+-- substrate_reverie_thought: 60 MB, read by expectation_scored_at (set on a minority of rows).
+CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_substrate_reverie_thought_scored_at
+    ON substrate_reverie_thought (expectation_scored_at) WHERE expectation_scored_at IS NOT NULL;

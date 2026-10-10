@@ -230,3 +230,24 @@ def test_retention_covers_chronicle_rows_and_arousal_transitions():
         assert [r["label"] for r in left] == ["engaged"] and [r["arc_id"] for r in arcs] == ["open"]
 
     with_db(scenario_fn)
+
+
+def test_attempt_inserted_active_then_abandoned_ninety_minutes_later_is_late_not_lost():
+    """Review blocker: live, `abandoned` replaces `active` ~5,400 s after started_at."""
+    async def scenario_fn(pool):
+        w = scenario()
+        async with pool.connection() as conn:
+            await fdb.insert(conn, "reverie_visual_attempt", [{
+                "attempt_id": "att-a", "started_at": T0 + timedelta(minutes=10), "outcome": "active",
+                "result_json": {"detail": {"state": "normal"}}}])
+        ch = await run_pg(pool, w, T0 + timedelta(minutes=10, seconds=5400))
+        async with pool.connection() as conn:
+            await conn.execute("UPDATE reverie_visual_attempt SET outcome = 'abandoned' WHERE attempt_id = 'att-a'")
+        while w.now < T0 + timedelta(hours=2):
+            w.now += STEP
+            assert (await ch.step())["error"] is None
+        store = ChronicleStore(pool)
+        assert await store.late_counts(T0 - timedelta(days=1)) == {"visual_deferral": 1}
+        assert (await store.frame())["skipped_at_or_before_watermark"] == 1
+
+    with_db(scenario_fn)

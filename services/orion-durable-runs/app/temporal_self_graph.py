@@ -22,6 +22,7 @@ No LLM, no GPU lease. Nothing reads arousal or the chronology yet (spec order 6 
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -71,6 +72,10 @@ class TemporalSelfDeps:
     max_prev_gap_sec: float = 360.0
     # Patch 3: one chronology step (``Chronicler.step``); None = TEMPORAL_SELF_CHRONICLE_ENABLED off.
     chronicle: Optional[Callable[[], Awaitable[dict]]] = None
+    # Hard ceiling on one chronicle call. The chronicler itself stops starting windows after 30 s
+    # and every statement has a 30 s timeout; this catches anything else (review finding: a hung
+    # read would otherwise hold every queued tick and chat turn, and the regulate checkpoint).
+    chronicle_timeout_sec: float = 120.0
 
 
 def _dt(v: Any) -> Optional[datetime]:
@@ -154,7 +159,10 @@ def build_temporal_self_graph(deps: TemporalSelfDeps, checkpointer: Any):
         if deps.chronicle is None:
             return {"chronicle": None}
         try:
-            summary = await deps.chronicle()
+            summary = await asyncio.wait_for(deps.chronicle(), timeout=deps.chronicle_timeout_sec)
+        except asyncio.TimeoutError:
+            logger.warning("temporal_self_chronicle_node_timeout sec=%s", deps.chronicle_timeout_sec)
+            summary = {"error": f"timeout after {deps.chronicle_timeout_sec:.0f} s"}
         except Exception as exc:  # noqa: BLE001 - the chronology must never break regulation
             logger.warning("temporal_self_chronicle_node_failed", exc_info=True)
             summary = {"error": f"{type(exc).__name__}: {str(exc)[:300]}"}

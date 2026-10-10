@@ -14,8 +14,9 @@ double-reads and never needs SQL to restate an adapter's time rule.
 Rows that change after insert (stated, so a live/replay difference is never a surprise):
 
 * ``reverie_visual_attempt.outcome`` reads ``active``/``unknown`` while in flight (the table's own
-  partial index); those are skipped here, and a final outcome that lands after its window is a
-  late row (``late_unfolded`` in ``temporal_self_event``).
+  partial index); those are skipped here. ``abandoned`` lands ~90 min after ``started_at``, so it
+  is always a late row live (the chronicle probes 3 h back for it): stored ``late_unfolded`` in
+  ``temporal_self_event``, counted, never folded.
 * ``attention_salience_trace``'s ``chat_turn`` EXISTS becomes true when sql-writer lands the chat
   row: up to 141 s after the trace (live, 7 days to 10-10). The read lag covers it.
 * ``episode_memory`` rows are written a median 13 h after ``occurred_at`` (live 10-10), so live
@@ -32,6 +33,8 @@ from orion.schemas.temporal_self import TemporalSelfEventV1
 from orion.temporal_self.broadcast import BroadcastTickView, tick_from_log_row
 from orion.temporal_self.day import as_utc
 from orion.temporal_self.sources import ADAPTERS
+
+STATEMENT_TIMEOUT = "30s"  # a stalled read fails the window (retried next step), never hangs it
 
 # Outcomes of an attempt still running (reverie_visual_attempt's own "active" partial index).
 VISUAL_IN_FLIGHT = ("active", "unknown")
@@ -111,19 +114,25 @@ WHERE status = 'completed' AND ended_at >= %(lo)s AND ended_at < %(hi)s
 SELECT hypothesis_id, cycle_id, arm, created_at, expires_at, offered_at, offered_run_id
 FROM dream_hypothesis WHERE created_at >= %(lo)s AND created_at < %(hi)s
 """),
+    # Time is observed_at, else created_at; observed_at is indexed (and never null live: 0 of
+    # 144,909 on 10-10), so the two branches keep the read off a 201 MB seq scan.
     SourceQuery("action_outcome", """
 SELECT id, observed_at, created_at, claim_upheld, dispatch_kind, target_id, prediction_error
-FROM substrate_action_outcomes
-WHERE coalesce(observed_at, created_at) >= %(lo)s AND coalesce(observed_at, created_at) < %(hi)s
+FROM substrate_action_outcomes WHERE observed_at >= %(lo)s AND observed_at < %(hi)s
+UNION ALL
+SELECT id, observed_at, created_at, claim_upheld, dispatch_kind, target_id, prediction_error
+FROM substrate_action_outcomes WHERE observed_at IS NULL AND created_at >= %(lo)s AND created_at < %(hi)s
 """),
     # Time is the trigger's naive-UTC timestamp; the metacog row is written up to ~9 min later
-    # (live p99 12.7 s, max 532 s), so the TEXT row time is only a lower-bounded superset.
+    # (live p99 12.7 s, max 532 s), so the TEXT row time is only a lower-bounded superset. The
+    # indexed TEXT prefix (a day wider, either separator) keeps it off a 611 MB seq scan; the
+    # cast then decides exactly.
     SourceQuery("metacog_observation", """
 SELECT m.id, m.correlation_id, m.severity, m.trigger_kind, m.timestamp, t.timestamp AS trigger_timestamp
 FROM orion_metacog m LEFT JOIN LATERAL (
   SELECT timestamp FROM metacog_trigger t WHERE t.correlation_id = m.correlation_id
   ORDER BY timestamp LIMIT 1) t ON true
-WHERE m.severity IN ('degraded', 'critical') AND m.timestamp::timestamptz >= %(lo)s
+WHERE m.timestamp >= %(lo_key)s AND m.severity IN ('degraded', 'critical') AND m.timestamp::timestamptz >= %(lo)s
 """, slack=timedelta(days=1)),
     SourceQuery("consolidation_window_close", """
 SELECT memory_window_id, closed_at, turn_correlation_ids, close_reason, source_platform
@@ -221,12 +230,15 @@ class SourceReader:
         async with self._pool.connection() as conn:
             async with conn.transaction():
                 await conn.execute("SET TRANSACTION READ ONLY")
+                await conn.execute(f"SET LOCAL statement_timeout = '{STATEMENT_TIMEOUT}'")
                 if ticks:
                     out_ticks = [tick_from_log_row(r) for r in await _fetch(conn, BROADCAST_SQL, {"lo": lo, "hi": hi})]
                 for q in QUERIES:
                     if want is not None and q.kind not in want:
                         continue
-                    rows = await _fetch(conn, q.sql, {"lo": lo - q.slack, "hi": hi, "in_flight": list(VISUAL_IN_FLIGHT)})
+                    qlo = lo - q.slack
+                    rows = await _fetch(conn, q.sql, {"lo": qlo, "hi": hi, "in_flight": list(VISUAL_IN_FLIGHT),
+                                                      "lo_key": _text_key(qlo - timedelta(days=1))})
                     events.extend(ADAPTERS[q.kind](r, self._tz) for r in rows)
                 if want is None or "reverie_chain" in want:
                     events.extend(await self._reverie(conn, lo, hi))
@@ -249,6 +261,7 @@ class SourceReader:
         async with self._pool.connection() as conn:
             async with conn.transaction():
                 await conn.execute("SET TRANSACTION READ ONLY")
+                await conn.execute(f"SET LOCAL statement_timeout = '{STATEMENT_TIMEOUT}'")
                 cluster = await _fetch(conn, BODY_CLUSTER_SQL, {"lo": lo, "hi": hi})
                 cabinet = await _fetch(conn, BODY_CABINET_SQL, {
                     "lo": lo, "hi": hi, "lo_key": _text_key(lo - timedelta(days=1)),

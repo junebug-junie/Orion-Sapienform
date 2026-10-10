@@ -30,6 +30,9 @@ from orion.schemas.temporal_self import (
 logger = logging.getLogger("orion-durable-runs.temporal_self_store")
 
 STATE_ID = "orion"
+# Every chronicle transaction is bounded: a stalled statement fails the window (retried next step)
+# instead of holding the regulate thread.
+STATEMENT_TIMEOUT = "30s"
 PROJECTION_ID = "current_day"
 READ_WATERMARK = "read_watermark"
 
@@ -50,6 +53,7 @@ class WindowWrite:
     # The watermark this window started from (None on the first window after a fresh start).
     # The commit refuses if the stored watermark moved: a second writer, or a stale cache.
     expected_prev: Optional[datetime] = None
+    state_gz: Optional[bytes] = None   # pack_state(state), precomputed off the event loop
 
 
 @dataclass
@@ -69,8 +73,10 @@ INSERT INTO temporal_self_event (event_id, day_id, occurred_at, source_kind, sou
   correlation_id, subject_ref, related_refs, label, verdict, payload_json, late_unfolded)
 VALUES (%(event_id)s, %(day_id)s, %(occurred_at)s, %(source_kind)s, %(source_table)s, %(source_ref)s,
   %(correlation_id)s, %(subject_ref)s, %(related_refs)s, %(label)s, %(verdict)s, %(payload)s::jsonb, %(late)s)
-ON CONFLICT (event_id) DO NOTHING
+ON CONFLICT (event_id) DO UPDATE SET late_unfolded = false
+  WHERE temporal_self_event.late_unfolded AND NOT EXCLUDED.late_unfolded
 """
+# A re-fold after a reset folds a row that was stored late before: it is no longer unfolded.
 UPSERT_ARC_SQL = """
 INSERT INTO temporal_self_arc (arc_id, day_id, kind, subject_ref, began_at, ended_at, status,
   attention_returns, arc_json, updated_at)
@@ -161,14 +167,17 @@ class ChronicleStore:
             logger.warning("temporal_self_state_invalid watermark=%s", row["watermark"], exc_info=True)
             return LoadedState(None, row["watermark"], row["origin"], error=f"{type(exc).__name__}: {str(exc)[:200]}")
 
-    async def unseen(self, event_ids: Iterable[str]) -> set[str]:
+    async def stored_available(self, event_ids: Iterable[str]) -> dict[str, datetime]:
+        """Already-stored events -> the available time they were stored with (ended_at, else
+        occurred_at). Absent ids were never stored (the late probe's test)."""
         ids = sorted(set(event_ids))
         if not ids:
-            return set()
+            return {}
         async with self._pool.connection() as conn:
             rows = await (await conn.execute(
-                "SELECT event_id FROM temporal_self_event WHERE event_id = ANY(%(ids)s)", {"ids": ids})).fetchall()
-        return set(ids) - {r["event_id"] for r in rows}
+                "SELECT event_id, occurred_at, payload_json->>'ended_at' AS ended_at FROM temporal_self_event "
+                "WHERE event_id = ANY(%(ids)s)", {"ids": ids})).fetchall()
+        return {r["event_id"]: (datetime.fromisoformat(r["ended_at"]) if r["ended_at"] else r["occurred_at"]) for r in rows}
 
     async def deferrals(self, lo: datetime, hi: datetime) -> list[TemporalSelfEventV1]:
         """Stored visual deferrals in ``[lo, hi]`` (the body summary's ``thermal_refusals``)."""
@@ -191,6 +200,7 @@ class ChronicleStore:
         async with self._pool.connection() as conn:
             async with conn.transaction():
                 async with conn.cursor() as cur:
+                    await cur.execute(f"SET LOCAL statement_timeout = '{STATEMENT_TIMEOUT}'")
                     await cur.execute("SELECT watermark FROM temporal_self_state WHERE state_id = %(id)s FOR UPDATE",
                                       {"id": STATE_ID})
                     held = await cur.fetchone()
@@ -212,7 +222,7 @@ class ChronicleStore:
                     await cur.execute(UPSERT_STATE_SQL, {
                         "id": STATE_ID, "watermark": w.watermark, "origin": w.origin or w.watermark,
                         "version": w.state.schema_version,
-                        "gz": pack_state(w.state), "now": now})
+                        "gz": w.state_gz if w.state_gz is not None else pack_state(w.state), "now": now})
 
     async def retention(self, now: datetime, *, event_days: int, arc_days: int, day_days: int) -> dict[str, int]:
         """Delete past each retention horizon. Covers every row in temporal_self_event, including

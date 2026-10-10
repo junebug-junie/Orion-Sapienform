@@ -583,11 +583,16 @@ windows of at most an hour. Per window:
 1. `app/temporal_self_sources.py` reads every bound source (the reference for every query is
    `orion/temporal_self/evals/export_fixture_day.sql`): broadcast ticks by `generated_at`, and every
    event whose *available* time (a process at its end) is in `[lo, hi)`;
-2. a late-row probe re-reads the previous 30 min (memory episodes: 3 days) for rows that were not
-   there yet; they are folded as late (the reducer counts them in
+2. a late-row probe re-reads the previous 30 min (memory episodes: 3 days; visual deferrals: 3 h,
+   because `abandoned` replaces `active` ~90 min after `started_at`) for rows that were not there
+   yet; they are folded as late (the reducer counts them in
    `frame.skipped_at_or_before_watermark`, never folds them) and stored with
    `temporal_self_event.late_unfolded = true`, so each is counted once;
-3. ONE `fold` (ticks and events together), `advance_clock(hi)`, `build_frame`, `drain_closed_days`;
+3. ONE `fold` (ticks and events together), `advance_clock(hi)`, `build_frame`, `drain_closed_days`,
+   in a worker thread (pure, CPU-bound; it shares the event loop with admission and `/health`
+   otherwise). An in-window row that is already stored with an EARLIER available time (an upsert
+   moved it, e.g. a rewritten `completed_at`) is dropped and counted (`moved_total`), never folded
+   twice;
 4. one body read (`orion_biometrics_cluster`, athena's cabinet temperature, `cabinet_ambient_spike`,
    stored visual deferrals) per newly closed non-reverie arc, into `arc.body`;
 5. ONE transaction (`app/temporal_self_store.py`): new events, changed arcs, closed days, the
@@ -595,6 +600,9 @@ windows of at most an hour. Per window:
    in-memory state advances only after the commit, so a crash or a failed commit re-reads the same
    window: no double fold, no dropped row. The commit refuses if the stored watermark moved (a
    second writer).
+
+Bounded: a step stops starting new windows after 30 s, every chronicle statement has a 30 s
+`statement_timeout`, and the node gives up after 120 s (`chronicle_failed`, retried next step).
 
 Reducer state lives in its own table, never in the LangGraph checkpoint (it reaches ~1.2 MB at a
 busy midday). A chronicle failure is a `chronicle_failed` warning on the step; `regulate` is

@@ -477,10 +477,21 @@ def _chronicle_store():
     return ChronicleStore(_checkpointer_cm)
 
 
+async def _chronicle_read(coro):
+    """A missing table means the migration was not applied: 503 with the file name, not a 500."""
+    from psycopg.errors import UndefinedColumn, UndefinedTable
+
+    try:
+        return await coro
+    except (UndefinedTable, UndefinedColumn) as exc:
+        raise HTTPException(503, "temporal self tables missing: apply "
+                                 "services/orion-sql-db/manual_migration_temporal_self_v1.sql") from exc
+
+
 @app.get("/temporal-self/frame")
 async def temporal_self_frame():
     """The current-day TemporalSelfFrameV1, verbatim (singleton ``current_day``)."""
-    frame = await _chronicle_store().frame()
+    frame = await _chronicle_read(_chronicle_store().frame())
     if frame is None:
         raise HTTPException(404, "no chronicle window has committed yet")
     return frame
@@ -489,7 +500,7 @@ async def temporal_self_frame():
 @app.get("/temporal-self/day/{day_id}")
 async def temporal_self_day(day_id: str):
     """A closed local day (final frame + every arc in full), or 404."""
-    day = await _chronicle_store().day(day_id)
+    day = await _chronicle_read(_chronicle_store().day(day_id))
     if day is None:
         raise HTTPException(404, f"day {day_id} is not closed (or not chronicled)")
     return day
@@ -500,18 +511,18 @@ async def temporal_self_arcs(day_id: Optional[str] = None, kind: Optional[str] =
     """Arcs of one local day (default: the current frame's day), oldest first."""
     store = _chronicle_store()
     if day_id is None:
-        frame = await store.frame()
+        frame = await _chronicle_read(store.frame())
         if frame is None:
             raise HTTPException(404, "no chronicle window has committed yet")
         day_id = frame["day_id"]
-    arcs = await store.arcs(day_id, kind=kind, limit=max(1, min(limit, 2000)))
+    arcs = await _chronicle_read(store.arcs(day_id, kind=kind, limit=max(1, min(limit, 2000))))
     return {"day_id": day_id, "count": len(arcs), "arcs": arcs}
 
 
 @app.get("/temporal-self/threads")
 async def temporal_self_threads():
     """Open threads: concern loops raised in conversation with no verdict yet (from the frame)."""
-    frame = await _chronicle_store().frame()
+    frame = await _chronicle_read(_chronicle_store().frame())
     if frame is None:
         raise HTTPException(404, "no chronicle window has committed yet")
     return {"day_id": frame["day_id"], "as_of": frame["as_of"], "open_threads": frame.get("open_threads") or []}
@@ -527,8 +538,8 @@ async def temporal_self_cursors():
 
     store = _chronicle_store()
     now = datetime.now(timezone.utc)
-    rows = await store.cursors()
-    late = await store.late_counts(now - timedelta(days=1))
+    rows = await _chronicle_read(store.cursors())
+    late = await _chronicle_read(store.late_counts(now - timedelta(days=1)))
     out, warnings = [], []
     budget = _settings.temporal_self_read_lag_sec + 10.0 * _settings.temporal_self_tick_sec
     for r in rows:

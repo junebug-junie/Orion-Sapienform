@@ -47,11 +47,19 @@ def load_jsonl(path: Path) -> dict[str, list[dict]]:
     return rows
 
 
+def statements(sql: str) -> list[str]:
+    """Split a migration the way psql runs it: one statement at a time (so CREATE INDEX
+    CONCURRENTLY after COMMIT runs outside a transaction). Our migrations hold no ';' in strings."""
+    body = "\n".join(line for line in sql.splitlines() if not line.lstrip().startswith("--"))
+    return [s.strip() for s in body.split(";") if s.strip()]
+
+
 async def create_schema(conn: Any) -> None:
-    """Source tables, then the chronicle's own migrations (both idempotent)."""
-    await conn.execute(SOURCE_DDL.read_text(), prepare=False)
-    for m in MIGRATIONS:
-        await conn.execute(m.read_text(), prepare=False)
+    """Source tables, then the chronicle's own migrations (both idempotent). ``conn`` must be in
+    autocommit mode, as psql is."""
+    for sql in [SOURCE_DDL.read_text(), *(m.read_text() for m in MIGRATIONS)]:
+        for stmt in statements(sql):
+            await conn.execute(stmt, prepare=False)
 
 
 def _v(value: Any) -> Any:

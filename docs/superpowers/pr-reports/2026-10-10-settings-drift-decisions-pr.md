@@ -91,6 +91,6 @@ The GPU pool needs no restart: it already runs `GPU_POOL_ORION_SHED_ENABLED=true
 
 ## PR link
 
-PR_LINK
+https://github.com/junebug-junie/Orion-Sapienform/pull/2596
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

@@ -10,7 +10,7 @@ from __future__ import annotations
 import asyncio
 
 from app.controller_alert import build_request
-from app.controller_health import DEGRADE_AFTER, ControllerHealth, classify
+from orion.gpu_pool.controller_health import DEGRADE_AFTER, ControllerHealth, classify
 from tests.test_holds_and_actuation import SEAT, actuations, boot, demand_gpu2, make, result, step
 from tests.test_runtime import CFG, Clock, run
 from tests.test_stage5_7_enforce import LOADED, enforce, statuses

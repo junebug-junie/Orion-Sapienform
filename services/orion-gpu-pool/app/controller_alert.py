@@ -1,4 +1,4 @@
-"""Tell Juniper when a seat's controller cannot act (app/controller_health.py): a Hub Pending
+"""Tell Juniper when a seat's controller cannot act (orion/gpu_pool/controller_health.py): a Hub Pending
 Attention card through orion-notify ``/attention/request`` -- the same surface the mesh guardian's
 stability checks use. An unacked card escalates to email after 60 min (notify rules.yaml
 ``chat_attention_default``).

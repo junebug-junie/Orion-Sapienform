@@ -44,7 +44,7 @@ from orion.gpu_pool.orion_shed import (
 from orion.gpu_pool.shed import REFLEX_REASONS, ShedBoard, ShedSignal
 from orion.schemas.hardware_watch import HardwareWatchIncidentV1, HardwareWatchReflexShedV1
 from orion.gpu_pool.config import SWAP_GUARDS
-from app.controller_health import ControllerHealth
+from orion.gpu_pool.controller_health import ControllerHealth
 from orion.schemas.gpu_pool import (
     GPU_ACTUATE_KIND, GPU_POOL_ACTUATE_REQUEST_CHANNEL, GPU_POOL_EVENT_CHANNEL, GPU_POOL_EVENT_KIND,
     GPU_POOL_STATE_CHANNEL, GPU_POOL_STATE_KIND,
@@ -208,7 +208,7 @@ class PoolRuntime:
             board=self.shed_board, ledger=orion_shed_ledger or MemoryOrionShedLedger(),
             caps=orion_shed_caps or OrionShedCaps(), enabled=orion_shed_enabled,
             lever_enabled=lambda: self.shed_enabled, now=lambda: self.now())
-        # Can each seat's actuator act on what the pool asks? (app/controller_health.py; the
+        # Can each seat's actuator act on what the pool asks? (orion/gpu_pool/controller_health.py; the
         # 2026-10-09 stale-controller incident.) controller_alert(seat, "degraded"|"recovered", view)
         # is fired once per transition, outside the lock (main.py wires it to a Hub attention card).
         self.controller_health = ControllerHealth()
@@ -1081,7 +1081,7 @@ class PoolRuntime:
                                    detail={"restored": res.restored, "phase": res.phase,
                                            "observed": dict(res.observed)})
 
-    # --- controller health (app/controller_health.py) ---------------------------------------
+    # --- controller health (orion/gpu_pool/controller_health.py) ---------------------------------------
     def _controller_host(self, seat: str) -> str:
         launch = self.cfg.roles[seat].launch
         return launch.actuator if launch else "unknown"

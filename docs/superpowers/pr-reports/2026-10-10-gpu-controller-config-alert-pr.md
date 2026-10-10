@@ -55,7 +55,7 @@ The pool sent `GpuActuateV1` to the circe controller. A `refused` result set the
 
 ## Files changed
 
-- `services/orion-gpu-pool/app/controller_health.py`: new. Pure tracker: classifies refusal reasons, applies the two-in-a-row threshold, writes the plain advice text.
+- `orion/gpu_pool/controller_health.py`: new. Pure tracker: classifies refusal reasons, applies the two-in-a-row threshold, writes the plain advice text.
 - `services/orion-gpu-pool/app/controller_alert.py`: new. Builds the `ChatAttentionRequest` and sends it with an httpx POST to notify. Delivery failures are logged at ERROR and never raised.
 - `services/orion-gpu-pool/app/runtime.py`:
   - feeds the tracker from action results, in-flight status replies, and boot/resume reconcile replies;
@@ -64,7 +64,7 @@ The pool sent `GpuActuateV1` to the circe controller. A `refused` result set the
 - `services/orion-gpu-pool/app/main.py`: wires the alert; adds `/health` `degraded` and `actuation.controller`.
 - `services/orion-gpu-pool/app/settings.py`, `.env_example`, `docker-compose.yml`: three keys.
 - `services/orion-gpu-pool/README.md`: a "When the controller can't act" section.
-- `services/orion-gpu-pool/tests/test_controller_health.py`: 9 regression tests.
+- `services/orion-gpu-pool/tests/test_controller_health.py`: 14 regression tests.
 - `services/orion-gpu-pool/evals/run_controller_stale_eval.py`: incident replay with hard targets.
 - `services/orion-hub/static/js/gpu_pool.js`, `services/orion-hub/tests/test_gpu_pool_panel_browser_smoke.py`: CONTROLLER BROKEN line and its browser assertion.
 - `.github/workflows/orion-gpu-pool-tests.yml`: runs the replay eval; triggers on `orion/schemas/notify.py`.

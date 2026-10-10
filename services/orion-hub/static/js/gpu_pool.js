@@ -280,7 +280,7 @@
       const seats = c.roles.filter((r) => r.swap).map((r) => r.name);
       if (!seats.length && sw.swapState === "idle" && !sw.action) return "";
       const a = sw.action;
-      // The pool's controller-health tracker (orion-gpu-pool app/controller_health.py): the seat's lane
+      // The pool's controller-health tracker (orion/gpu_pool/controller_health.py): the seat's lane
       // controller keeps refusing with a reason a retry cannot fix -- say so above everything else.
       const broken = a && a.controller_degraded
         ? Object.entries(a.controller_degraded).map(([seat, b]) => ({ seat, ...b })) : [];

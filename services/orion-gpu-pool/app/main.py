@@ -385,7 +385,7 @@ async def health() -> dict[str, Any]:
             # restart) -- apply the named operator migration or let the background retry heal it.
             "schema": _store.schema_status() if _store is not None else None,
             # degraded: seats whose lane controller keeps refusing with a reason a retry cannot fix
-            # (app/controller_health.py) -- the pool serves, but cannot load/unload them. Each entry
+            # (orion/gpu_pool/controller_health.py) -- the pool serves, but cannot load/unload them. Each entry
             # in actuation.controller says why, since when, and what to do.
             "degraded": sorted(runtime.controller_health.degraded()) if runtime else [],
             "actuation": ({"seats": sorted(runtime.actuated), **runtime._paused_detail(),

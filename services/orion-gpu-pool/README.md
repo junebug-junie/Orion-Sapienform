@@ -336,7 +336,7 @@ finished, cooldown/residency, which guard blocks, and every hold with the calls 
 The lane controller on circe reads `config/gpu_pool.yaml` from its bind-mounted checkout but runs the
 code baked into its image. When the checkout moves ahead of the image (2026-10-09: stage 7.3's
 `max_holds`), the controller refuses every request `config_unloadable:ValidationError` and the seat
-loads nothing -- 136 refusals over 26 h went unnoticed. Now (`app/controller_health.py`):
+loads nothing -- 136 refusals over 26 h went unnoticed. Now (`orion/gpu_pool/controller_health.py`):
 
 - Two refusals in a row whose reason a retry cannot fix (`config_unloadable`, `fence_state_unreadable`,
   `launch_digest_mismatch` and the other config disagreements, `invalid_request`) mark the seat

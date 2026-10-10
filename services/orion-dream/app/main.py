@@ -38,6 +38,13 @@ async def lifespan(app: FastAPI):
         introspect = build_listener()
         await introspect.start()
         logger.info("dream introspect responder started")
+    carry_listener = None
+    if settings.DREAM_CARRY_ENABLED and settings.ORION_BUS_ENABLED:
+        from app.carry_listener import build_carry_listener
+
+        carry_listener = build_carry_listener()
+        await carry_listener.start()
+        logger.info("dream carry step responder started")
     loop_task = None
     if settings.ORION_DREAM_CYCLE_ENABLED:
         from app.cycle import sleep_loop
@@ -51,6 +58,8 @@ async def lifespan(app: FastAPI):
 
     if introspect is not None:
         await introspect.stop()
+    if carry_listener is not None:
+        await carry_listener.stop()
     stop.set()
     if loop_task is not None:
         try:
@@ -165,6 +174,18 @@ def build_cycle_deps():
             trigger.trigger_id, len(trigger.sleep.material), env.correlation_id,
         )
 
+    async def _start_carry(trigger):
+        # The sleep ends in a carried dream instead of the one-shot story: same trigger id,
+        # same digest (T0 *is* the story), one durable run per sleep (deterministic run_id).
+        bus = await _cycle_bus()
+        if bus is None:
+            return
+        try:
+            await submit_carry(bus, trigger.trigger_id, trigger.sleep)
+        except Exception:
+            await _drop_cycle_bus()  # same as _complete: reconnect on the next use
+            raise
+
     read_errors = []
 
     def _window_start():
@@ -189,8 +210,33 @@ def build_cycle_deps():
         read_errors=read_errors,
         complete=_complete,
         rem_compaction=_rem,
-        start_story=_start_story if settings.DREAM_STORY_AFTER_SLEEP_ENABLED else None,
+        start_story=(
+            (_start_carry if settings.DREAM_CARRY_ENABLED else _start_story)
+            if settings.DREAM_STORY_AFTER_SLEEP_ENABLED else None
+        ),
     )
+
+
+async def submit_carry(bus, trigger_id: str, sleep) -> str:
+    """Submit one dream.carry run; returns its run_id. Raises with the reason when cortex-orch
+    did not accept it (the sleep's caller logs that and carries on)."""
+    from app.carry_submit import build_carry_request, submit_via_cortex
+
+    request = build_carry_request(trigger_id, sleep, deadline_sec=settings.DREAM_CARRY_DEADLINE_SEC)
+    reason = await submit_via_cortex(
+        bus=bus,
+        source=ServiceRef(name=settings.SERVICE_NAME, version=settings.SERVICE_VERSION, node=settings.NODE_NAME),
+        request=request,
+        request_channel=settings.CHANNEL_CORTEX_REQUEST,
+    )
+    if reason is not None:
+        logger.warning("dream_carry_submit_failed trigger_id=%s run_id=%s reason=%s", trigger_id, request.run_id, reason)
+        raise RuntimeError(f"dream_carry_submit_failed: {reason}")
+    logger.info(
+        "dream_carry_submitted trigger_id=%s run_id=%s material=%d correlation_id=%s",
+        trigger_id, request.run_id, len(sleep.material) if sleep is not None else 0, request.correlation_id,
+    )
+    return request.run_id
 
 
 app = FastAPI(
@@ -306,6 +352,28 @@ async def rem_preview_endpoint():
         "proposal_marked": delta.proposal_marked,
         "applied": False,
     }
+
+
+@app.post("/dreams/carry/run", summary="Start one carried dream by hand")
+async def carry_run_endpoint():
+    """Submit a hand-started dream.carry run (no sleep behind it: it dreams from a free seed).
+    Refuses when DREAM_CARRY_ENABLED is false."""
+    if not settings.DREAM_CARRY_ENABLED:
+        return {"status": "disabled", "reason": "DREAM_CARRY_ENABLED is false"}
+    if not settings.ORION_BUS_ENABLED:
+        return {"status": "disabled", "reason": "ORION_BUS_ENABLED is false"}
+    from uuid import uuid4
+
+    from orion.schemas.dream_carry import dream_carry_run_id
+
+    trigger_id = f"manual:{uuid4()}"
+    try:
+        bus = await _cycle_bus()
+        run_id = await submit_carry(bus, trigger_id, None)
+    except Exception as exc:
+        await _drop_cycle_bus()
+        return {"run_id": dream_carry_run_id(trigger_id), "status": "submit_failed", "reason": str(exc)[:300]}
+    return {"run_id": run_id, "status": "accepted", "trigger_id": trigger_id}
 
 
 @app.get("/dreams/cycle/pressure", summary="Current sleep pressure (read-only)")

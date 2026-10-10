@@ -12,6 +12,8 @@ How to read them: docs/operations/container-logs.md.
 
 from __future__ import annotations
 
+import re
+import subprocess
 from pathlib import Path
 
 import yaml
@@ -36,10 +38,18 @@ _ComposeLoader.add_multi_constructor("!", _construct_any)
 
 
 def _compose_files() -> list[Path]:
+    # Tracked files only, anywhere in the repo, so a local untracked override
+    # can't fail the gate and a compose file outside services/ can't skip it.
+    # services/*/upstream/ is vendored third-party code, built as context only.
+    out = subprocess.run(
+        ["git", "ls-files", "-z", "--", "*compose*.yml", "*compose*.yaml"],
+        cwd=REPO_ROOT, check=True, capture_output=True, text=True,
+    ).stdout
     return sorted(
-        p
-        for pattern in ("docker-compose*.yml", "docker-compose*.yaml", "compose*.yml", "compose*.yaml")
-        for p in REPO_ROOT.glob(f"services/*/{pattern}")
+        REPO_ROOT / rel
+        for rel in out.split("\0")
+        if rel and "/upstream/" not in rel and "node_modules/" not in rel
+        and re.search(r"(^|/)(docker-)?compose[^/]*\.ya?ml$", rel)
     )
 
 

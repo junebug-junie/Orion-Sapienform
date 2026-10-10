@@ -11,7 +11,7 @@ journal instead of Docker's default `json-file`:
 ```
 
 `tests/test_compose_logging_journald.py` (run by `orion-static-gates` CI)
-fails if any compose service is missing this block, so new services cannot
+fails if any service in any tracked compose file is missing this block, so new services cannot
 drift.
 
 ## Why
@@ -64,6 +64,10 @@ journalctl CONTAINER_ID=<12-char id>
 journalctl CONTAINER_NAME=orion-athena-hub --since today | grep -i reading
 ```
 
+Docker splits lines longer than 16 KB into several journal entries
+(`CONTAINER_PARTIAL_MESSAGE=true`). `docker logs` joins them back together;
+`journalctl | grep` does not, so a match in a very long line may be cut.
+
 The user needs to be in `adm` or `systemd-journal` to read the journal
 without sudo (athena's `athena` user is in `adm`).
 
@@ -78,25 +82,36 @@ keeps `json-file` until its next recreate (`docker compose up -d` after
 pulling this change). Once recreated, its old `json-file` history is deleted
 as before; from then on its lines go to the journal.
 
-## Retention and rate limits (host config)
+## Retention (host config)
 
-Both of these are host settings, checked in under `deploy/systemd/`, and need
-sudo to install:
+`deploy/systemd/journald.conf.d/orion-container-logs.conf` sets
+`SystemMaxUse=24G` (needs sudo to install). journald's default cap is
+min(10% of `/`, 4G). On 2026-10-10 the fleet wrote about 2.4 MB/min of
+json-file output (~3.4 GB/day). Under the default cap that is about a day of
+history, and it would push system logs out early. 24G is roughly a week.
 
-- `deploy/systemd/journald.conf.d/orion-container-logs.conf` sets
-  `SystemMaxUse=24G`. journald's default cap is min(10% of `/`, 4G). On
-  2026-10-10 the fleet wrote about 2.4 MB/min of json-file output (~3.4 GB/day;
-  orion-signal-gateway alone about 60% of that, from per-message
-  `Hunter intake` INFO lines). Under the default cap that is about a day of
-  history and would push system logs out early. 24G is roughly a week. This
-  is an estimate from json-file growth; journald's per-line size differs, so
-  check `journalctl --disk-usage` after a day.
-- `deploy/systemd/docker.service.d/orion-log-ratelimit.conf` raises
-  docker.service's journal rate limit. dockerd writes every container's lines
-  itself, so the whole fleet shares one limit (default 10000 lines / 30s).
-  The fleet averaged about 4000 / 30s; bursts above the limit get dropped with
-  a `Suppressed N messages from docker.service` line. Takes effect on the next
-  Docker daemon restart (reboot is fine).
+Two caveats on that week:
+
+- It is an estimate from json-file growth. journald adds per-entry metadata,
+  so short lines may take *more* space, not less. Check
+  `journalctl --disk-usage` after a day.
+- The cap is shared by the whole fleet, and orion-signal-gateway is about 60%
+  of the volume (a per-message `Hunter intake` INFO line). Its spikes evict
+  every other container's history first. Lowering that line's level is the
+  real fix (separate follow-up).
+
+Rate limiting: dockerd writes every container's lines itself, so the fleet
+shares docker.service's journal rate limit. journald scales its default burst
+(10000 / 30s) up with free disk space; with ~113G free on athena that is about
+50000 / 30s, well above the fleet's ~4000 / 30s average. No change needed. If
+lines do get dropped you will see `Suppressed N messages from docker.service`
+in `journalctl -u systemd-journald`.
+
+Containers started outside compose (`docker run` in scripts and evals) still
+use the daemon default, `json-file`. Setting
+`"log-driver": "journald", "log-opts": {"tag": "{{.Name}}"}` in
+`/etc/docker/daemon.json` would cover them too; the compose block and its gate
+stay the portable source of truth either way.
 
 ## Other hosts
 
@@ -105,3 +120,5 @@ need a running systemd-journald for the driver to start a container. Not
 checked from athena (no SSH access) -- confirm with
 `docker info --format '{{.LoggingDriver}} {{.ServerVersion}}'` and
 `systemctl is-active systemd-journald` on each before recreating there.
+Install the same journald drop-in there too: without persistent storage the
+journal lives in memory and is lost on reboot.

@@ -35,13 +35,17 @@ def test_persist_directory_is_the_mounted_volume() -> None:
 
 ENV_EXAMPLE = COMPOSE.parent / ".env_example"
 BACKUP = COMPOSE.parents[2] / "scripts" / "backup" / "orion_backup_databases.py"
-GRAPHDB_CHROMA = "/mnt/graphdb/chroma"
 
 
 def test_chroma_data_lives_on_the_graphdb_drive() -> None:
     lines = [l for l in ENV_EXAMPLE.read_text().splitlines() if l.startswith("CHROMA_DATA_PATH=")]
-    assert lines == [f"CHROMA_DATA_PATH={GRAPHDB_CHROMA}"]
+    assert lines == ["CHROMA_DATA_PATH=${ORION_DATA_ROOT}/chroma"]
 
 
-def test_backup_reads_the_same_chroma_path() -> None:
-    assert f'host_path=Path("{GRAPHDB_CHROMA}")' in BACKUP.read_text()
+def test_backup_follows_the_live_chroma_mount() -> None:
+    # The backup must resolve the folder from the container's mount at
+    # PERSIST_DIRECTORY, never a hardcoded host path that can drift.
+    persist = _env()["PERSIST_DIRECTORY"]
+    src = BACKUP.read_text()
+    assert f'container_mount_source("orion-athena-vector-db", "{persist}"' in src
+    assert "collapse-mirrors/chroma" not in src

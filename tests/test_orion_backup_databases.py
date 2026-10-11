@@ -17,6 +17,7 @@ from scripts.backup.orion_backup_databases import (
     _terminate_stale_pg_dump_backends,
     capture_postgres,
     capture_stopped_container_tree,
+    container_mount_source,
     run_backup,
     run_target_backup,
     send_backup_notification,
@@ -649,3 +650,21 @@ def test_capture_postgres_fails_fast_when_gzip_is_missing(
         capture_postgres(
             tmp_path / "snap", container="orion-athena-sql-db", pg_user="postgres", log=[]
         )
+
+
+def test_container_mount_source_reads_the_live_mount(monkeypatch: pytest.MonkeyPatch) -> None:
+    mounts = '[{"Source":"/opt/x.py","Destination":"/opt/x.py"},{"Source":"/mnt/graphdb/chroma","Destination":"/chroma/chroma"}]'
+    monkeypatch.setattr(
+        "scripts.backup.orion_backup_databases._run",
+        lambda cmd, log, **kw: subprocess.CompletedProcess(cmd, 0, mounts.encode(), b""),
+    )
+    assert container_mount_source("c", "/chroma/chroma", log=[]) == Path("/mnt/graphdb/chroma")
+
+
+def test_container_mount_source_raises_when_mount_missing(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "scripts.backup.orion_backup_databases._run",
+        lambda cmd, log, **kw: subprocess.CompletedProcess(cmd, 0, b"[]", b""),
+    )
+    with pytest.raises(RuntimeError, match="no mount"):
+        container_mount_source("c", "/chroma/chroma", log=[])

@@ -12,7 +12,7 @@ Configuration is managed via the .env file in this directory, which defines:
 
     PORT: The host port to expose the ChromaDB API on.
 
-    CHROMA_DATA_PATH: The path on the host machine where the persistent database files will be stored. Default `/mnt/graphdb/chroma` (graph DB drive, next to FalkorDB).
+    CHROMA_DATA_PATH: The path on the host machine where the persistent database files will be stored. Default `${ORION_DATA_ROOT}/chroma` = `/mnt/graphdb/chroma` (graph DB drive, next to FalkorDB).
 
     Persistence requires `IS_PERSISTENT=TRUE` in the compose environment. Without it chroma 0.4.x runs in memory, ignores PERSIST_DIRECTORY, and every restart wipes every collection (gated by tests/test_vector_db_compose_persistent.py).
 

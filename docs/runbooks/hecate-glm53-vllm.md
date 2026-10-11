@@ -81,8 +81,10 @@ commit `def8a636157d5e3766c6c03df2b816a521549ada`, tree
   with a persistent `/etc/fstab` entry. Original partition table and fstab are
   recorded in `/mnt/scripts/hecate-nvme-layout-before-20261011` (metadata only,
   not a backup of erased Windows data).
-- Qwen download completed at pinned revision below; original GLM download and
-  CUDA image build are in progress. Existing llama.cpp worker remains running
+- Both pinned snapshots downloaded successfully: Qwen has 3 weight shards
+  (8,044,982,000 bytes), GLM has 13 (104,011,208,249 bytes). All index-referenced
+  shards exist and download metadata matches the pinned revisions. The CUDA
+  image build is in progress. Existing llama.cpp worker remains running
   until the image is ready. No pool route activated.
 
 Recheck before any eventual activation:
@@ -184,7 +186,7 @@ python3 services/orion-vllm-host/evals/smoke_glm.py \
   --route qwen3-4b-instruct --expected-model qwen3-4b-instruct
 ```
 
-Build log: `/mnt/scripts/hecate-vllm-build.log` on Hecate.
+Build log: `/mnt/scripts/hecate-vllm-build-headers.log` on Hecate.
 Download progress: `docker logs --tail 20 hecate-model-download`.
 Role announcement stays disabled during direct acceptance: the production pool
 still describes the previous llama.cpp worker. Do not advertise Qwen as GLM.

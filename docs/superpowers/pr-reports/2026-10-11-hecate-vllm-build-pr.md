@@ -66,9 +66,10 @@ not an ancestor. Model acceptance remains UNVERIFIED pending image completion.
 ## Docker/build/smoke checks
 
 - Hecate override `config --quiet`: PASS through the safety wrapper.
-- Full CUDA image build: IN PROGRESS at `/mnt/scripts/hecate-vllm-build-retry.log`. Initial integrity check caught an upstream Docker-ignore omission; the image now reconstructs the pinned tree from Git objects, and that gate passes.
+- Athena generic `--dry-run up -d`: `no service selected`, proving the worker opt-in blocks routine startup.
+- Full CUDA image build: IN PROGRESS at `/mnt/scripts/hecate-vllm-build-headers.log`. Initial integrity check caught an upstream Docker-ignore omission; the image now reconstructs the pinned tree from Git objects, and that gate passes. The next CMake pass identified missing Python development headers; `python3.12-dev` is now explicit in the image.
 - Qwen pinned snapshot: downloaded to Hecate NVMe.
-- GLM pinned snapshot: IN PROGRESS in `hecate-model-download` container.
+- GLM pinned snapshot: downloaded successfully; downloader exited 0. All 13 shards exist (104,011,208,249 weight bytes); 24 metadata files match the locked revision. Qwen has all 3 shards (8,044,982,000 weight bytes), with 13 matching metadata files.
 - Existing Hecate worker `/health`: `{"status":"ok"}` before testing.
 - NVMe `/dev/nvme0n1p1` mounted ext4 at `/mnt/models`, UUID `19d66b9a-2234-4a60-9180-1862285cd74c`; fstab verified. The operator explicitly approved erasing its prior BitLocker contents. Saved layout metadata is not a data backup.
 

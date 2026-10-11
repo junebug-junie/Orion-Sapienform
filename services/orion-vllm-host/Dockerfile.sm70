@@ -20,6 +20,8 @@ ENV PATH="/opt/vllm/.venv/bin:${PATH}"
 RUN uv pip install -r requirements/build/cuda.txt --torch-backend=cu128
 ENV TORCH_CUDA_ARCH_LIST=7.0 CMAKE_CUDA_ARCHITECTURES=70 MAX_JOBS=10 \
     CC=gcc-14 CXX=g++-14 CUDAHOSTCXX=g++-14
+# CMake requires the Python C API headers for its extension modules.
+RUN apt-get install -y --no-install-recommends python3.12-dev
 RUN uv pip install -e . --torch-backend=cu128 --no-build-isolation
 WORKDIR /app
 COPY services/orion-vllm-host/requirements.txt /app/requirements.txt

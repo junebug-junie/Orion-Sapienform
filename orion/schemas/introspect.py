@@ -8,7 +8,7 @@ Design: docs/superpowers/specs/2026-09-28-orion-introspect-mcp-design.md.
 from __future__ import annotations
 
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Literal
 from uuid import UUID
 
@@ -40,8 +40,19 @@ CURIOSITY_FULL_JSON_BUDGET = 9000
 CURIOSITY_WINDOW_DAYS = 90
 CURIOSITY_RUN_ID_PATTERN = r"^[A-Za-z0-9_.:-]{1,64}$"
 
-IntrospectBusOperation = Literal["dreams", "curiosity"]
-IntrospectOperation = Literal["reading_result", "dreams", "curiosity"]
+IntrospectBusOperation = Literal["dreams", "curiosity", "orion_day"]
+IntrospectOperation = Literal["reading_result", "dreams", "curiosity", "orion_day"]
+
+# The day sections of an Orion's Day letter, named as the email headings read
+# (services/orion-hub/scripts/orion_day_email.py). Each maps to the material
+# refs it is built from in orion.orion_day.letter_parts.SECTION_PREFIXES.
+OrionDaySection = Literal[
+    "curiosity", "self_sense", "readings", "dreams", "code_changes", "conversations",
+    "world_news", "reveries",
+]
+# A note has ~25 paragraphs and a carry-forward ~10 items; a bound only so a
+# typo cannot ask for paragraph 10**9.
+ORION_DAY_MAX_INDEX = 500
 
 
 def clip_text(text: str | None, cap: int = DEFAULT_TEXT_CAP) -> tuple[str, bool]:
@@ -238,4 +249,42 @@ class CuriosityArguments(BaseModel):
             self.query is not None or self.run_id is not None or self.line is not None
         ):
             raise ValueError("kind=self_question lists open self-questions; it takes only limit and since")
+        return self
+
+
+class OrionDayArguments(BaseModel):
+    """Model-supplied arguments for the ``orion_day`` tool (rereading an Orion's Day letter).
+
+    ``part=list`` (default) is the letter's outline; ``note`` / ``carry_forward`` return
+    the exact words, one part by ``index`` or the first ``limit`` parts; ``section`` returns
+    the day's records behind one email section. ``query`` searches paragraphs and carry
+    items by meaning across letters (``letter_date`` narrows it to one letter, ``part``
+    note / carry_forward to one kind).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+    letter_date: date | None = None
+    part: Literal["list", "note", "carry_forward", "section"] = "list"
+    index: int | None = Field(default=None, ge=1, le=ORION_DAY_MAX_INDEX)
+    section: OrionDaySection | None = None
+    query: str | None = Field(default=None, min_length=1, max_length=QUERY_CAP)
+    limit: int = Field(default=DEFAULT_LIMIT, ge=1, le=MAX_ITEMS)
+
+    @field_validator("query", mode="before")
+    @classmethod
+    def _strip_query(cls, value: Any) -> Any:
+        return normalize_query(value)
+
+    @model_validator(mode="after")
+    def _selectors(self):
+        if self.index is not None and self.part not in ("note", "carry_forward"):
+            raise ValueError("index numbers a note paragraph or carry item; it needs part=note or part=carry_forward")
+        if self.part == "section" and self.section is None:
+            raise ValueError("part=section needs section=<curiosity|self_sense|readings|dreams|code_changes|"
+                             "conversations|world_news|reveries>")
+        if self.section is not None and self.part != "section":
+            raise ValueError("section applies only with part=section")
+        if self.query is not None and (self.index is not None or self.part == "section"):
+            raise ValueError("query searches note paragraphs and carry items by meaning; it cannot be "
+                             "combined with index or part=section")
         return self

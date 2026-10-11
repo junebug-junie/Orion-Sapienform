@@ -1,6 +1,6 @@
 # Orion's Day letters: rereading what Orion wrote, with the records behind it
 
-Status: APPROVED IN DIRECTION 2026-10-11 (decisions below); patch 1 in progress
+Status: APPROVED IN DIRECTION 2026-10-11 (decisions below); patch 1 merged, patch 2 (`orion_day` read tool) implemented 2026-10-11
 
 ## Arsonist summary
 

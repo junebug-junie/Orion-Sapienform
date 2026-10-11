@@ -9,6 +9,7 @@ it saw a face; re-enrolling from cam0's own angle needs those frames, and auditi
 Every identity_face check that detects at least one face writes the frame and a JSON sidecar:
 
     <root>/<stream_id>/<UTC date>/<HHMMSS_micro>_<best_state>_<best_similarity>.jpg / .json
+    ... plus <stem>_face<N>.jpg: each detected face cropped at the source resolution (2026-10-11)
 
 At most one per stream per ``min_interval_sec``; files older than ``retention_days`` are pruned
 on a daemon thread (never on the detection path). The writer owns its retention.
@@ -31,6 +32,8 @@ from .crop_embeddings import ThumbRateLimiter
 
 FRAME_MAX_SIDE = 1280
 FRAME_QUALITY = 90
+FACE_MARGIN = 0.4       # of the face box's longer side, on each side
+FACE_MAX_SIDE = 640
 _STATE_RANK = {"probable": 3, "possible": 2, "unsure": 1}
 
 
@@ -40,6 +43,31 @@ def best_candidate(candidates: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]
     if not scored:
         return None
     return max(scored, key=lambda c: (_STATE_RANK.get(str(c.get("state")), 0), float(c.get("similarity") or -1.0)))
+
+
+def face_crops(img: Image.Image, boxes: List[List[float]]) -> List[Image.Image]:
+    """Each face at the source resolution, with margin, before the frame is shrunk.
+
+    Shrinking a 2560x1920 still to 1280 px halves a face at the desk to ~50 px; re-enrollment
+    needs the detail, and the enrollment script finds the face again inside the crop."""
+    out: List[Image.Image] = []
+    w, h = img.size
+    for box in boxes:
+        try:
+            x1, y1, x2, y2 = (float(v) for v in box)
+        except (TypeError, ValueError):
+            continue
+        side = max(x2 - x1, y2 - y1) * (1.0 + 2 * FACE_MARGIN)
+        if side <= 0:
+            continue
+        cx, cy = (x1 + x2) / 2, (y1 + y2) / 2
+        crop = img.crop((
+            int(max(0, cx - side / 2)), int(max(0, cy - side / 2)),
+            int(min(w, cx + side / 2)), int(min(h, cy + side / 2)),
+        ))
+        crop.thumbnail((FACE_MAX_SIDE, FACE_MAX_SIDE))
+        out.append(crop)
+    return out
 
 
 def _safe(part: str) -> str:
@@ -76,12 +104,15 @@ class FaceFrameStore:
             else f"{now:%H%M%S_%f}_{_safe(best.get('state') or 'none')}"
         folder = self.root / stream / f"{now:%Y-%m-%d}"
         frame = img.convert("RGB")
+        crops = face_crops(frame, meta.get("face_boxes") or [])
         frame.thumbnail((FRAME_MAX_SIDE, FRAME_MAX_SIDE))
         sidecar = json.dumps({"stream_id": stream_id, "saved_at": now.isoformat(), **meta}, default=str, indent=1)
         for attempt in range(2):
             try:
                 folder.mkdir(parents=True, exist_ok=True)
                 self._atomic(folder / f"{stem}.jpg", lambda t: frame.save(t, format="JPEG", quality=FRAME_QUALITY))
+                for i, crop in enumerate(crops):
+                    self._atomic(folder / f"{stem}_face{i}.jpg", lambda t, c=crop: c.save(t, format="JPEG", quality=FRAME_QUALITY))
                 self._atomic(folder / f"{stem}.json", lambda t: t.write_text(sidecar))
                 break
             except FileNotFoundError:

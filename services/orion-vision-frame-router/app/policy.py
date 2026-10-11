@@ -343,6 +343,8 @@ class FrameDispatchPolicy:
             return False
         min_s = float(cfg.get("min_seconds_between_dispatch", self.settings.DEFAULT_IDENTITY_MIN_SECONDS))
         cam = state.camera(camera_id)
+        if cam.identity_still_pending:
+            return False
         if cam.last_identity_dispatch_ts is not None and (now - cam.last_identity_dispatch_ts) < min_s:
             return False
         max_total = int(self.global_cfg.get("max_inflight_total", self.settings.MAX_INFLIGHT_TOTAL))

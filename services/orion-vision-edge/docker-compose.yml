@@ -14,6 +14,7 @@ services:
 
     environment:
       - SOURCE=${REOLINK_URL}
+      - HIRES_SOURCE=${REOLINK_HIRES_URL:-}
       - WIDTH=${WIDTH}
       - HEIGHT=${HEIGHT}
       - FPS=${FPS}

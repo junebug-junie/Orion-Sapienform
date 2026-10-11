@@ -28,6 +28,9 @@ class RouterMetrics:
     # retina_fast dispatch, or the identity_face secondary one?) for a
     # metric other consumers already read.
     identity_dispatched_total: int = 0
+    # Face checks that got a full-resolution still, and ones that fell back to the stream frame.
+    identity_still_total: int = 0
+    identity_still_fallback_total: int = 0
     last_error: str | None = None
 
     def record_skip(self, reason: str) -> None:
@@ -71,6 +74,8 @@ def make_health_envelope(
             "frames_seen_total": metrics.frames_seen_total,
             "frames_dispatched_total": metrics.frames_dispatched_total,
             "identity_dispatched_total": metrics.identity_dispatched_total,
+            "identity_still_total": metrics.identity_still_total,
+            "identity_still_fallback_total": metrics.identity_still_fallback_total,
             "frames_skipped_total": metrics.frames_skipped_total,
             "inflight_total": state.inflight_total(),
             "pending_count": len(state.pending),

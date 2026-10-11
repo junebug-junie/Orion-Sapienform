@@ -652,8 +652,12 @@ class VisionRunner:
         if gallery_embedding is None:
             warnings.append("identity_gallery_not_enrolled")
 
-        faces, probs = mtcnn(img, return_prob=True)
+        # detect + extract is exactly what mtcnn(img) runs with keep_all=True, split so the face
+        # boxes are kept: face_frames saves each face at the source resolution from them.
+        boxes, probs = mtcnn.detect(img)
+        faces = mtcnn.extract(img, boxes, None) if boxes is not None else None
         candidates: List[Dict[str, Any]] = []
+        kept_boxes: List[List[float]] = []
 
         if faces is not None:
             # keep_all=True (model_manager.py's construction) always stacks
@@ -670,6 +674,7 @@ class VisionRunner:
             order = order[:max_faces]
             faces = faces[order]
             probs = [probs[i] for i in order]
+            kept_boxes = [[float(v) for v in boxes[i]] for i in order]
             if device.startswith("cuda"):
                 # Must match the embedder's own resident dtype (now
                 # dtype-aware per the review finding above) -- a plain
@@ -707,6 +712,9 @@ class VisionRunner:
                 if store is not None:
                     store.save(str(request.get("stream_id") or request.get("camera_id") or "unknown"), img, {
                         "candidates": candidates,
+                        "face_boxes": kept_boxes,
+                        "source_size": list(img.size),
+                        "image_source": request.get("image_source") or "stream_frame",
                         "enrolled_subject": enrolled_subject,
                         "image_path": request.get("image_path") or request.get("frame_path"),
                         "match_threshold": match_threshold,

@@ -276,3 +276,124 @@ async def test_identity_dispatch_does_not_starve_primary_detection_at_live_infli
     assert len(primary_dispatches) == 2, (
         "primary retina_fast dispatch must not be blocked by identity's still-pending task"
     )
+
+
+# --- Full-resolution still before the face check (2026-10-11) ---------------------------------
+
+@pytest.fixture
+def still_policy_path(identity_policy_path: Path, tmp_path: Path) -> Path:
+    p = tmp_path / "still_policy.yaml"
+    p.write_text(
+        identity_policy_path.read_text(encoding="utf-8").replace(
+            "        min_seconds_between_dispatch: 30\n",
+            "        min_seconds_between_dispatch: 0\n        still_url: http://edge:7100/still\n        still_timeout_sec: 3\n",
+        ),
+        encoding="utf-8",
+    )
+    return p
+
+
+async def _drain(dispatcher: FrameDispatcher) -> None:
+    import asyncio
+
+    while dispatcher._background:
+        await asyncio.gather(*list(dispatcher._background))
+
+
+def _identity_published(bus: FakeBus):
+    return [env for _, env in bus.published if env.payload["task_type"] == "identity_face"]
+
+
+@pytest.mark.asyncio
+async def test_face_check_uses_the_full_resolution_still(still_policy_path: Path, monkeypatch) -> None:
+    import app.dispatcher as d
+
+    calls = []
+
+    def fake_still(url, timeout):
+        calls.append((url, timeout))
+        return {"ok": True, "image_path": "/frames/still_1.jpg", "width": 2560, "height": 1920, "grab_ms": 2100}
+
+    monkeypatch.setattr(d, "request_still", fake_still)
+    dispatcher, bus = _make_dispatcher(still_policy_path)
+    dispatcher.state.record_activity("cam0", ["person"], now=time.time())
+
+    await dispatcher.handle_frame_envelope(_frame_env())
+    await _drain(dispatcher)
+
+    assert calls == [("http://edge:7100/still", 3.0)]
+    [identity] = _identity_published(bus)
+    assert identity.payload["request"]["image_path"] == "/frames/still_1.jpg"
+    assert identity.payload["request"]["image_source"] == "hires_still"
+    assert identity.payload["meta"]["still_size"] == [2560, 1920]
+    assert dispatcher.metrics.identity_still_total == 1
+    assert dispatcher.state.camera("cam0").identity_still_pending is False
+    pend = [p for p in dispatcher.state.pending.values() if p.task_type == "identity_face"]
+    assert pend[0].image_path == "/frames/still_1.jpg"
+
+
+@pytest.mark.asyncio
+async def test_failed_still_falls_back_to_the_stream_frame(still_policy_path: Path, monkeypatch) -> None:
+    import app.dispatcher as d
+
+    def broken(url, timeout):
+        raise d.StillError("no_frame")
+
+    monkeypatch.setattr(d, "request_still", broken)
+    dispatcher, bus = _make_dispatcher(still_policy_path)
+    dispatcher.state.record_activity("cam0", ["person"], now=time.time())
+
+    await dispatcher.handle_frame_envelope(_frame_env())
+    await _drain(dispatcher)
+
+    [identity] = _identity_published(bus)
+    assert identity.payload["request"]["image_path"] == "/tmp/f.jpg"
+    assert identity.payload["request"]["image_source"] == "stream_frame"
+    assert identity.payload["meta"]["still_error"] == "no_frame"
+    assert dispatcher.metrics.identity_still_fallback_total == 1
+    assert dispatcher.state.camera("cam0").identity_still_pending is False
+
+
+@pytest.mark.asyncio
+async def test_no_second_face_check_while_a_still_is_being_fetched(still_policy_path: Path, monkeypatch) -> None:
+    """min_seconds_between_dispatch is 0 here, so only the pending flag stops a pile-up."""
+    import asyncio
+    import threading
+
+    import app.dispatcher as d
+
+    release = threading.Event()
+    calls = []
+
+    def slow_still(url, timeout):
+        calls.append(url)
+        release.wait(5)
+        return {"ok": True, "image_path": "/frames/still_2.jpg"}
+
+    monkeypatch.setattr(d, "request_still", slow_still)
+    dispatcher, bus = _make_dispatcher(still_policy_path)
+    dispatcher.state.record_activity("cam0", ["person"], now=time.time())
+
+    await dispatcher.handle_frame_envelope(_frame_env())
+    await asyncio.sleep(0.05)
+    # The primary path keeps flowing while the still is fetched.
+    await dispatcher.handle_frame_envelope(_frame_env())
+    assert len(calls) == 1
+    assert sum(1 for _, e in bus.published if e.payload["task_type"] == "retina_fast") == 2
+    release.set()
+    await _drain(dispatcher)
+    assert len(_identity_published(bus)) == 1
+
+
+def test_request_still_reports_the_capture_service_error(monkeypatch) -> None:
+    import io
+    import urllib.error
+
+    import app.dispatcher as d
+
+    def fake_urlopen(req, timeout):
+        raise urllib.error.HTTPError(req.full_url, 502, "bad", {}, io.BytesIO(b'{"ok": false, "error": "no_frame"}'))
+
+    monkeypatch.setattr(d.urllib.request, "urlopen", fake_urlopen)
+    with pytest.raises(d.StillError, match="no_frame"):
+        d.request_still("http://edge:7100/still", 1.0)

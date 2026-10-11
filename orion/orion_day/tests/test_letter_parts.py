@@ -144,3 +144,34 @@ def test_number_match_respects_digit_boundaries():
     results = {t.token: t for t in claim_check("260.6 and 4,059", material)}
     assert not results["260.6"].found  # inside 1260.65, not the same number
     assert results["4,059"].found      # thousands separator normalised
+
+
+def test_a_rule_inside_the_carry_forward_takes_no_number():
+    items = [p for p in split_carry("- a\n* * *\n- b\n- - -\n- c") if p.kind == "carry"]
+    assert [p.text for p in items] == ["- a", "- b", "- c"]
+
+
+def test_only_the_opening_fence_marker_closes_a_fence():
+    paragraphs = [p for p in split_note("```\n~~~\n\nx\n```\n\nafter") if p.kind == "paragraph"]
+    assert [p.text for p in paragraphs] == ["```\n~~~\n\nx\n```", "after"]
+
+
+def test_a_bare_date_is_not_an_integer_claim():
+    assert extract_claim_tokens("On 2026-10-09 the 211-node graph") == [("211", "integer")]
+
+
+def test_quotes_with_json_escaped_characters_are_found():
+    material = _material()
+    run = material.curiosity_runs[0]
+    planted = run.model_copy(update={"journal_body": 'I ran `foo("bar")` and wrote "a path C:\\tmp\\x was here".'})
+    material = material.model_copy(update={"curiosity_runs": [planted]})
+    results = {t.token: t for t in claim_check('`foo("bar")` and "a path C:\\tmp\\x was here"', material)}
+    assert results['foo("bar")'].found
+    assert results["a path C:\\tmp\\x was here"].found
+
+
+def test_a_decimal_inside_a_version_string_is_not_support():
+    material = _material()
+    planted = material.curiosity_runs[0].model_copy(update={"journal_body": "running v0.27.1"})
+    material = material.model_copy(update={"curiosity_runs": [planted]})
+    assert not claim_check("a floor of 0.27", material)[0].found

@@ -17,7 +17,6 @@ Grounding:
 """
 from __future__ import annotations
 
-import json
 import re
 from dataclasses import dataclass, field
 from typing import Any, Literal
@@ -50,11 +49,12 @@ def _blocks(text: str) -> list[str]:
     """Blank-line separated blocks; a fenced code block never splits."""
     blocks: list[str] = []
     current: list[str] = []
-    in_fence = False
+    fence: str | None = None  # the marker that opened the current fence; only it closes it
     for line in (text or "").splitlines():
-        if _FENCE_RE.match(line):
-            in_fence = not in_fence
-        if not line.strip() and not in_fence:
+        m = _FENCE_RE.match(line)
+        if m:
+            fence = m.group(1) if fence is None else (None if m.group(1) == fence else fence)
+        if not line.strip() and fence is None:
             if current:
                 blocks.append("\n".join(current))
                 current = []
@@ -107,7 +107,12 @@ def split_carry(carry_md: str) -> list[LetterPart]:
             item = None
 
     for line in (carry_md or "").splitlines():
-        if _TOP_BULLET_RE.match(line):
+        if _RULE_RE.match(line) and (item is None or not line[:1].isspace()):
+            # A thematic break ends a list (markdown), even right under an item.
+            flush_item()
+            flush_loose()
+            parts.append(LetterPart("other", line))
+        elif _TOP_BULLET_RE.match(line):
             flush_item()
             flush_loose()
             item = [line]
@@ -141,7 +146,7 @@ def resolve_citations(text: str, material: OrionDayMaterialV1) -> list[Citation]
     return [Citation(ref, records.get(ref)) for ref in extract_refs(text)]
 
 
-TokenKind = Literal["timestamp", "decimal", "integer", "pr", "prior_id", "code", "quote"]
+TokenKind = Literal["timestamp", "date", "decimal", "integer", "pr", "prior_id", "code", "quote"]
 
 # Order matters: earlier patterns claim their span first, so "2026-10-09T06:35:27Z" is one
 # timestamp, not a date plus a time plus three integers.
@@ -149,10 +154,11 @@ _TOKEN_PATTERNS: list[tuple[TokenKind, re.Pattern[str]]] = [
     ("code", re.compile(r"`([^`\n]{4,})`")),
     ("quote", re.compile(r"[\"“]([^\"”\n]{12,200})[\"”]")),
     ("timestamp", re.compile(r"\b\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2})?(?:\.\d+)?Z?\b|\b\d{2}:\d{2}:\d{2}Z?\b")),
+    ("date", re.compile(r"\b\d{4}-\d{2}-\d{2}\b")),  # claimed so its digits aren't integers, then skipped
     ("prior_id", re.compile(r"\b(?:self|world|lived|prior):[a-z0-9_.\-]{6,}\b")),
     ("pr", re.compile(r"(?<![\w#])#(\d{2,6})\b")),
     ("decimal", re.compile(r"(?<![\w.])\d+\.\d+(?![\d.]*\d)")),
-    ("integer", re.compile(r"(?<![\w.,])\d{1,3}(?:,\d{3})+(?![\d,])|(?<![\w.,])\d{3,}(?![\w.,]*\d)")),
+    ("integer", re.compile(r"(?<![\w.,\-])\d{1,3}(?:,\d{3})+(?![\d,])|(?<![\w.,\-])\d{3,}(?![\w.,]*\d)")),
 ]
 
 
@@ -178,6 +184,8 @@ def extract_claim_tokens(text: str) -> list[tuple[str, TokenKind]]:
             if any(span[0] < end and start < span[1] for start, end in taken):
                 continue
             taken.append(span)
+            if kind == "date":
+                continue
             token = m.group(1) if kind in ("code", "quote", "pr") else m.group(0)
             found.append((span[0], token.strip(), kind))
     seen: dict[tuple[str, TokenKind], None] = {}
@@ -193,15 +201,24 @@ def _needles(token: str, kind: TokenKind) -> list[re.Pattern[str]]:
         return [re.compile(re.escape(core))]
     if kind in ("decimal", "integer"):
         forms = {token, token.replace(",", "")}
-        return [re.compile(rf"(?<![\d.]){re.escape(f)}(?![\d])") for f in forms]
+        return [re.compile(rf"(?<![\d.]){re.escape(f)}(?!\d|\.\d)") for f in forms]
     if kind == "pr":
         return [re.compile(rf"(?:#|pull/|PR ?){re.escape(token)}\b")]
     return [re.compile(re.escape(token), re.IGNORECASE)]
 
 
+def _leaf_strings(value: Any) -> list[str]:
+    """Every scalar in a record as plain text. Searching json.dumps output instead would miss a
+    quote or code span containing '"' or a backslash, which JSON escapes."""
+    if isinstance(value, dict):
+        return [s for v in value.values() for s in _leaf_strings(v)]
+    if isinstance(value, list):
+        return [s for v in value for s in _leaf_strings(v)]
+    return [] if value is None else [str(value)]
+
+
 def claim_check(text: str, material: OrionDayMaterialV1) -> list[ClaimToken]:
-    haystacks = {ref: json.dumps(record, ensure_ascii=False, default=str)
-                 for ref, record in material_ref_records(material).items()}
+    haystacks = {ref: "\n".join(_leaf_strings(record)) for ref, record in material_ref_records(material).items()}
     results: list[ClaimToken] = []
     for token, kind in extract_claim_tokens(text):
         needles = _needles(token, kind)

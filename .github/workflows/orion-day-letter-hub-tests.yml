@@ -14,6 +14,10 @@ on:
       - "services/orion-hub/.env_example"
       - "services/orion-hub/templates/orion_day_letter.html.j2"
       - "services/orion-hub/tests/test_orion_day_letter.py"
+      - "services/orion-hub/tests/test_orion_day_introspect_listener.py"
+      - "services/orion-hub/scripts/curiosity_introspect_listener.py"
+      - "orion/introspect/**"
+      - "orion/schemas/introspect.py"
       - "services/orion-hub/evals/*orion_day*"
       - "services/orion-hub/requirements.txt"
       - ".github/workflows/orion-day-letter-hub-tests.yml"
@@ -42,6 +46,9 @@ jobs:
           PYTHONPATH: ${{ github.workspace }}
         run: |
           python -m pytest -q services/orion-hub/tests/test_orion_day_letter.py \
-            services/orion-hub/tests/test_curiosity_dream_hypotheses.py
+            services/orion-hub/tests/test_curiosity_dream_hypotheses.py \
+            services/orion-hub/tests/test_orion_day_introspect_listener.py
       - name: Email full-text eval (fixture day)
         run: python services/orion-hub/evals/run_orion_day_email_eval.py
+      - name: Reread eval (orion_day tool, fixture letter, 10 planted references)
+        run: python services/orion-hub/evals/run_orion_day_reread_eval.py

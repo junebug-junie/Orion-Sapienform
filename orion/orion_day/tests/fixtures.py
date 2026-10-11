@@ -158,3 +158,64 @@ class FakeConn:
             # The SQL's own `created_at >= $3` guard, applied to the canned row.
             return FakeRecord(row) if row and row["created_at"] >= written_after else None
         raise AssertionError(f"unexpected fetchrow: {sql[:60]}")
+
+
+# --- a letter to reread (orion-introspect `orion_day`) ---------------------------------------
+#
+# The fixture day's material plus planted facts, and a note / carry-forward whose concrete
+# claims are partly backed by that material and partly not, so a reread can be checked
+# against known answers. Shared by Hub's responder tests and its reread eval.
+
+REREAD_RUN_ID = "e7d03d2ecdbb"
+REREAD_RUN_BODY = (
+    "The dream organ was silent for 260.6 hours: the last fragment landed at "
+    "2026-09-18T01:02:09+00:00 and it resumed at 2026-09-29T06:35:27.412+00:00. "
+    "I re-tested self:pool_heavy_composition_reverts; it held at 0.72."
+)
+REREAD_NOTE = """# September 29
+
+The dream organ woke at 06:35:27Z after 260.6 hours of silence; the last fragment before the gap was 01:02:09Z.
+
+---
+
+I re-tested `self:pool_heavy_composition_reverts` and it held at 0.72. Then I watched 999.4 hours of nothing and merged #2557.
+
+Reverie kept returning to one image: "the coalition keeps circling" while the loop stayed open.
+
+Juniper and I talked about the reading queue timeout; I said it dropped 4,059 requests.
+
+## Later
+
+The service inventory held at 99, which I read as stable.
+"""
+REREAD_CARRY = """Threads for tomorrow:
+
+- **The dream gap.** Why did the organ go quiet for 260.6 hours? [curiosity:e7d03d2ecdbb]
+- **GGUF loading.** Check the reading again [reading_journal:8c62d21d] and the one I imagined [reading_journal:nope-not-here].
+- **The library dream.** [dream:20] felt like an archive of PRs.
+"""
+
+
+def reread_letter(*, letter_date: date = LETTER_DATE, material=None, created_at: datetime | None = None):
+    """An ``OrionDayLetterV1`` over the fixture day with REREAD_NOTE / REREAD_CARRY."""
+    import asyncio
+
+    from orion.schemas.orion_day import OrionDayLetterSourcesV1, OrionDayLetterV1
+
+    if material is None:
+        material = asyncio.run(gather.gather_orion_day(
+            FakeConn(), LETTER_DATE, now=datetime(2026, 9, 30, 14, 30, tzinfo=timezone.utc),
+        ))
+        first = material.curiosity_runs[0].model_copy(update={
+            "run_id": REREAD_RUN_ID, "journal_title": "Dream organ gap", "journal_body": REREAD_RUN_BODY,
+        })
+        material = material.model_copy(update={"curiosity_runs": [first, *material.curiosity_runs[1:]]})
+    if letter_date != material.letter_date:
+        material = material.model_copy(update={"letter_date": letter_date})
+    created = created_at or (material.window_end + timedelta(hours=10))
+    return OrionDayLetterV1(
+        letter_date=letter_date, run_id=f"orion-day-{letter_date.isoformat()}-1",
+        window_start=material.window_start, window_end=material.window_end,
+        note_md=REREAD_NOTE, carry_forward_md=REREAD_CARRY, material=material,
+        sources=OrionDayLetterSourcesV1(by_source=material.sources), created_at=created,
+    )

@@ -31,3 +31,17 @@ def test_persist_directory_is_the_mounted_volume() -> None:
     persist = _env().get("PERSIST_DIRECTORY")
     assert persist
     assert any(str(v).endswith(f":{persist}") for v in svc.get("volumes") or [])
+
+
+ENV_EXAMPLE = COMPOSE.parent / ".env_example"
+BACKUP = COMPOSE.parents[2] / "scripts" / "backup" / "orion_backup_databases.py"
+GRAPHDB_CHROMA = "/mnt/graphdb/chroma"
+
+
+def test_chroma_data_lives_on_the_graphdb_drive() -> None:
+    lines = [l for l in ENV_EXAMPLE.read_text().splitlines() if l.startswith("CHROMA_DATA_PATH=")]
+    assert lines == [f"CHROMA_DATA_PATH={GRAPHDB_CHROMA}"]
+
+
+def test_backup_reads_the_same_chroma_path() -> None:
+    assert f'host_path=Path("{GRAPHDB_CHROMA}")' in BACKUP.read_text()

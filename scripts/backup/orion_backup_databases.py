@@ -338,7 +338,7 @@ def default_targets() -> list[Target]:
             lambda dest, log: capture_stopped_container_tree(
                 dest,
                 container="orion-athena-vector-db",
-                host_path=Path("/mnt/postgres/collapse-mirrors/chroma"),
+                host_path=Path("/mnt/graphdb/chroma"),
                 log=log,
             ),
         ),

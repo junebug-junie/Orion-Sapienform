@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Optional, Tuple, Dict, Any
 
 from pydantic_settings import BaseSettings
-from pydantic import Field
+from pydantic import Field, field_validator
 import yaml
 
 
@@ -20,6 +20,27 @@ class Settings(BaseSettings):
     orion_bus_url: str = Field("redis://100.92.216.81:6379/0", alias="ORION_BUS_URL")
     orion_bus_enabled: bool = Field(True, alias="ORION_BUS_ENABLED")
     heartbeat_interval_sec: float = Field(10.0, alias="HEARTBEAT_INTERVAL_SEC")
+
+    # Optional GPU-pool announcement; disabled until a role and public port are supplied.
+    llm_role: Optional[str] = Field(None, alias="LLM_ROLE")
+    llm_announce_host: str = Field("hecate", alias="LLM_ANNOUNCE_HOST")
+    llm_announce_port: Optional[int] = Field(None, ge=1, le=65535, alias="LLM_ANNOUNCE_PORT")
+
+    @field_validator("llm_announce_port", mode="before")
+    @classmethod
+    def _empty_port(cls, value):
+        return None if value == "" else value
+
+    def validate_announcement(self) -> None:
+        if (self.llm_role or self.llm_announce_port) and not (
+            self.llm_role and self.llm_announce_port and self.profile_name
+        ):
+            raise ValueError("Pool announcement requires LLM_ROLE, LLM_ANNOUNCE_PORT and VLLM_PROFILE_NAME")
+
+    def resolve_serving(self) -> Dict[str, Any]:
+        profiles = self._load_profiles()
+        name = self.profile_name or next(iter(profiles), None)
+        return dict((profiles.get(name) or {}).get("vllm") or {})
 
     # HTTP bind
     host: str = Field("0.0.0.0", alias="VLLM_HOST")

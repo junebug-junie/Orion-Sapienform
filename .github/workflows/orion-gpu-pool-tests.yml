@@ -4,6 +4,7 @@ on:
   pull_request:
     paths:
       - "services/orion-gpu-pool/**"
+      - "services/orion-vllm-host/**"
       - "orion/gpu_pool/**"
       - "orion/schemas/gpu_pool.py"
       # the controller-health alert builds orion-notify's ChatAttentionRequest
@@ -81,6 +82,7 @@ on:
     branches: [main]
     paths:
       - "services/orion-gpu-pool/**"
+      - "services/orion-vllm-host/**"
       - "orion/gpu_pool/**"
       - "orion/schemas/gpu_pool.py"
       # the controller-health alert builds orion-notify's ChatAttentionRequest
@@ -170,6 +172,10 @@ jobs:
         env:
           GPU_POOL_TEST_POSTGRES_URI: postgresql://postgres:gpu-pool-test@127.0.0.1:5432/gpu_pool_test
         run: cd services/orion-gpu-pool && python -m pytest tests -q -p no:cacheprovider
+      - name: vLLM launch, discovery middleware and announcement (CPU only)
+        run: |
+          python -m pip install -r services/orion-vllm-host/requirements.txt
+          PYTHONPATH="$GITHUB_WORKSPACE:$GITHUB_WORKSPACE/services/orion-vllm-host" python -m pytest services/orion-vllm-host/tests -q -p no:cacheprovider
       - name: Worker announce (llamacpp-host side of the discovery bridge)
         env:
           LLM_PROFILE_NAME: ci

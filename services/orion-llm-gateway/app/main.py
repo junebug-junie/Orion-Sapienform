@@ -322,7 +322,8 @@ async def _run_on_grant(plan: ChatDispatchPlan, lease: Lease, read_timeout_s: fl
     }})
     run_plan = dataclasses.replace(
         plan, body=run_body,
-        route_target=RouteTarget(url=grant.url, backend=pool_placement.LLAMACPP_BACKEND, served_by=grant.served_by),
+        route_target=RouteTarget(url=grant.url, backend=pool_placement.granted_backend(grant),
+                                 model=pool_placement.granted_model(grant), served_by=grant.served_by),
     )
     loop = asyncio.get_running_loop()
     handle = upstream_cancel.UpstreamCancel()

@@ -126,7 +126,7 @@ class GpuLeaseGrantV1(BaseModel):
     cards: list[str]
     url: str
     profile_name: str | None = None
-    model_file: str | None = None
+    model_file: str | None = None  # llama.cpp basename; vLLM exact /v1/models served id
     ctx_per_slot: int | None = None
     served_by: str
 
@@ -178,8 +178,8 @@ class DiscoveredRoleV1(BaseModel):
     url: str
     status: Literal["confirmed", "mismatch", "silent", "down", "unloaded", "evicted", "static"]
     profile_name: str | None = None
-    model_file: str | None = None
-    model_path: str | None = None   # as llama.cpp /props reports it (durable-runs compares full paths)
+    model_file: str | None = None  # llama.cpp basename; vLLM exact /v1/models served id
+    model_path: str | None = None   # as /props or vLLM /orion/server-info reports it (durable-runs compares full paths)
     slots: int = 0
     ctx_per_slot: int | None = None
     vision: bool | None = None
@@ -425,7 +425,7 @@ class GpuActuateResultV1(BaseModel):
 
 
 class LlmWorkerAnnounceV1(BaseModel):
-    """A llama.cpp worker saying which role and ``llm_profiles.yaml`` profile it serves."""
+    """An LLM worker saying which role and ``llm_profiles.yaml`` profile it serves."""
 
     model_config = ConfigDict(extra="forbid")
 

@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import json
 import logging
 import os
 import subprocess
@@ -103,6 +105,22 @@ def build_vllm_command_and_env() -> tuple[List[str], Dict[str, str]]:
    # Help PyTorch deal with fragmentation on these tight V100s
     env.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 
+    serving = settings.resolve_serving()
+    if serving.get("pool_discovery") is True:
+        cmd += ["--middleware", "app.discovery.pool_server_info"]
+    for key in ("served_model_name", "dtype", "kv_cache_dtype", "reasoning_parser", "tool_call_parser"):
+        if serving.get(key) is not None:
+            cmd += ["--" + key.replace("_", "-"), str(serving[key])]
+    for key in ("trust_remote_code", "enable_auto_tool_choice"):
+        if serving.get(key) is True:
+            cmd.append("--" + key.replace("_", "-"))
+    if serving.get("speculative_config"):
+        cmd += ["--speculative-config", json.dumps(serving["speculative_config"])]
+    for key, value in (serving.get("env") or {}).items():
+        if key not in {"VLLM_USE_V2_MODEL_RUNNER", "VLLM_WORKER_MULTIPROC_METHOD",
+                       "VLLM_MEMORY_PROFILER_ESTIMATE_CUDAGRAPHS"}:
+            raise ValueError(f"Unsupported vLLM profile environment key: {key}")
+        env[key] = str(value)
     return cmd, env
 
 
@@ -136,7 +154,41 @@ def run_vllm_server_blocking() -> None:
     subprocess.run(cmd, check=True, env=env)
 
 
+async def announce_loop() -> None:
+    """A fresh declaration is necessary but never sufficient for a pool grant."""
+    from orion.core.bus.async_service import OrionBusAsync
+    from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
+    from orion.schemas.gpu_pool import (
+        LLM_WORKER_ANNOUNCE_CHANNEL, LLM_WORKER_ANNOUNCE_KIND, LlmWorkerAnnounceV1,
+    )
+    if not settings.orion_bus_enabled or not settings.llm_role or not settings.llm_announce_port:
+        return
+    if not settings.profile_name:
+        raise ValueError("Pool announcement requires explicit VLLM_PROFILE_NAME")
+    _, gpu = settings.resolve_model_and_gpu()
+    bus = OrionBusAsync(settings.orion_bus_url, enabled=True)
+    try:
+        while True:
+            try:
+                await bus.connect()
+                payload = LlmWorkerAnnounceV1(
+                    host=settings.llm_announce_host, role=settings.llm_role,
+                    profile_name=settings.profile_name, port=settings.llm_announce_port,
+                    cuda_visible_devices=gpu.get("cuda_visible_devices"), service_name=settings.service_name,
+                )
+                await bus.publish(LLM_WORKER_ANNOUNCE_CHANNEL, BaseEnvelope(
+                    kind=LLM_WORKER_ANNOUNCE_KIND,
+                    source=ServiceRef(name=settings.service_name, version=settings.service_version,
+                                      node=settings.node_name), payload=payload.model_dump(mode="json")))
+            except Exception:
+                logger.warning("vllm_worker_announce_failed", exc_info=True)
+            await asyncio.sleep(30)
+    finally:
+        await bus.close()
+
+
 async def _main_async() -> None:
+    settings.validate_announcement()
     logger.info(
         "Starting %s v%s (host=%s port=%s)",
         settings.service_name,
@@ -167,9 +219,13 @@ async def _main_async() -> None:
     # Ctrl-C (SIGINT) can leave the interpreter hanging until the vLLM subprocess exits on its
     # own, whereas before this patch the same blocking call ran on the main thread and Ctrl-C
     # interrupted it immediately. `docker stop` (SIGTERM) is unaffected either way.
+    announce_task = asyncio.create_task(announce_loop())
     try:
         await asyncio.to_thread(run_vllm_server_blocking)
     finally:
+        announce_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await announce_task
         if heartbeat_chassis is not None:
             try:
                 await heartbeat_chassis.stop()

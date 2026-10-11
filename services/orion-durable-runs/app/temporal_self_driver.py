@@ -12,6 +12,9 @@ The first step of a day seeds the new thread from the previous day's last state 
 the strain latch carry over midnight), and threads past TEMPORAL_SELF_RETENTION_DAYS are deleted
 with the saver's own ``adelete_thread``.
 
+Each step also runs the ``chronicle`` node (patch 3, ``app.temporal_self_chronicle``), which
+folds the chronology up to ``now - TEMPORAL_SELF_READ_LAG_SEC``; its summary is in ``health()``.
+
 A step that starts a new level episode (level change, or restart after a gap) is logged (``arousal_transition``) and recorded as one row
 in ``temporal_self_event`` by the graph. It does NOT publish a ``DurableRunStateV1`` row: that
 model's ``workflow`` is a closed Literal read by sql-writer and Hub, and widening it would need a
@@ -85,6 +88,7 @@ class TemporalSelfDriver:
         self._tasks: list[asyncio.Task] = []
         self.steps = 0
         self.latest: Optional[RegulationStateV1] = None
+        self.last_chronicle: Optional[dict] = None   # the chronicle node's summary of the last step
         self.last_error: Optional[str] = None
         self._retired_for: Optional[str] = None
 
@@ -171,6 +175,7 @@ class TemporalSelfDriver:
         out = await self._graph.ainvoke(inputs, self._config(thread_id), durability="exit")
         self.steps += 1
         self.latest = RegulationStateV1.model_validate(out["regulation"])
+        self.last_chronicle = out.get("chronicle")
         transition = out.get("transition")
         if transition:
             a = self.latest.arousal
@@ -183,4 +188,4 @@ class TemporalSelfDriver:
         a = self.latest.arousal if self.latest else None
         return {"steps": self.steps, "arousal_level": a.arousal_level if a else None,
                 "since": a.since.isoformat() if a else None, "queued": self._queue.qsize(),
-                "last_error": self.last_error}
+                "last_error": self.last_error, "chronicle": self.last_chronicle}

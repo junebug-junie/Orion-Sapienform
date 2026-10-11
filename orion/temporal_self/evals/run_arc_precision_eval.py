@@ -34,7 +34,7 @@ REPO = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(REPO))
 
 from orion.temporal_self import ReducerConfig, advance_clock, drain_closed_days, fold, initial_state  # noqa: E402
-from orion.temporal_self.body import summarize_body  # noqa: E402
+from orion.temporal_self.body import NO_BODY_KINDS, body_window, summarize_body  # noqa: E402
 from orion.temporal_self.broadcast import tick_from_log_row  # noqa: E402
 from orion.temporal_self.day import as_utc, day_window  # noqa: E402
 from orion.temporal_self.sources import ADAPTERS  # noqa: E402
@@ -121,6 +121,13 @@ def run(cfg: ReducerConfig, rows, ticks, events):
 
 def evaluate(cfg: ReducerConfig, rows, ticks, events) -> dict:
     day, identical = run(cfg, rows, ticks, events)
+    return score(cfg, rows, ticks, day, identical)
+
+
+def score(cfg: ReducerConfig, rows, ticks, day, identical: bool) -> dict:
+    """Every gate on one closed day. The patch-3 live replay
+    (services/orion-durable-runs/evals/temporal_self_live_replay.py) scores the day the live
+    driver persisted with this same function."""
     subjects = oracle(rows)
     arcs = day.arcs
     total = matched = unresolved = 0
@@ -192,11 +199,9 @@ def evaluate(cfg: ReducerConfig, rows, ticks, events) -> dict:
                  for k in ("body_cluster", "body_cabinet", "body_spike")}
     bodies = []
     for a in arcs:
-        if a.kind == "reverie":
+        if a.kind in NO_BODY_KINDS:
             continue
-        b0, b1 = a.began_at, a.ended_at or a.last_seen_at
-        if b1 <= b0:
-            b0, b1 = b0 - timedelta(seconds=30), b1 + timedelta(seconds=30)  # point arcs: the minute around them
+        b0, b1 = body_window(a)  # point arcs: the minute around them
         pick = {k: [r for r in v if b0 <= r["_t"] <= b1] for k, v in body_rows.items()}
         bodies.append((a, summarize_body(pick["body_cluster"], pick["body_cabinet"], pick["body_spike"])))
 

@@ -12,6 +12,9 @@ on:
       - "orion/schemas/regulation.py"
       - "orion/autonomy/cabinet_heat.py"
       - "services/orion-sql-db/manual_migration_temporal_self_event_v1.sql"
+      - "services/orion-sql-db/manual_migration_temporal_self_v1.sql"
+      - "orion/temporal_self/**"
+      - "orion/schemas/temporal_self.py"
       - "services/orion-sql-db/manual_migration_regulation_history.sql"
       - "orion/schemas/durable_run.py"
       - "orion/schemas/reverie_visual_run.py"
@@ -87,6 +90,10 @@ on:
       - "orion/schemas/thought.py"
       - "services/orion-thought/app/bus_listener.py"
       - "services/orion-sql-db/manual_migration_durable_resource_abandon_pending_v1.sql"
+      - "services/orion-sql-db/manual_migration_temporal_self_event_v1.sql"
+      - "services/orion-sql-db/manual_migration_temporal_self_v1.sql"
+      - "orion/temporal_self/**"
+      - "orion/schemas/temporal_self.py"
 
 jobs:
   unit:
@@ -140,6 +147,11 @@ jobs:
           PYTHONPATH: ${{ github.workspace }}
           ORION_ADMISSION_TEST_DSN: postgresql://postgres:admission-test@127.0.0.1:5432/admission_test
         run: python services/orion-durable-runs/evals/deploy_order_skew.py
+      - name: Temporal Self live replay (the live chronicle over the 10-09 fixture reproduces patch 2) on isolated Postgres
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+          ORION_ADMISSION_TEST_DSN: postgresql://postgres:admission-test@127.0.0.1:5432/admission_test
+        run: python services/orion-durable-runs/evals/temporal_self_live_replay.py --step-sec 600
 
   gateway:
     # Renamed in GPU pool stage 6.6: the gateway's /capacity broker and shared-capacity

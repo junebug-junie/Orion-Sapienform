@@ -570,6 +570,61 @@ for the trace; arousal never reads it. No dial reads arousal yet (spec order 6).
 Kill switches: `TEMPORAL_SELF_ENABLED=false` (no thread), `ORION_REGULATION_AROUSAL_ENABLED=false`
 (reads `unknown`). Health: `/health` -> `temporal_self`.
 
+## Temporal Self chronology: the `chronicle` node (2026-10-10, patch 3, no reader yet)
+
+The same thread now runs `ingest -> regulate -> chronicle -> done`. `chronicle`
+(`app/temporal_self_chronicle.py`) runs the pure reducer `orion/temporal_self/` live: it turns
+rows Orion already writes into **arcs** (a stretch of the day Orion kept coming back to one
+subject, or one bounded process) and one frame of "where am I in my day".
+
+Each step reads forward from the stored watermark to `now - TEMPORAL_SELF_READ_LAG_SEC` (300 s), in
+windows of at most an hour. Per window:
+
+1. `app/temporal_self_sources.py` reads every bound source (the reference for every query is
+   `orion/temporal_self/evals/export_fixture_day.sql`): broadcast ticks by `generated_at`, and every
+   event whose *available* time (a process at its end) is in `[lo, hi)`;
+2. a late-row probe re-reads the previous 30 min (memory episodes: 3 days; visual deferrals: 3 h,
+   because `abandoned` replaces `active` ~90 min after `started_at`) for rows that were not there
+   yet; they are folded as late (the reducer counts them in
+   `frame.skipped_at_or_before_watermark`, never folds them) and stored with
+   `temporal_self_event.late_unfolded = true`, so each is counted once;
+3. ONE `fold` (ticks and events together), `advance_clock(hi)`, `build_frame`, `drain_closed_days`,
+   in a worker thread (pure, CPU-bound; it shares the event loop with admission and `/health`
+   otherwise). An in-window row that is already stored with an EARLIER available time (an upsert
+   moved it, e.g. a rewritten `completed_at`) is dropped and counted (`moved_total`), never folded
+   twice;
+4. one body read (`orion_biometrics_cluster`, athena's cabinet temperature, `cabinet_ambient_spike`,
+   stored visual deferrals) per newly closed non-reverie arc, into `arc.body`;
+5. ONE transaction (`app/temporal_self_store.py`): new events, changed arcs, closed days, the
+   `current_day` frame, cursors, and the reducer's own state (gzipped, `temporal_self_state`). The
+   in-memory state advances only after the commit, so a crash or a failed commit re-reads the same
+   window: no double fold, no dropped row. The commit refuses if the stored watermark moved (a
+   second writer).
+
+Bounded: a step stops starting new windows after 30 s, every chronicle statement has a 30 s
+`statement_timeout`, and the node gives up after 120 s (`chronicle_failed`, retried next step).
+
+Reducer state lives in its own table, never in the LangGraph checkpoint (it reaches ~1.2 MB at a
+busy midday). A chronicle failure is a `chronicle_failed` warning on the step; `regulate` is
+unaffected. First boot (no stored state) starts at local midnight `TEMPORAL_SELF_BACKFILL_DAYS` ago
+(1: yesterday is closed on the first step). A stored state that no longer validates is reported
+and that whole local day is re-folded from its midnight (arc ids are deterministic).
+
+Routes (all read Postgres): `GET /temporal-self/frame` (current-day `TemporalSelfFrameV1`),
+`/temporal-self/day/{day_id}` (closed day, or 404), `/temporal-self/arcs?day_id=&kind=`,
+`/temporal-self/threads` (concern loops raised in conversation with no verdict yet),
+`/temporal-self/cursors` (per-source last folded row, the read watermark and its lag, late rows in
+the last 24 h; a watermark more than `READ_LAG + 10 ticks` behind is named in `warnings`).
+
+Retention every 6 h: `temporal_self_event` 30 days (this includes the regulate node's
+`arousal_transition` rows), closed arcs 90 days, days 365 days
+(`TEMPORAL_SELF_{EVENT,ARC,DAY}_RETENTION_DAYS`).
+
+Tables: `services/orion-sql-db/manual_migration_temporal_self_v1.sql` (hand-applied BEFORE
+deploy). Kill switch: `TEMPORAL_SELF_CHRONICLE_ENABLED=false`. Health: `/health` ->
+`temporal_self_chronicle`. Eval: `evals/temporal_self_live_replay.py` runs this code path over the
+10-09 fixture on a disposable Postgres (`--source-dsn` reads real tables read-only instead).
+
 ## Deploy order
 
 Stage 4.5 is a cutover: follow `docs/runbooks/2026-09-25-gpu-pool-stage4-cutover.md` exactly

@@ -19,11 +19,26 @@ No feeling is asserted; the field is called ``body``.
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta
 from typing import Any, Iterable, Mapping
 
-from orion.schemas.temporal_self import ArcBodySummaryV1, TemporalSelfEventV1
+from orion.schemas.temporal_self import ArcBodySummaryV1, TemporalSelfArcV1, TemporalSelfEventV1
 
 Row = Mapping[str, Any]
+
+# Reverie chains (~170 a day with content) are seconds long and not foreground: no body read.
+NO_BODY_KINDS = frozenset({"reverie"})
+POINT_ARC_PAD = timedelta(seconds=30)
+
+
+def body_window(arc: TemporalSelfArcV1) -> tuple[datetime, datetime]:
+    """The closed interval whose sensor rows describe ``arc``: began_at .. ended_at (or
+    last_seen_at). A point arc (zero span) reads the minute around it. The patch-2 eval and
+    the patch-3 driver both use this, so live and replayed body numbers agree."""
+    b0, b1 = arc.began_at, arc.ended_at or arc.last_seen_at
+    if b1 <= b0:
+        b0, b1 = b0 - POINT_ARC_PAD, b1 + POINT_ARC_PAD
+    return b0, b1
 
 
 def _f(value: Any) -> float | None:

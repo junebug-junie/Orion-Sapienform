@@ -3,19 +3,26 @@ order 3 "R2/R3 core").
 
 One invocation per (coalesced) event on the day's thread ``temporal_self:orion:<local date>``:
 
-    ingest -> regulate -> done
+    ingest -> regulate -> chronicle -> done
 
 * regulate: reads E1/S1/S2 (``deps.read_inputs``), folds them through the pure, I/O-free
   ``orion.regulation.arousal.classify_arousal`` with the previous reading carried by the
   checkpoint (hysteresis lives there), embeds the latest drive readings verbatim, projects the
   ``RegulationStateV1`` to Redis, and records one ``arousal_transition`` event on a level change.
 
-Patch 3 adds the Temporal Self chronology nodes to this same thread. No LLM, no GPU lease.
-Nothing reads arousal yet (spec order 6 wires the dials, one PR per reader).
+* chronicle (patch 3): runs the pure chronology reducer (``orion.temporal_self``) live through
+  ``deps.chronicle`` (``app.temporal_self_chronicle.Chronicler``): reads every bound source up to
+  ``now - TEMPORAL_SELF_READ_LAG_SEC``, folds, and commits arcs / closed days / frame / cursors /
+  reducer state in one transaction per window. The reducer's state lives in its own table, never
+  in this checkpoint (it reaches ~1.2 MB); the checkpoint keeps a one-line summary. A chronicle
+  failure is a warning on this step and never touches the regulation reading.
+
+No LLM, no GPU lease. Nothing reads arousal or the chronology yet (spec order 6 and patch 4).
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -34,7 +41,7 @@ from orion.schemas.regulation import (
 
 logger = logging.getLogger("orion-durable-runs.temporal_self_graph")
 
-NODES = ("ingest", "regulate", "done")
+NODES = ("ingest", "regulate", "chronicle", "done")
 
 
 class TemporalSelfGraphState(TypedDict, total=False):
@@ -47,6 +54,7 @@ class TemporalSelfGraphState(TypedDict, total=False):
     last_juniper_turn_at: Optional[str]   # newest Juniper turn seen on the bus (ISO)
     transition: Optional[dict]   # {"from", "to"} when this step changed the level (transient)
     warnings: list
+    chronicle: Optional[dict]    # Chronicler.step() summary: watermark, lag, windows, error
 
 
 @dataclass
@@ -62,6 +70,12 @@ class TemporalSelfDeps:
     gpu_sustain_sec: float = 300.0
     clear_sec: float = 600.0
     max_prev_gap_sec: float = 360.0
+    # Patch 3: one chronology step (``Chronicler.step``); None = TEMPORAL_SELF_CHRONICLE_ENABLED off.
+    chronicle: Optional[Callable[[], Awaitable[dict]]] = None
+    # Hard ceiling on one chronicle call. The chronicler itself stops starting windows after 30 s
+    # and every statement has a 30 s timeout; this catches anything else (review finding: a hung
+    # read would otherwise hold every queued tick and chat turn, and the regulate checkpoint).
+    chronicle_timeout_sec: float = 120.0
 
 
 def _dt(v: Any) -> Optional[datetime]:
@@ -141,14 +155,31 @@ def build_temporal_self_graph(deps: TemporalSelfDeps, checkpointer: Any):
         return {"regulation": model.model_dump(mode="json"), "last_inputs": inputs.model_dump(mode="json"),
                 "transition": transition, "warnings": model.warnings}
 
+    async def chronicle(state: TemporalSelfGraphState) -> dict:
+        if deps.chronicle is None:
+            return {"chronicle": None}
+        try:
+            summary = await asyncio.wait_for(deps.chronicle(), timeout=deps.chronicle_timeout_sec)
+        except asyncio.TimeoutError:
+            logger.warning("temporal_self_chronicle_node_timeout sec=%s", deps.chronicle_timeout_sec)
+            summary = {"error": f"timeout after {deps.chronicle_timeout_sec:.0f} s"}
+        except Exception as exc:  # noqa: BLE001 - the chronology must never break regulation
+            logger.warning("temporal_self_chronicle_node_failed", exc_info=True)
+            summary = {"error": f"{type(exc).__name__}: {str(exc)[:300]}"}
+        warnings = list(state.get("warnings") or [])
+        if summary.get("error"):
+            warnings.append("chronicle_failed")
+        return {"chronicle": summary, "warnings": warnings}
+
     async def done(state: TemporalSelfGraphState) -> dict:
         return {}
 
     g = StateGraph(TemporalSelfGraphState)
-    for name, fn in (("ingest", ingest), ("regulate", regulate), ("done", done)):
+    for name, fn in (("ingest", ingest), ("regulate", regulate), ("chronicle", chronicle), ("done", done)):
         g.add_node(name, fn)
     g.add_edge(START, "ingest")
     g.add_edge("ingest", "regulate")
-    g.add_edge("regulate", "done")
+    g.add_edge("regulate", "chronicle")
+    g.add_edge("chronicle", "done")
     g.add_edge("done", END)
     return g.compile(checkpointer=checkpointer)

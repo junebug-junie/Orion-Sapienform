@@ -261,11 +261,14 @@ def test_dynamics_tick_against_falkor_routed_store(monkeypatch) -> None:
     assert new_pressure != seed_pressure, "expected the tick to actually seed pressure, not no-op"
     assert new_pressure > 0.0
 
-    write_calls = _write_calls(client)
+    # The tick persists through its targeted write (MATCH + named SETs,
+    # compare-and-set on activation), never a full-node MERGE (2026-10-11).
+    write_calls = [(c, p) for c, p in client.calls if "applied_node_id" in c]
     assert write_calls, "expected the dynamics tick to durably persist the pressure update"
     cypher, params = write_calls[-1]
     assert "n.dynamic_pressure = $dynamic_pressure" in cypher
-    assert "payload_json" not in cypher.replace("REMOVE n.payload_json", "")
+    assert "MERGE" not in cypher and "observed_at" not in cypher
+    assert "payload_json" not in cypher
     assert params is not None
     assert "payload_json" not in params
     assert params["dynamic_pressure"] == pytest.approx(new_pressure)

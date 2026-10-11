@@ -106,11 +106,15 @@ def test_tick_seeds_pressure_from_prediction_error_through_routed_falkor_store()
     assert node is not None
     assert node.metadata.get("dynamic_pressure") == pytest.approx(round(update.new_pressure, 6))
 
-    write_calls = [(c, p) for c, p in client.calls if "MERGE (n:SubstrateNode" in c]
+    write_calls = [(c, p) for c, p in client.calls if "applied_node_id" in c]
     assert write_calls, "expected dynamics tick to durably persist the pressure update"
     cypher, params = write_calls[-1]
     assert "n.dynamic_pressure = $dynamic_pressure" in cypher
-    assert "payload_json" not in cypher.replace("REMOVE n.payload_json", "")
+    # Targeted write: never MERGE (no resurrecting a deleted node), never SET
+    # a property the tick doesn't own (2026-10-11 lost-update fix).
+    assert "MERGE" not in cypher
+    assert "observed_at" not in cypher and "label" not in cypher
+    assert "payload_json" not in cypher
     assert params is not None
     assert "payload_json" not in params
     assert params["dynamic_pressure"] == pytest.approx(round(update.new_pressure, 6))
@@ -146,14 +150,19 @@ def test_dynamic_pressure_persists_through_native_properties_across_process_rest
     assert tick1.pressure_updates
     tick1_pressure = round(tick1.pressure_updates[0].new_pressure, 6)
 
-    write_calls = [(c, p) for c, p in client.calls if "MERGE (n:SubstrateNode" in c]
+    write_calls = [(c, p) for c, p in client.calls if "applied_node_id" in c]
     assert write_calls
-    _, durable_params = write_calls[-1]
-    assert durable_params["dynamic_pressure"] == pytest.approx(tick1_pressure)
+    _, write_params = write_calls[-1]
+    assert write_params["dynamic_pressure"] == pytest.approx(tick1_pressure)
 
     # "Process restart": a brand-new client/store/routed-store/engine, hydrated
-    # only from the row tick 1 actually wrote durably -- no shared in-process
-    # cache with the first store at all.
+    # only from the durable row as tick 1 left it -- the original row with
+    # tick 1's targeted SET applied on top (it SETs named properties only) --
+    # no shared in-process cache with the first store at all.
+    durable_params = dict(row)
+    durable_params.update(
+        {k: v for k, v in write_params.items() if k in row or k == "activation_decayed_at"}
+    )
     restart_client = RecordingFalkorClient(hydrate_node_rows=[durable_params])
     restarted_falkor_store = FalkorSubstrateStore(
         FalkorSubstrateStoreConfig(uri="redis://localhost:6379", graph_name="orion_substrate"),

@@ -12,6 +12,7 @@ from orion.core.schemas.cognitive_substrate import BaseSubstrateNodeV1, Substrat
 from orion.substrate.store import (
     InMemorySubstrateGraphStore,
     MaterializedSubstrateGraphState,
+    NodeDynamicsWriteV1,
     SubstrateGraphStore,
     SubstrateNeighborhoodSliceV1,
     SubstrateQueryResultV1,
@@ -33,6 +34,7 @@ class RoutedSubstrateGraphStore:
         self._primary = primary
         self._shadow = shadow
         self._workload = workload
+        self._warned_shadow_no_dynamics = False
 
     def get_node_by_id(self, node_id: str) -> BaseSubstrateNodeV1 | None:
         return self._primary.get_node_by_id(node_id)
@@ -60,6 +62,28 @@ class RoutedSubstrateGraphStore:
         self._shadow_write(
             "upsert_node", identity_key=identity_key, node=node, skip_metadata_keys=skip_metadata_keys
         )
+
+    @property
+    def supports_node_dynamics_write(self) -> bool:
+        return callable(getattr(type(self._primary), "update_node_dynamics", None))
+
+    def update_node_dynamics(self, write: NodeDynamicsWriteV1) -> bool:
+        """Primary's targeted dynamics write (see NodeDynamicsWriteV1); the
+        shadow gets it only if it supports the targeted path too -- never a
+        full-node fallback, which is the lost-update this method replaces."""
+        applied = self._primary.update_node_dynamics(write)  # type: ignore[attr-defined]
+        if self._shadow is not None:
+            if callable(getattr(type(self._shadow), "update_node_dynamics", None)):
+                self._shadow_write("update_node_dynamics", write=write)
+            elif not self._warned_shadow_no_dynamics:
+                self._warned_shadow_no_dynamics = True
+                logger.warning(
+                    "substrate_route_shadow_skips_dynamics workload=%s shadow=%s "
+                    "(no targeted dynamics write; shadow will not receive decay)",
+                    self._workload,
+                    type(self._shadow).__name__,
+                )
+        return applied
 
     def upsert_edge(self, *, identity_key: str, edge: SubstrateEdgeV1) -> None:
         self._primary.upsert_edge(identity_key=identity_key, edge=edge)

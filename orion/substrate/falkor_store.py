@@ -56,8 +56,11 @@ from orion.substrate.store import (
     CompleteScanReceipt,
     InMemorySubstrateGraphStore,
     MaterializedSubstrateGraphState,
+    ACTIVATION_CAS_TOLERANCE,
+    NodeDynamicsWriteV1,
     SubstrateNeighborhoodSliceV1,
     SubstrateQueryResultV1,
+    apply_node_dynamics_write,
 )
 from orion.substrate.graphdb_store import _resolve_snapshot_force_refresh_ceiling_sec
 
@@ -570,6 +573,9 @@ class FalkorSubstrateStore:
                 for kind, identity_key, obj, skip_keys in journal:
                     if kind == "node":
                         self._apply_node_to_cache(fresh, identity_key, obj, skip_keys)
+                    elif kind == "dynamics":
+                        write, applied = obj
+                        self._apply_dynamics_to_cache(fresh, write, applied)
                     elif all(fresh.get_node_by_id(end.node_id) is not None
                              for end in (obj.source, obj.target)):
                         fresh.upsert_edge(identity_key=identity_key, edge=obj)
@@ -916,6 +922,117 @@ class FalkorSubstrateStore:
             if self._scan_journal is not None:
                 self._scan_journal.append(("node", identity_key, node, skip_metadata_keys))
             self._write_generation += 1
+
+    @staticmethod
+    def _apply_dynamics_to_cache(
+        cache: InMemorySubstrateGraphStore, write: NodeDynamicsWriteV1, applied: bool
+    ) -> None:
+        """Mirror a durable dynamics write onto a cache: the pressure group
+        always, the activation group only if the durable compare-and-set
+        applied. The cache's own CAS is not consulted -- the durable result is
+        the truth."""
+        existing = cache.get_node_by_id(write.node_id)
+        if existing is None:
+            return
+        cache.upsert_node(
+            identity_key=cache.get_identity_key_by_node_id(write.node_id),
+            node=apply_node_dynamics_write(
+                existing,
+                write,
+                include_activation=applied,
+                # Match what the graph actually stores: pressure/dormancy are
+                # concept-only native properties.
+                include_concept_only=write.node_kind == "concept",
+            ),
+        )
+
+    def update_node_dynamics(self, write: NodeDynamicsWriteV1) -> bool:
+        """Targeted write of only SubstrateDynamicsEngine.tick()'s own fields.
+
+        Replaces the tick's old full-node ``upsert_node`` re-persist, which
+        SET every property from the tick's start-of-tick snapshot and so
+        reverted any concurrent write to a property it doesn't own (confirmed
+        live 2026-10-11: 238 corrected ``observed_at`` values reverted within
+        two minutes, PR #2608). Here:
+
+        - ``MATCH``, never ``MERGE``: a node deleted since the tick read it
+          stays deleted.
+        - Only named properties are SET; observed_at, label, provenance and
+          every foreign property are never in the statement.
+        - The activation group (activation, recency_score,
+          activation_decayed_at, dormancy) is compare-and-set on the
+          activation and stamp the tick read, in the same statement, so a
+          fresh activation written meanwhile is not overwritten by a decayed
+          stale one. Pressure is written regardless (tick-owned, not derived
+          from the node's stored activation).
+
+        Returns whether the activation group applied.
+        """
+        params: dict[str, Any] = {
+            "node_id": write.node_id,
+            "expected_activation": float(write.expected_activation),
+            "activation_tolerance": ACTIVATION_CAS_TOLERANCE,
+            "expected_decay_stamp": write.expected_decay_stamp,
+            "activation": float(write.activation),
+            "recency_score": float(write.recency_score),
+            ACTIVATION_DECAYED_AT_KEY: write.activation_decayed_at,
+        }
+        # Pressure/dormancy are native properties on concept nodes only (the
+        # codec's DYNAMICS_METADATA_KEYS); other kinds never stored them, so
+        # don't start now.
+        is_concept = write.node_kind == "concept"
+        pressure_set = ""
+        if is_concept and write.dynamic_pressure is not None:
+            params["dynamic_pressure"] = float(write.dynamic_pressure)
+            params["dynamic_pressure_reason"] = write.dynamic_pressure_reason
+            pressure_set = (
+                "SET n.dynamic_pressure = $dynamic_pressure, "
+                "n.dynamic_pressure_reason = $dynamic_pressure_reason WITH n "
+            )
+        activation_assignments = [
+            "n.activation = $activation",
+            "n.recency_score = $recency_score",
+            f"n.{ACTIVATION_DECAYED_AT_KEY} = ${ACTIVATION_DECAYED_AT_KEY}",
+        ]
+        if is_concept and write.dormant is not None:
+            params["dormant"] = bool(write.dormant)
+            params["dormancy_updated_at"] = write.dormancy_updated_at
+            activation_assignments += [
+                "n.dormant = $dormant",
+                "n.dormancy_updated_at = $dormancy_updated_at",
+            ]
+        cypher = (
+            "MATCH (n:SubstrateNode {node_id: $node_id}) "
+            f"{pressure_set}"
+            # Tolerance, not equality: FalkorDB stores the full double but
+            # returns ~15 significant digits, so the value the tick read back
+            # (hydrate) never equals the stored one exactly and an equality
+            # CAS would miss on every node forever, freezing decay. Verified
+            # live: 0.7127189745122715 stored, 0.712718974512272 returned.
+            # 1e-12 is far above that rounding (~1e-16) and far below any real
+            # concurrent change (one 30 s decay step on a 30-day half-life is
+            # ~8e-6 relative). coalesce: hydrate decodes a missing activation
+            # as 0.0 (falkor_codec).
+            "WHERE abs(coalesce(n.activation, 0.0) - $expected_activation) <= $activation_tolerance "
+            f"AND ((n.{ACTIVATION_DECAYED_AT_KEY} IS NULL AND $expected_decay_stamp IS NULL) "
+            f"OR n.{ACTIVATION_DECAYED_AT_KEY} = $expected_decay_stamp) "
+            f"SET {', '.join(activation_assignments)} "
+            "RETURN n.node_id AS applied_node_id"
+        )
+        try:
+            rows = _normalize_rows(self._client.graph_query(cypher, params))
+        except Exception as exc:
+            logger.error("falkor_substrate_update_node_dynamics_failed node_id=%s error=%s", write.node_id, exc)
+            raise
+        applied = any(row.get("applied_node_id") == write.node_id for row in rows)
+        with self._cache_lock:
+            self._apply_dynamics_to_cache(self._cache, write, applied)
+            if self._scan_journal is not None:
+                self._scan_journal.append(("dynamics", None, (write, applied), None))
+            # Bumped on a miss too: the cache disagreed with the graph, so the
+            # next snapshot must re-read it rather than decay the stale copy.
+            self._write_generation += 1
+        return applied
 
     def upsert_edge(self, *, identity_key: str, edge: SubstrateEdgeV1) -> None:
         edge = _with_sanitized_metadata(edge)

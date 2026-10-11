@@ -50,6 +50,12 @@ class RecordingFalkorClient:
             rows = self._hydrate_node_rows
         elif "RETURN e.edge_id AS edge_id" in cypher:
             rows = self._hydrate_edge_rows
+        elif "RETURN n.node_id AS applied_node_id" in cypher:
+            # A targeted dynamics write (FalkorSubstrateStore.
+            # update_node_dynamics): the recording double holds no graph to
+            # compare against, so it reports the compare-and-set as applied.
+            # A test exercising a miss scripts its own client.
+            return [{"applied_node_id": (params or {}).get("node_id")}]
         else:
             return []
         if params is not None and "after_id" in params:

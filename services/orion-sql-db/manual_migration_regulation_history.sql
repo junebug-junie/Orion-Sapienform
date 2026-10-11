@@ -1,3 +1,4 @@
+-- ORION-MIGRATION-REQUIRED-BY: orion-dream, orion-sql-writer
 -- Observation-only history. Apply before restarting dream / sql-writer.
 -- No existing rows or tables change. Re-running is safe.
 BEGIN;

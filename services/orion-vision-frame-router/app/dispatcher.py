@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import time
+import urllib.error
+import urllib.request
 import uuid
 from typing import TYPE_CHECKING
 
@@ -40,6 +43,7 @@ class FrameDispatcher:
         self.metrics = metrics
         self.bus = bus
         self._state_lock = asyncio.Lock()
+        self._background: set[asyncio.Task] = set()
 
     async def handle_frame_envelope(self, env: BaseEnvelope) -> None:
         try:
@@ -133,45 +137,100 @@ class FrameDispatcher:
             now = time.time()
             if self.policy.decide_identity(decision, camera_id=camera_id, state=self.state, now=now):
                 identity_task = self.policy.build_identity_task_request(frame, env, decision)
-                identity_corr = str(uuid.uuid4())
-                identity_reply_to = f"{self.settings.CHANNEL_REPLY_PREFIX}:{identity_corr}"
-                identity_env = make_secondary_task_envelope(
-                    frame_env=env,
-                    frame=frame,
-                    task=identity_task,
-                    service_name=self.settings.SERVICE_NAME,
-                    service_version=self.settings.SERVICE_VERSION,
-                    reply_to=identity_reply_to,
-                    correlation_id=identity_corr,
-                )
-                if not self.settings.DRY_RUN and self.bus:
-                    await self.bus.publish(self.settings.CHANNEL_HOST_INTAKE, identity_env)
-                self.state.mark_dispatched(
-                    correlation_id=identity_corr,
-                    camera_id=frame.camera_id or "unknown",
-                    image_path=frame.image_path or "",
-                    task_type=identity_task.task_type,
-                    reply_to=identity_reply_to,
-                    now=now,
-                    frame_ts=frame.frame_ts,
-                    stream_id=frame.stream_id,
-                    # is_primary=False: does not consume the primary tier's
-                    # per-camera inflight slot or re-pace its dispatch
-                    # clock -- see mark_dispatched's own docstring for the
-                    # real bug this prevents (three review passes found it
-                    # independently, 2026-08-26).
-                    is_primary=False,
-                )
-                self.state.camera(camera_id).last_identity_dispatch_ts = now
-                self.metrics.record_identity_dispatch()
-                if organ_tasks is not None:
-                    organ_tasks.record_dispatch(organ_stream, identity=True)
-                logger.info(
-                    "[ROUTER] identity_dispatch camera_id={} stream_id={} corr={}",
-                    camera_id,
-                    frame.stream_id,
-                    identity_corr,
-                )
+                cam = self.state.camera(camera_id)
+                cam.last_identity_dispatch_ts = now
+                still_url = str(decision.identity_dispatch_cfg.get("still_url") or "").strip()
+                if still_url and not self.settings.DRY_RUN:
+                    # The still takes 2-5 s to grab, so it runs off this handler (which holds the
+                    # state lock for every camera); decide_identity skips this camera meanwhile.
+                    cam.identity_still_pending = True
+                    timeout = float(decision.identity_dispatch_cfg.get("still_timeout_sec", 10.0))
+                    job = asyncio.create_task(
+                        self._identity_with_still(
+                            frame, env, identity_task, camera_id, organ_tasks, organ_stream, still_url, timeout
+                        )
+                    )
+                    self._background.add(job)
+                    job.add_done_callback(self._background.discard)
+                else:
+                    await self._publish_identity(frame, env, identity_task, camera_id, organ_tasks, organ_stream)
+
+    async def _identity_with_still(
+        self, frame, env, identity_task, camera_id, organ_tasks, organ_stream, still_url: str, timeout: float
+    ) -> None:
+        """Swap the substream frame for a full-resolution still from the camera's capture service
+        (orion-vision-edge POST /still) before the face check. A 640x480 frame leaves a face at
+        the desk about 25 px wide; the face model works from 160 px. Any failure falls back to
+        the substream frame, so a broken still never costs the face check itself."""
+        request = dict(identity_task.request)
+        meta = dict(identity_task.meta or {})
+        try:
+            still = await asyncio.to_thread(request_still, still_url, timeout)
+            request["image_path"] = still["image_path"]
+            request.pop("percept_sha256", None)  # the still is a different image than the frame's hash
+            request["image_source"] = "hires_still"
+            meta["still_grab_ms"] = still.get("grab_ms")
+            meta["still_size"] = [still.get("width"), still.get("height")]
+            meta["still_frame_ts"] = still.get("frame_ts")   # frame_ts stays the triggering frame's
+            self.metrics.identity_still_total += 1
+        except Exception as exc:  # noqa: BLE001
+            request["image_source"] = "stream_frame"
+            meta["still_error"] = str(exc) if isinstance(exc, StillError) else type(exc).__name__
+            self.metrics.identity_still_fallback_total += 1
+            logger.warning("[ROUTER] still_fallback camera_id={} error={}", camera_id, meta["still_error"])
+        task = identity_task.model_copy(update={"request": request, "meta": meta})
+        # max_inflight_total was checked when the check was decided, 2-10 s ago; at most one still
+        # is pending per camera, so this publish can overshoot the cap by one per camera.
+        async with self._state_lock:
+            try:
+                await self._publish_identity(frame, env, task, camera_id, organ_tasks, organ_stream)
+            except Exception as exc:  # noqa: BLE001 -- a background task has no caller to raise to
+                self.metrics.last_error = f"identity_still_publish_error: {exc}"
+            finally:
+                self.state.camera(camera_id).identity_still_pending = False
+
+    async def _publish_identity(self, frame, env, identity_task, camera_id, organ_tasks, organ_stream) -> None:
+        """Publish the identity_face task and book it. Caller holds the state lock."""
+        now = time.time()
+        identity_corr = str(uuid.uuid4())
+        identity_reply_to = f"{self.settings.CHANNEL_REPLY_PREFIX}:{identity_corr}"
+        identity_env = make_secondary_task_envelope(
+            frame_env=env,
+            frame=frame,
+            task=identity_task,
+            service_name=self.settings.SERVICE_NAME,
+            service_version=self.settings.SERVICE_VERSION,
+            reply_to=identity_reply_to,
+            correlation_id=identity_corr,
+        )
+        if not self.settings.DRY_RUN and self.bus:
+            await self.bus.publish(self.settings.CHANNEL_HOST_INTAKE, identity_env)
+        self.state.mark_dispatched(
+            correlation_id=identity_corr,
+            camera_id=frame.camera_id or "unknown",
+            image_path=str(identity_task.request.get("image_path") or frame.image_path or ""),
+            task_type=identity_task.task_type,
+            reply_to=identity_reply_to,
+            now=now,
+            frame_ts=frame.frame_ts,
+            stream_id=frame.stream_id,
+            # is_primary=False: does not consume the primary tier's
+            # per-camera inflight slot or re-pace its dispatch
+            # clock -- see mark_dispatched's own docstring for the
+            # real bug this prevents (three review passes found it
+            # independently, 2026-08-26).
+            is_primary=False,
+        )
+        self.metrics.record_identity_dispatch()
+        if organ_tasks is not None:
+            organ_tasks.record_dispatch(organ_stream, identity=True)
+        logger.info(
+            "[ROUTER] identity_dispatch camera_id={} stream_id={} corr={} image_source={}",
+            camera_id,
+            frame.stream_id,
+            identity_corr,
+            identity_task.request.get("image_source", "stream_frame"),
+        )
 
     async def handle_reply_envelope(self, env: BaseEnvelope) -> None:
         try:
@@ -267,3 +326,24 @@ def _organ_reply_ok(task, result: VisionTaskResultPayload) -> None:
         caption_requested=task.want_caption,
         caption_present=bool(caption is not None and str(caption.text or "").strip()),
     )
+
+
+class StillError(RuntimeError):
+    """The capture service answered but gave no still (its own error code)."""
+
+
+def request_still(url: str, timeout: float) -> dict:
+    """POST to orion-vision-edge's /still; returns its JSON (image_path, width, height, grab_ms)."""
+    req = urllib.request.Request(url, data=b"", method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            body = json.loads(resp.read().decode("utf-8") or "{}")
+    except urllib.error.HTTPError as exc:
+        try:
+            code = json.loads(exc.read().decode("utf-8") or "{}").get("error")
+        except Exception:  # noqa: BLE001
+            code = None
+        raise StillError(code or f"http_{exc.code}") from exc
+    if not body.get("ok") or not body.get("image_path"):
+        raise StillError(str(body.get("error") or "no_image_path"))
+    return body

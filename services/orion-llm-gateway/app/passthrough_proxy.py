@@ -38,6 +38,8 @@ from .pool_placement import (
     LeaseStreamingResponse,
     PoolLease,
     busy_at_grant,
+    granted_backend,
+    granted_model,
     class_max_ctx,
     pool_node,
     mark_revoked,
@@ -278,10 +280,20 @@ async def proxy_on_pool(
         watch = asyncio.ensure_future(wait_lease_revoked(lease))
         stream_owns_lease = False
         try:
+            dispatch_body = dict(forward_body)
+            if granted_backend(lease.grant) == "vllm":
+                if anthropic:
+                    report.finish("unsupported_backend_protocol")
+                    await handle.release()
+                    return JSONResponse(error_body(
+                        "unsupported_backend_protocol",
+                        "This vLLM route supports /v1/chat/completions; Anthropic Messages is not enabled",
+                    ), status_code=400)
+                dispatch_body["model"] = granted_model(lease.grant)
             if stream:
                 client = httpx.AsyncClient(timeout=timeout)
                 try:
-                    upstream_request = client.build_request("POST", upstream_url, headers=headers, json=forward_body)
+                    upstream_request = client.build_request("POST", upstream_url, headers=headers, json=dispatch_body)
                     upstream = await _race(client.send(upstream_request, stream=True), watch)
                 except BaseException:
                     await client.aclose()
@@ -363,7 +375,7 @@ async def proxy_on_pool(
                 return streaming
 
             async with httpx.AsyncClient(timeout=timeout) as client:
-                upstream = await _race(client.post(upstream_url, headers=headers, json=forward_body), watch)
+                upstream = await _race(client.post(upstream_url, headers=headers, json=dispatch_body), watch)
             report.clock.replied()
             response = _plain_response(upstream.content, upstream)
             if upstream.status_code >= 400:

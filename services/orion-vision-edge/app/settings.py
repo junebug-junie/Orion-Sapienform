@@ -36,6 +36,9 @@ class Settings(BaseSettings):
     # SOURCE was published as camera_id.
     SOURCE: str = Field(..., alias="SOURCE")
     STREAM_ID: str = Field("cam0", alias="STREAM_ID")
+    # Full-resolution stream for on-demand stills before a face check (app/still.py). Same
+    # credential rule as SOURCE. Empty turns POST /still off (404).
+    HIRES_SOURCE: str = Field("", alias="HIRES_SOURCE")
 
     WIDTH: int = Field(640, alias="WIDTH")
     HEIGHT: int = Field(360, alias="HEIGHT")

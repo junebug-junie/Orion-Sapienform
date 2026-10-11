@@ -74,6 +74,12 @@ streams:
         # at the camera got exactly one face check. identity_face inference is 0.06-0.14 s on
         # cuda:0, so ~9 checks per short visit is cheap.
         min_seconds_between_dispatch: 5
+        # Face checks run on a full-resolution still (2560x1920), not the 640x480 substream frame
+        # (2026-10-11): at 640 px Juniper's face at the desk is ~25 px and her own frames scored
+        # 0.09-0.18 against each other. orion-vision-edge grabs it from the main stream in 2-5 s;
+        # any failure falls back to the substream frame. Remove still_url to go back.
+        still_url: http://orion-athena-vision-edge:7100/still
+        still_timeout_sec: 10
 
   carbon:
     enabled: true

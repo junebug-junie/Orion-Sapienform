@@ -2307,3 +2307,39 @@ profiles:
       Quality: hard depth test 19/20 vs Q4 20/20 (docs/2026-09-30-ternary-bonsai2-27b-1xv100-circe.md).
       Acceptance (design doc): turn_ok within 5 points of Q4 over >= 1 day or 30 turns, read a
       sample of curiosity findings by hand.
+
+  glm-5.3-flash-exl3-hecate:
+    display_name: "GLM 5.3 Flash EXL3 — Hecate staged, UNVERIFIED"
+    backend: vllm
+    task_type: chat
+    model_id: /models/GLM-5.3-Flash-EXL3
+    supports_tools: true
+    supports_embeddings: false
+    gpu:
+      num_gpus: 4
+      tensor_parallel_size: 4
+      device_ids: [0, 1, 2, 3]
+      max_model_len: 131072
+      max_batch_tokens: 4096
+      max_concurrent_requests: 1
+      gpu_memory_fraction: 0.92
+    vllm:
+      pool_discovery: true
+      served_model_name: glm-5.3-flash
+      dtype: half
+      kv_cache_dtype: fp8_e4m3
+      trust_remote_code: true
+      reasoning_parser: deepseek_r1
+      tool_call_parser: glm47
+      enable_auto_tool_choice: true
+      speculative_config:
+        method: mtp
+        num_speculative_tokens: 3
+        draft_sample_method: greedy
+      env:
+        VLLM_USE_V2_MODEL_RUNNER: "1"
+        VLLM_WORKER_MULTIPROC_METHOD: spawn
+        VLLM_MEMORY_PROFILER_ESTIMATE_CUDAGRAPHS: "0"
+    notes: >-
+      Staged only. Requires pinned 1Cat-vLLM SM70 EXL3 build, not the stock host image.
+      No active pool role selects this profile. See docs/runbooks/hecate-glm53-vllm.md.

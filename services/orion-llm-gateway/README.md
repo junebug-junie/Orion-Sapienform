@@ -407,3 +407,23 @@ Juniper's chat card is the GPU pool's `lent` flag on `gpu0` (Hub GPU pool panel 
 Until durable-runs reads pool state (stage 4), `GET /routes` still reports `chat-burst` as
 `operator_closed` (with `gate_open: false`) unless gpu0 is lent, and `agent-burst` as `up` only
 while the `agent-gpu2` swap seat is confirmed.
+
+### Staged vLLM roles
+
+Pool roles may declare `backend: vllm` (omitted means `llamacpp`). The gateway
+uses the **granted role**, including spill/retry, to choose the backend. For
+vLLM, `grant.model_file` carries the exact discovered `/v1/models` ID and
+replaces the route/request label in the upstream OpenAI body. The bus path
+also uses that ID; `chat_template_kwargs` is forwarded for vLLM as well.
+Existing llama.cpp requests retain their previous model-label behavior.
+
+OpenAI passthrough preserves streaming, tool payloads and the existing lease
+lifecycle. Anthropic passthrough refuses a vLLM grant with HTTP 400
+`unsupported_backend_protocol` and releases it. The pinned fork has an
+Anthropic endpoint, but Orion's integration with it has not been validated.
+The model-list backend is `mixed` when a route can be granted different backend
+types; it is not a promise that every role supports Anthropic.
+
+No active route has been switched. See
+[Hecate rollout](../../docs/runbooks/hecate-glm53-vllm.md) for candidate config,
+reader rollout order and acceptance gates.

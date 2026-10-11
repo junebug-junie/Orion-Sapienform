@@ -23,6 +23,15 @@ def _runner() -> VisionRunner:
     return VisionRunner(profiles=profiles, enabled_names=["identity_face"], cache_dir=tmp)
 
 
+def _mtcnn(faces, probs):
+    """Stand-in for facenet-pytorch MTCNN: detect() gives boxes + probs, extract() the aligned faces."""
+    m = MagicMock()
+    n = 0 if faces is None else faces.shape[0]
+    m.detect.return_value = ([[0.0, 0.0, 4.0, 4.0]] * n if n else None, probs)
+    m.extract.return_value = faces
+    return m
+
+
 def _image_path(tmp_path) -> str:
     p = tmp_path / "frame.jpg"
     Image.new("RGB", (8, 8)).save(p)
@@ -34,7 +43,7 @@ def test_run_identity_face_no_face_detected_returns_empty_candidates(monkeypatch
     profile = runner.profiles.get_profile("identity_face")
 
     fake_model = MagicMock()
-    fake_mtcnn = MagicMock(return_value=(None, [None]))
+    fake_mtcnn = _mtcnn(None, [None])
     monkeypatch.setattr(runner.models, "load_face_identity_models", lambda **kw: (fake_model, fake_mtcnn))
     monkeypatch.setattr(runner_module, "settings", MagicMock(
         MODEL_CACHE_DIR="/tmp", IDENTITY_ENROLLED_SUBJECT="juniper", IDENTITY_GALLERY_DIR=str(tmp_path)
@@ -53,7 +62,7 @@ def test_run_identity_face_gallery_not_enrolled_flags_warning_and_returns_unknow
 
     fake_face = torch.zeros((1, 3, 4, 4))
     fake_model = MagicMock(return_value=torch.zeros((1, 512)))
-    fake_mtcnn = MagicMock(return_value=(fake_face, [0.99]))
+    fake_mtcnn = _mtcnn(fake_face, [0.99])
     monkeypatch.setattr(runner.models, "load_face_identity_models", lambda **kw: (fake_model, fake_mtcnn))
     monkeypatch.setattr(runner_module, "settings", MagicMock(
         MODEL_CACHE_DIR="/tmp", IDENTITY_ENROLLED_SUBJECT="juniper", IDENTITY_GALLERY_DIR=str(tmp_path)
@@ -85,7 +94,7 @@ def test_run_identity_face_matches_enrolled_subject(monkeypatch, tmp_path):
     query_embedding = torch.tensor(gallery_vec).unsqueeze(0)  # identical -> similarity 1.0
     fake_face = torch.zeros((1, 3, 4, 4))
     fake_model = MagicMock(return_value=query_embedding)
-    fake_mtcnn = MagicMock(return_value=(fake_face, [0.99]))
+    fake_mtcnn = _mtcnn(fake_face, [0.99])
     monkeypatch.setattr(runner.models, "load_face_identity_models", lambda **kw: (fake_model, fake_mtcnn))
     monkeypatch.setattr(runner_module, "settings", MagicMock(
         MODEL_CACHE_DIR="/tmp", IDENTITY_ENROLLED_SUBJECT="juniper", IDENTITY_GALLERY_DIR=str(tmp_path)
@@ -108,7 +117,7 @@ def test_run_identity_face_caps_at_max_candidates(monkeypatch, tmp_path):
 
     fake_faces = torch.zeros((5, 3, 4, 4))
     fake_model = MagicMock(side_effect=lambda faces: torch.zeros((faces.shape[0], 512)))
-    fake_mtcnn = MagicMock(return_value=(fake_faces, [0.9, 0.8, 0.7, 0.6, 0.5]))
+    fake_mtcnn = _mtcnn(fake_faces, [0.9, 0.8, 0.7, 0.6, 0.5])
     monkeypatch.setattr(runner.models, "load_face_identity_models", lambda **kw: (fake_model, fake_mtcnn))
     monkeypatch.setattr(runner_module, "settings", MagicMock(
         MODEL_CACHE_DIR="/tmp", IDENTITY_ENROLLED_SUBJECT="juniper", IDENTITY_GALLERY_DIR=str(tmp_path)
@@ -134,7 +143,7 @@ def test_run_identity_face_keeps_highest_confidence_faces_not_first_n(monkeypatc
     fake_faces = torch.zeros((5, 3, 4, 4))
     fake_model = MagicMock(side_effect=lambda faces: torch.zeros((faces.shape[0], 512)))
     # Deliberately unsorted -- the two highest (0.95, 0.9) are NOT first.
-    fake_mtcnn = MagicMock(return_value=(fake_faces, [0.5, 0.95, 0.6, 0.9, 0.4]))
+    fake_mtcnn = _mtcnn(fake_faces, [0.5, 0.95, 0.6, 0.9, 0.4])
     monkeypatch.setattr(runner.models, "load_face_identity_models", lambda **kw: (fake_model, fake_mtcnn))
     monkeypatch.setattr(runner_module, "settings", MagicMock(
         MODEL_CACHE_DIR="/tmp", IDENTITY_ENROLLED_SUBJECT="juniper", IDENTITY_GALLERY_DIR=str(tmp_path)
@@ -156,7 +165,7 @@ def test_run_identity_face_never_returns_raw_embedding(monkeypatch, tmp_path):
 
     fake_face = torch.zeros((1, 3, 4, 4))
     fake_model = MagicMock(return_value=torch.rand((1, 512)))
-    fake_mtcnn = MagicMock(return_value=(fake_face, [0.99]))
+    fake_mtcnn = _mtcnn(fake_face, [0.99])
     monkeypatch.setattr(runner.models, "load_face_identity_models", lambda **kw: (fake_model, fake_mtcnn))
     monkeypatch.setattr(runner_module, "settings", MagicMock(
         MODEL_CACHE_DIR="/tmp", IDENTITY_ENROLLED_SUBJECT="juniper", IDENTITY_GALLERY_DIR=str(tmp_path)
@@ -188,15 +197,16 @@ def test_a_detected_face_keeps_its_frame_and_no_face_keeps_nothing(monkeypatch, 
     monkeypatch.setattr(runner_module, "settings", settings)
     monkeypatch.setattr(runner_module, "_FACE_FRAMES", None)
 
-    no_face = MagicMock(return_value=(None, [None]))
+    no_face = _mtcnn(None, [None])
     monkeypatch.setattr(runner.models, "load_face_identity_models", lambda **kw: (MagicMock(), no_face))
     runner._run_identity_face(profile, {"image_path": _image_path(tmp_path), "stream_id": "cam0"}, "cpu", [])
     assert not frames.exists() or not list(frames.rglob("*.jpg"))
 
-    face = MagicMock(return_value=(torch.zeros((1, 3, 4, 4)), [0.99]))
+    face = _mtcnn(torch.zeros((1, 3, 4, 4)), [0.99])
     monkeypatch.setattr(runner.models, "load_face_identity_models",
                         lambda **kw: (MagicMock(return_value=torch.zeros((1, 512))), face))
     warnings = []
     runner._run_identity_face(profile, {"image_path": _image_path(tmp_path), "stream_id": "cam0"}, "cpu", warnings)
-    saved = list(frames.rglob("*.jpg"))
-    assert len(saved) == 1 and saved[0].parts[-3] == "cam0" and not any("face_frame_save_failed" in w for w in warnings)
+    saved = sorted(frames.rglob("*.jpg"))
+    assert [p.name.endswith("_face0.jpg") for p in saved] == [False, True]
+    assert saved[0].parts[-3] == "cam0" and not any("face_frame_save_failed" in w for w in warnings)

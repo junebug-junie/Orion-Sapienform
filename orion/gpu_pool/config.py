@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any, Literal, get_args
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_validator, model_validator, model_serializer
 
 DEFAULT_PATH = Path(__file__).resolve().parents[2] / "config" / "gpu_pool.yaml"
 PRIORITIES = ("urgent", "interactive", "system", "background")
@@ -162,6 +162,7 @@ class SwapSpec(BaseModel):
 
 class RoleSpec(BaseModel):
     model_config = ConfigDict(extra="forbid")
+    backend: Literal["llamacpp", "vllm"] = "llamacpp"
     kind: Literal["llm", "service"]
     cards: list[str] = Field(min_length=1)
     owner: list[str] = Field(default_factory=list)
@@ -186,6 +187,14 @@ class RoleSpec(BaseModel):
     # Stage 5: roles that must never compute at the same time as this one (same card). Symmetric:
     # the scheduler places nothing on R while a lease is active on a role R lists or that lists R.
     serialize_with: list[str] = Field(default_factory=list)
+
+    @model_serializer(mode="wrap")
+    def _wire(self, handler):
+        data = handler(self)
+        # Existing pool snapshots and actuator digests must stay byte-compatible.
+        if self.backend == "llamacpp":
+            data.pop("backend", None)
+        return data
 
     @field_validator("owner", mode="before")
     @classmethod

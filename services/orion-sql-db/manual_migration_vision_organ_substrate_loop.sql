@@ -1,3 +1,4 @@
+-- ORION-MIGRATION-REQUIRED-BY: orion-substrate-runtime
 -- vision_organ substrate projection (apply before ENABLE_VISION_ORGAN_REDUCER=true on substrate-runtime)
 -- Apply: docker exec -i orion-athena-sql-db psql -U postgres -d conjourney < services/orion-sql-db/manual_migration_vision_organ_substrate_loop.sql
 --

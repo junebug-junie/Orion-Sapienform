@@ -13,6 +13,9 @@ class CameraState(BaseModel):
     # last_dispatch_ts would couple identity's cadence to whatever the
     # primary task's own min_seconds_between_tasks_per_camera happens to be.
     last_identity_dispatch_ts: float | None = None
+    # A full-resolution still is being fetched for this camera's next face check
+    # (dispatcher._identity_with_still); no second check starts until it is published.
+    identity_still_pending: bool = False
     inflight: set[str] = Field(default_factory=set)
     last_skip_reason: str | None = None
 

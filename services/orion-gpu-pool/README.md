@@ -429,3 +429,23 @@ times it took the lock and its worst wait / hold since the previous call (then r
 hold over 250 ms is also logged as `gpu_pool_slow_lock op=... phases={...}`, with time per phase
 (probe, live_leases, schedule, resume, start_thread, bus_publish, publish_state). On 2026-09-25 the
 phases were all database commits, stalled behind Postgres I/O from the substrate reconcile sweeps.
+
+### vLLM discovery (staged Hecate integration)
+
+An LLM role can set `backend: vllm`. Discovery checks `/health`, `/v1/models`
+and the Orion host middleware's `/orion/server-info`; all must succeed.
+It confirms the profile's served alias and loaded path, announcement host,
+public port and CUDA indices, and the engine's tensor-parallel size against
+all role cards. Pipeline/data parallelism beyond one is refused. Slot count
+and context size come from the initialized engine, never the desired profile.
+Vision remains unknown. A stale or mismatched declaration receives no grants.
+
+The existing `LlmWorkerAnnounceV1`, `DiscoveredRoleV1` and `GpuLeaseGrantV1`
+wire shapes remain unchanged. For vLLM only, `model_file` means the exact
+served-model ID; `model_path` remains the actual loaded engine path. Registry
+entries and bus kinds are unchanged; the announcement channel now also names
+the vLLM host as a producer. Default llama.cpp role serialization omits
+`backend`, preserving existing config snapshots and actuator digests.
+
+Existing readers reject unknown role fields: rebuild readers of pool config
+before **activating** a vLLM role. See the [Hecate runbook](../../docs/runbooks/hecate-glm53-vllm.md).

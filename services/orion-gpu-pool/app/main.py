@@ -74,9 +74,18 @@ def _reply(env: BaseEnvelope, kind: str, payload: Any) -> BaseEnvelope:
                         payload=payload.model_dump(mode="json"))
 
 
-async def _probe(client: httpx.AsyncClient, role: str, url: str, kind: str, health: str) -> Probe:
+async def _probe(client: httpx.AsyncClient, role: str, url: str, kind: str, health: str, backend: str = "llamacpp") -> Probe:
     now = datetime.now(timezone.utc)
     try:
+        if kind == "llm" and backend == "vllm":
+            health_response = await client.get(f"{url}/health")
+            health_response.raise_for_status()
+            models = await client.get(f"{url}/v1/models")
+            models.raise_for_status()
+            info = await client.get(f"{url}/orion/server-info")
+            info.raise_for_status()
+            return Probe(True, {"models": models.json(), "server_info": info.json()},
+                         checked_at=now, backend="vllm")
         if kind == "llm":
             r = await client.get(f"{url}/props")
             r.raise_for_status()
@@ -293,7 +302,7 @@ async def lifespan(app: FastAPI):
     client = httpx.AsyncClient(timeout=_settings.probe_timeout_sec)
 
     async def prober(role, url, kind, health):
-        return await _probe(client, role, url, kind, health)
+        return await _probe(client, role, url, kind, health, cfg.roles[role].backend)
 
     runtime = PoolRuntime(
         cfg=cfg, profiles=profiles, store=_store, graph=build_lease_graph(lambda: cfg, saver), bus=_bus,

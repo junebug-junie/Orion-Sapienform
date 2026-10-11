@@ -56,6 +56,7 @@ from orion.substrate.store import (
     CompleteScanReceipt,
     InMemorySubstrateGraphStore,
     MaterializedSubstrateGraphState,
+    ACTIVATION_CAS_TOLERANCE,
     NodeDynamicsWriteV1,
     SubstrateNeighborhoodSliceV1,
     SubstrateQueryResultV1,
@@ -935,7 +936,14 @@ class FalkorSubstrateStore:
             return
         cache.upsert_node(
             identity_key=cache.get_identity_key_by_node_id(write.node_id),
-            node=apply_node_dynamics_write(existing, write, include_activation=applied),
+            node=apply_node_dynamics_write(
+                existing,
+                write,
+                include_activation=applied,
+                # Match what the graph actually stores: pressure/dormancy are
+                # concept-only native properties.
+                include_concept_only=write.node_kind == "concept",
+            ),
         )
 
     def update_node_dynamics(self, write: NodeDynamicsWriteV1) -> bool:
@@ -963,6 +971,7 @@ class FalkorSubstrateStore:
         params: dict[str, Any] = {
             "node_id": write.node_id,
             "expected_activation": float(write.expected_activation),
+            "activation_tolerance": ACTIVATION_CAS_TOLERANCE,
             "expected_decay_stamp": write.expected_decay_stamp,
             "activation": float(write.activation),
             "recency_score": float(write.recency_score),
@@ -995,8 +1004,16 @@ class FalkorSubstrateStore:
         cypher = (
             "MATCH (n:SubstrateNode {node_id: $node_id}) "
             f"{pressure_set}"
-            # coalesce: hydrate decodes a missing activation as 0.0 (falkor_codec).
-            "WHERE coalesce(n.activation, 0.0) = $expected_activation "
+            # Tolerance, not equality: FalkorDB stores the full double but
+            # returns ~15 significant digits, so the value the tick read back
+            # (hydrate) never equals the stored one exactly and an equality
+            # CAS would miss on every node forever, freezing decay. Verified
+            # live: 0.7127189745122715 stored, 0.712718974512272 returned.
+            # 1e-12 is far above that rounding (~1e-16) and far below any real
+            # concurrent change (one 30 s decay step on a 30-day half-life is
+            # ~8e-6 relative). coalesce: hydrate decodes a missing activation
+            # as 0.0 (falkor_codec).
+            "WHERE abs(coalesce(n.activation, 0.0) - $expected_activation) <= $activation_tolerance "
             f"AND ((n.{ACTIVATION_DECAYED_AT_KEY} IS NULL AND $expected_decay_stamp IS NULL) "
             f"OR n.{ACTIVATION_DECAYED_AT_KEY} = $expected_decay_stamp) "
             f"SET {', '.join(activation_assignments)} "

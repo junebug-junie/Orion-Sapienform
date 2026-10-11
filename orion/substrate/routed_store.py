@@ -34,6 +34,7 @@ class RoutedSubstrateGraphStore:
         self._primary = primary
         self._shadow = shadow
         self._workload = workload
+        self._warned_shadow_no_dynamics = False
 
     def get_node_by_id(self, node_id: str) -> BaseSubstrateNodeV1 | None:
         return self._primary.get_node_by_id(node_id)
@@ -71,8 +72,17 @@ class RoutedSubstrateGraphStore:
         shadow gets it only if it supports the targeted path too -- never a
         full-node fallback, which is the lost-update this method replaces."""
         applied = self._primary.update_node_dynamics(write)  # type: ignore[attr-defined]
-        if self._shadow is not None and callable(getattr(type(self._shadow), "update_node_dynamics", None)):
-            self._shadow_write("update_node_dynamics", write=write)
+        if self._shadow is not None:
+            if callable(getattr(type(self._shadow), "update_node_dynamics", None)):
+                self._shadow_write("update_node_dynamics", write=write)
+            elif not self._warned_shadow_no_dynamics:
+                self._warned_shadow_no_dynamics = True
+                logger.warning(
+                    "substrate_route_shadow_skips_dynamics workload=%s shadow=%s "
+                    "(no targeted dynamics write; shadow will not receive decay)",
+                    self._workload,
+                    type(self._shadow).__name__,
+                )
         return applied
 
     def upsert_edge(self, *, identity_key: str, edge: SubstrateEdgeV1) -> None:

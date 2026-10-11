@@ -96,6 +96,13 @@ class NodeDynamicsWriteV1:
     dormancy_updated_at: str | None = None
 
 
+# Activation compare-and-set tolerance (absolute; activation is in [0, 1]).
+# FalkorDB returns doubles rounded to ~15 significant digits, so the value read
+# back never equals the stored one exactly; see FalkorSubstrateStore.
+# update_node_dynamics. Used by every store so they agree.
+ACTIVATION_CAS_TOLERANCE = 1e-12
+
+
 def encode_decay_stamp(raw: object) -> str | None:
     """The stored string form of an ``activation_decayed_at`` value (mirrors
     falkor_codec's encoding, kept here so the in-memory store compares the
@@ -108,7 +115,11 @@ def encode_decay_stamp(raw: object) -> str | None:
 
 
 def apply_node_dynamics_write(
-    node: BaseSubstrateNodeV1, write: NodeDynamicsWriteV1, *, include_activation: bool
+    node: BaseSubstrateNodeV1,
+    write: NodeDynamicsWriteV1,
+    *,
+    include_activation: bool,
+    include_concept_only: bool = True,
 ) -> BaseSubstrateNodeV1:
     """Return ``node`` with only the write's owned fields replaced. Every
     other field -- observed_at, label, provenance, foreign metadata -- is the
@@ -116,13 +127,13 @@ def apply_node_dynamics_write(
     from .activation import ACTIVATION_DECAYED_AT_KEY
 
     metadata = dict(node.metadata or {})
-    if write.dynamic_pressure is not None:
+    if include_concept_only and write.dynamic_pressure is not None:
         metadata["dynamic_pressure"] = write.dynamic_pressure
         metadata["dynamic_pressure_reason"] = write.dynamic_pressure_reason
     update: dict[str, Any] = {}
     if include_activation:
         metadata[ACTIVATION_DECAYED_AT_KEY] = write.activation_decayed_at
-        if write.dormant is not None:
+        if include_concept_only and write.dormant is not None:
             metadata["dormant"] = write.dormant
             metadata["dormancy_updated_at"] = write.dormancy_updated_at
         bundle = node.signals.activation.model_copy(
@@ -137,7 +148,7 @@ def node_dynamics_cas_matches(node: BaseSubstrateNodeV1, write: NodeDynamicsWrit
     from .activation import ACTIVATION_DECAYED_AT_KEY
 
     return (
-        node.signals.activation.activation == write.expected_activation
+        abs(node.signals.activation.activation - write.expected_activation) <= ACTIVATION_CAS_TOLERANCE
         and encode_decay_stamp((node.metadata or {}).get(ACTIVATION_DECAYED_AT_KEY)) == write.expected_decay_stamp
     )
 

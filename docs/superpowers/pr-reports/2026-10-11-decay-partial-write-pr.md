@@ -50,9 +50,10 @@ Other "decay" code checked, not affected:
 ## Tests run
 
 ```text
-ORION_TEST_FALKOR_URI=redis://localhost:6380 pytest orion/substrate/tests/test_dynamics_lost_update.py -> 7 passed (incl. real FalkorDB, throwaway graph)
+ORION_TEST_FALKOR_URI=redis://localhost:6380 pytest orion/substrate/tests/test_dynamics_lost_update.py -> 8 passed (incl. 2 real-FalkorDB tests on throwaway graphs)
+Reload test with tolerance forced to 0 -> fails (5 skips): catches the freeze
 Same two race tests with the targeted path disabled (old behavior) -> 2 failed (observed_at reverted): the tests catch the bug
-pytest orion/substrate/tests orion/substrate/evals orion/graph -> 1213 passed, 3 failed (test_felt_state_self_definition_lane.py, also fail on main)
+pytest orion/substrate/tests orion/substrate/evals orion/graph -> 1213 passed, 48 skipped, 3 failed (test_felt_state_self_definition_lane.py, also fail on main)
 services/orion-substrate-runtime tests -> same failure set as main (env-sensitive, pre-existing)
 tests/test_cognitive_substrate_phase4_dynamics.py -> 2 failures, identical on main
 orion-recall test_concept_region_collector, orion-hub test_world_pulse_read_assertion_links -> pass
@@ -81,7 +82,18 @@ No build in the worktree. Live verify after deploy (UNVERIFIED until then):
 
 ## Review findings fixed
 
-(filled after review)
+- Finding (critical): an equality CAS on activation can never match after a reload. FalkorDB stores the full double but returns ~15 significant digits (verified live: 0.7127189745122715 stored, 0.712718974512272 returned, `WHERE n.a = <read-back>` matches 0 rows). Every node would miss every tick, so decay would freeze, and each miss would force a full rescan.
+  - Fix: compare within an absolute tolerance of 1e-12 (`ACTIVATION_CAS_TOLERANCE`). Float rounding is about 1e-16; one 30 s decay step on a 30-day half-life is about 8e-6, so a real concurrent write is still detected. The stamp string is still matched exactly.
+  - Evidence: new `test_real_falkor_decay_keeps_moving_after_reload` (real FalkorDB, reloads before each of 3 ticks) passes; with tolerance forced to 0 it fails with `5 == 0` skips.
+- Finding (major): the live test seeded a 15-digit value that survives rounding, so it hid the bug.
+  - Fix: it now seeds real decay outputs; the reload test was added.
+- Finding (major): a durable NULL activation can never match.
+  - Fix: `coalesce(n.activation, 0.0)`.
+- Finding (minor): the cache wrote pressure/dormancy for non-concept nodes, which the graph never stores.
+  - Fix: the Falkor cache mirror gates those on concept.
+- Finding (minor): a shadow store without the targeted write silently stopped receiving decay.
+  - Fix: the routed store logs a one-time warning.
+- Finding (minor, not fixed, follow-up): `_write_prediction_error_node` still does a full-node upsert that carries forward the tick's pressure/dormancy from its cached copy, so it can revert the tick's fields. Listed under risks.
 
 ## Restart required
 

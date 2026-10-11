@@ -156,7 +156,7 @@ def test_falkor_targeted_write_sets_only_owned_properties_compare_and_set() -> N
     (cypher, params), = client.calls
     assert cypher.startswith("MATCH (n:SubstrateNode {node_id: $node_id})")
     assert "MERGE" not in cypher
-    assert "WHERE coalesce(n.activation, 0.0) = $expected_activation" in cypher
+    assert "WHERE abs(coalesce(n.activation, 0.0) - $expected_activation) <= $activation_tolerance" in cypher
     assert "n.activation_decayed_at = $expected_decay_stamp" in cypher
     for unowned in ("observed_at", "label", "provenance", "prediction_error", "identity_key"):
         assert unowned not in cypher
@@ -213,7 +213,7 @@ def test_real_falkor_tick_does_not_revert_concurrent_writes() -> None:
     seeder = FalkorSubstrateStore(cfg, hydrate=False)
     raw = seeder._client
     try:
-        seeder.upsert_node(identity_key="id:a", node=_concept("a", activation=0.123456789012345))
+        seeder.upsert_node(identity_key="id:a", node=_concept("a", activation=0.8 * 0.5 ** (600 / HL)))
         seeder.upsert_node(identity_key="id:b", node=_concept("b"))
         seeder.upsert_node(identity_key="id:c", node=_concept("c"))
         # c: a pre-stamp node (no activation_decayed_at property at all).
@@ -236,11 +236,40 @@ def test_real_falkor_tick_does_not_revert_concurrent_writes() -> None:
         )
         by_id = {r["id"]: r for r in rows}
         assert by_id["a"]["o"] == corrected and by_id["a"]["s"] == "keep"
-        assert by_id["a"]["act"] == pytest.approx(0.123456789012345 * 0.5 ** (600 / HL), abs=1e-15)
+        assert by_id["a"]["act"] == pytest.approx(0.8 * 0.5 ** (1200 / HL), abs=1e-12)
         assert by_id["b"]["act"] == 0.95 and by_id["b"]["st"] == fresh_stamp
         # c had no stamp property (IS NULL branch): decayed from observed_at.
         assert by_id["c"]["st"] == T0.isoformat()
         assert by_id["c"]["act"] == pytest.approx(0.8 * 0.5 ** (7200 / HL), abs=1e-12)
         assert result.activation_cas_skips == 1
+    finally:
+        redis.Redis.from_url(_LIVE_URI).execute_command("GRAPH.DELETE", graph)
+
+
+@pytest.mark.skipif(not _LIVE_URI, reason="ORION_TEST_FALKOR_URI not set")
+def test_real_falkor_decay_keeps_moving_after_reload() -> None:
+    """Review finding 2026-10-11: FalkorDB returns ~15 significant digits, so
+    an equality CAS on the read-back activation missed on every node after a
+    reload and froze decay. Seed real decay outputs (17 digits), reload, tick
+    three times: every tick must apply and the value must keep falling."""
+    import redis
+
+    graph = f"orion_test_decay_cas_{uuid.uuid4().hex[:10]}"
+    cfg = FalkorSubstrateStoreConfig(uri=_LIVE_URI, graph_name=graph, ensure_indexes=False)
+    try:
+        seeder = FalkorSubstrateStore(cfg, hydrate=False)
+        values = [0.8 * 0.5 ** (k / 7.0) for k in range(1, 6)]
+        for k, v in enumerate(values):
+            seeder.upsert_node(identity_key=f"id:r{k}", node=_concept(f"r{k}", activation=v))
+        prev = None
+        for t in range(1, 4):
+            store = FalkorSubstrateStore(cfg, hydrate=True)  # reload every tick
+            result = SubstrateDynamicsEngine(store=store).tick(now=T0 + timedelta(seconds=30 * t))
+            assert result.activation_cas_skips == 0
+            rows = seeder._client.graph_query("MATCH (n:SubstrateNode) RETURN n.node_id AS id, n.activation AS a")
+            now_vals = {r["id"]: r["a"] for r in rows}
+            if prev is not None:
+                assert all(now_vals[k] < prev[k] for k in now_vals)
+            prev = now_vals
     finally:
         redis.Redis.from_url(_LIVE_URI).execute_command("GRAPH.DELETE", graph)

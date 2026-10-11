@@ -1,5 +1,6 @@
 """orion-signal-gateway FastAPI entrypoint."""
 import logging
+import sys
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Any, Dict
@@ -14,6 +15,21 @@ logging.basicConfig(
     level=settings.LOG_LEVEL.upper(),
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
 )
+
+
+def configure_loguru(level: str) -> None:
+    """Apply LOG_LEVEL to loguru too. The shared bus chassis logs via loguru,
+    whose default sink is DEBUG, so without this the chassis's per-message DEBUG
+    intake line would still print regardless of LOG_LEVEL."""
+    try:
+        from loguru import logger as _loguru
+    except ImportError:  # chassis falls back to stdlib logging, covered above
+        return
+    _loguru.remove()
+    _loguru.add(sys.stderr, level=level.upper())
+
+
+configure_loguru(settings.LOG_LEVEL)
 logger = logging.getLogger(settings.SERVICE_NAME)
 
 _gateway: GatewayService | None = None

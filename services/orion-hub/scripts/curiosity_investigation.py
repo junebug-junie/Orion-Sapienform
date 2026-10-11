@@ -1323,8 +1323,10 @@ class CuriosityInvestigation:
     async def _stamp_corrections(self, run_id: str) -> None:
         """After the turn: which named priors this run re-tested and moved, on each correction
         it was offered. Read-only on the graph (the turn-start snapshot and a fresh read); the
-        only write is the correction row's outcome columns. Never raises into the turn."""
-        if not self.orion_day_corrections_enabled or not run_id:
+        only write is the correction row's outcome columns. Never raises into the turn.
+        Not gated on the flag: corrections taken while it was on still get their outcome
+        (one indexed lookup per measured turn)."""
+        if not run_id:
             return
         try:
             pool = self._pool_provider()
@@ -2173,12 +2175,14 @@ class CuriosityInvestigation:
                 "curiosity_durable_dispatch_fell_back run=%s -- running the turn in-process",
                 run_id,
             )
+        turn_began = False
         try:
             if self.kickoff_via_cortex:
                 # Fallback after a failed dispatch: go through the same
                 # per-run_id dedup the runner's turn RPC uses, so if the
                 # dispatch did land after all, the runner's request joins
                 # this turn instead of starting a second one.
+                turn_began = True
                 turn = await self._turn_result_for(
                     CuriosityTurnRequestV1(
                         run_id=run_id,
@@ -2193,6 +2197,8 @@ class CuriosityInvestigation:
                 )
                 text, debug = turn.text, dict(turn.debug)
             else:
+                # From here Orion may have the prompt: a cancel no longer means "unseen".
+                turn_began = True
                 await self._spend_turn_started(run_id)
                 text, debug = await self._generate(
                     prompt, correlation_id, parent_run_id=run_id,
@@ -2207,7 +2213,9 @@ class CuriosityInvestigation:
             await self._refund_investigation(previous_stamp)
             await self._release_offers(
                 run_id, dream=bool(dream_hypotheses), carry_forward=carry_forward is not None,
-                corrections=bool(corrections),
+                # Corrections are released only when Orion cannot have seen them: a correction
+                # re-offered after a started turn could be re-tested twice.
+                corrections=bool(corrections) and not turn_began,
             )
             raise
         if not text:

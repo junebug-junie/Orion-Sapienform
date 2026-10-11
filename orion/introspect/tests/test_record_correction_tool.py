@@ -117,6 +117,10 @@ def test_a_refusal_says_not_recorded_and_no_reply_says_unknown():
         _invoke(DreamBus(refused.model_dump(mode="json")), VALID)
     with pytest.raises(IntrospectUnknownError, match="answer unknown"):
         _invoke(DreamBus(_ok(), raise_exc=TimeoutError()), VALID)
+    outage = IntrospectResultV1(ok=False, operation="record_correction", as_of=NOW,
+                                error="record_correction_unavailable; answer unknown")
+    with pytest.raises(IntrospectUnknownError, match=r"record_correction: answer unknown \("):
+        _invoke(DreamBus(outage.model_dump(mode="json")), VALID)
 
 
 def test_description_is_honest_that_it_changes_no_belief():

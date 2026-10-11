@@ -61,7 +61,8 @@ def introspect_brief_lines(binding: IntrospectToolBindingV1) -> list[str]:
             f"accept that, call {RECORD_CORRECTION} with the part's ref, the claim's own words, "
             "the correction, the evidence (record refs from the claim check, or that Juniper said "
             "so), and the prior_id of each prior the claim rested on. It changes no belief by "
-            "itself: your next curiosity run re-tests those priors. Do not record a correction "
+            "itself: a later curiosity run is shown it once and asked to re-test those priors, "
+            "and whether it did is recorded. Do not record a correction "
             "you do not actually accept, and do not say it was recorded unless the tool returned "
             "a correction_id."
         ),

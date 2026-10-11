@@ -3482,6 +3482,11 @@ section 4.
   (`IntrospectRequestV1`), answered by
   `scripts/orion_day_correction_listener.py`; replies only to exactly
   `orion:introspect:result:<correlation_id>`.
+- **Errors.** A failed check is "not recorded (<why>)". A database failure is
+  `record_correction_unavailable; answer unknown` (a connection lost after the
+  insert lands here too; calling again with the same words is safe). A graph
+  over 2,000 priors refuses prior ids with its own message (the read is
+  bounded), not as "unreadable".
 - **Where it goes next.**
   - The regular curiosity investigate line, on a readable graph, claims up to
     5 unoffered corrections, oldest first, once each (`TAKE ... FOR UPDATE SKIP
@@ -3490,9 +3495,14 @@ section 4.
     prior's current confidence and times_tested. Kill switch:
     `HUB_CURIOSITY_ORION_DAY_CORRECTIONS_ENABLED` (default `true`).
   - When that run's turn ends, Hub stamps `priors_retested` (named priors the
-    run stamped with its `last_run_id` and whose `times_tested` went up),
-    `priors_moved` (confidence changed or closed; NULL = unknown, no turn-start
-    snapshot) and `outcome_stamped_at`. A named prior the run never touched is
+    run stamped with its `last_run_id` and whose `times_tested` went up or that
+    it moved), `priors_moved` (confidence changed or closed; NULL = unknown, no
+    turn-start snapshot) and `outcome_stamped_at`. A turn cancelled after it
+    started keeps its claim (Orion may have seen it); only a run cancelled
+    before its turn gives the corrections back. Corrections claimed by a run
+    whose registration was never confirmed stay offered and unstamped
+    (`offered_at` set, `outcome_stamped_at` NULL), which is visible on the row
+    but not yet reaped. A named prior the run never touched is
     absent from `priors_retested`. Log line:
     `curiosity_correction_outcome run=<id> correction_id=<id> named=<n> retested=<ids> moved=<ids|unknown>`.
   - The next Orion's Day letter gathers the day's corrections into its

@@ -36,7 +36,8 @@ from orion.orion_day.corrections import (
     MIGRATION,
     correction_id_for,
     evidence_records,
-    read_named_priors,
+    TRUNCATED,
+    read_named_priors_or_reason,
 )
 from orion.orion_day.letter_parts import find_part, parse_ref, split_carry, split_note
 from orion.orion_day.store import fetch_letter
@@ -45,9 +46,14 @@ from orion.schemas.introspect import IntrospectItemV1, IntrospectRequestV1, Intr
 logger = logging.getLogger("orion-hub.orion_day_correction")
 
 OPERATION = "record_correction"
-UNAVAILABLE = "record_correction_unavailable"
+# Not "not recorded": a connection lost after the INSERT committed lands here too.
+UNAVAILABLE = "record_correction_unavailable; answer unknown"
 WORLDVIEW_UNREADABLE = (
     "your graph (orion_worldview) could not be read, so the prior ids could not be checked"
+)
+WORLDVIEW_TRUNCATED = (
+    "your graph holds more priors than one bounded read returns, so the prior ids could not be "
+    "checked; name no prior ids to record it as context only"
 )
 _INVALID_CAP = 400
 _UNDEFINED_TABLE = "42P01"
@@ -119,12 +125,16 @@ class OrionDayCorrectionListener:
         if parsed is None:  # the contract's pattern already holds; kept for a hand-built request
             raise RefusedError(f"ref {args.ref!r} is not a letter part id like '2026-10-09 ¶3' or '2026-10-09 carry 5'")
         day, kind, index = parsed
+        try:
+            letter_day = date.fromisoformat(day)
+        except ValueError as exc:
+            raise RefusedError(f"ref {args.ref!r} names no real date") from exc
         pool = self.pool_provider()
         if pool is None:
             raise RuntimeError("no memory pool")
 
         async with pool.acquire() as conn:
-            letter = await fetch_letter(conn, date.fromisoformat(day))
+            letter = await fetch_letter(conn, letter_day)
         if letter is None:
             raise RefusedError(f"unknown letter {day}: no Orion's Day letter for that date (not found)")
         parts = split_note(letter.note_md) if kind == "paragraph" else split_carry(letter.carry_forward_md)
@@ -135,9 +145,11 @@ class OrionDayCorrectionListener:
             raise RefusedError(f"unknown part {args.ref}: that letter has {numbered} numbered {label} (not found)")
 
         if args.prior_ids:
-            current = await asyncio.to_thread(read_named_priors, self.reader_provider(), args.prior_ids)
+            current, reason = await asyncio.to_thread(
+                read_named_priors_or_reason, self.reader_provider(), args.prior_ids,
+            )
             if current is None:
-                raise RefusedError(WORLDVIEW_UNREADABLE)
+                raise RefusedError(WORLDVIEW_TRUNCATED if reason == TRUNCATED else WORLDVIEW_UNREADABLE)
             missing = [p for p in args.prior_ids if current.get(p) is None]
             if missing:
                 raise RefusedError(
@@ -171,9 +183,10 @@ class OrionDayCorrectionListener:
                 "chat_correlation_id": chat_corr,
                 "already_recorded": inserted is None,
                 "what_happens_next": (
-                    "nothing changes now; your next curiosity run is shown this once and re-tests "
-                    "the named priors itself" if args.prior_ids
-                    else "nothing changes now; your next curiosity run and next letter see it as context"
+                    "nothing changes now; a later curiosity run is shown this once and asked to "
+                    "re-test the named priors, and whether it did is recorded on this correction"
+                    if args.prior_ids
+                    else "nothing changes now; a later curiosity run and the next letter see it as context"
                 ),
             },
         )

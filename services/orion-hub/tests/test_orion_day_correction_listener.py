@@ -163,6 +163,21 @@ def test_an_unreadable_graph_refuses_rather_than_skipping_the_check():
     assert _ask(listener2, ARGS).error == cl.WORLDVIEW_UNREADABLE and conn2.rows == []
 
 
+def test_an_impossible_date_is_a_refusal_not_an_outage():
+    listener, conn = _listener()
+    out = _ask(listener, {**ARGS, "ref": "2026-13-45 ¶1"})
+    assert out.ok is False and "names no real date" in out.error and conn.rows == []
+
+
+def test_an_oversized_graph_says_so_rather_than_unreadable():
+    from orion.curiosity.worldview import LIVE_PRIORS_LIMIT
+
+    rows = [{"prior_id": f"p{i}", "claim": "c", "confidence": 0.5} for i in range(LIVE_PRIORS_LIMIT)]
+    listener, conn = _listener(reader=fx.FakePriorReader(rows))
+    out = _ask(listener, {**ARGS, "prior_ids": ["p1"]})
+    assert out.ok is False and out.error == cl.WORLDVIEW_TRUNCATED and conn.rows == []
+
+
 def test_only_a_chat_turn_records():
     listener, conn = _listener()
     curiosity = CHAT.model_copy(update={"invocation_context": "curiosity"})
@@ -185,6 +200,7 @@ def test_db_failure_is_unavailable_never_success():
     listener, _ = _listener(pool=_Boom(None))
     out = _ask(listener, ARGS)
     assert out.ok is False and out.error == cl.UNAVAILABLE and "hunter2" not in out.error
+    assert "answer unknown" in out.error  # a lost connection may follow a committed insert
     listener2, _ = _listener(pool=None)
     assert _ask(listener2, ARGS).error == cl.UNAVAILABLE
 
@@ -253,13 +269,29 @@ def test_an_unreadable_graph_claims_nothing(monkeypatch):
     assert oc.CORRECTIONS_HEADER not in loop.seen_prompt and table.rows[0]["offered_at"] is None
 
 
-def test_a_cancelled_turn_releases_the_corrections(monkeypatch):
+def test_a_turn_cancelled_after_it_started_keeps_the_claim(monkeypatch):
+    """Orion may already have the prompt (and have stamped priors): re-offering would let a
+    second run re-test the same correction."""
     loop, table, _ = _curiosity_loop(monkeypatch)
 
     async def _cancelled(*a, **k):
         raise asyncio.CancelledError()
 
     loop._generate = _cancelled  # type: ignore[assignment]
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(loop.tick())
+    assert oc.TAKE_CORRECTIONS_SQL in table.statements and oc.RELEASE_CORRECTIONS_SQL not in table.statements
+    assert table.rows[0]["offered_run_id"] is not None
+
+
+def test_a_run_cancelled_before_its_turn_releases_the_corrections(monkeypatch):
+    loop, table, _ = _curiosity_loop(monkeypatch)
+    loop.kickoff_via_cortex = True
+
+    async def _cancelled(**k):
+        raise asyncio.CancelledError()
+
+    loop._dispatch_durable_run = _cancelled  # type: ignore[assignment]
     with pytest.raises(asyncio.CancelledError):
         asyncio.run(loop.tick())
     assert oc.TAKE_CORRECTIONS_SQL in table.statements and oc.RELEASE_CORRECTIONS_SQL in table.statements
@@ -317,6 +349,29 @@ def test_both_turn_end_paths_stamp_and_only_investigate_takes():
 
 
 # --- the email ----------------------------------------------------------------------------------
+
+
+def test_durable_brief_omits_empty_corrections_for_an_older_durable_runs():
+    from orion.orion_day.brief import build_orion_day_request
+    from orion.schemas.orion_day import OrionDayRunBriefV1
+    from scripts.orion_day_letter import brief_request_payload
+
+    material = asyncio.run(fx.gather.gather_orion_day(
+        fx.FakeConn(), fx.LETTER_DATE, now=datetime(2026, 9, 30, 14, 30, tzinfo=timezone.utc)))
+    from orion.orion_day.budget import build_llm_view
+
+    def payload(m):
+        brief = OrionDayRunBriefV1(letter_date=m.letter_date, window_start=m.window_start,
+                                   window_end=m.window_end, material=m, llm_view=build_llm_view(m))
+        return brief_request_payload(build_orion_day_request(brief, attempt=1))
+
+    empty = payload(material)
+    assert "corrections" not in empty["brief"]["material"]
+    with_rows = payload(asyncio.run(fx.gather.gather_orion_day(
+        fx.FakeConn(corrections=fx.CORRECTIONS), fx.LETTER_DATE, now=datetime(2026, 9, 30, 14, 30, tzinfo=timezone.utc))))
+    assert with_rows["brief"]["material"]["corrections"][0]["correction_id"] == fx.CORRECTION_ID
+    # What durable-runs receives still validates on the new model.
+    OrionDayRunBriefV1.model_validate(empty["brief"])
 
 
 def test_email_shows_corrections_from_conversations():

@@ -33,6 +33,9 @@ on:
       - "services/orion-hub/scripts/orion_day_*.py"
       - "services/orion-hub/scripts/curiosity_investigation.py"
       - "orion/curiosity/kickoff_prompt.py"
+      - "orion/introspect/**"
+      - "orion/schemas/introspect.py"
+      - "services/orion-sql-db/manual_migration_orion_day_correction_v1.sql"
       - "services/orion-hub/templates/orion_day_letter.html.j2"
 
 jobs:

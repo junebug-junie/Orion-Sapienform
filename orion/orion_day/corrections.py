@@ -142,7 +142,18 @@ def _offered(row: Any) -> OfferedCorrection:
 # --- the worldview, read only -----------------------------------------------------------------
 
 
+UNREADABLE = "unreadable"
+TRUNCATED = "truncated"
+
+
 def read_named_priors(reader: Any, prior_ids: Sequence[str]) -> Optional[dict[str, Optional[Prior]]]:
+    """``read_named_priors_or_reason`` without the reason."""
+    return read_named_priors_or_reason(reader, prior_ids)[0]
+
+
+def read_named_priors_or_reason(
+    reader: Any, prior_ids: Sequence[str],
+) -> tuple[Optional[dict[str, Optional[Prior]]], Optional[str]]:
     """prior_id -> the prior as Orion's graph holds it (None: no node with that id). None for
     the whole answer when the graph could not be read, or when the read filled its row cap (an
     id past the cap would read as missing). Synchronous: callers use asyncio.to_thread.
@@ -152,17 +163,17 @@ def read_named_priors(reader: Any, prior_ids: Sequence[str]) -> Optional[dict[st
     the kickoff offers (``Prior.fork_rank``)."""
     wanted = {str(p) for p in prior_ids}
     if not wanted:
-        return {}
+        return {}, None
     if reader is None:
-        return None
+        return None, UNREADABLE
     try:
         rows = reader.query(ALL_PRIORS_CYPHER)
     except WorldviewUnavailable as exc:
         logger.warning("orion_day_correction_priors_unreadable err=%s", str(exc)[:200])
-        return None
+        return None, UNREADABLE
     if len(rows) >= LIVE_PRIORS_LIMIT:
         logger.warning("orion_day_correction_priors_truncated rows=%s limit=%s", len(rows), LIVE_PRIORS_LIMIT)
-        return None
+        return None, TRUNCATED
     found: dict[str, Optional[Prior]] = {p: None for p in wanted}
     seen: set[str] = set()
     for row in rows:
@@ -174,7 +185,7 @@ def read_named_priors(reader: Any, prior_ids: Sequence[str]) -> Optional[dict[st
         current = found[prior_id]
         if current is None or prior.fork_rank > current.fork_rank:
             found[prior_id] = prior
-    return found
+    return found, None
 
 
 # --- offer once (carry_forward.py shape) ------------------------------------------------------
@@ -225,9 +236,9 @@ def correction_outcome(
     snapshots (orion.curiosity.value): ``before`` taken when the turn started, ``after`` now.
 
     Re-tested: the run stamped the prior (``last_run_id`` = this run, the kickoff's testing
-    ``SET``) and its ``times_tested`` went up. Moved: stamped by this run, and its confidence
-    changed or it was closed (refuted / retired_unresolvable). A named prior the run never
-    stamped is in neither list.
+    ``SET``) and its ``times_tested`` went up, or it moved. Moved: stamped by this run, and its
+    confidence changed or it was closed (refuted / retired_unresolvable); always a subset of
+    re-tested. A named prior the run never stamped is in neither list.
 
     No usable start (``before`` None, or it already carries this run's stamps because an earlier
     attempt wrote first -- ``value.diff_snapshots``' rule): re-tested falls back to "stamped by
@@ -249,10 +260,13 @@ def correction_outcome(
         if was is None:
             retested.append(prior_id)
             continue
-        if int(now.times_tested or 0) > int(was.times_tested or 0):
-            retested.append(prior_id)
         closed = now.status in CLOSED_STATUSES and now.status != was.status
-        if now.confidence != was.confidence or closed:
+        is_moved = now.confidence != was.confidence or closed
+        # Moved implies re-tested: a run that changed the prior worked on it, even if it forgot
+        # the times_tested bump (protocol drift, also visible in curiosity_run_outcomes).
+        if int(now.times_tested or 0) > int(was.times_tested or 0) or is_moved:
+            retested.append(prior_id)
+        if is_moved:
             moved.append(prior_id)
     return retested, (None if before is None else moved)
 
@@ -330,7 +344,7 @@ def format_corrections_section(corrections: Sequence[OfferedCorrection]) -> list
         if not c.prior_ids:
             lines.append("     No prior named: context only, nothing here to re-test.")
         elif c.current_priors is None:
-            lines.append("     Priors it rested on (your graph could not be read for their current numbers):")
+            lines.append("     Priors it rested on (their current numbers could not be read this time):")
             lines += [f"      prior_id: {p}" for p in c.prior_ids]
         else:
             lines.append("     Priors it rested on:")
@@ -339,8 +353,9 @@ def format_corrections_section(corrections: Sequence[OfferedCorrection]) -> list
                 if prior is None:
                     lines.append(f"      prior_id: {prior_id} -- not in your graph under this id any more")
                 else:
-                    status = f" [status: {prior.status}]" if prior.status in CLOSED_STATUSES else ""
-                    lines.append(f"    - {prior.preview()}{status}")
+                    lines.append(f"    - {prior.preview()}")
+                    if prior.status in CLOSED_STATUSES:
+                        lines.append(f"      status: {prior.status} (already closed)")
         lines.append("")
     if testable:
         lines += [

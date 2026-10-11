@@ -19,9 +19,10 @@
 -- READS the worldview to validate prior_ids and to stamp what the run did.
 --
 -- priors_retested: named priors the offered run stamped (last_run_id = offered_run_id) and
---   whose times_tested went up. A named prior the run never touched is absent.
+--   whose times_tested went up or that it moved. With no turn-start snapshot: stamped by the
+--   run. A named prior the run never touched is absent.
 -- priors_moved: named priors that run moved (confidence changed, or closed as refuted /
---   retired_unresolvable). NULL = unknown (no turn-start snapshot to compare against),
+--   retired_unresolvable); a subset of priors_retested. NULL = unknown (no turn-start snapshot to compare against),
 --   which is different from '{}' (compared, nothing moved).
 -- outcome_stamped_at NULL on an offered row = the run's end was never scored.
 --

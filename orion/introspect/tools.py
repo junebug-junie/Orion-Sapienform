@@ -108,18 +108,21 @@ ORION_DAY_DESCRIPTION = (
 RECORD_CORRECTION_DESCRIPTION = (
     "Record a correction to something you wrote in an Orion's Day letter, once the conversation "
     "with Juniper has established that the claim was wrong and you actually accept that. It "
-    "edits nothing: not the letter, and not any belief. It saves the correction as evidence, and "
-    "your next curiosity run is shown it once, with the priors you name and their current "
-    "confidence, to re-test them itself; that run decides how far, if at all, a prior moves. "
+    "edits nothing: not the letter, and not any belief. It saves the correction as evidence; a "
+    "later curiosity run is shown it once, with the priors you name and their current "
+    "confidence, and asked to re-test them. That run decides how far, if at all, a prior moves, "
+    "and whether it re-tested each one is recorded on the correction. "
     "ref is the part's id exactly as orion_day prints it ('2026-10-09 ¶3' or '2026-10-09 carry 5') "
     "and must name a part that exists. claim: the words you are correcting, quoted from that "
     "part. correction: what is actually true, in plain words. evidence: what the correction "
     "rests on, one item each: record refs from orion_day's claim check or citations (e.g. "
     "'curiosity:e7d03d2ecdbb'), or 'Juniper said so in this conversation'. prior_ids: the exact "
     "prior_id of each :Prior in your graph that the claim rested on (zero or more; every one "
-    "must exist). Only from a conversation with Juniper. A tool error means nothing was written "
-    "(the error says why) or that the answer is unknown; never report a correction as recorded "
-    "without ok=true and a correction_id."
+    "must exist; an id containing spaces or quotes cannot be named). Only from a conversation "
+    "with Juniper. A tool error saying 'not recorded' means nothing was written (it says why); "
+    "'answer unknown' means it may or may not have been (calling again with the same words is "
+    "safe: it returns the same correction_id). Never report a correction as recorded without "
+    "ok=true and a correction_id."
 )
 
 @dataclass(frozen=True)
@@ -223,7 +226,8 @@ class IntrospectTools:
         except ValueError as exc:
             raise IntrospectUnknownError(f"{operation}: answer unknown (malformed result)") from exc
         if not result.ok:
-            raise IntrospectUnknownError(f"{operation}: {refused} ({result.error})")
+            label = "answer unknown" if "answer unknown" in (result.error or "") else refused
+            raise IntrospectUnknownError(f"{operation}: {label} ({result.error})")
         if result.operation != operation:
             raise IntrospectUnknownError(f"{operation}: answer unknown (mismatched result)")
         return result

@@ -155,7 +155,7 @@ def test_a_prior_gone_from_the_graph_and_an_unreadable_graph_are_said_plainly():
     assert f"prior_id: {fx.UNTOUCHED_PRIOR} -- not in your graph under this id any more" in prompt
     taken = _offered()
     blind = tuple(c.__class__(**{**c.__dict__, "current_priors": None}) for c in taken)
-    assert "could not be read for their current numbers" in _prompt(blind)
+    assert "their current numbers could not be read this time" in _prompt(blind)
 
 
 def test_section_absent_when_the_graph_cannot_be_written():
@@ -192,6 +192,25 @@ def test_outcome_retested_and_moved_and_untouched_absent():
 def test_outcome_tested_and_kept_is_retested_not_moved():
     after = _states(**{fx.CORRECTION_PRIOR: {"times_tested": 3, "last_run_id": RUN}})
     assert oc.correction_outcome([fx.CORRECTION_PRIOR], _states(), after, run_id=RUN) == ([fx.CORRECTION_PRIOR], [])
+
+
+def test_outcome_moved_without_the_times_tested_bump_still_counts_as_retested():
+    after = _states(**{fx.CORRECTION_PRIOR: {"confidence": 0.4, "last_run_id": RUN}})
+    assert oc.correction_outcome([fx.CORRECTION_PRIOR], _states(), after, run_id=RUN) == (
+        [fx.CORRECTION_PRIOR], [fx.CORRECTION_PRIOR])
+
+
+def test_read_named_priors_says_why_it_could_not_answer():
+    assert oc.read_named_priors_or_reason(fx.FakePriorReader(raises=True), ["x"]) == (None, oc.UNREADABLE)
+    rows = [{"prior_id": f"p{i}", "claim": "c", "confidence": 0.5} for i in range(LIVE_PRIORS_LIMIT)]
+    assert oc.read_named_priors_or_reason(fx.FakePriorReader(rows), ["p1"]) == (None, oc.TRUNCATED)
+
+
+def test_a_closed_prior_says_so_on_its_own_line_not_after_its_id():
+    rows = [{**fx.FIXTURE_PRIORS[0], "status": "refuted"}, fx.FIXTURE_PRIORS[1]]
+    prompt = _prompt(_offered(reader=fx.FakePriorReader(rows)))
+    assert "status: refuted (already closed)" in prompt
+    assert "[status:" not in prompt
 
 
 def test_outcome_retirement_counts_as_moved():

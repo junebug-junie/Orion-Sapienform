@@ -1,6 +1,10 @@
 # Explicit Hecate override; never selected by Athena's post-pull automation.
 services:
   vllm-host:
+    logging:
+      driver: journald
+      options:
+        tag: "{{.Name}}"
     build:
       dockerfile: services/orion-vllm-host/Dockerfile.sm70
       additional_contexts:

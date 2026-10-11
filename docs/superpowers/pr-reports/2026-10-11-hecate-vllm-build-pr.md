@@ -82,6 +82,8 @@ not an ancestor. Model acceptance remains UNVERIFIED pending image completion.
   - Evidence: focused preparation tests pass.
 - Independent review found no material issues in the source fix or expanded Docker/Compose/profile changes; reviewer independently ran 40 focused tests.
 
+- CI finding: override Compose files must repeat the journald block. Added the block; focused logging gate passes.
+
 ## Restart required
 
 No Athena or Circe restart required for the staging patch. On Hecate, after image
@@ -103,4 +105,4 @@ Role announcement remains disabled during direct acceptance.
 
 ## PR link
 
-Pending.
+https://github.com/junebug-junie/Orion-Sapienform/pull/2615

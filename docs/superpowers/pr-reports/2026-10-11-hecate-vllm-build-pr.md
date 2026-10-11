@@ -66,7 +66,7 @@ not an ancestor. Model acceptance remains UNVERIFIED pending image completion.
 ## Docker/build/smoke checks
 
 - Hecate override `config --quiet`: PASS through the safety wrapper.
-- Full CUDA image build: IN PROGRESS at `/mnt/scripts/hecate-vllm-build.log`.
+- Full CUDA image build: IN PROGRESS at `/mnt/scripts/hecate-vllm-build-retry.log`. Initial integrity check caught an upstream Docker-ignore omission; the image now reconstructs the pinned tree from Git objects, and that gate passes.
 - Qwen pinned snapshot: downloaded to Hecate NVMe.
 - GLM pinned snapshot: IN PROGRESS in `hecate-model-download` container.
 - Existing Hecate worker `/health`: `{"status":"ok"}` before testing.

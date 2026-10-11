@@ -2237,10 +2237,11 @@ class BiometricsSubstrateWorker:
             result = engine.tick(now=datetime.now(timezone.utc))
             logger.info(
                 "substrate_dynamics_tick_completed activation_updates=%d "
-                "pressure_updates=%d dormancy_transitions=%d",
+                "pressure_updates=%d dormancy_transitions=%d activation_cas_skips=%d",
                 len(result.activation_updates),
                 len(result.pressure_updates),
                 len(result.dormancy_transitions),
+                result.activation_cas_skips,
             )
         except Exception:
             logger.exception("substrate_dynamics_tick_failed")

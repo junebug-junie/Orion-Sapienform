@@ -57,6 +57,107 @@ class SubstrateQueryResultV1:
     details: dict[str, Any] = field(default_factory=dict)
 
 
+@dataclass(frozen=True)
+class NodeDynamicsWriteV1:
+    """A targeted write of ONLY the fields SubstrateDynamicsEngine.tick() owns.
+
+    Why this exists (confirmed live 2026-10-11, wp-read timestamp repair
+    PR #2608): the tick used to re-upsert the WHOLE node from its start-of-tick
+    snapshot, so any write to any other property (observed_at, label,
+    provenance, ...) landing between the tick's read and its write was
+    reverted -- 238 corrected observed_at values within two minutes.
+
+    Two groups, with different guards:
+
+    - Pressure (``dynamic_pressure``/``dynamic_pressure_reason``): computed
+      from the graph's prediction-error/contradiction state, owned only by the
+      tick, written unconditionally when set (None = leave untouched).
+    - Activation (``activation``, ``recency_score``, ``activation_decayed_at``,
+      and dormancy, which is derived from activation): computed by decaying
+      the value the tick READ, so it is written compare-and-set -- only if the
+      node still holds ``expected_activation`` and ``expected_decay_stamp``.
+      A fresh activation written by anyone else in between wins; the tick
+      re-reads and decays it next tick.
+
+    ``expected_decay_stamp`` is the stamp in its stored (encoded string) form,
+    or None when the node carried none.
+    """
+
+    node_id: str
+    node_kind: str
+    expected_activation: float
+    expected_decay_stamp: str | None
+    activation: float
+    recency_score: float
+    activation_decayed_at: str
+    dynamic_pressure: float | None = None
+    dynamic_pressure_reason: str | None = None
+    dormant: bool | None = None
+    dormancy_updated_at: str | None = None
+
+
+def encode_decay_stamp(raw: object) -> str | None:
+    """The stored string form of an ``activation_decayed_at`` value (mirrors
+    falkor_codec's encoding, kept here so the in-memory store compares the
+    same representation the durable store does)."""
+    if raw is None:
+        return None
+    if isinstance(raw, datetime):
+        return raw.isoformat()
+    return str(raw)
+
+
+def apply_node_dynamics_write(
+    node: BaseSubstrateNodeV1, write: NodeDynamicsWriteV1, *, include_activation: bool
+) -> BaseSubstrateNodeV1:
+    """Return ``node`` with only the write's owned fields replaced. Every
+    other field -- observed_at, label, provenance, foreign metadata -- is the
+    node's own, untouched."""
+    from .activation import ACTIVATION_DECAYED_AT_KEY
+
+    metadata = dict(node.metadata or {})
+    if write.dynamic_pressure is not None:
+        metadata["dynamic_pressure"] = write.dynamic_pressure
+        metadata["dynamic_pressure_reason"] = write.dynamic_pressure_reason
+    update: dict[str, Any] = {}
+    if include_activation:
+        metadata[ACTIVATION_DECAYED_AT_KEY] = write.activation_decayed_at
+        if write.dormant is not None:
+            metadata["dormant"] = write.dormant
+            metadata["dormancy_updated_at"] = write.dormancy_updated_at
+        bundle = node.signals.activation.model_copy(
+            update={"activation": write.activation, "recency_score": write.recency_score}
+        )
+        update["signals"] = node.signals.model_copy(update={"activation": bundle})
+    update["metadata"] = metadata
+    return node.model_copy(update=update)
+
+
+def node_dynamics_cas_matches(node: BaseSubstrateNodeV1, write: NodeDynamicsWriteV1) -> bool:
+    from .activation import ACTIVATION_DECAYED_AT_KEY
+
+    return (
+        node.signals.activation.activation == write.expected_activation
+        and encode_decay_stamp((node.metadata or {}).get(ACTIVATION_DECAYED_AT_KEY)) == write.expected_decay_stamp
+    )
+
+
+def node_dynamics_writer(store: object):
+    """The store's targeted ``update_node_dynamics`` if it has one, else None.
+
+    Looked up on the class, not via the Protocol: SubstrateGraphStore is a
+    Protocol some stores subclass explicitly (GraphDBSubstrateStore), and a
+    Protocol stub would be inherited as a silent no-op returning None. A
+    wrapper (RoutedSubstrateGraphStore) reports its primary's capability via
+    ``supports_node_dynamics_write``.
+    """
+    if not callable(getattr(type(store), "update_node_dynamics", None)):
+        return None
+    if not getattr(store, "supports_node_dynamics_write", True):
+        return None
+    return store.update_node_dynamics  # type: ignore[attr-defined]
+
+
 class SubstrateGraphStore(Protocol):
     def get_node_by_id(self, node_id: str) -> BaseSubstrateNodeV1 | None: ...
     def get_edge_by_id(self, edge_id: str) -> SubstrateEdgeV1 | None: ...
@@ -150,6 +251,18 @@ class InMemorySubstrateGraphStore:
     def upsert_edge(self, *, identity_key: str, edge: SubstrateEdgeV1) -> None:
         self._edges[edge.edge_id] = edge
         self._edge_identity_index[identity_key] = edge.edge_id
+
+    def update_node_dynamics(self, write: NodeDynamicsWriteV1) -> bool:
+        """Targeted write of the dynamics tick's owned fields (see
+        NodeDynamicsWriteV1). Returns whether the activation group applied
+        (False = the node is gone, or its activation/stamp moved since the
+        tick read it). Never creates a node."""
+        existing = self._nodes.get(write.node_id)
+        if existing is None:
+            return False
+        applied = node_dynamics_cas_matches(existing, write)
+        self._nodes[write.node_id] = apply_node_dynamics_write(existing, write, include_activation=applied)
+        return applied
 
     def snapshot(self) -> MaterializedSubstrateGraphState:
         return MaterializedSubstrateGraphState(

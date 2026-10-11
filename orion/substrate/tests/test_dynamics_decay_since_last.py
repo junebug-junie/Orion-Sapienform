@@ -80,6 +80,11 @@ class _CountingStore(InMemorySubstrateGraphStore):
         self.upserts += 1
         super().upsert_node(identity_key=identity_key, node=node, skip_metadata_keys=skip_metadata_keys)
 
+    def update_node_dynamics(self, write) -> bool:  # noqa: ANN001
+        # The tick's per-node persist (targeted write since 2026-10-11).
+        self.upserts += 1
+        return super().update_node_dynamics(write)
+
 
 def _store_with(node: ConceptNodeV1) -> _CountingStore:
     store = _CountingStore()
@@ -141,8 +146,9 @@ def test_legacy_mode_reproduces_old_behavior_exactly() -> None:
         age = (T0 + timedelta(seconds=30 * i) - observed).total_seconds()
         value = round(decay_activation(current=value, elapsed_seconds=age, half_life_seconds=HL, floor=0.0), 6)
     assert _activation(store, "sub-concept-seed-test") == value
-    # legacy never writes the stamp
-    assert ACTIVATION_DECAYED_AT_KEY not in store.get_node_by_id("sub-concept-seed-test").metadata
+    # legacy never maintains the stamp: it stays pinned to observed_at (what
+    # the durable store filled in when legacy dropped it)
+    assert store.get_node_by_id("sub-concept-seed-test").metadata[ACTIVATION_DECAYED_AT_KEY] == observed.isoformat()
 
 
 # --- stamp semantics ---------------------------------------------------------
@@ -342,7 +348,9 @@ def test_legacy_mode_drops_stale_stamp_so_roll_forward_does_not_double_decay() -
     node = _concept(metadata={ACTIVATION_DECAYED_AT_KEY: (T0 - timedelta(hours=5)).isoformat()})
     store = _store_with(node)
     SubstrateDynamicsEngine(store=store, decay_mode="legacy").tick(now=T0)
-    assert ACTIVATION_DECAYED_AT_KEY not in store.get_node_by_id(node.node_id).metadata
+    # The stale 5h-old stamp is replaced by observed_at, so a roll-forward to
+    # since_last anchors at observed_at (max(stamp, observed_at)), not at it.
+    assert store.get_node_by_id(node.node_id).metadata[ACTIVATION_DECAYED_AT_KEY] == node.temporal.observed_at.isoformat()
 
 
 def test_stamp_survives_the_metadata_key_cap() -> None:

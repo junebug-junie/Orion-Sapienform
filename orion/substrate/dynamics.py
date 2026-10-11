@@ -23,7 +23,12 @@ from .pressure import (
     prediction_error_pressure,
     pressure_edge_multiplier,
 )
-from .store import InMemorySubstrateGraphStore
+from .store import (
+    InMemorySubstrateGraphStore,
+    NodeDynamicsWriteV1,
+    encode_decay_stamp,
+    node_dynamics_writer,
+)
 
 
 @dataclass(frozen=True)
@@ -56,6 +61,11 @@ class SubstrateDynamicsResultV1:
     activation_updates: list[ActivationUpdateV1]
     pressure_updates: list[PressureUpdateV1]
     dormancy_transitions: list[DormancyTransitionV1]
+    # Nodes whose decayed activation was NOT written because the node's
+    # activation/stamp changed between this tick's read and its write (a fresh
+    # write won the race; the next tick decays the fresh value). Trace for the
+    # lost-update fix, 2026-10-11.
+    activation_cas_skips: int = 0
 
 
 class SubstrateDynamicsEngine:
@@ -133,6 +143,8 @@ class SubstrateDynamicsEngine:
         pressure_changed_ids = {update.node_id for update in pressure_updates}
 
         legacy_decay = self._decay_mode == DECAY_MODE_LEGACY
+        targeted_write = node_dynamics_writer(self._store)
+        activation_cas_skips = 0
         for node_id, node in updated_nodes.items():
             prev_activation = node.signals.activation.activation
             combined_activation = activations.get(node_id, prev_activation)
@@ -225,11 +237,13 @@ class SubstrateDynamicsEngine:
             if activation_changed or dormant_new != dormant_prev or node_id in pressure_changed_ids:
                 if legacy_decay:
                     persisted_activation = round(new_activation, 6)
-                    # legacy never maintains the stamp; drop it so the store
-                    # re-stamps with observed_at. Carrying a stale stamp
-                    # forward would make a later roll-forward to since_last
-                    # re-apply all the decay legacy applied since that stamp.
-                    metadata.pop(ACTIVATION_DECAYED_AT_KEY, None)
+                    # legacy never maintains the stamp: it is the node's own
+                    # observed_at (what the store filled in when the stamp
+                    # was dropped, before the targeted write). Carrying a
+                    # stale stamp forward would make a later roll-forward to
+                    # since_last re-apply all the decay legacy applied since
+                    # that stamp.
+                    persisted_stamp = observed_at.isoformat()
                 elif activation_changed:
                     # Unrounded on purpose: the stamp says "this exact value is
                     # valid as of tick_at". Rounding to 6 places would drop up
@@ -237,49 +251,72 @@ class SubstrateDynamicsEngine:
                     # nodes that only cross the 1e-6 write threshold every few
                     # ticks.
                     persisted_activation = new_activation
-                    metadata[ACTIVATION_DECAYED_AT_KEY] = new_decay_stamp.isoformat()
+                    persisted_stamp = new_decay_stamp.isoformat()
                 else:
                     # Written only for pressure/dormancy. Keep the stored value
                     # AND its stamp together: persisting a sub-threshold decay
                     # with a fresh stamp would round it away and restart the
                     # clock every tick, freezing decay for any node whose
                     # pressure moves every tick. The stamp is written
-                    # explicitly (not left to whatever is durable) so the
-                    # value and its stamp always travel as a pair: writing
-                    # prev_activation without its own stamp could pair it with
-                    # a different stamp already durable and mis-time the next
-                    # decay. (This tick is the only decay writer since
+                    # explicitly so the value and its stamp always travel as
+                    # a pair. (This tick is the only decay writer since
                     # 2026-10-06; the Hub's second one was removed.)
                     persisted_activation = prev_activation
-                    metadata[ACTIVATION_DECAYED_AT_KEY] = anchor.isoformat()
-                activation_bundle = node.signals.activation.model_copy(
-                    update={
-                        "activation": persisted_activation,
-                        "recency_score": round(fresh_recency, 6),
-                    }
-                )
-                updated_signal = node.signals.model_copy(update={"activation": activation_bundle})
-                updated_node = node.model_copy(update={"signals": updated_signal, "metadata": metadata})
-                # skip_metadata_keys: this engine reads prediction_error purely
-                # to SEED pressure (prediction_error_pressure() above) -- it
-                # never computes prediction_error/contributing_turn_ids
-                # itself and must not re-persist whatever (possibly stale)
-                # copy happened to be in this tick's start-of-loop snapshot.
-                # Confirmed live 2026-07-29: this write guard fires on
-                # activation decay alone, which changes on essentially every
-                # node every tick, far more often than an external writer
-                # like bus_synaptic's 30s cadence -- without this guard,
-                # this engine's own frequent re-writes durably clobbered a
-                # real writer's fresh values, freezing node:substrate.
-                # bus_synaptic's prediction_error at a stale 1.0 for 3+
-                # hours and causing real false "Bus Anomaly Detected"
-                # alerts downstream. See falkor_codec.
-                # EXTERNALLY_OWNED_METADATA_KEYS's docstring for the full trace.
-                self._store.upsert_node(
-                    identity_key=identity_by_node_id.get(node_id),
-                    node=updated_node,
-                    skip_metadata_keys=EXTERNALLY_OWNED_METADATA_KEYS,
-                )
+                    persisted_stamp = anchor.isoformat()
+                if targeted_write is not None:
+                    # Only the fields this tick owns, compare-and-set on the
+                    # activation + stamp it read (NodeDynamicsWriteV1). The
+                    # old full-node re-upsert below re-SET every property from
+                    # this tick's snapshot and reverted concurrent writes to
+                    # properties it does not own -- confirmed live 2026-10-11:
+                    # 238 corrected observed_at values reverted within two
+                    # minutes (PR #2608).
+                    pressure_moved = node_id in pressure_changed_ids
+                    applied = targeted_write(
+                        NodeDynamicsWriteV1(
+                            node_id=node_id,
+                            node_kind=str(node.node_kind),
+                            expected_activation=prev_activation,
+                            expected_decay_stamp=encode_decay_stamp(
+                                (node.metadata or {}).get(ACTIVATION_DECAYED_AT_KEY)
+                            ),
+                            activation=persisted_activation,
+                            recency_score=round(fresh_recency, 6),
+                            activation_decayed_at=persisted_stamp,
+                            dynamic_pressure=metadata["dynamic_pressure"] if pressure_moved else None,
+                            dynamic_pressure_reason=metadata.get("dynamic_pressure_reason") if pressure_moved else None,
+                            dormant=dormant_new if dormant_new != dormant_prev else None,
+                            dormancy_updated_at=metadata.get("dormancy_updated_at") if dormant_new != dormant_prev else None,
+                        )
+                    )
+                    if not applied:
+                        activation_cas_skips += 1
+                else:
+                    # Store without a targeted write path (the SPARQL/GraphDB
+                    # backend): full-node re-upsert, which still carries the
+                    # lost-update race for unowned properties. Production runs
+                    # Falkor (SUBSTRATE_STORE_BACKEND=falkor).
+                    if legacy_decay:
+                        metadata.pop(ACTIVATION_DECAYED_AT_KEY, None)
+                    else:
+                        metadata[ACTIVATION_DECAYED_AT_KEY] = persisted_stamp
+                    activation_bundle = node.signals.activation.model_copy(
+                        update={
+                            "activation": persisted_activation,
+                            "recency_score": round(fresh_recency, 6),
+                        }
+                    )
+                    updated_signal = node.signals.model_copy(update={"activation": activation_bundle})
+                    updated_node = node.model_copy(update={"signals": updated_signal, "metadata": metadata})
+                    # skip_metadata_keys: never re-persist a stale copy of a
+                    # field another writer owns (prediction_error froze at 1.0
+                    # for 3+ hours, 2026-07-29). See falkor_codec.
+                    # EXTERNALLY_OWNED_METADATA_KEYS's docstring.
+                    self._store.upsert_node(
+                        identity_key=identity_by_node_id.get(node_id),
+                        node=updated_node,
+                        skip_metadata_keys=EXTERNALLY_OWNED_METADATA_KEYS,
+                    )
 
             if activation_changed:
                 activation_updates.append(
@@ -296,6 +333,7 @@ class SubstrateDynamicsEngine:
             activation_updates=activation_updates,
             pressure_updates=pressure_updates,
             dormancy_transitions=dormancy_transitions,
+            activation_cas_skips=activation_cas_skips,
         )
 
     @staticmethod

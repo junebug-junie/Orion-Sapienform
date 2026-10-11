@@ -12,6 +12,7 @@ from orion.core.schemas.cognitive_substrate import BaseSubstrateNodeV1, Substrat
 from orion.substrate.store import (
     InMemorySubstrateGraphStore,
     MaterializedSubstrateGraphState,
+    NodeDynamicsWriteV1,
     SubstrateGraphStore,
     SubstrateNeighborhoodSliceV1,
     SubstrateQueryResultV1,
@@ -60,6 +61,19 @@ class RoutedSubstrateGraphStore:
         self._shadow_write(
             "upsert_node", identity_key=identity_key, node=node, skip_metadata_keys=skip_metadata_keys
         )
+
+    @property
+    def supports_node_dynamics_write(self) -> bool:
+        return callable(getattr(type(self._primary), "update_node_dynamics", None))
+
+    def update_node_dynamics(self, write: NodeDynamicsWriteV1) -> bool:
+        """Primary's targeted dynamics write (see NodeDynamicsWriteV1); the
+        shadow gets it only if it supports the targeted path too -- never a
+        full-node fallback, which is the lost-update this method replaces."""
+        applied = self._primary.update_node_dynamics(write)  # type: ignore[attr-defined]
+        if self._shadow is not None and callable(getattr(type(self._shadow), "update_node_dynamics", None)):
+            self._shadow_write("update_node_dynamics", write=write)
+        return applied
 
     def upsert_edge(self, *, identity_key: str, edge: SubstrateEdgeV1) -> None:
         self._primary.upsert_edge(identity_key=identity_key, edge=edge)

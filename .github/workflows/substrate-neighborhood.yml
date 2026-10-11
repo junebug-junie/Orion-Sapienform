@@ -92,6 +92,7 @@ jobs:
           orion/substrate/tests/test_dynamics.py
           orion/substrate/tests/test_dynamics_falkor_routed.py
           orion/substrate/tests/test_dynamics_decay_since_last.py
+          orion/substrate/tests/test_dynamics_lost_update.py
           orion/substrate/tests/test_graphdb_store.py
           orion/substrate/tests/test_routed_store.py
           orion/substrate/tests/test_phase16_query_planning.py
@@ -105,6 +106,16 @@ jobs:
         env:
           ORION_TEST_FALKOR_URI: redis://localhost:6379
         run: python -m pytest -q -rs orion/substrate/tests/test_falkor_direct.py orion/substrate/tests/test_falkor_anchor_store.py
+      - name: Dynamics tick does not revert concurrent writes (real FalkorDB, must not skip)
+        env:
+          ORION_TEST_FALKOR_URI: redis://localhost:6379
+        run: |
+          set -o pipefail
+          python -m pytest -q -rs orion/substrate/tests/test_dynamics_lost_update.py -k real_falkor | tee lost_update.out
+          if grep -q "SKIPPED" lost_update.out; then
+            echo "real-Falkor lost-update test skipped -- service wiring is broken" >&2
+            exit 1
+          fi
       - name: Neighborhood reads equal the reference, with index seeks (real FalkorDB)
         env:
           ORION_TEST_FALKOR_URI: redis://localhost:6379
@@ -128,3 +139,5 @@ jobs:
         run: python -m orion.substrate.evals.run_complete_hydration_eval
       - name: Activation decay since-last-tick eval (no compounding)
         run: python -m orion.substrate.evals.run_decay_since_last_eval
+      - name: Dynamics tick lost-update eval (concurrent writes survive)
+        run: python -m orion.substrate.evals.run_dynamics_lost_update_eval

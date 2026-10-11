@@ -62,6 +62,7 @@ def required_refs(m: OrionDayMaterialV1) -> set[str]:
         refs.add(f"chat_compactor:{m.chat_compactor.entry_id}")
     if m.github_compactor:
         refs.add(f"github_compactor:{m.github_compactor.entry_id}")
+    refs |= {f"correction:{c.correction_id}" for c in m.corrections}
     return refs
 
 
@@ -127,7 +128,7 @@ def evaluate(material: OrionDayMaterialV1) -> list[tuple[str, bool, str]]:
 
 async def _fixture_material() -> OrionDayMaterialV1:
     from orion.orion_day.tests import fixtures as fx
-    return await gather_orion_day(fx.FakeConn(), fx.LETTER_DATE, now=datetime(2026, 9, 30, 14, 30, tzinfo=timezone.utc))
+    return await gather_orion_day(fx.FakeConn(corrections=fx.CORRECTIONS), fx.LETTER_DATE, now=datetime(2026, 9, 30, 14, 30, tzinfo=timezone.utc))
 
 
 async def _live_material(letter_date: date | None, dsn: str | None) -> OrionDayMaterialV1:

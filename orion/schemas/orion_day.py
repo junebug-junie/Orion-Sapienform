@@ -209,6 +209,25 @@ class WorldPulseDigestV1(_Model):
     items: list[WorldPulseDigestItemV1] = Field(default_factory=list)
 
 
+class OrionDayCorrectionV1(_Model):
+    """A letter claim Juniper and Orion agreed was wrong, as recorded by Orion
+    (``orion_day_correction``, orion/orion_day/corrections.py). In a day's material when it was
+    recorded that day, so the next letter's writer sees it and does not re-derive the claim.
+    The outcome fields are as of the gather: None = not stamped yet, or (moved) unknown."""
+
+    correction_id: str
+    created_at: datetime
+    letter_date: date
+    ref: str
+    claim: str
+    correction: str
+    evidence: list[dict[str, Any]] = Field(default_factory=list)
+    prior_ids: list[str] = Field(default_factory=list)
+    offered_run_id: str | None = None
+    priors_retested: list[str] | None = None
+    priors_moved: list[str] | None = None
+
+
 class OrionDayMaterialV1(_Model):
     """Everything gathered for one Denver calendar day, full length."""
 
@@ -231,6 +250,10 @@ class OrionDayMaterialV1(_Model):
     chat_compactor: JournalTextV1 | None = None
     github_compactor: JournalTextV1 | None = None
     world_pulse_digest: WorldPulseDigestV1 | None = None
+    # Added 2026-10-11 (letter reread, patch 3). Default-empty so letter rows stored before it
+    # still validate. Hub writes it into the durable brief: rebuild orion-durable-runs (the
+    # forbid reader) before or with orion-hub.
+    corrections: list[OrionDayCorrectionV1] = Field(default_factory=list)
     sources: dict[str, OrionDaySourceStatusV1] = Field(default_factory=dict)
 
     @model_validator(mode="after")

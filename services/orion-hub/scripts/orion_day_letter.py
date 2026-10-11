@@ -77,6 +77,18 @@ def letter_slot(letter_date: date, *, hour: int, minute: int, tz_name: str = ORI
     return datetime.combine(letter_date + timedelta(days=1), dtime(hour, minute), tzinfo=ZoneInfo(tz_name))
 
 
+def brief_request_payload(request: Any) -> dict[str, Any]:
+    """The durable request as JSON. ``material.corrections`` (added 2026-10-11) is left out when
+    empty: orion-durable-runs validates the brief with extra=forbid, so an older durable-runs
+    would reject even ``"corrections": []`` and lose the day's letter. Only a day that really
+    has corrections needs the newer durable-runs (deploy it before or with Hub)."""
+    payload = request.model_dump(mode="json")
+    material = (payload.get("brief") or {}).get("material") or {}
+    if not material.get("corrections"):
+        material.pop("corrections", None)
+    return payload
+
+
 @dataclass(frozen=True)
 class AttemptState:
     """The latest durable attempt for a letter date (None = no attempt yet)."""
@@ -325,7 +337,7 @@ class OrionDayLetterLoop:
         request = build_orion_day_request(brief, attempt=attempt,
                                           deadline_at=self.hard_stop(letter_date).astimezone(timezone.utc))
         try:
-            status, body = await self.durable.submit(request.model_dump(mode="json"))
+            status, body = await self.durable.submit(brief_request_payload(request))
         except DurableUnavailable as exc:
             logger.warning("orion_day_submit_unavailable run=%s err=%s", request.run_id, exc)
             return "durable_unavailable"

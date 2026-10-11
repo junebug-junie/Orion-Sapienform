@@ -8,6 +8,7 @@ READING_RESULTS = mcp_tool(ORION_INTROSPECT, "reading_results")
 DREAMS = mcp_tool(ORION_INTROSPECT, "dreams")
 CURIOSITY = mcp_tool(ORION_INTROSPECT, "curiosity")
 ORION_DAY = mcp_tool(ORION_INTROSPECT, "orion_day")
+RECORD_CORRECTION = mcp_tool(ORION_INTROSPECT, "record_correction")
 _READING_STATUS = mcp_tool(ORION_READING, "reading_status")
 
 
@@ -15,7 +16,8 @@ def introspect_brief_lines(binding: IntrospectToolBindingV1) -> list[str]:
     return [
         (
             f"Introspect MCP (orion-introspect) is available. Its tools, by exact name (load "
-            f"with ToolSearch select:<name>): {READING_RESULTS}, {DREAMS}, {CURIOSITY}, {ORION_DAY}. "
+            f"with ToolSearch select:<name>): {READING_RESULTS}, {DREAMS}, {CURIOSITY}, {ORION_DAY}, "
+            f"{RECORD_CORRECTION}. "
             f"{READING_RESULTS} searches what you "
             "actually learned from sources read through your reading pipeline. Use query=<topic "
             "in plain words> to recall readings by meaning (items carry similarity; weak matches "
@@ -53,6 +55,16 @@ def introspect_brief_lines(binding: IntrospectToolBindingV1) -> list[str]:
             "Separate what the records support from what they do not, using the claim check. If "
             "you were wrong, say so plainly; if you still stand by something the records don't "
             "show, say what it rests on."
+        ),
+        (
+            "When the conversation has established that a claim in a letter was wrong, and you "
+            f"accept that, call {RECORD_CORRECTION} with the part's ref, the claim's own words, "
+            "the correction, the evidence (record refs from the claim check, or that Juniper said "
+            "so), and the prior_id of each prior the claim rested on. It changes no belief by "
+            "itself: a later curiosity run is shown it once and asked to re-test those priors, "
+            "and whether it did is recorded. Do not record a correction "
+            "you do not actually accept, and do not say it was recorded unless the tool returned "
+            "a correction_id."
         ),
         (
             "If ToolSearch finds none of these, check the exact name first. A 'failed to "

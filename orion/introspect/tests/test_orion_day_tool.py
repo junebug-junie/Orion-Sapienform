@@ -146,7 +146,7 @@ def test_description_is_honest_about_text_refs_claim_check_and_errors():
 def test_brief_names_the_tool_exactly_and_carries_the_guide_line():
     text = " ".join(introspect_brief_lines(BINDING))
     assert ORION_DAY == "mcp__orion-introspect__orion_day"
-    assert f"{ORION_DAY}." in text  # in the list of exact names
+    assert f"{ORION_DAY}," in text  # in the list of exact names
     assert (
         "When Juniper refers to an Orion's Day letter or a part of it (a date, ¶N, carry N, a section "
         f"name), call {ORION_DAY} before answering. Quote what you actually wrote. Separate what the "

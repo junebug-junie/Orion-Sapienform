@@ -116,10 +116,24 @@ class FakeRecord(dict):
     """asyncpg Record stand-in: mapping access by column name."""
 
 
+# A correction recorded on the fixture day (orion_day_correction; asyncpg hands jsonb back as
+# text and text[] as a list). Not served by default: pass ``corrections=CORRECTIONS``.
+CORRECTION_ID = "6f1d2c3b-4a59-5e6f-8a7b-9c0d1e2f3a4b"
+CORRECTIONS = [
+    {"correction_id": CORRECTION_ID, "created_at": _t(90), "letter_date": date(2026, 9, 28),
+     "ref": "2026-09-28 ¶4", "claim": "the reading queue timeout dropped 4,059 requests",
+     "correction": "The timeout dropped 12 requests; 4,059 was the queue's lifetime total.",
+     "evidence": json.dumps([{"text": "Juniper said so in this conversation", "in_letter_records": False}]),
+     "prior_ids": ["self:reading_queue_drops_most_requests"], "offered_run_id": "ab61e4ccd47b",
+     "priors_retested": ["self:reading_queue_drops_most_requests"], "priors_moved": []},
+]
+
+
 class FakeConn:
     """Serves canned rows keyed by the exact SQL constant gather sends. Records every call."""
 
-    def __init__(self, *, fail: set[str] | None = None, github: dict | None = None, chat: dict | None = CHAT_COMPACTOR):
+    def __init__(self, *, fail: set[str] | None = None, github: dict | None = None, chat: dict | None = CHAT_COMPACTOR,
+                 corrections: list[dict] | None = None):
         self.calls: list[tuple[str, tuple]] = []
         self.fail = fail or set()
         self.fetch_map = {
@@ -135,6 +149,7 @@ class FakeConn:
             gather.REVERIE_THOUGHTS_SQL: ("reverie_thoughts", REVERIE_THOUGHTS),
             gather.REVERIE_CHAINS_SQL: ("reverie_chains", REVERIE_CHAINS),
             gather.VISUAL_REVERIES_SQL: ("visual_reveries", VISUAL_REVERIES),
+            gather.CORRECTIONS_SQL: ("corrections", corrections or []),
         }
         self.github = github
         self.chat = chat
@@ -219,3 +234,122 @@ def reread_letter(*, letter_date: date = LETTER_DATE, material=None, created_at:
         note_md=REREAD_NOTE, carry_forward_md=REREAD_CARRY, material=material,
         sources=OrionDayLetterSourcesV1(by_source=material.sources), created_at=created,
     )
+
+
+# --- corrections (orion/orion_day/corrections.py) ---------------------------------------------
+#
+# An in-memory orion_day_correction table answering the module's own SQL constants with the
+# same semantics (offer once, release only unstamped rows, stamp only the offered run), and a
+# graph reader answering ALL_PRIORS_CYPHER. Shared by the orion_day tests, Hub's responder and
+# curiosity tests, and Hub's correction eval.
+
+CORRECTION_PRIOR = "self:reading_queue_drops_most_requests"
+UNTOUCHED_PRIOR = "self:queue_timeout_is_the_bottleneck"
+FIXTURE_PRIORS = [
+    {"prior_id": CORRECTION_PRIOR, "claim": "The reading queue drops most of the requests it gets.",
+     "confidence": 0.8, "status": "open", "times_tested": 2, "formed_from": "orion_day:2026-09-29",
+     "last_tested_at": "2026-09-29T10:00:00Z", "run_id": "aaaa11112222", "last_run_id": "bbbb33334444"},
+    {"prior_id": UNTOUCHED_PRIOR, "claim": "The queue timeout is the reading bottleneck.",
+     "confidence": 0.6, "status": "revised", "times_tested": 4, "formed_from": "",
+     "last_tested_at": "2026-09-28T10:00:00Z", "run_id": "aaaa11112222", "last_run_id": "cccc55556666"},
+]
+
+
+class FakePriorReader:
+    """Stands in for ``WorldviewReader``: answers only the bounded all-priors read."""
+
+    def __init__(self, rows: list[dict] | None = None, *, raises: bool = False) -> None:
+        self.rows = [dict(r) for r in (FIXTURE_PRIORS if rows is None else rows)]
+        self.raises = raises
+        self.queries: list[str] = []
+
+    def query(self, cypher: str) -> list[dict]:
+        from orion.curiosity.atlas import ATLAS_PRIORS_CYPHER
+        from orion.curiosity.worldview import ALL_PRIORS_CYPHER, WorldviewUnavailable
+
+        self.queries.append(cypher)
+        if self.raises:
+            raise WorldviewUnavailable("ConnectionError: refused")
+        assert cypher in (ALL_PRIORS_CYPHER, ATLAS_PRIORS_CYPHER), cypher
+        return [dict(r) for r in self.rows]
+
+
+class CorrectionTable:
+    """orion_day_correction semantics for every statement corrections.py and gather send."""
+
+    def __init__(self, now: datetime | None = None) -> None:
+        self.rows: list[dict] = []
+        self.now = now or datetime(2026, 9, 29, 16, 0, tzinfo=timezone.utc)
+        self.statements: list[str] = []
+
+    def _tick(self) -> datetime:
+        self.now += timedelta(seconds=1)
+        return self.now
+
+    async def fetchval(self, sql: str, *args: Any):
+        from orion.orion_day import corrections as oc
+
+        self.statements.append(sql)
+        assert sql == oc.INSERT_CORRECTION_SQL, sql[:60]
+        cid, letter_date, ref, claim, correction, evidence, prior_ids, chat = args
+        if any(r["correction_id"] == cid for r in self.rows):
+            return None
+        self.rows.append({
+            "correction_id": cid, "letter_date": letter_date, "ref": ref, "claim": claim,
+            "correction": correction, "evidence": evidence, "prior_ids": list(prior_ids),
+            "chat_correlation_id": chat, "created_at": self._tick(), "offered_at": None,
+            "offered_run_id": None, "priors_retested": None, "priors_moved": None, "outcome_stamped_at": None,
+        })
+        return cid
+
+    async def fetch(self, sql: str, *args: Any):
+        from orion.orion_day import corrections as oc
+
+        self.statements.append(sql)
+        if sql == oc.TAKE_CORRECTIONS_SQL:
+            run_id, limit = args
+            free = sorted((r for r in self.rows if r["offered_at"] is None),
+                          key=lambda r: (r["created_at"], str(r["correction_id"])))[:limit]
+            for r in free:
+                r["offered_at"], r["offered_run_id"] = self._tick(), run_id
+            return [dict(r) for r in reversed(free)]  # RETURNING has no order
+        if sql == oc.OFFERED_FOR_RUN_SQL:
+            return [dict(r) for r in self.rows if r["offered_run_id"] == args[0]]
+        if sql == gather.CORRECTIONS_SQL:
+            start, end = args
+            return [dict(r) for r in self.rows if start <= r["created_at"] < end]
+        raise AssertionError(sql[:60])
+
+    async def execute(self, sql: str, *args: Any):
+        from orion.orion_day import corrections as oc
+
+        self.statements.append(sql)
+        if sql == oc.RELEASE_CORRECTIONS_SQL:
+            for r in self.rows:
+                if r["offered_run_id"] == args[0] and r["outcome_stamped_at"] is None:
+                    r["offered_at"] = r["offered_run_id"] = None
+            return "UPDATE"
+        if sql == oc.STAMP_OUTCOME_SQL:
+            cid, run_id, retested, moved = args
+            for r in self.rows:
+                if str(r["correction_id"]) == str(cid) and r["offered_run_id"] == run_id:
+                    r["priors_retested"], r["priors_moved"] = retested, moved
+                    r["outcome_stamped_at"] = self._tick()
+            return "UPDATE"
+        raise AssertionError(sql[:60])
+
+
+class TablePool:
+    """``pool.acquire()`` over one connection-like object."""
+
+    def __init__(self, conn: Any) -> None:
+        self.conn = conn
+
+    def acquire(self):
+        from contextlib import asynccontextmanager
+
+        @asynccontextmanager
+        async def _cm():
+            yield self.conn
+
+        return _cm()

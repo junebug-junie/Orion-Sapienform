@@ -989,6 +989,12 @@ def _carry_forward_section(carry_forward=None) -> list[str]:
     return format_carry_forward_section(carry_forward)
 
 
+def _corrections_section(corrections: Sequence = ()) -> list[str]:
+    from orion.orion_day.corrections import format_corrections_section
+
+    return format_corrections_section(corrections or ())
+
+
 def _role_and_help_section(
     *,
     own_graph: str,
@@ -1148,6 +1154,7 @@ def build_kickoff_prompt(
     dream_hypotheses: Sequence = (),
     carry_forward=None,
     open_lived_questions: Sequence[OpenLivedQuestion] = (),
+    corrections: Sequence = (),
 ) -> str:
     """Assemble the whole invitation.
 
@@ -1159,6 +1166,10 @@ def build_kickoff_prompt(
     Day named for future curiosity. Its own section with its own header, never inside the
     dream section or the material, and not gated on the graph (it asks for no write). Only
     the letter's carry-forward text ever arrives here -- never its freeform note.
+
+    ``corrections`` (orion.orion_day.corrections.OfferedCorrection): letter claims Juniper and
+    Orion agreed were wrong, with the priors they rested on. Shown on a writable graph only
+    (the caller claims them only then): the section asks Orion to re-test those priors.
 
     THREE STATES, NOT TWO, and conflating the last two is a real bug this
     signature exists to prevent (caught by its own test, 2026-08-26):
@@ -1195,6 +1206,7 @@ def build_kickoff_prompt(
         # the caller claims (stamps offered) only on a writable graph too.
         if writable:
             lines += _dream_section(dream_hypotheses)
+            lines += _corrections_section(corrections)
 
     lines += _carry_forward_section(carry_forward)
     lines += _material_section(material)

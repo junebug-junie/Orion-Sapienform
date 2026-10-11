@@ -148,6 +148,21 @@
 </td></tr>
 {% endif %}
 
+{% if corrections %}
+{{ heading("Corrections from conversations") }}
+<tr><td style="padding:0 28px 8px 28px;" data-section="corrections">
+{% for c in corrections %}
+{{ item_title("Correction to " ~ c.ref, "recorded " ~ c.when) }}
+<p style="margin:0 0 4px 0;font-size:13px;color:{{ muted }};">Orion wrote:</p>
+<p style="margin:0 0 10px 0;line-height:1.5;"><s>{{ c.claim }}</s></p>
+<p style="margin:0 0 4px 0;font-size:13px;color:{{ muted }};">What is actually true:</p>
+<p style="margin:0 0 10px 0;line-height:1.5;">{{ c.correction }}</p>
+<p style="margin:0 0 4px 0;font-size:13px;color:{{ muted }};">Evidence: {{ c.evidence }}.</p>
+<p style="margin:0 0 12px 0;font-size:13px;color:{{ muted }};">{{ c.outcome }}</p>
+{% endfor %}
+</td></tr>
+{% endif %}
+
 {% if chat %}
 {{ heading("Conversations with Juniper") }}
 <tr><td style="padding:0 28px 8px 28px;" data-section="chat">

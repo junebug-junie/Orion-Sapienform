@@ -252,7 +252,7 @@ SECTION_PREFIXES: dict[str, tuple[str, ...]] = {
     "readings": ("reading:", "reading_journal:"),
     "dreams": ("dream:", "dream_offered:"),
     "code_changes": ("github_compactor:",),
-    "conversations": ("chat_compactor:",),
+    "conversations": ("chat_compactor:", "correction:"),
     "world_news": ("world_pulse_digest:",),
     "reveries": ("visual_reverie:", "reverie:"),
 }
@@ -268,7 +268,7 @@ def section_records(material: OrionDayMaterialV1, section: str) -> list[tuple[st
 # how each material model spells them (orion/schemas/orion_day.py).
 _TITLE_FIELDS = ("journal_title", "title", "tldr", "question")
 _BODY_FIELDS = (
-    "journal_body", "finding_text", "answer_text", "learned", "narrative", "body", "claim",
+    "journal_body", "finding_text", "answer_text", "learned", "narrative", "body", "correction", "claim",
     "interpretation", "description", "executive_summary", "lived_answer_text", "self_definition_text",
     "error",
 )

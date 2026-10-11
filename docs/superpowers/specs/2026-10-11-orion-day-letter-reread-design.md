@@ -1,6 +1,6 @@
 # Orion's Day letters: rereading what Orion wrote, with the records behind it
 
-Status: APPROVED IN DIRECTION 2026-10-11 (decisions below); patch 1 merged, patch 2 (`orion_day` read tool) implemented 2026-10-11
+Status: APPROVED IN DIRECTION 2026-10-11 (decisions below); patches 1 and 2 merged; patch 3 (`record_correction`, corrections into curiosity, outcome stamping) implemented 2026-10-11
 
 ## Arsonist summary
 
@@ -111,8 +111,10 @@ Orion's beliefs through the one door that is allowed to change them: a curiosity
   shows the original words, the correction, the evidence, and the named priors with their current
   confidence and times_tested.
   The instruction: re-test each named prior against the correction in this run, using the normal
-  `MATCH … SET p.times_tested = p.times_tested + 1, p.run_id = <RUN_ID>` already in the kickoff, and
-  move confidence (or retire the prior) only as far as the evidence warrants.
+  `MATCH … SET p.times_tested = p.times_tested + 1, p.last_run_id = <RUN_ID>` already in the kickoff, and
+  move confidence (or retire the prior) only as far as the evidence warrants. (Implementation note: the
+  kickoff's testing SET stamps `p.last_run_id`; `p.run_id` is the run that FORMED a prior. The outcome
+  stamping reads `last_run_id`, the same attribution rule as `orion/curiosity/value.py`.)
 - **The boundary stays intact:** Hub never writes `orion_worldview` (the PR #2199 boundary). Orion
   revises their own priors in a curiosity run, as today. A correction is evidence, not an override. If
   Orion re-tests a prior and keeps it, the write-up says why.

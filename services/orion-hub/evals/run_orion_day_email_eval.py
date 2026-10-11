@@ -104,6 +104,8 @@ def material_texts(letter) -> list[tuple[str, str]]:
     out += [(f"visual:{v.sha256[:12]}", v.description) for v in m.visual_reveries if v.description]
     if m.github_compactor:
         out.append(("github_compactor", m.github_compactor.body))
+    for c in m.corrections:
+        out += [(f"correction:{c.correction_id}:{k}", v) for k, v in (("claim", c.claim), ("correction", c.correction))]
     if m.chat_compactor:
         out.append(("chat_compactor", m.chat_compactor.body))
     if m.world_pulse_digest:
@@ -170,7 +172,7 @@ def fixture_letter():
     github = {"entry_id": "gh01", "created_at": datetime(2026, 9, 30, 12, 2, tzinfo=timezone.utc),
               "title": "Repo digest", "body": "Merged the backend. " * 50,
               "source_ref": "github_compactor_pass:github_compactor:day:2026-09-29"}
-    material = asyncio.run(gather_orion_day(fx.FakeConn(github=github), fx.LETTER_DATE,
+    material = asyncio.run(gather_orion_day(fx.FakeConn(github=github, corrections=fx.CORRECTIONS), fx.LETTER_DATE,
                                             now=datetime(2026, 9, 30, 15, tzinfo=timezone.utc)))
     return _letter_from_material(material, note=PLACEHOLDER_NOTE, carry=PLACEHOLDER_CARRY)
 

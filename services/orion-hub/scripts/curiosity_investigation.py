@@ -71,6 +71,7 @@ something worth writing up manufactures significance daily.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 
 import httpx
 import json
@@ -112,6 +113,15 @@ from orion.curiosity.kickoff_prompt import (
     build_resume_preamble,
 )
 from orion.orion_day.carry_forward import release_carry_forward, take_carry_forward
+from orion.orion_day.corrections import (
+    MAX_CORRECTIONS_PER_RUN,
+    correction_outcome,
+    offered_corrections_for_run,
+    read_named_priors,
+    release_corrections,
+    stamp_correction_outcome,
+    take_corrections,
+)
 from orion.dream.hypotheses import release_hypotheses_for_run, take_hypotheses_for_offer
 from orion.curiosity.peer_briefs import (
     REFUSED_OR_FAILED_RECENT_CYPHER,
@@ -753,6 +763,12 @@ class CuriosityInvestigation:
         # The regular investigate line only: claims yesterday's letter's
         # carry_forward_md once and shows it as its own kickoff section.
         carry_forward_enabled: bool = False,
+        # --- Orion's Day corrections (orion/orion_day/corrections.py) ------
+        # The regular investigate line, on a writable graph only: claims up to
+        # MAX_CORRECTIONS_PER_RUN recorded letter corrections once, shows them
+        # with their named priors' current numbers, and stamps at turn end which
+        # of those priors the run re-tested.
+        orion_day_corrections_enabled: bool = False,
         # --- the self-inquiry line -----------------------------------------
         self_inquiry_enabled: bool = False,
         self_inquiry_daily_cap: int = 3,
@@ -881,6 +897,7 @@ class CuriosityInvestigation:
         self.dream_hypotheses_enabled = bool(dream_hypotheses_enabled)
         self.dream_hypotheses_per_run = max(0, int(dream_hypotheses_per_run))
         self.carry_forward_enabled = bool(carry_forward_enabled)
+        self.orion_day_corrections_enabled = bool(orion_day_corrections_enabled)
         # Other Hub loops that want terminal durable-run states without a second
         # subscription (Orion's Day: scripts/orion_day_letter.py). Each hook gets
         # every DurableRunStateV1 this listener decodes; a failing hook is logged
@@ -1284,13 +1301,71 @@ class CuriosityInvestigation:
             return None
         return await take_carry_forward(self._pool_provider(), run_id=run_id)
 
+    async def _take_corrections(self, view: WorldviewSnapshot, run_id: str) -> tuple:
+        """Claim this run's Orion's Day corrections, with each named prior as the graph holds
+        it now. () unless Orion could re-test them: the same writable condition
+        `build_kickoff_prompt` shows the section on (claiming means "shown to Orion")."""
+        if not self.orion_day_corrections_enabled or not run_id:
+            return ()
+        if not self.graph_enabled or view.is_unavailable:
+            return ()
+        taken = await take_corrections(self._pool_provider(), run_id=run_id, limit=MAX_CORRECTIONS_PER_RUN)
+        named = sorted({p for c in taken for p in c.prior_ids})
+        if not named:
+            return taken
+        try:
+            current = await asyncio.to_thread(read_named_priors, self._reader, named)
+        except Exception as exc:  # noqa: BLE001 -- the section says the numbers could not be read
+            logger.warning("curiosity_corrections_priors_read_failed run=%s err=%s", run_id, exc)
+            current = None
+        return tuple(dataclasses.replace(c, current_priors=current) for c in taken)
+
+    async def _stamp_corrections(self, run_id: str) -> None:
+        """After the turn: which named priors this run re-tested and moved, on each correction
+        it was offered. Read-only on the graph (the turn-start snapshot and a fresh read); the
+        only write is the correction row's outcome columns. Never raises into the turn.
+        Not gated on the flag: corrections taken while it was on still get their outcome
+        (one indexed lookup per measured turn)."""
+        if not run_id:
+            return
+        try:
+            pool = self._pool_provider()
+            offered = await offered_corrections_for_run(pool, run_id)
+            if not offered:
+                return
+            before = after = None
+            if any(prior_ids for _, prior_ids in offered):
+                _, before = await load_turn_snapshot(pool, run_id)
+                if self._reader is not None:
+                    after = await asyncio.to_thread(read_prior_states, self._reader)
+            for correction_id, prior_ids in offered:
+                # A correction that named no prior claims no belief movement: stamped empty.
+                result = correction_outcome(prior_ids, before, after, run_id=run_id) if prior_ids else ([], [])
+                if result is None:
+                    logger.warning(
+                        "curiosity_correction_outcome_unknown run=%s correction_id=%s reason=no_end_snapshot",
+                        run_id, correction_id,
+                    )
+                    continue
+                retested, moved = result
+                await stamp_correction_outcome(
+                    pool, correction_id=correction_id, run_id=run_id, retested=retested, moved=moved,
+                )
+                logger.info(
+                    "curiosity_correction_outcome run=%s correction_id=%s named=%d retested=%s moved=%s",
+                    run_id, correction_id, len(prior_ids), ",".join(retested) or "-",
+                    "unknown" if moved is None else (",".join(moved) or "-"),
+                )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("curiosity_correction_outcome_failed run=%s err=%s", run_id, exc)
+
     async def _release_carry_forward_if_unseen(self, run_id: str) -> None:
         """A durable run that ended before its turn started never showed Orion the
-        carry-forward it claimed at kickoff: give it back. "Started" is the run's own
-        `run.started` event in durable-runs' history (GET /runs/{id}); on any doubt
-        (unreachable, unknown run) the claim is kept -- a lost offer is recoverable by the
-        next day's letter, a double offer is not."""
-        if not self.carry_forward_enabled or not run_id:
+        carry-forward (or the Orion's Day corrections) it claimed at kickoff: give them back.
+        "Started" is the run's own `run.started` event in durable-runs' history
+        (GET /runs/{id}); on any doubt (unreachable, unknown run) the claim is kept -- a lost
+        offer is recoverable by the next day's letter, a double offer is not."""
+        if not (self.carry_forward_enabled or self.orion_day_corrections_enabled) or not run_id:
             return
         root = str(self.durable_runs_url or "").strip().rstrip("/")
         if not root:
@@ -1306,15 +1381,23 @@ class CuriosityInvestigation:
             return
         if any(isinstance(e, dict) and e.get("event") == "run.started" for e in history):
             return
-        await release_carry_forward(self._pool_provider(), run_id=run_id)
-        logger.info("curiosity_carry_forward_released_unstarted run=%s", run_id)
+        if self.carry_forward_enabled:
+            await release_carry_forward(self._pool_provider(), run_id=run_id)
+            logger.info("curiosity_carry_forward_released_unstarted run=%s", run_id)
+        if self.orion_day_corrections_enabled:
+            await release_corrections(self._pool_provider(), run_id=run_id)
+            logger.info("curiosity_corrections_released_unstarted run=%s", run_id)
 
-    async def _release_offers(self, run_id: str, *, dream: bool, carry_forward: bool) -> None:
+    async def _release_offers(
+        self, run_id: str, *, dream: bool, carry_forward: bool, corrections: bool = False,
+    ) -> None:
         """Give back what this run claimed but Orion never saw (cancelled before the turn)."""
         if dream:
             await release_hypotheses_for_run(self._pool_provider(), run_id=run_id)
         if carry_forward:
             await release_carry_forward(self._pool_provider(), run_id=run_id)
+        if corrections:
+            await release_corrections(self._pool_provider(), run_id=run_id)
 
     async def _read_peer_briefs_for_nudge(self) -> tuple:
         """Unused PeerBriefs for kickoff soft-nudge (RO_QUERY only).
@@ -1998,6 +2081,7 @@ class CuriosityInvestigation:
             peer_briefs = await self._read_peer_briefs_for_nudge()
         dream_hypotheses = await self._take_dream_hypotheses(view, run_id)
         carry_forward = await self._take_carry_forward(run_id)
+        corrections = await self._take_corrections(view, run_id)
         open_lived_questions = await self._read_open_lived_questions(run_id)
         prompt = build_kickoff_prompt(
             material,
@@ -2018,6 +2102,7 @@ class CuriosityInvestigation:
             dream_hypotheses=dream_hypotheses,
             carry_forward=carry_forward,
             open_lived_questions=open_lived_questions,
+            corrections=corrections,
         )
         if open_lived_questions:
             logger.info(
@@ -2028,6 +2113,12 @@ class CuriosityInvestigation:
             logger.info(
                 "curiosity_carry_forward_offered run=%s letter_date=%s chars=%s",
                 run_id, carry_forward.letter_date, len(carry_forward.text),
+            )
+        if corrections:
+            logger.info(
+                "curiosity_corrections_offered run=%s correction_ids=%s named_priors=%d",
+                run_id, ",".join(c.correction_id for c in corrections),
+                sum(len(c.prior_ids) for c in corrections),
             )
         if dream_hypotheses:
             logger.info(
@@ -2067,7 +2158,8 @@ class CuriosityInvestigation:
                 if not self.durable_admission_enabled:
                     await self._refund_investigation(previous_stamp)
                     await self._release_offers(
-                        run_id, dream=bool(dream_hypotheses), carry_forward=carry_forward is not None
+                        run_id, dream=bool(dream_hypotheses), carry_forward=carry_forward is not None,
+                        corrections=bool(corrections),
                     )
                 raise
             if dispatched:
@@ -2083,12 +2175,14 @@ class CuriosityInvestigation:
                 "curiosity_durable_dispatch_fell_back run=%s -- running the turn in-process",
                 run_id,
             )
+        turn_began = False
         try:
             if self.kickoff_via_cortex:
                 # Fallback after a failed dispatch: go through the same
                 # per-run_id dedup the runner's turn RPC uses, so if the
                 # dispatch did land after all, the runner's request joins
                 # this turn instead of starting a second one.
+                turn_began = True
                 turn = await self._turn_result_for(
                     CuriosityTurnRequestV1(
                         run_id=run_id,
@@ -2103,19 +2197,25 @@ class CuriosityInvestigation:
                 )
                 text, debug = turn.text, dict(turn.debug)
             else:
+                # From here Orion may have the prompt: a cancel no longer means "unseen".
+                turn_began = True
                 await self._spend_turn_started(run_id)
                 text, debug = await self._generate(
                     prompt, correlation_id, parent_run_id=run_id,
                     **({"retrieval_query": retrieval_query} if retrieval_query else {}),
                 )
                 await self._spend_turn_ended(run_id, turn_ok=bool(text))
+                await self._stamp_corrections(run_id)
         except asyncio.CancelledError:
             # Hub is going away mid-turn. Give the slot back and let the
             # cancellation continue -- swallowing it would leave a task the
             # shutdown is waiting on.
             await self._refund_investigation(previous_stamp)
             await self._release_offers(
-                run_id, dream=bool(dream_hypotheses), carry_forward=carry_forward is not None
+                run_id, dream=bool(dream_hypotheses), carry_forward=carry_forward is not None,
+                # Corrections are released only when Orion cannot have seen them: a correction
+                # re-offered after a started turn could be re-tested twice.
+                corrections=bool(corrections) and not turn_began,
             )
             raise
         if not text:
@@ -4384,6 +4484,7 @@ class CuriosityInvestigation:
                 )
                 if measured:
                     await self._spend_turn_ended(request.run_id, turn_ok=bool(text))
+                    await self._stamp_corrections(request.run_id)
                 return CuriosityTurnResultV1(
                     run_id=request.run_id,
                     correlation_id=request.correlation_id,

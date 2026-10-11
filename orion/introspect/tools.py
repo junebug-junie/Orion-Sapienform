@@ -12,6 +12,7 @@ from orion.introspect.transport import (
     CURIOSITY_REQUEST_CHANNEL,
     DREAM_REQUEST_CHANNEL,
     ORION_DAY_REQUEST_CHANNEL,
+    RECORD_CORRECTION_REQUEST_CHANNEL,
     REQUEST_KIND,
     RESULT_KIND,
     RESULT_PREFIX,
@@ -24,6 +25,7 @@ from orion.schemas.introspect import (
     IntrospectToolBindingV1,
     OrionDayArguments,
     ReadingResultArguments,
+    RecordCorrectionArguments,
 )
 from orion.schemas.reading import ReadingToolRequestV1, ReadingToolResultV1
 from orion.world_pulse_read.events import TOOL_CHANNEL, TOOL_RESULT_PREFIX
@@ -103,6 +105,26 @@ ORION_DAY_DESCRIPTION = (
 )
 
 
+RECORD_CORRECTION_DESCRIPTION = (
+    "Record a correction to something you wrote in an Orion's Day letter, once the conversation "
+    "with Juniper has established that the claim was wrong and you actually accept that. It "
+    "edits nothing: not the letter, and not any belief. It saves the correction as evidence; a "
+    "later curiosity run is shown it once, with the priors you name and their current "
+    "confidence, and asked to re-test them. That run decides how far, if at all, a prior moves, "
+    "and whether it re-tested each one is recorded on the correction. "
+    "ref is the part's id exactly as orion_day prints it ('2026-10-09 ¶3' or '2026-10-09 carry 5') "
+    "and must name a part that exists. claim: the words you are correcting, quoted from that "
+    "part. correction: what is actually true, in plain words. evidence: what the correction "
+    "rests on, one item each: record refs from orion_day's claim check or citations (e.g. "
+    "'curiosity:e7d03d2ecdbb'), or 'Juniper said so in this conversation'. prior_ids: the exact "
+    "prior_id of each :Prior in your graph that the claim rested on (zero or more; every one "
+    "must exist; an id containing spaces or quotes cannot be named). Only from a conversation "
+    "with Juniper. A tool error saying 'not recorded' means nothing was written (it says why); "
+    "'answer unknown' means it may or may not have been (calling again with the same words is "
+    "safe: it returns the same correction_id). Never report a correction as recorded without "
+    "ok=true and a correction_id."
+)
+
 @dataclass(frozen=True)
 class ToolSpec:
     name: str
@@ -125,6 +147,7 @@ class IntrospectTools:
             ToolSpec("dreams", DREAMS_DESCRIPTION, DreamsArguments),
             ToolSpec("curiosity", CURIOSITY_DESCRIPTION, CuriosityArguments),
             ToolSpec("orion_day", ORION_DAY_DESCRIPTION, OrionDayArguments),
+            ToolSpec("record_correction", RECORD_CORRECTION_DESCRIPTION, RecordCorrectionArguments),
         ]
 
     async def invoke(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
@@ -148,6 +171,14 @@ class IntrospectTools:
                 ORION_DAY_REQUEST_CHANNEL, "orion_day", day_args.model_dump(mode="json", exclude_none=True),
             )
             return result.model_dump(mode="json")
+        if name == "record_correction":
+            correction_args = RecordCorrectionArguments.model_validate(arguments)
+            result = await self._introspect_rpc(
+                RECORD_CORRECTION_REQUEST_CHANNEL, "record_correction",
+                correction_args.model_dump(mode="json"),
+                refused="not recorded",
+            )
+            return result.model_dump(mode="json")
         if name != "reading_results":
             raise ValueError(f"unknown introspect tool: {name}")
         args = ReadingResultArguments.model_validate(arguments)
@@ -161,7 +192,11 @@ class IntrospectTools:
         )
         return (await self._reading_rpc(command)).model_dump(mode="json")
 
-    async def _introspect_rpc(self, channel: str, operation: str, args: dict[str, Any]) -> IntrospectResultV1:
+    async def _introspect_rpc(
+        self, channel: str, operation: str, args: dict[str, Any], *, refused: str = "answer unknown",
+    ) -> IntrospectResultV1:
+        """``refused`` words an ok=false answer. A write tool's responder answers ok=false only
+        before it writes, so that is "not recorded", not "unknown"; no reply stays unknown."""
         correlation_id = uuid4()
         reply = f"{RESULT_PREFIX}{correlation_id}"
         request = IntrospectRequestV1(operation=operation, binding=self.binding, args=args)
@@ -191,7 +226,8 @@ class IntrospectTools:
         except ValueError as exc:
             raise IntrospectUnknownError(f"{operation}: answer unknown (malformed result)") from exc
         if not result.ok:
-            raise IntrospectUnknownError(f"{operation}: answer unknown ({result.error})")
+            label = "answer unknown" if "answer unknown" in (result.error or "") else refused
+            raise IntrospectUnknownError(f"{operation}: {label} ({result.error})")
         if result.operation != operation:
             raise IntrospectUnknownError(f"{operation}: answer unknown (mismatched result)")
         return result

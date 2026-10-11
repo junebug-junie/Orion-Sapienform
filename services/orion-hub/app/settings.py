@@ -971,6 +971,15 @@ class Settings(BaseSettings):
     HUB_CURIOSITY_CARRY_FORWARD_ENABLED: bool = Field(
         default=True, alias="HUB_CURIOSITY_CARRY_FORWARD_ENABLED"
     )
+    # Orion's Day corrections (orion/orion_day/corrections.py): the regular investigate
+    # line, on a writable graph, claims up to 5 recorded letter corrections once, shows each
+    # with its named priors' current confidence / times_tested, and stamps at turn end which
+    # of those priors the run re-tested. Off = the section is never shown or claimed (the
+    # record_correction tool still records). Needs
+    # services/orion-sql-db/manual_migration_orion_day_correction_v1.sql.
+    HUB_CURIOSITY_ORION_DAY_CORRECTIONS_ENABLED: bool = Field(
+        default=True, alias="HUB_CURIOSITY_ORION_DAY_CORRECTIONS_ENABLED"
+    )
 
     # --- Orion's Day: the daily letter (scripts/orion_day_letter.py) --------
     # Hub gathers yesterday (America/Denver), submits an admitted

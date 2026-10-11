@@ -87,7 +87,21 @@ async def test_intake_summary_rolls_up_counts(info_records) -> None:
 
     summaries = [m for m in info_records if m.startswith("Hunter intake summary")]
     assert summaries, info_records
-    assert "vision.edge.frame.v1=1" in summaries[0]
+    assert "orion:vision:frames:vision.edge.frame.v1=1" in summaries[0]
+
+
+def test_bad_log_level_falls_back_instead_of_crashing() -> None:
+    from app.main import configure_loguru
+
+    try:
+        configure_loguru("WARN")  # stdlib accepts, loguru does not
+        handlers = logger._core.handlers  # type: ignore[attr-defined]
+        assert [h.levelno for h in handlers.values()] == [20]
+    finally:
+        logger.remove()
+        import sys
+
+        logger.add(sys.stderr)
 
 
 def test_log_level_applies_to_loguru() -> None:

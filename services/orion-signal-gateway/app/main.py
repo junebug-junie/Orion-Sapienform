@@ -26,7 +26,11 @@ def configure_loguru(level: str) -> None:
     except ImportError:  # chassis falls back to stdlib logging, covered above
         return
     _loguru.remove()
-    _loguru.add(sys.stderr, level=level.upper())
+    try:
+        _loguru.add(sys.stderr, level=level.upper())
+    except (ValueError, TypeError):  # e.g. "WARN": loguru rejects it, stdlib accepts it
+        _loguru.add(sys.stderr, level="INFO")
+        _loguru.warning(f"LOG_LEVEL={level!r} not understood by loguru; using INFO")
 
 
 configure_loguru(settings.LOG_LEVEL)

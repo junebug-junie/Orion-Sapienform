@@ -492,8 +492,8 @@ class Hunter(BaseChassis):
             logger.info(f"{line} first_after_subscribe=true")
         else:
             logger.debug(line)
-        kind = str(env.kind)
-        self._intake_counts[kind] = self._intake_counts.get(kind, 0) + 1
+        key = f"{channel}:{env.kind}"
+        self._intake_counts[key] = self._intake_counts.get(key, 0) + 1
         now = time.monotonic()
         elapsed = now - self._intake_window_start
         if elapsed >= self.INTAKE_SUMMARY_INTERVAL_SEC:
@@ -503,7 +503,7 @@ class Hunter(BaseChassis):
             )
             logger.info(
                 f"Hunter intake summary window_sec={elapsed:.0f} total={total} "
-                f"patterns={self.patterns} by_kind=[{by_kind}]"
+                f"patterns={self.patterns} by_channel_kind=[{by_kind}]"
             )
             self._intake_counts = {}
             self._intake_window_start = now

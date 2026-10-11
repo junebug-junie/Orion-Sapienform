@@ -189,8 +189,8 @@ context, but nothing is claimed about belief movement.
 
 ## Acceptance checks
 
-1. Fixture letter (copy of 2026-10-09): `part=list` returns 29 note paragraphs and the carry
-   bullets. `part=note, index=3` returns exactly paragraph 3. The email renders `¶3` before that same text.
+1. Fixture letter (copy of 2026-10-09): `part=list` returns 24 numbered note paragraphs (plus 5
+   unnumbered headings/rules) and 10 carry items, whose 21 citations all resolve. `part=note, index=3` returns exactly paragraph 3. The email renders `¶3` before that same text.
 2. Carry bullet with `[curiosity:e7d03d2ecdbb]` resolves to that run's excerpt from `material`.
    A planted fake id comes back `unresolved`.
 3. Claim check on the 10-09 dream paragraph: `260.6 hours`, `06:35:27Z` and `01:02:09Z` are each

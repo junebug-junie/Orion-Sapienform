@@ -273,6 +273,22 @@ def capture_falkordb(
         raise RuntimeError(f"docker cp of dump.rdb failed: {proc.stderr.decode(errors='replace')[:500]}")
 
 
+def container_mount_source(container: str, destination: str, *, log: list[str]) -> Path:
+    """Host folder the running container actually mounts at `destination`.
+
+    The backup follows the live mount rather than a hardcoded path, so moving a
+    store's data dir (Chroma -> /mnt/graphdb/chroma, 2026-10-11) can't leave the
+    nightly backup copying a stale or missing folder.
+    """
+    proc = _run(["docker", "inspect", "-f", "{{json .Mounts}}", container], log=log)
+    if proc.returncode != 0:
+        raise RuntimeError(f"docker inspect failed: {proc.stderr.decode(errors='replace')[:500]}")
+    for mount in json.loads(proc.stdout.decode() or "[]") or []:
+        if mount.get("Destination") == destination and mount.get("Source"):
+            return Path(mount["Source"])
+    raise RuntimeError(f"{container} has no mount at {destination}")
+
+
 def capture_stopped_container_tree(
     dest_dir: Path, *, container: str, host_path: Path, log: list[str], stop_timeout_sec: int = 30
 ) -> None:
@@ -338,7 +354,7 @@ def default_targets() -> list[Target]:
             lambda dest, log: capture_stopped_container_tree(
                 dest,
                 container="orion-athena-vector-db",
-                host_path=Path("/mnt/postgres/collapse-mirrors/chroma"),
+                host_path=container_mount_source("orion-athena-vector-db", "/chroma/chroma", log=log),
                 log=log,
             ),
         ),

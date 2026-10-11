@@ -14,7 +14,7 @@ One correction is planted end to end over fixture data, through the real code at
    run A's id. A second take (run B) must get nothing; a cancelled run C's take is released and
    offered again.
 3. Run: a simulated outcome where run A re-tests (and moves) one named prior and never touches
-   the other, scored by the real CuriosityInvestigation._stamp_corrections (turn-start snapshot
+   the other (which a different run moves meanwhile), scored by the real CuriosityInvestigation._stamp_corrections (turn-start snapshot
    from the spend log's own SQL, end state from the graph reader).
 4. Check the row: the re-tested prior is in priors_retested and priors_moved; the untouched prior
    is absent from both; the context-only correction is stamped empty.
@@ -176,6 +176,9 @@ def main(argv: list[str] | None = None) -> int:  # noqa: C901 -- one linear scen
     after_rows = [dict(r) for r in fx.FIXTURE_PRIORS]
     after_rows[0].update(times_tested=after_rows[0]["times_tested"] + 1, confidence=0.3, status="revised",
                          last_run_id=RUN_A)
+    # The other named prior is moved during the turn by a DIFFERENT run (e.g. an urgent run):
+    # run A never touched it, so it must not be credited to run A.
+    after_rows[1].update(times_tested=after_rows[1]["times_tested"] + 1, confidence=0.9, last_run_id="0ther0run000")
     loop = CuriosityInvestigation(
         enabled=True, tick_interval_sec=60.0, min_cooldown_sec=14400.0, daily_cap=3, timeout_sec=60.0,
         session_id="eval", crystallization_sample=1, relation_sample=1, pool_provider=lambda: pool,

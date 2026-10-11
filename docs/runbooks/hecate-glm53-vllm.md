@@ -190,8 +190,9 @@ Build log: `/mnt/scripts/hecate-vllm-build-headers.log` on Hecate.
 Download progress: `docker logs --tail 20 hecate-model-download`.
 Role announcement stays disabled during direct acceptance: the production pool
 still describes the previous llama.cpp worker. Do not advertise Qwen as GLM.
-After acceptance, a one-card candidate requires the Qwen profile and exact served
-alias; the four-card GLM candidate below must not be activated on this inventory.
+After acceptance, render the one-card candidate with `stage_pool.py --gpus 1`.
+It requires the Qwen profile and exact served alias; the default four-card GLM
+candidate below must not be activated on this inventory.
 
 Rollback: stop `orion-hecate-vllm-host` before starting the preserved
 `orion-hecate-hecate-llamacpp-agent-deep` container. The old image and model remain.
@@ -202,9 +203,11 @@ Render a full candidate to a scratch file; the renderer does not edit defaults:
 
 ```bash
 python services/orion-vllm-host/scripts/stage_pool.py > /tmp/hecate-pool.candidate.yaml
+# Live single-card inventory, for the Qwen fallback:
+python services/orion-vllm-host/scripts/stage_pool.py --gpus 1 > /tmp/hecate-qwen-pool.candidate.yaml
 ```
 
-It replaces the existing Hecate `agent-deep` allocation with all four cards and
+The default four-card candidate replaces the Hecate `agent-deep` allocation with all four cards and
 `backend: vllm`, retaining port 8021. All four lend flags must be enabled before
 other classes can borrow it. Do not run the previous Hecate llama.cpp worker
 on those cards/port at the same time. Do not activate the candidate while an
@@ -213,7 +216,7 @@ old `agent-deep` lease is active; drain and verify no outstanding holds first.
 The added backend field is omitted for unchanged llama.cpp roles. Once a vLLM
 role is activated, older strict `PoolConfig` readers cannot decode it. Before
 activation, update the gateway and every reader of shared pool configuration
-(including Hub, durable-runs and Circe's lane controller) from the same branch.
+(including Hub, mesh-guardian, durable-runs and Circe's lane controller) from the same branch.
 The lane controller's Circe role definitions and launch digests remain unchanged.
 Deploying those reader updates and switching the candidate require a concrete
 operator-approved maintenance step; neither is done by this preparation patch.

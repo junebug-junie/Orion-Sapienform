@@ -32,6 +32,23 @@ def test_smoke_rejects_empty_reasoning_only_or_wrong_model(monkeypatch):
     assert not any(x['passed'] for x in evaluate('http://unused', 'agent-deep', 'glm-5.3-flash'))
 
 
+def test_single_card_candidate_preserves_other_roles_and_routing():
+    from orion.gpu_pool.config import load_pool_config
+    live = load_pool_config()
+    candidate = runpy.run_path(str(SERVICE/'scripts/stage_pool.py'))['candidate']
+    cfg = candidate(gpus=1)
+    assert cfg.roles['agent-deep'].backend == 'vllm'
+    assert cfg.roles['agent-deep'].cards == ['hecate-gpu0']
+    assert cfg.cards == live.cards
+    assert cfg.classes == live.classes and cfg.routes == live.routes
+    for role in live.roles:
+        if role != 'agent-deep':
+            assert cfg.roles[role] == live.roles[role]
+    import pytest
+    with pytest.raises(ValueError):
+        candidate(gpus=2)
+
+
 def test_hecate_wrapper_rejects_other_host_before_docker(tmp_path):
     import os
     import subprocess

@@ -1,174 +1,139 @@
-# Hecate GLM 5.3 Flash: Athena preparation and later activation
+# Hecate vLLM: live Qwen and staged GLM
 
-## What is ready
+## Live state (2026-10-11)
 
-Athena can now discover and route to a vLLM role through the existing GPU pool.
-The Hecate profile, immutable source/model revisions, candidate config renderer,
-worker announcement and inference smoke are staged. The worktree pool config
-selects vLLM for the existing one-card `agent-deep` role. Live containers still
-use their previous config until the reviewed activation step.
-The follow-up on 2026-10-11 provisions Hecate's NVMe and builds a pinned SM70
-image. The four-GPU GLM plan does not fit the live one-GPU inventory; the operator
-authorized a single-GPU Qwen validation model. No Circe service changed.
-Native compilation, installation and image export passed. Containerd unpacking
-exposed an unexpected root-disk image store; storage relocation is staged but
-not activated. GPU execution, memory fit and model quality remain **UNVERIFIED**.
+Hecate serves `qwen3-4b-instruct` through Athena's `agent-deep` gateway route.
+The runtime is the pinned 1Cat-vLLM SM70/EXL3 build, not the legacy stock image.
+Live discovery confirms one slot, 8,192 tokens, TP1 and GPU0. HTTP requests,
+streamed tool calls and bus RPC reached Hecate with the exact model identity.
+The maintenance hold was released; ordinary requests work and no test lease remains.
 
-## Current architecture
+The requested GLM checkpoint is fully downloaded to NVMe, but Hecate has exactly
+one Tesla V100-SXM2-32GB. The documented GLM recipe requires four. Juniper
+explicitly authorized the smaller model to validate vLLM. Host RAM does not
+supply the missing GPU capacity. Do not enable the four-card profile on this host.
 
-- Athena: `orion-gpu-pool` grants GPU leases; `orion-llm-gateway` serves HTTP
-  and bus clients. Their settings live in `app/settings.py`; there is no
-  service-root `settings.py` for either. Both have tests and evals.
-- Circe: existing llama.cpp roles are launched by the lane controller. Keep
-  their roles, models and ports as they are during this preparation.
-- Hecate: current inventory records one 32 GB V100 for `agent-deep`, port 8021,
-  Tailscale `100.87.202.68`. The requested checkpoint requires a four-card plan;
-  live SSH and PCI inventory on 2026-10-11 confirmed exactly one V100-SXM2-32GB.
-  The current four-GPU checkpoint plan is **BLOCKED** on hardware/model choice.
-- vLLM host: existing wrapper, `app/settings.py`, compose, requirements and
-  tests. A new `evals/smoke_glm.py` covers opt-in real inference acceptance.
-  The legacy stock-vLLM Dockerfile does **not** build the required fork.
-- Contracts: existing `orion:llm:worker:announce` and GPU pool lease/state
-  channels; no new bus kinds or registry entries.
+**Quality limitation:** the strict arithmetic eval returns `17 × 23 = 391` rather
+than only `391`, including in streaming. That gate still fails. Recall, JSON,
+structured arithmetic and automatic/streamed tool calls pass. This does not
+establish 4B quality equivalent to the previous 27B/128K worker. GLM inference,
+TP4, Anthropic Messages and vision remain **UNVERIFIED**.
 
-The missing seam was llama.cpp-only discovery and dispatch. This patch makes
-that seam explicit without changing Orion's memory, identity or cognition loops.
+## Architecture and deployment
 
-## Pinned upstream build
+Deployment used the reviewed worktree. Merge PR #2615 before rebuilding the pool
+or gateway from shared main: main still has the previous llama.cpp role config
+until that merge. Athena's existing worker exclusion is already present on main.
 
-Sources: [checkpoint card](https://huggingface.co/philbert440/GLM-5.3-Flash-EXL3),
-[pinned API server](https://github.com/1CatAI/1Cat-vLLM/blob/ec60883ad7187dc8aa29b3c30cae5a69e1cfa5cd/vllm/entrypoints/openai/api_server.py),
-[development-only router registration](https://github.com/1CatAI/1Cat-vLLM/blob/ec60883ad7187dc8aa29b3c30cae5a69e1cfa5cd/vllm/entrypoints/serve/instrumentator/__init__.py).
+- Athena GPU pool owns leases and live worker discovery; the gateway dispatches
+  HTTP and bus calls to the granted role. `config/gpu_pool.yaml` selects
+  `agent-deep.backend=vllm`; other role definitions and launch digests are unchanged.
+- Hecate: `100.87.202.68:8021`, container `orion-hecate-vllm-host`, profile
+  `qwen3-4b-vllm-hecate`. The old `orion-hecate-hecate-llamacpp-agent-deep`
+  container is stopped and preserved with its model on telemetry storage.
+- Existing `orion:llm:worker:announce` and GPU pool contracts are used. Announcement
+  alone is insufficient: the pool checks health, model ID/path, capacity and GPUs.
+- With explicit operator approval, deployed compatibility readers on Athena
+  durable-runs/mesh-guardian and Circe's lane controller before activating the
+  pool/gateway images. Hub already had the compatible reader. Circe's model workers
+  were not restarted; its `quick` route still returns a real answer.
+- Services use `app/settings.py`; service-root `settings.py` files are absent.
+  The vLLM host, pool and gateway have tests; vLLM's opt-in model eval is
+  `services/orion-vllm-host/evals/smoke_glm.py`.
 
-The source and weights are locked in
-`services/orion-vllm-host/scripts/glm53.lock.json`. This EXL3 packing needs the
-SM70 path in 1Cat-vLLM. Stock ExLlama and the legacy Orion image are unsuitable.
-The upstream recipe uses four 32 GB V100s, CUDA 12.8 and GCC/G++ 14.
-Its throughput/context claims are upstream reports, not Orion measurements.
+Active image IDs (prefixes):
 
-Prepare source on a writable disk (no weights, CUDA build or deployment):
+| Service | Image |
+|---|---|
+| Hecate vLLM (image config) | `8d4eac1c38a7` |
+| Athena GPU pool | `562b90014859` |
+| Athena gateway | `c86645e65422` |
+| Athena durable-runs | `870f7945992b` |
+| Athena mesh-guardian | `f23a5ef16030` |
+| Circe lane-controller | `126f18023f68` |
 
-```bash
-python3 services/orion-vllm-host/scripts/prepare_source.py /mnt/scripts/hecate-glm53-source
-```
+## Model and image storage
 
-The helper cherry-picks six exact patches onto the tested base, then merges
-only the EXL3 loader branch. Merging all upstream branches imports
-`d4ce513991b79a9cac2a4d72fbe8bcac5f566d5e`, a known MTP startup regression.
-The lock now rejects that ancestor and verifies the tree after every step.
+Juniper explicitly approved erasing Toshiba NVMe serial `49JA22UKK03N`.
+It is ext4 at `/mnt/models`, UUID `19d66b9a-2234-4a60-9180-1862285cd74c`, with a
+persistent fstab entry. Saved partition/fstab metadata under
+`/mnt/scripts/hecate-nvme-layout-before-20261011` is not an erased-data backup.
 
-It stops on conflicts. Inspect each conflict in `CMakeLists.txt` and `csrc/ops.h`;
-retain both independent additions after checking them. Commit the resolution and
-resume with `--resume`. Resume accepts only clean, reviewed intermediate trees.
-Never blindly remove conflict markers. Preserve the final source commit and
-build output as deployment artifacts.
+| Model | NVMe directory | Locked revision | Verified weight bytes |
+|---|---|---|---:|
+| Qwen/Qwen3-4B-Instruct-2507 | `/mnt/models/Qwen3-4B-Instruct-2507` | `cdbee75f17c01a7cc42f958dc650907174af0554` | 8,044,982,000 (3 shards) |
+| philbert440/GLM-5.3-Flash-EXL3 | `/mnt/models/GLM-5.3-Flash-EXL3` | `4ba4b9afb2191578378454cdd28aa35e9484960c` | 104,011,208,249 (13 shards) |
+
+All index-referenced shards exist and download metadata matches these revisions.
+The container binds this NVMe to `/models`; missing host paths are not auto-created.
+
+Docker data-root was already `/mnt/docker` on `/dev/sdb1`, but containerd's separate
+store still used `/var/lib/containerd`. Image unpacking left root with 3.5 GiB free.
+Docker's data-root does not relocate that store; see
+[Docker daemon documentation](https://docs.docker.com/engine/daemon/).
+
+The operator-approved correction is complete:
+
+- Active containerd root: `/mnt/docker/containerd-store`, with a systemd
+  `RequiresMountsFor` dependency. Live snapshot mounts and the nonroot guard pass.
+- Original store retained intact at `/mnt/docker/containerd-root-backup-20261011`.
+- Root: 79 GiB free, 16% used; original 100 GiB LV unchanged. Docker SSD: 686 GiB
+  free; model NVMe: 341 GiB free at verification. No image pruning/root expansion.
+- First attempt exercised recovery when biometrics' startup connection reset.
+  Original config and both workers recovered. Second attempt added bounded
+  retries/curl-managed output and succeeded. Biometrics HTTP health and preserved
+  image identity were verified before moving the old store off root.
+- Evidence/log on Hecate: `/mnt/scripts/hecate-containerd-move-20261011-attempt2`
+  and the adjacent `.log`; attempt-one evidence is preserved separately.
+  **Do not rerun** `/mnt/scripts/hecate-containerd-relocate.sh`.
+
+The launch wrapper checks the configured filesystem and actual snapshot mounts
+from a running container (normally biometrics). It reads the mount table without
+stat-ing root-only Docker directories. Editing config without moving the live
+store cannot satisfy the guard. Stop/down and inspection bypass storage checks.
+
+## Pinned source and build
+
+The [checkpoint card](https://huggingface.co/philbert440/GLM-5.3-Flash-EXL3) requires
+the SM70/EXL3 path in 1Cat-vLLM. The lock is
+`services/orion-vllm-host/scripts/glm53.lock.json`: base, six cherry-picks, EXL3
+merge and per-step tree checks. It rejects the known MTP-regression ancestor
+`d4ce513991b79a9cac2a4d72fbe8bcac5f566d5e`.
+
+Verified source on Athena and Hecate:
+`/mnt/scripts/hecate-glm53-source-verified-20261011`, commit
+`08b29dcd5211cc85502f7ae6a3ef66ff303f20f6`, tree
+`b321701ed88fc9882ae7c71cdb5968a6635505ab`.
 
 **Retired source, do not build:** `/mnt/scripts/hecate-glm53-source-20261011`,
-commit `58531acc450ca0226f71fd1756e3357c7897c479`, tree
-`c5838487a6c58c079cc9e86f3fa391ba5ff1cca0`. It contains the regression.
-The corrected Athena copy is `/mnt/scripts/hecate-glm53-source-corrected-20261011`,
-commit `def8a636157d5e3766c6c03df2b816a521549ada`, tree
-`b321701ed88fc9882ae7c71cdb5968a6635505ab`. Native compilation and installation
-passed on Hecate; runtime acceptance is recorded separately below.
+tree `c5838487a6c58c079cc9e86f3fa391ba5ff1cca0`, which includes the regression.
+Preserve source and graph artifacts.
 
-## Hecate live inventory (2026-10-11)
-
-- SSH and PCI enumeration: one Tesla V100-SXM2-32GB, driver 580.178.04.
-- Existing `orion-hecate-hecate-llamacpp-agent-deep` uses about 24,678 MiB
-  and publishes port 8021; it was not stopped or changed.
-- 183 GiB host RAM; host RAM does not satisfy the documented TP4 GPU allocation.
-- System Python 3.14.4 and GCC 15.2; `nvcc`, `gcc-14` and `uv` absent from PATH.
-- `/mnt/scripts` is a separate 1.6 TiB filesystem. Docker data lives on the
-  separate SSD `/mnt/docker`, but containerd was still using `/var/lib/containerd`.
-  Image unpacking left root with 3.5 GiB free. Do not build/unpack again until
-  the reviewed containerd relocation below is complete.
-- Operator explicitly authorized erasing Toshiba NVMe serial `49JA22UKK03N`.
-  It is now ext4 at `/mnt/models`, UUID `19d66b9a-2234-4a60-9180-1862285cd74c`,
-  with a persistent `/etc/fstab` entry. Original partition table and fstab are
-  recorded in `/mnt/scripts/hecate-nvme-layout-before-20261011` (metadata only,
-  not a backup of erased Windows data).
-- Both pinned snapshots downloaded successfully: Qwen has 3 weight shards
-  (8,044,982,000 bytes), GLM has 13 (104,011,208,249 bytes). All index-referenced
-  shards exist and download metadata matches the pinned revisions. The CUDA
-  image is exported; unpack/runtime validation is pending the storage fix.
-  Existing llama.cpp and biometrics workers remain running. No pool route activated.
-
-Recheck before any eventual activation:
+For a fresh source checkout:
 
 ```bash
-ssh hecate@hecate 'hostname; nvidia-smi; nvidia-smi topo -m; df -h; nvcc --version; gcc-14 --version'
+python3 services/orion-vllm-host/scripts/prepare_source.py /mnt/scripts/hecate-glm53-source-new
 ```
 
-Do not start the four-GPU build/serve plan on a one-GPU inventory. If cards need
-to move from Circe, decide that separately; it changes existing service capacity.
-Transfer/assemble the pinned source on Hecate. In that source checkout:
+If the helper stops on conflicts, inspect both additions in `CMakeLists.txt` and
+`csrc/ops.h`, retain the necessary independent declarations, commit, then use
+`--resume`. Never blindly strip conflict markers. The helper verifies ancestry
+and resulting trees before accepting a checkpoint.
 
-```bash
-uv venv --python 3.12 --seed
-uv pip install -r requirements/build/cuda.txt --torch-backend=cu128
-TORCH_CUDA_ARCH_LIST=7.0 CMAKE_CUDA_ARCHITECTURES=70 MAX_JOBS=10 \
-  CC=gcc-14 CXX=g++-14 CUDAHOSTCXX=g++-14 \
-  uv pip install -e . --torch-backend=cu128 --no-build-isolation
-uv pip install pytest tblib
-.venv/bin/python -m pytest tests/kernels/quantization/test_exl3_moe.py tests/models/glm5next/test_sm70_sparse.py
-hf download philbert440/GLM-5.3-Flash-EXL3 \
-  --revision 4ba4b9afb2191578378454cdd28aa35e9484960c --local-dir /models/GLM-5.3-Flash-EXL3
-```
+`Dockerfile.sm70` builds CUDA12.8/GCC14/Python3.12/torch2.10 for SM70 and reconstructs
+the pinned source from Git objects to avoid upstream Docker-ignore omissions.
+Native compilation, installation, export and actual GPU execution passed.
+Image: `orion-vllm-host:sm70-glm53-b321701e`.
+Build log on Hecate: `/mnt/scripts/hecate-vllm-build-headers.log`.
 
-Check that `/models` is writable and has sufficient free space first; choose a
-mount at that path rather than changing the profile/engine identity independently.
-Install Orion host requirements into this same environment. Do not use the
-stock image. In the Hecate Orion worktree, set the following **local-only**
-service `.env` values, with the absolute profile path for that worktree:
+## Explicit launch and configuration
 
-```dotenv
-NODE_NAME=hecate
-SERVICE_NAME=orion-vllm-host
-ORION_BUS_URL=redis://100.92.216.81:6379/0
-VLLM_PROFILE_NAME=glm-5.3-flash-exl3-hecate
-VLLM_MODEL_ID=
-LLM_PROFILES_CONFIG_PATH=/absolute/orion-worktree/config/llm_profiles.yaml
-VLLM_HOST=100.87.202.68
-VLLM_PORT=8021
-LLM_ROLE=agent-deep
-LLM_ANNOUNCE_HOST=hecate
-LLM_ANNOUNCE_PORT=8021
-```
+Athena's generic post-pull classifier and bring-up sweeps exclude `orion-vllm-host`.
+The base Compose service additionally requires `--profile vllm-worker`. A generic
+`up` cannot launch it. Use the Hecate wrapper from a worktree, never shared main.
 
-Run the wrapper with the fork's Python and Orion on `PYTHONPATH` from
-`services/orion-vllm-host` (its settings read `.env`). Replace these two absolute
-paths with the verified checkouts on Hecate:
-
-```bash
-PYTHONPATH=/absolute/orion-worktree:/absolute/orion-worktree/services/orion-vllm-host \
-  /absolute/1Cat-vLLM/.venv/bin/python -m app.main
-```
-
-The launch profile supplies the constrained sequence count, precision, cache,
-parsers, speculation and engine environment. It also registers only the
-read-only `/orion/server-info` middleware. Do **not** enable
-`VLLM_SERVER_DEV_MODE`; the pool does not need the fork's other developer APIs.
-A foreground run is the first acceptance step; a permanent service/container
-and its exact rollback should be reviewed after the hardware smoke succeeds.
-
-## Explicit Hecate container and single-GPU validation
-
-Athena's post-pull classifier and bring-up sweeps exclude `orion-vllm-host`.
-The base Compose file also requires the explicit `vllm-worker` profile; a generic
-`up` cannot start it. Never add the worker to Athena's automatic rebuild list.
-
-`Dockerfile.sm70` uses CUDA 12.8.1, GCC 14, Python 3.12 and the verified source tree.
-`docker-compose.hecate.yml` supplies the external source build context and binds
-the real NVMe `/mnt/models` into `/models`. The wrapper rejects other hosts and
-an absent/wrong NVMe mount. Before builds and launches, it also verifies the
-configured image-store filesystem and live containerd snapshot mounts from
-running containers. Editing daemon config alone cannot satisfy this gate. At
-least one running container with `cat` must supply mount evidence (normally
-biometrics). Stop/down and inspection commands bypass storage checks for recovery.
-This is separate from the legacy stock-vLLM image.
-
-Hecate worktree: `/mnt/scripts/Orion-Sapienform-hecate-vllm`.
-Set its local service env (also synchronize the primary checkout's ignored env):
+Hecate worktree: `/mnt/scripts/Orion-Sapienform-hecate-vllm`. Its ignored local env,
+also synchronized to the primary checkout, contains:
 
 ```dotenv
 NODE_NAME=hecate
@@ -176,121 +141,97 @@ SERVICE_NAME=orion-vllm-host
 ORION_BUS_URL=redis://100.92.216.81:6379/0
 VLLM_SOURCE_DIR=/mnt/scripts/hecate-glm53-source-verified-20261011
 VLLM_PROFILE_NAME=qwen3-4b-vllm-hecate
+LLM_PROFILES_CONFIG_PATH=/app/config/llm_profiles.yaml
 VLLM_HOST_PORT=8021
 VLLM_ENFORCE_EAGER=true
-LLM_ROLE=
-LLM_ANNOUNCE_PORT=
+LLM_ROLE=agent-deep
+LLM_ANNOUNCE_HOST=hecate
+LLM_ANNOUNCE_PORT=8021
 ```
 
-Qwen checkpoint: `Qwen/Qwen3-4B-Instruct-2507` at
-`cdbee75f17c01a7cc42f958dc650907174af0554`, downloaded to
-`/mnt/models/Qwen3-4B-Instruct-2507`. The same downloader then fetches the pinned
-GLM checkpoint into `/mnt/models/GLM-5.3-Flash-EXL3` for later hardware use.
-Host RAM does not supply the missing three GPUs in the documented GLM TP4 recipe.
+The profile supplies FP16, TP1, GPU0, context8192, one sequence, 0.85 memory
+fraction and Hermes automatic tool parsing. Do not enable `VLLM_SERVER_DEV_MODE`;
+the read-only `/orion/server-info` middleware supplies live discovery facts.
 
 ```bash
+# Hecate only; explicit future rebuild/start commands:
 services/orion-vllm-host/scripts/hecate.sh build
-# After draining the existing role and stopping its worker:
-services/orion-vllm-host/scripts/hecate.sh up -d
+services/orion-vllm-host/scripts/hecate.sh up -d --no-build
+```
+
+Blank both `LLM_ROLE` and `LLM_ANNOUNCE_PORT` for a deliberately undiscovered
+worker during future isolated acceptance. Current live deployment has them enabled.
+
+## Verification and evidence
+
+The actual V100 passed all 80 EXL3/SM70 kernel tests:
+
+```bash
+services/orion-vllm-host/scripts/hecate.sh run --rm --no-deps \
+  --entrypoint python --workdir /opt/vllm vllm-host -m pytest \
+  tests/kernels/quantization/test_exl3_moe.py tests/models/glm5next/test_sm70_sparse.py -q
+```
+
+Run this only with the GPU drained and model worker stopped; it uses the GPU.
+Runtime reports torch `2.10.0+cu128`, CUDA12.8, vLLM `0.1.dev20452+g08b29dcd5`,
+SM70 and EXL3 available. `/health`, `/v1/models` and `/orion/server-info` agree.
+
+The strict model smoke remains useful and currently exits nonzero for formatting:
+
+```bash
 python3 services/orion-vllm-host/evals/smoke_glm.py \
   --url http://100.87.202.68:8021 \
   --route qwen3-4b-instruct --expected-model qwen3-4b-instruct
+# Gateway equivalent (may wait for a normal pool lease):
+python3 services/orion-vllm-host/evals/smoke_glm.py \
+  --url http://127.0.0.1:8210 --route agent-deep --expected-model qwen3-4b-instruct
 ```
 
-Build log: `/mnt/scripts/hecate-vllm-build-headers.log` on Hecate.
-Download progress: `docker logs --tail 20 hecate-model-download`.
-Role announcement stays disabled during direct acceptance: the production pool
-still describes the previous llama.cpp worker. Do not advertise Qwen as GLM.
-After acceptance, render the one-card candidate with `stage_pool.py --gpus 1`.
-It requires the Qwen profile and exact served alias; the default four-card GLM
-candidate below must not be activated on this inventory.
+Committed synthetic evidence lives at
+`docs/superpowers/evidence/2026-10-11-hecate-vllm/`. It records failing exact-text
+arithmetic, successful recall/JSON, completed streaming, automatic and streamed
+tool calls, structured arithmetic, context rejection, fresh announcement,
+HTTP/bus dispatch and an ordinary request after maintenance release.
 
-Rollback: stop `orion-hecate-vllm-host` before starting the preserved
-`orion-hecate-hecate-llamacpp-agent-deep` container. The old image and model remain.
+Bus correlation `1b29fb78-10e7-4701-ab92-ec4ed953ff18` proves
+`served_by=hecate-worker-agent-deep` and exact model identity. Normal HTTP correlation
+`a6eabc40-bbf8-40cc-8b80-9eaac5d94da9` returned `{"answer":391}` after release.
+Circe `quick` correlation `0fb5c43c-36cb-421c-81b0-75dbe3ef8ed0` reached
+`circe-worker-fast` and returned `READY.`.
 
-## Containerd storage correction (staged, not executed)
+During warm-up, the pool reported down/zero slots. A queued client's timeout
+cancelled cleanly with no remaining child lease. This verifies cancellation while
+unavailable, not a completed server-side timeout/error response. The test hold
+`367216bbc21340ec82679b1f6e9c6165` was explicitly released and no test lease remains.
 
-Docker's `data-root` does not relocate the separate containerd image store.
-See [Docker daemon storage documentation](https://docs.docker.com/engine/daemon/).
-Live biometrics mount information confirmed `/var/lib/containerd` snapshot paths.
-The image was exported as `orion-vllm-host:sm70-glm53-b321701e`, image config
-`8d4eac1c38a7e8db61cc0add69404a825e5bc14ca1acd3a05e160d62548c03f7`.
-Root expansion was considered and withdrawn; the root LV remains 100 GiB.
+## Rollback and future four-card activation
 
-A live pre-copy to `/mnt/docker/containerd-store` has completed; it is not yet
-active. Hecate's `/mnt/scripts/hecate-containerd-relocate.sh` is the reviewed
-operator artifact. It requires explicit approval and runs outside Docker as a
-host oneshot because it stops Docker/containerd. It checks the SSD identity,
-refuses unexpected running containers and pre-existing evidence, saves immutable
-configuration evidence, stops the two known workers, finishes and verifies the
-copy, and switches containerd with a mount dependency. It then checks preserved
-image identity, biometrics HTTP health and actual snapshot mount paths. The old
-store is moved intact to `/mnt/docker/containerd-root-backup-20261011`, freeing
-root without deleting the rollback copy. Failures before live verification
-attempt to restore the original configuration and both workers; after verification,
-the new store stays active if the backup move is interrupted.
+Drain Hecate and hold the role before changing its worker. Stop vLLM before
+starting the preserved llama.cpp worker; they share GPU0 and port8021. Restore
+pool/gateway config and images to the previous llama.cpp backend. Athena's
+pre-activation images are tagged:
 
-The switch briefly interrupts Hecate biometrics. The old GPU worker stays stopped
-for the already-authorized vLLM acceptance checks. Do not execute until the operator
-confirms this exact maintenance action. No image pruning or root expansion is
-part of this correction. Migration and recovered free space remain **UNVERIFIED**.
+```text
+orion-gpu-pool-gpu-pool:hecate-rollback-20261011
+orion-llm-gateway-llm-gateway:hecate-rollback-20261011
+```
 
-## Candidate routing and safe rollout
+Activation/rollback Compose overrides are under `/tmp/hecate-{activate,rollback}-<service>.yml`
+on Athena; image IDs are also in the PR report. If those temporary files are gone,
+create an override selecting the rollback image for `gpu-pool` or `llm-gateway`,
+then use the worktree's `scripts/safe_docker_build.sh` with that override and
+`up -d --no-build`. The additive compatible-reader upgrades can stay in place.
+Do not overwrite shared main or remove storage/model rollback artifacts.
 
-Render a full candidate to a scratch file; the renderer does not edit defaults:
+For later hardware availability, render a candidate without mutating live defaults:
 
 ```bash
-python services/orion-vllm-host/scripts/stage_pool.py > /tmp/hecate-pool.candidate.yaml
-# Live single-card inventory, for the Qwen fallback:
-python services/orion-vllm-host/scripts/stage_pool.py --gpus 1 > /tmp/hecate-qwen-pool.candidate.yaml
+python3 services/orion-vllm-host/scripts/stage_pool.py > /tmp/hecate-tp4.candidate.yaml
+python3 services/orion-vllm-host/scripts/stage_pool.py --gpus 1 > /tmp/hecate-tp1.candidate.yaml
 ```
 
-The default four-card candidate replaces the Hecate `agent-deep` allocation with all four cards and
-`backend: vllm`, retaining port 8021. All four lend flags must be enabled before
-other classes can borrow it. Do not run the previous Hecate llama.cpp worker
-on those cards/port at the same time. Do not activate the candidate while an
-old `agent-deep` lease is active; drain and verify no outstanding holds first.
-
-The added backend field is omitted for unchanged llama.cpp roles. Once a vLLM
-role is activated, older strict `PoolConfig` readers cannot decode it. Before
-activation, update the gateway and every reader of shared pool configuration
-(including Hub, mesh-guardian, durable-runs and Circe's lane controller) from the same branch.
-The lane controller's Circe role definitions and launch digests remain unchanged.
-Deploying those reader updates and switching the candidate require a concrete
-operator-approved maintenance step; neither is done by this preparation patch.
-
-After approval, from the selected Orion worktree with synchronized local env:
-
-```bash
-scripts/safe_docker_build.sh orion-llm-gateway up -d --build
-scripts/safe_docker_build.sh orion-gpu-pool up -d --build
-```
-
-These are future restart commands, not commands run during Athena preparation.
-The active `config/gpu_pool.yaml` must contain the reviewed candidate before
-building the activated images. Reader upgrades on Circe must precede activation.
-
-## Acceptance and rollback
-
-1. From Athena: `/health`, `/v1/models`, `/orion/server-info` on Hecate answer.
-   Model path/alias, CUDA indices and live capacity agree with the selected
-  profile: one card for Qwen, four cards for GLM. Inspect startup
-   logs for the EXL3 and SM70 kernels. A heartbeat alone proves none of this.
-2. Run direct synthetic inference:
-   `python services/orion-vllm-host/evals/smoke_glm.py --url http://100.87.202.68:8021`.
-   Save the nonempty outputs, model ID and usage. The set checks arithmetic,
-   a planted key and JSON; it is not a comprehensive quality benchmark.
-3. After approved activation, verify a fresh announcement, confirmed pool role,
-   lease grant/release and a bus response with Hecate `served_by` and the exact
-   model. Run the same smoke through Athena using
-   `--url http://127.0.0.1:8210 --route agent-deep`.
-4. Check streamed text and tool calls separately. Anthropic Messages and images
-   remain disabled/unvalidated for this integration; the fork having an endpoint
-   or vision tower is not proof that Orion's paths work.
-5. Test Hecate unavailable: no fabricated answer, no false healthy capacity,
-   no leaked lease, existing Circe routes still serve.
-
-For rollback, drain Hecate work, restore the previous pool config and rebuild
-pool/gateway from the chosen worktree. Stop the new worker before restoring
-the old one. No schema/database migration or persistent model-state rewrite is
-introduced. Leave the source and graph artifacts intact.
+TP4 must be independently approved and verified against four physical GPUs,
+model memory fit and live GLM inference. Do not move Circe cards or advertise
+Qwen as GLM. All readers of the shared pool config must support the selected
+backend before activation. Confirm exact model/alias/context in discovery and
+repeat HTTP, bus, streaming, tool and lease tests before releasing maintenance.

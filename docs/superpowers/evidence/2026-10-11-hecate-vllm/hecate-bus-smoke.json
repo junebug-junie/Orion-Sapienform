@@ -1,0 +1,31 @@
+{
+  "kind": "llm.chat.result",
+  "correlation_id": "1b29fb78-10e7-4701-ab92-ec4ed953ff18",
+  "content": "{\n  \"answer\": 391\n}",
+  "model_used": "qwen3-4b-instruct",
+  "meta": {
+    "served_by": "hecate-worker-agent-deep",
+    "gateway": "gateway-llm-gateway",
+    "route": "agent-deep",
+    "provider_reasoning_available": false,
+    "inline_think_extracted": false,
+    "thinking_source": "none",
+    "structured_output_diagnostics": {
+      "structured_output_requested": false,
+      "structured_output_method": null,
+      "structured_output_schema_name": null,
+      "response_format_shape": "json_object_only",
+      "thinking_policy": null,
+      "chat_template_kwargs_sent": null,
+      "backend_name": "vllm",
+      "route": "agent-deep",
+      "served_by": "hecate-worker-agent-deep"
+    }
+  },
+  "usage": {
+    "prompt_tokens": 31,
+    "total_tokens": 43,
+    "completion_tokens": 12,
+    "prompt_tokens_details": null
+  }
+}

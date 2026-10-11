@@ -21,6 +21,15 @@ def validate_mount(root, mount):
         raise ValueError(f"Image store {root} is on {mount}, not the Docker SSD /mnt/docker")
 
 
+def mount_for_root(root, mounts):
+    # Read the mount table without stat-ing containerd's root-only directories.
+    path = Path(root).resolve()
+    parents = [Path(item["target"]) for item in mounts if path.is_relative_to(item["target"])]
+    if not parents:
+        raise ValueError(f"No filesystem found for image store {root}")
+    return str(max(parents, key=lambda parent: len(parent.parts)))
+
+
 def live_snapshot_root(mountinfo):
     """Read the host snapshot path exposed by a running container's root mount."""
     marker = "/io.containerd.snapshotter.v1.overlayfs/"
@@ -53,9 +62,10 @@ def main():
     ], text=True))
     config = Path("/etc/containerd/config.toml")
     root = image_root(info, config.read_text() if config.exists() else "")
-    mount = subprocess.check_output([
-        "findmnt", "-n", "-o", "TARGET", "--target", str(Path(root).resolve()),
-    ], text=True).strip()
+    mounts = json.loads(subprocess.check_output([
+        "findmnt", "--json", "--list", "--output", "TARGET",
+    ], text=True))["filesystems"]
+    mount = mount_for_root(root, mounts)
     validate_mount(root, mount)
     if ["driver-type", "io.containerd.snapshotter.v1"] in (info.get("driver_status") or []):
         containers = subprocess.check_output(["docker", "ps", "-q"], text=True).split()

@@ -48,6 +48,19 @@ def test_matching_live_storage_is_accepted():
     CHECK["validate_live_root"]("/mnt/docker/containerd-store", mountinfo("/mnt/docker/containerd-store"))
 
 
+def test_mount_table_identifies_ssd_without_stat_of_private_store():
+    mounts = [{"target": "/"}, {"target": "/mnt/docker"}]
+    assert CHECK["mount_for_root"]("/mnt/docker/containerd-store", mounts) == "/mnt/docker"
+    assert CHECK["mount_for_root"]("/mnt/docker-other/store", mounts) == "/"
+
+
+def test_missing_ssd_and_nested_mount_do_not_pass_as_docker_ssd():
+    root = "/mnt/docker/containerd-store"
+    for mounts in ([{"target": "/"}], [{"target": "/"}, {"target": "/mnt/docker"}, {"target": root}]):
+        with pytest.raises(ValueError, match="not the Docker SSD"):
+            CHECK["validate_mount"](root, CHECK["mount_for_root"](root, mounts))
+
+
 @pytest.mark.parametrize("data", ["", "1 2 0:1 / / rw - ext4 /dev/sda rw\n"])
 def test_missing_live_snapshot_proof_fails_closed(data):
     with pytest.raises(ValueError, match="Cannot establish"):

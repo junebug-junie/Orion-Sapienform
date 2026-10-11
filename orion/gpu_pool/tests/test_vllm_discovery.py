@@ -91,11 +91,16 @@ def test_stale_down_wrong_alias_and_wrong_probe_refuse():
     assert not resolve(data)[1].healthy
 
 
-def test_legacy_role_serialization_is_unchanged_and_active_config_stays_llamacpp():
+def test_only_hecate_changes_backend_and_legacy_serialization_is_unchanged():
     cfg = load_pool_config()
-    assert all(r.backend == 'llamacpp' for r in cfg.roles.values())
-    assert all('backend' not in r for r in cfg.model_dump()['roles'].values())
-    assert configuration().model_dump()['roles']['agent-deep']['backend'] == 'vllm'
+    serialized = cfg.model_dump()['roles']
+    assert cfg.roles['agent-deep'].backend == 'vllm'
+    assert cfg.roles['agent-deep'].cards == ['hecate-gpu0']
+    assert serialized['agent-deep']['backend'] == 'vllm'
+    for name, role in cfg.roles.items():
+        if name != 'agent-deep':
+            assert role.backend == 'llamacpp'
+            assert 'backend' not in serialized[name]
 
 
 def test_routes_report_vllm_without_claiming_health():

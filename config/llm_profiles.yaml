@@ -2343,3 +2343,31 @@ profiles:
     notes: >-
       Staged only. Requires pinned 1Cat-vLLM SM70 EXL3 build, not the stock host image.
       No active pool role selects this profile. See docs/runbooks/hecate-glm53-vllm.md.
+
+  qwen3-4b-vllm-hecate:
+    display_name: "Qwen3 4B Instruct — Hecate vLLM validation"
+    backend: vllm
+    task_type: chat
+    model_id: /models/Qwen3-4B-Instruct-2507
+    supports_tools: true
+    supports_embeddings: false
+    gpu:
+      num_gpus: 1
+      tensor_parallel_size: 1
+      device_ids: [0]
+      max_model_len: 8192
+      max_batch_tokens: 2048
+      max_concurrent_requests: 1
+      gpu_memory_fraction: 0.85
+    vllm:
+      pool_discovery: true
+      served_model_name: qwen3-4b-instruct
+      dtype: half
+      tool_call_parser: hermes
+      enable_auto_tool_choice: true
+      env:
+        VLLM_WORKER_MULTIPROC_METHOD: spawn
+    notes: >-
+      Single-V100 validation model; no active pool role selects this profile.
+      Pin Qwen/Qwen3-4B-Instruct-2507 at cdbee75f17c01a7cc42f958dc650907174af0554.
+      See docs/runbooks/hecate-glm53-vllm.md for the explicit Hecate image build.

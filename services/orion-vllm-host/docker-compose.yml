@@ -2,6 +2,8 @@
 
 services:
   vllm-host:
+    # Never start a GPU worker during a generic Athena pull/rebuild sweep.
+    profiles: [vllm-worker]
     logging:
       driver: journald
       options:

@@ -32,6 +32,7 @@ from typing import Any
 
 from orion.schemas.orion_day import (
     OrionDayCondensationV1,
+    OrionDayCorrectionV1,
     OrionDayLlmViewV1,
     OrionDayMaterialV1,
     ReverieThoughtV1,
@@ -56,7 +57,7 @@ REVERIE_FRAME_CHARS = 400
 MIN_CLIP_CHARS = 400
 
 _REF_RE = re.compile(r"\[((?:curiosity|curiosity_failed|self_sense|reading|reading_journal|dream|dream_offered|"
-                     r"chat_compactor|github_compactor|world_pulse_digest|visual_reverie|reverie|reverie_theme)"
+                     r"chat_compactor|github_compactor|world_pulse_digest|visual_reverie|reverie|reverie_theme|correction)"
                      r":[^\]\s]+)\]")
 
 
@@ -89,6 +90,33 @@ def _fmt_time(value) -> str:
 
 def _yn(value) -> str:
     return "unknown" if value is None else ("yes" if value else "no")
+
+
+def correction_outcome_text(c: OrionDayCorrectionV1) -> str:
+    """What became of a correction's named priors so far, in plain words (digest and email)."""
+    if not c.prior_ids:
+        return "No prior named: context only."
+    named = ", ".join(c.prior_ids)
+    if c.offered_run_id is None:
+        return f"Priors it rested on: {named}. Not yet offered to a curiosity run."
+    if c.priors_retested is None:
+        return f"Priors it rested on: {named}. Offered to curiosity run {c.offered_run_id}; its outcome is not recorded yet."
+    untouched = [p for p in c.prior_ids if p not in c.priors_retested]
+    moved = "unknown" if c.priors_moved is None else (", ".join(c.priors_moved) or "none")
+    return (f"Priors it rested on: {named}. Curiosity run {c.offered_run_id} re-tested: "
+            f"{', '.join(c.priors_retested) or 'none'}; moved: {moved}"
+            + (f"; not re-tested: {', '.join(untouched)}." if untouched else "."))
+
+
+def _correction_parts(c: OrionDayCorrectionV1) -> list:
+    evidence = "; ".join(str(e.get("text")) for e in c.evidence if e.get("text")) or "none recorded"
+    return [
+        f"### [correction:{c.correction_id}] Correction to my letter {c.ref}",
+        "I wrote:", _Body(c.claim),
+        "What is actually true:", _Body(c.correction),
+        f"Evidence: {evidence}.",
+        correction_outcome_text(c),
+    ]
 
 
 def _full_text_blocks(material: OrionDayMaterialV1) -> list[tuple[str, list]]:
@@ -155,6 +183,9 @@ def _full_text_blocks(material: OrionDayMaterialV1) -> list[tuple[str, list]]:
         sections.append((f"## Dreams ({len(material.dream_narratives)} narratives, "
                          f"{len(material.dream_hypotheses)} hypotheses offered to me)", dreams))
 
+    if material.corrections:
+        sections.append(("## Corrections from conversations with Juniper",
+                         [_correction_parts(c) for c in material.corrections]))
     if material.chat_compactor is not None:
         c = material.chat_compactor
         sections.append(("## Conversations with Juniper (chat digest)",
@@ -345,6 +376,7 @@ def material_ref_records(material: OrionDayMaterialV1) -> dict[str, dict[str, An
         records[f"world_pulse_digest:{material.world_pulse_digest.run_id}"] = dump(material.world_pulse_digest)
     records |= {f"visual_reverie:{v.sha256[:16]}": dump(v) for v in material.visual_reveries}
     records |= {f"reverie:{t.thought_id[:8]}": dump(t) for t in material.reverie_thoughts}
+    records |= {f"correction:{c.correction_id}": dump(c) for c in material.corrections}
     for c in material.reverie_chains:
         records.setdefault(f"reverie_theme:{c.theme_key or 'unthemed'}", dump(c))
     return records

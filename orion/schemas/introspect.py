@@ -8,6 +8,7 @@ Design: docs/superpowers/specs/2026-09-28-orion-introspect-mcp-design.md.
 from __future__ import annotations
 
 import json
+import re
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Literal
 from uuid import UUID
@@ -40,8 +41,8 @@ CURIOSITY_FULL_JSON_BUDGET = 9000
 CURIOSITY_WINDOW_DAYS = 90
 CURIOSITY_RUN_ID_PATTERN = r"^[A-Za-z0-9_.:-]{1,64}$"
 
-IntrospectBusOperation = Literal["dreams", "curiosity", "orion_day"]
-IntrospectOperation = Literal["reading_result", "dreams", "curiosity", "orion_day"]
+IntrospectBusOperation = Literal["dreams", "curiosity", "orion_day", "record_correction"]
+IntrospectOperation = Literal["reading_result", "dreams", "curiosity", "orion_day", "record_correction"]
 
 # The day sections of an Orion's Day letter, named as the email headings read
 # (services/orion-hub/scripts/orion_day_email.py). Each maps to the material
@@ -53,6 +54,16 @@ OrionDaySection = Literal[
 # A note has ~25 paragraphs and a carry-forward ~10 items; a bound only so a
 # typo cannot ask for paragraph 10**9.
 ORION_DAY_MAX_INDEX = 500
+
+# record_correction: a letter part by the ref the email and `orion_day` print, the corrected
+# words, and what the correction rests on. Bounds are generous for one claim, tight enough
+# that a whole letter cannot be pasted in as a "claim".
+CORRECTION_REF_PATTERN = r"^\d{4}-\d{2}-\d{2} (?:¶\d{1,4}|carry \d{1,4})$"
+CORRECTION_TEXT_CAP = 2000
+CORRECTION_EVIDENCE_MAX = 10
+CORRECTION_EVIDENCE_CAP = 500
+CORRECTION_PRIORS_MAX = 10
+CORRECTION_PRIOR_ID_PATTERN = r"^[^\s\"'\\`]{1,200}$"
 
 
 def clip_text(text: str | None, cap: int = DEFAULT_TEXT_CAP) -> tuple[str, bool]:
@@ -287,4 +298,67 @@ class OrionDayArguments(BaseModel):
         if self.query is not None and (self.index is not None or self.part == "section"):
             raise ValueError("query searches note paragraphs and carry items by meaning; it cannot be "
                              "combined with index or part=section")
+        return self
+
+
+def _strip_required(value: Any, field: str) -> Any:
+    if not isinstance(value, str):
+        return value
+    value = value.strip()
+    if not value:
+        raise ValueError(f"{field} must not be blank")
+    return value
+
+
+class RecordCorrectionArguments(BaseModel):
+    """Model-supplied arguments for the ``record_correction`` tool.
+
+    A claim in an Orion's Day letter that a conversation with Juniper showed was wrong.
+    Recording it changes no belief: it is evidence offered to Orion's next curiosity run,
+    which re-tests ``prior_ids`` itself. ``ref`` must name a numbered note paragraph or carry
+    item (``2026-10-09 ¶3`` / ``2026-10-09 carry 5``); the responder checks it exists and that
+    every prior id is in Orion's worldview before anything is written.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+    ref: str = Field(min_length=1, max_length=40, pattern=CORRECTION_REF_PATTERN)
+    claim: str = Field(min_length=1, max_length=CORRECTION_TEXT_CAP)
+    correction: str = Field(min_length=1, max_length=CORRECTION_TEXT_CAP)
+    evidence: list[str] = Field(min_length=1, max_length=CORRECTION_EVIDENCE_MAX)
+    prior_ids: list[str] = Field(default_factory=list, max_length=CORRECTION_PRIORS_MAX)
+
+    @field_validator("ref", mode="before")
+    @classmethod
+    def _strip_ref(cls, value: Any) -> Any:
+        return value.strip() if isinstance(value, str) else value
+
+    @field_validator("claim", "correction", mode="before")
+    @classmethod
+    def _strip_text(cls, value: Any, info) -> Any:
+        return _strip_required(value, info.field_name)
+
+    @field_validator("evidence", mode="before")
+    @classmethod
+    def _strip_evidence(cls, value: Any) -> Any:
+        if not isinstance(value, list):
+            return value
+        out = [_strip_required(v, "evidence item") for v in value]
+        if any(isinstance(v, str) and len(v) > CORRECTION_EVIDENCE_CAP for v in out):
+            raise ValueError(f"each evidence item is at most {CORRECTION_EVIDENCE_CAP} characters")
+        return out
+
+    @field_validator("prior_ids", mode="before")
+    @classmethod
+    def _strip_prior_ids(cls, value: Any) -> Any:
+        if not isinstance(value, list):
+            return value
+        return [_strip_required(v, "prior id") for v in value]
+
+    @model_validator(mode="after")
+    def _distinct(self):
+        bad = [p for p in self.prior_ids if not re.match(CORRECTION_PRIOR_ID_PATTERN, p)]
+        if bad:
+            raise ValueError(f"prior ids are exact :Prior prior_id strings; not valid: {bad[:3]}")
+        if len(set(self.prior_ids)) != len(self.prior_ids):
+            raise ValueError("prior_ids must not repeat")
         return self

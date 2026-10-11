@@ -22,6 +22,8 @@ Sources:
 * compactors -- the chat and GitHub compactor journal entries for the day, by their
   stable ids (or their stable source_ref), full length.
 * world pulse -- the day's world_pulse_digest, if any.
+* corrections -- orion_day_correction rows recorded in the window (letter claims Juniper and
+  Orion agreed were wrong; orion/orion_day/corrections.py), with their outcome so far.
 """
 
 from __future__ import annotations
@@ -43,6 +45,7 @@ from orion.schemas.orion_day import (
     DreamHypothesisV1,
     DreamNarrativeV1,
     JournalTextV1,
+    OrionDayCorrectionV1,
     OrionDayMaterialV1,
     OrionDaySourceStatusV1,
     ReadingItemV1,
@@ -160,6 +163,14 @@ FROM reverie_visual_artifact a
 LEFT JOIN reverie_visual_chain c ON c.chain_id = a.chain_id
 WHERE a.created_at >= $1 AND a.created_at < $2
 ORDER BY a.created_at, a.sha256
+"""
+
+CORRECTIONS_SQL = """
+SELECT correction_id, created_at, letter_date, ref, claim, correction, evidence, prior_ids,
+       offered_run_id, priors_retested, priors_moved
+FROM orion_day_correction
+WHERE created_at >= $1 AND created_at < $2
+ORDER BY created_at, correction_id
 """
 
 WORLD_PULSE_DIGEST_SQL = """
@@ -398,6 +409,19 @@ async def gather_world_pulse_digest(conn: Any, letter_date: date) -> WorldPulseD
     )
 
 
+async def gather_corrections(conn: Any, start: datetime, end: datetime) -> list[OrionDayCorrectionV1]:
+    def _texts(value: Any) -> list[str] | None:
+        return None if value is None else [str(v) for v in value]
+
+    return [OrionDayCorrectionV1(
+        correction_id=str(r["correction_id"]), created_at=_aware(r["created_at"]), letter_date=r["letter_date"],
+        ref=r["ref"], claim=r["claim"] or "", correction=r["correction"] or "",
+        evidence=[e for e in (_obj(r["evidence"]) or []) if isinstance(e, dict)],
+        prior_ids=[str(p) for p in (r["prior_ids"] or [])], offered_run_id=r["offered_run_id"],
+        priors_retested=_texts(r["priors_retested"]), priors_moved=_texts(r["priors_moved"]),
+    ) for r in await conn.fetch(CORRECTIONS_SQL, start, end)]
+
+
 async def gather_orion_day(
     conn: Any,
     letter_date: date,
@@ -427,6 +451,7 @@ async def gather_orion_day(
     chat = await _read(sources, "chat_compactor", lambda: gather_chat_compactor(conn, letter_date, end), None)
     github = await _read(sources, "github_compactor", lambda: gather_github_compactor(conn, letter_date, github_repo, end), None)
     digest = await _read(sources, "world_pulse_digest", lambda: gather_world_pulse_digest(conn, letter_date), None)
+    corrections = await _read(sources, "corrections", lambda: gather_corrections(conn, start, end), [])
     return OrionDayMaterialV1(
         letter_date=letter_date,
         timezone=tz_name,
@@ -446,5 +471,6 @@ async def gather_orion_day(
         chat_compactor=chat,
         github_compactor=github,
         world_pulse_digest=digest,
+        corrections=corrections,
         sources=sources,
     )

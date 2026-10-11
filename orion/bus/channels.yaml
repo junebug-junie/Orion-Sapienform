@@ -3767,6 +3767,17 @@ channels:
     since: "2026-10-11"
     description: "orion-introspect orion_day tool RPC. Read-only: an Orion's Day letter's outline, its exact note paragraphs (with a string-only claim check) and carry items (with resolved citations), one day section's records, or note/carry parts by meaning. Answered by Hub from orion_day_letter. Reply on orion:introspect:result:<correlation_id>."
 
+  - name: "orion:introspect:record_correction:request"
+    kind: "request"
+    schema_id: "IntrospectRequestV1"
+    message_kind: "introspect.tool.request.v1"
+    producer_services: ["orion-harness-governor"]
+    consumer_services: ["orion-hub"]
+    single_consumer: true
+    stability: "experimental"
+    since: "2026-10-11"
+    description: "orion-introspect record_correction tool RPC. Orion records a correction to a claim in an Orion's Day letter that a conversation with Juniper established was wrong. Hub checks the ref names a real note paragraph or carry item and that every prior id exists in orion_worldview (read only), then writes one orion_day_correction row; nothing else. It changes no belief: the next curiosity run is offered it and re-tests the named priors itself. Reply on orion:introspect:result:<correlation_id>."
+
   - name: "orion:introspect:result:*"
     kind: "result"
     schema_id: "IntrospectResultV1"

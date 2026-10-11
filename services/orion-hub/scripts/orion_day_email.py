@@ -32,6 +32,7 @@ from zoneinfo import ZoneInfo
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 from markupsafe import Markup
 
+from orion.orion_day.budget import correction_outcome_text
 from orion.orion_day.letter_parts import LetterPart, split_carry, split_note
 from orion.schemas.notify import NotificationAttachment, NotificationRequest
 from orion.schemas.orion_day import OrionDayLetterV1, VisualReverieV1
@@ -343,6 +344,10 @@ def build_context(letter: OrionDayLetterV1, images: list[InlineImage]) -> dict[s
         "images_attached": len(images),
         "github": ({"title": m.github_compactor.title or "Repo digest",
                     "body": markdown_to_html(m.github_compactor.body)} if m.github_compactor else None),
+        "corrections": [{"ref": c.ref, "claim": c.claim, "correction": c.correction,
+                         "evidence": "; ".join(str(e.get("text")) for e in c.evidence if e.get("text")) or "none recorded",
+                         "outcome": correction_outcome_text(c), "when": _local(c.created_at, tz)}
+                        for c in m.corrections],
         "chat": ({"title": m.chat_compactor.title or "Chat digest",
                   "body": markdown_to_html(m.chat_compactor.body)} if m.chat_compactor else None),
         "world": m.world_pulse_digest,
@@ -439,6 +444,13 @@ def render_text(letter: OrionDayLetterV1, images: list[InlineImage]) -> str:
             out.append(f"- {_local(v.created_at, tz)}" + (f" [{att}]" if att else "") + f": {v.description or '(no caption)'}")
     if m.github_compactor is not None:
         out += ["", f"## Changes to Orion's code: {m.github_compactor.title or 'Repo digest'}", "", m.github_compactor.body]
+    if m.corrections:
+        out += ["", f"## Corrections from conversations ({len(m.corrections)})"]
+        for c in m.corrections:
+            evidence = "; ".join(str(e.get("text")) for e in c.evidence if e.get("text")) or "none recorded"
+            out += ["", f"### Correction to {c.ref} (recorded {_local(c.created_at, tz)})",
+                    "Orion wrote:", "", c.claim, "", "What is actually true:", "", c.correction, "",
+                    f"Evidence: {evidence}.", correction_outcome_text(c)]
     if m.chat_compactor is not None:
         out += ["", f"## Conversations with Juniper: {m.chat_compactor.title or 'Chat digest'}", "", m.chat_compactor.body]
     if m.world_pulse_digest is not None:

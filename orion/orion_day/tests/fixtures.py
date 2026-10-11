@@ -116,10 +116,24 @@ class FakeRecord(dict):
     """asyncpg Record stand-in: mapping access by column name."""
 
 
+# A correction recorded on the fixture day (orion_day_correction; asyncpg hands jsonb back as
+# text and text[] as a list). Not served by default: pass ``corrections=CORRECTIONS``.
+CORRECTION_ID = "6f1d2c3b-4a59-5e6f-8a7b-9c0d1e2f3a4b"
+CORRECTIONS = [
+    {"correction_id": CORRECTION_ID, "created_at": _t(90), "letter_date": date(2026, 9, 28),
+     "ref": "2026-09-28 ¶4", "claim": "the reading queue timeout dropped 4,059 requests",
+     "correction": "The timeout dropped 12 requests; 4,059 was the queue's lifetime total.",
+     "evidence": json.dumps([{"text": "Juniper said so in this conversation", "in_letter_records": False}]),
+     "prior_ids": ["self:reading_queue_drops_most_requests"], "offered_run_id": "ab61e4ccd47b",
+     "priors_retested": ["self:reading_queue_drops_most_requests"], "priors_moved": []},
+]
+
+
 class FakeConn:
     """Serves canned rows keyed by the exact SQL constant gather sends. Records every call."""
 
-    def __init__(self, *, fail: set[str] | None = None, github: dict | None = None, chat: dict | None = CHAT_COMPACTOR):
+    def __init__(self, *, fail: set[str] | None = None, github: dict | None = None, chat: dict | None = CHAT_COMPACTOR,
+                 corrections: list[dict] | None = None):
         self.calls: list[tuple[str, tuple]] = []
         self.fail = fail or set()
         self.fetch_map = {
@@ -135,6 +149,7 @@ class FakeConn:
             gather.REVERIE_THOUGHTS_SQL: ("reverie_thoughts", REVERIE_THOUGHTS),
             gather.REVERIE_CHAINS_SQL: ("reverie_chains", REVERIE_CHAINS),
             gather.VISUAL_REVERIES_SQL: ("visual_reveries", VISUAL_REVERIES),
+            gather.CORRECTIONS_SQL: ("corrections", corrections or []),
         }
         self.github = github
         self.chat = chat

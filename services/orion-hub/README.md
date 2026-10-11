@@ -3439,6 +3439,67 @@ Design: [`2026-10-11-orion-day-letter-reread-design.md`](../../docs/superpowers/
   curiosity search; blank the Chroma or embedder URL to turn off both. Each hit is re-read from `orion_day_letter`. The 0.65
   floor was calibrated on curiosity write-ups, not on letter paragraphs.
 
+
+### Introspect responder: `record_correction`
+
+**What it does.** When a conversation about an Orion's Day letter establishes
+that something Orion wrote was wrong, Orion records the correction with the
+orion-introspect `record_correction` tool, and this responder saves it. It is
+the only write in the letter-reread design, and it changes no belief: Orion's
+priors live in their own graph (`orion_worldview`) and move only through
+Orion's own writes inside a curiosity run. Design:
+[`2026-10-11-orion-day-letter-reread-design.md`](../../docs/superpowers/specs/2026-10-11-orion-day-letter-reread-design.md),
+section 4.
+
+- **What Orion sends.** `ref` (`2026-10-09 ¶3` or `2026-10-09 carry 5`, as the
+  email and `orion_day` print it), `claim` (the words being corrected),
+  `correction` (what is actually true), `evidence` (1-10 items: record refs from
+  the claim check, or "Juniper said so"), `prior_ids` (0-10 exact `:Prior`
+  ids the claim rested on). Extra fields are rejected
+  (`RecordCorrectionArguments`, `extra=forbid`).
+- **Checks before any write** (each failure is `ok=false` and nothing is
+  written; the tool reports it as "not recorded"):
+  - the turn is a chat turn (`binding.invocation_context=unified_chat`);
+  - the letter exists and has that numbered paragraph or carry item (same
+    splitters as the email, `orion/orion_day/letter_parts.py`);
+  - every prior id exists in `orion_worldview`, read with `GRAPH.RO_QUERY`
+    through the curiosity `WorldviewReader` (`read_named_priors`); an
+    unreadable graph refuses rather than skipping the check.
+- **The write.** One `orion_day_correction` row
+  (`services/orion-sql-db/manual_migration_orion_day_correction_v1.sql`).
+  `correction_id` is a uuid5 of (ref, claim, correction, chat correlation id),
+  so a retried call returns the same id with `already_recorded=true` instead of
+  a second row. `chat_correlation_id` is the chat turn's correlation id
+  (`binding.parent_trace_id`). Each evidence item is stored with
+  `in_letter_records` = whether it names a record of that letter's day.
+- **Reply.** One `orion_day_correction` item, `record`, id = the
+  `correction_id`; `extra` carries the ref, `claim_quoted` (whether the claim's
+  words appear in that part), the stored evidence, the prior ids and what
+  happens next. Log line:
+  `orion_day_correction_recorded corr=<id> correction_id=<id> ref=<ref> priors=<n> already_recorded=<bool>`;
+  a refusal logs `orion_day_correction_refused`.
+- **Transport.** `orion:introspect:record_correction:request`
+  (`IntrospectRequestV1`), answered by
+  `scripts/orion_day_correction_listener.py`; replies only to exactly
+  `orion:introspect:result:<correlation_id>`.
+- **Where it goes next.**
+  - The regular curiosity investigate line, on a readable graph, claims up to
+    5 unoffered corrections, oldest first, once each (`TAKE ... FOR UPDATE SKIP
+    LOCKED`; released if the run is cancelled before Orion saw the prompt) and
+    shows them as "CORRECTIONS FROM CONVERSATIONS WITH JUNIPER" with each named
+    prior's current confidence and times_tested. Kill switch:
+    `HUB_CURIOSITY_ORION_DAY_CORRECTIONS_ENABLED` (default `true`).
+  - When that run's turn ends, Hub stamps `priors_retested` (named priors the
+    run stamped with its `last_run_id` and whose `times_tested` went up),
+    `priors_moved` (confidence changed or closed; NULL = unknown, no turn-start
+    snapshot) and `outcome_stamped_at`. A named prior the run never touched is
+    absent from `priors_retested`. Log line:
+    `curiosity_correction_outcome run=<id> correction_id=<id> named=<n> retested=<ids> moved=<ids|unknown>`.
+  - The next Orion's Day letter gathers the day's corrections into its
+    material (`corrections`), cites them as `[correction:<id>]` in the
+    writer's digest, and the email shows a "Corrections from conversations"
+    section.
+
 ## Curiosity resource admission
 
 `HUB_CURIOSITY_DURABLE_ADMISSION_ENABLED=true` is the operator-template default.

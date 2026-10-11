@@ -30,7 +30,11 @@ services:
       #- ANONYMIZED_TELEMETRY=False
       - CHROMA_MULTI_TENANT=true
       #- ALLOW_RESET=true
-      #- IS_PERSISTENT=TRUE
+      # Without IS_PERSISTENT chroma 0.4.24 runs IN MEMORY: PERSIST_DIRECTORY alone is
+      # ignored and every container restart wipes every collection (confirmed live
+      # 2026-10-11: Settings().is_persistent=False, no chroma.sqlite3 on the mount).
+      # Gated by tests/test_vector_db_compose_persistent.py.
+      - IS_PERSISTENT=TRUE
       - PERSIST_DIRECTORY=/chroma/chroma
 
       - CHROMA_SERVER_HTTP_PORT=8000

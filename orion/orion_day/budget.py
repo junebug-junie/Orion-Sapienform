@@ -28,6 +28,7 @@ import math
 import re
 from collections import defaultdict
 from dataclasses import dataclass
+from typing import Any
 
 from orion.schemas.orion_day import (
     OrionDayCondensationV1,
@@ -319,22 +320,36 @@ def build_llm_view(
     )
 
 
+def material_ref_records(material: OrionDayMaterialV1) -> dict[str, dict[str, Any]]:
+    """Every reference a digest may cite, mapped to the stored record it names.
+
+    The one place the ref formats above are spelled out for lookup: ``material_refs`` (grounding)
+    and ``orion.orion_day.letter_parts`` (resolving a letter's citations, checking its claims)
+    both read it, so a ref the writer was shown always resolves the same way afterwards."""
+    def dump(item: Any) -> dict[str, Any]:
+        return item.model_dump(mode="json")
+
+    records: dict[str, dict[str, Any]] = {}
+    records |= {f"curiosity:{r.run_id}": dump(r) for r in material.curiosity_runs}
+    records |= {f"curiosity_failed:{f.run_id}": dump(f) for f in material.curiosity_failed}
+    records |= {f"self_sense:{a.run_id or 'na'}:{a.question_key}": dump(a) for a in material.self_sense}
+    records |= {f"reading:{r.seed_id}": dump(r) for r in material.readings}
+    records |= {f"reading_journal:{j.entry_id}": dump(j) for j in material.reading_journals}
+    records |= {f"dream:{d.id}": dump(d) for d in material.dream_narratives}
+    records |= {f"dream_offered:{i}": dump(h) for i, h in enumerate(material.dream_hypotheses, start=1)}
+    if material.chat_compactor is not None:
+        records[f"chat_compactor:{material.chat_compactor.entry_id}"] = dump(material.chat_compactor)
+    if material.github_compactor is not None:
+        records[f"github_compactor:{material.github_compactor.entry_id}"] = dump(material.github_compactor)
+    if material.world_pulse_digest is not None:
+        records[f"world_pulse_digest:{material.world_pulse_digest.run_id}"] = dump(material.world_pulse_digest)
+    records |= {f"visual_reverie:{v.sha256[:16]}": dump(v) for v in material.visual_reveries}
+    records |= {f"reverie:{t.thought_id[:8]}": dump(t) for t in material.reverie_thoughts}
+    for c in material.reverie_chains:
+        records.setdefault(f"reverie_theme:{c.theme_key or 'unthemed'}", dump(c))
+    return records
+
+
 def material_refs(material: OrionDayMaterialV1) -> set[str]:
     """Every reference a digest may legitimately cite for this material (grounding checks)."""
-    refs = {f"curiosity:{r.run_id}" for r in material.curiosity_runs}
-    refs |= {f"curiosity_failed:{f.run_id}" for f in material.curiosity_failed}
-    refs |= {f"self_sense:{a.run_id or 'na'}:{a.question_key}" for a in material.self_sense}
-    refs |= {f"reading:{r.seed_id}" for r in material.readings}
-    refs |= {f"reading_journal:{j.entry_id}" for j in material.reading_journals}
-    refs |= {f"dream:{d.id}" for d in material.dream_narratives}
-    refs |= {f"dream_offered:{i}" for i in range(1, len(material.dream_hypotheses) + 1)}
-    if material.chat_compactor is not None:
-        refs.add(f"chat_compactor:{material.chat_compactor.entry_id}")
-    if material.github_compactor is not None:
-        refs.add(f"github_compactor:{material.github_compactor.entry_id}")
-    if material.world_pulse_digest is not None:
-        refs.add(f"world_pulse_digest:{material.world_pulse_digest.run_id}")
-    refs |= {f"visual_reverie:{v.sha256[:16]}" for v in material.visual_reveries}
-    refs |= {f"reverie:{t.thought_id[:8]}" for t in material.reverie_thoughts}
-    refs |= {f"reverie_theme:{c.theme_key or 'unthemed'}" for c in material.reverie_chains}
-    return refs
+    return set(material_ref_records(material))

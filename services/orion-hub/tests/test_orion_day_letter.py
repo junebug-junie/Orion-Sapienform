@@ -829,3 +829,24 @@ def test_a_started_or_unknown_run_keeps_the_claim(monkeypatch):
     loop2, released2 = _release_loop(monkeypatch, [], status=404)
     asyncio.run(loop2._release_carry_forward_if_unseen("run-y"))
     assert released == [] and released2 == []
+
+
+def test_email_numbers_note_paragraphs_and_carry_items_like_the_splitters():
+    """The email's ¶N / carry N must name exactly what letter_parts returns for that N."""
+    from orion.orion_day.letter_parts import find_part, split_carry, split_note
+
+    note = "# Day\n\nFirst paragraph.\n\n---\n\nSecond paragraph.\n\n- a list paragraph"
+    carry = "Intro.\n\n- **One.** [curiosity:x]\n- **Two.**\n  continued"
+    letter = _letter().model_copy(update={"note_md": note, "carry_forward_md": carry})
+    req = email.build_notification(letter, [])
+
+    for kind, label, parts in (("paragraph", "¶{}", split_note(note)), ("carry", "carry {}", split_carry(carry))):
+        for n in (1, 2):
+            first_words = find_part(parts, kind, n).text.lstrip("- ").split("\n")[0][:10]
+            marker = re.search(rf">{re.escape(label.format(n))}</span>&nbsp; (.*?)<", req.body_html)
+            assert marker, label.format(n)
+            assert first_words.replace("**", "") in re.sub(r"<[^>]+>", "", req.body_html[marker.start():marker.start() + 200])
+    assert ">¶3</p>" in req.body_html  # a list paragraph gets its number on its own line
+    assert "[¶1] First paragraph." in req.body_md
+    assert "- [carry 2] **Two.**" in req.body_md
+    assert "¶" not in "".join(p.text for p in split_note(note))  # numbers are never stored

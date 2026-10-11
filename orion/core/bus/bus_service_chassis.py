@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import signal
+import time
 import traceback
 from dataclasses import dataclass
 from uuid import uuid4
@@ -466,6 +467,46 @@ class Hunter(BaseChassis):
         self.handler = handler
         self.concurrent_handlers = bool(concurrent_handlers)
         self._inflight_tasks: set[asyncio.Task] = set()
+        # Per-message intake is DEBUG. INFO gets the first message after each
+        # (re)subscribe plus one rolled-up count line per interval. A per-message
+        # INFO line here wrote ~200k lines/hour from orion-signal-gateway alone.
+        self._intake_counts: Dict[str, int] = {}
+        self._intake_window_start = time.monotonic()
+
+    INTAKE_SUMMARY_INTERVAL_SEC = 60.0
+
+    def _log_intake(
+        self,
+        *,
+        channel: Any,
+        pattern: Any,
+        env: BaseEnvelope,
+        trace_id: Any,
+        first_after_subscribe: bool,
+    ) -> None:
+        line = (
+            f"Hunter intake channel={channel} pattern={pattern} kind={env.kind} "
+            f"schema_id={env.schema_id} trace_id={trace_id} source={env.source}"
+        )
+        if first_after_subscribe:
+            logger.info(f"{line} first_after_subscribe=true")
+        else:
+            logger.debug(line)
+        key = f"{channel}:{env.kind}"
+        self._intake_counts[key] = self._intake_counts.get(key, 0) + 1
+        now = time.monotonic()
+        elapsed = now - self._intake_window_start
+        if elapsed >= self.INTAKE_SUMMARY_INTERVAL_SEC:
+            total = sum(self._intake_counts.values())
+            by_kind = ", ".join(
+                f"{k}={v}" for k, v in sorted(self._intake_counts.items(), key=lambda kv: -kv[1])
+            )
+            logger.info(
+                f"Hunter intake summary window_sec={elapsed:.0f} total={total} "
+                f"patterns={self.patterns} by_channel_kind=[{by_kind}]"
+            )
+            self._intake_counts = {}
+            self._intake_window_start = now
 
     async def _run(self) -> None:
         uses_glob = any(any(ch in pattern for ch in "*?[") for pattern in self.patterns)
@@ -482,6 +523,7 @@ class Hunter(BaseChassis):
                     await self.bus.connect()
                 async with self.bus.subscribe(*self.patterns, patterns=uses_glob) as pubsub:
                     backoff_sec = 1.0
+                    first_after_subscribe = True
                     try:
                         async for msg in self.bus.iter_messages(pubsub):
                             if self._stop.is_set():
@@ -513,10 +555,14 @@ class Hunter(BaseChassis):
 
                             env = decoded.envelope
                             trace_id = (env.trace or {}).get("trace_id") or str(env.correlation_id)
-                            logger.info(
-                                f"Hunter intake channel={channel} pattern={pattern} kind={env.kind} "
-                                f"schema_id={env.schema_id} trace_id={trace_id} source={env.source}"
+                            self._log_intake(
+                                channel=channel,
+                                pattern=pattern,
+                                env=env,
+                                trace_id=trace_id,
+                                first_after_subscribe=first_after_subscribe,
                             )
+                            first_after_subscribe = False
                             if self.concurrent_handlers:
                                 async def _run_handler(envelope: BaseEnvelope) -> None:
                                     try:

@@ -32,6 +32,7 @@ from zoneinfo import ZoneInfo
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 from markupsafe import Markup
 
+from orion.orion_day.letter_parts import LetterPart, split_carry, split_note
 from orion.schemas.notify import NotificationAttachment, NotificationRequest
 from orion.schemas.orion_day import OrionDayLetterV1, VisualReverieV1
 
@@ -105,6 +106,51 @@ def markdown_to_html(text: str | None) -> Markup:
     html = _md().render(text)
     html = _TAG_RE.sub(lambda m: f'<{m.group(1)} style="{_TAG_STYLES[m.group(1)]}"', html)
     return Markup(html)
+
+
+# --- part numbers (orion/orion_day/letter_parts.py) -----------------------------------------
+# Juniper points at "2026-10-09 ¶3" / "2026-10-09 carry 5"; Orion's reread tool resolves the
+# same numbers with the same splitters, so the email and the tool can never disagree.
+
+_MARK_STYLE = "color:#9aa4b2;font-size:12px;font-weight:normal;"
+_FIRST_OPEN_RE = re.compile(r"^\s*(<(?:p|li)\b[^>]*>)")
+_FIRST_LI_RE = re.compile(r"(<li\b[^>]*>)")
+
+
+def part_label(part: LetterPart) -> str:
+    return f"¶{part.index}" if part.kind == "paragraph" else f"carry {part.index}"
+
+
+def _marked_html(part: LetterPart) -> str:
+    html = str(markdown_to_html(part.text))
+    if part.index is None:
+        return html
+    mark = f'<span style="{_MARK_STYLE}">{part_label(part)}</span>&nbsp; '
+    # A carry item renders as its own one-item list: mark inside the <li>. A prose paragraph
+    # gets the mark inside its <p>. Anything else (a list or quote as a note paragraph) gets
+    # the mark on its own line above it.
+    pattern = _FIRST_LI_RE if part.kind == "carry" else _FIRST_OPEN_RE
+    marked, n = pattern.subn(lambda m: m.group(1) + mark, html, count=1)
+    return marked if n else f'<p style="margin:0 0 4px;{_MARK_STYLE}">{part_label(part)}</p>' + html
+
+
+def numbered_html(parts: list[LetterPart]) -> Markup:
+    return Markup("".join(_marked_html(p) for p in parts))
+
+
+_BULLET_RE = re.compile(r"^((?:[-*+]|\d+[.)])\s+)")
+
+
+def numbered_text(parts: list[LetterPart]) -> str:
+    out: list[str] = []
+    for p in parts:
+        if p.index is None:
+            out.append(p.text)
+        elif p.kind == "carry":
+            out.append(_BULLET_RE.sub(lambda m: m.group(1) + f"[{part_label(p)}] ", p.text, count=1))
+        else:
+            out.append(f"[{part_label(p)}] {p.text}")
+    return "\n\n".join(out)
 
 
 # --- images ----------------------------------------------------------------------------------
@@ -274,8 +320,8 @@ def build_context(letter: OrionDayLetterV1, images: list[InlineImage]) -> dict[s
         "window_end_utc": letter.window_end.strftime("%Y-%m-%d %H:%MZ"),
         "run_id": letter.run_id,
         "written_at": _local(letter.created_at, tz, "%Y-%m-%d %H:%M"),
-        "note_html": markdown_to_html(letter.note_md),
-        "carry_forward_html": markdown_to_html(letter.carry_forward_md),
+        "note_html": numbered_html(split_note(letter.note_md)),
+        "carry_forward_html": numbered_html(split_carry(letter.carry_forward_md)),
         "carry_forward_expires": _local(letter.carry_forward_expires_at, tz, "%Y-%m-%d %H:%M"),
         "curiosity": curiosity,
         "curiosity_failed": [{"workflow": f.workflow, "when": _local(f.failed_at, tz),
@@ -333,14 +379,14 @@ def render_text(letter: OrionDayLetterV1, images: list[InlineImage]) -> str:
         "",
         "## Orion's note",
         "",
-        letter.note_md.strip(),
+        numbered_text(split_note(letter.note_md)).strip(),
         "",
         "## Carrying forward into curiosity",
         "(Offered once to Orion's next regular curiosity run"
         + (f", until {_local(letter.carry_forward_expires_at, tz, '%Y-%m-%d %H:%M')}" if letter.carry_forward_expires_at else "")
         + ".)",
         "",
-        letter.carry_forward_md.strip(),
+        numbered_text(split_carry(letter.carry_forward_md)).strip(),
         "",
         "---",
         "# What the day held",

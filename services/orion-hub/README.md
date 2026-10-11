@@ -3368,6 +3368,77 @@ the whole tool family see the
     `python services/orion-hub/evals/run_curiosity_search_calibration.py`
     (needs `POSTGRES_URI`; read-only, no Chroma write).
 
+### Introspect responder: `orion_day`
+
+**What it does.** Lets Orion reread an Orion's Day letter they wrote, next to
+the records that letter was written from, instead of improvising from memory
+when Juniper asks about one. It answers the orion-introspect `orion_day` tool
+from the stored `orion_day_letter` row (`orion/orion_day/store.py`), numbered
+with the same splitters the email uses (`orion/orion_day/letter_parts.py`), so
+"2026-10-09 ¶3" in the email and in the tool always name the same words.
+Design: [`2026-10-11-orion-day-letter-reread-design.md`](../../docs/superpowers/specs/2026-10-11-orion-day-letter-reread-design.md).
+
+- **What Orion can ask.** `letter_date` (omitted = most recent letter) and:
+  - `part=list` (default; `limit` does not apply): three items -- the note's paragraphs by number
+    with their first 120 characters, the carry items by number with their
+    first line (plus citation and unresolved-citation counts), and how many
+    records each day section holds (counts only).
+  - `part=note` / `part=carry_forward` with `index=<N>`: that part's exact
+    words (up to 6,000 serialized characters). Without `index`, the first
+    `limit` (≤ 5) parts, sharing a smaller budget.
+  - `part=section`, `section=curiosity|self_sense|readings|dreams|
+    code_changes|conversations|world_news|reveries`: that section's records
+    from the letter's `material`, first `limit`, `total_available` = all.
+  - `query=<plain words>`: note paragraphs and carry items by meaning, across
+    letters; `letter_date` and `part=note|carry_forward` narrow it.
+- **Items and labels.**
+  - A note paragraph or carry item is `orion_day_letter_part`, `unsettled`
+    (what Orion wrote then), id = its ref (`2026-10-09 ¶3`,
+    `2026-10-09 carry 5`), `occurred_at` = when the letter was written.
+  - A note paragraph's `extra.claim_check` lists each concrete token
+    (numbers, timestamps, PR numbers, prior ids, code spans, long quotes) with
+    `found_in` = the refs of that day's records holding it verbatim (first 5;
+    `found_in_more` counts the rest), plus `claims_found` /
+    `claims_not_found`. String evidence only: not found means "not in that
+    day's records verbatim", not "false".
+  - A carry item's `extra.citations` resolves each `[ref]` it cites against
+    that day's material: `{ref, resolved, excerpt}` (title + opening of the
+    record, 300 chars for one part, 120 in a list); `citations_unresolved`
+    names up to 10 refs that day does not hold, `citations_unresolved_count`
+    counts them all.
+  - A section record is `orion_day_record`, id = its material ref
+    (`curiosity:<run_id>`, `dream:<id>`, …), dated by its own clock. Failed
+    runs and the world-pulse digest are `record`; everything Orion wrote or
+    concluded is `unsettled`.
+- **Transport and trust.** Requests arrive on
+  `orion:introspect:orion_day:request` (`IntrospectRequestV1`), answered by
+  `scripts/orion_day_introspect_listener.py`; the reply goes to exactly
+  `orion:introspect:result:<correlation_id>`, anything else is ignored. Every
+  Postgres read is a READ ONLY transaction (`ReadOnlyPool`). Nothing is
+  written, and no privacy gate applies (`memory_allowed` is ignored by
+  decision, 2026-10-11).
+- **Empty vs unknown.**
+  - A letter that exists with an empty section: `ok=true, items=[]`.
+  - An unknown `letter_date`, no letter at all, or a paragraph/item number the
+    letter does not have: `ok=false` with an error that says `unknown …
+    (not found)` and, for a part, how many the letter has. Never `items=[]`.
+  - Postgres down or no pool: `orion_day_unavailable; answer unknown`.
+    Embedder/Chroma failure, an unbuilt index, or a search that found nothing
+    before the index is known complete: `orion_day_search_unavailable; answer
+    unknown`. Search hits that all fail to re-read are unknown too.
+  - Log line per answer: `orion_day_introspect_answered corr=<id> part=<part>
+    mode=<mode> items=<n> total=<n> refs=<ids>`; a missing letter or part logs
+    `orion_day_introspect_not_found`.
+- **Search by meaning.** Every `HUB_CURIOSITY_SEARCH_INDEX_INTERVAL_SEC` a
+  hash-aware loop embeds each numbered note paragraph and carry item (1,800
+  chars) and upserts it into Chroma `orion_day_letter_parts` (doc id = the
+  ref) through orion-vector-writer, `HUB_CURIOSITY_SEARCH_INDEX_BATCH` docs
+  per pass. It reuses the curiosity search's Chroma URL, embedder and floor
+  (`HUB_CURIOSITY_SEARCH_*`); only the collection is its own, so there is no
+  separate env key. Blanking `HUB_CURIOSITY_SEARCH_COLLECTION` turns off only
+  curiosity search; blank the Chroma or embedder URL to turn off both. Each hit is re-read from `orion_day_letter`. The 0.65
+  floor was calibrated on curiosity write-ups, not on letter paragraphs.
+
 ## Curiosity resource admission
 
 `HUB_CURIOSITY_DURABLE_ADMISSION_ENABLED=true` is the operator-template default.

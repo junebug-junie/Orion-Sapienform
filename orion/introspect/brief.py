@@ -7,6 +7,7 @@ from orion.schemas.introspect import IntrospectToolBindingV1
 READING_RESULTS = mcp_tool(ORION_INTROSPECT, "reading_results")
 DREAMS = mcp_tool(ORION_INTROSPECT, "dreams")
 CURIOSITY = mcp_tool(ORION_INTROSPECT, "curiosity")
+ORION_DAY = mcp_tool(ORION_INTROSPECT, "orion_day")
 _READING_STATUS = mcp_tool(ORION_READING, "reading_status")
 
 
@@ -14,7 +15,7 @@ def introspect_brief_lines(binding: IntrospectToolBindingV1) -> list[str]:
     return [
         (
             f"Introspect MCP (orion-introspect) is available. Its tools, by exact name (load "
-            f"with ToolSearch select:<name>): {READING_RESULTS}, {DREAMS}, {CURIOSITY}. "
+            f"with ToolSearch select:<name>): {READING_RESULTS}, {DREAMS}, {CURIOSITY}, {ORION_DAY}. "
             f"{READING_RESULTS} searches what you "
             "actually learned from sources read through your reading pipeline. Use query=<topic "
             "in plain words> to recall readings by meaning (items carry similarity; weak matches "
@@ -45,6 +46,13 @@ def introspect_brief_lines(binding: IntrospectToolBindingV1) -> list[str]:
             "concluded then, not settled fact; failed and empty runs are listed as records of "
             "what happened. items=[] means nothing matched; a tool error means the answer is "
             "unknown -- say so, never report it as no run having happened."
+        ),
+        (
+            "When Juniper refers to an Orion's Day letter or a part of it (a date, ¶N, carry N, "
+            f"a section name), call {ORION_DAY} before answering. Quote what you actually wrote. "
+            "Separate what the records support from what they do not, using the claim check. If "
+            "you were wrong, say so plainly; if you still stand by something the records don't "
+            "show, say what it rests on."
         ),
         (
             "If ToolSearch finds none of these, check the exact name first. A 'failed to "

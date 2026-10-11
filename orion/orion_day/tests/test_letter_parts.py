@@ -175,3 +175,54 @@ def test_a_decimal_inside_a_version_string_is_not_support():
     planted = material.curiosity_runs[0].model_copy(update={"journal_body": "running v0.27.1"})
     material = material.model_copy(update={"curiosity_runs": [planted]})
     assert not claim_check("a floor of 0.27", material)[0].found
+
+
+# --- reread helpers (orion-introspect `orion_day`) -------------------------------------------
+
+from orion.orion_day.letter_parts import (  # noqa: E402
+    SECTION_PREFIXES,
+    parse_ref,
+    record_excerpt,
+    record_text,
+    section_records,
+)
+from orion.schemas.introspect import OrionDaySection  # noqa: E402
+
+
+def test_parse_ref_inverts_letter_part_ref():
+    for part in split_note(NOTE) + split_carry(CARRY):
+        ref = part.ref("2026-09-29")
+        if ref is not None:
+            assert parse_ref(ref) == ("2026-09-29", part.kind, part.index)
+    for bad in ("2026-09-29 ¶", "2026-09-29 note 3", "¶3", "2026-09-29 carry five", ""):
+        assert parse_ref(bad) is None
+
+
+def test_section_names_match_the_tool_contract_and_cover_every_record_but_themes():
+    assert set(SECTION_PREFIXES) == set(OrionDaySection.__args__)
+    material = _material()
+    covered = {ref for name in SECTION_PREFIXES for ref, _ in section_records(material, name)}
+    rest = set(material_ref_records(material)) - covered
+    assert rest and all(ref.startswith("reverie_theme:") for ref in rest)
+    curiosity = [ref for ref, _ in section_records(material, "curiosity")]
+    assert curiosity[0] == f"curiosity:{material.curiosity_runs[0].run_id}"
+    assert any(ref.startswith("curiosity_failed:") for ref in curiosity)
+    assert all(ref.startswith("reverie:") or ref.startswith("visual_reverie:")
+               for ref, _ in section_records(material, "reveries"))
+
+
+def test_record_excerpt_is_title_then_body_and_capped():
+    material = _material()
+    records = material_ref_records(material)
+    run = records[f"curiosity:{material.curiosity_runs[0].run_id}"]
+    excerpt = record_excerpt(run, 60)
+    assert excerpt.startswith("Curiosity: I tested the hop written_at prior.")
+    assert len(excerpt) <= 60 and excerpt.endswith("…")
+    dream = next(r for ref, r in records.items() if ref.startswith("dream:"))
+    assert record_text(dream) == "A library of recent work: I walked between stacks of PRs."
+    news = next(r for ref, r in records.items() if ref.startswith("world_pulse_digest:"))
+    assert record_text(news) == "Daily World Pulse: 12 tracked items. Items: Fuel standards rolled back"
+    failed = next(r for ref, r in records.items() if ref.startswith("curiosity_failed:"))
+    assert record_text(failed) == "HoldLost: x"
+    assert record_excerpt(None) == "" and record_excerpt({}) == ""
+    assert record_excerpt({"body": "short"}, 300) == "short"

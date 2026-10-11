@@ -995,7 +995,8 @@ class FalkorSubstrateStore:
         cypher = (
             "MATCH (n:SubstrateNode {node_id: $node_id}) "
             f"{pressure_set}"
-            "WHERE n.activation = $expected_activation "
+            # coalesce: hydrate decodes a missing activation as 0.0 (falkor_codec).
+            "WHERE coalesce(n.activation, 0.0) = $expected_activation "
             f"AND ((n.{ACTIVATION_DECAYED_AT_KEY} IS NULL AND $expected_decay_stamp IS NULL) "
             f"OR n.{ACTIVATION_DECAYED_AT_KEY} = $expected_decay_stamp) "
             f"SET {', '.join(activation_assignments)} "

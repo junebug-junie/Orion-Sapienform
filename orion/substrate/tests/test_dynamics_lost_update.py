@@ -156,7 +156,7 @@ def test_falkor_targeted_write_sets_only_owned_properties_compare_and_set() -> N
     (cypher, params), = client.calls
     assert cypher.startswith("MATCH (n:SubstrateNode {node_id: $node_id})")
     assert "MERGE" not in cypher
-    assert "WHERE n.activation = $expected_activation" in cypher
+    assert "WHERE coalesce(n.activation, 0.0) = $expected_activation" in cypher
     assert "n.activation_decayed_at = $expected_decay_stamp" in cypher
     for unowned in ("observed_at", "label", "provenance", "prediction_error", "identity_key"):
         assert unowned not in cypher

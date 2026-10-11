@@ -1252,7 +1252,7 @@ def _execute_openai_chat(
     elif opts.get("return_json") and backend_name in ("vllm", "llamacpp", "llama-cola"):
         payload["response_format"] = {"type": "json_object"}
     # llama.cpp OpenAI server: per-request template kwargs (Qwen3 enable_thinking, etc.) — no worker restart.
-    if backend_name in ("llamacpp", "llama-cola"):
+    if backend_name in ("vllm", "llamacpp", "llama-cola"):
         ctk = opts.get("chat_template_kwargs")
         if isinstance(ctk, dict) and ctk:
             payload["chat_template_kwargs"] = ctk
@@ -1674,7 +1674,7 @@ def run_llm_chat(body: ChatBody, plan: Optional[ChatDispatchPlan] = None) -> Dic
         route_url = base_url
         served_by = route_target.served_by
         if backend == "vllm":
-            model = _normalize_model_for_vllm(model)
+            model = route_target.model or _normalize_model_for_vllm(model)
         if backend == "ollama":
             if settings.ollama_use_openai_compat:
                 logger.info(

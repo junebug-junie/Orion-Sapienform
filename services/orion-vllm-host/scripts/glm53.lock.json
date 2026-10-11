@@ -1,0 +1,35 @@
+{
+  "source": "https://github.com/1CatAI/1Cat-vLLM.git",
+  "base": "ec60883ad7187dc8aa29b3c30cae5a69e1cfa5cd",
+  "merge_order": [
+    {
+      "pr": 1125,
+      "commit": "da13d2d9ca4bba2cf7757442afde63c38b407d78"
+    },
+    {
+      "pr": 1159,
+      "commit": "44d292046a7b206fe3504315fd1de505aea89c3c"
+    },
+    {
+      "pr": 1161,
+      "commit": "a66fcda49f1133b54dbbe8d14daf38e2a6731da4"
+    },
+    {
+      "pr": 1166,
+      "commit": "74d2cf6da8412fa0a6bc98da0c02b36686be2b84"
+    },
+    {
+      "pr": 1165,
+      "commit": "60dd820a7cba6a3388934e791ac72cbfe50606a1"
+    },
+    {
+      "pr": 1102,
+      "commit": "b96d43e5c8df201992a181836d631198ef827edf"
+    }
+  ],
+  "model": "philbert440/GLM-5.3-Flash-EXL3",
+  "model_revision": "4ba4b9afb2191578378454cdd28aa35e9484960c",
+  "verified_refs_at": "2026-10-11",
+  "local_gpu_runtime": "UNVERIFIED",
+  "assembled_tree": "c5838487a6c58c079cc9e86f3fa391ba5ff1cca0"
+}

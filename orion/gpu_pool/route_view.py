@@ -23,7 +23,6 @@ from orion.llm.routes import BACKGROUND_LLM_ROUTES, LLM_ROUTE_DISPLAY_ORDER, SYS
 
 logger = logging.getLogger("orion.gpu_pool.route_view")
 
-LLAMACPP_BACKEND = "llamacpp"  # every pool llm role is a llama.cpp server
 UP_STATUSES = frozenset({"confirmed", "static"})
 
 # Where a view came from, so a reader (and its tests) can tell "the pool said down" from
@@ -73,11 +72,12 @@ def _role_serves_class(cfg: PoolConfig, work_class: str, role: str, cards: dict[
     return all(bool((cards.get(card) or {}).get("lent")) for card in cfg.lendable_cards(role))
 
 
-def _unknown_entry(route_id: str, *, served_by: str | None = None, upstream: str | None = None) -> dict[str, Any]:
+def _unknown_entry(route_id: str, *, served_by: str | None = None, upstream: str | None = None,
+                   backend: str = "llamacpp") -> dict[str, Any]:
     return {
         "id": route_id,
         "served_by": served_by,
-        "backend": LLAMACPP_BACKEND if served_by else None,
+        "backend": backend if served_by else None,
         "status": "unknown",
         "latency_ms": None,
         "last_checked_at": None,
@@ -98,7 +98,7 @@ def _entry(route_id: str, *, cfg: PoolConfig, role: str, status: str, discovered
     return {
         "id": route_id,
         "served_by": f"{cfg.role_host(role)}-worker-{role}",  # the same label the pool puts on a grant
-        "backend": LLAMACPP_BACKEND,
+        "backend": cfg.roles[role].backend,
         "status": status,
         "latency_ms": None,
         "last_checked_at": checked_at,
@@ -130,7 +130,7 @@ def build_route_view(state: Mapping[str, Any] | None, cfg: PoolConfig | None = N
             if cfg is not None:
                 first = cfg.classes[cfg.routes[route_id].work_class].roles[0]
                 routes.append(_unknown_entry(route_id, served_by=f"{cfg.role_host(first)}-worker-{first}",
-                                             upstream=cfg.url(first)))
+                                             upstream=cfg.url(first), backend=cfg.roles[first].backend))
             else:
                 routes.append(_unknown_entry(route_id))
         return {"source": SOURCE_UNAVAILABLE, "routes": routes}

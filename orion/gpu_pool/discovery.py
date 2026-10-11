@@ -46,6 +46,7 @@ class Probe:
     props: dict[str, Any] | None = None
     error: str | None = None
     checked_at: datetime | None = None
+    backend: str = "llamacpp"
 
 
 def resolve_roles(
@@ -93,6 +94,16 @@ def resolve_roles(
             live[role] = RoleLive(role, False)
             continue
 
+        if spec.backend == "vllm":
+            row, role_live = _resolve_vllm(cfg, role, base, profiles, ann, probe)
+            discovered.append(row)
+            live[role] = role_live
+            continue
+        if probe.backend != spec.backend:
+            discovered.append(DiscoveredRoleV1(**base, status="mismatch", detail="probe backend mismatch"))
+            live[role] = RoleLive(role, False)
+            continue
+
         props = probe.props
         loaded_file = PurePosixPath(str(props.get("model_path") or "")).name or None
         slots = int(props.get("total_slots") or 0)
@@ -129,3 +140,55 @@ def resolve_roles(
         if a.role not in cfg.roles and (now - a.announced_at).total_seconds() <= announce_stale_sec
     )
     return discovered, live, unclaimed
+
+
+def _resolve_vllm(cfg, role, base, profiles, ann, probe):
+    """Confirm the alias AND loaded path, live scheduler capacity, and all TP cards.
+
+    /orion/server-info is the running engine's config, not Orion's desired launch config.
+    No /props fabrication, guessed slots, or config-only readiness.
+    """
+    facts = {}
+    status, detail = "mismatch", "invalid vLLM discovery"
+    try:
+        if probe.backend != "vllm":
+            raise ValueError("probe backend mismatch")
+        info = probe.props["server_info"]["vllm_config"]
+        model = info["model_config"]
+        path = model["model"]
+        ctx = model["max_model_len"]
+        slots = info["scheduler_config"]["max_num_seqs"]
+        tp = info["parallel_config"]["tensor_parallel_size"]
+        if any(info["parallel_config"].get(key) != 1 for key in
+               ("pipeline_parallel_size", "data_parallel_size")):
+            raise ValueError("pool vLLM roles require a single TP replica")
+        ids = [m["id"] for m in probe.props["models"]["data"]]
+        if any(type(v) is not int or v <= 0 for v in (ctx, slots, tp)):
+            raise ValueError("invalid live capacity")
+        if not isinstance(path, str) or not path or not ids:
+            raise ValueError("missing loaded model identity")
+        if ann is None:
+            status = "silent"
+            raise ValueError("port answers but no fresh announcement")
+        spec = cfg.roles[role]
+        if ann.host != cfg.role_host(role) or ann.port != spec.port:
+            raise ValueError("announcement host/port differs from role")
+        profile = profiles.get(ann.profile_name) or {}
+        serving = profile.get("vllm") or {}
+        alias = serving.get("served_model_name")
+        if profile.get("backend") != "vllm" or not alias or alias not in ids:
+            raise ValueError("profile backend or served model differs from engine")
+        if path != profile.get("model_id"):
+            raise ValueError("profile model path differs from engine")
+        if tp != len(spec.cards) or tp != (profile.get("gpu") or {}).get("tensor_parallel_size"):
+            raise ValueError("tensor parallel size differs from allocated cards")
+        devices = [str(cfg.cards[c].index) for c in spec.cards]
+        if ann.cuda_visible_devices != ",".join(devices):
+            raise ValueError("announced CUDA devices differ from allocated cards")
+        facts = dict(model_file=alias, model_path=path, slots=slots, ctx_per_slot=ctx, vision=None)
+        status, detail = "confirmed", None
+    except (KeyError, TypeError, ValueError, AttributeError) as exc:
+        detail = str(exc)
+    row = DiscoveredRoleV1(**base, status=status, profile_name=ann.profile_name if ann else None,
+                           detail=detail, **facts)
+    return row, RoleLive(role, status == "confirmed", row.slots, row.ctx_per_slot, False)

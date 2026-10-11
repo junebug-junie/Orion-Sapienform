@@ -3393,11 +3393,11 @@ channels:
     kind: "event"
     schema_id: "LlmWorkerAnnounceV1"
     message_kind: "llm.worker.announce.v1"
-    producer_services: ["orion-llamacpp-host"]
+    producer_services: ["orion-llamacpp-host", "orion-vllm-host"]
     consumer_services: ["orion-gpu-pool"]
     stability: "experimental"
     since: "2026-09-24"
-    description: "Each llama.cpp worker says which gpu_pool.yaml role and llm_profiles.yaml profile it serves (every 30s). The pool confirms it against the server's /props before granting anything."
+    description: "Each LLM worker declares its role, profile, host, port and CUDA devices every 30s. The pool confirms llama.cpp via /props and vLLM via /health, /v1/models and /orion/server-info before granting capacity."
 
   - name: "orion:reading:turn:request"
     kind: "request"

@@ -1,3 +1,4 @@
+-- ORION-MIGRATION-REQUIRED-BY: orion-durable-runs
 -- Temporal Self rev 4 (PR #2369), order 3 "R2/R3 core": the event table only.
 -- Single writer: orion-durable-runs, the `regulate` node of the temporal_self.update thread,
 -- which writes one `arousal_transition` row per arousal level change (spec R3 "History").

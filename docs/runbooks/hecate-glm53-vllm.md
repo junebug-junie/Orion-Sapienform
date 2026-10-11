@@ -4,11 +4,14 @@
 
 Athena can now discover and route to a vLLM role through the existing GPU pool.
 The Hecate profile, immutable source/model revisions, candidate config renderer,
-worker announcement and inference smoke are staged. No active route is changed.
+worker announcement and inference smoke are staged. The worktree pool config
+selects vLLM for the existing one-card `agent-deep` role. Live containers still
+use their previous config until the reviewed activation step.
 The follow-up on 2026-10-11 provisions Hecate's NVMe and builds a pinned SM70
 image. The four-GPU GLM plan does not fit the live one-GPU inventory; the operator
 authorized a single-GPU Qwen validation model. No Circe service changed.
-GPU build, memory fit and model quality remain **UNVERIFIED** until smoke results
+Native compilation and installation passed. Image export is in progress; GPU
+execution, memory fit and model quality remain **UNVERIFIED** until smoke results
 are recorded below.
 
 ## Current architecture
@@ -65,7 +68,8 @@ commit `58531acc450ca0226f71fd1756e3357c7897c479`, tree
 `c5838487a6c58c079cc9e86f3fa391ba5ff1cca0`. It contains the regression.
 The corrected Athena copy is `/mnt/scripts/hecate-glm53-source-corrected-20261011`,
 commit `def8a636157d5e3766c6c03df2b816a521549ada`, tree
-`b321701ed88fc9882ae7c71cdb5968a6635505ab`. Compilation remains **UNVERIFIED**.
+`b321701ed88fc9882ae7c71cdb5968a6635505ab`. Native compilation and installation
+passed on Hecate; runtime acceptance is recorded separately below.
 
 ## Hecate live inventory (2026-10-11)
 
@@ -235,7 +239,8 @@ building the activated images. Reader upgrades on Circe must precede activation.
 ## Acceptance and rollback
 
 1. From Athena: `/health`, `/v1/models`, `/orion/server-info` on Hecate answer.
-   Model path/alias, four CUDA indices and live capacity agree. Inspect startup
+   Model path/alias, CUDA indices and live capacity agree with the selected
+  profile: one card for Qwen, four cards for GLM. Inspect startup
    logs for the EXL3 and SM70 kernels. A heartbeat alone proves none of this.
 2. Run direct synthetic inference:
    `python services/orion-vllm-host/evals/smoke_glm.py --url http://100.87.202.68:8021`.

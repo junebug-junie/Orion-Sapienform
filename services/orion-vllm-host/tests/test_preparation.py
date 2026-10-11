@@ -7,8 +7,10 @@ SERVICE = ROOT / 'services/orion-vllm-host'
 
 def test_candidate_allocates_all_four_cards_and_preserves_circe():
     from orion.gpu_pool.config import load_pool_config
-    cfg = runpy.run_path(str(SERVICE/'scripts/stage_pool.py'))['candidate']()
     live = load_pool_config()
+    source = ROOT / 'config/gpu_pool.yaml'
+    before = source.read_bytes()
+    cfg = runpy.run_path(str(SERVICE/'scripts/stage_pool.py'))['candidate']()
     assert cfg.roles['agent-deep'].backend == 'vllm'
     assert cfg.roles['agent-deep'].cards == [f'hecate-gpu{i}' for i in range(4)]
     assert cfg.url('agent-deep') == 'http://100.87.202.68:8021'
@@ -16,7 +18,8 @@ def test_candidate_allocates_all_four_cards_and_preserves_circe():
         if role != 'agent-deep':
             assert live.roles[role] == cfg.roles[role]
     assert live.classes == cfg.classes and live.routes == cfg.routes
-    assert live.roles['agent-deep'].backend == 'llamacpp'
+    assert load_pool_config() == live  # Rendering never mutates the source config.
+    assert source.read_bytes() == before
 
 
 def test_smoke_rejects_empty_reasoning_only_or_wrong_model(monkeypatch):

@@ -382,3 +382,5 @@ if Juniper wants it back.
 5. **Late rows?** Recommended: keep closed days frozen, and add "as recorded at close, <time>" to
    the block's first line (not in the 10-09 render above) so the reader knows the record's limits. Re-closing day D at D+2 is a later patch, if memory episodes matter to the
    reflection.
+
+PR: https://github.com/junebug-junie/Orion-Sapienform/pull/2616

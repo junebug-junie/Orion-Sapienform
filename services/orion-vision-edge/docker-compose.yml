@@ -14,6 +14,7 @@ services:
 
     environment:
       - SOURCE=${REOLINK_URL}
+      - HIRES_SOURCE=${REOLINK_HIRES_URL:-}
       - WIDTH=${WIDTH}
       - HEIGHT=${HEIGHT}
       - FPS=${FPS}
@@ -110,6 +111,8 @@ services:
       # which would break interpolation of the cam0 service too.
       - SOURCE=${WALKWAY_RTSP_URL:-}
       - STREAM_ID=walkway
+      # Stills are cam0's main stream only; never inherit them through env_file.
+      - HIRES_SOURCE=
       - ORION_BUS_URL=${ORION_BUS_URL}
       - ORION_BUS_ENFORCE_CATALOG=${ORION_BUS_ENFORCE_CATALOG}
       - ORION_BUS_VELOCITY_TRACKING_ENABLED=${ORION_BUS_VELOCITY_TRACKING_ENABLED}

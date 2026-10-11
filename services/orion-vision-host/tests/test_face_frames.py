@@ -75,3 +75,16 @@ def test_save_retries_once_when_the_pruner_removes_the_day_folder(tmp_path, monk
     rel = store.save("cam0", Image.new("RGB", (16, 16)), {"candidates": CANDS})
     assert (tmp_path / rel).exists() and (tmp_path / rel).with_suffix(".json").exists()
     assert not list(tmp_path.rglob("*.tmp"))
+
+
+def test_faces_are_cropped_at_source_resolution_before_the_frame_shrinks(tmp_path):
+    """2026-10-11: a 2560x1920 still shrunk to 1280 halves a desk face to ~50 px."""
+    t = {"now": 1_791_693_875.0}
+    img = Image.new("RGB", (2560, 1920))
+    # A 100 px face near the left edge: the margin is clipped at the border, never padded.
+    rel = _store(tmp_path, t).save("cam0", img, {"candidates": CANDS, "face_boxes": [[20, 900, 120, 1000], ["bad"], [3000, 2000, 3100, 2100]]})
+    frame = tmp_path / rel
+    crop = frame.with_name(frame.stem + "_face0.jpg")
+    assert Image.open(frame).size == (1280, 960)
+    assert Image.open(crop).size == (160, 180)          # side 100 * 1.8 = 180; x runs -20..160, clipped to 0
+    assert not frame.with_name(frame.stem + "_face1.jpg").exists()

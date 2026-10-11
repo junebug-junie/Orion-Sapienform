@@ -10,6 +10,8 @@ orion-diffusion-host
 orion-llamacpp-neural-host
 orion-llamacpp-bonsai-host
 
+# Hecate worker: keep excluded from Athena pull/rebuild and bring-up sweeps.
+# Explicit Hecate launch also requires the vllm-worker Compose profile.
 orion-vllm-host
 orion-rag
 orion-ollama-host

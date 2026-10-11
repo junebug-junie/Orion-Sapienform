@@ -7,8 +7,14 @@ the real vLLM OpenAI-compatible server subprocess.
 ## Usage
 
 ```bash
-docker compose -f services/orion-vllm-host/docker-compose.yml up -d
+scripts/safe_docker_build.sh orion-vllm-host --profile vllm-worker up -d
 ```
+
+The worker requires the explicit `vllm-worker` Compose profile and remains in
+Athena's pull/rebuild exclusion list. A routine pull must not start it.
+For the patched Hecate image, use `services/orion-vllm-host/scripts/hecate.sh build`
+and `services/orion-vllm-host/scripts/hecate.sh up -d` from Hecate's worktree.
+That wrapper checks the host and NVMe mount before selecting the SM70 override.
 
 Health: `GET http://localhost:${VLLM_HOST_PORT:-7000}/health`
 

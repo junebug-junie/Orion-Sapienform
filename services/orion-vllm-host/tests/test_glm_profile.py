@@ -31,3 +31,16 @@ def test_glm_profile_builds_the_pinned_forks_required_arguments(monkeypatch):
 
 def test_empty_announcement_port_is_disabled():
     assert Settings(_env_file=None, LLM_ANNOUNCE_PORT='').llm_announce_port is None
+
+
+def test_qwen_validation_profile_fits_one_card_without_glm_speculation(monkeypatch):
+    cfg = Settings(_env_file=None, VLLM_PROFILE_NAME='qwen3-4b-vllm-hecate',
+                   LLM_PROFILES_CONFIG_PATH=ROOT/'config/llm_profiles.yaml')
+    monkeypatch.setattr(main, 'settings', cfg)
+    cmd, env = main.build_vllm_command_and_env()
+    assert cmd[cmd.index('--tensor-parallel-size') + 1] == '1'
+    assert cmd[cmd.index('--dtype') + 1] == 'half'
+    assert cmd[cmd.index('--served-model-name') + 1] == 'qwen3-4b-instruct'
+    assert env['CUDA_VISIBLE_DEVICES'] == '0'
+    assert '--speculative-config' not in cmd
+    assert '--middleware' in cmd

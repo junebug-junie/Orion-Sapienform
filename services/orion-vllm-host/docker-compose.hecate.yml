@@ -1,0 +1,16 @@
+# Explicit Hecate override; never selected by Athena's post-pull automation.
+services:
+  vllm-host:
+    build:
+      dockerfile: services/orion-vllm-host/Dockerfile.sm70
+      additional_contexts:
+        vllm_source: ${VLLM_SOURCE_DIR:?Set VLLM_SOURCE_DIR to the verified standalone source checkout}
+    image: orion-vllm-host:sm70-glm53-b321701e
+    container_name: orion-hecate-vllm-host
+    shm_size: 8gb
+    volumes: !override
+      - type: bind
+        source: /mnt/models
+        target: /models
+        bind:
+          create_host_path: false

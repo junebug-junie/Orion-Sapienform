@@ -30,3 +30,34 @@ def test_smoke_rejects_empty_reasoning_only_or_wrong_model(monkeypatch):
         return {'model':'wrong-model','choices':[{'message':{'content':'391'}}]}
     monkeypatch.setitem(evaluate.__globals__, 'chat', wrong)
     assert not any(x['passed'] for x in evaluate('http://unused', 'agent-deep', 'glm-5.3-flash'))
+
+
+def test_hecate_wrapper_rejects_other_host_before_docker(tmp_path):
+    import os
+    import subprocess
+    fakebin = tmp_path / 'bin'
+    fakebin.mkdir()
+    hostname = fakebin / 'hostname'
+    hostname.write_text('#!/bin/sh\necho athena\n')
+    hostname.chmod(0o755)
+    result = subprocess.run([str(SERVICE/'scripts/hecate.sh'), 'up', '-d'],
+                            env={**os.environ, 'PATH':str(fakebin)+':'+os.environ['PATH']},
+                            capture_output=True, text=True)
+    assert result.returncode == 1
+    assert 'must run on Hecate' in result.stderr
+
+
+def test_hecate_wrapper_rejects_wrong_model_mount(tmp_path):
+    import os
+    import subprocess
+    fakebin = tmp_path / 'bin'
+    fakebin.mkdir()
+    for name, value in [('hostname', 'hecate'), ('findmnt', '/dev/sda1')]:
+        command = fakebin / name
+        command.write_text('#!/bin/sh\necho '+value+'\n')
+        command.chmod(0o755)
+    result = subprocess.run([str(SERVICE/'scripts/hecate.sh'), 'up', '-d'],
+                            env={**os.environ, 'PATH':str(fakebin)+':'+os.environ['PATH']},
+                            capture_output=True, text=True)
+    assert result.returncode == 1
+    assert 'NVMe is not mounted' in result.stderr

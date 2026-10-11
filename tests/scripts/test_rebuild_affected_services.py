@@ -129,24 +129,22 @@ def test_root_tests_skipped() -> None:
     assert "tests/test_curiosity_worldview.py" in payload["skipped"]
 
 
-def test_sample_pull_diff() -> None:
-    """User example: orion/curiosity, services/orion-actions, root tests.
-
-    orion-cortex-exec joined the expected set 2026-08-30 (pre-existing,
-    unrelated to any later change) when
-    services/orion-cortex-exec/tests/test_situation_curiosity_reverie_context.py
-    started importing orion.curiosity directly -- a real, correct
-    attribution (that test genuinely imports the changed package), not
-    scope creep from the classifier. This assertion had gone stale
-    against the real repo since then; caught 2026-09-04 while verifying
-    an unrelated rebuild-tooling change against ROOT."""
+def test_sample_pull_diff(mini_repo: Path) -> None:
+    """Keep exact fan-out assertions on an explicit import graph, not growing ROOT."""
+    (mini_repo / "orion/curiosity").mkdir(parents=True)
+    (mini_repo / "orion/curiosity/worldview.py").write_text("# changed package\n")
+    for name in ("orion-cortex-exec", "orion-hub", "orion-harness-governor"):
+        service = mini_repo / "services" / name
+        service.mkdir()
+        (service / "docker-compose.yml").write_text("services: {}\n")
+        (service / "consumer.py").write_text("import orion.curiosity\n")
     payload = _resolve(
         [
             "orion/curiosity/worldview.py",
             "services/orion-actions/app/main.py",
             "tests/test_curiosity_worldview.py",
         ],
-        ROOT,
+        mini_repo,
     )
     services = set(payload["services"])
     assert services == {"orion-actions", "orion-cortex-exec", "orion-hub", "orion-harness-governor"}
@@ -194,3 +192,19 @@ def test_resolve_base_ref_prefers_orig_head(tmp_path: Path) -> None:
         check=False,
     )
     assert proc.returncode == 0, proc.stderr
+
+
+def test_athena_pull_never_rebuilds_hecate_vllm_worker() -> None:
+    payload = _resolve([
+        "services/orion-vllm-host/app/main.py",
+        "services/orion-vllm-host/Dockerfile.sm70",
+        "services/orion-vllm-host/docker-compose.yml",
+        "config/llm_profiles.yaml",
+    ], ROOT, host="athena")
+    assert "orion-vllm-host" not in payload["services"]
+
+
+def test_vllm_worker_requires_explicit_compose_profile() -> None:
+    import yaml
+    compose = yaml.safe_load((ROOT / "services/orion-vllm-host/docker-compose.yml").read_text())
+    assert compose["services"]["vllm-host"]["profiles"] == ["vllm-worker"]

@@ -1,0 +1,29 @@
+# Hecate's patched Volta engine. Use docker-compose.hecate.yml explicitly.
+FROM nvidia/cuda:12.8.1-devel-ubuntu24.04@sha256:520292dbb4f755fd360766059e62956e9379485d9e073bbd2f6e3c20c270ed66
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3.12 python3.12-venv python3-pip gcc-14 g++-14 git curl \
+    ca-certificates libnuma1 libglib2.0-0 libgl1 protobuf-compiler cargo \
+    && apt-get clean
+RUN python3 -m pip install --break-system-packages --no-cache-dir uv==0.9.26
+COPY --from=vllm_source / /opt/vllm/
+WORKDIR /opt/vllm
+# Refuse an old assembled tree or locally modified tracked source.
+RUN test "$(git rev-parse HEAD^{tree})" = b321701ed88fc9882ae7c71cdb5968a6635505ab \
+    && git diff --exit-code HEAD
+RUN uv venv --python python3.12 --seed .venv
+ENV VIRTUAL_ENV=/opt/vllm/.venv
+ENV PATH="/opt/vllm/.venv/bin:${PATH}"
+RUN uv pip install -r requirements/build/cuda.txt --torch-backend=cu128
+ENV TORCH_CUDA_ARCH_LIST=7.0 CMAKE_CUDA_ARCHITECTURES=70 MAX_JOBS=10 \
+    CC=gcc-14 CXX=g++-14 CUDAHOSTCXX=g++-14
+RUN uv pip install -e . --torch-backend=cu128 --no-build-isolation
+WORKDIR /app
+COPY services/orion-vllm-host/requirements.txt /app/requirements.txt
+RUN uv pip install -r /app/requirements.txt pytest tblib
+COPY services/orion-vllm-host/app /app/app
+COPY config/llm_profiles.yaml /app/config/llm_profiles.yaml
+COPY orion /app/orion
+ENV PYTHONPATH=/app
+EXPOSE 8000
+ENTRYPOINT ["python", "-m", "app.main"]

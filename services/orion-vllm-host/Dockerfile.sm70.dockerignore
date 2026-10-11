@@ -1,0 +1,12 @@
+**
+!services/
+!services/orion-vllm-host/
+!services/orion-vllm-host/requirements.txt
+!services/orion-vllm-host/app/
+!services/orion-vllm-host/app/**
+!config/
+!config/llm_profiles.yaml
+!orion/
+!orion/**
+**/__pycache__/
+**/.env

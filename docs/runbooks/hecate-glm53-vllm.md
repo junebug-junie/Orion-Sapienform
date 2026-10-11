@@ -5,8 +5,11 @@
 Athena can now discover and route to a vLLM role through the existing GPU pool.
 The Hecate profile, immutable source/model revisions, candidate config renderer,
 worker announcement and inference smoke are staged. No active route is changed.
-No model weights have been downloaded, no Hecate service started, and no Circe
-service changed. GPU build, memory fit and model quality are **UNVERIFIED**.
+The follow-up on 2026-10-11 provisions Hecate's NVMe and builds a pinned SM70
+image. The four-GPU GLM plan does not fit the live one-GPU inventory; the operator
+authorized a single-GPU Qwen validation model. No Circe service changed.
+GPU build, memory fit and model quality remain **UNVERIFIED** until smoke results
+are recorded below.
 
 ## Current architecture
 
@@ -73,7 +76,14 @@ commit `def8a636157d5e3766c6c03df2b816a521549ada`, tree
 - System Python 3.14.4 and GCC 15.2; `nvcc`, `gcc-14` and `uv` absent from PATH.
 - `/mnt/scripts` is a separate 1.6 TiB filesystem. Recheck free capacity before
   downloading; the root filesystem has only about 58 GiB free.
-- No weights downloaded, toolkit installed, GPUs reassigned or routes activated.
+- Operator explicitly authorized erasing Toshiba NVMe serial `49JA22UKK03N`.
+  It is now ext4 at `/mnt/models`, UUID `19d66b9a-2234-4a60-9180-1862285cd74c`,
+  with a persistent `/etc/fstab` entry. Original partition table and fstab are
+  recorded in `/mnt/scripts/hecate-nvme-layout-before-20261011` (metadata only,
+  not a backup of erased Windows data).
+- Qwen download completed at pinned revision below; original GLM download and
+  CUDA image build are in progress. Existing llama.cpp worker remains running
+  until the image is ready. No pool route activated.
 
 Recheck before any eventual activation:
 
@@ -132,6 +142,57 @@ read-only `/orion/server-info` middleware. Do **not** enable
 `VLLM_SERVER_DEV_MODE`; the pool does not need the fork's other developer APIs.
 A foreground run is the first acceptance step; a permanent service/container
 and its exact rollback should be reviewed after the hardware smoke succeeds.
+
+## Explicit Hecate container and single-GPU validation
+
+Athena's post-pull classifier and bring-up sweeps exclude `orion-vllm-host`.
+The base Compose file also requires the explicit `vllm-worker` profile; a generic
+`up` cannot start it. Never add the worker to Athena's automatic rebuild list.
+
+`Dockerfile.sm70` uses CUDA 12.8.1, GCC 14, Python 3.12 and the verified source tree.
+`docker-compose.hecate.yml` supplies the external source build context and binds
+the real NVMe `/mnt/models` into `/models`. The wrapper rejects other hosts and
+an absent/wrong NVMe mount. This is separate from the legacy stock-vLLM image.
+
+Hecate worktree: `/mnt/scripts/Orion-Sapienform-hecate-vllm`.
+Set its local service env (also synchronize the primary checkout's ignored env):
+
+```dotenv
+NODE_NAME=hecate
+SERVICE_NAME=orion-vllm-host
+ORION_BUS_URL=redis://100.92.216.81:6379/0
+VLLM_SOURCE_DIR=/mnt/scripts/hecate-glm53-source-verified-20261011
+VLLM_PROFILE_NAME=qwen3-4b-vllm-hecate
+VLLM_HOST_PORT=8021
+VLLM_ENFORCE_EAGER=true
+LLM_ROLE=
+LLM_ANNOUNCE_PORT=
+```
+
+Qwen checkpoint: `Qwen/Qwen3-4B-Instruct-2507` at
+`cdbee75f17c01a7cc42f958dc650907174af0554`, downloaded to
+`/mnt/models/Qwen3-4B-Instruct-2507`. The same downloader then fetches the pinned
+GLM checkpoint into `/mnt/models/GLM-5.3-Flash-EXL3` for later hardware use.
+Host RAM does not supply the missing three GPUs in the documented GLM TP4 recipe.
+
+```bash
+services/orion-vllm-host/scripts/hecate.sh build
+# After draining the existing role and stopping its worker:
+services/orion-vllm-host/scripts/hecate.sh up -d
+python3 services/orion-vllm-host/evals/smoke_glm.py \
+  --url http://100.87.202.68:8021 \
+  --route qwen3-4b-instruct --expected-model qwen3-4b-instruct
+```
+
+Build log: `/mnt/scripts/hecate-vllm-build.log` on Hecate.
+Download progress: `docker logs --tail 20 hecate-model-download`.
+Role announcement stays disabled during direct acceptance: the production pool
+still describes the previous llama.cpp worker. Do not advertise Qwen as GLM.
+After acceptance, a one-card candidate requires the Qwen profile and exact served
+alias; the four-card GLM candidate below must not be activated on this inventory.
+
+Rollback: stop `orion-hecate-vllm-host` before starting the preserved
+`orion-hecate-hecate-llamacpp-agent-deep` container. The old image and model remain.
 
 ## Candidate routing and safe rollout
 

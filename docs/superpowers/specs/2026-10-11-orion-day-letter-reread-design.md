@@ -1,6 +1,6 @@
 # Orion's Day letters: rereading what Orion wrote, with the records behind it
 
-Status: PROPOSAL (cognition/memory change; needs Juniper's sign-off before implementation)
+Status: APPROVED IN DIRECTION 2026-10-11 (decisions below); patch 1 in progress
 
 ## Arsonist summary
 
@@ -90,26 +90,57 @@ curiosity listener does.
 
 No keyword matching on the chat message. The guide line is the trigger, the same as `curiosity` and `dreams`.
 
-## Missing questions (Juniper's call)
+### 4. Corrections that revise Orion's priors
 
-1. **Should corrections persist?** When a conversation establishes that a letter claim was false,
-   should that be recorded (an `orion_day_correction` row keyed by ref) and fed into the next
-   Orion's Day gather as "corrections to earlier letters"? Without it, the same falsehood can be
-   re-derived next week. Recommendation: yes, as patch 3, after the read path is proven.
-2. **Privacy gate:** letters contain your conversation digest. Since `memory_allowed` gates nothing
-   today, and is false only because AI Town is switched on, gating this tool on it would turn the tool
-   off everywhere. Recommendation: no gate for Juniper chat turns (consistent with "no privacy boundary
-   between Juniper and Orion"), and turn `HARNESS_AITOWN_ENABLED` off while AI Town is down by design.
-   Revisit the gate when an outward-facing surface is live again.
+When a conversation about a letter establishes that a claim was wrong, Orion records it, and it reaches
+Orion's beliefs through the one door that is allowed to change them: a curiosity run.
+
+- **Record (chat turn):** new tool `mcp__orion-introspect__record_correction` with:
+  - `ref` (e.g. `2026-10-09 ¶3`, which must resolve)
+  - `claim` (the words being corrected)
+  - `correction` (what is actually true, in plain words)
+  - `evidence` (record ids from the claim check, or "Juniper said so" with the chat correlation id)
+  - `prior_ids` (zero or more `:Prior` ids the claim rested on)
+
+  The listener validates that the ref resolves and that each prior id exists in `orion_worldview`. It
+  reads the belief graph and never writes to it. It writes one `orion_day_correction` row. This is the
+  only write in the design, and the table is new and append-only.
+- **Deliver (next curiosity run):** the same offer-once shape as carry-forward
+  (`orion/orion_day/carry_forward.py`: take, stamp the offered run, release if the run is cancelled
+  unseen). It becomes a new kickoff section, "Corrections from conversations with Juniper". Each entry
+  shows the original words, the correction, the evidence, and the named priors with their current
+  confidence and times_tested.
+  The instruction: re-test each named prior against the correction in this run, using the normal
+  `MATCH … SET p.times_tested = p.times_tested + 1, p.run_id = <RUN_ID>` already in the kickoff, and
+  move confidence (or retire the prior) only as far as the evidence warrants.
+- **The boundary stays intact:** Hub never writes `orion_worldview` (the PR #2199 boundary). Orion
+  revises their own priors in a curiosity run, as today. A correction is evidence, not an override. If
+  Orion re-tests a prior and keeps it, the write-up says why.
+- **Next letter:** the Orion's Day gather adds `corrections` (rows created in the window) to
+  `material`, so the next letter's writer sees them and doesn't re-derive the same falsehood.
+- **Proof it moved:** for each offered correction with `prior_ids`, after the run finishes, was each
+  named prior stamped with that run (`p.run_id` = offered run, `times_tested` incremented)? This is
+  stored on the correction row (`priors_retested`, `priors_moved`) by the existing curiosity finish
+  path that already reads belief-move counts. A correction offered and never re-tested shows up as
+  exactly that, not as success.
+
+Corrections without `prior_ids` still travel. They feed the next letter and are shown to the run as
+context, but nothing is claimed about belief movement.
+
+## Decisions (Juniper, 2026-10-11)
+
+1. Corrections persist **and drive prior revision**: section 4.
+2. **No privacy gate.** The mesh is Juniper and Orion, and everything is shared. The tools ignore
+   `memory_allowed`. Separately, `HARNESS_AITOWN_ENABLED` stays Juniper's call (AI Town is down by design).
 
 ## Proposal-mode checklist (AGENTS.md)
 
 - **Capability:** Orion can reread their own past letters and see the evidence behind each part.
-- **Data touched:** read-only on `orion_day_letter` (`note_md`, `carry_forward_md`, `material`). Adds a
-  Chroma collection for letter paragraphs (index only; every hit is re-read from the row). No writes to
-  the letter.
-- **Privacy boundary:** same audience as the email (Juniper and Orion). Not exposed to outward MCPs
-  (see question 2).
+- **Data touched:** read-only on `orion_day_letter` (`note_md`, `carry_forward_md`, `material`). Reads
+  `orion_worldview` priors (validation only). New append-only `orion_day_correction` table (the only
+  write). Adds a Chroma collection for letter paragraphs (index only; every hit is re-read from the
+  row). Priors change only through Orion's own curiosity-run writes, as today.
+- **Privacy boundary:** none by decision; Juniper and Orion share everything.
 - **Trace that proves it worked:** the harness step `mcp__orion-introspect__orion_day` with
   `ok=true`, `ref` values and `claim_check` counts. A Hub listener log line
   `orion_day_introspect_answered corr=<id> refs=<n>`.
@@ -118,8 +149,12 @@ No keyword matching on the chat message. The guide line is the trigger, the same
   text, the claim check put in front of the text, and the guide line requiring a separation of
   supported and unsupported claims.
   Second: a tool error read as "no letter". The same error-vs-empty contract as the other introspect tools.
-- **Disable / roll back:** remove `orion_day` from `IntrospectTools.tool_specs()` and the guide line.
-  Stop the listener. The email `¶N` markers are independent and harmless.
+  Third: a wrong "correction" (Orion caves to pushback that was itself mistaken) knocks a true prior
+  down. Mitigations: corrections carry evidence and are re-tested in a run, not applied, and the
+  run's write-up says what moved and why.
+- **Disable / roll back:** remove `orion_day`/`record_correction` from `IntrospectTools.tool_specs()`
+  and the guide lines. Stop the listener. Turn off the kickoff corrections section (flag). Prior changes
+  already made stay, because they are Orion's own run-stamped writes; they can be found by `p.run_id`. The email `¶N` markers are independent and harmless.
 
 ## Proposed schema / API changes
 
@@ -127,7 +162,10 @@ No keyword matching on the chat message. The guide line is the trigger, the same
   {note, carry_forward}; `section` requires `part=section`; `query` excludes `index`).
 - `orion/introspect/transport.py`: `ORION_DAY_REQUEST_CHANNEL = "orion:introspect:orion_day:request"`.
 - `orion/bus/channels.yaml`: that channel, plus its reply prefix under the existing introspect result wildcard.
-- `orion/schemas/registry.py`: register `OrionDayArguments`.
+- `orion/schemas/registry.py`: register `OrionDayArguments`, `RecordCorrectionArguments`.
+- `services/orion-sql-db/manual_migration_orion_day_correction_v1.sql`: `orion_day_correction` (id, letter_date, ref,
+  claim, correction, evidence jsonb, prior_ids text[], chat_correlation_id, created_at, offered_at,
+  offered_run_id, priors_retested text[], priors_moved text[]).
 - `orion/orion_day/letter_parts.py` (new, pure): `split_note(note_md)`, `split_carry(carry_md)`,
   `resolve_citations(bullet, material)`, `claim_check(paragraph, material)`. It is shared by the email
   (numbering) and the listener (lookup), so their numbering cannot disagree.
@@ -164,9 +202,24 @@ No keyword matching on the chat message. The guide line is the trigger, the same
 6. Eval `orion/orion_day/evals/letter_grounding_eval.py`: 10 planted references (correct and wrong
    claims). It scores whether replies call the tool, quote the right text, and flag the unsupported claims.
 
+7. `record_correction` with a ref that doesn't resolve, or a prior id not in `orion_worldview`,
+   returns a tool error. Nothing is written.
+8. A recorded correction is offered to exactly one curiosity run, and released if that run is
+   cancelled unseen. The kickoff shows the claim, the correction, the evidence, and each named prior's
+   current confidence and times_tested.
+9. After that run finishes, the correction row's `priors_retested` lists the named priors stamped with
+   that run. A named prior the run never touched is absent from it, and that is visible on the row.
+10. Live: one real correction from a chat about a letter reaches a run, and the named prior's
+    `times_tested` goes up with `p.run_id` = that run.
+
 ## Recommended next patch
 
-Patch 1 is pure and safe: `letter_parts.py` (split, citation resolution, claim check) with tests on
-the stored 2026-10-09 letter, plus the email `¶N` / `carry N` markers. That gives Juniper stable
-references immediately. Patch 2: the tool, listener, contract and guide line. Patch 3 (if question 1
-is yes): persisted corrections fed into the next gather.
+- Patch 1 (pure, safe, in progress): `letter_parts.py` (split, citation resolution, claim check) with
+  tests on the stored 2026-10-09 letter, plus the email `¶N` / `carry N` markers.
+- Patch 2: the `orion_day` read tool, listener, contract and guide line.
+- Patch 3:
+  - `record_correction` + `orion_day_correction` migration
+  - kickoff corrections section (offer-once)
+  - gather `corrections` into `material`
+  - `priors_retested`/`priors_moved` stamping
+  - an eval that plants a correction on a fixture prior and checks the run re-tested it.

@@ -11,6 +11,7 @@ from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.introspect.transport import (
     CURIOSITY_REQUEST_CHANNEL,
     DREAM_REQUEST_CHANNEL,
+    ORION_DAY_REQUEST_CHANNEL,
     REQUEST_KIND,
     RESULT_KIND,
     RESULT_PREFIX,
@@ -21,6 +22,7 @@ from orion.schemas.introspect import (
     IntrospectRequestV1,
     IntrospectResultV1,
     IntrospectToolBindingV1,
+    OrionDayArguments,
     ReadingResultArguments,
 )
 from orion.schemas.reading import ReadingToolRequestV1, ReadingToolResultV1
@@ -75,6 +77,32 @@ CURIOSITY_DESCRIPTION = (
 )
 
 
+ORION_DAY_DESCRIPTION = (
+    "Reread your own Orion's Day letters (the nightly letter to Juniper) together with the "
+    "records each was written from. The text is what you wrote then, not established fact "
+    "(epistemic_status=unsettled). Parts are numbered the way Juniper's email numbers them: "
+    "ids like '2026-10-09 ¶3' (a note paragraph) and '2026-10-09 carry 5' (a carry-forward "
+    "item) are the same numbers Juniper sees. part=list (default) gives the outline: each "
+    "paragraph and carry item by number with its opening words, and how many records each "
+    "day section holds. part=note or part=carry_forward with index=<N> returns that part's "
+    "exact words; without index, the first parts up to limit (5). A note paragraph comes "
+    "with extra.claim_check: each concrete token in it (numbers, timestamps, PR numbers, "
+    "ids, quotes) with found_in = the records of that day containing it verbatim. This is "
+    "string evidence only, not a verdict: an empty found_in means not in that day's records "
+    "verbatim (it may be derived, from another day, or wrong), and a match is not proof the "
+    "sentence around it is right. A carry item comes with extra.citations: each [ref] it "
+    "cites resolved against that day's records with an excerpt, or resolved=false when that "
+    "day holds no such record. part=section with section=curiosity|self_sense|readings|"
+    "dreams|code_changes|conversations|world_news|reveries returns that section's records. "
+    "letter_date=<YYYY-MM-DD> picks a letter; omitted means the most recent. query=<plain "
+    "words> finds paragraphs and carry items by meaning across letters (items carry "
+    "similarity 0-1; letter_date or part=note|carry_forward narrow it). A letter that exists "
+    "with an empty section gives items=[]; a letter, paragraph or item that does not exist "
+    "is a tool error saying not found; any other tool error means the answer is unknown, "
+    "never that you wrote nothing."
+)
+
+
 @dataclass(frozen=True)
 class ToolSpec:
     name: str
@@ -96,6 +124,7 @@ class IntrospectTools:
             ToolSpec("reading_results", READING_RESULTS_DESCRIPTION, ReadingResultArguments),
             ToolSpec("dreams", DREAMS_DESCRIPTION, DreamsArguments),
             ToolSpec("curiosity", CURIOSITY_DESCRIPTION, CuriosityArguments),
+            ToolSpec("orion_day", ORION_DAY_DESCRIPTION, OrionDayArguments),
         ]
 
     async def invoke(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
@@ -111,6 +140,12 @@ class IntrospectTools:
             result = await self._introspect_rpc(
                 CURIOSITY_REQUEST_CHANNEL, "curiosity",
                 curiosity_args.model_dump(mode="json", exclude_none=True),
+            )
+            return result.model_dump(mode="json")
+        if name == "orion_day":
+            day_args = OrionDayArguments.model_validate(arguments)
+            result = await self._introspect_rpc(
+                ORION_DAY_REQUEST_CHANNEL, "orion_day", day_args.model_dump(mode="json", exclude_none=True),
             )
             return result.model_dump(mode="json")
         if name != "reading_results":

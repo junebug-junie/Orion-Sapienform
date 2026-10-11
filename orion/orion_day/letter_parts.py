@@ -225,3 +225,77 @@ def claim_check(text: str, material: OrionDayMaterialV1) -> list[ClaimToken]:
         hits = tuple(ref for ref, hay in haystacks.items() if any(n.search(hay) for n in needles))
         results.append(ClaimToken(token, kind, hits))
     return results
+
+
+# --- reading a letter back (orion-introspect `orion_day`) ------------------------------------
+
+_REF_PART_RE = re.compile(r"^(\d{4}-\d{2}-\d{2}) (?:¶(\d{1,4})|carry (\d{1,4}))$")
+
+
+def parse_ref(ref: str) -> tuple[str, PartKind, int] | None:
+    """``"2026-10-09 ¶3"`` -> ("2026-10-09", "paragraph", 3); ``"... carry 5"`` -> carry.
+    The inverse of ``LetterPart.ref``; None for anything else."""
+    m = _REF_PART_RE.match((ref or "").strip())
+    if m is None:
+        return None
+    if m.group(2) is not None:
+        return m.group(1), "paragraph", int(m.group(2))
+    return m.group(1), "carry", int(m.group(3))
+
+
+# Each email day section, as the material refs it is built from (``material_ref_records``
+# prefixes). Reverie themes (``reverie_theme:``) are chain aggregates, not records, and are
+# counted in the outline instead.
+SECTION_PREFIXES: dict[str, tuple[str, ...]] = {
+    "curiosity": ("curiosity:", "curiosity_failed:"),
+    "self_sense": ("self_sense:",),
+    "readings": ("reading:", "reading_journal:"),
+    "dreams": ("dream:", "dream_offered:"),
+    "code_changes": ("github_compactor:",),
+    "conversations": ("chat_compactor:",),
+    "world_news": ("world_pulse_digest:",),
+    "reveries": ("visual_reverie:", "reverie:"),
+}
+
+
+def section_records(material: OrionDayMaterialV1, section: str) -> list[tuple[str, dict[str, Any]]]:
+    """(ref, record) for one day section, in the order the material holds them."""
+    prefixes = SECTION_PREFIXES[section]
+    return [(ref, rec) for ref, rec in material_ref_records(material).items() if ref.startswith(prefixes)]
+
+
+# The first non-empty field names what a record is about, then what it says. Ordered by
+# how each material model spells them (orion/schemas/orion_day.py).
+_TITLE_FIELDS = ("journal_title", "title", "tldr", "question")
+_BODY_FIELDS = (
+    "journal_body", "finding_text", "answer_text", "learned", "narrative", "body", "claim",
+    "interpretation", "description", "executive_summary", "lived_answer_text", "self_definition_text",
+    "error",
+)
+
+
+def _squash(value: Any) -> str:
+    return " ".join(str(value or "").split())
+
+
+def record_text(record: dict[str, Any] | None) -> str:
+    """A record as plain words: its title, then its main text (a world-pulse digest adds its
+    item titles). Empty for a missing record."""
+    if not record:
+        return ""
+    title = next((_squash(record.get(k)) for k in _TITLE_FIELDS if _squash(record.get(k))), "")
+    body = next((_squash(record.get(k)) for k in _BODY_FIELDS if _squash(record.get(k))), "")
+    items = record.get("items")
+    if isinstance(items, list):
+        titles = [_squash(i.get("title")) for i in items if isinstance(i, dict) and _squash(i.get("title"))]
+        if titles:
+            body = (body + " Items: " if body else "Items: ") + "; ".join(titles)
+    if title and body and not body.startswith(title):
+        return f"{title}: {body}"
+    return body or title
+
+
+def record_excerpt(record: dict[str, Any] | None, cap: int = 300) -> str:
+    """``record_text`` cut to ``cap`` characters (an ellipsis marks the cut)."""
+    text = record_text(record)
+    return text if len(text) <= cap else text[: max(cap - 1, 0)].rstrip() + "…"

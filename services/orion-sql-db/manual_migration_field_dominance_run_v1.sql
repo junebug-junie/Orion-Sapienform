@@ -1,3 +1,4 @@
+-- ORION-MIGRATION-REQUIRED-BY: orion-attention-runtime, orion-durable-runs
 -- Apply before deploying attention-runtime. SQL-only observational record.
 -- Open-run checkpoint shares the existing singleton, surviving process restarts.
 BEGIN;

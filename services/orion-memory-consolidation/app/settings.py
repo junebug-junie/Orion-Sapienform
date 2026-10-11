@@ -150,17 +150,18 @@ class Settings(BaseSettings):
         return frozenset(p.strip() for p in raw.split(",") if p.strip())
 
     # Cross-window concept-relation resolution (candidate retrieval + typed link dispatch).
-    # Off by default pending review -- see orion/memory/crystallization/concept_relation.py.
+    # On by default (Juniper-approved 2026-10-10). Hosts default to the athena container
+    # names on app-net; an empty host is reported as degraded at boot and on /health.
     CRYSTALLIZER_VECTOR_COLLECTION: str = Field(
         default="orion_memory_crystallizations", alias="CRYSTALLIZER_VECTOR_COLLECTION"
     )
-    CRYSTALLIZER_EMBED_HOST_URL: str = Field(default="", alias="CRYSTALLIZER_EMBED_HOST_URL")
+    CRYSTALLIZER_EMBED_HOST_URL: str = Field(default="http://orion-athena-vector-host:8320/embedding", alias="CRYSTALLIZER_EMBED_HOST_URL")
     CRYSTALLIZER_EMBED_TIMEOUT_MS: int = Field(default=8000, alias="CRYSTALLIZER_EMBED_TIMEOUT_MS")
-    CHROMA_HOST: str = Field(default="", alias="CHROMA_HOST")
+    CHROMA_HOST: str = Field(default="orion-athena-vector-db", alias="CHROMA_HOST")
     CHROMA_PORT: int = Field(default=8000, alias="CHROMA_PORT")
 
     CONCEPT_RELATION_RESOLUTION_ENABLED: bool = Field(
-        default=False, alias="CONCEPT_RELATION_RESOLUTION_ENABLED"
+        default=True, alias="CONCEPT_RELATION_RESOLUTION_ENABLED"
     )
     CONCEPT_RELATION_CONFIDENCE_FLOOR: float = Field(
         default=0.6, alias="CONCEPT_RELATION_CONFIDENCE_FLOOR"

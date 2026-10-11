@@ -11,6 +11,10 @@ from orion.memory.crystallization.schemas import MemoryCrystallizationV1
 
 logger = logging.getLogger(__name__)
 
+# Warn (once per process) instead of silently returning [] when hosts are unset --
+# that silent path hid a month-long outage of the concept-relation writer.
+_warned_missing_config = False
+
 
 async def fetch_similar_candidates(
     candidate: MemoryCrystallizationV1,
@@ -29,7 +33,18 @@ async def fetch_similar_candidates(
     match across two different conversation windows. Degrades to [] on any missing config
     or failure at any step — never raises.
     """
-    if not embed_host_url.strip() or not chroma_host.strip() or pool is None:
+    if not embed_host_url.strip() or not chroma_host.strip():
+        global _warned_missing_config
+        if not _warned_missing_config:
+            _warned_missing_config = True
+            logger.warning(
+                "candidate_retrieval_unconfigured embed_host_url_set=%s chroma_host_set=%s "
+                "-- returning no candidates (further occurrences not logged)",
+                bool(embed_host_url.strip()),
+                bool(chroma_host.strip()),
+            )
+        return []
+    if pool is None:
         return []
 
     # limit <= 0 is a legitimate "throttle to zero" operator setting (see

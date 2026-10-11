@@ -57,6 +57,10 @@ def check_files(repo: Path, new_names: set[str]) -> list[str]:
             if not (repo / "services" / svc / "docker-compose.yml").is_file():
                 errors.append(f"{rel}: REQUIRED-BY names {svc!r}, but services/{svc}/docker-compose.yml "
                               "does not exist")
+        if rb.services and not drift.is_destructive(text) and not drift.has_unconditional_effects(text):
+            errors.append(f"{rel}: REQUIRED-BY on a data-only/fully guarded migration over-promises -- "
+                          "the schema cannot show it ran, so the deploy gate could never enforce it; "
+                          "declare 'ORION-MIGRATION-REQUIRED-BY: none <reason>'")
         if rb.services and drift.is_destructive(text):
             errors.append(f"{rel}: a DESTRUCTIVE migration can never be a deploy dependency; "
                           "declare 'ORION-MIGRATION-REQUIRED-BY: none <reason>'")
@@ -70,7 +74,7 @@ def new_migration_names(repo: Path, base: str) -> set[str]:
     if mb.returncode != 0:
         raise RuntimeError(f"cannot find a merge base with {base!r}: {mb.stderr.strip()}")
     out = subprocess.run(
-        ["git", "-C", str(repo), "diff", "--name-only", "--diff-filter=A", mb.stdout.strip(),
+        ["git", "-C", str(repo), "diff", "--name-only", "--no-renames", "--diff-filter=A", mb.stdout.strip(),
          "--", str(MIG_DIR)],
         capture_output=True, text=True, check=True,
     ).stdout.split()

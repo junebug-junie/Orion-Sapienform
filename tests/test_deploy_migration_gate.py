@@ -98,8 +98,45 @@ def test_deploy_gate_ignores_the_recency_window():
     report = d.evaluate([f], d.LiveState(set(), set(), {}, set()),
                         now=OLD + timedelta(days=400), window_days=30)
     assert not report.red  # outside the watch's window...
-    gate = d.deploy_gate(report, ["manual_migration_a.sql"], "orion-x")
+    gate = d.deploy_gate(report, [f], "orion-x")
     assert not gate.ok  # ...but a deploy that needs it still refuses
+
+
+def _mf(name, text, days=0):
+    return d.MigrationFile(name, text, OLD + timedelta(days=days), OLD + timedelta(days=days))
+
+
+EMPTY = d.LiveState(set(), set(), {}, set())
+
+
+def test_deploy_gate_blocks_when_a_later_file_redeclares_the_same_table():
+    # Review finding: evaluate() blames the LAST creator, so A alone read APPLIED with t absent.
+    a = _mf("manual_migration_a.sql", "-- ORION-MIGRATION-REQUIRED-BY: orion-x\nCREATE TABLE IF NOT EXISTS t (i int);")
+    b = _mf("manual_migration_b.sql", "CREATE TABLE IF NOT EXISTS t (i int);", days=1)
+    report = d.evaluate([a, b], EMPTY, window_days=None)
+    gate = d.deploy_gate(report, [a], "orion-x")
+    assert [r.name for r in gate.blocking] == ["manual_migration_a.sql"]
+    full = d.LiveState({"t"}, set(), {}, set())
+    assert d.deploy_gate(d.evaluate([a, b], full, window_days=None), [a], "orion-x").ok
+
+
+def test_deploy_gate_follows_superseded_by_to_the_successor():
+    a = _mf("manual_migration_a.sql", "-- ORION-MIGRATION-REQUIRED-BY: orion-x\n"
+            "-- ORION-MIGRATION-SUPERSEDED-BY: manual_migration_b.sql\nCREATE TABLE IF NOT EXISTS t (i int);")
+    b = _mf("manual_migration_b.sql", "CREATE TABLE IF NOT EXISTS t2 (i int);", days=1)
+    gate = d.deploy_gate(d.evaluate([a, b], EMPTY, window_days=None), [a], "orion-x")
+    assert "manual_migration_b.sql" in gate.required
+    assert "manual_migration_b.sql" in [r.name for r in gate.blocking]
+
+
+def test_deploy_gate_required_file_absent_from_report_blocks():
+    a = _mf("manual_migration_a.sql", "-- ORION-MIGRATION-REQUIRED-BY: orion-x\nCREATE TABLE t (i int);")
+    report = d.DriftReport(files=[], window_days=None)
+    assert not d.deploy_gate(report, [a], "orion-x").ok
+
+
+def test_none_is_not_a_prefix_match():
+    assert d.parse_required_by("-- ORION-MIGRATION-REQUIRED-BY: none-svc").services == ("none-svc",)
 
 
 # ------------------------------------------------------------------ CLI --service
@@ -275,6 +312,20 @@ def test_ci_new_untagged_migration_fails(ci_repo, capsys):
 def test_ci_declarations(ci_repo, header, ok):
     _add(ci_repo, "manual_migration_new.sql", header + "\nCREATE TABLE n (i int);\n")
     assert (_ci(ci_repo) == 0) is ok
+
+
+def test_ci_required_by_on_data_only_file_is_rejected(ci_repo, capsys):
+    (ci_repo / "services" / "orion-sql-db" / "manual_migration_new.sql").write_text(
+        "-- ORION-MIGRATION-REQUIRED-BY: orion-x\nUPDATE o SET i = 1;\n")
+    assert _ci(ci_repo) == 1
+    assert "over-promises" in capsys.readouterr().err
+
+
+def test_ci_renamed_in_migration_must_declare(ci_repo):
+    _git(ci_repo, "mv", "services/orion-sql-db/manual_migration_old.sql",
+         "services/orion-sql-db/manual_migration_renamed.sql")
+    _git(ci_repo, "commit", "-qm", "rename")
+    assert _ci(ci_repo) == 1
 
 
 def test_ci_rollback_files_are_exempt(ci_repo):

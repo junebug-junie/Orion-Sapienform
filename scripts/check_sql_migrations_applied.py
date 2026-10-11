@@ -103,7 +103,7 @@ def service_gate(service: str, ref: str = "HEAD", connect_fn=None) -> int:
               file=sys.stderr)
         return 2
     report = drift.evaluate(files, live, window_days=None)
-    gate = drift.deploy_gate(report, [f.name for f in needed], service)
+    gate = drift.deploy_gate(report, drift.required_for(files, service), service)
     for r in gate.unverifiable:
         print(f"{tag}: note -- {r.name} is data-only/guarded; the schema cannot confirm it ran, "
               "verify manually", file=sys.stderr)

@@ -375,7 +375,7 @@ _NOT_A_MIGRATION = re.compile(r"--\s*ORION-MIGRATION-NOT-A-MIGRATION:\s*(?P<why>
 _ABSENT_OK = re.compile(r"--\s*ORION-MIGRATION-ABSENT-OK:[ \t]*(?P<obj>[^\s]*)[ \t]*(?P<why>[^\n]*)", re.I)
 _HEADER_SCRIPT = re.compile(r"\bscripts/[\w./-]+\.(?:sh|py)\b")
 _REQUIRED_BY = re.compile(r"^[ \t]*--[ \t]*ORION-MIGRATION-REQUIRED-BY:[ \t]*(?P<val>[^\n]*)$", re.I | re.M)
-_REQUIRED_NONE = re.compile(r"^none\b[\s:;,()\-\u2013\u2014]*(?P<why>.*)$", re.I)
+_REQUIRED_NONE = re.compile(r"^none(?![A-Za-z0-9_-])[\s:;,()\-\u2013\u2014]*(?P<why>.*)$", re.I)
 _DESTRUCTIVE = re.compile(r"^[ \t]*--[ \t]*DESTRUCTIVE\b", re.M)
 _SERVICE_NAME = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 
@@ -448,20 +448,56 @@ class DeployGate:
         return not self.blocking
 
 
-def deploy_gate(report: DriftReport, required: Iterable[str], service: str) -> DeployGate:
-    """Window-free verdict for the files ``service`` requires: a requirement does not age out."""
-    names = list(dict.fromkeys(required))
+def deploy_gate(report: DriftReport, required: Iterable[MigrationFile], service: str) -> DeployGate:
+    """Window-free verdict for the files ``service`` requires: a requirement does not age out.
+
+    Blame in ``evaluate`` goes to the LAST file that creates an object, so a required file whose
+    ``CREATE TABLE IF NOT EXISTS t`` is repeated by a later file reads APPLIED while ``t`` is
+    absent. The gate therefore also blocks on any finding against an object the required file
+    itself creates unconditionally. A ``SUPERSEDED-BY`` target is required in its place."""
     by_name = {f.name: f for f in report.files}
+    findings: dict[tuple[str, str], ObjectFinding] = {}
+    for fr in report.files:
+        for p in fr.problems:
+            if p.status in ("missing", "invalid"):
+                findings.setdefault((p.kind, p.name), p)
+    texts = {f.name: f.text for f in required}
+    queue = list(texts)
+    names: list[str] = []
+    while queue:
+        n = queue.pop(0)
+        if n in names:
+            continue
+        names.append(n)
+        sup = _SUPERSEDED.search(texts.get(n, ""))
+        if sup:
+            target = Path(sup["file"].strip()).name
+            queue.append(target)
     blocking, unverifiable = [], []
     for n in names:
         r = by_name.get(n)
         if r is None:
+            blocking.append(FileResult(name=n, in_window=True, changed_at=datetime.now(timezone.utc),
+                                       status="MISSING", marker_error="required, but not found in the "
+                                       "migration corpus -- cannot confirm it is applied"))
             continue
         if r.broken:
             blocking.append(r)
+            continue
+        own = {(e.kind, e.name) for e in parse_migration(texts.get(n, "")).effects
+               if e.op == "create" and not e.conditional} if texts.get(n) else set()
+        stray = sorted((findings[k] for k in own if k in findings), key=lambda p: (p.kind, p.name))
+        if stray:
+            blocking.append(FileResult(name=n, in_window=True, changed_at=r.changed_at, status="MISSING",
+                                       problems=stray, header_script=r.header_script))
         elif r.status in ("DATA", "UNKNOWN", "CONDITIONAL"):
             unverifiable.append(r)
     return DeployGate(service=service, required=names, blocking=blocking, unverifiable=unverifiable)
+
+
+def has_unconditional_effects(text: str) -> bool:
+    """Whether the schema can confirm this file ran (a REQUIRED-BY on anything else over-promises)."""
+    return any(not e.conditional for e in parse_migration(text).effects)
 
 
 # --------------------------------------------------------------------------- replay

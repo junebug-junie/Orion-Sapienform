@@ -9,6 +9,10 @@
 
 services:
   dsv41-flash:
+    logging:
+      driver: journald
+      options:
+        tag: "{{.Name}}"
     build:
       context: ../..
       dockerfile: services/orion-llamacpp-host/Dockerfile.dsv41-porte

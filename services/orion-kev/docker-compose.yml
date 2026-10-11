@@ -1,5 +1,9 @@
 services:
   kev:
+    logging:
+      driver: journald
+      options:
+        tag: "{{.Name}}"
     build:
       context: .
       dockerfile: Dockerfile

@@ -1,5 +1,9 @@
 services:
   orion-self-experiments:
+    logging:
+      driver: journald
+      options:
+        tag: "{{.Name}}"
     build:
       context: ../..
       dockerfile: services/orion-self-experiments/Dockerfile

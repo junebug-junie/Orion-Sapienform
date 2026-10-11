@@ -1,5 +1,9 @@
 services:
   policy-runtime:
+    logging:
+      driver: journald
+      options:
+        tag: "{{.Name}}"
     build:
       context: ../..
       dockerfile: services/orion-policy-runtime/Dockerfile

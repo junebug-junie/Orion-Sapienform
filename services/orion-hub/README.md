@@ -1819,6 +1819,8 @@ for the original design.
 docker-compose up -d
 ```
 
+Logs go to the host journal (`logging: driver: journald`), so they survive a container being recreated. Read a recreated container's old logs with `journalctl CONTAINER_NAME=orion-athena-hub --since "2 days ago"` (`docker logs` only shows the current container). See `docs/operations/container-logs.md`.
+
 ### Environment Variables
 
 Key variables in `.env`:

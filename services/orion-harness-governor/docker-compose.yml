@@ -1,5 +1,9 @@
 services:
   harness-governor:
+    logging:
+      driver: journald
+      options:
+        tag: "{{.Name}}"
     build:
       context: ../..
       dockerfile: services/orion-harness-governor/Dockerfile

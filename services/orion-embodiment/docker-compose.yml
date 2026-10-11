@@ -1,5 +1,9 @@
 services:
   embodiment:
+    logging:
+      driver: journald
+      options:
+        tag: "{{.Name}}"
     build:
       context: ../..
       dockerfile: services/orion-embodiment/Dockerfile

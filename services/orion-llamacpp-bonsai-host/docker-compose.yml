@@ -8,6 +8,10 @@
 
 services:
   bonsai-worker:
+    logging:
+      driver: journald
+      options:
+        tag: "{{.Name}}"
     # `up --build` (post-merge auto-rebuild) must rebuild, or wrapper/profile
     # changes never reach the image. The fork compile layer stays cached.
     build:

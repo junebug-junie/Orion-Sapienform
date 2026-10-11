@@ -4,6 +4,10 @@
 
 services:
   vector-db:
+    logging:
+      driver: journald
+      options:
+        tag: "{{.Name}}"
     image: chromadb/chroma:0.4.24
     container_name: ${PROJECT}-vector-db
     restart: unless-stopped

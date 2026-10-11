@@ -78,7 +78,12 @@ def normalise_doc(doc: str, *, is_html: bool) -> str:
 def material_texts(letter) -> list[tuple[str, str]]:
     """(label, full text) for every material item the letter promises to show in full."""
     m = letter.material
-    out: list[tuple[str, str]] = [("note", letter.note_md), ("carry_forward", letter.carry_forward_md)]
+    # The note and carry-forward render part by part with a number between parts
+    # (orion/orion_day/letter_parts.py), so each part must be present in full.
+    from orion.orion_day.letter_parts import split_carry, split_note
+
+    out: list[tuple[str, str]] = [(f"note:{i}", p.text) for i, p in enumerate(split_note(letter.note_md))]
+    out += [(f"carry_forward:{i}", p.text) for i, p in enumerate(split_carry(letter.carry_forward_md))]
     for r in m.curiosity_runs:
         for name in ("journal_body", "self_definition_text", "lived_answer_text"):
             if getattr(r, name):
@@ -116,10 +121,16 @@ def missing_texts(doc: str, texts: list[tuple[str, str]], *, is_html: bool) -> l
 
 
 def check(letter, images) -> list[str]:
+    from orion.orion_day.letter_parts import split_carry, split_note
     from scripts.orion_day_email import build_notification
 
     req = build_notification(letter, images)
     failures: list[str] = []
+    # The per-part checks below take the parts from the splitter; it must not drop or reorder text.
+    for name, text, parts in (("note", letter.note_md, split_note(letter.note_md)),
+                              ("carry_forward", letter.carry_forward_md, split_carry(letter.carry_forward_md))):
+        if normalise_source("\n".join(p.text for p in parts)) != normalise_source(text):
+            failures.append(f"{name} split lost or reordered text")
     texts = material_texts(letter)
     failures += [f"html missing {label}" for label in missing_texts(req.body_html, texts, is_html=True)]
     failures += [f"text missing {label}" for label in missing_texts(req.body_md, texts, is_html=False)]

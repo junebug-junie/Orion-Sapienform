@@ -51,6 +51,8 @@ Ships on (2026-10-10). Defaults point the embed host and Chroma at the athena co
 
 **Readiness (boot + every 10 min).** If resolution is enabled but either host is empty or unreachable, or the collection holds fewer documents than `CONCEPT_RELATION_CANDIDATE_LIMIT`, the service logs `concept_relation_resolution_degraded` (WARNING) and `/health` returns `"degraded": true` with reasons under `concept_relation.problems` and the probe time in `concept_relation.checked_at`. This replaced a silent no-op that let the writer produce zero decisions from 2026-09-07 to 2026-10-10.
 
+**Refilling the candidate collection.** New crystallizations reach Chroma through the live projection (`projector.project_crystallization` -> `chroma_publish.publish_crystallization_to_chroma` -> bus `orion:memory:vector:upsert` -> orion-vector-writer). If the collection is empty (e.g. `chroma_collection_sparse:0` after a vector-db wipe), `scripts/backfill_concept_relation_chroma.py` re-projects every active crystallization through that same path; it is idempotent (skips doc ids already present) and writes section-14 artifacts to `/tmp/concept-relation-chroma-backfill/`. Run instructions are in its docstring.
+
 ### Scheduled maintenance (Athena cron)
 
 `scripts/concept_relation_digest.py` is a standalone script, not a live service loop (see above) -- something external has to run it. Install on the host that runs the memory-consolidation stack (`crontab -e` as the operating user):

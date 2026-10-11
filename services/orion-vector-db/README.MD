@@ -14,6 +14,8 @@ Configuration is managed via the .env file in this directory, which defines:
 
     CHROMA_DATA_PATH: The path on the host machine where the persistent database files will be stored.
 
+    Persistence requires `IS_PERSISTENT=TRUE` in the compose environment. Without it chroma 0.4.x runs in memory, ignores PERSIST_DIRECTORY, and every restart wipes every collection (gated by tests/test_vector_db_compose_persistent.py).
+
 3. How to Run
 
 This service is managed like any other in the Orion mesh.

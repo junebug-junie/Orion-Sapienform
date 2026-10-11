@@ -17,7 +17,8 @@ service changed. GPU build, memory fit and model quality are **UNVERIFIED**.
   their roles, models and ports as they are during this preparation.
 - Hecate: current inventory records one 32 GB V100 for `agent-deep`, port 8021,
   Tailscale `100.87.202.68`. The requested checkpoint requires a four-card plan;
-  actual installed hardware must be checked when `ssh hecate@hecate` is available.
+  live SSH and PCI inventory on 2026-10-11 confirmed exactly one V100-SXM2-32GB.
+  The current four-GPU checkpoint plan is **BLOCKED** on hardware/model choice.
 - vLLM host: existing wrapper, `app/settings.py`, compose, requirements and
   tests. A new `evals/smoke_glm.py` covers opt-in real inference acceptance.
   The legacy stock-vLLM Dockerfile does **not** build the required fork.
@@ -45,18 +46,36 @@ Prepare source on a writable disk (no weights, CUDA build or deployment):
 python3 services/orion-vllm-host/scripts/prepare_source.py /mnt/scripts/hecate-glm53-source
 ```
 
-The helper fetches exact commits and merges them in the locked order. It stops
-on conflicts. Inspect each conflict in `CMakeLists.txt` and `csrc/ops.h`; retain
-both independent additions only after checking them. Commit the resolution and
-resume with `--resume`. Never blindly remove conflict markers. Preserve the
-final source commit and build output as deployment artifacts. The helper checks
-its final source-tree hash against the reviewed lock. Athena's assembled copy is
-`/mnt/scripts/hecate-glm53-source-20261011`, commit
-`58531acc450ca0226f71fd1756e3357c7897c479`, tree
-`c5838487a6c58c079cc9e86f3fa391ba5ff1cca0`; compilation is still UNVERIFIED.
+The helper cherry-picks six exact patches onto the tested base, then merges
+only the EXL3 loader branch. Merging all upstream branches imports
+`d4ce513991b79a9cac2a4d72fbe8bcac5f566d5e`, a known MTP startup regression.
+The lock now rejects that ancestor and verifies the tree after every step.
 
-Once Hecate is online, first inspect GPUs, free memory, topology, free disk,
-driver/toolkit and compilers:
+It stops on conflicts. Inspect each conflict in `CMakeLists.txt` and `csrc/ops.h`;
+retain both independent additions after checking them. Commit the resolution and
+resume with `--resume`. Resume accepts only clean, reviewed intermediate trees.
+Never blindly remove conflict markers. Preserve the final source commit and
+build output as deployment artifacts.
+
+**Retired source, do not build:** `/mnt/scripts/hecate-glm53-source-20261011`,
+commit `58531acc450ca0226f71fd1756e3357c7897c479`, tree
+`c5838487a6c58c079cc9e86f3fa391ba5ff1cca0`. It contains the regression.
+The corrected Athena copy is `/mnt/scripts/hecate-glm53-source-corrected-20261011`,
+commit `def8a636157d5e3766c6c03df2b816a521549ada`, tree
+`b321701ed88fc9882ae7c71cdb5968a6635505ab`. Compilation remains **UNVERIFIED**.
+
+## Hecate live inventory (2026-10-11)
+
+- SSH and PCI enumeration: one Tesla V100-SXM2-32GB, driver 580.178.04.
+- Existing `orion-hecate-hecate-llamacpp-agent-deep` uses about 24,678 MiB
+  and publishes port 8021; it was not stopped or changed.
+- 183 GiB host RAM; host RAM does not satisfy the documented TP4 GPU allocation.
+- System Python 3.14.4 and GCC 15.2; `nvcc`, `gcc-14` and `uv` absent from PATH.
+- `/mnt/scripts` is a separate 1.6 TiB filesystem. Recheck free capacity before
+  downloading; the root filesystem has only about 58 GiB free.
+- No weights downloaded, toolkit installed, GPUs reassigned or routes activated.
+
+Recheck before any eventual activation:
 
 ```bash
 ssh hecate@hecate 'hostname; nvidia-smi; nvidia-smi topo -m; df -h; nvcc --version; gcc-14 --version'
@@ -72,7 +91,8 @@ uv pip install -r requirements/build/cuda.txt --torch-backend=cu128
 TORCH_CUDA_ARCH_LIST=7.0 CMAKE_CUDA_ARCHITECTURES=70 MAX_JOBS=10 \
   CC=gcc-14 CXX=g++-14 CUDAHOSTCXX=g++-14 \
   uv pip install -e . --torch-backend=cu128 --no-build-isolation
-uv run pytest tests/kernels/quantization/test_exl3_moe.py tests/models/glm5next/test_sm70_sparse.py
+uv pip install pytest tblib
+.venv/bin/python -m pytest tests/kernels/quantization/test_exl3_moe.py tests/models/glm5next/test_sm70_sparse.py
 hf download philbert440/GLM-5.3-Flash-EXL3 \
   --revision 4ba4b9afb2191578378454cdd28aa35e9484960c --local-dir /models/GLM-5.3-Flash-EXL3
 ```

@@ -1,3 +1,8 @@
+> Source-stack correction after Hecate came online: the assembly recorded below
+> is retired because it imported upstream MTP regression `d4ce51399`.
+> Use the corrected lock/helper and [current runbook](../../runbooks/hecate-glm53-vllm.md).
+> Live Hecate inventory confirms one V100 32GB; the TP4 rollout remains blocked.
+
 ## Summary
 
 - Prepare Athena to discover and route to a Hecate vLLM worker through the existing GPU pool.

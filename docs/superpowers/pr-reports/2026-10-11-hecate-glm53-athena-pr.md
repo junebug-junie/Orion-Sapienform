@@ -35,6 +35,7 @@ turning on its developer APIs.
 - `services/orion-llm-gateway/app/{main,llm_backend,pool_placement,passthrough_proxy,anthropic_passthrough}.py`: dispatch, exact alias, retries and catalog.
 - `services/orion-vllm-host/app/{main,settings,discovery}.py`: launch, announcements and read-only endpoint.
 - `config/llm_profiles.yaml`: unselected GLM launch profile.
+- `config/metrics/metric_definitions.lock.json`: acknowledge the existing announcement channel's added producer; no new metric or formula.
 - `services/orion-vllm-host/{.env_example,docker-compose.yml,requirements.txt}`: announcement and middleware requirements.
 - `services/orion-vllm-host/scripts/`: revision lock, source assembly and candidate rendering.
 - `services/orion-vllm-host/evals/smoke_glm.py`: opt-in synthetic inference acceptance.
@@ -113,6 +114,18 @@ Hecate GPU build, memory fit, direct inference and live pool traffic: UNVERIFIED
   - Fix: rebuild each dispatch body and report backend from role configuration.
   - Evidence: dispatch suite and independent re-review.
 - Independent requesting-code-review skill verdict: **ready to merge as staged preparation**, no remaining material findings. GPU execution explicitly excluded from the review verdict.
+
+## Definition gate
+
+CI correctly detected one change to the existing worker-announcement channel's
+producer list. Re-locking records that exact routing change. The producer is
+`services/orion-vllm-host/app/main.py:announce_loop`; it reports configured
+worker identity periodically. It is redundant with startup configuration and
+cadence, not independent evidence of inference health or cognition. The pool
+only grants after live engine probes agree. No detector/metric formula is
+added. Hecate live-data sanity remains UNVERIFIED, so no health claim or active
+vLLM route is enabled. This producer can be disabled by clearing its role/port.
+`check_definition_drift.py --gate` passes after updating the lock.
 
 ## Restart required
 

@@ -2,16 +2,10 @@
   "_comment": "Definition lock for scripts/check_definition_drift.py. Generated, never hand-edited. Regenerate with --update; the resulting diff IS the definition-change alert. Unlike the *_baseline.json ratchets this tracks current truth in both directions -- a definition change is an event, not a defect.",
   "metric_count": 717,
   "_last_change": {
-    "change_count": 7,
-    "high_severity_count": 6,
+    "change_count": 1,
+    "high_severity_count": 1,
     "changes": [
-      "high   removed metric://bus_channel/orion-context-exec/orion:context_exec:event",
-      "high   removed metric://bus_channel/orion-context-exec/orion:exec:request:RecallService",
-      "high   removed metric://bus_channel/orion-context-exec/orion:exec:result:ContextExecService",
-      "high   removed metric://bus_channel/orion-context-exec/orion:exec:result:ContextExecService:*",
-      "high   removed metric://bus_channel/orion-context-exec/orion:self_experiments:context_exec:reply:*",
-      "high   removed metric://bus_channel/orion-cortex-exec/orion:exec:request:ContextExecService",
-      "medium added metric://bus_channel/orion-cortex-exec/orion:exec:request:RecallService"
+      "high   routing_changed metric://bus_channel/orion-llamacpp-host/orion:llm:worker:announce (all_producers: ['orion-llamacpp-host'] -> ['orion-llamacpp-host', 'orion-vllm-host'])"
     ]
   },
   "definitions": {
@@ -2393,7 +2387,8 @@
     "metric://bus_channel/orion-llamacpp-host/orion:llm:worker:announce": {
       "schema_id": "LlmWorkerAnnounceV1",
       "all_producers": [
-        "orion-llamacpp-host"
+        "orion-llamacpp-host",
+        "orion-vllm-host"
       ],
       "declared_consumers": [
         "orion-gpu-pool"

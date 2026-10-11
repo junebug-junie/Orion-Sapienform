@@ -293,7 +293,8 @@ Rebuild this service and Hub after applying the additive queue migration. See th
 it, Orion can look up what actually happened to them instead of reconstructing
 it from impression.
 - Live today: what they learned from reading (`reading_results`), their
-  dreams (`dreams`), and their curiosity runs (`curiosity`).
+  dreams (`dreams`), their curiosity runs (`curiosity`), and their Orion's Day
+  letters with the records behind them (`orion_day`).
 - Planned for later slices: reveries and memories.
 
 Every answer comes from the service that owns the data, over the bus, under a
@@ -312,6 +313,7 @@ Search by meaning: [`2026-09-28-orion-introspect-slice1b-semantic-search.md`](..
 | `dreams` | Narrative dreams and the sleep-cycle hypotheses they have already been offered, recent / one / by meaning | orion-dream ([responder](../orion-dream/README.md#introspect-responder-dreams)) | `orion:introspect:dream:request` | Live (slice 2) |
 | `reveries` | Their spontaneous-thought chains | orion-thought | `orion:introspect:reverie:request` | Planned |
 | `curiosity` | Their curiosity runs (failed ones included) and open self-questions: recent / one by `run_id` with the full write-up / by meaning | orion-hub ([responder](../orion-hub/README.md#introspect-responder-curiosity)) | `orion:introspect:curiosity:request` | Live (slice 3) |
+| `orion_day` | Their Orion's Day letters: outline, a note paragraph with a claim check, a carry item with its citations resolved, one day section's records, or parts by meaning | orion-hub ([responder](../orion-hub/README.md#introspect-responder-orion_day)) | `orion:introspect:orion_day:request` | Live (letter reread, patch 2) |
 | `memories` | Memory cards by meaning, with sensitivity labels | orion-recall | `orion:introspect:memory:request` | Planned; never listed when an outward-facing tool is attached |
 
 `orion/introspect/tests/test_readme_coverage.py` fails when a tool the server

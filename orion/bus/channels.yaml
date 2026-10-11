@@ -3756,6 +3756,17 @@ channels:
     since: "2026-10-09"
     description: "orion-introspect curiosity tool RPC. Read-only: recent runs (failed included), one run by run_id with its write-up, query by meaning over run write-ups, or open self-questions. Answered from the Hub's own run join. Reply on orion:introspect:result:<correlation_id>."
 
+  - name: "orion:introspect:orion_day:request"
+    kind: "request"
+    schema_id: "IntrospectRequestV1"
+    message_kind: "introspect.tool.request.v1"
+    producer_services: ["orion-harness-governor"]
+    consumer_services: ["orion-hub"]
+    single_consumer: true
+    stability: "experimental"
+    since: "2026-10-11"
+    description: "orion-introspect orion_day tool RPC. Read-only: an Orion's Day letter's outline, its exact note paragraphs (with a string-only claim check) and carry items (with resolved citations), one day section's records, or note/carry parts by meaning. Answered by Hub from orion_day_letter. Reply on orion:introspect:result:<correlation_id>."
+
   - name: "orion:introspect:result:*"
     kind: "result"
     schema_id: "IntrospectResultV1"

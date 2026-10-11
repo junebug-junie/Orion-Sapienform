@@ -51,9 +51,9 @@ def _invoke(bus, name="reading_results", args=None):
     return asyncio.run(IntrospectTools(bus, BINDING).invoke(name, args or {}))
 
 
-def test_tool_specs_list_reading_results_then_dreams_then_curiosity():
+def test_tool_specs_list_reading_results_then_dreams_then_curiosity_then_orion_day():
     assert [s.name for s in IntrospectTools(ReplyBus(), BINDING).tool_specs()] == [
-        "reading_results", "dreams", "curiosity",
+        "reading_results", "dreams", "curiosity", "orion_day",
     ]
 
 

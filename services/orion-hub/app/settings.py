@@ -1025,6 +1025,11 @@ class Settings(BaseSettings):
     HUB_CURIOSITY_DURABLE_ADMISSION_ENABLED: bool = Field(
         default=True, alias="HUB_CURIOSITY_DURABLE_ADMISSION_ENABLED"
     )
+    # Hold new investigation briefs while this many earlier ones still wait for
+    # a GPU hold (briefs are frozen at admission). 0 = no cap.
+    HUB_CURIOSITY_MAX_QUEUED_INVESTIGATIONS: int = Field(
+        default=1, ge=0, alias="HUB_CURIOSITY_MAX_QUEUED_INVESTIGATIONS"
+    )
     # orion-durable-runs base URL for curiosity's Door-A: Hub posts
     # /runs/{id}/release-outreach-lease here when outreach composition under the run's
     # GPU pool hold is done. Empty = no release call (the hold ends at its outreach max).

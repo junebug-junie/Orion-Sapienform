@@ -5,6 +5,10 @@
 # comment these volumes for dev-only nodes.
 services:
   cortex-exec:
+    logging:
+      driver: journald
+      options:
+        tag: "{{.Name}}"
     build:
       context: ../..
       dockerfile: services/orion-cortex-exec/Dockerfile
@@ -289,6 +293,10 @@ services:
       - app-net
 
   cortex-exec-chat:
+    logging:
+      driver: journald
+      options:
+        tag: "{{.Name}}"
     extends:
       service: cortex-exec
     container_name: ${PROJECT}-cortex-exec-chat
@@ -300,6 +308,10 @@ services:
       ENABLE_PRE_TURN_APPRAISAL_HANDLER: "false"
 
   cortex-exec-spark:
+    logging:
+      driver: journald
+      options:
+        tag: "{{.Name}}"
     extends:
       service: cortex-exec
     container_name: ${PROJECT}-cortex-exec-spark
@@ -311,6 +323,10 @@ services:
       ENABLE_PRE_TURN_APPRAISAL_HANDLER: "false"
 
   cortex-exec-background:
+    logging:
+      driver: journald
+      options:
+        tag: "{{.Name}}"
     extends:
       service: cortex-exec
     container_name: ${PROJECT}-cortex-exec-background

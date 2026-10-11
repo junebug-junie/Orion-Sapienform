@@ -1,5 +1,9 @@
 services:
   hardware-watch:
+    logging:
+      driver: journald
+      options:
+        tag: "{{.Name}}"
     build:
       context: ../..
       dockerfile: services/orion-hardware-watch/Dockerfile

@@ -1816,6 +1816,8 @@ for the original design.
 docker-compose up -d
 ```
 
+Logs go to the host journal (`logging: driver: journald`), so they survive a container being recreated. Read a recreated container's old logs with `journalctl CONTAINER_NAME=orion-athena-hub --since "2 days ago"` (`docker logs` only shows the current container). See `docs/operations/container-logs.md`.
+
 ### Environment Variables
 
 Key variables in `.env`:
@@ -3374,6 +3376,30 @@ exclusive requirement for the configured `HUB_CURIOSITY_INVESTIGATION_LLM_ROUTE`
 investigation and self-inquiry submissions. An uncertain receipt never triggers
 an unleased direct fallback or a budget refund: inspect/retry the same run ID.
 Set the flag false to preserve the prior non-admitted durable kickoff.
+
+**Stale briefs.** A brief (the investigation prompt) is built when the run is
+admitted and can wait hours for a GPU hold. Two guards:
+
+- `HUB_CURIOSITY_MAX_QUEUED_INVESTIGATIONS` (default `1`, `0` = off): a
+  scheduled tick does not admit a new investigation while this many earlier
+  ones are still waiting (`curiosity_investigation_blocked reason=queue_backlog`).
+  Counted read-only from orion-durable-runs' `durable_admission_runs` (no
+  `run.admitted` event, not terminal, last 24 h). An unreadable count fails
+  open with `curiosity_queue_backlog_unreadable`. Not counted (by design):
+  self-inquiry briefs, and runs re-queued for a retry after a first admission;
+  the drift block below covers both.
+- At turn start Hub re-reads every prior the prompt shows and prepends a short
+  block naming any whose confidence, test count or closed status moved since
+  the brief was written (`curiosity_prior_drift_preamble run=... moved=N`).
+
+**Lived answers from investigations.** The investigation kickoff lists up to
+five open lived questions (unanswered first, then oldest answer first) with
+their current `:LivedAnswer` and a prefilled MERGE keyed on
+`(run_id, question_id)` whose `revises` is the newest answer in the graph.
+Hub mirrors any answer the run wrote into `self_concept_history` on completion
+(`curiosity_investigation_lived_answers`). Self-inquiry runs now take their
+"previous answer" (and `revises`) from the graph's newest answer, not the
+mirror table, which skips evidence-less drafts.
 
 An admitted run waits in orion-durable-runs for one GPU pool hold (GPU pool stage 4). Hub
 validates each turn's hold ref (`gpu_lease`) with the pool's `status` verb before spending a turn

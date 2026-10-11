@@ -1,5 +1,9 @@
 services:
   vision-edge:
+    logging:
+      driver: journald
+      options:
+        tag: "{{.Name}}"
     build:
       context: ../..
       dockerfile: services/orion-vision-edge/Dockerfile
@@ -89,6 +93,10 @@ services:
   # Each instance detects only frames whose stream_id matches its own
   # STREAM_ID (app/detector_worker.py), so the two do not double-process.
   vision-edge-walkway:
+    logging:
+      driver: journald
+      options:
+        tag: "{{.Name}}"
     profiles: ["walkway"]
     build:
       context: ../..

@@ -5,6 +5,10 @@
 
 services:
   bus-core:
+    logging:
+      driver: journald
+      options:
+        tag: "{{.Name}}"
     build:
       context: .
       dockerfile: Dockerfile.bus-core
@@ -47,6 +51,10 @@ services:
           - bus-core
 
   bus-exporter:
+    logging:
+      driver: journald
+      options:
+        tag: "{{.Name}}"
     image: oliver006/redis_exporter:latest
     container_name: orion-${PROJECT}-bus-exporter
     environment:
@@ -61,6 +69,10 @@ services:
       - app-net
 
   bus-observer:
+    logging:
+      driver: journald
+      options:
+        tag: "{{.Name}}"
     build:
       context: ../..
       dockerfile: services/orion-bus/Dockerfile

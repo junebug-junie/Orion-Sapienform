@@ -80,6 +80,11 @@ jobs:
       - name: Bus schema lookup and kind registry agree
         run: python -m pytest tests/test_agent_trace_schema_registry.py -q
 
+      # json-file logs die with the container on recreate (10-08 reading
+      # failure). Every compose service must log to journald instead.
+      - name: Every compose service logs to journald
+        run: python -m pytest tests/test_compose_logging_journald.py -q -p no:cacheprovider
+
       # Pure logic of the substrate ladder liveness gate, including the replay
       # of the 2026-09-20 FieldStateV1 extra_forbidden incident. The live check
       # itself (make substrate-ladder-check) needs Postgres + docker, so it runs

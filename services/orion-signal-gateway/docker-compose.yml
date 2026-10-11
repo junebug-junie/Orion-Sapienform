@@ -2,6 +2,10 @@ services:
   # Matches ORION_BUS_URL default redis://orion-redis:6379/0 and app/settings.py.
   # If you already run Redis on app-net (e.g. orion-bus), remove this service and set ORION_BUS_URL.
   orion-redis:
+    logging:
+      driver: journald
+      options:
+        tag: "{{.Name}}"
     image: redis:7-alpine
     command: ["redis-server", "--appendonly", "yes", "--maxmemory-policy", "allkeys-lru"]
     restart: unless-stopped
@@ -14,6 +18,10 @@ services:
       - app-net
 
   orion-signal-gateway:
+    logging:
+      driver: journald
+      options:
+        tag: "{{.Name}}"
     build:
       context: ../..
       dockerfile: services/orion-signal-gateway/Dockerfile
@@ -42,6 +50,10 @@ services:
       - app-net
 
   otel-tempo:
+    logging:
+      driver: journald
+      options:
+        tag: "{{.Name}}"
     image: grafana/tempo:2.7.1
     command: ["-target=all", "-config.file=/etc/tempo.yaml"]
     volumes:
@@ -62,6 +74,10 @@ services:
       - app-net
 
   otel-grafana:
+    logging:
+      driver: journald
+      options:
+        tag: "{{.Name}}"
     image: grafana/grafana:11.5.2
     environment:
       # Local dev default is anonymous admin — set GRAFANA_ANONYMOUS_ENABLED=false for shared nets,
@@ -83,6 +99,10 @@ services:
       - app-net
 
   otel-collector:
+    logging:
+      driver: journald
+      options:
+        tag: "{{.Name}}"
     # Pinned (not :latest). Bump deliberately when upgrading collector semantics.
     # Image digest for reproducibility (pair with tag): sha256:d2da12c4336a79758826700be9e21ecf4a9f7d945b7f8a58ba55ee3fa45427c8
     image: otel/opentelemetry-collector-contrib:0.115.1

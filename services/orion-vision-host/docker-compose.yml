@@ -1,5 +1,9 @@
 services:
   vision-host:
+    logging:
+      driver: journald
+      options:
+        tag: "{{.Name}}"
     build:
       context: ../..
       dockerfile: services/orion-vision-host/Dockerfile

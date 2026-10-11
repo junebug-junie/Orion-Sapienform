@@ -649,6 +649,7 @@ async def startup_event():
                 carry_forward_enabled=settings.HUB_CURIOSITY_CARRY_FORWARD_ENABLED,
                 kickoff_via_cortex=settings.HUB_CURIOSITY_KICKOFF_VIA_CORTEX,
                 durable_admission_enabled=settings.HUB_CURIOSITY_DURABLE_ADMISSION_ENABLED,
+                max_queued_investigations=settings.HUB_CURIOSITY_MAX_QUEUED_INVESTIGATIONS,
                 # Door-A's release-outreach call goes to the same orion-durable-runs the
                 # reading loop submits to (one service, one base URL).
                 durable_runs_url=settings.HUB_CURIOSITY_DURABLE_RUNS_URL,

@@ -1,5 +1,9 @@
 services:
   affectgpt-worker:
+    logging:
+      driver: journald
+      options:
+        tag: "{{.Name}}"
     build:
       context: ../..
       dockerfile: services/orion-affectgpt-worker/Dockerfile

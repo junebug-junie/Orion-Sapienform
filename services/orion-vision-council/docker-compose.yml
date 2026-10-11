@@ -1,5 +1,9 @@
 services:
   orion-vision-council:
+    logging:
+      driver: journald
+      options:
+        tag: "{{.Name}}"
     build:
       context: ../..
       dockerfile: services/orion-vision-council/Dockerfile

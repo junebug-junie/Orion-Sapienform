@@ -1,5 +1,9 @@
 services:
   field-digester:
+    logging:
+      driver: journald
+      options:
+        tag: "{{.Name}}"
     build:
       context: ../..
       dockerfile: services/orion-field-digester/Dockerfile

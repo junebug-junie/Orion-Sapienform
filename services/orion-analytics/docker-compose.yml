@@ -1,5 +1,9 @@
 services:
   analytics-dbt:
+    logging:
+      driver: journald
+      options:
+        tag: "{{.Name}}"
     image: ghcr.io/dbt-labs/dbt-postgres:1.9.0
     profiles: ["tools"]
     working_dir: /usr/app/dbt
@@ -22,6 +26,10 @@ services:
       - app-net
 
   lightdash-db:
+    logging:
+      driver: journald
+      options:
+        tag: "{{.Name}}"
     image: postgres:15.14-alpine
     profiles: ["analytics"]
     restart: unless-stopped
@@ -41,6 +49,10 @@ services:
       - analytics-internal
 
   lightdash-object-storage:
+    logging:
+      driver: journald
+      options:
+        tag: "{{.Name}}"
     image: minio/minio:RELEASE.2025-09-07T16-13-09Z
     profiles: ["analytics"]
     restart: unless-stopped
@@ -62,6 +74,10 @@ services:
       - analytics-storage
 
   lightdash-object-storage-init:
+    logging:
+      driver: journald
+      options:
+        tag: "{{.Name}}"
     image: minio/mc:RELEASE.2025-08-13T08-35-41Z
     profiles: ["analytics"]
     depends_on:
@@ -82,6 +98,10 @@ services:
       - analytics-storage
 
   lightdash:
+    logging:
+      driver: journald
+      options:
+        tag: "{{.Name}}"
     image: lightdash/lightdash:2.184.6
     profiles: ["analytics"]
     restart: unless-stopped

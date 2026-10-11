@@ -1,6 +1,10 @@
 services:
 
   hub-app:
+    logging:
+      driver: journald
+      options:
+        tag: "{{.Name}}"
     build:
       context: ../..
       dockerfile: services/orion-hub/Dockerfile
@@ -87,6 +91,7 @@ services:
       - /run/orion-audio:/run/orion-audio:ro
     environment:
       - HUB_CURIOSITY_DURABLE_ADMISSION_ENABLED=${HUB_CURIOSITY_DURABLE_ADMISSION_ENABLED:-true}
+      - HUB_CURIOSITY_MAX_QUEUED_INVESTIGATIONS=${HUB_CURIOSITY_MAX_QUEUED_INVESTIGATIONS:-1}
       - HUB_CURIOSITY_DURABLE_RUNS_URL=${HUB_CURIOSITY_DURABLE_RUNS_URL:-http://127.0.0.1:8124}
       - HUB_CURIOSITY_URGENT_ENABLED=${HUB_CURIOSITY_URGENT_ENABLED:-true}
       - HUB_CURIOSITY_URGENT_TURN_TIMEOUT_SEC=${HUB_CURIOSITY_URGENT_TURN_TIMEOUT_SEC:-900}

@@ -1167,3 +1167,30 @@ def test_stage2_turn_recalls_about_title_and_stage1_claim(monkeypatch) -> None:
         pass
 
     assert captured["retrieval_query"] == "A — Learned about packaging."
+
+
+# --- created_at is the server clock, never the model's text (live 2026-10-10:
+# model-written round future times reached journal rows and wp-read nodes). ---
+
+
+def test_stage2_model_written_future_created_at_is_overwritten(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pipe = _pipeline(_FakeBus(), _FakeConn())
+    future = (datetime.now(timezone.utc) + timedelta(hours=4)).replace(minute=30, second=0, microsecond=0)
+    body = {"summary": "Tested the packaging prior.", "created_at": future.isoformat()}
+    _patch_turn(monkeypatch, [{"type": "final", "llm_response": "```json\n" + json.dumps(body) + "\n```"}])
+
+    before = datetime.now(timezone.utc)
+    result = asyncio.run(pipe._stage2_pass(_handoff()))
+    after = datetime.now(timezone.utc)
+
+    assert before <= result.created_at <= after
+
+
+def test_stage2_prompt_no_longer_asks_the_model_for_created_at() -> None:
+    from scripts.world_pulse_read_stage2 import _build_stage2_prompt
+
+    prompt = _build_stage2_prompt(_handoff(), "tr-1")
+    assert '"created_at":' not in prompt
+    assert "created_at are forced server-side" in prompt

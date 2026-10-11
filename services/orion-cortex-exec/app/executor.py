@@ -80,7 +80,7 @@ from orion.schemas.platform import CoreEventV1
 
 from orion.cognition.personality.identity_context import build_identity_context, load_identity_file
 from .settings import settings
-from .clients import ContextExecClient, LLMGatewayClient, RecallClient
+from .clients import LLMGatewayClient, RecallClient
 from .pageindex_client import JournalPageIndexClient
 from orion.cognition.fast_chat_verbs import FAST_SINGLE_PASS_CHAT_VERBS
 
@@ -2007,7 +2007,7 @@ def _journal_pageindex_query(user_text: str) -> bool:
 # Accepted caller-supplied llm_route overrides. Historically missing "agent":
 # Hub's "Compute" selector (services/orion-hub/scripts/cortex_request_builder.py)
 # sends options.llm_route="agent" for ANY Hub Mode (not just Mode: Agent, which
-# is a separate context_exec_agent_bridge.py code path entirely) whenever an
+# is a separate FCC/harness code path entirely) whenever an
 # operator picks Compute: Agent -- but this allowlist silently rejected it,
 # falling through to the verb-based default mapping below (which never resolves
 # to "agent" for a normal chat_general turn), so the selection had no effect.
@@ -3098,7 +3098,6 @@ async def call_step_services(
     effective_timeout = step_timeout_sec
 
     llm_client = LLMGatewayClient(bus)
-    context_exec_client = ContextExecClient(bus)
 
     def _record_scoped_step(
         status: str,

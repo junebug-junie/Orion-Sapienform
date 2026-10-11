@@ -83,17 +83,6 @@ class Settings(BaseSettings):
         True, alias="MEMORY_COGNITION_BRAIN_BELIEF_DEFAULT"
     )
     orion_unified_grounding_enabled: bool = Field(True, alias="ORION_UNIFIED_GROUNDING_ENABLED")
-    channel_context_exec_intake: str = Field(
-        "orion:exec:request:ContextExecService",
-        alias="CHANNEL_CONTEXT_EXEC_INTAKE",
-    )
-    channel_context_exec_reply_prefix: str = Field(
-        "orion:exec:result:ContextExecService",
-        alias="CHANNEL_CONTEXT_EXEC_REPLY_PREFIX",
-    )
-    context_exec_enabled: bool = Field(False, alias="CONTEXT_EXEC_ENABLED")
-    context_exec_timeout_sec: float = Field(60.0, alias="CONTEXT_EXEC_TIMEOUT_SEC")
-    context_exec_depth2_default: bool = Field(False, alias="CONTEXT_EXEC_DEPTH2_DEFAULT")
     channel_council_intake: str = Field("orion:agent-council:intake", alias="CHANNEL_COUNCIL_INTAKE")
     channel_council_reply_prefix: str = Field("orion:council:reply", alias="CHANNEL_COUNCIL_REPLY_PREFIX")
     channel_cognition_trace_pub: str = Field("orion:cognition:trace", alias="CHANNEL_COGNITION_TRACE_PUB")

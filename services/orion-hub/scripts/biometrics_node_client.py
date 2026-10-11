@@ -8,7 +8,7 @@ was decommissioned 2026-08-20 and is deliberately rejected here rather than
 silently resolved to nothing or forwarded as a doomed HTTP call — "absent is
 not zero" applies to node identity too, not just to a missing reading.
 
-Modeled on `context_exec_client.py`'s aiohttp pattern: one controlled
+Modeled on the (since-deleted, 2026-10-10) hub context_exec_client.py aiohttp pattern: one controlled
 exception type, no raw `aiohttp.ClientError` ever escapes to a route handler.
 """
 

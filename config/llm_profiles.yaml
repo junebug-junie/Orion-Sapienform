@@ -712,7 +712,7 @@ profiles:
 
     notes: |
       Breadth-oriented Qwen3-Coder-Next profile for 2x V100 32GB (row split).
-      - Target lane: context-exec agent_repl / smolagents CodeAgent via gateway route="agent".
+      - Target lane: gateway route="agent" (originally sized for the context-exec agent_repl lane, retired 2026-10-10).
       - Q4_K_M (~48GB weights) fits two 32GB GPUs with headroom for ~40k KV cache.
       - Non-thinking coder: reasoning_budget 0 emits --jinja + --reasoning-budget 0 (no redacted_thinking blocks).
       - Sampling matches Qwen model-card agent defaults (temp 1.0, top_k 40, top_p 0.95).

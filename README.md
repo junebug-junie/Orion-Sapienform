@@ -752,7 +752,7 @@ Interface / ingress:
 Cortex / unified turn / motor:
   orion-cortex-orch, orion-cortex-exec, orion-agent-council, orion-actions,
   orion-thought, orion-harness-governor, orion-fcc, orion-mind,
-  orion-context-exec, orion-self-experiments
+  orion-self-experiments
 
 Model serving:
   orion-llm-gateway, orion-llamacpp-host, orion-llamacpp-neural-host,

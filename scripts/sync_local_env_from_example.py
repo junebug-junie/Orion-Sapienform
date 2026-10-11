@@ -214,7 +214,6 @@ SYNC_PREFIXES = (
     "SQL_WRITER_WRITE_HEALTH_",
     "ENABLE_STORAGE_WRITE_",
     "STORAGE_WRITE_",
-    "HUB_PROPOSAL_REVIEW_",
     # Runtime activity marquee (2026-09-09): its two keys matched no prefix and
     # were silently skipped on first sync; found by grepping the live .env after.
     "HUB_RUNTIME_ACTIVITY_",
@@ -237,7 +236,6 @@ SYNC_PREFIXES = (
     "HUB_READING_",
     "HUB_LLM_GATEWAY_",
     "HUB_CHAT_ATTACHMENT_",
-    "HUB_AGENT_CONTEXT_EXEC_",
     "HUB_AGENT_CLAUDE_",
     "HUB_AITOWN_",
     "HUB_FCC_",
@@ -253,7 +251,6 @@ SYNC_PREFIXES = (
     "LLM_GATEWAY_UPSTREAM_",
     "ORION_VECTOR_HOST_",
     "VECTOR_HOST_",
-    "HUB_CONTEXT_EXEC_",
     # Endogenous outreach (Orion speaks first) -- services/orion-hub
     "HUB_ENDOGENOUS_OUTREACH_",
     # Collapse Mirror → live Hub chat-lane reply (PR follow-up 2026-09-14).
@@ -264,8 +261,6 @@ SYNC_PREFIXES = (
     "COLLAPSE_MIRROR_",
     # Conversation-history rehydration on connect -- services/orion-hub
     "HUB_HISTORY_REHYDRATE_",
-    "CONTEXT_EXEC_",
-    "CHANNEL_CONTEXT_EXEC_",
     "SELF_EXPERIMENTS_",
     "ACTIONS_SELF_EXPERIMENTS_",
     "CHANNEL_MEMORY_",
@@ -504,7 +499,6 @@ DEFAULT_SERVICES = (
     "orion-cortex-exec",
     "orion-cortex-orch",
     "orion-durable-runs",
-    "orion-context-exec",
     "orion-self-experiments",
     "orion-actions",
     "orion-spark-concept-induction",

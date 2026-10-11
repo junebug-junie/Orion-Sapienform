@@ -1528,9 +1528,6 @@ section degrades to `null` independently (missing table, unset
 - Hub records chat-turn timestamps and mirrors a liveness snapshot to
   `substrate_hub_presence` (`HUB_PRESENCE_WRITER_ENABLED`, default on;
   apply `services/orion-sql-db/manual_migration_hub_presence_v1.sql`).
-- The Agent lane can prepend a one-line curiosity focus hint from fresh
-  endogenous candidates (`HUB_AGENT_CURIOSITY_HINT_ENABLED`, default on;
-  advisory only, structural gate, no keyword classification).
 
 ### 5.4 Drives Analytics panel — REMOVED 2026-08-13
 
@@ -2051,8 +2048,6 @@ Then open the Hub Memory tab → **Review queue**, or `GET /api/memory/cards?sta
 
 **Memory consolidation graph drafts:** `orion-memory-consolidation` persists `memory_graph_suggest_drafts` (`pending_review`) when conversation windows close. Hub Memory tab → **Graph drafts** lists automated drafts from the same Postgres DSN as memory cards (`RECALL_PG_DSN`). **Load in editor** prefills the graph annotator; **Validate / Approve** uses existing `/api/memory/graph/*` and marks the consolidation draft `approved` when `consolidation_draft_id` is sent on approve (only while the draft is still `pending_review`). Reject via **Graph drafts** or `POST /api/memory/consolidation/drafts/{draft_id}/status` — rejecting clears the active consolidation draft link so a later Approve does not resurrect it. Graph approve and inbox status update are not one transaction: if RDF/cards succeed but the draft row is not updated, the API returns `consolidation_draft_marked: false` and the UI warns. Requires `services/orion-sql-db/manual_migration_memory_consolidation_v1.sql` applied on the memory Postgres.
 
-**Proposal review (attention + review decisions):** Hub main tab → **Pending Decisions** lists decision-worthy `pending_review` proposals from the context-exec proposal review API. Enabled in Athena `.env_example` (`HUB_PROPOSAL_REVIEW_ENABLED=true`); panel and script are omitted from the page when false. Hub calls `GET /health`, `GET /proposals`, detail, eligibility, and `POST /proposals/{id}/review` only — it does not read JSON ledger files, does not POST triage, and does not execute proposals directly. Approval creates future execution eligibility only. See [docs/proposal-review-api.md](../../docs/proposal-review-api.md).
-
 **Compute lane override (mode vs compute):** Hub chat UI exposes **Mode** and **Compute** dropdowns. Mode decides behavior (`Auto`, `Grounded Small`, `Brain`, `Quick`, `Story`, `Agent`, `Council`); **Compute** selects the GPU/model lane (`chat`, `quick`, `agent`, `metacog`). Default compute is `quick`. Hub serves `GET /api/llm-routes` from GPU pool state (`orion:gpu_pool:state` RPC with the pool's config, built by `orion/gpu_pool/route_view.py`, cached 10s; GPU pool stage 6.3 -- it no longer calls orion-llm-gateway's retiring `GET /routes`) and polls every 30s. When the pool cannot be asked, every lane is `unknown` (`source: gpu_pool_unavailable`), never a guessed `up`. Selected lane is sent as `llm_route` on chat payloads (wired into cortex `options.llm_route`). **Mode: Agent now routes through FCC (see below), not context-exec** — `llm_route`/**Compute** is independent of Mode and unaffected by this: it's still the plain-completion lane picker used by Quick/Story/auto-escalated turns via `orion-llm-gateway`, not something FCC (Orion or Agent mode) ever consults. Down lanes warn with explicit **Use quick / Try anyway / Cancel** — no silent fallback.
 
 **Social room toggle vs Mode vs Compute:**
@@ -2065,7 +2060,7 @@ Then open the Hub Memory tab → **Review queue**, or `GET /api/memory/cards?sta
 
 Bridge env keys `SOCIAL_BRIDGE_HUB_MODE` / `SOCIAL_BRIDGE_HUB_VERB` affect **CallSyne bridge → Hub** calls only; the Hub UI toggle ignores them.
 
-**Agent mode → FCC (not context-exec):** As of 2026-09-02, Hub **Agent** mode routes through the same FCC/harness-governor `claude -p` mechanism as **Orion** mode (`websocket_handler.py`'s `client_mode in ("orion", "agent")` branch over WebSocket; `handle_chat_request`'s matching `mode in ("orion", "agent")` branch over the HTTP `/api/chat` fallback) — real Claude, same subprocess-spawn machinery, just tagged `"agent"` for tracing instead of `"orion"`. `HUB_AGENT_CONTEXT_EXEC_ENABLED` now **defaults to `false`**: the old `POST /context-exec/run` path (`orion-context-exec`, `HUB_CONTEXT_EXEC_API_URL`) is left in place but unreachable by default, since `orion-context-exec` has zero containers deployed on athena — every Agent-mode turn failed with `"context-exec run unreachable"` before this fix. Flip the flag back to `true` only if `orion-context-exec` is ever actually redeployed and Agent mode should use it again instead of FCC.
+**Agent mode → FCC:** As of 2026-09-02, Hub **Agent** mode routes through the same FCC/harness-governor `claude -p` mechanism as **Orion** mode (`websocket_handler.py`'s `client_mode in ("orion", "agent")` branch over WebSocket; `handle_chat_request`'s matching `mode in ("orion", "agent")` branch over the HTTP `/api/chat` fallback) — real Claude, same subprocess-spawn machinery, just tagged `"agent"` for tracing instead of `"orion"`. The older context-exec Agent lane, the Pending Decisions proposal-review panel, and `orion-context-exec` itself were deleted 2026-10-10 (a completed experiment with no production use).
 
 ### Agent Claude mode (FCC harness)
 
@@ -2110,10 +2105,6 @@ When `HUB_AGENT_CLAUDE_MCP_ENABLED=true`, each agent-claude turn renders an ephe
 Hub settings: `HUB_AGENT_CLAUDE_MCP_ENABLED`, `HUB_AITOWN_ENABLED`, `HUB_AITOWN_UI_URL`, `HUB_AITOWN_CONVEX_URL` (defaults in `.env_example`; not read from `~/.fcc/.env`). Routes: `GET /api/aitown/status`, `GET /aitown/` reverse proxy, `/aitown-convex/*` Convex proxy for embedded clients.
 
 Preflight errors surface as `fcc_mcp_*` codes before spawn (e.g. `fcc_mcp_github_missing`, `fcc_mcp_aitown_config`).
-
-**Investigation v2 (epistemic pipeline):** When `CONTEXT_EXEC_INVESTIGATION_V2_ENABLED=true`, Hub Agent lane threads `answer_contract` from `answer_contract_draft` into context-exec, sends `mode=investigation_v2` with profile-derived permissions (`context_exec_permissions_for_llm_profile`), and receives **`final_text`** (finalize-rendered user voice) as `llm_response`. `InvestigationReportV2` remains an inspectable operator sidecar in `metadata.context_exec` (`operator_report_text`). Conceptual/personal turns do not trigger repo/trace sweeps. Default is `false` (legacy keyword mode inference preserved).
-
-**Denver memory correction vertical slice:** `ORION_PY=orion_dev/bin/python bash scripts/denver_memory_correction_vertical_smoke.sh` proves a Denver `memory_correction_proposal` reaches Pending Decisions when `HUB_PROPOSAL_REVIEW_ENABLED=true`. Expected final line: `denver_memory_correction_vertical_smoke PASS`. Hub card shows current belief, proposed correction, rationale, evidence summary, risk/confidence, and safety flags. Hub review actions (approve/reject/request changes) are on the detail card when enabled — smoke does not exercise them; pytest covers review POST allowlist and no-execution invariants. No execution or memory mutation in smoke.
 
 ---
 

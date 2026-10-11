@@ -35,7 +35,7 @@ rpc_bus = await fork_rpc_client(listener_bus)  # dedicated worker pubsub
 # keep listener_bus for intake/publish; route all rpc_request via rpc_bus
 ```
 
-Hub, cortex-gateway, cortex-orch, cortex-exec, context-exec, actions, chat-memory, vision-council,
+Hub, cortex-gateway, cortex-orch, cortex-exec, actions, chat-memory, vision-council,
 and agent-chain follow this split as of the bus RPC hardening pass.
 
 ## Downstream (deferred)

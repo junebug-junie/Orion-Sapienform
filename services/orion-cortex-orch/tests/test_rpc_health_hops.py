@@ -99,7 +99,7 @@ def _plan_request(*args: Any, **kwargs: Any) -> PlanExecutionRequest:
             can_interrupt_others=False,
             timeout_ms=1000,
             max_recursion_depth=1,
-            steps=[ExecutionStep(verb_name="agent_runtime", step_name="context_exec", order=0, services=["ContextExecService"])],
+            steps=[ExecutionStep(verb_name="agent_runtime", step_name="agent_runtime", order=0, services=[])],
             metadata={"mode": "agent"},
         ),
         args=PlanExecutionArgs(request_id="trace-1", extra={"mode": "agent", "supervised": True}),

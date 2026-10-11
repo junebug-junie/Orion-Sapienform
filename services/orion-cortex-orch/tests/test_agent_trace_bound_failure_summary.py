@@ -170,3 +170,38 @@ def test_agent_trace_delegate_row_fail_when_non_service_keys_precede_context_exe
     assert delegate[0].summary == (
         "Bound capability failed: Could not check mesh status: tailscale_not_installed."
     )
+
+
+def test_agent_trace_renders_agent_runtime_unavailable_as_failed_delegate():
+    """cortex-exec's depth-2 stub (after the 2026-10-10 context-exec retirement) is keyed
+    "AgentRuntime"; the trace must show it as a failed orchestration delegate, not an
+    unknown step."""
+    text = "No depth-2 agent runtime is available: orion-context-exec was retired (2026-10-10)."
+    steps = [
+        StepExecutionResult(
+            status="fail",
+            verb_name="agent_runtime",
+            step_name="agent_runtime_unavailable",
+            order=100,
+            result={"AgentRuntime": {"final_text": text, "text": text,
+                                     "runtime_debug": {"agent_runtime_available": False}}},
+            latency_ms=0,
+            node="test",
+            logs=["fail <- agent_runtime_unavailable"],
+            error="agent_runtime_unavailable",
+        ),
+    ]
+    summary = build_agent_trace_summary(
+        correlation_id="corr-ar",
+        message_id="corr-ar",
+        mode="agent",
+        status="fail",
+        final_text=text,
+        steps=steps,
+        metadata={},
+    )
+    assert summary is not None
+    rows = [s for s in summary.steps if s.tool_id == "agent_runtime"]
+    assert rows, [s.tool_id for s in summary.steps]
+    assert rows[0].status == "fail"
+    assert rows[0].tool_family == "orchestration"

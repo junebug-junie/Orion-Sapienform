@@ -85,67 +85,6 @@
     }));
   }
 
-  const _liveAgentSteps = new Map(); // correlationId -> [step,...]
-  const LIVE_TRACE_ANCHOR_ID = 'conversation';
-
-  function resolveLiveTraceAnchor(doc) {
-    const root = doc || (typeof document !== 'undefined' ? document : null);
-    if (!root || typeof root.getElementById !== 'function') return null;
-    return root.getElementById(LIVE_TRACE_ANCHOR_ID);
-  }
-
-  function ensureLiveTracePanel(correlationId, doc) {
-    const anchor = resolveLiveTraceAnchor(doc);
-    if (!anchor || typeof anchor.appendChild !== 'function') return null;
-
-    const panelId = `agent-live-${correlationId}`;
-    let panel = (doc || document).getElementById(panelId);
-    if (panel) return panel;
-
-    panel = (doc || document).createElement('div');
-    panel.id = panelId;
-    panel.className = 'agent-live-trace';
-    panel.dataset.correlationId = String(correlationId);
-
-    const heading = (doc || document).createElement('div');
-    heading.className = 'agent-live-trace__heading';
-    heading.textContent = 'Reasoning steps (live)';
-    panel.appendChild(heading);
-
-    const steps = (doc || document).createElement('div');
-    steps.className = 'agent-live-trace__steps';
-    panel.appendChild(steps);
-
-    anchor.appendChild(panel);
-    return panel;
-  }
-
-  function appendLiveAgentStep(correlationId, step, doc) {
-    if (!correlationId || !step) return;
-    const list = _liveAgentSteps.get(correlationId) || [];
-    list.push(step);
-    _liveAgentSteps.set(correlationId, list);
-
-    const panel = ensureLiveTracePanel(correlationId, doc);
-    if (!panel) return;
-
-    const stepsHost = panel.querySelector('.agent-live-trace__steps');
-    if (!stepsHost) return;
-
-    const row = (doc || document).createElement('div');
-    row.className = 'agent-live-trace__step' + (step.is_final ? ' is-final' : '');
-    const idx = step.step_index != null ? step.step_index : (list.length - 1);
-    const dur = step.duration_ms != null ? `${step.duration_ms}ms` : '';
-    row.textContent = `#${idx} ${step.tool_id || 'step'} ${dur} — ${String(step.observation || step.thought || '').slice(0, 200)}`;
-    stepsHost.appendChild(row);
-    stepsHost.scrollTop = stepsHost.scrollHeight;
-
-    const anchor = resolveLiveTraceAnchor(doc);
-    if (anchor && typeof anchor.scrollTop === 'number') {
-      anchor.scrollTop = anchor.scrollHeight;
-    }
-  }
-
   const api = {
     normalizeSummary,
     shouldShowAgentTrace,
@@ -154,14 +93,9 @@
     formatDuration,
     groupToolsByFamily,
     buildTimelineRows,
-    resolveLiveTraceAnchor,
-    ensureLiveTracePanel,
-    appendLiveAgentStep,
-    LIVE_TRACE_ANCHOR_ID,
   };
 
   global.OrionAgentTrace = api;
-  global.appendLiveAgentStep = appendLiveAgentStep;
   if (typeof module !== 'undefined' && module.exports) {
     module.exports = api;
   }

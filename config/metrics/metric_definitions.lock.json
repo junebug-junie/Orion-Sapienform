@@ -1,11 +1,17 @@
 {
   "_comment": "Definition lock for scripts/check_definition_drift.py. Generated, never hand-edited. Regenerate with --update; the resulting diff IS the definition-change alert. Unlike the *_baseline.json ratchets this tracks current truth in both directions -- a definition change is an event, not a defect.",
-  "metric_count": 722,
+  "metric_count": 717,
   "_last_change": {
-    "change_count": 1,
-    "high_severity_count": 1,
+    "change_count": 7,
+    "high_severity_count": 6,
     "changes": [
-      "high   semantics_changed metric://inner_state/orion-substrate-runtime/frontier_invocation_signal.v1#signal_strength (absent_means: \u2026s its floor. -> \u2026s its floor. Exception: a seed noted strength:unscored_even\u2026)"
+      "high   removed metric://bus_channel/orion-context-exec/orion:context_exec:event",
+      "high   removed metric://bus_channel/orion-context-exec/orion:exec:request:RecallService",
+      "high   removed metric://bus_channel/orion-context-exec/orion:exec:result:ContextExecService",
+      "high   removed metric://bus_channel/orion-context-exec/orion:exec:result:ContextExecService:*",
+      "high   removed metric://bus_channel/orion-context-exec/orion:self_experiments:context_exec:reply:*",
+      "high   removed metric://bus_channel/orion-cortex-exec/orion:exec:request:ContextExecService",
+      "medium added metric://bus_channel/orion-cortex-exec/orion:exec:request:RecallService"
     ]
   },
   "definitions": {
@@ -646,65 +652,6 @@
       "notes": "kind=event stability=experimental",
       "registry_source": "orion/bus/channels.yaml"
     },
-    "metric://bus_channel/orion-context-exec/orion:context_exec:event": {
-      "schema_id": "GenericPayloadV1",
-      "all_producers": [
-        "orion-context-exec"
-      ],
-      "declared_consumers": [
-        "*"
-      ],
-      "notes": "kind=event stability=experimental",
-      "registry_source": "orion/bus/channels.yaml"
-    },
-    "metric://bus_channel/orion-context-exec/orion:exec:request:RecallService": {
-      "schema_id": "RecallQueryV1",
-      "all_producers": [
-        "orion-context-exec",
-        "orion-cortex-exec",
-        "orion-cortex-orch",
-        "orion-hub",
-        "orion-spark-concept-induction"
-      ],
-      "declared_consumers": [
-        "orion-recall"
-      ],
-      "notes": "kind=request stability=experimental",
-      "registry_source": "orion/bus/channels.yaml"
-    },
-    "metric://bus_channel/orion-context-exec/orion:exec:result:ContextExecService": {
-      "schema_id": "ContextExecRunV1",
-      "all_producers": [
-        "orion-context-exec"
-      ],
-      "declared_consumers": [
-        "orion-cortex-exec"
-      ],
-      "notes": "kind=result stability=experimental",
-      "registry_source": "orion/bus/channels.yaml"
-    },
-    "metric://bus_channel/orion-context-exec/orion:exec:result:ContextExecService:*": {
-      "schema_id": "ContextExecRunV1",
-      "all_producers": [
-        "orion-context-exec"
-      ],
-      "declared_consumers": [
-        "orion-cortex-exec"
-      ],
-      "notes": "kind=result stability=experimental",
-      "registry_source": "orion/bus/channels.yaml"
-    },
-    "metric://bus_channel/orion-context-exec/orion:self_experiments:context_exec:reply:*": {
-      "schema_id": "ContextExecRunV1",
-      "all_producers": [
-        "orion-context-exec"
-      ],
-      "declared_consumers": [
-        "orion-self-experiments"
-      ],
-      "notes": "kind=result stability=experimental",
-      "registry_source": "orion/bus/channels.yaml"
-    },
     "metric://bus_channel/orion-cortex-exec/orion:agent-council:intake": {
       "schema_id": "GenericPayloadV1",
       "all_producers": [
@@ -903,18 +850,6 @@
       "notes": "kind=request stability=experimental",
       "registry_source": "orion/bus/channels.yaml"
     },
-    "metric://bus_channel/orion-cortex-exec/orion:exec:request:ContextExecService": {
-      "schema_id": "ContextExecRequestV1",
-      "all_producers": [
-        "orion-cortex-exec",
-        "orion-self-experiments"
-      ],
-      "declared_consumers": [
-        "orion-context-exec"
-      ],
-      "notes": "kind=request stability=experimental",
-      "registry_source": "orion/bus/channels.yaml"
-    },
     "metric://bus_channel/orion-cortex-exec/orion:exec:request:MetaTagsService": {
       "schema_id": "MetaTagsRequestV1",
       "all_producers": [
@@ -922,6 +857,20 @@
       ],
       "declared_consumers": [
         "orion-meta-tags"
+      ],
+      "notes": "kind=request stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-cortex-exec/orion:exec:request:RecallService": {
+      "schema_id": "RecallQueryV1",
+      "all_producers": [
+        "orion-cortex-exec",
+        "orion-cortex-orch",
+        "orion-hub",
+        "orion-spark-concept-induction"
+      ],
+      "declared_consumers": [
+        "orion-recall"
       ],
       "notes": "kind=request stability=experimental",
       "registry_source": "orion/bus/channels.yaml"

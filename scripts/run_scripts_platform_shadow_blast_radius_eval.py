@@ -72,7 +72,6 @@ KNOWN_AFFECTED_FILES: tuple[str, ...] = (
     "scripts/check_single_consumer_channels.py",
     "scripts/check_substrate_projection_schema_drift.py",
     "scripts/concept_relation_digest.py",
-    "scripts/context_exec_rlm_eval.py",
     "scripts/diagnose_cortex_bus_stack.py",
     "scripts/diag.py",
     "scripts/disk_threshold_watchdog.py",

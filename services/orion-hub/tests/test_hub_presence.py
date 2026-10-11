@@ -85,42 +85,7 @@ def test_record_turn_rate_limits_writes(monkeypatch):
     assert calls[-1]["connection_health"] == "active"
 
 
-# ── curiosity focus hint ─────────────────────────────────────────────
-
-
-def test_hint_none_without_summaries():
-    assert curiosity_hint.format_curiosity_hint([]) is None
-    assert curiosity_hint.format_curiosity_hint([{"signal_strength": 0.9}]) is None
-
-
-def test_hint_ranked_capped_truncated():
-    candidates = [
-        {"signal_strength": 0.2, "evidence_summary": "weak gap"},
-        {"signal_strength": 0.9, "evidence_summary": "x" * 200},
-        {"signal_strength": 0.5, "evidence_summary": "medium gap"},
-    ]
-    hint = curiosity_hint.format_curiosity_hint(candidates)
-    assert hint.startswith("[curiosity focus] Self-observed gaps: ")
-    # Top-2 by strength only; the strongest is truncated to 120 chars.
-    assert "weak gap" not in hint
-    assert "medium gap" in hint
-    truncated = "x" * 119 + "…"
-    assert truncated in hint
-
-
-def test_apply_hint_prepends_and_degrades():
-    with patch.object(curiosity_hint, "_fetch_fresh_candidates", return_value=[
-        {"signal_strength": 0.8, "evidence_summary": "open loop in transport"}
-    ]):
-        out = curiosity_hint.apply_curiosity_hint("what am I missing?")
-    assert out.startswith("[curiosity focus] Self-observed gaps: open loop in transport")
-    assert out.endswith("\n\nwhat am I missing?")
-
-    with patch.object(curiosity_hint, "_fetch_fresh_candidates", side_effect=RuntimeError("db down")):
-        assert curiosity_hint.apply_curiosity_hint("prompt") == "prompt"
-
-    with patch.object(curiosity_hint, "_fetch_fresh_candidates", return_value=[]):
-        assert curiosity_hint.apply_curiosity_hint("prompt") == "prompt"
+# ── curiosity candidate reader ─────────────────────────────────────
 
 
 def test_unscored_link_seed_never_becomes_a_curiosity_hint_or_outreach_topic() -> None:

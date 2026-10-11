@@ -92,6 +92,19 @@ KNOWN_DEAD: dict[str, str] = {
     "HUB_LLM_GATEWAY_URL": "stage 6.3 (its only reader was the /routes read)",
     "CORTEX_EXEC_LLM_GATEWAY_URL": "stage 6.3",
     "CONTEXT_EXEC_LLM_PROFILE_FALLBACK_ENABLED": "stage 6.3",
+    # orion-context-exec retirement (2026-10-10, docs/superpowers/pr-reports/
+    # 2026-10-10-retire-context-exec-pr.md): the service, its Hub lane/proposal-review
+    # panel, cortex-exec's delegate and self-experiments' dispatch were deleted.
+    "CONTEXT_EXEC_*": "context-exec retirement (cortex-exec delegate + hub investigation_v2 flag)",
+    "CHANNEL_CONTEXT_EXEC_*": "context-exec retirement (cortex-exec delegate channels)",
+    "HUB_CONTEXT_EXEC_*": "context-exec retirement (hub agent lane URL/timeout/event channel)",
+    "HUB_AGENT_CONTEXT_EXEC_ENABLED": "context-exec retirement (hub agent lane gate)",
+    "HUB_AGENT_REPL_ENABLED": "context-exec retirement (hub agent lane agent_repl mode)",
+    "HUB_AGENT_CURIOSITY_HINT_ENABLED": "context-exec retirement (hint only fed the hub agent lane)",
+    "HUB_PROPOSAL_REVIEW_*": "context-exec retirement (Pending Decisions panel read context-exec's API)",
+    "SELF_EXPERIMENTS_CONTEXT_EXEC_*": "context-exec retirement (self-experiments dispatch)",
+    "SELF_EXPERIMENTS_DISPATCH_ENABLED": "context-exec retirement (self-experiments dispatch)",
+    "SELF_EXPERIMENTS_MAX_DISPATCH_ATTEMPTS": "context-exec retirement (self-experiments dispatch)",
 }
 
 # Never reported dead, whatever the scan says. Pattern -> why.

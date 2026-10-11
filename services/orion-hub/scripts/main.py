@@ -24,7 +24,6 @@ from scripts.mind_routes import router as mind_router
 from scripts.ask_routes import router as ask_router
 from scripts.memory_graph_routes import router as memory_graph_router
 from scripts.memory_consolidation_draft_routes import router as memory_consolidation_draft_router
-from scripts.proposal_review_routes import router as proposal_review_router
 from scripts.concept_atlas_routes import router as concept_atlas_router
 from scripts.curiosity_routes import router as curiosity_atlas_router
 from scripts.curiosity_routes import _build_reader as build_curiosity_reader
@@ -66,7 +65,6 @@ from scripts.orion_day_letter import DurableRunsClient, OrionDayLetterLoop
 from scripts.endogenous_outreach import EndogenousOutreach
 import scripts.tension_outreach_trigger as tension_outreach_trigger
 from scripts.room_claude_relay import RoomClaudeRelay
-from scripts.agent_step_relay import AgentStepRelay
 from scripts.harness_step_relay import HarnessStepRelay
 from scripts.signals_inspect_cache import SignalsInspectCache
 from scripts.cognition_trace_cache import CognitionTraceCache
@@ -219,7 +217,6 @@ def render_hub_index_html(*, memory_pool_ok: bool | None = None) -> str:
         "agentClaudeEnabled": bool(getattr(settings, "HUB_AGENT_CLAUDE_ENABLED", False)),
         "aitownEnabled": bool(getattr(settings, "HUB_AITOWN_ENABLED", False)),
         "worldPulseFixtureRunEnabled": bool(settings.WORLD_PULSE_UI_FIXTURE_RUN_ENABLED),
-        "proposalReviewEnabled": bool(getattr(settings, "HUB_PROPOSAL_REVIEW_ENABLED", False)),
         "memoryGraphSuggestFetchTimeoutMs": hub_client_fetch_timeout_ms(
             settings, escalation_enabled=mg_escalation
         ),
@@ -231,37 +228,6 @@ def render_hub_index_html(*, memory_pool_ok: bool | None = None) -> str:
     aitown_nav, aitown_panel = render_aitown_tab_blocks(settings)
     rendered = rendered.replace("{{HUB_AITOWN_TAB_NAV}}", aitown_nav)
     rendered = rendered.replace("{{HUB_AITOWN_PANEL}}", aitown_panel)
-
-    proposal_review_panel = ""
-    proposal_review_script = ""
-    if bool(getattr(settings, "HUB_PROPOSAL_REVIEW_ENABLED", False)):
-        proposal_review_panel = """
-      <div class="w-full bg-gray-900 rounded-2xl shadow-lg p-5 space-y-3" id="proposalReviewPanel">
-        <div class="flex flex-wrap items-center justify-between gap-3">
-          <div>
-            <h3 class="text-lg font-semibold text-white">Pending Decisions</h3>
-            <div class="text-[11px] text-gray-400">Agent proposals from context-exec that need human approve/reject before anything can run.</div>
-          </div>
-          <div class="flex items-center gap-2">
-            <select id="proposalReviewFilter" class="hidden bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs">
-              <option value="pending_review" selected>Pending review</option>
-              <option value="blocked">Blocked</option>
-              <option value="stored">Stored</option>
-              <option value="approved">Approved history</option>
-              <option value="rejected">Rejected history</option>
-            </select>
-            <button id="proposalReviewRefreshButton" type="button" class="text-xs bg-gray-800 hover:bg-gray-700 text-gray-200 rounded-lg px-3 py-1 border border-gray-700">Refresh</button>
-          </div>
-        </div>
-        <div id="proposalReviewStatus" class="text-xs text-gray-500">Loading…</div>
-        <div id="proposalReviewList" class="space-y-2 max-h-56 overflow-y-auto text-xs"></div>
-        <div id="proposalReviewDetail" class="hidden rounded-xl border border-gray-700 bg-gray-900/50 p-3 text-[11px] space-y-2 text-gray-300"></div>
-      </div>"""
-        proposal_review_script = (
-            f'<script src="/static/js/proposal-review-ui.js?v={ui_asset_version}" defer></script>'
-        )
-    rendered = rendered.replace("{{HUB_PROPOSAL_REVIEW_PANEL}}", proposal_review_panel)
-    rendered = rendered.replace("{{HUB_PROPOSAL_REVIEW_SCRIPT}}", proposal_review_script)
 
     from scripts.api_routes import resolve_hub_autonomy_subject_display
 
@@ -364,7 +330,6 @@ world_pulse_read_pipeline: Optional[WorldPulseReadPipeline] = None
 world_pulse_read_stage2: Optional[WorldPulseReadStage2Pipeline] = None
 orion_day_letter: Optional[OrionDayLetterLoop] = None
 room_claude_relay: Optional[RoomClaudeRelay] = None
-agent_step_relay: Optional[AgentStepRelay] = None
 runtime_activity_feeds: Optional[RuntimeActivityFeeds] = None
 harness_step_relay: Optional[HarnessStepRelay] = None
 signals_inspect_cache: Optional[SignalsInspectCache] = None
@@ -467,7 +432,7 @@ async def startup_event():
     Initializes all shared services at application startup.
     OrionBus + Clients + UI template.
     """
-    global reading_turn_listener, reading_listener, curiosity_introspect_listener, bus, rpc_bus, cortex_client, tts_client, html_content, biometrics_cache, notification_cache, bus_synaptic_trigger_notifier, endogenous_outreach, collapse_mirror_chat_reply_handler, curiosity_investigation, world_pulse_read_pipeline, world_pulse_read_stage2, orion_day_letter, room_claude_relay, agent_step_relay, harness_step_relay, signals_inspect_cache, cognition_trace_cache, embodiment_outcome_cache, presence_state, presence_context_store, substrate_autonomy_task, substrate_review_task, substrate_topic_foundry_scheduler_task, affect_ambient_loop_task, heartbeat_chassis, runtime_activity_feeds
+    global reading_turn_listener, reading_listener, curiosity_introspect_listener, bus, rpc_bus, cortex_client, tts_client, html_content, biometrics_cache, notification_cache, bus_synaptic_trigger_notifier, endogenous_outreach, collapse_mirror_chat_reply_handler, curiosity_investigation, world_pulse_read_pipeline, world_pulse_read_stage2, orion_day_letter, room_claude_relay, harness_step_relay, signals_inspect_cache, cognition_trace_cache, embodiment_outcome_cache, presence_state, presence_context_store, substrate_autonomy_task, substrate_review_task, substrate_topic_foundry_scheduler_task, affect_ambient_loop_task, heartbeat_chassis, runtime_activity_feeds
 
     # ------------------------------------------------------------
     # Bus-native SystemHealthV1 heartbeat (pilot-5 rollout, see
@@ -838,9 +803,6 @@ async def startup_event():
                 enabled=settings.HUB_ROOM_CLAUDE_ENABLED,
             )
             await room_claude_relay.start(bus)
-
-            agent_step_relay = AgentStepRelay(channel=settings.HUB_CONTEXT_EXEC_EVENT_CHANNEL)
-            await agent_step_relay.start(bus)
 
             harness_step_relay = HarnessStepRelay(
                 channel=settings.CHANNEL_HARNESS_RUN_STEP,
@@ -1495,7 +1457,7 @@ async def startup_event():
 
 @app.on_event("shutdown")
 async def shutdown_event() -> None:
-    global reading_turn_listener, reading_listener, curiosity_introspect_listener, bus, rpc_bus, biometrics_cache, notification_cache, bus_synaptic_trigger_notifier, endogenous_outreach, collapse_mirror_chat_reply_handler, curiosity_investigation, world_pulse_read_pipeline, world_pulse_read_stage2, orion_day_letter, room_claude_relay, agent_step_relay, harness_step_relay, signals_inspect_cache, cognition_trace_cache, embodiment_outcome_cache, substrate_autonomy_task, substrate_review_task, substrate_topic_foundry_scheduler_task, affect_ambient_loop_task, heartbeat_chassis, runtime_activity_feeds
+    global reading_turn_listener, reading_listener, curiosity_introspect_listener, bus, rpc_bus, biometrics_cache, notification_cache, bus_synaptic_trigger_notifier, endogenous_outreach, collapse_mirror_chat_reply_handler, curiosity_investigation, world_pulse_read_pipeline, world_pulse_read_stage2, orion_day_letter, room_claude_relay, harness_step_relay, signals_inspect_cache, cognition_trace_cache, embodiment_outcome_cache, substrate_autonomy_task, substrate_review_task, substrate_topic_foundry_scheduler_task, affect_ambient_loop_task, heartbeat_chassis, runtime_activity_feeds
     if heartbeat_chassis is not None:
         try:
             await heartbeat_chassis.stop()
@@ -1606,11 +1568,6 @@ async def shutdown_event() -> None:
         except Exception:
             pass
         room_claude_relay = None
-    if agent_step_relay is not None:
-        try:
-            await agent_step_relay.stop()
-        except Exception:
-            pass
     if harness_step_relay is not None:
         try:
             await harness_step_relay.stop()
@@ -1662,7 +1619,6 @@ app.include_router(mind_router)
 app.include_router(ask_router)
 app.include_router(memory_graph_router)
 app.include_router(memory_consolidation_draft_router)
-app.include_router(proposal_review_router)
 app.include_router(concept_atlas_router)
 app.include_router(curiosity_atlas_router)
 app.include_router(graph_workbench_router)

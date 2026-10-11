@@ -37,14 +37,7 @@ from orion.schemas.agents.bound_capability import (
     CapabilityRecoveryReasonV1,
 )
 
-from orion.schemas.cognition.answer_contract import AnswerContract
-from orion.schemas.context_exec import (
-    ContextExecBudgetV1,
-    ContextExecPermissionV1,
-    ContextExecRequestV1,
-)
-
-from .clients import ContextExecClient, CouncilClient, LLMGatewayClient
+from .clients import CouncilClient, LLMGatewayClient
 from .bound_capability_exec import execute_bound_capability
 from .executor import _last_user_message, call_step_services, run_recall_step
 from .pcr_chat_memory import CONTINUITY_PROFILE, run_pcr_phase0_and_1, run_pcr_phase3
@@ -917,87 +910,21 @@ def _extract_council_debug(result_payload: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-_CONTEXT_EXEC_ARTIFACT_BY_MODE = {
-    "belief_provenance": "BeliefProvenanceReportV1",
-    "trace_autopsy": "TraceAutopsyReportV1",
-    "repo_impact_analysis": "RepoImpactAnalysisReportV1",
-}
-
-
-def _context_exec_options(ctx: Dict[str, Any]) -> Dict[str, Any]:
-    options = ctx.get("options")
-    return options if isinstance(options, dict) else {}
-
-
-def _should_use_context_exec(ctx: Dict[str, Any], *, bound_execution: Any = None) -> bool:
-    if not settings.context_exec_enabled:
-        return False
-    if bool(ctx.get("operational_intent_detected")):
-        return False
-    if isinstance(ctx.get("__bound_execution"), dict) or isinstance(bound_execution, dict):
-        return False
-    options = _context_exec_options(ctx)
-    if (
-        str(options.get("agent_runtime_engine") or "") == "context_exec"
-        or bool(options.get("context_exec_mode"))
-    ):
-        return True
-    mode = str(ctx.get("mode") or "").lower()
-    return mode in {"agent", "council"}
-
-
-def _context_exec_mode_from_options(options: Dict[str, Any]) -> str:
-    explicit = str(options.get("context_exec_mode") or "").strip()
-    if explicit:
-        return explicit
-    return "general_investigation"
-
-
-def _build_context_exec_request(
-    *,
-    agent_req: Dict[str, Any],
-    ctx: Dict[str, Any],
-    options: Dict[str, Any],
-    correlation_id: str,
-    packs: List[str],
-    ctx_mode: str,
-) -> ContextExecRequestV1:
-    ac = agent_req.get("answer_contract")
-    if ac is None:
-        ac_raw = ctx.get("answer_contract")
-        ac = ac_raw if isinstance(ac_raw, dict) else None
-    allowed_raw = options.get("allowed_verbs") or ctx.get("allowed_verbs") or []
-    allowed_verbs = [str(v).strip() for v in allowed_raw if str(v).strip()]
-    scopes_raw = options.get("scopes") or ctx.get("scopes")
-    scopes = scopes_raw if isinstance(scopes_raw, dict) else {}
-    budget_raw = options.get("budget") or ctx.get("budget")
-    if isinstance(budget_raw, dict):
-        budget = ContextExecBudgetV1.model_validate(budget_raw)
-    else:
-        budget = ContextExecBudgetV1(max_seconds=float(settings.context_exec_timeout_sec))
-    return ContextExecRequestV1(
-        text=str(agent_req["text"]),
-        mode=ctx_mode,  # type: ignore[arg-type]
-        correlation_id=correlation_id,
-        session_id=agent_req.get("session_id"),
-        user_id=agent_req.get("user_id"),
-        messages=[
-            LLMMessage.model_validate(m) if isinstance(m, dict) else m
-            for m in (agent_req.get("messages") or [])
-        ],
-        packs=list(packs or []),
-        answer_contract=AnswerContract.model_validate(ac) if isinstance(ac, dict) else None,
-        expected_artifact_type=_CONTEXT_EXEC_ARTIFACT_BY_MODE.get(ctx_mode),
-        allowed_verbs=allowed_verbs,
-        scopes=scopes,
-        permissions=ContextExecPermissionV1(),
-        budget=budget,
-    )
+# Result key for the depth-2 agent runtime stub below. "ContextExecService" is
+# still the payload key the live bound-capability / autonomy-goal steps use
+# (bound_capability_exec.py, _execute_autonomy_goal_action) and that
+# cortex-orch's answer-depth reader and orion/normalizers/agent_trace.py consume,
+# so it stays; it no longer means a call to orion-context-exec (retired 2026-10-10).
+_AGENT_RUNTIME_RESULT_KEY = "AgentRuntime"
+_AGENT_RUNTIME_UNAVAILABLE_TEXT = (
+    "No depth-2 agent runtime is available: orion-context-exec was retired "
+    "(2026-10-10) and the planner-react/agent-chain organs were removed before it."
+)
 
 
 def _extract_agent_escalation_payload(step: StepExecutionResult) -> Dict[str, Any]:
     result = step.result if isinstance(step.result, dict) else {}
-    for key in ("ContextExecService",):
+    for key in ("ContextExecService", _AGENT_RUNTIME_RESULT_KEY):
         payload = result.get(key)
         if isinstance(payload, dict):
             return payload
@@ -1023,7 +950,6 @@ class Supervisor:
         self.registry = VerbRegistry(VERBS_DIR)
         self.pack_manager = PackManager(ORION_PKG_DIR / "cognition")
         self.llm_client = LLMGatewayClient(bus)
-        self.context_exec_client = ContextExecClient(bus)
         self.council_client = CouncilClient(bus)
 
     def _toolset(self, packs: List[str] | None = None, tags: List[str] | None = None) -> List[ToolDef]:
@@ -1157,15 +1083,6 @@ class Supervisor:
                 action={"tool_id": tool_id, "input": tool_input},
                 ctx=ctx,
                 correlation_id=correlation_id,
-            )
-        if str(tool_id) in {"agent_chain", "context_exec"}:
-            logger.info("dispatch_action corr_id=%s mode=%s step=context_exec route=ContextExecService", correlation_id, mode)
-            chain_ctx = {**ctx, **tool_input}
-            return await self._context_exec_escalation(
-                source=source,
-                correlation_id=correlation_id,
-                ctx=chain_ctx,
-                packs=packs,
             )
         if not tool_id or not is_active(str(tool_id), node_name=settings.node_name):
             logger.warning("Inactive verb selected by supervisor corr_id=%s verb=%s", correlation_id, tool_id)
@@ -1373,146 +1290,29 @@ class Supervisor:
             logs=logs,
         )
 
-    async def _context_exec_escalation(
-        self,
-        *,
-        source: ServiceRef,
-        correlation_id: str,
-        ctx: Dict[str, Any],
-        packs: List[str],
-    ) -> StepExecutionResult:
-        logger.info(
-            "grounding_snapshot component=agent_chain_entry corr_id=%s trace_id=%s session_id=%s text_source=last_user_message text_head=%r prior_step_results_count=%s recall_included=%s scaffolding_markers=%s",
+    def _agent_runtime_unavailable(self, *, correlation_id: str, mode: str) -> StepExecutionResult:
+        """Depth-2 (agent/council) work has no runtime: fail fast and say so."""
+        logger.warning(
+            "agent_runtime_unavailable corr_id=%s mode=%s reason=context_exec_retired",
             correlation_id,
-            ctx.get("trace_id"),
-            ctx.get("session_id"),
-            _truncate_text(_last_user_message(ctx), 220),
-            len(ctx.get("prior_step_results") or []) if isinstance(ctx.get("prior_step_results"), list) else len(ctx.get("prior_step_results") or {}) if isinstance(ctx.get("prior_step_results"), dict) else 0,
-            bool(ctx.get("memory_digest")),
-            _detect_scaffolding_markers(_last_user_message(ctx)),
+            mode,
         )
-        agent_req = {
-            "text": _last_user_message(ctx),
-            "mode": ctx.get("mode") or "agent",
-            "session_id": ctx.get("session_id"),
-            "user_id": ctx.get("user_id"),
-            "messages": ctx.get("messages") or [],
-            "packs": packs,
-            "output_mode": ctx.get("output_mode"),
-            "response_profile": ctx.get("response_profile"),
-        }
-        ac = ctx.get("answer_contract")
-        if isinstance(ac, dict):
-            agent_req["answer_contract"] = ac
-        bound_execution = ctx.get("__bound_execution")
-        if isinstance(bound_execution, dict):
-            contract = BoundCapabilityExecutionRequestV1.model_validate(bound_execution)
-            logger.info(
-                "bound_capability_request_received corr_id=%s selected_verb=%s selected_verb_preserved=1",
-                correlation_id,
-                contract.selected_verb,
-            )
-            agent_req["goal_description"] = "execute_selected_capability"
-            agent_req["bound_capability_execution"] = contract.model_dump(mode="json")
-
-        options = _context_exec_options(ctx)
-        use_context_exec = _should_use_context_exec(ctx, bound_execution=bound_execution)
-        context_exec_fallback_debug: Dict[str, Any] | None = None
-        if use_context_exec:
-            ctx_mode = _context_exec_mode_from_options(options)
-            ce_req = _build_context_exec_request(
-                agent_req=agent_req,
-                ctx=ctx,
-                options=options,
-                correlation_id=correlation_id,
-                packs=packs,
-                ctx_mode=ctx_mode,
-            )
-            reply_channel = f"{settings.channel_context_exec_reply_prefix}:{correlation_id}"
-            t0 = time.time()
-            logs = [f"rpc -> ContextExecService reply={reply_channel}"]
-            try:
-                ce_run = await self.context_exec_client.run(
-                    source=source,
-                    req=ce_req,
-                    correlation_id=correlation_id,
-                    reply_to=reply_channel,
-                    timeout_sec=float(settings.context_exec_timeout_sec),
-                )
-                logs.append("ok <- ContextExecService")
-                runtime_debug = dict(ce_run.runtime_debug or {})
-                runtime_debug.setdefault("engine", "context_exec")
-                runtime_debug["context_exec_attempted"] = True
-                runtime_debug["context_exec_status"] = ce_run.status
-                agent_payload = {
-                    "final_text": ce_run.final_text,
-                    "text": ce_run.final_text,
-                    "structured": {
-                        "context_exec": {
-                            "run_id": ce_run.run_id,
-                            "mode": ce_run.mode,
-                            "artifact_type": ce_run.artifact_type,
-                            "artifact": ce_run.artifact,
-                            "findings_bundle": ce_run.findings_bundle.model_dump(mode="json")
-                            if ce_run.findings_bundle
-                            else None,
-                        },
-                        "findings_bundle": ce_run.findings_bundle.model_dump(mode="json")
-                        if ce_run.findings_bundle
-                        else None,
-                    },
-                    "runtime_debug": runtime_debug,
-                    "mode": agent_req.get("mode"),
-                }
-                return StepExecutionResult(
-                    status="success" if ce_run.status == "ok" else "fail",
-                    verb_name="context_exec",
-                    step_name="context_exec",
-                    order=100,
-                    result={"ContextExecService": agent_payload},
-                    latency_ms=int((time.time() - t0) * 1000),
-                    node=settings.node_name,
-                    logs=logs,
-                )
-            except Exception as exc:
-                logs.append(f"fail <- ContextExecService: {exc}")
-                return StepExecutionResult(
-                    status="fail",
-                    verb_name="context_exec",
-                    step_name="context_exec",
-                    order=100,
-                    result={
-                        "ContextExecService": {
-                            "final_text": "Insufficient grounding: context-exec failed before acquiring evidence.",
-                            "text": "Insufficient grounding: context-exec failed before acquiring evidence.",
-                            "runtime_debug": {
-                                "context_exec_attempted": True,
-                                "context_exec_status": "error",
-                                "error": str(exc),
-                            },
-                        }
-                    },
-                    latency_ms=int((time.time() - t0) * 1000),
-                    node=settings.node_name,
-                    logs=logs,
-                )
-
         return StepExecutionResult(
             status="fail",
-            verb_name="context_exec",
-            step_name="context_exec",
+            verb_name="agent_runtime",
+            step_name="agent_runtime_unavailable",
             order=100,
             result={
-                "ContextExecService": {
-                    "final_text": "Context-exec is disabled; legacy planner/agent-chain organs were removed.",
-                    "text": "Context-exec is disabled; legacy planner/agent-chain organs were removed.",
-                    "runtime_debug": {"context_exec_attempted": False, "context_exec_status": "disabled"},
+                _AGENT_RUNTIME_RESULT_KEY: {
+                    "final_text": _AGENT_RUNTIME_UNAVAILABLE_TEXT,
+                    "text": _AGENT_RUNTIME_UNAVAILABLE_TEXT,
+                    "runtime_debug": {"agent_runtime_available": False},
                 }
             },
             latency_ms=0,
             node=settings.node_name,
-            logs=["fail <- context_exec disabled"],
-            error="context_exec_disabled",
+            logs=["fail <- agent_runtime_unavailable"],
+            error="agent_runtime_unavailable",
         )
 
 
@@ -1829,26 +1629,6 @@ class Supervisor:
             agent_payload = _extract_agent_escalation_payload(action_step)
             if agent_payload:
                 _merge_agent_findings_into_ctx(ctx, agent_payload)
-        elif _should_use_context_exec(ctx):
-            logger.info(
-                "context_exec_dispatch corr_id=%s mode=%s verb=%s ctx_mode=%s",
-                correlation_id,
-                mode,
-                req.verb_name,
-                _context_exec_mode_from_options(_context_exec_options(ctx)),
-            )
-            agent_step = await self._context_exec_escalation(
-                source=source,
-                correlation_id=correlation_id,
-                ctx=ctx,
-                packs=packs,
-            )
-            step_results.append(agent_step)
-            executed_steps.append(agent_step.step_name)
-            agent_payload = _extract_agent_escalation_payload(agent_step)
-            if agent_payload:
-                _merge_agent_findings_into_ctx(ctx, agent_payload)
-            final_text = _extract_agent_escalation_text(agent_step)
         else:
             final_text = None
 
@@ -1872,21 +1652,6 @@ class Supervisor:
                 memory_used=memory_used,
                 recall_debug=recall_debug,
                 error=overall_error,
-            )
-
-        if _should_use_context_exec(ctx) and final_text is not None:
-            return PlanExecutionResult(
-                verb_name=req.verb_name,
-                request_id=correlation_id,
-                status="success" if step_results and step_results[-1].status == "success" else "fail",
-                blocked=False,
-                blocked_reason=None,
-                steps=step_results,
-                mode=mode,
-                final_text=final_text,
-                memory_used=memory_used,
-                recall_debug=recall_debug,
-                error=step_results[-1].error if step_results else None,
             )
 
         if not self._should_use_react(mode, tools):
@@ -1931,18 +1696,7 @@ class Supervisor:
                 error=direct_step.error,
             )
 
-        logger.info(
-            "supervisor_react_path_removed corr_id=%s mode=%s verb=%s route=context_exec",
-            correlation_id,
-            mode,
-            req.verb_name,
-        )
-        agent_step = await self._context_exec_escalation(
-            source=source,
-            correlation_id=correlation_id,
-            ctx=ctx,
-            packs=packs or [],
-        )
+        agent_step = self._agent_runtime_unavailable(correlation_id=correlation_id, mode=str(mode))
         step_results.append(agent_step)
         agent_payload = _extract_agent_escalation_payload(agent_step)
         if agent_payload:
@@ -2115,6 +1869,11 @@ class Supervisor:
         bound_failure_signal = _extract_bound_failure_signal(step_results)
         preserve_operational_failure_text = bound_failure_signal is not None
         preserve_bound_capability_text = _bound_capability_succeeded(step_results)
+        # The "no depth-2 runtime" text is the true cause; the drift rewrite below
+        # would replace it with "could you restate the key constraint", hiding it.
+        # Only while the stub text is still the answer: a council checkpoint that ran after
+        # the stub and replaced final_text must still face the drift check.
+        preserve_runtime_unavailable_text = (final_text or "").strip() == _AGENT_RUNTIME_UNAVAILABLE_TEXT
         output_mode_lane = str(ctx.get("output_mode") or "").strip() == "implementation_guide"
         if (
             not verdict["anchored"]
@@ -2122,6 +1881,7 @@ class Supervisor:
             and not explanation_downgrade
             and not preserve_operational_failure_text
             and not preserve_bound_capability_text
+            and not preserve_runtime_unavailable_text
         ):
             if _looks_like_coaching_growth_prompt(user_text) or output_mode_lane:
                 logger.info(

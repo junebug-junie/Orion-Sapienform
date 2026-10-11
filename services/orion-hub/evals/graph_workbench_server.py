@@ -66,8 +66,6 @@ def main():
             "{{HUB_MEMORY_STORE_READY}}": "false",
             "{{HUB_AITOWN_TAB_NAV}}": "",
             "{{HUB_AITOWN_PANEL}}": "",
-            "{{HUB_PROPOSAL_REVIEW_PANEL}}": "",
-            "{{HUB_PROPOSAL_REVIEW_SCRIPT}}": "",
         }
         for token, value in replacements.items():
             html = html.replace(token, value)

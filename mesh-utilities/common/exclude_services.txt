@@ -7,7 +7,6 @@ orion-gpu-lane-controller
 orion-juniper-affective-state
 orion-affectgpt-worker
 orion-diffusion-host
-orion-context-exec
 orion-llamacpp-neural-host
 orion-llamacpp-bonsai-host
 

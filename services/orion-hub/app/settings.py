@@ -98,17 +98,6 @@ class Settings(BaseSettings):
         default=10.0,
         alias="HUB_EXO_EXPLORATION_TIMEOUT_SEC",
     )
-    # --- Proposal review API (Pending Decisions attention + review actions) ---
-    HUB_PROPOSAL_REVIEW_ENABLED: bool = Field(default=False, alias="HUB_PROPOSAL_REVIEW_ENABLED")
-    HUB_PROPOSAL_REVIEW_API_URL: str = Field(
-        default="http://orion-context-exec:8096",
-        alias="HUB_PROPOSAL_REVIEW_API_URL",
-    )
-    HUB_PROPOSAL_REVIEW_TIMEOUT_SEC: float = Field(
-        default=10.0,
-        alias="HUB_PROPOSAL_REVIEW_TIMEOUT_SEC",
-    )
-
     # --- LLM gateway timeout (concept relation classifier) ---
     # HUB_LLM_GATEWAY_URL was removed in GPU pool stage 6.3: its only reader was the Compute
     # picker's GET /routes proxy, which now reads GPU pool state (scripts/llm_gateway_client.py).
@@ -170,33 +159,6 @@ class Settings(BaseSettings):
         alias="HUB_CHAT_ATTACHMENT_MAX_PER_TURN",
     )
 
-    # --- Context-exec agent lane (Hub Agent mode) ---
-    # Default flipped True -> False 2026-09-02: orion-context-exec has zero
-    # containers deployed on athena (confirmed live) -- with this on, every
-    # Hub "Agent" mode turn failed with "context-exec run unreachable"
-    # (services/orion-hub/scripts/context_exec_client.py). Hub's Agent mode
-    # now routes through the same FCC/harness-governor path Orion mode uses
-    # instead (see websocket_handler.py's `client_mode in ("orion", "agent")`
-    # branch) -- this flag's code path (context_exec_agent_bridge.py) is
-    # left in place, just off by default, not deleted; flip back to true
-    # only if orion-context-exec is ever actually redeployed AND you want
-    # Agent mode to use it again instead of FCC.
-    HUB_AGENT_CONTEXT_EXEC_ENABLED: bool = Field(
-        default=False,
-        alias="HUB_AGENT_CONTEXT_EXEC_ENABLED",
-    )
-    HUB_CONTEXT_EXEC_API_URL: str = Field(
-        default="http://orion-context-exec:8096",
-        alias="HUB_CONTEXT_EXEC_API_URL",
-    )
-    HUB_CONTEXT_EXEC_TIMEOUT_SEC: float = Field(
-        default=600.0,
-        alias="HUB_CONTEXT_EXEC_TIMEOUT_SEC",
-    )
-    HUB_AGENT_REPL_ENABLED: bool = Field(
-        default=True,
-        alias="HUB_AGENT_REPL_ENABLED",
-    )
     # --- Hub Agent Claude (FCC harness in chat) ---
     # ── Room companion (Claude as a third social-room participant) ────
     # Hub publishes an invite and relays the reply; it never spawns `claude`
@@ -313,23 +275,11 @@ class Settings(BaseSettings):
             "Compact earlier than Claude Code default (~83%%). Set 0 to omit."
         ),
     )
-    HUB_CONTEXT_EXEC_EVENT_CHANNEL: str = Field(
-        default="orion:context_exec:event",
-        alias="HUB_CONTEXT_EXEC_EVENT_CHANNEL",
-    )
-    CONTEXT_EXEC_INVESTIGATION_V2_ENABLED: bool = Field(
-        default=False,
-        alias="CONTEXT_EXEC_INVESTIGATION_V2_ENABLED",
-    )
 
-    # --- Self-observability (hub presence + curiosity focus hint) ---
+    # --- Self-observability (hub presence) ---
     HUB_PRESENCE_WRITER_ENABLED: bool = Field(
         default=True,
         alias="HUB_PRESENCE_WRITER_ENABLED",
-    )
-    HUB_AGENT_CURIOSITY_HINT_ENABLED: bool = Field(
-        default=True,
-        alias="HUB_AGENT_CURIOSITY_HINT_ENABLED",
     )
 
     WORLD_PULSE_UI_FIXTURE_RUN_ENABLED: bool = Field(

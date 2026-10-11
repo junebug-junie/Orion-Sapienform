@@ -127,7 +127,6 @@ DECLARED_WRITERS: dict[str, tuple[Optional[str], str]] = {
     "orion/core/contracts/memory_cards.py": (None, "LLM output (cortex-orch) and Hub browser request bodies"),
     "orion/core/schemas/drives.py": (None, "orion:memory:drives:state has had no producer since the 2026-07-30 drive-pressure deletion"),
     "orion/schemas/actions/daily.py": (None, "LLM output parsed by orion-actions"),
-    "orion/schemas/context_exec.py": (None, "LLM-produced artifacts parsed by orion-context-exec"),
     "orion/schemas/world_pulse_read.py": (None, "LLM output and the hub's own DB round trip"),
     "orion/schemas/telemetry/mood_arc.py": (None, "manifest file written by the offline fit script"),
     "orion/schemas/telemetry/phi_encoder.py": (None, "manifest file written by the offline fit script"),

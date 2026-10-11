@@ -108,7 +108,6 @@ def test_promoted_goal_execution_allowed_after_operator_promote(monkeypatch: pyt
 
 def test_supervisor_blocks_unpromoted_goal_execute(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("AUTONOMY_GOAL_EXECUTION_ENABLED", "true")
-    monkeypatch.setattr("app.settings.settings.context_exec_enabled", False)
 
     supervisor = Supervisor(object())
     monkeypatch.setattr(
@@ -161,7 +160,6 @@ def test_supervisor_blocks_unpromoted_goal_execute(monkeypatch: pytest.MonkeyPat
 
 def test_supervisor_e2e_promote_plan_execute_complete(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("AUTONOMY_GOAL_EXECUTION_ENABLED", "true")
-    monkeypatch.setattr("app.settings.settings.context_exec_enabled", False)
     execute_calls: list[str] = []
 
     async def _fake_execute_autonomy_goal_v1(payload, **kwargs):

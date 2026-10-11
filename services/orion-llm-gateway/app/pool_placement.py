@@ -58,7 +58,7 @@ MIN_CTX_EXCEEDS_PREFIX = "min_ctx_exceeds_class:"
 # After an acquire RPC times out, later calls fail fast for this long instead of each waiting
 # out its own RPC timeout against a pool that is not answering.
 _UNREACHABLE_CACHE_SEC = 5.0
-LLAMACPP_BACKEND = "llamacpp"  # every pool llm role is a llama.cpp server
+LLAMACPP_BACKEND = "llamacpp"  # legacy catalog default; dispatch uses the granted role
 
 HOLDER_OPENAI = "http:openai"      # AI Town NPC traffic; cortex-exec's first-person wait cue skips http:*
 HOLDER_ANTHROPIC = "http:anthropic"
@@ -86,6 +86,20 @@ def get_bus() -> Any:
 @lru_cache(maxsize=1)
 def pool_config() -> PoolConfig:
     return load_pool_config(settings.gpu_pool_config_path)
+
+
+def granted_backend(grant: Any) -> str:
+    """The granted role, including a spill, determines the wire protocol."""
+    return pool_config().roles[grant.role].backend
+
+
+def granted_model(grant: Any) -> Optional[str]:
+    if granted_backend(grant) != "vllm":
+        return None
+    # For vLLM discovery this is the exact /v1/models id, not a local filename.
+    if not grant.model_file:
+        raise ValueError("vLLM grant has no discovered served model")
+    return grant.model_file
 
 
 def reset_pool_config_cache() -> None:

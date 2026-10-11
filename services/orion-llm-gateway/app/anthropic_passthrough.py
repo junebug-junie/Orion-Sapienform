@@ -200,14 +200,17 @@ def resolve_anthropic_route(
 
 
 def build_models_list_payload() -> Dict[str, Any]:
-    """Every pool route is a llama.cpp role, so every route speaks /v1/messages. served_by is
-    per call (the grant), so it is not claimed here."""
+    """List logical routes. Protocol compatibility is checked on each actual grant."""
+    cfg = pool_placement.pool_config()
+    def backend(route):
+        kinds = {cfg.roles[r].backend for r in cfg.classes[cfg.routes[route].work_class].roles}
+        return next(iter(kinds)) if len(kinds) == 1 else "mixed"
     data = [
         {
             "id": route_key,
             "type": "model",
             "display_name": route_key,
-            "backend": pool_placement.LLAMACPP_BACKEND,
+            "backend": backend(route_key),
             "served_by": None,
         }
         for route_key in _available_route_keys()

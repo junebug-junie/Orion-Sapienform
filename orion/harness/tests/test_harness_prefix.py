@@ -345,7 +345,7 @@ def test_compile_harness_prefix_includes_reading_status_brief_when_attached(
         reading_binding=_READING_BINDING,
     )
     assert "reading_status" in prompt
-    assert "ToolSearch and call reading_status" in prompt
+    assert "ToolSearch select:mcp__orion-reading__reading_status and call it" in prompt
     assert "with the supplied URL directly" in prompt
     assert "Do not ask for an ID when a link is available" in prompt
     assert "Tool discovery is not a status check" in prompt

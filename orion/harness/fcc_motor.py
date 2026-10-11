@@ -17,6 +17,8 @@ from typing import Any, AsyncIterator, Dict, List, Mapping, Optional, Tuple
 from orion.fcc.claude_spawn import claude_permission_argv, extend_mcp_argv, setting_sources_argv
 from orion.fcc.turn_lock import turn_in_progress
 from orion.curiosity.write_stamp import WriteStamper, completed_tool_use_ids, graph_write_tool_use_ids
+from orion.core.redact import redact_secrets, redact_secrets_deep, remember_secret_env
+from orion.fcc import mcp_names
 from orion.fcc.context_budget import (
     annotate_harness_step,
     apply_context_overflow_hint,
@@ -105,7 +107,10 @@ def parse_stream_json_line(line: str) -> Optional[Dict[str, Any]]:
 
 
 def build_step_frame(raw: Dict[str, Any]) -> Dict[str, Any]:
-    return {"type": str(raw.get("type") or "unknown"), "raw": raw}
+    """Trace frame for one stream event. Credentials are stripped here because
+    the frame is published, stored and shown in Hub; the motor itself keeps
+    reading the unredacted event."""
+    return {"type": str(raw.get("type") or "unknown"), "raw": redact_secrets_deep(raw)}
 
 
 def _text_blocks_from_assistant(event: Dict[str, Any]) -> str:
@@ -195,15 +200,15 @@ def extract_final_from_stream_event(
     if etype == "result":
         result = event.get("result")
         if isinstance(result, str) and result.strip():
-            return result.strip(), sid, dur
+            return redact_secrets(result.strip()), sid, dur
         if isinstance(result, dict):
             text = str(result.get("result") or result.get("text") or "").strip()
             if text:
-                return text, sid, dur
+                return redact_secrets(text), sid, dur
 
     assistant_text = _text_blocks_from_assistant(event)
     if assistant_text.strip():
-        return assistant_text.strip(), sid, dur
+        return redact_secrets(assistant_text.strip()), sid, dur
 
     return accumulated, sid, dur
 
@@ -404,6 +409,8 @@ def load_fcc_env(path: Path | str) -> Dict[str, str]:
             continue
         key, _, value = stripped.partition("=")
         out[key.strip()] = value.strip().strip('"').strip("'")
+    # These become the Claude subprocess env; its trace must not echo them.
+    remember_secret_env(out)
     return out
 
 
@@ -1249,7 +1256,7 @@ def build_claude_argv(
             # Claude Code 2.1 pre-approval pattern is the bare server name,
             # mirroring mcp_allowed_tool_patterns; the plugin-owned server is
             # not in the rendered config, so pre-approve it explicitly.
-            extra_allowed_tools = ["mcp__plugin_context-mode_context-mode"]
+            extra_allowed_tools = [f"mcp__{mcp_names.CONTEXT_MODE_PLUGIN}"]
         extend_mcp_argv(argv, mcp_config_path, extra_allowed_tools=extra_allowed_tools)
     if _should_skip_claude_permissions():
         perm = claude_permission_argv(auto_approve=True)

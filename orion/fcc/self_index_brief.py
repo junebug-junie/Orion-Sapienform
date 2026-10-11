@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import os
 
+from orion.fcc.mcp_names import CONTEXT_MODE, CONTEXT_MODE_PLUGIN, GITNEXUS, mcp_tool
+
 
 def _env_truthy(key: str) -> bool:
     return os.environ.get(key, "").strip().lower() in {"1", "true", "yes", "on"}
@@ -34,10 +36,12 @@ def gitnexus_brief_lines() -> list[str]:
             "For questions about repo topology, ownership, call graphs, blast "
             "radius, or where a concept lives, call it before falling back to "
             "raw source search — a ctx_* shell search or grep is not a "
-            "substitute for a GitNexus query on those questions. Use query to "
-            "locate a concept or process, context for the 360-degree view of "
-            "one symbol, impact for upstream/downstream blast radius, and "
-            "trace only between two known endpoints. Request full symbol "
+            "substitute for a GitNexus query on those questions. Use "
+            f"{mcp_tool(GITNEXUS, 'query')} to locate a concept or process, "
+            f"{mcp_tool(GITNEXUS, 'context')} for the 360-degree view of one "
+            f"symbol, {mcp_tool(GITNEXUS, 'impact')} for upstream/downstream "
+            f"blast radius, and {mcp_tool(GITNEXUS, 'trace')} only between two "
+            "known endpoints. Request full symbol "
             "content only after narrowing."
         ),
         (
@@ -55,12 +59,16 @@ def gitnexus_brief_lines() -> list[str]:
 
 
 def context_mode_brief_lines() -> list[str]:
+    # Hook mode wins when both flags are set (fcc_motor skips the standalone
+    # server), and the plugin's server carries a different name.
+    server = CONTEXT_MODE_PLUGIN if context_mode_hooks_enabled() else CONTEXT_MODE
     return [
         (
             "Context Mode MCP is available. Route bulk file reads, command output, "
-            "and multi-file analysis through ctx_batch_execute / ctx_execute so raw "
-            "output stays out of the live context; recover exact omitted evidence "
-            "later with ctx_search instead of re-running bulk queries."
+            f"and multi-file analysis through {mcp_tool(server, 'ctx_batch_execute')} / "
+            f"{mcp_tool(server, 'ctx_execute')} so raw output stays out of the live "
+            "context; recover exact omitted evidence later with "
+            f"{mcp_tool(server, 'ctx_search')} instead of re-running bulk queries."
         ),
     ]
 

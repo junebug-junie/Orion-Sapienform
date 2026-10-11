@@ -11,6 +11,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Mapping, Optional
 
+from orion.fcc import mcp_names
+
 _TEMPLATE_PATH = Path(__file__).resolve().parent / "fcc_claude_mcp.template.json"
 _TMP_ROOT = Path("/tmp/orion-fcc-mcp")
 
@@ -196,7 +198,7 @@ def render_mcp_config(
             from orion.schemas.reading import ReadingToolBindingV1
             binding = ReadingToolBindingV1.model_validate(reading_binding)
             reading_bind_env = {"ORION_READING_BINDING": binding.model_dump_json()}
-        rendered["mcpServers"]["orion-reading"] = {
+        rendered["mcpServers"][mcp_names.ORION_READING] = {
             "type": "stdio", "command": "python3",
             "args": ["-P", "-m", "orion.world_pulse_read.mcp_server"],
             "env": {"ORION_BUS_URL": reading_bus_url,
@@ -220,7 +222,7 @@ def render_mcp_config(
                 "fcc_introspect_outward_memory",
                 "introspect memory access must be off when an outward-facing MCP (AI Town) is attached",
             )
-        rendered["mcpServers"]["orion-introspect"] = {
+        rendered["mcpServers"][mcp_names.ORION_INTROSPECT] = {
             "type": "stdio", "command": "python3",
             "args": ["-P", "-m", "orion.introspect.mcp_server"],
             "env": {"ORION_BUS_URL": introspect_bus_url,
@@ -235,7 +237,7 @@ def render_mcp_config(
         world_id = _require(ae, "AITOWN_WORLD_ID", error_code="fcc_mcp_aitown_config")
         _probe_convex_version(convex_url)
         _probe_convex_auth(convex_url, admin_key)
-        rendered["mcpServers"]["orion-aitown"] = {
+        rendered["mcpServers"][mcp_names.ORION_AITOWN] = {
             "type": "stdio",
             "command": "python3",
             "args": ["-m", "orion_aitown_mcp"],
@@ -253,7 +255,7 @@ def render_mcp_config(
         # host-built .gitnexus/ index; no secrets required. Requires a global
         # registry entry (~/.gitnexus/registry.json) resolving to the workspace.
         _require_tool("gitnexus", error_code="fcc_mcp_gitnexus_missing")
-        rendered["mcpServers"]["gitnexus"] = {
+        rendered["mcpServers"][mcp_names.GITNEXUS] = {
             "type": "stdio",
             "command": "gitnexus",
             "args": ["mcp"],
@@ -271,7 +273,7 @@ def render_mcp_config(
                 error_code="fcc_mcp_context_mode_config",
                 message="Context Mode requires a project dir (HARNESS_FCC_WORKSPACE)",
             )
-        rendered["mcpServers"]["context-mode"] = {
+        rendered["mcpServers"][mcp_names.CONTEXT_MODE] = {
             "type": "stdio",
             "command": "context-mode",
             "env": {

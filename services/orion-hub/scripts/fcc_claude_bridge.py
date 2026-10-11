@@ -19,6 +19,7 @@ from orion.fcc.claude_spawn import (
     extend_mcp_argv,
     setting_sources_argv,
 )
+from orion.core.redact import redact_secrets, redact_secrets_deep
 from orion.fcc.turn_lock import turn_in_progress
 from orion.fcc.context_budget import (
     annotate_harness_step,
@@ -66,7 +67,8 @@ def parse_stream_json_lines(lines: List[str]) -> List[Dict[str, Any]]:
 
 
 def build_step_frame(raw: Dict[str, Any]) -> Dict[str, Any]:
-    return {"type": str(raw.get("type") or "unknown"), "raw": raw}
+    # Same credential stripping as orion/harness/fcc_motor.py: the frame is shown in Hub.
+    return {"type": str(raw.get("type") or "unknown"), "raw": redact_secrets_deep(raw)}
 
 
 def _tool_result_body_text(body: Any) -> str:
@@ -205,15 +207,15 @@ def extract_final_from_stream_event(
     if etype == "result":
         result = event.get("result")
         if isinstance(result, str) and result.strip():
-            return result.strip(), sid, dur
+            return redact_secrets(result.strip()), sid, dur
         if isinstance(result, dict):
             text = str(result.get("result") or result.get("text") or "").strip()
             if text:
-                return text, sid, dur
+                return redact_secrets(text), sid, dur
 
     assistant_text = _text_blocks_from_assistant(event)
     if assistant_text.strip():
-        return assistant_text.strip(), sid, dur
+        return redact_secrets(assistant_text.strip()), sid, dur
 
     return accumulated, sid, dur
 

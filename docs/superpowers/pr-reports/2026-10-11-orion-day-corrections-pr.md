@@ -169,6 +169,6 @@ cd /mnt/scripts/Orion-Sapienform && git pull --ff-only && for s in orion-durable
 
 ## PR link
 
-<filled after open>
+https://github.com/junebug-junie/Orion-Sapienform/pull/2618
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

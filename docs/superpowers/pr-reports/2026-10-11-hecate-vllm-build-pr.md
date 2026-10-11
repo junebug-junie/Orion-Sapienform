@@ -51,8 +51,8 @@ No live pool routing, Circe workload or cognition contract changed.
 
 ## Tests run
 
-40 focused vLLM host/rebuild tests passed, followed by 4 preparation tests including
-two additional host/mount rejection cases. Env and compose parity gates passed.
+40 focused vLLM host/rebuild tests passed, followed by the expanded host suite
+(25 tests), including host/mount rejection and single-card candidate preservation. Env and compose parity gates passed.
 The stale real-repository exact import fan-out test now uses an explicit miniature
 import graph, preserving an exact assertion without unrelated repository growth.
 
@@ -61,16 +61,26 @@ import graph, preserving an exact assertion without unrelated repository growth.
 Actual fresh network source assembly reached the documented conflicts; both
 additions were inspected and retained. Manual commit plus helper `--resume` passed
 with tree `b321701ed88fc9882ae7c71cdb5968a6635505ab`. Forbidden upstream commit is
-not an ancestor. Model acceptance remains UNVERIFIED pending image completion.
+not an ancestor. Model acceptance remains UNVERIFIED pending containerd storage relocation and GPU execution.
 
 ## Docker/build/smoke checks
 
 - Hecate override `config --quiet`: PASS through the safety wrapper.
 - Athena generic `--dry-run up -d`: `no service selected`, proving the worker opt-in blocks routine startup.
-- Full CUDA image build: IN PROGRESS at `/mnt/scripts/hecate-vllm-build-headers.log`. Initial integrity check caught an upstream Docker-ignore omission; the image now reconstructs the pinned tree from Git objects, and that gate passes. The next CMake pass identified missing Python development headers; `python3.12-dev` is now explicit in the image.
+- Full CUDA compilation, installation and image export: PASS. Build log at `/mnt/scripts/hecate-vllm-build-headers.log`. Initial integrity check caught an upstream Docker-ignore omission; the image now reconstructs the pinned tree from Git objects, and that gate passes. The next CMake pass identified missing Python development headers; `python3.12-dev` is now explicit in the image.
 - Qwen pinned snapshot: downloaded to Hecate NVMe.
 - GLM pinned snapshot: downloaded successfully; downloader exited 0. All 13 shards exist (104,011,208,249 weight bytes); 24 metadata files match the locked revision. Qwen has all 3 shards (8,044,982,000 weight bytes), with 13 matching metadata files.
-- Existing Hecate worker `/health`: `{"status":"ok"}` before testing.
+- Existing Hecate worker `/health`: `{"status":"ok"}` before testing. A baseline
+  gateway arithmetic request timed out after 90 seconds; its own lease
+  `563a8653d0194f38afebf2087e937ab9` was explicitly cancelled (reply `ok`).
+  Health alone did not prove baseline inference.
+- Compatibility reader images built without restarting services: Athena
+  durable-runs `870f7945992b`, mesh-guardian `f23a5ef16030`; Circe lane-controller
+  `126f18023f68`. Each image successfully imports `RoleSpec.backend`. Live gateway,
+  pool and Hub already have the compatible reader. Fresh activation pool `562b90014859`
+  and gateway `c86645e65422` images include the Qwen profile and one-card backend config. Pool, gateway,
+  durable-runs and mesh-guardian images parse the actual one-card candidate.
+- CI: all ten checks passed on `e201e9a3e`; later storage-guard changes require a fresh run.
 - NVMe `/dev/nvme0n1p1` mounted ext4 at `/mnt/models`, UUID `19d66b9a-2234-4a60-9180-1862285cd74c`; fstab verified. The operator explicitly approved erasing its prior BitLocker contents. Saved layout metadata is not a data backup.
 
 ## Review findings fixed
@@ -83,7 +93,16 @@ not an ancestor. Model acceptance remains UNVERIFIED pending image completion.
   - Evidence: focused preparation tests pass.
 - Independent review found no material issues in the source fix or expanded Docker/Compose/profile changes; reviewer independently ran 40 focused tests.
 
+- Independent follow-up review approved the one-card candidate; 5 preparation
+  tests passed. Clarified the default four-card wording in the runbook.
+
 - CI finding: override Compose files must repeat the journald block. Added the block; focused logging gate passes.
+
+- Storage follow-up review: fixed config-only proof by checking live snapshot mounts;
+  exempted inspection/shutdown so recovery is not obstructed. Added immutable
+  migration evidence and phase-aware interruption recovery. Independent reviewer
+  ran all 15 focused preparation/storage tests and shell syntax checks; no remaining
+  material findings. Full host suite: 35 passed. Migration remains unexecuted.
 
 ## Restart required
 
@@ -102,7 +121,9 @@ Role announcement remains disabled during direct acceptance.
 - Severity: GLM hardware blocker.
 - Concern: one physical V100 cannot satisfy the documented four-card setup.
 - Mitigation: authorized smaller Qwen checkpoint tests the new engine; keep GLM weights for later capacity.
-- GPU build, inference quality, streaming/tool calls and gateway integration remain UNVERIFIED until live evidence is appended.
+- Native GPU compilation passed. GPU execution, inference quality, streaming/tool calls and gateway integration remain UNVERIFIED until live evidence is appended.
+- Containerd image storage unexpectedly remained on root despite Docker data-root on SSD. Root is stable at 3.5 GiB free. The SSD pre-copy is complete; the reviewed host maintenance switch awaits operator confirmation. Root expansion was withdrawn and was not performed.
+- Added a preflight checking both configured and live snapshot storage; editing config alone cannot hide a daemon still using root. Inspection and shutdown remain available when the guard fails. All 35 vLLM host tests pass, including config/runtime disagreement; the live guard rejects Hecate's current root-backed store.
 
 ## PR link
 

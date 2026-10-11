@@ -10,9 +10,9 @@ use their previous config until the reviewed activation step.
 The follow-up on 2026-10-11 provisions Hecate's NVMe and builds a pinned SM70
 image. The four-GPU GLM plan does not fit the live one-GPU inventory; the operator
 authorized a single-GPU Qwen validation model. No Circe service changed.
-Native compilation and installation passed. Image export is in progress; GPU
-execution, memory fit and model quality remain **UNVERIFIED** until smoke results
-are recorded below.
+Native compilation, installation and image export passed. Containerd unpacking
+exposed an unexpected root-disk image store; storage relocation is staged but
+not activated. GPU execution, memory fit and model quality remain **UNVERIFIED**.
 
 ## Current architecture
 
@@ -78,8 +78,10 @@ passed on Hecate; runtime acceptance is recorded separately below.
   and publishes port 8021; it was not stopped or changed.
 - 183 GiB host RAM; host RAM does not satisfy the documented TP4 GPU allocation.
 - System Python 3.14.4 and GCC 15.2; `nvcc`, `gcc-14` and `uv` absent from PATH.
-- `/mnt/scripts` is a separate 1.6 TiB filesystem. Recheck free capacity before
-  downloading; the root filesystem has only about 58 GiB free.
+- `/mnt/scripts` is a separate 1.6 TiB filesystem. Docker data lives on the
+  separate SSD `/mnt/docker`, but containerd was still using `/var/lib/containerd`.
+  Image unpacking left root with 3.5 GiB free. Do not build/unpack again until
+  the reviewed containerd relocation below is complete.
 - Operator explicitly authorized erasing Toshiba NVMe serial `49JA22UKK03N`.
   It is now ext4 at `/mnt/models`, UUID `19d66b9a-2234-4a60-9180-1862285cd74c`,
   with a persistent `/etc/fstab` entry. Original partition table and fstab are
@@ -88,8 +90,8 @@ passed on Hecate; runtime acceptance is recorded separately below.
 - Both pinned snapshots downloaded successfully: Qwen has 3 weight shards
   (8,044,982,000 bytes), GLM has 13 (104,011,208,249 bytes). All index-referenced
   shards exist and download metadata matches the pinned revisions. The CUDA
-  image build is in progress. Existing llama.cpp worker remains running
-  until the image is ready. No pool route activated.
+  image is exported; unpack/runtime validation is pending the storage fix.
+  Existing llama.cpp and biometrics workers remain running. No pool route activated.
 
 Recheck before any eventual activation:
 
@@ -158,7 +160,12 @@ The base Compose file also requires the explicit `vllm-worker` profile; a generi
 `Dockerfile.sm70` uses CUDA 12.8.1, GCC 14, Python 3.12 and the verified source tree.
 `docker-compose.hecate.yml` supplies the external source build context and binds
 the real NVMe `/mnt/models` into `/models`. The wrapper rejects other hosts and
-an absent/wrong NVMe mount. This is separate from the legacy stock-vLLM image.
+an absent/wrong NVMe mount. Before builds and launches, it also verifies the
+configured image-store filesystem and live containerd snapshot mounts from
+running containers. Editing daemon config alone cannot satisfy this gate. At
+least one running container with `cat` must supply mount evidence (normally
+biometrics). Stop/down and inspection commands bypass storage checks for recovery.
+This is separate from the legacy stock-vLLM image.
 
 Hecate worktree: `/mnt/scripts/Orion-Sapienform-hecate-vllm`.
 Set its local service env (also synchronize the primary checkout's ignored env):
@@ -200,6 +207,33 @@ candidate below must not be activated on this inventory.
 
 Rollback: stop `orion-hecate-vllm-host` before starting the preserved
 `orion-hecate-hecate-llamacpp-agent-deep` container. The old image and model remain.
+
+## Containerd storage correction (staged, not executed)
+
+Docker's `data-root` does not relocate the separate containerd image store.
+See [Docker daemon storage documentation](https://docs.docker.com/engine/daemon/).
+Live biometrics mount information confirmed `/var/lib/containerd` snapshot paths.
+The image was exported as `orion-vllm-host:sm70-glm53-b321701e`, image config
+`8d4eac1c38a7e8db61cc0add69404a825e5bc14ca1acd3a05e160d62548c03f7`.
+Root expansion was considered and withdrawn; the root LV remains 100 GiB.
+
+A live pre-copy to `/mnt/docker/containerd-store` has completed; it is not yet
+active. Hecate's `/mnt/scripts/hecate-containerd-relocate.sh` is the reviewed
+operator artifact. It requires explicit approval and runs outside Docker as a
+host oneshot because it stops Docker/containerd. It checks the SSD identity,
+refuses unexpected running containers and pre-existing evidence, saves immutable
+configuration evidence, stops the two known workers, finishes and verifies the
+copy, and switches containerd with a mount dependency. It then checks preserved
+image identity, biometrics HTTP health and actual snapshot mount paths. The old
+store is moved intact to `/mnt/docker/containerd-root-backup-20261011`, freeing
+root without deleting the rollback copy. Failures before live verification
+attempt to restore the original configuration and both workers; after verification,
+the new store stays active if the backup move is interrupted.
+
+The switch briefly interrupts Hecate biometrics. The old GPU worker stays stopped
+for the already-authorized vLLM acceptance checks. Do not execute until the operator
+confirms this exact maintenance action. No image pruning or root expansion is
+part of this correction. Migration and recovered free space remain **UNVERIFIED**.
 
 ## Candidate routing and safe rollout
 

@@ -81,3 +81,29 @@ def test_hecate_wrapper_rejects_wrong_model_mount(tmp_path):
                             capture_output=True, text=True)
     assert result.returncode == 1
     assert 'NVMe is not mounted' in result.stderr
+
+
+def test_hecate_wrapper_allows_shutdown_with_broken_storage(tmp_path):
+    import os
+    import subprocess
+    root = tmp_path / 'repo'
+    wrapper = root / 'services/orion-vllm-host/scripts/hecate.sh'
+    wrapper.parent.mkdir(parents=True)
+    wrapper.write_bytes((SERVICE / 'scripts/hecate.sh').read_bytes())
+    wrapper.chmod(0o755)
+    safe = root / 'scripts/safe_docker_build.sh'
+    safe.parent.mkdir()
+    safe.write_text('#!/bin/sh\necho safe-wrapper-reached\n')
+    safe.chmod(0o755)
+    fakebin = tmp_path / 'bin'
+    fakebin.mkdir()
+    for name, body in [('hostname', 'echo hecate'), ('findmnt', 'exit 99'), ('python3', 'exit 99')]:
+        command = fakebin / name
+        command.write_text('#!/bin/sh\n' + body + '\n')
+        command.chmod(0o755)
+    for verb in ('stop', 'down', 'logs', 'ps', 'config'):
+        result = subprocess.run([str(wrapper), verb],
+                                env={**os.environ, 'PATH': str(fakebin) + ':' + os.environ['PATH']},
+                                capture_output=True, text=True)
+        assert result.returncode == 0, result.stderr
+        assert 'safe-wrapper-reached' in result.stdout

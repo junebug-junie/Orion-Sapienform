@@ -3379,7 +3379,7 @@ with the same splitters the email uses (`orion/orion_day/letter_parts.py`), so
 Design: [`2026-10-11-orion-day-letter-reread-design.md`](../../docs/superpowers/specs/2026-10-11-orion-day-letter-reread-design.md).
 
 - **What Orion can ask.** `letter_date` (omitted = most recent letter) and:
-  - `part=list` (default): three items -- the note's paragraphs by number
+  - `part=list` (default; `limit` does not apply): three items -- the note's paragraphs by number
     with their first 120 characters, the carry items by number with their
     first line (plus citation and unresolved-citation counts), and how many
     records each day section holds (counts only).
@@ -3404,7 +3404,8 @@ Design: [`2026-10-11-orion-day-letter-reread-design.md`](../../docs/superpowers/
   - A carry item's `extra.citations` resolves each `[ref]` it cites against
     that day's material: `{ref, resolved, excerpt}` (title + opening of the
     record, 300 chars for one part, 120 in a list); `citations_unresolved`
-    names refs that day does not hold.
+    names up to 10 refs that day does not hold, `citations_unresolved_count`
+    counts them all.
   - A section record is `orion_day_record`, id = its material ref
     (`curiosity:<run_id>`, `dream:<id>`, …), dated by its own clock. Failed
     runs and the world-pulse digest are `record`; everything Orion wrote or
@@ -3434,7 +3435,8 @@ Design: [`2026-10-11-orion-day-letter-reread-design.md`](../../docs/superpowers/
   ref) through orion-vector-writer, `HUB_CURIOSITY_SEARCH_INDEX_BATCH` docs
   per pass. It reuses the curiosity search's Chroma URL, embedder and floor
   (`HUB_CURIOSITY_SEARCH_*`); only the collection is its own, so there is no
-  separate env key. Each hit is re-read from `orion_day_letter`. The 0.65
+  separate env key. Blanking `HUB_CURIOSITY_SEARCH_COLLECTION` turns off only
+  curiosity search; blank the Chroma or embedder URL to turn off both. Each hit is re-read from `orion_day_letter`. The 0.65
   floor was calibrated on curiosity write-ups, not on letter paragraphs.
 
 ## Curiosity resource admission

@@ -166,7 +166,7 @@ class OrionDayIntrospectListener:
         if letter_date is None:
             letter = await fetch_latest_letter(conn)
             if letter is None:
-                raise NotFoundError("not found: no Orion's Day letter has been written yet")
+                raise NotFoundError("unknown letter: no Orion's Day letter has been written yet (not found)")
             return letter
         letter = await fetch_letter(conn, letter_date)
         if letter is None:
@@ -203,6 +203,12 @@ class OrionDayIntrospectListener:
         return _ok(now, [part_item(letter, p, full=False, n_items=len(shown)) for p in shown], len(parts))
 
     async def _search(self, pool: ReadOnlyPool, args: OrionDayArguments, now: datetime) -> IntrospectResultV1:
+        letters: dict[str, Optional[OrionDayLetterV1]] = {}
+        if args.letter_date is not None:
+            # A search narrowed to a letter that does not exist is "not found", not "no match",
+            # and that is known before the embedder or index is asked anything.
+            async with pool.acquire() as conn:
+                letters[args.letter_date.isoformat()] = await self._letter(conn, args.letter_date)
         if self.search is None or not self.search.enabled:
             raise SearchUnavailableError("orion_day search is not configured")
         async with self.client_factory() as client:
@@ -210,13 +216,9 @@ class OrionDayIntrospectListener:
             hits = await nearest(client, self.search, vector, CANDIDATES,
                                  where=search_filter(args.letter_date, args.part))
         scored = [h for h in hits if h[1] >= self.search.min_similarity]
-        letters: dict[str, Optional[OrionDayLetterV1]] = {}
         found: list[tuple[OrionDayLetterV1, LetterPart, float]] = []
         dropped = 0
         async with pool.acquire() as conn:
-            if args.letter_date is not None:
-                # A search narrowed to a letter that does not exist is "not found", not "no match".
-                letters[args.letter_date.isoformat()] = await self._letter(conn, args.letter_date)
             for ref, score in scored:
                 parsed = parse_ref(ref)
                 if parsed is None:
@@ -237,7 +239,8 @@ class OrionDayIntrospectListener:
                 found.append((letter, part, score))
         if not found and dropped:
             raise RuntimeError(f"{dropped} search hit(s) could not be read back")
-        if not found and await self._unindexed(pool):
+        narrowed = letters.get(args.letter_date.isoformat()) if args.letter_date is not None else None
+        if not found and await self._unindexed(pool, narrowed):
             raise SearchUnavailableError("orion_day index behind the record; empty search is not proof")
         shown = found[: args.limit]
         items = [
@@ -246,11 +249,15 @@ class OrionDayIntrospectListener:
         ]
         return _ok(now, items, len(found))
 
-    async def _unindexed(self, pool: ReadOnlyPool) -> bool:
-        """True when a letter may be missing from the index."""
+    async def _unindexed(self, pool: ReadOnlyPool, letter: Optional[OrionDayLetterV1] = None) -> bool:
+        """True when a letter the search could match may be missing from the index. A search
+        narrowed to one letter asks only about that letter."""
         as_of = self.index_complete_as_of
         if as_of is None:
             return True
+        if letter is not None:
+            created = letter.created_at if letter.created_at.tzinfo else letter.created_at.replace(tzinfo=timezone.utc)
+            return created >= as_of
         async with pool.acquire() as conn:
             return bool(await conn.fetchval(LETTER_CREATED_SINCE_SQL, as_of))
 

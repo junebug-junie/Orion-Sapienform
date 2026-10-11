@@ -117,7 +117,9 @@ def citations_extra(text: str, letter: OrionDayLetterV1, budget: int, excerpt_ch
     kept, cut = fit_list(entries, budget)
     return {
         "citations_total": len(cites),
-        "citations_unresolved": [c.ref for c in cites if not c.resolved],
+        # Capped like the outline's list: a carry item can cite any number of refs.
+        "citations_unresolved": [c.ref for c in cites if not c.resolved][:UNRESOLVED_SHOWN],
+        "citations_unresolved_count": sum(1 for c in cites if not c.resolved),
         "citations": kept,
         "citations_truncated": cut,
     }

@@ -84,7 +84,7 @@ ORION_DAY_DESCRIPTION = (
     "ids like '2026-10-09 ¶3' (a note paragraph) and '2026-10-09 carry 5' (a carry-forward "
     "item) are the same numbers Juniper sees. part=list (default) gives the outline: each "
     "paragraph and carry item by number with its opening words, and how many records each "
-    "day section holds. part=note or part=carry_forward with index=<N> returns that part's "
+    "day section holds (limit does not apply to it). part=note or part=carry_forward with index=<N> returns that part's "
     "exact words; without index, the first parts up to limit (5). A note paragraph comes "
     "with extra.claim_check: each concrete token in it (numbers, timestamps, PR numbers, "
     "ids, quotes) with found_in = the records of that day containing it verbatim. This is "

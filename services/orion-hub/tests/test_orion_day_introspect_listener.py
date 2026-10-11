@@ -250,7 +250,7 @@ def test_unknown_date_is_a_not_found_tool_error_never_empty(caplog):
 def test_no_letter_at_all_is_not_found():
     listener, _ = _listener(_Pool(letters={}))
     out = _ask(listener, {})
-    assert not out.ok and "not found" in out.error
+    assert not out.ok and "not found" in out.error and "unknown letter" in out.error
 
 
 @pytest.mark.parametrize("args, phrase", [
@@ -301,8 +301,11 @@ def test_worst_case_results_fit_the_mcp_budget():
         f'Paragraph {i}: "{quoted}" ' + " ".join(f"{n}.{i}" for n in range(100, 160))
         for i in range(1, 8)
     )
+    # Densely packed distinct unresolved refs: the review found 400 of these in one item
+    # serialized to 24,670 chars before citations_unresolved was capped.
     long_carry = "\n".join(
-        f"- item {i} " + " ".join(f"[curiosity:{fx.REREAD_RUN_ID}] [reading:missing{n:04d}]" for n in range(20))
+        f"- item {i} " + " ".join(f"[curiosity:{fx.REREAD_RUN_ID}] [reading_journal:imagined-{i}-{n:04d}]"
+                                  for n in range(400))
         for i in range(1, 8)
     )
     letter = fx.reread_letter().model_copy(update={"note_md": long_note, "carry_forward_md": long_carry})
@@ -312,6 +315,8 @@ def test_worst_case_results_fit_the_mcp_budget():
                  {"part": "section", "section": "readings"}):
         out = _ask(listener, args)  # _ask asserts the serialized payload fits MCP_BUDGET
         assert out.ok, args
+    carry = _ask(listener, {"part": "carry_forward", "index": 1}).items[0]
+    assert carry.extra["citations_unresolved_count"] == 400 and len(carry.extra["citations_unresolved"]) == 10
     one = _ask(listener, {"part": "note", "index": 1}).items[0]
     assert one.extra["claim_check_truncated"] is True and one.extra["claims_not_found"] > len(one.extra["claim_check"])
 
@@ -368,6 +373,27 @@ def test_search_narrowed_to_a_missing_letter_is_not_found():
     _index_all(listener, chroma)
     out = _ask(listener, {"query": "anything", "letter_date": "2030-01-01"})
     assert not out.ok and "not found" in out.error
+    # Known before the embedder or index is asked: still "not found" with search down.
+    for search in (None, SEARCH):
+        listener, _ = _listener(search=search)
+        listener.client_factory = FakeChroma(ol.SEARCH_COLLECTION).client  # collection never built
+        out = _ask(listener, {"query": "anything", "letter_date": "2030-01-01"})
+        assert not out.ok and "not found" in out.error, search
+
+
+def test_a_date_narrowed_empty_search_asks_only_about_that_letter():
+    chroma = FakeChroma(ol.SEARCH_COLLECTION)
+    listener, pool = _search_listener(chroma)
+    _index_all(listener, chroma)
+    # A newer letter lands after the index was confirmed: the global check would say "behind".
+    newest = fx.reread_letter(letter_date=date(2026, 9, 30),
+                              material=pool.conn.letters[fx.LETTER_DATE].material.model_copy(
+                                  update={"letter_date": date(2026, 9, 30)}),
+                              created_at=datetime.now(timezone.utc))
+    pool.conn.letters[newest.letter_date] = newest
+    out = _ask(listener, {"query": "cookie recipes", "letter_date": DAY})
+    assert out.ok and out.items == []
+    assert not _ask(listener, {"query": "cookie recipes"}).ok
 
 
 def test_empty_search_is_unknown_until_the_index_has_caught_up():

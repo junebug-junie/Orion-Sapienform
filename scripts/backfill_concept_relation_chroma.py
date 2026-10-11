@@ -15,6 +15,11 @@ channel (`orion:memory:vector:upsert`) consumed by orion-vector-writer. Idempote
 Chroma upserts by doc id `crys_<crystallization_id>`, and ids already in the collection
 are skipped unless --force. Postgres is read-only here (projection_refs are NOT updated).
 
+Step 0: orion-vector-db must already be running with IS_PERSISTENT=TRUE (this PR's
+compose fix) and `chroma.sqlite3` must exist on its mount. Recreating an in-memory
+vector-db wipes it, so a backfill run BEFORE that redeploy is lost and must be re-run
+after it (re-running is cheap: ids already present are skipped).
+
 Run INSIDE the orion-athena-memory-consolidation container (it has the orion package,
 asyncpg, chromadb and the correct env), e.g.:
 
@@ -147,13 +152,17 @@ def _chroma_ids(host: str, port: int, collection: str) -> tuple[int, set[str], b
     import chromadb  # type: ignore
 
     client = chromadb.HttpClient(host=host, port=port)
+    client.heartbeat()  # unreachable chroma must raise, not read as "empty collection"
     try:
         coll = client.get_collection(collection)
-    except Exception:
+    except Exception as exc:
+        # chromadb 0.4.x HttpClient raises a bare Exception("Collection X does not exist.")
+        if "does not exist" not in str(exc):
+            raise
         return 0, set(), False
     got = coll.get(include=[])
     ids = set(got.get("ids") or [])
-    return int(coll.count()), ids, True
+    return len(ids), ids, True
 
 
 async def _load_targets(pool) -> list[Any]:

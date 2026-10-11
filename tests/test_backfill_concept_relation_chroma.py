@@ -21,16 +21,22 @@ def _row(cid: str):
 
 
 def test_doc_id_matches_live_projector() -> None:
+    from datetime import datetime, timezone
+
     from orion.memory.crystallization.projection_chroma import build_chroma_upsert
-    from orion.memory.crystallization.schemas import MemoryCrystallizationV1
+    from orion.memory.crystallization.schemas import CrystallizationGovernanceV1, MemoryCrystallizationV1
 
-    fields = MemoryCrystallizationV1.model_fields
-    assert "crystallization_id" in fields
-    # build_chroma_upsert is the source of truth for the doc id shape.
-    import inspect
-
-    assert 'f"crys_{crystallization.crystallization_id}"' in inspect.getsource(build_chroma_upsert)
-    assert bf.doc_id_for("abc") == "crys_abc"
+    now = datetime.now(timezone.utc)
+    row = MemoryCrystallizationV1(
+        crystallization_id="0f0f0f0f-0000-4000-8000-000000000001",
+        kind="semantic", subject="s", summary="s", status="active",
+        governance=CrystallizationGovernanceV1(proposed_by="t"),
+        created_at=now, updated_at=now,
+    )
+    upsert = build_chroma_upsert(row)
+    assert upsert is not None
+    assert upsert.doc_id == bf.doc_id_for(row.crystallization_id)
+    assert upsert.collection == bf.DEFAULT_COLLECTION
 
 
 def test_skips_existing_publishes_rest_and_survives_errors() -> None:
@@ -41,7 +47,7 @@ def test_skips_existing_publishes_rest_and_survives_errors() -> None:
         if row.crystallization_id == "boom":
             raise RuntimeError("x")
         if row.crystallization_id == "noemb":
-            return {"published": False, "reason": "no_embedding"}
+            return {"published": False, "skipped": True, "reason": "no_embedding"}
         return {"published": True}
 
     lines: list[str] = []

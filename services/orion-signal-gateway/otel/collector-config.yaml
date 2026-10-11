@@ -53,8 +53,10 @@ processors:
 
 exporters:
   # logging exporter removed in recent collector distros; debug is the supported console exporter.
+  # basic = one summary line per batch. normal printed one line per span
+  # (~300k lines/hour into journald, 2026-10-11).
   debug:
-    verbosity: normal
+    verbosity: basic
     sampling_initial: 5
     sampling_thereafter: 200
 

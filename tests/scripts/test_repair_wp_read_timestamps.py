@@ -80,3 +80,21 @@ def test_stage1_trace_does_not_satisfy_stage2_row():
     changes, unmatched = mod.plan_journal_changes(
         rows, table="journal_entries", handoff_at_by_trace={"t1": SERVER}, stage2_at_by_trace={})
     assert changes == [] and len(unmatched) == 1
+
+
+def test_parse_ts_pins_utc_whatever_the_session_timezone():
+    from datetime import timedelta
+    mdt = datetime(2026, 10, 10, 8, 33, 48, tzinfo=timezone(timedelta(hours=-6)))
+    assert mod.parse_ts(mdt).isoformat() == "2026-10-10T14:33:48+00:00"
+
+
+def test_settle_reapplies_until_two_clean_rounds(monkeypatch):
+    applied = iter([238, 0, 0])
+    verified = iter([1, 0, 0, 0])
+    monkeypatch.setattr(mod, "_run", lambda args, reverse, quiet=False: next(applied))
+    monkeypatch.setattr(mod, "cmd_verify", lambda args, quiet=False: next(verified))
+    monkeypatch.setattr(mod.time, "sleep", lambda s: None)
+
+    class A:
+        max_rounds, wait_s = 5, 0
+    assert mod.cmd_settle(A()) == 0

@@ -21,6 +21,8 @@ Subcommands (all write under --out, default /tmp/wp-read-timestamp-repair):
   plan      read-only; writes snapshot.json + plan summary
   apply     applies snapshot.json (guarded: only rows still holding the
             snapshotted old value change), logs progress.log
+  settle    apply, then re-apply until two delayed verifies are clean
+            (a decay tick in flight can write the old values back)
   verify    checks invariants against live data, writes verify.json
   rollback  restores old values from snapshot.json (guarded the same way)
 """
@@ -55,7 +57,9 @@ def parse_ts(value: Any) -> datetime | None:
         dt = value
     else:
         dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
-    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+    dt = dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+    # Pin UTC so new values never depend on the Postgres session timezone.
+    return dt.astimezone(timezone.utc)
 
 
 def needs_change(current: datetime | None, server: datetime) -> bool:
@@ -247,7 +251,7 @@ def _apply_one(cur, falkor, store: str, key: str, expect: str | None, value: str
     return cur.rowcount == 1
 
 
-def _run(args, *, reverse: bool) -> int:
+def _run(args, *, reverse: bool, quiet: bool = False) -> int:
     out = Path(args.out)
     snap = json.loads((out / "snapshot.json").read_text())
     changes = snap["changes"]
@@ -267,23 +271,29 @@ def _run(args, *, reverse: bool) -> int:
             prog.tick(error=True, anomaly=f"{c['store']}:{c['key']}:{type(exc).__name__}")
             continue
         pg.commit()
+    if quiet:
+        if prog.errors:
+            raise RuntimeError(f"{prog.errors} write errors; see progress.log")
+        return applied
     print(json.dumps({"total": len(changes), "applied": applied, "errors": prog.errors,
                       "anomalies": prog.anomalies}, indent=1))
     return 0 if prog.errors == 0 else 1
 
 
-def cmd_verify(args) -> int:
+def cmd_verify(args, quiet: bool = False) -> int:
     out = Path(args.out)
     pg, falkor = _connect(args)
     cur = pg.cursor()
     s1, s2 = _server_times(cur)
     now = datetime.now(timezone.utc)
     nodes = _fetch_nodes(falkor)
-    future = [n["node_id"] for n in nodes if parse_ts(n["observed_at"]) and parse_ts(n["observed_at"]) > now]
+    obs = {n["node_id"]: parse_ts(n["observed_at"]) for n in nodes}
+    missing = [i for i, v in obs.items() if v is None]
+    future = [i for i, v in obs.items() if v is not None and v > now]
     later = [n["node_id"] for n in nodes
-             if n["trace_id"] in s1 and parse_ts(n["observed_at"]) > s1[n["trace_id"]]]
-    early = [n["node_id"] for n in nodes if n["trace_id"] in s1
-             and (s1[n["trace_id"]] - parse_ts(n["observed_at"])).total_seconds() > TOLERANCE_S]
+             if n["trace_id"] in s1 and obs[n["node_id"]] is not None and obs[n["node_id"]] > s1[n["trace_id"]]]
+    early = [n["node_id"] for n in nodes if n["trace_id"] in s1 and obs[n["node_id"]] is not None
+             and (s1[n["trace_id"]] - obs[n["node_id"]]).total_seconds() > TOLERANCE_S]
     stamp_future = [n["node_id"] for n in nodes if parse_ts(n.get(DECAY_STAMP)) and parse_ts(n[DECAY_STAMP]) > now]
     journal: dict[str, Any] = {}
     for table in ("journal_entries", "journal_entry_index"):
@@ -296,16 +306,43 @@ def cmd_verify(args) -> int:
         "falkor_observed_at_in_future": len(future), "falkor_observed_after_write": len(later),
         "falkor_observed_more_than_tolerance_before_write": len(early),
         "falkor_decay_stamp_in_future": len(stamp_future),
+        "falkor_observed_at_missing": len(missing),
         "journal": journal,
         "recency_sample": sorted(({"node_id": n["node_id"], "observed_at": n["observed_at"],
                                    "recency_score": n["recency_score"], "activation": n["activation"]}
-                                  for n in nodes), key=lambda r: r["observed_at"], reverse=True)[:8],
+                                  for n in nodes), key=lambda r: str(r["observed_at"] or ""), reverse=True)[:8],
     }
     (out / "verify.json").write_text(json.dumps(result, indent=1, default=str))
-    print(json.dumps(result, indent=1, default=str))
-    bad = (len(future) + len(later) + len(early) + len(stamp_future)
+    if not quiet:
+        print(json.dumps(result, indent=1, default=str))
+    bad = (len(future) + len(later) + len(early) + len(stamp_future) + len(missing)
            + sum(j["still_off"] + j["future"] for j in journal.values()))
     return 0 if bad == 0 else 1
+
+
+def cmd_settle(args) -> int:
+    """Apply, then keep re-applying until the fix survives the decay tick.
+
+    SubstrateDynamicsEngine.tick() re-upserts every node it decays from the
+    snapshot it read at tick start, observed_at included, with no check on
+    what is stored now. A tick whose snapshot predates apply therefore writes
+    the old times back (observed live 2026-10-11: 238 of 244 reverted within
+    two minutes). apply only touches values that still hold the snapshotted
+    old value, so re-running it is safe; this loops until two consecutive
+    verifies, each a full wait apart, come back clean with nothing re-applied.
+    """
+    clean_streak = 0
+    for round_no in range(1, args.max_rounds + 1):
+        applied = _run(args, reverse=False, quiet=True)
+        time.sleep(args.wait_s)
+        ok = cmd_verify(args, quiet=True) == 0
+        print(json.dumps({"round": round_no, "reapplied": applied, "verify_clean": ok}))
+        clean_streak = clean_streak + 1 if (ok and applied == 0) else 0
+        if clean_streak >= 2:
+            cmd_verify(args)
+            return 0
+    print("STOP: fix did not settle", file=sys.stderr)
+    return 1
 
 
 def cmd_report(args) -> int:
@@ -321,7 +358,9 @@ def cmd_report(args) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("command", choices=["plan", "apply", "verify", "rollback", "report"])
+    p.add_argument("command", choices=["plan", "apply", "settle", "verify", "rollback", "report"])
+    p.add_argument("--wait-s", type=float, default=75.0, help="settle: wait between rounds (> 2 tick periods)")
+    p.add_argument("--max-rounds", type=int, default=12)
     p.add_argument("--out", default="/tmp/wp-read-timestamp-repair")
     p.add_argument("--pg-dsn", default="host=localhost port=55432 user=postgres password=postgres dbname=conjourney")
     p.add_argument("--falkor-uri", default="redis://localhost:6380")
@@ -331,6 +370,8 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_plan(args)
     if args.command == "apply":
         return _run(args, reverse=False)
+    if args.command == "settle":
+        return cmd_settle(args)
     if args.command == "rollback":
         return _run(args, reverse=True)
     if args.command == "verify":

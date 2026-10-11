@@ -19,16 +19,15 @@ from typing import Any, Callable, Dict, Optional
 
 import cv2
 
-OPEN_TIMEOUT_MS = 6000
-READ_TIMEOUT_MS = 6000
 MAX_READS = 5   # the first frames after opening can fail while the decoder waits for a keyframe
+DEADLINE_SEC = 8.0  # read loop stops here; open and each read are also capped at it (router waits 10 s)
 
 
-def _open(url: str):
+def _open(url: str, timeout_ms: int):
     return cv2.VideoCapture(
         url,
         cv2.CAP_FFMPEG,
-        [cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, OPEN_TIMEOUT_MS, cv2.CAP_PROP_READ_TIMEOUT_MSEC, READ_TIMEOUT_MS],
+        [cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, timeout_ms, cv2.CAP_PROP_READ_TIMEOUT_MSEC, timeout_ms],
     )
 
 
@@ -37,17 +36,22 @@ def grab_still(
     out_dir: str,
     *,
     quality: int = 92,
-    opener: Callable[[str], Any] = _open,
+    deadline_sec: float = DEADLINE_SEC,
+    opener: Callable[[str, int], Any] = _open,
     clock: Callable[[], float] = time.time,
 ) -> Optional[Dict[str, Any]]:
-    """Grab one frame from ``url`` and write it into ``out_dir``. None when no frame came back."""
+    """Grab one frame from ``url`` and write it into ``out_dir``. None when no frame came back
+    within ``deadline_sec``."""
     started = clock()
-    cap = opener(url)
+    give_up = time.monotonic() + deadline_sec
+    cap = opener(url, int(deadline_sec * 1000))
     try:
         if not cap.isOpened():
             return None
         frame = None
         for _ in range(MAX_READS):
+            if time.monotonic() >= give_up:
+                return None
             ok, frame = cap.read()
             if ok and frame is not None:
                 break

@@ -712,7 +712,7 @@ class VisionRunner:
                 if store is not None:
                     store.save(str(request.get("stream_id") or request.get("camera_id") or "unknown"), img, {
                         "candidates": candidates,
-                        "face_boxes": kept_boxes,
+                        "face_boxes": kept_boxes,      # in source_size pixels, not the shrunk saved frame
                         "source_size": list(img.size),
                         "image_source": request.get("image_source") or "stream_frame",
                         "enrolled_subject": enrolled_subject,

@@ -171,6 +171,7 @@ class FrameDispatcher:
             request["image_source"] = "hires_still"
             meta["still_grab_ms"] = still.get("grab_ms")
             meta["still_size"] = [still.get("width"), still.get("height")]
+            meta["still_frame_ts"] = still.get("frame_ts")   # frame_ts stays the triggering frame's
             self.metrics.identity_still_total += 1
         except Exception as exc:  # noqa: BLE001
             request["image_source"] = "stream_frame"
@@ -178,9 +179,13 @@ class FrameDispatcher:
             self.metrics.identity_still_fallback_total += 1
             logger.warning("[ROUTER] still_fallback camera_id={} error={}", camera_id, meta["still_error"])
         task = identity_task.model_copy(update={"request": request, "meta": meta})
+        # max_inflight_total was checked when the check was decided, 2-10 s ago; at most one still
+        # is pending per camera, so this publish can overshoot the cap by one per camera.
         async with self._state_lock:
             try:
                 await self._publish_identity(frame, env, task, camera_id, organ_tasks, organ_stream)
+            except Exception as exc:  # noqa: BLE001 -- a background task has no caller to raise to
+                self.metrics.last_error = f"identity_still_publish_error: {exc}"
             finally:
                 self.state.camera(camera_id).identity_still_pending = False
 

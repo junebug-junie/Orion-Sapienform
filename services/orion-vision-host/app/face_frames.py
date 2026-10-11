@@ -61,10 +61,11 @@ def face_crops(img: Image.Image, boxes: List[List[float]]) -> List[Image.Image]:
         if side <= 0:
             continue
         cx, cy = (x1 + x2) / 2, (y1 + y2) / 2
-        crop = img.crop((
-            int(max(0, cx - side / 2)), int(max(0, cy - side / 2)),
-            int(min(w, cx + side / 2)), int(min(h, cy + side / 2)),
-        ))
+        left, top = int(max(0, cx - side / 2)), int(max(0, cy - side / 2))
+        right, bottom = int(min(w, cx + side / 2)), int(min(h, cy + side / 2))
+        if right <= left or bottom <= top:      # box outside the image: skip it, keep the frame
+            continue
+        crop = img.crop((left, top, right, bottom))
         crop.thumbnail((FACE_MAX_SIDE, FACE_MAX_SIDE))
         out.append(crop)
     return out

@@ -312,7 +312,8 @@ async def test_face_check_uses_the_full_resolution_still(still_policy_path: Path
 
     def fake_still(url, timeout):
         calls.append((url, timeout))
-        return {"ok": True, "image_path": "/frames/still_1.jpg", "width": 2560, "height": 1920, "grab_ms": 2100}
+        return {"ok": True, "image_path": "/frames/still_1.jpg", "width": 2560, "height": 1920, "grab_ms": 2100,
+                "frame_ts": 123.0}
 
     monkeypatch.setattr(d, "request_still", fake_still)
     dispatcher, bus = _make_dispatcher(still_policy_path)
@@ -326,6 +327,7 @@ async def test_face_check_uses_the_full_resolution_still(still_policy_path: Path
     assert identity.payload["request"]["image_path"] == "/frames/still_1.jpg"
     assert identity.payload["request"]["image_source"] == "hires_still"
     assert identity.payload["meta"]["still_size"] == [2560, 1920]
+    assert identity.payload["meta"]["still_frame_ts"] == 123.0
     assert dispatcher.metrics.identity_still_total == 1
     assert dispatcher.state.camera("cam0").identity_still_pending is False
     pend = [p for p in dispatcher.state.pending.values() if p.task_type == "identity_face"]

@@ -82,7 +82,7 @@ def test_faces_are_cropped_at_source_resolution_before_the_frame_shrinks(tmp_pat
     t = {"now": 1_791_693_875.0}
     img = Image.new("RGB", (2560, 1920))
     # A 100 px face near the left edge: the margin is clipped at the border, never padded.
-    rel = _store(tmp_path, t).save("cam0", img, {"candidates": CANDS, "face_boxes": [[20, 900, 120, 1000], ["bad"]]})
+    rel = _store(tmp_path, t).save("cam0", img, {"candidates": CANDS, "face_boxes": [[20, 900, 120, 1000], ["bad"], [3000, 2000, 3100, 2100]]})
     frame = tmp_path / rel
     crop = frame.with_name(frame.stem + "_face0.jpg")
     assert Image.open(frame).size == (1280, 960)

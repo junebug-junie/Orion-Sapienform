@@ -23,7 +23,8 @@ from .utils import encode_jpeg
 
 router = APIRouter()
 
-# One still at a time: a second caller waits for the camera rather than opening a second stream.
+# One still at a time. A caller that arrives mid-grab is told "busy" instead of queueing: a queued
+# grab would run after its caller (the frame router waits 10 s) had already given up.
 _still_lock = asyncio.Lock()
 
 # Path to static index.html
@@ -86,6 +87,8 @@ async def still():
     The frame router calls this right before a face check (app/still.py says why)."""
     if not settings.HIRES_SOURCE.strip():
         return JSONResponse({"ok": False, "error": "hires_source_not_configured"}, status_code=404)
+    if _still_lock.locked():
+        return JSONResponse({"ok": False, "error": "busy"}, status_code=409)
     async with _still_lock:
         try:
             result = await asyncio.to_thread(grab_still, settings.HIRES_SOURCE, settings.FRAME_STORAGE_DIR)

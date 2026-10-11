@@ -1,3 +1,4 @@
+-- ORION-MIGRATION-REQUIRED-BY: orion-durable-runs
 -- Temporal Self rev 4 (PR #2369), patch 3: the live chronology's tables.
 -- Single writer: orion-durable-runs, the `chronicle` node of the temporal_self.update thread
 -- (services/orion-durable-runs/app/temporal_self_chronicle.py). Readers: the same service's

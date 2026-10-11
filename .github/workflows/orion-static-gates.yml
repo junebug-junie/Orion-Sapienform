@@ -97,6 +97,16 @@ jobs:
       - name: Substrate ladder liveness logic replays the 09-20 incident red
         run: python -m pytest tests/scripts/test_substrate_ladder_liveness.py tests/scripts/test_schema_skew_discovery.py tests/test_sql_migration_drift_gate.py -q
 
+      # Deploy-time migration gate (scripts/safe_docker_build.sh refuses `up` while a
+      # migration REQUIRED-BY the service is unapplied; PRs #2594/#2605 shipped
+      # orion-durable-runs ahead of its migration twice). The gate only knows what
+      # migrations declare, so every newly added manual_migration_*.sql must declare
+      # REQUIRED-BY <services> or REQUIRED-BY none <reason>.
+      - name: New SQL migrations declare which services need them
+        run: |
+          python scripts/check_migration_required_by.py --base origin/main
+          python -m pytest tests/test_deploy_migration_gate.py -q
+
       # Host-cron watchdogs: an escalation failure (unusable dedupe state,
       # orion-notify refused) must exit 4 and still card, never exit 0/1 with
       # one log line (2026-09-26: 204 red ladder runs, zero Hub cards).

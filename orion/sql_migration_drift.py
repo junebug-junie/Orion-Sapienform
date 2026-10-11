@@ -34,6 +34,15 @@ already exists adds nothing and is NOT caught -- add columns with ``ALTER TABLE 
 ``EXECUTE '<sql string>'`` inside plpgsql is not parsed. Views and functions are not tracked
 (none in the corpus as of 2026-10-01).
 
+DEPLOY GATE (``deploy_gate``): a migration declares which services cannot run without it,
+    -- ORION-MIGRATION-REQUIRED-BY: orion-durable-runs, orion-dream
+    -- ORION-MIGRATION-REQUIRED-BY: none <reason>     (explicitly nobody; reason required)
+and ``scripts/safe_docker_build.sh <svc> up`` refuses while any file requiring ``<svc>`` is MISSING
+or INVALID (2026-10-10/11: PRs #2594 and #2605 deployed orion-durable-runs before their
+migrations, every step failed with UndefinedTable). A file whose header starts ``-- DESTRUCTIVE``
+is never a dependency, whatever it declares -- it must never be auto-run or demanded.
+``scripts/check_migration_required_by.py`` (CI) makes every newly added migration declare one.
+
 Escape hatches live INSIDE migration files (an exception in someone's head is drift with an alibi):
     -- ORION-MIGRATION-NOT-A-MIGRATION: <why>          (file is a dump/scratch, ignore it)
     -- ORION-MIGRATION-SUPERSEDED-BY: <file.sql>         (absence of this file's objects is expected)
@@ -365,6 +374,94 @@ _SUPERSEDED = re.compile(r"--\s*ORION-MIGRATION-SUPERSEDED-BY:\s*(?P<file>\S+)",
 _NOT_A_MIGRATION = re.compile(r"--\s*ORION-MIGRATION-NOT-A-MIGRATION:\s*(?P<why>.+)", re.I)
 _ABSENT_OK = re.compile(r"--\s*ORION-MIGRATION-ABSENT-OK:[ \t]*(?P<obj>[^\s]*)[ \t]*(?P<why>[^\n]*)", re.I)
 _HEADER_SCRIPT = re.compile(r"\bscripts/[\w./-]+\.(?:sh|py)\b")
+_REQUIRED_BY = re.compile(r"^[ \t]*--[ \t]*ORION-MIGRATION-REQUIRED-BY:[ \t]*(?P<val>[^\n]*)$", re.I | re.M)
+_REQUIRED_NONE = re.compile(r"^none\b[\s:;,()\-\u2013\u2014]*(?P<why>.*)$", re.I)
+_DESTRUCTIVE = re.compile(r"^[ \t]*--[ \t]*DESTRUCTIVE\b", re.M)
+_SERVICE_NAME = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
+
+
+@dataclass
+class RequiredBy:
+    """Parsed ``ORION-MIGRATION-REQUIRED-BY`` marker(s) of one migration file."""
+    services: tuple[str, ...] = ()
+    none_reason: Optional[str] = None
+    errors: list[str] = field(default_factory=list)
+
+
+def parse_required_by(text: str) -> Optional[RequiredBy]:
+    """None when the file declares nothing. Several marker lines are unioned."""
+    matches = list(_REQUIRED_BY.finditer(text))
+    if not matches:
+        return None
+    rb = RequiredBy()
+    services: list[str] = []
+    for m in matches:
+        val = m["val"].strip()
+        none = _REQUIRED_NONE.match(val)
+        if none:
+            why = none["why"].strip().rstrip(")").strip()
+            if not why:
+                rb.errors.append("REQUIRED-BY: none needs a reason after it")
+            rb.none_reason = why or rb.none_reason
+            continue
+        names = [n.strip() for n in val.split(",") if n.strip()]
+        if not names:
+            rb.errors.append("REQUIRED-BY names no service (write 'none <reason>' if nothing needs it)")
+        for n in names:
+            if _SERVICE_NAME.match(n):
+                services.append(n)
+            else:
+                rb.errors.append(f"REQUIRED-BY: {n!r} is not a service directory name")
+    rb.services = tuple(dict.fromkeys(services))
+    if rb.services and rb.none_reason is not None:
+        rb.errors.append("REQUIRED-BY says both 'none' and names services")
+    return rb
+
+
+def is_destructive(text: str) -> bool:
+    """A ``-- DESTRUCTIVE`` header line: operator-approved only, never a deploy dependency."""
+    return bool(_DESTRUCTIVE.search(text))
+
+
+def required_for(files: Iterable[MigrationFile], service: str) -> list[MigrationFile]:
+    """Files a deploy of ``service`` needs applied. DESTRUCTIVE and NOT-A-MIGRATION files never
+    count, whatever they declare."""
+    out = []
+    for f in files:
+        if is_destructive(f.text) or _NOT_A_MIGRATION.search(f.text):
+            continue
+        rb = parse_required_by(f.text)
+        if rb and service in rb.services:
+            out.append(f)
+    return out
+
+
+@dataclass
+class DeployGate:
+    service: str
+    required: list[str]
+    blocking: list[FileResult]       # MISSING / INVALID: refuse the deploy
+    unverifiable: list[FileResult]   # DATA / UNKNOWN / CONDITIONAL: the schema cannot say; warn only
+
+    @property
+    def ok(self) -> bool:
+        return not self.blocking
+
+
+def deploy_gate(report: DriftReport, required: Iterable[str], service: str) -> DeployGate:
+    """Window-free verdict for the files ``service`` requires: a requirement does not age out."""
+    names = list(dict.fromkeys(required))
+    by_name = {f.name: f for f in report.files}
+    blocking, unverifiable = [], []
+    for n in names:
+        r = by_name.get(n)
+        if r is None:
+            continue
+        if r.broken:
+            blocking.append(r)
+        elif r.status in ("DATA", "UNKNOWN", "CONDITIONAL"):
+            unverifiable.append(r)
+    return DeployGate(service=service, required=names, blocking=blocking, unverifiable=unverifiable)
 
 
 # --------------------------------------------------------------------------- replay

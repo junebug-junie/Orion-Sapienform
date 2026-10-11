@@ -1,3 +1,4 @@
+-- ORION-MIGRATION-REQUIRED-BY: orion-substrate-runtime
 -- storage_write substrate projection (apply BEFORE ENABLE_STORAGE_WRITE_REDUCER=true on substrate-runtime)
 -- Apply: docker exec -i orion-athena-sql-db psql -U postgres -d conjourney < services/orion-sql-db/manual_migration_storage_write_substrate_loop.sql
 --

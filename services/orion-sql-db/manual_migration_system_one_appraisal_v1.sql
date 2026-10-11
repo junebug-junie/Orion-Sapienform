@@ -1,3 +1,4 @@
+-- ORION-MIGRATION-REQUIRED-BY: orion-substrate-runtime
 -- Shadow System One appraisal frames produced by orion-substrate-runtime.
 --
 -- One writer only: services/orion-substrate-runtime/app/store.py::

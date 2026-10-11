@@ -150,6 +150,49 @@ if [ -f "scripts/check_service_hostname_refs.py" ] && [ "${ORION_ALLOW_ENV_DRIFT
     fi
 fi
 
+# --- 2c. Refuse to bring up a service whose required SQL migration is unapplied
+# 2026-10-10 and 10-11: PRs #2594 and #2605 deployed orion-durable-runs before
+# their services/orion-sql-db/manual_migration_*.sql had been applied; the
+# service started, then failed every step with UndefinedTable until the
+# migration was applied by hand. A migration declares who needs it with a
+# header line `-- ORION-MIGRATION-REQUIRED-BY: <svc>, <svc>`; this asks the live
+# database (read-only) whether each one the service needs is applied.
+# Deploy-time, not a container boot guard: a service that refuses to start is
+# worse than one that degrades. Only `up` is gated (build/config/logs/ps pass).
+# Never auto-applies (a migration can be destructive). An unreachable database
+# is UNKNOWN and refuses -- no answer is not "applied".
+_GATE_UP=0
+for _a in "$@"; do
+    [ "$_a" = "up" ] && _GATE_UP=1
+done
+if [ "$_GATE_UP" = "1" ] && [ -f "scripts/check_sql_migrations_applied.py" ]; then
+    if [ "${ORION_ALLOW_UNAPPLIED_MIGRATION:-}" = "1" ]; then
+        echo "safe_docker_build.sh: ORION_ALLOW_UNAPPLIED_MIGRATION=1 -- SKIPPING the SQL migration gate for $SERVICE." >&2
+    else
+        # The repo venv has psycopg2; system python3 does not. Linked worktrees have
+        # no .venv of their own, so reach the main checkout's via git's common dir
+        # (same lookup as the Makefile's METRIC_PYTHON).
+        _GATE_PY=python3
+        _CD=$(git rev-parse --git-common-dir 2>/dev/null || true)
+        if [ -x .venv/bin/python ]; then
+            _GATE_PY=.venv/bin/python
+        elif [ -n "$_CD" ] && [ -x "$_CD/../.venv/bin/python" ]; then
+            _GATE_PY="$_CD/../.venv/bin/python"
+        fi
+        _GATE_RC=0
+        "$_GATE_PY" scripts/check_sql_migrations_applied.py --service "$SERVICE" || _GATE_RC=$?
+        if [ "$_GATE_RC" = "1" ]; then
+            echo "REFUSING to bring up $SERVICE: a SQL migration it needs is not applied (apply command above)." >&2
+            echo "Deliberate exception: ORION_ALLOW_UNAPPLIED_MIGRATION=1 scripts/safe_docker_build.sh $SERVICE ..." >&2
+            exit 1
+        elif [ "$_GATE_RC" != "0" ]; then
+            echo "REFUSING to bring up $SERVICE: whether its required SQL migrations are applied is UNKNOWN (see above)." >&2
+            echo "Deliberate exception: ORION_ALLOW_UNAPPLIED_MIGRATION=1 scripts/safe_docker_build.sh $SERVICE ..." >&2
+            exit 1
+        fi
+    fi
+fi
+
 # --- 3. Run docker compose with this repo's mandatory dual --env-file  -----
 # AGENTS.md section 8 requires every docker compose invocation in this repo
 # to load BOTH the root .env and the service's own .env, root first --

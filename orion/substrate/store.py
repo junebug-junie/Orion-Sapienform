@@ -144,6 +144,36 @@ def apply_node_dynamics_write(
     return node.model_copy(update=update)
 
 
+_SIGNAL_ACTIVATION_KEYS = ("activation", "recency_score")
+
+
+def preserve_skipped_keys(
+    node: BaseSubstrateNodeV1, existing: BaseSubstrateNodeV1, skip_metadata_keys: frozenset[str]
+) -> BaseSubstrateNodeV1:
+    """``node`` with ``existing``'s values for every skipped key: metadata keys
+    are copied (or dropped when ``existing`` lacks them), and the signal-level
+    ``activation``/``recency_score`` (falkor_codec.ACTIVATION_STATE_KEYS) are
+    copied from ``existing.signals.activation``. The full-replace stores' half
+    of upsert_node()'s ``skip_metadata_keys`` contract."""
+    merged_metadata = dict(node.metadata or {})
+    existing_metadata = existing.metadata or {}
+    for key in skip_metadata_keys:
+        if key in _SIGNAL_ACTIVATION_KEYS:
+            continue
+        if key in existing_metadata:
+            merged_metadata[key] = existing_metadata[key]
+        else:
+            merged_metadata.pop(key, None)
+    update: dict[str, Any] = {"metadata": merged_metadata}
+    skipped_signals = [key for key in _SIGNAL_ACTIVATION_KEYS if key in skip_metadata_keys]
+    if skipped_signals:
+        bundle = node.signals.activation.model_copy(
+            update={key: getattr(existing.signals.activation, key) for key in skipped_signals}
+        )
+        update["signals"] = node.signals.model_copy(update={"activation": bundle})
+    return node.model_copy(update=update)
+
+
 def node_dynamics_cas_matches(node: BaseSubstrateNodeV1, write: NodeDynamicsWriteV1) -> bool:
     from .activation import ACTIVATION_DECAYED_AT_KEY
 
@@ -246,14 +276,7 @@ class InMemorySubstrateGraphStore:
         if skip_metadata_keys:
             existing = self._nodes.get(node.node_id)
             if existing is not None:
-                merged_metadata = dict(node.metadata or {})
-                existing_metadata = existing.metadata or {}
-                for key in skip_metadata_keys:
-                    if key in existing_metadata:
-                        merged_metadata[key] = existing_metadata[key]
-                    else:
-                        merged_metadata.pop(key, None)
-                node = node.model_copy(update={"metadata": merged_metadata})
+                node = preserve_skipped_keys(node, existing, skip_metadata_keys)
         self._nodes[node.node_id] = node
         if identity_key:
             self._node_identity_index[identity_key] = node.node_id

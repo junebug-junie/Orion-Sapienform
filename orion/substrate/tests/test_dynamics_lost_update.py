@@ -273,3 +273,67 @@ def test_real_falkor_decay_keeps_moving_after_reload() -> None:
             prev = now_vals
     finally:
         redis.Redis.from_url(_LIVE_URI).execute_command("GRAPH.DELETE", graph)
+
+
+# --- every other upsert_node writer (2026-10-12) ----------------------------
+# A blind whole-node upsert from any writer (concept induction's re-save, the
+# materializer, town perception, ...) builds a model whose pressure/dormancy
+# are defaults (0.0 / False) and used to SET them over the tick's values.
+# Pressure/dormancy are now ON CREATE only in FalkorSubstrateStore.upsert_node.
+
+
+def _with_tick_state(node_id: str) -> ConceptNodeV1:
+    node = _concept(node_id)
+    return node.model_copy(update={"metadata": {
+        **node.metadata, "dynamic_pressure": 0.4, "dynamic_pressure_reason": "prediction_error_seed",
+        "dormant": True, "dormancy_updated_at": T0.isoformat(),
+    }})
+
+
+def test_falkor_blind_upsert_never_sets_tick_owned_pressure_or_dormancy_on_match() -> None:
+    store, client = _falkor(applied=True)
+    store.upsert_node(identity_key="id:p", node=_with_tick_state("p"))
+    client.calls.clear()
+    store.upsert_node(identity_key="id:p", node=_concept("p", label="renamed"))  # blind: defaults
+    (cypher, _), = client.calls
+    on_create, on_match = cypher.split("ON CREATE SET", 1)[1].split("ON MATCH SET", 1)
+    for prop in ("dynamic_pressure", "dynamic_pressure_reason", "dormant", "dormancy_updated_at"):
+        assert f"n.{prop} = ${prop}" in on_create
+        assert f"n.{prop} = ${prop}" not in on_match
+    assert "n.label = $label" in on_match  # the writer's own field still lands
+    cached = store.get_node_by_id("p")
+    assert cached.label == "renamed"
+    assert cached.metadata["dynamic_pressure"] == 0.4 and cached.metadata["dormant"] is True
+
+
+def test_in_memory_skip_preserves_signal_level_activation_state() -> None:
+    from orion.substrate.falkor_codec import ACTIVATION_STATE_KEYS
+
+    store = InMemorySubstrateGraphStore()
+    store.upsert_node(identity_key="id:s", node=_concept("s", activation=0.8))
+    store.upsert_node(identity_key="id:s", node=_concept("s", activation=0.1, stamp=T0.isoformat(), label="x"),
+                      skip_metadata_keys=ACTIVATION_STATE_KEYS)
+    node = store.get_node_by_id("s")
+    assert node.signals.activation.activation == 0.8
+    assert node.metadata[ACTIVATION_DECAYED_AT_KEY] == STAMP
+    assert node.label == "x"
+
+
+@pytest.mark.skipif(not _LIVE_URI, reason="ORION_TEST_FALKOR_URI not set")
+def test_real_falkor_blind_upsert_keeps_tick_pressure_and_creates_complete() -> None:
+    import redis
+
+    graph = f"orion_test_decay_cas_{uuid.uuid4().hex[:10]}"
+    cfg = FalkorSubstrateStoreConfig(uri=_LIVE_URI, graph_name=graph, ensure_indexes=False)
+    try:
+        store = FalkorSubstrateStore(cfg, hydrate=False)
+        store.upsert_node(identity_key="id:p", node=_with_tick_state("p"))
+        (created,) = store._client.graph_query(
+            "MATCH (n {node_id: 'p'}) RETURN n.dynamic_pressure AS p, n.dormant AS d")
+        assert created["p"] == pytest.approx(0.4) and created["d"] is True  # ON CREATE wrote them
+        store.upsert_node(identity_key="id:p", node=_concept("p", label="renamed"))
+        (row,) = store._client.graph_query(
+            "MATCH (n {node_id: 'p'}) RETURN n.dynamic_pressure AS p, n.dormant AS d, n.label AS l")
+        assert row["p"] == pytest.approx(0.4) and row["d"] is True and row["l"] == "renamed"
+    finally:
+        redis.Redis.from_url(_LIVE_URI).execute_command("GRAPH.DELETE", graph)

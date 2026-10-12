@@ -44,6 +44,7 @@ from orion.substrate.activation import ACTIVATION_DECAYED_AT_KEY
 from orion.substrate.falkor_codec import (
     DURABLE_NODE_KINDS,
     JSON_SUFFIXED_EXTERNALLY_OWNED_METADATA_KEYS,
+    TICK_OWNED_NODE_PROPERTIES,
     decode_edge,
     decode_node,
     edge_row_is_known,
@@ -646,13 +647,21 @@ class FalkorSubstrateStore:
         skip_metadata_keys: frozenset[str] | None,
     ) -> None:
         """Cache half of upsert_node; also replays journaled writes onto a
-        freshly scanned cache, merging skipped keys against that cache."""
+        freshly scanned cache, merging skipped keys against that cache.
+
+        Mirrors the durable MERGE's ON CREATE / ON MATCH split: when the cache
+        already holds the node (the durable write matched), the tick-owned
+        pressure/dormancy properties and any skipped activation state keep the
+        cached values, exactly as the graph keeps its own."""
         cache_node = node
+        existing_cached = cache.get_node_by_id(node.node_id)
+        merged_metadata = dict(node.metadata or {})
+        update: dict[str, Any] = {}
         if skip_metadata_keys:
-            existing_cached = cache.get_node_by_id(node.node_id)
-            merged_metadata = dict(node.metadata or {})
             existing_metadata = (existing_cached.metadata or {}) if existing_cached is not None else {}
             for key in skip_metadata_keys:
+                if key in ("activation", "recency_score"):
+                    continue  # signals, not metadata; handled below
                 if key in existing_metadata:
                     merged_metadata[key] = existing_metadata[key]
                 else:
@@ -665,7 +674,27 @@ class FalkorSubstrateStore:
                     # deliberately skipped -- cache/durable divergence until
                     # the next generation-triggered rehydrate.
                     merged_metadata.pop(key, None)
-            cache_node = node.model_copy(update={"metadata": merged_metadata})
+        if existing_cached is not None:
+            existing_metadata = existing_cached.metadata or {}
+            if node.node_kind == "concept":
+                for key in TICK_OWNED_NODE_PROPERTIES:
+                    if key in existing_metadata:
+                        merged_metadata[key] = existing_metadata[key]
+                    else:
+                        merged_metadata.pop(key, None)
+            skipped_signals = {"activation", "recency_score"} & set(skip_metadata_keys or ())
+            if skipped_signals:
+                cached_activation = existing_cached.signals.activation
+                update["signals"] = node.signals.model_copy(
+                    update={
+                        "activation": node.signals.activation.model_copy(
+                            update={key: getattr(cached_activation, key) for key in skipped_signals}
+                        )
+                    }
+                )
+        if skip_metadata_keys or existing_cached is not None:
+            update["metadata"] = merged_metadata
+            cache_node = node.model_copy(update=update)
         # skip_metadata_keys=None: the merge above already applied the
         # Falkor-specific semantics (pop on miss), which differ from the
         # in-memory store's (keep on miss).
@@ -838,6 +867,14 @@ class FalkorSubstrateStore:
         value. See falkor_codec.EXTERNALLY_OWNED_METADATA_KEYS's docstring
         for the full trace.
 
+        ``skip_metadata_keys`` may also name ``falkor_codec.ACTIVATION_STATE_KEYS``
+        (``activation``, ``recency_score``, ``activation_decayed_at``) for a
+        writer that does not own the node's activation. Skipped keys are still
+        set when this call creates the node (ON CREATE); only an existing
+        node's values are left alone (ON MATCH). The tick-owned
+        pressure/dormancy properties (``falkor_codec.TICK_OWNED_NODE_PROPERTIES``)
+        are always ON CREATE only.
+
         The skip-preserving merge read, the cache write and the
         ``_write_generation`` bump run together under ``_cache_lock`` after the
         durable write, so a concurrent writer or a snapshot cache swap cannot
@@ -906,10 +943,21 @@ class FalkorSubstrateStore:
 
         params = encode_node_properties(node, identity_key)
         label = node_label_for_kind(str(node.node_kind))
-        assignments = _set_assignments("n", params, skip={"node_id"} | skip_encoded_keys)
+        # ON CREATE sets everything, so a new node starts complete. ON MATCH
+        # leaves alone (a) properties this caller said it does not own
+        # (skip_metadata_keys) and (b) the tick-owned pressure/dormancy
+        # properties, which only update_node_dynamics writes on an existing
+        # node -- a whole-node upsert from any other writer used to reset them
+        # to its model's defaults or to a stale carried-forward copy
+        # (2026-10-12, the remaining lost-update writer after PR #2617).
+        create_assignments = _set_assignments("n", params, skip={"node_id"})
+        match_assignments = _set_assignments(
+            "n", params, skip={"node_id"} | skip_encoded_keys | TICK_OWNED_NODE_PROPERTIES
+        )
         cypher = (
             f"MERGE (n:SubstrateNode:{label} {{node_id: $node_id}}) "
-            f"SET {assignments} "
+            f"ON CREATE SET {create_assignments} "
+            f"ON MATCH SET {match_assignments} "
             "REMOVE n.payload_json"
         )
         try:

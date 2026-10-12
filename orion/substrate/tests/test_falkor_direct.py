@@ -164,7 +164,7 @@ def test_upsert_is_one_merge_on_the_write_client_only() -> None:
     assert len(write.calls) == 1
     cypher, params = write.calls[0]
     assert cypher.startswith("MERGE (n:SubstrateNode:")
-    assert "prediction_error" not in cypher.split("SET", 1)[1]
+    assert "prediction_error" not in cypher.split("ON MATCH SET", 1)[1]
     assert params["identity_key"] == "concept:c1"
 
 

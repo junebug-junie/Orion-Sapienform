@@ -25,6 +25,7 @@ from .store import (
     SubstrateGraphStore,
     SubstrateNeighborhoodSliceV1,
     SubstrateQueryResultV1,
+    preserve_skipped_keys,
 )
 
 logger = logging.getLogger("orion.substrate.graphdb_store")
@@ -217,14 +218,7 @@ LIMIT 1
         if skip_metadata_keys:
             existing = self.get_node_by_id(node.node_id)
             if existing is not None:
-                merged_metadata = dict(node.metadata or {})
-                existing_metadata = existing.metadata or {}
-                for key in skip_metadata_keys:
-                    if key in existing_metadata:
-                        merged_metadata[key] = existing_metadata[key]
-                    else:
-                        merged_metadata.pop(key, None)
-                node = node.model_copy(update={"metadata": merged_metadata})
+                node = preserve_skipped_keys(node, existing, skip_metadata_keys)
         node_iri = self._node_iri(node.node_id)
         payload_json = json.dumps(node.model_dump(mode="json"), ensure_ascii=False, sort_keys=True)
         metadata_json = json.dumps(node.metadata or {}, ensure_ascii=False, sort_keys=True)

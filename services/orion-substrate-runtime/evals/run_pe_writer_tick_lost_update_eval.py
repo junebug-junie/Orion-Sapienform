@@ -11,9 +11,13 @@ prediction-error write, landing at random in one of three places:
 
 Counts (a) PE fields the tick reverted, (b) tick-owned fields the PE write
 reverted, (c) tick activation compare-and-set misses caused by the PE write.
-The fixed writer must score 0 on all three. The comparison run forces the
-old whole-node behaviour (no tick-owned skip) and must reproduce the bug, or
-this eval proves nothing.
+The fixed writer must score 0 on all three. The comparison run
+(``whole_node_write_baseline``) empties the writer's skip set, so it writes
+every field from its fresh model; it must reproduce the bug, or this eval
+proves nothing. It is not byte-for-byte the pre-2026-10-12 writer, which also
+carried pressure/dormancy forward from its own read: the baseline's
+tick_fields_reverted count is driven by the activation/recency stomp both
+share, and overstates how often the old code reverted pressure.
 
 Mirrors the live symptom: node:substrate.bus_synaptic's activation read
 0.0118343 == its prediction_error and recency_score 0 after every 30 s write.
@@ -141,7 +145,7 @@ def _run(fixed: bool) -> dict:
 def run() -> dict:
     fixed = _run(fixed=True)
     old = _run(fixed=False)
-    report = {"nodes": len(NODES), "ticks": TICKS, "fixed": fixed, "old_whole_node_write": old}
+    report = {"nodes": len(NODES), "ticks": TICKS, "fixed": fixed, "whole_node_write_baseline": old}
     assert all(v == 0 for v in fixed["counts"].values()), report
     assert old["counts"]["tick_fields_reverted"] > 0.9 * old["writes"]["pe_race"], report
     report["passed"] = True

@@ -958,18 +958,51 @@ class FalkorSubstrateStore:
             f"MERGE (n:SubstrateNode:{label} {{node_id: $node_id}}) "
             f"ON CREATE SET {create_assignments} "
             f"ON MATCH SET {match_assignments} "
-            "REMOVE n.payload_json"
+            "REMOVE n.payload_json "
+            # Return what the graph now holds, so the cache stores the durable
+            # truth: on ON MATCH the graph kept values (pressure, dormancy,
+            # skipped keys) this caller's model does not carry, and a cache miss
+            # here (node written by another process since the last hydrate)
+            # would otherwise cache the caller's defaults -- and the tick's
+            # compare-and-set would then expect an activation the graph does
+            # not hold (review finding 2026-10-12).
+            "RETURN " + _return_clause("n", NATIVE_NODE_RETURN_FIELDS)
         )
         try:
-            self._client.graph_query(cypher, params)
+            raw = self._client.graph_query(cypher, params)
         except Exception as exc:
             logger.error("falkor_substrate_upsert_node_failed node_id=%s error=%s", node.node_id, exc)
             raise
+        durable = self._decode_written_node(raw, node.node_id)
         with self._cache_lock:
-            self._apply_node_to_cache(self._cache, identity_key, node, skip_metadata_keys)
+            if durable is not None:
+                # The durable row is authoritative; nothing left to merge.
+                self._cache.upsert_node(identity_key=identity_key, node=durable)
+                journal_entry = ("node", identity_key, durable, None)
+            else:
+                self._apply_node_to_cache(self._cache, identity_key, node, skip_metadata_keys)
+                journal_entry = ("node", identity_key, node, skip_metadata_keys)
             if self._scan_journal is not None:
-                self._scan_journal.append(("node", identity_key, node, skip_metadata_keys))
+                self._scan_journal.append(journal_entry)
             self._write_generation += 1
+
+    @staticmethod
+    def _decode_written_node(raw: Any, node_id: str) -> BaseSubstrateNodeV1 | None:
+        """The node the MERGE returned, or None (a test double returning no
+        row or someone else's row, or an undecodable row) -- the caller then
+        falls back to the merge-based cache mirror."""
+        try:
+            rows = _normalize_rows(raw, fields=NATIVE_NODE_RETURN_FIELDS)
+        except Exception:
+            return None
+        for row in rows:
+            if row.get("node_id") != node_id or not node_row_is_known(row):
+                continue
+            try:
+                return decode_node(row)
+            except Exception:
+                return None
+        return None
 
     @staticmethod
     def _apply_dynamics_to_cache(

@@ -295,7 +295,12 @@ class SubstrateDynamicsEngine:
                     # Store without a targeted write path (the SPARQL/GraphDB
                     # backend): full-node re-upsert, which still carries the
                     # lost-update race for unowned properties. Production runs
-                    # Falkor (SUBSTRATE_STORE_BACKEND=falkor).
+                    # Falkor (SUBSTRATE_STORE_BACKEND=falkor). Do not point this
+                    # path at a Falkor-backed store without
+                    # update_node_dynamics (a wrapper, or a Falkor shadow):
+                    # Falkor's upsert_node sets pressure/dormancy ON CREATE
+                    # only (falkor_codec.TICK_OWNED_NODE_PROPERTIES), so they
+                    # would never land on an existing node.
                     if legacy_decay:
                         metadata.pop(ACTIVATION_DECAYED_AT_KEY, None)
                     else:

@@ -338,3 +338,29 @@ def test_real_falkor_both_interleavings_keep_both_writers_fields() -> None:
         assert cached.metadata["dynamic_pressure"] == pytest.approx(row2["dynamic_pressure"], abs=1e-9)
     finally:
         redis.Redis.from_url(_LIVE_URI).execute_command("GRAPH.DELETE", graph)
+
+
+@pytest.mark.skipif(not _LIVE_URI, reason="ORION_TEST_FALKOR_URI not set")
+def test_real_falkor_cache_miss_caches_what_the_graph_kept() -> None:
+    """Review finding 2026-10-12: the node exists in the graph (written by
+    another process) but not in this store's cache. ON MATCH keeps the tick's
+    values in the graph; the cache must hold those, not the PE writer's model
+    defaults, or the tick's next compare-and-set expects an activation the
+    graph does not hold."""
+    import redis
+
+    graph = f"orion_test_pe_partial_{uuid.uuid4().hex[:10]}"
+    cfg = FalkorSubstrateStoreConfig(uri=_LIVE_URI, graph_name=graph, ensure_indexes=False)
+    try:
+        FalkorSubstrateStore(cfg, hydrate=False).upsert_node(identity_key=IDENTITY, node=_seed_node())
+        cold = FalkorSubstrateStore(cfg, hydrate=False)  # empty cache
+        assert cold._cache.get_node_by_id(NODE) is None
+        _pe_write(_worker(cold), error=0.9, now=T0, turn="turn-1")
+        cached = cold._cache.get_node_by_id(NODE)
+        row = _row(cold._client, NODE)
+        assert cached.signals.activation.activation == pytest.approx(row["activation"], abs=1e-12) == 0.6
+        assert cached.metadata[ACTIVATION_DECAYED_AT_KEY] == row["stamp"] == SEED_STAMP
+        assert cached.metadata["dynamic_pressure"] == pytest.approx(0.21)
+        assert cached.metadata["prediction_error"] == pytest.approx(0.9)
+    finally:
+        redis.Redis.from_url(_LIVE_URI).execute_command("GRAPH.DELETE", graph)

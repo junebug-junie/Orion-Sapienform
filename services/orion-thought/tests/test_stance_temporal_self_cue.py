@@ -16,7 +16,7 @@ from orion.schemas.thought import HubAssociationBundleV1, StanceReactRequestV1
 
 _REPO = Path(__file__).resolve().parents[3]
 _PROMPT = _REPO / "orion" / "cognition" / "prompts" / "stance_react.j2"
-_FRAME = json.loads((_REPO / "orion/temporal_self/tests/data/frame_2026-10-11_talking.json").read_text())
+_FRAME = json.loads((_REPO / "orion/temporal_self/tests/patch4_rows/frame_2026-10-11_talking.json").read_text())
 _NOW = datetime(2026, 10, 11, 23, 58, 34, tzinfo=timezone.utc)
 _ACTIVE = "571bce17764b0a9e"
 
@@ -145,3 +145,29 @@ async def test_run_stance_react_without_cue_is_unchanged(monkeypatch) -> None:
     thought = await run_stance_react(_request(), bus=None, cortex_client=client)
     assert "temporal_self_cue" not in client.contexts[0]
     assert thought.day_citations is None
+
+
+@pytest.mark.asyncio
+async def test_slow_fetch_is_bounded_by_the_total_timeout(monkeypatch) -> None:
+    import asyncio
+
+    async def hang(base_url, timeout_sec):
+        await asyncio.sleep(5)
+
+    monkeypatch.setattr(cue_mod, "fetch_frame", hang)
+    monkeypatch.setattr(cue_mod.settings, "temporal_self_cue_fetch_timeout_sec", 0.05)
+    t0 = asyncio.get_running_loop().time()
+    cue = await cue_mod.build_stance_cue("c-1", now=_NOW)
+    assert cue.skip_reason == "fetch_failed" and asyncio.get_running_loop().time() - t0 < 1.0
+
+
+@pytest.mark.asyncio
+async def test_render_bug_is_named_as_render_failed(monkeypatch) -> None:
+    _mock(monkeypatch, lambda r: httpx.Response(200, json=_FRAME))
+
+    def boom(*a, **k):
+        raise RuntimeError("bug")
+
+    monkeypatch.setattr(cue_mod, "project_stance_cue", boom)
+    cue = await cue_mod.build_stance_cue("c-1", now=_NOW)
+    assert cue.text == "" and cue.skip_reason == "render_failed"

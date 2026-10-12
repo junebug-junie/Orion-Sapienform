@@ -11,7 +11,8 @@ from orion.temporal_self.tests.patch4_fixtures import BUSY_NOW, TALKING_NOW, fra
 TALKING = (
     "Afternoon, Sun 17:58 local (day record as of 17:53). On now: talking with Juniper, last turn 42 min ago "
     "[arc:571bce17764b0a9e]. Before that: attention on Juniper is talking (1 message in the last 15 min), set "
-    "aside 28 min ago [arc:4f06f3b115f9a3ac]. 2 open threads from conversation [arc:fd63c7ab0ad3ecbe]. Last "
+    "aside 28 min ago [arc:4f06f3b115f9a3ac]. 2 open threads from conversation, 1 with its record "
+    "[arc:fd63c7ab0ad3ecbe]. Last "
     "slept 14 h 52 min ago [arc:460c1b680514c3e8]."
 )
 BUSY = (
@@ -98,3 +99,16 @@ def test_old_frame_without_last_seen_at_still_renders_honestly():
 def test_span_words():
     assert [span_words(s) for s in (5, 60, 25 * 60, 7200, 5 * 3600 + 13 * 60)] == [
         "under a minute", "1 min", "25 min", "2 h", "5 h 13 min"]
+
+
+def test_silent_broadcast_with_no_open_arc_is_not_rest():
+    f = rest_frame()
+    f["warnings"] = ["broadcast log silent for 1200 s"]
+    cue = project_stance_cue(f, TALKING_NOW.replace(hour=6, minute=6))
+    assert "No attention" not in cue.text and cue.clauses_dropped == 1
+    assert cue.text == "Pre-dawn, Sun 00:06 local (day record as of 00:04)."
+
+
+def test_frame_from_the_future_renders_nothing():
+    cue = project_stance_cue(frame("talking"), TALKING_NOW - timedelta(minutes=32))
+    assert cue.text == "" and cue.skip_reason == "clock_skew"

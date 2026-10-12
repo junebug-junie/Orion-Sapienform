@@ -1,4 +1,4 @@
-"""Patch-4 fixtures: real temporal-self rows compacted by data/build_fixtures.py (see its docstring)."""
+"""Patch-4 fixtures: real temporal-self rows compacted by patch4_rows/build_fixtures.py (see its docstring)."""
 from __future__ import annotations
 
 import copy
@@ -9,7 +9,7 @@ from pathlib import Path
 
 from orion.schemas.temporal_self import TemporalSelfDayV1
 
-DATA = Path(__file__).parent / "data"
+DATA = Path(__file__).parent / "patch4_rows"
 # The real frame was fetched at this moment; the busy frame is the same day rebuilt at 17:20Z.
 TALKING_NOW = datetime(2026, 10, 11, 23, 58, 34, tzinfo=timezone.utc)
 BUSY_NOW = datetime(2026, 10, 11, 17, 20, tzinfo=timezone.utc)

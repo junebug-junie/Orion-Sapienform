@@ -28,6 +28,7 @@ from orion.schemas.temporal_self import (
 from orion.temporal_self.day import DEFAULT_TZ, as_utc, day_id_for, day_phase_for
 
 DEFAULT_MAX_AGE_SEC = 900.0
+MAX_FUTURE_SKEW_SEC = 60.0
 MAX_THREAD_REFS = 3
 SILENT_BROADCAST_WARNING = "broadcast log silent"
 
@@ -128,6 +129,9 @@ def project_stance_cue(
     assert as_of is not None
     if (now - as_of).total_seconds() > max_age_sec:
         return _skip(now, "stale", frame)
+    if (as_of - now).total_seconds() > MAX_FUTURE_SKEW_SEC:
+        # A frame "from the future" means one of the two clocks is wrong: no ages can be trusted.
+        return _skip(now, "clock_skew", frame)
 
     silent = any(w.startswith(SILENT_BROADCAST_WARNING) for w in frame.warnings)
     dropped = 0
@@ -142,6 +146,9 @@ def project_stance_cue(
     if active is not None and active.kind == "attention" and silent:
         dropped += 1
         active = None
+    elif active is None and silent:
+        # No open arc while the attention log is silent is not rest: the instrument stopped.
+        dropped += 1
     else:
         clauses.append((_active_clause(now, active), [active] if active else []))
 
@@ -163,7 +170,8 @@ def project_stance_cue(
     if thread_arcs:
         n = len(frame.open_threads)
         refs = " ".join(_ref(a) for a in thread_arcs)
-        clauses.append((f"{n} open thread{'s' if n != 1 else ''} from conversation {refs}.", thread_arcs))
+        cited = "" if len(thread_arcs) == n else f", {len(thread_arcs)} with its record"
+        clauses.append((f"{n} open thread{'s' if n != 1 else ''} from conversation{cited} {refs}.", thread_arcs))
 
     sleeps = [a for a in frame.arcs_today if a.kind == "sleep"]
     if sleeps:

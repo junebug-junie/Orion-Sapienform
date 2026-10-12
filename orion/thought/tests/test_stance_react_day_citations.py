@@ -111,3 +111,12 @@ def test_bracketed_evidence_ref_from_the_live_model_is_cited_not_dropped():
     out = apply_stance_react_pipeline(_thought(evidence_refs=["node-a", f"[arc:{SHOWN}]"]), _request(), day_cue=CUE)
     assert out.evidence_refs == ["node-a", f"arc:{SHOWN}"]
     assert out.day_citations.cited_valid == [f"arc:{SHOWN}"] and out.day_citations.label == "verified"
+
+
+def test_stored_check_describes_the_text_that_ships():
+    """Enforcement runs after the gate; it must not rewrite imperative/tone, or the stored
+    uncited examples would describe text that never shipped (review finding)."""
+    imperative = "Say the Bus synaptic prediction error held me all morning."
+    out = apply_stance_react_pipeline(_thought(imperative=imperative), _request(), day_cue=CUE)
+    assert out.imperative == imperative
+    assert out.day_citations.uncited_examples == [imperative]

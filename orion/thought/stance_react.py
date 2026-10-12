@@ -16,7 +16,7 @@ from orion.thought.coalition import (
 )
 from orion.thought.policy_refusal import evaluate_thought_disposition
 from orion.thought.stance_quality import enforce_thought_stance_quality
-from orion.schemas.temporal_self import DayCitationCheckV1, TemporalSelfStanceCueV1
+from orion.schemas.temporal_self import UNCITED_SENTENCES_SHOWN, DayCitationCheckV1, TemporalSelfStanceCueV1
 from orion.temporal_self.citations import ARC_EVIDENCE_RE, arc_ref, check_arc_citations, gate_arc_refs
 
 logger = logging.getLogger(__name__)
@@ -255,7 +255,7 @@ def _merge_day_checks(checks: list[DayCitationCheckV1], refs_rejected: list[str]
     label = "UNVERIFIED" if uncited else ("verified" if valid else "no_day_claims")
     return DayCitationCheckV1(
         shown=shown, cited_valid=valid, rejected_unknown=rejected, uncited_day_sentences=uncited,
-        uncited_examples=examples[:5], label=label, action="stripped" if rejected else "kept",
+        uncited_examples=examples[:UNCITED_SENTENCES_SHOWN], label=label, action="stripped" if rejected else "kept",
     )
 
 

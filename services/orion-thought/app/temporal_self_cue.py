@@ -14,6 +14,7 @@ The fetch runs concurrently with Mind enrichment, so it adds no wait to the turn
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from datetime import datetime, timezone
@@ -58,12 +59,18 @@ async def build_stance_cue(correlation_id: str, *, now: datetime | None = None) 
     if not settings.temporal_self_stance_cue_enabled:
         return TemporalSelfStanceCueV1(rendered_at=now, skip_reason="disabled")
     started = time.perf_counter()
+    timeout = settings.temporal_self_cue_fetch_timeout_sec
     try:
-        frame = await fetch_frame(settings.temporal_self_frame_url, settings.temporal_self_cue_fetch_timeout_sec)
+        # httpx's timeout is per phase (connect, each read; DNS not covered): bound the whole fetch.
+        frame = await asyncio.wait_for(fetch_frame(settings.temporal_self_frame_url, timeout), timeout)
+    except (asyncio.TimeoutError, Exception) as exc:  # noqa: BLE001 -- the cue must never fail a turn
+        logger.debug("temporal_self_frame_fetch_failed corr=%s err=%s", correlation_id, type(exc).__name__)
+        frame = None
+    try:
         cue = project_stance_cue(frame, now, max_age_sec=settings.temporal_self_cue_max_age_sec)
-    except Exception as exc:  # noqa: BLE001 -- the cue must never fail a turn
-        logger.warning("temporal_self_cue_failed corr=%s err=%s: %s", correlation_id, type(exc).__name__, exc)
-        cue = TemporalSelfStanceCueV1(rendered_at=now, skip_reason="fetch_failed")
+    except Exception as exc:  # noqa: BLE001 -- a render bug is named as one, never as a network problem
+        logger.warning("temporal_self_cue_render_failed corr=%s err=%s: %s", correlation_id, type(exc).__name__, exc)
+        cue = TemporalSelfStanceCueV1(rendered_at=now, skip_reason="render_failed")
     elapsed_ms = round((time.perf_counter() - started) * 1000.0, 1)
     if cue.text:
         logger.info("temporal_self_cue corr=%s day=%s chars=%s arcs=%s dropped=%s fetch_ms=%s",

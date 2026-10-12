@@ -65,3 +65,28 @@ def test_bracketed_arc_ref_in_a_ref_list_is_the_same_citation():
     kept, rejected = gate_arc_refs(["hub:turn", "[arc:2ce0b486a356bbd2]", "arc:2ce0b486a356bbd2",
                                     "[arc:deadbeefdeadbeef]"], SHOWN)
     assert kept == ["hub:turn", "arc:2ce0b486a356bbd2"] and rejected == ["arc:deadbeefdeadbeef"]
+
+
+def test_bare_unknown_arc_in_text_is_removed_and_counted():
+    out, check = check_arc_citations("Look at arc:0123456789abcdff here.", SHOWN)
+    assert out == "Look at here." and check.rejected_unknown == ["arc:0123456789abcdff"]
+
+
+def test_bare_shown_arc_in_text_cites_its_sentence():
+    _, check = check_arc_citations("Harness closure prediction error held me (arc:2ce0b486a356bbd2).", SHOWN,
+                                   labels=LABELS)
+    assert check.cited_valid == ["arc:2ce0b486a356bbd2"] and check.label == "verified"
+
+
+def test_uppercase_shown_id_is_the_same_id():
+    out, check = check_arc_citations("x [arc:2CE0B486A356BBD2]", SHOWN)
+    assert check.rejected_unknown == [] and check.cited_valid == ["arc:2ce0b486a356bbd2"]
+    kept, rejected = gate_arc_refs(["ARC:2CE0B486A356BBD2"], SHOWN)
+    assert kept == ["arc:2ce0b486a356bbd2"] and rejected == []
+
+
+def test_labels_match_whole_words_only():
+    labels = {"memory": ["2ce0b486a356bbd2"]}
+    _, inside = check_arc_citations("I am memoryless today.", SHOWN, labels=labels)
+    _, whole = check_arc_citations("My memory was busy.", SHOWN, labels=labels)
+    assert inside.uncited_day_sentences == 0 and whole.uncited_day_sentences == 1

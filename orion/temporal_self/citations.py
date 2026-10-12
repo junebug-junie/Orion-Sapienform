@@ -23,8 +23,9 @@ from orion.schemas.temporal_self import UNCITED_SENTENCES_SHOWN, DayCitationChec
 ARC_REF_RE = re.compile(r"\[arc:([0-9a-f]{16})\]")
 # An evidence_refs / strain_refs entry ("arc:<id>"), as stance_react cites it.
 ARC_EVIDENCE_RE = re.compile(r"^arc:([0-9a-f]{16})$")
-# Any bracketed arc ref, well-formed or not, so a garbled one is still removed and counted.
-_ANY_ARC_BRACKET_RE = re.compile(r"\s?\[arc:([^\]\s]*)\]")
+# Any arc ref in text, bracketed or bare ("arc:<id>", the form the stance prompt asks for in
+# evidence_refs), well-formed or not, so a garbled or unknown one is still removed and counted.
+_ANY_ARC_BRACKET_RE = re.compile(r"\s?\[arc:([^\]\s]*)\]|\s?(?<![\w\[/])arc:([0-9A-Za-z_\-]+)")
 _SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+|\n+")
 _CLOCK_LABEL_RE = re.compile(r"^\d{2}:\d{2}$")
 LABEL_MIN_CHARS = 6
@@ -45,7 +46,8 @@ def _label_patterns(labels: Mapping[str, Sequence[str]]) -> list[tuple[re.Patter
             # A local clock time from the block; "15:05 UTC" elsewhere in a letter is another clock.
             pattern = re.compile(rf"(?<![\d:]){re.escape(text)}(?![\d:])(?!\s*UTC)")
         elif len(text) >= LABEL_MIN_CHARS:
-            pattern = re.compile(re.escape(text), re.IGNORECASE)
+            # Whole words only: a label "memory" must not match "memoryless".
+            pattern = re.compile(rf"(?<!\w){re.escape(text)}(?!\w)", re.IGNORECASE)
         else:
             continue
         out.append((pattern, set(arc_ids)))
@@ -69,12 +71,13 @@ def check_arc_citations(
     valid: list[str] = []
 
     def _strip(match: re.Match[str]) -> str:
-        arc_id = match.group(1)
+        raw = match.group(1) if match.group(1) is not None else match.group(2)
+        arc_id = raw.lower()
         if arc_id in shown:
             if arc_id not in valid:
                 valid.append(arc_id)
             return match.group(0)
-        rejected.append(arc_id)
+        rejected.append(raw)  # verbatim, as written
         return ""
 
     cleaned = _ANY_ARC_BRACKET_RE.sub(_strip, text or "")
@@ -94,7 +97,7 @@ def check_arc_citations(
                     named |= arc_ids
             if not named:
                 continue
-            in_sentence = {m.group(1) for m in ARC_REF_RE.finditer(sentence)} & shown
+            in_sentence = {(m.group(1) or m.group(2)).lower() for m in _ANY_ARC_BRACKET_RE.finditer(sentence)} & shown
             if in_sentence or (named & elsewhere):
                 continue
             uncited.append(" ".join(sentence.split())[:EXAMPLE_MAX_CHARS])
@@ -129,7 +132,8 @@ def gate_arc_refs(refs: Iterable[str], shown_arc_ids: Iterable[str]) -> tuple[li
             # Live 2026-10-12: the stance model copied the cue's bracketed form into evidence_refs.
             # Same citation, so normalise it rather than let the coalition filter drop it unseen.
             text = text[1:-1]
-        if text.startswith("arc:"):
+        if text.lower().startswith("arc:"):
+            text = "arc:" + text[4:].lower()
             if text in kept:
                 continue
             m = ARC_EVIDENCE_RE.match(text)

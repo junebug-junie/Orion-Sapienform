@@ -48,6 +48,6 @@ with Juniper's decisions). Both renderers are fixed templates over stored rows; 
 
 Results land in `thought_decision.day_citations` (Hub turn trace) and
 `orion_day_letter.sources.arc_citations`. Kill switches: `TEMPORAL_SELF_STANCE_CUE_ENABLED`
-(orion-thought), `TEMPORAL_SELF_DAY_BLOCK_ENABLED` (orion-hub). Fixtures: `tests/data/`
-(rebuild with `tests/data/build_fixtures.py`). Latency eval:
+(orion-thought), `TEMPORAL_SELF_DAY_BLOCK_ENABLED` (orion-hub). Fixtures: `tests/patch4_rows/`
+(rebuild with `tests/patch4_rows/build_fixtures.py`). Latency eval:
 `services/orion-thought/evals/run_temporal_self_cue_latency_eval.py`.

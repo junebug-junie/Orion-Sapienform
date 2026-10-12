@@ -353,7 +353,7 @@ class TemporalSelfStateV1(_Forbid):
 # renderers are deterministic templates over stored rows (no LLM); every clause carries the
 # ``[arc:<id>]`` it came from, and whatever Orion writes back is checked against what it was shown.
 
-CueSkipReason = Literal["disabled", "fetch_failed", "invalid_frame", "wrong_day", "stale"]
+CueSkipReason = Literal["disabled", "fetch_failed", "render_failed", "invalid_frame", "wrong_day", "stale", "clock_skew"]
 DayCitationLabel = Literal["verified", "UNVERIFIED", "no_day_claims"]
 STANCE_CUE_MAX_CHARS = 400
 DAY_BLOCK_MAX_CHARS = 2400

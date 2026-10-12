@@ -122,11 +122,34 @@ def test_no_hunter_service_ships_log_level_debug_by_default() -> None:
     would silently turn the per-message firehose back on for that service."""
     services = _hunter_services()
     assert len(services) >= 10, "Hunter service discovery broke"
-    pattern = re.compile(r"^\s*-?\s*LOG_LEVEL\s*[=:]\s*\$?\{?(?:LOG_LEVEL:-)?\s*['\"]?DEBUG", re.I | re.M)
+    pattern = re.compile(
+        r"^[^#\n]*\bLOG_LEVEL['\"]?\s*[=:]\s*['\"]?(?:\$\{[A-Z_]+:?-)?['\"]?DEBUG\b", re.I | re.M
+    )
     offenders = []
     for svc in services + [REPO_ROOT]:
-        for name in (".env_example", "docker-compose.yml"):
-            f = svc / name
+        files = [svc / ".env_example", *sorted(svc.glob("docker-compose*.y*ml"))]
+        for f in files:
             if f.exists() and pattern.search(f.read_text(errors="ignore")):
                 offenders.append(str(f.relative_to(REPO_ROOT)))
     assert not offenders, f"LOG_LEVEL defaults to DEBUG in: {offenders}"
+
+
+@pytest.mark.parametrize(
+    "line,hit",
+    [
+        ("LOG_LEVEL=DEBUG", True),
+        ("  - LOG_LEVEL=${LOG_LEVEL:-DEBUG}", True),
+        ('  - "LOG_LEVEL=DEBUG"', True),
+        ("  LOG_LEVEL: debug", True),
+        ("  LOG_LEVEL: ${OTHER_VAR-DEBUG}", True),
+        ("export LOG_LEVEL=DEBUG", True),
+        ("LOG_LEVEL=INFO", False),
+        ("# set LOG_LEVEL=DEBUG to see every message", False),
+        ("CHROMA_LOG_LEVEL=DEBUG", False),
+    ],
+)
+def test_debug_default_pattern_shapes(line, hit) -> None:
+    pattern = re.compile(
+        r"^[^#\n]*\bLOG_LEVEL['\"]?\s*[=:]\s*['\"]?(?:\$\{[A-Z_]+:?-)?['\"]?DEBUG\b", re.I | re.M
+    )
+    assert bool(pattern.search(line)) is hit

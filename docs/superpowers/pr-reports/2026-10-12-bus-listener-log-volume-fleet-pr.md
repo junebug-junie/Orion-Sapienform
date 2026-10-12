@@ -9,7 +9,7 @@
 
 Per-message intake lines no longer fill the shared journald cap (PR #2602) and push out other services' history.
 
-Why it still printed after #2607: #2607 moved the line to `logger.debug`, but the chassis logs through **loguru**, whose default stderr sink is DEBUG. Most services only configure stdlib `logging` (`orion-sql-writer`: `logging.basicConfig(INFO)`) and never touch loguru, so the "DEBUG" line printed anyway. Only services that call `loguru.logger.remove()` and re-add a leveled sink (signal-gateway after #2607, the vision services) were quiet. The fix makes the decision in the chassis from the service's own `LOG_LEVEL` env var, so it no longer depends on how each service set up logging.
+Why it still printed after #2607: #2607 moved the line to `logger.debug`, but the chassis logs through **loguru**, whose default stderr sink is DEBUG. Most services only configure stdlib `logging` (`orion-sql-writer`: `logging.basicConfig(INFO)`) and never touch loguru, so the "DEBUG" line printed anyway. Only services that call `loguru.logger.remove()` and re-add a leveled sink (only signal-gateway among Hunter services, after #2607) were quiet. The fix makes the decision in the chassis from the service's own `LOG_LEVEL` env var, so it no longer depends on how each service set up logging.
 
 Live measurement, 10-minute window, 2026-10-11 ~23:50 UTC (`journalctl CONTAINER_NAME=<c> --since -10min`):
 
@@ -63,7 +63,7 @@ Not addressed here (separate sources, reported for follow-up):
 ## Tests run
 
 ```text
-pytest orion/core/bus/tests/test_hunter_intake_log_quiet.py            -> 6 passed
+pytest orion/core/bus/tests/test_hunter_intake_log_quiet.py            -> 15 passed
 pytest orion/core/bus/tests/ services/orion-sql-writer/tests/test_consumer_resilience.py tests/test_hunter_reconnect.py -> 82 passed
 services/orion-signal-gateway: pytest -q                                -> 38 passed
 Mutation: per-message line unconditional again (pre-fix behavior)       -> 4 gate cases FAIL (as intended)
@@ -85,14 +85,23 @@ Not run (task: do not deploy). Chassis code is baked into each image, so service
 
 ## Review findings fixed
 
-See PR comments / follow-up commit.
+Review subagent: no must-fix findings.
+
+- Finding: restart loop would be refused by `safe_docker_build.sh` in the primary checkout.
+  - Fix: added `ORION_ALLOW_SHARED_CHECKOUT_WRITE=1` prefix.
+  - Evidence: `scripts/safe_docker_build.sh:48`.
+- Finding: DEBUG-default regex missed quoted list items, `${X-DEBUG}`, other-var indirection, `export`; only scanned `docker-compose.yml`.
+  - Fix: looser comment-aware pattern, scans `docker-compose*.y*ml`, added shape test cases.
+  - Evidence: `test_debug_default_pattern_shapes` (9 cases pass).
+- Finding: report credited vision services, which do not use Hunter.
+  - Fix: corrected to signal-gateway only.
 
 ## Restart required
 
-From the primary checkout on main after merge:
+From the primary checkout on main after merge and `git pull --ff-only`:
 
 ```bash
-for s in orion-sql-writer orion-state-service orion-biometrics orion-cortex-exec orion-gpu-pool orion-signal-gateway; do scripts/safe_docker_build.sh $s up -d --build; done
+for s in orion-sql-writer orion-state-service orion-biometrics orion-cortex-exec orion-gpu-pool orion-signal-gateway; do ORION_ALLOW_SHARED_CHECKOUT_WRITE=1 scripts/safe_docker_build.sh $s up -d --build; done
 ```
 
 Remaining Hunter services pick it up on their next rebuild. Separately, restart the otel collector to load #2607's `basic` exporter: `docker restart orion-signal-gateway-otel-collector-1`.

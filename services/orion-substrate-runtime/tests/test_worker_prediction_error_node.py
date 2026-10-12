@@ -25,7 +25,7 @@ class _FakeStore:
     def __init__(self) -> None:
         self.calls: list[dict] = []
 
-    def upsert_node(self, *, identity_key, node) -> None:
+    def upsert_node(self, *, identity_key, node, skip_metadata_keys=None) -> None:
         self.calls.append({"identity_key": identity_key, "node": node})
 
 
@@ -33,7 +33,7 @@ class _RaisingStore:
     def __init__(self) -> None:
         self.calls = 0
 
-    def upsert_node(self, *, identity_key, node) -> None:
+    def upsert_node(self, *, identity_key, node, skip_metadata_keys=None) -> None:
         self.calls += 1
         raise RuntimeError("boom")
 
@@ -50,7 +50,7 @@ class _RecordingStore:
     def get_node_by_id(self, node_id):
         return self.nodes.get(node_id)
 
-    def upsert_node(self, *, identity_key, node) -> None:
+    def upsert_node(self, *, identity_key, node, skip_metadata_keys=None) -> None:
         self.upsert_calls += 1
         self.nodes[node.node_id] = node
 

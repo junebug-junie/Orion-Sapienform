@@ -32,7 +32,9 @@ async def heartbeat_loop(bus_instance):
                     boot_id=BOOT_ID,
                     last_seen_ts=datetime.now(timezone.utc),
                     node="vision-edge-node",
-                    status="ok",
+                    # Blind is degraded, not ok: on 10-11 this heartbeat said "ok" for 16 h while
+                    # the camera connection was dead and the room Orion saw was a frozen frame.
+                    status="ok" if camera.get_frame() is not None else "degraded",
                     # heartbeat_interval_sec must match this loop's real period. Left at the
                     # schema default of 10.0, orion-equilibrium-service computes
                     # grace = interval * EQUILIBRIUM_GRACE_MULTIPLIER (3.0) = 30.0s and marks the

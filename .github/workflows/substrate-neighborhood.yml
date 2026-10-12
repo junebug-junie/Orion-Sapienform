@@ -5,6 +5,7 @@ on:
       - 'orion/core/schemas/substrate_graph_journal.py'
       - 'services/orion-sql-db/manual_migration_substrate_graph_journal_v1*.sql'
       - 'services/orion-substrate-runtime/app/worker.py'
+      - 'services/orion-substrate-runtime/tests/test_prediction_error_node_lost_update.py'
       - 'orion/substrate/**'
       - 'services/*/.env_example'
       - 'services/*/docker-compose.yml'
@@ -22,6 +23,7 @@ on:
       - 'orion/core/schemas/substrate_graph_journal.py'
       - 'services/orion-sql-db/manual_migration_substrate_graph_journal_v1*.sql'
       - 'services/orion-substrate-runtime/app/worker.py'
+      - 'services/orion-substrate-runtime/tests/test_prediction_error_node_lost_update.py'
       - 'orion/substrate/**'
       - 'services/*/.env_example'
       - 'services/*/docker-compose.yml'
@@ -77,7 +79,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - run: python -m pip install 'pydantic>=2' pydantic-settings requests 'redis<6' PyYAML jinja2 pytest 'rdflib>=7' asyncpg==0.29.0 sqlalchemy==2.0.36 psycopg2-binary==2.9.10
+      - run: python -m pip install 'pydantic>=2' pydantic-settings requests 'redis<6' PyYAML jinja2 pytest 'rdflib>=7' asyncpg==0.29.0 sqlalchemy==2.0.36 psycopg2-binary==2.9.10 fastapi
       - name: Store contract and backend regressions
         run: >-
           python -m pytest -q
@@ -112,6 +114,9 @@ jobs:
         run: |
           set -o pipefail
           python -m pytest -q -rs orion/substrate/tests/test_dynamics_lost_update.py -k "real_falkor" | tee lost_update.out
+          # The prediction-error writer vs the tick, both interleavings (needs
+          # fastapi: app.worker imports the service's HTTP routes).
+          python -m pytest -q -rs services/orion-substrate-runtime/tests/test_prediction_error_node_lost_update.py | tee -a lost_update.out
           if grep -q "SKIPPED" lost_update.out; then
             echo "real-Falkor lost-update test skipped -- service wiring is broken" >&2
             exit 1
@@ -141,3 +146,5 @@ jobs:
         run: python -m orion.substrate.evals.run_decay_since_last_eval
       - name: Dynamics tick lost-update eval (concurrent writes survive)
         run: python -m orion.substrate.evals.run_dynamics_lost_update_eval
+      - name: PE writer vs dynamics tick lost-update eval (both interleavings)
+        run: PYTHONPATH=. python services/orion-substrate-runtime/evals/run_pe_writer_tick_lost_update_eval.py

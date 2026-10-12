@@ -111,6 +111,9 @@ services:
       # which would break interpolation of the cam0 service too.
       - SOURCE=${WALKWAY_RTSP_URL:-}
       - STREAM_ID=walkway
+      # Own heartbeat identity: orion-equilibrium keys health on service@node, and a shared name
+      # would flip one record between ok and degraded whenever only one camera is down.
+      - SERVICE_NAME=vision-edge-walkway
       # Stills are cam0's main stream only; never inherit them through env_file.
       - HIRES_SOURCE=
       - ORION_BUS_URL=${ORION_BUS_URL}

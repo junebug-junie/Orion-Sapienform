@@ -237,19 +237,38 @@ DYNAMICS_METADATA_KEYS: tuple[str, ...] = (
     "perception_yield",
 )
 
-# Subset of DYNAMICS_METADATA_KEYS owned by SubstrateDynamicsEngine.tick()
-# rather than by whichever writer is upserting this call -- any caller that
-# upserts a concept node via a freshly-constructed model (not one round-tripped
-# from the store) must carry these forward from the pre-existing node or its
-# own upsert_node() call will durably reset dynamics.py's computed pressure/
-# dormancy state back to defaults. See
-# services/orion-substrate-runtime/app/worker.py::_write_prediction_error_node.
-DYNAMICS_ENGINE_OWNED_METADATA_KEYS: tuple[str, ...] = (
-    "dynamic_pressure",
-    "dynamic_pressure_reason",
-    "dormant",
-    "dormancy_updated_at",
-    ACTIVATION_DECAYED_AT_KEY,
+# Native properties ONLY SubstrateDynamicsEngine.tick() writes on an existing
+# node, through its targeted compare-and-set write
+# (FalkorSubstrateStore.update_node_dynamics, PR #2617). Every other writer
+# reaches the graph through upsert_node(), which since 2026-10-12 sets these
+# ON CREATE only -- never ON MATCH -- so a writer that builds a fresh model
+# (default pressure 0.0, dormant False) or carries forward a copy it read a
+# moment ago can no longer revert the tick's value. The old fix for this was
+# a read-and-carry-forward in _write_prediction_error_node (the retired
+# DYNAMICS_ENGINE_OWNED_METADATA_KEYS); a read-modify-write still lost any
+# tick write landing between its read and its write. Concept nodes only (the
+# only kind that stores them, see DYNAMICS_METADATA_KEYS).
+TICK_OWNED_NODE_PROPERTIES: frozenset[str] = frozenset(
+    {
+        "dynamic_pressure",
+        "dynamic_pressure_reason",
+        "dormant",
+        "dormancy_updated_at",
+    }
+)
+
+# A node's activation state: the decayed value, its recency, and the stamp the
+# value is valid as of. Written by the tick (decay) AND, legitimately, by
+# producers that reinforce a node with a fresh activation -- the tick's
+# compare-and-set yields to those. A writer that does NOT mean to set
+# activation names these in upsert_node()'s ``skip_metadata_keys`` so they are
+# set ON CREATE only. Confirmed live 2026-10-12: _write_prediction_error_node
+# built a fresh ConceptNodeV1 every write, whose validator seeds
+# activation = salience and recency_score = 0.0, and wrote them paired with the
+# tick's old decay stamp -- node:substrate.bus_synaptic read activation
+# 0.0118343 == its prediction_error 0.011834, recency 0, every 30 s.
+ACTIVATION_STATE_KEYS: frozenset[str] = frozenset(
+    {"activation", "recency_score", ACTIVATION_DECAYED_AT_KEY}
 )
 
 # The reverse-direction ownership problem, confirmed live 2026-07-29 as a real

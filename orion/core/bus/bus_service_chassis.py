@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import signal
 import time
 import traceback
@@ -22,6 +23,21 @@ from orion.schemas.telemetry.system_health import SystemHealthV1
 
 
 Handler = Callable[[BaseEnvelope], Awaitable[BaseEnvelope | None]]
+
+
+def intake_log_each_enabled() -> bool:
+    """Whether Hunter writes one log line per received message.
+
+    Off unless the service explicitly opts into debug with ``LOG_LEVEL=DEBUG``.
+    A plain ``logger.debug`` is not enough: this module logs through loguru,
+    whose default stderr sink is DEBUG, and most services only configure stdlib
+    ``logging`` -- so the "DEBUG" line printed anyway (orion-sql-writer: ~19k
+    lines/hour into the shared journald cap). Deciding here, from the service's
+    own LOG_LEVEL, makes the quiet default independent of each service's
+    logging setup. The first-after-subscribe line and the per-minute summary
+    still log at INFO regardless.
+    """
+    return (os.getenv("LOG_LEVEL") or "").strip().upper() == "DEBUG"
 
 # Optional, synchronous, no-arg callable a chassis owner can supply to fold extra
 # free-form data into every SystemHealthV1.details payload the heartbeat publishes.
@@ -472,6 +488,7 @@ class Hunter(BaseChassis):
         # INFO line here wrote ~200k lines/hour from orion-signal-gateway alone.
         self._intake_counts: Dict[str, int] = {}
         self._intake_window_start = time.monotonic()
+        self._intake_log_each = intake_log_each_enabled()
 
     INTAKE_SUMMARY_INTERVAL_SEC = 60.0
 
@@ -490,7 +507,7 @@ class Hunter(BaseChassis):
         )
         if first_after_subscribe:
             logger.info(f"{line} first_after_subscribe=true")
-        else:
+        elif self._intake_log_each:
             logger.debug(line)
         key = f"{channel}:{env.kind}"
         self._intake_counts[key] = self._intake_counts.get(key, 0) + 1

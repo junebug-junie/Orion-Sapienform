@@ -55,6 +55,8 @@ from orion.substrate.execution_loop.constants import (
     EXECUTION_TRAJECTORY_PROJECTION_ID,
 )
 from orion.substrate.execution_loop.pipeline import process_execution_grammar_events
+from orion.substrate.falkor_codec import ACTIVATION_STATE_KEYS as _ACTIVATION_STATE_KEYS
+from orion.substrate.falkor_codec import TICK_OWNED_NODE_PROPERTIES as _TICK_OWNED_NODE_PROPERTIES
 from orion.substrate.execution_loop.projection import empty_execution_projection
 from orion.substrate.transport_loop.constants import (
     TRANSPORT_BUS_PROJECTION_ID,
@@ -262,6 +264,11 @@ def _log_transport_incident_signals(projection: Any) -> None:
 # duplication for one of four existing copies, not all of them -- a real
 # consolidation is a separate, dedicated patch, not a rider on this one.
 _PREDICTION_ERROR_EVIDENCE_CAP = 50
+
+# The tick-owned fields _write_prediction_error_node must not write on an
+# existing node (pressure, dormancy, activation, recency, decay stamp). Set only
+# when the write creates the node. See that method's docstring.
+_PE_WRITER_SKIPS_TICK_OWNED: frozenset[str] = _TICK_OWNED_NODE_PROPERTIES | _ACTIVATION_STATE_KEYS
 
 
 def _prediction_error_evidence_event_ids(
@@ -2029,16 +2036,24 @@ class BiometricsSubstrateWorker:
         collapse (no unbounded node growth), letting the dynamics engine seed
         pressure from ``metadata['prediction_error']``.
 
-        This builds a fresh ``ConceptNodeV1`` on every call rather than
-        round-tripping the existing one, so any dynamics-engine-owned metadata
-        already durably set on this same ``node_id`` (``dynamic_pressure``,
-        ``dynamic_pressure_reason``, ``dormant``, ``dormancy_updated_at`` --
-        now native Cypher properties, see falkor_codec.py) must be carried
-        forward explicitly. Without this, a repeat prediction-error event for
-        the same fixed node_id -- the documented, intended "re-writes collapse"
-        path -- would durably clobber SubstrateDynamicsEngine.tick()'s computed
-        state back to 0.0/False on every re-write, since encode_node_properties()
-        now always includes those keys in the upsert's SET clause.
+        Ownership (2026-10-12). This writer owns ``prediction_error``, the
+        extra channels, the evidence ids, ``contributing_turn_ids``, and the
+        node's own stamps (``observed_at``, salience, label, provenance).
+        SubstrateDynamicsEngine.tick() owns pressure, dormancy, activation,
+        recency and the decay stamp. This builds a fresh ``ConceptNodeV1``
+        every call, so it names the tick's fields in ``skip_metadata_keys``
+        (``_PE_WRITER_SKIPS_TICK_OWNED``): they are set only when this call
+        creates the node, never on an existing one. The old approach -- read
+        the node, carry the tick's values forward, write them back -- lost
+        any tick write landing between that read and this write, and wrote
+        the fresh model's validator-seeded activation (= salience) and
+        recency 0.0 over the tick's every time.
+
+        Waking a dormant node is the tick's job, not a field this writer
+        stomps: this write moves ``observed_at`` to now and salience to the
+        error, which the very next tick reads as fresh seed activation
+        (recency 1.0) and pressure (``prediction_error_pressure``), and the
+        tick's own revival threshold clears ``dormant``.
 
         ``contributing_id`` (optional) is a per-call identifier -- e.g. a
         harness turn's ``correlation_id`` -- appended to
@@ -2087,7 +2102,6 @@ class BiometricsSubstrateWorker:
                 SubstrateSignalBundleV1,
             )
             from orion.substrate.adapters._common import make_temporal
-            from orion.substrate.falkor_codec import DYNAMICS_ENGINE_OWNED_METADATA_KEYS
 
             salience = max(0.0, min(1.0, error))
             metadata: dict[str, Any] = {
@@ -2119,9 +2133,6 @@ class BiometricsSubstrateWorker:
                 existing = None
             contributing_ids: list[str] = []
             if existing is not None:
-                for key in DYNAMICS_ENGINE_OWNED_METADATA_KEYS:
-                    if key in existing.metadata:
-                        metadata[key] = existing.metadata[key]
                 # Carry forward prior per-turn attribution. Tolerate a
                 # missing/malformed stored value (not a list, or a list of
                 # non-strings) rather than raising -- this write must stay
@@ -2155,6 +2166,7 @@ class BiometricsSubstrateWorker:
             store.upsert_node(
                 identity_key=f"substrate_prediction_error|{node_id}",
                 node=node,
+                skip_metadata_keys=_PE_WRITER_SKIPS_TICK_OWNED,
             )
             logger.info(
                 "substrate_prediction_error_node_written node_id=%s error=%.3f reducer_key=%s",

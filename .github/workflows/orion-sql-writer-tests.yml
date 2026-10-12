@@ -66,6 +66,7 @@ jobs:
         run: |
           PYTHONPATH=.:services/orion-sql-writer python -m pytest -q \
             orion/grammar/tests/test_ledger.py \
+            orion/core/bus/tests/test_hunter_intake_log_quiet.py \
             services/orion-sql-writer/tests/test_consumer_resilience.py \
             services/orion-sql-writer/tests/test_route_map_completeness.py \
             services/orion-sql-writer/tests/test_world_pulse_routing.py \

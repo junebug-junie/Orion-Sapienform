@@ -132,6 +132,6 @@ Other services importing `orion/substrate` (hub, recall, concept induction) pick
 
 ## PR link
 
-PR_LINK_PLACEHOLDER
+https://github.com/junebug-junie/Orion-Sapienform/pull/2621
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

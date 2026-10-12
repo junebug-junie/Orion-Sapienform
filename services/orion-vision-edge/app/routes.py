@@ -45,6 +45,10 @@ async def health():
         "source": settings.source_redacted,
         "detectors": settings.detector_names,
         "hires_still": bool(settings.HIRES_SOURCE.strip()),
+        # Seconds since the camera last delivered a frame; past capture.STALE_AFTER_SEC nothing
+        # is published. None means no frame since boot.
+        "camera_frame_age_sec": None if camera.frame_age_sec() is None else round(camera.frame_age_sec(), 1),
+        "camera_reopens": camera.reopens,
         "bus_enabled": settings.ORION_BUS_ENABLED,
         "events_publish_raw": settings.VISION_EVENTS_PUBLISH_RAW,
         "events_subscribe_raw": settings.VISION_EVENTS_SUBSCRIBE_RAW,

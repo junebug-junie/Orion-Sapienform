@@ -1,6 +1,6 @@
 import cv2, threading, time
 import logging
-from typing import Optional
+from typing import Callable, Optional
 from orion.vision.stream_ids import strip_userinfo
 
 from .settings import get_settings
@@ -8,27 +8,55 @@ from .settings import get_settings
 settings = get_settings()
 logger = logging.getLogger("orion-vision-edge.capture_source")
 
+# 2026-10-11: cam0 dropped its RTSP connection at 02:00 (the camera's scheduled reboot). This
+# reader never reopened the stream, failed 200k reads in a row, and get_frame() kept returning
+# the last good picture -- so for 16 h every consumer saw a dark, empty room as if it were live,
+# and Juniper's visit to the basement was never seen. Now a frame older than STALE_AFTER_SEC is
+# not handed out at all, and the stream is reopened after REOPEN_AFTER_SEC of failed reads
+# (backing off to REOPEN_BACKOFF_MAX_SEC while the camera stays down).
+STALE_AFTER_SEC = 5.0
+REOPEN_AFTER_SEC = 5.0
+REOPEN_BACKOFF_MAX_SEC = 60.0
+
+
 class CameraSource:
-    def __init__(self, source: str):
+    def __init__(
+        self,
+        source: str,
+        *,
+        opener: Optional[Callable[[str], object]] = None,
+        clock: Callable[[], float] = time.monotonic,
+    ):
         self.source = source
         # Log-safe form: the RTSP URL carries the camera password.
         self._source_for_log = strip_userinfo(source) if "://" in source else source
         self.cap = None
         self.last_frame = None
+        self.last_frame_at: Optional[float] = None
+        self.reopens = 0
+        self._opener = opener or cv2.VideoCapture
+        self._clock = clock
+        self._failing_since: Optional[float] = None
+        self._next_reopen = 0.0
+        self._backoff = REOPEN_AFTER_SEC
+        self._retry = 0
         self._stop = threading.Event()
         self._thread: Optional[threading.Thread] = None
         self.width = settings.WIDTH
         self.height = settings.HEIGHT
         self.fps = settings.FPS
 
-    def start(self):
-        logger.info(f"Opening camera source: {self._source_for_log}")
-        self.cap = cv2.VideoCapture(self.source)
+    def _open(self) -> None:
+        if self.cap is not None:
+            try:
+                self.cap.release()
+            except Exception as e:
+                logger.warning(f"Error releasing camera before reopen: {e}")
+        self.cap = self._opener(self.source)
         if not self.cap.isOpened():
             logger.error(f"Failed to open camera source: {self._source_for_log}")
-        else:
-            logger.info("Camera source opened successfully.")
-            
+            return
+        logger.info(f"Camera source opened: {self._source_for_log}")
         if self.width:
             self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.width)
         if self.height:
@@ -36,33 +64,55 @@ class CameraSource:
         if self.fps:
             self.cap.set(cv2.CAP_PROP_FPS, self.fps)
 
+    def start(self):
+        logger.info(f"Opening camera source: {self._source_for_log}")
+        self._open()
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
 
+    def step(self) -> float:
+        """One read attempt (reopening the stream when it has been failing too long); returns
+        how long to wait before the next one."""
+        now = self._clock()
+        ok, frame = self.cap.read() if self.cap is not None and self.cap.isOpened() else (False, None)
+        if ok and frame is not None:
+            self.last_frame = frame
+            self.last_frame_at = now
+            if self._failing_since is not None:
+                logger.info(f"Camera stream recovered after {now - self._failing_since:.1f}s.")
+            self._failing_since, self._backoff, self._retry = None, REOPEN_AFTER_SEC, 0
+            return 0.5 / max(self.fps, 1)
+        self._retry += 1
+        if self._failing_since is None:
+            self._failing_since = now
+            self._next_reopen = now + REOPEN_AFTER_SEC
+        if self._retry % 20 == 1:
+            logger.warning(f"Failed to read frame from camera (attempt {self._retry}).")
+        if now >= self._next_reopen:
+            self.reopens += 1
+            logger.warning(
+                f"Reopening camera after {now - self._failing_since:.0f}s without a frame (reopen #{self.reopens})."
+            )
+            self._open()
+            self._next_reopen = now + self._backoff
+            self._backoff = min(self._backoff * 2, REOPEN_BACKOFF_MAX_SEC)
+        return 0.25
+
     def _run(self):
-        interval = 1.0 / max(self.fps, 1)
-        retry_count = 0
         while not self._stop.is_set():
-            if not self.cap or not self.cap.isOpened():
-                time.sleep(1)
-                continue
-                
-            ok, frame = self.cap.read()
-            if ok:
-                self.last_frame = frame
-                if retry_count > 0:
-                    logger.info("Camera stream recovered.")
-                    retry_count = 0
-            else:
-                retry_count += 1
-                if retry_count % 20 == 1: # Log occasionally
-                    logger.warning(f"Failed to read frame from camera (attempt {retry_count}).")
-                time.sleep(0.25)
-            
-            # regulate loop speed roughly
-            time.sleep(interval * 0.5)
+            self._stop.wait(self.step())
+
+    def frame_age_sec(self) -> Optional[float]:
+        if self.last_frame_at is None:
+            return None
+        return self._clock() - self.last_frame_at
 
     def get_frame(self):
+        """The latest frame, or None once it is older than STALE_AFTER_SEC: a stale frame handed
+        out as live is worse than no frame (every caller already handles None)."""
+        age = self.frame_age_sec()
+        if age is None or age > STALE_AFTER_SEC:
+            return None
         return self.last_frame
 
     def stop(self):

@@ -1213,11 +1213,21 @@ REGISTRY: tuple[InnerStateSignal, ...] = (
             ),
         ),
         shadow_reason=(
-            "No reader yet by design: Temporal Self rev 4 order 3 ships the "
-            "reading alone; order 6 wires each dial in its own PR with a "
-            "flag-off and a must-not test."
+            "Not composed into self_state.v1 (that producer was removed in PR "
+            "#1266). SHADOW in the literal sense only: it has live readers "
+            "listed below (Temporal Self rev 4 order 6, R3 readers 1-3 and 7), "
+            "each with its own flag, a flag-off test and a must-not test."
         ),
-        cognition_consumers=(),
+        cognition_consumers=(
+            "services.orion-dream.app.cycle:run_cycle_once "
+            "(a due sleep is held while engaged or strained)",
+            "services.orion-hub.scripts.curiosity_investigation:"
+            "CuriosityInvestigation.tick (strained holds; engaged doubles the cooldown)",
+            "services.orion-hub.scripts.curiosity_investigation:"
+            "CuriosityInvestigation.tick_self_inquiry (runs only at idle)",
+            "services.orion-hub.scripts.endogenous_outreach:"
+            "EndogenousOutreach._gate_inputs (strained refuses background outreach)",
+        ),
         notes=(
             "Temporal Self rev 4 (PR #2369) R3. Inputs: E1 Juniper turns "
             "(orion.regulation.juniper_turns), S1 cabinet reflex "

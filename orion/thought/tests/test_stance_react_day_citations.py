@@ -104,3 +104,10 @@ def test_model_supplied_day_citations_is_dropped():
                                     "answer_strategy": "d"},
            "day_citations": {"label": "verified", "cited_valid": ["arc:deadbeefdeadbeef"]}}
     assert parse_stance_react_payload(raw, correlation_id="c-1").day_citations is None
+
+
+def test_bracketed_evidence_ref_from_the_live_model_is_cited_not_dropped():
+    """Live 2026-10-12 (qwen 35B, relational turn): evidence_refs came back as '[arc:<id>]'."""
+    out = apply_stance_react_pipeline(_thought(evidence_refs=["node-a", f"[arc:{SHOWN}]"]), _request(), day_cue=CUE)
+    assert out.evidence_refs == ["node-a", f"arc:{SHOWN}"]
+    assert out.day_citations.cited_valid == [f"arc:{SHOWN}"] and out.day_citations.label == "verified"

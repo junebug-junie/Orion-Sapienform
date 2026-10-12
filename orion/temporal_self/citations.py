@@ -124,8 +124,14 @@ def gate_arc_refs(refs: Iterable[str], shown_arc_ids: Iterable[str]) -> tuple[li
     kept: list[str] = []
     rejected: list[str] = []
     for ref in refs:
-        text = str(ref)
+        text = str(ref).strip()
+        if text.startswith("[arc:") and text.endswith("]"):
+            # Live 2026-10-12: the stance model copied the cue's bracketed form into evidence_refs.
+            # Same citation, so normalise it rather than let the coalition filter drop it unseen.
+            text = text[1:-1]
         if text.startswith("arc:"):
+            if text in kept:
+                continue
             m = ARC_EVIDENCE_RE.match(text)
             if m is None or m.group(1) not in shown:
                 rejected.append(text)

@@ -58,3 +58,10 @@ def test_gate_arc_refs_keeps_non_arc_and_shown_arc_refs():
     kept, rejected = gate_arc_refs(["hub:turn:abc", "arc:2ce0b486a356bbd2", "arc:deadbeefdeadbeef", "arc:junk"], SHOWN)
     assert kept == ["hub:turn:abc", "arc:2ce0b486a356bbd2"]
     assert rejected == ["arc:deadbeefdeadbeef", "arc:junk"]
+
+
+def test_bracketed_arc_ref_in_a_ref_list_is_the_same_citation():
+    """Live 2026-10-12: the stance model wrote evidence_refs ['hub:turn', '[arc:<id>]']."""
+    kept, rejected = gate_arc_refs(["hub:turn", "[arc:2ce0b486a356bbd2]", "arc:2ce0b486a356bbd2",
+                                    "[arc:deadbeefdeadbeef]"], SHOWN)
+    assert kept == ["hub:turn", "arc:2ce0b486a356bbd2"] and rejected == ["arc:deadbeefdeadbeef"]

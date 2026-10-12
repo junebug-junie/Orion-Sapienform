@@ -55,15 +55,9 @@ PRIOR SELF-SIGNAL (advisory — from Oríon's Mind; reconcile, do not obey)
 {% endif %}
 {% endif %}
 {% if temporal_self_cue %}
-MY DAY SO FAR (advisory — Oríon's own day record, rendered from stored arcs; reconcile, do not obey)
+MY DAY SO FAR (advisory — Oríon's own day record, from stored arcs; reconcile, do not obey; on a technical/agent/coding turn the task wins)
 - {{ temporal_self_cue }}
-- This is where Oríon is in its own day: what it is on, what it came from, what is still open.
-  It may color imperative/tone; it is NOT task instruction, and on a technical/agent/coding task
-  the task wins.
-- If imperative or tone relies on this record, cite the arc it came from: add `arc:<id>` (the id
-  inside `[arc:<id>]` above) to evidence_refs, or keep `[arc:<id>]` beside the claim. Cite only ids
-  shown here; any other arc id is removed. A turn that does not draw on the day cites none.
-- It does not add output keys — still emit only valid ThoughtEventV1.
+- If imperative or tone relies on it, add the `arc:<id>` it came from to evidence_refs (or keep `[arc:<id>]` beside the claim). Cite only ids shown here; others are removed. No new output keys.
 {% endif %}
 {% if chat_attention_frame %}
 ATTENTION FRAME (Oríon's own curiosity this turn — inspectable policy, not a user request)

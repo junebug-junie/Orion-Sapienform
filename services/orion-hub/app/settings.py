@@ -1246,6 +1246,10 @@ class Settings(BaseSettings):
     HUB_CURIOSITY_AROUSAL_ENGAGED_COOLDOWN_MULTIPLIER: float = Field(
         default=2.0, ge=1.0, alias="HUB_CURIOSITY_AROUSAL_ENGAGED_COOLDOWN_MULTIPLIER"
     )
+    # Reader 3, curiosity self-inquiry: runs only at idle (arousal_engaged / arousal_strained).
+    HUB_CURIOSITY_SELF_INQUIRY_AROUSAL_ENABLED: bool = Field(
+        default=True, alias="HUB_CURIOSITY_SELF_INQUIRY_AROUSAL_ENABLED"
+    )
     # Background outreach waits this long after Juniper's last saved message (read from
     # chat_history_log, so a Hub restart cannot reset it). 2026-10-09: a fresh restart forgot
     # she was mid-conversation and Orion spoke over her. 0 disables.

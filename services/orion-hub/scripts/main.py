@@ -640,14 +640,18 @@ async def startup_event():
                     max_age_sec=settings.ORION_REST_DRIVE_MAX_AGE_SEC,
                     name="curiosity",
                 ),
-                # Orion's arousal (scripts/arousal_reader.py): one GET per tick.
+                # Orion's arousal (scripts/arousal_reader.py): one GET per tick, two lines.
                 arousal_reader=ArousalReader(
-                    enabled=settings.HUB_CURIOSITY_AROUSAL_ENABLED,
+                    enabled=(
+                        settings.HUB_CURIOSITY_AROUSAL_ENABLED
+                        or settings.HUB_CURIOSITY_SELF_INQUIRY_AROUSAL_ENABLED
+                    ),
                     max_age_sec=settings.ORION_REGULATION_READER_MAX_AGE_SEC,
                     name="curiosity",
                 ),
                 arousal_pacing_enabled=settings.HUB_CURIOSITY_AROUSAL_ENABLED,
                 arousal_engaged_cooldown_multiplier=settings.HUB_CURIOSITY_AROUSAL_ENGAGED_COOLDOWN_MULTIPLIER,
+                arousal_self_inquiry_enabled=settings.HUB_CURIOSITY_SELF_INQUIRY_AROUSAL_ENABLED,
                 max_hops=settings.HUB_CURIOSITY_MAX_HOPS,
                 pg_readonly_role=settings.HUB_CURIOSITY_PG_READONLY_ROLE,
                 # A finding Orion judges worth saying goes through a SECOND

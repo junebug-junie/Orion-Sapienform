@@ -89,6 +89,7 @@ from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from .endogenous_outreach import in_quiet_hours
 from orion.regulation.arousal_view import (
     AROUSAL_ENGAGED_COOLDOWN_REASON,
+    AROUSAL_ENGAGED_REASON,
     AROUSAL_STRAINED_REASON,
     engaged_cooldown_sec,
 )
@@ -454,9 +455,11 @@ class SchedulingGateInputs:
     # "engaged" / "idle" / "strained", or None when unknown or this line's flag is off --
     # None is exactly the behaviour before arousal existed. `strained` holds the run;
     # `arousal_engaged_cooldown_sec` is the stretched cooldown kept while Juniper is talking
-    # (investigation line). The daily cap, the hour window and `enabled` never read any of it.
+    # (investigation line); `arousal_idle_only` makes the line run only at `idle`
+    # (self-inquiry). The daily cap, the hour window and `enabled` never read any of it.
     arousal_level: Optional[str] = None
     arousal_engaged_cooldown_sec: Optional[float] = None
+    arousal_idle_only: bool = False
 
 
 def window_is_configured(start_hour: int, end_hour: int) -> bool:
@@ -601,7 +604,7 @@ QUEUED_INVESTIGATIONS_SQL = (
 # Arousal's holds are pacing too: an operator asking for a run on purpose has made that call.
 FORCE_OVERRIDABLE_REASONS = frozenset({
     "cooldown", "daily_cap", "outside_window", REST_DRIVE_BLOCK_REASON,
-    AROUSAL_STRAINED_REASON, AROUSAL_ENGAGED_COOLDOWN_REASON,
+    AROUSAL_STRAINED_REASON, AROUSAL_ENGAGED_REASON, AROUSAL_ENGAGED_COOLDOWN_REASON,
 })
 
 
@@ -639,6 +642,8 @@ def scheduling_block_reason(inp: SchedulingGateInputs) -> Optional[str]:
     # reason names exactly what arousal blocked. Unknown (None) skips all three.
     if inp.arousal_level == "strained":
         return AROUSAL_STRAINED_REASON
+    if inp.arousal_idle_only and inp.arousal_level == "engaged":
+        return AROUSAL_ENGAGED_REASON
     if (
         inp.arousal_level == "engaged"
         and inp.arousal_engaged_cooldown_sec is not None
@@ -821,10 +826,11 @@ class CuriosityInvestigation:
         energy_stakes_max_age_sec: float = 1800.0,
         # --- rest drive (HUB_CURIOSITY_REST_DRIVE_*): cooldowns stretch while tired ---
         rest_drive_reader: Optional[RestDriveReader] = None,
-        # --- arousal (HUB_CURIOSITY_AROUSAL_*; Temporal Self R3 reader 2) ---
+        # --- arousal (HUB_CURIOSITY_*AROUSAL*; Temporal Self R3 readers 2 and 3) ---
         arousal_reader: Optional[ArousalReader] = None,
         arousal_pacing_enabled: bool = False,
         arousal_engaged_cooldown_multiplier: float = 2.0,
+        arousal_self_inquiry_enabled: bool = False,
         # --- urgent runs (start_urgent; HUB_CURIOSITY_URGENT_*) --------------
         urgent_enabled: bool = False,
         urgent_turn_timeout_sec: float = 900.0,
@@ -1025,11 +1031,13 @@ class CuriosityInvestigation:
         # Orion's rest drive: while it reads `due`, every line's cooldown is
         # multiplied. Unknown/off leaves every gate exactly as it was.
         self.rest_drive_reader = rest_drive_reader
-        # Orion's arousal (one Redis GET per tick): investigation line -- strained
-        # holds, engaged stretches the cooldown. Unknown/off leaves every gate as it was.
+        # Orion's arousal (one Redis GET per tick, shared by two lines, two flags):
+        # investigation line -- strained holds, engaged stretches the cooldown;
+        # self-inquiry -- runs only at idle. Unknown/off leaves every gate as it was.
         self.arousal_reader = arousal_reader
         self.arousal_pacing_enabled = bool(arousal_pacing_enabled)
         self.arousal_engaged_cooldown_multiplier = float(arousal_engaged_cooldown_multiplier)
+        self.arousal_self_inquiry_enabled = bool(arousal_self_inquiry_enabled)
         # Urgent runs: a seeded investigation Juniper or the hardware watcher
         # asks for. `urgent_reporter` is set by main.py; `urgent_listener_task`
         # is the bus consumer main.py starts (scripts/curiosity_urgent.py).
@@ -2624,6 +2632,8 @@ class CuriosityInvestigation:
                 seconds_since_last=since_last,
                 min_cooldown_sec=self.effective_self_inquiry_cooldown_sec,
                 rest_drive_cooldown_sec=self._rest_drive_cooldown(self.effective_self_inquiry_cooldown_sec, now),
+                arousal_level=self._arousal_level(self.arousal_self_inquiry_enabled, now),
+                arousal_idle_only=self.arousal_self_inquiry_enabled,
                 done_today=done_today,
                 daily_cap=self.self_inquiry_daily_cap,
                 local_hour=(

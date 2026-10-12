@@ -198,3 +198,67 @@ def test_flag_off_runs_exactly_as_today(level):
 def test_a_forced_investigation_overrides_arousal(level):
     """Must-not: an operator's / Juniper's forced run is never held by arousal."""
     assert _curiosity_tick(_state(level), force=True) is None
+
+
+# --- reader 3: curiosity self-inquiry (runs only at idle) ---------------------------------
+
+
+def _si_gate(level, *, enabled=True, **over):
+    return scheduling_block_reason(_sched(
+        arousal_level=level if enabled else None, arousal_idle_only=enabled, **over))
+
+
+def test_self_inquiry_gate_runs_only_at_idle():
+    assert _si_gate("idle") is None
+    assert _si_gate("engaged") == "arousal_engaged"
+    assert _si_gate("strained") == "arousal_strained"
+    assert _si_gate(None) is None  # unknown = today
+    for level in LEVELS:
+        assert _si_gate(level, enabled=False) is None  # flag off = today
+
+
+def _self_inquiry_tick(raw, *, enabled=True, force=False):
+    from test_curiosity_self_inquiry import _DefinitionReader, _GrantConn, _self_loop
+
+    bus = _bus_with(raw)
+    loop = _self_loop(
+        bus, reader=_DefinitionReader(), conn=_GrantConn(), kickoff_via_cortex=False,
+        arousal_reader=_reader(enabled=enabled), arousal_self_inquiry_enabled=enabled,
+    )
+    now = _now()
+    # tick() refreshes once and hands `now` to the self line; this calls the line directly.
+    asyncio.run(loop.arousal_reader.refresh(bus, now))
+    return asyncio.run(loop.tick_self_inquiry(force=force, now=now))
+
+
+def test_self_inquiry_runs_at_idle():
+    assert _self_inquiry_tick(_state("idle")) is None
+
+
+@pytest.mark.parametrize("level", ["engaged", "strained"])
+def test_self_inquiry_holds_when_not_idle(level):
+    assert _self_inquiry_tick(_state(level)) == f"arousal_{level}"
+
+
+@pytest.mark.parametrize("name", UNKNOWN)
+def test_self_inquiry_unknown_runs_as_today(name):
+    assert _self_inquiry_tick(_unknown(name)) is None
+
+
+@pytest.mark.parametrize("level", LEVELS)
+def test_self_inquiry_flag_off_runs_as_today(level):
+    assert _self_inquiry_tick(_state(level), enabled=False) is None
+
+
+@pytest.mark.parametrize("level", ["engaged", "strained"])
+def test_a_forced_self_inquiry_overrides_arousal(level):
+    assert _self_inquiry_tick(_state(level), force=True) is None
+
+
+def test_self_inquiry_flag_does_not_turn_on_investigation_pacing():
+    """Two flags, one shared reader: self-inquiry on must not hold the investigation line."""
+    bus = _bus_with(_state("strained"))
+    cooldown_key, _, _ = _line_keys(LINE_INVESTIGATE)
+    bus.redis.values[cooldown_key] = (_now() - timedelta(seconds=20000)).isoformat()
+    loop = _loop(bus, arousal_reader=_reader(), arousal_pacing_enabled=False, arousal_self_inquiry_enabled=True)
+    assert asyncio.run(loop.tick()) is None

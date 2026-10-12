@@ -22,6 +22,7 @@ from pydantic import ValidationError
 from orion.schemas.temporal_self import (
     STANCE_CUE_MAX_CHARS,
     ArcSummaryV1,
+    OpenThreadV1,
     TemporalSelfFrameV1,
     TemporalSelfStanceCueV1,
 )
@@ -29,7 +30,7 @@ from orion.temporal_self.day import DEFAULT_TZ, as_utc, day_id_for, day_phase_fo
 
 DEFAULT_MAX_AGE_SEC = 900.0
 MAX_FUTURE_SKEW_SEC = 60.0
-MAX_THREAD_REFS = 3
+MAX_THREAD_REFS = 5
 SILENT_BROADCAST_WARNING = "broadcast log silent"
 
 PHASE_WORDS = {
@@ -107,6 +108,46 @@ def _previous_clause(now: datetime, arc: ArcSummaryV1) -> str:
     return f"Before that: {what} {_ref(arc)}."
 
 
+def _thread_arc(thread: OpenThreadV1, concern: dict[str, ArcSummaryV1]) -> ArcSummaryV1 | None:
+    """The arc a thread cites: its own ``arc_id`` (frames since thread arc ids), else the open
+    concern arc of the same subject in ``arcs_today`` (older frames; may have fallen off the cap)."""
+    if thread.arc_id:
+        return ArcSummaryV1(
+            arc_id=thread.arc_id, kind="concern", subject_ref=thread.subject_ref,
+            subject_label=thread.subject_label, began_at=thread.first_seen_today, status="open",
+            attention_returns=thread.returns_today, last_seen_at=thread.last_returned,
+        )
+    return concern.get(thread.subject_ref)
+
+
+def _threads_clause(frame: TemporalSelfFrameV1, limit: int = MAX_THREAD_REFS) -> tuple[str, list[ArcSummaryV1]] | None:
+    """Every open thread with its own citation, most recently returned first.
+
+    Over ``MAX_THREAD_REFS`` threads the clause says how many it lists ("the 5 most recent"), so
+    every thread it renders is cited and the count stays true. A thread with no arc to cite (an
+    older frame whose concern arc fell off ``arcs_today``) is counted, not cited. ``limit`` shrinks
+    when the cue is over its length cap, before the clause itself would be dropped."""
+    if not frame.open_threads:
+        return None
+    concern = {a.subject_ref: a for a in frame.arcs_today if a.kind == "concern" and a.status != "closed"}
+    ordered = sorted(frame.open_threads, key=lambda t: (t.last_returned, t.subject_ref), reverse=True)
+    arcs = [a for a in (_thread_arc(t, concern) for t in ordered) if a is not None]
+    if not arcs:
+        return None
+    n = len(frame.open_threads)
+    listed = arcs[:max(1, limit)]
+    refs = " ".join(_ref(a) for a in listed)
+    if len(listed) == n:
+        cited = ""
+    elif len(arcs) == n:
+        cited = ", the most recent" if len(listed) == 1 else f", the {len(listed)} most recent"
+    elif len(listed) == 1:
+        cited = ", 1 with its record"
+    else:
+        cited = f", {len(listed)} with their records"
+    return f"{n} open thread{'s' if n != 1 else ''} from conversation{cited} {refs}.", listed
+
+
 def project_stance_cue(
     frame: TemporalSelfFrameV1 | dict[str, Any] | None,
     now: datetime,
@@ -165,13 +206,9 @@ def project_stance_cue(
             if previous is None or last.arc_id != previous.arc_id:
                 clauses.append((f"Juniper last spoke {_ago(now, last.last_seen_at)} ago {_ref(last)}.", [last]))
 
-    concern = {a.subject_ref: a for a in frame.arcs_today if a.kind == "concern" and a.status != "closed"}
-    thread_arcs = [concern[t.subject_ref] for t in frame.open_threads if t.subject_ref in concern][:MAX_THREAD_REFS]
-    if thread_arcs:
-        n = len(frame.open_threads)
-        refs = " ".join(_ref(a) for a in thread_arcs)
-        cited = "" if len(thread_arcs) == n else f", {len(thread_arcs)} with its record"
-        clauses.append((f"{n} open thread{'s' if n != 1 else ''} from conversation{cited} {refs}.", thread_arcs))
+    thread_clause = _threads_clause(frame)
+    if thread_clause is not None:
+        clauses.append(thread_clause)
 
     sleeps = [a for a in frame.arcs_today if a.kind == "sleep"]
     if sleeps:
@@ -183,7 +220,14 @@ def project_stance_cue(
             clauses.append((f"Last slept {_ago(now, woke)} ago {_ref(last_sleep)}.", [last_sleep]))
 
     kept = list(clauses)
+    thread_limit = MAX_THREAD_REFS
     while kept and len(" ".join([head] + [c for c, _ in kept])) > max_chars:
+        if thread_clause is not None and kept[-1] is thread_clause and len(thread_clause[1]) > 1:
+            # Cite fewer threads (the count stays true) before dropping the clause.
+            thread_limit = len(thread_clause[1]) - 1
+            thread_clause = _threads_clause(frame, thread_limit)
+            kept[-1] = thread_clause
+            continue
         kept.pop()
         dropped += 1
     text = " ".join([head] + [c for c, _ in kept])

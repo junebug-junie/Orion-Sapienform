@@ -51,3 +51,22 @@ Results land in `thought_decision.day_citations` (Hub turn trace) and
 (orion-thought), `TEMPORAL_SELF_DAY_BLOCK_ENABLED` (orion-hub). Fixtures: `tests/patch4_rows/`
 (rebuild with `tests/patch4_rows/build_fixtures.py`). Latency eval:
 `services/orion-thought/evals/run_temporal_self_cue_latency_eval.py`.
+
+### Thread arc ids and the truth eval (2026-10-12)
+
+`OpenThreadV1.arc_id` names the concern arc a thread is, so the cue cites every open thread
+(`2 open threads from conversation [arc:684d45c2010540ed] [arc:fd63c7ab0ad3ecbe].`) even when that
+arc fell off `arcs_today`'s 64-arc cap; over 5 threads it says "the 5 most recent". The field is
+optional: frames and closed days stored before it still load (the cue falls back to the old
+subject_ref lookup and its "N with its record" wording). Rollout is consumer-first: orion-thought
+and orion-hub before orion-durable-runs.
+
+`citation_truth.py` + `evals/run_day_citation_truth_eval.py` (`make eval-temporal-self-truth`):
+the gate proves a cited arc exists and was shown; this measures whether the sentence around it is
+true to that arc. Read-only over `thought_decision.day_citations`, the stored reply
+(`chat_history_log`, else `harness_turn_trace.run_artifact.final_text`) and `temporal_self_arc`.
+Deterministic only (kind, attention subject, "N min ago" / "for N min" / local clocks, return and
+open-thread counts), using the renderers' own phrasing; anything else is **undecidable** and
+counted, never guessed. No LLM judge. Output: per sentence match / mismatch / undecidable with
+reasons, and per ISO week `truth_rate = match / (match + mismatch)`. A measurement, not a gate.
+Calibration tests run it over the renderers' own output (`tests/test_citation_truth.py`).

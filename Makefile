@@ -528,3 +528,11 @@ eval-self-sense:
 .PHONY: eval-bonsai-replay
 eval-bonsai-replay:
 	@ORION_BUS_URL=$${ORION_BUS_URL:-redis://100.92.216.81:6379/0} PYTHONPATH=. $(METRIC_PYTHON) scripts/run_bonsai_replay_eval.py $(ARGS)
+
+# Temporal Self patch 4, acceptance check 6: do Orion's citations of its own day describe the cited
+# arc correctly? Read-only over thought_decision.day_citations (label verified by default), the
+# stored reply and temporal_self_arc; deterministic checks only, no LLM judge. A measurement, not a
+# gate. `ARGS="--days 7 --json --out /tmp/truth.json"`; `ARGS=--labels verified,UNVERIFIED`.
+.PHONY: eval-temporal-self-truth
+eval-temporal-self-truth:
+	@PYTHONPATH=. $(METRIC_PYTHON) orion/temporal_self/evals/run_day_citation_truth_eval.py $(ARGS)

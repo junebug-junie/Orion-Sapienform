@@ -62,7 +62,7 @@ def build_frame(state: TemporalSelfStateV1, now: datetime, cfg: ReducerConfig = 
 
     threads = [
         OpenThreadV1(
-            subject_ref=a.subject_ref, subject_label=a.subject_label, first_seen_today=a.began_at,
+            arc_id=a.arc_id, subject_ref=a.subject_ref, subject_label=a.subject_label, first_seen_today=a.began_at,
             last_returned=a.last_seen_at, returns_today=a.attention_returns,
             carried_from_previous_day=a.carried_from_previous_day,
         )

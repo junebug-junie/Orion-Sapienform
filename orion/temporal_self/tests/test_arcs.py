@@ -222,6 +222,8 @@ def test_concern_open_thread_in_frame():
     s = fold(initial_state(), events=[raised], cfg=CFG)
     (thread,) = build_frame(s, at(10), CFG).open_threads
     assert thread.subject_ref == "loop-1" and thread.subject_label == "a worry"
+    # The thread carries its concern arc's id, so readers cite it even off arcs_today's cap.
+    assert thread.arc_id == arcs_of(s, "concern")[0].arc_id
 
 
 # ---------------------------------------------------------------- process arcs and binding

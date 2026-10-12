@@ -34,7 +34,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Iterable, Literal, Mapping
 from zoneinfo import ZoneInfo
 
-from orion.temporal_self.citations import _ANY_ARC_BRACKET_RE, _SENTENCE_SPLIT_RE
+from orion.temporal_self.citations import _ANY_ARC_BRACKET_RE, _SENTENCE_SPLIT_RE, LABEL_MIN_CHARS
 from orion.temporal_self.day import DEFAULT_TZ
 
 Outcome = Literal["match", "mismatch", "undecidable"]
@@ -59,7 +59,7 @@ KIND_PHRASES: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"\breverie\b", re.I), "reverie"),
 )
 _SPAN = r"(?:(?P<h>\d+)\s*h(?:ours?|rs?)?\.?)?\s*(?:(?P<m>\d+)\s*min(?:utes?|s)?\.?)?"
-AGO_RE = re.compile(rf"(?<![\w:])(?:{_SPAN}|(?P<under>under a minute))\s+ago\b", re.I)
+AGO_RE = re.compile(rf"(?<![\w:])(?:(?P<under>under a minute)|{_SPAN})\s+ago\b", re.I)
 FOR_RE = re.compile(rf"\bfor\s+{_SPAN}(?=[\s,.;]|$)", re.I)
 CLOCK_RE = re.compile(r"(?<![\d:])([01]\d|2[0-3]):([0-5]\d)(?![\d:])(?!\s*UTC)")
 RETURNS_RE = re.compile(r"\bback to it (\d+) times?\b|\b(\d+) returns?\b", re.I)
@@ -69,6 +69,13 @@ THREADS_RE = re.compile(r"\b(\d+) open threads?\b", re.I)
 SUBJECT_RE = re.compile(r"\battention on (.+?)(?=\s+for\s|\s*[,;\[]|\.(?:\s|$)|\s+set aside|\s+ended|$)", re.I)
 # The word before an age says which time it is: "ended 44 min ago", "Asleep since 2 h ago".
 AGO_FIELD = {"ended": ("ended",), "since": ("began",)}
+# A word before a number that makes it a bound or an estimate, not a template value.
+HEDGES: tuple[tuple[str, str], ...] = (
+    ("more than", "lower"), ("over", "lower"), ("at least", "lower"),
+    ("less than", "upper"), ("under", "upper"), ("within", "upper"), ("at most", "upper"),
+    ("about", "approx"), ("around", "approx"), ("nearly", "approx"), ("almost", "approx"),
+    ("roughly", "approx"), ("some", "approx"), ("maybe", "approx"),
+)
 
 
 @dataclass(frozen=True)
@@ -147,64 +154,100 @@ def _fmt(sec: float) -> str:
     return f"{int(sec // 60)} min" if sec < 3600 else f"{sec / 3600:.1f} h"
 
 
-# A fact check returns (outcome, reason); outcome None means the fact did not apply.
+def _quote(m: re.Match[str]) -> str:
+    return "'" + m.group(0).strip().rstrip(".,;:!?") + "'"
+
+
+# A fact check returns (outcome, reason).
 Fact = tuple[Outcome, str]
 
 
-def _check_kinds(sentence: str, arcs: list[ArcFacts], inline: bool) -> list[Fact]:
-    out: list[Fact] = []
-    kinds = {a.kind for a in arcs}
-    for pattern, kind in KIND_PHRASES:
-        m = pattern.search(sentence)
-        if m is None:
-            continue
-        if kind in kinds:
-            out.append(("match", f"kind: '{m.group(0)}' names a {kind} arc, and one is cited"))
-        elif inline:
-            out.append(("mismatch", f"kind: '{m.group(0)}' names a {kind} arc; cited arcs are {sorted(kinds)}"))
-        else:
-            out.append(("undecidable", f"kind: '{m.group(0)}' names a {kind} arc; none is in evidence_refs"))
-    return out
+def _moved(arcs: list[ArcFacts], at: datetime) -> bool:
+    """Some cited row changed after the frame the sentence may have been written from (up to
+    FRAME_LAG_SEC before ``at``): its value then is not stored, so a miss cannot be a mismatch."""
+    return any(a.moved_after(at - timedelta(seconds=FRAME_LAG_SEC)) for a in arcs)
 
 
-def _check_subject(sentence: str, arcs: list[ArcFacts], inline: bool) -> list[Fact]:
-    out: list[Fact] = []
-    attention = [a for a in arcs if a.kind == "attention"]
-    for m in SUBJECT_RE.finditer(sentence):
-        said = m.group(1).strip().lower()
-        if not said or not attention:
+def _check_subject(sentence: str, found: list[ArcFacts], known: Mapping[str, ArcFacts],
+                   inline: bool) -> tuple[list[Fact], list[tuple[int, int]]]:
+    """Returns (facts, spans of the subject text, which the kind check must not read)."""
+    facts: list[Fact] = []
+    spans: list[tuple[int, int]] = []
+    attention = [a for a in found if a.kind == "attention"]
+    lower = sentence.lower()
+    for m in re.finditer(r"\battention on\s+", sentence, re.I):
+        start = m.end()
+        # 1) A cited label written out after "attention on": a match, whatever separators it holds.
+        hit = next((a for a in attention for name in (a.subject_label.strip(), a.subject_ref)
+                    if len(name) >= LABEL_MIN_CHARS and lower.startswith(name.lower(), start)), None)
+        if hit is not None:
+            name = hit.subject_label.strip() if lower.startswith(hit.subject_label.strip().lower(), start) and \
+                hit.subject_label.strip() else hit.subject_ref
+            spans.append((start, start + len(name)))
+            facts.append(("match", f"subject: '{name}' is the label of [arc:{hit.arc_id}]"))
             continue
-        hit = [a for a in attention if said in {a.subject_label.strip().lower(), a.subject_ref.lower()}
-               or (a.subject_label and a.subject_label.strip().lower() in said)]
-        if hit:
-            out.append(("match", f"subject: '{m.group(1).strip()}' is the label of [arc:{hit[0].arc_id}]"))
+        sm = SUBJECT_RE.match(sentence, m.start())
+        if sm is None:
+            continue
+        said = sm.group(1).strip()
+        spans.append((sm.start(1), sm.end(1)))
+        key = said.lower()
+        if not attention:
+            continue
+        if any(len(n) >= LABEL_MIN_CHARS and (n.lower().startswith(key) or n.lower() in key)
+               for a in attention for n in (a.subject_label.strip(), a.subject_ref)):
+            facts.append(("match", f"subject: '{said}' names a cited attention arc's label"))
+            continue
+        other = next((a for a in known.values() if a.kind == "attention" and a not in attention
+                      and key in {a.subject_label.strip().lower(), a.subject_ref.lower()}), None)
+        if other is not None and inline:
+            facts.append(("mismatch", f"subject: '{said}' is the label of another arc [arc:{other.arc_id}], "
+                                      "not of a cited one"))
         else:
-            labels = sorted({a.subject_label or a.subject_ref for a in attention})
-            out.append(("mismatch" if inline else "undecidable",
-                        f"subject: '{m.group(1).strip()}' is not a cited attention arc's label {labels}"))
-    return out
+            facts.append(("undecidable", f"subject: '{said}' is not a cited attention arc's label (may be a paraphrase)"))
+    return facts, spans
 
 
 def _check_instant(what: str, claimed: datetime, span: float, at: datetime, arcs: list[ArcFacts],
-                   fields: Iterable[str] | None, inline: bool) -> Fact:
+                   fields: Iterable[str] | None, decisive: bool, hedge: str | None = None) -> Fact:
     tol = _tolerance(span)
     candidates = [(a, name, t) for a in arcs for name, t in a.times() if fields is None or name in fields]
     for a, name, t in candidates:
-        # A claim may read older than the row by the frame's lag (the cue saw an older frame).
-        if -tol <= (t - claimed).total_seconds() <= tol + FRAME_LAG_SEC:
+        d = (t - claimed).total_seconds()  # > 0: the record is newer than the claim
+        if hedge == "lower":  # "over 2 h ago": happened at or before the claimed instant
+            ok = d <= tol + FRAME_LAG_SEC
+        elif hedge == "upper":  # "under 10 min ago": at or after it
+            ok = d >= -tol
+        elif hedge == "approx":
+            ok = -2 * tol <= d <= 2 * tol + FRAME_LAG_SEC
+        else:
+            # A claim may read older than the row by the frame's lag (the cue saw an older frame).
+            ok = -tol <= d <= tol + FRAME_LAG_SEC
+        if ok:
             return ("match", f"time: {what} -> {claimed:%H:%MZ}, [arc:{a.arc_id}] {name} {t:%H:%MZ}")
-    if any(a.moved_after(at) for a in arcs):
-        return ("undecidable", f"time: {what} -> {claimed:%H:%MZ}; a cited arc's row moved after the sentence, "
-                               "its value at the time is not stored")
-    if not inline:
-        return ("undecidable", f"time: {what} -> {claimed:%H:%MZ} matches no evidence_refs arc (may name an uncited record)")
+    if hedge is not None:
+        return ("undecidable", f"time: {what} is hedged and fits no cited arc time")
+    if _moved(arcs, at):
+        return ("undecidable", f"time: {what} -> {claimed:%H:%MZ}; a cited arc's row moved after the frame the "
+                               "sentence may have read, its value then is not stored")
+    if not decisive:
+        return ("undecidable", f"time: {what} -> {claimed:%H:%MZ} matches no cited arc time (attribution is not "
+                               "one-to-one: evidence_refs, or a cited arc of a kind the sentence does not name)")
     near = min(candidates, key=lambda c: abs((c[2] - claimed).total_seconds()), default=None)
     detail = (f"; nearest [arc:{near[0].arc_id}] {near[1]} {near[2]:%H:%MZ}, off by {_fmt((near[2] - claimed).total_seconds())}"
               if near else "")
     return ("mismatch", f"time: {what} -> {claimed:%H:%MZ} matches no cited arc time{detail}")
 
 
-def _check_times(sentence: str, at: datetime, arcs: list[ArcFacts], inline: bool, tz: ZoneInfo) -> list[Fact]:
+def _hedge(sentence: str, start: int) -> str | None:
+    before = " ".join(sentence[:start].lower().split()[-2:])
+    for words, kind in HEDGES:
+        if before.endswith(words):
+            return kind
+    return None
+
+
+def _check_times(sentence: str, at: datetime, arcs: list[ArcFacts], decisive: bool, tz: ZoneInfo) -> list[Fact]:
     out: list[Fact] = []
     for m in AGO_RE.finditer(sentence):
         span = _span_sec(m)
@@ -212,13 +255,19 @@ def _check_times(sentence: str, at: datetime, arcs: list[ArcFacts], inline: bool
             continue
         before = sentence[:m.start()].split()
         fields = AGO_FIELD.get(before[-1].lower()) if before else None
-        out.append(_check_instant(f"'{m.group(0).strip()}'", at - timedelta(seconds=span), span, at, arcs, fields, inline))
+        hedge = None if m.groupdict().get("under") else _hedge(sentence, m.start())
+        out.append(_check_instant(_quote(m), at - timedelta(seconds=span), span, at, arcs, fields, decisive, hedge))
     for m in FOR_RE.finditer(sentence):
         span = _span_sec(m)
         if span is None:
             continue
-        out.append(_check_instant(f"'{m.group(0).strip()}' (start)", at - timedelta(seconds=span), span, at, arcs,
-                                  ("began",), inline))
+        # Only the templates' "attention on X for N" / "open for N" mean "since the arc began".
+        head = sentence[:m.start()].lower()
+        template = bool(re.search(r"\battention on\b[^.;]*$|\bopen$", head.rstrip()))
+        out.append(_check_instant(_quote(m) + (" (start)" if template else ""), at - timedelta(seconds=span), span,
+                                  at, arcs, ("began",) if template else None, decisive and template,
+                                  _hedge(sentence, m.start() + len("for "))))
+    now_local = at.astimezone(tz)
     for m in CLOCK_RE.finditer(sentence):
         said = int(m.group(1)) * 60 + int(m.group(2))
 
@@ -228,10 +277,14 @@ def _check_times(sentence: str, at: datetime, arcs: list[ArcFacts], inline: bool
             return min(d, 1440 - d)
 
         hits = [(a, name) for a in arcs for name, t in a.times() if off(t) <= CLOCK_TOLERANCE_MIN]
+        lag_min = int(FRAME_LAG_SEC // 60) + CLOCK_TOLERANCE_MIN
+        is_now = any(off(now_local - timedelta(minutes=k)) <= CLOCK_TOLERANCE_MIN for k in range(0, lag_min + 1))
         if hits:
             a, name = hits[0]
             out.append(("match", f"clock: {m.group(0)} local is [arc:{a.arc_id}] {name}"))
-        elif inline and len(arcs) == 1 and not arcs[0].moved_after(at):
+        elif is_now:
+            out.append(("undecidable", f"clock: {m.group(0)} local is the time of writing or of the frame, not an arc time"))
+        elif decisive and len(arcs) == 1 and not _moved(arcs, at):
             out.append(("mismatch", f"clock: {m.group(0)} local is none of [arc:{arcs[0].arc_id}]'s times"))
         else:
             out.append(("undecidable", f"clock: {m.group(0)} local matches no cited arc time "
@@ -239,32 +292,40 @@ def _check_times(sentence: str, at: datetime, arcs: list[ArcFacts], inline: bool
     return out
 
 
-def _check_counts(sentence: str, at: datetime, arcs: list[ArcFacts], inline: bool) -> list[Fact]:
+def _check_counts(sentence: str, at: datetime, arcs: list[ArcFacts], decisive: bool) -> list[Fact]:
     out: list[Fact] = []
     for m in RETURNS_RE.finditer(sentence):
         n = int(m.group(1) or m.group(2))
         have = sorted(a.attention_returns for a in arcs)
         if n in have:
             out.append(("match", f"count: {n} return(s) equals a cited arc's attention_returns"))
-        elif inline and all(n > a.attention_returns for a in arcs):
-            # Returns only grow: a claim above every current count was never true.
+        elif decisive and all(n > a.attention_returns for a in arcs):
+            # Returns only grow, and a lagging frame only shows fewer: above every current count was never true.
             out.append(("mismatch", f"count: {n} return(s); cited arcs have {have}"))
-        elif inline and not any(a.moved_after(at) for a in arcs):
+        elif decisive and not _moved(arcs, at):
             out.append(("mismatch", f"count: {n} return(s); cited arcs have {have}"))
         else:
             out.append(("undecidable", f"count: {n} return(s); cited arcs have {have} now "
-                                       "(rows moved after the sentence, or not cited inline)"))
+                                       "(rows moved since the frame, or attribution is not one-to-one)"))
     for m in THREADS_RE.finditer(sentence):
         n = int(m.group(1))
         open_then = [a for a in arcs if a.kind == "concern" and a.began_at <= at + timedelta(seconds=MIN_TOLERANCE_SEC)
                      and (a.ended_at is None or a.ended_at > at)]
         if len(open_then) == n:
             out.append(("match", f"count: {n} open thread(s), {n} cited concern arc(s) open then"))
-        elif len(open_then) > n:
+        elif decisive and len(open_then) > n:
             out.append(("mismatch", f"count: {n} open thread(s), but {len(open_then)} cited concern arcs were open then"))
         else:
-            out.append(("undecidable", f"count: {n} open thread(s), {len(open_then)} cited (older cues cited only some)"))
+            out.append(("undecidable", f"count: {n} open thread(s), {len(open_then)} cited concern arc(s) open then"))
     return out
+
+
+def _blank(text: str, spans: list[tuple[int, int]]) -> str:
+    chars = list(text)
+    for a, b in spans:
+        for i in range(a, b):
+            chars[i] = " "
+    return "".join(chars)
 
 
 def check_sentence(
@@ -285,16 +346,31 @@ def check_sentence(
         return SentenceCheck(source, text, cited, attribution, "undecidable", reasons or ["no cited arc row"])
     inline = attribution == "inline"
     bare = _ANY_ARC_BRACKET_RE.sub("", sentence)
-    facts: list[Fact] = []
-    facts += _check_kinds(bare, found, inline)
-    # A sentence that names a kind ("I slept 3 h ago") is about arcs of that kind: its time and
-    # count are checked against those only, never against whatever cited arc happens to fit.
-    named = {kind for pattern, kind in KIND_PHRASES if pattern.search(bare)}
+    facts, subject_spans = _check_subject(bare, found, arcs, inline)
+    # Kind phrases inside a subject label ("attention on curiosity runs backlog") name no kind.
+    kind_text = _blank(bare, subject_spans)
+    named = {kind: pattern.search(kind_text) for pattern, kind in KIND_PHRASES}
+    named = {k: m for k, m in named.items() if m is not None}
+    cited_kinds = {a.kind for a in found}
     scoped = [a for a in found if a.kind in named] if named else found
-    facts += _check_subject(bare, found, inline)
+    has_measure = bool([m for m in AGO_RE.finditer(kind_text) if _span_sec(m) is not None]
+                       or [m for m in FOR_RE.finditer(kind_text) if _span_sec(m) is not None]
+                       or RETURNS_RE.search(kind_text) or THREADS_RE.search(kind_text))
+    if named:
+        phrases = ", ".join(f"'{m.group(0)}'" for m in named.values())
+        if set(named) & cited_kinds:
+            facts.append(("match", f"kind: {phrases} names {sorted(named)}, and a cited arc is one"))
+        elif inline and len(named) == 1 and has_measure:
+            # "Last slept 2 h ago [arc:<attention>]": a timed or counted claim about a kind no cited arc is.
+            facts.append(("mismatch", f"kind: {phrases} names {sorted(named)}; cited arcs are {sorted(cited_kinds)}"))
+        else:
+            facts.append(("undecidable", f"kind: {phrases} names {sorted(named)}; cited arcs are {sorted(cited_kinds)} "
+                                         "(ordinary words, no timed claim: not decisive)"))
+    # One-to-one: every cited arc is of a kind the sentence names (or it names none).
+    decisive = inline and (not named or cited_kinds <= set(named))
     if scoped:
-        facts += _check_times(bare, at, scoped, inline, ZoneInfo(tz_name))
-        facts += _check_counts(bare, at, scoped, inline)
+        facts += _check_times(kind_text, at, scoped, decisive, ZoneInfo(tz_name))
+        facts += _check_counts(kind_text, at, scoped, decisive)
     reasons += [r for _, r in facts]
     outcomes = {o for o, _ in facts}
     if "mismatch" in outcomes:

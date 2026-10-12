@@ -24,6 +24,11 @@ ROWS = {
     "fd63c7ab0ad3ecbe": dict(kind="concern", subject_ref="open-loop-496dd47e676b", subject_label="", status="open",
                              began_at="2026-10-11T22:46:57Z", ended_at=None, last_seen_at="2026-10-11T22:46:57Z",
                              attention_returns=0),
+    # Another real attention arc (10-11 morning), cited by nothing here: a known label that is not cited.
+    "ae0a3cb57ae73ee4": dict(kind="attention", subject_ref="node:substrate.bus_synaptic",
+                             subject_label="Bus synaptic prediction error", status="closed",
+                             began_at="2026-10-11T16:51:00Z", ended_at="2026-10-11T17:30:00Z",
+                             last_seen_at="2026-10-11T17:30:00Z", attention_returns=1),
     "684d45c2010540ed": dict(kind="concern", subject_ref="open-loop-5cb6cd032923", subject_label="", status="open",
                              began_at="2026-10-11T06:00:00Z", ended_at=None, last_seen_at="2026-10-11T23:15:00Z",
                              attention_returns=5),
@@ -47,9 +52,16 @@ def test_match_kind_subject_time_and_count():
 
 
 def test_wrong_kind_is_a_mismatch():
-    c = _inline("I slept through most of it [arc:381981f663496a47].")
+    # A timed claim about a kind no cited arc is: the citation points at the wrong record.
+    c = _inline("Last slept 15 h 53 min ago [arc:381981f663496a47].")
     assert c.outcome == "mismatch"
-    assert any("names a sleep arc" in r and "attention" in r for r in c.reasons)
+    assert any(r.startswith("kind:") and "['sleep']" in r and "['attention']" in r for r in c.reasons)
+
+
+def test_kind_words_without_a_timed_claim_are_not_decisive():
+    # Ordinary English: a concern raised while talking with Juniper is still a true sentence.
+    assert _inline("I slept through most of it [arc:381981f663496a47].").outcome == "undecidable"
+    assert _inline("The thread from talking with Juniper is still open [arc:fd63c7ab0ad3ecbe].").outcome == "undecidable"
 
 
 def test_wrong_time_is_a_mismatch():
@@ -85,7 +97,7 @@ def test_row_that_moved_after_the_sentence_is_undecidable_not_mismatch():
     c = check_sentence("On now: talking with Juniper, last turn 40 min ago [arc:571bce17764b0a9e].", source="tone",
                        at=AT, cited=["571bce17764b0a9e"], attribution="inline", arcs=moved)
     assert c.outcome == "match"  # kind still matches
-    assert any(r.startswith("time:") and "moved after the sentence" in r for r in c.reasons)
+    assert any(r.startswith("time:") and "moved after the frame" in r for r in c.reasons)
 
 
 def test_return_count_above_the_row_is_a_mismatch():
@@ -149,14 +161,14 @@ def test_eval_entrypoint_evaluates_db_shaped_rows():
         "imperative": "Mention the sleep: last slept 15 h 53 min ago [arc:460c1b680514c3e8].", "tone": "warm",
         "day_citations": {"label": "verified", "cited_valid": ["arc:460c1b680514c3e8"]},
     }]
-    replies = {"c-1": {"src": "chat_history_log", "text": "I slept a while ago [arc:381981f663496a47]."}}
+    replies = {"c-1": {"src": "chat_history_log", "text": "Last slept 15 h 53 min ago [arc:381981f663496a47]."}}
     report = mod.evaluate(decisions, replies, {k: {"arc_id": k, **v} for k, v in ROWS.items()})
     (row,) = report["rows"]
     assert row["reply_source"] == "chat_history_log"
     assert [s["outcome"] for s in row["sentences"]] == ["match", "mismatch"]
     assert report["weeks"]["2026-W42"]["truth_rate"] == 0.5
     text = mod.render_text(report, AT, ["verified"])
-    assert "[MISMATCH] (reply, inline) I slept a while ago [arc:381981f663496a47]." in text
+    assert "[MISMATCH] (reply, inline) Last slept 15 h 53 min ago [arc:381981f663496a47]." in text
 
 
 # ---------------------------------------------------------------- calibration on the renderers' own output
@@ -169,7 +181,12 @@ def test_the_stance_cue_is_true_to_its_own_arcs():
     from orion.temporal_self.tests.patch4_fixtures import BUSY_NOW, TALKING_NOW, frame
     from orion.temporal_self.tests.test_thread_arcs import frame_with_thread_arcs
 
-    for f, now in ((frame_with_thread_arcs(), TALKING_NOW), (frame("busy"), BUSY_NOW)):
+    from datetime import timedelta
+
+    # Also 5 min later, with the frame ~10 min old at the turn (the cue accepts up to 900 s).
+    cases = [(frame_with_thread_arcs(), TALKING_NOW), (frame("busy"), BUSY_NOW)]
+    cases += [(f, now + timedelta(minutes=5)) for f, now in cases]
+    for f, now in cases:
         arcs = {a["arc_id"]: ArcFacts.from_row(a) for a in f["arcs_today"] + [f["active_arc"], f["previous_arc"]]}
         for t in f["open_threads"]:
             if t.get("arc_id"):
@@ -198,3 +215,71 @@ def test_the_closed_day_block_group_lines_cite_one_arc_for_a_group_total():
         "- Execution prediction error: 2 h 14 min over 16 arcs, 13 returns [arc:7bf5c22449afc56d].",
     ]
     assert sum(c.outcome == "match" for c in checks) == 14
+
+
+# ---------------------------------------------------------------- review: never call a true sentence wrong
+
+
+def test_a_lagging_frame_does_not_turn_a_true_count_into_a_mismatch():
+    # The frame (<= 900 s old) said 2 returns; the row ticked to 3 five minutes before the turn.
+    lag = {"381981f663496a47": ArcFacts.from_row({"arc_id": "381981f663496a47", **ROWS["381981f663496a47"],
+                                                  "attention_returns": 3, "last_seen_at": "2026-10-12T00:54:41Z"})}
+    c = check_sentence("Attention on Codebase prediction error, back to it 2 times [arc:381981f663496a47].",
+                       source="tone", at=AT, cited=["381981f663496a47"], attribution="inline", arcs=lag)
+    assert c.outcome == "match"  # subject; the count is undecidable, not a mismatch
+    assert any(r.startswith("count:") and "moved since the frame" in r for r in c.reasons)
+
+
+def test_a_paraphrased_subject_is_undecidable():
+    c = _inline("Keep attention on the codebase errors for now [arc:381981f663496a47].")
+    assert not any(r.startswith("subject:") and "another arc" in r for r in c.reasons)
+    assert c.outcome != "mismatch"
+
+
+def test_a_label_holding_a_separator_or_a_kind_phrase_is_read_whole():
+    rows = {"aaaaaaaaaaaaaaaa": ArcFacts.from_row(dict(
+        arc_id="aaaaaaaaaaaaaaaa", kind="attention", subject_ref="node:x", subject_label="curiosity runs, for Juniper",
+        status="suspended", began_at="2026-10-12T00:30:00Z", last_seen_at="2026-10-12T00:50:00Z", attention_returns=1))}
+    c = check_sentence("On now: attention on curiosity runs, for Juniper for 29 min, back to it 1 time today "
+                       "[arc:aaaaaaaaaaaaaaaa].", source="tone", at=AT, cited=["aaaaaaaaaaaaaaaa"],
+                       attribution="inline", arcs=rows)
+    assert c.outcome == "match", c.reasons
+    assert not any(r.startswith("kind:") and "curiosity" in r for r in c.reasons)
+
+
+def test_hedged_times_are_bounds_not_values():
+    # Juniper's last turn was 23:15:43, 1 h 44 min before AT.
+    assert _inline("Talking with Juniper was over 1 h ago [arc:571bce17764b0a9e].").outcome == "match"
+    assert _inline("Talking with Juniper was more than 5 h ago [arc:571bce17764b0a9e].").outcome == "match"  # kind
+    c = _inline("Talking with Juniper was more than 5 h ago [arc:571bce17764b0a9e].")
+    assert not any(o for o in c.reasons if "off by" in o)
+    assert _inline("I talked with Juniper about 2 h ago [arc:571bce17764b0a9e].").outcome == "match"
+    assert _inline("Juniper last spoke under 3 h ago [arc:571bce17764b0a9e].").outcome == "match"
+
+
+def test_for_outside_the_template_is_not_a_start_time():
+    c = _inline("I have not been talking with Juniper for 1 h 44 min [arc:571bce17764b0a9e].")
+    assert c.outcome == "match", c.reasons  # matched against last seen, not began
+
+
+def test_an_uncited_kind_makes_a_time_miss_undecidable():
+    c = _inline("2 open threads, and she last spoke 2 h 50 min ago [arc:684d45c2010540ed] [arc:fd63c7ab0ad3ecbe] "
+                "[arc:571bce17764b0a9e].")
+    assert c.outcome != "mismatch", c.reasons
+
+
+def test_a_clock_naming_the_time_of_writing_is_undecidable():
+    c = _inline("It is 18:59 local and the thread remains [arc:fd63c7ab0ad3ecbe].")  # AT is 18:59 MDT
+    assert c.outcome == "undecidable"
+    assert any("time of writing" in r for r in c.reasons)
+
+
+def test_open_thread_count_in_a_reply_never_mismatches():
+    c = check_sentence("There is 1 open thread I keep coming back to.", source="reply", at=AT,
+                       cited=["684d45c2010540ed", "fd63c7ab0ad3ecbe"], attribution="evidence_refs", arcs=ARCS)
+    assert c.outcome != "mismatch"
+
+
+def test_reasons_quote_without_trailing_punctuation():
+    c = _inline("Last slept 2 h ago [arc:460c1b680514c3e8].")
+    assert any("'2 h ago'" in r for r in c.reasons)

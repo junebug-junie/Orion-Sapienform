@@ -120,12 +120,13 @@ def _thread_arc(thread: OpenThreadV1, concern: dict[str, ArcSummaryV1]) -> ArcSu
     return concern.get(thread.subject_ref)
 
 
-def _threads_clause(frame: TemporalSelfFrameV1) -> tuple[str, list[ArcSummaryV1]] | None:
+def _threads_clause(frame: TemporalSelfFrameV1, limit: int = MAX_THREAD_REFS) -> tuple[str, list[ArcSummaryV1]] | None:
     """Every open thread with its own citation, most recently returned first.
 
     Over ``MAX_THREAD_REFS`` threads the clause says how many it lists ("the 5 most recent"), so
     every thread it renders is cited and the count stays true. A thread with no arc to cite (an
-    older frame whose concern arc fell off ``arcs_today``) is counted, not cited."""
+    older frame whose concern arc fell off ``arcs_today``) is counted, not cited. ``limit`` shrinks
+    when the cue is over its length cap, before the clause itself would be dropped."""
     if not frame.open_threads:
         return None
     concern = {a.subject_ref: a for a in frame.arcs_today if a.kind == "concern" and a.status != "closed"}
@@ -134,12 +135,12 @@ def _threads_clause(frame: TemporalSelfFrameV1) -> tuple[str, list[ArcSummaryV1]
     if not arcs:
         return None
     n = len(frame.open_threads)
-    listed = arcs[:MAX_THREAD_REFS]
+    listed = arcs[:max(1, limit)]
     refs = " ".join(_ref(a) for a in listed)
     if len(listed) == n:
         cited = ""
     elif len(arcs) == n:
-        cited = f", the {len(listed)} most recent"
+        cited = ", the most recent" if len(listed) == 1 else f", the {len(listed)} most recent"
     elif len(listed) == 1:
         cited = ", 1 with its record"
     else:
@@ -219,7 +220,14 @@ def project_stance_cue(
             clauses.append((f"Last slept {_ago(now, woke)} ago {_ref(last_sleep)}.", [last_sleep]))
 
     kept = list(clauses)
+    thread_limit = MAX_THREAD_REFS
     while kept and len(" ".join([head] + [c for c, _ in kept])) > max_chars:
+        if thread_clause is not None and kept[-1] is thread_clause and len(thread_clause[1]) > 1:
+            # Cite fewer threads (the count stays true) before dropping the clause.
+            thread_limit = len(thread_clause[1]) - 1
+            thread_clause = _threads_clause(frame, thread_limit)
+            kept[-1] = thread_clause
+            continue
         kept.pop()
         dropped += 1
     text = " ".join([head] + [c for c, _ in kept])

@@ -40,7 +40,7 @@ sys.path.insert(0, str(REPO))
 from orion.temporal_self.citation_truth import ArcFacts, check_decision, summarize  # noqa: E402
 
 DEFAULT_DSN = "postgresql://postgres:postgres@localhost:55432/conjourney"
-_ID_RE = re.compile(r"arc:([0-9a-f]{16})")
+_ID_RE = re.compile(r"arc:([0-9a-f]{16})", re.I)
 
 DECISIONS_SQL = """
 SELECT correlation_id, created_at, imperative, tone, day_citations
@@ -75,9 +75,9 @@ def read_rows(dsn: str, since: datetime, labels: list[str]) -> tuple[list[dict],
                 replies[d["correlation_id"]] = got[0]
         ids: set[str] = set()
         for d in decisions:
-            ids.update(_ID_RE.findall(json.dumps(d["day_citations"])))
+            ids.update(i.lower() for i in _ID_RE.findall(json.dumps(d["day_citations"])))
             for text in (d["imperative"], d["tone"], (replies.get(d["correlation_id"]) or {}).get("text")):
-                ids.update(_ID_RE.findall(text or ""))
+                ids.update(i.lower() for i in _ID_RE.findall(text or ""))
         arcs = {r["arc_json"]["arc_id"]: r["arc_json"]
                 for r in conn.execute(ARCS_SQL, {"ids": sorted(ids)}).fetchall()} if ids else {}
     return decisions, replies, arcs

@@ -179,3 +179,22 @@ def test_unchanged_day_renders_unchanged():
 def test_cue_model_lists_thread_arcs_in_order():
     cue: TemporalSelfStanceCueV1 = project_stance_cue(frame_with_thread_arcs(), TALKING_NOW)
     assert cue.arc_ids == re.findall(r"\[arc:([0-9a-f]{16})\]", cue.text)
+
+
+def test_many_threads_with_long_labels_shrink_the_refs_not_the_clause():
+    """Over the 400-char cap the sleep line goes first, then the thread refs shrink (the count stays
+    true); the thread clause itself is the last to go."""
+    f = _many_threads(7)
+    f.update(active_arc=frame("busy")["active_arc"], previous_arc=frame("busy")["previous_arc"])
+    f["arcs_today"] = frame("talking")["arcs_today"]  # has a sleep arc and a conversation arc
+    cue = project_stance_cue(f, TALKING_NOW)
+    assert len(cue.text) <= 400
+    m = re.search(r"7 open threads from conversation, the (?:(\d) )?most recent((?: \[arc:[0-9a-f]{16}\])+)\.", cue.text)
+    assert m is not None, cue.text
+    shown = re.findall(r"\[arc:([0-9a-f]{16})\]", m.group(2))
+    assert shown == [f"{i:016x}" for i in range(len(shown))]  # most recent first, each cited
+    assert "Last slept" not in cue.text and cue.clauses_dropped >= 1
+
+
+def test_two_threads_keep_the_sleep_line():
+    assert TALKING_WITH_THREAD_ARCS.endswith("Last slept 14 h 52 min ago [arc:460c1b680514c3e8].")

@@ -43,6 +43,8 @@ from app.admitted_graph import (
 from orion.journaler.schemas import JournalEntryWriteV1
 from orion.orion_day.budget import extract_refs
 from orion.schemas.gpu_pool import GpuLeaseRefV1
+from orion.schemas.temporal_self import DayCitationCheckV1
+from orion.temporal_self.citations import check_arc_citations
 from orion.schemas.orion_day import (
     ORION_DAY_CARRY_FORWARD_VERB,
     ORION_DAY_JOURNAL_SOURCE_KIND,
@@ -93,6 +95,9 @@ class OrionDayState(TypedDict, total=False):
     note_md: str | None
     carry_forward_md: str | None
     carry_forward_refs: dict[str, int]
+    # Temporal Self patch 4: the arc citation gate's result per text (DayCitationCheckV1 json).
+    note_arc_citations: dict[str, Any]
+    carry_forward_arc_citations: dict[str, Any]
     letter_written: bool
     persisted: bool
     persist_outcome: str | None
@@ -148,10 +153,25 @@ def carry_forward_metadata(brief: OrionDayRunBriefV1, note_md: str) -> dict[str,
     }}
 
 
+def gate_arc_citations(text: str, brief: OrionDayRunBriefV1) -> tuple[str, DayCitationCheckV1 | None]:
+    """Temporal Self patch 4: arc ids the closed-day block did not show are removed from the text
+    and counted; a sentence naming the block's labels or clock times without an [arc:] is counted
+    and labelled UNVERIFIED (never retried). None when the letter had no block and cites no arc."""
+    block = brief.material.temporal_day
+    shown = [ref[4:] for ref in (block.records if block else {}) if ref.startswith("arc:")]
+    cleaned, check = check_arc_citations(text, shown, labels=block.labels if block else None)
+    if block is None and not check.rejected_unknown:
+        return text, None
+    return cleaned, check
+
+
 def check_note(text: str, brief: OrionDayRunBriefV1) -> dict[str, Any]:
     if len(text) < MIN_NOTE_CHARS:
         raise EmptyGeneration(f"{ORION_DAY_NOTE_VERB}: completion too short ({len(text)} chars < {MIN_NOTE_CHARS})")
-    return {}
+    cleaned, check = gate_arc_citations(text, brief)
+    if check is None:
+        return {}
+    return {"note_md": cleaned, "note_arc_citations": check.model_dump(mode="json")}
 
 
 def check_carry_forward(text: str, brief: OrionDayRunBriefV1) -> dict[str, Any]:
@@ -161,10 +181,13 @@ def check_carry_forward(text: str, brief: OrionDayRunBriefV1) -> dict[str, Any]:
         raise EmptyGeneration(f"{ORION_DAY_CARRY_FORWARD_VERB}: completion too short ({len(text)} chars)")
     if not _LIST_ITEM_RE.search(text):
         raise EmptyGeneration(f"{ORION_DAY_CARRY_FORWARD_VERB}: no list item in the completion")
+    text, check = gate_arc_citations(text, brief)
+    gated = {} if check is None else {"carry_forward_md": text,
+                                      "carry_forward_arc_citations": check.model_dump(mode="json")}
     refs = extract_refs(text)
     known = set(brief.llm_view.included_refs)
-    return {"carry_forward_refs": {"valid": sum(1 for r in refs if r in known),
-                                   "unknown": sum(1 for r in refs if r not in known)}}
+    return {**gated, "carry_forward_refs": {"valid": sum(1 for r in refs if r in known),
+                                            "unknown": sum(1 for r in refs if r not in known)}}
 
 
 def letter_row(state: dict, brief: OrionDayRunBriefV1, now: datetime) -> dict[str, Any]:
@@ -173,6 +196,10 @@ def letter_row(state: dict, brief: OrionDayRunBriefV1, now: datetime) -> dict[st
         condensed=brief.llm_view.condensed,
         approx_tokens=brief.llm_view.approx_tokens,
         budget_tokens=brief.llm_view.budget_tokens,
+        arc_citations={name: DayCitationCheckV1.model_validate(state[key])
+                       for name, key in (("note", "note_arc_citations"),
+                                         ("carry_forward", "carry_forward_arc_citations"))
+                       if state.get(key)},
     )
     return {
         "letter_date": brief.letter_date,
@@ -222,6 +249,11 @@ def finish_detail(state: dict) -> dict[str, Any]:
         "note_chars": len(state.get("note_md") or ""),
         "carry_forward_chars": len(state.get("carry_forward_md") or ""),
         "carry_forward_refs": dict(state.get("carry_forward_refs") or {}),
+        "arc_citations": {name: {"label": c.get("label"), "cited": len(c.get("cited_valid") or []),
+                                 "rejected": len(c.get("rejected_unknown") or []),
+                                 "uncited": c.get("uncited_day_sentences", 0)}
+                          for name, c in (("note", state.get("note_arc_citations")),
+                                          ("carry_forward", state.get("carry_forward_arc_citations"))) if c},
         "llm_attempts": dict(state.get("llm_attempts") or {}),
         "hold_takebacks": int(state.get("hold_takebacks") or 0),
     }

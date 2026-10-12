@@ -31,6 +31,8 @@ from uuid import NAMESPACE_URL, uuid5
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from orion.schemas.temporal_self import DayCitationCheckV1, TemporalSelfDayBlockV1
+
 ORION_DAY_WORKFLOW = "orion_day.letter"
 ORION_DAY_NOTE_VERB = "orion_day_note_v1"
 ORION_DAY_CARRY_FORWARD_VERB = "orion_day_carry_forward_v1"
@@ -254,6 +256,10 @@ class OrionDayMaterialV1(_Model):
     # still validate. Hub writes it into the durable brief: rebuild orion-durable-runs (the
     # forbid reader) before or with orion-hub.
     corrections: list[OrionDayCorrectionV1] = Field(default_factory=list)
+    # Added 2026-10-11 (Temporal Self patch 4): the closed day as Orion's own chronology recorded
+    # it (temporal_self_day), rendered by a fixed template with [arc:<id>] refs. None when the day
+    # was not closed/chronicled: renders nothing. Same rollout rule as ``corrections``.
+    temporal_day: TemporalSelfDayBlockV1 | None = None
     sources: dict[str, OrionDaySourceStatusV1] = Field(default_factory=dict)
 
     @model_validator(mode="after")
@@ -350,6 +356,10 @@ class OrionDayLetterSourcesV1(_Model):
     condensed: OrionDayCondensationV1 = Field(default_factory=OrionDayCondensationV1)
     approx_tokens: int = 0
     budget_tokens: int = 0
+    # Temporal Self patch 4: the citation gate on the note and the carry-forward ("note",
+    # "carry_forward"). Unknown [arc:] ids were removed from the stored text and are listed here;
+    # label UNVERIFIED = a sentence named the closed day's record without citing an arc.
+    arc_citations: dict[str, DayCitationCheckV1] = Field(default_factory=dict)
 
 
 class OrionDayLetterV1(_Model):

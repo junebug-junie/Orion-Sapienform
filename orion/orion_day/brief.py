@@ -78,8 +78,10 @@ async def build_orion_day_brief(
     budget_tokens: int = DEFAULT_BUDGET_TOKENS,
     timeout_sec: float = 1800.0,
     carry_forward_ttl_hours: float = 48.0,
+    temporal_day: bool = True,
 ) -> OrionDayRunBriefV1:
-    material = await gather_orion_day(conn, letter_date, now=now, github_repo=github_repo)
+    material = await gather_orion_day(conn, letter_date, now=now, github_repo=github_repo,
+                                      temporal_day=temporal_day)
     return brief_from_material(material, budget_tokens=budget_tokens, timeout_sec=timeout_sec,
                                carry_forward_ttl_hours=carry_forward_ttl_hours)
 

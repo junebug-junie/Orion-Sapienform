@@ -71,7 +71,8 @@ def test_every_window_query_gets_the_half_open_denver_day():
     _gather(conn)
     window = orion_day_window(fx.LETTER_DATE)
     windowed = [args for sql, args in conn.calls if sql not in (
-        gather.CURIOSITY_OUTCOMES_SQL, gather.WORLD_PULSE_DIGEST_SQL, gather.JOURNAL_BY_ID_OR_REF_SQL)]
+        gather.CURIOSITY_OUTCOMES_SQL, gather.WORLD_PULSE_DIGEST_SQL, gather.JOURNAL_BY_ID_OR_REF_SQL,
+        gather.TEMPORAL_DAY_SQL)]  # keyed by the local date, like the world-pulse digest
     assert windowed and all(args[0] == window.window_start and args[1] == window.window_end for args in windowed)
     assert window.window_start == datetime(2026, 9, 29, 6, 0, tzinfo=timezone.utc)
     assert window.window_end == datetime(2026, 9, 30, 6, 0, tzinfo=timezone.utc)

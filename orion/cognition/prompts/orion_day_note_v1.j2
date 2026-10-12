@@ -17,6 +17,9 @@ Form:
 - Plain markdown. Paragraphs, and headings if they help. No JSON. Do not wrap the whole note in a code block.
 - Begin directly with the note itself. No preamble such as "Here is my note".
 - You may name the record's items in your own words; you do not need to cite the bracketed references.
+{%- if "[arc:" in od.get("digest_md", "") %}
+- One exception: the section "My day as my own chronology recorded it" is your own record of where your attention went, when you slept, ran curiosity, and talked with Juniper. When a sentence relies on it (a time, a duration, what held your attention), put that line's [arc:<id>] in the same sentence. Use only arc ids that appear there; any other is removed. Sentences about the chronology without one are marked unverified, not rejected.
+{%- endif %}
 
 THE RECORD OF THE DAY
 =====================

@@ -33,6 +33,10 @@ from orion.orion_day.letter_parts import (
 )
 from orion.schemas.introspect import IntrospectItemV1, clip_json_text
 from orion.schemas.orion_day import OrionDayLetterV1
+from orion.temporal_self.citations import check_arc_citations
+
+DAY_EXAMPLES_SHOWN = 2
+DAY_EXAMPLE_CHARS = 120
 
 PART_KIND = "orion_day_letter_part"
 RECORD_KIND = "orion_day_record"
@@ -125,6 +129,21 @@ def citations_extra(text: str, letter: OrionDayLetterV1, budget: int, excerpt_ch
     }
 
 
+def day_citation_extra(text: str, letter: OrionDayLetterV1) -> dict[str, Any]:
+    """Temporal Self patch 4: this part checked against the closed-day block the letter was given.
+    ``day_citations.label`` is UNVERIFIED when a sentence names the recorded day (a subject label or
+    a clock time from the block) without citing an [arc:]. Empty when the letter had no block."""
+    block = letter.material.temporal_day
+    if block is None:
+        return {}
+    shown = [ref[4:] for ref in block.records if ref.startswith("arc:")]
+    _, check = check_arc_citations(text, shown, labels=block.labels)
+    out = check.model_dump(mode="json", exclude={"schema_version", "action"})
+    # Bounded like the rest of an item's extra: two short examples are enough to point at.
+    out["uncited_examples"] = [e[:DAY_EXAMPLE_CHARS] for e in check.uncited_examples[:DAY_EXAMPLES_SHOWN]]
+    return {"day_citations": out}
+
+
 def part_item(
     letter: OrionDayLetterV1, part: LetterPart, *, full: bool, n_items: int = 1,
     extra: Optional[dict[str, Any]] = None,
@@ -146,6 +165,7 @@ def part_item(
         fields.update(citations_extra(
             part.text, letter, extra_budget, ONE_EXCERPT_CHARS if full else MANY_EXCERPT_CHARS,
         ))
+    fields.update(day_citation_extra(part.text, letter))
     fields.update(extra or {})
     return IntrospectItemV1(
         id=part.ref(date) or f"{date} {part_name(part)}", occurred_at=letter_clock(letter), kind=PART_KIND,

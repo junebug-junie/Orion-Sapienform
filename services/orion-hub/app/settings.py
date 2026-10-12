@@ -1011,6 +1011,10 @@ class Settings(BaseSettings):
     # REVERIE_VISUAL_STORAGE_DIR and transcoded to JPEG <=1024px under this cap each.
     HUB_ORION_DAY_MAX_IMAGES: int = Field(default=6, ge=0, alias="HUB_ORION_DAY_MAX_IMAGES")
     HUB_ORION_DAY_IMAGE_MAX_BYTES: int = Field(default=450000, gt=0, alias="HUB_ORION_DAY_IMAGE_MAX_BYTES")
+    # Temporal Self patch 4: the letter also reads the closed day from Orion's own chronology
+    # (temporal_self_day, rendered with [arc:<id>] refs; orion/temporal_self/day_block.py), and
+    # orion-durable-runs gates the note's arc citations. Kill switch: false = the letter as before.
+    TEMPORAL_SELF_DAY_BLOCK_ENABLED: bool = Field(default=True, alias="TEMPORAL_SELF_DAY_BLOCK_ENABLED")
     # Soft Mind work-shape lines into the curiosity / self-inquiry role teach
     # (advisory only; Orion still authors :InvestigationRole / HelpRequest).
     # Default on; set false to leave motor kickoff prompts unchanged.

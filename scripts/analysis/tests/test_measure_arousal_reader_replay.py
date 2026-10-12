@@ -57,3 +57,11 @@ def test_export_is_one_read_only_transaction():
     assert sql.startswith("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY;")
     assert sql.rstrip().endswith("ROLLBACK;") and sql.count("ROLLBACK;") == 1
     assert "arousal_transition" in sql and "durable_admission_runs" in sql
+
+
+def test_dream_hold_is_bounded_by_the_level_age():
+    assert held("dream", "strained", None, **KW, level_age_sec=5 * 3600.0) == "arousal_strained"
+    assert held("dream", "strained", None, **KW, level_age_sec=6 * 3600.0) is None
+    tl = Timeline([(T0, "strained", T0 - timedelta(hours=7))])
+    r = reader_impact([("dream", T0 + timedelta(minutes=1))], tl, T0, T0 + timedelta(days=1), **KW)
+    assert r["totals"]["dream"] == {"decisions": 1, "held": 0}

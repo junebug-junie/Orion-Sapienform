@@ -15,17 +15,23 @@ Arousal timeline, two lanes:
 Decisions, each joined to the level in force at its own timestamp with the production reader
 rules (the gate functions' own branches, restated here as a level check):
 
-  dream       non-forced sleeps (``dream_cycle.trigger = 'pressure'``). Held if engaged or strained.
+  dream       non-forced sleeps (``dream_cycle.trigger = 'pressure'``). Held if engaged or strained
+              and that level began less than ``--dream-max-hold-hours`` (6) before the sleep.
   curiosity   non-urgent investigation-line runs (``durable_admission_runs``, workflow
               ``curiosity.investigate``, line ``investigate``). Held if strained, or if
               engaged and the gap since the previous run was under base cooldown x multiplier.
   self_inquiry  self-inquiry runs (same table, line ``self_inquiry``). Held unless idle.
   outreach    sent background outreach (``endogenous_outreach_decisions``: outreach, not
-              forced, not Door-A ``curiosity_outreach``). Held if strained.
+              Door-A ``curiosity_outreach``; forced debug sends included, since the shipped
+              gate holds them too). Held if strained.
 
 Unknown never holds anything. First order only: a held decision would have moved the ones
 after it, which this does not simulate. Curiosity rows do not record whether a run was forced
 (a forced run would not have been held), so curiosity counts are an upper bound.
+
+Live-lane caveat: a level holds until the next ``arousal_transition`` row. If durable-runs
+stopped writing, the real readers would read unknown after 360 s while this lane keeps the
+last level, so the live lane can overcount holds across a durable-runs outage.
 
 Known caveat: a fault-jammed GPU queue reads as strained (S2 cannot tell a jam from load).
 Every strained span is listed with its reasons so a jam can be told apart by eye.
@@ -86,7 +92,7 @@ SELECT row_to_json(r) FROM (
     AND created_at >= '{(start - timedelta(days=1)).isoformat()}'::timestamptz AND created_at < '{hi}'::timestamptz
  UNION ALL
  SELECT 'decision', 'outreach', decided_at FROM endogenous_outreach_decisions
-  WHERE outreach AND NOT forced AND COALESCE(result_json->>'source', '') <> 'curiosity_outreach'
+  WHERE outreach AND COALESCE(result_json->>'source', '') <> 'curiosity_outreach'
     AND decided_at >= '{lo}'::timestamptz AND decided_at < '{hi}'::timestamptz
 ) r ORDER BY at;
 SELECT row_to_json(r) FROM (
@@ -98,22 +104,28 @@ SELECT row_to_json(r) FROM (
 
 
 class Timeline:
-    """Level in force at any instant: a sorted list of (start, level)."""
+    """Level in force at any instant: a sorted list of (start, level[, since])."""
 
     def __init__(self, points):
-        self.points = sorted(points)
+        self.points = sorted((p[0], p[1], p[2] if len(p) > 2 else p[0]) for p in points)
         self.ts = [p[0] for p in self.points]
 
     def level_at(self, at):
+        return self.level_and_since(at)[0]
+
+    def level_and_since(self, at):
         i = bisect.bisect_right(self.ts, at)
-        return self.points[i - 1][1] if i else "unknown"
+        return (self.points[i - 1][1], self.points[i - 1][2]) if i else ("unknown", None)
 
 
-def held(reader, level, gap_sec, *, curiosity_base_sec, engaged_multiplier):
+def held(reader, level, gap_sec, *, curiosity_base_sec, engaged_multiplier,
+         level_age_sec=None, dream_max_hold_sec=6 * 3600.0):
     """Would this reader's gate have refused at `level`? Mirrors the shipped branches."""
     if level in (None, "unknown", "idle"):
         return None
     if reader == "dream":
+        if level_age_sec is not None and level_age_sec >= dream_max_hold_sec:
+            return None  # DREAM_AROUSAL_MAX_HOLD_HOURS: a long-held level stops holding sleep
         return f"arousal_{level}"
     if reader == "self_inquiry":
         return f"arousal_{level}"
@@ -139,8 +151,9 @@ def reader_impact(decisions, timeline, start, end, **kw):
             continue  # earlier runs only seed the curiosity gap
         day = at.date().isoformat()
         per_day[day][reader]["decisions"] += 1
-        level = timeline.level_at(at)
-        why = held(reader, level, gap, **kw)
+        level, since = timeline.level_and_since(at)
+        age = None if since is None else (at - since).total_seconds()
+        why = held(reader, level, gap, level_age_sec=age, **kw)
         if why:
             per_day[day][reader]["held"] += 1
             reasons[reader][why] += 1
@@ -166,6 +179,7 @@ def main():
     # paced cooldown = the floor. Engaged multiplier 2.0 (HUB_CURIOSITY_AROUSAL_*).
     p.add_argument("--curiosity-base-cooldown-sec", type=float, default=1800.0)
     p.add_argument("--engaged-multiplier", type=float, default=2.0)
+    p.add_argument("--dream-max-hold-hours", type=float, default=6.0)
     args = p.parse_args()
     if args.print_sql:
         print(export_sql(args.start, args.end))
@@ -174,11 +188,12 @@ def main():
         p.error("history export required")
     rows = [json.loads(line) for line in args.history.read_text().splitlines() if line.strip().startswith("{")]
     decisions = [(r["reader"], utc(r["at"])) for r in rows if r.get("kind") == "decision"]
-    kw = dict(curiosity_base_sec=args.curiosity_base_cooldown_sec, engaged_multiplier=args.engaged_multiplier)
+    kw = dict(curiosity_base_sec=args.curiosity_base_cooldown_sec, engaged_multiplier=args.engaged_multiplier,
+              dream_max_hold_sec=args.dream_max_hold_hours * 3600.0)
 
     rr = _reducer_replay()
     readings = rr.replay_readings(rows, args.start, args.end)
-    replay_tl = Timeline((r.observed_at, r.arousal_level) for r in readings)
+    replay_tl = Timeline((r.observed_at, r.arousal_level, r.since) for r in readings)
     summary = rr.summarize(readings, args.end)
     out = {
         "start": args.start.isoformat(), "end": args.end.isoformat(),

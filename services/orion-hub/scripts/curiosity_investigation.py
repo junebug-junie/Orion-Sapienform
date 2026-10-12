@@ -87,6 +87,13 @@ from uuid import NAMESPACE_URL, uuid4, uuid5
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 
 from .endogenous_outreach import in_quiet_hours
+from orion.regulation.arousal_view import (
+    AROUSAL_ENGAGED_COOLDOWN_REASON,
+    AROUSAL_STRAINED_REASON,
+    engaged_cooldown_sec,
+)
+
+from .arousal_reader import ArousalReader
 from .rest_drive_reader import RestDriveReader
 from .energy_stakes_gate import (
     HOLD_REASON as ENERGY_HOLD_REASON,
@@ -443,6 +450,13 @@ class SchedulingGateInputs:
     # while Orion is tired, or None when the drive is not `due`, unknown, or
     # switched off -- None is exactly the behaviour before the drive existed.
     rest_drive_cooldown_sec: Optional[float] = None
+    # Arousal (scripts/arousal_reader.py, Temporal Self R3). `arousal_level` is a fresh
+    # "engaged" / "idle" / "strained", or None when unknown or this line's flag is off --
+    # None is exactly the behaviour before arousal existed. `strained` holds the run;
+    # `arousal_engaged_cooldown_sec` is the stretched cooldown kept while Juniper is talking
+    # (investigation line). The daily cap, the hour window and `enabled` never read any of it.
+    arousal_level: Optional[str] = None
+    arousal_engaged_cooldown_sec: Optional[float] = None
 
 
 def window_is_configured(start_hour: int, end_hour: int) -> bool:
@@ -584,7 +598,11 @@ QUEUED_INVESTIGATIONS_SQL = (
     "WHERE e.run_id = r.run_id AND e.event = 'run.admitted')"
 )
 # Reasons an operator's forced run overrides: pacing, never "can this work".
-FORCE_OVERRIDABLE_REASONS = frozenset({"cooldown", "daily_cap", "outside_window", REST_DRIVE_BLOCK_REASON})
+# Arousal's holds are pacing too: an operator asking for a run on purpose has made that call.
+FORCE_OVERRIDABLE_REASONS = frozenset({
+    "cooldown", "daily_cap", "outside_window", REST_DRIVE_BLOCK_REASON,
+    AROUSAL_STRAINED_REASON, AROUSAL_ENGAGED_COOLDOWN_REASON,
+})
 
 
 def scheduling_block_reason(inp: SchedulingGateInputs) -> Optional[str]:
@@ -617,6 +635,17 @@ def scheduling_block_reason(inp: SchedulingGateInputs) -> Optional[str]:
         and inp.seconds_since_last < inp.rest_drive_cooldown_sec
     ):
         return REST_DRIVE_BLOCK_REASON
+    # Arousal, last: it only ever adds a hold after every pacing gate has passed, so the
+    # reason names exactly what arousal blocked. Unknown (None) skips all three.
+    if inp.arousal_level == "strained":
+        return AROUSAL_STRAINED_REASON
+    if (
+        inp.arousal_level == "engaged"
+        and inp.arousal_engaged_cooldown_sec is not None
+        and inp.seconds_since_last is not None
+        and inp.seconds_since_last < inp.arousal_engaged_cooldown_sec
+    ):
+        return AROUSAL_ENGAGED_COOLDOWN_REASON
     return None
 
 
@@ -792,6 +821,10 @@ class CuriosityInvestigation:
         energy_stakes_max_age_sec: float = 1800.0,
         # --- rest drive (HUB_CURIOSITY_REST_DRIVE_*): cooldowns stretch while tired ---
         rest_drive_reader: Optional[RestDriveReader] = None,
+        # --- arousal (HUB_CURIOSITY_AROUSAL_*; Temporal Self R3 reader 2) ---
+        arousal_reader: Optional[ArousalReader] = None,
+        arousal_pacing_enabled: bool = False,
+        arousal_engaged_cooldown_multiplier: float = 2.0,
         # --- urgent runs (start_urgent; HUB_CURIOSITY_URGENT_*) --------------
         urgent_enabled: bool = False,
         urgent_turn_timeout_sec: float = 900.0,
@@ -992,6 +1025,11 @@ class CuriosityInvestigation:
         # Orion's rest drive: while it reads `due`, every line's cooldown is
         # multiplied. Unknown/off leaves every gate exactly as it was.
         self.rest_drive_reader = rest_drive_reader
+        # Orion's arousal (one Redis GET per tick): investigation line -- strained
+        # holds, engaged stretches the cooldown. Unknown/off leaves every gate as it was.
+        self.arousal_reader = arousal_reader
+        self.arousal_pacing_enabled = bool(arousal_pacing_enabled)
+        self.arousal_engaged_cooldown_multiplier = float(arousal_engaged_cooldown_multiplier)
         # Urgent runs: a seeded investigation Juniper or the hardware watcher
         # asks for. `urgent_reporter` is set by main.py; `urgent_listener_task`
         # is the bus consumer main.py starts (scripts/curiosity_urgent.py).
@@ -1512,6 +1550,17 @@ class CuriosityInvestigation:
             return None
         return self.rest_drive_reader.cooldown_sec(base_sec, now)
 
+    def _arousal_level(self, line_enabled: bool, now: datetime) -> Optional[str]:
+        """A fresh arousal level for a line whose flag is on, else None (= today)."""
+        if not line_enabled or self.arousal_reader is None:
+            return None
+        return self.arousal_reader.level(now)
+
+    def _arousal_engaged_cooldown(self, base_sec: float, now: datetime) -> Optional[float]:
+        if not self.arousal_pacing_enabled or self.arousal_reader is None:
+            return None
+        return engaged_cooldown_sec(base_sec, self.arousal_reader.view(now), self.arousal_engaged_cooldown_multiplier)
+
     @property
     def window_configured(self) -> bool:
         return window_is_configured(self.window_start_hour, self.window_end_hour)
@@ -1825,6 +1874,8 @@ class CuriosityInvestigation:
         if self.rest_drive_reader is not None:
             # One Redis GET per tick; the three lines below judge it at `now`.
             await self.rest_drive_reader.refresh(self._bus, now)
+        if self.arousal_reader is not None:
+            await self.arousal_reader.refresh(self._bus, now)
 
         # The self-inquiry line gets first refusal on every scheduled tick
         # (never on a forced investigation run). It is the rarer line and it
@@ -1866,6 +1917,8 @@ class CuriosityInvestigation:
                 seconds_since_last=since_last,
                 min_cooldown_sec=self.effective_cooldown_sec,
                 rest_drive_cooldown_sec=self._rest_drive_cooldown(self.effective_cooldown_sec, now),
+                arousal_level=self._arousal_level(self.arousal_pacing_enabled, now),
+                arousal_engaged_cooldown_sec=self._arousal_engaged_cooldown(self.effective_cooldown_sec, now),
                 done_today=done_today,
                 daily_cap=self.daily_cap,
                 # `None` disables the window for this tick. A zone that failed

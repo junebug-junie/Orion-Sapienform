@@ -217,6 +217,9 @@ class ArcSummaryV1(_Forbid):
     status: ArcStatus
     attention_returns: int = 0
     cumulative_dwell_sec: float = 0.0
+    # Patch 4: the arc's newest evidence ("last turn 3 min ago"). Optional so frames and closed
+    # days stored before it still validate; readers render the clause only when it is present.
+    last_seen_at: AwareDatetime | None = None
 
 
 class OpenThreadV1(_Forbid):
@@ -343,3 +346,63 @@ class TemporalSelfStateV1(_Forbid):
     cursors: dict[str, str] = Field(default_factory=dict)
     pending_closed_days: list[TemporalSelfDayV1] = Field(default_factory=list)
     reducer_version: str = TEMPORAL_SELF_REDUCER_VERSION
+
+
+# --- Patch 4: Orion uses its own day (readers + citation gate) --------------------------------
+# Spec: docs/superpowers/specs/2026-10-11-temporal-self-patch4-orion-uses-its-day.md. Both
+# renderers are deterministic templates over stored rows (no LLM); every clause carries the
+# ``[arc:<id>]`` it came from, and whatever Orion writes back is checked against what it was shown.
+
+CueSkipReason = Literal["disabled", "fetch_failed", "invalid_frame", "wrong_day", "stale"]
+DayCitationLabel = Literal["verified", "UNVERIFIED", "no_day_claims"]
+STANCE_CUE_MAX_CHARS = 400
+DAY_BLOCK_MAX_CHARS = 2400
+UNCITED_SENTENCES_SHOWN = 5
+
+
+class TemporalSelfStanceCueV1(_Forbid):
+    """The "where am I in my day" line shown to stance_react. ``text`` is "" when skipped."""
+
+    schema_version: Literal["temporal_self.stance_cue.v1"] = "temporal_self.stance_cue.v1"
+    text: str = Field(default="", max_length=STANCE_CUE_MAX_CHARS)
+    day_id: str | None = None
+    frame_as_of: AwareDatetime | None = None
+    rendered_at: AwareDatetime
+    arc_ids: list[str] = Field(default_factory=list)  # every [arc:<id>] in ``text``, in order
+    # Shown subject label -> the arc ids it names (the citation gate's match set, not a word list).
+    labels: dict[str, list[str]] = Field(default_factory=dict)
+    skip_reason: CueSkipReason | None = None
+    clauses_dropped: int = 0  # dropped to fit STANCE_CUE_MAX_CHARS, or for a silent broadcast log
+
+
+class TemporalSelfDayBlockV1(_Forbid):
+    """A closed day, rendered for a reader of "yesterday" (Orion's Day letter).
+
+    ``records`` maps every ref in ``text`` (``arc:<id>``, ``day:<day_id>``) to a compact copy of
+    the stored row it names, so a citation in the letter resolves after the fact without the
+    700 KB day record."""
+
+    schema_version: Literal["temporal_self.day_block.v1"] = "temporal_self.day_block.v1"
+    day_id: str
+    closed_at: AwareDatetime
+    text: str = Field(min_length=1, max_length=DAY_BLOCK_MAX_CHARS)
+    records: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    labels: dict[str, list[str]] = Field(default_factory=dict)
+    lines_dropped: int = 0
+
+
+class DayCitationCheckV1(_Forbid):
+    """What the citation gate found in text a reader of Orion's day wrote back.
+
+    Unknown ``arc:`` ids are always removed and counted. A sentence that names something from the
+    shown record (a subject label, a clock time) without citing an arc is not blocked or retried:
+    it is counted and the whole check is labelled ``UNVERIFIED`` where Juniper reads it."""
+
+    schema_version: Literal["temporal_self.day_citations.v1"] = "temporal_self.day_citations.v1"
+    shown: int = 0
+    cited_valid: list[str] = Field(default_factory=list)
+    rejected_unknown: list[str] = Field(default_factory=list)
+    uncited_day_sentences: int = 0
+    uncited_examples: list[str] = Field(default_factory=list)  # first few, clipped
+    label: DayCitationLabel = "no_day_claims"
+    action: Literal["kept", "stripped"] = "kept"

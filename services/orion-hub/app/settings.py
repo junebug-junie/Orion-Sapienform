@@ -1234,7 +1234,8 @@ class Settings(BaseSettings):
     # its own gain, only in the conservative direction. A state older than
     # ORION_REGULATION_READER_MAX_AGE_SEC (3 regulate steps), absent, or `unknown` changes
     # nothing. One flag per reader. Caps, quiet hours, the hour window, recent-chat,
-    # turn-in-flight, forced runs, urgent runs and Door-A never read it.
+    # turn-in-flight, urgent runs and Door-A never read it. Forced curiosity runs override
+    # it; a forced (debug) outreach is held like the cooldown.
     ORION_REGULATION_READER_MAX_AGE_SEC: float = Field(
         default=360.0, gt=0.0, alias="ORION_REGULATION_READER_MAX_AGE_SEC"
     )

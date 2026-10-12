@@ -17,6 +17,18 @@ logger = logging.getLogger("orion-vision-edge.capture_source")
 STALE_AFTER_SEC = 5.0
 REOPEN_AFTER_SEC = 5.0
 REOPEN_BACKOFF_MAX_SEC = 60.0
+# FFmpeg's own defaults let a half-dead RTSP connection block an open or a read for ~30 s.
+STREAM_TIMEOUT_MS = 5000
+
+
+def _open_capture(source: str):
+    if "://" in source:
+        return cv2.VideoCapture(
+            source,
+            cv2.CAP_FFMPEG,
+            [cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, STREAM_TIMEOUT_MS, cv2.CAP_PROP_READ_TIMEOUT_MSEC, STREAM_TIMEOUT_MS],
+        )
+    return cv2.VideoCapture(source)
 
 
 class CameraSource:
@@ -34,7 +46,7 @@ class CameraSource:
         self.last_frame = None
         self.last_frame_at: Optional[float] = None
         self.reopens = 0
-        self._opener = opener or cv2.VideoCapture
+        self._opener = opener or _open_capture
         self._clock = clock
         self._failing_since: Optional[float] = None
         self._next_reopen = 0.0
@@ -52,6 +64,9 @@ class CameraSource:
                 self.cap.release()
             except Exception as e:
                 logger.warning(f"Error releasing camera before reopen: {e}")
+        if self._stop.is_set():
+            self.cap = None
+            return
         self.cap = self._opener(self.source)
         if not self.cap.isOpened():
             logger.error(f"Failed to open camera source: {self._source_for_log}")
@@ -74,8 +89,14 @@ class CameraSource:
         """One read attempt (reopening the stream when it has been failing too long); returns
         how long to wait before the next one."""
         now = self._clock()
-        ok, frame = self.cap.read() if self.cap is not None and self.cap.isOpened() else (False, None)
+        try:
+            ok, frame = self.cap.read() if self.cap is not None and self.cap.isOpened() else (False, None)
+        except Exception as e:  # noqa: BLE001 -- a decoder error is a failed read, not a dead thread
+            logger.warning(f"Camera read raised {type(e).__name__}; counting it as a failed read.")
+            ok, frame = False, None
         if ok and frame is not None:
+            # Frame before timestamp, and frame_age_sec reads the timestamp first: a reader can
+            # pair a newer frame with an older age, never a stale frame with a fresh age.
             self.last_frame = frame
             self.last_frame_at = now
             if self._failing_since is not None:
@@ -93,14 +114,31 @@ class CameraSource:
             logger.warning(
                 f"Reopening camera after {now - self._failing_since:.0f}s without a frame (reopen #{self.reopens})."
             )
-            self._open()
-            self._next_reopen = now + self._backoff
+            try:
+                self._open()
+            except Exception as e:  # noqa: BLE001
+                logger.warning(f"Camera reopen raised {type(e).__name__}.")
+            # From after the open: a slow open must not use up the wait before the next one.
+            self._next_reopen = self._clock() + self._backoff
             self._backoff = min(self._backoff * 2, REOPEN_BACKOFF_MAX_SEC)
         return 0.25
 
     def _run(self):
         while not self._stop.is_set():
-            self._stop.wait(self.step())
+            try:
+                wait = self.step()
+            except Exception as e:  # noqa: BLE001 -- backstop: a dead reader thread blinds the camera for good
+                logger.warning(f"Camera reader step raised {type(e).__name__}.")
+                wait = 0.25
+            self._stop.wait(wait)
+        # The reader owns the capture: releasing it here, not from stop(), avoids freeing it
+        # while a read is still blocked inside it.
+        if self.cap is not None:
+            try:
+                self.cap.release()
+                logger.info("Camera released.")
+            except Exception as e:
+                logger.warning(f"Error releasing camera: {e}")
 
     def frame_age_sec(self) -> Optional[float]:
         if self.last_frame_at is None:
@@ -119,9 +157,3 @@ class CameraSource:
         self._stop.set()
         if self._thread:
             self._thread.join(timeout=2)
-        if self.cap:
-            try:
-                self.cap.release()
-                logger.info("Camera released.")
-            except Exception as e:
-                logger.warning(f"Error releasing camera: {e}")

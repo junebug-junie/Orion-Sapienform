@@ -303,6 +303,24 @@ with a turn-level budget/circuit-breaker on the caller.
 Everything fails open: Mind unconfigured / unreachable / slow / low-quality →
 byte-identical to today's stance behavior.
 
+## "My day" cue for stance_react (Temporal Self patch 4)
+
+Each unified turn, `app/temporal_self_cue.py` fetches orion-durable-runs `GET /temporal-self/frame`
+(`TEMPORAL_SELF_FRAME_URL`, `TEMPORAL_SELF_CUE_FETCH_TIMEOUT_SEC=0.5`) concurrently with Mind
+enrichment and renders it with `orion.temporal_self.stance_cue.project_stance_cue` (a fixed template,
+<= 400 chars, every clause citing `[arc:<id>]`). The text goes into the verb context as
+`temporal_self_cue` and renders as `MY DAY SO FAR` in `stance_react.j2`. A frame that is missing,
+for another local day, or older than `TEMPORAL_SELF_CUE_MAX_AGE_SEC=900` renders nothing.
+
+The stance's arc citations are gated (`orion.thought.stance_react.gate_day_citations`): shown arc
+ids may appear in `evidence_refs`; any other is removed and counted; a sentence naming the shown day
+without citing an arc is labelled `UNVERIFIED`. The result is `ThoughtEventV1.day_citations`,
+persisted by orion-sql-writer to `thought_decision.day_citations` and shown in the Hub turn trace.
+
+Logs: `temporal_self_cue corr=... chars=... arcs=... fetch_ms=...`,
+`temporal_self_cue_skipped corr=... reason=stale|wrong_day|fetch_failed|invalid_frame|disabled`,
+`temporal_self_day_citations corr=... label=...`. Kill switch: `TEMPORAL_SELF_STANCE_CUE_ENABLED=false`.
+
 ## Reverie VISUAL chain (Patch 2 orchestration + Patch 3 context-seeding + Patch 4 continuity reset + Patch 5 self-study context-seed + Patch 6 memory-crystallization context-seed + Patch 7 context-slot rotation)
 
 `app/visual_chain.py`, alongside `chain.py`. Patch 2 of

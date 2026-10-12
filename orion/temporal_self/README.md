@@ -34,3 +34,20 @@ never reopen an arc.
 Gates: `pytest orion/temporal_self/tests` (rules, sources, day boundary, replay identity) and
 `python orion/temporal_self/evals/run_arc_precision_eval.py` (real 10-09 rows; `--sweep` for K/R,
 `--timeline` for the day). Re-export the fixture with `evals/export_fixture_day.sql` (read-only).
+
+## Readers (patch 4: Orion uses its own day)
+
+Spec: `docs/superpowers/specs/2026-10-11-temporal-self-patch4-orion-uses-its-day.md` (PR #2616,
+with Juniper's decisions). Both renderers are fixed templates over stored rows; no model writes them.
+
+| Module | Reader | What it renders |
+|---|---|---|
+| `stance_cue.py` (`project_stance_cue`) | orion-thought, the unified turn's `stance_react` | <= 400 chars: phase and local time, what Orion is on, what it came from, Juniper's last turn, open threads, last sleep. Every clause cites `[arc:<id>]`. Frame missing / invalid / another local day / older than 900 s: `text == ""` with `skip_reason`. No open arc: a rest line. |
+| `day_block.py` (`render_closed_day_block`) | Orion's Day letter (Hub gather -> digest) | <= 2,400 chars for one closed day: arc counts, Juniper's turns, top attention subjects, curiosity runs, sleep, images, expectations, refusals, threads, instrument warnings. Lines cite `[arc:<id>]`, whole-day counts `[day:<date>]`. First line: "as recorded at close". |
+| `citations.py` | stance pipeline, durable-runs letter graph, Hub letter reread | The gate: unknown `arc:` ids removed and counted; a sentence naming a shown label or local clock time with no `[arc:]` counted and labelled `UNVERIFIED` (never blocked). |
+
+Results land in `thought_decision.day_citations` (Hub turn trace) and
+`orion_day_letter.sources.arc_citations`. Kill switches: `TEMPORAL_SELF_STANCE_CUE_ENABLED`
+(orion-thought), `TEMPORAL_SELF_DAY_BLOCK_ENABLED` (orion-hub). Fixtures: `tests/data/`
+(rebuild with `tests/data/build_fixtures.py`). Latency eval:
+`services/orion-thought/evals/run_temporal_self_cue_latency_eval.py`.

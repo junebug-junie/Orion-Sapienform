@@ -159,3 +159,57 @@ def test_api_chat_turn_trace_route_returns_fused_body(monkeypatch) -> None:
     out = asyncio.run(chat_turn_trace_routes.api_chat_turn_trace("corr-route"))
     assert out["correlation_id"] == "corr-route"
     assert out["route_signal_inferred"] == "classic_planrunner"
+
+
+class _FakeResult:
+    def __init__(self, row):
+        self._row = row
+
+    def mappings(self):
+        return self
+
+    def first(self):
+        return self._row
+
+
+class _FakeConn:
+    def __init__(self, row, seen):
+        self._row, self._seen = row, seen
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def execute(self, stmt, params):
+        self._seen.append(str(stmt))
+        return _FakeResult(self._row)
+
+
+class _FakeEngine:
+    def __init__(self, row):
+        self.row, self.seen = row, []
+
+    def connect(self):
+        return _FakeConn(self.row, self.seen)
+
+
+def test_load_thought_decision_returns_day_citations(monkeypatch) -> None:
+    """Temporal Self patch 4: the turn trace carries the stored citation check (UNVERIFIED label)."""
+    from datetime import datetime
+
+    row = {"event_id": "t-1", "correlation_id": "c-1", "session_id": "s-1", "created_at": datetime(2026, 10, 11, 23, 0),
+           "imperative": "Stay.", "tone": "warm", "strain_refs": [], "stance_harness_slice": None,
+           "disposition": "proceed", "disposition_reasons": [], "boundary_register": False,
+           "repair_pressure_level": None, "trust_rupture_score": None,
+           "day_citations": {"shown": 2, "cited_valid": [], "rejected_unknown": [], "uncited_day_sentences": 1,
+                             "uncited_examples": ["Chat prediction error kept me busy."], "label": "UNVERIFIED",
+                             "action": "kept"},
+           "llm_profile": "brain", "producer": "stance_react_v1", "model_id": None}
+    engine = _FakeEngine(row)
+    monkeypatch.setattr(chat_turn_trace_routes, "_postgres_engine", lambda: engine)
+    out = chat_turn_trace_routes._load_thought_decision("c-1")
+    assert "day_citations" in engine.seen[0]
+    assert out["day_citations"]["label"] == "UNVERIFIED"
+    assert out["day_citations"]["uncited_day_sentences"] == 1

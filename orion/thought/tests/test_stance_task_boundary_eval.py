@@ -18,7 +18,7 @@ def test_accepts_actual_stance_without_transport_metadata():
     assert assess_response(response(), 'test')['valid_stance']
 
 
-@pytest.mark.parametrize('key', ['grounding_capsule', 'autonomy_slice', 'summary', 'priors_tested'])
+@pytest.mark.parametrize('key', ['grounding_capsule', 'autonomy_slice', 'day_citations', 'summary', 'priors_tested'])
 def test_rejects_invented_or_downstream_fields_without_mutating_input(key):
     raw = response()
     raw[key] = {}
@@ -47,3 +47,10 @@ def test_accepts_bare_turn_token_the_prompt_asks_for():
     raw = response()
     raw['evidence_refs'] = ['hub:turn']
     assert assess_response(raw, 'test')['valid_stance']
+
+
+def test_day_arc_in_task_evidence_fails_the_boundary():
+    """Patch 4: with the day cue present, a task stance must not cite the day as its evidence."""
+    raw = response()
+    raw['evidence_refs'] = ['hub:turn', 'arc:2ce0b486a356bbd2']
+    assert not assess_response(raw, 'test')['valid_stance']

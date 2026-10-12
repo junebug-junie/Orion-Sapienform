@@ -629,6 +629,18 @@ class ThoughtSettings(BaseSettings):
     mind_coloring_max_items: int = Field(3, alias="ORION_THOUGHT_MIND_COLORING_MAX_ITEMS")
     channel_mind_artifact: str = Field("orion:mind:artifact", alias="CHANNEL_MIND_ARTIFACT")
 
+    # --- Temporal Self patch 4: "my day" cue for stance_react (app/temporal_self_cue.py) ---
+    # One short paragraph rendered from orion-durable-runs' current day frame (no LLM), shown to
+    # the unified turn's stance step. Kill switch: false = stance_react runs exactly as before.
+    # The frame older than MAX_AGE_SEC, for another local day, or not fetched within
+    # FETCH_TIMEOUT_SEC renders nothing. The fetch overlaps Mind enrichment.
+    temporal_self_stance_cue_enabled: bool = Field(True, alias="TEMPORAL_SELF_STANCE_CUE_ENABLED")
+    temporal_self_frame_url: str = Field("http://durable-runs:8121", alias="TEMPORAL_SELF_FRAME_URL")
+    temporal_self_cue_max_age_sec: float = Field(900.0, gt=0.0, alias="TEMPORAL_SELF_CUE_MAX_AGE_SEC")
+    temporal_self_cue_fetch_timeout_sec: float = Field(
+        0.5, gt=0.0, le=5.0, alias="TEMPORAL_SELF_CUE_FETCH_TIMEOUT_SEC"
+    )
+
     # --- Reasoning activity projection (always-on consumer; harmless when idle) ---
     # Consume per-call ReasoningCallV1 telemetry and materialize a rolling-window
     # ReasoningActivityV1 for φ. The buffer is capped (max_calls) so memory is

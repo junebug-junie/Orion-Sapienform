@@ -16,6 +16,8 @@ from orion.thought.coalition import (
 )
 from orion.thought.policy_refusal import evaluate_thought_disposition
 from orion.thought.stance_quality import enforce_thought_stance_quality
+from orion.schemas.temporal_self import DayCitationCheckV1, TemporalSelfStanceCueV1
+from orion.temporal_self.citations import ARC_EVIDENCE_RE, arc_ref, check_arc_citations, gate_arc_refs
 
 logger = logging.getLogger(__name__)
 
@@ -229,6 +231,8 @@ def parse_stance_react_payload(
     # drive/tension state, assembled deterministically in cortex-exec and mapped on
     # from result metadata — never authored by the stance LLM.
     raw.pop("autonomy_slice", None)
+    # And for the day-citation check: the gate's result, never the model's claim about it.
+    raw.pop("day_citations", None)
     # Record identity is owned by the transport, never the stance LLM: it has no
     # clock and no id source, and invents plausible values when asked.
     raw.pop("event_id", None)
@@ -239,11 +243,61 @@ def parse_stance_react_payload(
     return ThoughtEventV1.model_validate(normalize_stance_react_raw(raw))
 
 
+def _merge_day_checks(checks: list[DayCitationCheckV1], refs_rejected: list[str],
+                      refs_valid: list[str], shown: int) -> DayCitationCheckV1:
+    valid: list[str] = []
+    for ref in refs_valid + [r for c in checks for r in c.cited_valid]:
+        if ref not in valid:
+            valid.append(ref)
+    rejected = list(refs_rejected) + [r for c in checks for r in c.rejected_unknown]
+    uncited = sum(c.uncited_day_sentences for c in checks)
+    examples = [e for c in checks for e in c.uncited_examples]
+    label = "UNVERIFIED" if uncited else ("verified" if valid else "no_day_claims")
+    return DayCitationCheckV1(
+        shown=shown, cited_valid=valid, rejected_unknown=rejected, uncited_day_sentences=uncited,
+        uncited_examples=examples[:5], label=label, action="stripped" if rejected else "kept",
+    )
+
+
+def gate_day_citations(
+    thought: ThoughtEventV1,
+    day_cue: TemporalSelfStanceCueV1 | None,
+) -> tuple[ThoughtEventV1, set[str]]:
+    """Temporal Self patch 4: check this stance's references to Orion's own day.
+
+    Arc ids the cue showed join the allowed evidence set; any other ``arc:`` ref is removed from
+    evidence_refs, strain_refs (which widen the allowed set, so an unknown id there would launder
+    itself) and the imperative/tone text, and counted. A sentence naming a shown label without
+    citing its arc is counted and the check labelled UNVERIFIED -- never blocked or retried.
+    Returns (thought with ``day_citations`` set, the ``arc:<id>`` refs to add to the coalition)."""
+    shown = list(day_cue.arc_ids) if day_cue is not None and day_cue.text else []
+    labels = dict(day_cue.labels) if day_cue is not None and day_cue.text else {}
+    evidence, rejected_e = gate_arc_refs(thought.evidence_refs, shown)
+    strain, rejected_s = gate_arc_refs(thought.strain_refs, shown)
+    cited_refs = [r for r in evidence + strain if ARC_EVIDENCE_RE.match(r)]
+    cited_ids = [r[4:] for r in cited_refs]
+    imperative, check_i = check_arc_citations(thought.imperative, shown, labels=labels, cited_elsewhere=cited_ids)
+    tone, check_t = check_arc_citations(thought.tone, shown, labels=labels, cited_elsewhere=cited_ids)
+    touched = bool(shown or rejected_e or rejected_s or check_i.rejected_unknown or check_t.rejected_unknown)
+    if not touched:
+        return thought, set()
+    check = _merge_day_checks([check_i, check_t], rejected_e + rejected_s, cited_refs, len(shown))
+    gated = thought.model_copy(update={
+        "evidence_refs": evidence, "strain_refs": strain, "imperative": imperative, "tone": tone,
+        "day_citations": check,
+    })
+    return gated, {arc_ref(a) for a in shown}
+
+
 def apply_stance_react_pipeline(
     thought: ThoughtEventV1,
     request: StanceReactRequestV1,
+    *,
+    day_cue: TemporalSelfStanceCueV1 | None = None,
 ) -> ThoughtEventV1:
     coalition_ids = coalition_ids_from_association(request.association)
+    thought, day_arc_refs = gate_day_citations(thought, day_cue)
+    coalition_ids = coalition_ids | day_arc_refs
     aligned = align_evidence_refs_to_coalition(thought, coalition_ids)
     enriched, _ = enforce_thought_stance_quality(aligned, request.stance_inputs)
     decision = evaluate_thought_disposition(

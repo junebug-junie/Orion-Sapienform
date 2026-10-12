@@ -8,6 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from orion.schemas.attention_frame import AttentionBroadcastProjectionV1
 from orion.schemas.pre_turn_appraisal import TurnAppraisalBundleV1
 from orion.schemas.gpu_pool import GpuLeaseRefV1
+from orion.schemas.temporal_self import DayCitationCheckV1
 
 
 class CoalitionSnapshotV1(BaseModel):
@@ -109,6 +110,11 @@ class ThoughtEventV1(BaseModel):
     # cross_cutting, foresight_note, and optionally user_intent. Scalar str
     # values only — consumers must not treat this as an open bag.
     mind_work_shape: dict[str, str] | None = None
+    # Temporal Self patch 4: what the citation gate found in this stance's references to
+    # Orion's own day (the "my day" cue). Transport-owned: set by apply_stance_react_pipeline,
+    # never by the stance LLM (parse_stance_react_payload drops a model-supplied value).
+    # None when no day cue was shown and no arc was cited.
+    day_citations: DayCitationCheckV1 | None = None
 
     llm_profile: str = "brain"
     producer: str = "stance_react_v1"
@@ -144,6 +150,9 @@ class ThoughtDecisionRecordV1(BaseModel):
     boundary_register: bool = False
     repair_pressure_level: float | None = None
     trust_rupture_score: float | None = None
+    # Temporal Self patch 4 (thought_decision.day_citations, nullable jsonb): the citation gate's
+    # result, with label UNVERIFIED when a sentence named the shown day without citing an arc.
+    day_citations: DayCitationCheckV1 | None = None
     llm_profile: str = "brain"
     producer: str = "stance_react_v1"
     model_id: str | None = None

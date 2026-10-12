@@ -262,3 +262,69 @@ def test_self_inquiry_flag_does_not_turn_on_investigation_pacing():
     bus.redis.values[cooldown_key] = (_now() - timedelta(seconds=20000)).isoformat()
     loop = _loop(bus, arousal_reader=_reader(), arousal_pacing_enabled=False, arousal_self_inquiry_enabled=True)
     assert asyncio.run(loop.tick()) is None
+
+
+# --- reader 7: outreach cooldown (strained refuses) ---------------------------------------
+
+
+def _ogate(**over):
+    from scripts.endogenous_outreach import OutreachGateInputs
+
+    base = dict(enabled=True, turn_in_flight=False, local_hour=14, quiet_start_hour=23, quiet_end_hour=8,
+                seconds_since_last_outreach=4000.0, min_cooldown_sec=2700.0, sent_today=0, daily_cap=4)
+    base.update(over)
+    return OutreachGateInputs(**base)
+
+
+def test_outreach_gate_level_effects():
+    from scripts.endogenous_outreach import outreach_block_reason
+
+    assert outreach_block_reason(_ogate(arousal_level="strained")) == "arousal_strained"
+    for level in ("engaged", "idle", None):
+        assert outreach_block_reason(_ogate(arousal_level=level)) is None, level
+    # Door-A (a finished curiosity run with something to say) skips it like the cooldown.
+    assert outreach_block_reason(_ogate(arousal_level="strained"), skip_schedule_gates=True) is None
+
+
+def _outreach_with(raw, *, enabled=True):
+    import time
+
+    from test_endogenous_outreach import _outreach
+
+    o = _outreach(min_cooldown_sec=2700.0, arousal_reader=_reader(enabled=enabled))
+    o._bus = _bus_with(raw)
+    o._last_outreach_at = time.time() - 4000.0
+    return o
+
+
+def test_strained_outreach_tick_refuses_and_status_reports_it():
+    o = _outreach_with(_state("strained"))
+    result = asyncio.run(o._outreach_once(force=False))
+    assert result.get("reason") == "arousal_strained"
+    status = o.status()
+    assert status["arousal"]["level"] == "strained" and status["block_reason"] == "arousal_strained"
+
+
+@pytest.mark.parametrize("raw_name", ["engaged", "idle", *UNKNOWN])
+def test_outreach_unchanged_unless_strained(raw_name):
+    from scripts.endogenous_outreach import outreach_block_reason
+
+    raw = _state(raw_name) if raw_name in LEVELS else _unknown(raw_name)
+    o = _outreach_with(raw)
+    asyncio.run(o.arousal_reader.refresh(o._bus))
+    off = _outreach_with(raw, enabled=False)
+    assert outreach_block_reason(o._gate_inputs()) == outreach_block_reason(off._gate_inputs()) is None
+
+
+@pytest.mark.parametrize("level", LEVELS)
+def test_outreach_flag_off_is_today(level):
+    o = _outreach_with(_state(level), enabled=False)
+    asyncio.run(o.arousal_reader.refresh(o._bus))
+    assert o._gate_inputs().arousal_level is None
+
+
+def test_outreach_tick_survives_a_disconnected_bus():
+    o = _outreach_with(None)
+    o._bus = _NotConnected()
+    assert asyncio.run(o.arousal_reader.refresh(o._bus)).level == "unknown"
+    assert o._gate_inputs().arousal_level is None

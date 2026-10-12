@@ -557,6 +557,12 @@ async def startup_event():
                     max_age_sec=settings.ORION_REST_DRIVE_MAX_AGE_SEC,
                     name="outreach",
                 ),
+                # Orion's arousal: strained refuses a background outreach (scripts/arousal_reader.py).
+                arousal_reader=ArousalReader(
+                    enabled=settings.HUB_ENDOGENOUS_OUTREACH_AROUSAL_ENABLED,
+                    max_age_sec=settings.ORION_REGULATION_READER_MAX_AGE_SEC,
+                    name="outreach",
+                ),
                 daily_cap=settings.HUB_ENDOGENOUS_OUTREACH_DAILY_CAP,
                 quiet_start_hour=settings.HUB_ENDOGENOUS_OUTREACH_QUIET_START_HOUR,
                 quiet_end_hour=settings.HUB_ENDOGENOUS_OUTREACH_QUIET_END_HOUR,

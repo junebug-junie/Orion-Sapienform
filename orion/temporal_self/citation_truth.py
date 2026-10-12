@@ -383,4 +383,3 @@ def summarize(rows: list[dict[str, Any]]) -> dict[str, Any]:
         w["decided_share"] = round(decided / w["sentences"], 3) if w["sentences"] else None
         out[key] = w
     return out
-

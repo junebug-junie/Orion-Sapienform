@@ -24,7 +24,7 @@ from orion.substrate.activation import (
 )
 from orion.substrate.dynamics import SubstrateDynamicsEngine
 from orion.substrate.falkor_codec import (
-    DYNAMICS_ENGINE_OWNED_METADATA_KEYS,
+    ACTIVATION_STATE_KEYS,
     decode_node,
     encode_node_properties,
 )
@@ -295,7 +295,7 @@ def test_stamp_round_trips_through_falkor_codec_for_every_durable_kind() -> None
         row = {key: props.get(key) for key in NATIVE_NODE_RETURN_FIELDS}
         decoded = decode_node(row)
         assert decoded.metadata[ACTIVATION_DECAYED_AT_KEY] == stamp
-    assert ACTIVATION_DECAYED_AT_KEY in DYNAMICS_ENGINE_OWNED_METADATA_KEYS
+    assert ACTIVATION_DECAYED_AT_KEY in ACTIVATION_STATE_KEYS
 
 
 def test_stamp_unaware_writer_is_stamped_with_its_own_observed_at() -> None:

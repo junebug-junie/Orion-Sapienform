@@ -123,7 +123,7 @@ class _RecordingStore:
     def get_node_by_id(self, node_id):
         return self.nodes.get(node_id)
 
-    def upsert_node(self, *, identity_key, node) -> None:
+    def upsert_node(self, *, identity_key, node, skip_metadata_keys=None) -> None:
         self.nodes[node.node_id] = node
 
 

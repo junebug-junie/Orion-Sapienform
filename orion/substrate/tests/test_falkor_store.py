@@ -1450,10 +1450,16 @@ def test_falkor_upsert_node_skip_metadata_keys_excludes_from_cypher_set_clause()
     )
 
     cypher, params = client.calls[-1]
-    assert "n.prediction_error = $prediction_error" not in cypher
-    assert "n.contributing_turn_ids_json = $contributing_turn_ids_json" not in cypher
-    # dynamic_pressure isn't in the skip set -- still a normal, unaffected write.
-    assert "n.dynamic_pressure = $dynamic_pressure" in cypher
+    on_create, on_match = cypher.split("ON CREATE SET", 1)[1].split("ON MATCH SET", 1)
+    # Skipped keys: never written over an existing node (ON MATCH), still set
+    # when this call creates the node (ON CREATE), so a new node is complete.
+    assert "n.prediction_error = $prediction_error" not in on_match
+    assert "n.contributing_turn_ids_json = $contributing_turn_ids_json" not in on_match
+    assert "n.prediction_error = $prediction_error" in on_create
+    # dynamic_pressure is tick-owned: ON CREATE only for every writer, skip
+    # set or not (TICK_OWNED_NODE_PROPERTIES, 2026-10-12).
+    assert "n.dynamic_pressure = $dynamic_pressure" in on_create
+    assert "n.dynamic_pressure = $dynamic_pressure" not in on_match
 
 
 def test_falkor_upsert_node_skip_metadata_keys_preserves_cached_value():
@@ -1479,7 +1485,7 @@ def test_falkor_upsert_node_skip_metadata_keys_preserves_cached_value():
     cached = store.get_node_by_id("concept-skip-beta")
     assert cached.metadata["prediction_error"] == 0.42
     cypher, params = client.calls[-1]
-    assert "n.prediction_error = $prediction_error" not in cypher
+    assert "n.prediction_error = $prediction_error" not in cypher.split("ON MATCH SET", 1)[1]
 
 
 def test_externally_owned_metadata_keys_translation_matches_real_encoding():

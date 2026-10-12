@@ -89,8 +89,13 @@ SELECT row_to_json(r) FROM (
 ROLLBACK;"""
 
 
-def replay(rows, start, end, *, tick_sec=120.0, engaged_minutes=DEFAULT_ENGAGED_MINUTES,
-           floor=DEFAULT_GPU_QUEUE_FLOOR, sustain_sec=DEFAULT_GPU_SUSTAIN_SEC, clear_sec=DEFAULT_CLEAR_SEC):
+def replay(rows, start, end, **kw):
+    return summarize(replay_readings(rows, start, end, **kw), utc(end))
+
+
+def replay_readings(rows, start, end, *, tick_sec=120.0, engaged_minutes=DEFAULT_ENGAGED_MINUTES,
+                    floor=DEFAULT_GPU_QUEUE_FLOOR, sustain_sec=DEFAULT_GPU_SUSTAIN_SEC, clear_sec=DEFAULT_CLEAR_SEC):
+    """Every regulate step's ArousalReadingV1, in order (the readers' eval replays these)."""
     start, end = utc(start), utc(end)
     turns = sorted(utc(r["at"]) for r in rows if r["kind"] == "turn")
     heat = sorted((utc(r["at"]), float(r["temp_c"])) for r in rows
@@ -145,7 +150,7 @@ def replay(rows, start, end, *, tick_sec=120.0, engaged_minutes=DEFAULT_ENGAGED_
                                 gpu_sustain_sec=sustain_sec, clear_sec=clear_sec, max_prev_gap_sec=3 * tick_sec)
         prev_inputs = inputs
         readings.append(prev)
-    return summarize(readings, end)
+    return readings
 
 
 def summarize(readings, end):
@@ -183,16 +188,19 @@ def summarize(readings, end):
 
 
 def _spans(readings, end, level):
-    out, open_at = [], None
+    out, open_at, seen = [], None, Counter()
     for cur, nxt in zip(readings, readings[1:] + [None]):
         if cur.arousal_level == level and open_at is None:
-            open_at = cur.observed_at
+            open_at, seen = cur.observed_at, Counter()
+        if open_at is not None:
+            seen.update(cur.reasons)  # every step's reasons, not just the closing step's
         closes = nxt is None or nxt.arousal_level != level
         if open_at is not None and closes:
             stop = nxt.observed_at if nxt is not None else end
             out.append({"from": open_at.isoformat(), "to": stop.isoformat(),
                         "minutes": round((stop - open_at).total_seconds() / 60.0, 1),
-                        "reasons": sorted({r for r in cur.reasons})})
+                        "reasons": dict(seen.most_common()),
+                        })
             open_at = None
     return out
 

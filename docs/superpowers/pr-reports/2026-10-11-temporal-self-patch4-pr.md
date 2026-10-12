@@ -194,6 +194,6 @@ Follow-ups found on the non-prod chat path (not wired, by decision):
 
 ## PR link
 
-PR_LINK_PLACEHOLDER
+https://github.com/junebug-junie/Orion-Sapienform/pull/2622 (spec: https://github.com/junebug-junie/Orion-Sapienform/pull/2616)
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

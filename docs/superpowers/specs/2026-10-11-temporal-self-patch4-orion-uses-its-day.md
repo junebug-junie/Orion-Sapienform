@@ -1,6 +1,8 @@
 # Temporal Self, patch 4: Orion uses its own day
 
-Status: PROPOSAL (design mode, nothing implemented). Parent spec:
+Status: APPROVED with changes (Juniper, 2026-10-11): see "Decisions (Juniper, 2026-10-11)" at the
+end, which override the body where they differ. Implemented in branch
+`feat/temporal-self-patch4-uses-its-day`. Parent spec:
 `docs/superpowers/specs/2026-09-26-temporal-self-design.md` (PR #2369, rev 4), "Recommended next
 patch" row 8. Live data pulled read-only on 2026-10-11 06:28-06:45 UTC.
 
@@ -384,3 +386,38 @@ if Juniper wants it back.
    reflection.
 
 PR: https://github.com/junebug-junie/Orion-Sapienform/pull/2616
+
+## Decisions (Juniper, 2026-10-11)
+
+These override the body above where they differ. The implementation follows these.
+
+1. **Closed-day reader = Orion's Day letter only.** `daily_metacog_v1` stays off (it only sent
+   telemetry updates) and gets no new wiring and no grounding flag. The orion-actions row in the env
+   table above is dropped.
+2. **Chat cue = the unified turn's `stance_react` only.** That is the production chat path. Nothing
+   changes in `chat_general`, `chat_stance_brief.j2`, or the old `recent_attention` slot, and
+   orion-cortex-exec gets no new keys. Anything useful found only on the non-prod path is listed as a
+   follow-up, not wired. The orion-cortex-exec rows in the env table above are dropped; the fetch
+   lives in orion-thought (it overlaps Mind enrichment there).
+3. **An uncited sentence about the day is marked UNVERIFIED**, visibly: in the stored check
+   (`thought_decision.day_citations.label`, `orion_day_letter.sources.arc_citations.*.label`), the Hub
+   turn trace, and the letter reread's per-part check. It is never blocked and never retried. An
+   unknown arc id is still always removed from the text and counted. (This replaces the letter's
+   "one retry, then strip" in the body.)
+4. **Staleness cutoff 900 s.** A frame older than that renders nothing.
+5. **Closed days stay frozen.** The block's first line says "as recorded at close" and that rows
+   which arrived later are not in it.
+
+Standing rules applied: evidence is enforced by mechanism (deterministic templates from persisted
+arcs, no LLM in rendering, `[arc:<id>]` on every clause, a citation gate with a stored count and a
+visible trace); Orion may narrate its plumbing (no word filters, no eval penalizing internal names);
+a missing, wrong-day or stale record renders nothing, never a placeholder; a real quiet stretch
+renders as rest.
+
+Two details settled during implementation:
+
+- Whole-day counts in the closed-day block (arc totals, expectations, refusals, day-level instrument
+  warnings) cite the day record itself as `[day:<date>]`, so every line still names its source.
+- The letter reads `temporal_self_day` with SQL inside Orion's Day gather (the same connection and
+  "a failed source names its gap" rule as every other letter source); stance reads
+  `GET /temporal-self/frame` over HTTP (orion-thought has no DSN for the chronicle tables).

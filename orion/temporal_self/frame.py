@@ -35,6 +35,7 @@ def summarize(arc: TemporalSelfArcV1) -> ArcSummaryV1:
         arc_id=arc.arc_id, kind=arc.kind, subject_ref=arc.subject_ref, subject_label=arc.subject_label,
         began_at=arc.began_at, ended_at=arc.ended_at, status=arc.status,
         attention_returns=arc.attention_returns, cumulative_dwell_sec=round(arc.cumulative_dwell_sec, 3),
+        last_seen_at=arc.last_seen_at,
     )
 
 

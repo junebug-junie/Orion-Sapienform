@@ -24,6 +24,11 @@ Sources:
 * world pulse -- the day's world_pulse_digest, if any.
 * corrections -- orion_day_correction rows recorded in the window (letter claims Juniper and
   Orion agreed were wrong; orion/orion_day/corrections.py), with their outcome so far.
+* temporal_day -- the closed ``temporal_self_day`` row for the letter date (Orion's own chronology
+  of arcs, Temporal Self patch 4), rendered into a short cited block
+  (``orion/temporal_self/day_block.py``). Read from the table directly, like every source here
+  (same connection, same "a failed source names its gap" rule); a day that is not closed yet is
+  ``empty`` and renders nothing.
 """
 
 from __future__ import annotations
@@ -56,6 +61,8 @@ from orion.schemas.orion_day import (
     WorldPulseDigestItemV1,
     WorldPulseDigestV1,
 )
+from orion.schemas.temporal_self import TemporalSelfDayBlockV1, TemporalSelfDayV1
+from orion.temporal_self.day_block import render_closed_day_block
 from orion.world_pulse_read.introspect import reading_items_between
 
 logger = logging.getLogger(__name__)
@@ -171,6 +178,10 @@ SELECT correction_id, created_at, letter_date, ref, claim, correction, evidence,
 FROM orion_day_correction
 WHERE created_at >= $1 AND created_at < $2
 ORDER BY created_at, correction_id
+"""
+
+TEMPORAL_DAY_SQL = """
+SELECT day_json FROM temporal_self_day WHERE day_id = $1
 """
 
 WORLD_PULSE_DIGEST_SQL = """
@@ -422,6 +433,16 @@ async def gather_corrections(conn: Any, start: datetime, end: datetime) -> list[
     ) for r in await conn.fetch(CORRECTIONS_SQL, start, end)]
 
 
+async def gather_temporal_day(conn: Any, letter_date: date, tz_name: str) -> TemporalSelfDayBlockV1 | None:
+    row = await conn.fetchrow(TEMPORAL_DAY_SQL, letter_date.isoformat())
+    if row is None:
+        return None
+    day = TemporalSelfDayV1.model_validate(_obj(row["day_json"]))
+    if day.day_id != letter_date.isoformat():  # never show another day's record as this one
+        return None
+    return render_closed_day_block(day, tz_name=tz_name)
+
+
 async def gather_orion_day(
     conn: Any,
     letter_date: date,
@@ -429,6 +450,7 @@ async def gather_orion_day(
     now: datetime | None = None,
     github_repo: str = DEFAULT_GITHUB_REPO,
     tz_name: str = ORION_DAY_TIMEZONE,
+    temporal_day: bool = True,
 ) -> OrionDayMaterialV1:
     """Read everything Orion did on ``letter_date`` (local ``tz_name`` day). Read-only."""
     window = orion_day_window(letter_date, tz_name=tz_name)
@@ -452,6 +474,9 @@ async def gather_orion_day(
     github = await _read(sources, "github_compactor", lambda: gather_github_compactor(conn, letter_date, github_repo, end), None)
     digest = await _read(sources, "world_pulse_digest", lambda: gather_world_pulse_digest(conn, letter_date), None)
     corrections = await _read(sources, "corrections", lambda: gather_corrections(conn, start, end), [])
+    # Kill switch off: not read at all, so the letter is exactly what it was before patch 4.
+    day_block = (await _read(sources, "temporal_day", lambda: gather_temporal_day(conn, letter_date, tz_name), None)
+                 if temporal_day else None)
     return OrionDayMaterialV1(
         letter_date=letter_date,
         timezone=tz_name,
@@ -472,5 +497,6 @@ async def gather_orion_day(
         github_compactor=github,
         world_pulse_digest=digest,
         corrections=corrections,
+        temporal_day=day_block,
         sources=sources,
     )

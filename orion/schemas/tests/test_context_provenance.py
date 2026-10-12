@@ -82,3 +82,8 @@ def test_classify_returns_registered_kind():
     assert classify("self_state") is None
     assert classify("recall_bundle") == "memory_recall"
     assert classify("orion_identity_summary") == "static_identity_config"
+
+
+def test_temporal_self_cue_is_a_live_projection():
+    """Temporal Self patch 4: the stance day cue is classified, so the grounding capsule names it."""
+    assert classify("temporal_self_cue") == "live_runtime_projection"

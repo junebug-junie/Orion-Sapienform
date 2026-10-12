@@ -18,7 +18,8 @@ class ThoughtDecisionSQL(Base):
     stance_harness_slice unredacted (this is the Turn Trace operator debug
     surface -- see orion/schemas/thought.py's ThoughtDecisionRecordV1
     docstring); evidence_refs/grounding_capsule/autonomy_slice still never
-    reach this table.
+    reach this table. day_citations (patch 4) does: it holds arc ids and short
+    excerpts of the stance's own imperative/tone, no memory digest.
     """
 
     __tablename__ = "thought_decision"
@@ -39,6 +40,11 @@ class ThoughtDecisionSQL(Base):
     boundary_register = Column(Boolean, default=False)
     repair_pressure_level = Column(Float, nullable=True)
     trust_rupture_score = Column(Float, nullable=True)
+
+    # Temporal Self patch 4: the citation gate's result for this stance's references to Orion's
+    # own day (DayCitationCheckV1; label UNVERIFIED when a day sentence cited no arc). Needs
+    # services/orion-sql-db/manual_migration_thought_decision_day_citations_v1.sql.
+    day_citations = Column(_JSONB, nullable=True)
 
     llm_profile = Column(String, nullable=True)
     producer = Column(String, nullable=True)

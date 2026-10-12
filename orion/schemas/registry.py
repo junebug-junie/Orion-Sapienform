@@ -712,12 +712,15 @@ from orion.schemas.temporal_self import (
     ArcAttentionSummaryV1,
     ArcBodySummaryV1,
     ArcSummaryV1,
+    DayCitationCheckV1,
     ExpectationRefV1,
     OpenThreadV1,
     TemporalSelfArcV1,
+    TemporalSelfDayBlockV1,
     TemporalSelfDayV1,
     TemporalSelfEventV1,
     TemporalSelfFrameV1,
+    TemporalSelfStanceCueV1,
     TemporalSelfStateV1,
 )
 from orion.schemas.field_state import FieldEdgeV1, FieldStateV1
@@ -1435,6 +1438,11 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "ArcBodySummaryV1": ArcBodySummaryV1,
     "OpenThreadV1": OpenThreadV1,
     "ExpectationRefV1": ExpectationRefV1,
+    # Patch 4 (Orion uses its own day): the two readers' rendered views and the citation gate's
+    # result (carried on ThoughtEventV1.day_citations and orion_day_letter.sources.arc_citations).
+    "TemporalSelfStanceCueV1": TemporalSelfStanceCueV1,
+    "TemporalSelfDayBlockV1": TemporalSelfDayBlockV1,
+    "DayCitationCheckV1": DayCitationCheckV1,
     "PolicyDecisionV1": PolicyDecisionV1,
     "PolicyDecisionFrameV1": PolicyDecisionFrameV1,
     "ProposalCandidateV1": ProposalCandidateV1,

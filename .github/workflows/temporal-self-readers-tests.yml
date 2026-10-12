@@ -1,0 +1,62 @@
+name: Temporal Self readers (patch 4)
+
+# The two readers of Orion's own day: the stance_react "my day" cue (orion-thought) with its
+# citation gate and Hub turn-trace surface, and the closed-day block in Orion's Day letter.
+on:
+  pull_request:
+    paths:
+      - "orion/temporal_self/**"
+      - "orion/schemas/temporal_self.py"
+      - "orion/schemas/thought.py"
+      - "orion/thought/**"
+      - "orion/cognition/prompts/stance_react.j2"
+      - "orion/orion_day/**"
+      - "orion/schemas/orion_day.py"
+      - "services/orion-thought/app/temporal_self_cue.py"
+      - "services/orion-thought/app/bus_listener.py"
+      - "services/orion-thought/app/settings.py"
+      - "services/orion-thought/tests/test_stance_temporal_self_cue.py"
+      - "services/orion-hub/scripts/chat_turn_trace_routes.py"
+      - "services/orion-hub/static/js/thought-process.js"
+      - "services/orion-hub/scripts/orion_day_introspect.py"
+      - "services/orion-hub/tests/test_chat_turn_trace_routes.py"
+      - "services/orion-hub/tests/test_turn_trace_panel_ui.py"
+      - "services/orion-hub/tests/test_orion_day_temporal_day.py"
+      - ".github/workflows/temporal-self-readers-tests.yml"
+  push:
+    branches: [main]
+    paths:
+      - "orion/temporal_self/**"
+      - "orion/schemas/temporal_self.py"
+      - "orion/thought/**"
+      - "services/orion-thought/app/temporal_self_cue.py"
+      - "services/orion-thought/app/bus_listener.py"
+      - "services/orion-hub/scripts/chat_turn_trace_routes.py"
+      - "services/orion-hub/static/js/thought-process.js"
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  readers:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      PYTHONPATH: ${{ github.workspace }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: |
+          python -m pip install -r services/orion-hub/tests/requirements-reading.txt
+          python -m pip install -r services/orion-thought/requirements.txt
+      - name: Renderers and gate (pure)
+        run: python -m pytest -q -p no:cacheprovider orion/temporal_self/tests orion/thought/tests
+      - name: orion-thought cue fetch and stance wiring
+        run: cd services/orion-thought && python -m pytest -q -p no:cacheprovider tests/test_stance_temporal_self_cue.py
+      - name: Hub turn trace (route + rendered panel, node) and letter closed-day block
+        run: |
+          cd services/orion-hub && python -m pytest -q -p no:cacheprovider \
+            tests/test_chat_turn_trace_routes.py tests/test_turn_trace_panel_ui.py \
+            tests/test_orion_day_temporal_day.py

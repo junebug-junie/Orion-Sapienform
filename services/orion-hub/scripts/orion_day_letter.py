@@ -171,6 +171,7 @@ class OrionDayLetterLoop:
         image_max_bytes: int = 450_000,
         source_service: str = "orion-hub",
         clock: Callable[[], datetime] | None = None,
+        temporal_day_enabled: bool = True,
     ) -> None:
         self.enabled = bool(enabled)
         self.email_enabled = bool(email_enabled)
@@ -190,6 +191,8 @@ class OrionDayLetterLoop:
         self.max_images = max(0, int(max_images))
         self.image_max_bytes = int(image_max_bytes)
         self.source_service = source_service
+        # Temporal Self patch 4 (TEMPORAL_SELF_DAY_BLOCK_ENABLED): read the closed day's own chronology.
+        self.temporal_day_enabled = bool(temporal_day_enabled)
         self._clock = clock or (lambda: datetime.now(timezone.utc))
         self._lock = asyncio.Lock()
         self._task: Optional[asyncio.Task] = None
@@ -326,6 +329,7 @@ class OrionDayLetterLoop:
                 brief = await build_orion_day_brief(
                     conn, letter_date, now=self._clock(), timeout_sec=self.timeout_sec,
                     carry_forward_ttl_hours=self.carry_forward_ttl_hours,
+                    temporal_day=self.temporal_day_enabled,
                 )
         except OrionDayEmptyError:
             self._empty_dates.add(letter_date)

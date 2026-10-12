@@ -57,7 +57,8 @@ REVERIE_FRAME_CHARS = 400
 MIN_CLIP_CHARS = 400
 
 _REF_RE = re.compile(r"\[((?:curiosity|curiosity_failed|self_sense|reading|reading_journal|dream|dream_offered|"
-                     r"chat_compactor|github_compactor|world_pulse_digest|visual_reverie|reverie|reverie_theme|correction)"
+                     r"chat_compactor|github_compactor|world_pulse_digest|visual_reverie|reverie|reverie_theme|correction|"
+                     r"arc|day)"
                      r":[^\]\s]+)\]")
 
 
@@ -321,6 +322,12 @@ def build_llm_view(
     if gaps:
         header += "\n\nSources that could not be read (their sections are missing, not empty): " + "; ".join(gaps)
 
+    if material.temporal_day is not None:
+        # Temporal Self patch 4: the closed day as Orion's chronology recorded it. Short (capped at
+        # 2,400 chars), never clipped, and counted in the header so the budget below accounts for it.
+        header += ("\n\n## My day as my own chronology recorded it (closed day; each line names the record it came from)\n\n"
+                   + material.temporal_day.text)
+
     sections = _full_text_blocks(material)
     bodies = _bodies(sections)
     cond.full_text_items_total = len(bodies)
@@ -377,6 +384,8 @@ def material_ref_records(material: OrionDayMaterialV1) -> dict[str, dict[str, An
     records |= {f"visual_reverie:{v.sha256[:16]}": dump(v) for v in material.visual_reveries}
     records |= {f"reverie:{t.thought_id[:8]}": dump(t) for t in material.reverie_thoughts}
     records |= {f"correction:{c.correction_id}": dump(c) for c in material.corrections}
+    if material.temporal_day is not None:
+        records |= dict(material.temporal_day.records)  # "arc:<id>" / "day:<id>" -> compact stored row
     for c in material.reverie_chains:
         records.setdefault(f"reverie_theme:{c.theme_key or 'unthemed'}", dump(c))
     return records

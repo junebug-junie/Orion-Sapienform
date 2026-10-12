@@ -56,6 +56,7 @@ from .mind_enrichment import (
     work_shape_from_coloring,
 )
 from .settings import settings
+from .temporal_self_cue import build_stance_cue
 from .visual_steps import run_visual_step
 
 logger = logging.getLogger("orion-thought.bus")
@@ -161,6 +162,7 @@ def build_stance_react_context(
     *,
     mind_coloring: dict[str, Any] | None = None,
     stance_prepare_requested: bool = False,
+    temporal_self_cue: str | None = None,
 ) -> dict[str, Any]:
     stance_inputs = (
         dict(request.stance_inputs)
@@ -218,6 +220,9 @@ def build_stance_react_context(
         context["retrieval_query"] = retrieval_query
     if mind_coloring is not None:
         context["mind_coloring"] = mind_coloring
+    if temporal_self_cue:
+        # Temporal Self patch 4: where Orion is in its own day (rendered from stored arcs, no LLM).
+        context["temporal_self_cue"] = temporal_self_cue
     if stance_prepare_requested:
         # cortex-exec waits for (and uses) the context it is already building for
         # this turn instead of building a second one (app/stance_prepare.py).
@@ -247,12 +252,14 @@ def build_stance_react_plan_request(
     *,
     mind_coloring: dict[str, Any] | None = None,
     stance_prepare_requested: bool = False,
+    temporal_self_cue: str | None = None,
 ) -> PlanExecutionRequest:
     """Build the cortex-exec plan request for the stance_react verb (one attempt, on the turn's own
     route and correlation id; which GPU serves it is orion-gpu-pool's decision)."""
     plan = build_plan_for_verb("stance_react", mode="brain")
     context = build_stance_react_context(
-        request, mind_coloring=mind_coloring, stance_prepare_requested=stance_prepare_requested
+        request, mind_coloring=mind_coloring, stance_prepare_requested=stance_prepare_requested,
+        temporal_self_cue=temporal_self_cue,
     )
     return PlanExecutionRequest(
         plan=plan,
@@ -274,6 +281,7 @@ async def execute_stance_react(
     client: CortexExecClient,
     mind_coloring: dict[str, Any] | None = None,
     stance_prepare_requested: bool = False,
+    temporal_self_cue: str | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any] | str]:
     """Run the stance_react plan once, on the turn's own route and correlation id, with the whole
     STANCE_REACT_TIMEOUT_SEC budget.
@@ -286,7 +294,8 @@ async def execute_stance_react(
     caller-side placement decision on top would only fight the pool, so it is gone.
     """
     plan_request = build_stance_react_plan_request(
-        request, mind_coloring=mind_coloring, stance_prepare_requested=stance_prepare_requested
+        request, mind_coloring=mind_coloring, stance_prepare_requested=stance_prepare_requested,
+        temporal_self_cue=temporal_self_cue,
     )
     exec_result = await client.execute_plan(
         source=_source(),
@@ -546,19 +555,28 @@ async def run_stance_react(
     # The stance_react lane is decided once, here: the prepare goes to the
     # prepare channel of client.request_channel, the stance RPC to that channel.
     prepare_task = _start_stance_prepare(request, client)
+    # Temporal Self patch 4: the day cue is fetched alongside Mind (bounded, fail-open), so it
+    # only adds wait when Mind is off or faster than the frame fetch's short timeout.
+    cue_task = asyncio.create_task(build_stance_cue(request.correlation_id),
+                                   name=f"temporal-self-cue-{request.correlation_id}")
     mind_started = time.perf_counter()
     mind_ms: float | None = None
     exec_result: dict[str, Any] | None = None
+    day_cue = None
     try:
         mind_coloring = await _maybe_build_mind_coloring(request, bus=bus)
         mind_ms = round((time.perf_counter() - mind_started) * 1000.0, 1)
+        day_cue = await cue_task
         exec_result, raw_payload = await execute_stance_react(
             request,
             client=client,
             mind_coloring=mind_coloring,
             stance_prepare_requested=prepare_task is not None,
+            temporal_self_cue=day_cue.text or None,
         )
     finally:
+        if not cue_task.done():
+            cue_task.cancel()
         if prepare_task is not None:
             # Also on a mind/stance failure or cancellation: never leave the
             # prepare RPC task (and its bus connection) orphaned.
@@ -570,7 +588,12 @@ async def run_stance_react(
         correlation_id=request.correlation_id,
         session_id=request.session_id,
     )
-    enriched = apply_stance_react_pipeline(thought, request)
+    enriched = apply_stance_react_pipeline(thought, request, day_cue=day_cue)
+    if enriched.day_citations is not None:
+        dc = enriched.day_citations
+        logger.info("temporal_self_day_citations corr=%s label=%s shown=%s cited=%s rejected=%s uncited=%s",
+                    request.correlation_id, dc.label, dc.shown, len(dc.cited_valid),
+                    len(dc.rejected_unknown), dc.uncited_day_sentences)
     capsule = _extract_grounding_capsule(exec_result)
     if capsule is not None:
         enriched = enriched.model_copy(update={"grounding_capsule": capsule})

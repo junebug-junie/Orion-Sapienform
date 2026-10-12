@@ -123,6 +123,14 @@ CONTEXT_PROVENANCE_REGISTRY: dict[str, ContextKeyProvenance] = {
         _entry("transport_bus_projection", "live_runtime_projection", "Live transport-bus projection."),
         _entry("active_node_pressure_projection", "live_runtime_projection", "Live substrate pressure-field projection."),
         _entry("attention_broadcast", "live_runtime_projection", "Live substrate attention-broadcast projection."),
+        _entry(
+            "temporal_self_cue",
+            "live_runtime_projection",
+            "Where Orion is in its own day: one paragraph rendered by a fixed template (no LLM) from "
+            "orion-durable-runs' current Temporal Self frame (GET /temporal-self/frame, at most "
+            "TEMPORAL_SELF_CUE_MAX_AGE_SEC old), every clause citing [arc:<id>]. Set by orion-thought "
+            "for the unified turn's stance_react only (app/temporal_self_cue.py).",
+        ),
         _entry("curiosity_signals", "live_runtime_projection", "Live curiosity/drive signals."),
         _entry("metacog_substrate_cue", "live_runtime_projection", "Compact live substrate cue for metacog prompts."),
         _entry("substrate_eventfulness_score", "live_runtime_projection", "Live substrate eventfulness score."),

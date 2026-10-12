@@ -1468,6 +1468,7 @@ async def startup_event():
             max_images=settings.HUB_ORION_DAY_MAX_IMAGES,
             image_max_bytes=settings.HUB_ORION_DAY_IMAGE_MAX_BYTES,
             source_service=settings.SERVICE_NAME,
+            temporal_day_enabled=settings.TEMPORAL_SELF_DAY_BLOCK_ENABLED,
         )
         if curiosity_investigation is not None:
             curiosity_investigation.run_state_hooks.append(orion_day_letter.on_run_state)

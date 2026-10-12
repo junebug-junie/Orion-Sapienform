@@ -1,0 +1,207 @@
+"""``project_stance_cue``: where Orion is in its day, one short paragraph for stance_react. Pure.
+
+A fixed template over the current ``TemporalSelfFrameV1`` (orion-durable-runs
+``GET /temporal-self/frame``). No model writes it. Every clause after the clock line carries the
+``[arc:<id>]`` it came from; a clause whose data is missing is left out, never filled in.
+
+Render nothing (``text == ""``, with ``skip_reason``) when the frame is missing or invalid, is
+for another local day, or is older than ``max_age_sec``. A fresh frame with no open arc is a
+real rest state and renders as one ("No attention or conversation arc is open right now.").
+A frame warning "broadcast log silent" drops the attention clauses (the record of what Orion
+attends to has stopped) and keeps the rest.
+"""
+
+from __future__ import annotations
+
+from datetime import datetime, timezone
+from typing import Any
+from zoneinfo import ZoneInfo
+
+from pydantic import ValidationError
+
+from orion.schemas.temporal_self import (
+    STANCE_CUE_MAX_CHARS,
+    ArcSummaryV1,
+    TemporalSelfFrameV1,
+    TemporalSelfStanceCueV1,
+)
+from orion.temporal_self.day import DEFAULT_TZ, as_utc, day_id_for, day_phase_for
+
+DEFAULT_MAX_AGE_SEC = 900.0
+MAX_FUTURE_SKEW_SEC = 60.0
+MAX_THREAD_REFS = 3
+SILENT_BROADCAST_WARNING = "broadcast log silent"
+
+PHASE_WORDS = {
+    "pre_dawn": "Pre-dawn",
+    "dawn": "Dawn",
+    "morning": "Morning",
+    "midday": "Midday",
+    "afternoon": "Afternoon",
+    "dusk": "Dusk",
+    "night": "Night",
+}
+
+
+def span_words(seconds: float) -> str:
+    """A duration in plain words: "under a minute", "25 min", "2 h", "5 h 13 min"."""
+    minutes = int(max(0.0, seconds) // 60)
+    if minutes < 1:
+        return "under a minute"
+    hours, rest = divmod(minutes, 60)
+    if hours == 0:
+        return f"{rest} min"
+    return f"{hours} h" if rest == 0 else f"{hours} h {rest} min"
+
+
+def _ago(now: datetime, at: datetime | None) -> str | None:
+    if at is None:
+        return None
+    return span_words((now - at).total_seconds())
+
+
+def _ref(arc: ArcSummaryV1) -> str:
+    return f"[arc:{arc.arc_id}]"
+
+
+def _subject(arc: ArcSummaryV1) -> str:
+    return arc.subject_label.strip() or arc.subject_ref
+
+
+def _skip(now: datetime, reason: str, frame: TemporalSelfFrameV1 | None = None) -> TemporalSelfStanceCueV1:
+    return TemporalSelfStanceCueV1(
+        rendered_at=now, skip_reason=reason,
+        day_id=frame.day_id if frame else None, frame_as_of=frame.as_of if frame else None,
+    )
+
+
+def _active_clause(now: datetime, arc: ArcSummaryV1 | None) -> str:
+    if arc is None:
+        return "No attention or conversation arc is open right now."
+    if arc.kind == "conversation":
+        last = _ago(now, arc.last_seen_at)
+        if last is not None:
+            return f"On now: talking with Juniper, last turn {last} ago {_ref(arc)}."
+        return f"On now: a conversation with Juniper, open for {span_words((now - arc.began_at).total_seconds())} {_ref(arc)}."
+    returns = ""
+    if arc.attention_returns > 0:
+        returns = f", back to it {arc.attention_returns} time{'s' if arc.attention_returns != 1 else ''} today"
+    return (f"On now: attention on {_subject(arc)} for {span_words((now - arc.began_at).total_seconds())}"
+            f"{returns} {_ref(arc)}.")
+
+
+_PREVIOUS_WORDS = {
+    "conversation": "a conversation with Juniper",
+    "curiosity": "a curiosity run",
+    "sleep": "a sleep cycle",
+    "imagery": "an image attempt",
+}
+
+
+def _previous_clause(now: datetime, arc: ArcSummaryV1) -> str:
+    what = f"attention on {_subject(arc)}" if arc.kind == "attention" else _PREVIOUS_WORDS.get(arc.kind, f"a {arc.kind} arc")
+    if arc.ended_at is not None:
+        return f"Before that: {what}, ended {_ago(now, arc.ended_at)} ago {_ref(arc)}."
+    if arc.last_seen_at is not None:  # suspended: set aside, may still return
+        return f"Before that: {what}, set aside {_ago(now, arc.last_seen_at)} ago {_ref(arc)}."
+    return f"Before that: {what} {_ref(arc)}."
+
+
+def project_stance_cue(
+    frame: TemporalSelfFrameV1 | dict[str, Any] | None,
+    now: datetime,
+    *,
+    max_age_sec: float = DEFAULT_MAX_AGE_SEC,
+    tz_name: str = DEFAULT_TZ,
+    max_chars: int = STANCE_CUE_MAX_CHARS,
+) -> TemporalSelfStanceCueV1:
+    now = now.astimezone(timezone.utc)
+    if frame is None:
+        return _skip(now, "fetch_failed")
+    if not isinstance(frame, TemporalSelfFrameV1):
+        try:
+            frame = TemporalSelfFrameV1.model_validate(frame)
+        except ValidationError:
+            return _skip(now, "invalid_frame")
+    if frame.day_id != day_id_for(now, tz_name):
+        return _skip(now, "wrong_day", frame)
+    as_of = as_utc(frame.as_of)
+    assert as_of is not None
+    if (now - as_of).total_seconds() > max_age_sec:
+        return _skip(now, "stale", frame)
+    if (as_of - now).total_seconds() > MAX_FUTURE_SKEW_SEC:
+        # A frame "from the future" means one of the two clocks is wrong: no ages can be trusted.
+        return _skip(now, "clock_skew", frame)
+
+    silent = any(w.startswith(SILENT_BROADCAST_WARNING) for w in frame.warnings)
+    dropped = 0
+    local = now.astimezone(ZoneInfo(tz_name))
+    phase = PHASE_WORDS.get(day_phase_for(now, tz_name), day_phase_for(now, tz_name))
+    head = (f"{phase}, {local.strftime('%a %H:%M')} local "
+            f"(day record as of {as_of.astimezone(ZoneInfo(tz_name)).strftime('%H:%M')}).")
+
+    # (clause, arcs it cites). Order is priority: the cap drops from the bottom.
+    clauses: list[tuple[str, list[ArcSummaryV1]]] = []
+    active = frame.active_arc
+    if active is not None and active.kind == "attention" and silent:
+        dropped += 1
+        active = None
+    elif active is None and silent:
+        # No open arc while the attention log is silent is not rest: the instrument stopped.
+        dropped += 1
+    else:
+        clauses.append((_active_clause(now, active), [active] if active else []))
+
+    previous = frame.previous_arc
+    if previous is not None and not (silent and previous.kind == "attention"):
+        clauses.append((_previous_clause(now, previous), [previous]))
+    elif previous is not None:
+        dropped += 1
+
+    if active is None or active.kind != "conversation":
+        talks = [a for a in frame.arcs_today if a.kind == "conversation" and a.last_seen_at is not None]
+        if talks:
+            last = max(talks, key=lambda a: (a.last_seen_at, a.arc_id))
+            if previous is None or last.arc_id != previous.arc_id:
+                clauses.append((f"Juniper last spoke {_ago(now, last.last_seen_at)} ago {_ref(last)}.", [last]))
+
+    concern = {a.subject_ref: a for a in frame.arcs_today if a.kind == "concern" and a.status != "closed"}
+    thread_arcs = [concern[t.subject_ref] for t in frame.open_threads if t.subject_ref in concern][:MAX_THREAD_REFS]
+    if thread_arcs:
+        n = len(frame.open_threads)
+        refs = " ".join(_ref(a) for a in thread_arcs)
+        cited = "" if len(thread_arcs) == n else f", {len(thread_arcs)} with its record"
+        clauses.append((f"{n} open thread{'s' if n != 1 else ''} from conversation{cited} {refs}.", thread_arcs))
+
+    sleeps = [a for a in frame.arcs_today if a.kind == "sleep"]
+    if sleeps:
+        last_sleep = max(sleeps, key=lambda a: (a.ended_at or a.last_seen_at or a.began_at, a.arc_id))
+        if last_sleep.status == "open":
+            clauses.append((f"Asleep since {_ago(now, last_sleep.began_at)} ago {_ref(last_sleep)}.", [last_sleep]))
+        else:
+            woke = last_sleep.ended_at or last_sleep.last_seen_at or last_sleep.began_at
+            clauses.append((f"Last slept {_ago(now, woke)} ago {_ref(last_sleep)}.", [last_sleep]))
+
+    kept = list(clauses)
+    while kept and len(" ".join([head] + [c for c, _ in kept])) > max_chars:
+        kept.pop()
+        dropped += 1
+    text = " ".join([head] + [c for c, _ in kept])
+    if len(text) > max_chars:  # the head alone cannot overrun; belt and braces
+        text = head[:max_chars]
+
+    arc_ids: list[str] = []
+    labels: dict[str, list[str]] = {}
+    for _, arcs in kept:
+        for arc in arcs:
+            if arc.arc_id not in arc_ids:
+                arc_ids.append(arc.arc_id)
+            label = arc.subject_label.strip()
+            if label and label in text:  # only what Orion was actually shown is a match label
+                labels.setdefault(label, [])
+                if arc.arc_id not in labels[label]:
+                    labels[label].append(arc.arc_id)
+    return TemporalSelfStanceCueV1(
+        text=text, day_id=frame.day_id, frame_as_of=as_of, rendered_at=now,
+        arc_ids=arc_ids, labels=labels, clauses_dropped=dropped,
+    )

@@ -21,6 +21,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Awaitable, Callable, Optional
 from uuid import uuid4
 
+from orion.regulation.arousal_view import ArousalView, UNKNOWN_DISABLED, arousal_view
 from orion.regulation.rest_drive import no_rest_reading, read_rest_drive
 from orion.schemas.dream_cycle import DreamCycleV1, DreamPressureObservationV1, SleepPressureV1
 from orion.schemas.drive_reading import DriveReadingV1
@@ -55,6 +56,13 @@ class CycleDeps:
     # DriveReadingV1 for readers outside the dream (Hub curiosity/outreach).
     # Best effort: a publish failure never changes or fails a sleep decision.
     publish_drive_reading: Optional[Callable[[DriveReadingV1], Awaitable[None]]] = None
+    # Arousal reader (Temporal Self rev 4, R3, reader 1): returns the raw Redis value of
+    # orion:regulation:latest. None (flag off) or any failure = arousal unknown = the idle
+    # query alone, exactly as before arousal existed.
+    read_arousal: Optional[Callable[[], Awaitable[object]]] = None
+    # Set by run_cycle_once when arousal held a sleep this check (e.g. "arousal_strained"),
+    # else None, so a manual run can say "held" instead of "not due".
+    hold_reason: Optional[str] = None
     # One deps instance per loop/request. The real clock loaders append failures;
     # each serialized check clears it before reading. Scheduling still sees None.
     read_errors: list[str] = field(default_factory=list)
@@ -122,6 +130,36 @@ def too_soon(now: datetime, last_end: Optional[datetime]) -> bool:
 # A dead or hung Redis must not hold up a sleep decision (the bus socket
 # timeout is 60 s). The publish never changes the decision either way.
 PUBLISH_TIMEOUT_SEC = 5.0
+# Same bound for the arousal read: a slow Redis reads as unknown, never as a hold.
+AROUSAL_READ_TIMEOUT_SEC = 2.0
+
+
+async def read_arousal_view(deps: CycleDeps, now: datetime) -> ArousalView:
+    """The arousal level this check may act on. Never raises; anything doubtful is unknown."""
+    if deps.read_arousal is None:
+        return UNKNOWN_DISABLED
+    try:
+        raw = await asyncio.wait_for(deps.read_arousal(), timeout=AROUSAL_READ_TIMEOUT_SEC)
+    except Exception:  # noqa: BLE001 -- unreadable is unknown, never a hold
+        logger.warning("dream_arousal_read_failed -- treating as unknown", exc_info=True)
+        return ArousalView(level="unknown", reason="read_failed")
+    return arousal_view(raw, now=now, max_age_sec=settings.ORION_REGULATION_READER_MAX_AGE_SEC)
+
+
+def arousal_holds_sleep(view: ArousalView, now: datetime) -> bool:
+    """Spec R3: the dream sleeps only at `idle`. Veto only: `engaged` or `strained` holds a
+    sleep the idle query allowed; `idle` and `unknown` change nothing (arousal never
+    authorizes a sleep the dream's own Juniper-filtered idle query refused).
+
+    Bounded: a level that has held for DREAM_AROUSAL_MAX_HOLD_HOURS no longer holds. A
+    fault-jammed GPU queue reads as strained (S2 cannot tell a jam from load; the 10-09 jam
+    was ~20 h), and a mood must not cost Orion its sleep, the overdue backstop included."""
+    if view.level not in ("engaged", "strained"):
+        return False
+    since = view.since
+    if since is not None and now - since >= timedelta(hours=settings.DREAM_AROUSAL_MAX_HOLD_HOURS):
+        return False
+    return True
 
 
 async def _publish_drive(deps: CycleDeps, build: Callable[[], DriveReadingV1]) -> None:
@@ -190,6 +228,7 @@ async def run_cycle_once(deps: CycleDeps, *, trigger: str = "pressure", force: b
     started = datetime.now(timezone.utc)
     check_id = f"dp-{uuid4().hex}"
     deps.read_errors.clear()
+    deps.hold_reason = None
     read_errors = []
     try:
         last_start = await asyncio.to_thread(deps.load_last_window_start)
@@ -240,6 +279,17 @@ async def run_cycle_once(deps: CycleDeps, *, trigger: str = "pressure", force: b
                 "dream_cycle not due pressure=%.2f/%.2f idle=%s/%s new=%s counts=%s",
                 pressure.pressure, pressure.threshold, pressure.idle_minutes,
                 pressure.idle_required_minutes, pressure.new_counts, pressure.counts,
+            )
+            return None
+        # Read only when the dream would otherwise sleep: one Redis GET per would-be
+        # sleep, and the log names exactly the sleeps arousal held. Forced runs skip it.
+        arousal = await read_arousal_view(deps, started)
+        if arousal_holds_sleep(arousal, started):
+            deps.hold_reason = f"arousal_{arousal.level}"
+            logger.info(
+                "dream_cycle held reason=arousal_%s since=%s pressure=%.2f/%.2f idle=%s/%s backstop=%s",
+                arousal.level, arousal.since, pressure.pressure, pressure.threshold,
+                pressure.idle_minutes, pressure.idle_required_minutes, backstop,
             )
             return None
 

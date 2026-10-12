@@ -12,6 +12,7 @@ from orion.core.bus.bus_service_chassis import OrionBusAsync
 from orion.core.bus.enforce import enforcer
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.schemas.drive_reading import REST_DRIVE_REDIS_KEY
+from orion.schemas.regulation import REGULATION_STATE_REDIS_KEY
 from orion.schemas.telemetry.dream import DreamTriggerPayload
 from app.settings import settings
 from app.dream_api import router as dream_router
@@ -222,6 +223,18 @@ def build_cycle_deps():
             reading.state, reading.level, reading.threshold, reading.due_reason, reading.source_ref,
         )
 
+    async def _read_arousal():
+        # Temporal Self R3 reader: durable-runs' latest regulation state. Any failure is
+        # unknown (cycle.read_arousal_view), which leaves the idle query alone in charge.
+        bus = await _cycle_bus()
+        if bus is None:
+            return None
+        try:
+            return await bus.redis.get(REGULATION_STATE_REDIS_KEY)
+        except Exception:
+            await _drop_cycle_bus()
+            raise
+
     read_errors = []
 
     def _window_start():
@@ -251,6 +264,7 @@ def build_cycle_deps():
             if settings.DREAM_STORY_AFTER_SLEEP_ENABLED else None
         ),
         publish_drive_reading=_publish_drive_reading if settings.DREAM_REST_DRIVE_PUBLISH_ENABLED else None,
+        read_arousal=_read_arousal if settings.DREAM_IDLE_FROM_AROUSAL_ENABLED else None,
     )
 
 
@@ -468,8 +482,12 @@ async def cycle_run_endpoint(force: bool = False):
         return {"status": "disabled", "reason": "ORION_DREAM_CYCLE_ENABLED is false"}
     from app.cycle import run_cycle_once
 
-    cycle = await run_cycle_once(build_cycle_deps(), trigger="manual", force=force)
+    deps = build_cycle_deps()
+    cycle = await run_cycle_once(deps, trigger="manual", force=force)
     if cycle is None:
+        if deps.hold_reason:
+            # Due, but arousal (engaged / strained) held it: say so, not "not due".
+            return {"status": "held", "reason": deps.hold_reason}
         return {"status": "not_due"}
     return {
         "status": cycle.status,

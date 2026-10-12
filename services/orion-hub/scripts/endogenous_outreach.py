@@ -275,6 +275,8 @@ from orion.cognition.cortex_payload_extract import looks_like_error_text
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.schemas.notify import HubNotificationEvent
 from orion.situational.perception_reader import fetch_presence, presence_fragment
+from orion.regulation.arousal_view import AROUSAL_STRAINED_REASON
+from scripts.arousal_reader import ArousalReader
 from scripts.rest_drive_reader import RestDriveReader
 from scripts.outreach_vocabulary import (
     find_ungrounded_signal_mentions,
@@ -447,6 +449,12 @@ class OutreachGateInputs:
     # None is exactly the behaviour before the drive existed. The cap, quiet
     # hours, recent_chat and turn_in_flight never read it.
     rest_drive_cooldown_sec: Optional[float] = None
+    # Arousal (scripts/arousal_reader.py, Temporal Self R3 reader 7): a fresh "engaged" /
+    # "idle" / "strained", or None when unknown or the flag is off -- None is exactly the
+    # behaviour before arousal existed. Only `strained` acts: it refuses a background
+    # outreach after every other gate has passed. Quiet hours, turn-in-flight, recent_chat,
+    # the cap and Door-A never read it.
+    arousal_level: Optional[str] = None
 
 
 REST_DRIVE_BLOCK_REASON = "rest_drive_cooldown"
@@ -512,6 +520,10 @@ def outreach_block_reason(
         and not skip_schedule_gates
     ):
         return REST_DRIVE_BLOCK_REASON
+    # Last, so it names only what arousal held. A schedule gate: Door-A (a finished
+    # curiosity run with something to say) skips it like the cooldown.
+    if inp.arousal_level == "strained" and not skip_schedule_gates:
+        return AROUSAL_STRAINED_REASON
     return None
 
 
@@ -1605,8 +1617,11 @@ class EndogenousOutreach:
         agent_lane_timeout_sec: float = 210.0,
         recent_chat_sec: float = 900.0,
         rest_drive_reader: Optional[RestDriveReader] = None,
+        arousal_reader: Optional[ArousalReader] = None,
     ) -> None:
         self.enabled = enabled
+        # Orion's arousal: while it reads `strained`, background outreach is refused.
+        self.arousal_reader = arousal_reader
         # Orion's rest drive: while it reads `due`, the cooldown is multiplied.
         self.rest_drive_reader = rest_drive_reader
         self.recent_chat_sec = max(0.0, float(recent_chat_sec))
@@ -1874,6 +1889,11 @@ class EndogenousOutreach:
                     self.min_cooldown_sec, datetime.fromtimestamp(ts, tz=timezone.utc)
                 )
             ),
+            arousal_level=(
+                None
+                if self.arousal_reader is None
+                else self.arousal_reader.level(datetime.fromtimestamp(ts, tz=timezone.utc))
+            ),
         )
 
     def status(self) -> Dict[str, Any]:
@@ -1908,6 +1928,9 @@ class EndogenousOutreach:
                 None if self.rest_drive_reader is None else self.rest_drive_reader.view().as_dict()
             ),
             "rest_drive_cooldown_sec": inputs.rest_drive_cooldown_sec,
+            "arousal": (
+                None if self.arousal_reader is None else self.arousal_reader.view().as_dict()
+            ),
             "block_reason": outreach_block_reason(inputs),
             "last_result": dict(self._last_result),
         }
@@ -2044,6 +2067,8 @@ class EndogenousOutreach:
         compose_started_at = time.time()
         if self.rest_drive_reader is not None:
             await self.rest_drive_reader.refresh(self._bus)
+        if self.arousal_reader is not None:
+            await self.arousal_reader.refresh(self._bus)
         # Cheap gates first: the DB read for recent_chat only happens when nothing else blocks.
         blocked = outreach_block_reason(self._gate_inputs())
         if not blocked:

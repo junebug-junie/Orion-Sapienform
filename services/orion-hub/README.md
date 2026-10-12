@@ -912,6 +912,31 @@ Per-reader off switches: `HUB_ENDOGENOUS_OUTREACH_REST_DRIVE_ENABLED`,
 `HUB_CURIOSITY_REST_DRIVE_ENABLED`. The outreach status endpoint shows
 `rest_drive` and `rest_drive_cooldown_sec`.
 
+#### 4.1.y Orion's arousal sets three dials (Temporal Self R3, 2026-10-12)
+
+orion-durable-runs writes one reading of Orion's situation to Redis
+`orion:regulation:latest` (every 120 s and on every Juniper turn): `engaged`
+(Juniper is talking with Orion), `idle`, `strained` (cabinet hot, or the GPU
+queue backed up for 5 minutes), or `unknown`. `scripts/arousal_reader.py` reads it
+once per tick; each loop decides what a level means for its own dial:
+
+| Dial | strained | engaged | idle | unknown / off |
+|---|---|---|---|---|
+| Curiosity investigation line | held, `arousal_strained` | cooldown x `HUB_CURIOSITY_AROUSAL_ENGAGED_COOLDOWN_MULTIPLIER` (2.0), `arousal_engaged_cooldown` | as today | as today |
+| Curiosity self-inquiry | held, `arousal_strained` | held, `arousal_engaged` | as today | as today |
+| Background outreach | refused, `arousal_strained` | as today | as today | as today |
+
+Every arousal hold is checked last, so it only ever adds a hold after every other
+gate has passed. Daily caps, the curiosity hour window, quiet hours, recent-chat,
+turn-in-flight, urgent runs and Door-A never read it, and forced curiosity runs
+override it (`tests/test_regulation_must_not_readers.py` checks this per branch).
+A state older than `ORION_REGULATION_READER_MAX_AGE_SEC` (360), a missing key,
+the producer's own `unknown`, or a Redis error changes nothing. Off switches:
+`HUB_CURIOSITY_AROUSAL_ENABLED`, `HUB_CURIOSITY_SELF_INQUIRY_AROUSAL_ENABLED`,
+`HUB_ENDOGENOUS_OUTREACH_AROUSAL_ENABLED`. The rest drive (above) stays a separate
+input: tired and strained are different facts and both can hold. The outreach
+status endpoint shows `arousal`. Eval: `scripts/analysis/measure_arousal_reader_replay.py`.
+
 ### 4.2 Curiosity investigation — Orion's own time, and its own graph
 
 `scripts/curiosity_investigation.py`. Code decides only **when** Orion gets

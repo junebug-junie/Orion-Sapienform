@@ -53,6 +53,7 @@ from scripts.curiosity_urgent import urgent_request_loop
 from scripts.urgent_report import UrgentReporter, read_urgent_run_progress
 from orion.notify.client import NotifyClient
 from scripts.energy_stakes_gate import read_latest_energy_stakes
+from scripts.arousal_reader import ArousalReader
 from scripts.rest_drive_reader import RestDriveReader
 from orion.world_pulse_read.search import ReadingSearchConfig
 from orion.introspect.semantic_index import SearchConfig
@@ -556,6 +557,12 @@ async def startup_event():
                     max_age_sec=settings.ORION_REST_DRIVE_MAX_AGE_SEC,
                     name="outreach",
                 ),
+                # Orion's arousal: strained refuses a background outreach (scripts/arousal_reader.py).
+                arousal_reader=ArousalReader(
+                    enabled=settings.HUB_ENDOGENOUS_OUTREACH_AROUSAL_ENABLED,
+                    max_age_sec=settings.ORION_REGULATION_READER_MAX_AGE_SEC,
+                    name="outreach",
+                ),
                 daily_cap=settings.HUB_ENDOGENOUS_OUTREACH_DAILY_CAP,
                 quiet_start_hour=settings.HUB_ENDOGENOUS_OUTREACH_QUIET_START_HOUR,
                 quiet_end_hour=settings.HUB_ENDOGENOUS_OUTREACH_QUIET_END_HOUR,
@@ -639,6 +646,18 @@ async def startup_event():
                     max_age_sec=settings.ORION_REST_DRIVE_MAX_AGE_SEC,
                     name="curiosity",
                 ),
+                # Orion's arousal (scripts/arousal_reader.py): one GET per tick, two lines.
+                arousal_reader=ArousalReader(
+                    enabled=(
+                        settings.HUB_CURIOSITY_AROUSAL_ENABLED
+                        or settings.HUB_CURIOSITY_SELF_INQUIRY_AROUSAL_ENABLED
+                    ),
+                    max_age_sec=settings.ORION_REGULATION_READER_MAX_AGE_SEC,
+                    name="curiosity",
+                ),
+                arousal_pacing_enabled=settings.HUB_CURIOSITY_AROUSAL_ENABLED,
+                arousal_engaged_cooldown_multiplier=settings.HUB_CURIOSITY_AROUSAL_ENGAGED_COOLDOWN_MULTIPLIER,
+                arousal_self_inquiry_enabled=settings.HUB_CURIOSITY_SELF_INQUIRY_AROUSAL_ENABLED,
                 max_hops=settings.HUB_CURIOSITY_MAX_HOPS,
                 pg_readonly_role=settings.HUB_CURIOSITY_PG_READONLY_ROLE,
                 # A finding Orion judges worth saying goes through a SECOND

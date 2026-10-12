@@ -1229,6 +1229,32 @@ class Settings(BaseSettings):
     HUB_CURIOSITY_REST_DRIVE_COOLDOWN_MULTIPLIER: float = Field(
         default=2.0, ge=1.0, alias="HUB_CURIOSITY_REST_DRIVE_COOLDOWN_MULTIPLIER"
     )
+    # Orion's arousal (Temporal Self rev 4, R3 readers; orion-durable-runs writes Redis
+    # orion:regulation:latest every 120 s and on every Juniper turn). Each reader adjusts only
+    # its own gain, only in the conservative direction. A state older than
+    # ORION_REGULATION_READER_MAX_AGE_SEC (3 regulate steps), absent, or `unknown` changes
+    # nothing. One flag per reader. Caps, quiet hours, the hour window, recent-chat,
+    # turn-in-flight, urgent runs and Door-A never read it. Forced curiosity runs override
+    # it; a forced (debug) outreach is held like the cooldown.
+    ORION_REGULATION_READER_MAX_AGE_SEC: float = Field(
+        default=360.0, gt=0.0, alias="ORION_REGULATION_READER_MAX_AGE_SEC"
+    )
+    # Reader 2, curiosity pacing (investigation line): strained -> hold (reason
+    # arousal_strained); engaged -> cooldown x multiplier (arousal_engaged_cooldown).
+    HUB_CURIOSITY_AROUSAL_ENABLED: bool = Field(
+        default=True, alias="HUB_CURIOSITY_AROUSAL_ENABLED"
+    )
+    HUB_CURIOSITY_AROUSAL_ENGAGED_COOLDOWN_MULTIPLIER: float = Field(
+        default=2.0, ge=1.0, alias="HUB_CURIOSITY_AROUSAL_ENGAGED_COOLDOWN_MULTIPLIER"
+    )
+    # Reader 3, curiosity self-inquiry: runs only at idle (arousal_engaged / arousal_strained).
+    HUB_CURIOSITY_SELF_INQUIRY_AROUSAL_ENABLED: bool = Field(
+        default=True, alias="HUB_CURIOSITY_SELF_INQUIRY_AROUSAL_ENABLED"
+    )
+    # Reader 7, outreach cooldown: strained -> refuse (arousal_strained).
+    HUB_ENDOGENOUS_OUTREACH_AROUSAL_ENABLED: bool = Field(
+        default=True, alias="HUB_ENDOGENOUS_OUTREACH_AROUSAL_ENABLED"
+    )
     # Background outreach waits this long after Juniper's last saved message (read from
     # chat_history_log, so a Hub restart cannot reset it). 2026-10-09: a fresh restart forgot
     # she was mid-conversation and Orion spoke over her. 0 disables.

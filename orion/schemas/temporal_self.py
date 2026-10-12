@@ -225,6 +225,12 @@ class ArcSummaryV1(_Forbid):
 class OpenThreadV1(_Forbid):
     """A concern loop raised in conversation and not yet given a verdict."""
 
+    # The concern arc this thread is (``TemporalSelfArcV1.arc_id``), so every reader can cite it
+    # as ``[arc:<id>]`` even when the arc fell off ``arcs_today``'s cap. Optional: frames and
+    # closed days stored before it still validate (readers fall back to a subject_ref lookup).
+    # Consumer-first rollout: readers (orion-thought, orion-hub) deploy before the producer
+    # (orion-durable-runs), since this model forbids unknown fields.
+    arc_id: str | None = None
     subject_ref: str
     subject_label: str = ""
     first_seen_today: AwareDatetime

@@ -152,9 +152,14 @@ def render_closed_day_block(
         lines.append((3, f"Refused or made to wait: {text}{more} {day_ref}."))
 
     threads = [a for a in arcs if a.kind == "concern"]
-    if threads:
+    # A thread open at close whose arc row is not in the day (a frame/arc mismatch) still renders,
+    # cited to the day record and named as missing, never dropped silently.
+    orphans = [t for t in frame.open_threads if t.arc_id and t.arc_id not in by_id]
+    if threads or orphans:
         parts = [f"{a.subject_label.strip() or a.subject_ref}, {_plural(a.attention_returns, 'return')}, "
                  f"{a.closed_reason or a.status} {ref(a, a.subject_label.strip())}" for a in threads]
+        parts += [f"{t.subject_label.strip() or t.subject_ref}, open at close, arc {t.arc_id} not in the day record "
+                  f"{day_ref}" for t in orphans]
         lines.append((3, "Conversation threads: " + "; ".join(parts) + "."))
 
     day_warnings = []

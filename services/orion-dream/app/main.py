@@ -482,8 +482,12 @@ async def cycle_run_endpoint(force: bool = False):
         return {"status": "disabled", "reason": "ORION_DREAM_CYCLE_ENABLED is false"}
     from app.cycle import run_cycle_once
 
-    cycle = await run_cycle_once(build_cycle_deps(), trigger="manual", force=force)
+    deps = build_cycle_deps()
+    cycle = await run_cycle_once(deps, trigger="manual", force=force)
     if cycle is None:
+        if deps.hold_reason:
+            # Due, but arousal (engaged / strained) held it: say so, not "not due".
+            return {"status": "held", "reason": deps.hold_reason}
         return {"status": "not_due"}
     return {
         "status": cycle.status,

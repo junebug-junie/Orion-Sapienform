@@ -15,9 +15,9 @@ from orion.schemas.regulation import ArousalReadingV1, RegulationStateV1
 from test_dream_cycle_v2 import _Fakes, _all_seen, _rows
 
 
-def _state(level, *, age_sec=30.0):
+def _state(level, *, age_sec=30.0, held_for=timedelta(minutes=3)):
     at = datetime.now(timezone.utc) - timedelta(seconds=age_sec)
-    reading = ArousalReadingV1(arousal_level=level, since=at - timedelta(minutes=3), observed_at=at,
+    reading = ArousalReadingV1(arousal_level=level, since=at - held_for, observed_at=at,
                                reasons=[f"test_{level}"])
     return RegulationStateV1(generated_at=at, arousal=reading).model_dump_json()
 
@@ -126,3 +126,34 @@ def test_forced_sleep_ignores_arousal(level):
     deps, calls = _deps(f, _state(level))
     cycle = _run(deps, force=True)
     assert cycle is not None and calls == []
+
+
+def test_a_level_held_past_the_max_hold_stops_holding_sleep():
+    """A fault-jammed GPU queue reads strained for ~20 h (10-09): it must not cost a day of sleep."""
+    from app.settings import settings
+
+    f = _Fakes(_rows())
+    long = timedelta(hours=settings.DREAM_AROUSAL_MAX_HOLD_HOURS, minutes=1)
+    deps, _ = _deps(f, _state("strained", held_for=long))
+    cycle = _run(deps)
+    assert cycle is not None and cycle.status == "completed" and deps.hold_reason is None
+    f = _Fakes(_rows())
+    short = timedelta(hours=settings.DREAM_AROUSAL_MAX_HOLD_HOURS, minutes=-1)
+    deps, _ = _deps(f, _state("strained", held_for=short))
+    assert _run(deps) is None and deps.hold_reason == "arousal_strained"
+
+
+def test_manual_run_says_held_not_not_due(monkeypatch):
+    import app.main as main
+    from app.settings import settings
+
+    f = _Fakes(_rows())
+    deps, _ = _deps(f, _state("engaged"))
+    monkeypatch.setattr(settings, "ORION_DREAM_CYCLE_ENABLED", True)
+    monkeypatch.setattr(main, "build_cycle_deps", lambda: deps)
+    out = asyncio.run(main.cycle_run_endpoint(force=False))
+    assert out == {"status": "held", "reason": "arousal_engaged"}
+    f = _Fakes(_rows(), idle=5.0)
+    deps, _ = _deps(f, _state("engaged"))
+    monkeypatch.setattr(main, "build_cycle_deps", lambda: deps)
+    assert asyncio.run(main.cycle_run_endpoint(force=False)) == {"status": "not_due"}

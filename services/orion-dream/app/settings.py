@@ -89,6 +89,9 @@ class Settings(BaseSettings):
     # idle query alone, so a durable-runs or Redis outage cannot stop sleep.
     DREAM_IDLE_FROM_AROUSAL_ENABLED: bool = Field(default=True)
     ORION_REGULATION_READER_MAX_AGE_SEC: float = Field(default=360.0, gt=0.0)
+    # A level that has held this long (from its `since`) no longer holds a sleep, so a
+    # fault-jammed GPU queue (reads strained) cannot stop Orion sleeping for a day.
+    DREAM_AROUSAL_MAX_HOLD_HOURS: float = Field(default=6.0, gt=0.0)
 
     # --- Dream carry-through (dream.carry durable run) ---
     # On: the dream a completed sleep ends in is a carried dream (text -> picture ->

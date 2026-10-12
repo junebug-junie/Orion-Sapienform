@@ -108,7 +108,10 @@ backstop), the loop first reads durable-runs' `orion:regulation:latest`. `engage
 (Juniper is talking) or `strained` (cabinet hot, or the GPU queue backed up for 5
 minutes) holds the sleep and logs `dream_cycle held reason=arousal_<level>`. `idle`
 lets it through. Arousal only vetoes: it never authorizes a sleep the
-Juniper-filtered idle query refused. An absent, stale (> `ORION_REGULATION_READER_MAX_AGE_SEC`,
+Juniper-filtered idle query refused, and a level that has held for
+`DREAM_AROUSAL_MAX_HOLD_HOURS` (6) stops holding, so a fault-jammed GPU queue (which
+reads strained) cannot cost Orion a day of sleep. A manual `/dreams/cycle/run` that
+arousal held answers `{"status": "held", "reason": "arousal_<level>"}`. An absent, stale (> `ORION_REGULATION_READER_MAX_AGE_SEC`,
 360 s), malformed or `unknown` state, a Redis error, or
 `DREAM_IDLE_FROM_AROUSAL_ENABLED=false` leaves the idle query alone in charge, so a
 durable-runs or Redis outage cannot stop Orion sleeping. Forced sleeps and the 6 h

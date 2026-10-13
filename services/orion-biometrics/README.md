@@ -115,6 +115,26 @@ Key convention:
   two -- `collect_disk_capacity()` is intentionally a separate function/key, not an extension of
   `_collect_disk()`.
 
+### Vector DB footprint (`details.vector_db`)
+
+The Chroma persist dir (`orion-athena-vector-db`, host `/mnt/graphdb/chroma`) is measured
+by a background poller (`app/vector_db_footprint.py`, every `VECTOR_DB_POLL_INTERVAL_SEC`)
+and the cached result rides the heartbeat:
+
+| key | meaning |
+| --- | --- |
+| `dir_bytes` / `sqlite_bytes` | on-disk size of the whole dir / of `chroma.sqlite3` |
+| `alert_bytes` / `over_alert` | growth alarm (`VECTOR_DB_ALERT_BYTES`, default 4 GiB); crossing it logs `vector_db_over_alert` once |
+| `collection_counts` | rows per collection, from Chroma's `/api/v1/collections/{id}/count` |
+| `unpoliced_collections` | live collections missing from `orion/memory/vector_collection_policy.py` (also logged) |
+| `error` | `not_present` on nodes without the dir; `collection_counts_failed: ...` if the API is down (size still reported) |
+
+Measure-only. Per the policy table no collection is pruned: every recall-backing
+collection is protected, and the derived ones are keyed upserts bounded by their source.
+Most of the on-disk growth is Chroma 0.4.24's write-ahead log (`embeddings_queue`, ~40% of
+the dir on 2026-10-13), which that server version never prunes; the fix is a Chroma
+upgrade, not deleting rows.
+
 ### iLO/BMC hardware telemetry (`details.ilo_*`)
 
 Real out-of-band hardware telemetry (thermal, fan, power) pulled from the node's iLO/BMC

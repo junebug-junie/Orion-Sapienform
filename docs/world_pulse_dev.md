@@ -59,6 +59,23 @@ ACTIONS_WORLD_PULSE_ENABLED=false
 - `sitemap`: reads sitemap URL lists with bounded child sitemap and URL caps.
 - `html_section`: extracts anchor links from a single approved section page.
 - `manual_urls`: uses explicitly curated URL lists only.
+- `api`: dispatched by API host. Only `export.arxiv.org` has an adapter (`app/services/ingest/arxiv_api_adapter.py`); an `api` source on any other host fetches nothing.
+
+## arXiv research papers (`arxiv_research`)
+
+Orion gets up to `max_articles_per_day` (default 4) new arXiv papers per daily run, read through the normal reading queue like any digest item.
+
+- One newest-first export-API query per category in `urls` (cs.AI, cs.LG, cs.CL, q-bio.NC), picked round-robin so no category fills the day.
+- Requests are spaced at least 3 s apart process-wide and carry an honest `orion-world-pulse` User-Agent, per arXiv's API terms. Neither is configurable downward.
+- Deduped by bare arXiv id against every arXiv URL already in `world_pulse_read_seed` (abs, pdf, ar5iv, `vN` all count as one paper), read via `WORLD_PULSE_READ_HISTORY_DB_URL`. Blank or unreachable DSN logs `world_pulse_arxiv_dedupe_skipped`; Hub's exact-URL `already_read` gate is then the only guard.
+- Seeds use `https://arxiv.org/abs/<id>` in the existing `ai_technology` section.
+- Dedupe scope: only papers that became reading seeds. A paper shown in a digest but never seeded can be picked again; Hub's exact-URL `already_read` gate still stops a re-read.
+- Coverage: arXiv articles do not count toward `ai_technology` coverage, so a tech-news outage still reads as missing and still triggers the curiosity gap-fill. Paper worth-reading/watching entries and situation changes are appended after the ordinary caps, so they displace no news entries.
+- All four queries returning zero entries logs `world_pulse_arxiv_all_feeds_empty`; all four failing raises (recorded as `source_fetch_error:arxiv_research`).
+- `digest_policy.reserved_source_slots.arxiv_research` gives papers their own digest cards outside `max_digest_items_total` and the per-section cap, so they never displace news coverage. `clustering_policy.singleton_source_ids` keeps each paper its own card.
+- Preprints: trust tier 3, corroboration required, no graph or prior writes.
+- Live check (read-only): `PYTHONPATH=.:services/orion-world-pulse python services/orion-world-pulse/evals/run_arxiv_source_eval.py --dsn <reading-queue DSN>` prints today's picks.
+- Rollback: `enabled: false` on `arxiv_research` in `config/world_pulse/sources.yaml`.
 - Strategy fetch is always bounded by source `domains`, optional `allowed_path_prefixes`, and per-source limits.
 
 ## Per-source rollback and guardrails

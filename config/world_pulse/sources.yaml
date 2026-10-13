@@ -25,6 +25,10 @@ digest_policy:
   max_worth_reading: 10
   max_worth_watching: 8
   prefer_required_sections: true
+  # Own digest cards outside max_digest_items_total / per-section caps, so research
+  # papers reach the reading queue without displacing any news section.
+  reserved_source_slots:
+    arxiv_research: 4
   include_coverage_note: true
 situation_policy:
   max_situation_changes_per_run: 25
@@ -46,6 +50,8 @@ clustering_policy:
   preserve_section_boundaries: true
   allow_cross_source_merge: true
   weak_token_file: null
+  # Each arXiv paper is its own work: never merged into another item.
+  singleton_source_ids: ["arxiv_research"]
 sources:
   - source_id: npr_us_politics
     name: NPR Politics RSS
@@ -147,6 +153,39 @@ sources:
     max_articles_per_day: 6
     fetch_timeout_seconds: 20
     notes: "Reachable AI product/research feed; corroboration required for claims."
+  - source_id: arxiv_research
+    name: arXiv (cs.AI, cs.LG, cs.CL, q-bio.NC)
+    type: api
+    strategy: api
+    # One newest-first query per category; papers are picked round-robin across
+    # them, deduped against arXiv ids already in the reading queue, capped at
+    # max_articles_per_day. Seeds use the https://arxiv.org/abs/<id> page.
+    urls:
+      - https://export.arxiv.org/api/query?search_query=cat:cs.AI&sortBy=submittedDate&sortOrder=descending&max_results=25
+      - https://export.arxiv.org/api/query?search_query=cat:cs.LG&sortBy=submittedDate&sortOrder=descending&max_results=25
+      - https://export.arxiv.org/api/query?search_query=cat:cs.CL&sortBy=submittedDate&sortOrder=descending&max_results=25
+      - https://export.arxiv.org/api/query?search_query=cat:q-bio.NC&sortBy=submittedDate&sortOrder=descending&max_results=25
+    domains: ["arxiv.org", "export.arxiv.org"]
+    allowed_path_prefixes: ["/abs/"]
+    categories: ["ai_technology"]
+    region_scope: technology
+    trust_tier: 3
+    factuality: medium
+    enabled: true
+    approved: true
+    required: false
+    allowed_uses:
+      digest: true
+      claim_extraction: true
+      graph_write: false
+      stance_capsule: false
+      prior_update_candidate: false
+    politics_allowed: false
+    requires_corroboration: true
+    # Daily paper cap across all four categories.
+    max_articles_per_day: 4
+    fetch_timeout_seconds: 30
+    notes: "Preprints, not peer reviewed: trust_tier 3, corroboration required, no graph/prior writes."
   - source_id: who_news
     name: WHO News RSS
     type: rss

@@ -59,6 +59,7 @@ from orion.schemas.repair_pressure_appraisal import RepairPressureAppraisalV1
 from orion.schemas.telemetry.biometrics import BiometricsClusterV1
 from orion.schemas.telemetry.system_health import EquilibriumSnapshotV1
 from orion.schemas.telemetry.field_channel_corpus import FieldChannelCorpusRowV1
+from orion.schemas.telemetry.field_channel_anomaly_score import FieldChannelAnomalyScoreV1
 from orion.schemas.telemetry.mood_arc import MoodArcCorpusRowV1, MoodArcEncoderManifestV1
 from orion.schemas.telemetry.transport_baseline_hourly import TransportBaselineHourlyV1
 
@@ -815,6 +816,73 @@ REGISTRY: tuple[InnerStateSignal, ...] = (
             "2026-10-11..13, vs 486 on 2026-10-08); 0/NULL on rows before "
             "2026-10-13 even where refusals happened (then counted in "
             "success_count)."
+        ),
+    ),
+    InnerStateSignal(
+        signal_id="field_channel_anomaly_score.v1",
+        schema=FieldChannelAnomalyScoreV1,
+        producer_service="orion-field-digester",
+        cadence=Cadence.PER_TICK,
+        composition_status=CompositionStatus.SHADOW,
+        shadow_reason=(
+            "Reaches cognition through the telemetry_anomaly metacog trigger "
+            "(one LLM metacog entry per anomaly episode), not through a "
+            "composed self-state."
+        ),
+        cognition_consumers=(
+            "services.orion-equilibrium-service.app.telemetry_anomaly_metacog_gate:evaluate_telemetry_anomaly_episode",
+        ),
+        # Semantics (2026-10-13), read from services/orion-field-digester/app/
+        # anomaly_scorer.py:score_latest and the v4 manifest's training stats.
+        semantics=(
+            (
+                "recon_loss",
+                MetricSemantics(
+                    value_kind="level",
+                    rest=(
+                        "mean squared reconstruction error of the latest 30-row "
+                        "(~60s) window of 37 field channels under the active "
+                        "mood-arc encoder. Calm = near the encoder's held-out "
+                        "median (v4: p50 0.0016, p95 0.0048); never exactly 0. "
+                        "The telemetry_anomaly trigger flags > p95 x "
+                        "EQUILIBRIUM_METACOG_TELEMETRY_ANOMALY_THRESHOLD_MULTIPLIER "
+                        "(3.0, uncalibrated)."
+                    ),
+                    sparsity="per_tick",
+                    absent_means=(
+                        "no row for a minute = scorer not loaded, inside its "
+                        "startup grace, or the buffer has under 30 rows -- not calm."
+                    ),
+                    polarity="higher_is_worse",
+                ),
+            ),
+            (
+                "mean_signed_deviation",
+                MetricSemantics(
+                    value_kind="level",
+                    rest=(
+                        "0.0 = reconstruction errors cancel (the 'mixed' "
+                        "direction); positive = channels above what the encoder "
+                        "expects (elevated), negative = below (depressed). "
+                        "0.0 is also the fallback when attribution_ok is false."
+                    ),
+                    sparsity="per_tick",
+                ),
+            ),
+        ),
+        notes=(
+            "One score per 60s scoring window (FIELD_CHANNEL_ANOMALY_CHECK_"
+            "INTERVAL_SEC) on orion:field_channel:anomaly_score. Since "
+            "2026-10-13 EVERY score -- flagged or not -- is persisted by "
+            "orion-sql-writer to field_channel_anomaly_score; before that only "
+            "flagged windows survived (as metacog_trigger rows), so the "
+            "threshold multiplier could not be fit from the calm side of the "
+            "distribution. Consumers: orion-equilibrium-service's episode gate "
+            "(orion/metacog/anomaly_episode.py -- one trigger per anomaly "
+            "episode, task_execution-led windows during a harness turn left to "
+            "the chat_turn trigger) and orion-substrate-runtime's brain frame "
+            "(field_anomaly region). Replay: scripts/analysis/"
+            "replay_telemetry_anomaly_episodes.py."
         ),
     ),
     InnerStateSignal(

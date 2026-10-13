@@ -41,7 +41,7 @@ This section exists because design decisions for this system have historically o
 | `manual` | User-triggered Collapse Mirror event | shared | live |
 | `dense` / `pulse` | Substrate self-state eventfulness score | — | **retired 2026-09-29** (never fired; see below) |
 | `relational` | Real `repair_pressure_v2` appraisal | shared | live |
-| `telemetry_anomaly` | Trained autoencoder reconstruction-loss anomaly | shared | live (2026-07-21) |
+| `telemetry_anomaly` | Trained autoencoder reconstruction-loss anomaly | none: episode-shaped, bypasses the lane (2026-10-13) | live (2026-07-21) |
 | `chat_turn` | Correlated `ThoughtEventV1` + `HarnessRunV1` (or a governor/stance-react timeout) | own (`EQUILIBRIUM_METACOG_CHAT_TURN_COOLDOWN_SEC`) | live (2026-07-23) |
 | `transport` | per-hop baseline gate episodes (timeout / zero_success / spike / saturation / regime_shift) + real per-call RPC timeout grammar events for timeouts no gate window claims (pooled timeouts retired 2026-09-29; bus_synaptic retired 2026-09-30) | own (`EQUILIBRIUM_METACOG_TRANSPORT_COOLDOWN_SEC`) | live; gate emitting since 2026-10-01 |
 | `insight` | Sustained low→high recovery in `AttentionSelfModelV1.prediction_error_confidence` (`substrate_attention_self_model`) | own (`EQUILIBRIUM_METACOG_INSIGHT_COOLDOWN_SEC`) | **ships disabled**, not yet live-verified |
@@ -119,7 +119,19 @@ Added 2026-07-21 -- see `docs/superpowers/design/2026-07-18-collapse-mirror-meta
 |-----|---------|---------|
 | `EQUILIBRIUM_METACOG_TELEMETRY_ANOMALY_TRIGGER_ENABLE` | `true` | Master gate for the telemetry-anomaly trigger |
 | `EQUILIBRIUM_METACOG_TELEMETRY_ANOMALY_THRESHOLD_MULTIPLIER` | `3.0` | Multiplier applied to the encoder's own `recon_error_p95` |
-| `CHANNEL_FIELD_CHANNEL_ANOMALY_SCORE` | `orion:field_channel:anomaly_score` | Source channel (single consumer: this service) |
+| `CHANNEL_FIELD_CHANNEL_ANOMALY_SCORE` | `orion:field_channel:anomaly_score` | Source channel (also read by substrate-runtime's brain frame and persisted by sql-writer) |
+| `EQUILIBRIUM_METACOG_TELEMETRY_ANOMALY_EPISODE_ENABLE` | `true` | One fire per anomaly episode (off = old one-fire-per-window on the shared lane) |
+| `EQUILIBRIUM_METACOG_TELEMETRY_ANOMALY_EPISODE_CALM_GAP_SEC` | `150` | Episode ends after this long with no flagged window (>= 2 calm 60s windows) |
+| `EQUILIBRIUM_METACOG_TELEMETRY_ANOMALY_EPISODE_SUSTAINED_WINDOWS` | `10` | Flagged windows after which turn suppression stops applying (0 = never) |
+| `EQUILIBRIUM_METACOG_TELEMETRY_ANOMALY_EPISODE_STATE_KEY` | `equilibrium:telemetry_anomaly_episode:v1` | Redis key for the open episode (restart-safe) |
+| `EQUILIBRIUM_METACOG_TELEMETRY_ANOMALY_TURN_SUPPRESS_ENABLE` | `true` | Leave turn-coupled windows to the chat_turn trigger |
+| `EQUILIBRIUM_METACOG_TELEMETRY_ANOMALY_TURN_CARRY_SEC` | `150` | How long after a turn a turn-derived channel can still elevate a window |
+
+**Episodes (2026-10-13).** The scorer runs every 60s, the shared cooldown was 30s, so every flagged window used to fire (10-08: 396 fires, one LLM metacog entry each). Now `orion/metacog/anomaly_episode.py` groups flagged windows into an episode and fires once, on the first window no chat turn explains; it re-fires only when the ratio climbs into a higher `evidence_map` band (nominal -> degraded -> critical). The `reason` string is unchanged, so orion-dream's novelty key is too; `upstream` gains `episode_id`, `episode_fire_reason`, `episode_windows`, `episode_turn_explained_windows`, `episode_duration_sec`, `episode_peak_ratio`, `lead_channel_category`, `turn_active`.
+
+**Turn suppression.** A window is left to the chat_turn trigger when its lead channel's glossary category (`config/field/field_channel_glossary.v1.yaml`, copied into the image) is `task_execution` -- the channels built from harness/execution run deltas -- and a harness turn was active within `TURN_CARRY_SEC` of the window. Turn activity comes from `orion-harness-governor` events on `orion:grammar:event` (they stream through the turn), closed by `HarnessRunV1` (whose `fcc_elapsed_sec` back-dates the start) or Hub's `exec_turn_timeout`. After `SUSTAINED_WINDOWS` flagged windows the episode fires anyway: on 10-08 the GPU outage hung turns for 20-70 minutes, so without the override its first fire would have come ~2.5h late. Turn tracking is in-memory; the open episode is in Redis, so a restart mid-anomaly does not re-fire.
+
+Replay over 15 days of stored fires (`scripts/analysis/replay_telemetry_anomaly_episodes.py`, eval `evals/test_telemetry_anomaly_episode_replay_eval.py`): 2,485 fires -> 143; 10-08 outage first fires 14:49Z (onset ~14:40Z).
 
 ### chat_turn metacog trigger
 

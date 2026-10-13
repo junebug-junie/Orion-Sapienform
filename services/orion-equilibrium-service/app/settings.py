@@ -160,6 +160,40 @@ class Settings(BaseSettings):
     metacog_telemetry_anomaly_threshold_multiplier: float = Field(
         3.0, alias="EQUILIBRIUM_METACOG_TELEMETRY_ANOMALY_THRESHOLD_MULTIPLIER"
     )
+    # Episode gate (2026-10-13, orion/metacog/anomaly_episode.py): fire once per
+    # anomaly episode, not once per flagged 60s window. Off = the old
+    # per-window behaviour on the shared cooldown lane.
+    metacog_telemetry_anomaly_episode_enable: bool = Field(
+        True, alias="EQUILIBRIUM_METACOG_TELEMETRY_ANOMALY_EPISODE_ENABLE"
+    )
+    # An episode ends after this long with no flagged window: >= 2 calm 60s
+    # scoring windows. Live 15-day gap histogram: 90-149s gaps are single-window
+    # flicker around the threshold; 150s is where episodes separate.
+    metacog_telemetry_anomaly_episode_calm_gap_sec: float = Field(
+        150.0, alias="EQUILIBRIUM_METACOG_TELEMETRY_ANOMALY_EPISODE_CALM_GAP_SEC"
+    )
+    # After this many flagged windows an episode fires even while a turn
+    # explains it: past the p75 turn length, and a hung turn is itself the
+    # symptom of a real outage (10-08). 0 disables the override.
+    metacog_telemetry_anomaly_episode_sustained_windows: int = Field(
+        10, alias="EQUILIBRIUM_METACOG_TELEMETRY_ANOMALY_EPISODE_SUSTAINED_WINDOWS"
+    )
+    # Persisted open-episode state, so a restart mid-anomaly does not re-fire it.
+    metacog_telemetry_anomaly_episode_state_key: str = Field(
+        "equilibrium:telemetry_anomaly_episode:v1",
+        alias="EQUILIBRIUM_METACOG_TELEMETRY_ANOMALY_EPISODE_STATE_KEY",
+    )
+    # Leave windows led by a task_execution channel (glossary category) to the
+    # chat_turn trigger while a harness turn is active. Needs the episode gate.
+    metacog_telemetry_anomaly_turn_suppress_enable: bool = Field(
+        True, alias="EQUILIBRIUM_METACOG_TELEMETRY_ANOMALY_TURN_SUPPRESS_ENABLE"
+    )
+    # How long a turn-derived channel can keep a window elevated after the
+    # turn's last delta: digester holds 90s (FIELD_DECAY_STALENESS_THRESHOLD_SEC)
+    # then decays 0.92/2s tick (~55s to 10%).
+    metacog_telemetry_anomaly_turn_carry_sec: float = Field(
+        150.0, alias="EQUILIBRIUM_METACOG_TELEMETRY_ANOMALY_TURN_CARRY_SEC"
+    )
 
     metacog_publish_verb_request: bool = Field(
         False,

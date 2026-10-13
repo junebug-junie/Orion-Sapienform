@@ -122,6 +122,83 @@ def test_unreadable_prior_state_sends_the_frozen_prompt():
     assert text == prompt
 
 
+# --- every drift outcome leaves exactly one log line --------------------------
+#
+# Live 2026-10-13: across 28 investigate turns the drift check never logged,
+# because nothing had moved and the no-drift path said nothing. A silent "ran,
+# nothing moved" cannot be told apart from "never ran"; these pin one line per
+# outcome so the check can be audited from journald.
+
+
+def _drift_request(prompt: str) -> CuriosityTurnRequestV1:
+    return CuriosityTurnRequestV1(
+        run_id=RUN, correlation_id="00000000-0000-0000-0000-000000000001",
+        prompt=prompt, timeout_sec=10.0, attempt=1,
+    )
+
+
+def _drift_lines(caplog) -> list[str]:
+    return [r.getMessage() for r in caplog.records if "curiosity_prior_drift" in r.getMessage()]
+
+
+def _run_prompt(reader, prompt: str) -> str:
+    return asyncio.run(
+        CuriosityInvestigation._prompt_for_attempt(SimpleNamespace(_reader=reader), _drift_request(prompt))
+    )
+
+
+def test_unmoved_prior_logs_checked_with_offered_count(caplog):
+    caplog.set_level("INFO")
+    prompt = _brief_prompt()
+    reader = _Reader(rows=[{"prior_id": PRIOR_ID, "confidence": 0.55, "times_tested": 0, "status": "open"}])
+    assert _run_prompt(reader, prompt) == prompt
+    assert _drift_lines(caplog) == [f"curiosity_prior_drift_checked run={RUN} attempt=1 offered=1 moved=0"]
+
+
+def test_moved_prior_logs_preamble_once(caplog):
+    caplog.set_level("INFO")
+    reader = _Reader(rows=[{"prior_id": PRIOR_ID, "confidence": 0.82, "times_tested": 4, "status": "open"}])
+    _run_prompt(reader, _brief_prompt())
+    assert _drift_lines(caplog) == [f"curiosity_prior_drift_preamble run={RUN} attempt=1 offered=1 moved=1"]
+
+
+def test_missing_reader_logs_a_skip(caplog):
+    caplog.set_level("INFO")
+    prompt = _brief_prompt()
+    assert _run_prompt(None, prompt) == prompt
+    assert _drift_lines(caplog) == [f"curiosity_prior_drift_skipped run={RUN} attempt=1 reason=reader_missing"]
+
+
+def test_prompt_without_priors_logs_a_skip_and_reads_nothing(caplog):
+    caplog.set_level("INFO")
+    reader = _Reader(rows=[])
+    assert _run_prompt(reader, "no priors here") == "no priors here"
+    assert reader.queries == []
+    assert _drift_lines(caplog) == [f"curiosity_prior_drift_skipped run={RUN} attempt=1 reason=no_prior_in_prompt"]
+
+
+def test_unparseable_prior_lines_warn_as_format_drift(caplog):
+    caplog.set_level("INFO")
+    reader = _Reader(rows=[])
+    prompt = "  - [confidence=0.5 tested] something\n      prior_id: p.x\n"
+    assert _run_prompt(reader, prompt) == prompt
+    assert reader.queries == []
+    [record] = [r for r in caplog.records if "curiosity_prior_drift" in r.getMessage()]
+    assert record.levelname == "WARNING" and "reason=no_priors_parsed" in record.getMessage()
+
+
+def test_settled_only_prior_lines_are_a_quiet_skip_not_a_warning(caplog):
+    # RECENTLY SETTLED prints `- [status] claim` + `prior_id:` with no
+    # confidence bracket; that is not an offer menu and not format drift.
+    caplog.set_level("INFO")
+    reader = _Reader(rows=[])
+    prompt = "  - [refuted] something\n      prior_id: p.x\n"
+    assert _run_prompt(reader, prompt) == prompt
+    assert reader.queries == []
+    [record] = [r for r in caplog.records if "curiosity_prior_drift" in r.getMessage()]
+    assert record.levelname == "INFO" and "reason=no_offered_priors" in record.getMessage()
+
+
 # --- the queued-backlog cap --------------------------------------------------
 
 

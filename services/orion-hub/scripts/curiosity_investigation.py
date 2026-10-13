@@ -119,6 +119,7 @@ from orion.curiosity.kickoff_prompt import (
     build_kickoff_prompt,
     build_prior_drift_preamble,
     build_resume_preamble,
+    offered_priors_in_prompt,
 )
 from orion.orion_day.carry_forward import release_carry_forward, take_carry_forward
 from orion.orion_day.corrections import (
@@ -412,8 +413,33 @@ _RUN_ID_RE = re.compile(r"^[0-9a-f]{6,32}$")
 
 async def prior_drift_preamble(reader: Optional[WorldviewReader], request: CuriosityTurnRequestV1) -> str:
     """Empty unless an offered prior moved since the brief was built. One RO
-    read of current prior state; never raises into the turn."""
-    if reader is None or "prior_id: " not in request.prompt:
+    read of current prior state; never raises into the turn.
+
+    Exactly one log line per call, whatever the outcome. Before this, the
+    no-drift and skip paths were silent, so "the check ran and nothing had
+    moved" was indistinguishable from "the check never ran" -- live
+    2026-10-13 a whole investigation went into proving which one it was.
+    """
+    if reader is None:
+        logger.info("curiosity_prior_drift_skipped run=%s attempt=%s reason=reader_missing",
+                    request.run_id, request.attempt)
+        return ""
+    if "prior_id: " not in request.prompt:
+        logger.info("curiosity_prior_drift_skipped run=%s attempt=%s reason=no_prior_in_prompt",
+                    request.run_id, request.attempt)
+        return ""
+    offered = offered_priors_in_prompt(request.prompt)
+    if not offered:
+        if "[confidence=" in request.prompt:
+            # A menu line is printed but none parse: `Prior.preview`'s format
+            # and `_OFFERED_PRIOR_RE` drifted apart, and drift can never be seen.
+            logger.warning("curiosity_prior_drift_skipped run=%s attempt=%s reason=no_priors_parsed",
+                           request.run_id, request.attempt)
+        else:
+            # Healthy: `prior_id:` lines from sections that are not an offer
+            # menu (recently settled priors, Orion's Day corrections).
+            logger.info("curiosity_prior_drift_skipped run=%s attempt=%s reason=no_offered_priors",
+                        request.run_id, request.attempt)
         return ""
     try:
         states = await asyncio.to_thread(read_prior_states, reader)
@@ -426,8 +452,13 @@ async def prior_drift_preamble(reader: Optional[WorldviewReader], request: Curio
     drift = build_prior_drift_preamble(request.prompt, states, attempt=request.attempt)
     if drift:
         logger.info(
-            "curiosity_prior_drift_preamble run=%s attempt=%s moved=%s",
-            request.run_id, request.attempt, drift.count("  - prior_id: "),
+            "curiosity_prior_drift_preamble run=%s attempt=%s offered=%s moved=%s",
+            request.run_id, request.attempt, len(offered), drift.count("  - prior_id: "),
+        )
+    else:
+        logger.info(
+            "curiosity_prior_drift_checked run=%s attempt=%s offered=%s moved=0",
+            request.run_id, request.attempt, len(offered),
         )
     return drift
 
@@ -4451,10 +4482,12 @@ class CuriosityInvestigation:
         only: a fresh run_id holds nothing to resume. The drift read runs
         whenever the prompt shows a prior.
         """
-        if self._reader is None:
-            return request.prompt
         reader = self._reader
+        # Called before the reader check so a missing reader is logged as a
+        # skip rather than leaving no trace at all.
         drift = await prior_drift_preamble(reader, request)
+        if reader is None:
+            return request.prompt
         if request.attempt <= 1:
             return drift + request.prompt
         hops = await asyncio.to_thread(read_hop_notes, reader, request.run_id)

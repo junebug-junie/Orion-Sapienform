@@ -24,12 +24,22 @@ class RpcChannelLatencyV1(BaseModel):
     but never enter the latency statistics -- a timeout's elapsed time is the caller's
     own ceiling, not a round trip (same separation as the pooled fields below).
     ``max_ms`` is the largest success latency in the window, ``None`` if no successes.
+
+    ``degraded_count`` (added 2026-10-13): replies that arrived but that the replying
+    service marked as not its real answer (``orion/core/bus/rpc_degraded.py``: a GPU
+    pool refusal, a canned fallback, a ``system.error`` reply). Disjoint from
+    ``success_count`` and ``timeout_count`` (calls = success + timeout + degraded) and,
+    like timeouts, never in the latency statistics: a 0.3 s refusal is not the hop's
+    speed. Absent (= 0) from producers that predate it. A degraded reply WAS
+    delivered: delivery-pressure consumers count it as delivered, latency consumers
+    do not count it at all.
     """
 
     model_config = ConfigDict(extra="forbid")
 
     success_count: int = 0
     timeout_count: int = 0
+    degraded_count: int = 0
     log_ms_sum: float = 0.0
     log_ms_sumsq: float = 0.0
     max_ms: Optional[float] = None
@@ -55,6 +65,9 @@ class RpcHealthSnapshotV1(BaseModel):
     window_end: datetime
     success_count: int
     timeout_count: int
+    # rpc_request() replies marked degraded (see RpcChannelLatencyV1.degraded_count):
+    # excluded from success_count and the success_latency_* samples. Additive.
+    degraded_count: int = 0
     success_latency_ms_p50: Optional[float] = None
     success_latency_ms_p95: Optional[float] = None
     success_latency_ms_max: Optional[float] = None

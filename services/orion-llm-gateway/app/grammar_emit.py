@@ -129,6 +129,25 @@ def classify_outcome(result: Any) -> str:
     return "upstream_error"
 
 
+# Outcomes where the gateway declined the work -- refused (pool/lease/capacity) or the
+# request was unusable -- so the reply is not a round trip of the hop and the caller's
+# rpc_request() must count it as degraded (orion/core/bus/rpc_degraded.py), never time
+# it as a fast success. Backend failures (UPSTREAM_FAILURE_CLASSES) are deliberately
+# NOT here: the backend was asked and the wait was real -- an upstream_timeout is the
+# slowness the transport baseline exists to see. ``upstream_empty`` is not here either
+# (the backend answered; unmeasured at rest, see above).
+DEGRADED_OUTCOMES = REFUSAL_CLASSES | REQUEST_INVALID_CLASSES
+
+
+def degraded_outcome(result: Any) -> str | None:
+    """The outcome class if this reply is degraded, else None. Never raises."""
+    try:
+        outcome = classify_outcome(result)
+    except Exception:  # noqa: BLE001 -- a classifier bug must not change a reply
+        return None
+    return outcome if outcome in DEGRADED_OUTCOMES else None
+
+
 # HTTP passthrough outcomes that are not in the contract's class sets: counted for
 # inspection only (like upstream_empty), never as a backend failure or a refusal.
 CLIENT_GONE = "client_gone"

@@ -215,3 +215,19 @@ def test_receipt_shape_is_what_the_field_digester_reads():
     assert delta.after["node_id"] == "node:substrate.rpc_delivery"
     assert delta.after["pressure_hints"] == {RPC_DELIVERY_CHANNEL: 0.2}
     assert "orion:state:request" in delta.explanation
+
+
+def test_degraded_replies_were_delivered_and_dilute_timeout_pressure():
+    """2026-10-13: degraded_count (refusals/fallbacks) is disjoint from success_count but
+    the bus delivered those replies, so delivery pressure counts them as delivered."""
+    payload = _snap(T0, {"orion:cortex:exec:request:background": (0, 3)})
+    payload["channel_latency"]["orion:cortex:exec:request:background"]["degraded_count"] = 27
+    RpcHealthSnapshotV1.model_validate(payload)
+    win = RpcDeliveryWindow()
+    win.fold(payload)
+    with_degraded = _reading(win, T0)
+    assert with_degraded.total_calls == 30 and with_degraded.total_timeouts == 3
+
+    win2 = RpcDeliveryWindow()
+    win2.fold(_snap(T0, {"orion:cortex:exec:request:background": (0, 3)}))
+    assert with_degraded.pressure < _reading(win2, T0).pressure

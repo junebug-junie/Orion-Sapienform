@@ -13,6 +13,15 @@ on:
   pull_request:
     paths:
       - "orion/metacog/transport_baseline.py"
+      - "orion/metacog/tests/test_transport_baseline_degraded.py"
+      - "orion/metacog/evals/run_rpc_degraded_mutations.py"
+      - "orion/core/bus/rpc_degraded.py"
+      - "orion/core/bus/rpc_health.py"
+      - "orion/core/bus/rpc_health_publish.py"
+      - "orion/core/bus/async_service.py"
+      - "orion/core/bus/bus_service_chassis.py"
+      - "orion/core/bus/tests/test_rpc_degraded.py"
+      - "orion/schemas/telemetry/rpc_health.py"
       - "orion/metacog/evidence_map.py"
       - "orion/metacog/tests/test_transport_baseline.py"
       - "orion/metacog/evals/run_transport_baseline_pause_mutations.py"
@@ -30,6 +39,11 @@ on:
     branches: [main]
     paths:
       - "orion/metacog/transport_baseline.py"
+      - "orion/core/bus/rpc_degraded.py"
+      - "orion/core/bus/rpc_health.py"
+      - "orion/core/bus/async_service.py"
+      - "orion/core/bus/bus_service_chassis.py"
+      - "orion/schemas/telemetry/rpc_health.py"
       - "orion/metacog/evidence_map.py"
       - "orion/schemas/telemetry/transport_baseline_hourly.py"
       - "services/orion-equilibrium-service/app/transport_*.py"
@@ -56,9 +70,13 @@ jobs:
         run: |
           PYTHONPATH=. python -m pytest -q -p no:cacheprovider \
             orion/metacog/tests/test_transport_baseline.py \
+            orion/metacog/tests/test_transport_baseline_degraded.py \
+            orion/core/bus/tests/test_rpc_degraded.py \
             scripts/analysis/tests/test_grade_transport_baseline.py
       - name: Silence-pause mutation eval (every mutant must be killed)
         run: PYTHONPATH=. python orion/metacog/evals/run_transport_baseline_pause_mutations.py
+      - name: Degraded-reply mutation eval (every mutant must be killed)
+        run: PYTHONPATH=. python orion/metacog/evals/run_rpc_degraded_mutations.py
       - name: Equilibrium transport wiring + evals (mesh, real sparse-hop replay)
         working-directory: services/orion-equilibrium-service
         run: |

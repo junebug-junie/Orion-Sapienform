@@ -249,3 +249,66 @@ def test_metacog_draft_rejects_exact_example_echo(monkeypatch):
     assert telemetry["metacog_draft_fallback_reason"] == "example_echo"
     # The fallback entry must not silently carry the echoed example forward.
     assert ctx["collapse_entry"]["summary"] != executor_module._METACOG_DRAFT_EXAMPLE_SUMMARY
+
+
+class _RefusedReply:
+    """What LLMGatewayClient.chat returns when the gateway refused (live 2026-10-08)."""
+
+    choices: list = []
+    meta: dict = {}
+
+    def model_dump(self, mode="json"):
+        return {"content": "", "raw": {"error": "gpu_pool_unavailable", "details": {"reason": "deadline"}}}
+
+
+@pytest.mark.parametrize(
+    "reply,expected",
+    [
+        (_RefusedReply(), "metacog_draft_fallback:gpu_pool_unavailable:deadline"),
+        # the model ran and returned junk: a real wait, stays timed
+        (_fake_llm_response(content=""), None),
+        (_fake_llm_response(content=_VALID_DRAFT_JSON), None),
+    ],
+)
+def test_a_refused_metacog_draft_marks_the_reply_degraded(monkeypatch, reply, expected):
+    """2026-10-13: a draft the gateway refused falls back to the canned template and
+    returns fast and "successfully"; the reply must be marked degraded so the caller's
+    rpc_request() never times it as the hop's speed (orion/core/bus/rpc_degraded.py).
+    A fallback after the model really ran is not marked (review finding)."""
+    from orion.core.bus.rpc_degraded import begin_collecting, current_degraded_reason, end_collecting
+
+    executor_module = _load_executor_module()
+
+    class FakeLLMClient:
+        def __init__(self, bus):
+            self.bus = bus
+
+        async def chat(self, **kwargs):
+            return reply
+
+    monkeypatch.setattr(executor_module, "LLMGatewayClient", FakeLLMClient)
+    step = ExecutionStep(
+        verb_name="log_orion_metacognition",
+        step_name="draft_entry",
+        order=0,
+        services=["MetacogDraftService"],
+        prompt_template=_load_template("log_orion_metacognition_draft.j2"),
+    )
+
+    async def _run():
+        token = begin_collecting()
+        try:
+            res = await executor_module.call_step_services(
+                bus=object(),
+                source=ServiceRef(name="test", node="test", version="1.0"),
+                step=step,
+                ctx=_draft_ctx(),
+                correlation_id="corr-degraded",
+            )
+            return res, current_degraded_reason()
+        finally:
+            end_collecting(token)
+
+    result, reason = asyncio.run(_run())
+    assert result.status == "success"
+    assert reason == expected

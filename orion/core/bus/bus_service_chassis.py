@@ -19,6 +19,14 @@ except Exception:  # pragma: no cover - fallback when loguru is unavailable
 
 from .async_service import OrionBusAsync
 from .bus_schemas import BaseEnvelope, ErrorInfo, ServiceRef
+from .rpc_degraded import (
+    DEGRADED_TRACE_KEY,
+    begin_collecting,
+    current_degraded_reason,
+    end_collecting,
+    mark_degraded,
+    strip_degraded,
+)
 from orion.schemas.telemetry.system_health import SystemHealthV1
 
 
@@ -271,6 +279,25 @@ class BaseChassis:
             backoff_sec = min(backoff_sec * 2.0, 30.0)
 
 
+def _stamp_degraded_reply(out: Any, *, request: BaseEnvelope, noted: Optional[str]) -> Any:
+    """Stamp a Rabbit reply with the reason noted while handling ``request``. A marker
+    the reply merely inherited from the request's trace is dropped first, so it can
+    neither read as this reply's verdict nor mask the reason noted here (first cause
+    wins in ``mark_degraded``). Never raises; returns ``out`` unchanged on any problem."""
+    try:
+        trace = getattr(out, "trace", None)
+        if not isinstance(trace, dict) or not hasattr(out, "model_copy"):
+            return out
+        inherited = (request.trace or {}).get(DEGRADED_TRACE_KEY)
+        if inherited is not None and trace.get(DEGRADED_TRACE_KEY) == inherited:
+            out = out.model_copy(update={"trace": strip_degraded(trace)})
+        if noted:
+            return mark_degraded(out, noted)
+    except Exception as exc:  # noqa: BLE001 -- a stamp bug must never drop a reply
+        logger.warning(f"rabbit_degraded_stamp_failed err={type(exc).__name__}: {exc}")
+    return out
+
+
 class Rabbit(BaseChassis):
     """
     RPC / synchronous pattern.
@@ -297,7 +324,22 @@ class Rabbit(BaseChassis):
             f"Rabbit request received channel={channel} kind={env.kind} "
             f"schema_id={env.schema_id} trace_id={trace_id} source={env.source}"
         )
-        out = await self.handler(env)
+        # Degraded-reply collector (orion/core/bus/rpc_degraded.py): anything the
+        # handler runs may note_degraded(reason); the reply is stamped below so the
+        # caller's rpc_request() counts it as degraded, never as a fast success.
+        # The handler never sees a degraded marker on the *request* (a caller that
+        # copied one from an earlier reply): copying it into this reply would
+        # read as this reply's own verdict, or mask a real one.
+        if (env.trace or {}).get(DEGRADED_TRACE_KEY) is not None:
+            env = env.model_copy(update={"trace": strip_degraded(env.trace)})
+        token = begin_collecting()
+        try:
+            out = await self.handler(env)
+            noted = current_degraded_reason()
+        finally:
+            end_collecting(token)
+        if out is not None:
+            out = _stamp_degraded_reply(out, request=env, noted=noted)
         if out is not None and env.reply_to:
             payload_obj = getattr(out, "payload", None)
             payload_keys = []

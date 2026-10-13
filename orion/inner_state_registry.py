@@ -763,7 +763,12 @@ REGISTRY: tuple[InnerStateSignal, ...] = (
                         "the hop's best recent typical latency, in ms -- its own "
                         "scale per hop, no universal rest value. Moves up only "
                         "slowly and never while saturation is open/paused; a "
-                        "stated regime_shift re-seeds it."
+                        "stated regime_shift re-seeds it. Built from real round "
+                        "trips only: replies the replier marked degraded (row "
+                        "degraded_count) never enter it, and a pool where they "
+                        "outnumber real calls may not move it down (since "
+                        "2026-10-13; before then a burst of fast GPU-pool "
+                        "refusals dragged it ~10x low)."
                     ),
                     sparsity="event_gated",
                     absent_means=(
@@ -799,7 +804,17 @@ REGISTRY: tuple[InnerStateSignal, ...] = (
             "Registered 2026-10-13 with the silence-pause fix: the bug it "
             "fixed (silence aged latency episodes out, so drift was absorbed "
             "and never stated) is exactly the 'absent read as calm' failure "
-            "absent_means exists to name."
+            "absent_means exists to name. "
+            "degraded_count (int, 2026-10-13) is not a semantics entry because "
+            "the lineage resolver addresses float fields only: it counts replies "
+            "the replying service marked degraded (orion/core/bus/rpc_degraded.py "
+            "-- the replier declined or skipped the work: GPU-pool refusal, "
+            "unusable request, canned fallback without a model call, system.error), "
+            "delivered but never a latency reading. Near 0 at rest (live "
+            "cognition_traces: ~1 gateway refusal/day across all cortex traces "
+            "2026-10-11..13, vs 486 on 2026-10-08); 0/NULL on rows before "
+            "2026-10-13 even where refusals happened (then counted in "
+            "success_count)."
         ),
     ),
     InnerStateSignal(

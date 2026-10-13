@@ -54,8 +54,18 @@ aggregator into a process-wide, lock-guarded ``SharedRpcHealthSink`` before they
 discarded; the publish loop drains the sink into its long-lived bus's aggregator each
 tick (``RpcHealthAggregator.absorb``: exact for counts/hops, sample lists stay capped).
 
-Hand-rolled paths call ``record_hop_success()``/``record_hop_timeout()``. Those record
-into ``channel_latency`` ONLY -- the pooled fields keep their original, documented
+**Degraded replies (2026-10-13).** A reply the replying service marked as not its
+real answer (``orion/core/bus/rpc_degraded.py``: a GPU-pool refusal, a canned
+fallback, a ``system.error``) is recorded with ``record_degraded()`` /
+``record_hop_degraded()``: counted in ``degraded_count``, never in
+``success_count`` and never in the latency statistics. Outcomes are disjoint --
+``success + timeout + degraded`` is the call count -- so ``log_ms_sum /
+success_count`` stays the exact mean of real round trips. Before this, a 0.3 s
+refusal was a "success" and taught the transport baseline's floor a speed the
+hop never had (2026-10-08 GPU shed).
+
+Hand-rolled paths call ``record_hop_success()``/``record_hop_timeout()``/
+``record_hop_degraded()``. Those record into ``channel_latency`` ONLY -- the pooled fields keep their original, documented
 meaning (``rpc_request()`` outcomes on this bus), so no existing consumer of the pooled
 fields sees its input change under it.
 """
@@ -102,6 +112,8 @@ class HopLatency:
     log_ms_sum: float = 0.0
     log_ms_sumsq: float = 0.0
     max_ms: Optional[float] = None
+    # Replies marked degraded by the replier: counted, never in the latency stats.
+    degraded_count: int = 0
 
     def add_success(self, elapsed_ms: float) -> None:
         ms = float(elapsed_ms)
@@ -118,10 +130,24 @@ class HopLatency:
     def add_timeout(self) -> None:
         self.timeout_count += 1
 
+    def add_degraded(self) -> None:
+        self.degraded_count += 1
+
+    def merge(self, other: "HopLatency") -> None:
+        """Fold ``other`` in. Exact: counts and log sums add, max takes the larger."""
+        self.success_count += other.success_count
+        self.timeout_count += other.timeout_count
+        self.degraded_count += other.degraded_count
+        self.log_ms_sum += other.log_ms_sum
+        self.log_ms_sumsq += other.log_ms_sumsq
+        if other.max_ms is not None and (self.max_ms is None or other.max_ms > self.max_ms):
+            self.max_ms = other.max_ms
+
     def as_dict(self) -> dict:
         return {
             "success_count": self.success_count,
             "timeout_count": self.timeout_count,
+            "degraded_count": self.degraded_count,
             "log_ms_sum": self.log_ms_sum,
             "log_ms_sumsq": self.log_ms_sumsq,
             "max_ms": self.max_ms,
@@ -157,6 +183,9 @@ class RpcHealthSnapshot:
     channel_counts: dict[str, int]
     truncated: bool
     channel_latency: dict[str, HopLatency] = field(default_factory=dict)
+    # rpc_request() replies marked degraded (not in success_count or the latency
+    # samples). Defaulted so pre-existing constructors keep working.
+    degraded_count: int = 0
 
 
 def _percentile(sorted_values: list[float], pct: float) -> Optional[float]:
@@ -186,6 +215,7 @@ class RpcHealthAggregator:
     _timeout_elapsed_ms: list[float] = field(default_factory=list)
     _success_count: int = 0
     _timeout_count: int = 0
+    _degraded_count: int = 0
     _channel_counts: dict[str, int] = field(default_factory=dict)
     _truncated: bool = False
     _hops: dict[str, HopLatency] = field(default_factory=dict)
@@ -227,6 +257,27 @@ class RpcHealthAggregator:
         except Exception:
             logger.warning("failed to record RPC timeout in health aggregator", exc_info=True)
 
+    def record_degraded(
+        self,
+        *,
+        request_channel: str,
+        latency_ms: Optional[float] = None,
+        health_label: Optional[str] = None,
+        reason: Optional[str] = None,
+    ) -> None:
+        """A reply arrived but the replier marked it degraded (see
+        ``orion/core/bus/rpc_degraded.py``). Counted in ``degraded_count``; its
+        elapsed time never enters the success latency samples or the per-hop log
+        statistics -- a refusal's speed is not the hop's speed. ``latency_ms`` and
+        ``reason`` are accepted for the caller's log line only. Never raises."""
+        try:
+            self._degraded_count += 1
+            self._bump_channel(request_channel)
+            if request_channel:
+                self._hop(hop_key(request_channel, health_label)).add_degraded()
+        except Exception:
+            logger.warning("failed to record degraded RPC reply in health aggregator", exc_info=True)
+
     def record_hop_success(self, hop: str, elapsed_ms: float) -> None:
         """Record a successful round trip on a hand-rolled hop (not rpc_request()).
         Lands in ``channel_latency`` only; pooled fields are untouched. Never raises."""
@@ -245,6 +296,15 @@ class RpcHealthAggregator:
                 self._hop(str(hop)).add_timeout()
         except Exception:
             logger.warning("failed to record hop timeout hop=%s", hop, exc_info=True)
+
+    def record_hop_degraded(self, hop: str, elapsed_ms: Optional[float] = None) -> None:
+        """Record a degraded reply on a hand-rolled hop: counted, never timed.
+        ``channel_latency`` only. Never raises."""
+        try:
+            if hop:
+                self._hop(str(hop)).add_degraded()
+        except Exception:
+            logger.warning("failed to record hop degraded hop=%s", hop, exc_info=True)
 
     def _hop(self, key: str) -> HopLatency:
         stats = self._hops.get(key)
@@ -270,6 +330,7 @@ class RpcHealthAggregator:
         try:
             self._success_count += other._success_count
             self._timeout_count += other._timeout_count
+            self._degraded_count += other._degraded_count
             for bucket, extra in (
                 (self._success_latencies_ms, other._success_latencies_ms),
                 (self._timeout_elapsed_ms, other._timeout_elapsed_ms),
@@ -288,13 +349,7 @@ class RpcHealthAggregator:
                 else:
                     self._truncated = True
             for key, stats in other._hops.items():
-                cur = self._hop(key)
-                cur.success_count += stats.success_count
-                cur.timeout_count += stats.timeout_count
-                cur.log_ms_sum += stats.log_ms_sum
-                cur.log_ms_sumsq += stats.log_ms_sumsq
-                if stats.max_ms is not None and (cur.max_ms is None or stats.max_ms > cur.max_ms):
-                    cur.max_ms = stats.max_ms
+                self._hop(key).merge(stats)
         except Exception:
             logger.warning("failed to absorb RPC health aggregator", exc_info=True)
 
@@ -324,12 +379,14 @@ class RpcHealthAggregator:
             channel_counts=dict(self._channel_counts),
             truncated=self._truncated,
             channel_latency=self._hops,
+            degraded_count=self._degraded_count,
         )
         self._window_start = now
         self._success_latencies_ms = []
         self._timeout_elapsed_ms = []
         self._success_count = 0
         self._timeout_count = 0
+        self._degraded_count = 0
         self._channel_counts = {}
         self._truncated = False
         self._hops = {}
@@ -377,6 +434,10 @@ class SharedRpcHealthSink:
     def record_hop_timeout(self, hop: str, elapsed_ms: Optional[float] = None) -> None:
         with self._lock:
             self._agg.record_hop_timeout(hop, elapsed_ms)
+
+    def record_hop_degraded(self, hop: str, elapsed_ms: Optional[float] = None) -> None:
+        with self._lock:
+            self._agg.record_hop_degraded(hop, elapsed_ms)
 
     def drain_into(self, target: RpcHealthAggregator) -> None:
         """Move everything accumulated so far into ``target`` (the publishing bus's own

@@ -54,6 +54,15 @@ class TransportBaselineHourlyV1(BaseModel):
     windows_evaluated: int = Field(..., ge=0, description="Folds that produced a latency evaluation (>= min_calls pooled).")
     success_count: int = Field(0, ge=0)
     timeout_count: int = Field(0, ge=0)
+    degraded_count: int = Field(
+        0,
+        ge=0,
+        description="Replies the replying service marked degraded (orion/core/bus/rpc_degraded.py: a GPU-pool "
+        "refusal, a canned fallback, a system.error) -- delivered, but never a latency reading, so never in "
+        "the z/ratio/floor of this row. Disjoint from success_count/timeout_count. Added 2026-10-13; rows "
+        "from before then carry 0 (NULL in SQL) even where refusals happened (2026-10-08 06:00 and "
+        "14:00-19:00 UTC were counted as successes).",
+    )
 
     z_p50: Optional[float] = Field(None, description="Median z over evaluated windows; None if none evaluated.")
     z_p90: Optional[float] = None

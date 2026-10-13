@@ -14,6 +14,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import BaseEnvelope, LLMMessage, ServiceRef
+from orion.core.bus.rpc_degraded import degraded_reason, note_degraded
 from orion.core.verbs import VerbRequestV1, VerbResultV1
 from orion.cognition.plan_loader import build_plan_for_verb
 from orion.schemas.collapse_mirror import CollapseMirrorEntryV2
@@ -54,13 +55,18 @@ logger = logging.getLogger("orion.cortex.orch")
 METACOG_HEALTH_LABEL = "log_orion_metacognition"
 
 
-def _record_verb_hop(bus: Any, verb_name: str, elapsed_ms: float, *, timed_out: bool) -> None:
+def _record_verb_hop(
+    bus: Any, verb_name: str, elapsed_ms: float, *, timed_out: bool, degraded: bool = False
+) -> None:
     """Record the chat-lane hand-rolled orion:verb:request round trip as hop
-    ``verb:<verb_name>`` on the bus the RPC-health publish loop drains. Never raises."""
+    ``verb:<verb_name>`` on the bus the RPC-health publish loop drains. A reply cortex-exec
+    marked degraded is counted, never timed (orion/core/bus/rpc_degraded.py). Never raises."""
     hop = f"verb:{verb_name or 'unknown'}"
     try:
         if timed_out:
             bus.record_hop_timeout(hop, elapsed_ms)
+        elif degraded:
+            bus.record_hop_degraded(hop, elapsed_ms)
         else:
             bus.record_hop_success(hop, elapsed_ms)
     except Exception:
@@ -768,6 +774,8 @@ async def call_verb_runtime(
         verb_s,
     )
 
+    verb_degraded: list[str] = []
+
     async def _wait_for_result() -> VerbResultV1:
         reply_channel = str(envelope.reply_to or "orion:verb:result")
         logger.info(
@@ -800,6 +808,9 @@ async def call_verb_runtime(
                     )
                     continue
                 if result.request_id == verb_request.request_id:
+                    reason = degraded_reason(decoded.envelope, request_trace=envelope.trace)
+                    if reason is not None:
+                        verb_degraded.append(reason)
                     logger.info(
                         "orch_verb_runtime_result corr=%s reply=%s request_id=%s ok=%s",
                         correlation_id,
@@ -830,7 +841,16 @@ async def call_verb_runtime(
     verb_hop_started = time.perf_counter()
     try:
         verb_result = await asyncio.wait_for(_wait_for_result(), timeout=timeout_sec)
-        _record_verb_hop(bus, verb_s, (time.perf_counter() - verb_hop_started) * 1000.0, timed_out=False)
+        _record_verb_hop(
+            bus,
+            verb_s,
+            (time.perf_counter() - verb_hop_started) * 1000.0,
+            timed_out=False,
+            degraded=bool(verb_degraded),
+        )
+        if verb_degraded:
+            # Relay: the verb result is orch's answer (see CortexExecClient.execute_plan).
+            note_degraded(verb_degraded[0])
         return verb_result
     except asyncio.TimeoutError as exc:
         _record_verb_hop(bus, verb_s, (time.perf_counter() - verb_hop_started) * 1000.0, timed_out=True)

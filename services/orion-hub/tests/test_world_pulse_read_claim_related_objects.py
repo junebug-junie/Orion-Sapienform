@@ -223,3 +223,138 @@ def test_no_concept_search_configured_means_label_objects_only():
     assert pipe.concept_search is None
     ctx = asyncio.run(pipe._build_claim_context(h))
     assert [o.node_id for o in ctx.objects] == [o.node_id for o in exact_ctx.objects]
+
+
+def test_a_label_too_short_to_name_anything_is_never_offered():
+    # The quote check is a substring test: a concept labelled "AI" would be "named" by any
+    # quote containing "said". The label path drops such labels; so does the meaning path.
+    store, _, ctx, _, _ = _setup([existing_concept("concept-ai", "AI")])
+    backend = _indexed(store, dict(VECTORS, AI=(1.0, 0.0, 0.0)))
+    assert "concept-ai" in backend.docs
+    assert "concept-ai" not in {e.node_id for e, _ in _related(store, ctx, backend)}
+
+
+def test_a_low_ranked_concept_named_in_the_text_is_linked_by_the_same_quote_rule():
+    """The only way a meaning object can be linked: its label IS in the text but it ranked
+    below the label path's region scan. The quote rule treats it exactly like a label hit."""
+    store, subject_id, ctx, _, h = _setup()
+    low = existing_concept("concept-thermal-energy", "thermal energy")
+    store.upsert_node(identity_key=None, node=low)
+    backend = _indexed(store, dict(VECTORS, **{"thermal energy": (0.95, 0.2, 0.0)}))
+    # Simulate the rank cut: drop it from the label objects the way a 500-node scan would.
+    ctx = type(ctx)(subjects=ctx.subjects, objects=tuple(o for o in ctx.objects if o.node_id != low.node_id),
+                    texts=ctx.texts, haystack=ctx.haystack)
+    widened = with_related_objects(ctx, _related(store, ctx, backend))
+    assert any(o.node_id == low.node_id and o.via == "meaning" for o in widened.objects)
+    claim = WorldPulseReadRelationshipClaimV1(
+        subject_id=subject_id, predicate="associated_with", object_id=low.node_id, statement_text="s",
+        quote="moving thermal energy from a cold space to a warm one")
+    plan = plan_claims([claim], widened, seed_id=h.seed_ref.seed_id, recorded_at=NOW)[0]
+    assert plan.claim.receipt.outcome == "accepted_provisional"
+
+
+def test_stage2_keeps_label_objects_before_the_index_exists():
+    store, _, exact_ctx, conn, h = _setup()
+    backend = FakeSemanticBackend(VECTORS)  # nothing indexed: the collection does not exist
+    pipe = _pipeline(store, conn, backend)
+    ctx = asyncio.run(pipe._build_claim_context(h))
+    assert [o.node_id for o in ctx.objects] == [o.node_id for o in exact_ctx.objects]
+
+
+def test_stage2_records_a_meaning_claim_as_proposed_and_refuses_one_no_longer_offered(monkeypatch):
+    store, subject_id, _, conn, h = _setup()
+    journal = FakeJournal()
+    # The globals the class actually runs with (Hub's conftest re-imports scripts.* per test).
+    monkeypatch.setitem(WorldPulseReadStage2Pipeline._record_claims.__globals__, "SubstrateGraphJournal",
+                        lambda pool: journal)
+    backend = FakeSemanticBackend(VECTORS)
+    pipe = _pipeline(store, conn, backend)
+    asyncio.run(pipe.index_concepts_once())
+    pipe._claim_context = asyncio.run(pipe._build_claim_context(h))
+    claim = WorldPulseReadRelationshipClaimV1(
+        subject_id=subject_id, predicate="associated_with", object_id=RELATED_ID, statement_text="s", quote=QUOTE)
+    result = WorldPulseReadStage2ResultV1(summary="s", trace_id="t", created_at=NOW, seed_id="finding:heat-pump",
+                                          relationship_claims=[claim])
+    recorded = asyncio.run(pipe._record_claims("finding:heat-pump", result))
+    assert recorded.relationship_claims[0].receipt.outcome == "proposed"
+    assert recorded.relationship_claims[0].receipt.reason == "quote_not_about_endpoints"
+    assert len(journal.proposals()) == 1 and journal.decisions() == []
+    # A Hub restart rebuilt the context and the meaning object no longer ranks: refused, no
+    # proposal (documented on stored_object_lookup; it could never have been linked).
+    pipe._claim_context = type(pipe._claim_context)(
+        subjects=pipe._claim_context.subjects, texts=pipe._claim_context.texts,
+        objects=tuple(o for o in pipe._claim_context.objects if o.via != "meaning"),
+        haystack=pipe._claim_context.haystack)
+    again = asyncio.run(pipe._record_claims("finding:heat-pump", result))
+    assert again.relationship_claims[0].receipt.reason == "unknown_object"
+    assert len(journal.proposals()) == 1
+
+
+def _run_loop(pipe, passes):
+    """Run _concept_index_loop for `passes` index passes, recording each requested delay."""
+    delays = []
+
+    async def fake_wait_for(aw, timeout):
+        delays.append(timeout)
+        aw.close()
+        if len(delays) >= passes:
+            pipe._stop.set()
+        raise asyncio.TimeoutError
+
+    async def go():
+        import scripts.world_pulse_read_stage2 as mod
+        orig = mod.asyncio.wait_for
+        mod.asyncio.wait_for = fake_wait_for
+        try:
+            await pipe._concept_index_loop()
+        finally:
+            mod.asyncio.wait_for = orig
+    asyncio.run(go())
+    return delays
+
+
+def test_index_loop_hurries_only_while_the_backlog_drains():
+    extra = [existing_concept(f"concept-x-{i:02d}", f"Concept x {i:02d}") for i in range(5)]
+    store, _, _, conn, _ = _setup(extra)
+    backend = FakeSemanticBackend(VECTORS)
+    pipe = _pipeline(store, conn, backend)
+    pipe.concept_search = backend.config(index_batch=3)
+    total = len(asyncio.run(asyncio.to_thread(__import__(
+        "orion.world_pulse_read.concept_search", fromlist=["index_rows"]).index_rows, store)))
+    delays = _run_loop(pipe, passes=6)
+    assert len(backend.docs) == total
+    assert delays[0] == 5.0 and delays[-1] == 300.0
+
+
+def test_index_loop_backs_off_when_upserts_never_land():
+    store, _, _, conn, _ = _setup()
+    backend = FakeSemanticBackend(VECTORS)
+    backend.drop_upserts = True
+    pipe = _pipeline(store, conn, backend)
+    pipe.concept_search = backend.config(index_batch=2)
+    delays = _run_loop(pipe, passes=4)
+    # First pass hurries (no history); the backlog never shrinks, so every later pass waits.
+    assert delays[0] == 5.0 and delays[1:] == [300.0, 300.0, 300.0]
+    embeds_per_pass = 2
+    assert len(backend.embedded) == 4 * embeds_per_pass
+
+
+def test_index_task_starts_only_with_search_and_assertions_and_stop_cancels_it():
+    store, _, _, conn, _ = _setup()
+    backend = FakeSemanticBackend(VECTORS)
+
+    async def go(assertions):
+        pipe = WorldPulseReadStage2Pipeline(
+            enabled=True, tick_interval_sec=3600, timeout_sec=60, session_id="s",
+            pool_provider=lambda: None, source_ref=ServiceRef(name="hub", version="0", node="t"),
+            store_provider=lambda: store, projector_readiness=ALWAYS_READY,
+            concept_search=backend.config(), assertions_enabled=assertions)
+        pipe._http_client = backend.client
+        pipe.tick = lambda **kw: asyncio.sleep(0)
+        await pipe.start(backend)
+        started = pipe._concept_index_task is not None
+        await pipe.stop()
+        return started, pipe._concept_index_task
+
+    assert asyncio.run(go(True)) == (True, None)
+    assert asyncio.run(go(False)) == (False, None)

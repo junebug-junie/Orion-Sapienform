@@ -12,8 +12,9 @@ Flow, all deterministic except the model's proposal:
    label-in-text retrieval Recall's concept_region collector uses; no new score), plus the
    text Hub retained for the read (fetch_text.py). Hub then fills the rest of the object
    list with concepts nearest the subjects by meaning (concept_search.py); those are
-   offered, but a claim to one stays ``proposed`` under (a) below, since its label is not
-   in the text.
+   offered under the same rule below, so a claim to one is linked only if the quote names
+   it by its stored label (almost never: its label is usually not in the text) and
+   otherwise stays ``proposed``.
 2. Stage 2's model returns ``relationship_claims`` choosing ids from those two lists.
 3. ``plan_claims`` validates each claim. Refused outright (not journalled, no node, no
    edge): a predicate outside the reader allowlist, an id not in the lists Hub offered,

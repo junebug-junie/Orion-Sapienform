@@ -207,6 +207,8 @@ class FakeSemanticBackend:
         self.docs: dict[str, tuple[list[float], dict, str]] = {}
         self.embedded: list[str] = []
         self.fail_embed = False
+        # vector-writer down: upserts are published but never land.
+        self.drop_upserts = False
 
     def vector(self, text: str) -> list[float]:
         return self.vectors.get(text) or self._norm([0.0] * (self._dims - 1) + [1.0])
@@ -227,6 +229,10 @@ class FakeSemanticBackend:
                                              "embedding_model": "fake-bge", "embedding_dim": len(vec)})
         base = f"{self.CHROMA_URL}/api/v1/collections"
         if request.method == "GET" and url.startswith(base + "/") and not url.endswith("/count"):
+            if not self.docs:
+                # Chroma 0.4.24: a collection nothing was ever upserted into does not exist.
+                name = url.rsplit("/", 1)[-1]
+                return httpx.Response(500, json={"error": f"ValueError('Collection {name} does not exist.')"})
             return httpx.Response(200, json={"id": self.COLLECTION_ID, "metadata": {"hnsw:space": "cosine"}})
         if url == f"{base}/{self.COLLECTION_ID}/count":
             return httpx.Response(200, json=len(self.docs))
@@ -257,5 +263,7 @@ class FakeSemanticBackend:
     async def publish(self, channel: str, envelope: Any) -> None:
         """What orion-vector-writer does with an upsert: store the vector under its doc id."""
         assert channel == "orion:vector:semantic:upsert"
+        if self.drop_upserts:
+            return
         p = envelope.payload
         self.docs[p["doc_id"]] = (p["embedding"], p["meta"], p["text"])

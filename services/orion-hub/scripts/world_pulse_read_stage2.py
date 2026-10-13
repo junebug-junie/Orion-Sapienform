@@ -405,15 +405,23 @@ class WorldPulseReadStage2Pipeline:
         return result
 
     async def _concept_index_loop(self) -> None:
+        # Backlog (indexed + pending) seen by the previous pass. Upserts reach Chroma via
+        # vector-writer asynchronously, so a pass only proves progress when the backlog
+        # it sees has shrunk; otherwise (writer down or behind) wait the full interval
+        # rather than re-embedding the same batch every few seconds.
+        last_backlog: Optional[int] = None
         while not self._stop.is_set():
             delay = self.concept_search.index_interval_sec
             try:
                 result = await self.index_concepts_once()
                 if result is None:
                     delay = min(delay, 30.0)
-                elif result.pending:
-                    # First build: keep going until the backlog is gone.
-                    delay = min(delay, 5.0)
+                else:
+                    backlog = result.indexed + result.pending
+                    if result.pending and (last_backlog is None or backlog < last_backlog):
+                        # First build: keep going while the backlog drains.
+                        delay = min(delay, 5.0)
+                    last_backlog = backlog
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # noqa: BLE001

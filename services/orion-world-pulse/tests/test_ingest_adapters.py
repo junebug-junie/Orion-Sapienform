@@ -67,7 +67,7 @@ def test_manual_adapter_enforces_domains():
     source = _source("manual_urls").model_copy(
         update={
             "urls": [
-                "https://example.org/news/path/allowed",
+                "https://example.org/news/path/allowed-article-slug",
                 "https://unapproved.example.net/blocked",
             ],
             "max_articles_per_day": 10,
@@ -75,5 +75,5 @@ def test_manual_adapter_enforces_domains():
     )
     rows = manual_urls_adapter.fetch(source, 5)
     assert len(rows) == 1
-    assert rows[0].url == "https://example.org/news/path/allowed"
+    assert rows[0].url == "https://example.org/news/path/allowed-article-slug"
 

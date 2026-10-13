@@ -341,6 +341,7 @@ def test_pipeline_turns_arxiv_papers_into_reading_seeds(monkeypatch):
                 source_id=source.source_id, source_name=source.name,
                 url=f"https://{host}/{source.source_id}/{w}", title=f"{source.source_id} {w} {i} report",
                 fetched_at=datetime(2026, 10, 13, tzinfo=timezone.utc), discovered_via="rss",
+                published_at=datetime(2026, 10, 12, 12, tzinfo=timezone.utc),
                 trust_tier=source.trust_tier, categories=list(source.categories),
             )
             for i, w in enumerate(words[:3])
@@ -356,6 +357,8 @@ def test_pipeline_turns_arxiv_papers_into_reading_seeds(monkeypatch):
 
     monkeypatch.setattr(pipeline, "fetch_source_candidates", fetch)
     monkeypatch.setattr(pipeline, "normalize_article", recording_normalize)
+    # Pin the clock: fixture papers are dated 2026-10-09, inside arXiv's 7-day window.
+    monkeypatch.setattr(pipeline, "now_utc", lambda: datetime(2026, 10, 13, 12, tzinfo=timezone.utc))
     result = pipeline.run_world_pulse(run_id="run-arxiv", requested_by="test", dry_run=True)
     assert result.digest is not None
 
@@ -364,8 +367,7 @@ def test_pipeline_turns_arxiv_papers_into_reading_seeds(monkeypatch):
     assert sorted(s.url for s in paper_seeds) == [
         "https://arxiv.org/abs/2610.13419",
         "https://arxiv.org/abs/2610.13918",
-        "https://arxiv.org/abs/hep-th/9901001",
-    ]
+    ]  # hep-th/9901001 (published 1999) is dropped by arXiv's 7-day freshness window
     assert {s.section for s in paper_seeds} == {"ai_technology"}
     assert {s.kind for s in paper_seeds} == {"digest_item"}
     assert result.digest.max_digest_items_total == 16

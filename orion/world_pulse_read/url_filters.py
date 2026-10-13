@@ -69,6 +69,12 @@ _ITEM_PARENTS = frozenset(
 )
 
 
+# Index segments whose children are more listings, never an owner/author.
+_TAXONOMY_SEGMENTS = frozenset(
+    {"category", "categories", "tag", "tags", "topic", "topics", "section", "sections", "index", "latest", "headlines"}
+)
+
+
 def _leaf_tokens(leaf: str) -> list[str]:
     return [t for t in re.split(r"[-_]+", leaf) if t]
 
@@ -113,6 +119,16 @@ def url_looks_like_section_index(url: str) -> bool:
     parents = cleaned[:-1]
     if parents and parents[-1] in _ITEM_PARENTS:
         return False
+    # /blog/<org>/<post> (huggingface.co/blog/microsoft/thinkingbox): a content
+    # listing word with an owner segment between it and the leaf names one
+    # post, whatever the leaf looks like. Before this, 182 of 876 live
+    # huggingface_blog feed items were rejected as listings (2026-10-13).
+    # Taxonomy buckets are excluded: /category/ai/ml is still a listing.
+    listing_idx = [i for i, p in enumerate(parents) if p in _INDEX_SEGMENTS]
+    if listing_idx:
+        last = listing_idx[-1]
+        if parents[last] not in _TAXONOMY_SEGMENTS and last < len(parents) - 1:
+            return False
     # /category/ai -- parent is a listing bucket and the leaf is not an article slug.
     if any(p in _INDEX_SEGMENTS for p in parents):
         if tokens and all(t in _LISTING_WORDS for t in tokens):

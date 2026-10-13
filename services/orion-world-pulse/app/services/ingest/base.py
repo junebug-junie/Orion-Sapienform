@@ -12,6 +12,7 @@ import requests
 
 from app.services.ingest.models import ArticleCandidate
 from orion.schemas.world_pulse import WorldPulseSourceV1
+from orion.world_pulse_read.url_filters import url_looks_like_section_index
 
 
 def now_utc() -> datetime:
@@ -19,15 +20,30 @@ def now_utc() -> datetime:
 
 
 def parse_date(value: str | None) -> datetime | None:
+    """RSS pubDate (RFC 822) or Atom/Dublin Core date (ISO 8601). Naive -> UTC.
+
+    Before 2026-10-13 only RFC 822 parsed, so every Atom ``<published>`` read
+    as "undated" -- harmless while nothing filtered on dates, wrong once the
+    freshness window drops undated items.
+    """
     if not value:
         return None
-    try:
-        dt = parsedate_to_datetime(value)
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-        return dt
-    except Exception:
+    raw = value.strip()
+    if not raw:
         return None
+    dt: datetime | None = None
+    try:
+        dt = parsedate_to_datetime(raw)
+    except Exception:
+        dt = None
+    if dt is None:
+        try:
+            dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        except Exception:
+            return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt
 
 
 def source_timeout_seconds(source: WorldPulseSourceV1, fallback: int) -> int:
@@ -124,6 +140,11 @@ def to_candidate(
     if not clean_title or not clean_url:
         return None
     if not is_allowed_url(source, clean_url):
+        return None
+    # One article per candidate, never a listing/landing page or a data file
+    # (live 2026-10-01..13: usgs.gov/news/national-news-release and the CISA KEV
+    # .json were each re-served daily as a "digest item" the reader could not read).
+    if url_looks_like_section_index(clean_url):
         return None
     return ArticleCandidate(
         source_id=source.source_id,

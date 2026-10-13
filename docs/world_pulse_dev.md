@@ -107,11 +107,25 @@ Orion gets up to `max_articles_per_day` (default 4) new arXiv papers per daily r
 
 ## Known zero-source sections
 
-- `hardware_compute_gpu` (a `recommended`, not `required`, section) has zero passive/RSS sources tagged to it as of 2026-07-13.
-- `nasa_news` previously carried a `hardware_compute_gpu` tag alongside `science_climate_energy`, but NASA press releases (launches, contract awards, Mars missions) are not GPU/hardware/compute content. Since NASA publishes near-daily, that mistagging permanently marked the section `covered` and silently suppressed the curiosity gap-fill (see `_compute_coverage` in `app/services/pipeline.py`) for months. The tag was removed; do not re-add `nasa_news` (or any other off-topic source) to `hardware_compute_gpu` to "fix" the resulting gap.
-- This is an accepted, intentional tradeoff: `hardware_compute_gpu` now relies entirely on the curiosity live-search gap-fill (`build_curiosity_followups` in `app/services/curiosity.py`) firing on every run where the section has zero accepted articles, instead of on a passive feed. Do not add a replacement source for this section without an explicit decision to do so.
+- None as of 2026-10-13. `hardware_compute_gpu` had no passive source from 2026-07-13 and relied on the curiosity live-search gap-fill, which in practice fed the reader YouTube videos and listing pages (`tomshardware.com/news`, `wccftech.com/topic/hardware/`, `nvidianews.nvidia.com/`). Juniper approved replacing it with real feeds (`nvidia_newsroom`, `servethehome`); the gap-fill now only fires when those yield nothing, and it drops listing-page results.
+- Do not re-add `nasa_news` (or any other off-topic source) to `hardware_compute_gpu`: NASA's near-daily cadence once marked the section `covered` for months with no GPU content.
 
 ## Source quality guidance
+
+Every source must give Orion's reader a fresh, individual article it can actually read. Before enabling one, check all three and record the results in the source's `notes`:
+
+1. `robots.txt` allows `Claude-User` for the article paths (the reading harness's WebFetch agent).
+2. A real WebFetch through the harness returns article text, not a refusal, a 403, or a truncated shell.
+3. The feed yields distinct, dated article links (not landing pages, not data files) with recent dates.
+
+No user-agent spoofing or other block evasion. A site that refuses the reader is dropped, not routed around.
+
+Runtime guards (`app/services/source_health.py`, `app/services/ingest/base.py`):
+
+- Listing/landing/data-file URLs never become candidates (`orion/world_pulse_read/url_filters.url_looks_like_section_index`).
+- `WORLD_PULSE_MAX_ITEM_AGE_DAYS` (default 3): items older than this by their own published date are dropped; undated items are dropped too, so `manual_urls` sources can no longer reach the digest.
+- `WORLD_PULSE_STUCK_SOURCE_DIGESTS` (default 3): a source with no new article URL versus the previous real run for this many digests in a row gets a `source_stuck:<source_id>:<reason>:<n>` run warning (reason `same_urls`, `zero_fresh_items`, or `fetch_error`). Per-source counts are in `run.metrics.source_health` (`/api/world-pulse/runs`, `world_pulse_run.payload_json`), which is also where the next run reads its history from via `WORLD_PULSE_SOURCE_HEALTH_DB_URL`.
+- Eval: `services/orion-world-pulse/evals/run_source_quality_eval.py --replay 10 --live --old-root <origin/main tree>`.
 
 - Prefer official/public-interest sources, wire-style reporting, and stable metadata-rich feeds.
 - Avoid paywalled feeds, social/comment sources, broad homepage scraping, and JS-rendered-only pages.
@@ -120,12 +134,13 @@ Orion gets up to `max_articles_per_day` (default 4) new arXiv papers per daily r
 ## Example approved source entry
 
 ```yaml
-- source_id: npr_us_politics
-  name: NPR Politics RSS
+- source_id: pbs_newshour_politics
+  name: PBS NewsHour Politics RSS
   type: rss
   strategy: rss
-  url: https://feeds.npr.org/1014/rss.xml
-  domains: ["feeds.npr.org", "npr.org"]
+  url: https://www.pbs.org/newshour/feeds/rss/politics
+  domains: ["www.pbs.org", "pbs.org"]
+  allowed_path_prefixes: ["/newshour/"]
   categories: ["us_politics"]
   trust_tier: 2
   enabled: true
@@ -139,8 +154,8 @@ Orion gets up to `max_articles_per_day` (default 4) new arXiv papers per daily r
     prior_update_candidate: true
   politics_allowed: true
   requires_corroboration: true
-  max_articles_per_day: 8
-  notes: "Reachable RSS feed used for US politics coverage."
+  max_articles_per_day: 6
+  notes: "Verified 2026-10-13: robots.txt allows Claude-User; harness WebFetch returned full article text; feed 20 distinct dated items."
 ```
 
 ## Coverage status interpretation

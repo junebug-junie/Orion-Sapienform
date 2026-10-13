@@ -7,6 +7,8 @@ from orion.schemas.world_pulse import SourceRegistryV1, WorldPulseAllowedUsesV1,
 
 
 def test_run_world_pulse_with_fixture_fetch(monkeypatch):
+    # Dated: undated feed items are dropped by the freshness window.
+    published = datetime.now(timezone.utc)
     monkeypatch.setattr(
         pipeline,
         "fetch_source_candidates",
@@ -16,14 +18,14 @@ def test_run_world_pulse_with_fixture_fetch(monkeypatch):
                 "url": "https://example.com/us-ai",
                 "summary": "A policy update with GPU implications.",
                 "author": "Staff",
-                "published_at": None,
+                "published_at": published,
             }})(),
             type("Candidate", (), {"model_dump": lambda self, mode="python": {
                 "title": "Utah county announces local election timeline",
                 "url": "https://example.com/utah-election",
                 "summary": "Local politics and administration changes.",
                 "author": "Desk",
-                "published_at": None,
+                "published_at": published,
             }})(),
         ],
     )

@@ -64,7 +64,7 @@ sources:
     region_scope: us
     trust_tier: 2
     factuality: high
-    enabled: true
+    enabled: false
     approved: true
     required: false
     allowed_uses:
@@ -77,7 +77,7 @@ sources:
     requires_corroboration: true
     max_articles_per_day: 8
     fetch_timeout_seconds: 20
-    notes: "Reachable RSS feed used for US politics coverage."
+    notes: "Disabled 2026-10-13: npr.org robots.txt disallows Claude-User and the edge resets that agent, so the reader never got an article (17/17 no_read_evidence 10-05..13). Replaced by pbs_newshour_politics / rollcall_politics."
   - source_id: bbc_world
     name: BBC World RSS
     type: rss
@@ -89,7 +89,7 @@ sources:
     region_scope: global
     trust_tier: 2
     factuality: high
-    enabled: true
+    enabled: false
     approved: true
     required: false
     allowed_uses:
@@ -102,7 +102,7 @@ sources:
     requires_corroboration: true
     max_articles_per_day: 8
     fetch_timeout_seconds: 20
-    notes: "Reachable world RSS feed for global politics coverage."
+    notes: "Disabled 2026-10-13: the reading harness WebFetch refuses bbc.co.uk / bbc.com / feeds.bbci.co.uk outright (18/18 no_read_evidence 10-05..13). Replaced by pbs_newshour_world / un_news."
   - source_id: utah_governor_news
     name: Utah Governor News RSS
     type: rss
@@ -166,6 +166,9 @@ sources:
       - https://export.arxiv.org/api/query?search_query=cat:cs.CL&sortBy=submittedDate&sortOrder=descending&max_results=25
       - https://export.arxiv.org/api/query?search_query=cat:q-bio.NC&sortBy=submittedDate&sortOrder=descending&max_results=25
     domains: ["arxiv.org", "export.arxiv.org"]
+    # Submission-dated; announced 1-3 days later (longer over weekends). The
+    # reading queue dedupes by arXiv id, so a wider window cannot repeat a paper.
+    max_item_age_days: 7
     allowed_path_prefixes: ["/abs/"]
     categories: ["ai_technology"]
     region_scope: technology
@@ -197,7 +200,7 @@ sources:
     region_scope: healthcare
     trust_tier: 1
     factuality: high
-    enabled: true
+    enabled: false
     approved: true
     required: false
     allowed_uses:
@@ -210,7 +213,7 @@ sources:
     requires_corroboration: false
     max_articles_per_day: 6
     fetch_timeout_seconds: 20
-    notes: "Reachable public-health feed used for healthcare coverage."
+    notes: "Disabled 2026-10-13: feed is stale (newest item 2026-02-25 on 10-13); it re-served a 2026-01-24 statement daily (26 seeds / 2 distinct URLs 10-01..13). Replaced by kff_health_news / stat_news / sciencedaily_mind_brain."
   - source_id: cisa_kev_manual
     name: CISA KEV Catalog (Manual URL)
     type: manual
@@ -223,7 +226,7 @@ sources:
     region_scope: security
     trust_tier: 1
     factuality: high
-    enabled: true
+    enabled: false
     approved: true
     required: false
     allowed_uses:
@@ -235,7 +238,7 @@ sources:
     politics_allowed: false
     requires_corroboration: false
     max_articles_per_day: 3
-    notes: "Reachable CISA KEV JSON endpoint via bounded manual URL adapter."
+    notes: "Disabled 2026-10-13: a JSON data file, not an article (13 seeds / 1 URL 10-01..13). cisa.gov RSS feeds return 403 to this agent. Replaced by therecord_cyber / bleepingcomputer."
   - source_id: nasa_news
     name: NASA News RSS
     type: rss
@@ -259,6 +262,331 @@ sources:
     requires_corroboration: false
     max_articles_per_day: 8
     fetch_timeout_seconds: 20
+  - source_id: pbs_newshour_politics
+    name: PBS NewsHour Politics RSS
+    type: rss
+    strategy: rss
+    url: https://www.pbs.org/newshour/feeds/rss/politics
+    domains: ["www.pbs.org", "pbs.org"]
+    allowed_path_prefixes: ["/newshour/"]
+    categories: ["us_politics"]
+    region_scope: us
+    trust_tier: 2
+    factuality: high
+    enabled: true
+    approved: true
+    required: false
+    allowed_uses:
+      digest: true
+      claim_extraction: true
+      graph_write: true
+      stance_capsule: false
+      prior_update_candidate: true
+    politics_allowed: true
+    requires_corroboration: true
+    max_articles_per_day: 6
+    fetch_timeout_seconds: 20
+    notes: "Verified 2026-10-13: robots.txt allows Claude-User; harness WebFetch returned full article text (~600 words); feed 20 distinct dated items, 20 within 3 days."
+  - source_id: rollcall_politics
+    name: Roll Call RSS
+    type: rss
+    strategy: rss
+    url: https://rollcall.com/feed/
+    domains: ["rollcall.com", "www.rollcall.com"]
+    allowed_path_prefixes: ["/20"]
+    categories: ["us_politics"]
+    region_scope: us
+    trust_tier: 2
+    factuality: high
+    enabled: true
+    approved: true
+    required: false
+    allowed_uses:
+      digest: true
+      claim_extraction: true
+      graph_write: true
+      stance_capsule: false
+      prior_update_candidate: true
+    politics_allowed: true
+    requires_corroboration: true
+    max_articles_per_day: 6
+    fetch_timeout_seconds: 20
+    notes: "Verified 2026-10-13: robots.txt allows Claude-User; harness WebFetch returned full article text (~1,100 words); feed 10 distinct dated items, 7 within 3 days. Some items are short photo posts."
+  - source_id: pbs_newshour_world
+    name: PBS NewsHour World RSS
+    type: rss
+    strategy: rss
+    url: https://www.pbs.org/newshour/feeds/rss/world
+    domains: ["www.pbs.org", "pbs.org"]
+    allowed_path_prefixes: ["/newshour/"]
+    categories: ["global_politics"]
+    region_scope: global
+    trust_tier: 2
+    factuality: high
+    enabled: true
+    approved: true
+    required: false
+    allowed_uses:
+      digest: true
+      claim_extraction: true
+      graph_write: true
+      stance_capsule: false
+      prior_update_candidate: true
+    politics_allowed: true
+    requires_corroboration: true
+    max_articles_per_day: 6
+    fetch_timeout_seconds: 20
+    notes: "Verified 2026-10-13: robots.txt allows Claude-User; harness WebFetch returned full article text (~1,000 words); feed 20 distinct dated items, 20 within 3 days."
+  - source_id: un_news
+    name: UN News RSS
+    type: rss
+    strategy: rss
+    url: https://news.un.org/feed/subscribe/en/news/all/rss.xml
+    domains: ["news.un.org"]
+    allowed_path_prefixes: ["/feed/view/en/story/", "/en/story/"]
+    categories: ["global_politics"]
+    region_scope: global
+    trust_tier: 1
+    factuality: high
+    enabled: true
+    approved: true
+    required: false
+    allowed_uses:
+      digest: true
+      claim_extraction: true
+      graph_write: true
+      stance_capsule: false
+      prior_update_candidate: true
+    politics_allowed: true
+    requires_corroboration: true
+    max_articles_per_day: 6
+    fetch_timeout_seconds: 20
+    notes: "Verified 2026-10-13: robots.txt allows Claude-User; harness WebFetch returned full article text (~550 words); feed 30 distinct dated items, 12 within 3 days."
+  - source_id: deseret_politics
+    name: Deseret News Politics RSS
+    type: rss
+    strategy: rss
+    url: https://www.deseret.com/arc/outboundfeeds/rss/category/politics/
+    domains: ["www.deseret.com", "deseret.com"]
+    allowed_path_prefixes: ["/politics/", "/utah/"]
+    categories: ["local_politics"]
+    region_scope: local
+    trust_tier: 2
+    factuality: high
+    enabled: true
+    approved: true
+    required: false
+    allowed_uses:
+      digest: true
+      claim_extraction: true
+      graph_write: true
+      stance_capsule: false
+      prior_update_candidate: true
+    politics_allowed: true
+    requires_corroboration: true
+    max_articles_per_day: 4
+    fetch_timeout_seconds: 20
+    notes: "Verified 2026-10-13: robots.txt allows Claude-User; harness WebFetch returned full article text (~600 words); feed 20 distinct dated items, 10 within 3 days. Utah-delegation-heavy politics desk; supplements the governor feed, which often has no post in 3 days."
+  - source_id: kff_health_news
+    name: KFF Health News RSS
+    type: rss
+    strategy: rss
+    url: https://kffhealthnews.org/feed/
+    domains: ["kffhealthnews.org"]
+    allowed_path_prefixes: ["/"]
+    categories: ["healthcare_mental_health"]
+    region_scope: healthcare
+    trust_tier: 2
+    factuality: high
+    enabled: true
+    approved: true
+    required: false
+    allowed_uses:
+      digest: true
+      claim_extraction: true
+      graph_write: true
+      stance_capsule: false
+      prior_update_candidate: true
+    politics_allowed: false
+    requires_corroboration: true
+    max_articles_per_day: 4
+    fetch_timeout_seconds: 20
+    notes: "Verified 2026-10-13: robots.txt allows Claude-User; harness WebFetch returned full article text (~1,450 words); feed 10 distinct dated items, 3 within 3 days."
+  - source_id: stat_news
+    name: STAT News RSS
+    type: rss
+    strategy: rss
+    url: https://www.statnews.com/feed/
+    domains: ["www.statnews.com", "statnews.com"]
+    allowed_path_prefixes: ["/20"]
+    categories: ["healthcare_mental_health"]
+    region_scope: healthcare
+    trust_tier: 2
+    factuality: high
+    enabled: true
+    approved: true
+    required: false
+    allowed_uses:
+      digest: true
+      claim_extraction: true
+      graph_write: true
+      stance_capsule: false
+      prior_update_candidate: true
+    politics_allowed: false
+    requires_corroboration: true
+    max_articles_per_day: 4
+    fetch_timeout_seconds: 20
+    notes: "Verified 2026-10-13: robots.txt allows Claude-User; harness WebFetch returned full article text (~1,750 words); feed 20 distinct dated items, 12 within 3 days."
+  - source_id: sciencedaily_mind_brain
+    name: ScienceDaily Mind & Brain RSS
+    type: rss
+    strategy: rss
+    url: https://www.sciencedaily.com/rss/mind_brain.xml
+    domains: ["www.sciencedaily.com", "sciencedaily.com"]
+    allowed_path_prefixes: ["/releases/"]
+    categories: ["healthcare_mental_health"]
+    region_scope: healthcare
+    trust_tier: 3
+    factuality: medium
+    enabled: true
+    approved: true
+    required: false
+    allowed_uses:
+      digest: true
+      claim_extraction: true
+      graph_write: false
+      stance_capsule: false
+      prior_update_candidate: true
+    politics_allowed: false
+    requires_corroboration: true
+    max_articles_per_day: 3
+    fetch_timeout_seconds: 20
+    notes: "Verified 2026-10-13: robots.txt allows Claude-User; harness WebFetch returned full article text (~650 words); feed 60 distinct dated items, 9 within 3 days. Mental-health research releases (press-release aggregator, so tier 3 + corroboration)."
+  - source_id: therecord_cyber
+    name: The Record (Recorded Future News) RSS
+    type: rss
+    strategy: rss
+    url: https://therecord.media/feed
+    domains: ["therecord.media"]
+    allowed_path_prefixes: ["/"]
+    categories: ["security_infrastructure_software"]
+    region_scope: security
+    trust_tier: 2
+    factuality: high
+    enabled: true
+    approved: true
+    required: false
+    allowed_uses:
+      digest: true
+      claim_extraction: true
+      graph_write: true
+      stance_capsule: false
+      prior_update_candidate: true
+    politics_allowed: false
+    requires_corroboration: true
+    max_articles_per_day: 4
+    fetch_timeout_seconds: 20
+    notes: "Verified 2026-10-13: robots.txt allows Claude-User; harness WebFetch returned full article text (~400 words); feed 5 distinct dated items, 5 within 3 days."
+  - source_id: bleepingcomputer
+    name: BleepingComputer RSS
+    type: rss
+    strategy: rss
+    url: https://www.bleepingcomputer.com/feed/
+    domains: ["www.bleepingcomputer.com", "bleepingcomputer.com"]
+    allowed_path_prefixes: ["/news/"]
+    categories: ["security_infrastructure_software"]
+    region_scope: security
+    trust_tier: 2
+    factuality: medium
+    enabled: true
+    approved: true
+    required: false
+    allowed_uses:
+      digest: true
+      claim_extraction: true
+      graph_write: true
+      stance_capsule: false
+      prior_update_candidate: true
+    politics_allowed: false
+    requires_corroboration: true
+    max_articles_per_day: 4
+    fetch_timeout_seconds: 20
+    notes: "Verified 2026-10-13: robots.txt allows Claude-User; harness WebFetch returned full article text (~330 words); feed 15 distinct dated items, 15 within 3 days."
+  - source_id: sciencedaily_top_science
+    name: ScienceDaily Top Science RSS
+    type: rss
+    strategy: rss
+    url: https://www.sciencedaily.com/rss/top/science.xml
+    domains: ["www.sciencedaily.com", "sciencedaily.com"]
+    allowed_path_prefixes: ["/releases/"]
+    categories: ["science_climate_energy"]
+    region_scope: science
+    trust_tier: 3
+    factuality: medium
+    enabled: true
+    approved: true
+    required: false
+    allowed_uses:
+      digest: true
+      claim_extraction: true
+      graph_write: false
+      stance_capsule: false
+      prior_update_candidate: true
+    politics_allowed: false
+    requires_corroboration: true
+    max_articles_per_day: 4
+    fetch_timeout_seconds: 20
+    notes: "Verified 2026-10-13: robots.txt allows Claude-User; harness WebFetch returned full article text (~1,400 words); feed 60 distinct dated items, 22 within 3 days. Press-release aggregator, so tier 3 + corroboration."
+  - source_id: nvidia_newsroom
+    name: NVIDIA Newsroom RSS
+    type: rss
+    strategy: rss
+    url: https://nvidianews.nvidia.com/releases.xml
+    domains: ["nvidianews.nvidia.com", "blogs.nvidia.com"]
+    allowed_path_prefixes: ["/news/", "/blog/"]
+    categories: ["hardware_compute_gpu"]
+    region_scope: hardware
+    trust_tier: 3
+    factuality: medium
+    enabled: true
+    approved: true
+    required: false
+    allowed_uses:
+      digest: true
+      claim_extraction: true
+      graph_write: false
+      stance_capsule: false
+      prior_update_candidate: true
+    politics_allowed: false
+    requires_corroboration: true
+    max_articles_per_day: 4
+    fetch_timeout_seconds: 20
+    notes: "Verified 2026-10-13: robots.txt allows Claude-User; harness WebFetch returned full article text (nvidianews ~650 words, blogs.nvidia.com ~2,100 words); feed 20 distinct dated items, 5 within 3 days. Vendor source: tier 3 + corroboration."
+  - source_id: servethehome
+    name: ServeTheHome RSS
+    type: rss
+    strategy: rss
+    url: https://www.servethehome.com/feed/
+    domains: ["www.servethehome.com", "servethehome.com"]
+    allowed_path_prefixes: ["/"]
+    categories: ["hardware_compute_gpu"]
+    region_scope: hardware
+    trust_tier: 2
+    factuality: medium
+    enabled: true
+    approved: true
+    required: false
+    allowed_uses:
+      digest: true
+      claim_extraction: true
+      graph_write: true
+      stance_capsule: false
+      prior_update_candidate: true
+    politics_allowed: false
+    requires_corroboration: true
+    max_articles_per_day: 4
+    fetch_timeout_seconds: 20
+    notes: "Verified 2026-10-13: robots.txt allows Claude-User; harness WebFetch returned full article text (~650-1,400 words); feed 6 distinct dated items, 5 within 3 days."
   - source_id: noaa_newsroom
     name: NOAA Newsroom
     type: html
@@ -283,7 +611,7 @@ sources:
     requires_corroboration: false
     max_articles_per_day: 6
     html_link_limit: 120
-    notes: "403 in current environment; disabled until a stable approved endpoint is selected"
+    notes: "403 in current environment; disabled until a stable approved endpoint is selected. Re-checked 2026-10-13: noaa.gov/rss.xml is reachable and readable but re-dates old stories (a 2020 Hurricane Isaias item carried a 2026-10-13 pubDate), which defeats the freshness window, so it was not added."
   - source_id: usgs_releases
     name: USGS News Releases
     type: manual
@@ -297,7 +625,7 @@ sources:
     region_scope: us
     trust_tier: 1
     factuality: high
-    enabled: true
+    enabled: false
     approved: true
     allowed_uses:
       digest: true
@@ -308,6 +636,7 @@ sources:
     politics_allowed: false
     requires_corroboration: false
     max_articles_per_day: 4
+    notes: "Disabled 2026-10-13: both URLs are listing pages, not articles (13 seeds / 1 URL 10-01..13); usgs.gov has no working news RSS (404). Science covered by nasa_news / sciencedaily_top_science."
   - source_id: reuters
     name: Reuters
     type: rss
@@ -329,7 +658,7 @@ sources:
     politics_allowed: true
     requires_corroboration: false
     max_articles_per_day: 10
-    notes: "Disabled: feed host failed DNS in local validation environment."
+    notes: "Disabled: feed host failed DNS in local validation environment. Re-checked 2026-10-13: reuters.com robots.txt disallows Claude-User and its feed URL 404s; AP (apnews.com) likewise disallows Claude-User and 403s. Neither is usable without block evasion."
   - source_id: local_official
     name: Utah Government News
     type: rss

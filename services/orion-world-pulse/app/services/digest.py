@@ -117,16 +117,21 @@ def curate_digest_items(
             section_counts[section] = section_counts.get(section, 0) + 1
             break
 
-    for item in ranked:
-        if len(chosen) >= max_total:
-            break
-        if item in chosen:
-            continue
-        current = section_counts.get(item.category, 0)
-        if current >= max_per_section:
-            continue
-        chosen.append(item)
-        section_counts[item.category] = current + 1
+    # Breadth first: every section with an item gets one card before any section
+    # gets a second. Ranking alone let higher-confidence sections take both
+    # their slots and crowd healthcare out of the 12-card cap (live dry-run
+    # 2026-10-13, once the broken sources were replaced with real feeds).
+    for section_cap in sorted({min(1, max_per_section), max_per_section}):
+        for item in ranked:
+            if len(chosen) >= max_total:
+                break
+            if item in chosen:
+                continue
+            current = section_counts.get(item.category, 0)
+            if current >= section_cap:
+                continue
+            chosen.append(item)
+            section_counts[item.category] = current + 1
     # Reserved cards follow pipeline order; the adapter already capped the count.
     reserved_counts: dict[str, int] = {}
     for item in reserved_items:

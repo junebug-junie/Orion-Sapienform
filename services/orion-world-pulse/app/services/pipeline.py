@@ -37,6 +37,13 @@ from app.services.extract import (
 )
 from app.services.ingest.registry import fetch_source_candidates
 from app.services.normalize_article import normalize_article
+from app.services.source_health import (
+    assess_source_health,
+    candidate_field,
+    filter_fresh,
+    load_previous_source_health,
+    stuck_reason,
+)
 from app.services.source_registry import load_source_registry
 from app.services.trust import assess_source, source_allowed_for_fetch, source_allowed_for_graph
 
@@ -137,6 +144,42 @@ def _compute_coverage(
     return coverage_status, per_section, missing_required, missing_recommended, covered_sections
 
 
+def _record_source_health(*, run: WorldPulseRunV1, run_id: str, observations: dict[str, dict[str, Any]]) -> None:
+    """Freshness counters + stuck-source flags onto run.metrics / run.warnings.
+
+    run.metrics is persisted in world_pulse_run.payload_json, which is where
+    the next run reads ``source_health`` back from.
+    """
+    previous, history_status = load_previous_source_health(
+        settings.world_pulse_source_health_db_url, run_id=run_id
+    )
+    health = assess_source_health(
+        observations,
+        previous,
+        stuck_after=settings.world_pulse_stuck_source_digests,
+    )
+    run.metrics["source_health"] = health
+    run.metrics["source_health_history"] = history_status
+    run.metrics["max_item_age_days"] = settings.world_pulse_max_item_age_days
+    run.metrics["stale_items_dropped"] = sum(h["stale_dropped"] for h in health.values())
+    run.metrics["undated_items_dropped"] = sum(h["undated_dropped"] for h in health.values())
+    run.metrics["future_items_dropped"] = sum(h["future_dropped"] for h in health.values())
+    stuck = sorted(sid for sid, h in health.items() if h["stuck"])
+    run.metrics["stuck_sources"] = stuck
+    for sid in stuck:
+        entry = health[sid]
+        reason = stuck_reason(entry)
+        run.warnings.append(f"source_stuck:{sid}:{reason}:{entry['consecutive_no_new']}")
+        logger.warning(
+            "world_pulse_source_stuck run_id=%s source_id=%s reason=%s consecutive_no_new=%s urls=%s",
+            run_id,
+            sid,
+            reason,
+            entry["consecutive_no_new"],
+            entry["urls"][:3],
+        )
+
+
 def run_world_pulse(
     *,
     run_id: str | None = None,
@@ -178,6 +221,8 @@ def run_world_pulse(
     source_skip_details: list[str] = []
     source_error_details: list[str] = []
     required_source_failures: list[str] = []
+    # Per-source accepted URLs + drop counters, for the stuck-source detector.
+    source_observations: dict[str, dict[str, Any]] = {}
     if fixture_items:
         source = next((s for s in registry.sources if s.enabled and s.approved), None)
         if source is None:
@@ -214,6 +259,7 @@ def run_world_pulse(
                     exc,
                 )
                 err = f"source_fetch_error:{source.source_id}"
+                source_observations[source.source_id] = {"urls": [], "fetched": 0, "fetch_error": True}
                 source_error_details.append(err)
                 sources_failed += 1
                 if source.required:
@@ -222,7 +268,27 @@ def run_world_pulse(
                 else:
                     run.warnings.append(f"optional_{err}")
                 continue
-            for candidate in candidates[: min(source.max_articles_per_day, settings.world_pulse_max_articles_per_source)]:
+            fresh, dropped = filter_fresh(
+                candidates,
+                now=now,
+                max_age_days=(
+                    source.max_item_age_days
+                    if source.max_item_age_days is not None
+                    else settings.world_pulse_max_item_age_days
+                ),
+            )
+            accepted = fresh[: min(source.max_articles_per_day, settings.world_pulse_max_articles_per_source)]
+            if assessment.allowed_uses.digest:
+                # A digest-disabled source contributes no articles by design;
+                # observing it would read as "zero fresh" and flag it stuck.
+                source_observations[source.source_id] = {
+                    "urls": [str(candidate_field(c, "url") or "") for c in accepted],
+                    "fetched": len(candidates),
+                    "stale_dropped": dropped["stale"],
+                    "undated_dropped": dropped["undated"],
+                    "future_dropped": dropped["future"],
+                }
+            for candidate in accepted:
                 if not assessment.allowed_uses.digest:
                     continue
                 all_articles.append(
@@ -235,13 +301,16 @@ def run_world_pulse(
                 )
             fetched_count += len(candidates)
             logger.info(
-                "world_pulse_fetch_source_result run_id=%s source_id=%s strategy=%s fetched=%s accepted=%s",
+                "world_pulse_fetch_source_result run_id=%s source_id=%s strategy=%s fetched=%s accepted=%s stale_dropped=%s undated_dropped=%s",
                 rid,
                 source.source_id,
                 strategy,
                 len(candidates),
-                min(source.max_articles_per_day, settings.world_pulse_max_articles_per_source, len(candidates)),
+                len(accepted),
+                dropped["stale"],
+                dropped["undated"],
             )
+        _record_source_health(run=run, run_id=rid, observations=source_observations)
     all_articles = dedupe_articles(all_articles)[: settings.world_pulse_max_articles_per_run]
     run.sources_considered = len(registry.sources)
     run.sources_fetched = len({a.source_id for a in all_articles})

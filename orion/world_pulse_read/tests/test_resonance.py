@@ -192,3 +192,51 @@ def test_hub_correction_demotes_a_doc_near_everything():
     assert dot(q, hub_doc) > dot(q, specific)
     assert rank_score(q, specific, h[1]) > rank_score(q, hub_doc, h[0])
     assert hub_scores([hub_doc], [], k=3) == [0.0]
+
+
+# ---- review regressions (2026-10-13) ----
+
+def test_none_decision_cannot_smuggle_a_retest_or_foreign_citation():
+    j, chk = check_judgment(packet(), judged(decision="none", citations=[], bears_on_prior="strains",
+                                             strained_prior_id="prior-not-in-packet"))
+    assert not chk.accepted and strained_prior(j, chk) is None
+    assert {"prior_relation_without_prior", "strained_prior_not_cited"} <= set(chk.reasons)
+    _, chk = check_judgment(packet(), judged(decision="none", citations=[
+        {"ref_kind": "dream", "ref_id": "foreign", "how": "x"}]))
+    assert "citation_not_in_packet" in chk.reasons
+
+
+def test_short_or_mid_word_quote_rejected():
+    for q in ["and the", "cooled, 130", "iquid cooled, 130 kW per rack"]:
+        _, chk = check_judgment(packet(), judged(read_quote=q), retained_texts=READ.retained_texts)
+        assert "quote_not_in_read" in chk.reasons, q
+
+
+def test_same_ref_twice_with_different_excerpts_is_offered_once():
+    p = build_packet(READ, [sd("dream", "d1", 0.5, excerpt="one"), sd("dream", "d1", 0.4, excerpt="two")],
+                     built_at=AT)
+    assert [c.excerpt for c in p.candidates] == ["one"]
+
+
+def test_json_with_trailing_brace_prose_still_parses():
+    raw = "Here you go: " + json.dumps(judged()) + " (note: {not json})"
+    _, chk = check_judgment(packet(), raw, retained_texts=READ.retained_texts)
+    assert chk.accepted
+
+
+def test_echo_in_summary_or_how_rejected():
+    p = packet()
+    prompt = build_judge_prompt(p)
+    line = "Treat nearness as no evidence at all."
+    _, chk = check_judgment(p, judged(article_summary=f"A is here. B is there. {line}"),
+                            retained_texts=READ.retained_texts, prompt=prompt)
+    assert "prompt_echo" in chk.reasons
+
+
+def test_hub_from_sims_leaves_out_what_the_caller_excludes():
+    from orion.world_pulse_read.resonance_similarity import hub_from_sims
+    assert hub_from_sims([0.9, 0.1, 0.1], k=2) == pytest.approx(0.5)
+    assert hub_from_sims([0.1, 0.1], k=2) == pytest.approx(0.1)  # the 0.9 read left out
+    assert hub_from_sims([], k=2) == 0.0
+    with pytest.raises(ValueError):
+        dot([1.0], [1.0, 0.0])

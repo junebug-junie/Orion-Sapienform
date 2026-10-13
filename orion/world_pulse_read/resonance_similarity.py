@@ -73,13 +73,27 @@ def mean_vector(vectors: Sequence[Vector]) -> list[float]:
 
 def center(v: Vector, mu: Vector) -> list[float]:
     """v minus the corpus mean, renormalized. A zero result stays zero."""
+    if len(v) != len(mu):
+        raise ValueError("vector and mean differ in dimension")
     d = [a - b for a, b in zip(v, mu)]
     n = _norm(d)
     return [x / n for x in d] if n > 0 else d
 
 
 def dot(a: Vector, b: Vector) -> float:
+    if len(a) != len(b):
+        raise ValueError("vectors differ in dimension")
     return sum(x * y for x, y in zip(a, b))
+
+
+def hub_from_sims(sims: Sequence[float], k: int = HUB_K) -> float:
+    """Mean of the k highest similarities a document has to the reference reads. The caller
+    leaves the query read itself out of ``sims``: a document near ONLY this read must not be
+    penalised for being near it."""
+    if not sims:
+        return 0.0
+    top = sorted(sims, reverse=True)[: max(1, min(k, len(sims)))]
+    return sum(top) / len(top)
 
 
 def hub_scores(doc_vecs: Sequence[Vector], reference_vecs: Sequence[Vector], k: int = HUB_K) -> list[float]:
@@ -87,14 +101,7 @@ def hub_scores(doc_vecs: Sequence[Vector], reference_vecs: Sequence[Vector], k: 
 
     Inputs are already centered. With fewer than k references, all are used.
     """
-    if not reference_vecs:
-        return [0.0] * len(doc_vecs)
-    kk = max(1, min(k, len(reference_vecs)))
-    out = []
-    for d in doc_vecs:
-        sims = sorted((dot(d, r) for r in reference_vecs), reverse=True)
-        out.append(sum(sims[:kk]) / kk)
-    return out
+    return [hub_from_sims([dot(d, r) for r in reference_vecs], k) for d in doc_vecs]
 
 
 def rank_score(query_vec: Vector, doc_vec: Vector, hub: float) -> float:

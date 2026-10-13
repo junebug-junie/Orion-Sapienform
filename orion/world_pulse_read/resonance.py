@@ -55,6 +55,9 @@ SUMMARY_MIN_SENTENCES = 3
 SUMMARY_MAX_SENTENCES = 5
 # Prompt lines shorter than this are too generic to call an echo ("Return JSON.").
 ECHO_MIN_CHARS = 30
+# A read_quote must be at least this many whole words, matched on word boundaries:
+# "and the" is inside every read and proves nothing.
+QUOTE_MIN_WORDS = 5
 
 
 @dataclass(frozen=True)
@@ -117,7 +120,7 @@ def build_packet(
     drop below-floor candidates (except floorless docs), dedup identical excerpts
     (Chroma holds duplicate crystallization rows), take up to the kind's budget.
     """
-    budget = budget or KIND_BUDGET
+    budget = KIND_BUDGET if budget is None else budget
     excluded = set(exclude_ref_ids)
     by_kind: dict[str, list[ScoredDoc]] = {}
     for s in scored:
@@ -129,14 +132,16 @@ def build_packet(
     candidates: list[ResonanceCandidateV1] = []
     for kind in budget:  # fixed kind order -> stable packet
         seen: set[str] = set()
+        seen_refs: set[str] = set()
         taken = 0
         for s in sorted(by_kind.get(kind, []), key=lambda x: (-x.rank, x.doc.ref_id)):
             if taken >= budget[kind]:
                 break
             key = _excerpt_key(s.doc.excerpt)
-            if not s.doc.excerpt.strip() or key in seen:
+            if not s.doc.excerpt.strip() or key in seen or s.doc.ref_id in seen_refs:
                 continue
             seen.add(key)
+            seen_refs.add(s.doc.ref_id)
             candidates.append(ResonanceCandidateV1(
                 ref_kind=kind,  # type: ignore[arg-type]
                 ref_id=s.doc.ref_id,
@@ -174,6 +179,8 @@ def with_recent_counts(packets: Sequence[ResonancePacketV1]) -> list[ResonancePa
     return out
 
 
+# A heuristic: abbreviations ("U.S. Senate") over-split and lowercase starts under-split.
+# Good enough for a 3-5 sentence sanity gate on a summary, not for anything finer.
 _SENTENCE = re.compile(r"(?<=[.!?])\s+(?=[A-Z0-9\"'(\[])")
 
 
@@ -251,17 +258,19 @@ def _parse(raw: str | dict[str, Any]) -> dict[str, Any] | None:
     if isinstance(raw, dict):
         return raw
     text = str(raw or "").strip()
-    fenced = re.search(r"```(?:json)?\s*(\{.*\})\s*```", text, re.S)
-    if fenced:
-        text = fenced.group(1)
-    start, end = text.find("{"), text.rfind("}")
-    if start < 0 or end <= start:
-        return None
-    try:
-        obj = json.loads(text[start : end + 1])
-    except json.JSONDecodeError:
-        return None
-    return obj if isinstance(obj, dict) else None
+    start = text.find("{")
+    while start >= 0:
+        try:
+            obj, _ = json.JSONDecoder().raw_decode(text, start)
+        except json.JSONDecodeError:
+            start = text.find("{", start + 1)
+            continue
+        return obj if isinstance(obj, dict) else None
+    return None
+
+
+def _quote_in(quote: str, source: str) -> bool:
+    return re.search(r"(?<!\w)" + re.escape(quote) + r"(?!\w)", source) is not None
 
 
 def check_judgment(
@@ -288,25 +297,29 @@ def check_judgment(
     n = len(split_sentences(j.article_summary))
     if not SUMMARY_MIN_SENTENCES <= n <= SUMMARY_MAX_SENTENCES:
         reasons.append("summary_sentence_count")
+    # Checked whatever the decision: a "none" must not smuggle in an uncited prior or a
+    # citation the packet never handed over (strained_prior would route it to a re-test).
+    handed = {(c.ref_kind, c.ref_id) for c in packet.candidates}
+    if any((c.ref_kind, c.ref_id) not in handed for c in j.citations):
+        reasons.append("citation_not_in_packet")
+    cited_priors = {c.ref_id for c in j.citations if c.ref_kind == "self_prior"}
+    if j.bears_on_prior is not None and not cited_priors:
+        reasons.append("prior_relation_without_prior")
+    if j.bears_on_prior == "strains" and j.strained_prior_id not in cited_priors:
+        reasons.append("strained_prior_not_cited")
     if j.decision != "none":
-        handed = {(c.ref_kind, c.ref_id) for c in packet.candidates}
-        if not j.citations or any((c.ref_kind, c.ref_id) not in handed for c in j.citations):
+        if not j.citations and "citation_not_in_packet" not in reasons:
             reasons.append("citation_not_in_packet")
         sources = [packet.read_summary, packet.read_learned, *(t for _, t in retained_texts)]
         quote = _norm_ws(j.read_quote)
-        if len(quote) < 8 or not any(quote in _norm_ws(s) for s in sources if s):
+        if len(quote.split()) < QUOTE_MIN_WORDS or not any(_quote_in(quote, _norm_ws(s)) for s in sources if s):
             reasons.append("quote_not_in_read")
         if not j.connection.strip():
             reasons.append("empty_connection")
-        elif prompt is not None:
-            conn = _norm_ws(j.connection)
-            if any(_norm_ws(line) in conn for line in _scaffold_lines(prompt)):
-                reasons.append("prompt_echo")
-        cited_priors = {c.ref_id for c in j.citations if c.ref_kind == "self_prior"}
-        if j.bears_on_prior is not None and not cited_priors:
-            reasons.append("prior_relation_without_prior")
-        if j.bears_on_prior == "strains" and j.strained_prior_id not in cited_priors:
-            reasons.append("strained_prior_not_cited")
+    if prompt is not None:
+        written = [_norm_ws(j.connection), _norm_ws(j.article_summary), *(_norm_ws(c.how) for c in j.citations)]
+        if any(_norm_ws(line) in w for line in _scaffold_lines(prompt) for w in written if w):
+            reasons.append("prompt_echo")
     if reasons:
         return reject(reasons, j)
     return j, ReadingResonanceCheckV1(packet_id=packet.packet_id, accepted=True,
@@ -316,6 +329,6 @@ def check_judgment(
 def strained_prior(j: ReadingResonanceJudgmentV1 | None, check: ReadingResonanceCheckV1) -> str | None:
     """The prior an accepted judgment says this read strains: the re-test request patch B
     routes into the curiosity prior menu (orion/curiosity/worldview.py select_priors)."""
-    if j is None or not check.accepted or j.bears_on_prior != "strains":
+    if j is None or not check.accepted or check.decision == "none" or j.bears_on_prior != "strains":
         return None
     return j.strained_prior_id

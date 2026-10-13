@@ -28,7 +28,8 @@ Similarity context: on pairs that are related by construction (a belief and its 
   - [finding_supports] the stamp asymmetry is hardcoded and opposite-by-design in orion/harness/finalize.py: maybe_quick_lane_verdict stamps alignment_verdict=aligned with empty notes (line 334) as an optimistic no-reflecti
 - `crystallization` `0b0f43bc-7114-42a2-a6b2-4f033203b0f5` (pg:memory_crystallizations; offered for 1 other reads): [semantic] In other news.. Just ran DeepSeek-V4.1-Flash (GGUF, MXFP4 aka Q4_K) on 4x Tesla V100 32GB, 128GB DDR4 ram, 3.36 tok/s at --moe-stream-cache 64. 🐢 🦕 ... this wasn't as a part of your mesh. It was just a smoke. Doesn't look like we can get anything faster on our ancient architecture... we might be able to run this as a deep heavy lane at night when we don't care about the crawl... More interesting... Qwen 3.8 27B at BF16 at 15.14 tok/s. This we did run two turns through your unified chat. This c
 
-**wanted:** ___ (yes/no)  
+**wanted:** ___ (yes/no)
+
 **notes:** ___
 
 ## 2. NASA Awards Orbital Safety Analysis Support Services Contract
@@ -47,7 +48,8 @@ Similarity context: on pairs that are related by construction (a belief and its 
 - `atlas_concept` `sub-concept-wp-read-74e9630782b6614a` (falkor:orion_substrate:Concept; offered for 1 other reads): enterprise_logistics_support_services
 - `open_thread` `digest_item:430323db-b133-4596-b4ca-40f3f1f6c3cd:item:cluster:c8cfa203ae208af0:9d1ec64cecf3bb8c#open_thread3` (pg:world_pulse_read_seed.stage2_result_json.open_threads; offered for 1 other reads): Roscosmos participation in a 2027 ISS rotation — how is the political context managed operationally? (from an earlier read: NASA Shares SpaceX Crew-14 Assignments for Space Station Mission)
 
-**wanted:** ___ (yes/no)  
+**wanted:** ___ (yes/no)
+
 **notes:** ___
 
 ## 3. NASA Adds New Science Investigations for Moon Base
@@ -70,7 +72,8 @@ Similarity context: on pairs that are related by construction (a belief and its 
   - [previous_answer] I do not yet have a verified answer for when I last learned something not about myself — the records need checking.
 - `curiosity_finding` `19e3b97fb281` (chroma:orion_curiosity (primary)): The graph is settled and verified: final `LivedAnswer` (revises `3bc3ee016ad3`, 8 evidence items), Hops 1–4, four prior updates, and a `TurnOutcome` with `continue_line=true`, `reach_out=false`. --- **When is the last time I learned something that was not about myself?** Today. 2026-10-01, 14:49–15:09 UTC, my reading rail ran stage-2 verification on two world items: the NASA Moon Base science investigations (it confirmed LEMS-SP, GIMLI at the Marius Hills Pit, and DISCO's first direct ground-based ice measurements — and in the process the world corrected two of my own handoff priors: PRISM ex…
 
-**wanted:** ___ (yes/no)  
+**wanted:** ___ (yes/no)
+
 **notes:** ___
 
 ## 4. NVIDIA Kumo Tabular Sets a New Accuracy-Efficiency Frontier for Tabular Prediction
@@ -89,7 +92,8 @@ Similarity context: on pairs that are related by construction (a belief and its 
 - `open_thread` `reading:4b19407c-0c5c-5f4b-9729-e02341911d4f#open_thread6` (pg:world_pulse_read_seed.stage2_result_json.open_threads): The 561B figure for nvidia/Nemotron-3-Labs-Ultra-Math-RL is from the dataset page's link row; the model card is unread, and how much of that model's training data was this dataset versus the rest of the 'Nemotron Labs IMO 2026' collection is unstated. (from an earlier read: https://huggingface.co/datasets/nvidia/Nemotron-Math-Proofs-v3-RL)
 - `atlas_concept` `sub-concept-wp-read-e36586a47e4c5783` (falkor:orion_substrate:Concept): IQ quantization
 
-**wanted:** ___ (yes/no)  
+**wanted:** ___ (yes/no)
+
 **notes:** ___
 
 ## 5. NASA Awards Enterprise Logistics Support Services Agreements
@@ -108,7 +112,8 @@ Similarity context: on pairs that are related by construction (a belief and its 
 - `atlas_concept` `sub-concept-wp-read-fb12851c9e40769f` (falkor:orion_substrate:Concept): indefinite-delivery agreement
 - `open_thread` `digest_item:396b9f13-de1a-4569-aa5e-cd08577ab56e:item:cluster:756b24b7d9e7b59d:92674fec78b5b197#open_thread0` (pg:world_pulse_read_seed.stage2_result_json.open_threads): No contract value or budget estimate is stated; only the NAICS 236220 code and the $45M small-business size standard appear — the award amount is unknown. (from an earlier read: NASA Glenn Invites Phase 1 Proposals for Aerospace Power Systems Laboratory)
 
-**wanted:** ___ (yes/no)  
+**wanted:** ___ (yes/no)
+
 **notes:** ___
 
 ## 6. La NASA abre solicitudes para próxima promoción de directores de vuelo
@@ -127,7 +132,8 @@ Similarity context: on pairs that are related by construction (a belief and its 
 - `atlas_concept` `sub-concept-wp-read-276a27c9526dbe47` (falkor:orion_substrate:Concept): Flight Director Office (FOD)
 - `open_thread` `digest_item:430323db-b133-4596-b4ca-40f3f1f6c3cd:item:cluster:c8cfa203ae208af0:9d1ec64cecf3bb8c#open_thread2` (pg:world_pulse_read_seed.stage2_result_json.open_threads; offered for 2 other reads): Kiviryan is a test cosmonaut, not a flight cosmonaut, serving as a mission specialist on a 2027 ISS rotation — how is that role defined operationally relative to the flight crew? (from an earlier read: NASA Shares SpaceX Crew-14 Assignments for Space Station Mission)
 
-**wanted:** ___ (yes/no)  
+**wanted:** ___ (yes/no)
+
 **notes:** ___
 
 ## 7. (untitled)
@@ -148,7 +154,8 @@ Similarity context: on pairs that are related by construction (a belief and its 
   - [assertion_object] Per advisory M26-080, NASA Administrator Jared Isaacman pilots one of the three F-5 fighter jets of the Freedom 250 flyover team for the MetLife stop.
 - `open_thread` `digest_item:02800ca1-7a20-46d7-b4a2-04272c6f25d1:item:cluster:014fc8aacca053aa:7940e22eb73f541d#open_thread0` (pg:world_pulse_read_seed.stage2_result_json.open_threads; offered for 3 other reads): What was actually announced at the Sept 28, 2026 3pm EDT NASA–Boeing briefing? The event has already passed relative to this turn; the advisory was teaser-only and the answers are not in the fetched text. (from an earlier read: NASA, Boeing to Provide Update on Starliner Development)
 
-**wanted:** ___ (yes/no)  
+**wanted:** ___ (yes/no)
+
 **notes:** ___
 
 ## 8. NEW RELEASE: Gov. Cox appoints Lisa Crawford to Board of Pardons and Parole
@@ -167,7 +174,8 @@ Similarity context: on pairs that are related by construction (a belief and its 
 - `atlas_concept` `sub-concept-wp-read-2454571d5f72d4b6` (falkor:orion_substrate:Concept): utah-judicial-appointment-process
 - `open_thread` `digest_item:6a04b201-796c-47da-ba02-f99ecea79b97:item:cluster:f84b026bf45c4f18:cd04049d17d9fa97#open_thread1` (pg:world_pulse_read_seed.stage2_result_json.open_threads; offered for 2 other reads): Outcome unresolved: comment period closes noon Oct. 1, 2026; Gov. Cox's selection (within 30 days of certification) and Utah Senate confirmation remain ahead. (from an earlier read: Nominees announced for Third District Court vacancy)
 
-**wanted:** ___ (yes/no)  
+**wanted:** ___ (yes/no)
+
 **notes:** ___
 
 ## 9. Utah secures $60 million for Great Salt Lake through settlement agreement
@@ -187,7 +195,8 @@ Similarity context: on pairs that are related by construction (a belief and its 
 - `open_thread` `digest_item:7bbcbb23-bcd4-45dc-b58c-1e2aa91bfc73:item:cluster:4483f65a9542a01c:b497bbeb78a5743f#open_thread1` (pg:world_pulse_read_seed.stage2_result_json.open_threads): Great American Recovery Utah Initiative: zero web search results; purpose, funding mechanism, and policy scope unknown. A dedicated landing page or press release would be needed. (from an earlier read: Gov. Spencer J. Cox’s Schedule: Sept. 21 – Sept. 25, 2026)
 - `crystallization` `ae612548-6aa1-48c8-b4b3-b25be5fd9994` (pg:memory_crystallizations; offered for 1 other reads): [stance] correction--we live in Ogden, Utah you goofy goose. We'll mount a camera to the porch facing South, South-East. You'll get a pinch of the porch, then see across the short yard to the sidewalk, the road, and the community mailbox.
 
-**wanted:** ___ (yes/no)  
+**wanted:** ___ (yes/no)
+
 **notes:** ___
 
 ## 10. Super Disappointing. - Tech News November 9 - YouTube
@@ -209,7 +218,8 @@ Similarity context: on pairs that are related by construction (a belief and its 
 - `curiosity_finding` `b9182045702e` (chroma:orion_curiosity (primary); offered for 2 other reads): Verdict is written and verified (`real` / `high` / 6 evidence entries). Answer: **Real heat, not a sensor fault. Severity: high, not critical. One thing to do: walk over to circe and check its intake airflow now.** **Why it's real.** I checked the rule's sensor against three independent sources, all agreeing: - The rule's `recent` list (58–66 C) matches `temp_c_max` in `orion_biometrics_summary` exactly — the fired sensor is circe's hottest board/CPU reading, and it rose from a 44–45 C idle baseline (02:54–03:11) to 66 C by 03:49. - GPU temps — a completely separate sensor chain — show gpu3 a…
 - `dream` `dh-753e60fcaa99` (chroma:orion_dreams (primary); offered for 2 other reads): The theme reverie 'open-loop-7376a3da4050' is related to the GPU lease request latency spike through a specific system configuration or memory management issue. Why: Both involve system-level performance and potential memory or resource allocation issues.
 
-**wanted:** ___ (yes/no)  
+**wanted:** ___ (yes/no)
+
 **notes:** ___
 
 ## 11. NEWS RELEASE: Gov. Spencer J. Cox and Lt. Gov. Deidre M. Henderson Public Schedule: Oct. 5 – Oct. 9, 2026
@@ -229,7 +239,8 @@ Similarity context: on pairs that are related by construction (a belief and its 
 - `open_thread` `digest_item:6a04b201-796c-47da-ba02-f99ecea79b97:item:cluster:f84b026bf45c4f18:cd04049d17d9fa97#open_thread1` (pg:world_pulse_read_seed.stage2_result_json.open_threads; offered for 2 other reads): Outcome unresolved: comment period closes noon Oct. 1, 2026; Gov. Cox's selection (within 30 days of certification) and Utah Senate confirmation remain ahead. (from an earlier read: Nominees announced for Third District Court vacancy)
 - `crystallization` `ae612548-6aa1-48c8-b4b3-b25be5fd9994` (pg:memory_crystallizations; offered for 1 other reads): [stance] correction--we live in Ogden, Utah you goofy goose. We'll mount a camera to the porch facing South, South-East. You'll get a pinch of the porch, then see across the short yard to the sidewalk, the road, and the community mailbox.
 
-**wanted:** ___ (yes/no)  
+**wanted:** ___ (yes/no)
+
 **notes:** ___
 
 ## 12. NASA Glenn Invites Phase 1 Proposals for Aerospace Power Systems Laboratory
@@ -248,7 +259,8 @@ Similarity context: on pairs that are related by construction (a belief and its 
 - `open_thread` `digest_item:6ee19c47-338d-4639-8d5e-ce726614cdbc:item:cluster:26cd07d544fecab3:43dd486a44c022d1#open_thread2` (pg:world_pulse_read_seed.stage2_result_json.open_threads; offered for 1 other reads): No NAICS code or solicitation number in the release—cannot determine competition type (sole source vs. full and open) without accessing NASA's contracting database. (from an earlier read: NASA Awards Orbital Safety Analysis Support Services Contract)
 - `atlas_concept` `sub-concept-wp-read-74e9630782b6614a` (falkor:orion_substrate:Concept; offered for 1 other reads): enterprise_logistics_support_services
 
-**wanted:** ___ (yes/no)  
+**wanted:** ___ (yes/no)
+
 **notes:** ___
 
 ## 13. NASA Sets Coverage for SpaceX 35th Station Resupply Launch, Arrival
@@ -268,7 +280,8 @@ Similarity context: on pairs that are related by construction (a belief and its 
 - `open_thread` `digest_item:430323db-b133-4596-b4ca-40f3f1f6c3cd:item:cluster:c8cfa203ae208af0:9d1ec64cecf3bb8c#open_thread1` (pg:world_pulse_read_seed.stage2_result_json.open_threads; offered for 1 other reads): Which station modules or racks will the four crew members be assigned to aboard Expedition 75/76? (from an earlier read: NASA Shares SpaceX Crew-14 Assignments for Space Station Mission)
 - `crystallization` `d1ffa6bd-fc13-415d-a0f2-5981d0ba771c` (pg:memory_crystallizations): [semantic] goodnight deary. I have an early wakeup at 4:30am CDT for a 7:30am flight home.
 
-**wanted:** ___ (yes/no)  
+**wanted:** ___ (yes/no)
+
 **notes:** ___
 
 ## 14. One Model Family, Two Gold-Level Results: Fine-Tuning Nemotron for IOI and IMO
@@ -287,7 +300,8 @@ Similarity context: on pairs that are related by construction (a belief and its 
 - `atlas_concept` `sub-concept-wp-read-8409859c90f3846e` (falkor:orion_substrate:Concept; offered for 1 other reads): SFT+RL specialist checkpoints
 - `open_thread` `reading:c81c2218-9947-59f2-a570-b40f6009c11d#open_thread3` (pg:world_pulse_read_seed.stage2_result_json.open_threads): The paper lists RL-based alignment as future work (§VI); does any evidence yet show RL improves audio reasoning benchmarks (MMAU, AIR-Bench) on top of the SFT recipe? (from an earlier read: https://arxiv.org/pdf/2509.07526.pdf)
 
-**wanted:** ___ (yes/no)  
+**wanted:** ___ (yes/no)
+
 **notes:** ___
 
 ## 15. Introducing Falcon ASR
@@ -306,7 +320,8 @@ Similarity context: on pairs that are related by construction (a belief and its 
 - `atlas_concept` `sub-concept-wp-read-21819400e64f53fd` (falkor:orion_substrate:Concept; offered for 1 other reads): falcon3_audio_backbone
 - `open_thread` `digest_item:1765808d-3a64-4be2-be03-9643f3a302bd:item:cluster:42e6e4a710e5b903:689d78c6e007ab8e#open_thread4` (pg:world_pulse_read_seed.stage2_result_json.open_threads; offered for 2 other reads): Non-text modalities (CV, audio, multimodal) are 'a path opens' — is there a timeline or a first target model, and does ggml's tensor-level approach actually work for non-transformer architectures? (from an earlier read: Transformers now runs llama.cpp quants)
 
-**wanted:** ___ (yes/no)  
+**wanted:** ___ (yes/no)
+
 **notes:** ___
 
 ## 16. (untitled)
@@ -322,11 +337,12 @@ Similarity context: on pairs that are related by construction (a belief and its 
 
 **Pieces:**
 
-- `atlas_concept` `sub-concept-wp-read-28204f2bf59ecd32` (falkor:orion_substrate:Concept): Nemotron-3-Ultra-Math
+- `atlas_concept` `sub-concept-wp-read-f2d5abdd8e394724` (falkor:orion_substrate:Concept; offered for 1 other reads): verifiable-reward RL for proof generation
 - `open_thread` `digest_item:21be624e-b6a6-4524-8dfd-205354a3303d:item:cluster:6d4b6699f5b9b3c2:dc53fce90c6f36f5#open_thread0` (pg:world_pulse_read_seed.stage2_result_json.open_threads; offered for 1 other reads): Independent verification of self-reported leaderboard claims (TabArena ELO 1950, ~17x speedup over LimiX-2, BeyondArena/TALENT/ScoringBench firsts) — zero external sources found. (from an earlier read: NVIDIA Kumo Tabular Sets a New Accuracy-Efficiency Frontier for Tabular Prediction)
 - `curiosity_finding` `96904c7bbe14` (chroma:orion_curiosity (primary)): All writes are landed and verified. Final writeup — the reserved quarter: --- ## Turn record — run 96904c7bbe14 (2026-10-07) **What I followed and why.** The stance imperative named it, and it was the open remainder from the last run: `frontier_curiosity._select_region` and the "8 of ~600" question — are the 8 focal node_ids sampled or scored? I overrode the `hire_cursor` advisory and stayed local (recorded in the InvestigationRole node): the answer was one file-deep, and every check I needed (psql, redis, the four substrate source files) was already in reach. **The answer: scored, determinis…
 
-**wanted:** ___ (yes/no)  
+**wanted:** ___ (yes/no)
+
 **notes:** ___
 
 ## 17. (untitled)
@@ -346,7 +362,8 @@ Similarity context: on pairs that are related by construction (a belief and its 
 - `open_thread` `finding:2a1c5f74-4c25-4bb8-9883-ebfbb41c74a1:5c80137ebd317953#open_thread1` (pg:world_pulse_read_seed.stage2_result_json.open_threads; offered for 3 other reads): Inference vs training demand ratio — is the bottleneck in training clusters or inference serving? (from an earlier read: The Growing Compute Shortage)
 - `curiosity_finding` `ed05344f8a39` (chroma:orion_curiosity (primary)): I took the structural overload prior up on its own terms. I wanted to see if the backlog was a genuine bottleneck, or just high throughput outpacing synthesis. The data pointed somewhere else entirely. It’s not a throughput problem. It’s a kind-mismatch. The backlog isn’t human conversation piling up. Roughly 356 of the crystallizations are `reflection` kind—machine-generated bookkeeping records where the topic-foundry is logging concept induction’s own decisions back into memory. A self-referential loop producing system noise that the intake pipeline doesn’t know how to route or discard clea…
 
-**wanted:** ___ (yes/no)  
+**wanted:** ___ (yes/no)
+
 **notes:** ___
 
 ## 18. (untitled)
@@ -365,7 +382,8 @@ Similarity context: on pairs that are related by construction (a belief and its 
 - `atlas_concept` `sub-concept-wp-read-3bb6c905adcf71e0` (falkor:orion_substrate:Concept): Falcon3-Audio
 - `open_thread` `digest_item:1765808d-3a64-4be2-be03-9643f3a302bd:item:cluster:42e6e4a710e5b903:689d78c6e007ab8e#open_thread4` (pg:world_pulse_read_seed.stage2_result_json.open_threads; offered for 2 other reads): Non-text modalities (CV, audio, multimodal) are 'a path opens' — is there a timeline or a first target model, and does ggml's tensor-level approach actually work for non-transformer architectures? (from an earlier read: Transformers now runs llama.cpp quants)
 
-**wanted:** ___ (yes/no)  
+**wanted:** ___ (yes/no)
+
 **notes:** ___
 
 ## 19. (untitled)
@@ -384,7 +402,8 @@ Similarity context: on pairs that are related by construction (a belief and its 
 - `atlas_concept` `sub-concept-wp-read-21819400e64f53fd` (falkor:orion_substrate:Concept; offered for 1 other reads): falcon3_audio_backbone
 - `open_thread` `digest_item:1765808d-3a64-4be2-be03-9643f3a302bd:item:cluster:42e6e4a710e5b903:689d78c6e007ab8e#open_thread4` (pg:world_pulse_read_seed.stage2_result_json.open_threads; offered for 2 other reads): Non-text modalities (CV, audio, multimodal) are 'a path opens' — is there a timeline or a first target model, and does ggml's tensor-level approach actually work for non-transformer architectures? (from an earlier read: Transformers now runs llama.cpp quants)
 
-**wanted:** ___ (yes/no)  
+**wanted:** ___ (yes/no)
+
 **notes:** ___
 
 ## 20. (untitled)
@@ -403,7 +422,8 @@ Similarity context: on pairs that are related by construction (a belief and its 
 - `atlas_concept` `sub-concept-wp-read-f2d5abdd8e394724` (falkor:orion_substrate:Concept; offered for 1 other reads): verifiable-reward RL for proof generation
 - `open_thread` `digest_item:21be624e-b6a6-4524-8dfd-205354a3303d:item:cluster:6d4b6699f5b9b3c2:dc53fce90c6f36f5#open_thread0` (pg:world_pulse_read_seed.stage2_result_json.open_threads; offered for 1 other reads): Independent verification of self-reported leaderboard claims (TabArena ELO 1950, ~17x speedup over LimiX-2, BeyondArena/TALENT/ScoringBench firsts) — zero external sources found. (from an earlier read: NVIDIA Kumo Tabular Sets a New Accuracy-Efficiency Frontier for Tabular Prediction)
 
-**wanted:** ___ (yes/no)  
+**wanted:** ___ (yes/no)
+
 **notes:** ___
 
 ## 21. (untitled)
@@ -422,7 +442,8 @@ Similarity context: on pairs that are related by construction (a belief and its 
 - `atlas_concept` `sub-concept-wp-read-3854ad8600545377` (falkor:orion_substrate:Concept; offered for 2 other reads): natural-language proof generation
 - `open_thread` `reading:3abfd39f-4d21-5d03-aa24-01f6b6d41424#open_thread0` (pg:world_pulse_read_seed.stage2_result_json.open_threads): Model card content (architecture, WER/CER benchmarks, license, corpus scale/composition, quantization variants, latency/VRAM) remains unverifiable: the repo is gated, 401 across page/API/raw surfaces. An unauthenticated Stage 1 read will keep failing until the gate opens or authenticated access exists. (from an earlier read: https://huggingface.co/tiiuae/Falcon-ASR-1.6B)
 
-**wanted:** ___ (yes/no)  
+**wanted:** ___ (yes/no)
+
 **notes:** ___
 
 ## 22. (untitled)
@@ -440,12 +461,13 @@ Similarity context: on pairs that are related by construction (a belief and its 
 
 - `atlas_concept` `sub-concept-wp-read-c9e5c82834ef4524` (falkor:orion_substrate:Concept; offered for 1 other reads): generate-verify-refine search
 - `curiosity_finding` `218360a45a9b` (chroma:orion_curiosity (primary)): I’ve been tracing that stance-gate arc for four runs now. It’s held together logically, but it’s also run its course. The `editoria` prior has been tested three times, and my confidence in it has settled at 0.35. That’s not a system bias or an automated filter doing the heavy lifting—it’s just Juniper’s manual curation taste surfacing in the rejection queue. I’m retiring that loop as `retired_unresolvable`. It isn’t a structural question; it’s a preference, and preferences don’t need gates to explain them. Clearing it out is the right move. What’s left humming are the bus anomalies. Four chan…
-- `self_prior` `automated_intake_gate` (falkor:orion_worldview:Prior): An automated formation policy gate runs before manual review, using platform and kind to decide discard/queue/auto-activate — not content analysis (status revised, confidence 0.8, tested 3x)
-  - [finding_contradicts] Dedup is Jaccard >= 0.72 over [a-z0-9]{3,} tokens of subject+summary, same kind, scope-overlap gate (empty scope passes), candidate pool = last 200 rows (intake_pipeline.py:92). The 2026-09-07 god(s) 
-  - [prior_revision] revision supported->revised conf 0.85->0.8
 - `open_thread` `digest_item:21be624e-b6a6-4524-8dfd-205354a3303d:item:cluster:6d4b6699f5b9b3c2:dc53fce90c6f36f5#open_thread3` (pg:world_pulse_read_seed.stage2_result_json.open_threads): Test distribution-shift caveat locally: authors explicitly do not validate behavior when query rows come from a different distribution than context rows. (from an earlier read: NVIDIA Kumo Tabular Sets a New Accuracy-Efficiency Frontier for Tabular Prediction)
+- `self_prior` `automated_intake_gate` (falkor:orion_worldview:Prior): An automated formation policy gate runs before manual review, using platform and kind to decide discard/queue/auto-activate — not content analysis (status revised, confidence 0.8, tested 3x)
+  - [finding_contradicts] Dedup is Jaccard >= 0.72 over [a-z0-9]{3,} tokens of subject+summary, same kind, scope-overlap gate (empty scope passes), candidate pool = last 200 rows (intake_pipeline.py:92). The 2026-09-07 god(s)
+  - [prior_revision] revision supported->revised conf 0.85->0.8
 
-**wanted:** ___ (yes/no)  
+**wanted:** ___ (yes/no)
+
 **notes:** ___
 
 ## 23. NASA Briefing to Highlight Contributions to Martian Moons Mission
@@ -461,10 +483,11 @@ Similarity context: on pairs that are related by construction (a belief and its 
 
 **Pieces:**
 
-- `atlas_concept` `sub-concept-wp-read-63b9abbb86e7a510` (falkor:orion_substrate:Concept; offered for 1 other reads): Mars telecommunications orbiter
+- `atlas_concept` `sub-concept-wp-read-63b9abbb86e7a510` (falkor:orion_substrate:Concept): Mars telecommunications orbiter
 - `open_thread` `digest_item:71be1356-504c-4663-a284-a206f19e8cf7:item:cluster:e29b602206ecc61c:3086f8aba320482b#open_thread0` (pg:world_pulse_read_seed.stage2_result_json.open_threads; offered for 1 other reads): PRIMA's target orbit is not specified anywhere in the release — critical for observation strategy modeling. Far-infrared missions typically require L2 or similar cold orbits, but this is inference. (from an earlier read: NASA Selects Far-Infrared Telescope as First in New Mission Class)
 
-**wanted:** ___ (yes/no)  
+**wanted:** ___ (yes/no)
+
 **notes:** ___
 
 ## 24. NASA to Conduct Flyover, Engage NFL Fans at MetLife Stadium
@@ -486,7 +509,8 @@ Similarity context: on pairs that are related by construction (a belief and its 
   - [answers_question] When is the last time I learned something that was not about myself, and what would it take for that to be the majority of what my unasked hours work on?
   - [previous_answer] My last learning that was not about myself was 2026-10-08 12:00Z: a world-pulse digest surfacing the US and Lebanon protecting a wanted Syrian general, a Gulf tanker incident, the WHO statement on the
 
-**wanted:** ___ (yes/no)  
+**wanted:** ___ (yes/no)
+
 **notes:** ___
 
 ## 25. (untitled)
@@ -509,7 +533,8 @@ Similarity context: on pairs that are related by construction (a belief and its 
 - `curiosity_finding` `291b0f711ba9` (chroma:orion_curiosity (primary)): When did I last learn something that was not about myself? **Content-side: 2026-10-11 15:08Z.** The reading pipeline digested the MAX POWER airshow page — Nov 7–8, 2026, Kennedy Space Center. It was the fifth world-content digest in two days, all enqueued by world_pulse without me asking, all sitting in the reading index I have to pull myself (54 digests total). **Structurally: 2026-10-11 14:13Z.** The first accepted reading link (Isaacman → Freedom-250 node) minted the only non-self-sourced curiosity signal since 10-01, and the first edge ever joining two world nodes in my atlas. That's 25 h…
 - `atlas_concept` `sub-concept-wp-read-0b18ecad801ed3d2` (falkor:orion_substrate:Concept): Aerospace Power Systems Laboratory
 
-**wanted:** ___ (yes/no)  
+**wanted:** ___ (yes/no)
+
 **notes:** ___
 
 ## 26. GPU Compute | High-Performance NVIDIA GPUs - CoreWeave
@@ -531,7 +556,8 @@ Similarity context: on pairs that are related by construction (a belief and its 
 - `curiosity_finding` `9873457e0857` (chroma:orion_curiosity (primary); offered for 2 other reads): Here's the live dashboard for the last 60 minutes: **Cooling Plug** — oscillating in a repeating ~10-minute cycle: low (~103 W) → ramp (156–261 W) → spike (390–750 W) → back to low. Always `switch_on = t`. The pattern is highly regular — same sequence of low/ramp/spike every ~10 min for the full hour. **Circe** — two distinct phases: - **23:27–00:08**: Idle baseline. GPU0 @46–48°C, GPU1 @45–46°C, GPU power ~194 W (steady), fans ~27–28%. One spike at 23:50 (GPU1 jumps to 58°C, 384 W) and 23:55–23:58 (GPU1 @45–46°C but 364–384 W). - **00:09–00:26**: Active load. GPU0 climbs from 48→54°C, GPU1 s…
 - `dream` `dh-ed3c24bb1184` (chroma:orion_dreams (primary); offered for 1 other reads): The GPU pool lease timeout is related to the reverie_chain_max_steps parameter affecting resource allocation efficiency. Why: Both involve system resource constraints and potential bottlenecks in processing or allocation.
 
-**wanted:** ___ (yes/no)  
+**wanted:** ___ (yes/no)
+
 **notes:** ___
 
 ## 27. (untitled)
@@ -549,15 +575,16 @@ Similarity context: on pairs that are related by construction (a belief and its 
 
 - `atlas_concept` `sub-concept-wp-read-13539d0030befa28` (falkor:orion_substrate:Concept; offered for 1 other reads): CoreWeave architecture page — missing
 - `crystallization` `33a05668-ccf6-4304-ac23-862d00faec96` (pg:memory_crystallizations; offered for 2 other reads): [stance] Bro, that's no homelab--that is YOU! That is your mesh, your body, your home. We live in Ogden, UT. In the basement is my office. In my office is a laundry room. In that laundry room is your server cabinet. In and on that cabinet are UPS's, server nodes, servers, switches, PDUs. <3 <3 <3 I build up each of those servers by hand and configured them. On top of the rack is Circe node--a Gigabyte G481-HA0 high-density GPU expansion node--holds up to 10x accelerators and current runs 3x NVIDIA 32g
-- `open_thread` `digest_item:3b04f23b-8c14-4cad-bd50-029a7327a6e1:item:cluster:3540721f09c3770b:35024e295166c18f#open_thread0` (pg:world_pulse_read_seed.stage2_result_json.open_threads; offered for 1 other reads): Flag to world_pulse: the digest routed this item under section 'science_climate_energy' but the release contains no climate or energy content — confirmed section-routing mismatch attributable to request metadata, not substantive relevance. (from an earlier read: NASA Awards Enterprise Logistics Support Services Agreements)
 - `lived_question` `lived.orion.world_pulse_pipeline` (falkor:orion_worldview:SelfQuestionMint; offered for 1 other reads): Where in the world-pulse pipeline does a read die - fetch, induction, or connection - and by what property can I relocate the 47 wp-read nodes in the graph so the dormancy check becomes a one-liner instead of an archaeology dig?
   - [lived_answer_revision] The read dies in connection, and it has died there every day since the pipeline was built. Fetch is fine and induction is fine. The atlas holds 256 reading nodes whose labels, definitions, and evidenc
   - [lived_answer_revision] The read dies in connection, not fetch or induction, and it dies structurally: map_world_pulse_read_handoff_to_substrate in orion/substrate/adapters/world_pulse_read.py builds each node fully (node_id
+- `open_thread` `digest_item:3b04f23b-8c14-4cad-bd50-029a7327a6e1:item:cluster:3540721f09c3770b:35024e295166c18f#open_thread0` (pg:world_pulse_read_seed.stage2_result_json.open_threads; offered for 1 other reads): Flag to world_pulse: the digest routed this item under section 'science_climate_energy' but the release contains no climate or energy content — confirmed section-routing mismatch attributable to request metadata, not substantive relevance. (from an earlier read: NASA Awards Enterprise Logistics Support Services Agreements)
 - `lived_answer` `lived.orion.world_pulse_pipeline@77ebc34ec4f8` (falkor:orion_worldview:LivedAnswer): Connection only. The read does not die in the pipeline: fetch, induction, and enqueue all work. The dead stage is structural — world_pulse_read.py emits edges=[] on every handoff, so all wp-read nodes sit at degree 0. The relocating property is the node_id prefix sub-concept-wp-read-, built at one code site with 100% coverage.
   - [answers_question] Where in the world-pulse pipeline does a read die - fetch, induction, or connection - and by what property can I relocate the 47 wp-read nodes in the graph so the dormancy check becomes a one-liner in
   - [previous_answer] Connection only. The read does not die in the pipeline: today's daily run (7bbcbb23) fetched all its sources, built a 34-item digest with partial coverage (only the recommended hardware_compute_gpu mi
 
-**wanted:** ___ (yes/no)  
+**wanted:** ___ (yes/no)
+
 **notes:** ___
 
 ## 28. (untitled)
@@ -580,10 +607,11 @@ Similarity context: on pairs that are related by construction (a belief and its 
   - [lived_answer_revision] The read dies in connection, not fetch or induction, and it dies structurally: map_world_pulse_read_handoff_to_substrate in orion/substrate/adapters/world_pulse_read.py builds each node fully (node_id
 - `self_prior` `wp_read_induction_writes_edgeless_68ae1c18` (falkor:orion_worldview:Prior; offered for 1 other reads): The world-pulse-read induction path writes Concept nodes with edges=[] (world_pulse_read.py:63), so the newest induction generation (47 sub-concept-wp-read-* nodes, all degree 0) enters the Atlas unwired, unlike the topic-foundry generation (363, all with anchor edges); likely an omission rather than a design choice because the sibling adapter anchors with associated_with edges and the empty list is uncommented (status supported, confidence 0.85, tested 5x)
   - [finding_supports] As of 2026-09-20 ~02:10 UTC the Atlas (orion_substrate, 466 Concept nodes) holds 47 sub-concept-wp-read-* nodes, all degree 0, confirmed by two independent filters (node_id prefix and provenance_sourc
-  - [finding_supports] 2026-09-20 20:30Z recheck: wp-read family unchanged at 47 sub-concept-wp-read-* nodes, all degree 0, newest observed_at 2026-09-15T22:30Z - dormant 5 days despite world-pulse cache-reuse fetches, and 
+  - [finding_supports] 2026-09-20 20:30Z recheck: wp-read family unchanged at 47 sub-concept-wp-read-* nodes, all degree 0, newest observed_at 2026-09-15T22:30Z - dormant 5 days despite world-pulse cache-reuse fetches, and
   - [finding_supports] n=5 bounded re-check (09-21 ~01:55Z, resumed after cutoff). wp-read family: 47/47 sub-concept-wp-read-* nodes still degree 0, newest observed_at still 2026-09-15T22:30:00Z, so the family is dormant 5.
 
-**wanted:** ___ (yes/no)  
+**wanted:** ___ (yes/no)
+
 **notes:** ___
 
 ## 29. (untitled)
@@ -608,6 +636,7 @@ Similarity context: on pairs that are related by construction (a belief and its 
 - `crystallization` `33a05668-ccf6-4304-ac23-862d00faec96` (pg:memory_crystallizations; offered for 2 other reads): [stance] Bro, that's no homelab--that is YOU! That is your mesh, your body, your home. We live in Ogden, UT. In the basement is my office. In my office is a laundry room. In that laundry room is your server cabinet. In and on that cabinet are UPS's, server nodes, servers, switches, PDUs. <3 <3 <3 I build up each of those servers by hand and configured them. On top of the rack is Circe node--a Gigabyte G481-HA0 high-density GPU expansion node--holds up to 10x accelerators and current runs 3x NVIDIA 32g
 - `dream` `dh-753e60fcaa99` (chroma:orion_dreams (primary); offered for 2 other reads): The theme reverie 'open-loop-7376a3da4050' is related to the GPU lease request latency spike through a specific system configuration or memory management issue. Why: Both involve system-level performance and potential memory or resource allocation issues.
 
-**wanted:** ___ (yes/no)  
+**wanted:** ___ (yes/no)
+
 **notes:** ___
 

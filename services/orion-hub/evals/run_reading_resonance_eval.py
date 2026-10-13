@@ -68,7 +68,7 @@ from orion.world_pulse_read.resonance_similarity import (
     CENTERED_OFFER_FLOOR,
     center,
     dot,
-    hub_scores,
+    hub_from_sims,
     mean_vector,
     rank_score,
 )
@@ -115,13 +115,12 @@ class Falkor:
     def __init__(self, url: str) -> None:
         import redis
 
-        u = urlparse(url)
-        self.r = redis.Redis(host=u.hostname or "127.0.0.1", port=u.port or 6379, decode_responses=True)
+        self.r = redis.Redis.from_url(url, decode_responses=True)
 
     def rows(self, graph: str, cypher: str, **params: Any) -> list[dict[str, Any]]:
         prefix = ""
         if params:
-            prefix = "CYPHER " + " ".join(f"{k}={json.dumps(v)}" for k, v in params.items()) + " "
+            prefix = "CYPHER " + " ".join(f"{k}={json.dumps(v, ensure_ascii=False)}" for k, v in params.items()) + " "
         res = self.r.execute_command("GRAPH.RO_QUERY", graph, prefix + cypher)
         return [dict(zip(res[0], row)) for row in res[1]]
 
@@ -293,8 +292,17 @@ async def run(args: argparse.Namespace) -> int:
     except Exception as exc:  # noqa: BLE001
         print(f"UNKNOWN: store unavailable: {type(exc).__name__}: {exc}", file=sys.stderr)
         return 2
-    tx = conn.transaction(readonly=True)
-    await tx.start()
+    try:
+        async with conn.transaction(readonly=True):  # nothing here writes; the server enforces it
+            return await _replay(args, conn, fk, out)
+    except Exception as exc:  # noqa: BLE001 - any store/embedder failure is UNKNOWN, not a verdict
+        print(f"UNKNOWN: replay failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return 2
+    finally:
+        await conn.close()
+
+
+async def _replay(args: argparse.Namespace, conn: Any, fk: "Falkor", out: Path) -> int:
     random.seed(13)
     t0 = time.perf_counter()
     async with httpx.AsyncClient(timeout=30.0) as client:
@@ -362,7 +370,8 @@ async def run(args: argparse.Namespace) -> int:
             # ---- query vectors: what the article says, not the Stage 2 process notes ----
             for rd in reads:
                 texts = [t for t in [rd["input"].learned, *rd["claims"]] if t.strip()]
-                rd["qraw"] = [await emb(t[:2000]) for t in texts] or [await emb(rd["input"].summary or rd["input"].title)]
+                fallback = rd["input"].summary or rd["input"].title or rd["input"].url
+                rd["qraw"] = [await emb(t[:2000]) for t in texts] or [await emb(fallback)]
                 rd["summary_vec"] = await emb(rd["input"].summary) if rd["input"].summary else None
                 rd["claim_vecs"] = [await emb(t[:2000]) for t in rd["claims"]]
             # sanity-set texts
@@ -371,9 +380,10 @@ async def run(args: argparse.Namespace) -> int:
             emb.save()
         except (httpx.HTTPError, KeyError, ValueError) as exc:
             print(f"UNKNOWN: embedder/index: {type(exc).__name__}: {exc}", file=sys.stderr)
-            await tx.rollback()
-            await conn.close()
             return 2
+        if not reads:
+            print("no completed reads in the window; nothing to replay")
+            return 0
         print(f"pool={len(pool)} embed_calls={emb.calls} ({time.perf_counter() - t0:.0f}s)")
 
         # ---- 1. similarity diagnosis ----
@@ -390,6 +400,8 @@ async def run(args: argparse.Namespace) -> int:
             if rd["summary_vec"] is None:
                 continue
             others = [j for j in range(len(reads)) if domains[j] != domains[i] and reads[j]["claim_vecs"]]
+            if not others:
+                continue
             for cv in rd["claim_vecs"]:
                 pos.append((rd["summary_vec"], cv))
                 j = random.choice(others)
@@ -398,14 +410,14 @@ async def run(args: argparse.Namespace) -> int:
         pos, neg = [], []
         pids = list(prior_vec)
         for f in pairs["findings"]:
-            if f["pid"] in prior_vec and f["fid"] in fvec:
+            if f["pid"] in prior_vec and f["fid"] in fvec and len(pids) > 1:
                 pos.append((prior_vec[f["pid"]], fvec[f["fid"]]))
                 neg.append((prior_vec[random.choice([p for p in pids if p != f["pid"]])], fvec[f["fid"]]))
         sets["prior vs its own Finding"] = (pos, neg)
         pos, neg = [], []
         qids = list(q_vec)
         for a in pairs["answers"]:
-            if a["qid"] in q_vec and a["nid"] in avec:
+            if a["qid"] in q_vec and a["nid"] in avec and len(qids) > 1:
                 pos.append((q_vec[a["qid"]], avec[a["nid"]]))
                 neg.append((q_vec[random.choice([q for q in qids if q != a["qid"]])], avec[a["nid"]]))
         sets["lived question vs its own answer"] = (pos, neg)
@@ -414,6 +426,9 @@ async def run(args: argparse.Namespace) -> int:
         pooled_raw: tuple[list[float], list[float]] = ([], [])
         pooled_cen: tuple[list[float], list[float]] = ([], [])
         for name, (P, N) in sets.items():
+            if not P or not N:
+                print(f"{name:42s}    0 | (no pairs)")
+                continue
             rp, rn = [dot(a, b) for a, b in P], [dot(a, b) for a, b in N]
             cp, cn = [dot(C(a), C(b)) for a, b in P], [dot(C(a), C(b)) for a, b in N]
             diag[name] = {"raw": _stats(rp, rn), "centered": _stats(cp, cn)}
@@ -423,24 +438,34 @@ async def run(args: argparse.Namespace) -> int:
             print(f"{name:42s} {len(P):4d} | {diag[name]['raw']['pos_mean']:.3f} / {diag[name]['raw']['neg_mean']:.3f} / "
                   f"{diag[name]['raw']['auc']:.3f} | {diag[name]['centered']['pos_mean']:.3f} / "
                   f"{diag[name]['centered']['neg_mean']:.3f} / {diag[name]['centered']['auc']:.3f}")
-        diag["belief_sets_pooled"] = {"raw": _stats(*pooled_raw), "centered": _stats(*pooled_cen)}
-        b = diag["belief_sets_pooled"]
-        print(f"belief sets pooled: raw related p10={b['raw']['pos_p10']:.3f} unrelated p50={b['raw']['neg_p50']:.3f} "
-              f"p95={b['raw']['neg_p95']:.3f} | centered related p10={b['centered']['pos_p10']:.3f} "
-              f"unrelated p50={b['centered']['neg_p50']:.3f} p95={b['centered']['neg_p95']:.3f} "
-              f"(offer floor {CENTERED_OFFER_FLOOR})")
+        if pooled_raw[0] and pooled_raw[1]:
+            diag["belief_sets_pooled"] = {"raw": _stats(*pooled_raw), "centered": _stats(*pooled_cen)}
+            b = diag["belief_sets_pooled"]
+            print(
+                f"belief sets pooled: raw related p10={b['raw']['pos_p10']:.3f} unrelated p50={b['raw']['neg_p50']:.3f} "
+                f"p95={b['raw']['neg_p95']:.3f} | centered related p10={b['centered']['pos_p10']:.3f} "
+                f"unrelated p50={b['centered']['neg_p50']:.3f} p95={b['centered']['neg_p95']:.3f} "
+                f"(offer floor {CENTERED_OFFER_FLOOR})")
 
         # ---- 2. crosswalk ----
         cen_pool = [(d, C(v)) for d, v in pool]
         for rd in reads:
             qs = [C(v) for v in rd["qraw"]]
             rd["q"] = center(mean_vector(qs), [0.0] * len(qs[0]))  # renormalized mean of centered queries
-        hubs = hub_scores([v for _, v in cen_pool], [rd["q"] for rd in reads])
+        # Each doc's similarity to every replayed read, once; a read's hub penalty leaves that
+        # read out (a doc near ONLY this read must not be penalised for it).
+        sims = [[dot(v, rd["q"]) for rd in reads] for _, v in cen_pool]
+
+        def hubs_for(ri: int) -> list[float]:
+            return [hub_from_sims(row[:ri] + row[ri + 1:]) for row in sims]
+
+        hubs_by_read = [hubs_for(ri) for ri in range(len(reads))]
         # Raw-vs-centered attractor: which crystallization is in the most reads' top-2.
         crys_idx = [i for i, (d, _) in enumerate(cen_pool) if d.ref_kind == "crystallization"]
         raw_pool = [v for _, v in pool]
         att: dict[str, dict[str, int]] = {"raw": {}, "centered_hub": {}}
-        for rd in reads:
+        for ri_, rd in enumerate(reads):
+            hubs = hubs_by_read[ri_]
             qraw = mean_vector(rd["qraw"])
             for mode in att:
                 if mode == "raw":
@@ -460,7 +485,8 @@ async def run(args: argparse.Namespace) -> int:
         packets: list[ResonancePacketV1] = []
         per_read_scores: list[dict[str, Any]] = []
         built_at = datetime.now(timezone.utc)
-        for rd in reads:
+        for ri_, rd in enumerate(reads):
+            hubs = hubs_by_read[ri_]
             ri: ReadInput = rd["input"]
             scored_by_kind: dict[str, list[ScoredDoc]] = {}
             for i, (d, v) in enumerate(cen_pool):
@@ -527,9 +553,6 @@ async def run(args: argparse.Namespace) -> int:
                 except (httpx.HTTPError, KeyError, IndexError, ValueError) as exc:
                     item["judge_status"] = f"judge_error: {type(exc).__name__}"
             results.append(item)
-    await tx.rollback()  # read-only either way; nothing to keep
-    await conn.close()
-
     # ---- outputs ----
     (out / "similarity.json").write_text(json.dumps(diag, indent=1, default=str))
     (out / "packets.jsonl").write_text("\n".join(p.model_dump_json() for p in packets) + "\n")
@@ -543,11 +566,16 @@ async def run(args: argparse.Namespace) -> int:
     else:
         print("\njudge: UNVERIFIED (no --judge-url); prompts written to", out / "prompts")
     sizes = [len(p.candidates) for p in packets]
-    print(f"packets={len(packets)} candidates/packet min={min(sizes)} max={max(sizes)} "
+    print(f"packets={len(packets)} candidates/packet min={min(sizes, default=0)} max={max(sizes, default=0)} "
           f"empty_kinds_per_packet=" + ",".join(str(len(KIND_BUDGET) - len({c.ref_kind for c in p.candidates}))
                                                  for p in packets))
     print(f"wrote {args.labeling_md} and {args.labeling_csv}; packets+prompts under {out}")
     return 0
+
+
+def _flat(text: Any) -> str:
+    """One line, no trailing whitespace: stored texts carry newlines and line-end spaces."""
+    return " ".join(str(text or "").split())
 
 
 def _source(url: str) -> str:
@@ -598,15 +626,16 @@ def write_labeling_set(args: argparse.Namespace, reads: list[dict[str, Any]], re
     csv_path = Path(args.labeling_csv)
     csv_path.parent.mkdir(parents=True, exist_ok=True)
     with csv_path.open("w", newline="") as fh:
-        w = csv.writer(fh)
+        w = csv.writer(fh, lineterminator="\n")
         w.writerow(["item", "seed_id", "title", "source", "url", "article_summary", "summary_source",
                     "proposed_connection", "decision", "judge_confidence", "would_retest_prior",
                     "best_centered_cos", "best_raw_prior_cos", "best_centered_prior_cos", "cited_pieces", "wanted", "notes"])
         for r in rows:
+            r = {k: (_flat(v) if isinstance(v, str) else v) for k, v in r.items()}
             w.writerow([r["item"], r["seed_id"], r["title"], r["source"], r["url"], r["article_summary"],
                         r["summary_source"], r["proposed_connection"], r["decision"], r["judge_confidence"],
                         r["would_retest_prior"], r["best_centered_cos"], r["best_raw_prior_cos"], r["best_centered_prior_cos"],
-                        " || ".join(f"{x['ref_kind']} {x['ref_id']} @ {x['store']}: {x['text']}" for x in r["pieces"]),
+                        " || ".join(_flat(f"{x['ref_kind']} {x['ref_id']} @ {x['store']}: {x['text']}") for x in r["pieces"]),
                         "", ""])
     md = [f"# Reading resonance labeling set ({datetime.now(timezone.utc):%Y-%m-%d})", "",
           "Generated by `services/orion-hub/evals/run_reading_resonance_eval.py` (read-only replay of every read "
@@ -631,17 +660,17 @@ def write_labeling_set(args: argparse.Namespace, reads: list[dict[str, Any]], re
                f"- best centered cosine {r['best_centered_cos']}; nearest belief: raw {r['best_raw_prior_cos']}, "
                f"centered {r['best_centered_prior_cos']} (offer floor {CENTERED_OFFER_FLOOR}); "
                f"{r['candidates_in_packet']} pieces in the packet", "",
-               f"**What the article says** ({r['summary_source']}): {r['article_summary']}", "",
-               f"**Proposed connection:** {r['proposed_connection']}", "", "**Pieces:**", ""]
+               f"**What the article says** ({r['summary_source']}): {_flat(r['article_summary'])}", "",
+               f"**Proposed connection:** {_flat(r['proposed_connection'])}", "", "**Pieces:**", ""]
         if not r["pieces"]:
             md.append("- (none: nothing cleared the offer floor)")
         for x in r["pieces"]:
             md.append(f"- `{x['ref_kind']}` `{x['ref_id']}` ({x['store']}"
                       + (f"; offered for {x['offered_in_other_reads']} other reads" if x["offered_in_other_reads"] else "")
-                      + f"): {x['text']}")
+                      + f"): {_flat(x['text'])}")
             for nb in x["neighborhood"]:
-                md.append(f"  - {nb}")
-        md += ["", "**wanted:** ___ (yes/no)  ", "**notes:** ___", ""]
+                md.append(f"  - {_flat(nb)}")
+        md += ["", "**wanted:** ___ (yes/no)", "", "**notes:** ___", ""]
     Path(args.labeling_md).write_text("\n".join(md) + "\n")
 
 

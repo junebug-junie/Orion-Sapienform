@@ -45,6 +45,17 @@ transport-ewma-baseline-design.md, made runnable:
   design (90 s half-life down), and "busy quietly becoming normal" is the upward
   failure this guards. A config change (new fingerprint) cold-starts the gate,
   so it also starts a new comparison segment.
+
+  2026-10-13: a rise is a FAIL only when the floor also moved by at least
+  MIN_EXCESS_MS in absolute terms -- the gate's own materiality line, the same
+  rule the rest-state check above already applies. A 13 ms -> 20 ms floor on a
+  GPU-lease status hop is 1.5x, but the gate can never alert on a change that
+  small, so its floor drifting there cannot hide an alertable slowdown. It is
+  reported as a NOTE with its numbers, not dropped.
+- Close reasons (``conditions_closed``, rows from 2026-10-13 on): a latency
+  episode closed ``went_silent`` ended because the hop stopped producing
+  evaluated traffic for a day, not because it recovered. Counted per hop and
+  shown as a NOTE.
 - Warm-up is not a resting state: until a hop has ``n_warm`` judged windows its
   floor simply equals its level. Rows not warm at the hour's start are left out
   of the medians, and a non-warm row (first learning, or a cold start after a
@@ -87,7 +98,7 @@ COLUMNS = (
     "service", "instance", "key", "hour_start", "flush_reason", "windows_seen",
     "windows_evaluated", "success_count", "timeout_count", "z_p50", "z_p90",
     "saturation_ratio_p50", "baseline_ms", "floor_ms_start", "floor_ms",
-    "calls_per_min_mean", "conditions_opened", "open_at_hour_end",
+    "calls_per_min_mean", "conditions_opened", "conditions_closed", "open_at_hour_end",
     "would_emit_by_condition", "excluded", "warm", "warm_at_start", "emit_effective", "config_fingerprint",
 )
 
@@ -150,18 +161,33 @@ def _ident(r: dict) -> str:
     return f"{r['service']}|{r.get('instance') or ''}|{r['key']}"
 
 
-def floor_rises(rows: list[dict]) -> list[str]:
+def floor_rises(rows: list[dict], *, min_excess_ms: float = 0.0) -> list[str]:
     """Upward floor moves > FLOOR_RISE_LIMIT inside a segment with no
-    regime_shift. Segments restart at a regime_shift or a config change."""
-    flags: list[str] = []
+    regime_shift and at least ``min_excess_ms`` in absolute terms. Segments
+    restart at a regime_shift or a config change."""
+    return [f for f, material in _floor_rise_steps(rows, min_excess_ms) if material]
+
+
+def immaterial_floor_rises(rows: list[dict], *, min_excess_ms: float) -> list[str]:
+    """The same 1.5x rises, but smaller than ``min_excess_ms`` in absolute ms."""
+    return [f for f, material in _floor_rise_steps(rows, min_excess_ms) if not material]
+
+
+def _floor_rise_steps(rows: list[dict], min_excess_ms: float) -> list[tuple[str, bool]]:
+    flags: list[tuple[str, bool]] = []
     seg_min: float | None = None
+    # The segment's true lowest floor, never ratcheted up by a reported step:
+    # materiality is judged against it, so a floor creeping 13 -> 20 -> 30 ->
+    # ... ms in individually-immaterial 1.5x steps still FAILs once the total
+    # rise reaches min_excess_ms (review finding, 2026-10-13).
+    seg_base: float | None = None
     fp: str | None = None
     for r in sorted(rows, key=lambda r: _ts(r["hour_start"])):
         if r.get("config_fingerprint") != fp:
-            fp, seg_min = r.get("config_fingerprint"), None
+            fp, seg_min, seg_base = r.get("config_fingerprint"), None, None
         if not _warm_at_start(r):
             # warm-up (first learning or a cold start): floor == level, not a floor yet
-            seg_min = None
+            seg_min = seg_base = None
             if not r.get("warm", True):
                 continue
         shifted = int(_dict(r.get("conditions_opened")).get("regime_shift", 0) or 0) > 0
@@ -173,14 +199,19 @@ def floor_rises(rows: list[dict]) -> list[str]:
             if v is None or v <= 0:
                 continue
             if seg_min is not None and v / seg_min > FLOOR_RISE_LIMIT:
-                flags.append(
+                base = seg_base if seg_base is not None else seg_min
+                msg = (
                     f"floor rose {v / seg_min:.2f}x ({seg_min:.0f} -> {v:.0f} ms) by "
                     f"{_ts(r['hour_start']):%Y-%m-%d %H:00} UTC with no regime_shift"
                 )
+                if base < seg_min:
+                    msg += f" ({v - base:.0f} ms above this segment's lowest, {base:.0f} ms)"
+                flags.append((msg, (v - base) >= min_excess_ms))
                 seg_min = v  # report each further 1.5x step once, not every hour
             seg_min = v if seg_min is None else min(seg_min, v)
+            seg_base = v if seg_base is None else min(seg_base, v)
         if shifted:
-            seg_min = r.get("floor_ms")  # re-seeded after the stated shift
+            seg_min = seg_base = r.get("floor_ms")  # re-seeded after the stated shift
     return flags
 
 
@@ -225,8 +256,24 @@ def grade_key(
         z_median=z,
         ratio_median=ratio,
         excess_ms_median=weighted_median((_excess_ms(r), r.get("windows_evaluated")) for r in quiet),
-        floor_flags=floor_rises(rows),
+        floor_flags=floor_rises(rows, min_excess_ms=min_excess_ms),
     )
+    small = immaterial_floor_rises(rows, min_excess_ms=min_excess_ms)
+    if small:
+        g.notes.append(
+            f"{len(small)} floor rise(s) past {FLOOR_RISE_LIMIT}x were under the gate's {min_excess_ms:.0f} ms "
+            f"materiality line, so they cannot hide an alertable slowdown (first: {small[0]})"
+        )
+    silent = sum(
+        int(n or 0)
+        for r in rows
+        for k, n in _dict(r.get("conditions_closed")).items()
+        if str(k).endswith(":went_silent")
+    )
+    if silent:
+        g.notes.append(
+            f"{silent} latency episode(s) closed because the hop went silent for a day, not because it recovered"
+        )
     problems: list[str] = []
     gradable = z is not None or ratio is not None
     if gradable:
@@ -379,8 +426,16 @@ def load_rows_pg(dsn: str, days: int) -> list[dict] | None:
         return None
     try:
         with conn.cursor() as cur:
+            # conditions_closed arrived 2026-10-13 (sql-writer boot-time ADD
+            # COLUMN); grade a database that predates it instead of failing.
             cur.execute(
-                f"SELECT {', '.join(COLUMNS)} FROM transport_baseline_hourly "
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_name = 'transport_baseline_hourly' AND table_schema = current_schema()"
+            )
+            present = {row[0] for row in cur.fetchall()}
+            select = ", ".join(c if c in present else f"NULL AS {c}" for c in COLUMNS)
+            cur.execute(
+                f"SELECT {select} FROM transport_baseline_hourly "
                 "WHERE hour_start >= now() - (%s * interval '1 day') ORDER BY hour_start",
                 (days,),
             )

@@ -60,6 +60,7 @@ from orion.schemas.telemetry.biometrics import BiometricsClusterV1
 from orion.schemas.telemetry.system_health import EquilibriumSnapshotV1
 from orion.schemas.telemetry.field_channel_corpus import FieldChannelCorpusRowV1
 from orion.schemas.telemetry.mood_arc import MoodArcCorpusRowV1, MoodArcEncoderManifestV1
+from orion.schemas.telemetry.transport_baseline_hourly import TransportBaselineHourlyV1
 
 
 class Cadence(str, Enum):
@@ -718,6 +719,87 @@ REGISTRY: tuple[InnerStateSignal, ...] = (
             "Superseded by field_channel_corpus.v1 (below) as roadmap item "
             "2's actual target substrate -- this sink is still real, still "
             "running, not a gap to close by disabling it here."
+        ),
+    ),
+    InnerStateSignal(
+        signal_id="transport_baseline_hourly.v1",
+        schema=TransportBaselineHourlyV1,
+        producer_service="orion-equilibrium-service",
+        cadence=Cadence.PER_TICK,
+        composition_status=CompositionStatus.REHEARSAL,
+        cognition_consumers=(),
+        # Semantics (2026-10-13), read from code: per-hop readings of the
+        # transport baseline gate (orion/metacog/transport_baseline.py
+        # fold_snapshot), summarised per UTC hour by services/orion-
+        # equilibrium-service/app/transport_baseline_hourly.py:_row.
+        semantics=(
+            # transport_baseline.py fold_snapshot: ratio = exp(level - floor);
+            # floor follows the smoothed level (fast down, 3-day up), frozen
+            # upward while saturation is open or paused.
+            (
+                "saturation_ratio_p50",
+                MetricSemantics(
+                    value_kind="level",
+                    rest=(
+                        "1.0 = the hop runs at its best recent speed (calm hops "
+                        "read ~1.0-1.2 by construction, floor follows level). "
+                        ">= 2.0 with >= 250 ms excess opens saturation. Never 0."
+                    ),
+                    sparsity="event_gated",
+                    absent_means=(
+                        "None = no evaluated window this hour (no traffic, or "
+                        "fewer than min_calls pooled). Not calm: an open latency "
+                        "episode is paused, not closed, until an evaluated calm "
+                        "window or 24 h without one (closed went_silent)."
+                    ),
+                    polarity="higher_is_worse",
+                ),
+            ),
+            (
+                "floor_ms",
+                MetricSemantics(
+                    value_kind="level",
+                    rest=(
+                        "the hop's best recent typical latency, in ms -- its own "
+                        "scale per hop, no universal rest value. Moves up only "
+                        "slowly and never while saturation is open/paused; a "
+                        "stated regime_shift re-seeds it."
+                    ),
+                    sparsity="event_gated",
+                    absent_means=(
+                        "None until the hop's first evaluation; otherwise "
+                        "carried unchanged through hours with no evaluation."
+                    ),
+                ),
+            ),
+            (
+                "z_p50",
+                MetricSemantics(
+                    value_kind="level",
+                    rest=(
+                        "0.0 = this hour's windows sit at the guarded baseline; "
+                        "spike needs z >= 3 sustained and >= 250 ms excess."
+                    ),
+                    sparsity="event_gated",
+                    absent_means="None = no evaluated window this hour (see saturation_ratio_p50).",
+                    polarity="higher_is_worse",
+                ),
+            ),
+        ),
+        notes=(
+            "Durable hourly readings of the per-hop transport EWMA gate "
+            "(spec docs/superpowers/specs/2026-09-24-metacog-capture-and-"
+            "transport-ewma-baseline-design.md). Written by orion-sql-writer "
+            "to transport_baseline_hourly; read by scripts/analysis/"
+            "grade_transport_baseline.py (analysis, not cognition), hence "
+            "REHEARSAL. The gate's per-window conditions DO reach Orion: with "
+            "EQUILIBRIUM_TRANSPORT_BASELINE_EMIT=true they become transport "
+            "MetacogTriggerV1 rows banded by orion/metacog/evidence_map.py -- "
+            "that path has no schema field (see PROMPT_INVENTORY_URNS notes). "
+            "Registered 2026-10-13 with the silence-pause fix: the bug it "
+            "fixed (silence aged latency episodes out, so drift was absorbed "
+            "and never stated) is exactly the 'absent read as calm' failure "
+            "absent_means exists to name."
         ),
     ),
     InnerStateSignal(

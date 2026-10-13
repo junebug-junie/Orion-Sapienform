@@ -85,6 +85,8 @@ def build_transport_baseline_trigger(
         detail = f"z={_fmt(event.z, '.2f')}:ratio={_fmt(event.saturation_ratio, '.2f')}"
     else:
         detail = f"timeouts={event.timeout_count}"
+    if event.close_reason:
+        detail += f":closed={event.close_reason}"
     reason = (
         f"transport:{event.condition}:{event.phase}:{event.service}:{event.key}:{detail}"
     )[:500]
@@ -112,6 +114,9 @@ def build_transport_baseline_trigger(
             "duration_s": event.duration_s,
             "peak_ms": event.peak_ms,
             "timeout_count": event.timeout_count,
+            # close phase only: quiet | calm | went_silent | evicted. A
+            # went_silent close is the hop going quiet, not a recovery.
+            "close_reason": event.close_reason,
         },
     )
 
@@ -163,6 +168,14 @@ class TransportBaselineGate:
         if reason is not None:
             logger.warning(
                 "transport_baseline cold_start reason=%s fingerprint=%s", reason, self.config.fingerprint()
+            )
+        elif self.state.migrated_from is not None:
+            # Learned floors/levels kept across a state-schema upgrade: said
+            # out loud, never silent (orion/metacog/transport_baseline.py
+            # "Config fingerprint").
+            logger.warning(
+                "transport_baseline migrated from=%s keys=%d fingerprint=%s",
+                self.state.migrated_from, len(self.state.keys), self.state.fingerprint,
             )
         else:
             logger.info(

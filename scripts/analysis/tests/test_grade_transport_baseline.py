@@ -225,3 +225,40 @@ def test_quiet_hours_follow_denver_dst():
     # Winter (MST, UTC-7): 07 UTC = 00 local (not), 12 UTC = 05 local (quiet).
     assert not mod.is_quiet_hour("2026-11-10T07:00:00+00:00")
     assert mod.is_quiet_hour("2026-11-10T12:00:00+00:00")
+
+
+def test_immaterial_floor_rise_is_a_note_not_a_fail():
+    """2026-10-13: durable-runs' GPU-lease status hop drifted 13 -> 20 ms (1.5x);
+    the gate can never alert under 250 ms, so that cannot hide an alertable
+    slowdown. NOTE with numbers, not FAIL."""
+    rows = [_row(h, floor=13.0 + 1.0 * h) for h in range(0, 12)]  # 13 -> 24 ms
+    _, g = _grade(rows)
+    k = g["orion:exec:request:LLMGatewayService"]
+    assert k.floor_flags == [] and k.verdict == "PASS"
+    assert any("materiality line" in n and "13 ->" in n for n in k.notes)
+
+
+def test_material_floor_rise_still_fails_at_the_live_scale():
+    rows = [_row(h, floor=1300.0 + 250.0 * h) for h in range(0, 12)]  # 1.3 s -> 4.05 s
+    _, g = _grade(rows)
+    k = g["orion:exec:request:LLMGatewayService"]
+    assert k.verdict == "FAIL" and k.floor_flags
+
+
+def test_went_silent_closes_are_noted():
+    rows = [_row(h) for h in range(0, 12)]
+    rows[3]["conditions_closed"] = {"saturation:went_silent": 1, "spike:calm": 2}
+    _, g = _grade(rows)
+    k = g["orion:exec:request:LLMGatewayService"]
+    assert any("1 latency episode(s) closed because the hop went silent" in n for n in k.notes)
+
+
+def test_creep_in_immaterial_steps_still_fails_once_the_total_is_material():
+    """Review finding: seg_min ratcheted up after each immaterial 1.5x step, so a
+    floor could creep 13 -> ~700 ms producing only NOTEs."""
+    floors = [13.0 * (1.55 ** k) for k in range(10)]  # 13 -> ~670 ms
+    rows = [_row(h, floor=f) for h, f in enumerate(floors)]
+    _, g = _grade(rows)
+    k = g["orion:exec:request:LLMGatewayService"]
+    assert k.verdict == "FAIL" and k.floor_flags
+    assert "above this segment's lowest, 13 ms" in k.floor_flags[0]

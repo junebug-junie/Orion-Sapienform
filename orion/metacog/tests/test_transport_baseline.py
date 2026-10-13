@@ -445,9 +445,12 @@ def test_moderate_step_below_saturation_ratio_still_becomes_regime_shift():
     assert 1350.0 <= obs[-1].baseline_ms <= 1650.0
 
 
-def test_silence_does_not_count_toward_regime_shift_and_closes_saturation():
+def test_silence_does_not_count_toward_regime_shift_and_pauses_saturation():
     """Review finding 2: 30 min saturated, 7 h silent, then slow again must not
-    instantly declare a regime from ~30 min of evidence."""
+    instantly declare a regime from ~30 min of evidence.
+
+    2026-10-13: the 7 h of silence now *pauses* the episode instead of closing
+    it (absence of traffic is not evidence of calm); it still adds no hot time."""
     cfg = replace(CFG, regime_after_s=3 * 3600.0)
     state = new_state(cfg)
     _flat(state, 1000.0, 0, 120, cfg=cfg)
@@ -456,7 +459,7 @@ def test_silence_does_not_count_toward_regime_shift_and_closes_saturation():
     quiet_start = 180
     quiet_n = int(7 * 3600 / WIN)
     ev2, _ = _run(state, ((i, {}) for i in range(quiet_start, quiet_start + quiet_n)), cfg=cfg)
-    assert ("saturation", "close") in [(e.condition, e.phase) for e in ev2]
+    assert ev2 == []  # paused, not closed
     ev3, _ = _flat(state, 4000.0, quiet_start + quiet_n, 20, cfg=cfg)
     assert not [e for e in ev1 + ev2 + ev3 if e.condition == "regime_shift"]
 
@@ -545,6 +548,7 @@ def test_eviction_closes_open_episodes():
     closes = [e for e in ev if e.phase == "close"]
     assert [(e.condition, e.key) for e in closes] == [("timeout", HOP)]
     assert closes[0].duration_s >= 3600.0
+    assert closes[0].close_reason == "evicted"
     assert state_key("cortex-exec", "chat", HOP) not in state.keys
 
 
@@ -592,3 +596,372 @@ def test_open_saturation_keeps_hysteresis_on_the_materiality_term():
     assert any(e.condition == "saturation" and e.phase == "open" for e in ev_open)
     ev_hold, _ = _run(state, ((i, {HOP: _stats(_noisy(rng, 400.0, sigma=0.02))}) for i in range(300, 500)))
     assert not [e for e in ev_hold if e.condition == "saturation" and e.phase == "close"]
+
+
+# ---------------------------------------------------------------- silence pauses (2026-10-13)
+#
+# Live bug: on sparse hops (cortex-orch -> orion:cortex:exec:request:background,
+# ~5 calls/h) silence aged latency episodes out after close_quiet_s, resetting
+# hot_s ~19 times a day, so a 3x slowdown never reached regime_after_s while
+# the floor crept up between episodes (1.4 s -> 4 s over four days, no
+# regime_shift ever stated).
+
+
+def _ks(state):
+    return state.keys[state_key("cortex-exec", "chat", HOP)]
+
+
+def _silent(state, start, n_windows, cfg=CFG):
+    """Windows on which this producer reports no traffic for the hop."""
+    return _run(state, ((i, {}) for i in range(start, start + n_windows)), cfg=cfg)
+
+
+def _saturated_hop(cfg=CFG, *, hot_windows=120):
+    """Warm at 1000 ms, then hot_windows at 4000 ms. Returns (state, next_i)."""
+    state = new_state(cfg)
+    _flat(state, 1000.0, 0, 120, cfg=cfg)
+    ev, _ = _flat(state, 4000.0, 120, hot_windows, cfg=cfg)
+    assert ("saturation", "open") in [(e.condition, e.phase) for e in ev]
+    return state, 120 + hot_windows
+
+
+def test_silence_pauses_a_latency_episode_and_preserves_hot_time():
+    state, i = _saturated_hop()
+    ep = _ks(state).episodes["saturation"]
+    hot_before = ep.hot_s
+    assert hot_before > 0
+    ev, obs = _silent(state, i, int(3 * 3600 / WIN))  # a 3 h night
+    assert ev == []
+    assert "saturation" in _ks(state).episodes  # paused, not closed
+    assert all("saturation" in o.open_conditions for o in obs)
+    assert _ks(state).episodes["saturation"].hot_s == hot_before  # neither reset nor grown
+    # traffic resumes, still slow: hot time continues from where it paused and
+    # the 3 h gap itself is not counted as hot
+    i += int(3 * 3600 / WIN)
+    _flat(state, 4000.0, i, 60)
+    ep = _ks(state).episodes["saturation"]
+    assert hot_before + 59 * WIN - 1e-6 <= ep.hot_s <= hot_before + 60 * WIN + 1e-6
+
+
+def test_pooling_windows_also_pause_rather_than_add_time():
+    """A sparse hop's pool filling across windows is not an evaluation."""
+    state, i = _saturated_hop()
+    hot_before = _ks(state).episodes["saturation"].hot_s
+    ev, _ = _run(state, [(i, {HOP: _stats([4000.0])}), (i + 1, {HOP: _stats([4000.0])})])
+    assert ev == [] and _ks(state).episodes["saturation"].hot_s == hot_before
+
+
+def test_only_evaluated_calm_closes_and_one_calm_window_after_silence_is_not_enough():
+    # level_alpha=1: the level is the window mean, so a calm window reads calm
+    # at once (otherwise level smoothing keeps the first calm windows "hot"
+    # and the one-window check below would pass vacuously).
+    cfg = replace(CFG, level_alpha=1.0)
+    state, i = _saturated_hop(cfg)
+    # two calm verdicts first, so the verdict before the silence is already
+    # calm: the silence must still not be credited as calm time
+    _flat(state, 1000.0, i, 2, cfg=cfg)
+    i += 2
+    assert "saturation" in _ks(state).episodes
+    _silent(state, i, int(2 * 3600 / WIN), cfg=cfg)
+    i += int(2 * 3600 / WIN)
+    # one calm evaluated window right after the silence: observed calm time is
+    # 0 (the silent gap is not credited as calm), so the episode stays open
+    ev, obs = _flat(state, 1000.0, i, 1, cfg=cfg)
+    assert obs[-1].saturation_ratio < cfg.saturation_close_ratio  # it really read calm
+    assert not [e for e in ev if e.phase == "close"]
+    assert "saturation" in _ks(state).episodes
+    # close_quiet_s of *observed* calm closes it, with close_reason="calm"
+    ev, _ = _flat(state, 1000.0, i + 1, int(cfg.close_quiet_s / WIN) + 1, cfg=cfg)
+    closes = [e for e in ev if e.condition == "saturation" and e.phase == "close"]
+    assert len(closes) == 1 and closes[0].close_reason == "calm"
+    assert closes[0].saturation_ratio is not None  # judged on an evaluated window
+
+
+def test_silence_beyond_max_silence_closes_as_went_silent_not_calm():
+    cfg = replace(CFG, max_silence_s=4 * 3600.0)
+    state, i = _saturated_hop(cfg)
+    ev, _ = _silent(state, i, int(4 * 3600 / WIN) - 2, cfg=cfg)
+    assert ev == []  # still paused just under the bound
+    ev, _ = _silent(state, i + int(4 * 3600 / WIN) - 2, 4, cfg=cfg)
+    closes = [e for e in ev if e.phase == "close"]
+    assert ("saturation", "went_silent") in [(e.condition, e.close_reason) for e in closes]
+    assert {e.close_reason for e in closes} == {"went_silent"}  # never "calm"
+    # duration is what was observed (open -> last evaluated window), not the
+    # trailing silence that ended it
+    assert all(0 < e.duration_s <= 120 * WIN for e in closes)
+    assert _ks(state).episodes == {}
+
+
+def test_hop_returning_after_max_silence_is_judged_fresh():
+    """Checked before evaluation: a hop that comes back slow after the bound
+    closes went_silent and then opens a new episode (no stale hot time)."""
+    cfg = replace(CFG, max_silence_s=3600.0)
+    state, i = _saturated_hop(cfg)
+    gap = int(2 * 3600 / WIN)
+    # no producer windows at all during the gap (producer down), then slow
+    ev, _ = _flat(state, 4000.0, i + gap, 3, cfg=cfg)
+    seq = [(e.condition, e.phase, e.close_reason) for e in ev if e.condition == "saturation"]
+    assert seq[0] == ("saturation", "close", "went_silent")
+    assert ("saturation", "open", None) in seq
+    assert _ks(state).episodes["saturation"].hot_s < 120.0
+
+
+def test_default_max_silence_is_a_day():
+    assert CFG.max_silence_s == 24 * 3600.0
+
+
+def test_floor_is_frozen_while_saturation_is_paused():
+    """Fast floor-up half-life so any creep would be visible."""
+    cfg = replace(CFG, floor_half_life_up_s=1800.0, regime_after_s=48 * 3600.0)
+    state, i = _saturated_hop(cfg)
+    floor = _ks(state).floor
+    _silent(state, i, int(6 * 3600 / WIN), cfg=cfg)
+    i += int(6 * 3600 / WIN)
+    _flat(state, 4000.0, i, 10, cfg=cfg)  # the first window after silence spans 6 h of dt
+    assert _ks(state).floor == floor
+    assert "saturation" in _ks(state).episodes
+
+
+def test_window_that_opens_saturation_does_not_creep_the_floor_first():
+    """The opening evaluation can carry a whole silent night of dt; letting
+    that one update move the floor toward the slow level is absorption."""
+    # level_alpha=1 so a single slow window moves the level across the line
+    cfg = replace(CFG, floor_half_life_up_s=1800.0, level_alpha=1.0)
+    state = new_state(cfg)
+    _flat(state, 1000.0, 0, 120, cfg=cfg)
+    floor = _ks(state).floor
+    # an 8 h gap (alpha ~1 at this half-life), then one 4x window
+    ev, obs = _flat(state, 4000.0, 120 + int(8 * 3600 / WIN), 1, cfg=cfg)
+    assert _ks(state).floor <= floor + 1e-12
+    assert obs[-1].saturation_ratio >= cfg.saturation_ratio
+
+
+def _sparse_days(state, *, slow_ms, days, active_h, cfg, start_i, rng, calls_per_window=2):
+    """Each day: active_h hours of sparse traffic (pooled to min_calls), then
+    silence for the rest of the day. Returns (events, obs, next_i)."""
+    events, obs = [], []
+    i = start_i
+    per_day = int(24 * 3600 / WIN)
+    active = int(active_h * 3600 / WIN)
+    for _ in range(days):
+        ev, ob = _run(
+            state,
+            ((j, {HOP: _stats(_noisy(rng, slow_ms, n=calls_per_window, sigma=0.1))}) for j in range(i, i + active)),
+            cfg=cfg,
+        )
+        events += ev
+        obs += ob
+        ev, ob = _run(state, ((j, {}) for j in range(i + active, i + per_day)), cfg=cfg)
+        events += ev
+        obs += ob
+        i += per_day
+    return events, obs, i
+
+
+def test_sustained_slowdown_with_nightly_gaps_states_exactly_one_regime_shift():
+    """The live shape: a 3x slowdown on a hop that is only busy ~4 h a day.
+    Before the fix every night closed the episode and reset hot_s, so the
+    shift was never stated while the floor crept up. Now hot time accumulates
+    across nights and one regime_shift is stated after regime_after_s of
+    observed-hot time (~2 active days at 4 h/day)."""
+    rng = random.Random(31)
+    state = new_state(CFG)
+    _, _, i = _sparse_days(state, slow_ms=1300.0, days=2, active_h=4, cfg=CFG, start_i=0, rng=rng)
+    floor_before = math.exp(_ks(state).floor)
+    events, obs, _ = _sparse_days(state, slow_ms=3900.0, days=4, active_h=4, cfg=CFG, start_i=i, rng=rng)
+    conds = [(e.condition, e.phase) for e in events]
+    assert conds.count(("regime_shift", "open")) == 1
+    assert ("saturation", "close") not in conds  # never reported cleared
+    assert not [e for e in events if e.close_reason == "went_silent"]
+    rs = next(e for e in events if e.condition == "regime_shift")
+    # stated against the old normal: the floor did not creep before the statement
+    assert rs.floor_ms is not None and rs.floor_ms < floor_before * 1.1
+    # it took > 1 active day (6 h of observed-hot time at 4 h/day) but < 3 days
+    assert 24 * 3600.0 < rs.duration_s < 3 * 24 * 3600.0
+    # after the statement the slow level is the new normal and the hop rests
+    tail = [o for o in obs[-int(24 * 3600 / WIN):] if o.evaluated]
+    rs_ = sorted(o.saturation_ratio for o in tail)
+    assert 0.8 <= rs_[len(rs_) // 2] <= 1.3
+
+
+def test_calm_sparse_hop_with_nightly_gaps_rests():
+    rng = random.Random(32)
+    state = new_state(CFG)
+    events, obs, _ = _sparse_days(state, slow_ms=1300.0, days=5, active_h=4, cfg=CFG, start_i=0, rng=rng)
+    assert [e for e in events if e.condition in ("spike", "saturation", "regime_shift")] == []
+    tail = [o for o in obs[len(obs) // 2:] if o.evaluated]
+    zs = sorted(o.z for o in tail)
+    ratios = sorted(o.saturation_ratio for o in tail)
+    assert abs(zs[len(zs) // 2]) <= 0.5
+    assert 0.95 <= ratios[len(ratios) // 2] <= 1.1
+
+
+def test_timeout_close_reason_is_quiet():
+    state = new_state(CFG)
+    _flat(state, 1000.0, 0, 10)
+    ev, _ = _run(state, [(10, {HOP: _stats([1000.0] * 5, timeouts=1)})])
+    ev2, _ = _flat(state, 1000.0, 11, int(CFG.close_quiet_s / WIN) + 1)
+    closes = [e for e in ev2 if e.condition == "timeout" and e.phase == "close"]
+    assert len(closes) == 1 and closes[0].close_reason == "quiet"
+    assert all(e.close_reason is None for e in ev + ev2 if e.phase != "close")
+
+
+# ---------------------------------------------------------------- v2 -> v3 state migration
+
+
+def _as_v2(d: dict, cfg=CFG) -> dict:
+    """What a pre-2026-10-13 checkpoint of the same state looked like."""
+    d = json.loads(json.dumps(d))
+    d["schema_version"] = 2
+    d["fingerprint"] = cfg.v2_fingerprint()
+    for ks in d["keys"].values():
+        ks.pop("active_s", None)
+        ks.pop("last_success_ts", None)
+        for ep in ks["episodes"].values():
+            ep.pop("last_obs_ts", None)
+            ep.pop("calm_s", None)
+    return d
+
+
+def test_v2_state_is_migrated_preserving_learned_floors_and_open_episodes():
+    state, _ = _saturated_hop()
+    before = _ks(state)
+    loaded, reason = load_state(_as_v2(state_to_dict(state)), CFG)
+    assert reason is None
+    assert loaded.migrated_from and loaded.migrated_from.startswith("schema_v2:")
+    ks = loaded.keys[state_key("cortex-exec", "chat", HOP)]
+    assert ks.floor == before.floor and ks.level_mean == before.level_mean and ks.fast_var == before.fast_var
+    ep = ks.episodes["saturation"]
+    assert ep.hot_s == before.episodes["saturation"].hot_s
+    assert ep.last_obs_ts == ep.last_hot_ts and ep.calm_s == 0.0
+    assert loaded.fingerprint == CFG.fingerprint()
+    # and it round-trips as v3 from then on
+    again, reason = load_state(state_to_dict(loaded), CFG)
+    assert reason is None and again.migrated_from is None
+
+
+def test_v2_state_under_a_different_config_still_cold_starts():
+    state, _ = _saturated_hop()
+    other = replace(CFG, spike_z=4.0)
+    loaded, reason = load_state(_as_v2(state_to_dict(state)), other)
+    assert loaded.keys == {} and reason.startswith("config_fingerprint_mismatch")
+
+
+def test_v2_fingerprint_matches_what_schema_v2_computed():
+    """Pinned literal: origin/main 3f22b2f25's TransportBaselineConfig().
+    fingerprint(), and the fingerprint on the live Redis checkpoint read
+    2026-10-13. If this moves, live state would cold-start, not migrate."""
+    assert CFG.v2_fingerprint() == "697b47aac18690e3" != CFG.fingerprint()
+
+
+def test_floor_stays_frozen_in_the_hysteresis_band_after_a_pause():
+    """Saturation open (paused overnight), then back at 1.8x: inside the
+    1.5-2.0 hysteresis band, so the episode stays hot but the window alone
+    would not open saturation. Only the open/paused episode holds the floor
+    here -- the mutation check showed the opening-window guard masked it."""
+    cfg = replace(CFG, floor_half_life_up_s=1800.0, level_alpha=1.0, regime_after_s=48 * 3600.0)
+    state, i = _saturated_hop(cfg)
+    floor = _ks(state).floor
+    _silent(state, i, int(6 * 3600 / WIN), cfg=cfg)
+    i += int(6 * 3600 / WIN)
+    ev, obs = _flat(state, 1800.0, i, 60, cfg=cfg)
+    assert all(cfg.saturation_close_ratio <= o.saturation_ratio < cfg.saturation_ratio for o in obs if o.evaluated)
+    assert "saturation" in _ks(state).episodes
+    assert _ks(state).floor == floor
+
+
+def test_sparse_hop_evaluated_every_30_min_accumulates_hot_time_from_its_traffic():
+    """Live shape (2026-10-12): the background lane was *evaluated* 25-47 min
+    apart (min_calls only pooled in bursts) while carrying a call every few
+    minutes. The pre-fix credit rule (gap between evaluations <= 15 min)
+    credited it ~0 hot time, so regime_shift could never fire. Continuous
+    traffic between two hot verdicts is observed hot time."""
+    state, i = _saturated_hop()
+    hot0 = _ks(state).episodes["saturation"].hot_s
+    rng = random.Random(41)
+    windows = []
+    for k in range(int(3 * 3600 / WIN)):  # 3 h
+        if k % 60 == 0:
+            windows.append((i + k, {HOP: _stats(_noisy(rng, 4000.0, n=5, sigma=0.1))}))  # burst -> evaluation
+        elif k % 6 == 0:
+            windows.append((i + k, {HOP: _stats(_noisy(rng, 4000.0, n=1, sigma=0.1))}))  # one call / 3 min
+        else:
+            windows.append((i + k, {}))
+    _, obs = _run(state, windows)
+    evals = [o for o in obs if o.evaluated]
+    assert 5 <= len(evals) <= 12  # sparse: roughly one per 30 min
+    gained = _ks(state).episodes["saturation"].hot_s - hot0
+    assert gained >= 2.5 * 3600.0
+
+
+def test_calls_further_apart_than_close_quiet_are_silence_not_hot_time():
+    state, i = _saturated_hop()
+    hot0 = _ks(state).episodes["saturation"].hot_s
+    gap = int(CFG.close_quiet_s / WIN) + 2  # 16 min between calls
+    windows = [(i + k * gap, {HOP: _stats(_noisy(random.Random(k), 4000.0, n=5, sigma=0.1))}) for k in range(1, 9)]
+    _run(state, windows)
+    assert _ks(state).episodes["saturation"].hot_s == hot0
+
+
+
+# ---------------------------------------------------------------- review fixes (2026-10-13)
+
+
+def test_an_outage_is_never_credited_as_latency_hot_time():
+    """Review finding 1: timeout-only windows grew active_s, so a 6 h total
+    outage under an open saturation episode was credited as 6 h of hot
+    latency and the next single window stated a regime_shift -- a Phase I
+    fault taught as a new normal."""
+    state, i = _saturated_hop(hot_windows=60)
+    hot0 = _ks(state).episodes["saturation"].hot_s
+    n = int(6 * 3600 / WIN)
+    ev, _ = _run(state, ((i + k, {HOP: _stats([], timeouts=2)}) for k in range(n)))
+    assert ("zero_success", "open") in [(e.condition, e.phase) for e in ev]
+    ev2, _ = _flat(state, 1500.0, i + n, 1)
+    assert not [e for e in ev + ev2 if e.condition == "regime_shift"]
+    assert _ks(state).episodes.get("saturation") is None or _ks(state).episodes["saturation"].hot_s <= hot0 + WIN
+
+
+def test_flapping_verdict_still_reaches_a_regime_decision():
+    """Review finding 2: with credit only on agreeing verdicts, a spike whose
+    windows alternate hot/calm kept the episode open forever (hot_s stuck,
+    calm_s reset by every hot window) and never stated anything."""
+    state = new_state(CFG)
+    _flat(state, 1000.0, 0, 120)
+    i = 120
+    windows = [(i + k, {HOP: _stats(_noisy(random.Random(k), 3000.0 if k % 2 == 0 or k < 2 else 1000.0, n=10, sigma=0.05))})
+               for k in range(int(16 * 3600 / WIN))]
+    events, _ = _run(state, windows)
+    conds = [(e.condition, e.phase) for e in events]
+    assert ("spike", "open") in conds
+    # half the windows hot -> 6 h of hot credit after ~12 h: stated once
+    assert conds.count(("regime_shift", "open")) == 1
+
+
+def test_one_verdict_vouches_for_at_most_max_credit_s():
+    state, i = _saturated_hop()
+    hot0 = _ks(state).episodes["saturation"].hot_s
+    # 3 h of thin traffic (1 call / 3 min: never pools to min_calls inside
+    # max_aggregate_windows), then one evaluation
+    thin = [(i + k, {HOP: _stats([4000.0])} if k % 6 == 0 else {}) for k in range(int(3 * 3600 / WIN))]
+    _, obs = _run(state, thin)
+    assert not [o for o in obs if o.evaluated]
+    j = i + int(3 * 3600 / WIN)
+    _run(state, [(j, {HOP: _stats([4000.0] * 5)})])
+    assert _ks(state).episodes["saturation"].hot_s <= hot0 + CFG.max_credit_s + 1e-6
+
+
+def test_floor_is_not_frozen_by_a_would_saturate_that_cannot_open():
+    """Review finding 5: level warm, fast not warm (guard 1 blocked): a 2x
+    level froze the floor with no saturation episode to explain it."""
+    cfg = replace(CFG, floor_half_life_up_s=1800.0, level_alpha=1.0)
+    state = new_state(cfg)
+    # every pooled window is tainted by a timeout -> fast never folds (guard 1)
+    _run(state, ((k, {HOP: _stats([1000.0] * 5, timeouts=1)}) for k in range(1, 3)), cfg=cfg)
+    ks = _ks(state)
+    _run(state, ((k, {HOP: _stats([1000.0] * 5, timeouts=1)}) for k in range(3, 3 + cfg.n_warm + 2)), cfg=cfg)
+    assert ks.fast_count < cfg.n_warm and ks.level_count > cfg.n_warm
+    floor = ks.floor
+    _run(state, [(400, {HOP: _stats([4000.0] * 5, timeouts=1)})], cfg=cfg)
+    assert ks.episodes.get("saturation") is None
+    assert ks.floor > floor  # not frozen: nothing open explains a freeze

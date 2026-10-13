@@ -443,16 +443,25 @@ def _map_transport_baseline(reason: str, up: dict[str, Any]) -> EvidenceMapping:
         band = ("degraded", round(m, 4))
         basis = f"regime_shift saturation_ratio={sat if sat is not None else 'n/a'}"
 
+    close_reason = str(up.get("close_reason") or "").strip().lower() or None
     severity, magnitude = band
     if phase == "close":
         # An episode ending is news, not trouble: nominal, scaled by how big
         # the episode was so a big close still outranks a small one.
         severity, magnitude = "nominal", _nominal_band(magnitude)
         basis += ", phase=close"
+        if close_reason:
+            basis += f", closed={close_reason}"
     elif phase == "escalate":
         basis += ", phase=escalate"
 
     evidence: list[str] = [f"{condition} {phase} on {key}"]
+    if phase == "close" and close_reason == "went_silent":
+        # Not a recovery: the hop stopped producing evaluated traffic while
+        # the episode was still open (orion/metacog/transport_baseline.py).
+        evidence.append("closed because the hop went silent, not because it recovered")
+    elif phase == "close" and close_reason:
+        evidence.append(f"closed: {close_reason}")
     if window_ms is not None and baseline_ms is not None:
         s = f"mean {_secs(window_ms)} vs normal {_secs(baseline_ms)}"
         if z is not None:
@@ -487,7 +496,9 @@ def _map_transport_baseline(reason: str, up: dict[str, Any]) -> EvidenceMapping:
         basis=basis,
         evidence=evidence,
         touches=[key],
-        headline=f"{condition} {phase} on {key}",
+        headline=f"{condition} {phase} on {key}" + (
+            " (went silent, not recovered)" if phase == "close" and close_reason == "went_silent" else ""
+        ),
     )
 
 

@@ -387,6 +387,13 @@ async def lifespan(app: FastAPI):
             conn.exec_driver_sql(
                 "ALTER TABLE journal_entry_index ADD COLUMN IF NOT EXISTS llm_uncertainty JSONB;"
             )
+            # 2026-10-13 transport baseline close reasons (TransportBaselineHourlyV1.
+            # conditions_closed). create_all does not add columns to an existing
+            # table, and _write_row would put the key in the INSERT -- same hazard
+            # as orion_biometrics_summary.measurements above.
+            conn.exec_driver_sql(
+                "ALTER TABLE IF EXISTS transport_baseline_hourly ADD COLUMN IF NOT EXISTS conditions_closed JSON;"
+            )
             conn.exec_driver_sql(
                 "ALTER TABLE journal_entry_index ADD COLUMN IF NOT EXISTS llm_mean_logprob DOUBLE PRECISION;"
             )

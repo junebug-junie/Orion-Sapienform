@@ -64,6 +64,7 @@ class _Bucket:
     floor_ms_start: float | None = None
     floor_ms: float | None = None
     opened: dict[str, int] = field(default_factory=dict)
+    closed: dict[str, int] = field(default_factory=dict)
     open_now: tuple[str, ...] = ()
     would_emit: dict[str, int] = field(default_factory=dict)
     excluded: bool = False
@@ -129,6 +130,9 @@ class TransportBaselineHourly:
             b.excluded = b.excluded or bool(ev.excluded)
             if ev.phase == "open":
                 b.opened[ev.condition] = b.opened.get(ev.condition, 0) + 1
+            elif ev.phase == "close":
+                ck = f"{ev.condition}:{getattr(ev, 'close_reason', None) or 'unknown'}"
+                b.closed[ck] = b.closed.get(ck, 0) + 1
             if not ev.excluded:
                 k = f"{ev.condition}:{ev.phase}"
                 b.would_emit[k] = b.would_emit.get(k, 0) + 1
@@ -154,6 +158,7 @@ class TransportBaselineHourly:
             floor_ms=b.floor_ms,
             calls_per_min_mean=(b.calls_sum / b.windows_seen) if b.windows_seen else 0.0,
             conditions_opened=dict(b.opened),
+            conditions_closed=dict(b.closed),
             open_at_hour_end=list(b.open_now),
             would_emit_by_condition=dict(b.would_emit),
             excluded=b.excluded,

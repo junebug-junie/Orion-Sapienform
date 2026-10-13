@@ -86,7 +86,7 @@ def test_calm_hour_summarises_to_rest_state_and_validates():
     assert r.warm and not r.excluded
     assert r.floor_ms_start is not None and r.floor_ms is not None and r.baseline_ms is not None
     assert r.calls_per_min_mean == pytest.approx(10.0)
-    assert r.would_emit_by_condition == {} and r.conditions_opened == {}
+    assert r.would_emit_by_condition == {} and r.conditions_opened == {} and r.conditions_closed == {}
     assert r.config_fingerprint == gate.config.fingerprint()
     assert acc.bucket_count == 0
 
@@ -199,3 +199,34 @@ def test_warm_at_start_records_whether_the_hour_began_warm():
     _run(gate, acc, range(0, 30), lambda i: [1000.0] * 5)
     r = acc.flush_all(T0.timestamp() + 3700, emit_effective=False)[0]
     assert r.warm and not r.warm_at_start
+
+
+def test_closes_are_recorded_by_reason():
+    """2026-10-13: a went_silent close (no evaluated traffic for max_silence_s)
+    must be distinguishable from a calm one in the durable rows -- the bug this
+    field exists for was silence closes reading exactly like recoveries."""
+    from orion.metacog.transport_baseline import TransportConditionEvent
+
+    def ev(cond, phase, reason=None):
+        return TransportConditionEvent(
+            condition=cond, phase=phase, service="cortex-exec", instance="chat", key=LLM,
+            excluded=False, z=None, saturation_ratio=None, baseline_ms=None, floor_ms=None,
+            window_mean_ms=None, calls_per_min=0.0, calls_per_min_usual=None, duration_s=1.0,
+            peak_ms=None, timeout_count=0, close_reason=reason,
+        )
+
+    class _R:
+        observations = ()
+        events = [
+            ev("saturation", "close", "went_silent"),
+            ev("spike", "close", "calm"),
+            ev("timeout", "close", "quiet"),
+            ev("saturation", "open"),
+        ]
+
+    acc = TransportBaselineHourly(config_fingerprint="f")
+    acc.observe(_R(), window_end_ts=_we(0))
+    (row,) = acc.flush_all(T0.timestamp() + 100, emit_effective=False)
+    assert row.conditions_closed == {"saturation:went_silent": 1, "spike:calm": 1, "timeout:quiet": 1}
+    assert row.conditions_opened == {"saturation": 1}
+    TransportBaselineHourlyV1.model_validate(row.model_dump(mode="json"))

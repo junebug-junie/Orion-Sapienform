@@ -1,11 +1,18 @@
 {
   "_comment": "Definition lock for scripts/check_definition_drift.py. Generated, never hand-edited. Regenerate with --update; the resulting diff IS the definition-change alert. Unlike the *_baseline.json ratchets this tracks current truth in both directions -- a definition change is an event, not a defect.",
-  "metric_count": 719,
+  "metric_count": 727,
   "_last_change": {
-    "change_count": 1,
-    "high_severity_count": 1,
+    "change_count": 8,
+    "high_severity_count": 0,
     "changes": [
-      "high   routing_changed metric://inner_state/orion-durable-runs/regulation.state.v1 (declared_consumers: - -> ['services.orion-dream.app.cycle:run_cycle_once (a due slee\u2026)"
+      "medium added metric://inner_state/orion-equilibrium-service/transport_baseline_hourly.v1",
+      "medium added metric://inner_state/orion-equilibrium-service/transport_baseline_hourly.v1#baseline_ms",
+      "medium added metric://inner_state/orion-equilibrium-service/transport_baseline_hourly.v1#calls_per_min_mean",
+      "medium added metric://inner_state/orion-equilibrium-service/transport_baseline_hourly.v1#floor_ms",
+      "medium added metric://inner_state/orion-equilibrium-service/transport_baseline_hourly.v1#floor_ms_start",
+      "medium added metric://inner_state/orion-equilibrium-service/transport_baseline_hourly.v1#saturation_ratio_p50",
+      "medium added metric://inner_state/orion-equilibrium-service/transport_baseline_hourly.v1#z_p50",
+      "medium added metric://inner_state/orion-equilibrium-service/transport_baseline_hourly.v1#z_p90"
     ]
   },
   "definitions": {
@@ -4692,6 +4699,81 @@
         "metric://inner_state/orion-equilibrium-service/equilibrium_snapshot.v1"
       ],
       "notes": "scalar field on EquilibriumSnapshotV1",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-equilibrium-service/transport_baseline_hourly.v1": {
+      "schema_id": "TransportBaselineHourlyV1",
+      "notes": "cadence=per_tick composition=no_cognition_consumer",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-equilibrium-service/transport_baseline_hourly.v1#baseline_ms": {
+      "schema_id": "TransportBaselineHourlyV1",
+      "upstream": [
+        "metric://inner_state/orion-equilibrium-service/transport_baseline_hourly.v1"
+      ],
+      "notes": "scalar field on TransportBaselineHourlyV1",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-equilibrium-service/transport_baseline_hourly.v1#calls_per_min_mean": {
+      "schema_id": "TransportBaselineHourlyV1",
+      "upstream": [
+        "metric://inner_state/orion-equilibrium-service/transport_baseline_hourly.v1"
+      ],
+      "notes": "scalar field on TransportBaselineHourlyV1",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-equilibrium-service/transport_baseline_hourly.v1#floor_ms": {
+      "schema_id": "TransportBaselineHourlyV1",
+      "value_kind": "level",
+      "rest": "the hop's best recent typical latency, in ms -- its own scale per hop, no universal rest value. Moves up only slowly and never while saturation is open/paused; a stated regime_shift re-seeds it.",
+      "sparsity": "event_gated",
+      "absent_means": "None until the hop's first evaluation; otherwise carried unchanged through hours with no evaluation.",
+      "upstream": [
+        "metric://inner_state/orion-equilibrium-service/transport_baseline_hourly.v1"
+      ],
+      "notes": "scalar field on TransportBaselineHourlyV1",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-equilibrium-service/transport_baseline_hourly.v1#floor_ms_start": {
+      "schema_id": "TransportBaselineHourlyV1",
+      "upstream": [
+        "metric://inner_state/orion-equilibrium-service/transport_baseline_hourly.v1"
+      ],
+      "notes": "scalar field on TransportBaselineHourlyV1",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-equilibrium-service/transport_baseline_hourly.v1#saturation_ratio_p50": {
+      "schema_id": "TransportBaselineHourlyV1",
+      "value_kind": "level",
+      "rest": "1.0 = the hop runs at its best recent speed (calm hops read ~1.0-1.2 by construction, floor follows level). >= 2.0 with >= 250 ms excess opens saturation. Never 0.",
+      "sparsity": "event_gated",
+      "absent_means": "None = no evaluated window this hour (no traffic, or fewer than min_calls pooled). Not calm: an open latency episode is paused, not closed, until an evaluated calm window or 24 h without one (closed went_silent).",
+      "polarity": "higher_is_worse",
+      "upstream": [
+        "metric://inner_state/orion-equilibrium-service/transport_baseline_hourly.v1"
+      ],
+      "notes": "scalar field on TransportBaselineHourlyV1",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-equilibrium-service/transport_baseline_hourly.v1#z_p50": {
+      "schema_id": "TransportBaselineHourlyV1",
+      "value_kind": "level",
+      "rest": "0.0 = this hour's windows sit at the guarded baseline; spike needs z >= 3 sustained and >= 250 ms excess.",
+      "sparsity": "event_gated",
+      "absent_means": "None = no evaluated window this hour (see saturation_ratio_p50).",
+      "polarity": "higher_is_worse",
+      "upstream": [
+        "metric://inner_state/orion-equilibrium-service/transport_baseline_hourly.v1"
+      ],
+      "notes": "scalar field on TransportBaselineHourlyV1",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-equilibrium-service/transport_baseline_hourly.v1#z_p90": {
+      "schema_id": "TransportBaselineHourlyV1",
+      "upstream": [
+        "metric://inner_state/orion-equilibrium-service/transport_baseline_hourly.v1"
+      ],
+      "notes": "scalar field on TransportBaselineHourlyV1",
       "registry_source": "orion/inner_state_registry.py"
     },
     "metric://inner_state/orion-field-digester/field_channel_corpus.v1": {

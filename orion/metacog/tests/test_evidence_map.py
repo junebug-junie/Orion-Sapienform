@@ -184,6 +184,16 @@ def test_transport_baseline_evidence_reads_like_the_spec():
     assert any("slow while idle" in e for e in idle.evidence)
 
 
+def test_transport_went_silent_close_is_not_read_as_recovery():
+    m = map_trigger("transport", "r", _cond(condition="saturation", phase="close", close_reason="went_silent"))
+    assert m.severity == "nominal"
+    assert "closed because the hop went silent, not because it recovered" in m.evidence
+    assert "closed=went_silent" in m.density_rationale
+    assert "went silent, not recovered" in m.summary_fallback
+    calm = map_trigger("transport", "r", _cond(condition="saturation", phase="close", close_reason="calm"))
+    assert "closed: calm" in calm.evidence
+
+
 def test_transport_close_of_big_episode_outranks_close_of_small():
     big = map_trigger("transport", "r", _cond(z=9.0, phase="close"))
     small = map_trigger("transport", "r", _cond(z=3.1, phase="close"))

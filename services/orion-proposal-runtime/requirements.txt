@@ -7,3 +7,7 @@ psycopg2-binary==2.9.10
 PyYAML==6.0.2
 # Required for orion.core.bus.bus_service_chassis (bus-native SystemHealthV1 heartbeat).
 redis[hiredis]==5.0.7
+# Required transitively: orion.proposals.builder -> orion.attention.world_first -> orion.substrate
+# -> orion.substrate.graphdb_store imports requests. Missing it crashed ~half of proposal ticks
+# (proposal_runtime_tick_failed, ModuleNotFoundError) once the image was rebuilt on 2026-10-13.
+requests==2.32.3

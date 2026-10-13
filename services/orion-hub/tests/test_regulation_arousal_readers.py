@@ -328,3 +328,32 @@ def test_outreach_tick_survives_a_disconnected_bus():
     o._bus = _NotConnected()
     assert asyncio.run(o.arousal_reader.refresh(o._bus)).level == "unknown"
     assert o._gate_inputs().arousal_level is None
+
+
+def test_outreach_re_reads_arousal_before_delivery(monkeypatch):
+    """Live 10-12 14:56 / 15:45, 10-13 15:39: a compose of 6+ min (agent lane timeout then chat
+    fallback) re-gated on the reading cached at the top of the tick, read it stale -> unknown,
+    and sent. The pre-delivery gate must see the current reading. This pins the re-read (a cached
+    idle misses strain that began mid-compose); the stale-cache form of the same gap is covered by
+    test_reader_decays_to_unknown_when_not_refreshed."""
+    from test_endogenous_outreach import _stub_context
+
+    o = _outreach_with(_state("idle"))
+    # Patch the class and module globals `o` actually came from: other hub tests re-import and
+    # drop scripts.* from sys.modules, so a fresh import here can be a different module object.
+    EndogenousOutreach = type(o)
+    module_globals = EndogenousOutreach._outreach_once.__globals__
+    queue: asyncio.Queue = asyncio.Queue()
+    o.register_connection("c1", queue, {"correlation_id": None, "kind": None})
+    _stub_context(monkeypatch)
+    monkeypatch.setitem(module_globals, "_juniper_spoke_since", lambda epoch: False)
+    monkeypatch.setitem(module_globals, "_seconds_since_juniper_spoke", lambda: 4000.0)
+
+    async def generate_while_strain_begins(self, prompt, session_id, correlation_id, **_kw):
+        o._bus.redis.values[REGULATION_STATE_REDIS_KEY] = _state("strained")
+        return "something I was thinking about", {"stub": True}
+
+    monkeypatch.setattr(EndogenousOutreach, "_generate", generate_while_strain_begins)
+    result = asyncio.run(o._outreach_once(force=False))
+    assert (result["outreach"], result["reason"]) == (False, "arousal_strained_after_generation")
+    assert queue.empty()

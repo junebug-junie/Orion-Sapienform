@@ -6,7 +6,9 @@ Reads (read-only, bounded):
 * S1 -- athena's cabinet readings for the last hour (``orion.autonomy.cabinet_heat``'s own query,
   folded by its own pure verdict);
 * S2 -- saved GPU pool snapshots (``gpu_pool_state_history``, written by sql-writer from
-  ``orion:gpu_pool:state`` in ~10 ms) for the sustain window plus a margin.
+  ``orion:gpu_pool:state`` in ~10 ms) for the sustain window plus a margin, and the pool's own
+  controller refusals/answers (``gpu_pool_events``, last ``GPU_FAULT_LOOKBACK_SEC``) so a queue
+  jammed by a broken lane controller is not read as load. Either read failing makes S2 stale.
 
 Each read fails on its own: a failed read makes only that input stale (-> ``unknown``), never 0.
 
@@ -24,7 +26,13 @@ from typing import Any, Optional
 
 from orion.autonomy.cabinet_heat import CABINET_NODE, CABINET_POINTS_SQL, _ts_key, read_cabinet_heat
 from orion.hardware_watch.rules import TempPoint
-from orion.regulation.arousal import GPU_STATE_STALE_SEC, gpu_queue_evidence
+from orion.regulation.arousal import (
+    GPU_FAULT_EVENTS,
+    GPU_FAULT_LOOKBACK_SEC,
+    GPU_STATE_STALE_SEC,
+    gpu_fault_from_events,
+    gpu_queue_evidence,
+)
 from orion.regulation.juniper_turns import JUNIPER_IDLE_MINUTES_SQL
 from orion.schemas.regulation import ArousalInputsV1, ArousalReadingV1
 
@@ -40,6 +48,12 @@ CABINET_POINTS_PG = (CABINET_POINTS_SQL.replace(":node", "%(node)s").replace(":s
 GPU_SNAPSHOTS_SQL = (
     "SELECT host, generated_at, queue_depth FROM gpu_pool_state_history "
     "WHERE generated_at >= %(since)s ORDER BY host, generated_at"
+)
+
+# Index idx_gpu_pool_events_generated bounds it (0.2 ms live, 10-13). ``role`` is the seat.
+GPU_FAULT_EVENTS_SQL = (
+    "SELECT generated_at, event, reason, role FROM gpu_pool_events "
+    "WHERE generated_at >= %(since)s AND event = ANY(%(events)s) ORDER BY generated_at, event_id"
 )
 
 INSERT_EVENT_SQL = """
@@ -89,9 +103,15 @@ async def _gpu(pool: Any, now: datetime, *, floor: int, sustain_sec: float) -> d
         async with pool.connection() as conn:
             rows = await (await conn.execute(GPU_SNAPSHOTS_SQL, {
                 "since": now - timedelta(seconds=sustain_sec + GPU_MARGIN_SEC)})).fetchall()
+            events = await (await conn.execute(GPU_FAULT_EVENTS_SQL, {
+                "since": now - timedelta(seconds=GPU_FAULT_LOOKBACK_SEC),
+                "events": list(GPU_FAULT_EVENTS)})).fetchall()
     except Exception:  # noqa: BLE001
+        # Without the fault read a jammed queue cannot be told from load: the whole input is stale.
         logger.warning("regulation_gpu_state_read_failed", exc_info=True)
         return {}
+    fault = gpu_fault_from_events(
+        ((r["generated_at"], r["event"], r["reason"], r["role"]) for r in events), now)
     by_host: dict[str, list] = {}
     for r in rows:
         depth = r["queue_depth"]
@@ -114,7 +134,8 @@ async def _gpu(pool: Any, now: datetime, *, floor: int, sustain_sec: float) -> d
     if best is None:
         return {}
     _, age, depth, sustained = best
-    return {"gpu_state_age_sec": age, "gpu_queue_depth": depth, "gpu_queue_sustained_sec": sustained}
+    return {"gpu_state_age_sec": age, "gpu_queue_depth": depth, "gpu_queue_sustained_sec": sustained,
+            "gpu_fault": fault}
 
 
 async def read_arousal_inputs(

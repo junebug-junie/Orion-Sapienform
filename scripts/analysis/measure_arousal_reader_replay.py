@@ -33,8 +33,10 @@ Live-lane caveat: a level holds until the next ``arousal_transition`` row. If du
 stopped writing, the real readers would read unknown after 360 s while this lane keeps the
 last level, so the live lane can overcount holds across a durable-runs outage.
 
-Known caveat: a fault-jammed GPU queue reads as strained (S2 cannot tell a jam from load).
-Every strained span is listed with its reasons so a jam can be told apart by eye.
+A GPU queue jammed by a refusing lane controller reads ``unknown`` (``gpu_fault:<kind>:<seat>``),
+not strained (``orion.regulation.arousal.gpu_fault_from_events``). ``--no-gpu-fault`` replays
+the reducer without that input, for a before/after on the same export. Every strained span is
+listed with its reasons.
 
 Usage:
   python3 scripts/analysis/measure_arousal_reader_replay.py --print-sql --start S --end E > x.sql
@@ -180,6 +182,7 @@ def main():
     p.add_argument("--curiosity-base-cooldown-sec", type=float, default=1800.0)
     p.add_argument("--engaged-multiplier", type=float, default=2.0)
     p.add_argument("--dream-max-hold-hours", type=float, default=6.0)
+    p.add_argument("--no-gpu-fault", action="store_true", help="replay without the GPU fault input (before)")
     args = p.parse_args()
     if args.print_sql:
         print(export_sql(args.start, args.end))
@@ -192,7 +195,7 @@ def main():
               dream_max_hold_sec=args.dream_max_hold_hours * 3600.0)
 
     rr = _reducer_replay()
-    readings = rr.replay_readings(rows, args.start, args.end)
+    readings = rr.replay_readings(rows, args.start, args.end, gpu_fault=not args.no_gpu_fault)
     replay_tl = Timeline((r.observed_at, r.arousal_level, r.since) for r in readings)
     summary = rr.summarize(readings, args.end)
     out = {
@@ -202,6 +205,7 @@ def main():
         "replay": {
             "level_minutes_per_day": summary["minutes_per_day"],
             "strained_spans": summary["strained_spans"],
+            "unknown_spans": summary["unknown_spans"],
             "readers": reader_impact(decisions, replay_tl, args.start, args.end, **kw),
         },
     }

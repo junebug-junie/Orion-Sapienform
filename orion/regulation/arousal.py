@@ -13,6 +13,11 @@ Rule, evaluated in this order (spec R3):
    (default 10 min). Stale time never earns clear time: a latched step with a stale strain input
    reads ``unknown`` and restarts the clear clock.
 3. Any stale input (S1 past its own 300 s grace, S2 past 30 s, E1 query failed) -> unknown. Unknown is never idle.
+   A GPU queue at or above its floor while the pool's lane controller is refusing to act
+   (``gpu_fault``, see ``gpu_fault_from_events``) is not evidence of load: S2 reads like a stale
+   input (``gpu_fault:<kind>:<seat>``), so it can neither strain nor clear. Live 2026-10-09: the
+   controller refused every swap for 26 h (``config_unloadable``) and the jammed queue alone would
+   have read strained for 20 h and held every optional decision.
 4. A Juniper turn within ``engaged_minutes`` (the dream's DREAM_IDLE_MINUTES, 45) -> engaged.
 5. Otherwise idle.
 
@@ -29,6 +34,7 @@ from datetime import datetime, timezone
 from typing import Iterable, Optional, Sequence, Tuple
 
 from orion.autonomy.cabinet_heat import REFLEX_CABINET_HOT, REFLEX_CABINET_UNKNOWN
+from orion.gpu_pool.controller_health import classify as classify_controller_refusal
 from orion.schemas.regulation import ArousalInputsV1, ArousalReadingV1
 
 # GPU pool publishes GpuPoolStateV1 every 5 s; sql-writer lands each in ~10 ms (live 10-10).
@@ -43,6 +49,18 @@ DEFAULT_ENGAGED_MINUTES = 45.0
 DEFAULT_GPU_QUEUE_FLOOR = 2
 DEFAULT_GPU_SUSTAIN_SEC = 300.0
 DEFAULT_CLEAR_SEC = 600.0
+
+# The pool re-asks a refusing controller every swap_cooldown_sec (600 s); live 2026-10-09/10 the
+# 155 refusals came a median 601 s apart, never more than 604 s. Three cadences: one missed or
+# late refusal does not end a fault that is still there.
+GPU_FAULT_LOOKBACK_SEC = 1800.0
+# gpu_pool_events rows that say whether a seat's lane controller can act. A refusal on the pool's
+# own action is ``actuate_refused``; a refusal on a status probe is ``swap_failed`` with reason
+# ``status_refused:<reason>``. Only ``swapped`` (the controller did what was asked) ends a fault:
+# other ``swap_failed`` rows (ack timeout, ambiguous reconcile, a failed action) do not prove the
+# controller can read its config, so they neither trip nor clear.
+GPU_FAULT_EVENTS = ("actuate_refused", "swap_failed", "swapped")
+_STATUS_REFUSED = "status_refused:"
 
 
 def _utc(dt: Optional[datetime]) -> Optional[datetime]:
@@ -84,6 +102,59 @@ def gpu_queue_evidence(
             break
         start = ts
     return age, newest_depth, (newest_ts - start).total_seconds()
+
+
+def _fault_event(event: str, reason: Optional[str]) -> tuple[bool, Optional[str]]:
+    """``(decides, kind)``: whether this row says anything about the controller, and the fault
+    kind it reports (None = the controller answered)."""
+    r = reason or ""
+    if event == "swapped":
+        # fault_cleared:discovery / fault_cleared:operator clear a CARD fault without the
+        # controller saying anything (runtime._clear_faults, operator clear_fault): neutral.
+        return (False, None) if r.startswith("fault_cleared:") else (True, None)
+    if event == "actuate_refused":
+        kind = classify_controller_refusal(r)
+        return kind is not None, kind
+    if event == "swap_failed" and r.startswith(_STATUS_REFUSED):
+        kind = classify_controller_refusal(r[len(_STATUS_REFUSED):])
+        return kind is not None, kind
+    return False, None
+
+
+def gpu_fault_from_events(
+    events: Iterable[Tuple[datetime, str, Optional[str], Optional[str]]],
+    now: datetime,
+    *,
+    lookback_sec: float = GPU_FAULT_LOOKBACK_SEC,
+) -> Optional[str]:
+    """Saved pool events ``(generated_at, event, reason, seat)`` -> ``"<kind>:<seat>"`` while a
+    seat's lane controller is refusing to act, else None.
+
+    Per seat, the newest deciding row inside ``lookback_sec`` wins: a refusal the pool's own
+    ``orion.gpu_pool.controller_health.classify`` calls unfixable by retry (``config_unloadable``,
+    ``launch_digest_mismatch``, ...) is a fault; a later ``swapped`` ends it (except
+    ``fault_cleared:*``, which clears a card without a controller answer). Refusals a retry
+    fixes (``busy``, ``upstream_not_idle``) and unknown reasons are neutral, as the pool treats
+    them. Several faulted seats join with ``+``. Rows stamped after ``now`` are ignored.
+    """
+    now = _utc(now)
+    newest: dict[str, tuple[datetime, Optional[str]]] = {}
+    for ts, event, reason, seat in events:
+        ts = _utc(ts)
+        if ts is None or not seat:
+            continue
+        age = (now - ts).total_seconds()
+        if age < 0 or age > lookback_sec:
+            continue
+        decides, kind = _fault_event(event, reason)
+        if not decides:
+            continue
+        cur = newest.get(seat)
+        # Same instant: the refusal wins, so the answer is independent of row order.
+        if cur is None or ts > cur[0] or (ts == cur[0] and kind is not None):
+            newest[seat] = (ts, kind)
+    faults = sorted(f"{kind}:{seat}" for seat, (_, kind) in newest.items() if kind)
+    return "+".join(faults) or None
 
 
 def _usable_prev(prev: Optional[ArousalReadingV1], now: datetime, max_gap_sec: float) -> Optional[ArousalReadingV1]:
@@ -130,12 +201,18 @@ def classify_arousal(
     s1_fresh = (inputs.cabinet_read_ok and inputs.cabinet_reflex != REFLEX_CABINET_UNKNOWN
                 and inputs.cabinet_thermal_state not in (None, "unknown"))
     s1_hot = s1_fresh and inputs.cabinet_reflex == REFLEX_CABINET_HOT
-    s2_fresh = (inputs.gpu_state_age_sec is not None and inputs.gpu_state_age_sec <= GPU_STATE_STALE_SEC
-                and inputs.gpu_queue_depth is not None)
+    s2_seen = (inputs.gpu_state_age_sec is not None and inputs.gpu_state_age_sec <= GPU_STATE_STALE_SEC
+               and inputs.gpu_queue_depth is not None)
+    # A queue at/above the floor while a lane controller refuses to act measures the fault, not
+    # load: it can neither strain nor clear. Below the floor nothing is waiting, which stays true.
+    s2_faulted = s2_seen and bool(inputs.gpu_fault) and inputs.gpu_queue_depth >= gpu_queue_floor
+    s2_fresh = s2_seen and not s2_faulted
     s2_strain = s2_fresh and (inputs.gpu_queue_sustained_sec or 0.0) >= gpu_sustain_sec
     s2_clear = s2_fresh and inputs.gpu_queue_depth < gpu_queue_floor
     e1_fresh = inputs.juniper_turn_read_ok
-    stale = [name for name, ok in (("cabinet", s1_fresh), ("gpu_state", s2_fresh), ("juniper_turns", e1_fresh)) if not ok]
+    s2_stale = f"gpu_fault:{inputs.gpu_fault}" if s2_faulted else "stale:gpu_state"
+    stale = [why for why, ok in (("stale:cabinet", s1_fresh), (s2_stale, s2_fresh),
+                                 ("stale:juniper_turns", e1_fresh)) if not ok]
 
     level: Optional[str] = None
     if s1_hot or s2_strain:
@@ -156,12 +233,12 @@ def classify_arousal(
             reasons.append("strain_holding")
         else:
             level, clear_since = "unknown", None
-            reasons += [f"stale:{s}" for s in stale if s != "juniper_turns"]
+            reasons += [s for s in stale if s != "stale:juniper_turns"]
 
     if level is None:
         if stale:
             level = "unknown"
-            reasons += [f"stale:{s}" for s in stale]
+            reasons += stale
         else:
             minutes = inputs.minutes_since_juniper_turn
             if minutes is not None and minutes < engaged_minutes:
@@ -171,6 +248,9 @@ def classify_arousal(
                 level = "idle"
                 reasons.append(f"no_juniper_turn_{engaged_minutes:g}m")
 
+    if inputs.gpu_fault and not s2_faulted:
+        # Annotate only: the fault is real, but this step did not lean on the queue reading.
+        reasons.append(f"gpu_fault:{inputs.gpu_fault}")
     since = _utc(usable.since) if usable is not None and usable.arousal_level == level else now
     return ArousalReadingV1(
         arousal_level=level, since=since, strain_latched=latched, strain_clear_since=clear_since,
@@ -193,8 +273,11 @@ __all__ = [
     "DEFAULT_ENGAGED_MINUTES",
     "DEFAULT_GPU_QUEUE_FLOOR",
     "DEFAULT_GPU_SUSTAIN_SEC",
+    "GPU_FAULT_EVENTS",
+    "GPU_FAULT_LOOKBACK_SEC",
     "GPU_STATE_STALE_SEC",
     "classify_arousal",
+    "gpu_fault_from_events",
     "gpu_queue_evidence",
     "level_seconds",
 ]

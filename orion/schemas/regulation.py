@@ -21,6 +21,10 @@ Inputs, per the spec's metric gate (R3):
 * S2 -- GPU pool queue depth (``GpuPoolStateV1.queue_depth``, summed) at or above a floor for a
   sustained time, from the saved ``gpu_pool_state_history`` snapshots. ``backlog_depth`` (the
   spec's first choice) is excluded: it was empty in every saved snapshot (replay #2576).
+  A queue at or above the floor while a lane controller refuses to act (``gpu_pool_events``
+  ``actuate_refused`` that ``orion.gpu_pool.controller_health.classify`` calls unfixable by retry,
+  not yet followed by a ``swapped``) is a fault, not load: S2 reads like a stale input and the
+  reading carries ``gpu_fault:<kind>:<seat>`` in ``reasons`` (2026-10-09: 26 h of refusals).
 """
 
 from __future__ import annotations
@@ -65,6 +69,10 @@ class ArousalInputsV1(BaseModel):
     gpu_state_age_sec: Optional[float] = Field(default=None, ge=0.0)
     gpu_queue_depth: Optional[int] = Field(default=None, ge=0)
     gpu_queue_sustained_sec: Optional[float] = Field(default=None, ge=0.0)
+    # S2 fault: "<kind>:<seat>" (``+``-joined) while a GPU lane controller refuses to act
+    # (``orion.regulation.arousal.gpu_fault_from_events`` over ``gpu_pool_events``). A queue at or
+    # above the floor during a fault is not load evidence. None: no fault seen in the lookback.
+    gpu_fault: Optional[str] = None
 
 
 class ArousalReadingV1(BaseModel):
@@ -87,7 +95,8 @@ class ArousalReadingV1(BaseModel):
     strain_latched: bool = False
     strain_clear_since: Optional[AwareDatetime] = None
     # Which input decided, in plain words (e.g. "cabinet_hot", "gpu_queue_sustained",
-    # "juniper_turn_recent", "no_juniper_turn_45m", "stale:cabinet", "disabled").
+    # "juniper_turn_recent", "no_juniper_turn_45m", "stale:cabinet", "disabled",
+    # "gpu_fault:config_unreadable:agent-gpu2").
     reasons: List[str] = Field(default_factory=list)
 
 

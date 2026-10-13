@@ -2265,6 +2265,11 @@ class EndogenousOutreach:
         # by timeout_sec (default 60s), and Juniper can easily start typing
         # inside that window -- a gate checked only at the top of the tick would
         # let outreach talk straight over a turn that began mid-generation.
+        # Re-read arousal too: the reading cached at the top of the tick is as old as the compose,
+        # and a compose past 360 s (agent lane 210 s + chat fallback) read it as stale -> unknown,
+        # so strain that began mid-compose could not hold the send (live 10-12/10-13, 4 times).
+        if self.arousal_reader is not None:
+            await self.arousal_reader.refresh(self._bus)
         blocked_now = outreach_block_reason(self._gate_inputs())
         if not blocked_now:
             # Composing can take minutes (agent lane, then a chat-lane fallback). If Juniper

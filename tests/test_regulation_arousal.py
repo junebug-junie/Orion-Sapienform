@@ -227,3 +227,130 @@ def test_parse_regulation_state_tolerates_garbage():
     assert parse_regulation_state(None) is None
     assert parse_regulation_state(b"{not json") is None
     assert parse_regulation_state({"schema_version": "regulation.state.v1"}) is None
+
+
+# --- GPU fault vs load (2026-10-13) ---------------------------------------------------------
+#
+# Live 2026-10-09 04:07 -> 2026-10-10 05:51: the circe lane controller refused every swap of
+# agent-gpu2 with config_unloadable:ValidationError (155 refusals, median 601 s apart, max 604 s)
+# while the agent queue sat at 9-18. Live 2026-10-12 14:09: a 24 min depth-2 span with no refusal
+# at all and 199 leases granted in 40 min. These fixtures copy those shapes.
+
+from orion.regulation.arousal import GPU_FAULT_LOOKBACK_SEC, gpu_fault_from_events  # noqa: E402
+
+REFUSED = "config_unloadable:ValidationError"
+
+
+def refusal(sec_ago, seat="agent-gpu2", reason=REFUSED, event="actuate_refused"):
+    return (T0 - timedelta(seconds=sec_ago), event, reason, seat)
+
+
+def test_controller_refusal_is_a_fault_until_the_seat_swaps():
+    assert gpu_fault_from_events([refusal(1201), refusal(600)], T0) == "config_unreadable:agent-gpu2"
+    # 10-10 06:01: the controller swapped -> fault over, at once.
+    assert gpu_fault_from_events([refusal(600), (T0 - timedelta(seconds=5), "swapped", "max_hold", "agent-gpu2")],
+                                 T0) is None
+
+
+def test_fault_survives_one_late_refusal_and_ages_out_after_the_lookback():
+    assert gpu_fault_from_events([refusal(1700)], T0) == "config_unreadable:agent-gpu2"
+    assert gpu_fault_from_events([refusal(GPU_FAULT_LOOKBACK_SEC + 1)], T0) is None
+
+
+@pytest.mark.parametrize("reason", ["busy", "deadline_passed", "upstream_not_idle:x", "", None, "brand_new_reason"])
+def test_retryable_or_unknown_refusal_neither_trips_nor_clears(reason):
+    assert gpu_fault_from_events([refusal(30, reason=reason)], T0) is None
+    assert gpu_fault_from_events([refusal(600), refusal(30, reason=reason)], T0) == "config_unreadable:agent-gpu2"
+
+
+def test_status_probe_refusal_counts_and_other_swap_failures_are_neutral():
+    status = refusal(30, event="swap_failed", reason=f"status_refused:{REFUSED}")
+    assert gpu_fault_from_events([status], T0) == "config_unreadable:agent-gpu2"
+    for reason in ("actuator_unreachable", "reconcile_ambiguous", "status_failed:x", "failed"):
+        assert gpu_fault_from_events([refusal(600), refusal(30, event="swap_failed", reason=reason)],
+                                     T0) == "config_unreadable:agent-gpu2"
+
+
+def test_load_events_are_not_faults_and_seats_are_separate():
+    load = [(T0 - timedelta(seconds=s), ev, None, "agent") for s, ev in ((30, "granted"), (20, "released"))]
+    assert gpu_fault_from_events(load, T0) is None
+    two = [refusal(60), refusal(50, seat="chat-gpu0", reason="launch_digest_mismatch:x"),
+           (T0 - timedelta(seconds=10), "swapped", "demand", "other-seat")]
+    assert gpu_fault_from_events(two, T0) == "config_mismatch:chat-gpu0+config_unreadable:agent-gpu2"
+
+
+def test_future_stamped_events_are_ignored():
+    assert gpu_fault_from_events([refusal(-60)], T0) is None
+
+
+def fault_inputs(at=T0, **kw):
+    base = dict(depth=12, sustained=3600.0)
+    base.update(kw)
+    fault = base.pop("fault", "config_unreadable:agent-gpu2")
+    return inputs(at, **base).model_copy(update={"gpu_fault": fault})
+
+
+def test_fault_jammed_queue_is_not_strained():
+    r = classify_arousal(None, fault_inputs())
+    assert r.arousal_level == "unknown"
+    assert r.reasons[0] == "gpu_fault:config_unreadable:agent-gpu2"
+    assert not r.strain_latched
+
+
+def test_real_load_still_strains():
+    r = step(None, depth=2, sustained=301.0)
+    assert r.arousal_level == "strained" and r.reasons == ["gpu_queue_sustained"]
+
+
+def test_fault_with_nothing_queued_stays_a_fresh_reading_and_says_so():
+    r = classify_arousal(None, fault_inputs(depth=0, sustained=0.0, minutes=300.0))
+    assert r.arousal_level == "idle"
+    assert r.reasons[-1] == "gpu_fault:config_unreadable:agent-gpu2"
+
+
+def test_mixed_cabinet_heat_still_strains_during_a_gpu_fault():
+    r = classify_arousal(None, fault_inputs(reflex="cabinet_hot", thermal="hot"))
+    assert r.arousal_level == "strained" and "cabinet_hot" in r.reasons
+    assert "gpu_queue_sustained" not in r.reasons
+
+
+def test_fault_never_earns_clear_time_for_an_earlier_strain():
+    strained = step(None, depth=4, sustained=400.0)
+    t = T0
+    for _ in range(10):   # 20 min of fault: the latch must not clear on fault time
+        t += timedelta(seconds=120)
+        strained = classify_arousal(strained, fault_inputs(t))
+        assert strained.arousal_level == "unknown" and strained.strain_clear_since is None
+    assert strained.strain_latched
+
+
+def test_fault_onset_ends_strain_and_its_end_with_a_backlog_strains_again():
+    prev = step(None, depth=12, sustained=400.0)
+    assert prev.arousal_level == "strained"
+    prev = classify_arousal(prev, fault_inputs(T0 + timedelta(seconds=120)))
+    assert prev.arousal_level == "unknown"
+    prev = classify_arousal(prev, inputs(T0 + timedelta(seconds=240), depth=12, sustained=640.0))
+    assert prev.arousal_level == "strained"
+
+
+@pytest.mark.parametrize("reason", ["fault_cleared:discovery", "fault_cleared:operator"])
+def test_a_card_fault_clear_is_not_a_controller_answer(reason):
+    """runtime._clear_faults / operator clear_fault emit `swapped` with no controller reply."""
+    rows = [refusal(600), (T0 - timedelta(seconds=30), "swapped", reason, "agent-gpu2")]
+    assert gpu_fault_from_events(rows, T0) == "config_unreadable:agent-gpu2"
+
+
+def test_same_instant_refusal_and_swap_is_a_fault_in_either_row_order():
+    at = T0 - timedelta(seconds=30)
+    rows = [(at, "swapped", "demand", "agent-gpu2"), (at, "actuate_refused", REFUSED, "agent-gpu2")]
+    assert gpu_fault_from_events(rows, T0) == gpu_fault_from_events(rows[::-1], T0) == "config_unreadable:agent-gpu2"
+
+
+def test_fault_voids_the_whole_summed_queue_by_design():
+    """The fault voids S2 for every class, not just the faulted seat's. Live 10-09 the jam spread
+    past agent-gpu2's own classes: memory_distill (roles [agent] only) and diffusion (roles
+    [diffusion], waiting on gpu2's unload) sat at 1-2 and 1 with zero grants all day. Scoping the
+    void to the seat's configured classes would still have summed 2-3 >= floor and read strained.
+    The cost: real load elsewhere during a fault reads unknown (pre-arousal behaviour), not strained."""
+    r = classify_arousal(None, fault_inputs(depth=5))
+    assert r.arousal_level == "unknown"

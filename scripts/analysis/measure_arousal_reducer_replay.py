@@ -11,7 +11,10 @@ each step's inputs exactly as ``services/orion-durable-runs/app/regulation_store
 * S1 -- ``read_cabinet_heat`` over the last hour of athena cabinet readings, seeded with the
   previous step's thermal state and critical latch;
 * S2 -- ``gpu_queue_evidence`` over the saved ``gpu_pool_state_history`` snapshots in the sustain
-  window plus 60 s, per host, most-strained fresh host wins.
+  window plus 60 s, per host, most-strained fresh host wins; plus ``gpu_fault_from_events`` over the
+  ``gpu_pool_events`` controller refusals/answers in the last ``GPU_FAULT_LOOKBACK_SEC`` (a queue
+  jammed by a refusing lane controller is not load). ``--no-gpu-fault`` replays the reducer as it
+  was before the fault input existed, for a before/after on the same rows.
 
 Reports minutes per level per UTC day, level transitions per day, and strained exits per day
 (spec R3a: more than 12 strained -> engaged/idle exits a day means the clear time is too short).
@@ -41,8 +44,11 @@ from orion.regulation.arousal import (  # noqa: E402
     DEFAULT_ENGAGED_MINUTES,
     DEFAULT_GPU_QUEUE_FLOOR,
     DEFAULT_GPU_SUSTAIN_SEC,
+    GPU_FAULT_EVENTS,
+    GPU_FAULT_LOOKBACK_SEC,
     GPU_STATE_STALE_SEC,
     classify_arousal,
+    gpu_fault_from_events,
     gpu_queue_evidence,
 )
 from orion.regulation.juniper_turns import JUNIPER_TURN_PREDICATE  # noqa: E402
@@ -86,6 +92,12 @@ SELECT row_to_json(r) FROM (
  SELECT 'gpu_state' AS kind, generated_at AS at, host, queue_depth FROM gpu_pool_state_history
  WHERE generated_at >= '{lo}'::timestamptz AND generated_at < '{hi}'::timestamptz ORDER BY host, generated_at
 ) r;
+SELECT row_to_json(r) FROM (
+ SELECT 'gpu_event' AS kind, generated_at AS at, event, reason, role FROM gpu_pool_events
+ WHERE event IN ({", ".join(f"'{e}'" for e in GPU_FAULT_EVENTS)})
+ AND generated_at >= '{(warm - timedelta(seconds=GPU_FAULT_LOOKBACK_SEC)).isoformat()}'::timestamptz
+ AND generated_at < '{hi}'::timestamptz ORDER BY generated_at
+) r;
 ROLLBACK;"""
 
 
@@ -94,7 +106,8 @@ def replay(rows, start, end, **kw):
 
 
 def replay_readings(rows, start, end, *, tick_sec=120.0, engaged_minutes=DEFAULT_ENGAGED_MINUTES,
-                    floor=DEFAULT_GPU_QUEUE_FLOOR, sustain_sec=DEFAULT_GPU_SUSTAIN_SEC, clear_sec=DEFAULT_CLEAR_SEC):
+                    floor=DEFAULT_GPU_QUEUE_FLOOR, sustain_sec=DEFAULT_GPU_SUSTAIN_SEC, clear_sec=DEFAULT_CLEAR_SEC,
+                    gpu_fault=True):
     """Every regulate step's ArousalReadingV1, in order (the readers' eval replays these)."""
     start, end = utc(start), utc(end)
     turns = sorted(utc(r["at"]) for r in rows if r["kind"] == "turn")
@@ -106,6 +119,9 @@ def replay_readings(rows, start, end, *, tick_sec=120.0, engaged_minutes=DEFAULT
         if r["kind"] == "gpu_state":
             gpu[r["host"]].append((utc(r["at"]), r["queue_depth"]))
     gpu_ts = {h: [s[0] for s in sorted(v, key=lambda s: s[0])] for h, v in gpu.items()}
+    events = sorted(((utc(r["at"]), r["event"], r.get("reason"), r.get("role"))
+                     for r in rows if r["kind"] == "gpu_event"), key=lambda e: e[0])
+    event_ts = [e[0] for e in events]
     gpu = {h: sorted(v, key=lambda s: s[0]) for h, v in gpu.items()}
 
     # The node's own step times: a tick every tick_sec from start, plus one at each Juniper turn.
@@ -140,12 +156,16 @@ def replay_readings(rows, start, end, *, tick_sec=120.0, engaged_minutes=DEFAULT
             key = (age <= GPU_STATE_STALE_SEC, sustained or 0.0, -age)
             if best is None or key > best[0]:
                 best = (key, age, depth, sustained)
+        fault = None
+        if gpu_fault:
+            a = bisect.bisect_left(event_ts, now - timedelta(seconds=GPU_FAULT_LOOKBACK_SEC))
+            fault = gpu_fault_from_events(events[a:bisect.bisect_right(event_ts, now)], now)
         inputs = ArousalInputsV1(
             observed_at=now, juniper_turn_read_ok=True, minutes_since_juniper_turn=minutes,
             cabinet_read_ok=True, cabinet_reflex=verdict.reflex, cabinet_thermal_state=verdict.thermal_state,
             cabinet_critical=verdict.critical, cabinet_temp_c=verdict.temp_c,
             **({} if best is None else {"gpu_state_age_sec": best[1], "gpu_queue_depth": best[2],
-                                        "gpu_queue_sustained_sec": best[3]}))
+                                        "gpu_queue_sustained_sec": best[3], "gpu_fault": fault}))
         prev = classify_arousal(prev, inputs, engaged_minutes=engaged_minutes, gpu_queue_floor=floor,
                                 gpu_sustain_sec=sustain_sec, clear_sec=clear_sec, max_prev_gap_sec=3 * tick_sec)
         prev_inputs = inputs
@@ -184,6 +204,7 @@ def summarize(readings, end):
         "hysteresis_review_days": [d for d, n in strained_exits.items() if n > 12],
         "unknown_step_reasons": dict(reasons_when_unknown),
         "strained_spans": _spans(readings, end, "strained"),
+        "unknown_spans": _spans(readings, end, "unknown"),
     }
 
 
@@ -213,6 +234,7 @@ def main():
     p.add_argument("--tick-sec", type=float, default=120.0)
     p.add_argument("--gpu-queue-floor", type=int, default=DEFAULT_GPU_QUEUE_FLOOR)
     p.add_argument("--print-sql", action="store_true")
+    p.add_argument("--no-gpu-fault", action="store_true", help="replay without the GPU fault input (before)")
     args = p.parse_args()
     if args.print_sql:
         print(export_sql(args.start, args.end))
@@ -220,7 +242,8 @@ def main():
     if not args.history:
         p.error("history export required")
     rows = [json.loads(line) for line in args.history.read_text().splitlines() if line.strip().startswith("{")]
-    result = replay(rows, args.start, args.end, tick_sec=args.tick_sec, floor=args.gpu_queue_floor)
+    result = replay(rows, args.start, args.end, tick_sec=args.tick_sec, floor=args.gpu_queue_floor,
+                    gpu_fault=not args.no_gpu_fault)
     result.update(start=args.start.isoformat(), end=args.end.isoformat(), tick_sec=args.tick_sec,
                   gpu_queue_floor=args.gpu_queue_floor, input_counts=dict(Counter(r["kind"] for r in rows)))
     print(json.dumps(result, indent=2))

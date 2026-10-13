@@ -42,6 +42,7 @@ class World:
         self.turn_ok = True
         self.reflex, self.thermal = None, "normal"
         self.depth, self.sustained, self.gpu_age = 0, 0.0, 2.0
+        self.fault = None
         self.projected: list[RegulationStateV1] = []
         self.transitions: list[tuple] = []
         self.fail_project = False
@@ -57,7 +58,8 @@ class World:
         return ArousalInputsV1(
             observed_at=now, juniper_turn_read_ok=self.turn_ok, minutes_since_juniper_turn=minutes,
             cabinet_read_ok=True, cabinet_reflex=self.reflex, cabinet_thermal_state=self.thermal,
-            gpu_state_age_sec=self.gpu_age, gpu_queue_depth=self.depth, gpu_queue_sustained_sec=self.sustained)
+            gpu_state_age_sec=self.gpu_age, gpu_queue_depth=self.depth, gpu_queue_sustained_sec=self.sustained,
+            gpu_fault=self.fault)
 
     async def read_drives(self, now):
         return list(self.drives), []
@@ -238,6 +240,8 @@ def test_stale_gpu_host_does_not_outrank_a_fresh_one():
                     for i in range(60)]
             rows += [{"host": "circe", "generated_at": now - timedelta(seconds=5 * i), "queue_depth": {}}
                      for i in range(5)]
+            if "gpu_pool_events" in sql:
+                rows = []
 
             class R:
                 async def fetchall(self_inner):
@@ -250,6 +254,96 @@ def test_stale_gpu_host_does_not_outrank_a_fresh_one():
 
     out = asyncio.run(regulation_store._gpu(Pool(), T0, floor=2, sustain_sec=300.0))
     assert out["gpu_queue_depth"] == 0 and out["gpu_state_age_sec"] == 0.0
+    assert out["gpu_fault"] is None
+
+
+class _GpuPool:
+    """Fake pool for ``regulation_store._gpu``: snapshots and pool events by SQL text."""
+
+    def __init__(self, snaps, events, fail_events=False):
+        self.snaps, self.events, self.fail_events = snaps, events, fail_events
+        self.event_params = []
+
+    def connection(self):
+        outer = self
+
+        class Conn:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return False
+
+            async def execute(self, sql, params=None):
+                if "gpu_pool_events" in sql:
+                    if outer.fail_events:
+                        raise RuntimeError("relation gpu_pool_events does not exist")
+                    outer.event_params.append(params)
+                    rows = outer.events
+                else:
+                    rows = outer.snaps
+
+                class R:
+                    async def fetchall(self_inner):
+                        return rows
+                return R()
+        return Conn()
+
+
+def _jam(now, n=70, depth=12):
+    return [{"host": "circe", "generated_at": now - timedelta(seconds=5 * i), "queue_depth": {"agent": depth}}
+            for i in range(n)]
+
+
+def test_store_reads_a_controller_fault_from_pool_events():
+    from app import regulation_store
+
+    events = [{"generated_at": T0 - timedelta(seconds=601), "event": "actuate_refused",
+               "reason": "config_unloadable:ValidationError", "role": "agent-gpu2"}]
+    pool = _GpuPool(_jam(T0), events)
+    out = asyncio.run(regulation_store._gpu(pool, T0, floor=2, sustain_sec=300.0))
+    assert out["gpu_fault"] == "config_unreadable:agent-gpu2"
+    assert out["gpu_queue_depth"] == 12 and out["gpu_queue_sustained_sec"] >= 300.0
+    assert pool.event_params[0]["since"] == T0 - timedelta(seconds=1800)
+    assert set(pool.event_params[0]["events"]) == {"actuate_refused", "swap_failed", "swapped"}
+
+
+def test_store_fault_read_failure_makes_gpu_stale_not_load():
+    from app import regulation_store
+
+    out = asyncio.run(regulation_store._gpu(_GpuPool(_jam(T0), [], fail_events=True), T0, floor=2,
+                                            sustain_sec=300.0))
+    assert out == {}
+
+
+def test_fault_jam_reads_unknown_through_a_restart_then_real_load_strains():
+    """Lifecycle: the fault is re-read from pool events every step, so a durable-runs restart in
+    the middle of a jam still reads unknown (never strained), and the queue counts as load again
+    only once the controller swapped."""
+    w = World()
+    saver = InMemorySaver()
+    w.depth, w.sustained = 12, 3600.0
+    w.fault = "config_unreadable:agent-gpu2"
+    d = driver(w, saver)
+    tick(d)
+    a = w.projected[-1].arousal
+    assert a.arousal_level == "unknown" and a.reasons[0] == "gpu_fault:config_unreadable:agent-gpu2"
+    assert not a.strain_latched
+    # Restart mid-jam: a new driver on the same checkpoint.
+    w.now += timedelta(seconds=120)
+    d2 = driver(w, saver)
+    tick(d2)
+    assert w.projected[-1].arousal.arousal_level == "unknown"
+    # Restart after an outage longer than the carry gap: still unknown, never strained.
+    w.now += timedelta(hours=2)
+    tick(driver(w, saver))
+    assert w.projected[-1].arousal.arousal_level == "unknown"
+    # The controller swapped: the backlog it leaves is real work being drained.
+    w.fault = None
+    w.now += timedelta(seconds=120)
+    tick(d2)
+    assert w.projected[-1].arousal.arousal_level == "strained"
+    assert "gpu_queue_sustained" in w.projected[-1].arousal.reasons
 
 
 # --- store SQL on real Postgres -------------------------------------------------------------
@@ -289,6 +383,9 @@ def test_store_reads_and_transition_write_on_postgres():
                                   client_meta jsonb, created_at timestamp DEFAULT now())""")
             await conn.execute("""CREATE TABLE orion_biometrics_summary (node varchar, timestamp varchar,
                                   measurements jsonb)""")
+            await conn.execute("""CREATE TABLE gpu_pool_events (event_id varchar PRIMARY KEY,
+                                  generated_at timestamptz NOT NULL, event varchar NOT NULL, reason varchar,
+                                  role varchar)""")
             await conn.execute("""INSERT INTO chat_history_log (id, source, prompt, client_meta, created_at) VALUES
                 ('j', 'hub_orion', 'hello', NULL, LOCALTIMESTAMP - interval '50 minutes'),
                 ('o', NULL, NULL, '{"unsolicited": true}', LOCALTIMESTAMP - interval '1 minutes')""")
@@ -309,10 +406,26 @@ def test_store_reads_and_transition_write_on_postgres():
         assert inputs.gpu_queue_depth == 3 and inputs.gpu_queue_sustained_sec >= 300.0
         assert inputs.gpu_state_age_sec < 5.0
 
+        assert inputs.gpu_fault is None
+
         from orion.regulation.arousal import classify_arousal
 
         reading = classify_arousal(None, inputs)
         assert reading.arousal_level == "strained"
+
+        # The same jam with the lane controller refusing: a fault, not load.
+        async with pool.connection() as conn:
+            await conn.execute("""INSERT INTO gpu_pool_events (event_id, generated_at, event, reason, role) VALUES
+                ('r1', %(a)s, 'actuate_refused', 'config_unloadable:ValidationError', 'agent-gpu2'),
+                ('r0', %(b)s, 'actuate_refused', 'config_unloadable:ValidationError', 'agent-gpu2'),
+                ('old', %(c)s, 'swapped', 'demand', 'agent-gpu2'),
+                ('g', %(a)s, 'granted', NULL, 'agent')""",
+                               {"a": now - timedelta(seconds=30), "b": now - timedelta(seconds=630),
+                                "c": now - timedelta(seconds=4000)})
+        faulted = await regulation_store.read_arousal_inputs(pool, now, None, gpu_queue_floor=2,
+                                                             gpu_sustain_sec=300.0)
+        assert faulted.gpu_fault == "config_unreadable:agent-gpu2"
+        assert classify_arousal(None, faulted.model_copy(update={"cabinet_reflex": None})).arousal_level == "unknown"
         row = regulation_store.transition_row(None, reading, "2026-10-10")
         assert await regulation_store.record_transition(pool, row)
         assert await regulation_store.record_transition(pool, row)          # idempotent

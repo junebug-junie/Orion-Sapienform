@@ -1232,7 +1232,8 @@ REGISTRY: tuple[InnerStateSignal, ...] = (
             "Temporal Self rev 4 (PR #2369) R3. Inputs: E1 Juniper turns "
             "(orion.regulation.juniper_turns), S1 cabinet reflex "
             "(orion.autonomy.cabinet_heat), S2 GPU pool queue_depth sustained "
-            "(gpu_pool_state_history). Transport: Redis orion:regulation:latest "
+            "(gpu_pool_state_history), not counted while a lane controller refuses "
+            "to act (gpu_pool_events; reason gpu_fault:<kind>:<seat>, reads unknown). Transport: Redis orion:regulation:latest "
             "+ GET /regulation/state; history: temporal_self_event "
             "arousal_transition rows. No bus channel (no subscriber)."
         ),

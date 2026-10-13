@@ -1,0 +1,12 @@
+node:substrate.biometrics.prediction_error 1441 {'decayed_to_zero': 'clear', 'replayed': 'clear', 'constant': 'clear', 'floor_locked': 'clear'}
+node:substrate.bus_synaptic.prediction_error 1441 {'decayed_to_zero': 'clear', 'replayed': 'clear', 'constant': 'clear', 'floor_locked': 'clear'}
+node:substrate.cabinet.prediction_error 0 absent in the window
+node:substrate.chat.prediction_error 1441 {'decayed_to_zero': 'clear', 'replayed': 'clear', 'constant': 'clear:carried forward, re-written in only 14 h (designed)', 'floor_locked': 'clear:carried forward, re-written in only 14 h (designed)'}
+node:substrate.codebase.prediction_error 1441 {'decayed_to_zero': 'clear', 'replayed': 'clear', 'constant': 'clear', 'floor_locked': 'not_applicable:sparsity designed_sparse'}
+node:substrate.execution.prediction_error 1441 {'decayed_to_zero': 'clear', 'replayed': 'clear', 'constant': 'clear', 'floor_locked': 'not_applicable:sparsity designed_sparse'}
+node:substrate.harness_closure.prediction_error 0 absent in the window
+node:substrate.perception.prediction_error 1441 {'decayed_to_zero': 'clear', 'replayed': 'clear', 'constant': 'clear', 'floor_locked': 'not_applicable:sparsity designed_sparse'}
+node:substrate.route.prediction_error 1441 {'decayed_to_zero': 'clear', 'replayed': 'not_applicable:value_kind count', 'constant': 'not_applicable:value_kind count', 'floor_locked': 'not_applicable:value_kind count'}
+node:substrate.vision_organ.vision_frame_staleness 1441 {'decayed_to_zero': 'clear', 'replayed': 'clear', 'constant': 'clear', 'floor_locked': 'clear'}
+node:substrate.vision_organ.vision_processing_failure_pressure 1441 {'decayed_to_zero': 'clear', 'replayed': 'clear', 'constant': 'clear', 'floor_locked': 'not_applicable:sparsity event_gated'}
+FINDINGS []

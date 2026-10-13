@@ -100,12 +100,27 @@ Each (key, condition) is an open -> escalate* -> close state machine.
 - open: condition first observed (spike: after ``spike_sustain``).
 - escalate: magnitude reached ``escalate_factor`` x the last announced
   magnitude (spike: z; saturation: ratio; timeout: timeouts per window).
-- close: condition not observed for ``close_quiet_s`` (15 min; a key
-  faulting every few minutes is one episode, not a flapping pair per
-  window). Carries ``duration_s`` and ``peak_ms``. Latency episodes on a
-  hop with no latency evidence arriving at all also age out this way. A hop
-  evicted from state (idle > ``max_idle_s`` or over ``max_keys``) emits a
-  close for every open episode rather than dropping it silently.
+- close: carries ``duration_s``, ``peak_ms`` and a ``close_reason``.
+  * ``timeout`` / ``zero_success``: the fault not observed for
+    ``close_quiet_s`` (15 min; a key faulting every few minutes is one
+    episode, not a flapping pair per window) -> ``close_reason="quiet"``.
+  * ``spike`` / ``saturation`` (latency episodes): only *evaluated* windows
+    that read calm can close them, after ``close_quiet_s`` of observed calm
+    -> ``close_reason="calm"``. Windows with no evaluated latency (no traffic,
+    or a pool still filling) **pause** the episode: they neither add hot
+    time nor calm time, and they never reset ``hot_s``. Absence of traffic
+    is not evidence of calm -- before 2026-10-13 silence aged these episodes
+    out after 15 min, which on sparse hops (nights, the ~5 calls/h
+    background lane) reset ``hot_s`` ~19 times a day, so a sustained 3x
+    slowdown never reached ``regime_after_s`` while the floor crept up
+    between episodes: drift absorbed, never stated (guard 3 broken live).
+  * A latency episode with no evaluated window for ``max_silence_s`` closes
+    with ``close_reason="went_silent"`` -- explicitly *not* a recovery, so a
+    hop that stops for good does not hold an episode (and a frozen floor)
+    forever.
+  * A hop evicted from state (idle > ``max_idle_s`` or over ``max_keys``)
+    emits a close for every open episode (``close_reason="evicted"``)
+    rather than dropping it silently.
 
 ## Config fingerprint
 
@@ -113,6 +128,12 @@ The config is hashed into the state. Resuming a state produced under a
 different config cold-starts (``load_state`` returns ``cold_start_reason``)
 rather than silently mixing baselines calibrated with different constants --
 the caveat ``trend_reducer`` disclosed and left open.
+
+One exception, deliberate and narrow: a schema-v2 state whose fingerprint
+equals the *current* config minus the fields v3 added (``max_silence_s``) is
+migrated in place (``TransportBaselineState.migrated_from`` says so), because
+v3 changed episode bookkeeping, not any constant the learned floors, levels
+or variances were calibrated with. Every other mismatch still cold-starts.
 
 ## Import cost
 
@@ -133,7 +154,13 @@ from typing import Any, Iterable
 
 from orion.bus.ewma import compute_ewma_update
 
-STATE_SCHEMA_VERSION = 2
+STATE_SCHEMA_VERSION = 3
+# Config fields added in schema v3. A v2 state whose fingerprint matches the
+# current config with these removed is migrated, not cold-started.
+_V3_CONFIG_FIELDS = ("max_silence_s",)
+
+LATENCY_CONDITIONS = ("spike", "saturation")
+CLOSE_REASONS = ("quiet", "calm", "went_silent", "evicted")
 
 CONDITIONS = ("timeout", "zero_success", "spike", "saturation", "regime_shift")
 
@@ -178,13 +205,35 @@ class TransportBaselineConfig:
     # Quiet time before an episode closes. 15 min: a hop faulting every few
     # minutes is one episode, not an open/close pair per fault.
     close_quiet_s: float = 900.0
+    # A latency episode with no *evaluated* window this long closes as
+    # "went_silent" (not calm). Measured 2026-10-13 from 13.5 days of
+    # transport_baseline_hourly: on the two hops this fix is for
+    # (cortex-orch->cortex:exec:request:background, actions->cortex:request)
+    # runs of whole hours with no evaluated window were p50 2 h, p90 7 h,
+    # p99 11-13 h, max 13-21 h; across all 933 silent runs on every hop p95
+    # was 23 h. 24 h bridges every observed silence on those hops (and a
+    # night plus a quiet day) while still ending an episode on a hop that
+    # stopped for good within a day.
+    max_silence_s: float = 24 * 3600.0
     # State bounds.
     max_idle_s: float = 7 * 24 * 3600.0
     max_keys: int = 512
 
     def fingerprint(self) -> str:
-        blob = json.dumps(asdict(self), sort_keys=True).encode("utf-8")
-        return hashlib.sha256(blob).hexdigest()[:16]
+        return _fingerprint_of(asdict(self))
+
+    def v2_fingerprint(self) -> str:
+        """The fingerprint schema v2 computed for this config (v3 fields
+        dropped) -- what a pre-v3 saved state carries."""
+        d = asdict(self)
+        for name in _V3_CONFIG_FIELDS:
+            d.pop(name, None)
+        return _fingerprint_of(d)
+
+
+def _fingerprint_of(d: dict[str, Any]) -> str:
+    blob = json.dumps(d, sort_keys=True).encode("utf-8")
+    return hashlib.sha256(blob).hexdigest()[:16]
 
 
 @dataclass
@@ -197,7 +246,13 @@ class Episode:
     # Time the condition was actually observed hot, gaps longer than
     # close_quiet_s excluded -- regime_shift is judged on this, never on
     # wall-clock since open (silence is not evidence of a sustained regime).
+    # Silence pauses it; nothing but a close or a regime_shift resets it.
     hot_s: float = 0.0
+    # Latency episodes only: window_end of the last *evaluated* window that
+    # judged this condition (hot or calm), and observed calm time since the
+    # last hot one (gaps longer than close_quiet_s excluded, like hot_s).
+    last_obs_ts: float = 0.0
+    calm_s: float = 0.0
 
 
 @dataclass
@@ -252,6 +307,8 @@ class TransportConditionEvent:
     duration_s: float | None
     peak_ms: float | None
     timeout_count: int
+    # close phase only: quiet | calm | went_silent | evicted (CLOSE_REASONS)
+    close_reason: str | None = None
 
 
 @dataclass(frozen=True)
@@ -280,6 +337,9 @@ class KeyObservation:
 class TransportBaselineState:
     fingerprint: str
     keys: dict[str, KeyState] = field(default_factory=dict)
+    # Set by load_state when an older schema was migrated in place (never
+    # persisted); the service logs it so a migration is never silent.
+    migrated_from: str | None = None
 
 
 @dataclass(frozen=True)
@@ -369,7 +429,9 @@ def state_to_dict(state: TransportBaselineState) -> dict[str, Any]:
     }
 
 
-_EPISODE_FLOATS = ("opened_ts", "last_hot_ts", "announced_magnitude", "peak_magnitude", "hot_s")
+_EPISODE_FLOATS = (
+    "opened_ts", "last_hot_ts", "announced_magnitude", "peak_magnitude", "hot_s", "last_obs_ts", "calm_s",
+)
 _KEY_FLOATS = (
     "last_seen_ts", "last_window_end", "last_eval_ts", "fast_mean", "fast_var",
     "level_mean", "calls_ewma", "pend_sum", "pend_sumsq",
@@ -390,7 +452,7 @@ def _strict_int(v: Any) -> int:
     return v
 
 
-def _key_state_from_raw(raw: Any) -> KeyState:
+def _key_state_from_raw(raw: Any, *, from_v2: bool = False) -> KeyState:
     """Type-checked rebuild; raises on any wrong-typed field so a corrupt
     checkpoint is refused at load, not discovered by a crash on every fold."""
     if not isinstance(raw, dict):
@@ -419,6 +481,10 @@ def _key_state_from_raw(raw: Any) -> KeyState:
         if cond not in CONDITIONS or not isinstance(ep, dict):
             raise ValueError(f"bad episode {cond!r}")
         pm = ep.get("peak_ms")
+        if from_v2:
+            # v2 had no last_obs_ts/calm_s: the last hot reading is the last
+            # observation it can vouch for; no calm has been observed since.
+            ep = {**ep, "last_obs_ts": ep.get("last_hot_ts", 0.0), "calm_s": 0.0}
         ks.episodes[cond] = Episode(
             **{n: _finite(ep.get(n, 0.0)) for n in _EPISODE_FLOATS},
             peak_ms=None if pm is None else _finite(pm),
@@ -432,7 +498,8 @@ def load_state(
     """Rebuild state from its JSON form. Never raises.
 
     Returns ``(state, cold_start_reason)``; the reason is ``None`` on a clean
-    resume. A fingerprint mismatch is refused (cold start), not merged; so is
+    resume (``state.migrated_from`` is set if that resume migrated a v2
+    state). A fingerprint mismatch is refused (cold start), not merged; so is
     any wrong-typed field.
     """
     fp = config.fingerprint()
@@ -441,16 +508,21 @@ def load_state(
             return new_state(config), "no_saved_state"
         if not isinstance(data, dict):
             return new_state(config), "malformed_state"
-        if data.get("schema_version") != STATE_SCHEMA_VERSION:
-            return new_state(config), f"schema_version_mismatch:{data.get('schema_version')}"
-        if data.get("fingerprint") != fp:
-            return new_state(config), f"config_fingerprint_mismatch:{data.get('fingerprint')}!={fp}"
+        version = data.get("schema_version")
+        from_v2 = version == 2
+        if version != STATE_SCHEMA_VERSION and not from_v2:
+            return new_state(config), f"schema_version_mismatch:{version}"
+        expected_fp = config.v2_fingerprint() if from_v2 else fp
+        if data.get("fingerprint") != expected_fp:
+            return new_state(config), f"config_fingerprint_mismatch:{data.get('fingerprint')}!={expected_fp}"
         keys_raw = data.get("keys")
         if not isinstance(keys_raw, dict):
             return new_state(config), "malformed_state"
         state = TransportBaselineState(fingerprint=fp)
         for k, raw in keys_raw.items():
-            state.keys[str(k)] = _key_state_from_raw(raw)
+            state.keys[str(k)] = _key_state_from_raw(raw, from_v2=from_v2)
+        if from_v2:
+            state.migrated_from = f"schema_v2:{expected_fp}"
         return state, None
     except Exception as exc:  # noqa: BLE001 -- documented never-raises contract
         return new_state(config), f"malformed_state:{type(exc).__name__}"
@@ -501,6 +573,76 @@ def _episode_step(
     return None
 
 
+def _latency_step(
+    ks: KeyState,
+    cond: str,
+    *,
+    hot: bool,
+    magnitude: float,
+    now: float,
+    peak_ms: float | None,
+    config: TransportBaselineConfig,
+) -> tuple[str, Episode] | None:
+    """One *evaluated* window's verdict on a latency condition (spike /
+    saturation). Only called when a latency evaluation happened: silence never
+    reaches here, so it can neither add time nor close the episode.
+
+    Time between two evaluations is credited to whatever the later one read
+    (hot -> ``hot_s``, calm -> ``calm_s``), and only if the gap is at most
+    ``close_quiet_s`` -- a longer gap was not observed either way. A calm
+    episode closes once it has *observed* ``close_quiet_s`` of calm."""
+    ep = ks.episodes.get(cond)
+    if hot:
+        if ep is None:
+            ep = Episode(
+                opened_ts=now,
+                last_hot_ts=now,
+                announced_magnitude=magnitude,
+                peak_ms=peak_ms,
+                peak_magnitude=magnitude,
+                last_obs_ts=now,
+            )
+            ks.episodes[cond] = ep
+            return "open", ep
+        gap = now - ep.last_obs_ts
+        if 0 < gap <= config.close_quiet_s:
+            ep.hot_s += gap
+        ep.last_hot_ts = now
+        ep.last_obs_ts = now
+        ep.calm_s = 0.0
+        ep.peak_magnitude = max(ep.peak_magnitude, magnitude)
+        if peak_ms is not None:
+            ep.peak_ms = peak_ms if ep.peak_ms is None else max(ep.peak_ms, peak_ms)
+        if ep.announced_magnitude > 0 and magnitude >= config.escalate_factor * ep.announced_magnitude:
+            ep.announced_magnitude = magnitude
+            return "escalate", ep
+        return None
+    if ep is None:
+        return None
+    gap = now - ep.last_obs_ts
+    if 0 < gap <= config.close_quiet_s:
+        ep.calm_s += gap
+    ep.last_obs_ts = now
+    if ep.calm_s >= config.close_quiet_s:
+        del ks.episodes[cond]
+        return "close", ep
+    return None
+
+
+def _close_silent_latency(
+    ks: KeyState, now: float, config: TransportBaselineConfig
+) -> list[tuple[str, Episode]]:
+    """Latency episodes with no evaluated window for ``max_silence_s`` end as
+    ``went_silent``: the hop stopped telling us anything, which is not calm."""
+    out: list[tuple[str, Episode]] = []
+    for cond in LATENCY_CONDITIONS:
+        ep = ks.episodes.get(cond)
+        if ep is not None and (now - ep.last_obs_ts) >= config.max_silence_s:
+            del ks.episodes[cond]
+            out.append((cond, ep))
+    return out
+
+
 def _keep_alive(ks: KeyState, cond: str, now: float, config: TransportBaselineConfig) -> None:
     """Refresh an already-open episode without announcing anything (used when
     a stronger condition subsumes it this window)."""
@@ -531,6 +673,7 @@ def _event(
     z: float | None = None,
     ratio: float | None = None,
     wmean: float | None = None,
+    close_reason: str | None = None,
 ) -> TransportConditionEvent:
     return TransportConditionEvent(
         condition=cond,
@@ -549,6 +692,7 @@ def _event(
         duration_s=(now - ep.opened_ts) if (phase != "open" or cond == "regime_shift") else None,
         peak_ms=ep.peak_ms,
         timeout_count=timeouts,
+        close_reason=close_reason if phase == "close" else None,
     )
 
 
@@ -639,7 +783,7 @@ def fold_snapshot(
             peak_ms=None, config=config,
         )
         if step:
-            emit("zero_success", step[0], step[1])
+            emit("zero_success", step[0], step[1], close_reason="quiet")
         if "zero_success" in ks.episodes and timeouts > 0:
             _keep_alive(ks, "timeout", now, config)
         else:
@@ -648,7 +792,7 @@ def fold_snapshot(
                 peak_ms=max_ms, config=config,
             )
             if step:
-                emit("timeout", step[0], step[1])
+                emit("timeout", step[0], step[1], close_reason="quiet")
 
         # --- calls EWMA (evidence only) ----------------------------------
         if ks.calls_count == 0:
@@ -656,6 +800,12 @@ def fold_snapshot(
         else:
             ks.calls_ewma = config.calls_alpha * calls_per_min + (1 - config.calls_alpha) * ks.calls_ewma
         ks.calls_count += 1
+
+        # --- latency episodes silent too long: went_silent, not calm -------
+        # Checked before this window's evaluation, so a hop returning after
+        # max_silence_s is judged fresh rather than resuming a stale episode.
+        for cond, ep in _close_silent_latency(ks, now, config):
+            emit(cond, "close", ep, close_reason="went_silent")
 
         # --- latency pooling ---------------------------------------------
         log_sum = _as_float(stats.get("log_ms_sum"))
@@ -734,6 +884,11 @@ def fold_snapshot(
             # floor: asymmetric, time-based, frozen upward while saturated.
             # It follows the smoothed *level*, not the raw window mean -- see
             # "floor follows level" in the module docstring.
+            # Frozen upward while a saturation episode exists (open *or*
+            # paused by silence), and on the window that is about to open one:
+            # dt here can span a whole silent night, and letting that one
+            # update creep the floor toward the slow level is exactly the
+            # absorption guard 3 forbids.
             lv = ks.level_mean
             if ks.floor is None or ks.level_count <= config.n_warm:
                 # Until warm, the floor is the level: an asymmetric filter
@@ -741,9 +896,13 @@ def fold_snapshot(
                 ks.floor, ks.floor_ts = lv, now
             else:
                 dt = now - (ks.floor_ts or now)
+                would_saturate = (
+                    math.exp(lv - ks.floor) >= config.saturation_ratio
+                    and math.exp(lv) - math.exp(ks.floor) >= config.min_excess_ms
+                )
                 if lv < ks.floor:
                     a = _half_life_alpha(dt, config.floor_half_life_down_s)
-                elif "saturation" in ks.episodes:
+                elif "saturation" in ks.episodes or would_saturate:
                     a = 0.0
                 else:
                     a = _half_life_alpha(dt, config.floor_half_life_up_s)
@@ -759,12 +918,12 @@ def fold_snapshot(
                 spike_hot = ks.hot_streak >= config.spike_sustain or (
                     spike_now and "spike" in ks.episodes
                 )
-                step = _episode_step(
+                step = _latency_step(
                     ks, "spike", hot=spike_hot, magnitude=max(z or 0.0, 0.0), now=now,
                     peak_ms=peak, config=config,
                 )
                 if step:
-                    emit("spike", step[0], step[1], z=z, ratio=ratio, wmean=wmean_ms)
+                    emit("spike", step[0], step[1], z=z, ratio=ratio, wmean=wmean_ms, close_reason="calm")
 
                 # saturation, with open/close hysteresis.
                 sat_open = "saturation" in ks.episodes
@@ -780,12 +939,12 @@ def fold_snapshot(
                     )
                 else:
                     sat_hot = ratio >= config.saturation_ratio and excess_ms >= config.min_excess_ms
-                step = _episode_step(
+                step = _latency_step(
                     ks, "saturation", hot=sat_hot, magnitude=ratio, now=now,
                     peak_ms=peak, config=config,
                 )
                 if step:
-                    emit("saturation", step[0], step[1], z=z, ratio=ratio, wmean=wmean_ms)
+                    emit("saturation", step[0], step[1], z=z, ratio=ratio, wmean=wmean_ms, close_reason="calm")
 
                 # regime_shift: a saturation OR a spike observed hot for
                 # regime_after_s (hot time, not wall time) is a new normal.
@@ -811,19 +970,10 @@ def fold_snapshot(
             # Too sparse to ever reach min_calls in a reasonable span: drop the
             # pool rather than evaluate an under-sampled mean.
             _reset_pending(ks)
-
-        if not evaluated and ks.pend_windows == 0:
-            # No latency evidence arriving at all (not merely pooling): open
-            # latency episodes age out after close_quiet_s rather than stay
-            # open forever on a hop that went quiet -- and silence never adds
-            # hot time toward a regime_shift.
-            for cond in ("spike", "saturation"):
-                if cond in ks.episodes:
-                    step = _episode_step(
-                        ks, cond, hot=False, magnitude=0.0, now=now, peak_ms=None, config=config
-                    )
-                    if step:
-                        emit(cond, step[0], step[1])
+        # No evaluated latency this window (no traffic, or a pool still
+        # filling): open latency episodes are *paused* -- no hot time, no calm
+        # time, no close. Only an evaluated calm window closes them, or
+        # max_silence_s without any evaluation (went_silent, above).
 
         observations.append(
             KeyObservation(
@@ -885,6 +1035,7 @@ def _evict(
                     calls_per_min=0.0,
                     usual=ks.calls_ewma if ks.calls_count else None,
                     timeouts=0,
+                    close_reason="evicted",
                 )
             )
     return closes

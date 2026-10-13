@@ -119,8 +119,8 @@ def replay_readings(rows, start, end, *, tick_sec=120.0, engaged_minutes=DEFAULT
         if r["kind"] == "gpu_state":
             gpu[r["host"]].append((utc(r["at"]), r["queue_depth"]))
     gpu_ts = {h: [s[0] for s in sorted(v, key=lambda s: s[0])] for h, v in gpu.items()}
-    events = sorted((utc(r["at"]), r["event"], r.get("reason"), r.get("role"))
-                    for r in rows if r["kind"] == "gpu_event")
+    events = sorted(((utc(r["at"]), r["event"], r.get("reason"), r.get("role"))
+                     for r in rows if r["kind"] == "gpu_event"), key=lambda e: e[0])
     event_ts = [e[0] for e in events]
     gpu = {h: sorted(v, key=lambda s: s[0]) for h, v in gpu.items()}
 

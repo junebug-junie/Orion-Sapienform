@@ -333,7 +333,9 @@ def test_outreach_tick_survives_a_disconnected_bus():
 def test_outreach_re_reads_arousal_before_delivery(monkeypatch):
     """Live 10-12 14:56 / 15:45, 10-13 15:39: a compose of 6+ min (agent lane timeout then chat
     fallback) re-gated on the reading cached at the top of the tick, read it stale -> unknown,
-    and sent. The pre-delivery gate must see the current reading."""
+    and sent. The pre-delivery gate must see the current reading. This pins the re-read (a cached
+    idle misses strain that began mid-compose); the stale-cache form of the same gap is covered by
+    test_reader_decays_to_unknown_when_not_refreshed."""
     from test_endogenous_outreach import _stub_context
 
     o = _outreach_with(_state("idle"))

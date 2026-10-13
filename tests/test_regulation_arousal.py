@@ -331,3 +331,26 @@ def test_fault_onset_ends_strain_and_its_end_with_a_backlog_strains_again():
     assert prev.arousal_level == "unknown"
     prev = classify_arousal(prev, inputs(T0 + timedelta(seconds=240), depth=12, sustained=640.0))
     assert prev.arousal_level == "strained"
+
+
+@pytest.mark.parametrize("reason", ["fault_cleared:discovery", "fault_cleared:operator"])
+def test_a_card_fault_clear_is_not_a_controller_answer(reason):
+    """runtime._clear_faults / operator clear_fault emit `swapped` with no controller reply."""
+    rows = [refusal(600), (T0 - timedelta(seconds=30), "swapped", reason, "agent-gpu2")]
+    assert gpu_fault_from_events(rows, T0) == "config_unreadable:agent-gpu2"
+
+
+def test_same_instant_refusal_and_swap_is_a_fault_in_either_row_order():
+    at = T0 - timedelta(seconds=30)
+    rows = [(at, "swapped", "demand", "agent-gpu2"), (at, "actuate_refused", REFUSED, "agent-gpu2")]
+    assert gpu_fault_from_events(rows, T0) == gpu_fault_from_events(rows[::-1], T0) == "config_unreadable:agent-gpu2"
+
+
+def test_fault_voids_the_whole_summed_queue_by_design():
+    """The fault voids S2 for every class, not just the faulted seat's. Live 10-09 the jam spread
+    past agent-gpu2's own classes: memory_distill (roles [agent] only) and diffusion (roles
+    [diffusion], waiting on gpu2's unload) sat at 1-2 and 1 with zero grants all day. Scoping the
+    void to the seat's configured classes would still have summed 2-3 >= floor and read strained.
+    The cost: real load elsewhere during a fault reads unknown (pre-arousal behaviour), not strained."""
+    r = classify_arousal(None, fault_inputs(depth=5))
+    assert r.arousal_level == "unknown"

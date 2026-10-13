@@ -53,7 +53,7 @@ GPU_SNAPSHOTS_SQL = (
 # Index idx_gpu_pool_events_generated bounds it (0.2 ms live, 10-13). ``role`` is the seat.
 GPU_FAULT_EVENTS_SQL = (
     "SELECT generated_at, event, reason, role FROM gpu_pool_events "
-    "WHERE generated_at >= %(since)s AND event = ANY(%(events)s) ORDER BY generated_at"
+    "WHERE generated_at >= %(since)s AND event = ANY(%(events)s) ORDER BY generated_at, event_id"
 )
 
 INSERT_EVENT_SQL = """

@@ -109,7 +109,9 @@ def _fault_event(event: str, reason: Optional[str]) -> tuple[bool, Optional[str]
     kind it reports (None = the controller answered)."""
     r = reason or ""
     if event == "swapped":
-        return True, None
+        # fault_cleared:discovery / fault_cleared:operator clear a CARD fault without the
+        # controller saying anything (runtime._clear_faults, operator clear_fault): neutral.
+        return (False, None) if r.startswith("fault_cleared:") else (True, None)
     if event == "actuate_refused":
         kind = classify_controller_refusal(r)
         return kind is not None, kind
@@ -130,7 +132,8 @@ def gpu_fault_from_events(
 
     Per seat, the newest deciding row inside ``lookback_sec`` wins: a refusal the pool's own
     ``orion.gpu_pool.controller_health.classify`` calls unfixable by retry (``config_unloadable``,
-    ``launch_digest_mismatch``, ...) is a fault; a later ``swapped`` ends it. Refusals a retry
+    ``launch_digest_mismatch``, ...) is a fault; a later ``swapped`` ends it (except
+    ``fault_cleared:*``, which clears a card without a controller answer). Refusals a retry
     fixes (``busy``, ``upstream_not_idle``) and unknown reasons are neutral, as the pool treats
     them. Several faulted seats join with ``+``. Rows stamped after ``now`` are ignored.
     """
@@ -144,7 +147,11 @@ def gpu_fault_from_events(
         if age < 0 or age > lookback_sec:
             continue
         decides, kind = _fault_event(event, reason)
-        if decides and (seat not in newest or ts >= newest[seat][0]):
+        if not decides:
+            continue
+        cur = newest.get(seat)
+        # Same instant: the refusal wins, so the answer is independent of row order.
+        if cur is None or ts > cur[0] or (ts == cur[0] and kind is not None):
             newest[seat] = (ts, kind)
     faults = sorted(f"{kind}:{seat}" for seat, (_, kind) in newest.items() if kind)
     return "+".join(faults) or None

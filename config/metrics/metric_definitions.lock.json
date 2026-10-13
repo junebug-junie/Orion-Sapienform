@@ -2,17 +2,10 @@
   "_comment": "Definition lock for scripts/check_definition_drift.py. Generated, never hand-edited. Regenerate with --update; the resulting diff IS the definition-change alert. Unlike the *_baseline.json ratchets this tracks current truth in both directions -- a definition change is an event, not a defect.",
   "metric_count": 727,
   "_last_change": {
-    "change_count": 8,
-    "high_severity_count": 0,
+    "change_count": 1,
+    "high_severity_count": 1,
     "changes": [
-      "medium added metric://inner_state/orion-equilibrium-service/transport_baseline_hourly.v1",
-      "medium added metric://inner_state/orion-equilibrium-service/transport_baseline_hourly.v1#baseline_ms",
-      "medium added metric://inner_state/orion-equilibrium-service/transport_baseline_hourly.v1#calls_per_min_mean",
-      "medium added metric://inner_state/orion-equilibrium-service/transport_baseline_hourly.v1#floor_ms",
-      "medium added metric://inner_state/orion-equilibrium-service/transport_baseline_hourly.v1#floor_ms_start",
-      "medium added metric://inner_state/orion-equilibrium-service/transport_baseline_hourly.v1#saturation_ratio_p50",
-      "medium added metric://inner_state/orion-equilibrium-service/transport_baseline_hourly.v1#z_p50",
-      "medium added metric://inner_state/orion-equilibrium-service/transport_baseline_hourly.v1#z_p90"
+      "high   semantics_changed metric://inner_state/orion-equilibrium-service/transport_baseline_hourly.v1#floor_ms (rest: \u2026re-seeds it. -> \u2026re-seeds it. Built from real round trips only: replies the \u2026)"
     ]
   },
   "definitions": {
@@ -4725,7 +4718,7 @@
     "metric://inner_state/orion-equilibrium-service/transport_baseline_hourly.v1#floor_ms": {
       "schema_id": "TransportBaselineHourlyV1",
       "value_kind": "level",
-      "rest": "the hop's best recent typical latency, in ms -- its own scale per hop, no universal rest value. Moves up only slowly and never while saturation is open/paused; a stated regime_shift re-seeds it.",
+      "rest": "the hop's best recent typical latency, in ms -- its own scale per hop, no universal rest value. Moves up only slowly and never while saturation is open/paused; a stated regime_shift re-seeds it. Built from real round trips only: replies the replier marked degraded (row degraded_count) never enter it, and a pool that saw one may not move it down (since 2026-10-13; before then a burst of fast GPU-pool refusals dragged it ~10x low).",
       "sparsity": "event_gated",
       "absent_means": "None until the hop's first evaluation; otherwise carried unchanged through hours with no evaluation.",
       "upstream": [

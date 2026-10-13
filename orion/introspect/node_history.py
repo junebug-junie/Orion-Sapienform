@@ -51,9 +51,13 @@ from (
     window w as (order by observed_at)
 ) d
 where prev_value is not null
-order by abs(value - prev_value) desc, observed_at
+order by abs(value - prev_value) desc, observed_at desc
 limit $4
 """
+
+# Earliest reading still stored for the node, any window (primary-key lookup). Tells a
+# pruned stretch from a quiet one, and a node that never had a reading from one that did.
+EARLIEST_SQL = f"select min(observed_at) from {TABLE} where node_id = $1"
 
 NODES_SQL = f"""
 select node_id, count(*)::int as n, max(observed_at) as last_at
@@ -86,6 +90,7 @@ async def read_node_history(conn: Any, node_id: str, start: datetime, end: datet
     summary = await conn.fetchrow(SUMMARY_SQL, node_id, start, end)
     if summary is None or not summary["n"]:
         return None
+    earliest = await conn.fetchval(EARLIEST_SQL, node_id)
     width = (end - start).total_seconds() / NODE_HISTORY_MAX_POINTS
     buckets = await conn.fetch(SERIES_SQL, node_id, start, end, width, NODE_HISTORY_MAX_POINTS)
     changes = await conn.fetch(CHANGES_SQL, node_id, start, end, NODE_HISTORY_TOP_CHANGES)
@@ -112,7 +117,9 @@ async def read_node_history(conn: Any, node_id: str, start: datetime, end: datet
     )
     if largest:
         top = largest[0]
-        text += f" Largest single change {top['delta']:+g} at {top['at']}."
+        text += f" Largest change between consecutive readings in the window {top['delta']:+g} at {top['at']}."
+    if earliest is not None and earliest > start:
+        text += f" Nothing is stored before {_iso(earliest)}, so the window's start is not covered."
     return IntrospectItemV1(
         id=node_id,
         occurred_at=summary["last_at"],
@@ -133,8 +140,14 @@ async def read_node_history(conn: Any, node_id: str, start: datetime, end: datet
             "series": series,
             "empty_buckets": NODE_HISTORY_MAX_POINTS - len(series),
             "largest_changes": largest,
+            "largest_changes_scope": "between consecutive readings inside the window; ties go to the most recent",
+            "earliest_stored_at": _iso(earliest) if earliest is not None else None,
         },
     )
+
+
+async def node_has_any_reading(conn: Any, node_id: str) -> bool:
+    return await conn.fetchval(EARLIEST_SQL, node_id) is not None
 
 
 async def list_history_nodes(conn: Any, start: datetime, end: datetime) -> IntrospectItemV1 | None:

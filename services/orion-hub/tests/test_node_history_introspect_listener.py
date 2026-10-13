@@ -8,10 +8,11 @@ from uuid import uuid4
 
 import scripts.node_history_introspect_listener as nl
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
-from orion.introspect.tests.test_node_history import NODE, FakeConn
+from orion.introspect.tests.node_history_fake import FakeConn
 from orion.introspect.transport import REQUEST_KIND, RESULT_KIND, RESULT_PREFIX
 from orion.schemas.introspect import IntrospectRequestV1, IntrospectResultV1, IntrospectToolBindingV1
 
+NODE = "node:substrate.bus_synaptic"
 BINDING = IntrospectToolBindingV1(
     invocation_context="curiosity", parent_run_id="r", parent_trace_id="t", memory_allowed=True,
 )
@@ -91,9 +92,15 @@ def test_history_answered_in_a_read_only_transaction():
     assert conn.readonly_flags == [True]
 
 
-def test_empty_node_is_ok_with_no_items():
-    result = _ask(_listener(_Conn(_recent_rows())), {"node_id": "node:substrate.never_written", "hours": 72})
+def test_node_with_no_reading_in_window_is_ok_with_no_items():
+    old = [(NODE, datetime.now(timezone.utc) - timedelta(hours=100), 0.3)]
+    result = _ask(_listener(_Conn(old)), {"node_id": NODE, "hours": 24})
     assert result.ok is True and result.items == [] and result.total_available == 0
+
+
+def test_node_with_no_stored_reading_is_not_found_not_empty():
+    result = _ask(_listener(_Conn(_recent_rows())), {"node_id": "node:substrate.never_written", "hours": 72})
+    assert result.ok is False and "(not found)" in result.error and "no node_id" in result.error
 
 
 def test_no_node_id_lists_nodes():

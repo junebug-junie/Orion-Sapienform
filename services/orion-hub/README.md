@@ -3487,8 +3487,10 @@ kept 168 h), through `orion/introspect/node_history.py`.
   count, min, median, max, first and last reading with timestamps, a series
   of at most 48 equal time buckets (`bucket_start, n, mean, min, max`; a
   bucket with no reading is left out and counted in `empty_buckets`, because
-  a node writes a row only when it is refreshed), and the 5 largest
-  reading-to-reading changes with when they happened. Everything is
+  a node writes a row only when it is refreshed), the 5 largest changes
+  between consecutive readings inside the window (ties go to the most
+  recent), and `earliest_stored_at` (nothing older exists; the text says so
+  when the window starts before it). Everything is
   aggregated in Postgres with parameterized queries on the
   `(node_id, observed_at)` primary key, so a 7-day window stays a few KB.
 - **Transport and trust.** Requests arrive on
@@ -3496,7 +3498,10 @@ kept 168 h), through `orion/introspect/node_history.py`.
   `scripts/node_history_introspect_listener.py`; the reply goes to exactly
   `orion:introspect:result:<correlation_id>`, anything else is ignored. Reads
   run in a READ ONLY transaction (`ReadOnlyPool`). Nothing is written.
-- **Empty vs unknown.** No reading in the window: `ok=true, items=[]`.
+- **Empty vs unknown.** A node with readings, none in the window:
+  `ok=true, items=[]`. A `node_id` with no stored reading at all (a typo):
+  `ok=false`, `unknown node_id … (not found)`, pointing at the no-`node_id`
+  listing. An `until` more than 5 minutes in the future is refused.
   Postgres down or no pool: `node_history_unavailable; answer unknown`. Log
   line per answer: `node_history_introspect_answered corr=<id> node=<id>
   hours=<h> items=<n> readings=<n>`.

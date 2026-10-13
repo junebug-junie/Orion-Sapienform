@@ -9,16 +9,17 @@ from __future__ import annotations
 
 import asyncio
 import json
-import statistics
 from datetime import datetime, timedelta, timezone
 
 import pytest
 from pydantic import ValidationError
 
 from orion.introspect import node_history as nh
+from orion.introspect.tests.node_history_fake import FakeConn
 from orion.schemas.introspect import (
     NODE_HISTORY_MAX_HOURS,
     NODE_HISTORY_MAX_POINTS,
+    NODE_HISTORY_MIN_HOURS,
     IntrospectResultV1,
     NodeHistoryArguments,
 )
@@ -26,54 +27,6 @@ from orion.schemas.introspect import (
 NOW = datetime(2026, 10, 13, 18, 0, tzinfo=timezone.utc)
 NODE = "node:substrate.bus_synaptic"
 MCP_BUDGET = 12000
-
-
-class FakeConn:
-    def __init__(self, rows):
-        self.rows = sorted(rows, key=lambda r: (r[0], r[1]))  # (node_id, observed_at, value)
-        self.calls: list[tuple[str, tuple]] = []
-
-    def _window(self, node, start, end):
-        return [(t, v) for n, t, v in self.rows if (node is None or n == node) and start < t <= end]
-
-    async def fetchrow(self, sql, *args):
-        self.calls.append((sql, args))
-        assert sql == nh.SUMMARY_SQL
-        node, start, end = args
-        pts = self._window(node, start, end)
-        if not pts:
-            return {"n": 0, "min_v": None, "max_v": None, "median_v": None, "first_v": None,
-                    "first_at": None, "last_v": None, "last_at": None}
-        values = [v for _, v in pts]
-        return {"n": len(pts), "min_v": min(values), "max_v": max(values),
-                "median_v": statistics.median(values), "first_v": pts[0][1], "first_at": pts[0][0],
-                "last_v": pts[-1][1], "last_at": pts[-1][0]}
-
-    async def fetch(self, sql, *args):
-        self.calls.append((sql, args))
-        if sql == nh.SERIES_SQL:
-            node, start, end, width, count = args
-            buckets: dict[int, list[float]] = {}
-            for t, v in self._window(node, start, end):
-                b = min(int((t - start).total_seconds() // width), count - 1)
-                buckets.setdefault(b, []).append(v)
-            return [{"b": b, "n": len(vs), "mean_v": sum(vs) / len(vs), "min_v": min(vs), "max_v": max(vs)}
-                    for b, vs in sorted(buckets.items())]
-        if sql == nh.CHANGES_SQL:
-            node, start, end, limit = args
-            pts = self._window(node, start, end)
-            pairs = [{"observed_at": b[0], "value": b[1], "prev_at": a[0], "prev_value": a[1]}
-                     for a, b in zip(pts, pts[1:])]
-            pairs.sort(key=lambda r: (-abs(r["value"] - r["prev_value"]), r["observed_at"]))
-            return pairs[:limit]
-        if sql == nh.NODES_SQL:
-            start, end = args
-            out: dict[str, list] = {}
-            for n, t, _ in self.rows:
-                if start < t <= end:
-                    out.setdefault(n, []).append(t)
-            return [{"node_id": n, "n": len(ts), "last_at": max(ts)} for n, ts in sorted(out.items())]
-        raise AssertionError(sql)
 
 
 def _rows(node=NODE, hours=72, every_sec=40, base=0.02):
@@ -99,7 +52,7 @@ def test_defaults_and_window():
     assert end == NOW and start == NOW - timedelta(hours=24)
 
 
-@pytest.mark.parametrize("hours", [0, -1, NODE_HISTORY_MAX_HOURS + 0.5, 10_000])
+@pytest.mark.parametrize("hours", [0, -1, 1e-9, NODE_HISTORY_MIN_HOURS / 2, NODE_HISTORY_MAX_HOURS + 0.5, 10_000])
 def test_hours_out_of_bounds_refused(hours):
     with pytest.raises(ValidationError):
         NodeHistoryArguments(node_id=NODE, hours=hours)
@@ -121,10 +74,44 @@ def test_until_needs_timezone():
         NodeHistoryArguments(node_id=NODE, until=datetime(2026, 10, 13, 12, 0))
 
 
-def test_future_until_is_clamped_to_now():
-    args = NodeHistoryArguments(node_id=NODE, hours=2, until=datetime.now(timezone.utc) + timedelta(days=3))
+def test_future_until_is_refused():
+    with pytest.raises(ValidationError, match="future"):
+        NodeHistoryArguments(node_id=NODE, hours=2, until=datetime.now(timezone.utc) + timedelta(days=3))
+
+
+def test_until_within_clock_skew_is_now():
+    args = NodeHistoryArguments(node_id=NODE, hours=2, until=datetime.now(timezone.utc) + timedelta(minutes=2))
     start, end = args.window(NOW)
     assert end == NOW and start == NOW - timedelta(hours=2)
+
+
+def test_retention_edge_has_slack_for_the_second_validation():
+    edge = datetime.now(timezone.utc) - timedelta(hours=NODE_HISTORY_MAX_HOURS - 1)
+    NodeHistoryArguments(node_id=NODE, hours=1, until=edge - timedelta(seconds=30))
+
+
+def _env_value(path, key):
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if line.startswith(f"{key}="):
+            return float(line.split("=", 1)[1].strip())
+    raise AssertionError(f"{key} missing from {path}")
+
+
+def test_max_hours_equals_the_writers_retention():
+    """The window cap is the substrate writer's prune horizon. If retention shrinks, a window
+    past it would read as quiet when the rows are only pruned; this pins the two together."""
+    import re
+    from pathlib import Path
+
+    repo = Path(__file__).resolve().parents[3]
+    svc = repo / "services/orion-substrate-runtime"
+    key = "SUBSTRATE_PE_HISTORY_RETENTION_HOURS"
+    assert _env_value(svc / ".env_example", key) == NODE_HISTORY_MAX_HOURS
+    settings = (svc / "app/settings.py").read_text(encoding="utf-8")
+    m = re.search(r"Field\(\s*([0-9.]+)[^)]*alias=\"" + key + r"\"", settings)
+    assert m and float(m.group(1)) == NODE_HISTORY_MAX_HOURS
+    compose = (svc / "docker-compose.yml").read_text(encoding="utf-8")
+    assert f"${{{key}:-{int(NODE_HISTORY_MAX_HOURS)}}}" in compose
 
 
 @pytest.mark.parametrize("bad", ["bus_synaptic", "node:", "node:x'; drop table t;--", "node:a b", "x" * 300])
@@ -143,6 +130,27 @@ def test_queries_are_parameterized_and_bounded():
         assert "node_id = $1" in sql and "observed_at > $2" in sql and "observed_at <= $3" in sql
     assert "limit $4" in nh.CHANGES_SQL
     assert "observed_at > $1 and observed_at <= $2" in nh.NODES_SQL
+    assert "where node_id = $1" in nh.EARLIEST_SQL
+
+
+def test_sql_text_carries_the_rules_the_fake_implements():
+    """FakeConn reads each query this way; pin the SQL to the same rules."""
+    assert "least(floor(extract(epoch from (observed_at - $2)) / $4)::int, $5 - 1)" in nh.SERIES_SQL
+    assert "window w as (order by observed_at)" in nh.CHANGES_SQL
+    assert "lag(value) over w" in nh.CHANGES_SQL and "lag(observed_at) over w" in nh.CHANGES_SQL
+    assert "order by abs(value - prev_value) desc, observed_at desc" in nh.CHANGES_SQL
+    assert "(array_agg(value order by observed_at asc))[1] as first_v" in nh.SUMMARY_SQL
+    assert "(array_agg(value order by observed_at desc))[1] as last_v" in nh.SUMMARY_SQL
+    assert "percentile_cont(0.5) within group (order by value)" in nh.SUMMARY_SQL
+
+
+def test_reading_exactly_at_window_end_lands_in_the_last_bucket():
+    rows = [(NODE, NOW - timedelta(hours=1), 0.1), (NODE, NOW, 0.2)]
+    item = run(nh.read_node_history(FakeConn(rows), NODE, NOW - timedelta(hours=1), NOW))
+    # the reading at start is outside (start, end]; the one at end is in bucket MAX_POINTS - 1
+    assert item.extra["count"] == 1 and len(item.extra["series"]) == 1
+    last_start = NOW - timedelta(hours=1) + timedelta(seconds=item.extra["bucket_sec"] * (NODE_HISTORY_MAX_POINTS - 1))
+    assert item.extra["series"][0][0] == last_start.isoformat().replace("+00:00", "Z")
 
 
 # --- empty node ---------------------------------------------------------------
@@ -181,7 +189,9 @@ def test_summary_shape_and_budget_for_a_full_week():
     assert len(json.dumps(result.model_dump(mode="json"), ensure_ascii=False)) < MCP_BUDGET
     # every call passed the node, window bounds as parameters, never in the SQL text
     for sql, args in conn.calls:
-        assert NODE not in sql and args[:3] == (NODE, start, NOW)
+        assert NODE not in sql
+        assert args[:3] == (NODE, start, NOW) or (sql == nh.EARLIEST_SQL and args == (NODE,))
+    assert extra["earliest_stored_at"] == rows[0][1].isoformat().replace("+00:00", "Z")
 
 
 def test_gap_buckets_are_left_out_not_zeroed():
@@ -200,7 +210,19 @@ def test_largest_change_is_dated_and_signed():
     assert top["delta"] > 0.8 and top["to"] == 0.9 and top["since_previous_sec"] == 600.0
     assert top["at"] in {spike_at.isoformat().replace("+00:00", "Z"),
                          rows[11][1].isoformat().replace("+00:00", "Z")}
-    assert "Largest single change" in item.text
+    assert "Largest change between consecutive readings" in item.text
+
+
+def test_tied_changes_favour_the_most_recent():
+    rows = [(NODE, NOW - timedelta(minutes=50 - 10 * i), 0.25 * (i % 2)) for i in range(5)]
+    item = run(nh.read_node_history(FakeConn(rows), NODE, NOW - timedelta(hours=1), NOW))
+    assert item.extra["largest_changes"][0]["at"] == rows[-1][1].isoformat().replace("+00:00", "Z")
+
+
+def test_pruned_window_start_is_said_plainly():
+    rows = [(NODE, NOW - timedelta(hours=2), 0.1)]
+    item = run(nh.read_node_history(FakeConn(rows), NODE, NOW - timedelta(hours=5), NOW))
+    assert "Nothing is stored before" in item.text
 
 
 def test_tiny_values_keep_significant_figures():

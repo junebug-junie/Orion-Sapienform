@@ -9,7 +9,8 @@ Same trust and honesty rules as the other Hub responders (curiosity_introspect_l
 replies only when reply_to is exactly orion:introspect:result:<corr> and the kind matches;
 every read runs in a READ ONLY transaction; errors become ok=false ("answer unknown"),
 never []. ok=true with items=[] means the node (or, with no node_id, every node) has no
-reading in that window.
+reading in that window. A node_id with no stored reading at all (a typo, or a node that is
+not a substrate PE node) is a tool error saying "not found", never items=[].
 """
 from __future__ import annotations
 
@@ -20,7 +21,7 @@ from datetime import datetime, timezone
 from typing import Any, Callable
 
 from orion.core.bus.bus_schemas import BaseEnvelope
-from orion.introspect.node_history import list_history_nodes, read_node_history
+from orion.introspect.node_history import list_history_nodes, node_has_any_reading, read_node_history
 from orion.introspect.redact import safe_exception_detail
 from orion.introspect.transport import NODE_HISTORY_REQUEST_CHANNEL, REQUEST_KIND, RESULT_KIND, RESULT_PREFIX
 from orion.schemas.introspect import IntrospectRequestV1, IntrospectResultV1, NodeHistoryArguments
@@ -36,6 +37,10 @@ _INVALID_CAP = 400
 
 def _failed(now: datetime, error: str) -> IntrospectResultV1:
     return IntrospectResultV1(ok=False, operation=OPERATION, as_of=now, error=error)
+
+
+class NotFoundError(LookupError):
+    """The node has no stored reading at all. The message says so plainly."""
 
 
 class NodeHistoryIntrospectListener:
@@ -58,6 +63,11 @@ class NodeHistoryIntrospectListener:
                 item = await list_history_nodes(conn, start, end)
             else:
                 item = await read_node_history(conn, args.node_id, start, end)
+                if item is None and not await node_has_any_reading(conn, args.node_id):
+                    raise NotFoundError(
+                        f"unknown node_id {args.node_id}: no prediction-error reading is stored for it "
+                        "(not found); call node_history with no node_id to list nodes that have one"
+                    )
         items = [item] if item is not None else []
         return IntrospectResultV1(
             ok=True, operation=OPERATION, as_of=now, total_available=len(items), items=items,
@@ -78,6 +88,9 @@ class NodeHistoryIntrospectListener:
             return
         try:
             result = await self.answer(args, now)
+        except NotFoundError as exc:
+            logger.info("node_history_introspect_not_found corr=%s node=%s", envelope.correlation_id, args.node_id)
+            result = _failed(now, str(exc)[:_INVALID_CAP])
         except Exception as exc:
             logger.warning(
                 "introspect_failed op=node_history corr=%s node=%s category=node_history_query_failure "

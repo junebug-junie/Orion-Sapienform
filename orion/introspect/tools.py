@@ -135,11 +135,13 @@ NODE_HISTORY_DESCRIPTION = (
     "until=<ISO timestamp with timezone> ends the window there instead of now (the whole "
     "window must start within the last 168 hours). You get count, min, median, max, the "
     "first and last reading, a series of at most 48 time buckets (bucket_start, n, mean, "
-    "min, max), and the largest reading-to-reading changes with when they happened. A node "
+    "min, max), the largest changes between consecutive readings inside the window with when "
+    "they happened, and earliest_stored_at (nothing older exists). A node "
     "only records a reading when it is refreshed, so a bucket missing from the series means "
     "no new reading then, not zero. Pass no node_id to list which nodes have readings in the "
-    "window. items=[] means no reading in that window; a tool error means the answer is "
-    "unknown, never that the node was quiet."
+    "window. items=[] means that node has no reading in that window; a node_id with no stored "
+    "reading at all is a tool error saying not found; any other tool error means the answer "
+    "is unknown, never that the node was quiet."
 )
 
 

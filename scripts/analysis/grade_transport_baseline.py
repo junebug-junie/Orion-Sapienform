@@ -176,13 +176,18 @@ def immaterial_floor_rises(rows: list[dict], *, min_excess_ms: float) -> list[st
 def _floor_rise_steps(rows: list[dict], min_excess_ms: float) -> list[tuple[str, bool]]:
     flags: list[tuple[str, bool]] = []
     seg_min: float | None = None
+    # The segment's true lowest floor, never ratcheted up by a reported step:
+    # materiality is judged against it, so a floor creeping 13 -> 20 -> 30 ->
+    # ... ms in individually-immaterial 1.5x steps still FAILs once the total
+    # rise reaches min_excess_ms (review finding, 2026-10-13).
+    seg_base: float | None = None
     fp: str | None = None
     for r in sorted(rows, key=lambda r: _ts(r["hour_start"])):
         if r.get("config_fingerprint") != fp:
-            fp, seg_min = r.get("config_fingerprint"), None
+            fp, seg_min, seg_base = r.get("config_fingerprint"), None, None
         if not _warm_at_start(r):
             # warm-up (first learning or a cold start): floor == level, not a floor yet
-            seg_min = None
+            seg_min = seg_base = None
             if not r.get("warm", True):
                 continue
         shifted = int(_dict(r.get("conditions_opened")).get("regime_shift", 0) or 0) > 0
@@ -194,15 +199,19 @@ def _floor_rise_steps(rows: list[dict], min_excess_ms: float) -> list[tuple[str,
             if v is None or v <= 0:
                 continue
             if seg_min is not None and v / seg_min > FLOOR_RISE_LIMIT:
-                flags.append((
+                base = seg_base if seg_base is not None else seg_min
+                msg = (
                     f"floor rose {v / seg_min:.2f}x ({seg_min:.0f} -> {v:.0f} ms) by "
-                    f"{_ts(r['hour_start']):%Y-%m-%d %H:00} UTC with no regime_shift",
-                    (v - seg_min) >= min_excess_ms,
-                ))
+                    f"{_ts(r['hour_start']):%Y-%m-%d %H:00} UTC with no regime_shift"
+                )
+                if base < seg_min:
+                    msg += f" ({v - base:.0f} ms above this segment's lowest, {base:.0f} ms)"
+                flags.append((msg, (v - base) >= min_excess_ms))
                 seg_min = v  # report each further 1.5x step once, not every hour
             seg_min = v if seg_min is None else min(seg_min, v)
+            seg_base = v if seg_base is None else min(seg_base, v)
         if shifted:
-            seg_min = r.get("floor_ms")  # re-seeded after the stated shift
+            seg_min = seg_base = r.get("floor_ms")  # re-seeded after the stated shift
     return flags
 
 
@@ -420,7 +429,8 @@ def load_rows_pg(dsn: str, days: int) -> list[dict] | None:
             # conditions_closed arrived 2026-10-13 (sql-writer boot-time ADD
             # COLUMN); grade a database that predates it instead of failing.
             cur.execute(
-                "SELECT column_name FROM information_schema.columns WHERE table_name = 'transport_baseline_hourly'"
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_name = 'transport_baseline_hourly' AND table_schema = current_schema()"
             )
             present = {row[0] for row in cur.fetchall()}
             select = ", ".join(c if c in present else f"NULL AS {c}" for c in COLUMNS)

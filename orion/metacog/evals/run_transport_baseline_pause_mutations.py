@@ -38,22 +38,34 @@ MUTANTS: dict[str, tuple[str, str]] = {
         "        # No evaluated latency this window (no traffic, or a pool still\n",
     ),
     "silence between calls credited as active time": (
-        "            if ks.last_seen_ts and 0 < now - ks.last_seen_ts <= config.close_quiet_s:",
-        "            if ks.last_seen_ts and 0 < now - ks.last_seen_ts:",
+        "            if ks.last_success_ts and 0 < now - ks.last_success_ts <= config.close_quiet_s:",
+        "            if ks.last_success_ts and 0 < now - ks.last_success_ts:",
     ),
     "pre-fix hot credit (gap between evaluations <= close_quiet_s)": (
-        "            ep.hot_s += credit_s",
-        "            ep.hot_s += (now - ep.last_obs_ts) if 0 < now - ep.last_obs_ts <= config.close_quiet_s else 0.0",
+        "        ep.hot_s += credit_s",
+        "        ep.hot_s += (now - ep.last_obs_ts) if 0 < now - ep.last_obs_ts <= config.close_quiet_s else 0.0",
     ),
     "silence resets hot_s": (
-        "        if ep.last_obs_ts == ep.last_hot_ts:  # previous verdict was hot too\n",
+        "        ep.hot_s += credit_s",
         "        if now - ep.last_obs_ts > config.close_quiet_s:\n"
         "            ep.hot_s = 0.0\n"
-        "        if ep.last_obs_ts == ep.last_hot_ts:  # previous verdict was hot too\n",
+        "        ep.hot_s += credit_s",
     ),
     "silent gap credited as calm time": (
-        "        ep.calm_s += credit_s",
-        "        ep.calm_s += now - ep.last_obs_ts",
+        "    ep.calm_s += credit_s",
+        "    ep.calm_s += now - ep.last_obs_ts",
+    ),
+    "credit only when the verdict agrees (flapping holds an episode forever)": (
+        "        ep.hot_s += credit_s",
+        "        if ep.last_obs_ts == ep.last_hot_ts:\n            ep.hot_s += credit_s",
+    ),
+    "an outage feeds latency active time (timeout-only windows count as traffic)": (
+        "        if success > 0:\n            if ks.last_success_ts",
+        "        if success > 0 or timeouts > 0:\n            if ks.last_success_ts",
+    ),
+    "no per-verdict credit cap": (
+        "credit_s, ks.active_s = min(ks.active_s, config.max_credit_s), 0.0",
+        "credit_s, ks.active_s = ks.active_s, 0.0",
     ),
     "floor not frozen while saturation is open or paused": (
         'elif "saturation" in ks.episodes or would_saturate:',
@@ -62,6 +74,10 @@ MUTANTS: dict[str, tuple[str, str]] = {
     "opening window may creep the floor": (
         'elif "saturation" in ks.episodes or would_saturate:',
         'elif "saturation" in ks.episodes:',
+    ),
+    "unwarm would-saturate freezes the floor": (
+        "would_saturate = warm and (",
+        "would_saturate = (",
     ),
     "max-silence bound removed": (
         "        if ep is not None and (now - ep.last_obs_ts) >= config.max_silence_s:",

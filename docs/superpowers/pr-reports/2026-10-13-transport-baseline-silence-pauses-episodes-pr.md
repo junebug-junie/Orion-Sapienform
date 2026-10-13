@@ -1,7 +1,7 @@
 ## Summary
 
 - When a hop goes quiet (nights, or the long gaps between a sparse hop's latency checks), an open slowness episode is now **paused** instead of closed. Its accumulated "hot time" is kept, the floor stays frozen, and only a real calm reading can close it. Before this, quiet aged every episode out after 15 minutes, so the gate never reached its 6-hour "the normal has moved" statement (`regime_shift`) and the floor crept up between episodes: drift absorbed, never stated (spec guard 3 broken live).
-- Hot and calm time are now measured from the hop's own traffic (gaps between calls longer than 15 minutes are silence and count as neither), not from the gap between latency checks. Without this second change the pause alone would not have helped: live, the background lane was checked only every 25-47 minutes.
+- Hot and calm time are now measured from the hop's own successful traffic since its previous latency check, credited to the newer reading and capped at 1 hour per reading. Gaps between calls longer than 15 minutes are silence, and an outage window (timeouts only) breaks the chain, so neither counts. Without this second change the pause alone would not have helped: live, the background lane was checked only every 25-47 minutes.
 - An episode with no latency check for 24 hours closes as `went_silent` — explicitly not a recovery. Every close now says why (`quiet` / `calm` / `went_silent` / `evicted`) in the trigger, in the metacog evidence text, and in the durable hourly row (`conditions_closed`).
 - The learned state migrates in place (checked against the live Redis checkpoint: 60 hops kept), instead of cold-starting on the config change.
 - Grader: a floor rise is a FAIL only if it is also material in absolute ms (the gate's own 250 ms line); went_silent closes are noted. New CI workflow: no workflow ran any transport baseline test before this.
@@ -13,13 +13,13 @@ Replayed on the real stored hourly rows for the two failing hops (2026-09-30 →
 | | live (stored) | pre-fix reducer, replayed | this branch, replayed |
 |---|---|---|---|
 | saturation opens since 10-08 18:00 | 44 per hop | 37-55 per hop | **1 per hop** |
-| regime_shift stated | 0 | 0 | **1 per hop, 2026-10-09 08:15-13:00 UTC** |
+| regime_shift stated | 0 | 0 | **1 per hop, 2026-10-09 13:30-15:00 UTC** |
 | floor 10-08 20:00 → 10-13 15:00 | 1.26 s → 3.99 s | 1.53 s → 4.2-4.4 s | 1.53 s → frozen, re-seeded to ~6.6-7.5 s at the shift |
 | grader on the replayed rows | FAIL | — | **PASS** (both hops, 13.5 days and last 4 days) |
 
 The pre-fix column is the validation that the reconstruction is faithful: the old reducer, fed the reconstruction, reproduces the live failure (same order of open/close pairs, zero shifts, same floor creep).
 
-What the regime_shift says, read honestly (thanks to the parallel investigation): this was **not a real slowdown**. On 2026-10-08 the cabinet overheated, the GPU pool shed, and metacog drafts fell back to the canned template and "succeeded" in 0.3-1 s. The floor follows improvements with a 90 s half-life, so it learned ~1.3 s. Real calls came back at 6-9 s (faster than the ~14-17 s before 10-08). The fixed gate states "normal for this hop moved from 1.55 s to ~9.4 s" once, ~7-12 hours of observed-hot time after the episode opened, and re-seeds. The old gate never said anything and spent five days creeping back.
+What the regime_shift says, read honestly (thanks to the parallel investigation): this was **not a real slowdown**. On 2026-10-08 the cabinet overheated, the GPU pool shed, and metacog drafts fell back to the canned template and "succeeded" in 0.3-1 s. The floor follows improvements with a 90 s half-life, so it learned ~1.3 s. Real calls came back at 6-9 s (faster than the ~14-17 s before 10-08). The fixed gate states "normal for this hop moved from 1.55 s to ~9.4 s" once, 12-14 hours after the episode opened (6 h of it observed hot), and re-seeds. The old gate never said anything and spent five days creeping back.
 
 ## Current architecture
 
@@ -39,8 +39,8 @@ Before: latency episodes aged out after `close_quiet_s` (900 s) with no evaluate
 ## Files changed
 
 - `orion/metacog/transport_baseline.py`: the fix (pause, traffic-time credit, went_silent, floor freeze, close_reason, v3 migration).
-- `orion/metacog/tests/test_transport_baseline.py`: 17 new tests; the old "silence closes saturation" test now asserts the pause.
-- `orion/metacog/evals/run_transport_baseline_pause_mutations.py`: mutation eval, 8 mutants.
+- `orion/metacog/tests/test_transport_baseline.py`: 21 new tests; the old "silence closes saturation" test now asserts the pause.
+- `orion/metacog/evals/run_transport_baseline_pause_mutations.py`: mutation eval, 12 mutants.
 - `services/orion-equilibrium-service/evals/run_transport_baseline_sparse_hop_replay.py` + `fixtures/transport_baseline_hourly_sparse_hops_2026-10-13.jsonl` (668 real hourly rows, trimmed): replay eval; wired into `evals/test_transport_baseline_mesh_eval.py`.
 - `services/orion-equilibrium-service/app/transport_baseline_gate.py`, `app/transport_baseline_hourly.py`, their tests, `README.md`.
 - `orion/schemas/telemetry/transport_baseline_hourly.py`: `conditions_closed`.
@@ -60,7 +60,7 @@ Before: latency episodes aged out after `close_quiet_s` (900 s) with no evaluate
 
 ## Env/config changes
 
-- Added / removed / renamed keys: none (`max_silence_s` is a reducer constant beside `close_quiet_s`, not an env key).
+- Added / removed / renamed keys: none (`max_silence_s` 24 h and `max_credit_s` 1 h are reducer constants beside `close_quiet_s`, not env keys).
 - `.env_example` updated: no. Local `.env` sync: not needed.
 - Skipped keys: none.
 
@@ -72,6 +72,8 @@ Before: latency episodes aged out after `close_quiet_s` (900 s) with no evaluate
 4. Live data: pulled `transport_baseline_hourly` (21,329 rows, 09-30 → 10-13) and 42 h of per-window `transport_baseline_obs`/`event` logs. Rest: calm hops read ratio ~1.0-1.2 (grader PASS on 19 hops). The failing hops were not degenerate but *structurally unable to state a shift*: 44 open/close pairs each, every close with `ratio=None` (a silence close, confirmed in the event logs).
 5. Existing mechanism: semantic layer had no entry (`check_metric_lineage.py --metric saturation_ratio` → UNREGISTERED; same for `floor_ms`, `transport_baseline`); glossary/registry grep empty. Now registered.
 6. Reversibility: constants and a state-schema bump; the v3 → v2 direction would cold-start once.
+
+`max_credit_s` (1 h): the live background lane's evaluations were a median 47 min apart (p90 ~95 min); 1 h bridges its typical gap without letting one reading vouch for an afternoon of unjudged traffic (in the uncapped replay single credits reached 2.4 h).
 
 ## Silence-gap distribution (what sets max_silence_s)
 
@@ -87,9 +89,8 @@ From `transport_baseline_hourly`, runs of whole hours with no evaluated window b
 ## Tests run
 
 ```text
-orion/metacog/tests/test_transport_baseline.py + scripts/analysis/tests/test_grade_transport_baseline.py   81 passed
+orion/metacog (all) + scripts/analysis/tests/test_grade_transport_baseline.py                           263 passed
 services/orion-equilibrium-service tests + evals                                                         190 passed
-orion/metacog (all)                                                                                      231 passed
 services/orion-sql-writer tests/test_transport_baseline_hourly_sql_shape.py                                6 passed
 services/orion-sql-writer tests (all): 14 failed / 736 passed -- the same 14 fail on origin/main (diffed on a detached origin/main worktree)
 python scripts/check_metric_lineage.py --gate             PASS
@@ -108,16 +109,20 @@ KILLED  silence between calls credited as active time
 KILLED  pre-fix hot credit (gap between evaluations <= close_quiet_s)
 KILLED  silence resets hot_s
 KILLED  silent gap credited as calm time
+KILLED  credit only when the verdict agrees (flapping holds an episode forever)
+KILLED  an outage feeds latency active time (timeout-only windows count as traffic)
+KILLED  no per-verdict credit cap
 KILLED  floor not frozen while saturation is open or paused
 KILLED  opening window may creep the floor
+KILLED  unwarm would-saturate freezes the floor
 KILLED  max-silence bound removed
-8/8 mutants killed   (the first run had "silent gap credited as calm" SURVIVE and "floor not frozen" SURVIVE; tests were strengthened until both died)
+12/12 mutants killed   (along the way three mutants SURVIVED -- "silent gap credited as calm", "floor not frozen while open/paused", and a mis-built outage mutant that was a no-op; tests and the mutant were fixed until every one died)
 
 python services/orion-equilibrium-service/evals/run_transport_baseline_sparse_hop_replay.py
-background lane, even bursts:  saturation open 1, regime_shift 2026-10-09 08:15 UTC (floor 1550 ms -> window 9421 ms, episode 7.1 h)
-background lane, packed bursts: saturation open 1, regime_shift 2026-10-09 13:00 UTC (floor 1557 ms -> window 9432 ms, episode 12.0 h)
-actions hop, even:   regime_shift 2026-10-09 08:15 UTC (1564 -> 9548 ms)
-actions hop, packed: regime_shift 2026-10-09 13:00 UTC (1572 -> 9553 ms)
+background lane, even bursts:   saturation open 1, regime_shift 2026-10-09 13:30 UTC (floor 1550 ms -> window 9432 ms, episode 12.4 h)
+background lane, packed bursts: saturation open 1, regime_shift 2026-10-09 15:00 UTC (floor 1557 ms -> window 9133 ms, episode 14.0 h)
+actions hop, even:   regime_shift 2026-10-09 13:30 UTC (1564 -> 9553 ms)
+actions hop, packed: regime_shift 2026-10-09 15:00 UTC (1572 -> 9221 ms)
 all checks pass; mesh eval passes unchanged
 ```
 
@@ -136,7 +141,30 @@ NOT deployed.
 
 ## Review findings fixed
 
-(filled in after review)
+Code review ran in a subagent against `origin/main...HEAD`. Every finding below was reproduced by the reviewer in a scratch script and is now covered by a test or a mutant.
+
+- Finding (blocker): an outage counted as latency hot time. Timeout-only windows grew the traffic-time counter, so 6 h of total loss under an open saturation episode was credited as 6 h hot, and the next single window stated a `regime_shift` -- a fault taught as a new normal.
+  - Fix: only windows with successes add traffic time; a timeout-only window zeroes it and breaks the chain. Each reading may vouch for at most 1 h (`max_credit_s`).
+  - Evidence: `test_an_outage_is_never_credited_as_latency_hot_time`, `test_one_verdict_vouches_for_at_most_max_credit_s`; mutants "an outage feeds latency active time" and "no per-verdict credit cap" KILLED.
+- Finding (should-fix): a flapping verdict held an episode open forever. With credit only when two readings agree, hot/calm/hot/calm never added time either way.
+  - Fix: the stretch is credited to the newer reading (the rule the dense-hop path always used).
+  - Evidence: `test_flapping_verdict_still_reaches_a_regime_decision` (one regime_shift after ~12 h); mutant "credit only when the verdict agrees" KILLED.
+- Finding (should-fix): on sparse hops a spike can never open (needs two hot readings within 15 min), so the spike route to `regime_shift` is unreachable there.
+  - Fix: not changed -- the brief said keep spike semantics intact. Stated as a known limit in the reducer docstring and README; saturation, the path this PR restores, has no such limit.
+  - Evidence: docstring "Known limit, stated".
+- Finding (should-fix): the grader's new materiality rule let a floor creep 13 -> ~700 ms in individually-small steps with only NOTEs.
+  - Fix: materiality is judged against the segment's true lowest floor, never the ratcheted one.
+  - Evidence: `test_creep_in_immaterial_steps_still_fails_once_the_total_is_material`.
+- Finding (should-fix): the opening-window floor freeze ignored warm-up, so a hop that could not open saturation (fast blocked by tainted pools) could still have its floor frozen with no episode explaining it.
+  - Fix: `would_saturate = warm and (...)`.
+  - Evidence: `test_floor_is_not_frozen_by_a_would_saturate_that_cannot_open`; mutant "unwarm would-saturate freezes the floor" KILLED.
+- Finding (nit): a `went_silent` close reported ~24 h of duration for a 20-minute episode.
+  - Fix: its duration ends at the last evaluated reading. (`evicted` keeps "measured to eviction", as documented before.)
+  - Evidence: `test_silence_beyond_max_silence_closes_as_went_silent_not_calm`.
+- Finding (nit): the v2 fingerprint pin test was tautological.
+  - Fix: pinned the literal `697b47aac18690e3` (origin/main's default fingerprint and the live checkpoint's); the v2 fixture also strips the new key fields.
+- Finding (nit): CI path filter missed `services/orion-sql-writer/app/main.py`; the grader's column lookup was not schema-qualified.
+  - Fix: path added; `AND table_schema = current_schema()`.
 
 ## Restart required
 
@@ -152,7 +180,8 @@ Expect `transport_baseline migrated from=schema_v2:697b47aac18690e3 keys=…` in
 
 - Severity: medium. Concern: the 10-08 absorption is already done. Live, both hops now read floor ~4.0 s vs level ~6.4-7.1 s (ratio ~1.6-1.8, under the 2.0 saturation line). After deploy the gate will not retroactively state that shift; the floor keeps creeping toward the level at the 3-day half-life. Mitigation: stated here; the grader's floor-rise check keeps it visible. A cold start would have silently reset it instead, which is worse.
 - Severity: medium. Concern: **the root cause is not fixed here** — failed/degraded calls (canned-fallback drafts, lease refusals) are recorded as fast successes and can drag a floor down at its 90 s half-life. This branch makes the gate state and re-seed such a move within hours instead of absorbing it over days; it does not stop the poisoning. Follow-up design below.
-- Severity: low. Concern: traffic-time credit trusts two agreeing verdicts across thin, un-judged traffic between them (in the replay, single credits reached ~2.4 h). Mitigation: a gap between calls > 15 min still breaks it; a calm verdict in between resets the agreement.
+- Severity: low. Concern: traffic-time credit lets one reading vouch for thin, un-judged traffic since the previous one. Mitigation: capped at 1 h per reading; a gap between calls > 15 min or an outage window breaks it.
+- Severity: low. Concern: on hops checked less often than every 15 min, a spike can never open, so a small step (under the 2x saturation line) that freezes `fast` is not stated there. Pre-existing; documented, not changed (brief: keep spike semantics).
 - Severity: low. Concern: replay is a reconstruction from hourly medians (every call in an hour reads the hour's median level; burst spacing assumed, both extremes run). Validated by the old reducer reproducing the stored floor and pair counts.
 
 ## Follow-up (not in this PR): keep failed/degraded calls out of latency
@@ -167,6 +196,6 @@ Exact design, consumer-first because `RpcChannelLatencyV1` is `extra="forbid"` a
 
 ## PR link
 
-(filled in after push)
+https://github.com/junebug-junie/Orion-Sapienform/pull/2629
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

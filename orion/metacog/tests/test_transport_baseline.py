@@ -686,7 +686,9 @@ def test_silence_beyond_max_silence_closes_as_went_silent_not_calm():
     closes = [e for e in ev if e.phase == "close"]
     assert ("saturation", "went_silent") in [(e.condition, e.close_reason) for e in closes]
     assert {e.close_reason for e in closes} == {"went_silent"}  # never "calm"
-    assert all(e.duration_s >= 4 * 3600.0 for e in closes)
+    # duration is what was observed (open -> last evaluated window), not the
+    # trailing silence that ended it
+    assert all(0 < e.duration_s <= 120 * WIN for e in closes)
     assert _ks(state).episodes == {}
 
 
@@ -813,6 +815,8 @@ def _as_v2(d: dict, cfg=CFG) -> dict:
     d["schema_version"] = 2
     d["fingerprint"] = cfg.v2_fingerprint()
     for ks in d["keys"].values():
+        ks.pop("active_s", None)
+        ks.pop("last_success_ts", None)
         for ep in ks["episodes"].values():
             ep.pop("last_obs_ts", None)
             ep.pop("calm_s", None)
@@ -844,15 +848,10 @@ def test_v2_state_under_a_different_config_still_cold_starts():
 
 
 def test_v2_fingerprint_matches_what_schema_v2_computed():
-    """Pinned: the v2 fingerprint of the default config is exactly the value
-    schema v2 stamped (hash of the v2 field set), so live state migrates."""
-    import hashlib
-    from dataclasses import asdict
-
-    d = asdict(CFG)
-    d.pop("max_silence_s")
-    expected = hashlib.sha256(json.dumps(d, sort_keys=True).encode("utf-8")).hexdigest()[:16]
-    assert CFG.v2_fingerprint() == expected != CFG.fingerprint()
+    """Pinned literal: origin/main 3f22b2f25's TransportBaselineConfig().
+    fingerprint(), and the fingerprint on the live Redis checkpoint read
+    2026-10-13. If this moves, live state would cold-start, not migrate."""
+    assert CFG.v2_fingerprint() == "697b47aac18690e3" != CFG.fingerprint()
 
 
 def test_floor_stays_frozen_in_the_hysteresis_band_after_a_pause():
@@ -902,3 +901,67 @@ def test_calls_further_apart_than_close_quiet_are_silence_not_hot_time():
     windows = [(i + k * gap, {HOP: _stats(_noisy(random.Random(k), 4000.0, n=5, sigma=0.1))}) for k in range(1, 9)]
     _run(state, windows)
     assert _ks(state).episodes["saturation"].hot_s == hot0
+
+
+
+# ---------------------------------------------------------------- review fixes (2026-10-13)
+
+
+def test_an_outage_is_never_credited_as_latency_hot_time():
+    """Review finding 1: timeout-only windows grew active_s, so a 6 h total
+    outage under an open saturation episode was credited as 6 h of hot
+    latency and the next single window stated a regime_shift -- a Phase I
+    fault taught as a new normal."""
+    state, i = _saturated_hop(hot_windows=60)
+    hot0 = _ks(state).episodes["saturation"].hot_s
+    n = int(6 * 3600 / WIN)
+    ev, _ = _run(state, ((i + k, {HOP: _stats([], timeouts=2)}) for k in range(n)))
+    assert ("zero_success", "open") in [(e.condition, e.phase) for e in ev]
+    ev2, _ = _flat(state, 1500.0, i + n, 1)
+    assert not [e for e in ev + ev2 if e.condition == "regime_shift"]
+    assert _ks(state).episodes.get("saturation") is None or _ks(state).episodes["saturation"].hot_s <= hot0 + WIN
+
+
+def test_flapping_verdict_still_reaches_a_regime_decision():
+    """Review finding 2: with credit only on agreeing verdicts, a spike whose
+    windows alternate hot/calm kept the episode open forever (hot_s stuck,
+    calm_s reset by every hot window) and never stated anything."""
+    state = new_state(CFG)
+    _flat(state, 1000.0, 0, 120)
+    i = 120
+    windows = [(i + k, {HOP: _stats(_noisy(random.Random(k), 3000.0 if k % 2 == 0 or k < 2 else 1000.0, n=10, sigma=0.05))})
+               for k in range(int(16 * 3600 / WIN))]
+    events, _ = _run(state, windows)
+    conds = [(e.condition, e.phase) for e in events]
+    assert ("spike", "open") in conds
+    # half the windows hot -> 6 h of hot credit after ~12 h: stated once
+    assert conds.count(("regime_shift", "open")) == 1
+
+
+def test_one_verdict_vouches_for_at_most_max_credit_s():
+    state, i = _saturated_hop()
+    hot0 = _ks(state).episodes["saturation"].hot_s
+    # 3 h of thin traffic (1 call / 3 min: never pools to min_calls inside
+    # max_aggregate_windows), then one evaluation
+    thin = [(i + k, {HOP: _stats([4000.0])} if k % 6 == 0 else {}) for k in range(int(3 * 3600 / WIN))]
+    _, obs = _run(state, thin)
+    assert not [o for o in obs if o.evaluated]
+    j = i + int(3 * 3600 / WIN)
+    _run(state, [(j, {HOP: _stats([4000.0] * 5)})])
+    assert _ks(state).episodes["saturation"].hot_s <= hot0 + CFG.max_credit_s + 1e-6
+
+
+def test_floor_is_not_frozen_by_a_would_saturate_that_cannot_open():
+    """Review finding 5: level warm, fast not warm (guard 1 blocked): a 2x
+    level froze the floor with no saturation episode to explain it."""
+    cfg = replace(CFG, floor_half_life_up_s=1800.0, level_alpha=1.0)
+    state = new_state(cfg)
+    # every pooled window is tainted by a timeout -> fast never folds (guard 1)
+    _run(state, ((k, {HOP: _stats([1000.0] * 5, timeouts=1)}) for k in range(1, 3)), cfg=cfg)
+    ks = _ks(state)
+    _run(state, ((k, {HOP: _stats([1000.0] * 5, timeouts=1)}) for k in range(3, 3 + cfg.n_warm + 2)), cfg=cfg)
+    assert ks.fast_count < cfg.n_warm and ks.level_count > cfg.n_warm
+    floor = ks.floor
+    _run(state, [(400, {HOP: _stats([4000.0] * 5, timeouts=1)})], cfg=cfg)
+    assert ks.episodes.get("saturation") is None
+    assert ks.floor > floor  # not frozen: nothing open explains a freeze

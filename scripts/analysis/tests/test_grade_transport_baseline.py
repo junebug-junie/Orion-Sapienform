@@ -251,3 +251,14 @@ def test_went_silent_closes_are_noted():
     _, g = _grade(rows)
     k = g["orion:exec:request:LLMGatewayService"]
     assert any("1 latency episode(s) closed because the hop went silent" in n for n in k.notes)
+
+
+def test_creep_in_immaterial_steps_still_fails_once_the_total_is_material():
+    """Review finding: seg_min ratcheted up after each immaterial 1.5x step, so a
+    floor could creep 13 -> ~700 ms producing only NOTEs."""
+    floors = [13.0 * (1.55 ** k) for k in range(10)]  # 13 -> ~670 ms
+    rows = [_row(h, floor=f) for h, f in enumerate(floors)]
+    _, g = _grade(rows)
+    k = g["orion:exec:request:LLMGatewayService"]
+    assert k.verdict == "FAIL" and k.floor_flags
+    assert "above this segment's lowest, 13 ms" in k.floor_flags[0]

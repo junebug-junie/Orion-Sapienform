@@ -21,6 +21,7 @@ on:
       - "services/orion-equilibrium-service/tests/test_transport_*.py"
       - "services/orion-equilibrium-service/evals/**"
       - "services/orion-sql-writer/app/models/transport_baseline_hourly.py"
+      - "services/orion-sql-writer/app/main.py"
       - "services/orion-sql-writer/tests/test_transport_baseline_hourly_sql_shape.py"
       - "scripts/analysis/grade_transport_baseline.py"
       - "scripts/analysis/tests/test_grade_transport_baseline.py"

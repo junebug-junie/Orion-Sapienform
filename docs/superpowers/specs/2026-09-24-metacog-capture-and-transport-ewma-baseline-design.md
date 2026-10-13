@@ -215,10 +215,11 @@ evaluated window (nights, and the 25-47 minutes between this sparse hop's
 evaluations), which reset hot time, so `T_regime` was never reached; between
 episodes the floor was free to creep up. Absence of traffic is not evidence of
 calm. Now: silence *pauses* a latency episode (hot time kept, floor frozen);
-only observed calm closes it; hot/calm time is the hop's own traffic time
-between two agreeing verdicts; 24 h with no evaluated window closes it as
+only observed calm closes it; hot/calm time is the hop's own successful-traffic
+time since its previous check (capped at 1 h per check, outages excluded); 24 h
+with no evaluated window closes it as
 `went_silent`. Replayed on the stored hourly rows, the fixed reducer opens one
-saturation episode and states one `regime_shift` on 2026-10-09 (08:15-13:00 UTC
+saturation episode and states one `regime_shift` on 2026-10-09 (13:30-15:00 UTC
 depending on burst spacing) instead of 44 pairs. What the shift states, read
 honestly: the floor had been pulled down to ~1.3 s on 2026-10-08 by fast
 canned-fallback metacog drafts during a cabinet-hot GPU shed, so this is "the

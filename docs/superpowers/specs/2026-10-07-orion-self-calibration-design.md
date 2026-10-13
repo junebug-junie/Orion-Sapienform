@@ -300,8 +300,11 @@ its immune sweep waits on the §B lock fields.
    - no-winner frames appear on calm ticks;
    - chat/perception winner share rises (report it, no guessed target);
    - a real body spike (the 09-28 gateway timeout storm class) still wins.
-4. **Prompt evals:** on calm fixtures, stance and reverie mention prediction error in ≤ 20% of
-   outputs. On busy-world fixtures, the reply engages the world input.
+4. **Prompt evals (truth, not topic):** every self-reading Orion states must resolve to a
+   persisted row and match it; missing or stale data renders nothing. Orion talking about its own
+   plumbing (prediction error, bus, harness) is allowed and is not penalized (Juniper, 2026-10-11:
+   "orion is welcome to narrate plumbing if that's what's important and what is going on"). On
+   busy-world fixtures, the reply engages the world input.
 5. **No regression:** stance p50 latency within +5%; reverie hollow/discard within +5 points.
 
 ## Recommended next patches
@@ -317,6 +320,7 @@ its immune sweep waits on the §B lock fields.
    - the proposals filter and empty-frame fixes.
 
    Pull live chat and perception percentiles first (metric gate step 4).
-4. **Self-readings in stance and reverie** (§C).
+4. **Self-readings in the unified turn** (`stance_react`, the production chat path, per Juniper
+   2026-10-11) and reverie (§C). Not the old `chat_general` / `chat_stance_brief` path.
 5. **Metacog `self_signal_episode`** (§D).
 6. **Phase 2, then the stream.**

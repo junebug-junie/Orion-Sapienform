@@ -380,3 +380,50 @@ def test_pipeline_turns_arxiv_papers_into_reading_seeds(monkeypatch):
     titles = lambda d: sorted(i.title for i in d.items if "arxiv_research" not in i.source_ids)  # noqa: E731
     assert titles(result.digest) == titles(baseline.digest)
     assert len(titles(baseline.digest)) >= 10
+    assert [r.title for r in result.digest.things_worth_reading if r.source_id != "arxiv_research"] == [
+        r.title for r in baseline.digest.things_worth_reading
+    ]
+    paper_watch = {i.title for i in result.digest.items if i.source_ids == ["arxiv_research"]}
+    assert [w.title for w in result.digest.things_worth_watching if w.title not in paper_watch] == [
+        w.title for w in baseline.digest.things_worth_watching
+    ]
+    assert {r.source_id for r in result.digest.things_worth_reading} >= {"arxiv_research"}
+    # Papers do not make ai_technology look covered.
+    assert result.digest.section_coverage["ai_technology"].articles_accepted == (
+        baseline.digest.section_coverage["ai_technology"].articles_accepted
+    )
+
+
+# --- review follow-ups ------------------------------------------------------
+
+
+def test_query_category_names_the_feed_the_paper_was_taken_from():
+    a = ax.ArxivEntry("2610.00001", "A", "s", None, None)
+    b = ax.ArxivEntry("2610.00002", "B", "s", None, None)
+    cross = ax.ArxivEntry("2610.00003", "Cross", "s", None, None)
+    # cross is 3rd in feed 0 but 1st in feed 1: round-robin takes it via feed 1.
+    picks = ax.select_papers_with_feed([[a, b, cross], [cross]], seen_ids=set(), cap=3)
+    assert [(e.arxiv_id, i) for e, i in picks] == [("2610.00001", 0), ("2610.00003", 1), ("2610.00002", 0)]
+
+
+def test_seen_sql_covers_ar5iv_org_and_host_check_is_exact():
+    assert "ar5iv.org" in ax.SEEN_ARXIV_URLS_SQL and "arxiv.org" in ax.SEEN_ARXIV_URLS_SQL
+    assert ax.arxiv_id_from_url("https://ar5iv.org/abs/2401.02385") == "2401.02385"
+    assert ax.arxiv_id_from_url("https://evilar5iv.org/abs/2401.02385") is None
+    assert ax.arxiv_id_from_url("https://evilarxiv.org/abs/2401.02385") is None
+
+
+def test_arxiv_does_not_count_as_ai_technology_news_coverage():
+    from app.services import pipeline
+
+    reg = load_source_registry(str(SOURCES_YAML))
+    src = next(s for s in reg.sources if s.source_id == "arxiv_research")
+    arts = [_article(src, "Paper one", "https://arxiv.org/abs/2610.00001")]
+    items = [_item("p0", "ai_technology", "arxiv_research")]
+    _, with_excl, *_ = pipeline._compute_coverage(
+        registry=reg, all_articles=arts, digest_items=items, excluded_source_ids={"arxiv_research"}
+    )
+    assert with_excl["ai_technology"].status in {"missing", "no_articles"}
+    assert with_excl["ai_technology"].articles_accepted == 0
+    _, without, *_ = pipeline._compute_coverage(registry=reg, all_articles=arts, digest_items=items)
+    assert without["ai_technology"].status == "covered"  # proves the exclusion is what flips it

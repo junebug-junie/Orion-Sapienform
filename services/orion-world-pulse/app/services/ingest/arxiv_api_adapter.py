@@ -44,7 +44,7 @@ _ARXIV = "{http://arxiv.org/schemas/atom}"
 # New-style ids (0704.0001 onward) and old-style archive ids (hep-th/9901001).
 _NEW_ID = re.compile(r"(\d{4}\.\d{4,5})(?:v\d+)?")
 _OLD_ID = re.compile(r"([a-z\-]+(?:\.[A-Z]{2})?/\d{7})(?:v\d+)?")
-_ARXIV_HOSTS = ("arxiv.org",)
+_ARXIV_HOSTS = ("arxiv.org", "ar5iv.org")
 _ID_PATH_PREFIXES = ("/abs/", "/pdf/", "/html/", "/format/")
 
 
@@ -61,7 +61,7 @@ def arxiv_id_from_url(url: str) -> str | None:
     except ValueError:
         return None
     host = (parts.hostname or "").lower()
-    if not any(host == h or host.endswith("." + h) for h in _ARXIV_HOSTS) and not host.endswith("ar5iv.org"):
+    if not any(host == h or host.endswith("." + h) for h in _ARXIV_HOSTS):
         return None
     path = parts.path
     for prefix in _ID_PATH_PREFIXES:
@@ -137,10 +137,17 @@ def parse_arxiv_atom(xml_text: str) -> list[ArxivEntry]:
 def select_papers(
     feeds: list[list[ArxivEntry]], *, seen_ids: set[str], cap: int
 ) -> list[ArxivEntry]:
+    return [e for e, _ in select_papers_with_feed(feeds, seen_ids=seen_ids, cap=cap)]
+
+
+def select_papers_with_feed(
+    feeds: list[list[ArxivEntry]], *, seen_ids: set[str], cap: int
+) -> list[tuple[ArxivEntry, int]]:
     """Round-robin over the per-category feeds (each newest first), skipping
-    ids already seen and papers cross-listed into an earlier feed, until
-    ``cap`` papers are chosen."""
-    chosen: list[ArxivEntry] = []
+    ids already seen and papers already picked via another feed, until
+    ``cap`` papers are chosen. Each pick carries the index of the feed it was
+    actually taken from."""
+    chosen: list[tuple[ArxivEntry, int]] = []
     taken = set(seen_ids)
     cursors = [0] * len(feeds)
     while len(chosen) < cap:
@@ -154,7 +161,7 @@ def select_papers(
                 if entry.arxiv_id in taken:
                     continue
                 taken.add(entry.arxiv_id)
-                chosen.append(entry)
+                chosen.append((entry, i))
                 progressed = True
                 break
         if not progressed:
@@ -193,7 +200,10 @@ _SPACER = RequestSpacer()
 _history_engine: object | None = None
 _history_engine_lock = threading.Lock()
 
-SEEN_ARXIV_URLS_SQL = "SELECT url FROM world_pulse_read_seed WHERE url ILIKE '%arxiv.org%'"
+# ar5iv.org does not contain "arxiv.org"; both patterns are needed.
+SEEN_ARXIV_URLS_SQL = (
+    "SELECT url FROM world_pulse_read_seed WHERE url ILIKE '%arxiv.org%' OR url ILIKE '%ar5iv.org%'"
+)
 
 
 def _get_history_engine():
@@ -276,14 +286,19 @@ def fetch(
         # Every query failed: raise so the pipeline records source_fetch_error
         # instead of an empty-but-"ok" source.
         raise last_error
+    if not any(feeds):
+        # HTTP 200 with zero usable entries everywhere (arXiv returns empty
+        # feeds under load): not an error, but must not look like a quiet day.
+        logger.warning("world_pulse_arxiv_all_feeds_empty source_id=%s queries=%s", source.source_id, len(query_urls))
 
     seen = seen_ids_loader()
     if seen is None:
         logger.warning("world_pulse_arxiv_dedupe_skipped reason=read_history_unavailable")
         seen = set()
     cap = int(source.max_articles_per_day)
-    picks = select_papers(feeds, seen_ids=seen, cap=cap)
-    category_of = {e.arxiv_id: feed_category[i] for i, feed in enumerate(feeds) for e in feed}
+    picks_with_feed = select_papers_with_feed(feeds, seen_ids=seen, cap=cap)
+    picks = [e for e, _ in picks_with_feed]
+    category_of = {e.arxiv_id: feed_category[i] for e, i in picks_with_feed}
 
     out: list[ArticleCandidate] = []
     for entry in picks:

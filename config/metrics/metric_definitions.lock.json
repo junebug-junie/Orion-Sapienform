@@ -3,9 +3,9 @@
   "metric_count": 728,
   "_last_change": {
     "change_count": 1,
-    "high_severity_count": 0,
+    "high_severity_count": 1,
     "changes": [
-      "medium added metric://bus_channel/orion-harness-governor/orion:introspect:node_history:request"
+      "high   routing_changed metric://inner_state/orion-durable-runs/regulation.state.v1 (declared_consumers: \u2026d outreach)'] -> \u2026d outreach)', 'services.orion-proposal-runtime.app.worker:P\u2026)"
     ]
   },
   "definitions": {
@@ -4649,7 +4649,8 @@
         "services.orion-dream.app.cycle:run_cycle_once (a due sleep is held while engaged or strained)",
         "services.orion-hub.scripts.curiosity_investigation:CuriosityInvestigation.tick (strained holds; engaged doubles the cooldown)",
         "services.orion-hub.scripts.curiosity_investigation:CuriosityInvestigation.tick_self_inquiry (runs only at idle)",
-        "services.orion-hub.scripts.endogenous_outreach:EndogenousOutreach._gate_inputs (strained refuses background outreach)"
+        "services.orion-hub.scripts.endogenous_outreach:EndogenousOutreach._gate_inputs (strained refuses background outreach)",
+        "services.orion-proposal-runtime.app.worker:ProposalRuntimeWorker._baseline_arousal_level -> orion.reverie.baseline:schedule (strained defers a due visual baseline image by retry_sec)"
       ],
       "notes": "cadence=per_tick composition=shadow_declared_not_composed",
       "registry_source": "orion/inner_state_registry.py"

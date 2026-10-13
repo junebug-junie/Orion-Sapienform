@@ -4,7 +4,13 @@ from pathlib import Path
 from hashlib import sha256
 import yaml
 from pydantic import BaseModel, ConfigDict, Field
+from typing import Callable, Optional
 from orion.schemas.reverie_visual import VisualBaselineEligibilityV1, VisualActivityV1
+
+# Spec R3 reader 4 (Temporal Self rev 4): while Orion's arousal reads `strained` (cabinet hot
+# or GPU queue backed up), a due baseline image is deferred by `retry_sec`, exactly like a
+# retry. Same spelling as orion.regulation.arousal_view.AROUSAL_STRAINED_REASON.
+AROUSAL_STRAINED_REASON = "arousal_strained"
 
 class VisualBaselinePolicy(BaseModel):
     model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
@@ -50,8 +56,14 @@ def validate_eligibility(value, *, now=None, policy=None, target_id=None, templa
         return "visual_baseline_invalid"
     return None
 
-def schedule(activity: VisualActivityV1, checkpoint: dict, *, now: datetime, policy: VisualBaselinePolicy):
-    """Pure checkpoint reducer. One pending need and bounded retries across restarts."""
+def schedule(activity: VisualActivityV1, checkpoint: dict, *, now: datetime, policy: VisualBaselinePolicy,
+             arousal_level: Optional[Callable[[], Optional[str]]] = None):
+    """Pure checkpoint reducer. One pending need and bounded retries across restarts.
+
+    ``arousal_level`` (R3 reader 4) is called only once every other check has passed, i.e. at
+    the moment a baseline would be issued. ``"strained"`` defers it by ``retry_sec`` with reason
+    ``arousal_strained``; any other value (None = unknown, flag off, Redis down) changes
+    nothing. It can only withhold an eligibility this function would have issued."""
     state = dict(checkpoint)
     if not policy.enabled:
         return None, state, "visual_baseline_disabled"
@@ -80,5 +92,7 @@ def schedule(activity: VisualActivityV1, checkpoint: dict, *, now: datetime, pol
     if reason:
         return None, state, reason
     state["next_attempt_not_before"] = (now + timedelta(seconds=policy.retry_sec)).isoformat()
+    if arousal_level is not None and arousal_level() == "strained":
+        return None, state, AROUSAL_STRAINED_REASON
     state["last_attempt_id"] = f"{eligibility.need_id}:{now.isoformat()}"
     return eligibility, state, "visual_baseline_due"

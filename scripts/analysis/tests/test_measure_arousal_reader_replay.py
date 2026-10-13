@@ -28,6 +28,13 @@ def test_hold_rules_match_the_shipped_branches():
     assert held("curiosity", "engaged", 1900.0, curiosity_base_sec=1800.0, engaged_multiplier=1.0) is None
 
 
+def test_readers_4_to_6_hold_only_while_strained():
+    for reader in ("visual_baseline", "reverie_chain", "mutation"):
+        assert held(reader, "strained", None, **KW) == "arousal_strained"
+        for level in ("engaged", "idle", "unknown", None):
+            assert held(reader, level, 10.0, **KW) is None
+
+
 def test_impact_counts_per_day_and_uses_earlier_runs_only_for_gaps():
     tl = Timeline([(T0, "idle"), (T0 + timedelta(hours=2), "strained"), (T0 + timedelta(hours=3), "engaged"),
                    (T0 + timedelta(hours=4), "idle")])
@@ -57,6 +64,8 @@ def test_export_is_one_read_only_transaction():
     assert sql.startswith("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY;")
     assert sql.rstrip().endswith("ROLLBACK;") and sql.count("ROLLBACK;") == 1
     assert "arousal_transition" in sql and "durable_admission_runs" in sql
+    for table in ("reverie_visual_attempt", "substrate_reverie_chain", "substrate_mutation_proposal"):
+        assert table in sql
 
 
 def test_dream_hold_is_bounded_by_the_level_age():

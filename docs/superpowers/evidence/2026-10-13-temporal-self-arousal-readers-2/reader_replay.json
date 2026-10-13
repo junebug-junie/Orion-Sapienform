@@ -1,0 +1,693 @@
+{
+  "start": "2026-10-09T07:00:00+00:00",
+  "end": "2026-10-13T19:00:00+00:00",
+  "input_counts": {
+    "turn": 11,
+    "heat": 12566,
+    "gpu_state": 65291,
+    "gpu_event": 153,
+    "decision": 2222,
+    "live_level": 8
+  },
+  "decision_counts": {
+    "curiosity": 40,
+    "self_inquiry": 41,
+    "mutation": 632,
+    "reverie_chain": 1415,
+    "visual_baseline": 68,
+    "outreach": 20,
+    "dream": 6
+  },
+  "replay": {
+    "level_minutes_per_day": {
+      "2026-10-09": {
+        "engaged": 0.0,
+        "idle": 0.0,
+        "strained": 0.0,
+        "unknown": 1020.0
+      },
+      "2026-10-10": {
+        "engaged": 59.0,
+        "idle": 1089.0,
+        "strained": 88.0,
+        "unknown": 204.0
+      },
+      "2026-10-11": {
+        "engaged": 181.5,
+        "idle": 1238.5,
+        "strained": 20.0,
+        "unknown": 0.0
+      },
+      "2026-10-12": {
+        "engaged": 2.0,
+        "idle": 1412.0,
+        "strained": 26.0,
+        "unknown": 0.0
+      },
+      "2026-10-13": {
+        "engaged": 0.0,
+        "idle": 1140.0,
+        "strained": 0.0,
+        "unknown": 0.0
+      }
+    },
+    "strained_spans": [
+      {
+        "from": "2026-10-10T06:18:00+00:00",
+        "to": "2026-10-10T06:32:00+00:00",
+        "minutes": 14.0,
+        "reasons": {
+          "strain_clearing": 5,
+          "gpu_queue_sustained": 2
+        }
+      },
+      {
+        "from": "2026-10-10T09:56:00+00:00",
+        "to": "2026-10-10T10:10:00+00:00",
+        "minutes": 14.0,
+        "reasons": {
+          "strain_clearing": 5,
+          "gpu_queue_sustained": 2
+        }
+      },
+      {
+        "from": "2026-10-10T10:28:00+00:00",
+        "to": "2026-10-10T11:28:00+00:00",
+        "minutes": 60.0,
+        "reasons": {
+          "gpu_queue_sustained": 14,
+          "strain_holding": 8,
+          "strain_clearing": 8
+        }
+      },
+      {
+        "from": "2026-10-11T06:16:00+00:00",
+        "to": "2026-10-11T06:36:00+00:00",
+        "minutes": 20.0,
+        "reasons": {
+          "gpu_queue_sustained": 5,
+          "strain_clearing": 5
+        }
+      },
+      {
+        "from": "2026-10-12T14:08:00+00:00",
+        "to": "2026-10-12T14:34:00+00:00",
+        "minutes": 26.0,
+        "reasons": {
+          "gpu_queue_sustained": 7,
+          "strain_clearing": 5,
+          "strain_holding": 1
+        }
+      }
+    ],
+    "unknown_spans": [
+      {
+        "from": "2026-10-09T07:00:00+00:00",
+        "to": "2026-10-10T02:42:00+00:00",
+        "minutes": 1182.0,
+        "reasons": {
+          "gpu_fault:config_unreadable:agent-gpu2": 593
+        }
+      },
+      {
+        "from": "2026-10-10T03:48:00+00:00",
+        "to": "2026-10-10T04:00:00+00:00",
+        "minutes": 12.0,
+        "reasons": {
+          "gpu_fault:config_unreadable:agent-gpu2": 6
+        }
+      },
+      {
+        "from": "2026-10-10T04:02:00+00:00",
+        "to": "2026-10-10T04:06:00+00:00",
+        "minutes": 4.0,
+        "reasons": {
+          "gpu_fault:config_unreadable:agent-gpu2": 2
+        }
+      },
+      {
+        "from": "2026-10-10T04:40:00+00:00",
+        "to": "2026-10-10T05:02:00+00:00",
+        "minutes": 22.0,
+        "reasons": {
+          "gpu_fault:config_unreadable:agent-gpu2": 11
+        }
+      },
+      {
+        "from": "2026-10-10T05:30:00+00:00",
+        "to": "2026-10-10T05:32:00+00:00",
+        "minutes": 2.0,
+        "reasons": {
+          "gpu_fault:config_unreadable:agent-gpu2": 1
+        }
+      },
+      {
+        "from": "2026-10-10T05:52:00+00:00",
+        "to": "2026-10-10T05:54:00+00:00",
+        "minutes": 2.0,
+        "reasons": {
+          "gpu_fault:config_unreadable:agent-gpu2": 1
+        }
+      }
+    ],
+    "readers": {
+      "per_day": {
+        "2026-10-09": {
+          "dream": {
+            "decisions": 0,
+            "held": 0
+          },
+          "curiosity": {
+            "decisions": 5,
+            "held": 0
+          },
+          "self_inquiry": {
+            "decisions": 6,
+            "held": 0
+          },
+          "outreach": {
+            "decisions": 4,
+            "held": 0
+          },
+          "visual_baseline": {
+            "decisions": 11,
+            "held": 0
+          },
+          "reverie_chain": {
+            "decisions": 178,
+            "held": 0
+          },
+          "mutation": {
+            "decisions": 100,
+            "held": 0
+          }
+        },
+        "2026-10-10": {
+          "dream": {
+            "decisions": 2,
+            "held": 0
+          },
+          "curiosity": {
+            "decisions": 7,
+            "held": 0
+          },
+          "self_inquiry": {
+            "decisions": 7,
+            "held": 1
+          },
+          "outreach": {
+            "decisions": 4,
+            "held": 0
+          },
+          "visual_baseline": {
+            "decisions": 14,
+            "held": 1
+          },
+          "reverie_chain": {
+            "decisions": 306,
+            "held": 21
+          },
+          "mutation": {
+            "decisions": 140,
+            "held": 8
+          }
+        },
+        "2026-10-11": {
+          "dream": {
+            "decisions": 2,
+            "held": 0
+          },
+          "curiosity": {
+            "decisions": 7,
+            "held": 0
+          },
+          "self_inquiry": {
+            "decisions": 7,
+            "held": 0
+          },
+          "outreach": {
+            "decisions": 4,
+            "held": 0
+          },
+          "visual_baseline": {
+            "decisions": 16,
+            "held": 0
+          },
+          "reverie_chain": {
+            "decisions": 321,
+            "held": 5
+          },
+          "mutation": {
+            "decisions": 141,
+            "held": 2
+          }
+        },
+        "2026-10-12": {
+          "dream": {
+            "decisions": 2,
+            "held": 0
+          },
+          "curiosity": {
+            "decisions": 7,
+            "held": 0
+          },
+          "self_inquiry": {
+            "decisions": 7,
+            "held": 0
+          },
+          "outreach": {
+            "decisions": 4,
+            "held": 0
+          },
+          "visual_baseline": {
+            "decisions": 15,
+            "held": 0
+          },
+          "reverie_chain": {
+            "decisions": 334,
+            "held": 7
+          },
+          "mutation": {
+            "decisions": 140,
+            "held": 3
+          }
+        },
+        "2026-10-13": {
+          "dream": {
+            "decisions": 0,
+            "held": 0
+          },
+          "curiosity": {
+            "decisions": 7,
+            "held": 0
+          },
+          "self_inquiry": {
+            "decisions": 7,
+            "held": 0
+          },
+          "outreach": {
+            "decisions": 4,
+            "held": 0
+          },
+          "visual_baseline": {
+            "decisions": 12,
+            "held": 0
+          },
+          "reverie_chain": {
+            "decisions": 276,
+            "held": 0
+          },
+          "mutation": {
+            "decisions": 111,
+            "held": 0
+          }
+        }
+      },
+      "totals": {
+        "dream": {
+          "decisions": 6,
+          "held": 0
+        },
+        "curiosity": {
+          "decisions": 33,
+          "held": 0
+        },
+        "self_inquiry": {
+          "decisions": 34,
+          "held": 1
+        },
+        "outreach": {
+          "decisions": 20,
+          "held": 0
+        },
+        "visual_baseline": {
+          "decisions": 68,
+          "held": 1
+        },
+        "reverie_chain": {
+          "decisions": 1415,
+          "held": 33
+        },
+        "mutation": {
+          "decisions": 632,
+          "held": 13
+        }
+      },
+      "held_reasons": {
+        "reverie_chain": {
+          "arousal_strained": 33
+        },
+        "mutation": {
+          "arousal_strained": 13
+        },
+        "visual_baseline": {
+          "arousal_strained": 1
+        },
+        "self_inquiry": {
+          "arousal_strained": 1
+        }
+      },
+      "examples": {
+        "reverie_chain": [
+          {
+            "at": "2026-10-10T06:22:29.345135+00:00",
+            "level": "strained",
+            "reason": "arousal_strained",
+            "gap_min": 10.6
+          },
+          {
+            "at": "2026-10-10T06:26:59.411671+00:00",
+            "level": "strained",
+            "reason": "arousal_strained",
+            "gap_min": 4.5
+          },
+          {
+            "at": "2026-10-10T06:28:29.450370+00:00",
+            "level": "strained",
+            "reason": "arousal_strained",
+            "gap_min": 1.5
+          },
+          {
+            "at": "2026-10-10T06:30:09.605066+00:00",
+            "level": "strained",
+            "reason": "arousal_strained",
+            "gap_min": 1.7
+          },
+          {
+            "at": "2026-10-10T09:57:18.401994+00:00",
+            "level": "strained",
+            "reason": "arousal_strained",
+            "gap_min": 1.5
+          }
+        ],
+        "mutation": [
+          {
+            "at": "2026-10-10T06:27:34.703566+00:00",
+            "level": "strained",
+            "reason": "arousal_strained",
+            "gap_min": 10.2
+          },
+          {
+            "at": "2026-10-10T10:02:43.382707+00:00",
+            "level": "strained",
+            "reason": "arousal_strained",
+            "gap_min": 10.2
+          },
+          {
+            "at": "2026-10-10T10:33:35.829994+00:00",
+            "level": "strained",
+            "reason": "arousal_strained",
+            "gap_min": 10.4
+          },
+          {
+            "at": "2026-10-10T10:43:49.108396+00:00",
+            "level": "strained",
+            "reason": "arousal_strained",
+            "gap_min": 10.2
+          },
+          {
+            "at": "2026-10-10T10:54:01.820702+00:00",
+            "level": "strained",
+            "reason": "arousal_strained",
+            "gap_min": 10.2
+          }
+        ],
+        "visual_baseline": [
+          {
+            "at": "2026-10-10T09:57:16.764107+00:00",
+            "level": "strained",
+            "reason": "arousal_strained",
+            "gap_min": 141.9
+          }
+        ],
+        "self_inquiry": [
+          {
+            "at": "2026-10-10T10:04:13.973022+00:00",
+            "level": "strained",
+            "reason": "arousal_strained",
+            "gap_min": 120.3
+          }
+        ]
+      }
+    }
+  },
+  "live": {
+    "from": "2026-10-10T23:00:59.337907+00:00",
+    "transitions": [
+      {
+        "at": "2026-10-10T23:00:59.337907+00:00",
+        "level": "engaged"
+      },
+      {
+        "at": "2026-10-11T01:07:23.402565+00:00",
+        "level": "idle"
+      },
+      {
+        "at": "2026-10-11T06:17:23.444340+00:00",
+        "level": "strained"
+      },
+      {
+        "at": "2026-10-11T06:37:23.454597+00:00",
+        "level": "idle"
+      },
+      {
+        "at": "2026-10-11T22:03:26.381685+00:00",
+        "level": "engaged"
+      },
+      {
+        "at": "2026-10-12T00:02:23.042486+00:00",
+        "level": "idle"
+      },
+      {
+        "at": "2026-10-12T14:09:49.500196+00:00",
+        "level": "strained"
+      },
+      {
+        "at": "2026-10-12T14:33:49.505107+00:00",
+        "level": "idle"
+      }
+    ],
+    "readers": {
+      "per_day": {
+        "2026-10-10": {
+          "dream": {
+            "decisions": 0,
+            "held": 0
+          },
+          "curiosity": {
+            "decisions": 0,
+            "held": 0
+          },
+          "self_inquiry": {
+            "decisions": 0,
+            "held": 0
+          },
+          "outreach": {
+            "decisions": 0,
+            "held": 0
+          },
+          "visual_baseline": {
+            "decisions": 0,
+            "held": 0
+          },
+          "reverie_chain": {
+            "decisions": 14,
+            "held": 0
+          },
+          "mutation": {
+            "decisions": 6,
+            "held": 0
+          }
+        },
+        "2026-10-11": {
+          "dream": {
+            "decisions": 2,
+            "held": 0
+          },
+          "curiosity": {
+            "decisions": 7,
+            "held": 0
+          },
+          "self_inquiry": {
+            "decisions": 7,
+            "held": 0
+          },
+          "outreach": {
+            "decisions": 4,
+            "held": 0
+          },
+          "visual_baseline": {
+            "decisions": 16,
+            "held": 0
+          },
+          "reverie_chain": {
+            "decisions": 321,
+            "held": 4
+          },
+          "mutation": {
+            "decisions": 141,
+            "held": 2
+          }
+        },
+        "2026-10-12": {
+          "dream": {
+            "decisions": 2,
+            "held": 0
+          },
+          "curiosity": {
+            "decisions": 7,
+            "held": 0
+          },
+          "self_inquiry": {
+            "decisions": 7,
+            "held": 0
+          },
+          "outreach": {
+            "decisions": 4,
+            "held": 0
+          },
+          "visual_baseline": {
+            "decisions": 15,
+            "held": 0
+          },
+          "reverie_chain": {
+            "decisions": 334,
+            "held": 7
+          },
+          "mutation": {
+            "decisions": 140,
+            "held": 2
+          }
+        },
+        "2026-10-13": {
+          "dream": {
+            "decisions": 0,
+            "held": 0
+          },
+          "curiosity": {
+            "decisions": 7,
+            "held": 0
+          },
+          "self_inquiry": {
+            "decisions": 7,
+            "held": 0
+          },
+          "outreach": {
+            "decisions": 4,
+            "held": 0
+          },
+          "visual_baseline": {
+            "decisions": 12,
+            "held": 0
+          },
+          "reverie_chain": {
+            "decisions": 276,
+            "held": 0
+          },
+          "mutation": {
+            "decisions": 111,
+            "held": 0
+          }
+        }
+      },
+      "totals": {
+        "dream": {
+          "decisions": 4,
+          "held": 0
+        },
+        "curiosity": {
+          "decisions": 21,
+          "held": 0
+        },
+        "self_inquiry": {
+          "decisions": 21,
+          "held": 0
+        },
+        "outreach": {
+          "decisions": 12,
+          "held": 0
+        },
+        "visual_baseline": {
+          "decisions": 43,
+          "held": 0
+        },
+        "reverie_chain": {
+          "decisions": 945,
+          "held": 11
+        },
+        "mutation": {
+          "decisions": 398,
+          "held": 4
+        }
+      },
+      "held_reasons": {
+        "reverie_chain": {
+          "arousal_strained": 11
+        },
+        "mutation": {
+          "arousal_strained": 4
+        }
+      },
+      "examples": {
+        "reverie_chain": [
+          {
+            "at": "2026-10-11T06:18:50.109008+00:00",
+            "level": "strained",
+            "reason": "arousal_strained",
+            "gap_min": 1.6
+          },
+          {
+            "at": "2026-10-11T06:20:27.926782+00:00",
+            "level": "strained",
+            "reason": "arousal_strained",
+            "gap_min": 1.6
+          },
+          {
+            "at": "2026-10-11T06:29:28.000875+00:00",
+            "level": "strained",
+            "reason": "arousal_strained",
+            "gap_min": 9.0
+          },
+          {
+            "at": "2026-10-11T06:30:58.063007+00:00",
+            "level": "strained",
+            "reason": "arousal_strained",
+            "gap_min": 1.5
+          },
+          {
+            "at": "2026-10-12T14:09:59.981823+00:00",
+            "level": "strained",
+            "reason": "arousal_strained",
+            "gap_min": 15.0
+          }
+        ],
+        "mutation": [
+          {
+            "at": "2026-10-11T06:24:23.250897+00:00",
+            "level": "strained",
+            "reason": "arousal_strained",
+            "gap_min": 10.4
+          },
+          {
+            "at": "2026-10-11T06:34:38.079220+00:00",
+            "level": "strained",
+            "reason": "arousal_strained",
+            "gap_min": 10.2
+          },
+          {
+            "at": "2026-10-12T14:19:18.486407+00:00",
+            "level": "strained",
+            "reason": "arousal_strained",
+            "gap_min": 10.2
+          },
+          {
+            "at": "2026-10-12T14:29:30.352592+00:00",
+            "level": "strained",
+            "reason": "arousal_strained",
+            "gap_min": 10.2
+          }
+        ]
+      }
+    }
+  }
+}

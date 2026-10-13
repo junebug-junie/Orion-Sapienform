@@ -24,6 +24,7 @@ from app.services.source_health import (
     stuck_reason,
 )
 from app.services.source_registry import load_source_registry
+from orion.world_pulse_read.reader_blocks import reader_block_reason
 from orion.schemas.world_pulse import (
     DailyWorldPulseItemV1,
     SectionCoverageV1,
@@ -462,16 +463,14 @@ def test_curiosity_drops_listing_page_findings(monkeypatch):
 
 # --- the real registry -------------------------------------------------------
 
-_READER_BLOCKED = ("bbc.co.uk", "bbc.com", "bbci.co.uk", "npr.org")  # PR #2634 evidence
-
-
 def test_registry_has_no_enabled_source_the_reader_cannot_use():
     registry = load_source_registry(str(REPO_ROOT / "config" / "world_pulse" / "sources.yaml"))
     for s in registry.sources:
         if not (s.enabled and s.approved):
             continue
         hosts = set(s.domains) | {urlparse(s.url or "").hostname or ""}
-        assert not any(h == d or h.endswith("." + d) for h in hosts for d in _READER_BLOCKED), s.source_id
+        # Same list the reader skips on (PR #2634, live refusal evidence).
+        assert not any(reader_block_reason(f"https://{h}/x") for h in hosts if h), s.source_id
         # Undated manual URLs can never pass the freshness window.
         assert s.strategy != "manual_urls", s.source_id
         assert s.url, s.source_id

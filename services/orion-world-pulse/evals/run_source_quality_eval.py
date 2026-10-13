@@ -48,8 +48,8 @@ from orion.world_pulse_read.seeds import seeds_from_digest_payload  # noqa: E402
 from orion.world_pulse_read.url_filters import url_looks_like_section_index  # noqa: E402
 
 # Sites whose refusal of the reading harness is recorded with live evidence in
-# PR #2634 (orion/world_pulse_read/reader_blocks.py once merged). Mirrored here
-# so this eval runs on main before that lands; prefer the module when present.
+# orion/world_pulse_read/reader_blocks.py (PR #2634). The fallback copy only
+# matters when --old-root points at a tree that predates that module.
 _FALLBACK_BLOCKED = ("bbc.co.uk", "bbc.com", "bbci.co.uk", "npr.org")
 
 

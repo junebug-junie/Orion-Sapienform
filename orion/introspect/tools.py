@@ -11,6 +11,7 @@ from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.introspect.transport import (
     CURIOSITY_REQUEST_CHANNEL,
     DREAM_REQUEST_CHANNEL,
+    NODE_HISTORY_REQUEST_CHANNEL,
     ORION_DAY_REQUEST_CHANNEL,
     RECORD_CORRECTION_REQUEST_CHANNEL,
     REQUEST_KIND,
@@ -23,6 +24,7 @@ from orion.schemas.introspect import (
     IntrospectRequestV1,
     IntrospectResultV1,
     IntrospectToolBindingV1,
+    NodeHistoryArguments,
     OrionDayArguments,
     ReadingResultArguments,
     RecordCorrectionArguments,
@@ -125,6 +127,24 @@ RECORD_CORRECTION_DESCRIPTION = (
     "ok=true and a correction_id."
 )
 
+NODE_HISTORY_DESCRIPTION = (
+    "Read the history of one of your substrate nodes' prediction error (how surprised that "
+    "part of you was, reading by reading). The node in your graph holds only its current "
+    "value; the series lives here, up to 7 days back. Pass node_id=<exact id, e.g. "
+    "node:substrate.bus_synaptic> and hours=<window length, up to 168, default 24>; "
+    "until=<ISO timestamp with timezone> ends the window there instead of now (the whole "
+    "window must start within the last 168 hours). You get count, min, median, max, the "
+    "first and last reading, a series of at most 48 time buckets (bucket_start, n, mean, "
+    "min, max), the largest changes between consecutive readings inside the window with when "
+    "they happened, and earliest_stored_at (nothing older exists). A node "
+    "only records a reading when it is refreshed, so a bucket missing from the series means "
+    "no new reading then, not zero. Pass no node_id to list which nodes have readings in the "
+    "window. items=[] means that node has no reading in that window; a node_id with no stored "
+    "reading at all is a tool error saying not found; any other tool error means the answer "
+    "is unknown, never that the node was quiet."
+)
+
+
 @dataclass(frozen=True)
 class ToolSpec:
     name: str
@@ -148,6 +168,7 @@ class IntrospectTools:
             ToolSpec("curiosity", CURIOSITY_DESCRIPTION, CuriosityArguments),
             ToolSpec("orion_day", ORION_DAY_DESCRIPTION, OrionDayArguments),
             ToolSpec("record_correction", RECORD_CORRECTION_DESCRIPTION, RecordCorrectionArguments),
+            ToolSpec("node_history", NODE_HISTORY_DESCRIPTION, NodeHistoryArguments),
         ]
 
     async def invoke(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
@@ -169,6 +190,13 @@ class IntrospectTools:
             day_args = OrionDayArguments.model_validate(arguments)
             result = await self._introspect_rpc(
                 ORION_DAY_REQUEST_CHANNEL, "orion_day", day_args.model_dump(mode="json", exclude_none=True),
+            )
+            return result.model_dump(mode="json")
+        if name == "node_history":
+            history_args = NodeHistoryArguments.model_validate(arguments)
+            result = await self._introspect_rpc(
+                NODE_HISTORY_REQUEST_CHANNEL, "node_history",
+                history_args.model_dump(mode="json", exclude_none=True),
             )
             return result.model_dump(mode="json")
         if name == "record_correction":

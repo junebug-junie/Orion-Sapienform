@@ -216,6 +216,18 @@ class Settings(BaseSettings):
                 return {str(k): float(v) for k, v in data.items()}
         return {"circe": 0.7, "athena": 0.3, "other": 0.5}
 
+    # Vector DB (Chroma) footprint gauge -- see app/vector_db_footprint.py and
+    # README.md "Vector DB footprint". Measure-only: nothing deletes from Chroma.
+    VECTOR_DB_FOOTPRINT_ENABLED: bool = True
+    VECTOR_DB_DATA_PATH: str = "/host_mnt/graphdb/chroma"
+    VECTOR_DB_URL: str = "http://orion-athena-vector-db:8000"
+    # 4 GiB: ~20x the 2026-10-13 footprint (206 MB); ~7 weeks away at ~80 MB/day,
+    # far below the 825 GB graphdb drive. Meant to force the Chroma-upgrade decision
+    # (0.4.24 never prunes its write-ahead log) before the dir gets big, not to page.
+    VECTOR_DB_ALERT_BYTES: int = 4294967296
+    VECTOR_DB_POLL_INTERVAL_SEC: float = 300.0
+    VECTOR_DB_REQUEST_TIMEOUT_SEC: float = 5.0
+
     @field_validator("DISK_CAPACITY_MOUNTS", mode="before")
     @classmethod
     def _parse_disk_capacity_mounts(cls, value: object) -> Dict[str, str]:

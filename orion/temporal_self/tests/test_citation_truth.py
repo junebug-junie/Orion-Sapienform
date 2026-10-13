@@ -198,10 +198,10 @@ def test_the_stance_cue_is_true_to_its_own_arcs():
         assert [c.outcome for c in checks] == ["match"] * len(checks), [c.reasons for c in checks]
 
 
-def test_the_closed_day_block_group_lines_cite_one_arc_for_a_group_total():
-    """Real finding on the 10-09 block: an attention line states the GROUP's returns ("11 returns",
-    summed over 11 arcs) but cites only the longest arc, which has 3. The check flags exactly those
-    lines; everything else the block says is a match or undecidable."""
+def test_the_closed_day_block_attention_lines_state_the_cited_arcs_own_numbers():
+    """Was a real finding on the 10-09 block: an attention line stated the GROUP's returns ("11
+    returns", summed over 11 arcs) next to the longest arc, which has 3. The group total now cites
+    the day and the arc clause states the arc's own numbers, so nothing in the block mismatches."""
     from orion.temporal_self.day_block import render_closed_day_block
     from orion.temporal_self.tests.patch4_fixtures import day_1009
 
@@ -209,12 +209,10 @@ def test_the_closed_day_block_group_lines_cite_one_arc_for_a_group_total():
     arcs = {a.arc_id: ArcFacts.from_row(a.model_dump(mode="json")) for a in day.arcs}
     checks, _ = check_decision(at=day.closed_at, cited_valid=[], texts={"block": render_closed_day_block(day).text},
                                arcs=arcs)
-    mismatched = [c.sentence for c in checks if c.outcome == "mismatch"]
-    assert mismatched == [
-        "- Harness closure prediction error: 2 h 15 min over 11 arcs, 11 returns [arc:2ce0b486a356bbd2].",
-        "- Execution prediction error: 2 h 14 min over 16 arcs, 13 returns [arc:7bf5c22449afc56d].",
-    ]
-    assert sum(c.outcome == "match" for c in checks) == 14
+    assert [c.sentence for c in checks if c.outcome == "mismatch"] == []
+    harness = next(c for c in checks if c.sentence.startswith("- Harness closure prediction error:"))
+    assert harness.outcome == "match"
+    assert sum(c.outcome == "match" for c in checks) == 16
 
 
 # ---------------------------------------------------------------- review: never call a true sentence wrong

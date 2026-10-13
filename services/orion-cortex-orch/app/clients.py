@@ -8,6 +8,7 @@ from uuid import uuid4
 from pydantic import ValidationError
 from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
+from orion.core.bus.rpc_degraded import degraded_reason, note_degraded, strip_degraded
 from orion.schemas.cortex.exec import CortexExecResultPayload
 from orion.schemas.cortex.schemas import PlanExecutionRequest
 from orion.schemas.state.contracts import StateGetLatestRequest, StateLatestReply
@@ -50,7 +51,7 @@ class CortexExecClient:
             source=source,
             correlation_id=correlation_id,
             reply_to=reply_channel,
-            trace=dict(trace or {}),
+            trace=strip_degraded(trace),
             payload=payload_json,
         )
 
@@ -74,6 +75,15 @@ class CortexExecClient:
 
         if not decoded.ok:
             raise RuntimeError(f"Exec RPC failed: {decoded.error}")
+
+        # Relay, explicitly: this plan's result IS the answer orch is building, so a
+        # degraded exec reply (gateway refusal, canned fallback) makes orch's own reply
+        # degraded too -- otherwise actions -> orion:cortex:request would time the same
+        # refusal as orch's speed. No-op when no request collector is open (a Hunter
+        # dispatch with no reply). orion/core/bus/rpc_degraded.py.
+        relayed = degraded_reason(decoded.envelope, request_trace=env.trace)
+        if relayed is not None:
+            note_degraded(relayed)
 
         payload = decoded.envelope.payload
         if isinstance(payload, dict):

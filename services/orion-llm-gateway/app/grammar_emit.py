@@ -129,6 +129,23 @@ def classify_outcome(result: Any) -> str:
     return "upstream_error"
 
 
+# Outcomes whose bus reply is not a served answer, so the caller's rpc_request() must
+# count it as degraded (orion/core/bus/rpc_degraded.py), never as a fast success:
+# the contract's own refusal / backend-failure / unusable-request classes plus a
+# crash. ``upstream_empty`` is deliberately absent -- the backend answered with no
+# text, and whether that is common at rest has not been measured (see above).
+DEGRADED_OUTCOMES = REFUSAL_CLASSES | UPSTREAM_FAILURE_CLASSES | REQUEST_INVALID_CLASSES | {"gateway_exception"}
+
+
+def degraded_outcome(result: Any) -> str | None:
+    """The outcome class if this reply is degraded, else None. Never raises."""
+    try:
+        outcome = classify_outcome(result)
+    except Exception:  # noqa: BLE001 -- a classifier bug must not change a reply
+        return None
+    return outcome if outcome in DEGRADED_OUTCOMES else None
+
+
 # HTTP passthrough outcomes that are not in the contract's class sets: counted for
 # inspection only (like upstream_empty), never as a backend failure or a refusal.
 CLIENT_GONE = "client_gone"

@@ -26,6 +26,7 @@ from pydantic import BaseModel, ValidationError
 from orion.llm.routes import LLM_ROUTE_ALIASES, METACOG_LLM_ROUTES, normalize_llm_route
 from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import AttachmentRefV1, BaseEnvelope, ChatRequestPayload, LLMMessage, ServiceRef
+from orion.core.bus.rpc_degraded import note_degraded
 from orion.core.contracts.recall import RecallQueryV1
 from orion.cognition.recall_query import (
     cap_retrieval_query,
@@ -3514,6 +3515,13 @@ async def call_step_services(
                         finish_reason=finish_reason,
                         raw_content=raw_content if metacog_budget_ok else "",
                     )
+                    if draft_mode == "fallback":
+                        # The canned template (_fallback_metacog_draft) carries this
+                        # entry, not the model: the reply is degraded, and its speed is
+                        # not the hop's (orion/core/bus/rpc_degraded.py).
+                        note_degraded(
+                            f"metacog_draft_fallback:{fallback_reason or draft_error or patch_error}"
+                        )
                     _set_metacog_draft_telemetry(
                         base_entry,
                         mode=draft_mode,
@@ -3649,6 +3657,7 @@ async def call_step_services(
                         "error": str(e),
                         "fallback_reason": "llm_exception",
                     }
+                    note_degraded("metacog_draft_failed:llm_exception")
                     by_service = ctx.get("prior_step_results_by_service")
                     if not isinstance(by_service, dict):
                         by_service = {}
@@ -4476,6 +4485,10 @@ async def call_step_services(
                         raw_payload.get("details"),
                     )
                     logs.append(f"fail <- {service}: {gateway_failure}")
+                    # The reply this request gets is a refusal, not an answer: the
+                    # caller's RPC health must count it degraded, not time it
+                    # (orion/core/bus/rpc_degraded.py; 2026-10-08 gpu_pool_unavailable).
+                    note_degraded(f"llm_gateway:{gateway_failure}")
                     merged_result[service] = result_payload
                     merged_result["error"] = {"message": gateway_failure, "service": service}
                     _record_scoped_step("fail", gateway_failure, merged_result, logs)

@@ -19,6 +19,14 @@ from pydantic import Field, ValidationError
 # IMPORTS UPDATED: Added Envelope for generic typing
 from orion.core.bus.bus_schemas import BaseEnvelope, Envelope, ServiceRef, CausalityLink
 from orion.core.bus.bus_service_chassis import ChassisConfig, Rabbit, Hunter
+from orion.core.bus.rpc_degraded import (
+    begin_collecting,
+    current_degraded_reason,
+    end_collecting,
+    mark_degraded,
+    note_degraded,
+    strip_degraded,
+)
 from orion.core.bus.rpc_health_publish import rpc_health_publish_loop
 from orion.core.verbs import VerbRequestV1, VerbResultV1, VerbEffectV1, VerbRuntime
 
@@ -488,6 +496,16 @@ def _run_autonomy_graph_probe() -> None:
         )
 
 
+def _stamp_degraded(reply: BaseEnvelope, *, failed: bool = False) -> BaseEnvelope:
+    """Mark a reply this service publishes itself (outside the Rabbit chassis, which
+    stamps returned replies on its own) as degraded when the request's handling noted
+    a degradation -- a gateway refusal, a canned metacog fallback -- or the reply is
+    an explicit failure. orion/core/bus/rpc_degraded.py: the caller's rpc_request()
+    then counts it as degraded instead of timing a refusal as this hop's speed."""
+    reason = current_degraded_reason() or ("exec_failed" if failed else None)
+    return mark_degraded(reply, reason) if reason else reply
+
+
 async def handle(env: BaseEnvelope) -> BaseEnvelope:
     corr_id = str(env.correlation_id)
     logger.info(f"Incoming Exec Request: correlation_id={corr_id}")
@@ -527,6 +545,7 @@ async def handle(env: BaseEnvelope) -> BaseEnvelope:
                     corr_id,
                     exc_info=True,
                 )
+        note_degraded("validation_failed")
         return BaseEnvelope(
             kind="cortex.exec.result",
             source=_source(),
@@ -651,11 +670,13 @@ async def handle(env: BaseEnvelope) -> BaseEnvelope:
                     f"preview={preview_text}",
                     flush=True,
                 )
-                manual_result = CortexExecResult(
-                    source=_source(),
-                    correlation_id=corr_id,
-                    causality_chain=env.causality_chain,
-                    payload=CortexExecResultPayload(ok=True, result=res_payload),
+                manual_result = _stamp_degraded(
+                    CortexExecResult(
+                        source=_source(),
+                        correlation_id=corr_id,
+                        causality_chain=env.causality_chain,
+                        payload=CortexExecResultPayload(ok=True, result=res_payload),
+                    )
                 )
                 publish_started = time.perf_counter()
                 try:
@@ -705,6 +726,7 @@ async def handle(env: BaseEnvelope) -> BaseEnvelope:
             )
 
     if cognition_error is not None:
+        note_degraded("exec_error")
         return CortexExecResult(
             source=_source(),
             correlation_id=corr_id,
@@ -731,7 +753,9 @@ def _derive_envelope(env: BaseEnvelope, *, kind: str, payload: dict) -> BaseEnve
         source=_source(),
         correlation_id=env.correlation_id,
         causality_chain=[*env.causality_chain, parent_link],
-        trace=dict(env.trace),
+        # The request's own degraded marker (if a caller ever sent one) is not this
+        # reply's verdict; replies are stamped explicitly by _stamp_degraded.
+        trace=strip_degraded(env.trace),
         payload=payload,
     )
 
@@ -825,6 +849,16 @@ async def handle_world_context_capsule(env: BaseEnvelope) -> None:
 
 
 async def handle_verb_request(env: BaseEnvelope) -> None:
+    """orion:verb:request is a Hunter (no chassis reply), so this handler opens its own
+    degraded-reply collector and stamps the verb.result it publishes."""
+    token = begin_collecting()
+    try:
+        await _handle_verb_request(env)
+    finally:
+        end_collecting(token)
+
+
+async def _handle_verb_request(env: BaseEnvelope) -> None:
     assert svc is not None, "Rabbit service not initialized"
     assert verb_runtime is not None, "Verb runtime not initialized"
 
@@ -847,7 +881,10 @@ async def handle_verb_request(env: BaseEnvelope) -> None:
             error=f"invalid_request:{ve}",
             request_id=raw_payload.get("request_id"),
         )
-        result_env = _derive_envelope(env, kind="verb.result", payload=error_result.model_dump(mode="json"))
+        result_env = _stamp_degraded(
+            _derive_envelope(env, kind="verb.result", payload=error_result.model_dump(mode="json")),
+            failed=True,
+        )
         await svc.bus.publish(reply_channel, result_env)
         if reply_channel != "orion:verb:result":
             await svc.bus.publish("orion:verb:result", result_env)
@@ -869,7 +906,10 @@ async def handle_verb_request(env: BaseEnvelope) -> None:
         },
     )
 
-    result_env = _derive_envelope(env, kind="verb.result", payload=result.model_dump(mode="json"))
+    result_env = _stamp_degraded(
+        _derive_envelope(env, kind="verb.result", payload=result.model_dump(mode="json")),
+        failed=not result.ok,
+    )
     await svc.bus.publish(reply_channel, result_env)
     logger.info(
         "verb_runtime_result corr=%s reply=%s request_id=%s ok=%s",

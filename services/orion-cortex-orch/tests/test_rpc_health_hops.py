@@ -237,3 +237,88 @@ def test_main_publish_loop_wiring_folds_metacog_bus_and_sets_instance() -> None:
     # svc.bus: verb:* hops recorded via _bus_for_rpc() before the fork is ready.
     assert kw["hop_only_bus_getters"] == "[lambda: equilibrium_hunter.bus, lambda: svc.bus]"
     assert kw["bus_getter"] == "_bus_for_rpc"
+
+
+# --- degraded replies (2026-10-13) -------------------------------------------
+
+from orion.core.bus.rpc_degraded import (  # noqa: E402
+    begin_collecting,
+    current_degraded_reason,
+    end_collecting,
+    mark_degraded,
+)
+
+
+class _DegradedVerbBus(_RecordingBus):
+    """cortex-exec answered, but marked its verb.result degraded (a gateway refusal)."""
+
+    def record_hop_degraded(self, hop: str, elapsed_ms: float | None = None) -> None:
+        self._real.record_hop_degraded(hop, elapsed_ms)
+
+    async def iter_messages(self, pubsub):
+        async for msg in super().iter_messages(pubsub):
+            yield {"data": mark_degraded(msg["data"], "llm_gateway:gpu_pool_unavailable:deadline")}
+
+
+def test_a_degraded_verb_reply_is_counted_not_timed_and_relayed_to_orchs_reply() -> None:
+    bus = _DegradedVerbBus()
+
+    async def _run():
+        token = begin_collecting()  # what orch's Rabbit opens around orion:cortex:request
+        try:
+            await orchestrator.call_verb_runtime(
+                bus, source=SOURCE, client_request=_client_request(),
+                correlation_id="11111111-1111-1111-1111-000000000010", timeout_sec=5.0,
+            )
+            return current_degraded_reason()
+        finally:
+            end_collecting(token)
+
+    relayed = asyncio.run(_run())
+    assert relayed == "llm_gateway:gpu_pool_unavailable:deadline"
+    hop = bus.snapshot().channel_latency["verb:agent_runtime"]
+    assert (hop.success_count, hop.degraded_count, hop.max_ms) == (0, 1, None)
+
+
+class _ExecRpcBus:
+    """rpc_request() stand-in for CortexExecClient.execute_plan: replies with a
+    cortex.exec.result, optionally marked degraded by cortex-exec."""
+
+    def __init__(self, reason: str | None) -> None:
+        self.reason = reason
+        from orion.core.bus.codec import OrionCodec
+
+        self.codec = OrionCodec()
+        self.sent: BaseEnvelope | None = None
+
+    async def rpc_request(self, channel, env, **kwargs):
+        self.sent = env
+        reply = BaseEnvelope(
+            kind="cortex.exec.result",
+            source=ServiceRef(name="cortex-exec", version="0", node="n"),
+            correlation_id=env.correlation_id,
+            payload={"ok": True, "result": None},
+        )
+        if self.reason:
+            reply = mark_degraded(reply, self.reason)
+        return {"data": self.codec.encode(reply)}
+
+
+@pytest.mark.parametrize("reason", ["llm_gateway:gpu_pool_unavailable", None])
+def test_execute_plan_relays_a_degraded_exec_reply_and_strips_an_inherited_marker(reason) -> None:
+    bus = _ExecRpcBus(reason)
+    client = CortexExecClient(bus, request_channel="orion:cortex:exec:request:background", result_prefix="orion:exec:result")
+
+    async def _run():
+        token = begin_collecting()
+        try:
+            await client.execute_plan(
+                source=SOURCE, req=_plan_request(), correlation_id="11111111-1111-1111-1111-000000000011",
+                timeout_sec=5.0, trace={"trace_id": "t", "rpc_degraded": "from-our-caller"},
+            )
+            return current_degraded_reason()
+        finally:
+            end_collecting(token)
+
+    assert asyncio.run(_run()) == reason
+    assert bus.sent.trace == {"trace_id": "t"}  # never forward a marker downstream

@@ -16,6 +16,7 @@ from pydantic import ValidationError
 # [FIX] Added ServiceRef to imports
 from orion.core.bus.bus_schemas import BaseEnvelope, ChatRequestPayload, ChatResultPayload, Envelope, ServiceRef
 from orion.core.bus.bus_service_chassis import ChassisConfig, Rabbit
+from orion.core.bus.rpc_degraded import note_degraded
 from orion.bus.consumer_readiness import bus_consumer_readiness_v1, check_bus_consumer_readiness
 from orion.schemas.gpu_pool import GpuLeaseRefV1
 from orion.schemas.telemetry.system_health import BusConsumerReadinessV1
@@ -497,6 +498,7 @@ async def handle_chat(env: BaseEnvelope) -> BaseEnvelope:
             {**env.model_dump(), "kind": "llm.chat.request", "payload": payload_obj}
         )
     except ValidationError as ve:
+        note_degraded("validation_failed")
         return BaseEnvelope(
             kind="llm.chat.result",
             source=_source(),  # [FIX]
@@ -571,6 +573,14 @@ async def handle_chat(env: BaseEnvelope) -> BaseEnvelope:
             )
         except Exception:  # noqa: BLE001 -- telemetry must never break a reply
             logger.warning("llm_gateway_grammar_record_failed", exc_info=True)
+    # A refusal / backend failure / unusable request comes back as a normal
+    # llm.chat.result (empty content, typed raw.error). Mark the reply degraded so the
+    # caller's RPC health counts it, never times it as this hop's speed: live
+    # 2026-10-08, gpu_pool_unavailable refusals answered in well under a second
+    # taught cortex-exec/cortex-orch's transport baseline a floor ~10x too fast.
+    degraded = grammar_emit.degraded_outcome(result)
+    if degraded is not None:
+        note_degraded(degraded)
     text = result.get("text") if isinstance(result, dict) else str(result)
 
     # Optional Spark/NeuralHost enrichments. These may be absent depending on

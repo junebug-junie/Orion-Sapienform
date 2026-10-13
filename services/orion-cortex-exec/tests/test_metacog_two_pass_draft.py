@@ -249,3 +249,56 @@ def test_metacog_draft_rejects_exact_example_echo(monkeypatch):
     assert telemetry["metacog_draft_fallback_reason"] == "example_echo"
     # The fallback entry must not silently carry the echoed example forward.
     assert ctx["collapse_entry"]["summary"] != executor_module._METACOG_DRAFT_EXAMPLE_SUMMARY
+
+
+@pytest.mark.parametrize(
+    "content,expected",
+    [
+        ("", "metacog_draft_fallback:json_parse_failed"),  # e.g. a refused gateway call
+        (_VALID_DRAFT_JSON, None),
+    ],
+)
+def test_a_canned_fallback_draft_marks_the_reply_degraded(monkeypatch, content, expected):
+    """2026-10-13: a draft carried by the canned template (_fallback_metacog_draft)
+    returns fast and "successfully"; the reply must be marked degraded so the caller's
+    rpc_request() never times it as the hop's speed (orion/core/bus/rpc_degraded.py)."""
+    from orion.core.bus.rpc_degraded import begin_collecting, current_degraded_reason, end_collecting
+
+    executor_module = _load_executor_module()
+
+    class FakeLLMClient:
+        def __init__(self, bus):
+            self.bus = bus
+
+        async def chat(self, **kwargs):
+            return _fake_llm_response(content=content)
+
+    monkeypatch.setattr(executor_module, "LLMGatewayClient", FakeLLMClient)
+    step = ExecutionStep(
+        verb_name="log_orion_metacognition",
+        step_name="draft_entry",
+        order=0,
+        services=["MetacogDraftService"],
+        prompt_template=_load_template("log_orion_metacognition_draft.j2"),
+    )
+
+    async def _run():
+        token = begin_collecting()
+        try:
+            res = await executor_module.call_step_services(
+                bus=object(),
+                source=ServiceRef(name="test", node="test", version="1.0"),
+                step=step,
+                ctx=_draft_ctx(),
+                correlation_id="corr-degraded",
+            )
+            return res, current_degraded_reason()
+        finally:
+            end_collecting(token)
+
+    result, reason = asyncio.run(_run())
+    assert result.status == "success"
+    if expected is None:
+        assert reason is None
+    else:
+        assert reason is not None and reason.startswith("metacog_draft_fallback:"), reason

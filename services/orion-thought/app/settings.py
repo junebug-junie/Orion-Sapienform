@@ -200,8 +200,10 @@ class ThoughtSettings(BaseSettings):
     # multiplied (each chain step is a background-lane LLM call). Read right before each pause.
     # Missing / stale / unknown / Redis down / flag off = today's interval.
     reverie_chain_arousal_enabled: bool = Field(True, alias="ORION_REVERIE_CHAIN_AROUSAL_ENABLED")
+    # No `ge` bound on purpose: a value at or below 1 must change nothing (chain.py guards it),
+    # not stop the service from booting.
     reverie_chain_arousal_strained_multiplier: float = Field(
-        2.0, ge=1.0, alias="ORION_REVERIE_CHAIN_AROUSAL_STRAINED_MULTIPLIER"
+        2.0, alias="ORION_REVERIE_CHAIN_AROUSAL_STRAINED_MULTIPLIER"
     )
     regulation_reader_max_age_sec: float = Field(
         360.0, gt=0.0, alias="ORION_REGULATION_READER_MAX_AGE_SEC"

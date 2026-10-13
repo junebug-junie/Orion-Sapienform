@@ -124,3 +124,12 @@ def test_must_not_refractory_and_step_cap_do_not_read_arousal():
     from app import chain
     src = inspect.getsource(chain.run_reverie_chain) + inspect.getsource(chain.resolve_reverie_chain_stuck_loop)
     assert "arousal" not in src
+
+
+def test_a_sub_one_multiplier_boots_and_changes_nothing(monkeypatch):
+    from app.settings import ThoughtSettings as Settings
+    monkeypatch.setenv("ORION_REVERIE_CHAIN_AROUSAL_STRAINED_MULTIPLIER", "0.5")
+    s = Settings()
+    assert s.reverie_chain_arousal_strained_multiplier == 0.5
+    from app import chain
+    assert chain.reverie_chain_sleep_sec(90.0, "strained", s.reverie_chain_arousal_strained_multiplier) == 90.0

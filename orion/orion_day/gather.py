@@ -185,12 +185,12 @@ SELECT day_json FROM temporal_self_day WHERE day_id = $1
 """
 
 # R4 immune sweep findings for the day, as recorded at close (rows ingested later are not shown,
-# same rule as the rest of the closed day). Written by orion-durable-runs' immune node.
+# same rule as the rest of the closed day). Written by orion-durable-runs' immune node. Unbounded on
+# purpose: rows are unique per (metric, kind, day), so a day holds at most channels x 4 kinds.
 TEMPORAL_DAY_IMMUNE_SQL = """
 SELECT payload_json FROM temporal_self_event
 WHERE source_kind = 'immune_finding' AND day_id = $1 AND ingested_at <= $2
 ORDER BY occurred_at, event_id
-LIMIT 50
 """
 
 WORLD_PULSE_DIGEST_SQL = """

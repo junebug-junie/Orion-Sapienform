@@ -26,8 +26,9 @@ Four failures, each with the reason it is a lie and not a calm reading:
   source throughout; without one, a value at a saturation bound (exactly 0.0 or 1.0) cannot be
   told from a real pinned reading and is not judged as a replay.
 * ``constant`` -- level channel, one distinct value over at least ``constant_min_span_sec`` with
-  at least ``min_samples`` samples, outside its declared rest range, and freshly written at least
-  once (a value only carried forward is "no reading", not a constant reading).
+  at least ``min_samples`` samples, outside its declared rest range, and freshly re-written in at
+  least ``written_min_hours`` distinct hours (a value carried forward is "no reading", not a
+  constant reading; a series with no stamps at all cannot be judged).
 * ``floor_locked`` -- level, ``per_tick`` channel whose minimum over the same span stays above
   the top of its declared rest range: it never reaches rest.
 
@@ -36,6 +37,13 @@ rest-dependent check (replayed, constant, floor_locked) answers ``cannot_judge``
 it is never flagged. One finding per channel per sweep, in priority order
 ``decayed_to_zero`` > ``replayed`` (with source evidence) > ``constant`` > ``replayed`` >
 ``floor_locked``. Bad input never raises: the channel is skipped with a reason.
+
+Known limits, stated: (1) a gauge that lies AT its rest value is invisible to all four checks.
+(2) Field-channel reads carry no ``source``, so live replays at exactly 0.0/1.0 are not judged
+and the source-evidence branch only fires for producers that can name their source row (the
+fixtures; future surfaces). (3) ``decayed_to_zero`` would also flag a channel that decays by
+design (an EWMA fed zeros, ``NODE_DECAY_CHANNELS`` in orion-field-digester); no semantic channel
+decays by design today, and one that does should not be given semantics without revisiting this.
 """
 
 from __future__ import annotations
@@ -63,6 +71,10 @@ class ImmuneConfig:
     # samples (10 h of coverage) so two samples 20 h apart cannot pass as a day.
     constant_min_span_sec: float = 20 * 3600.0
     min_samples: int = 600
+    # Constant / floor-locked also need the value freshly re-written in at least this many distinct
+    # clock hours of the window: a value written once and carried forward overnight is "no
+    # reading" (absent_means), not a constant reading. 20 of 24 matches the 20 h span rule.
+    written_min_hours: int = 20
     # 30 fresh re-stamps in a row at one sample per minute = half an hour of a producer re-writing
     # the identical non-rest value. The live 24 h dry run (2026-10-13) had no healthy level
     # channel repeat a non-rest value with fresh stamps more than 3 times in a row.
@@ -294,12 +306,12 @@ def _long_enough(samples: Sequence[ImmuneSample], cfg: ImmuneConfig) -> Optional
     return None
 
 
-def _ever_written(samples: Sequence[ImmuneSample]) -> bool:
-    """Freshly written at least once in the window (or the series carries no stamps at all)."""
-    stamps = [s.updated_at for s in samples]
-    if all(u is None for u in stamps):
-        return True
-    return len({u for u in stamps if u is not None}) > 1
+def _written_hours(samples: Sequence[ImmuneSample]) -> Optional[int]:
+    """Distinct clock hours holding a fresh re-stamp, or None when the series carries no stamps
+    (then a carried value cannot be told from a re-written one)."""
+    if all(s.updated_at is None for s in samples):
+        return None
+    return len({b.t.replace(minute=0, second=0, microsecond=0) for a, b in zip(samples, samples[1:]) if _fresh(a, b)})
 
 
 # --- one channel, then the sweep ---------------------------------------------------------------
@@ -349,8 +361,11 @@ def inspect_channel(
             distinct = len(set(values))
             if short:
                 checks["constant"] = checks["floor_locked"] = short
-            elif not _ever_written(samples):
-                checks["constant"] = checks["floor_locked"] = "clear:carried forward, never re-written (designed)"
+            elif _written_hours(samples) is None:
+                checks["constant"] = checks["floor_locked"] = "cannot_judge:no updated_at stamps"
+            elif _written_hours(samples) < config.written_min_hours:
+                checks["constant"] = checks["floor_locked"] = (
+                    f"clear:carried forward, re-written in only {_written_hours(samples)} h (designed)")
             else:
                 if distinct == 1 and not _in_rest(values[0], rest):
                     checks["constant"] = "flagged"
@@ -442,10 +457,13 @@ def sweep(
             node, channel = str(key[0]), str(key[1])
         except Exception:  # noqa: BLE001
             continue
-        sem = (semantics or {}).get(key)
+        try:
+            sem = (semantics or {}).get(key)
+            raw = (series or {}).get(key)
+        except Exception:  # noqa: BLE001 - a non-mapping argument is bad input, not a crash
+            continue
         if sem is None:
             continue
-        raw = (series or {}).get(key)
         if not raw:
             verdicts.append(ChannelVerdict(f"{node}.{channel}", {}, skipped="absent in the window"))
             continue

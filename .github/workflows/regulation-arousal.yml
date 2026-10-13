@@ -16,6 +16,7 @@ on:
       - "tests/test_regulation_arousal.py"
       - "tests/test_regulation_immune.py"
       - "orion/field/channel_glossary.py"
+      - "config/field/field_channel_glossary.v1.yaml"
       - "scripts/analysis/measure_arousal_reducer_replay.py"
       - "scripts/analysis/tests/test_measure_arousal_reducer_replay.py"
       - "scripts/check_env_key_single_source.py"

@@ -65,7 +65,7 @@ class TemporalSelfGraphState(TypedDict, total=False):
     transition: Optional[dict]   # {"from", "to"} when this step changed the level (transient)
     warnings: list
     chronicle: Optional[dict]    # Chronicler.step() summary: watermark, lag, windows, error
-    immune: dict                 # {last_run_at, open, findings[<=20], judged, error}: carried across days
+    immune: dict                 # {last_run_at, open, findings[<=20], coverage, error, skipped}: carried across days
 
 
 @dataclass
@@ -180,59 +180,75 @@ def build_temporal_self_graph(deps: TemporalSelfDeps, checkpointer: Any):
         if deps.read_immune_series is None:
             return {}
         regulation = dict(state.get("regulation") or {})
-        if (regulation.get("arousal") or {}).get("arousal_level") != "idle":
-            return {}
-        now = deps.now()
         prev = dict(state.get("immune") or {})
+        level = (regulation.get("arousal") or {}).get("arousal_level")
+        if level != "idle":
+            # Visible in /health: with arousal disabled or unknown the sweep never runs.
+            skipped = f"arousal {level}"
+            return {} if prev.get("skipped") == skipped else {"immune": {**prev, "skipped": skipped}}
+        now = deps.now()
         last = _dt(prev.get("last_run_at"))
         if last is not None and 0.0 <= (now - last).total_seconds() < deps.immune_interval_sec:
-            return {}
+            return {} if not prev.get("skipped") else {"immune": {**prev, "skipped": None}}
 
-        async def run() -> tuple[list, int]:
+        async def run() -> tuple[list, dict]:
             series, semantics = await deps.read_immune_series(now)
             result = immune_sweep(series, semantics, config=deps.immune_config)
-            return result.findings, sum(1 for v in result.verdicts if v.skipped is None)
+            answered = [v for v in result.verdicts if any(c in ("flagged", "clear") or str(c).startswith("clear:")
+                                                          for c in v.checks.values())]
+            coverage = {"judged": len(answered),
+                        "rest_unjudged": sum(1 for v in answered if "cannot_judge:no rest_range" in v.checks.values()),
+                        "skipped": sum(1 for v in result.verdicts if v.skipped is not None)}
+            return result.findings, coverage
 
-        warnings = list(state.get("warnings") or [])
+        new_warnings: list[str] = []
         # A failed or timed-out sweep still stamps last_run_at: a broken read must not re-run a
         # 24 h scan every 120 s step. The open count keeps its last known value.
         summary: dict = {"last_run_at": now.isoformat(), "open": int(prev.get("open") or 0),
-                         "findings": list(prev.get("findings") or []), "judged": prev.get("judged"), "error": None}
+                         "findings": list(prev.get("findings") or []), "coverage": prev.get("coverage"),
+                         "error": None, "skipped": None}
         try:
-            findings, judged = await asyncio.wait_for(run(), timeout=deps.immune_timeout_sec)
+            findings, coverage = await asyncio.wait_for(run(), timeout=deps.immune_timeout_sec)
         except asyncio.TimeoutError:
             logger.warning("temporal_self_immune_timeout sec=%s", deps.immune_timeout_sec)
             summary["error"] = f"timeout after {deps.immune_timeout_sec:.0f} s"
-            return {"immune": summary, "warnings": warnings + ["immune_failed"]}
+            findings = None
         except Exception as exc:  # noqa: BLE001 - the sweep must never break regulation
             logger.warning("temporal_self_immune_failed", exc_info=True)
             summary["error"] = f"{type(exc).__name__}: {str(exc)[:300]}"
-            return {"immune": summary, "warnings": warnings + ["immune_failed"]}
-        summary.update(open=len(findings), judged=judged,
-                       findings=[f"{f.metric_id}:{f.kind}" for f in findings][:IMMUNE_TRACE_CAP])
-        logger.info("temporal_self_immune_sweep judged=%s open=%s findings=%s", judged, len(findings),
-                    ",".join(summary["findings"]))
-        if findings and deps.record_immune is not None:
-            try:
-                ok = await deps.record_immune(findings, state.get("day_id") or "", now)
-            except Exception:  # noqa: BLE001
-                logger.warning("temporal_self_immune_record_failed", exc_info=True)
-                ok = False
-            if not ok:
-                warnings.append("immune_write_failed")
-        out: dict = {"immune": summary, "warnings": warnings}
-        if regulation:
-            try:
-                model = RegulationStateV1.model_validate(regulation).model_copy(
-                    update={"immune_findings_open": len(findings)})
-            except Exception:  # noqa: BLE001
-                logger.warning("temporal_self_immune_state_invalid", exc_info=True)
-                return out
-            try:
-                await deps.project(model)
-            except Exception:  # noqa: BLE001 - Redis down: the checkpoint still carries the count
-                logger.warning("regulation_project_failed after immune sweep", exc_info=True)
-            out["regulation"] = model.model_dump(mode="json")
+            findings = None
+        if findings is None:
+            new_warnings.append("immune_failed")
+        else:
+            summary.update(open=len(findings), coverage=coverage,
+                           findings=[f"{f.metric_id}:{f.kind}" for f in findings][:IMMUNE_TRACE_CAP])
+            logger.info("temporal_self_immune_sweep coverage=%s open=%s findings=%s", coverage, len(findings),
+                        ",".join(summary["findings"]))
+            if findings and deps.record_immune is not None:
+                try:
+                    ok = await deps.record_immune(findings, state.get("day_id") or "", now)
+                except Exception:  # noqa: BLE001
+                    logger.warning("temporal_self_immune_record_failed", exc_info=True)
+                    ok = False
+                if not ok:
+                    # The count still reflects what the sweep saw; the day block shows only rows.
+                    new_warnings.append("immune_write_failed")
+        out: dict = {"immune": summary, "warnings": list(state.get("warnings") or []) + new_warnings}
+        if not regulation:
+            return out
+        # Re-project so /regulation/state carries the count and any immune warning this step.
+        try:
+            model = RegulationStateV1.model_validate(regulation)
+            model = model.model_copy(update={"immune_findings_open": summary["open"],
+                                             "warnings": list(model.warnings) + new_warnings})
+        except Exception:  # noqa: BLE001
+            logger.warning("temporal_self_immune_state_invalid", exc_info=True)
+            return out
+        try:
+            await deps.project(model)
+        except Exception:  # noqa: BLE001 - Redis down: the checkpoint still carries the count
+            logger.warning("regulation_project_failed after immune sweep", exc_info=True)
+        out["regulation"] = model.model_dump(mode="json")
         return out
 
     async def chronicle(state: TemporalSelfGraphState) -> dict:

@@ -234,3 +234,22 @@ def test_sweep_reports_absent_channels_and_counts_findings():
     by_id = {v.metric_id: v for v in res.verdicts}
     assert by_id["n:gone.c"].skipped == "absent in the window"
     assert res.findings[0].to_dict()["kind"] == "constant"
+
+
+def test_one_early_rewrite_then_carried_all_day_is_not_constant():
+    """Review finding: two stamps at the window start, then 23 h carried, used to pass as written."""
+    ts = minutes()
+    samples = [ImmuneSample(t, 0.5, updated_at=ts[min(i, 1)]) for i, t in enumerate(ts)]
+    v = inspect_channel("node:substrate.chat", "prediction_error", samples, sem(rest_range=(0.0, 0.0)))
+    assert v.finding is None and v.checks["constant"].startswith("clear:carried forward, re-written in only 1 h")
+
+
+def test_series_without_stamps_cannot_judge_constant():
+    samples = [ImmuneSample(t, 1.0) for t in minutes()]
+    v = inspect_channel("frontier:signals", "ontology_sparse_region", samples, sem(rest_range=(0.0, 0.5)))
+    assert v.finding is None and v.checks["constant"] == "cannot_judge:no updated_at stamps"
+
+
+def test_non_mapping_arguments_do_not_raise():
+    assert sweep({("n", "c"): []}, ["not", "a", "mapping"]).findings == []
+    assert sweep(["x"], {("n", "c"): sem()}).findings == []

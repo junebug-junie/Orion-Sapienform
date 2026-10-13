@@ -172,3 +172,12 @@ def test_malformed_immune_rows_are_dropped_not_invented():
     junk = [None, "x", {"kind": "constant"}, _finding(kind="made_up"), _finding(start="not a date"),
             _finding(start="2026-10-09T09:10:00")]  # naive timestamp
     assert render_closed_day_block(day_1009(), immune_findings=junk).text == BLOCK_1009
+
+
+def test_stuck_gauges_never_evict_attention_or_conversation():
+    many = [_finding(node=f"node:substrate.n{i}", kind="constant",
+                     start=f"2026-10-09T0{i}:00:00+00:00") for i in range(8)]
+    block = render_closed_day_block(day_1009(), immune_findings=many, max_chars=1400)
+    assert "Talked with Juniper" in block.text and "Attention, most time first:" in block.text
+    shown = sum("gauge looked stuck" in ln for ln in block.text.splitlines())
+    assert len(block.records["day:2026-10-09"]["immune_findings"]) == shown

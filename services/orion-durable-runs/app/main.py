@@ -479,7 +479,8 @@ async def health() -> dict[str, Any]:
 
 @app.get("/regulation/state")
 async def regulation_state():
-    """The latest RegulationStateV1, verbatim (the same body as Redis orion:regulation:latest)."""
+    """The latest RegulationStateV1, verbatim. Redis orion:regulation:latest carries the same body minus
+    ``REDIS_PROJECTION_EXCLUDE`` (fields older extra="forbid" readers would reject)."""
     if temporal_self is None:
         raise HTTPException(503, "temporal_self thread is disabled")
     if temporal_self.latest is None:

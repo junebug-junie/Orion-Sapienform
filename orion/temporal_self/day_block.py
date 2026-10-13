@@ -218,13 +218,17 @@ def render_closed_day_block(
     if day_warnings:
         lines.append((1, "Instrument warnings: " + " | ".join(day_warnings) + "."))
 
+    # Priority 3 (with expectations and threads): a run of stuck gauges must not evict what Orion
+    # attended to and did, which sits at 1-2.
     immune = _immune_rows(immune_findings)
+    immune_lines: list[tuple[str, dict[str, Any]]] = []
     for f in immune[:MAX_IMMUNE_LINES]:
-        lines.append((1, f"My {_gauge_name(f['node'], f['channel'])} gauge looked stuck "
-                         f"({IMMUNE_KIND_WORDS[f['kind']]}) from {_clock(f['start'], day.day_id, tz)} "
-                         f"to {_clock(f['end'], day.day_id, tz)} {day_ref}."))
+        immune_lines.append((f"My {_gauge_name(f['node'], f['channel'])} gauge looked stuck "
+                             f"({IMMUNE_KIND_WORDS[f['kind']]}) from {_clock(f['start'], day.day_id, tz)} "
+                             f"to {_clock(f['end'], day.day_id, tz)} {day_ref}.", f))
+    lines.extend((3, text) for text, _ in immune_lines)
     if len(immune) > MAX_IMMUNE_LINES:
-        lines.append((1, f"And {len(immune) - MAX_IMMUNE_LINES} more stuck gauges {day_ref}."))
+        lines.append((3, f"And {len(immune) - MAX_IMMUNE_LINES} more stuck gauges {day_ref}."))
 
     kept = list(lines)
     dropped = 0
@@ -250,8 +254,10 @@ def render_closed_day_block(
         "expectations_pending": len(frame.expectations_pending),
         "constraint_event_ids": len(frame.constraint_event_ids) + frame.constraint_overflow,
         "warnings": list(frame.warnings),
+        # Like attention_groups: only findings whose line survived the cap.
         "immune_findings": [{"metric_id": f["metric_id"], "kind": f["kind"], "window_start": f["start"].isoformat(),
-                             "window_end": f["end"].isoformat()} for f in immune],
+                             "window_end": f["end"].isoformat()}
+                            for line, f in immune_lines if line in text.splitlines()],
         "attention_groups": {k: v for k, (line, v) in sorted(group_totals.items()) if line in text.splitlines()},
     }
     return TemporalSelfDayBlockV1(

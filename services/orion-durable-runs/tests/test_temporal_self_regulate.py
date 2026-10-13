@@ -502,7 +502,8 @@ def test_immune_sweep_runs_when_idle_records_findings_and_sets_the_count():
     assert d.latest.immune_findings_open == 1
     assert w.projected[-1].immune_findings_open == 1          # re-projected after the sweep
     assert out["immune"]["open"] == 1 and out["immune"]["findings"] == ["node:z.gauge:constant"]
-    assert out["immune"]["judged"] == 2 and out["immune"]["error"] is None
+    assert out["immune"]["coverage"] == {"judged": 2, "rest_unjudged": 0, "skipped": 0}
+    assert out["immune"]["error"] is None
     assert d.health()["immune"]["open"] == 1
 
 
@@ -513,6 +514,14 @@ def test_immune_sweep_skipped_when_not_idle():
     tick(d)
     assert w.projected[-1].arousal.arousal_level == "engaged"
     assert w.reads == [] and d.latest.immune_findings_open == 0
+    assert d.health()["immune"] == {"skipped": "arousal engaged"}     # visible, not silent
+
+
+def test_immune_sweep_never_runs_with_arousal_disabled_and_says_so():
+    w = ImmuneWorld()
+    d = driver(w, arousal_enabled=False)
+    tick(d)
+    assert w.reads == [] and d.health()["immune"]["skipped"] == "arousal unknown"
 
 
 def test_immune_sweep_runs_at_most_once_per_interval_and_count_carries():
@@ -547,6 +556,7 @@ def test_immune_sweep_failure_does_not_break_regulation():
     assert w.projected[-1].arousal.arousal_level == "idle"
     assert d.latest is not None and d.latest.immune_findings_open == 0
     assert "immune_failed" in out["warnings"]
+    assert "immune_failed" in d.latest.warnings and "immune_failed" in w.projected[-1].warnings
     assert out["immune"]["error"].startswith("RuntimeError")
     w.now += timedelta(seconds=120)
     tick(d)
@@ -568,6 +578,7 @@ def test_immune_write_failure_is_a_warning_and_still_counts():
     d = driver(w)
     out = tick(d)
     assert "immune_write_failed" in out["warnings"] and d.latest.immune_findings_open == 1
+    assert "immune_write_failed" in d.latest.warnings
 
 
 def test_immune_disabled_never_reads():

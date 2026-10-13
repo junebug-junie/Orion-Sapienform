@@ -3,9 +3,9 @@
   "metric_count": 728,
   "_last_change": {
     "change_count": 1,
-    "high_severity_count": 0,
+    "high_severity_count": 1,
     "changes": [
-      "medium added metric://bus_channel/orion-harness-governor/orion:introspect:node_history:request"
+      "high   semantics_changed metric://inner_state/orion-equilibrium-service/transport_baseline_hourly.v1#floor_ms (rest: \u2026re-seeds it. -> \u2026re-seeds it. Built from real round trips only: replies the \u2026)"
     ]
   },
   "definitions": {
@@ -4729,7 +4729,7 @@
     "metric://inner_state/orion-equilibrium-service/transport_baseline_hourly.v1#floor_ms": {
       "schema_id": "TransportBaselineHourlyV1",
       "value_kind": "level",
-      "rest": "the hop's best recent typical latency, in ms -- its own scale per hop, no universal rest value. Moves up only slowly and never while saturation is open/paused; a stated regime_shift re-seeds it.",
+      "rest": "the hop's best recent typical latency, in ms -- its own scale per hop, no universal rest value. Moves up only slowly and never while saturation is open/paused; a stated regime_shift re-seeds it. Built from real round trips only: replies the replier marked degraded (row degraded_count) never enter it, and a pool where they outnumber real calls may not move it down (since 2026-10-13; before then a burst of fast GPU-pool refusals dragged it ~10x low).",
       "sparsity": "event_gated",
       "absent_means": "None until the hop's first evaluation; otherwise carried unchanged through hours with no evaluation.",
       "upstream": [

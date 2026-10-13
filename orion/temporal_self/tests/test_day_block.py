@@ -105,3 +105,29 @@ def test_attention_line_numbers_match_what_they_cite():
     one = day.model_copy(update={"arcs": [by_id["2ce0b486a356bbd2"]]})
     solo = render_closed_day_block(one).text.splitlines()
     assert "- Harness closure prediction error: 39 min, 3 returns [arc:2ce0b486a356bbd2]." in solo
+
+
+def test_attention_groups_follow_the_lines_that_survive_the_cap():
+    day = day_1009()
+    block = render_closed_day_block(day, max_chars=1000)
+    groups = block.records["day:2026-10-09"]["attention_groups"]
+    assert groups, block.text
+    for subject_ref in groups:
+        label = next(a.subject_label for a in day.arcs if a.subject_ref == subject_ref and a.kind == "attention")
+        assert any(l.startswith(f"- {label}:") for l in block.text.splitlines())
+    assert len(groups) < 5
+
+
+def test_same_label_groups_keep_only_the_one_whose_line_survives():
+    day = day_1009()
+    by_id = {a.arc_id: a for a in day.arcs}
+    harness_ref = by_id["2ce0b486a356bbd2"].subject_ref
+    route_ref = by_id["f6ddd30f4a7edd2b"].subject_ref
+    # Give the Route group the Harness label: same text, different subject.
+    arcs = [a.model_copy(update={"subject_label": by_id["2ce0b486a356bbd2"].subject_label})
+            if a.subject_ref == route_ref else a for a in day.arcs]
+    full = render_closed_day_block(day.model_copy(update={"arcs": arcs}))
+    assert {harness_ref, route_ref} <= set(full.records["day:2026-10-09"]["attention_groups"])
+    capped = render_closed_day_block(day.model_copy(update={"arcs": arcs}), max_chars=1000)
+    kept = capped.records["day:2026-10-09"]["attention_groups"]
+    assert harness_ref in kept and route_ref not in kept

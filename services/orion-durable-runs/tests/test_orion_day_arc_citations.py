@@ -130,15 +130,17 @@ def test_note_prompt_asks_for_the_chronology_brackets_before_and_after_the_recor
     rendered = _render_note(digest)
     head, tail = rendered.split(digest)
     assert "Cite your chronology" in head
-    assert "copy that line's bracket into the same sentence" in head
+    assert "copy the [arc:<id>] next to that fact into the same sentence" in head
     assert "[arc:<id>] for one arc, [day:<date>] for a count over the whole day" in head
+    assert "a sentence naming an attention subject or a time also needs that fact's [arc:<id>]" in head
     assert "marked unverified" in head and "you do not need to cite" not in head.split("Cite your chronology")[1]
-    assert "put that line's [arc:<id>] or [day:<date>] in the same sentence" in tail
+    assert "put the [arc:<id>] shown next to that fact in the same sentence" in tail
 
 
 def test_note_prompt_without_a_block_asks_for_no_ids():
     rendered = _render_note(brief_1009(with_block=False).llm_view.digest_md)
     assert "[arc:" not in rendered and "Cite your chronology" not in rendered
+    assert "(next point)" not in rendered and "you do not need to cite the bracketed references" in rendered
 
 
 def test_a_note_that_follows_the_prompt_is_verified():
@@ -158,3 +160,12 @@ def test_the_live_uncited_sentence_shape_stays_unverified_not_blocked():
     out = check_note(note, brief)
     assert out["note_md"] == note  # kept verbatim
     assert out["note_arc_citations"]["label"] == "UNVERIFIED"
+
+
+def test_a_day_bracket_alone_does_not_verify_an_attention_sentence():
+    """Why the prompt says [day:] covers only whole-day counts: the gate counts [arc:] ids, so a
+    sentence naming an attention subject with only the day bracket stays UNVERIFIED (kept)."""
+    brief = brief_1009()
+    note = "Harness closure prediction error held me 2 h 15 min over 11 arcs [day:2026-10-09]." + PAD
+    out = check_note(note, brief)
+    assert out["note_md"] == note and out["note_arc_citations"]["label"] == "UNVERIFIED"

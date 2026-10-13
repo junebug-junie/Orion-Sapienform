@@ -225,6 +225,6 @@ prints 1800.0, and `curl -s localhost:8124/regulation/state` shows a reading wit
 
 ## PR link
 
-PR_LINK_PLACEHOLDER
+https://github.com/junebug-junie/Orion-Sapienform/pull/2628
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

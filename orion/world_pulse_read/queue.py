@@ -23,6 +23,7 @@ from orion.world_pulse_read.documents import (
 from orion.world_pulse_read.urls import normalize_reading_source, validate_source_url
 from orion.schemas.world_pulse_read import WorldPulseReadHandoffV1, WorldPulseReadSeedV1
 from orion.world_pulse_read.retry import FailureOutcome, is_capacity_deferral, is_transient_failure
+from orion.world_pulse_read.reader_blocks import reader_block_reason
 from orion.world_pulse_read.seeds import seeds_from_digest_payload
 
 _PRIORITY = {"finding": 0, "reading": 0, "digest_item": 10}
@@ -132,9 +133,9 @@ INSERT INTO world_pulse_read_seed
     (seed_id, kind, run_id, url, title, section, item_id, priority, status,
      request_id, request_json, root_request_id, duplicate_of, stage2_status, last_error)
 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,
-        CASE WHEN $12::text IS NULL THEN 'pending' ELSE 'skipped' END,
+        CASE WHEN $12::text IS NULL AND $13::text IS NULL THEN 'pending' ELSE 'skipped' END,
         $9,$10::jsonb,$11,$12,
-        CASE WHEN $12::text IS NULL THEN 'pending' ELSE 'skipped' END, $13)
+        CASE WHEN $12::text IS NULL AND $13::text IS NULL THEN 'pending' ELSE 'skipped' END, $13)
 ON CONFLICT DO NOTHING
 """
 
@@ -407,9 +408,13 @@ async def enqueue_seeds(
                 if count >= max_round_trips:
                     raise ValueError("round_trip_cap")
             await conn.execute("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", url)
-            duplicate_of = await conn.fetchval(READ_URL_SQL, url, seed.seed_id)
-            reason = ALREADY_READ if duplicate_of else None
-            if duplicate_of is None:
+            # A publisher that refuses the fetch tool (reader_blocks.py) is
+            # recorded skipped on arrival: no queue slot, no tick, and the
+            # requester's reading_status names the block at once.
+            blocked = reader_block_reason(url)
+            duplicate_of = None if blocked else await conn.fetchval(READ_URL_SQL, url, seed.seed_id)
+            reason = blocked or (ALREADY_READ if duplicate_of else None)
+            if duplicate_of is None and blocked is None:
                 active = await conn.fetchrow(ACTIVE_URL_SQL, url)
                 duplicate_of = active["seed_id"] if active and active["seed_id"] != seed.seed_id else None
             status = await conn.execute(
@@ -663,6 +668,19 @@ async def mark_seed_failed(
         0 if is_capacity_deferral(error) else 1,
     )
     return _failure_outcome(row, status_key="status", attempts_key="attempts")
+
+
+PENDING_DURABLE_TURN_SQL = """
+SELECT 1 FROM reading_durable_turn
+WHERE seed_id = $1 AND stage = $2 AND consumed_at IS NULL LIMIT 1
+"""
+
+
+async def has_pending_durable_turn(conn: Any, seed_id: str, stage: int) -> bool:
+    """A submitted turn whose result is not consumed yet. Admission gates must
+    not skip such a seed: the turn already ran (or is running) and its result
+    would be stranded with the row unretryable (``active_durable_binding``)."""
+    return await conn.fetchrow(PENDING_DURABLE_TURN_SQL, seed_id, stage) is not None
 
 
 async def mark_seed_skipped(conn: Any, seed_id: str, *, reason: str) -> None:

@@ -470,3 +470,31 @@ def test_webfetch_redirect_notice_is_not_source_content():
         "with these parameters to fetch the content from the redirect URL.",
     ))
     assert tracker.source_fetches() == []
+
+
+
+def test_webfetch_http_error_notice_is_reported_but_not_a_source_read():
+    from orion.harness.reading_receipts import ReadingReceiptTracker, _RECOMMEND_TOOL
+
+    notice = ("The server returned HTTP 404 Not Found.\n\nThe response body was not retrieved. "
+              "If this URL requires authentication, use an authenticated tool (e.g. `gh` for "
+              "GitHub, or an MCP-provided fetch tool) instead of WebFetch.")
+
+    def run(body):
+        url = "https://www.coreweave.com/architecture"
+        tracker = ReadingReceiptTracker(None, retain_text=True)
+        tracker.observe({"message": {"content": [
+            {"type": "tool_use", "id": "f1", "name": "WebFetch", "input": {"url": url, "prompt": "p"}},
+            {"type": "tool_use", "id": "r1", "name": _RECOMMEND_TOOL,
+             "input": {"url": url, "why_now": "follow up"}},
+        ]}})
+        tracker.observe({"message": {"content": [
+            {"type": "tool_result", "tool_use_id": "f1", "content": body},
+        ]}})
+        return tracker
+
+    dead = run(notice)
+    (fetch,) = dead.source_fetches()
+    assert fetch.content_text == notice  # Hub sees it and rejects it (read_evidence.py)
+    assert [o.source_read for o in dead.outcomes()] == [False]
+    assert [o.source_read for o in run("CoreWeave architecture overview. " * 8).outcomes()] == [True]

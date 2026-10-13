@@ -1,11 +1,12 @@
 {
   "_comment": "Definition lock for scripts/check_definition_drift.py. Generated, never hand-edited. Regenerate with --update; the resulting diff IS the definition-change alert. Unlike the *_baseline.json ratchets this tracks current truth in both directions -- a definition change is an event, not a defect.",
-  "metric_count": 727,
+  "metric_count": 728,
   "_last_change": {
-    "change_count": 1,
+    "change_count": 2,
     "high_severity_count": 1,
     "changes": [
-      "high   routing_changed metric://inner_state/orion-durable-runs/regulation.state.v1 (declared_consumers: \u2026d outreach)'] -> \u2026d outreach)', 'services.orion-proposal-runtime.app.worker:P\u2026)"
+      "high   routing_changed metric://inner_state/orion-durable-runs/regulation.state.v1 (declared_consumers: \u2026d outreach)'] -> \u2026d outreach)', 'services.orion-proposal-runtime.app.worker:P\u2026)",
+      "medium added metric://bus_channel/orion-harness-governor/orion:introspect:node_history:request"
     ]
   },
   "definitions": {
@@ -1853,6 +1854,17 @@
       ],
       "declared_consumers": [
         "orion-dream"
+      ],
+      "notes": "kind=request stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-harness-governor/orion:introspect:node_history:request": {
+      "schema_id": "IntrospectRequestV1",
+      "all_producers": [
+        "orion-harness-governor"
+      ],
+      "declared_consumers": [
+        "orion-hub"
       ],
       "notes": "kind=request stability=experimental",
       "registry_source": "orion/bus/channels.yaml"

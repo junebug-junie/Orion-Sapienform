@@ -25,6 +25,7 @@ from typing import Any, Iterable, Literal
 from orion.schemas.reading import SourceFetchEvidenceV1
 
 from .documents import SNAPSHOT_TOOL
+from .fetch_provenance import fetch_http_error_status
 
 logger = logging.getLogger(__name__)
 
@@ -78,10 +79,12 @@ class RetainedTextV1:
 
 
 async def load_retained_texts(
-    conn: Any, evidence: Iterable[SourceFetchEvidenceV1]
+    conn: Any, evidence: Iterable[SourceFetchEvidenceV1], *, drop_http_errors: bool = True,
 ) -> list[RetainedTextV1]:
     """The retained texts behind a handoff's read evidence, re-verified against their hash.
-    A row whose content no longer hashes to its key is not evidence and is dropped."""
+    A row whose content no longer hashes to its key is not evidence and is dropped. So is
+    a fetch tool's HTTP error notice (fetch_provenance.py) unless ``drop_http_errors`` is
+    False: claims and hop links must never be drawn from "404 Not Found"."""
     wanted = [e for e in evidence if e.content_sha256]
     if not wanted or conn is None:
         return []
@@ -99,6 +102,8 @@ async def load_retained_texts(
             logger.warning("reading_fetch_text_hash_mismatch sha=%s", e.content_sha256)
             continue
         seen.add(e.content_sha256 or "")
+        if drop_http_errors and fetch_http_error_status(e.tool_name, text) is not None:
+            continue
         out.append(RetainedTextV1(sha256=e.content_sha256 or "", url=e.url,
                                   representation=fetch_representation(e), text=text))
     return out

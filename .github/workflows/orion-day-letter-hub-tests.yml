@@ -21,6 +21,8 @@ on:
       - "services/orion-hub/scripts/curiosity_offer_decisions.py"
       - "services/orion-sql-db/manual_migration_orion_day_correction_v1.sql"
       - "services/orion-hub/scripts/curiosity_introspect_listener.py"
+      - "services/orion-hub/scripts/node_history_introspect_listener.py"
+      - "services/orion-hub/tests/test_node_history_introspect_listener.py"
       - "orion/introspect/**"
       - "orion/schemas/introspect.py"
       - "services/orion-hub/evals/*orion_day*"
@@ -58,7 +60,8 @@ jobs:
           python -m pytest -q services/orion-hub/tests/test_orion_day_letter.py \
             services/orion-hub/tests/test_curiosity_dream_hypotheses.py \
             services/orion-hub/tests/test_orion_day_introspect_listener.py \
-            services/orion-hub/tests/test_orion_day_correction_listener.py
+            services/orion-hub/tests/test_orion_day_correction_listener.py \
+            services/orion-hub/tests/test_node_history_introspect_listener.py
       - name: Corrections (offer once, kickoff section, outcome, next letter)
         env:
           PYTHONPATH: ${{ github.workspace }}

@@ -62,6 +62,7 @@ from orion.world_pulse_read.read_evidence import (
     no_evidence_reason,
     source_read_evidence,
 )
+from orion.world_pulse_read.reader_blocks import reader_block_reason
 from orion.world_pulse_read.url_filters import url_looks_like_section_index
 from orion.world_pulse_read.wallet_a import (
     WalletAInputs,
@@ -394,6 +395,20 @@ class WorldPulseReadPipeline:
                 "world_pulse_read_skipped_index seed=%s url=%s", seed.seed_id, seed.url
             )
             return "skipped_index_url"
+
+        # Publishers that refuse the fetch tool (reader_blocks.py): every turn on
+        # them ends no_read_evidence. Any requester -- the block is the same.
+        blocked = reader_block_reason(seed.url)
+        if blocked is not None:
+            await self._with_conn(
+                lambda conn: mark_seed_skipped(conn, seed.seed_id, reason=blocked)
+            )
+            await publish_lifecycle(self._bus, seed, "stage1_failed", source=self._source_ref, error=blocked)
+            logger.info(
+                "world_pulse_read_skipped_blocked seed=%s url=%s reason=%s",
+                seed.seed_id, seed.url, blocked,
+            )
+            return "skipped_reader_blocked"
 
         receipt = None
         self._settlement_run_id = None

@@ -487,6 +487,60 @@ def test_section_index_url_skipped_without_wallet_debit() -> None:
     assert store.snapshot().nodes == {}
 
 
+@pytest.mark.parametrize(
+    "url, site",
+    [
+        # Live 2026-10-13: WebFetch -> "Claude Code is unable to fetch from www.bbc.co.uk".
+        ("https://www.bbc.co.uk/news/articles/cmn06w5x9g25o?at_medium=RSS&at_campaign=rss", "bbc.co.uk"),
+        # Live 2026-10-13: WebFetch -> "timeout of 60000ms exceeded" (npr.org refuses Claude-User).
+        ("https://www.npr.org/2026/10/12/nx-s1-5998948/new-white-house-press-secretary-a-devoted-fan-of-trump-and-maga", "npr.org"),
+    ],
+)
+def test_reader_blocked_source_skipped_without_turn_or_debit(url: str, site: str) -> None:
+    """Every BBC/NPR seed since 10-05 burned a turn + Wallet A slot and ended
+    no_read_evidence. Now: skipped before the read, reason names the block,
+    and the requester gets a terminal lifecycle event."""
+    bus = _FakeBus()
+    conn = _FakeConn()
+    store = InMemorySubstrateGraphStore()
+    pipe = _pipeline(bus, conn, store)
+    called = {"n": 0}
+
+    async def _fake_read(seed):
+        called["n"] += 1
+        return _handoff()
+
+    pipe._stage1_read = _fake_read  # type: ignore[method-assign]
+
+    async def _run():
+        await enqueue_seeds(
+            conn,
+            [
+                WorldPulseReadSeedV1(
+                    seed_id="digest_item:r1:item:blocked",
+                    kind="digest_item",
+                    run_id="r1",
+                    url=url,
+                    title="Blocked publisher article",
+                    section="global_politics",
+                    item_id="item",
+                )
+            ],
+        )
+        return await pipe.tick(force=True)
+
+    reason = asyncio.run(_run())
+    assert reason == "skipped_reader_blocked"
+    row = conn.rows["digest_item:r1:item:blocked"]
+    assert row["status"] == "skipped"
+    assert row["last_error"].startswith(f"source_blocks_reader:{site}:")
+    assert called["n"] == 0
+    assert _count_key() not in bus.redis.store
+    lifecycle = [e.payload for _, e in bus.published if e.kind == "reading.lifecycle.v1"]
+    assert [p["stage"] for p in lifecycle] == ["started", "stage1_failed"]
+    assert lifecycle[-1]["error"] == row["last_error"]
+
+
 def test_missing_store_fails_seed_when_nodes_exist() -> None:
     """Enablement without Atlas must not mark the seed done."""
     for over in ({"store_provider": None}, {"store_provider": lambda: None}):

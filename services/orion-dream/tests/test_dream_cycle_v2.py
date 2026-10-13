@@ -890,3 +890,4 @@ def test_reverie_source_queries_join_the_loop_title_by_its_indexed_theme_key():
         assert "LEFT JOIN LATERAL" in sql and "attention_salience_trace a" in sql
         assert f"a.theme_key = {col}" in sql  # idx_attention_salience_trace_theme, not loop_id
         assert "t.title" in sql and "LIMIT :limit" in sql
+        assert "a.created_at < :until" in sql  # the title as of the window, not today

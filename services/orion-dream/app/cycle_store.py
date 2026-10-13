@@ -47,10 +47,12 @@ CYCLE_WRITE_TABLES = ("dream_cycle", "dream_replay_item", "dream_hypothesis", "d
 METACOG_KEY_RE = r"[0-9a-f]{8,}|-?[0-9]+(\.[0-9]+)?"
 
 def _title_join(theme_col: str) -> str:
-    """Latest non-empty human description of the open loop a reverie theme names."""
+    """The open loop's latest non-empty human description before the window's end."""
     return (
         "\n        LEFT JOIN LATERAL (SELECT a.description AS title FROM attention_salience_trace a"
         f" WHERE a.theme_key = {theme_col} AND coalesce(a.description, '') <> ''"
+        # As described when the window closed, not today's (titles drift: "1 message" -> "2").
+        " AND a.created_at < :until"
         " ORDER BY a.created_at DESC LIMIT 1) t ON true"
     )
 

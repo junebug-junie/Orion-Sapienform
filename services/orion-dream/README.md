@@ -124,7 +124,11 @@ Compaction requests and resonance alerts name a reverie theme by its bare open-l
 description from `attention_salience_trace` (by the indexed `theme_key`), and replay
 text uses it: "Harness closure prediction error: reverie_chain_max_steps". The id stays
 the novelty key, ref and tag, so tiredness is unchanged when a title is reworded. No
-title found -> the id, as before.
+title found -> the id, as before. The title is the one current when the window closed.
+
+Cohort break: hypotheses made after this change pair titled reverie fragments, earlier
+ones id-only. Both arms changed together (arm vs arm stays fair), but absolute adoption
+rates may shift at the deploy date; split the dream scorecard there.
 
 ### Every sleep ends in a story
 

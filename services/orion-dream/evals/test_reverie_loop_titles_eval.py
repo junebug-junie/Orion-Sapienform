@@ -4,7 +4,12 @@ Fixture: the 11 distinct reverie themes (compaction requests + resonance alerts)
 7 days before 2026-10-13, each with the latest attention_salience_trace description for
 its theme_key -- what cycle_store's title join returns live. Before this change the dream
 read every one of them as a bare `open-loop-<hex>` id (e.g. 4 of 12 items in the
-2026-10-09 06:33 sleep)."""
+2026-10-09 06:33 sleep).
+
+Scope: a coverage check over real themes and titles through the real replay builders.
+It is not proof of the SQL; that was checked live (old vs new query: identical rows and
+order for 7-day and lookback windows; title lookup 0.02-0.05 ms per loop on
+idx_attention_salience_trace_theme)."""
 from __future__ import annotations
 
 import json

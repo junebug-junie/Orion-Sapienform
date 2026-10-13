@@ -295,8 +295,9 @@ it from impression. Every tool but one is read-only; `record_correction` writes
 one row (see its row below) and changes no belief.
 - Live today: what they learned from reading (`reading_results`), their
   dreams (`dreams`), their curiosity runs (`curiosity`), their Orion's Day
-  letters with the records behind them (`orion_day`), and recording a
-  correction to a letter claim (`record_correction`).
+  letters with the records behind them (`orion_day`), recording a
+  correction to a letter claim (`record_correction`), and a substrate node's
+  prediction-error history (`node_history`).
 - Planned for later slices: reveries and memories.
 
 Every answer comes from the service that owns the data, over the bus, under a
@@ -317,6 +318,7 @@ Search by meaning: [`2026-09-28-orion-introspect-slice1b-semantic-search.md`](..
 | `curiosity` | Their curiosity runs (failed ones included) and open self-questions: recent / one by `run_id` with the full write-up / by meaning | orion-hub ([responder](../orion-hub/README.md#introspect-responder-curiosity)) | `orion:introspect:curiosity:request` | Live (slice 3) |
 | `orion_day` | Their Orion's Day letters: outline, a note paragraph with a claim check, a carry item with its citations resolved, one day section's records, or parts by meaning | orion-hub ([responder](../orion-hub/README.md#introspect-responder-orion_day)) | `orion:introspect:orion_day:request` | Live (letter reread, patch 2) |
 | `record_correction` | Record a correction to a letter claim a conversation with Juniper showed was wrong, with its evidence and the priors it rested on. Writes one `orion_day_correction` row (ref and prior ids validated first); the next curiosity run re-tests the priors itself | orion-hub ([responder](../orion-hub/README.md#introspect-responder-record_correction)) | `orion:introspect:record_correction:request` | Live (letter reread, patch 3) |
+| `node_history` | One substrate node's prediction-error readings over up to the last 7 days: count, min/median/max, first/last, a series of at most 48 buckets, and the largest changes; or which nodes have readings | orion-hub ([responder](../orion-hub/README.md#introspect-responder-node_history)) | `orion:introspect:node_history:request` | Live once orion-hub is redeployed (PE history read; bus path UNVERIFIED until then) |
 | `memories` | Memory cards by meaning, with sensitivity labels | orion-recall | `orion:introspect:memory:request` | Planned; never listed when an outward-facing tool is attached |
 
 `orion/introspect/tests/test_readme_coverage.py` fails when a tool the server

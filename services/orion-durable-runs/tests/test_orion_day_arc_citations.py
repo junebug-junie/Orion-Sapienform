@@ -112,3 +112,60 @@ def test_full_run_never_retries_for_citations_and_persists_them():
         assert note_check["rejected_unknown"] == ["arc:deadbeefdeadbeef"] and note_check["label"] == "UNVERIFIED"
         assert row["sources"]["arc_citations"]["carry_forward"]["label"] == "verified"
     asyncio.run(scenario())
+
+
+# --- the note prompt asks for the ids (live 10-12/10-13: 20 and 17 arcs shown, 0 cited) ----------------
+
+
+def _render_note(digest_md: str) -> str:
+    from jinja2 import Environment
+    template = (ROOT / "orion" / "cognition" / "prompts" / "orion_day_note_v1.j2").read_text()
+    return Environment(autoescape=False).from_string(template).render(
+        metadata={"orion_day_input": {"letter_date": "2026-10-09", "timezone": "America/Denver",
+                                      "digest_md": digest_md}})
+
+
+def test_note_prompt_asks_for_the_chronology_brackets_before_and_after_the_record():
+    digest = brief_1009().llm_view.digest_md
+    rendered = _render_note(digest)
+    head, tail = rendered.split(digest)
+    assert "Cite your chronology" in head
+    assert "copy the [arc:<id>] next to that fact into the same sentence" in head
+    assert "[arc:<id>] for one arc, [day:<date>] for a count over the whole day" in head
+    assert "a sentence naming an attention subject or a time also needs that fact's [arc:<id>]" in head
+    assert "marked unverified" in head and "you do not need to cite" not in head.split("Cite your chronology")[1]
+    assert "put the [arc:<id>] shown next to that fact in the same sentence" in tail
+
+
+def test_note_prompt_without_a_block_asks_for_no_ids():
+    rendered = _render_note(brief_1009(with_block=False).llm_view.digest_md)
+    assert "[arc:" not in rendered and "Cite your chronology" not in rendered
+    assert "(next point)" not in rendered and "you do not need to cite the bracketed references" in rendered
+
+
+def test_a_note_that_follows_the_prompt_is_verified():
+    """The reply shape the prompt asks for (the 10-12 sentence, cited) passes the gate as verified."""
+    brief = brief_1009()
+    note = ("I talked with Juniper at 15:00 [arc:2545de72655edb66]. "
+            "Harness closure prediction error held me for 2 h 15 min over 11 arcs [day:2026-10-09]; "
+            f"the longest stretch was 39 min [arc:{HARNESS}]." + PAD)
+    c = check_note(note, brief)["note_arc_citations"]
+    assert c["label"] == "verified" and c["uncited_day_sentences"] == 0
+    assert c["cited_valid"] == ["arc:2545de72655edb66", f"arc:{HARNESS}"] and c["rejected_unknown"] == []
+
+
+def test_the_live_uncited_sentence_shape_stays_unverified_not_blocked():
+    brief = brief_1009()
+    note = "I talked with Juniper from 15:00 to 16:12." + PAD
+    out = check_note(note, brief)
+    assert out["note_md"] == note  # kept verbatim
+    assert out["note_arc_citations"]["label"] == "UNVERIFIED"
+
+
+def test_a_day_bracket_alone_does_not_verify_an_attention_sentence():
+    """Why the prompt says [day:] covers only whole-day counts: the gate counts [arc:] ids, so a
+    sentence naming an attention subject with only the day bracket stays UNVERIFIED (kept)."""
+    brief = brief_1009()
+    note = "Harness closure prediction error held me 2 h 15 min over 11 arcs [day:2026-10-09]." + PAD
+    out = check_note(note, brief)
+    assert out["note_md"] == note and out["note_arc_citations"]["label"] == "UNVERIFIED"

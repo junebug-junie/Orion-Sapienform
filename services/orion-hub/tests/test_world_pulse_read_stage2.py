@@ -281,6 +281,15 @@ def _handoff(seed: WorldPulseReadSeedV1 | None = None) -> WorldPulseReadHandoffV
     )
 
 
+def _linked_by_stage2(pipe, urls: list[str]) -> None:
+    """The Stage 2 turn fetched a page that links ``urls`` -- the only way a
+    model-named hop is allowed to re-enter Stage 1 (fetch_provenance.py)."""
+    pipe._stage2_fetches = [SourceFetchEvidenceV1(
+        url="https://ex.com/index-of-links", tool_name="WebFetch", content_chars=900,
+        content_text="Related pages:\n" + "\n".join(f"- {u}" for u in urls),
+    )]
+
+
 def _result(*, urls: list[str] | None = None) -> WorldPulseReadStage2ResultV1:
     return WorldPulseReadStage2ResultV1(
         summary="Priors updated.",
@@ -510,7 +519,9 @@ def test_round_trip_ceiling_stops_at_five() -> None:
     reentered: list[str] = []
 
     async def _pass(handoff):
-        return _result(urls=[f"https://ex.com/more-{i}" for i in range(10)])
+        urls = [f"https://ex.com/more-{i}" for i in range(10)]
+        _linked_by_stage2(pipe, urls)
+        return _result(urls=urls)
 
     async def _reenter(url, *, parent_seed):
         reentered.append(url)
@@ -536,7 +547,9 @@ def test_already_read_followup_is_passed_on_without_stopping_the_rest() -> None:
     tried: list[str] = []
 
     async def _pass(handoff):
-        return _result(urls=["https://ex.com/read-before", "https://ex.com/new"])
+        urls = ["https://ex.com/read-before", "https://ex.com/new"]
+        _linked_by_stage2(pipe, urls)
+        return _result(urls=urls)
 
     async def _reenter(url, *, parent_seed):
         tried.append(url)
@@ -561,7 +574,9 @@ def test_reentry_stops_when_wallet_a_blocked() -> None:
     reentered: list[str] = []
 
     async def _pass(handoff):
-        return _result(urls=["https://ex.com/more-0", "https://ex.com/more-1"])
+        urls = ["https://ex.com/more-0", "https://ex.com/more-1"]
+        _linked_by_stage2(pipe, urls)
+        return _result(urls=urls)
 
     async def _reenter(url, *, parent_seed):
         if reentered:
@@ -587,6 +602,7 @@ def test_default_reentry_enqueues_reading_seed_with_world_pulse_lineage() -> Non
     pipe = _pipeline(bus, conn)
 
     async def _pass(handoff):
+        _linked_by_stage2(pipe, ["https://ex.com/follow"])
         return _result(urls=["https://ex.com/follow"])
 
     pipe._stage2_pass = _pass  # type: ignore[method-assign]
@@ -1194,3 +1210,160 @@ def test_stage2_prompt_no_longer_asks_the_model_for_created_at() -> None:
     prompt = _build_stage2_prompt(_handoff(), "tr-1")
     assert '"created_at":' not in prompt
     assert "created_at are forced server-side" in prompt
+
+
+# --- Hop provenance (live 2026-10-13): Stage 2 of a CoreWeave read asked Stage 1
+# to read three sibling URLs it had guessed; each was a 404 and each was marked
+# `done`. A hop must come from a URL Orion actually fetched or saw linked.
+
+_LIVE_404_NOTICE = (
+    "The server returned HTTP 404 Not Found.\n\nThe response body was not retrieved. "
+    "If this URL requires authentication, use an authenticated tool (e.g. `gh` for "
+    "GitHub, or an MCP-provided fetch tool) instead of WebFetch."
+)
+
+
+def _retained_parent(conn: _FakeConn, seed: WorldPulseReadSeedV1, *texts: str) -> WorldPulseReadHandoffV1:
+    import hashlib
+
+    evidence = []
+    for text in texts:
+        sha = hashlib.sha256(text.encode()).hexdigest()
+        conn.__dict__.setdefault("snapshots", {})[sha] = {"content": text, "first_source": seed.url}
+        evidence.append(SourceFetchEvidenceV1(url=seed.url, tool_name="WebFetch",
+                                              content_chars=len(text), content_sha256=sha))
+    return WorldPulseReadHandoffV1(seed_ref=seed, what_i_learned="Learned.", trace_id="tr-pipeline-1",
+                                   created_at=NOW, read_evidence=evidence)
+
+
+def _hop_run(conn, pipe, handoff, urls, *, stage2_fetches=()):
+    tried: list[str] = []
+
+    async def _pass(_handoff):
+        pipe._stage2_fetches = list(stage2_fetches)
+        return _result(urls=urls)
+
+    async def _reenter(url, *, parent_seed):
+        tried.append(url)
+        return None
+
+    pipe._stage2_pass = _pass  # type: ignore[method-assign]
+    pipe._reenter_stage1 = _reenter  # type: ignore[method-assign]
+
+    async def _run():
+        seed = handoff.seed_ref
+        await enqueue_seeds(conn, [seed])
+        await mark_seed_done(conn, seed.seed_id, trace_id="tr-pipeline-1", handoff=handoff)
+        return await pipe.tick(force=True)
+
+    return asyncio.run(_run()), tried
+
+
+def test_invented_hop_url_is_refused_and_logged(caplog) -> None:
+    conn = _FakeConn()
+    pipe = _pipeline(_FakeBus(), conn)
+    page = "CoreWeave offers bare-metal NVIDIA GPUs for AI training. " * 5
+    handoff = _retained_parent(conn, _seed(), page)
+    guessed = ["https://www.coreweave.com/architecture", "https://www.coreweave.com/infrastructure"]
+    with caplog.at_level("INFO"):
+        outcome, tried = _hop_run(conn, pipe, handoff, guessed)
+    assert outcome is None
+    assert tried == []
+    assert pipe.last_round_trips == 0
+    assert conn.rows["finding:r1:x"]["stage2_status"] == "done"
+    refused = [r.getMessage() for r in caplog.records if "reentry_refused" in r.getMessage()]
+    assert len(refused) == 2 and all("reason=url_not_in_fetched_content" in m for m in refused)
+
+
+def test_hop_url_linked_in_parent_retained_text_is_followed() -> None:
+    conn = _FakeConn()
+    pipe = _pipeline(_FakeBus(), conn)
+    page = ("The full benchmark is described at https://www.ex.com/benchmarks/gb200/ "
+            "(see methodology). " * 3)
+    handoff = _retained_parent(conn, _seed(), page)
+    # The model's copy differs only in www / trailing slash; a guessed sibling does not.
+    outcome, tried = _hop_run(conn, pipe, handoff,
+                              ["https://ex.com/benchmarks/gb200", "https://ex.com/benchmarks/h100"])
+    assert outcome is None
+    assert tried == ["https://ex.com/benchmarks/gb200"]
+    assert pipe.last_round_trips == 1
+
+
+def test_hop_reached_by_a_stage2_fetch_is_followed_but_not_one_that_404d() -> None:
+    conn = _FakeConn()
+    pipe = _pipeline(_FakeBus(), conn)
+    handoff = _retained_parent(conn, _seed(), "A real page about packaging costs. " * 8)
+    fetched = [
+        SourceFetchEvidenceV1(url="https://ex.com/real", tool_name="WebFetch", content_chars=900,
+                              content_text="Packaging costs rose 12% in Q3. " * 10),
+        SourceFetchEvidenceV1(url="https://ex.com/gone", tool_name="WebFetch",
+                              content_chars=len(_LIVE_404_NOTICE), content_text=_LIVE_404_NOTICE),
+    ]
+    outcome, tried = _hop_run(conn, pipe, handoff, ["https://ex.com/gone", "https://ex.com/real"],
+                              stage2_fetches=fetched)
+    assert outcome is None
+    assert tried == ["https://ex.com/real"]
+
+
+def test_hop_from_a_dead_parent_read_is_never_attempted() -> None:
+    """A parent stored `done` on nothing but a 404 notice (pre-fix rows): no Stage 2
+    turn, no claims, no hop chain."""
+    bus = _FakeBus()
+    conn = _FakeConn()
+    pipe = _pipeline(bus, conn)
+    handoff = _retained_parent(conn, _seed(), _LIVE_404_NOTICE)
+    ran: list[str] = []
+
+    async def _pass(_handoff):
+        ran.append("pass")
+        return _result(urls=["https://ex.com/a/more"])
+
+    pipe._stage2_pass = _pass  # type: ignore[method-assign]
+
+    async def _run():
+        await enqueue_seeds(conn, [handoff.seed_ref])
+        await mark_seed_done(conn, handoff.seed_ref.seed_id, trace_id="tr-pipeline-1", handoff=handoff)
+        return await pipe.tick(force=True)
+
+    assert asyncio.run(_run()) == "no_read_evidence:http_error"
+    assert ran == []
+    row = conn.rows["finding:r1:x"]
+    assert row["stage2_status"] == "skipped"
+    assert row["stage2_error"] == "no_read_evidence:http_error"
+    assert not [r for r in conn.rows.values() if r["url"] == "https://ex.com/a/more"]
+    assert bus.redis.store.get(_count_key_b()) in (None, "0")  # no Wallet B debit
+
+
+def test_stage2_turn_fetches_reach_the_hop_gate_through_the_real_pass() -> None:
+    """The production _stage2_pass -> _generate path carries the turn's own fetches
+    (ReadingTurnResultV1.source_fetches) to the hop gate; no test-side injection."""
+    import json as _json
+
+    conn = _FakeConn()
+    pipe = _pipeline(_FakeBus(), conn)
+    handoff = _retained_parent(conn, _seed(), "A real page about packaging costs. " * 8)
+    body = {"summary": "Priors updated.", "need_stage1_urls": ["https://ex.com/linked", "https://ex.com/guessed"]}
+    linked = SourceFetchEvidenceV1(url="https://ex.com/related", tool_name="WebFetch", content_chars=400,
+                                   content_text="Further reading: https://ex.com/linked " * 5)
+
+    async def _generate(prompt, correlation_id, *, seed_id, retrieval_query=None):
+        return GenerateOutcome("```json\n" + _json.dumps(body) + "\n```", None, None,
+                               source_fetches=[linked])
+
+    pipe._generate = _generate  # type: ignore[method-assign]
+    tried: list[str] = []
+
+    async def _reenter(url, *, parent_seed):
+        tried.append(url)
+        return None
+
+    pipe._reenter_stage1 = _reenter  # type: ignore[method-assign]
+
+    async def _run():
+        await enqueue_seeds(conn, [handoff.seed_ref])
+        await mark_seed_done(conn, handoff.seed_ref.seed_id, trace_id="tr-pipeline-1", handoff=handoff)
+        return await pipe.tick(force=True)
+
+    assert asyncio.run(_run()) is None
+    assert tried == ["https://ex.com/linked"]
+    assert pipe.hops_refused_total == {"url_not_in_fetched_content": 1}

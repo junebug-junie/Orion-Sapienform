@@ -32,7 +32,8 @@ class ReadingQueueFakeMixin:
                        root_request_id=args[10], duplicate_of=args[11],
                        stage2_result_json=None, landing_at=None,
                        attempts=0, stage2_attempts=0)
-            if args[11]:
+            # INSERT_SQL: an alias (duplicate_of) or an arrival reason is skipped on insert.
+            if args[11] or args[12]:
                 row.update(status="skipped", stage2_status="skipped", last_error=args[12])
         if "stage2_result_json = COALESCE" in sql and args[0] in self.rows:
             self.rows[args[0]]["stage2_result_json"] = json.loads(args[2]) if args[2] else None
@@ -143,4 +144,7 @@ class ReadingQueueFakeMixin:
     async def fetch(self, sql, *args):
         if "SET landing_at = now()" in sql:
             return []
+        if "FROM reading_document_snapshot WHERE sha256 = ANY" in sql:
+            snaps = self.__dict__.get("snapshots", {})
+            return [{"sha256": sha, "content": snaps[sha]["content"]} for sha in args[0] if sha in snaps]
         return await super().fetch(sql, *args)

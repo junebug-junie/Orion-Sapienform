@@ -9,6 +9,7 @@ DREAMS = mcp_tool(ORION_INTROSPECT, "dreams")
 CURIOSITY = mcp_tool(ORION_INTROSPECT, "curiosity")
 ORION_DAY = mcp_tool(ORION_INTROSPECT, "orion_day")
 RECORD_CORRECTION = mcp_tool(ORION_INTROSPECT, "record_correction")
+NODE_HISTORY = mcp_tool(ORION_INTROSPECT, "node_history")
 _READING_STATUS = mcp_tool(ORION_READING, "reading_status")
 
 
@@ -17,7 +18,7 @@ def introspect_brief_lines(binding: IntrospectToolBindingV1) -> list[str]:
         (
             f"Introspect MCP (orion-introspect) is available. Its tools, by exact name (load "
             f"with ToolSearch select:<name>): {READING_RESULTS}, {DREAMS}, {CURIOSITY}, {ORION_DAY}, "
-            f"{RECORD_CORRECTION}. "
+            f"{RECORD_CORRECTION}, {NODE_HISTORY}. "
             f"{READING_RESULTS} searches what you "
             "actually learned from sources read through your reading pipeline. Use query=<topic "
             "in plain words> to recall readings by meaning (items carry similarity; weak matches "
@@ -65,6 +66,13 @@ def introspect_brief_lines(binding: IntrospectToolBindingV1) -> list[str]:
             "and whether it did is recorded. Do not record a correction "
             "you do not actually accept, and do not say it was recorded unless the tool returned "
             "a correction_id."
+        ),
+        (
+            "Substrate node history exists: a node in your graph shows only its current "
+            f"prediction error, but {NODE_HISTORY} returns its readings over up to the last 7 "
+            "days (count, min/median/max, a series of up to 48 points, and when the largest "
+            "changes happened). Call it before saying a node has no history or that a change "
+            "cannot be dated."
         ),
         (
             "If ToolSearch finds none of these, check the exact name first. A 'failed to "

@@ -1,18 +1,11 @@
 {
   "_comment": "Definition lock for scripts/check_definition_drift.py. Generated, never hand-edited. Regenerate with --update; the resulting diff IS the definition-change alert. Unlike the *_baseline.json ratchets this tracks current truth in both directions -- a definition change is an event, not a defect.",
-  "metric_count": 727,
+  "metric_count": 728,
   "_last_change": {
-    "change_count": 8,
+    "change_count": 1,
     "high_severity_count": 0,
     "changes": [
-      "medium added metric://inner_state/orion-equilibrium-service/transport_baseline_hourly.v1",
-      "medium added metric://inner_state/orion-equilibrium-service/transport_baseline_hourly.v1#baseline_ms",
-      "medium added metric://inner_state/orion-equilibrium-service/transport_baseline_hourly.v1#calls_per_min_mean",
-      "medium added metric://inner_state/orion-equilibrium-service/transport_baseline_hourly.v1#floor_ms",
-      "medium added metric://inner_state/orion-equilibrium-service/transport_baseline_hourly.v1#floor_ms_start",
-      "medium added metric://inner_state/orion-equilibrium-service/transport_baseline_hourly.v1#saturation_ratio_p50",
-      "medium added metric://inner_state/orion-equilibrium-service/transport_baseline_hourly.v1#z_p50",
-      "medium added metric://inner_state/orion-equilibrium-service/transport_baseline_hourly.v1#z_p90"
+      "medium added metric://bus_channel/orion-harness-governor/orion:introspect:node_history:request"
     ]
   },
   "definitions": {
@@ -1860,6 +1853,17 @@
       ],
       "declared_consumers": [
         "orion-dream"
+      ],
+      "notes": "kind=request stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-harness-governor/orion:introspect:node_history:request": {
+      "schema_id": "IntrospectRequestV1",
+      "all_producers": [
+        "orion-harness-governor"
+      ],
+      "declared_consumers": [
+        "orion-hub"
       ],
       "notes": "kind=request stability=experimental",
       "registry_source": "orion/bus/channels.yaml"

@@ -1,0 +1,31 @@
+name: vector-db footprint gauge
+
+# Vector DB growth gauge (orion-biometrics details.vector_db) and the no-silent-memory-loss
+# collection policy gate. Scoped to the two new test files: the rest of the biometrics suite
+# has no CI lane today.
+on:
+  pull_request:
+    paths:
+      - "orion/memory/vector_collection_policy.py"
+      - "services/orion-biometrics/**"
+      - "tests/test_vector_collection_policy.py"
+      - ".github/workflows/vector-db-footprint-tests.yml"
+  push:
+    branches: [main]
+
+jobs:
+  footprint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: python -m pip install -r services/orion-biometrics/requirements.txt
+      - run: python -m pytest -q -p no:cacheprovider tests/test_vector_collection_policy.py
+      - name: biometrics footprint tests
+        working-directory: services/orion-biometrics
+        env:
+          PYTHONPATH: .:../..
+        run: python -m pytest -q -p no:cacheprovider tests/test_vector_db_footprint.py

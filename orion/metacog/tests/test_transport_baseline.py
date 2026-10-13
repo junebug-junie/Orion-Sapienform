@@ -657,6 +657,11 @@ def test_only_evaluated_calm_closes_and_one_calm_window_after_silence_is_not_eno
     # and the one-window check below would pass vacuously).
     cfg = replace(CFG, level_alpha=1.0)
     state, i = _saturated_hop(cfg)
+    # two calm verdicts first, so the verdict before the silence is already
+    # calm: the silence must still not be credited as calm time
+    _flat(state, 1000.0, i, 2, cfg=cfg)
+    i += 2
+    assert "saturation" in _ks(state).episodes
     _silent(state, i, int(2 * 3600 / WIN), cfg=cfg)
     i += int(2 * 3600 / WIN)
     # one calm evaluated window right after the silence: observed calm time is
@@ -864,3 +869,36 @@ def test_floor_stays_frozen_in_the_hysteresis_band_after_a_pause():
     assert all(cfg.saturation_close_ratio <= o.saturation_ratio < cfg.saturation_ratio for o in obs if o.evaluated)
     assert "saturation" in _ks(state).episodes
     assert _ks(state).floor == floor
+
+
+def test_sparse_hop_evaluated_every_30_min_accumulates_hot_time_from_its_traffic():
+    """Live shape (2026-10-12): the background lane was *evaluated* 25-47 min
+    apart (min_calls only pooled in bursts) while carrying a call every few
+    minutes. The pre-fix credit rule (gap between evaluations <= 15 min)
+    credited it ~0 hot time, so regime_shift could never fire. Continuous
+    traffic between two hot verdicts is observed hot time."""
+    state, i = _saturated_hop()
+    hot0 = _ks(state).episodes["saturation"].hot_s
+    rng = random.Random(41)
+    windows = []
+    for k in range(int(3 * 3600 / WIN)):  # 3 h
+        if k % 60 == 0:
+            windows.append((i + k, {HOP: _stats(_noisy(rng, 4000.0, n=5, sigma=0.1))}))  # burst -> evaluation
+        elif k % 6 == 0:
+            windows.append((i + k, {HOP: _stats(_noisy(rng, 4000.0, n=1, sigma=0.1))}))  # one call / 3 min
+        else:
+            windows.append((i + k, {}))
+    _, obs = _run(state, windows)
+    evals = [o for o in obs if o.evaluated]
+    assert 5 <= len(evals) <= 12  # sparse: roughly one per 30 min
+    gained = _ks(state).episodes["saturation"].hot_s - hot0
+    assert gained >= 2.5 * 3600.0
+
+
+def test_calls_further_apart_than_close_quiet_are_silence_not_hot_time():
+    state, i = _saturated_hop()
+    hot0 = _ks(state).episodes["saturation"].hot_s
+    gap = int(CFG.close_quiet_s / WIN) + 2  # 16 min between calls
+    windows = [(i + k * gap, {HOP: _stats(_noisy(random.Random(k), 4000.0, n=5, sigma=0.1))}) for k in range(1, 9)]
+    _run(state, windows)
+    assert _ks(state).episodes["saturation"].hot_s == hot0

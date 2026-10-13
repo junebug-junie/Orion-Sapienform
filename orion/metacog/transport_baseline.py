@@ -53,7 +53,8 @@ and is what lets the ~1 call / 30 s background lane be measured at all.
    clipped at ``mean + borderline_z * sigma``.
 2. ``saturation_ratio = exp(level - floor)``, opens at ``>= saturation_ratio``.
 3. Saturation *or spike* observed hot for ``>= regime_after_s`` (hot time,
-   ``Episode.hot_s`` -- silence never counts) emits exactly one
+   ``Episode.hot_s`` -- silence never counts, and never resets it either:
+   see "Episodes") emits exactly one
    ``regime_shift`` and only then re-seeds ``floor`` and ``fast``'s mean to
    the new level. The spike path matters: a step too small for
    ``saturation_ratio`` (e.g. 1.5x) but at z >= 3 freezes ``fast`` under
@@ -243,14 +244,16 @@ class Episode:
     announced_magnitude: float
     peak_ms: float | None = None
     peak_magnitude: float = 0.0
-    # Time the condition was actually observed hot, gaps longer than
-    # close_quiet_s excluded -- regime_shift is judged on this, never on
-    # wall-clock since open (silence is not evidence of a sustained regime).
-    # Silence pauses it; nothing but a close or a regime_shift resets it.
+    # Time the condition was actually observed hot -- regime_shift is judged
+    # on this, never on wall-clock since open (silence is not evidence of a
+    # sustained regime). timeout/zero_success: gaps between hot windows
+    # <= close_quiet_s. Latency episodes: traffic time (KeyState.active_s)
+    # bracketed by two hot verdicts. Silence pauses it; nothing but a close
+    # or a regime_shift resets it.
     hot_s: float = 0.0
     # Latency episodes only: window_end of the last *evaluated* window that
-    # judged this condition (hot or calm), and observed calm time since the
-    # last hot one (gaps longer than close_quiet_s excluded, like hot_s).
+    # judged this condition (hot or calm; last_obs_ts == last_hot_ts means
+    # the last verdict was hot), and traffic time observed calm since then.
     last_obs_ts: float = 0.0
     calm_s: float = 0.0
 
@@ -286,6 +289,11 @@ class KeyState:
     pend_tainted: bool = False
     # spike sustain counter
     hot_streak: int = 0
+    # Time this hop carried traffic since its last latency evaluation: the sum
+    # of gaps between consecutive traffic windows that are <= close_quiet_s.
+    # A gap with no calls longer than that is silence and adds nothing. On
+    # the next evaluation it is credited to that evaluation's verdict.
+    active_s: float = 0.0
     episodes: dict[str, Episode] = field(default_factory=dict)
 
 
@@ -434,7 +442,7 @@ _EPISODE_FLOATS = (
 )
 _KEY_FLOATS = (
     "last_seen_ts", "last_window_end", "last_eval_ts", "fast_mean", "fast_var",
-    "level_mean", "calls_ewma", "pend_sum", "pend_sumsq",
+    "level_mean", "calls_ewma", "pend_sum", "pend_sumsq", "active_s",
 )
 _KEY_OPT_FLOATS = ("floor", "floor_ts", "pend_max_ms")
 _KEY_INTS = ("fast_count", "level_count", "calls_count", "pend_n", "pend_windows", "hot_streak")
@@ -581,16 +589,27 @@ def _latency_step(
     magnitude: float,
     now: float,
     peak_ms: float | None,
+    credit_s: float,
     config: TransportBaselineConfig,
 ) -> tuple[str, Episode] | None:
     """One *evaluated* window's verdict on a latency condition (spike /
     saturation). Only called when a latency evaluation happened: silence never
     reaches here, so it can neither add time nor close the episode.
 
-    Time between two evaluations is credited to whatever the later one read
-    (hot -> ``hot_s``, calm -> ``calm_s``), and only if the gap is at most
-    ``close_quiet_s`` -- a longer gap was not observed either way. A calm
-    episode closes once it has *observed* ``close_quiet_s`` of calm."""
+    ``credit_s`` is how long the hop carried traffic since its previous
+    evaluation (``KeyState.active_s``: gaps between calls longer than
+    ``close_quiet_s`` are silence and excluded). It is credited only when this
+    verdict agrees with the episode's previous one -- hot after hot adds to
+    ``hot_s``, calm after calm to ``calm_s``; the stretch across a change of
+    verdict is ambiguous and credited to neither. A calm episode closes once it
+    has *observed* ``close_quiet_s`` of calm.
+
+    Why traffic time, not "gap between evaluations <= close_quiet_s" (the
+    pre-2026-10-13 rule): a sparse hop is only evaluated when ``min_calls``
+    pool inside ``max_aggregate_windows``; live, the background lane was
+    evaluated 25-47 min apart while carrying calls every few minutes, so the
+    gap rule credited it ~0 hot time per day and regime_shift could never
+    fire. Continuous traffic bracketed by two hot verdicts is observed time."""
     ep = ks.episodes.get(cond)
     if hot:
         if ep is None:
@@ -604,9 +623,8 @@ def _latency_step(
             )
             ks.episodes[cond] = ep
             return "open", ep
-        gap = now - ep.last_obs_ts
-        if 0 < gap <= config.close_quiet_s:
-            ep.hot_s += gap
+        if ep.last_obs_ts == ep.last_hot_ts:  # previous verdict was hot too
+            ep.hot_s += credit_s
         ep.last_hot_ts = now
         ep.last_obs_ts = now
         ep.calm_s = 0.0
@@ -619,9 +637,8 @@ def _latency_step(
         return None
     if ep is None:
         return None
-    gap = now - ep.last_obs_ts
-    if 0 < gap <= config.close_quiet_s:
-        ep.calm_s += gap
+    if ep.last_obs_ts != ep.last_hot_ts:  # previous verdict was calm too
+        ep.calm_s += credit_s
     ep.last_obs_ts = now
     if ep.calm_s >= config.close_quiet_s:
         del ks.episodes[cond]
@@ -754,6 +771,8 @@ def fold_snapshot(
         ks.last_window_end = now
         excluded = is_excluded(hop, exclude)
         if success > 0 or timeouts > 0:
+            if ks.last_seen_ts and 0 < now - ks.last_seen_ts <= config.close_quiet_s:
+                ks.active_s += now - ks.last_seen_ts
             ks.last_seen_ts = now
 
         calls = success + timeouts
@@ -842,6 +861,7 @@ def fold_snapshot(
             if ks.last_eval_ts and (now - ks.last_eval_ts) > config.close_quiet_s:
                 ks.hot_streak = 0
             ks.last_eval_ts = now
+            credit_s, ks.active_s = ks.active_s, 0.0
 
             sigma = math.sqrt(max(ks.fast_var, config.min_variance))
             if ks.fast_count > 0:
@@ -920,7 +940,7 @@ def fold_snapshot(
                 )
                 step = _latency_step(
                     ks, "spike", hot=spike_hot, magnitude=max(z or 0.0, 0.0), now=now,
-                    peak_ms=peak, config=config,
+                    peak_ms=peak, credit_s=credit_s, config=config,
                 )
                 if step:
                     emit("spike", step[0], step[1], z=z, ratio=ratio, wmean=wmean_ms, close_reason="calm")
@@ -941,7 +961,7 @@ def fold_snapshot(
                     sat_hot = ratio >= config.saturation_ratio and excess_ms >= config.min_excess_ms
                 step = _latency_step(
                     ks, "saturation", hot=sat_hot, magnitude=ratio, now=now,
-                    peak_ms=peak, config=config,
+                    peak_ms=peak, credit_s=credit_s, config=config,
                 )
                 if step:
                     emit("saturation", step[0], step[1], z=z, ratio=ratio, wmean=wmean_ms, close_reason="calm")

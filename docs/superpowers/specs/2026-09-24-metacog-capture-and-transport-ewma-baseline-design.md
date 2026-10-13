@@ -206,6 +206,26 @@ Latency is right-skewed and roughly log-normal, so fold `ln(ms)`. Per key, keep:
 trigger on open, one on a severity escalation, and one on close with duration and peak. The
 per-30-second firing is gone, and so is the per-lane cooldown's job of papering over it.
 
+**Addendum 2026-10-13 -- guard 3 was broken by silence (fixed).** Live, the
+`cortex-orch -> orion:cortex:exec:request:background` and `actions ->
+orion:cortex:request` hops opened and closed `saturation` 44 times each after
+2026-10-08 and never stated a `regime_shift`, while their floor crept 1.3 s ->
+4 s. Mechanism: latency episodes aged out after 15 minutes without an
+evaluated window (nights, and the 25-47 minutes between this sparse hop's
+evaluations), which reset hot time, so `T_regime` was never reached; between
+episodes the floor was free to creep up. Absence of traffic is not evidence of
+calm. Now: silence *pauses* a latency episode (hot time kept, floor frozen);
+only observed calm closes it; hot/calm time is the hop's own traffic time
+between two agreeing verdicts; 24 h with no evaluated window closes it as
+`went_silent`. Replayed on the stored hourly rows, the fixed reducer opens one
+saturation episode and states one `regime_shift` on 2026-10-09 (08:15-13:00 UTC
+depending on burst spacing) instead of 44 pairs. What the shift states, read
+honestly: the floor had been pulled down to ~1.3 s on 2026-10-08 by fast
+canned-fallback metacog drafts during a cabinet-hot GPU shed, so this is "the
+normal moved", not "the hop slowed". The root of *that* (failed/degraded calls
+folded into latency as successes) is a separate, cross-service fix: see the
+2026-10-13 PR report.
+
 ### B. Deterministic mapping from each trigger's upstream into the row
 
 A per-kind mapper, `orion/metacog/evidence_map.py`, turns `trigger.upstream` into the fields below.

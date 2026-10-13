@@ -1297,7 +1297,7 @@ REGISTRY: tuple[InnerStateSignal, ...] = (
         shadow_reason=(
             "Not composed into self_state.v1 (that producer was removed in PR "
             "#1266). SHADOW in the literal sense only: it has live readers "
-            "listed below (Temporal Self rev 4 order 6, R3 readers 1-4 and 7), "
+            "listed below (Temporal Self rev 4 order 6, R3 readers 1-5 and 7), "
             "each with its own flag, a flag-off test and a must-not test."
         ),
         cognition_consumers=(
@@ -1312,6 +1312,8 @@ REGISTRY: tuple[InnerStateSignal, ...] = (
             "services.orion-proposal-runtime.app.worker:"
             "ProposalRuntimeWorker._baseline_arousal_level -> orion.reverie.baseline:schedule "
             "(strained defers a due visual baseline image by retry_sec)",
+            "services.orion-thought.app.chain:_next_chain_sleep_sec "
+            "(strained doubles the pause between reverie chains)",
         ),
         notes=(
             "Temporal Self rev 4 (PR #2369) R3. Inputs: E1 Juniper turns "

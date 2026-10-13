@@ -195,6 +195,17 @@ class ThoughtSettings(BaseSettings):
     reverie_no_coalition_max_repeats: int = Field(
         3, alias="ORION_REVERIE_NO_COALITION_MAX_REPEATS"
     )
+    # Temporal Self rev 4, R3 reader 5: while Orion's arousal (Redis orion:regulation:latest,
+    # written by orion-durable-runs) reads `strained`, the pause between reverie chains is
+    # multiplied (each chain step is a background-lane LLM call). Read right before each pause.
+    # Missing / stale / unknown / Redis down / flag off = today's interval.
+    reverie_chain_arousal_enabled: bool = Field(True, alias="ORION_REVERIE_CHAIN_AROUSAL_ENABLED")
+    reverie_chain_arousal_strained_multiplier: float = Field(
+        2.0, ge=1.0, alias="ORION_REVERIE_CHAIN_AROUSAL_STRAINED_MULTIPLIER"
+    )
+    regulation_reader_max_age_sec: float = Field(
+        360.0, gt=0.0, alias="ORION_REGULATION_READER_MAX_AGE_SEC"
+    )
     reverie_drift_temp: float = Field(0.7, alias="ORION_REVERIE_DRIFT_TEMP")
     channel_reverie_chain: str = Field(
         "orion:reverie:chain",

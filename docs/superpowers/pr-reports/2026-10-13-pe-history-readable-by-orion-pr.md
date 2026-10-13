@@ -237,7 +237,7 @@ the SQL and summary were verified against live Postgres by the eval above.
 cd /mnt/scripts/Orion-Sapienform && git pull --ff-only && ORION_ALLOW_SHARED_CHECKOUT_WRITE=1 scripts/safe_docker_build.sh orion-hub up -d --build
 ```
 
-The orion-introspect MCP server is spawned per turn by orion-harness-governor from the repo's `orion/` package; if the governor image bakes that package in rather than mounting it, also rebuild it:
+The orion-introspect MCP server (tool list and brief) runs inside orion-harness-governor, whose image bakes in `orion/` (`COPY orion ./orion`), so it needs a rebuild too:
 
 ```bash
 cd /mnt/scripts/Orion-Sapienform && ORION_ALLOW_SHARED_CHECKOUT_WRITE=1 scripts/safe_docker_build.sh orion-harness-governor up -d --build

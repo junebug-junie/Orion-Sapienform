@@ -487,6 +487,106 @@ def test_section_index_url_skipped_without_wallet_debit() -> None:
     assert store.snapshot().nodes == {}
 
 
+def _queued_before_gate(conn, seed_id: str) -> None:
+    row = conn.rows[seed_id]
+    assert row["status"] == "skipped"  # arrival skip fired
+    row.update(status="pending", stage2_status="pending", last_error=None)
+
+
+@pytest.mark.parametrize(
+    "url, site",
+    [
+        # Live 2026-10-13: WebFetch -> "Claude Code is unable to fetch from www.bbc.co.uk".
+        ("https://www.bbc.co.uk/news/articles/cmn06w5x9g25o?at_medium=RSS&at_campaign=rss", "bbc.co.uk"),
+        # Live 2026-10-13: WebFetch -> "timeout of 60000ms exceeded" (npr.org refuses Claude-User).
+        ("https://www.npr.org/2026/10/12/nx-s1-5998948/new-white-house-press-secretary-a-devoted-fan-of-trump-and-maga", "npr.org"),
+    ],
+)
+def test_reader_blocked_source_skipped_without_turn_or_debit(url: str, site: str) -> None:
+    """Every BBC/NPR seed since 10-05 burned a turn + Wallet A slot and ended
+    no_read_evidence. Now: skipped before the read, reason names the block,
+    and the requester gets a terminal lifecycle event. The row is reset to
+    pending to model one queued before the arrival skip shipped (arrival skip
+    itself: test_reading_postgres.py)."""
+    bus = _FakeBus()
+    conn = _FakeConn()
+    store = InMemorySubstrateGraphStore()
+    pipe = _pipeline(bus, conn, store)
+    called = {"n": 0}
+
+    async def _fake_read(seed):
+        called["n"] += 1
+        return _handoff()
+
+    pipe._stage1_read = _fake_read  # type: ignore[method-assign]
+
+    async def _run():
+        await enqueue_seeds(
+            conn,
+            [
+                WorldPulseReadSeedV1(
+                    seed_id="digest_item:r1:item:blocked",
+                    kind="digest_item",
+                    run_id="r1",
+                    url=url,
+                    title="Blocked publisher article",
+                    section="global_politics",
+                    item_id="item",
+                )
+            ],
+        )
+        _queued_before_gate(conn, "digest_item:r1:item:blocked")
+        return await pipe.tick(force=True)
+
+    reason = asyncio.run(_run())
+    assert reason == "skipped_reader_blocked"
+    row = conn.rows["digest_item:r1:item:blocked"]
+    assert row["status"] == "skipped"
+    assert row["last_error"].startswith(f"source_blocks_reader:{site}:")
+    assert called["n"] == 0
+    assert _count_key() not in bus.redis.store
+    lifecycle = [e.payload for _, e in bus.published if e.kind == "reading.lifecycle.v1"]
+    assert [p["stage"] for p in lifecycle] == ["started", "stage1_failed"]
+    assert lifecycle[-1]["error"] == row["last_error"]
+
+
+def test_reader_blocked_seed_with_submitted_turn_is_not_stranded() -> None:
+    """A blocked seed whose durable turn was already submitted keeps it: the
+    skip yields so the result is consumed, not stranded unretryable."""
+    from orion.world_pulse_read.queue import PENDING_DURABLE_TURN_SQL
+
+    bus = _FakeBus()
+    conn = _FakeConn()
+    store = InMemorySubstrateGraphStore()
+    pipe = _pipeline(bus, conn, store)
+    called = {"n": 0}
+    base_fetchrow = conn.fetchrow
+
+    async def fetchrow(sql, *args):
+        if sql == PENDING_DURABLE_TURN_SQL:
+            return {"?column?": 1}
+        return await base_fetchrow(sql, *args)
+
+    conn.fetchrow = fetchrow  # type: ignore[method-assign]
+
+    async def _fake_read(seed):
+        called["n"] += 1
+        return None
+
+    pipe._stage1_read = _fake_read  # type: ignore[method-assign]
+
+    async def _run():
+        await enqueue_seeds(conn, [WorldPulseReadSeedV1(
+            seed_id="digest_item:r1:item:inflight", kind="digest_item", run_id="r1",
+            url="https://www.bbc.co.uk/news/articles/cmn06w5x9g25o", title="t",
+            section="global_politics", item_id="item")])
+        _queued_before_gate(conn, "digest_item:r1:item:inflight")
+        return await pipe.tick(force=True)
+
+    assert asyncio.run(_run()) != "skipped_reader_blocked"
+    assert called["n"] == 1
+
+
 def test_missing_store_fails_seed_when_nodes_exist() -> None:
     """Enablement without Atlas must not mark the seed done."""
     for over in ({"store_provider": None}, {"store_provider": lambda: None}):
@@ -1408,3 +1508,62 @@ def test_stage1_prompt_no_longer_asks_the_model_for_created_at() -> None:
     contract = _stage1_json_contract("tr-1")
     assert '"created_at":' not in contract
     assert "created_at are set server-side" in contract
+
+
+# --- Dead pages (live 2026-10-13). WebFetch answered three guessed CoreWeave
+# URLs with this exact 215-char notice and each seed was marked `done`; the
+# same day a real CoreWeave digest was only 202 chars, so size cannot tell them
+# apart. The tool's own status line can.
+
+_LIVE_404_NOTICE = (
+    "The server returned HTTP 404 Not Found.\n\nThe response body was not retrieved. "
+    "If this URL requires authentication, use an authenticated tool (e.g. `gh` for "
+    "GitHub, or an MCP-provided fetch tool) instead of WebFetch."
+)
+_LIVE_202_CHAR_PAGE = (
+    "CoreWeave offers bare-metal NVIDIA GPUs (Blackwell, H200, H100) for AI "
+    "training/inference. GB200 NVL72 provides 4x higher training performance vs "
+    "H100 and supports 130 kW rack power with liquid cooling."
+)
+
+
+def test_http_404_notice_is_failed_with_no_nodes_or_journal(monkeypatch: pytest.MonkeyPatch) -> None:
+    assert len(_LIVE_404_NOTICE) == 215
+    bus = _FakeBus()
+    conn = _FakeConn()
+    store = InMemorySubstrateGraphStore()
+    pipe = _pipeline(bus, conn, store, max_attempts=3)
+    dead = {"url": "https://ex.com/a", "tool_name": "WebFetch",
+            "content_chars": len(_LIVE_404_NOTICE), "content_text": _LIVE_404_NOTICE}
+    _patch_turn(monkeypatch, [_final_frame(
+        "CoreWeave publishes infrastructure information.",
+        fetches=[dead], concept_candidates=[{"label": "CoreWeave infrastructure"}],
+    )])
+
+    assert _tick(pipe, conn) == "no_read_evidence"
+    row = conn.rows["finding:r1:x"]
+    assert row["status"] == "failed"  # terminal, not retried
+    assert row["last_error"] == "no_read_evidence:http_error"
+    assert row.get("handoff_json") is None
+    assert store.snapshot().nodes == {}
+    assert bus.journal == []
+    assert getattr(conn, "snapshots", {}) == {}  # the notice is not retained as page text
+
+
+def test_short_real_page_still_counts(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The 202-char CoreWeave digest that was a genuine read stays `done`."""
+    assert len(_LIVE_202_CHAR_PAGE) == 202
+    bus = _FakeBus()
+    conn = _FakeConn()
+    pipe = _pipeline(bus, conn, InMemorySubstrateGraphStore())
+    page = {"url": "https://ex.com/a", "tool_name": "WebFetch",
+            "content_chars": len(_LIVE_202_CHAR_PAGE), "content_text": _LIVE_202_CHAR_PAGE}
+    dead = {"url": "https://ex.com/a/old", "tool_name": "WebFetch",
+            "content_chars": len(_LIVE_404_NOTICE), "content_text": _LIVE_404_NOTICE}
+    _patch_turn(monkeypatch, [_final_frame("GB200 NVL72 is 4x H100 for training.", fetches=[dead, page])])
+
+    assert _tick(pipe, conn) is None
+    row = conn.rows["finding:r1:x"]
+    assert row["status"] == "done"
+    (evidence,) = row["handoff_json"]["read_evidence"]
+    assert evidence["content_chars"] == 202

@@ -4650,7 +4650,8 @@
         "services.orion-hub.scripts.curiosity_investigation:CuriosityInvestigation.tick (strained holds; engaged doubles the cooldown)",
         "services.orion-hub.scripts.curiosity_investigation:CuriosityInvestigation.tick_self_inquiry (runs only at idle)",
         "services.orion-hub.scripts.endogenous_outreach:EndogenousOutreach._gate_inputs (strained refuses background outreach)",
-        "services.orion-proposal-runtime.app.worker:ProposalRuntimeWorker._baseline_arousal_level -> orion.reverie.baseline:schedule (strained defers a due visual baseline image by retry_sec)"
+        "services.orion-proposal-runtime.app.worker:ProposalRuntimeWorker._baseline_arousal_level -> orion.reverie.baseline:schedule (strained defers a due visual baseline image by retry_sec)",
+        "services.orion-thought.app.chain:_next_chain_sleep_sec (strained doubles the pause between reverie chains)"
       ],
       "notes": "cadence=per_tick composition=shadow_declared_not_composed",
       "registry_source": "orion/inner_state_registry.py"

@@ -26,6 +26,7 @@ from uuid import uuid4
 from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.core.bus.resilience import publish_with_reconnect
+from orion.regulation.arousal_read import read_arousal_async
 from orion.reverie.attention_schema import to_attention_schema
 from orion.schemas.attention_frame import AttentionBroadcastProjectionV1
 from orion.schemas.attention_schema import ATTENTION_SCHEMA_CHANNEL, ATTENTION_SCHEMA_KIND, bind_correlation
@@ -402,6 +403,38 @@ async def run_reverie_chain(
     return chain
 
 
+def reverie_chain_sleep_sec(base_sec: float, level: str | None, multiplier: float) -> float:
+    """R3 reader 5: the pause before the next chain. Strained stretches it; nothing shortens it.
+
+    ``level`` is Orion's arousal at the moment the pause starts (None = unknown / flag off /
+    Redis down = today's interval). A multiplier at or below 1 changes nothing."""
+    base = float(base_sec)
+    m = float(multiplier)
+    if level == "strained" and m > 1.0:
+        return base * m
+    return base
+
+
+async def _next_chain_sleep_sec(bus: OrionBusAsync) -> float:
+    """Read arousal right before the pause (the decision point), never at loop start."""
+    view = await read_arousal_async(
+        bus,
+        enabled=bool(settings.reverie_chain_arousal_enabled),
+        reader="reverie_chain",
+        max_age_sec=float(settings.regulation_reader_max_age_sec),
+    )
+    level = view.level if view.known else None
+    sleep_sec = reverie_chain_sleep_sec(
+        settings.reverie_interval_sec, level, settings.reverie_chain_arousal_strained_multiplier
+    )
+    if sleep_sec != float(settings.reverie_interval_sec):
+        logger.info(
+            "reverie_chain_paced reason=arousal_strained sleep_sec=%.0f base_sec=%.0f since=%s",
+            sleep_sec, float(settings.reverie_interval_sec), view.since,
+        )
+    return sleep_sec
+
+
 async def run_reverie_chain_worker(stop_event: asyncio.Event | None = None) -> None:
     """Self-driven chain loop. Default-off; no-op unless ORION_REVERIE_CHAIN_ENABLED."""
     if not settings.reverie_chain_enabled:
@@ -435,11 +468,12 @@ async def run_reverie_chain_worker(stop_event: asyncio.Event | None = None) -> N
             except Exception:
                 logger.exception("unhandled reverie chain error")
             fold_bus(bus)  # per chain run: this worker bus lives for the process (app/rpc_health.py)
+            sleep_sec = await _next_chain_sleep_sec(bus)
             try:
                 if stop_event is not None:
-                    await asyncio.wait_for(stop_event.wait(), timeout=settings.reverie_interval_sec)
+                    await asyncio.wait_for(stop_event.wait(), timeout=sleep_sec)
                     break
-                await asyncio.sleep(settings.reverie_interval_sec)
+                await asyncio.sleep(sleep_sec)
             except asyncio.TimeoutError:
                 continue
     except asyncio.CancelledError:

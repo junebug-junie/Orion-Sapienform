@@ -38,7 +38,7 @@ logger = logging.getLogger("orion-durable-runs.temporal_self_driver")
 
 _PRIORITY = {"chat_turn": 3, "tick": 1, "boot": 0}
 RETIRE_LOOKBACK_DAYS = 31
-CARRIED_KEYS = ("regulation", "last_inputs", "last_juniper_turn_at")
+CARRIED_KEYS = ("regulation", "last_inputs", "last_juniper_turn_at", "immune")
 
 
 def day_id_for(at: datetime, tz: ZoneInfo) -> str:
@@ -90,6 +90,7 @@ class TemporalSelfDriver:
         self.latest: Optional[RegulationStateV1] = None
         self.last_chronicle: Optional[dict] = None   # the chronicle node's summary of the last step
         self.last_error: Optional[str] = None
+        self.last_immune: Optional[dict] = None    # the immune node's carried summary
         self._retired_for: Optional[str] = None
 
     # --- intake -------------------------------------------------------------------------------
@@ -176,6 +177,7 @@ class TemporalSelfDriver:
         self.steps += 1
         self.latest = RegulationStateV1.model_validate(out["regulation"])
         self.last_chronicle = out.get("chronicle")
+        self.last_immune = out.get("immune")
         transition = out.get("transition")
         if transition:
             a = self.latest.arousal
@@ -188,4 +190,4 @@ class TemporalSelfDriver:
         a = self.latest.arousal if self.latest else None
         return {"steps": self.steps, "arousal_level": a.arousal_level if a else None,
                 "since": a.since.isoformat() if a else None, "queued": self._queue.qsize(),
-                "last_error": self.last_error, "chronicle": self.last_chronicle}
+                "last_error": self.last_error, "chronicle": self.last_chronicle, "immune": self.last_immune}

@@ -451,3 +451,184 @@ def test_store_missing_tables_read_as_stale_not_zero():
             "label": "idle", "payload": "{}"})
 
     asyncio.run(_with_schema(scenario))
+
+
+# --- R4 runtime immune sweep: the `immune` node ----------------------------------------------
+
+from orion.regulation.immune import ImmuneSample  # noqa: E402
+
+
+class ImmuneWorld(World):
+    """A World whose field history holds one constant zombie (1.0 all day, rest [0, 0.5])."""
+
+    def __init__(self):
+        super().__init__()
+        self.reads: list = []
+        self.recorded: list = []
+        self.fail_read: Exception | None = None
+        self.hang = False
+        self.record_ok = True
+
+    async def read_immune_series(self, now):
+        self.reads.append(now)
+        if self.hang:
+            await asyncio.sleep(10)
+        if self.fail_read is not None:
+            raise self.fail_read
+        ts = [now - timedelta(minutes=i) for i in range(24 * 60, 0, -1)]
+        zombie = [ImmuneSample(t, 1.0, updated_at=t, source=f"slice:{i}") for i, t in enumerate(ts)]
+        calm = [ImmuneSample(t, 0.0, updated_at=t) for t in ts]
+        sem = {"value_kind": "level", "sparsity": "per_tick", "rest_range": (0.0, 0.5)}
+        return ({("node:z", "gauge"): zombie, ("node:c", "gauge"): calm},
+                {("node:z", "gauge"): sem, ("node:c", "gauge"): dict(sem, rest_range=(0.0, 0.0))})
+
+    async def record_immune(self, findings, day_id, now):
+        self.recorded.append(([f.metric_id + ":" + f.kind for f in findings], day_id, now))
+        return self.record_ok
+
+    def deps(self, **kw):
+        kw.setdefault("read_immune_series", self.read_immune_series)
+        kw.setdefault("record_immune", self.record_immune)
+        return super().deps(**kw)
+
+
+def test_immune_sweep_runs_when_idle_records_findings_and_sets_the_count():
+    w = ImmuneWorld()
+    d = driver(w)
+    out = tick(d)
+    assert w.projected[-1].arousal.arousal_level == "idle"
+    assert len(w.reads) == 1
+    assert w.recorded == [(["node:z.gauge:constant"], "2026-10-10", T0)]
+    assert d.latest.immune_findings_open == 1
+    assert w.projected[-1].immune_findings_open == 1          # re-projected after the sweep
+    assert out["immune"]["open"] == 1 and out["immune"]["findings"] == ["node:z.gauge:constant"]
+    assert out["immune"]["judged"] == 2 and out["immune"]["error"] is None
+    assert d.health()["immune"]["open"] == 1
+
+
+def test_immune_sweep_skipped_when_not_idle():
+    w = ImmuneWorld()
+    w.minutes = 5.0                                            # Juniper just spoke: engaged
+    d = driver(w)
+    tick(d)
+    assert w.projected[-1].arousal.arousal_level == "engaged"
+    assert w.reads == [] and d.latest.immune_findings_open == 0
+
+
+def test_immune_sweep_runs_at_most_once_per_interval_and_count_carries():
+    w = ImmuneWorld()
+    d = driver(w)
+    tick(d)
+    for _ in range(5):
+        w.now += timedelta(minutes=30)
+        tick(d)
+    assert len(w.reads) == 1                                   # 2.5 h later: still one sweep
+    assert d.latest.immune_findings_open == 1                  # regulate carries the open count
+    w.now = T0 + timedelta(hours=6, seconds=1)
+    tick(d)
+    assert len(w.reads) == 2
+
+
+def test_immune_last_run_carries_over_midnight():
+    w = ImmuneWorld()
+    w.now = datetime(2026, 10, 11, 5, 0, tzinfo=timezone.utc)   # 23:00 Denver, 10-10
+    d = driver(w)
+    tick(d)
+    w.now += timedelta(hours=2)                                  # 01:00 Denver, 10-11: new thread
+    tick(d)
+    assert len(w.reads) == 1 and d.latest.immune_findings_open == 1
+
+
+def test_immune_sweep_failure_does_not_break_regulation():
+    w = ImmuneWorld()
+    w.fail_read = RuntimeError("relation substrate_field_state does not exist")
+    d = driver(w)
+    out = tick(d)
+    assert w.projected[-1].arousal.arousal_level == "idle"
+    assert d.latest is not None and d.latest.immune_findings_open == 0
+    assert "immune_failed" in out["warnings"]
+    assert out["immune"]["error"].startswith("RuntimeError")
+    w.now += timedelta(seconds=120)
+    tick(d)
+    assert len(w.reads) == 1                                   # a broken read is not retried every step
+
+
+def test_immune_sweep_timeout_does_not_break_regulation():
+    w = ImmuneWorld()
+    w.hang = True
+    d = driver(w, immune_timeout_sec=0.05)
+    out = tick(d)
+    assert w.projected[-1].arousal.arousal_level == "idle"
+    assert out["immune"]["error"].startswith("timeout")
+
+
+def test_immune_write_failure_is_a_warning_and_still_counts():
+    w = ImmuneWorld()
+    w.record_ok = False
+    d = driver(w)
+    out = tick(d)
+    assert "immune_write_failed" in out["warnings"] and d.latest.immune_findings_open == 1
+
+
+def test_immune_disabled_never_reads():
+    w = ImmuneWorld()
+    d = driver(w, read_immune_series=None)
+    tick(d)
+    assert w.reads == [] and d.latest.immune_findings_open == 0
+
+
+def test_redis_projection_omits_immune_count_for_older_readers():
+    """Consumer-first: RegulationStateV1 is extra="forbid", so a reader on older code would reject
+    the new field and read arousal as unknown. The Redis body leaves it out until they rebuild."""
+    from orion.schemas.regulation import parse_regulation_state, regulation_state_redis_json
+
+    w = ImmuneWorld()
+    d = driver(w)
+    tick(d)
+    body = json.loads(regulation_state_redis_json(d.latest))
+    assert "immune_findings_open" not in body
+    assert parse_regulation_state(json.dumps(body)) is not None
+
+
+@pytest.mark.skipif(not DSN, reason="isolated ORION_ADMISSION_TEST_DSN required")
+def test_store_immune_read_and_idempotent_write_on_postgres():
+    from app import regulation_store
+    from orion.regulation.immune import ImmuneFinding
+
+    async def scenario(pool):
+        async with pool.connection() as conn:
+            await conn.execute(MIGRATION.read_text(), prepare=False)
+            await conn.execute("""CREATE TABLE substrate_field_state (tick_id text PRIMARY KEY,
+                                  generated_at timestamptz NOT NULL, field_json jsonb NOT NULL,
+                                  created_at timestamptz NOT NULL DEFAULT now())""")
+        now = datetime.now(timezone.utc).replace(microsecond=0)
+        async with pool.connection() as conn:
+            # Two ticks per minute for 10 minutes: the read keeps the latest tick of each minute.
+            for i in range(20):
+                at = now - timedelta(seconds=30 * (i + 1))
+                field = {"node_vectors": {"node:substrate.route": {"prediction_error": 0.5 - i * 0.01, "other": 9.0}},
+                         "node_vector_updated_at": {"node:substrate.route": {"prediction_error": at.isoformat()}}}
+                await conn.execute("INSERT INTO substrate_field_state (tick_id, generated_at, field_json) "
+                                   "VALUES (%s, %s, %s)", (f"t{i}", at, json.dumps(field)))
+        series = await regulation_store.read_immune_series(pool, now, ["prediction_error"], window_sec=3600)
+        assert list(series) == [("node:substrate.route", "prediction_error")]
+        samples = series[("node:substrate.route", "prediction_error")]
+        assert len(samples) in (10, 11)                         # one per minute bucket
+        assert all(s.updated_at is not None for s in samples)
+        assert [s.t for s in samples] == sorted(s.t for s in samples)
+
+        f = ImmuneFinding("node:substrate.route.prediction_error", "node:substrate.route", "prediction_error",
+                          "decayed_to_zero", now - timedelta(hours=6), now - timedelta(hours=1), {"ratio": 0.92})
+        row = regulation_store.immune_finding_row(f, "2026-10-10", now)
+        assert await regulation_store.record_immune_findings(pool, [row])
+        later = regulation_store.immune_finding_row(
+            ImmuneFinding(f.metric_id, f.node, f.channel, f.kind, f.window_start, now, {"ratio": 0.92}),
+            "2026-10-10", now + timedelta(hours=6))
+        assert await regulation_store.record_immune_findings(pool, [later])   # same day: one row, refreshed
+        async with pool.connection() as conn:
+            rows = await (await conn.execute("SELECT * FROM temporal_self_event")).fetchall()
+        assert len(rows) == 1 and rows[0]["source_kind"] == "immune_finding"
+        assert rows[0]["label"] == "decayed_to_zero" and rows[0]["verdict"] == "open"
+        assert rows[0]["payload_json"]["window_end"] == now.isoformat()
+
+    asyncio.run(_with_schema(scenario))

@@ -262,7 +262,7 @@ def _build_temporal_self(saver: Any):
     from app.temporal_self_graph import TemporalSelfDeps
     from orion.regulation.rest_drive import rest_drive_view
     from orion.schemas.drive_reading import REST_DRIVE_REDIS_KEY, parse_drive_reading
-    from orion.schemas.regulation import REGULATION_STATE_REDIS_KEY
+    from orion.schemas.regulation import REGULATION_STATE_REDIS_KEY, regulation_state_redis_json
 
     s = _settings
 
@@ -290,11 +290,26 @@ def _build_temporal_self(saver: Any):
     async def project(model) -> None:
         if rpc_bus is None:
             raise RuntimeError("no bus")
-        await rpc_bus.redis.setex(REGULATION_STATE_REDIS_KEY, s.regulation_redis_ttl_sec, model.model_dump_json())
+        # Consumer-first: the Redis body omits fields older readers would reject (extra="forbid").
+        await rpc_bus.redis.setex(REGULATION_STATE_REDIS_KEY, s.regulation_redis_ttl_sec,
+                                  regulation_state_redis_json(model))
 
     async def record_transition(prev, new, day_id) -> bool:
         return await regulation_store.record_transition(
             _checkpointer_cm, regulation_store.transition_row(prev, new, day_id))
+
+    async def read_immune_series(now):
+        """R4: 24 h of every glossary channel that carries semantics, one sample per minute."""
+        from orion.field.channel_glossary import load_glossary
+        from orion.regulation.immune import semantic_channel_names, semantic_channels
+
+        entries = load_glossary()["entries"]
+        series = await regulation_store.read_immune_series(_checkpointer_cm, now, semantic_channel_names(entries))
+        return series, semantic_channels(entries, series.keys())
+
+    async def record_immune(findings, day_id, now) -> bool:
+        return await regulation_store.record_immune_findings(
+            _checkpointer_cm, [regulation_store.immune_finding_row(f, day_id, now) for f in findings])
 
     global chronicle
     chronicle = _build_chronicle() if s.temporal_self_chronicle_enabled else None
@@ -303,6 +318,9 @@ def _build_temporal_self(saver: Any):
         read_inputs=read_inputs, read_drives=read_drives, project=project,
         record_transition=record_transition, now=lambda: datetime.now(timezone.utc),
         chronicle=chronicle.step if chronicle is not None else None,
+        read_immune_series=read_immune_series if s.temporal_self_immune_enabled else None,
+        record_immune=record_immune,
+        immune_interval_sec=s.temporal_self_immune_interval_sec,
         arousal_enabled=s.regulation_arousal_enabled, engaged_minutes=s.dream_idle_minutes,
         gpu_queue_floor=s.regulation_strained_gpu_queue_min,
         gpu_sustain_sec=s.regulation_strained_gpu_queue_sec,

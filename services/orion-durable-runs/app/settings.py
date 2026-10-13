@@ -188,6 +188,12 @@ class Settings(BaseSettings):
     temporal_self_event_retention_days: int = Field(30, ge=1, alias="TEMPORAL_SELF_EVENT_RETENTION_DAYS")
     temporal_self_arc_retention_days: int = Field(90, ge=1, alias="TEMPORAL_SELF_ARC_RETENTION_DAYS")
     temporal_self_day_retention_days: int = Field(365, ge=1, alias="TEMPORAL_SELF_DAY_RETENTION_DAYS")
+    # R4 runtime immune sweep (PR #2369 rev 4): an `immune` node after `regulate` that, only while
+    # arousal is idle and at most every TEMPORAL_SELF_IMMUNE_INTERVAL_SEC, checks 24 h of the
+    # glossary's semantic field channels for constant / floor-locked / replayed / decayed-to-zero
+    # gauges and records `immune_finding` rows in temporal_self_event. Never fixes anything.
+    temporal_self_immune_enabled: bool = Field(True, alias="TEMPORAL_SELF_IMMUNE_ENABLED")
+    temporal_self_immune_interval_sec: float = Field(21600.0, gt=0.0, alias="TEMPORAL_SELF_IMMUNE_INTERVAL_SEC")
     request_channel: str = DURABLE_RUN_REQUEST_CHANNEL
     state_channel: str = DURABLE_RUN_STATE_CHANNEL
 

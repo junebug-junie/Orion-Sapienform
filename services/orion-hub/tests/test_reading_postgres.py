@@ -845,3 +845,49 @@ def test_document_capture_and_path_lookup_on_real_postgres(local_pg, tmp_path):
         await conn.close()
 
     asyncio.run(run())
+
+
+BBC = "https://www.bbc.co.uk/news/articles/cmn06w5x9g25o?at_medium=RSS&at_campaign=rss"
+NPR = "https://www.npr.org/2026/10/12/nx-s1-5998948/new-white-house-press-secretary-a-devoted-fan-of-trump-and-maga"
+
+
+@pytest.mark.parametrize("url, site", [(BBC, "bbc.co.uk"), (NPR, "npr.org")])
+def test_reader_blocked_source_is_skipped_on_arrival_for_any_requester(local_pg, url, site):
+    """Live 10-05..13: every BBC/NPR read ended no_read_evidence (fetch tool
+    refused). A direct request and a later alias for the same URL are both
+    recorded skipped at once, naming the block; nothing is claimable."""
+    async def run():
+        conn, _ = await db(local_pg)
+        first = request(url=url)
+        status = await queue.enqueue_reading(conn, first)
+        assert status["status"] == "skipped"
+        assert status["error"].startswith(f"source_blocks_reader:{site}:")
+        again = await queue.enqueue_reading(conn, ReadingRequestedV1(
+            url=url, requested_by="orion", invocation_context="curiosity", why_now="Curiosity hop"))
+        assert again["status"] == "skipped" and again["error"] == status["error"]
+        assert await conn.fetchval("SELECT count(*) FROM world_pulse_read_seed WHERE duplicate_of IS NOT NULL") == 0
+        assert await queue.claim_next_seed(conn) is None
+        await conn.close()
+    asyncio.run(run())
+
+
+def test_reader_blocked_seed_with_submitted_turn_is_left_to_finish(local_pg, monkeypatch):
+    """A BBC/NPR seed queued before the gate whose turn is already submitted is
+    not stranded: the claim-time skip yields to the unconsumed durable turn."""
+    from orion.schemas.reading_turn import ReadingRunBriefV1
+    from orion.world_pulse_read.durable import bind_turn
+
+    async def run():
+        conn, _ = await db(local_pg)
+        await queue.enqueue_reading(conn, request())
+        # Model a row queued before the gate shipped: point it at BBC.
+        await conn.execute("UPDATE world_pulse_read_seed SET url = $1", BBC)
+        seed = await queue.claim_next_seed(conn)
+        assert seed is not None
+        assert not await queue.has_pending_durable_turn(conn, seed.seed_id, 1)
+        await bind_turn(conn, ReadingRunBriefV1(seed_id=seed.seed_id, stage=1, prompt="p",
+                                                session_id="reading", timeout_sec=900), str(uuid4()))
+        assert await queue.has_pending_durable_turn(conn, seed.seed_id, 1)
+        assert not await queue.has_pending_durable_turn(conn, seed.seed_id, 2)
+        await conn.close()
+    asyncio.run(run())

@@ -75,7 +75,10 @@ ORDER BY completed_at, run_id
 def prior_texts_cypher(prior_ids: Iterable[str]) -> str:
     """The provenance text of the named priors. Ids are Orion-authored free text, so they are a
     JSON parameter list, never spliced (orion/curiosity/atlas.py ``prior_claims_cypher``)."""
-    clean = sorted({str(p)[:200] for p in prior_ids if p})[:200]
+    clean = sorted({str(p)[:200] for p in prior_ids if p})
+    if len(clean) > 200:
+        logger.warning("reading_findings_prior_ids_truncated asked=%d kept=200", len(clean))
+        clean = clean[:200]
     return (
         f"CYPHER ids={json.dumps(clean)} MATCH (p:Prior) WHERE p.prior_id IN $ids "
         "RETURN p.prior_id AS prior_id, p.claim AS claim, p.why AS why, p.formed_from AS formed_from, "
@@ -129,6 +132,12 @@ def normalize_url_text(text: str) -> str:
     return re.sub(r"https?://|www\.", "", str(text or "").lower())
 
 
+def _names(token: str, hay: str) -> bool:
+    """``token`` appears in ``hay`` as a whole: not as the prefix of a longer path or id
+    ("nasa.gov/maxpower" does not name "nasa.gov/maxpower-x" or "nasa.gov/maxpower/sub")."""
+    return re.search(re.escape(token) + r"/?(?![a-z0-9_\-/])", hay) is not None
+
+
 def _obj(raw: Any) -> Any:
     if isinstance(raw, str):
         try:
@@ -162,7 +171,7 @@ def _float(value: Any) -> Optional[float]:
 
 def link_findings(rows: Iterable[Mapping[str, Any]]) -> list[ReadingFindingV1]:
     """One finding per accepted assertion still accepted in the journal. Pure."""
-    out: dict[str, ReadingFindingV1] = {}
+    out: dict[tuple[str, str], ReadingFindingV1] = {}
     for row in rows:
         claim = _obj(row.get("claim"))
         if not isinstance(claim, dict):
@@ -174,7 +183,8 @@ def link_findings(rows: Iterable[Mapping[str, Any]]) -> list[ReadingFindingV1]:
             # No journal decision, or a later decision (Juniper's review) un-accepted it.
             continue
         projected_at = _aware(row.get("projected_at"))
-        observed = projected_at or _aware(row.get("stage2_completed_at")) or datetime.now(timezone.utc)
+        # When the read accepted it, so a link projected after midnight still belongs to its day.
+        observed = _aware(row.get("stage2_completed_at")) or projected_at or datetime.now(timezone.utc)
         statement = _clip(claim.get("statement_text"), STATEMENT_CHARS)
         seed_id = str(row["seed_id"])
         refs = [f"reading:{seed_id}", f"assertion:{assertion_id}"]
@@ -182,7 +192,7 @@ def link_findings(rows: Iterable[Mapping[str, Any]]) -> list[ReadingFindingV1]:
             refs.append(f"decision:{receipt['decision_id']}")
         if receipt.get("content_sha256") and receipt.get("span_start") is not None:
             refs.append(f"reading_text:{receipt['content_sha256']}#bytes={receipt['span_start']}-{receipt.get('span_end')}")
-        out.setdefault(assertion_id, ReadingFindingV1(
+        out.setdefault((seed_id, assertion_id), ReadingFindingV1(
             finding_id=f"link:{assertion_id}", kind="link_made", seed_id=seed_id, observed_at=observed,
             headline=f"Link made: {statement}" + ("" if projected_at else " (accepted, not yet in the graph)"),
             evidence_text=_clip(claim.get("quote"), EVIDENCE_CHARS), evidence_refs=refs,
@@ -252,7 +262,7 @@ def belief_findings(
             tokens = read.tokens()
             for field_name, text, copy in texts:
                 hay = normalize_url_text(text)
-                hit = next((t for t in tokens if normalize_url_text(t) in hay), None)
+                hit = next((t for t in tokens if _names(normalize_url_text(t), hay)), None)
                 if hit is None:
                     continue
                 claim = _clip(copy.get("claim"), CLAIM_CHARS) or move.prior_id

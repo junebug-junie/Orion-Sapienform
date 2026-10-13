@@ -51,7 +51,7 @@ def test_a_moved_belief_needs_the_graph_and_says_so_without_it():
 
 def test_nothing_changed_is_one_honest_line():
     material = _gather(fx.FakeConn(read_links=[]))
-    assert reading_change_lines(material.readings[0], material) == ["no link accepted, no belief moved"]
+    assert reading_change_lines(material.readings[0], material) == ["no link accepted; no curiosity run cited this read"]
 
 
 def test_a_failed_findings_read_never_drops_the_reading():
@@ -77,3 +77,20 @@ def test_letter_material_from_before_findings_still_validates():
         r.pop("findings"), r.pop("request_id"), r.pop("article_summary")
     assert OrionDayMaterialV1.model_validate(old).readings[0].findings == []
     assert material.window_end - material.window_start == timedelta(days=1)
+
+
+def test_a_link_plus_an_unreadable_graph_keeps_the_gap():
+    material = _gather(fx.FakeConn(prior_moves=[MOVE]))
+    lines = reading_change_lines(material.readings[0], material)
+    assert lines[0].startswith("Link made:") and lines[1] == "beliefs not checked (no_prior_lookup)"
+
+
+def test_findings_survive_the_durable_brief_round_trip():
+    """orion-durable-runs validates the brief (forbid): the new fields must round-trip."""
+    from orion.orion_day.brief import brief_from_material
+    from orion.schemas.orion_day import OrionDayRunBriefV1
+
+    material = _gather(fx.FakeConn(prior_moves=[MOVE]), prior_lookup=_lookup)
+    brief = brief_from_material(material)
+    again = OrionDayRunBriefV1.model_validate_json(brief.model_dump_json())
+    assert [f.kind for f in again.material.readings[0].findings] == ["link_made", "belief_moved"]

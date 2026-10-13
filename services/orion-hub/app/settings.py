@@ -950,7 +950,8 @@ class Settings(BaseSettings):
     HUB_READING_FINDING_OUTREACH_TICK_SEC: float = Field(
         default=300.0, alias="HUB_READING_FINDING_OUTREACH_TICK_SEC"
     )
-    # Reads that landed within this many hours are watched for new findings.
+    # A change recorded within this many hours is told (reads up to 7 days old are watched, so a
+    # belief a run moves days after the read still counts). Older changes are never messaged.
     HUB_READING_FINDING_OUTREACH_LOOKBACK_HOURS: float = Field(
         default=48.0, alias="HUB_READING_FINDING_OUTREACH_LOOKBACK_HOURS"
     )

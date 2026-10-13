@@ -121,18 +121,26 @@ def _correction_parts(c: OrionDayCorrectionV1) -> list:
     ]
 
 
+NOTHING_CHANGED_LINE = "no link accepted; no curiosity run cited this read"
+NOT_CHECKED_LINE = "not checked (the findings read failed)"
+
+
 def reading_change_lines(r: ReadingItemV1, material: OrionDayMaterialV1) -> list[str]:
     """What one read changed, as record-built lines (orion/world_pulse_read/findings.py). Never
     claims "no belief moved" when the belief check could not run: that names the gap instead."""
-    if r.findings:
-        return [f.headline for f in r.findings]
-    beliefs = material.sources.get("reading_beliefs")
-    if beliefs is not None and beliefs.status == "error":
-        return [f"no link accepted; beliefs not checked ({beliefs.error})"]
     findings_src = material.sources.get("reading_findings")
-    if findings_src is not None and findings_src.status == "error":
-        return ["not checked (the findings read failed)"]
-    return ["no link accepted, no belief moved"]
+    if not r.findings and findings_src is not None and findings_src.status == "error":
+        return [NOT_CHECKED_LINE]
+    beliefs = material.sources.get("reading_beliefs")
+    gap = (f"beliefs not checked ({beliefs.error})"
+           if beliefs is not None and beliefs.status == "error" else None)
+    if r.findings:
+        return [f.headline for f in r.findings] + ([gap] if gap else [])
+    if gap:
+        return [f"no link accepted; {gap}"]
+    # Says what was checked: a belief counts only when a curiosity run's own notes cite the read.
+    return [NOTHING_CHANGED_LINE]
+
 
 
 def _full_text_blocks(material: OrionDayMaterialV1) -> list[tuple[str, list]]:

@@ -136,3 +136,23 @@ def test_findings_for_reads_groups_and_names_an_unreadable_graph():
 def test_prior_texts_cypher_parameterises_ids():
     cypher = wf.prior_texts_cypher(['self:a"} DETACH DELETE p //'])
     assert cypher.startswith('CYPHER ids=["self:a\\"} DETACH DELETE p //"] MATCH (p:Prior)')
+
+
+def test_a_url_names_only_its_own_page_not_a_longer_one():
+    read = _read(url="https://www.nasa.gov/maxpower", request_id="", seed_id="reading:x")
+    texts = lambda why: {"self:proofs_need_search": [{"prior_id": "self:proofs_need_search", "claim": "c",  # noqa: E731
+                                                      "why": why, "last_run_id": "e5eb9cfcf7ea"}]}
+    moves = wf.prior_moves([MOVE_ROW])
+    assert wf.belief_findings([read], moves, texts("see nasa.gov/maxpower-x for more")) == []
+    assert wf.belief_findings([read], moves, texts("see nasa.gov/maxpower/sub")) == []
+    assert len(wf.belief_findings([read], moves, texts("per https://nasa.gov/maxpower."))) == 1
+
+
+def test_two_reads_making_the_same_link_each_show_it():
+    other = _link_row(seed_id="reading:other")
+    assert sorted(f.seed_id for f in wf.link_findings([_link_row(), other])) == sorted([LIVE_SEED, "reading:other"])
+
+
+def test_a_link_belongs_to_the_moment_it_was_accepted():
+    [f] = wf.link_findings([_link_row(projected_at=T0 + timedelta(days=1))])
+    assert f.observed_at == T0 and f.projected is True

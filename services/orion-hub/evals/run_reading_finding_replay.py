@@ -50,6 +50,8 @@ async def replay(conn, *, days: int, prior_lookup, now: datetime) -> dict:
     from orion.world_pulse_read.findings import ReadRefV1, findings_for_reads, first_sentences
     from orion.world_pulse_read.introspect import reading_items_between
 
+    from orion.orion_day.budget import NOTHING_CHANGED_LINE
+
     from scripts.reading_finding_outreach import pending_bundles
 
     items = await reading_items_between(conn, since=now - timedelta(days=days), until=now, text_cap=None)
@@ -67,7 +69,7 @@ async def replay(conn, *, days: int, prior_lookup, now: datetime) -> dict:
             "seed_id": r.seed_id, "title": r.title or r.url, "url": r.url,
             "article_summary": r.article_summary or None,
             "take": first_sentences(r.learned, 2),
-            "changed": [f.headline for f in fs] or ["no link accepted, no belief moved"],
+            "changed": [f.headline for f in fs] or [NOTHING_CHANGED_LINE],
         })
     return {
         "days": days, "reads": len(reads),

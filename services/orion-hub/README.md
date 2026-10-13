@@ -3352,8 +3352,14 @@ change of the same read (a belief moved days after the link) is a new message.
   `belief_moved`; a third kind adds one enum value and a producer). Not a bus payload yet:
   producer and consumers are all in Hub.
 - **Env.** `HUB_READING_FINDING_OUTREACH_ENABLED` (on), `_TICK_SEC` (300),
-  `_LOOKBACK_HOURS` (48: reads watched for new changes), `_MAX_ATTEMPTS` (3 composition
-  failures before a change is dropped).
+  `_LOOKBACK_HOURS` (48: a change recorded within this window is told; reads up to 7 days
+  old are watched, so a belief moved days after its read still counts), `_MAX_ATTEMPTS`
+  (3 composition failures before a change is dropped).
+- **What it cannot see yet.** A belief counts only when the curiosity run that moved it
+  names the read (URL path, seed id or request id) in the prior's `why`/`formed_from`.
+  Live 2026-10-13: 0 of 26 run-written prior texts in the last 7 days cite any read, so
+  only links fire today. The letter line says exactly that ("no curiosity run cited this
+  read"), never "no belief moved".
 - **Checks.** `tests/test_reading_finding_outreach.py`; replay eval (read-only, live):
   `PYTHONPATH=. .venv/bin/python services/orion-hub/evals/run_reading_finding_replay.py --days 7`.
 - **Logs.** `reading_finding_outreach_result seed=<id> reason=<sent|orion_passed|...>`,

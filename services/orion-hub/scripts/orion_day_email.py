@@ -32,7 +32,7 @@ from zoneinfo import ZoneInfo
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 from markupsafe import Markup
 
-from orion.orion_day.budget import correction_outcome_text, reading_change_lines
+from orion.orion_day.budget import NOTHING_CHANGED_LINE, correction_outcome_text, reading_change_lines
 from orion.orion_day.letter_parts import LetterPart, split_carry, split_note
 from orion.schemas.notify import NotificationAttachment, NotificationRequest
 from orion.schemas.orion_day import OrionDayLetterV1, VisualReverieV1
@@ -303,7 +303,11 @@ def what_i_read(material: Any) -> list[dict[str, Any]]:
             "href": r.url if (r.url or "").lower().startswith(("http://", "https://")) else None,
             "article": r.article_summary, "take": take, "changes": changes,
             "unchanged_line": None if changes else reading_change_lines(r, material)[0],
-            "empty": not r.article_summary and not take and not changes,
+            # Gaps a read with findings still carries (the belief check could not run).
+            "gaps": reading_change_lines(r, material)[len(changes):] if changes else [],
+            # "Nothing came of it" only when everything was checked and nothing was found.
+            "empty": (not r.article_summary and not take and not changes
+                      and reading_change_lines(r, material)[0] == NOTHING_CHANGED_LINE),
         })
     return out
 
@@ -430,6 +434,8 @@ def render_text(letter: OrionDayLetterV1, images: list[InlineImage]) -> str:
                 out.append(f"  What I took from it: {r['take']}")
             for c in r["changes"]:
                 out.append(f"  {c['headline']}" + (f" Evidence: \"{c['evidence']}\"" if c["evidence"] else ""))
+            for g in r["gaps"]:
+                out.append(f"  Not checked: {g}.")
             if r["unchanged_line"]:
                 out.append(f"  Changed: {r['unchanged_line']}.")
         out += ["", "---"]

@@ -46,14 +46,20 @@ TOLD_REASONS = frozenset({"sent", "orion_passed"})
 # Composition failures that count toward ``max_attempts``. A gate block is not a failure.
 FAILED_REASONS = frozenset({"empty_generation", "named_ungrounded_signal"})
 
+# Reads this old are still watched for a NEW finding (a belief a run moves days later).
+READ_WINDOW_DAYS = 7
+
 DECISIONS_SQL = """
 SELECT reason, result_json->'finding_ids' AS finding_ids
 FROM endogenous_outreach_decisions
-WHERE result_json->>'source' = 'reading_finding_outreach' AND decided_at >= $1
+WHERE decided_at >= $1 AND reason = ANY($2::text[])
+  AND result_json->>'source' = 'reading_finding_outreach'
 """
 
 
-def bundle_correlation_id(bundle: ReadingFindingBundleV1) -> str:
+def bundle_key(bundle: ReadingFindingBundleV1) -> str:
+    """Stable id of one bundle, for joins. Never a correlation id: an abandoned compose attempt
+    is cancelled by correlation id, and a retry reusing it would be killed on spawn."""
     return str(uuid5(NAMESPACE_URL, f"{READING_FINDING_TAG}:{bundle.seed_id}:{'|'.join(bundle.finding_ids)}"))
 
 
@@ -85,6 +91,7 @@ def pending_bundles(
 def decision_meta(bundle: ReadingFindingBundleV1, decision_id: str) -> dict[str, Any]:
     return {
         "decision_id": decision_id,
+        "bundle_key": bundle_key(bundle),
         "seed_id": bundle.seed_id,
         "title": bundle.title,
         "url": bundle.url,
@@ -156,9 +163,12 @@ class ReadingFindingOutreach:
         pool = self._pool_provider()
         if pool is None:
             return []
+        # A finding counts when it was RECORDED inside the lookback; its read may be older
+        # (up to READ_WINDOW_DAYS), so a belief a run moves days after the read is still told.
         since = now - timedelta(hours=self.lookback_hours)
         async with pool.acquire() as conn:
-            items = await reading_items_between(conn, since=since, until=now, text_cap=None)
+            items = await reading_items_between(
+                conn, since=now - timedelta(days=READ_WINDOW_DAYS), until=now, text_cap=None)
             reads = [ReadRefV1(seed_id=i.id, occurred_at=i.occurred_at, url=i.extra.get("url") or "",
                                request_id=i.extra.get("request_id") or "", title=i.extra.get("title") or "",
                                learned=i.text, article_summary=i.extra.get("article_summary") or "")
@@ -166,8 +176,9 @@ class ReadingFindingOutreach:
             result = await findings_for_reads(conn, reads, until=now, prior_lookup=self._prior_lookup)
             if result.beliefs_unchecked:
                 logger.warning("reading_finding_beliefs_unchecked reason=%s", result.beliefs_unchecked)
-            # Older than the read window is fine: a finding is only re-offered while its read is.
-            rows = await conn.fetch(DECISIONS_SQL, since - timedelta(days=7))
+            by_seed = {seed: [f for f in fs if f.observed_at >= since] for seed, fs in result.by_seed.items()}
+            rows = await conn.fetch(DECISIONS_SQL, now - timedelta(days=READ_WINDOW_DAYS + 7),
+                                    sorted(TOLD_REASONS | FAILED_REASONS))
         told, logged_failures = set(self._told), {}
         for row in rows:
             for fid in _ids(row["finding_ids"]):
@@ -179,7 +190,7 @@ class ReadingFindingOutreach:
         # the larger one, never the sum.
         failures = {fid: max(logged_failures.get(fid, 0), self._failures.get(fid, 0))
                     for fid in set(logged_failures) | set(self._failures)}
-        return pending_bundles(reads, result.by_seed, told=told, failures=failures, max_attempts=self.max_attempts)
+        return pending_bundles(reads, by_seed, told=told, failures=failures, max_attempts=self.max_attempts)
 
     async def tick(self) -> dict[str, Any]:
         now = self._clock()
@@ -200,7 +211,7 @@ class ReadingFindingOutreach:
         return summary
 
     async def _tell(self, outreach: Any, bundle: ReadingFindingBundleV1) -> dict[str, Any]:
-        correlation_id = bundle_correlation_id(bundle)
+        correlation_id = str(uuid4())  # per attempt: see bundle_key
         decision_id = str(uuid4())
         meta = decision_meta(bundle, decision_id)
         await outreach.refresh_human_gates()
@@ -208,8 +219,10 @@ class ReadingFindingOutreach:
         if blocked:
             # Retried next tick. Logged/recorded once per bundle+reason, not every tick of a
             # quiet-hours night.
-            key = (correlation_id, str(blocked))
+            key = (meta["bundle_key"], str(blocked))
             if key not in self._blocked_logged:
+                if len(self._blocked_logged) > 1000:
+                    self._blocked_logged.clear()  # a log-spam guard, not state
                 self._blocked_logged.add(key)
                 logger.info("reading_finding_outreach_blocked seed=%s reason=%s findings=%d",
                             bundle.seed_id, blocked, len(bundle.findings))

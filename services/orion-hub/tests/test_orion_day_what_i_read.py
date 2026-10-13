@@ -59,6 +59,21 @@ def test_a_read_that_changed_nothing_says_so_and_an_old_read_names_the_missing_s
     letter = _letter(fx.FakeConn(read_links=[]))
     section = _section(email.render_html(letter, []), "what-i-read")
     assert "(no summary of the piece was recorded)" in section
-    assert "Changed: no link accepted, no belief moved." in section
+    assert "Changed: no link accepted; no curiosity run cited this read." in section
     text = email.render_text(letter, [])
-    assert "  Changed: no link accepted, no belief moved." in text
+    assert "  Changed: no link accepted; no curiosity run cited this read." in text
+
+
+def test_an_unchecked_read_never_says_nothing_came_of_it():
+    from scripts import orion_day_email as email
+
+    letter = _letter(fx.FakeConn(fail={"reading_findings"}))
+    section = _section(email.render_html(letter, []), "what-i-read")
+    assert "nothing came of this read" not in section
+    assert "not checked (the findings read failed)" in section
+    move = {"run_id": "r1", "completed_at": fx._t(200),
+            "per_prior": json.dumps([{"kind": "tested", "before": 0.4, "after": 0.6, "prior_id": "p"}])}
+    letter = _letter(fx.FakeConn(prior_moves=[move]))  # no graph reader: beliefs unchecked
+    text = email.render_text(letter, [])
+    assert "  Link made: GGUF quantization" in text
+    assert "  Not checked: beliefs not checked (no_prior_lookup)." in text

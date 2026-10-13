@@ -69,6 +69,7 @@
 {% if r.take %}<br><span style="font-size:14px;"><em>What I took from it:</em> {{ r.take }}</span>{% endif %}
 {% for c in r.changes %}<br><span style="font-size:14px;"><strong>{{ c.headline }}</strong>{% if c.evidence %} <span style="color:{{ muted }};">&ldquo;{{ c.evidence }}&rdquo;</span>{% endif %}</span>{% endfor %}
 {% if r.unchanged_line %}<br><span style="font-size:13px;color:{{ muted }};">Changed: {{ r.unchanged_line }}.</span>{% endif %}
+{% for g in r.gaps %}<br><span style="font-size:13px;color:{{ muted }};">Not checked: {{ g }}.</span>{% endfor %}
 </li>
 {% endif %}
 {% endfor %}

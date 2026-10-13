@@ -241,3 +241,49 @@ def test_the_recorded_article_summary_is_delivered_under_orions_words(monkeypatc
     text = delivered[0]["text"]
     assert text.startswith("I read about NASA's flyover.\n\nWhat the piece says -- NASA to Conduct Flyover")
     assert text.endswith("The flyover is part of a national tour.")
+
+
+def test_rate_gate_skip_keeps_every_gate_that_protects_juniper():
+    from scripts.endogenous_outreach import OutreachGateInputs, outreach_block_reason
+
+    base = dict(enabled=True, turn_in_flight=False, local_hour=12, quiet_start_hour=-1, quiet_end_hour=-1,
+                seconds_since_last_outreach=10.0, min_cooldown_sec=3600.0, sent_today=9, daily_cap=4)
+    assert outreach_block_reason(OutreachGateInputs(**base)) == "daily_cap"
+    assert outreach_block_reason(OutreachGateInputs(**base), skip_rate_gates=True) is None
+    assert outreach_block_reason(OutreachGateInputs(**{**base, "rest_drive_cooldown_sec": 9e9}),
+                                 skip_rate_gates=True) is None
+    for over, reason in (({"quiet_start_hour": 11, "quiet_end_hour": 13}, "quiet_hours"),
+                         ({"arousal_level": "strained"}, "arousal_strained"),
+                         ({"turn_in_flight": True}, "turn_in_flight"),
+                         ({"enabled": False}, "disabled"),
+                         ({"recent_chat_sec": 600.0, "seconds_since_juniper_spoke": 5.0}, "recent_chat")):
+        got = outreach_block_reason(OutreachGateInputs(**{**base, **over}), skip_rate_gates=True)
+        assert got == reason, (over, got)
+    # Door-A unchanged: it still skips quiet hours.
+    assert outreach_block_reason(OutreachGateInputs(**{**base, "quiet_start_hour": 11, "quiet_end_hour": 13}),
+                                 skip_schedule_gates=True) is None
+
+
+def test_a_belief_moved_days_after_an_old_read_is_still_told(monkeypatch):
+    old = {**READ_ROW, "stage2_completed_at": NOW - timedelta(days=4), "created_at": NOW - timedelta(days=4),
+           "handoff_at": NOW - timedelta(days=4)}
+    late_move = {**MOVE_ROW, "completed_at": NOW - timedelta(hours=1)}
+    loop, _, state, rows, _, _ = _setup(monkeypatch, links=[], moves=[late_move])
+    state["reads"] = [old]
+    assert [r["reason"] for r in asyncio.run(loop.tick())["results"]] == ["sent"]
+    assert [r for r in rows if r["reason"] == "sent"][0]["finding_kinds"] == ["belief_moved"]
+
+
+def test_each_attempt_gets_its_own_correlation_id(monkeypatch):
+    loop, _, _, rows, _, _ = _setup(monkeypatch, text="")
+    asyncio.run(loop.tick())
+    asyncio.run(loop.tick())
+    ids = [r["correlation_id"] for r in rows]
+    assert len(ids) == 2 and len(set(ids)) == 2
+    assert len({r["bundle_key"] for r in rows}) == 1
+
+
+def test_a_restart_does_not_resend_a_told_read(monkeypatch):
+    told = [{"reason": "sent", "finding_ids": json.dumps(["link:assertion-f29721db-52ae-5017-8b26-107fceafbd0d"])}]
+    loop, _, _, _, composed, delivered = _setup(monkeypatch, decisions=told)  # fresh process, empty memory
+    assert asyncio.run(loop.tick())["pending"] == 0 and composed == [] and delivered == []

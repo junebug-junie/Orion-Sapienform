@@ -84,4 +84,4 @@ def test_replay_counts_one_message_per_read_per_tick_and_holds_unprojected_links
     assert a["appendix"].endswith("Piece A says X. It also says Y. And Z.")
     assert "Piece A says X." in a["prompt"] and "Belief moved (0.50 -> 0.70): A claim" in a["prompt"]
     d = [r for r in out["letter"] if r["seed_id"] == "reading:d"][0]
-    assert d["changed"] == ["no link accepted, no belief moved"] and d["article_summary"] is None
+    assert d["changed"] == ["no link accepted; no curiosity run cited this read"] and d["article_summary"] is None

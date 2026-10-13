@@ -61,6 +61,8 @@ def scheduler_fixture(monkeypatch):
     monkeypatch.setattr(api_routes, "SUBSTRATE_MUTATION_STORE", SubstrateMutationStore())
     monkeypatch.setattr(api_routes, "SUBSTRATE_MUTATION_SURFACES", {"routing": {"chat_reflective_lane_threshold": 0.5}})
     monkeypatch.setattr(api_routes, "substrate_autonomy_runtime_supported", lambda: (True, "supported"))
+    # R3 reader 6 reads Redis at the decision point; tests never touch the live bus.
+    monkeypatch.setattr(api_routes, "_mutation_arousal_level", lambda: None)
     return {
         "routing_telemetry": [
             {

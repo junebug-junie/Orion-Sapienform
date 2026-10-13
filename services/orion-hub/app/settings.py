@@ -2067,6 +2067,14 @@ class Settings(BaseSettings):
         default=200, alias="SUBSTRATE_TOPIC_FOUNDRY_ENRICH_LIMIT"
     )
     SUBSTRATE_AUTONOMY_ENABLED: bool = Field(default=True, alias="SUBSTRATE_AUTONOMY_ENABLED")
+    # Temporal Self rev 4, R3 reader 6: the scheduled self-modification cycle makes no new
+    # proposal while Orion's arousal reads `strained` (the pressure is kept, not cooled, and
+    # proposed the first cycle after strain clears). Read once per cycle, only when a pressure
+    # is otherwise ready. Unknown / stale / Redis down / false = today. The operator-triggered
+    # manual cycle never reads it.
+    SUBSTRATE_AUTONOMY_AROUSAL_ENABLED: bool = Field(
+        default=True, alias="SUBSTRATE_AUTONOMY_AROUSAL_ENABLED"
+    )
     SUBSTRATE_AUTONOMY_PROPOSALS_ENABLED: bool = Field(default=True, alias="SUBSTRATE_AUTONOMY_PROPOSALS_ENABLED")
     SUBSTRATE_AUTONOMY_APPLY_ENABLED: bool = Field(default=True, alias="SUBSTRATE_AUTONOMY_APPLY_ENABLED")
     SUBSTRATE_AUTONOMY_MONITOR_ENABLED: bool = Field(default=True, alias="SUBSTRATE_AUTONOMY_MONITOR_ENABLED")

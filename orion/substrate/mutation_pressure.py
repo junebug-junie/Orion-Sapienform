@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import Any, Callable, Optional
 
 from orion.core.schemas.substrate_mutation import MutationPressureV1, MutationSignalV1
 
@@ -24,6 +24,10 @@ _RECALL_SURFACES_FOR_SNAPSHOT = frozenset(
     }
 )
 _RECALL_HISTORY_MAX = 8
+
+# Temporal Self rev 4, R3 reader 6: no self-modification proposal while Orion's arousal reads
+# `strained`. Same spelling as orion.regulation.arousal_view.AROUSAL_STRAINED_REASON.
+AROUSAL_STRAINED_REASON = "arousal_strained"
 
 
 class PressureAccumulator:
@@ -89,13 +93,37 @@ class PressureAccumulator:
             recall_evidence_history=history,
         )
 
-    def ready_for_proposal(self, pressure: MutationPressureV1, *, now: datetime | None = None) -> bool:
+    def ready_for_proposal(
+        self,
+        pressure: MutationPressureV1,
+        *,
+        now: datetime | None = None,
+        arousal_level: Optional[Callable[[], Optional[str]]] = None,
+    ) -> bool:
+        """Threshold, then cooldown, then (R3 reader 6) arousal.
+
+        ``arousal_level`` is called only when the pressure would otherwise be ready, so it can
+        only withhold a proposal, never create one. ``"strained"`` -> False; anything else
+        (None = unknown / flag off / Redis down) changes nothing. The pressure is not cooled,
+        so it is proposed on the first cycle after strain clears."""
+        return self.readiness(pressure, now=now, arousal_level=arousal_level) is None
+
+    def readiness(
+        self,
+        pressure: MutationPressureV1,
+        *,
+        now: datetime | None = None,
+        arousal_level: Optional[Callable[[], Optional[str]]] = None,
+    ) -> str | None:
+        """None when ready, else why not: below_threshold / cooldown / arousal_strained."""
         t = now or datetime.now(timezone.utc)
         if pressure.pressure_score < self._policy.activation_threshold:
-            return False
+            return "below_threshold"
         if pressure.cooldown_until and pressure.cooldown_until > t:
-            return False
-        return True
+            return "cooldown"
+        if arousal_level is not None and arousal_level() == "strained":
+            return AROUSAL_STRAINED_REASON
+        return None
 
     def mark_proposal_emitted(self, pressure: MutationPressureV1, *, now: datetime | None = None) -> MutationPressureV1:
         t = now or datetime.now(timezone.utc)

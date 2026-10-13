@@ -912,7 +912,7 @@ Per-reader off switches: `HUB_ENDOGENOUS_OUTREACH_REST_DRIVE_ENABLED`,
 `HUB_CURIOSITY_REST_DRIVE_ENABLED`. The outreach status endpoint shows
 `rest_drive` and `rest_drive_cooldown_sec`.
 
-#### 4.1.y Orion's arousal sets three dials (Temporal Self R3, 2026-10-12)
+#### 4.1.y Orion's arousal sets four dials (Temporal Self R3, 2026-10-12)
 
 orion-durable-runs writes one reading of Orion's situation to Redis
 `orion:regulation:latest` (every 120 s and on every Juniper turn): `engaged`
@@ -925,6 +925,7 @@ once per tick; each loop decides what a level means for its own dial:
 | Curiosity investigation line | held, `arousal_strained` | cooldown x `HUB_CURIOSITY_AROUSAL_ENGAGED_COOLDOWN_MULTIPLIER` (2.0), `arousal_engaged_cooldown` | as today | as today |
 | Curiosity self-inquiry | held, `arousal_strained` | held, `arousal_engaged` | as today | as today |
 | Background outreach | refused, `arousal_strained` | as today | as today | as today |
+| Scheduled self-modification proposals (R3 reader 6) | no new proposal; pressure kept, traced `mutation_proposal_held` | as today | as today | as today |
 
 Every arousal hold is checked last, so it only ever adds a hold after every other
 gate has passed. Daily caps, the curiosity hour window, quiet hours, recent-chat,
@@ -936,6 +937,15 @@ the producer's own `unknown`, or a Redis error changes nothing. Off switches:
 `HUB_ENDOGENOUS_OUTREACH_AROUSAL_ENABLED`. The rest drive (above) stays a separate
 input: tired and strained are different facts and both can hold. The outreach
 status endpoint shows `arousal`. Eval: `scripts/analysis/measure_arousal_reader_replay.py`.
+
+The self-modification reader is different in one way: the mutation cycle runs 60-90 s
+off the event loop, so it reads Redis itself (one blocking GET, 2 s timeout) at the
+first pressure that is otherwise ready, not at tick start
+(`api_routes._mutation_arousal_level`). Below-threshold and cooldown pressures never
+read it, a held pressure is not cooled (it is proposed the first cycle after strain
+clears), and trials, decisions, adoptions, rollbacks and the operator's manual cycle
+never read it. The cycle summary log carries `proposals_held_arousal`. Off switch:
+`SUBSTRATE_AUTONOMY_AROUSAL_ENABLED`.
 
 ### 4.2 Curiosity investigation — Orion's own time, and its own graph
 

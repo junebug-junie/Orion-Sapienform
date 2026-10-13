@@ -5,7 +5,7 @@
     "change_count": 1,
     "high_severity_count": 1,
     "changes": [
-      "high   routing_changed metric://inner_state/orion-durable-runs/regulation.state.v1 (declared_consumers: \u2026d outreach)'] -> \u2026d outreach)', 'services.orion-proposal-runtime.app.worker:P\u2026)"
+      "high   routing_changed metric://inner_state/orion-durable-runs/regulation.state.v1 (declared_consumers: \u2026hub.scripts.curiosity_investigation:CuriosityInvestigation.\u2026 -> \u2026hub.scripts.api_routes:_mutation_arousal_level -> orion.sub\u2026)"
     ]
   },
   "definitions": {
@@ -4647,6 +4647,7 @@
       "absent_means": "Redis orion:regulation:latest expired (TTL 360 s, three ticks) or arousal_level unknown (a stale input, or ORION_REGULATION_AROUSAL_ENABLED=false): arousal unavailable, and every reader keeps its pre-arousal behaviour. Never read as idle.",
       "declared_consumers": [
         "services.orion-dream.app.cycle:run_cycle_once (a due sleep is held while engaged or strained)",
+        "services.orion-hub.scripts.api_routes:_mutation_arousal_level -> orion.substrate.mutation_pressure:PressureAccumulator.ready_for_proposal (no self-modification proposal while strained)",
         "services.orion-hub.scripts.curiosity_investigation:CuriosityInvestigation.tick (strained holds; engaged doubles the cooldown)",
         "services.orion-hub.scripts.curiosity_investigation:CuriosityInvestigation.tick_self_inquiry (runs only at idle)",
         "services.orion-hub.scripts.endogenous_outreach:EndogenousOutreach._gate_inputs (strained refuses background outreach)",

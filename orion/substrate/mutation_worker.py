@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import os
-from typing import Any, Callable
+from typing import Any, Callable, Optional
 from uuid import uuid4
 
 from orion.core.schemas.substrate_mutation import MutationDecisionV1, MutationSignalV1
@@ -28,6 +28,31 @@ class AdaptationCycleBudget:
     max_adoptions: int = 2
 
 
+class _CycleArousalProbe:
+    """R3 reader 6: Orion's arousal, read at most once per cycle and only at the first
+    pressure that is otherwise ready (the decision point). ``held`` says whether the most
+    recent ``ready_for_proposal`` call was refused by arousal."""
+
+    def __init__(self, read: Callable[[], Optional[str]]) -> None:
+        self._read = read
+        self._level: Optional[str] = None
+        self._done = False
+        self.held = False
+
+    def reset(self) -> None:
+        self.held = False
+
+    def __call__(self) -> Optional[str]:
+        if not self._done:
+            self._done = True
+            try:
+                self._level = self._read()
+            except Exception:  # noqa: BLE001 -- unreadable arousal is unknown, never strained
+                self._level = None
+        self.held = self._level == "strained"
+        return self._level
+
+
 @dataclass
 class SubstrateAdaptationWorker:
     store: SubstrateMutationStore
@@ -42,6 +67,9 @@ class SubstrateAdaptationWorker:
     kill_switch_env: str = "SUBSTRATE_MUTATION_AUTONOMY_ENABLED"
     lock_id: int = 914257
     trace_logger: Callable[[dict[str, Any]], None] | None = None
+    # R3 reader 6 (Temporal Self rev 4): returns Orion's arousal level, or None for unknown.
+    # None (the default) = no reader, exactly the pre-arousal behaviour.
+    arousal_level: Callable[[], Optional[str]] | None = None
 
     def run_cycle(
         self,
@@ -97,10 +125,34 @@ class SubstrateAdaptationWorker:
                 )
 
             proposal_count = 0
+            probe = _CycleArousalProbe(self.arousal_level) if self.arousal_level is not None else None
+            held_by_arousal = 0
             for pressure in list(self.store._pressures.values()):
                 if proposal_count >= self.budget.max_proposals:
                     break
-                ready = self.pressure.ready_for_proposal(pressure, now=t)
+                if probe is None:
+                    ready = self.pressure.ready_for_proposal(pressure, now=t)
+                else:
+                    probe.reset()
+                    ready = self.pressure.ready_for_proposal(pressure, now=t, arousal_level=probe)
+                    if not ready and probe.held:
+                        # Not cooled: the same pressure is proposed on the first cycle after
+                        # strain clears. Traced so a held proposal is distinguishable from a
+                        # pressure that never crossed its threshold.
+                        held_by_arousal += 1
+                        self._trace(
+                            event="mutation_proposal_held",
+                            cycle_id=cycle_id,
+                            pressure_id=pressure.pressure_id,
+                            lineage_id=(
+                                pressure.source_signal_ids[0]
+                                if pressure.source_signal_ids
+                                else pressure.pressure_id
+                            ),
+                            surface_key=pressure.target_surface,
+                            notes=["reason=arousal_strained", f"score={pressure.pressure_score:.4f}"],
+                        )
+                        continue
                 if ready:
                     self._trace(
                         event="mutation_pressure_threshold_crossed",
@@ -437,12 +489,15 @@ class SubstrateAdaptationWorker:
                         reason=f"window_elapsed_delta={delta:.4f}",
                     )
 
+            if held_by_arousal:
+                notes.append(f"proposals_held:arousal_strained={held_by_arousal}")
             result = {
                 "signals": len(signals),
                 "proposals": proposal_count,
                 "trials": trial_count,
                 "adoptions": adoption_count,
                 "notes": notes,
+                "proposals_held_arousal": held_by_arousal,
             }
             self._trace(event="mutation_cycle_complete", cycle_id=cycle_id, lock_acquired=True, notes=notes)
             return result

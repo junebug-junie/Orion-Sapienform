@@ -4746,6 +4746,23 @@ def substrate_autonomy_runtime_supported() -> tuple[bool, str]:
     return True, "supported"
 
 
+def _mutation_arousal_level() -> str | None:
+    """R3 reader 6: Orion's arousal for the scheduled self-modification cycle.
+
+    Called by the worker at most once per cycle, at the first pressure that is otherwise ready
+    for a proposal (this cycle runs 60-90 s off the event loop, so the read is a blocking GET
+    at the decision point, not at tick start). None = unknown / flag off = today."""
+    from orion.regulation.arousal_read import read_arousal_sync
+
+    view = read_arousal_sync(
+        settings.ORION_BUS_URL,
+        enabled=_env_flag("SUBSTRATE_AUTONOMY_AROUSAL_ENABLED", default=True),
+        reader="mutation_pressure",
+        max_age_sec=float(settings.ORION_REGULATION_READER_MAX_AGE_SEC),
+    )
+    return view.level if view.known else None
+
+
 def execute_substrate_mutation_scheduled_cycle(
     *,
     now: datetime | None = None,
@@ -4867,6 +4884,7 @@ def execute_substrate_mutation_scheduled_cycle(
             ),
             kill_switch_env="SUBSTRATE_AUTONOMY_ENABLED",
             trace_logger=traces.append,
+            arousal_level=_mutation_arousal_level,
         )
 
         # Narrow ramp scope: was routing-class only (zone "autonomy_graph"),
@@ -4987,6 +5005,8 @@ def execute_substrate_mutation_scheduled_cycle(
             "proposals_refused": len(
                 [event for event in traces if event.get("event") == "mutation_proposal_refused"]
             ),
+            # R3 reader 6: otherwise-ready pressures held while arousal read strained.
+            "proposals_held_arousal": int(result.get("proposals_held_arousal", 0)),
             "proposal_refusal_reasons": sorted(
                 {
                     note.split("reason=", 1)[1]

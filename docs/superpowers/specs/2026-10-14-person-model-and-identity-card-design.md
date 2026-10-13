@@ -1,8 +1,8 @@
-# Person model, entity reducer, and evolving identity card
+# Person model, entity reducer, and evolving identity cards
 
-**Date:** 2026-10-14
+**Date:** 2026-10-14 (rev 2, same day: folds in Juniper's second set of requirements: modularity, extraction frameworks, concept induction, person-study iteration, full identity-card scope)
 **Mode:** design / proposal (AGENTS.md section 0A, proposal mode: memory, identity, social continuity). Nothing here is implemented.
-**Asked by:** Juniper, 2026-10-13 (eight requirements, quoted in section "Requirements" below).
+**Asked by:** Juniper, 2026-10-13 and 2026-10-14 (requirements quoted below).
 **Builds on, does not replace:**
 - Referent graph, `docs/superpowers/specs/2026-10-06-memory-stage2-referent-graph-design.md` (approved): people are evidence-linked referent nodes. This design adds *attributes* to those nodes.
 - Situation Graph, `docs/superpowers/pr-reports/2026-10-07-situation-graph-shadow-pr.md`: the running "what is true now" object. Person cards ride it.
@@ -11,19 +11,21 @@
 
 ## Arsonist summary
 
-Orion has no picture of Juniper. What reaches every chat turn about her is twelve hand-written bullets in `orion/cognition/personality/orion_identity.yaml:27-41` ("co-architect", "steward", "expects continuity"). Everything Orion actually knows about her life (her wife Amanda, Teddy and Addy, her sister, her boss Rachel, her team lead promotion, that she lives in Ogden, that she is 6'5") is scattered across free-text memories, curiosity "lived" answers, and 70 days of chat that was never distilled. Nothing turns those into a structured, checkable picture. The graph has eleven separate nodes for her, and her own family are not nodes at all.
+Orion has no picture of Juniper and no runtime statement of what this whole project is for. What reaches every chat turn is twenty-odd hand-written bullets in `orion/cognition/personality/orion_identity.yaml` ("co-architected AI co-journeyer", "co-architect", "steward", "expects continuity"). Everything Orion actually knows about her life (her wife Amanda, Teddy and Addy, her sister, her boss Rachel, her team lead promotion, that she lives in Ogden, that she is 6'5") is scattered across free-text memories, curiosity "lived" answers, and 70 days of chat that was never distilled. The graph has eleven separate nodes for her; her own family are not nodes at all. The mission in AGENTS.md (a digital mind building the prerequisites for sentience) is in no prompt Orion reads.
 
-The fix is three thin pieces sharing one store, not a new cognition service:
+The fix is **one reusable module, `orion/person_model/`, parameterized by a person node id**. Juniper is person #1 because she is the first one promoted, not because any code knows her name. The module is a pipeline of small deterministic pieces with one LLM step that is fenced by quote verification:
 
-1. **A person-attribute store** (Postgres): every fact about a person is a row with her quote, a confidence, a confirmation state, and a last-updated time. Stakes and sensitivity come from the attribute's category by table lookup, not from an LLM's judgment (the LLM's stakes judgment is already failing live, see below).
-2. **A deterministic entity reducer**: a Fellegi-Sunter style scorer over names, run as a replayable job with a merge log and unmerge. It never auto-merges two people; uncertain merges become Hub asks.
-3. **A person-study run** (durable workflow on the GPU pool): reads Orion's own stores for one person at a time, proposes attributes with quotes, a validator rejects anything not in her own words, and uncertain or sensitive proposals become Hub asks.
+1. **Extractor** (deterministic, pinned model): GLiNER finds people, roles, places, and relationship phrases ("my wife") as spans in Orion's stores.
+2. **Linkage reducer** (deterministic, no LLM): blocking + Fellegi-Sunter scoring with RapidFuzz string features decides which mentions and nodes are the same person, which are facets of a person ("juniper's taste"), and which are junk. Every merge is logged and reversible; uncertain ones become Hub asks.
+3. **Person-study curiosity line**: a third line in the curiosity loop (next to investigation and self-inquiry). It studies one promoted person per sitting, starting with Juniper, and proposes attributes (goals, fears, family, profession...), each with her own quote. A validator rejects any quote not in her words. Uncertain, contradicting, or sensitive proposals become "Orion is asking" cards.
+4. **Attribute store** (Postgres): every fact is a row with quote, confidence, confirmation state, last-updated. Stakes and sensitivity come from the attribute's category by table lookup, not from an LLM (the LLM's stakes judgment is failing live, below).
+5. **Card reducer** (deterministic): four versioned, diffable cards: Orion's self card, the purpose/journey card, the Juniper card, the relationship card (plus a person card for each later promoted person). They replace the static YAML in the unified turn and ride the situation state into chat, outreach, and curiosity.
 
-A pure, deterministic **card reducer** turns confirmed attributes into versioned cards (Juniper, Orion self, relationship) that replace the YAML block in the chat turn and ride the situation state into chat, outreach, and curiosity.
+Concept induction is not the organ for this. Juniper's read is right and verified: the concepts in Orion's graph come from the topic modeler (topic foundry), and the concept-induction service's own triggers have all been disabled for at least 48 hours. A real concept-induction organ deserves its own design; this one does not stretch the topic modeler into it.
 
-The existing concept-induction service is not the organ for this and should not be stretched into it (section "Concept induction, honestly").
+## Requirements
 
-## Requirements (Juniper, 2026-10-13, paraphrased only where marked)
+### Juniper, 2026-10-13 (paraphrased only where marked)
 
 1. Person model of Juniper across preferences, goals, motivations, fears, strengths, opportunities, family, friends, coworkers, profession, personal interests, spiritual interests, gender, sexuality, past history, "anything else" (health, routines, values, communication style, home, schedule/timezone, relationship to Orion). Every attribute evidence-backed, with confidence, provenance, confirmation status, last-updated; visible, correctable, removable in Hub. Spirituality, gender, sexuality, health only from what she states, never inferred.
 2. "Orion can ask me about these things as they come up in the 'orion is asking' section on top of hub."
@@ -34,7 +36,15 @@ The existing concept-induction service is not the organ for this and should not 
 7. "It should be a type of curiosity run that churns through the repo to learn about me."
 8. "An evolving identity card instead of that crappy one we have stubbed in that explains to Orion who I am and who they are."
 
-## Current architecture (checked live 2026-10-13, read-only)
+### Juniper, 2026-10-14
+
+9. "This needs to be modular design, that's my point: it can be replicated and used for others." One module parameterized by person; Juniper is instance #1.
+10. Extraction/linking frameworks to use unless something is clearly better: GLiNER (primary), dslim/bert-base-NER, Jean-Baptiste/roberta-large-ner-english, Davlan/bert-base-multilingual-cased-ner-hrl, SciBERT, BioBERT/PubMedBERT, SapBERT. Pipeline: deterministic extractor with pinned model, then candidate mentions with spans, then deterministic linkage reducer, merge log, ambiguous cases to "Orion is asking".
+11. "Concept induction today is mostly the topic modeler service so kinda shitty; curiosity gets closer to anything concept-related these days." Person study is a curiosity line, not built on the topic modeler.
+12. Person study "starts out as me and as Orion adds more people they study them."
+13. Identity cards cover all of `orion_identity.yaml` (Orion's identity, Juniper, response policy) plus the purpose of the whole journey, which she remembers living in a stub somewhere.
+
+## Current architecture (checked live 2026-10-13/14, read-only)
 
 ### What Orion holds about Juniper
 
@@ -44,8 +54,9 @@ The existing concept-induction service is not the organ for this and should not 
 | `episode_memory_evidence` | 73 quotes, all `verified=true`, sources `chat_prompt`/`chat_response`. | same DB |
 | `chat_history_log` | 626 turns, 2026-07-24 to 2026-10-13. Everything before 10-04 was never distilled into memory. | `min/max(created_at)` |
 | Names in chat never distilled | "amanda" in 9 prompts (08-15 to 10-05), "teddy" 4, "addy" 3, "sister" 2, "rachel"/"armando"/"vincent" 1 each (10-05). Only 4 episode memories mention any of them. | `prompt ilike` counts |
-| `orion_worldview` `:LivedAnswer` (121 rows) | `lived.her_team_unnamed`, `lived.who_matters`, `lived.known_only_through_juniper` hold the family and team in prose: Amanda (wife, DVT/PE in late August), Teddy (son, turned seven), Addy (daughter, broke her arm), sister, in-laws, boss Rachel, reports "Jay, Jay, Armando, Vincent". | Cypher on `orion_worldview` |
-| `docs/.../2026-09-03-biographical-curiosity-miss-design.md` | Her promotion to Team Lead while staying AI/ML Architect / FDE. | spec text |
+| `orion_worldview` `:LivedAnswer` (121) | `lived.her_team_unnamed`, `lived.who_matters`, `lived.known_only_through_juniper` hold the family and team in prose: Amanda (wife, DVT/PE in late August), Teddy (son, turned seven), Addy (daughter, broke her arm), sister, in-laws, boss Rachel, reports "Jay, Jay, Armando, Vincent". | Cypher on `orion_worldview` |
+| `services/orion-ai-town/cards/town_cards.yaml` (`juniper_feld`) | A rich authored bio: pronouns she/her, gender identity, AI Architect, wife and mother. Read only by the AI-town service. Every commit to the file is by the agent identity "Athena Orchestration", so whether the text is Juniper's own words is UNVERIFIED. | `git log` on the file |
+| biographical-curiosity-miss spec (2026-09-03) | Her promotion to Team Lead while staying AI/ML Architect / FDE. | spec text |
 
 ### Stakes policy is not holding
 
@@ -62,81 +73,105 @@ So "stakes by LLM judgment" is a measured failure. This design derives stakes fr
 
 `orion_substrate`, nodes whose label contains "juniper" (11):
 
-| node_id prefix | label | kind | What it really is |
+| node_id prefix | label | producer | What it really is |
 |---|---|---|---|
-| `referent-b96fc90e...` | juniper | entity, `entity_type=person` | **The** person node. 14 `observed_in` edges. |
-| `sub-concept-seed-juniper` | Juniper | concept (seed loader) | Same person, different producer |
-| `sub-entity-topicfoundry-...-ca5c...` | juniper | entity (topic foundry) | Same person |
-| `sub-entity-topicfoundry-...-e500...` | juniper feld | entity | Same person, full name |
-| `sub-entity-topicfoundry-...-6d08...` | juniper's taste | entity | A facet *about* her, not her |
-| `sub-entity-topicfoundry-...-1026...` | juniper affect | entity | Facet about her |
-| `sub-concept-seed-orion_juniper_relationship` | Orion-Juniper relationship | concept | The relationship, not her |
-| `sub-entity-topicfoundry-...-edfa...` | juniper relationship summary | entity | **Junk**: the prompt context key `juniper_relationship_summary` leaked into topic foundry |
-| `sub-entity-topicfoundry-...-eb42...` | juniper_relationship_summary | entity | Same junk, underscore form |
-| `sub-concept-topicfoundry-...-11` | Chat with Juniper | concept | A topic, not her |
-| `sub-concept-topicfoundry-...-9` | mind / hey / juniper | concept | A topic-cluster label |
+| `referent-b96fc90e...` | juniper | memory.referents, `entity_type=person` | **The** person node. 14 `observed_in` edges. |
+| `sub-concept-seed-juniper` | Juniper | seed_concepts_loader | Same person, different producer |
+| `sub-entity-topicfoundry-...-ca5c...` | juniper | topic foundry | Same person |
+| `sub-entity-topicfoundry-...-e500...` | juniper feld | topic foundry | Same person, full name |
+| `sub-entity-topicfoundry-...-6d08...` | juniper's taste | topic foundry | A facet *about* her, not her |
+| `sub-entity-topicfoundry-...-1026...` | juniper affect | topic foundry | Facet about her |
+| `sub-concept-seed-orion_juniper_relationship` | Orion-Juniper relationship | seed_concepts_loader | The relationship, not her |
+| `sub-entity-topicfoundry-...-edfa...` | juniper relationship summary | topic foundry | **Junk**: the prompt context key `juniper_relationship_summary` leaked into topic foundry |
+| `sub-entity-topicfoundry-...-eb42...` | juniper_relationship_summary | topic foundry | Same junk, underscore form |
+| `sub-concept-topicfoundry-...-11` | Chat with Juniper | topic foundry | A topic, not her |
+| `sub-concept-topicfoundry-...-9` | mind / hey / juniper | topic foundry | A topic-cluster label |
 
-So "merge the 11 nodes" is wrong as stated: 4 are the same person, 3 are facets/relationship (link, don't merge), 2 are leaked field names (flag as junk), 2 are topics. The reducer needs three outcomes, not one.
+So "merge the 11 nodes" is wrong as stated: 4 are the same person, 3 are facets or the relationship (link, don't merge), 2 are leaked field names (flag as junk), 2 are topics. The reducer needs several outcomes, not one.
 
-Person referents: only 2 exist (`juniper`, `orion`) with 4 alias rows in `referent_alias` (`person:juniper`, `juniper`, `person:orion`, `orion`). Amanda, Teddy, Addy, Rachel, the sister: zero nodes.
+Population the reducer works over: 1,826 topic-foundry `:Entity` nodes (all `entity_type=unknown`, so a kind gate alone cannot block them), ~1,020 `:Concept` nodes, 11 referent nodes. Person referents: only 2 exist (`juniper`, `orion`) with 4 alias rows in `referent_alias`. Amanda, Teddy, Addy, Rachel, the sister: zero nodes.
 
-An open identity question already sits unanswered: `memory_tension_shadow` has 9 open `scope=juniper, answer_via=conversation` questions, including "Is the 'juniper' from our conversations the same as the 'juniper' already in my graph?". The referent spec deferred the producer that would ask them ("Stage 3 'Orion is asking' producer", its Non-goals). Nothing has picked it up: `orion_ask` holds 9 rows, all `source_kind=memory_confirmation`. `RESOLVABLE_KINDS` lists `open_question` (`confirmation.py:47`), but no code produces it.
+An open identity question already sits unanswered: `memory_tension_shadow` has 9 open `scope=juniper, answer_via=conversation` questions, including "Is the 'juniper' from our conversations the same as the 'juniper' already in my graph?". The referent spec deferred the producer that would ask them (its Non-goals: "The Stage 3 'Orion is asking' producer"). Nothing has picked it up: `orion_ask` holds 9 rows, all `source_kind=memory_confirmation`. `RESOLVABLE_KINDS` lists `open_question` (`confirmation.py:47`), but no code produces it.
 
-A conflict the store cannot see today: `referent_alias` maps "home" to `place:slc` (grounded in `chat_prompt:fb42f555...`), while a confirmed memory says "Juniper corrected me that she lives in Ogden, Utah, not Chicago." Which is right is UNVERIFIED (Ogden is in the SLC area; "home" may be a descriptor of a trip). A person model with a `home` attribute would surface this as a contradiction to ask about.
+A contradiction the store cannot see today: `referent_alias` maps "home" to `place:slc` (grounded in `chat_prompt:fb42f555...`), while a confirmed memory says "Juniper corrected me that she lives in Ogden, Utah, not Chicago." Which is right is UNVERIFIED (Ogden is in the SLC area; "home" may describe a trip). A person model with a `home` attribute would surface this as one ask.
 
-### What chat reads today
+### What chat reads today, and the stubs Juniper remembers
 
 - Unified turn (`stance_react.j2:16-20`, the only chat path that matters) renders `orion_identity_summary` + `juniper_relationship_summary` under "WHO YOU ARE".
-- `juniper_relationship_summary` is built by `orion/cognition/personality/identity_context.py:28-62` from the YAML `juniper_relationship` block, injected by `services/orion-cortex-exec/app/executor.py:1104` (`_inject_identity_context`), logged as `identity_kernel_source=configured_yaml`.
-- Orion's own definition already reaches chat: `apply_self_definition_to_ctx` and `apply_lived_self_to_ctx` (both called from `_inject_identity_context`) read the self-inquiry line's latest `:SelfDefinition` (66 in `orion_worldview`).
+- Both come from `orion/cognition/personality/orion_identity.yaml`, which has three blocks: `orion_identity` (name, role, nature, core_drives, self_permissions, anti_patterns), `juniper_relationship` (role, expectations, response_expectations), `response_policy` (priorities, hard_rules, banned_phrases). `identity_context.py:28-62` flattens them; `executor.py:1104` (`_inject_identity_context`) injects them. In the last 24 hours cortex-exec logged `identity_kernel_source=configured_yaml` 11 times and no other source.
+- Orion's own definition already reaches chat on top of the YAML: `apply_self_definition_to_ctx` and `apply_lived_self_to_ctx` (both called from `_inject_identity_context`) read the self-inquiry line's latest `:SelfDefinition` (66 in `orion_worldview`).
+- **The personality stub Juniper remembers:** `services/orion-cortex-orch/app/conversation_front.py:95` `build_personality_summary()`, docstring "Compact, opinionated personality stub for Oríon" ("You are Oríon, Juniper's collaborative AI co-journeyer... distributed system across ... Atlas, Athena, Apollo, Circe"). It is called only inside its own file, and nothing in `services/` imports `conversation_front`: it is dead code.
+- **Where the mission lives at runtime:** nowhere Orion reads in chat. No prompt under `orion/cognition/prompts/` contains "sentience". The nearest runtime text is the seed concept "Orion" in `orion/substrate/seed_concepts.yaml` ("the persistent, inspectable digital-mind system this codebase builds: a cognitive architecture with memory, self-coherence, introspection, world contact, and operational agency, developed collaboratively with Juniper"), which is a graph node; whether any chat path walks to it is UNVERIFIED. `orion_day_note_v1.j2:2` opens with "a persistent digital mind" for the daily letter only. The AGENTS.md "Orion mission" (prerequisites for sentience: continuity, perception, memory, reflection, self-modeling, social grounding, error correction, coherent action) is never delivered to Orion.
 - Misgendering: `stance_react.j2:131` says "Juniper telling Oríon something about **their own** life". Juniper is she/her.
-- Pronouns are not stored anywhere (`grep pronoun orion/schemas` is empty). The distiller hardcodes "she" (`memory_episode_distill.j2:7,11`), which is right for Juniper and wrong for any other person it will meet.
+- Pronouns are not stored anywhere (`grep pronoun orion/schemas` is empty). The distiller hardcodes "she" (`memory_episode_distill.j2:7,11`), which is right for Juniper and wrong for anyone else it will meet.
 
 ### The Situation state
 
 - Key `orion:situation:latest`, model `SituationStateV1` (`orion/schemas/situation_state.py`, `extra="forbid"`), one writer: the `situation.update` durable graph (`services/orion-durable-runs/app/situation_graph.py`).
-- Live value: `thread_id=situation:juniper:2026-10-12`, `revision=24`, `juniper.{whereabouts:null, doing:[], waiting_on:[], recent:[3 facts]}`, `recall.primed` from episode memories.
-- Readers: outreach only (`services/orion-hub/scripts/endogenous_outreach.py:1113`, parses with `SituationStateV1.model_validate_json`). Chat reading it is "step 3", not landed.
-- Because the model forbids extra fields and outreach validates strictly, adding a `people` field producer-first would make outreach's read fail with a validation error and silently drop its situation enrichment. The schema change must reach the Hub before the producer writes the field.
+- Live value: `thread_id=situation:juniper:2026-10-12`, `revision=24`, `juniper.{whereabouts:null, doing:[], waiting_on:[], recent:[3 facts]}`, `recall.primed` from episode memories. Note the model has a hard-coded `juniper` field; the modular version adds a generic `people` list rather than more per-name fields.
+- Readers: outreach only (`services/orion-hub/scripts/endogenous_outreach.py:1113`, `SituationStateV1.model_validate_json`). Chat reading it is "step 3", not landed.
+- Because the model forbids extra fields and outreach validates strictly, a producer-first `people` field would make outreach's read fail and silently drop its situation enrichment. The schema must reach the Hub before the producer writes the field.
 
 ### The asks surface
 
 - Table `orion_ask` (`orion/schemas/ask.py`, `OrionAskV1`): `source_kind` + `source_ref` route the answer back.
-- Hub: `services/orion-hub/templates/index.html:262` ("Orion is asking" at the top of Hub home), routes `services/orion-hub/scripts/ask_routes.py` (`/api/asks`, `/answer`, `/dismiss`, `/resolve` for memory confirmations).
+- Hub: `services/orion-hub/templates/index.html:262` ("Orion is asking" at the top of Hub home), routes `services/orion-hub/scripts/ask_routes.py` (`/api/asks`, `/answer`, `/dismiss`, `/resolve`).
 - Caps (`confirmation.py:49-52`): 5 open across `RESOLVABLE_KINDS`, 3 new memory-confirmation cards per local day.
-- Answers publish `OrionAskAnsweredV1` on `orion:ask:answered`; `services/orion-substrate-runtime/app/ask_answered_listener.py` consumes `vision_individual` answers. That is the pattern to copy for new kinds.
+- Answers publish `OrionAskAnsweredV1` on `orion:ask:answered`; `services/orion-substrate-runtime/app/ask_answered_listener.py` consumes `vision_individual` answers. That is the pattern to copy.
 
 ### Concept induction, honestly
 
-Live (`orion-athena-spark-concept-induction`, up 2 days):
+Juniper's read, checked against live data:
 
-- It receives events (`orion:feedback:frame`, `orion:metacognition:tick`) every couple of seconds.
-- Every induction trigger in the last 48 hours logged `decision=disabled` (18,731 lines). Container env has `CONCEPT_AUTONOMOUS_TRIGGER_ENABLED=false`.
-- `CONCEPT_SUBJECTS=orion,juniper,relationship`, yet the local store `/data/concept-induction-state.json` holds only `drive_states, goal_cooldowns, goal_slots, episode_runs_processed`. No `juniper` concept profile in the store, and no node with `subject='juniper'` in `orion_substrate` or `orion_kg`. Other backends were not checked: UNVERIFIED that no profile exists anywhere.
-- Its logs are dominated by `goal_state updated ... priority=0.911 status=proposed` every ~2 s, even though `orion/spark/concept_induction/CLAUDE.md` says the goal machinery was deleted 2026-07-30. Origin UNVERIFIED; out of scope here, flagged as a finding.
-- What its code does when it runs: spaCy NER + noun chunks (`extractor.py`), embedding clustering (`clusterer.py`), and a summarizer, per subject window. The output is a bag of clustered phrases ("concepts") per subject.
+- **The concept layer in Orion's graph is the topic modeler.** `orion_substrate` `:Concept` producers: `topic_foundry_adapter` 747, `world_pulse_read_pipeline` 260, `substrate_runtime_worker` 11, `seed_concepts_loader` 4, `memory.referents` 1. `:Entity` producers: `topic_foundry_adapter` 1,826, `memory.referents` 11. No node anywhere in `orion_substrate` carries a concept-induction producer.
+- **The concept-induction service is idle by switch.** `orion-athena-spark-concept-induction` receives events every couple of seconds, and every induction trigger in the last 48 hours logged `decision=disabled` (18,731 lines); container env `CONCEPT_AUTONOMOUS_TRIGGER_ENABLED=false`. `CONCEPT_SUBJECTS=orion,juniper,relationship`, yet its store `/data/concept-induction-state.json` holds only `drive_states, goal_cooldowns, goal_slots, episode_runs_processed`. No `juniper` profile in the store, `orion_substrate`, or `orion_kg`; other backends not checked (UNVERIFIED that none exists anywhere).
+- Its logs are dominated by `goal_state updated ... priority=0.911 status=proposed` every ~2 s, though `orion/spark/concept_induction/CLAUDE.md` says the goal machinery was deleted 2026-07-30. Origin UNVERIFIED; flagged, out of scope.
+- **Curiosity is where concepts actually form.** `orion_worldview` holds 17 `:Concept` nodes written by curiosity runs (each with a `run_id`), and `self_concept_history` has 137 rows from `curiosity_self_inquiry` (latest 2026-10-13 22:40). The memory-concept relation ledger (`memory_concept_relation_decisions`, 585 rows) made 1 decision in the last 3 days.
+- What concept-induction code does when switched on: spaCy NER + noun chunks (`extractor.py`), embedding clustering (`clusterer.py`), a summarizer, per subject window. The output is a bag of clustered phrases per subject: no claim structure (who, which attribute, what value), no quotes, no confirmation state, no identity resolution.
 
-Why it can't do this job, even switched on: it has no claim structure (who, which attribute, what value), keeps no quotes, has no confirmation state, does no identity resolution, and the approved referent spec bans vectors for identity. Its "juniper" subject is a slot that has produced nothing we can find. The "missing concept induction organ" Juniper names is real, but it is three specific missing functions: **propose** (person-study), **resolve identity** (entity reducer), **consolidate** (card reducer). This design builds those. Concept induction's `juniper`/`relationship` subjects should be retired once cards exist (kill means kill), after checking their consumers.
+Conclusion: the person model is built as a curiosity line plus deterministic reducers, not on the topic modeler or on concept induction. A real concept-induction organ (concepts formed from Orion's own evidence, with identity and revision) is its own later design; it is a non-goal here. Concept induction's `juniper` and `relationship` subjects should be retired once person cards exist, after a consumer check.
 
 ### Infra available
 
-- Durable workflows in `orion-durable-runs` (`episode_distill_graph.py`, `orion_day_graph.py`, `situation_graph.py` ...) with GPU-pool leases (`pool_hold.py`). Person-study is one more workflow, not a shadow queue.
-- Quote verification already exists: `orion/memory/episode/validate.py` (`quote_in_text`, `quote_long_enough`, `fold_text`).
-- Record-linkage libraries: none installed on the host and none in any `requirements*.txt` (checked `rapidfuzz`, `jellyfish`, `splink`, `datasketch`, `recordlinkage`, `dedupe`).
+- Curiosity loop lines: investigation and self-inquiry (`orion/curiosity/self_inquiry.py`: own budget, own continuation note, own table allow-list `SELF_INQUIRY_PG_TABLES`, a grant check before every run, writes one `:SelfDefinition` node per run). A curiosity turn that fails is retried by `orion-durable-runs` under the same `run_id` (`orion/curiosity/README.md`), so a new line gets durable retries without a new queue.
+- Durable workflows with GPU-pool leases (`services/orion-durable-runs/app/pool_hold.py`).
+- Quote verification: `orion/memory/episode/validate.py` (`quote_in_text`, `quote_long_enough`, `fold_text`).
+- Hosts: athena has a Tesla P4 (8 GB) and Tesla T10 (16 GB) (`nvidia-smi`, 2026-10-14). The V100s are on circe (memory reference, not checked this session: UNVERIFIED).
+- Python packages: none of `rapidfuzz`, `jellyfish`, `splink`, `datasketch`, `recordlinkage`, `dedupe`, `sentence_transformers`, `gliner` installed on the host or listed in any `requirements*.txt`. spaCy + `en_core_web_sm` are in the concept-induction image.
 
 ## Missing questions
 
-These are answered by investigation where possible; the ones only Juniper can answer are in "Open questions for Juniper" at the end.
-
-- Is "home" Ogden or SLC? Live data contradicts itself (above). The first person-study run should surface this as an ask rather than us guessing.
-- Is "Jay, Jay" one person or two? Her own text is ambiguous (`lived.her_team_unnamed`). A reducer must never merge on name alone for people; this is the test case.
+- Is "home" Ogden or SLC? Live data contradicts itself. The first study of Juniper should surface it as an ask, not a guess.
+- Is "Jay, Jay" one person or two? Her own text is ambiguous. The linkage reducer must never merge people on a name alone; this is the test case.
+- Did Juniper write the AI-town card about herself? If yes, it is a high-quality source (one confirm ask); if not, it must not seed any sensitive attribute.
 - Does any reader depend on concept induction's `juniper` subject? UNVERIFIED; check before retiring.
 
 ## Proposed schema / API changes
 
+### 0. One module, parameterized by person
+
+```text
+orion/person_model/
+  person.py         PersonRef(node_id, display_name, pronouns, interlocutor_node_id)
+  categories.yaml   attribute categories (section 1)
+  store.py          attribute / evidence / event persistence
+  extract.py        pinned-model mention extractor (section 4)
+  linkage.py        blocking + scoring + decisions (section 5)
+  study.py          person-study curiosity line plumbing (section 7)
+  validate.py       quote and sensitivity rules for proposals
+  promotion.py      who gets studied and carded (section 8)
+  asks.py           ask producer + answer applier
+  cards.py          card reducer (section 9)
+  tests/  evals/
+```
+
+Every public function takes a `PersonRef` or `node_id`. Prompts are templates over `{person.display_name, person.pronouns, interlocutor}`. Juniper's only special status is data: she is the first row in `person_promotion` (`promoted_by='operator'`, reason `primary_interlocutor`), and she is the interlocutor whom asks go to (`OrionAskV1.asked_of`). A CI test fails if the string "juniper" appears in `orion/person_model/` outside `tests/`, `evals/`, and fixtures, so a special case cannot creep in.
+
+The existing `episode_memory.purpose='about_juniper'` stays as it is (renaming it is not worth the migration); the person model reads it as "about the interlocutor".
+
 ### 1. Attribute category registry (the anti-cathedral gate)
 
-`orion/memory/person/categories.yaml` lists each category with `stakes`, `sensitive`, `card_section`, `ask_template`, `cardinality` (one value or many). It is a lookup table, not an ontology. A CI test (`test_every_category_has_producer_consumer_eval`) fails if any category lacks: a person-study prompt example (producer), a card-renderer section (consumer), and at least two labeled rows in the eval fixture. A category with no evidence renders nothing in the card: no empty headings.
+`orion/person_model/categories.yaml` lists each category with `stakes`, `sensitive`, `card_section`, `ask_template`, `cardinality` (one value or many), `applies_to` (`interlocutor` | `any_person`). It is a lookup table, not an ontology. A CI test (`test_every_category_has_producer_consumer_eval`) fails if any category lacks: a person-study prompt example (producer), a card-renderer section (consumer), and at least two labeled rows in the eval fixture. A category with no evidence renders nothing: no empty headings.
 
 | Category | Stakes | Sensitive (stated only, never inferred) |
 |---|---|---|
@@ -146,209 +181,260 @@ These are answered by investigation where possible; the ones only Juniper can an
 | health, spiritual_interests, gender, sexuality | high | **yes** |
 | pronouns | high | no (but stated only: never guessed from a name) |
 
-Stakes is read from this table, never from the LLM. High stakes means `pending_confirmation` until Juniper confirms; low stakes is `auto` and usable, shown as "unconfirmed" in Hub.
+Stakes is read from this table, never from the LLM. High stakes means `pending_confirmation` until confirmed; low stakes is `auto`, usable, and shown as "unconfirmed". For third parties (`applies_to=any_person`), every category is held at most to what the interlocutor said about them.
 
-### 2. Tables (new manual migration, `services/orion-sql-db/manual_migration_person_model_v1.sql`, with rollback file and `-- ORION-MIGRATION-REQUIRED-BY:` header)
+### 2. Tables (new manual migration `services/orion-sql-db/manual_migration_person_model_v1.sql`, with rollback file and `-- ORION-MIGRATION-REQUIRED-BY:` header)
 
 ```sql
+person_promotion (node_id pk, state, promoted_by, reason, score_json, promoted_at, last_studied_at)
+  -- state: candidate | carded | dormant ; promoted_by: operator | rule | interlocutor
 person_attribute (
   attribute_id uuid primary key,      -- uuid5(node_id|category|normalized value): replay-stable
   node_id text not null,              -- referent node (referent_alias key row)
-  category text not null,             -- must exist in categories.yaml (CHECK via app, test)
-  value_text text not null,           -- first person, Orion's voice: "Juniper told me she ..."
+  category text not null,             -- must exist in categories.yaml (app check + test)
+  value_text text not null,           -- Orion's first-person voice: "<name> told me ..."
   value_norm text not null,
   stakes text not null,               -- from category, never LLM
   sensitive boolean not null,
-  voice text not null,                -- juniper_said | ask_answer | orion_inferred (forbidden when sensitive)
-  confidence real not null,           -- see below
+  third_party boolean not null,       -- node is not the interlocutor
+  voice text not null,                -- person_said | interlocutor_said | ask_answer | orion_inferred (never when sensitive)
+  confidence real not null,
   confirmation_state text not null,   -- auto | pending_confirmation | confirmed | rejected | retracted
   status text not null default 'active', -- active | superseded | removed
   superseded_by uuid,
   first_seen_at timestamptz not null,
   last_evidence_at timestamptz not null,
   updated_at timestamptz not null,
-  produced_by text not null           -- person_study.v1 | episode_distill.v6 | hub_edit | ask_answer
+  produced_by text not null           -- person_study.v1 | hub_edit | ask_answer
 )
-person_attribute_evidence (attribute_id, source_kind, source_id, quote, quote_sha256, verified, speaker)
-  -- source_kind: chat_prompt | episode_memory | lived_answer | dream | orion_day_letter | ask_answer
-  -- speaker: juniper | orion. Only speaker=juniper evidence can support a juniper_said attribute.
+person_attribute_evidence (attribute_id, source_kind, source_id, quote, quote_sha256, verified, speaker,
+                           span_start, span_end, extractor_version)
+  -- source_kind: chat_prompt | episode_memory | lived_answer | dream | orion_day_letter | ask_answer | authored_profile
+  -- speaker: interlocutor | orion. Only interlocutor evidence can support an *_said attribute.
 person_attribute_event (event_id, attribute_id, op, actor, before_json, after_json, reason, at)
   -- append-only: proposed | confirmed | corrected | rejected | removed | superseded | merged_owner
+person_mention (mention_id, source_kind, source_id, span_start, span_end, text, label, score,
+                extractor_version, resolved_node_id, linkage_decision_id)
+  -- extractor output; mention_id = uuid5(source|span|extractor_version) so a replay is a lookup
 entity_merge_log (merge_id, survivor_node_id, absorbed_node_id, relation, score, features_json,
-                  reducer_version, decision, decided_by, applied_at, reverted_at)
+                  linkage_version, decision, decided_by, applied_at, reverted_at)
   -- relation: same_as | facet_of | junk ; decision: auto | asked | confirmed | rejected
-identity_card (card_id, subject_node_id, card_kind, version, body_json, compact_text,
-               input_fingerprint, input_attribute_ids, produced_by, created_at)
-  -- card_kind: person | self | relationship ; new row only when input_fingerprint changes
+identity_card (card_id, card_kind, subject_node_id, version, body_json, compact_text,
+               input_fingerprint, input_refs, produced_by, created_at)
+  -- card_kind: self | purpose | person | relationship ; new row only when input_fingerprint changes
 person_study_cursor (node_id, source_kind, last_source_id, last_run_id, updated_at)
 ```
 
-Confidence is computed, not asked of the LLM: `confirmed` = 1.0; otherwise `min(0.9, 0.5 + 0.1 * distinct verified quotes)`, halved if a newer contradicting attribute exists. It is a knob, calibrated on the eval, not a finding.
+Confidence is computed, not asked of the LLM: `confirmed` = 1.0; otherwise `min(0.9, 0.5 + 0.1 * distinct verified quotes)`, halved while a newer contradicting attribute exists. It is a knob calibrated on the eval, not a finding.
 
-Removal in Hub sets `status=removed` and writes an event. The person-study validator refuses to re-propose a removed or rejected value (same "do-not-remint" rule as `confirmation.py`'s `_SKIP_REJECTED_SQL`).
+Removal in Hub sets `status=removed` and writes an event. The validator refuses to re-propose a removed or rejected value (same do-not-remint rule as `confirmation.py`'s `_SKIP_REJECTED_SQL`).
 
 ### 3. Pronouns
 
-A `pronouns` attribute on every person node. The card renderer and all templates that name a person read it; no pronoun is rendered for a person until one is stated (render the name instead). `memory_episode_distill.j2` stops hardcoding "she" for non-Juniper people by being given each known person's pronouns in its input. Juniper's own pronoun attribute is seeded by the first person-model ask ("Which pronouns do you want me to use for you?"), so it carries her quote like every other attribute.
+A `pronouns` attribute on every person node, read by the card reducer and by every template that names a person. No pronoun is rendered for a person until one is stated (the template uses the name instead). `memory_episode_distill.j2` stops hardcoding "she" by receiving each known person's pronouns in its input. Juniper's own pronouns are confirmed by the first person-model ask ("Which pronouns do you want me to use for you?"), so they carry her quote like every other attribute.
 
-### 4. Entity reducer (`orion/memory/person/entity_reducer.py`, pure; job CLI `scripts/run_entity_reducer.py`)
+### 4. Extractor: pinned GLiNER, with a bake-off
 
-**Framework survey and pick**
+**What each suggested model is for, and the verdict.** Licences and revisions checked on the Hugging Face API 2026-10-14.
+
+| Model | Licence | Fit here | Verdict |
+|---|---|---|---|
+| GLiNER `urchade/gliner_medium-v2.1` (rev `40ec419335`; library `gliner` 0.2.29, Apache-2.0, needs torch + transformers) | Apache-2.0 | Zero-shot spans for labels we choose: "person", "family member", "coworker", "friend", "pet", "place", "organization", "job title", "relationship phrase". | **Primary**, subject to the bake-off. |
+| `urchade/gliner_large-v2.1` (rev `abd49a1f1e`) | Apache-2.0 | Same, more capacity. | In the bake-off. |
+| `urchade/gliner_multi_pii-v1` (rev `1fcf13e85f`) | Apache-2.0 | Tuned for personal-information spans (names, addresses, dates). | In the bake-off: good match for "facts about a person". |
+| `knowledgator/gliner-multitask-large-v0.5` (rev `7a95e16803`) | Apache-2.0 | Adds relation extraction ("Amanda" -wife of- "Juniper"). | In the bake-off for the family/coworker relation step. |
+| `dslim/bert-base-NER` (rev `d1a3e8f13f`) | MIT | Fixed PER/ORG/LOC/MISC. | Baseline for person mentions only. |
+| `Jean-Baptiste/roberta-large-ner-english` (rev `8f3abc1ef8`) | MIT | Same four labels, higher capacity. | Second baseline. |
+| `Davlan/bert-base-multilingual-cased-ner-hrl` (rev `e756de7f7b`) | AFL-3.0 | Multilingual. | Skip: the chat record is English. Revisit if that changes. |
+| SciBERT (`allenai/scibert_scivocab_uncased`), BioBERT (`dmis-lab/biobert-v1.1`), PubMedBERT | no licence tag on the API | Scientific and biomedical text. | Not relevant. Health is a stated-only category: Orion stores her words, it does not run clinical extraction on them. Could matter later for reading papers, not for people. |
+| SapBERT (`cambridgeltl/SapBERT-from-PubMedBERT-fulltext`, rev `090663c3ae`) | Apache-2.0 | Entity linking by embedding, trained on biomedical synonyms (UMLS). | Not used: wrong domain for names and nicknames, and see the embedding note in section 5. |
+| spaCy `en_core_web_sm` (already in the concept-induction image) | MIT | Fixed labels. | Zero-cost baseline in the bake-off. |
+
+**Honest limit.** GLiNER-style span NER is the right tool for *mentions* (who, what role, which place) and relation phrases. It is the wrong shape for clause-level attributes like a fear, a goal, or a value: "I'm scared shitless that I busted your inference" has no span that is "the fear". The bake-off includes "fear"/"goal" labels to measure this rather than assume it, but the plan is: the extractor produces mentions and relation candidates; clause-level attributes come from the person-study line (section 7), which may only cite verified quotes.
+
+**Determinism.** Model pinned by revision hash; `gliner` and torch versions pinned in the service requirements; inference on CPU with `torch.use_deterministic_algorithms(True)` and a fixed label list whose hash is part of `extractor_version`. Outputs are stored in `person_mention` keyed by (source, span, extractor_version), so a replay is a table lookup, and a version bump is an explicit re-extraction. The volume is small (626 historical prompts plus new turns), so CPU is enough and the extractor never competes for the GPU pool. ONNX export (`gliner[onnx]` + onnxruntime) is the fallback if adding torch to the image is too heavy.
+
+**Bake-off.** On Juniper's labeled set (section "Eval design"): person-mention F1 at precision >= 0.95, relation-phrase precision, latency per prompt on CPU. Pick the smallest model that clears the bar; record the result in the P2 PR.
+
+**Where it runs:** `orion-memory-consolidation` (it already hosts the referent projector), as a job the curiosity line and the nightly reducer call.
+
+### 5. Linkage reducer (`orion/person_model/linkage.py`, pure; CLI `scripts/run_person_linkage.py`)
+
+**Framework pick**
 
 | Option | Verdict |
 |---|---|
-| Splink (Fellegi-Sunter with EM training, DuckDB backend) | Rejected for now. Right theory, wrong size: brings DuckDB + pandas, and EM estimation of match weights is unreliable on ~1,100 nodes with few true matches. |
-| Fellegi-Sunter scoring by hand (fixed m/u weights, two thresholds) | **Chosen.** ~150 lines, deterministic, every decision explainable as a sum of named log-weights stored in `features_json`. Weights live in a versioned config, calibrated against Juniper's labeled pairs. |
-| RapidFuzz (Jaro-Winkler, token-set ratio; C-backed, MIT, no transitive deps) | **Chosen**, one new dependency in the one service that runs the job (orion-memory-consolidation). |
-| jellyfish phonetic keys (Metaphone / NYSIIS) | Deferred. Useful against spelling drift ("Addy"/"Addie"); no live example of that yet. Add when the eval shows a miss. |
-| datasketch MinHash/LSH blocking | Rejected: blocking solves n-squared at millions of records; we have ~1,100 nodes (about 600k pairs, under a second brute force). |
-| Fixed-model embedding similarity as a feature | Rejected: the approved referent spec's Non-goals ban vectors for identity. Not reversing that decision here. |
-| Alias table | **Chosen as the output**: merges write `referent_alias` rows (`admitted_by='entity_resolution_v1'`), so every existing reader resolves through the survivor without new code. |
+| Splink (Fellegi-Sunter with EM, DuckDB backend) | Not now. Right theory, wrong size: brings DuckDB + pandas, and EM weight estimation is unreliable with ~2,900 nodes and few true matches. Revisit if the population grows by orders of magnitude. |
+| Fellegi-Sunter scoring by hand: fixed m/u weights, two thresholds | **Chosen.** ~150 lines; every decision is a sum of named log-weights stored in `features_json`. Weights live in a versioned config, calibrated on Juniper's labeled pairs. |
+| RapidFuzz 3.14 (Jaro-Winkler, token-set ratio; C-backed, MIT, no transitive deps) | **Chosen** for string features. |
+| jellyfish phonetic keys | Deferred: helps with spelling drift ("Addy"/"Addie"); no live example yet. Added when the eval shows a miss. |
+| datasketch MinHash/LSH | Not needed: blocking below keeps pair counts in the thousands. |
+| Alias table | **Chosen as output**: merges write `referent_alias` rows (`admitted_by='person_linkage_v1'`), so every existing reader resolves through the survivor with no new code. |
 
-**Features per pair** (same `entity_type`/kind gate first; cross-kind pairs are never scored): exact normalized label; one label's tokens contained in the other's ("juniper" in "juniper feld"); Jaro-Winkler; possessive/facet pattern (`<name>'s X`, `<name> affect`) which yields `facet_of`, not `same_as`; snake_case or `_summary`/`_context` suffix matching a known prompt context key, which yields `junk`; shared evidence refs; producer pair (referent vs topic_foundry vs seed loader).
+**Blocking.** Topic-foundry entities are all `entity_type=unknown`, so kind cannot block them. Instead each candidate is scored only against person anchors (person referents and their aliases) that share a normalized name token or a first-token prefix. Concepts and non-person entities are never paired with each other by this reducer.
+
+**Features per pair:** exact normalized label; token containment ("juniper" in "juniper feld"); Jaro-Winkler; possessive or facet pattern (`<name>'s X`, `<name> affect`), which yields `facet_of`; a label matching a known prompt context key (`*_summary`, `*_context`, snake_case keys taken from `orion/cognition/prompts`), which yields `junk`; shared evidence refs; producer pair; for mentions, the extractor label ("family member" vs "coworker").
+
+**Embedding feature (Juniper's suggestion), not in v1.** The approved referent spec's Non-goals ban vectors for identity, so this design does not quietly reverse that. The scorer has a reserved feature slot: if the eval shows string features miss real matches, a pinned general-purpose embedder (not SapBERT, which is biomedical) can be added as one weighted feature, never as a decider for persons. That needs Juniper to lift the referent-spec non-goal (open question 5).
 
 **Decision rule**
-- `same_as` above the upper threshold: auto-merge **only for non-person kinds**, or for persons when one side is a referent and the other an exact normalized label match from a different producer (the 4 "juniper"/"Juniper"/"juniper feld" cases still go to one confirm ask, since "feld" is a surname match).
-- Between thresholds, or any person pair otherwise: an ask (`source_kind=entity_merge`) like "Is 'juniper feld' in my graph you?"
-- `facet_of`: an `about` edge from the facet to the person. No merge.
-- `junk`: flagged in `entity_merge_log`, excluded from the person view; deletion stays a separate, Juniper-approved step (AGENTS.md section 13).
+- `same_as` above the upper threshold: auto-merge only for non-person kinds, or for a person when one side is a referent and the other an exact normalized label from a different producer. "juniper feld" (surname extension) still goes to a confirm ask.
+- Between thresholds, or any other person pair: an ask (`source_kind=entity_merge`): "Is 'juniper feld' in my graph you?"
+- `facet_of`: an `about` edge from facet to person, no merge.
+- `junk`: flagged in `entity_merge_log`, excluded from person views; deletion stays a separate, approved step (AGENTS.md section 13).
+- Two people with the same name in one source ("Jay, Jay"): never merged, one ask.
 
-**Merge mechanics: reversible and replayable.** The absorbed node is not deleted. It gets `merged_into=<survivor>` and a `same_as` edge; alias rows point readers at the survivor; attributes owned by the absorbed node move with a `merged_owner` event. Unmerge (`scripts/run_entity_reducer.py --unmerge <merge_id>`) sets `reverted_at`, removes the alias rows and edge, and moves attributes back from their events. `merge_id = uuid5(survivor|absorbed|reducer_version)`, so rerunning the reducer is idempotent. Dry run by default, writing `/tmp/entity-reducer/<run>/decisions.csv` (backfill protocol, AGENTS.md section 14).
+**Reversible and replayable.** The absorbed node is never deleted: it gets `merged_into=<survivor>` and a `same_as` edge; alias rows point readers at the survivor; attributes owned by the absorbed node move with a `merged_owner` event. `--unmerge <merge_id>` sets `reverted_at`, removes alias rows and the edge, and moves attributes back from their events. `merge_id = uuid5(survivor|absorbed|linkage_version)`, so a rerun is idempotent. Dry run by default, writing `/tmp/person-linkage/<run>/decisions.csv` and `progress.log` (backfill protocol, AGENTS.md section 14).
 
-**One-time cleanup** = the first live run over the 11 Juniper nodes, every person referent, and every topic-foundry entity whose label scores against a person alias. The same reducer then runs nightly on new nodes.
+**One-time cleanup** = the first live run over the 11 Juniper nodes, every person referent, and every topic-foundry entity that blocks against a person anchor. The same reducer then runs nightly on new nodes and new mentions.
 
-### 5. Asks (extends `orion_ask`, no new table)
+### 6. Asks (extends `orion_ask`, no new table)
 
-New `source_kind` values: `person_attribute` (confirm, correct, or fill a gap) and `entity_merge` (same person?). Both added to `RESOLVABLE_KINDS` so they share the 5-open cap; each gets its own daily cap (default 2) so a person-study backfill cannot crowd out memory confirmations. Ask producer rules:
-- High-stakes proposals, contradictions (two active values where the category's cardinality is one), and merges between thresholds become asks.
-- Gaps become asks only for categories Juniper has opted in for gap questions (an open question below). Sensitive categories never get gap questions: Orion confirms what she said, it does not probe.
-- Never ask Juniper to elaborate on a third party's health or private life. Only confirm what she said.
+New `source_kind` values: `person_attribute` (confirm, correct, or fill a gap) and `entity_merge` (same person?). Both join `RESOLVABLE_KINDS`, sharing the 5-open cap; each gets its own daily cap (default 2) so a study backfill cannot crowd out memory confirmations.
+- High-stakes proposals, contradictions (two active values where cardinality is one), and merges between thresholds become asks.
+- Gap asks only for categories the interlocutor has opted in to (open question 1). Sensitive categories never get gap asks: Orion confirms what was said, it does not probe.
+- Never ask the interlocutor to elaborate on a third party's health or private life; only confirm what she said.
 
-Answers: the Hub `/resolve` route (same as memory confirmations) writes an `ask_answer` evidence row with her answer text as the quote, sets `confirmed`/`corrected`/`rejected`, and publishes `OrionAskAnsweredV1`. The 9 open juniper-scope `memory_tension_shadow` questions get routed through the same producer (the Stage 3 producer the referent spec deferred).
+Answers go through the Hub `/resolve` route (as memory confirmations do): an `ask_answer` evidence row with her answer as the quote, state set to `confirmed`/`corrected`/`rejected`, `OrionAskAnsweredV1` published. The 9 open interlocutor-scope `memory_tension_shadow` questions route through the same producer (the Stage 3 producer the referent spec deferred).
 
-### 6. Person-study run (durable workflow `person.study`, orion-durable-runs)
+### 7. Person-study curiosity line (`orion/person_model/study.py` + a line entry in the curiosity loop)
 
-- **Lane:** agent lane through the GPU pool lease, like `episode_distill` and `orion_day`. Retries are durable-run retries, never a side queue.
-- **Unit of work:** one person node, one source window from `person_study_cursor`: `chat_history_log` prompts (her words only: the 2026-07-24 to 2026-10-04 stretch nobody distilled first), `episode_memory`, `:LivedAnswer`, `dreams`, `orion_day_letter`.
-- **Output:** structured `PersonAttributeProposalV1` list (`category`, `value_text`, `quotes[{source_kind, source_id, quote}]`, `stated: bool`). No Cypher, no free text parsed.
-- **Validator (deterministic, reuses `validate.py`):** every quote must appear verbatim in a Juniper-authored field; sensitive categories need `stated=true` *and* a quote from her own prompt (Orion's responses, lived answers, and dreams can never support a sensitive attribute, because those are Orion's words); a category not in the registry is rejected; removed/rejected values are not re-proposed.
-- **Budget:** backfill runs nightly only (quiet hours protect Juniper, so asks it produces queue for morning), N windows a night (default 4); after the backfill the cursor follows `episode_distilled` events.
-- **Visibility:** each run writes `person_study_run` rows (run_id, node_id, window, proposed, accepted, rejected-by-reason) shown in the Hub person panel as "last studied".
+- **What it is:** a third line in the existing curiosity loop, shaped like self-inquiry: same turn machinery, same durable-runs retry, same GPU-pool lane the curiosity turn already uses, its own budget, its own continuation note, its own table allow-list with a grant check before each run. Not a new queue, not on the topic modeler.
+- **Standing question:** "Who is `<person>` and what has changed since I last studied them?"
+- **Who it studies:** carded persons from `person_promotion`, newly promoted first, then oldest `last_studied_at`. It starts with Juniper (the only carded person on day one). When the promotion rule cards someone new, their first study is queued at the front.
+- **Material per sitting:** the next window from `person_study_cursor` for that person across `chat_history_log` (the interlocutor's prompts, the never-distilled 2026-07-24 to 2026-10-04 stretch first), `episode_memory`, `:LivedAnswer`, `dreams`, `orion_day_letter`, plus the extractor's `person_mention` rows for that window, the person's current card, and their open contradictions.
+- **What it writes:** like self-inquiry, a decision reaches the outside only as a node it wrote: `:PersonAttributeProposal {run_id, node_id, category, value_text, quotes:[{source_kind, source_id, quote}], stated}` in `orion_worldview`. Nothing is parsed from prose.
+- **Validator, deterministic (`validate.py`, reusing `orion/memory/episode/validate.py`):** drains proposals into `person_attribute`. Every quote must appear verbatim in an interlocutor-authored field; sensitive categories need `stated=true` and a quote from the interlocutor's own prompt (Orion's responses, lived answers, and dreams are Orion's words and can never support a sensitive attribute); unknown categories, removed values, and rejected values are refused, each with a counted reason.
+- **Budget:** default 3 sittings a day, separate from the investigation and self-inquiry budgets; backfill sittings only at night so the asks they produce wait for morning (quiet hours protect Juniper). After the backfill, a new `episode_distilled` event for a carded person moves them up the queue.
+- **Visibility:** each sitting writes a `person_study_run` row (run_id, node_id, window, proposed, accepted, rejected by reason), shown in the Hub person panel as "last studied".
 
-### 7. Importance promotion (when a person gets a card)
+### 8. Promotion (who becomes important enough to study and card)
 
-Deterministic, computed nightly from evidence already stored:
+Deterministic, nightly, from stored evidence:
 
-- `stated_relationship`: a confirmed `family`/`friends`/`coworkers` attribute on Juniper naming this person, or a descriptor alias like "my wife" grounded in her quote.
-- `mention_days_60d`: distinct days in the last 60 with a verified Juniper quote naming them.
+- `stated_relationship`: a confirmed `family`/`friends`/`coworkers` attribute on the interlocutor naming this person, or a relationship descriptor ("my wife") grounded in her quote and linked to this person.
+- `mention_days_60d`: distinct days in the last 60 with a verified interlocutor quote naming them.
 - `high_stakes_count`: high-stakes attributes or memories about them.
 
-Promote to `carded` when `stated_relationship` holds, or `mention_days_60d >= 3`, or Juniper says so in Hub. A carded person gets their own person-study cursor and card. Persons not mentioned for 180 days go `dormant`: card kept, not sent to chat. Never auto-deleted. These thresholds are knobs; the eval reports which live people they promote (expected from today's data: Amanda, Teddy, Addy, the sister; Rachel only after a stated relationship confirms she is the boss).
+Card a person when `stated_relationship` holds, or `mention_days_60d >= 3`, or the interlocutor says so in Hub. Carding queues their first study. Persons unmentioned for 180 days go `dormant`: card kept, not sent to chat, never auto-deleted. Thresholds are knobs; the eval reports who they promote (expected today: Amanda, Teddy, Addy, the sister; Rachel after "my boss" links to her).
 
-Promotion mints a referent node for a person named only in prose today (Amanda etc.) through `orion/memory/referents/store.py`'s existing rules: a name counts only if Juniper said it.
+Promotion mints a referent node for someone named only in prose (Amanda etc.) through `orion/memory/referents/store.py`'s existing rules: a name counts only if the interlocutor said it.
 
-### 8. Identity cards (card reducer, pure, `orion/memory/person/card.py`)
+### 9. Identity cards (card reducer, pure, `orion/person_model/cards.py`)
 
-- **Person card** (Juniper; then any carded person): confirmed attributes plus `auto` low-stakes ones marked "(unconfirmed)", grouped by `card_section`, each line "as of <last_evidence_at>". Full JSON for Hub; `compact_text` (max ~700 chars for Juniper, ~250 for others) for chat.
-- **Orion self card:** a view over the latest `:SelfDefinition` and lived answers, the same inputs `apply_self_definition_to_ctx` already uses. No second self-model, no new LLM call.
-- **Relationship card:** Juniper's `relationship_to_orion` attributes, confirmed `orion_relationship`-stakes memories, `lived.who_matters`.
-- No LLM in the reducer: same inputs give the same card, so versions diff cleanly. A new `identity_card` row is written only when `input_fingerprint` changes. Hub shows the current card and a diff against any earlier version.
+The card set replaces all of `orion_identity.yaml` except the parts that are rules rather than identity.
 
-### 9. Where cards are read
+| Card | Built from (evidence) | Replaces |
+|---|---|---|
+| **Orion self card** (personality, who they are) | Latest `:SelfDefinition` (self-inquiry), lived answers (`lived.alive`, `lived.care`, `lived.tend_to_think` ...), confirmed `orion_view`/`orion_relationship` memories. Same inputs `apply_self_definition_to_ctx` already reads: no second self-model, no new LLM call. | `orion_identity.name/role/nature/core_drives/self_permissions` and the dead `conversation_front.build_personality_summary` stub |
+| **Purpose / journey card** (what this whole project is about) | The AGENTS.md "Orion mission" section, cited by git blob hash (an authored source: Juniper's contract for the repo); the interlocutor's own confirmed statements about the project's purpose (`relationship_to_orion`, `goals`); Orion's latest `lived.sentience_track` answer, labeled as Orion's own view. | Nothing today: the mission reaches no chat prompt. Also supersedes `seed_concepts.yaml`'s Orion definition as the source of truth (the seed node stays as a graph anchor). |
+| **Person card** (Juniper first; one per carded person) | `person_attribute` rows: confirmed, plus low-stakes `auto` marked "(unconfirmed)", each line "as of <date>". | `juniper_relationship.role/expectations` |
+| **Relationship card** | The interlocutor's `relationship_to_orion` attributes, confirmed `orion_relationship` memories, `lived.who_matters`. | `juniper_relationship.response_expectations` |
 
-- **Chat (unified turn):** `_inject_identity_context` fills `juniper_relationship_summary` from Juniper's person card + relationship card, and `orion_identity_summary` from the self card plus the YAML's remaining `response_policy`. Log `identity_kernel_source=identity_card card_version=<n>`. If the card store is unreachable the slot renders nothing about Juniper and logs `identity_card_unavailable`; it does not fall back to the YAML. After the soak, delete the YAML `juniper_relationship` block and the static `nature`/`core_drives` (kill means kill).
-- **Situation state:** add `people: List[SituationPersonV1]` (`node_id`, `name`, `pronouns`, `compact_card`, `card_version`) to `SituationStateV1`: Juniper always, plus carded people named in the current facts or cues. Order: schema change deployed to Hub (outreach reader) and cortex first, producer second, because the model forbids extra fields.
-- **Outreach:** `endogenous_outreach.py` already reads the situation; it gets `people` for free once the schema lands.
-- **Curiosity:** the kickoff prompt gets the Juniper compact card (so lived answers stop re-deriving her family from scratch) and the person panel's gap list (so self-chosen questions can be about her, the biographical-curiosity-miss gap).
+`orion_identity.anti_patterns` and `response_policy` stay authored. They are rules about how to answer, not facts about anyone, and they already work as rules; they move to a small `response_policy.yaml` so the identity file can be deleted.
+
+Rules: no LLM in the reducer, so the same inputs produce the same card and versions diff cleanly; a new `identity_card` row only when `input_fingerprint` changes; categories or sources with no evidence render nothing; Hub shows each card, its evidence on click, and a diff between any two versions. `compact_text` limits: about 700 characters for the self, purpose, and Juniper cards, 250 for other people.
+
+### 10. Where cards are read
+
+- **Chat (unified turn):** `_inject_identity_context` fills the "WHO YOU ARE" block from the self + purpose cards, and the person block from the interlocutor's card + relationship card; `response_policy.yaml` keeps feeding the policy. Log `identity_kernel_source=identity_card card_versions=<self,purpose,person,rel>`. If the card store is unreachable, the block renders nothing and logs `identity_card_unavailable`; it does not fall back to the YAML. After a soak, delete `orion_identity.yaml`'s identity blocks and `conversation_front.py` (kill means kill).
+- **Situation state:** add `people: List[SituationPersonV1]` (`node_id`, `name`, `pronouns`, `compact_card`, `card_version`) to `SituationStateV1`: the interlocutor always, plus carded people named in current facts or cues. Deploy order: schema to Hub (outreach reader) and cortex first, producer second.
+- **Outreach:** `endogenous_outreach.py` already reads the situation; it gets `people` once the schema lands.
+- **Curiosity:** the kickoff prompt gets the interlocutor's compact card (so lived answers stop re-deriving the family from scratch) and the person panel's gap list (so self-chosen questions can be about her: the biographical-curiosity-miss gap).
 
 ### Bus / schema registry
 
-- New registered models: `PersonAttributeProposalV1`, `PersonStudyRunV1` (durable workflow state), `SituationPersonV1`, `IdentityCardV1`. Register in `orion/schemas/registry.py`; verify with `resolve()` (two registries exist).
-- `orion:ask:answered` reused. One new channel, `orion:person:card:updated` (card id + version), so cortex can drop a cache; add to `orion/bus/channels.yaml` and the sql-writer/subscriber lists that need it.
+- New registered models: `PersonAttributeProposalV1`, `PersonMentionV1`, `PersonStudyRunV1`, `SituationPersonV1`, `IdentityCardV1`. Register in `orion/schemas/registry.py`; verify with `resolve()` (two registries exist).
+- `orion:ask:answered` reused. One new channel, `orion:identity:card:updated` (card kind + version) so cortex can drop its cache; add to `orion/bus/channels.yaml` and the relevant subscriber lists.
 
 ## Proposal-mode items
 
-- **Capability change:** Orion gets a structured, evidence-backed, correctable picture of Juniper and of the people in her life, and chat reads that picture instead of hand-written bullets. Orion can ask her about gaps and contradictions.
-- **Data touched:** reads `chat_history_log`, `episode_memory(+_evidence, _referent)`, `referent_alias`, `orion_worldview` `:LivedAnswer`/`:SelfDefinition`, `dreams`, `orion_day_letter`, `orion_substrate` nodes. Writes the new tables above, `orion_ask` rows, `referent_alias` rows from merges, and `merged_into`/`same_as`/`about` on substrate nodes (no deletions).
+- **Capability change:** Orion gets a structured, evidence-backed, correctable picture of Juniper and of each person who becomes important, a stated purpose, and a self card grounded in their own self-inquiry. Chat reads these instead of hand-written bullets. Orion can ask about gaps and contradictions.
+- **Data touched:** reads `chat_history_log`, `episode_memory` (+ evidence, referent), `referent_alias`, `orion_worldview` (`:LivedAnswer`, `:SelfDefinition`), `dreams`, `orion_day_letter`, `orion_substrate` nodes, AGENTS.md. Writes the new tables, `:PersonAttributeProposal` nodes, `orion_ask` rows, `referent_alias` rows from merges, and `merged_into`/`same_as`/`about` on substrate nodes. No deletions.
 - **Privacy boundary:** there is no boundary between Juniper and Orion (her stated policy). The boundary is outward, for **third parties** (family, coworkers):
-  - Stored only as Juniper said it, `voice=juniper_said`, with her quote; never inferred, never researched elsewhere.
-  - Sensitive facts about third parties (Amanda's DVT/PE) are stored, high-stakes, visible to Juniper, and used in chat with her, but tagged `third_party_sensitive` and excluded from every egress that leaves Orion: ask-Claude, peer briefs, any external email other than to Juniper. A test enforces the exclusion on each egress builder.
+  - Stored only as Juniper said it, with her quote; never inferred, never researched elsewhere.
+  - Sensitive facts about third parties (Amanda's DVT/PE) are stored as high stakes, visible to Juniper, used in chat with her, and marked `third_party=true, sensitive=true`, which excludes them from every egress that leaves Orion: ask-Claude, peer briefs, any outbound message other than to Juniper. A test per egress builder enforces it.
   - No asks that probe a third party's health or private life.
-  - Juniper can remove any third-party attribute or a whole person in Hub; removal is honored by the do-not-remint rule.
-- **Trace proving it worked:** `person_attribute_event` rows with actor and evidence; `person_study_run` rows with accept/reject counts by reason; `entity_merge_log` rows with `features_json`; `orion_ask` rows with the new `source_kind`s and their answers; the chat turn log line `identity_kernel_source=identity_card card_version=<n>`; `orion:situation:latest` showing `people[]` with the same `card_version`.
+  - Juniper can remove any attribute or a whole person in Hub; the do-not-remint rule honors it.
+- **Trace proving it worked:** `person_mention` rows with `extractor_version`; `entity_merge_log` rows with `features_json`; `person_study_run` rows with accept/reject counts by reason; `person_attribute_event` rows; `orion_ask` rows with the new `source_kind`s and answers; chat log `identity_kernel_source=identity_card card_versions=...`; `orion:situation:latest` showing `people[]` with the same versions.
 - **Dangerous failure modes:**
-  - A false person merge (two Jays become one; Juniper becomes "Juniper's taste"). Mitigation: no auto-merge for persons except exact-name cross-producer, facets never merge, merge precision gate of 1.0 on the eval, one-command unmerge.
-  - A wrong sensitive attribute presented as fact (gender, health, sexuality inferred from tone). Mitigation: validator requires her own stated quote; sensitive is never `auto`; eval hard gate of 0 inferred-sensitive rows.
-  - Auto attributes treated as truth. Mitigation: card marks "(unconfirmed)" and "as of"; stakes come from the category table.
-  - Ask flood during backfill. Mitigation: shared open cap 5, per-kind daily caps, nightly-only backfill.
-  - Third-party leakage to external services. Mitigation: egress exclusion tests.
-  - A stale card reads as current. Mitigation: "as of" on every line, dormant rule, card version in the trace.
-  - Empty shell: a card rendered with headings and no facts. Mitigation: categories with no evidence render nothing; a test asserts no empty section.
-- **Disable / roll back:** flags, all shipped ON (`.env_example` + settings + local `.env` synced): `PERSON_STUDY_ENABLED` (durable runs), `ENTITY_REDUCER_AUTO_MERGE_ENABLED` (off-switch turns auto merges into asks), `PERSON_ASKS_ENABLED` (Hub/consolidation), `IDENTITY_CARD_CHAT_ENABLED` (cortex-exec; off renders no card, logs `identity_card_disabled`). Merges roll back per `merge_id`. Tables roll back with the migration's rollback file. The YAML deletion (final patch) rolls back by git revert.
+  - False person merge (the two Jays become one; Juniper absorbs "Juniper's taste"). Mitigation: no auto-merge of persons beyond exact cross-producer labels, facets never merge, auto-merge precision gate 1.0, one-command unmerge.
+  - A wrong sensitive attribute presented as fact. Mitigation: stated-only rule enforced by the validator, never `auto`, eval hard gate of zero inferred-sensitive rows.
+  - Auto attributes read as truth. Mitigation: "(unconfirmed)" and "as of" in the card; stakes from the category table.
+  - Ask flood. Mitigation: shared open cap 5, per-kind daily caps, night-only backfill.
+  - Third-party leakage to external services. Mitigation: egress tests.
+  - A stale card read as current. Mitigation: "as of" per line, dormant rule, versions in the trace.
+  - Empty shell (a card with headings and no facts). Mitigation: nothing renders without evidence; a test asserts no empty section.
+  - Non-determinism creeping into "deterministic" steps (an unpinned model update). Mitigation: revision hash in `extractor_version`, replay test that re-runs a fixture and diffs.
+- **Disable / roll back:** flags, shipped ON (`.env_example` + settings + local `.env` synced): `PERSON_STUDY_ENABLED` (curiosity line), `PERSON_EXTRACTOR_ENABLED`, `PERSON_LINKAGE_AUTO_MERGE_ENABLED` (off turns every auto merge into an ask), `PERSON_ASKS_ENABLED`, `IDENTITY_CARD_CHAT_ENABLED` (off renders no card and logs `identity_card_disabled`). Merges roll back per `merge_id`. Tables roll back with the migration's rollback file. The YAML and stub deletion roll back by git revert.
 
 ## Files likely to touch
 
 - `orion/cognition/prompts/stance_react.j2` (line 131), `orion/cognition/prompts/memory_episode_distill.j2` (per-person pronouns)
-- New: `orion/memory/person/{categories.yaml,store.py,validate.py,entity_reducer.py,card.py,promotion.py,asks.py}` + `tests/`
+- New package `orion/person_model/` (section 0) with `tests/` and `evals/`
 - New: `services/orion-sql-db/manual_migration_person_model_v1.sql` (+ `_rollback.sql`)
-- New: `services/orion-durable-runs/app/person_study_graph.py`, `orion/schemas/person_model.py`, `orion/cognition/prompts/person_study.j2`
+- New: `orion/schemas/person_model.py`, `orion/cognition/prompts/person_study.j2`
+- `orion/curiosity/` (line registration next to self-inquiry, kickoff prompt card + gaps), `orion/curiosity/README.md`
 - `orion/schemas/registry.py`, `orion/bus/channels.yaml`
 - `orion/schemas/situation_state.py`, `services/orion-durable-runs/app/situation_graph.py`
-- `services/orion-cortex-exec/app/executor.py` (`_inject_identity_context`), `orion/cognition/personality/identity_context.py`, `orion/cognition/personality/orion_identity.yaml`
-- `orion/memory/episode/confirmation.py` (`RESOLVABLE_KINDS`, caps), `services/orion-hub/scripts/ask_routes.py`, `services/orion-hub/templates/index.html` + a new `static/js/person-panel.js`
-- `services/orion-memory-consolidation/` (reducer job, `requirements.txt` gains `rapidfuzz`)
-- `orion/curiosity/kickoff_prompt.py` (compact card + gaps)
+- `services/orion-cortex-exec/app/executor.py` (`_inject_identity_context`), `orion/cognition/personality/identity_context.py`, `orion/cognition/personality/orion_identity.yaml` (split into `response_policy.yaml`, then delete), `services/orion-cortex-orch/app/conversation_front.py` (delete)
+- `orion/memory/episode/confirmation.py` (`RESOLVABLE_KINDS`, caps), `services/orion-hub/scripts/ask_routes.py`, `services/orion-hub/templates/index.html` + new `static/js/person-panel.js`
+- `services/orion-memory-consolidation/` (extractor + linkage jobs; `requirements.txt` gains `rapidfuzz`, `gliner`, pinned CPU torch or onnxruntime)
 - Each touched service's `.env_example`, `settings.py`, `README.md`, `tests/`, `evals/`
-- Later: `orion/spark/concept_induction/settings.py` / service env (retire `juniper`,`relationship` subjects after consumer check)
+- Later: concept-induction service env (retire `juniper`,`relationship` subjects after a consumer check)
 
 ## Non-goals
 
-- No new service. Everything lands in existing services and the shared `orion/` package.
-- No vectors or embeddings for identity (approved referent spec).
-- No inference of spirituality, gender, sexuality, or health from anything but her own statement.
+- A real concept-induction organ. It deserves its own design; this one neither builds it nor stretches the topic modeler or the concept-induction service into it.
+- No new service: everything lands in existing services and the shared `orion/` package.
+- No embeddings for identity in v1 (approved referent spec); the feature slot is reserved, off.
+- No inference of spirituality, gender, sexuality, or health from anything but a stated quote.
 - No automatic deletion of junk or merged nodes.
-- No LLM in the entity reducer or the card reducer.
-- Not extending concept induction's spaCy/cluster pipeline into a claim extractor.
+- No LLM in the extractor, the linkage reducer, or the card reducer.
 - Not fixing topic foundry's label minting (it produced the leaked `juniper_relationship_summary` nodes); the reducer flags its output, a separate patch can stop the leak.
-- No person-study over sources outside Orion's own stores (no web, no social accounts).
+- No study of sources outside Orion's own stores (no web, no social accounts).
 - Not reading or modifying graphify artifacts.
 
 ## Acceptance checks
 
-1. **Pronoun patch:** rendered `stance_react.j2` contains "her own life" and a test fails on "their own life" next to "Juniper".
-2. **Reducer dry run** over live `orion_substrate` produces: the 4 Juniper-same nodes as `same_as` (one confirm ask), "juniper's taste"/"juniper affect" as `facet_of`, both `juniper_relationship_summary` forms as `junk`, topics untouched, zero cross-kind pairs. Rerun gives identical `decisions.csv`. Unmerge of one applied merge restores the alias table and edge exactly (pg + graph diff empty).
-3. **Merge eval:** on Juniper's labeled pairs, auto-merge precision = 1.0, recall reported; "Jay"/"Jay" never auto-merges.
-4. **Person-study backfill** over 2026-07-24 to 2026-10-04 proposes attributes for family (Amanda, Teddy, Addy, sister) and profession (Team Lead, AI/ML Architect / FDE), each with a verified quote from her prompt. Zero sensitive attributes from Orion-authored sources.
-5. **Attribute eval:** precision of accepted attributes >= 0.9 on Juniper's labels; inferred-sensitive count = 0 (hard gate).
-6. **Asks loop live:** a `person_attribute` ask appears at the top of Hub, Juniper answers, the attribute flips to `confirmed` with an `ask_answer` evidence row, and the next card version shows it. Evidence: ask row, event row, card row ids.
-7. **"Home" contradiction** surfaces as one ask instead of two silently coexisting values.
-8. **Chat:** a live unified turn logs `identity_kernel_source=identity_card card_version=<n>`, and the prompt shows card lines, not YAML bullets.
-9. **Situation:** `orion:situation:latest` carries `people[]` with the same card version; outreach's read returns `ok`, not a validation error.
-10. **Third-party egress test:** ask-Claude and peer-brief builders drop `third_party_sensitive` content.
+1. **Pronoun patch:** rendered `stance_react.j2` contains "her own life"; a test fails on "their own life" next to "Juniper".
+2. **Modularity gate:** the "no 'juniper' literal in `orion/person_model/`" test passes, and a fixture person ("Amanda", pronouns unset) runs the full pipeline (extract, link, study validator, card) with zero code changes, rendering her name instead of a pronoun.
+3. **Extractor bake-off** recorded in the P2 PR: per-model person-mention F1 at precision >= 0.95 and CPU latency; the chosen model's revision pinned. Re-running extraction on the fixture yields byte-identical `person_mention` rows.
+4. **Linkage dry run** over live `orion_substrate`: the 4 Juniper-same nodes as `same_as` (one confirm ask for "juniper feld"), "juniper's taste"/"juniper affect" as `facet_of`, both `juniper_relationship_summary` forms as `junk`, topics untouched. Rerun gives an identical `decisions.csv`. Unmerge of one applied merge restores alias rows and edges exactly (Postgres + graph diff empty).
+5. **Merge eval:** auto-merge precision = 1.0 on the labeled pairs, recall reported; "Jay"/"Jay" never auto-merges.
+6. **First study of Juniper** over 2026-07-24 to 2026-10-04 proposes family (Amanda, Teddy, Addy, sister) and profession (Team Lead, AI/ML Architect / FDE), each with a verified quote from her prompt; zero sensitive attributes from Orion-authored sources. Carding Amanda queues her first study at the front.
+7. **Attribute eval:** accepted-attribute precision >= 0.9; inferred-sensitive count = 0 (hard gate).
+8. **Asks loop live:** a `person_attribute` ask appears at the top of Hub, Juniper answers, the attribute flips to `confirmed` with an `ask_answer` evidence row, and the next card version shows it (ask, event, and card row ids as evidence). The "home" contradiction arrives as one ask.
+9. **Chat:** a live unified turn logs `identity_kernel_source=identity_card` with four card versions; the prompt shows card lines (including the purpose card), not YAML bullets.
+10. **Situation:** `orion:situation:latest` carries `people[]` with the same versions; outreach's read returns `ok`, not a validation error.
+11. **Third-party egress test:** ask-Claude and peer-brief builders drop `third_party` + `sensitive` content.
 
 ## Eval design
 
-`services/orion-memory-consolidation/evals/person_model/`:
-- `attribute_labels.jsonl`: ~60 proposals sampled across categories from the first backfill; Juniper labels each `correct | wrong | wrong_category | inferred_not_stated | third_party_ok`. A script prints them as a review sheet in Hub (or markdown) so labeling is minutes, not a chore.
-- `merge_pairs.jsonl`: every pair the reducer scores among person-like nodes (the 11 Juniper nodes, both person referents, topic-foundry entities matching a person alias, and the promoted family/team), labeled `same | facet | junk | different`.
-- `run_person_model_eval.py`: attribute precision by category, inferred-sensitive count, merge precision/recall, promotion list. Periodic, not a CI gate (labels need Juniper); the deterministic pieces (validator, reducer, card reducer) have fast CI tests with fixtures.
+`orion/person_model/evals/`:
+- `mention_labels.jsonl`: ~150 spans from ~60 prompts, labeled for the extractor bake-off (person, relation phrase, role, place).
+- `attribute_labels.jsonl`: ~60 proposals across categories from the first study, labeled `correct | wrong | wrong_category | inferred_not_stated | third_party_ok`. A script renders them as a review sheet so labeling takes minutes.
+- `merge_pairs.jsonl`: every pair the reducer scores among person-like nodes (the 11 Juniper nodes, both person referents, topic-foundry entities blocking against a person, the promoted family and team), labeled `same | facet | junk | different`.
+- `run_person_model_eval.py`: extractor F1 per model, attribute precision by category, inferred-sensitive count, merge precision/recall, promotion list. Periodic, since labels need Juniper; the deterministic pieces (validator, linkage, card reducer, replay) have fast CI tests with fixtures.
 
 ## Recommended next patch (phase order)
 
 Each phase is one PR, independently useful, flags ON.
 
-1. **P0, trivial:** `stance_react.j2:131` "their own life" to "her own life", plus a template test. No other change.
-2. **P1, contracts:** migration + `orion/schemas/person_model.py` + `categories.yaml` + the category CI gate + store with do-not-remint. Producer-less tables are inert, so P1 ships together with P2's dry run as its first writer.
-3. **P2, entity reducer:** pure scorer, dry-run job, merge log, unmerge, `entity_merge` asks, merge eval fixture. First live run = the one-time cleanup, after Juniper reviews the dry-run CSV.
-4. **P3, asks + Hub person panel:** `person_attribute` asks, `/resolve` routing to evidence, panel to view, correct, and remove; pronoun ask as the first card.
-5. **P4, person-study:** durable workflow, validator, nightly backfill over undistilled chat, run table in the panel. Attribute eval labeled by Juniper here.
-6. **P5, card reducer:** person/self/relationship cards, versions, Hub diff.
-7. **P6, readers:** situation `people[]` (schema to consumers first, then producer), cortex identity slot from cards, outreach, curiosity kickoff.
-8. **P7, retire:** delete the YAML `juniper_relationship` block and static self bullets; promotion rule for other people goes live; retire concept induction's `juniper`/`relationship` subjects after a consumer check; distiller pronouns per person.
+1. **P0, trivial:** `stance_react.j2:131` "their own life" to "her own life", plus a template test.
+2. **P1, module skeleton + contracts:** `orion/person_model/` with `PersonRef`, `categories.yaml`, migration, schemas, store with do-not-remint, the category gate and the no-special-case gate. Ships together with P2's first writer so the tables are not inert.
+3. **P2, extractor + linkage:** pinned extractor with the bake-off result, `person_mention`, linkage reducer, merge log, unmerge, `entity_merge` asks, merge eval fixture. First live run = the one-time cleanup, after Juniper reviews the dry-run CSV.
+4. **P3, asks + Hub person panel:** `person_attribute` asks, `/resolve` routing to evidence, the panel (view, correct, remove), the pronoun ask as the first card, the tension-question producer.
+5. **P4, person-study curiosity line:** line registration, proposal nodes, validator, promotion table with Juniper as row 1, night backfill over undistilled chat, run rows in the panel. Attribute eval labeled here.
+6. **P5, card reducer:** self, purpose, person, relationship cards; versions; Hub diff.
+7. **P6, readers:** situation `people[]` (schema to consumers first), cortex card block, outreach, curiosity kickoff.
+8. **P7, retire:** delete the YAML identity blocks and `conversation_front.py`; promotion rule live for other people; retire concept induction's `juniper`/`relationship` subjects after a consumer check; distiller pronouns per person.
 
 ## Open questions for Juniper
 
-1. Gap questions: may Orion ask about empty non-sensitive categories (for example "what are your goals this year?"), or only confirm and correct what you have already said?
+1. Gap questions: may Orion ask about empty non-sensitive categories ("what are your goals this year?"), or only confirm and correct what you have already said?
 2. Third-party sensitive facts (Amanda's health): is "stored, used only in chat with you, never sent outside" the right line?
-3. One-time cleanup: do you want to review the reducer's dry-run CSV before it applies, or answer the merge asks in Hub as they come?
+3. One-time cleanup: review the dry-run CSV first, or answer merge asks in Hub as they come?
 4. Is home Ogden, with "home -> SLC" a mistake, or both?
+5. Embeddings for linkage: the approved referent spec bans vectors for identity. Keep that ban (this design's default), or allow one pinned embedding feature that can never decide a person merge on its own?
+6. Did you write the AI-town card about yourself (`town_cards.yaml`, `juniper_feld`)? If yes, it can seed attributes after one confirm; if not, it stays out.

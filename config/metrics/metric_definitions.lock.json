@@ -1,20 +1,17 @@
 {
   "_comment": "Definition lock for scripts/check_definition_drift.py. Generated, never hand-edited. Regenerate with --update; the resulting diff IS the definition-change alert. Unlike the *_baseline.json ratchets this tracks current truth in both directions -- a definition change is an event, not a defect.",
-  "metric_count": 728,
+  "metric_count": 734,
   "_last_change": {
-    "change_count": 10,
-    "high_severity_count": 10,
+    "change_count": 7,
+    "high_severity_count": 1,
     "changes": [
-      "high   semantics_changed metric://field_channel/orion-field-digester/node:substrate.bus_synaptic.prediction_error (rest_range: - -> [0.0, 0.03])",
-      "high   semantics_changed metric://field_channel/orion-field-digester/vision_frame_staleness (rest_range: - -> [0.0, 0.0])",
-      "high   semantics_changed metric://field_channel/orion-field-digester/vision_processing_failure_pressure (rest_range: - -> [0.0, 0.0])",
-      "high   semantics_changed metric://field_channel/orion-substrate-runtime/node:substrate.biometrics.prediction_error (rest_range: - -> [0.0, 0.03])",
-      "high   semantics_changed metric://field_channel/orion-substrate-runtime/node:substrate.cabinet.prediction_error (rest_range: - -> [0.0, 0.0])",
-      "high   semantics_changed metric://field_channel/orion-substrate-runtime/node:substrate.chat.prediction_error (rest_range: - -> [0.0, 0.0])",
-      "high   semantics_changed metric://field_channel/orion-substrate-runtime/node:substrate.codebase.prediction_error (rest_range: - -> [0.0, 0.0])",
-      "high   semantics_changed metric://field_channel/orion-substrate-runtime/node:substrate.execution.prediction_error (rest_range: - -> [0.0, 0.0])",
-      "high   semantics_changed metric://field_channel/orion-substrate-runtime/node:substrate.perception.prediction_error (rest_range: - -> [0.0, 0.0])",
-      "high   semantics_changed metric://field_channel/orion-substrate-runtime/node:substrate.route.prediction_error (rest_range: - -> [0.0, 0.0])"
+      "high   routing_changed metric://bus_channel/orion-field-digester/orion:field_channel:anomaly_score (declared_consumers: \u2026e', 'orion-substrate-run\u2026 -> \u2026e', 'orion-sql-writer', 'orion-substrate-run\u2026)",
+      "medium added metric://inner_state/orion-field-digester/field_channel_anomaly_score.v1",
+      "medium added metric://inner_state/orion-field-digester/field_channel_anomaly_score.v1#mean_signed_deviation",
+      "medium added metric://inner_state/orion-field-digester/field_channel_anomaly_score.v1#recon_error_p95",
+      "medium added metric://inner_state/orion-field-digester/field_channel_anomaly_score.v1#recon_loss",
+      "medium added metric://inner_state/orion-field-digester/field_channel_anomaly_score.v1#threshold",
+      "medium added metric://inner_state/orion-field-digester/field_channel_anomaly_score.v1#threshold_multiplier"
     ]
   },
   "definitions": {
@@ -1604,6 +1601,7 @@
       ],
       "declared_consumers": [
         "orion-equilibrium-service",
+        "orion-sql-writer",
         "orion-substrate-runtime"
       ],
       "notes": "kind=event stability=experimental",
@@ -4830,6 +4828,83 @@
         "metric://inner_state/orion-equilibrium-service/transport_baseline_hourly.v1"
       ],
       "notes": "scalar field on TransportBaselineHourlyV1",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-field-digester/field_channel_anomaly_score.v1": {
+      "schema_id": "FieldChannelAnomalyScoreV1",
+      "declared_consumers": [
+        "orion-substrate-runtime",
+        "services.orion-equilibrium-service.app.telemetry_anomaly_metacog_gate:evaluate_telemetry_anomaly_episode"
+      ],
+      "notes": "cadence=per_tick composition=shadow_declared_not_composed",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-field-digester/field_channel_anomaly_score.v1#mean_signed_deviation": {
+      "schema_id": "FieldChannelAnomalyScoreV1",
+      "value_kind": "level",
+      "rest": "0.0 = reconstruction errors cancel (the 'mixed' direction); positive = channels above what the encoder expects (elevated), negative = below (depressed). 0.0 is also the fallback when attribution_ok is false.",
+      "sparsity": "per_tick",
+      "declared_consumers": [
+        "orion-substrate-runtime",
+        "services.orion-equilibrium-service.app.telemetry_anomaly_metacog_gate:evaluate_telemetry_anomaly_episode"
+      ],
+      "upstream": [
+        "metric://inner_state/orion-field-digester/field_channel_anomaly_score.v1"
+      ],
+      "notes": "scalar field on FieldChannelAnomalyScoreV1",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-field-digester/field_channel_anomaly_score.v1#recon_error_p95": {
+      "schema_id": "FieldChannelAnomalyScoreV1",
+      "declared_consumers": [
+        "orion-substrate-runtime",
+        "services.orion-equilibrium-service.app.telemetry_anomaly_metacog_gate:evaluate_telemetry_anomaly_episode"
+      ],
+      "upstream": [
+        "metric://inner_state/orion-field-digester/field_channel_anomaly_score.v1"
+      ],
+      "notes": "scalar field on FieldChannelAnomalyScoreV1",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-field-digester/field_channel_anomaly_score.v1#recon_loss": {
+      "schema_id": "FieldChannelAnomalyScoreV1",
+      "value_kind": "level",
+      "rest": "mean squared reconstruction error of the latest 30-row (~60s) window of 37 field channels under the active mood-arc encoder. Calm = near the encoder's held-out median (v4: p50 0.0016, p95 0.0048); never exactly 0. The telemetry_anomaly trigger flags > p95 x EQUILIBRIUM_METACOG_TELEMETRY_ANOMALY_THRESHOLD_MULTIPLIER (3.0, uncalibrated).",
+      "sparsity": "per_tick",
+      "absent_means": "no row for a minute = scorer not loaded, inside its startup grace, or the buffer has under 30 rows -- not calm.",
+      "polarity": "higher_is_worse",
+      "declared_consumers": [
+        "orion-substrate-runtime",
+        "services.orion-equilibrium-service.app.telemetry_anomaly_metacog_gate:evaluate_telemetry_anomaly_episode"
+      ],
+      "upstream": [
+        "metric://inner_state/orion-field-digester/field_channel_anomaly_score.v1"
+      ],
+      "notes": "scalar field on FieldChannelAnomalyScoreV1",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-field-digester/field_channel_anomaly_score.v1#threshold": {
+      "schema_id": "FieldChannelAnomalyScoreV1",
+      "declared_consumers": [
+        "orion-substrate-runtime",
+        "services.orion-equilibrium-service.app.telemetry_anomaly_metacog_gate:evaluate_telemetry_anomaly_episode"
+      ],
+      "upstream": [
+        "metric://inner_state/orion-field-digester/field_channel_anomaly_score.v1"
+      ],
+      "notes": "scalar field on FieldChannelAnomalyScoreV1",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-field-digester/field_channel_anomaly_score.v1#threshold_multiplier": {
+      "schema_id": "FieldChannelAnomalyScoreV1",
+      "declared_consumers": [
+        "orion-substrate-runtime",
+        "services.orion-equilibrium-service.app.telemetry_anomaly_metacog_gate:evaluate_telemetry_anomaly_episode"
+      ],
+      "upstream": [
+        "metric://inner_state/orion-field-digester/field_channel_anomaly_score.v1"
+      ],
+      "notes": "scalar field on FieldChannelAnomalyScoreV1",
       "registry_source": "orion/inner_state_registry.py"
     },
     "metric://inner_state/orion-field-digester/field_channel_corpus.v1": {

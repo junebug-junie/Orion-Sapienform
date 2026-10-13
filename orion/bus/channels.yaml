@@ -296,9 +296,12 @@ channels:
     # can apply its own configurable threshold multiplier, same pattern as
     # orion:repair_pressure:appraisal above (producer publishes the
     # measurement, consumer owns the trigger-sensitivity knob).
+    # orion-sql-writer (2026-10-13) persists EVERY score, flagged or not, to
+    # field_channel_anomaly_score -- the calibration data for the trigger
+    # threshold multiplier.
     schema_id: "FieldChannelAnomalyScoreV1"
     producer_services: ["orion-field-digester"]
-    consumer_services: ["orion-equilibrium-service", "orion-substrate-runtime"]
+    consumer_services: ["orion-equilibrium-service", "orion-substrate-runtime", "orion-sql-writer"]
     stability: "experimental"
     since: "2026-07-21"
 

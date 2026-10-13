@@ -69,6 +69,7 @@ DEFAULT_ROUTE_MAP: dict[str, str] = {
     "gpu_pool.event.v1": "GpuPoolEventSQL",
     "gpu_pool.state.v1": "GpuPoolStateSQL",
     "transport_baseline.hourly.v1": "TransportBaselineHourlySQL",
+    "field_channel_anomaly.score.v1": "FieldChannelAnomalyScoreSQL",
     "chat_stance.belief.write.v1": "ChatStanceBeliefLogSQL",
     "self_concept.history.write.v1": "SelfConceptHistorySQL",
     "self_sense.eval.write.v1": "SelfSenseEvalLogSQL",
@@ -200,6 +201,7 @@ class Settings(BaseSettings):
             "orion:gpu_pool:event",
             "orion:gpu_pool:state",
             "orion:equilibrium:transport_baseline:hourly",
+            "orion:field_channel:anomaly_score",
             "orion:chat_stance:belief:write",
             "orion:self_concept:history:write",
             "orion:self_sense:eval:write",
@@ -767,6 +769,11 @@ class Settings(BaseSettings):
         # code-default route; SQL_WRITER_SUBSCRIBE_CHANNELS replaces).
         if "orion:equilibrium:transport_baseline:hourly" not in channels:
             channels.append("orion:equilibrium:transport_baseline:hourly")
+        # Same guarantee, same reason (field_channel_anomaly.score.v1 is a
+        # code-default route; the full score distribution is the calibration
+        # data for the telemetry_anomaly trigger threshold).
+        if "orion:field_channel:anomaly_score" not in channels:
+            channels.append("orion:field_channel:anomaly_score")
         # Same guarantee, same reason: walkway camera routes are code
         # defaults with no feature toggle.
         for walkway_channel in ("orion:vision:crops:sql-write", "orion:vision:unresolved:sql-write"):

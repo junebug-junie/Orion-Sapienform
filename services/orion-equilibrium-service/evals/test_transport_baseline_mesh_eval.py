@@ -17,3 +17,13 @@ def test_transport_baseline_mesh_eval_passes():
     # volume: episodes, not windows
     assert report["triggers_total"] <= 20
     assert report["legacy_pooled_p95_fires"] > 100 * report["triggers_total"]
+
+
+def test_sparse_hop_replay_states_one_regime_shift_instead_of_absorbing():
+    """2026-10-13: real stored hourly rows for the two hops whose floor was
+    absorbed live (see run_transport_baseline_sparse_hop_replay.py)."""
+    from run_transport_baseline_sparse_hop_replay import run_eval as run_sparse
+
+    reports = run_sparse()
+    failed = [(r["hop"], r["spacing"], k) for r in reports for k, ok in r["checks"].items() if not ok]
+    assert not failed, reports

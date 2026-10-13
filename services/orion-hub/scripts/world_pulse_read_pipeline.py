@@ -173,8 +173,9 @@ def _turn_payload(source: str, fcc_model_label: Optional[str]) -> dict:
 
 def _build_stage1_prompt(seed: WorldPulseReadSeedV1, trace_id: str) -> str:
     return (
-        "Fetch the url below with WebFetch (ask it for the article's full text and main "
-        "points) before answering, then return ONLY one fenced ```json block "
+        "Fetch the url below with WebFetch (ask it for the article's full text, main "
+        "points, and the full URLs of the sources it links to) before answering, then "
+        "return ONLY one fenced ```json block "
         "(no greeting, no Juniper-facing prose). A turn with no successful fetch of this "
         "url is discarded, however good the JSON is.\n"
         f"seed_id={seed.seed_id} kind={seed.kind} run_id={seed.run_id}\n"

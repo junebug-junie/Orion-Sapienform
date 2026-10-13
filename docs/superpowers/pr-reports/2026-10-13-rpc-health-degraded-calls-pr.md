@@ -117,24 +117,27 @@ Semantic-layer trace (`check_metric_lineage.py --metric floor_ms`, after): writt
 
 ```text
 orion/core/bus/tests + orion/metacog + orion/signals + tests/test_bus_async_rpc_worker.py
-  + tests/test_rpc_delivery_reducer.py + scripts/analysis grader tests           490 passed
-orion/core/bus/tests/test_rpc_degraded.py (new)                                     18 passed
-orion/metacog/tests/test_transport_baseline_degraded.py (new)                        9 passed
+  + tests/test_rpc_delivery_reducer.py + scripts/analysis grader tests           494 passed
+  (incl. orion/core/bus/tests/test_rpc_degraded.py and
+   orion/metacog/tests/test_transport_baseline_degraded.py, both new)
 services/orion-equilibrium-service tests + evals                                   192 passed
-services/orion-llm-gateway tests                                                   455 passed
-services/orion-cortex-orch tests: 31 failed / 217 passed -- identical set on a detached origin/main
-  (diffed); tests/test_rpc_health_hops.py 9 passed
+services/orion-llm-gateway tests                                                   457 passed
+services/orion-cortex-orch tests: 31 failed / 221 passed -- identical failing set on a detached
+  origin/main 598b7864e (diffed); tests/test_rpc_health_hops.py 10 passed
+services/orion-hub tests/test_harness_governor_client_rpc_health.py                  7 passed
 services/orion-cortex-exec: full-suite collection is broken on main ("Verb already registered");
   ran all 150 files one process each on origin/main and on this branch -- identical results except
   the files with added tests (test_llm_gateway_overloaded_reply 18->19, test_metacog_two_pass_draft
-  10->12, test_verb_runtime_reply_channel 1->2)
+  10->13, test_verb_runtime_reply_channel 1->2) and test_self_study_pass1 (2 env-dependent skips
+  vs none; same 53 tests). test_self_study_harness takes ~4 min in any worktree that has the
+  graphify-out symlink (base re-timed with it: 232 s; without: 50 s) -- environmental, not this PR.
 services/orion-signal-gateway app/tests                                              38 passed
 services/orion-substrate-runtime tests/test_worker_rpc_delivery_tick.py              7 passed
 services/orion-sql-writer tests/test_transport_baseline_hourly_sql_shape.py          6 passed
-actions 249, mind 119, durable-runs 391, harness-governor 77, execution-dispatch 107 passed;
+actions 249, mind 119, durable-runs 396, harness-governor 77, execution-dispatch 107 passed;
   thought 1 failed / embodiment 14 failed / substrate-runtime collection error -- identical on origin/main
-static gates: check_metric_lineage --gate PASS, --prompt-semantics PASS,
-  check_definition_drift --gate PASS (after --update, 1 change), check_inner_state_registry OK (22),
+static gates: check_metric_lineage --gate PASS, --prompt-semantics PASS (728 URNs),
+  check_definition_drift --gate PASS (re-locked after each main merge, 1 change), check_inner_state_registry OK (22),
   tests/test_agent_trace_schema_registry.py + schema-skew + substrate ladder + migration drift +
   metric prompt semantics + compose journald: 190 passed
 ```
@@ -159,6 +162,12 @@ PYTHONPATH=. python orion/metacog/evals/run_transport_baseline_pause_mutations.p
 mesh eval + sparse-hop replay: pass unchanged
 ```
 
+## CI
+
+All 22 checks pass on the final head (incl. Transport baseline, Static repo gates, Signal gateway,
+SQL writer unit + shape, Metacog capture, Gateway). One gpu-pool job first failed on a Docker Hub
+pull rate limit ("toomanyrequests") before any test ran; re-run passed.
+
 ## Docker/build/smoke checks
 
 ```text
@@ -166,7 +175,9 @@ scripts/safe_docker_build.sh <svc> build (temporary .env symlinks, removed after
   orion-sql-writer, orion-equilibrium-service, orion-llm-gateway, orion-cortex-exec (3 images),
   orion-cortex-orch, orion-signal-gateway, orion-substrate-runtime
 in-image (docker run --rm, every image): orion.core.bus.rpc_degraded present; degraded_count in
-  RpcChannelLatencyV1 and TransportBaselineHourlyV1; sql-writer model has the column
+  RpcChannelLatencyV1 and TransportBaselineHourlyV1; sql-writer model has the column. Rebuilt all 7
+  after the review fixes + main merge: reducer has pend_degraded_n, bus has _rpc_classify_keys,
+  gateway DEGRADED_OUTCOMES has gpu_pool_unavailable and not upstream_timeout
 NOT deployed.
 ```
 

@@ -5,7 +5,7 @@ through the live episode gate (orion/metacog/anomaly_episode.py).
 
 Before = one fire per flagged 60s window (the shipped behaviour).
 After  = one fire per episode, task_execution-led windows during a turn left to
-chat_turn, sustained override after 10 windows."""
+chat_turn, sustained override after 15 flagged windows in 30 min."""
 
 from __future__ import annotations
 
@@ -31,7 +31,7 @@ def test_fire_volume_drops_by_an_order_of_magnitude():
     r = replay(ITEMS)
     before, after = _total(r, "before_fires"), _total(r, "after_fires")
     assert before == 2485
-    assert after <= before * 0.08, (before, after)  # 2485 -> 143
+    assert after <= before * 0.08, (before, after)  # 2485 -> 140
     for day, d in r["per_day"].items():
         assert d["after_fires"] <= d["episodes"] + 3, (day, d)  # escalations only
 
@@ -46,11 +46,11 @@ def test_10_08_gpu_outage_still_fires_promptly():
     assert any(f["severity"] == "critical" for f in fires)
 
 
-def test_without_sustained_override_the_outage_fires_hours_late():
-    """Pins why the override exists (and that removing it is visible)."""
+def test_without_sustained_override_the_outage_never_fires():
+    """Pins why the override exists: hung turns cover every outage window, so
+    pure turn suppression mutes the whole 10-08 outage."""
     r = replay(ITEMS, sustained_windows=0)
-    fires = fires_between(r, "2026-10-08T14:30:00+00:00", "2026-10-08T19:00:00+00:00")
-    assert fires and fires[0]["window_end"] > 1791475200  # after 16:00Z
+    assert not fires_between(r, "2026-10-08T14:30:00+00:00", "2026-10-08T19:00:00+00:00")
 
 
 def test_non_chat_availability_outage_still_fires():
@@ -62,7 +62,7 @@ def test_non_chat_availability_outage_still_fires():
 def test_turn_suppression_is_what_removes_most_episodes():
     episodes_only = _total(replay(ITEMS, turn_suppress=False), "after_fires")
     with_suppress = _total(replay(ITEMS), "after_fires")
-    assert episodes_only > 5 * with_suppress  # 885 vs 143
+    assert episodes_only > 5 * with_suppress  # 885 vs 140
 
 
 def test_dream_novelty_pressure_from_telemetry_is_roughly_unchanged():

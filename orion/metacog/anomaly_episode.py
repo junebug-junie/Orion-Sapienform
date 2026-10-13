@@ -25,13 +25,16 @@ This module turns the per-window stream into episodes:
   error; firing on them double-counts the turn. A turn-explained window does
   not consume the episode's single fire, so an anomaly that outlasts the turn
   still fires on its first window no turn explains.
-* **Sustained override.** Once an episode has ``sustained_windows`` (default
-  10) flagged windows, turn coupling no longer suppresses it. Ten minutes is
-  past the live p75 turn length (~570s), and a hung turn is itself the
-  symptom of a real outage: on 10-08 the GPU outage made turns run 20-70
-  minutes, so turn brackets covered almost every flagged window and pure
-  suppression would have held the first fire back ~2.5h (16:29 instead of
-  14:49). Replay cost of the override over 15 days: +2 fires.
+* **Sustained override.** Once ``sustained_windows`` (default 15) flagged
+  windows have landed within the trailing ``sustained_horizon_sec`` (default
+  1800s) -- counted across episode boundaries, so an outage that flickers
+  below threshold every few minutes still accumulates -- turn coupling no
+  longer suppresses it. Fifteen minutes of flagged scoring in half an hour
+  is well past the live p75 turn length (~570s), and a hung turn is itself
+  the symptom of a real outage: on 10-08 the GPU outage made turns run 20-70
+  minutes, so turn brackets covered every flagged window and pure
+  suppression never fired it at all. With the override it fires at 14:54Z
+  (onset ~14:40Z). Replay cost over 15 days: 121 -> 140 fires.
 
 ``turn_carry_sec`` (default 150s) is how long a turn-derived channel can keep
 a window elevated after the turn's last delta: orion-field-digester holds a
@@ -54,12 +57,13 @@ from orion.metacog.evidence_map import (
 
 DEFAULT_CALM_GAP_SEC: float = 150.0
 DEFAULT_TURN_CARRY_SEC: float = 150.0
-DEFAULT_SUSTAINED_WINDOWS: int = 10
-# A turn whose bracket never closes (lost HarnessRunV1) stops counting as
-# active after this long without any new activity. Live fcc_elapsed_sec p95 is
-# ~2,300s over 14 days; one hour covers it without letting a lost close
-# suppress forever.
-DEFAULT_TURN_OPEN_MAX_SEC: float = 3600.0
+DEFAULT_SUSTAINED_WINDOWS: int = 15
+DEFAULT_SUSTAINED_HORIZON_SEC: float = 1800.0
+# A turn whose bracket never closes (lost HarnessRunV1 and lost timeout) stops
+# counting as active after this long with NO harness grammar event. Measured
+# live (3 days, 182 turns): the longest silence between two harness-governor
+# grammar events inside one turn is p50 59s, p99 840s, max 855s.
+DEFAULT_TURN_OPEN_MAX_SEC: float = 900.0
 # Glossary categories whose channels are produced by turn execution
 # (services/orion-field-digester/app/ingest/state_deltas.py execution_run
 # deltas). Read from the glossary's own `category`, not a channel-name list.
@@ -86,6 +90,9 @@ class AnomalyEpisodeStateV1:
     fired_rank: int = -1  # -1: nothing published for this episode yet
     fires: int = 0
     peak_ratio: float = 0.0
+    # window_end of every flagged window in the trailing sustained horizon.
+    # Survives episode closes (the sustained override must see flicker).
+    recent_flagged: tuple[float, ...] = ()
 
     @property
     def active(self) -> bool:
@@ -105,8 +112,16 @@ class AnomalyEpisodeDecision:
 
 
 def _closed_if_calm(state: AnomalyEpisodeStateV1, at: float, calm_gap_sec: float) -> AnomalyEpisodeStateV1:
-    if state.active and state.last_flagged_at is not None and at - state.last_flagged_at > calm_gap_sec:
-        return AnomalyEpisodeStateV1()
+    """Close on a calm gap, or on a clock step backwards larger than the calm
+    gap (a producer clock correction must not mute anomalies until the clock
+    catches up with a stored last_flagged_at)."""
+    if not state.active or state.last_flagged_at is None:
+        return state
+    gap = at - state.last_flagged_at
+    if gap > calm_gap_sec:
+        return AnomalyEpisodeStateV1(recent_flagged=state.recent_flagged)
+    if gap < -calm_gap_sec:
+        return AnomalyEpisodeStateV1()  # history is on the old clock; drop it too
     return state
 
 
@@ -122,6 +137,7 @@ def step(
     calm_gap_sec: float = DEFAULT_CALM_GAP_SEC,
     turn_suppress: bool = True,
     sustained_windows: int = DEFAULT_SUSTAINED_WINDOWS,
+    sustained_horizon_sec: float = DEFAULT_SUSTAINED_HORIZON_SEC,
 ) -> AnomalyEpisodeDecision:
     """Fold one scored window into the episode state.
 
@@ -135,14 +151,17 @@ def step(
     if not flagged:
         return AnomalyEpisodeDecision(state, False, "calm", severity, False, False)
 
-    # A window at or before the last flagged one is a redelivery or a clock
-    # step backwards: never let it open or fire anything.
+    # A window at or slightly before the last flagged one is a redelivery or
+    # jitter: never let it open or fire anything. (A big step back already
+    # closed the episode above.)
     if state.last_flagged_at is not None and window_end <= state.last_flagged_at:
         return AnomalyEpisodeDecision(state, False, "stale_window", severity, False, False)
 
     new_episode = not state.active
     if new_episode:
-        state = AnomalyEpisodeStateV1(episode_id=window_end_iso, started_at=window_end)
+        state = AnomalyEpisodeStateV1(
+            episode_id=window_end_iso, started_at=window_end, recent_flagged=state.recent_flagged
+        )
     turn_explained = bool(
         turn_suppress and turn_active and lead_category in TURN_COUPLED_CATEGORIES
     )
@@ -152,8 +171,11 @@ def step(
         flagged_windows=state.flagged_windows + 1,
         turn_explained_windows=state.turn_explained_windows + (1 if turn_explained else 0),
         peak_ratio=max(state.peak_ratio, float(ratio)),
+        recent_flagged=tuple(
+            t for t in state.recent_flagged if t > window_end - sustained_horizon_sec
+        ) + (window_end,),
     )
-    sustained = sustained_windows > 0 and state.flagged_windows >= sustained_windows
+    sustained = sustained_windows > 0 and len(state.recent_flagged) >= sustained_windows
     if turn_explained and not sustained:
         return AnomalyEpisodeDecision(state, False, "turn_explained", severity, True, new_episode)
 
@@ -187,6 +209,7 @@ def state_to_dict(state: AnomalyEpisodeStateV1) -> dict[str, Any]:
         "fired_rank": state.fired_rank,
         "fires": state.fires,
         "peak_ratio": state.peak_ratio,
+        "recent_flagged": list(state.recent_flagged),
     }
 
 
@@ -196,10 +219,17 @@ def state_from_dict(data: Any) -> AnomalyEpisodeStateV1:
     Restoring a real open episode is what keeps a restart from re-firing an
     anomaly that is still running (the episode closes on its own once
     calm_gap_sec passes without a flagged window)."""
-    if not isinstance(data, dict) or not data.get("episode_id"):
+    if not isinstance(data, dict):
         return AnomalyEpisodeStateV1()
     try:
+        recent = tuple(float(t) for t in data.get("recent_flagged") or ())
+    except (TypeError, ValueError):
+        recent = ()
+    if not data.get("episode_id"):
+        return AnomalyEpisodeStateV1(recent_flagged=recent)
+    try:
         return AnomalyEpisodeStateV1(
+            recent_flagged=recent,
             episode_id=str(data["episode_id"]),
             started_at=float(data["started_at"]),
             last_flagged_at=float(data["last_flagged_at"]),

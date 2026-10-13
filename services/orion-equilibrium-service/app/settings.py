@@ -172,11 +172,15 @@ class Settings(BaseSettings):
     metacog_telemetry_anomaly_episode_calm_gap_sec: float = Field(
         150.0, alias="EQUILIBRIUM_METACOG_TELEMETRY_ANOMALY_EPISODE_CALM_GAP_SEC"
     )
-    # After this many flagged windows an episode fires even while a turn
-    # explains it: past the p75 turn length, and a hung turn is itself the
-    # symptom of a real outage (10-08). 0 disables the override.
+    # After this many flagged windows within the trailing horizon (counted
+    # across episode closes, so a flickering outage still accumulates) a window
+    # fires even while a turn explains it: past the p75 turn length, and a hung
+    # turn is itself the symptom of a real outage (10-08). 0 disables it.
     metacog_telemetry_anomaly_episode_sustained_windows: int = Field(
-        10, alias="EQUILIBRIUM_METACOG_TELEMETRY_ANOMALY_EPISODE_SUSTAINED_WINDOWS"
+        15, alias="EQUILIBRIUM_METACOG_TELEMETRY_ANOMALY_EPISODE_SUSTAINED_WINDOWS"
+    )
+    metacog_telemetry_anomaly_episode_sustained_horizon_sec: float = Field(
+        1800.0, alias="EQUILIBRIUM_METACOG_TELEMETRY_ANOMALY_EPISODE_SUSTAINED_HORIZON_SEC"
     )
     # Persisted open-episode state, so a restart mid-anomaly does not re-fire it.
     metacog_telemetry_anomaly_episode_state_key: str = Field(
@@ -193,6 +197,12 @@ class Settings(BaseSettings):
     # then decays 0.92/2s tick (~55s to 10%).
     metacog_telemetry_anomaly_turn_carry_sec: float = Field(
         150.0, alias="EQUILIBRIUM_METACOG_TELEMETRY_ANOMALY_TURN_CARRY_SEC"
+    )
+    # An unclosed turn stops counting as active after this long with no harness
+    # grammar event (lost HarnessRunV1 + lost timeout). Live: longest in-turn
+    # silence between harness events p99 840s, max 855s (3 days, 182 turns).
+    metacog_telemetry_anomaly_turn_open_max_sec: float = Field(
+        900.0, alias="EQUILIBRIUM_METACOG_TELEMETRY_ANOMALY_TURN_OPEN_MAX_SEC"
     )
 
     metacog_publish_verb_request: bool = Field(

@@ -147,6 +147,7 @@ def evaluate_telemetry_anomaly_episode(
     calm_gap_sec: float,
     sustained_windows: int,
     now: float,
+    sustained_horizon_sec: float = 1800.0,
 ) -> tuple[AnomalyEpisodeStateV1, AnomalyEpisodeDecision | None, MetacogTriggerV1 | None]:
     """Fold one score into the episode state.
 
@@ -183,6 +184,7 @@ def evaluate_telemetry_anomaly_episode(
         calm_gap_sec=calm_gap_sec,
         turn_suppress=turns is not None,
         sustained_windows=sustained_windows,
+        sustained_horizon_sec=sustained_horizon_sec,
     )
     if not decision.fire:
         return decision.state, decision, None

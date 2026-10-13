@@ -1,8 +1,20 @@
 #!/usr/bin/env python3
-"""Replay stored telemetry_anomaly fires through the episode gate.
+"""Replay stored telemetry_anomaly windows through the episode gate.
 
-Before = every telemetry_anomaly row in metacog_trigger (one per flagged 60s
-window, since the shared 30s cooldown never held a 60s cadence back).
+Two sources (--source):
+
+* ``triggers`` (default until enough scores accumulate): every pre-episode
+  telemetry_anomaly row in metacog_trigger, one per flagged 60s window. Rows
+  the episode gate itself published (upstream carries ``episode_id``) are
+  excluded, so a post-deploy export cannot replay its own output. Caveat: the
+  old shared 30s cooldown occasionally dropped a flagged window when another
+  trigger kind held the lane; those read as calm gaps here and can split an
+  episode, so "after" counts from this source are an upper bound.
+* ``scores``: field_channel_anomaly_score (written by orion-sql-writer from
+  2026-10-13), every window flagged or not, flagged = recon_loss >
+  recon_error_p95 * --multiplier. Exact; use once it covers the period.
+
+Before = flagged windows (one fire each under the shipped behaviour).
 After  = the same windows folded through orion.metacog.anomaly_episode with
 harness turns (harness_turn_trace: [created_at - fcc_elapsed_sec, created_at])
 fed through TurnActivityTracker in time order, as the live gate sees them.
@@ -33,6 +45,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from orion.metacog.anomaly_episode import (  # noqa: E402
     DEFAULT_CALM_GAP_SEC,
+    DEFAULT_SUSTAINED_HORIZON_SEC,
     DEFAULT_SUSTAINED_WINDOWS,
     DEFAULT_TURN_CARRY_SEC,
     AnomalyEpisodeStateV1,
@@ -43,14 +56,16 @@ from orion.metacog.anomaly_episode import (  # noqa: E402
 from orion.metacog.evidence_map import TELEMETRY_RATIO_CRITICAL, TELEMETRY_RATIO_DEGRADED  # noqa: E402
 
 
-def export_sql(days: int) -> str:
+TURN_ACTIVITY_STEP_SEC = 300.0
+
+
+def export_sql(days: int, source: str = "triggers", multiplier: float = 3.0) -> str:
     days = int(days)
     if days <= 0 or days > 60:
         raise ValueError("days must be 1..60")
-    return f"""BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY;
-SET LOCAL statement_timeout = '60s';
-SET LOCAL TIME ZONE 'UTC';
-SELECT row_to_json(r) FROM (
+    multiplier = float(multiplier)
+    if source == "triggers":
+        windows = f"""SELECT row_to_json(r) FROM (
  SELECT 'fire' AS kind, upstream->>'window_start' AS window_start,
         upstream->>'window_end' AS window_end,
         (upstream->>'recon_loss')::float / NULLIF((upstream->>'threshold')::float, 0) AS ratio,
@@ -58,8 +73,26 @@ SELECT row_to_json(r) FROM (
         split_part(upstream->'top_channels'->>0, '=', 1) AS lead
  FROM metacog_trigger
  WHERE trigger_kind = 'telemetry_anomaly' AND timestamp > now() - interval '{days} days'
+   AND NOT (upstream ? 'episode_id')
  ORDER BY timestamp
-) r;
+) r;"""
+    elif source == "scores":
+        # DISTINCT ON window: a stalled digester buffer can rescore one window.
+        windows = f"""SELECT row_to_json(r) FROM (
+ SELECT DISTINCT ON (encoder_id, window_end) 'score' AS kind, window_start, window_end,
+        recon_loss / NULLIF(recon_error_p95 * {multiplier}, 0) AS ratio,
+        deviation_direction AS direction,
+        split_part(top_channels->>0, '=', 1) AS lead
+ FROM field_channel_anomaly_score
+ WHERE window_end > now() - interval '{days} days'
+ ORDER BY encoder_id, window_end
+) r;"""
+    else:
+        raise ValueError("source must be triggers or scores")
+    return f"""BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY;
+SET LOCAL statement_timeout = '60s';
+SET LOCAL TIME ZONE 'UTC';
+{windows}
 SELECT row_to_json(r) FROM (
  SELECT 'turn' AS kind, correlation_id AS cid, created_at AS ended_at,
         (run_artifact->>'fcc_elapsed_sec')::float AS elapsed_sec
@@ -100,7 +133,12 @@ def compact(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Fixture form: timestamps as epoch seconds, glossary category resolved."""
     out = []
     for r in rows:
-        if r.get("kind") == "fire" and r.get("window_end") and r.get("ratio") is not None:
+        if r.get("kind") in ("fire", "score") and r.get("window_end") and r.get("ratio") is not None:
+            if r["kind"] == "score" and float(r["ratio"]) <= 1.0:
+                out.append({"k": "f", "ws": round(_ts(r["window_start"]), 3),
+                            "we": round(_ts(r["window_end"]), 3), "r": round(float(r["ratio"]), 4),
+                            "d": "", "l": "", "c": None, "calm": True})
+                continue
             out.append({
                 "k": "f", "ws": round(_ts(r["window_start"]), 3), "we": round(_ts(r["window_end"]), 3),
                 "r": round(float(r["ratio"]), 4), "d": r.get("direction") or "mixed",
@@ -132,6 +170,7 @@ def replay(
     turn_carry_sec: float = DEFAULT_TURN_CARRY_SEC,
     turn_suppress: bool = True,
     sustained_windows: int = DEFAULT_SUSTAINED_WINDOWS,
+    sustained_horizon_sec: float = DEFAULT_SUSTAINED_HORIZON_SEC,
 ) -> dict[str, Any]:
     """`items` in compact() form. Returns per-day before/after counts + every after-fire."""
     events: list[tuple[float, int, dict[str, Any]]] = []
@@ -142,8 +181,16 @@ def replay(
             el = it.get("el")
             start = it["end"] - float(el) if el else it["end"]
             events.append((start, 0, {**it, "phase": "start"}))
+            # Live, harness-governor grammar events stream through the turn
+            # (measured longest in-turn silence: p99 840s, max 855s). The stored
+            # trace keeps only start/end, so emit synthetic activity every
+            # TURN_ACTIVITY_STEP_SEC to mirror what the live tracker sees.
+            t = start + TURN_ACTIVITY_STEP_SEC
+            while t < it["end"]:
+                events.append((t, 0, {**it, "phase": "start"}))
+                t += TURN_ACTIVITY_STEP_SEC
             events.append((it["end"], 1, {**it, "phase": "end"}))
-    events.sort(key=lambda e: (e[0], e[1]))
+    events.sort(key=lambda e: (e[0], e[1], e[2].get("we", 0.0)))
 
     tracker = TurnActivityTracker(turn_carry_sec=turn_carry_sec)
     state = AnomalyEpisodeStateV1()
@@ -161,6 +208,10 @@ def replay(
                 tracker.observe(it["cid"], at, closed=True, elapsed_sec=it.get("el"))
             continue
         d = days[_day(at)]
+        if it.get("calm"):
+            state = step(state, window_end=it["we"], window_end_iso="", flagged=False, ratio=it["r"],
+                         lead_category=None, turn_active=False, calm_gap_sec=calm_gap_sec).state
+            continue
         d["before_fires"] += 1
         key = f'{it["d"]}:{it["l"]}'
         weight = _dream_weight(it["r"])
@@ -177,6 +228,7 @@ def replay(
             calm_gap_sec=calm_gap_sec,
             turn_suppress=turn_suppress,
             sustained_windows=sustained_windows,
+            sustained_horizon_sec=sustained_horizon_sec,
         )
         state = decision.state
         if state.episode_id and state.episode_id not in episode_ids:
@@ -219,6 +271,8 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--export-sql", action="store_true")
     ap.add_argument("--days", type=int, default=15)
+    ap.add_argument("--source", choices=("triggers", "scores"), default="triggers")
+    ap.add_argument("--multiplier", type=float, default=3.0)
     ap.add_argument("--rows", help="psql JSON-lines output of --export-sql")
     ap.add_argument("--fixture", help="compact fixture (JSON lines) instead of --rows")
     ap.add_argument("--write-fixture", help="write the compact form of --rows here")
@@ -226,10 +280,11 @@ def main() -> int:
     ap.add_argument("--turn-carry-sec", type=float, default=DEFAULT_TURN_CARRY_SEC)
     ap.add_argument("--no-turn-suppress", action="store_true")
     ap.add_argument("--sustained-windows", type=int, default=DEFAULT_SUSTAINED_WINDOWS)
+    ap.add_argument("--sustained-horizon-sec", type=float, default=DEFAULT_SUSTAINED_HORIZON_SEC)
     ap.add_argument("--json", action="store_true")
     args = ap.parse_args()
     if args.export_sql:
-        print(export_sql(args.days))
+        print(export_sql(args.days, args.source, args.multiplier))
         return 0
     if args.rows:
         items = compact(load_rows(Path(args.rows).read_text().splitlines()))
@@ -240,6 +295,7 @@ def main() -> int:
     else:
         ap.error("need --export-sql, --rows or --fixture")
     result = replay(items, calm_gap_sec=args.calm_gap_sec, turn_carry_sec=args.turn_carry_sec,
+                    sustained_horizon_sec=args.sustained_horizon_sec,
                     turn_suppress=not args.no_turn_suppress, sustained_windows=args.sustained_windows)
     if args.json:
         print(json.dumps(result["per_day"], indent=2))

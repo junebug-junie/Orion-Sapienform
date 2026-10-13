@@ -275,3 +275,51 @@ def test_service_turn_observation_from_grammar_and_run_artifact(monkeypatch):
                                {"correlation_id": "t1", "fcc_elapsed_sec": 42.0})
     (cid, _, closed_at), = list(svc._anomaly_turns.turns())
     assert closed_at is not None
+
+
+def test_flickering_turn_coupled_outage_still_fires_via_trailing_horizon():
+    """Review finding: 9 flagged / 3 calm, repeating, every window turn-covered.
+    Each episode closes before 10 windows, so a per-episode count never fires;
+    the trailing-horizon count must."""
+    windows, t = [], T0
+    for _ in range(4):
+        for _ in range(9):
+            windows.append((t, True, 5.0, "task_execution", True))
+            t += 60
+        for _ in range(3):
+            windows.append((t, False, 0.5, None, False))
+            t += 60
+    _, fires = _run(windows, sustained_windows=15, sustained_horizon_sec=1800)
+    assert fires and fires[0][1] == "sustained_past_turn"
+
+
+def test_ordinary_turn_bursts_stay_suppressed():
+    """A few short turn-coupled bursts per half hour stay under the horizon count."""
+    windows = []
+    for burst in range(3):
+        base = T0 + burst * 600
+        windows += [(base + 60 * i, True, 2.0, "task_execution", True) for i in range(4)]
+    _, fires = _run(windows, sustained_windows=15, sustained_horizon_sec=1800)
+    assert fires == []
+
+
+def test_large_backward_clock_step_does_not_mute_anomalies():
+    """Review finding: last_flagged_at an hour ahead must not drop every window."""
+    d = _flag(AnomalyEpisodeStateV1(), T0 + 3600)
+    s = mark_published(d.state, d.severity)
+    later = _flag(s, T0, ratio=4.0)
+    assert later.fire and later.reason == "episode_open"
+    # Small step back (jitter / redelivery) is still a no-op.
+    assert _flag(s, T0 + 3590).reason == "stale_window"
+
+
+def test_unclosed_turn_stops_counting_after_open_max():
+    tr = TurnActivityTracker(turn_carry_sec=150)  # default open_max 900s
+    tr.observe("lost", T0)
+    assert tr.active_between(T0 + 800, T0 + 860)
+    assert not tr.active_between(T0 + 1200, T0 + 1260)
+
+
+def test_recent_history_survives_restore_without_open_episode():
+    s = AnomalyEpisodeStateV1(recent_flagged=(T0, T0 + 60))
+    assert state_from_dict(json.loads(json.dumps(state_to_dict(s)))).recent_flagged == (T0, T0 + 60)

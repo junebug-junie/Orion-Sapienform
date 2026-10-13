@@ -167,7 +167,10 @@ class EquilibriumService(BaseChassis):
         # real start from HarnessRunV1.fcc_elapsed_sec).
         self._anomaly_episode_state: AnomalyEpisodeStateV1 = AnomalyEpisodeStateV1()
         self._anomaly_turns: TurnActivityTracker | None = (
-            TurnActivityTracker(turn_carry_sec=settings.metacog_telemetry_anomaly_turn_carry_sec)
+            TurnActivityTracker(
+                turn_carry_sec=settings.metacog_telemetry_anomaly_turn_carry_sec,
+                open_max_sec=settings.metacog_telemetry_anomaly_turn_open_max_sec,
+            )
             if settings.metacog_telemetry_anomaly_episode_enable
             and settings.metacog_telemetry_anomaly_turn_suppress_enable
             else None
@@ -325,7 +328,20 @@ class EquilibriumService(BaseChassis):
             if role == "exec_turn_timeout":
                 self._anomaly_turns.observe(cid, now, closed=True)
             elif source == HARNESS_TURN_SOURCE_SERVICE:
-                self._anomaly_turns.observe(cid, now)
+                # Producer emitted_at when sane (same clock family as the
+                # digester's window_end), else receipt time.
+                at = now
+                emitted = payload.get("emitted_at")
+                if isinstance(emitted, str):
+                    try:
+                        ts = datetime.fromisoformat(emitted.replace("Z", "+00:00"))
+                        if ts.tzinfo is None:
+                            ts = ts.replace(tzinfo=timezone.utc)
+                        if 0.0 <= now - ts.timestamp() <= 600.0:
+                            at = ts.timestamp()
+                    except ValueError:
+                        pass
+                self._anomaly_turns.observe(cid, at)
 
     async def _handle_anomaly_score(self, payload: Dict[str, Any], *, zen: float, distress: float) -> None:
         zen_state = "zen" if zen > 0.5 else "not_zen"
@@ -355,6 +371,7 @@ class EquilibriumService(BaseChassis):
             threshold_multiplier=settings.metacog_telemetry_anomaly_threshold_multiplier,
             calm_gap_sec=settings.metacog_telemetry_anomaly_episode_calm_gap_sec,
             sustained_windows=settings.metacog_telemetry_anomaly_episode_sustained_windows,
+            sustained_horizon_sec=settings.metacog_telemetry_anomaly_episode_sustained_horizon_sec,
             now=time.time(),
         )
         if decision is None:

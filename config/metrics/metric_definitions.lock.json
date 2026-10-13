@@ -4793,6 +4793,7 @@
     "metric://inner_state/orion-field-digester/field_channel_anomaly_score.v1": {
       "schema_id": "FieldChannelAnomalyScoreV1",
       "declared_consumers": [
+        "orion-substrate-runtime",
         "services.orion-equilibrium-service.app.telemetry_anomaly_metacog_gate:evaluate_telemetry_anomaly_episode"
       ],
       "notes": "cadence=per_tick composition=shadow_declared_not_composed",
@@ -4804,6 +4805,7 @@
       "rest": "0.0 = reconstruction errors cancel (the 'mixed' direction); positive = channels above what the encoder expects (elevated), negative = below (depressed). 0.0 is also the fallback when attribution_ok is false.",
       "sparsity": "per_tick",
       "declared_consumers": [
+        "orion-substrate-runtime",
         "services.orion-equilibrium-service.app.telemetry_anomaly_metacog_gate:evaluate_telemetry_anomaly_episode"
       ],
       "upstream": [
@@ -4815,6 +4817,7 @@
     "metric://inner_state/orion-field-digester/field_channel_anomaly_score.v1#recon_error_p95": {
       "schema_id": "FieldChannelAnomalyScoreV1",
       "declared_consumers": [
+        "orion-substrate-runtime",
         "services.orion-equilibrium-service.app.telemetry_anomaly_metacog_gate:evaluate_telemetry_anomaly_episode"
       ],
       "upstream": [
@@ -4831,6 +4834,7 @@
       "absent_means": "no row for a minute = scorer not loaded, inside its startup grace, or the buffer has under 30 rows -- not calm.",
       "polarity": "higher_is_worse",
       "declared_consumers": [
+        "orion-substrate-runtime",
         "services.orion-equilibrium-service.app.telemetry_anomaly_metacog_gate:evaluate_telemetry_anomaly_episode"
       ],
       "upstream": [
@@ -4842,6 +4846,7 @@
     "metric://inner_state/orion-field-digester/field_channel_anomaly_score.v1#threshold": {
       "schema_id": "FieldChannelAnomalyScoreV1",
       "declared_consumers": [
+        "orion-substrate-runtime",
         "services.orion-equilibrium-service.app.telemetry_anomaly_metacog_gate:evaluate_telemetry_anomaly_episode"
       ],
       "upstream": [
@@ -4853,6 +4858,7 @@
     "metric://inner_state/orion-field-digester/field_channel_anomaly_score.v1#threshold_multiplier": {
       "schema_id": "FieldChannelAnomalyScoreV1",
       "declared_consumers": [
+        "orion-substrate-runtime",
         "services.orion-equilibrium-service.app.telemetry_anomaly_metacog_gate:evaluate_telemetry_anomaly_episode"
       ],
       "upstream": [

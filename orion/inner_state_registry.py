@@ -831,6 +831,9 @@ REGISTRY: tuple[InnerStateSignal, ...] = (
         ),
         cognition_consumers=(
             "services.orion-equilibrium-service.app.telemetry_anomaly_metacog_gate:evaluate_telemetry_anomaly_episode",
+            # Brain frame field_anomaly region (worker._field_channel_anomaly_listener_loop,
+            # a method -- named by service, the form the lineage resolver supports).
+            "orion-substrate-runtime",
         ),
         # Semantics (2026-10-13), read from services/orion-field-digester/app/
         # anomaly_scorer.py:score_latest and the v4 manifest's training stats.

@@ -181,3 +181,93 @@ async def record_transition(pool: Any, row: dict) -> bool:
     except Exception:  # noqa: BLE001 - history is best-effort; Redis still carries the state
         logger.warning("regulation_transition_write_failed event=%s", row.get("event_id"), exc_info=True)
         return False
+
+
+# --- R4 runtime immune sweep: one read of the semantic field channels, one write per finding --------
+
+# One sample per minute over the window, every node's value for the named channels plus the
+# per-node/channel ``node_vector_updated_at`` stamp (the replay check's "fresh re-stamp"). The
+# generated_at index bounds the scan (live 2026-10-13: 41k rows/24 h -> 1,441 minutes, ~3 s; the
+# field_json TOAST read dominates). Read-only transaction with its own statement timeout.
+IMMUNE_SERIES_SQL = """
+WITH m AS (
+  SELECT DISTINCT ON (date_trunc('minute', generated_at)) tick_id
+  FROM substrate_field_state
+  WHERE generated_at >= %(since)s AND generated_at < %(until)s
+  ORDER BY date_trunc('minute', generated_at), generated_at DESC
+)
+SELECT s.generated_at AS t, n.key AS node, c.key AS channel, c.value #>> '{}' AS value,
+       s.field_json->'node_vector_updated_at'->n.key->>c.key AS updated_at
+FROM m JOIN substrate_field_state s USING (tick_id),
+     jsonb_each(s.field_json->'node_vectors') n, jsonb_each(n.value) c
+WHERE c.key = ANY(%(channels)s)
+ORDER BY 2, 3, 1
+"""
+IMMUNE_STATEMENT_TIMEOUT = "45s"
+
+INSERT_IMMUNE_SQL = """
+INSERT INTO temporal_self_event (event_id, day_id, occurred_at, source_kind, source_table, source_ref,
+                                 subject_ref, label, verdict, payload_json)
+VALUES (%(event_id)s, %(day_id)s, %(occurred_at)s, 'immune_finding', 'substrate_field_state',
+        %(source_ref)s, %(subject_ref)s, %(label)s, %(verdict)s, %(payload)s::jsonb)
+ON CONFLICT (event_id) DO UPDATE SET payload_json = EXCLUDED.payload_json, source_ref = EXCLUDED.source_ref
+"""
+
+
+async def read_immune_series(pool: Any, now: datetime, channels: list[str], *, window_sec: float = 86400.0) -> dict:
+    """``(node, channel) -> [(t, value, updated_at)]`` over the last ``window_sec``. Raises on a
+    failed read (the graph's immune node catches it; a failed read is never an empty day)."""
+    from orion.regulation.immune import ImmuneSample
+
+    params = {"since": now - timedelta(seconds=window_sec), "until": now, "channels": list(channels)}
+    async with pool.connection() as conn:
+        async with conn.transaction():
+            await conn.execute("SET TRANSACTION READ ONLY")
+            await conn.execute(f"SET LOCAL statement_timeout = '{IMMUNE_STATEMENT_TIMEOUT}'")
+            rows = await (await conn.execute(IMMUNE_SERIES_SQL, params)).fetchall()
+    out: dict = {}
+    for r in rows:
+        try:
+            value = float(r["value"])
+        except (TypeError, ValueError):
+            continue
+        upd = None
+        if r.get("updated_at"):
+            try:
+                upd = datetime.fromisoformat(str(r["updated_at"]).replace("Z", "+00:00"))
+            except ValueError:
+                upd = None
+        out.setdefault((r["node"], r["channel"]), []).append(ImmuneSample(r["t"], value, updated_at=upd))
+    return out
+
+
+def immune_finding_row(finding: Any, day_id: str, observed_at: datetime) -> dict:
+    """One finding -> one ``temporal_self_event`` row. The id is deterministic on (metric, kind,
+    day): a later sweep the same day refreshes the evidence window instead of adding a row."""
+    observed = observed_at.astimezone(timezone.utc)
+    payload = finding.to_dict()
+    payload["observed_at"] = observed.isoformat()
+    return {
+        "event_id": f"immune_finding:{finding.metric_id}:{finding.kind}:{day_id}",
+        "day_id": day_id,
+        "occurred_at": observed,
+        "source_ref": f"substrate_field_state:{finding.window_start.isoformat()}..{finding.window_end.isoformat()}",
+        "subject_ref": f"field:{finding.metric_id}",
+        "label": finding.kind,
+        "verdict": "open",
+        "payload": json.dumps(payload, default=str),
+    }
+
+
+async def record_immune_findings(pool: Any, rows: list[dict]) -> bool:
+    if not rows:
+        return True
+    try:
+        async with pool.connection() as conn:
+            async with conn.transaction():
+                for row in rows:
+                    await conn.execute(INSERT_IMMUNE_SQL, row)
+        return True
+    except Exception:  # noqa: BLE001 - the trace is best-effort; regulation never depends on it
+        logger.warning("regulation_immune_write_failed n=%s", len(rows), exc_info=True)
+        return False

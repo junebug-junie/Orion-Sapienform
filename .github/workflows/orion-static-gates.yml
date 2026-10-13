@@ -160,7 +160,7 @@ jobs:
       - name: Metric prompt semantics (rest/value-kind/sparsity for prompt-reaching metrics)
         run: |
           python scripts/check_metric_lineage.py --prompt-semantics
-          python -m pytest tests/test_metric_prompt_semantics.py -q -p no:cacheprovider
+          python -m pytest tests/test_metric_prompt_semantics.py tests/test_metric_rest_range.py -q -p no:cacheprovider
 
       # R4 definition-change alert. Red means a metric's meaning, schema,
       # producers or consumers changed without config/metrics/

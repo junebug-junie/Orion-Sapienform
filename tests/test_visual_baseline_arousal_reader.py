@@ -16,6 +16,7 @@ import pytest
 from orion.reverie import baseline as b
 from orion.schemas.reverie_visual import VisualActivityV1
 
+REPO = Path(__file__).resolve().parents[1]
 NOW = datetime(2026, 10, 13, 15, 0, tzinfo=timezone.utc)
 POLICY = b.VisualBaselinePolicy(enabled=True)
 LEVELS = ["engaged", "idle", "strained", None]
@@ -87,11 +88,11 @@ def test_must_not_arousal_never_turns_a_hold_into_an_issue(case, level):
 
 
 def test_must_not_thermal_gate_has_no_arousal_input():
-    src = Path("orion/autonomy/thermal_gate.py").read_text()
+    src = (REPO / "orion/autonomy/thermal_gate.py").read_text()
     assert "arousal" not in src and "regulation" not in src
 
 
 def test_worker_reads_arousal_only_through_the_flagged_reader():
-    src = Path("services/orion-proposal-runtime/app/worker.py").read_text()
+    src = (REPO / "services/orion-proposal-runtime/app/worker.py").read_text()
     assert "arousal_level=self._baseline_arousal_level" in src
     assert "enabled=bool(self._settings.visual_baseline_arousal_enabled)" in src

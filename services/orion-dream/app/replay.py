@@ -91,13 +91,21 @@ def candidate_from_metacog(row: dict[str, Any]) -> Optional[ReplayItemV1]:
     )
 
 
+def _loop_name(row: dict[str, Any], theme: str) -> str:
+    """What the dream reads for a reverie theme: the open loop's human title when the
+    source query found one (cycle_store _title_join), else the bare id. Text only:
+    ref_id, tags and the novelty key keep the id."""
+    return _clip(row.get("title"), 200) or theme
+
+
 def candidate_from_compaction_request(row: dict[str, Any]) -> Optional[ReplayItemV1]:
     rid = str(row.get("request_id") or "").strip()
     theme = _clip(row.get("theme"), 200)
     if not rid or not theme:
         return None
     reason_text = _clip(row.get("reason"), 400)
-    text = f"{theme}: {reason_text}" if reason_text else theme
+    name = _loop_name(row, theme)
+    text = f"{name}: {reason_text}" if reason_text else name
     return ReplayItemV1(
         ref_id=f"compaction_request:{rid}",
         source_kind="compaction_request",
@@ -118,7 +126,7 @@ def candidate_from_resonance(row: dict[str, Any]) -> Optional[ReplayItemV1]:
     return ReplayItemV1(
         ref_id=f"resonance:{aid}",
         source_kind="resonance",
-        text=f"a theme reverie kept returning to: {theme}",
+        text=f"a theme reverie kept returning to: {_loop_name(row, theme)}",
         weight=weight,
         reason=f"reverie re-ignited {theme!r} past its refractory bound ({violations} violations)",
         tags=[theme.lower()],

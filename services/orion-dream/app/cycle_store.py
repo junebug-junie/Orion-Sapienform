@@ -33,6 +33,10 @@ CYCLE_WRITE_TABLES = ("dream_cycle", "dream_replay_item", "dream_hypothesis", "d
 #                    `summary`: model prose, reworded per row for one event.
 #                    No reason -> the row id (counts as its own thing).
 #   compaction       the theme.   resonance  the theme_key.
+#                    Both are bare open-loop ids (`open-loop-968fda08910c`). `title` is the
+#                    loop's latest human description from attention_salience_trace
+#                    (theme_key == loop id, indexed), for replay text only: the key
+#                    stays the id, so tiredness and novelty are unchanged.
 #   crystallization  activation events (auto_activate / approve), NOT
 #                    updated_at: recall rewrites updated_at on all ~100
 #                    rendered crystallizations per retrieval (retriever.py
@@ -41,6 +45,15 @@ CYCLE_WRITE_TABLES = ("dream_cycle", "dream_replay_item", "dream_hypothesis", "d
 # timestamptz. Cast only well-formed values so one bad row cannot fail the read
 # (CASE, not AND: Postgres does not promise AND short-circuits).
 METACOG_KEY_RE = r"[0-9a-f]{8,}|-?[0-9]+(\.[0-9]+)?"
+
+def _title_join(theme_col: str) -> str:
+    """Latest non-empty human description of the open loop a reverie theme names."""
+    return (
+        "\n        LEFT JOIN LATERAL (SELECT a.description AS title FROM attention_salience_trace a"
+        f" WHERE a.theme_key = {theme_col} AND coalesce(a.description, '') <> ''"
+        " ORDER BY a.created_at DESC LIMIT 1) t ON true"
+    )
+
 
 SOURCE_QUERIES: dict[str, str] = {
     "metacog": f"""
@@ -57,22 +70,26 @@ SOURCE_QUERIES: dict[str, str] = {
           ORDER BY dedupe_key, (severity = 'critical') DESC, ts DESC
         ) d ORDER BY ts DESC LIMIT :limit
     """,
-    "compaction_request": """
-        SELECT request_id, theme, reason, dedupe_key FROM (
-          SELECT DISTINCT ON (lower(theme)) request_id, theme, reason, lower(theme) AS dedupe_key, created_at
-            FROM dream_compaction_request_queue
-           WHERE created_at > :since AND created_at < :until
-           ORDER BY lower(theme), created_at DESC
-        ) d ORDER BY created_at DESC LIMIT :limit
+    "compaction_request": f"""
+        SELECT d.request_id, d.theme, d.reason, d.dedupe_key, t.title FROM (
+          SELECT request_id, theme, reason, dedupe_key, created_at FROM (
+            SELECT DISTINCT ON (lower(theme)) request_id, theme, reason, lower(theme) AS dedupe_key, created_at
+              FROM dream_compaction_request_queue
+             WHERE created_at > :since AND created_at < :until
+             ORDER BY lower(theme), created_at DESC
+          ) k ORDER BY created_at DESC LIMIT :limit
+        ) d{_title_join('d.theme')} ORDER BY d.created_at DESC
     """,
-    "resonance": """
-        SELECT alert_id, theme_key, violation_count, dedupe_key FROM (
-          SELECT DISTINCT ON (lower(theme_key)) alert_id, theme_key, violation_count,
-                 lower(theme_key) AS dedupe_key, created_at
-            FROM substrate_reverie_resonance_alert
-           WHERE created_at > :since AND created_at < :until
-           ORDER BY lower(theme_key), violation_count DESC, created_at DESC
-        ) d ORDER BY created_at DESC LIMIT :limit
+    "resonance": f"""
+        SELECT d.alert_id, d.theme_key, d.violation_count, d.dedupe_key, t.title FROM (
+          SELECT alert_id, theme_key, violation_count, dedupe_key, created_at FROM (
+            SELECT DISTINCT ON (lower(theme_key)) alert_id, theme_key, violation_count,
+                   lower(theme_key) AS dedupe_key, created_at
+              FROM substrate_reverie_resonance_alert
+             WHERE created_at > :since AND created_at < :until
+             ORDER BY lower(theme_key), violation_count DESC, created_at DESC
+          ) k ORDER BY created_at DESC LIMIT :limit
+        ) d{_title_join('d.theme_key')} ORDER BY d.created_at DESC
     """,
     "crystallization": """
         SELECT crystallization_id, subject, summary, salience, tags, dedupe_key FROM (

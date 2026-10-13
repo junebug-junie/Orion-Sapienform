@@ -117,6 +117,15 @@ arousal held answers `{"status": "held", "reason": "arousal_<level>"}`. An absen
 durable-runs or Redis outage cannot stop Orion sleeping. Forced sleeps and the 6 h
 minimum never read it. Eval: `scripts/analysis/measure_arousal_reader_replay.py`.
 
+### Reverie themes read as titles
+
+Compaction requests and resonance alerts name a reverie theme by its bare open-loop id
+(`open-loop-968fda08910c`). The source queries also fetch the loop's latest human
+description from `attention_salience_trace` (by the indexed `theme_key`), and replay
+text uses it: "Harness closure prediction error: reverie_chain_max_steps". The id stays
+the novelty key, ref and tag, so tiredness is unchanged when a title is reworded. No
+title found -> the id, as before.
+
 ### Every sleep ends in a story
 
 A completed sleep (not `failed`, not `empty`) starts one narrative dream, the kind

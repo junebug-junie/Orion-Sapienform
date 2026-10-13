@@ -224,7 +224,7 @@ def log_fold_result(result: FoldResult, *, emit: bool) -> None:
     plus one per condition event. These lines are what acceptance check 1 (the
     log-only week) is measured from."""
     for ob in result.observations:
-        if not (ob.evaluated or ob.success_count or ob.timeout_count or ob.open_conditions):
+        if not (ob.evaluated or ob.success_count or ob.timeout_count or ob.degraded_count or ob.open_conditions):
             continue
         logger.info("transport_baseline_obs %s", json.dumps(asdict(ob), sort_keys=True))
     for ev in result.events:

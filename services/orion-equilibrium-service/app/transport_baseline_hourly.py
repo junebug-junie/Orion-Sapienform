@@ -57,6 +57,7 @@ class _Bucket:
     windows_evaluated: int = 0
     success_count: int = 0
     timeout_count: int = 0
+    degraded_count: int = 0
     z: list[float] = field(default_factory=list)
     ratio: list[float] = field(default_factory=list)
     calls_sum: float = 0.0
@@ -105,6 +106,7 @@ class TransportBaselineHourly:
             b.windows_seen += 1
             b.success_count += int(ob.success_count or 0)
             b.timeout_count += int(ob.timeout_count or 0)
+            b.degraded_count += int(getattr(ob, "degraded_count", 0) or 0)
             b.calls_sum += float(ob.calls_per_min or 0.0)
             if ob.evaluated:
                 b.windows_evaluated += 1
@@ -150,6 +152,7 @@ class TransportBaselineHourly:
             windows_evaluated=b.windows_evaluated,
             success_count=b.success_count,
             timeout_count=b.timeout_count,
+            degraded_count=b.degraded_count,
             z_p50=_pct(b.z, 0.5),
             z_p90=_pct(b.z, 0.9),
             saturation_ratio_p50=_pct(b.ratio, 0.5),

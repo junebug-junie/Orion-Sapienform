@@ -11,9 +11,33 @@ trigger publishing; this module only folds snapshots and names conditions.
 
 One ``RpcHealthSnapshotV1`` payload (plain dict, so this module does not depend
 on the schema model) carrying ``channel_latency: {hop: {success_count,
-timeout_count, log_ms_sum, log_ms_sumsq, max_ms}}``. State is keyed
+timeout_count, degraded_count, log_ms_sum, log_ms_sumsq, max_ms}}``. State is keyed
 ``(service, instance, hop)``. A snapshot without ``channel_latency`` (an old
 producer) is skipped entirely -- nothing is guessed from the pooled p95.
+
+## Degraded replies are never speed (2026-10-13)
+
+``degraded_count`` counts replies the replying service marked as not its real
+answer (``orion/core/bus/rpc_degraded.py``: a GPU-pool refusal, a canned
+fallback). The producer keeps them out of ``success_count`` and the log sums, so
+they never enter ``fast``, ``level`` or ``floor``. On 2026-10-08 (cabinet-heat GPU
+shed) 263 of 263 ``journal.compose`` calls on cortex-orch's background lane were
+``gpu_pool_unavailable`` refusals answered in ~0.3-1 s; counted as successes they
+dragged that hop's floor 13.9 s -> 1.26 s at the 90 s down half-life and real
+~8 s calls read ~6x "saturated" for days. Here, additionally:
+
+- a pool that saw a degraded reply is tainted (no ``fast`` fold, as with a
+  timeout) and **may not move the floor down**: while the hop is visibly not
+  serving normally, its surviving real calls are not evidence of a new best
+  speed. (Timeouts keep their old floor behaviour -- unchanged here.)
+- a window with degraded replies but no real success breaks the traffic-time
+  chain like an outage (a refusal stream is not latency evidence).
+- degraded replies count as calls in ``calls_per_min`` (they were delivered).
+- they open **no** condition. A degraded reply proves the bus hop delivered and
+  the downstream compute refused -- the GPU pool's domain, observed by
+  ``gpu_pool_events`` -- so naming it a transport timeout/zero_success would be a
+  new false transport trigger, the failure this fixes. Visible instead as
+  ``KeyObservation.degraded_count`` and the hourly row's ``degraded_count``.
 
 ## Per-key state (A1)
 
@@ -300,6 +324,9 @@ class KeyState:
     pend_max_ms: float | None = None
     pend_windows: int = 0
     pend_tainted: bool = False
+    # The pending pool saw a degraded reply: the floor may not move down on it.
+    # Additive (state schema unchanged): absent from an older checkpoint = False.
+    pend_degraded: bool = False
     # spike sustain counter
     hot_streak: int = 0
     # Time this hop carried *successful* traffic since its last latency
@@ -354,6 +381,8 @@ class KeyObservation:
     success_count: int
     timeout_count: int
     open_conditions: tuple[str, ...]
+    # Replies marked degraded this window (never in the latency statistics).
+    degraded_count: int = 0
 
 
 @dataclass
@@ -494,9 +523,10 @@ def _key_state_from_raw(raw: Any, *, from_v2: bool = False) -> KeyState:
         setattr(ks, name, None if v is None else _finite(v))
     for name in _KEY_INTS:
         setattr(ks, name, _strict_int(raw.get(name, 0)))
-    if not isinstance(raw.get("pend_tainted", False), bool):
-        raise ValueError("pend_tainted must be bool")
-    ks.pend_tainted = raw.get("pend_tainted", False)
+    for flag in ("pend_tainted", "pend_degraded"):
+        if not isinstance(raw.get(flag, False), bool):
+            raise ValueError(f"{flag} must be bool")
+        setattr(ks, flag, raw.get(flag, False))
     eps = raw.get("episodes") or {}
     if not isinstance(eps, dict):
         raise ValueError("episodes must be a dict")
@@ -776,8 +806,10 @@ def fold_snapshot(
         ks = state.keys.get(sk)
         success = _as_int(stats.get("success_count"))
         timeouts = _as_int(stats.get("timeout_count"))
+        # Absent from producers that predate it = 0 (no degraded replies known).
+        degraded = _as_int(stats.get("degraded_count"))
         if ks is None:
-            if success == 0 and timeouts == 0:
+            if success == 0 and timeouts == 0 and degraded == 0:
                 continue
             ks = KeyState(service=service, instance=instance, hop=hop)
             state.keys[sk] = ks
@@ -787,19 +819,20 @@ def fold_snapshot(
             continue
         ks.last_window_end = now
         excluded = is_excluded(hop, exclude)
-        if success > 0 or timeouts > 0:
+        if success > 0 or timeouts > 0 or degraded > 0:
             ks.last_seen_ts = now
         if success > 0:
             if ks.last_success_ts and 0 < now - ks.last_success_ts <= config.close_quiet_s:
                 ks.active_s += now - ks.last_success_ts
             ks.last_success_ts = now
-        elif timeouts > 0:
-            # Total loss this window: an outage is not latency evidence, so it
-            # must never be credited as hot (or calm) latency time.
+        elif timeouts > 0 or degraded > 0:
+            # Total loss this window (timeouts), or only refusals/fallbacks
+            # (degraded): neither is latency evidence, so it must never be
+            # credited as hot (or calm) latency time.
             ks.active_s = 0.0
             ks.last_success_ts = 0.0
 
-        calls = success + timeouts
+        calls = success + timeouts + degraded
         calls_per_min = calls / window_min if window_min > 0 else float(calls)
         usual = ks.calls_ewma if ks.calls_count > 0 else None
         max_ms = _as_float(stats.get("max_ms"))
@@ -862,13 +895,17 @@ def fold_snapshot(
             if max_ms is not None:
                 ks.pend_max_ms = max_ms if ks.pend_max_ms is None else max(ks.pend_max_ms, max_ms)
             ks.pend_windows += 1
-            if timeouts > 0:
+            if timeouts > 0 or degraded > 0:
                 ks.pend_tainted = True
+            if degraded > 0:
+                ks.pend_degraded = True
         elif ks.pend_windows:
             ks.pend_windows += 1
-            if timeouts > 0:
-                # a timeout-only window inside a pool still taints it (guard 1)
+            if timeouts > 0 or degraded > 0:
+                # a timeout-/degraded-only window inside a pool still taints it (guard 1)
                 ks.pend_tainted = True
+            if degraded > 0:
+                ks.pend_degraded = True
 
         evaluated = False
         z: float | None = None
@@ -882,6 +919,7 @@ def fold_snapshot(
             wmean_ms = math.exp(m)
             peak = ks.pend_max_ms if ks.pend_max_ms is not None else wmean_ms
             tainted = ks.pend_tainted
+            degraded_pool = ks.pend_degraded
             _reset_pending(ks)
             # Two hot evaluations hours apart are not "sustained".
             if ks.last_eval_ts and (now - ks.last_eval_ts) > config.close_quiet_s:
@@ -948,7 +986,11 @@ def fold_snapshot(
                     math.exp(lv - ks.floor) >= config.saturation_ratio
                     and math.exp(lv) - math.exp(ks.floor) >= config.min_excess_ms
                 )
-                if lv < ks.floor:
+                if lv < ks.floor and degraded_pool:
+                    # The hop was refusing/falling back inside this pool: its
+                    # surviving calls are no evidence of a new best speed.
+                    a = 0.0
+                elif lv < ks.floor:
                     a = _half_life_alpha(dt, config.floor_half_life_down_s)
                 elif "saturation" in ks.episodes or would_saturate:
                     a = 0.0
@@ -1041,6 +1083,7 @@ def fold_snapshot(
                 success_count=success,
                 timeout_count=timeouts,
                 open_conditions=tuple(sorted(ks.episodes)),
+                degraded_count=degraded,
             )
         )
 
@@ -1055,6 +1098,7 @@ def _reset_pending(ks: KeyState) -> None:
     ks.pend_max_ms = None
     ks.pend_windows = 0
     ks.pend_tainted = False
+    ks.pend_degraded = False
 
 
 def _evict(

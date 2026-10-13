@@ -328,6 +328,17 @@ It complements transport health; it cannot replace it.
 Because the EWMA baselines learn each key's own normal, adding a slow hop (the FCC motor, the
 governor) brings no hand-tuned thresholds with it. That is the whole point of A1.
 
+### Addendum 2026-10-13: degraded replies are never speed
+
+Guard 1 assumed a reply is a round trip. It is not when the replier refused or fell back:
+on 2026-10-08 (cabinet-heat GPU shed) 263/263 `journal.compose` calls on
+`cortex-orch -> orion:cortex:exec:request:background` in 15:00-19:00 UTC (and 41/46 at 06:00)
+were `gpu_pool_unavailable` refusals answered in ~1 s, recorded as successes, and the floor
+fell 13.9 s -> 1.26 s. Fix (PR `fix/rpc-health-degraded-calls`): the replying service marks
+the reply (`orion/core/bus/rpc_degraded.py`), the caller counts it in
+`RpcChannelLatencyV1.degraded_count` outside the latency sums, and the reducer never learns
+speed from it (pool tainted, floor may not move down on it, no condition opened).
+
 ## Metric quality gate: per-channel log-latency EWMA (A1/A2)
 
 1. **Provenance.**

@@ -71,7 +71,7 @@ sources:
     requires_corroboration: true
     max_articles_per_day: 8
     fetch_timeout_seconds: 20
-    notes: "Disabled 2026-10-13: npr.org robots.txt disallows Claude-User and the edge resets that agent, so the reader never got an article (17/17 no_read_evidence 10-05..13). Replaced by pbs_newshour_politics / rollcall_politics / csmonitor_usa."
+    notes: "Disabled 2026-10-13: npr.org robots.txt disallows Claude-User and the edge resets that agent, so the reader never got an article (17/17 no_read_evidence 10-05..13). Replaced by pbs_newshour_politics / rollcall_politics."
   - source_id: bbc_world
     name: BBC World RSS
     type: rss
@@ -96,7 +96,7 @@ sources:
     requires_corroboration: true
     max_articles_per_day: 8
     fetch_timeout_seconds: 20
-    notes: "Disabled 2026-10-13: the reading harness WebFetch refuses bbc.co.uk / bbc.com / feeds.bbci.co.uk outright (18/18 no_read_evidence 10-05..13). Replaced by pbs_newshour_world / un_news / csmonitor_world."
+    notes: "Disabled 2026-10-13: the reading harness WebFetch refuses bbc.co.uk / bbc.com / feeds.bbci.co.uk outright (18/18 no_read_evidence 10-05..13). Replaced by pbs_newshour_world / un_news."
   - source_id: utah_governor_news
     name: Utah Governor News RSS
     type: rss
@@ -270,31 +270,6 @@ sources:
     max_articles_per_day: 6
     fetch_timeout_seconds: 20
     notes: "Verified 2026-10-13: robots.txt allows Claude-User; harness WebFetch returned full article text (~1,100 words); feed 10 distinct dated items, 7 within 3 days. Some items are short photo posts."
-  - source_id: csmonitor_usa
-    name: Christian Science Monitor USA RSS
-    type: rss
-    strategy: rss
-    url: https://rss.csmonitor.com/feeds/usa
-    domains: ["www.csmonitor.com", "csmonitor.com"]
-    allowed_path_prefixes: ["/USA/"]
-    categories: ["us_politics"]
-    region_scope: us
-    trust_tier: 2
-    factuality: high
-    enabled: true
-    approved: true
-    required: false
-    allowed_uses:
-      digest: true
-      claim_extraction: true
-      graph_write: true
-      stance_capsule: false
-      prior_update_candidate: true
-    politics_allowed: true
-    requires_corroboration: true
-    max_articles_per_day: 4
-    fetch_timeout_seconds: 20
-    notes: "Verified 2026-10-13: robots.txt allows Claude-User; harness WebFetch returned full article text (~450 words); feed 20 distinct dated items, 2 within 3 days."
   - source_id: pbs_newshour_world
     name: PBS NewsHour World RSS
     type: rss
@@ -345,31 +320,6 @@ sources:
     max_articles_per_day: 6
     fetch_timeout_seconds: 20
     notes: "Verified 2026-10-13: robots.txt allows Claude-User; harness WebFetch returned full article text (~550 words); feed 30 distinct dated items, 12 within 3 days."
-  - source_id: csmonitor_world
-    name: Christian Science Monitor World RSS
-    type: rss
-    strategy: rss
-    url: https://rss.csmonitor.com/feeds/world
-    domains: ["www.csmonitor.com", "csmonitor.com"]
-    allowed_path_prefixes: ["/World/"]
-    categories: ["global_politics"]
-    region_scope: global
-    trust_tier: 2
-    factuality: high
-    enabled: true
-    approved: true
-    required: false
-    allowed_uses:
-      digest: true
-      claim_extraction: true
-      graph_write: true
-      stance_capsule: false
-      prior_update_candidate: true
-    politics_allowed: true
-    requires_corroboration: true
-    max_articles_per_day: 4
-    fetch_timeout_seconds: 20
-    notes: "Verified 2026-10-13: robots.txt allows Claude-User; harness WebFetch returned full article text (~1,800 words); feed 20 distinct dated items, 5 within 3 days."
   - source_id: deseret_politics
     name: Deseret News Politics RSS
     type: rss

@@ -50,8 +50,8 @@ No UA spoofing.
 
 | Section | Kept / added | Dropped (why) |
 |---|---|---|
-| us_politics | PBS NewsHour Politics (~600w, 20/20 fresh), Roll Call (~1,100w, 7/10 fresh, some items are photo posts), CSM USA (~450w) | NPR (robots disallow Claude-User), AP (robots disallow, 403), Reuters (robots disallow, feed 404) |
-| global_politics | PBS NewsHour World (~1,000w), UN News (~550w, 12/30 fresh), CSM World (~1,800w) | BBC (WebFetch refuses domain), DW (WebFetch refuses domain), France24 (robots disallow) |
+| us_politics | PBS NewsHour Politics (~600w, 20/20 fresh), Roll Call (~1,100w, 7/10 fresh, some items are photo posts) | NPR (robots disallow Claude-User), Christian Science Monitor (removed at Juniper's request), AP (robots disallow, 403), Reuters (robots disallow, feed 404) |
+| global_politics | PBS NewsHour World (~1,000w), UN News (~550w, 12/30 fresh) | BBC (WebFetch refuses domain), DW (WebFetch refuses domain), France24 (robots disallow) |
 | local_politics | Utah Governor (kept, readable, but no post in the last 3 days), Deseret Politics (~600w, 10/20 fresh) | Utah News Dispatch (WebFetch 403) |
 | healthcare_mental_health | KFF Health News (~1,450w), STAT (~1,750w), ScienceDaily Mind & Brain (~650w) | WHO (newest item 2026-02-25), CDC newsroom (newest 09-22), NIH (403), MedicalXpress (thin, ~200w), The Conversation (robots disallow) |
 | security | The Record (~400w), BleepingComputer (~330w) | CISA KEV (data file; cisa.gov feeds 403), Krebs (0 fresh in 3 days, not added) |

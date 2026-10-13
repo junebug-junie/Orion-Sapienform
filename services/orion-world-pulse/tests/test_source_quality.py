@@ -91,7 +91,6 @@ def test_to_candidate_rejects_listing_and_data_urls(url):
         # One real article per newly added source (sources.yaml), from the live feeds 2026-10-13.
         "https://www.pbs.org/newshour/politics/what-to-know-about-the-search-of-democratic-rep-omars-home",
         "https://rollcall.com/2026/10/13/house-republicans-open-seats-problem-midterm-elections/",
-        "https://www.csmonitor.com/USA/2026/1013/New-editor-named?icid=rss",
         "https://news.un.org/feed/view/en/story/2026/10/1168583",
         "https://www.deseret.com/politics/2026/10/12/john-curtis-mike-lee-opposite-ends-ukraine-russia-discourse/",
         "https://kffhealthnews.org/elections/online-safety-children-kosa-legislation-unites-democrats-republicans-big-tech/",

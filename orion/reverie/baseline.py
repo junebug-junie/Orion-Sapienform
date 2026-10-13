@@ -91,9 +91,8 @@ def schedule(activity: VisualActivityV1, checkpoint: dict, *, now: datetime, pol
     reason = validate_eligibility(eligibility, now=now, policy=policy)
     if reason:
         return None, state, reason
-    if arousal_level is not None and arousal_level() == "strained":
-        state["next_attempt_not_before"] = (now + timedelta(seconds=policy.retry_sec)).isoformat()
-        return None, state, AROUSAL_STRAINED_REASON
     state["next_attempt_not_before"] = (now + timedelta(seconds=policy.retry_sec)).isoformat()
+    if arousal_level is not None and arousal_level() == "strained":
+        return None, state, AROUSAL_STRAINED_REASON
     state["last_attempt_id"] = f"{eligibility.need_id}:{now.isoformat()}"
     return eligibility, state, "visual_baseline_due"

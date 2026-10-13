@@ -41,8 +41,21 @@ CURIOSITY_FULL_JSON_BUDGET = 9000
 CURIOSITY_WINDOW_DAYS = 90
 CURIOSITY_RUN_ID_PATTERN = r"^[A-Za-z0-9_.:-]{1,64}$"
 
-IntrospectBusOperation = Literal["dreams", "curiosity", "orion_day", "record_correction"]
-IntrospectOperation = Literal["reading_result", "dreams", "curiosity", "orion_day", "record_correction"]
+IntrospectBusOperation = Literal["dreams", "curiosity", "orion_day", "record_correction", "node_history"]
+IntrospectOperation = Literal[
+    "reading_result", "dreams", "curiosity", "orion_day", "record_correction", "node_history",
+]
+
+# node_history: a substrate node's prediction-error readings from
+# substrate_node_prediction_error_history. The writer prunes at
+# SUBSTRATE_PE_HISTORY_RETENTION_HOURS (default 168), so a window reaching
+# further back than that would read as a quiet stretch that is really a pruned
+# one; it is refused instead.
+NODE_HISTORY_MAX_HOURS = 168
+NODE_HISTORY_DEFAULT_HOURS = 24
+NODE_HISTORY_MAX_POINTS = 48
+NODE_HISTORY_TOP_CHANGES = 5
+NODE_ID_PATTERN = r"^node:[A-Za-z0-9_.:-]{1,120}$"
 
 # The day sections of an Orion's Day letter, named as the email headings read
 # (services/orion-hub/scripts/orion_day_email.py). Each maps to the material
@@ -362,3 +375,38 @@ class RecordCorrectionArguments(BaseModel):
         if len(set(self.prior_ids)) != len(self.prior_ids):
             raise ValueError("prior_ids must not repeat")
         return self
+
+
+class NodeHistoryArguments(BaseModel):
+    """Model-supplied arguments for the ``node_history`` tool.
+
+    ``node_id`` given: that node's prediction-error readings over the window ending at
+    ``until`` (default now) and reaching back ``hours``. Omitted: which nodes have readings
+    in the window. The whole window must sit inside the history's retention.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+    node_id: str | None = Field(default=None, pattern=NODE_ID_PATTERN)
+    hours: float = Field(default=NODE_HISTORY_DEFAULT_HOURS, gt=0, le=NODE_HISTORY_MAX_HOURS)
+    until: datetime | None = None
+
+    @field_validator("node_id", mode="before")
+    @classmethod
+    def _strip_node(cls, value: Any) -> Any:
+        return value.strip() if isinstance(value, str) else value
+
+    @model_validator(mode="after")
+    def _window(self):
+        _require_tz(self.until, "until")
+        if self.until is not None:
+            start = self.until - timedelta(hours=self.hours)
+            if start < datetime.now(timezone.utc) - timedelta(hours=NODE_HISTORY_MAX_HOURS):
+                raise ValueError(
+                    f"the window must start within the last {NODE_HISTORY_MAX_HOURS} hours: older "
+                    "readings are pruned, so an earlier window would read as quiet when it is only gone"
+                )
+        return self
+
+    def window(self, now: datetime) -> tuple[datetime, datetime]:
+        end = min(self.until, now) if self.until is not None else now
+        return end - timedelta(hours=self.hours), end

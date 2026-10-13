@@ -27,3 +27,18 @@ def test_sparse_hop_replay_states_one_regime_shift_instead_of_absorbing():
     reports = run_sparse()
     failed = [(r["hop"], r["spacing"], k) for r in reports for k, ok in r["checks"].items() if not ok]
     assert not failed, reports
+
+
+def test_gpu_shed_replay_degraded_refusals_never_drop_the_floor():
+    """2026-10-13: the 2026-10-08 GPU shed replayed from stored counts (see
+    run_transport_baseline_degraded_shed_replay.py). The control must reproduce the
+    live collapse, or the fixed run's pass would prove nothing."""
+    from run_transport_baseline_degraded_shed_replay import REAL_AFTER_MS, replay
+
+    control = replay(refused_as_success=True)
+    fixed = replay(refused_as_success=False)
+    assert control["floor_at_2026-10-08T19:00_ms"] < 2500, control
+    assert fixed["floor_min_ms"] >= 0.8 * REAL_AFTER_MS, fixed
+    assert not fixed["events"], fixed
+    assert fixed["degraded_counted"] == fixed["refusals_in_fixture"] > 0, fixed
+    assert 0.8 <= fixed["ratio_median_after_shed"] <= 1.3, fixed

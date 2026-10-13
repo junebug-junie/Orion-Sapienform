@@ -259,6 +259,29 @@ async def test_rpc_request_worker_path_records_a_marked_reply_as_degraded() -> N
     bus._rpc_worker_task.cancel()
 
 
+@pytest.mark.asyncio
+async def test_rpc_request_worker_path_never_leaks_a_stashed_reply() -> None:
+    """A reply can land (stashed for classification) and the call still fail before it
+    is read -- here the publish raises after the reply arrived. The stash must not grow."""
+    bus = OrionBusAsync("redis://unused:6379/0")
+    bus._rpc_worker_task = asyncio.get_running_loop().create_future()
+    bus._rpc_subscribe = AsyncMock()
+    bus.rpc_release_reply_channel = AsyncMock()
+    codec = OrionCodec()
+
+    async def _publish(channel: str, env: BaseEnvelope) -> None:
+        reply = _env().model_copy(update={"correlation_id": env.correlation_id})
+        await bus._handle_rpc_result({"channel": env.reply_to.encode(), "data": codec.encode(reply)})
+        raise RuntimeError("publish failed after the reply landed")
+
+    bus.publish = _publish  # type: ignore[assignment]
+    req = BaseEnvelope(kind="k", source=SRC, reply_to="orion:r", payload={})
+    with pytest.raises(RuntimeError):
+        await bus.rpc_request("orion:bg", req, reply_channel="orion:r", timeout_sec=1.0)
+    assert bus._rpc_reply_envelopes == {}
+    bus._rpc_worker_task.cancel()
+
+
 class _InlinePubSub:
     def __init__(self) -> None:
         self.queue: asyncio.Queue = asyncio.Queue()

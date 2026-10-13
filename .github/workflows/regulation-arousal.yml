@@ -14,6 +14,8 @@ on:
       - "orion/schemas/registry.py"
       - "orion/autonomy/cabinet_heat.py"
       - "tests/test_regulation_arousal.py"
+      - "tests/test_regulation_immune.py"
+      - "orion/field/channel_glossary.py"
       - "scripts/analysis/measure_arousal_reducer_replay.py"
       - "scripts/analysis/tests/test_measure_arousal_reducer_replay.py"
       - "scripts/check_env_key_single_source.py"
@@ -36,11 +38,11 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install
-        run: python -m pip install -r services/orion-sql-writer/requirements.txt pytest pytest-asyncio
+        run: python -m pip install -r services/orion-sql-writer/requirements.txt pytest pytest-asyncio pyyaml
       - name: Reducer, Juniper-turn rule, schema registry
         env:
           PYTHONPATH: ${{ github.workspace }}
-        run: python -m pytest -q -p no:cacheprovider tests/test_regulation_arousal.py
+        run: python -m pytest -q -p no:cacheprovider tests/test_regulation_arousal.py tests/test_regulation_immune.py
       - name: Shipped-reducer replay eval
         env:
           PYTHONPATH: ${{ github.workspace }}

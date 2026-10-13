@@ -133,7 +133,8 @@ class FakeConn:
     """Serves canned rows keyed by the exact SQL constant gather sends. Records every call."""
 
     def __init__(self, *, fail: set[str] | None = None, github: dict | None = None, chat: dict | None = CHAT_COMPACTOR,
-                 corrections: list[dict] | None = None, temporal_day: dict | None = None):
+                 corrections: list[dict] | None = None, temporal_day: dict | None = None,
+                 immune: list[dict] | None = None):
         self.calls: list[tuple[str, tuple]] = []
         self.fail = fail or set()
         self.fetch_map = {
@@ -150,6 +151,8 @@ class FakeConn:
             gather.REVERIE_CHAINS_SQL: ("reverie_chains", REVERIE_CHAINS),
             gather.VISUAL_REVERIES_SQL: ("visual_reveries", VISUAL_REVERIES),
             gather.CORRECTIONS_SQL: ("corrections", corrections or []),
+            # R4 immune findings for the closed day: payload_json rows from temporal_self_event.
+            gather.TEMPORAL_DAY_IMMUNE_SQL: ("temporal_day_immune", [{"payload_json": p} for p in immune or []]),
         }
         self.github = github
         self.chat = chat

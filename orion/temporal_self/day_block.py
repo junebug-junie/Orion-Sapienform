@@ -9,13 +9,19 @@ citations resolve later without the full day record.
 Closed days are frozen (Juniper, 2026-10-11): rows that arrive after the close (memory episodes
 run ~13 h late, image attempts ~90 min) are not in the record, and the first line says the
 record is as it stood at close.
+
+``immune_findings`` (Temporal Self R4): the day's ``immune_finding`` rows from
+``temporal_self_event`` (payloads written by the regulation step's immune sweep,
+``orion.regulation.immune``), recorded before the close. Each renders as one plain sentence naming
+the gauge, what was wrong with it and when; at most ``MAX_IMMUNE_LINES``, then "and N more".
+None or empty renders nothing.
 """
 
 from __future__ import annotations
 
 from collections import Counter, defaultdict
 from datetime import datetime
-from typing import Any
+from typing import Any, Mapping, Sequence
 from zoneinfo import ZoneInfo
 
 from orion.schemas.temporal_self import (
@@ -29,6 +35,9 @@ from orion.temporal_self.stance_cue import span_words
 
 TOP_ATTENTION = 5
 MAX_CURIOSITY_LINES = 10
+MAX_IMMUNE_LINES = 5
+IMMUNE_KIND_WORDS = {"constant": "constant", "floor_locked": "floor-locked", "replayed": "replayed",
+                     "decayed_to_zero": "decayed to zero"}
 KIND_ORDER = ("attention", "conversation", "curiosity", "sleep", "imagery", "concern", "reverie", "interoception")
 
 
@@ -51,6 +60,32 @@ def _arc_record(arc: TemporalSelfArcV1) -> dict[str, Any]:
     }
 
 
+def _gauge_name(node: str, channel: str) -> str:
+    """``node:substrate.route`` + ``prediction_error`` -> ``route prediction error``."""
+    short = node.rsplit(":", 1)[-1]
+    short = short[len("substrate."):] if short.startswith("substrate.") else short
+    return f"{short} {channel.replace('_', ' ')}".strip()
+
+
+def _immune_rows(raw: Sequence[Mapping[str, Any]] | None) -> list[dict[str, Any]]:
+    """Valid finding payloads, oldest window first. A malformed row is dropped, never invented."""
+    out = []
+    for r in raw or ():
+        if not isinstance(r, Mapping):
+            continue
+        try:
+            start = datetime.fromisoformat(str(r["window_start"]))
+            end = datetime.fromisoformat(str(r["window_end"]))
+            kind, node, channel = str(r["kind"]), str(r["node"]), str(r["channel"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if start.tzinfo is None or end.tzinfo is None or kind not in IMMUNE_KIND_WORDS:
+            continue
+        out.append({"metric_id": str(r.get("metric_id") or f"{node}.{channel}"), "node": node, "channel": channel,
+                    "kind": kind, "start": start, "end": end})
+    return sorted(out, key=lambda x: (x["start"], x["metric_id"], x["kind"]))
+
+
 def _plural(n: int, word: str) -> str:
     return f"{n} {word}{'' if n == 1 else 's'}"
 
@@ -60,6 +95,7 @@ def render_closed_day_block(
     *,
     tz_name: str = DEFAULT_TZ,
     max_chars: int = DAY_BLOCK_MAX_CHARS,
+    immune_findings: Sequence[Mapping[str, Any]] | None = None,
 ) -> TemporalSelfDayBlockV1 | None:
     """The block, or None when there is no closed day (missing renders nothing, never a placeholder)."""
     if day is None:
@@ -182,6 +218,14 @@ def render_closed_day_block(
     if day_warnings:
         lines.append((1, "Instrument warnings: " + " | ".join(day_warnings) + "."))
 
+    immune = _immune_rows(immune_findings)
+    for f in immune[:MAX_IMMUNE_LINES]:
+        lines.append((1, f"My {_gauge_name(f['node'], f['channel'])} gauge looked stuck "
+                         f"({IMMUNE_KIND_WORDS[f['kind']]}) from {_clock(f['start'], day.day_id, tz)} "
+                         f"to {_clock(f['end'], day.day_id, tz)} {day_ref}."))
+    if len(immune) > MAX_IMMUNE_LINES:
+        lines.append((1, f"And {len(immune) - MAX_IMMUNE_LINES} more stuck gauges {day_ref}."))
+
     kept = list(lines)
     dropped = 0
     while len("\n".join(t for _, t in kept)) > max_chars and len(kept) > 1:
@@ -206,6 +250,8 @@ def render_closed_day_block(
         "expectations_pending": len(frame.expectations_pending),
         "constraint_event_ids": len(frame.constraint_event_ids) + frame.constraint_overflow,
         "warnings": list(frame.warnings),
+        "immune_findings": [{"metric_id": f["metric_id"], "kind": f["kind"], "window_start": f["start"].isoformat(),
+                             "window_end": f["end"].isoformat()} for f in immune],
         "attention_groups": {k: v for k, (line, v) in sorted(group_totals.items()) if line in text.splitlines()},
     }
     return TemporalSelfDayBlockV1(

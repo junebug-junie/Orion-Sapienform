@@ -18,6 +18,7 @@ from urllib.parse import urlsplit
 
 from orion.schemas.reading import SourceFetchEvidenceV1
 from orion.world_pulse_read.documents import SNAPSHOT_TOOL, is_document_ref
+from orion.world_pulse_read.fetch_provenance import fetch_http_error_status
 from orion.world_pulse_read.url_filters import url_looks_like_section_index
 
 # last_error labels. Plain `no_read_evidence` is terminal (the model ran and
@@ -33,12 +34,20 @@ NO_READ_EVIDENCE_UNREPORTED = "no_read_evidence:harness_unreported"
 # is the fetch tool's answer to a prompt the reader wrote, so a short one may
 # be a narrow question rather than an empty page).
 NO_READ_EVIDENCE_THIN = "no_read_evidence:thin_fetch"
+# Every fetch of the seed's site came back as the fetch tool's own HTTP error
+# notice ("The server returned HTTP 404 Not Found." -- fetch_provenance.py).
+# Terminal: the page is gone or refused. Live 2026-10-13: three guessed
+# CoreWeave URLs were marked `done` on exactly that 215-char notice.
+NO_READ_EVIDENCE_HTTP_ERROR = "no_read_evidence:http_error"
 
 # Floor on the tool_result text the model received. A WebFetch result is the
 # fetch tool's own multi-sentence digest of the page; refusal/blocked strings
 # ("Request failed with status code 403", "Unable to fetch ...") are well under
-# this. UNVERIFIED against live WebFetch bodies (raw steps are not persisted);
-# every accepted/rejected fetch logs its content_chars so this can be checked.
+# this. Checked 2026-10-13 against the 74 retained live WebFetch texts: size
+# does NOT separate pages from errors -- real CoreWeave digests ran 139-208
+# chars while WebFetch's HTTP error notice is 215-223 chars. The floor stays as
+# a backstop for rows without retained text; the error notice is caught by its
+# status line instead (is_http_error_fetch below, fetch_provenance.py).
 MIN_SOURCE_CONTENT_CHARS = 200
 
 
@@ -118,8 +127,15 @@ def source_read_evidence(
     return [
         f
         for f in source_page_candidates(seed_url, fetches)
-        if f.content_chars >= MIN_SOURCE_CONTENT_CHARS
+        if f.content_chars >= MIN_SOURCE_CONTENT_CHARS and not is_http_error_fetch(f)
     ]
+
+
+def is_http_error_fetch(fetch: SourceFetchEvidenceV1) -> bool:
+    """The tool_result was the fetch tool's HTTP error notice, not the page.
+    Decidable only when the harness carried the text (every reading turn does,
+    ``reading_only`` -> ``retain_text``); a row without text is judged by size."""
+    return fetch_http_error_status(fetch.tool_name, fetch.content_text) is not None
 
 
 def no_evidence_reason(
@@ -128,6 +144,9 @@ def no_evidence_reason(
     """last_error label for a turn with no read evidence."""
     if fetches is None:
         return NO_READ_EVIDENCE_UNREPORTED
-    if source_page_candidates(seed_url, fetches):
+    candidates = source_page_candidates(seed_url, fetches)
+    if any(is_http_error_fetch(f) for f in candidates):
+        return NO_READ_EVIDENCE_HTTP_ERROR
+    if candidates:
         return NO_READ_EVIDENCE_THIN
     return NO_READ_EVIDENCE

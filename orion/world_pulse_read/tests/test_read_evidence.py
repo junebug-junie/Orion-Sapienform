@@ -98,3 +98,19 @@ def test_reading_status_reports_stage2_skip_as_skipped():
     status = asyncio.run(reading_status(_Conn(), rid))
     assert status["status"] == "skipped"
     assert status["error"] == "no_read_evidence"
+
+
+def test_http_error_notice_is_not_evidence_and_is_labeled():
+    from orion.world_pulse_read.read_evidence import NO_READ_EVIDENCE_HTTP_ERROR
+
+    notice = ("The server returned HTTP 404 Not Found.\n\nThe response body was not retrieved. "
+              "If this URL requires authentication, use an authenticated tool (e.g. `gh` for "
+              "GitHub, or an MCP-provided fetch tool) instead of WebFetch.")
+    url = "https://www.coreweave.com/infrastructure"
+    dead = SourceFetchEvidenceV1(url=url, tool_name="WebFetch", content_chars=len(notice), content_text=notice)
+    assert dead.content_chars >= MIN_SOURCE_CONTENT_CHARS  # why the size floor missed it
+    assert source_read_evidence(url, [dead]) == []
+    assert no_evidence_reason(url, [dead]) == NO_READ_EVIDENCE_HTTP_ERROR
+    assert not is_transient_failure(NO_READ_EVIDENCE_HTTP_ERROR)
+    page = SourceFetchEvidenceV1(url=url, tool_name="WebFetch", content_chars=202, content_text="x" * 202)
+    assert source_read_evidence(url, [dead, page]) == [page]

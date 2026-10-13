@@ -143,4 +143,7 @@ class ReadingQueueFakeMixin:
     async def fetch(self, sql, *args):
         if "SET landing_at = now()" in sql:
             return []
+        if "FROM reading_document_snapshot WHERE sha256 = ANY" in sql:
+            snaps = self.__dict__.get("snapshots", {})
+            return [{"sha256": sha, "content": snaps[sha]["content"]} for sha in args[0] if sha in snaps]
         return await super().fetch(sql, *args)

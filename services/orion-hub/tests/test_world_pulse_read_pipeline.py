@@ -1408,3 +1408,62 @@ def test_stage1_prompt_no_longer_asks_the_model_for_created_at() -> None:
     contract = _stage1_json_contract("tr-1")
     assert '"created_at":' not in contract
     assert "created_at are set server-side" in contract
+
+
+# --- Dead pages (live 2026-10-13). WebFetch answered three guessed CoreWeave
+# URLs with this exact 215-char notice and each seed was marked `done`; the
+# same day a real CoreWeave digest was only 202 chars, so size cannot tell them
+# apart. The tool's own status line can.
+
+_LIVE_404_NOTICE = (
+    "The server returned HTTP 404 Not Found.\n\nThe response body was not retrieved. "
+    "If this URL requires authentication, use an authenticated tool (e.g. `gh` for "
+    "GitHub, or an MCP-provided fetch tool) instead of WebFetch."
+)
+_LIVE_202_CHAR_PAGE = (
+    "CoreWeave offers bare-metal NVIDIA GPUs (Blackwell, H200, H100) for AI "
+    "training/inference. GB200 NVL72 provides 4x higher training performance vs "
+    "H100 and supports 130 kW rack power with liquid cooling."
+)
+
+
+def test_http_404_notice_is_failed_with_no_nodes_or_journal(monkeypatch: pytest.MonkeyPatch) -> None:
+    assert len(_LIVE_404_NOTICE) == 215
+    bus = _FakeBus()
+    conn = _FakeConn()
+    store = InMemorySubstrateGraphStore()
+    pipe = _pipeline(bus, conn, store, max_attempts=3)
+    dead = {"url": "https://ex.com/a", "tool_name": "WebFetch",
+            "content_chars": len(_LIVE_404_NOTICE), "content_text": _LIVE_404_NOTICE}
+    _patch_turn(monkeypatch, [_final_frame(
+        "CoreWeave publishes infrastructure information.",
+        fetches=[dead], concept_candidates=[{"label": "CoreWeave infrastructure"}],
+    )])
+
+    assert _tick(pipe, conn) == "no_read_evidence"
+    row = conn.rows["finding:r1:x"]
+    assert row["status"] == "failed"  # terminal, not retried
+    assert row["last_error"] == "no_read_evidence:http_error"
+    assert row.get("handoff_json") is None
+    assert store.snapshot().nodes == {}
+    assert bus.journal == []
+    assert getattr(conn, "snapshots", {}) == {}  # the notice is not retained as page text
+
+
+def test_short_real_page_still_counts(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The 202-char CoreWeave digest that was a genuine read stays `done`."""
+    assert len(_LIVE_202_CHAR_PAGE) == 202
+    bus = _FakeBus()
+    conn = _FakeConn()
+    pipe = _pipeline(bus, conn, InMemorySubstrateGraphStore())
+    page = {"url": "https://ex.com/a", "tool_name": "WebFetch",
+            "content_chars": len(_LIVE_202_CHAR_PAGE), "content_text": _LIVE_202_CHAR_PAGE}
+    dead = {"url": "https://ex.com/a/old", "tool_name": "WebFetch",
+            "content_chars": len(_LIVE_404_NOTICE), "content_text": _LIVE_404_NOTICE}
+    _patch_turn(monkeypatch, [_final_frame("GB200 NVL72 is 4x H100 for training.", fetches=[dead, page])])
+
+    assert _tick(pipe, conn) is None
+    row = conn.rows["finding:r1:x"]
+    assert row["status"] == "done"
+    (evidence,) = row["handoff_json"]["read_evidence"]
+    assert evidence["content_chars"] == 202

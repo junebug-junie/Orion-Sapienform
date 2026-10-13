@@ -80,9 +80,10 @@ from orion.world_pulse_read.queue import (
 )
 from orion.world_pulse_read.retry import is_refused_before_work
 from orion.world_pulse_read.fetch_provenance import (
-    fetch_http_error_status,
     hop_allowlist,
     hop_refusal_reason,
+    parent_read_state,
+    reached_pages,
 )
 from orion.world_pulse_read.read_evidence import NO_READ_EVIDENCE, NO_READ_EVIDENCE_HTTP_ERROR
 from orion.world_pulse_read.wallet_a import (
@@ -144,8 +145,8 @@ class GenerateOutcome(NamedTuple):
 class ParentRead(NamedTuple):
     """What the Stage 1 read behind this handoff actually retained."""
 
-    texts: list[str]  # retained fetch texts that are pages, not HTTP error notices
-    dead: bool  # every retained text was an HTTP error notice and none is unretained
+    texts: list[tuple[str, str]]  # (page url, retained text) -- pages, not HTTP error notices
+    dead: bool  # see fetch_provenance.parent_read_state
 
 
 def _reason_from_non_final_frame(frames: list[Any]) -> str:
@@ -352,6 +353,10 @@ class WorldPulseReadStage2Pipeline:
         self._stop = asyncio.Event()
         self.last_round_trips: int = 0
         self._stage2_fetches: list[SourceFetchEvidenceV1] = []
+        # Refused Stage 1 re-entries by reason, since process start (like
+        # unknown_keys_dropped_total). Each refusal is logged with its URL; the stored
+        # stage2_result_json keeps the model's need_stage1_urls as asked.
+        self.hops_refused_total: dict[str, int] = {}
         # Running count of unknown top-level keys dropped from model output
         # (each is also a WARNING log line naming the keys).
         self.unknown_keys_dropped_total: int = 0
@@ -595,6 +600,7 @@ class WorldPulseReadStage2Pipeline:
 
         result.request = request_for_seed(claim.seed)
         allowed = self._hop_allowlist(parent)
+        hops_refused: list[dict[str, str]] = []
         round_trips = 0
         for url in result.need_stage1_urls:
             refused = hop_refusal_reason(url, allowed)
@@ -606,6 +612,8 @@ class WorldPulseReadStage2Pipeline:
                     "world_pulse_read_stage2_reentry_refused reason=%s seed=%s url=%s",
                     refused, claim.seed.seed_id, url,
                 )
+                self.hops_refused_total[refused] = self.hops_refused_total.get(refused, 0) + 1
+                hops_refused.append({"url": url, "reason": refused})
                 continue
             if round_trips >= self.max_round_trips:
                 logger.info(
@@ -632,6 +640,11 @@ class WorldPulseReadStage2Pipeline:
             round_trips += 1
         self.last_round_trips = round_trips
         result.round_trips = round_trips
+        if hops_refused:
+            logger.info(
+                "world_pulse_read_stage2_hops seed=%s asked=%d refused=%d followed=%d",
+                claim.seed.seed_id, len(result.need_stage1_urls), len(hops_refused), round_trips,
+            )
         result = await self._record_claims(claim.seed.seed_id, result)
 
         try:
@@ -882,25 +895,15 @@ class WorldPulseReadStage2Pipeline:
             logger.warning("world_pulse_read_stage2_parent_text_unavailable seed=%s",
                            handoff.seed_ref.seed_id, exc_info=True)
             return ParentRead(texts=[], dead=False)
-        tool_by_sha = {e.content_sha256: e.tool_name for e in evidence if e.content_sha256}
-        texts = [r.text for r in rows
-                 if fetch_http_error_status(tool_by_sha.get(r.sha256, ""), r.text) is None]
-        unretained = any(not e.content_sha256 for e in evidence)
-        return ParentRead(texts=texts, dead=bool(rows) and not texts and not unretained)
+        texts, dead = parent_read_state(evidence, rows)
+        return ParentRead(texts=texts, dead=dead)
 
     def _hop_allowlist(self, parent: ParentRead) -> set[str]:
         """URLs Stage 1 re-entry may follow: links written in the parent's retained
         text or in the Stage 2 turn's own fetch results, plus URLs a Stage 2 fetch
         reached with a page (not an HTTP error notice)."""
-        texts = list(parent.texts)
-        reached: list[str] = []
-        for f in self._stage2_fetches:
-            if fetch_http_error_status(f.tool_name, f.content_text) is not None:
-                continue
-            reached.append(f.url)
-            if f.content_text:
-                texts.append(f.content_text)
-        return hop_allowlist(texts, reached)
+        reached, texts = reached_pages(self._stage2_fetches)
+        return hop_allowlist([*parent.texts, *texts], reached)
 
     async def _reenter_stage1(
         self, url: str, *, parent_seed: WorldPulseReadSeedV1

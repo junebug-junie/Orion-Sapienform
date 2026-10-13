@@ -10,9 +10,9 @@ import pytest
 
 from orion.schemas.reading import SourceFetchEvidenceV1
 from orion.world_pulse_read.fetch_provenance import (
-    fetch_http_error_status,
     hop_allowlist,
     hop_refusal_reason,
+    reached_pages,
 )
 from orion.world_pulse_read.read_evidence import no_evidence_reason, source_read_evidence
 
@@ -60,9 +60,9 @@ def test_live_guessed_coreweave_hops_are_refused(hop: str) -> None:
     # Parent finding:5ecbce82-...: its only retained text is the 202-char digest,
     # and its Stage 2 turn's own fetches of these URLs were all 404 notices.
     stage2_404s = [_fetch(hop, NOTICE_404)]
-    reached = [f.url for f in stage2_404s if fetch_http_error_status(f.tool_name, f.content_text) is None]
-    assert reached == []  # a 404 is not "reached"
-    allow = hop_allowlist([COREWEAVE_202], reached)
+    reached, texts = reached_pages(stage2_404s)  # what Stage 2's _hop_allowlist calls
+    assert reached == [] and texts == []  # a 404 is not "reached"
+    allow = hop_allowlist([COREWEAVE_202, *texts], reached)
     assert hop_refusal_reason(hop, allow) == "url_not_in_fetched_content"
 
 

@@ -114,3 +114,14 @@ def test_http_error_notice_is_not_evidence_and_is_labeled():
     assert not is_transient_failure(NO_READ_EVIDENCE_HTTP_ERROR)
     page = SourceFetchEvidenceV1(url=url, tool_name="WebFetch", content_chars=202, content_text="x" * 202)
     assert source_read_evidence(url, [dead, page]) == [page]
+
+
+def test_a_404_sibling_does_not_relabel_a_thin_real_page():
+    notice = "The server returned HTTP 404 Not Found.\n\nThe response body was not retrieved."
+    url = "https://ex.com/a"
+    fetches = [
+        SourceFetchEvidenceV1(url="https://ex.com/a/guess", tool_name="WebFetch",
+                              content_chars=len(notice), content_text=notice),
+        SourceFetchEvidenceV1(url=url, tool_name="WebFetch", content_chars=150, content_text="x" * 150),
+    ]
+    assert no_evidence_reason(url, fetches) == NO_READ_EVIDENCE_THIN

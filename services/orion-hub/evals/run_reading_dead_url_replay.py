@@ -30,9 +30,10 @@ from collections import Counter
 
 from orion.schemas.reading import SourceFetchEvidenceV1
 from orion.world_pulse_read.fetch_provenance import (
-    fetch_http_error_status,
     hop_allowlist,
     hop_refusal_reason,
+    parent_read_state,
+    reached_pages,
 )
 from orion.world_pulse_read.fetch_text import load_retained_texts
 from orion.world_pulse_read.read_evidence import (
@@ -141,17 +142,13 @@ async def main() -> int:
             parents += 1
             handoff = _obj(s["handoff_json"])
             evidence = parse_source_fetches(handoff.get("read_evidence")) or []
-            texts = await _texts_by_sha(conn, evidence)
-            tool = {e.content_sha256: e.tool_name for e in evidence if e.content_sha256}
-            page_texts = [t for sha, t in texts.items() if fetch_http_error_status(tool.get(sha, ""), t) is None]
-            dead = bool(texts) and not page_texts and not any(not e.content_sha256 for e in evidence)
-            reached = []
-            for f in traces.get(s["stage2_trace_id"]) or []:
-                if fetch_http_error_status(f.tool_name, f.content_text) is None:
-                    reached.append(f.url)
-                    if f.content_text:
-                        page_texts.append(f.content_text)
+            rows = await load_retained_texts(conn, evidence, drop_http_errors=False)
+            # The same functions Stage 2 calls (world_pulse_read_stage2._parent_read/_hop_allowlist).
+            parent_pages, dead = parent_read_state(evidence, rows)
+            reached, stage2_pages = reached_pages(traces.get(s["stage2_trace_id"]) or [])
+            page_texts = [*parent_pages, *stage2_pages]
             allow = hop_allowlist(page_texts, reached)
+            texts = rows
             # Nothing retained to look for links in (reads before 2026-10-11): the
             # live gate refuses these, but the replay cannot say they were invented.
             judgeable = bool(page_texts) or dead

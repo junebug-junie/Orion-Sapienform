@@ -145,7 +145,7 @@ def no_evidence_reason(
     if fetches is None:
         return NO_READ_EVIDENCE_UNREPORTED
     candidates = source_page_candidates(seed_url, fetches)
-    if any(is_http_error_fetch(f) for f in candidates):
+    if candidates and all(is_http_error_fetch(f) for f in candidates):
         return NO_READ_EVIDENCE_HTTP_ERROR
     if candidates:
         return NO_READ_EVIDENCE_THIN

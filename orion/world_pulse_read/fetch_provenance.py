@@ -27,9 +27,10 @@ Two deterministic rules, both decided from tool-trace text, never model prose:
 
 from __future__ import annotations
 
+import html
 import re
-from typing import Iterable, Optional
-from urllib.parse import urlsplit
+from typing import Any, Iterable, Optional, Sequence
+from urllib.parse import unquote, urljoin, urlsplit
 
 # Anchored at the start of the tool_result: a page that merely *quotes* this
 # sentence further down is still a page.
@@ -83,16 +84,26 @@ _BARE = re.compile(
 )
 
 
-def urls_in_text(text: Optional[str]) -> list[str]:
-    """http(s) URLs written in ``text`` (absolute, or ``host.tld/path`` read as
-    https), in order, deduplicated."""
+# A root-relative link target in markdown or HTML: ``](/docs/x)``, ``href="/paper"``.
+_RELATIVE = re.compile(r"(?:\]\(|href=[\"'])(/[^\s)\"'<>]*)", re.IGNORECASE)
+
+
+def urls_in_text(text: Optional[str], base_url: Optional[str] = None) -> list[str]:
+    """http(s) URLs written in ``text`` (absolute, ``host.tld/path`` read as https,
+    and -- given the fetched page's ``base_url`` -- root-relative link targets),
+    in order, deduplicated. Bare ``host.tld/path`` can also match a file-name-like
+    token (``llama.cpp/server``); that only widens the allowlist by a URL that was
+    literally written in fetched text."""
     if not text:
         return []
+    text = html.unescape(text)
     out: list[str] = []
     seen: set[str] = set()
     found = [m.group(0) for m in _URL.finditer(text)]
     stripped = _URL.sub(" ", text)
     found += ["https://" + m.group(1) for m in _BARE.finditer(stripped)]
+    if base_url and hop_url_key(base_url):
+        found += [urljoin(base_url, m.group(1)) for m in _RELATIVE.finditer(text)]
     for raw in found:
         url = _trim(raw)
         if url and url not in seen:
@@ -108,25 +119,29 @@ def hop_url_key(url: str) -> Optional[str]:
     try:
         parts = urlsplit(str(url or "").strip())
         host = (parts.hostname or "").lower().rstrip(".")
-        port = f":{parts.port}" if parts.port else ""
+        port = f":{parts.port}" if parts.port and parts.port not in (80, 443) else ""
     except ValueError:
         return None
     if parts.scheme.lower() not in ("http", "https") or not host:
         return None
     if host.startswith("www."):
         host = host[4:]
-    path = parts.path.rstrip("/") or "/"
+    path = unquote(parts.path).rstrip("/") or "/"
     query = f"?{parts.query}" if parts.query else ""
     # http and https name the same page for this purpose.
     return f"{host}{port}{path}{query}"
 
 
-def hop_allowlist(texts: Iterable[str], fetched_urls: Iterable[str] = ()) -> set[str]:
-    """Keys of every URL Orion actually saw: links written in fetched text, plus
-    URLs a fetch reached with real content (not a status notice)."""
+def hop_allowlist(
+    texts: Iterable[str | tuple[Optional[str], str]], fetched_urls: Iterable[str] = ()
+) -> set[str]:
+    """Keys of every URL Orion actually saw: links written in fetched text (each
+    item a text, or ``(page_url, text)`` so relative links resolve), plus URLs a
+    fetch reached with real content (not a status notice)."""
     keys: set[str] = set()
-    for text in texts:
-        for url in urls_in_text(text):
+    for item in texts:
+        base, text = item if isinstance(item, tuple) else (None, item)
+        for url in urls_in_text(text, base):
             key = hop_url_key(url)
             if key:
                 keys.add(key)
@@ -148,3 +163,34 @@ def hop_refusal_reason(url: str, allowlist: set[str]) -> Optional[str]:
     if key is None or key not in allowlist:
         return HOP_REFUSED_NOT_IN_FETCHED_CONTENT
     return None
+
+
+def reached_pages(fetches: Iterable[Any]) -> tuple[list[str], list[tuple[str, str]]]:
+    """A turn's fetches (``SourceFetchEvidenceV1``) that returned a page, not an
+    HTTP error notice: ``(urls reached, [(url, text)] for those carrying text)``."""
+    urls: list[str] = []
+    texts: list[tuple[str, str]] = []
+    for f in fetches:
+        if fetch_http_error_status(f.tool_name, f.content_text) is not None:
+            continue
+        urls.append(f.url)
+        if f.content_text:
+            texts.append((f.url, f.content_text))
+    return urls, texts
+
+
+def parent_read_state(
+    evidence: Sequence[Any], rows: Sequence[Any]
+) -> tuple[list[tuple[str, str]], bool]:
+    """Stage 1 evidence (``SourceFetchEvidenceV1``) and its retained rows
+    (``RetainedTextV1``, loaded with notices kept) -> ``([(url, page text)], dead)``.
+
+    Dead only when every evidence row is retained, every distinct text loaded,
+    and every one is an HTTP error notice. A missing or hash-failed text is
+    "unknown", never "dead": that costs hops, not a whole Stage 2 pass."""
+    tool_by_sha = {e.content_sha256: e.tool_name for e in evidence if e.content_sha256}
+    pages = [(r.url, r.text) for r in rows
+             if fetch_http_error_status(tool_by_sha.get(r.sha256, ""), r.text) is None]
+    all_retained = bool(evidence) and all(e.content_sha256 for e in evidence)
+    all_loaded = {r.sha256 for r in rows} == set(tool_by_sha)
+    return pages, bool(rows) and all_retained and all_loaded and not pages

@@ -1332,3 +1332,38 @@ def test_hop_from_a_dead_parent_read_is_never_attempted() -> None:
     assert row["stage2_error"] == "no_read_evidence:http_error"
     assert not [r for r in conn.rows.values() if r["url"] == "https://ex.com/a/more"]
     assert bus.redis.store.get(_count_key_b()) in (None, "0")  # no Wallet B debit
+
+
+def test_stage2_turn_fetches_reach_the_hop_gate_through_the_real_pass() -> None:
+    """The production _stage2_pass -> _generate path carries the turn's own fetches
+    (ReadingTurnResultV1.source_fetches) to the hop gate; no test-side injection."""
+    import json as _json
+
+    conn = _FakeConn()
+    pipe = _pipeline(_FakeBus(), conn)
+    handoff = _retained_parent(conn, _seed(), "A real page about packaging costs. " * 8)
+    body = {"summary": "Priors updated.", "need_stage1_urls": ["https://ex.com/linked", "https://ex.com/guessed"]}
+    linked = SourceFetchEvidenceV1(url="https://ex.com/related", tool_name="WebFetch", content_chars=400,
+                                   content_text="Further reading: https://ex.com/linked " * 5)
+
+    async def _generate(prompt, correlation_id, *, seed_id, retrieval_query=None):
+        return GenerateOutcome("```json\n" + _json.dumps(body) + "\n```", None, None,
+                               source_fetches=[linked])
+
+    pipe._generate = _generate  # type: ignore[method-assign]
+    tried: list[str] = []
+
+    async def _reenter(url, *, parent_seed):
+        tried.append(url)
+        return None
+
+    pipe._reenter_stage1 = _reenter  # type: ignore[method-assign]
+
+    async def _run():
+        await enqueue_seeds(conn, [handoff.seed_ref])
+        await mark_seed_done(conn, handoff.seed_ref.seed_id, trace_id="tr-pipeline-1", handoff=handoff)
+        return await pipe.tick(force=True)
+
+    assert asyncio.run(_run()) is None
+    assert tried == ["https://ex.com/linked"]
+    assert pipe.hops_refused_total == {"url_not_in_fetched_content": 1}

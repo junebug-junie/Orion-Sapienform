@@ -317,6 +317,8 @@ channels:
     semantics:
       value_kind: level
       rest: "0.0 = at least one camera delivered a frame in the last 15 s."
+      # rest_range live 2026-10-13: 41048 rows (24h to 2026-10-13, substrate_field_state node_vectors), 100% exact 0.0, max 0.0 (7d: 0 non-zero since the channel appeared 2026-10-10); the pinned-at-1.0 failure is outside
+      rest_range: [0.0, 0.0]
       sparsity: per_tick
       absent_means: "dropped (unmeasured) after 300 s without a reading; 1.0 (not absent) when the router itself is silent for 180 s."
 
@@ -330,6 +332,8 @@ channels:
     semantics:
       value_kind: level
       rest: "0.0 = every frame dispatched in the last 10 minutes came back usable, or fewer than 2 failed."
+      # rest_range live 2026-10-13: 41048 rows (24h to 2026-10-13, substrate_field_state node_vectors), 100% exact 0.0, max 0.0 (7d: never non-zero since 2026-10-10)
+      rest_range: [0.0, 0.0]
       sparsity: event_gated
       absent_means: "absent when nothing was dispatched; dropped (unmeasured) after 300 s without a reading."
 
@@ -374,6 +378,8 @@ channels:
     semantics:
       value_kind: level
       rest: "about 0.01-0.03: a few edges are always over |z| 3. 0.0 means no edge anomalous OR no live edges at all (an empty mesh reads calm)."
+      # rest_range live 2026-10-13: p05 0.0099, p50 0.0299, p95 0.0725, max 0.18, 0.18% exact 0 over 41048 rows (24h to 2026-10-13, substrate_field_state node_vectors); kept at the prose 0.03 top, not widened to p95; the historic ~0.27 floor is outside
+      rest_range: [0.0, 0.03]
       sparsity: per_tick
       absent_means: "carried forward in node_vectors (prediction_error is not a decayed or expiring channel, services/orion-field-digester/app/digestion/decay.py); the self-model drops the domain after 1800 s without a fresh observed_at (orion/substrate/prediction_error_freshness.py:26)."
       prompt_sites:
@@ -441,6 +447,8 @@ channels:
     semantics:
       value_kind: trigger
       rest: "0.0 = not elevated, or elevated but not rising >= 0.5 C in 15 min. Mostly zero by design (97% live)."
+      # rest_range live 2026-10-13: 1975 rows (substrate_node_prediction_error_history), 100% exact 0.0 over 24h; 98.4% over 7d, max 1.0
+      rest_range: [0.0, 0.0]
       sparsity: designed_sparse
       absent_means: "when the thermal reading is 'unknown' (older than the 300 s grace) the tick writes nothing and the node keeps its last value (worker.py:1434)."
 
@@ -461,6 +469,8 @@ channels:
     semantics:
       value_kind: level
       rest: "0.0 = at or below this stream's usual surprise. Also 0.0 while the baseline is still warming (fewer than 2 surprise samples) and when the frame is stale -- so 0 here does NOT prove the camera is working; node:substrate.vision_organ's vision_frame_staleness carries that."
+      # rest_range live 2026-10-13: 61.4% exact 0.0, p50 0.0, p95 0.357, max 1.0 over 41048 rows (24h to 2026-10-13, substrate_field_state node_vectors)
+      rest_range: [0.0, 0.0]
       sparsity: designed_sparse
       absent_means: "written as 0.0 every tick rather than dropped; nothing written until 15 s after process start before the first embedding arrives."
 
@@ -483,6 +493,8 @@ channels:
     semantics:
       value_kind: level
       rest: "0.0 = change at or below its usual (negative z clipped), or no baseline yet. Mostly zero by design (72% live)."
+      # rest_range live 2026-10-13: 90.0% exact 0.0, p50 0.0, p95 0.397, max 1.0 over 41048 rows (24h to 2026-10-13, substrate_field_state node_vectors); 77% in substrate_node_prediction_error_history
+      rest_range: [0.0, 0.0]
       sparsity: designed_sparse
       absent_means: "only written when a batch carried execution events; between batches the last value is carried forward in node_vectors, and the self-model drops the domain after 1800 s."
       prompt_sites:
@@ -505,6 +517,8 @@ channels:
     semantics:
       value_kind: level
       rest: "0.0 = at or below the usual turn-to-turn movement, or no baseline yet. Mostly zero by design (69% live)."
+      # rest_range live 2026-10-13: 89.0% exact 0.0, p50 0.0, p95 0.726, max 1.0 over 41048 rows (24h to 2026-10-13, substrate_field_state node_vectors); 71% in substrate_node_prediction_error_history
+      rest_range: [0.0, 0.0]
       sparsity: designed_sparse
       absent_means: "only written when chat turns were touched; carried forward in node_vectors between turns, dropped from the self-model after 1800 s."
 
@@ -525,6 +539,8 @@ channels:
     semantics:
       value_kind: level
       rest: "0.0 = no sub-domain above its usual. Mostly zero by design (91% live)."
+      # rest_range live 2026-10-13: 91.5% exact 0.0, p50 0.0, p95 0.118, max 1.0 over 41048 rows (24h to 2026-10-13, substrate_field_state node_vectors)
+      rest_range: [0.0, 0.0]
       sparsity: designed_sparse
       absent_means: "only written on a codebase delta event; carried forward in node_vectors between events."
 
@@ -547,6 +563,8 @@ channels:
     semantics:
       value_kind: count
       rest: "0.0 = routing made the same decision as last time (or no decided run this batch). Mostly zero by design (87% live)."
+      # rest_range live 2026-10-13: 67.6% exact 0.0 (76% in substrate_node_prediction_error_history), 3 distinct values, p95 0.5, max 0.5 over 41048 rows (24h to 2026-10-13, substrate_field_state node_vectors)
+      rest_range: [0.0, 0.0]
       sparsity: designed_sparse
       absent_means: "only written when routing runs were touched; carried forward in node_vectors, dropped from the self-model after 1800 s."
 
@@ -568,6 +586,8 @@ channels:
     semantics:
       value_kind: level
       rest: "about 0.02-0.03 (sensor jitter); 0.0 = nothing moved at all."
+      # rest_range live 2026-10-13: p05 0.0003, p50 0.0176, p95 0.0755, max 0.24, 0.53% exact 0 over 41048 rows (24h to 2026-10-13, substrate_field_state node_vectors); median sits below the prose 0.02 floor, band kept at the prose 0.03 top
+      rest_range: [0.0, 0.03]
       sparsity: per_tick
       absent_means: "carried forward in node_vectors between biometrics samples; dropped from the self-model after 1800 s."
       prompt_sites:

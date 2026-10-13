@@ -96,6 +96,9 @@ class MetricNode:
     sparsity: str | None = None
     absent_means: str | None = None
     polarity: str | None = None
+    # Machine-readable calm band [lo, hi] (orion.metrics.semantics); a tuple
+    # so the node stays hashable/frozen. Ordered, never sorted.
+    rest_range: tuple[float, float] | None = None
     # `module:callable` sites that render this number into an Orion LLM
     # prompt. Non-empty means the prompt gate requires value_kind/rest/
     # sparsity (orion.metrics.semantics.check_node_semantics).
@@ -193,6 +196,7 @@ def resolve_field_channels(path: Path | None = None) -> list[MetricNode]:
                 declared_consumers=tuple(entry.get("consumers") or ()),
                 value_kind=sem.value_kind,
                 rest=sem.rest,
+                rest_range=sem.rest_range,
                 sparsity=sem.sparsity,
                 absent_means=sem.absent_means,
                 polarity=derived_channel_polarity(channel, sem.value_kind),
@@ -251,6 +255,7 @@ def _semantic_kwargs(sem: Any) -> dict[str, Any]:
     return {
         "value_kind": sem.value_kind,
         "rest": sem.rest,
+        "rest_range": sem.rest_range,
         "sparsity": sem.sparsity,
         "absent_means": sem.absent_means,
         "polarity": sem.polarity,
@@ -532,6 +537,7 @@ def to_dict(node: MetricNode) -> dict[str, Any]:
         "notes": node.notes,
         "value_kind": node.value_kind,
         "rest": node.rest,
+        "rest_range": list(node.rest_range) if node.rest_range is not None else None,
         "sparsity": node.sparsity,
         "absent_means": node.absent_means,
         "polarity": node.polarity,

@@ -17,6 +17,12 @@ Fields
 ------
 value_kind   what shape the number has (see VALUE_KINDS)
 rest         the designed resting value, and what 0 means
+rest_range   optional machine-readable band [lo, hi] (finite, lo <= hi) that a
+             genuinely calm reading falls inside, so a runtime sweep can test
+             a value against rest instead of a sentence. Chosen from `rest`
+             and checked against live data; never widened to fit data that
+             contradicts the prose. Not allowed on a `placeholder` (it has no
+             designed rest). Not required by the prompt gate.
 sparsity     how often a real reading is expected (see SPARSITIES)
 absent_means what happens when there is no reading at all
 polarity     field channels: DERIVED from
@@ -35,6 +41,7 @@ prompt_sites the `module:callable` sites that put this number into an Orion
 """
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import Any, Iterable, Mapping
 
@@ -110,7 +117,31 @@ DECLARABLE_FIELDS: tuple[str, ...] = (
     "sparsity",
     "absent_means",
     "polarity",
+    "rest_range",
 )
+
+
+def rest_range_problem(value: Any, value_kind: str | None = None) -> str | None:
+    """Why `value` is not a valid rest_range, or None if it is (or is absent).
+
+    Valid: a 2-element list/tuple of finite real numbers (bool excluded) with
+    lo <= hi, on any value_kind except `placeholder`.
+    """
+    if value is None:
+        return None
+    if value_kind == "placeholder":
+        return "rest_range on a placeholder: a placeholder has no designed rest"
+    if not isinstance(value, (list, tuple)) or len(value) != 2:
+        return f"rest_range must be a 2-element [lo, hi] list, got {value!r}"
+    for bound in value:
+        if isinstance(bound, bool) or not isinstance(bound, (int, float)):
+            return f"rest_range bounds must be numbers, got {value!r}"
+        if not math.isfinite(bound):
+            return f"rest_range bounds must be finite, got {value!r}"
+    lo, hi = value
+    if lo > hi:
+        return f"rest_range lo > hi: {value!r}"
+    return None
 
 
 @dataclass(frozen=True)
@@ -127,6 +158,7 @@ class MetricSemantics:
     absent_means: str | None = None
     polarity: str | None = None
     prompt_sites: tuple[str, ...] = ()
+    rest_range: tuple[float, float] | None = None
 
     @classmethod
     def from_mapping(cls, raw: Mapping[str, Any] | None) -> "MetricSemantics":
@@ -134,6 +166,10 @@ class MetricSemantics:
         unknown = set(raw) - set(DECLARABLE_FIELDS) - {"prompt_sites"}
         if unknown:
             raise ValueError(f"unknown semantics keys: {sorted(unknown)}")
+        rest_range = raw.get("rest_range")
+        problem = rest_range_problem(rest_range, raw.get("value_kind"))
+        if problem:
+            raise ValueError(problem)
         return cls(
             value_kind=raw.get("value_kind"),
             rest=raw.get("rest"),
@@ -141,6 +177,11 @@ class MetricSemantics:
             absent_means=raw.get("absent_means"),
             polarity=raw.get("polarity"),
             prompt_sites=tuple(raw.get("prompt_sites") or ()),
+            rest_range=(
+                (float(rest_range[0]), float(rest_range[1]))
+                if rest_range is not None
+                else None
+            ),
         )
 
 
@@ -205,7 +246,8 @@ def check_prompt_inventory(
 def check_node_semantics(nodes: Iterable[Any]) -> list[str]:
     """Gate over resolved MetricNodes. Returns failure lines (empty = pass).
 
-    1. Any declared value_kind / sparsity / polarity must be a known value.
+    1. Any declared value_kind / sparsity / polarity must be a known value,
+       and any rest_range must pass rest_range_problem().
     2. A node with prompt_sites must carry every REQUIRED_FOR_PROMPT field.
     3. Every prompt site must be a checkable `module:callable` claim (the
        existence half is checked by orion.metrics.gate, which already knows
@@ -222,6 +264,9 @@ def check_node_semantics(nodes: Iterable[Any]) -> list[str]:
             failures.append(f"{urn}: sparsity {node.sparsity!r} not in {sorted(SPARSITIES)}")
         if node.polarity is not None and node.polarity not in POLARITIES:
             failures.append(f"{urn}: polarity {node.polarity!r} not in {sorted(POLARITIES)}")
+        problem = rest_range_problem(getattr(node, "rest_range", None), node.value_kind)
+        if problem:
+            failures.append(f"{urn}: {problem}")
         if not node.prompt_sites:
             continue
         missing = [f for f in REQUIRED_FOR_PROMPT if not _is_text(getattr(node, f, None))]

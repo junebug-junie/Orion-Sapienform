@@ -2,10 +2,19 @@
   "_comment": "Definition lock for scripts/check_definition_drift.py. Generated, never hand-edited. Regenerate with --update; the resulting diff IS the definition-change alert. Unlike the *_baseline.json ratchets this tracks current truth in both directions -- a definition change is an event, not a defect.",
   "metric_count": 728,
   "_last_change": {
-    "change_count": 1,
-    "high_severity_count": 1,
+    "change_count": 10,
+    "high_severity_count": 10,
     "changes": [
-      "high   semantics_changed metric://inner_state/orion-equilibrium-service/transport_baseline_hourly.v1#floor_ms (rest: \u2026re-seeds it. -> \u2026re-seeds it. Built from real round trips only: replies the \u2026)"
+      "high   semantics_changed metric://field_channel/orion-field-digester/node:substrate.bus_synaptic.prediction_error (rest_range: - -> [0.0, 0.03])",
+      "high   semantics_changed metric://field_channel/orion-field-digester/vision_frame_staleness (rest_range: - -> [0.0, 0.0])",
+      "high   semantics_changed metric://field_channel/orion-field-digester/vision_processing_failure_pressure (rest_range: - -> [0.0, 0.0])",
+      "high   semantics_changed metric://field_channel/orion-substrate-runtime/node:substrate.biometrics.prediction_error (rest_range: - -> [0.0, 0.03])",
+      "high   semantics_changed metric://field_channel/orion-substrate-runtime/node:substrate.cabinet.prediction_error (rest_range: - -> [0.0, 0.0])",
+      "high   semantics_changed metric://field_channel/orion-substrate-runtime/node:substrate.chat.prediction_error (rest_range: - -> [0.0, 0.0])",
+      "high   semantics_changed metric://field_channel/orion-substrate-runtime/node:substrate.codebase.prediction_error (rest_range: - -> [0.0, 0.0])",
+      "high   semantics_changed metric://field_channel/orion-substrate-runtime/node:substrate.execution.prediction_error (rest_range: - -> [0.0, 0.0])",
+      "high   semantics_changed metric://field_channel/orion-substrate-runtime/node:substrate.perception.prediction_error (rest_range: - -> [0.0, 0.0])",
+      "high   semantics_changed metric://field_channel/orion-substrate-runtime/node:substrate.route.prediction_error (rest_range: - -> [0.0, 0.0])"
     ]
   },
   "definitions": {
@@ -4278,6 +4287,10 @@
       "meaning": "Fraction of live bus-synaptic edges currently anomalous (|z| >= 3.0) -- mesh-wide transport health, not a single-organ fault signal.",
       "value_kind": "level",
       "rest": "about 0.01-0.03: a few edges are always over |z| 3. 0.0 means no edge anomalous OR no live edges at all (an empty mesh reads calm).",
+      "rest_range": [
+        0.0,
+        0.03
+      ],
       "sparsity": "per_tick",
       "absent_means": "carried forward in node_vectors (prediction_error is not a decayed or expiring channel, services/orion-field-digester/app/digestion/decay.py); the self-model drops the domain after 1800 s without a fresh observed_at (orion/substrate/prediction_error_freshness.py:26).",
       "polarity": "higher_is_worse",
@@ -4394,6 +4407,10 @@
       "meaning": "Can Orion see at all, on node:substrate.vision_organ: staleness of the freshest camera stream the vision frame router reports (0.0 while any camera's newest frame is under 15 s old, ramping to 1.0 at 60 s). A configured camera that has sent nothing since the router started is aged from that start, never read as calm. 1.0 when no camera delivers or the router stops reporting for 180 s (written on a clock). Per-camera status lives on the vision organ projection. Dropped (unmeasured) when no reading has arrived for 300 s.",
       "value_kind": "level",
       "rest": "0.0 = at least one camera delivered a frame in the last 15 s.",
+      "rest_range": [
+        0.0,
+        0.0
+      ],
       "sparsity": "per_tick",
       "absent_means": "dropped (unmeasured) after 300 s without a reading; 1.0 (not absent) when the router itself is silent for 180 s.",
       "notes": "category=sensor_trust_liveness level=node",
@@ -4403,6 +4420,10 @@
       "meaning": "Share of the frames the vision frame router handed to the vision host over the last 10 minutes that came back without a usable answer (timeout, invalid reply, ok=false), failures / max(attempts, 10), counted once 2+ failures are in the span; the worse of the pooled share and the worst single camera's. Absent when nothing was dispatched; dropped (unmeasured) when no reading has arrived for 300 s.",
       "value_kind": "level",
       "rest": "0.0 = every frame dispatched in the last 10 minutes came back usable, or fewer than 2 failed.",
+      "rest_range": [
+        0.0,
+        0.0
+      ],
       "sparsity": "event_gated",
       "absent_means": "absent when nothing was dispatched; dropped (unmeasured) after 300 s without a reading.",
       "notes": "category=task_execution level=node",
@@ -4417,6 +4438,10 @@
       "meaning": "How much the machines' pressure readings moved since the last sample: mean absolute change across pressure hints, 0.30 of change = 1.0 (a fixed scale, not versus its own history).",
       "value_kind": "level",
       "rest": "about 0.02-0.03 (sensor jitter); 0.0 = nothing moved at all.",
+      "rest_range": [
+        0.0,
+        0.03
+      ],
       "sparsity": "per_tick",
       "absent_means": "carried forward in node_vectors between biometrics samples; dropped from the self-model after 1800 s.",
       "polarity": "higher_is_worse",
@@ -4435,6 +4460,10 @@
       "meaning": "TRIGGER: cabinet is warming unexpectedly -- fires only while the cabinet thermal state is 'elevated' (never while 'hot') and the temperature rose at least 0.5 C in the last 15 minutes; value is rise/1.0 C, so 0.5-1.0 when it fires. FalkorDB node only; not in FieldStateV1 node_vectors.",
       "value_kind": "trigger",
       "rest": "0.0 = not elevated, or elevated but not rising >= 0.5 C in 15 min. Mostly zero by design (97% live).",
+      "rest_range": [
+        0.0,
+        0.0
+      ],
       "sparsity": "designed_sparse",
       "absent_means": "when the thermal reading is 'unknown' (older than the 300 s grace) the tick writes nothing and the node keeps its last value (worker.py:1434).",
       "declared_consumers": [
@@ -4447,6 +4476,10 @@
       "meaning": "How much more the chat's load and repair pressure moved on the turns touched this batch than they usually move: clipped z-score versus its own running average, 3 sigma = 1.0.",
       "value_kind": "level",
       "rest": "0.0 = at or below the usual turn-to-turn movement, or no baseline yet. Mostly zero by design (69% live).",
+      "rest_range": [
+        0.0,
+        0.0
+      ],
       "sparsity": "designed_sparse",
       "absent_means": "only written when chat turns were touched; carried forward in node_vectors between turns, dropped from the self-model after 1800 s.",
       "polarity": "higher_is_worse",
@@ -4461,6 +4494,10 @@
       "meaning": "How unusual the latest codebase change event (git, PR, graph) was versus each source's own history: mean clipped z-score across the sub-domains, 3 sigma = 1.0.",
       "value_kind": "level",
       "rest": "0.0 = no sub-domain above its usual. Mostly zero by design (91% live).",
+      "rest_range": [
+        0.0,
+        0.0
+      ],
       "sparsity": "designed_sparse",
       "absent_means": "only written on a codebase delta event; carried forward in node_vectors between events.",
       "polarity": "higher_is_worse",
@@ -4474,6 +4511,10 @@
       "meaning": "How much more execution pressure changed this batch than it usually does: z-score of the mean change in 4 execution pressure hints versus its own running average, negatives clipped, 3 sigma = 1.0.",
       "value_kind": "level",
       "rest": "0.0 = change at or below its usual (negative z clipped), or no baseline yet. Mostly zero by design (72% live).",
+      "rest_range": [
+        0.0,
+        0.0
+      ],
       "sparsity": "designed_sparse",
       "absent_means": "only written when a batch carried execution events; between batches the last value is carried forward in node_vectors, and the self-model drops the domain after 1800 s.",
       "polarity": "higher_is_worse",
@@ -4506,6 +4547,10 @@
       "meaning": "How surprising the camera scene is versus that stream's own recent normal: embedding distance from its running average, z-scored against its own history, negatives clipped, 3 sigma = 1.0.",
       "value_kind": "level",
       "rest": "0.0 = at or below this stream's usual surprise. Also 0.0 while the baseline is still warming (fewer than 2 surprise samples) and when the frame is stale -- so 0 here does NOT prove the camera is working; node:substrate.vision_organ's vision_frame_staleness carries that.",
+      "rest_range": [
+        0.0,
+        0.0
+      ],
       "sparsity": "designed_sparse",
       "absent_means": "written as 0.0 every tick rather than dropped; nothing written until 15 s after process start before the first embedding arrives.",
       "polarity": "higher_is_worse",
@@ -4519,6 +4564,10 @@
       "meaning": "COUNT: how many of the 4 routing decisions (lane, lane reason, output mode, mind requested) changed versus the previous decided run, as a share (0, 0.25, 0.5, 0.75, 1); averaged when a batch holds several runs.",
       "value_kind": "count",
       "rest": "0.0 = routing made the same decision as last time (or no decided run this batch). Mostly zero by design (87% live).",
+      "rest_range": [
+        0.0,
+        0.0
+      ],
       "sparsity": "designed_sparse",
       "absent_means": "only written when routing runs were touched; carried forward in node_vectors, dropped from the self-model after 1800 s.",
       "polarity": "higher_is_worse",

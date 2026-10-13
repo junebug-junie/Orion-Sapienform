@@ -220,6 +220,6 @@ Expect, after a shed or any refusal: `[rpc] reply degraded corr_id=... reason=gp
 
 ## PR link
 
-PR_LINK_PLACEHOLDER
+https://github.com/junebug-junie/Orion-Sapienform/pull/2640
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

@@ -13,6 +13,7 @@ from typing import Any
 from orion.dream import introspect_sql
 from orion.orion_day import gather
 from orion.world_pulse_read import introspect as wp_introspect
+from orion.world_pulse_read import findings as wp_findings
 
 LETTER_DATE = date(2026, 9, 29)
 T0 = datetime(2026, 9, 29, 12, 0, tzinfo=timezone.utc)  # inside the Denver day
@@ -63,6 +64,20 @@ READING_ROWS = [
                                                      "content_chars": 5000}]}),
      "stage2_result_json": json.dumps({"summary": "GGUF quants load through transformers now. " * 60}),
      "trace_id": None, "stage2_trace_id": None, "why_now": "Relevant to my own serving stack."},
+]
+# Reading findings (orion/world_pulse_read/findings.py): one accepted, projected link on the
+# GGUF read. Prior moves are empty by default; tests plant them with a fake prior lookup.
+READ_LINK_ROWS = [
+    {"seed_id": "reading:07d283a9", "stage2_completed_at": _t(62),
+     "claim": json.dumps({
+         "subject_id": "sub-concept-wp-read-aaaa", "predicate": "associated_with",
+         "object_id": "sub-concept-bbbb",
+         "statement_text": "GGUF quantization is now loadable by the transformers library.",
+         "quote": "transformers can now load GGUF quantized checkpoints directly",
+         "receipt": {"outcome": "accepted_provisional", "reason": "accepted",
+                     "assertion_id": "assertion-11112222", "decision_id": "reading-dec-1",
+                     "content_sha256": "f00d", "span_start": 10, "span_end": 70}}),
+     "latest_state": "provisional", "projected_at": _t(62)},
 ]
 READING_JOURNALS = [
     {"entry_id": "8c62d21d", "created_at": _t(64), "title": "Transformers now runs llama.cpp quants",
@@ -133,7 +148,8 @@ class FakeConn:
     """Serves canned rows keyed by the exact SQL constant gather sends. Records every call."""
 
     def __init__(self, *, fail: set[str] | None = None, github: dict | None = None, chat: dict | None = CHAT_COMPACTOR,
-                 corrections: list[dict] | None = None, temporal_day: dict | None = None):
+                 corrections: list[dict] | None = None, temporal_day: dict | None = None,
+                 read_links: list[dict] | None = None, prior_moves: list[dict] | None = None):
         self.calls: list[tuple[str, tuple]] = []
         self.fail = fail or set()
         self.fetch_map = {
@@ -150,6 +166,8 @@ class FakeConn:
             gather.REVERIE_CHAINS_SQL: ("reverie_chains", REVERIE_CHAINS),
             gather.VISUAL_REVERIES_SQL: ("visual_reveries", VISUAL_REVERIES),
             gather.CORRECTIONS_SQL: ("corrections", corrections or []),
+            wp_findings.READ_LINKS_SQL: ("reading_findings", READ_LINK_ROWS if read_links is None else read_links),
+            wp_findings.RUN_PRIOR_MOVES_SQL: ("reading_findings", prior_moves or []),
         }
         self.github = github
         self.chat = chat

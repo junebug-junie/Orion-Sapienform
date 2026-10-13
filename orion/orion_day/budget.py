@@ -35,6 +35,7 @@ from orion.schemas.orion_day import (
     OrionDayCorrectionV1,
     OrionDayLlmViewV1,
     OrionDayMaterialV1,
+    ReadingItemV1,
     ReverieThoughtV1,
 )
 
@@ -120,6 +121,20 @@ def _correction_parts(c: OrionDayCorrectionV1) -> list:
     ]
 
 
+def reading_change_lines(r: ReadingItemV1, material: OrionDayMaterialV1) -> list[str]:
+    """What one read changed, as record-built lines (orion/world_pulse_read/findings.py). Never
+    claims "no belief moved" when the belief check could not run: that names the gap instead."""
+    if r.findings:
+        return [f.headline for f in r.findings]
+    beliefs = material.sources.get("reading_beliefs")
+    if beliefs is not None and beliefs.status == "error":
+        return [f"no link accepted; beliefs not checked ({beliefs.error})"]
+    findings_src = material.sources.get("reading_findings")
+    if findings_src is not None and findings_src.status == "error":
+        return ["not checked (the findings read failed)"]
+    return ["no link accepted, no belief moved"]
+
+
 def _full_text_blocks(material: OrionDayMaterialV1) -> list[tuple[str, list]]:
     """(section heading, [str | _Body, ...]) in render order. _Body parts are clippable."""
     sections: list[tuple[str, list]] = []
@@ -164,8 +179,10 @@ def _full_text_blocks(material: OrionDayMaterialV1) -> list[tuple[str, list]]:
         f"### [reading:{r.seed_id}] {r.title or r.url or 'Reading'}",
         f"Source: {r.url or 'unknown'}. Status: {r.reading_status or 'unknown'}."
         + (f" Why I picked it: {r.why_now}" if r.why_now else ""),
+        *([f"What the piece says: {r.article_summary}"] if r.article_summary else []),
         "What I learned:" if r.learned else "What I learned: (nothing recorded)",
         *([_Body(r.learned)] if r.learned else []),
+        *[f"What it changed: {line}" for line in reading_change_lines(r, material)],
     ] for r in material.readings]
     readings += [[f"### [reading_journal:{j.entry_id}] {j.title or 'Reading journal'}", _Body(j.body)]
                  for j in material.reading_journals]

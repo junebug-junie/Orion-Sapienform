@@ -940,6 +940,24 @@ class Settings(BaseSettings):
     HUB_CURIOSITY_OUTREACH_ENABLED: bool = Field(
         default=True, alias="HUB_CURIOSITY_OUTREACH_ENABLED"
     )
+    # Orion tells Juniper when a read changed them (scripts/reading_finding_outreach.py): a link a
+    # read made (accepted + projected) or a belief a curiosity run moved while citing the read. One
+    # message per read, through the endogenous outreach path; no daily cap / cooldown for this kind
+    # (Juniper 2026-10-13), quiet hours / turn-in-flight / recent-chat still apply.
+    HUB_READING_FINDING_OUTREACH_ENABLED: bool = Field(
+        default=True, alias="HUB_READING_FINDING_OUTREACH_ENABLED"
+    )
+    HUB_READING_FINDING_OUTREACH_TICK_SEC: float = Field(
+        default=300.0, alias="HUB_READING_FINDING_OUTREACH_TICK_SEC"
+    )
+    # Reads that landed within this many hours are watched for new findings.
+    HUB_READING_FINDING_OUTREACH_LOOKBACK_HOURS: float = Field(
+        default=48.0, alias="HUB_READING_FINDING_OUTREACH_LOOKBACK_HOURS"
+    )
+    # Composition failures (empty generation, ungrounded-signal refusal) before a finding is dropped.
+    HUB_READING_FINDING_OUTREACH_MAX_ATTEMPTS: int = Field(
+        default=3, alias="HUB_READING_FINDING_OUTREACH_MAX_ATTEMPTS"
+    )
     # Orion contractor peer (HelpRequest -> Cursor/Claude PeerBrief soft-nudge
     # on kickoff / self-inquiry). On by default (matches .env_example and
     # production, aligned 2026-10-10) — kill switch for the peer

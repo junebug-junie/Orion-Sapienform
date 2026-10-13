@@ -54,6 +54,28 @@
 </table>
 </td></tr>
 
+{% if what_i_read %}
+{#- Compact, record-built: Orion's own take (first sentences of the stored read) and what the
+    read changed (orion/world_pulse_read/findings.py). Full texts are under "Readings" below. -#}
+{{ heading("What I read") }}
+<tr><td style="padding:0 28px 8px 28px;" data-section="what-i-read">
+<ul style="margin:8px 0 12px 0;padding-left:22px;">
+{% for r in what_i_read %}
+{% if r.empty %}
+<li style="margin:0 0 8px 0;color:{{ muted }};">{{ r.title }}: nothing came of this read ({{ r.unchanged_line }}).</li>
+{% else %}
+<li style="margin:0 0 10px 0;"><strong>{% if r.href %}<a href="{{ r.href }}" style="color:#2f5fb3;">{{ r.title }}</a>{% else %}{{ r.title }}{% endif %}</strong>
+<br><span style="font-size:14px;"><em>What the piece says:</em> {% if r.article %}{{ r.article }}{% else %}<span style="color:{{ muted }};">(no summary of the piece was recorded)</span>{% endif %}</span>
+{% if r.take %}<br><span style="font-size:14px;"><em>What I took from it:</em> {{ r.take }}</span>{% endif %}
+{% for c in r.changes %}<br><span style="font-size:14px;"><strong>{{ c.headline }}</strong>{% if c.evidence %} <span style="color:{{ muted }};">&ldquo;{{ c.evidence }}&rdquo;</span>{% endif %}</span>{% endfor %}
+{% if r.unchanged_line %}<br><span style="font-size:13px;color:{{ muted }};">Changed: {{ r.unchanged_line }}.</span>{% endif %}
+</li>
+{% endif %}
+{% endfor %}
+</ul>
+</td></tr>
+{% endif %}
+
 <tr><td style="padding:26px 28px 0 28px;">
 <p style="margin:0;font-size:12px;letter-spacing:2px;text-transform:uppercase;color:{{ muted }};">What the day held</p>
 </td></tr>

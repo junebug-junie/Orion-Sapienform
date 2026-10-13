@@ -32,10 +32,11 @@ from zoneinfo import ZoneInfo
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 from markupsafe import Markup
 
-from orion.orion_day.budget import correction_outcome_text
+from orion.orion_day.budget import correction_outcome_text, reading_change_lines
 from orion.orion_day.letter_parts import LetterPart, split_carry, split_note
 from orion.schemas.notify import NotificationAttachment, NotificationRequest
 from orion.schemas.orion_day import OrionDayLetterV1, VisualReverieV1
+from orion.world_pulse_read.findings import first_sentences
 
 logger = logging.getLogger("orion-hub.orion_day_email")
 
@@ -287,6 +288,26 @@ def reverie_counts(letter: OrionDayLetterV1) -> dict[str, Any]:
     }
 
 
+def what_i_read(material: Any) -> list[dict[str, Any]]:
+    """The compact "What I read" section: per read, what the piece says (Stage 2's stored
+    ``article_summary``), Orion's own take (the first sentences of the stored Stage 2 / Stage 1
+    text, verbatim) and what the read changed (record-built lines). A read that left none of those
+    gets one line, not padding."""
+    out = []
+    for r in material.readings:
+        title = r.title or r.url or "Reading"
+        take = first_sentences(r.learned, 2)
+        changes = [{"headline": f.headline, "evidence": f.evidence_text} for f in r.findings]
+        out.append({
+            "title": title, "url": r.url,
+            "href": r.url if (r.url or "").lower().startswith(("http://", "https://")) else None,
+            "article": r.article_summary, "take": take, "changes": changes,
+            "unchanged_line": None if changes else reading_change_lines(r, material)[0],
+            "empty": not r.article_summary and not take and not changes,
+        })
+    return out
+
+
 def build_context(letter: OrionDayLetterV1, images: list[InlineImage]) -> dict[str, Any]:
     m = letter.material
     tz = ZoneInfo(m.timezone)
@@ -330,6 +351,7 @@ def build_context(letter: OrionDayLetterV1, images: list[InlineImage]) -> dict[s
         "self_sense": [{"question": a.question, "answer": markdown_to_html(a.answer_text),
                         "self_label": a.self_label_score, "grounded": a.grounded_record_score,
                         "when": _local(a.created_at, tz)} for a in m.self_sense],
+        "what_i_read": what_i_read(m),
         "readings": [{"title": r.title or r.url or "Reading", "url": r.url, "why_now": r.why_now,
                       "href": r.url if (r.url or "").lower().startswith(("http://", "https://")) else None,
                       "status": r.reading_status or "unknown", "when": _local(r.occurred_at, tz),
@@ -394,8 +416,24 @@ def render_text(letter: OrionDayLetterV1, images: list[InlineImage]) -> str:
         numbered_text(split_carry(letter.carry_forward_md)).strip(),
         "",
         "---",
-        "# What the day held",
     ]
+    reads = what_i_read(m)
+    if reads:
+        out += ["## What I read", ""]
+        for r in reads:
+            if r["empty"]:
+                out.append(f"- {r['title']}: nothing came of this read ({r['unchanged_line']}).")
+                continue
+            out.append(f"- {r['title']}" + (f" ({r['url']})" if r["url"] and r["url"] != r["title"] else ""))
+            out.append(f"  What the piece says: {r['article'] or '(no summary of the piece was recorded)'}")
+            if r["take"]:
+                out.append(f"  What I took from it: {r['take']}")
+            for c in r["changes"]:
+                out.append(f"  {c['headline']}" + (f" Evidence: \"{c['evidence']}\"" if c["evidence"] else ""))
+            if r["unchanged_line"]:
+                out.append(f"  Changed: {r['unchanged_line']}.")
+        out += ["", "---"]
+    out += ["# What the day held"]
     if m.curiosity_runs or m.curiosity_failed:
         out += ["", f"## Curiosity ({len(m.curiosity_runs)} finished, {len(m.curiosity_failed)} failed)"]
         for r in m.curiosity_runs:

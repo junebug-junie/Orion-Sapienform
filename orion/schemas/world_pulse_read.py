@@ -320,6 +320,10 @@ class WorldPulseReadStage2ResultV1(_Base):
     """
 
     summary: str = Field(min_length=1)
+    # What the source itself says (3-5 sentences, from the text fetched), kept apart from
+    # ``summary`` (Orion's reading of it) so Juniper can learn the piece too (2026-10-13).
+    # Empty when nothing substantive was fetched, and on every row stored before.
+    article_summary: str = Field(default="", max_length=2000)
     need_stage1_urls: list[str] = Field(default_factory=list)
     candidate_priors: list[WorldPulseReadPriorCandidateV1] = Field(default_factory=list)
     priors_tested: list[WorldPulseReadPriorTestV1] = Field(default_factory=list)
@@ -342,6 +346,16 @@ class WorldPulseReadStage2ResultV1(_Base):
         if not value.strip():
             raise ValueError("empty_summary")
         return value.strip()
+
+    @field_validator("article_summary", mode="before")
+    @classmethod
+    def _article_summary_before(cls, value: Any) -> str:
+        # A model that returns null or a list here must not cost the whole read.
+        if value is None:
+            return ""
+        if isinstance(value, list):
+            value = " ".join(str(v) for v in value)
+        return " ".join(str(value).split())[:2000]
 
     @field_validator("candidate_priors", mode="before")
     @classmethod

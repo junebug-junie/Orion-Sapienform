@@ -51,6 +51,11 @@ def _arc_record(arc: TemporalSelfArcV1) -> dict[str, Any]:
     }
 
 
+def _label_of(group: list[TemporalSelfArcV1]) -> str:
+    longest = max(group, key=lambda a: (a.cumulative_dwell_sec, a.arc_id))
+    return longest.subject_label.strip() or longest.subject_ref
+
+
 def _plural(n: int, word: str) -> str:
     return f"{n} {word}{'' if n == 1 else 's'}"
 
@@ -107,15 +112,22 @@ def render_closed_day_block(
         if a.kind == "attention":
             groups[a.subject_ref].append(a)
     ranked = sorted(groups.values(), key=lambda g: (-sum(a.cumulative_dwell_sec for a in g), g[0].subject_ref))
+    group_totals: dict[str, dict[str, Any]] = {}  # subject_ref -> the totals a "[day:]" attention clause states
     if ranked:
         lines.append((1, "Attention, most time first:"))
         for i, group in enumerate(ranked[:TOP_ATTENTION]):
             longest = max(group, key=lambda a: (a.cumulative_dwell_sec, a.arc_id))
-            label = longest.subject_label.strip() or longest.subject_ref
-            dwell = span_words(sum(a.cumulative_dwell_sec for a in group))
-            returns = sum(a.attention_returns for a in group)
-            lines.append((2 + i, f"- {label}: {dwell} over {_plural(len(group), 'arc')}, "
-                                 f"{_plural(returns, 'return')} {ref(longest, longest.subject_label.strip())}."))
+            label = _label_of(group)
+            # Each number sits next to the record that holds it: the group's total over the day
+            # cites the day, the cited arc's own dwell and returns cite the arc (truth eval, #2623).
+            own = (f"{span_words(longest.cumulative_dwell_sec)}, {_plural(longest.attention_returns, 'return')} "
+                   f"{ref(longest, longest.subject_label.strip())}")
+            if len(group) > 1:
+                total = span_words(sum(a.cumulative_dwell_sec for a in group))
+                own = f"{total} over {_plural(len(group), 'arc')} {day_ref}; longest {own}"
+                group_totals[longest.subject_ref] = {
+                    "arcs": len(group), "cumulative_dwell_sec": round(sum(a.cumulative_dwell_sec for a in group), 3)}
+            lines.append((2 + i, f"- {label}: {own}."))
 
     runs = [a for a in arcs if a.kind == "curiosity"]
     if runs:
@@ -195,6 +207,7 @@ def render_closed_day_block(
         "expectations_pending": len(frame.expectations_pending),
         "constraint_event_ids": len(frame.constraint_event_ids) + frame.constraint_overflow,
         "warnings": list(frame.warnings),
+        "attention_groups": {k: v for k, v in sorted(group_totals.items()) if f"- {_label_of(groups[k])}:" in text},
     }
     return TemporalSelfDayBlockV1(
         day_id=day.day_id, closed_at=day.closed_at, text=text, records=records,

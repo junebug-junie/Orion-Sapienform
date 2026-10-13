@@ -2071,7 +2071,8 @@ class Settings(BaseSettings):
     # proposal while Orion's arousal reads `strained` (the pressure is kept, not cooled, and
     # proposed the first cycle after strain clears). Read once per cycle, only when a pressure
     # is otherwise ready. Unknown / stale / Redis down / false = today. The operator-triggered
-    # manual cycle never reads it.
+    # manual cycle never reads it. Declared here for env parity; the cycle reads it with
+    # _env_flag() like its SUBSTRATE_AUTONOMY_* neighbours (same key, same default).
     SUBSTRATE_AUTONOMY_AROUSAL_ENABLED: bool = Field(
         default=True, alias="SUBSTRATE_AUTONOMY_AROUSAL_ENABLED"
     )

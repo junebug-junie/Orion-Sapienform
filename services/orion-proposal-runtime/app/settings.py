@@ -56,6 +56,14 @@ class Settings(BaseSettings):
     world_action_rise_threshold_c: float = Field(
         0.5, ge=0.0, alias="ORION_SHED_RISE_THRESHOLD_C"
     )
+    # Temporal Self rev 4, R3 reader 4: while Orion's arousal (Redis orion:regulation:latest,
+    # written by orion-durable-runs) reads `strained`, a due visual-reverie baseline image is
+    # deferred by the policy's retry_sec (reason arousal_strained in the frame warnings).
+    # Missing / stale (> max age) / unknown / Redis down / flag off = today's behaviour.
+    visual_baseline_arousal_enabled: bool = Field(True, alias="ORION_VISUAL_BASELINE_AROUSAL_ENABLED")
+    regulation_reader_max_age_sec: float = Field(
+        360.0, gt=0.0, alias="ORION_REGULATION_READER_MAX_AGE_SEC"
+    )
     log_level: str = Field("INFO", alias="LOG_LEVEL")
 
 

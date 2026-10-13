@@ -5,7 +5,7 @@
     "change_count": 1,
     "high_severity_count": 1,
     "changes": [
-      "high   semantics_changed metric://inner_state/orion-equilibrium-service/transport_baseline_hourly.v1#floor_ms (rest: \u2026re-seeds it. -> \u2026re-seeds it. Built from real round trips only: replies the \u2026)"
+      "high   routing_changed metric://inner_state/orion-durable-runs/regulation.state.v1 (declared_consumers: \u2026hub.scripts.curiosity_investigation:CuriosityInvestigation.\u2026 -> \u2026hub.scripts.api_routes:_mutation_arousal_level -> orion.sub\u2026)"
     ]
   },
   "definitions": {
@@ -4647,9 +4647,12 @@
       "absent_means": "Redis orion:regulation:latest expired (TTL 360 s, three ticks) or arousal_level unknown (a stale input, or ORION_REGULATION_AROUSAL_ENABLED=false): arousal unavailable, and every reader keeps its pre-arousal behaviour. Never read as idle.",
       "declared_consumers": [
         "services.orion-dream.app.cycle:run_cycle_once (a due sleep is held while engaged or strained)",
+        "services.orion-hub.scripts.api_routes:_mutation_arousal_level -> orion.substrate.mutation_pressure:PressureAccumulator.ready_for_proposal (no self-modification proposal while strained)",
         "services.orion-hub.scripts.curiosity_investigation:CuriosityInvestigation.tick (strained holds; engaged doubles the cooldown)",
         "services.orion-hub.scripts.curiosity_investigation:CuriosityInvestigation.tick_self_inquiry (runs only at idle)",
-        "services.orion-hub.scripts.endogenous_outreach:EndogenousOutreach._gate_inputs (strained refuses background outreach)"
+        "services.orion-hub.scripts.endogenous_outreach:EndogenousOutreach._gate_inputs (strained refuses background outreach)",
+        "services.orion-proposal-runtime.app.worker:ProposalRuntimeWorker._baseline_arousal_level -> orion.reverie.baseline:schedule (strained defers a due visual baseline image by retry_sec)",
+        "services.orion-thought.app.chain:_next_chain_sleep_sec (strained doubles the pause between reverie chains)"
       ],
       "notes": "cadence=per_tick composition=shadow_declared_not_composed",
       "registry_source": "orion/inner_state_registry.py"
@@ -4729,7 +4732,7 @@
     "metric://inner_state/orion-equilibrium-service/transport_baseline_hourly.v1#floor_ms": {
       "schema_id": "TransportBaselineHourlyV1",
       "value_kind": "level",
-      "rest": "the hop's best recent typical latency, in ms -- its own scale per hop, no universal rest value. Moves up only slowly and never while saturation is open/paused; a stated regime_shift re-seeds it. Built from real round trips only: replies the replier marked degraded (row degraded_count) never enter it, and a pool where they outnumber real calls may not move it down (since 2026-10-13; before then a burst of fast GPU-pool refusals dragged it ~10x low).",
+      "rest": "the hop's best recent typical latency, in ms -- its own scale per hop, no universal rest value. Moves up only slowly and never while saturation is open/paused; a stated regime_shift re-seeds it.",
       "sparsity": "event_gated",
       "absent_means": "None until the hop's first evaluation; otherwise carried unchanged through hours with no evaluation.",
       "upstream": [

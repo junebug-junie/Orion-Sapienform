@@ -24,6 +24,14 @@ rules (the gate functions' own branches, restated here as a level check):
   outreach    sent background outreach (``endogenous_outreach_decisions``: outreach, not
               Door-A ``curiosity_outreach``; forced debug sends included, since the shipped
               gate holds them too). Held if strained.
+  visual_baseline  (reader 4) baseline visual-reverie attempts (``reverie_visual_attempt``
+              with a ``need_id``, at ``started_at``). Held (deferred by retry_sec) if strained.
+  reverie_chain  (reader 5) completed text-reverie chains (``substrate_reverie_chain.created_at``
+              = when the pause before the next chain starts). Held = that pause doubled if
+              strained.
+  mutation    (reader 6) self-modification proposals (``substrate_mutation_proposal``).
+              Held if strained. Includes any operator-triggered manual-cycle proposals (not
+              distinguishable in the row), which the shipped reader never holds: upper bound.
 
 Unknown never holds anything. First order only: a held decision would have moved the ones
 after it, which this does not simulate. Curiosity rows do not record whether a run was forced
@@ -58,7 +66,7 @@ REPO = Path(__file__).resolve().parents[2]
 if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 
-READERS = ("dream", "curiosity", "self_inquiry", "outreach")
+READERS = ("dream", "curiosity", "self_inquiry", "outreach", "visual_baseline", "reverie_chain", "mutation")
 
 
 def _reducer_replay():
@@ -96,6 +104,15 @@ SELECT row_to_json(r) FROM (
  SELECT 'decision', 'outreach', decided_at FROM endogenous_outreach_decisions
   WHERE outreach AND COALESCE(result_json->>'source', '') <> 'curiosity_outreach'
     AND decided_at >= '{lo}'::timestamptz AND decided_at < '{hi}'::timestamptz
+ UNION ALL
+ SELECT 'decision', 'visual_baseline', started_at FROM reverie_visual_attempt
+  WHERE need_id IS NOT NULL AND started_at >= '{lo}'::timestamptz AND started_at < '{hi}'::timestamptz
+ UNION ALL
+ SELECT 'decision', 'reverie_chain', created_at FROM substrate_reverie_chain
+  WHERE created_at >= '{lo}'::timestamptz AND created_at < '{hi}'::timestamptz
+ UNION ALL
+ SELECT 'decision', 'mutation', created_at FROM substrate_mutation_proposal
+  WHERE created_at >= '{lo}'::timestamptz AND created_at < '{hi}'::timestamptz
 ) r ORDER BY at;
 SELECT row_to_json(r) FROM (
  SELECT 'live_level' AS kind, occurred_at AS at, label AS level FROM temporal_self_event
@@ -131,7 +148,7 @@ def held(reader, level, gap_sec, *, curiosity_base_sec, engaged_multiplier,
         return f"arousal_{level}"
     if reader == "self_inquiry":
         return f"arousal_{level}"
-    if reader == "outreach":
+    if reader in ("outreach", "visual_baseline", "reverie_chain", "mutation"):
         return "arousal_strained" if level == "strained" else None
     if reader == "curiosity":
         if level == "strained":

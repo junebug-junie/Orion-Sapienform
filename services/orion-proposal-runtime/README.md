@@ -132,6 +132,16 @@ migration fails the baseline read visibly.
 Live receipts and concurrent diffusion behavior remain UNVERIFIED until an operator
 collects the correlated production trace described in the design document.
 
+**Arousal (Temporal Self R3 reader 4).** At the moment a baseline would be issued, the
+worker reads Orion's arousal from Redis `orion:regulation:latest`. While it reads
+`strained` (cabinet hot or the GPU queue backed up), the image is deferred by the policy's
+`retry_sec` exactly like a retry, and the frame carries the warning `arousal_strained`
+(log line `visual_baseline_deferred reason=arousal_strained`). Engaged and idle change
+nothing. Missing, stale (older than `ORION_REGULATION_READER_MAX_AGE_SEC`), unknown, a
+Redis failure, or `ORION_VISUAL_BASELINE_AROUSAL_ENABLED=false` is today's behaviour.
+Arousal is consulted only after every other baseline check passed, so it can only
+withhold an image, never issue one; the thermal gate downstream does not read it.
+
 
 ## Workspace-winner world candidates (attend-to-act loop, 2026-10-01)
 

@@ -174,6 +174,18 @@ where expectation_verdict is not null
 group by expectation_verdict;
 ```
 
+## Reverie chain pacing by arousal (Temporal Self R3 reader 5)
+
+Right before each pause between reverie chains, the chain worker reads Orion's arousal from
+Redis `orion:regulation:latest` (written by orion-durable-runs). While it reads `strained`
+(cabinet hot or GPU queue backed up), the pause is multiplied by
+`ORION_REVERIE_CHAIN_AROUSAL_STRAINED_MULTIPLIER` (2.0: 90 s becomes 180 s), since every chain
+step is a background-lane LLM call. Log line: `reverie_chain_paced reason=arousal_strained`.
+Engaged and idle change nothing. Missing, stale (older than
+`ORION_REGULATION_READER_MAX_AGE_SEC`), unknown, a Redis failure, or
+`ORION_REVERIE_CHAIN_AROUSAL_ENABLED=false` keeps today's interval. Arousal never shortens the
+pause and never touches the theme refractory or the step cap.
+
 ## Resonance health monitor (Phase H+)
 
 `ORION_REVERIE_RESONANCE_ALERT_ENABLED` (default `true`) already runs an observation-only

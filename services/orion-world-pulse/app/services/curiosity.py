@@ -16,6 +16,7 @@ from orion.schemas.world_pulse import (
     SectionCoverageV1,
 )
 from orion.substrate.bus_synaptic_surprise import latest_bus_synaptic_prediction_error
+from orion.world_pulse_read.url_filters import url_looks_like_section_index
 
 logger = logging.getLogger("orion-world-pulse.curiosity")
 
@@ -191,6 +192,11 @@ def build_curiosity_followups(
                             salience=a.salience,
                         )
                         for a in outcome.articles
+                        # A gap-fill search result that is a listing page
+                        # (tomshardware.com/news, wccftech.com/topic/hardware/,
+                        # nvidianews.nvidia.com/ -- live 2026-10-01..13) is not
+                        # an article; it only becomes an unreadable seed.
+                        if not url_looks_like_section_index(a.url)
                     ],
                     action_id=outcome.action_id,
                     correlation_id=run_id,

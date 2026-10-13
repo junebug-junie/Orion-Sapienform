@@ -58,6 +58,18 @@ class Settings(BaseSettings):
     world_pulse_max_articles_per_run: int = Field(100, alias="WORLD_PULSE_MAX_ARTICLES_PER_RUN")
     world_pulse_max_articles_per_source: int = Field(10, alias="WORLD_PULSE_MAX_ARTICLES_PER_SOURCE")
     world_pulse_fetch_timeout_seconds: int = Field(20, alias="WORLD_PULSE_FETCH_TIMEOUT_SECONDS")
+    # Freshness window: feed items older than this many days (by the item's own
+    # published date) are dropped before the digest; undated items are dropped
+    # too. <= 0 disables the window.
+    world_pulse_max_item_age_days: float = Field(3.0, alias="WORLD_PULSE_MAX_ITEM_AGE_DAYS")
+    # Stuck-source detector: a source with no new article URL (vs the previous
+    # real run) for this many consecutive digests is flagged
+    # `source_stuck:<source_id>` in run.warnings. <= 0 disables the flag.
+    world_pulse_stuck_source_digests: int = Field(3, alias="WORLD_PULSE_STUCK_SOURCE_DIGESTS")
+    # Postgres DSN the stuck-source detector reads the previous run's
+    # run.metrics.source_health from (world_pulse_run). Blank = no history, so
+    # nothing is ever flagged stuck (counts restart every run).
+    world_pulse_source_health_db_url: str = Field("", alias="WORLD_PULSE_SOURCE_HEALTH_DB_URL")
     world_pulse_min_stance_confidence: float = Field(0.65, alias="WORLD_PULSE_MIN_STANCE_CONFIDENCE")
     world_pulse_stance_max_topics: int = Field(5, alias="WORLD_PULSE_STANCE_MAX_TOPICS")
     world_pulse_politics_stance_default: str = Field("only_when_requested", alias="WORLD_PULSE_POLITICS_STANCE_DEFAULT")

@@ -493,6 +493,12 @@ SYNC_EXACT = frozenset(
         # rather than expanded here since fixing that pre-existing gap is out
         # of scope for this patch).
         "ENABLE_RECENT_ATTENTION_CUE",
+        # orion-world-pulse source quality (2026-10-13): freshness window and
+        # stuck-source detector. No WORLD_PULSE_ prefix is synced, so without
+        # these the default sync would report "no changes" and never add them.
+        "WORLD_PULSE_MAX_ITEM_AGE_DAYS",
+        "WORLD_PULSE_STUCK_SOURCE_DIGESTS",
+        "WORLD_PULSE_SOURCE_HEALTH_DB_URL",
     }
 )
 

@@ -31,7 +31,7 @@ LLM_HOP = "orion:exec:request:LLMGatewayService"
 CONTRACT_KEYS = {
     "evidence_source", "condition", "phase", "service", "instance", "key", "z",
     "saturation_ratio", "baseline_ms", "floor_ms", "window_mean_ms", "calls_per_min",
-    "calls_per_min_usual", "duration_s", "peak_ms", "timeout_count",
+    "calls_per_min_usual", "duration_s", "peak_ms", "timeout_count", "close_reason",
 }
 
 
@@ -126,6 +126,34 @@ def test_gate_load_logs_cold_start_on_config_change(caplog):
     c = TransportBaselineGate(TransportBaselineConfig(), ())
     assert c.load(dumped) is None and len(c.state.keys) == 1
     assert TransportBaselineGate(TransportBaselineConfig(), ()).load(b"{not json") is not None
+
+
+def test_gate_load_migrates_a_v2_state_and_says_so(caplog):
+    """2026-10-13 schema v3: a live v2 checkpoint under the same constants keeps
+    its learned floors (logged as a migration), it is not cold-started."""
+    a = TransportBaselineGate(TransportBaselineConfig(), ())
+    a.process(_snap(0, {LLM_HOP: _stats([1000.0] * 5)}), zen_state="zen", pressure=0.0, recall_enabled=True)
+    d = json.loads(a.dump())
+    d["schema_version"] = 2
+    d["fingerprint"] = TransportBaselineConfig().v2_fingerprint()
+    b = TransportBaselineGate(TransportBaselineConfig(), ())
+    with caplog.at_level(logging.INFO):
+        assert b.load(json.dumps(d)) is None
+    assert "transport_baseline migrated from=schema_v2:" in caplog.text
+    assert "cold_start" not in caplog.text
+    assert len(b.state.keys) == 1
+
+
+def test_went_silent_close_is_named_in_reason_and_upstream():
+    trig = build_transport_baseline_trigger(
+        _event(condition="saturation", phase="close", saturation_ratio=None, duration_s=90000.0,
+               timeout_count=0, close_reason="went_silent"),
+        zen_state="zen", pressure=0.0, recall_enabled=True,
+    )
+    assert trig.upstream["close_reason"] == "went_silent"
+    assert trig.reason.endswith(":closed=went_silent")
+    opened = build_transport_baseline_trigger(_event(), zen_state="zen", pressure=0.0, recall_enabled=True)
+    assert opened.upstream["close_reason"] is None and "closed=" not in opened.reason
 
 
 # ------------------------------------------------------------ service wiring

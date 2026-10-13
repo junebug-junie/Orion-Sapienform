@@ -848,3 +848,19 @@ def test_v2_fingerprint_matches_what_schema_v2_computed():
     d.pop("max_silence_s")
     expected = hashlib.sha256(json.dumps(d, sort_keys=True).encode("utf-8")).hexdigest()[:16]
     assert CFG.v2_fingerprint() == expected != CFG.fingerprint()
+
+
+def test_floor_stays_frozen_in_the_hysteresis_band_after_a_pause():
+    """Saturation open (paused overnight), then back at 1.8x: inside the
+    1.5-2.0 hysteresis band, so the episode stays hot but the window alone
+    would not open saturation. Only the open/paused episode holds the floor
+    here -- the mutation check showed the opening-window guard masked it."""
+    cfg = replace(CFG, floor_half_life_up_s=1800.0, level_alpha=1.0, regime_after_s=48 * 3600.0)
+    state, i = _saturated_hop(cfg)
+    floor = _ks(state).floor
+    _silent(state, i, int(6 * 3600 / WIN), cfg=cfg)
+    i += int(6 * 3600 / WIN)
+    ev, obs = _flat(state, 1800.0, i, 60, cfg=cfg)
+    assert all(cfg.saturation_close_ratio <= o.saturation_ratio < cfg.saturation_ratio for o in obs if o.evaluated)
+    assert "saturation" in _ks(state).episodes
+    assert _ks(state).floor == floor

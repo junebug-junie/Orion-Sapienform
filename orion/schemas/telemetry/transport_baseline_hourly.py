@@ -67,6 +67,13 @@ class TransportBaselineHourlyV1(BaseModel):
         default_factory=dict,
         description="condition -> episodes opened this hour, excluded keys included (regime_shift is an open).",
     )
+    conditions_closed: Dict[str, int] = Field(
+        default_factory=dict,
+        description="'condition:close_reason' -> episodes closed this hour, excluded keys included. "
+        "close_reason is quiet (timeout/zero_success fault stopped), calm (latency episode observed calm), "
+        "went_silent (latency episode with no evaluated traffic for max_silence_s -- NOT a recovery) or "
+        "evicted. Added 2026-10-13; rows from before then carry {}.",
+    )
     open_at_hour_end: List[str] = Field(default_factory=list)
     would_emit_by_condition: Dict[str, int] = Field(
         default_factory=dict,

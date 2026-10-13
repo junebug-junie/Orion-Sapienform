@@ -1,0 +1,17 @@
+{
+ "exported": "2026-10-13",
+ "source": "7-day reverie themes (compaction + resonance) -> latest attention_salience_trace.description by theme_key",
+ "titles": {
+  "open-loop-08d23ba68a84": "Route prediction error",
+  "open-loop-4409448b6975": "Codebase prediction error",
+  "open-loop-442aec94a6f4": "Bus synaptic prediction error",
+  "open-loop-5cb6cd032923": "Biometrics prediction error",
+  "open-loop-7376a3da4050": "Execution prediction error",
+  "open-loop-7597ff641a23": "Cabinet prediction error",
+  "open-loop-968fda08910c": "Harness closure prediction error",
+  "open-loop-a2bcad525fe2": "Chat prediction error",
+  "open-loop-d55af4571051": "Juniper is talking (2 messages in the last 15 min)",
+  "open-loop-e91fa7e1c61e": "Perception prediction error",
+  "open-loop-f9e44196c903": "Juniper is talking (1 message in the last 15 min)"
+ }
+}

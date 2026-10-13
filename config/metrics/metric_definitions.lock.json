@@ -2,17 +2,10 @@
   "_comment": "Definition lock for scripts/check_definition_drift.py. Generated, never hand-edited. Regenerate with --update; the resulting diff IS the definition-change alert. Unlike the *_baseline.json ratchets this tracks current truth in both directions -- a definition change is an event, not a defect.",
   "metric_count": 727,
   "_last_change": {
-    "change_count": 8,
-    "high_severity_count": 0,
+    "change_count": 1,
+    "high_severity_count": 1,
     "changes": [
-      "medium added metric://inner_state/orion-equilibrium-service/transport_baseline_hourly.v1",
-      "medium added metric://inner_state/orion-equilibrium-service/transport_baseline_hourly.v1#baseline_ms",
-      "medium added metric://inner_state/orion-equilibrium-service/transport_baseline_hourly.v1#calls_per_min_mean",
-      "medium added metric://inner_state/orion-equilibrium-service/transport_baseline_hourly.v1#floor_ms",
-      "medium added metric://inner_state/orion-equilibrium-service/transport_baseline_hourly.v1#floor_ms_start",
-      "medium added metric://inner_state/orion-equilibrium-service/transport_baseline_hourly.v1#saturation_ratio_p50",
-      "medium added metric://inner_state/orion-equilibrium-service/transport_baseline_hourly.v1#z_p50",
-      "medium added metric://inner_state/orion-equilibrium-service/transport_baseline_hourly.v1#z_p90"
+      "high   routing_changed metric://inner_state/orion-durable-runs/regulation.state.v1 (declared_consumers: \u2026d outreach)'] -> \u2026d outreach)', 'services.orion-proposal-runtime.app.worker:P\u2026)"
     ]
   },
   "definitions": {
@@ -4645,7 +4638,8 @@
         "services.orion-dream.app.cycle:run_cycle_once (a due sleep is held while engaged or strained)",
         "services.orion-hub.scripts.curiosity_investigation:CuriosityInvestigation.tick (strained holds; engaged doubles the cooldown)",
         "services.orion-hub.scripts.curiosity_investigation:CuriosityInvestigation.tick_self_inquiry (runs only at idle)",
-        "services.orion-hub.scripts.endogenous_outreach:EndogenousOutreach._gate_inputs (strained refuses background outreach)"
+        "services.orion-hub.scripts.endogenous_outreach:EndogenousOutreach._gate_inputs (strained refuses background outreach)",
+        "services.orion-proposal-runtime.app.worker:ProposalRuntimeWorker._baseline_arousal_level -> orion.reverie.baseline:schedule (strained defers a due visual baseline image by retry_sec)"
       ],
       "notes": "cadence=per_tick composition=shadow_declared_not_composed",
       "registry_source": "orion/inner_state_registry.py"

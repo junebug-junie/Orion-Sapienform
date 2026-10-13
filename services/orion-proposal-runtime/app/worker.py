@@ -12,6 +12,7 @@ from pathlib import Path
 from datetime import timedelta
 
 from orion.autonomy.cabinet_heat import read_cabinet_heat
+from orion.regulation.arousal_read import read_arousal_sync
 from orion.autonomy.self_shed import HardwareWatchView, bind_workspace_winner, evaluate_shed_eligibility
 from orion.proposals.builder import WorkspaceWinnerContext, build_proposal_frame
 from orion.proposals.policy import WORKSPACE_WINNER_BINDING
@@ -52,6 +53,23 @@ class ProposalRuntimeWorker:
                 continue
             except asyncio.CancelledError:
                 break
+
+    def _baseline_arousal_level(self) -> str | None:
+        """R3 reader 4: Orion's arousal at the moment a baseline image would be issued.
+
+        Called by ``orion.reverie.baseline.schedule`` only after every other baseline check
+        passed (about 16 times a day, plus retries), so this is one Redis GET per due image,
+        not per tick. None (unknown, flag off, Redis down) changes nothing."""
+        view = read_arousal_sync(
+            self._settings.orion_bus_url,
+            enabled=bool(self._settings.visual_baseline_arousal_enabled),
+            reader="visual_baseline",
+            max_age_sec=float(self._settings.regulation_reader_max_age_sec),
+        )
+        if view.level == "strained":
+            logger.info("visual_baseline_deferred reason=arousal_strained since=%s reasons=%s",
+                        view.since, ",".join(view.reasons))
+        return view.level if view.known else None
 
     def _workspace_context(self, now: datetime) -> WorkspaceWinnerContext:
         """Read the workspace winner; only when it binds to a world template, read the world.
@@ -189,7 +207,8 @@ class ProposalRuntimeWorker:
                 with urlopen(baseline_policy.thought_url.rstrip("/") + "/visual-chain/activity", timeout=baseline_policy.timeout_sec) as response:
                     activity = VisualActivityV1.model_validate(json.load(response))
                 eligibility, baseline_reason = self._store.baseline_eligibility(activity,
-                    now=datetime.now(timezone.utc), policy=baseline_policy)
+                    now=datetime.now(timezone.utc), policy=baseline_policy,
+                    arousal_level=self._baseline_arousal_level)
             except Exception:
                 baseline_reason = "visual_activity_unavailable"
                 logger.warning("visual_baseline_activity_unavailable", exc_info=True)

@@ -405,11 +405,15 @@ class ProposalRuntimeStore:
                 return []
             return world_episodes.in_flight(conn, template=template, now=now)
 
-    def baseline_eligibility(self, activity, *, now, policy):
-        """Serialize scheduler replicas on one durable checkpoint row."""
+    def baseline_eligibility(self, activity, *, now, policy, arousal_level=None):
+        """Serialize scheduler replicas on one durable checkpoint row.
+
+        ``arousal_level`` (R3 reader 4) is a callable that ``schedule`` invokes only when a
+        baseline would be issued; ``strained`` defers it by ``retry_sec``."""
         from orion.reverie.baseline import schedule
         with self._engine.begin() as conn:
             row = conn.execute(text("SELECT state FROM visual_baseline_checkpoint WHERE id = 1 FOR UPDATE")).scalar_one()
-            eligibility, state, reason = schedule(activity, row, now=now, policy=policy)
+            eligibility, state, reason = schedule(activity, row, now=now, policy=policy,
+                                                  arousal_level=arousal_level)
             conn.execute(text("UPDATE visual_baseline_checkpoint SET state = CAST(:state AS jsonb) WHERE id = 1"), {"state": json.dumps(state)})
             return eligibility, reason

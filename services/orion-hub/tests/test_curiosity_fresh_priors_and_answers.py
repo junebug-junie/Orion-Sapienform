@@ -180,11 +180,23 @@ def test_prompt_without_priors_logs_a_skip_and_reads_nothing(caplog):
 def test_unparseable_prior_lines_warn_as_format_drift(caplog):
     caplog.set_level("INFO")
     reader = _Reader(rows=[])
-    prompt = "  - [conf 0.5] something\n      prior_id: p.x\n"
+    prompt = "  - [confidence=0.5 tested] something\n      prior_id: p.x\n"
     assert _run_prompt(reader, prompt) == prompt
     assert reader.queries == []
     [record] = [r for r in caplog.records if "curiosity_prior_drift" in r.getMessage()]
     assert record.levelname == "WARNING" and "reason=no_priors_parsed" in record.getMessage()
+
+
+def test_settled_only_prior_lines_are_a_quiet_skip_not_a_warning(caplog):
+    # RECENTLY SETTLED prints `- [status] claim` + `prior_id:` with no
+    # confidence bracket; that is not an offer menu and not format drift.
+    caplog.set_level("INFO")
+    reader = _Reader(rows=[])
+    prompt = "  - [refuted] something\n      prior_id: p.x\n"
+    assert _run_prompt(reader, prompt) == prompt
+    assert reader.queries == []
+    [record] = [r for r in caplog.records if "curiosity_prior_drift" in r.getMessage()]
+    assert record.levelname == "INFO" and "reason=no_offered_priors" in record.getMessage()
 
 
 # --- the queued-backlog cap --------------------------------------------------

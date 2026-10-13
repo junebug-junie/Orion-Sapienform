@@ -430,10 +430,16 @@ async def prior_drift_preamble(reader: Optional[WorldviewReader], request: Curio
         return ""
     offered = offered_priors_in_prompt(request.prompt)
     if not offered:
-        # The prompt prints prior ids but none parse: `Prior.preview`'s format
-        # and `_OFFERED_PRIOR_RE` drifted apart, and drift can never be seen.
-        logger.warning("curiosity_prior_drift_skipped run=%s attempt=%s reason=no_priors_parsed",
-                       request.run_id, request.attempt)
+        if "[confidence=" in request.prompt:
+            # A menu line is printed but none parse: `Prior.preview`'s format
+            # and `_OFFERED_PRIOR_RE` drifted apart, and drift can never be seen.
+            logger.warning("curiosity_prior_drift_skipped run=%s attempt=%s reason=no_priors_parsed",
+                           request.run_id, request.attempt)
+        else:
+            # Healthy: `prior_id:` lines from sections that are not an offer
+            # menu (recently settled priors, Orion's Day corrections).
+            logger.info("curiosity_prior_drift_skipped run=%s attempt=%s reason=no_offered_priors",
+                        request.run_id, request.attempt)
         return ""
     try:
         states = await asyncio.to_thread(read_prior_states, reader)

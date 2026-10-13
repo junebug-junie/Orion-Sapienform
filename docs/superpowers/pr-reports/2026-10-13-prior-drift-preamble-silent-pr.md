@@ -1,8 +1,8 @@
 ## Summary
 
 - The drift preamble check from #2601 was not broken. It ran on every investigate turn and correctly found nothing to report, but it wrote no log line when nothing had moved, so "checked, nothing moved" looked exactly like "never ran".
-- `prior_drift_preamble()` now writes exactly one line per call: `curiosity_prior_drift_checked ... offered=N moved=0`, `curiosity_prior_drift_preamble ... offered=N moved=M`, or `curiosity_prior_drift_skipped reason=reader_missing|no_prior_in_prompt|no_priors_parsed`. The existing `_read_failed` and `_unknown` lines are unchanged.
-- `no_priors_parsed` logs at WARNING. It means the prompt prints `prior_id:` lines but `_OFFERED_PRIOR_RE` parses none of them, so the preview format has drifted and drift can never be detected.
+- `prior_drift_preamble()` now writes exactly one line per call: `curiosity_prior_drift_checked ... offered=N moved=0`, `curiosity_prior_drift_preamble ... offered=N moved=M`, or `curiosity_prior_drift_skipped reason=reader_missing|no_prior_in_prompt|no_offered_priors|no_priors_parsed`. The existing `_read_failed` and `_unknown` lines are unchanged.
+- `no_priors_parsed` logs at WARNING, and only when a `[confidence=` menu line is present. It means the prompt prints `prior_id:` lines but `_OFFERED_PRIOR_RE` parses none of them, so the preview format has drifted and drift can never be detected.
 - `_prompt_for_attempt` now calls the check before its own `reader is None` early return, so a missing reader is logged as a skip instead of leaving no trace.
 
 ## Outcome moved
@@ -29,7 +29,7 @@ orion-hub only: `scripts/curiosity_investigation.py`. No contract changes.
 ## Files changed
 
 - `services/orion-hub/scripts/curiosity_investigation.py`: one log line per drift-check outcome. `_prompt_for_attempt` routes the reader-missing case through the check.
-- `services/orion-hub/tests/test_curiosity_fresh_priors_and_answers.py`: 5 regression tests, one per outcome.
+- `services/orion-hub/tests/test_curiosity_fresh_priors_and_answers.py`: 6 regression tests, one per outcome.
 - `docs/superpowers/pr-reports/2026-10-13-prior-drift-preamble-silent-pr.md`: this report.
 
 ## Schema / bus / API changes
@@ -54,7 +54,7 @@ orion-hub only: `scripts/curiosity_investigation.py`. No contract changes.
 ```text
 pytest services/orion-hub/tests/test_curiosity_fresh_priors_and_answers.py -q
   before fix: 5 failed, 19 passed
-  after fix:  24 passed
+  after fix:  25 passed
 pytest services/orion-hub/tests -q -k curiosity
   469 passed, 3 skipped
 ```
@@ -75,7 +75,10 @@ Not deployed (per instruction). After restart, expect one curiosity_prior_drift_
 
 ## Review findings fixed
 
-See the PR conversation (code review run in a subagent against the branch diff vs origin/main).
+- Finding: the format-drift WARNING would fire on healthy briefs whose only `prior_id:` lines come from RECENTLY SETTLED or Orion's Day corrections (no confidence bracket).
+  - Fix: WARN only when a `[confidence=` line is present. Otherwise log INFO `reason=no_offered_priors`.
+  - Evidence: `test_settled_only_prior_lines_are_a_quiet_skip_not_a_warning` passes.
+- Reviewer confirmed: returned prompt unchanged on every path, no new exception path, single caller.
 
 ## Restart required
 

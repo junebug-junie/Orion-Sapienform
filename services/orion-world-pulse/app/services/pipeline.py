@@ -261,6 +261,9 @@ def run_world_pulse(
 
     digest_policy = registry.digest_policy or {}
     max_digest_items_total = int(digest_policy.get("max_digest_items_total", 12))
+    reserved_source_slots = {
+        str(k): int(v) for k, v in (digest_policy.get("reserved_source_slots") or {}).items()
+    }
     max_digest_items_per_section = int(digest_policy.get("max_digest_items_per_section", 2))
     min_digest_items_per_required = int(digest_policy.get("min_digest_items_per_required_section", 1))
     max_worth_reading = int(digest_policy.get("max_worth_reading", 10))
@@ -428,6 +431,7 @@ def run_world_pulse(
         max_total=max_digest_items_total,
         max_per_section=max_digest_items_per_section,
         min_per_required=min_digest_items_per_required,
+        reserved_source_slots=reserved_source_slots,
     )
     digest = build_digest(
         rid,
@@ -470,7 +474,8 @@ def run_world_pulse(
         coverage_status=coverage_status,
         section_coverage=section_coverage,
         section_rollups=section_rollups,
-        max_digest_items_total=max_digest_items_total,
+        # Reported cap includes reserved source cards, so "N cards (cap: M)" stays honest.
+        max_digest_items_total=max_digest_items_total + sum(max(0, v) for v in reserved_source_slots.values()),
     )
     run.metrics["missing_required_sections"] = missing_required
     run.metrics["missing_recommended_sections"] = missing_recommended

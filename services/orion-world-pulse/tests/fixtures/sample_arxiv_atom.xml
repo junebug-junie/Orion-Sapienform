@@ -1,0 +1,49 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<feed xmlns:opensearch="http://a9.com/-/spec/opensearch/1.1/" xmlns:arxiv="http://arxiv.org/schemas/atom" xmlns="http://www.w3.org/2005/Atom">
+  <id>https://arxiv.org/api/V4/2VpSENqHEPvwL7uODRqwc2K4</id>
+  <title>arXiv Query: search_query=cat:q-bio.NC&amp;id_list=&amp;start=0&amp;max_results=3</title>
+  <updated>2026-10-13T19:28:52Z</updated>
+  <opensearch:itemsPerPage>3</opensearch:itemsPerPage>
+  <opensearch:totalResults>12617</opensearch:totalResults>
+  <opensearch:startIndex>0</opensearch:startIndex>
+  <entry>
+    <id>http://arxiv.org/abs/2610.13918v1</id>
+    <title>DyssomniaNN: Multi-Scale Spiking Neural Modeling of Human Sleep
+  Disorders and Perceived Restedness</title>
+    <updated>2026-10-09T17:52:23Z</updated>
+    <link href="https://arxiv.org/abs/2610.13918v1" rel="alternate" type="text/html"/>
+    <link href="https://arxiv.org/pdf/2610.13918v1" rel="related" type="application/pdf" title="pdf"/>
+    <summary>Clinical sleep medicine repeatedly documents profound divergences
+  between objective sleep duration and subjective daytime impairment.</summary>
+    <category term="cs.NE" scheme="http://arxiv.org/schemas/atom"/>
+    <category term="cs.LG" scheme="http://arxiv.org/schemas/atom"/>
+    <category term="q-bio.NC" scheme="http://arxiv.org/schemas/atom"/>
+    <published>2026-10-09T17:52:23Z</published>
+    <arxiv:primary_category term="cs.NE"/>
+    <author><name>Daniel Szelogowski</name></author>
+  </entry>
+  <entry>
+    <id>http://arxiv.org/abs/2610.13419v2</id>
+    <title>EEG Entrainment to Non-Speech Rhythmic Patterns</title>
+    <updated>2026-10-10T11:25:45Z</updated>
+    <link href="https://arxiv.org/abs/2610.13419v2" rel="alternate" type="text/html"/>
+    <summary>We test whether neural entrainment predicts language performance.</summary>
+    <category term="q-bio.NC" scheme="http://arxiv.org/schemas/atom"/>
+    <published>2026-10-09T11:25:45Z</published>
+    <arxiv:primary_category term="q-bio.NC"/>
+    <author><name>A. Researcher</name></author>
+    <author><name>B. Researcher</name></author>
+  </entry>
+  <entry>
+    <id>http://arxiv.org/abs/hep-th/9901001v1</id>
+    <title>An Old-Style Identifier Paper</title>
+    <summary>Old archive id format.</summary>
+    <published>1999-01-01T00:00:00Z</published>
+    <arxiv:primary_category term="hep-th"/>
+  </entry>
+  <entry>
+    <id>http://arxiv.org/api/errors#incorrect_id_format_for_bogus</id>
+    <title>Error</title>
+    <summary>incorrect id format for bogus</summary>
+  </entry>
+</feed>

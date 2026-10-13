@@ -322,3 +322,28 @@ def test_execute_plan_relays_a_degraded_exec_reply_and_strips_an_inherited_marke
 
     assert asyncio.run(_run()) == reason
     assert bus.sent.trace == {"trace_id": "t"}  # never forward a marker downstream
+
+
+def test_a_workflow_subverb_does_not_relay_its_degradation_to_the_workflow_reply() -> None:
+    """Review finding: workflow sub-verbs include side fetches; one degraded side verb
+    must not mark orch's whole workflow reply degraded."""
+    from orion.core.bus.rpc_degraded import note_degraded
+    import app.workflow_runtime as workflow_runtime
+
+    async def _fake_call_verb_runtime(bus, **kwargs):
+        note_degraded("llm_gateway:gpu_pool_unavailable")
+        return VerbResultV1(verb="x", ok=True, output={}, request_id="r")
+
+    async def _run():
+        token = begin_collecting()
+        try:
+            await workflow_runtime._run_workflow_subverb(
+                _fake_call_verb_runtime, bus=object(), source=SOURCE,
+                correlation_id="11111111-1111-1111-1111-000000000012", causality_chain=None,
+                trace=None, base_request=_client_request(), workflow_id="wf", verb="fetch_result",
+            )
+            return current_degraded_reason()
+        finally:
+            end_collecting(token)
+
+    assert asyncio.run(_run()) is None

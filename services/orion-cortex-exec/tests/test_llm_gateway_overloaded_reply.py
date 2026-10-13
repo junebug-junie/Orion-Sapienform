@@ -236,3 +236,6 @@ def test_a_refused_gateway_reply_marks_the_exec_reply_degraded() -> None:
     pool_refusal = {"text": "", "content": "", "raw": {"error": "gpu_pool_unavailable", "details": {"reason": "deadline"}}}
     assert _run(ChatResponsePayload.model_validate(pool_refusal)) == "llm_gateway:gpu_pool_unavailable:deadline"
     assert _run(ChatResponsePayload(content='{"disposition":"proceed"}')) is None
+    # A backend failure fails the step too, but the backend was asked and the wait was
+    # real: not degraded (review finding -- it is the slowness the baseline must see).
+    assert _run(ChatResponsePayload.model_validate(UPSTREAM_500_REPLY)) is None

@@ -163,6 +163,30 @@ async def test_rabbit_leaves_a_clean_reply_alone_and_strips_an_inherited_marker(
     assert DEGRADED_TRACE_KEY not in bus.published[-1][1].trace
 
 
+@pytest.mark.asyncio
+async def test_rabbit_handler_never_sees_a_request_marker_and_its_own_note_wins() -> None:
+    """Review finding: a reply that copied a marked request trace kept the inherited
+    reason (first cause wins), and the caller then discarded it as an echo -- a real
+    degradation read as success."""
+    seen: list[dict] = []
+
+    async def copies_and_notes(env: BaseEnvelope) -> BaseEnvelope:
+        seen.append(dict(env.trace))
+        note_degraded("gpu_pool_unavailable")
+        return _env(trace=dict(env.trace))
+
+    rabbit, bus = _rabbit(copies_and_notes)
+    req_trace = {"trace_id": "t", DEGRADED_TRACE_KEY: "old"}
+    req = BaseEnvelope(kind="k", source=SRC, reply_to="orion:r", trace=req_trace, payload={})
+    await rabbit._handle_decoded_envelope(channel="orion:x", env=req)
+    assert seen == [{"trace_id": "t"}]
+    reply = bus.published[-1][1]
+    assert degraded_reason(reply, request_trace=req_trace) == "gpu_pool_unavailable"
+    # and directly: an inherited marker is dropped before the noted one is applied
+    out = _stamp_degraded_reply(_env(trace=dict(req_trace)), request=req, noted="mine")
+    assert out.trace[DEGRADED_TRACE_KEY] == "mine"
+
+
 def test_stamp_never_raises_on_a_non_envelope() -> None:
     assert _stamp_degraded_reply("not an envelope", request=_env(), noted="x") == "not an envelope"
 
@@ -280,6 +304,22 @@ async def test_rpc_request_worker_path_never_leaks_a_stashed_reply() -> None:
         await bus.rpc_request("orion:bg", req, reply_channel="orion:r", timeout_sec=1.0)
     assert bus._rpc_reply_envelopes == {}
     bus._rpc_worker_task.cancel()
+
+
+@pytest.mark.asyncio
+async def test_a_foreign_future_in_pending_rpc_never_stashes_its_reply() -> None:
+    """Review finding: orion-hub's harness_governor_client registers its own futures in
+    _pending_rpc and pops only that dict; stashing those replies would leak every
+    governor payload for the life of the process."""
+    bus = OrionBusAsync("redis://unused:6379/0")
+    codec = OrionCodec()
+    reply = _env()
+    key = ("orion:governor:reply", str(reply.correlation_id))
+    fut = asyncio.get_running_loop().create_future()
+    bus._pending_rpc[key] = fut  # the governor-client pattern
+    await bus._handle_rpc_result({"channel": key[0].encode(), "data": codec.encode(reply)})
+    assert fut.done()
+    assert bus._rpc_reply_envelopes == {}
 
 
 class _InlinePubSub:

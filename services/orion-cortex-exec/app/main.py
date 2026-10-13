@@ -496,13 +496,14 @@ def _run_autonomy_graph_probe() -> None:
         )
 
 
-def _stamp_degraded(reply: BaseEnvelope, *, failed: bool = False) -> BaseEnvelope:
+def _stamp_degraded(reply: BaseEnvelope, *, reason: str | None = None) -> BaseEnvelope:
     """Mark a reply this service publishes itself (outside the Rabbit chassis, which
     stamps returned replies on its own) as degraded when the request's handling noted
-    a degradation -- a gateway refusal, a canned metacog fallback -- or the reply is
-    an explicit failure. orion/core/bus/rpc_degraded.py: the caller's rpc_request()
-    then counts it as degraded instead of timing a refusal as this hop's speed."""
-    reason = current_degraded_reason() or ("exec_failed" if failed else None)
+    a degradation -- a gateway refusal, a skipped/refused metacog draft -- or the
+    caller passes an explicit ``reason`` (an unusable request). A reply that failed
+    after real work is NOT degraded: its wait was real. orion/core/bus/rpc_degraded.py:
+    the caller's rpc_request() counts a degraded reply instead of timing it."""
+    reason = current_degraded_reason() or reason
     return mark_degraded(reply, reason) if reason else reply
 
 
@@ -726,7 +727,6 @@ async def handle(env: BaseEnvelope) -> BaseEnvelope:
             )
 
     if cognition_error is not None:
-        note_degraded("exec_error")
         return CortexExecResult(
             source=_source(),
             correlation_id=corr_id,
@@ -883,7 +883,7 @@ async def _handle_verb_request(env: BaseEnvelope) -> None:
         )
         result_env = _stamp_degraded(
             _derive_envelope(env, kind="verb.result", payload=error_result.model_dump(mode="json")),
-            failed=True,
+            reason="validation_failed",
         )
         await svc.bus.publish(reply_channel, result_env)
         if reply_channel != "orion:verb:result":
@@ -908,7 +908,6 @@ async def _handle_verb_request(env: BaseEnvelope) -> None:
 
     result_env = _stamp_degraded(
         _derive_envelope(env, kind="verb.result", payload=result.model_dump(mode="json")),
-        failed=not result.ok,
     )
     await svc.bus.publish(reply_channel, result_env)
     logger.info(

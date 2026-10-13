@@ -337,7 +337,9 @@ were `gpu_pool_unavailable` refusals answered in ~1 s, recorded as successes, an
 fell 13.9 s -> 1.26 s. Fix (PR `fix/rpc-health-degraded-calls`): the replying service marks
 the reply (`orion/core/bus/rpc_degraded.py`), the caller counts it in
 `RpcChannelLatencyV1.degraded_count` outside the latency sums, and the reducer never learns
-speed from it (pool tainted, floor may not move down on it, no condition opened).
+speed from it (a mostly-degraded pool is tainted and may not move the floor down; no
+condition opened). Degraded means the replier declined or skipped the work; a failure
+after real work (backend timeout, 5xx) stays timed -- it is slowness the gate must see.
 
 ## Metric quality gate: per-channel log-latency EWMA (A1/A2)
 

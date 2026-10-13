@@ -28,10 +28,16 @@ from orion.schemas.llm_inference_projection import (  # noqa: E402
 from app import grammar_emit  # noqa: E402
 
 
-@pytest.mark.parametrize("err", sorted(REFUSAL_CLASSES | REQUEST_INVALID_CLASSES | UPSTREAM_FAILURE_CLASSES))
-def test_every_contract_failure_class_is_degraded(err: str) -> None:
-    expected = "upstream_timeout" if err == "timeout" else err
-    assert grammar_emit.degraded_outcome({"text": "", "raw": {"error": err}}) == expected
+@pytest.mark.parametrize("err", sorted(REFUSAL_CLASSES | REQUEST_INVALID_CLASSES))
+def test_every_declined_work_class_is_degraded(err: str) -> None:
+    assert grammar_emit.degraded_outcome({"text": "", "raw": {"error": err}}) == err
+
+
+@pytest.mark.parametrize("err", sorted(UPSTREAM_FAILURE_CLASSES | {"timeout", "gateway_exception"}))
+def test_a_backend_failure_stays_timed(err: str) -> None:
+    """Review finding: the backend was asked and the wait was real -- an upstream
+    timeout is the slowness the transport baseline exists to see."""
+    assert grammar_emit.degraded_outcome({"text": "", "raw": {"error": err}}) is None
 
 
 def test_a_served_or_empty_answer_is_not_degraded() -> None:
@@ -39,8 +45,9 @@ def test_a_served_or_empty_answer_is_not_degraded() -> None:
     # upstream_empty is unmeasured at rest: deliberately not called degraded.
     assert grammar_emit.degraded_outcome({"text": "", "raw": {}}) is None
     assert grammar_emit.degraded_outcome({"text": "", "reasoning_content": "thought", "raw": {}}) is None
-    # text framed as a gateway error is a failure even without raw.error
-    assert grammar_emit.degraded_outcome({"text": "[Error: llamacpp timed out]", "raw": {}}) == "upstream_timeout"
+    # a framed backend failure is a failure, but not declined work: timed
+    assert grammar_emit.degraded_outcome({"text": "[Error: llamacpp timed out]", "raw": {}}) is None
+    assert grammar_emit.degraded_outcome({"text": "[Error: route x not configured]", "raw": {}}) == "route_not_configured"
 
 
 def _req() -> BaseEnvelope:

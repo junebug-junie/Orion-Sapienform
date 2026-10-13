@@ -85,27 +85,20 @@ MUTANTS: dict[str, tuple[tuple[str, str, str], str, str]] = {
     "degraded pool may move the floor down": (
         REDUCER, "                if lv < ks.floor and degraded_pool:", "                if False:",
     ),
-    "degraded reply does not taint the pool (fast folds)": (
-        REDUCER,
-        "            if timeouts > 0 or degraded > 0:\n"
-        "                ks.pend_tainted = True\n"
-        "            if degraded > 0:\n"
-        "                ks.pend_degraded = True\n"
-        "        elif ks.pend_windows:",
-        "            if timeouts > 0:\n"
-        "                ks.pend_tainted = True\n"
-        "            if degraded > 0:\n"
-        "                ks.pend_degraded = True\n"
-        "        elif ks.pend_windows:",
+    "mostly-degraded pool does not taint (fast folds)": (
+        REDUCER, "            tainted = ks.pend_tainted or degraded_pool", "            tainted = ks.pend_tainted",
     ),
-    "a degraded-only window inside a pool does not mark it degraded": (
-        REDUCER,
-        "                ks.pend_tainted = True\n"
-        "            if degraded > 0:\n"
-        "                ks.pend_degraded = True\n"
-        "\n",
-        "                ks.pend_tainted = True\n"
-        "\n",
+    "any single refusal taints the pool (a trickle freezes the baseline)": (
+        REDUCER, "            degraded_pool = ks.pend_degraded_n > ks.pend_n",
+        "            degraded_pool = ks.pend_degraded_n > 0",
+    ),
+    "refusals between pools are forgotten": (
+        REDUCER, "        ks.pend_degraded_n += degraded",
+        "        if ks.pend_windows:\n            ks.pend_degraded_n += degraded",
+    ),
+    "refusals plus a timeout open zero_success": (
+        REDUCER, "            timeouts > 0 and success == 0 and degraded == 0 and had_successes",
+        "            timeouts > 0 and success == 0 and had_successes",
     ),
     "a degraded-only window keeps the traffic-time chain": (
         REDUCER, "        elif timeouts > 0 or degraded > 0:", "        elif timeouts > 0:",
@@ -113,11 +106,22 @@ MUTANTS: dict[str, tuple[tuple[str, str, str], str, str]] = {
     "degraded replies not counted as calls": (
         REDUCER, "        calls = success + timeouts + degraded", "        calls = success + timeouts",
     ),
-    "pend_degraded not restored from a checkpoint": (
-        REDUCER, "    for flag in (\"pend_tainted\", \"pend_degraded\"):", "    for flag in (\"pend_tainted\",):",
+    "pend_degraded_n not restored from a checkpoint": (
+        REDUCER,
+        '_KEY_INTS = ("fast_count", "level_count", "calls_count", "pend_n", "pend_windows", "hot_streak", "pend_degraded_n")',
+        '_KEY_INTS = ("fast_count", "level_count", "calls_count", "pend_n", "pend_windows", "hot_streak")',
     ),
-    "pend_degraded not reset with the pool": (
-        REDUCER, "    ks.pend_tainted = False\n    ks.pend_degraded = False\n", "    ks.pend_tainted = False\n",
+    "pend_degraded_n not reset with the pool": (
+        REDUCER, "    ks.pend_tainted = False\n    ks.pend_degraded_n = 0\n", "    ks.pend_tainted = False\n",
+    ),
+    # --- review findings 2 and 5 ----------------------------------------------
+    "a foreign pending future's reply is stashed (leak)": (
+        BUS, "            if key in self._rpc_classify_keys:\n                self._rpc_reply_envelopes[key] = decoded.envelope",
+        "            if True:\n                self._rpc_reply_envelopes[key] = decoded.envelope",
+    ),
+    "Rabbit hands the handler the request's marker": (
+        CHASSIS, "        if (env.trace or {}).get(DEGRADED_TRACE_KEY) is not None:\n            env = env.model_copy(",
+        "        if False:\n            env = env.model_copy(",
     ),
 }
 

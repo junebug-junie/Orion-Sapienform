@@ -22,6 +22,12 @@ The marker -- one reason string, no taxonomy:
 
 Nothing is inferred from payload content by the caller.
 
+What counts as degraded -- one rule: **the replier declined or skipped the work**
+(a GPU-pool / lease / capacity refusal, an unusable request, a canned fallback produced
+without asking the model). A reply that *failed after real work* -- a backend timeout,
+an upstream 5xx, a model that ran and returned junk -- is NOT degraded: its wait was
+real, and it is exactly the slowness a latency baseline must see.
+
 How a service marks: a Rabbit (``bus_service_chassis.Rabbit``) handler opens a
 collector around every request; anything that runs inside the handler calls
 ``note_degraded(reason)`` and the chassis stamps the reply. A service that

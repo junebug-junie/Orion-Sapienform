@@ -251,17 +251,30 @@ def test_metacog_draft_rejects_exact_example_echo(monkeypatch):
     assert ctx["collapse_entry"]["summary"] != executor_module._METACOG_DRAFT_EXAMPLE_SUMMARY
 
 
+class _RefusedReply:
+    """What LLMGatewayClient.chat returns when the gateway refused (live 2026-10-08)."""
+
+    choices: list = []
+    meta: dict = {}
+
+    def model_dump(self, mode="json"):
+        return {"content": "", "raw": {"error": "gpu_pool_unavailable", "details": {"reason": "deadline"}}}
+
+
 @pytest.mark.parametrize(
-    "content,expected",
+    "reply,expected",
     [
-        ("", "metacog_draft_fallback:json_parse_failed"),  # e.g. a refused gateway call
-        (_VALID_DRAFT_JSON, None),
+        (_RefusedReply(), "metacog_draft_fallback:gpu_pool_unavailable:deadline"),
+        # the model ran and returned junk: a real wait, stays timed
+        (_fake_llm_response(content=""), None),
+        (_fake_llm_response(content=_VALID_DRAFT_JSON), None),
     ],
 )
-def test_a_canned_fallback_draft_marks_the_reply_degraded(monkeypatch, content, expected):
-    """2026-10-13: a draft carried by the canned template (_fallback_metacog_draft)
+def test_a_refused_metacog_draft_marks_the_reply_degraded(monkeypatch, reply, expected):
+    """2026-10-13: a draft the gateway refused falls back to the canned template and
     returns fast and "successfully"; the reply must be marked degraded so the caller's
-    rpc_request() never times it as the hop's speed (orion/core/bus/rpc_degraded.py)."""
+    rpc_request() never times it as the hop's speed (orion/core/bus/rpc_degraded.py).
+    A fallback after the model really ran is not marked (review finding)."""
     from orion.core.bus.rpc_degraded import begin_collecting, current_degraded_reason, end_collecting
 
     executor_module = _load_executor_module()
@@ -271,7 +284,7 @@ def test_a_canned_fallback_draft_marks_the_reply_degraded(monkeypatch, content, 
             self.bus = bus
 
         async def chat(self, **kwargs):
-            return _fake_llm_response(content=content)
+            return reply
 
     monkeypatch.setattr(executor_module, "LLMGatewayClient", FakeLLMClient)
     step = ExecutionStep(
@@ -298,7 +311,4 @@ def test_a_canned_fallback_draft_marks_the_reply_degraded(monkeypatch, content, 
 
     result, reason = asyncio.run(_run())
     assert result.status == "success"
-    if expected is None:
-        assert reason is None
-    else:
-        assert reason is not None and reason.startswith("metacog_draft_fallback:"), reason
+    assert reason == expected

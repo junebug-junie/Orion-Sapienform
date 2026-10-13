@@ -12,7 +12,6 @@ from pydantic import Field, ValidationError
 
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.core.bus.bus_service_chassis import ChassisConfig, Rabbit, Hunter
-from orion.core.bus.rpc_degraded import note_degraded
 from orion.core.bus.rpc_health_publish import rpc_health_publish_loop
 from orion.normalizers.agent_trace import build_agent_trace_summary
 
@@ -556,9 +555,6 @@ async def handle(env: BaseEnvelope) -> BaseEnvelope:
     except TimeoutError as e:
         fallback_verb = _safe_req_verb(locals().get("req", None), locals().get("raw_payload", None))
         logger.error("orch_timeout_terminalized corr=%s verb=%s error=%s", str(env.correlation_id), fallback_verb, str(e))
-        # A terminalized downstream timeout is not a round trip of this hop: the
-        # caller must count the reply degraded, not time it (rpc_degraded.py).
-        note_degraded("orch_downstream_timeout")
         if fallback_verb == "unknown":
             logger.info("orch_timeout_verb_fallback_applied corr=%s", str(env.correlation_id))
         payload = CortexClientResult(
@@ -584,7 +580,6 @@ async def handle(env: BaseEnvelope) -> BaseEnvelope:
 
     except Exception as e:
         logger.exception(f"Execution failed for verb {_safe_req_verb(locals().get('req', None), locals().get('raw_payload', None))}")
-        note_degraded("orch_error")
         return CortexOrchResult(
             source=sref,
             correlation_id=env.correlation_id,

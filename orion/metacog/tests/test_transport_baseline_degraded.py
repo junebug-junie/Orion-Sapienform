@@ -146,35 +146,66 @@ def test_a_degraded_only_window_breaks_the_traffic_time_chain() -> None:
     assert ks.active_s == 0.0 and ks.last_success_ts == 0.0
 
 
-def test_a_pool_with_degraded_replies_is_tainted_and_holds_the_floor_down() -> None:
+def test_a_mostly_degraded_pool_is_tainted_and_holds_the_floor_down() -> None:
     rng = random.Random(5)
     state = new_state(CFG)
     i = _warm_slow_hop(state, rng)
     ks = state.keys[KEY]
     fast_count, fast_mean, floor = ks.fast_count, ks.fast_mean, ks.floor
-    # Real survivors read faster than normal (a lighter load while the pool sheds):
-    res = _fold(state, i, _stats([4000.0] * 5, degraded=1))
+    # Real survivors read faster than normal while refusals outnumber them:
+    res = _fold(state, i, _stats([4000.0] * 5, degraded=6))
     assert res.observations[0].evaluated
     assert ks.fast_count == fast_count and ks.fast_mean == fast_mean  # no fast fold
     assert ks.floor == floor  # held: not evidence of a new best speed
     assert ks.level_mean < fast_mean  # the level itself is unguarded and still moves
     # The very same window with no degraded reply moves the floor down.
-    res = _fold(state, i + 1, _stats([4000.0] * 5))
+    _fold(state, i + 1, _stats([4000.0] * 5))
     assert ks.floor < floor
 
 
-def test_the_taint_survives_pooling_across_windows() -> None:
+def test_a_stray_refusal_does_not_freeze_the_baseline() -> None:
+    """Review finding: one refusal must not taint a pool, or a trickle at rest would
+    stop fast and the floor from ever learning (live at rest: ~1 refusal/day)."""
+    rng = random.Random(5)
+    state = new_state(CFG)
+    i = _warm_slow_hop(state, rng)
+    ks = state.keys[KEY]
+    fast_count, floor = ks.fast_count, ks.floor
+    _fold(state, i, _stats([4000.0] * 5, degraded=1))
+    assert ks.fast_count == fast_count + 1  # folded
+    assert ks.floor < floor  # free to move down
+    # exactly as many refusals as real calls is not "mostly degraded" either
+    fast_count = ks.fast_count
+    _fold(state, i + 1, _stats([4000.0] * 5, degraded=5))
+    assert ks.fast_count == fast_count + 1
+
+
+def test_refusals_between_pools_count_toward_the_next_pool() -> None:
     rng = random.Random(6)
     state = new_state(CFG)
     i = _warm_slow_hop(state, rng)
     ks = state.keys[KEY]
     floor = ks.floor
-    _fold(state, i, _stats([4000.0, 4000.0]))
-    _fold(state, i + 1, _stats([], degraded=3))  # degraded-only window inside the pool
-    assert ks.pend_degraded and ks.pend_tainted
-    _fold(state, i + 2, _stats([4000.0] * 3))  # pool reaches min_calls
+    _fold(state, i, _stats([], degraded=4))  # no pool open yet
+    assert ks.pend_degraded_n == 4 and ks.pend_n == 0
+    _fold(state, i + 1, _stats([4000.0, 4000.0]))
+    _fold(state, i + 2, _stats([], degraded=3))
+    _fold(state, i + 3, _stats([4000.0] * 3))  # pool reaches min_calls: 5 real vs 7 refused
     assert ks.floor == floor
-    assert not ks.pend_degraded  # reset with the pool
+    assert ks.pend_degraded_n == 0  # reset with the pool
+
+
+def test_refusals_plus_a_timeout_are_not_total_loss() -> None:
+    """Review finding: with refusals out of success_count, a shed window of refusals
+    and one timeout must not open zero_success (a false transport alarm)."""
+    rng = random.Random(2)
+    state = new_state(CFG)
+    i = _warm_slow_hop(state, rng)
+    res = _fold(state, i, _stats([], timeouts=1, degraded=30))
+    assert [e.condition for e in res.events] == ["timeout"]  # the timeout itself, nothing more
+    # a real total loss still opens zero_success
+    res = _fold(state, i + 40, _stats([], timeouts=2))
+    assert "zero_success" in [e.condition for e in res.events]
 
 
 def test_snapshot_without_degraded_count_folds_exactly_as_before() -> None:
@@ -189,20 +220,20 @@ def test_snapshot_without_degraded_count_folds_exactly_as_before() -> None:
     assert state_to_dict(a) == state_to_dict(b)
 
 
-def test_pend_degraded_round_trips_and_an_older_checkpoint_loads_without_it() -> None:
+def test_pend_degraded_n_round_trips_and_an_older_checkpoint_loads_without_it() -> None:
     rng = random.Random(1)
     state = new_state(CFG)
     i = _warm_slow_hop(state, rng)
     _fold(state, i, _stats([9000.0], degraded=2))  # pool open, degraded seen
     dumped = json.loads(json.dumps(state_to_dict(state)))
-    assert dumped["keys"][KEY]["pend_degraded"] is True
+    assert dumped["keys"][KEY]["pend_degraded_n"] == 2
     loaded, reason = load_state(dumped, CFG)
-    assert reason is None and loaded.keys[KEY].pend_degraded is True
+    assert reason is None and loaded.keys[KEY].pend_degraded_n == 2
 
-    del dumped["keys"][KEY]["pend_degraded"]  # a checkpoint written before 2026-10-13
+    del dumped["keys"][KEY]["pend_degraded_n"]  # a checkpoint written before 2026-10-13
     loaded, reason = load_state(dumped, CFG)
-    assert reason is None and loaded.keys[KEY].pend_degraded is False
+    assert reason is None and loaded.keys[KEY].pend_degraded_n == 0
 
-    dumped["keys"][KEY]["pend_degraded"] = "yes"
+    dumped["keys"][KEY]["pend_degraded_n"] = "yes"
     _, reason = load_state(dumped, CFG)
     assert reason and reason.startswith("malformed_state")

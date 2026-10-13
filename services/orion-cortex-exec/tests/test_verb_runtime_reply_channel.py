@@ -113,7 +113,8 @@ def test_verb_reply_is_stamped_degraded_when_handling_noted_it(monkeypatch) -> N
 
     reply = _run_verb(monkeypatch, ok=True, note="llm_gateway:gpu_pool_unavailable")
     assert degraded_reason(reply) == "llm_gateway:gpu_pool_unavailable"
-    assert degraded_reason(_run_verb(monkeypatch, ok=False, note=None)) == "exec_failed"
+    # a verb that failed after real work is not degraded: its wait was real
+    assert degraded_reason(_run_verb(monkeypatch, ok=False, note=None)) is None
     clean = _run_verb(monkeypatch, ok=True, note=None)
     assert degraded_reason(clean) is None and "rpc_degraded" not in clean.trace
     assert clean.trace.get("trace_id") == "t"

@@ -60,6 +60,11 @@ class OrionBusAsync:
         # long enough for rpc_request() to classify it (degraded or a real answer)
         # without decoding the reply a second time. Popped by rpc_request() always.
         self._rpc_reply_envelopes: dict[tuple[str, str], Any] = {}
+        # Keys rpc_request() itself is waiting on. Other code registers futures in
+        # _pending_rpc directly (orion-hub's harness_governor_client) and never pops
+        # the stash, so only these keys are stashed -- otherwise every such reply
+        # (often a large agent payload) would be held for the life of the process.
+        self._rpc_classify_keys: set[tuple[str, str]] = set()
         # docs/superpowers/specs/2026-07-23-transport-domain-rpc-health-redesign.md
         # step 2: in-process only, not shared across fork() children, same as every
         # other per-instance RPC state above. No periodic self-publish wired yet --
@@ -333,7 +338,8 @@ class OrionBusAsync:
         key = (channel, corr)
         fut = self._pending_rpc.pop(key, None)
         if fut is not None and not fut.done():
-            self._rpc_reply_envelopes[key] = decoded.envelope
+            if key in self._rpc_classify_keys:
+                self._rpc_reply_envelopes[key] = decoded.envelope
             fut.set_result(msg)
             logger.info("[rpc-fork] future resolved corr_id=%s reply_channel=%s", corr, channel)
 
@@ -677,6 +683,7 @@ class OrionBusAsync:
             key = (reply_channel, corr)
             fut = asyncio.get_running_loop().create_future()
             self._pending_rpc[key] = fut
+            self._rpc_classify_keys.add(key)
             try:
                 async with self._rpc_lock:
                     await self._rpc_subscribe(reply_channel)
@@ -755,6 +762,7 @@ class OrionBusAsync:
                 raise TimeoutError(f"RPC timeout waiting on {reply_channel}")
             finally:
                 self._pending_rpc.pop(key, None)
+                self._rpc_classify_keys.discard(key)
                 self._rpc_reply_envelopes.pop(key, None)
                 # Reply, timeout, publish error, or cancellation: drop the reply
                 # channel's subscription unless another pending call shares it.

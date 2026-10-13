@@ -51,6 +51,7 @@ from orion.schemas.actions.chat_history_compactor import ChatHistoryCompactorDig
 from orion.schemas.actions.github_compactor import GithubCompactorDigestV1
 from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
+from orion.core.bus.rpc_degraded import begin_collecting, end_collecting
 from orion.core.verbs import VerbResultV1
 from orion.journaler.schemas import JournalEntryDraftV1, JournalEntryWriteV1
 from orion.discussion_window.timeframe import parse_journal_discussion_lookback_seconds
@@ -617,15 +618,23 @@ async def _run_workflow_subverb(
         verb=verb,
         metadata=subrequest.context.metadata,
     )
-    result = await call_verb_runtime(
-        bus,
-        source=source,
-        client_request=subrequest,
-        correlation_id=correlation_id,
-        causality_chain=causality_chain,
-        trace=_ensure_trace(trace, correlation_id=correlation_id, workflow_id=workflow_id),
-        timeout_sec=float((subrequest.options or {}).get("timeout_sec", 900.0)),
-    )
+    # A workflow sub-verb is one part of the workflow's answer (some are side
+    # fetches): its degradation is counted on its own verb hop, but not relayed as
+    # the whole workflow reply's (orion/core/bus/rpc_degraded.py). A nested
+    # collector catches call_verb_runtime's relay and drops it.
+    token = begin_collecting()
+    try:
+        result = await call_verb_runtime(
+            bus,
+            source=source,
+            client_request=subrequest,
+            correlation_id=correlation_id,
+            causality_chain=causality_chain,
+            trace=_ensure_trace(trace, correlation_id=correlation_id, workflow_id=workflow_id),
+            timeout_sec=float((subrequest.options or {}).get("timeout_sec", 900.0)),
+        )
+    finally:
+        end_collecting(token)
     return result, _extract_result_payload(result)
 
 

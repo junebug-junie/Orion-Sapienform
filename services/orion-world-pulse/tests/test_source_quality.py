@@ -467,12 +467,12 @@ def test_registry_has_no_enabled_source_the_reader_cannot_use():
     for s in registry.sources:
         if not (s.enabled and s.approved):
             continue
-        hosts = set(s.domains) | {urlparse(s.url or "").hostname or ""}
+        hosts = set(s.domains) | {urlparse(u or "").hostname or "" for u in [s.url, *(s.urls or [])]}
         # Same list the reader skips on (PR #2634, live refusal evidence).
         assert not any(reader_block_reason(f"https://{h}/x") for h in hosts if h), s.source_id
         # Undated manual URLs can never pass the freshness window.
         assert s.strategy != "manual_urls", s.source_id
-        assert s.url, s.source_id
+        assert s.url or s.urls, s.source_id
 
 
 def test_every_digest_section_has_an_enabled_feed():
@@ -480,3 +480,13 @@ def test_every_digest_section_has_an_enabled_feed():
     covered = {c for s in registry.sources if s.enabled and s.approved for c in s.categories}
     for section in pipeline.SECTION_NAMES:
         assert section in covered, section
+
+
+def test_arxiv_gets_a_wider_freshness_window_than_news():
+    # arXiv dates papers by submission; a Monday run sees papers submitted Thu/Fri.
+    # Under the 3-day news window those would all drop as stale.
+    registry = load_source_registry(str(REPO_ROOT / "config" / "world_pulse" / "sources.yaml"))
+    arxiv = next(s for s in registry.sources if s.source_id == "arxiv_research")
+    assert arxiv.max_item_age_days is not None and arxiv.max_item_age_days >= 5
+    news = [s for s in registry.sources if s.enabled and s.approved and s.source_id != "arxiv_research"]
+    assert all(s.max_item_age_days is None for s in news)

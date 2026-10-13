@@ -230,3 +230,23 @@ def test_closes_are_recorded_by_reason():
     assert row.conditions_closed == {"saturation:went_silent": 1, "spike:calm": 1, "timeout:quiet": 1}
     assert row.conditions_opened == {"saturation": 1}
     TransportBaselineHourlyV1.model_validate(row.model_dump(mode="json"))
+
+
+def test_degraded_replies_are_summed_into_the_row_and_never_read_as_latency() -> None:
+    """2026-10-13: the hourly row records how many replies were degraded (refusals,
+    canned fallbacks) so a quiet-looking hour of a shed is visible, while the latency
+    readings stay built from real round trips only."""
+    gate = TransportBaselineGate(TransportBaselineConfig(), ())
+    acc = TransportBaselineHourly(config_fingerprint=gate.config.fingerprint())
+    for i in range(20):
+        stats = _stats([900.0] * 5)
+        stats["degraded_count"] = 7
+        res, _ = gate.process(_snap(i, {LLM: stats}), zen_state="zen", pressure=0.0, recall_enabled=True)
+        acc.observe(res, window_end_ts=_we(i))
+    (row,) = acc.flush_all(T0.timestamp() + 3 * 3600, emit_effective=False)
+    assert (row.success_count, row.degraded_count, row.timeout_count) == (100, 140, 0)
+    assert row.floor_ms == pytest.approx(900.0)
+    TransportBaselineHourlyV1.model_validate(row.model_dump(mode="json"))
+    old = row.model_dump(mode="json")
+    old.pop("degraded_count")  # a row produced before 2026-10-13
+    assert TransportBaselineHourlyV1.model_validate(old).degraded_count == 0

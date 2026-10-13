@@ -17,11 +17,19 @@ from orion.signals.registry import ORGAN_REGISTRY
 from orion.signals.signal_ids import make_signal_id
 
 
+def _delivered(payload: dict) -> int:
+    """Calls whose reply arrived: successes plus degraded replies
+    (RpcHealthSnapshotV1.degraded_count, 2026-10-13; absent = 0). A degraded reply --
+    a GPU-pool refusal, a canned fallback -- is a transport success: the bus carried
+    the request and the reply. This organ is transport health, so it counts them."""
+    return int(payload.get("success_count") or 0) + int(payload.get("degraded_count") or 0)
+
+
 def _level(payload: dict) -> float:
-    """Fraction of calls that succeeded in this window. An empty window (no calls at
+    """Fraction of calls that were delivered in this window. An empty window (no calls at
     all) is healthy-by-absence, not a failure -- level=1.0, but confidence stays low
     to reflect the lack of real evidence (see _confidence below)."""
-    success = int(payload.get("success_count") or 0)
+    success = _delivered(payload)
     timeout = int(payload.get("timeout_count") or 0)
     total = success + timeout
     if total == 0:
@@ -33,7 +41,7 @@ def _confidence(payload: dict) -> float:
     """More real calls observed this window = more confidence in `level`. Caps out at
     a modest sample size rather than requiring a huge window, since a healthy quiet
     period (fewer calls) is still meaningful evidence, not noise."""
-    success = int(payload.get("success_count") or 0)
+    success = _delivered(payload)
     timeout = int(payload.get("timeout_count") or 0)
     total = success + timeout
     if total == 0:

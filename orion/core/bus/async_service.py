@@ -18,6 +18,7 @@ from orion.schemas.registry import resolve as resolve_schema_id
 from .bus_schemas import BaseEnvelope, SYSTEM_ERROR_KINDS
 from .codec import OrionCodec
 from .enforce import enforcer
+from .rpc_degraded import degraded_reason
 from .rpc_health import RpcHealthAggregator, RpcHealthSnapshot
 from .velocity_keys import DEFAULT_BUCKET_TTL_SEC, velocity_key
 
@@ -55,6 +56,15 @@ class OrionBusAsync:
         # another coroutine is already waiting") and tears the connection down.
         self._rpc_anchor_channel = f"orion:rpc:worker-anchor:{uuid.uuid4().hex}"
         self._pending_rpc: dict[tuple[str, str], asyncio.Future] = {}
+        # Worker path: the reply envelope _handle_rpc_result already decoded, kept just
+        # long enough for rpc_request() to classify it (degraded or a real answer)
+        # without decoding the reply a second time. Popped by rpc_request() always.
+        self._rpc_reply_envelopes: dict[tuple[str, str], Any] = {}
+        # Keys rpc_request() itself is waiting on. Other code registers futures in
+        # _pending_rpc directly (orion-hub's harness_governor_client) and never pops
+        # the stash, so only these keys are stashed -- otherwise every such reply
+        # (often a large agent payload) would be held for the life of the process.
+        self._rpc_classify_keys: set[tuple[str, str]] = set()
         # docs/superpowers/specs/2026-07-23-transport-domain-rpc-health-redesign.md
         # step 2: in-process only, not shared across fork() children, same as every
         # other per-instance RPC state above. No periodic self-publish wired yet --
@@ -154,6 +164,47 @@ class OrionBusAsync:
         emit_rpc_timeout_grammar() separately if the hop should reach that mesh-wide
         fallback too."""
         self._rpc_health.record_hop_timeout(hop, elapsed_ms)
+
+    def record_hop_degraded(self, hop: str, elapsed_ms: Optional[float] = None) -> None:
+        """A hand-rolled hop's reply arrived but was marked degraded
+        (``orion.core.bus.rpc_degraded.degraded_reason``): counted, never timed.
+        In-memory only, never raises."""
+        self._rpc_health.record_hop_degraded(hop, elapsed_ms)
+
+    def _record_rpc_reply(
+        self,
+        *,
+        request_channel: str,
+        request_envelope: BaseEnvelope,
+        reply_envelope: Any,
+        elapsed_ms: float,
+        health_label: str | None,
+        corr: str,
+    ) -> None:
+        """Success or degraded, by the reply's own marker. Never raises: this sits on
+        rpc_request()'s success path, after the real reply is in hand."""
+        try:
+            reason = degraded_reason(reply_envelope, request_trace=getattr(request_envelope, "trace", None))
+        except Exception:
+            reason = None
+        if reason is None:
+            self._rpc_health.record_success(
+                request_channel=request_channel, latency_ms=elapsed_ms, health_label=health_label
+            )
+            return
+        logger.info(
+            "[rpc] reply degraded corr_id=%s request_channel=%s reason=%s elapsed_ms=%.1f",
+            corr,
+            request_channel,
+            reason,
+            elapsed_ms,
+        )
+        self._rpc_health.record_degraded(
+            request_channel=request_channel,
+            latency_ms=elapsed_ms,
+            health_label=health_label,
+            reason=reason,
+        )
 
     async def emit_rpc_timeout_grammar(
         self,
@@ -287,6 +338,8 @@ class OrionBusAsync:
         key = (channel, corr)
         fut = self._pending_rpc.pop(key, None)
         if fut is not None and not fut.done():
+            if key in self._rpc_classify_keys:
+                self._rpc_reply_envelopes[key] = decoded.envelope
             fut.set_result(msg)
             logger.info("[rpc-fork] future resolved corr_id=%s reply_channel=%s", corr, channel)
 
@@ -630,6 +683,7 @@ class OrionBusAsync:
             key = (reply_channel, corr)
             fut = asyncio.get_running_loop().create_future()
             self._pending_rpc[key] = fut
+            self._rpc_classify_keys.add(key)
             try:
                 async with self._rpc_lock:
                     await self._rpc_subscribe(reply_channel)
@@ -676,8 +730,13 @@ class OrionBusAsync:
                     reply_channel,
                     success_elapsed_ms,
                 )
-                self._rpc_health.record_success(
-                    request_channel=request_channel, latency_ms=success_elapsed_ms, health_label=health_label
+                self._record_rpc_reply(
+                    request_channel=request_channel,
+                    request_envelope=envelope,
+                    reply_envelope=self._rpc_reply_envelopes.pop(key, None),
+                    elapsed_ms=success_elapsed_ms,
+                    health_label=health_label,
+                    corr=corr,
                 )
                 return result
             except asyncio.TimeoutError:
@@ -703,6 +762,8 @@ class OrionBusAsync:
                 raise TimeoutError(f"RPC timeout waiting on {reply_channel}")
             finally:
                 self._pending_rpc.pop(key, None)
+                self._rpc_classify_keys.discard(key)
+                self._rpc_reply_envelopes.pop(key, None)
                 # Reply, timeout, publish error, or cancellation: drop the reply
                 # channel's subscription unless another pending call shares it.
                 await self.rpc_release_reply_channel(reply_channel)
@@ -734,10 +795,18 @@ class OrionBusAsync:
                             reply_channel,
                             success_elapsed_ms,
                         )
-                        self._rpc_health.record_success(
+                        try:
+                            decoded = self.codec.decode(msg.get("data"))
+                            reply_env = decoded.envelope if decoded.ok else None
+                        except Exception:
+                            reply_env = None
+                        self._record_rpc_reply(
                             request_channel=request_channel,
-                            latency_ms=success_elapsed_ms,
+                            request_envelope=envelope,
+                            reply_envelope=reply_env,
+                            elapsed_ms=success_elapsed_ms,
                             health_label=health_label,
+                            corr=corr,
                         )
                         return msg
 

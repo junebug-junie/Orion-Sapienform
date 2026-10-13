@@ -224,3 +224,25 @@ def test_registry_entry_shape() -> None:
         assert entry.organ_class == OrganClass.exogenous
         assert "orion:rpc_health:snapshot" in entry.bus_channels
         assert "rpc_transport_health" in entry.signal_kinds
+
+
+def test_degraded_replies_count_as_delivered_for_transport_health(
+    adapter: RpcHealthAdapter, norm_ctx: NormalizationContext
+) -> None:
+    """2026-10-13: a degraded reply (GPU-pool refusal, canned fallback) is excluded from
+    success_count by the producer, but the bus DID deliver it -- this is a transport organ,
+    so a window of only refusals is healthy transport with full confidence, not empty."""
+    only_refusals = adapter.adapt(
+        "orion:rpc_health:snapshot", _payload(success_count=0, timeout_count=0, degraded_count=20),
+        ORGAN_REGISTRY, {}, norm_ctx,
+    )
+    assert only_refusals.dimensions["level"] == 1.0
+    assert only_refusals.dimensions["confidence"] == 1.0
+    mixed = adapter.adapt(
+        "orion:rpc_health:snapshot", _payload(success_count=5, timeout_count=5, degraded_count=10),
+        ORGAN_REGISTRY, {}, norm_ctx,
+    )
+    assert mixed.dimensions["level"] == 0.75
+    # A producer that predates the field reads exactly as before.
+    old = adapter.adapt("orion:rpc_health:snapshot", _payload(), ORGAN_REGISTRY, {}, norm_ctx)
+    assert old.dimensions["level"] == 0.9

@@ -1,0 +1,28 @@
+name: orion-world-pulse tests
+
+on:
+  pull_request:
+    paths:
+      - "services/orion-world-pulse/**"
+      - "config/world_pulse/**"
+      - "orion/schemas/world_pulse.py"
+      - "orion/world_pulse_read/seeds.py"
+      - ".github/workflows/orion-world-pulse-tests.yml"
+  push:
+    branches: [main]
+
+jobs:
+  world-pulse:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install service requirements
+        run: python -m pip install -r services/orion-world-pulse/requirements.txt pytest-asyncio
+      - name: World pulse unit + pipeline tests (offline; arXiv API is fixture-mocked)
+        env:
+          PYTHONPATH: ${{ github.workspace }}:${{ github.workspace }}/services/orion-world-pulse
+        run: python -m pytest -q services/orion-world-pulse/tests

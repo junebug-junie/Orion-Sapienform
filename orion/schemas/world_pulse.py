@@ -72,6 +72,10 @@ class WorldPulseSourceV1(_WPBase):
     politics_allowed: bool = True
     requires_corroboration: bool = False
     max_articles_per_day: int = Field(default=10, ge=0)
+    # Per-source override of WORLD_PULSE_MAX_ITEM_AGE_DAYS. For sources whose
+    # item date is not the publish-to-reader date (arXiv dates a paper by
+    # submission; it is announced 1-3 days later, longer over a weekend).
+    max_item_age_days: float | None = Field(default=None, ge=0)
     fetch_timeout_seconds: int | None = Field(default=None, ge=1)
     user_agent: str | None = None
     sitemap_max_urls: int = Field(default=100, ge=1, le=500)

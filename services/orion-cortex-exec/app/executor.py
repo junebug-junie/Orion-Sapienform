@@ -26,6 +26,8 @@ from pydantic import BaseModel, ValidationError
 from orion.llm.routes import LLM_ROUTE_ALIASES, METACOG_LLM_ROUTES, normalize_llm_route
 from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import AttachmentRefV1, BaseEnvelope, ChatRequestPayload, LLMMessage, ServiceRef
+from orion.core.bus.rpc_degraded import note_degraded
+from orion.schemas.llm_inference_projection import REFUSAL_CLASSES, REQUEST_INVALID_CLASSES
 from orion.core.contracts.recall import RecallQueryV1
 from orion.cognition.recall_query import (
     cap_retrieval_query,
@@ -1844,6 +1846,24 @@ def gateway_error_step_failure(result_payload: Any) -> Optional[str]:
     return named
 
 
+def gateway_refusal(result_payload: Any) -> Optional[str]:
+    """``gateway_error_step_failure``'s name for the reply, but only when the gateway
+    *declined the work* (a refusal or an unusable request -- the inference contract's
+    REFUSAL_CLASSES / REQUEST_INVALID_CLASSES). Such a reply is not a round trip, so
+    this request's own reply is marked degraded (orion/core/bus/rpc_degraded.py).
+    A backend failure (upstream_timeout, upstream_http_5xx) is not: the wait was real.
+    Accepts a dict or a pydantic payload. Never raises."""
+    try:
+        payload = result_payload.model_dump(mode="json") if hasattr(result_payload, "model_dump") else result_payload
+        named = gateway_error_step_failure(payload)
+        if named is None:
+            return None
+        error = str((payload.get("raw") or {}).get("error") or "").strip()
+        return named if error in REFUSAL_CLASSES or error in REQUEST_INVALID_CLASSES else None
+    except Exception:
+        return None
+
+
 def _extract_llm_text(res: Any) -> str:
     """Safely extract text content from various LLM result shapes."""
     if not res:
@@ -3514,6 +3534,16 @@ async def call_step_services(
                         finish_reason=finish_reason,
                         raw_content=raw_content if metacog_budget_ok else "",
                     )
+                    if draft_mode == "fallback":
+                        # The canned template carries this entry. When the model was
+                        # never asked (prompt skipped) or the gateway refused, the reply
+                        # is degraded -- its speed is not the hop's (rpc_degraded.py).
+                        # A model that ran and produced unusable output took its real
+                        # time: that reply stays timed.
+                        refused = gateway_refusal(llm_res) if llm_res is not None else None
+                        skipped = draft_error in ("prompt_context_overflow", "prompt_budget_exceeded")
+                        if refused or skipped:
+                            note_degraded(f"metacog_draft_fallback:{refused or draft_error}")
                     _set_metacog_draft_telemetry(
                         base_entry,
                         mode=draft_mode,
@@ -3649,6 +3679,8 @@ async def call_step_services(
                         "error": str(e),
                         "fallback_reason": "llm_exception",
                     }
+                    # Not marked degraded: an exception here is a parsing/LLM failure
+                    # after real work, not a declined call (the plan step fails).
                     by_service = ctx.get("prior_step_results_by_service")
                     if not isinstance(by_service, dict):
                         by_service = {}
@@ -4476,6 +4508,12 @@ async def call_step_services(
                         raw_payload.get("details"),
                     )
                     logs.append(f"fail <- {service}: {gateway_failure}")
+                    # A refusal is not an answer: the caller's RPC health must count
+                    # this request's reply degraded, not time it (rpc_degraded.py;
+                    # 2026-10-08 gpu_pool_unavailable). A backend failure stays timed.
+                    refusal = gateway_refusal(result_payload)
+                    if refusal is not None:
+                        note_degraded(f"llm_gateway:{refusal}")
                     merged_result[service] = result_payload
                     merged_result["error"] = {"message": gateway_failure, "service": service}
                     _record_scoped_step("fail", gateway_failure, merged_result, logs)

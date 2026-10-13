@@ -74,6 +74,12 @@ class Settings(BaseSettings):
     world_pulse_stance_max_topics: int = Field(5, alias="WORLD_PULSE_STANCE_MAX_TOPICS")
     world_pulse_politics_stance_default: str = Field("only_when_requested", alias="WORLD_PULSE_POLITICS_STANCE_DEFAULT")
 
+    # Read-only DSN for the reading queue (world_pulse_read_seed). The arXiv source
+    # reads every arXiv URL already queued/read so it never re-picks a paper Orion has
+    # seen (abs/pdf/ar5iv/vN all count as the same paper). Blank = no dedupe (logged);
+    # Hub's exact-URL already_read gate is then the only guard.
+    world_pulse_read_history_db_url: str = Field("", alias="WORLD_PULSE_READ_HISTORY_DB_URL")
+
     world_pulse_sources_config_path: str = Field(
         "config/world_pulse/sources.yaml",
         alias="WORLD_PULSE_SOURCES_CONFIG_PATH",

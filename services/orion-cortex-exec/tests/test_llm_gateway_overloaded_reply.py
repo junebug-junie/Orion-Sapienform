@@ -211,3 +211,31 @@ def test_stance_step_with_real_content_still_succeeds() -> None:
 
     assert result.status == "success"
     assert result.error is None
+
+
+def test_a_refused_gateway_reply_marks_the_exec_reply_degraded() -> None:
+    """2026-10-13: the refusal fails the step AND marks this request's reply degraded,
+    so cortex-orch's rpc_request() counts it instead of timing ~0.3 s as the background
+    lane's speed (live 2026-10-08: 263/263 journal.compose were gpu_pool_unavailable)."""
+    from orion.core.bus.rpc_degraded import begin_collecting, current_degraded_reason, end_collecting
+
+    def _run(reply):
+        async def _inner():
+            token = begin_collecting()
+            try:
+                with patch("app.executor.LLMGatewayClient.chat", new=AsyncMock(return_value=reply)):
+                    await call_step_services(
+                        bus=MagicMock(), source=ServiceRef(name="test"), step=_stance_step(),
+                        ctx=_ctx(), correlation_id=str(uuid4()),
+                    )
+                return current_degraded_reason()
+            finally:
+                end_collecting(token)
+        return asyncio.run(_inner())
+
+    pool_refusal = {"text": "", "content": "", "raw": {"error": "gpu_pool_unavailable", "details": {"reason": "deadline"}}}
+    assert _run(ChatResponsePayload.model_validate(pool_refusal)) == "llm_gateway:gpu_pool_unavailable:deadline"
+    assert _run(ChatResponsePayload(content='{"disposition":"proceed"}')) is None
+    # A backend failure fails the step too, but the backend was asked and the wait was
+    # real: not degraded (review finding -- it is the slowness the baseline must see).
+    assert _run(ChatResponsePayload.model_validate(UPSTREAM_500_REPLY)) is None

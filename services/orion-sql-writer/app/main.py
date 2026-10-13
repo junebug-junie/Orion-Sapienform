@@ -394,6 +394,11 @@ async def lifespan(app: FastAPI):
             conn.exec_driver_sql(
                 "ALTER TABLE IF EXISTS transport_baseline_hourly ADD COLUMN IF NOT EXISTS conditions_closed JSON;"
             )
+            # 2026-10-13 degraded replies (TransportBaselineHourlyV1.degraded_count),
+            # same hazard. Nullable: rows written before this have no such reading.
+            conn.exec_driver_sql(
+                "ALTER TABLE IF EXISTS transport_baseline_hourly ADD COLUMN IF NOT EXISTS degraded_count INTEGER;"
+            )
             conn.exec_driver_sql(
                 "ALTER TABLE journal_entry_index ADD COLUMN IF NOT EXISTS llm_mean_logprob DOUBLE PRECISION;"
             )

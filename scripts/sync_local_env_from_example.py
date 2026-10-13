@@ -233,6 +233,9 @@ SYNC_PREFIXES = (
     # without this prefix the default sync reports "no changes" and the keys
     # never land in the live .env.
     "HUB_WORLD_PULSE_READ_",
+    # orion-world-pulse's arXiv dedupe DSN (reading-queue history). Same blind
+    # spot: no WORLD_PULSE_ prefix is synced, so it would never land.
+    "WORLD_PULSE_READ_HISTORY_",
     "HUB_READING_",
     "HUB_LLM_GATEWAY_",
     "HUB_CHAT_ATTACHMENT_",

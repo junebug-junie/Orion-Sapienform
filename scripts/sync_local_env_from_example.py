@@ -440,6 +440,8 @@ SYNC_EXACT = frozenset(
         "DREAM_AROUSAL_MAX_HOLD_HOURS",
         # Temporal Self R3 reader 4 (orion-proposal-runtime): no ORION_VISUAL_ prefix is synced.
         "ORION_VISUAL_BASELINE_AROUSAL_ENABLED",
+        # Temporal Self R3 reader 6 (orion-hub mutation cycle): no SUBSTRATE_AUTONOMY_ prefix is synced.
+        "SUBSTRATE_AUTONOMY_AROUSAL_ENABLED",
         # Reverie/dream weave — Phase F (orion-dream REM compaction, default-off).
         "ORION_DREAM_REM_ENABLED",
         "CHANNEL_DREAM_COMPACTION_DELTA",

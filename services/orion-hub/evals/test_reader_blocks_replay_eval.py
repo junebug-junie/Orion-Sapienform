@@ -35,6 +35,10 @@ def test_every_bbc_and_npr_failure_is_skipped_before_a_turn() -> None:
     assert by_site["bbc.co.uk"] == 18 and by_site["npr.org"] == 17
     # After: every one is skipped without a turn.
     assert skipped == {"bbc.co.uk": 18, "npr.org": 17}
+    # Every BBC/NPR-family host (www., text., feeds., bbc.com, bbci) is caught.
+    family = [r["url"] for r in failed if any(
+        s in (urlsplit(r["url"]).hostname or "") for s in ("bbc.", "bbci.", "npr.org"))]
+    assert family and all(reader_block_reason(u) for u in family)
     # NASA thin_fetch is a reachable site with short digests, not a block.
     assert all(
         reader_block_reason(r["url"]) is None

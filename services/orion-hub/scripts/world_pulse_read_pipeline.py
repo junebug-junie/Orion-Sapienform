@@ -41,6 +41,7 @@ from orion.world_pulse_read.queue import (
     skip_stale_digest_items,
     mark_seed_done,
     mark_seed_failed,
+    has_pending_durable_turn,
     mark_seed_skipped,
     reclaim_stale_claimed,
     request_for_seed,
@@ -398,8 +399,14 @@ class WorldPulseReadPipeline:
 
         # Publishers that refuse the fetch tool (reader_blocks.py): every turn on
         # them ends no_read_evidence. Any requester -- the block is the same.
+        # New rows are skipped at enqueue; this catches rows queued before that.
+        # A seed with a submitted, unconsumed turn is left to finish it.
+        # The lifecycle has no "skipped" stage: stage1_failed is the terminal
+        # event, and its error's `source_blocks_reader:` prefix marks the skip.
         blocked = reader_block_reason(seed.url)
-        if blocked is not None:
+        if blocked is not None and not await self._with_conn(
+            lambda conn: has_pending_durable_turn(conn, seed.seed_id, 1)
+        ):
             await self._with_conn(
                 lambda conn: mark_seed_skipped(conn, seed.seed_id, reason=blocked)
             )

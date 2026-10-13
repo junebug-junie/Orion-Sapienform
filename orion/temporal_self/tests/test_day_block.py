@@ -10,11 +10,11 @@ from orion.temporal_self.tests.patch4_fixtures import day_1009
 BLOCK_1009 = """Closed day 2026-10-09 (America/Denver, midnight to midnight), as recorded at close, 2026-10-10 00:00 local: rows that arrived later are not in it. 291 arcs: 49 attention, 2 conversation, 8 curiosity, 2 sleep, 2 concern, 184 reverie, 44 interoception [day:2026-10-09].
 Talked with Juniper: 15:00 [arc:2545de72655edb66]; 18:08 [arc:b320b6c7e1308151].
 Attention, most time first:
-- Harness closure prediction error: 2 h 15 min over 11 arcs, 11 returns [arc:2ce0b486a356bbd2].
-- Execution prediction error: 2 h 14 min over 16 arcs, 13 returns [arc:7bf5c22449afc56d].
-- Chat prediction error: 1 h 17 min over 8 arcs, 3 returns [arc:e5f240a28cd2b208].
-- Codebase prediction error: 53 min over 7 arcs, 0 returns [arc:fda9750a570168c3].
-- Route prediction error: 23 min over 4 arcs, 1 return [arc:f6ddd30f4a7edd2b].
+- Harness closure prediction error: 2 h 15 min over 11 arcs [day:2026-10-09]; longest 39 min, 3 returns [arc:2ce0b486a356bbd2].
+- Execution prediction error: 2 h 14 min over 16 arcs [day:2026-10-09]; longest 31 min, 3 returns [arc:7bf5c22449afc56d].
+- Chat prediction error: 1 h 17 min over 8 arcs [day:2026-10-09]; longest 19 min, 3 returns [arc:e5f240a28cd2b208].
+- Codebase prediction error: 53 min over 7 arcs [day:2026-10-09]; longest 14 min, 0 returns [arc:fda9750a570168c3].
+- Route prediction error: 23 min over 4 arcs [day:2026-10-09]; longest 16 min, 1 return [arc:f6ddd30f4a7edd2b].
 Curiosity runs (8):
 - 10-08 13:56, 20 h 35 min (process longer than 4 h: its start column may predate a stall or retry) [arc:a6e49188fd4f7fa1].
 - 08:05, 51 min [arc:9d0862f139025ffb].
@@ -88,3 +88,46 @@ def test_empty_closed_day_is_a_real_record_not_a_placeholder():
         "constraint_event_ids": [], "warnings": []})})
     text = render_closed_day_block(day).text
     assert text.splitlines()[1] == "No arcs were recorded on this day [day:2026-10-09]."
+
+
+def test_attention_line_numbers_match_what_they_cite():
+    """#2623 truth eval: a group total cites the day (whose record holds it), the cited arc's own
+    dwell and returns cite the arc. A one-arc group states only that arc's numbers."""
+    day = day_1009()
+    block = render_closed_day_block(day)
+    by_id = {a.arc_id: a for a in day.arcs}
+    line = next(l for l in block.text.splitlines() if l.startswith("- Harness closure prediction error:"))
+    assert by_id["2ce0b486a356bbd2"].attention_returns == 3 and "3 returns [arc:2ce0b486a356bbd2]" in line
+    group = block.records["day:2026-10-09"]["attention_groups"][by_id["2ce0b486a356bbd2"].subject_ref]
+    assert group["arcs"] == 11 and "over 11 arcs [day:2026-10-09]" in line
+    assert len(block.records["day:2026-10-09"]["attention_groups"]) == 5
+
+    one = day.model_copy(update={"arcs": [by_id["2ce0b486a356bbd2"]]})
+    solo = render_closed_day_block(one).text.splitlines()
+    assert "- Harness closure prediction error: 39 min, 3 returns [arc:2ce0b486a356bbd2]." in solo
+
+
+def test_attention_groups_follow_the_lines_that_survive_the_cap():
+    day = day_1009()
+    block = render_closed_day_block(day, max_chars=1000)
+    groups = block.records["day:2026-10-09"]["attention_groups"]
+    assert groups, block.text
+    for subject_ref in groups:
+        label = next(a.subject_label for a in day.arcs if a.subject_ref == subject_ref and a.kind == "attention")
+        assert any(l.startswith(f"- {label}:") for l in block.text.splitlines())
+    assert len(groups) < 5
+
+
+def test_same_label_groups_keep_only_the_one_whose_line_survives():
+    day = day_1009()
+    by_id = {a.arc_id: a for a in day.arcs}
+    harness_ref = by_id["2ce0b486a356bbd2"].subject_ref
+    route_ref = by_id["f6ddd30f4a7edd2b"].subject_ref
+    # Give the Route group the Harness label: same text, different subject.
+    arcs = [a.model_copy(update={"subject_label": by_id["2ce0b486a356bbd2"].subject_label})
+            if a.subject_ref == route_ref else a for a in day.arcs]
+    full = render_closed_day_block(day.model_copy(update={"arcs": arcs}))
+    assert {harness_ref, route_ref} <= set(full.records["day:2026-10-09"]["attention_groups"])
+    capped = render_closed_day_block(day.model_copy(update={"arcs": arcs}), max_chars=1000)
+    kept = capped.records["day:2026-10-09"]["attention_groups"]
+    assert harness_ref in kept and route_ref not in kept

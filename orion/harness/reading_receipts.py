@@ -21,6 +21,7 @@ from orion.schemas.reading import (
     SourceFetchEvidenceV1,
 )
 from orion.fcc.mcp_names import CONTEXT_MODE_PLUGIN, ORION_READING, mcp_tool
+from orion.world_pulse_read.fetch_provenance import fetch_http_error_status
 from orion.world_pulse_read.tools import deterministic_reading_request_id
 from orion.world_pulse_read.urls import normalize_reading_source
 
@@ -236,7 +237,10 @@ class ReadingReceiptTracker:
             if not block.get("is_error") and _usable_fetch_result(
                 pending.tool_name, body
             ):
-                self._successful_fetch_urls.append(pending.url)
+                # An HTTP error notice is still reported (Hub judges it, and the
+                # trace keeps the record), but it is not a read of the source.
+                if fetch_http_error_status(pending.tool_name, body.strip()) is None:
+                    self._successful_fetch_urls.append(pending.url)
                 self._successful_fetches.append(
                     SourceFetchEvidenceV1(
                         url=pending.url,
@@ -272,9 +276,11 @@ class ReadingReceiptTracker:
         recommendation.receipt = receipt
 
     def source_fetches(self) -> list[SourceFetchEvidenceV1]:
-        """Every fetch-tool call this turn whose tool_result carried usable
-        source content (same rule ``outcomes()`` uses for ``source_read``).
-        Tool-trace evidence, not model prose -- see SourceFetchEvidenceV1."""
+        """Every fetch-tool call this turn whose tool_result carried a body
+        (same rule ``outcomes()`` uses for ``source_read``, except that a
+        WebFetch HTTP error notice is reported here but is not ``source_read``;
+        Hub's read_evidence.py rejects it from the text). Tool-trace evidence,
+        not model prose -- see SourceFetchEvidenceV1."""
         return list(self._successful_fetches)
 
     def outcomes(self) -> list[ReadingRecommendationOutcomeV1]:

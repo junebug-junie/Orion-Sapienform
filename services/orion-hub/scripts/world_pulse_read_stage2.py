@@ -23,7 +23,7 @@ from orion.core.bus.bus_schemas import ServiceRef
 from orion.core.llm_json import parse_json_object
 from orion.world_pulse_read.journal import publish_journal
 from orion.llm.routes import fcc_model_for_route
-from orion.schemas.reading import ReadingRequestedV1
+from orion.schemas.reading import ReadingRequestedV1, SourceFetchEvidenceV1
 from orion.schemas.reading_turn import ReadingRunBriefV1
 from orion.world_pulse_read.durable import (
     ReadingCancelled,
@@ -79,7 +79,13 @@ from orion.world_pulse_read.queue import (
     skip_already_read_stage2,
 )
 from orion.world_pulse_read.retry import is_refused_before_work
-from orion.world_pulse_read.read_evidence import NO_READ_EVIDENCE
+from orion.world_pulse_read.fetch_provenance import (
+    hop_allowlist,
+    hop_refusal_reason,
+    parent_read_state,
+    reached_pages,
+)
+from orion.world_pulse_read.read_evidence import NO_READ_EVIDENCE, NO_READ_EVIDENCE_HTTP_ERROR
 from orion.world_pulse_read.wallet_a import (
     WalletAInputs,
     read_wallet_a_retry_wait,
@@ -130,6 +136,17 @@ class GenerateOutcome(NamedTuple):
     text: str
     fail_reason: Optional[str] = None
     trace_id: str | None = None
+    # The Stage 2 turn's own fetches (harness tool trace, with text on a reading
+    # turn). Hop provenance only: a URL it reached, or a link in what it read,
+    # may re-enter Stage 1.
+    source_fetches: Optional[list[SourceFetchEvidenceV1]] = None
+
+
+class ParentRead(NamedTuple):
+    """What the Stage 1 read behind this handoff actually retained."""
+
+    texts: list[tuple[str, str]]  # (page url, retained text) -- pages, not HTTP error notices
+    dead: bool  # see fetch_provenance.parent_read_state
 
 
 def _reason_from_non_final_frame(frames: list[Any]) -> str:
@@ -207,7 +224,11 @@ def _build_stage2_prompt(
         f'  "seed_id": {handoff.seed_ref.seed_id!r}\n'
         "}\n"
         "candidate_priors MUST be objects with claim (not bare strings). "
-        "priors_tested MUST be objects with claim_ref. producer_hint and created_at are forced server-side."
+        "priors_tested MUST be objects with claim_ref. producer_hint and created_at are forced server-side. "
+        # Enforced server-side (fetch_provenance.py); said here so the model does not
+        # spend output on hops that are dropped.
+        "need_stage1_urls may only hold URLs written in a page that was fetched (by you this "
+        "turn, or by Stage 1) or URLs you fetched yourself this turn; a guessed URL is dropped, never read."
         # Only when this read has retained text, stored concepts and existing candidates
         # (orion/world_pulse_read/assertions.py); otherwise the prompt is unchanged.
         + claim_prompt_section(claim_context or ClaimContextV1())
@@ -331,6 +352,11 @@ class WorldPulseReadStage2Pipeline:
         self._task: Optional[asyncio.Task] = None
         self._stop = asyncio.Event()
         self.last_round_trips: int = 0
+        self._stage2_fetches: list[SourceFetchEvidenceV1] = []
+        # Refused Stage 1 re-entries by reason, since process start (like
+        # unknown_keys_dropped_total). Each refusal is logged with its URL; the stored
+        # stage2_result_json keeps the model's need_stage1_urls as asked.
+        self.hops_refused_total: dict[str, int] = {}
         # Running count of unknown top-level keys dropped from model output
         # (each is also a WARNING log line naming the keys).
         self.unknown_keys_dropped_total: int = 0
@@ -522,11 +548,31 @@ class WorldPulseReadStage2Pipeline:
             )
             return NO_READ_EVIDENCE
 
+        parent = await self._parent_read(handoff)
+        if parent.dead:
+            # A read stored `done` on nothing but "The server returned HTTP 404"
+            # (every such row before the Stage 1 status check). No second pass,
+            # no claims, and no hop chain from a page that was never there.
+            await self._with_conn(
+                lambda conn: mark_stage2_skipped(
+                    conn, claim.seed.seed_id, reason=NO_READ_EVIDENCE_HTTP_ERROR
+                )
+            )
+            logger.info(
+                "world_pulse_read_stage2_skipped_dead_parent seed=%s", claim.seed.seed_id
+            )
+            await publish_lifecycle(
+                self._bus, claim.seed, "stage2_failed", source=self._source_ref,
+                error=NO_READ_EVIDENCE_HTTP_ERROR,
+            )
+            return NO_READ_EVIDENCE_HTTP_ERROR
+
         # Debit only once a turn is actually about to run: an invalid stored
         # handoff never reaches the model and must not spend a Wallet B slot.
         receipt = None
         self._settlement_run_id = None
         self._claim_context = await self._build_claim_context(handoff)
+        self._stage2_fetches = []
 
         try:
             result = _as_stage2_result(
@@ -553,8 +599,22 @@ class WorldPulseReadStage2Pipeline:
         await self._settle_wallet(redis, receipt, None, claim.seed.seed_id)
 
         result.request = request_for_seed(claim.seed)
+        allowed = self._hop_allowlist(parent)
+        hops_refused: list[dict[str, str]] = []
         round_trips = 0
         for url in result.need_stage1_urls:
+            refused = hop_refusal_reason(url, allowed)
+            if refused is not None:
+                # A model-written URL nobody fetched or linked (live 2026-10-13:
+                # three guessed CoreWeave siblings, each a 404 read). Not a
+                # round trip; the rest of the list is still considered.
+                logger.info(
+                    "world_pulse_read_stage2_reentry_refused reason=%s seed=%s url=%s",
+                    refused, claim.seed.seed_id, url,
+                )
+                self.hops_refused_total[refused] = self.hops_refused_total.get(refused, 0) + 1
+                hops_refused.append({"url": url, "reason": refused})
+                continue
             if round_trips >= self.max_round_trips:
                 logger.info(
                     "world_pulse_read_stage2_round_trip_ceiling seed=%s cap=%s",
@@ -580,6 +640,11 @@ class WorldPulseReadStage2Pipeline:
             round_trips += 1
         self.last_round_trips = round_trips
         result.round_trips = round_trips
+        if hops_refused:
+            logger.info(
+                "world_pulse_read_stage2_hops seed=%s asked=%d refused=%d followed=%d",
+                claim.seed.seed_id, len(result.need_stage1_urls), len(hops_refused), round_trips,
+            )
         result = await self._record_claims(claim.seed.seed_id, result)
 
         try:
@@ -818,6 +883,28 @@ class WorldPulseReadStage2Pipeline:
             except Exception:
                 logger.warning("reading_journal_replay_failed seed=%s", row["seed_id"], exc_info=True)
 
+    async def _parent_read(self, handoff: WorldPulseReadHandoffV1) -> ParentRead:
+        """Retained Stage 1 texts for hop provenance, and whether the read was dead.
+        A load failure is "unknown", never "dead": it costs the hops, not the pass."""
+        evidence = handoff.read_evidence
+        try:
+            rows = await self._with_conn(
+                lambda conn: load_retained_texts(conn, evidence, drop_http_errors=False)
+            ) or []
+        except Exception:  # noqa: BLE001
+            logger.warning("world_pulse_read_stage2_parent_text_unavailable seed=%s",
+                           handoff.seed_ref.seed_id, exc_info=True)
+            return ParentRead(texts=[], dead=False)
+        texts, dead = parent_read_state(evidence, rows)
+        return ParentRead(texts=texts, dead=dead)
+
+    def _hop_allowlist(self, parent: ParentRead) -> set[str]:
+        """URLs Stage 1 re-entry may follow: links written in the parent's retained
+        text or in the Stage 2 turn's own fetch results, plus URLs a Stage 2 fetch
+        reached with a page (not an HTTP error notice)."""
+        reached, texts = reached_pages(self._stage2_fetches)
+        return hop_allowlist([*parent.texts, *texts], reached)
+
     async def _reenter_stage1(
         self, url: str, *, parent_seed: WorldPulseReadSeedV1
     ) -> str | None:
@@ -890,6 +977,7 @@ class WorldPulseReadStage2Pipeline:
             retrieval_query=reading_retrieval_query(handoff.seed_ref, handoff.what_i_learned),
         )
         trace_id = outcome.trace_id or trace_id
+        self._stage2_fetches = list(outcome.source_fetches or [])
         if not outcome.text:
             raise ValueError(outcome.fail_reason or "empty_generation")
         parsed = parse_json_object(outcome.text)
@@ -921,4 +1009,5 @@ class WorldPulseReadStage2Pipeline:
         self._settlement_run_id = request.run_id
         self._settlement_seed_id = seed_id
         result = await poll_turn(request, self.durable_url)
-        return GenerateOutcome(result.text, result.error, result.correlation_id)
+        return GenerateOutcome(result.text, result.error, result.correlation_id,
+                               source_fetches=result.source_fetches)

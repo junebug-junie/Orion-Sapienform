@@ -26,6 +26,7 @@ from app.ambient_audio_snapshot import load_ambient_audio_snapshot
 from app.ambient_spike_detector import AmbientSpikeDetector, AmbientSpikeDetectorConfig
 from app.cabinet_snapshot import load_cabinet_sensors_snapshot
 from app.metrics import collect_biometrics, collect_disk_capacity
+from app.vector_db_footprint import VectorDbFootprintPoller
 from app.ilo import IloPoller, parse_proxy_bmcs
 from app.pdu import PduPoller, parse_outlets, parse_proxy_outlets
 from orion.telemetry.biometrics_pipeline import (
@@ -188,6 +189,17 @@ _ilo_poller = IloPoller(
     timeout_sec=settings.ILO_REQUEST_TIMEOUT_SEC,
 )
 
+# Chroma footprint (size on disk + rows per collection). Slow background poll; the
+# heartbeat only reads its cache. Nodes without the Chroma dir report not_present.
+_vector_db_poller = VectorDbFootprintPoller(
+    enabled=settings.VECTOR_DB_FOOTPRINT_ENABLED,
+    data_path=settings.VECTOR_DB_DATA_PATH,
+    base_url=settings.VECTOR_DB_URL,
+    alert_bytes=settings.VECTOR_DB_ALERT_BYTES,
+    interval_sec=settings.VECTOR_DB_POLL_INTERVAL_SEC,
+    timeout_sec=settings.VECTOR_DB_REQUEST_TIMEOUT_SEC,
+)
+
 # Per-outlet power from the rack PDU. This is what gives circe a chassis figure at all: it
 # has no reachable BMC, so `_ilo_poller` is permanently `not_configured` there and every fleet
 # total has carried `measurements_missing: {"chassis_watts": ["circe"]}`. Configured per node
@@ -291,6 +303,7 @@ def _heartbeat_details() -> Dict[str, Any]:
     return {
         **collect_disk_capacity(settings.DISK_CAPACITY_MOUNTS),
         **_ilo_poller.details(),
+        **_vector_db_poller.details(),
     }
 
 
@@ -665,6 +678,7 @@ async def lifespan(app: FastAPI):
     hunter_stop = asyncio.Event()
 
     await _ilo_poller.start_background()
+    await _vector_db_poller.start_background()
     await _pdu_poller.start_background()
     for _proxy in _pdu_proxy_pollers.values():
         await _proxy.start_background()
@@ -711,6 +725,7 @@ async def lifespan(app: FastAPI):
             except Exception:
                 hunter_task.cancel()
         await _ilo_poller.stop()
+        await _vector_db_poller.stop()
         await _pdu_poller.stop()
         for _proxy in _pdu_proxy_pollers.values():
             await _proxy.stop()

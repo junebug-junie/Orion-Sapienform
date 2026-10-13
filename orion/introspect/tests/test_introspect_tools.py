@@ -53,7 +53,7 @@ def _invoke(bus, name="reading_results", args=None):
 
 def test_tool_specs_list_reading_results_then_dreams_then_curiosity_then_orion_day():
     assert [s.name for s in IntrospectTools(ReplyBus(), BINDING).tool_specs()] == [
-        "reading_results", "dreams", "curiosity", "orion_day", "record_correction",
+        "reading_results", "dreams", "curiosity", "orion_day", "record_correction", "node_history",
     ]
 
 
@@ -260,3 +260,39 @@ def test_curiosity_description_names_failures_labels_and_unknown():
     for phrase in ("failures are part of your history", "not established fact", "kind=self_question",
                    "graph_read=false means the hop counts are unknown", "never that no run happened"):
         assert phrase in spec.description
+
+
+def test_node_history_validates_then_rpcs_to_its_own_channel():
+    from orion.introspect.transport import NODE_HISTORY_REQUEST_CHANNEL
+    from orion.introspect.tools import NODE_HISTORY_DESCRIPTION
+
+    bus = DreamBus(IntrospectResultV1(
+        ok=True, operation="node_history", as_of=NOW, total_available=0,
+    ).model_dump(mode="json"))
+    out = asyncio.run(IntrospectTools(bus, BINDING).invoke(
+        "node_history", {"node_id": "node:substrate.bus_synaptic", "hours": 72},
+    ))
+    assert out["ok"] is True and out["items"] == []
+    [(channel, envelope, _reply, _timeout)] = bus.sent
+    assert channel == NODE_HISTORY_REQUEST_CHANNEL
+    from orion.schemas.introspect import IntrospectRequestV1
+
+    request = IntrospectRequestV1.model_validate(envelope.payload)
+    assert request.operation == "node_history"
+    assert request.args == {"node_id": "node:substrate.bus_synaptic", "hours": 72.0}
+    assert "up to 7 days" in NODE_HISTORY_DESCRIPTION and "not zero" in NODE_HISTORY_DESCRIPTION
+
+
+def test_node_history_rejects_out_of_bounds_window_before_transport():
+    bus = DreamBus()
+    with pytest.raises(ValueError):
+        asyncio.run(IntrospectTools(bus, BINDING).invoke("node_history", {"node_id": "node:x", "hours": 500}))
+    assert bus.sent == []
+
+
+def test_brief_says_node_history_exists():
+    from orion.introspect.brief import NODE_HISTORY, introspect_brief_lines
+
+    text = " ".join(introspect_brief_lines(BINDING))
+    assert NODE_HISTORY == "mcp__orion-introspect__node_history"
+    assert "Substrate node history exists" in text and NODE_HISTORY in text

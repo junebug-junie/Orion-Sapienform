@@ -3467,6 +3467,45 @@ Design: [`2026-10-11-orion-day-letter-reread-design.md`](../../docs/superpowers/
   floor was calibrated on curiosity write-ups, not on letter paragraphs.
 
 
+### Introspect responder: `node_history`
+
+**What it does.** Lets Orion look at how one of their substrate nodes'
+prediction error moved over time, instead of assuming a node "holds only a
+current value" (what the 2026-10-09 letter said about the synaptic bus node;
+the series was in Postgres, just not readable by any tool). It answers the
+orion-introspect `node_history` tool from
+`substrate_node_prediction_error_history` (written by orion-substrate-runtime,
+kept 168 h), through `orion/introspect/node_history.py`.
+
+- **What Orion can ask.** `node_id=<exact id>` with `hours` (default 24, at
+  most 168) and optionally `until=<ISO timestamp with timezone>` to end the
+  window in the past; the whole window must start within the last 168 h
+  (older rows are pruned, so an older window would read as quiet when it is
+  only gone, and is refused). No `node_id`: which nodes have readings in the
+  window, with counts.
+- **What comes back.** One `node_prediction_error_history` item (`record`):
+  count, min, median, max, first and last reading with timestamps, a series
+  of at most 48 equal time buckets (`bucket_start, n, mean, min, max`; a
+  bucket with no reading is left out and counted in `empty_buckets`, because
+  a node writes a row only when it is refreshed), the 5 largest changes
+  between consecutive readings inside the window (ties go to the most
+  recent), and `earliest_stored_at` (nothing older exists; the text says so
+  when the window starts before it). Everything is
+  aggregated in Postgres with parameterized queries on the
+  `(node_id, observed_at)` primary key, so a 7-day window stays a few KB.
+- **Transport and trust.** Requests arrive on
+  `orion:introspect:node_history:request` (`IntrospectRequestV1`), answered by
+  `scripts/node_history_introspect_listener.py`; the reply goes to exactly
+  `orion:introspect:result:<correlation_id>`, anything else is ignored. Reads
+  run in a READ ONLY transaction (`ReadOnlyPool`). Nothing is written.
+- **Empty vs unknown.** A node with readings, none in the window:
+  `ok=true, items=[]`. A `node_id` with no stored reading at all (a typo):
+  `ok=false`, `unknown node_id … (not found)`, pointing at the no-`node_id`
+  listing. An `until` more than 5 minutes in the future is refused.
+  Postgres down or no pool: `node_history_unavailable; answer unknown`. Log
+  line per answer: `node_history_introspect_answered corr=<id> node=<id>
+  hours=<h> items=<n> readings=<n>`.
+
 ### Introspect responder: `record_correction`
 
 **What it does.** When a conversation about an Orion's Day letter establishes

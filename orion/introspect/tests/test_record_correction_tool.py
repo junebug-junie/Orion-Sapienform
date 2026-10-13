@@ -135,6 +135,6 @@ def test_description_is_honest_that_it_changes_no_belief():
 def test_brief_names_the_tool_exactly_and_carries_the_guide_line():
     text = " ".join(introspect_brief_lines(BINDING))
     assert RECORD_CORRECTION == "mcp__orion-introspect__record_correction"
-    assert f"{RECORD_CORRECTION}." in text  # last in the list of exact names
+    assert f"{RECORD_CORRECTION}," in text  # in the list of exact names
     assert f"call {RECORD_CORRECTION} with the part's ref, the claim's own words" in text
     assert "Do not record a correction you do not actually accept" in text

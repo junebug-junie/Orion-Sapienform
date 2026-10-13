@@ -177,3 +177,93 @@ def seeded_store(h: WorldPulseReadHandoffV1) -> tuple[InMemorySubstrateGraphStor
         existing_concept(OBJECT_ID, "Refrigeration cycle"), existing_concept(UNRELATED_ID, "Furnace")]))
     result = materializer.apply_record(map_world_pulse_read_handoff_to_substrate(h))
     return store, result.node_decisions[0].canonical_node_id
+
+
+class FakeSemanticBackend:
+    """vector-host ``/embedding`` + Chroma's v1 REST + orion-vector-writer, in process.
+
+    The real ``orion.introspect.semantic_index`` code talks to it over an
+    ``httpx.MockTransport``; ``publish`` stands in for the bus hop to vector-writer.
+    ``vectors`` maps an embedded text to its vector; any other text gets an axis no
+    fixture vector shares (similarity 0)."""
+
+    EMBED_URL = "http://vector-host.test/embedding"
+    CHROMA_URL = "http://chroma.test"
+    COLLECTION_ID = "coll-1"
+
+    def __init__(self, vectors: dict[str, tuple[float, ...]]) -> None:
+        import math
+
+        dims = max(len(v) for v in vectors.values()) + 1
+        self._dims = dims
+
+        def norm(v):
+            v = list(v) + [0.0] * (dims - len(v))
+            n = math.sqrt(sum(x * x for x in v)) or 1.0
+            return [x / n for x in v]
+
+        self._norm = norm
+        self.vectors = {k: norm(v) for k, v in vectors.items()}
+        self.docs: dict[str, tuple[list[float], dict, str]] = {}
+        self.embedded: list[str] = []
+        self.fail_embed = False
+        # vector-writer down: upserts are published but never land.
+        self.drop_upserts = False
+
+    def vector(self, text: str) -> list[float]:
+        return self.vectors.get(text) or self._norm([0.0] * (self._dims - 1) + [1.0])
+
+    def _handler(self, request):
+        import json
+
+        import httpx
+
+        url = str(request.url)
+        if url == self.EMBED_URL:
+            if self.fail_embed:
+                return httpx.Response(503, json={"error": "down"})
+            body = json.loads(request.content)
+            self.embedded.append(body["text"])
+            vec = self.vector(body["text"])
+            return httpx.Response(200, json={"doc_id": body["doc_id"], "embedding": vec,
+                                             "embedding_model": "fake-bge", "embedding_dim": len(vec)})
+        base = f"{self.CHROMA_URL}/api/v1/collections"
+        if request.method == "GET" and url.startswith(base + "/") and not url.endswith("/count"):
+            if not self.docs:
+                # Chroma 0.4.24: a collection nothing was ever upserted into does not exist.
+                name = url.rsplit("/", 1)[-1]
+                return httpx.Response(500, json={"error": f"ValueError('Collection {name} does not exist.')"})
+            return httpx.Response(200, json={"id": self.COLLECTION_ID, "metadata": {"hnsw:space": "cosine"}})
+        if url == f"{base}/{self.COLLECTION_ID}/count":
+            return httpx.Response(200, json=len(self.docs))
+        if url == f"{base}/{self.COLLECTION_ID}/get":
+            ids = [i for i in json.loads(request.content)["ids"] if i in self.docs]
+            return httpx.Response(200, json={"ids": ids, "metadatas": [self.docs[i][1] for i in ids]})
+        if url == f"{base}/{self.COLLECTION_ID}/query":
+            body = json.loads(request.content)
+            q = body["query_embeddings"][0]
+            scored = sorted(((1.0 - sum(a * b for a, b in zip(q, v)), i) for i, (v, _, _) in self.docs.items()))
+            scored = scored[: body["n_results"]]
+            return httpx.Response(200, json={"ids": [[i for _, i in scored]], "distances": [[d for d, _ in scored]]})
+        return httpx.Response(404, json={"error": f"unexpected {request.method} {url}"})
+
+    def client(self):
+        import httpx
+
+        return httpx.AsyncClient(transport=httpx.MockTransport(self._handler))
+
+    def config(self, *, min_similarity: float = 0.65, index_batch: int = 200):
+        from orion.introspect.semantic_index import SearchConfig
+        from orion.world_pulse_read.concept_search import ATLAS_CONCEPT_COLLECTION
+
+        return SearchConfig(chroma_url=self.CHROMA_URL, embed_url=self.EMBED_URL,
+                            collection=ATLAS_CONCEPT_COLLECTION, min_similarity=min_similarity,
+                            index_interval_sec=300.0, index_batch=index_batch)
+
+    async def publish(self, channel: str, envelope: Any) -> None:
+        """What orion-vector-writer does with an upsert: store the vector under its doc id."""
+        assert channel == "orion:vector:semantic:upsert"
+        if self.drop_upserts:
+            return
+        p = envelope.payload
+        self.docs[p["doc_id"]] = (p["embedding"], p["meta"], p["text"])

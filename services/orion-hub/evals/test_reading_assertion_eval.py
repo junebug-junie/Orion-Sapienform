@@ -10,6 +10,15 @@ the Concept Atlas and Recall see). Measures, over the whole batch:
 - refused_writes: claims refused at validation that still wrote a journal row or a node.
   Must be 0.
 
+A second batch adds objects found by meaning (concept_search.py): an atlas concept near the
+subject whose label the text does not contain. Measures:
+
+- meaning_offered: such a concept is in the offered object list. Must be >= 1.
+- meaning_links: links to it from a verbatim quote that does not name it. Must be 0 (the
+  quote rule is unchanged; the claim is journalled ``proposed`` for review).
+
+Live counts over real reads: services/orion-hub/evals/run_reading_claim_objects_replay.py.
+
 This does not measure live model quality (how often a real Stage 2 quotes exactly); that
 needs a completed live read, UNVERIFIED until the reading queue moves.
 """
@@ -112,3 +121,45 @@ def test_reading_claims_link_only_what_the_retained_text_supports():
     assert refused_writes == 0
     assert {e.target.node_id for e in linked.values()} == {OBJECT_ID, UNRELATED_ID}
     assert len(linked) == len(expected)
+
+
+def test_meaning_objects_widen_the_offer_never_the_links():
+    from orion.core.bus.bus_schemas import ServiceRef
+    from orion.world_pulse_read.concept_search import index_atlas_concepts, related_objects, with_related_objects
+    from reading_assertion_fakes import FakeSemanticBackend, existing_concept
+
+    conn = FakeSnapshotConn()
+    sha = text_sha256(FETCH_TEXT)
+    conn.rows[sha] = (FETCH_TEXT, SOURCE_URL)
+    h = handoff(sha=sha)
+    store, subject = seeded_store(h)
+    related_id = "concept-thermal-energy-transfer"
+    store.upsert_node(identity_key=None, node=existing_concept(related_id, "Thermal energy transfer"))
+    backend = FakeSemanticBackend({"Heat pump": (1.0, 0.0), "Thermal energy transfer": (0.9, 0.3),
+                                   "Refrigeration cycle": (0.9, 0.4), "Furnace": (0.4, 1.0)})
+    texts = asyncio.run(load_retained_texts(conn, h.read_evidence))
+    ctx = build_claim_context(store, h, texts)
+
+    async def widen():
+        async with backend.client() as client:
+            await index_atlas_concepts(store, backend.config(), client=client, bus=backend,
+                                       source=ServiceRef(name="hub", version="0", node="eval"))
+            return with_related_objects(ctx, await related_objects(store, ctx, backend.config(), client=client))
+
+    widened = asyncio.run(widen())
+    meaning_offered = sum(o.via == "meaning" and o.node_id == related_id for o in widened.objects)
+    claims = [WorldPulseReadRelationshipClaimV1(
+        subject_id=subject, predicate=predicate, object_id=related_id, statement_text=f"meaning {predicate}",
+        quote="A heat pump transfers heat using a refrigeration cycle") for predicate in ("associated_with", "part_of")]
+    journal = FakeJournal()
+    report = asyncio.run(journal_claims(journal, plan_claims(claims, widened, seed_id=h.seed_ref.seed_id,
+                                                             recorded_at=NOW)))
+    asyncio.run(AssertionProjector(journal=journal, materializer=SubstrateGraphMaterializer(store=store),
+                                   readiness=ALWAYS_READY, proposal_actors=(READING_ACTOR,)).run_once())
+    meaning_links = sum(1 for e in store.snapshot().edges.values() if e.target.node_id == related_id)
+    print(f"\nreading_assertion_eval meaning_offered={meaning_offered} meaning_links={meaning_links} "
+          f"proposed={sum(c.receipt.outcome == 'proposed' for c in report.claims)} reasons="
+          + ",".join(c.receipt.reason for c in report.claims))
+    assert meaning_offered == 1
+    assert meaning_links == 0
+    assert all(c.receipt.reason == "quote_not_about_endpoints" for c in report.claims)

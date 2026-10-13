@@ -10,7 +10,11 @@ Flow, all deterministic except the model's proposal:
    materializer actually stored (identity index, never recomputed), plus a bounded list of
    EXISTING atlas concepts whose label appears in the read (the same region-rank +
    label-in-text retrieval Recall's concept_region collector uses; no new score), plus the
-   text Hub retained for the read (fetch_text.py).
+   text Hub retained for the read (fetch_text.py). Hub then fills the rest of the object
+   list with concepts nearest the subjects by meaning (concept_search.py); those are
+   offered under the same rule below, so a claim to one is linked only if the quote names
+   it by its stored label (almost never: its label is usually not in the text) and
+   otherwise stays ``proposed``.
 2. Stage 2's model returns ``relationship_claims`` choosing ids from those two lists.
 3. ``plan_claims`` validates each claim. Refused outright (not journalled, no node, no
    edge): a predicate outside the reader allowlist, an id not in the lists Hub offered,
@@ -80,6 +84,9 @@ class EndpointV1:
     node_id: str
     kind: str
     label: str
+    # How an object was found: "label" (named in the read) or "meaning" (near a subject
+    # by embedding, concept_search.py). Subjects are always "label".
+    via: str = "label"
 
 
 @dataclass(frozen=True)
@@ -188,7 +195,11 @@ def stored_object_lookup(store: Any, ctx: ClaimContextV1) -> Callable[[str], Opt
     (stored concept/entity, not a fenced memory node, label in this read), minus the rank
     cut. A durable Stage 2 turn binds its prompt once and may finish hours later, after the
     region ranking that produced the offered list has moved; a still-valid candidate from
-    that prompt must not be refused because it slipped in rank."""
+    that prompt must not be refused because it slipped in rank.
+
+    A meaning-only object (concept_search.py) that is no longer in a rebuilt list is not
+    re-found here: it is refused ``unknown_object``. Under the quote rule it could only ever
+    be ``proposed`` (its label is not in the text), so no link is lost, only its proposal."""
     subject_ids = {s.node_id for s in ctx.subjects}
     text = ctx.haystack.lower()
 
@@ -217,15 +228,24 @@ def claim_prompt_section(ctx: ClaimContextV1) -> str:
         budget -= len(shown)
         excerpts.append(f"--- retained {t.representation} of {t.url} (sha256 {t.sha256[:12]}) ---\n{shown}")
 
-    def listing(items: tuple[EndpointV1, ...]) -> str:
+    def listing(items) -> str:
         return "\n".join(f"  {e.node_id} = {e.label!r} ({e.kind})" for e in items)
 
+    named = [e for e in ctx.objects if e.via != "meaning"]
+    related = [e for e in ctx.objects if e.via == "meaning"]
+    objects = f"objects:\n{listing(named)}\n" if named else ""
+    if related:
+        objects += (
+            "objects related by meaning (the text below does not name these; a claim to one "
+            "is recorded for review, not linked, unless the quote names it):\n"
+            f"{listing(related)}\n"
+        )
     return (
         "\n\nRELATIONSHIP CLAIMS (optional; an empty list is a fine answer). You may link a concept "
         "this read produced (subject) to an EXISTING concept (object) only when the text below "
         "states the relationship. Use only these ids.\n"
         f"subjects:\n{listing(ctx.subjects)}\n"
-        f"objects:\n{listing(ctx.objects)}\n"
+        + objects +
         f"predicate must be one of: {', '.join(READING_CLAIM_PREDICATES)}. subtype_of and refines "
         "relate two concepts; part_of relates two things of the same kind; co_occurs_with means "
         "only that the source mentions both, never causation. If no predicate fits without "

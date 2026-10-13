@@ -40,7 +40,12 @@ def dir_size_bytes(path: str) -> int:
     stack = [path]
     while stack:
         current = stack.pop()
-        with os.scandir(current) as it:
+        try:
+            it = os.scandir(current)
+        except FileNotFoundError:
+            # A segment dir queued above was removed before we got to it.
+            continue
+        with it:
             for entry in it:
                 try:
                     if entry.is_dir(follow_symlinks=False):
@@ -139,7 +144,9 @@ class VectorDbFootprintPoller:
         self._alert_bytes = alert_bytes
         self._interval_sec = interval_sec
         self._timeout_sec = timeout_sec
-        self._snapshot = VectorDbFootprint(error=None if enabled else "disabled")
+        # Until the first poll lands, say so -- never publish an all-null "reading".
+        self._snapshot = VectorDbFootprint(error="not_sampled_yet" if enabled else "disabled")
+        self._last_unpoliced: List[str] = []
         self._was_over = False
         self._task: Optional[asyncio.Task] = None
         self._stop = asyncio.Event()
@@ -164,8 +171,10 @@ class VectorDbFootprintPoller:
             logger.info("vector_db_back_under_alert dir_bytes=%s alert_bytes=%s", snap.dir_bytes, snap.alert_bytes)
         if snap.dir_bytes is not None:
             self._was_over = snap.over_alert
-        if snap.unpoliced_collections:
-            logger.warning("vector_db_unpoliced_collections names=%s", snap.unpoliced_collections)
+        if snap.collection_counts and snap.unpoliced_collections != self._last_unpoliced:
+            if snap.unpoliced_collections:
+                logger.warning("vector_db_unpoliced_collections names=%s", snap.unpoliced_collections)
+            self._last_unpoliced = list(snap.unpoliced_collections)
         self._snapshot = snap
         return snap
 

@@ -1,4 +1,9 @@
-"""No-silent-memory-loss gate for orion/memory/vector_collection_policy.py."""
+"""No-silent-memory-loss gate for orion/memory/vector_collection_policy.py.
+
+LIVE_2026_10_13 is a snapshot, so the coverage test only proves the table matched that day.
+The live guard against a new unreviewed writer is the biometrics heartbeat's
+`details.vector_db.unpoliced_collections` (+ WARNING log).
+"""
 from __future__ import annotations
 
 from orion.memory.vector_collection_policy import POLICIES, retention_allowed, unpoliced

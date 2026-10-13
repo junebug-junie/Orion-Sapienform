@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import socket
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -77,8 +79,17 @@ def test_missing_dir_makes_no_http_calls(tmp_path, fake_chroma):
     assert calls == []
 
 
+def _closed_port() -> int:
+    s = socket.socket()
+    s.bind(("127.0.0.1", 0))
+    port = s.getsockname()[1]
+    s.close()
+    return port
+
+
 def test_api_down_still_reports_size(tmp_path):
-    snap = sample_footprint(str(_chroma_dir(tmp_path)), "http://127.0.0.1:9", alert_bytes=1000, timeout=0.5)
+    url = f"http://127.0.0.1:{_closed_port()}"
+    snap = sample_footprint(str(_chroma_dir(tmp_path)), url, alert_bytes=1000, timeout=0.5)
     assert snap.dir_bytes == 1500 and snap.over_alert is True
     assert snap.error.startswith("collection_counts_failed")
     assert snap.collection_counts == {}
@@ -119,3 +130,62 @@ def test_settings_ship_enabled_with_athena_defaults():
     assert settings.VECTOR_DB_FOOTPRINT_ENABLED is True
     assert settings.VECTOR_DB_DATA_PATH == "/host_mnt/graphdb/chroma"
     assert settings.VECTOR_DB_ALERT_BYTES > 0
+
+
+def test_dir_removed_mid_walk_is_skipped_not_fatal(tmp_path, monkeypatch):
+    d = _chroma_dir(tmp_path)
+    real = os.scandir
+
+    def flaky(path):
+        if str(path).endswith("seg"):
+            raise FileNotFoundError(path)
+        return real(path)
+
+    monkeypatch.setattr("app.vector_db_footprint.os.scandir", flaky)
+    assert dir_size_bytes(str(d)) == 1000
+
+
+def test_before_first_poll_says_not_sampled(tmp_path):
+    poller = VectorDbFootprintPoller(enabled=True, data_path=str(tmp_path), base_url="", alert_bytes=1)
+    assert poller.details()["vector_db"]["error"] == "not_sampled_yet"
+
+
+def test_failed_size_sample_keeps_previous_alert_state(tmp_path, caplog):
+    d = _chroma_dir(tmp_path)
+    poller = VectorDbFootprintPoller(enabled=True, data_path=str(d), base_url="", alert_bytes=1200)
+    poller.poll_once()  # over
+    poller._data_path = str(tmp_path / "gone")
+    poller.poll_once()  # not_present: must not reset the crossing
+    poller._data_path = str(d)
+    caplog.clear()
+    with caplog.at_level(logging.INFO, logger="orion-biometrics.vector_db"):
+        poller.poll_once()  # still over: no second crossing log
+    assert not any("vector_db_over_alert" in r.getMessage() for r in caplog.records)
+
+
+def test_unpoliced_logged_only_when_set_changes(tmp_path, fake_chroma, caplog):
+    url, _ = fake_chroma
+    poller = VectorDbFootprintPoller(enabled=True, data_path=str(_chroma_dir(tmp_path)), base_url=url, alert_bytes=0)
+    with caplog.at_level(logging.WARNING, logger="orion-biometrics.vector_db"):
+        poller.poll_once()
+        poller.poll_once()
+    assert sum("vector_db_unpoliced_collections" in r.getMessage() for r in caplog.records) == 1
+
+
+def test_lifecycle_start_poll_stop(tmp_path):
+    import asyncio
+
+    async def run():
+        poller = VectorDbFootprintPoller(
+            enabled=True, data_path=str(_chroma_dir(tmp_path)), base_url="", alert_bytes=0, interval_sec=60
+        )
+        await poller.start_background()
+        for _ in range(100):
+            if poller.details()["vector_db"].get("dir_bytes") is not None:
+                break
+            await asyncio.sleep(0.02)
+        await poller.stop()
+        return poller.details()["vector_db"]
+
+    d = asyncio.run(run())
+    assert d["dir_bytes"] == 1500 and "error" not in d

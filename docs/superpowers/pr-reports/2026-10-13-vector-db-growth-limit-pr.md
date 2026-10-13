@@ -76,9 +76,9 @@ orion-biometrics already published disk percent-full per mount (`details.disk_us
 ## Tests run
 
 ```text
-services/orion-biometrics: pytest tests/test_vector_db_footprint.py -> 8 passed
+services/orion-biometrics: pytest tests/test_vector_db_footprint.py -> 13 passed
 pytest tests/test_vector_collection_policy.py -> 5 passed
-services/orion-biometrics: pytest tests -> 176 passed, 2 failed (test_node_catalog::test_circe_expected_offline
+services/orion-biometrics: pytest tests -> 181 passed, 2 failed (test_node_catalog::test_circe_expected_offline
   and test_biometrics_grammar_emit::test_circe_node_availability_reflects_expected_offline: they fail
   identically on main; config/biometrics/node_catalog.yaml is untouched here)
 scripts/check_env_template_parity.py -> PASS (93 services)
@@ -101,12 +101,29 @@ sample_footprint('/mnt/graphdb/chroma', 'http://localhost:8500', 4 GiB):
   curiosity 444, dreams 236, reading_results 58, doc_semantic_drift 36, chat 21
 In the running orion-athena-biometrics container: `getent hosts orion-athena-vector-db` resolves and
 /host_mnt/graphdb/chroma is readable, so the deployed path will reach both.
-Not deployed. Container not rebuilt (per task).
+Not deployed. Container not rebuilt (per task). UNVERIFIED: a real athena heartbeat carrying `details.vector_db` has not been observed yet. Check after restart with `docker logs orion-athena-biometrics | grep vector_db` or by reading one `orion:system:health` message.
 ```
 
 ## Review findings fixed
 
-See the PR conversation / appended section below.
+Review by a code-review subagent on commit 9046b858c. Nothing blocking; all three "should" findings and most nits fixed:
+
+- Finding: if a segment folder was deleted between being queued and being scanned, the whole size sample failed.
+  - Fix: `os.scandir` of a vanished dir is now skipped.
+  - Evidence: `test_dir_removed_mid_walk_is_skipped_not_fatal`.
+- Finding: before the first poll, the heartbeat carried all-null fields that looked like a real reading.
+  - Fix: it now carries `error: not_sampled_yet` until then.
+  - Evidence: `test_before_first_poll_says_not_sampled`.
+- Finding: the report did not say that nothing consumes the gauge, and the live heartbeat path was unverified.
+  - Fix: both are now stated (Risks, Docker/smoke, README).
+- Nit: the unpoliced-collection WARNING repeated every 5 minutes.
+  - Fix: it now logs only when the set of unpoliced collections changes.
+  - Evidence: `test_unpoliced_logged_only_when_set_changes`.
+- Nit: these cases had no tests: setting the alarm to 0, a failed sample keeping the alarm state, start/poll/stop, and the API-down test depending on port 9.
+  - Fix: `.env_example` now documents that 0 disables the alarm. Added tests `test_failed_size_sample_keeps_previous_alert_state` and `test_lifecycle_start_poll_stop`. The API-down test now uses a port taken from a closed socket.
+- Nit: the README's "derived ones are bounded" claim was wrong for two collections, the 40% WAL figure had no cited source, a point-in-time "flat since 10-11" was baked into code, and the policy test didn't say it only checks a snapshot.
+  - Fix: the README is reworded and cites the measurement (sqlite `dbstat` on a copy of the file). The date-stamped wording is gone from the code. The policy test's docstring now names the runtime `unpoliced_collections` as the live guard.
+- Not changed: the poller's `stop()` can't interrupt a blocked HTTP thread. Same as `IloPoller`. The worst case is a slower container shutdown.
 
 ## Restart required
 
@@ -115,6 +132,8 @@ cd /mnt/scripts/Orion-Sapienform && git pull --ff-only && ORION_ALLOW_SHARED_CHE
 ```
 
 ## Risks / concerns
+
+- Severity: low. Concern: nothing consumes `details.vector_db` yet. The 4 GiB alarm is a log line plus a flag, so nothing pages and no reducer or UI reads it. Mitigation: the data is on the bus, ready for a consumer to pick up.
 
 - Severity: medium. Concern: Chroma's write-ahead log is never pruned on 0.4.24 and is the biggest single consumer of space. Mitigation: the alarm fires well before it matters. Follow-up: upgrade Chroma to >=0.5.6, which prunes it automatically, as its own migration PR.
 - Severity: low. Concern: `orion_main_store` stores every embedding request, including duplicates (7,647 distinct of 9,034). Mitigation: monitored only. Deduplicating or narrowing what vector-host stores is a writer-side change that needs Juniper's call.

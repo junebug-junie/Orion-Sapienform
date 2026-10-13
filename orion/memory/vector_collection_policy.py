@@ -71,7 +71,7 @@ POLICIES: dict[str, CollectionPolicy] = {
             retention=None,
             reason=(
                 "Rebuildable from Postgres, but recall reads it for crystallized memory; "
-                "pruning would make old memories unrecallable. Flat since 10-11."
+                "pruning would make old memories unrecallable."
             ),
         ),
         CollectionPolicy(

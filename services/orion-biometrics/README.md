@@ -129,11 +129,15 @@ and the cached result rides the heartbeat:
 | `unpoliced_collections` | live collections missing from `orion/memory/vector_collection_policy.py` (also logged) |
 | `error` | `not_present` on nodes without the dir; `collection_counts_failed: ...` if the API is down (size still reported) |
 
-Measure-only. Per the policy table no collection is pruned: every recall-backing
-collection is protected, and the derived ones are keyed upserts bounded by their source.
-Most of the on-disk growth is Chroma 0.4.24's write-ahead log (`embeddings_queue`, ~40% of
-the dir on 2026-10-13), which that server version never prunes; the fix is a Chroma
-upgrade, not deleting rows.
+Measure-only. Per the policy table no collection is pruned: none is both derived with a
+rebuild path and outside recall (see each entry's `reason`). Before the first poll the
+block carries `error: not_sampled_yet`. Nothing consumes `details.vector_db` yet beyond the
+WARNING log -- no reducer, UI or pager reads it.
+
+Chroma 0.4.24 never prunes its write-ahead log (`embeddings_queue` table in
+`chroma.sqlite3`; 79 MB of a 206 MB dir on 2026-10-13, measured with sqlite `dbstat`
+on a copy of the file). The fix for that is a Chroma upgrade (>=0.5.6 prunes it), not
+deleting rows.
 
 ### iLO/BMC hardware telemetry (`details.ilo_*`)
 

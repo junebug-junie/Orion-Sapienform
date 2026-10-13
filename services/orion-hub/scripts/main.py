@@ -57,6 +57,11 @@ from scripts.arousal_reader import ArousalReader
 from scripts.rest_drive_reader import RestDriveReader
 from orion.world_pulse_read.search import ReadingSearchConfig
 from orion.introspect.semantic_index import SearchConfig
+from orion.world_pulse_read.concept_search import (
+    ATLAS_CONCEPT_COLLECTION,
+    INDEX_BATCH as ATLAS_CONCEPT_INDEX_BATCH,
+    OBJECT_MIN_SIMILARITY as READING_OBJECT_MIN_SIMILARITY,
+)
 from scripts.reading_listener import ReadingListener
 from scripts.curiosity_introspect_listener import CuriosityIntrospectListener
 from scripts.orion_day_introspect_listener import SEARCH_COLLECTION as ORION_DAY_SEARCH_COLLECTION, OrionDayIntrospectListener
@@ -835,6 +840,16 @@ async def startup_event():
                 step_relay_provider=lambda: harness_step_relay,
                 store_provider=concept_atlas_routes_runtime._get_substrate_store,
                 assertions_enabled=settings.HUB_WORLD_PULSE_READ_ASSERTIONS_ENABLED,
+                # Claim objects by meaning: reading search's Chroma + embedder, own
+                # collection (orion/world_pulse_read/concept_search.py). Empty URLs = off.
+                concept_search=SearchConfig(
+                    chroma_url=settings.HUB_READING_SEARCH_CHROMA_URL,
+                    embed_url=settings.HUB_READING_SEARCH_EMBED_URL,
+                    collection=ATLAS_CONCEPT_COLLECTION,
+                    min_similarity=READING_OBJECT_MIN_SIMILARITY,
+                    index_interval_sec=settings.HUB_READING_SEARCH_INDEX_INTERVAL_SEC,
+                    index_batch=ATLAS_CONCEPT_INDEX_BATCH,
+                ),
             )
             await world_pulse_read_stage2.start(bus, harness_rpc_bus=rpc_bus)
 

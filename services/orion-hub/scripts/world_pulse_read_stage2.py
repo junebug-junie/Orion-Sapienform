@@ -11,10 +11,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from datetime import datetime, timezone
 from typing import Any, Callable, NamedTuple, Optional
 from uuid import uuid4, uuid5, NAMESPACE_URL
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+import httpx
 
 from orion.core.bus.bus_schemas import ServiceRef
 from orion.core.llm_json import parse_json_object
@@ -49,6 +52,13 @@ from orion.world_pulse_read.assertions import (
     stored_object_lookup,
 )
 from orion.substrate.graph_journal import SubstrateGraphJournal
+from orion.introspect.semantic_index import SearchConfig
+from orion.world_pulse_read.concept_search import (
+    HTTP_TIMEOUT_SEC as CONCEPT_SEARCH_TIMEOUT_SEC,
+    index_atlas_concepts,
+    related_objects,
+    with_related_objects,
+)
 from orion.world_pulse_read.fetch_text import load_retained_texts
 from orion.world_pulse_read.timestamps import stamp_server_created_at
 from orion.world_pulse_read.queue import (
@@ -276,6 +286,7 @@ class WorldPulseReadStage2Pipeline:
         durable_url: str = "http://127.0.0.1:8124",
         assertions_enabled: bool = True,
         projector_readiness: Optional[Callable[[], Any]] = None,
+        concept_search: Optional[SearchConfig] = None,
     ) -> None:
         self.enabled = enabled
         # HUB_WORLD_PULSE_READ_ASSERTIONS_ENABLED: kill switch for relationship claims
@@ -284,6 +295,10 @@ class WorldPulseReadStage2Pipeline:
         self._projector_readiness = projector_readiness
         self._assertion_projector: Any = None
         self._claim_context: ClaimContextV1 = ClaimContextV1()
+        # Claim objects by meaning (orion/world_pulse_read/concept_search.py). None or an
+        # unconfigured search = exact-label objects only.
+        self.concept_search = concept_search if concept_search is not None and concept_search.enabled else None
+        self._concept_index_task: Optional[asyncio.Task] = None
         self.durable_url = durable_url
         self.tick_interval_sec = tick_interval_sec
         self.window_start_hour = int(window_start_hour)
@@ -334,6 +349,9 @@ class WorldPulseReadStage2Pipeline:
             return
         self._stop.clear()
         self._task = asyncio.create_task(self._run())
+        if self.assertions_enabled and self.concept_search is not None:
+            self._concept_index_task = asyncio.create_task(
+                self._concept_index_loop(), name="hub-reading-concept-index")
         logger.info(
             "world_pulse_read_stage2 started tick=%ss round_trips=%s max_attempts=%s",
             self.tick_interval_sec,
@@ -343,6 +361,13 @@ class WorldPulseReadStage2Pipeline:
 
     async def stop(self) -> None:
         self._stop.set()
+        if self._concept_index_task is not None:
+            self._concept_index_task.cancel()
+            try:
+                await self._concept_index_task
+            except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                pass
+            self._concept_index_task = None
         if self._task is not None:
             self._task.cancel()
             try:
@@ -361,6 +386,41 @@ class WorldPulseReadStage2Pipeline:
                 logger.warning("world_pulse_read_stage2_tick_failed", exc_info=True)
             try:
                 await asyncio.wait_for(self._stop.wait(), timeout=self.tick_interval_sec)
+            except (TimeoutError, asyncio.TimeoutError):
+                continue
+
+    def _http_client(self) -> httpx.AsyncClient:
+        """Embedder + Chroma client for one concept-search call (tests replace this)."""
+        return httpx.AsyncClient(timeout=CONCEPT_SEARCH_TIMEOUT_SEC)
+
+    async def index_concepts_once(self) -> Any:
+        """One pass of the atlas concept index; None when the store is not up yet."""
+        store = self._store_provider() if self._store_provider else None
+        if store is None or self.concept_search is None:
+            return None
+        async with self._http_client() as client:
+            result = await index_atlas_concepts(store, self.concept_search, client=client,
+                                                bus=self._bus, source=self._source_ref)
+        logger.info("reading_concept_index indexed=%d pending=%d", result.indexed, result.pending)
+        return result
+
+    async def _concept_index_loop(self) -> None:
+        while not self._stop.is_set():
+            delay = self.concept_search.index_interval_sec
+            try:
+                result = await self.index_concepts_once()
+                if result is None:
+                    delay = min(delay, 30.0)
+                elif result.pending:
+                    # First build: keep going until the backlog is gone.
+                    delay = min(delay, 5.0)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("reading_concept_index_failed exc_type=%s detail=%s",
+                               type(exc).__name__, str(exc)[:300])
+            try:
+                await asyncio.wait_for(self._stop.wait(), timeout=delay)
             except (TimeoutError, asyncio.TimeoutError):
                 continue
 
@@ -555,9 +615,24 @@ class WorldPulseReadStage2Pipeline:
         except Exception:  # noqa: BLE001 - a read without claims is still a read
             logger.warning("reading_claim_context_failed seed=%s", handoff.seed_ref.seed_id, exc_info=True)
             return ClaimContextV1()
+        named = len(ctx.objects)
+        related: list = []
+        related_ms = 0
+        if self.concept_search is not None and ctx.subjects and ctx.texts:
+            started = time.perf_counter()
+            try:
+                async with self._http_client() as client:
+                    related = await related_objects(store, ctx, self.concept_search, client=client)
+            except Exception as exc:  # noqa: BLE001 - label objects still stand
+                logger.warning("reading_claim_related_unavailable seed=%s exc_type=%s detail=%s",
+                               handoff.seed_ref.seed_id, type(exc).__name__, str(exc)[:300])
+            related_ms = int((time.perf_counter() - started) * 1000)
+            ctx = with_related_objects(ctx, related)
         logger.info(
-            "reading_claim_context seed=%s texts=%d subjects=%d objects=%d usable=%s",
-            handoff.seed_ref.seed_id, len(ctx.texts), len(ctx.subjects), len(ctx.objects), ctx.usable,
+            "reading_claim_context seed=%s texts=%d subjects=%d objects=%d named=%d related=%d "
+            "related_top=%s related_ms=%d usable=%s",
+            handoff.seed_ref.seed_id, len(ctx.texts), len(ctx.subjects), len(ctx.objects), named,
+            len(related), f"{related[0][1]:.3f}" if related else "-", related_ms, ctx.usable,
         )
         return ctx
 

@@ -1,6 +1,7 @@
 # Reading resonance: when something Orion reads touches something Orion already holds
 
-Status: DESIGN (proposal mode: cognition + outreach change). No code in this PR.
+Status: DESIGN, revised 2026-10-13 with Juniper's answers (section "Decisions"). No code in this PR;
+patch A (read-only crosswalk + similarity diagnosis + labeling set) is PR #2647.
 Date: 2026-10-13. Author: Athena Orchestration for Juniper.
 
 Juniper (2026-10-13): "we are also missing a category in all of this, where Orion reads
@@ -20,19 +21,28 @@ staying a journal record my unasked loop never attends?"* and *"When is the last
 something that was not about myself?"* (`orion_worldview`, `:SelfQuestionMint`).
 
 Resonance is one extra, bounded step after every real read: gather the handful of things in
-Orion that the read sits closest to (beliefs, atlas concepts, past conversations with Juniper,
-open curiosity), hand that frozen packet plus the read to one model call, and ask a single
-question: *is there a connection here worth saying out loud, and which pieces prove it?* The
+Orion that the read might touch (beliefs with the findings and revisions behind them, lived
+questions with their answers, atlas concepts with their graph neighbourhood, past
+conversations with Juniper, curiosity findings, dreams, open threads), hand that frozen packet
+plus the read to one model call, and ask a single question: *is there a real connection here
+worth saying out loud, and which pieces prove it?* The
 answer is only accepted if every piece it cites is one we actually gave it and the quote from
 the read is really in the read. Accepted answers become a `ReadingFindingV1` of kind
 `resonance` on the seam the parallel PR is building, which already feeds outreach and the
 "What I read" letter section. Optionally the answer names one thing to explore next, which
-becomes an unscored curiosity seed the same way accepted links do today.
+becomes an unscored curiosity seed the same way accepted links do today. A read that *strains*
+a belief puts that belief at the front of the next curiosity investigation's prior menu, so it
+gets re-tested, not just mentioned. Every message to Juniper opens with a 3-5 sentence summary
+of what the article says, so she learns it too, before Orion's connection.
 
-What I would burn: any similarity threshold as the decider of "interesting". The live probe
-below shows belief similarity is flat (every read is 0.61-0.77 close to some plumbing prior,
-including a Utah board appointment), so a number cannot tell interesting from adjacent. The
-model judges; code checks the citations.
+What I burn: similarity as evidence. Juniper (2026-10-13): "similarity scores are shit... that
+will need to get fixed" and "real connections is loose". Patch A measured why (section
+"Similarity: what is wrong and what it can still do"): raw bge cosine has no calm state (two
+unrelated beliefs score 0.66, a related pair 0.83, every read's nearest belief 0.56-0.71
+whatever it is about). Centering the vectors restores a calm state but adds no separation. So
+similarity only builds a loose candidate list inside fixed per-kind budgets, is never shown to
+the judge, and never decides anything. The model judges; code checks the citations; Juniper's
+labels decide whether the judge is worth hearing.
 
 ## Current architecture (verified)
 
@@ -125,22 +135,64 @@ Script: session scratchpad `probe/probe.py`; no writes.
 My rough read of the probe (not a label, not ground truth): 3-6 of 30 reads carry a
 connection Juniper would plausibly want to hear about; most are routine or junk pages.
 
-## Missing questions
+## Decisions (Juniper, 2026-10-13)
 
-1. Outreach volume. Should resonance shares skip the endogenous daily cap (like curiosity's
-   offer door) and be bounded only by quiet hours plus "one share per reading thread per
-   day"? Default proposed: yes. Natural ceiling is the read rate (about 2/day).
-2. Lane. Same `agent` lane as reading (27B on circe gpu1, Orion's reading voice), or
-   `metacog_background`? Default proposed: `agent`, background, tool-free.
-3. Raw chat. v1 searches crystallized memories (the curated record of your conversations),
-   not raw chat turns through orion-recall. Is crystallization coverage good enough, or do you
-   want raw chat in v1? (Recall's side effects on a read-only lookup, such as crystallization
-   recall-boost writes in `orion/memory/crystallization/retriever.py`, are UNVERIFIED for the
-   `/recall` path; that is why v1 avoids it.)
-4. Should a resonance that *strains* a self-prior also open a re-test of that prior through the
-   existing curiosity path, or only say so in the message and letter? Default: say so only.
-5. Labels. The eval needs you to mark roughly 30 replayed resonances "would want this /
-   meh / no". Willing?
+1. **Outreach volume.** Resonance shares skip the endogenous 4/day cap
+   (`HUB_ENDOGENOUS_OUTREACH_DAILY_CAP`). Everything else still applies: quiet hours (held to
+   08:00, not dropped), the cooldown, the 7-day content-novelty ledger, one share per reading
+   thread per day, `HUB_READING_RESONANCE_DAILY_MAX`. Note this is *not* curiosity's
+   `offer_message` door, which also skips quiet hours (`endogenous_outreach.py` module
+   docstring): resonance needs its own door with exactly one gate removed.
+2. **Lane.** Agent lane, run as a durable run (`reading.resonance`), as designed.
+3. **Memory.** v1 conversation memory = crystallizations, as designed. *And* crosswalk the
+   graphs, semantically, not by verbatim names: atlas/substrate concepts with their 1-hop
+   neighbourhood (edges, assertions; the neighbourhood shape PR #2598 attaches to link seeds),
+   and the worldview graph: priors with the Findings that support/contradict them and their
+   `PriorRevision` trail, lived questions with their answers and the answers they revised.
+4. **Strain triggers a re-test.** Not just a mention. Routed into the existing prior-testing
+   path (section "Re-test routing").
+5. **Labels.** Juniper hand-labels about 30 replayed results. Patch A produced the set:
+   `docs/superpowers/evals/2026-10-13-resonance-labeling-set.md` (+ `.csv`).
+6. **Article summary in every message.** 3-5 sentences on what the article says, separate from
+   Orion's connection. A judge field, checked for sentence count.
+7. **Similarity is not evidence.** See the section below; the spec no longer leans on cosine
+   closeness anywhere a decision is made.
+
+## Similarity: what is wrong and what it can still do (patch A, measured)
+
+Replay of the 29 reads whose Stage 2 finished in the last 14 days, against the live stores,
+read-only (`services/orion-hub/evals/run_reading_resonance_eval.py`). Labelled-by-construction
+sets: a related pair is a read and its own Stage 2 claims, a prior and its own Finding, a lived
+question and its own answer; the unrelated pair swaps in a random partner.
+
+| set | n | raw related / unrelated / AUC | centered related / unrelated / AUC |
+|---|---|---|---|
+| read summary vs its own claims | 346 | 0.774 / 0.582 / 0.977 | 0.484 / 0.047 / 0.988 |
+| prior vs its own Finding | 241 | 0.828 / 0.666 / 0.967 | 0.526 / 0.094 / 0.961 |
+| lived question vs its own answer | 60 | 0.801 / 0.616 / 0.948 | 0.522 / 0.095 / 0.949 |
+
+- **Cause: anisotropy, not a missing prefix.** bge-large-en-v1.5 vectors sit in one narrow
+  cone, so the unrelated rest point is about 0.66 raw. Checked and ruled out offline with the
+  same model files: the query instruction prefix (AUC 0.978 with, 0.979 without), CLS pooling
+  instead of vector-host's mean pooling (0.955, worse), and embedding claims instead of the
+  Stage 2 summary (no gain on its own; the summary does narrate the fetch, so the query is
+  now what_i_learned + claims).
+- **Centering fixes the scale, not the ranking.** Subtracting the corpus mean moves the
+  unrelated rest point to 0.08, so a number finally has a calm state: the Utah read's nearest
+  belief goes 0.593 raw -> 0.219 centered (below the offer floor; no belief offered) while the
+  CoreWeave GPU reads keep 0.27-0.35. AUC barely moves, and the unrelated p95 (0.31) sits
+  above the related p10 (0.25). With ~3,000 candidates per read the unrelated tail outnumbers
+  real neighbours, so top-k is mostly adjacency. That is why a model must judge.
+- **Hub correction tames attractors.** One crystallization was in the top-2 of 8/29 reads raw,
+  3/29 after centering + CSLS hub correction.
+- **What the Utah 0.62 was** (offline probe, raw): the nearest prior was about `governor.reject`
+  calls on stance crystallizations, one shared word with "Gov. Cox". No similarity number can
+  tell those apart; a reader can.
+
+Consequences in this design: the candidate field is `score` (rank only), never rendered to the
+judge; the offer floor (centered 0.25 = related p10) is a recall net tied to the mean vector it
+was measured on, stored with the index (patch B) and re-measured when the pool shifts;
+Juniper's labels, not cosine, are the acceptance metric.
 
 ## Proposed schema / API changes
 
@@ -155,12 +207,14 @@ retried run judges the same evidence.
 ```python
 class ResonanceCandidateV1(_Forbid):
     ref_kind: Literal["self_prior", "lived_question", "lived_answer", "atlas_concept",
-                      "crystallization", "chat_memory", "curiosity_finding", "dream",
-                      "open_thread"]
+                      "crystallization", "curiosity_finding", "dream", "open_thread"]
     ref_id: str            # prior_id, question_id, concept node id, crystallization_id, ...
     store: str             # "falkor:orion_worldview:Prior", "pg:memory_crystallizations", ...
-    excerpt: str           # re-read from the store (Chroma is an index, never the record), <=400 chars
-    similarity: float | None   # recorded for the eval; never a gate (except the existing atlas 0.65)
+    excerpt: str           # re-read from the store (Chroma is an index, never the record), <=600 chars
+    neighborhood: list[ResonanceNeighborV1]   # <=6: Findings/revisions of a prior, answers of a
+                           # question, 1-hop substrate neighbours + assertions of a concept
+    score: float           # centered, hub-corrected cosine: ORDER within a kind only.
+                           # Never shown to the judge, never a gate on "interesting".
     recent_packet_count: int   # how many of the last 14 days' packets offered this ref (attractor guard)
 
 class ResonancePacketV1(_Forbid):
@@ -169,15 +223,23 @@ class ResonancePacketV1(_Forbid):
     root_request_id: str | None
     read_title: str
     read_summary: str      # Stage 2 summary
+    read_learned: str      # Stage 1 what_i_learned: what the article itself says
     read_text_sha256: list[str]   # retained texts the quote may come from
     candidates: list[ResonanceCandidateV1]   # cap 24 total
     built_at: AwareDatetime
 ```
 
-Per-kind budget (top-k, deduped by excerpt hash, self/root excluded):
-priors+lived questions/answers 4, atlas concepts 4 (reuse Stage 2's `related_objects` + exact
-objects from `ClaimContextV1`, no new embedding), crystallizations 4, chat memory 2, curiosity
-findings 3, dreams 2, open concern threads all (currently 1).
+Per-kind budget (deduped by excerpt hash; the read itself, its root request's other reads,
+and atlas concepts the read minted are excluded): priors 4, lived questions 2, lived answers 2,
+atlas concepts 4, crystallizations 4, curiosity findings 3, dreams 2, open threads 3 (earlier
+reads' Stage 2 `open_threads` + open concern arcs; arcs skip the floor). Implemented in
+`orion/world_pulse_read/resonance.py:build_packet` (patch A). Everything is retrieved by
+meaning: worldview and atlas text is embedded, not label-matched.
+
+Patch A finding: the 260 atlas concepts minted by reads have 2 substrate edges between them, so
+their 1-hop neighbourhood is almost always empty; older topic-foundry concepts are densely
+connected (e.g. `sub-concept-seed-orion`: 2,027). The neighbourhood step is wired; reading
+concepts are islands until links land.
 
 ### `ReadingResonanceV1` (payload of `ReadingFindingV1(kind="resonance")`)
 
@@ -187,13 +249,15 @@ class ResonanceCitationV1(_Forbid):
     ref_id: str            # must be in the packet
     how: str               # one sentence: what this piece has to do with the read
 
-class ReadingResonanceV1(_Forbid):
+class ReadingResonanceV1(_Forbid):   # patch A ships the judge half as ReadingResonanceJudgmentV1
     resonance_id: str      # = packet_id
     seed_id: str
-    read_quote: str        # verbatim from retained text or Stage 2 summary
+    article_summary: str   # 3-5 sentences, what the article says, no connection (Juniper learns too)
+    read_quote: str        # verbatim from retained text, Stage 2 summary, or what_i_learned
     connection: str        # Orion's own words, first person, <=600 chars
     citations: list[ResonanceCitationV1]   # >=1, all resolve into the packet
     bears_on_prior: Literal["supports", "strains"] | None   # only when a self_prior is cited
+    strained_prior_id: str | None   # required for "strains"; must be a cited self_prior
     decision: Literal["share", "note", "none"]
     explore_next: str | None   # one question worth chasing, or None
     confidence: float          # model self-report, recorded, not gated until the eval calibrates it
@@ -201,8 +265,9 @@ class ReadingResonanceV1(_Forbid):
 ```
 
 What each field does at runtime (no-cathedral check): `decision` routes (share = outreach +
-letter, note = letter only, none = receipt only); `bears_on_prior` is rendered in the letter
-next to the cited prior; `explore_next` mints a seed; `recent_packet_count` is shown to the
+letter, note = letter only, none = receipt only); `article_summary` opens the message and the
+letter entry; `bears_on_prior` is rendered next to the cited prior, and `strains` +
+`strained_prior_id` is the re-test request; `explore_next` mints a seed; `recent_packet_count` is shown to the
 judge and counted by the eval; `confidence` is stored for calibration only.
 
 ### Deterministic acceptance check (code, not model)
@@ -213,7 +278,11 @@ A judged output is rejected (stored as `decision=none`, `rejected_reason=...`) w
   (`quote_not_in_read`);
 - `connection` is empty, or contains a line of the prompt scaffold (`prompt_echo`). The prompt
   carries no example sentences at all, so there is nothing to echo by construction;
-- `bears_on_prior` is set without a cited `self_prior` (`prior_relation_without_prior`).
+- `bears_on_prior` is set without a cited `self_prior` (`prior_relation_without_prior`), or
+  `strains` names a prior it did not cite (`strained_prior_not_cited`);
+- `article_summary` is not 3-5 sentences (`summary_sentence_count`).
+
+Implemented and tested in patch A (`check_judgment`, one test per reason).
 
 The rendered message and letter entry show cited excerpts **re-read from their stores by
 ref_id**, never the model's paraphrase of them. A citation that stops resolving renders
@@ -234,11 +303,13 @@ nothing.
 
 ### Routing
 
-- **Outreach (`share`)**: through the seam's outreach hook. Proposed gates: quiet hours
-  respected (held until 08:00, not dropped); at most one share per `root_request_id` per day
-  (the three CoreWeave reads would be one message); content id
-  `resonance:<sha of sorted ref_ids>` in the existing 7-day novelty ledger; skips the
-  endogenous daily cap (pending Juniper, question 1).
+- **Outreach (`share`)**: through the seam's outreach hook. Gates: quiet hours respected (held
+  until 08:00, not dropped); cooldown respected; at most one share per `root_request_id` per
+  day (the three CoreWeave reads would be one message); content id
+  `resonance:<sha of sorted ref_ids>` in the existing 7-day novelty ledger;
+  `HUB_READING_RESONANCE_DAILY_MAX`. Skips the endogenous daily cap (Juniper, decision 1). The
+  message is: article summary, then Orion's connection, then the cited pieces re-read from
+  their stores.
 - **Letter**: `share` and `note` rows render in "What I read" with the cited excerpts.
 - **Curiosity seed**: `share`/`note` with `explore_next` mints one unscored seed in
   substrate-runtime, sibling of `link_accepted_seeds.py`: focal nodes = the read's landed
@@ -246,11 +317,34 @@ nothing.
   `strength:unscored_event`; once per `resonance_id`; ceiling 4 per tick. A resonance with no
   graph node to anchor (only memories cited) goes to the letter, no seed.
 
+### Re-test routing (decision 4)
+
+Today a prior is re-tested only when a curiosity investigation's Orion picks it from the
+menu Hub builds with `select_priors` (`orion/curiosity/worldview.py:1002`, called from
+`read_snapshot` at `:1179`): most uncertain first, then least tested, with priors tested
+`HUB_CURIOSITY_STALE_PRIOR_TESTS` (3) times moved to a stale bucket with a retire option.
+Orion writes the test itself (`kickoff_prompt.py:851-863`); Hub never writes the worldview
+graph. The urgent door (`CuriosityUrgentSeedV1`) is for hardware incidents and is not used.
+
+Patch B adds one input to that menu, nothing else:
+- `select_priors(..., strained: Mapping[prior_id, StrainNoteV1])`, where a strain note is an
+  accepted resonance with `bears_on_prior="strains"` from the last 14 days whose
+  `strained_at` is later than the prior's `last_tested_at` (read from the finding rows).
+- Strained priors go to the front of the offered list (cap 2 per run), even from the stale
+  bucket: new evidence is the one good reason to re-open a well-tested belief. The menu line
+  carries the quote, the read's URL and the resonance id. Orion still chooses.
+- Cleared by the test itself: once `last_tested_at` passes `strained_at`, the note no longer
+  applies. No new writer touches priors.
+- Trace: `curiosity_prior_menu strained=<n> prior_ids=...` log line, plus the investigation's
+  `PriorRevision`/`Finding` written after a strained offer.
+
 ### New index
 
-Chroma `orion_worldview_beliefs`: non-retired `:Prior`, `:SelfQuestionMint`, `:LivedAnswer`,
+Chroma `orion_worldview_beliefs`: live `:Prior` (status not refuted/retired), `:SelfQuestionMint`, `:LivedAnswer`,
 indexed through `orion/introspect/semantic_index.index_docs` (same as `concept_search`).
-Derived, rebuildable from FalkorDB; add to `vector_collection_policy.py`.
+Derived, rebuildable from FalkorDB; add to `vector_collection_policy.py`. Patch A embeds these
+at replay time instead (about 340 texts, persists nothing). The index also stores the corpus
+mean vector and hub scores the floor was measured against.
 
 ## Files likely to touch
 
@@ -291,11 +385,12 @@ Env (ship ON, per standing rule): `HUB_READING_RESONANCE_ENABLED=true`,
 
 ## Non-goals
 
-- No prior writes. Resonance can say a read strains a belief; it never revises, tests, or
-  retires a prior. That stays with curiosity investigations.
+- No prior writes by resonance. A strain re-orders the curiosity prior menu (decision 4);
+  the test, revision, or retirement stays with the investigation Orion runs.
 - No change to the strict link quote rule or to `concept_search` thresholds.
 - No new score or metric that ranks curiosity seeds; resonance seeds are unscored events.
-- No raw-chat recall in v1 (question 3).
+- No raw-chat recall in v1 (decision 3: crystallizations are the conversation memory).
+- No similarity number as evidence, in the prompt, the message, or a gate on interest.
 - No privacy filtering. There is no privacy boundary between Juniper and Orion (Juniper,
   2026-10-07: "there is no privacy. orion and i share a life together and im the only user in
   the system."). Crystallized memories of her life are fair to cite and quote.
@@ -350,11 +445,12 @@ Gate tests (fast, deterministic):
   packet.
 
 Eval (`services/orion-hub/evals/run_reading_resonance_eval.py`):
-- Replay every Stage 2 read completed in the last 14 days (30 as of 2026-10-13). Build packets
-  read-only, run the judge on the configured lane, write
-  `/tmp/reading-resonance-eval/labels.csv` with read, decision, connection, citations
-  (with excerpts).
-- Juniper labels every row: want / meh / no. All rows, not a sample, because N is small.
+- Replay every Stage 2 read completed in the last 14 days (29 on the patch A run). Build
+  packets read-only, run the judge on the configured lane, write the labeling set
+  (`docs/superpowers/evals/<date>-resonance-labeling-set.md` + `.csv`): title, source, link,
+  article summary, proposed connection, each cited piece's stored text and store, judge
+  decision/confidence, rejected items too (to test recall), empty `wanted` + `notes`.
+- Juniper labels every row (decision 5): wanted yes/no + notes. All rows, not a sample.
 - Targets: precision of `share` (labeled want) >= 0.7; `share` rate <= 0.4 of reads; citation
   resolution 100%; prompt echoes 0; attractor share <= 0.2; median lease recorded.
 - Honest limit: with about 30 reads and maybe 5 shares, this is a smoke-level precision check.
@@ -364,19 +460,24 @@ Live smoke after deploy: one real read produces the full trace above.
 
 ## Recommended next patch
 
-**Patch A (read-only, no outreach):** `belief_index.py` + `orion_worldview_beliefs` collection,
-`resonance.py` packet builder and acceptance check, the schemas, and the eval harness running
-the judge offline against the 14-day replay. Deliverable: the labeled CSV and precision
-number. This proves the judgment is worth hearing before it can message anyone.
+**Patch A (read-only, no outreach): PR #2647.** Similarity diagnosis, `resonance.py`
+crosswalk + packet builder + judge prompt + acceptance check, the schemas, and the replay eval
+writing the labeling set. The judge step is UNVERIFIED in that PR: the only agent route
+(`agent`) runs at `system` priority (`config/gpu_pool.yaml`), ahead of the background reading
+and curiosity holds, so the replay builds and stores every prompt but does not call it. Run it
+with `--judge-url` when gpu1 is idle, or after patch B adds a background-priority agent route.
+Deliverable once judged: Juniper's labels and a share precision.
 
 **Patch B (after A meets target, rebased on the merged ReadingFindingV1 seam):** durable
-`reading.resonance` workflow, Stage 2 submission, finding kind, outreach/letter hooks,
-resonance seeds, env flags ON, live smoke.
+`reading.resonance` workflow, Stage 2 submission, finding kind, outreach door that skips only
+the daily cap, letter hooks with article summary, `select_priors` strain input, resonance
+seeds, `orion_worldview_beliefs` index, env flags ON, live smoke.
 
 ### Metric gate notes
 
-No new metric enters a decision. Similarity is recorded for ranking candidates and for the
-eval; the probe above is the live check showing why it is not a gate (flat distribution, no
-rest state that means "unrelated"). `confidence` is a model self-report, stored only, with no
+No new metric enters a decision. The candidate score only orders candidates within a kind
+and is never shown to the judge; patch A's measurements (section above) are the live check:
+raw cosine has no rest state (unrelated 0.66), centered cosine has one (0.08) but the same
+overlap (AUC 0.95-0.99, unrelated p95 above related p10), so it cannot be evidence. `confidence` is a model self-report, stored only, with no
 threshold until the eval shows whether it tracks Juniper's labels. `recent_packet_count` is a
 plain count with a direct consumer (the judge prompt) and is cheap to remove.

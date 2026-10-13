@@ -26,6 +26,9 @@ logger = logging.getLogger("orion-world-pulse.source_health")
 
 # Cap persisted URLs per source; max_articles_per_day is <= 10 in practice.
 MAX_URLS_RECORDED = 20
+# URLs remembered across recent runs, so a feed rotating between the same few
+# stale items (who.int: 26 items / 2 URLs) never reads as "new".
+MAX_SEEN_URLS = 50
 
 T = TypeVar("T")
 
@@ -53,14 +56,18 @@ def filter_fresh(
     """Keep items published within ``max_age_days`` of ``now``, newest first.
 
     ``max_age_days <= 0`` disables the window (all items kept, input order).
-    Returns ``(kept, {"stale": n, "undated": n})``.
+    Items dated more than a day in the future are dropped as ``future``.
+    Returns ``(kept, {"stale": n, "undated": n, "future": n})``.
     """
     items = list(candidates)
     if max_age_days <= 0:
-        return items, {"stale": 0, "undated": 0}
+        return items, {"stale": 0, "undated": 0, "future": 0}
     cutoff = now - timedelta(days=max_age_days)
+    # A feed date more than a day ahead is a bad clock or a scheduled post;
+    # it would otherwise sort to the top of every run.
+    horizon = now + timedelta(days=1)
     kept: list[tuple[datetime, T]] = []
-    stale = undated = 0
+    stale = undated = future = 0
     for item in items:
         published = candidate_field(item, "published_at")
         if isinstance(published, str):
@@ -76,9 +83,12 @@ def filter_fresh(
         if published < cutoff:
             stale += 1
             continue
+        if published > horizon:
+            future += 1
+            continue
         kept.append((published, item))
     kept.sort(key=lambda pair: pair[0], reverse=True)
-    return [item for _, item in kept], {"stale": stale, "undated": undated}
+    return [item for _, item in kept], {"stale": stale, "undated": undated, "future": future}
 
 
 def assess_source_health(
@@ -91,19 +101,27 @@ def assess_source_health(
 
     ``current[source_id]`` carries ``urls`` (accepted article URLs this run)
     plus counters (``fetched``, ``stale_dropped``, ``undated_dropped``,
-    ``fetch_error``). ``previous`` is the last real run's ``source_health``
-    map (or None when unavailable). A run "has something new" when at least
-    one accepted URL was not accepted last run; ``consecutive_no_new`` counts
-    runs in a row without that, and ``stuck`` is ``consecutive_no_new >=
-    stuck_after`` (``stuck_after <= 0`` disables the flag).
+    ``future_dropped``, ``fetch_error``). ``previous`` is the last real run's
+    ``source_health`` map (or None when unavailable). A URL is "new" when it
+    is not in ``seen_urls`` -- the union of URLs accepted over recent runs
+    (capped at MAX_SEEN_URLS), carried forward even through empty or failed
+    runs so they cannot reset the count. ``consecutive_no_new`` counts runs in
+    a row with no new URL; ``stuck`` is ``consecutive_no_new >= stuck_after``
+    (``stuck_after <= 0`` disables the flag).
     """
     out: dict[str, dict[str, Any]] = {}
     prev_map = previous if isinstance(previous, dict) else {}
     for source_id, row in current.items():
         urls = [str(u) for u in (row.get("urls") or [])][:MAX_URLS_RECORDED]
         prev = prev_map.get(source_id) if isinstance(prev_map.get(source_id), dict) else None
-        prev_urls = set(prev.get("urls") or []) if prev else set()
-        new_urls = [u for u in urls if u not in prev_urls]
+        prev_seen: list[str] = []
+        if prev:
+            for key in ("seen_urls", "urls"):
+                value = prev.get(key)
+                if isinstance(value, list):
+                    prev_seen.extend(str(u) for u in value)
+        prev_seen_set = set(prev_seen)
+        new_urls = [u for u in urls if u not in prev_seen_set]
         if new_urls:
             consecutive = 0
         else:
@@ -112,16 +130,24 @@ def assess_source_health(
             except (TypeError, ValueError):
                 prev_count = 0
             consecutive = prev_count + 1
+        seen: list[str] = []
+        for u in urls + prev_seen:
+            if u not in seen:
+                seen.append(u)
+            if len(seen) >= MAX_SEEN_URLS:
+                break
         entry = {
             "fetched": int(row.get("fetched", 0)),
             "fresh": len(urls),
             "new": len(new_urls),
             "stale_dropped": int(row.get("stale_dropped", 0)),
             "undated_dropped": int(row.get("undated_dropped", 0)),
+            "future_dropped": int(row.get("future_dropped", 0)),
             "fetch_error": bool(row.get("fetch_error", False)),
             "consecutive_no_new": consecutive,
             "stuck": stuck_after > 0 and consecutive >= stuck_after,
             "urls": urls,
+            "seen_urls": seen,
         }
         out[source_id] = entry
     return out
@@ -166,16 +192,19 @@ def _get_engine(db_url: str):
                     pool_pre_ping=True,
                     pool_size=1,
                     max_overflow=0,
+                    pool_timeout=5,
                     connect_args={"connect_timeout": 5, "options": "-c statement_timeout=5000"},
                 )
                 _engine_url = db_url
     return _engine
 
 
-def load_previous_source_health(db_url: str, *, run_id: str) -> dict[str, Any] | None:
-    """Last real run's ``source_health`` map, or None (no URL, no row, DB down)."""
+def load_previous_source_health(db_url: str, *, run_id: str) -> tuple[dict[str, Any] | None, str]:
+    """Last real run's ``source_health`` map and a status:
+    ``loaded`` | ``no_row`` (no earlier run has history yet) | ``no_db_url`` |
+    ``error`` (DB unreachable/query failed). The map is None unless loaded."""
     if not db_url:
-        return None
+        return None, "no_db_url"
     try:
         from sqlalchemy import text
 
@@ -185,7 +214,7 @@ def load_previous_source_health(db_url: str, *, run_id: str) -> dict[str, Any] |
             row = conn.execute(text(_PREVIOUS_SQL), {"run_id": run_id}).first()
     except Exception:
         logger.warning("world_pulse_source_health_history_unavailable", exc_info=True)
-        return None
+        return None, "error"
     if row is None or not isinstance(row[0], dict):
-        return None
-    return row[0]
+        return None, "no_row"
+    return row[0], "loaded"

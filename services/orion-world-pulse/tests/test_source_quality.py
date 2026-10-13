@@ -101,6 +101,9 @@ def test_to_candidate_rejects_listing_and_data_urls(url):
         "https://nvidianews.nvidia.com/news/nvidia-and-cisco-introduce-new-pluggable-optics-form-factor-to-scale-ai-factories",
         "https://blogs.nvidia.com/blog/ocp-global-summit-vera-rubin-scale-ai-factories/",
         "https://www.servethehome.com/intels-crescent-island-ai-server-gpu-gets-a-name-and-specs-meet-the-intel-gpu-d-series/",
+        # Org-owned Hugging Face posts (182 of 876 feed items were rejected before the fix).
+        "https://huggingface.co/blog/microsoft/thinkingbox",
+        "https://huggingface.co/blog/ServiceNow-AI/autosynthdata",
     ],
 )
 def test_real_article_urls_from_new_sources_pass_their_source_rules(url):
@@ -189,14 +192,14 @@ def test_filter_fresh_drops_stale_and_undated_and_sorts_newest_first():
     ]
     kept, dropped = filter_fresh(items, now=NOW, max_age_days=3)
     assert [c.url for c in kept] == ["new", "mid"]
-    assert dropped == {"stale": 2, "undated": 1}
+    assert dropped == {"stale": 2, "undated": 1, "future": 0}
 
 
 def test_filter_fresh_disabled_keeps_everything():
     items = [_C("old", NOW - timedelta(days=400)), _C("none", None)]
     kept, dropped = filter_fresh(items, now=NOW, max_age_days=0)
     assert [c.url for c in kept] == ["old", "none"]
-    assert dropped == {"stale": 0, "undated": 0}
+    assert dropped == {"stale": 0, "undated": 0, "future": 0}
 
 
 def test_filter_fresh_reads_model_dump_only_candidates():
@@ -254,10 +257,46 @@ def test_fetch_error_reason_and_malformed_previous_tolerated():
     assert health["s"]["stuck"] and stuck_reason(health["s"]) == "fetch_error"
 
 
-def test_history_read_fails_open():
-    assert load_previous_source_health("", run_id="r") is None
-    # sqlite cannot run the jsonb query: must degrade to None, never raise.
-    assert load_previous_source_health("sqlite://", run_id="r") is None
+def test_history_read_fails_open_with_a_status():
+    assert load_previous_source_health("", run_id="r") == (None, "no_db_url")
+    # Nothing listens on port 1: a down DB degrades to "error", never raises.
+    assert load_previous_source_health("postgresql://u:p@127.0.0.1:1/x", run_id="r") == (None, "error")
+
+
+def test_rotating_between_the_same_stale_urls_goes_stuck():
+    # who.int: 26 items over 2 URLs. A, B, A, B must not read as "new" each time.
+    runs = _chain([["A"], ["B"], ["A"], ["B"], ["A"]])
+    assert [r["new"] for r in runs] == [1, 1, 0, 0, 0]
+    assert [r["stuck"] for r in runs] == [False, False, False, False, True]
+
+
+def test_an_empty_or_failed_run_does_not_reset_the_count():
+    prev = None
+    seq = [{"urls": ["u"]}, {"urls": [], "fetch_error": True}, {"urls": ["u"]}, {"urls": ["u"]}]
+    out = []
+    for row in seq:
+        prev = assess_source_health({"s": row}, prev, stuck_after=3)
+        out.append(prev["s"])
+    assert [r["consecutive_no_new"] for r in out] == [0, 1, 2, 3]
+    assert out[-1]["stuck"] is True
+    assert out[1]["seen_urls"] == ["u"]
+
+
+def test_seen_urls_are_capped():
+    from app.services.source_health import MAX_SEEN_URLS
+
+    prev = None
+    for i in range(20):
+        prev = assess_source_health({"s": {"urls": [f"u{i}-{j}" for j in range(10)]}}, prev, stuck_after=3)
+    assert len(prev["s"]["seen_urls"]) == MAX_SEEN_URLS
+    assert prev["s"]["seen_urls"][0] == "u19-0"
+
+
+def test_filter_fresh_drops_far_future_dates():
+    items = [_C("future", NOW + timedelta(days=30)), _C("soon", NOW + timedelta(hours=2))]
+    kept, dropped = filter_fresh(items, now=NOW, max_age_days=3)
+    assert [c.url for c in kept] == ["soon"]
+    assert dropped["future"] == 1
 
 
 def _registry():
@@ -296,6 +335,31 @@ def _registry():
     )
 
 
+def test_digest_disabled_source_is_not_observed(monkeypatch):
+    registry = _registry()
+    registry.sources[0] = registry.sources[0].model_copy(
+        update={"allowed_uses": WorldPulseAllowedUsesV1(digest=False)}
+    )
+    now = datetime.now(timezone.utc)
+    monkeypatch.setattr(pipeline, "load_source_registry", lambda path: registry)
+    monkeypatch.setattr(
+        _C,
+        "model_dump",
+        lambda self, mode="python": {"title": "t", "url": self.url, "summary": "s", "published_at": self.published_at},
+        raising=False,
+    )
+    monkeypatch.setattr(
+        pipeline,
+        "fetch_source_candidates",
+        lambda source, timeout_seconds: [_C(f"https://{source.domains[0]}/2026/10/a-story", now)],
+    )
+    monkeypatch.setattr(pipeline, "load_previous_source_health", lambda db_url, run_id: (None, "no_row"))
+    result = pipeline.run_world_pulse(run_id="nodigest", requested_by="test", dry_run=True)
+    assert "stuck-feed" not in result.run.metrics["source_health"]
+    assert "fresh-feed" in result.run.metrics["source_health"]
+    assert result.run.metrics["source_health_history"] == "no_row"
+
+
 def test_pipeline_drops_stale_items_and_flags_stuck_source(monkeypatch):
     now = datetime.now(timezone.utc)
     monkeypatch.setattr(pipeline, "load_source_registry", lambda path: _registry())
@@ -314,10 +378,13 @@ def test_pipeline_drops_stale_items_and_flags_stuck_source(monkeypatch):
     monkeypatch.setattr(
         pipeline,
         "load_previous_source_health",
-        lambda db_url, run_id: {
-            "stuck-feed": {"urls": [], "consecutive_no_new": 2},
-            "fresh-feed": {"urls": ["https://example.net/2026/10/story-0"], "consecutive_no_new": 0},
-        },
+        lambda db_url, run_id: (
+            {
+                "stuck-feed": {"urls": [], "consecutive_no_new": 2},
+                "fresh-feed": {"urls": ["https://example.net/2026/10/story-0"], "consecutive_no_new": 0},
+            },
+            "loaded",
+        ),
     )
     result = pipeline.run_world_pulse(run_id="stuck", requested_by="test", dry_run=True)
     health = result.run.metrics["source_health"]

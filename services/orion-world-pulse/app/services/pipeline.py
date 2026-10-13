@@ -141,17 +141,20 @@ def _record_source_health(*, run: WorldPulseRunV1, run_id: str, observations: di
     run.metrics is persisted in world_pulse_run.payload_json, which is where
     the next run reads ``source_health`` back from.
     """
-    previous = load_previous_source_health(settings.world_pulse_source_health_db_url, run_id=run_id)
+    previous, history_status = load_previous_source_health(
+        settings.world_pulse_source_health_db_url, run_id=run_id
+    )
     health = assess_source_health(
         observations,
         previous,
         stuck_after=settings.world_pulse_stuck_source_digests,
     )
     run.metrics["source_health"] = health
-    run.metrics["source_health_history"] = "loaded" if previous is not None else "unavailable"
+    run.metrics["source_health_history"] = history_status
     run.metrics["max_item_age_days"] = settings.world_pulse_max_item_age_days
     run.metrics["stale_items_dropped"] = sum(h["stale_dropped"] for h in health.values())
     run.metrics["undated_items_dropped"] = sum(h["undated_dropped"] for h in health.values())
+    run.metrics["future_items_dropped"] = sum(h["future_dropped"] for h in health.values())
     stuck = sorted(sid for sid, h in health.items() if h["stuck"])
     run.metrics["stuck_sources"] = stuck
     for sid in stuck:
@@ -262,12 +265,16 @@ def run_world_pulse(
                 max_age_days=settings.world_pulse_max_item_age_days,
             )
             accepted = fresh[: min(source.max_articles_per_day, settings.world_pulse_max_articles_per_source)]
-            source_observations[source.source_id] = {
-                "urls": [str(candidate_field(c, "url") or "") for c in accepted] if assessment.allowed_uses.digest else [],
-                "fetched": len(candidates),
-                "stale_dropped": dropped["stale"],
-                "undated_dropped": dropped["undated"],
-            }
+            if assessment.allowed_uses.digest:
+                # A digest-disabled source contributes no articles by design;
+                # observing it would read as "zero fresh" and flag it stuck.
+                source_observations[source.source_id] = {
+                    "urls": [str(candidate_field(c, "url") or "") for c in accepted],
+                    "fetched": len(candidates),
+                    "stale_dropped": dropped["stale"],
+                    "undated_dropped": dropped["undated"],
+                    "future_dropped": dropped["future"],
+                }
             for candidate in accepted:
                 if not assessment.allowed_uses.digest:
                     continue

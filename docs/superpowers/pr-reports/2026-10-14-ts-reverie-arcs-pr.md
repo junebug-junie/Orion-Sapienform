@@ -36,3 +36,7 @@ cd /mnt/scripts/Orion-Sapienform && git pull --ff-only && ORION_ALLOW_SHARED_CHE
 ## Risks / concerns
 - Medium: watch `reverie_evidence_arc_ref_stripped` and hollow rate after deploy. Model use of the block is UNVERIFIED until a live tick.
 - Low: interoception labels are raw node refs.
+
+## PR link
+
+https://github.com/junebug-junie/Orion-Sapienform/pull/2660

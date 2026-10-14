@@ -175,6 +175,6 @@ Not run by this task. Until it runs, chat keeps the old wording; nothing else in
 
 ## PR link
 
-PR_LINK_PLACEHOLDER
+https://github.com/junebug-junie/Orion-Sapienform/pull/2649
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

@@ -155,6 +155,7 @@ async def main() -> int:
     ap.add_argument("--llm-url", default="")
     ap.add_argument("--llm-model", default="agent")
     ap.add_argument("--llm-max-tokens", type=int, default=1200)
+    ap.add_argument("--llm-role", default="agent", help="gpu-pool role the LLM route lands on (pool gate)")
     ap.add_argument("--pool-url", default=os.environ.get("GPU_POOL_URL", "http://127.0.0.1:8127"))
     args = ap.parse_args()
     until = datetime.fromisoformat(args.until) if args.until else datetime.now(timezone.utc)
@@ -317,7 +318,7 @@ async def main() -> int:
                             if cache.exists():
                                 raw_out = json.loads(cache.read_text())["raw"]
                             elif paused is None:
-                                busy = await _pool_mod().wait_for_quiet_pool(client, args.pool_url, 30.0)
+                                busy = await _pool_mod().wait_for_quiet_pool(client, args.pool_url, 30.0, args.llm_role)
                                 if busy:
                                     paused = busy
                                     print("LLM paused: pool busy:", "; ".join(busy))

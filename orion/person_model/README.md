@@ -30,7 +30,7 @@ mode yet; applying reviewed decisions is a later step.
 ```bash
 pip install -r orion/person_model/requirements-extract.txt   # plus the CPU torch wheel
 PYTHONPATH=. python scripts/run_person_linkage.py --run 2026-10-14 \
-    --html docs/superpowers/evals/2026-10-14-person-cleanup-review.html
+    --html /tmp/person-linkage/person-cleanup-review.html  (never inside the repo: it holds chat snippets and the repo is public)
 PYTHONPATH=. python orion/person_model/evals/run_linkage_eval.py \
     --decisions /tmp/person-linkage/2026-10-14/decisions.jsonl
 PYTHONPATH=. python -m pytest orion/person_model/tests -q

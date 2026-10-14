@@ -7,7 +7,7 @@ choices persist, and asserts the page made no network request and threw no error
 
     pip install playwright
     python orion/person_model/evals/check_review_html_ui.py \
-        docs/superpowers/evals/2026-10-14-person-cleanup-review.html [--chrome /path/to/chrome]
+        /tmp/person-linkage/person-cleanup-review.html  (never inside the repo: it holds chat snippets and the repo is public) [--chrome /path/to/chrome]
 """
 
 import argparse

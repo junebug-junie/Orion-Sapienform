@@ -193,3 +193,8 @@ graphify-out/graph.html
 # Generated Graphify data lives on warm storage, including the directory symlink.
 /graphify-out
 /.graphify-migrated-*
+
+# Review/labeling artifacts carry Juniper chat + memory snippets; the repo is public.
+docs/superpowers/evals/*-review.html
+docs/superpowers/evals/*-decisions.csv
+docs/superpowers/evals/*labeling-set*

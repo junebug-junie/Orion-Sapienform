@@ -269,6 +269,18 @@ A `pronouns` attribute on every person node, read by the card reducer and by eve
 
 **Bake-off.** On Juniper's labeled set (section "Eval design"): person-mention F1 at precision >= 0.95, relation-phrase precision, latency per prompt on CPU. Pick the smallest model that clears the bar; record the result in the P2 PR.
 
+**Bake-off result (P2, 2026-10-14; 55 of her chat prompts, 34 person spans, 19 relation phrases; labels by the implementing agent).** Person-mention F1 at precision >= 0.95, CPU latency per prompt:
+
+| Model | F1 @ P>=0.95 (P / R) | Best F1 (P / R) | ms/prompt |
+|---|---|---|---|
+| `knowledgator/gliner-multitask-large-v0.5`, label "person name" | **0.871** (0.964 / 0.794) | 0.912 (0.912 / 0.912) | 253 |
+| `dslim/bert-base-NER` | 0.871 (0.964 / 0.794) | 0.875 (0.933 / 0.824) | 40 |
+| `Jean-Baptiste/roberta-large-ner-english` | never reaches P 0.95 | 0.943 (0.917 / 0.971) | 133 |
+| `urchade/gliner_medium-v2.1` / `_large-v2.1` / `_multi_pii-v1` ("person name") | never / never / 0.162 | 0.638 / 0.587 / 0.267 | 91-259 |
+| spaCy `en_core_web_sm` | never | 0.582 | 11 |
+
+Pinned: GLiNER multitask-large at threshold 0.85 (ties BERT at the gate, ahead on best F1, keeps zero-shot labels). Two findings that change the design: (1) the bare label "person" makes every GLiNER tag pronouns ("I", "you", "me"): precision 0.29-0.51; "person name" fixes most of it. (2) Relation phrases ("my wife") do not work as spans: best relation-phrase F1 is 0.20. Relationships therefore come from the person-study line (section 7), not the extractor. Rerunning the pinned model gives byte-identical mention rows.
+
 **Where it runs:** `orion-memory-consolidation` (it already hosts the referent projector), as a job the curiosity line and the nightly reducer call.
 
 ### 5. Linkage reducer (`orion/person_model/linkage.py`, pure; CLI `scripts/run_person_linkage.py`)
@@ -302,6 +314,12 @@ A `pronouns` attribute on every person node, read by the card reducer and by eve
 **Reversible and replayable.** The absorbed node is never deleted: it gets `merged_into=<survivor>` and a `same_as` edge; alias rows point readers at the survivor; attributes owned by the absorbed node move with a `merged_owner` event. `--unmerge <merge_id>` sets `reverted_at`, removes alias rows and the edge, and moves attributes back from their events. `merge_id = uuid5(survivor|absorbed|linkage_version)`, so a rerun is idempotent. Dry run by default, writing `/tmp/person-linkage/<run>/decisions.csv` and `progress.log` (backfill protocol, AGENTS.md section 14).
 
 **One-time cleanup** = the first run over the 11 Juniper nodes, every person referent, every `referent_alias` row, and every topic-foundry entity that blocks against a person anchor. Rev 3 (Juniper's answer 3): the dry run is rendered as one self-contained HTML file, `docs/superpowers/evals/2026-10-14-person-cleanup-review.html`. Each proposed merge, facet link, junk flag, or non-home correction is a card with its evidence (node ids, names, linked memory snippets, per-feature scores), grouped **auto-merge / needs your call / auto-reject**, with approve / reject and a notes box per card and an "export decisions" button that downloads a CSV (no network). Her exported CSV becomes the labeled set that calibrates the thresholds, and applying any decision to a live store is a later, separate step. After that, the same reducer runs nightly on new nodes and new mentions, and only its review band reaches Hub.
+
+**P2 dry run over the live graph (2026-10-14, read only).** 122 decisions over the 11 Juniper nodes, the 2 person referents and their aliases, every graph entity or concept that blocks against them, and 158 person-name mentions from her 377 chat prompts. Thresholds: auto-merge at >= 8.0, auto-reject at <= 2.0.
+- **Auto-merge: 55** (21 same-person merges, e.g. "Juniper" seed concept and the topic-modeler "juniper" into her referent, "oríon" into Orion, and her mentions of Amanda, Teddy, Addy, Rachel, Armando, Vincent into the topic-modeler entities that already carry those names; plus 34 facet links such as "juniper's taste", "juniper affect", "orion hub").
+- **Needs her call: 3.** "juniper feld" (her full name; one card also covers the mention cluster), "Skye" vs "Skye Laflamme", and "Jay, Jay" (one name, two people; the "jay" node merge waits on her answer).
+- **Auto-reject: 64** (code identifiers, topic clusters, the two leaked `juniper_relationship_summary` fields flagged as junk, and "home -> slc" marked non-home per her answer).
+- Expected ask volume for the one-time cleanup: **3**. Rerun is byte-identical (`decisions.csv` sha256 `10c90bd037f4f71f...`). On the agent's provisional labels auto-merge precision is 1.0 and recall 0.91; those labels were made after seeing the output, so her exported CSV is the real calibration set. The rule outcomes left only one scored non-match, so the labels cannot yet place the upper line: 8.0 is a design choice (exact name plus one corroborating feature) until her decisions come back.
 
 ### 6. Asks (extends `orion_ask`, no new table)
 

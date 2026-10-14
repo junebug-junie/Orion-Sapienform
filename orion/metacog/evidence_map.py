@@ -875,7 +875,78 @@ def map_manual(reason: str, up: dict[str, Any]) -> EvidenceMapping:
     )
 
 
+# --------------------------------------------------------------------------
+# self_signal_episode (spec 2026-10-07 section D; orion/metacog/self_signal_episode.py)
+# --------------------------------------------------------------------------
+
+# Bad-direction percentile against the signal's own 7 days. The cut points ARE
+# the attention seam's band cuts (prediction_error_magnitude.DEFAULT_BAND_CUTS:
+# high >= 0.9, unusual >= 0.99), so severity says the same thing the band does:
+# high -> degraded, unusual -> critical. Strict-below percentile never reaches
+# 1.0, so 1.0 is the saturation point.
+SELF_SIGNAL_PCT_DEGRADED = 0.9
+SELF_SIGNAL_PCT_CRITICAL = 0.99
+SELF_SIGNAL_PCT_SATURATE = 1.0
+
+
+def map_self_signal_episode(reason: str, up: dict[str, Any]) -> EvidenceMapping:
+    signal = str(up.get("signal_id") or "").strip()
+    phase = str(up.get("phase") or "").strip()
+    if not signal or phase not in ("open", "close"):
+        return _no_evidence("self_signal_episode", reason, "missing signal_id/phase")
+    label = str(up.get("label") or signal)
+    peak = _num(up.get("peak_percentile"))
+    peak_raw = _num(up.get("peak_raw"))
+    peak_band = str(up.get("peak_band") or "?")
+    open_pct = _num(up.get("percentile_at_open"))
+    open_raw = _num(up.get("raw_at_open"))
+    open_band = str(up.get("band_at_open") or "?")
+    touches = [signal, str(up.get("source_table") or "")]
+    evidence: list[str] = []
+    if open_raw is not None and open_pct is not None:
+        evidence.append(f"{label}: {open_raw:.4g} entered {open_band} (above {open_pct:.1%} of its own week)")
+    if peak_raw is not None and peak is not None:
+        evidence.append(f"peak {peak_raw:.4g} ({peak_band}, above {peak:.1%} of its week)")
+    p50, p90 = _num(up.get("p50_7d")), _num(up.get("p90_7d"))
+    if p50 is not None and p90 is not None:
+        evidence.append(f"its usual: median {p50:.4g}, p90 {p90:.4g} over 7 days")
+    if phase == "close":
+        dur = _num(up.get("duration_sec"))
+        close_reason = str(up.get("close_reason") or "?")
+        evidence.insert(
+            0,
+            f"{label} returned ({close_reason}) after {dur / 60.0:.0f} min"
+            if dur is not None
+            else f"{label} returned ({close_reason})",
+        )
+        return _build(
+            kind="self_signal_episode",
+            severity="nominal",
+            magnitude=_nominal_band((dur or 0.0) / 3600.0),
+            basis=f"close:{close_reason}:duration_sec={dur}",
+            evidence=evidence,
+            touches=touches,
+            headline=f"{label} back from {peak_band} ({close_reason})",
+        )
+    pct = peak if peak is not None else open_pct
+    if pct is None:
+        return _no_evidence("self_signal_episode", reason, "open without percentile")
+    severity, magnitude = banded(
+        pct, SELF_SIGNAL_PCT_DEGRADED, SELF_SIGNAL_PCT_CRITICAL, SELF_SIGNAL_PCT_SATURATE
+    )
+    return _build(
+        kind="self_signal_episode",
+        severity=severity,
+        magnitude=magnitude,
+        basis=f"percentile={pct:.4f}",
+        evidence=evidence,
+        touches=touches,
+        headline=f"{label} {peak_band} for itself (above {pct:.1%} of its own week)",
+    )
+
+
 _MAPPERS: dict[str, Callable[[str, dict[str, Any]], EvidenceMapping]] = {
+    "self_signal_episode": map_self_signal_episode,
     "transport": map_transport,
     "telemetry_anomaly": map_telemetry_anomaly,
     "chat_turn": map_chat_turn,

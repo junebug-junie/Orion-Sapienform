@@ -187,6 +187,24 @@ class Settings(BaseSettings):
         "equilibrium:telemetry_anomaly_episode:v1",
         alias="EQUILIBRIUM_METACOG_TELEMETRY_ANOMALY_EPISODE_STATE_KEY",
     )
+    # self_signal_episode (spec 2026-10-07 section D, orion/metacog/
+    # self_signal_episode.py): a calibrated internal prediction-error node that
+    # stays high/unusual for itself (the attention seam's judge_candidate) for
+    # MORE than OPEN_DWELL_SEC within OPEN_WINDOW_SEC opens an episode (one
+    # LLM-drafted open row); CALM_GAP_SEC of continuous calm closes it (a
+    # deterministic close row, no prose). SILENT_CLOSE_SEC of absent/stale
+    # readings closes it as went_silent (never as calm). MAX_OPENS_PER_HOUR
+    # caps drafts across all signals. Live 7-day replay: ~9.5 opens/day.
+    # Reads substrate_node_prediction_error_history over
+    # EQUILIBRIUM_METACOG_GENERATIVE_POSTGRES_URI (read-only).
+    metacog_self_signal_episodes_enabled: bool = Field(True, alias="EQUILIBRIUM_METACOG_SELF_SIGNAL_EPISODES_ENABLED")
+    metacog_self_signal_episodes_poll_interval_sec: float = Field(30.0, alias="EQUILIBRIUM_METACOG_SELF_SIGNAL_EPISODES_POLL_INTERVAL_SEC")
+    metacog_self_signal_episodes_open_dwell_sec: float = Field(300.0, alias="EQUILIBRIUM_METACOG_SELF_SIGNAL_EPISODES_OPEN_DWELL_SEC")
+    metacog_self_signal_episodes_open_window_sec: float = Field(600.0, alias="EQUILIBRIUM_METACOG_SELF_SIGNAL_EPISODES_OPEN_WINDOW_SEC")
+    metacog_self_signal_episodes_calm_gap_sec: float = Field(600.0, alias="EQUILIBRIUM_METACOG_SELF_SIGNAL_EPISODES_CALM_GAP_SEC")
+    metacog_self_signal_episodes_silent_close_sec: float = Field(3600.0, alias="EQUILIBRIUM_METACOG_SELF_SIGNAL_EPISODES_SILENT_CLOSE_SEC")
+    metacog_self_signal_episodes_max_opens_per_hour: int = Field(6, alias="EQUILIBRIUM_METACOG_SELF_SIGNAL_EPISODES_MAX_OPENS_PER_HOUR")
+    metacog_self_signal_episodes_state_key: str = Field("equilibrium:self_signal_episodes:v1", alias="EQUILIBRIUM_METACOG_SELF_SIGNAL_EPISODES_STATE_KEY")
     # Leave windows led by a task_execution channel (glossary category) to the
     # chat_turn trigger while a harness turn is active. Needs the episode gate.
     metacog_telemetry_anomaly_turn_suppress_enable: bool = Field(

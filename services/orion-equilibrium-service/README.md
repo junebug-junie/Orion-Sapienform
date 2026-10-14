@@ -46,6 +46,7 @@ This section exists because design decisions for this system have historically o
 | `transport` | per-hop baseline gate episodes (timeout / zero_success / spike / saturation / regime_shift) + real per-call RPC timeout grammar events for timeouts no gate window claims (pooled timeouts retired 2026-09-29; bus_synaptic retired 2026-09-30) | own (`EQUILIBRIUM_METACOG_TRANSPORT_COOLDOWN_SEC`) | live; gate emitting since 2026-10-01 |
 | `insight` | Sustained low→high recovery in `AttentionSelfModelV1.prediction_error_confidence` (`substrate_attention_self_model`) | own (`EQUILIBRIUM_METACOG_INSIGHT_COOLDOWN_SEC`) | **ships disabled**, not yet live-verified |
 | `flow` | Sustained high-confidence plateau in the *same* field | — | **retired 2026-10-10** (its plateau was the idle rest state; see below) |
+| `self_signal_episode` | An internal `node:substrate.*` prediction error high/unusual **for itself** (the attention seam's `world_first.judge_candidate`) for longer than one event's orienting window; open + close rows | none: episode-shaped, own hourly open budget | ships on (2026-10-14) |
 
 **A separate, parallel system this table's `transport` row borrows from, not the same pipeline:** `rpc_health` (`orion/core/bus/rpc_health.py` → `orion/core/bus/rpc_health_publish.py` → `orion:rpc_health:snapshot` → `orion-signal-gateway`'s `RpcHealthAdapter` → `OrionSignalV1`) is the `orion-signal-gateway` **organ-signal** pipeline (see that service's own README), completely independent of `orion_metacog`/`MetacogTriggerV1`. `transport`'s per-hop baseline gate subscribes to the same `orion:rpc_health:snapshot` channel as a *second* consumer, reading the same real data into a different destination table. Don't confuse the two pipelines when reading logs — a `rpc_health` organ signal in `orion-signal-gateway` and a `transport` metacog trigger in `orion_metacog` can both exist (or not) independently of each other.
 
@@ -266,6 +267,17 @@ Shipped **disabled**, same standard as `transport`'s (since retired) bus_synapti
 | `EQUILIBRIUM_METACOG_INSIGHT_HIGH_THRESHOLD` | `0.90` | Provisional; high band that resolves it |
 | `EQUILIBRIUM_METACOG_INSIGHT_MAX_TICKS_TO_CROSS` | `15` | Rejects an hours-old low being called a recovery (observed max was 12) |
 | `EQUILIBRIUM_METACOG_INSIGHT_CONFIRM_TICKS` | `2` | Consecutive newest ticks that must hold the high band |
+
+### self_signal_episode metacog trigger (spec 2026-10-07 section D, 2026-10-14)
+
+Metacog as a **reader** of the body's calibrated signals, instead of another bespoke threshold. Every `EQUILIBRIUM_METACOG_SELF_SIGNAL_EPISODES_POLL_INTERVAL_SEC` (30 s) the service refreshes a 7-day window of `substrate_node_prediction_error_history` (`orion.attention.pe_history_cache`, read-only over `EQUILIBRIUM_METACOG_GENERATIVE_POSTGRES_URI`) and judges each internal node with the attention seam's own rule (`world_first.node_candidate` + `judge_candidate`, the same calls attention-runtime makes). Pure lifecycle: `orion/metacog/self_signal_episode.py`; adapter: `app/self_signal_episode_gate.py`.
+
+- **Opens** when a node has been hot (band high/unusual in its bad direction, against its own week) for more than `OPEN_DWELL_SEC` (300 s = the seam's event-orienting window) within `OPEN_WINDOW_SEC` (600 s). One `trigger_kind=self_signal_episode`, `upstream.phase=open` row, drafted into prose by the metacog writer.
+- **Closes** after `CALM_GAP_SEC` (600 s) of continuous calm/faded readings: one `phase=close` row with duration, peak and close reason. cortex-orch and orion-actions do **not** draft or journal the close row (prose once per episode); sql-writer persists it to `metacog_trigger`.
+- **Absent is not calm.** An unreadable history, a stale node, too little history or a placeholder (harness_closure) never opens, never advances the calm clock, and closes an open episode only after `SILENT_CLOSE_SEC` (3600 s) as `went_silent`.
+- **Restarts:** state is persisted to `EQUILIBRIUM_METACOG_SELF_SIGNAL_EPISODES_STATE_KEY`; a restart resumes open episodes (no burst). With no persisted state, a signal already hot on the first poll is adopted silently.
+- **Budget:** at most `MAX_OPENS_PER_HOUR` (6) open rows per hour across all signals; extra episodes are tracked silently.
+- Replay over stored history: `python scripts/analysis/replay_self_signal_episodes.py --from-db`; eval: `evals/test_self_signal_episode_replay_eval.py` (7 days, ~9.5 opens/day).
 
 ---
 

@@ -51,6 +51,13 @@ from .repair_pressure_trend_gate import (
 )
 from orion.metacog.trend_reducer import MetacogTrendStateV1
 from .attention_self_model_reader import AttentionSelfModelReader
+from .pe_history_reader import NodePeHistoryReader
+from .self_signal_episode_gate import (
+    SelfSignalEpisodeGate,
+    config_from_settings as self_signal_config_from_settings,
+    observe_signals,
+)
+from orion.attention.pe_history_cache import NodePeHistoryCache
 from orion.substrate.metacog_trigger_signals import (
     ConfidenceSample,
     detect_confidence_recovery,
@@ -199,6 +206,16 @@ class EquilibriumService(BaseChassis):
             else None
         )
         self._hourly_outbox: list[Any] = []
+        # self_signal_episode gate (orion/metacog/self_signal_episode.py). State
+        # restored from Redis in _run(); the 7-day PE window is re-seeded from
+        # Postgres on the first poll.
+        self._self_signal_gate: SelfSignalEpisodeGate | None = (
+            SelfSignalEpisodeGate(self_signal_config_from_settings(settings))
+            if settings.metacog_enable and settings.metacog_self_signal_episodes_enabled
+            else None
+        )
+        self._pe_history_cache = NodePeHistoryCache()
+        self._pe_history_reader: NodePeHistoryReader | None = None
         # One housekeeping task per process, not per _run: _supervise_run
         # restarts _run after a crash, and a per-_run task would pile up.
         self._transport_housekeeping_task: asyncio.Task | None = None
@@ -399,6 +416,84 @@ class EquilibriumService(BaseChassis):
         self._anomaly_episode_state = state
         if state != before:
             await self._persist_anomaly_episode_state()
+
+    async def _load_self_signal_state(self) -> None:
+        gate = self._self_signal_gate
+        if gate is None:
+            return
+        try:
+            raw = await self.bus.redis.get(settings.metacog_self_signal_episodes_state_key)
+        except Exception as e:
+            # Unreadable is not "nothing stored": stay cold so already-hot
+            # signals are adopted silently rather than re-opened as new.
+            logger.warning("Failed to load self_signal_episode state: %s", e)
+            return
+        gate.load(raw)
+
+    async def _persist_self_signal_state(self) -> None:
+        gate = self._self_signal_gate
+        if gate is None:
+            return
+        try:
+            await self.bus.redis.set(settings.metacog_self_signal_episodes_state_key, gate.dump())
+        except Exception as e:
+            logger.warning("Failed to persist self_signal_episode state: %s", e)
+
+    async def _self_signal_episode_poll_once(self) -> None:
+        """One poll: refresh the 7-day PE window, judge every internal node
+        with the attention seam's rule, fold into episodes, publish rows."""
+        gate = self._self_signal_gate
+        if gate is None:
+            return
+        now = _utcnow()
+        if self._pe_history_reader is None:
+            self._pe_history_reader = NodePeHistoryReader(dsn=settings.metacog_generative_postgres_uri)
+        reader = self._pe_history_reader
+        magnitudes: dict = {}
+        history_error: str | None = None
+        try:
+            await asyncio.to_thread(self._pe_history_cache.refresh, reader.fetch_since, now=now)
+            magnitudes = await asyncio.to_thread(self._pe_history_cache.magnitudes, now=now)
+        except Exception as exc:
+            # Absent, never calm: every signal reads unknown this poll.
+            history_error = f"prediction-error history unreadable ({type(exc).__name__})"
+        observations = observe_signals(
+            magnitudes,
+            now=now,
+            history_error=history_error,
+            known_signal_ids=list(gate.state.episodes),
+        )
+        distress, zen, _ = self._calculate_metrics()
+        before = gate.dump()
+        outgoing = gate.step(
+            observations,
+            zen_state="zen" if zen > 0.5 else "not_zen",
+            pressure=distress,
+            recall_enabled=settings.metacog_recall_enabled,
+        )
+        for out in outgoing:
+            # Episode-shaped and budgeted by the gate: skip the shared lane so
+            # another kind's fire cannot swallow an episode's one open/close.
+            if await self._publish_metacog_trigger(out.trigger, bypass_cooldown=True):
+                gate.mark_published(out, now=now.timestamp())
+        if gate.dump() != before:
+            await self._persist_self_signal_state()
+
+    async def _self_signal_episode_poll_loop(self) -> None:
+        if self._self_signal_gate is None:
+            return
+        interval = float(settings.metacog_self_signal_episodes_poll_interval_sec)
+        while not self._stop.is_set():
+            try:
+                await self._self_signal_episode_poll_once()
+            except Exception:
+                logger.exception("self_signal_episode_poll_failed")
+            try:
+                await asyncio.wait_for(self._stop.wait(), timeout=interval)
+            except asyncio.TimeoutError:
+                continue
+            except asyncio.CancelledError:
+                break
 
     async def _load_transport_baseline_state(self) -> None:
         if self._transport_baseline_gate is None:
@@ -1330,12 +1425,14 @@ class EquilibriumService(BaseChassis):
         await self._load_repair_pressure_trend_state()
         await self._load_anomaly_episode_state()
         await self._load_transport_baseline_state()
+        await self._load_self_signal_state()
         publisher = asyncio.create_task(self._publish_loop())
         collapse_task = asyncio.create_task(self._collapse_loop())
         heartbeat_task = None
         if settings.equilibrium_spark_heartbeat_enable:
             heartbeat_task = asyncio.create_task(self._spark_heartbeat_loop())
         generative_poll_task = asyncio.create_task(self._generative_metacog_poll_loop())
+        self_signal_task = asyncio.create_task(self._self_signal_episode_poll_loop())
         self._ensure_transport_housekeeping()
 
         # Build list of channels to subscribe to
@@ -1574,12 +1671,14 @@ class EquilibriumService(BaseChassis):
         if heartbeat_task:
             heartbeat_task.cancel()
         generative_poll_task.cancel()
+        self_signal_task.cancel()
 
         await asyncio.gather(
             publisher,
             collapse_task,
             *( [heartbeat_task] if heartbeat_task else [] ),
             generative_poll_task,
+            self_signal_task,
             return_exceptions=True,
         )
 
@@ -1587,3 +1686,5 @@ class EquilibriumService(BaseChassis):
         # it holds a real long-lived psycopg2 socket.
         if self._attention_self_model_reader is not None:
             self._attention_self_model_reader.close()
+        if self._pe_history_reader is not None:
+            self._pe_history_reader.close()

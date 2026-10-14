@@ -40,6 +40,7 @@ from .settings import get_settings
 from orion.schemas.state.contracts import StateGetLatestRequest, StateLatestReply
 from orion.schemas.cortex.contracts import CortexClientContext, CortexClientRequest, RecallDirective
 from orion.schemas.telemetry.dream import DreamInternalTriggerV1, DreamTriggerPayload
+from orion.metacog.self_signal_episode import trigger_wants_prose
 from orion.schemas.telemetry.metacog_trigger import MetacogTriggerV1
 
 from orion.cognition.output_mode_classifier import classify_output_mode
@@ -888,6 +889,18 @@ async def dispatch_metacog_trigger(
         trigger.pressure,
         trace_id,
     )
+
+    # Prose once per episode (spec 2026-10-07 section D): a self_signal_episode
+    # CLOSE row is a terse deterministic record. orion-sql-writer already
+    # persists it straight off the trigger channel (metacog_trigger); drafting
+    # an LLM entry for it would be a second prose for the same episode.
+    if not trigger_wants_prose(trigger.trigger_kind, trigger.upstream):
+        logger.info(
+            "Metacog trigger recorded without prose kind=%s phase=close trace_id=%s",
+            trigger.trigger_kind,
+            trace_id,
+        )
+        return
 
     # 1. Load the "Big Mirror" Plan
     # This corresponds to your log_orion_metacognition.yaml

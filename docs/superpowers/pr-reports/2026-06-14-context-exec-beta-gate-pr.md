@@ -10,7 +10,7 @@ Repairs the context-exec beta gate by eliminating cross-test module/settings pol
 2. **`test_health.py` partial reloads** recreated `app.settings` while leaving `app.runner` / `app.alexzhang_rlm_engine` bound to old settings singletons — monkeypatches and eval harness overrides silently missed the live settings object.
 3. **`repo_tools` module-level settings import** cached a pre-reload settings reference, so monkeypatched repo roots in tests were ignored after reload pollution.
 4. **Stale runtime-debug contract** conflated requested vs effective engine (`engine` vs `engine_selected`), hiding AlexZhang fallback in eval assertions.
-5. **Fake engine belief_provenance** treated any prompt mentioning "denver" as the Denver vertical slice, starving Ogden-seeded fixtures of findings.
+5. **Fake engine belief_provenance** treated any prompt mentioning "denver" as the Denver vertical slice, starving [home city]-seeded fixtures of findings.
 
 ## Changes
 
@@ -20,7 +20,7 @@ Repairs the context-exec beta gate by eliminating cross-test module/settings pol
 | `repo_tools.py` | Lazy `settings` reads inside `_repo_root` / `repo_read` |
 | `runner.py` | `engine_requested`, `engine_selected`, `fallback_used` in `runtime_debug` |
 | `rlm_eval_harness.py` | Contract-aware assertions; fresh runner/settings imports per eval |
-| `rlm_engine.py` | Ogden-aware belief provenance; trace autopsy root_cause echo guard |
+| `rlm_engine.py` | [home city]-aware belief provenance; trace autopsy root_cause echo guard |
 | Tests | `conftest` autouse settings sync; health reload scoped; ledger intake patches `app.settings.settings` |
 | Beta gate script | Split pytest: core suite vs RLM eval fixtures (actionable sections) |
 
@@ -32,7 +32,7 @@ Repairs the context-exec beta gate by eliminating cross-test module/settings pol
 15 failed, 120 passed, 1 xfailed
 ```
 
-Representative failures: repo grep empty hits, alexzhang `runtime_debug.engine` mismatch, fake ogden/trace autopsy quality.
+Representative failures: repo grep empty hits, alexzhang `runtime_debug.engine` mismatch, fake [home city]/trace autopsy quality.
 
 ### After (this branch)
 

@@ -87,7 +87,7 @@ async def _seed(pool) -> tuple[str, str]:
     await pool.execute(
         """INSERT INTO episode_memory (memory_id, episode_id, purpose, voice, channel, statement, stakes, stakes_reason,
                confirmation_state, strength, half_life_days, last_reinforced_at)
-           VALUES ($1, 'ep', 'about_juniper', 'juniper_said', 'chat', 'Juniper told me her sister feels distant.',
+           VALUES ($1, 'ep', 'about_juniper', 'juniper_said', 'chat', 'Juniper told me her neighbor feels distant.',
                    'high', 'family_relationships', 'pending_confirmation', 0.9, 180, now())""",
         uuid.UUID(mid))
     await c.run_tick(pool, now=datetime.now(timezone.utc))
@@ -104,7 +104,7 @@ def test_resolve_then_bus_consumer_closes_the_memory(monkeypatch, resolution, no
         mid, ask_id = await _seed(pool)
         listed = (await client.get("/api/asks?status=open")).json()["asks"]
         assert [a["ask_id"] for a in listed] == [ask_id]
-        assert listed[0]["memory_statement"] == "Juniper told me her sister feels distant."
+        assert listed[0]["memory_statement"] == "Juniper told me her neighbor feels distant."
 
         r = await client.post(f"/api/asks/{ask_id}/resolve", json={"resolution": resolution, "note": note})
         assert r.status_code == 200, r.text
@@ -165,7 +165,7 @@ def test_legacy_answer_and_dismiss_cannot_orphan_a_memory_card(monkeypatch):
 
 @pytest.mark.parametrize("note,detail", [
     ("no, wrong", "revised_too_short"),
-    ("  juniper told me her SISTER feels   distant. ", "revised_unchanged"),
+    ("  juniper told me her NEIGHBOR feels   distant. ", "revised_unchanged"),
 ])
 def test_a_meta_note_revise_is_refused_and_the_card_stays_open(monkeypatch, note, detail):
     """Review of #2517: the unchanged check reads the memory inside the same transaction and its

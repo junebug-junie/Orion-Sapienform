@@ -44,14 +44,14 @@ def _profile(**overrides):
 def test_fusion_scoring_mix_changes_ranking_order():
     candidates = [
         {"id": "base-heavy", "source": "vector", "text": "unrelated archive note", "score": 0.95, "ts": 1.0, "tags": []},
-        {"id": "text-heavy", "source": "vector", "text": "User: Teddy launch plan\nOrion: agreed plan", "score": 0.3, "ts": 1.0, "tags": []},
+        {"id": "text-heavy", "source": "vector", "text": "User: Pip launch plan\nOrion: agreed plan", "score": 0.3, "ts": 1.0, "tags": []},
     ]
 
     score_profile = _profile(relevance={"backend_weights": {"vector": 1.0}, "score_weight": 1.0, "text_similarity_weight": 0.0, "recency_weight": 0.0, "enable_recency": False})
     text_profile = _profile(relevance={"backend_weights": {"vector": 1.0}, "score_weight": 0.0, "text_similarity_weight": 1.0, "recency_weight": 0.0, "enable_recency": False})
 
-    score_bundle, _ = fuse_candidates(candidates=candidates, profile=score_profile, query_text="Teddy launch plan", diagnostic=True)
-    text_bundle, _ = fuse_candidates(candidates=candidates, profile=text_profile, query_text="Teddy launch plan", diagnostic=True)
+    score_bundle, _ = fuse_candidates(candidates=candidates, profile=score_profile, query_text="Pip launch plan", diagnostic=True)
+    text_bundle, _ = fuse_candidates(candidates=candidates, profile=text_profile, query_text="Pip launch plan", diagnostic=True)
 
     assert score_bundle.items[0].id == "base-heavy"
     assert text_bundle.items[0].id == "text-heavy"
@@ -59,12 +59,12 @@ def test_fusion_scoring_mix_changes_ranking_order():
 
 def test_fusion_enable_recency_false_disables_recency_effect():
     candidates = [
-        {"id": "older", "source": "vector", "text": "Teddy launch plan", "score": 0.7, "ts": 1.0, "tags": []},
-        {"id": "newer", "source": "vector", "text": "Teddy launch plan", "score": 0.6, "ts": 9999999999.0, "tags": []},
+        {"id": "older", "source": "vector", "text": "Pip launch plan", "score": 0.7, "ts": 1.0, "tags": []},
+        {"id": "newer", "source": "vector", "text": "Pip launch plan", "score": 0.6, "ts": 9999999999.0, "tags": []},
     ]
     profile = _profile(relevance={"backend_weights": {"vector": 1.0}, "score_weight": 1.0, "text_similarity_weight": 0.0, "recency_weight": 1.0, "enable_recency": False})
 
-    bundle, _ = fuse_candidates(candidates=candidates, profile=profile, query_text="Teddy launch plan", diagnostic=True)
+    bundle, _ = fuse_candidates(candidates=candidates, profile=profile, query_text="Pip launch plan", diagnostic=True)
     assert bundle.items[0].id == "older"
 
 

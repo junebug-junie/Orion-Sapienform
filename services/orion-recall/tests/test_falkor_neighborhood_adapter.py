@@ -108,7 +108,7 @@ def test_fetch_falkor_neighborhood_fragments_aitown_row_gets_marker_and_tag(monk
 def test_extract_keywords_filters_stopwords() -> None:
     """Regression for a real live finding (2026-07-22): unfiltered "and" alone
     false-positive-matched 'sandra bullock', 'nelson mandela', 'england',
-    'landing pad', 'amanda', 'grand canyon skywalk' as CONTAINS substrings
+    'landing pad', 'miranda', 'grand canyon skywalk' as CONTAINS substrings
     against the real orion_recall Entity set. Stopwords must never survive
     into the keyword list this module uses for entity matching."""
     keywords = neigh._extract_keywords("tell me about Orion and reverie")

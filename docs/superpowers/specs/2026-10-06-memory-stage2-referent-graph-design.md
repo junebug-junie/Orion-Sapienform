@@ -24,7 +24,7 @@ The repo is public. Memories about Juniper's family, body, feelings or whereabou
 ## Decisions (Juniper, 2026-10-06)
 
 1. **Recall by referent becomes primary at Stage 2**, once the shadow-week gates in 7.2 pass (not at Stage 4). This answers open product question 1.
-2. **Relative names ("my boss", "my sister") resolve as soon as Juniper says them**, under the 90-day descriptor expiry; a collision always becomes a question, never a silent merge. This answers open product question 2.
+2. **Relative names ("my boss", "my relative") resolve as soon as Juniper says them**, under the 90-day descriptor expiry; a collision always becomes a question, never a silent merge. This answers open product question 2.
 3. **Go-ahead to build PR A, the shared assertion core** that #2497 deferred, renaming #2497's proposed `ReadingGraph*V1` events to `SubstrateGraph*V1` with `proposal_kind`. Stay backward compatible wherever #2497 already shipped code; the PR A report lists what the #2497 owner must review.
 
 ## What changed in revision 2
@@ -50,7 +50,7 @@ Revision 1 built a second graph of the same things #2497 governs. It used Postgr
 
 ## Arsonist summary
 
-Stage 1 works. Since 10-02, after each conversation, Orion writes down what is worth keeping, in its own words. Each memory names the things it is about: `project:hecate`, `person:vincent`, `place:chicago`. Nothing uses those names yet. Recall still serves the same top 100 old rows by salience, whatever Juniper says.
+Stage 1 works. Since 10-02, after each conversation, Orion writes down what is worth keeping, in its own words. Each memory names the things it is about: `project:hecate`, `person:team-member-1`, `place:chicago`. Nothing uses those names yet. Recall still serves the same top 100 old rows by salience, whatever Juniper says.
 
 Stage 2 makes those names part of Orion's one graph:
 
@@ -95,13 +95,13 @@ It runs in shadow next to today's recall. It replaces the old recall only when m
 |---|---|
 | `person:juniper` | subject 5, about 3 |
 | `project:hecate` | about 5 |
-| `person:juniper-sister` | about 3 |
+| `person:juniper-relative` | about 3 |
 | `event:austin-offsite` | event 2 |
 | `event:joker-2-viewing` | event 2 |
-| `person:vincent` | participant 2 |
-| `place:the-wade` | location 2 |
+| `person:team-member-1` | participant 2 |
+| `place:hotel` | location 2 |
 | `project:circe` | about 2 |
-| `concept:space`, `person:orion`, `person:rachel`, `place:chicago`, `place:jackalope-bar`, `project:orion-camera` | 1 each |
+| `concept:space`, `person:orion`, `person:boss`, `place:chicago`, `place:bar`, `project:orion-camera` | 1 each |
 
 What this shows:
 - Roles are free text (7 values).
@@ -113,12 +113,12 @@ What this shows:
 | Key | Aliases | Grounded in Juniper's words? |
 |---|---|---|
 | `project:hecate` | "Inspur NF5288M5", "AGX-2 GPU", "8x smx2 gpus" | Yes. Prompt `ddc979a1…`: "I got us an Inspur NF5288M5 AGX-2 GPU that holds 8x smx2 gpus. We'll call it Hecate" |
-| `person:juniper-sister` | "my sister" | Yes, but relative to the speaker |
-| `place:the-wade` | "the Wade", "a Marriott" | "the Wade" yes. "a Marriott" is a class (**UNVERIFIED** whether it is quoted) |
+| `person:juniper-relative` | "my relative" | Yes, but relative to the speaker |
+| `place:hotel` | "[hotel]", "a Marriott" | "[hotel]" yes. "a Marriott" is a class (**UNVERIFIED** whether it is quoted) |
 | `event:joker-2-viewing` | "Joker 2" | Yes |
 | `event:austin-offsite` | "Austin team", "offsite" | "offsite" yes |
-| `person:rachel` | "my boss" | Yes, but relative to the speaker |
-| `place:jackalope-bar` | "Jackalope bar" | Yes |
+| `person:boss` | "my boss" | Yes, but relative to the speaker |
+| `place:bar` | "[bar]" | Yes |
 | `project:orion-camera` | "camera", "autonomous robot" | Yes, but "autonomous robot" is a different future thing |
 | `event:chicago-simulation` (question only) | "simulation", "client use case" | Generic words |
 
@@ -186,7 +186,7 @@ For comparison, one bounded Cypher query (focal → latest 6 evidence nodes) run
 
 ### Other stores that mention referents (live counts)
 
-| Source | Hecate | Inspur | Vincent | Jackalope | Wade |
+| Source | Hecate | Inspur | [team member 1] | [bar] | [hotel] |
 |---|---|---|---|---|---|
 | `substrate_reverie_thought` | **180** (first 10-04 02:10, 41 min after Juniper's message) | 1 | 0 | 0 | 0 |
 | `journal_entries`, non-metacog | 6 | 3 | 2 | 2 | 2 |
@@ -352,7 +352,7 @@ The projector writes the provisional/canonical names onto `EntityNodeV1.aliases`
 |---|---|---|
 | **Grounding:** the alias occurs (word-bounded, case-insensitive) in a verified evidence quote with `source_kind='chat_prompt'` | `provisional`. This is an auto-accept policy, `alias_grounding_v1` ("it is Juniper's own word"), with tests | "Inspur NF5288M5", "8x smx2 gpus", "AGX-2 GPU" on Hecate |
 | Not grounded in a prompt | `proposed`. Never used to resolve or to index | "a Marriott" if unquoted; "the new server" from Orion's statement |
-| **Descriptor:** starts with a determiner or possessive (the, a, an, my, our, her, his, their, this, that), or every token is common (df > 0.5%) | `alias_class='descriptor'`, `valid_until = last use + 90 d`. Resolves only while valid and unique | "my boss", "my sister", "camera" |
+| **Descriptor:** starts with a determiner or possessive (the, a, an, my, our, her, his, their, this, that), or every token is common (df > 0.5%) | `alias_class='descriptor'`, `valid_until = last use + 90 d`. Resolves only while valid and unique | "my boss", "my relative", "camera" |
 | **Collision:** an alias proposed for node B is already provisional/canonical on node A | The alias on B is `proposed` → identity proposal (1.2 step 4) | If a robot node someday gets "autonomous robot", Orion asks |
 | **Rare tokens:** a token of a name alias with df ≤ 0.5% that belongs to exactly one node's aliases | The extractor matches it on its own | "the Inspur" → "inspur" (df 4) → Hecate |
 | Juniper confirms or corrects (Stage 3) | `canonical` / `rejected` | — |
@@ -425,8 +425,8 @@ The memory's own `episode_memory_referent` row and the Falkor edge record the sa
 - Anything else stays `proposed`.
 
 **Projection.** An accepted assertion is projected as a semantic edge with `edge_role=semantic_projection`, `assertion_id` and `assertion_revision`, which is #2497's rule. This gives the neighborhood something real to walk:
-- Vincent ↔ Austin offsite ↔ Rachel;
-- Vincent ↔ Jackalope bar;
+- [team member 1] ↔ Austin offsite ↔ [boss];
+- [team member 1] ↔ [bar];
 - Hecate ↔ Circe.
 
 Other predicates (`part_of`, `causes`, `subtype_of`) are out of scope. They stay with #2497's reviewed reading pipeline.
@@ -619,7 +619,7 @@ Under that policy, memories about health, family or relationships, feelings, and
 3. **Theory:** inverse document frequency (Spärck Jones 1972), over Orion's own memories.
 4. **Live data:**
    - Juniper has 8 referent rows across the 25 memories, so idf ≈ 1.0, but it is forced to 0 as a self referent.
-   - Hecate (5 of 25) ≈ 1.4; Jackalope (1 of 25) ≈ 2.5.
+   - Hecate (5 of 25) ≈ 1.4; [bar] (1 of 25) ≈ 2.5.
    - With no referent the sum is 0 and recall abstains, a real rest state.
 5. **Existing mechanism:** #2413's df table.
 6. **Reversibility:** `RECALL_PCR_MEMORY_MODE=legacy`.
@@ -674,7 +674,7 @@ Nothing is kept as a fallback.
 | # | PR | Contents | Acceptance |
 |---|---|---|---|
 | **A** | `feat(substrate): shared assertion core` (contract patch, co-owned with #2497) | Durable `assertion` node kind (codec encode/decode); `assertion_subject`/`assertion_object` edges; native `edge_role` on edges; evidence `voice`/`channel` native properties; `substrate_graph_journal` + `SubstrateGraph{Proposal,Decision,Materialization}V1` (registry, channels, fixtures); `reconcile.py` identity branch for `memory.referents` nodes; the dynamics/attention eligibility predicate excludes assertions, provenance edges, evidence and `memory.referents` nodes | Codec round-trips every new field. Old edges decode as `edge_role=legacy_unreviewed`. Dynamics before/after fixture is identical. Reconcile fixture shows no label or embedding merge for fenced nodes. Reading can use the same contracts unchanged |
-| **B** | `feat(memory): referents as substrate nodes + alias lifecycle` | `referent_alias` and `episode_memory_referent.node_id`; validator keeps aliases, adds `machine`, normalizes roles; persist writes aliases and journal (1.2); projector loop in orion-memory-consolidation (2.3) with memory evidence nodes and `observed_in` edges; `co_occurs_with` assertions under `source_cooccurrence_v1`; checkpoint alias-recovery backfill | 14 keys → nodes (Hecate and Circe are `entity_type=machine` via `kind_refined`). Hecate has 3 provisional grounded aliases. The writer's `machine:circe` vs topic-foundry "circe" opens an identity proposal and merges nothing. 25 memory evidence nodes have a valid `valid_from`. Accepted assertions include Vincent–austin-offsite and Hecate–Circe. Running the backfill twice gives an identical journal and graph |
+| **B** | `feat(memory): referents as substrate nodes + alias lifecycle` | `referent_alias` and `episode_memory_referent.node_id`; validator keeps aliases, adds `machine`, normalizes roles; persist writes aliases and journal (1.2); projector loop in orion-memory-consolidation (2.3) with memory evidence nodes and `observed_in` edges; `co_occurs_with` assertions under `source_cooccurrence_v1`; checkpoint alias-recovery backfill | 14 keys → nodes (Hecate and Circe are `entity_type=machine` via `kind_refined`). Hecate has 3 provisional grounded aliases. The writer's `machine:circe` vs topic-foundry "circe" opens an identity proposal and merges nothing. 25 memory evidence nodes have a valid `valid_from`. Accepted assertions include [team member 1]–austin-offsite and Hecate–Circe. Running the backfill twice gives an identical journal and graph |
 | **C** | `feat(memory): referent mention indexer` | Indexer loop (+ read-only `FALKORDB_URI` for `orion_worldview`, `.env_example`, env sync); dormant graphify/git-log candidates (2.4); 90-day alias backfill under CLAUDE.md §14 | `machine:hecate` reverie evidence ≈ the live ILIKE count of 180, minus word-boundary misses. 0 from AI Town, metacog or refuted priors. 0 person edges from `orion_read`. Indexer lag p95 < 120 s. A graphify PR node is minted only on first mention |
 | **D** | `feat(memory): voice renderer + intent fix` | `orion/memory/voice_render.py`; the `retrieval_intent.py` fix and referent rule; `MemoryItemV1` gains `recall_reason`/voice fields (consumer-first, registry) | `rule_id` histogram shows ≥ 3 intents over 7 days. Source-monitoring unit tests pass |
 | **E** | `perf(substrate): batch neighborhood node fetches + read_evidence_handles` (in #2497's code) | One `IN $ids` node query per round in `neighborhood.py`; bounded `read_evidence_handles(node_ids, evidence_types, voices, per_node_limit)` in the Falkor, SPARQL and memory backends; hydration through the provenance resolver | Replay: 4/8/8 single-focal ≤ 150 ms p95. Receipts identical to before on fixtures. Evidence-handle read ≤ 30 ms p95 |
@@ -834,7 +834,7 @@ Nothing is kept as a fallback.
 ## Open product questions (for Juniper)
 
 1. **When should recall by referent become primary: at Stage 2, once the 7.2 gates pass, or at Stage 4 as rev 3 planned?** Recommendation: Stage 2. Today's path ignores the query (569 of 569 retrievals return the same-shaped 100 rows) and reinforces junk on every read.
-2. **Should descriptor names like "my boss" or "my sister" resolve while live (90-day expiry, grounded in your words, collisions become questions), or only after you confirm them?** Recommendation: resolve while live.
+2. **Should descriptor names like "my boss" or "my relative" resolve while live (90-day expiry, grounded in your words, collisions become questions), or only after you confirm them?** Recommendation: resolve while live.
 
 ## Recommended next patch
 

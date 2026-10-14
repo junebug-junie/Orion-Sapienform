@@ -292,7 +292,7 @@ def local_day_start(now: datetime, tz_name: str = DEFAULT_TZ) -> datetime:
 # A pending memory whose statement is word-for-word one Juniper already rejected (whitespace and
 # case folded) is never asked again: exact match only, no similarity (review of #2517). Matching on
 # the referent set + purpose was considered and left as a follow-up: too coarse (one rejected
-# "person:sister" memory would silence every later one about her sister).
+# "person:sister" memory would silence every later one about her neighbor).
 _SKIP_REJECTED_SQL = """
 SELECT m.memory_id::text AS memory_id, m.episode_id, r.memory_id::text AS rejected_memory_id
 FROM episode_memory m

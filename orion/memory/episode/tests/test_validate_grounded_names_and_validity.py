@@ -2,7 +2,7 @@
 
 1. A statement may not name a known person, place, project or service that Juniper never said in
    the episode and that none of its own quotes contain. Live case 2026-10-06 (c0dc86c8): "Juniper
-   corrected me that she lives in Ogden, Utah, not Chicago." -- its only quote was "we live in Ogden,
+   corrected me that she lives in Millbrook, Utah, not Chicago." -- its only quote was "we live in Millbrook,
    Utah"; "Chicago" came from Orion's own reply. Such a memory is kept but asked about.
 2. A time-bounded fact keeps its end date on any purpose, but only when Juniper's own words naming
    that period are quoted from her prompt. Live case: "in Chicago ... until Wednesday" was stored as
@@ -23,11 +23,11 @@ from orion.schemas.memory_episode import EpisodeDistillationV1
 
 T0 = datetime(2026, 10, 5, 3, 51, tzinfo=timezone.utc)
 
-OGDEN_TURNS = [
+HOME_TURNS = [
     EpisodeTurn(
-        "t1", "c-ogden",
-        "correction--we live in Ogden, Utah you goofy goose. We'll mount a camera to the porch.",
-        "Ogden. Of course it's Ogden. Not Chicago -- that was just where you were this week.",
+        "t1", "c-millbrook",
+        "correction--we live in Millbrook, Utah silly. We'll mount a camera to the porch.",
+        "Millbrook. Of course it's Millbrook. Not Chicago -- that was just where you were this week.",
         T0,
     ),
 ]
@@ -47,13 +47,13 @@ def _run(turns, memory, *, known=()):
     return validate_distillation(d, turns, episode_id="ep-test", known_referents=list(known))
 
 
-def _ogden_memory(**kw):
+def _home_memory(**kw):
     base = {
         "purpose": "about_juniper", "voice": "juniper_said", "channel": "chat",
-        "statement": "Juniper corrected me that she lives in Ogden, Utah, not Chicago.",
+        "statement": "Juniper corrected me that she lives in Millbrook, Utah, not Chicago.",
         "stakes": "low", "stakes_reason": "none",
-        "referents": [{"key": "person:juniper"}, {"key": "place:ogden"}],
-        "evidence": [{"turn": "t1", "field": "prompt", "quote": "we live in Ogden, Utah"}],
+        "referents": [{"key": "person:juniper"}, {"key": "place:millbrook"}],
+        "evidence": [{"turn": "t1", "field": "prompt", "quote": "we live in Millbrook, Utah"}],
     }
     base.update(kw)
     return base
@@ -62,8 +62,8 @@ def _ogden_memory(**kw):
 # --- 1. grounded names -------------------------------------------------------------------------
 
 
-def test_ogden_row_names_chicago_that_juniper_never_said_and_is_asked_about():
-    r = _run(OGDEN_TURNS, _ogden_memory(), known=["place:chicago", "person:juniper"])
+def test_home_row_names_chicago_that_juniper_never_said_and_is_asked_about():
+    r = _run(HOME_TURNS, _home_memory(), known=["place:chicago", "person:juniper"])
     assert not r.rejections
     (m,) = r.memories
     assert m.stakes == "high"
@@ -74,7 +74,7 @@ def test_ogden_row_names_chicago_that_juniper_never_said_and_is_asked_about():
 
 
 def test_same_row_without_the_imported_name_stays_settled():
-    r = _run(OGDEN_TURNS, _ogden_memory(statement="Juniper told me that she and I live in Ogden, Utah."),
+    r = _run(HOME_TURNS, _home_memory(statement="Juniper told me that she and I live in Millbrook, Utah."),
              known=["place:chicago"])
     (m,) = r.memories
     assert (m.stakes, m.confirmation_state) == ("low", "auto")
@@ -104,14 +104,14 @@ def test_participants_and_minted_event_slugs_are_never_checked():
 
 
 def test_name_matching_is_whole_word_and_typography_folded():
-    assert ungrounded_names("She mentioned Ogdensburg.", known_keys={"place:ogden"}, grounding_texts=[""]) == []
-    assert ungrounded_names("She lives in OGDEN.", known_keys={"place:ogden"}, grounding_texts=["x"]) == ["place:ogden"]
-    assert ungrounded_names("Juniper is at the Wade.", known_keys={"place:the-wade"},
-                            grounding_texts=["staying at The Wade tonight"]) == []
+    assert ungrounded_names("She mentioned Millbrooksburg.", known_keys={"place:millbrook"}, grounding_texts=[""]) == []
+    assert ungrounded_names("She lives in MILLBROOK.", known_keys={"place:millbrook"}, grounding_texts=["x"]) == ["place:millbrook"]
+    assert ungrounded_names("Juniper is at the Larkspur.", known_keys={"place:the-larkspur"},
+                            grounding_texts=["staying at The Larkspur tonight"]) == []
 
 
 def test_already_high_memory_keeps_its_category_but_logs_the_name():
-    r = _run(OGDEN_TURNS, _ogden_memory(stakes="high", stakes_reason="family_relationships"), known=["place:chicago"])
+    r = _run(HOME_TURNS, _home_memory(stakes="high", stakes_reason="family_relationships"), known=["place:chicago"])
     (m,) = r.memories
     assert (m.stakes, m.stakes_reason) == ("high", "family_relationships")
     assert [e for e in m.events if e.op == "ungrounded_name"]
@@ -120,7 +120,7 @@ def test_already_high_memory_keeps_its_category_but_logs_the_name():
 def test_without_known_referents_only_this_episodes_keys_are_checked():
     """No candidate list (e.g. the table is unreadable) -> the check still runs on keys the
     distiller itself emitted in this episode, and never fails the memory."""
-    r = _run(OGDEN_TURNS, _ogden_memory(), known=())
+    r = _run(HOME_TURNS, _home_memory(), known=())
     (m,) = r.memories
     assert m.stakes == "low"  # chicago is not a key anywhere in this run, so it cannot be checked
 
@@ -185,11 +185,11 @@ def test_follow_up_expiry_is_unchanged():
 def test_quoting_orions_own_reply_does_not_ground_a_name_in_juniper_voice():
     """Review finding: the live row only got caught because it quoted her prompt. Quoting Orion's
     reply ("Not Chicago") must not ground a claim made in Juniper's voice."""
-    mem = _ogden_memory(voice="worked_out_together", evidence=[
-        {"turn": "t1", "field": "prompt", "quote": "we live in Ogden, Utah"},
+    mem = _home_memory(voice="worked_out_together", evidence=[
+        {"turn": "t1", "field": "prompt", "quote": "we live in Millbrook, Utah"},
         {"turn": "t1", "field": "response", "quote": "Not Chicago -- that was just where you were"},
     ])
-    (m,) = _run(OGDEN_TURNS, mem, known=["place:chicago"]).memories
+    (m,) = _run(HOME_TURNS, mem, known=["place:chicago"]).memories
     assert m.stakes_reason == UNGROUNDED_NAME_STAKES_LABEL
 
 
@@ -197,7 +197,7 @@ def test_orions_own_memory_may_name_what_orion_said():
     mem = {"purpose": "orion_view", "voice": "orion_thought", "channel": "chat", "stakes": "low", "stakes_reason": "none",
            "statement": "I pointed out that Chicago was just where Juniper was this week.",
            "evidence": [{"turn": "t1", "field": "response", "quote": "Not Chicago -- that was just where you were"}]}
-    (m,) = _run(OGDEN_TURNS, mem, known=["place:chicago"]).memories
+    (m,) = _run(HOME_TURNS, mem, known=["place:chicago"]).memories
     assert m.stakes == "low"
 
 

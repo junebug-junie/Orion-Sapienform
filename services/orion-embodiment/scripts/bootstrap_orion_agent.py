@@ -104,11 +104,18 @@ def _poll_new_body(timeout: float = 30.0) -> tuple[Optional[str], Optional[str]]
     return None, None
 
 
+def _prefer_local(path: Path) -> Path:
+    """``x.local.txt`` beside ``x.txt`` wins: generate_descriptions.py writes the
+    real (gitignored) card there when town_cards.local.yaml is its source."""
+    local = path.with_name(f"{path.stem}.local{path.suffix}")
+    return local if local.exists() else path
+
+
 def _load_town_card_blurb() -> Optional[str]:
     """Read Orion's authored town card (full blurb). Path override via
     EMBODIMENT_TOWN_CARDS_PATH; default is the generated card in orion-ai-town."""
     raw = os.environ.get("EMBODIMENT_TOWN_CARDS_PATH", "").strip()
-    path = Path(expand_env_path(raw)) if raw else _DEFAULT_TOWN_CARD_PATH
+    path = _prefer_local(Path(expand_env_path(raw)) if raw else _DEFAULT_TOWN_CARD_PATH)
     try:
         text = " ".join(path.read_text(encoding="utf-8").split())
     except OSError:

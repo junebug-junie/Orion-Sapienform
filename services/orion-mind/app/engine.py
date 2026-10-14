@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import time
 from pathlib import Path
@@ -79,7 +80,6 @@ _REFLECTIVE_PATTERNS = (
     r"\brelationship\b",
 )
 _RELATIONAL_PATTERNS = (
-    r"\bamanda\b",
     r"\bbike(s)?\b",
     r"\bfamily\b",
     r"\bfriend\b",
@@ -141,6 +141,18 @@ def deterministic_merge_stance(patch_structured_layers: list[dict[str, Any]]) ->
     return merged
 
 
+def _relational_name_patterns() -> tuple[str, ...]:
+    """Names of people close to Juniper, matched as relational cues.
+
+    Real names are personal data and stay out of the public repo: they live in the
+    local ``.env`` (``ORION_MIND_RELATIONAL_NAMES``, comma-separated), read per call
+    so a restart is the only thing needed after editing it.
+    """
+    raw = os.environ.get("ORION_MIND_RELATIONAL_NAMES", "")
+    names = [n.strip().lower() for n in raw.split(",") if n.strip()]
+    return tuple(rf"\b{re.escape(n)}\b" for n in names)
+
+
 def _matches_any(text: str, patterns: tuple[str, ...]) -> bool:
     return any(re.search(pattern, text) for pattern in patterns)
 
@@ -160,7 +172,7 @@ def _deterministic_frame_from_user_text(user_text: str) -> tuple[str, str]:
         return "planning", "direct_response"
     if _matches_any(lowered, _REFLECTIVE_PATTERNS):
         return "reflective", "reflective_dialogue"
-    if _matches_any(lowered, _RELATIONAL_PATTERNS):
+    if _matches_any(lowered, _RELATIONAL_PATTERNS + _relational_name_patterns()):
         return "playful_relational", "playful_exchange"
     return "mixed", "direct_response"
 

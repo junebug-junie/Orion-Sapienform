@@ -20,7 +20,7 @@ Replayed against live data:
 Where Juniper is right now, from your running situation:
 - Nothing on record says she is away from home right now.
 - She said 2 days ago: Juniper told me she has an early wakeup at 4:30am CDT for a 7:30am flight home.
-- No longer true (ended 36 hours ago): Juniper told me she is staying in Chicago for another night and will fly back to SLC at 7:30am.
+- No longer true (ended 36 hours ago): Juniper told me she is staying in Chicago for another night and will fly back to [home airport] at 7:30am.
 Trust this over anything older in the conversation history below.
 ```
 

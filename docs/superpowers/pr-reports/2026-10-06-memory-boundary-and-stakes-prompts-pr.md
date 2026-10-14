@@ -123,7 +123,7 @@ Rebuild both services together. The validator and the prompt ship in the same im
 - **Medium. The boundary wording was tuned on the data it is measured on.** 26 decisive turns, my own labels, three wordings. Mitigation: re-run `run_boundary_prompt_rescore_eval.py` after a few weeks of new turns.
 - **Medium. Single runs.** The two "before" passes differed by one resumed_thread split (17 vs 18), so run-to-run noise exists. The stakes numbers are one run per prompt per episode.
 - **Low. The Chicago phase in this replay differs from the live stamp.** The replay recomputes phase from gaps between turns, so the 03:51 turn (a 17-minute gap) is `short_pause` here, while the live Hub stamped it `resumed_thread`. Either way the new score at 03:51 is 0.00, so the session stays one episode.
-- **Low. Borderline stakes calls remain.** For example, in the Chicago episode, her height and finding economy seats "brutal" stayed low. The rubric is the model's judgment, by design. The validator does not second-guess it.
+- **Low. Borderline stakes calls remain.** For example, in the Chicago episode, a body detail and a travel complaint stayed low. The rubric is the model's judgment, by design. The validator does not second-guess it.
 - **Not fixed here, observed during the eval.** From at least 03:30 until 03:50 UTC today (start not pinned), the GPU pool's cooling shed (`rule=cooling shed=cabinet_rising`) left every metacog and quick classify request unserved. The live service logged `memory_classify_degraded` for those turns.
 
 ## PR link

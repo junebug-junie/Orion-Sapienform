@@ -337,8 +337,8 @@ async def test_weather_context_reports_live_conditions_when_openmeteo_configured
         _settings(
             orion_situation_weather_enabled=True,
             orion_situation_weather_provider="openmeteo",
-            orion_situation_weather_lat=41.2230,
-            orion_situation_weather_lon=-111.9738,
+            orion_situation_weather_lat=45.0000,
+            orion_situation_weather_lon=-100.0000,
         )
     )
     diagnostics = situation.SituationDiagnosticsV1()
@@ -368,8 +368,8 @@ async def test_weather_context_caches_within_ttl(monkeypatch):
         _settings(
             orion_situation_weather_enabled=True,
             orion_situation_weather_provider="openmeteo",
-            orion_situation_weather_lat=41.2230,
-            orion_situation_weather_lon=-111.9738,
+            orion_situation_weather_lat=45.0000,
+            orion_situation_weather_lon=-100.0000,
         )
     )
     diagnostics = situation.SituationDiagnosticsV1()

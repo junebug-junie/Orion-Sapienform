@@ -64,7 +64,7 @@ def follow_up(**kw):
 
 
 def test_trip_without_end_date_is_only_recent_never_whereabouts():
-    """Live check 2026-10-07: "sang karaoke at the Jackalope bar during the Austin trip" (told on
+    """Live check 2026-10-07: "sang karaoke at the Thistle bar during the Austin trip" (told on
     10-05, happened a week earlier) became whereabouts under a newest-place rule. Without
     Juniper's own end date a place memory is recent, not where she is."""
     f = facts_from_rows([trip()], T0 + timedelta(hours=44), TTL)
@@ -82,8 +82,8 @@ def test_trip_with_juniper_end_date_holds_until_it_and_no_longer():
 
 
 def test_follow_up_is_waiting_on_and_long_term_facts_are_not_situation():
-    about = trip(memory_id="m-home", purpose="about_juniper", statement="Juniper told me we live in Ogden, Utah.",
-                 referents=[{"key": "place:ogden", "role": "location"}])
+    about = trip(memory_id="m-home", purpose="about_juniper", statement="Juniper told me we live in Millbrook, Utah.",
+                 referents=[{"key": "place:millbrook", "role": "location"}])
     f = facts_from_rows([follow_up(), about], T0 + timedelta(hours=2), TTL)
     assert [x["memory_id"] for x in f["waiting_on"]] == ["m-fu"]
     assert f["whereabouts"] is None and f["doing"] == []
@@ -92,8 +92,8 @@ def test_follow_up_is_waiting_on_and_long_term_facts_are_not_situation():
 def test_newest_place_wins_whereabouts_and_older_place_stays_doing():
     end = T0 + timedelta(days=3)
     hotel = trip(memory_id="m-hotel", occurred_at=T0 + timedelta(hours=1), expires_at=end,
-                 statement="Juniper is staying at the Wade, a hotel on the lake in Chicago.",
-                 referents=[{"key": "place:the-wade", "role": "location"}])
+                 statement="Juniper is staying at the Larkspur, a hotel on the lake in Chicago.",
+                 referents=[{"key": "place:the-larkspur", "role": "location"}])
     f = facts_from_rows([trip(expires_at=end), hotel], T0 + timedelta(hours=3), TTL)
     assert f["whereabouts"]["memory_id"] == "m-hotel"
     assert [d["memory_id"] for d in f["doing"]] == ["m-trip"]
@@ -121,19 +121,19 @@ def test_fact_pushed_out_of_a_full_slot_is_not_lapsed():
 
 def test_cues_come_from_facts_and_names_in_the_turn_never_participants():
     facts = facts_from_rows([trip()], T0 + timedelta(hours=1), TTL)
-    cues = cues_for(facts, "just chilling, thinking about Hecate", ["project:hecate", "person:juniper", "place:ogden"])
+    cues = cues_for(facts, "just chilling, thinking about Hecate", ["project:hecate", "person:juniper", "place:millbrook"])
     assert cues == ["place:chicago", "project:hecate"]
 
 
 def test_rank_primed_orders_by_decayed_strength_and_names_the_cue():
     now = T0
     rows = [
-        {"memory_id": "old", "statement": "Juniper and Vincent sang karaoke in Austin.", "strength": 0.8,
+        {"memory_id": "old", "statement": "Juniper and Bram sang karaoke in Austin.", "strength": 0.8,
          "half_life_days": 14.0, "last_reinforced_at": now - timedelta(days=28), "referent_keys": ["place:chicago"]},
         {"memory_id": "new", "statement": "Juniper sent me photos of the Chicago skyline.", "strength": 0.8,
          "half_life_days": 14.0, "last_reinforced_at": now - timedelta(days=1), "referent_keys": ["place:chicago"]},
         {"memory_id": "off", "statement": "Unrelated memory with no shared referent.", "strength": 1.0,
-         "half_life_days": None, "last_reinforced_at": now, "referent_keys": ["place:ogden"]},
+         "half_life_days": None, "last_reinforced_at": now, "referent_keys": ["place:millbrook"]},
     ]
     out = rank_primed(rows, ["place:chicago"], now)
     assert [p["memory_id"] for p in out] == ["new", "old"]

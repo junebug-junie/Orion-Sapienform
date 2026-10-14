@@ -758,7 +758,7 @@
           mind_authorized_for_stance_skip: false,
           shadow_synthesis: {
             present: true,
-            attention_focus: ["evening plans with Amanda"],
+            attention_focus: ["evening plans with Robin"],
             curiosity_candidate: ["ask about the show tone"],
             projection_refs_used: ["projection:relationship:0"],
             relationship_frame: "shared life moment",
@@ -793,7 +793,7 @@
               {
                 claim_id: "c1",
                 label: "shared evening moment",
-                summary: "User mentions watching a show with Amanda.",
+                summary: "User mentions watching a show with Robin.",
                 claim_kind: "relationship_claim",
                 evidence_refs: ["current_turn:0"],
               },

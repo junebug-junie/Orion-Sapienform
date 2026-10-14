@@ -20,7 +20,7 @@ lists, no "memorability" rules). It only checks things code can check exactly:
   project or service Juniper never said in the episode, and that none of its own quotes contain,
   is kept but escalated to high stakes ("ungrounded_name") so Juniper is asked. A memory in
   Juniper's voice is grounded only by her own prompts; Orion's reply grounds only Orion's voice. Live case
-  2026-10-06: "...lives in Ogden, Utah, not Chicago" took "Chicago" from Orion's own reply. The
+  2026-10-06: "...lives in [home city], not Chicago" took "Chicago" from Orion's own reply. The
   names come from referent keys (data), never from a word list.
 * **End dates on any purpose need Juniper's words.** A non-follow_up memory keeps ``expires_at``
   only when ``until_quote`` is found in one of her prompts and the date is not before the episode.
@@ -67,7 +67,7 @@ MIN_STATEMENT_WORDS = 6  # "0 statements of 5 words or fewer" (Stage 1 acceptanc
 
 # The two people in every chat episode: naming them is never an import from outside it.
 PARTICIPANT_REFERENTS = frozenset({"person:juniper", "person:orion"})
-# Kinds whose slug is a name someone says ("ogden", "hecate"). Event and concept slugs are
+# Kinds whose slug is a name someone says ("millbrook", "hecate"). Event and concept slugs are
 # descriptions the distiller mints ("austin-offsite"), not words anyone said, so they are skipped.
 NAMED_REFERENT_KINDS = frozenset({"person", "place", "project", "service"})
 MIN_NAME_CHARS = 3
@@ -247,7 +247,7 @@ def ungrounded_names(statement: str, *, known_keys: Iterable[str], grounding_tex
     """Known referent keys whose name the statement uses but no grounding text contains.
 
     ``grounding_texts`` are Juniper's own prompts in the episode plus the memory's verified quotes.
-    Names come from the keys' slugs ("place:the-wade" -> "the wade"), matched as whole words after
+    Names come from the keys' slugs ("place:the-larkspur" -> "the larkspur"), matched as whole words after
     the same folding the quote check uses. Participants and minted event/concept slugs are skipped.
     """
     grounds = [fold_text(t) for t in grounding_texts if t]
@@ -258,7 +258,7 @@ def ungrounded_names(statement: str, *, known_keys: Iterable[str], grounding_tex
 
 
 def referent_name(key: str) -> str:
-    """The name a referent key's slug spells, folded ("place:the-wade" -> "the wade")."""
+    """The name a referent key's slug spells, folded ("place:the-larkspur" -> "the larkspur")."""
     return fold_text(key.partition(":")[2].replace("-", " "))
 
 

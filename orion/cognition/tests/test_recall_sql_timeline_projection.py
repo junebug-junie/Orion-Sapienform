@@ -20,7 +20,7 @@ def test_sql_timeline_recall_enriches_mind_projection_beyond_identity() -> None:
                     "source": "sql_timeline",
                     "source_ref": "chat_history_log",
                     "tags": ["chat_timeline"],
-                    "snippet": "User: What is the Teddy launch plan?\nOrion: We agreed on phased rollout.",
+                    "snippet": "User: What is the Pip launch plan?\nOrion: We agreed on phased rollout.",
                 },
             ],
             "citations": [],

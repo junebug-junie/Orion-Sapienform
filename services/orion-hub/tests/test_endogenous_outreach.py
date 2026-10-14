@@ -3961,7 +3961,7 @@ def _situation(**juniper):
 def test_situation_lines_say_a_trip_has_ended():
     sit = _situation()
     sit["lapsed"] = [{"memory_id": "m", "slot": "whereabouts", "lapsed_at": (_NOW - _td(days=1, hours=11)).isoformat(),
-                      "gist": "Juniper told me she is staying in Chicago for another night and will fly back to SLC at 7:30am."}]
+                      "gist": "Juniper told me she is staying in Chicago for another night and will fly back to home at 7:30am."}]
     lines = _eo_mod.situation_lines(sit, _NOW, _DENVER)
     assert lines[1] == "- Nothing on record says she is away from home right now."
     assert lines[2].startswith("- No longer true (ended 35 hours ago): Juniper told me she is staying in Chicago")

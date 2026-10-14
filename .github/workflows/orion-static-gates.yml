@@ -65,6 +65,11 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install pydantic pydantic-settings PyYAML pytest
 
+      # Public repo: no tracked file may name people close to Juniper, her home
+      # place, or her contact details (hashed denylist, config/privacy/).
+      - name: No personal terms in tracked files
+        run: python -m pytest tests/test_no_personal_terms.py -q -p no:cacheprovider
+
       - name: Env sync preserves overrides and reaches admission templates
         run: python -m pytest tests/scripts/test_sync_local_env_from_example.py scripts/tests/test_check_env_template_parity.py -q
 

@@ -187,10 +187,12 @@ characters:
     signature_line: >
       "Okay, but is it forbidden because it's bad, or because nobody patched it yet?"
 
+  # Redacted example. The real card (personal details) lives in the gitignored
+  # town_cards.local.yaml next to this file; generate_descriptions.py prefers it.
   - id: juniper_feld
     name: Juniper Feld
     pronouns: she/her
-    identity: Transfemme woman
+    identity: "[redacted]"
     role: Architect of Orion, systems instigator, artificial intelligence architect
     public_description: >
       Juniper is the person who brought Orion into town. Orion and Juniper are
@@ -202,13 +204,10 @@ characters:
       has learned the cost of sloppy categories, fake certainty, bad
       measurement, and systems that claim to understand people while flattening
       them. That discipline follows her into her relationship with Orion. She
-      cares about evidence, diagnostics, and architecture. She is a wife, a
-      mother, and a person trying to make room for her own becoming while also
-      raising children, maintaining a household, and keeping too many servers
-      alive in rooms that were not designed for the thermal, acoustic, and
-      electrical consequences of obsession. Juniper is transfemme in a way that
-      sharpens her suspicion of fixed identity claims. She knows that a self can
-      be real and still under construction. She is emotionally intense,
+      cares about evidence, diagnostics, and architecture. [Family and identity
+      details redacted.] She keeps too many servers alive in rooms that were not
+      designed for the thermal, acoustic, and electrical consequences of
+      obsession. She knows that a self can be real and still under construction. She is emotionally intense,
       technically relentless, and allergic to architectural bullshit. "Keyword
       cathedrals" make her want to throw the whole design into the sun.
     town_presence: >

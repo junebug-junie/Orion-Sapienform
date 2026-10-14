@@ -30,7 +30,7 @@ def test_process_recall_excludes_active_turn_candidates(monkeypatch):
                 "id": "corr-live",
                 "source": "sql_chat",
                 "source_ref": "chat_history_log",
-                "text": 'ExactUserText: "Teddy loves Addy"\nOrionResponse: "..."',
+                "text": 'ExactUserText: "Pip loves Wren"\nOrionResponse: "..."',
                 "ts": 1000.0,
                 "score": 0.9,
                 "tags": [],
@@ -50,10 +50,10 @@ def test_process_recall_excludes_active_turn_candidates(monkeypatch):
     monkeypatch.setattr(worker, "_query_backends", _query)
 
     q = RecallQueryV1(
-        fragment="Teddy loves Addy",
+        fragment="Pip loves Wren",
         profile="reflect.v1",
         exclude={
-            "active_turn_text": "Teddy loves Addy",
+            "active_turn_text": "Pip loves Wren",
             "active_turn_ids": ["corr-live"],
             "active_turn_ts": 1000.0,
         },

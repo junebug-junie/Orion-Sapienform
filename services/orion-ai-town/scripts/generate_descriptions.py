@@ -1,7 +1,11 @@
 #!/usr/bin/env python3
 """Deterministically compose AI Town `Descriptions` from the tracked card set.
 
-Source of truth: ``services/orion-ai-town/cards/town_cards.yaml``.
+Source of truth: ``services/orion-ai-town/cards/town_cards.local.yaml`` when it
+exists (gitignored: the real cards, which carry personal details), else the
+committed, redacted ``town_cards.yaml`` example. Outputs follow the source: the
+local cards write ``generated/*.local.txt`` (gitignored), the example writes the
+tracked ``generated/*.txt``, so real text never lands in a tracked file.
 Target: ``services/orion-ai-town/upstream/data/characters.ts`` (the ``Descriptions``
 array only; imports + ``characters`` sprite table are left untouched).
 
@@ -23,11 +27,40 @@ import yaml
 
 _HERE = Path(__file__).resolve()
 _SERVICE = _HERE.parents[1]
-CARDS = _SERVICE / "cards" / "town_cards.yaml"
+CARDS_EXAMPLE = _SERVICE / "cards" / "town_cards.yaml"
+CARDS_LOCAL = _SERVICE / "cards" / "town_cards.local.yaml"
 CHARACTERS_TS = _SERVICE / "upstream" / "data" / "characters.ts"
 WORLD_TS = _SERVICE / "upstream" / "convex" / "world.ts"
 CONSTANTS_TS = _SERVICE / "upstream" / "convex" / "constants.ts"
 GENERATED = _SERVICE / "cards" / "generated"
+HUMAN_PATCH = _SERVICE / "patches" / "orion-human-juniper.patch"
+# The committed human patch carries this token in place of Juniper's join
+# description; scripts/apply_upstream_patches.sh renders it from the cards.
+HUMAN_DESCRIPTION_TOKEN = "__ORION_TOWN_HUMAN_DESCRIPTION__"
+
+
+def cards_path() -> Path:
+    """Local real cards first, committed redacted example second."""
+    return CARDS_LOCAL if CARDS_LOCAL.exists() else CARDS_EXAMPLE
+
+
+def load_cards() -> dict:
+    return yaml.safe_load(cards_path().read_text(encoding="utf-8"))
+
+
+def generated_name(stem: str) -> str:
+    """``<stem>.local.txt`` when the real cards are the source, else ``<stem>.txt``."""
+    return f"{stem}.local.txt" if cards_path() == CARDS_LOCAL else f"{stem}.txt"
+
+
+def render_human_patch(cards: dict) -> str:
+    """The human-join patch with Juniper's description filled in from the cards."""
+    by_id = {c["id"]: c for c in cards["characters"]}
+    desc = _ts_backtick(compose_presence_blurb(by_id["juniper_feld"]))
+    text = HUMAN_PATCH.read_text(encoding="utf-8")
+    if HUMAN_DESCRIPTION_TOKEN not in text:
+        raise SystemExit(f"{HUMAN_PATCH.name}: missing {HUMAN_DESCRIPTION_TOKEN}")
+    return text.replace(HUMAN_DESCRIPTION_TOKEN, desc)
 
 # Fixed NPC order (matches the seeded roster / sprite table).
 NPC_ORDER = ["mara_vale", "nico_sable", "sofia_bell", "cam_lin"]
@@ -165,7 +198,11 @@ def patch_juniper(cards: dict) -> list[str]:
 
 
 def main() -> int:
-    cards = yaml.safe_load(CARDS.read_text(encoding="utf-8"))
+    if sys.argv[1:2] == ["--render-human-patch"]:
+        sys.stdout.write(render_human_patch(load_cards()))
+        return 0
+    cards = load_cards()
+    print(f"cards: {cards_path().relative_to(_SERVICE.parents[1])}")
     src = CHARACTERS_TS.read_text(encoding="utf-8")
 
     start = src.index("export const Descriptions = [")
@@ -187,13 +224,13 @@ def main() -> int:
     #  - juniper_description.txt -> reference for the world.ts join description
     by_id = {c["id"]: c for c in cards["characters"]}
     GENERATED.mkdir(parents=True, exist_ok=True)
-    (GENERATED / "orion_town_card.txt").write_text(
+    (GENERATED / generated_name("orion_town_card")).write_text(
         compose_presence_blurb(by_id["orion"]) + "\n", encoding="utf-8"
     )
-    (GENERATED / "juniper_description.txt").write_text(
+    (GENERATED / generated_name("juniper_description")).write_text(
         compose_presence_blurb(by_id["juniper_feld"]) + "\n", encoding="utf-8"
     )
-    print(f"wrote {GENERATED.relative_to(_SERVICE.parents[1])}/orion_town_card.txt")
+    print(f"wrote {GENERATED.relative_to(_SERVICE.parents[1])}/{generated_name('orion_town_card')}")
 
     # Juniper (human) join description + DEFAULT_NAME in the Convex source.
     juniper_changed = patch_juniper(cards)

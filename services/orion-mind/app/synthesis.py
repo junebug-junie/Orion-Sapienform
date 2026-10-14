@@ -67,7 +67,7 @@ Prefer uncertainty over invention.
 Return strict JSON matching SemanticSynthesisV1 with schema_version mind.semantic_synthesis.v1.
 Each claim object MUST include: claim_id, label, summary, claim_kind, evidence_refs, source_kinds.
 Example claim:
-{"claim_id":"c1","label":"shared evening plan","summary":"User mentions watching a show with Amanda.","claim_kind":"relationship_claim","evidence_refs":["current_turn:0"],"source_kinds":["current_turn"],"anchor":"relationship","confidence":0.85,"salience_hint":0.8,"recommended_effect":"receive_warmly"}
+{"claim_id":"c1","label":"shared evening plan","summary":"User mentions watching a show with Robin.","claim_kind":"relationship_claim","evidence_refs":["current_turn:0"],"source_kinds":["current_turn"],"anchor":"relationship","confidence":0.85,"salience_hint":0.8,"recommended_effect":"receive_warmly"}
 Do NOT emit legacy shapes like {"claim":"...","evidence":[...]} without the required fields."""
 
 

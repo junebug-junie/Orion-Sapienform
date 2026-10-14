@@ -23,7 +23,7 @@ JUNIPER_FRAMES = re.compile(r"\byou told me something\b|\byou (said|mentioned)\b
 
 
 def _q(**kw) -> str:
-    base = dict(statement="Juniper said things with her sister have felt asymmetric lately.", voice="juniper_said",
+    base = dict(statement="Juniper said things with her neighbor have felt asymmetric lately.", voice="juniper_said",
                 channel="chat", stakes_reason="family_relationships", occurred_at=AT)
     base.update(kw)
     return c.render_question(**base)
@@ -32,7 +32,7 @@ def _q(**kw) -> str:
 def test_example_card_reads_in_orions_voice():
     q = _q()
     assert q.startswith("You told me something on Oct 3, and I wrote it down like this:")
-    assert "“Juniper said things with her sister have felt asymmetric lately.”" in q
+    assert "“Juniper said things with her neighbor have felt asymmetric lately.”" in q
     assert "family" in q
     assert q.endswith("Want me to remember that?")
 

@@ -6,7 +6,7 @@ that Juniper never said in its episode and that none of its own quotes contain
 (orion/memory/episode/validate.py ``ungrounded_names``; spec
 docs/superpowers/specs/2026-10-07-situation-graph-design.md section 7). Rows stored before that
 check are re-run here with the SAME function. Live case: c0dc86c8 "Juniper corrected me that she
-lives in Ogden, Utah, not Chicago", whose "Chicago" came from Orion's own reply.
+lives in [home city], not Chicago", whose "Chicago" came from Orion's own reply.
 
 A flagged row is not rewritten or deleted. It moves from settled (low / auto) to asked
 (high / "ungrounded_name" / pending_confirmation), so the existing confirmation loop asks

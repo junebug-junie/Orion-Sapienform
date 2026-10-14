@@ -210,15 +210,15 @@ def test_confirm_relabels_voice_reinforces_and_records_the_outcome():
 
 def test_revise_supersedes_the_original_and_confirms_her_wording():
     async def body(pool):
-        mid = await _memory(pool, statement="Juniper told me her sister feels distant.")
+        mid = await _memory(pool, statement="Juniper told me her neighbor feels distant.")
         await c.run_tick(pool, now=T0)
-        oid = await _answer(pool, mid, "revised", "  Juniper told me her brother feels distant, not her sister. ")
+        oid = await _answer(pool, mid, "revised", "  Juniper told me her coworker feels distant, not her neighbor. ")
         await c.run_tick(pool, now=T0 + timedelta(minutes=1))
         old = await _mem(pool, mid)
         assert (old["confirmation_state"], old["status"]) == ("corrected", "superseded")
-        assert old["statement"] == "Juniper told me her sister feels distant."  # the original is kept
+        assert old["statement"] == "Juniper told me her neighbor feels distant."  # the original is kept
         new = await pool.fetchrow("SELECT * FROM episode_memory WHERE supersedes_memory_id=$1", uuid.UUID(mid))
-        assert new["statement"] == "Juniper told me her brother feels distant, not her sister."
+        assert new["statement"] == "Juniper told me her coworker feels distant, not her neighbor."
         assert (new["confirmation_state"], new["voice"], new["status"]) == ("confirmed", "worked_out_together", "active")
         assert new["prompt_version"] == "juniper_revision" and new["stakes_reason"] == "family_relationships"
         # Review of #2517: the old quotes supported the OLD wording, so none are copied as verified
@@ -227,7 +227,7 @@ def test_revise_supersedes_the_original_and_confirms_her_wording():
         ev = await pool.fetch("SELECT source_kind, source_id, quote, verified FROM episode_memory_evidence "
                               "WHERE memory_id=$1", new["memory_id"])
         assert [(r["source_kind"], r["quote"], r["verified"]) for r in ev] == [
-            ("confirmation_revise", "Juniper told me her brother feels distant, not her sister.", True)]
+            ("confirmation_revise", "Juniper told me her coworker feels distant, not her neighbor.", True)]
         assert await pool.fetchval("SELECT count(*) FROM episode_memory_referent WHERE memory_id=$1",
                                    new["memory_id"]) == 0
         assert await pool.fetchval("SELECT count(*) FROM episode_memory_evidence WHERE memory_id=$1",
@@ -245,7 +245,7 @@ def test_reject_marks_rejected_and_an_exact_repeat_is_never_asked():
     """Do-not-remint (review of #2517): a later memory whose statement is word-for-word one Juniper
     rejected (whitespace and case folded) is never asked; anything else still is. Exact match only."""
     async def body(pool):
-        drop = await _memory(pool, statement="Juniper told me her sister feels distant lately.")
+        drop = await _memory(pool, statement="Juniper told me her neighbor feels distant lately.")
         await c.run_tick(pool, now=T0)
         await _answer(pool, drop, "rejected")
         await c.run_tick(pool, now=T0 + timedelta(minutes=1))
@@ -253,9 +253,9 @@ def test_reject_marks_rejected_and_an_exact_repeat_is_never_asked():
         assert (m["confirmation_state"], m["status"]) == ("rejected", "rejected")
         assert await _events(pool, drop) == ["confirm_asked", "rejected"]
 
-        repeat = await _memory(pool, statement="  juniper told me her SISTER   feels distant lately. ",
+        repeat = await _memory(pool, statement="  juniper told me her NEIGHBOR   feels distant lately. ",
                                created=T0 + timedelta(hours=1))
-        other = await _memory(pool, statement="Juniper told me her sister feels close again.",
+        other = await _memory(pool, statement="Juniper told me her neighbor feels close again.",
                               created=T0 + timedelta(hours=2))
         for k in range(2):
             await c.run_tick(pool, now=T0 + timedelta(hours=3, minutes=k))
@@ -445,7 +445,7 @@ def test_reaper_frees_a_memory_whose_card_closed_without_an_answer_and_it_is_ask
 
 def test_an_invalid_revise_that_slipped_past_the_hub_is_refused_and_reasked():
     async def body(pool):
-        mid = await _memory(pool, statement="Juniper told me her sister feels distant lately.")
+        mid = await _memory(pool, statement="Juniper told me her neighbor feels distant lately.")
         await c.run_tick(pool, now=T0)
         await _answer(pool, mid, "revised", "no, wrong")  # a meta-note, not wording
         s = await c.run_tick(pool, now=T0 + timedelta(minutes=1))

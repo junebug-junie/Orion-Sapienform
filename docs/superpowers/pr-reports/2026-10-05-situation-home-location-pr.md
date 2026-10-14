@@ -2,17 +2,17 @@
 
 - The unified-turn "Situation" block had a timezone but no place: the Hub adapter hardcoded `location_label="Unknown"`, `locality=None`.
 - Hub now reads `ORION_SITUATION_LOCATION_LABEL/LOCALITY/REGION/COUNTRY/LOCATION_PRECISION`.
-- New fixed facts `ORION_SITUATION_HOME_LOCATION` ("Ogden, Utah") and `ORION_SITUATION_PHYSICAL_LOCATION` ("Server cabinet in basement, in office, laundry closet") render as a `Place:` line right after `Local context:`.
+- New fixed facts `ORION_SITUATION_HOME_LOCATION` ("[home city]") and `ORION_SITUATION_PHYSICAL_LOCATION` ("Server cabinet in basement, in office, laundry closet") render as a `Place:` line right after `Local context:`.
 - The line says Juniper's travel city is where *she* is, not where Orion's body, cameras or sensors are.
 - Same two keys added to cortex-exec (legacy chat-verb lane) and its stance place compaction.
 
 ## Outcome moved
 
-2026-10-05, correlation `5063fb71-471c-46e2-860d-8415f9253e14`: Juniper was in a Chicago hotel and said a camera would soon watch the road at home. Orion replied "whatever Chicago looks like at 2 AM from your hotel window". Recall had Chicago 4x and Ogden 0x; the Situation block had no place at all.
+2026-10-05, correlation `5063fb71-471c-46e2-860d-8415f9253e14`: Juniper was in a Chicago hotel and said a camera would soon watch the road at home. Orion replied "whatever Chicago looks like at 2 AM from your hotel window". Recall had Chicago 4x and [home city] 0x; the Situation block had no place at all.
 
 ## Current architecture
 
-Hub builds the fragment (`orion/hub/turn_orchestrator.py::_build_situation_prompt_fragment`) via `hub_settings_to_runtime_namespace` -> `settings_from_runtime` -> `_build_place_context` -> `_build_prompt_fragment`. cortex-exec had real place config (Ogden) but only for its own legacy lane.
+Hub builds the fragment (`orion/hub/turn_orchestrator.py::_build_situation_prompt_fragment`) via `hub_settings_to_runtime_namespace` -> `settings_from_runtime` -> `_build_place_context` -> `_build_prompt_fragment`. cortex-exec had real place config ([home city]) but only for its own legacy lane.
 
 ## Architecture touched
 

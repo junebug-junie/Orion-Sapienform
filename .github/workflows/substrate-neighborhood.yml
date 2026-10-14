@@ -16,6 +16,8 @@ on:
       - 'services/orion-substrate-runtime/evals/**'
       - 'scripts/replay_substrate_neighborhood.py'
       - 'scripts/replay_substrate_complete_scan.py'
+      - 'scripts/repair_substrate_duplicate_identities.py'
+      - 'tests/test_repair_substrate_duplicate_identities.py'
       - '.github/workflows/substrate-neighborhood.yml'
   push:
     branches: [main]
@@ -34,6 +36,8 @@ on:
       - 'services/orion-substrate-runtime/evals/**'
       - 'scripts/replay_substrate_neighborhood.py'
       - 'scripts/replay_substrate_complete_scan.py'
+      - 'scripts/repair_substrate_duplicate_identities.py'
+      - 'tests/test_repair_substrate_duplicate_identities.py'
       - '.github/workflows/substrate-neighborhood.yml'
 jobs:
   neighborhood:
@@ -90,6 +94,8 @@ jobs:
           orion/graph/tests/test_falkor_client.py
           orion/substrate/tests/test_falkor_store.py
           orion/substrate/tests/test_complete_hydration.py
+          orion/substrate/tests/test_falkor_identity_dedupe.py
+          tests/test_repair_substrate_duplicate_identities.py
           orion/substrate/tests/test_falkor_store_hydrate_signal.py
           orion/substrate/tests/test_dynamics.py
           orion/substrate/tests/test_dynamics_falkor_routed.py
@@ -142,6 +148,18 @@ jobs:
         run: python -m orion.substrate.evals.run_neighborhood_eval
       - name: Complete scan and dynamics equivalence eval
         run: python -m orion.substrate.evals.run_complete_hydration_eval
+      - name: Identity convergence across runs and restarts eval
+        run: python -m orion.substrate.evals.run_identity_convergence_eval
+      - name: Duplicate-identity repair merges on a throwaway graph (real FalkorDB, must not skip)
+        env:
+          ORION_DEDUPE_TEST_FALKOR_URI: redis://localhost:6379
+        run: |
+          set -o pipefail
+          python -m pytest -q -rs tests/test_repair_substrate_duplicate_identities.py | tee dedupe.out
+          if grep -q "SKIPPED" dedupe.out; then
+            echo "repair live test skipped -- FalkorDB service wiring is broken" >&2
+            exit 1
+          fi
       - name: Activation decay since-last-tick eval (no compounding)
         run: python -m orion.substrate.evals.run_decay_since_last_eval
       - name: Dynamics tick lost-update eval (concurrent writes survive)

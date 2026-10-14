@@ -1,0 +1,61 @@
+name: Memory schema boot apply
+on:
+  pull_request:
+    paths:
+      - 'orion/core/storage/schema_fingerprint.py'
+      - 'orion/core/storage/memory_cards.py'
+      - 'orion/core/storage/sql/memory_cards.sql'
+      - 'orion/core/storage/sql/memory_crystallizations.sql'
+      - 'orion/memory/crystallization/repository.py'
+      - 'services/orion-hub/scripts/memory_schema_bootstrap.py'
+      - 'services/orion-hub/tests/test_memory_schema_bootstrap.py'
+      - 'tests/test_schema_apply_lock_timeout.py'
+      - '.github/workflows/memory-schema-bootstrap.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'orion/core/storage/schema_fingerprint.py'
+      - 'orion/core/storage/memory_cards.py'
+      - 'orion/core/storage/sql/memory_cards.sql'
+      - 'orion/core/storage/sql/memory_crystallizations.sql'
+      - 'orion/memory/crystallization/repository.py'
+      - 'services/orion-hub/scripts/memory_schema_bootstrap.py'
+      - 'tests/test_schema_apply_lock_timeout.py'
+jobs:
+  schema:
+    runs-on: ubuntu-latest
+    services:
+      # Throwaway Postgres: the lock-contention tests hold ACCESS EXCLUSIVE on
+      # memory_cards, which must never run against a real database.
+      postgres:
+        image: public.ecr.aws/docker/library/postgres:16  # Docker Hub mirror: no unauthenticated pull rate limit
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install 'pydantic>=2' pydantic-settings pytest pytest-asyncio asyncpg==0.29.0 psycopg2-binary==2.9.10
+      - name: Fingerprint skip, lock contention, current schema boots through a backup-style lock (must not skip)
+        env:
+          RECALL_PG_DSN: postgresql://postgres:postgres@localhost:5432/postgres
+        run: |
+          set -o pipefail
+          python -m pytest -q -rs tests/test_schema_apply_lock_timeout.py | tee schema.out
+          if grep -q "SKIPPED" schema.out; then
+            echo "real-Postgres schema tests skipped -- service wiring is broken" >&2
+            exit 1
+          fi
+      - name: Hub boot applies each schema independently and retries
+        working-directory: services/orion-hub
+        run: python -m pytest -q tests/test_memory_schema_bootstrap.py

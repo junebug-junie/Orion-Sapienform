@@ -115,7 +115,9 @@ def test_apply_memory_cards_schema_fails_fast_on_lock_contention() -> None:
             def _run():
                 start = time.monotonic()
                 try:
-                    apply_memory_cards_schema(dsn)
+                    # force: the fingerprint skip would otherwise (correctly)
+                    # bypass the DDL this test exists to contend.
+                    apply_memory_cards_schema(dsn, force=True)
                     result["elapsed"] = time.monotonic() - start
                     result["error"] = None
                 except Exception as exc:  # noqa: BLE001 - capturing for assertion
@@ -168,7 +170,7 @@ def test_apply_memory_crystallizations_schema_fails_fast_on_lock_contention() ->
             def _run():
                 start = time.monotonic()
                 try:
-                    apply_memory_crystallizations_schema(dsn)
+                    apply_memory_crystallizations_schema(dsn, force=True)
                     result["elapsed"] = time.monotonic() - start
                     result["error"] = None
                 except Exception as exc:  # noqa: BLE001
@@ -191,3 +193,136 @@ def test_apply_memory_crystallizations_schema_fails_fast_on_lock_contention() ->
         f"expected LockNotAvailable, got {type(result['error'])}: {result['error']}"
     )
     assert result["elapsed"] < (_SCHEMA_APPLY_LOCK_TIMEOUT_MS / 1000.0) + 10.0
+
+
+# ---------------------------------------------------------------------------
+# 2026-10-14: a boot during the nightly pg_dump hit lock_timeout on a no-op
+# ALTER ... ADD COLUMN IF NOT EXISTS. A current schema must skip its DDL.
+# ---------------------------------------------------------------------------
+
+
+class _FakeCursor:
+    def __init__(self, stored):
+        self.stored = stored
+        self.executed = []
+        self._next = None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def execute(self, sql, params=None):
+        self.executed.append((sql, params))
+        if sql.startswith("SELECT to_regclass"):
+            self._next = ("orion_schema_fingerprints",) if self.stored is not None else (None,)
+        elif sql.startswith("SELECT sha256"):
+            self._next = (self.stored,) if self.stored else None
+        else:
+            self._next = None
+
+    def fetchone(self):
+        return self._next
+
+
+class _FakeConn:
+    def __init__(self, cur):
+        self.cur = cur
+        self.autocommit = False
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def cursor(self):
+        return self.cur
+
+
+def _apply(stored, *, force=False, sql="CREATE TABLE IF NOT EXISTS t (x int);"):
+    from orion.core.storage.schema_fingerprint import apply_schema_file_once
+
+    cur = _FakeCursor(stored)
+    ran = apply_schema_file_once(
+        "postgresql://example/db", name="memory_cards", sql=sql,
+        lock_timeout_ms=10_000, statement_timeout_ms=30_000,
+        connect=lambda dsn, options: _FakeConn(cur), force=force,
+    )
+    return ran, [q for q, _ in cur.executed]
+
+
+def test_current_fingerprint_skips_the_ddl():
+    from orion.core.storage.schema_fingerprint import sql_fingerprint
+
+    sql = "ALTER TABLE memory_cards ADD COLUMN IF NOT EXISTS x int;"
+    ran, executed = _apply(sql_fingerprint(sql), sql=sql)
+    assert ran is False
+    assert sql not in executed
+    assert not any(q.startswith("INSERT") for q in executed)
+
+
+def test_changed_file_applies_then_records_fingerprint():
+    sql = "ALTER TABLE memory_cards ADD COLUMN IF NOT EXISTS y int;"
+    ran, executed = _apply("stale-hash", sql=sql)
+    assert ran is True
+    assert executed.index(sql) < next(i for i, q in enumerate(executed) if q.startswith("INSERT"))
+
+
+def test_first_boot_without_fingerprint_table_applies():
+    ran, executed = _apply(None)
+    assert ran is True
+    assert any(q.startswith("CREATE TABLE IF NOT EXISTS orion_schema_fingerprints") for q in executed)
+
+
+def test_force_applies_even_when_current():
+    from orion.core.storage.schema_fingerprint import sql_fingerprint
+
+    sql = "SELECT 1;"
+    ran, executed = _apply(sql_fingerprint(sql), sql=sql, force=True)
+    assert ran is True and sql in executed
+
+
+def test_failed_ddl_never_records_fingerprint():
+    from orion.core.storage.schema_fingerprint import apply_schema_file_once
+
+    class _Boom(_FakeCursor):
+        def execute(self, sql, params=None):
+            super().execute(sql, params)
+            if sql.startswith("ALTER"):
+                raise RuntimeError("canceling statement due to lock timeout")
+
+    cur = _Boom(None)
+    with pytest.raises(RuntimeError):
+        apply_schema_file_once(
+            "postgresql://example/db", name="memory_cards", sql="ALTER TABLE t ADD COLUMN IF NOT EXISTS z int;",
+            lock_timeout_ms=10_000, statement_timeout_ms=30_000,
+            connect=lambda dsn, options: _FakeConn(cur),
+        )
+    assert not any(q.startswith("INSERT") for q, _ in cur.executed)
+
+
+@pytest.mark.skipif(not os.environ.get("RECALL_PG_DSN"), reason="RECALL_PG_DSN not set")
+def test_current_schema_boots_through_a_backup_style_lock() -> None:
+    """Real Postgres: with the schema current, a session holding ACCESS SHARE
+    on memory_cards (what pg_dump holds) and another holding ACCESS EXCLUSIVE
+    must not stall or fail the boot-time apply -- it is skipped outright."""
+    pytest.importorskip("psycopg2")
+    import psycopg2
+
+    from orion.core.storage.memory_cards import apply_memory_cards_schema
+
+    dsn = os.environ["RECALL_PG_DSN"]
+    apply_memory_cards_schema(dsn, force=True)  # records the fingerprint
+    blocker = psycopg2.connect(dsn)
+    blocker.autocommit = False
+    try:
+        with blocker.cursor() as bcur:
+            bcur.execute("LOCK TABLE memory_cards IN ACCESS EXCLUSIVE MODE")
+            start = time.monotonic()
+            assert apply_memory_cards_schema(dsn) is False
+            assert time.monotonic() - start < 3.0
+    finally:
+        blocker.rollback()
+        blocker.close()

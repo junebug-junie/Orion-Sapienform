@@ -200,7 +200,10 @@ def test_builder_uses_a_read_only_client_and_never_hydrates(monkeypatch) -> None
     assert all(b["socket_timeout"] == 5.0 and b["graph_name"] == "g1" for b in built)
     reader, writer = clients
     assert reader.queries == []
-    assert writer.queries == ["CREATE INDEX FOR (n:SubstrateNode) ON (n.node_id)"]
+    assert writer.queries == [
+        "CREATE INDEX FOR (n:SubstrateNode) ON (n.node_id)",
+        "CREATE INDEX FOR (n:SubstrateNode) ON (n.identity_key)",
+    ]
 
     monkeypatch.delenv("FALKORDB_URI")
     assert build_falkor_direct_concept_store_from_env() is None
@@ -405,7 +408,10 @@ def test_ensure_indexes_is_idempotent_and_never_raises(caplog) -> None:
 
     fresh = _Client(None)
     assert ensure_substrate_indexes("redis://x", "g", client=fresh) is True
-    assert fresh.calls == ["CREATE INDEX FOR (n:SubstrateNode) ON (n.node_id)"]
+    assert fresh.calls == [
+        "CREATE INDEX FOR (n:SubstrateNode) ON (n.node_id)",
+        "CREATE INDEX FOR (n:SubstrateNode) ON (n.identity_key)",
+    ]
     # 4.18 and 6.0 both say exactly this on a repeat.
     assert ensure_substrate_indexes("redis://x", "g", client=_Client(RuntimeError("Attribute 'node_id' is already indexed"))) is True
     with caplog.at_level("WARNING"):

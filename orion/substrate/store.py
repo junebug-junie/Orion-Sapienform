@@ -27,6 +27,9 @@ class CompleteScanReceipt:
     reason: str | None = None
     consistency: str = "non_atomic_keyset"
     edge_identity_aliases: int = 0
+    # Identities held by more than one durable node (hydrated, not fatal --
+    # see FalkorSubstrateStore._hydrate_from_durable). Nonzero = repair due.
+    duplicate_node_identities: int = 0
 
 
 @dataclass(frozen=True)
@@ -285,6 +288,17 @@ class InMemorySubstrateGraphStore:
     def upsert_edge(self, *, identity_key: str, edge: SubstrateEdgeV1) -> None:
         self._edges[edge.edge_id] = edge
         self._edge_identity_index[identity_key] = edge.edge_id
+
+    def set_identity_canonical(self, identity_key: str, node_id: str) -> None:
+        """Point ``identity_key`` at ``node_id`` without touching any node.
+
+        For a duplicated identity (several stored nodes, one key): every
+        duplicate keeps its own reverse mapping, so a later write to it still
+        carries its real identity_key, while lookups resolve to one canonical
+        node. Only an already-cached node can become canonical."""
+        if node_id in self._nodes:
+            self._node_identity_index[identity_key] = node_id
+            self._identity_key_by_node_id[node_id] = identity_key
 
     def update_node_dynamics(self, write: NodeDynamicsWriteV1) -> bool:
         """Targeted write of the dynamics tick's owned fields (see

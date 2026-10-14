@@ -53,19 +53,25 @@ async def fetch_frame(base_url: str, timeout_sec: float) -> dict[str, Any] | Non
     return body if isinstance(body, dict) else None
 
 
+async def fetch_frame_bounded(timeout_sec: float, correlation_id: str = "") -> dict[str, Any] | None:
+    """The current frame, or None. Never raises, never takes longer than ``timeout_sec``.
+
+    Shared by the stance cue and reverie's recent-arcs block (``app/reverie.py``)."""
+    try:
+        # httpx's timeout is per phase (connect, each read; DNS not covered): bound the whole fetch.
+        return await asyncio.wait_for(fetch_frame(settings.temporal_self_frame_url, timeout_sec), timeout_sec)
+    except (asyncio.TimeoutError, Exception) as exc:  # noqa: BLE001 -- a reader must never fail its caller
+        logger.debug("temporal_self_frame_fetch_failed corr=%s err=%s", correlation_id, type(exc).__name__)
+        return None
+
+
 async def build_stance_cue(correlation_id: str, *, now: datetime | None = None) -> TemporalSelfStanceCueV1:
     """Always returns a cue; ``text`` is "" when nothing may be shown. Never raises."""
     now = now or datetime.now(timezone.utc)
     if not settings.temporal_self_stance_cue_enabled:
         return TemporalSelfStanceCueV1(rendered_at=now, skip_reason="disabled")
     started = time.perf_counter()
-    timeout = settings.temporal_self_cue_fetch_timeout_sec
-    try:
-        # httpx's timeout is per phase (connect, each read; DNS not covered): bound the whole fetch.
-        frame = await asyncio.wait_for(fetch_frame(settings.temporal_self_frame_url, timeout), timeout)
-    except (asyncio.TimeoutError, Exception) as exc:  # noqa: BLE001 -- the cue must never fail a turn
-        logger.debug("temporal_self_frame_fetch_failed corr=%s err=%s", correlation_id, type(exc).__name__)
-        frame = None
+    frame = await fetch_frame_bounded(settings.temporal_self_cue_fetch_timeout_sec, correlation_id)
     try:
         cue = project_stance_cue(frame, now, max_age_sec=settings.temporal_self_cue_max_age_sec)
     except Exception as exc:  # noqa: BLE001 -- a render bug is named as one, never as a network problem

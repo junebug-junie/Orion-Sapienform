@@ -659,6 +659,18 @@ class ThoughtSettings(BaseSettings):
         0.5, gt=0.0, le=5.0, alias="TEMPORAL_SELF_CUE_FETCH_TIMEOUT_SEC"
     )
 
+    # --- Temporal Self rev 4: reverie gets the last few closed arcs (app/reverie.py) ---
+    # The reverie tick fetches the same frame as the stance cue (TEMPORAL_SELF_FRAME_URL, same
+    # TEMPORAL_SELF_CUE_MAX_AGE_SEC gate) and renders the last LIMIT closed arcs of today, most
+    # recent first, each citing [arc:<id>] (orion/temporal_self/recent_arcs.py, no LLM). The fetch
+    # runs alongside reverie's other reads and gives up after FETCH_TIMEOUT_SEC with no block.
+    # Kill switch: false = reverie_narrate runs exactly as before.
+    reverie_recent_arcs_enabled: bool = Field(True, alias="ORION_REVERIE_RECENT_ARCS_ENABLED")
+    reverie_recent_arcs_limit: int = Field(3, ge=1, le=5, alias="ORION_REVERIE_RECENT_ARCS_LIMIT")
+    reverie_recent_arcs_fetch_timeout_sec: float = Field(
+        1.0, gt=0.0, le=1.5, alias="ORION_REVERIE_RECENT_ARCS_FETCH_TIMEOUT_SEC"
+    )
+
     # --- Reasoning activity projection (always-on consumer; harmless when idle) ---
     # Consume per-call ReasoningCallV1 telemetry and materialize a rolling-window
     # ReasoningActivityV1 for φ. The buffer is capped (max_calls) so memory is

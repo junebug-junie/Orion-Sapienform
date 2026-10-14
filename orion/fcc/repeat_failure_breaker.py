@@ -29,6 +29,25 @@ Rules:
 Out of scope: subagent (Task) calls, which Claude Code 2.x writes to separate
 transcripts, and MCP tools that report failure only in text with is_error=false.
 
+Two more rules, armed only on reading-only turns (``--refetch-limit`` and
+``--tool-window-fraction``; fcc_motor passes them for ``reading_only``). Incident:
+Stage 2 of reading seed c31227dc (2026-10-14, turn 98c6a963) asked WebFetch for
+"characters 100000 to 200000" of a 222 KB raw C file again and again. WebFetch
+only ever hands its summarizer the first ~100k characters (and caches the page),
+so each repeat re-ran the same ~42k-token prompt through the single agent-lane
+slot -- 5 to 19 minutes a call -- and the turn hit its 3500 s wall with no draft.
+
+- refetch: a WebFetch of a URL that already came back successfully this turn is
+  blocked once it has succeeded ``refetch_limit`` times. Same URL means the same
+  text, whatever the prompt asks for. GitHub raw spellings of one file
+  (``github.com/<o>/<r>/raw/<ref>/...``, ``raw.githubusercontent.com/.../refs/heads/<ref>/...``)
+  count as one URL: both turns of that seed used all three.
+- tool window: once ``tool_window_fraction`` of the turn's own budget
+  (``ORION_TURN_BUDGET_SEC`` / ``ORION_TURN_DEADLINE_EPOCH``, stamped by the motor)
+  has passed, every new tool call is blocked and the model is told to answer with
+  what it has. A tool already running is not stopped; this only keeps the turn
+  from starting new waits it cannot finish. Missing/bad clock env = rule off.
+
 Stdlib-only on purpose: it runs as a separate Python process per tool call,
 by file path, so it must not import the orion package.
 """
@@ -48,6 +67,7 @@ _STATE_CHANGING_TOOLS = frozenset({"Edit", "Write", "MultiEdit", "NotebookEdit"}
 # Stable marker the harness motor greps for in tool_result errors to log the trace.
 BLOCK_MARKER = "[orion-repeat-failure-breaker]"
 _ERROR_SNIPPET_CHARS = 300
+_REFETCH_TOOLS = frozenset({"WebFetch"})
 
 
 def _normalize(value: Any) -> Any:
@@ -92,14 +112,37 @@ def _result_text(content: Any) -> str:
     return "" if content is None else str(content)
 
 
+def canonical_fetch_url(url: Any) -> str:
+    """One key per fetched document: trimmed, no fragment, lowercased scheme/host,
+    no trailing slash, and the GitHub raw spellings of one file folded together."""
+    from urllib.parse import urlsplit, urlunsplit
+
+    raw = str(url or "").strip()
+    try:
+        parts = urlsplit(raw)
+    except ValueError:
+        return raw
+    host = (parts.hostname or "").lower()
+    path = parts.path.rstrip("/")
+    segs = path.split("/")
+    if host == "github.com" and len(segs) > 4 and segs[3] == "raw":
+        # /<owner>/<repo>/raw/<ref>/<path> -> raw.githubusercontent.com/<owner>/<repo>/<ref>/<path>
+        host, segs = "raw.githubusercontent.com", segs[:3] + segs[4:]
+    if host == "raw.githubusercontent.com" and len(segs) > 5 and segs[3:5] == ["refs", "heads"]:
+        segs = segs[:3] + segs[5:]
+    return urlunsplit(((parts.scheme or "").lower(), host, "/".join(segs), parts.query, ""))
+
+
 class CallHistory:
-    """Per-key failure count, last error, and ever-succeeded flag for one session."""
+    """Per-key failure count, last error, and ever-succeeded flag for one session,
+    plus successful WebFetch counts per canonical URL."""
 
     def __init__(self) -> None:
-        self._pending: Dict[str, Tuple[str, str]] = {}  # tool_use_id -> (tool_name, key)
+        self._pending: Dict[str, Tuple[str, str, str]] = {}  # tool_use_id -> (tool_name, key, url)
         self.failures: Dict[str, int] = {}
         self.last_error: Dict[str, str] = {}
         self.succeeded: set[str] = set()
+        self.fetched_ok: Dict[str, int] = {}
 
     def feed(self, entry: Dict[str, Any]) -> None:
         if not isinstance(entry, dict) or entry.get("isSidechain"):
@@ -115,14 +158,18 @@ class CallHistory:
                 continue
             btype = block.get("type")
             if btype == "tool_use" and block.get("id") and isinstance(block.get("name"), str):
-                self._pending[str(block["id"])] = (
-                    block["name"], call_key(block["name"], block.get("input"))
+                inp = block.get("input")
+                url = (
+                    canonical_fetch_url(inp.get("url"))
+                    if block["name"] in _REFETCH_TOOLS and isinstance(inp, dict) and inp.get("url")
+                    else ""
                 )
+                self._pending[str(block["id"])] = (block["name"], call_key(block["name"], inp), url)
             elif btype == "tool_result":
                 pending = self._pending.pop(str(block.get("tool_use_id") or ""), None)
                 if pending is None:
                     continue
-                tool_name, key = pending
+                tool_name, key, url = pending
                 if block.get("is_error"):
                     self.failures[key] = self.failures.get(key, 0) + 1
                     text = _result_text(block.get("content")).strip()
@@ -130,6 +177,8 @@ class CallHistory:
                         self.last_error[key] = text
                 else:
                     self.succeeded.add(key)
+                    if url:
+                        self.fetched_ok[url] = self.fetched_ok.get(url, 0) + 1
                     if tool_name in _STATE_CHANGING_TOOLS:
                         self.failures.clear()
 
@@ -181,27 +230,103 @@ def block_message(tool_name: str, count: int, last_error: str) -> str:
     )
 
 
-def run_hook(payload: Dict[str, Any], *, threshold: int) -> Optional[str]:
+def decide_refetch(history: CallHistory, tool_name: str, tool_input: Any, *, limit: int) -> Optional[Tuple[str, int]]:
+    """``(canonical_url, times_fetched)`` if this WebFetch repeats a URL that already
+    succeeded ``limit`` times this turn, else None. ``limit <= 0`` disables."""
+    if limit <= 0 or tool_name not in _REFETCH_TOOLS or not isinstance(tool_input, dict):
+        return None
+    url = canonical_fetch_url(tool_input.get("url"))
+    count = history.fetched_ok.get(url, 0) if url else 0
+    return (url, count) if count >= limit else None
+
+
+def refetch_message(url: str, count: int) -> str:
+    return (
+        f"{BLOCK_MARKER} Blocked: {url} was already fetched {count} time(s) in this turn. "
+        "WebFetch only ever reads the first ~100,000 characters of a page and cannot read a "
+        "later slice or character range, so fetching it again (with any prompt) returns the "
+        "same text and costs minutes of the shared model. Use the earlier result, or answer "
+        "now with what you have and say what you could not read."
+    )
+
+
+def tool_window_state(env: Dict[str, str], *, fraction: float, now: float) -> Optional[Tuple[int, int]]:
+    """``(elapsed_sec, budget_sec)`` once ``fraction`` of the turn budget has passed, else None.
+    None too when the clock env is missing or unparseable (fail-open)."""
+    if fraction <= 0:
+        return None
+    try:
+        budget = float(env.get("ORION_TURN_BUDGET_SEC") or "")
+        deadline = float(env.get("ORION_TURN_DEADLINE_EPOCH") or "")
+    except ValueError:
+        return None
+    if budget <= 0:
+        return None
+    elapsed = now - (deadline - budget)
+    if elapsed < fraction * budget:
+        return None
+    return int(elapsed), int(budget)
+
+
+def tool_window_message(tool_name: str, elapsed: int, budget: int) -> str:
+    left = max(0, budget - elapsed)
+    return (
+        f"{BLOCK_MARKER} Blocked: the tool window for this turn is closed ({elapsed}s of a "
+        f"{budget}s budget used, about {left}s left). No new {tool_name} or other tool calls: "
+        "a call started now may not return before the turn is cut off with nothing. Write your "
+        "final answer now from what you already have, and name what you could not read."
+    )
+
+
+def run_hook(
+    payload: Dict[str, Any],
+    *,
+    threshold: int,
+    refetch_limit: int = 0,
+    tool_window_fraction: float = 0.0,
+    env: Optional[Dict[str, str]] = None,
+    now: Optional[float] = None,
+) -> Optional[str]:
     """Block message for this PreToolUse payload, or None to allow."""
+    import os
+    import time
+
     tool_name = payload.get("tool_name")
+    if not isinstance(tool_name, str) or not tool_name:
+        return None
+    window = tool_window_state(
+        dict(os.environ) if env is None else env,
+        fraction=tool_window_fraction,
+        now=time.time() if now is None else now,
+    )
+    if window is not None:
+        return tool_window_message(tool_name, *window)
     transcript = payload.get("transcript_path")
-    if not isinstance(tool_name, str) or not tool_name or not transcript:
+    if not transcript:
         return None
     history = CallHistory().feed_all(read_transcript(transcript))
-    verdict = decide(history, tool_name, payload.get("tool_input"), threshold=threshold)
+    tool_input = payload.get("tool_input")
+    refetch = decide_refetch(history, tool_name, tool_input, limit=refetch_limit)
+    if refetch is not None:
+        return refetch_message(*refetch)
+    verdict = decide(history, tool_name, tool_input, threshold=threshold)
     if verdict is None:
         return None
     return block_message(tool_name, *verdict)
 
 
-def hook_settings_json(*, threshold: int, python_bin: str) -> str:
+def hook_settings_json(
+    *, threshold: int, python_bin: str, refetch_limit: int = 0, tool_window_fraction: float = 0.0
+) -> str:
     """The ``--settings`` JSON that installs this module as a PreToolUse hook on all tools."""
     import shlex
 
-    cmd = " ".join(
-        shlex.quote(part)
-        for part in (python_bin, str(Path(__file__).resolve()), "--threshold", str(int(threshold)))
-    )
+    parts = [python_bin, str(Path(__file__).resolve()), "--threshold", str(int(threshold))]
+    if refetch_limit > 0:
+        parts += ["--refetch-limit", str(int(refetch_limit))]
+    if tool_window_fraction > 0:
+        parts += ["--tool-window-fraction", f"{float(tool_window_fraction):g}"]
+    cmd = " ".join(shlex.quote(part) for part in parts)
     return json.dumps(
         {"hooks": {"PreToolUse": [{"matcher": "*", "hooks": [{"type": "command", "command": cmd}]}]}}
     )
@@ -210,6 +335,8 @@ def hook_settings_json(*, threshold: int, python_bin: str) -> str:
 def main(argv: Optional[list[str]] = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--threshold", type=int, default=DEFAULT_THRESHOLD)
+    parser.add_argument("--refetch-limit", type=int, default=0)
+    parser.add_argument("--tool-window-fraction", type=float, default=0.0)
     try:
         # argparse exits 2 on bad args -- the same code that blocks. Stay fail-open.
         args = parser.parse_args(argv)
@@ -219,7 +346,12 @@ def main(argv: Optional[list[str]] = None) -> int:
         payload = json.load(sys.stdin)
         if not isinstance(payload, dict):
             return 0
-        message = run_hook(payload, threshold=args.threshold)
+        message = run_hook(
+            payload,
+            threshold=args.threshold,
+            refetch_limit=args.refetch_limit,
+            tool_window_fraction=args.tool_window_fraction,
+        )
     except Exception:  # fail-open: never break a tool call because the breaker broke
         return 0
     if message is None:

@@ -1367,3 +1367,67 @@ def test_stage2_turn_fetches_reach_the_hop_gate_through_the_real_pass() -> None:
     assert asyncio.run(_run()) is None
     assert tried == ["https://ex.com/linked"]
     assert pipe.hops_refused_total == {"url_not_in_fetched_content": 1}
+
+
+# --- huge-page Stage 2 (seed c31227dc, 2026-10-14) ---
+
+
+def test_prompt_states_webfetch_limit_once():
+    from orion.world_pulse_read.fetch_text import WEBFETCH_LIMIT_NOTE
+
+    prompt = _build_stage2_prompt(_handoff(), "tr-s2")
+    assert prompt.count(WEBFETCH_LIMIT_NOTE) == 1
+    assert "RETRY:" not in prompt
+
+
+@pytest.mark.parametrize("error", [
+    "turn_exception:TimeoutError: ", "stage2_turn_timeout", "turn_error:fcc_timeout",
+    "turn_error:fcc_stream_stalled", "workflow_deadline",
+])
+def test_retry_after_timeout_tells_model_not_to_fetch(error):
+    prompt = _build_stage2_prompt(_handoff(), "tr-s2", prior_error=error)
+    assert "RETRY:" in prompt and "Do not call WebFetch or WebSearch" in prompt
+    assert error.split(":")[-1].strip() in prompt
+
+
+@pytest.mark.parametrize("error", [None, "", "interrupted:process_restart", "parse_failed", "blank_final_response"])
+def test_retry_note_absent_for_non_timeout_failures(error):
+    assert "RETRY:" not in _build_stage2_prompt(_handoff(), "tr-s2", prior_error=error)
+
+
+def test_stage2_pass_builds_prompt_with_the_seeds_prior_error():
+    pipe = object.__new__(WorldPulseReadStage2Pipeline)
+    pipe._claim_context = None
+    pipe._prior_stage2_error = "turn_exception:TimeoutError: "
+    pipe._stage2_fetches = []
+    seen = {}
+
+    async def generate(prompt, corr, *, seed_id, retrieval_query=None):
+        seen["prompt"] = prompt
+        return GenerateOutcome("")
+
+    pipe._generate = generate
+    with pytest.raises(ValueError):
+        asyncio.run(pipe._stage2_pass(_handoff()))
+    assert "RETRY:" in seen["prompt"]
+
+
+def test_prior_error_reads_the_seed_row_and_fails_open():
+    pipe = object.__new__(WorldPulseReadStage2Pipeline)
+
+    class Conn:
+        async def fetchval(self, sql, seed_id):
+            assert "stage2_error" in sql and seed_id == "s1"
+            return "turn_exception:TimeoutError: "
+
+    async def with_conn(fn):
+        return await fn(Conn())
+
+    pipe._with_conn = with_conn
+    assert asyncio.run(pipe._prior_error("s1")) == "turn_exception:TimeoutError: "
+
+    async def broken(fn):
+        raise RuntimeError("db down")
+
+    pipe._with_conn = broken
+    assert asyncio.run(pipe._prior_error("s1")) is None

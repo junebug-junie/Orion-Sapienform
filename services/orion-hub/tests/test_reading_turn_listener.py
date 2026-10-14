@@ -144,3 +144,57 @@ def test_production_generate_only_binds_and_polls_durable_run(monkeypatch, cls, 
         assert pipe._settlement_run_id == "immutable-run"
 
     asyncio.run(run())
+
+
+def test_reading_turn_budget_is_the_briefs_wall_not_the_harness_default():
+    """Seed c31227dc Stage 2 (2026-10-14): no budget on the payload -> motor ran on
+    HARNESS_FCC_TIMEOUT_SEC=7200 inside a 3500 s durable attempt."""
+    from scripts.reading_turn_listener import (
+        READING_REPLY_RESERVE_SEC, REPLY_DEADLINE_PAYLOAD_KEY, stamp_reading_turn_budget,
+    )
+    from scripts.curiosity_investigation import REPLY_DEADLINE_PAYLOAD_KEY as CURIOSITY_KEY
+    from orion.hub import turn_orchestrator
+
+    assert REPLY_DEADLINE_PAYLOAD_KEY == CURIOSITY_KEY  # the key _held_turn_budgets reads
+    payload = {}
+    stamp_reading_turn_budget(payload, timeout_sec=3500.0, started=1000.0)
+    assert payload["inference_timeout_sec"] == 3500.0 - READING_REPLY_RESERVE_SEC
+    assert payload[REPLY_DEADLINE_PAYLOAD_KEY] == 4500.0
+    # After 249 s of stance/recall the harness gets what is really left (10 s slack).
+    monkey_now = 1249.0
+    orig = turn_orchestrator.time.monotonic
+    turn_orchestrator.time.monotonic = lambda: monkey_now
+    try:
+        inference, reply = turn_orchestrator._held_turn_budgets(payload)
+    finally:
+        turn_orchestrator.time.monotonic = orig
+    assert reply == 3500.0 - 249 - 10 and inference == reply
+    small = {}
+    stamp_reading_turn_budget(small, timeout_sec=10.0, started=0.0)
+    assert small["inference_timeout_sec"] == 10.0
+
+
+def test_listener_stamps_budget_on_the_turn_payload(monkeypatch):
+    from scripts.reading_turn_listener import REPLY_DEADLINE_PAYLOAD_KEY
+
+    monkeypatch.setitem(ReadingTurnListener.handle.__globals__, "validate_hold_ref", AsyncMock())
+    turn = AsyncMock(return_value=[{"type": "final", "llm_response": "ok", "harness_source_fetches": []}])
+    monkeypatch.setattr("orion.hub.turn_orchestrator.execute_unified_turn", turn)
+
+    async def run():
+        listener = ReadingTurnListener(ServiceRef(name="orion-hub"))
+        listener.bus = AsyncMock()
+        listener.rpc_bus = listener.bus
+        req = request()
+        envelope = BaseEnvelope(
+            kind="reading.turn.request.v1", source=ServiceRef(name="orion-durable-runs"),
+            correlation_id=req.correlation_id,
+            reply_to=f"orion:reading:turn:reply:{req.correlation_id}", payload=req.model_dump(),
+        )
+        await listener.handle(envelope)
+        payload = turn.call_args.kwargs["payload"]
+        assert payload["inference_timeout_sec"] == 10.0
+        assert REPLY_DEADLINE_PAYLOAD_KEY in payload
+        await listener.stop()
+
+    asyncio.run(run())

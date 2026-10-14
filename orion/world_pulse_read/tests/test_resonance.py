@@ -2,11 +2,18 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timezone
+from typing import get_args
 
 import pytest
 
-from orion.schemas.reading_resonance import ResonanceNeighborV1
+from orion.schemas.reading_resonance import (
+    RELATION_REF_KINDS,
+    ReadingResonanceJudgmentV1,
+    ResonanceNeighborV1,
+    ResonanceRefKind,
+)
 from orion.world_pulse_read.resonance import (
+    JUDGE_INSTRUCTIONS,
     KIND_BUDGET,
     PoolDoc,
     ReadInput,
@@ -118,8 +125,8 @@ def test_valid_judgment_accepted():
     ({"citations": []}, "citation_not_in_packet"),
     ({"read_quote": "an invented sentence that is nowhere"}, "quote_not_in_read"),
     ({"connection": "   "}, "empty_connection"),
-    ({"bears_on_prior": "supports"}, "prior_relation_without_prior"),
-    ({"bears_on_prior": "strains", "strained_prior_id": "p1"}, "prior_relation_without_prior"),
+    ({"bears_on_prior": "supports"}, "relation_ref_kind_mismatch"),
+    ({"bears_on_prior": "strains", "strained_prior_id": "p1"}, "relation_ref_kind_mismatch"),
     ({"article_summary": "Too short."}, "summary_sentence_count"),
 ])
 def test_each_rejection_reason_fires(over, reason):
@@ -200,7 +207,7 @@ def test_none_decision_cannot_smuggle_a_retest_or_foreign_citation():
     j, chk = check_judgment(packet(), judged(decision="none", citations=[], bears_on_prior="strains",
                                              strained_prior_id="prior-not-in-packet"))
     assert not chk.accepted and strained_prior(j, chk) is None
-    assert {"prior_relation_without_prior", "strained_prior_not_cited"} <= set(chk.reasons)
+    assert {"relation_ref_kind_mismatch", "strained_prior_not_cited"} <= set(chk.reasons)
     _, chk = check_judgment(packet(), judged(decision="none", citations=[
         {"ref_kind": "dream", "ref_id": "foreign", "how": "x"}]))
     assert "citation_not_in_packet" in chk.reasons
@@ -252,3 +259,95 @@ def test_judge_prompt_states_every_length_limit_the_validator_enforces():
                         (ReadingResonanceJudgmentV1, "explore_next"), (ResonanceCitationV1, "how")):
         assert f"at most {_max_len(model, name)} characters" in JUDGE_INSTRUCTIONS, name
     assert f"at most {_max_len(ReadingResonanceJudgmentV1, 'citations')} objects" in JUDGE_INSTRUCTIONS
+
+
+# ---- relation/ref-kind table + quote normalization (2026-10-14 judge run) ----
+
+def rich_packet():
+    return build_packet(READ, [sd("self_prior", "p1", 0.5), sd("lived_answer", "la1", 0.5),
+                               sd("atlas_concept", "sub-concept-a", 0.5), sd("atlas_concept", "sub-concept-b", 0.5),
+                               sd("crystallization", "c1", 0.5)], built_at=AT)
+
+
+def test_relation_table_covers_the_schema_and_the_prompt_renders_it():
+    rel_values = {a for a in get_args(ReadingResonanceJudgmentV1.model_fields["bears_on_prior"].annotation)
+                  if a is not type(None)}
+    rel_values = {v for a in rel_values for v in (get_args(a) or (a,))}
+    assert set(RELATION_REF_KINDS) == rel_values
+    assert all(set(k) <= set(get_args(ResonanceRefKind)) for k in RELATION_REF_KINDS.values())
+    for rel, kinds in RELATION_REF_KINDS.items():
+        line = next(ln for ln in JUDGE_INSTRUCTIONS.splitlines() if ln.strip().startswith(f'"{rel}"'))
+        assert all(k in line for k in kinds), line
+
+
+def test_real_case_supports_over_atlas_concepts_only_is_refused_by_name():
+    # 3f821acc (2026-10-14): "supports" while citing two atlas concepts and no belief.
+    cites = [{"ref_kind": "atlas_concept", "ref_id": "sub-concept-a", "how": "confirms combining SFT and RL"},
+             {"ref_kind": "atlas_concept", "ref_id": "sub-concept-b", "how": "a test-time compute pipeline"}]
+    _, chk = check_judgment(rich_packet(), judged(citations=cites, bears_on_prior="supports"),
+                            retained_texts=READ.retained_texts)
+    assert chk.reasons == ["relation_ref_kind_mismatch"]
+    # The same connection with bears_on_prior null is the honest form and is accepted.
+    _, chk = check_judgment(rich_packet(), judged(citations=cites), retained_texts=READ.retained_texts)
+    assert chk.accepted
+
+
+def test_real_case_strains_naming_an_atlas_concept_is_refused():
+    # b7d743d2 (2026-10-14): "strains" with strained_prior_id set to an atlas concept.
+    cites = [{"ref_kind": "atlas_concept", "ref_id": "sub-concept-a", "how": "blocks verification"}]
+    j, chk = check_judgment(rich_packet(), judged(citations=cites, bears_on_prior="strains",
+                                                  strained_prior_id="sub-concept-a"),
+                            retained_texts=READ.retained_texts)
+    assert {"relation_ref_kind_mismatch", "strained_prior_not_cited"} <= set(chk.reasons)
+    assert strained_prior(j, chk) is None
+
+
+def test_supports_may_cite_a_lived_answer_but_strains_may_not():
+    # b2e0b70c (2026-10-14): "supports" citing a curiosity finding and a lived answer.
+    cites = [{"ref_kind": "lived_answer", "ref_id": "la1", "how": "the read validates that answer"}]
+    _, chk = check_judgment(rich_packet(), judged(citations=cites, bears_on_prior="supports"),
+                            retained_texts=READ.retained_texts)
+    assert chk.accepted
+    _, chk = check_judgment(rich_packet(), judged(citations=cites, bears_on_prior="strains", strained_prior_id="la1"),
+                            retained_texts=READ.retained_texts)
+    assert "relation_ref_kind_mismatch" in chk.reasons
+
+
+CRS = ReadInput(
+    seed_id="seed-crs", root_request_id=None, title="CRS-35", url="https://example.test/crs",
+    summary="", learned="",
+    retained_texts=[("b" * 64,
+                     "NASA and SpaceX are targeting 6:33 a.m. EDT Tuesday, Oct. 13, 2026 for the 35th SpaceX "
+                     "Commercial Resupply Services mission (CRS-35). The spacecraft carries 6,300 pounds. Cargo also "
+                     "includes hardware to make artificial retinas in microgravity, and brain organoids relevant to "
+                     "Alzheimer\u2019s \u2013 Parkinson&#39;s&nbsp;and multiple sclerosis.")],
+)
+
+
+def crs_packet():
+    return build_packet(CRS, [sd("crystallization", "c1", 0.5)], built_at=AT)
+
+
+def test_real_case_elided_quote_of_two_real_spans_is_accepted():
+    # db13f467 (2026-10-14): two exact sentences of the read joined by "...".
+    q = ("NASA and SpaceX are targeting 6:33 a.m. EDT Tuesday, Oct. 13, 2026 for the 35th SpaceX Commercial "
+         "Resupply Services mission (CRS-35)... Cargo also includes hardware to make artificial retinas in microgravity")
+    for joined in (q, q.replace("...", "\u2026"), q.replace("...", " [...] ")):
+        _, chk = check_judgment(crs_packet(), judged(read_quote=joined), retained_texts=CRS.retained_texts)
+        assert chk.accepted, (joined, chk.reasons)
+
+
+def test_elided_quote_refused_when_out_of_order_short_or_invented():
+    a = "NASA and SpaceX are targeting 6:33 a.m."
+    b = "Cargo also includes hardware to make artificial retinas"
+    for q in (f"{b} ... {a}",  # read order reversed
+              f"{a} ... to make",  # an elided span under QUOTE_MIN_WORDS
+              f"{a} ... and the rocket will land on the moon"):  # second span invented
+        _, chk = check_judgment(crs_packet(), judged(read_quote=q), retained_texts=CRS.retained_texts)
+        assert "quote_not_in_read" in chk.reasons, q
+
+
+def test_quote_matcher_folds_quotes_dashes_entities_on_both_sides():
+    q = "brain organoids relevant to Alzheimer's - Parkinson\u2019s and multiple sclerosis"
+    _, chk = check_judgment(crs_packet(), judged(read_quote=q), retained_texts=CRS.retained_texts)
+    assert chk.accepted, chk.reasons

@@ -96,8 +96,13 @@ The local privacy gate now passes all seven checks. No privacy gate was weakened
 
 The initial durable/substrate infrastructure failures were Postgres image-mirror
 `toomanyrequests: Data limit exceeded` errors before checkout, not test failures.
-Both substrate matrix versions subsequently passed. Fresh checks on the integrated
-branch, including the added Curiosity CI commands, are authoritative in PR #2654.
+Both substrate matrix versions subsequently passed, as did the new Curiosity CI step
+(79 checks plus three cortex prompt checks). Passing the privacy gate exposed a missing
+journal routing lock refresh: the producer catalog already declared dream/durable-runs,
+but `metric_definitions.lock.json` still had the old producers. Regenerated the lock with
+`check_definition_drift.py --update`; its sole definition delta adds those two journal
+producers and preserves the derived change alert. No sensor or metric signal was added.
+The definition-drift gate now passes locally. Current CI is authoritative in PR #2654.
 
 ## Deployment (requires Juniper's production approval)
 

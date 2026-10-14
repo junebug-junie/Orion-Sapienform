@@ -982,6 +982,10 @@ async def _compute_entity_relatedness_boost_map(
                 for turn_id, matched_names in matches.items()
                 if matched_names
             }
+            # Which names each injected turn matched, so belief fusion can
+            # show the part of the turn that mentions them (not its opening).
+            for f in injected:
+                f["meta"]["entity_terms"] = list(matches.get(f["uri"]) or [])
 
         return boost_map, injected
     except Exception as exc:

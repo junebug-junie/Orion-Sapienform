@@ -795,7 +795,11 @@ ENTITY_INJECTED_TAG = "entity_relatedness_injected"
 # rank-0 active_packet lines (backend weight 1.0 vs falkor_chat's 0.4) fill
 # the small belief budget and the one turn that actually names who the user
 # is talking about never renders (live: corr 21c8a610, 2026-10-14).
-_BELIEF_ENTITY_RESERVED_SLOTS = 2
+# 4, not 2: a person is usually mentioned in passing, and which of their turns
+# says who they are cannot be known here. Live corr 21c8a610 found 4 turns
+# naming the child; with 2 slots the one saying "my son, ...'s 7th birthday"
+# was dropped.
+_BELIEF_ENTITY_RESERVED_SLOTS = 4
 _BELIEF_ENTITY_MIN_WORDS = 16
 
 
@@ -808,6 +812,33 @@ def _clamp_words(text: str, max_words: int) -> str:
     if len(words) <= max_words:
         return text
     return " ".join(words[:max_words]) + " ..."
+
+
+def _window_around_terms(text: str, terms: Iterable[str], max_words: int) -> str:
+    """max_words of text centred on the first mention of any term.
+
+    An injected turn is in the digest BECAUSE it names someone in the query;
+    clamping from its start (live corr 21c8a610) kept "Here are the photos of
+    the sensor array..." and cut the mention it was injected for. The user's
+    own words are searched first, then the whole turn. No term found: the
+    opening, as before.
+    """
+    words = (text or "").split()
+    if len(words) <= max_words:
+        return text
+    lowered = [w.lower() for w in words]
+    wanted = [str(t).lower() for t in terms if str(t).strip()]
+    user_end = next((i for i, w in enumerate(words) if w.startswith("OrionResponse:")), len(words))
+    hit = None
+    for lo, hi in ((0, user_end), (0, len(words))):
+        hit = next((i for i in range(lo, hi) if any(t in lowered[i] for t in wanted)), None)
+        if hit is not None:
+            break
+    if hit is None:
+        return _clamp_words(text, max_words)
+    start = max(0, min(hit - max_words // 3, len(words) - max_words))
+    end = start + max_words
+    return ("... " if start else "") + " ".join(words[start:end]) + (" ..." if end < len(words) else "")
 
 
 def _pcr_fuse_belief_with_entity_reserve(
@@ -828,6 +859,21 @@ def _pcr_fuse_belief_with_entity_reserve(
     max_total = int(narrowed.get("max_total_items", 8))
     budget = int(narrowed.get("render_budget_tokens", 128))
     reserved = max(0, min(_BELIEF_ENTITY_RESERVED_SLOTS, max_total))
+    # Half the belief budget goes to entity turns, split between them; the
+    # default render estimator counts words. Each is cut to a window around
+    # the name it was injected for, before fusion sees it.
+    word_cap = max(_BELIEF_ENTITY_MIN_WORDS, budget // (2 * max(1, min(reserved, len(injected)))))
+    injected = [
+        {
+            **c,
+            "text": _window_around_terms(
+                str(c.get("text") or c.get("snippet") or ""),
+                (c.get("meta") or {}).get("entity_terms") or [],
+                word_cap,
+            ),
+        }
+        for c in injected
+    ]
     inj_profile = dict(narrowed)
     inj_profile["max_total_items"] = reserved
     inj_profile["max_per_source"] = reserved
@@ -841,12 +887,9 @@ def _pcr_fuse_belief_with_entity_reserve(
         entity_boost_map=entity_boost_map,
     )
     inj_items = list(inj_bundle.items)
-    if inj_items:
-        # Half the belief budget goes to entity turns, split between them;
-        # the default render estimator counts words.
-        word_cap = max(_BELIEF_ENTITY_MIN_WORDS, budget // (2 * len(inj_items)))
-        for item in inj_items:
-            item.snippet = _clamp_words(str(item.snippet or ""), word_cap)
+    for item in inj_items:
+        # Fusion may re-derive the snippet; keep it inside the cap.
+        item.snippet = _clamp_words(str(item.snippet or ""), word_cap + 2)
 
     rest_profile = dict(narrowed)
     rest_profile["max_total_items"] = max(0, max_total - len(inj_items))

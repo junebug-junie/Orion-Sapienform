@@ -146,3 +146,37 @@ def test_belief_fusion_without_injected_turns_is_unchanged():
         candidates=cands + [plain_turn], profile=profile, retrieval_intent="open_loop", query_text=FRAGMENT
     )
     assert bundle.items[0].source == "active_packet"
+
+
+def test_injected_turn_is_cut_around_the_name_not_from_its_start():
+    """Live smoke, corr 21c8a610: clamping from the start kept "Here are the
+    photos of the sensor array..." and cut the mention the turn was injected
+    for. The window must centre on the matched name."""
+    from app.fusion import _window_around_terms
+
+    opening = " ".join(["photos of the sensor array in the cabinet"] * 12)
+    text = f'ExactUserText: "{opening} and my son Pip loved the blinking lights" OrionResponse: "nice"'
+    window = _window_around_terms(text, ["pip"], 16)
+    assert "my son Pip" in window
+    assert len(window.split()) <= 18
+    assert _window_around_terms(text, [], 16).startswith('ExactUserText: "photos')
+
+
+def test_four_entity_turns_fit_ahead_of_active_packet():
+    profile = dict(get_profile("chat.belief.open_loop.v1"))
+    turns = [
+        {"id": f"t{i}", "source": "falkor_chat", "uri": f"t{i}",
+         "text": f'ExactUserText: "{" ".join(["filler words here"] * 20)} my son Pip did thing {i}"',
+         "score": 0.5, "tags": ["falkor", "chat", "chatturn", ENTITY_INJECTED_TAG],
+         "meta": {"entity_terms": ["pip"]}}
+        for i in range(4)
+    ]
+    bundle, _ = pcr_fuse_belief_candidates(
+        candidates=_unrelated_active_packet() + turns,
+        profile=profile,
+        retrieval_intent="open_loop",
+        query_text=FRAGMENT,
+        entity_boost_map={f"t{i}": 1.0 for i in range(4)},
+    )
+    assert {it.id for it in bundle.items[:4]} == {"t0", "t1", "t2", "t3"}
+    assert bundle.rendered.count("my son Pip") == 4

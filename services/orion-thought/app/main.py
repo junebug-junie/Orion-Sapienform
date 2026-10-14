@@ -110,6 +110,13 @@ async def lifespan(app: FastAPI):
     # kept on app.state -- an unreferenced asyncio task can be
     # garbage-collected mid-execution (see asyncio docs on create_task).
     app.state.pool_warmup_task = asyncio.create_task(warm_pool())
+    # Self-readings (stance_react / reverie): import the calibration modules and seed the 7-day
+    # prediction-error window once, off the event loop, so the first turn does not pay for it.
+    app.state.self_readings_warm_task = None
+    if settings.self_readings_stance_enabled or settings.self_readings_reverie_enabled:
+        from .self_readings_cue import warm as warm_self_readings
+
+        app.state.self_readings_warm_task = asyncio.create_task(asyncio.to_thread(warm_self_readings))
     # RPC-health publish (orion:rpc_health:snapshot): one dedicated long-lived bus that
     # drains the process sink every worker/per-call bus folds into (app/rpc_health.py).
     app.state.rpc_health_bus = None
@@ -158,7 +165,10 @@ async def lifespan(app: FastAPI):
         app.state.visual_chain_watchdog_task,
         app.state.visual_painting_gap_task,
         app.state.pool_warmup_task,
+        app.state.self_readings_warm_task,
     ):
+        if task is None:
+            continue
         task.cancel()
         with suppress(asyncio.CancelledError):
             await task

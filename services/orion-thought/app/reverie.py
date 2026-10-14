@@ -244,6 +244,7 @@ def build_reverie_context(
     concern_cards: list[ConcernCardV1] | None = None,
     loop_outcomes: dict[str, dict[str, Any]] | None = None,
     recent_percepts: list[dict[str, Any]] | None = None,
+    self_readings: str | None = None,
 ) -> dict[str, Any]:
     percepts = recent_percepts or []
     if concern_cards:
@@ -279,6 +280,12 @@ def build_reverie_context(
     }
     if percepts:
         ctx["recent_percepts"] = percepts
+    if self_readings:
+        # Self-calibration section C: body signals unusual for themselves (rendered, no LLM).
+        # Coalition branch only: the concern-card branch discards any interpretation with
+        # mechanism vocabulary (orion/reverie/semantic_lift.py), so body numbers there would
+        # only manufacture hollow thoughts.
+        ctx["self_readings"] = self_readings
     return ctx
 
 
@@ -289,6 +296,7 @@ def build_reverie_plan_request(
     concern_cards: list[ConcernCardV1] | None = None,
     loop_outcomes: dict[str, dict[str, Any]] | None = None,
     recent_percepts: list[dict[str, Any]] | None = None,
+    self_readings: str | None = None,
 ) -> PlanExecutionRequest:
     use_lift = settings.reverie_semantic_lift_enabled and bool(concern_cards)
     mode = "metacog" if use_lift else "brain"
@@ -312,6 +320,7 @@ def build_reverie_plan_request(
             concern_cards=concern_cards,
             loop_outcomes=loop_outcomes,
             recent_percepts=recent_percepts,
+            self_readings=self_readings,
         ),
     )
 
@@ -628,8 +637,19 @@ async def run_reverie_once(
                 stream_ids=settings.reverie_perception_stream_id_list,
             )
 
-        loop_outcomes, recent_percepts = await asyncio.gather(
-            _fetch_loop_outcomes(), _fetch_percepts()
+        async def _fetch_self_readings() -> str | None:
+            # Only the coalition branch renders it (see build_reverie_context).
+            if not want_loop_outcomes:
+                return None
+            from .self_readings_cue import build_self_readings_block
+
+            block = await build_self_readings_block(
+                correlation_id, purpose="reverie", enabled=settings.self_readings_reverie_enabled
+            )
+            return block.text or None
+
+        loop_outcomes, recent_percepts, self_readings = await asyncio.gather(
+            _fetch_loop_outcomes(), _fetch_percepts(), _fetch_self_readings()
         )
         plan_request = build_reverie_plan_request(
             broadcast,
@@ -637,6 +657,7 @@ async def run_reverie_once(
             concern_cards=concern_cards,
             loop_outcomes=loop_outcomes,
             recent_percepts=recent_percepts,
+            self_readings=self_readings,
         )
         # Same formula build_reverie_plan_request uses internally to decide `use_lift` --
         # duplicated here (not returned by that function) because only a call that actually set

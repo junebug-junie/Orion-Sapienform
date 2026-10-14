@@ -730,6 +730,7 @@ from orion.schemas.temporal_self import (
     TemporalSelfStateV1,
 )
 from orion.schemas.field_state import FieldEdgeV1, FieldStateV1
+from orion.schemas.self_reading import SelfReadingsBlockV1, SelfReadingV1
 from orion.schemas.causal_geometry import (
     CausalGeometryDivergenceEntryV1,
     CausalGeometryEdgeV1,
@@ -1457,6 +1458,9 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     # Patch 4 (Orion uses its own day): the two readers' rendered views and the citation gate's
     # result (carried on ThoughtEventV1.day_citations and orion_day_letter.sources.arc_citations).
     "TemporalSelfStanceCueV1": TemporalSelfStanceCueV1,
+    # Self-calibration section C: body signals against their own 7 days (stance_react, reverie).
+    "SelfReadingV1": SelfReadingV1,
+    "SelfReadingsBlockV1": SelfReadingsBlockV1,
     "TemporalSelfDayBlockV1": TemporalSelfDayBlockV1,
     "DayCitationCheckV1": DayCitationCheckV1,
     "PolicyDecisionV1": PolicyDecisionV1,

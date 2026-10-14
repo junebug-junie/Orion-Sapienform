@@ -11714,34 +11714,23 @@ let chatTurnTimer = null;
     return base;
   }
 
+  // Row markup and read-back live in presence-form.js (unit-tested there).
   function renderPresenceCompanions(companions = []) {
-    if (!presenceCompanionRows) return;
+    if (!presenceCompanionRows || !window.OrionPresenceForm) return;
     presenceCompanionRows.innerHTML = '';
     companions.forEach((item, idx) => {
       const row = document.createElement('div');
-      row.className = 'grid grid-cols-1 gap-1 rounded border border-gray-700 bg-gray-900/40 p-2 md:grid-cols-6';
-      row.innerHTML = `
-        <input data-presence-field="display_name" data-presence-index="${idx}" class="rounded border border-gray-700 bg-gray-900 px-2 py-1 text-[11px]" placeholder="Name" value="${item.display_name || ''}" />
-        <input data-presence-field="relationship" data-presence-index="${idx}" class="rounded border border-gray-700 bg-gray-900 px-2 py-1 text-[11px]" placeholder="relationship" value="${item.relationship || 'other'}" />
-        <input data-presence-field="role" data-presence-index="${idx}" class="rounded border border-gray-700 bg-gray-900 px-2 py-1 text-[11px]" placeholder="role" value="${item.role || 'nearby'}" />
-        <input data-presence-field="age_band" data-presence-index="${idx}" class="rounded border border-gray-700 bg-gray-900 px-2 py-1 text-[11px]" placeholder="age_band" value="${item.age_band || 'unknown'}" />
-        <input data-presence-field="context_note" data-presence-index="${idx}" class="rounded border border-gray-700 bg-gray-900 px-2 py-1 text-[11px]" placeholder="context note" value="${item.context_note || ''}" />
-        <button data-presence-remove="${idx}" class="rounded border border-rose-500/50 bg-rose-500/10 px-2 py-1 text-[10px] text-rose-200" type="button">Remove</button>
-      `;
+      row.className = 'grid grid-cols-2 items-end gap-2 rounded border border-gray-700 bg-gray-900/40 p-2 md:grid-cols-6';
+      row.innerHTML = window.OrionPresenceForm.rowHtml(item, idx);
       presenceCompanionRows.appendChild(row);
     });
   }
 
   function collectPresenceCompanions() {
-    if (!presenceCompanionRows) return [];
-    const rows = {};
-    presenceCompanionRows.querySelectorAll('input[data-presence-index]').forEach((el) => {
-      const idx = String(el.dataset.presenceIndex || '');
-      const field = String(el.dataset.presenceField || '');
-      if (!rows[idx]) rows[idx] = {};
-      rows[idx][field] = String(el.value || '').trim();
-    });
-    return Object.values(rows).filter((row) => row.display_name);
+    if (!presenceCompanionRows || !window.OrionPresenceForm) return [];
+    return window.OrionPresenceForm.collectRows(
+      Array.from(presenceCompanionRows.querySelectorAll('[data-presence-index]'))
+    );
   }
 
   async function loadPresenceContext() {

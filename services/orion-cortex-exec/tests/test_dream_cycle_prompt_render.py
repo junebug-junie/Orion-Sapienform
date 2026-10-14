@@ -59,3 +59,13 @@ def test_a_hand_started_dream_renders_the_memory_only_prompt():
         assert "TONIGHT'S SLEEP" not in prompt
         assert "MEMORY BUNDLE (rendered recall; primary grounding):\nMEMORIES" in prompt
         assert "Synthesize a dream narrative from the memory bundle and mode." in prompt
+
+
+def test_curiosity_compactor_renders_metadata_with_a_structured_output_budget():
+    from types import SimpleNamespace
+    module = _load_executor_module()
+    template = ROOT / "orion/cognition/prompts/curiosity_compactor_digest_v1.j2"
+    prompt = "Topic chronology: September 2 suspicion; September 16 conflicting evidence."
+    assert module._render_prompt(template.read_text(), {"metadata": {"curiosity_compaction_prompt": prompt}}).strip() == prompt
+    tokens, _, _ = module._resolve_llm_chat_max_tokens(SimpleNamespace(verb_name="curiosity_compactor_digest_v1"), {})
+    assert tokens == 3000

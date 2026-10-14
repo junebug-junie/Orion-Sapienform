@@ -826,3 +826,22 @@ borrowing it (grace, then abort and re-queue). `ResourceRequirementV1.alternativ
 `allow_elastic_activation`, `pinned_lane` and `operator_override` were deleted in 4.6
 (`extra="forbid"`: a producer still sending them is refused). A duplicate receipt of a row stored
 before 4.6 still ignores those keys when comparing (`IGNORED_ADMISSION_FIELDS`).
+
+### Curiosity chronology (`curiosity.compaction`)
+
+The broader dream/sleep arc admits closed weekly/monthly windows; this service owns
+all generation. `prepare -> resource_request -> resource_wait -> compact (topics,
+reduction, overall) -> finalize -> finish`. `compact` makes one cortex verb call under
+`llm.route.agent` background admission and the run's GPU hold. Pool waits/recalls do
+not spend model attempts. The shared `orion.curiosity.compaction_store` contract saves
+each accepted answer before the node returns; replay reloads that cursor, including a
+crash between artifact commit and LangGraph checkpoint. The checkpoint itself stays
+small: source material is stored once in `curiosity_compaction`, not in every LangGraph
+state. A SQL write checks the run generation to fence delayed old workers.
+
+The final journal contains content-derived topic summaries with dated sources plus an
+overall synthesis. Missing/invented topic references, empty text and malformed JSON
+are rejected. Empty input skips the GPU. Finalization releases the hold before journal
+publication; delivery failure retries without regeneration, and the dream-side
+reconciler repairs missed journal delivery using the same ID. Every source survives.
+See the dream README and the 2026-10-14 PR report for activation and migration order.

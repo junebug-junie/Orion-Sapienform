@@ -22,9 +22,11 @@ docs/superpowers/specs/2026-08-20-reverie-visual-chain-design.md §1-2):
    `continuity_reset` (Patch 4) record whether THIS run's own prompt was
    forced to drop continuity; `chain_json.self_study_text` (Patch 5) is a
    second, richer context-seed from the self-study analysis system;
-   `chain_json.memory_text` (Patch 6) is a third, from the Recall system's
-   `memory_crystallizations` table; `chain_json.context_slot_used` (Patch
-   7) records WHICH of those three actually entered the prompt this run --
+   `chain_json.memory_text` is a third, now sourced by default from governed
+   `episode_memory`; `chain_json.context_selection.source_kind` preserves
+   whether a row used that source or a legacy crystallization; and
+   `chain_json.context_slot_used` (Patch 7) records WHICH of those three
+   actually entered the prompt this run --
    see that patch's note below, all three are recorded but only one is
    ever actually rendered -- nothing else downstream of any of these
    exists yet.
@@ -113,6 +115,18 @@ by an actual decision. `store.load_latest_memory_crystallization` now also
 requires a real `memory_crystallization_history` row with `op='approve'`
 -- the pipeline's actual audit trail, not its near-universal default
 status.
+
+**Stage 2 PR G memory source:** the default reader is now
+`store.load_episode_memory_seed`, not the legacy crystallization reader.
+It accepts only active, unexpired `happened`/`about_juniper` memories from
+the last seven days whose quotes are all verified and which are either
+low-stakes automatic memories or explicitly confirmed. Memories carrying a
+`downgraded_voice`/`rejected_invalid` event are excluded. The exact
+`memory_id` and `source_kind='episode_memory'` are stored in
+`context_selection`; `memory_source_kind` separately identifies a loaded but
+unselected memory slot. The Hub exposes that kind so current rows and
+historical crystallization rows are labeled honestly. Set
+`REVERIE_VISUAL_MEMORY_SEED_SOURCE=crystallization` for bounded rollback.
 """
 
 from __future__ import annotations
@@ -308,10 +322,13 @@ async def visual_recent(
                 # "own field, not just prose" reasoning as context_text
                 # above.
                 "self_study_text": cj.get("self_study_text"),
-                # Patch 6: a third context-seed -- real shared-life memory
-                # crystallization content. Same "own field" reasoning as
-                # context_text/self_study_text above.
+                # Memory context-seed text. Stage 2 PR G reads validated
+                # episode_memory by default; old rows may still contain a
+                # legacy crystallization. Keep the prose and its typed kind
+                # separate so the UI never mislabels either source.
                 "memory_text": cj.get("memory_text"),
+                "memory_source_kind": cj.get("memory_source_kind"),
+                "context_source_kind": (cj.get("context_selection") or {}).get("source_kind"),
                 # Patch 7: which ONE of context_text/self_study_text/
                 # memory_text actually entered THIS run's prompt --
                 # "context", "self_study", "memory", or null (nothing had

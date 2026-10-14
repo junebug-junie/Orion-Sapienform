@@ -5,7 +5,10 @@ on:
       - 'services/orion-dream/**'
       - 'services/orion-sql-writer/**'
       - 'services/orion-sql-db/manual_migration_regulation_history.sql'
+      - 'services/orion-sql-db/manual_migration_curiosity_compaction.sql'
       - 'orion/schemas/dream_cycle.py'
+      - 'orion/schemas/curiosity_compaction.py'
+      - 'orion/curiosity/compaction*.py'
       - 'orion/regulation/**'
       - 'orion/bus/channels.yaml'
       - 'scripts/analysis/measure_dream_pressure_crossings.py'
@@ -31,6 +34,7 @@ jobs:
           --health-timeout 5s --health-retries 10
     env:
       POSTGRES_URI: postgresql://postgres:test-only@localhost:5432/regulation_history_test
+      CURIOSITY_COMPACTION_TEST_POSTGRES_URI: postgresql://postgres:test-only@localhost:5432/regulation_history_test
       REGULATION_HISTORY_TEST_POSTGRES_URI: postgresql://postgres:test-only@localhost:5432/regulation_history_test
       ORION_BUS_URL: redis://100.92.216.81:6379/0
       ORION_BUS_ENABLED: 'false'
@@ -45,8 +49,12 @@ jobs:
           python -m pytest -q services/orion-dream/tests/test_pressure_history.py
           services/orion-dream/tests/test_dream_cycle_v2.py
           services/orion-dream/tests/test_idle_counts_only_juniper.py
+      - name: Curiosity calendar compaction, restart and delivery
+        run: >-
+          python -m pytest -q services/orion-dream/tests/test_curiosity_compaction.py
+          services/orion-dream/tests/test_curiosity_compaction_postgres.py
       - name: Dream behavior evals
-        run: python -m pytest -q services/orion-dream/evals/test_dream_cycle_eval.py
+        run: python -m pytest -q services/orion-dream/evals/test_dream_cycle_eval.py services/orion-dream/evals/test_curiosity_compaction_eval.py
       - name: GPU consumer and bounded retention, including real Postgres
         run: >-
           python -m pytest -q services/orion-sql-writer/tests/test_gpu_pool_state_history.py

@@ -103,3 +103,9 @@ def test_js_shows_the_realized_prompt_and_error_state() -> None:
     assert "chain.prompt" in REVERIE_JS
     assert "chain.error" in REVERIE_JS
     assert "egress" in REVERIE_JS
+
+
+def test_js_labels_episode_memory_without_rewriting_legacy_history() -> None:
+    assert 'chain.memory_source_kind === "episode_memory"' in REVERIE_JS
+    assert "Memory (validated episode)" in REVERIE_JS
+    assert "Memory (legacy shared-life crystallization)" in REVERIE_JS

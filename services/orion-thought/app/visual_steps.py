@@ -128,7 +128,8 @@ def _dream_plan(hop: DreamHopImageV1) -> vc.VisualPlan:
         prompt=hop.prompt, prior_description=None, prior_chain_id=None, effective_prior=None,
         continuity_fallback=None, continuity_streak=0, continuity_reset=False,
         context_slot_used=None, context_slot_rotation=0, context_slot_interpreted=None,
-        context_text=None, self_study_text=None, memory_text=None, context_selection=None,
+        context_text=None, self_study_text=None, memory_text=None, memory_source_kind=None,
+        context_selection=None,
     )
 
 

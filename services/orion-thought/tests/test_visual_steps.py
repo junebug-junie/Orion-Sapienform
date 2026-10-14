@@ -114,7 +114,7 @@ def env(monkeypatch, tmp_path):
                         lambda **kw: ("a fox by the fire", 1, 4, "prior-chain"))
     monkeypatch.setattr(visual_chain, "load_latest_reverie_interpretation", lambda **kw: "a real thought")
     monkeypatch.setattr(visual_chain, "load_latest_self_study_reflection", lambda **kw: None)
-    monkeypatch.setattr(visual_chain, "load_latest_memory_crystallization", lambda **kw: None)
+    monkeypatch.setattr(visual_chain, "load_episode_memory_seed", lambda **kw: None)
     generate_calls: list[str] = []
 
     def fake_generate(prompt, *, base_url, timeout_sec):
@@ -864,7 +864,7 @@ def _forbid_waking_planning(env, monkeypatch):
     monkeypatch.setattr(env.vc, "compute_visual_plan", AsyncMock(side_effect=AssertionError("compute_visual_plan")))
     monkeypatch.setattr(env.vc, "interpret_context_for_visual", AsyncMock(side_effect=AssertionError("interpret")))
     for name in ("load_latest_visual_chain_continuity_state", "load_latest_reverie_interpretation",
-                 "load_latest_self_study_reflection", "load_latest_memory_crystallization"):
+                 "load_latest_self_study_reflection", "load_episode_memory_seed"):
         monkeypatch.setattr(env.vc, name, boom)
 
 

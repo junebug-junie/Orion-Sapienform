@@ -916,7 +916,100 @@ def test_load_latest_self_study_reflection_never_raises_on_db_failure() -> None:
         monkeypatch.undo()
 
 
-# --- load_latest_memory_crystallization: Patch 6 third context-seed --------
+# --- load_episode_memory_seed: Stage 2 PR G visual-memory source -----------
+
+
+def test_load_episode_memory_seed_returns_typed_source_identity() -> None:
+    store = _fresh_store()
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(
+        store,
+        "_get_engine",
+        lambda: _body_row_result(
+            {"source_id": "a47eb72a-7010-4ea4-a90d-f025166ac2fd", "statement": "A kept memory."}
+        ),
+    )
+    try:
+        source = store.load_episode_memory_seed(with_identity=True)
+    finally:
+        monkeypatch.undo()
+
+    assert source.source_id == "a47eb72a-7010-4ea4-a90d-f025166ac2fd"
+    assert source.text == "A kept memory."
+
+
+def test_load_episode_memory_seed_query_enforces_governance_and_rotation() -> None:
+    """The SQL is the privacy and diversity boundary; lock its joins and gates."""
+    store = _fresh_store()
+    captured: dict = {}
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(
+        store,
+        "_get_engine",
+        lambda: _body_capturing_engine(
+            {"source_id": "a47eb72a-7010-4ea4-a90d-f025166ac2fd", "statement": "x"}, captured
+        ),
+    )
+    try:
+        store.load_episode_memory_seed(max_age_sec=1209600.0)
+    finally:
+        monkeypatch.undo()
+
+    stmt = captured["stmt"]
+    assert "m.purpose IN ('happened', 'about_juniper')" in stmt
+    assert "m.status = 'active'" in stmt
+    assert "m.expires_at IS NULL OR m.expires_at > now()" in stmt
+    assert "m.stakes = 'low' AND m.confirmation_state = 'auto'" in stmt
+    assert "m.confirmation_state = 'confirmed'" in stmt
+    assert "ev.memory_id = m.memory_id AND ev.verified IS TRUE" in stmt
+    assert "ev.memory_id = m.memory_id AND ev.verified IS NOT TRUE" in stmt
+    assert "e.memory_id = m.memory_id" in stmt
+    assert "e.op IN ('downgraded_voice', 'rejected_invalid')" in stmt
+    assert "source_kind' = 'episode_memory'" in stmt
+    assert "s.last_seeded_at ASC NULLS FIRST" in stmt
+    assert "e.created_at ASC" in stmt
+    assert captured["params"] == {"max_age_sec": 604800.0}
+
+
+def test_load_episode_memory_seed_truncates_at_word_boundary() -> None:
+    store = _fresh_store()
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(
+        store,
+        "_get_engine",
+        lambda: _body_row_result({"source_id": "memory-id", "statement": "shared memory " * 30}),
+    )
+    try:
+        value = store.load_episode_memory_seed(char_limit=20)
+    finally:
+        monkeypatch.undo()
+
+    assert value is not None
+    assert len(value) <= 21
+
+
+def test_load_episode_memory_seed_none_on_empty_or_db_failure() -> None:
+    store = _fresh_store()
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(store, "_get_engine", lambda: _body_row_result(None))
+    try:
+        assert store.load_episode_memory_seed() is None
+    finally:
+        monkeypatch.undo()
+
+    class _FakeEngine:
+        def connect(self):
+            raise RuntimeError("connection refused")
+
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(store, "_get_engine", lambda: _FakeEngine())
+    try:
+        assert store.load_episode_memory_seed() is None
+    finally:
+        monkeypatch.undo()
+
+
+# --- load_latest_memory_crystallization: Patch 6 legacy context-seed -------
 #
 # Reverses Patch 5's declined call on this same table -- see the function's
 # own docstring for why. Real correction (design doc §20): `status='active'`

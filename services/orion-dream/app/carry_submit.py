@@ -46,15 +46,15 @@ def build_carry_request(
 
 
 async def submit_via_cortex(
-    *, bus: Any, source: ServiceRef, request: DurableRunRequestV1, request_channel: str, timeout_sec: float = 20.0,
+    *, bus: Any, source: ServiceRef, request: DurableRunRequestV1, request_channel: str, timeout_sec: float = 20.0, user_text: str = CARRY_PROMPT,
 ) -> Optional[str]:
     """None when cortex accepted and the receipt names THIS run, workflow and resource; else the reason."""
     reply_channel = f"orion:cortex:result:dream-carry:{uuid4()}"
     payload = {
         "mode": "brain",
         "context": {
-            "messages": [{"role": "user", "content": CARRY_PROMPT}],
-            "user_message": CARRY_PROMPT,
+            "messages": [{"role": "user", "content": user_text}],
+            "user_message": user_text,
             "session_id": request.brief.session_id,
             "metadata": {"durable_run": request.model_dump(mode="json", exclude_none=True)},
         },

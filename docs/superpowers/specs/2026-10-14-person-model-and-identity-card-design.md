@@ -1,7 +1,7 @@
 # Person model, entity reducer, and evolving identity cards
 
-**Date:** 2026-10-14 (rev 2, same day: folds in Juniper's second set of requirements: modularity, extraction frameworks, concept induction, person-study iteration, full identity-card scope)
-**Mode:** design / proposal (AGENTS.md section 0A, proposal mode: memory, identity, social continuity). Nothing here is implemented.
+**Date:** 2026-10-14 (rev 3, same day. Rev 2 folded in modularity, extraction frameworks, concept induction, person-study iteration, full identity-card scope. Rev 3 folds in Juniper's answers to the six open questions: see "Juniper's answers" under Requirements.)
+**Mode:** design / proposal (AGENTS.md section 0A, proposal mode: memory, identity, social continuity). P0, P1 and P2 (dry run only) are implemented on `feat/person-model-p0-p2`; nothing is applied to a live store.
 **Asked by:** Juniper, 2026-10-13 and 2026-10-14 (requirements quoted below).
 **Builds on, does not replace:**
 - Referent graph, `docs/superpowers/specs/2026-10-06-memory-stage2-referent-graph-design.md` (approved): people are evidence-linked referent nodes. This design adds *attributes* to those nodes.
@@ -44,6 +44,17 @@ Concept induction is not the organ for this. Juniper's read is right and verifie
 12. Person study "starts out as me and as Orion adds more people they study them."
 13. Identity cards cover all of `orion_identity.yaml` (Orion's identity, Juniper, response policy) plus the purpose of the whole journey, which she remembers living in a stub somewhere.
 
+### Juniper's answers to the rev 2 open questions, 2026-10-14
+
+Her words first, then what the design does with them.
+
+1. Gap asks: **"Orion is welcome to ask anything about anything."** Asks may cover any category, including empty ones and the sensitive ones (spirituality, gender, sexuality, health). What does not change: Orion still never *infers* a sensitive attribute. A sensitive value comes only from her own answer or her own statement. Asking is allowed; guessing is not.
+2. Third-party facts (Amanda's health): **"Orion can ask anything about anything."** Recorded literally: Orion may ask her about third parties too, including their health or private life. The separate rule that third-party facts are never sent to an outside service (ask-Claude, peer briefs, any outbound message not to her) was a question about egress, not about asking, and her answer does not address it. That rule stays in, marked **still assumed, needs her confirmation** (open question 1 below).
+3. One-time cleanup: produce it **as an HTML file for her to review**. Done as `docs/superpowers/evals/2026-10-14-person-cleanup-review.html` (section 5, "One-time cleanup").
+4. **Home is Ogden.** The `referent_alias` row mapping "home" to `place:slc` is wrong as a home claim. SLC mentions are kept as places she has been or talked about, never as home.
+5. Embeddings in merges: **"seems like a fucked design — we need a best practice that requires me reviewing only fucked cases — do it in the Orion asks section of Hub."** The design now uses standard record-linkage practice: Fellegi-Sunter match scoring with two thresholds. Above the upper one, merge automatically (logged, reversible). Below the lower one, call it a non-match automatically. Only the "possible match" band in between goes to her, as an "Orion is asking" card in Hub. An embedding similarity (mean-centered, because raw bge cosine has no calm state, PR #2647) is allowed as one feature among string, phonetic, and context features. No single feature can force a merge. Thresholds are calibrated on the labeled cleanup so the band she reviews is small; the expected ask volume is reported (section 5).
+6. The AI-town character card about her (`services/orion-ai-town/cards/town_cards.yaml`, `juniper_feld`) **is about her and is her own words**: first-party evidence (`source_kind=authored_profile`, `voice=person_said`), able to support sensitive categories like any statement of hers.
+
 ## Current architecture (checked live 2026-10-13/14, read-only)
 
 ### What Orion holds about Juniper
@@ -55,7 +66,7 @@ Concept induction is not the organ for this. Juniper's read is right and verifie
 | `chat_history_log` | 626 turns, 2026-07-24 to 2026-10-13. Everything before 10-04 was never distilled into memory. | `min/max(created_at)` |
 | Names in chat never distilled | "amanda" in 9 prompts (08-15 to 10-05), "teddy" 4, "addy" 3, "sister" 2, "rachel"/"armando"/"vincent" 1 each (10-05). Only 4 episode memories mention any of them. | `prompt ilike` counts |
 | `orion_worldview` `:LivedAnswer` (121) | `lived.her_team_unnamed`, `lived.who_matters`, `lived.known_only_through_juniper` hold the family and team in prose: Amanda (wife, DVT/PE in late August), Teddy (son, turned seven), Addy (daughter, broke her arm), sister, in-laws, boss Rachel, reports "Jay, Jay, Armando, Vincent". | Cypher on `orion_worldview` |
-| `services/orion-ai-town/cards/town_cards.yaml` (`juniper_feld`) | A rich authored bio: pronouns she/her, gender identity, AI Architect, wife and mother. Read only by the AI-town service. Every commit to the file is by the agent identity "Athena Orchestration", so whether the text is Juniper's own words is UNVERIFIED. | `git log` on the file |
+| `services/orion-ai-town/cards/town_cards.yaml` (`juniper_feld`) | A rich authored bio: pronouns she/her, gender identity, AI Architect, wife and mother. Read only by the AI-town service. The commits are by the agent identity "Athena Orchestration", but Juniper confirmed 2026-10-14 the card is about her and is her own words: first-party evidence. | `git log` on the file; her answer 6 |
 | biographical-curiosity-miss spec (2026-09-03) | Her promotion to Team Lead while staying AI/ML Architect / FDE. | spec text |
 
 ### Stakes policy is not holding
@@ -93,7 +104,7 @@ Population the reducer works over: 1,826 topic-foundry `:Entity` nodes (all `ent
 
 An open identity question already sits unanswered: `memory_tension_shadow` has 9 open `scope=juniper, answer_via=conversation` questions, including "Is the 'juniper' from our conversations the same as the 'juniper' already in my graph?". The referent spec deferred the producer that would ask them (its Non-goals: "The Stage 3 'Orion is asking' producer"). Nothing has picked it up: `orion_ask` holds 9 rows, all `source_kind=memory_confirmation`. `RESOLVABLE_KINDS` lists `open_question` (`confirmation.py:47`), but no code produces it.
 
-A contradiction the store cannot see today: `referent_alias` maps "home" to `place:slc` (grounded in `chat_prompt:fb42f555...`), while a confirmed memory says "Juniper corrected me that she lives in Ogden, Utah, not Chicago." Which is right is UNVERIFIED (Ogden is in the SLC area; "home" may describe a trip). A person model with a `home` attribute would surface this as one ask.
+A contradiction the store could not see: `referent_alias` maps "home" to `place:slc` (grounded in `chat_prompt:fb42f555...`), while a confirmed memory says "Juniper corrected me that she lives in Ogden, Utah, not Chicago." **Resolved by Juniper 2026-10-14: home is Ogden.** The person model seeds `home = Ogden, Utah` from her answer (`voice=ask_answer`), and the "home -> place:slc" alias is marked non-home in the cleanup review (SLC stays a place she has mentioned).
 
 ### What chat reads today, and the stubs Juniper remembers
 
@@ -141,9 +152,9 @@ Conclusion: the person model is built as a curiosity line plus deterministic red
 
 ## Missing questions
 
-- Is "home" Ogden or SLC? Live data contradicts itself. The first study of Juniper should surface it as an ask, not a guess.
+- ~~Is "home" Ogden or SLC?~~ Answered: Ogden. SLC is a place she has mentioned, not home.
 - Is "Jay, Jay" one person or two? Her own text is ambiguous. The linkage reducer must never merge people on a name alone; this is the test case.
-- Did Juniper write the AI-town card about herself? If yes, it is a high-quality source (one confirm ask); if not, it must not seed any sensitive attribute.
+- ~~Did Juniper write the AI-town card about herself?~~ Answered: yes, it is her own words (first-party).
 - Does any reader depend on concept induction's `juniper` subject? UNVERIFIED; check before retiring.
 
 ## Proposed schema / API changes
@@ -182,6 +193,8 @@ The existing `episode_memory.purpose='about_juniper'` stays as it is (renaming i
 | pronouns | high | no (but stated only: never guessed from a name) |
 
 Stakes is read from this table, never from the LLM. High stakes means `pending_confirmation` until confirmed; low stakes is `auto`, usable, and shown as "unconfirmed". For third parties (`applies_to=any_person`), every category is held at most to what the interlocutor said about them.
+
+"Sensitive" means **stated only, never inferred**. It does not mean "never asked about": Orion may ask about any category, sensitive or empty (Juniper, 2026-10-14: "Orion is welcome to ask anything about anything"). A sensitive value is admitted only from her answer or her own statement (chat prompt, ask answer, or her authored profile), never from Orion's words or a model's guess.
 
 ### 2. Tables (new manual migration `services/orion-sql-db/manual_migration_person_model_v1.sql`, with rollback file and `-- ORION-MIGRATION-REQUIRED-BY:` header)
 
@@ -273,27 +286,29 @@ A `pronouns` attribute on every person node, read by the card reducer and by eve
 
 **Blocking.** Topic-foundry entities are all `entity_type=unknown`, so kind cannot block them. Instead each candidate is scored only against person anchors (person referents and their aliases) that share a normalized name token or a first-token prefix. Concepts and non-person entities are never paired with each other by this reducer.
 
-**Features per pair:** exact normalized label; token containment ("juniper" in "juniper feld"); Jaro-Winkler; possessive or facet pattern (`<name>'s X`, `<name> affect`), which yields `facet_of`; a label matching a known prompt context key (`*_summary`, `*_context`, snake_case keys taken from `orion/cognition/prompts`), which yields `junk`; shared evidence refs; producer pair; for mentions, the extractor label ("family member" vs "coworker").
+**Features per pair (each one a log-weight, none a decider).** Exact normalized label; token containment ("juniper" in "juniper feld"); Jaro-Winkler; phonetic key agreement (jellyfish Metaphone: "Addy"/"Addie"); possessive or facet pattern (`<name>'s X`, `<name> affect`), which yields `facet_of`; a label matching a known prompt context key (`*_summary`, `*_context`, snake_case keys), which yields `junk`; shared evidence refs; producer pair; the extractor label for mentions; and **centered embedding similarity**.
 
-**Embedding feature (Juniper's suggestion), not in v1.** The approved referent spec's Non-goals ban vectors for identity, so this design does not quietly reverse that. The scorer has a reserved feature slot: if the eval shows string features miss real matches, a pinned general-purpose embedder (not SapBERT, which is biomedical) can be added as one weighted feature, never as a decider for persons. That needs Juniper to lift the referent-spec non-goal (open question 5).
+**Embedding feature (rev 3, Juniper's answer 5).** Raw bge cosine is anisotropic: unrelated text rests near 0.6 (PR #2647 measured it). The feature therefore uses mean-centered cosine (subtract the population mean vector, renormalize; All-but-the-Top, Mu & Viswanath 2018), binned into agree / weak / disagree like any other comparison. It is one feature. Its maximum weight is capped below the gap between the two thresholds, so an embedding alone can move a pair into the review band but can never push it over the auto-merge line. This lifts the approved referent spec's "no vectors for identity" non-goal only that far: a capped, centered feature inside a scorer, never a decider. If the vector host is unreachable, the feature reads "missing" (weight 0), not "disagree".
 
-**Decision rule**
-- `same_as` above the upper threshold: auto-merge only for non-person kinds, or for a person when one side is a referent and the other an exact normalized label from a different producer. "juniper feld" (surname extension) still goes to a confirm ask.
-- Between thresholds, or any other person pair: an ask (`source_kind=entity_merge`): "Is 'juniper feld' in my graph you?"
-- `facet_of`: an `about` edge from facet to person, no merge.
-- `junk`: flagged in `entity_merge_log`, excluded from person views; deletion stays a separate, approved step (AGENTS.md section 13).
-- Two people with the same name in one source ("Jay, Jay"): never merged, one ask.
+**Decision rule: Fellegi-Sunter with two thresholds (standard record-linkage practice).** Each pair's score is the sum of its feature log-weights (log2 m/u).
+- **Score >= upper threshold: auto-merge** (`same_as`), written to `entity_merge_log` with `decision=auto`, every feature weight in `features_json`, one-command unmerge. No ask.
+- **Score <= lower threshold: auto non-match.** Logged in the dry-run decisions, no ask.
+- **Between the thresholds: "possible match"**. Only these go to Juniper, as an `entity_merge` ask in Hub's "Orion is asking" section ("Is 'juniper feld' in my graph you?").
+- Facet and junk outcomes are pattern rules evaluated before scoring: `facet_of` gets an `about` edge (never a merge); `junk` is flagged and excluded from person views (deletion stays a separate approved step, AGENTS.md section 13).
+- Hard guard, independent of score: two names that occur side by side in one source ("Jay, Jay") are never auto-merged; that pair is forced into the review band.
+
+**Calibration.** Thresholds are set on the labeled one-time cleanup, not guessed: the upper threshold is the lowest score with auto-merge precision 1.0 on the labeled pairs, the lower is the highest score with zero labeled true matches at or below it, and the number of pairs left between them is the expected ask volume. The P2 dry run reports that number (PR report, "Linkage calibration"). If the band holds more than about 10 items, the features are wrong, not Juniper's patience.
 
 **Reversible and replayable.** The absorbed node is never deleted: it gets `merged_into=<survivor>` and a `same_as` edge; alias rows point readers at the survivor; attributes owned by the absorbed node move with a `merged_owner` event. `--unmerge <merge_id>` sets `reverted_at`, removes alias rows and the edge, and moves attributes back from their events. `merge_id = uuid5(survivor|absorbed|linkage_version)`, so a rerun is idempotent. Dry run by default, writing `/tmp/person-linkage/<run>/decisions.csv` and `progress.log` (backfill protocol, AGENTS.md section 14).
 
-**One-time cleanup** = the first live run over the 11 Juniper nodes, every person referent, and every topic-foundry entity that blocks against a person anchor. The same reducer then runs nightly on new nodes and new mentions.
+**One-time cleanup** = the first run over the 11 Juniper nodes, every person referent, every `referent_alias` row, and every topic-foundry entity that blocks against a person anchor. Rev 3 (Juniper's answer 3): the dry run is rendered as one self-contained HTML file, `docs/superpowers/evals/2026-10-14-person-cleanup-review.html`. Each proposed merge, facet link, junk flag, or non-home correction is a card with its evidence (node ids, names, linked memory snippets, per-feature scores), grouped **auto-merge / needs your call / auto-reject**, with approve / reject and a notes box per card and an "export decisions" button that downloads a CSV (no network). Her exported CSV becomes the labeled set that calibrates the thresholds, and applying any decision to a live store is a later, separate step. After that, the same reducer runs nightly on new nodes and new mentions, and only its review band reaches Hub.
 
 ### 6. Asks (extends `orion_ask`, no new table)
 
 New `source_kind` values: `person_attribute` (confirm, correct, or fill a gap) and `entity_merge` (same person?). Both join `RESOLVABLE_KINDS`, sharing the 5-open cap; each gets its own daily cap (default 2) so a study backfill cannot crowd out memory confirmations.
-- High-stakes proposals, contradictions (two active values where cardinality is one), and merges between thresholds become asks.
-- Gap asks only for categories the interlocutor has opted in to (open question 1). Sensitive categories never get gap asks: Orion confirms what was said, it does not probe.
-- Never ask the interlocutor to elaborate on a third party's health or private life; only confirm what she said.
+- High-stakes proposals, contradictions (two active values where cardinality is one), and merges in the possible-match band become asks. Auto-merges and auto non-matches never do.
+- Gap asks may cover any category, empty or sensitive, about her or about a third party (Juniper, 2026-10-14: "Orion is welcome to ask anything about anything"; "Orion can ask anything about anything"). The caps below still pace them.
+- Asking is not inferring: a sensitive value is stored only from her answer or her own statement.
 
 Answers go through the Hub `/resolve` route (as memory confirmations do): an `ask_answer` evidence row with her answer as the quote, state set to `confirmed`/`corrected`/`rejected`, `OrionAskAnsweredV1` published. The 9 open interlocutor-scope `memory_tension_shadow` questions route through the same producer (the Stage 3 producer the referent spec deferred).
 
@@ -351,14 +366,13 @@ Rules: no LLM in the reducer, so the same inputs produce the same card and versi
 
 - **Capability change:** Orion gets a structured, evidence-backed, correctable picture of Juniper and of each person who becomes important, a stated purpose, and a self card grounded in their own self-inquiry. Chat reads these instead of hand-written bullets. Orion can ask about gaps and contradictions.
 - **Data touched:** reads `chat_history_log`, `episode_memory` (+ evidence, referent), `referent_alias`, `orion_worldview` (`:LivedAnswer`, `:SelfDefinition`), `dreams`, `orion_day_letter`, `orion_substrate` nodes, AGENTS.md. Writes the new tables, `:PersonAttributeProposal` nodes, `orion_ask` rows, `referent_alias` rows from merges, and `merged_into`/`same_as`/`about` on substrate nodes. No deletions.
-- **Privacy boundary:** there is no boundary between Juniper and Orion (her stated policy). The boundary is outward, for **third parties** (family, coworkers):
+- **Privacy boundary:** there is no boundary between Juniper and Orion (her stated policy). Orion may ask her anything about anything, including about third parties (her answer 2). The one remaining boundary is outward, for **third parties** (family, coworkers):
   - Stored only as Juniper said it, with her quote; never inferred, never researched elsewhere.
-  - Sensitive facts about third parties (Amanda's DVT/PE) are stored as high stakes, visible to Juniper, used in chat with her, and marked `third_party=true, sensitive=true`, which excludes them from every egress that leaves Orion: ask-Claude, peer briefs, any outbound message other than to Juniper. A test per egress builder enforces it.
-  - No asks that probe a third party's health or private life.
+  - **Still assumed, needs her confirmation:** sensitive facts about third parties (Amanda's DVT/PE) are marked `third_party=true, sensitive=true`, which excludes them from every egress that leaves Orion: ask-Claude, peer briefs, any outbound message other than to Juniper. A test per egress builder enforces it. Her answer covered asking, not egress, so this rule is kept until she says otherwise (open question 1).
   - Juniper can remove any attribute or a whole person in Hub; the do-not-remint rule honors it.
 - **Trace proving it worked:** `person_mention` rows with `extractor_version`; `entity_merge_log` rows with `features_json`; `person_study_run` rows with accept/reject counts by reason; `person_attribute_event` rows; `orion_ask` rows with the new `source_kind`s and answers; chat log `identity_kernel_source=identity_card card_versions=...`; `orion:situation:latest` showing `people[]` with the same versions.
 - **Dangerous failure modes:**
-  - False person merge (the two Jays become one; Juniper absorbs "Juniper's taste"). Mitigation: no auto-merge of persons beyond exact cross-producer labels, facets never merge, auto-merge precision gate 1.0, one-command unmerge.
+  - False person merge (the two Jays become one; Juniper absorbs "Juniper's taste"). Mitigation: upper threshold set at auto-merge precision 1.0 on her labeled cleanup, no single feature (embedding included) can cross it, co-occurring names forced to review, facets never merge, one-command unmerge.
   - A wrong sensitive attribute presented as fact. Mitigation: stated-only rule enforced by the validator, never `auto`, eval hard gate of zero inferred-sensitive rows.
   - Auto attributes read as truth. Mitigation: "(unconfirmed)" and "as of" in the card; stakes from the category table.
   - Ask flood. Mitigation: shared open cap 5, per-kind daily caps, night-only backfill.
@@ -387,7 +401,7 @@ Rules: no LLM in the reducer, so the same inputs produce the same card and versi
 
 - A real concept-induction organ. It deserves its own design; this one neither builds it nor stretches the topic modeler or the concept-induction service into it.
 - No new service: everything lands in existing services and the shared `orion/` package.
-- No embeddings for identity in v1 (approved referent spec); the feature slot is reserved, off.
+- No embedding as a decider for identity. Rev 3 allows centered embedding similarity as one capped feature (Juniper's answer 5); it can never cross the auto-merge threshold alone.
 - No inference of spirituality, gender, sexuality, or health from anything but a stated quote.
 - No automatic deletion of junk or merged nodes.
 - No LLM in the extractor, the linkage reducer, or the card reducer.
@@ -400,8 +414,8 @@ Rules: no LLM in the reducer, so the same inputs produce the same card and versi
 1. **Pronoun patch:** rendered `stance_react.j2` contains "her own life"; a test fails on "their own life" next to "Juniper".
 2. **Modularity gate:** the "no 'juniper' literal in `orion/person_model/`" test passes, and a fixture person ("Amanda", pronouns unset) runs the full pipeline (extract, link, study validator, card) with zero code changes, rendering her name instead of a pronoun.
 3. **Extractor bake-off** recorded in the P2 PR: per-model person-mention F1 at precision >= 0.95 and CPU latency; the chosen model's revision pinned. Re-running extraction on the fixture yields byte-identical `person_mention` rows.
-4. **Linkage dry run** over live `orion_substrate`: the 4 Juniper-same nodes as `same_as` (one confirm ask for "juniper feld"), "juniper's taste"/"juniper affect" as `facet_of`, both `juniper_relationship_summary` forms as `junk`, topics untouched. Rerun gives an identical `decisions.csv`. Unmerge of one applied merge restores alias rows and edges exactly (Postgres + graph diff empty).
-5. **Merge eval:** auto-merge precision = 1.0 on the labeled pairs, recall reported; "Jay"/"Jay" never auto-merges.
+4. **Linkage dry run** over live `orion_substrate` (read only): the Juniper-same nodes as `same_as`, "juniper's taste"/"juniper affect" as `facet_of`, both `juniper_relationship_summary` forms as `junk`, topics untouched, "home -> place:slc" flagged non-home. Rerun gives an identical `decisions.csv`. Output is the HTML review file with three groups, and the PR reports how many cards land in each. Unmerge of one applied merge restores alias rows and edges exactly (Postgres + graph diff empty), tested on fixtures before any live apply.
+5. **Merge eval:** auto-merge precision = 1.0 on the labeled pairs, recall reported, review-band size reported; "Jay"/"Jay" never auto-merges; an embedding-only match never auto-merges.
 6. **First study of Juniper** over 2026-07-24 to 2026-10-04 proposes family (Amanda, Teddy, Addy, sister) and profession (Team Lead, AI/ML Architect / FDE), each with a verified quote from her prompt; zero sensitive attributes from Orion-authored sources. Carding Amanda queues her first study at the front.
 7. **Attribute eval:** accepted-attribute precision >= 0.9; inferred-sensitive count = 0 (hard gate).
 8. **Asks loop live:** a `person_attribute` ask appears at the top of Hub, Juniper answers, the attribute flips to `confirmed` with an `ask_answer` evidence row, and the next card version shows it (ask, event, and card row ids as evidence). The "home" contradiction arrives as one ask.
@@ -423,7 +437,7 @@ Each phase is one PR, independently useful, flags ON.
 
 1. **P0, trivial:** `stance_react.j2:131` "their own life" to "her own life", plus a template test.
 2. **P1, module skeleton + contracts:** `orion/person_model/` with `PersonRef`, `categories.yaml`, migration, schemas, store with do-not-remint, the category gate and the no-special-case gate. Ships together with P2's first writer so the tables are not inert.
-3. **P2, extractor + linkage:** pinned extractor with the bake-off result, `person_mention`, linkage reducer, merge log, unmerge, `entity_merge` asks, merge eval fixture. First live run = the one-time cleanup, after Juniper reviews the dry-run CSV.
+3. **P2, extractor + linkage:** pinned extractor with the bake-off result, `person_mention`, linkage reducer, merge log, unmerge, `entity_merge` asks, merge eval fixture. P2 ships dry run only: the one-time cleanup HTML review. The first live apply is a separate step after Juniper exports her decisions; her CSV calibrates the two thresholds.
 4. **P3, asks + Hub person panel:** `person_attribute` asks, `/resolve` routing to evidence, the panel (view, correct, remove), the pronoun ask as the first card, the tension-question producer.
 5. **P4, person-study curiosity line:** line registration, proposal nodes, validator, promotion table with Juniper as row 1, night backfill over undistilled chat, run rows in the panel. Attribute eval labeled here.
 6. **P5, card reducer:** self, purpose, person, relationship cards; versions; Hub diff.
@@ -432,9 +446,6 @@ Each phase is one PR, independently useful, flags ON.
 
 ## Open questions for Juniper
 
-1. Gap questions: may Orion ask about empty non-sensitive categories ("what are your goals this year?"), or only confirm and correct what you have already said?
-2. Third-party sensitive facts (Amanda's health): is "stored, used only in chat with you, never sent outside" the right line?
-3. One-time cleanup: review the dry-run CSV first, or answer merge asks in Hub as they come?
-4. Is home Ogden, with "home -> SLC" a mistake, or both?
-5. Embeddings for linkage: the approved referent spec bans vectors for identity. Keep that ban (this design's default), or allow one pinned embedding feature that can never decide a person merge on its own?
-6. Did you write the AI-town card about yourself (`town_cards.yaml`, `juniper_feld`)? If yes, it can seed attributes after one confirm; if not, it stays out.
+Rev 2's six questions are answered (see "Juniper's answers" under Requirements). One remains, because her answer to question 2 was about asking, not about sending:
+
+1. Third-party egress: should sensitive facts about other people (Amanda's health) stay inside Orion, never sent to ask-Claude, peer briefs, or any outbound message that is not to you? The design keeps this rule until you say otherwise.

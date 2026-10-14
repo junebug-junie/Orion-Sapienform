@@ -27,7 +27,7 @@ LEVEL_RE = re.compile(
     rf"(?P<pct>\d+)% of my last 7 days{_TREND}\) {_REF}$"
 )
 RATE_RE = re.compile(
-    r"^- (?P<label>.+?): (?P<score>\d+)/10 for me \(fired (?P<n>\d+) times? in the last hour; "
+    r"^- (?P<label>.+?): (?P<score>\d+)/10 for me \(went off (?P<n>\d+) times? in the last hour; "
     rf"more than in (?P<pct>\d+)% of my hours this week{_TREND}\) {_REF}$"
 )
 TAIL_OK = re.compile(
@@ -93,7 +93,11 @@ def check_block(text: str, rows: Sequence[Row], now: datetime) -> list[str]:
             continue
         node = PREFIX + m["name"]
         rows_n = _node_rows(rows, node, now)
-        row = _resolve(rows_n, m["ts"], now)
+        if kind == "rate":
+            # A trigger's ref names its newest ON row (the count is about the ON transitions).
+            row = _resolve([r for r in rows_n if r[1] > 0.0], m["ts"], now)
+        else:
+            row = _resolve(rows_n, m["ts"], now)
         if row is None:
             failures.append(f"{node}: ref {m['ts']} is not its newest persisted row")
             continue
@@ -104,10 +108,14 @@ def check_block(text: str, rows: Sequence[Row], now: datetime) -> list[str]:
                 failures.append(f"{node}: shows {shown}, row holds {row[1]}")
             pct = sum(1 for v in week if v < row[1]) / len(week)
         else:
-            fires = [t for t, v in rows_n if v > 0.0]
+            fires, prev = [], False
+            for t, v in rows_n:  # off->on transitions, re-derived here, not imported
+                if v > 0.0 and not prev:
+                    fires.append(t)
+                prev = v > 0.0
             n = sum(1 for t in fires if now - HOUR < t <= now)
             if n != int(m["n"]):
-                failures.append(f"{node}: shows {m['n']} firings, rows hold {n} in the last hour")
+                failures.append(f"{node}: shows {m['n']} onsets, rows hold {n} in the last hour")
             pct = _rate_percentile(fires, int(m["n"]), now)
         if int(math.floor(pct * 100.0)) != int(m["pct"]):
             failures.append(f"{node}: shows {m['pct']}%, rows give {pct * 100:.2f}%")

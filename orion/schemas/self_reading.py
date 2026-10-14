@@ -22,7 +22,8 @@ from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
 
 SelfReadingState = Literal["live", "no_reading", "stale", "insufficient_history"]
 SelfReadingsSkipReason = Literal[
-    "disabled", "fetch_failed", "fetch_timeout", "busy", "no_history", "all_calm", "render_failed",
+    "disabled", "fetch_failed", "fetch_timeout", "busy", "no_history", "all_calm", "calm_partial",
+    "render_failed",
 ]
 SELF_READINGS_MAX_CHARS = 600
 
@@ -34,7 +35,7 @@ class SelfReadingV1(BaseModel):
     source_id: str  # node:substrate.<name>
     label: str  # plain words
     value_kind: str  # level | count | trigger | binary (placeholder/bucket never get a reading)
-    # level/count: the stored reading. trigger/binary: how many times it fired in rate_window_sec.
+    # level/count: the stored reading. trigger/binary: how many times it turned on in rate_window_sec.
     value: float | None = None
     units: str = ""
     # Share of the last 7 days strictly below now, in the signal's BAD direction (the attention

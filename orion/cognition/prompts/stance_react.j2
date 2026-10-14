@@ -42,7 +42,7 @@ PRIOR SELF-SIGNAL (advisory — from Oríon's Mind; reconcile, do not obey)
   or the actual task (technical/agent/coding), those WIN. Never let it force chat framing.
 - It does not add output keys — still emit only valid ThoughtEventV1; do not invent extra top-level keys.
 - attention_frontier: {{ mind_coloring.attention_frontier }}
-{% if self_readings_label_estimates %}- (attention_frontier scores and uncertainty_summary numbers are Oríon's own estimates from Mind, not measurements)
+{% if self_readings_label_estimates %}- (attention_frontier scores{% if mind_coloring.uncertainty_summary %} and uncertainty_summary numbers{% endif %} are Oríon's own estimates from Mind, not measurements)
 {% endif %}- reflective_themes: {{ mind_coloring.reflective_themes }}
 - curiosity_threads: {{ mind_coloring.curiosity_threads }}
 - self_relevance: {{ mind_coloring.self_relevance }}

@@ -20,6 +20,10 @@ def _series(node: str, step_min: float, fn, *, now: datetime = NOW, days: float 
     return [(node, now - timedelta(minutes=step_min * k), float(fn(k))) for k in range(n, 0, -1)]
 
 
+# Six historical warming episodes (onsets) in the week, each 30 minutes of "on" rows.
+_CABINET_BURSTS = (300, 600, 900, 1200, 1500, 1800)
+
+
 def calm_rows(now: datetime = NOW) -> list[Row]:
     """Every node in its usual range; event-written nodes' last event long past."""
     rows: list[Row] = []
@@ -30,7 +34,7 @@ def calm_rows(now: datetime = NOW) -> list[Row]:
     rows += _series("node:substrate.route", 15, lambda k: 0.0 if k % 8 else 0.25 * (1 + k % 3), now=now)
     rows += _series("node:substrate.codebase", 15, lambda k: 0.0 if k % 9 else (k % 10) / 10.0, now=now)
     # cabinet: a trigger. A few historical bursts (k in a 12-reading run), zero otherwise.
-    rows += _series("node:substrate.cabinet", 5, lambda k: 0.7 if 600 <= k < 612 or 1500 <= k < 1508 else 0.0, now=now)
+    rows += _series("node:substrate.cabinet", 5, lambda k: 0.7 if any(b <= k < b + 6 for b in _CABINET_BURSTS) else 0.0, now=now)
     rows += _series("node:substrate.harness_closure", 60, lambda k: 0.65, now=now)
     # perception is the world, not the body: never a self-reading.
     rows += _series("node:substrate.perception", 5, lambda k: 0.0 if k % 2 else 0.9, now=now)
@@ -39,10 +43,14 @@ def calm_rows(now: datetime = NOW) -> list[Row]:
 
 def busy_body_rows(now: datetime = NOW) -> list[Row]:
     """Calm history, then: an execution spike 30 s ago, bus anomalies at their week's top, and
-    the cabinet warming alarm firing through the last hour."""
-    rows = calm_rows(now)
+    the cabinet warming alarm going off twice in the last hour (30 s cadence, like live)."""
+    hour_ago = now - timedelta(hours=1)
+    # The cabinet's real cadence in the last hour: a row every 30 s, "on" (>0) while warming.
+    rows = [r for r in calm_rows(now) if not (r[0] == "node:substrate.cabinet" and r[1] > hour_ago)]
     rows.append(("node:substrate.execution", now - timedelta(seconds=30), 1.0))
     rows.append(("node:substrate.bus_synaptic", now - timedelta(seconds=20), 0.2))
-    for m in range(55, 0, -5):
-        rows.append(("node:substrate.cabinet", now - timedelta(minutes=m, seconds=-1), 0.8))
+    for i in range(1, 120):  # 119 checks, two warming episodes -> 2 onsets, not 36 "firings"
+        t = hour_ago + timedelta(seconds=30 * i)
+        on = (10 * 60 <= 30 * i < 20 * 60) or (40 * 60 <= 30 * i < 44 * 60)
+        rows.append(("node:substrate.cabinet", t, 0.8 if on else 0.0))
     return rows

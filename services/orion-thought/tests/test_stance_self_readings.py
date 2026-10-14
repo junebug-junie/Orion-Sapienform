@@ -86,11 +86,23 @@ def test_reverie_prompt_byte_identical_to_main_when_off() -> None:
 
 
 def _strip_blocks(template: str) -> str:
-    """The template as if this patch's blocks had never been added (no git needed: CI is shallow)."""
+    """The template as if this patch's blocks had never been added (no git needed: CI is shallow).
+    Removes each ``{% if self_readings... %}`` block up to its MATCHING endif (blocks may nest)."""
     import re
 
-    return re.sub(r"\{% if self_readings(?:_label_estimates)? %\}.*?\{% endif %\}", "", template,
-                  flags=re.DOTALL)
+    tag = re.compile(r"\{%-?\s*(if|endif)\b[^%]*%\}")
+    opener = re.compile(r"\{% if self_readings(?:_label_estimates)? %\}")
+    out = template
+    while (m := opener.search(out)) is not None:
+        depth, pos = 0, m.start()
+        for t in tag.finditer(out, pos):
+            depth += 1 if t.group(1) == "if" else -1
+            if depth == 0:
+                out = out[: m.start()] + out[t.end():]
+                break
+        else:
+            raise AssertionError("unbalanced if/endif")
+    return out
 
 
 @pytest.mark.parametrize("ctx", [dict(_STANCE_BASE), dict(_STANCE_BASE, mind_coloring=_COLORING)])
@@ -182,6 +194,9 @@ async def test_slow_read_is_bounded(monkeypatch) -> None:
     t0 = asyncio.get_running_loop().time()
     block = await cue_mod.build_self_readings_block("c-1", purpose="stance", enabled=True, now=fx.NOW)
     assert block.skip_reason == "fetch_timeout" and asyncio.get_running_loop().time() - t0 < 0.8
+    # Drain the timed-out worker thread so it cannot touch the next test's cache.
+    assert await asyncio.to_thread(cue_mod._lock.acquire, True, 5.0)
+    cue_mod._lock.release()
 
 
 @pytest.mark.asyncio

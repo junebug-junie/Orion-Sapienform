@@ -82,9 +82,17 @@ def test_trigger_reads_as_a_rate_never_a_magnitude() -> None:
     cab = _by_id(block.readings)["node:substrate.cabinet"]
     assert cab.value_kind == "trigger"
     assert cab.rate_window_sec == 3600.0
-    assert cab.value == 11.0  # 11 firings in the last hour, not the 0.8 magnitude
+    assert cab.value == 2.0  # 2 onsets in the last hour: not 36 "on" checks, not the 0.8 magnitude
     assert cab.unusual
-    assert "fired 11 times in the last hour" in cab.plain
+    assert "went off 2 times in the last hour" in cab.plain
+    # The ref names the newest ON row, not the trailing 0.0 write.
+    assert cab.ref == "pe:cabinet@2026-10-14T03:13:30Z"
+
+
+def test_trigger_onsets_count_transitions_not_rows() -> None:
+    t = [NOW - timedelta(seconds=30 * i) for i in range(10, 0, -1)]
+    vals = [0, 1, 1, 1, 0, 0, 1, 1, 0, 1]
+    assert sr.trigger_onsets(list(zip(t, vals))) == [t[1], t[6], t[9]]
 
 
 def test_placeholder_never_rendered_as_a_measurement() -> None:
@@ -163,10 +171,28 @@ def test_unreadable_glossary_renders_nothing(monkeypatch) -> None:
 
 
 @pytest.mark.parametrize("bad", [float("nan"), float("inf")])
-def test_non_finite_rows_do_not_raise(bad) -> None:
+def test_non_finite_latest_value_is_no_reading_never_a_measurement(bad) -> None:
     rows = fx.busy_body_rows() + [("node:substrate.route", NOW - timedelta(seconds=3), bad)]
     block = sr.project_self_readings(_cache(rows), now=NOW)
-    assert block.skip_reason in (None, "all_calm")
+    route = _by_id(block.readings)["node:substrate.route"]
+    assert route.state == "no_reading" and route.value is None and not route.unusual
+    assert "inf" not in block.text and "nan" not in block.text
+    assert "route (no reading)" in block.text
+
+
+def test_calm_with_unread_signals_is_not_logged_all_calm() -> None:
+    rows = [r for r in fx.calm_rows() if r[0] in ("node:substrate.biometrics",)]
+    block = sr.project_self_readings(_cache(rows), now=NOW)
+    assert block.text == "" and block.skip_reason == "calm_partial"
+
+
+def test_trigger_with_too_little_history_is_neither_calm_nor_unreadable() -> None:
+    rows = [r for r in fx.busy_body_rows() if r[0] != "node:substrate.cabinet"]
+    rows += [("node:substrate.cabinet", NOW - timedelta(minutes=5 * k), 0.0) for k in range(1, 300)]
+    block = sr.project_self_readings(_cache(rows), now=NOW)
+    cab = _by_id(block.readings)["node:substrate.cabinet"]
+    assert cab.state == "insufficient_history" and not cab.unusual
+    assert "cabinet" not in block.text
 
 
 def test_event_signal_with_no_recent_event_is_not_called_unreadable() -> None:

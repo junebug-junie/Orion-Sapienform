@@ -53,6 +53,6 @@ def test_checker_has_teeth() -> None:
     rows = fx.busy_body_rows()
     text = _block(rows, fx.NOW).text
     assert check_block(text.replace("now 1.00", "now 0.40"), rows, fx.NOW)
-    assert check_block(text.replace("fired 11 times", "fired 12 times"), rows, fx.NOW)
+    assert check_block(text.replace("went off 2 times", "went off 3 times"), rows, fx.NOW)
     assert check_block(text.replace("03:29:30Z", "03:29:31Z"), rows, fx.NOW)
     assert check_block(text + "\n- invented: 7/10 for me", rows, fx.NOW)

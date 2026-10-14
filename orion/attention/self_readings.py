@@ -152,6 +152,26 @@ def _state(candidate: AttentionCandidateV1, band: str, reason: str) -> str:
     return "live"
 
 
+def trigger_onsets(history: list[tuple[datetime, float]]) -> list[datetime]:
+    """Each time the trigger turned ON (a >0 row after a 0 row, or the first row). The cabinet
+    writes a row every 30 s while warming, so counting >0 rows would count checks, not firings."""
+    out: list[datetime] = []
+    prev_on = False
+    for ts, v in history:
+        on = math.isfinite(v) and v > 0.0
+        if on and not prev_on:
+            out.append(ts)
+        prev_on = on
+    return out
+
+
+def _last_on_row(history: list[tuple[datetime, float]]) -> datetime | None:
+    for ts, v in reversed(history):
+        if math.isfinite(v) and v > 0.0:
+            return ts
+    return None
+
+
 def _trigger_candidate(
     node_id: str,
     label: str,
@@ -160,7 +180,7 @@ def _trigger_candidate(
     now: datetime,
     value_kind: str,
 ) -> tuple[AttentionCandidateV1, float]:
-    fires = [ts for ts, v in history if v > 0.0]
+    fires = trigger_onsets(history)
     mag, mid = chat_rate_reading(
         fires, now=now, window=TRIGGER_RATE_WINDOW, min_turns=TRIGGER_MIN_FIRES_7D
     )
@@ -214,14 +234,19 @@ def _reading(cache, node_id, mags, current, now) -> SelfReadingV1:
     value_kind, _polarity = node_prediction_error_semantics(node_id)
     is_rate = value_kind in _RATE_KINDS
     latest = current.get(node_id)
+    ref_at = None
     if is_rate:
-        candidate, value = _trigger_candidate(
-            node_id, label, cache.history(node_id), latest, now, str(value_kind)
-        )
+        history = cache.history(node_id)
+        candidate, value = _trigger_candidate(node_id, label, history, latest, now, str(value_kind))
         observed_at = latest[1] if latest else None
+        # The shown ref names the newest ON row (what the count is about), not the last 0 write.
+        ref_at = _last_on_row(history)
     else:
         entry = mags.get(node_id)
         magnitude, observed_at, mid = (entry if entry is not None else (None, None, None))
+        if magnitude is not None and not math.isfinite(float(magnitude.value)):
+            # A non-finite stored value is not a measurement: no reading, never "now inf".
+            magnitude, mid = None, None
         candidate = node_candidate(
             node_id=node_id, label=label, magnitude=magnitude, observed_at=observed_at,
             now=now, rank_percentile=mid,
@@ -232,12 +257,13 @@ def _reading(cache, node_id, mags, current, now) -> SelfReadingV1:
     pct = verdict.score if state == "live" else None
     rank = verdict.rank_score if verdict.rank_score is not None else candidate.rank_percentile
     name = short_name(node_id)
-    ref = f"pe:{name}@{_z(observed_at)}" if observed_at is not None else ""
+    ref_ts = ref_at if is_rate else observed_at
+    ref = f"pe:{name}@{_z(ref_ts)}" if ref_ts is not None else ""
     if observed_at is None:
         source_ref = ""
     elif is_rate:
         start = now - TRIGGER_RATE_WINDOW
-        source_ref = (f"{HISTORY_TABLE}:{node_id} value>0 observed_at in "
+        source_ref = (f"{HISTORY_TABLE}:{node_id} off->on transitions with observed_at in "
                       f"({start.isoformat()}, {now.isoformat()}]; last write {_aware(observed_at).isoformat()}")
     else:
         source_ref = f"{HISTORY_TABLE}:{node_id}@{_aware(observed_at).isoformat()}"
@@ -273,7 +299,7 @@ def plain_line(r: SelfReadingV1) -> str:
     trend = f", {r.trend}" if r.trend in ("rising", "settling") else ""
     if r.rate_window_sec is not None:
         n = int(r.value)
-        return (f"{r.label}: {r.score_0_10}/10 for me (fired {n} time{'s' if n != 1 else ''} in the "
+        return (f"{r.label}: {r.score_0_10}/10 for me (went off {n} time{'s' if n != 1 else ''} in the "
                 f"last hour; more than in {pct}% of my hours this week{trend}) [{r.ref}]")
     return (f"{r.label}: {r.score_0_10}/10 for me (now {r.value:.2f}; higher than "
             f"{pct}% of my last 7 days{trend}) [{r.ref}]")
@@ -294,13 +320,19 @@ def render_self_readings(
     )
     if not unusual:
         live = any(r.state == "live" for r in readings)
-        return SelfReadingsBlockV1(
-            rendered_at=now, readings=readings, skip_reason="all_calm" if live else "no_history"
-        )
+        # "all_calm" only when every signal was actually read (an event signal with no recent
+        # event counts as read): the skip log must not call a mostly-unread body calm.
+        unread = [r for r in readings if r.state != "live"
+                  and not (r.state == "stale" and _event_written(r.source_id))]
+        reason = "no_history" if not live else ("calm_partial" if unread else "all_calm")
+        return SelfReadingsBlockV1(rendered_at=now, readings=readings, skip_reason=reason)
     # An event-written signal past the staleness horizon had no event to measure (chat with no
     # turns): say so, not "can't read". A per-tick signal gone stale really is unread.
     quiet_events = [r for r in readings if r.state == "stale" and _event_written(r.source_id)]
-    unreadable = [r for r in readings if r.state != "live" and r not in quiet_events]
+    # A trigger with too little history has simply not gone off often enough to judge: left out
+    # of both lists (never called calm, not "unreadable" either).
+    unreadable = [r for r in readings if r.state != "live" and r not in quiet_events
+                  and not (r.rate_window_sec is not None and r.state == "insufficient_history")]
     tail = "Nothing else I can read is unusual right now."
     if quiet_events:
         tail += f" No recent events: {', '.join(short_name(r.source_id) for r in quiet_events)}."

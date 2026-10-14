@@ -329,7 +329,11 @@ profiles:
       - If OOM: lower ctx_size to 24576, then lower batch_size to 512.
 
   qwen36-35b-a3b-udq5km-2xv100-32gb-deep-cognition:
-    display_name: "Qwen 3.6 35B A3B – UD-Q5_K_M (llama.cpp, 2x V100 32GB, deep cognition)"
+    # display_name said "2x V100 32GB" until 2026-10-14; the lane has run on ONE card
+    # since 2026-09-21 (device_ids [0], CUDA_VISIBLE_DEVICES_OVERRIDE=0 live on circe).
+    # The "2xv100" in the profile KEY is kept: LLM_PROFILE_NAME / ATLAS_CHAT_PROFILE_NAME
+    # and the pool's announce matching reference it by name.
+    display_name: "Qwen 3.6 35B A3B – UD-Q5_K_M (llama.cpp, 1x V100 32GB, deep cognition)"
     task_type: chat
     backend: llamacpp
     model_id: "qwen36-35b-a3b-ud-q5_k_m"

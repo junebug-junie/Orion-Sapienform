@@ -947,6 +947,13 @@ def map_self_signal_episode(reason: str, up: dict[str, Any]) -> EvidenceMapping:
     pct = peak if peak is not None else open_pct
     if pct is None:
         return _no_evidence("self_signal_episode", reason, "open without percentile")
+    # What this signal tends to lead to (spec section E): the producer attaches it only when the
+    # persisted association's 95% interval excludes 1; the clause cites [assoc:<association_id>].
+    tends_to = up.get("tends_to")
+    if isinstance(tends_to, dict):
+        clause = str(tends_to.get("clause") or "").strip()
+        if clause:
+            evidence.append(clause[:300])
     severity, magnitude = banded(
         pct, SELF_SIGNAL_PCT_DEGRADED, SELF_SIGNAL_PCT_CRITICAL, SELF_SIGNAL_PCT_SATURATE
     )

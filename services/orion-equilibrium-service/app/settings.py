@@ -205,6 +205,21 @@ class Settings(BaseSettings):
     metacog_self_signal_episodes_silent_close_sec: float = Field(3600.0, alias="EQUILIBRIUM_METACOG_SELF_SIGNAL_EPISODES_SILENT_CLOSE_SEC")
     metacog_self_signal_episodes_max_opens_per_hour: int = Field(6, alias="EQUILIBRIUM_METACOG_SELF_SIGNAL_EPISODES_MAX_OPENS_PER_HOUR")
     metacog_self_signal_episodes_state_key: str = Field("equilibrium:self_signal_episodes:v1", alias="EQUILIBRIUM_METACOG_SELF_SIGNAL_EPISODES_STATE_KEY")
+    # Self-signal -> outcome association (spec 2026-10-07 section E; app/self_signal_outcome_rollup.py
+    # -> orion/attention/self_signal_outcomes.py, no LLM). Once per completed hour (+GRACE_SEC):
+    # each body signal's hour as high/normal/unknown + that hour's outcome counts (failed harness
+    # turns, repaired replies, RPC timeouts) -> self_signal_hour; then per (signal, outcome) the
+    # next-hour rate when high vs normal with a 95% interval -> self_signal_outcome_association.
+    # An episode open row carries the signal's association only when both sides have MIN_HOURS
+    # hours and the interval excludes 1. Rides the self_signal_episode poll loop and its PE cache;
+    # reads harness_turn_trace / transport_baseline_hourly / self_signal_hour read-only over
+    # EQUILIBRIUM_METACOG_GENERATIVE_POSTGRES_URI. Deploy orion-sql-writer FIRST (it creates the
+    # tables). Kill switch: false = no rows published, episode open rows exactly as before.
+    self_signal_outcome_association_enabled: bool = Field(
+        True, alias="EQUILIBRIUM_SELF_SIGNAL_OUTCOME_ASSOCIATION_ENABLED"
+    )
+    self_signal_outcome_min_hours: int = Field(24, ge=1, alias="EQUILIBRIUM_SELF_SIGNAL_OUTCOME_MIN_HOURS")
+    self_signal_outcome_grace_sec: float = Field(600.0, ge=0.0, alias="EQUILIBRIUM_SELF_SIGNAL_OUTCOME_GRACE_SEC")
     # Leave windows led by a task_execution channel (glossary category) to the
     # chat_turn trigger while a harness turn is active. Needs the episode gate.
     metacog_telemetry_anomaly_turn_suppress_enable: bool = Field(
@@ -440,6 +455,13 @@ class Settings(BaseSettings):
     channel_metacog_trigger: str = Field("orion:equilibrium:metacog:trigger", alias="CHANNEL_EQUILIBRIUM_METACOG_TRIGGER")
     channel_transport_baseline_hourly: str = Field(
         "orion:equilibrium:transport_baseline:hourly", alias="CHANNEL_TRANSPORT_BASELINE_HOURLY"
+    )
+    channel_self_signal_hour: str = Field(
+        "orion:equilibrium:self_signal:hour", alias="CHANNEL_EQUILIBRIUM_SELF_SIGNAL_HOUR"
+    )
+    channel_self_signal_outcome_association: str = Field(
+        "orion:equilibrium:self_signal:outcome_association",
+        alias="CHANNEL_EQUILIBRIUM_SELF_SIGNAL_OUTCOME_ASSOCIATION",
     )
     channel_collapse_mirror_user_event: str = Field("orion:collapse:intake", alias="CHANNEL_COLLAPSE_MIRROR_USER_EVENT")
     channel_repair_pressure_appraisal: str = Field(

@@ -62,6 +62,7 @@ from orion.schemas.telemetry.field_channel_corpus import FieldChannelCorpusRowV1
 from orion.schemas.telemetry.field_channel_anomaly_score import FieldChannelAnomalyScoreV1
 from orion.schemas.telemetry.mood_arc import MoodArcCorpusRowV1, MoodArcEncoderManifestV1
 from orion.schemas.telemetry.transport_baseline_hourly import TransportBaselineHourlyV1
+from orion.schemas.self_signal_outcome import SelfSignalOutcomeAssociationV1
 
 
 class Cadence(str, Enum):
@@ -816,6 +817,99 @@ REGISTRY: tuple[InnerStateSignal, ...] = (
             "2026-10-11..13, vs 486 on 2026-10-08); 0/NULL on rows before "
             "2026-10-13 even where refusals happened (then counted in "
             "success_count)."
+        ),
+    ),
+    InnerStateSignal(
+        signal_id="self_signal_outcome_association.v1",
+        schema=SelfSignalOutcomeAssociationV1,
+        producer_service="orion-equilibrium-service",
+        cadence=Cadence.EVENT_GATED,
+        composition_status=CompositionStatus.SHADOW,
+        shadow_reason=(
+            "Not composed into self_state.v1 (that producer was removed in PR "
+            "#1266). Reaches Orion only as the self-reading 'tends to' clause and "
+            "the self_signal_episode open row's evidence line."
+        ),
+        cognition_consumers=(
+            "orion.attention.self_readings:render_self_readings",
+            "orion.metacog.evidence_map:map_self_signal_episode",
+        ),
+        # Semantics (2026-10-14), read from code: orion/attention/self_signal_outcomes.py
+        # associate(): hour H's signal condition (classify_signal_hours) paired with hour H+1's
+        # outcome; rates are next hours with >= 1 event over hours with exposure.
+        semantics=(
+            (
+                "ratio",
+                MetricSemantics(
+                    value_kind="level",
+                    rest=(
+                        "1.0 = the next hour's outcome is as likely after a high hour "
+                        "as after a normal one (no association). Only shown when the "
+                        "95% interval [ci_low, ci_high] excludes 1 and both sides have "
+                        ">= min_hours hours."
+                    ),
+                    sparsity="event_gated",
+                    absent_means=(
+                        "None = no normal-hour events to divide by (the clause then "
+                        "says 'more often' with both rates), or no hours at all. Never "
+                        "treated as 1."
+                    ),
+                    prompt_sites=(
+                        "orion.attention.self_readings:render_self_readings",
+                        "orion.metacog.evidence_map:map_self_signal_episode",
+                    ),
+                    rest_range=(1.0, 1.0),
+                ),
+            ),
+            (
+                "rate_high",
+                MetricSemantics(
+                    value_kind="level",
+                    rest=(
+                        "share of high hours whose next hour had >= 1 outcome event "
+                        "(0-1); no designed rest -- compare with rate_normal."
+                    ),
+                    sparsity="event_gated",
+                    absent_means="None = no high hour with an exposed next hour yet.",
+                    polarity="higher_is_worse",
+                    prompt_sites=(
+                        "orion.attention.self_readings:render_self_readings",
+                        "orion.metacog.evidence_map:map_self_signal_episode",
+                    ),
+                ),
+            ),
+            (
+                "rate_normal",
+                MetricSemantics(
+                    value_kind="level",
+                    rest=(
+                        "share of normal hours whose next hour had >= 1 outcome event "
+                        "(0-1): the base rate the high hours are compared against."
+                    ),
+                    sparsity="event_gated",
+                    absent_means="None = no normal hour with an exposed next hour yet.",
+                    polarity="higher_is_worse",
+                    prompt_sites=(
+                        "orion.attention.self_readings:render_self_readings",
+                        "orion.metacog.evidence_map:map_self_signal_episode",
+                    ),
+                ),
+            ),
+        ),
+        notes=(
+            "Self-calibration spec section E ('what it tends to lead to'). Hourly "
+            "rollup in orion-equilibrium-service (app/self_signal_outcome_rollup.py) "
+            "over the pure reducer orion/attention/self_signal_outcomes.py; durable "
+            "hour rows in self_signal_hour (SelfSignalHourV1) let it accumulate past "
+            "the 7-day PE prune. Outcomes, each traced to its producer: turn_failed = "
+            "harness run compliance_verdict 'failed' (orion/harness/runner.py motor "
+            "failed); response_repair = run_artifact response_repair_ran "
+            "(orion/harness/finalize.py needs_response_repair); rpc_timeout = "
+            "transport_baseline_hourly.timeout_count (gpu_pool_wait keys excluded). "
+            "Circular pairs (signal computed from, or sharing a short upstream with, "
+            "the outcome) are verdict excluded_circular and never rendered: "
+            "execution x turn_failed / response_repair, chat x response_repair, "
+            "bus_synaptic x rpc_timeout (CIRCULAR_PAIRS)."
         ),
     ),
     InnerStateSignal(

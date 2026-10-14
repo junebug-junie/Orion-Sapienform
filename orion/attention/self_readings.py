@@ -28,6 +28,11 @@ Rendering (``render_self_readings``): only unusual readings get a line, at most
 chaos"); no reading, stale, or too-little-history signals never render as calm -- when a block is
 shown they are named as unreadable. Every line carries ``[pe:<name>@<observed_at>]`` naming the
 persisted row (``substrate_node_prediction_error_history`` primary key) its numbers came from.
+
+What it tends to lead to (spec section E): when the caller passes the signal's renderable
+``self_signal_outcome_association`` row (``orion.attention.self_signal_outcomes.index_by_signal``:
+min n met, 95% interval excludes 1), the line gets "; when this is high, my next hour had ... Nx as
+often (...) [assoc:<association_id>]". The clause is dropped before a whole reading would be.
 """
 
 from __future__ import annotations
@@ -35,7 +40,7 @@ from __future__ import annotations
 import logging
 import math
 from datetime import datetime, timedelta, timezone
-from typing import Iterable
+from typing import Iterable, Mapping
 
 from orion.attention.pe_history_cache import NodePeHistoryCache
 from orion.attention.world_first import (
@@ -209,9 +214,17 @@ def _trigger_candidate(
 
 
 def build_self_readings(
-    cache: NodePeHistoryCache, *, now: datetime, nodes: Iterable[str] | None = None
+    cache: NodePeHistoryCache,
+    *,
+    now: datetime,
+    nodes: Iterable[str] | None = None,
+    associations: Mapping[str, object] | None = None,
 ) -> list[SelfReadingV1]:
-    """One reading per prompt-reaching body node. Never raises for a single bad node."""
+    """One reading per prompt-reaching body node. Never raises for a single bad node.
+
+    ``associations`` (signal_id -> ``SelfSignalOutcomeAssociationV1``, from
+    ``orion.attention.self_signal_outcomes.index_by_signal``): only renderable rows (a clause, so
+    min n met and the interval excludes 1). None = the readings are exactly as before."""
     now = _aware(now)
     node_ids = list(nodes) if nodes is not None else prompt_reaching_nodes()
     mags = cache.magnitudes(now=now)
@@ -223,7 +236,16 @@ def build_self_readings(
             # placeholder / bucket (or unknown): never rendered as a measurement.
             continue
         try:
-            readings.append(_reading(cache, node_id, mags, current, now))
+            reading = _reading(cache, node_id, mags, current, now)
+            assoc = (associations or {}).get(node_id)
+            clause = str(getattr(assoc, "clause", "") or "")
+            if clause:
+                reading = reading.model_copy(update={
+                    "tends_to": clause,
+                    "outcome_association_id": str(getattr(assoc, "association_id", "") or ""),
+                })
+                reading = reading.model_copy(update={"plain": plain_line(reading)})
+            readings.append(reading)
         except Exception as exc:  # noqa: BLE001 -- one broken node must not hide the others
             logger.warning("self_reading_failed node_id=%s err=%s", node_id, exc)
     return readings
@@ -291,8 +313,7 @@ def _reading(cache, node_id, mags, current, now) -> SelfReadingV1:
     return reading.model_copy(update={"plain": plain_line(reading)})
 
 
-def plain_line(r: SelfReadingV1) -> str:
-    """One deterministic sentence for a reading. "" for anything not live."""
+def _base_line(r: SelfReadingV1) -> str:
     if r.state != "live" or r.percentile_now is None or r.value is None:
         return ""
     pct = int(math.floor(r.percentile_now * 100.0))
@@ -303,6 +324,15 @@ def plain_line(r: SelfReadingV1) -> str:
                 f"last hour; more than in {pct}% of my hours this week{trend}) [{r.ref}]")
     return (f"{r.label}: {r.score_0_10}/10 for me (now {r.value:.2f}; higher than "
             f"{pct}% of my last 7 days{trend}) [{r.ref}]")
+
+
+def plain_line(r: SelfReadingV1) -> str:
+    """One deterministic sentence for a reading. "" for anything not live. A reading with a
+    ``tends_to`` clause gets it appended after the reading's own ref."""
+    base = _base_line(r)
+    if base and r.tends_to:
+        return f"{base}; {r.tends_to}"
+    return base
 
 
 def render_self_readings(
@@ -340,13 +370,14 @@ def render_self_readings(
         names = ", ".join(f"{short_name(r.source_id)} ({_STATE_WORDS[r.state]})" for r in unreadable)
         tail += f" Can't read right now: {names}."
     lines: list[str] = []
-    shown: list[str] = []
+    shown: list[SelfReadingV1] = []
     for r in unusual[: max(0, max_shown)]:
-        candidate = "\n".join([*lines, f"- {r.plain}", tail])
+        # Selection uses the reading alone: a "tends to" clause never costs Orion a reading.
+        candidate = "\n".join([*lines, f"- {_base_line(r)}", tail])
         if len(candidate) > max_chars:
             break
-        lines.append(f"- {r.plain}")
-        shown.append(r.source_id)
+        lines.append(f"- {_base_line(r)}")
+        shown.append(r)
     dropped = len(unusual) - len(shown)
     if not lines:
         # Even one line does not fit: say nothing rather than a cut sentence.
@@ -354,19 +385,30 @@ def render_self_readings(
                                    skip_reason="render_failed")
     if dropped:
         tail = f"{dropped} more unusual signal{'s' if dropped != 1 else ''} not shown. " + tail
+    # Then each shown reading's clause, in rank order, while the whole block still fits.
+    for i, r in enumerate(shown):
+        if r.tends_to and r.plain != _base_line(r):
+            trial = [*lines[:i], f"- {r.plain}", *lines[i + 1:]]
+            if len("\n".join([*trial, tail])) <= max_chars:
+                lines = trial
     text = "\n".join([*lines, tail])
     if len(text) > max_chars:
         text = "\n".join(lines)
     return SelfReadingsBlockV1(
-        rendered_at=now, text=text, readings=readings, shown=shown, lines_dropped=dropped
+        rendered_at=now, text=text, readings=readings, shown=[r.source_id for r in shown],
+        lines_dropped=dropped,
     )
 
 
-def project_self_readings(cache: NodePeHistoryCache, *, now: datetime) -> SelfReadingsBlockV1:
+def project_self_readings(
+    cache: NodePeHistoryCache, *, now: datetime, associations: Mapping[str, object] | None = None
+) -> SelfReadingsBlockV1:
     """build + render. Never raises."""
     now = _aware(now)
     try:
-        return render_self_readings(build_self_readings(cache, now=now), now=now)
+        return render_self_readings(
+            build_self_readings(cache, now=now, associations=associations), now=now
+        )
     except Exception as exc:  # noqa: BLE001
         logger.warning("self_readings_render_failed err=%s: %s", type(exc).__name__, exc)
         return SelfReadingsBlockV1(rendered_at=now, skip_reason="render_failed")

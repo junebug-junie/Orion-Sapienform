@@ -102,6 +102,11 @@ class NodePeHistoryCache:
             if window
         }
 
+    def earliest(self) -> datetime | None:
+        """Oldest reading held across every node (no copies); None when empty."""
+        firsts = [w[0][0] for w in self._windows.values() if w]
+        return min(firsts) if firsts else None
+
     def history(self, node_id: str) -> list[tuple[datetime, float]]:
         """A copy of one node's 7-day window, oldest first (empty when unknown)."""
         return list(self._windows.get(node_id, ()))

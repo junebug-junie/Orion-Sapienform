@@ -23,7 +23,7 @@ import json
 import logging
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Iterable, Literal
+from typing import Any, Iterable, Literal, Mapping
 
 from orion.attention.world_first import (
     SUBSTRATE_NODE_PREFIX,
@@ -96,9 +96,19 @@ def observe_signals(
 
 
 def build_self_signal_episode_trigger(
-    event: EpisodeEvent, *, zen_state: str, pressure: float, recall_enabled: bool
+    event: EpisodeEvent,
+    *,
+    zen_state: str,
+    pressure: float,
+    recall_enabled: bool,
+    tends_to: dict[str, Any] | None = None,
 ) -> MetacogTriggerV1:
+    """``tends_to`` (open rows only): the signal's renderable outcome association
+    (``self_signal_outcome_rollup.association_payload``), cited by its persisted
+    association_id. Absent -> the row is exactly as before."""
     up = episode_upstream(event)
+    if tends_to and event.phase == "open":
+        up["tends_to"] = dict(tends_to)
     refs = up.get("evidence_refs") or []
     return MetacogTriggerV1(
         trigger_kind=TRIGGER_KIND,
@@ -186,6 +196,7 @@ class SelfSignalEpisodeGate:
         pressure: float,
         recall_enabled: bool,
         history_ok: bool = True,
+        tends_to: Mapping[str, dict[str, Any]] | None = None,
     ) -> list[Outgoing]:
         """Fold one poll. Returns the rows to publish now (retried closes
         first); call ``mark_published`` for each one that really went out.
@@ -253,6 +264,7 @@ class SelfSignalEpisodeGate:
                                 zen_state=zen_state,
                                 pressure=pressure,
                                 recall_enabled=recall_enabled,
+                                tends_to=(tends_to or {}).get(obs.signal_id),
                             ),
                         )
                     )

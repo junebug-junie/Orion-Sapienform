@@ -160,8 +160,10 @@ def test_reverie_coalition_branch_renders_block_concern_branch_never() -> None:
 
 # --- the cue: fail-open, bounded --------------------------------------------------------------
 
-def _fresh_cache(monkeypatch):
+def _fresh_cache(monkeypatch, associations=None):
     monkeypatch.setattr(cue_mod, "_cache", None)
+    monkeypatch.setattr(cue_mod, "_assoc", None)
+    monkeypatch.setattr(cue_mod, "fetch_associations", lambda since: list(associations or []))
 
 
 @pytest.mark.asyncio
@@ -257,3 +259,110 @@ def test_importing_the_cue_does_not_load_substrate() -> None:
     result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, env=env,
                             cwd=str(service_root))
     assert result.returncode == 0, result.stderr
+
+
+# --- "tends to" clauses (spec section E) ---------------------------------------------------------
+
+_ASSOC_ROW = {
+    "association_id": "ssa-0123456789", "computed_at": fx.NOW, "signal_id": "node:substrate.execution",
+    "outcome": "rpc_timeout", "window_start": None, "window_end": None, "n_high": 42, "events_high": 13,
+    "n_normal": 120, "events_normal": 12, "rate_high": 13 / 42, "rate_normal": 0.1, "ratio": 3.0952,
+    "ci_low": 1.6, "ci_high": 6.0, "ci_method": "katz_log_rr_95", "min_hours": 24, "verdict": "tends_more",
+    "excluded_reason": "",
+    "clause": ("when this is high, my next hour had an RPC timeout 3.1x as often at equal activity (31% of 42 high hours "
+               "vs 10% of 120 normal) [assoc:ssa-0123456789]"),
+}
+
+
+async def _block_with(monkeypatch, *, enabled: bool, assoc_rows):
+    _fresh_cache(monkeypatch, assoc_rows)
+    if enabled:
+        cue_mod.refresh_associations(fx.NOW)  # what startup warm / the background refresh do
+    rows = [r for r in fx.busy_body_rows() if r[0] != "node:substrate.cabinet"]  # two readings: room
+    monkeypatch.setattr(cue_mod, "fetch_since", lambda since: [r for r in rows if r[1] >= since])
+    monkeypatch.setattr(cue_mod.settings, "self_readings_fetch_timeout_sec", 5.0)
+    monkeypatch.setattr(cue_mod.settings, "self_signal_outcome_association_enabled", enabled)
+    return await cue_mod.build_self_readings_block("c-1", purpose="stance", enabled=True, now=fx.NOW)
+
+
+@pytest.mark.asyncio
+async def test_flag_on_renders_the_cited_clause(monkeypatch) -> None:
+    block = await _block_with(monkeypatch, enabled=True, assoc_rows=[_ASSOC_ROW])
+    assert "[pe:execution@2026-10-14T03:29:30Z]; when this is high" in block.text
+    assert "[assoc:ssa-0123456789]" in block.text
+
+
+@pytest.mark.asyncio
+async def test_flag_off_is_byte_identical_and_never_reads_associations(monkeypatch) -> None:
+    base = await _block_with(monkeypatch, enabled=True, assoc_rows=[])
+    off = await _block_with(monkeypatch, enabled=False, assoc_rows=[_ASSOC_ROW])
+    assert off.text == base.text and "when this is high" not in off.text
+    monkeypatch.setattr(cue_mod.settings, "self_signal_outcome_association_enabled", False)
+    calls = []
+    monkeypatch.setattr(cue_mod, "_assoc", None)
+    monkeypatch.setattr(cue_mod, "fetch_associations", lambda since: calls.append(since) or [_ASSOC_ROW])
+    assert cue_mod._associations(fx.NOW) is None
+    assert cue_mod._assoc is None and calls == []  # flag off never reads, not even in background
+
+
+@pytest.mark.asyncio
+async def test_unreadable_associations_leave_readings_unchanged(monkeypatch) -> None:
+    base = await _block_with(monkeypatch, enabled=True, assoc_rows=[])
+
+    def boom(since):
+        raise RuntimeError("no such table: self_signal_outcome_association")
+
+    _fresh_cache(monkeypatch)
+    monkeypatch.setattr(cue_mod, "fetch_associations", boom)
+    cue_mod.refresh_associations(fx.NOW)  # never raises
+    rows = [r for r in fx.busy_body_rows() if r[0] != "node:substrate.cabinet"]
+    monkeypatch.setattr(cue_mod, "fetch_since", lambda since: [r for r in rows if r[1] >= since])
+    block = await cue_mod.build_self_readings_block("c-1", purpose="stance", enabled=True, now=fx.NOW)
+    assert block.text == base.text
+
+
+@pytest.mark.asyncio
+async def test_a_row_without_a_clause_or_malformed_renders_nothing_extra(monkeypatch) -> None:
+    base = await _block_with(monkeypatch, enabled=True, assoc_rows=[])
+    quiet = dict(_ASSOC_ROW, verdict="below_min_n", clause="")
+    broken = dict(_ASSOC_ROW, association_id="ssa-1111111111", verdict="nonsense")
+    block = await _block_with(monkeypatch, enabled=True, assoc_rows=[quiet, broken])
+    assert block.text == base.text
+
+
+def test_association_query_is_fresh_bounded_and_newest_per_pair() -> None:
+    sql = cue_mod._ASSOC_SQL
+    assert "DISTINCT ON (signal_id, outcome)" in sql and "computed_at >= :since" in sql
+    assert "ORDER BY signal_id, outcome, computed_at DESC" in sql and "LIMIT 200" in sql
+    assert cue_mod.ASSOCIATION_MAX_AGE.total_seconds() == 3 * 3600
+
+
+def test_flag_ships_on() -> None:
+    from app.settings import ThoughtSettings
+
+    assert ThoughtSettings(_env_file=None).self_signal_outcome_association_enabled is True
+    env = (Path(__file__).resolve().parents[1] / ".env_example").read_text()
+    assert "SELF_SIGNAL_OUTCOME_ASSOCIATION_ENABLED=true" in env
+
+
+def test_a_stale_index_never_reads_on_the_callers_thread(monkeypatch) -> None:
+    """The association query runs in a background thread: a slow table cannot cost a turn its
+    self-readings (0.5 s budget) or hold the history lock."""
+    import threading
+    import time
+
+    _fresh_cache(monkeypatch)
+    monkeypatch.setattr(cue_mod.settings, "self_signal_outcome_association_enabled", True)
+    release = threading.Event()
+    monkeypatch.setattr(cue_mod, "fetch_associations", lambda since: release.wait(5) and [_ASSOC_ROW])
+    t0 = time.perf_counter()
+    assert cue_mod._associations(fx.NOW) is None  # nothing loaded yet: no clause, no wait
+    assert cue_mod._associations(fx.NOW) is None  # a refresh is in flight: not a second one
+    assert time.perf_counter() - t0 < 0.2
+    release.set()
+    for _ in range(100):
+        if cue_mod._assoc is not None:
+            break
+        time.sleep(0.02)
+    got = cue_mod._associations(fx.NOW)
+    assert got is not None and got["node:substrate.execution"].association_id == "ssa-0123456789"

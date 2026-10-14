@@ -1,17 +1,21 @@
 {
   "_comment": "Definition lock for scripts/check_definition_drift.py. Generated, never hand-edited. Regenerate with --update; the resulting diff IS the definition-change alert. Unlike the *_baseline.json ratchets this tracks current truth in both directions -- a definition change is an event, not a defect.",
-  "metric_count": 734,
+  "metric_count": 745,
   "_last_change": {
-    "change_count": 7,
-    "high_severity_count": 7,
+    "change_count": 11,
+    "high_severity_count": 0,
     "changes": [
-      "high   routing_changed metric://field_channel/orion-field-digester/node:substrate.bus_synaptic.prediction_error (prompt_sites: ['services.ori\u2026 -> ['orion.attention.self_readings:render_self_readings', 'ser\u2026\u2026)",
-      "high   routing_changed metric://field_channel/orion-substrate-runtime/node:substrate.biometrics.prediction_error (prompt_sites: ['services.ori\u2026 -> ['orion.attention.self_readings:render_self_readings', 'ser\u2026\u2026)",
-      "high   routing_changed metric://field_channel/orion-substrate-runtime/node:substrate.cabinet.prediction_error (prompt_sites: - -> ['orion.attention.self_readings:render_self_readings'])",
-      "high   routing_changed metric://field_channel/orion-substrate-runtime/node:substrate.chat.prediction_error (prompt_sites: - -> ['orion.attention.self_readings:render_self_readings'])",
-      "high   routing_changed metric://field_channel/orion-substrate-runtime/node:substrate.codebase.prediction_error (prompt_sites: - -> ['orion.attention.self_readings:render_self_readings'])",
-      "high   routing_changed metric://field_channel/orion-substrate-runtime/node:substrate.execution.prediction_error (prompt_sites: ['services.ori\u2026 -> ['orion.attention.self_readings:render_self_readings', 'ser\u2026\u2026)",
-      "high   routing_changed metric://field_channel/orion-substrate-runtime/node:substrate.route.prediction_error (prompt_sites: - -> ['orion.attention.self_readings:render_self_readings'])"
+      "medium added metric://bus_channel/orion-equilibrium-service/orion:equilibrium:self_signal:hour",
+      "medium added metric://bus_channel/orion-equilibrium-service/orion:equilibrium:self_signal:outcome_association",
+      "medium added metric://inner_state/orion-equilibrium-service/self_signal_outcome_association.v1",
+      "medium added metric://inner_state/orion-equilibrium-service/self_signal_outcome_association.v1#ci_high",
+      "medium added metric://inner_state/orion-equilibrium-service/self_signal_outcome_association.v1#ci_low",
+      "medium added metric://inner_state/orion-equilibrium-service/self_signal_outcome_association.v1#ci_z",
+      "medium added metric://inner_state/orion-equilibrium-service/self_signal_outcome_association.v1#min_history_hours",
+      "medium added metric://inner_state/orion-equilibrium-service/self_signal_outcome_association.v1#rate_high",
+      "medium added metric://inner_state/orion-equilibrium-service/self_signal_outcome_association.v1#rate_normal",
+      "medium added metric://inner_state/orion-equilibrium-service/self_signal_outcome_association.v1#ratio",
+      "medium added metric://inner_state/orion-equilibrium-service/self_signal_outcome_association.v1#se_inflation"
     ]
   },
   "definitions": {
@@ -1489,6 +1493,28 @@
       "declared_consumers": [
         "orion-actions",
         "orion-cortex-orch",
+        "orion-sql-writer"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-equilibrium-service/orion:equilibrium:self_signal:hour": {
+      "schema_id": "SelfSignalHourV1",
+      "all_producers": [
+        "orion-equilibrium-service"
+      ],
+      "declared_consumers": [
+        "orion-sql-writer"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-equilibrium-service/orion:equilibrium:self_signal:outcome_association": {
+      "schema_id": "SelfSignalOutcomeAssociationV1",
+      "all_producers": [
+        "orion-equilibrium-service"
+      ],
+      "declared_consumers": [
         "orion-sql-writer"
       ],
       "notes": "kind=event stability=experimental",
@@ -4770,6 +4796,141 @@
         "metric://inner_state/orion-equilibrium-service/equilibrium_snapshot.v1"
       ],
       "notes": "scalar field on EquilibriumSnapshotV1",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-equilibrium-service/self_signal_outcome_association.v1": {
+      "schema_id": "SelfSignalOutcomeAssociationV1",
+      "declared_consumers": [
+        "orion.attention.self_readings:render_self_readings",
+        "orion.metacog.evidence_map:map_self_signal_episode"
+      ],
+      "notes": "cadence=event_gated composition=shadow_declared_not_composed",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-equilibrium-service/self_signal_outcome_association.v1#ci_high": {
+      "schema_id": "SelfSignalOutcomeAssociationV1",
+      "declared_consumers": [
+        "orion.attention.self_readings:render_self_readings",
+        "orion.metacog.evidence_map:map_self_signal_episode"
+      ],
+      "upstream": [
+        "metric://inner_state/orion-equilibrium-service/self_signal_outcome_association.v1"
+      ],
+      "notes": "scalar field on SelfSignalOutcomeAssociationV1",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-equilibrium-service/self_signal_outcome_association.v1#ci_low": {
+      "schema_id": "SelfSignalOutcomeAssociationV1",
+      "declared_consumers": [
+        "orion.attention.self_readings:render_self_readings",
+        "orion.metacog.evidence_map:map_self_signal_episode"
+      ],
+      "upstream": [
+        "metric://inner_state/orion-equilibrium-service/self_signal_outcome_association.v1"
+      ],
+      "notes": "scalar field on SelfSignalOutcomeAssociationV1",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-equilibrium-service/self_signal_outcome_association.v1#ci_z": {
+      "schema_id": "SelfSignalOutcomeAssociationV1",
+      "declared_consumers": [
+        "orion.attention.self_readings:render_self_readings",
+        "orion.metacog.evidence_map:map_self_signal_episode"
+      ],
+      "upstream": [
+        "metric://inner_state/orion-equilibrium-service/self_signal_outcome_association.v1"
+      ],
+      "notes": "scalar field on SelfSignalOutcomeAssociationV1",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-equilibrium-service/self_signal_outcome_association.v1#min_history_hours": {
+      "schema_id": "SelfSignalOutcomeAssociationV1",
+      "declared_consumers": [
+        "orion.attention.self_readings:render_self_readings",
+        "orion.metacog.evidence_map:map_self_signal_episode"
+      ],
+      "upstream": [
+        "metric://inner_state/orion-equilibrium-service/self_signal_outcome_association.v1"
+      ],
+      "notes": "scalar field on SelfSignalOutcomeAssociationV1",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-equilibrium-service/self_signal_outcome_association.v1#rate_high": {
+      "schema_id": "SelfSignalOutcomeAssociationV1",
+      "value_kind": "level",
+      "rest": "share of high hours whose next hour had >= 1 outcome event (0-1); no designed rest -- compare with rate_normal.",
+      "sparsity": "event_gated",
+      "absent_means": "None = no high hour with an exposed next hour yet.",
+      "polarity": "higher_is_worse",
+      "declared_consumers": [
+        "orion.attention.self_readings:render_self_readings",
+        "orion.metacog.evidence_map:map_self_signal_episode"
+      ],
+      "prompt_sites": [
+        "orion.attention.self_readings:render_self_readings",
+        "orion.metacog.evidence_map:map_self_signal_episode"
+      ],
+      "upstream": [
+        "metric://inner_state/orion-equilibrium-service/self_signal_outcome_association.v1"
+      ],
+      "notes": "scalar field on SelfSignalOutcomeAssociationV1",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-equilibrium-service/self_signal_outcome_association.v1#rate_normal": {
+      "schema_id": "SelfSignalOutcomeAssociationV1",
+      "value_kind": "level",
+      "rest": "share of normal hours whose next hour had >= 1 outcome event (0-1): the base rate the high hours are compared against.",
+      "sparsity": "event_gated",
+      "absent_means": "None = no normal hour with an exposed next hour yet.",
+      "polarity": "higher_is_worse",
+      "declared_consumers": [
+        "orion.attention.self_readings:render_self_readings",
+        "orion.metacog.evidence_map:map_self_signal_episode"
+      ],
+      "prompt_sites": [
+        "orion.attention.self_readings:render_self_readings",
+        "orion.metacog.evidence_map:map_self_signal_episode"
+      ],
+      "upstream": [
+        "metric://inner_state/orion-equilibrium-service/self_signal_outcome_association.v1"
+      ],
+      "notes": "scalar field on SelfSignalOutcomeAssociationV1",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-equilibrium-service/self_signal_outcome_association.v1#ratio": {
+      "schema_id": "SelfSignalOutcomeAssociationV1",
+      "value_kind": "level",
+      "rest": "1.0 = the next hour's outcome is as likely after a high hour as after a normal one (no association). Only shown when the 95% interval [ci_low, ci_high] excludes 1 and both sides have >= min_hours hours.",
+      "rest_range": [
+        1.0,
+        1.0
+      ],
+      "sparsity": "event_gated",
+      "absent_means": "None = no normal-hour events to divide by (the clause then says 'more often' with both rates), or no hours at all. Never treated as 1.",
+      "declared_consumers": [
+        "orion.attention.self_readings:render_self_readings",
+        "orion.metacog.evidence_map:map_self_signal_episode"
+      ],
+      "prompt_sites": [
+        "orion.attention.self_readings:render_self_readings",
+        "orion.metacog.evidence_map:map_self_signal_episode"
+      ],
+      "upstream": [
+        "metric://inner_state/orion-equilibrium-service/self_signal_outcome_association.v1"
+      ],
+      "notes": "scalar field on SelfSignalOutcomeAssociationV1",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-equilibrium-service/self_signal_outcome_association.v1#se_inflation": {
+      "schema_id": "SelfSignalOutcomeAssociationV1",
+      "declared_consumers": [
+        "orion.attention.self_readings:render_self_readings",
+        "orion.metacog.evidence_map:map_self_signal_episode"
+      ],
+      "upstream": [
+        "metric://inner_state/orion-equilibrium-service/self_signal_outcome_association.v1"
+      ],
+      "notes": "scalar field on SelfSignalOutcomeAssociationV1",
       "registry_source": "orion/inner_state_registry.py"
     },
     "metric://inner_state/orion-equilibrium-service/transport_baseline_hourly.v1": {

@@ -12,8 +12,13 @@ from __future__ import annotations
 import bisect
 import math
 import re
+import sys
 from datetime import datetime, timedelta, timezone
-from typing import Sequence
+from pathlib import Path
+from typing import Any, Mapping, Sequence
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "scripts" / "analysis"))
+from self_signal_outcome_truth import _get, check_clause as _check_clause  # noqa: E402
 
 Row = tuple[str, datetime, float]
 WEEK = timedelta(days=7)
@@ -22,13 +27,16 @@ PREFIX = "node:substrate."
 
 _REF = r"\[pe:(?P<name>[a-z_]+)@(?P<ts>\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ)\]"
 _TREND = r"(?:, (?:rising|settling))?"
+# Optional "tends to" clause (spec section E), checked against its association row by
+# scripts/analysis/self_signal_outcome_truth.py:check_clause.
+_TENDS = r"(?:; (?P<tends>when this is high, .+))?"
 LEVEL_RE = re.compile(
     r"^- (?P<label>.+?): (?P<score>\d+)/10 for me \(now (?P<value>\d+\.\d\d); higher than "
-    rf"(?P<pct>\d+)% of my last 7 days{_TREND}\) {_REF}$"
+    rf"(?P<pct>\d+)% of my last 7 days{_TREND}\) {_REF}{_TENDS}$"
 )
 RATE_RE = re.compile(
     r"^- (?P<label>.+?): (?P<score>\d+)/10 for me \(went off (?P<n>\d+) times? in the last hour; "
-    rf"more than in (?P<pct>\d+)% of my hours this week{_TREND}\) {_REF}$"
+    rf"more than in (?P<pct>\d+)% of my hours this week{_TREND}\) {_REF}{_TENDS}$"
 )
 TAIL_OK = re.compile(
     r"^(?:\d+ more unusual signals? not shown\. )?Nothing else I can read is unusual right now\."
@@ -73,8 +81,11 @@ def _rate_percentile(fires: list[datetime], value: int, now: datetime) -> float:
     return sum(1 for c in grid if c < value) / len(grid)
 
 
-def check_block(text: str, rows: Sequence[Row], now: datetime) -> list[str]:
-    """Failure lines (empty = every number in ``text`` resolves to ``rows`` and matches)."""
+def check_block(
+    text: str, rows: Sequence[Row], now: datetime, associations: Mapping[str, Any] | None = None
+) -> list[str]:
+    """Failure lines (empty = every number in ``text`` resolves to ``rows`` and matches).
+    ``associations`` (association_id -> self_signal_outcome_association row) backs any clause."""
     now = _aware(now)
     failures: list[str] = []
     if not text:
@@ -92,6 +103,11 @@ def check_block(text: str, rows: Sequence[Row], now: datetime) -> list[str]:
             failures.append(f"unparseable line (a number with no row behind it?): {line!r}")
             continue
         node = PREFIX + m["name"]
+        if m["tends"]:
+            failures += _check_clause(m["tends"], associations or {})
+            row = (associations or {}).get(m["tends"].rsplit("[assoc:", 1)[-1].rstrip("]"))
+            if row is not None and _get(row, "signal_id") != node:
+                failures.append(f"{node}: clause cites an association for {_get(row, 'signal_id')}")
         rows_n = _node_rows(rows, node, now)
         if kind == "rate":
             # A trigger's ref names its newest ON row (the count is about the ON transitions).

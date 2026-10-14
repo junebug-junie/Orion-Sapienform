@@ -362,6 +362,12 @@ template, no LLM.
   prompt byte-identical to before).
 - Eval: `evals/test_self_readings_truth_eval.py` (every number shown resolves to its row);
   live replay `python evals/run_self_readings_live_eval.py`.
+- What it tends to lead to (spec section E): an unusual reading's line gets "; when this is high, my
+  next hour had <a failed turn | a reply I had to repair | an RPC timeout> Nx as often at equal activity (...)
+  [assoc:<id>]" from the newest `self_signal_outcome_association` row per (signal, outcome) written by
+  orion-equilibrium-service within the last 3 h (read at most every 5 min, same lock/timeout). Only
+  rows whose 95% interval excludes 1 with enough hours carry a clause; a clause is dropped before a
+  reading would be. Kill switch: `SELF_SIGNAL_OUTCOME_ASSOCIATION_ENABLED=false` (block byte-identical).
 
 ## Reverie VISUAL chain (context rotation + validated episode-memory seed)
 

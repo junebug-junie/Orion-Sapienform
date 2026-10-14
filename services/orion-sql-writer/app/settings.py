@@ -69,6 +69,8 @@ DEFAULT_ROUTE_MAP: dict[str, str] = {
     "gpu_pool.event.v1": "GpuPoolEventSQL",
     "gpu_pool.state.v1": "GpuPoolStateSQL",
     "transport_baseline.hourly.v1": "TransportBaselineHourlySQL",
+    "self_signal.hour.v1": "SelfSignalHourSQL",
+    "self_signal.outcome_association.v1": "SelfSignalOutcomeAssociationSQL",
     "field_channel_anomaly.score.v1": "FieldChannelAnomalyScoreSQL",
     "chat_stance.belief.write.v1": "ChatStanceBeliefLogSQL",
     "self_concept.history.write.v1": "SelfConceptHistorySQL",
@@ -201,6 +203,8 @@ class Settings(BaseSettings):
             "orion:gpu_pool:event",
             "orion:gpu_pool:state",
             "orion:equilibrium:transport_baseline:hourly",
+            "orion:equilibrium:self_signal:hour",
+            "orion:equilibrium:self_signal:outcome_association",
             "orion:field_channel:anomaly_score",
             "orion:chat_stance:belief:write",
             "orion:self_concept:history:write",
@@ -769,6 +773,14 @@ class Settings(BaseSettings):
         # code-default route; SQL_WRITER_SUBSCRIBE_CHANNELS replaces).
         if "orion:equilibrium:transport_baseline:hourly" not in channels:
             channels.append("orion:equilibrium:transport_baseline:hourly")
+        # Same guarantee, same reason (self_signal.hour.v1 /
+        # self_signal.outcome_association.v1 are code-default routes).
+        for self_signal_channel in (
+            "orion:equilibrium:self_signal:hour",
+            "orion:equilibrium:self_signal:outcome_association",
+        ):
+            if self_signal_channel not in channels:
+                channels.append(self_signal_channel)
         # Same guarantee, same reason (field_channel_anomaly.score.v1 is a
         # code-default route; the full score distribution is the calibration
         # data for the telemetry_anomaly trigger threshold).

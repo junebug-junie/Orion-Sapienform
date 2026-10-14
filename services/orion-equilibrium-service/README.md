@@ -279,6 +279,18 @@ Metacog as a **reader** of the body's calibrated signals, instead of another bes
 - **Budget:** at most `MAX_OPENS_PER_HOUR` (6) open rows per hour across all signals; extra episodes are tracked silently.
 - Replay over stored history: `python scripts/analysis/replay_self_signal_episodes.py --from-db`; eval: `evals/test_self_signal_episode_replay_eval.py` (7 days, ~9.5 opens/day).
 
+### What a body signal tends to lead to (spec 2026-10-07 section E, 2026-10-14)
+
+Rides the same poll and 7-day PE cache (`app/self_signal_outcome_rollup.py` over the pure reducer `orion/attention/self_signal_outcomes.py`, no LLM). Once per completed UTC hour (plus `EQUILIBRIUM_SELF_SIGNAL_OUTCOME_GRACE_SEC`, 600 s):
+
+- **Hour condition** per internal body signal: `high` when the episode gate's own open dwell (hot for more than 300 s within 600 s, judged by the attention seam at each replayed 30 s poll) was met in the hour; `normal` when readings spoke but never that long; `unknown` when nothing readable spoke (never counted as normal). Triggers (cabinet): `high` when it turned on.
+- **Outcomes** in that hour, from rows Orion already records: failed harness turns (`harness_turn_trace.run_artifact.compliance_verdict='failed'`), repaired replies (`response_repair_ran`), RPC timeouts (`transport_baseline_hourly.timeout_count`, `#gpu_pool_wait` keys excluded).
+- Publishes `SelfSignalHourV1` on `CHANNEL_EQUILIBRIUM_SELF_SIGNAL_HOUR` (sql-writer -> `self_signal_hour`, which outlives the 7-day PE prune), then per (signal, outcome) a `SelfSignalOutcomeAssociationV1` on `CHANNEL_EQUILIBRIUM_SELF_SIGNAL_OUTCOME_ASSOCIATION` (-> `self_signal_outcome_association`): hour H's condition vs hour H+1's outcome, next-hour rate when high vs normal; ratio = Mantel-Haenszel over next-hour activity bins (busy hours have more chances for one failure), interval widened for serial correlation between hours and Bonferroni-adjusted for every renderable pair (family-wise 5%). Hours judged against under 144 h of PE history (cold-start backfill) are stored but never counted.
+- A clause ("when this is high, my next hour had a failed turn 3.1x as often at equal activity (...) [assoc:<id>]") exists only when both sides have `EQUILIBRIUM_SELF_SIGNAL_OUTCOME_MIN_HOURS` (24) hours and the adjusted interval excludes 1. Circular pairs (execution x turn_failed/response_repair, chat x response_repair, bus_synaptic x rpc_timeout) are `excluded_circular` and never rendered. The episode open row carries the signal's clause in `upstream.tends_to` (evidence line in `orion/metacog/evidence_map.py`).
+- Read failures skip the cycle (logged `self_signal_outcome_skipped`); a restart reloads persisted hours and never recomputes them. Log per cycle: `self_signal_outcome_cycle hours=... associations=... renderable=...`.
+- Live table / truth check: `python scripts/analysis/self_signal_outcome_truth.py --live` (before deploy) or `--persisted` (after). Eval: `evals/test_self_signal_outcome_replay_eval.py`.
+- Kill switch: `EQUILIBRIUM_SELF_SIGNAL_OUTCOME_ASSOCIATION_ENABLED=false` (nothing published, open rows exactly as before). Deploy orion-sql-writer first (it creates both tables).
+
 ---
 
 ## Quick start (copy/paste)

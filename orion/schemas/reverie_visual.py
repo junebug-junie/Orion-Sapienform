@@ -88,7 +88,14 @@ class VisualSourceV1(BaseModel):
 class VisualContextSelectionV1(BaseModel):
     model_config = ConfigDict(extra="forbid")
     selection_method: Literal["round_robin"] = "round_robin"
-    source_kind: Literal["reverie", "self_study", "memory", "prior_visual", "default_seed"]
+    source_kind: Literal[
+        "reverie",
+        "self_study",
+        "memory",  # legacy memory_crystallizations rows; retained for historical decode
+        "episode_memory",
+        "prior_visual",
+        "default_seed",
+    ]
     source: VisualSourceV1 | None = None
     reverie: ReverieVisualContextV1 | None = None
     continuity: VisualSourceV1 | None = None

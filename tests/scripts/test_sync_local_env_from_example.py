@@ -21,6 +21,10 @@ def test_orion_bus_url_never_synced() -> None:
     assert should_sync_key("ORION_BUS_URL", all_keys=True) is False
 
 
+def test_visual_memory_seed_switch_is_in_default_sync_contract() -> None:
+    assert should_sync_key("REVERIE_VISUAL_MEMORY_SEED_SOURCE", all_keys=False) is True
+
+
 def test_default_sync_reaches_admission_templates_and_preserves_overrides(tmp_path, monkeypatch, capsys):
     """The documented default command must populate the real admission contract."""
     prefixes = {

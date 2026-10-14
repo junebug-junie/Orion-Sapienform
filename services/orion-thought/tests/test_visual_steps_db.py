@@ -59,7 +59,7 @@ def db(monkeypatch, tmp_path):
     monkeypatch.setattr(settings, "visual_chain_storage_dir", str(tmp_path))
     monkeypatch.setattr(visual_chain, "load_latest_reverie_interpretation", lambda **kw: "a real thought")
     monkeypatch.setattr(visual_chain, "load_latest_self_study_reflection", lambda **kw: None)
-    monkeypatch.setattr(visual_chain, "load_latest_memory_crystallization", lambda **kw: None)
+    monkeypatch.setattr(visual_chain, "load_episode_memory_seed", lambda **kw: None)
     renders = []
 
     def fake_generate(prompt, *, base_url, timeout_sec):

@@ -45,6 +45,9 @@ def stamp_reading_turn_budget(payload: dict, *, timeout_sec: float, started: flo
     payload["inference_timeout_sec"] = max(1.0, timeout - READING_REPLY_RESERVE_SEC) \
         if timeout > READING_REPLY_RESERVE_SEC else timeout
     payload[REPLY_DEADLINE_PAYLOAD_KEY] = started + timeout
+    # Re-applied after stance/recall by turn_orchestrator._held_turn_budgets, so a slow
+    # setup cannot leave the reply/finalize step zero seconds.
+    payload["harness_finalize_reserve_sec"] = READING_REPLY_RESERVE_SEC
 
 
 class ReadingTurnListener:

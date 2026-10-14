@@ -52,7 +52,8 @@ Root cause, from the live records:
 ## Tests run
 
 ```text
-reading CI set (hub reading + world_pulse_read + orion/fcc + orion/harness tests): 1339 passed, 76 skipped, 1 failed
+reading CI set (hub reading + world_pulse_read + orion/fcc + orion/harness tests): 1339 passed, 76 skipped, 1 failed (before review fixes)
+after review fixes: breaker + harness + hub reading/stage2/curiosity/orchestrator + eval: 994 passed, 28 skipped; curiosity held-turn finalize 12 passed
   failure = orion/fcc/tests/test_claude_spawn.py::test_no_undiscovered_root_callers_of_claude_permission_argv, also fails on main (untouched files)
 orion-harness-governor tests: 77 passed
 ```
@@ -76,7 +77,18 @@ Expected trace: governor log `fcc_repeat_failure_breaker_fired corr=<reading tur
 
 ## Review findings fixed
 
-(see PR body)
+- Finding: the 60 s reserve was spent before stance/recall. After a slow stance (249 s live), the motor got the whole reply budget, which left finalize/reply 0 s.
+  - Fix: listener stamps `harness_finalize_reserve_sec`; `_held_turn_budgets` re-applies it after measuring the time already used. Curiosity's held turns don't set it and are unchanged.
+  - Evidence: `test_reading_turn_budget_is_the_briefs_wall_not_the_harness_default` asserts `reply - inference == 60` at 249 s, and that no-reserve callers are unchanged; `test_curiosity_held_turn_finalize.py` 12 passed.
+- Finding: the block message and prompt note said a refetch "returns the same text", but WebFetch returns a summarizer's answer to each prompt.
+  - Fix: reworded to "reads the same characters; ask everything you need in one prompt". The README states the trade-off (a differently worded second question is refused too).
+- Finding: the no-fetch retry note matched any `TimeoutError`.
+  - Fix: narrowed to `turn_exception:TimeoutError` (durable-runs' attempt timeout, the live failure), the listener's and motor's own timeout codes, and `workflow_deadline`. Dropped the unproven "while still fetching". Test pins that `reading_binding_unavailable:TimeoutError` gets no retry note.
+- Finding: `canonical_fetch_url` dropped the port and kept http/https as separate keys.
+  - Fix: key on netloc (port kept); http is folded into https. Tests added.
+- Finding: two same-URL fetches in one assistant message both run.
+  - Fix: documented, not fixed. Counting pending calls risks blocking every first fetch, because the current call may already be in the transcript.
+- Not changed (nits): the hardcoded 60 s reserve (no tuning need yet); no backoff after the window closes; no end-to-end env assertion across listener -> runner -> subprocess (each hop is tested separately).
 
 ## Restart required
 
@@ -92,4 +104,4 @@ cd /mnt/scripts/Orion-Sapienform && git pull --ff-only && ORION_ALLOW_SHARED_CHE
 
 ## PR link
 
-(filled on open)
+https://github.com/junebug-junie/Orion-Sapienform/pull/2672

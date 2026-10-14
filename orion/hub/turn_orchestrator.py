@@ -425,6 +425,12 @@ def _held_turn_budgets(payload: dict[str, Any]) -> tuple[float | None, float | N
     reply_budget = max(1.0, float(deadline) - time.monotonic() - _REPLY_TRANSIT_SLACK_SEC)
     if inference is not None:
         inference = min(float(inference), reply_budget)
+        # Optional: keep this much of what is really left for finalize/reply, measured
+        # here (after stance/recall), not when the caller stamped the request. Reading
+        # turns set it; curiosity's held turns reserve up front and do not.
+        reserve = float(payload.get("harness_finalize_reserve_sec") or 0.0)
+        if reserve > 0 and reply_budget - reserve > 0:
+            inference = min(inference, reply_budget - reserve)
     return inference, reply_budget
 
 

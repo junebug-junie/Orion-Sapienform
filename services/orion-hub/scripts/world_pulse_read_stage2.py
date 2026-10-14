@@ -197,7 +197,10 @@ def _turn_payload(source: str, fcc_model_label: Optional[str]) -> dict:
 # durable-runs reading_graph, fcc_motor). A retry after one of these must not
 # send the model down the same road.
 _TIMEOUT_FAILURE_MARKERS = (
-    "TimeoutError", "turn_timeout", "fcc_timeout", "fcc_stream_stalled", "workflow_deadline",
+    # durable-runs' attempt timeout surfaces as turn_exception:TimeoutError (the live
+    # seed c31227dc failure); a bare TimeoutError elsewhere (bus/RPC) is not this.
+    "turn_exception:TimeoutError", "turn_timeout", "fcc_timeout", "fcc_stream_stalled",
+    "workflow_deadline",
 )
 
 
@@ -212,8 +215,8 @@ def retry_note(prior_error: str | None) -> str:
         return ""
     reason = " ".join(str(prior_error).split())[:_FAIL_REASON_DETAIL_MAX_LEN]
     return (
-        f"\nRETRY: the previous attempt of this pass ran out of time ({reason}) while it was "
-        "still fetching. Do not call WebFetch or WebSearch this time. Answer from the handoff "
+        f"\nRETRY: the previous attempt of this pass ran out of time ({reason}). Do not call "
+        "WebFetch or WebSearch this time. Answer from the handoff "
         "and any retained text above, and say in summary what could not be read.\n"
     )
 

@@ -34,10 +34,10 @@ from .fetch_provenance import fetch_http_error_status
 # (orion/fcc/repeat_failure_breaker.py); this line keeps the model from planning on it.
 WEBFETCH_LIMIT_NOTE = (
     "WebFetch only ever reads the first ~100,000 characters of a page and cannot read a "
-    "later slice or character range; fetching the same URL again (with any prompt) returns "
-    "the same text, and each fetch of a large page holds the shared model for minutes. "
-    "Fetch a URL at most once. If the source is too large to read whole, work from what "
-    "came back and say what you could not read."
+    "later slice or character range; fetching the same URL again (with any prompt) reads the "
+    "same characters, and each fetch of a large page holds the shared model for minutes. "
+    "Fetch a URL once and ask everything you need in that one prompt. If the source is too "
+    "large to read whole, work from what came back and say what you could not read."
 )
 
 logger = logging.getLogger(__name__)

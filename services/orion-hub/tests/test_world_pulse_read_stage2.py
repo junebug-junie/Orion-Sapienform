@@ -1390,7 +1390,8 @@ def test_retry_after_timeout_tells_model_not_to_fetch(error):
     assert error.split(":")[-1].strip() in prompt
 
 
-@pytest.mark.parametrize("error", [None, "", "interrupted:process_restart", "parse_failed", "blank_final_response"])
+@pytest.mark.parametrize("error", [None, "", "interrupted:process_restart", "parse_failed", "blank_final_response",
+                                   "reading_binding_unavailable:TimeoutError"])
 def test_retry_note_absent_for_non_timeout_failures(error):
     assert "RETRY:" not in _build_stage2_prompt(_handoff(), "tr-s2", prior_error=error)
 

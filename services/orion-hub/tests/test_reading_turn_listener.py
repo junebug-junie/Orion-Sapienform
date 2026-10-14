@@ -168,7 +168,16 @@ def test_reading_turn_budget_is_the_briefs_wall_not_the_harness_default():
         inference, reply = turn_orchestrator._held_turn_budgets(payload)
     finally:
         turn_orchestrator.time.monotonic = orig
-    assert reply == 3500.0 - 249 - 10 and inference == reply
+    assert reply == 3500.0 - 249 - 10
+    assert reply - inference == READING_REPLY_RESERVE_SEC  # reserve survives slow stance
+    # A caller that sets no reserve (curiosity held turns) is unchanged.
+    no_reserve = {k: v for k, v in payload.items() if k != "harness_finalize_reserve_sec"}
+    turn_orchestrator.time.monotonic = lambda: monkey_now
+    try:
+        inference2, reply2 = turn_orchestrator._held_turn_budgets(no_reserve)
+    finally:
+        turn_orchestrator.time.monotonic = orig
+    assert inference2 == reply2
     small = {}
     stamp_reading_turn_budget(small, timeout_sec=10.0, started=0.0)
     assert small["inference_timeout_sec"] == 10.0

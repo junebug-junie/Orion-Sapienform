@@ -41,7 +41,12 @@ slot -- 5 to 19 minutes a call -- and the turn hit its 3500 s wall with no draft
   blocked once it has succeeded ``refetch_limit`` times. Same URL means the same
   text, whatever the prompt asks for. GitHub raw spellings of one file
   (``github.com/<o>/<r>/raw/<ref>/...``, ``raw.githubusercontent.com/.../refs/heads/<ref>/...``)
-  count as one URL: both turns of that seed used all three.
+  count as one URL: both turns of that seed used all three. Only finished
+  results count, so two fetches of one URL in the same assistant message both run
+  (the current call may already sit in the transcript as pending, so pending calls
+  cannot be counted without blocking every first fetch). Trade-off: a second,
+  differently-worded question to the same page is also refused -- on the one-slot
+  lane each is a full summarizer pass over the page.
 - tool window: once ``tool_window_fraction`` of the turn's own budget
   (``ORION_TURN_BUDGET_SEC`` / ``ORION_TURN_DEADLINE_EPOCH``, stamped by the motor)
   has passed, every new tool call is blocked and the model is told to answer with
@@ -122,7 +127,7 @@ def canonical_fetch_url(url: Any) -> str:
         parts = urlsplit(raw)
     except ValueError:
         return raw
-    host = (parts.hostname or "").lower()
+    host = parts.netloc.lower()
     path = parts.path.rstrip("/")
     segs = path.split("/")
     if host == "github.com" and len(segs) > 4 and segs[3] == "raw":
@@ -130,7 +135,10 @@ def canonical_fetch_url(url: Any) -> str:
         host, segs = "raw.githubusercontent.com", segs[:3] + segs[4:]
     if host == "raw.githubusercontent.com" and len(segs) > 5 and segs[3:5] == ["refs", "heads"]:
         segs = segs[:3] + segs[5:]
-    return urlunsplit(((parts.scheme or "").lower(), host, "/".join(segs), parts.query, ""))
+    scheme = (parts.scheme or "").lower()
+    if scheme == "http":  # WebFetch upgrades http to https: one document
+        scheme = "https"
+    return urlunsplit((scheme, host, "/".join(segs), parts.query, ""))
 
 
 class CallHistory:
@@ -244,9 +252,9 @@ def refetch_message(url: str, count: int) -> str:
     return (
         f"{BLOCK_MARKER} Blocked: {url} was already fetched {count} time(s) in this turn. "
         "WebFetch only ever reads the first ~100,000 characters of a page and cannot read a "
-        "later slice or character range, so fetching it again (with any prompt) returns the "
-        "same text and costs minutes of the shared model. Use the earlier result, or answer "
-        "now with what you have and say what you could not read."
+        "later slice or character range, so fetching it again (with any prompt) reads the "
+        "same characters and costs minutes of the shared model. Use the earlier result, or "
+        "answer now with what you have and say what you could not read."
     )
 
 

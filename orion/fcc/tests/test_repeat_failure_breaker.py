@@ -247,6 +247,8 @@ def test_canonical_fetch_url_folds_github_raw_spellings_only():
     blob = "https://github.com/ggml-org/llama.cpp/blob/master/ggml/src/ggml-quants.c"
     assert rfb.canonical_fetch_url(blob) == blob
     assert rfb.canonical_fetch_url("https://a.example/x?page=2") != rfb.canonical_fetch_url("https://a.example/x")
+    assert rfb.canonical_fetch_url("http://a.example/x") == rfb.canonical_fetch_url("https://a.example/x")
+    assert rfb.canonical_fetch_url("https://a.example:8080/x") != rfb.canonical_fetch_url("https://a.example/x")
 
 
 def test_huge_page_replay_refetch_blocks_the_three_repeat_fetches():

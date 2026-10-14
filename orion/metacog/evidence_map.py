@@ -884,6 +884,9 @@ def map_manual(reason: str, up: dict[str, Any]) -> EvidenceMapping:
 # high >= 0.9, unusual >= 0.99), so severity says the same thing the band does:
 # high -> degraded, unusual -> critical. Strict-below percentile never reaches
 # 1.0, so 1.0 is the saturation point.
+# Not imported: orion.substrate's package __init__ is heavy and this module
+# loads in cortex-exec / cortex-orch / orion-actions. Equality with
+# DEFAULT_BAND_CUTS[1:] is pinned by test_self_signal_cut_points_are_the_seams.
 SELF_SIGNAL_PCT_DEGRADED = 0.9
 SELF_SIGNAL_PCT_CRITICAL = 0.99
 SELF_SIGNAL_PCT_SATURATE = 1.0
@@ -913,12 +916,25 @@ def map_self_signal_episode(reason: str, up: dict[str, Any]) -> EvidenceMapping:
     if phase == "close":
         dur = _num(up.get("duration_sec"))
         close_reason = str(up.get("close_reason") or "?")
-        evidence.insert(
-            0,
-            f"{label} returned ({close_reason}) after {dur / 60.0:.0f} min"
-            if dur is not None
-            else f"{label} returned ({close_reason})",
-        )
+        after = f" after {dur / 60.0:.0f} min" if dur is not None else ""
+        if close_reason == "went_silent":
+            # Silence is not a recovery: the signal could not be read for the
+            # silent-close horizon. Degraded, never nominal (absent != calm).
+            evidence.insert(0, f"{label} went silent{after}: no readable reading; NOT a recovery")
+            return _build(
+                kind="self_signal_episode",
+                severity="degraded",
+                magnitude=DEGRADED_FLOOR,
+                basis=f"close:went_silent:duration_sec={dur}",
+                evidence=evidence,
+                touches=touches,
+                headline=f"{label} went silent while {peak_band} (not a recovery)",
+            )
+        if close_reason == "faded":
+            what = "no new event since; its last reading stopped being news"
+        else:
+            what = "readings back within its usual range"
+        evidence.insert(0, f"{label} settled ({close_reason}){after}: {what}")
         return _build(
             kind="self_signal_episode",
             severity="nominal",
@@ -926,7 +942,7 @@ def map_self_signal_episode(reason: str, up: dict[str, Any]) -> EvidenceMapping:
             basis=f"close:{close_reason}:duration_sec={dur}",
             evidence=evidence,
             touches=touches,
-            headline=f"{label} back from {peak_band} ({close_reason})",
+            headline=f"{label} settled from {peak_band} ({close_reason})",
         )
     pct = peak if peak is not None else open_pct
     if pct is None:

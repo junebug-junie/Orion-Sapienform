@@ -100,9 +100,9 @@ Metacog gains a reader of calibrated body signals. On 7 days of real stored hist
 ## Tests run
 
 ```text
-orion/metacog/tests + orion/attention + orion/schemas/tests: 443 passed, 1 failed
+orion/metacog/tests: 287 passed (after review fixes); orion/metacog + orion/attention + orion/schemas/tests before fixes: 443 passed, 1 failed
   (test_context_provenance::test_static_ctx_assignments_covered — fails identically on unmodified HEAD)
-services/orion-equilibrium-service tests + evals: 241 passed
+services/orion-equilibrium-service tests + evals: 244 passed (after review fixes)
 services/orion-cortex-orch tests: 224 passed, 31 failed (the same 31 fail on unmodified HEAD: test_workflow_lane x27, test_verb_runtime_rpc x2, test_ready, test_mind_skip_logging)
 services/orion-actions tests: 252 passed
 python scripts/check_env_template_parity.py: PASS
@@ -134,7 +134,25 @@ scripts/safe_docker_build.sh orion-equilibrium-service build: refused before com
 
 ## Review findings fixed
 
-(filled in after review)
+Review: code-review subagent over `git diff origin/main...HEAD` (no blockers; findings below).
+
+- Finding: a failed history read on the first poll after a cold start cleared `cold_start`, so already-hot signals opened ~5 min later (a boot burst).
+  - Fix: `gate.step(..., history_ok=)`; cold start is cleared only by a readable poll.
+  - Evidence: `test_failed_first_read_keeps_cold_start_cold`.
+- Finding: the poll task and the Redis state load were per `_run`; a supervisor restart of `_run` orphaned the task and started a second one (dwell counts polls, so episodes would open at half the dwell; concurrent cache access) and reloaded possibly-stale Redis state over newer in-memory state (duplicate open/close rows).
+  - Fix: `_ensure_self_signal_task()` (one task per process, cancelled in `_shutdown`), state loaded once per process.
+  - Evidence: `test_poll_task_is_once_per_process`.
+- Finding: a `went_silent` close rendered as "returned ... nominal" -- silence presented as recovery.
+  - Fix: its own branch in `map_self_signal_episode`: severity degraded, "went silent ... NOT a recovery"; calm/faded closes say "settled".
+  - Evidence: `test_went_silent_close_is_not_rendered_as_a_recovery`.
+- Finding: severity cut points duplicated the seam's band cuts; `observation_from_verdict` re-derived the past-window rule.
+  - Fix: faded now read from the verdict's own `event_decay == 0` + `event_age_sec`; the cut points stay literal (importing `orion.substrate` would pull its heavy package `__init__` into cortex-exec/orch/actions) and are pinned equal to `DEFAULT_BAND_CUTS[1:]` by a test.
+  - Evidence: `test_self_signal_cut_points_are_the_seams`.
+- Finding (nit): no Postgres timeouts on the reader. Fix: `connect_timeout=10`, `statement_timeout=20s`. Evidence: live smoke from the built image reads `show statement_timeout` = `20s`.
+- Finding (nit): corrupt numeric fields in persisted state would make every step raise; a non-dict JSON blob ended cold start. Fix: numeric coercion per field (bad episode dropped), non-dict blob stays cold. Evidence: `test_state_from_dict_drops_corrupt_numeric_fields`, `test_non_dict_state_blob_stays_cold`.
+- Finding (nit, documented not changed): calm and unknown readings that alternate at least every 10 min keep an episode open (neither clock completes). Pinned by `test_calm_and_unknown_interleaving_keeps_episode_open`; listed under concerns.
+- Finding: deploy order. Already consumer-first in the restart command (orch, actions, then equilibrium).
+- Not changed: a retried open row is built from the current poll's observation (if that poll was a failed read, the 7-day context fields are empty; band/percentile/raw at open and peak come from the stored episode either way). The close outbox is in memory only.
 
 ## Restart required
 
@@ -149,11 +167,12 @@ cd /mnt/scripts/Orion-Sapienform && git pull --ff-only && scripts/safe_docker_bu
 - Severity: medium. Concern: the 10-08 afternoon GPU shed is not distinguished by these signals; PE nodes measure surprise, not sustained load. Mitigation: reported; no tuning around it. A load/thermal level signal would be a separate seam source.
 - Severity: low. Concern: each open row still gets both a metacog draft and an orion-actions `metacog_digest` journal (existing behavior for every trigger kind). Mitigation: unchanged here; the close row gets neither.
 - Severity: low. Concern: the replay's first day is scored against hours, not 7 days, of history (table began 10-07). Mitigation: stated; in production the window is full.
+- Severity: low. Concern: an intermittent history read failure at least every 10 min keeps an open episode open (unknown resets the calm clock, calm resets the silence clock). Mitigation: pinned by a test; the read now has timeouts.
 - Severity: low. Concern: a flickering pending run can stretch onset-to-open latency (replay p50 8 min, max 70 min). Mitigation: `opened_at` is the onset, `confirmed_at` the open row time; both are in the row.
 - Follow-up (not done here, per instructions): no remaining bespoke trigger is clearly superseded. `telemetry_anomaly` (autoencoder), `transport` (per-hop latency) and `insight` (confidence recovery) read different evidence. The `metacog_trend_signals` prompt cue (latest raw execution/biometrics PE) could later read open self-signal episodes instead of raw values.
 
 ## PR link
 
-(filled in after push)
+https://github.com/junebug-junie/Orion-Sapienform/pull/2662
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

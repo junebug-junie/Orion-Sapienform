@@ -193,4 +193,4 @@ def test_self_signal_episode_gate():
     )
     close = EpisodeEvent("close", ep, calm, "calm", t0 + 2000)
     m = _assert_mapped(g.build_self_signal_episode_trigger(close, **COMMON), severity="nominal")
-    assert "returned (calm)" in m.evidence[0]
+    assert "settled (calm)" in m.evidence[0]

@@ -216,6 +216,12 @@ class EquilibriumService(BaseChassis):
         )
         self._pe_history_cache = NodePeHistoryCache()
         self._pe_history_reader: NodePeHistoryReader | None = None
+        # One poll task and one state load per PROCESS, not per _run:
+        # _supervise_run restarts _run after a crash, and a per-_run task
+        # would (a) double-poll (halving the dwell, which counts polls) and
+        # (b) reload Redis state over newer in-memory state (review 2026-10-14).
+        self._self_signal_task: asyncio.Task | None = None
+        self._self_signal_state_loaded: bool = False
         # One housekeeping task per process, not per _run: _supervise_run
         # restarts _run after a crash, and a per-_run task would pile up.
         self._transport_housekeeping_task: asyncio.Task | None = None
@@ -419,8 +425,9 @@ class EquilibriumService(BaseChassis):
 
     async def _load_self_signal_state(self) -> None:
         gate = self._self_signal_gate
-        if gate is None:
+        if gate is None or self._self_signal_state_loaded:
             return
+        self._self_signal_state_loaded = True
         try:
             raw = await self.bus.redis.get(settings.metacog_self_signal_episodes_state_key)
         except Exception as e:
@@ -470,6 +477,7 @@ class EquilibriumService(BaseChassis):
             zen_state="zen" if zen > 0.5 else "not_zen",
             pressure=distress,
             recall_enabled=settings.metacog_recall_enabled,
+            history_ok=history_error is None,
         )
         for out in outgoing:
             # Episode-shaped and budgeted by the gate: skip the shared lane so
@@ -478,6 +486,15 @@ class EquilibriumService(BaseChassis):
                 gate.mark_published(out, now=now.timestamp())
         if gate.dump() != before:
             await self._persist_self_signal_state()
+
+    def _ensure_self_signal_task(self) -> None:
+        if self._self_signal_gate is None:
+            return
+        t = self._self_signal_task
+        if t is None or t.done():
+            self._self_signal_task = asyncio.create_task(
+                self._self_signal_episode_poll_loop(), name="equilibrium-self-signal-episodes"
+            )
 
     async def _self_signal_episode_poll_loop(self) -> None:
         if self._self_signal_gate is None:
@@ -714,11 +731,11 @@ class EquilibriumService(BaseChassis):
         cancels the _run task while it is parked in iter_messages(), so nothing
         after that loop runs on a real shutdown -- this override is the only
         place a shutdown flush can happen with the bus still open."""
-        t = self._transport_housekeeping_task
-        if t is not None and not t.done():
-            t.cancel()
-            with suppress(asyncio.CancelledError, Exception):
-                await t
+        for t in (self._transport_housekeeping_task, self._self_signal_task):
+            if t is not None and not t.done():
+                t.cancel()
+                with suppress(asyncio.CancelledError, Exception):
+                    await t
         await self._transport_shutdown_flush()
         await super()._shutdown()
 
@@ -1432,7 +1449,7 @@ class EquilibriumService(BaseChassis):
         if settings.equilibrium_spark_heartbeat_enable:
             heartbeat_task = asyncio.create_task(self._spark_heartbeat_loop())
         generative_poll_task = asyncio.create_task(self._generative_metacog_poll_loop())
-        self_signal_task = asyncio.create_task(self._self_signal_episode_poll_loop())
+        self._ensure_self_signal_task()
         self._ensure_transport_housekeeping()
 
         # Build list of channels to subscribe to
@@ -1671,14 +1688,12 @@ class EquilibriumService(BaseChassis):
         if heartbeat_task:
             heartbeat_task.cancel()
         generative_poll_task.cancel()
-        self_signal_task.cancel()
 
         await asyncio.gather(
             publisher,
             collapse_task,
             *( [heartbeat_task] if heartbeat_task else [] ),
             generative_poll_task,
-            self_signal_task,
             return_exceptions=True,
         )
 

@@ -162,6 +162,9 @@ class SelfSignalEpisodeGate:
         except (ValueError, UnicodeDecodeError):
             logger.warning("self_signal_episode cold_start reason=malformed_state")
             return
+        if not isinstance(data, dict):
+            logger.warning("self_signal_episode cold_start reason=malformed_state")
+            return
         self.state = state_from_dict(data)
         self.cold_start = False
         logger.info(
@@ -182,9 +185,14 @@ class SelfSignalEpisodeGate:
         zen_state: str,
         pressure: float,
         recall_enabled: bool,
+        history_ok: bool = True,
     ) -> list[Outgoing]:
         """Fold one poll. Returns the rows to publish now (retried closes
-        first); call ``mark_published`` for each one that really went out."""
+        first); call ``mark_published`` for each one that really went out.
+
+        ``history_ok`` False (the history read failed: every observation is
+        unknown) keeps a cold start cold, so signals already hot when the
+        history first becomes readable are still adopted silently."""
         cfg = self.config
         cold = self.cold_start
         episodes = dict(self.state.episodes)
@@ -255,7 +263,8 @@ class SelfSignalEpisodeGate:
             else:
                 episodes[obs.signal_id] = ep
         self.state = SelfSignalEpisodesStateV1(episodes=episodes, recent_opens=self.state.recent_opens)
-        self.cold_start = False
+        if history_ok:
+            self.cold_start = False
         if len(self._pending_closes) > MAX_PENDING_CLOSES:
             dropped = self._pending_closes[: len(self._pending_closes) - MAX_PENDING_CLOSES]
             self._pending_closes = self._pending_closes[-MAX_PENDING_CLOSES:]

@@ -120,14 +120,14 @@ def observation_from_verdict(verdict: Any, *, now: float) -> SignalObservation:
     mag = cand.unusualness
     observed = cand.observed_at
     observed_epoch = observed.timestamp() if observed is not None else None
-    window = getattr(cand, "event_window_sec", None)
-    event_age = getattr(verdict, "event_age_sec", None)
     if verdict.eligible:
         kind: ObservationKind = "hot"
     elif verdict.score is None:
         # absent / insufficient_history / stale / placeholder / no polarity
         kind = "unknown"
-    elif window is not None and event_age is not None and event_age >= window:
+    elif getattr(verdict, "event_age_sec", None) is not None and verdict.event_decay == 0.0:
+        # The judge's own past-the-window verdict (decay 0 for an event-written
+        # source), read rather than re-derived from age and window.
         kind = "faded"
     else:
         kind = "calm"
@@ -457,6 +457,10 @@ class SelfSignalEpisodesStateV1:
 
 _EP_FIELDS = tuple(SignalEpisodeV1.__dataclass_fields__)
 _TUPLE_FIELDS = {"evidence_refs", "recent_hot"}
+_OPTIONAL_FLOAT_FIELDS = (
+    "confirmed_at", "calm_since", "unknown_since", "open_percentile", "open_value",
+    "open_observed_at", "peak_percentile", "peak_value", "peak_observed_at",
+)
 
 
 def state_to_dict(state: SelfSignalEpisodesStateV1) -> dict[str, Any]:
@@ -484,9 +488,14 @@ def state_from_dict(data: Any) -> SelfSignalEpisodesStateV1:
                 -MAX_EVIDENCE_REFS:
             ]
             kw["recent_hot"] = tuple(float(t) for t in (d.get("recent_hot") or ()))[-_MAX_RECENT_HOT:]
+            for k in ("opened_at", "last_hot_at"):
+                kw[k] = float(kw[k])
+            for k in _OPTIONAL_FLOAT_FIELDS:
+                if kw.get(k) is not None:
+                    kw[k] = float(kw[k])
+            kw["hot_polls"] = int(kw.get("hot_polls", 1))
             ep = SignalEpisodeV1(**kw)
-            float(ep.opened_at), float(ep.last_hot_at)
-        except (TypeError, ValueError):
+        except (KeyError, TypeError, ValueError):
             continue
         eps[str(sid)] = ep
     try:

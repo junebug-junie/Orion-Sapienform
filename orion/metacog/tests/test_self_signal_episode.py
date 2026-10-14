@@ -297,3 +297,39 @@ def test_cold_start_adopts_already_hot_signal_silently():
 def test_state_from_dict_never_raises():
     assert state_from_dict(None).episodes == {}
     assert state_from_dict({"episodes": {"x": {"bad": 1}}, "recent_opens": ["nan?"]}).episodes == {}
+
+
+def test_self_signal_cut_points_are_the_seams():
+    from orion.metacog.evidence_map import SELF_SIGNAL_PCT_CRITICAL, SELF_SIGNAL_PCT_DEGRADED
+    from orion.substrate.prediction_error_magnitude import DEFAULT_BAND_CUTS
+
+    assert (SELF_SIGNAL_PCT_DEGRADED, SELF_SIGNAL_PCT_CRITICAL) == DEFAULT_BAND_CUTS[1:]
+
+
+def test_went_silent_close_is_not_rendered_as_a_recovery():
+    from orion.metacog.evidence_map import map_trigger
+
+    ep, ev = _run(_hot_run(T0, 11) + [(T0 + 330 + 30 * i, "unknown") for i in range(121)])
+    m = map_trigger("self_signal_episode", episode_reason(ev[-1]), episode_upstream(ev[-1]))
+    assert ev[-1].close_reason == "went_silent"
+    assert m.severity != "nominal"
+    assert "NOT a recovery" in m.evidence[0] and "returned" not in m.evidence[0]
+
+
+def test_calm_and_unknown_interleaving_keeps_episode_open():
+    """Documented behaviour: a flapping read (unknown at least every 10 min)
+    neither completes a calm gap nor a silent close."""
+    ep, _ = _run(_hot_run(T0, 11))
+    t = T0 + 330
+    for _ in range(20):
+        ep, ev = _run([(t + 30 * i, "calm") for i in range(10)] + [(t + 300, "unknown")], ep)
+        assert ev == []
+        t += 330
+    assert ep is not None
+
+
+def test_state_from_dict_drops_corrupt_numeric_fields():
+    ep, _ = _run(_hot_run(T0, 11))
+    d = state_to_dict(SelfSignalEpisodesStateV1(episodes={SIG: ep}))
+    d["episodes"][SIG]["calm_since"] = "garbage"
+    assert state_from_dict(d).episodes == {}

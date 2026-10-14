@@ -220,3 +220,38 @@ async def test_service_poll_publishes_with_cooldown_bypass(monkeypatch):
         await svc._self_signal_episode_poll_once()
     assert published == [("open", True)]
     svc.bus.redis.set.assert_awaited()
+
+
+def test_failed_first_read_keeps_cold_start_cold():
+    cold = SelfSignalEpisodeGate(GateConfig())
+    cold.load(None)
+    obs = observe_signals(None, now=T0, history_error="unreadable")
+    assert cold.step(obs, zen_state="zen", pressure=0.1, recall_enabled=False, history_ok=False) == []
+    assert cold.cold_start
+    assert _drive(cold, T0 + timedelta(seconds=30), 40, HOT) == []  # adopted, no boot burst
+
+
+def test_non_dict_state_blob_stays_cold():
+    g = SelfSignalEpisodeGate(GateConfig())
+    g.load("null")
+    assert g.cold_start
+
+
+def test_poll_task_is_once_per_process(monkeypatch):
+    import asyncio
+
+    from app import service as svc_mod
+
+    monkeypatch.setattr(svc_mod.settings, "metacog_enable", True)
+    monkeypatch.setattr(svc_mod.settings, "metacog_self_signal_episodes_enabled", True)
+    svc = svc_mod.EquilibriumService()
+
+    async def _go():
+        svc._self_signal_episode_poll_loop = AsyncMock()
+        svc._ensure_self_signal_task()
+        first = svc._self_signal_task
+        svc._ensure_self_signal_task()  # a restarted _run must not add a second
+        assert svc._self_signal_task is first
+        await first
+
+    asyncio.run(_go())

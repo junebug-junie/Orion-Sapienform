@@ -13,6 +13,7 @@ on:
       - "orion/autonomy/cabinet_heat.py"
       - "services/orion-sql-db/manual_migration_temporal_self_event_v1.sql"
       - "services/orion-sql-db/manual_migration_temporal_self_v1.sql"
+      - "services/orion-sql-db/manual_migration_vision_presence_transition_v1.sql"
       - "orion/temporal_self/**"
       - "orion/schemas/temporal_self.py"
       - "services/orion-sql-db/manual_migration_regulation_history.sql"
@@ -96,6 +97,7 @@ on:
       - "services/orion-sql-db/manual_migration_durable_resource_abandon_pending_v1.sql"
       - "services/orion-sql-db/manual_migration_temporal_self_event_v1.sql"
       - "services/orion-sql-db/manual_migration_temporal_self_v1.sql"
+      - "services/orion-sql-db/manual_migration_vision_presence_transition_v1.sql"
       - "orion/temporal_self/**"
       - "orion/schemas/temporal_self.py"
 

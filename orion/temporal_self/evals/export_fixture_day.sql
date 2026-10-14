@@ -115,6 +115,12 @@ SELECT json_build_object('k','memory_episode','memory_id',memory_id,'episode_id'
   'occurred_at',occurred_at)
 FROM episode_memory WHERE occurred_at >= :start AND occurred_at < :end;
 
+-- Seam S1 (needs manual_migration_vision_presence_transition_v1.sql). Label only when confirmed.
+SELECT json_build_object('k','presence_transition','transition_id',transition_id,'presence_id',presence_id,
+  'from_state',from_state,'to_state',to_state,'occurred_at',occurred_at,'identity_confirmed',identity_confirmed,
+  'label',CASE WHEN identity_confirmed THEN label END)
+FROM vision_presence_transition WHERE occurred_at >= :start AND occurred_at < :end;
+
 -- Body rows for the eval day only (the metric gate's live sanity check).
 SELECT json_build_object('k','body_cluster','observed_at',observed_at,'chassis_watts',chassis_watts)
 FROM orion_biometrics_cluster WHERE observed_at >= :body_start AND observed_at < :end;

@@ -9,6 +9,9 @@ for another local day, or is older than ``max_age_sec``. A fresh frame with no o
 real rest state and renders as one ("No attention or conversation arc is open right now.").
 A frame warning "broadcast log silent" drops the attention clauses (the record of what Orion
 attends to has stopped) and keeps the rest.
+
+An open ``company`` arc (seam S1: someone at the room camera) adds "Someone has been here since
+21:02 [arc:<id>]", naming the person only when the arc carries a confirmed identity label.
 """
 
 from __future__ import annotations
@@ -26,7 +29,7 @@ from orion.schemas.temporal_self import (
     TemporalSelfFrameV1,
     TemporalSelfStanceCueV1,
 )
-from orion.temporal_self.day import DEFAULT_TZ, as_utc, day_id_for, day_phase_for
+from orion.temporal_self.day import DEFAULT_TZ, as_utc, day_id_for, day_phase_for, day_window
 
 DEFAULT_MAX_AGE_SEC = 900.0
 MAX_FUTURE_SKEW_SEC = 60.0
@@ -106,6 +109,27 @@ def _previous_clause(now: datetime, arc: ArcSummaryV1) -> str:
     if arc.last_seen_at is not None:  # suspended: set aside, may still return
         return f"Before that: {what}, set aside {_ago(now, arc.last_seen_at)} ago {_ref(arc)}."
     return f"Before that: {what} {_ref(arc)}."
+
+
+def _company_clause(frame: TemporalSelfFrameV1, tz_name: str) -> tuple[str, list[ArcSummaryV1]] | None:
+    """Someone at the room camera right now (an open company arc). Names the person only when the
+    arc's label exists, and the reducer sets it only from a confirmed identity row; otherwise
+    "Someone". A stretch carried over midnight began before the day did: said so, not "00:00"."""
+    arc = frame.active_by_kind.get("company")
+    if arc is None or arc.status != "open":
+        opened = [a for a in frame.arcs_today if a.kind == "company" and a.status == "open"]
+        arc = max(opened, key=lambda a: (a.began_at, a.arc_id), default=None)
+    if arc is None:
+        return None
+    label = arc.subject_label.strip()
+    who = (label[:1].upper() + label[1:]) if label else "Someone"
+    began = as_utc(arc.began_at)
+    assert began is not None
+    if began <= day_window(frame.day_id, tz_name)[0]:
+        since = "before midnight"
+    else:
+        since = began.astimezone(ZoneInfo(tz_name)).strftime("%H:%M")
+    return f"{who} has been here since {since} {_ref(arc)}.", [arc]
 
 
 def _thread_arc(thread: OpenThreadV1, concern: dict[str, ArcSummaryV1]) -> ArcSummaryV1 | None:
@@ -206,6 +230,10 @@ def project_stance_cue(
             if previous is None or last.arc_id != previous.arc_id:
                 clauses.append((f"Juniper last spoke {_ago(now, last.last_seen_at)} ago {_ref(last)}.", [last]))
 
+    company = _company_clause(frame, tz_name)
+    if company is not None:
+        clauses.append(company)
+
     thread_clause = _threads_clause(frame)
     if thread_clause is not None:
         clauses.append(thread_clause)
@@ -240,6 +268,10 @@ def project_stance_cue(
         for arc in arcs:
             if arc.arc_id not in arc_ids:
                 arc_ids.append(arc.arc_id)
+            if arc.kind == "company":
+                # A person's name is not a label of Orion's day: matching it would mark every
+                # uncited mention of Juniper as an unverified day claim.
+                continue
             label = arc.subject_label.strip()
             if label and label in text:  # only what Orion was actually shown is a match label
                 labels.setdefault(label, [])

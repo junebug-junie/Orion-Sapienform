@@ -9,15 +9,17 @@ whose source is dead or missing on 2026-10-10 were dropped rather than kept as n
 no producer (see docs/superpowers/pr-reports/2026-10-10-temporal-self-chronology-reducer-pr.md):
 
 * ``town_exchange`` / arc kind ``town``: zero ``aitown_chat_history_log`` rows since 09-17.
-* ``presence_transition`` / arc kind ``company``: ``vision_presence_transition`` (seam S1)
-  does not exist.
 * ``unresolved_percept`` (1 row ever), ``attention_worthy_sighting`` (walkway not live).
 * ``prior_revision`` / ``peer_ask``: FalkorDB reads, deferred to the patch-3 driver.
 * ``situation_revision``: Redis keeps only the latest revision, no history to replay.
 * ``immune_finding`` / ``arousal_transition`` / ``drive_reading``: regulation lane, not here.
-* ``closed_reason='source_stale'``: its only producer was the company lane.
 * ``ArcSelfModelSummaryV1``: acceptance check 9 requires reproducing the calibration
   script's 66.0% on the same rows first; those rows aged out (168 h retention). Not bound.
+
+Seam S1 (2026-10-14) added ``presence_transition`` / arc kind ``company`` / closed reason
+``source_stale`` once ``vision_presence_transition`` existed. Consumer-first rollout: these
+models forbid unknown values, so every reader of frames/arcs (orion-thought, orion-hub) must
+deploy before the producer (orion-durable-runs) folds a company arc.
 """
 
 from __future__ import annotations
@@ -52,6 +54,8 @@ TemporalSourceKind = Literal[
     "attention_row",
     "vision_percept",
     "memory_episode",
+    # the room camera's presence state machine (seam S1)
+    "presence_transition",
 ]
 
 ArcKind = Literal[
@@ -63,10 +67,12 @@ ArcKind = Literal[
     "reverie",
     "imagery",
     "sleep",
+    "company",
 ]
 
 ArcStatus = Literal["open", "suspended", "closed"]
-ClosedReason = Literal["process_ended", "verdict", "day_boundary", "return_window_expired"]
+# source_stale: the instrument went dark (a company arc closed by ``unknown`` or a producer restart).
+ClosedReason = Literal["process_ended", "verdict", "day_boundary", "return_window_expired", "source_stale"]
 PrivacyClass = Literal["orion_internal", "juniper_chat"]
 
 LABEL_MAX = 300

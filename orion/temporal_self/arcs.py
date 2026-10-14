@@ -107,6 +107,9 @@ LANE_RULES = {
     "reverie": "one reverie chain with >= 1 thought",
     "imagery": "one visual reverie chain",
     "sleep": "one completed dream cycle",
+    "company": ("presence_transition presence_id (room camera); opens on present, recent is the grace "
+                "period, closes on absent (process_ended, at the last sighting) or unknown / a producer "
+                "restart (source_stale); label only when identity was confirmed; spans days"),
 }
 
 
@@ -304,8 +307,13 @@ def _forward_reach(arc: TemporalSelfArcV1, cfg: "ReducerConfig") -> float:
     return cfg.max_tick_gap_sec if arc.kind == "attention" else cfg.conversation_idle_sec
 
 
+# Arcs that are threads or facts about the room, not stretches of Orion's own process: nothing
+# binds to them by time.
+_NO_CONTEXT_KINDS = {"concern", "company"}
+
+
 def _covers(state: TemporalSelfStateV1, arc: TemporalSelfArcV1, at: datetime, cfg: "ReducerConfig") -> bool:
-    if arc.kind == "concern" or at < arc.began_at:
+    if arc.kind in _NO_CONTEXT_KINDS or at < arc.began_at:
         return False
     if (
         arc.status == "open" and arc.kind in _FORWARD_KINDS and arc.segments
@@ -374,7 +382,7 @@ def _retro_bind(state: TemporalSelfStateV1, arc: TemporalSelfArcV1, began: datet
         if _by_ref(item):
             if arc.kind == "reverie" and item.correlation_id in state.arc_correlations.get(arc.arc_id, []):
                 _bind_item(arc, item)
-        elif arc.kind != "concern" and began <= item.at < until:
+        elif arc.kind not in _NO_CONTEXT_KINDS and began <= item.at < until:
             _bind_item(arc, item)
 
 
@@ -550,6 +558,63 @@ def _fold_loop_verdict(state: TemporalSelfStateV1, e: TemporalSelfEventV1) -> No
     _close(arc, "verdict", e.occurred_at)
 
 
+def _company_arc(state: TemporalSelfStateV1, subject: str) -> TemporalSelfArcV1 | None:
+    for arc in state.arcs.values():
+        if arc.kind == "company" and arc.subject_ref == subject and arc.status == "open":
+            return arc
+    return None
+
+
+def _end_company(state: TemporalSelfStateV1, arc: TemporalSelfArcV1, reason: str, at: datetime) -> None:
+    _close(arc, reason, at)
+    if state.active.get("company") == arc.arc_id:
+        del state.active["company"]
+
+
+def _fold_presence(state: TemporalSelfStateV1, e: TemporalSelfEventV1) -> None:
+    """Company: someone at the room camera. The subject is the camera (presence_id), never a
+    person; the enrolled label rides along only on rows whose identity was confirmed."""
+    assert e.subject_ref is not None and state.day_id is not None
+    to_state = e.payload.get("to_state")
+    t = e.occurred_at
+    ref = _ref(e)
+    arc = _company_arc(state, e.subject_ref)
+    if arc is not None and e.payload.get("from_state") is None:
+        # The producer restarted: nothing was observed between the arc's last row and this one.
+        _add_evidence(arc, ref)
+        _end_company(state, arc, "source_stale", arc.last_seen_at)
+        arc = None
+    if to_state == "present":
+        if arc is None:
+            arc = TemporalSelfArcV1(
+                arc_id=arc_id_for(state.day_id, "company", e.subject_ref, ref), day_id=state.day_id,
+                kind="company", subject_ref=e.subject_ref, began_at=t, last_seen_at=t, status="open",
+                segments=[ArcSegmentV1(began_at=t, ended_at=t)],
+            )
+            _add_evidence(arc, ref)
+            state.arcs[arc.arc_id] = arc
+        else:
+            _extend(arc, t, ref, accrue=True)
+        state.active["company"] = arc.arc_id
+        if e.payload.get("identity_confirmed") and e.label and not arc.subject_label:
+            arc.subject_label = e.label
+    elif arc is None:
+        return  # recent/absent/unknown with no open stretch: nothing to extend or close
+    elif to_state == "recent":
+        _extend(arc, t, ref, accrue=True)  # the grace period: not seen since t, arc stays open
+    elif to_state == "absent":
+        _add_evidence(arc, ref)
+        if e.payload.get("from_state") == "recent":
+            # Absent is stamped when the grace ran out; the person left at the recent row.
+            _end_company(state, arc, "process_ended", arc.last_seen_at)
+        else:
+            _extend(arc, t, None, accrue=True)
+            _end_company(state, arc, "process_ended", t)
+    elif to_state == "unknown":
+        _extend(arc, t, ref, accrue=True)  # t is the last observation before the camera went dark
+        _end_company(state, arc, "source_stale", t)
+
+
 def _fold_process(state: TemporalSelfStateV1, e: TemporalSelfEventV1, cfg: ReducerConfig) -> None:
     kind = PROCESS_KINDS[e.source_kind]
     assert state.day_id is not None and e.subject_ref is not None
@@ -662,6 +727,8 @@ def _fold_event(state: TemporalSelfStateV1, e: TemporalSelfEventV1, cfg: Reducer
         _fold_process(state, e, cfg)
     elif k == "consolidation_window_close":
         _fold_consolidation_close(state, e)
+    elif k == "presence_transition":
+        _fold_presence(state, e)
     elif k in ("dream_hypothesis", "expectation_verdict", "action_outcome"):
         _fold_expectation(state, e)
         if k == "action_outcome":
@@ -707,9 +774,20 @@ def _roll_day(state: TemporalSelfStateV1, cfg: ReducerConfig) -> None:
     for arc in list(state.arcs.values()):
         if arc.day_id != old_day or arc.status == "closed":
             continue
+        if arc.kind == "company" and arc.status == "open":
+            # Rows are written only on change: an open stretch is still going at midnight.
+            _extend(arc, max(day_end, arc.last_seen_at), None, accrue=True)
         _close(arc, "day_boundary", arc.last_seen_at)
         carried.append(arc.arc_id)
-        if arc.kind == "concern":
+        if arc.kind == "company":
+            continuations.append(TemporalSelfArcV1(
+                arc_id=arc_id_for(next_day, "company", arc.subject_ref, arc.arc_id), day_id=next_day,
+                kind="company", subject_ref=arc.subject_ref, subject_label=arc.subject_label,
+                began_at=day_end, last_seen_at=day_end, status="open",
+                segments=[ArcSegmentV1(began_at=day_end, ended_at=day_end)],
+                carried_from_previous_day=True, carried_from_arc_id=arc.arc_id,
+            ))
+        elif arc.kind == "concern":
             cont = TemporalSelfArcV1(
                 arc_id=arc_id_for(next_day, "concern", arc.subject_ref, arc.arc_id), day_id=next_day,
                 kind="concern", subject_ref=arc.subject_ref, subject_label=arc.subject_label,
@@ -722,7 +800,7 @@ def _roll_day(state: TemporalSelfStateV1, cfg: ReducerConfig) -> None:
             continuations.append(cont)
         else:
             state.carry[f"{arc.kind}|{arc.subject_ref}"] = {"arc_id": arc.arc_id, "last_seen": arc.last_seen_at.isoformat()}
-    state.active = {}
+    state.active = {c.kind: c.arc_id for c in continuations if c.kind == "company"}
     day_arcs = sorted((a for a in state.arcs.values() if a.day_id == old_day), key=lambda a: (a.began_at, a.arc_id))
     state.pending_closed_days.append(
         TemporalSelfDayV1(day_id=old_day, closed_at=day_end, frame=frame, arcs=[a.model_copy(deep=True) for a in day_arcs])

@@ -38,7 +38,8 @@ MAX_CURIOSITY_LINES = 10
 MAX_IMMUNE_LINES = 5
 IMMUNE_KIND_WORDS = {"constant": "constant", "floor_locked": "floor-locked", "replayed": "replayed",
                      "decayed_to_zero": "decayed to zero"}
-KIND_ORDER = ("attention", "conversation", "curiosity", "sleep", "imagery", "concern", "reverie", "interoception")
+KIND_ORDER = ("attention", "conversation", "curiosity", "sleep", "imagery", "concern", "reverie", "interoception",
+              "company")
 
 
 def _clock(at: datetime | None, day_id: str, tz: ZoneInfo) -> str:

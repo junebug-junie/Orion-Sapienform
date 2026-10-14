@@ -151,7 +151,7 @@ def test_every_source_kind_has_an_adapter_and_no_dead_kind_is_declared():
     from orion.schemas.temporal_self import TemporalSourceKind
 
     assert set(get_args(TemporalSourceKind)) == set(S.ADAPTERS)
-    for dead in ("town_exchange", "presence_transition", "prior_revision", "peer_ask", "situation_revision"):
+    for dead in ("town_exchange", "prior_revision", "peer_ask", "situation_revision"):
         assert dead not in S.ADAPTERS
 
 

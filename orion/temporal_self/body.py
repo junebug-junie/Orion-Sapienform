@@ -27,7 +27,8 @@ from orion.schemas.temporal_self import ArcBodySummaryV1, TemporalSelfArcV1, Tem
 Row = Mapping[str, Any]
 
 # Reverie chains (~170 a day with content) are seconds long and not foreground: no body read.
-NO_BODY_KINDS = frozenset({"reverie"})
+# Company arcs are a fact about the room (someone at the camera), not a stretch of Orion's work.
+NO_BODY_KINDS = frozenset({"reverie", "company"})
 POINT_ARC_PAD = timedelta(seconds=30)
 
 

@@ -21,6 +21,8 @@ Rows that change after insert (stated, so a live/replay difference is never a su
   row: up to 141 s after the trace (live, 7 days to 10-10). The read lag covers it.
 * ``episode_memory`` rows are written a median 13 h after ``occurred_at`` (live 10-10), so live
   they arrive late by construction and are counted, never bound. A replay binds them.
+* ``vision_presence_transition`` ``unknown`` rows are written ~120 s (the producer's
+  ``STALE_AFTER_MS``) after their ``occurred_at`` (the last observation); inside the 300 s read lag.
 """
 
 from __future__ import annotations
@@ -165,6 +167,13 @@ WHERE created_at >= %(lo)s AND created_at < %(hi)s
     SourceQuery("memory_episode", """
 SELECT memory_id::text AS memory_id, episode_id, purpose, occurred_at
 FROM episode_memory WHERE occurred_at >= %(lo)s AND occurred_at < %(hi)s
+"""),
+    # Seam S1. The label column is selected only where identity was confirmed; the adapter
+    # enforces the same rule again.
+    SourceQuery("presence_transition", """
+SELECT transition_id, presence_id, from_state, to_state, occurred_at, identity_confirmed,
+  CASE WHEN identity_confirmed THEN label END AS label
+FROM vision_presence_transition WHERE occurred_at >= %(lo)s AND occurred_at < %(hi)s
 """),
 )
 

@@ -364,6 +364,30 @@ def memory_episode(row: Row, tz_name: str = DEFAULT_TZ) -> TemporalSelfEventV1 |
     )
 
 
+PRESENCE_STATES = frozenset({"present", "recent", "absent", "unknown"})
+
+
+def presence_transition(row: Row, tz_name: str = DEFAULT_TZ) -> TemporalSelfEventV1 | None:
+    """vision_presence_transition (seam S1), room streams only (a walkway camera seeing a
+    passer-by is not company). Time: occurred_at (the state machine's own state_since; for
+    ``unknown``, the last observation). Subject: presence_id. Verdict: to_state.
+
+    The label is the enrolled identity label and is copied ONLY when ``identity_confirmed``: an
+    unconfirmed guess never reaches the chronology. ``from_state`` NULL marks the producer's first
+    row after a restart."""
+    stream = row.get("presence_id")
+    to_state = row.get("to_state")
+    if stream not in ROOM_STREAMS or to_state not in PRESENCE_STATES:
+        return None
+    confirmed = bool(row.get("identity_confirmed")) and bool(str(row.get("label") or "").strip())
+    return _event(
+        kind="presence_transition", table="vision_presence_transition", ref=row.get("transition_id"),
+        at=row.get("occurred_at"), tz_name=tz_name, subject_ref=str(stream),
+        label=clip(row.get("label")) if confirmed else "", verdict=str(to_state),
+        payload={"from_state": row.get("from_state"), "to_state": to_state, "identity_confirmed": confirmed},
+    )
+
+
 def _iso(value: Any) -> str | None:
     dt = as_utc(value)
     return dt.isoformat() if dt else None
@@ -388,6 +412,7 @@ ADAPTERS: dict[str, Callable[[Row, str], TemporalSelfEventV1 | None]] = {
     "field_dominance_run": field_dominance_run,
     "vision_percept": vision_percept,
     "memory_episode": memory_episode,
+    "presence_transition": presence_transition,
 }
 
 

@@ -34,6 +34,8 @@ REPO = HERE.parents[2]
 MIGRATIONS = (
     REPO / "services/orion-sql-db/manual_migration_temporal_self_event_v1.sql",
     REPO / "services/orion-sql-db/manual_migration_temporal_self_v1.sql",
+    # Seam S1's source table is new (not in the live-typed source DDL export): its own migration.
+    REPO / "services/orion-sql-db/manual_migration_vision_presence_transition_v1.sql",
 )
 
 
@@ -132,6 +134,7 @@ def table_rows(rows: dict[str, list[dict]]) -> dict[str, list[dict]]:
     out["attention_loop_outcome"].extend(dict(r) for r in rows.get("attention_loop_verdict", []))
     out["field_dominance_run"].extend(dict(r) for r in rows.get("field_dominance_run", []))
     out["vision_events"].extend(dict(r) for r in rows.get("vision_percept", []))
+    out["vision_presence_transition"].extend(dict(r) for r in rows.get("presence_transition", []))
     for r in rows.get("memory_episode", []):
         out["episode_memory"].append(dict(r, created_at=r.get("occurred_at")))
     out["orion_biometrics_cluster"].extend(dict(r) for r in rows.get("body_cluster", []))

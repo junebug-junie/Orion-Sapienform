@@ -129,6 +129,42 @@ def test_source_sql_reads_exactly_what_the_adapters_read():
     with_db(scenario_fn)
 
 
+def test_presence_transitions_read_from_the_s1_table_and_fold_into_company_arcs():
+    async def scenario_fn(pool):
+        w = scenario()
+        rows = [
+            ("t1", "cam0", None, "present", 0, False, None),
+            ("t2", "cam0", "present", "present", 2, True, "juniper"),
+            ("t3", "cam0", "present", "recent", 30, False, None),
+            ("t4", "cam0", "recent", "absent", 32, False, None),
+            ("t5", "walkway", None, "present", 5, False, None),  # not a room stream: not company
+        ]
+        for tid, pid, frm, to, minute, confirmed, label in rows:
+            w.add("presence_transition", {"transition_id": tid, "presence_id": pid, "from_state": frm, "to_state": to,
+                                          "occurred_at": T0 + timedelta(minutes=minute),
+                                          "identity_confirmed": confirmed, "label": label})
+        await run_pg(pool, w, T0 + timedelta(hours=1))
+        lo, hi = T0 - timedelta(minutes=5), T0 + timedelta(minutes=50)
+        _, events = await SourceReader(pool, TZ).read(lo, hi, ticks=False, kinds=["presence_transition"])
+        _, fevents = await FakeReader(w).read(lo, hi, ticks=False, kinds=["presence_transition"])
+        assert sorted(e.model_dump_json() for e in events) == sorted(e.model_dump_json() for e in fevents)
+        assert {e.source_ref: e.label for e in events} == {"t1": "", "t2": "juniper", "t3": "", "t4": ""}
+        store = ChronicleStore(pool)
+        (arc,) = [a for a in await store.arcs("2026-10-10") if a["kind"] == "company"]
+        arc = canon(arc)
+        assert arc["subject_ref"] == "cam0" and arc["subject_label"] == "juniper"
+        assert arc["status"] == "closed" and arc["closed_reason"] == "process_ended"
+        cursors = {c["source_kind"]: c for c in await store.cursors()}
+        assert cursors["presence_transition"]["last_source_ref"] == "t4"  # its own cursor
+        async with pool.connection() as conn:  # the table refuses a label without a confirmed identity
+            with pytest.raises(Exception):
+                await conn.execute("INSERT INTO vision_presence_transition (transition_id, presence_id, to_state, "
+                                   "occurred_at, identity_confirmed, label) VALUES ('bad', 'cam0', 'present', now(), "
+                                   "false, 'guess')")
+
+    with_db(scenario_fn)
+
+
 def test_cabinet_text_timestamps_with_either_separator_are_read():
     async def scenario_fn(pool):
         async with pool.connection() as conn:

@@ -114,6 +114,7 @@ from .curiosity_offer_decisions import (
 )
 from orion.curiosity.acl import assert_orion_acl, ensure_graph_exists
 from orion.curiosity.investigation_subject import build_investigation_subject
+from orion.curiosity.temporal_fact import curiosity_today_fact, thread_run_ids_from_view
 from orion.curiosity.kickoff_prompt import (
     DEFAULT_MAX_HOPS,
     build_kickoff_prompt,
@@ -265,6 +266,9 @@ JOURNAL_WRITE_CHANNEL = "orion:journal:write"
 # write (see _publish_attention_schema). Above the reader's 5s socket_timeout
 # so a merely slow read completes; below the ~10s a dead host would cost.
 ATTENTION_SCHEMA_GRAPH_READ_TIMEOUT_SEC = 6.0
+# The kickoff's "today so far" chronicle read: one deadline for both GETs. Short, because
+# the line is optional and the kickoff must not wait on it.
+TEMPORAL_SELF_FACT_TIMEOUT_SEC = 1.5
 # How long a finished harness-turn result is served to a re-issued request for
 # the same run_id (a runner that restarted mid-turn asks again). One hour
 # covers the longest turn plus the runner's own RPC timeout.
@@ -828,6 +832,11 @@ class CuriosityInvestigation:
         # The regular investigate line only: claims yesterday's letter's
         # carry_forward_md once and shows it as its own kickoff section.
         carry_forward_enabled: bool = False,
+        # --- Temporal Self "curiosity gets its day" (orion/curiosity/temporal_fact.py) ---
+        # One fact line: curiosity runs finished today and their minutes, read from
+        # orion-durable-runs' chronicle at `durable_runs_url`. Off here so bare
+        # constructions in tests never touch the network; settings ship it on.
+        temporal_self_fact_enabled: bool = False,
         # --- Orion's Day corrections (orion/orion_day/corrections.py) ------
         # The regular investigate line, on a writable graph only: claims up to
         # MAX_CORRECTIONS_PER_RUN recorded letter corrections once, shows them
@@ -967,6 +976,7 @@ class CuriosityInvestigation:
         self.dream_hypotheses_enabled = bool(dream_hypotheses_enabled)
         self.dream_hypotheses_per_run = max(0, int(dream_hypotheses_per_run))
         self.carry_forward_enabled = bool(carry_forward_enabled)
+        self.temporal_self_fact_enabled = bool(temporal_self_fact_enabled)
         self.orion_day_corrections_enabled = bool(orion_day_corrections_enabled)
         # Other Hub loops that want terminal durable-run states without a second
         # subscription (Orion's Day: scripts/orion_day_letter.py). Each hook gets
@@ -1367,6 +1377,52 @@ class CuriosityInvestigation:
         return await take_hypotheses_for_offer(
             self._pool_provider(), run_id=run_id, limit=self.dream_hypotheses_per_run
         )
+
+    async def _read_today_fact(self, view: WorldviewSnapshot, now: datetime) -> Optional[str]:
+        """The kickoff's "today so far" fact line, or None.
+
+        Two GETs on orion-durable-runs, in parallel, under one short deadline: the frame
+        (freshness and day) and the uncapped curiosity arc list (the frame's own list is
+        capped and drops morning runs on a busy day). Any failure -- off, unreachable,
+        slow, 404 before the first window commits, bad JSON -- is no line, never a
+        failed or delayed kickoff."""
+        if not self.temporal_self_fact_enabled:
+            return None
+        root = str(self.durable_runs_url or "").strip().rstrip("/")
+        if not root:
+            return None
+
+        async def _get(client: httpx.AsyncClient, path: str) -> Any:
+            resp = await client.get(f"{root}{path}")
+            return resp.json() if resp.status_code == 200 else None
+
+        try:
+            async with httpx.AsyncClient(timeout=TEMPORAL_SELF_FACT_TIMEOUT_SEC) as client:
+                frame, arcs = await asyncio.wait_for(
+                    asyncio.gather(
+                        _get(client, "/temporal-self/frame"),
+                        _get(client, "/temporal-self/arcs?kind=curiosity"),
+                        return_exceptions=True,
+                    ),
+                    timeout=TEMPORAL_SELF_FACT_TIMEOUT_SEC,
+                )
+        except Exception as exc:  # noqa: BLE001
+            logger.info("curiosity_today_fact_unavailable err=%s", exc)
+            return None
+        if isinstance(frame, BaseException) or frame is None:
+            logger.info("curiosity_today_fact_unavailable err=%s", frame or "no frame")
+            return None
+        fact = curiosity_today_fact(
+            frame,
+            now=now,
+            thread_run_ids=thread_run_ids_from_view(view) if self.graph_enabled else (),
+            curiosity_arcs=arcs if isinstance(arcs, dict) else None,
+        )
+        if fact is None:
+            logger.info("curiosity_today_fact_withheld day=%s as_of=%s",
+                        frame.get("day_id") if isinstance(frame, dict) else None,
+                        frame.get("as_of") if isinstance(frame, dict) else None)
+        return fact
 
     async def _take_carry_forward(self, run_id: str):
         """Claim Orion's Day carry-forward for this run. None when off or nothing fresh.
@@ -2175,6 +2231,7 @@ class CuriosityInvestigation:
         carry_forward = await self._take_carry_forward(run_id)
         corrections = await self._take_corrections(view, run_id)
         open_lived_questions = await self._read_open_lived_questions(run_id)
+        today_fact = await self._read_today_fact(view, now)
         prompt = build_kickoff_prompt(
             material,
             view=view,
@@ -2195,7 +2252,10 @@ class CuriosityInvestigation:
             carry_forward=carry_forward,
             open_lived_questions=open_lived_questions,
             corrections=corrections,
+            today_fact=today_fact,
         )
+        if today_fact:
+            logger.info("curiosity_today_fact_offered run=%s fact=%s", run_id, today_fact)
         if open_lived_questions:
             logger.info(
                 "curiosity_open_lived_questions_offered run=%s ids=%s",

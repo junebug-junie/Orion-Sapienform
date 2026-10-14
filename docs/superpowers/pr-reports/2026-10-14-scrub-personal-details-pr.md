@@ -101,6 +101,6 @@ Only orion-mind, after merge and pull, so the env-driven name list replaces the 
 
 ## PR link
 
-PR_LINK_PLACEHOLDER
+https://github.com/junebug-junie/Orion-Sapienform/pull/2651
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

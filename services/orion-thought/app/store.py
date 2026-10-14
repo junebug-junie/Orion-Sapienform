@@ -975,6 +975,116 @@ def load_latest_self_study_reflection(
 # MAX_REVERIE_CONTEXT_CHARS rather than matching either.
 MAX_MEMORY_CRYSTALLIZATION_CONTEXT_CHARS = 180
 
+# Episode-memory statements are natural prose under the same diffusion prompt
+# budget as legacy crystallization summaries. Keep one cap until the real
+# tokenizer demonstrates they need different budgets.
+MAX_EPISODE_MEMORY_CONTEXT_CHARS = MAX_MEMORY_CRYSTALLIZATION_CONTEXT_CHARS
+EPISODE_MEMORY_MAX_AGE_SEC = 604800.0
+
+
+def load_episode_memory_seed(
+    *,
+    char_limit: int | None = None,
+    max_age_sec: float = 604800.0,
+    with_identity: bool = False,
+) -> "Any | None":
+    """Least-recently-seeded eligible Stage 2 episode memory.
+
+    This is the approved PR G read seam from the Stage 2 referent-memory
+    design. Eligibility is deliberately stricter than ``status='active'``:
+    only ``happened``/``about_juniper`` memories with verified evidence may
+    seed an image; low-stakes memories must be automatic, while any high-
+    stakes memory must have been confirmed. Expired facts are excluded even
+    if their lifecycle worker has not changed ``status`` yet.
+
+    The seven-day policy is a hard ceiling: callers may narrow it for testing
+    or emergency operation, but cannot widen it through the legacy age env.
+
+    Selection is deterministic and diversity-preserving: memories never used
+    by a visual chain sort first, oldest memory first; after every eligible
+    memory has appeared, the least-recently-used one wins. Usage is read from
+    the visual chain's own typed ``context_selection`` receipt, so a stored
+    prompt attempt advances rotation even when generation later fails.
+
+    Read-only and best-effort. With ``with_identity=True``, returns
+    ``VisualSourceV1`` so the exact ``memory_id`` follows the prompt into the
+    chain receipt; otherwise returns its text. Returns ``None`` on an empty
+    set or any database failure.
+    """
+    try:
+        from sqlalchemy import text
+
+        from orion.cognition.compactor.truncate import truncate_at_word_boundary
+        from orion.schemas.reverie_visual import VisualSourceV1
+
+        engine = _get_engine()
+        with engine.connect() as conn:
+            row = (
+                conn.execute(
+                    text(
+                        """
+                        WITH eligible AS (
+                            SELECT m.memory_id, m.statement, m.created_at
+                            FROM episode_memory m
+                            WHERE m.purpose IN ('happened', 'about_juniper')
+                              AND m.status = 'active'
+                              AND m.created_at > now() - make_interval(secs => :max_age_sec)
+                              AND (m.expires_at IS NULL OR m.expires_at > now())
+                              AND (
+                                (m.stakes = 'low' AND m.confirmation_state = 'auto')
+                                OR m.confirmation_state = 'confirmed'
+                              )
+                              AND EXISTS (
+                                SELECT 1 FROM episode_memory_evidence ev
+                                WHERE ev.memory_id = m.memory_id AND ev.verified IS TRUE
+                              )
+                              AND NOT EXISTS (
+                                SELECT 1 FROM episode_memory_evidence ev
+                                WHERE ev.memory_id = m.memory_id AND ev.verified IS NOT TRUE
+                              )
+                              AND NOT EXISTS (
+                                SELECT 1 FROM episode_memory_event e
+                                WHERE e.memory_id = m.memory_id
+                                  AND e.op IN ('downgraded_voice', 'rejected_invalid')
+                              )
+                        ), seeded AS (
+                            SELECT
+                                chain_json->'context_selection'->'source'->>'source_id' AS memory_id,
+                                max(created_at) AS last_seeded_at
+                            FROM reverie_visual_chain
+                            WHERE chain_json->'context_selection'->>'source_kind' = 'episode_memory'
+                            GROUP BY 1
+                        )
+                        SELECT e.memory_id::text AS source_id, e.statement
+                        FROM eligible e
+                        LEFT JOIN seeded s ON s.memory_id = e.memory_id::text
+                        WHERE btrim(e.statement) <> ''
+                        ORDER BY s.last_seeded_at ASC NULLS FIRST,
+                                 e.created_at ASC,
+                                 e.memory_id ASC
+                        LIMIT 1
+                        """
+                    ),
+                    {"max_age_sec": min(float(max_age_sec), EPISODE_MEMORY_MAX_AGE_SEC)},
+                )
+                .mappings()
+                .first()
+            )
+        if not row:
+            return None
+        value = str(row.get("statement") or "").strip()
+        source_id = str(row.get("source_id") or "").strip()
+        if not value or not source_id:
+            return None
+        limit_chars = MAX_EPISODE_MEMORY_CONTEXT_CHARS if char_limit is None else char_limit
+        trimmed, _truncated = truncate_at_word_boundary(value, limit_chars)
+        if with_identity:
+            return VisualSourceV1(source_id=source_id, text=trimmed)
+        return trimmed
+    except Exception as exc:
+        logger.debug("episode memory visual context-seed load failed: %s", exc)
+        return None
+
 
 def load_latest_memory_crystallization(
     *, char_limit: int | None = None, max_age_sec: float | None = None, with_identity: bool = False

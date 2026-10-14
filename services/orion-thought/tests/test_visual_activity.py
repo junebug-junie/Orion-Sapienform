@@ -34,7 +34,11 @@ def database(monkeypatch):
     engine = create_engine(url, connect_args={"options": f"-c search_path={schema}"})
     root = Path(__file__).resolve().parents[3]
     with engine.begin() as conn:
-        for filename in ("manual_migration_reverie_visual_chain.sql", "manual_migration_reverie_visual_attempt.sql"):
+        for filename in (
+            "manual_migration_episode_memory_v1.sql",
+            "manual_migration_reverie_visual_chain.sql",
+            "manual_migration_reverie_visual_attempt.sql",
+        ):
             conn.execute(text((root / "services/orion-sql-db" / filename).read_text()))
     monkeypatch.setattr(store, "_get_engine", lambda: engine)
     yield store, engine
@@ -54,6 +58,100 @@ def production(store, tmp_path, chain_id="chain-1", at=NOW, content=b"real store
         mime="image/png", bytes=len(content), path=str(path), created_at=at)
     assert store.persist_reverie_visual_chain(chain)
     return chain, artifact
+
+
+def test_episode_memory_seed_executes_governance_filters_and_lru_rotation(database):
+    store, engine = database
+    ids = {name: uuid4() for name in (
+        "low_auto", "confirmed_high", "pending_high", "mixed_evidence",
+        "downgraded", "expired", "older_than_policy",
+    )}
+
+    def add_memory(name, *, age_days, stakes="low", confirmation="auto", expires=None):
+        with engine.begin() as conn:
+            conn.execute(text("""
+                INSERT INTO episode_memory (
+                    memory_id, episode_id, purpose, voice, channel, statement,
+                    stakes, stakes_reason, confirmation_state, strength,
+                    last_reinforced_at, status, expires_at, created_at, updated_at
+                ) VALUES (
+                    :memory_id, :episode_id, 'happened', 'worked_out_together',
+                    'chat', :statement, :stakes, 'test policy', :confirmation,
+                    0.8, now(), 'active', :expires,
+                    now() - make_interval(days => :age_days), now()
+                )
+            """), {
+                "memory_id": ids[name], "episode_id": f"episode-{name}",
+                "statement": f"Eligible fixture {name}.", "stakes": stakes,
+                "confirmation": confirmation, "expires": expires, "age_days": age_days,
+            })
+            conn.execute(text("""
+                INSERT INTO episode_memory_evidence
+                    (memory_id, source_kind, source_id, quote, quote_sha256, verified)
+                VALUES (:memory_id, 'chat_prompt', :source_id, 'verified quote', :sha, true)
+            """), {
+                "memory_id": ids[name], "source_id": f"source-{name}",
+                "sha": f"sha-{name}",
+            })
+
+    add_memory("low_auto", age_days=3)
+    add_memory("confirmed_high", age_days=2, stakes="high", confirmation="confirmed")
+    add_memory("pending_high", age_days=4, stakes="high", confirmation="pending_confirmation")
+    add_memory("mixed_evidence", age_days=4)
+    add_memory("downgraded", age_days=4)
+    add_memory("expired", age_days=4, expires=NOW - timedelta(hours=1))
+    add_memory("older_than_policy", age_days=8)
+
+    with engine.begin() as conn:
+        conn.execute(text("""
+            INSERT INTO episode_memory_evidence
+                (memory_id, source_kind, source_id, quote, quote_sha256, verified)
+            VALUES (:memory_id, 'chat_response', 'mixed-unverified',
+                    'unverified quote', 'mixed-unverified-sha', false)
+        """), {"memory_id": ids["mixed_evidence"]})
+        conn.execute(text("""
+            INSERT INTO episode_memory_event
+                (event_id, memory_id, op, actor, episode_id, reason)
+            VALUES (:event_id, :memory_id, 'downgraded_voice', 'test',
+                    'episode-downgraded', 'test exclusion')
+        """), {"event_id": uuid4(), "memory_id": ids["downgraded"]})
+
+    # Never-used memories sort first, oldest eligible first.
+    first = store.load_episode_memory_seed(with_identity=True)
+    assert first.source_id == str(ids["low_auto"])
+
+    def record_use(name, *, hours_ago):
+        with engine.begin() as conn:
+            conn.execute(text("""
+                INSERT INTO reverie_visual_chain
+                    (chain_id, created_at, terminal_reason, chain_json)
+                VALUES (:chain_id, now() - make_interval(hours => :hours_ago),
+                        'generation_failed', jsonb_build_object(
+                            'context_selection', jsonb_build_object(
+                                'source_kind', 'episode_memory',
+                                'source', jsonb_build_object(
+                                    'source_id', :source_id, 'text', 'private'))))
+            """), {
+                "chain_id": f"used-{name}-{hours_ago}", "hours_ago": hours_ago,
+                "source_id": str(ids[name]),
+            })
+
+    record_use("low_auto", hours_ago=1)
+    assert store.load_episode_memory_seed(with_identity=True).source_id == str(ids["confirmed_high"])
+
+    # Once both have been used, the least-recently-used memory wins.
+    record_use("confirmed_high", hours_ago=2)
+    assert store.load_episode_memory_seed(with_identity=True).source_id == str(ids["confirmed_high"])
+
+    # Retire the two valid rows. Even a caller asking for 14 days cannot widen
+    # the hard seven-day boundary to admit the old pre-policy-shaped fixture;
+    # every remaining row is pending, mixed-unverified, downgraded, or expired.
+    with engine.begin() as conn:
+        conn.execute(text("""
+            UPDATE episode_memory SET status='retired'
+            WHERE memory_id IN (:low_auto, :confirmed_high)
+        """), {"low_auto": ids["low_auto"], "confirmed_high": ids["confirmed_high"]})
+    assert store.load_episode_memory_seed(max_age_sec=1209600.0, with_identity=True) is None
 
 
 def test_receipt_duplicate_bytes_advance_per_run_and_failures_do_not(database, tmp_path):
@@ -260,7 +358,7 @@ async def test_only_selected_source_is_credited_and_store_restores_selection(dat
     monkeypatch.setattr(vc, 'load_latest_visual_chain_continuity_state', lambda **kw: ('previous scene', 0, rotation[0], 'prior-chain-id'))
     monkeypatch.setattr(vc, 'load_latest_reverie_interpretation', lambda **kw: context)
     monkeypatch.setattr(vc, 'load_latest_self_study_reflection', lambda **kw: VisualSourceV1(source_id='entry-id', text='Observed traffic changed.'))
-    monkeypatch.setattr(vc, 'load_latest_memory_crystallization', lambda **kw: VisualSourceV1(source_id='crystal-id', text='A reviewed memory.'))
+    monkeypatch.setattr(vc, 'load_episode_memory_seed', lambda **kw: VisualSourceV1(source_id='episode-memory-id', text='A reviewed memory.'))
     monkeypatch.setattr(vc.settings, 'visual_chain_interpretation_enabled', False)
     monkeypatch.setattr(vc.settings, 'thermal_gate_enabled', False)
     monkeypatch.setattr(vc.settings, 'visual_chain_storage_dir', str(tmp_path))
@@ -269,7 +367,7 @@ async def test_only_selected_source_is_credited_and_store_restores_selection(dat
     monkeypatch.setattr(vc, 'call_diffusion_generate', lambda *a, **kw: png)
     def no_caption(*a, **kw): raise RuntimeError('caption unavailable')
     monkeypatch.setattr(vc, 'upload_to_percept_store', no_caption)
-    for index, kind, source_id in [(0,'reverie','thought-id'),(1,'self_study','entry-id'),(2,'memory','crystal-id')]:
+    for index, kind, source_id in [(0,'reverie','thought-id'),(1,'self_study','entry-id'),(2,'episode_memory','episode-memory-id')]:
         rotation[0] = index
         # A bus: a run with no hold asks the pool (granted by conftest's fake) since stage 5.4.
         chain = await vc.run_visual_chain_once(bus=AsyncMock())

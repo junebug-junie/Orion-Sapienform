@@ -292,6 +292,9 @@ SYNC_PREFIXES = (
     # Reverie VISUAL chain (Patch 2 of docs/superpowers/specs/2026-08-20-
     # reverie-visual-chain-design.md, default-off)
     "ORION_VISUAL_CHAIN_",
+    # Stage 2 PR G uses the design-approved REVERIE_VISUAL_* switch name,
+    # which does not match the older ORION_VISUAL_CHAIN_* family above.
+    "REVERIE_VISUAL_",
     "SUBSTRATE_FELT_STATE_",
     # System One / Kev shadow appraisal (orion-substrate-runtime). Without this
     # prefix the default sync silently skips every SUBSTRATE_SYSTEM_ONE_* key

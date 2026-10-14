@@ -82,7 +82,7 @@ SCENARIOS = [
 ]
 
 
-async def _run_scenario(monkeypatch, scenario: Scenario, tmp_path):
+async def _run_scenario(monkeypatch, scenario: Scenario, tmp_path, *, memory_source=None):
     from app import visual_chain
 
     monkeypatch.setattr(visual_chain.settings, "thermal_gate_enabled", False)
@@ -95,7 +95,7 @@ async def _run_scenario(monkeypatch, scenario: Scenario, tmp_path):
     )
     monkeypatch.setattr(visual_chain, "load_latest_reverie_interpretation", lambda **kw: None)
     monkeypatch.setattr(visual_chain, "load_latest_self_study_reflection", lambda **kw: None)
-    monkeypatch.setattr(visual_chain, "load_latest_memory_crystallization", lambda **kw: None)
+    monkeypatch.setattr(visual_chain, "load_episode_memory_seed", lambda **kw: memory_source)
 
     def fake_generate(prompt, **kw):
         if not scenario.generate_ok:
@@ -182,3 +182,40 @@ async def test_visual_chain_honest_degradation_matrix(monkeypatch, tmp_path):
             chain, persisted_artifacts = await _run_scenario(m, scenario, tmp_path / scenario.name)
             all_problems.extend(_check(chain, persisted_artifacts, scenario))
     assert not all_problems, "honest-degradation invariant violated:\n" + "\n".join(all_problems)
+
+
+@pytest.mark.asyncio
+async def test_episode_memory_seed_keeps_typed_provenance_without_text_egress(
+    monkeypatch, tmp_path
+):
+    """A memory reaching diffusion must remain attributable by id and kind.
+
+    The execution receipt may expose that identity, but not the private source
+    statement itself. This is the Stage 2 PR G trace/privacy contract rather
+    than a mere assertion that a loader returned some text.
+    """
+    from app import visual_chain
+    from orion.schemas.reverie_visual import VisualRunRequestV1, VisualSourceV1
+
+    source = VisualSourceV1(
+        source_id="episode-memory-eval-id",
+        text="Juniper and Orion repaired the mesh together.",
+    )
+    scenario = next(item for item in SCENARIOS if item.name == "full_success")
+    chain, _artifacts = await _run_scenario(
+        monkeypatch, scenario, tmp_path / "episode-memory", memory_source=source
+    )
+
+    assert chain.context_selection.source_kind == "episode_memory"
+    assert chain.context_selection.source.source_id == source.source_id
+    assert source.text in chain.chain_json["prompt"]
+
+    receipt = visual_chain.build_visual_execution_receipt(
+        VisualRunRequestV1(dispatch_id="episode-memory-eval"),
+        chain.chain_id,
+        chain,
+        visual_chain.visual_outcome_for_chain(chain),
+    )
+    assert receipt.source_kind == "episode_memory"
+    assert receipt.source_refs == [source.source_id]
+    assert source.text not in str(receipt.model_dump(mode="json"))

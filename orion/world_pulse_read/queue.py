@@ -178,6 +178,7 @@ SET status = 'claimed', claimed_at = now()
 WHERE seed_id = (
     SELECT seed_id FROM world_pulse_read_seed
     WHERE status = 'pending'
+      AND seed_id <> ALL(COALESCE($2::text[], ARRAY[]::text[]))
       AND (NOT $1::boolean OR EXISTS (
           SELECT 1 FROM reading_durable_turn d
           WHERE d.seed_id=world_pulse_read_seed.seed_id
@@ -201,6 +202,7 @@ WHERE seed_id = (
     WHERE status = 'done'
       AND handoff_json IS NOT NULL
       AND stage2_status = 'pending'
+      AND seed_id <> ALL(COALESCE($2::text[], ARRAY[]::text[]))
       AND (NOT $1::boolean OR EXISTS (
           SELECT 1 FROM reading_durable_turn d
           WHERE d.seed_id=world_pulse_read_seed.seed_id
@@ -575,8 +577,12 @@ def _seed_from_row(row: Any) -> WorldPulseReadSeedV1:
     )
 
 
-async def claim_next_seed(conn: Any, *, active_only: bool = False) -> WorldPulseReadSeedV1 | None:
-    row = await conn.fetchrow(CLAIM_SQL, active_only)
+async def claim_next_seed(
+    conn: Any, *, active_only: bool = False, exclude: Sequence[str] = (),
+) -> WorldPulseReadSeedV1 | None:
+    """Claim the next Stage 1 seed. ``exclude``: seeds this tick already handled (a
+    released in-flight seed goes back to pending and would otherwise be claimed again)."""
+    row = await conn.fetchrow(CLAIM_SQL, active_only, list(exclude))
     if not row:
         return None
     return _seed_from_row(row)
@@ -808,8 +814,11 @@ async def mark_stage2_skipped(conn: Any, seed_id: str, *, reason: str) -> None:
     )
 
 
-async def claim_next_stage2_seed(conn: Any, *, active_only: bool = False) -> Stage2Claim | None:
-    row = await conn.fetchrow(CLAIM_STAGE2_SQL, active_only)
+async def claim_next_stage2_seed(
+    conn: Any, *, active_only: bool = False, exclude: Sequence[str] = (),
+) -> Stage2Claim | None:
+    """Claim the next Stage 2 seed; ``exclude`` as in claim_next_seed."""
+    row = await conn.fetchrow(CLAIM_STAGE2_SQL, active_only, list(exclude))
     if not row:
         return None
     raw = row["handoff_json"]

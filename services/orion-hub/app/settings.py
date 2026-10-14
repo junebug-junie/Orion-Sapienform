@@ -785,6 +785,13 @@ class Settings(BaseSettings):
     HUB_WORLD_PULSE_READ_MAX_ATTEMPTS: int = Field(
         default=3, ge=1, le=10, alias="HUB_WORLD_PULSE_READ_MAX_ATTEMPTS"
     )
+    # Reads in flight at once, per stage (Stage 1 and Stage 2 each). Each tick polls
+    # the in-flight turns first, then starts new ones while fewer than this are in
+    # flight, so the GPU pool sees several agent holds and can spread them over
+    # gpu1/gpu2/gpu0. 1 == one read at a time (pre-2026-10-14 behaviour).
+    HUB_WORLD_PULSE_READ_MAX_IN_FLIGHT: int = Field(
+        default=3, ge=1, le=8, alias="HUB_WORLD_PULSE_READ_MAX_IN_FLIGHT"
+    )
     # Pending digest_item seeds older than this many days are marked
     # skipped/stale_digest_item on every Stage 1 tick. 0 disables.
     # See orion/world_pulse_read/queue.py skip_stale_digest_items.

@@ -305,6 +305,7 @@ class WorldPulseReadStage2Pipeline:
         timezone_name: str = "UTC",
         max_round_trips: int = 5,
         max_attempts: int = 1,
+        max_in_flight: int = 1,
         wallet_a_window_start_hour: int = 0,
         wallet_a_window_end_hour: int = 0,
         pool_provider: Callable[[], Any],
@@ -344,6 +345,8 @@ class WorldPulseReadStage2Pipeline:
         # Bounded retry for transient turn failures (orion/world_pulse_read/retry.py).
         # 1 == legacy terminal-on-first-failure.
         self.max_attempts = max(1, int(max_attempts))
+        # Stage 2 turns in flight at once (HUB_WORLD_PULSE_READ_MAX_IN_FLIGHT); 1 == serial.
+        self.max_in_flight = max(1, int(max_in_flight))
         self.wallet_a_window_start_hour = int(wallet_a_window_start_hour)
         self.wallet_a_window_end_hour = int(wallet_a_window_end_hour)
         try:
@@ -520,15 +523,36 @@ class WorldPulseReadStage2Pipeline:
             logger.info("world_pulse_read_stage2_blocked reason=%s", reason)
             return reason
 
+        # Up to max_in_flight claims per tick, in-flight turns first (CLAIM_STAGE2_SQL
+        # order): see WorldPulseReadPipeline.tick. One claim per tick serialized Stage 2.
         # Admission gates must not strand an already-submitted durable result.
-        claim = await self._with_conn(
-            lambda conn: claim_next_stage2_seed(conn, active_only=reason is not None)
-        )
-        if claim is None:
+        handled: list[str] = []
+        first: str | None = None
+        while len(handled) < self.max_in_flight:
+            exclude = tuple(handled)
+            claim = await self._with_conn(
+                lambda conn: claim_next_stage2_seed(
+                    conn, active_only=reason is not None, exclude=exclude
+                )
+            )
+            if claim is None:
+                break
+            handled.append(claim.seed.seed_id)
+            outcome = await self._pass_claimed(claim, redis)
+            if len(handled) == 1:
+                first = outcome
+        if not handled:
             if reason is not None:
                 logger.info("world_pulse_read_stage2_blocked reason=%s", reason)
             return reason or "empty_queue"
+        if len(handled) > 1:
+            logger.info("world_pulse_read_stage2_tick_claims n=%d max_in_flight=%d",
+                        len(handled), self.max_in_flight)
+        return first
 
+    async def _pass_claimed(self, claim: Any, redis: Any) -> str | None:
+        """One claimed seed: start, poll, or finish its Stage 2 turn. Returns the outcome."""
+        self.last_round_trips = 0
         await publish_lifecycle(self._bus, claim.seed, "stage2_started", source=self._source_ref)
 
         try:

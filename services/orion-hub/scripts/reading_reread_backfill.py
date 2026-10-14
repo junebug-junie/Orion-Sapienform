@@ -3,7 +3,7 @@
 
 Reads before text retention (~2026-10-11), or whose fetch came back a 404, have no usable
 retained text, so Stage 2 never saw a claim block and could not link anything. This puts
-each one back through the REAL reading path, one at a time: ``operator.reread_read`` sets
+each one back through the REAL reading path, --concurrency at a time: ``operator.reread_read`` sets
 the same seed row back to Stage 1 pending, and Hub's own workers do the rest (Stage 1
 reading turn on the agent lane via durable runs, text retained, then Stage 2 with
 reading_meaning_target_v1 active). No shadow queue, no direct model call.
@@ -12,7 +12,7 @@ CLAUDE.md section 14 protocol. Everything lands in --out (default /tmp/reading-r
 
     # from services/orion-hub, PYTHONPATH=.:../..
     python3 scripts/reading_reread_backfill.py snapshot          # read-only: targets, URL probe, snapshot
-    python3 scripts/reading_reread_backfill.py run --yes         # after Hub is deployed with this code
+    python3 scripts/reading_reread_backfill.py run --yes [--concurrency 3]  # after Hub is deployed
     tail -f /tmp/reading-reread-backfill/progress.log
     python3 scripts/reading_reread_backfill.py report            # report.md + before_after.csv
     python3 scripts/reading_reread_backfill.py rollback          # dry run; --yes to withdraw links,
@@ -22,9 +22,17 @@ Targets: reads whose Stage 2 finished in (--until - --days, --until] with no usa
 text (fetch_text.load_retained_texts returns nothing). Each URL is probed with one plain GET
 first; 404/410 or an unresolvable host is recorded ``gone`` and never re-read.
 
-Pacing: one read at a time; before each, wait until the GPU pool is quiet (same check as the
-resonance judge run). A read that is not finished within --per-read-timeout-min stops the
-run (anomaly) instead of starting the next. Resumable: finished targets are in results.jsonl.
+Pacing: up to --concurrency reads in flight (default 1). A new read starts only while the
+reading queue has no live work and the GPU pool has nothing but this run's own reads (same
+check as the resonance judge run, minus our own leases). --concurrency N > 1 is refused
+unless Hub runs HUB_WORLD_PULSE_READ_MAX_IN_FLIGHT >= N (older Hub reads one at a time).
+A read not finished within --per-read-timeout-min stops new starts (anomaly); reads already
+in flight are still waited for. Resumable: every requeue is written to results.jsonl as
+``in_flight`` before it is waited on, so a stopped run resumes by waiting on those reads,
+never requeueing them; a requeued row with no record (stopped pre-concurrency run) is
+recognized from the live row and progress.log. Stop with Ctrl-C / kill <pid>; restart:
+
+    python3 scripts/reading_reread_backfill.py run --yes --concurrency 3
 
 What a re-read writes (all snapshotted first): the seed row (status, handoff_json,
 stage2_result_json, trace ids), new reading_durable_turn rows (new run ids), new
@@ -281,7 +289,18 @@ def deploy_check() -> list[str]:
 
 
 def _load_jsonl(path: Path) -> list[dict[str, Any]]:
-    return [json.loads(ln) for ln in path.read_text().splitlines() if ln.strip()] if path.exists() else []
+    """Every whole JSON line; a line cut off by a kill mid-write is skipped, not fatal."""
+    out = []
+    if not path.exists():
+        return out
+    for ln in path.read_text().splitlines():
+        if not ln.strip():
+            continue
+        try:
+            out.append(json.loads(ln))
+        except ValueError:
+            print(f"skipping unparseable line in {path.name}: {ln[:80]!r}", file=sys.stderr)
+    return out
 
 
 async def _pool_quiet(client: Any, pool_url: str, wait_sec: float) -> list[str]:
@@ -341,61 +360,208 @@ async def _settled(conn: Any, seed_id: str) -> tuple[str, Any] | None:
     return None
 
 
+def _parse_ts(v: Any) -> datetime | None:
+    if v is None or v == "":
+        return None
+    if isinstance(v, datetime):
+        return v if v.tzinfo else v.replace(tzinfo=timezone.utc)
+    try:
+        d = datetime.fromisoformat(str(v))
+    except ValueError:
+        return None
+    return d if d.tzinfo else d.replace(tzinfo=timezone.utc)
+
+
+def _requeued_at_from_log(out: Path) -> dict[str, datetime]:
+    """When each seed was requeued, from progress.log ("<ts> requeued <seed[:60]> | ...").
+    Recovers the start of a read that was requeued by a run stopped before it wrote an
+    ``in_flight`` record (any run of the pre-concurrency code)."""
+    found: dict[str, datetime] = {}
+    path = out / "progress.log"
+    if not path.exists():
+        return found
+    for ln in path.read_text(errors="replace").splitlines():
+        parts = ln.split(" ", 2)
+        if len(parts) == 3 and parts[1] == "requeued":
+            ts = _parse_ts(parts[0])
+            key = parts[2].split(" |", 1)[0].strip()
+            if ts is not None and key:
+                found[key] = ts
+    return found
+
+
+def _already_requeued(live: Any, snap: dict[str, Any] | None) -> bool:
+    """True when the live row shows this run already put the seed back through the reader:
+    a stage is in flight, or a stage finished at a different time than the snapshot."""
+    if live is None:
+        return False
+    if live["status"] in ("pending", "claimed") or (
+            live["status"] == "done" and live["stage2_status"] in ("pending", "claimed")):
+        return True
+    old = (snap or {}).get("seed_row") or {}
+    for col in ("completed_at", "stage2_completed_at"):
+        if _parse_ts(live[col]) != _parse_ts(old.get(col)):
+            return True
+    return False
+
+
+# The run_ids of this backfill's own reads still in flight; their GPU-pool leases are
+# held by "durable-runs:<run_id>" and are not someone else's work.
+OWN_RUNS_SQL = """
+SELECT run_id FROM reading_durable_turn WHERE seed_id = ANY($1::text[]) AND consumed_at IS NULL
+"""
+
+
+def _foreign_busy(state: Any, own_runs: set[str], own_waiting: int) -> list[str]:
+    """pool_busy_reasons minus this backfill's own in-flight reads: their leases (holder
+    ``durable-runs:<run_id>``), and up to ``own_waiting`` of the queue/backlog depth (our
+    own holds waiting for a seat). Anything else still pauses the next start."""
+    from evals.run_reading_resonance_eval import pool_busy_reasons
+
+    if not isinstance(state, dict):
+        return pool_busy_reasons(state)
+    own_holders = {f"durable-runs:{r}" for r in own_runs}
+    leases = [x for x in state.get("leases") or [] if not (isinstance(x, dict) and x.get("holder") in own_holders)]
+    depth = sum(int(v or 0) for key in ("queue_depth", "backlog_depth") for v in (state.get(key) or {}).values())
+    trimmed = dict(state, leases=leases)
+    if depth <= own_waiting:
+        trimmed["queue_depth"], trimmed["backlog_depth"] = {}, {}
+    return pool_busy_reasons(trimmed)
+
+
+async def _pool_busy(client: Any, pool_url: str, wait_sec: float, own_runs: set[str]) -> list[str]:
+    """Like _pool_quiet, but this backfill's own in-flight reads are not contention."""
+    if not own_runs:
+        return await _pool_quiet(client, pool_url, wait_sec)
+    from orion.schemas.gpu_pool import TERMINAL_STATUSES
+
+    deadline = time.monotonic() + max(0.0, wait_sec)
+    while True:
+        try:
+            resp = await client.get(pool_url.rstrip("/") + "/v1/pool", timeout=10.0)
+            resp.raise_for_status()
+            state = resp.json()
+            own_holders = {f"durable-runs:{r}" for r in own_runs}
+            own_waiting = sum(1 for x in state.get("leases") or []
+                              if isinstance(x, dict) and x.get("holder") in own_holders
+                              and x.get("status") not in TERMINAL_STATUSES and x.get("status") != "granted")
+            reasons = _foreign_busy(state, own_runs, own_waiting)
+        except Exception as exc:  # noqa: BLE001 -- unreadable pool = busy (no state, no start)
+            reasons = [f"pool state unreadable: {type(exc).__name__}"]
+        if not reasons or time.monotonic() >= deadline:
+            return reasons
+        await asyncio.sleep(5.0)
+
+
+def hub_parallel_check(concurrency: int) -> list[str]:
+    """--concurrency > 1 needs Hub's reading workers to run that many reads at once;
+    on the old one-claim-per-tick Hub the extra reads only queue and run out their timers."""
+    if concurrency <= 1:
+        return []
+    r = subprocess.run(["docker", "exec", HUB_CONTAINER, "grep", "-q", "max_in_flight",
+                        "/app/scripts/world_pulse_read_pipeline.py"], capture_output=True, text=True)
+    if r.returncode != 0:
+        return [f"{HUB_CONTAINER} reading pipeline has no max_in_flight (Hub reads one at a time)"]
+    r = subprocess.run(["docker", "exec", HUB_CONTAINER, "printenv", "HUB_WORLD_PULSE_READ_MAX_IN_FLIGHT"],
+                       capture_output=True, text=True)
+    raw = r.stdout.strip()
+    value = int(raw) if raw.isdigit() else 1
+    if value < concurrency:
+        return [f"HUB_WORLD_PULSE_READ_MAX_IN_FLIGHT in {HUB_CONTAINER} is {raw or 'unset'!r} "
+                f"(< --concurrency {concurrency})"]
+    return []
+
+
 async def cmd_run(pool: Any, args: argparse.Namespace, out: Path) -> int:
+    """Up to --concurrency reads in flight. A new read starts only while the reading queue
+    has no live work and the pool has no work but this run's own reads. Every requeue is
+    recorded ``in_flight`` before it is waited on, so a run stopped at any point resumes by
+    waiting on those reads, never requeueing them (a requeued row whose run left no record,
+    e.g. under the pre-concurrency code, is recognized from the live row and progress.log)."""
     import httpx
 
-    from orion.schemas.world_pulse_read import WorldPulseReadHandoffV1
-    from orion.world_pulse_read.fetch_text import load_retained_texts
     from orion.world_pulse_read.operator import OperatorActionError, reread_read
 
     if not args.yes:
         print("run writes to live stores; pass --yes (after Hub is deployed with this code)", file=sys.stderr)
         return 1
+    concurrency = max(1, int(args.concurrency))
     if not args.skip_deploy_check:
-        missing = deploy_check()
+        missing = deploy_check() + hub_parallel_check(concurrency)
         if missing:
             print("REFUSED: Hub is not on the reread code yet:\n  " + "\n  ".join(missing), file=sys.stderr)
             return 5
     targets = json.loads((out / "targets.json").read_text())
+    target_ids = [t["seed_id"] for t in targets]
     snaps = {s["seed_id"]: s for s in _load_jsonl(out / "snapshot.jsonl")}
     results_path = out / "results.jsonl"
     latest = {r["seed_id"]: r for r in _load_jsonl(results_path)}  # last record per seed wins
-    # A read that timed out is not done: on resume it is waited for (never re-queued) first.
-    waiting = {s: r for s, r in latest.items() if r["outcome"] == "timeout_still_running"}
-    done_ids = set(latest) - set(waiting)
-    todo = sorted((t for t in targets if t["probe"] != "gone" and t["seed_id"] not in done_ids),
-                  key=lambda t: t["seed_id"] not in waiting)
-    if args.limit:
-        todo = todo[: args.limit]
     meta = out / "run_meta.json"
     if not meta.exists():
         meta.write_text(json.dumps({"run_started_at": _now().isoformat()}))
-    prog = Progress(out, len(done_ids) + len(todo), done=len(done_ids))
-    prog.line("run_start", todo=len(todo), already_done=len(done_ids),
-              gone_skipped=sum(t["probe"] == "gone" for t in targets))
+    run_started = _parse_ts(json.loads(meta.read_text()).get("run_started_at")) or _now()
+    # A read that is requeued but not settled is not done: on resume it is waited for
+    # (never re-queued) first.
+    waiting = {s: r for s, r in latest.items() if r["outcome"] in WAITING_OUTCOMES}
+    done_ids = set(latest) - set(waiting)
+    log_requeued = _requeued_at_from_log(out)
+    async with pool.acquire() as conn:
+        for t in targets:
+            sid = t["seed_id"]
+            if t["probe"] == "gone" or sid in latest:
+                continue
+            if _already_requeued(await conn.fetchrow(SEED_ROW_SQL, sid), snaps.get(sid)):
+                started = log_requeued.get(sid[:60]) or run_started
+                waiting[sid] = {"seed_id": sid, "outcome": "in_flight", "started_at": started.isoformat(),
+                                "adopted": True}
+    todo_new = [t for t in targets if t["probe"] != "gone" and t["seed_id"] not in done_ids
+                and t["seed_id"] not in waiting]
+    if args.limit:
+        todo_new = todo_new[: args.limit]
+    by_id = {t["seed_id"]: t for t in targets}
+    resume = [by_id[s] for s in target_ids if s in waiting]
+    prog = Progress(out, len(done_ids) + len(resume) + len(todo_new), done=len(done_ids))
+    prog.line("run_start", todo=len(todo_new), resuming=len(resume), already_done=len(done_ids),
+              gone_skipped=sum(t["probe"] == "gone" for t in targets), concurrency=concurrency)
 
     def record(rec: dict[str, Any]) -> None:
         with results_path.open("a") as fh:
             fh.write(json.dumps(rec, default=str) + "\n")
 
+    timed_out = False
+    tasks: dict[asyncio.Task, str] = {}
+
+    def spawn(t: dict[str, Any], started: datetime, consumed: list[str]) -> None:
+        tasks[asyncio.create_task(_settle_one(pool, args, t, started, consumed, snaps, prog, record))] = t["seed_id"]
+
+    for t in resume:
+        prog.line(f"resume waiting on {t['seed_id'][:60]}")
+        w = waiting[t["seed_id"]]
+        spawn(t, _parse_ts(w.get("started_at")) or run_started, list(w.get("consumed_finished_runs") or []))
+
+    queue = list(todo_new)
     async with httpx.AsyncClient() as client:
-        for t in todo:
-            seed_id = t["seed_id"]
-            consumed: list[str] = []
-            if seed_id in waiting:
-                started = datetime.fromisoformat(str(waiting[seed_id]["started_at"]))
-                prog.line(f"resume waiting on {seed_id[:60]}")
-            else:
-                while True:
-                    busy = await _pool_quiet(client, args.pool_url, 30.0)
-                    if not busy:
-                        async with pool.acquire() as conn:
-                            queued = await conn.fetchval(QUEUE_BUSY_SQL, [seed_id], args.digest_item_max_age_sec)
-                        busy = [f"{queued} live read(s) in flight on the reading queue"] if queued else []
-                    if not busy:
-                        break
-                    prog.line(f"paused before {seed_id[:50]}", reason=busy[0][:120])
-                    await asyncio.sleep(args.pause_sec)
+        while queue or tasks:
+            if queue and not timed_out and len(tasks) < concurrency:
+                t = queue[0]
+                seed_id = t["seed_id"]
+                async with pool.acquire() as conn:
+                    own = [tasks[k] for k in tasks]
+                    own_runs = {r["run_id"] for r in await conn.fetch(OWN_RUNS_SQL, own)} if own else set()
+                busy = await _pool_busy(client, args.pool_url, 30.0, own_runs)
+                if not busy:
+                    async with pool.acquire() as conn:
+                        queued = await conn.fetchval(QUEUE_BUSY_SQL, target_ids, args.digest_item_max_age_sec)
+                    busy = [f"{queued} live read(s) in flight on the reading queue"] if queued else []
+                if busy:
+                    prog.line(f"paused before {seed_id[:50]}", reason=busy[0][:120], in_flight=len(tasks))
+                    if tasks:
+                        await _wait_some(tasks, args.pause_sec)
+                    else:
+                        await asyncio.sleep(args.pause_sec)
+                    timed_out |= _reap(tasks, prog)
+                    continue
+                queue.pop(0)
                 started = _now()
                 async with pool.acquire() as conn:
                     try:
@@ -406,66 +572,114 @@ async def cmd_run(pool: Any, args: argparse.Namespace, out: Path) -> int:
                         record({"seed_id": seed_id, "outcome": f"refused:{exc.code}", "started_at": started})
                         prog.line(f"refused {seed_id[:50]}", code=exc.code)
                         continue
-                prog.line(f"requeued {seed_id[:60]}", url=t["url"][:80], consumed_old_runs=len(consumed))
-            deadline = time.monotonic() + args.per_read_timeout_min * 60
-            settled = None
-            while time.monotonic() < deadline:
-                await asyncio.sleep(args.poll_sec)
-                async with pool.acquire() as conn:
-                    settled = await _settled(conn, seed_id)
-                if settled:
-                    break
-            if settled is None:
-                prog.anomalies += 1
-                record({"seed_id": seed_id, "outcome": "timeout_still_running", "started_at": started,
+                # Recorded before anything waits on it: a run stopped from here on resumes
+                # by waiting on this read, never by requeueing it.
+                record({"seed_id": seed_id, "outcome": "in_flight", "started_at": started,
                         "consumed_finished_runs": consumed})
-                prog.line(f"ANOMALY timeout {seed_id[:50]}: stopping (resume with run --yes)",
-                          minutes=args.per_read_timeout_min)
-                return 3
-            outcome, row = settled
-            async with pool.acquire() as conn:
-                runs = [_row_dict(r) for r in await conn.fetch(NEW_RUNS_SQL, seed_id, started)]
-                decisions = [_row_dict(r) for r in await conn.fetch(DECISIONS_SINCE_SQL, seed_id, started)]
-                handoff = WorldPulseReadHandoffV1.model_validate(_row_dict(row)["handoff_json"])
-                texts = await load_retained_texts(conn, handoff.read_evidence)
-                restored, new_row = False, None
-                if outcome != "stage2_done":
-                    # The re-read did not finish: put the old finished read back as it was, so
-                    # the URL still counts as read and handoff + Stage 2 result stay a pair.
-                    # The new row is kept in results.jsonl.
-                    new_row = {c: _row_dict(row).get(c) for c in SEED_COLUMNS}
-                    try:
-                        await restore_seed(conn, snaps[seed_id])
-                        restored = True
-                    except RestoreRefused as exc:
-                        prog.anomalies += 1
-                        prog.line(f"ANOMALY restore refused {seed_id[:50]}", reason=str(exc)[:120])
-            result = _row_dict(row).get("stage2_result_json") or {}
-            claims = result.get("relationship_claims") or [] if outcome == "stage2_done" else []
-            reasons: dict[str, int] = {}
-            for c in claims:
-                r = (c.get("receipt") or {}).get("reason", "?")
-                reasons[r] = reasons.get(r, 0) + 1
-            rec = {
-                "seed_id": seed_id, "url": t["url"], "outcome": outcome, "started_at": started,
-                "finished_at": _now(), "run_ids": [r["run_id"] for r in runs], "restored_old_row": restored,
-                "consumed_finished_runs": consumed, "new_row_if_restored": new_row,
-                "stage1_error": row["last_error"], "stage2_error": row["stage2_error"],
-                "retained_chars": [len(x.text) for x in texts], "claims": len(claims), "reasons": reasons,
-                "links_quote_rule": sum(d["policy"] == POLICY for d in decisions),
-                "links_meaning_rule": sum(d["policy"] == MEANING_POLICY for d in decisions),
-                "decisions": decisions,
-            }
-            if outcome != "stage2_done" or not texts:
-                prog.anomalies += outcome == "stage2_done" and not texts
-                prog.errors += outcome != "stage2_done"
-            prog.done += 1
-            record(rec)
-            prog.line(f"{outcome} {seed_id[:50]}", text=bool(texts), claims=len(claims),
-                      quote_links=rec["links_quote_rule"], meaning_links=rec["links_meaning_rule"],
-                      runs=",".join(rec["run_ids"]))
+                prog.line(f"requeued {seed_id[:60]}", url=t["url"][:80], consumed_old_runs=len(consumed),
+                          in_flight=len(tasks) + 1)
+                spawn(t, started, consumed)
+                continue
+            if not tasks:
+                break  # timed out with nothing left in flight, or nothing to do
+            await _wait_some(tasks, args.pause_sec if queue and not timed_out else None)
+            timed_out |= _reap(tasks, prog)
+    if timed_out:
+        prog.line("ANOMALY timeout: stopped starting new reads (resume with run --yes)",
+                  minutes=args.per_read_timeout_min, not_started=len(queue))
+        return 3
     prog.line("run_done")
     return 0
+
+
+WAITING_OUTCOMES = frozenset({"in_flight", "timeout_still_running"})
+
+
+async def _wait_some(tasks: dict[asyncio.Task, str], timeout: float | None) -> None:
+    await asyncio.wait(list(tasks), timeout=timeout, return_when=asyncio.FIRST_COMPLETED)
+
+
+def _reap(tasks: dict[asyncio.Task, str], prog: Progress) -> bool:
+    """Drop finished tasks. True when any of them timed out (stop starting new reads)."""
+    timed_out = False
+    for task in [k for k in tasks if k.done()]:
+        seed_id = tasks.pop(task)
+        exc = task.exception()
+        if exc is not None:
+            prog.errors += 1
+            prog.line(f"ERROR settling {seed_id[:50]} (resume waits on it)", error=f"{type(exc).__name__}: {exc}"[:200])
+            timed_out = True  # unknown state: do not keep starting reads on top of it
+        elif task.result() == "timeout":
+            timed_out = True
+    return timed_out
+
+
+async def _settle_one(pool: Any, args: argparse.Namespace, t: dict[str, Any], started: datetime,
+                      consumed: list[str], snaps: dict[str, Any], prog: Progress, record: Any) -> str:
+    """Wait for one requeued read to settle, then record it (restoring the old row if the
+    re-read did not finish). Returns "timeout" or the settled outcome."""
+    from orion.schemas.world_pulse_read import WorldPulseReadHandoffV1
+    from orion.world_pulse_read.fetch_text import load_retained_texts
+
+    seed_id = t["seed_id"]
+    deadline = time.monotonic() + args.per_read_timeout_min * 60
+    settled = None
+    while True:
+        async with pool.acquire() as conn:
+            settled = await _settled(conn, seed_id)
+        if settled or time.monotonic() >= deadline:
+            break
+        await asyncio.sleep(args.poll_sec)
+    if settled is None:
+        prog.anomalies += 1
+        record({"seed_id": seed_id, "outcome": "timeout_still_running", "started_at": started,
+                "consumed_finished_runs": consumed})
+        prog.line(f"ANOMALY timeout {seed_id[:50]}: no new reads start (resume with run --yes)",
+                  minutes=args.per_read_timeout_min)
+        return "timeout"
+    outcome, row = settled
+    async with pool.acquire() as conn:
+        runs = [_row_dict(r) for r in await conn.fetch(NEW_RUNS_SQL, seed_id, started)]
+        decisions = [_row_dict(r) for r in await conn.fetch(DECISIONS_SINCE_SQL, seed_id, started)]
+        handoff = WorldPulseReadHandoffV1.model_validate(_row_dict(row)["handoff_json"])
+        texts = await load_retained_texts(conn, handoff.read_evidence)
+        restored, new_row = False, None
+        if outcome != "stage2_done":
+            # The re-read did not finish: put the old finished read back as it was, so
+            # the URL still counts as read and handoff + Stage 2 result stay a pair.
+            # The new row is kept in results.jsonl.
+            new_row = {c: _row_dict(row).get(c) for c in SEED_COLUMNS}
+            try:
+                await restore_seed(conn, snaps[seed_id])
+                restored = True
+            except RestoreRefused as exc:
+                prog.anomalies += 1
+                prog.line(f"ANOMALY restore refused {seed_id[:50]}", reason=str(exc)[:120])
+    result = _row_dict(row).get("stage2_result_json") or {}
+    claims = result.get("relationship_claims") or [] if outcome == "stage2_done" else []
+    reasons: dict[str, int] = {}
+    for c in claims:
+        r = (c.get("receipt") or {}).get("reason", "?")
+        reasons[r] = reasons.get(r, 0) + 1
+    rec = {
+        "seed_id": seed_id, "url": t["url"], "outcome": outcome, "started_at": started,
+        "finished_at": _now(), "run_ids": [r["run_id"] for r in runs], "restored_old_row": restored,
+        "consumed_finished_runs": consumed, "new_row_if_restored": new_row,
+        "stage1_error": row["last_error"], "stage2_error": row["stage2_error"],
+        "retained_chars": [len(x.text) for x in texts], "claims": len(claims), "reasons": reasons,
+        "links_quote_rule": sum(d["policy"] == POLICY for d in decisions),
+        "links_meaning_rule": sum(d["policy"] == MEANING_POLICY for d in decisions),
+        "decisions": decisions,
+    }
+    if outcome != "stage2_done" or not texts:
+        prog.anomalies += outcome == "stage2_done" and not texts
+        prog.errors += outcome != "stage2_done"
+    prog.done += 1
+    record(rec)
+    prog.line(f"{outcome} {seed_id[:50]}", text=bool(texts), claims=len(claims),
+              quote_links=rec["links_quote_rule"], meaning_links=rec["links_meaning_rule"],
+              runs=",".join(rec["run_ids"]))
+    return outcome
 
 
 def cmd_report(out: Path) -> int:
@@ -485,12 +699,13 @@ def cmd_report(out: Path) -> int:
         w = csv.DictWriter(fh, fieldnames=list(rows[0]) if rows else ["seed_id"])
         w.writeheader()
         w.writerows(rows)
-    ran = [x for x in rows if x["outcome"] not in ("not_run", "skipped_gone")]
+    unsettled = ("not_run", *WAITING_OUTCOMES)  # requeued but not settled is not done
+    ran = [x for x in rows if x["outcome"] not in ("skipped_gone", *unsettled)]
     text_now = sum(1 for x in ran if x["after_retained_chars"])
     links_q = sum(x["after_links_quote_rule"] for x in rows)
     links_m = sum(x["after_links_meaning_rule"] for x in rows)
     errors = sum(1 for x in ran if x["outcome"] != "stage2_done")
-    pending = sum(1 for x in rows if x["outcome"] == "not_run")
+    pending = sum(1 for x in rows if x["outcome"] in unsettled)
     verdict = ("NOT RUN" if not ran else "INCOMPLETE" if pending else
                "DONE" if errors == 0 else "DONE_WITH_ERRORS")
     md = [f"# Reading reread backfill report ({_now().isoformat(timespec='seconds')})", "",
@@ -566,7 +781,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     ap.add_argument("--until", default="2026-10-14T00:10:00+00:00",
                     help="window end (default: the window #2647's replay and judge run used)")
     ap.add_argument("--yes", action="store_true")
-    ap.add_argument("--limit", type=int, default=0, help="run: at most N reads this invocation")
+    ap.add_argument("--limit", type=int, default=0, help="run: at most N new reads this invocation")
+    ap.add_argument("--concurrency", type=int, default=1,
+                    help="run: reads in flight at once (needs Hub HUB_WORLD_PULSE_READ_MAX_IN_FLIGHT >= N)")
     ap.add_argument("--pool-url", default=os.environ.get("GPU_POOL_URL", "http://127.0.0.1:8127"))
     ap.add_argument("--pause-sec", type=float, default=60.0)
     ap.add_argument("--poll-sec", type=float, default=30.0)
@@ -586,7 +803,8 @@ async def _amain(args: argparse.Namespace) -> int:
     if args.action == "report":
         return cmd_report(out)
     try:
-        pool = await asyncpg.create_pool(resolve_dsn(args.dsn), min_size=1, max_size=2)
+        pool = await asyncpg.create_pool(resolve_dsn(args.dsn), min_size=1,
+                                         max_size=max(2, int(getattr(args, "concurrency", 1)) + 1))
     except Exception as exc:  # noqa: BLE001
         print(f"UNKNOWN: database unavailable: {type(exc).__name__}: {exc}", file=sys.stderr)
         return 2

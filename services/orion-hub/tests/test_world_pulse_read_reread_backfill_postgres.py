@@ -146,9 +146,12 @@ def test_backfill_rereads_records_restores_reports_and_rolls_back(local_pg, tmp_
         assert all(" | eta " in ln and "/h | errors " in ln and "| anomalies " in ln for ln in log)
         assert any("stage2_done" in ln and "meaning_links=1" in ln for ln in log)
 
-        # Resume: nothing left to do.
+        # Every requeue is recorded in_flight before it is waited on, then settled.
+        lines = bf._load_jsonl(out / "results.jsonl")
+        assert [r["outcome"] for r in lines].count("in_flight") == 2 and len(lines) == 4
+        # Resume: nothing left to do, nothing appended.
         assert await bf.cmd_run(pool, args, out) == 0
-        assert len(bf._load_jsonl(out / "results.jsonl")) == 2
+        assert len(bf._load_jsonl(out / "results.jsonl")) == 4
 
         assert bf.cmd_report(out) == 0
         table = list(csv.DictReader((out / "before_after.csv").open()))
@@ -200,7 +203,8 @@ def test_queue_gate_counts_live_work_but_not_stale_digest_items_or_the_target(lo
     asyncio.run(run())
 
 
-def test_a_timed_out_read_is_waited_for_on_resume_never_requeued(local_pg, tmp_path, monkeypatch):
+@pytest.mark.parametrize("prior", ["timeout_still_running", "in_flight"])
+def test_a_timed_out_read_is_waited_for_on_resume_never_requeued(local_pg, tmp_path, monkeypatch, prior):
     async def run():
         schema = "reading_" + uuid4().hex
         admin = await asyncpg.connect(**local_pg)
@@ -221,7 +225,7 @@ def test_a_timed_out_read_is_waited_for_on_resume_never_requeued(local_pg, tmp_p
         (out / "targets.json").write_text(json.dumps([{"seed_id": made["seed_id"], "url": "https://example.org/slow",
                                                        "probe": "fetchable", "before_claims": 0, "before_accepted": 0}]))
         (out / "snapshot.jsonl").write_text(json.dumps(snap, default=str) + "\n")
-        (out / "results.jsonl").write_text(json.dumps({"seed_id": made["seed_id"], "outcome": "timeout_still_running",
+        (out / "results.jsonl").write_text(json.dumps({"seed_id": made["seed_id"], "outcome": prior,
                                                        "started_at": datetime.now(timezone.utc).isoformat()}) + "\n")
 
         async def quiet(*_a, **_k):
@@ -242,3 +246,176 @@ def test_a_timed_out_read_is_waited_for_on_resume_never_requeued(local_pg, tmp_p
         assert "resume waiting on" in (out / "progress.log").read_text()
         await pool.close()
     asyncio.run(run())
+
+
+async def _schema_pool(local_pg):
+    schema = "reading_" + uuid4().hex
+    admin = await asyncpg.connect(**local_pg)
+    await admin.execute(f'CREATE SCHEMA "{schema}"')
+    await admin.close()
+    pool = await asyncpg.create_pool(**local_pg, min_size=1, max_size=8, server_settings={"search_path": schema})
+    async with pool.acquire() as conn:
+        await queue.ensure_seed_queue_schema(conn)
+        await conn.execute(MIGRATION.read_text())
+    return pool
+
+
+async def _targets(pool, out, urls):
+    rows = {}
+    async with pool.acquire() as conn:
+        for url in urls:
+            made = await queue.enqueue_reading(conn, request(url))
+            await _finish(conn, await queue.claim_next_seed(conn))
+            rows[made["seed_id"]] = bf._row_dict(await conn.fetchrow(bf.SEED_ROW_SQL, made["seed_id"]))
+    out.mkdir()
+    (out / "targets.json").write_text(json.dumps([
+        {"seed_id": s, "url": r["url"], "probe": "fetchable", "before_claims": 0, "before_accepted": 0}
+        for s, r in rows.items()]))
+    (out / "snapshot.jsonl").write_text("".join(json.dumps({"seed_id": s, "seed_row": r}, default=str) + "\n"
+                                                for s, r in rows.items()))
+    return list(rows)
+
+
+def _quiet(monkeypatch):
+    async def quiet(*_a, **_k):
+        return []
+    monkeypatch.setattr(bf, "_pool_quiet", quiet)
+    monkeypatch.setattr(bf, "_pool_busy", quiet)
+
+
+async def _complete(conn):
+    """What Hub's two workers write for one successful re-read of the next claimable seed."""
+    seed = await queue.claim_next_seed(conn)
+    assert seed is not None
+    seed_id = seed.seed_id
+    req = await bind_turn(conn, ReadingRunBriefV1(seed_id=seed_id, stage=1, prompt="p", session_id="r",
+                                                  timeout_sec=900), str(uuid4()))
+    assert await conn.fetchval("SELECT attempt FROM reading_durable_turn WHERE run_id=$1", req.run_id) == 1
+    await queue.mark_seed_done(conn, seed_id, trace_id="t-new", handoff=_handoff(seed))
+    await conn.execute("UPDATE world_pulse_read_seed SET stage2_status='done', stage2_completed_at=now() "
+                       "WHERE seed_id=$1", seed_id)
+
+
+def test_concurrency_keeps_three_reads_in_flight_never_four(local_pg, tmp_path, monkeypatch):
+    """--concurrency 3: three requeued at once before any settles; the fourth starts only
+    after one settles; each seed is requeued exactly once."""
+    async def run():
+        pool = await _schema_pool(local_pg)
+        out = tmp_path / "bf"
+        ids = await _targets(pool, out, [f"https://example.org/p{i}" for i in range(4)])
+        _quiet(monkeypatch)
+        stop, peak = asyncio.Event(), []
+
+        async def worker():
+            reached = False
+            while not stop.is_set():
+                async with pool.acquire() as conn:
+                    pending = [r["seed_id"] for r in await conn.fetch(
+                        "SELECT seed_id FROM world_pulse_read_seed WHERE status='pending' ORDER BY seed_id")]
+                    peak.append(len(pending))
+                    # Hold every read until three are in flight at once, then drain.
+                    reached = reached or len(pending) >= 3
+                    if pending and reached:
+                        await _complete(conn)
+                await asyncio.sleep(0.02)
+
+        w = asyncio.create_task(worker())
+        args = bf.parse_args(["run", "--yes", "--skip-deploy-check", "--out", str(out), "--poll-sec", "0.05",
+                              "--pause-sec", "0.05", "--per-read-timeout-min", "1", "--concurrency", "3"])
+        assert await asyncio.wait_for(bf.cmd_run(pool, args, out), 30) == 0
+        stop.set()
+        await w
+        assert max(peak) == 3
+        latest = {r["seed_id"]: r for r in bf._load_jsonl(out / "results.jsonl")}
+        assert {latest[s]["outcome"] for s in ids} == {"stage2_done"}
+        async with pool.acquire() as conn:
+            for s in ids:  # the original + ONE reread attempt, never a double queue
+                assert await conn.fetchval("SELECT count(*) FROM reading_durable_turn WHERE seed_id=$1 AND stage=1",
+                                           s) == 2
+        assert "concurrency=3" in (out / "progress.log").read_text()
+        await pool.close()
+    asyncio.run(run())
+
+
+def test_resume_adopts_a_requeue_the_stopped_run_never_recorded(local_pg, tmp_path, monkeypatch):
+    """A run stopped after reread_read but before any record (every pre-concurrency run):
+    the in-flight seed and a seed whose re-read finished while stopped are waited for and
+    recorded, never requeued; the untouched one is read normally."""
+    from orion.world_pulse_read.operator import reread_read
+
+    async def run():
+        pool = await _schema_pool(local_pg)
+        out = tmp_path / "bf"
+        flying, finished, fresh = await _targets(
+            pool, out, ["https://example.org/a", "https://example.org/b", "https://example.org/c"])
+        (out / "run_meta.json").write_text(json.dumps({"run_started_at": datetime.now(timezone.utc).isoformat()}))
+        async with pool.acquire() as conn:
+            await reread_read(conn, finished)
+            await _complete(conn)  # Hub finished it while the backfill was stopped
+            await reread_read(conn, flying)
+        ts = "2026-10-14T03:01:07+00:00"
+        (out / "progress.log").write_text(f"{ts} requeued {flying[:60]} | 0% | eta unknown | 0/3 | 0.0/h | "
+                                          "errors 0 | anomalies 0 | url=x consumed_old_runs=2\n")
+        _quiet(monkeypatch)
+        stop = asyncio.Event()
+
+        async def worker():
+            while not stop.is_set():
+                async with pool.acquire() as conn:
+                    if await conn.fetchval("SELECT count(*) FROM world_pulse_read_seed WHERE status='pending'"):
+                        await _complete(conn)
+                await asyncio.sleep(0.02)
+
+        w = asyncio.create_task(worker())
+        args = bf.parse_args(["run", "--yes", "--skip-deploy-check", "--out", str(out), "--poll-sec", "0.05",
+                              "--pause-sec", "0.05", "--per-read-timeout-min", "1", "--concurrency", "3"])
+        assert await asyncio.wait_for(bf.cmd_run(pool, args, out), 30) == 0
+        stop.set()
+        await w
+        lines = bf._load_jsonl(out / "results.jsonl")
+        latest = {r["seed_id"]: r for r in lines}
+        assert {latest[s]["outcome"] for s in (flying, finished, fresh)} == {"stage2_done"}
+        # Only the fresh seed was requeued by this run.
+        assert [r["seed_id"] for r in lines if r["outcome"] == "in_flight"] == [fresh]
+        assert bf._parse_ts(latest[flying]["started_at"]) == bf._parse_ts(ts)  # recovered from progress.log
+        async with pool.acquire() as conn:
+            for s in (flying, finished, fresh):
+                assert await conn.fetchval("SELECT count(*) FROM reading_durable_turn WHERE seed_id=$1 AND stage=1",
+                                           s) == 2
+        log = (out / "progress.log").read_text()
+        assert f"resume waiting on {flying[:60]}" in log and f"resume waiting on {finished[:60]}" in log
+        assert "resuming=2" in log
+        await pool.close()
+    asyncio.run(run())
+
+
+def test_own_leases_are_not_contention_but_anyone_elses_are():
+    own = {"reading-aaa"}
+    state = {"leases": [
+        {"holder": "durable-runs:reading-aaa", "status": "granted", "priority": "background", "role": "agent"},
+        {"holder": "durable-runs:reading-bbb", "status": "dead_letter", "priority": "background"}],
+        "queue_depth": {"agent": 1}, "backlog_depth": {}, "cards": [], "roles": []}
+    assert bf._foreign_busy(state, own, own_waiting=1) == []
+    assert bf._foreign_busy(state, own, own_waiting=0) == ["queue_depth[agent]=1"]
+    state["leases"].append({"holder": "orion-mind", "status": "granted", "priority": "interactive",
+                            "work_class": "metacog", "role": "agent"})
+    assert bf._foreign_busy(state, own, own_waiting=1) == ["granted interactive metacog lease held by orion-mind"]
+
+
+def test_concurrency_above_one_is_refused_without_parallel_hub(monkeypatch):
+    import subprocess as sp
+
+    calls = []
+
+    def fake_run(cmd, **_k):
+        calls.append(cmd)
+        return sp.CompletedProcess(cmd, 1, "", "")
+    monkeypatch.setattr(bf.subprocess, "run", fake_run)
+    assert bf.hub_parallel_check(1) == [] and not calls
+    assert "max_in_flight" in bf.hub_parallel_check(3)[0]
+
+
+def test_a_line_cut_off_by_a_kill_does_not_break_resume(tmp_path):
+    p = tmp_path / "results.jsonl"
+    p.write_text(json.dumps({"seed_id": "a", "outcome": "in_flight"}) + "\n" + '{"seed_id": "b", "outc')
+    assert bf._load_jsonl(p) == [{"seed_id": "a", "outcome": "in_flight"}]

@@ -747,6 +747,7 @@ async def startup_event():
                 llm_route=settings.HUB_WORLD_PULSE_READ_LLM_ROUTE,
                 timezone_name=settings.HUB_ENDOGENOUS_OUTREACH_TZ,
                 max_attempts=settings.HUB_WORLD_PULSE_READ_MAX_ATTEMPTS,
+                max_in_flight=settings.HUB_WORLD_PULSE_READ_MAX_IN_FLIGHT,
                 digest_item_max_age_days=settings.HUB_WORLD_PULSE_READ_DIGEST_ITEM_MAX_AGE_DAYS,
                 pool_provider=lambda: getattr(app.state, "memory_pg_pool", None),
                 source_ref=ServiceRef(
@@ -840,6 +841,7 @@ async def startup_event():
                 timezone_name=settings.HUB_ENDOGENOUS_OUTREACH_TZ,
                 max_round_trips=settings.HUB_WORLD_PULSE_READ_STAGE2_MAX_ROUND_TRIPS,
                 max_attempts=settings.HUB_WORLD_PULSE_READ_MAX_ATTEMPTS,
+                max_in_flight=settings.HUB_WORLD_PULSE_READ_MAX_IN_FLIGHT,
                 wallet_a_window_start_hour=settings.HUB_WORLD_PULSE_READ_WINDOW_START_HOUR,
                 wallet_a_window_end_hour=settings.HUB_WORLD_PULSE_READ_WINDOW_END_HOUR,
                 pool_provider=lambda: getattr(app.state, "memory_pg_pool", None),

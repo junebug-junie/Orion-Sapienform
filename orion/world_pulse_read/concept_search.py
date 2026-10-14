@@ -67,8 +67,12 @@ ATLAS_CONCEPT_COLLECTION = "orion_atlas_concepts"
 # concept pairs over the 1,022 indexed atlas concepts, centered against the index mean:
 # two concepts minted by the same read (related by construction) p10 0.18 / p50 0.37;
 # a concept vs one from a different read p50 0.05 / p90 0.24 / p95 0.30 / p99 0.46.
-# 0.35 sits between the unrelated p95 and p99, the same place the retired raw floor (0.65,
-# between raw p95 0.63 and p99 0.69) was set, but it now rests near 0 instead of 0.53.
+# 0.35 sits between the per-pair unrelated p95 and p99. Hub thresholds the BEST score over
+# all of a read's subjects, whose null is fatter: over the 28 reads with stored subjects,
+# best-over-subjects against concepts other reads minted rests at p50 0.08 (calm) but has
+# p95 0.34 / p99 0.51, and 4.6% of those concepts clear 0.35 (an upper bound on noise:
+# "other read" includes sibling reads on one topic). So the list is a recall net with ~5%
+# adjacency in it, not a judgment; the quote rule decides links.
 # The value is tied to the index mean it was measured against; re-run the replay after
 # the atlas changes shape.
 OBJECT_MIN_CENTERED_SIMILARITY = 0.35

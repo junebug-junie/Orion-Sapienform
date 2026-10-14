@@ -111,26 +111,59 @@ def _sha(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
-# Lease states that mean something is running or waiting on a GPU (orion/schemas/gpu_pool.py).
-POOL_BUSY_STATUSES = frozenset({"granted", "queued", "backlogged", "recall"})
-
-
-def pool_busy_reasons(state: dict[str, Any]) -> list[str]:
+def pool_busy_reasons(state: Any) -> list[str]:
     """Why the GPU pool is not quiet, from its /v1/pool snapshot. Empty = quiet.
 
     Conservative on purpose: the judge's ``agent`` route runs at system priority, ahead of
-    background reading/curiosity holds, so ANY live or waiting lease (and any queue or
-    backlog) pauses it. Dead-lettered and unavailable leases are history, not load."""
+    background reading/curiosity holds, so ANY lease not in a terminal state (granted,
+    queued, backlogged, recalling, retry_wait, aborted-and-requeued, or a status this code
+    does not know yet), any queue or backlog, a card mid-swap, or paused actuation pauses
+    it. Only TERMINAL_STATUSES (orion/schemas/gpu_pool.py) are history, not load."""
+    from orion.schemas.gpu_pool import TERMINAL_STATUSES
+
+    if not isinstance(state, dict):
+        return ["pool state is not an object"]
     reasons = []
     for lease in state.get("leases") or []:
-        if lease.get("status") in POOL_BUSY_STATUSES:
+        if lease.get("status") not in TERMINAL_STATUSES:
             reasons.append(f"{lease.get('status')} {lease.get('priority')} {lease.get('work_class')} "
                            f"lease held by {lease.get('holder')}")
     for key in ("queue_depth", "backlog_depth"):
         for k, v in (state.get(key) or {}).items():
             if v:
                 reasons.append(f"{key}[{k}]={v}")
+    for card in state.get("cards") or []:
+        if card.get("swap_state") not in (None, "idle"):
+            reasons.append(f"card {card.get('card')} swap_state={card.get('swap_state')}")
+    if state.get("actuation_paused"):
+        reasons.append("actuation paused")
     return reasons
+
+
+# The model and budget every judgment cached before they were recorded used (2026-10-14).
+_CACHE_DEFAULTS = {"model": "agent", "max_tokens": 900}
+
+
+def read_judgment_cache(path: Path, args: argparse.Namespace) -> dict[str, Any] | None:
+    """A cached judgment for this prompt, or None (missing, unreadable, or made by another
+    model / token budget: a different judge's answer is not this judge's answer)."""
+    try:
+        cached = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return None
+    if not isinstance(cached, dict) or not isinstance(cached.get("raw"), str):
+        return None
+    if (cached.get("model", _CACHE_DEFAULTS["model"]) != args.judge_model
+            or cached.get("max_tokens", _CACHE_DEFAULTS["max_tokens"]) != args.judge_max_tokens):
+        return None
+    return cached
+
+
+def write_judgment_cache(path: Path, entry: dict[str, Any]) -> None:
+    """Atomic: a run killed mid-write leaves the old file or none, never half of one."""
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(entry))
+    os.replace(tmp, path)
 
 
 async def wait_for_quiet_pool(client: httpx.AsyncClient, pool_url: str, wait_sec: float) -> list[str]:
@@ -143,7 +176,7 @@ async def wait_for_quiet_pool(client: httpx.AsyncClient, pool_url: str, wait_sec
             resp = await client.get(pool_url.rstrip("/") + "/v1/pool", timeout=10.0)
             resp.raise_for_status()
             reasons = pool_busy_reasons(resp.json())
-        except (httpx.HTTPError, ValueError) as exc:
+        except (httpx.HTTPError, ValueError, AttributeError) as exc:
             reasons = [f"pool state unreadable: {type(exc).__name__}"]
         if not reasons or time.monotonic() >= deadline:
             return reasons
@@ -582,9 +615,11 @@ async def _replay(args: argparse.Namespace, conn: Any, fk: "Falkor", out: Path) 
             item: dict[str, Any] = {"packet": packet, "prompt": prompt, "judgment": None, "check": None,
                                     "judge_status": "UNVERIFIED: judge not run", "lease_sec": None}
             cache_file = judged_dir / f"{_sha(packet.packet_id + chr(0) + prompt)[:24]}.json"
-            if args.judge_url and cache_file.exists():
-                # Resume: a judgment already made for this exact prompt is re-checked, not re-asked.
-                cached = json.loads(cache_file.read_text())
+            cached = read_judgment_cache(cache_file, args) if args.judge_url else None
+            if cached is not None:
+                # Resume: a judgment already made for this exact prompt, by this model and token
+                # budget, is re-checked, not re-asked. A cached REJECTED answer is a real outcome
+                # and is not re-asked either; delete its file under judgments/ to re-ask it.
                 j, chk = check_judgment(packet, cached["raw"], retained_texts=rd["input"].retained_texts, prompt=prompt)
                 item.update(judgment=j, check=chk, raw=cached["raw"], judge_status="judged",
                             lease_sec=cached.get("lease_sec"))
@@ -605,8 +640,9 @@ async def _replay(args: argparse.Namespace, conn: Any, fk: "Falkor", out: Path) 
                         resp.raise_for_status()
                         raw = resp.json()["choices"][0]["message"]["content"]
                         lease_sec = round(time.perf_counter() - started, 1)
-                        cache_file.write_text(json.dumps({"packet_id": packet.packet_id, "raw": raw,
-                                                          "lease_sec": lease_sec}))
+                        write_judgment_cache(cache_file, {"packet_id": packet.packet_id, "raw": raw,
+                                                          "lease_sec": lease_sec, "model": args.judge_model,
+                                                          "max_tokens": args.judge_max_tokens})
                         j, chk = check_judgment(packet, raw, retained_texts=rd["input"].retained_texts, prompt=prompt)
                         item.update(judgment=j, check=chk, raw=raw, judge_status="judged", lease_sec=lease_sec)
                         print(f"judged {len(results) + 1}/{len(packets)} in {lease_sec}s: "
@@ -830,8 +866,9 @@ rows.forEach(r => {
   const s = saved[r.seed_id] || (saved[r.seed_id] = {wanted: "", notes: ""});
   const c = el("div", "card" + (s.wanted ? " done" : ""));
   c.appendChild(el("h2", "", r.item + ". " + r.title));
-  const m = el("div", "meta"); const a = el("a", "", r.source); a.href = r.url; a.rel = "noreferrer";
-  a.target = "_blank"; m.appendChild(a); c.appendChild(m);
+  const m = el("div", "meta"); const a = el("a", "", r.source);
+  if (/^https?:\/\//i.test(r.url || "")) { a.href = r.url; a.rel = "noreferrer"; a.target = "_blank"; }
+  m.appendChild(a); c.appendChild(m);
   const dc = r.accepted ? r.decision : (r.judged ? "rej" : "");
   const dl = el("div", "meta"); const badge = el("span", "decision " + dc, r.decision);
   dl.appendChild(badge);
@@ -862,7 +899,7 @@ rows.forEach(r => {
   f.appendChild(t); c.appendChild(f); root.appendChild(c);
 });
 function store() { localStorage.setItem(KEY, JSON.stringify(saved)); progress(); }
-function cell(v) { v = String(v == null ? "" : v); return /[",\n\r]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v; }
+function cell(v) { v = String(v == null ? "" : v); if (/^[=+\-@\t\r]/.test(v)) v = "'" + v; return /[",\n\r]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v; }
 document.getElementById("export").addEventListener("click", () => {
   const head = ["item", "seed_id", "title", "url", "decision", "judge_confidence", "proposed_connection", "wanted", "notes"];
   const lines = [head.join(",")].concat(rows.map(r => { const s = saved[r.seed_id] || {};

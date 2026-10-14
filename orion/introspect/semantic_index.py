@@ -7,6 +7,7 @@ caller re-reads each hit from its own tables and re-gates it.
 """
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 from dataclasses import dataclass
@@ -182,8 +183,13 @@ async def all_vectors(
     out: list[tuple[str, list[float]]] = []
     offset = 0
     while True:
-        status, body = await _json(client, "POST", f"{_base(cfg)}/{coll.id}/get",
-                                   json={"limit": page, "offset": offset, "include": ["embeddings"]})
+        try:
+            resp = await client.post(f"{_base(cfg)}/{coll.id}/get",
+                                     json={"limit": page, "offset": offset, "include": ["embeddings"]})
+            # A page is ~10 MB of JSON floats: decode it off the event loop, not on it.
+            status, body = resp.status_code, await asyncio.to_thread(json.loads, resp.content)
+        except (httpx.HTTPError, ValueError) as exc:
+            raise SearchUnavailableError(f"chroma unavailable: {type(exc).__name__}") from exc
         ids = body.get("ids") if isinstance(body, dict) else None
         vecs = body.get("embeddings") if isinstance(body, dict) else None
         if status != 200 or not isinstance(ids, list) or not isinstance(vecs, list) or len(ids) != len(vecs):

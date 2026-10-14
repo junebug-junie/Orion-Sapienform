@@ -1,4 +1,5 @@
 ## Summary
+> Superseded 2026-10-14: the raw 0.65 floor and `run_reading_claim_objects_replay.py` are retired; see `2026-10-14-reading-link-targets-centered-pr.md` (centered floor, `run_reading_link_targets_replay.py`).
 
 - When Orion finishes reading a page, Stage 2 may link the read's new concepts to concepts Orion already had. Until now it was only offered an existing concept when that concept's exact name appeared in the page. Atlas names are chat-topic phrases ("Health Crisis Burden") and earlier readings' concept names, so that almost never happened.
 - Stage 2 now also offers the existing concepts closest in meaning to each new concept (embedding search over the whole concept atlas), up to the same 24-object cap, with exact-name hits always first.

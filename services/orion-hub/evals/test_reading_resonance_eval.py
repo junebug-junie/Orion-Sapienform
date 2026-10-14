@@ -119,6 +119,8 @@ def test_labeling_html_is_self_contained_and_cannot_be_broken_by_stored_text(tmp
     # JS escapes reach the browser as escapes (a Python-cooked "\n" broke the CSV regex once:
     # caught by a headless-Chromium probe, "Invalid regular expression: missing /").
     assert r'/[",\n\r]/' in html and r'lines.join("\n")' in html
+    assert "/^https?:" in html  # a stored javascript: URL never becomes a clickable href
+    assert "/^[=+\\-@\\t\\r]/" in html  # CSV export defuses spreadsheet formulas
     assert p.packet_id  # the packet fixture still builds
 
 
@@ -129,11 +131,36 @@ def test_read_claims_uses_article_content_not_process_notes():
     assert EVAL.read_claims(s2) == ["A", "GB200: rack", "H100", "B"]
 
 
-def test_pool_is_busy_on_any_live_or_waiting_lease_and_quiet_on_history_only():
-    history = [{"status": "dead_letter", "priority": "background", "work_class": "agent", "holder": "d"},
-               {"status": "unavailable", "priority": "background", "work_class": "diffusion", "holder": "x"}]
-    assert EVAL.pool_busy_reasons({"leases": history, "queue_depth": {}, "backlog_depth": {}}) == []
-    for status in ("granted", "queued", "backlogged", "recall"):
+def test_pool_is_busy_on_any_non_terminal_lease_and_quiet_on_history_only():
+    import typing
+
+    from orion.schemas.gpu_pool import TERMINAL_STATUSES, LeaseStatus
+
+    history = [{"status": s, "priority": "background", "work_class": "agent", "holder": "d"}
+               for s in sorted(TERMINAL_STATUSES)]
+    quiet = {"leases": history, "queue_depth": {}, "backlog_depth": {},
+             "cards": [{"card": "gpu1", "swap_state": "idle"}], "actuation_paused": None}
+    assert EVAL.pool_busy_reasons(quiet) == []
+    # Every real non-terminal LeaseStatus (recalling and retry_wait included), and a status
+    # this code has never seen, reads as busy.
+    for status in [*sorted(set(typing.get_args(LeaseStatus)) - TERMINAL_STATUSES), "some_future_status"]:
         lease = {"status": status, "priority": "background", "work_class": "agent", "holder": "durable-runs:1"}
-        assert EVAL.pool_busy_reasons({"leases": history + [lease]}), status
-    assert EVAL.pool_busy_reasons({"leases": [], "backlog_depth": {"agent": 2}}) == ["backlog_depth[agent]=2"]
+        assert EVAL.pool_busy_reasons(dict(quiet, leases=history + [lease])), status
+    assert EVAL.pool_busy_reasons(dict(quiet, backlog_depth={"agent": 2})) == ["backlog_depth[agent]=2"]
+    assert EVAL.pool_busy_reasons(dict(quiet, cards=[{"card": "gpu1", "swap_state": "loading"}]))
+    assert EVAL.pool_busy_reasons(dict(quiet, actuation_paused={"by": "x"}))
+    assert EVAL.pool_busy_reasons(["not", "a", "dict"])
+
+
+def test_judgment_cache_is_per_model_and_survives_junk(tmp_path):
+    args = argparse.Namespace(judge_model="agent", judge_max_tokens=900)
+    f = tmp_path / "j.json"
+    assert EVAL.read_judgment_cache(f, args) is None  # missing
+    f.write_text('{"raw": "x"')  # killed mid-write (old code) -> a miss, not a crash
+    assert EVAL.read_judgment_cache(f, args) is None
+    EVAL.write_judgment_cache(f, {"raw": "x", "model": "agent", "max_tokens": 900})
+    assert EVAL.read_judgment_cache(f, args)["raw"] == "x"
+    assert EVAL.read_judgment_cache(f, argparse.Namespace(judge_model="agent-deep", judge_max_tokens=900)) is None
+    f.write_text('{"raw": "old"}')  # written before model was recorded: the defaults it ran with
+    assert EVAL.read_judgment_cache(f, args)["raw"] == "old"
+    assert not list(tmp_path.glob("*.tmp"))

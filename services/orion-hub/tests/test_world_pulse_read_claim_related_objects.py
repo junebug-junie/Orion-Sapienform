@@ -417,8 +417,23 @@ def test_all_vectors_pages_through_the_whole_index():
     assert [i for i, _ in got] == [f"d{i}" for i in range(7)] and got[4][1] == [4.0, 1.0]
     backend.docs.clear()  # a collection nothing was ever upserted into does not exist
     import pytest
-    with pytest.raises(SearchUnavailableError):
+    with pytest.raises(SearchUnavailableError, match="not built"):
         asyncio.run(go(3))
+    backend.exists_empty = True  # exists, holds nothing: unknown, not "no match"
+    with pytest.raises(SearchUnavailableError, match="is empty"):
+        asyncio.run(go(3))
+
+
+def test_a_failing_whole_index_read_is_search_unavailable_so_label_objects_stand():
+    import pytest
+
+    from orion.introspect.semantic_index import SearchUnavailableError
+
+    store, _, ctx, _, _ = _setup()
+    backend = _indexed(store)
+    backend.fail_get_all = True
+    with pytest.raises(SearchUnavailableError):
+        _related(store, ctx, backend)
 
 
 def test_the_raw_floor_is_retired_not_left_beside_the_centered_one():

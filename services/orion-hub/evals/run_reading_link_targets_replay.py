@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
 import importlib.util
 import json
 import os
@@ -53,6 +54,7 @@ from orion.schemas.world_pulse_read import WorldPulseReadHandoffV1, WorldPulseRe
 from orion.substrate.reconcile import is_identity_fenced
 from orion.world_pulse_read.assertions import (
     MAX_OBJECTS,
+    resolve_reading_subjects,
     MIN_LABEL_CHARS,
     EndpointV1,
     build_claim_context,
@@ -73,7 +75,8 @@ RETIRED_RAW_FLOOR = 0.65
 SEEDS_SQL = """
 SELECT seed_id, url, stage2_completed_at, handoff_json FROM world_pulse_read_seed
 WHERE stage2_status = 'done' AND handoff_json IS NOT NULL
-  AND stage2_completed_at > now() - make_interval(days => $1)
+  AND stage2_completed_at > $2::timestamptz - make_interval(days => $1)
+  AND stage2_completed_at <= $2::timestamptz
 ORDER BY stage2_completed_at
 """
 
@@ -141,6 +144,7 @@ def parse_claims(raw: str) -> list[WorldPulseReadRelationshipClaimV1]:
 async def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--days", type=int, default=14)
+    ap.add_argument("--until", default=None, help="window end, ISO time (default now)")
     ap.add_argument("--out", default="/tmp/reading-link-targets")
     ap.add_argument("--dsn", default=os.environ.get(
         "RECALL_PG_DSN", "postgresql://postgres:postgres@127.0.0.1:55432/conjourney"))
@@ -153,6 +157,8 @@ async def main() -> int:
     ap.add_argument("--llm-max-tokens", type=int, default=1200)
     ap.add_argument("--pool-url", default=os.environ.get("GPU_POOL_URL", "http://127.0.0.1:8127"))
     args = ap.parse_args()
+    until = datetime.fromisoformat(args.until) if args.until else datetime.now(timezone.utc)
+    args.until = until if until.tzinfo else until.replace(tzinfo=timezone.utc)
     out = Path(args.out)
     (out / "llm").mkdir(parents=True, exist_ok=True)
 
@@ -204,6 +210,12 @@ async def main() -> int:
             report["calibration"] = calib
             print("calibration (same-read concept pairs vs cross-read):", json.dumps(calib))
 
+            url_of = {}
+            for k, members in groups.items():
+                for m in members:
+                    url_of[ids[m]] = k
+            read_minted = np.asarray([i in url_of for i in ids])
+
             async def subject_vec(node_id: str) -> np.ndarray:
                 if node_id in index:
                     return raw[index[node_id]]
@@ -222,8 +234,9 @@ async def main() -> int:
             totals = {k: 0 for k in ("reads", "with_text", "usable_before", "usable_live", "usable_after",
                                      "offered_before", "offered_live", "offered_after",
                                      "acceptable_before", "acceptable_live", "acceptable_after")}
+            null_pool: list[float] = []
             async with conn.transaction(readonly=True):
-                rows = await conn.fetch(SEEDS_SQL, args.days)
+                rows = await conn.fetch(SEEDS_SQL, args.days, args.until)
                 for row in rows:
                     handoff = WorldPulseReadHandoffV1.model_validate(json.loads(row["handoff_json"]))
                     texts = await load_retained_texts(conn, handoff.read_evidence)
@@ -251,6 +264,24 @@ async def main() -> int:
                                 if offerable(ids[k], seen):
                                     dest.append((ids[k], float(scores[k])))
                                     seen.add(ids[k])
+                    # Null for the statistic Hub thresholds (best over ALL this read's subjects):
+                    # concepts minted by OTHER reads (a different source URL). Impure: sibling
+                    # reads on one topic (the CoreWeave pages) count as "other" here too.
+                    null_subjects = resolve_reading_subjects(store, handoff)
+                    if null_subjects:
+                        q0 = np.stack([await subject_vec(e.node_id) for e in null_subjects])
+                        q0c = q0 - mu
+                        q0c /= np.maximum(np.linalg.norm(q0c, axis=1, keepdims=True), 1e-12)
+                        own = {url_of.get(e.node_id) for e in null_subjects} | {row["url"]}
+                        other = read_minted & np.asarray([url_of.get(i) not in own for i in ids])
+                        best0 = (q0c @ cen[other].T).max(axis=0) if other.any() else np.zeros(0)
+                        null_rec = {"subjects": len(null_subjects), "cross_read_concepts": int(other.sum()),
+                                    "clear_floor": int((best0 >= OBJECT_MIN_CENTERED_SIMILARITY).sum()),
+                                    "best_p50": round(float(np.median(best0)), 3) if best0.size else None,
+                                    "best_p95": round(float(np.quantile(best0, 0.95)), 3) if best0.size else None}
+                        null_pool.extend(float(x) for x in best0)
+                    else:
+                        null_rec = {"subjects": 0}
                     acc = lambda objs: sum(1 for i in objs if str(nodes[i].label).lower() in retained) if objs else 0  # noqa: E731
                     a_b = sum(1 for o in exact if o.label.lower() in retained)
                     rec = {"seed_id": row["seed_id"], "url": row["url"],
@@ -260,6 +291,7 @@ async def main() -> int:
                            "before": [o.label for o in exact],
                            "live": [(nodes[i].label, round(s, 3)) for i, s in live],
                            "after": [(nodes[i].label, round(s, 3)) for i, s in after],
+                           "null_best_over_subjects": null_rec,
                            "acceptable": {"before": a_b, "live": a_b + acc([i for i, _ in live]),
                                           "after": a_b + acc([i for i, _ in after])}}
                     usable = bool(ctx.subjects and texts)
@@ -279,7 +311,9 @@ async def main() -> int:
                             if not c2.usable:
                                 continue
                             prompt = claims_prompt(handoff, c2)
-                            cache = out / "llm" / f"{row['seed_id'].replace(':', '_')[:80]}-{tag}.json"
+                            # Keyed on what was asked: a changed object list (floor, atlas) is a new prompt.
+                            key = hashlib.sha256(f"{args.llm_model}|{args.llm_max_tokens}|{prompt}".encode()).hexdigest()[:24]
+                            cache = out / "llm" / f"{tag}-{key}.json"
                             if cache.exists():
                                 raw_out = json.loads(cache.read_text())["raw"]
                             elif paused is None:
@@ -324,13 +358,17 @@ async def main() -> int:
                     report["reads"].append(rec)
                     print(f"{row['seed_id'][:58]:58} text={rec['retained_chars']} subj={len(ctx.subjects)} "
                           f"before={len(exact)} live={len(exact) + len(live)} after={len(exact) + len(after)} "
-                          f"acceptable={rec['acceptable']}" + (f" llm={ {k: (v['claims'], v['accepted'], v['reasons']) for k, v in rec.get('llm', {}).items()} }" if rec.get("llm") else ""))
+                          f"acceptable={rec['acceptable']} null={null_rec}" + (f" llm={ {k: (v['claims'], v['accepted'], v['reasons']) for k, v in rec.get('llm', {}).items()} }" if rec.get("llm") else ""))
         except (httpx.HTTPError, ValueError, KeyError) as exc:
             print(f"UNKNOWN: {type(exc).__name__}: {exc}", file=sys.stderr)
             return 2
         finally:
             await conn.close()
     report["totals"] = totals
+    report["null_best_over_subjects_pooled"] = quantiles(null_pool) | {
+        "share_clearing_floor": round(sum(x >= OBJECT_MIN_CENTERED_SIMILARITY for x in null_pool)
+                                      / max(1, len(null_pool)), 3)}
+    print("null (best over subjects vs other reads' concepts):", json.dumps(report["null_best_over_subjects_pooled"]))
     if args.llm_url:
         agg: dict[str, dict[str, int]] = {}
         for r in report["reads"]:

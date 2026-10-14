@@ -75,7 +75,8 @@ def test_frozen_coreweave_case_accepts_real_citation_and_refuses_invented_ones()
 
 def test_labeling_set_has_summary_pieces_and_empty_label_columns(tmp_path):
     p = _packet()
-    args = argparse.Namespace(days=14, labeling_md=str(tmp_path / "set.md"), labeling_csv=str(tmp_path / "set.csv"))
+    args = argparse.Namespace(days=14, labeling_md=str(tmp_path / "set.md"), labeling_csv=str(tmp_path / "set.csv"),
+                              labeling_html=str(tmp_path / "set.html"))
     reads = [{"input": READ}, {"input": READ}]
     j, chk = check_judgment(p, _judgment(read_quote="invented"), retained_texts=READ.retained_texts)
     results = [
@@ -90,8 +91,35 @@ def test_labeling_set_has_summary_pieces_and_empty_label_columns(tmp_path):
     assert "UNVERIFIED" in rows[0]["proposed_connection"] and "c-v100" in rows[0]["cited_pieces"]  # best of its kind by rank
     assert "c-home" in rows[1]["cited_pieces"]  # judged row shows what the judge cited
     assert rows[1]["decision"].startswith("REJECTED (quote_not_in_read)")  # a rejection stays labelable
+    assert "c-v100" in rows[1]["offered_not_cited"]  # recall: what the judge passed over
     md = Path(args.labeling_md).read_text()
     assert md.count("**wanted:**") == 2 and "that's no homelab" in md
+    assert "Offered but not cited" in md
+
+
+def test_labeling_html_is_self_contained_and_cannot_be_broken_by_stored_text(tmp_path):
+    import json
+    import re
+
+    p = _packet()
+    hostile = "</script><script>alert(1)</script> <!-- x"
+    rows = [{"item": 1, "seed_id": "s1", "title": hostile, "source": "example.com", "url": "https://example.com/a",
+             "article_summary": "A. B. C.", "summary_source": "judge", "proposed_connection": hostile,
+             "decision": "share", "judge_confidence": "0.60", "would_retest_prior": "",
+             "pieces": [{"ref_kind": "crystallization", "ref_id": "c-home", "store": "pg", "text": hostile,
+                         "how": "x", "neighborhood": [], "offered_in_other_reads": 0}],
+             "passed_over": [], "judged": True, "accepted": True, "read_quote": "q", "explore_next": ""}]
+    html = EVAL.labeling_html(rows, generated="now", days=14)
+    assert "default-src 'none'" in html  # CSP: the page may not load or send anything
+    assert not re.search(r"<script[^>]+src=|<link[^>]+href=|fetch\(|XMLHttpRequest|sendBeacon|WebSocket", html)
+    assert html.count("</script>") == 2  # the two real script tags; stored text never closes one
+    data = re.search(r'<script id="data" type="application/json">(.*?)</script>', html, re.S).group(1)
+    assert json.loads(data)[0]["title"] == hostile  # round-trips exactly
+    assert 'id="export"' in html and "text/csv" in html and "wanted" in html
+    # JS escapes reach the browser as escapes (a Python-cooked "\n" broke the CSV regex once:
+    # caught by a headless-Chromium probe, "Invalid regular expression: missing /").
+    assert r'/[",\n\r]/' in html and r'lines.join("\n")' in html
+    assert p.packet_id  # the packet fixture still builds
 
 
 def test_read_claims_uses_article_content_not_process_notes():
@@ -99,3 +127,13 @@ def test_read_claims_uses_article_content_not_process_notes():
           "concept_candidates": [{"label": "GB200", "definition": "rack"}, {"label": "H100"}],
           "priors_tested": [{"claim_ref": "B"}]}
     assert EVAL.read_claims(s2) == ["A", "GB200: rack", "H100", "B"]
+
+
+def test_pool_is_busy_on_any_live_or_waiting_lease_and_quiet_on_history_only():
+    history = [{"status": "dead_letter", "priority": "background", "work_class": "agent", "holder": "d"},
+               {"status": "unavailable", "priority": "background", "work_class": "diffusion", "holder": "x"}]
+    assert EVAL.pool_busy_reasons({"leases": history, "queue_depth": {}, "backlog_depth": {}}) == []
+    for status in ("granted", "queued", "backlogged", "recall"):
+        lease = {"status": status, "priority": "background", "work_class": "agent", "holder": "durable-runs:1"}
+        assert EVAL.pool_busy_reasons({"leases": history + [lease]}), status
+    assert EVAL.pool_busy_reasons({"leases": [], "backlog_depth": {"agent": 2}}) == ["backlog_depth[agent]=2"]

@@ -77,14 +77,16 @@ READS_SQL = """
 SELECT seed_id, url, title, root_request_id::text AS root, stage2_completed_at,
        stage2_result_json, handoff_json
 FROM world_pulse_read_seed
-WHERE stage2_status = 'done' AND stage2_completed_at > now() - make_interval(days => $1)
+WHERE stage2_status = 'done' AND stage2_completed_at > $2::timestamptz - make_interval(days => $1)
+  AND stage2_completed_at <= $2::timestamptz
 ORDER BY stage2_completed_at
 """
 OPEN_THREADS_SQL = """
 SELECT seed_id, root_request_id::text AS root, coalesce(title, '') AS title, url,
        stage2_result_json->'open_threads' AS threads
 FROM world_pulse_read_seed
-WHERE stage2_status = 'done' AND stage2_completed_at > now() - make_interval(days => $1)
+WHERE stage2_status = 'done' AND stage2_completed_at > $2::timestamptz - make_interval(days => $1)
+  AND stage2_completed_at <= $2::timestamptz
   AND jsonb_typeof(stage2_result_json->'open_threads') = 'array'
 """
 CRYS_SQL = """
@@ -107,6 +109,45 @@ HYDRATE_PER_KIND = 3 * max(KIND_BUDGET.values())
 
 def _sha(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+# Lease states that mean something is running or waiting on a GPU (orion/schemas/gpu_pool.py).
+POOL_BUSY_STATUSES = frozenset({"granted", "queued", "backlogged", "recall"})
+
+
+def pool_busy_reasons(state: dict[str, Any]) -> list[str]:
+    """Why the GPU pool is not quiet, from its /v1/pool snapshot. Empty = quiet.
+
+    Conservative on purpose: the judge's ``agent`` route runs at system priority, ahead of
+    background reading/curiosity holds, so ANY live or waiting lease (and any queue or
+    backlog) pauses it. Dead-lettered and unavailable leases are history, not load."""
+    reasons = []
+    for lease in state.get("leases") or []:
+        if lease.get("status") in POOL_BUSY_STATUSES:
+            reasons.append(f"{lease.get('status')} {lease.get('priority')} {lease.get('work_class')} "
+                           f"lease held by {lease.get('holder')}")
+    for key in ("queue_depth", "backlog_depth"):
+        for k, v in (state.get(key) or {}).items():
+            if v:
+                reasons.append(f"{key}[{k}]={v}")
+    return reasons
+
+
+async def wait_for_quiet_pool(client: httpx.AsyncClient, pool_url: str, wait_sec: float) -> list[str]:
+    """Poll /v1/pool until quiet or ``wait_sec`` passes (a lease from the previous judge
+    call can take a moment to release). Returns the busy reasons, or [] when quiet. An
+    unreadable pool counts as busy: no state, no call."""
+    deadline = time.monotonic() + max(0.0, wait_sec)
+    while True:
+        try:
+            resp = await client.get(pool_url.rstrip("/") + "/v1/pool", timeout=10.0)
+            resp.raise_for_status()
+            reasons = pool_busy_reasons(resp.json())
+        except (httpx.HTTPError, ValueError) as exc:
+            reasons = [f"pool state unreadable: {type(exc).__name__}"]
+        if not reasons or time.monotonic() >= deadline:
+            return reasons
+        await asyncio.sleep(5.0)
 
 
 class Falkor:
@@ -308,7 +349,7 @@ async def _replay(args: argparse.Namespace, conn: Any, fk: "Falkor", out: Path) 
     async with httpx.AsyncClient(timeout=30.0) as client:
         emb = Embedder(client, args.embed_url, out / "embed_cache.json")
         try:
-            rows = await conn.fetch(READS_SQL, args.days)
+            rows = await conn.fetch(READS_SQL, args.days, args.until)
             reads: list[dict[str, Any]] = []
             for r in rows:
                 s2 = json.loads(r["stage2_result_json"]) if isinstance(r["stage2_result_json"], str) else r["stage2_result_json"]
@@ -343,7 +384,7 @@ async def _replay(args: argparse.Namespace, conn: Any, fk: "Falkor", out: Path) 
                     pool.append((PoolDoc(kind, str(ref), store, c["doc"]), c["vec"]))
             # ---- pool: earlier reads' open threads + open concern arcs ----
             thread_root: dict[str, str | None] = {}
-            for r in await conn.fetch(OPEN_THREADS_SQL, max(args.days, 60)):
+            for r in await conn.fetch(OPEN_THREADS_SQL, max(args.days, 60), args.until):
                 threads = json.loads(r["threads"]) if isinstance(r["threads"], str) else r["threads"]
                 for i, t in enumerate(threads or []):
                     text = t if isinstance(t, str) else json.dumps(t)
@@ -532,26 +573,48 @@ async def _replay(args: argparse.Namespace, conn: Any, fk: "Falkor", out: Path) 
 
         # ---- 3. judge (only with --judge-url) ----
         results: list[dict[str, Any]] = []
+        judged_dir = out / "judgments"
+        judged_dir.mkdir(parents=True, exist_ok=True)
+        paused: list[str] | None = None
         for rd, packet in zip(reads, packets):
             prompt = build_judge_prompt(packet, rd["input"].retained_texts)
             (out / "prompts" / f"{packet.packet_id}.txt").write_text(prompt)
             item: dict[str, Any] = {"packet": packet, "prompt": prompt, "judgment": None, "check": None,
                                     "judge_status": "UNVERIFIED: judge not run", "lease_sec": None}
-            if args.judge_url:
-                started = time.perf_counter()
-                try:
-                    resp = await client.post(args.judge_url, timeout=args.judge_timeout, json={
-                        "model": args.judge_model, "max_tokens": args.judge_max_tokens, "temperature": 0.2,
-                        "messages": [{"role": "user", "content": prompt}],
-                        "chat_template_kwargs": {"enable_thinking": False},
-                    })
-                    resp.raise_for_status()
-                    raw = resp.json()["choices"][0]["message"]["content"]
-                    j, chk = check_judgment(packet, raw, retained_texts=rd["input"].retained_texts, prompt=prompt)
-                    item.update(judgment=j, check=chk, raw=raw, judge_status="judged",
-                                lease_sec=round(time.perf_counter() - started, 1))
-                except (httpx.HTTPError, KeyError, IndexError, ValueError) as exc:
-                    item["judge_status"] = f"judge_error: {type(exc).__name__}"
+            cache_file = judged_dir / f"{_sha(packet.packet_id + chr(0) + prompt)[:24]}.json"
+            if args.judge_url and cache_file.exists():
+                # Resume: a judgment already made for this exact prompt is re-checked, not re-asked.
+                cached = json.loads(cache_file.read_text())
+                j, chk = check_judgment(packet, cached["raw"], retained_texts=rd["input"].retained_texts, prompt=prompt)
+                item.update(judgment=j, check=chk, raw=cached["raw"], judge_status="judged",
+                            lease_sec=cached.get("lease_sec"))
+            elif args.judge_url and paused is None:
+                busy = await wait_for_quiet_pool(client, args.pool_url, args.pool_wait_sec)
+                if busy:
+                    # Stop asking; everything after this stays unjudged until a re-run resumes.
+                    paused = busy
+                    print(f"judge paused before item {len(results) + 1}/{len(packets)}: pool busy ({'; '.join(busy)})")
+                else:
+                    started = time.perf_counter()
+                    try:
+                        resp = await client.post(args.judge_url, timeout=args.judge_timeout, json={
+                            "model": args.judge_model, "max_tokens": args.judge_max_tokens, "temperature": 0.2,
+                            "messages": [{"role": "user", "content": prompt}],
+                            "chat_template_kwargs": {"enable_thinking": False},
+                        })
+                        resp.raise_for_status()
+                        raw = resp.json()["choices"][0]["message"]["content"]
+                        lease_sec = round(time.perf_counter() - started, 1)
+                        cache_file.write_text(json.dumps({"packet_id": packet.packet_id, "raw": raw,
+                                                          "lease_sec": lease_sec}))
+                        j, chk = check_judgment(packet, raw, retained_texts=rd["input"].retained_texts, prompt=prompt)
+                        item.update(judgment=j, check=chk, raw=raw, judge_status="judged", lease_sec=lease_sec)
+                        print(f"judged {len(results) + 1}/{len(packets)} in {lease_sec}s: "
+                              f"{chk.decision if chk.accepted else 'REJECTED ' + ','.join(chk.reasons)}")
+                    except (httpx.HTTPError, KeyError, IndexError, ValueError) as exc:
+                        item["judge_status"] = f"judge_error: {type(exc).__name__}"
+            if args.judge_url and item["check"] is None and paused is not None and item["judge_status"].startswith("UNVERIFIED"):
+                item["judge_status"] = "UNVERIFIED: judge paused (GPU pool busy); re-run to resume"
             results.append(item)
     # ---- outputs ----
     (out / "similarity.json").write_text(json.dumps(diag, indent=1, default=str))
@@ -569,7 +632,11 @@ async def _replay(args: argparse.Namespace, conn: Any, fk: "Falkor", out: Path) 
     print(f"packets={len(packets)} candidates/packet min={min(sizes, default=0)} max={max(sizes, default=0)} "
           f"empty_kinds_per_packet=" + ",".join(str(len(KIND_BUDGET) - len({c.ref_kind for c in p.candidates}))
                                                  for p in packets))
-    print(f"wrote {args.labeling_md} and {args.labeling_csv}; packets+prompts under {out}")
+    print(f"wrote {args.labeling_md}, {args.labeling_csv} and {args.labeling_html}; packets+prompts under {out}")
+    if args.judge_url and len(judged) < len(results):
+        print(f"judge INCOMPLETE: {len(judged)}/{len(results)} judged; re-run the same command to resume "
+              f"(cached judgments under {out / 'judgments'})")
+        return 3
     return 0
 
 
@@ -595,22 +662,36 @@ def write_labeling_set(args: argparse.Namespace, reads: list[dict[str, Any]], re
             if len(summary) > 900:
                 summary = summary[:899].rsplit(" ", 1)[0] + "\u2026"
             summary_src = "Stage 1 what_i_learned (first sentences), not judge-written"
+        # Best piece of each kind, up to five kinds: the label then tests every store.
+        best: dict[str, Any] = {}
+        for c in p.candidates:
+            if c.ref_kind not in best or c.score > best[c.ref_kind].score:
+                best[c.ref_kind] = c
+        top_pieces = sorted(best.values(), key=lambda c: -c.score)[:5]
+        cited: dict[tuple[str, str], str] = {}
+        read_quote, explore, judged_flag = "", "", False
         if j is not None and chk is not None:
+            judged_flag = True
             cited = {(c.ref_kind, c.ref_id): c.how for c in j.citations}
             pieces = [c for c in p.candidates if (c.ref_kind, c.ref_id) in cited]
+            # Recall: what retrieval offered that the judge did not cite, so a "the judge
+            # missed this" label is possible on every item, judged or rejected.
+            passed_over = [c for c in top_pieces if (c.ref_kind, c.ref_id) not in cited]
             connection = j.connection or "(none)"
             decision = chk.decision if chk.accepted else f"REJECTED ({', '.join(chk.reasons)}); judge said {j.decision}"
             conf = f"{j.confidence:.2f}"
             strain = strained_prior(j, chk) or ""
+            read_quote, explore = j.read_quote, j.explore_next or ""
         else:
-            # Best piece of each kind, up to five kinds: the label then tests every store.
-            best: dict[str, Any] = {}
-            for c in p.candidates:
-                if c.ref_kind not in best or c.score > best[c.ref_kind].score:
-                    best[c.ref_kind] = c
-            pieces = sorted(best.values(), key=lambda c: -c.score)[:5]
+            pieces, passed_over = top_pieces, []
             connection = "(judge not run: UNVERIFIED) retrieval's top pieces below, NOT a judged connection"
             decision, conf, strain = res["judge_status"], "", ""
+
+        def piece(c: Any) -> dict[str, Any]:
+            return {"ref_kind": c.ref_kind, "ref_id": c.ref_id, "store": c.store, "text": c.excerpt,
+                    "how": cited.get((c.ref_kind, c.ref_id), ""),
+                    "neighborhood": [f"[{x.relation}] {x.text[:200]}" for x in c.neighborhood[:3]],
+                    "offered_in_other_reads": c.recent_packet_count}
         rows.append({
             "item": n, "seed_id": p.seed_id, "title": p.read_title or "(untitled)", "source": _source(p.read_url),
             "url": p.read_url, "article_summary": summary, "summary_source": summary_src,
@@ -618,9 +699,9 @@ def write_labeling_set(args: argparse.Namespace, reads: list[dict[str, Any]], re
             "would_retest_prior": strain, "candidates_in_packet": len(p.candidates),
             "best_centered_cos": f"{sc['best_centered']:.3f}", "best_raw_prior_cos": f"{sc['best_raw_prior']:.3f}",
             "best_centered_prior_cos": f"{sc['best_centered_prior']:.3f}",
-            "pieces": [{"ref_kind": c.ref_kind, "ref_id": c.ref_id, "store": c.store, "text": c.excerpt,
-                        "neighborhood": [f"[{x.relation}] {x.text[:200]}" for x in c.neighborhood[:3]],
-                        "offered_in_other_reads": c.recent_packet_count} for c in pieces],
+            "pieces": [piece(c) for c in pieces], "passed_over": [piece(c) for c in passed_over],
+            "judged": judged_flag, "accepted": bool(chk is not None and chk.accepted),
+            "read_quote": read_quote, "explore_next": explore,
             "wanted": "", "notes": "",
         })
     csv_path = Path(args.labeling_csv)
@@ -629,13 +710,16 @@ def write_labeling_set(args: argparse.Namespace, reads: list[dict[str, Any]], re
         w = csv.writer(fh, lineterminator="\n")
         w.writerow(["item", "seed_id", "title", "source", "url", "article_summary", "summary_source",
                     "proposed_connection", "decision", "judge_confidence", "would_retest_prior",
-                    "best_centered_cos", "best_raw_prior_cos", "best_centered_prior_cos", "cited_pieces", "wanted", "notes"])
+                    "best_centered_cos", "best_raw_prior_cos", "best_centered_prior_cos", "cited_pieces",
+                    "offered_not_cited", "wanted", "notes"])
         for r in rows:
             r = {k: (_flat(v) if isinstance(v, str) else v) for k, v in r.items()}
             w.writerow([r["item"], r["seed_id"], r["title"], r["source"], r["url"], r["article_summary"],
                         r["summary_source"], r["proposed_connection"], r["decision"], r["judge_confidence"],
                         r["would_retest_prior"], r["best_centered_cos"], r["best_raw_prior_cos"], r["best_centered_prior_cos"],
                         " || ".join(_flat(f"{x['ref_kind']} {x['ref_id']} @ {x['store']}: {x['text']}") for x in r["pieces"]),
+                        " || ".join(_flat(f"{x['ref_kind']} {x['ref_id']} @ {x['store']}: {x['text']}")
+                                    for x in r["passed_over"]),
                         "", ""])
     md = [f"# Reading resonance labeling set ({datetime.now(timezone.utc):%Y-%m-%d})", "",
           "Generated by `services/orion-hub/evals/run_reading_resonance_eval.py` (read-only replay of every read "
@@ -662,24 +746,166 @@ def write_labeling_set(args: argparse.Namespace, reads: list[dict[str, Any]], re
                f"{r['candidates_in_packet']} pieces in the packet", "",
                f"**What the article says** ({r['summary_source']}): {_flat(r['article_summary'])}", "",
                f"**Proposed connection:** {_flat(r['proposed_connection'])}", "", "**Pieces:**", ""]
+        if r["read_quote"]:
+            md += [f"**Quote from the read:** \"{_flat(r['read_quote'])}\"", ""]
         if not r["pieces"]:
-            md.append("- (none: nothing cleared the offer floor)")
-        for x in r["pieces"]:
+            md.append("- (none cited)" if r["judged"] else "- (none: nothing cleared the offer floor)")
+
+        def md_piece(x: dict[str, Any]) -> None:
             md.append(f"- `{x['ref_kind']}` `{x['ref_id']}` ({x['store']}"
                       + (f"; offered for {x['offered_in_other_reads']} other reads" if x["offered_in_other_reads"] else "")
                       + f"): {_flat(x['text'])}")
+            if x.get("how"):
+                md.append(f"  - judge: {_flat(x['how'])}")
             for nb in x["neighborhood"]:
                 md.append(f"  - {_flat(nb)}")
+
+        for x in r["pieces"]:
+            md_piece(x)
+        if r["passed_over"]:
+            md += ["", "**Offered but not cited** (did the judge miss one?):", ""]
+            for x in r["passed_over"]:
+                md_piece(x)
+        if r["explore_next"]:
+            md += ["", f"**Explore next:** {_flat(r['explore_next'])}"]
         md += ["", "**wanted:** ___ (yes/no)", "", "**notes:** ___", ""]
     Path(args.labeling_md).write_text("\n".join(md) + "\n")
+    Path(args.labeling_html).write_text(labeling_html(rows, generated=f"{datetime.now(timezone.utc):%Y-%m-%d %H:%M} UTC",
+                                                      days=args.days))
+
+
+_HTML_TEMPLATE = r"""<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'">
+<title>Reading resonance labeling set</title>
+<style>
+body{font:15px/1.5 system-ui,sans-serif;max-width:920px;margin:0 auto;padding:16px;background:#f6f5f2;color:#222}
+header{position:sticky;top:0;background:#f6f5f2;padding:8px 0;border-bottom:1px solid #ccc;z-index:2}
+button{font:inherit;padding:6px 14px;cursor:pointer}
+.card{background:#fff;border:1px solid #ddd;border-radius:8px;padding:14px 18px;margin:16px 0}
+.card.done{border-left:6px solid #4a8}
+.meta{color:#666;font-size:13px}
+.decision{display:inline-block;padding:1px 8px;border-radius:10px;font-size:13px;background:#eee}
+.decision.share{background:#cfe9d6}.decision.note{background:#e2e6f5}.decision.rej{background:#f6d4d0}
+.piece{border-left:3px solid #bbb;padding:2px 10px;margin:8px 0;font-size:14px}
+.piece .tag{font-family:monospace;font-size:12px;color:#555}
+.how{color:#335;font-style:italic}
+.nb{color:#666;font-size:13px;margin-left:12px}
+.passed{opacity:.8}
+textarea{width:100%;min-height:52px;font:inherit}
+label{margin-right:14px}
+h2{font-size:17px;margin:0 0 4px}
+</style></head><body>
+<header><b>Reading resonance labeling set</b> &middot; generated __GENERATED__ &middot; reads from the last __DAYS__ days
+&middot; <span id="progress"></span>
+<button id="export">Export my labels (CSV)</button></header>
+<p>For each item: is this a connection you would have <b>wanted</b> Orion to tell you about? Mark yes or no and add a
+note (which piece mattered, what the judge missed). Labels are kept in this browser (localStorage) until you export;
+nothing is sent anywhere.</p>
+<div id="cards"></div>
+<script id="data" type="application/json">__DATA__</script>
+<script>
+"use strict";
+const rows = JSON.parse(document.getElementById("data").textContent);
+const KEY = "orion-resonance-labels-__KEY__";
+const saved = JSON.parse(localStorage.getItem(KEY) || "{}");
+function el(tag, cls, text) { const e = document.createElement(tag); if (cls) e.className = cls;
+  if (text !== undefined) e.textContent = text; return e; }
+function pieceEl(x, extra) {
+  const d = el("div", "piece" + (extra ? " " + extra : ""));
+  d.appendChild(el("div", "tag", x.ref_kind + " · " + x.ref_id + " · " + x.store +
+    (x.offered_in_other_reads ? " · offered for " + x.offered_in_other_reads + " other reads" : "")));
+  d.appendChild(el("div", "", x.text));
+  if (x.how) d.appendChild(el("div", "how", "judge: " + x.how));
+  (x.neighborhood || []).forEach(n => d.appendChild(el("div", "nb", n)));
+  return d;
+}
+function progress() {
+  const n = rows.filter(r => (saved[r.seed_id] || {}).wanted).length;
+  document.getElementById("progress").textContent = n + " / " + rows.length + " labelled";
+}
+const root = document.getElementById("cards");
+rows.forEach(r => {
+  const s = saved[r.seed_id] || (saved[r.seed_id] = {wanted: "", notes: ""});
+  const c = el("div", "card" + (s.wanted ? " done" : ""));
+  c.appendChild(el("h2", "", r.item + ". " + r.title));
+  const m = el("div", "meta"); const a = el("a", "", r.source); a.href = r.url; a.rel = "noreferrer";
+  a.target = "_blank"; m.appendChild(a); c.appendChild(m);
+  const dc = r.accepted ? r.decision : (r.judged ? "rej" : "");
+  const dl = el("div", "meta"); const badge = el("span", "decision " + dc, r.decision);
+  dl.appendChild(badge);
+  if (r.judge_confidence) dl.appendChild(document.createTextNode(" confidence " + r.judge_confidence));
+  if (r.would_retest_prior) dl.appendChild(document.createTextNode(" · would re-test prior " + r.would_retest_prior));
+  c.appendChild(dl);
+  c.appendChild(el("p", "", "")).appendChild(el("b", "", "What the article says "));
+  c.lastChild.appendChild(el("span", "meta", "(" + r.summary_source + "): "));
+  c.lastChild.appendChild(document.createTextNode(r.article_summary));
+  if (r.read_quote) { const q = el("p"); q.appendChild(el("b", "", "Quote from the read: "));
+    q.appendChild(document.createTextNode("“" + r.read_quote + "”")); c.appendChild(q); }
+  const pc = el("p"); pc.appendChild(el("b", "", "Proposed connection: "));
+  pc.appendChild(document.createTextNode(r.proposed_connection)); c.appendChild(pc);
+  c.appendChild(el("b", "", r.judged ? "Cited pieces" : "Retrieval's top pieces (judge not run)"));
+  if (!r.pieces.length) c.appendChild(el("div", "meta", r.judged ? "(none cited)" : "(nothing cleared the offer floor)"));
+  r.pieces.forEach(x => c.appendChild(pieceEl(x)));
+  if (r.passed_over.length) { c.appendChild(el("b", "", "Offered but not cited (did the judge miss one?)"));
+    r.passed_over.forEach(x => c.appendChild(pieceEl(x, "passed"))); }
+  if (r.explore_next) { const e = el("p"); e.appendChild(el("b", "", "Explore next: "));
+    e.appendChild(document.createTextNode(r.explore_next)); c.appendChild(e); }
+  const f = el("div"); f.appendChild(el("b", "", "Wanted? "));
+  ["yes", "no"].forEach(v => { const l = el("label"); const i = el("input"); i.type = "radio";
+    i.name = "w-" + r.item; i.value = v; i.checked = s.wanted === v;
+    i.addEventListener("change", () => { s.wanted = v; c.classList.add("done"); store(); });
+    l.appendChild(i); l.appendChild(document.createTextNode(" " + v)); f.appendChild(l); });
+  const t = el("textarea"); t.placeholder = "notes"; t.value = s.notes;
+  t.addEventListener("input", () => { s.notes = t.value; store(); });
+  f.appendChild(t); c.appendChild(f); root.appendChild(c);
+});
+function store() { localStorage.setItem(KEY, JSON.stringify(saved)); progress(); }
+function cell(v) { v = String(v == null ? "" : v); return /[",\n\r]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v; }
+document.getElementById("export").addEventListener("click", () => {
+  const head = ["item", "seed_id", "title", "url", "decision", "judge_confidence", "proposed_connection", "wanted", "notes"];
+  const lines = [head.join(",")].concat(rows.map(r => { const s = saved[r.seed_id] || {};
+    return [r.item, r.seed_id, r.title, r.url, r.decision, r.judge_confidence, r.proposed_connection,
+            s.wanted || "", s.notes || ""].map(cell).join(","); }));
+  const blob = new Blob([lines.join("\n") + "\n"], {type: "text/csv"});
+  const a = document.createElement("a"); a.href = URL.createObjectURL(blob);
+  a.download = "resonance-labels-__KEY__.csv"; document.body.appendChild(a); a.click(); a.remove();
+});
+progress();
+</script></body></html>
+"""
+
+
+def labeling_html(rows: list[dict[str, Any]], *, generated: str, days: int) -> str:
+    """One self-contained page: cards, a wanted yes/no + notes per item, and an export
+    button that downloads a CSV. No network: inline CSS/JS, a CSP of default-src 'none',
+    data embedded as JSON (every ``<`` escaped so text can never close the script tag)."""
+    keep = ("item", "seed_id", "title", "source", "url", "article_summary", "summary_source",
+            "proposed_connection", "decision", "judge_confidence", "would_retest_prior", "pieces",
+            "passed_over", "judged", "accepted", "read_quote", "explore_next")
+    data = json.dumps([{k: r.get(k) for k in keep} for r in rows], ensure_ascii=False)
+    data = data.replace("<", "\\u003c")
+    key = _sha("|".join(str(r.get("seed_id")) for r in rows))[:10]
+    return (_HTML_TEMPLATE.replace("__GENERATED__", generated).replace("__DAYS__", str(int(days)))
+            .replace("__KEY__", key).replace("__DATA__", data))
+
+
+def _utc(text: str) -> datetime:
+    t = datetime.fromisoformat(text)
+    return t if t.tzinfo else t.replace(tzinfo=timezone.utc)
 
 
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--days", type=int, default=14)
+    ap.add_argument("--until", type=_utc, default=None,
+                    help="window end (ISO time, default now). Pin it when resuming a judge run so a new "
+                         "read cannot change the packets (and the cached judgments) between runs")
     ap.add_argument("--out-dir", default="/tmp/reading-resonance-eval")
     ap.add_argument("--labeling-md", default="docs/superpowers/evals/2026-10-13-resonance-labeling-set.md")
     ap.add_argument("--labeling-csv", default="docs/superpowers/evals/2026-10-13-resonance-labeling-set.csv")
+    ap.add_argument("--labeling-html", default="docs/superpowers/evals/2026-10-13-resonance-labeling-set.html")
     ap.add_argument("--dsn", default=os.environ.get(
         "RECALL_PG_DSN", "postgresql://postgres:postgres@127.0.0.1:55432/conjourney"))
     ap.add_argument("--falkor", default=os.environ.get("FALKORDB_URI", "redis://127.0.0.1:6380"))
@@ -690,7 +916,13 @@ def main() -> int:
     ap.add_argument("--judge-model", default="agent")
     ap.add_argument("--judge-max-tokens", type=int, default=900)
     ap.add_argument("--judge-timeout", type=float, default=600.0)
-    return asyncio.run(run(ap.parse_args()))
+    ap.add_argument("--pool-url", default=os.environ.get("GPU_POOL_URL", "http://127.0.0.1:8127"),
+                    help="orion-gpu-pool HTTP base; GET /v1/pool is read before every judge call")
+    ap.add_argument("--pool-wait-sec", type=float, default=30.0,
+                    help="how long to wait for the pool to go quiet before pausing the judge")
+    args = ap.parse_args()
+    args.until = args.until or datetime.now(timezone.utc)
+    return asyncio.run(run(args))
 
 
 if __name__ == "__main__":

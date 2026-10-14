@@ -86,6 +86,19 @@ def test_producer_restart_closes_the_open_arc_unobserved():
     assert s.active["company"] == second.arc_id
 
 
+def test_a_lost_closing_row_never_merges_two_visits():
+    # present, recent, (absent row lost), then a new visit whose from_state says the room was empty.
+    s = fold(initial_state(), events=evs([row("present", at(0), None), row("recent", at(1), "present"),
+                                           row("present", at(180), "absent")]))
+    first, second = company(s)
+    assert first.closed_reason == "process_ended" and first.ended_at == at(1) and first.cumulative_dwell_sec == 60
+    assert second.status == "open" and second.began_at == at(180)
+    # Same with a lost unknown row: the dark gap is never company.
+    s = fold(initial_state(), events=evs([row("present", at(0), None), row("present", at(90), "unknown")]))
+    first, second = company(s)
+    assert first.closed_reason == "source_stale" and first.ended_at == at(0)
+
+
 def test_absent_straight_from_present_closes_at_the_absent_row():
     s = fold(initial_state(), events=evs([row("present", at(0), None), row("absent", at(5), "present")]))
     (arc,) = company(s)

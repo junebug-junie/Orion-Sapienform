@@ -88,7 +88,8 @@ changes, both stated so a reader is never surprised:
 `from_state` is NULL on the first row after a process start: the producer
 cannot know what happened while it was down, and the reducer reads that NULL as
 "close whatever was open, unobserved". `label` is the enrolled identity label
-and is stored ONLY when `identity_confirmed` is true -- never a guess.
+and is stored ONLY when `identity_confirmed` is true, which for this history
+means a fresh `probable` face match (a `possible` match is not a name) -- never a guess.
 """
 
 from __future__ import annotations
@@ -243,6 +244,7 @@ class PresenceRegistry:
         # (present .. absent/unknown); reset when the stretch ends.
         self._stretch_confirmed: dict[str, bool] = {}
         self._pending: list[dict[str, Any]] = []
+        self._closed = False  # set by close(): no transition after the shutdown unknown rows
 
     def _tracker(self, stream_id: str) -> PresenceTracker:
         if stream_id not in self._trackers:
@@ -277,8 +279,8 @@ class PresenceRegistry:
             snapshot = self._tracker(stream_id).observe(
                 believed_labels, now=ts, identity_hint=identity_hint, identity_confidence=identity_confidence
             )
-            if self._transitions_enabled:
-                self._note_transition(stream_id, snapshot, ts)
+            if self._transitions_enabled and not self._closed:
+                self._note_transition(stream_id, snapshot, ts, identity_hint=identity_hint)
             last_write = self._last_write_at.get(stream_id, 0.0)
             due = (ts - last_write) >= self._write_min_interval_sec
             if due:
@@ -316,12 +318,14 @@ class PresenceRegistry:
         self._last_transition_at[stream_id] = occurred_at
         self._pending.append(row)
 
-    def _note_transition(self, stream_id: str, snapshot: dict[str, Any], ts: float) -> None:
+    def _note_transition(
+        self, stream_id: str, snapshot: dict[str, Any], ts: float, *, identity_hint: Optional[dict[str, Any]] = None
+    ) -> None:
         tracker = self._trackers[stream_id]
         self._last_observed_at[stream_id] = ts
         state = snapshot["state"]
-        confirmed = bool(snapshot.get("identity_confirmed"))
-        label = _confirmed_label(snapshot)
+        label = _confirmed_label(snapshot, identity_hint)
+        confirmed = label is not None
         written = self._written_state.get(stream_id)
         if state != written:
             since = tracker.state_since if tracker.state_since is not None else ts
@@ -355,6 +359,25 @@ class PresenceRegistry:
         except Exception as exc:
             logger.warning("presence_sweep_failed error=%s", exc)
         return n
+
+    def close(self, now: float) -> int:
+        """Shutdown: queue ``unknown`` for every stream, then refuse further transitions so a
+        late flush cannot write a row after the stream was declared dark."""
+        n = self.sweep_stale(now, force=True)
+        self._closed = True
+        return n
+
+    def requeue(self, rows: list[dict[str, Any]]) -> None:
+        """Put rows whose write failed back at the front of the queue (bounded; ids are
+        deterministic and the insert is ON CONFLICT DO NOTHING, so a retry is safe)."""
+        merged = list(rows) + self._pending
+        dropped = max(0, len(merged) - MAX_PENDING_TRANSITIONS)
+        if dropped:
+            logger.warning("presence_transition_queue_full dropped=%d", dropped)
+        self._pending = merged[-MAX_PENDING_TRANSITIONS:] if dropped else merged
+
+    def has_pending(self) -> bool:
+        return bool(self._pending)
 
     def drain_transitions(self) -> list[dict[str, Any]]:
         """Hand out (and forget) the transition rows queued since the last drain."""
@@ -428,12 +451,18 @@ def _engine_for(postgres_uri: str) -> Any:
 
 # ---------------------------------------------------------------------- transitions
 
-def _confirmed_label(snapshot: dict[str, Any]) -> Optional[str]:
-    """The enrolled label, only when identity is confirmed RIGHT NOW. Never a
-    guess: ``subject`` narrows to a real name from a probable/possible hint,
-    and ``identity_confirmed`` is the same hint being present now
-    (projection.identity_confidence_from_artifact delegates to it)."""
+MAX_PENDING_TRANSITIONS = 256
+
+
+def _confirmed_label(snapshot: dict[str, Any], identity_hint: Optional[dict[str, Any]] = None) -> Optional[str]:
+    """The enrolled label, only when identity is confirmed RIGHT NOW by a
+    ``probable`` match. ``identity_confirmed`` upstream also counts a
+    ``possible`` match (the weaker similarity band, orion-vision-host
+    identity_gallery), which is not strong enough to put a name on a stretch
+    of company, so the chronology treats it as unconfirmed."""
     if not snapshot.get("identity_confirmed"):
+        return None
+    if not identity_hint or identity_hint.get("state") != "probable":
         return None
     subject = str(snapshot.get("subject") or "").strip()
     return subject if subject and subject not in ("unknown", "none") else None

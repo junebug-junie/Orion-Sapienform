@@ -225,3 +225,50 @@ def test_service_flushes_transitions_off_the_loop(monkeypatch) -> None:
 
     asyncio.run(go())
     assert [r["to_state"] for batch in written for r in batch] == ["present"]
+
+
+def test_possible_match_is_not_a_confirmed_name() -> None:
+    reg = _reg()
+    reg.record("cam0", PERSON, now=T, identity_hint={"subject": "juniper", "state": "possible"},
+               identity_confidence="confirmed")
+    (row,) = reg.drain_transitions()
+    assert row["identity_confirmed"] is False and row["label"] is None
+
+
+def test_close_writes_unknown_then_refuses_later_rows() -> None:
+    reg = _reg()
+    reg.record("cam0", PERSON, now=T)
+    reg.drain_transitions()
+    assert reg.close(T + 1) == 1
+    assert [r["to_state"] for r in reg.drain_transitions()] == ["unknown"]
+    reg.record("cam0", EMPTY, now=T + 2)  # a late flush after shutdown began
+    assert reg.drain_transitions() == []
+
+
+def test_failed_rows_are_requeued_in_order_and_bounded() -> None:
+    reg = _reg()
+    reg.record("cam0", PERSON, now=T)
+    first = reg.drain_transitions()
+    reg.record("cam0", EMPTY, now=T + 5)
+    reg.requeue(first)
+    assert [r["to_state"] for r in reg.drain_transitions()] == ["present", "recent"]
+    reg.requeue([first[0]] * (P.MAX_PENDING_TRANSITIONS + 10))
+    assert len(reg.drain_transitions()) == P.MAX_PENDING_TRANSITIONS
+
+
+def test_service_requeues_on_write_failure(monkeypatch) -> None:
+    from app import main as M
+
+    monkeypatch.setattr(M, "write_transitions_to_postgres", lambda rows, postgres_uri: 0)
+    monkeypatch.setattr(M, "write_snapshot_to_postgres", lambda *a, **k: None)
+    monkeypatch.setattr(M.settings, "POSTGRES_URI", "postgresql://x")
+    monkeypatch.setattr(M.settings, "VISION_PRESENCE_TRANSITIONS_ENABLED", True)
+    monkeypatch.setattr(M.settings, "WINDOW_PRESENCE_ENABLED", True)
+
+    async def go():
+        svc = M.WindowService()
+        svc._note_presence("cam0", PERSON)
+        await asyncio.gather(*list(svc._presence_write_tasks))
+        return svc._presence_registry.has_pending()
+
+    assert asyncio.run(go()) is True

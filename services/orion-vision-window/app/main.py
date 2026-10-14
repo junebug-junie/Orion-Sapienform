@@ -220,17 +220,6 @@ class WindowService:
 
     async def stop(self) -> None:
         self._shutdown_event.set()
-        # A graceful stop closes every company stretch: after this, nothing is known.
-        self._presence_registry.sweep_stale(time.time(), force=True)
-        rows = self._presence_registry.drain_transitions()
-        if rows and settings.POSTGRES_URI:
-            try:
-                await asyncio.wait_for(
-                    asyncio.to_thread(write_transitions_to_postgres, rows, postgres_uri=settings.POSTGRES_URI),
-                    timeout=5.0,
-                )
-            except Exception as exc:
-                logger.warning(f"[WINDOW] presence_transition_shutdown_write_failed error={exc}")
         for t in [self._consumer_task, self._identity_consumer_task, self._rpc_task, self._emitter_task]:
             if t:
                 try:
@@ -238,6 +227,7 @@ class WindowService:
                     await t
                 except asyncio.CancelledError:
                     pass
+        await self._close_presence_transitions()
         await self.bus.close()
         self._bus_ready = False
         if self._recovery:
@@ -422,7 +412,7 @@ class WindowService:
                         flush = True
                 if flush:
                     await self._drain_stream(sid)
-            if self._presence_registry.sweep_stale(now):
+            if self._presence_registry.sweep_stale(now) or self._presence_registry.has_pending():
                 self._flush_presence_transitions()
             await asyncio.sleep(0.25)
 
@@ -752,6 +742,30 @@ class WindowService:
         self._presence_write_tasks.add(task)
         task.add_done_callback(self._presence_write_tasks.discard)
 
+    async def _close_presence_transitions(self) -> None:
+        """A graceful stop closes every company stretch: after this nothing is known. The
+        registry refuses later transitions (an in-flight RPC flush cannot write after it)."""
+        self._presence_registry.close(time.time())
+        pending = list(self._presence_write_tasks)
+        if pending:  # let the last real transitions land first (bounded)
+            await asyncio.wait(pending, timeout=5.0)
+        rows = self._presence_registry.drain_transitions()
+        if rows and settings.POSTGRES_URI:
+            try:
+                await asyncio.wait_for(
+                    asyncio.to_thread(write_transitions_to_postgres, rows, postgres_uri=settings.POSTGRES_URI),
+                    timeout=5.0,
+                )
+            except Exception as exc:
+                logger.warning(f"[WINDOW] presence_transition_shutdown_write_failed error={exc}")
+
+    async def _write_transitions(self, rows: List[Dict[str, Any]]) -> None:
+        written = await asyncio.to_thread(write_transitions_to_postgres, rows, postgres_uri=settings.POSTGRES_URI)
+        if not written:
+            # Retried with the next flush or sweep; a lost closing row would otherwise merge
+            # two visits (the reducer also guards against that).
+            self._presence_registry.requeue(rows)
+
     def _flush_presence_transitions(self) -> None:
         """Fire-and-forget append of any queued presence transition rows.
         Always drains (so the queue never grows when Postgres is unset); a
@@ -765,9 +779,7 @@ class WindowService:
                 f"[WINDOW] presence_transition stream={r['presence_id']} "
                 f"{r['from_state'] or '-'}->{r['to_state']} confirmed={r['identity_confirmed']}"
             )
-        task = asyncio.create_task(
-            asyncio.to_thread(write_transitions_to_postgres, rows, postgres_uri=settings.POSTGRES_URI)
-        )
+        task = asyncio.create_task(self._write_transitions(rows))
         self._presence_write_tasks.add(task)
         task.add_done_callback(self._presence_write_tasks.discard)
 

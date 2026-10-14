@@ -579,10 +579,12 @@ def _fold_presence(state: TemporalSelfStateV1, e: TemporalSelfEventV1) -> None:
     t = e.occurred_at
     ref = _ref(e)
     arc = _company_arc(state, e.subject_ref)
-    if arc is not None and e.payload.get("from_state") is None:
-        # The producer restarted: nothing was observed between the arc's last row and this one.
-        _add_evidence(arc, ref)
-        _end_company(state, arc, "source_stale", arc.last_seen_at)
+    from_state = e.payload.get("from_state")
+    if arc is not None and from_state in (None, "absent", "unknown"):
+        # The row that should have closed this arc never arrived (a producer restart writes
+        # from_state NULL; a lost write leaves absent/unknown as the prior state). Nothing was
+        # observed after the arc's last row, so it ends there, never across the gap.
+        _end_company(state, arc, "process_ended" if from_state == "absent" else "source_stale", arc.last_seen_at)
         arc = None
     if to_state == "present":
         if arc is None:

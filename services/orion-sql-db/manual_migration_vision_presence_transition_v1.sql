@@ -18,7 +18,7 @@
 --   from_state          NULL on the first row after a producer restart (nothing known before).
 --   to_state            present | recent | absent | unknown (no window for STALE_AFTER_MS).
 --   occurred_at         the state machine's own state_since (for unknown: the last observation).
---   identity_confirmed  a fresh confirmed face match at that moment.
+--   identity_confirmed  a fresh "probable" face match at that moment (a "possible" match is not enough).
 --   label               the enrolled identity label, ONLY when identity_confirmed (never a guess).
 --
 -- Retention: none, like field_dominance_run. Volume is one row per presence change (tens a

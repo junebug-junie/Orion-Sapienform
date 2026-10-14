@@ -3,7 +3,7 @@
 
     PYTHONPATH=. .venv/bin/python services/orion-hub/evals/run_reading_resonance_eval.py \
         [--days 14] [--out-dir /tmp/reading-resonance-eval] \
-        [--labeling-md docs/superpowers/evals/2026-10-13-resonance-labeling-set.md] \
+        [--labeling-md /tmp/reading-resonance-eval/labeling/2026-10-13-resonance-labeling-set.md] \
         [--judge-url http://127.0.0.1:8222/v1/chat/completions --judge-model agent]
 
 Design: docs/superpowers/specs/2026-10-13-reading-resonance-design.md (PR #2642), patch A.
@@ -105,6 +105,20 @@ CHROMA_KINDS = {
 # Per kind, how many top-ranked docs are hydrated from their record store before the
 # packet budget is applied (a hit whose record is gone is dropped, the next one moves up).
 HYDRATE_PER_KIND = 3 * max(KIND_BUDGET.values())
+# The labeling set quotes Juniper's memories and chats; the repo is public. It is written
+# outside the repo only, and the runner refuses a labeling path inside the checkout.
+LABELING_DIR = "/tmp/reading-resonance-eval/labeling"
+REPO_ROOT = Path(__file__).resolve().parents[3]
+
+
+def labeling_paths_inside_repo(args: argparse.Namespace, repo_root: Path = REPO_ROOT) -> list[str]:
+    """Labeling outputs that would land inside the git checkout (refused: private text)."""
+    inside = []
+    for path in (args.labeling_md, args.labeling_csv, args.labeling_html):
+        resolved = Path(path).expanduser().resolve()
+        if resolved == repo_root or repo_root in resolved.parents:
+            inside.append(str(path))
+    return inside
 
 
 def _sha(text: str) -> str:
@@ -730,6 +744,13 @@ def write_labeling_set(args: argparse.Namespace, reads: list[dict[str, Any]], re
             conf = f"{j.confidence:.2f}"
             strain = strained_prior(j, chk) or ""
             read_quote, explore = j.read_quote, j.explore_next or ""
+        elif chk is not None:
+            # Judged, but the answer never became a judgment (bad JSON or broke the schema,
+            # e.g. a connection over its length limit): a real rejection, not "not run".
+            judged_flag = True
+            pieces, passed_over = top_pieces, []
+            connection = "(judge answered, but the answer was unparseable or broke the schema) retrieval's top pieces below"
+            decision, conf, strain = f"REJECTED ({', '.join(chk.reasons)})", "", ""
         else:
             pieces, passed_over = top_pieces, []
             connection = "(judge not run: UNVERIFIED) retrieval's top pieces below, NOT a judged connection"
@@ -952,9 +973,9 @@ def main() -> int:
                     help="window end (ISO time, default now). Pin it when resuming a judge run so a new "
                          "read cannot change the packets (and the cached judgments) between runs")
     ap.add_argument("--out-dir", default="/tmp/reading-resonance-eval")
-    ap.add_argument("--labeling-md", default="docs/superpowers/evals/2026-10-13-resonance-labeling-set.md")
-    ap.add_argument("--labeling-csv", default="docs/superpowers/evals/2026-10-13-resonance-labeling-set.csv")
-    ap.add_argument("--labeling-html", default="docs/superpowers/evals/2026-10-13-resonance-labeling-set.html")
+    ap.add_argument("--labeling-md", default=f"{LABELING_DIR}/2026-10-13-resonance-labeling-set.md")
+    ap.add_argument("--labeling-csv", default=f"{LABELING_DIR}/2026-10-13-resonance-labeling-set.csv")
+    ap.add_argument("--labeling-html", default=f"{LABELING_DIR}/2026-10-13-resonance-labeling-set.html")
     ap.add_argument("--dsn", default=os.environ.get(
         "RECALL_PG_DSN", "postgresql://postgres:postgres@127.0.0.1:55432/conjourney"))
     ap.add_argument("--falkor", default=os.environ.get("FALKORDB_URI", "redis://127.0.0.1:6380"))
@@ -973,6 +994,11 @@ def main() -> int:
     ap.add_argument("--pool-wait-sec", type=float, default=30.0,
                     help="how long to wait for the pool to go quiet before pausing the judge")
     args = ap.parse_args()
+    inside = labeling_paths_inside_repo(args)
+    if inside:
+        print(f"refused: the labeling set quotes Juniper's memories and the repo is public; write it "
+              f"outside the checkout (default {LABELING_DIR}), not {', '.join(inside)}", file=sys.stderr)
+        return 2
     args.until = args.until or datetime.now(timezone.utc)
     return asyncio.run(run(args))
 

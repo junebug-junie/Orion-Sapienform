@@ -179,3 +179,29 @@ def test_judge_ignores_foreground_work_on_other_cards_but_not_background_or_wait
     assert EVAL.pool_busy_reasons(state(status="queued"), "agent")  # waiting work
     assert EVAL.pool_busy_reasons(state(role=None), "agent")        # unknown placement
     assert EVAL.pool_busy_reasons(state(role="nope"), "agent")
+
+
+def test_unparseable_answer_is_labelled_rejected_not_unjudged(tmp_path):
+    # 2026-10-14 re-run: two answers broke the schema (connection over 900 chars, truncated
+    # JSON) and the set called them "judged" with an "UNVERIFIED: judge not run" connection.
+    p = _packet()
+    args = argparse.Namespace(days=14, labeling_md=str(tmp_path / "set.md"), labeling_csv=str(tmp_path / "set.csv"),
+                              labeling_html=str(tmp_path / "set.html"))
+    j, chk = check_judgment(p, '{"article_summary": "cut off', retained_texts=READ.retained_texts)
+    assert j is None and chk.reasons == ["unparseable"]
+    results = [{"packet": p, "judgment": j, "check": chk, "judge_status": "judged"}]
+    EVAL.write_labeling_set(args, [{"input": READ}], results,
+                            [{"best_centered": 0.5, "best_raw_prior": 0.6, "best_centered_prior": 0.3}], {})
+    row = next(csv.DictReader(open(args.labeling_csv)))
+    assert row["decision"] == "REJECTED (unparseable)"
+    assert "UNVERIFIED" not in row["proposed_connection"]
+
+
+def test_labeling_set_is_refused_inside_the_public_repo(tmp_path):
+    repo = EVAL.REPO_ROOT
+    inside = argparse.Namespace(labeling_md=str(repo / "docs/superpowers/evals/x-labeling-set.md"),
+                                labeling_csv=str(tmp_path / "a.csv"), labeling_html=str(tmp_path / "a.html"))
+    assert EVAL.labeling_paths_inside_repo(inside) == [inside.labeling_md]
+    outside = argparse.Namespace(labeling_md=f"{EVAL.LABELING_DIR}/a.md", labeling_csv=f"{EVAL.LABELING_DIR}/a.csv",
+                                 labeling_html=f"{EVAL.LABELING_DIR}/a.html")
+    assert EVAL.labeling_paths_inside_repo(outside) == []

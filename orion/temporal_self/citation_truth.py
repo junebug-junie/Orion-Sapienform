@@ -57,6 +57,7 @@ KIND_PHRASES: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"\battention on\b", re.I), "attention"),
     (re.compile(r"\b(?:open|conversation) threads?\b", re.I), "concern"),
     (re.compile(r"\breverie\b", re.I), "reverie"),
+    (re.compile(r"\bbeen here since\b", re.I), "company"),
 )
 _SPAN = r"(?:(?P<h>\d+)\s*h(?:ours?|rs?)?\.?)?\s*(?:(?P<m>\d+)\s*min(?:utes?|s)?\.?)?"
 AGO_RE = re.compile(rf"(?<![\w:])(?:(?P<under>under a minute)|{_SPAN})\s+ago\b", re.I)

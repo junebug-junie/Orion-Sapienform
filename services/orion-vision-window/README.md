@@ -61,3 +61,16 @@ PYTHONPATH=services/orion-vision-window:. pytest services/orion-vision-window/te
 ```
 
 See also: `docs/vision_services.md` for cross-service contracts.
+
+## Presence history (Temporal Self seam S1)
+
+Besides the single-row `substrate_embodied_presence` upsert, the presence state machine
+(`app/presence.py`) appends one row to `vision_presence_transition` per state change
+(`present` / `recent` / `absent`), `unknown` when a stream sends no window for
+`STALE_AFTER_MS` (120 s) or the service stops, and a same-state keepalive row every
+`VISION_PRESENCE_KEEPALIVE_SEC` (600 s) while someone is present. The chronicle closes a company
+arc with no row for 1500 s as stale, so a crash cannot leave "someone is here" asserted. The enrolled identity label is stored only when
+`identity_confirmed` is true. orion-durable-runs folds these rows into Temporal Self `company`
+arcs. Flag: `VISION_PRESENCE_TRANSITIONS_ENABLED` (default true). Needs
+`services/orion-sql-db/manual_migration_vision_presence_transition_v1.sql`; without it each write
+logs `presence_transition_write_failed` and nothing else changes.

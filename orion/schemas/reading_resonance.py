@@ -30,6 +30,20 @@ ResonanceRefKind = Literal[
 ]
 
 
+# Which cited ref kinds each relation needs: the ONE table the judge prompt renders and
+# check_judgment enforces (orion/world_pulse_read/resonance.py), so the two cannot drift.
+# The judge's only relation field is bears_on_prior, and both values are belief relations.
+# A connection to a concept, memory, finding, dream, thread or question is said by citing
+# that piece (its ref_kind IS the relation) with bears_on_prior null. The first live run
+# (2026-10-14) lost 12 of 13 rejections to "supports" set over atlas concepts only.
+# "strains" is self_prior only: strained_prior_id routes into the prior re-test menu,
+# which only knows priors.
+RELATION_REF_KINDS: dict[str, tuple[str, ...]] = {
+    "supports": ("self_prior", "lived_answer"),
+    "strains": ("self_prior",),
+}
+
+
 class _Base(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -96,7 +110,7 @@ ResonanceRejectReason = Literal[
     "quote_not_in_read",
     "empty_connection",
     "prompt_echo",
-    "prior_relation_without_prior",
+    "relation_ref_kind_mismatch",
     "strained_prior_not_cited",
     "summary_sentence_count",
     "unparseable",

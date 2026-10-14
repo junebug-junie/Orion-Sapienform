@@ -18,8 +18,10 @@ pure: all store I/O lives in the caller (the replay eval in patch A).
 from __future__ import annotations
 
 import hashlib
+import html
 import json
 import re
+import unicodedata
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -28,6 +30,7 @@ from typing import Any, Iterable, Sequence
 from pydantic import ValidationError
 
 from orion.schemas.reading_resonance import (
+    RELATION_REF_KINDS,
     ReadingResonanceCheckV1,
     ReadingResonanceJudgmentV1,
     ResonanceCandidateV1,
@@ -211,7 +214,9 @@ Rules:
 - read_quote must be copied verbatim from the READ section (summary, what you learned, or retained text).
 - article_summary: 3 to 5 sentences on what the article itself says, for Juniper, without your connection; at most {summary_max} characters.
 - connection: first person, your own words, what the read has to do with the cited pieces; at most {connection_max} characters.
-- bears_on_prior: "strains" only if the read gives a reason to doubt a cited self_prior; then set strained_prior_id to that prior's ref_id. "supports" if it backs one. Otherwise null.
+- bears_on_prior names a relation to a belief, and each value needs a cited piece of the right ref_kind:
+{relation_table}
+- A connection to anything else (an atlas concept, a memory, a curiosity finding, a dream, an open thread, a lived question) is said by citing that piece, with bears_on_prior null.
 - decision: "share" if Juniper would want to hear this now, "note" if it belongs in your letter only, "none" otherwise.
 - explore_next: one question worth chasing because of this read, or null; at most {explore_max} characters.
 - confidence: 0 to 1, how sure you are the connection is real.
@@ -228,7 +233,25 @@ def _max_len(model: Any, name: str) -> int:
     raise KeyError(f"{model.__name__}.{name} has no max_length")
 
 
+# What each relation means, in the judge's words; WHICH ref kinds it needs comes from
+# RELATION_REF_KINDS only (the table check_judgment enforces).
+RELATION_MEANING: dict[str, str] = {
+    "supports": "the read backs a belief you hold",
+    "strains": "the read gives a reason to doubt a belief you hold",
+}
+
+
+def _relation_table() -> str:
+    lines = []
+    for rel, kinds in RELATION_REF_KINDS.items():
+        need = " or ".join(kinds)
+        extra = f"; set strained_prior_id to the ref_id of that {kinds[0]}" if rel == "strains" else ""
+        lines.append(f'  "{rel}": {RELATION_MEANING[rel]}; cite at least one {need}{extra}.')
+    return "\n".join(lines)
+
+
 JUDGE_INSTRUCTIONS = _JUDGE_INSTRUCTIONS_TEMPLATE.format(
+    relation_table=_relation_table(),
     summary_max=_max_len(ReadingResonanceJudgmentV1, "article_summary"),
     connection_max=_max_len(ReadingResonanceJudgmentV1, "connection"),
     explore_max=_max_len(ReadingResonanceJudgmentV1, "explore_next"),
@@ -289,8 +312,63 @@ def _parse(raw: str | dict[str, Any]) -> dict[str, Any] | None:
     return None
 
 
+_QUOTE_FOLD = str.maketrans({
+    **{c: "'" for c in "\u2018\u2019\u201a\u201b\u2032"},
+    **{c: '"' for c in "\u201c\u201d\u201e\u201f\u2033"},
+    **{c: "-" for c in "\u2010\u2011\u2012\u2013\u2014\u2015\u2212"},
+    **{c: "" for c in "\u200b\u200c\u200d\u2060\ufeff\u00ad"},
+})
+# An elision inside a quote: "...", "…" (NFKC turns it into "..."), or "[...]". A source's
+# own "…" also folds to "...", so a quote copying it verbatim still matches before splitting.
+_ELISION = re.compile(r"\s*(?:\[\s*(?:\.\s*){3,}\]|(?:\.\s*){3,})\s*")
+_EDGE_ELISION = re.compile(r"^(?:" + _ELISION.pattern + r")+|(?:" + _ELISION.pattern + r")+$")
+# Splicing limits: at most 3 spans, each next span starting within this many normalized
+# characters of the last one's end, so far-apart fragments cannot be spliced into a claim.
+QUOTE_MAX_SPANS = 3
+QUOTE_MAX_GAP_CHARS = 600  # the real 2026-10-14 elided quote skipped 376
+
+
+def _norm_quote(text: str) -> str:
+    """Fold what differs between a model's copy and the stored text without changing a word:
+    HTML entities, compatibility forms (NBSP, the ellipsis character), curly quotes, unicode
+    dashes, zero-width characters, whitespace, case. Applied to the quote AND the read."""
+    t = unicodedata.normalize("NFKC", html.unescape(str(text or ""))).translate(_QUOTE_FOLD)
+    return " ".join(t.split()).casefold()
+
+
+def _span_at(span: str, source: str, start: int) -> tuple[int, int] | None:
+    """(start, end) of the first whole-word occurrence of span in source at or after start."""
+    m = re.compile(r"(?<!\w)" + re.escape(span) + r"(?!\w)").search(source, start)
+    return (m.start(), m.end()) if m else None
+
+
 def _quote_in(quote: str, source: str) -> bool:
-    return re.search(r"(?<!\w)" + re.escape(quote) + r"(?!\w)", source) is not None
+    """Verbatim, or real spans joined by an elision ("A ... B"): the 2026-10-14 judge run's
+    one quote rejection was two exact sentences of the read joined by "...". A leading or
+    trailing elision is dropped. Each elided span must be a QUOTE_MIN_WORDS-word whole-word
+    match, in the read's order, at most QUOTE_MAX_SPANS of them, each within
+    QUOTE_MAX_GAP_CHARS of the previous one."""
+    if _span_at(quote, source, 0) is not None:
+        return True
+    core = _EDGE_ELISION.sub("", quote).strip()
+    if core != quote and len(core.split()) >= QUOTE_MIN_WORDS and _span_at(core, source, 0) is not None:
+        return True
+    spans = [p.strip() for p in _ELISION.split(core) if p.strip()]
+    if not 2 <= len(spans) <= QUOTE_MAX_SPANS or any(len(p.split()) < QUOTE_MIN_WORDS for p in spans):
+        return False
+    hit = _span_at(spans[0], source, 0)
+    while hit is not None:  # try each occurrence of the first span as the anchor
+        end, ok = hit[1], True
+        for p in spans[1:]:
+            nxt = _span_at(p, source, end)
+            if nxt is None or nxt[0] - end > QUOTE_MAX_GAP_CHARS:
+                ok = False
+                break
+            end = nxt[1]
+        if ok:
+            return True
+        hit = _span_at(spans[0], source, hit[0] + 1)
+    return False
 
 
 def check_judgment(
@@ -323,16 +401,17 @@ def check_judgment(
     if any((c.ref_kind, c.ref_id) not in handed for c in j.citations):
         reasons.append("citation_not_in_packet")
     cited_priors = {c.ref_id for c in j.citations if c.ref_kind == "self_prior"}
-    if j.bears_on_prior is not None and not cited_priors:
-        reasons.append("prior_relation_without_prior")
+    cited_kinds = {c.ref_kind for c in j.citations}
+    if j.bears_on_prior is not None and not cited_kinds & set(RELATION_REF_KINDS[j.bears_on_prior]):
+        reasons.append("relation_ref_kind_mismatch")
     if j.bears_on_prior == "strains" and j.strained_prior_id not in cited_priors:
         reasons.append("strained_prior_not_cited")
     if j.decision != "none":
         if not j.citations and "citation_not_in_packet" not in reasons:
             reasons.append("citation_not_in_packet")
         sources = [packet.read_summary, packet.read_learned, *(t for _, t in retained_texts)]
-        quote = _norm_ws(j.read_quote)
-        if len(quote.split()) < QUOTE_MIN_WORDS or not any(_quote_in(quote, _norm_ws(s)) for s in sources if s):
+        quote = _norm_quote(j.read_quote)
+        if len(quote.split()) < QUOTE_MIN_WORDS or not any(_quote_in(quote, _norm_quote(s)) for s in sources if s):
             reasons.append("quote_not_in_read")
         if not j.connection.strip():
             reasons.append("empty_connection")

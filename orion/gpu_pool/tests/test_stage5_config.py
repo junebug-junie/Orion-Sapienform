@@ -390,8 +390,11 @@ def test_unserviceable_world_request_waits_instead_of_backlogging():
 def test_agent_gpu2_seat_limit_is_9000s(loaded_sec, drains):
     crds = {c: CardLive(c) for c in CFG.cards}
     crds["gpu2"] = CardLive("gpu2", swapped_in={"agent-gpu2"}, loaded_at=T0 - timedelta(seconds=loaded_sec))
-    d = schedule(CFG, _live(), crds, [], T0)
+    from orion.gpu_pool.tests.test_scheduler import cold
+
+    d = schedule(cold(CFG), _live(), crds, [], T0)   # warm standby (the live default) never max-holds idle
     assert bool([u for u in _of(SwapUnload, d) if u.reason == "max_hold"]) is drains
+    assert not [u for u in _of(SwapUnload, schedule(CFG, _live(), crds, [], T0)) if u.reason == "max_hold"]
 
 
 # --- worked example A: add gpu4 hosting an 8B or a vision model -----------------------------------

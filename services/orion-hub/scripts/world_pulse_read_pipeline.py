@@ -242,6 +242,7 @@ class WorldPulseReadPipeline:
         timezone_name: str = "UTC",
         max_attempts: int = 1,
         digest_item_max_age_days: float = 0.0,
+        max_in_flight: int = 1,
         pool_provider: Callable[[], Any],
         source_ref: ServiceRef,
         step_relay_provider: Optional[Callable[[], Any]] = None,
@@ -261,6 +262,8 @@ class WorldPulseReadPipeline:
         # Bounded retry for transient turn failures (orion/world_pulse_read/retry.py).
         # 1 == legacy terminal-on-first-failure.
         self.max_attempts = max(1, int(max_attempts))
+        # Reads in flight at once (HUB_WORLD_PULSE_READ_MAX_IN_FLIGHT); 1 == legacy serial.
+        self.max_in_flight = max(1, int(max_in_flight))
         # Pending digest_item seeds older than this are skipped as
         # `stale_digest_item` every tick (0 disables). See skip_stale_digest_items.
         self.digest_item_max_age_days = max(0.0, float(digest_item_max_age_days or 0.0))
@@ -364,15 +367,46 @@ class WorldPulseReadPipeline:
             logger.info("world_pulse_read_blocked reason=%s", reason)
             return reason
 
+        # Up to max_in_flight claims per tick. CLAIM_SQL puts seeds with a submitted,
+        # unconsumed durable turn first, so the in-flight reads are polled before a new
+        # one is started, and a new one only gets a slot while fewer than max_in_flight
+        # are in flight. Before 2026-10-14 this was one claim per tick, so a read in
+        # flight was re-claimed (and released) every tick and no second read was ever
+        # submitted: reading ran one at a time and the pool never saw two agent holds
+        # to spread over gpu1/gpu2/gpu0. Each claim here is a non-blocking poll; the
+        # parallelism is in durable-runs (MAX_CONCURRENT_DRIVERS) and the GPU pool.
         # Admission gates must not strand an already-submitted durable result.
-        seed = await self._with_conn(
-            lambda conn: claim_next_seed(conn, active_only=reason is not None)
-        )
-        if seed is None:
+        handled: list[str] = []
+        first: str | None = None
+        while len(handled) < self.max_in_flight:
+            exclude = tuple(handled)
+            seed = await self._with_conn(
+                lambda conn: claim_next_seed(
+                    conn, active_only=reason is not None, exclude=exclude
+                )
+            )
+            if seed is None:
+                break
+            handled.append(seed.seed_id)
+            outcome = await self._read_claimed(seed, redis)
+            if reason is None and not force and redis is not None and len(handled) < self.max_in_flight:
+                # A turn refused before work this tick set the refund backoff: start no new
+                # turn behind it (in-flight ones are still polled), as the next tick would.
+                wait = await read_wallet_a_retry_wait(redis, now=datetime.now(timezone.utc))
+                if wait is not None and wait > 0:
+                    reason = "refund_backoff"
+            if len(handled) == 1:
+                first = outcome
+        if not handled:
             if reason is not None:
                 logger.info("world_pulse_read_blocked reason=%s", reason)
             return reason or "empty_queue"
+        if len(handled) > 1:
+            logger.info("world_pulse_read_tick_claims n=%d max_in_flight=%d", len(handled), self.max_in_flight)
+        return first
 
+    async def _read_claimed(self, seed: WorldPulseReadSeedV1, redis: Any) -> str | None:
+        """One claimed seed: start, poll, or finish its Stage 1 turn. Returns the outcome."""
         seed = seed.model_copy(update={"request": request_for_seed(seed)})
         await publish_lifecycle(self._bus, seed, "started", source=self._source_ref)
         try:

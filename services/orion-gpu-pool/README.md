@@ -331,6 +331,35 @@ tick. A new reason, or the block clearing and recurring, is a new episode and is
 The Hub GPU-pool panel shows each card's `swap_state` (fault in red), the action in flight or last
 finished, cooldown/residency, which guard blocks, and every hold with the calls running in it.
 
+### Warm standby (`swap.standby: warm`, 2026-10-14)
+
+Juniper: "gpu2 should not sit idle while agent work exists". `agent-gpu2` ships `standby: warm`
+in `config/gpu_pool.yaml`. The pool then keeps the 27B loaded on gpu2 whenever diffusion is not
+using it:
+
+- **Loads with no demand** (`swap_started reason=standby`). This happens once diffusion has had no
+  lease, none waiting, and none held for `standby_after_idle_sec` (900 s). That wait is the
+  hysteresis: a burst of paintings does not flap the seat. The diffusion clock is in memory and
+  starts at pool boot, so a restart waits the full 900 s first.
+- **Is never unloaded for idleness, and never drained on the `max_hold_sec` clock.** A diffusion
+  lease still drains it and unloads it (`owner_reclaim`), exactly as before. After that unload,
+  `min_residency` (600 s) still applies, and the 900 s quiet wait starts again.
+- **Can be blocked.** The thermal guard, `cooldown` and `min_residency` block a warm load. So does
+  any active shed (`swap_requested reason=shed:<name>`). The pool waits
+  `standby_retry_after_fail_sec` (3600 s, `reason=standby_backoff`) after any failed load of the seat,
+  instead of the 600 s swap cooldown.
+- **Costs paintings a drain.** A diffusion lease now always waits for the warm seat to drain
+  (its holds are recalled with the hold grace; a running agent turn finishes first) and unload,
+  where before an idle seat was usually already gone. Paintings more often than every ~15 min
+  will cycle the 27B each time; the 900 s quiet window is the only bound.
+- **Spreads reading over two cards.** With the seat warm, durable-run holds land on gpu1 (one) and
+  gpu2 (two, `max_holds: 2`) with no `after_wait_sec` wait.
+
+Rollback: set `standby: off` and redeploy the pool. `standby` is not in the launch digest, so the
+pool and the controller need no lockstep. But the circe controller re-reads this YAML with its own
+parser on every request. Rebuild circe's `gpu-lane-controller` from this code when circe pulls it:
+an older parser refuses the new keys.
+
 ### When the controller can't act (controller health)
 
 The lane controller on circe reads `config/gpu_pool.yaml` from its bind-mounted checkout but runs the

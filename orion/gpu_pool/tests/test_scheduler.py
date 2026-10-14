@@ -15,6 +15,17 @@ T0 = datetime(2026, 9, 24, 12, 0, tzinfo=timezone.utc)
 CFG = load_pool_config()
 
 
+def cold(cfg, seat="agent-gpu2"):
+    """``cfg`` with ``seat``'s warm standby off: load on demand, unload when idle, drain at
+    max_hold_sec -- the behaviour these older tests pin (test_warm_standby.py pins warm)."""
+    spec = cfg.roles[seat]
+    roles = {**cfg.roles, seat: spec.model_copy(update={"swap": spec.swap.model_copy(update={"standby": "off"})})}
+    return cfg.model_copy(update={"roles": roles})
+
+
+COLD = cold(CFG)
+
+
 def live(**overrides):
     base = {
         "chat": RoleLive("chat", True, 1, 65536, True),
@@ -47,8 +58,8 @@ def lease(work_class, status="queued", role=None, priority="system", age=0, **kw
                      status=status, role=role, created_at=T0 - timedelta(seconds=age), **kw)
 
 
-def run(leases, roles=None, crds=None, now=T0):
-    return schedule(CFG, roles or live(), crds or cards(), leases, now)
+def run(leases, roles=None, crds=None, now=T0, cfg=CFG):
+    return schedule(cfg, roles or live(), crds or cards(), leases, now)
 
 
 def grants(decisions):
@@ -233,7 +244,7 @@ def test_cooldown_blocks_reload():
 def test_idle_seat_unloads():
     idle = cards(gpu2=CardLive("gpu2", swapped_in={"agent-gpu2"},
                                last_active_at=T0 - timedelta(seconds=CFG.defaults.swap_idle_unload_sec)))
-    assert [(u.role, u.reason) for u in of(SwapUnload, run([], crds=idle))] == [("agent-gpu2", "idle")]
+    assert [(u.role, u.reason) for u in of(SwapUnload, run([], crds=idle, cfg=COLD))] == [("agent-gpu2", "idle")]
 
 
 def _launchable_experiment():

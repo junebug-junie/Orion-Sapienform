@@ -152,6 +152,17 @@ class SwapSpec(BaseModel):
     # role it evicts.
     after_wait_sec: float | None = Field(None, ge=0)   # per-seat override of defaults.swap_after_wait_sec
     guards: list[SwapGuard] = Field(default_factory=list)
+    # Warm standby (Juniper 2026-10-14: "gpu2 should not sit idle while agent work exists"):
+    # "warm" keeps the seat LOADED whenever what it evicts is idle -- loaded with no demand once
+    # the residents have been idle for standby_after_idle_sec, never unloaded for being idle, and
+    # not drained on a max_hold_sec clock. A resident's own demand still drains and unloads it
+    # exactly as before. Guards, cooldown, min_residency and any active shed block the warm load.
+    # "off" = load on demand only (after_wait_sec), unload after swap_idle_unload_sec.
+    standby: Literal["off", "warm"] = "off"
+    standby_after_idle_sec: float = Field(900, ge=0)
+    # After a load of this seat that did not succeed (warm or demand), no warm load for this long (the generic swap cooldown is
+    # 600 s): a seat that cannot start must not drain and restore diffusion every 10 minutes.
+    standby_retry_after_fail_sec: float = Field(3600, ge=0)
 
     @model_validator(mode="after")
     def _unique_guards(self):

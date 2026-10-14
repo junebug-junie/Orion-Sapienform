@@ -29,6 +29,7 @@ from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.core.bus.codec import OrionCodec
 from orion.gpu_pool.client import Lease, LeaseUnavailable
 from orion.gpu_pool.config import load_pool_config
+from orion.gpu_pool.tests.test_scheduler import cold
 from orion.gpu_pool.discovery import Probe, load_profiles
 from orion.gpu_pool.lease_graph import build_lease_graph
 from orion.schemas.gpu_pool import (
@@ -44,7 +45,10 @@ if _PKG not in sys.modules:
 PoolRuntime = importlib.import_module(f"{_PKG}.runtime").PoolRuntime
 MemoryStore = importlib.import_module(f"{_PKG}.store").MemoryStore
 
-CFG = load_pool_config()
+# Warm standby off (orion/gpu_pool/tests/test_scheduler.py ``cold``): these acceptance tests pin the
+# on-demand path (a hold waits after_wait_sec, the pool loads gpu2). With the live warm default the
+# seat loads on its own after 900 s of diffusion quiet, which is what the pool's own tests pin.
+CFG = cold(load_pool_config())
 PROFILES = load_profiles()
 SOURCE = ServiceRef(name="durable-tests-gpu-pool")
 # What circe's llama.cpp servers report today (same table as services/orion-gpu-pool/tests).

@@ -239,6 +239,14 @@ class PoolRuntime:
                 if role in self.cfg.roles and size:
                     self._ctx_seen.setdefault(role, int(size))
         self._ctx_saved = dict(self._ctx_seen)
+        # Residents' quiet clocks start at boot (in memory only): nothing says what ran on a card
+        # while the pool was down, so a warm-standby seat waits a full standby_after_idle_sec first.
+        boot = self.now()
+        for r, spec in self.cfg.roles.items():
+            if spec.swap is None:
+                for card in spec.cards:
+                    if card in self.cards:
+                        self.cards[card].role_active_at.setdefault(r, boot)
         # Only configured cards: a row for a card since removed from the YAML must not pause the pool.
         paused = [r for c, r in stored.items() if c in self.cfg.cards and r.get("actuation_paused_at")]
         if paused:
@@ -1378,9 +1386,19 @@ class PoolRuntime:
         now = self.now()
         for row in rows:
             role = row.get("role")
-            if row["status"] in ("granted", "recalling") and role and self.cfg.roles[role].swap:
-                for card in self.cfg.roles[role].cards:
-                    self.cards[card].last_active_at = now
+            if row["status"] in ("granted", "recalling") and role in self.cfg.roles:
+                self._mark_active(role, now)
+
+    def _mark_active(self, role: str, now: datetime) -> None:
+        """A lease holds ``role``: a swap seat's idle-unload clock, or a resident's quiet clock
+        (CardLive.role_active_at, which a warm-standby seat waits on before it loads)."""
+        for card in self.cfg.roles[role].cards:
+            if card not in self.cards:
+                continue
+            if self.cfg.roles[role].swap:
+                self.cards[card].last_active_at = now
+            else:
+                self.cards[card].role_active_at[role] = now
 
     # --- lease-graph plumbing ---------------------------------------------------------
     async def _start_thread(self, lease_id: str, request: dict, now: datetime,
@@ -1421,10 +1439,9 @@ class PoolRuntime:
         # A lease granted on, or leaving, a swap seat is activity there: the idle-unload clock must
         # see a lease that came and went between two ticks, not only what a tick happened to catch.
         seat = row.get("role") or (prior or {}).get("role")
-        if seat in self.cfg.roles and self.cfg.roles[seat].swap is not None \
+        if seat in self.cfg.roles \
                 and (row["status"] in ("granted", "recalling") or (prior or {}).get("status") in ("granted", "recalling")):
-            for card in self.cfg.roles[seat].cards:
-                self.cards[card].last_active_at = self.now()
+            self._mark_active(seat, self.now())
         # What happened (aborted / expired / cancelled), then where it ended up when that is a
         # terminal outcome (dead_lettered / released), so neither fact hides the other.
         names: list[str] = []

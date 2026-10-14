@@ -12,9 +12,13 @@ from app.store import MemoryStore
 from orion.gpu_pool.config import load_pool_config
 from orion.gpu_pool.discovery import Probe, load_profiles
 from orion.gpu_pool.lease_graph import build_lease_graph
+from orion.gpu_pool.tests.test_scheduler import cold
 from orion.schemas.gpu_pool import GpuLeaseRequestV1, GpuPoolControlV1, LlmWorkerAnnounceV1
 
-CFG = load_pool_config()
+# Warm standby off: these tests pin the on-demand actuation engine (load after after_wait_sec,
+# unload when idle). The live warm-standby default is pinned in tests/test_warm_standby_runtime.py.
+WARM_CFG = load_pool_config()
+CFG = cold(WARM_CFG)
 PROFILES = load_profiles()
 LIVE = {  # what circe's llama.cpp servers report today (see spec, "The machine")
     "chat": ("qwen36-35b-a3b-udq5km-2xv100-32gb-deep-cognition", "Qwen3.6-35B-A3B-UD-Q5_K_M.gguf", 1, 65536),

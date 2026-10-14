@@ -687,6 +687,7 @@ async def startup_event():
                 # Door-A's release-outreach call goes to the same orion-durable-runs the
                 # reading loop submits to (one service, one base URL).
                 durable_runs_url=settings.HUB_CURIOSITY_DURABLE_RUNS_URL,
+                temporal_self_fact_enabled=settings.HUB_CURIOSITY_TEMPORAL_SELF_FACT_ENABLED,
                 # The self-inquiry line: own budget, same loop. See the
                 # settings' own comment and orion/curiosity/self_inquiry.py.
                 self_inquiry_enabled=settings.HUB_CURIOSITY_SELF_INQUIRY_ENABLED,

@@ -138,6 +138,19 @@ def _thread_section(view: WorldviewSnapshot) -> list[str]:
     return lines
 
 
+def _today_section(today_fact: Optional[str]) -> list[str]:
+    """How much of today curiosity has already had (Temporal Self rev 4).
+
+    One line, built by `orion.curiosity.temporal_fact.curiosity_today_fact` from the
+    chronicle and cited with ``[arc:<id>]``. Stated as fact, no steering: nothing here
+    says whether that is a lot. Nothing is rendered when the caller has no fresh frame.
+    """
+    text = (today_fact or "").strip()
+    if not text:
+        return []
+    return [text, ""]
+
+
 def _priors_section(view: WorldviewSnapshot, *, stale_after: int) -> list[str]:
     if view.is_unavailable:
         # Stated rather than hidden. A turn that silently loses its own world
@@ -1155,8 +1168,13 @@ def build_kickoff_prompt(
     carry_forward=None,
     open_lived_questions: Sequence[OpenLivedQuestion] = (),
     corrections: Sequence = (),
+    today_fact: Optional[str] = None,
 ) -> str:
     """Assemble the whole invitation.
+
+    ``today_fact``: one fact line about today's curiosity time from the Temporal Self
+    chronicle (`orion.curiosity.temporal_fact`), or None to render nothing. Placed right
+    after the thread section it refers to.
 
     ``open_lived_questions``: open lived questions with their current answer
     (`self_inquiry.OpenLivedQuestion`), already bounded by the caller. Shown on
@@ -1200,6 +1218,7 @@ def build_kickoff_prompt(
         # answers "what have I already been picking". The second question is
         # the one a run cannot ask itself.
         lines += _thread_section(view)
+        lines += _today_section(today_fact)
         lines += _priors_section(view, stale_after=stale_after)
         lines += _peer_briefs_section(peer_briefs, run_id=run_id if writable else None)
         # Only offered when Orion can write the prior that would adopt one --
@@ -1207,6 +1226,8 @@ def build_kickoff_prompt(
         if writable:
             lines += _dream_section(dream_hypotheses)
             lines += _corrections_section(corrections)
+    else:
+        lines += _today_section(today_fact)
 
     lines += _carry_forward_section(carry_forward)
     lines += _material_section(material)

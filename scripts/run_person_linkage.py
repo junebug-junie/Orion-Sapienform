@@ -116,7 +116,7 @@ def collapse_same_question(decisions: list) -> list:
 
 def fold_claims_into_pair_questions(decisions: list) -> list:
     """A candidate claimed by two people who are themselves the subject of an
-    open review card ("Skye" vs "Skye Laflamme") is decided by that card: the
+    open review card ("Zara" vs "Zara Quill") is decided by that card: the
     claim rides on it instead of becoming a separate question."""
     pair_card = {}
     for i, d in enumerate(decisions):

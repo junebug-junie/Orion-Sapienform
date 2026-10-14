@@ -17,7 +17,8 @@
 Before: Orion read bare numbers about itself (or none) with no range, percentile, or trend
 ("what is 2 vs 10000"). After: when a body signal is unusual, the stance and reverie prompts carry a
 plain line with its 0-10 score, its percentile against its own week, and the row it came from. Live
-replay over the last day (7 moments): 7/7 rendered blocks, **0 truth-to-rows failures**.
+replay over the last day (7 moments): 6 rendered blocks + 1 calm moment that rendered nothing,
+**0 truth-to-rows failures**.
 
 ## Current architecture
 
@@ -104,9 +105,9 @@ scripts/check_inner_state_registry.py -> OK; scripts/check_env_template_parity.p
 ```text
 cd services/orion-thought && pytest evals -> 13 passed (incl. test_self_readings_truth_eval.py: 5 passed)
 python services/orion-thought/evals/run_self_readings_live_eval.py --moments 6  (live, read-only)
-  moments=7 rendered=7 truth_failures=0
-  block chars p50=359 max=523
-  seed+render ms p50=353 max=428; incremental+render ms p50=4.0 max=4.6
+  moments=7 rendered=6 truth_failures=0   (the "now" moment was calm: skip=all_calm, nothing rendered)
+  block chars p50=353 max=511
+  seed+render ms p50=349 max=758; incremental+render ms p50=5.4 max=6.4
 ```
 
 Example block, real rows (2026-10-14 02:35:26 UTC):
@@ -118,9 +119,11 @@ Example block, real rows (2026-10-14 02:35:26 UTC):
 Nothing else I can read is unusual right now. No recent events: chat.
 ```
 
+(After review: same block, rerun post-fix; the live eval re-derives every number from the rows itself.)
+
 ## Acceptance check 5 (cost)
 
-- Prompt: the block plus its header adds 357 chars of fixed text + the block (p50 359, max 523 live,
+- Prompt: the block plus its header adds 357 chars of fixed text + the block (p50 353, max 511 live,
   capped at 600): about +716 chars (~180 tokens) typical, +957 worst case, and only on turns where a
   body signal is unusual. Calm turns add 0.
 - Read: runs concurrently with Mind enrichment; incremental read+render 4-5 ms; the cold 7-day seed
@@ -139,7 +142,22 @@ Dockerfile now COPYs config/field so the glossary resolves inside the image.
 
 ## Review findings fixed
 
-(filled after review)
+Code review ran in a subagent against `git diff origin/main...HEAD`. No blockers.
+
+- Finding: a stored `inf` rendered as "now inf; higher than 100%", `nan` read as a calm live reading; the test passed either way.
+  - Fix: a non-finite current value is `no_reading`; the test asserts state, no "inf"/"nan" in text, and "route (no reading)".
+  - Evidence: `test_non_finite_latest_value_is_no_reading_never_a_measurement[nan|inf]` pass.
+- Finding: the cabinet count counted 30 s checks, not firings ("~20 times" for one 10-minute episode), and its ref named a 0.0 row.
+  - Fix: count off->on transitions (`trigger_onsets`), wording "went off N times", ref = newest ON row; 30 s-cadence fixture; the truth eval re-derives transitions independently.
+  - Evidence: `test_trigger_reads_as_a_rate_never_a_magnitude` (2 onsets from 36 ON rows), `test_trigger_onsets_count_transitions_not_rows`, eval teeth test.
+- Finding: `skip_reason=all_calm` logged when 6 of 7 signals were unread.
+  - Fix: new `calm_partial` reason (schema literal); `all_calm` only when every signal was read (event signals with no recent event count as read).
+  - Evidence: `test_calm_with_unread_signals_is_not_logged_all_calm`.
+- Finding: branch conflicted with main (lock, README).
+  - Fix: merged origin/main, took main's lock, re-ran `check_definition_drift.py --update` after the merge commit.
+  - Evidence: drift / lineage / prompt-semantics gates PASS post-merge.
+- Nits fixed: test drains the timed-out worker thread; cabinet with too little history is no longer listed as "can't read" (still never called calm); the Mind estimate label names uncertainty_summary only when present.
+- Nits noted, not changed: one extra small read pool per orion-thought process (pool 1 + overflow 1) against the Postgres connection budget (PR #2010); refs are second-precision (two rows in the same second would be ambiguous; the eval resolves by newest row).
 
 ## Restart required
 

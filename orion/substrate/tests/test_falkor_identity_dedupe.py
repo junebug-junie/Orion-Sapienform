@@ -94,3 +94,27 @@ def test_materializer_merges_a_new_run_into_the_durable_identity_instead_of_mint
 
 def test_identity_key_is_indexed():
     assert ("SubstrateNode", "identity_key") in SUBSTRATE_INDEXES
+
+
+def test_a_write_to_the_larger_duplicate_does_not_move_the_identity():
+    """Review 2026-10-14: InMemory upsert points an identity at the last
+    writer; a tick re-saving the larger copy would flip canonical."""
+    from orion.substrate.falkor_codec import decode_node
+
+    client = CappedClient()
+    client._hydrate_node_rows[3].update(identity_key="node:5")
+    store = build(client)
+    assert store.get_node_id_by_identity("node:5") == "node3"
+    dup = decode_node(client._hydrate_node_rows[5])
+    store.upsert_node(identity_key="node:5", node=dup)
+    assert store.get_node_id_by_identity("node:5") == "node3"
+    assert store.get_identity_key_by_node_id("node5") == "node:5"
+
+
+def test_durable_hit_during_an_inflight_scan_survives_the_swap():
+    client = CappedClient()
+    store = build(client)
+    store._cache = type(store._cache)()
+    store._scan_journal = []  # a hydrate is mid-scan
+    assert store.get_node_id_by_identity("node:2") == "node2"
+    assert [entry[2].node_id for entry in store._scan_journal] == ["node2"]

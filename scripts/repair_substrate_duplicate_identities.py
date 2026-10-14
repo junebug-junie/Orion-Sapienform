@@ -120,15 +120,27 @@ def _json_list(value: Any) -> list[Any]:
     return []
 
 
+def edge_dedupe_key(rel_type: str, source: str, target: str, props: dict[str, Any]) -> tuple:
+    """Two edges are the same edge only if they share an identity, not just
+    type + endpoints: reconcile.canonical_edge_key gives a semantic projection
+    (projection|<assertion_id>) and a role-tagged edge their own identity even
+    on identical endpoints, and hydrate keeps such parallels. Falls back to
+    (type, source, target, role, assertion) when no identity_key is stored."""
+    identity = props.get("identity_key")
+    if identity:
+        return ("id", rel_type, str(identity))
+    return ("shape", rel_type, source, target, props.get("edge_role"), props.get("assertion_id"))
+
+
 def build_plan(
     nodes: list[dict[str, Any]],
     edges: list[EdgeRow],
-    keeper_edge_keys: set[tuple[str, str, str]],
+    keeper_edge_keys: set[tuple],
 ) -> RepairPlan:
     """``nodes``: every node in a duplicate group (node_id, identity_key, and
     the mergeable properties). ``edges``: every edge touching a duplicate
-    (non-keeper). ``keeper_edge_keys``: (type, source, target) for the edges
-    keepers already hold -- a re-pointed edge colliding with one is dropped."""
+    (non-keeper). ``keeper_edge_keys``: ``edge_dedupe_key`` of every edge keepers already
+    hold -- a re-pointed edge colliding with one is dropped."""
     groups = group_duplicates(nodes)
     keeper_of = {dup: ids[0] for ids in groups.values() for dup in ids[1:]}
     plan = RepairPlan(groups=groups, keeper_of=keeper_of)
@@ -146,13 +158,13 @@ def build_plan(
         if source == target:
             plan.drop_self_loops.append(edge)
             continue
-        key = (edge.rel_type, source, target)
+        props = dict(edge.props)
+        props["identity_key"] = _map_identity(props.get("identity_key"), keeper_of)
+        key = edge_dedupe_key(edge.rel_type, source, target, props)
         if key in taken:
             plan.drop_parallel.append(edge)
             continue
         taken.add(key)
-        props = dict(edge.props)
-        props["identity_key"] = _map_identity(props.get("identity_key"), keeper_of)
         plan.rewire.append((edge, source, target, props))
 
     by_id = {str(row["node_id"]): row for row in nodes}
@@ -238,10 +250,9 @@ def fetch_edges(client, node_ids: list[str], *, keepers: bool) -> list[EdgeRow]:
     # timeout on the 140k-edge AI Town graph.
     rows = _query_chunked(
         client,
-        "UNWIND $items AS id MATCH (n:SubstrateNode {node_id: id})-[e]-(o:SubstrateNode) "
+        "UNWIND $items AS id MATCH (n:SubstrateNode {node_id: id})-[e]-(o) "
         "RETURN e.edge_id AS edge_id, type(e) AS rel_type, "
-        "startNode(e).node_id AS source, endNode(e).node_id AS target"
-        + ("" if keepers else ", properties(e) AS props"),
+        "startNode(e).node_id AS source, endNode(e).node_id AS target, properties(e) AS props",
         node_ids, PAGE,
     )
     return [
@@ -272,7 +283,7 @@ def dry_run(uri: str, graph: str, out_dir: Path) -> tuple[RepairPlan, dict[str, 
     dup_edges = fetch_edges(client, dups, keepers=False)
     keeper_edges = fetch_edges(client, keepers, keepers=True)
     dup_set = set(dups)
-    keeper_keys = {(e.rel_type, e.source, e.target) for e in keeper_edges
+    keeper_keys = {edge_dedupe_key(e.rel_type, e.source, e.target, e.props) for e in keeper_edges
                    if e.source not in dup_set and e.target not in dup_set}
     plan = build_plan(nodes, dup_edges, keeper_keys)
 
@@ -330,11 +341,18 @@ def apply_plan(uri: str, graph: str, plan: RepairPlan, out_dir: Path) -> dict[st
         log.flush()
 
     for edge, source, target, props in plan.rewire:
+        rel = edge.rel_type.replace("`", "``")
         try:
+            # Create the re-pointed copy and delete the original in ONE query,
+            # so the graph never holds two relationships with one edge_id
+            # (hydrate rejects that) even if this process dies mid-run.
             client.graph_query(
+                "MATCH (os:SubstrateNode {node_id: $os})-[old]->(ot:SubstrateNode {node_id: $ot}) "
+                "WHERE old.edge_id = $eid "
                 "MATCH (s:SubstrateNode {node_id: $s}), (t:SubstrateNode {node_id: $t}) "
-                f"CREATE (s)-[e:`{edge.rel_type}`]->(t) SET e = $props",
-                {"s": source, "t": target, "props": props},
+                f"CREATE (s)-[e:`{rel}`]->(t) SET e = $props DELETE old",
+                {"os": edge.source, "ot": edge.target, "eid": edge.edge_id,
+                 "s": source, "t": target, "props": props},
             )
         except Exception as exc:  # noqa: BLE001 - counted and reported
             errors += 1
@@ -352,6 +370,13 @@ def apply_plan(uri: str, graph: str, plan: RepairPlan, out_dir: Path) -> dict[st
             log.write(f"{graph} keeper_update_error node_id={node_id} error={exc}\n")
         done += 1
     progress("keepers")
+    if errors:
+        # Never DETACH DELETE a duplicate whose edges did not all move: the
+        # snapshot would be the only copy left. Re-run after fixing the cause;
+        # already re-pointed edges are not re-planned.
+        log.write(f"{graph} aborted_before_delete errors={errors}\n")
+        log.close()
+        return {"errors": errors, "done": done, "total": total, "deleted": 0, "aborted": True}
     dups = plan.nodes_to_delete
     for i in range(0, len(dups), 500):
         chunk = dups[i:i + 500]
@@ -363,10 +388,12 @@ def apply_plan(uri: str, graph: str, plan: RepairPlan, out_dir: Path) -> dict[st
         done += len(chunk)
         progress("delete")
     log.close()
-    return {"errors": errors, "done": done, "total": total}
+    return {"errors": errors, "done": done, "total": total,
+            "deleted": len(dups) if not errors else 0, "aborted": False}
 
 
-def write_report(out_dir: Path, summaries: list[dict[str, Any]], applied: bool) -> None:
+def write_report(out_dir: Path, summaries: list[dict[str, Any]], applied: bool,
+                 results: dict[str, dict[str, Any]] | None = None) -> None:
     with (out_dir / "before_after.csv").open("w", newline="", encoding="utf-8") as fh:
         writer = csv.writer(fh)
         writer.writerow(["graph", "identity_key", "copies_before", "copies_after", "keeper"])
@@ -387,9 +414,18 @@ def write_report(out_dir: Path, summaries: list[dict[str, Any]], applied: bool) 
             f"- snapshot rows: {s['snapshot_rows']} -- "
             + ("written" if s["snapshot_written"] else
                f"NOT written (over {SNAPSHOT_ROW_LIMIT}); needs Juniper's call before --apply"),
-            "",
         ]
-    lines += ["Verdict: needs approval before --apply. Re-run the dry run immediately before applying;",
+        result = (results or {}).get(s["graph"])
+        if result is not None:
+            lines.append(f"- apply result: errors={result['errors']} deleted={result['deleted']} "
+                         f"aborted={result['aborted']}")
+        lines.append("")
+    lines += ["Run order: deploy the writer fix and restart orion-athena-hub first (a process still",
+              "caching a deleted duplicate re-creates it as a blank node on its next edge write);",
+              "then stop orion-athena-hub, re-run the dry run, --apply --approved, start the hub.",
+              "Known loss: a parallel co_occurs_with edge dropped in favour of the keeper's keeps",
+              "the keeper's properties only (no weight merge).", "",
+              "Verdict: needs approval before --apply. Re-run the dry run immediately before applying;",
               "counts grow until the writer fix is deployed.", ""]
     (out_dir / "report.md").write_text("\n".join(lines), encoding="utf-8")
 
@@ -409,6 +445,7 @@ def main(argv: list[str] | None = None) -> int:
         print("refusing --apply without --approved (CLAUDE.md section 14)", file=sys.stderr)
         return 2
     summaries = []
+    results: dict[str, dict[str, Any]] = {}
     for graph in args.graph:
         plan, summary = dry_run(args.uri, graph, out_dir)
         summaries.append(summary)
@@ -418,8 +455,12 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"refusing --apply on {graph}: no snapshot written (too large)", file=sys.stderr)
                 return 3
             result = apply_plan(args.uri, graph, plan, out_dir)
+            results[graph] = result
             print(json.dumps({"graph": graph, **result}))
-    write_report(out_dir, summaries, applied=args.apply)
+            if result["errors"]:
+                write_report(out_dir, summaries, applied=True, results=results)
+                return 4
+    write_report(out_dir, summaries, applied=args.apply, results=results)
     print(f"report: {out_dir / 'report.md'}")
     return 0
 

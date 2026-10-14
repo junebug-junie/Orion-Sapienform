@@ -676,10 +676,29 @@ class FalkorSubstrateStore:
             return
         self._hydrate_stats_logged_at = now
         logger.info(
-            "falkor_substrate_hydrate_stats graph=%s ok_total=%d failed_total=%d replayed_writes_total=%d",
+            "falkor_substrate_hydrate_stats graph=%s ok_total=%d failed_total=%d replayed_writes_total=%d "
+            "duplicate_identities=%d identity_durable_lookups=%d identity_durable_hits=%d",
             self._cfg.graph_name, self.hydrate_ok_total, self.hydrate_failed_total,
-            self.hydrate_replayed_writes_total,
+            self.hydrate_replayed_writes_total, getattr(self, "hydrate_duplicate_node_identities", 0),
+            getattr(self, "identity_durable_lookups_total", 0), getattr(self, "identity_durable_hits_total", 0),
         )
+
+    @staticmethod
+    def _cache_upsert_keep_canonical(
+        cache: InMemorySubstrateGraphStore, identity_key: str | None, node: BaseSubstrateNodeV1,
+    ) -> None:
+        """Cache a node without moving a duplicated identity off its canonical.
+
+        The in-memory store points an identity at whichever node was written
+        last. With duplicates still in the graph (pre-repair), a write to a
+        larger-id copy would re-point the identity at it, and new runs would
+        then merge into a different copy than the durable lookup and the
+        repair pick (review finding 2026-10-14). Smallest node_id stays put."""
+        previous = cache.get_node_id_by_identity(identity_key) if identity_key else None
+        cache.upsert_node(identity_key=identity_key, node=node)
+        if (identity_key and previous and previous != node.node_id
+                and previous < node.node_id and cache.get_node_by_id(previous) is not None):
+            cache.set_identity_canonical(identity_key, previous)
 
     @staticmethod
     def _apply_node_to_cache(
@@ -740,7 +759,7 @@ class FalkorSubstrateStore:
         # skip_metadata_keys=None: the merge above already applied the
         # Falkor-specific semantics (pop on miss), which differ from the
         # in-memory store's (keep on miss).
-        cache.upsert_node(identity_key=identity_key, node=cache_node)
+        FalkorSubstrateStore._cache_upsert_keep_canonical(cache, identity_key, cache_node)
 
     def _migrate_legacy_payload_nodes(self, rows: list[dict[str, Any]]) -> None:
         for row in rows:
@@ -922,6 +941,11 @@ class FalkorSubstrateStore:
             with self._cache_lock:
                 if self._cache.get_node_by_id(node.node_id) is None:
                     self._cache.upsert_node(identity_key=identity_key, node=node)
+                    if self._scan_journal is not None:
+                        # A hydrate is mid-scan and may already have passed
+                        # this row; journal it so the swap keeps it and the
+                        # caller's follow-up get_node_by_id still finds it.
+                        self._scan_journal.append(("node", identity_key, node, None))
                 else:
                     self._cache.set_identity_canonical(identity_key, node.node_id)
             self.identity_durable_hits_total += 1
@@ -1069,7 +1093,7 @@ class FalkorSubstrateStore:
         with self._cache_lock:
             if durable is not None:
                 # The durable row is authoritative; nothing left to merge.
-                self._cache.upsert_node(identity_key=identity_key, node=durable)
+                self._cache_upsert_keep_canonical(self._cache, identity_key, durable)
                 journal_entry = ("node", identity_key, durable, None)
             else:
                 self._apply_node_to_cache(self._cache, identity_key, node, skip_metadata_keys)

@@ -47,11 +47,39 @@ def test_edges_repoint_drop_self_loops_and_parallels_and_map_identity():
         _edge("e3", "co_occurs_with", "a2", "a1"),    # becomes a1->a1: dropped
         _edge("e4", "supports", "ev2", "a2"),         # keeper already has ev2->a1: dropped
     ]
-    plan = repair.build_plan(nodes, edges, {("supports", "ev2", "a1")})
+    plan = repair.build_plan(nodes, edges, {repair.edge_dedupe_key("supports", "ev2", "a1", {"identity_key": "ev2|supports|a1"})})
     rewired = {e.edge_id: (s, t, p["identity_key"]) for e, s, t, p in plan.rewire}
     assert rewired == {"e1": ("ev", "a1", "ev|supports|a1"), "e2": ("a1", "b1", "a1|co_occurs_with|b1")}
     assert [e.edge_id for e in plan.drop_self_loops] == ["e3"]
     assert [e.edge_id for e in plan.drop_parallel] == ["e4"]
+
+
+def test_a_projection_edge_is_not_dropped_as_parallel_to_a_legacy_edge():
+    """Same type + endpoints, different identity: hydrate keeps both, so must the repair."""
+    nodes = [_node("a1"), _node("a2")]
+    proj = _edge("p1", "supports", "ev", "a2", key="projection|assert-1")
+    keeper_legacy = repair.edge_dedupe_key("supports", "ev", "a1", {"identity_key": "ev|supports|a1"})
+    plan = repair.build_plan(nodes, [proj], {keeper_legacy})
+    assert [e.edge_id for e, *_ in plan.rewire] == ["p1"] and not plan.drop_parallel
+
+
+def test_apply_aborts_before_deleting_when_a_rewire_failed(tmp_path, monkeypatch):
+    class _Client:
+        def __init__(self):
+            self.queries = []
+
+        def graph_query(self, cypher, params=None):
+            self.queries.append(cypher)
+            if "CREATE" in cypher:
+                raise RuntimeError("boom")
+            return []
+
+    client = _Client()
+    monkeypatch.setattr(repair, "_client", lambda *a, **k: client)
+    plan = repair.build_plan([_node("a1"), _node("a2")], [_edge("e1", "supports", "ev", "a2")], set())
+    result = repair.apply_plan("redis://unused", "g", plan, tmp_path)
+    assert result["aborted"] and result["deleted"] == 0 and result["errors"] == 1
+    assert not any("DETACH DELETE" in q for q in client.queries)
 
 
 def test_keeper_gets_union_of_evidence_and_latest_observed_at():

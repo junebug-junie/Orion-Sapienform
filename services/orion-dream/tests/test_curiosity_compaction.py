@@ -121,6 +121,24 @@ def test_journal_contract_is_idempotent_indexable_and_silent():
     assert not resolve_policy(entry.trigger_kind or "").email_enabled
 
 
+def test_readout_public_path_on_full_app(monkeypatch):
+    from fastapi.testclient import TestClient
+    from app import curiosity_compaction_store, main
+
+    seen = []
+    def recent(limit):
+        seen.append(limit)
+        return [{"compaction_id": "weekly:test", "status": "pending"}]
+    monkeypatch.setattr(curiosity_compaction_store, "recent", recent)
+    # No lifespan: exercise the actual mounted HTTP route without starting workers.
+    client = TestClient(main.app)
+    response = client.get("/dreams/curiosity-compactions?limit=2")
+    assert response.status_code == 200
+    assert response.json() == {"items": [{"compaction_id": "weekly:test", "status": "pending"}]}
+    assert seen == [2]
+    assert client.get("/dreams/curiosity-compactions?limit=101").status_code == 422
+
+
 def test_readout_unavailable_is_503(monkeypatch):
     from app import curiosity_compaction_store, dream_api
     from fastapi import HTTPException

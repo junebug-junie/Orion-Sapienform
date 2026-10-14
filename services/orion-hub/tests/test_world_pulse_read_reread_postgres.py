@@ -19,7 +19,7 @@ from orion.substrate.graph_journal import journal_row
 from orion.world_pulse_read import operator as op
 from orion.world_pulse_read import queue
 from orion.world_pulse_read.assertions import MEANING_POLICY, POLICY, READING_ACTOR
-from orion.world_pulse_read.durable import bind_turn, consume_turn
+from orion.world_pulse_read.durable import bind_turn
 from orion.world_pulse_read.meaning_links import WITHDRAW_ACTOR, list_policy_links, withdrawal_for
 from test_reading_postgres import db, local_pg, request  # noqa: F401 -- fixture reuse
 
@@ -50,8 +50,8 @@ async def _row(conn, seed_id):
 async def _read_done(conn, seed_id, *, stage2="done"):
     seed = await queue.claim_next_seed(conn)
     assert seed.seed_id == seed_id
+    # The live shape (2026-10-14): Hub's success path leaves the finished run unconsumed.
     req = await _bind(conn, seed_id, 1)
-    await consume_turn(conn, req.run_id)
     await queue.mark_seed_done(conn, seed_id, trace_id="t1", handoff=_handoff(seed))
     await conn.execute("UPDATE world_pulse_read_seed SET stage2_status=$2, stage2_completed_at=now() "
                        "WHERE seed_id=$1", seed_id, stage2)
@@ -65,7 +65,10 @@ def test_reread_puts_a_finished_read_back_through_both_stages_with_a_new_run(loc
         seed, first = await _read_done(conn, made["seed_id"])
         old_handoff = (await _row(conn, seed.seed_id))["handoff_json"]
 
-        assert await op.reread_read(conn, seed.seed_id) == {"action": "requeued_reread", "stage": 1}
+        s2 = await _bind(conn, seed.seed_id, 2)  # finished Stage 2, also left unconsumed
+        assert await op.reread_read(conn, seed.seed_id) == {
+            "action": "requeued_reread", "stage": 1, "consumed_finished_runs": sorted([first.run_id, s2.run_id])}
+        assert await conn.fetchval("SELECT count(*) FROM reading_durable_turn WHERE consumed_at IS NULL") == 0
         row = await _row(conn, seed.seed_id)
         assert (row["status"], row["stage2_status"], row["attempts"], row["last_error"]) == (
             "pending", "pending", 0, op.REREAD_MARKER)
@@ -76,7 +79,10 @@ def test_reread_puts_a_finished_read_back_through_both_stages_with_a_new_run(loc
         again = await queue.claim_next_seed(conn)
         assert again.seed_id == seed.seed_id
         second = await _bind(conn, seed.seed_id, 1)
+        # A NEW attempt: the old run is never resubmitted (it would return its cached result).
         assert second.run_id != first.run_id
+        assert second.brief.prompt == "Saved prompt" and await conn.fetchval(
+            "SELECT attempt FROM reading_durable_turn WHERE run_id=$1", second.run_id) == 1
         await queue.mark_seed_done(conn, seed.seed_id, trace_id="t2", handoff=_handoff(seed, sha="ab" * 32))
         row = await _row(conn, seed.seed_id)
         assert row["last_error"] is None
@@ -120,11 +126,6 @@ def test_reread_refusals(local_pg):
             await op.reread_read(conn, made["seed_id"])
         assert err.value.code == "stage2_not_terminal"
         await conn.execute("UPDATE world_pulse_read_seed SET stage2_status='done' WHERE seed_id=$1", made["seed_id"])
-        await _bind(conn, made["seed_id"], 2)
-        with pytest.raises(op.OperatorActionError) as err:
-            await op.reread_read(conn, made["seed_id"])
-        assert err.value.code == "active_durable_binding"
-        await conn.execute("UPDATE reading_durable_turn SET consumed_at=now()")
         # Another non-alias row holding the URL (in flight) blocks it.
         await conn.execute(
             "INSERT INTO world_pulse_read_seed (seed_id, kind, run_id, url, status, priority) "

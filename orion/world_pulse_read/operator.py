@@ -349,8 +349,14 @@ async def reread_read(conn: Any, seed_id: str) -> dict[str, Any]:
     NEW durable attempt (bind_turn numbers attempts per seed, so no old run is reused),
     and its handoff replaces this one; Stage 2 then runs on the new handoff. The old
     handoff stays until Stage 1 replaces it (MARK_DONE_SQL coalesces), so a failed reread
-    leaves the old read readable. Refused unless both stages are finished, nothing is bound,
-    and no other row holds this URL (the stage-1 sweep would fold this row onto it)."""
+    leaves the old read readable. Refused unless both stages are finished and no other row
+    holds this URL (the stage-1 sweep would fold this row onto it).
+
+    A finished read's own durable bindings are usually still unconsumed (live 2026-10-14:
+    every one of the 26 backfill targets; the success path never consumes them). bind_turn
+    hands back an unconsumed binding instead of numbering a new attempt, so it would resubmit
+    the OLD run and get its cached result: no fetch, no text. Both stages are terminal here,
+    so those runs are finished; they are consumed in the same transaction and returned."""
     async with conn.transaction():
         row = await _locked_row(conn, seed_id)
         if row["status"] != "done":
@@ -359,12 +365,12 @@ async def reread_read(conn: Any, seed_id: str) -> dict[str, Any]:
             raise OperatorActionError("stage2_not_terminal")
         if not _has_read_evidence(row["handoff_json"]):
             raise OperatorActionError("no_read_evidence")
-        for stage in (1, 2):
-            if await conn.fetchval(_ACTIVE_BINDING_SQL, seed_id, stage):
-                raise OperatorActionError("active_durable_binding")
         await conn.execute("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", row["url"])
         if await conn.fetchval(_OTHER_ROW_FOR_URL_SQL, row["url"], seed_id):
             raise OperatorActionError("url_held_by_another_row")
+        consumed = [r["run_id"] for r in await conn.fetch(
+            "UPDATE reading_durable_turn SET consumed_at=now() "
+            "WHERE seed_id=$1 AND consumed_at IS NULL RETURNING run_id", seed_id)]
         await conn.execute(
             """UPDATE world_pulse_read_seed
                SET status='pending', attempts=0, last_error=$2,
@@ -374,7 +380,7 @@ async def reread_read(conn: Any, seed_id: str) -> dict[str, Any]:
                WHERE seed_id=$1""",
             seed_id, REREAD_MARKER,
         )
-    return {"action": "requeued_reread", "stage": 1}
+    return {"action": "requeued_reread", "stage": 1, "consumed_finished_runs": sorted(consumed)}
 
 
 def operator_request(*, url: str, why_now: str = "", title: str = "") -> ReadingRequestedV1:

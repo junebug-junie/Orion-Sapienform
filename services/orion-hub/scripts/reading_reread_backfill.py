@@ -94,6 +94,16 @@ ORDER BY recorded_at, event_id
 """
 JOURNAL_ENTRIES_SQL = "SELECT entry_id, source_ref, created_at FROM journal_entries WHERE source_ref = ANY($1::text[])"
 NEW_RUNS_SQL = "SELECT stage, attempt, run_id, created_at, consumed_at FROM reading_durable_turn WHERE seed_id = $1 AND created_at >= $2 ORDER BY stage, attempt"
+# Anything else in flight on the reading queue: a re-read waits for it, so the backfill
+# never takes a Stage 1/2 turn ahead of a live read (re-queued rows keep their old
+# created_at, which CLAIM_SQL would otherwise put first). Stale digest items the sweep is
+# about to skip are not live work.
+QUEUE_BUSY_SQL = """
+SELECT count(*) FROM world_pulse_read_seed
+WHERE seed_id <> ALL($1::text[]) AND duplicate_of IS NULL
+  AND (status IN ('pending', 'claimed') OR (status = 'done' AND stage2_status IN ('pending', 'claimed')))
+  AND NOT (kind = 'digest_item' AND status = 'pending' AND created_at < now() - ($2 * interval '1 second'))
+"""
 DECISIONS_SINCE_SQL = """
 SELECT payload->>'policy' AS policy, payload->>'resulting_state' AS state, target_id, decision_id
 FROM substrate_graph_journal
@@ -280,8 +290,31 @@ async def _pool_quiet(client: Any, pool_url: str, wait_sec: float) -> list[str]:
     return await wait_for_quiet_pool(client, pool_url, wait_sec, None)
 
 
+class RestoreRefused(RuntimeError):
+    pass
+
+
 async def restore_seed(conn: Any, snap: dict[str, Any]) -> None:
-    """Write the snapshotted values of every SEED_COLUMNS column back onto the seed row."""
+    """Write the snapshotted values of every SEED_COLUMNS column back onto the seed row.
+    Refused while the row is in flight (a stage pending or claimed): a worker finishing
+    later would overwrite the restore with its own result. Once both stages are terminal,
+    a still-unconsumed run is a finished one (as in operator.reread_read) and is consumed,
+    so the restored row cannot be bound to it again."""
+    async with conn.transaction():
+        live = await conn.fetchrow("SELECT status, stage2_status FROM world_pulse_read_seed "
+                                   "WHERE seed_id = $1 FOR UPDATE", snap["seed_id"])
+        if live is None:
+            raise RestoreRefused("seed_missing")
+        in_flight = live["status"] in ("pending", "claimed") or (
+            live["status"] == "done" and live["stage2_status"] in ("pending", "claimed"))
+        if in_flight:
+            raise RestoreRefused(f"in_flight status={live['status']} stage2={live['stage2_status']}")
+        await conn.execute("UPDATE reading_durable_turn SET consumed_at = now() "
+                           "WHERE seed_id = $1 AND consumed_at IS NULL", snap["seed_id"])
+        await _write_seed(conn, snap)
+
+
+async def _write_seed(conn: Any, snap: dict[str, Any]) -> None:
     row = snap["seed_row"]
     sets, vals = [], []
     for i, col in enumerate(SEED_COLUMNS, start=2):
@@ -326,8 +359,12 @@ async def cmd_run(pool: Any, args: argparse.Namespace, out: Path) -> int:
     targets = json.loads((out / "targets.json").read_text())
     snaps = {s["seed_id"]: s for s in _load_jsonl(out / "snapshot.jsonl")}
     results_path = out / "results.jsonl"
-    done_ids = {r["seed_id"] for r in _load_jsonl(results_path)}
-    todo = [t for t in targets if t["probe"] != "gone" and t["seed_id"] not in done_ids]
+    latest = {r["seed_id"]: r for r in _load_jsonl(results_path)}  # last record per seed wins
+    # A read that timed out is not done: on resume it is waited for (never re-queued) first.
+    waiting = {s: r for s, r in latest.items() if r["outcome"] == "timeout_still_running"}
+    done_ids = set(latest) - set(waiting)
+    todo = sorted((t for t in targets if t["probe"] != "gone" and t["seed_id"] not in done_ids),
+                  key=lambda t: t["seed_id"] not in waiting)
     if args.limit:
         todo = todo[: args.limit]
     meta = out / "run_meta.json"
@@ -344,23 +381,32 @@ async def cmd_run(pool: Any, args: argparse.Namespace, out: Path) -> int:
     async with httpx.AsyncClient() as client:
         for t in todo:
             seed_id = t["seed_id"]
-            while True:
-                busy = await _pool_quiet(client, args.pool_url, 30.0)
-                if not busy:
-                    break
-                prog.line(f"paused pool busy before {seed_id[:50]}", reason=busy[0][:120])
-                await asyncio.sleep(args.pause_sec)
-            started = _now()
-            async with pool.acquire() as conn:
-                try:
-                    await reread_read(conn, seed_id)
-                except OperatorActionError as exc:
-                    prog.errors += 1
-                    prog.done += 1
-                    record({"seed_id": seed_id, "outcome": f"refused:{exc.code}", "started_at": started})
-                    prog.line(f"refused {seed_id[:50]}", code=exc.code)
-                    continue
-            prog.line(f"requeued {seed_id[:60]}", url=t["url"][:80])
+            consumed: list[str] = []
+            if seed_id in waiting:
+                started = datetime.fromisoformat(str(waiting[seed_id]["started_at"]))
+                prog.line(f"resume waiting on {seed_id[:60]}")
+            else:
+                while True:
+                    busy = await _pool_quiet(client, args.pool_url, 30.0)
+                    if not busy:
+                        async with pool.acquire() as conn:
+                            queued = await conn.fetchval(QUEUE_BUSY_SQL, [seed_id], args.digest_item_max_age_sec)
+                        busy = [f"{queued} live read(s) in flight on the reading queue"] if queued else []
+                    if not busy:
+                        break
+                    prog.line(f"paused before {seed_id[:50]}", reason=busy[0][:120])
+                    await asyncio.sleep(args.pause_sec)
+                started = _now()
+                async with pool.acquire() as conn:
+                    try:
+                        consumed = (await reread_read(conn, seed_id)).get("consumed_finished_runs", [])
+                    except OperatorActionError as exc:
+                        prog.errors += 1
+                        prog.done += 1
+                        record({"seed_id": seed_id, "outcome": f"refused:{exc.code}", "started_at": started})
+                        prog.line(f"refused {seed_id[:50]}", code=exc.code)
+                        continue
+                prog.line(f"requeued {seed_id[:60]}", url=t["url"][:80], consumed_old_runs=len(consumed))
             deadline = time.monotonic() + args.per_read_timeout_min * 60
             settled = None
             while time.monotonic() < deadline:
@@ -371,7 +417,8 @@ async def cmd_run(pool: Any, args: argparse.Namespace, out: Path) -> int:
                     break
             if settled is None:
                 prog.anomalies += 1
-                record({"seed_id": seed_id, "outcome": "timeout_still_running", "started_at": started})
+                record({"seed_id": seed_id, "outcome": "timeout_still_running", "started_at": started,
+                        "consumed_finished_runs": consumed})
                 prog.line(f"ANOMALY timeout {seed_id[:50]}: stopping (resume with run --yes)",
                           minutes=args.per_read_timeout_min)
                 return 3
@@ -381,11 +428,18 @@ async def cmd_run(pool: Any, args: argparse.Namespace, out: Path) -> int:
                 decisions = [_row_dict(r) for r in await conn.fetch(DECISIONS_SINCE_SQL, seed_id, started)]
                 handoff = WorldPulseReadHandoffV1.model_validate(_row_dict(row)["handoff_json"])
                 texts = await load_retained_texts(conn, handoff.read_evidence)
-                restored = False
-                if outcome.startswith("stage1_"):
-                    # The reader failed: put the old finished read back as it was.
-                    await restore_seed(conn, snaps[seed_id])
-                    restored = True
+                restored, new_row = False, None
+                if outcome != "stage2_done":
+                    # The re-read did not finish: put the old finished read back as it was, so
+                    # the URL still counts as read and handoff + Stage 2 result stay a pair.
+                    # The new row is kept in results.jsonl.
+                    new_row = {c: _row_dict(row).get(c) for c in SEED_COLUMNS}
+                    try:
+                        await restore_seed(conn, snaps[seed_id])
+                        restored = True
+                    except RestoreRefused as exc:
+                        prog.anomalies += 1
+                        prog.line(f"ANOMALY restore refused {seed_id[:50]}", reason=str(exc)[:120])
             result = _row_dict(row).get("stage2_result_json") or {}
             claims = result.get("relationship_claims") or [] if outcome == "stage2_done" else []
             reasons: dict[str, int] = {}
@@ -395,6 +449,7 @@ async def cmd_run(pool: Any, args: argparse.Namespace, out: Path) -> int:
             rec = {
                 "seed_id": seed_id, "url": t["url"], "outcome": outcome, "started_at": started,
                 "finished_at": _now(), "run_ids": [r["run_id"] for r in runs], "restored_old_row": restored,
+                "consumed_finished_runs": consumed, "new_row_if_restored": new_row,
                 "stage1_error": row["last_error"], "stage2_error": row["stage2_error"],
                 "retained_chars": [len(x.text) for x in texts], "claims": len(claims), "reasons": reasons,
                 "links_quote_rule": sum(d["policy"] == POLICY for d in decisions),
@@ -490,8 +545,12 @@ async def cmd_rollback(pool: Any, args: argparse.Namespace, out: Path) -> int:
             if snap["seed_id"] not in results:
                 continue
             if args.yes:
-                async with pool.acquire() as conn:
-                    await restore_seed(conn, snap)
+                try:
+                    async with pool.acquire() as conn:
+                        await restore_seed(conn, snap)
+                except RestoreRefused as exc:
+                    print(json.dumps({"seed_id": snap["seed_id"], "restore": "refused", "reason": str(exc)}))
+                    continue
             restored += 1
     print(json.dumps({"dry_run": not args.yes, "links": len(links), "withdrawals_written": written,
                       "seed_rows_restored" if args.yes else "seed_rows_to_restore": restored}))
@@ -512,6 +571,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     ap.add_argument("--pause-sec", type=float, default=60.0)
     ap.add_argument("--poll-sec", type=float, default=30.0)
     ap.add_argument("--per-read-timeout-min", type=float, default=240.0)
+    ap.add_argument("--digest-item-max-age-sec", type=float, default=5 * 86400.0,
+                    help="Hub's HUB_WORLD_PULSE_READ_DIGEST_ITEM_MAX_AGE_DAYS, in seconds (queue gate)")
     ap.add_argument("--skip-deploy-check", action="store_true")
     ap.add_argument("--restore-seeds", action="store_true", help="rollback: also write snapshotted seed rows back")
     return ap.parse_args(argv)

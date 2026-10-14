@@ -107,7 +107,7 @@ def withdrawal_for(link: PolicyLinkV1, *, recorded_at: datetime, reason: str = "
         proposal_id=d.proposal_id, proposal_kind=d.proposal_kind, target_id=d.target_id,
         actor=WITHDRAW_ACTOR, decision_id=f"reading-{uuid.uuid5(_NS, f'{d.decision_id}|withdraw')}",
         expected_prior_revision=link.latest_revision, resulting_state="rejected",
-        policy=f"{d.policy}{WITHDRAWN_SUFFIX}", authority="user_asserted",
+        policy=f"{d.policy}{WITHDRAWN_SUFFIX}", authority="local_inferred",
         rationale=f"withdrawn: link accepted by {d.policy} ({d.decision_id}){note}",
         evidence_refs=[f"withdraws:{d.decision_id}", *d.evidence_refs], recorded_at=recorded_at,
     )

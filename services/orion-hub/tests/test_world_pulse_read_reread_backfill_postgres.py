@@ -42,7 +42,9 @@ def _handoff(seed, sha=None):
 async def _finish(conn, seed):
     req = await bind_turn(conn, ReadingRunBriefV1(seed_id=seed.seed_id, stage=1, prompt="p", session_id="r",
                                                   timeout_sec=900), str(uuid4()))
-    await consume_turn(conn, req.run_id)
+    # Live shape: Hub's success path leaves both stages' finished runs unconsumed.
+    await bind_turn(conn, ReadingRunBriefV1(seed_id=seed.seed_id, stage=2, prompt="p", session_id="r",
+                                            timeout_sec=900), str(uuid4()))
     await queue.mark_seed_done(conn, seed.seed_id, trace_id=str(uuid4()), handoff=_handoff(seed))
     await conn.execute("UPDATE world_pulse_read_seed SET stage2_status='done', stage2_completed_at=now() "
                        "WHERE seed_id=$1", seed.seed_id)
@@ -58,9 +60,11 @@ async def _worker(pool, good_seed, stop):
                 continue
             req = await bind_turn(conn, ReadingRunBriefV1(seed_id=seed.seed_id, stage=1, prompt="p", session_id="r",
                                                           timeout_sec=900), str(uuid4()))
-            await consume_turn(conn, req.run_id)
+            assert req.brief.prompt == "p" and await conn.fetchval(
+                "SELECT attempt FROM reading_durable_turn WHERE run_id=$1", req.run_id) == 1  # never the old run
             if seed.seed_id != good_seed:
                 await queue.mark_seed_failed(conn, seed.seed_id, error="turn_error:failed")
+                await consume_turn(conn, req.run_id)  # Hub's _fail_seed consumes on failure
                 continue
             sha = text_sha256(PAGE)
             await conn.execute("INSERT INTO reading_document_snapshot (sha256, content, content_chars, first_source) "
@@ -175,3 +179,66 @@ def test_progress_line_has_every_field_the_protocol_names(tmp_path):
     for part in ("requeued reading:x", "| 50% |", "| eta ", "| 2/4 |", "/h |", "errors 1", "anomalies 2", "url=https://e.org"):
         assert part in line
     assert (tmp_path / "progress.log").read_text().strip() == line
+
+
+def test_queue_gate_counts_live_work_but_not_stale_digest_items_or_the_target(local_pg):
+    async def run():
+        schema = "reading_" + uuid4().hex
+        conn = await asyncpg.connect(**local_pg, server_settings={"search_path": schema})
+        await conn.execute(f'CREATE SCHEMA "{schema}"')
+        await conn.execute(f'SET search_path TO "{schema}"')
+        await queue.ensure_seed_queue_schema(conn)
+        target = await queue.enqueue_reading(conn, request("https://example.org/target"))
+        assert await conn.fetchval(bf.QUEUE_BUSY_SQL, [target["seed_id"]], 86400.0) == 0
+        await conn.execute(
+            "INSERT INTO world_pulse_read_seed (seed_id, kind, run_id, url, status, priority, created_at) VALUES "
+            "('digest_item:stale', 'digest_item', 'r', 'https://example.org/stale', 'pending', 10, now() - interval '9 days')")
+        assert await conn.fetchval(bf.QUEUE_BUSY_SQL, [target["seed_id"]], 86400.0) == 0
+        await queue.enqueue_reading(conn, request("https://example.org/live"))
+        assert await conn.fetchval(bf.QUEUE_BUSY_SQL, [target["seed_id"]], 86400.0) == 1
+        await conn.close()
+    asyncio.run(run())
+
+
+def test_a_timed_out_read_is_waited_for_on_resume_never_requeued(local_pg, tmp_path, monkeypatch):
+    async def run():
+        schema = "reading_" + uuid4().hex
+        admin = await asyncpg.connect(**local_pg)
+        await admin.execute(f'CREATE SCHEMA "{schema}"')
+        await admin.close()
+        pool = await asyncpg.create_pool(**local_pg, min_size=1, max_size=4, server_settings={"search_path": schema})
+        async with pool.acquire() as conn:
+            await queue.ensure_seed_queue_schema(conn)
+            await conn.execute(MIGRATION.read_text())
+            made = await queue.enqueue_reading(conn, request("https://example.org/slow"))
+            await _finish(conn, await queue.claim_next_seed(conn))
+            snap = {"seed_id": made["seed_id"],
+                    "seed_row": bf._row_dict(await conn.fetchrow(bf.SEED_ROW_SQL, made["seed_id"]))}
+            from orion.world_pulse_read.operator import reread_read
+            await reread_read(conn, made["seed_id"])  # the earlier, timed-out invocation
+        out = tmp_path / "bf"
+        out.mkdir()
+        (out / "targets.json").write_text(json.dumps([{"seed_id": made["seed_id"], "url": "https://example.org/slow",
+                                                       "probe": "fetchable", "before_claims": 0, "before_accepted": 0}]))
+        (out / "snapshot.jsonl").write_text(json.dumps(snap, default=str) + "\n")
+        (out / "results.jsonl").write_text(json.dumps({"seed_id": made["seed_id"], "outcome": "timeout_still_running",
+                                                       "started_at": datetime.now(timezone.utc).isoformat()}) + "\n")
+
+        async def quiet(*_a, **_k):
+            return []
+        monkeypatch.setattr(bf, "_pool_quiet", quiet)
+        stop = asyncio.Event()
+        worker = asyncio.create_task(_worker(pool, made["seed_id"], stop))
+        args = bf.parse_args(["run", "--yes", "--skip-deploy-check", "--out", str(out), "--poll-sec", "0.05",
+                              "--per-read-timeout-min", "1"])
+        assert await bf.cmd_run(pool, args, out) == 0
+        stop.set()
+        await worker
+        last = bf._load_jsonl(out / "results.jsonl")[-1]
+        assert last["outcome"] == "stage2_done"
+        async with pool.acquire() as conn:
+            assert await conn.fetchval("SELECT count(*) FROM reading_durable_turn WHERE seed_id=$1 AND stage=1",
+                                       made["seed_id"]) == 2  # the original + ONE reread attempt
+        assert "resume waiting on" in (out / "progress.log").read_text()
+        await pool.close()
+    asyncio.run(run())

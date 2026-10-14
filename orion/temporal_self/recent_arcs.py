@@ -5,6 +5,13 @@ A fixed template over the current ``TemporalSelfFrameV1`` (orion-durable-runs
 first, in local time, each line carrying the ``[arc:<id>]`` it came from. The arc's label is its
 ``subject_label`` (falling back to ``subject_ref``); the duration is ``ended_at - began_at``.
 
+Reverie's own daydreams are themselves arcs, and the commonest kind (160 of 258 closed on
+2026-10-13), so "the last few closed" was mostly reverie's previous thoughts fed back to it.
+They are grouped instead: one line counting today's daydreams (citing the latest), then
+``limit - 1`` other closed arcs. With no daydream closed, ``limit`` other arcs. The frame drops
+reverie arcs first when it is over ``ARCS_IN_FRAME_CAP``, so a truncated frame's count reads
+"at least".
+
 Same render gate as the stance cue (``stance_cue.project_stance_cue``): nothing (``text == ""``,
 with ``skip_reason``) when the frame is missing or invalid, is for another local day, is older
 than ``max_age_sec``, or is from the future. A fresh frame with no closed arc renders nothing
@@ -63,6 +70,19 @@ def _line(arc: ArcSummaryV1, tz: ZoneInfo) -> str:
     return f"- {when} ({span}) {_what(arc)} [arc:{arc.arc_id}]"
 
 
+def _daydream_line(dreams: list[ArcSummaryV1], tz: ZoneInfo, *, lower_bound: bool) -> str:
+    first = min(as_utc(a.began_at) for a in dreams)
+    latest = dreams[0]  # newest-ended first
+    last = as_utc(latest.ended_at)
+    assert first is not None and last is not None
+    n = len(dreams)
+    count = f"{'at least ' if lower_bound else ''}{n} daydream{'' if n == 1 else 's'}"
+    when = f"{first.astimezone(tz).strftime('%H:%M')}-{last.astimezone(tz).strftime('%H:%M')}"
+    if lower_bound:  # the frame dropped the oldest daydreams, so the true start is unknown
+        when = f"up to {last.astimezone(tz).strftime('%H:%M')}"
+    return f"- {when} ({count}) your own daydreaming, the latest ended {last.astimezone(tz).strftime('%H:%M')} [arc:{latest.arc_id}]"
+
+
 def project_recent_arcs(
     frame: TemporalSelfFrameV1 | dict[str, Any] | None,
     now: datetime,
@@ -95,8 +115,16 @@ def project_recent_arcs(
     closed.sort(key=lambda a: (as_utc(a.ended_at), a.arc_id), reverse=True)
     n = max(1, min(int(limit), MAX_LIMIT))
     tz = ZoneInfo(tz_name)
-    picked = closed[:n]
-    lines = [_line(a, tz) for a in picked]
+    dreams = [a for a in closed if a.kind == "reverie"]
+    others = [a for a in closed if a.kind != "reverie"][: n - 1 if dreams else n]
+    # (line, cited arc, sort key) -- the daydream line sits where its latest daydream ended
+    rows = [(_line(a, tz), a, as_utc(a.ended_at)) for a in others]
+    if dreams:
+        truncated = frame.arcs_today_total > len(frame.arcs_today)
+        rows.append((_daydream_line(dreams, tz, lower_bound=truncated), dreams[0], as_utc(dreams[0].ended_at)))
+    rows.sort(key=lambda r: (r[2], r[1].arc_id), reverse=True)
+    lines = [r[0] for r in rows]
+    picked = [r[1] for r in rows]
     # Over the length cap: drop the oldest lines first; one line alone is clipped, never dropped
     # (its [arc:<id>] is at the end, so a clipped line would lose its citation -- shorten the label).
     while len(lines) > 1 and len("\n".join([HEAD] + lines)) > max_chars:

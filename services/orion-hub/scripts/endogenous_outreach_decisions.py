@@ -199,6 +199,8 @@ def count_sent_on(local_date: str, tz_name: str) -> Optional[int]:
     Counts `reason='sent'` rows from the *background* endogenous tick (and any
     other non-Door-A sender). Curiosity Door-A (`source='curiosity_outreach'`)
     is excluded: those sends do not consume the shared daily cap (2026-09-22).
+    Reading findings (`source='reading_finding_outreach'`, 2026-10-13) are excluded
+    for the same reason: they skip the cap and must not starve the background tick.
     """
     if not decision_log_enabled():
         # UNKNOWN, not zero. With the log switched off the table stops
@@ -219,7 +221,8 @@ def count_sent_on(local_date: str, tz_name: str) -> Optional[int]:
                 text(
                     "SELECT count(*) FROM endogenous_outreach_decisions "
                     "WHERE reason = 'sent' "
-                    "AND coalesce(result_json->>'source', '') <> 'curiosity_outreach' "
+                    "AND coalesce(result_json->>'source', '') "
+                    "NOT IN ('curiosity_outreach', 'reading_finding_outreach') "
                     "AND (decided_at AT TIME ZONE :tz)::date = CAST(:d AS date)"
                 ),
                 {"tz": tz_name, "d": local_date},

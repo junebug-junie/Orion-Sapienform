@@ -14,7 +14,9 @@ Sources:
   (substrate_durable_run_state), their journal entries (source_ref ``curiosity:<run>``),
   curiosity_run_outcomes, failed runs, and self_sense_eval_log answers.
 * readings -- verified world_pulse_read_seed rows (orion/world_pulse_read/introspect.py,
-  full text) and ``world_pulse_read_stage2:*`` journal entries.
+  full text) and ``world_pulse_read_stage2:*`` journal entries. Each reading carries its
+  ``findings`` (orion/world_pulse_read/findings.py): accepted links, and beliefs a curiosity run
+  moved while naming the read, recorded before the window ends.
 * dreams -- narrative dreams and OFFERED hypotheses only (orion/dream/introspect_sql.py,
   the blind rule).
 * reveries -- substrate_reverie_thought / substrate_reverie_chain (text) and
@@ -63,6 +65,7 @@ from orion.schemas.orion_day import (
 )
 from orion.schemas.temporal_self import TemporalSelfDayBlockV1, TemporalSelfDayV1
 from orion.temporal_self.day_block import render_closed_day_block
+from orion.world_pulse_read.findings import PriorLookup, ReadRefV1, findings_for_reads
 from orion.world_pulse_read.introspect import reading_items_between
 
 logger = logging.getLogger(__name__)
@@ -348,7 +351,24 @@ async def gather_readings(conn: Any, start: datetime, end: datetime) -> list[Rea
         seed_id=i.id, occurred_at=i.occurred_at, title=i.extra.get("title") or None,
         url=i.extra.get("url") or None, why_now=i.extra.get("why_now") or None, learned=i.text,
         reading_status=i.extra.get("reading_status"), source_read=bool(i.extra.get("source_read")),
+        request_id=i.extra.get("request_id") or None,
+        article_summary=i.extra.get("article_summary") or "",
     ) for i in items]
+
+
+async def gather_reading_findings(
+    conn: Any, readings: list[ReadingItemV1], until: datetime, sources: dict,
+    prior_lookup: PriorLookup | None,
+) -> list[ReadingItemV1]:
+    """The day's readings with what each one changed attached (links made, beliefs moved), as of
+    ``until``. A belief check the graph could not answer is a named gap, never "nothing moved"."""
+    refs = [ReadRefV1(seed_id=r.seed_id, occurred_at=r.occurred_at, url=r.url or "",
+                      request_id=r.request_id or "", title=r.title or "", learned=r.learned,
+                      article_summary=r.article_summary) for r in readings]
+    result = await findings_for_reads(conn, refs, until=until, prior_lookup=prior_lookup)
+    if result.beliefs_unchecked:
+        sources["reading_beliefs"] = OrionDaySourceStatusV1(status="error", error=result.beliefs_unchecked)
+    return [r.model_copy(update={"findings": result.by_seed.get(r.seed_id, [])}) for r in readings]
 
 
 async def gather_journals_by_prefix(conn: Any, start: datetime, end: datetime, prefix: str) -> list[JournalTextV1]:
@@ -466,8 +486,12 @@ async def gather_orion_day(
     github_repo: str = DEFAULT_GITHUB_REPO,
     tz_name: str = ORION_DAY_TIMEZONE,
     temporal_day: bool = True,
+    prior_lookup: PriorLookup | None = None,
 ) -> OrionDayMaterialV1:
-    """Read everything Orion did on ``letter_date`` (local ``tz_name`` day). Read-only."""
+    """Read everything Orion did on ``letter_date`` (local ``tz_name`` day). Read-only.
+
+    ``prior_lookup`` reads prior provenance from Orion's graph (Hub passes a GRAPH.RO_QUERY
+    reader); without it a belief a read moved cannot be credited and ``reading_beliefs`` says so."""
     window = orion_day_window(letter_date, tz_name=tz_name)
     start, end = window.window_start, window.window_end
     sources: dict[str, OrionDaySourceStatusV1] = {}
@@ -477,6 +501,10 @@ async def gather_orion_day(
     readings = await _read(sources, "readings", lambda: gather_readings(conn, start, end), [])
     if len(readings) >= READINGS_LIMIT:
         sources["readings"] = sources["readings"].model_copy(update={"truncated": True})
+    if readings:
+        readings = await _read(
+            sources, "reading_findings",
+            lambda: gather_reading_findings(conn, readings, end, sources, prior_lookup), readings)
     reading_journals = await _read(
         sources, "reading_journals",
         lambda: gather_journals_by_prefix(conn, start, end, "world_pulse_read_stage2:"), [])

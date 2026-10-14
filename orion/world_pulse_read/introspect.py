@@ -84,6 +84,14 @@ def _learned(row: Any, source_read: bool) -> str:
     return str(result.get("summary") or _obj(row["handoff_json"]).get("what_i_learned") or "")
 
 
+def _article_summary(row: Any, source_read: bool) -> str:
+    """What the piece itself says (Stage 2 ``article_summary``), under the same rule as
+    ``_learned``. Empty on reads stored before the field existed."""
+    if row["status"] != "done" or not source_read:
+        return ""
+    return " ".join(str(_obj(row["stage2_result_json"]).get("article_summary") or "").split())
+
+
 def _item(
     row: Any,
     *,
@@ -104,6 +112,7 @@ def _item(
         "source_read": source_read,
         "learned": bool(text),
         "request_id": request_id,
+        "article_summary": _article_summary(row, source_read),
     }
     if url_truncated:
         # A clipped URL matches nothing on lookup; say so rather than let a

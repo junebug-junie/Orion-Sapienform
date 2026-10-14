@@ -3315,8 +3315,56 @@ Orion's next curiosity run.
   under its own header in the kickoff prompt; a cancelled turn gives it back. The
   letter's note never reaches curiosity. Kill switch:
   `HUB_CURIOSITY_CARRY_FORWARD_ENABLED`; freshness `HUB_ORION_DAY_CARRY_FORWARD_TTL_HOURS`.
-- Checks: `tests/test_orion_day_letter.py`; eval
+- **What I read** (2026-10-13): a compact section right under the carry-forward. Per read
+  of the day: what the piece says (Stage 2's `article_summary`, 3-5 sentences about the
+  source itself), what Orion took from it (the first two sentences of the stored Stage 2
+  summary, verbatim), and what the read changed -- a link made (accepted claim whose
+  latest journal decision is still accepted) or a belief moved (a curiosity run moved a
+  prior and that run's own `why`/`formed_from` text names the read). A read that changed
+  nothing says so in one line; when the graph could not be read the line says "beliefs
+  not checked" instead of "no belief moved" (`sources.reading_beliefs`). Built from
+  records only: `orion/world_pulse_read/findings.py`, attached as `ReadingItemV1.findings`.
+  Reads stored before `article_summary` existed show "(no summary of the piece was recorded)".
+- Checks: `tests/test_orion_day_letter.py`, `tests/test_orion_day_what_i_read.py`; eval
   `python services/orion-hub/evals/run_orion_day_email_eval.py [--material m.json]`.
+
+### Reading findings reach Juniper (`scripts/reading_finding_outreach.py`)
+
+**What it does.** When a read changes Orion -- a link it made is accepted and projected
+into the graph, or a curiosity run moves a belief while citing the read -- Orion writes
+Juniper a message in their own words. One message per read: every not-yet-told change of
+that read goes into the same message. A change told once is never told again; a later
+change of the same read (a belief moved days after the link) is a new message.
+
+- **Same path as curiosity findings.** `EndogenousOutreach.compose` (the real unified
+  turn; `PASS` means "not worth sending") then `offer_message` (decision log, grounding
+  guard, sockets + chat history + notification). The recorded summary of the piece is
+  delivered under Orion's message as stored, not regenerated.
+- **Gates.** No daily cap and no cooldown for this kind (`skip_rate_gates`, Juniper
+  2026-10-13). Disabled, turn-in-flight, recent-chat, quiet hours and arousal `strained`
+  still apply; a blocked message waits for a later tick, it is not dropped. Sends do not
+  consume the background tick's daily cap (`count_sent_on` excludes the source).
+- **Evidence.** The decision row (`endogenous_outreach_decisions`, `result_json.source =
+  'reading_finding_outreach'`) carries `seed_id`, `finding_ids`, `finding_kinds`,
+  `evidence_refs`; the delivered message carries an `outreach_provenance.v1` capsule with
+  the exact prompt.
+- **Seam.** `orion/schemas/reading_finding.py` (`ReadingFindingV1`, kinds `link_made`,
+  `belief_moved`; a third kind adds one enum value and a producer). Not a bus payload yet:
+  producer and consumers are all in Hub.
+- **Env.** `HUB_READING_FINDING_OUTREACH_ENABLED` (on), `_TICK_SEC` (300),
+  `_LOOKBACK_HOURS` (48: a change recorded within this window is told; reads up to 7 days
+  old are watched, so a belief moved days after its read still counts), `_MAX_ATTEMPTS`
+  (3 composition failures before a change is dropped).
+- **What it cannot see yet.** A belief counts only when the curiosity run that moved it
+  names the read (URL path, seed id or request id) in the prior's `why`/`formed_from`.
+  Live 2026-10-13: 0 of 26 run-written prior texts in the last 7 days cite any read, so
+  only links fire today. The letter line says exactly that ("no curiosity run cited this
+  read"), never "no belief moved".
+- **Checks.** `tests/test_reading_finding_outreach.py`; replay eval (read-only, live):
+  `PYTHONPATH=. .venv/bin/python services/orion-hub/evals/run_reading_finding_replay.py --days 7`.
+- **Logs.** `reading_finding_outreach_result seed=<id> reason=<sent|orion_passed|...>`,
+  `reading_finding_outreach_blocked seed=<id> reason=<gate>`,
+  `reading_finding_beliefs_unchecked reason=<...>`.
 
 ### Introspect responder: `curiosity`
 

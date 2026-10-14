@@ -213,6 +213,7 @@ def _build_stage2_prompt(
         "Required JSON shape (use exactly these top-level keys; anything else is dropped):\n"
         "{\n"
         '  "summary": "non-empty prose",\n'
+        '  "article_summary": "3-5 sentences: what the source itself says",\n'
         '  "priors_tested": [{"claim_ref": "a Stage 1 claim", '
         '"verdict": "supported|revised|refuted|untested", "why": "string"}],\n'
         '  "candidate_priors": [{"claim": "new or revised claim", "confidence": 0.5}],\n'
@@ -223,6 +224,10 @@ def _build_stage2_prompt(
         f'  "trace_id": {trace_id!r},\n'
         f'  "seed_id": {handoff.seed_ref.seed_id!r}\n'
         "}\n"
+        "article_summary is what the PIECE says -- its claims, findings and facts, in 3-5 plain "
+        "sentences, taken only from text you or Stage 1 actually fetched -- not your reaction, "
+        "not what it means for you (that goes in summary). Use an empty string if nothing "
+        "substantive was fetched (an error page, a 404, a paywall). "
         "candidate_priors MUST be objects with claim (not bare strings). "
         "priors_tested MUST be objects with claim_ref. producer_hint and created_at are forced server-side. "
         # Enforced server-side (fetch_provenance.py); said here so the model does not

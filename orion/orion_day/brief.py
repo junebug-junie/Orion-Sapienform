@@ -14,6 +14,7 @@ from zoneinfo import ZoneInfo
 
 from orion.orion_day.budget import DEFAULT_BUDGET_TOKENS, build_llm_view
 from orion.orion_day.gather import DEFAULT_GITHUB_REPO, gather_orion_day
+from orion.world_pulse_read.findings import PriorLookup
 from orion.schemas.durable_run import DurableRunRequestV1
 from orion.schemas.orion_day import (
     ORION_DAY_LLM_ROUTE,
@@ -79,9 +80,10 @@ async def build_orion_day_brief(
     timeout_sec: float = 1800.0,
     carry_forward_ttl_hours: float = 48.0,
     temporal_day: bool = True,
+    prior_lookup: PriorLookup | None = None,
 ) -> OrionDayRunBriefV1:
     material = await gather_orion_day(conn, letter_date, now=now, github_repo=github_repo,
-                                      temporal_day=temporal_day)
+                                      temporal_day=temporal_day, prior_lookup=prior_lookup)
     return brief_from_material(material, budget_tokens=budget_tokens, timeout_sec=timeout_sec,
                                carry_forward_ttl_hours=carry_forward_ttl_hours)
 

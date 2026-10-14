@@ -25,6 +25,24 @@ The dry-run CLI is `scripts/run_person_linkage.py` (read only: Postgres read-onl
 session, FalkorDB `GRAPH.RO_QUERY`, vector-host `/embedding`). There is no apply
 mode yet; applying reviewed decisions is a later step.
 
+## Personal data stays local
+
+The repo is public, so real stated answers and eval labels (real names, chat
+snippets) live in gitignored `*.local.*` files beside committed, redacted
+`*.example.*` fixtures. `person.local_first()` reads the local file when it
+exists (same idea as `.env` / `.env_example`):
+
+| Committed (redacted / fake) | Real, gitignored, read first |
+|---|---|
+| `config/person_model/stated_answers.example.yaml` | `config/person_model/stated_answers.local.yaml` |
+| `evals/cleanup_labels.example.jsonl` | `evals/cleanup_labels.local.jsonl` |
+| `evals/mention_labels.example.jsonl` | `evals/mention_labels.local.jsonl` |
+
+The real copies sit in the primary checkout. A new worktree has none, so the
+dry run and evals fall back to the fake fixtures; copy the local files over (or
+pass `--answers` / `--labels`) to run against real data. CI only uses the
+fixtures. `tests/test_no_personal_terms.py` fails on any tracked personal term.
+
 ## Run
 
 ```bash

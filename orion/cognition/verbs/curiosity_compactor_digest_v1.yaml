@@ -1,0 +1,15 @@
+name: curiosity_compactor_digest_v1
+label: Curiosity calendar compaction
+description: Consolidate dated Curiosity records by topic, then synthesize their overall chronology.
+category: Generative
+priority: normal
+requires_gpu: true
+requires_memory: false
+timeout_ms: 600000
+services: [LLMGatewayService]
+prompt_template: curiosity_compactor_digest_v1.j2
+steps:
+  - name: curiosity_compactor_digest_v1
+    order: 0
+    services: [LLMGatewayService]
+    prompt_template: curiosity_compactor_digest_v1.j2

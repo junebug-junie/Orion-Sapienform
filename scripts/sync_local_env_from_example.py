@@ -292,6 +292,9 @@ SYNC_PREFIXES = (
     # Reverie VISUAL chain (Patch 2 of docs/superpowers/specs/2026-08-20-
     # reverie-visual-chain-design.md, default-off)
     "ORION_VISUAL_CHAIN_",
+    # Stage 2 PR G uses the design-approved REVERIE_VISUAL_* switch name,
+    # which does not match the older ORION_VISUAL_CHAIN_* family above.
+    "REVERIE_VISUAL_",
     "SUBSTRATE_FELT_STATE_",
     # System One / Kev shadow appraisal (orion-substrate-runtime). Without this
     # prefix the default sync silently skips every SUBSTRATE_SYSTEM_ONE_* key
@@ -438,6 +441,7 @@ SYNC_EXACT = frozenset(
         # (orion-dream owns it; durable-runs reads the same key for arousal).
         "ORION_SITUATION_TIMEZONE",
         "DREAM_IDLE_MINUTES",
+        "DREAM_CURIOSITY_COMPACTION_ENABLED",
         # Temporal Self R3 reader 1: the dream reads arousal (orion-dream). No DREAM_ prefix is synced.
         "DREAM_IDLE_FROM_AROUSAL_ENABLED",
         "DREAM_AROUSAL_MAX_HOLD_HOURS",

@@ -8,7 +8,7 @@
 ## Outcome moved
 
 - The one-time cleanup is a review Juniper can actually do: **3 cards need her call** out of 120 decisions (53 auto-merge, 64 auto-reject). File: `docs/superpowers/evals/2026-10-14-person-cleanup-review.html`.
-- The three that need her: "juniper feld" (her full name; the card also covers the matching chat mentions), "Skye" vs "Skye Laflamme" (the card also decides where the graph nodes "skye" and "skye laflamme" go), and "Jay, Jay" (one name, two people; the "jay" node merge waits on her answer).
+- The three that need her: "juniper feld" (her full name; the card also covers the matching chat mentions), "[team member 1]" vs "[team member 1 full name]" (the card also decides where the matching graph nodes go), and "[team member 2], [team member 2]" (one name, two people; the matching node merge waits on her answer).
 - Misgendering in the live chat prompt path is gone and has a regression test tied to the pronoun source of truth.
 
 ## Current architecture
@@ -19,7 +19,7 @@ The graph had 11 nodes for Juniper from four producers, no person nodes for her 
 
 - New package `orion/person_model/` (person, extract, normalize, linkage + `linkage_config.yaml`, merge_log, review_html, tests, evals).
 - New contracts `orion/schemas/person_model.py`, registered in `orion/schemas/registry.py` (both `_REGISTRY` and `SCHEMA_REGISTRY`, checked with `resolve()`).
-- New data: `config/person_model/people.yaml` (pronouns), `config/person_model/stated_answers.yaml` (her answer: home is Ogden).
+- New data: `config/person_model/people.yaml` (pronouns), `config/person_model/stated_answers.yaml` (her answer: home is [home city]). Since moved to the gitignored `stated_answers.local.yaml`; the committed file is `stated_answers.example.yaml`.
 - New read-only CLI `scripts/run_person_linkage.py`.
 - Prompt text: `stance_react.j2`, `chat_quick.j2`, `services/orion-mind/app/stance_handoff.py`.
 - New CI workflow `.github/workflows/orion-person-model-tests.yml`.
@@ -29,7 +29,7 @@ The graph had 11 nodes for Juniper from four producers, no person nodes for her 
 
 - `orion/cognition/prompts/stance_react.j2`, `orion/cognition/prompts/chat_quick.j2`, `services/orion-mind/app/stance_handoff.py`: she/her for Juniper.
 - `config/person_model/people.yaml`: pronoun source of truth with evidence.
-- `config/person_model/stated_answers.yaml`: home = Ogden, citing her answer on #2646.
+- `config/person_model/stated_answers.yaml`: home = [home city], citing her answer on #2646 (now `stated_answers.local.yaml`, gitignored).
 - `orion/person_model/person.py`: `PersonRefV1` loader; stated-only pronouns; name fallback instead of guessing.
 - `orion/person_model/extract.py`: pinned extractor, replay-stable mention rows.
 - `orion/person_model/normalize.py`: folding, tokens, prompt-key harvest from the templates.
@@ -135,7 +135,7 @@ Code review ran in a subagent against `origin/main...feat/person-model-p0-p2`. N
 - Finding: a candidate claimed by two people was resolved silently by score.
   - Fix: goes to review as `multiple_anchor_claims`; when the two claimants are themselves an open review pair, it rides on that card.
   - Evidence: `test_two_people_claiming_one_candidate_go_to_review`, `test_claims_by_two_people_ride_on_their_pair_question`; live: "skye"/"skye laflamme" ride on the Skye card.
-- Finding: the "Jay, Jay" hold matched ids only.
+- Finding: the repeated-name ("[team member 2], [team member 2]") hold matched ids only.
   - Fix: also matches folded labels.
   - Evidence: `test_split_hold_also_catches_graph_nodes_with_the_same_name`.
 - Finding: a rerun was not guaranteed identical (a timed-out embedding silently scored as missing; centering mean included cache leftovers).
@@ -168,9 +168,9 @@ Not run by this task. Until it runs, chat keeps the old wording; nothing else in
 
 ## Risks / concerns
 
-- Severity: medium. Concern: the review HTML is committed to a public repository and includes short snippets of Juniper's chat and memories (family names, Amanda's health). Mitigation: snippets are windowed and email addresses masked; the same facts are already in the public spec. If she wants it private, delete the file and keep the `/tmp/person-linkage/` copy.
+- Severity: medium. Concern: the review HTML includes short snippets of Juniper's chat and memories (family names, [family member]'s health). Mitigation: it is not committed; it lives only under `/tmp/person-linkage/`, snippets are windowed and email addresses masked.
 - Severity: medium. Concern: labels for the bake-off and the linkage eval were made by the agent, the latter after seeing the output. Mitigation: her exported CSV replaces them; thresholds are re-derived from it before any live apply.
-- Severity: low. Concern: 18 auto-merges include links from her chat mentions (Amanda, Teddy, Addy...) to topic-modeler entities with the same name; the topic modeler's "amanda" could in principle be a different Amanda. Mitigation: nothing is applied; each merge is reversible from its log entry.
+- Severity: low. Concern: 18 auto-merges include links from her chat mentions ([family member], [child 1], [child 2]...) to topic-modeler entities with the same name; the topic modeler's same-name entity could in principle be a different person. Mitigation: nothing is applied; each merge is reversible from its log entry.
 - Severity: low. Concern: the extractor stack (torch, gliner) is not in any service image yet. Mitigation: dry run only; P3+ decides where it runs.
 
 ## PR link

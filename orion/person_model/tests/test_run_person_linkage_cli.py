@@ -27,13 +27,13 @@ def test_parse_labels_handles_the_ro_query_string_form():
 
 
 def test_repeated_name_in_a_list_flags_a_split_and_possessives_are_not_names():
-    src = {"p1": _mentions("my boss, Rachel, my reports: Jay, Jay, Armando, and Vincent. my wife too.",
-                           ["Rachel", "Jay", "Jay", "Armando", "Vincent", "my wife"])}
+    src = {"p1": _mentions("my boss, Marlow, my reports: Zed, Zed, Osric, and Quentin. my wife too.",
+                           ["Marlow", "Zed", "Zed", "Osric", "Quentin", "my wife"])}
     clusters = cli.cluster_mentions(src)
-    assert clusters["jay"]["repeat_sources"] == ["p1"]
-    assert not clusters["rachel"]["repeat_sources"]
+    assert clusters["zed"]["repeat_sources"] == ["p1"]
+    assert not clusters["marlow"]["repeat_sources"]
     assert "my wife" not in clusters
-    assert ("armando", "jay") in cli.cooccurring_pairs(src)
+    assert ("osric", "zed") in cli.cooccurring_pairs(src)
 
 
 def _d(anchor, cand, group, relation="same_as", kind="substrate_node", rule=None):
@@ -45,8 +45,8 @@ def _d(anchor, cand, group, relation="same_as", kind="substrate_node", rule=None
 
 
 def test_merges_of_a_split_name_are_held_and_folded_into_one_card():
-    clusters = {"jay": {"node_id": "mention:jay", "repeat_sources": ["p1"]}}
-    ds = [_d("mention:jay", "jay", "auto_merge"), _d("mention:jay", "Jay", "needs_your_call", "distinct", "mention_cluster")]
+    clusters = {"zed": {"node_id": "mention:zed", "repeat_sources": ["p1"]}}
+    ds = [_d("mention:zed", "zed", "auto_merge"), _d("mention:zed", "Zed", "needs_your_call", "distinct", "mention_cluster")]
     held = cli.hold_merges_of_split_names(ds, clusters)
     assert all(d.group == "needs_your_call" for d in held)
     out = cli.collapse_same_question(held)
@@ -62,8 +62,8 @@ def test_duplicate_review_questions_collapse_keeping_the_graph_node():
 
 
 def test_window_snippet():
-    assert cli.window("a" * 200 + " Amanda had surgery " + "b" * 200, "Amanda", 10).startswith("...")
-    assert cli.window("nothing here", "Amanda") is None
+    assert cli.window("a" * 200 + " Brenda had surgery " + "b" * 200, "Brenda", 10).startswith("...")
+    assert cli.window("nothing here", "Brenda") is None
 
 
 def test_window_masks_email_addresses():
@@ -72,9 +72,9 @@ def test_window_masks_email_addresses():
 
 
 def test_split_hold_also_catches_graph_nodes_with_the_same_name():
-    """Review finding 4: a substrate node 'Jay' cannot auto-merge while 'Jay' means two people."""
-    clusters = {"jay": {"node_id": "mention:jay", "repeat_sources": ["p1"]}}
-    held = cli.hold_merges_of_split_names([_d("ref-person-jay", "Jay", "auto_merge")], clusters)
+    """Review finding 4: a substrate node 'Zed' cannot auto-merge while 'Zed' means two people."""
+    clusters = {"zed": {"node_id": "mention:zed", "repeat_sources": ["p1"]}}
+    held = cli.hold_merges_of_split_names([_d("ref-person-zed", "Zed", "auto_merge")], clusters)
     assert held[0].group == "needs_your_call" and held[0].rule == "name_used_for_two_people"
 
 

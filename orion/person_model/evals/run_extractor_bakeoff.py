@@ -2,11 +2,12 @@
 """Extractor bake-off: GLiNER variants vs the BERT/RoBERTa/spaCy NER baselines.
 
 Periodic eval, not a CI gate: needs torch/transformers/gliner and live, READ-ONLY
-access to ``chat_history_log`` (the labeled texts are Juniper's chat prompts; the
-committed label file stores only row ids, a text hash, and span offsets).
+access to ``chat_history_log`` (the labeled texts are the interlocutor's chat prompts). Real labels live in the
+gitignored ``mention_labels.local.jsonl`` (read first); the committed
+``mention_labels.example.jsonl`` is a fake-name fixture.
 
     python orion/person_model/evals/run_extractor_bakeoff.py \
-        --labels orion/person_model/evals/mention_labels.jsonl \
+        --labels orion/person_model/evals/mention_labels.local.jsonl \
         --dsn postgresql://postgres:postgres@localhost:55432/conjourney \
         --out /tmp/person-bakeoff/results.json
 
@@ -175,7 +176,7 @@ def replay_identical(model, items: List[dict], threshold: float) -> bool:
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--labels", type=Path, default=Path(__file__).with_name("mention_labels.jsonl"))
+    ap.add_argument("--labels", type=Path, default=local_first(Path(__file__).with_name("mention_labels.example.jsonl")))
     ap.add_argument("--dsn", default="postgresql://postgres:postgres@localhost:55432/conjourney")
     ap.add_argument("--out", type=Path, default=Path("/tmp/person-bakeoff/results.json"))
     ap.add_argument("--models", default="all")

@@ -17,6 +17,18 @@ from orion.schemas.person_model import PersonRefV1
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_PEOPLE_PATH = REPO_ROOT / "config" / "person_model" / "people.yaml"
+DEFAULT_ANSWERS_PATH = REPO_ROOT / "config" / "person_model" / "stated_answers.example.yaml"
+
+
+def local_first(example: Path) -> Path:
+    """The gitignored ``<name>.local.<ext>`` beside a committed ``<name>.example.<ext>``
+    when it exists, else the example (same pattern as the root ``.env``/``.env_example``).
+    Real personal values live only in the local file; the example is redacted."""
+    name = example.name
+    if ".example." not in name:
+        return example
+    local = example.with_name(name.replace(".example.", ".local.", 1))
+    return local if local.exists() else example
 
 
 @dataclass(frozen=True)

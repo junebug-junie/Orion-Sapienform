@@ -224,6 +224,6 @@ Consumer-first: sql-writer creates the tables and subscribes, then equilibrium p
 
 ## PR link
 
-(filled in after push)
+https://github.com/junebug-junie/Orion-Sapienform/pull/2671
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

@@ -184,11 +184,12 @@ def test_the_strict_quote_rule_keeps_a_meaning_only_claim_proposed_with_no_link(
 # ── Stage 2 wiring ─────────────────────────────────────────────────────────
 
 
-def _pipeline(store, conn, backend):
+def _pipeline(store, conn, backend, *, meaning_target_links=True):
     pipe = WorldPulseReadStage2Pipeline(
         enabled=True, tick_interval_sec=60, timeout_sec=60, session_id="s",
         pool_provider=lambda: FakePool(conn), source_ref=ServiceRef(name="hub", version="0", node="t"),
         store_provider=lambda: store, projector_readiness=ALWAYS_READY, concept_search=backend.config(),
+        meaning_target_links=meaning_target_links,
     )
     pipe._http_client = backend.client
     pipe._bus = backend
@@ -267,13 +268,16 @@ def test_stage2_keeps_label_objects_before_the_index_exists():
 
 
 def test_stage2_records_a_meaning_claim_as_proposed_and_refuses_one_no_longer_offered(monkeypatch):
+    """With reading_meaning_target_v1 OFF (HUB_WORLD_PULSE_READ_MEANING_TARGET_LINKS_ENABLED=
+    false) the strict quote rule is back exactly. With it on, see
+    test_world_pulse_read_meaning_target_links.py."""
     store, subject_id, _, conn, h = _setup()
     journal = FakeJournal()
     # The globals the class actually runs with (Hub's conftest re-imports scripts.* per test).
     monkeypatch.setitem(WorldPulseReadStage2Pipeline._record_claims.__globals__, "SubstrateGraphJournal",
                         lambda pool: journal)
     backend = FakeSemanticBackend(VECTORS)
-    pipe = _pipeline(store, conn, backend)
+    pipe = _pipeline(store, conn, backend, meaning_target_links=False)
     asyncio.run(pipe.index_concepts_once())
     pipe._claim_context = asyncio.run(pipe._build_claim_context(h))
     claim = WorldPulseReadRelationshipClaimV1(

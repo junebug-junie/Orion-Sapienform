@@ -723,6 +723,10 @@ WHERE status = 'pending'
       WHERE alias.duplicate_of = world_pulse_read_seed.seed_id
         AND alias.kind <> 'digest_item'
   )
+  -- A pending row that already holds a read (handoff with fetch evidence) was put back
+  -- by an operator reread (operator.reread_read), not left waiting by the feed: its age
+  -- is the original read's, so the sweep would skip it before it could be read again.
+  AND (world_pulse_read_seed.handoff_json->'read_evidence'->0) IS NULL
 """
 
 

@@ -238,8 +238,10 @@ class WorldPulseReadClaimReceiptV1(_Base):
     outcome: ReadingClaimOutcomeV1
     # accepted_provisional: journalled proposal + accepting decision. proposed: journalled
     # proposal only, no link. rejected: refused by validation or not journalled at all.
-    # reason, a short machine label: accepted | quote_not_found | quote_too_short |
-    # quote_not_about_endpoints |
+    # reason, a short machine label: accepted | accepted_meaning_target (decided by
+    # reading_meaning_target_v1, an object offered by meaning only) | quote_not_found |
+    # quote_too_short | quote_not_about_endpoints | quote_not_about_subject |
+    # meaning_target_predicate |
     # domain_rule:<predicate> | already_decided | decision_journal_failed |
     # predicate_not_allowed | unknown_subject | unknown_object | same_endpoint | duplicate |
     # journal_unavailable

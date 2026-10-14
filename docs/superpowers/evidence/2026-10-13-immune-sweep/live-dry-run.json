@@ -1,0 +1,834 @@
+{
+  "generated_at": "2026-10-13T23:14:00+00:00",
+  "source": "substrate_field_state (read-only psql, docker exec orion-athena-sql-db)",
+  "config": {
+    "constant_min_span_sec": 72000.0,
+    "min_samples": 600,
+    "written_min_hours": 20,
+    "replay_min_restamps": 30,
+    "decay_min_changes": 5,
+    "decay_rel_tol": 1e-06,
+    "decay_max_divisor": 64,
+    "max_examples": 5
+  },
+  "glossary": "config/field/field_channel_glossary.v1.yaml",
+  "provisional_rest_ranges": {
+    "node:substrate.vision_organ.vision_frame_staleness": {
+      "rest_range": [
+        0.0,
+        0.0
+      ],
+      "from_prose": "0.0 = a camera delivered a frame in the last 15 s"
+    },
+    "node:substrate.vision_organ.vision_processing_failure_pressure": {
+      "rest_range": [
+        0.0,
+        0.0
+      ],
+      "from_prose": "0.0 = every dispatched frame usable"
+    },
+    "node:substrate.bus_synaptic.prediction_error": {
+      "rest_range": [
+        0.0,
+        0.03
+      ],
+      "from_prose": "about 0.01-0.03; 0.0 = no edge anomalous"
+    },
+    "node:substrate.cabinet.prediction_error": {
+      "rest_range": [
+        0.0,
+        0.0
+      ],
+      "from_prose": "0.0 = not elevated or not rising"
+    },
+    "node:substrate.perception.prediction_error": {
+      "rest_range": [
+        0.0,
+        0.0
+      ],
+      "from_prose": "0.0 = at or below usual surprise"
+    },
+    "node:substrate.execution.prediction_error": {
+      "rest_range": [
+        0.0,
+        0.0
+      ],
+      "from_prose": "0.0 = change at or below usual"
+    },
+    "node:substrate.chat.prediction_error": {
+      "rest_range": [
+        0.0,
+        0.0
+      ],
+      "from_prose": "0.0 = at or below usual movement"
+    },
+    "node:substrate.codebase.prediction_error": {
+      "rest_range": [
+        0.0,
+        0.0
+      ],
+      "from_prose": "0.0 = no sub-domain above usual"
+    },
+    "node:substrate.route.prediction_error": {
+      "rest_range": [
+        0.0,
+        0.0
+      ],
+      "from_prose": "0.0 = same decision as last time"
+    },
+    "node:substrate.biometrics.prediction_error": {
+      "rest_range": [
+        0.0,
+        0.03
+      ],
+      "from_prose": "about 0.02-0.03 jitter; 0.0 = nothing moved"
+    },
+    "node:substrate.harness_closure.prediction_error": {
+      "rest_range": null,
+      "from_prose": "placeholder: none designed"
+    }
+  },
+  "windows": [
+    {
+      "since": "2026-10-12T23:14:00+00:00",
+      "until": "2026-10-13T23:14:00+00:00",
+      "pairs_read": 12,
+      "pairs_with_semantics": 11,
+      "findings": [],
+      "channels": [
+        {
+          "metric_id": "node:substrate.biometrics.prediction_error",
+          "skipped": null,
+          "liveness": "live",
+          "checks": {
+            "decayed_to_zero": "clear",
+            "replayed": "clear",
+            "constant": "clear",
+            "floor_locked": "clear"
+          },
+          "finding": null,
+          "near_miss": {
+            "n": 1440,
+            "distinct": 605,
+            "min": 0.0,
+            "max": 0.2099,
+            "distinct_updated_at": 1438,
+            "longest_fresh_same_nonrest_run": 0,
+            "longest_falling_run_changes": 7
+          }
+        },
+        {
+          "metric_id": "node:substrate.bus_synaptic.prediction_error",
+          "skipped": null,
+          "liveness": "live",
+          "checks": {
+            "decayed_to_zero": "clear",
+            "replayed": "clear",
+            "constant": "clear",
+            "floor_locked": "clear"
+          },
+          "finding": null,
+          "near_miss": {
+            "n": 1440,
+            "distinct": 518,
+            "min": 0.0,
+            "max": 0.1638,
+            "distinct_updated_at": 1438,
+            "longest_fresh_same_nonrest_run": 3,
+            "longest_falling_run_changes": 5
+          }
+        },
+        {
+          "metric_id": "node:substrate.cabinet.prediction_error",
+          "skipped": "absent in the window",
+          "liveness": null,
+          "checks": {},
+          "finding": null
+        },
+        {
+          "metric_id": "node:substrate.chat.prediction_error",
+          "skipped": null,
+          "liveness": "live",
+          "checks": {
+            "decayed_to_zero": "clear",
+            "replayed": "clear",
+            "constant": "clear:carried forward, re-written in only 14 h (designed)",
+            "floor_locked": "clear:carried forward, re-written in only 14 h (designed)"
+          },
+          "finding": null,
+          "near_miss": {
+            "n": 1440,
+            "distinct": 16,
+            "min": 0.0,
+            "max": 1.0,
+            "distinct_updated_at": 60,
+            "longest_fresh_same_nonrest_run": 0,
+            "longest_falling_run_changes": 1
+          }
+        },
+        {
+          "metric_id": "node:substrate.codebase.prediction_error",
+          "skipped": null,
+          "liveness": "live",
+          "checks": {
+            "decayed_to_zero": "clear",
+            "replayed": "clear",
+            "constant": "clear",
+            "floor_locked": "not_applicable:sparsity designed_sparse"
+          },
+          "finding": null,
+          "near_miss": {
+            "n": 1440,
+            "distinct": 12,
+            "min": 0.0,
+            "max": 1.0,
+            "distinct_updated_at": 100,
+            "longest_fresh_same_nonrest_run": 0,
+            "longest_falling_run_changes": 3
+          }
+        },
+        {
+          "metric_id": "node:substrate.execution.prediction_error",
+          "skipped": null,
+          "liveness": "live",
+          "checks": {
+            "decayed_to_zero": "clear",
+            "replayed": "clear",
+            "constant": "clear",
+            "floor_locked": "not_applicable:sparsity designed_sparse"
+          },
+          "finding": null,
+          "near_miss": {
+            "n": 1440,
+            "distinct": 72,
+            "min": 0.0,
+            "max": 1.0,
+            "distinct_updated_at": 368,
+            "longest_fresh_same_nonrest_run": 0,
+            "longest_falling_run_changes": 2
+          }
+        },
+        {
+          "metric_id": "node:substrate.harness_closure.prediction_error",
+          "skipped": "absent in the window",
+          "liveness": null,
+          "checks": {},
+          "finding": null
+        },
+        {
+          "metric_id": "node:substrate.perception.prediction_error",
+          "skipped": null,
+          "liveness": "live",
+          "checks": {
+            "decayed_to_zero": "clear",
+            "replayed": "clear",
+            "constant": "clear",
+            "floor_locked": "not_applicable:sparsity designed_sparse"
+          },
+          "finding": null,
+          "near_miss": {
+            "n": 1440,
+            "distinct": 470,
+            "min": 0.0,
+            "max": 1.0,
+            "distinct_updated_at": 1438,
+            "longest_fresh_same_nonrest_run": 0,
+            "longest_falling_run_changes": 3
+          }
+        },
+        {
+          "metric_id": "node:substrate.route.prediction_error",
+          "skipped": null,
+          "liveness": "live",
+          "checks": {
+            "decayed_to_zero": "clear",
+            "replayed": "not_applicable:value_kind count",
+            "constant": "not_applicable:value_kind count",
+            "floor_locked": "not_applicable:value_kind count"
+          },
+          "finding": null,
+          "near_miss": {
+            "n": 1440,
+            "distinct": 3,
+            "min": 0.0,
+            "max": 0.5,
+            "distinct_updated_at": 97,
+            "longest_fresh_same_nonrest_run": 1,
+            "longest_falling_run_changes": 0
+          }
+        },
+        {
+          "metric_id": "node:substrate.vision_organ.vision_frame_staleness",
+          "skipped": null,
+          "liveness": "dead",
+          "checks": {
+            "decayed_to_zero": "clear",
+            "replayed": "clear",
+            "constant": "clear",
+            "floor_locked": "clear"
+          },
+          "finding": null,
+          "near_miss": {
+            "n": 1440,
+            "distinct": 1,
+            "min": 0.0,
+            "max": 0.0,
+            "distinct_updated_at": 1440,
+            "longest_fresh_same_nonrest_run": 0,
+            "longest_falling_run_changes": 0
+          }
+        },
+        {
+          "metric_id": "node:substrate.vision_organ.vision_processing_failure_pressure",
+          "skipped": null,
+          "liveness": "dead",
+          "checks": {
+            "decayed_to_zero": "clear",
+            "replayed": "clear",
+            "constant": "clear",
+            "floor_locked": "not_applicable:sparsity event_gated"
+          },
+          "finding": null,
+          "near_miss": {
+            "n": 1440,
+            "distinct": 1,
+            "min": 0.0,
+            "max": 0.0,
+            "distinct_updated_at": 1440,
+            "longest_fresh_same_nonrest_run": 0,
+            "longest_falling_run_changes": 0
+          }
+        }
+      ],
+      "not_judged_no_semantics": [
+        "node:athena.prediction_error",
+        "node:circe.prediction_error",
+        "node:prometheus.prediction_error"
+      ]
+    },
+    {
+      "since": "2026-10-11T23:14:00+00:00",
+      "until": "2026-10-12T23:14:00+00:00",
+      "pairs_read": 12,
+      "pairs_with_semantics": 11,
+      "findings": [],
+      "channels": [
+        {
+          "metric_id": "node:substrate.biometrics.prediction_error",
+          "skipped": null,
+          "liveness": "live",
+          "checks": {
+            "decayed_to_zero": "clear",
+            "replayed": "clear",
+            "constant": "clear",
+            "floor_locked": "clear"
+          },
+          "finding": null,
+          "near_miss": {
+            "n": 1440,
+            "distinct": 593,
+            "min": 0.0,
+            "max": 0.1864,
+            "distinct_updated_at": 1437,
+            "longest_fresh_same_nonrest_run": 1,
+            "longest_falling_run_changes": 8
+          }
+        },
+        {
+          "metric_id": "node:substrate.bus_synaptic.prediction_error",
+          "skipped": null,
+          "liveness": "live",
+          "checks": {
+            "decayed_to_zero": "clear",
+            "replayed": "clear",
+            "constant": "clear",
+            "floor_locked": "clear"
+          },
+          "finding": null,
+          "near_miss": {
+            "n": 1440,
+            "distinct": 497,
+            "min": 0.0,
+            "max": 0.1458,
+            "distinct_updated_at": 1438,
+            "longest_fresh_same_nonrest_run": 2,
+            "longest_falling_run_changes": 5
+          }
+        },
+        {
+          "metric_id": "node:substrate.cabinet.prediction_error",
+          "skipped": "absent in the window",
+          "liveness": null,
+          "checks": {},
+          "finding": null
+        },
+        {
+          "metric_id": "node:substrate.chat.prediction_error",
+          "skipped": null,
+          "liveness": "live",
+          "checks": {
+            "decayed_to_zero": "clear",
+            "replayed": "clear",
+            "constant": "clear:carried forward, re-written in only 14 h (designed)",
+            "floor_locked": "clear:carried forward, re-written in only 14 h (designed)"
+          },
+          "finding": null,
+          "near_miss": {
+            "n": 1440,
+            "distinct": 13,
+            "min": 0.0,
+            "max": 1.0,
+            "distinct_updated_at": 57,
+            "longest_fresh_same_nonrest_run": 0,
+            "longest_falling_run_changes": 1
+          }
+        },
+        {
+          "metric_id": "node:substrate.codebase.prediction_error",
+          "skipped": null,
+          "liveness": "live",
+          "checks": {
+            "decayed_to_zero": "clear",
+            "replayed": "clear",
+            "constant": "clear",
+            "floor_locked": "not_applicable:sparsity designed_sparse"
+          },
+          "finding": null,
+          "near_miss": {
+            "n": 1440,
+            "distinct": 8,
+            "min": 0.0,
+            "max": 1.0,
+            "distinct_updated_at": 100,
+            "longest_fresh_same_nonrest_run": 0,
+            "longest_falling_run_changes": 1
+          }
+        },
+        {
+          "metric_id": "node:substrate.execution.prediction_error",
+          "skipped": null,
+          "liveness": "live",
+          "checks": {
+            "decayed_to_zero": "clear",
+            "replayed": "clear",
+            "constant": "clear",
+            "floor_locked": "not_applicable:sparsity designed_sparse"
+          },
+          "finding": null,
+          "near_miss": {
+            "n": 1440,
+            "distinct": 66,
+            "min": 0.0,
+            "max": 1.0,
+            "distinct_updated_at": 348,
+            "longest_fresh_same_nonrest_run": 0,
+            "longest_falling_run_changes": 3
+          }
+        },
+        {
+          "metric_id": "node:substrate.harness_closure.prediction_error",
+          "skipped": "absent in the window",
+          "liveness": null,
+          "checks": {},
+          "finding": null
+        },
+        {
+          "metric_id": "node:substrate.perception.prediction_error",
+          "skipped": null,
+          "liveness": "live",
+          "checks": {
+            "decayed_to_zero": "clear",
+            "replayed": "clear",
+            "constant": "clear",
+            "floor_locked": "not_applicable:sparsity designed_sparse"
+          },
+          "finding": null,
+          "near_miss": {
+            "n": 1440,
+            "distinct": 460,
+            "min": 0.0,
+            "max": 1.0,
+            "distinct_updated_at": 1438,
+            "longest_fresh_same_nonrest_run": 1,
+            "longest_falling_run_changes": 2
+          }
+        },
+        {
+          "metric_id": "node:substrate.route.prediction_error",
+          "skipped": null,
+          "liveness": "live",
+          "checks": {
+            "decayed_to_zero": "clear",
+            "replayed": "not_applicable:value_kind count",
+            "constant": "not_applicable:value_kind count",
+            "floor_locked": "not_applicable:value_kind count"
+          },
+          "finding": null,
+          "near_miss": {
+            "n": 1440,
+            "distinct": 4,
+            "min": 0.0,
+            "max": 0.75,
+            "distinct_updated_at": 115,
+            "longest_fresh_same_nonrest_run": 1,
+            "longest_falling_run_changes": 1
+          }
+        },
+        {
+          "metric_id": "node:substrate.vision_organ.vision_frame_staleness",
+          "skipped": null,
+          "liveness": "dead",
+          "checks": {
+            "decayed_to_zero": "clear",
+            "replayed": "clear",
+            "constant": "clear",
+            "floor_locked": "clear"
+          },
+          "finding": null,
+          "near_miss": {
+            "n": 1440,
+            "distinct": 1,
+            "min": 0.0,
+            "max": 0.0,
+            "distinct_updated_at": 1440,
+            "longest_fresh_same_nonrest_run": 0,
+            "longest_falling_run_changes": 0
+          }
+        },
+        {
+          "metric_id": "node:substrate.vision_organ.vision_processing_failure_pressure",
+          "skipped": null,
+          "liveness": "dead",
+          "checks": {
+            "decayed_to_zero": "clear",
+            "replayed": "clear",
+            "constant": "clear",
+            "floor_locked": "not_applicable:sparsity event_gated"
+          },
+          "finding": null,
+          "near_miss": {
+            "n": 1440,
+            "distinct": 1,
+            "min": 0.0,
+            "max": 0.0,
+            "distinct_updated_at": 1440,
+            "longest_fresh_same_nonrest_run": 0,
+            "longest_falling_run_changes": 0
+          }
+        }
+      ],
+      "not_judged_no_semantics": [
+        "node:athena.prediction_error",
+        "node:circe.prediction_error",
+        "node:prometheus.prediction_error"
+      ]
+    },
+    {
+      "since": "2026-10-10T23:14:00+00:00",
+      "until": "2026-10-11T23:14:00+00:00",
+      "pairs_read": 12,
+      "pairs_with_semantics": 11,
+      "findings": [],
+      "channels": [
+        {
+          "metric_id": "node:substrate.biometrics.prediction_error",
+          "skipped": null,
+          "liveness": "live",
+          "checks": {
+            "decayed_to_zero": "clear",
+            "replayed": "clear",
+            "constant": "clear",
+            "floor_locked": "clear"
+          },
+          "finding": null,
+          "near_miss": {
+            "n": 1440,
+            "distinct": 597,
+            "min": 0.0,
+            "max": 0.2119,
+            "distinct_updated_at": 1435,
+            "longest_fresh_same_nonrest_run": 0,
+            "longest_falling_run_changes": 6
+          }
+        },
+        {
+          "metric_id": "node:substrate.bus_synaptic.prediction_error",
+          "skipped": null,
+          "liveness": "live",
+          "checks": {
+            "decayed_to_zero": "clear",
+            "replayed": "clear",
+            "constant": "clear",
+            "floor_locked": "clear"
+          },
+          "finding": null,
+          "near_miss": {
+            "n": 1440,
+            "distinct": 550,
+            "min": 0.0,
+            "max": 0.1436,
+            "distinct_updated_at": 1434,
+            "longest_fresh_same_nonrest_run": 2,
+            "longest_falling_run_changes": 6
+          }
+        },
+        {
+          "metric_id": "node:substrate.cabinet.prediction_error",
+          "skipped": "absent in the window",
+          "liveness": null,
+          "checks": {},
+          "finding": null
+        },
+        {
+          "metric_id": "node:substrate.chat.prediction_error",
+          "skipped": null,
+          "liveness": "live",
+          "checks": {
+            "decayed_to_zero": "clear",
+            "replayed": "clear",
+            "constant": "clear:carried forward, re-written in only 17 h (designed)",
+            "floor_locked": "clear:carried forward, re-written in only 17 h (designed)"
+          },
+          "finding": null,
+          "near_miss": {
+            "n": 1440,
+            "distinct": 23,
+            "min": 0.0,
+            "max": 1.0,
+            "distinct_updated_at": 63,
+            "longest_fresh_same_nonrest_run": 0,
+            "longest_falling_run_changes": 4
+          }
+        },
+        {
+          "metric_id": "node:substrate.codebase.prediction_error",
+          "skipped": null,
+          "liveness": "live",
+          "checks": {
+            "decayed_to_zero": "clear",
+            "replayed": "clear",
+            "constant": "clear",
+            "floor_locked": "not_applicable:sparsity designed_sparse"
+          },
+          "finding": null,
+          "near_miss": {
+            "n": 1440,
+            "distinct": 9,
+            "min": 0.0,
+            "max": 1.0,
+            "distinct_updated_at": 101,
+            "longest_fresh_same_nonrest_run": 1,
+            "longest_falling_run_changes": 2
+          }
+        },
+        {
+          "metric_id": "node:substrate.execution.prediction_error",
+          "skipped": null,
+          "liveness": "live",
+          "checks": {
+            "decayed_to_zero": "clear",
+            "replayed": "clear",
+            "constant": "clear",
+            "floor_locked": "not_applicable:sparsity designed_sparse"
+          },
+          "finding": null,
+          "near_miss": {
+            "n": 1440,
+            "distinct": 81,
+            "min": 0.0,
+            "max": 1.0,
+            "distinct_updated_at": 373,
+            "longest_fresh_same_nonrest_run": 0,
+            "longest_falling_run_changes": 3
+          }
+        },
+        {
+          "metric_id": "node:substrate.harness_closure.prediction_error",
+          "skipped": "absent in the window",
+          "liveness": null,
+          "checks": {},
+          "finding": null
+        },
+        {
+          "metric_id": "node:substrate.perception.prediction_error",
+          "skipped": null,
+          "liveness": "live",
+          "checks": {
+            "decayed_to_zero": "clear",
+            "replayed": "clear",
+            "constant": "clear",
+            "floor_locked": "not_applicable:sparsity designed_sparse"
+          },
+          "finding": null,
+          "near_miss": {
+            "n": 1440,
+            "distinct": 180,
+            "min": 0.0,
+            "max": 1.0,
+            "distinct_updated_at": 1435,
+            "longest_fresh_same_nonrest_run": 0,
+            "longest_falling_run_changes": 3
+          }
+        },
+        {
+          "metric_id": "node:substrate.route.prediction_error",
+          "skipped": null,
+          "liveness": "live",
+          "checks": {
+            "decayed_to_zero": "clear",
+            "replayed": "not_applicable:value_kind count",
+            "constant": "not_applicable:value_kind count",
+            "floor_locked": "not_applicable:value_kind count"
+          },
+          "finding": null,
+          "near_miss": {
+            "n": 1440,
+            "distinct": 4,
+            "min": 0.0,
+            "max": 0.75,
+            "distinct_updated_at": 138,
+            "longest_fresh_same_nonrest_run": 2,
+            "longest_falling_run_changes": 1
+          }
+        },
+        {
+          "metric_id": "node:substrate.vision_organ.vision_frame_staleness",
+          "skipped": null,
+          "liveness": "dead",
+          "checks": {
+            "decayed_to_zero": "clear",
+            "replayed": "clear",
+            "constant": "clear",
+            "floor_locked": "clear"
+          },
+          "finding": null,
+          "near_miss": {
+            "n": 1440,
+            "distinct": 1,
+            "min": 0.0,
+            "max": 0.0,
+            "distinct_updated_at": 1438,
+            "longest_fresh_same_nonrest_run": 0,
+            "longest_falling_run_changes": 0
+          }
+        },
+        {
+          "metric_id": "node:substrate.vision_organ.vision_processing_failure_pressure",
+          "skipped": null,
+          "liveness": "dead",
+          "checks": {
+            "decayed_to_zero": "clear",
+            "replayed": "clear",
+            "constant": "clear",
+            "floor_locked": "not_applicable:sparsity event_gated"
+          },
+          "finding": null,
+          "near_miss": {
+            "n": 1440,
+            "distinct": 1,
+            "min": 0.0,
+            "max": 0.0,
+            "distinct_updated_at": 1438,
+            "longest_fresh_same_nonrest_run": 0,
+            "longest_falling_run_changes": 0
+          }
+        }
+      ],
+      "not_judged_no_semantics": [
+        "node:athena.prediction_error",
+        "node:circe.prediction_error",
+        "node:prometheus.prediction_error"
+      ]
+    }
+  ],
+  "planted_sensitivity_check": {
+    "what": "today's real series with two known failures planted; every other channel untouched",
+    "planted": {
+      "node:substrate.route.prediction_error": {
+        "expect": "decayed_to_zero",
+        "from": "2026-10-13T00:45:59.553209+00:00"
+      },
+      "node:substrate.bus_synaptic.prediction_error": {
+        "expect": "replayed",
+        "value": 0.0667,
+        "from": "2026-10-13T09:19:59.007430+00:00"
+      }
+    },
+    "findings": [
+      {
+        "metric_id": "node:substrate.bus_synaptic.prediction_error",
+        "node": "node:substrate.bus_synaptic",
+        "channel": "prediction_error",
+        "kind": "replayed",
+        "window_start": "2026-10-13T09:19:59.007430+00:00",
+        "window_end": "2026-10-13T10:03:59.401137+00:00",
+        "evidence": {
+          "n_samples": 1440,
+          "distinct": 507,
+          "min": 0.0,
+          "max": 0.1638,
+          "rest_range": [
+            0.0,
+            0.03
+          ],
+          "restamps": 44,
+          "value": 0.0667,
+          "source": null,
+          "source_evidence": false,
+          "first_updated_at": "2026-10-13T09:19:48.121860+00:00",
+          "last_updated_at": "2026-10-13T10:03:46.441158+00:00"
+        }
+      },
+      {
+        "metric_id": "node:substrate.route.prediction_error",
+        "node": "node:substrate.route",
+        "channel": "prediction_error",
+        "kind": "decayed_to_zero",
+        "window_start": "2026-10-13T00:45:59.553209+00:00",
+        "window_end": "2026-10-13T05:25:59.807598+00:00",
+        "evidence": {
+          "n_samples": 1440,
+          "distinct": 315,
+          "min": 0.0,
+          "max": 0.5,
+          "rest_range": [
+            0.0,
+            0.0
+          ],
+          "changes": 280,
+          "ratio": 0.92,
+          "powers": [
+            29,
+            29,
+            26,
+            28,
+            30
+          ],
+          "first_value": 0.5,
+          "last_value": 5.319027330826366e-290,
+          "examples": [
+            0.5,
+            0.04454684977029256,
+            0.003968843648914028,
+            0.00045409581704085057,
+            4.397508291964571e-05
+          ],
+          "updated_at_moved": false
+        }
+      }
+    ]
+  },
+  "verdict": {
+    "real_findings": "none in any of the three 24 h windows (2026-10-10T23:14 .. 2026-10-13T23:14 UTC, all retained history)",
+    "hand_check": {
+      "vision_frame_staleness / vision_processing_failure_pressure": "0.0 all 72 h, re-stamped every tick. Checked: vision_scene_inventory got 409-469 windows every hour of the last 24 h and the frame router logs a cam0 dispatch every ~5 s, so 'a frame in the last 15 s' is true: calm at rest, correctly not flagged. LIMIT: a gauge that lies AT its rest value is invisible to all four checks by design.",
+      "biometrics / bus_synaptic prediction_error (level, per_tick)": "604 / 519 distinct values a day, min 0.0 (reaches rest), longest fresh same-value non-rest run 1 / 3 (threshold 30), longest falling run 8 / 6 changes but not exact-geometric: healthy.",
+      "chat / codebase / execution / perception prediction_error (level, designed_sparse)": "16-469 distinct values a day, min 0.0, no fresh same-value non-rest run longer than 1: healthy; floor_locked not applicable (designed_sparse). chat's constant check reads 'carried forward' (re-written in only 14-17 of 24 h): designed carry, not a constant.",
+      "route prediction_error (count)": "3-4 distinct values (0, 0.25, 0.5, 0.75), no geometric run: the 07-26 decay bug stays fixed. Replay/constant/floor not applicable to a count.",
+      "cabinet / harness_closure prediction_error": "absent from substrate_field_state in all three windows (reported as skipped 'absent in the window', never a finding). harness_closure is a placeholder and would be skipped anyway.",
+      "node:athena/circe/prometheus prediction_error": "resolve to the bare prediction_error glossary entry, which has no semantics: not judged (listed under not_judged_no_semantics)."
+    },
+    "not_tuned": "Thresholds were not loosened to produce flags: the nearest real approach to each threshold is 10x away (replay 3 vs 30) or fails the exactness test outright (decay). Loosening would make the detector match noise, not a failure.",
+    "sensitivity": "planted_sensitivity_check: the same real 24 h with a 0.92-per-tick decay planted on route and a 45-min frozen reading planted on bus_synaptic -> exactly those two findings, right kinds, right windows; every untouched channel stays clear."
+  }
+}

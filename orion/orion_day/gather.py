@@ -187,6 +187,15 @@ TEMPORAL_DAY_SQL = """
 SELECT day_json FROM temporal_self_day WHERE day_id = $1
 """
 
+# R4 immune sweep findings for the day, as recorded at close (rows ingested later are not shown,
+# same rule as the rest of the closed day). Written by orion-durable-runs' immune node. Unbounded on
+# purpose: rows are unique per (metric, kind, day), so a day holds at most channels x 4 kinds.
+TEMPORAL_DAY_IMMUNE_SQL = """
+SELECT payload_json FROM temporal_self_event
+WHERE source_kind = 'immune_finding' AND day_id = $1 AND ingested_at <= $2
+ORDER BY occurred_at, event_id
+"""
+
 WORLD_PULSE_DIGEST_SQL = """
 SELECT run_id, date, title, executive_summary, payload_json
 FROM world_pulse_digest
@@ -460,7 +469,13 @@ async def gather_temporal_day(conn: Any, letter_date: date, tz_name: str) -> Tem
     day = TemporalSelfDayV1.model_validate(_obj(row["day_json"]))
     if day.day_id != letter_date.isoformat():  # never show another day's record as this one
         return None
-    return render_closed_day_block(day, tz_name=tz_name)
+    findings = []
+    try:
+        rows = await conn.fetch(TEMPORAL_DAY_IMMUNE_SQL, day.day_id, day.closed_at)
+        findings = [p for p in (_obj(r["payload_json"]) for r in rows) if isinstance(p, dict)]
+    except Exception:  # noqa: BLE001 - the findings are an addendum; the day block stands without them
+        logger.warning("orion_day_immune_findings_read_failed day=%s", day.day_id, exc_info=True)
+    return render_closed_day_block(day, tz_name=tz_name, immune_findings=findings)
 
 
 async def gather_orion_day(

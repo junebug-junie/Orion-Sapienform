@@ -113,6 +113,24 @@ class RegulationStateV1(BaseModel):
     # loop, since the rest drive is meant to read arousal).
     drives: List[DriveReadingV1] = Field(default_factory=list)
     warnings: List[str] = Field(default_factory=list)
+    # R4 runtime immune sweep (``orion.regulation.immune``): how many of Orion's own gauges the
+    # latest sweep found not telling the truth (constant / floor-locked / replayed /
+    # decayed-to-zero). Carried between sweeps by the graph checkpoint; the sweep runs only while
+    # arousal is idle, at most every TEMPORAL_SELF_IMMUNE_INTERVAL_SEC. Each finding is one
+    # ``immune_finding`` row in ``temporal_self_event``. 0 also means "no sweep yet".
+    immune_findings_open: int = Field(default=0, ge=0)
+
+
+# Fields the Redis projection leaves out until every reader runs code that knows them. This model
+# is extra="forbid": an older reader (Hub, dream, thought, proposal-runtime) parsing a value with
+# an unknown field gets None, reads arousal as ``unknown`` and silently drops its arousal gate.
+# GET /regulation/state serves the full model. Empty this set once those services are rebuilt.
+REDIS_PROJECTION_EXCLUDE: frozenset[str] = frozenset({"immune_findings_open"})
+
+
+def regulation_state_redis_json(state: RegulationStateV1) -> str:
+    """The Redis body for ``orion:regulation:latest`` (consumer-first: see REDIS_PROJECTION_EXCLUDE)."""
+    return state.model_dump_json(exclude=set(REDIS_PROJECTION_EXCLUDE))
 
 
 def parse_regulation_state(raw: object) -> Optional[RegulationStateV1]:
@@ -139,8 +157,10 @@ __all__ = [
     "ArousalReadingV1",
     "REGULATION_STATE_KIND",
     "REGULATION_STATE_REDIS_KEY",
+    "REDIS_PROJECTION_EXCLUDE",
     "TEMPORAL_SELF_THREAD_PREFIX",
     "TEMPORAL_SELF_WORKFLOW",
     "RegulationStateV1",
     "parse_regulation_state",
+    "regulation_state_redis_json",
 ]

@@ -149,7 +149,8 @@ class FakeConn:
 
     def __init__(self, *, fail: set[str] | None = None, github: dict | None = None, chat: dict | None = CHAT_COMPACTOR,
                  corrections: list[dict] | None = None, temporal_day: dict | None = None,
-                 read_links: list[dict] | None = None, prior_moves: list[dict] | None = None):
+                 read_links: list[dict] | None = None, prior_moves: list[dict] | None = None,
+                 immune: list[dict] | None = None):
         self.calls: list[tuple[str, tuple]] = []
         self.fail = fail or set()
         self.fetch_map = {
@@ -168,6 +169,8 @@ class FakeConn:
             gather.CORRECTIONS_SQL: ("corrections", corrections or []),
             wp_findings.READ_LINKS_SQL: ("reading_findings", READ_LINK_ROWS if read_links is None else read_links),
             wp_findings.RUN_PRIOR_MOVES_SQL: ("reading_findings", prior_moves or []),
+            # R4 immune findings for the closed day: payload_json rows from temporal_self_event.
+            gather.TEMPORAL_DAY_IMMUNE_SQL: ("temporal_day_immune", [{"payload_json": p} for p in immune or []]),
         }
         self.github = github
         self.chat = chat

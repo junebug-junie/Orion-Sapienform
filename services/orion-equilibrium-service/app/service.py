@@ -4,6 +4,7 @@ import asyncio
 from contextlib import suppress
 import json
 import logging
+import time
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Tuple
 from uuid import UUID, uuid4
@@ -13,7 +14,18 @@ from orion.core.bus.bus_schemas import BaseEnvelope
 from orion.schemas.telemetry.metacognition import MetacognitionTickV1
 from orion.schemas.telemetry.metacog_trigger import MetacogTriggerV1
 from .repair_pressure_metacog_gate import build_repair_pressure_metacog_trigger
-from .telemetry_anomaly_metacog_gate import build_telemetry_anomaly_metacog_trigger
+from .telemetry_anomaly_metacog_gate import (
+    HARNESS_TURN_SOURCE_SERVICE,
+    build_telemetry_anomaly_metacog_trigger,
+    evaluate_telemetry_anomaly_episode,
+)
+from orion.metacog.anomaly_episode import (
+    AnomalyEpisodeStateV1,
+    TurnActivityTracker,
+    mark_published as mark_anomaly_episode_published,
+    state_from_dict as anomaly_episode_state_from_dict,
+    state_to_dict as anomaly_episode_state_to_dict,
+)
 from .chat_turn_metacog_gate import (
     ChatTurnCorrelator,
     build_chat_turn_metacog_trigger,
@@ -148,6 +160,21 @@ class EquilibriumService(BaseChassis):
         # a restart legitimately re-enters cold-start rather than fabricating
         # history, same discipline as every other persisted-state field here.
         self._repair_pressure_trend_state: MetacogTrendStateV1 = MetacogTrendStateV1()
+        # telemetry_anomaly episode gate (orion/metacog/anomaly_episode.py).
+        # State restored from Redis in _run() so a restart mid-anomaly does not
+        # re-fire it; the turn tracker is in-memory only (a turn already in
+        # flight at boot is learned from its next harness grammar event, and its
+        # real start from HarnessRunV1.fcc_elapsed_sec).
+        self._anomaly_episode_state: AnomalyEpisodeStateV1 = AnomalyEpisodeStateV1()
+        self._anomaly_turns: TurnActivityTracker | None = (
+            TurnActivityTracker(
+                turn_carry_sec=settings.metacog_telemetry_anomaly_turn_carry_sec,
+                open_max_sec=settings.metacog_telemetry_anomaly_turn_open_max_sec,
+            )
+            if settings.metacog_telemetry_anomaly_episode_enable
+            and settings.metacog_telemetry_anomaly_turn_suppress_enable
+            else None
+        )
         # Per-hop transport baselines (app/transport_baseline_gate.py). State is
         # restored from Redis in _run(); a config change cold-starts it.
         self._transport_baseline_gate: TransportBaselineGate | None = (
@@ -243,6 +270,135 @@ class EquilibriumService(BaseChassis):
             )
         except Exception as e:
             logger.warning("Failed to persist repair_pressure_trend state: %s", e)
+
+    async def _load_anomaly_episode_state(self) -> None:
+        if not settings.metacog_telemetry_anomaly_episode_enable:
+            return
+        try:
+            raw = await self.bus.redis.get(settings.metacog_telemetry_anomaly_episode_state_key)
+            if raw is None:
+                return
+            if isinstance(raw, (bytes, bytearray)):
+                raw = raw.decode("utf-8")
+            self._anomaly_episode_state = anomaly_episode_state_from_dict(json.loads(raw))
+            logger.info(
+                "telemetry_anomaly_episode_state_restored episode_id=%s windows=%s fired_rank=%s",
+                self._anomaly_episode_state.episode_id,
+                self._anomaly_episode_state.flagged_windows,
+                self._anomaly_episode_state.fired_rank,
+            )
+        except Exception as e:
+            logger.warning("Failed to load telemetry_anomaly episode state: %s", e)
+
+    async def _persist_anomaly_episode_state(self) -> None:
+        try:
+            await self.bus.redis.set(
+                settings.metacog_telemetry_anomaly_episode_state_key,
+                json.dumps(anomaly_episode_state_to_dict(self._anomaly_episode_state)),
+            )
+        except Exception as e:
+            logger.warning("Failed to persist telemetry_anomaly episode state: %s", e)
+
+    def _observe_turn_activity(self, channel: str, payload: Dict[str, Any]) -> None:
+        """Feed harness-turn activity to the anomaly gate's turn tracker.
+
+        Harness-governor grammar events stream through a turn (live: first one at
+        turn start, last at turn end); HarnessRunV1 closes it and carries
+        fcc_elapsed_sec; Hub's exec_turn_timeout atom closes a turn whose run
+        artifact will never arrive."""
+        if self._anomaly_turns is None or not isinstance(payload, dict):
+            return
+        cid = str(payload.get("correlation_id") or "")
+        if not cid:
+            return
+        now = time.time()
+        if channel == settings.channel_harness_run_artifact:
+            elapsed = payload.get("fcc_elapsed_sec")
+            self._anomaly_turns.observe(
+                cid,
+                now,
+                closed=True,
+                elapsed_sec=float(elapsed) if isinstance(elapsed, (int, float)) else None,
+            )
+        elif channel == settings.channel_grammar_event:
+            provenance = payload.get("provenance")
+            source = provenance.get("source_service") if isinstance(provenance, dict) else None
+            atom = payload.get("atom")
+            role = atom.get("semantic_role") if isinstance(atom, dict) else None
+            if role == "exec_turn_timeout":
+                self._anomaly_turns.observe(cid, now, closed=True)
+            elif source == HARNESS_TURN_SOURCE_SERVICE:
+                # Producer emitted_at when sane (same clock family as the
+                # digester's window_end), else receipt time.
+                at = now
+                emitted = payload.get("emitted_at")
+                if isinstance(emitted, str):
+                    try:
+                        ts = datetime.fromisoformat(emitted.replace("Z", "+00:00"))
+                        if ts.tzinfo is None:
+                            ts = ts.replace(tzinfo=timezone.utc)
+                        if 0.0 <= now - ts.timestamp() <= 600.0:
+                            at = ts.timestamp()
+                    except ValueError:
+                        pass
+                self._anomaly_turns.observe(cid, at)
+
+    async def _handle_anomaly_score(self, payload: Dict[str, Any], *, zen: float, distress: float) -> None:
+        zen_state = "zen" if zen > 0.5 else "not_zen"
+        correlation_id = str(payload.get("correlation_id") or "")
+        if not settings.metacog_telemetry_anomaly_episode_enable:
+            trigger = build_telemetry_anomaly_metacog_trigger(
+                correlation_id=correlation_id,
+                score=payload,
+                zen_state=zen_state,
+                pressure=distress,
+                recall_enabled=settings.metacog_recall_enabled,
+                threshold_multiplier=settings.metacog_telemetry_anomaly_threshold_multiplier,
+            )
+            if trigger is not None:
+                await self._publish_metacog_trigger(trigger)
+            return
+
+        before = self._anomaly_episode_state
+        state, decision, trigger = evaluate_telemetry_anomaly_episode(
+            before,
+            correlation_id=correlation_id,
+            score=payload,
+            turns=self._anomaly_turns,
+            zen_state=zen_state,
+            pressure=distress,
+            recall_enabled=settings.metacog_recall_enabled,
+            threshold_multiplier=settings.metacog_telemetry_anomaly_threshold_multiplier,
+            calm_gap_sec=settings.metacog_telemetry_anomaly_episode_calm_gap_sec,
+            sustained_windows=settings.metacog_telemetry_anomaly_episode_sustained_windows,
+            sustained_horizon_sec=settings.metacog_telemetry_anomaly_episode_sustained_horizon_sec,
+            now=time.time(),
+        )
+        if decision is None:
+            return
+        published = False
+        if trigger is not None:
+            # Already episode-shaped: skip the shared lane so another kind's
+            # fire cannot swallow this episode's single trigger.
+            published = await self._publish_metacog_trigger(trigger, bypass_cooldown=True)
+            if published:
+                state = mark_anomaly_episode_published(state, decision.severity)
+        if decision.reason != "calm" or before.active != state.active:
+            logger.info(
+                "telemetry_anomaly_episode decision=%s published=%s episode_id=%s windows=%s "
+                "turn_explained_windows=%s severity=%s turn_explained=%s corr=%s",
+                decision.reason,
+                published,
+                state.episode_id,
+                state.flagged_windows,
+                state.turn_explained_windows,
+                decision.severity,
+                decision.turn_explained,
+                correlation_id,
+            )
+        self._anomaly_episode_state = state
+        if state != before:
+            await self._persist_anomaly_episode_state()
 
     async def _load_transport_baseline_state(self) -> None:
         if self._transport_baseline_gate is None:
@@ -1172,6 +1328,7 @@ class EquilibriumService(BaseChassis):
     async def _run(self) -> None:
         await self._load_state()
         await self._load_repair_pressure_trend_state()
+        await self._load_anomaly_episode_state()
         await self._load_transport_baseline_state()
         publisher = asyncio.create_task(self._publish_loop())
         collapse_task = asyncio.create_task(self._collapse_loop())
@@ -1204,6 +1361,11 @@ class EquilibriumService(BaseChassis):
                 # avoid a duplicate pubsub subscription to the same channel.
                 if settings.channel_grammar_event not in channels:
                     channels.append(settings.channel_grammar_event)
+            if settings.metacog_telemetry_anomaly_trigger_enable and self._anomaly_turns is not None:
+                # Turn activity for the anomaly gate's turn suppression.
+                for turn_channel in (settings.channel_grammar_event, settings.channel_harness_run_artifact):
+                    if turn_channel not in channels:
+                        channels.append(turn_channel)
 
         async with self.bus.subscribe(*channels) as pubsub:
             async for msg in self.bus.iter_messages(pubsub):
@@ -1232,6 +1394,11 @@ class EquilibriumService(BaseChassis):
                     # Metacog Triggers (only if enabled)
                     elif settings.metacog_enable:
                         distress, zen, _ = self._calculate_metrics()
+                        if channel in (
+                            settings.channel_grammar_event,
+                            settings.channel_harness_run_artifact,
+                        ):
+                            self._observe_turn_activity(channel, payload_dict)
 
                         if channel == settings.channel_collapse_mirror_user_event:
                             # User manually triggered collapse
@@ -1302,17 +1469,9 @@ class EquilibriumService(BaseChassis):
                             # Real field_channel_corpus.v1 anomaly score,
                             # published by orion-field-digester's periodic
                             # anomaly-scoring loop against a trained
-                            # orion/mood_arc/fit_encoder.py encoder.
-                            trigger = build_telemetry_anomaly_metacog_trigger(
-                                correlation_id=str(payload_dict.get("correlation_id") or ""),
-                                score=payload_dict,
-                                zen_state="zen" if zen > 0.5 else "not_zen",
-                                pressure=distress,
-                                recall_enabled=settings.metacog_recall_enabled,
-                                threshold_multiplier=settings.metacog_telemetry_anomaly_threshold_multiplier,
-                            )
-                            if trigger is not None:
-                                await self._publish_metacog_trigger(trigger)
+                            # orion/mood_arc/fit_encoder.py encoder. Episode
+                            # gate: see _handle_anomaly_score.
+                            await self._handle_anomaly_score(payload_dict, zen=zen, distress=distress)
 
                         elif (
                             channel == settings.channel_thought_artifact

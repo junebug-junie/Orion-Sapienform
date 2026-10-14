@@ -16,7 +16,8 @@ class MetacogTriggerV1(BaseModel):
         description=(
             "baseline | dense | manual | pulse | relational | llm_surface_instability "
             "(advisory: language-surface instability from logprob summary, not factual confidence) "
-            "| telemetry_anomaly | chat_turn | transport | insight | flow | repair_pressure_trend. "
+            "| telemetry_anomaly | chat_turn | transport | insight | flow | repair_pressure_trend "
+            "| self_signal_episode. "
             "relational = a live repair_pressure_v2 appraisal (see repair_pressure_metacog_gate.py). "
             "repair_pressure_trend = a sustained (3+ consecutive, EWMA-z-scored) elevated run across "
             "multiple repair_pressure_v2 appraisals over time -- 'has this kept happening', not one "
@@ -42,7 +43,13 @@ class MetacogTriggerV1(BaseModel):
             "maps directly to a CollapseMirrorEntryV2.type (epiphany, in orion-cortex-exec's "
             "_fallback_metacog_draft); every other kind's type is guessed from phi bands. "
             "flow (a sustained high-confidence plateau) is RETIRED as of 2026-10-10 -- nothing "
-            "produces it; historical rows may still carry it."
+            "produces it; historical rows may still carry it. "
+            "self_signal_episode = an internal node:substrate.* prediction error that stayed "
+            "high/unusual for ITSELF (the attention seam's world_first.judge_candidate) longer "
+            "than one event's orienting window; upstream.phase is open | close, one pair per "
+            "episode (see orion/metacog/self_signal_episode.py). Only the open row is drafted "
+            "into prose: cortex-orch and orion-actions skip the close row "
+            "(upstream.phase == 'close'), which is persisted by sql-writer only."
         ),
     )
     reason: str

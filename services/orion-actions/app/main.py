@@ -47,6 +47,7 @@ from orion.schemas.compactor_digest_run import COMPACTOR_DIGEST_WORKFLOW
 from orion.schemas.durable_run import DURABLE_RUN_STATE_CHANNEL, DURABLE_RUN_STATE_KIND, DurableRunStateV1
 from orion.schemas.cortex.schemas import PlanExecutionArgs, PlanExecutionRequest
 from orion.schemas.notify import NotificationRecord, NotificationRequest
+from orion.metacog.self_signal_episode import trigger_wants_prose
 from orion.schemas.telemetry.metacog_trigger import MetacogTriggerV1
 from .capability_gap_journal import build_daily_seed_payload, collect_capability_gaps
 from .perception_gap_journal import collect_perception_gaps
@@ -1216,6 +1217,13 @@ def should_journal_from_collapse(is_causally_dense: bool, *, dense_only: bool) -
     return bool(is_causally_dense) or not dense_only
 
 
+def should_journal_metacog_trigger(trigger: MetacogTriggerV1) -> bool:
+    """A self_signal_episode CLOSE row is a terse record with no prose (spec
+    2026-10-07 section D, prose once per episode); every other trigger keeps
+    getting its metacog_digest journal."""
+    return trigger_wants_prose(trigger.trigger_kind, trigger.upstream)
+
+
 def should_run_interval(*, now_monotonic: float, last_run_monotonic: float | None, interval_seconds: int, run_on_startup: bool) -> bool:
     if last_run_monotonic is None:
         return bool(run_on_startup)
@@ -1862,6 +1870,15 @@ async def lifespan(app: FastAPI):
         try:
             trigger_payload = MetacogTriggerV1.model_validate(env.payload)
         except Exception:
+            return
+        if not should_journal_metacog_trigger(trigger_payload):
+            await _audit(
+                env,
+                status="skipped",
+                event_id=str(env.correlation_id),
+                action_name="journal.metacog_digest",
+                reason="self_signal_episode_close_no_prose",
+            )
             return
         trigger = build_metacog_trigger(trigger_payload)
         await _dispatch_journal(

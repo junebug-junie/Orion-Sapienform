@@ -1,0 +1,74 @@
+name: self-signal-episode-tests
+
+# Deterministic gate for metacog self_signal_episode (spec 2026-10-07 section D):
+# the pure episode lifecycle over the attention seam's verdicts, its equilibrium
+# adapter + wiring, the "prose once per episode" consumers (cortex-orch,
+# orion-actions), and the 7-day replay eval over real stored PE history.
+# No DB, bus or LLM.
+
+on:
+  pull_request:
+    paths:
+      - "orion/metacog/self_signal_episode.py"
+      - "orion/metacog/evidence_map.py"
+      - "orion/attention/world_first.py"
+      - "orion/attention/pe_history_cache.py"
+      - "orion/substrate/prediction_error_magnitude.py"
+      - "config/field/field_channel_glossary.v1.yaml"
+      - "orion/schemas/telemetry/metacog_trigger.py"
+      - "services/orion-equilibrium-service/app/self_signal_episode_gate.py"
+      - "services/orion-equilibrium-service/app/pe_history_reader.py"
+      - "services/orion-equilibrium-service/app/service.py"
+      - "services/orion-equilibrium-service/app/settings.py"
+      - "services/orion-equilibrium-service/tests/test_self_signal_episode_*.py"
+      - "services/orion-equilibrium-service/evals/test_self_signal_episode_*.py"
+      - "services/orion-equilibrium-service/evals/fixtures/self_signal_*"
+      - "services/orion-cortex-orch/app/orchestrator.py"
+      - "services/orion-actions/app/main.py"
+      - "scripts/analysis/replay_self_signal_episodes.py"
+      - ".github/workflows/self-signal-episode-tests.yml"
+  push:
+    branches: [main]
+    paths:
+      - "orion/metacog/self_signal_episode.py"
+      - "orion/attention/world_first.py"
+      - "services/orion-equilibrium-service/app/self_signal_episode_gate.py"
+      - "services/orion-equilibrium-service/app/service.py"
+      - "scripts/analysis/replay_self_signal_episodes.py"
+      - ".github/workflows/self-signal-episode-tests.yml"
+
+jobs:
+  unit:
+    name: Self-signal episodes — lifecycle, wiring, prose-once consumers, replay eval
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r services/orion-equilibrium-service/requirements.txt
+          python -m pip install -r services/orion-cortex-orch/requirements.txt
+          python -m pip install -r services/orion-actions/requirements.txt
+          python -m pip install -r requirements-dev.txt
+      - name: Pure lifecycle + evidence map contract
+        run: |
+          PYTHONPATH=. python -m pytest -q -p no:cacheprovider \
+            orion/metacog/tests/test_self_signal_episode.py \
+            orion/metacog/tests/test_evidence_map.py \
+            orion/metacog/tests/test_evidence_map_producer_contract.py
+      - name: Equilibrium gate + wiring + replay eval
+        working-directory: services/orion-equilibrium-service
+        run: |
+          PYTHONPATH=${{ github.workspace }} python -m pytest -q -p no:cacheprovider \
+            tests/test_self_signal_episode_gate.py \
+            tests/test_docker_compose_env_parity.py \
+            evals/test_self_signal_episode_replay_eval.py
+      - name: cortex-orch close row is not drafted
+        working-directory: services/orion-cortex-orch
+        run: PYTHONPATH=${{ github.workspace }} python -m pytest -q -p no:cacheprovider tests/test_metacog_self_signal_episode_prose.py
+      - name: orion-actions close row is not journaled
+        working-directory: services/orion-actions
+        run: PYTHONPATH=${{ github.workspace }} python -m pytest -q -p no:cacheprovider tests/test_metacog_self_signal_episode_journal.py

@@ -23,19 +23,25 @@ APP_JS = (HUB / "static" / "js" / "app.js").read_text()
 
 # Panels deliberately not reachable via a top-level tab + app.js setActiveTab.
 # Each needs a real, checked reason -- this is not a place to silence failures.
-PANELS_WITHOUT_APP_JS_TAB = {
+PANELS_WITHOUT_NAV = {
     # Relocated 2026-09-02 from a top-level tab into the Biometrics modal's
     # Cabinet subview; see the comment above `id="cabinet"` in index.html and
     # biometrics-view.js. Intentionally has no nav entry of its own.
     "cabinet",
-    # Has a nav entry, but routes itself: self_observability.js owns this
-    # panel's show/hide and hash handling instead of app.js's setActiveTab.
-    "self-observability",
-    # Has a nav entry, but routes itself: hub_surface_tab.js owns this
-    # panel's show/hide and hash handling instead of app.js's setActiveTab
-    # (same pattern as self-observability above).
-    "hub-surface",
 }
+
+# Panels with a nav entry that route themselves: their own *_tab.js (or
+# self_observability.js) owns show/hide + hash handling instead of app.js's
+# setActiveTab. Still checked by test_every_panel_has_a_nav_entry.
+SELF_ROUTING_PANELS = {
+    "self-observability",  # self_observability.js
+    "hub-surface",         # hub_surface_tab.js
+    "gpu-pool",            # gpu_pool_tab.js
+    "reading",             # reading_tab.js
+    "temporal-self",       # temporal_self_tab.js
+}
+
+PANELS_WITHOUT_APP_JS_TAB = PANELS_WITHOUT_NAV | SELF_ROUTING_PANELS
 
 
 def _panels() -> set[str]:
@@ -49,7 +55,7 @@ def _nav_targets() -> set[str]:
 def test_every_panel_has_a_nav_entry():
     """A panel with no nav entry cannot be clicked to."""
     missing = {
-        p for p in _panels() - PANELS_WITHOUT_APP_JS_TAB if p not in _nav_targets()
+        p for p in _panels() - PANELS_WITHOUT_NAV if p not in _nav_targets()
     }
     assert not missing, (
         f"panels with no nav entry (unreachable by clicking): {sorted(missing)}"

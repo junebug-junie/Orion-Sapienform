@@ -164,3 +164,18 @@ def test_judgment_cache_is_per_model_and_survives_junk(tmp_path):
     f.write_text('{"raw": "old"}')  # written before model was recorded: the defaults it ran with
     assert EVAL.read_judgment_cache(f, args)["raw"] == "old"
     assert not list(tmp_path.glob("*.tmp"))
+
+
+def test_judge_ignores_foreground_work_on_other_cards_but_not_background_or_waiting():
+    roles = [{"role": "agent", "cards": ["gpu1"]}, {"role": "fast", "cards": ["gpu3"]},
+             {"role": "chat", "cards": ["gpu0", "gpu1"]}]
+    def state(**lease):
+        base = {"status": "granted", "priority": "system", "work_class": "fast", "role": "fast", "holder": "tf"}
+        return {"roles": roles, "leases": [dict(base, **lease)]}
+    assert EVAL.pool_busy_reasons(state(), "agent") == []          # topic-foundry on gpu3
+    assert EVAL.pool_busy_reasons(state())                         # no judge role: any lease pauses
+    assert EVAL.pool_busy_reasons(state(role="chat"), "agent")     # shares gpu1
+    assert EVAL.pool_busy_reasons(state(priority="background"), "agent")  # a reading/curiosity hold
+    assert EVAL.pool_busy_reasons(state(status="queued"), "agent")  # waiting work
+    assert EVAL.pool_busy_reasons(state(role=None), "agent")        # unknown placement
+    assert EVAL.pool_busy_reasons(state(role="nope"), "agent")

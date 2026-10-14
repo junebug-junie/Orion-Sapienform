@@ -111,21 +111,32 @@ def _sha(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
-def pool_busy_reasons(state: Any) -> list[str]:
+def pool_busy_reasons(state: Any, judge_role: str | None = None) -> list[str]:
     """Why the GPU pool is not quiet, from its /v1/pool snapshot. Empty = quiet.
 
     Conservative on purpose: the judge's ``agent`` route runs at system priority, ahead of
     background reading/curiosity holds, so ANY lease not in a terminal state (granted,
     queued, backlogged, recalling, retry_wait, aborted-and-requeued, or a status this code
     does not know yet), any queue or backlog, a card mid-swap, or paused actuation pauses
-    it. Only TERMINAL_STATUSES (orion/schemas/gpu_pool.py) are history, not load."""
+    it. Only TERMINAL_STATUSES (orion/schemas/gpu_pool.py) are history, not load.
+
+    One exception, when ``judge_role`` is given: a GRANTED, non-background lease running on a
+    role whose cards do not overlap the judge role's cards (e.g. topic-foundry's short
+    ``fast`` requests on gpu3 while the judge's ``agent`` role is gpu1) is not contention.
+    Anything waiting, any background hold (reading, curiosity), and any lease with no
+    role or an unknown role still pauses the judge."""
     from orion.schemas.gpu_pool import TERMINAL_STATUSES
 
     if not isinstance(state, dict):
         return ["pool state is not an object"]
+    cards = {r.get("role"): set(r.get("cards") or []) for r in state.get("roles") or [] if isinstance(r, dict)}
+    judge_cards = cards.get(judge_role) if judge_role else None
     reasons = []
     for lease in state.get("leases") or []:
-        if lease.get("status") not in TERMINAL_STATUSES:
+        role = lease.get("role")
+        elsewhere = (judge_cards and lease.get("status") == "granted" and lease.get("priority") != "background"
+                     and role in cards and not (cards[role] & judge_cards))
+        if lease.get("status") not in TERMINAL_STATUSES and not elsewhere:
             reasons.append(f"{lease.get('status')} {lease.get('priority')} {lease.get('work_class')} "
                            f"lease held by {lease.get('holder')}")
     for key in ("queue_depth", "backlog_depth"):
@@ -166,7 +177,8 @@ def write_judgment_cache(path: Path, entry: dict[str, Any]) -> None:
     os.replace(tmp, path)
 
 
-async def wait_for_quiet_pool(client: httpx.AsyncClient, pool_url: str, wait_sec: float) -> list[str]:
+async def wait_for_quiet_pool(client: httpx.AsyncClient, pool_url: str, wait_sec: float,
+                              judge_role: str | None = None) -> list[str]:
     """Poll /v1/pool until quiet or ``wait_sec`` passes (a lease from the previous judge
     call can take a moment to release). Returns the busy reasons, or [] when quiet. An
     unreadable pool counts as busy: no state, no call."""
@@ -175,7 +187,7 @@ async def wait_for_quiet_pool(client: httpx.AsyncClient, pool_url: str, wait_sec
         try:
             resp = await client.get(pool_url.rstrip("/") + "/v1/pool", timeout=10.0)
             resp.raise_for_status()
-            reasons = pool_busy_reasons(resp.json())
+            reasons = pool_busy_reasons(resp.json(), judge_role)
         except (httpx.HTTPError, ValueError, AttributeError) as exc:
             reasons = [f"pool state unreadable: {type(exc).__name__}"]
         if not reasons or time.monotonic() >= deadline:
@@ -624,7 +636,7 @@ async def _replay(args: argparse.Namespace, conn: Any, fk: "Falkor", out: Path) 
                 item.update(judgment=j, check=chk, raw=cached["raw"], judge_status="judged",
                             lease_sec=cached.get("lease_sec"))
             elif args.judge_url and paused is None:
-                busy = await wait_for_quiet_pool(client, args.pool_url, args.pool_wait_sec)
+                busy = await wait_for_quiet_pool(client, args.pool_url, args.pool_wait_sec, args.judge_role)
                 if busy:
                     # Stop asking; everything after this stays unjudged until a re-run resumes.
                     paused = busy
@@ -955,6 +967,9 @@ def main() -> int:
     ap.add_argument("--judge-timeout", type=float, default=600.0)
     ap.add_argument("--pool-url", default=os.environ.get("GPU_POOL_URL", "http://127.0.0.1:8127"),
                     help="orion-gpu-pool HTTP base; GET /v1/pool is read before every judge call")
+    ap.add_argument("--judge-role", default="agent",
+                    help="gpu-pool role the judge route lands on; granted foreground leases on cards it "
+                         "does not use are not contention (empty = any lease pauses)")
     ap.add_argument("--pool-wait-sec", type=float, default=30.0,
                     help="how long to wait for the pool to go quiet before pausing the judge")
     args = ap.parse_args()

@@ -81,7 +81,8 @@ async def test_fetch_ok_renders_block(monkeypatch):
     from app import reverie
 
     _mock(monkeypatch, lambda r: httpx.Response(200, json=_FRAME))
-    text = await reverie.build_recent_arcs_text("c-1", now=_NOW)
+    text, ids = await reverie.build_recent_arcs_text("c-1", now=_NOW)
+    assert len(ids) == 3 and all(f"[arc:{i}]" in text for i in ids)
     assert text.startswith("Recently closed today")
     assert text.count("[arc:") == 3
 
@@ -93,7 +94,7 @@ async def test_fetch_failure_renders_nothing(monkeypatch, response):
     from app import reverie
 
     _mock(monkeypatch, lambda r: response)
-    assert await reverie.build_recent_arcs_text("c-1", now=_NOW) == ""
+    assert await reverie.build_recent_arcs_text("c-1", now=_NOW) == ("", [])
 
 
 @pytest.mark.asyncio
@@ -110,7 +111,7 @@ async def test_slow_fetch_is_bounded(monkeypatch):
     monkeypatch.setattr(settings, "reverie_recent_arcs_fetch_timeout_sec", 0.05)
     loop = asyncio.get_running_loop()
     t0 = loop.time()
-    assert await reverie.build_recent_arcs_text("c-1", now=_NOW) == ""
+    assert await reverie.build_recent_arcs_text("c-1", now=_NOW) == ("", [])
     assert loop.time() - t0 < 1.0
 
 
@@ -124,10 +125,10 @@ async def test_disabled_never_fetches(monkeypatch):
 
     _mock(monkeypatch, boom)
     monkeypatch.setattr(settings, "reverie_recent_arcs_enabled", False)
-    assert await reverie.build_recent_arcs_text("c-1", now=_NOW) == ""
+    assert await reverie.build_recent_arcs_text("c-1", now=_NOW) == ("", [])
 
 
-async def _tick(monkeypatch, handler):
+async def _tick(monkeypatch, handler, refs=("ol-1",)):
     from app import reverie
     from app.settings import settings
 
@@ -146,16 +147,16 @@ async def _tick(monkeypatch, handler):
     _mock(monkeypatch, fresh)
     cortex = AsyncMock()
     cortex.execute_plan = AsyncMock(return_value={
-        "final_text": json.dumps({"interpretation": GROUNDED_TEXT, "evidence_refs": ["ol-1"]}),
+        "final_text": json.dumps({"interpretation": GROUNDED_TEXT, "evidence_refs": list(refs)}),
     })
     result = await reverie.run_reverie_once(AsyncMock(), broadcast_reader=_broadcast, cortex_client=cortex)
     assert result is not None
-    return cortex.execute_plan.call_args.kwargs["req"].context
+    return cortex.execute_plan.call_args.kwargs["req"].context, result
 
 
 @pytest.mark.asyncio
 async def test_tick_threads_block_into_plan_request(monkeypatch):
-    ctx = await _tick(monkeypatch, lambda r: httpx.Response(200, json=_FRAME))
+    ctx, _ = await _tick(monkeypatch, lambda r: httpx.Response(200, json=_FRAME))
     assert ctx["recent_arcs"].startswith("Recently closed today")
 
 
@@ -164,5 +165,28 @@ async def test_tick_omits_block_on_fetch_failure(monkeypatch):
     def down(request):
         raise httpx.ConnectError("down")
 
-    ctx = await _tick(monkeypatch, down)
+    ctx, _ = await _tick(monkeypatch, down)
     assert "recent_arcs" not in ctx
+
+
+@pytest.mark.asyncio
+async def test_stray_arc_citation_is_stripped_not_fatal(monkeypatch):
+    """The model cites an arc id the block showed: the thought survives the hollow guard with
+    only its coalition ref, instead of being dropped as unanchored."""
+    shown = [a["arc_id"] for a in sorted(
+        (a for a in _FRAME["arcs_today"] if a["status"] == "closed"),
+        key=lambda a: (a["ended_at"], a["arc_id"]), reverse=True)][:2]
+    refs = ("ol-1", f"arc:{shown[0]}", shown[1])
+    ctx, thought = await _tick(monkeypatch, lambda r: httpx.Response(200, json=_FRAME), refs=refs)
+    assert f"[arc:{shown[0]}]" in ctx["recent_arcs"]
+    assert thought.evidence_refs == ["ol-1"] and not thought.hollow
+
+
+def test_arc_ids_never_count_as_grounding():
+    from app import reverie
+
+    b = _broadcast()
+    raw = {"interpretation": GROUNDED_TEXT, "evidence_refs": ["arc:abc"]}
+    thought = reverie.parse_reverie_payload(raw, coalition=reverie.build_coalition_snapshot(b),
+                                            correlation_id="c", broadcast=b, strip_arc_ids=["abc"])
+    assert thought.hollow and thought.hollow_reason == "unanchored_no_evidence"

@@ -100,3 +100,10 @@ def test_no_closed_arcs_renders_nothing():
     from datetime import datetime, timezone
     block = project_recent_arcs(f, datetime(2026, 10, 11, 6, 5, tzinfo=timezone.utc))
     assert block.text == "" and block.skip_reason == "no_closed_arcs"
+
+
+def test_tiny_cap_renders_nothing_rather_than_overrunning():
+    for cap in (10, 30, 60):
+        block = project_recent_arcs(frame("talking"), TALKING_NOW, limit=1, max_chars=cap)
+        assert len(block.text) <= cap
+        assert block.text == "" and block.skip_reason == "cap_too_small"

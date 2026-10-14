@@ -106,5 +106,8 @@ def project_recent_arcs(
     if len(text) > max_chars:
         arc = picked[0]
         ref = f" [arc:{arc.arc_id}]"
-        text = text[: max_chars - len(ref) - 3].rstrip() + "..." + ref
+        keep = max_chars - len(ref) - 3
+        if keep < len(HEAD) + 20:  # no room for any of the line itself: show nothing, not a stub
+            return RecentArcsBlock(skip_reason="cap_too_small", day_id=frame.day_id)
+        text = text[:keep].rstrip() + "..." + ref
     return RecentArcsBlock(text=text, arc_ids=[a.arc_id for a in picked], day_id=frame.day_id)

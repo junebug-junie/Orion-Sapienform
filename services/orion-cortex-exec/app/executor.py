@@ -2972,7 +2972,9 @@ def _local_skill_payload_failure_reason(skill_payload: Dict[str, Any]) -> str | 
 # topology) must degrade to None, not create a phantom node_vectors entry in
 # field-digester (services/orion-field-digester/app/digestion/perturbation.py
 # creates whatever node_id it's handed, with no whitelist of its own).
-_KNOWN_FIELD_NODES = frozenset({"atlas", "athena", "circe", "prometheus"})
+# hecate added 2026-10-14 with its topology entry (on-demand agent-deep node).
+# atlas kept: circe's workers still carry "atlas-*" served_by labels.
+_KNOWN_FIELD_NODES = frozenset({"atlas", "athena", "circe", "hecate", "prometheus"})
 
 
 def _normalize_served_by_to_node(served_by: Any) -> str | None:

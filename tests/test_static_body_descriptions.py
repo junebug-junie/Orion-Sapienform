@@ -35,8 +35,9 @@ def test_hecate_is_in_the_field_topology_and_on_demand() -> None:
     assert hecate["expected_online"] is False
 
 
-def test_hecate_reaches_self_study_and_field_digester_loaders() -> None:
-    """Both real consumers parse the file the same way: `node:<node_id>` from `nodes`."""
+def test_hecate_reaches_field_digester_and_self_sense_loaders() -> None:
+    """Both parse the file the same way: `node_id` from `nodes`. self_study's
+    _hardware_items uses the same rule (covered by its own suite)."""
     import importlib.util
     import sys
 
@@ -44,9 +45,16 @@ def test_hecate_reaches_self_study_and_field_digester_loaders() -> None:
     spec = importlib.util.spec_from_file_location("_fd_lattice_probe", path)
     mod = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = mod
-    spec.loader.exec_module(mod)
-    lattice = mod.load_lattice(REPO / "config/field/orion_field_topology.v1.yaml")
+    try:
+        spec.loader.exec_module(mod)
+        lattice = mod.load_lattice(REPO / "config/field/orion_field_topology.v1.yaml")
+    finally:
+        sys.modules.pop(spec.name, None)
     assert "node:hecate" in lattice.nodes
+
+    from orion.evals.self_sense import load_field_node_ids
+
+    assert "hecate" in load_field_node_ids()
 
 
 def test_chat_profile_label_says_one_card_and_key_is_kept() -> None:

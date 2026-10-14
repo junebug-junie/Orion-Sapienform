@@ -155,7 +155,38 @@ salient.
 
 ### 3.3 What Orion has today for doing (live evidence)
 
-_Filled from the live inventory below._
+Live read-only inventory, 2026-10-14 (Postgres plus container logs; 7-day window unless noted).
+
+**Orion does a lot. Almost none of it goes through one decide → act → record path.**
+
+| Part of the doing loop | What exists | Live state |
+|---|---|---|
+| Common language (the grammar) | `GrammarEventV1`/`GrammarAtomV1` (`orion/schemas/grammar.py:176,91`), written by `services/orion-sql-writer/app/grammar_truth.py` | 1.26M events from 12 emitters (biometrics 818k, bus 226k, cortex-exec 57k...). It is a *trace* language: no verb, no cost, no expected effect, no outcome. 35k `action_candidate` atoms are never linked to anything that happened. **Not emitting:** orion-thought (reverie, paintings), dreams, curiosity, reading, outreach, equilibrium, field-digester, power-guard, durable-runs |
+| Predict → act → measure → update | `substrate_action_outcomes` + `EffectPosterior` (`orion/autonomy/prediction.py:103`) | Real machinery: 6k–28k outcomes a day through 08-30, now **21 rows in 7 days**. `substrate_action_ratings`: 0 rows ever |
+| Competition for action | motor allocator (`orion/autonomy/allocator.py`), scored in expected nats of information per motor-second | **Refuses everything on 1591 of 1593 ticks.** 127 of 256k dispatch frames dispatched. Its candidates are about 12 housekeeping and introspection templates (`orion/proposals/templates.py`) |
+| Self-modification knobs | mutation loop, runtime control surface | 981 proposals, all rejected; 0 adoptions since 09-03; control surface 0 rows |
+| A ledger of doing | `temporal_self_event` (`orion/temporal_self/sources.py`): about 20 source tables copied into one shape | 17k rows, live. After the fact only (no intent, expectation or cost); misses outreach, reading, power, dispatch, web fetch |
+| Heavy-work registry | durable runs (`durable_admission_runs`) | 398 runs: paintings, curiosity, reading, situation, dreams, letters |
+| Expect, then check | `power_intent_settled` (expected vs actual watts) | 97 rows, one workload kind (diffusion) |
+| Goals | `GoalProposalV1` (`orion/core/schemas/drives.py:143`); attention goal-provenance streaks; situation graph (`SituationStateV1`) | GoalProposalV1 is **never published**. Goal streak inactive, 0 emits seen. The situation graph is dynamic and expiring but models *Juniper's* situation, not Orion's goals |
+| Workspace | attention frames, broadcast log, attention schema → chat cue, curiosity | **72% of 123,615 frames have no winner.** Winners: bus_synaptic 9.9k, perception 8.7k, biometrics 4.9k |
+| Global gain | `classify_arousal` (`orion/regulation/arousal.py:171`): idle/engaged/strained | Three levels, not a dial. 14 transitions. Three local readers (curiosity cooldown, outreach, visual baseline); two did not fire in 7 days. Nothing sets thresholds system-wide |
+| Competition between kinds of doing | none | Every doer gates itself with its own caps and cooldowns. Outreach alone made 56k decisions to send 28 messages |
+
+**Reading.**
+- Orion already has the hardest parts:
+  - a common event language with 12 emitters;
+  - a real Bayesian predict-and-grade loop;
+  - an information-per-cost competition;
+  - a partial ledger;
+  - a situation model.
+- They are disconnected, and each one starves:
+  - The grammar records traces but no acts.
+  - The grading loop only ever sees housekeeping verbs.
+  - The allocator refuses those verbs, correctly, because there's nothing to learn from them.
+- Meanwhile the world-facing doing (talking, reaching out, reading, painting, looking, curiosity) happens outside the loop entirely, each in its own table with its own private gate.
+
+Thinking has nothing to steer because doing was never put on one track.
 
 ### 3.4 The doing loop
 
@@ -199,7 +230,16 @@ outcome (ActRecord closed: outcome, error)  ──► learning (per-verb, per-si
 
 ## Files likely to touch
 
-_Filled after the inventory: the producing organs that emit first._
+- `orion/schemas/grammar.py`: add event kinds `act_opened` / `act_closed`, and an `ActV1` payload (verb, level, object_ref, test_before, expect, cost, outcome, error, goal_ref, workspace_ref). This extends the grammar rather than adding a parallel contract.
+- `orion/schemas/registry.py`, `orion/bus/channels.yaml`: registration.
+- `services/orion-sql-writer/app/grammar_truth.py`: persist acts and close them by `act_id`.
+- First producers (world-facing, already heavily used):
+  - orion-thought: paintings, `make`;
+  - hub/mind: chat reply, `say`;
+  - reading: `look`;
+  - endogenous outreach: `ask` / `say`.
+- `orion/autonomy/prediction.py`: grade closed acts through the existing `EffectPosterior`. No new learner.
+- `orion/temporal_self/sources.py`: read acts from the grammar instead of adding more per-table adapters.
 
 ## Non-goals
 
@@ -222,4 +262,23 @@ _Filled after the inventory: the producing organs that emit first._
 
 ## Recommended next patch
 
-_Filled after the inventory._
+The order follows the seams. Each rung must show live rows before the next starts.
+
+1. **Put doing on one track (efference copy).** Add acts to the grammar, wire the four world-facing producers above, and give each act a numeric `expect`:
+   - a painting predicts how surprising its caption will be;
+   - a reply predicts whether it will need repair;
+   - outreach predicts whether Juniper will reply within its horizon;
+   - reading predicts whether a summary is produced.
+
+   Close acts with outcomes and grade them with the existing `EffectPosterior`.
+   Proof: acts and posteriors move for world-facing verbs for the first time since 08-30.
+2. **One competition across kinds of doing.** Feed those acts to the motor allocator as candidates. They have real uncertainty, so they can clear its information floor honestly, without lowering it. Each doer's private cap becomes a cost in one shared budget.
+   Proof: the refusal rate falls because there are better candidates, not because the floor dropped.
+3. **Gain becomes a dial.** Turn arousal into a continuous 0–1 gain that the allocator, attention and curiosity read to scale thresholds and exploration.
+   Proof: the same candidate is admitted at one gain and refused at another, logged with both values.
+4. **Situational goals.** Goals are wanted states with a horizon, born from the situation graph and attention streaks, re-ranked every situation update, expiring. Acts cite `goal_ref`.
+   Proof: the share of acts carrying a `goal_ref`.
+5. **Workspace and working memory.** A held set of 1–3 items (goals plus the winning content) is broadcast to chat, attention and the allocator. This is where the stream, reverie, looking and painting plug in as generators.
+   Proof: the share of deliberate acts with `workspace_ref`, against the rung-1 baseline.
+
+The stream rev 2 mechanics (checkpointed thread, interrupts, caps) are reused in rung 5. They are not built before it.

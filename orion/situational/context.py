@@ -26,6 +26,7 @@ from .perception_reader import (
     presence_row_age_seconds,
 )
 from .cabinet_sound_reader import fetch_cabinet_sound_history
+from .presence import companions_phrase, is_child, normalize_presence_context
 from .reverie_reader import fetch_recent_reverie_snippets
 from .session_turn_phase import read_session_turn_state, write_session_turn_state
 from orion.curiosity.worldview import (
@@ -666,29 +667,19 @@ def _presence_cache_fingerprint(ctx: dict[str, Any], cfg: SituationSettings) -> 
     they carry microsecond precision and no real caller ever sets them on
     genuine input, so there is no meaningful signal to preserve there.
     """
-    raw = ctx.get("presence_context") if isinstance(ctx.get("presence_context"), dict) else {}
-    companions = raw.get("companions") if isinstance(raw.get("companions"), list) else []
-    normalized_companions = [
-        {
-            "display_name": item.get("display_name"),
-            "relationship": item.get("relationship"),
-            "role": item.get("role"),
-            "age_band": item.get("age_band"),
-        }
-        for item in companions[:8]
-        if isinstance(item, dict) and item.get("display_name")
-    ]
-    requestor = raw.get("requestor") if isinstance(raw.get("requestor"), dict) else {}
-    # Same default logic as _presence_from_ctx below, field for field.
-    audience_mode = str(raw.get("audience_mode") or ("solo" if not normalized_companions else "mixed_group"))
+    # Same normalizer as _presence_from_ctx, so the two agree by construction.
+    presence = normalize_presence_context(ctx.get("presence_context"), default_requestor=cfg.default_requestor)
     fingerprint = {
-        "audience_mode": audience_mode,
-        "companions": normalized_companions,
+        "audience_mode": presence["audience_mode"],
+        "companions": [
+            {k: c[k] for k in ("display_name", "relationship", "role", "age_band")}
+            for c in presence["companions"]
+        ],
         "requestor": {
-            "display_name": str(requestor.get("display_name") or cfg.default_requestor),
-            "relationship_to_orion": str(requestor.get("relationship_to_orion") or "primary_operator"),
+            "display_name": presence["requestor"]["display_name"],
+            "relationship_to_orion": presence["requestor"]["relationship_to_orion"],
         },
-        "privacy_mode": str(raw.get("privacy_mode") or "session_only"),
+        "privacy_mode": presence["privacy_mode"],
     }
     return json.dumps(fingerprint, sort_keys=True, separators=(",", ":"))
 
@@ -939,34 +930,11 @@ async def build_situation_for_ctx(
 
 
 def _presence_from_ctx(ctx: dict[str, Any], cfg: SituationSettings, now: datetime) -> PresenceContextV1:
-    raw = ctx.get("presence_context") if isinstance(ctx.get("presence_context"), dict) else {}
-    requestor = RequestorContextV1(
-        display_name=str((raw.get("requestor") or {}).get("display_name") or cfg.default_requestor),
-        relationship_to_orion=str((raw.get("requestor") or {}).get("relationship_to_orion") or "primary_operator"),
-        source=str((raw.get("requestor") or {}).get("source") or "hub_manual"),
-        confidence=str((raw.get("requestor") or {}).get("confidence") or "medium"),
-    )
-    companions = raw.get("companions") if isinstance(raw.get("companions"), list) else []
-    normalized_companions = []
-    for item in companions[:8]:
-        if not isinstance(item, dict):
-            continue
-        if not item.get("display_name"):
-            continue
-        normalized_companions.append(item)
-    audience_mode = str(raw.get("audience_mode") or ("solo" if not normalized_companions else "mixed_group"))
-    return PresenceContextV1(
-        requestor=requestor,
-        companions=normalized_companions,
-        audience_mode=audience_mode,  # type: ignore[arg-type]
-        submitted_at=now,
-        expires_at=now + timedelta(hours=4),
-        source=str(raw.get("source") or "default"),
-        persist_to_memory=bool(raw.get("persist_to_memory", False) and cfg.presence_persist_allowed),
-        privacy_mode=str(raw.get("privacy_mode") or "session_only"),  # type: ignore[arg-type]
-        notes=str(raw.get("notes")) if raw.get("notes") else None,
-    )
-
+    # Normalized first: a hand-typed bad value used to raise here and drop the
+    # whole situation brief (corr 21c8a610, 2026-10-14). See presence.py.
+    presence = normalize_presence_context(ctx.get("presence_context"), default_requestor=cfg.default_requestor)
+    presence["persist_to_memory"] = presence["persist_to_memory"] and cfg.presence_persist_allowed
+    return PresenceContextV1(**presence, submitted_at=now, expires_at=now + timedelta(hours=4))
 
 def _build_time_context(cfg: SituationSettings, diagnostics: SituationDiagnosticsV1) -> TimeContextV1:
     tz = ZoneInfo(cfg.timezone)
@@ -2329,6 +2297,19 @@ def _build_prompt_fragment(brief: SituationBriefV1, max_chars: int) -> Situation
         f"Conversation phase: {brief.conversation_phase.phase_change}; continuity={brief.conversation_phase.continuity_mode}.",
         f"Presence: requestor={brief.requestor.display_name}, audience_mode={brief.presence.audience_mode}.",
     ]
+    # Who is in the room, by name. audience_mode alone ("kid_present") never
+    # told Orion WHICH person in the message was the child.
+    if brief.presence.companions:
+        lines.append(
+            f"With {brief.requestor.display_name} right now: {companions_phrase(brief.presence.companions)}."
+        )
+    kids = [c.display_name for c in brief.presence.companions if is_child(c.model_dump())]
+    if kids:
+        # Kept in the head of the body, which the char cap never trims.
+        lines.append(
+            f"A child is listening ({', '.join(kids)}): use words and pictures a young child can follow,"
+            " and if you tell a story, tell all of it -- a beginning, a middle, and a real ending."
+        )
     # Fixed home/body location, only when configured. Placed up front so the
     # budget cap never trims it. Without it, a travel city mentioned in recent
     # chat is the only place in context (see 2026-10-05, correlation 5063fb71).

@@ -1,8 +1,8 @@
 {
   "_comment": "Definition lock for scripts/check_definition_drift.py. Generated, never hand-edited. Regenerate with --update; the resulting diff IS the definition-change alert. Unlike the *_baseline.json ratchets this tracks current truth in both directions -- a definition change is an event, not a defect.",
-  "metric_count": 742,
+  "metric_count": 745,
   "_last_change": {
-    "change_count": 8,
+    "change_count": 11,
     "high_severity_count": 0,
     "changes": [
       "medium added metric://bus_channel/orion-equilibrium-service/orion:equilibrium:self_signal:hour",
@@ -10,9 +10,12 @@
       "medium added metric://inner_state/orion-equilibrium-service/self_signal_outcome_association.v1",
       "medium added metric://inner_state/orion-equilibrium-service/self_signal_outcome_association.v1#ci_high",
       "medium added metric://inner_state/orion-equilibrium-service/self_signal_outcome_association.v1#ci_low",
+      "medium added metric://inner_state/orion-equilibrium-service/self_signal_outcome_association.v1#ci_z",
+      "medium added metric://inner_state/orion-equilibrium-service/self_signal_outcome_association.v1#min_history_hours",
       "medium added metric://inner_state/orion-equilibrium-service/self_signal_outcome_association.v1#rate_high",
       "medium added metric://inner_state/orion-equilibrium-service/self_signal_outcome_association.v1#rate_normal",
-      "medium added metric://inner_state/orion-equilibrium-service/self_signal_outcome_association.v1#ratio"
+      "medium added metric://inner_state/orion-equilibrium-service/self_signal_outcome_association.v1#ratio",
+      "medium added metric://inner_state/orion-equilibrium-service/self_signal_outcome_association.v1#se_inflation"
     ]
   },
   "definitions": {
@@ -4828,6 +4831,30 @@
       "notes": "scalar field on SelfSignalOutcomeAssociationV1",
       "registry_source": "orion/inner_state_registry.py"
     },
+    "metric://inner_state/orion-equilibrium-service/self_signal_outcome_association.v1#ci_z": {
+      "schema_id": "SelfSignalOutcomeAssociationV1",
+      "declared_consumers": [
+        "orion.attention.self_readings:render_self_readings",
+        "orion.metacog.evidence_map:map_self_signal_episode"
+      ],
+      "upstream": [
+        "metric://inner_state/orion-equilibrium-service/self_signal_outcome_association.v1"
+      ],
+      "notes": "scalar field on SelfSignalOutcomeAssociationV1",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-equilibrium-service/self_signal_outcome_association.v1#min_history_hours": {
+      "schema_id": "SelfSignalOutcomeAssociationV1",
+      "declared_consumers": [
+        "orion.attention.self_readings:render_self_readings",
+        "orion.metacog.evidence_map:map_self_signal_episode"
+      ],
+      "upstream": [
+        "metric://inner_state/orion-equilibrium-service/self_signal_outcome_association.v1"
+      ],
+      "notes": "scalar field on SelfSignalOutcomeAssociationV1",
+      "registry_source": "orion/inner_state_registry.py"
+    },
     "metric://inner_state/orion-equilibrium-service/self_signal_outcome_association.v1#rate_high": {
       "schema_id": "SelfSignalOutcomeAssociationV1",
       "value_kind": "level",
@@ -4885,6 +4912,18 @@
         "orion.metacog.evidence_map:map_self_signal_episode"
       ],
       "prompt_sites": [
+        "orion.attention.self_readings:render_self_readings",
+        "orion.metacog.evidence_map:map_self_signal_episode"
+      ],
+      "upstream": [
+        "metric://inner_state/orion-equilibrium-service/self_signal_outcome_association.v1"
+      ],
+      "notes": "scalar field on SelfSignalOutcomeAssociationV1",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-equilibrium-service/self_signal_outcome_association.v1#se_inflation": {
+      "schema_id": "SelfSignalOutcomeAssociationV1",
+      "declared_consumers": [
         "orion.attention.self_readings:render_self_readings",
         "orion.metacog.evidence_map:map_self_signal_episode"
       ],

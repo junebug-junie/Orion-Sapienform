@@ -41,6 +41,13 @@ class Settings(BaseSettings):
     # "absent" -- covers a bathroom break without flapping the state.
     WINDOW_PRESENCE_GRACE_SEC: float = 120.0
     WINDOW_PRESENCE_WRITE_MIN_INTERVAL_SEC: float = 5.0
+    # Append one vision_presence_transition row per presence state change
+    # (Temporal Self seam S1: company arcs). `unknown` is written after
+    # STALE_AFTER_MS with no window for a stream. Needs
+    # services/orion-sql-db/manual_migration_vision_presence_transition_v1.sql;
+    # without it each write logs presence_transition_write_failed and the
+    # state machine carries on.
+    VISION_PRESENCE_TRANSITIONS_ENABLED: bool = True
     POSTGRES_URI: str = ""
 
     # Identity hypothesis intake -- separate channel and separate consumer

@@ -34,7 +34,7 @@ from .projection import (
 )
 from .crops import build_crop_observation
 from .recovery_store import RecoveryStore
-from .presence import PresenceRegistry, write_snapshot_to_postgres
+from .presence import PresenceRegistry, write_snapshot_to_postgres, write_transitions_to_postgres
 from .scene_belief import SceneBeliefRegistry
 from .settings import Settings
 
@@ -132,6 +132,10 @@ class WindowService:
         self._presence_registry = PresenceRegistry(
             grace_sec=settings.WINDOW_PRESENCE_GRACE_SEC,
             write_min_interval_sec=settings.WINDOW_PRESENCE_WRITE_MIN_INTERVAL_SEC,
+            transitions_enabled=settings.WINDOW_PRESENCE_ENABLED and settings.VISION_PRESENCE_TRANSITIONS_ENABLED,
+            # A stream with no window for longer than a window is considered
+            # stale is dark: the service's own staleness contract, not a new knob.
+            unknown_after_sec=settings.STALE_AFTER_MS / 1000.0,
         )
         # Background presence writes, tracked so they cannot be GC'd mid-flight
         # (asyncio.create_task holds only a weak reference -- same reasoning
@@ -216,6 +220,17 @@ class WindowService:
 
     async def stop(self) -> None:
         self._shutdown_event.set()
+        # A graceful stop closes every company stretch: after this, nothing is known.
+        self._presence_registry.sweep_stale(time.time(), force=True)
+        rows = self._presence_registry.drain_transitions()
+        if rows and settings.POSTGRES_URI:
+            try:
+                await asyncio.wait_for(
+                    asyncio.to_thread(write_transitions_to_postgres, rows, postgres_uri=settings.POSTGRES_URI),
+                    timeout=5.0,
+                )
+            except Exception as exc:
+                logger.warning(f"[WINDOW] presence_transition_shutdown_write_failed error={exc}")
         for t in [self._consumer_task, self._identity_consumer_task, self._rpc_task, self._emitter_task]:
             if t:
                 try:
@@ -407,6 +422,8 @@ class WindowService:
                         flush = True
                 if flush:
                     await self._drain_stream(sid)
+            if self._presence_registry.sweep_stale(now):
+                self._flush_presence_transitions()
             await asyncio.sleep(0.25)
 
     async def _drain_stream(self, stream_id: str) -> None:
@@ -719,6 +736,7 @@ class WindowService:
         snapshot = self._presence_registry.record(
             stream_id, believed_labels, identity_hint=identity_hint, identity_confidence=identity_confidence
         )
+        self._flush_presence_transitions()
         if snapshot is None:
             return
         if not settings.POSTGRES_URI:
@@ -730,6 +748,25 @@ class WindowService:
                 snapshot,
                 postgres_uri=settings.POSTGRES_URI,
             )
+        )
+        self._presence_write_tasks.add(task)
+        task.add_done_callback(self._presence_write_tasks.discard)
+
+    def _flush_presence_transitions(self) -> None:
+        """Fire-and-forget append of any queued presence transition rows.
+        Always drains (so the queue never grows when Postgres is unset); a
+        failed write is logged inside write_transitions_to_postgres and never
+        reaches the state machine or this flush."""
+        rows = self._presence_registry.drain_transitions()
+        if not rows or not settings.POSTGRES_URI:
+            return
+        for r in rows:
+            logger.info(
+                f"[WINDOW] presence_transition stream={r['presence_id']} "
+                f"{r['from_state'] or '-'}->{r['to_state']} confirmed={r['identity_confirmed']}"
+            )
+        task = asyncio.create_task(
+            asyncio.to_thread(write_transitions_to_postgres, rows, postgres_uri=settings.POSTGRES_URI)
         )
         self._presence_write_tasks.add(task)
         task.add_done_callback(self._presence_write_tasks.discard)

@@ -66,13 +66,39 @@ absent), `absent` (nothing for longer than that). `since_sec` is the number
 nothing in this pipeline computed before this module: how long the CURRENT
 state has held, which is the substrate for "you've been at that desk five
 hours and it's 2am."
+
+**Transitions are the replayable history (Temporal Self seam S1, 2026-10-14).**
+The upsert above keeps only the latest state, so "someone was with me from
+9:02 to 11:15" could not be replayed. `PresenceRegistry` now also yields one
+append-only `vision_presence_transition` row per state change (`from_state`,
+`to_state`, `occurred_at` = the tracker's own `state_since`), consumed by the
+Temporal Self chronicle as `company` arcs. Two rows that are not plain state
+changes, both stated so a reader is never surprised:
+
+* `to_state='unknown'` when no window has been observed for a stream for longer
+  than `unknown_after_sec` (the service's own `STALE_AFTER_MS`, 120 s; live
+  2026-10-14 an empty room still flushes every 5-10 s, so 120 s of silence is a
+  dark camera or a stopped pipeline, not an empty room). `occurred_at` is the
+  LAST observation, the last moment anything was actually known. Also written
+  for every stream on a graceful shutdown.
+* `present -> present` once per company stretch, when identity becomes
+  confirmed after the stretch opened (a face match usually lands a few seconds
+  after the person is first seen). `occurred_at` is the confirming observation.
+
+`from_state` is NULL on the first row after a process start: the producer
+cannot know what happened while it was down, and the reducer reads that NULL as
+"close whatever was open, unobserved". `label` is the enrolled identity label
+and is stored ONLY when `identity_confirmed` is true -- never a guess.
 """
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
+import threading
 import time
+from datetime import datetime, timezone
 from typing import Any, Optional
 
 logger = logging.getLogger("orion-vision-window.presence")
@@ -100,6 +126,22 @@ class PresenceTracker:
         """Read-only: the most recent observe() result, or None before the
         first call. Never triggers a new observation."""
         return self._last_snapshot
+
+    @property
+    def state(self) -> str:
+        return self._state
+
+    @property
+    def state_since(self) -> Optional[float]:
+        return self._state_since
+
+    def mark_unknown(self, at: float) -> None:
+        """The stream went dark: nothing is known after ``at`` (the last
+        observation). The next observe() then sees a real state change and
+        stamps a fresh ``state_since``, so a resumed camera opens a new
+        stretch instead of silently continuing the one before the gap."""
+        self._state = "unknown"
+        self._state_since = at
 
     def observe(
         self,
@@ -179,11 +221,28 @@ class PresenceRegistry:
     delay a window flush.
     """
 
-    def __init__(self, *, grace_sec: float, write_min_interval_sec: float = 5.0) -> None:
+    def __init__(
+        self,
+        *,
+        grace_sec: float,
+        write_min_interval_sec: float = 5.0,
+        transitions_enabled: bool = False,
+        unknown_after_sec: float = 120.0,
+    ) -> None:
         self._grace_sec = grace_sec
         self._write_min_interval_sec = write_min_interval_sec
         self._trackers: dict[str, PresenceTracker] = {}
         self._last_write_at: dict[str, float] = {}
+        # Transition history (seam S1). All per stream, all in process.
+        self._transitions_enabled = bool(transitions_enabled)
+        self._unknown_after_sec = float(unknown_after_sec)
+        self._written_state: dict[str, str] = {}  # last to_state yielded
+        self._last_transition_at: dict[str, float] = {}
+        self._last_observed_at: dict[str, float] = {}
+        # True once a confirmed row exists for the current company stretch
+        # (present .. absent/unknown); reset when the stretch ends.
+        self._stretch_confirmed: dict[str, bool] = {}
+        self._pending: list[dict[str, Any]] = []
 
     def _tracker(self, stream_id: str) -> PresenceTracker:
         if stream_id not in self._trackers:
@@ -218,6 +277,8 @@ class PresenceRegistry:
             snapshot = self._tracker(stream_id).observe(
                 believed_labels, now=ts, identity_hint=identity_hint, identity_confidence=identity_confidence
             )
+            if self._transitions_enabled:
+                self._note_transition(stream_id, snapshot, ts)
             last_write = self._last_write_at.get(stream_id, 0.0)
             due = (ts - last_write) >= self._write_min_interval_sec
             if due:
@@ -226,6 +287,79 @@ class PresenceRegistry:
         except Exception as exc:
             logger.warning("presence_record_failed stream=%s error=%s", stream_id, exc)
             return None
+
+    # ------------------------------------------------------------------ transitions
+
+    def _emit(
+        self,
+        stream_id: str,
+        to_state: str,
+        occurred_at: float,
+        *,
+        identity_confirmed: bool,
+        label: Optional[str],
+    ) -> None:
+        # Two rows of one stream never share an instant: the reducer orders by
+        # occurred_at, and a tie would be broken by the hashed id, not by order.
+        prev_at = self._last_transition_at.get(stream_id)
+        if prev_at is not None and occurred_at <= prev_at:
+            occurred_at = prev_at + 0.001
+        row = transition_row(
+            stream_id,
+            from_state=self._written_state.get(stream_id),
+            to_state=to_state,
+            occurred_at=occurred_at,
+            identity_confirmed=identity_confirmed,
+            label=label,
+        )
+        self._written_state[stream_id] = to_state
+        self._last_transition_at[stream_id] = occurred_at
+        self._pending.append(row)
+
+    def _note_transition(self, stream_id: str, snapshot: dict[str, Any], ts: float) -> None:
+        tracker = self._trackers[stream_id]
+        self._last_observed_at[stream_id] = ts
+        state = snapshot["state"]
+        confirmed = bool(snapshot.get("identity_confirmed"))
+        label = _confirmed_label(snapshot)
+        written = self._written_state.get(stream_id)
+        if state != written:
+            since = tracker.state_since if tracker.state_since is not None else ts
+            if state in ("absent", "unknown") or written in (None, "absent", "unknown"):
+                # A stretch ended, or a new one may be starting: identity starts over.
+                self._stretch_confirmed[stream_id] = False
+            self._emit(stream_id, state, since, identity_confirmed=confirmed, label=label)
+            if confirmed:
+                self._stretch_confirmed[stream_id] = True
+        elif state == "present" and confirmed and not self._stretch_confirmed.get(stream_id):
+            self._emit(stream_id, "present", ts, identity_confirmed=True, label=label)
+            self._stretch_confirmed[stream_id] = True
+
+    def sweep_stale(self, now: float, *, force: bool = False) -> int:
+        """Yield an ``unknown`` row for every stream silent longer than
+        ``unknown_after_sec`` (every stream when ``force``, for shutdown).
+        Returns how many were queued. Never raises."""
+        if not self._transitions_enabled:
+            return 0
+        n = 0
+        try:
+            for stream_id, last in list(self._last_observed_at.items()):
+                if self._written_state.get(stream_id) in (None, "unknown"):
+                    continue
+                if not force and (now - last) <= self._unknown_after_sec:
+                    continue
+                self._trackers[stream_id].mark_unknown(last)
+                self._stretch_confirmed[stream_id] = False
+                self._emit(stream_id, "unknown", last, identity_confirmed=False, label=None)
+                n += 1
+        except Exception as exc:
+            logger.warning("presence_sweep_failed error=%s", exc)
+        return n
+
+    def drain_transitions(self) -> list[dict[str, Any]]:
+        """Hand out (and forget) the transition rows queued since the last drain."""
+        out, self._pending = self._pending, []
+        return out
 
     def current_snapshot(self, stream_id: str) -> Optional[dict[str, Any]]:
         """The tracker's most recent observe() result for this stream,
@@ -249,26 +383,115 @@ def write_snapshot_to_postgres(stream_id: str, snapshot: dict[str, Any], *, post
     try:
         import json
 
-        from sqlalchemy import create_engine, text
+        from sqlalchemy import text
 
-        engine = create_engine(postgres_uri, pool_pre_ping=True)
-        try:
-            with engine.begin() as conn:
-                conn.execute(
-                    text(
-                        """
-                        INSERT INTO substrate_embodied_presence
-                            (presence_id, generated_at, presence_json, updated_at)
-                        VALUES (:presence_id, now(), CAST(:presence_json AS jsonb), now())
-                        ON CONFLICT (presence_id) DO UPDATE SET
-                            generated_at = EXCLUDED.generated_at,
-                            presence_json = EXCLUDED.presence_json,
-                            updated_at = EXCLUDED.updated_at
-                        """
-                    ),
-                    {"presence_id": stream_id, "presence_json": json.dumps(snapshot)},
-                )
-        finally:
-            engine.dispose()
+        engine = _engine_for(postgres_uri)
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO substrate_embodied_presence
+                        (presence_id, generated_at, presence_json, updated_at)
+                    VALUES (:presence_id, now(), CAST(:presence_json AS jsonb), now())
+                    ON CONFLICT (presence_id) DO UPDATE SET
+                        generated_at = EXCLUDED.generated_at,
+                        presence_json = EXCLUDED.presence_json,
+                        updated_at = EXCLUDED.updated_at
+                    """
+                ),
+                {"presence_id": stream_id, "presence_json": json.dumps(snapshot)},
+            )
     except Exception as exc:
         logger.warning("embodied_presence_write_failed stream=%s error=%s", stream_id, exc)
+
+
+# ---------------------------------------------------------------------- shared engine
+
+_ENGINES: dict[str, Any] = {}
+_ENGINES_LOCK = threading.Lock()
+
+
+def _engine_for(postgres_uri: str) -> Any:
+    """One pooled engine per URI for the process, shared by the snapshot
+    upsert and the transition insert (both run in worker threads; a
+    SQLAlchemy engine is thread-safe). Small pool: at most a couple of
+    writes are ever in flight."""
+    with _ENGINES_LOCK:
+        engine = _ENGINES.get(postgres_uri)
+        if engine is None:
+            from sqlalchemy import create_engine
+
+            engine = create_engine(postgres_uri, pool_pre_ping=True, pool_size=2, max_overflow=2)
+            _ENGINES[postgres_uri] = engine
+        return engine
+
+
+# ---------------------------------------------------------------------- transitions
+
+def _confirmed_label(snapshot: dict[str, Any]) -> Optional[str]:
+    """The enrolled label, only when identity is confirmed RIGHT NOW. Never a
+    guess: ``subject`` narrows to a real name from a probable/possible hint,
+    and ``identity_confirmed`` is the same hint being present now
+    (projection.identity_confidence_from_artifact delegates to it)."""
+    if not snapshot.get("identity_confirmed"):
+        return None
+    subject = str(snapshot.get("subject") or "").strip()
+    return subject if subject and subject not in ("unknown", "none") else None
+
+
+def transition_id_for(presence_id: str, occurred_at: datetime, to_state: str) -> str:
+    """Deterministic on (presence_id, occurred_at, to_state): a retried or
+    duplicated write is the same row (ON CONFLICT DO NOTHING)."""
+    raw = f"{presence_id}|{occurred_at.astimezone(timezone.utc).isoformat()}|{to_state}".encode()
+    return hashlib.sha256(raw).hexdigest()[:32]
+
+
+def transition_row(
+    presence_id: str,
+    *,
+    from_state: Optional[str],
+    to_state: str,
+    occurred_at: float,
+    identity_confirmed: bool,
+    label: Optional[str],
+) -> dict[str, Any]:
+    at = datetime.fromtimestamp(round(occurred_at, 6), tz=timezone.utc)
+    confirmed = bool(identity_confirmed and label)
+    return {
+        "transition_id": transition_id_for(presence_id, at, to_state),
+        "presence_id": presence_id,
+        "from_state": from_state,
+        "to_state": to_state,
+        "occurred_at": at,
+        "identity_confirmed": confirmed,
+        "label": label if confirmed else None,
+    }
+
+
+INSERT_TRANSITION_SQL = """
+INSERT INTO vision_presence_transition
+    (transition_id, presence_id, from_state, to_state, occurred_at, identity_confirmed, label)
+VALUES (:transition_id, :presence_id, :from_state, :to_state, :occurred_at, :identity_confirmed, :label)
+ON CONFLICT (transition_id) DO NOTHING
+"""
+
+
+def write_transitions_to_postgres(rows: list[dict[str, Any]], *, postgres_uri: str) -> int:
+    """Blocking append. Callers MUST run this off the event loop. Never raises:
+    a failed write is logged and the rows are lost (the state machine and the
+    snapshot upsert are unaffected). Returns rows attempted on success, 0 on
+    failure."""
+    if not postgres_uri or not rows:
+        return 0
+    try:
+        from sqlalchemy import text
+
+        with _engine_for(postgres_uri).begin() as conn:
+            conn.execute(text(INSERT_TRANSITION_SQL), rows)
+        return len(rows)
+    except Exception as exc:
+        logger.warning(
+            "presence_transition_write_failed rows=%d streams=%s error=%s",
+            len(rows), ",".join(sorted({r["presence_id"] for r in rows})), exc,
+        )
+        return 0

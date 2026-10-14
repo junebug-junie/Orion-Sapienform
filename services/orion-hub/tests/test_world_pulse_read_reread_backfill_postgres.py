@@ -392,12 +392,16 @@ def test_resume_adopts_a_requeue_the_stopped_run_never_recorded(local_pg, tmp_pa
 def test_own_leases_are_not_contention_but_anyone_elses_are():
     own = {"reading-aaa"}
     state = {"leases": [
-        {"holder": "durable-runs:reading-aaa", "status": "granted", "priority": "background", "role": "agent"},
-        {"holder": "durable-runs:reading-bbb", "status": "dead_letter", "priority": "background"}],
+        {"lease_id": "h", "holder": "durable-runs:reading-aaa", "status": "granted", "priority": "background",
+         "role": "agent"},
+        # a gateway call running inside our hold is ours too
+        {"lease_id": "c", "holder": "orion-llm-gateway", "hold_lease_id": "h", "status": "granted",
+         "priority": "background", "role": "agent"},
+        {"lease_id": "x", "holder": "durable-runs:reading-bbb", "status": "dead_letter", "priority": "background"}],
         "queue_depth": {"agent": 1}, "backlog_depth": {}, "cards": [], "roles": []}
     assert bf._foreign_busy(state, own, own_waiting=1) == []
     assert bf._foreign_busy(state, own, own_waiting=0) == ["queue_depth[agent]=1"]
-    state["leases"].append({"holder": "orion-mind", "status": "granted", "priority": "interactive",
+    state["leases"].append({"lease_id": "m", "holder": "orion-mind", "status": "granted", "priority": "interactive",
                             "work_class": "metacog", "role": "agent"})
     assert bf._foreign_busy(state, own, own_waiting=1) == ["granted interactive metacog lease held by orion-mind"]
 

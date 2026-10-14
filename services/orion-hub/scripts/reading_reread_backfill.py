@@ -420,13 +420,22 @@ def _foreign_busy(state: Any, own_runs: set[str], own_waiting: int) -> list[str]
 
     if not isinstance(state, dict):
         return pool_busy_reasons(state)
-    own_holders = {f"durable-runs:{r}" for r in own_runs}
-    leases = [x for x in state.get("leases") or [] if not (isinstance(x, dict) and x.get("holder") in own_holders)]
+    own = _own_lease_ids(state, own_runs)
+    leases = [x for x in state.get("leases") or [] if not (isinstance(x, dict) and x.get("lease_id") in own)]
     depth = sum(int(v or 0) for key in ("queue_depth", "backlog_depth") for v in (state.get(key) or {}).values())
     trimmed = dict(state, leases=leases)
     if depth <= own_waiting:
         trimmed["queue_depth"], trimmed["backlog_depth"] = {}, {}
     return pool_busy_reasons(trimmed)
+
+
+def _own_lease_ids(state: dict[str, Any], own_runs: set[str]) -> set[str]:
+    """This run's holds (holder ``durable-runs:<run_id>``) and the gateway calls running inside
+    them (``hold_lease_id`` = one of those holds)."""
+    holders = {f"durable-runs:{r}" for r in own_runs}
+    leases = [x for x in state.get("leases") or [] if isinstance(x, dict)]
+    holds = {x.get("lease_id") for x in leases if x.get("holder") in holders}
+    return holds | {x.get("lease_id") for x in leases if x.get("hold_lease_id") in holds}
 
 
 async def _pool_busy(client: Any, pool_url: str, wait_sec: float, own_runs: set[str]) -> list[str]:
@@ -441,9 +450,9 @@ async def _pool_busy(client: Any, pool_url: str, wait_sec: float, own_runs: set[
             resp = await client.get(pool_url.rstrip("/") + "/v1/pool", timeout=10.0)
             resp.raise_for_status()
             state = resp.json()
-            own_holders = {f"durable-runs:{r}" for r in own_runs}
+            own = _own_lease_ids(state, own_runs)
             own_waiting = sum(1 for x in state.get("leases") or []
-                              if isinstance(x, dict) and x.get("holder") in own_holders
+                              if isinstance(x, dict) and x.get("lease_id") in own
                               and x.get("status") not in TERMINAL_STATUSES and x.get("status") != "granted")
             reasons = _foreign_busy(state, own_runs, own_waiting)
         except Exception as exc:  # noqa: BLE001 -- unreadable pool = busy (no state, no start)

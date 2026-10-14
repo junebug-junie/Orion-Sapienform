@@ -28,3 +28,7 @@ cd /mnt/scripts/Orion-Sapienform && git pull --ff-only && ORION_ALLOW_SHARED_CHE
 - Interoception `attention_returns` count sensor re-entries (up to 53/day), so they can outrank attention/curiosity arcs. Used as defined.
 - Near (non-overlapping) edits to PR #2654 in dream cycle/main/settings.
 - Candidates carry `arc_id` as the citation handle, not evidence id lists.
+
+## PR link
+
+https://github.com/junebug-junie/Orion-Sapienform/pull/2658

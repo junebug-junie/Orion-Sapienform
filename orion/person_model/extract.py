@@ -124,7 +124,9 @@ class GlinerExtractor:
         deterministic transform so "amy smith" is read as a name would be
         written. Used as one linkage feature, never as a decider.
         """
-        text = " ".join(w[:1].upper() + w[1:] for w in label.split())
+        from orion.person_model.normalize import strip_accents
+
+        text = " ".join(w[:1].upper() + w[1:] for w in strip_accents(label).split())
         for sp in self.raw_spans(text, labels=(PERSON_LABEL,)):
             if sp["start"] == 0 and sp["end"] >= len(text.rstrip()):
                 return True

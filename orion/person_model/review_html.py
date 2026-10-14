@@ -26,6 +26,8 @@ def verdict(d: PersonLinkageDecisionV1) -> str:
     a, c = d.anchor_label, d.candidate_label
     if d.relation == "same_as" and d.group == "auto_merge":
         return f"Same person: “{c}” is “{a}”. Orion would merge them."
+    if d.relation == "same_as" and d.rule == "name_used_for_two_people":
+        return f"You used \u201c{a}\u201d for two people, so Orion will not merge \u201c{c}\u201d until you say which."
     if d.relation == "same_as" and d.rule == "cooccurring_names_guard":
         return f"“{c}” and “{a}” appear side by side in one message, so they may be two people. Same person?"
     if d.relation == "same_as":
@@ -61,6 +63,11 @@ def _card(d: PersonLinkageDecisionV1, default_choice: str) -> str:
                     _e(" / ".join(str(x) for x in (node.get("kind"), node.get("producer")) if x)),
                 )
             )
+    also = ev.get("also_answers") or []
+    also_labels = ev.get("also_answers_labels") or also
+    also_html = (
+        "<div class=score>Your answer here also decides: " + "; ".join(_e(x) for x in also_labels) + "</div>" if also else ""
+    )
     snippets = "".join(
         f"<li><span class=src>{_e(s.get('source'))}</span> {_e(s.get('text'))}</li>" for s in (ev.get("snippets") or [])[:5]
     ) or "<li class=muted>No linked memory or chat mentions this label.</li>"
@@ -78,9 +85,9 @@ def _card(d: PersonLinkageDecisionV1, default_choice: str) -> str:
     return f"""
 <article class="card {d.group}" data-id="{name}" data-group="{_e(d.group)}" data-relation="{_e(d.relation)}"
   data-anchor="{_e(d.anchor_id)}" data-anchor-label="{_e(d.anchor_label)}" data-candidate="{_e(d.candidate_id)}"
-  data-candidate-label="{_e(d.candidate_label)}" data-score="{'' if d.score is None else d.score}" data-default="{default_choice}">
+  data-candidate-label="{_e(d.candidate_label)}" data-also="{_e(' '.join(also))}" data-score="{'' if d.score is None else d.score}" data-default="{default_choice}">
   <h3>{_e(verdict(d))}</h3>
-  {score}
+  {score}{also_html}
   <table class=nodes>{''.join(rows)}</table>
   <div class=ev><b>Evidence</b><ul>{snippets}</ul></div>
   {feat_block}
@@ -98,7 +105,7 @@ header{background:#1d1d1f;color:#fff;padding:18px 28px;position:sticky;top:0;z-i
 header h1{margin:0 0 4px;font-size:20px} header p{margin:2px 0;color:#ccc;font-size:13px}
 header button{margin-top:8px;font-size:15px;padding:6px 14px;border-radius:6px;border:0;background:#4c8bf5;color:#fff;cursor:pointer}
 main{padding:12px 28px 60px;max-width:1100px}
-section>h2{margin:28px 0 4px} section>p{margin:0 0 10px;color:#555}
+section{scroll-margin-top:190px} section>h2{margin:28px 0 4px} section>p{margin:0 0 10px;color:#555}
 .card{background:#fff;border-radius:10px;padding:14px 18px;margin:10px 0;border-left:6px solid #999;box-shadow:0 1px 2px #0001}
 .card.auto_merge{border-color:#2e9b5f}.card.needs_your_call{border-color:#e0a100}.card.auto_reject{border-color:#9aa0a6}
 .card h3{margin:0 0 6px;font-size:16px} .score{color:#444;font-size:13px;margin-bottom:6px}
@@ -125,10 +132,10 @@ _JS = r"""
   count();
   function q(v){v=(v==null?'':String(v));return '"'+v.replace(/"/g,'""')+'"';}
   document.getElementById('export').addEventListener('click',function(){
-    var head=['decision_id','group','relation','anchor_id','anchor_label','candidate_id','candidate_label','score','your_choice','notes'];
+    var head=['decision_id','group','relation','anchor_id','anchor_label','candidate_id','candidate_label','score','your_choice','notes','also_answers'];
     var lines=[head.join(',')];
     cards.forEach(function(c){var r=c.querySelector('input:checked');
-      lines.push([c.dataset.id,c.dataset.group,c.dataset.relation,c.dataset.anchor,c.dataset.anchorLabel,c.dataset.candidate,c.dataset.candidateLabel,c.dataset.score,r?r.value:'',c.querySelector('textarea').value].map(q).join(','));});
+      lines.push([c.dataset.id,c.dataset.group,c.dataset.relation,c.dataset.anchor,c.dataset.anchorLabel,c.dataset.candidate,c.dataset.candidateLabel,c.dataset.score,r?r.value:'',c.querySelector('textarea').value,c.dataset.also].map(q).join(','));});
     var blob=new Blob([lines.join('\r\n')+'\r\n'],{type:'text/csv'});
     var a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download='person-cleanup-decisions-'+document.body.dataset.run+'.csv';
     document.body.appendChild(a); a.click(); setTimeout(function(){URL.revokeObjectURL(a.href); a.remove();},0);
@@ -164,8 +171,9 @@ def render(
             for r in info_rows
         )
         info = (
-            "<section id=new_people><h2>People in your words with no node yet (no action now)</h2>"
-            "<p>Names the extractor found in your chat messages that have no person node in the graph. "
+            "<section id=new_people><h2>People in your words with no person node yet (no action now)</h2>"
+            "<p>Names the extractor found in your chat messages that have no person node in the graph "
+            "(some match a topic-modeler entity, which is not a person node). "
             "Promotion and study come in a later phase; this is here so you can see who Orion would start with.</p>"
             f"<table class=info><tr><th>name</th><th>mentions</th><th>first seen</th><th>example</th></tr>{trs}</table></section>"
         )

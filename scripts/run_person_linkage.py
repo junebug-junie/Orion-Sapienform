@@ -79,6 +79,53 @@ class Graph:
         return res[1] if len(res) > 1 else []
 
 
+def parse_labels(raw) -> Tuple[str, ...]:
+    """GRAPH.RO_QUERY (non-compact) returns labels(n) as the string "[A, B]"."""
+    if isinstance(raw, (list, tuple)):
+        return tuple(str(x) for x in raw)
+    return tuple(x.strip() for x in str(raw).strip("[]").split(",") if x.strip())
+
+
+def collapse_same_question(decisions: list) -> list:
+    """Review cards that ask the same question become one card: same anchor and
+    same folded candidate label (a graph node and a mention cluster both reading
+    "juniper feld"; a "Jay" split card and the "jay" node merge that depends on
+    it). The kept card (a split card first, then a graph node) lists the others,
+    and an exported answer applies to all of them."""
+    review = [d for d in decisions if d.group == "needs_your_call"]
+    rest = [d for d in decisions if d.group != "needs_your_call"]
+    groups: Dict[tuple, list] = {}
+    for d in review:
+        groups.setdefault((d.anchor_id, fold(d.candidate_label)), []).append(d)
+    out = list(rest)
+    for key in sorted(groups):
+        ds = sorted(groups[key], key=lambda d: (d.relation != "distinct", d.candidate_kind != "substrate_node", d.decision_id))
+        keep, others = ds[0], ds[1:]
+        if others:
+            ev = dict(keep.evidence)
+            ev["also_answers"] = [o.decision_id for o in others]
+            ev["also_answers_labels"] = [f"{o.relation}: {o.anchor_label} / {o.candidate_label} ({o.candidate_kind})" for o in others]
+            snips = list(ev.get("snippets") or [])
+            for o in others:
+                snips += [x for x in (o.evidence.get("snippets") or []) if x not in snips]
+            ev["snippets"] = snips
+            keep = keep.model_copy(update={"evidence": ev})
+        out.append(keep)
+    return out
+
+
+def hold_merges_of_split_names(decisions: list, clusters: Dict[str, dict]) -> list:
+    """A name she used for two people ("Jay, Jay") cannot auto-merge with
+    anything until she answers the split card."""
+    split_ids = {c["node_id"] for c in clusters.values() if c.get("repeat_sources")}
+    out = []
+    for d in decisions:
+        if d.relation == "same_as" and d.group == "auto_merge" and (d.anchor_id in split_ids or d.candidate_id in split_ids):
+            d = d.model_copy(update={"group": "needs_your_call", "rule": "name_used_for_two_people"})
+        out.append(d)
+    return out
+
+
 def pg_connect(dsn: str):
     import psycopg2
 
@@ -179,13 +226,20 @@ class CenteredEmbedder:
 
 # ---------------------------------------------------------------- mentions
 _LIST_SEP = re.compile(r"^\s*(,|and|&|,\s*and)\s*$", re.I)
+# Possessive determiners are a closed grammatical class (not a growing list):
+# "my wife" is a relationship phrase, never a person's name.
+_POSSESSIVE_DET = re.compile(r"^(my|your|his|her|our|their|its)\b", re.I)
+
+
+def name_mentions(ms: list) -> list:
+    return [m for m in ms if m.label == PERSON_LABEL and not _POSSESSIVE_DET.match(m.text.strip())]
 
 
 def cluster_mentions(mentions_by_source: Dict[str, Tuple[str, list]]) -> Dict[str, dict]:
     clusters: Dict[str, dict] = {}
     for sid in sorted(mentions_by_source):
         text, ms = mentions_by_source[sid]
-        persons = [m for m in ms if m.label == PERSON_LABEL]
+        persons = name_mentions(ms)
         for m in persons:
             key = fold(m.text)
             if not key:
@@ -210,7 +264,7 @@ def cluster_mentions(mentions_by_source: Dict[str, Tuple[str, list]]) -> Dict[st
 def cooccurring_pairs(mentions_by_source: Dict[str, Tuple[str, list]]) -> frozenset:
     pairs = set()
     for sid, (text, ms) in mentions_by_source.items():
-        persons = [m for m in ms if m.label == PERSON_LABEL]
+        persons = name_mentions(ms)
         for a, b in zip(persons, persons[1:]):
             fa, fb = fold(a.text), fold(b.text)
             if fa != fb and _LIST_SEP.match(text[a.span_end:b.span_start] or "x"):
@@ -218,12 +272,18 @@ def cooccurring_pairs(mentions_by_source: Dict[str, Tuple[str, list]]) -> frozen
     return frozenset(pairs)
 
 
+_EMAIL = re.compile(r"[\w.+-]+@[\w-]+(\.[\w-]+)+")
+
+
 def window(text: str, needle: str, width: int = 90) -> Optional[str]:
+    """Snippet around the first match. Email addresses are masked: the review
+    file is committed to a public repository."""
     i = text.lower().find(needle.lower())
     if i < 0:
         return None
     a, b = max(0, i - width), min(len(text), i + len(needle) + width)
-    return ("..." if a else "") + " ".join(text[a:b].split()) + ("..." if b < len(text) else "")
+    snippet = ("..." if a else "") + " ".join(text[a:b].split()) + ("..." if b < len(text) else "")
+    return _EMAIL.sub("[email]", snippet)
 
 
 # ---------------------------------------------------------------- main
@@ -257,6 +317,7 @@ def main() -> int:
                     "RETURN n.node_id, n.label, labels(n), n.provenance_producer, n.entity_type, n.evidence_refs_json ORDER BY n.node_id")
         nodes = {}
         for nid, label, labels, producer, etype, ev in rows:
+            labels = parse_labels(labels)
             try:
                 refs = tuple(sorted(json.loads(ev or "[]")))
             except Exception:
@@ -332,6 +393,7 @@ def main() -> int:
             emb.warm(pop, prog)
         ctx = L.LinkageContext(
             is_person_name=lambda lab: person_cache.get(lab),
+            mentioned_as_person=(lambda lab: fold(lab) in clusters) if extractor is not None else (lambda lab: None),
             embedding_sim=emb.sim,
             prompt_keys=frozenset(prompt_context_keys([ROOT / "orion" / "cognition" / "prompts"])),
             cooccurring=cooccurring_pairs(mentions_by_source),
@@ -346,7 +408,7 @@ def main() -> int:
             for ref in c.evidence_refs[:3]:
                 kind, _, rid = ref.partition(":")
                 if kind == "episode_memory" and rid in mem_by_id:
-                    out_s.append({"source": ref, "text": mem_by_id[rid][:240]})
+                    out_s.append({"source": ref, "text": _EMAIL.sub("[email]", mem_by_id[rid][:240])})
             if c.kind == "mention_cluster":
                 for ref in c.evidence_refs[:3]:
                     pid = ref.partition(":")[2]
@@ -357,7 +419,7 @@ def main() -> int:
                 needle = c.label.replace("_", " ") if "_" in c.label else c.label
                 for mid, stmt in memories:
                     if needle.lower() in stmt.lower():
-                        out_s.append({"source": f"episode_memory:{mid}", "text": stmt[:240]})
+                        out_s.append({"source": f"episode_memory:{mid}", "text": _EMAIL.sub("[email]", stmt[:240])})
                         if len(out_s) >= 2:
                             break
                 hits = 0
@@ -403,6 +465,10 @@ def main() -> int:
                     place_labels.setdefault(r["node_id"], next((x["alias_text"] for x in alias_rows if x["node_id"] == r["node_id"] and x["alias_class"] == "name"), r["node_id"]))
                 dec_final += L.stated_home_conflicts(alias_rows, person=me_anchor, stated_home=home["value"], place_labels=place_labels, cfg=cfg, stated_ref=home["source"])
         dec_final += L.repeated_name_splits({k: v for k, v in clusters.items() if k not in agent_names}, cfg)
+        dec_final = hold_merges_of_split_names(dec_final, clusters)
+        # Graph nodes before mention clusters, so the kept card is the graph one.
+        dec_final.sort(key=lambda d: (d.group, d.anchor_label, d.candidate_kind != "substrate_node", d.candidate_label, d.decision_id))
+        dec_final = collapse_same_question(dec_final)
         dec_final.sort(key=lambda d: (d.group, d.anchor_label, d.candidate_label, d.decision_id))
 
         # --- outputs

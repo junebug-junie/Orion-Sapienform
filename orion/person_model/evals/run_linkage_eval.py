@@ -49,6 +49,10 @@ def load_labels(path: Path, decisions: dict) -> dict:
                     out[d["decision_id"]] = "junk" if ok else "different"
                 elif rel in ("not_home", "distinct"):
                     out[d["decision_id"]] = rel if ok else "same"
+                # One card can answer duplicate questions (same anchor, same folded label).
+                for extra in (row.get("also_answers") or "").split():
+                    if extra in decisions and d["decision_id"] in out:
+                        out[extra] = out[d["decision_id"]]
         return out
     rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
     return {r["decision_id"]: r["label"] for r in rows}

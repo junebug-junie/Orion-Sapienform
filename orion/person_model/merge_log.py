@@ -41,15 +41,18 @@ def plan_ops(d: PersonLinkageDecisionV1, store: Store, *, now_iso: str) -> List[
     survivor, absorbed = d.anchor_id, d.candidate_id
     if d.relation == "same_as":
         alias_norm = fold(d.candidate_label)
-        return [
+        ops: List[Dict[str, object]] = [
             {"op": "set_prop", "node_id": absorbed, "prop": "merged_into", "value": survivor,
              "before": store.get_prop(absorbed, "merged_into")},
             {"op": "add_edge", "src": absorbed, "dst": survivor, "rel": "same_as",
              "existed": store.has_edge(absorbed, survivor, "same_as")},
-            {"op": "put_alias", "node_id": survivor, "alias_norm": alias_norm,
-             "value": {"alias_text": d.candidate_label, "alias_class": "name", "admitted_by": ADMITTED_BY},
-             "before": store.get_alias(survivor, alias_norm)},
         ]
+        # An alias the survivor already has is left exactly as it is.
+        if store.get_alias(survivor, alias_norm) is None:
+            ops.append({"op": "put_alias", "node_id": survivor, "alias_norm": alias_norm,
+                        "value": {"alias_text": d.candidate_label, "alias_class": "name", "admitted_by": ADMITTED_BY},
+                        "before": None})
+        return ops
     if d.relation == "facet_of":
         return [{"op": "add_edge", "src": absorbed, "dst": survivor, "rel": "about",
                  "existed": store.has_edge(absorbed, survivor, "about")}]

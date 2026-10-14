@@ -1,0 +1,59 @@
+#!/usr/bin/env python3
+"""UI interaction check for the cleanup review HTML (AGENTS.md section 9).
+
+Opens the file in headless Chromium, picks a choice and a note on the first
+needs-your-call card, clicks Export, parses the downloaded CSV, reloads to check
+choices persist, and asserts the page made no network request and threw no error.
+
+    pip install playwright
+    python orion/person_model/evals/check_review_html_ui.py \
+        docs/superpowers/evals/2026-10-14-person-cleanup-review.html [--chrome /path/to/chrome]
+"""
+
+import argparse
+import csv
+import io
+from pathlib import Path
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("html", type=Path)
+    ap.add_argument("--chrome", default=None)
+    args = ap.parse_args()
+    from playwright.sync_api import sync_playwright
+
+    with sync_playwright() as p:
+        browser = p.chromium.launch(executable_path=args.chrome) if args.chrome else p.chromium.launch()
+        page = browser.new_context(accept_downloads=True).new_page()
+        reqs, errs = [], []
+        page.on("request", lambda r: reqs.append(r.url))
+        page.on("pageerror", lambda e: errs.append(str(e)))
+        page.goto(args.html.resolve().as_uri())
+        n_cards = page.locator("article.card").count()
+        card = page.locator("#needs_your_call article").first
+        card.locator("input[value=reject]").check()
+        note = 'not me, "quoted", with, commas'
+        card.locator("textarea").fill(note)
+        with page.expect_download() as dl:
+            page.click("#export")
+        rows = list(csv.DictReader(io.StringIO(Path(dl.value.path()).read_text(encoding="utf-8"))))
+        page.reload()
+        persisted = page.locator("#needs_your_call article").first.locator("textarea").input_value()
+        browser.close()
+    external = [u for u in reqs if not u.startswith(("file://", "blob:"))]
+    noted = [r for r in rows if r["notes"] == note]
+    checks = {
+        "csv_has_every_card": len(rows) == n_cards,
+        "choice_and_note_exported": len(noted) == 1 and noted[0]["your_choice"] == "reject",
+        "persisted_after_reload": persisted == note,
+        "no_network_requests": not external,
+        "no_page_errors": not errs,
+    }
+    for k, v in checks.items():
+        print(f"{'PASS' if v else 'FAIL'} {k}")
+    return 0 if all(checks.values()) else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

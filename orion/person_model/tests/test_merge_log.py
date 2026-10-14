@@ -78,3 +78,13 @@ def test_unmerge_keeps_an_edge_that_existed_before(ctx, candidates):
     apply_ops(store, e.ops)
     apply_ops(store, unmerge_ops(e))
     assert store.has_edge(d.candidate_id, d.anchor_id, "about")
+
+
+def test_existing_survivor_alias_is_not_overwritten(ctx, candidates):
+    store = MemStore()
+    store.put_alias(ANCHOR.node_id, "juniper", {"alias_text": "juniper", "admitted_by": "episode_writer"})
+    d = next(d for d in _decisions(ctx, candidates) if d.relation == "same_as" and d.candidate_label == "Juniper")
+    e = build_entry(d, store, decided_by="t", decision="auto", now_iso="x")
+    assert not any(op["op"] == "put_alias" for op in e.ops)
+    apply_ops(store, e.ops)
+    assert store.get_alias(ANCHOR.node_id, "juniper")["admitted_by"] == "episode_writer"

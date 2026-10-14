@@ -7,16 +7,20 @@ the dry-run CLI drives it with read-only live data.
 
 Outcomes, in evaluation order:
 1. ``topic``  -> no_match (auto_reject): a Concept from a topic-cluster producer.
-2. ``junk``   -> junk (auto_reject): the label is a leaked prompt field / snake_case key.
-3. ``facet``  -> facet_of (auto_merge group, link only, never a merge): "<name>'s X",
+2. ``junk``   -> junk (auto_reject): the label is a leaked prompt field (a key the
+   prompt templates render).
+3. ``code_identifier`` -> no_match (auto_reject): a path, channel, file name, or
+   snake_case identifier. A shape rule (characters), not a word list.
+4. ``facet``  -> facet_of (auto_merge group, link only, never a merge): "<name>'s X",
    or "<name> X" where the extractor does not read the whole label as a name.
-4. otherwise Fellegi-Sunter score: >= upper -> same_as auto_merge;
+5. otherwise Fellegi-Sunter score: >= upper -> same_as auto_merge;
    <= lower -> no_match auto_reject; between -> same_as needs_your_call.
    Guard: names that occur side by side in one source are forced to review.
 """
 
 from __future__ import annotations
 
+import re
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -95,6 +99,9 @@ def validate_config(cfg: LinkageConfig) -> None:
 class LinkageContext:
     # Whole label read as one person name by the pinned extractor; None = unknown.
     is_person_name: Callable[[str], Optional[bool]] = lambda label: None
+    # The folded label occurs as an extractor person-name mention in the
+    # interlocutor's own messages; None = extractor not run.
+    mentioned_as_person: Callable[[str], Optional[bool]] = lambda label: None
     # Centered cosine between two labels; None = vector host unavailable.
     embedding_sim: Callable[[str, str], Optional[float]] = lambda a, b: None
     # Prompt-context keys harvested from the templates (normalize.prompt_context_keys).
@@ -164,11 +171,24 @@ def _best_name(anchor: Anchor, cand: Candidate) -> str:
     return max(names, key=lambda n: (_jaro_winkler(fold(n), cf), n))
 
 
+_IDENT_CHARS = re.compile(r"[/:*\\]|\.[A-Za-z]{1,5}\b|\w_\w")
+
+
+def is_code_identifier(label: str) -> bool:
+    """Paths, bus channels, file names, snake_case identifiers ("x/y.py",
+    "svc:vision:frames", "a_b"). Hyphens are left alone: people have hyphenated
+    names, and "name-thing" labels go through the facet rule instead."""
+    s = str(label).strip()
+    return is_snake_key(s) or bool(_IDENT_CHARS.search(s))
+
+
 def rule_outcome(anchor: Anchor, cand: Candidate, cfg: LinkageConfig, ctx: LinkageContext) -> Optional[Tuple[str, str]]:
     if "Concept" in cand.node_labels and cand.producer in cfg.topic_producers:
         return "no_match", "topic_cluster_concept"
-    if is_snake_key(cand.label) or as_key(cand.label) in ctx.prompt_keys:
+    if as_key(cand.label) in ctx.prompt_keys:
         return "junk", "prompt_context_key"
+    if is_code_identifier(cand.label):
+        return "no_match", "code_identifier"
     ats = anchor_tokens(anchor)
     head = possessive_head(cand.label)
     if head and any(fold(head) == at[0] and len(at) == 1 for at in ats):
@@ -176,7 +196,12 @@ def rule_outcome(anchor: Anchor, cand: Candidate, cfg: LinkageConfig, ctx: Linka
     ct = tokens(cand.label)
     for at in ats:
         if len(ct) > len(at) and ct[: len(at)] == at:
-            if ctx.is_person_name(cand.label) is False:
+            # "<name> <more words>" is a possible full name only if the
+            # interlocutor ever wrote it as a person's name (a name counts only
+            # if she said it). Without mention data, fall back to the
+            # extractor's reading of the bare label.
+            mentioned = ctx.mentioned_as_person(cand.label)
+            if mentioned is False or (mentioned is None and ctx.is_person_name(cand.label) is False):
                 return "facet_of", "name_plus_non_name_words"
     return None
 
@@ -206,10 +231,18 @@ def features(anchor: Anchor, cand: Candidate, cfg: LinkageConfig, ctx: LinkageCo
         add("jaro_winkler", level, f"{jw:.3f}")
         same_ph = bool(at and ct) and _metaphone(at[0]) == _metaphone(ct[0])
         add("phonetic_first", "agree" if same_ph else "disagree", f"{_metaphone(at[0]) if at else ''}/{_metaphone(ct[0]) if ct else ''}")
-    person = ctx.is_person_name(cand.label)
-    add("extractor_person", "missing" if person is None else "agree" if person else "disagree")
+    # One feature for the one model: the extractor read this label as a person,
+    # in her messages or as a bare label. Two readings, same source, one weight.
+    readings = [r for r in (ctx.mentioned_as_person(cand.label), ctx.is_person_name(cand.label)) if r is not None]
+    add("extractor_person", "missing" if not readings else "agree" if any(readings) else "disagree")
     sim = ctx.embedding_sim(name, cand.label)
-    if sim is None:
+    if exact:
+        # The embedder lowercases and strips accents too (bge tokenizer), so for
+        # labels that fold to the same text it returns ~1.0: the same comparison
+        # as exact_label, not independent evidence. It adds nothing here.
+        feats.append(LinkageFeatureV1(name="embedding_centered", level="implied_by_exact", weight=0.0,
+                                      detail=None if sim is None else f"{sim:.3f}"))
+    elif sim is None:
         add("embedding_centered", "missing")
     else:
         lvl = "agree" if sim >= cfg.embedding_bins["agree"] else "weak" if sim >= cfg.embedding_bins["weak"] else "disagree"

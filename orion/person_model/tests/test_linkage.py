@@ -78,3 +78,36 @@ def test_best_per_candidate_prefers_the_strongest_claim(cfg, ctx):
     other = L.Anchor("referent-zzz", "orion", (), "memory.referents")
     ds = [L.decide(ANCHOR, c, cfg, ctx), L.decide(other, c, cfg, ctx)]
     assert L.best_per_candidate(ds)[0].anchor_id == ANCHOR.node_id
+
+
+@pytest.mark.parametrize("label,want", [
+    ("orion/harness/finalize.py", True), ("orion:vision:frames", True), ("orion_identity.yaml", True),
+    ("orion_readonly user", True), ("orion-*", True), ("orion hub", False), ("Mary-Jane", False), ("juniper feld", False),
+])
+def test_code_identifier_shape_rule(label, want):
+    assert L.is_code_identifier(label) is want
+
+
+def test_exact_match_does_not_double_count_the_embedding(cfg):
+    ctx = L.LinkageContext(is_person_name=lambda s: True, embedding_sim=lambda a, b: 1.0)
+    d = L.decide(L.Anchor("a", "orion", producer="p"), L.Candidate("c", "Oríon", producer="q"), cfg, ctx)
+    emb = next(f for f in d.features if f.name == "embedding_centered")
+    assert emb.level == "implied_by_exact" and emb.weight == 0.0
+    assert d.score == pytest.approx(6.0 + 2.0 + 0.5) and d.group == "auto_merge"
+
+
+def test_name_plus_words_needs_to_have_been_written_as_a_name(cfg):
+    """'claude motor' reads like a name when title-cased, but she never wrote it as one."""
+    mentioned = {"juniper feld"}
+    ctx = L.LinkageContext(is_person_name=lambda s: True, mentioned_as_person=lambda s: s.lower() in mentioned)
+    a = L.Anchor("a", "juniper")
+    assert L.decide(a, L.Candidate("c1", "juniper motor"), cfg, ctx).relation == "facet_of"
+    full = L.decide(a, L.Candidate("c2", "juniper feld"), cfg, ctx)
+    assert full.relation == "same_as" and full.group == "needs_your_call"
+
+
+def test_extractor_readings_count_once(cfg):
+    both = L.LinkageContext(is_person_name=lambda s: True, mentioned_as_person=lambda s: True)
+    one = L.LinkageContext(is_person_name=lambda s: True)
+    a, c = L.Anchor("a", "gaga", producer="p"), L.Candidate("c", "Gaga", producer="q")
+    assert L.decide(a, c, cfg, both).score == L.decide(a, c, cfg, one).score

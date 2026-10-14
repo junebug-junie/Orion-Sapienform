@@ -53,8 +53,9 @@ def test_renders_the_fact_from_frame_and_arcs(monkeypatch):
 
     seen = _patch_client(monkeypatch, handler)
     line = asyncio.run(_loop()._read_today_fact(VIEW, NOW))
-    assert line == ("TODAY SO FAR: 1 curiosity run finished today, 10 min in total. "
-                    "1 of the earlier runs listed above was today, 10 min of that. [arc:a1]")
+    assert line == ("TODAY SO FAR (day record as of 20:59 local): 1 curiosity run started today "
+                    "and finished, 10 min in total. 1 of the earlier runs listed above is among "
+                    "them, 10 min of that. [arc:a1]")
     assert seen["timeout"] is not None and seen["timeout"] <= 1.5
     assert sorted(calls) == ["http://durable.test/temporal-self/arcs?kind=curiosity",
                              "http://durable.test/temporal-self/frame"]
@@ -119,3 +120,19 @@ def test_settings_ship_the_flag_on():
     from app.settings import Settings
 
     assert Settings.model_fields["HUB_CURIOSITY_TEMPORAL_SELF_FACT_ENABLED"].default is True
+
+
+def test_investigate_hands_the_fact_to_the_kickoff_prompt():
+    """Removing the kwarg from `_investigate`'s build_kickoff_prompt call must fail a test."""
+    import ast
+    import inspect
+    import textwrap
+
+    tree = ast.parse(textwrap.dedent(inspect.getsource(CuriosityInvestigation._investigate)))
+    calls = [n for n in ast.walk(tree) if isinstance(n, ast.Call)
+             and getattr(n.func, "id", None) == "build_kickoff_prompt"]
+    assert len(calls) == 1
+    kw = {k.arg: k.value for k in calls[0].keywords}
+    assert isinstance(kw.get("today_fact"), ast.Name) and kw["today_fact"].id == "today_fact"
+    reads = [n for n in ast.walk(tree) if isinstance(n, ast.Attribute) and n.attr == "_read_today_fact"]
+    assert reads, "_investigate no longer reads the fact"

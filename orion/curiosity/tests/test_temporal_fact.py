@@ -42,26 +42,29 @@ def test_thread_match_counts_only_listed_runs_and_cites_them_first():
     arcs = [_arc("r1", began_h=8, minutes=12), _arc("r2", began_h=10, minutes=20), _arc("r3", began_h=14, minutes=5)]
     line = curiosity_today_fact(_frame(), now=NOW, thread_run_ids=["r1", "r3", "old"],
                                 curiosity_arcs=_arcs_payload(arcs))
-    assert line == ("TODAY SO FAR: 3 curiosity runs finished today, 37 min in total. "
-                    "2 of the earlier runs listed above were today, 17 min of that. "
+    assert line == ("TODAY SO FAR (day record as of 20:59 local): 3 curiosity runs started today and finished, 37 min in total. "
+                    "2 of the earlier runs listed above are among them, 17 min of that. "
                     "[arc:arcr3] [arc:arcr1] [arc:arcr2]")
 
 
-def test_no_thread_match_is_stated_not_hidden():
+def test_no_thread_match_never_claims_an_absence():
+    # The chronicle lags ~5 min behind its clock: the newest listed run may just not be
+    # folded yet, so "none of them was today" could be false. Nothing is said about it.
     line = curiosity_today_fact(_frame(), now=NOW, thread_run_ids=["x", "y"],
                                 curiosity_arcs=_arcs_payload([_arc("r1", began_h=8, minutes=0.5)]))
-    assert line == ("TODAY SO FAR: 1 curiosity run finished today, under a minute in total. "
-                    "None of the earlier runs listed above was today. [arc:arcr1]")
+    assert line == ("TODAY SO FAR (day record as of 20:59 local): 1 curiosity run started today and finished, under a minute in total. "
+                    "[arc:arcr1]")
+    assert "none" not in line.lower() and "listed above" not in line
 
 
 def test_no_thread_ids_gives_day_total_only():
     line = curiosity_today_fact(_frame(), now=NOW, curiosity_arcs=_arcs_payload([_arc("r1", began_h=8, minutes=9)]))
-    assert line == "TODAY SO FAR: 1 curiosity run finished today, 9 min in total. [arc:arcr1]"
+    assert line == "TODAY SO FAR (day record as of 20:59 local): 1 curiosity run started today and finished, 9 min in total. [arc:arcr1]"
 
 
 def test_zero_runs_with_a_complete_list():
     line = curiosity_today_fact(_frame(), now=NOW, curiosity_arcs=_arcs_payload([]))
-    assert line == "TODAY SO FAR: no curiosity run has finished yet today."
+    assert line == "TODAY SO FAR (day record as of 20:59 local): no curiosity run started today has finished."
 
 
 def test_stale_frame_renders_nothing():
@@ -70,12 +73,29 @@ def test_stale_frame_renders_nothing():
     assert curiosity_today_fact(_frame(as_of=NOW - timedelta(seconds=899)), now=NOW, curiosity_arcs=arcs) is not None
 
 
+def test_future_frame_renders_nothing():
+    arcs = _arcs_payload([_arc("r1", began_h=8, minutes=9)])
+    assert curiosity_today_fact(_frame(as_of=NOW + timedelta(seconds=61)), now=NOW, curiosity_arcs=arcs) is None
+    assert curiosity_today_fact(_frame(as_of=NOW + timedelta(seconds=30)), now=NOW, curiosity_arcs=arcs) is not None
+
+
+def test_day_is_the_start_day_and_named_in_the_line():
+    # The chronicle files a run under the day it STARTED; the line says "started today".
+    line = curiosity_today_fact(_frame(), now=NOW, curiosity_arcs=_arcs_payload([_arc("r1", began_h=8, minutes=9)]))
+    assert line is not None and "started today and finished" in line and "finished today" not in line
+
+
 def test_wrong_day_renders_nothing():
     arcs = _arcs_payload([_arc("r1", began_h=8, minutes=9)])
     assert curiosity_today_fact(_frame(day="2026-10-12"), now=NOW, curiosity_arcs=arcs) is None
     # The arc list for another day than the frame is not used; the frame fallback is.
     line = curiosity_today_fact(_frame(), now=NOW, curiosity_arcs=_arcs_payload([_arc("r1", began_h=8, minutes=9)], day="2026-10-12"))
-    assert line == "TODAY SO FAR: no curiosity run has finished yet today."
+    assert line == "TODAY SO FAR (day record as of 20:59 local): no curiosity run started today has finished."
+    # A row naming another day (or none) inside today's payload is not counted.
+    other = dict(_arc("r2", began_h=8, minutes=9), day_id="2026-10-12")
+    nodate = {k: v for k, v in _arc("r3", began_h=8, minutes=9).items() if k != "day_id"}
+    assert curiosity_today_fact(_frame(), now=NOW, curiosity_arcs=_arcs_payload([other, nodate])) == (
+        "TODAY SO FAR (day record as of 20:59 local): no curiosity run started today has finished.")
 
 
 def test_garbage_never_raises():
@@ -83,10 +103,10 @@ def test_garbage_never_raises():
                   {"day_id": 5, "as_of": NOW.isoformat()}):
         assert curiosity_today_fact(frame, now=NOW) is None
     bad_rows = [None, "x", {"kind": "curiosity"}, {"kind": "curiosity", "arc_id": "a", "subject_ref": "r",
-                                                     "cumulative_dwell_sec": "nan?"}]
+                                                     "day_id": DAY, "cumulative_dwell_sec": "nan?"}]
     line = curiosity_today_fact(_frame(), now=NOW, thread_run_ids=[None, ""],  # type: ignore[list-item]
                                 curiosity_arcs={"day_id": DAY, "arcs": bad_rows})
-    assert line == "TODAY SO FAR: 1 curiosity run finished today, under a minute in total. [arc:a]"
+    assert line == "TODAY SO FAR (day record as of 20:59 local): 1 curiosity run started today and finished, under a minute in total. [arc:a]"
     assert curiosity_today_fact(_frame(), now="now", curiosity_arcs=_arcs_payload([])) is None  # type: ignore[arg-type]
 
 
@@ -94,7 +114,7 @@ def test_citations_capped_and_duplicates_not_double_counted():
     arcs = [_arc(f"r{i}", began_h=7 + i, minutes=10) for i in range(8)]
     line = curiosity_today_fact(_frame(), now=NOW, curiosity_arcs=_arcs_payload(arcs + arcs[:2]))
     assert line is not None and line.count("[arc:") == CITATION_CAP
-    assert "8 curiosity runs finished today, 80 min in total" in line
+    assert "8 curiosity runs started today and finished, 80 min in total" in line
     assert "[arc:arcr7]" in line and "[arc:arcr0]" not in line  # most recent first
 
 
@@ -104,7 +124,7 @@ def test_capped_frame_without_arc_list_says_nothing():
     # Complete when a reverie arc is listed (reverie only fills after every other kind).
     listed_rev = listed + [_arc("c1", began_h=9, minutes=1, kind="reverie")]
     assert curiosity_today_fact(_frame(listed_rev, total=200), now=NOW) == (
-        "TODAY SO FAR: 1 curiosity run finished today, 9 min in total. [arc:arcr1]")
+        "TODAY SO FAR (day record as of 20:59 local): 1 curiosity run started today and finished, 9 min in total. [arc:arcr1]")
     assert curiosity_today_fact(_frame(listed), now=NOW) is not None
 
 

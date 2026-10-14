@@ -189,6 +189,14 @@ class HarnessGovernorSettings(BaseSettings):
     harness_fcc_repeat_failure_threshold: str = Field(
         "3", alias="HARNESS_FCC_REPEAT_FAILURE_THRESHOLD"
     )
+    # Reading-only turns only (seed c31227dc, 2026-10-14), read by
+    # orion.harness.fcc_motor.reading_refetch_limit / reading_tool_window_fraction:
+    # successful WebFetches of one URL before a repeat is blocked, and the share
+    # of the turn budget after which new tool calls are blocked. 0 disables each.
+    harness_fcc_reading_refetch_limit: str = Field("1", alias="HARNESS_FCC_READING_REFETCH_LIMIT")
+    harness_fcc_reading_tool_window_fraction: str = Field(
+        "0.5", alias="HARNESS_FCC_READING_TOOL_WINDOW_FRACTION"
+    )
 
     # Warm Claude Code pool for Hub chat replies (spec L5; orion/harness/fcc_warm_pool.py).
     # Chat-reply turns borrow a long-lived claude process instead of spawning one,

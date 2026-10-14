@@ -68,6 +68,8 @@ jobs:
             orion/thought/tests \
             orion/fcc/tests/test_reading_mcp.py \
             orion/fcc/tests/test_mcp_config.py \
+            orion/fcc/tests/test_repeat_failure_breaker.py \
+            orion/harness/tests/test_fcc_motor_repeat_failure_breaker.py \
             orion/introspect/tests \
             orion/harness/tests/test_fcc_motor_mcp.py \
             orion/harness/tests/test_reading_receipts.py \
@@ -81,7 +83,7 @@ jobs:
             services/orion-dream/tests/test_dream_search.py \
             services/orion-dream/tests/test_introspect_listener.py
       - name: Offline source handoff behavior eval
-        run: python -m pytest services/orion-hub/evals/test_reading_handoff_eval.py services/orion-hub/evals/test_reading_receipt_truth_eval.py services/orion-hub/evals/test_reading_assertion_eval.py services/orion-hub/evals/test_reading_dead_url_eval.py services/orion-hub/evals/test_reading_finding_eval.py services/orion-hub/evals/test_reading_resonance_eval.py -q
+        run: python -m pytest services/orion-hub/evals/test_reading_handoff_eval.py services/orion-hub/evals/test_reading_receipt_truth_eval.py services/orion-hub/evals/test_reading_assertion_eval.py services/orion-hub/evals/test_reading_dead_url_eval.py services/orion-hub/evals/test_reading_finding_eval.py services/orion-hub/evals/test_reading_resonance_eval.py services/orion-hub/evals/test_reading_huge_page_eval.py -q
       - name: Checkpointed reading admission
         run: |
           python -m pip install langgraph==1.2.11

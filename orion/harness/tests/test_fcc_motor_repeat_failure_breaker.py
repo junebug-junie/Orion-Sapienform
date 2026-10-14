@@ -55,10 +55,41 @@ _DONE = ['{"type":"result","result":"Done.","session_id":"s1"}']
 @pytest.mark.parametrize("reading_only", [False, True])
 async def test_breaker_hook_installed_with_default_threshold(monkeypatch, reading_only) -> None:
     monkeypatch.delenv("HARNESS_FCC_REPEAT_FAILURE_THRESHOLD", raising=False)
+    monkeypatch.delenv("HARNESS_FCC_READING_REFETCH_LIMIT", raising=False)
+    monkeypatch.delenv("HARNESS_FCC_READING_TOOL_WINDOW_FRACTION", raising=False)
     argv = await _run(monkeypatch, _DONE, reading_only=reading_only)
     cmd = _hook_command(argv)
-    assert "repeat_failure_breaker.py" in cmd and cmd.endswith("--threshold 3")
+    assert "repeat_failure_breaker.py" in cmd and "--threshold 3" in cmd
     assert Path(cmd.split()[1]).is_file()  # the script path the hook runs exists
+    # Reading-only turns also get the refetch + tool-window rules (seed c31227dc).
+    reading_rules = "--refetch-limit 1 --tool-window-fraction 0.5"
+    assert (reading_rules in cmd) is reading_only
+    if not reading_only:
+        assert cmd.endswith("--threshold 3")
+
+
+@pytest.mark.asyncio
+async def test_reading_rules_survive_repeat_breaker_disabled(monkeypatch) -> None:
+    monkeypatch.setenv("HARNESS_FCC_REPEAT_FAILURE_THRESHOLD", "0")
+    monkeypatch.setenv("HARNESS_FCC_READING_REFETCH_LIMIT", "2")
+    monkeypatch.setenv("HARNESS_FCC_READING_TOOL_WINDOW_FRACTION", "0.6")
+    cmd = _hook_command(await _run(monkeypatch, _DONE, reading_only=True))
+    assert "--threshold 0 --refetch-limit 2 --tool-window-fraction 0.6" in cmd
+
+
+@pytest.mark.asyncio
+async def test_reading_rules_all_off_installs_nothing(monkeypatch) -> None:
+    monkeypatch.setenv("HARNESS_FCC_REPEAT_FAILURE_THRESHOLD", "0")
+    monkeypatch.setenv("HARNESS_FCC_READING_REFETCH_LIMIT", "0")
+    monkeypatch.setenv("HARNESS_FCC_READING_TOOL_WINDOW_FRACTION", "0")
+    assert "--settings" not in await _run(monkeypatch, _DONE, reading_only=True)
+
+
+def test_invalid_reading_knobs_fall_back_to_defaults(monkeypatch) -> None:
+    monkeypatch.setenv("HARNESS_FCC_READING_REFETCH_LIMIT", "many")
+    monkeypatch.setenv("HARNESS_FCC_READING_TOOL_WINDOW_FRACTION", "half")
+    assert motor.reading_refetch_limit() == 1
+    assert motor.reading_tool_window_fraction() == 0.5
 
 
 @pytest.mark.asyncio

@@ -55,7 +55,7 @@ from orion.world_pulse_read.documents import (
 )
 from orion.world_pulse_read.events import publish_lifecycle
 from orion.world_pulse_read.retry import is_refused_before_work
-from orion.world_pulse_read.fetch_text import retain_fetch_texts
+from orion.world_pulse_read.fetch_text import WEBFETCH_LIMIT_NOTE, retain_fetch_texts
 from orion.world_pulse_read.timestamps import stamp_server_created_at
 from orion.world_pulse_read.read_evidence import (
     NO_READ_EVIDENCE,
@@ -179,7 +179,7 @@ def _build_stage1_prompt(seed: WorldPulseReadSeedV1, trace_id: str) -> str:
         "points, and the full URLs of the sources it links to) before answering, then "
         "return ONLY one fenced ```json block "
         "(no greeting, no Juniper-facing prose). A turn with no successful fetch of this "
-        "url is discarded, however good the JSON is.\n"
+        "url is discarded, however good the JSON is. " + WEBFETCH_LIMIT_NOTE + "\n"
         f"seed_id={seed.seed_id} kind={seed.kind} run_id={seed.run_id}\n"
         f"url={seed.url}\ntitle={seed.title}\nsection={seed.section}\n"
         f"reading_request={request_for_seed(seed).model_dump(mode='json')}\n"

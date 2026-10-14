@@ -956,20 +956,57 @@ def repeat_failure_threshold() -> int:
         return DEFAULT_THRESHOLD
 
 
-def repeat_failure_breaker_argv(*, correlation_id: str) -> List[str]:
+def _reading_env_number(key: str, default: float, *, cast=float) -> float:
+    raw = os.environ.get(key, "").strip()
+    if not raw:
+        return default
+    try:
+        return max(0, cast(raw))
+    except ValueError:
+        logger.warning("invalid %s=%r; using default %s", key, raw, default)
+        return default
+
+
+DEFAULT_READING_REFETCH_LIMIT = 1
+DEFAULT_READING_TOOL_WINDOW_FRACTION = 0.5
+
+
+def reading_refetch_limit() -> int:
+    """HARNESS_FCC_READING_REFETCH_LIMIT: successful WebFetches of one URL a
+    reading-only turn may make before a repeat is blocked. 0 disables."""
+    return int(_reading_env_number("HARNESS_FCC_READING_REFETCH_LIMIT", DEFAULT_READING_REFETCH_LIMIT, cast=int))
+
+
+def reading_tool_window_fraction() -> float:
+    """HARNESS_FCC_READING_TOOL_WINDOW_FRACTION: share of a reading-only turn's
+    budget after which new tool calls are blocked. 0 disables; >=1 never closes."""
+    return float(_reading_env_number("HARNESS_FCC_READING_TOOL_WINDOW_FRACTION", DEFAULT_READING_TOOL_WINDOW_FRACTION))
+
+
+def repeat_failure_breaker_argv(*, correlation_id: str, reading_only: bool = False) -> List[str]:
     """``--settings`` installing the repeat-failing-call PreToolUse hook (all tools).
 
     Passed as flag settings so it applies regardless of --setting-sources
     (reading-only turns pass an empty source list). See
     orion/fcc/repeat_failure_breaker.py for the rule and the incident.
+    Reading-only turns also get the refetch and tool-window rules (seed
+    c31227dc, 2026-10-14).
     """
     from orion.fcc.repeat_failure_breaker import hook_settings_json
 
     threshold = repeat_failure_threshold()
-    if threshold <= 0:
+    refetch = reading_refetch_limit() if reading_only else 0
+    window = reading_tool_window_fraction() if reading_only else 0.0
+    if threshold <= 0 and refetch <= 0 and window <= 0:
         logger.info("fcc_repeat_failure_breaker_disabled corr=%s", correlation_id)
         return []
-    return ["--settings", hook_settings_json(threshold=threshold, python_bin=sys.executable)]
+    return [
+        "--settings",
+        hook_settings_json(
+            threshold=threshold, python_bin=sys.executable,
+            refetch_limit=refetch, tool_window_fraction=window,
+        ),
+    ]
 
 
 def _log_repeat_failure_blocks(parsed: Dict[str, Any], *, correlation_id: str) -> None:
@@ -1249,7 +1286,7 @@ def build_claude_argv(
         argv.extend(["--tools", "WebFetch,WebSearch", "--strict-mcp-config", "--setting-sources", ""])
     else:
         argv.extend(setting_sources_argv("HARNESS_FCC_SETTING_SOURCES"))
-    argv.extend(repeat_failure_breaker_argv(correlation_id=correlation_id))
+    argv.extend(repeat_failure_breaker_argv(correlation_id=correlation_id, reading_only=reading_only))
     if mcp_config_path is not None:
         extra_allowed_tools: Optional[List[str]] = None
         if not reading_only and _env_truthy("HARNESS_FCC_CONTEXT_MODE_HOOKS_ENABLED"):

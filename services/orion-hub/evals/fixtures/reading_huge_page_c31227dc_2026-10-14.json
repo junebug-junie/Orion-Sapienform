@@ -1,0 +1,130 @@
+{
+ "seed_id": "reading:c31227dc-0f4a-59dd-b8cb-b3c41b55be10",
+ "handoff_json": {
+  "seed_ref": {
+   "url": "https://github.com/ggml-org/llama.cpp/blob/master/ggml/src/ggml-quants.c",
+   "kind": "reading",
+   "title": "",
+   "run_id": "1765808d-3a64-4be2-be03-9643f3a302bd",
+   "item_id": null,
+   "request": {
+    "url": "https://github.com/ggml-org/llama.cpp/blob/master/ggml/src/ggml-quants.c",
+    "title": "",
+    "why_now": "",
+    "request_id": "c31227dc-0f4a-59dd-b8cb-b3c41b55be10",
+    "requested_at": "2026-09-29T23:22:02.460541Z",
+    "requested_by": "world_pulse",
+    "parent_run_id": "1765808d-3a64-4be2-be03-9643f3a302bd",
+    "parent_trace_id": null,
+    "root_request_id": "40a72e6b-8bbc-5b0a-a382-dd3a0b01edbe",
+    "parent_request_id": "034a2645-0ef5-5c41-b4d9-323ab0dd8794",
+    "invocation_context": "world_pulse"
+   },
+   "section": "",
+   "seed_id": "reading:c31227dc-0f4a-59dd-b8cb-b3c41b55be10"
+  },
+  "trace_id": "3f4c4938-4e45-5d8f-aa49-357236f89041",
+  "created_at": "2026-10-14T03:31:15.909031Z",
+  "open_threads": [
+   "Where in the ggml-cpu layer do the per-quant-type dot-product/mul_mat SIMD kernels (AVX2/AVX512/NEON) that pair with these dequantizers live? Candidate next read: ggml/src/ggml-cpu/quants.c.",
+   "Does Q4_K_XL (this turn's serving model name) map onto block_q4_K as defined in ggml-quants.c, or is there a separate XL block variant declared in ggml-quants.h or another file?",
+   "The IQ grid tables are opaque as fetched (raw integer entries, kmap_size 43692 for iq1/iq2, 4096 for iq3): only the iq3 family is commented as 'D4 lattice'; the provenance of the 2-bit and 1-bit grids (lattice construction vs training) is not explained in the file.",
+   "The fetched blob page was chrome-only to the fetcher (content truncated at line-number anchors, 0 code lines); the raw URL was required for the actual file - worth noting for future reading pipeline requests on large GitHub source files."
+  ],
+  "producer_hint": "world_pulse_read_pipeline",
+  "read_evidence": [
+   {
+    "url": "https://github.com/ggml-org/llama.cpp/blob/master/ggml/src/ggml-quants.c",
+    "tool_name": "WebFetch",
+    "content_chars": 5544,
+    "content_sha256": "e812cdb27dde9a772d7ed9db6867cc74ab122557604b6a60b16d29005ed7ff27"
+   }
+  ],
+  "what_i_learned": "Fetched the GitHub blob page for ggml/src/ggml-quants.c (master) as the required first step; per its metadata the file is 5,639 lines (5,021 loc), 222 KB, and the blob view itself returned only GitHub UI chrome to the fetcher (0 code lines, truncated at line-number anchors), so I then fetched the raw source URL that page links (https://github.com/ggml-org/llama.cpp/raw/refs/heads/master/ggml/src/ggml-quants.c, redirecting to raw.githubusercontent.com) in three slices covering the full 226,845 characters. The file is llama.cpp's portable quantization layer: it opens directly with '#define GGML_COMMON_IMPL_C' (no license header comment visible in the fetch), includes ggml-common.h, ggml-quants.h, ggml-impl.h, ggml-cpu/ggml-cpu-impl.h, ggml-cpu.h, math.h, string.h, assert.h, float.h, stdlib.h (annotated 'for qsort'), stdio.h (annotated 'for GGML_ASSERT'), and omp.h under GGML_USE_OPENMP. It defines block structs for the whole quant family: q1_0, q2_0, q4_0, q4_1, q5_0, q5_1, q8_0, q8_1, mxfp4 (e8m0 exponent byte + 4-bit qs), nvfp4 (per-sub-block UE4M3 scales + 4-bit qs), the K-quants q2_K through q8_K, the ternary tq1_0/tq2_0 (weights mapped to {-1,0,+1}, base-3 encoded with 3^5=243 ceiling-division scaling), and the IQ codebook family iq1_s/iq1_m, iq2_xxs/iq2_xs/iq2_s, iq3_xxs/iq3_s, iq4_nl/iq4_xs. For each type it implements a deterministic '*_ref' quantizer for model creation, a '*_impl' quantizer that accepts a quant_weights pointer for weighted quantization, a public 'quantize_*' wrapper dispatching between ref and impl, and a dequantize_row_* function. Documented invariants from comments: Q2_0 scale = block absolute max with codes 'round(w/d) clamped to [-1, 2], then add 1' (00=-d, 01=0, 10=+d, 11=2d); Q4_0 scale = max/-8; Q5_0 scale = max/-16 with the 5th bit in packed qh; Q8_0 scale = amax/127; Q8_1 asserts QK8_1 == 32 and stores a per-block sum 's' for dot products; Q8_K uses iscale -127 rather than -128, the comment noting 'We need this change for IQ2_XXS, else the AVX implementation becomes very awkward'; K-quants use 256-element super-blocks whose 16/32-element sub-blocks carry 6-bit packed scales (and dmin for q2_K/q4_K/q5_K, with 'as we are deducting the min, scales are always positive'), q3_K adds an hmask overflow bit, q6_K uses int8 scales with a 6-bit ql/qh weight split, q8_K uses fp32 d plus 16-element bsums. The IQ family is grid/codebook-based on static tables (kgrid_2bit_256 for IQ2_XXS, kgrid_2bit_512 for IQ2_XS, kgrid_2bit_1024 for IQ2_S, kgrid_256 for IQ3_XXS under a '3-bit using D4 lattice' banner, kgrid_512 for IQ3_S, kgrid_1bit_2048 for IQ1_S/M; kmap_size 43692 for the iq1/iq2 family, 4096 for iq3), with neighbour tables built at init time via a three-pass qsort-based parallel/serial/parallel construction in iq2xs_init_impl / iq3xs_init_impl (OpenMP, schedule(dynamic, 64)), guarded at runtime by asserts reading 'forgot to call ggml_quantize_init()?'. The iq1/iq3 quantizers contain explicit tuned fudge factors (1.0125f, 1.033f, 1.125f, 1.1125f) with the comment 'This is a fudge factor. Don't ask me why it improves the result.', and IQ2_S applies d * 0.9875f to the block scale. Per-type GROUP_MAX_EPS thresholds treat tiny groups as all-zero (1e-15f general, 1e-8f for IQ3_XXS/IQ2_S, 1e-7f for IQ1_M, 1e-12f for IQ1_S). A HAVE_BUGGY_APPLE_LINKER guard inserts volatile loop counters to defeat unrolling, cited as 'a bug in Apple ld64 1015.7'. The file ends with ggml_validate_row_data, a big switch over enum ggml_type validating stored scale fields (d/dmin/e) with __AVX2__ / __ARM_NEON fast paths for BF16/F16/F32, IQ1_M decoding its packed 4-byte scale first, NVFP4 skipped ('UE4M3 scales are uint8_t - all byte values are valid'), and I8-I64 doing nothing. No dot-product or mul_mat kernels appear anywhere in the file: it is the quantize/dequantize/validate layer, with CPU SIMD GEMM kernels living elsewhere in the ggml-cpu layer. No URLs or paper references appear in code comments; the page's link set is GitHub navigation chrome (61 site URLs), repo links (ggml-org/llama.cpp, its tree/master, ggml/src tree, commits for this path, issues/pulls/discussions/actions/projects/wiki/security/pulse), and the raw source URL. Self-referentially: this turn I am running on Qwen3.8-27B-UD-Q4_K_XL.gguf, and block_q4_K - the base block of that model's quantization - is one of the structs defined in this very file.",
+  "candidate_priors": [
+   {
+    "claim": "llama.cpp's ggml/src/ggml-quants.c (master, ~5,639 lines / 222 KB) contains only quantize/dequantize/validate implementations for its block quant types - it defines no dot-product or mul_mat kernels, so the CPU SIMD GEMM kernels must live in a separate translation unit in the ggml-cpu layer.",
+    "confidence": 0.72
+   },
+   {
+    "claim": "The llama.cpp IQ (improved quantization) family (iq1_s/m, iq2_*, iq3_*, iq4_nl/xs) is codebook/grid-based: quantizers snap each sub-block to the nearest point on a static grid table (kgrid_2bit_256/512/1024, kgrid_256/512, kgrid_1bit_2048), with neighbour maps built once at ggml_quantize_init via a three-pass qsort construction; the runtime failure mode for skipping init is an assert reading 'forgot to call ggml_quantize_init()?'.",
+    "confidence": 0.7
+   },
+   {
+    "claim": "llama.cpp's quantizers embed explicit tuned fudge factors (1.0125f, 1.033f, 1.125f, 1.1125f in the iq1/iq3 families; 0.9875f on the IQ2_S block scale) whose only documented rationale is the in-code comment 'Don't ask me why it improves the result' - their quality gains are empirical, not derived.",
+    "confidence": 0.68
+   },
+   {
+    "claim": "llama.cpp K-quants (q2_K through q8_K) store 256-element super-blocks with 16/32-element sub-blocks carrying 6-bit packed scales (plus dmin for q2_K/q4_K/q5_K); scale precision varies with weight precision - q3_K adds an hmask overflow bit, q6_K uses int8 scales with a 6-bit ql/qh split, and q8_K uses an fp32 scale plus per-16-element bsums for dot products.",
+    "confidence": 0.72
+   },
+   {
+    "claim": "block_q4_K, defined in ggml-quants.c, is the base block format of the model serving this turn (Qwen3.8-27B-UD-Q4_K_XL.gguf); whether the XL suffix maps onto block_q4_K as defined here or to a distinct XL variant declared elsewhere is unverified.",
+    "confidence": 0.55
+   },
+   {
+    "claim": "ggml-quants.c still carries a HAVE_BUGGY_APPLE_LINKER workaround (volatile loop counters to prevent unrolling) citing 'a bug in Apple ld64 1015.7' - a specific Apple linker bug workaround lives in the core quantization code.",
+    "confidence": 0.6
+   },
+   {
+    "claim": "Per the fetched blob page, github.com/.../blob/... URLs for large C files return only page chrome to a text fetcher (0 code lines); the reliable form for the reading pipeline is the raw source URL (raw.githubusercontent.com), which the blob page itself links.",
+    "confidence": 0.75
+   }
+  ],
+  "concept_candidates": [
+   {
+    "label": "K-quants (super-block quantization)",
+    "definition": "llama.cpp quant family (q2_K through q8_K) storing 256-element super-blocks whose 16/32-element sub-blocks each carry 6-bit scales (and mins for some types), quantized against super-block scale d and dmin.",
+    "link_hints": []
+   },
+   {
+    "label": "IQ (improved quantization) codebook family",
+    "definition": "Grid/codebook quantizers (iq1_s/m, iq2_*, iq3_*, iq4_nl/xs) that snap sub-blocks to nearest points on static grid tables, with neighbour maps built at init; enables sub-3-bit and non-linear 4-bit formats.",
+    "link_hints": []
+   },
+   {
+    "label": "Reference vs weighted quantization split",
+    "definition": "llama.cpp's per-type trio: a deterministic *_ref quantizer for model creation, a *_impl quantizer taking per-row quant_weights, and a public quantize_* wrapper that dispatches between the two based on weight presence.",
+    "link_hints": []
+   },
+   {
+    "label": "Ternary (TQ) quantization",
+    "definition": "tq1_0/tq2_0 block formats mapping weights to {-1, 0, +1} and encoding them in base 3 with 3^5=243 ceiling-division scaling, reaching ~1.5 bits per weight.",
+    "link_hints": []
+   },
+   {
+    "label": "ggml_validate_row_data",
+    "definition": "The final function of ggml-quants.c: a switch over ggml_type validating stored scale fields (d/dmin/e) per block format, with AVX2/ARM NEON fast paths for float types and skip/no-op cases for NVFP4 and integer types.",
+    "link_hints": []
+   }
+  ]
+ },
+ "stage2_prompts": [
+  {
+   "attempt": 0,
+   "run_id": "reading-6192d5cc-1ba0-5e66-859c-8378dbac50cb",
+   "prompt_chars": 7047,
+   "timeout_sec": 3500
+  },
+  {
+   "attempt": 1,
+   "run_id": "reading-119c24ca-f90e-5f5f-a66f-43b6fe55b902",
+   "prompt_chars": 7047,
+   "timeout_sec": 3500
+  },
+  {
+   "attempt": 2,
+   "run_id": "reading-50b3d5d9-e91d-549a-9036-1422a99d5d9e",
+   "prompt_chars": 20879,
+   "timeout_sec": 3500
+  },
+  {
+   "attempt": 3,
+   "run_id": "reading-d372ce39-992a-5bc8-b5c0-4f5fa593c231",
+   "prompt_chars": 20879,
+   "timeout_sec": 3500
+  }
+ ],
+ "retained_chars": 5544,
+ "captured_at": "2026-10-14T06:10Z"
+}

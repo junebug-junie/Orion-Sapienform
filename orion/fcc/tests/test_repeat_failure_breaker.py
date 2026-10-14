@@ -200,3 +200,130 @@ def test_settings_json_installs_catch_all_pretooluse_hook():
     cmd = entry["hooks"][0]["command"]
     assert cmd.startswith("/usr/local/bin/python3 ") and "repeat_failure_breaker.py" in cmd
     assert cmd.endswith("--threshold 4")
+
+
+# --- reading-only rules: refetch + tool window (seed c31227dc Stage 2, 2026-10-14) ---
+
+HUGE = Path(__file__).parent / "fixtures" / "fcc_reading_refetch_c31227dc.jsonl"
+QUANTS_C = "https://raw.githubusercontent.com/ggml-org/llama.cpp/master/ggml/src/ggml-quants.c"
+# Motor budget the fixed listener gives this turn: 3500 s attempt, harness started
+# 249 s in (stance), 10 s reply slack -> 3241 s; turn start = deadline - budget.
+HUGE_BUDGET = 3500 - 249 - 10
+
+
+def _huge_entries():
+    return [json.loads(line) for line in HUGE.read_text().splitlines()[1:]]
+
+
+def _replay_reading(entries, *, refetch_limit=1, fraction=0.5, budget=HUGE_BUDGET):
+    """Re-run the turn's tool calls through run_hook's rules at their real start times.
+    Returns {tool_use_id: block message or None}."""
+    env = {"ORION_TURN_BUDGET_SEC": str(budget), "ORION_TURN_DEADLINE_EPOCH": str(budget)}
+    out = {}
+    for i, entry in enumerate(entries):
+        for block in entry["message"]["content"]:
+            if block.get("type") != "tool_use":
+                continue
+            history = rfb.CallHistory().feed_all(entries[:i])
+            window = rfb.tool_window_state(env, fraction=fraction, now=float(entry["_t"]))
+            if window is not None:
+                out[block["id"]] = rfb.tool_window_message(block["name"], *window)
+                continue
+            refetch = rfb.decide_refetch(history, block["name"], block["input"], limit=refetch_limit)
+            out[block["id"]] = rfb.refetch_message(*refetch) if refetch else None
+    return out
+
+
+def test_canonical_fetch_url_folds_github_raw_spellings_only():
+    variants = [
+        QUANTS_C,
+        "https://raw.githubusercontent.com/ggml-org/llama.cpp/refs/heads/master/ggml/src/ggml-quants.c",
+        "https://github.com/ggml-org/llama.cpp/raw/refs/heads/master/ggml/src/ggml-quants.c",
+        "https://github.com/ggml-org/llama.cpp/raw/master/ggml/src/ggml-quants.c/",
+        "  HTTPS://Raw.GitHubUserContent.com/ggml-org/llama.cpp/master/ggml/src/ggml-quants.c#L10 ",
+    ]
+    assert {rfb.canonical_fetch_url(v) for v in variants} == {QUANTS_C}
+    # The blob page is a different document (GitHub chrome), and a query string is content.
+    blob = "https://github.com/ggml-org/llama.cpp/blob/master/ggml/src/ggml-quants.c"
+    assert rfb.canonical_fetch_url(blob) == blob
+    assert rfb.canonical_fetch_url("https://a.example/x?page=2") != rfb.canonical_fetch_url("https://a.example/x")
+    assert rfb.canonical_fetch_url("http://a.example/x") == rfb.canonical_fetch_url("https://a.example/x")
+    assert rfb.canonical_fetch_url("https://a.example:8080/x") != rfb.canonical_fetch_url("https://a.example/x")
+
+
+def test_huge_page_replay_refetch_blocks_the_three_repeat_fetches():
+    verdicts = _replay_reading(_huge_entries(), fraction=0.0)
+    blocked = {k for k, v in verdicts.items() if v}
+    # t20: same .c "slice 100000-200000"; t21: same .h again; t99: refs/heads spelling of the .c.
+    assert blocked == {"t20", "t21", "t99"}
+    assert all("already fetched" in verdicts[k] for k in blocked)
+    assert "already fetched 1 time" in verdicts["t20"]  # the real turn then fetched it again
+    assert "cannot read a later slice" in verdicts["t20"]
+
+
+def test_huge_page_replay_tool_window_closes_before_the_last_two_fetches():
+    verdicts = _replay_reading(_huge_entries(), refetch_limit=0)
+    assert {k for k, v in verdicts.items() if v} == {"t99", "t100"}  # started at 1922 s > 0.5 x 3241 s
+    assert "tool window for this turn is closed" in verdicts["t100"]
+    # On the old 7200 s motor budget the window never closed inside the 3500 s attempt.
+    assert not any(_replay_reading(_huge_entries(), refetch_limit=0, budget=7200).values())
+
+
+def test_failed_fetch_does_not_count_toward_refetch():
+    url = {"url": QUANTS_C, "prompt": "a"}
+    h = _hist(("WebFetch", url, True))
+    assert rfb.decide_refetch(h, "WebFetch", {"url": QUANTS_C, "prompt": "b"}, limit=1) is None
+    h = _hist(("WebFetch", url, False))
+    assert rfb.decide_refetch(h, "WebFetch", {"url": QUANTS_C, "prompt": "b"}, limit=1) == (QUANTS_C, 1)
+    assert rfb.decide_refetch(h, "WebFetch", {"url": QUANTS_C}, limit=2) is None
+    assert rfb.decide_refetch(h, "WebFetch", {"url": QUANTS_C}, limit=0) is None
+    assert rfb.decide_refetch(h, "WebSearch", {"query": QUANTS_C}, limit=1) is None
+
+
+def test_tool_window_fails_open_without_clock_env():
+    assert rfb.tool_window_state({}, fraction=0.5, now=1e12) is None
+    assert rfb.tool_window_state({"ORION_TURN_BUDGET_SEC": "x", "ORION_TURN_DEADLINE_EPOCH": "1"}, fraction=0.5, now=1e12) is None
+    assert rfb.tool_window_state({"ORION_TURN_BUDGET_SEC": "100", "ORION_TURN_DEADLINE_EPOCH": "1000"}, fraction=0.0, now=999) is None
+    env = {"ORION_TURN_BUDGET_SEC": "100", "ORION_TURN_DEADLINE_EPOCH": "1000"}  # turn started at 900
+    assert rfb.tool_window_state(env, fraction=0.5, now=949) is None
+    assert rfb.tool_window_state(env, fraction=0.5, now=950) == (50, 100)
+
+
+def test_hook_process_reading_rules(tmp_path):
+    import os
+    import time
+
+    t = tmp_path / "session.jsonl"
+    t.write_text("".join(json.dumps(e) + "\n" for e in _hist_entries_fetched()))
+    payload = {"transcript_path": str(t), "tool_name": "WebFetch",
+               "tool_input": {"url": QUANTS_C, "prompt": "characters 100000 to 200000"}}
+
+    def run(args, env_extra):
+        env = {k: v for k, v in os.environ.items() if not k.startswith("ORION_TURN_")}
+        env.update(env_extra)
+        return subprocess.run([sys.executable, rfb.__file__, *args], input=json.dumps(payload),
+                              capture_output=True, text=True, timeout=30, env=env)
+
+    # Refetch armed: blocked. Not armed (non-reading turn): allowed.
+    proc = run(["--threshold", "3", "--refetch-limit", "1"], {})
+    assert proc.returncode == 2 and "already fetched" in proc.stderr
+    assert run(["--threshold", "3"], {}).returncode == 0
+    # Tool window closed on the turn's own clock: any tool blocked, before the transcript is read.
+    now = time.time()
+    clock = {"ORION_TURN_BUDGET_SEC": "100", "ORION_TURN_DEADLINE_EPOCH": str(int(now + 10))}
+    proc = run(["--tool-window-fraction", "0.5"], clock)
+    assert proc.returncode == 2 and "tool window" in proc.stderr
+    open_clock = {"ORION_TURN_BUDGET_SEC": "100", "ORION_TURN_DEADLINE_EPOCH": str(int(now + 95))}
+    assert run(["--tool-window-fraction", "0.5"], open_clock).returncode == 0
+
+
+def _hist_entries_fetched():
+    return [_use(0, "WebFetch", {"url": QUANTS_C, "prompt": "slice"}), _res(0, False, "digest")]
+
+
+def test_settings_json_carries_reading_flags_only_when_armed():
+    plain = json.loads(rfb.hook_settings_json(threshold=3, python_bin="py"))
+    assert "--refetch-limit" not in plain["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
+    armed = json.loads(rfb.hook_settings_json(threshold=3, python_bin="py", refetch_limit=1, tool_window_fraction=0.5))
+    assert armed["hooks"]["PreToolUse"][0]["hooks"][0]["command"].endswith(
+        "--threshold 3 --refetch-limit 1 --tool-window-fraction 0.5")

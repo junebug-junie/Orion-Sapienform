@@ -61,7 +61,7 @@ from orion.world_pulse_read.concept_search import (
     related_objects,
     with_related_objects,
 )
-from orion.world_pulse_read.fetch_text import load_retained_texts
+from orion.world_pulse_read.fetch_text import WEBFETCH_LIMIT_NOTE, load_retained_texts
 from orion.world_pulse_read.timestamps import stamp_server_created_at
 from orion.world_pulse_read.queue import (
     ALREADY_READ,
@@ -193,8 +193,39 @@ def _turn_payload(source: str, fcc_model_label: Optional[str]) -> dict:
     return payload
 
 
+# Our own error codes for "the attempt ran out of time" (reading_turn_listener,
+# durable-runs reading_graph, fcc_motor). A retry after one of these must not
+# send the model down the same road.
+_TIMEOUT_FAILURE_MARKERS = (
+    # durable-runs' attempt timeout surfaces as turn_exception:TimeoutError (the live
+    # seed c31227dc failure); a bare TimeoutError elsewhere (bus/RPC) is not this.
+    "turn_exception:TimeoutError", "turn_timeout", "fcc_timeout", "fcc_stream_stalled",
+    "workflow_deadline",
+)
+
+
+def is_timeout_failure(error: str | None) -> bool:
+    text = str(error or "")
+    return any(marker in text for marker in _TIMEOUT_FAILURE_MARKERS)
+
+
+def retry_note(prior_error: str | None) -> str:
+    """Extra instruction for a retry whose previous attempt timed out; "" otherwise."""
+    if not is_timeout_failure(prior_error):
+        return ""
+    reason = " ".join(str(prior_error).split())[:_FAIL_REASON_DETAIL_MAX_LEN]
+    return (
+        f"\nRETRY: the previous attempt of this pass ran out of time ({reason}). Do not call "
+        "WebFetch or WebSearch this time. Answer from the handoff "
+        "and any retained text above, and say in summary what could not be read.\n"
+    )
+
+
 def _build_stage2_prompt(
-    handoff: WorldPulseReadHandoffV1, trace_id: str, claim_context: ClaimContextV1 | None = None
+    handoff: WorldPulseReadHandoffV1,
+    trace_id: str,
+    claim_context: ClaimContextV1 | None = None,
+    prior_error: str | None = None,
 ) -> str:
     """Prompt and schema must agree, the way Stage 1's prompt already does.
 
@@ -235,7 +266,9 @@ def _build_stage2_prompt(
         # Enforced server-side (fetch_provenance.py); said here so the model does not
         # spend output on hops that are dropped.
         "need_stage1_urls may only hold URLs written in a page that was fetched (by you this "
-        "turn, or by Stage 1) or URLs you fetched yourself this turn; a guessed URL is dropped, never read."
+        "turn, or by Stage 1) or URLs you fetched yourself this turn; a guessed URL is dropped, never read.\n"
+        + WEBFETCH_LIMIT_NOTE
+        + retry_note(prior_error)
         # Only when this read has retained text, stored concepts and existing candidates
         # (orion/world_pulse_read/assertions.py); otherwise the prompt is unchanged.
         + claim_prompt_section(claim_context or ClaimContextV1())
@@ -367,6 +400,8 @@ class WorldPulseReadStage2Pipeline:
         self._stop = asyncio.Event()
         self.last_round_trips: int = 0
         self._stage2_fetches: list[SourceFetchEvidenceV1] = []
+        # stage2_error left by the previous attempt (retry_note reads it).
+        self._prior_stage2_error: str | None = None
         # Refused Stage 1 re-entries by reason, since process start (like
         # unknown_keys_dropped_total). Each refusal is logged with its URL; the stored
         # stage2_result_json keeps the model's need_stage1_urls as asked.
@@ -614,6 +649,7 @@ class WorldPulseReadStage2Pipeline:
         self._settlement_run_id = None
         self._claim_context = await self._build_claim_context(handoff)
         self._stage2_fetches = []
+        self._prior_stage2_error = await self._prior_error(claim.seed.seed_id)
 
         try:
             result = _as_stage2_result(
@@ -707,6 +743,15 @@ class WorldPulseReadStage2Pipeline:
         await publish_lifecycle(self._bus, claim.seed, "stage2_completed", source=self._source_ref, trace_id=result.trace_id)
         await self._project_assertions()
         return None
+
+    async def _prior_error(self, seed_id: str) -> str | None:
+        """The last Stage 2 failure on this seed (a retry's reason), if any."""
+        try:
+            return await self._with_conn(lambda conn: conn.fetchval(
+                "SELECT stage2_error FROM world_pulse_read_seed WHERE seed_id=$1", seed_id))
+        except Exception:  # noqa: BLE001 - a missing note costs the hint, not the pass
+            logger.warning("world_pulse_read_stage2_prior_error_unavailable seed=%s", seed_id, exc_info=True)
+            return None
 
     async def _build_claim_context(self, handoff: WorldPulseReadHandoffV1) -> ClaimContextV1:
         """Subjects, existing candidates and retained text for this read's claims. Empty
@@ -1014,7 +1059,8 @@ class WorldPulseReadStage2Pipeline:
         """Production path: unified turn + fenced JSON. Tests replace this."""
         trace_id = str(uuid4())
         outcome = await self._generate(
-            _build_stage2_prompt(handoff, trace_id, self._claim_context), trace_id,
+            _build_stage2_prompt(handoff, trace_id, self._claim_context,
+                                 prior_error=getattr(self, "_prior_stage2_error", None)), trace_id,
             seed_id=handoff.seed_ref.seed_id,
             # Recall searches the source and what stage 1 concluded, not the
             # stage-2 prompt (which embeds the whole stage-1 handoff JSON).

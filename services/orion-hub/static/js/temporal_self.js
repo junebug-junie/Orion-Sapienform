@@ -45,7 +45,14 @@
     return String((arc && arc.subject_ref) || "(no subject)");
   }
 
-  function arcRow(arc) {
+  // A time on the given day reads as HH:MM; one on another day (carried arcs) gets its date.
+  function fmtOnDay(iso, dayId) {
+    if (!iso) return "";
+    if (dayId && String(iso).slice(0, 10) < dayId) return fmtAt(iso);
+    return fmtTime(iso);
+  }
+
+  function arcRow(arc, dayId) {
     const open = (arc.status || "") === "open";
     return {
       arc_id: arc.arc_id || "",
@@ -53,7 +60,7 @@
       label: arcLabel(arc),
       began_at: arc.began_at || null,
       ended_at: arc.ended_at || null,
-      span: `${fmtTime(arc.began_at)}–${open ? "now" : fmtTime(arc.ended_at)}`,
+      span: `${fmtOnDay(arc.began_at, dayId)}–${open ? "now" : fmtTime(arc.ended_at)}`,
       dwell: fmtDuration(arc.cumulative_dwell_sec),
       dwell_sec: Number(arc.cumulative_dwell_sec) || 0,
       returns: Number(arc.attention_returns) || 0,
@@ -63,11 +70,11 @@
   }
 
   // Groups arcs by kind (biggest group first), each group oldest first.
-  function timelineModel(arcs) {
+  function timelineModel(arcs, dayId) {
     const groups = new Map();
     (Array.isArray(arcs) ? arcs : []).forEach((arc) => {
       if (!arc || typeof arc !== "object") return;
-      const row = arcRow(arc);
+      const row = arcRow(arc, dayId);
       if (!groups.has(row.kind)) groups.set(row.kind, []);
       groups.get(row.kind).push(row);
     });
@@ -93,7 +100,8 @@
     const im = (immune && immune.immune) || null;
     const findings = im && Array.isArray(im.findings) ? im.findings : [];
     let openCount = null;
-    if (im && Number.isFinite(Number(im.open))) openCount = Number(im.open);
+    if (im && !im.last_run_at) openCount = null;   // never ran: a 0 here would read as calm
+    else if (im && im.open != null && Number.isFinite(Number(im.open))) openCount = Number(im.open);
     else if (reg && Number.isFinite(Number(reg.immune_findings_open))) openCount = Number(reg.immune_findings_open);
     return {
       arousal_level: arousal.arousal_level || "unknown",
@@ -109,6 +117,7 @@
       immune_open: openCount,
       findings,
       immune_last_run_at: im ? im.last_run_at || null : null,
+      immune_never_ran: Boolean(im && !im.last_run_at),
       immune_skipped: im ? im.skipped || null : null,
       immune_error: im ? im.error || null : null,
       warnings: (reg && Array.isArray(reg.warnings)) ? reg.warnings : [],
@@ -129,13 +138,13 @@
     return String(f.summary || f.message || f.kind || f.code || JSON.stringify(f));
   }
 
-  const api = { fmtDuration, arcLabel, arcRow, timelineModel, regulationModel, shiftDay, findingText, ARC_LIMIT };
+  const api = { fmtDuration, fmtOnDay, arcLabel, arcRow, timelineModel, regulationModel, shiftDay, findingText, ARC_LIMIT };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   if (typeof document === "undefined") return;
 
   // --- DOM layer ------------------------------------------------------------------------------
   const $ = (id) => document.getElementById(id);
-  const view = { today: null, dayId: null };
+  const view = { today: null, dayId: null, seq: 0 };
 
   function el(tag, attrs, text) {
     const node = document.createElement(tag);
@@ -189,10 +198,10 @@
     });
   }
 
-  function renderTimeline(arcs, total) {
+  function renderTimeline(arcs, total, dayId) {
     const box = $("tsTimeline");
     box.replaceChildren();
-    const groups = timelineModel(arcs);
+    const groups = timelineModel(arcs, dayId);
     const shown = groups.reduce((acc, g) => acc + g.count, 0);
     $("tsArcCount").textContent = total && total > shown ? `${shown} of ${total} arcs` : `${shown} arcs`;
     if (!groups.length) { box.append(el("div", { class: "muted" }, "No arcs for this day.")); return; }
@@ -228,7 +237,8 @@
       ? `${model.rest.state} · level ${model.rest.level ?? "?"} / ${model.rest.threshold ?? "?"}` +
         (model.rest.last_discharge_at ? ` · last slept ${fmtAt(model.rest.last_discharge_at)}` : "")
       : "no rest reading";
-    $("tsImmuneCount").textContent = model.immune_open == null ? "?" : String(model.immune_open);
+    $("tsImmuneCount").textContent = model.immune_open != null ? String(model.immune_open)
+      : (model.immune_never_ran ? "not run yet" : "?");
     const meta = [];
     if (model.immune_last_run_at) meta.push(`last run ${fmtAt(model.immune_last_run_at)}`);
     if (model.immune_skipped) meta.push(`skipped: ${model.immune_skipped}`);
@@ -251,10 +261,10 @@
                                      imm.status === "fulfilled" ? imm.value : null));
   }
 
-  function renderFrame(frame, isToday) {
+  function renderFrame(frame, isToday, closedAt) {
     $("tsDayId").textContent = frame.day_id || "?";
     $("tsDayPhase").textContent = frame.day_phase || "?";
-    $("tsAsOf").textContent = isToday ? `as of ${fmtAt(frame.as_of)}` : `closed ${fmtAt(frame.as_of)}`;
+    $("tsAsOf").textContent = isToday ? `as of ${fmtAt(frame.as_of)}` : `closed ${fmtAt(closedAt || frame.as_of)}`;
     const active = $("tsActiveArc");
     active.replaceChildren(renderArcCell(isToday ? frame.active_arc : null));
     $("tsActiveLabel").textContent = isToday ? "Active arc" : "Active arc (none on a closed day)";
@@ -263,19 +273,25 @@
     $("tsWarnings").textContent = warnings.join(" · ");
   }
 
+  // Every load takes a ticket; a load whose ticket is no longer the latest drops its result, so a
+  // slow poll of today cannot overwrite a past day the user navigated to meanwhile.
   async function loadToday() {
+    const seq = ++view.seq;
     setStatus("loading…");
     try {
       const frame = await getJson("/api/temporal-self/frame");
+      if (seq !== view.seq) return;
       view.today = frame.day_id;
       view.dayId = frame.day_id;
       $("tsDayPicker").value = frame.day_id;
       $("tsDayPicker").max = frame.day_id;
       renderFrame(frame, true);
       const arcs = await getJson(`/api/temporal-self/arcs?day_id=${encodeURIComponent(frame.day_id)}&limit=${ARC_LIMIT}`);
-      renderTimeline(arcs.arcs, frame.arcs_today_total);
+      if (seq !== view.seq) return;
+      renderTimeline(arcs.arcs, frame.arcs_today_total, frame.day_id);
       setStatus("");
     } catch (err) {
+      if (seq !== view.seq) return;
       setStatus(`Could not load today: ${err.message}`, true);
     }
   }
@@ -283,17 +299,32 @@
   async function loadDay(dayId) {
     if (!dayId) return;
     if (view.today && dayId >= view.today) { loadToday(); return; }
+    const seq = ++view.seq;
     setStatus(`loading ${dayId}…`);
     try {
       const day = await getJson(`/api/temporal-self/day/${encodeURIComponent(dayId)}`);
+      if (seq !== view.seq) return;
       view.dayId = dayId;
       $("tsDayPicker").value = dayId;
-      renderFrame(day.frame || { day_id: dayId, as_of: day.closed_at }, false);
-      renderTimeline(day.arcs, (day.frame || {}).arcs_today_total);
+      renderFrame(day.frame || { day_id: dayId, as_of: day.closed_at }, false, day.closed_at);
+      renderTimeline(day.arcs, (day.frame || {}).arcs_today_total, dayId);
       setStatus("");
     } catch (err) {
+      if (seq !== view.seq) return;
+      $("tsDayPicker").value = view.dayId || view.today || "";
       setStatus(err.status === 404 ? `${dayId}: not closed (or not chronicled)` : `Could not load ${dayId}: ${err.message}`, true);
     }
+  }
+
+  // Inside the Hub tab iframe, document.hidden only tracks the browser tab, not the Hub panel's
+  // display:none -- a hidden panel gives the frame element no offsetParent.
+  function isVisible() {
+    if (document.hidden) return false;
+    try {
+      const host = root.frameElement;
+      if (host && host.offsetParent === null) return false;
+    } catch (_) { /* cross-origin: assume visible */ }
+    return true;
   }
 
   function refresh() {
@@ -308,6 +339,6 @@
     $("tsDayPicker").addEventListener("change", () => loadDay($("tsDayPicker").value));
     $("tsRefresh").addEventListener("click", refresh);
     refresh();
-    setInterval(() => { if (!document.hidden && (!view.dayId || view.dayId === view.today)) refresh(); }, 60000);
+    setInterval(() => { if (isVisible() && (!view.dayId || view.dayId === view.today)) refresh(); }, 60000);
   });
 })(typeof window !== "undefined" ? window : globalThis);

@@ -75,13 +75,59 @@ def test_arcs_forwards_day_kind_limit_and_drops_absent_params(wire):
     assert dict(up.calls[-1].url.params) == {"limit": "2000"}
 
 
-@pytest.mark.parametrize("url", ["/api/temporal-self/day/2026-1-2", "/api/temporal-self/day/..%2Fhealth",
-                                 "/api/temporal-self/arcs?day_id=yesterday", "/api/temporal-self/arcs?kind=A;B"])
-def test_bad_input_is_400_and_never_reaches_upstream(wire, url):
+@pytest.mark.parametrize("url,code", [
+    ("/api/temporal-self/day/2026-1-2", 400),
+    ("/api/temporal-self/day/2026-10-12%0A", 400),          # `$` would accept a trailing newline
+    ("/api/temporal-self/day/%D9%A2026-10-12", 400),        # non-ASCII digit
+    ("/api/temporal-self/day/..%2Fhealth", 404),            # never routed
+    ("/api/temporal-self/arcs?day_id=yesterday", 400),
+    ("/api/temporal-self/arcs?day_id=2026-10-12%0A", 400),
+    ("/api/temporal-self/arcs?kind=A;B", 400),
+    ("/api/temporal-self/arcs?kind=concern%0A", 400),
+    ("/api/temporal-self/arcs?limit=0", 422),
+    ("/api/temporal-self/arcs?limit=2001", 422),
+])
+def test_bad_input_is_rejected_and_never_reaches_upstream(wire, url, code):
     up = Upstream()
     resp = wire(up).get(url)
-    assert resp.status_code in (400, 404)
+    assert resp.status_code == code
     assert up.calls == []
+
+
+def test_malformed_base_url_is_502_not_500(wire):
+    resp = wire(Upstream(), base="http://[::1").get("/api/temporal-self/frame")
+    assert resp.status_code == 502
+    assert "durable_runs_unavailable" in resp.json()["detail"]
+
+
+FULL_ARC = {"kind": "concern", "arc_id": "c1", "status": "open", "began_at": "2026-10-13T06:00:00Z",
+            "ended_at": None, "subject_ref": "open-loop-x", "subject_label": "", "cumulative_dwell_sec": 0.0,
+            "attention_returns": 5, "carried_from_previous_day": True, "closed_reason": None,
+            "segments": [{"began_at": "x"}] * 50, "evidence_refs": ["e"] * 50, "body": {"big": 1}}
+
+
+def test_arcs_and_day_are_slim_by_default_and_verbatim_with_full(wire):
+    day = {"day_id": "2026-10-12", "closed_at": "2026-10-13T06:00:00Z", "frame": FRAME, "arcs": [FULL_ARC]}
+    up = Upstream({"/temporal-self/arcs": (200, {"day_id": "2026-10-13", "count": 1, "arcs": [FULL_ARC]}),
+                   "/temporal-self/day/2026-10-12": (200, day)})
+    client = wire(up)
+    slim = client.get("/api/temporal-self/arcs").json()["arcs"][0]
+    assert set(slim) == set(mod.ARC_FIELDS)
+    assert slim["attention_returns"] == 5 and slim["carried_from_previous_day"] is True
+    assert "full" not in dict(up.calls[-1].url.params)
+    assert client.get("/api/temporal-self/arcs?full=true").json()["arcs"][0] == FULL_ARC
+    slim_day = client.get("/api/temporal-self/day/2026-10-12").json()
+    assert set(slim_day["arcs"][0]) == set(mod.ARC_FIELDS) and slim_day["frame"] == FRAME
+    assert slim_day["closed_at"] == "2026-10-13T06:00:00Z"
+    assert client.get("/api/temporal-self/day/2026-10-12?full=1").json()["arcs"][0] == FULL_ARC
+
+
+def test_page_js_reads_only_fields_the_slim_arc_keeps():
+    js = (HUB / "static" / "js" / "temporal_self.js").read_text(encoding="utf-8")
+    body = js.split("function arcRow", 1)[1].split("function timelineModel", 1)[0]
+    import re as _re
+    used = set(_re.findall(r"arc\.([a-z_]+)", body))
+    assert used <= set(mod.ARC_FIELDS), used - set(mod.ARC_FIELDS)
 
 
 def test_closed_day_proxies_and_open_day_404_passes_through(wire):

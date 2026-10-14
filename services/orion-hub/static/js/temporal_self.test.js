@@ -76,3 +76,14 @@ test("shiftDay crosses month and year boundaries and rejects junk", () => {
   assert.strictEqual(ts.shiftDay("2026-12-31", 1), "2027-01-01");
   assert.strictEqual(ts.shiftDay("yesterday", -1), null);
 });
+
+test("immune that never ran reads as unknown, not as a calm 0", () => {
+  const m = ts.regulationModel({ immune_findings_open: 0 }, { immune: { open: 0, findings: [], last_run_at: null } });
+  assert.strictEqual(m.immune_open, null);
+  assert.strictEqual(m.immune_never_ran, true);
+});
+
+test("fmtOnDay dates a time from an earlier day, keeps same/later-day times short", () => {
+  assert.notStrictEqual(ts.fmtOnDay("2026-10-12T06:00:00Z", "2026-10-13"), ts.fmtOnDay("2026-10-13T06:00:00Z", "2026-10-13"));
+  assert.strictEqual(ts.fmtOnDay(null, "2026-10-13"), "");
+});

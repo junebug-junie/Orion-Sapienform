@@ -3796,6 +3796,9 @@ Hub's existing durable-runs base URL, reused rather than adding a second key): `
 `frame`, `day/{day_id}`, `arcs?day_id=&kind=&limit=`, `threads`, `cursors`, `regulation`
 (`/regulation/state`) and `immune` (`/health` `temporal_self.immune`). Upstream down or timed out
 (5 s) is a 502 naming the reason; an upstream 404/503 passes through with its detail; never a 500.
+`arcs` and `day` return slim arcs (only the fields the tab renders, ~5x smaller) unless `full=true`;
+`arcs` defaults to `limit=2000` (upstream's max, not its default 500) so the tab sees the whole day.
+The page polls every 60 s only while viewing today and while the Hub panel is visible.
 Code: `scripts/temporal_self_routes.py`, `templates/temporal_self.html`, `static/js/temporal_self.js`,
 `static/js/temporal_self_tab.js`.
 

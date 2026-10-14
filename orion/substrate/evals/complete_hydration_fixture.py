@@ -49,3 +49,14 @@ class CappedClient(RecordingFalkorClient):
 def build(client, **kw):
     return FalkorSubstrateStore(FalkorSubstrateStoreConfig(uri="redis://unused", **kw), client=client)
 
+
+
+def topic_concept(node_id: str, label: str) -> ConceptNodeV1:
+    """A topic-foundry-shaped world concept (run-scoped node_id, label identity)."""
+    return ConceptNodeV1(
+        node_id=node_id, label=label, anchor_scope="world",
+        temporal=SubstrateTemporalWindowV1(observed_at=datetime(2026, 10, 14, tzinfo=timezone.utc)),
+        provenance=SubstrateProvenanceV1(authority="local_inferred", source_kind="topic_foundry.topic",
+                                        source_channel="orion:topic_foundry:run:x",
+                                        producer="topic_foundry_adapter"),
+    )

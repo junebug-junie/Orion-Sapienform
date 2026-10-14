@@ -9,25 +9,16 @@ Two defects fed each other:
   2. one duplicate identity failed the whole hydrate, so the hub booted with
      an empty cache and the next ingest duplicated every identity again.
 """
-from datetime import datetime, timezone
-
 from orion.core.schemas.cognitive_substrate import (
-    ConceptNodeV1, SubstrateGraphRecordV1, SubstrateProvenanceV1, SubstrateTemporalWindowV1,
+    SubstrateGraphRecordV1,
 )
-from orion.substrate.evals.complete_hydration_fixture import CappedClient, build
+from orion.substrate.evals.complete_hydration_fixture import CappedClient, build, topic_concept
 from orion.substrate.falkor_store import NODE_BY_IDENTITY_CYPHER, SUBSTRATE_INDEXES
 from orion.substrate.materializer import SubstrateGraphMaterializer
 from orion.substrate.reconcile import SubstrateIdentityResolver
 
 
-def _topic_concept(node_id: str, label: str) -> ConceptNodeV1:
-    return ConceptNodeV1(
-        node_id=node_id, label=label, anchor_scope="world",
-        temporal=SubstrateTemporalWindowV1(observed_at=datetime(2026, 10, 14, tzinfo=timezone.utc)),
-        provenance=SubstrateProvenanceV1(authority="local_inferred", source_kind="topic_foundry.topic",
-                                        source_channel="orion:topic_foundry:run:x",
-                                        producer="topic_foundry_adapter"),
-    )
+_topic_concept = topic_concept
 
 
 def test_duplicate_identity_hydrates_every_node_and_resolves_to_smallest_node_id(caplog):

@@ -272,3 +272,25 @@ def test_service_requeues_on_write_failure(monkeypatch) -> None:
         return svc._presence_registry.has_pending()
 
     assert asyncio.run(go()) is True
+
+
+def test_keepalive_cadence_while_present_only() -> None:
+    reg = PresenceRegistry(grace_sec=120.0, transitions_enabled=True, unknown_after_sec=120.0, keepalive_sec=600.0)
+    for k in range(0, 1301, 5):  # present 0..1300 s, observed every 5 s
+        reg.record("cam0", PERSON, now=T + k)
+    rows = reg.drain_transitions()
+    # opening row at 0, keepalives at 600 and 1200 (each 600 s after the previous row)
+    assert _states(rows) == [(None, "present"), ("present", "present"), ("present", "present")]
+    assert [r["occurred_at"].timestamp() for r in rows] == [T, T + 600, T + 1200]
+    assert len({r["transition_id"] for r in rows}) == 3
+    # Nobody here: no keepalives for absent.
+    for k in range(1400, 4000, 5):
+        reg.record("cam0", EMPTY, now=T + k)
+    assert _states(reg.drain_transitions()) == [("present", "recent"), ("recent", "absent")]
+
+
+def test_keepalive_disabled_at_zero() -> None:
+    reg = PresenceRegistry(grace_sec=120.0, transitions_enabled=True, keepalive_sec=0)
+    for k in range(0, 2000, 5):
+        reg.record("cam0", PERSON, now=T + k)
+    assert _states(reg.drain_transitions()) == [(None, "present")]

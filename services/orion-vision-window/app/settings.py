@@ -48,6 +48,10 @@ class Settings(BaseSettings):
     # without it each write logs presence_transition_write_failed and the
     # state machine carries on.
     VISION_PRESENCE_TRANSITIONS_ENABLED: bool = True
+    # While someone is present/recent, a same-state keepalive row this often. The
+    # Temporal Self reducer closes a company arc with no row for 2.5x this
+    # (ReducerConfig.company_stale_sec = 1500 s), so keep the two in step.
+    VISION_PRESENCE_KEEPALIVE_SEC: float = 600.0
     POSTGRES_URI: str = ""
 
     # Identity hypothesis intake -- separate channel and separate consumer

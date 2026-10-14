@@ -135,6 +135,8 @@ def test_presence_transitions_read_from_the_s1_table_and_fold_into_company_arcs(
         rows = [
             ("t1", "cam0", None, "present", 0, False, None),
             ("t2", "cam0", "present", "present", 2, True, "juniper"),
+            ("k1", "cam0", "present", "present", 12, False, None),  # keepalives every 10 min
+            ("k2", "cam0", "present", "present", 22, False, None),
             ("t3", "cam0", "present", "recent", 30, False, None),
             ("t4", "cam0", "recent", "absent", 32, False, None),
             ("t5", "walkway", None, "present", 5, False, None),  # not a room stream: not company
@@ -148,7 +150,7 @@ def test_presence_transitions_read_from_the_s1_table_and_fold_into_company_arcs(
         _, events = await SourceReader(pool, TZ).read(lo, hi, ticks=False, kinds=["presence_transition"])
         _, fevents = await FakeReader(w).read(lo, hi, ticks=False, kinds=["presence_transition"])
         assert sorted(e.model_dump_json() for e in events) == sorted(e.model_dump_json() for e in fevents)
-        assert {e.source_ref: e.label for e in events} == {"t1": "", "t2": "juniper", "t3": "", "t4": ""}
+        assert {e.source_ref: e.label for e in events} == {"t1": "", "t2": "juniper", "k1": "", "k2": "", "t3": "", "t4": ""}
         store = ChronicleStore(pool)
         (arc,) = [a for a in await store.arcs("2026-10-10") if a["kind"] == "company"]
         arc = canon(arc)

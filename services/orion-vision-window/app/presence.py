@@ -84,6 +84,11 @@ changes, both stated so a reader is never surprised:
 * `present -> present` once per company stretch, when identity becomes
   confirmed after the stretch opened (a face match usually lands a few seconds
   after the person is first seen). `occurred_at` is the confirming observation.
+* Same-state keepalives (`present -> present`, `recent -> recent`) every
+  `keepalive_sec` (VISION_PRESENCE_KEEPALIVE_SEC, 600 s) while someone is
+  present, `occurred_at` = the keepalive observation. They let the chronology
+  close a stretch whose producer died without writing `unknown` (no row for
+  2.5x the keepalive => closed as stale).
 
 `from_state` is NULL on the first row after a process start: the producer
 cannot know what happened while it was down, and the reducer reads that NULL as
@@ -229,6 +234,7 @@ class PresenceRegistry:
         write_min_interval_sec: float = 5.0,
         transitions_enabled: bool = False,
         unknown_after_sec: float = 120.0,
+        keepalive_sec: float = 600.0,
     ) -> None:
         self._grace_sec = grace_sec
         self._write_min_interval_sec = write_min_interval_sec
@@ -237,6 +243,8 @@ class PresenceRegistry:
         # Transition history (seam S1). All per stream, all in process.
         self._transitions_enabled = bool(transitions_enabled)
         self._unknown_after_sec = float(unknown_after_sec)
+        # <= 0 disables keepalives (the reducer would then close long stretches as stale).
+        self._keepalive_sec = float(keepalive_sec)
         self._written_state: dict[str, str] = {}  # last to_state yielded
         self._last_transition_at: dict[str, float] = {}
         self._last_observed_at: dict[str, float] = {}
@@ -338,6 +346,16 @@ class PresenceRegistry:
         elif state == "present" and confirmed and not self._stretch_confirmed.get(stream_id):
             self._emit(stream_id, "present", ts, identity_confirmed=True, label=label)
             self._stretch_confirmed[stream_id] = True
+        elif (
+            state in ("present", "recent")
+            and self._keepalive_sec > 0
+            and ts - self._last_transition_at.get(stream_id, ts) >= self._keepalive_sec
+        ):
+            # Same-state keepalive: proves the producer is alive while someone is here, so the
+            # chronology can close a stretch whose producer died without writing `unknown`.
+            self._emit(stream_id, state, ts, identity_confirmed=confirmed, label=label)
+            if confirmed:
+                self._stretch_confirmed[stream_id] = True
 
     def sweep_stale(self, now: float, *, force: bool = False) -> int:
         """Yield an ``unknown`` row for every stream silent longer than

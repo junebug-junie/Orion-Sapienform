@@ -96,6 +96,12 @@ class ReducerConfig:
     stuck_segment_sec: float = 4 * 3600.0
     # Rule 1's "broadcast winner unchanged all day" warning needs at least this many winners.
     unchanged_winner_min_ticks: int = 100
+    # Company (seam S1): vision-window writes a same-state keepalive row every
+    # VISION_PRESENCE_KEEPALIVE_SEC (600 s) while someone is present. An open company arc with
+    # no row for 2.5x that means the producer died without writing ``unknown`` (kill -9, OOM,
+    # host crash): closed source_stale at its last row, so "someone has been here" is never
+    # asserted past the evidence. 2.5x tolerates one lost keepalive plus write/read lag.
+    company_stale_sec: float = 1500.0
 
 
 LANE_RULES = {
@@ -108,8 +114,9 @@ LANE_RULES = {
     "imagery": "one visual reverie chain",
     "sleep": "one completed dream cycle",
     "company": ("presence_transition presence_id (room camera); opens on present, recent is the grace "
-                "period, closes on absent (process_ended, at the last sighting) or unknown / a producer "
-                "restart (source_stale); label only when identity was confirmed; spans days"),
+                "period, same-state keepalives only refresh; closes on absent (process_ended, at the last "
+                "sighting), unknown / a producer restart / no row for company_stale_sec (source_stale); "
+                "label only when identity was confirmed; spans days"),
 }
 
 
@@ -571,7 +578,7 @@ def _end_company(state: TemporalSelfStateV1, arc: TemporalSelfArcV1, reason: str
         del state.active["company"]
 
 
-def _fold_presence(state: TemporalSelfStateV1, e: TemporalSelfEventV1) -> None:
+def _fold_presence(state: TemporalSelfStateV1, e: TemporalSelfEventV1) -> None:  # noqa: C901
     """Company: someone at the room camera. The subject is the camera (presence_id), never a
     person; the enrolled label rides along only on rows whose identity was confirmed."""
     assert e.subject_ref is not None and state.day_id is not None
@@ -580,6 +587,16 @@ def _fold_presence(state: TemporalSelfStateV1, e: TemporalSelfEventV1) -> None:
     ref = _ref(e)
     arc = _company_arc(state, e.subject_ref)
     from_state = e.payload.get("from_state")
+    if from_state is not None and from_state == to_state:
+        # A keepalive (or a mid-stretch identity confirmation): refreshes an open arc, never
+        # opens or splits one. With no open arc (it timed out, or its opening row was lost)
+        # there is no stretch whose start is known, so nothing is claimed.
+        if arc is None:
+            return
+        _extend(arc, max(t, arc.last_seen_at), ref, accrue=True)
+        if e.payload.get("identity_confirmed") and e.label and not arc.subject_label:
+            arc.subject_label = e.label
+        return
     if arc is not None and from_state in (None, "absent", "unknown"):
         # The row that should have closed this arc never arrived (a producer restart writes
         # from_state NULL; a lost write leaves absent/unknown as the prior state). Nothing was
@@ -759,6 +776,8 @@ def _expire(state: TemporalSelfStateV1, at: datetime, cfg: ReducerConfig) -> Non
             _suspend(state, arc, by=None)
         if arc.kind in EXCLUSIVE_LANES and arc.status == "suspended" and _secs(arc.last_seen_at, at) > _return_window(arc.kind, cfg):
             _close(arc, "return_window_expired", arc.last_seen_at)
+        if arc.kind == "company" and arc.status == "open" and _secs(arc.last_seen_at, at) > cfg.company_stale_sec:
+            _end_company(state, arc, "source_stale", arc.last_seen_at)  # no keepalive: producer gone
 
 
 def _roll_day(state: TemporalSelfStateV1, cfg: ReducerConfig) -> None:
@@ -776,8 +795,9 @@ def _roll_day(state: TemporalSelfStateV1, cfg: ReducerConfig) -> None:
     for arc in list(state.arcs.values()):
         if arc.day_id != old_day or arc.status == "closed":
             continue
+        last_row_at = arc.last_seen_at
         if arc.kind == "company" and arc.status == "open":
-            # Rows are written only on change: an open stretch is still going at midnight.
+            # Still open at midnight (the stale timeout already ran at day_end): going on.
             _extend(arc, max(day_end, arc.last_seen_at), None, accrue=True)
         _close(arc, "day_boundary", arc.last_seen_at)
         carried.append(arc.arc_id)
@@ -785,7 +805,8 @@ def _roll_day(state: TemporalSelfStateV1, cfg: ReducerConfig) -> None:
             continuations.append(TemporalSelfArcV1(
                 arc_id=arc_id_for(next_day, "company", arc.subject_ref, arc.arc_id), day_id=next_day,
                 kind="company", subject_ref=arc.subject_ref, subject_label=arc.subject_label,
-                began_at=day_end, last_seen_at=day_end, status="open",
+                # last_seen keeps the real last row, so the stale timeout keeps counting from it.
+                began_at=day_end, last_seen_at=last_row_at, status="open",
                 segments=[ArcSegmentV1(began_at=day_end, ended_at=day_end)],
                 carried_from_previous_day=True, carried_from_arc_id=arc.arc_id,
             ))

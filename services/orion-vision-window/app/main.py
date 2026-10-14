@@ -136,6 +136,7 @@ class WindowService:
             # A stream with no window for longer than a window is considered
             # stale is dark: the service's own staleness contract, not a new knob.
             unknown_after_sec=settings.STALE_AFTER_MS / 1000.0,
+            keepalive_sec=settings.VISION_PRESENCE_KEEPALIVE_SEC,
         )
         # Background presence writes, tracked so they cannot be GC'd mid-flight
         # (asyncio.create_task holds only a weak reference -- same reasoning

@@ -10,7 +10,7 @@ import pytest
 from orion.gpu_pool.config import PoolConfig, RoleSpec, check_max_holds, load_pool_config
 from orion.gpu_pool.discovery import load_profiles
 from orion.gpu_pool.scheduler import CardLive, Grant, Recall, RoleLive, SwapUnload, hold_cap
-from orion.gpu_pool.tests.test_scheduler import CFG, T0, cards, grants, lease, live, of, run
+from orion.gpu_pool.tests.test_scheduler import CFG, COLD, T0, cards, grants, lease, live, of, run, cold
 
 SEAT = "agent-gpu2"
 TWO = live(**{SEAT: RoleLive(SEAT, True, 2, 131072, False)})   # Bonsai 2 x 131072 (stage 7.2, live)
@@ -234,7 +234,7 @@ def test_owner_reclaim_recalls_both_runs_then_unloads_once_both_leave():
 def test_max_hold_drain_recalls_both_runs():
     old = cards(gpu2=CardLive("gpu2", swapped_in={SEAT}, loaded_at=T0 - timedelta(seconds=9000)))
     a, b = two_idle_runs()
-    recalls = sorted((r.lease_id, r.reason) for r in of(Recall, sched(home_busy() + [a, b], crds=old)))
+    recalls = sorted((r.lease_id, r.reason) for r in of(Recall, sched(home_busy() + [a, b], cfg=COLD, crds=old)))
     assert recalls == [("a", "max_hold"), ("b", "max_hold")]
 
 
@@ -252,7 +252,7 @@ def test_urgent_pauses_only_the_most_recent_of_two_runs():
 def test_a_failed_probe_never_makes_a_held_seat_look_empty(max_holds):
     """slots 0 (probe down) must not charge the idle hold as lent: the seat stays occupied, so a
     draining seat is not unloaded under a live run (identical to main at max_holds 1)."""
-    cfg = with_role(CFG, SEAT, max_holds=max_holds)
+    cfg = with_role(COLD, SEAT, max_holds=max_holds)
     down = live(**{SEAT: RoleLive(SEAT, False)})
     old = cards(gpu2=CardLive("gpu2", swapped_in={SEAT}, loaded_at=T0 - timedelta(seconds=10800)))
     h = hold("h", "granted", SEAT)

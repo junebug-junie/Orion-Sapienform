@@ -30,7 +30,7 @@ class World:
         self.up = set(LIVE) | {"world", "diffusion"}
 
 
-def make(store=None, saver=None, clock=None, world=None, bus=None, guards=CLEAR_GUARDS, mode="observe"):
+def make(store=None, saver=None, clock=None, world=None, bus=None, guards=CLEAR_GUARDS, mode="observe", cfg=None):
     """mode=observe by default: these tests pin the actuation engine itself, and several adopt a seat
     "loaded by the old path" through observe's liveness shortcut. Stage 5.7's enforce behaviour (boot
     reconcile, operator holds, the pause) is in tests/test_stage5_7_enforce.py."""
@@ -47,8 +47,9 @@ def make(store=None, saver=None, clock=None, world=None, bus=None, guards=CLEAR_
                             "default_generation_settings": {"n_ctx": ctx}, "modalities": {"vision": False}},
                      checked_at=clock())
 
-    rt = PoolRuntime(cfg=CFG, profiles=PROFILES, store=store or MemoryStore(),
-                     graph=build_lease_graph(lambda: CFG, saver or MemorySaver()), bus=bus or FakeBus(),
+    cfg = cfg or CFG
+    rt = PoolRuntime(cfg=cfg, profiles=PROFILES, store=store or MemoryStore(),
+                     graph=build_lease_graph(lambda: cfg, saver or MemorySaver()), bus=bus or FakeBus(),
                      prober=prober, now=clock, probe_interval_sec=0, mode=mode)
     rt.guard_states = dict(guards)
     rt._world = world

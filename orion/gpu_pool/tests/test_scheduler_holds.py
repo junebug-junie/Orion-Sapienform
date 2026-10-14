@@ -8,7 +8,7 @@ from datetime import timedelta
 from orion.gpu_pool.scheduler import (
     Abort, CardLive, Grant, Recall, SwapBlocked, SwapLoad, SwapUnload, Unavailable, schedule,
 )
-from orion.gpu_pool.tests.test_scheduler import CFG, T0, cards, grants, lease, live, of, run
+from orion.gpu_pool.tests.test_scheduler import CFG, COLD, T0, cards, grants, lease, live, of, run
 
 CLEAR = {"thermal": None}
 AFTER = CFG.swap_after_wait_sec("agent-gpu2")
@@ -157,11 +157,11 @@ def test_seat_loaded_past_max_hold_drains_recalls_then_unloads():
     loaded = cards(gpu2=CardLive("gpu2", swapped_in={"agent-gpu2"}, loaded_at=T0 - timedelta(seconds=9000)))
     h = hold("granted", "agent-gpu2", lease_id="h")
     q = hold(lease_id="q")
-    decisions = run([hold("granted", "agent", lease_id="home"), h, q], crds=loaded)
+    decisions = run([hold("granted", "agent", lease_id="home"), h, q], crds=loaded, cfg=COLD)
     assert [(r.lease_id, r.reason) for r in of(Recall, decisions)] == [("h", "max_hold")]
     assert "q" not in grants(decisions)                 # nothing new lands on a draining seat
     assert not of(SwapUnload, decisions)                # busy: unload waits for the hold to leave
-    assert [(u.role, u.reason) for u in of(SwapUnload, run([], crds=loaded))] == [("agent-gpu2", "max_hold")]
+    assert [(u.role, u.reason) for u in of(SwapUnload, run([], crds=loaded, cfg=COLD))] == [("agent-gpu2", "max_hold")]
 
 
 def test_observed_seat_without_loaded_at_is_never_max_held():

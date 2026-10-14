@@ -78,6 +78,15 @@ Stage 5 (docs/superpowers/specs/2026-09-29-gpu-pool-stage5-world-diffusion-gener
      a lease blocked only by the mutex reserves the partner role, so later leases are not granted
      there and the partner drains. A lease a free role would otherwise
      take is reported as Serialized(reason="serialized:<role>"), never silent
+
+Warm standby (2026-10-14, Juniper: "gpu2 should not sit idle while agent work exists"):
+  W1 a swap seat with ``swap.standby: warm`` loads with no demand (SwapLoad reason="standby") once
+     every role it evicts has no lease, none waiting, and none held for standby_after_idle_sec
+     (CardLive.role_active_at; a clock not started blocks). Guards, cooldown and min_residency apply
+     (SwapBlocked); so does any active shed (SwapBlocked "shed:<name>") and, after a failed standby
+     load, standby_retry_after_fail_sec (SwapBlocked "standby_backoff"). Still settling is silent.
+  W2 a loaded warm seat is never unloaded for idleness and never drained on the max_hold_sec clock;
+     a resident's own demand drains and unloads it exactly as for any swap seat (rule 2 above)
 """
 from __future__ import annotations
 
@@ -85,7 +94,7 @@ from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 from typing import Collection, Iterable, Mapping, Union
 
-from orion.gpu_pool.config import PoolConfig
+from orion.gpu_pool.config import PoolConfig, RoleSpec
 from orion.schemas.gpu_pool import URGENT_PREEMPT as PREEMPT
 
 ACTIVE = ("granted", "recalling")
@@ -115,6 +124,11 @@ class CardLive:
     swap_role: str | None = None             # the seat a loading/unloading/fault state is about
     residency_until: datetime | None = None  # after an unload, the evicted residents stay until this
     loaded_at: datetime | None = None        # when the seat on this card was loaded (max_hold_sec)
+    # Last time a lease held each non-swap role on this card (diffusion, world on gpu2): a
+    # warm-standby seat loads only once every role it evicts is standby_after_idle_sec quiet. A
+    # role missing here = its clock has not started (the runtime starts every clock at boot):
+    # no warm load, fail closed.
+    role_active_at: dict[str, datetime] = field(default_factory=dict)
     # Runtime bookkeeping for the actuation engine; the scheduler reads neither.
     swap_generation: int = 0
     swap_action: dict | None = None
@@ -557,8 +571,10 @@ def schedule(
                 ctx.draining.add(seat)
             # H4: a seat loaded for max_hold_sec gives its card back (loaded_at is only set when
             # the pool itself loaded or adopted the seat, never by observation alone).
+            # A warm-standby seat gives its card back on a resident's demand (above), not on a
+            # clock: a max_hold drain with nobody waiting would only unload and re-warm it.
             loaded_at = [cards[c].loaded_at for c in spec.cards if cards[c].loaded_at]
-            if not spec.operator_only and spec.max_hold_sec and loaded_at \
+            if not spec.operator_only and spec.max_hold_sec and loaded_at and not _warm(spec) \
                     and (now - min(loaded_at)).total_seconds() >= spec.max_hold_sec:
                 ctx.draining.add(seat)
                 max_held.add(seat)
@@ -881,6 +897,8 @@ def schedule(
                     for l in holders:
                         if l.status == "granted":
                             recall(l, "max_hold")
+            elif _warm(spec):
+                pass   # warm standby: stays loaded while idle; only a resident's demand drains it
             elif not busy_seat and not any(seat in cfg.classes[q.work_class].roles for q in waiting):
                 last = max((c.last_active_at for c in seat_cards if c.last_active_at), default=None)
                 if last is None or (now - last).total_seconds() >= d.swap_idle_unload_sec:
@@ -906,10 +924,54 @@ def schedule(
                                    f"min_ctx_tokens={max(q.min_ctx_tokens for q in unknown)}"))
             continue
         if not (wanting and residents_idle and not residents_wanted):
+            if _warm(spec) and residents_idle and not residents_wanted and not ctx.evicted(seat):
+                standby = _standby_blocked(cfg, spec, seat_cards, evicted, now, shed)
+                if standby is not None:
+                    if standby[0] != "residents_recent":
+                        out.append(SwapBlocked(seat, *standby))
+                    continue   # residents_recent: hysteresis, silent (it changes every tick)
+                blocked = _load_blocked(spec.swap.guards, seat_cards, now, guards)
+                out.append(SwapBlocked(seat, *blocked) if blocked else SwapLoad(seat, "standby"))
             continue
         blocked = _load_blocked(spec.swap.guards if spec.swap else [], seat_cards, now, guards)
         out.append(SwapBlocked(seat, *blocked) if blocked else SwapLoad(seat, "demand"))
     return out
+
+
+# Outcomes of a load that did not leave the seat serving (runtime._finish).
+_STANDBY_FAILED = frozenset({"failed_restored", "failed", "refused", "unreachable", "fault_cleared", "stuck"})
+
+
+def _warm(spec: RoleSpec) -> bool:
+    return spec.swap is not None and spec.swap.standby == "warm" and not spec.operator_only
+
+
+def _standby_blocked(cfg: PoolConfig, spec: RoleSpec, seat_cards: list[CardLive], evicted: list[str], now: datetime,
+                     shed: Mapping[str, str] | None) -> tuple[str, str | None] | None:
+    """Why a warm-standby load may not start (on top of _load_blocked), or None.
+    residents_recent: what the seat evicts was active less than standby_after_idle_sec ago (or
+    the clock has not started) -- the hysteresis that keeps a painting burst from flapping the
+    seat. shed: the pool is shedding work for heat/power; a 27B load is not started then."""
+    if shed:
+        name = sorted(set(shed.values()))[0]
+        return f"shed:{name}", None
+    act = seat_cards[0].swap_action or {}
+    if act.get("reason") == "standby" and act.get("action") == "load" \
+            and act.get("outcome") in _STANDBY_FAILED and act.get("finished_at"):
+        try:
+            finished = datetime.fromisoformat(str(act["finished_at"]))
+        except ValueError:
+            finished = None
+        if finished is not None and (now - finished).total_seconds() < spec.swap.standby_retry_after_fail_sec:
+            return "standby_backoff", str(act.get("outcome"))
+    for role in evicted:
+        for c in seat_cards:
+            if c.card not in cfg.roles[role].cards:
+                continue
+            seen = c.role_active_at.get(role)
+            if seen is None or (now - seen).total_seconds() < spec.swap.standby_after_idle_sec:
+                return "residents_recent", role
+    return None
 
 
 def _load_blocked(seat_guards: list[str], seat_cards: list[CardLive], now: datetime,

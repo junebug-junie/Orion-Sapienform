@@ -72,7 +72,14 @@ roles:
                # (stage 5.3 cutover; 5.6 deleted the load/unload bridge verbs and the controller's bridge).
                # after_wait_sec keeps today's 1200s elastic trigger. guards: thermal only -- visual_baseline was
                # deleted in stage 5.4 (a reverie-visual diffusion hold reclaims gpu2 through the queue).
-               swap: {evicts: [diffusion], after_wait_sec: 1200, guards: [thermal]},
+               # standby: warm (Juniper 2026-10-14, "gpu2 should not sit idle while agent work exists"):
+               # loaded whenever diffusion has been quiet for standby_after_idle_sec, never unloaded
+               # for idleness or on the max_hold_sec clock; a diffusion lease still drains and unloads
+               # it as before. A failed warm load waits standby_retry_after_fail_sec. Rollback:
+               # standby: off. Not in the launch digest (pool and controller need no lockstep), but the
+               # controller parses this file: circe's controller must run this parser before circe pulls.
+               swap: {evicts: [diffusion], after_wait_sec: 1200, guards: [thermal],
+                      standby: warm, standby_after_idle_sec: 900, standby_retry_after_fail_sec: 3600},
                launch: {actuator: circe, compose: services/orion-llamacpp-host/docker-compose.atlas-workers.yml,
                         env_file: services/orion-llamacpp-host/.env, service: atlas-agent-burst,
                         compose_profile: agent-burst,

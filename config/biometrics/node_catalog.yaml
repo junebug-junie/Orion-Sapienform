@@ -57,7 +57,13 @@ nodes:
     aliases:
       - circe
       - circe.tail348bbe.ts.net
-    role: burst_gpu
+    # Was `burst_gpu` until 2026-10-14: wrong. circe carries the bulk of Orion's
+    # daily cognition -- the chat lane (Qwen3.6-35B on gpu0), the agent lanes,
+    # metacog/fast, and diffusion -- across 4 GPUs (2x V100-PCIE-32GB,
+    # PG500-216, V100-SXM2-32GB; `nvidia-smi -L` on circe, 2026-10-14). Role is
+    # free text read into biometrics node-context summaries; nothing branches
+    # on its value. Pinned by tests/test_static_body_descriptions.py.
+    role: primary_cognition_gpu
     # Was false: circe was intermittent/burst-only. A real llamacpp chat worker
     # (orion-atlas-llamacpp-chat, port 8011) has been running on circe continuously
     # for days (2026-07-18) -- expected_online=false was making pressure_organ.py

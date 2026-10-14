@@ -9,6 +9,20 @@ nodes:
   - node_id: athena
   - node_id: circe
   - node_id: prometheus
+  # hecate added 2026-10-14: an on-demand GPU server for deep agentic thinking
+  # (the vLLM `agent-deep` role, config/gpu_pool.yaml). Not on 24/7 -- Juniper
+  # powers it up when deep agent work needs it, so its silence is expected,
+  # not an outage (expected_online: false in config/biometrics/node_catalog
+  # .yaml). It was missing here, so self_study's physical_topology facts told
+  # Orion their body had no hecate. node:hecate already existed in the live
+  # field off-lattice (biometrics perturbations, expected_offline_suppression
+  # 1.0 since 2026-10-11); listing it here only adds the default node channels
+  # reconcile seeds for every lattice node (availability 1.0 there is the
+  # pre-existing expected_offline_suppression floor, not new).
+  # Deliberately NO edge: hecate is down most of the time and reports no
+  # biometrics of its own, so any edge would feed a capability from a node
+  # whose readings are seeded defaults, not measurements.
+  - node_id: hecate
 
 capabilities:
   - capability_id: llm_inference

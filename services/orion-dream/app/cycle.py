@@ -28,7 +28,7 @@ from orion.schemas.drive_reading import DriveReadingV1
 from orion.schemas.telemetry.dream import DreamInternalTriggerV1
 
 from app.recombine import Complete, control_pairs, dream_pairs, recombine
-from app.replay import compute_pressure, keyed_candidates, prior_keys, select_replay
+from app.replay import arc_candidates, arc_replay_slots, compute_pressure, keyed_candidates, prior_keys, select_replay
 from app.story import story_trigger
 from app.settings import settings
 
@@ -61,6 +61,11 @@ class CycleDeps:
     # orion:regulation:latest. None (flag off) or any failure = arousal unknown = the idle
     # query alone, exactly as before arousal existed.
     read_arousal: Optional[Callable[[], Awaitable[object]]] = None
+    # Closed Temporal Self arcs (rev 4 patch 7): (since, until) -> temporal_self_arc rows.
+    # None (DREAM_REPLAY_ARC_CANDIDATES_ENABLED off) or any failure = no arc candidates,
+    # the sleep exactly as before. Read only once a sleep proceeds, after the pressure read:
+    # arcs are replay material, never pressure, has_candidates or the rest drive.
+    load_arc_rows: Optional[Callable[[datetime, datetime], list[dict[str, Any]]]] = None
     # Set by run_cycle_once when arousal held a sleep this check (e.g. "arousal_strained"),
     # else None, so a manual run can say "held" instead of "not due".
     hold_reason: Optional[str] = None
@@ -133,6 +138,20 @@ def too_soon(now: datetime, last_end: Optional[datetime]) -> bool:
 PUBLISH_TIMEOUT_SEC = 5.0
 # Same bound for the arousal read: a slow Redis reads as unknown, never as a hold.
 AROUSAL_READ_TIMEOUT_SEC = 2.0
+# The arc read has its own 2 s statement_timeout (cycle_store); this bounds a hung connect.
+ARC_READ_TIMEOUT_SEC = 5.0
+
+
+async def read_arc_candidates(deps: CycleDeps, since: datetime, until: datetime) -> list:
+    """Closed-arc replay candidates for [since, until). Never raises; any failure is []."""
+    if deps.load_arc_rows is None:
+        return []
+    try:
+        rows = await asyncio.wait_for(asyncio.to_thread(deps.load_arc_rows, since, until), timeout=ARC_READ_TIMEOUT_SEC)
+        return arc_candidates(rows, since, until)
+    except Exception:  # noqa: BLE001 -- no arcs is the pre-arc sleep, never a failed one
+        logger.warning("dream_arc_candidates_failed -- replaying without arcs", exc_info=True)
+        return []
 
 
 async def read_arousal_view(deps: CycleDeps, now: datetime) -> ArousalView:
@@ -305,7 +324,18 @@ async def run_cycle_once(deps: CycleDeps, *, trigger: str = "pressure", force: b
         await _publish_after_sleep(deps, cycle, last_start)
         return cycle
 
-    replay = select_replay(candidates, settings.DREAM_REPLAY_MAX)
+    # Mixing rule: arcs join the pool as their own source_kind, capped at a third of the
+    # replay (replay.arc_replay_slots: 4 of 12), so the existing sources keep at least two
+    # thirds; ARC_WEIGHT_MAX (0.8) keeps a critical metacog ahead of every arc. Arcs never
+    # start a sleep on their own: with no existing candidate the cycle above is `empty`.
+    # Arcs above an existing item's weight do displace it, within that third.
+    arcs = await read_arc_candidates(deps, pressure.since, started)
+    arc_slots = arc_replay_slots(settings.DREAM_REPLAY_MAX)
+    replay = select_replay(candidates + arcs, settings.DREAM_REPLAY_MAX, source_caps={"arc": arc_slots})
+    # Control pool: the same top arcs replay could take, not all 20. Uniform sampling over
+    # 20 arcs + ~5-12 existing items would make most control fragments arcs while the dream
+    # arm is capped at a third: source mix would confound the dream-vs-control comparison.
+    pool = candidates + arcs[:arc_slots]
 
     compaction_delta_id = None
     if deps.rem_compaction is not None:
@@ -316,7 +346,7 @@ async def run_cycle_once(deps: CycleDeps, *, trigger: str = "pressure", force: b
 
     d_pairs = dream_pairs(replay, settings.DREAM_HYPOTHESES_PER_CYCLE)
     c_pairs = control_pairs(
-        candidates, settings.DREAM_CONTROL_PER_CYCLE, seed=cycle_id, exclude=d_pairs
+        pool, settings.DREAM_CONTROL_PER_CYCLE, seed=cycle_id, exclude=d_pairs
     )
     rem = await recombine(
         d_pairs + c_pairs, deps.complete, cycle_id=cycle_id,
@@ -342,6 +372,7 @@ async def run_cycle_once(deps: CycleDeps, *, trigger: str = "pressure", force: b
         llm_failures=rem.failures,
         compaction_delta_id=compaction_delta_id,
         note=f"pairs dream={len(d_pairs)} control={len(c_pairs)}"
+        + (f" | arc candidates={len(arcs)}" if deps.load_arc_rows is not None else "")
         + (f" | overdue: {settings.DREAM_LOOKBACK_HOURS:g} h without crossing threshold" if backstop else ""),
     )
     persisted = await asyncio.to_thread(deps.persist_cycle, cycle)

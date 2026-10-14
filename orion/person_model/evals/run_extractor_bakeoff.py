@@ -34,6 +34,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from orion.person_model.extract import PERSON_LABEL, RELATION_LABEL, spans_to_mentions  # noqa: E402
+from orion.person_model.person import local_first  # noqa: E402
 
 GLINER_MODELS = {
     "gliner_medium-v2.1": ("urchade/gliner_medium-v2.1", "40ec419335d09393f298636f471328b722c6da9e"),

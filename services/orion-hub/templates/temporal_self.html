@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Temporal Self</title>
+<style>
+/* Theme tokens shared with templates/gpu_pool.html so the tab matches Hub in both modes. */
+:root {
+  color-scheme: light;
+  --plane: #f9f9f7; --surface: #fcfcfb; --ink: #0b0b0b; --ink-2: #52514e; --ink-muted: #898781;
+  --grid: #e1e0d9; --axis: #c3c2b7; --hairline: rgba(11,11,11,0.10);
+  --series-1: #2a78d6; --good: #0ca30c; --warning: #fab219; --critical: #d03b3b; --good-text: #006300;
+  --shadow: 0 1px 2px rgba(11,11,11,0.05), 0 4px 12px rgba(11,11,11,0.04);
+}
+@media (prefers-color-scheme: dark) {
+  :root:where(:not([data-theme="light"])) {
+    color-scheme: dark;
+    --plane: #0d0d0d; --surface: #1a1a19; --ink: #ffffff; --ink-2: #c3c2b7; --ink-muted: #898781;
+    --grid: #2c2c2a; --axis: #383835; --hairline: rgba(255,255,255,0.10);
+    --series-1: #3987e5; --good-text: #0ca30c;
+    --shadow: 0 1px 2px rgba(0,0,0,0.4), 0 4px 12px rgba(0,0,0,0.3);
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --plane: #0d0d0d; --surface: #1a1a19; --ink: #ffffff; --ink-2: #c3c2b7; --ink-muted: #898781;
+  --grid: #2c2c2a; --axis: #383835; --hairline: rgba(255,255,255,0.10);
+  --series-1: #3987e5; --good-text: #0ca30c;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--plane); color: var(--ink); font: 13px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+main { max-width: 1200px; margin: 0 auto; padding: 12px; display: flex; flex-direction: column; gap: 12px; }
+header { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+h1 { font-size: 18px; margin: 0; }
+h2 { font-size: 14px; margin: 0 0 8px; }
+.muted { color: var(--ink-muted); font-size: 12px; }
+.err { color: var(--critical); }
+.panel { background: var(--surface); border: 1px solid var(--hairline); border-radius: 12px; padding: 12px; box-shadow: var(--shadow); min-width: 0; }
+.badge { display: inline-block; padding: 1px 8px; border-radius: 999px; border: 1px solid var(--hairline); font-size: 11px; }
+.big { font-size: 16px; font-weight: 600; }
+.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; }
+.row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+button, input { font: inherit; color: var(--ink); background: var(--plane); border: 1px solid var(--axis); border-radius: 8px; padding: 4px 10px; }
+button { cursor: pointer; }
+button:hover { border-color: var(--ink-2); }
+.thread { padding: 4px 0; border-bottom: 1px solid var(--hairline); }
+.thread:last-child { border-bottom: 0; }
+details.kind-group { border: 1px solid var(--hairline); border-radius: 8px; padding: 6px 8px; margin-bottom: 8px; }
+details.kind-group summary { cursor: pointer; font-weight: 600; }
+.scroll { overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 6px; }
+th, td { text-align: left; padding: 3px 6px; border-bottom: 1px solid var(--hairline); }
+th { color: var(--ink-2); font-weight: 600; }
+td.time, td.num { white-space: nowrap; font-variant-numeric: tabular-nums; }
+td.num, th.num { text-align: right; }
+td.label { word-break: break-word; }
+tr.st-open td { color: var(--good-text); font-weight: 600; }
+ul { margin: 4px 0 0; padding-left: 18px; }
+</style>
+</head>
+<body>
+<main id="temporalSelfRoot">
+  <header>
+    <h1>Orion's day</h1>
+    <span class="badge" id="tsDayId">?</span>
+    <span class="badge" id="tsDayPhase">?</span>
+    <span class="muted" id="tsAsOf"></span>
+    <span class="row" style="margin-left:auto">
+      <button id="tsPrevDay" type="button" aria-label="Previous day">◀</button>
+      <input id="tsDayPicker" type="date" aria-label="Pick a closed day" />
+      <button id="tsNextDay" type="button" aria-label="Next day">▶</button>
+      <button id="tsToday" type="button">Today</button>
+      <button id="tsRefresh" type="button">Refresh</button>
+    </span>
+  </header>
+  <div id="tsStatus" class="muted" role="status"></div>
+  <div id="tsWarnings" class="muted"></div>
+
+  <div class="grid">
+    <section class="panel">
+      <h2 id="tsActiveLabel">Active arc</h2>
+      <div id="tsActiveArc"></div>
+    </section>
+    <section class="panel">
+      <h2>Open threads</h2>
+      <div id="tsThreads"></div>
+    </section>
+    <section class="panel">
+      <h2>Regulation <span class="muted">(now)</span></h2>
+      <div><span class="big" id="tsArousal">?</span> <span class="muted" id="tsArousalSince"></span></div>
+      <div class="muted" id="tsArousalReasons"></div>
+      <div style="margin-top:6px"><strong>Rest drive:</strong> <span id="tsRest">?</span></div>
+      <div style="margin-top:6px"><strong>Immune findings open:</strong> <span id="tsImmuneCount">?</span>
+        <span class="muted" id="tsImmuneMeta"></span></div>
+      <ul id="tsImmuneFindings"></ul>
+    </section>
+  </div>
+
+  <section class="panel">
+    <h2>Timeline <span class="muted" id="tsArcCount"></span></h2>
+    <div id="tsTimeline"></div>
+  </section>
+</main>
+<script src="/static/js/temporal_self.js?v={{HUB_UI_ASSET_VERSION}}"></script>
+</body>
+</html>

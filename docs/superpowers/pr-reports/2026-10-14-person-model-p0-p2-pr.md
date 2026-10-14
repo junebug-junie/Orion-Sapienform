@@ -87,7 +87,7 @@ The graph had 11 nodes for Juniper from four producers, no person nodes for her 
 1. Provenance: vector-host `/embedding` (bge-large-en-v1.5), centered in `scripts/run_person_linkage.py` (`CenteredEmbedder`).
 2. Independence: a transform of string meaning; overlaps the string features, so it is capped and zeroed on exact matches.
 3. Theory: All-but-the-Top (Mu & Viswanath 2018), as measured on this host in PR #2647.
-4. Live check: 2,867 live labels, 0 embedding errors. 3,000 random label pairs: raw cosine p50 0.535 / p95 0.617 (no calm state); centered p50 -0.008 / p95 0.139, so it rests at about 0. Only 1.1% of random pairs reach the 0.3 "weak" bin and 0.3% the 0.5 "agree" bin. Real pairs: "juniper" vs "juniper feld" 0.54, "skye" vs "Skye Laflamme" 0.63. Exact-string pairs read 1.000, which is why the feature is zeroed on exact matches.
+4. Live check: 2,867 live labels, 0 embedding errors. 3,000 random label pairs: raw cosine p50 0.535 / p95 0.617 (no calm state); centered p50 -0.008 / p95 0.139, so it rests at about 0. Only 1.1% of random pairs reach the 0.3 "weak" bin and 0.3% the 0.5 "agree" bin. Real pairs: "juniper" vs "juniper feld" 0.54, "[team member 1]" vs "[team member 1 full name]" 0.63. Exact-string pairs read 1.000, which is why the feature is zeroed on exact matches.
 5. Existing mechanism: `orion/world_pulse_read/resonance_similarity.py` (PR #2647) does the same centering for reading; not merged into a shared helper here.
 6. Reversible: one weight in `linkage_config.yaml`; nothing persisted.
 
@@ -134,7 +134,7 @@ Code review ran in a subagent against `origin/main...feat/person-model-p0-p2`. N
   - Evidence: `test_sharing_only_a_chat_message_is_counter_evidence`.
 - Finding: a candidate claimed by two people was resolved silently by score.
   - Fix: goes to review as `multiple_anchor_claims`; when the two claimants are themselves an open review pair, it rides on that card.
-  - Evidence: `test_two_people_claiming_one_candidate_go_to_review`, `test_claims_by_two_people_ride_on_their_pair_question`; live: "skye"/"skye laflamme" ride on the Skye card.
+  - Evidence: `test_two_people_claiming_one_candidate_go_to_review`, `test_claims_by_two_people_ride_on_their_pair_question`; live: the two [team member 1] nodes ride on that person's card.
 - Finding: the repeated-name ("[team member 2], [team member 2]") hold matched ids only.
   - Fix: also matches folded labels.
   - Evidence: `test_split_hold_also_catches_graph_nodes_with_the_same_name`.

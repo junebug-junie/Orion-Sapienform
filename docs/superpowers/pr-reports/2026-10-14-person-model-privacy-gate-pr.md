@@ -42,7 +42,7 @@ Privacy gate green again: `scripts/check_personal_terms.py` reports no personal 
 ```text
 check_personal_terms.py                       -> no personal terms in tracked files
 pytest orion/person_model/tests tests/test_interlocutor_pronouns_in_prompts.py \
-  tests/test_person_model_schemas_registered.py tests/test_no_personal_terms.py -> 71 passed
+  tests/test_person_model_schemas_registered.py tests/test_no_personal_terms.py -> 72 passed
 local_first(primary checkout example paths) vs origin/main originals:
   stated_answers parsed YAML identical: True; cleanup/mention labels bytes identical: True
 ```
@@ -61,7 +61,16 @@ None: no compose file or Dockerfile references orion/person_model or these data 
 
 ## Review findings fixed
 
-See PR conversation / commit history for the review pass.
+- Finding: `run_extractor_bakeoff.py` used `local_first` without importing it (`--help` raised NameError).
+  - Fix: import added; `test_eval_scripts_start` runs `--help` on both eval CLIs.
+  - Evidence: 72 passed.
+- Finding: a fixture string still held a real-looking contact name, and a fake fixture name was paired with the interlocutor's real surname.
+  - Fix: both swapped for fake names (tests, CLI docstring, #2649 report).
+  - Evidence: `check_personal_terms.py` clean; 72 passed.
+- Finding: removed values remain in git history.
+  - Fix: not fixable without a force push; listed under risks for Juniper.
+  - Evidence: n/a.
+- Note (not changed): the interlocutor's own name stays in fixtures and `people.yaml`; the denylist allows it.
 
 ## Restart required
 
@@ -76,4 +85,6 @@ No restart required.
 
 ## PR link
 
-(see PR)
+https://github.com/junebug-junie/Orion-Sapienform/pull/2653
+
+🤖 Generated with [Claude Code](https://claude.com/claude-code)

@@ -92,6 +92,11 @@ class Settings(BaseSettings):
     # A level that has held this long (from its `since`) no longer holds a sleep, so a
     # fault-jammed GPU queue (reads strained) cannot stop Orion sleeping for a day.
     DREAM_AROUSAL_MAX_HOLD_HOURS: float = Field(default=6.0, gt=0.0)
+    # Closed Temporal Self arcs as replay candidates (rev 4 patch 7): arcs that ended since
+    # the last sleep began (sleep arcs excluded, <= 20 per sleep), read from temporal_self_arc.
+    # Replay material only: never sleep pressure or the rest drive. Off, or any read
+    # failure = replay exactly as before arcs existed.
+    DREAM_REPLAY_ARC_CANDIDATES_ENABLED: bool = Field(default=True)
 
     # Weekly/monthly Curiosity write-up summaries after a persisted successful sleep.
     DREAM_CURIOSITY_COMPACTION_ENABLED: bool = Field(default=False)

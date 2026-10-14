@@ -49,3 +49,12 @@ def test_example_mention_spans_match_their_text():
     for r in rows:
         assert [r["fixture_text"][a:b] for a, b in r["persons"]] == r["persons_text"]
         assert [r["fixture_text"][a:b] for a, b in r["relations"]] == r["relations_text"]
+
+
+def test_eval_scripts_start():
+    """Both eval CLIs parse args without the heavy extractor stack (catches a missing import)."""
+    import sys
+
+    for script in ("run_linkage_eval.py", "run_extractor_bakeoff.py"):
+        r = subprocess.run([sys.executable, str(EVALS / script), "--help"], capture_output=True, text=True)
+        assert r.returncode == 0, r.stderr

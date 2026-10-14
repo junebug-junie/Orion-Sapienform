@@ -16,6 +16,14 @@ PRIMARY INPUT — concern_cards (human meaning; narrate THESE):
 AUDIT ONLY — coalition_refs (for evidence_refs; do NOT narrate these ids):
 {{ coalition_refs }}
 
+{% if recent_arcs %}
+EARLIER TODAY (your own day record, closed arcs, from stored history — background only):
+{{ recent_arcs }}
+This is what you were doing before now. It may color the thought (a return, a
+contrast, something unfinished) only where it genuinely connects; do not
+recount it. The [arc:...] ids are NOT evidence_refs — never put them there.
+{% endif %}
+
 {% if recent_percepts %}
 WHAT YOU CAN CURRENTLY SEE (real camera input, not memory or imagination):
 {% for p in recent_percepts %}
@@ -70,6 +78,13 @@ HOW MY BODY IS DOING (measured, each signal scored 0-10 against its own last 7 d
 {{ self_readings }}
 - Real state, not a coalition id: it may color the interpretation when it bears on the coalition,
   never replaces a grounded evidence_ref. Use the numbers exactly as shown or not at all.
+{% endif %}
+{% if recent_arcs %}
+EARLIER TODAY (your own day record, closed arcs, from stored history — background only):
+{{ recent_arcs }}
+This is what you were doing before now. It may color the thought (a return, a
+contrast, something unfinished) only where it genuinely connects; do not
+recount it. The [arc:...] ids are NOT evidence_refs — never put them there.
 {% endif %}
 
 {% if has_settled_loops %}

@@ -238,6 +238,42 @@ def _metacog_route() -> str:
     return "metacog_background" if settings.reverie_metacog_background_enabled else "metacog"
 
 
+async def build_recent_arcs_text(
+    correlation_id: str, *, now: datetime | None = None
+) -> tuple[str, list[str]]:
+    """Today's last few closed arcs for the reverie prompt, and the arc ids it cites; ("", [])
+    when nothing may be shown (Temporal Self rev 4).
+
+    Same frame fetch as the stance cue (``temporal_self_cue.fetch_frame_bounded``), bounded by
+    ``ORION_REVERIE_RECENT_ARCS_FETCH_TIMEOUT_SEC``; the block itself is a fixed template
+    (``orion.temporal_self.recent_arcs``). Never raises: any failure leaves the block out.
+    """
+    if not settings.reverie_recent_arcs_enabled:
+        return "", []
+    try:
+        from orion.temporal_self.recent_arcs import project_recent_arcs
+
+        from .temporal_self_cue import fetch_frame_bounded
+
+        frame = await fetch_frame_bounded(settings.reverie_recent_arcs_fetch_timeout_sec, correlation_id)
+        block = project_recent_arcs(
+            frame,
+            now or datetime.now(timezone.utc),
+            limit=settings.reverie_recent_arcs_limit,
+            max_age_sec=settings.temporal_self_cue_max_age_sec,
+        )
+    except Exception as exc:  # noqa: BLE001 -- a reverie tick must never fail on this block
+        logger.warning("reverie_recent_arcs_failed corr=%s err=%s: %s", correlation_id, type(exc).__name__, exc)
+        return "", []
+    if block.text:
+        logger.info("reverie_recent_arcs corr=%s day=%s arcs=%s chars=%s",
+                    correlation_id, block.day_id, len(block.arc_ids), len(block.text))
+    else:
+        logger.info("reverie_recent_arcs_skipped corr=%s reason=%s day=%s",
+                    correlation_id, block.skip_reason, block.day_id)
+    return block.text, list(block.arc_ids)
+
+
 def build_reverie_context(
     broadcast: AttentionBroadcastProjectionV1,
     *,
@@ -245,6 +281,7 @@ def build_reverie_context(
     loop_outcomes: dict[str, dict[str, Any]] | None = None,
     recent_percepts: list[dict[str, Any]] | None = None,
     self_readings: str | None = None,
+    recent_arcs: str | None = None,
 ) -> dict[str, Any]:
     percepts = recent_percepts or []
     if concern_cards:
@@ -260,6 +297,8 @@ def build_reverie_context(
         }
         if percepts:
             ctx["recent_percepts"] = percepts
+        if recent_arcs:
+            ctx["recent_arcs"] = recent_arcs
         return ctx
     open_loops = _open_loops_for_prompt(broadcast, loop_outcomes=loop_outcomes)
     ctx = {
@@ -286,6 +325,8 @@ def build_reverie_context(
         # mechanism vocabulary (orion/reverie/semantic_lift.py), so body numbers there would
         # only manufacture hollow thoughts.
         ctx["self_readings"] = self_readings
+    if recent_arcs:
+        ctx["recent_arcs"] = recent_arcs
     return ctx
 
 
@@ -297,6 +338,7 @@ def build_reverie_plan_request(
     loop_outcomes: dict[str, dict[str, Any]] | None = None,
     recent_percepts: list[dict[str, Any]] | None = None,
     self_readings: str | None = None,
+    recent_arcs: str | None = None,
 ) -> PlanExecutionRequest:
     use_lift = settings.reverie_semantic_lift_enabled and bool(concern_cards)
     mode = "metacog" if use_lift else "brain"
@@ -321,6 +363,7 @@ def build_reverie_plan_request(
             loop_outcomes=loop_outcomes,
             recent_percepts=recent_percepts,
             self_readings=self_readings,
+            recent_arcs=recent_arcs,
         ),
     )
 
@@ -331,8 +374,14 @@ def parse_reverie_payload(
     coalition: CoalitionSnapshotV1,
     correlation_id: str,
     broadcast: AttentionBroadcastProjectionV1,
+    strip_arc_ids: list[str] | None = None,
 ) -> SpontaneousThoughtV1:
     """Build a SpontaneousThoughtV1 from LLM output, stamping the hollow guard.
+
+    ``strip_arc_ids``: arc ids the prompt's recent-arcs block showed. The prompt says they are not
+    evidence_refs; a model that cites one anyway has them removed (and counted in the log) before
+    the guard runs, so one stray day-record citation cannot drop an otherwise grounded thought.
+    The guard stays strict: an arc id is never accepted as grounding.
 
     Deterministic/latent split (§4): the LLM owns only the *interpretation* text;
     salience is computed deterministically from coalition scores here, never taken
@@ -354,6 +403,13 @@ def parse_reverie_payload(
     if not isinstance(evidence_refs, list):
         evidence_refs = []
     evidence_refs = [str(x) for x in evidence_refs][: 50]
+    if strip_arc_ids:
+        arc_refs = set(strip_arc_ids) | {f"arc:{i}" for i in strip_arc_ids} | {f"[arc:{i}]" for i in strip_arc_ids}
+        kept = [r for r in evidence_refs if r not in arc_refs]
+        if len(kept) != len(evidence_refs):
+            logger.info("reverie_evidence_arc_ref_stripped corr=%s n=%s",
+                        correlation_id, len(evidence_refs) - len(kept))
+        evidence_refs = kept
 
     # Phase E (Movement III): optional falsifiable claim about the room. Only
     # ever present when the prompt actually offered a recent_percepts block
@@ -648,8 +704,16 @@ async def run_reverie_once(
             )
             return block.text or None
 
-        loop_outcomes, recent_percepts, self_readings = await asyncio.gather(
-            _fetch_loop_outcomes(), _fetch_percepts(), _fetch_self_readings()
+        (
+            loop_outcomes,
+            recent_percepts,
+            (recent_arcs, recent_arc_ids),
+            self_readings,
+        ) = await asyncio.gather(
+            _fetch_loop_outcomes(),
+            _fetch_percepts(),
+            build_recent_arcs_text(correlation_id),
+            _fetch_self_readings(),
         )
         plan_request = build_reverie_plan_request(
             broadcast,
@@ -658,6 +722,7 @@ async def run_reverie_once(
             loop_outcomes=loop_outcomes,
             recent_percepts=recent_percepts,
             self_readings=self_readings,
+            recent_arcs=recent_arcs,
         )
         # Same formula build_reverie_plan_request uses internally to decide `use_lift` --
         # duplicated here (not returned by that function) because only a call that actually set
@@ -691,6 +756,7 @@ async def run_reverie_once(
             coalition=coalition,
             correlation_id=correlation_id,
             broadcast=broadcast,
+            strip_arc_ids=recent_arc_ids,
         )
         if settings.reverie_expectation_scoring_enabled and thought.expectation:
             # Open the checkable window only when scoring is actually on --

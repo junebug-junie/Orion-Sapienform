@@ -1077,6 +1077,14 @@ class Settings(BaseSettings):
     HUB_CURIOSITY_DURABLE_RUNS_URL: str = Field(
         default="http://127.0.0.1:8124", alias="HUB_CURIOSITY_DURABLE_RUNS_URL"
     )
+    # Temporal Self rev 4 (#2369), "curiosity gets its day": the investigate kickoff gets one
+    # fact line -- curiosity runs finished today, their minutes, and how many of the earlier
+    # runs it lists were today, cited [arc:<id>] -- read from orion-durable-runs at
+    # HUB_CURIOSITY_DURABLE_RUNS_URL (/temporal-self/frame + /temporal-self/arcs) under a
+    # 1.5 s deadline. No line when the read fails or the frame is stale. orion/curiosity/temporal_fact.py.
+    HUB_CURIOSITY_TEMPORAL_SELF_FACT_ENABLED: bool = Field(
+        default=True, alias="HUB_CURIOSITY_TEMPORAL_SELF_FACT_ENABLED"
+    )
     # Urgent curiosity runs (docs/superpowers/plans/2026-09-28-urgent-curiosity-plan-3-seeded-urgent-runs.md):
     # a seeded investigation from the Hub button or orion:curiosity:urgent:request,
     # admitted at `urgent` GPU priority, bypassing the curiosity gates. Needs

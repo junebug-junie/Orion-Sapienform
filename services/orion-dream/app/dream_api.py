@@ -12,7 +12,7 @@ def wake_today():
     return build_readout(date.today())
 
 
-@router.get("/dreams/curiosity-compactions")
+@router.get("/curiosity-compactions")
 def curiosity_compactions(limit: int = Query(default=20, ge=1, le=100)):
     """Stored summaries/provenance, including pending and explicitly empty windows."""
     from app.curiosity_compaction_store import recent

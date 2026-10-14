@@ -23,8 +23,14 @@ on:
     branches: [main]
     paths:
       - "orion/person_model/**"
+      - "orion/schemas/person_model.py"
       - "config/person_model/**"
       - "orion/cognition/prompts/stance_react.j2"
+      - "orion/cognition/prompts/chat_quick.j2"
+      - "services/orion-mind/app/stance_handoff.py"
+      - "scripts/run_person_linkage.py"
+      - "tests/test_interlocutor_pronouns_in_prompts.py"
+      - "tests/test_person_model_schemas_registered.py"
 
 jobs:
   person-model:

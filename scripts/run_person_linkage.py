@@ -40,7 +40,7 @@ import yaml  # noqa: E402
 
 from orion.person_model import linkage as L  # noqa: E402
 from orion.person_model.extract import PERSON_LABEL  # noqa: E402
-from orion.person_model.merge_log import build_entry  # noqa: E402
+from orion.person_model.merge_log import plan_entries  # noqa: E402
 from orion.person_model.normalize import fold, prompt_context_keys  # noqa: E402
 from orion.person_model.person import interlocutor, load_people  # noqa: E402
 from orion.person_model.review_html import render  # noqa: E402
@@ -114,13 +114,40 @@ def collapse_same_question(decisions: list) -> list:
     return out
 
 
+def fold_claims_into_pair_questions(decisions: list) -> list:
+    """A candidate claimed by two people who are themselves the subject of an
+    open review card ("Skye" vs "Skye Laflamme") is decided by that card: the
+    claim rides on it instead of becoming a separate question."""
+    pair_card = {}
+    for i, d in enumerate(decisions):
+        if d.group == "needs_your_call" and d.relation == "same_as" and d.rule != "multiple_anchor_claims":
+            pair_card[frozenset((d.anchor_id, d.candidate_id))] = i
+    out = list(decisions)
+    drop = set()
+    for i, d in enumerate(decisions):
+        ids = d.evidence.get("claimed_by_ids") or []
+        j = pair_card.get(frozenset(ids)) if d.rule == "multiple_anchor_claims" and len(ids) == 2 else None
+        if j is None:
+            continue
+        keep = out[j]
+        ev = dict(keep.evidence)
+        ev["also_answers"] = list(ev.get("also_answers", [])) + [d.decision_id]
+        ev["also_answers_labels"] = list(ev.get("also_answers_labels", [])) + [f"which person the graph node \u201c{d.candidate_label}\u201d belongs to"]
+        out[j] = keep.model_copy(update={"evidence": ev})
+        drop.add(i)
+    return [d for i, d in enumerate(out) if i not in drop]
+
+
 def hold_merges_of_split_names(decisions: list, clusters: Dict[str, dict]) -> list:
     """A name she used for two people ("Jay, Jay") cannot auto-merge with
     anything until she answers the split card."""
     split_ids = {c["node_id"] for c in clusters.values() if c.get("repeat_sources")}
+    split_names = {k for k, c in clusters.items() if c.get("repeat_sources")}
     out = []
     for d in decisions:
-        if d.relation == "same_as" and d.group == "auto_merge" and (d.anchor_id in split_ids or d.candidate_id in split_ids):
+        touches = (d.anchor_id in split_ids or d.candidate_id in split_ids
+                   or fold(d.anchor_label) in split_names or fold(d.candidate_label) in split_names)
+        if d.relation == "same_as" and d.group == "auto_merge" and touches:
             d = d.model_copy(update={"group": "needs_your_call", "rule": "name_used_for_two_people"})
         out.append(d)
     return out
@@ -187,11 +214,13 @@ class CenteredEmbedder:
 
         req = urllib.request.Request(self.url + "/embedding", data=json.dumps({"doc_id": "person-linkage-dryrun", "text": text}).encode(),
                                      headers={"content-type": "application/json"})
-        try:
-            with urllib.request.urlopen(req, timeout=20) as resp:
-                return json.loads(resp.read())["embedding"]
-        except Exception:
-            return None
+        for attempt in range(3):
+            try:
+                with urllib.request.urlopen(req, timeout=20) as resp:
+                    return json.loads(resp.read())["embedding"]
+            except Exception:
+                time.sleep(1.0 + attempt)
+        return None
 
     def warm(self, texts: List[str], progress: Progress) -> None:
         todo = sorted({t for t in texts if t not in self.cache})
@@ -205,12 +234,15 @@ class CenteredEmbedder:
                 if i % 250 == 0 or i == len(todo):
                     progress("embed labels", i, len(todo), errors)
         self.cache_path.write_text(json.dumps(self.cache), encoding="utf-8")
+        if errors:
+            # A silently missing vector would change scores between runs; a
+            # dry run is either complete or it stops (use --no-embeddings).
+            raise SystemExit(f"{errors} labels could not be embedded after retries; rerun or pass --no-embeddings")
         import numpy as np
 
-        if not self.cache:
-            self.ok = False
-            return
-        mat = np.array([self.cache[k] for k in sorted(self.cache)], dtype="float64")
+        # The centering mean is over this run's population only, never over
+        # leftovers in the cache, so it depends on the graph and nothing else.
+        mat = np.array([self.cache[k] for k in sorted(set(texts))], dtype="float64")
         mat /= np.linalg.norm(mat, axis=1, keepdims=True)
         self.mean = mat.mean(axis=0)
 
@@ -469,6 +501,7 @@ def main() -> int:
         # Graph nodes before mention clusters, so the kept card is the graph one.
         dec_final.sort(key=lambda d: (d.group, d.anchor_label, d.candidate_kind != "substrate_node", d.candidate_label, d.decision_id))
         dec_final = collapse_same_question(dec_final)
+        dec_final = fold_claims_into_pair_questions(dec_final)
         dec_final.sort(key=lambda d: (d.group, d.anchor_label, d.candidate_label, d.decision_id))
 
         # --- outputs
@@ -484,12 +517,17 @@ def main() -> int:
                 fh.write(d.model_dump_json() + "\n")
         store = ReadOnlyStore(g, conn)
         now_iso = f"{args.run}T00:00:00+00:00"
+        plannable = [d for d in dec_final if d.relation in ("same_as", "facet_of", "junk", "not_home")
+                     and not d.candidate_id.startswith("mention:") and not d.anchor_id.startswith("mention:")]
+        entries, conflicts = plan_entries(
+            plannable, store, now_iso=now_iso,
+            decided_by=lambda d: "person_linkage_v1" if d.group != "needs_your_call" else "pending_interlocutor",
+            decision=lambda d: "auto" if d.group != "needs_your_call" else "asked")
         with (out / "merge_plan.jsonl").open("w", encoding="utf-8") as fh:
-            for d in dec_final:
-                if d.relation in ("same_as", "facet_of", "junk", "not_home") and not d.candidate_id.startswith("mention:") and not d.anchor_id.startswith("mention:"):
-                    e = build_entry(d, store, decided_by="person_linkage_v1" if d.group != "needs_your_call" else "pending_interlocutor",
-                                    decision="auto" if d.group != "needs_your_call" else "asked", now_iso=now_iso)
-                    fh.write(e.model_dump_json() + "\n")
+            for e in entries:
+                fh.write(e.model_dump_json() + "\n")
+        for d, why in conflicts:
+            prog("merge plan conflict", errors=1, note=f"{d.decision_id} {why}")
         counts = defaultdict(int)
         for d in dec_final:
             counts[d.group] += 1

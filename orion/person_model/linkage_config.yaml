@@ -15,13 +15,14 @@
 version: person_linkage_v1
 # upper: a design choice, not yet a fitted number. On the 2026-10-14 dry run the
 # rule outcomes took every clear non-match, so only one scored non-match exists
-# (-12.0) and the labels cannot place the upper line. 8.0 means: an exact folded
-# label needs one corroborating feature (extractor reads it as a name, + cross
-# producer) to auto-merge (8.5); exact text alone (6.0-6.5) goes to review.
+# (-12.0) and the labels cannot place the upper line. 8.5 means: an exact folded
+# label needs the extractor to read it as a name AND a cross-producer pair to
+# auto-merge (6.0 + 2.0 + 0.5 = 8.5, merged at >= 8.5); exact + extractor from
+# the same producer (8.0) or exact text alone (6.0-6.5) goes to review.
 # Re-derive from the interlocutor's exported decisions (run_linkage_eval.py).
 # lower: 2.0, below the label-supported 5.0 (lowest labeled match 6.0 - 1.0), so
 # the band errs wide.
-upper_threshold: 8.0
+upper_threshold: 8.5
 lower_threshold: 2.0
 
 weights:
@@ -31,12 +32,13 @@ weights:
   phonetic_first:     {agree: 1.0, disagree: -2.0}
   extractor_person:   {agree: 2.0, disagree: -2.0, missing: 0.0}
   # Centered cosine (mean-centered bge; raw cosine has no calm state, PR #2647).
-  # Capped: its largest weight (1.5) is below the band width (upper - lower = 6),
+  # Capped: its largest weight (1.5) is below the band width (upper - lower = 6.5),
   # so the embedding alone can move a pair into review but never across the
   # auto-merge line.
   embedding_centered: {agree: 1.5, weak: 0.5, disagree: -1.0, missing: 0.0}  # agree >= 0.5, weak >= 0.3
   producer_pair:      {cross: 0.5, same: 0.0}
-  shared_evidence:    {agree: 2.0, missing: 0.0}
+  # same_message: the two names only share a chat message (likely two people).
+  shared_evidence:    {agree: 2.0, same_message: -1.0, missing: 0.0}
 
 embedding_bins: {agree: 0.5, weak: 0.3}
 jaro_winkler_bins: {high: 0.95, mid: 0.85}

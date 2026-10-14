@@ -171,7 +171,7 @@ def _best_name(anchor: Anchor, cand: Candidate) -> str:
     return max(names, key=lambda n: (_jaro_winkler(fold(n), cf), n))
 
 
-_IDENT_CHARS = re.compile(r"[/:*\\]|\.[A-Za-z]{1,5}\b|\w_\w")
+_IDENT_CHARS = re.compile(r"[/:*\\]|\w\.[a-z0-9]{1,5}\b|\w_\w")  # lowercase ext: not "St.John"
 
 
 def is_code_identifier(label: str) -> bool:
@@ -199,7 +199,11 @@ def rule_outcome(anchor: Anchor, cand: Candidate, cfg: LinkageConfig, ctx: Linka
             # "<name> <more words>" is a possible full name only if the
             # interlocutor ever wrote it as a person's name (a name counts only
             # if she said it). Without mention data, fall back to the
-            # extractor's reading of the bare label.
+            # extractor's reading of the bare label. Trade-off (review of the
+            # P2 PR): a full name she only ever wrote outside chat becomes a
+            # facet link (reversible, still attached to the right person)
+            # instead of a review card; the alternative put "claude motor"-style
+            # labels in front of her. Revisit when mentions cover more sources.
             mentioned = ctx.mentioned_as_person(cand.label)
             if mentioned is False or (mentioned is None and ctx.is_person_name(cand.label) is False):
                 return "facet_of", "name_plus_non_name_words"
@@ -249,7 +253,16 @@ def features(anchor: Anchor, cand: Candidate, cfg: LinkageConfig, ctx: LinkageCo
         add("embedding_centered", lvl, f"{sim:.3f}")
     add("producer_pair", "cross" if anchor.producer != cand.producer else "same", f"{anchor.producer or '?'} / {cand.producer or '?'}")
     shared = sorted(set(cand.evidence_refs) & set(anchor.evidence_refs))
-    add("shared_evidence", "agree" if shared else "missing", ",".join(shared[:3]) or None)
+    # Two different names in the same chat message are more likely two people,
+    # not one: a shared chat_prompt ref is counter-evidence. Only a shared
+    # grounding record (a memory both are observed in) supports a match.
+    grounding = [r for r in shared if not r.startswith("chat_prompt:")]
+    if grounding:
+        add("shared_evidence", "agree", ",".join(grounding[:3]))
+    elif shared:
+        add("shared_evidence", "same_message", ",".join(shared[:3]))
+    else:
+        add("shared_evidence", "missing")
     return feats
 
 
@@ -279,7 +292,7 @@ def decide(anchor: Anchor, cand: Candidate, cfg: LinkageConfig, ctx: LinkageCont
         relation, group, rule = "no_match", "auto_reject", None
     else:
         relation, group, rule = "same_as", "needs_your_call", "possible_match_band"
-    pair = tuple(sorted((fold(anchor.label), fold(cand.label))))
+    pair = tuple(sorted((fold(_best_name(anchor, cand)), fold(cand.label))))
     if pair in ctx.cooccurring and group != "needs_your_call":
         group, relation, rule = "needs_your_call", "same_as", "cooccurring_names_guard"
     return PersonLinkageDecisionV1(relation=relation, group=group, score=score, rule=rule, features=feats, **base)
@@ -297,14 +310,33 @@ _GROUP_RANK = {"auto_merge": 0, "needs_your_call": 1, "auto_reject": 2}
 
 def best_per_candidate(decisions: Iterable[PersonLinkageDecisionV1]) -> List[PersonLinkageDecisionV1]:
     """One decision per candidate: the strongest claim wins (a merge or facet over
-    a review over a reject; then higher score). Stable for identical input."""
+    a review over a reject; then higher score). Stable for identical input.
+
+    If two or more different people could each be the same person as this
+    candidate (same_as in auto_merge or review), nothing is silently dropped:
+    the kept decision goes to review with rule ``multiple_anchor_claims`` and
+    names the other claimants."""
+    decisions = list(decisions)
     best: Dict[str, PersonLinkageDecisionV1] = {}
+    claims: Dict[str, List[str]] = {}
     for d in decisions:
+        if d.relation == "same_as" and d.group in ("auto_merge", "needs_your_call"):
+            claims.setdefault(d.candidate_id, []).append((d.anchor_id, d.anchor_label))
         cur = best.get(d.candidate_id)
         key = (-_GROUP_RANK[d.group], d.score if d.score is not None else 0.0, d.anchor_id)
         if cur is None or key > (-_GROUP_RANK[cur.group], cur.score if cur.score is not None else 0.0, cur.anchor_id):
             best[d.candidate_id] = d
-    return [best[k] for k in sorted(best)]
+    out = []
+    for k in sorted(best):
+        d = best[k]
+        rivals = sorted(set(claims.get(k, [])))
+        if len(rivals) > 1 and d.relation == "same_as":
+            ev = dict(d.evidence)
+            ev["claimed_by"] = [f"{label} ({aid})" for aid, label in rivals]
+            ev["claimed_by_ids"] = [aid for aid, _ in rivals]
+            d = d.model_copy(update={"group": "needs_your_call", "rule": "multiple_anchor_claims", "evidence": ev})
+        out.append(d)
+    return out
 
 
 HOME_ALIAS = "home"  # the attribute category name a descriptor alias claims
@@ -323,13 +355,15 @@ def stated_home_conflicts(
 
     The person's own answer decides it, so it is an auto outcome (auto_reject:
     the alias stops claiming home; the place itself is untouched)."""
-    home_tokens = set(tokens(stated_home))
+    # The town is the first token of the stated home ("Ogden, Utah" -> ogden);
+    # a shared state name alone ("Salt Lake City, Utah") is not the same home.
+    town = (tokens(stated_home) or [""])[0]
     out = []
     for row in alias_rows:
         if row.get("referent_kind") != "place" or fold(row.get("alias_norm", "")) != HOME_ALIAS:
             continue
         place = place_labels.get(row["node_id"], row["node_id"])
-        if home_tokens & set(tokens(place)):
+        if town and town in tokens(place):
             continue
         cid = f"{row['node_id']}#alias:{row['alias_norm']}"
         out.append(

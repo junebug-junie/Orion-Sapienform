@@ -111,3 +111,48 @@ def test_extractor_readings_count_once(cfg):
     one = L.LinkageContext(is_person_name=lambda s: True)
     a, c = L.Anchor("a", "gaga", producer="p"), L.Candidate("c", "Gaga", producer="q")
     assert L.decide(a, c, cfg, both).score == L.decide(a, c, cfg, one).score
+
+
+def test_exact_plus_extractor_from_the_same_producer_goes_to_review(cfg):
+    """Review finding 1: two features (8.0) must not auto-merge; the cross-producer
+    corroboration is what reaches the 8.5 line."""
+    ctx = L.LinkageContext(is_person_name=lambda s: True)
+    same = L.decide(L.Anchor("a", "addy", producer="p"), L.Candidate("c", "Addy", producer="p"), cfg, ctx)
+    cross = L.decide(L.Anchor("a", "addy", producer="p"), L.Candidate("c", "Addy", producer="q"), cfg, ctx)
+    assert same.score == pytest.approx(8.0) and same.group == "needs_your_call"
+    assert cross.score == pytest.approx(8.5) and cross.group == "auto_merge"
+
+
+def test_sharing_only_a_chat_message_is_counter_evidence(cfg):
+    """Review finding 2: two names in one message are not evidence of one person."""
+    a = L.Anchor("mention:jay", "Jay", (), "x", ("chat_prompt:p1",))
+    msg = L.decide(a, L.Candidate("mention:jason", "Jason", "mention_cluster", (), "x", ("chat_prompt:p1",)), cfg, L.LinkageContext())
+    mem = L.decide(a, L.Candidate("n", "Jason", "substrate_node", (), "y", ("episode_memory:m1",)), cfg, L.LinkageContext())
+    f_msg = next(f for f in msg.features if f.name == "shared_evidence")
+    assert f_msg.level == "same_message" and f_msg.weight < 0
+    a2 = L.Anchor("r", "jay", (), "x", ("episode_memory:m1",))
+    f_mem = next(f for f in L.decide(a2, L.Candidate("n", "Jason", producer="y", evidence_refs=("episode_memory:m1",)), cfg, L.LinkageContext()).features if f.name == "shared_evidence")
+    assert f_mem.level == "agree" and mem is not None
+
+
+def test_two_people_claiming_one_candidate_go_to_review(cfg):
+    """Review finding 3: the tie is not broken silently."""
+    ctx = L.LinkageContext(is_person_name=lambda s: True)
+    c = L.Candidate("c", "Sam", producer="q")
+    ds = [L.decide(L.Anchor("a1", "sam", producer="p"), c, cfg, ctx), L.decide(L.Anchor("a2", "sam", producer="p2"), c, cfg, ctx)]
+    assert all(d.group == "auto_merge" for d in ds)
+    (kept,) = L.best_per_candidate(ds)
+    assert kept.group == "needs_your_call" and kept.rule == "multiple_anchor_claims"
+    assert kept.evidence["claimed_by"] == ["sam (a1)", "sam (a2)"]
+
+
+def test_home_needs_the_town_not_just_the_state(cfg):
+    rows = [{"node_id": "ref-slc", "alias_norm": "home", "referent_kind": "place"}]
+    out = L.stated_home_conflicts(rows, person=ANCHOR, stated_home="Ogden, Utah",
+                                  place_labels={"ref-slc": "Salt Lake City, Utah"}, cfg=cfg, stated_ref="a4")
+    assert len(out) == 1
+
+
+def test_capitalized_dotted_names_are_not_code(cfg):
+    assert not L.is_code_identifier("St.John")
+    assert not L.is_code_identifier("Dr.Smith")

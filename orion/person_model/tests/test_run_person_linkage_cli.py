@@ -69,3 +69,34 @@ def test_window_snippet():
 def test_window_masks_email_addresses():
     w = cli.window("Juniper Feld <someone.x@gmail.com> to skye", "Juniper")
     assert "@" not in w and "[email]" in w
+
+
+def test_split_hold_also_catches_graph_nodes_with_the_same_name():
+    """Review finding 4: a substrate node 'Jay' cannot auto-merge while 'Jay' means two people."""
+    clusters = {"jay": {"node_id": "mention:jay", "repeat_sources": ["p1"]}}
+    held = cli.hold_merges_of_split_names([_d("ref-person-jay", "Jay", "auto_merge")], clusters)
+    assert held[0].group == "needs_your_call" and held[0].rule == "name_used_for_two_people"
+
+
+def test_cli_is_read_only_by_construction():
+    """Review finding 10: no write path to the live stores exists in the CLI."""
+    src = (ROOT / "scripts" / "run_person_linkage.py").read_text(encoding="utf-8")
+    assert "GRAPH.QUERY" not in src and src.count("GRAPH.RO_QUERY") >= 1
+    assert "readonly=True" in src
+    for kw in ("INSERT ", "UPDATE ", "DELETE ", "CREATE ", "MERGE (", "SET n.", "DETACH"):
+        assert kw not in src.upper().replace("SET_SESSION", ""), kw
+    store = cli.ReadOnlyStore.__new__(cli.ReadOnlyStore)
+    import pytest
+
+    for name, args in (("set_prop", ("n", "p", 1)), ("add_edge", ("a", "b", "r")), ("remove_edge", ("a", "b", "r")), ("put_alias", ("n", "a", {}))):
+        with pytest.raises(RuntimeError):
+            getattr(store, name)(*args)
+
+
+def test_claims_by_two_people_ride_on_their_pair_question():
+    pair = _d("mention:skye", "Skye Laflamme", "needs_your_call", kind="mention_cluster")
+    pair = pair.model_copy(update={"candidate_id": "mention:skye laflamme", "rule": "possible_match_band"})
+    claim = _d("mention:skye", "skye", "needs_your_call", rule="multiple_anchor_claims")
+    claim = claim.model_copy(update={"evidence": {"claimed_by_ids": ["mention:skye", "mention:skye laflamme"]}})
+    out = cli.fold_claims_into_pair_questions([pair, claim])
+    assert len(out) == 1 and out[0].evidence["also_answers"] == [claim.decision_id]

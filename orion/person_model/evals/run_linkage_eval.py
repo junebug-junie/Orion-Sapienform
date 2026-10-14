@@ -35,7 +35,9 @@ def load_labels(path: Path, decisions: dict) -> dict:
         with path.open(encoding="utf-8") as fh:
             for row in csv.DictReader(fh):
                 d = decisions.get(row["decision_id"])
-                if not d or not row.get("your_choice"):
+                # Pre-approved defaults she never touched are Orion's own output,
+                # not labels: tuning on them would fit the thresholds to themselves.
+                if not d or not row.get("your_choice") or row.get("defaulted") == "yes":
                     continue
                 rel = d["relation"]
                 ok = row["your_choice"] == "approve"

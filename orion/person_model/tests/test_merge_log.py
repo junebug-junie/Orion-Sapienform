@@ -88,3 +88,55 @@ def test_existing_survivor_alias_is_not_overwritten(ctx, candidates):
     assert not any(op["op"] == "put_alias" for op in e.ops)
     apply_ops(store, e.ops)
     assert store.get_alias(ANCHOR.node_id, "juniper")["admitted_by"] == "episode_writer"
+
+
+def _two_juniper_merges(store):
+    """Two graph nodes ('Juniper', 'juniper') both need the same survivor alias."""
+    cfg = L.load_config()
+    from orion.person_model.merge_log import plan_entries
+
+    ctx = L.LinkageContext(is_person_name=lambda s: True)
+    anchor = L.Anchor("ref-j", "jun", (), "memory.referents")
+    ds = [L.decide(anchor, L.Candidate(n, lab, producer="tf"), cfg, ctx) for n, lab in (("n1", "Juniper"), ("n2", "juniper"))]
+    ds = [d.model_copy(update={"relation": "same_as", "group": "auto_merge"}) for d in ds]
+    entries, conflicts = plan_entries(ds, store, now_iso="x")
+    assert not conflicts
+    return entries
+
+
+def test_undo_a_middle_entry_alone_keeps_what_the_other_needs():
+    """Review finding 9: entries can be undone one at a time, in either order."""
+    for order in ((0, 1), (1, 0)):
+        store = MemStore()
+        before = store.snapshot()
+        entries = _two_juniper_merges(store)
+        assert [op["op"] for op in entries[1].ops].count("claim_alias") == 1
+        for e in entries:
+            apply_ops(store, e.ops)
+        first, second = entries[order[0]], entries[order[1]]
+        apply_ops(store, unmerge_ops(first, still_active=[second]))
+        assert store.get_alias("ref-j", "juniper") is not None  # the other merge still needs it
+        apply_ops(store, unmerge_ops(second, still_active=[]))
+        assert store.snapshot() == before
+
+
+def test_planner_refuses_a_node_already_merged_elsewhere():
+    from orion.person_model.merge_log import plan_entries
+
+    store = MemStore()
+    store.set_prop("n1", "merged_into", "someone-else")
+    cfg = L.load_config()
+    d = L.decide(L.Anchor("ref-j", "jun"), L.Candidate("n1", "jun"), cfg, L.LinkageContext()).model_copy(update={"relation": "same_as"})
+    entries, conflicts = plan_entries([d], store, now_iso="x")
+    assert not entries and len(conflicts) == 1
+
+
+def test_not_home_requires_the_alias_to_exist():
+    import pytest
+
+    store = MemStore()
+    cfg = L.load_config()
+    d = L.stated_home_conflicts([{"node_id": "ref-x", "alias_norm": "home", "referent_kind": "place"}], person=ANCHOR,
+                                stated_home="Ogden", place_labels={"ref-x": "slc"}, cfg=cfg, stated_ref="a4")[0]
+    with pytest.raises(ValueError):
+        build_entry(d, store, decided_by="t", decision="auto", now_iso="x")

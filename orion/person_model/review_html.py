@@ -122,20 +122,32 @@ _JS = r"""
   var KEY='person-cleanup-review:'+document.body.dataset.run;
   var saved={}; try{saved=JSON.parse(localStorage.getItem(KEY)||'{}')}catch(e){}
   var cards=[].slice.call(document.querySelectorAll('article.card'));
-  function save(){var o={};cards.forEach(function(c){var r=c.querySelector('input:checked');o[c.dataset.id]={choice:r?r.value:'',notes:c.querySelector('textarea').value}});
+  var explicit={};
+  // Only explicit choices are stored: a pre-approved default is never saved as
+  // a choice, and a saved choice applies only while the card is in the group it
+  // was made in (a decision that moved groups on a re-render starts fresh).
+  function save(){var o={};cards.forEach(function(c){var r=c.querySelector('input:checked');var n=c.querySelector('textarea').value;
+      if(explicit[c.dataset.id]||n){o[c.dataset.id]={choice:(explicit[c.dataset.id]&&r)?r.value:'',notes:n,group:c.dataset.group};}});
     try{localStorage.setItem(KEY,JSON.stringify(o))}catch(e){} count();}
-  function count(){var n=0;cards.forEach(function(c){if(c.querySelector('input:checked'))n++});document.getElementById('progress').textContent=n+' of '+cards.length+' cards have a choice';}
-  cards.forEach(function(c){var s=saved[c.dataset.id]; var v=s?s.choice:c.dataset.default;
-    if(v){var r=c.querySelector('input[value='+v+']'); if(r) r.checked=true;}
-    if(s) c.querySelector('textarea').value=s.notes||'';
-    c.addEventListener('change',save); c.addEventListener('input',save);});
+  function count(){var n=0,m=0;cards.forEach(function(c){if(c.querySelector('input:checked'))n++;if(explicit[c.dataset.id])m++;});
+    document.getElementById('progress').textContent=n+' of '+cards.length+' cards have a choice ('+m+' chosen by you, the rest are Orion defaults)';}
+  cards.forEach(function(c){var s=saved[c.dataset.id]; var id=c.dataset.id;
+    if(s&&s.group===c.dataset.group){ if(s.choice){var r=c.querySelector('input[value='+s.choice+']'); if(r){r.checked=true; explicit[id]=true;}}
+      c.querySelector('textarea').value=s.notes||''; }
+    if(!explicit[id]&&c.dataset.default){var d=c.querySelector('input[value='+c.dataset.default+']'); if(d) d.checked=true;}
+    [].forEach.call(c.querySelectorAll('input[type=radio]'),function(r){r.addEventListener('change',function(){explicit[id]=true;save();});});
+    c.querySelector('textarea').addEventListener('input',save);});
   count();
-  function q(v){v=(v==null?'':String(v));return '"'+v.replace(/"/g,'""')+'"';}
+  // CSV cell: quoted; a leading = + - @ tab or CR is neutralized with ' so a
+  // spreadsheet never runs a graph label as a formula.
+  function q(v,raw){v=(v==null?'':String(v)); if(!raw&&/^[=+\-@\t\r]/.test(v)) v="'"+v; return '"'+v.replace(/"/g,'""')+'"';}
   document.getElementById('export').addEventListener('click',function(){
-    var head=['decision_id','group','relation','anchor_id','anchor_label','candidate_id','candidate_label','score','your_choice','notes','also_answers'];
+    var head=['decision_id','group','relation','anchor_id','anchor_label','candidate_id','candidate_label','score','your_choice','defaulted','notes','also_answers'];
     var lines=[head.join(',')];
-    cards.forEach(function(c){var r=c.querySelector('input:checked');
-      lines.push([c.dataset.id,c.dataset.group,c.dataset.relation,c.dataset.anchor,c.dataset.anchorLabel,c.dataset.candidate,c.dataset.candidateLabel,c.dataset.score,r?r.value:'',c.querySelector('textarea').value,c.dataset.also].map(q).join(','));});
+    cards.forEach(function(c){var r=c.querySelector('input:checked'); var id=c.dataset.id;
+      var defaulted=explicit[id]?'no':(r?'yes':'');
+      lines.push([q(id),q(c.dataset.group),q(c.dataset.relation),q(c.dataset.anchor),q(c.dataset.anchorLabel),q(c.dataset.candidate),q(c.dataset.candidateLabel),
+        q(c.dataset.score,true),q(r?r.value:''),q(defaulted),q(c.querySelector('textarea').value),q(c.dataset.also)].join(','));});
     var blob=new Blob([lines.join('\r\n')+'\r\n'],{type:'text/csv'});
     var a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download='person-cleanup-decisions-'+document.body.dataset.run+'.csv';
     document.body.appendChild(a); a.click(); setTimeout(function(){URL.revokeObjectURL(a.href); a.remove();},0);
@@ -178,6 +190,8 @@ def render(
             f"<table class=info><tr><th>name</th><th>mentions</th><th>first seen</th><th>example</th></tr>{trs}</table></section>"
         )
     summary = "".join(f"<p>{_e(s)}</p>" for s in summary_lines)
+    # Raw JSON (valid for any parser); "</" is escaped so the data cannot close the tag.
+    ids_json = json.dumps([d.decision_id for d in decisions]).replace("</", "<\\/")
     return f"""<!doctype html>
 <html lang=en><head><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1">
 <title>{_e(title)}</title><style>{_CSS}</style></head>
@@ -185,6 +199,6 @@ def render(
 <header><h1>{_e(title)}</h1>{summary}<p id=progress></p><button id=export type=button>Export decisions (CSV)</button></header>
 <main>{''.join(sections)}{info}</main>
 <script>{_JS}</script>
-<script type="application/json" id=decisions-json>{_e(json.dumps([d.decision_id for d in decisions]))}</script>
+<script type="application/json" id=decisions-json>{ids_json}</script>
 </body></html>
 """

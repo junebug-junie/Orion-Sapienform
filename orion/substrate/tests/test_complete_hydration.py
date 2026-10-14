@@ -56,7 +56,6 @@ def test_failed_boot_does_not_mark_empty_cache_fresh():
 @pytest.mark.parametrize("mutation,reason", [
     (lambda c: c._hydrate_node_rows.append(dict(c._hydrate_node_rows[0])), "duplicate node_id"),
     (lambda c: c._hydrate_edge_rows.append(dict(c._hydrate_edge_rows[0])), "duplicate edge_id"),
-    (lambda c: c._hydrate_node_rows[1].update(identity_key="node:0"), "duplicate node identity"),
     (lambda c: c._hydrate_edge_rows[0].update(source_id="missing"), "endpoint"),
     (lambda c: c._hydrate_edge_rows[0].update(source_kind="entity"), "endpoint"),
     (lambda c: c._hydrate_node_rows[0].update(node_id=None), "invalid"),

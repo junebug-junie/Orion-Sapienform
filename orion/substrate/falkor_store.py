@@ -295,10 +295,26 @@ def _with_sanitized_metadata(model: Any) -> Any:
 # Every substrate writer MERGEs on SubstrateNode.node_id (upsert_node,
 # upsert_edge's two endpoint MERGEs) and every single-node reader filters on
 # it (falkor_direct NODE_BY_ID, neighborhood_backends). Without an index each
-# of those is a label scan of every SubstrateNode. identity_key is NOT indexed:
-# no Cypher query filters on it (identity lookups go through the in-process
-# cache). Mirrors services/orion-bus-mirror/app/graph_writer.py::ensure_indexes.
-SUBSTRATE_INDEXES: tuple[tuple[str, str], ...] = (("SubstrateNode", "node_id"),)
+# of those is a label scan of every SubstrateNode. identity_key is indexed
+# because FalkorSubstrateStore.get_node_id_by_identity falls back to a durable
+# lookup on a cache miss (2026-10-14): resolving identity against the
+# in-process cache alone let every incomplete cache (the old 10k-row server
+# cap, then a failed hydrate) mint a second node for an identity that already
+# existed. Unindexed, that lookup is ~23ms per miss on the 44k-node AI Town
+# graph. Mirrors services/orion-bus-mirror/app/graph_writer.py::ensure_indexes.
+SUBSTRATE_INDEXES: tuple[tuple[str, str], ...] = (
+    ("SubstrateNode", "node_id"),
+    ("SubstrateNode", "identity_key"),
+)
+# Durable identity lookup (see get_node_id_by_identity). Smallest node_id wins
+# when an identity is duplicated -- the one canonical rule hydrate and the
+# dedupe repair also use. LIMIT 1 bounds the read; the identity_key index
+# keeps it off a label scan.
+NODE_BY_IDENTITY_CYPHER = (
+    "MATCH (n:SubstrateNode) WHERE n.identity_key = $identity_key AND n.payload_json IS NULL "
+    f"RETURN {_return_clause('n', NATIVE_NODE_RETURN_FIELDS)} ORDER BY n.node_id LIMIT 1"
+)
+
 # Bounded: a dedicated client with its own short timeouts, so a down or hung
 # FalkorDB delays construction by at most ~connect+read, never indefinitely.
 ENSURE_INDEX_SOCKET_TIMEOUT_S = 5.0
@@ -440,6 +456,9 @@ class FalkorSubstrateStore:
             bootstrap_substrate_reader(cfg.uri, cfg.graph_name)
         self.hydrate_skipped_unknown_nodes = 0
         self.hydrate_skipped_unknown_edges = 0
+        self.hydrate_duplicate_node_identities = 0
+        self.identity_durable_lookups_total = 0
+        self.identity_durable_hits_total = 0
         if hydrate:
             self._hydrate_from_durable()
 
@@ -486,16 +505,29 @@ class FalkorSubstrateStore:
         legacy_nodes, legacy_edges = [], []
         node_ids, edge_ids = set(), set()
 
+        duplicate_identities: dict[str, int] = {}
+
         def add_node(row, node):
             if node is None or not node.node_id or node.node_id == "None":
                 raise ValueError("invalid or unsupported durable node")
             if node.node_id in node_ids:
                 raise ValueError(f"duplicate node_id: {node.node_id}")
-            identity = row.get("identity_key") or None
-            if identity and fresh.get_node_id_by_identity(str(identity)) is not None:
-                raise ValueError(f"duplicate node identity: {identity}")
+            identity = str(row.get("identity_key") or "") or None
+            previous_id = fresh.get_node_id_by_identity(identity) if identity else None
             node_ids.add(node.node_id)
-            fresh.upsert_node(identity_key=str(identity) if identity else None, node=node)
+            fresh.upsert_node(identity_key=identity, node=node)
+            if previous_id is not None:
+                # Two durable nodes share one identity. Both are real rows with
+                # their own edges, so both stay in the cache; the identity
+                # resolves to the lexically smallest node_id -- the same rule
+                # as the durable lookup (NODE_BY_IDENTITY_CYPHER) and the
+                # dedupe repair (scripts/repair_substrate_duplicate_identities.py),
+                # so every writer converges on one node instead of minting a
+                # third. Before 2026-10-14 this raised and failed the whole
+                # scan, which left the cache empty at boot, so the next ingest
+                # missed every identity and duplicated all of them again.
+                duplicate_identities[identity] = duplicate_identities.get(identity, 1) + 1
+                fresh.set_identity_canonical(identity, min(previous_id, node.node_id))
 
         def add_edge(row, edge):
             if edge is None:
@@ -603,6 +635,15 @@ class FalkorSubstrateStore:
 
         self.last_hydrate_ok = True
         self.hydrate_ok_total += 1
+        self.hydrate_duplicate_node_identities = len(duplicate_identities)
+        if duplicate_identities:
+            sample = sorted(duplicate_identities.items(), key=lambda kv: (-kv[1], kv[0]))[:3]
+            logger.warning(
+                "falkor_substrate_hydrate_duplicate_identities graph=%s identities=%d extra_nodes=%d sample=%s",
+                self._cfg.graph_name, len(duplicate_identities),
+                sum(count - 1 for count in duplicate_identities.values()),
+                "; ".join(f"{key} x{count}" for key, count in sample),
+            )
         self.hydrate_skipped_unknown_nodes = skipped["nodes"]
         self.hydrate_skipped_unknown_edges = skipped["edges"]
         if skipped["nodes"] or skipped["edges"]:
@@ -618,6 +659,7 @@ class FalkorSubstrateStore:
             node_count=len(node_ids), edge_count=len(edge_ids), pages_read=progress["pages"],
             last_successful_refresh_at=finished,
             edge_identity_aliases=progress["edge_identity_aliases"],
+            duplicate_node_identities=len(duplicate_identities),
         )
         if not getattr(self._client, "read_only", False):
             self._migrate_legacy_payload_nodes(legacy_nodes)
@@ -834,7 +876,57 @@ class FalkorSubstrateStore:
         return self._cache.get_edge_by_id(edge_id)
 
     def get_node_id_by_identity(self, identity_key: str) -> str | None:
-        return self._cache.get_node_id_by_identity(identity_key)
+        """Cache first, then the durable graph.
+
+        The cache is not proof of absence: it can be partial (a failed or
+        not-yet-run hydrate, another process's write since the last refresh).
+        Callers such as the materializer treat ``None`` as "create a new node",
+        and topic-foundry mints a fresh run-scoped node_id every run, so a
+        cache-only miss durably duplicated the identity -- 1,237 identities
+        (14,022 nodes) on orion_substrate_aitown and 1,109 (4,640) on
+        orion_substrate_self by 2026-10-14. A durable hit is loaded into the
+        cache so the caller's follow-up ``get_node_by_id`` finds it.
+        """
+        cached = self._cache.get_node_id_by_identity(identity_key)
+        if cached or not identity_key:
+            return cached
+        return self._durable_node_id_by_identity(str(identity_key))
+
+    def _durable_node_id_by_identity(self, identity_key: str) -> str | None:
+        self.identity_durable_lookups_total += 1
+        try:
+            raw = self._client.graph_query(NODE_BY_IDENTITY_CYPHER, {"identity_key": identity_key})
+            rows = _normalize_rows(raw, fields=NATIVE_NODE_RETURN_FIELDS)
+        except Exception as exc:  # noqa: BLE001 - a lookup must not break the caller's write path
+            logger.warning(
+                "falkor_substrate_identity_lookup_failed graph=%s identity_key=%s error=%s",
+                self._cfg.graph_name, identity_key, exc,
+            )
+            return None
+        # Same canonical rule as hydrate and the dedupe repair: smallest
+        # node_id. Filtered and sorted here too, not only in Cypher, so a
+        # client that ignores WHERE/ORDER BY cannot pick a different node.
+        matches = sorted(
+            (row for row in rows
+             if row.get("identity_key") == identity_key and row.get("node_id") and node_row_is_known(row)),
+            key=lambda row: str(row["node_id"]),
+        )
+        for row in matches:
+            try:
+                node = decode_node(row)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "falkor_substrate_identity_lookup_undecodable node_id=%s error=%s", row.get("node_id"), exc,
+                )
+                continue
+            with self._cache_lock:
+                if self._cache.get_node_by_id(node.node_id) is None:
+                    self._cache.upsert_node(identity_key=identity_key, node=node)
+                else:
+                    self._cache.set_identity_canonical(identity_key, node.node_id)
+            self.identity_durable_hits_total += 1
+            return node.node_id
+        return None
 
     def get_identity_key_by_node_id(self, node_id: str) -> str | None:
         return self._cache.get_identity_key_by_node_id(node_id)

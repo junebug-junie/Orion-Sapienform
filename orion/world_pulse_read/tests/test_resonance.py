@@ -351,3 +351,25 @@ def test_quote_matcher_folds_quotes_dashes_entities_on_both_sides():
     q = "brain organoids relevant to Alzheimer's - Parkinson\u2019s and multiple sclerosis"
     _, chk = check_judgment(crs_packet(), judged(read_quote=q), retained_texts=CRS.retained_texts)
     assert chk.accepted, chk.reasons
+
+
+def test_edge_elisions_are_dropped_and_far_spans_are_not_spliced():
+    a = "NASA and SpaceX are targeting 6:33 a.m."
+    b = "Cargo also includes hardware to make artificial retinas"
+    for q in (f"... {a}", f"{b}...", f"\u2026 {b} \u2026"):
+        _, chk = check_judgment(crs_packet(), judged(read_quote=q), retained_texts=CRS.retained_texts)
+        assert chk.accepted, (q, chk.reasons)
+    far = [("c" * 64, a + " " + "filler words here. " * 60 + b)]
+    _, chk = check_judgment(crs_packet(), judged(read_quote=f"{a} ... {b}"), retained_texts=far)
+    assert "quote_not_in_read" in chk.reasons
+    four = " ... ".join([a, b, a, b])
+    _, chk = check_judgment(crs_packet(), judged(read_quote=four), retained_texts=[("d" * 64, " ".join([a, b] * 2))])
+    assert "quote_not_in_read" in chk.reasons
+
+
+def test_a_paraphrase_of_a_relation_line_is_not_a_prompt_echo():
+    p = rich_packet()
+    cites = [{"ref_kind": "self_prior", "ref_id": "p1", "how": "the read backs a belief I hold about racks"}]
+    _, chk = check_judgment(p, judged(citations=cites, bears_on_prior="supports"),
+                            retained_texts=READ.retained_texts, prompt=build_judge_prompt(p, READ.retained_texts))
+    assert chk.accepted, chk.reasons

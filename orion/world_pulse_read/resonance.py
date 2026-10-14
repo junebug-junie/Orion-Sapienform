@@ -318,8 +318,14 @@ _QUOTE_FOLD = str.maketrans({
     **{c: "-" for c in "\u2010\u2011\u2012\u2013\u2014\u2015\u2212"},
     **{c: "" for c in "\u200b\u200c\u200d\u2060\ufeff\u00ad"},
 })
-# An elision inside a quote: "...", "…" (NFKC turns it into "..."), or "[...]".
-_ELISION = re.compile(r"\s*\[?\s*(?:\.\s*){3,}\]?\s*")
+# An elision inside a quote: "...", "…" (NFKC turns it into "..."), or "[...]". A source's
+# own "…" also folds to "...", so a quote copying it verbatim still matches before splitting.
+_ELISION = re.compile(r"\s*(?:\[\s*(?:\.\s*){3,}\]|(?:\.\s*){3,})\s*")
+_EDGE_ELISION = re.compile(r"^(?:" + _ELISION.pattern + r")+|(?:" + _ELISION.pattern + r")+$")
+# Splicing limits: at most 3 spans, each next span starting within this many normalized
+# characters of the last one's end, so far-apart fragments cannot be spliced into a claim.
+QUOTE_MAX_SPANS = 3
+QUOTE_MAX_GAP_CHARS = 600  # the real 2026-10-14 elided quote skipped 376
 
 
 def _norm_quote(text: str) -> str:
@@ -330,27 +336,39 @@ def _norm_quote(text: str) -> str:
     return " ".join(t.split()).casefold()
 
 
-def _span_at(span: str, source: str, start: int) -> int:
-    """End of the first whole-word occurrence of span in source at or after start, or -1."""
+def _span_at(span: str, source: str, start: int) -> tuple[int, int] | None:
+    """(start, end) of the first whole-word occurrence of span in source at or after start."""
     m = re.compile(r"(?<!\w)" + re.escape(span) + r"(?!\w)").search(source, start)
-    return m.end() if m else -1
+    return (m.start(), m.end()) if m else None
 
 
 def _quote_in(quote: str, source: str) -> bool:
     """Verbatim, or real spans joined by an elision ("A ... B"): the 2026-10-14 judge run's
-    one quote rejection was two exact sentences of the read joined by "...". Each elided
-    span must be a QUOTE_MIN_WORDS-word whole-word match, in the read's own order."""
-    if _span_at(quote, source, 0) >= 0:
+    one quote rejection was two exact sentences of the read joined by "...". A leading or
+    trailing elision is dropped. Each elided span must be a QUOTE_MIN_WORDS-word whole-word
+    match, in the read's order, at most QUOTE_MAX_SPANS of them, each within
+    QUOTE_MAX_GAP_CHARS of the previous one."""
+    if _span_at(quote, source, 0) is not None:
         return True
-    spans = [p for p in _ELISION.split(quote) if p.strip()]
-    if len(spans) < 2 or any(len(p.split()) < QUOTE_MIN_WORDS for p in spans):
+    core = _EDGE_ELISION.sub("", quote).strip()
+    if core != quote and len(core.split()) >= QUOTE_MIN_WORDS and _span_at(core, source, 0) is not None:
+        return True
+    spans = [p.strip() for p in _ELISION.split(core) if p.strip()]
+    if not 2 <= len(spans) <= QUOTE_MAX_SPANS or any(len(p.split()) < QUOTE_MIN_WORDS for p in spans):
         return False
-    pos = 0
-    for p in spans:
-        pos = _span_at(p.strip(), source, pos)
-        if pos < 0:
-            return False
-    return True
+    hit = _span_at(spans[0], source, 0)
+    while hit is not None:  # try each occurrence of the first span as the anchor
+        end, ok = hit[1], True
+        for p in spans[1:]:
+            nxt = _span_at(p, source, end)
+            if nxt is None or nxt[0] - end > QUOTE_MAX_GAP_CHARS:
+                ok = False
+                break
+            end = nxt[1]
+        if ok:
+            return True
+        hit = _span_at(spans[0], source, hit[0] + 1)
+    return False
 
 
 def check_judgment(

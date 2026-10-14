@@ -171,8 +171,11 @@ def test_flag_off_builds_no_gate_and_poll_writes_nothing(monkeypatch):
 
     monkeypatch.setattr(svc_mod.settings, "metacog_enable", True)
     monkeypatch.setattr(svc_mod.settings, "metacog_self_signal_episodes_enabled", False)
+    # The outcome rollup rides the same poll; off here so the poll has nothing to do at all.
+    monkeypatch.setattr(svc_mod.settings, "self_signal_outcome_association_enabled", False)
     svc = svc_mod.EquilibriumService()
     assert svc._self_signal_gate is None
+    assert svc._self_signal_rollup is None
     svc._publish_metacog_trigger = AsyncMock()
     import asyncio
 

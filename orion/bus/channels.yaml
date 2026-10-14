@@ -1177,6 +1177,26 @@ channels:
     since: "2026-09-29"
     description: "One row per (service, instance, hop, UTC hour) of the per-hop transport baseline gate's readings (windows seen/evaluated, z p50/p90, saturation ratio p50, baseline/floor ms, would-emit counts). Durable evidence for the gate's log-only week; sql-writer -> transport_baseline_hourly; graded by scripts/analysis/grade_transport_baseline.py."
 
+  - name: "orion:equilibrium:self_signal:hour"
+    kind: "event"
+    schema_id: "SelfSignalHourV1"
+    message_kind: "self_signal.hour.v1"
+    producer_services: ["orion-equilibrium-service"]
+    consumer_services: ["orion-sql-writer"]
+    stability: "experimental"
+    since: "2026-10-14"
+    description: "One row per completed UTC hour: each internal body signal's condition (high = high/unusual for itself by the attention seam's rule for more than 300 s within 600 s at some point in the hour -- the episode gate's open dwell, normal, unknown = nothing readable) plus that hour's outcome counts (failed harness turns, repaired replies, RPC timeouts) with exposure. Outlives the 7-day PE history prune. sql-writer -> self_signal_hour (upsert on hour_id). Spec 2026-10-07 section E."
+
+  - name: "orion:equilibrium:self_signal:outcome_association"
+    kind: "event"
+    schema_id: "SelfSignalOutcomeAssociationV1"
+    message_kind: "self_signal.outcome_association.v1"
+    producer_services: ["orion-equilibrium-service"]
+    consumer_services: ["orion-sql-writer"]
+    stability: "experimental"
+    since: "2026-10-14"
+    description: "One row per (body signal, outcome) per hourly refresh: next-hour outcome rate when the signal was high vs normal, rate ratio with a Katz 95% interval, verdict (tends_more/tends_less/no_clear_difference/below_min_n/excluded_circular) and the one clause a prompt may show. sql-writer -> self_signal_outcome_association (append-only); read by orion-thought self-readings and cited as [assoc:<association_id>]."
+
   - name: "orion:equilibrium:metacog:trigger"
     kind: "event"
     schema_id: "MetacogTriggerV1"

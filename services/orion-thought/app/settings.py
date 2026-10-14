@@ -669,6 +669,14 @@ class ThoughtSettings(BaseSettings):
     self_readings_fetch_timeout_sec: float = Field(
         0.5, gt=0.0, le=5.0, alias="SELF_READINGS_FETCH_TIMEOUT_SEC"
     )
+    # What each body signal tends to lead to (self-calibration spec section E): a self-reading line
+    # gets "; when this is high, my next hour had <outcome> Nx as often (...) [assoc:<id>]" from the
+    # newest self_signal_outcome_association row (orion-equilibrium-service's hourly rollup) only
+    # when both sides have enough hours and the 95% interval excludes 1. Kill switch: false = the
+    # self-readings block is byte-identical to before.
+    self_signal_outcome_association_enabled: bool = Field(
+        True, alias="SELF_SIGNAL_OUTCOME_ASSOCIATION_ENABLED"
+    )
 
     # --- Temporal Self rev 4: reverie gets the last few closed arcs (app/reverie.py) ---
     # The reverie tick fetches the same frame as the stance cue (TEMPORAL_SELF_FRAME_URL, same

@@ -56,6 +56,7 @@ from .durable_run_state import DurableRunStateSQL
 from .gpu_pool_event import GpuPoolEventSQL
 from .gpu_pool_state import GpuPoolStateSQL
 from .transport_baseline_hourly import TransportBaselineHourlySQL
+from .self_signal_outcome import SelfSignalHourSQL, SelfSignalOutcomeAssociationSQL
 from .field_channel_anomaly_score import FieldChannelAnomalyScoreSQL
 from .chat_stance_belief import ChatStanceBeliefLogSQL
 from .self_concept_history import SelfConceptHistorySQL
@@ -156,6 +157,8 @@ __all__ = [
     "GpuPoolEventSQL",
     "GpuPoolStateSQL",
     "TransportBaselineHourlySQL",
+    "SelfSignalHourSQL",
+    "SelfSignalOutcomeAssociationSQL",
     "FieldChannelAnomalyScoreSQL",
     "JournalEntryIndexSQL",
     "ChatStanceBeliefLogSQL",

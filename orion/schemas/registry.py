@@ -731,6 +731,7 @@ from orion.schemas.temporal_self import (
 )
 from orion.schemas.field_state import FieldEdgeV1, FieldStateV1
 from orion.schemas.self_reading import SelfReadingsBlockV1, SelfReadingV1
+from orion.schemas.self_signal_outcome import SelfSignalHourV1, SelfSignalOutcomeAssociationV1
 from orion.schemas.causal_geometry import (
     CausalGeometryDivergenceEntryV1,
     CausalGeometryEdgeV1,
@@ -930,6 +931,8 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "MetacognitiveTraceV1": MetacognitiveTraceV1,
     "MetacogTriggerV1": MetacogTriggerV1,
     "TransportBaselineHourlyV1": TransportBaselineHourlyV1,
+    "SelfSignalHourV1": SelfSignalHourV1,
+    "SelfSignalOutcomeAssociationV1": SelfSignalOutcomeAssociationV1,
     "MetacogDraftTextPatchV1": MetacogDraftTextPatchV1,
     "MetacogEntryV1": MetacogEntryV1,
     "RepairPressureAppraisalV1": RepairPressureAppraisalV1,
@@ -1979,6 +1982,11 @@ SCHEMA_REGISTRY: Dict[str, SchemaRegistration] = {
     # Transport baseline gate hourly per-hop summary (2026-09-29). In BOTH maps.
     "TransportBaselineHourlyV1": SchemaRegistration(
         model=TransportBaselineHourlyV1, kind="transport_baseline.hourly.v1"
+    ),
+    # Self-signal -> outcome association (2026-10-14, spec 2026-10-07 section E). In BOTH maps.
+    "SelfSignalHourV1": SchemaRegistration(model=SelfSignalHourV1, kind="self_signal.hour.v1"),
+    "SelfSignalOutcomeAssociationV1": SchemaRegistration(
+        model=SelfSignalOutcomeAssociationV1, kind="self_signal.outcome_association.v1"
     ),
     "GpuPoolStateV1": SchemaRegistration(model=GpuPoolStateV1, kind="gpu_pool.state.v1"),
     "GpuPoolStateRequestV1": SchemaRegistration(model=GpuPoolStateRequestV1, kind="gpu_pool.state.request.v1"),

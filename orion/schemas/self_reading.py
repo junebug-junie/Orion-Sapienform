@@ -59,7 +59,12 @@ class SelfReadingV1(BaseModel):
     # "substrate_node_prediction_error_history:node:substrate.chat@2026-10-14T03:11:18.254835+00:00".
     source_ref: str = ""
     ref: str = ""  # the short ref shown in text, e.g. "pe:chat@2026-10-14T03:11:18Z"
-    plain: str = ""  # one deterministic sentence, no LLM
+    # What this signal tends to lead to (spec section E): the clause of the signal's strongest
+    # self_signal_outcome_association row whose 95% interval excludes 1, cited [assoc:<id>] inside
+    # the clause. "" when there is none or SELF_SIGNAL_OUTCOME_ASSOCIATION_ENABLED is off.
+    tends_to: str = ""
+    outcome_association_id: str = ""  # self_signal_outcome_association primary key, "" when none
+    plain: str = ""  # one deterministic sentence, no LLM (ends with "; <tends_to>" when set)
 
 
 class SelfReadingsBlockV1(BaseModel):

@@ -51,7 +51,13 @@ from .repair_pressure_trend_gate import (
 )
 from orion.metacog.trend_reducer import MetacogTrendStateV1
 from .attention_self_model_reader import AttentionSelfModelReader
-from .pe_history_reader import NodePeHistoryReader
+from .self_signal_outcome_rollup import (
+    SelfSignalOutcomeReader,
+    SelfSignalOutcomeRollup,
+    association_payload,
+    summarize as summarize_self_signal_associations,
+)
+from orion.schemas.self_signal_outcome import SELF_SIGNAL_ASSOCIATION_KIND, SELF_SIGNAL_HOUR_KIND
 from .self_signal_episode_gate import (
     SelfSignalEpisodeGate,
     config_from_settings as self_signal_config_from_settings,
@@ -215,7 +221,16 @@ class EquilibriumService(BaseChassis):
             else None
         )
         self._pe_history_cache = NodePeHistoryCache()
-        self._pe_history_reader: NodePeHistoryReader | None = None
+        self._pe_history_reader: SelfSignalOutcomeReader | None = None
+        # Self-signal -> outcome association (spec section E): rides the same poll and PE cache.
+        self._self_signal_rollup: SelfSignalOutcomeRollup | None = (
+            SelfSignalOutcomeRollup(
+                grace_sec=float(settings.self_signal_outcome_grace_sec),
+                min_hours=int(settings.self_signal_outcome_min_hours),
+            )
+            if settings.self_signal_outcome_association_enabled
+            else None
+        )
         # One poll task and one state load per PROCESS, not per _run:
         # _supervise_run restarts _run after a crash, and a per-_run task
         # would (a) double-poll (halving the dwell, which counts polls) and
@@ -450,20 +465,29 @@ class EquilibriumService(BaseChassis):
         """One poll: refresh the 7-day PE window, judge every internal node
         with the attention seam's rule, fold into episodes, publish rows."""
         gate = self._self_signal_gate
-        if gate is None:
+        rollup = self._self_signal_rollup
+        if gate is None and rollup is None:
             return
         now = _utcnow()
         if self._pe_history_reader is None:
-            self._pe_history_reader = NodePeHistoryReader(dsn=settings.metacog_generative_postgres_uri)
+            self._pe_history_reader = SelfSignalOutcomeReader(dsn=settings.metacog_generative_postgres_uri)
         reader = self._pe_history_reader
         magnitudes: dict = {}
         history_error: str | None = None
         try:
             await asyncio.to_thread(self._pe_history_cache.refresh, reader.fetch_since, now=now)
-            magnitudes = await asyncio.to_thread(self._pe_history_cache.magnitudes, now=now)
+            if gate is not None:
+                magnitudes = await asyncio.to_thread(self._pe_history_cache.magnitudes, now=now)
         except Exception as exc:
             # Absent, never calm: every signal reads unknown this poll.
             history_error = f"prediction-error history unreadable ({type(exc).__name__})"
+        if rollup is not None and history_error is None:
+            try:
+                await self._self_signal_outcome_cycle(rollup, reader, now)
+            except Exception:
+                logger.exception("self_signal_outcome_cycle_failed")
+        if gate is None:
+            return
         observations = observe_signals(
             magnitudes,
             now=now,
@@ -478,6 +502,11 @@ class EquilibriumService(BaseChassis):
             pressure=distress,
             recall_enabled=settings.metacog_recall_enabled,
             history_ok=history_error is None,
+            tends_to=(
+                {sid: association_payload(a) for sid, a in rollup.renderable().items()}
+                if rollup is not None
+                else None
+            ),
         )
         for out in outgoing:
             # Episode-shaped and budgeted by the gate: skip the shared lane so
@@ -487,8 +516,56 @@ class EquilibriumService(BaseChassis):
         if gate.dump() != before:
             await self._persist_self_signal_state()
 
+    async def _self_signal_outcome_cycle(
+        self, rollup: SelfSignalOutcomeRollup, reader: SelfSignalOutcomeReader, now: datetime
+    ) -> None:
+        """Hourly: publish new SelfSignalHourV1 rows, then every (signal, outcome) association.
+        A row that fails to publish is forgotten so the next poll recomputes and retries it."""
+        cache = self._pe_history_cache
+        node_ids = list(cache.current())
+        firsts = [h[0][0] for h in (cache.history(n) for n in node_ids) if h]
+        result = await asyncio.to_thread(
+            rollup.run_cycle,
+            now=now,
+            reader=reader,
+            history=cache.history,
+            node_ids=node_ids,
+            history_start=min(firsts) if firsts else None,
+        )
+        if result.skipped:
+            if result.skipped != "nothing_due":
+                logger.info("self_signal_outcome_skipped reason=%s", result.skipped)
+            return
+        published_hours = 0
+        for row in result.hour_rows:
+            if await self._publish_row(settings.channel_self_signal_hour, SELF_SIGNAL_HOUR_KIND, row):
+                published_hours += 1
+            else:
+                rollup.known_hours.pop(row.hour_start, None)
+        published_assoc = 0
+        for a in result.associations:
+            if await self._publish_row(
+                settings.channel_self_signal_outcome_association, SELF_SIGNAL_ASSOCIATION_KIND, a
+            ):
+                published_assoc += 1
+        logger.info(
+            "self_signal_outcome_cycle hours=%d/%d associations=%d/%d renderable=%s %s",
+            published_hours, len(result.hour_rows), published_assoc, len(result.associations),
+            ",".join(sorted(rollup.renderable())) or "-",
+            summarize_self_signal_associations(result.associations),
+        )
+
+    async def _publish_row(self, channel: str, kind: str, row: Any) -> bool:
+        try:
+            env = BaseEnvelope(kind=kind, source=self._source(), payload=row.model_dump(mode="json"))
+            await self.bus.publish(channel, env)
+            return True
+        except Exception as e:
+            logger.warning("publish_failed channel=%s kind=%s err=%s", channel, kind, e)
+            return False
+
     def _ensure_self_signal_task(self) -> None:
-        if self._self_signal_gate is None:
+        if self._self_signal_gate is None and self._self_signal_rollup is None:
             return
         t = self._self_signal_task
         if t is None or t.done():
@@ -497,7 +574,7 @@ class EquilibriumService(BaseChassis):
             )
 
     async def _self_signal_episode_poll_loop(self) -> None:
-        if self._self_signal_gate is None:
+        if self._self_signal_gate is None and self._self_signal_rollup is None:
             return
         interval = float(settings.metacog_self_signal_episodes_poll_interval_sec)
         while not self._stop.is_set():

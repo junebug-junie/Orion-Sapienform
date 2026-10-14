@@ -209,3 +209,60 @@ def test_per_tick_signal_gone_stale_is_unreadable() -> None:
             if not (r[0] == "node:substrate.biometrics" and r[1] > NOW - timedelta(hours=1))]
     block = sr.project_self_readings(_cache(rows), now=NOW)
     assert "Can't read right now: biometrics (stale)." in block.text
+
+
+# --- what it tends to lead to (spec section E) --------------------------------------------------
+
+from datetime import datetime, timezone  # noqa: E402
+
+from orion.schemas.self_signal_outcome import SelfSignalOutcomeAssociationV1  # noqa: E402
+
+_CLAUSE = ("when this is high, my next hour had a failed turn 3.1x as often (31% of 42 high hours vs "
+           "10% of 120 normal) [assoc:ssa-0123456789]")
+
+
+def _assoc(signal: str, clause: str = _CLAUSE) -> SelfSignalOutcomeAssociationV1:
+    return SelfSignalOutcomeAssociationV1(
+        association_id="ssa-0123456789", computed_at=datetime(2026, 10, 14, 3, tzinfo=timezone.utc),
+        signal_id=signal, outcome="turn_failed", n_high=42, events_high=13, n_normal=120, events_normal=12,
+        rate_high=13 / 42, rate_normal=0.1, ratio=3.0952, ci_low=1.5, ci_high=6.3, min_hours=24,
+        verdict="tends_more", clause=clause,
+    )
+
+
+def test_no_association_is_byte_identical_to_before() -> None:
+    cache = _cache(fx.busy_body_rows())
+    before = sr.project_self_readings(cache, now=NOW)
+    assert sr.project_self_readings(cache, now=NOW, associations=None).text == before.text
+    assert sr.project_self_readings(cache, now=NOW, associations={}).text == before.text
+    assert before.text and "when this is high" not in before.text
+
+
+def test_an_unusual_reading_gets_its_cited_clause() -> None:
+    exe = "node:substrate.execution"
+    readings = sr.build_self_readings(_cache(fx.busy_body_rows()), now=NOW, associations={exe: _assoc(exe)})
+    # Two readings shown leave room for the clause under the 600-char cap (three do not: see below).
+    block = sr.render_self_readings(readings, now=NOW, max_shown=2)
+    line = next(ln for ln in block.text.splitlines() if "task execution" in ln)
+    assert line.endswith("[pe:execution@2026-10-14T03:29:30Z]; " + _CLAUSE)
+    r = _by_id(block.readings)[exe]
+    assert r.tends_to == _CLAUSE and r.outcome_association_id == "ssa-0123456789"
+
+
+def test_a_clause_never_attaches_to_a_calm_or_unread_signal() -> None:
+    block = sr.project_self_readings(
+        _cache(fx.calm_rows()), now=NOW,
+        associations={n: _assoc(n) for n in sr.prompt_reaching_nodes()},
+    )
+    assert block.text == ""  # calm body: nothing rendered, clause or not
+
+
+def test_the_clause_is_dropped_before_a_reading_would_be() -> None:
+    nodes = ["node:substrate.execution", "node:substrate.bus_synaptic", "node:substrate.cabinet"]
+    readings = sr.build_self_readings(_cache(fx.busy_body_rows()), now=NOW,
+                                      associations={n: _assoc(n) for n in nodes})
+    plain = sr.render_self_readings(sr.build_self_readings(_cache(fx.busy_body_rows()), now=NOW), now=NOW)
+    block = sr.render_self_readings(readings, now=NOW)
+    assert len(block.text) <= 600
+    assert block.shown == plain.shown  # every reading still shown
+    assert block.text == plain.text  # three readings fill the cap: every clause gave way

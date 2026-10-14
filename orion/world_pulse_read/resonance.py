@@ -31,6 +31,7 @@ from orion.schemas.reading_resonance import (
     ReadingResonanceCheckV1,
     ReadingResonanceJudgmentV1,
     ResonanceCandidateV1,
+    ResonanceCitationV1,
     ResonanceNeighborV1,
     ResonancePacketV1,
 )
@@ -200,7 +201,7 @@ def fallback_article_summary(learned: str, *, max_sentences: int = SUMMARY_MAX_S
 # (the judge must not anchor on a number that does not mean "related").
 # ---------------------------------------------------------------------------------------
 
-JUDGE_INSTRUCTIONS = """You are Orion. You just finished reading something from the world.
+_JUDGE_INSTRUCTIONS_TEMPLATE = """You are Orion. You just finished reading something from the world.
 Below is what you read, then pieces of your own mind that retrieval placed near it: beliefs you hold (priors) with the findings and revisions behind them, questions you live with and your answers, concepts in your atlas with their neighbours, memories of conversations with Juniper, your curiosity findings, dreams, and open threads.
 Retrieval is loose. Most of these pieces are only near the read in wording. Treat nearness as no evidence at all.
 Decide whether there is a real connection between this read and one or more of these pieces: one you could explain to Juniper in plain words, where the read actually changes, confirms, sharpens, or contradicts something you hold, or answers or reopens one of your questions.
@@ -208,13 +209,32 @@ If there is none, say so: decision "none" is the normal, honest outcome.
 Rules:
 - Cite only pieces listed below, by their exact ref_kind and ref_id.
 - read_quote must be copied verbatim from the READ section (summary, what you learned, or retained text).
-- article_summary: 3 to 5 sentences on what the article itself says, for Juniper, without your connection.
-- connection: first person, your own words, what the read has to do with the cited pieces.
+- article_summary: 3 to 5 sentences on what the article itself says, for Juniper, without your connection; at most {summary_max} characters.
+- connection: first person, your own words, what the read has to do with the cited pieces; at most {connection_max} characters.
 - bears_on_prior: "strains" only if the read gives a reason to doubt a cited self_prior; then set strained_prior_id to that prior's ref_id. "supports" if it backs one. Otherwise null.
 - decision: "share" if Juniper would want to hear this now, "note" if it belongs in your letter only, "none" otherwise.
-- explore_next: one question worth chasing because of this read, or null.
+- explore_next: one question worth chasing because of this read, or null; at most {explore_max} characters.
 - confidence: 0 to 1, how sure you are the connection is real.
-Return one JSON object with exactly these keys: article_summary, read_quote, connection, citations (list of objects with ref_kind, ref_id, how), bears_on_prior, strained_prior_id, decision, explore_next, confidence."""
+Return one JSON object with exactly these keys: article_summary, read_quote, connection, citations (list of at most {citations_max} objects with ref_kind, ref_id, how; how at most {how_max} characters), bears_on_prior, strained_prior_id, decision, explore_next, confidence."""
+
+
+def _max_len(model: Any, name: str) -> int:
+    """A field's max_length from the schema itself, so the prompt and the validator cannot
+    drift: the first live judge run (2026-10-14) lost a real judgment to a 1,382-character
+    connection against a 900-character limit the prompt never stated."""
+    for meta in model.model_fields[name].metadata:
+        if getattr(meta, "max_length", None) is not None:
+            return int(meta.max_length)
+    raise KeyError(f"{model.__name__}.{name} has no max_length")
+
+
+JUDGE_INSTRUCTIONS = _JUDGE_INSTRUCTIONS_TEMPLATE.format(
+    summary_max=_max_len(ReadingResonanceJudgmentV1, "article_summary"),
+    connection_max=_max_len(ReadingResonanceJudgmentV1, "connection"),
+    explore_max=_max_len(ReadingResonanceJudgmentV1, "explore_next"),
+    citations_max=_max_len(ReadingResonanceJudgmentV1, "citations"),
+    how_max=_max_len(ResonanceCitationV1, "how"),
+)
 
 
 def build_judge_prompt(packet: ResonancePacketV1, retained_texts: Sequence[tuple[str, str]] = ()) -> str:

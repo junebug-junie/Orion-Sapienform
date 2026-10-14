@@ -240,3 +240,15 @@ def test_hub_from_sims_leaves_out_what_the_caller_excludes():
     assert hub_from_sims([], k=2) == 0.0
     with pytest.raises(ValueError):
         dot([1.0], [1.0, 0.0])
+
+
+def test_judge_prompt_states_every_length_limit_the_validator_enforces():
+    # 2026-10-14 live run: a real judgment was thrown away as "unparseable" for a
+    # 1,382-character connection; the prompt never said 900.
+    from orion.schemas.reading_resonance import ReadingResonanceJudgmentV1, ResonanceCitationV1
+    from orion.world_pulse_read.resonance import JUDGE_INSTRUCTIONS, _max_len
+
+    for model, name in ((ReadingResonanceJudgmentV1, "article_summary"), (ReadingResonanceJudgmentV1, "connection"),
+                        (ReadingResonanceJudgmentV1, "explore_next"), (ResonanceCitationV1, "how")):
+        assert f"at most {_max_len(model, name)} characters" in JUDGE_INSTRUCTIONS, name
+    assert f"at most {_max_len(ReadingResonanceJudgmentV1, 'citations')} objects" in JUDGE_INSTRUCTIONS

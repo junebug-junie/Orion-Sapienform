@@ -26,9 +26,10 @@ to one route decorator and its mounted-app regression. No live services are rest
 
 ## Deployment and rollback
 
-Rebuild/redeploy `orion-dream` from the reviewed worktree via
-`scripts/safe_docker_build.sh orion-dream up -d --build` after production approval.
-Verify the documented URL returns 200. Enabling periodic compaction is a separate
-operator action: set the dream flag true and recreate dream before the next natural
-sleep. Its end-to-end generation remains UNVERIFIED while disabled. Roll back the
-image if needed; original journals and compaction rows remain untouched.
+The route correction was merged to main and deployed. With explicit operator approval,
+`DREAM_CURIOSITY_COMPACTION_ENABLED` is now `true` in the checked-in Dream environment
+template and the ignored live Dream `.env`; Dream was recreated from main. Verify the
+documented URL returns 200 and observe the next successful persisted sleep for a durable
+admission. Its end-to-end generated summary remains UNVERIFIED until that occurs.
+Roll back by setting the flag to `false` and recreating Dream; original journals and
+compaction rows remain untouched.

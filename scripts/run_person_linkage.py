@@ -42,7 +42,7 @@ from orion.person_model import linkage as L  # noqa: E402
 from orion.person_model.extract import PERSON_LABEL  # noqa: E402
 from orion.person_model.merge_log import plan_entries  # noqa: E402
 from orion.person_model.normalize import fold, prompt_context_keys  # noqa: E402
-from orion.person_model.person import interlocutor, load_people  # noqa: E402
+from orion.person_model.person import DEFAULT_ANSWERS_PATH, interlocutor, load_people, local_first  # noqa: E402
 from orion.person_model.review_html import render  # noqa: E402
 
 GRAPH = "orion_substrate"
@@ -89,7 +89,7 @@ def parse_labels(raw) -> Tuple[str, ...]:
 def collapse_same_question(decisions: list) -> list:
     """Review cards that ask the same question become one card: same anchor and
     same folded candidate label (a graph node and a mention cluster both reading
-    "juniper feld"; a "Jay" split card and the "jay" node merge that depends on
+    "juniper feld"; a "Zed" split card and the "zed" node merge that depends on
     it). The kept card (a split card first, then a graph node) lists the others,
     and an exported answer applies to all of them."""
     review = [d for d in decisions if d.group == "needs_your_call"]
@@ -139,7 +139,7 @@ def fold_claims_into_pair_questions(decisions: list) -> list:
 
 
 def hold_merges_of_split_names(decisions: list, clusters: Dict[str, dict]) -> list:
-    """A name she used for two people ("Jay, Jay") cannot auto-merge with
+    """A name she used for two people ("Zed, Zed") cannot auto-merge with
     anything until she answers the split card."""
     split_ids = {c["node_id"] for c in clusters.values() if c.get("repeat_sources")}
     split_names = {k for k, c in clusters.items() if c.get("repeat_sources")}
@@ -280,7 +280,7 @@ def cluster_mentions(mentions_by_source: Dict[str, Tuple[str, list]]) -> Dict[st
             c["surfaces"][m.text] += 1
             if sid not in c["sources"]:
                 c["sources"].append(sid)
-        # A name listed twice side by side ("Jay, Jay") in one source.
+        # A name listed twice side by side ("Zed, Zed") in one source.
         for a, b in zip(persons, persons[1:]):
             if fold(a.text) == fold(b.text) and _LIST_SEP.match(text[a.span_end:b.span_start] or "x"):
                 rs = clusters[fold(a.text)]["repeat_sources"]
@@ -328,7 +328,8 @@ def main() -> int:
     ap.add_argument("--out-dir", type=Path, default=Path("/tmp/person-linkage"))
     ap.add_argument("--html", type=Path, default=None)
     ap.add_argument("--people", type=Path, default=ROOT / "config" / "person_model" / "people.yaml")
-    ap.add_argument("--answers", type=Path, default=ROOT / "config" / "person_model" / "stated_answers.yaml")
+    ap.add_argument("--answers", type=Path, default=local_first(DEFAULT_ANSWERS_PATH),
+                    help="stated answers; default: stated_answers.local.yaml if present, else the redacted example")
     ap.add_argument("--no-extractor", action="store_true", help="skip GLiNER (extractor features read 'missing')")
     ap.add_argument("--no-embeddings", action="store_true")
     args = ap.parse_args()

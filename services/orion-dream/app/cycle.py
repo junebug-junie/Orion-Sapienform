@@ -52,6 +52,7 @@ class CycleDeps:
     # A completed, saved sleep ends in a story dream: publishes the trigger
     # app/story.py builds. Best effort: a failure never fails or undoes the sleep.
     start_story: Optional[Callable[[DreamInternalTriggerV1], Awaitable[None]]] = None
+    compact_curiosity: Optional[Callable[[DreamCycleV1], Awaitable[None]]] = None
     # The rest drive (Temporal Self rev 4, R2): this check's pressure as a
     # DriveReadingV1 for readers outside the dream (Hub curiosity/outreach).
     # Best effort: a publish failure never changes or fails a sleep decision.
@@ -366,6 +367,11 @@ async def run_cycle_once(deps: CycleDeps, *, trigger: str = "pressure", force: b
                 logger.exception("dream_story_start_failed cycle_id=%s", cycle_id)
     # After the story trigger, so its extra pressure read never delays the story.
     await _publish_after_sleep(deps, cycle, last_start)
+    if persisted and cycle.status == "completed" and deps.compact_curiosity is not None:
+        try:
+            await deps.compact_curiosity(cycle)
+        except Exception:
+            logger.exception("curiosity_compaction_after_sleep_failed cycle_id=%s", cycle_id)
     return cycle
 
 

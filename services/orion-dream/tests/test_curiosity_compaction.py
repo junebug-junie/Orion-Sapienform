@@ -1,0 +1,231 @@
+from __future__ import annotations
+
+import asyncio
+import copy
+import json
+from datetime import datetime, timezone
+
+import pytest
+
+NOW = datetime(2026, 10, 14, 12, tzinfo=timezone.utc)
+BODY = "Orion investigated the delayed journal writes. The observed records support a delivery gap, while its cause remains uncertain and needs another check."
+
+
+def row(material=None):
+    from orion.curiosity.compaction import batches, due_window, window_id
+    start, end = due_window(NOW, "weekly", None)
+    return dict(compaction_id=window_id("weekly", start), cadence="weekly", window_start=start,
+                window_end=end, cycle_id="dc-test", status="pending", updated_at=NOW,
+                state={"phase": "topics", "sources": [{"entry_id": "j1", "run_ref": "curiosity:r1", "created_at": NOW.isoformat()}],
+                       "batches": batches(material or [{"ref": "j1", "body": BODY, "sources": ["j1"]}]), "partials": []})
+
+
+@pytest.mark.parametrize("cadence,start,end", [
+    ("weekly", "2026-10-05T06:00:00+00:00", "2026-10-12T06:00:00+00:00"),
+    ("monthly", "2026-09-01T06:00:00+00:00", "2026-10-01T06:00:00+00:00"),
+])
+def test_closed_calendar_windows_and_no_repeat(cadence, start, end):
+    from orion.curiosity.compaction import due_window
+    window = due_window(NOW, cadence, None)
+    assert tuple(d.isoformat() for d in window) == (start, end)
+    latest = dict(window_start=window[0], window_end=window[1], status="completed")
+    assert due_window(NOW, cadence, latest) is None
+    latest["status"] = "pending"
+    assert due_window(NOW, cadence, latest) == window
+
+
+def test_catchup_preserves_oldest_gap_and_dst_calendar_boundaries():
+    from orion.curiosity.compaction import due_window
+    now = datetime(2026, 11, 3, 12, tzinfo=timezone.utc)
+    start, end = due_window(now, "weekly", None)
+    assert (end - start).total_seconds() == 169 * 3600
+    next_start, next_end = due_window(datetime(2027, 1, 1, tzinfo=timezone.utc), "weekly",
+                                     dict(window_start=start, window_end=end, status="empty"))
+    assert next_start == end
+    assert next_end.day == 9 and next_end.month == 11
+    start, end = due_window(datetime(2027, 1, 14, tzinfo=timezone.utc), "monthly", None)
+    assert (start.year, start.month, end.year, end.month) == (2026, 12, 2027, 1)
+
+
+def test_month_uses_weeks_plus_uncovered_and_late_journals_once():
+    from orion.curiosity.compaction import source_material
+    journals = [{"entry_id": f"j{i}", "source_ref": f"curiosity:r{i}", "body": f"body {i}", "created_at": NOW} for i in range(4)]
+    week = {"compaction_id": "week1", "state": {"sources": [{"entry_id": "j1"}, {"entry_id": "j2"}], "body": BODY, "topics": [{"topic": "Delivery", "body": BODY, "sources": ["j1", "j2"]}]}}
+    material, refs = source_material(journals, [week])
+    assert [m["ref"] for m in material] == ["j0", "j3", "week1:topic:0"]
+    assert len(refs) == 4
+    # A mismatching or overlapping summary must not suppress original evidence.
+    invalid = copy.deepcopy(week)
+    invalid["state"]["sources"].append({"entry_id": "outside-month"})
+    material, _ = source_material(journals, [invalid])
+    assert [m["ref"] for m in material] == [f"j{i}" for i in range(4)]
+
+
+def test_oversized_unicode_sources_are_lossless_and_bounded():
+    from orion.curiosity.compaction import batches, INPUT_BUDGET
+    from orion.cognition.compactor.chunking import json_char_len
+    body = "a😀<&中文" * 10000
+    result = batches([{"ref": "j1", "body": body}])
+    assert "".join(item["body"] for batch in result for item in batch) == body
+    assert all(sum(json_char_len(item) for item in batch) <= INPUT_BUDGET for batch in result)
+
+
+def answer_for(r):
+    from orion.curiosity.compaction import next_prompt
+    prompt = next_prompt(r)
+    if r["state"]["phase"] == "overall":
+        return json.dumps({"body": BODY})
+    records = json.loads(prompt.split("SOURCE RECORDS:\n")[1])
+    return json.dumps({"topics": [{"topic": "Delivery reliability", "body": BODY,
+                                   "refs": [item["ref"] for item in records]}]})
+
+
+def test_topic_checkpoint_then_overall_keeps_provenance_and_reduces():
+    from orion.curiosity.compaction import record_answer
+    r = row([{"ref": str(i), "body": "evidence " * 1500, "sources": [f"j{i}"]} for i in range(7)])
+    r["state"]["sources"] = [{"entry_id": f"j{i}", "run_ref": f"curiosity:r{i}", "created_at": NOW.isoformat()} for i in range(7)]
+    phases = []
+    for _ in range(40):
+        phases.append(r["state"]["phase"])
+        r = record_answer(r, answer_for(r))
+        if r["status"] == "completed":
+            break
+    assert r["status"] == "completed" and phases[-1] == "overall"
+    assert {s for t in r["state"]["topics"] for s in t["sources"]} == {f"j{i}" for i in range(7)}
+
+
+@pytest.mark.parametrize("raw", ["", '{"body":""}', '{"body":"No findings."}', 'not json',
+                                  '{"topics":[{"topic":"Invented", "body":"' + BODY + '","refs":["made-up"]}]}'])
+def test_failed_empty_or_ungrounded_generation_does_not_change_checkpoint(raw):
+    from orion.curiosity.compaction import record_answer
+    r = row()
+    before = copy.deepcopy(r)
+    with pytest.raises(ValueError):
+        record_answer(r, raw)
+    assert r == before
+
+
+def test_journal_contract_is_idempotent_indexable_and_silent():
+    from orion.curiosity.compaction import journal_entry
+    from orion.journaler import build_journal_entry_index_payload
+    from orion.journaler.dispatch_registry import resolve_policy
+    r = row()
+    r["state"]["body"] = BODY
+    r["state"]["topics"] = [{"topic": "Delivery", "body": BODY, "sources": ["j1"]}]
+    entry = journal_entry(r)
+    assert entry.entry_id == journal_entry(r).entry_id
+    assert entry.source_ref.startswith("curiosity-compaction:")
+    assert not entry.source_ref.startswith("curiosity:")  # cannot ingest itself
+    assert "curiosity:r1 (journal j1)" in entry.body
+    assert build_journal_entry_index_payload(entry)["body"] == entry.body
+    assert not resolve_policy(entry.trigger_kind or "").email_enabled
+
+
+def test_readout_unavailable_is_503(monkeypatch):
+    from app import curiosity_compaction_store, dream_api
+    from fastapi import HTTPException
+    def unavailable(limit):
+        raise RuntimeError("missing migration")
+    monkeypatch.setattr(curiosity_compaction_store, "recent", unavailable)
+    with pytest.raises(HTTPException) as exc:
+        dream_api.curiosity_compactions(20)
+    assert exc.value.status_code == 503
+
+
+@pytest.mark.parametrize("block_at", ["acquire", "prepare"])
+def test_shutdown_waits_for_db_worker_and_closes_late_session(block_at):
+    import threading
+    from app.curiosity_compaction_submit import submit_due
+    async def run():
+        entered = asyncio.Event()
+        release = threading.Event()
+        loop = asyncio.get_running_loop()
+        events = []
+        def block():
+            loop.call_soon_threadsafe(entered.set)
+            assert release.wait(5)
+            events.append("worker-finished")
+        class Session:
+            def prepare(self, *args):
+                if block_at == "prepare":
+                    block()
+            def unjournaled(self):
+                return []
+            def close(self):
+                events.append("closed")
+        class Store:
+            def acquire(self, cadence):
+                if block_at == "acquire":
+                    block()
+                return Session()
+        task = asyncio.create_task(submit_due(Store(), None, None, now=NOW, cycle_id="dc-test"))
+        await asyncio.wait_for(entered.wait(), 5)
+        task.cancel()
+        await asyncio.sleep(0)
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert events == ["worker-finished", "closed"]
+    asyncio.run(run())
+
+
+def test_dates_survive_topic_reduction_and_overall_even_if_model_omits_dates():
+    from orion.curiosity.compaction import source_material, record_answer, next_prompt, journal_entry
+    from datetime import timedelta
+    # IDs intentionally oppose chronology.
+    journals = [{"entry_id": "z-early", "source_ref": "curiosity:early", "body": BODY, "created_at": NOW},
+                {"entry_id": "a-late", "source_ref": "curiosity:late", "body": BODY, "created_at": NOW + timedelta(days=1)}]
+    material, sources = source_material(journals, [])
+    r = row(material)
+    r["state"]["sources"] = sources
+    r = record_answer(r, answer_for(r))
+    assert r["state"]["topics"][0]["sources"] == ["z-early", "a-late"]
+    prompt = next_prompt(r)
+    assert NOW.isoformat() in prompt and (NOW + timedelta(days=1)).isoformat() in prompt
+    r = record_answer(r, answer_for(r))
+    output = journal_entry(r).body
+    assert output.index("curiosity:early") < output.index("curiosity:late")
+
+
+def test_due_window_submission_uses_durable_ingress_without_narrative_prompt():
+    from types import SimpleNamespace
+    from app.curiosity_compaction_submit import request_for
+    from app.carry_submit import submit_via_cortex
+    from orion.core.bus.bus_schemas import ServiceRef
+    r = row()
+    r["run_id"] = r["compaction_id"] + ":r0"
+    req = request_for(r)
+    sent = []
+    class Bus:
+        async def rpc_request(self, channel, envelope, **kwargs):
+            sent.append(envelope.payload)
+            return {"data": "receipt"}
+        codec = SimpleNamespace(decode=lambda raw: SimpleNamespace(ok=True, envelope=SimpleNamespace(payload={
+            "status": "accepted", "metadata": {"durable_run": {"run_id": req.run_id,
+                "workflow_kind": "curiosity.compaction", "requested_resource": "llm.route.agent"}}})))
+    result = asyncio.run(submit_via_cortex(bus=Bus(), source=ServiceRef(name="orion-dream", version="test", node="test"),
+                                         request=req, request_channel="orion:cortex:request",
+                                         user_text="Consolidate the due Curiosity calendar window."))
+    assert result is None
+    assert sent[0]["context"]["metadata"]["durable_run"]["workflow"] == "curiosity.compaction"
+    assert "words and pictures" not in json.dumps(sent)
+
+
+def test_distinct_topic_areas_keep_their_own_sources_before_overall_synthesis():
+    from orion.curiosity.compaction import source_material, record_answer, next_prompt, journal_entry
+    material, sources = source_material([
+        {"entry_id": "delivery", "source_ref": "curiosity:delivery", "body": BODY, "created_at": NOW},
+        {"entry_id": "self-inquiry", "source_ref": "curiosity:self-inquiry", "body": BODY, "created_at": NOW},
+    ], [])
+    r = row(material)
+    r["state"]["sources"] = sources
+    r = record_answer(r, json.dumps({"topics": [
+        {"topic": "Delivery reliability", "body": BODY, "refs": ["s0"]},
+        {"topic": "Self-understanding", "body": BODY, "refs": ["s1"]},
+    ]}))
+    assert {t["topic"]: t["sources"] for t in r["state"]["topics"]} == {
+        "Delivery reliability": ["delivery"], "Self-understanding": ["self-inquiry"]}
+    assert "Delivery reliability" in next_prompt(r) and "Self-understanding" in next_prompt(r)
+    r = record_answer(r, json.dumps({"body": BODY}))
+    journal = journal_entry(r).body
+    assert "## Delivery reliability" in journal and "## Self-understanding" in journal

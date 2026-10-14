@@ -46,6 +46,9 @@ from app.dream_carry_graph import (
     finish_detail as dream_carry_finish_detail, terminal_detail as dream_carry_terminal_detail,
 )
 from orion.schemas.dream_carry import DREAM_CARRY_WORKFLOW, dream_hop_dispatch_id
+from orion.schemas.curiosity_compaction import CURIOSITY_COMPACTION_WORKFLOW
+from orion.curiosity.compaction_store import Store as CuriosityCompactionStore
+from app.curiosity_compaction_graph import build_curiosity_compaction_graph, finish_detail as curiosity_compaction_finish_detail
 from app.episode_distill_graph import build_episode_distill_graph, finish_detail as episode_distill_finish_detail
 from orion.schemas.memory_episode import MEMORY_EPISODE_DISTILL_WORKFLOW
 from orion.schemas.journal_compose_run import JOURNAL_COMPOSE_WORKFLOW
@@ -104,7 +107,8 @@ WORK_NODES = {DEFAULT_WORKFLOW: {"run_started", "harness_turn"}, SELF_SENSE_WORK
               ORION_DAY_WORKFLOW: {"write_note", "write_carry_forward"},
               # Only a text hop holds the LLM hold; it releases it before its hop is checkpointed.
               # Image hops are child reverie.visual runs and hold nothing in the carry.
-              DREAM_CARRY_WORKFLOW: {"text_hop"}}
+              DREAM_CARRY_WORKFLOW: {"text_hop"},
+              CURIOSITY_COMPACTION_WORKFLOW: {"compact"}}
 # Interrupt nodes the driver resumes only once the run's checkpointed ``retry_at`` has passed, and
 # whose loop iterations are not lifecycle facts (no run.<status> / run.resumed event per wake).
 TIMED_WAIT_NODES = frozenset({"retry_wait", "image_wait"})
@@ -179,6 +183,10 @@ class AdmissionRuntime:
             READING_WORKFLOW: build_reading_graph(lambda request: runner._run_reading_turn(request), admission_deps, runner._checkpointer),
             REVERIE_VISUAL_WORKFLOW: build_reverie_visual_graph(self._reverie_step, admission_deps, runner._checkpointer),
             # Late-bound (like reading above): the runner's method is read per call.
+            CURIOSITY_COMPACTION_WORKFLOW: build_curiosity_compaction_graph(
+                CuriosityCompactionStore(lambda: settings.postgres_uri, driver="psycopg"),
+                lambda *args, **kwargs: runner._call_verb_text(*args, **kwargs),
+                lambda entry: runner._publish_journal(entry), admission_deps, runner._checkpointer),
             COMPACTOR_DIGEST_WORKFLOW: build_compactor_digest_graph(
                 lambda payload, **kw: runner._cortex_orch_rpc(payload, **kw), admission_deps, runner._checkpointer),
             # Late-bound (like reading/reverie above): the runner's methods are read per call.
@@ -271,6 +279,8 @@ class AdmissionRuntime:
             return reading_finish_detail(state)
         if workflow == REVERIE_VISUAL_WORKFLOW:
             return reverie_visual_finish_detail(state)
+        if workflow == CURIOSITY_COMPACTION_WORKFLOW:
+            return curiosity_compaction_finish_detail(state)
         if workflow == COMPACTOR_DIGEST_WORKFLOW:
             return compactor_digest_finish_detail(state)
         if workflow == JOURNAL_COMPOSE_WORKFLOW:

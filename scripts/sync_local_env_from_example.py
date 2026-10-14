@@ -438,6 +438,7 @@ SYNC_EXACT = frozenset(
         # (orion-dream owns it; durable-runs reads the same key for arousal).
         "ORION_SITUATION_TIMEZONE",
         "DREAM_IDLE_MINUTES",
+        "DREAM_CURIOSITY_COMPACTION_ENABLED",
         # Temporal Self R3 reader 1: the dream reads arousal (orion-dream). No DREAM_ prefix is synced.
         "DREAM_IDLE_FROM_AROUSAL_ENABLED",
         "DREAM_AROUSAL_MAX_HOLD_HOURS",

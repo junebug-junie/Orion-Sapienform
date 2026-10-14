@@ -421,3 +421,40 @@ pass that export back to the same script without `--print-sql`. Old cycle-only
 exports remain supported. The report only claims fall-and-rise when real checks
 straddle a stored successful cycle and later rise without a source failure,
 formula change or long sampling gap. A missing check is never interpolated.
+
+### Weekly/monthly Curiosity consolidation (durable)
+
+`DREAM_CURIOSITY_COMPACTION_ENABLED=true` makes a **completed, persisted sleep cycle**
+check closed Denver calendar weeks (Monday–Monday) and calendar months. This hook is
+independent of the narrative story and `dream.carry`; it belongs to the broader sleep
+arc. GitHub/chat compactors retain their independent daily actions schedules (06:10 /
+06:00 Denver). REM's staged memory proposals remain a separate activity.
+
+The sleep service snapshots Curiosity journal records and admits `curiosity.compaction`
+through cortex. Durable-runs performs content-derived topic consolidation, reduces the
+parts, then writes a distinct overall chronological synthesis. Every topic has dated
+source references. Monthly input reuses wholly contained completed weekly topics,
+then includes uncovered original write-ups (including late arrivals and month-edge days).
+Source records are never deleted, retagged, or rewritten. Incomplete investigations
+remain evidence of unfinished work, not claims of completion.
+
+- First activation starts with the previous closed week/month, not all history.
+  Thereafter each sleep admits the oldest pending/missing window per cadence.
+- A pending window keeps an immutable input snapshot. Post-snapshot backdated inserts
+  are not silently incorporated into that artifact; a future explicit rebuild is needed.
+- A busy GPU pool is a durable wait. Each accepted topic/overall answer is saved before
+  advancing the graph. Failed durable runs retry their saved progress on a later sleep
+  using a fenced generation; operator-cancelled/abandoned windows are not resurrected.
+- Empty windows are explicitly `empty`, with no model call or fabricated journal.
+- Completed topic+overall summaries enter the existing journal/index path with stable
+  IDs and no notification trigger. Sleep retries journal delivery until the SQL row exists.
+- `GET /dreams/curiosity-compactions?limit=20` shows windows, durable run IDs/terminal
+  state, phase, topics, overall prose and dated source references. Store failure is 503.
+- No new metric is wired into a cognition loop. This patch creates inspectable derived
+  artifacts, not a numerical claim about selfhood or growth.
+
+Apply `services/orion-sql-db/manual_migration_curiosity_compaction.sql` and update the
+DurableRunState/Request consumers before enabling. Deployment order and evidence:
+`docs/superpowers/pr-reports/2026-10-14-curiosity-periodic-compaction-pr.md`.
+Turning the flag off stops new admissions and delivery reconciliation. Use the existing
+durable pause/cancel controls for work already admitted. Keep artifacts on rollback.

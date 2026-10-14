@@ -1,7 +1,10 @@
 """safe_docker_build.sh must heartbeat the agent board before running a
 build, so a concurrent session's `agent_board.py checkin` sees the deploy in
-flight. A fake `docker` binary on PATH stands in for the real one so this test
-needs neither a daemon nor a real service compose file.
+flight -- this is the actual mitigation for the documented incident where a
+concurrent agent silently reverted another session's verified fix by running
+docker compose from the shared checkout. A fake `docker` binary on PATH
+stands in for the real one so this test needs neither a daemon nor a real
+service compose file.
 """
 from __future__ import annotations
 
@@ -23,7 +26,9 @@ def _make_fake_docker(bin_dir: Path) -> None:
     fake_docker.chmod(fake_docker.stat().st_mode | stat.S_IEXEC)
 
 
-def _init_primary_repo(tmp_path: Path, service: str) -> Path:
+def _init_worktree_repo(tmp_path: Path, service: str) -> Path:
+    """A non-shared checkout (linked worktree) so the wrapper's shared-checkout
+    guard doesn't refuse to run -- mirrors how this wrapper is actually used."""
     primary = tmp_path / "primary"
     primary.mkdir()
     subprocess.run(["git", "init", "-q", "-b", "main"], cwd=primary, check=True)
@@ -36,19 +41,18 @@ def _init_primary_repo(tmp_path: Path, service: str) -> Path:
     (service_dir / ".env").write_text("", encoding="utf-8")
     subprocess.run(["git", "add", "-A"], cwd=primary, check=True)
     subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=primary, check=True)
-    remote = tmp_path / "remote.git"
-    subprocess.run(["git", "init", "--bare", "-q", str(remote)], check=True)
-    subprocess.run(["git", "remote", "add", "origin", str(remote)], cwd=primary, check=True)
+
+    worktree = tmp_path / "worktree"
     subprocess.run(
-        ["git", "push", "-qu", "origin", "main"],
+        ["git", "worktree", "add", "-q", str(worktree), "-b", "chore/test-deploy"],
         cwd=primary,
         check=True,
     )
-    return primary
+    return worktree
 
 
 def test_heartbeats_before_running_docker_compose(tmp_path: Path) -> None:
-    primary = _init_primary_repo(tmp_path, "orion-fake-service")
+    worktree = _init_worktree_repo(tmp_path, "orion-fake-service")
 
     fake_bin = tmp_path / "fake-bin"
     fake_bin.mkdir()
@@ -63,7 +67,7 @@ def test_heartbeats_before_running_docker_compose(tmp_path: Path) -> None:
 
     proc = subprocess.run(
         ["sh", str(SCRIPT), "orion-fake-service", "up", "-d"],
-        cwd=primary,
+        cwd=worktree,
         env=env,
         capture_output=True,
         text=True,
@@ -74,7 +78,7 @@ def test_heartbeats_before_running_docker_compose(tmp_path: Path) -> None:
 
     listed = subprocess.run(
         [sys.executable, str(ROOT / "scripts" / "agent_board.py"), "list", "--all"],
-        cwd=primary,
+        cwd=worktree,
         env=env,
         capture_output=True,
         text=True,
@@ -91,7 +95,7 @@ def test_heartbeat_tags_claude_session_id_when_set(tmp_path: Path) -> None:
     resolve_current_identity() in agent_board_lib.py) -- this only works if
     the docker-build heartbeat actually passes $CLAUDE_CODE_SESSION_ID
     through when Claude Code set it for the wrapper's own subprocess."""
-    primary = _init_primary_repo(tmp_path, "orion-fake-service")
+    worktree = _init_worktree_repo(tmp_path, "orion-fake-service")
 
     fake_bin = tmp_path / "fake-bin"
     fake_bin.mkdir()
@@ -107,7 +111,7 @@ def test_heartbeat_tags_claude_session_id_when_set(tmp_path: Path) -> None:
 
     proc = subprocess.run(
         ["sh", str(SCRIPT), "orion-fake-service", "up", "-d"],
-        cwd=primary,
+        cwd=worktree,
         env=env,
         capture_output=True,
         text=True,
@@ -122,7 +126,7 @@ def test_heartbeat_tags_claude_session_id_when_set(tmp_path: Path) -> None:
 def test_never_fails_the_build_when_board_path_is_unwritable(tmp_path: Path) -> None:
     """The heartbeat is advisory-only -- an agent-board failure must never
     block a real deploy."""
-    primary = _init_primary_repo(tmp_path, "orion-fake-service")
+    worktree = _init_worktree_repo(tmp_path, "orion-fake-service")
 
     fake_bin = tmp_path / "fake-bin"
     fake_bin.mkdir()
@@ -138,7 +142,7 @@ def test_never_fails_the_build_when_board_path_is_unwritable(tmp_path: Path) -> 
 
     proc = subprocess.run(
         ["sh", str(SCRIPT), "orion-fake-service", "config"],
-        cwd=primary,
+        cwd=worktree,
         env=env,
         capture_output=True,
         text=True,

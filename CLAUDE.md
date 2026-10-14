@@ -20,7 +20,7 @@ Speak plainly and succinctly. No meandering treatise or novelas to explain every
 
 Listen to prompt nags and follow CI/CD. 
 
-Be tidy: code changes happen in worktrees, not on main. Live deployments are the explicit exception: deploy only from the clean primary `main` checkout synchronized with `origin/main`, never from a linked worktree. When you are done working, remove any orphan uncommitted work that might be on main.
+Be tidy: no work happens on main--only worktrees. When you are done working, remove any orphan uncommitted work that might be on main.
 
 Do not build cathedrals.
 
@@ -552,7 +552,7 @@ If `git status` shows `.env` staged or unstaged as a tracked file, stop and fix 
 
 If the change affects runtime behavior, config read at boot, dependencies, ports, health checks, workers, Redis, or compose wiring, run the affected Docker build or service smoke.
 
-Run docker compose builds/deploys through `scripts/safe_docker_build.sh <service_name> <args...>` instead of calling `docker compose` directly. Builds and read-only compose operations may run in worktrees. Live deployments (`up`) must run from the clean primary `main` checkout synchronized with `origin/main`; the wrapper refuses deployment from linked worktrees, feature branches, dirty main, or stale main. This makes the deployed source unambiguous while preserving worktree isolation for development. The wrapper applies the `--env-file`/`-f` pattern below automatically.
+Run docker compose builds/deploys through `scripts/safe_docker_build.sh <service_name> <args...>` instead of calling `docker compose` directly. It refuses to run from the shared/primary checkout (worktrees only, same policy as commits) and applies the `--env-file`/`-f` pattern below automatically. This exists because a concurrent agent session once ran `docker compose build`+`up` straight from the shared checkout and silently reverted another session's already-verified fix — see `scripts/safe_docker_build.sh`'s own header and `docs/superpowers/pr-reports/2026-07-14-agent-git-safety-hooks-pr.md` for the full story.
 
 The wrapper also refuses `up` while a SQL migration the service needs is unapplied (read-only check against the live DB; an unreachable DB reads as UNKNOWN and also refuses). A migration declares its consumers with a header line `-- ORION-MIGRATION-REQUIRED-BY: <svc>, <svc>` (or `none <reason>`; CI requires one on every new `manual_migration_*.sql`, and `-- DESTRUCTIVE` files are never dependencies). The refusal names the exact `docker exec ... psql` apply command; it never applies anything itself. Conscious per-command override: `ORION_ALLOW_UNAPPLIED_MIGRATION=1`.
 

@@ -7,8 +7,7 @@ Layers covered:
 - orion/sql_migration_drift.py: REQUIRED-BY parsing, DESTRUCTIVE exclusion, window-free verdict.
 - scripts/check_sql_migrations_applied.py --service: applied / missing (+ exact apply command) /
   DB unreachable = UNKNOWN.
-- scripts/safe_docker_build.sh: permits `up` only from clean synchronized primary main, refuses
-  it on migration exit 1 and 2, honours the migration override, and never migration-gates
+- scripts/safe_docker_build.sh: refuses `up` on exit 1 and 2, honours the override, never gates
   build/config/logs.
 - scripts/check_migration_required_by.py: the CI header check.
 
@@ -198,7 +197,7 @@ def test_service_gate_never_connects_when_nothing_is_required(mig_repo, capsys):
 # ------------------------------------------------------------------ wrapper
 
 
-def _wrapper_repo(tmp_path: Path, stub_rc: int) -> tuple[Path, Path, Path, dict]:
+def _wrapper_repo(tmp_path: Path, stub_rc: int) -> tuple[Path, Path, dict]:
     primary = _init_repo(tmp_path / "primary")
     svc = primary / "services" / "orion-x"
     svc.mkdir(parents=True)
@@ -213,11 +212,6 @@ def _wrapper_repo(tmp_path: Path, stub_rc: int) -> tuple[Path, Path, Path, dict]
         f"sys.exit({stub_rc})\n")
     _git(primary, "add", "-A")
     _git(primary, "commit", "-qm", "init")
-    remote = tmp_path / "remote.git"
-    remote.mkdir()
-    _git(remote, "init", "--bare", "-q")
-    _git(primary, "remote", "add", "origin", str(remote))
-    _git(primary, "push", "-qu", "origin", "main")
     wt = tmp_path / "wt"
     _git(primary, "worktree", "add", "-q", str(wt), "-b", "chore/t")
     fake_bin = tmp_path / "bin"
@@ -229,18 +223,18 @@ def _wrapper_repo(tmp_path: Path, stub_rc: int) -> tuple[Path, Path, Path, dict]
            "ORION_AGENT_BOARD_PATH": str(tmp_path / "board.jsonl")}
     env.pop("ORION_ALLOW_UNAPPLIED_MIGRATION", None)
     env.pop("CLAUDE_CODE_SESSION_ID", None)
-    return primary, wt, marker, env
+    return wt, marker, env
 
 
-def _run(checkout, env, *args):
-    return subprocess.run(["sh", str(WRAPPER), "orion-x", *args], cwd=checkout, env=env,
+def _run(wt, env, *args):
+    return subprocess.run(["sh", str(WRAPPER), "orion-x", *args], cwd=wt, env=env,
                           capture_output=True, text=True, timeout=30)
 
 
 @pytest.mark.parametrize("rc,word", [(1, "not applied"), (2, "UNKNOWN")])
 def test_wrapper_refuses_up(tmp_path, rc, word):
-    primary, _, marker, env = _wrapper_repo(tmp_path, rc)
-    p = _run(primary, env, "up", "-d", "--build")
+    wt, marker, env = _wrapper_repo(tmp_path, rc)
+    p = _run(wt, env, "up", "-d", "--build")
     assert p.returncode == 1
     assert "fake-docker" not in p.stdout
     assert word in p.stderr and "ORION_ALLOW_UNAPPLIED_MIGRATION=1" in p.stderr
@@ -248,16 +242,16 @@ def test_wrapper_refuses_up(tmp_path, rc, word):
 
 
 def test_wrapper_passes_up_when_gate_passes(tmp_path):
-    primary, _, marker, env = _wrapper_repo(tmp_path, 0)
-    p = _run(primary, env, "up", "-d")
+    wt, marker, env = _wrapper_repo(tmp_path, 0)
+    p = _run(wt, env, "up", "-d")
     assert p.returncode == 0, p.stderr
     assert "fake-docker" in p.stdout and marker.exists()
 
 
 def test_wrapper_override_skips_gate(tmp_path):
-    primary, _, marker, env = _wrapper_repo(tmp_path, 1)
+    wt, marker, env = _wrapper_repo(tmp_path, 1)
     env["ORION_ALLOW_UNAPPLIED_MIGRATION"] = "1"
-    p = _run(primary, env, "up", "-d")
+    p = _run(wt, env, "up", "-d")
     assert p.returncode == 0, p.stderr
     assert "fake-docker" in p.stdout and "SKIPPING" in p.stderr
     assert not marker.exists()
@@ -265,69 +259,9 @@ def test_wrapper_override_skips_gate(tmp_path):
 
 @pytest.mark.parametrize("args", [("build",), ("config",), ("logs", "--tail=5"), ("ps",)])
 def test_wrapper_does_not_gate_non_up(tmp_path, args):
-    _, wt, marker, env = _wrapper_repo(tmp_path, 1)
+    wt, marker, env = _wrapper_repo(tmp_path, 1)
     p = _run(wt, env, *args)
     assert p.returncode == 0, p.stderr
-    assert not marker.exists()
-
-
-def test_wrapper_refuses_live_deploy_from_worktree(tmp_path):
-    _, wt, marker, env = _wrapper_repo(tmp_path, 0)
-    p = _run(wt, env, "up", "-d")
-    assert p.returncode == 1
-    assert "linked worktree" in p.stderr
-    assert "fake-docker" not in p.stdout
-    assert not marker.exists()
-
-
-def test_wrapper_refuses_live_deploy_from_dirty_main(tmp_path):
-    primary, _, marker, env = _wrapper_repo(tmp_path, 0)
-    (primary / "dirty.txt").write_text("not deployed\n")
-    p = _run(primary, env, "up", "-d")
-    assert p.returncode == 1
-    assert "dirty main" in p.stderr
-    assert "fake-docker" not in p.stdout
-    assert not marker.exists()
-
-
-def test_wrapper_refuses_live_deploy_from_non_main_primary_branch(tmp_path):
-    primary, _, marker, env = _wrapper_repo(tmp_path, 0)
-    _git(primary, "branch", "-m", "feature")
-    p = _run(primary, env, "up", "-d")
-    assert p.returncode == 1
-    assert "main is required" in p.stderr
-    assert "fake-docker" not in p.stdout
-    assert not marker.exists()
-
-
-def test_wrapper_refuses_live_deploy_from_stale_main(tmp_path):
-    primary, _, marker, env = _wrapper_repo(tmp_path, 0)
-    (primary / "new.txt").write_text("ahead of origin/main\n")
-    _git(primary, "add", "new.txt")
-    _git(primary, "commit", "-qm", "ahead")
-    p = _run(primary, env, "up", "-d")
-    assert p.returncode == 1
-    assert "not synchronized with origin/main" in p.stderr
-    assert "fake-docker" not in p.stdout
-    assert not marker.exists()
-
-
-def test_wrapper_fetches_and_refuses_when_remote_main_advanced(tmp_path):
-    primary, _, marker, env = _wrapper_repo(tmp_path, 0)
-    remote = tmp_path / "remote.git"
-    other = tmp_path / "other"
-    subprocess.run(["git", "clone", "-q", "-b", "main", str(remote), str(other)], check=True)
-    _git(other, "config", "user.email", "t@example.com")
-    _git(other, "config", "user.name", "T")
-    (other / "remote.txt").write_text("new remote main\n")
-    _git(other, "add", "remote.txt")
-    _git(other, "commit", "-qm", "advance remote")
-    _git(other, "push", "-q", "origin", "main")
-
-    p = _run(primary, env, "up", "-d")
-    assert p.returncode == 1
-    assert "not synchronized with origin/main" in p.stderr
-    assert "fake-docker" not in p.stdout
     assert not marker.exists()
 
 

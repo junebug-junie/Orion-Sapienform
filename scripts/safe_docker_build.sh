@@ -1,12 +1,16 @@
 #!/bin/sh
-# safe_docker_build.sh — wrapper around `docker compose` that requires live
-# deployments to run from the clean, synchronized primary `main` checkout.
+# safe_docker_build.sh — wrapper around `docker compose` that refuses to run
+# from the shared/primary git checkout of this repo.
 #
-# Builds and read-only compose commands may run from development worktrees.
-# `up`, however, changes the live runtime and therefore has one canonical
-# source: the primary checkout on `main`, clean and equal to `origin/main`.
-# This prevents a feature-named or stale worktree from becoming an accidental
-# deployment source while preserving isolated worktrees for development.
+# Rationale: a real incident occurred where a concurrent AI coding-agent
+# session ran `docker compose build`+`up` directly from the shared/primary
+# checkout (not a worktree) against services/orion-cortex-orch, and silently
+# reverted another session's already-verified fix. A git hook cannot prevent
+# this category of incident — `docker compose` is not a git operation, so
+# git hooks have no jurisdiction over it. This wrapper is the weaker,
+# convention-based mitigation: it is only effective if callers route their
+# docker compose invocations through it instead of calling `docker compose`
+# directly.
 #
 # Usage:
 #   scripts/safe_docker_build.sh <service-name> [docker compose args...]
@@ -15,6 +19,9 @@
 #   scripts/safe_docker_build.sh orion-cortex-orch build
 #   scripts/safe_docker_build.sh orion-cortex-orch up -d --build
 #
+# Escape hatch (use deliberately, not by default):
+#   ORION_ALLOW_SHARED_CHECKOUT_WRITE=1 scripts/safe_docker_build.sh ...
+
 set -e
 
 # --- 1. Detect whether this is the shared/primary checkout -----------------
@@ -38,6 +45,25 @@ if [ -n "$_COMMONDIR" ] && [ "$_GITDIR" = "$_COMMONDIR" ]; then
     IS_SHARED_CHECKOUT=1
 fi
 
+if [ "$IS_SHARED_CHECKOUT" = "1" ] && [ "$ORION_ALLOW_SHARED_CHECKOUT_WRITE" != "1" ]; then
+    echo "safe_docker_build.sh: REFUSING to run docker compose from the shared/primary git checkout." >&2
+    echo "" >&2
+    echo "This repo has had a real incident where a concurrent agent session ran" >&2
+    echo "'docker compose build'/'up' directly from the shared checkout and silently" >&2
+    echo "reverted another session's already-verified fix. Docker compose is not a" >&2
+    echo "git operation, so a git hook cannot block it — this wrapper is the only" >&2
+    echo "available mitigation, and it only works if you route through it." >&2
+    echo "" >&2
+    echo "Fix: run this from a git worktree instead of the shared checkout, e.g.:" >&2
+    echo "  git worktree add ../Orion-Sapienform-<task-name> -b <type>/<task-name>" >&2
+    echo "  cd ../Orion-Sapienform-<task-name>" >&2
+    echo "  scripts/safe_docker_build.sh <service-name> ..." >&2
+    echo "" >&2
+    echo "Escape hatch (only if you are certain this is safe right now):" >&2
+    echo "  ORION_ALLOW_SHARED_CHECKOUT_WRITE=1 scripts/safe_docker_build.sh <service-name> ..." >&2
+    exit 1
+fi
+
 # --- 2. Validate service argument and its docker-compose.yml ---------------
 SERVICE="$1"
 if [ -z "$SERVICE" ]; then
@@ -46,56 +72,6 @@ if [ -z "$SERVICE" ]; then
     exit 1
 fi
 shift
-
-# --- 2.1. Require live deployments to originate from canonical main --------
-IS_DEPLOY=0
-for arg in "$@"; do
-    if [ "$arg" = "up" ]; then
-        IS_DEPLOY=1
-        break
-    fi
-done
-
-if [ "$IS_DEPLOY" = "1" ]; then
-    if [ "$IS_SHARED_CHECKOUT" != "1" ]; then
-        PRIMARY_ROOT=$(git worktree list --porcelain 2>/dev/null | awk '
-            /^worktree / { sub(/^worktree /, ""); print; exit }
-        ')
-        echo "safe_docker_build.sh: REFUSING live deployment from a linked worktree." >&2
-        echo "Deploy from the clean primary main checkout instead:" >&2
-        echo "  cd \"${PRIMARY_ROOT:-<primary-checkout>}\"" >&2
-        echo "  scripts/safe_docker_build.sh $SERVICE up -d --build" >&2
-        exit 1
-    fi
-
-    CURRENT_BRANCH=$(git branch --show-current 2>/dev/null || true)
-    if [ "$CURRENT_BRANCH" != "main" ]; then
-        echo "safe_docker_build.sh: REFUSING live deployment from branch '$CURRENT_BRANCH'; main is required." >&2
-        exit 1
-    fi
-
-    if [ -n "$(git status --porcelain 2>/dev/null)" ]; then
-        echo "safe_docker_build.sh: REFUSING live deployment from dirty main." >&2
-        echo "Commit, move, or remove local changes before deploying." >&2
-        exit 1
-    fi
-
-    if ! git fetch --quiet origin main; then
-        echo "safe_docker_build.sh: REFUSING live deployment because origin/main could not be refreshed." >&2
-        echo "Restore access to origin, then retry." >&2
-        exit 1
-    fi
-    if ! ORIGIN_MAIN=$(git rev-parse --verify origin/main 2>/dev/null); then
-        echo "safe_docker_build.sh: REFUSING live deployment because origin/main is unavailable after fetch." >&2
-        exit 1
-    fi
-    LOCAL_HEAD=$(git rev-parse HEAD 2>/dev/null)
-    if [ "$LOCAL_HEAD" != "$ORIGIN_MAIN" ]; then
-        echo "safe_docker_build.sh: REFUSING live deployment because main is not synchronized with origin/main." >&2
-        echo "main=$LOCAL_HEAD origin/main=$ORIGIN_MAIN" >&2
-        exit 1
-    fi
-fi
 
 if [ ! -f "services/$SERVICE/docker-compose.yml" ]; then
     echo "safe_docker_build.sh: no such service compose file: services/$SERVICE/docker-compose.yml" >&2

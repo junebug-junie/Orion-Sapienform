@@ -956,8 +956,9 @@ def _standby_blocked(cfg: PoolConfig, spec: RoleSpec, seat_cards: list[CardLive]
         name = sorted(set(shed.values()))[0]
         return f"shed:{name}", None
     act = seat_cards[0].swap_action or {}
-    if act.get("reason") == "standby" and act.get("action") == "load" \
-            and act.get("outcome") in _STANDBY_FAILED and act.get("finished_at"):
+    # Any failed load of this seat (standby or demand): a seat that cannot start must not be
+    # warm-retried on the 600 s swap cooldown.
+    if act.get("action") == "load" and act.get("outcome") in _STANDBY_FAILED and act.get("finished_at"):
         try:
             finished = datetime.fromisoformat(str(act["finished_at"]))
         except ValueError:

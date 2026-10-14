@@ -153,3 +153,32 @@ def test_settings_ship_three_in_flight():
     assert Settings.model_fields["HUB_WORLD_PULSE_READ_MAX_IN_FLIGHT"].default == 3
     env = (Path(__file__).resolve().parents[1] / ".env_example").read_text()
     assert "HUB_WORLD_PULSE_READ_MAX_IN_FLIGHT=3" in env
+
+
+def test_a_refund_backoff_set_mid_tick_starts_no_new_turn(local_pg, monkeypatch):
+    """The first claim's turn is refused before work and sets the refund backoff: the same tick
+    must not start the other seeds' turns behind it (it may still poll in-flight ones)."""
+    async def run():
+        conn, _ = await db(local_pg)
+        for i in range(3):
+            await queue.enqueue_reading(conn, request(f"https://example.org/backoff-{i}"))
+        pipe = _pipe(s1.WorldPulseReadPipeline, conn, monkeypatch, s1, 3, 1)
+        pipe._maybe_enqueue_recent = AsyncMock()
+        pipe._bus = SimpleNamespace(redis=object(), publish=AsyncMock())
+        backoff = {"on": False}
+
+        async def retry_wait(_redis, *, now):
+            return 1800.0 if backoff["on"] else None
+        monkeypatch.setattr(s1, "read_wallet_a_retry_wait", retry_wait)
+        pipe._settle_wallet = AsyncMock()
+        polled = []
+
+        async def read(seed):
+            polled.append(seed.seed_id)
+            backoff["on"] = True   # this turn was refused before work
+            raise ReadingPending("durable:refused")
+        pipe._stage1_read = read
+        await pipe.tick()
+        assert len(polled) == 1
+        await conn.close()
+    asyncio.run(run())

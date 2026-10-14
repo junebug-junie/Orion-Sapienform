@@ -376,7 +376,9 @@ def test_resume_adopts_a_requeue_the_stopped_run_never_recorded(local_pg, tmp_pa
         latest = {r["seed_id"]: r for r in lines}
         assert {latest[s]["outcome"] for s in (flying, finished, fresh)} == {"stage2_done"}
         # Only the fresh seed was requeued by this run.
-        assert [r["seed_id"] for r in lines if r["outcome"] == "in_flight"] == [fresh]
+        assert [r["seed_id"] for r in lines if r["outcome"] == "in_flight" and not r.get("adopted")] == [fresh]
+        # Adoptions are written down once, so a second stop resumes from the file alone.
+        assert sorted(r["seed_id"] for r in lines if r.get("adopted")) == sorted([flying, finished])
         assert bf._parse_ts(latest[flying]["started_at"]) == bf._parse_ts(ts)  # recovered from progress.log
         async with pool.acquire() as conn:
             for s in (flying, finished, fresh):
@@ -423,3 +425,44 @@ def test_a_line_cut_off_by_a_kill_does_not_break_resume(tmp_path):
     p = tmp_path / "results.jsonl"
     p.write_text(json.dumps({"seed_id": "a", "outcome": "in_flight"}) + "\n" + '{"seed_id": "b", "outc')
     assert bf._load_jsonl(p) == [{"seed_id": "a", "outcome": "in_flight"}]
+
+
+def test_resume_never_rereads_a_seed_restored_before_its_record(local_pg, tmp_path, monkeypatch):
+    """Killed after restore_seed committed but before the result was recorded: the row equals the
+    snapshot again, but progress.log says it was requeued -- recorded, never read a second time."""
+    from orion.world_pulse_read.operator import reread_read
+
+    async def run():
+        pool = await _schema_pool(local_pg)
+        out = tmp_path / "bf"
+        [sid] = await _targets(pool, out, ["https://example.org/restored"])
+        (out / "run_meta.json").write_text(json.dumps({"run_started_at": datetime.now(timezone.utc).isoformat()}))
+        snap = bf._load_jsonl(out / "snapshot.jsonl")[0]
+        async with pool.acquire() as conn:
+            await reread_read(conn, sid)
+            await conn.execute("UPDATE world_pulse_read_seed SET status='failed' WHERE seed_id=$1", sid)
+            await bf.restore_seed(conn, snap)   # the old run restored it, then died
+        (out / "progress.log").write_text(f"2026-10-14T03:01:07+00:00 requeued {sid} | x | url=https://example.org/restored\n")
+        _quiet(monkeypatch)
+        args = bf.parse_args(["run", "--yes", "--skip-deploy-check", "--out", str(out), "--poll-sec", "0.05",
+                              "--per-read-timeout-min", "1", "--concurrency", "3"])
+        assert await asyncio.wait_for(bf.cmd_run(pool, args, out), 10) == 0
+        [rec] = bf._load_jsonl(out / "results.jsonl")
+        assert rec["outcome"] == "restored_unrecorded"
+        async with pool.acquire() as conn:
+            assert (await conn.fetchrow(bf.SEED_ROW_SQL, sid))["status"] == "done"   # not requeued
+        await pool.close()
+    asyncio.run(run())
+
+
+def test_old_truncated_log_lines_resolve_by_url_or_not_at_all(tmp_path):
+    a = "digest_item:fce4f8ce-be4d-46f0-b045-5b19a95ee551:item:cluster:30ee7260f8e1caac:88ed000e9bfd12f0"
+    b = "digest_item:fce4f8ce-be4d-46f0-b045-5b19a95ee551:item:cluster:6656f9442af13db5:87b6c81a34d040e4"
+    assert a[:60] == b[:60]
+    targets = [{"seed_id": a, "url": "https://ex.org/a"}, {"seed_id": b, "url": "https://ex.org/b"}]
+    (tmp_path / "progress.log").write_text(
+        f"2026-10-14T03:00:00+00:00 requeued {a[:60]} | 0% | url=https://ex.org/b consumed_old_runs=2\n"
+        f"2026-10-14T03:05:00+00:00 requeued {a[:60]} | 0% | url=https://ex.org/zzz consumed_old_runs=2\n"
+        f"2026-10-14T03:10:00+00:00 requeued {a} | 0% | url=https://ex.org/a consumed_old_runs=2\n")
+    found = bf._requeued_at_from_log(tmp_path, targets)
+    assert found == {b: bf._parse_ts("2026-10-14T03:00:00+00:00"), a: bf._parse_ts("2026-10-14T03:10:00+00:00")}

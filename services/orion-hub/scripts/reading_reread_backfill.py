@@ -372,21 +372,32 @@ def _parse_ts(v: Any) -> datetime | None:
     return d if d.tzinfo else d.replace(tzinfo=timezone.utc)
 
 
-def _requeued_at_from_log(out: Path) -> dict[str, datetime]:
-    """When each seed was requeued, from progress.log ("<ts> requeued <seed[:60]> | ...").
+def _requeued_at_from_log(out: Path, targets: list[dict[str, Any]]) -> dict[str, datetime]:
+    """When each seed was (last) requeued, from progress.log ("<ts> requeued <seed> | ... url=<url[:80]>").
     Recovers the start of a read that was requeued by a run stopped before it wrote an
-    ``in_flight`` record (any run of the pre-concurrency code)."""
+    ``in_flight`` record (any run of the pre-concurrency code). Lines written before 2026-10-14
+    carry only the first 60 characters of the seed id, which several digest_item ids share: an
+    ambiguous prefix is resolved by the line's url=, and dropped if that does not settle it."""
     found: dict[str, datetime] = {}
     path = out / "progress.log"
     if not path.exists():
         return found
     for ln in path.read_text(errors="replace").splitlines():
         parts = ln.split(" ", 2)
-        if len(parts) == 3 and parts[1] == "requeued":
-            ts = _parse_ts(parts[0])
-            key = parts[2].split(" |", 1)[0].strip()
-            if ts is not None and key:
-                found[key] = ts
+        if len(parts) != 3 or parts[1] != "requeued":
+            continue
+        ts = _parse_ts(parts[0])
+        key = parts[2].split(" |", 1)[0].strip()
+        if ts is None or not key:
+            continue
+        hits = [t for t in targets if t["seed_id"] == key]
+        if not hits and len(key) == 60:
+            hits = [t for t in targets if t["seed_id"].startswith(key)]
+            if len(hits) > 1:
+                url = ln.split(" url=", 1)[1].split(" ", 1)[0] if " url=" in ln else None
+                hits = [t for t in hits if url is not None and t["url"][:80] == url]
+        if len(hits) == 1:
+            found[hits[0]["seed_id"]] = ts
     return found
 
 
@@ -474,7 +485,7 @@ def hub_parallel_check(concurrency: int) -> list[str]:
     r = subprocess.run(["docker", "exec", HUB_CONTAINER, "printenv", "HUB_WORLD_PULSE_READ_MAX_IN_FLIGHT"],
                        capture_output=True, text=True)
     raw = r.stdout.strip()
-    value = int(raw) if raw.isdigit() else 1
+    value = int(raw) if raw.isdigit() else 3   # unset = Hub's settings default (3)
     if value < concurrency:
         return [f"HUB_WORLD_PULSE_READ_MAX_IN_FLIGHT in {HUB_CONTAINER} is {raw or 'unset'!r} "
                 f"(< --concurrency {concurrency})"]
@@ -513,16 +524,26 @@ async def cmd_run(pool: Any, args: argparse.Namespace, out: Path) -> int:
     # (never re-queued) first.
     waiting = {s: r for s, r in latest.items() if r["outcome"] in WAITING_OUTCOMES}
     done_ids = set(latest) - set(waiting)
-    log_requeued = _requeued_at_from_log(out)
+    log_requeued = _requeued_at_from_log(out, targets)
+    adopted: list[dict[str, Any]] = []
     async with pool.acquire() as conn:
         for t in targets:
             sid = t["seed_id"]
             if t["probe"] == "gone" or sid in latest:
                 continue
             if _already_requeued(await conn.fetchrow(SEED_ROW_SQL, sid), snaps.get(sid)):
-                started = log_requeued.get(sid[:60]) or run_started
+                started = log_requeued.get(sid) or run_started
                 waiting[sid] = {"seed_id": sid, "outcome": "in_flight", "started_at": started.isoformat(),
                                 "adopted": True}
+                adopted.append(waiting[sid])
+            elif sid in log_requeued:
+                # Requeued, then restored to the snapshot (a re-read that did not finish), and the
+                # run stopped before recording it: done, not to be read again.
+                rec = {"seed_id": sid, "outcome": "restored_unrecorded",
+                       "started_at": log_requeued[sid].isoformat(), "adopted": True}
+                latest[sid] = rec
+                done_ids.add(sid)
+                adopted.append(rec)
     todo_new = [t for t in targets if t["probe"] != "gone" and t["seed_id"] not in done_ids
                 and t["seed_id"] not in waiting]
     if args.limit:
@@ -537,6 +558,9 @@ async def cmd_run(pool: Any, args: argparse.Namespace, out: Path) -> int:
         with results_path.open("a") as fh:
             fh.write(json.dumps(rec, default=str) + "\n")
 
+    for rec in adopted:   # written once, so a second stop resumes from the file alone
+        record(rec)
+
     timed_out = False
     tasks: dict[asyncio.Task, str] = {}
 
@@ -544,7 +568,7 @@ async def cmd_run(pool: Any, args: argparse.Namespace, out: Path) -> int:
         tasks[asyncio.create_task(_settle_one(pool, args, t, started, consumed, snaps, prog, record))] = t["seed_id"]
 
     for t in resume:
-        prog.line(f"resume waiting on {t['seed_id'][:60]}")
+        prog.line(f"resume waiting on {t['seed_id']}")
         w = waiting[t["seed_id"]]
         spawn(t, _parse_ts(w.get("started_at")) or run_started, list(w.get("consumed_finished_runs") or []))
 
@@ -585,7 +609,7 @@ async def cmd_run(pool: Any, args: argparse.Namespace, out: Path) -> int:
                 # by waiting on this read, never by requeueing it.
                 record({"seed_id": seed_id, "outcome": "in_flight", "started_at": started,
                         "consumed_finished_runs": consumed})
-                prog.line(f"requeued {seed_id[:60]}", url=t["url"][:80], consumed_old_runs=len(consumed),
+                prog.line(f"requeued {seed_id}", url=t["url"][:80], consumed_old_runs=len(consumed),
                           in_flight=len(tasks) + 1)
                 spawn(t, started, consumed)
                 continue

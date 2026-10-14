@@ -539,6 +539,12 @@ class WorldPulseReadStage2Pipeline:
                 break
             handled.append(claim.seed.seed_id)
             outcome = await self._pass_claimed(claim, redis)
+            if reason is None and not force and redis is not None and len(handled) < self.max_in_flight:
+                # A turn refused before work this tick set the refund backoff: start no new
+                # turn behind it (in-flight ones are still polled), as the next tick would.
+                wait = await read_wallet_b_retry_wait(redis, now=datetime.now(timezone.utc))
+                if wait is not None and wait > 0:
+                    reason = "refund_backoff"
             if len(handled) == 1:
                 first = outcome
         if not handled:

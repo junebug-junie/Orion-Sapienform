@@ -94,8 +94,10 @@ def test_a_failed_warm_load_backs_off_longer_than_the_swap_cooldown():
     assert blocked(sched(crds=gpu2(swap_action=failed))) == [(SEAT, "standby_backoff")]
     old = {**failed, "finished_at": (T0 - timedelta(seconds=SPEC.standby_retry_after_fail_sec + 1)).isoformat()}
     assert loads(sched(crds=gpu2(swap_action=old))) == [(SEAT, "standby")]
-    demand = {**failed, "reason": "demand"}   # only a failed STANDBY load backs off this way
-    assert loads(sched(crds=gpu2(swap_action=demand))) == [(SEAT, "standby")]
+    demand = {**failed, "reason": "demand"}   # a failed DEMAND load backs the warm retry off too
+    assert blocked(sched(crds=gpu2(swap_action=demand))) == [(SEAT, "standby_backoff")]
+    unload = {**failed, "action": "unload"}   # a failed unload is not a reason to stay cold
+    assert loads(sched(crds=gpu2(swap_action=unload))) == [(SEAT, "standby")]
 
 
 def test_warm_seat_stays_loaded_idle_and_past_max_hold():

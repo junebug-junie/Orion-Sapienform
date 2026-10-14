@@ -160,7 +160,7 @@ class SwapSpec(BaseModel):
     # "off" = load on demand only (after_wait_sec), unload after swap_idle_unload_sec.
     standby: Literal["off", "warm"] = "off"
     standby_after_idle_sec: float = Field(900, ge=0)
-    # A warm load that did not succeed is not retried for this long (the generic swap cooldown is
+    # After a load of this seat that did not succeed (warm or demand), no warm load for this long (the generic swap cooldown is
     # 600 s): a seat that cannot start must not drain and restore diffusion every 10 minutes.
     standby_retry_after_fail_sec: float = Field(3600, ge=0)
 

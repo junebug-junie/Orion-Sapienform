@@ -104,13 +104,44 @@ scripts/gpu_pool_actuator_probe.py --role agent-gpu2 --check status digest -> bo
 
 ## Review findings fixed
 
-See the PR comment / follow-up commit.
+A code review ran in a subagent on `origin/main...HEAD`.
+
+- Finding: if circe pulls the new YAML before its controller is rebuilt, every actuation is refused as `config_unloadable`, paintings included. The controller parses with `extra="forbid"`.
+  - Fix: the restart order below is explicit. Rebuild the controller in the same step as the pull, then check the probe before deploying the pool.
+  - Evidence: the deploy section below.
+- Finding: the backfill re-read a seed if it was killed after `restore_seed` but before writing its result. The live row looked untouched.
+  - Fix: a `requeued` line in `progress.log` plus a live row equal to the snapshot is now recorded as `restored_unrecorded` and is never requeued.
+  - Evidence: `test_resume_never_rereads_a_seed_restored_before_its_record`.
+- Finding: old `progress.log` lines carry only the first 60 characters of the seed id, and live `digest_item` ids share that prefix. A seed could inherit another seed's requeue time.
+  - Fix: new lines log the full id. An old prefix is resolved by its `url=`, and an ambiguous one is dropped (the start time falls back to `run_started_at`).
+  - Evidence: `test_old_truncated_log_lines_resolve_by_url_or_not_at_all`.
+- Finding: a refund backoff set by the first claim in a tick did not stop that same tick from starting more turns.
+  - Fix: after each claim the retry wait is read again. If it is set, the rest of the tick only polls in-flight turns.
+  - Evidence: `test_a_refund_backoff_set_mid_tick_starts_no_new_turn`. A mutation of the fix makes it fail.
+- Finding: adopted seeds were not written to `results.jsonl`, so a second stop had to rediscover them.
+  - Fix: adoptions are written once, as `adopted: true`.
+  - Evidence: `test_resume_adopts_a_requeue_the_stopped_run_never_recorded`.
+- Finding: the warm-retry backoff applied only after a failed *standby* load, so a failed demand load fell back to the 600 s cooldown.
+  - Fix: any failed load of the seat backs off the warm retry for 3600 s.
+  - Evidence: `test_a_failed_warm_load_backs_off_longer_than_the_swap_cooldown`.
+- Finding: an unset `HUB_WORLD_PULSE_READ_MAX_IN_FLIGHT` was read as 1 by `hub_parallel_check`, while Hub's settings default is 3.
+  - Fix: unset is now read as 3.
+- Finding: the README did not say that paintings now always wait for the warm seat to drain.
+  - Fix: documented in the orion-gpu-pool README.
+- Self-found: gateway calls running inside the backfill's own holds counted as pool contention, which paused new starts.
+  - Fix: `_own_lease_ids`.
+  - Evidence: `test_own_leases_are_not_contention_but_anyone_elses_are`.
+- CI: the durable-runs acceptance test `gpu2-loaded-by-the-pool` failed because the warm seat loaded at 900 s and granted an unheartbeated hold, which then expired.
+  - Fix: that fixture pins the on-demand path with `cold(CFG)`.
+- Not fixed, low risk:
+  - The in-flight cap is approximate if more than N turns are ever unconsumed (after lowering the setting, or with two Hubs). Those extra turns are polled once a slot frees.
+  - Stage 2 rebuilds its claim context on every poll.
 
 ## Restart required
 
 Order matters. Deploy from the primary checkout on main, after merge.
 
-1. **circe** (controller first: it must accept the new YAML keys):
+1. **circe** (controller first: it must accept the new YAML keys; then confirm with the read-only probe from athena: `ORION_BUS_URL=redis://100.92.216.81:6379/0 PYTHONPATH=. .venv/bin/python scripts/gpu_pool_actuator_probe.py --role agent-gpu2 --check status digest` must say OK twice, no `config_unloadable`):
 
    ```bash
    ssh circe@circe "cd /mnt/scripts/Orion-Sapienform && git pull --ff-only && scripts/safe_docker_build.sh orion-gpu-lane-controller up -d --build"
@@ -150,4 +181,4 @@ Order matters. Deploy from the primary checkout on main, after merge.
 
 ## PR link
 
-(filled in on the PR)
+https://github.com/junebug-junie/Orion-Sapienform/pull/2668

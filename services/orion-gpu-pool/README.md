@@ -345,9 +345,13 @@ using it:
   lease still drains it and unloads it (`owner_reclaim`), exactly as before. After that unload,
   `min_residency` (600 s) still applies, and the 900 s quiet wait starts again.
 - **Can be blocked.** The thermal guard, `cooldown` and `min_residency` block a warm load. So does
-  any active shed (`swap_requested reason=shed:<name>`). After a failed warm load, the pool waits
-  `standby_retry_after_fail_sec` (3600 s, `reason=standby_backoff`) instead of the 600 s swap
-  cooldown.
+  any active shed (`swap_requested reason=shed:<name>`). The pool waits
+  `standby_retry_after_fail_sec` (3600 s, `reason=standby_backoff`) after any failed load of the seat,
+  instead of the 600 s swap cooldown.
+- **Costs paintings a drain.** A diffusion lease now always waits for the warm seat to drain
+  (its holds are recalled with the hold grace; a running agent turn finishes first) and unload,
+  where before an idle seat was usually already gone. Paintings more often than every ~15 min
+  will cycle the 27B each time; the 900 s quiet window is the only bound.
 - **Spreads reading over two cards.** With the seat warm, durable-run holds land on gpu1 (one) and
   gpu2 (two, `max_holds: 2`) with no `after_wait_sec` wait.
 

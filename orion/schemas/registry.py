@@ -525,6 +525,12 @@ from orion.schemas.world_model import (
     WorldModelTrajectoryStepV1,
 )
 from orion.schemas.ask import OrionAskAnsweredV1, OrionAskV1
+from orion.schemas.person_model import (
+    EntityMergeLogEntryV1,
+    PersonLinkageDecisionV1,
+    PersonMentionV1,
+    PersonRefV1,
+)
 from orion.schemas.vision import (
     VisionArtifactPayload,
     VisionSceneInventoryV1,
@@ -989,6 +995,10 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "PerceptExpectationV1": PerceptExpectationV1,
     "VisionUnresolvedV1": VisionUnresolvedV1,
     "OrionAskV1": OrionAskV1,
+    "PersonRefV1": PersonRefV1,
+    "PersonMentionV1": PersonMentionV1,
+    "PersonLinkageDecisionV1": PersonLinkageDecisionV1,
+    "EntityMergeLogEntryV1": EntityMergeLogEntryV1,
     "OrionAskAnsweredV1": OrionAskAnsweredV1,
     # Pre-existing gap surfaced by test_registry_and_schema_registry_agree:
     # registered in SCHEMA_REGISTRY, carried on a real channel
@@ -1736,6 +1746,12 @@ SCHEMA_REGISTRY: Dict[str, SchemaRegistration] = {
     ),
     "OrionAskV1": SchemaRegistration(model=OrionAskV1, kind="orion.ask.v1"),
     "OrionAskAnsweredV1": SchemaRegistration(model=OrionAskAnsweredV1, kind="orion.ask.answered.v1"),
+    # Person model P1/P2 (docs/superpowers/specs/2026-10-14-person-model-and-identity-card-design.md).
+    # Not on the bus yet: P2 is a dry run that writes files only.
+    "PersonRefV1": SchemaRegistration(model=PersonRefV1, kind="person.ref.v1"),
+    "PersonMentionV1": SchemaRegistration(model=PersonMentionV1, kind="person.mention.v1"),
+    "PersonLinkageDecisionV1": SchemaRegistration(model=PersonLinkageDecisionV1, kind="person.linkage.decision.v1"),
+    "EntityMergeLogEntryV1": SchemaRegistration(model=EntityMergeLogEntryV1, kind="person.entity_merge_log.v1"),
     "CoalitionSnapshotV1": SchemaRegistration(
         model=CoalitionSnapshotV1,
         kind="coalition.snapshot.v1",

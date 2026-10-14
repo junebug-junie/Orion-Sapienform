@@ -1,0 +1,9 @@
+# Facts a person stated directly in answer to a question, keyed by person node id.
+# DATA, not code. Each entry cites where the person said it. The linkage dry run
+# uses `home` to flag 'home' aliases on other places (scripts/run_person_linkage.py);
+# the attribute store (P3) will ingest these as voice=ask_answer rows.
+people:
+  referent-b96fc90e-0f16-5e40-a3eb-9807cc38e968:
+    home:
+      value: "Ogden, Utah"
+      source: "design PR #2646, Juniper's answer 4 (2026-10-14): home is Ogden"

@@ -1,0 +1,39 @@
+# Linkage reducer weights and thresholds (spec section 5, rev 3).
+#
+# Fellegi-Sunter: each feature level carries a log2(m/u) weight; a pair's score
+# is their sum. Two thresholds: score >= upper auto-merges (logged, reversible),
+# score <= lower is an automatic non-match, anything between is a "possible
+# match" and is the ONLY thing that becomes an Orion-asks card for the
+# interlocutor.
+#
+# v1 weights are set by hand from what each comparison means (m = how often it
+# agrees for a true match, u = how often by chance). The thresholds are then
+# checked against the labeled cleanup by orion/person_model/evals/run_linkage_eval.py,
+# which fails if auto-merge precision on the labels drops below 1.0. When the
+# interlocutor exports her decisions from the HTML review, those become the
+# labels and these numbers are re-derived (bump version).
+version: person_linkage_v1
+upper_threshold: 9.0
+lower_threshold: 2.0
+
+weights:
+  exact_label:        {agree: 6.0, disagree: -1.5}
+  token_containment:  {agree: 2.0, disagree: -4.0, exact: 0.0}
+  jaro_winkler:       {high: 3.0, mid: 1.0, low: -3.0}   # high >= 0.95, mid >= 0.85
+  phonetic_first:     {agree: 1.0, disagree: -2.0}
+  extractor_person:   {agree: 2.0, disagree: -2.0, missing: 0.0}
+  # Centered cosine (mean-centered bge; raw cosine has no calm state, PR #2647).
+  # Capped: its largest weight (1.5) is below the band width (upper - lower = 7),
+  # so the embedding alone can move a pair into review but never across the
+  # auto-merge line.
+  embedding_centered: {agree: 1.5, weak: 0.5, disagree: -1.0, missing: 0.0}  # agree >= 0.5, weak >= 0.3
+  producer_pair:      {cross: 0.5, same: 0.0}
+  shared_evidence:    {agree: 2.0, missing: 0.0}
+
+embedding_bins: {agree: 0.5, weak: 0.3}
+jaro_winkler_bins: {high: 0.95, mid: 0.85}
+
+# Rule outcomes evaluated before scoring.
+rules:
+  # Concepts minted by these producers are topic clusters, not people.
+  topic_producers: [topic_foundry_adapter, world_pulse_read_pipeline]

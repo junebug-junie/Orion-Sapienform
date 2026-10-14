@@ -1,0 +1,49 @@
+# Person model P0-P2 (docs/superpowers/specs/2026-10-14-person-model-and-identity-card-design.md):
+# pronoun regression, modularity gate (no person special cases in orion/person_model/),
+# two-threshold linkage reducer, merge log + exact unmerge, self-contained review HTML,
+# extractor row stability. Offline: no model download, no live store.
+
+name: orion-person-model-tests
+
+on:
+  pull_request:
+    paths:
+      - "orion/person_model/**"
+      - "orion/schemas/person_model.py"
+      - "orion/schemas/registry.py"
+      - "config/person_model/**"
+      - "orion/cognition/prompts/stance_react.j2"
+      - "orion/cognition/prompts/chat_quick.j2"
+      - "services/orion-mind/app/stance_handoff.py"
+      - "scripts/run_person_linkage.py"
+      - "tests/test_interlocutor_pronouns_in_prompts.py"
+      - "tests/test_person_model_schemas_registered.py"
+      - ".github/workflows/orion-person-model-tests.yml"
+  push:
+    branches: [main]
+    paths:
+      - "orion/person_model/**"
+      - "config/person_model/**"
+      - "orion/cognition/prompts/stance_react.j2"
+
+jobs:
+  person-model:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install
+        run: python -m pip install pytest pydantic pyyaml rapidfuzz==3.14.6 jellyfish==1.2.1
+      - name: Person model tests
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+        run: |
+          python -m pytest -q -p no:cacheprovider orion/person_model/tests \
+            tests/test_interlocutor_pronouns_in_prompts.py tests/test_person_model_schemas_registered.py
+      - name: Dry-run CLI imports without the extractor stack
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+        run: python scripts/run_person_linkage.py --help > /dev/null

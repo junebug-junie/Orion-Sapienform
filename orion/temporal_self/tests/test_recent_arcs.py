@@ -107,3 +107,66 @@ def test_tiny_cap_renders_nothing_rather_than_overrunning():
         block = project_recent_arcs(frame("talking"), TALKING_NOW, limit=1, max_chars=cap)
         assert len(block.text) <= cap
         assert block.text == "" and block.skip_reason == "cap_too_small"
+
+
+def _with_daydreams(n: int, *, start_hour: int = 22) -> dict:
+    """The talking fixture plus ``n`` closed reverie arcs, 10 min apart, the last ending latest."""
+    f = copy.deepcopy(frame("talking"))
+    template = dict(f["arcs_today"][0])
+    f["arcs_today"] = f["arcs_today"][: len(f["arcs_today"]) - n]  # stay under ARCS_IN_FRAME_CAP
+    for i in range(n):
+        arc = dict(template)
+        m = i * 10
+        arc.update(arc_id=f"{i:016x}"[-16:].replace("0", "d"), kind="reverie", status="closed",
+                   subject_label="", subject_ref=f"open-loop-{i}",
+                   began_at=f"2026-10-11T{start_hour + m // 60:02d}:{m % 60:02d}:00Z",
+                   ended_at=f"2026-10-11T{start_hour + m // 60:02d}:{m % 60:02d}:08Z")
+        f["arcs_today"].append(arc)
+    f["arcs_today_total"] = len(f["arcs_today"])
+    return f
+
+
+def test_daydreams_grouped_into_one_line_plus_two_other_arcs():
+    f = _with_daydreams(5)
+    block = project_recent_arcs(f, TALKING_NOW)
+    lines = block.text.splitlines()[1:]
+    dream_lines = [ln for ln in lines if "daydreaming" in ln]
+    assert len(dream_lines) == 1, block.text
+    assert "(5 daydreams)" in dream_lines[0] and "22:00" not in dream_lines[0]  # local time, not UTC
+    assert dream_lines[0].startswith("- 16:00-16:40 ")  # first began 22:00Z, last ended 22:40Z (MDT)
+    # the group cites only its latest daydream; the other two lines are the newest non-reverie arcs
+    reverie_ids = {a["arc_id"] for a in f["arcs_today"] if a["kind"] == "reverie"}
+    latest = max((a for a in f["arcs_today"] if a["kind"] == "reverie"), key=lambda a: a["ended_at"])
+    assert [i for i in block.arc_ids if i in reverie_ids] == [latest["arc_id"]]
+    others = [i for i in block.arc_ids if i not in reverie_ids]
+    non_reverie = [i for i in _closed_by_end(f) if i not in reverie_ids]
+    assert others == non_reverie[:2]
+    assert len(lines) == 3
+    for line in lines:  # same shape as every other line
+        assert re.match(r"^- \d\d:\d\d-\d\d:\d\d \(.+\) .+ \[arc:[0-9a-f]+\]$", line), line
+    assert set(_ids(block.text)) == set(block.arc_ids)
+
+
+def test_one_daydream_is_singular_and_truncated_frame_says_at_least():
+    f = _with_daydreams(1)
+    assert "(1 daydream)" in project_recent_arcs(f, TALKING_NOW).text
+    f["arcs_today_total"] = len(f["arcs_today"]) + 40  # the frame dropped arcs (reverie first)
+    line = [ln for ln in project_recent_arcs(f, TALKING_NOW).text.splitlines() if "daydream" in ln][0]
+    assert "(at least 1 daydream)" in line
+    assert line.startswith("- up to 16:00 ")  # oldest daydreams were dropped: no claimed start time
+
+
+def test_no_daydreams_lists_limit_other_arcs():
+    f = frame("talking")
+    assert not any(a["kind"] == "reverie" for a in f["arcs_today"])
+    assert len(project_recent_arcs(f, TALKING_NOW).arc_ids) == 3
+
+
+def test_only_daydreams_renders_the_group_line_alone():
+    f = _with_daydreams(4)
+    f["arcs_today"] = [a for a in f["arcs_today"] if a["kind"] == "reverie"]
+    f["arcs_today_total"] = len(f["arcs_today"])
+    for k in ("active_arc",):
+        f[k] = None
+    lines = project_recent_arcs(f, TALKING_NOW).text.splitlines()
+    assert len(lines) == 2 and "(4 daydreams)" in lines[1]

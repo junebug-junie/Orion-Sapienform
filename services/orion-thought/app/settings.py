@@ -680,8 +680,9 @@ class ThoughtSettings(BaseSettings):
 
     # --- Temporal Self rev 4: reverie gets the last few closed arcs (app/reverie.py) ---
     # The reverie tick fetches the same frame as the stance cue (TEMPORAL_SELF_FRAME_URL, same
-    # TEMPORAL_SELF_CUE_MAX_AGE_SEC gate) and renders the last LIMIT closed arcs of today, most
-    # recent first, each citing [arc:<id>] (orion/temporal_self/recent_arcs.py, no LLM). The fetch
+    # TEMPORAL_SELF_CUE_MAX_AGE_SEC gate) and renders LIMIT lines of today's closed arcs, most
+    # recent first, each citing [arc:<id>] (orion/temporal_self/recent_arcs.py, no LLM). Reverie's
+    # own daydreams share ONE grouped line (a count), so they take one of the LIMIT lines. The fetch
     # runs alongside reverie's other reads and gives up after FETCH_TIMEOUT_SEC with no block.
     # Kill switch: false = reverie_narrate runs exactly as before.
     reverie_recent_arcs_enabled: bool = Field(True, alias="ORION_REVERIE_RECENT_ARCS_ENABLED")

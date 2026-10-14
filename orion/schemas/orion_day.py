@@ -31,6 +31,7 @@ from uuid import NAMESPACE_URL, uuid5
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from orion.schemas.reading_finding import ReadingFindingV1
 from orion.schemas.temporal_self import DayCitationCheckV1, TemporalSelfDayBlockV1
 
 ORION_DAY_WORKFLOW = "orion_day.letter"
@@ -130,6 +131,12 @@ class ReadingItemV1(_Model):
     learned: str = ""
     reading_status: str | None = None
     source_read: bool = False
+    # Added 2026-10-13 (reading findings). Default-empty so rows stored before still validate;
+    # same rollout rule as ``corrections``: rebuild orion-durable-runs (the forbid reader) with
+    # or before orion-hub. ``findings``: what this read changed (orion/world_pulse_read/findings.py).
+    request_id: str | None = None
+    article_summary: str = ""  # what the piece itself says (Stage 2 ``article_summary``)
+    findings: list[ReadingFindingV1] = Field(default_factory=list)
 
 
 class JournalTextV1(_Model):

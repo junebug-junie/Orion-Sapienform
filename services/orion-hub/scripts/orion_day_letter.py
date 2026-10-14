@@ -35,6 +35,7 @@ import httpx
 
 from orion.orion_day.brief import OrionDayEmptyError, build_orion_day_brief, build_orion_day_request
 from orion.orion_day.store import fetch_letter
+from orion.world_pulse_read.findings import prior_lookup_from_reader
 from orion.schemas.notify import NotificationAccepted, NotificationRequest
 from orion.schemas.orion_day import ORION_DAY_TIMEZONE, ORION_DAY_WORKFLOW, orion_day_run_id
 
@@ -172,6 +173,7 @@ class OrionDayLetterLoop:
         source_service: str = "orion-hub",
         clock: Callable[[], datetime] | None = None,
         temporal_day_enabled: bool = True,
+        prior_reader_provider: Callable[[], Any] | None = None,
     ) -> None:
         self.enabled = bool(enabled)
         self.email_enabled = bool(email_enabled)
@@ -193,6 +195,9 @@ class OrionDayLetterLoop:
         self.source_service = source_service
         # Temporal Self patch 4 (TEMPORAL_SELF_DAY_BLOCK_ENABLED): read the closed day's own chronology.
         self.temporal_day_enabled = bool(temporal_day_enabled)
+        # Orion's graph, read-only: credits a belief a read moved ("What I read"). None -> the
+        # letter names the gap (sources.reading_beliefs) instead of saying nothing moved.
+        self._prior_lookup = prior_lookup_from_reader(prior_reader_provider) if prior_reader_provider else None
         self._clock = clock or (lambda: datetime.now(timezone.utc))
         self._lock = asyncio.Lock()
         self._task: Optional[asyncio.Task] = None
@@ -330,6 +335,7 @@ class OrionDayLetterLoop:
                     conn, letter_date, now=self._clock(), timeout_sec=self.timeout_sec,
                     carry_forward_ttl_hours=self.carry_forward_ttl_hours,
                     temporal_day=self.temporal_day_enabled,
+                    prior_lookup=self._prior_lookup,
                 )
         except OrionDayEmptyError:
             self._empty_dates.add(letter_date)

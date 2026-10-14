@@ -69,6 +69,7 @@ SEMANTIC_FIELDS: tuple[str, ...] = (
     "schema_id",
     "value_kind",
     "rest",
+    "rest_range",
     "sparsity",
     "absent_means",
     "polarity",
@@ -93,7 +94,9 @@ DEFINITION_FIELDS: tuple[str, ...] = SEMANTIC_FIELDS + ROUTING_FIELDS + ANNOTATI
 # routing change that emitted no alert at all. Every other tuple field
 # (producers, consumers, upstream, upstream_organs) is a genuine set and is
 # sorted, which is what keeps a reordered YAML list from being an alert.
-ORDERED_FIELDS: frozenset[str] = frozenset({"feeds_dimensions"})
+# rest_range ([lo, hi]) is positional too: sorting would hide a malformed
+# hi < lo behind a valid-looking lock.
+ORDERED_FIELDS: frozenset[str] = frozenset({"feeds_dimensions", "rest_range"})
 
 _FIELD_CLASS: dict[str, str] = {
     **{f: "semantics" for f in SEMANTIC_FIELDS},

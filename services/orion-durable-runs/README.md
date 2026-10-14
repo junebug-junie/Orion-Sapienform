@@ -625,6 +625,34 @@ deploy). Kill switch: `TEMPORAL_SELF_CHRONICLE_ENABLED=false`. Health: `/health`
 `temporal_self_chronicle`. Eval: `evals/temporal_self_live_replay.py` runs this code path over the
 10-09 fixture on a disposable Postgres (`--source-dsn` reads real tables read-only instead).
 
+## Runtime immune sweep: the `immune` node (2026-10-13, Temporal Self R4)
+
+The thread runs `ingest -> regulate -> immune -> chronicle -> done`. `immune` asks whether any of
+Orion's own gauges has stopped telling the truth. It runs only while arousal reads `idle`, at most
+once per `TEMPORAL_SELF_IMMUNE_INTERVAL_SEC` (6 h; the last run time is in the checkpoint and
+carries over midnight). It reads 24 h of every field channel whose glossary entry carries
+`semantics:` (`config/field/field_channel_glossary.v1.yaml`) from `substrate_field_state`, one
+sample per minute (one read-only query, ~3 s live, 45 s statement timeout), and judges each with the
+pure `orion/regulation/immune.py`: **constant**, **floor-locked**, **replayed** (same non-rest value
+freshly re-stamped 30 times running), **decayed-to-zero** (exact powers of one ratio). Checks that
+need a rest value read `semantics.rest_range` and say "cannot judge" without it. **As shipped,
+the glossary has no `rest_range` yet** (a parallel patch adds it), so only decayed-to-zero is
+live until it lands; `/health` -> `temporal_self.immune.coverage.rest_unjudged` counts the channels
+still waiting on one. Field-channel reads carry no source row, so a replay frozen at exactly 0.0
+or 1.0 is not judged (it cannot be told from a pinned real reading).
+
+Each finding is one `immune_finding` row in `temporal_self_event` (id
+`immune_finding:<metric>:<kind>:<day>`, so a later sweep the same day refreshes it);
+`RegulationStateV1.immune_findings_open` counts the latest sweep's findings (`GET
+/regulation/state`; left out of the Redis body until every `extra="forbid"` reader is rebuilt, see
+`REDIS_PROJECTION_EXCLUDE`). The Orion's Day closed-day block renders the day's findings. Nothing
+is ever fixed. A failure or timeout (90 s) is an `immune_failed` warning on the re-projected state;
+a failed row write is `immune_write_failed` (the count still says what the sweep saw, the day block
+shows only written rows); regulation and chronicle are unaffected. With arousal not `idle`
+(including `ORION_REGULATION_AROUSAL_ENABLED=false`, which reads `unknown`) the sweep never runs and
+`temporal_self.immune.skipped` says why. Kill switch: `TEMPORAL_SELF_IMMUNE_ENABLED=false`. Health: `/health` ->
+`temporal_self.immune`. Live dry run: `docs/superpowers/evidence/2026-10-13-immune-sweep/`.
+
 ## Deploy order
 
 Stage 4.5 is a cutover: follow `docs/runbooks/2026-09-25-gpu-pool-stage4-cutover.md` exactly

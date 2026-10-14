@@ -74,3 +74,21 @@ def test_reread_without_a_block_is_unchanged():
     letter = fx.reread_letter()
     part = [p for p in split_note(letter.note_md) if p.kind == "paragraph"][0]
     assert "day_citations" not in oi.part_item(letter, part, full=True).extra
+
+
+def test_gather_passes_the_days_immune_findings_recorded_before_close():
+    finding = {"metric_id": "node:substrate.route.prediction_error", "node": "node:substrate.route",
+               "channel": "prediction_error", "kind": "decayed_to_zero",
+               "window_start": "2026-09-29T09:10:00+00:00", "window_end": "2026-09-29T15:40:00+00:00"}
+    conn = fx.FakeConn(temporal_day=_day_json(), immune=[finding])
+    material = asyncio.run(gather.gather_orion_day(conn, fx.LETTER_DATE, now=NOW))
+    calls = [args for sql, args in conn.calls if sql == gather.TEMPORAL_DAY_IMMUNE_SQL]
+    assert len(calls) == 1 and calls[0][0] == fx.LETTER_DATE.isoformat()
+    assert "My route prediction error gauge looked stuck (decayed to zero) from 03:10 to 09:40" in material.temporal_day.text
+
+
+def test_a_failed_immune_read_still_renders_the_day():
+    conn = fx.FakeConn(temporal_day=_day_json(), fail={"temporal_day_immune"})
+    material = asyncio.run(gather.gather_orion_day(conn, fx.LETTER_DATE, now=NOW))
+    assert material.temporal_day is not None and "gauge" not in material.temporal_day.text
+    assert material.sources["temporal_day"].status == "ok"

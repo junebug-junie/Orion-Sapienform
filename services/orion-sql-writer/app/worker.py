@@ -73,6 +73,7 @@ from app.models import (
     GpuPoolEventSQL,
     GpuPoolStateSQL,
     TransportBaselineHourlySQL,
+    FieldChannelAnomalyScoreSQL,
     ChatStanceBeliefLogSQL,
     SelfConceptHistorySQL,
     SelfSenseEvalLogSQL,
@@ -125,6 +126,7 @@ from orion.schemas.durable_run import DurableRunStateV1
 from orion.schemas.gpu_pool import GpuPoolEventV1, GpuPoolStateV1
 from app.models.gpu_pool_state import state_history_row
 from orion.schemas.telemetry.transport_baseline_hourly import TransportBaselineHourlyV1
+from orion.schemas.telemetry.field_channel_anomaly_score import FieldChannelAnomalyScoreV1
 from orion.schemas.chat_stance_belief import ChatStanceBeliefLogV1
 from orion.schemas.self_concept_history import SelfConceptHistoryV1
 from orion.schemas.self_sense import SelfSenseEvalV1
@@ -259,6 +261,7 @@ INSERT_ONLY_MODELS = {
     GpuPoolEventSQL,
     GpuPoolStateSQL,
     TransportBaselineHourlySQL,
+    FieldChannelAnomalyScoreSQL,
     DurableRunStateSQL,
     SelfKnowledgeItemLogSQL,
     AttentionSchemaSQL,
@@ -541,6 +544,7 @@ MODEL_MAP: Dict[str, Tuple[Type[Any], Optional[Type[BaseModel]]]] = {
     "GpuPoolEventSQL": (GpuPoolEventSQL, GpuPoolEventV1),
     "GpuPoolStateSQL": (GpuPoolStateSQL, GpuPoolStateV1),
     "TransportBaselineHourlySQL": (TransportBaselineHourlySQL, TransportBaselineHourlyV1),
+    "FieldChannelAnomalyScoreSQL": (FieldChannelAnomalyScoreSQL, FieldChannelAnomalyScoreV1),
     "ChatStanceBeliefLogSQL": (ChatStanceBeliefLogSQL, ChatStanceBeliefLogV1),
     "SelfConceptHistorySQL": (SelfConceptHistorySQL, SelfConceptHistoryV1),
     "SelfSenseEvalLogSQL": (SelfSenseEvalLogSQL, SelfSenseEvalV1),

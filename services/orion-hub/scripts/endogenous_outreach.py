@@ -477,7 +477,7 @@ def in_quiet_hours(local_hour: int, start_hour: int, end_hour: int) -> bool:
 
 
 def outreach_block_reason(
-    inp: OutreachGateInputs, *, skip_schedule_gates: bool = False
+    inp: OutreachGateInputs, *, skip_schedule_gates: bool = False, skip_rate_gates: bool = False
 ) -> Optional[str]:
     """First reason this tick must not reach out, or None if it may.
 
@@ -486,6 +486,12 @@ def outreach_block_reason(
 
     ``skip_schedule_gates`` (Door-A): ignore quiet hours, daily cap, and
     cooldown. Still blocks on disabled / turn_in_flight.
+
+    ``skip_rate_gates`` (reading findings, Juniper 2026-10-13: "reach out as much as
+    they want while learning"): ignore only the gates that ration how OFTEN Orion
+    speaks -- daily cap, cooldown, rest-drive cooldown. The gates that protect
+    Juniper's moment stay: disabled, turn_in_flight, recent_chat, quiet hours,
+    and arousal ``strained``.
     """
     if not inp.enabled:
         return "disabled"
@@ -502,13 +508,13 @@ def outreach_block_reason(
         if not skip_schedule_gates:
             return "quiet_hours"
     if inp.daily_cap >= 0 and inp.sent_today >= inp.daily_cap:
-        if not skip_schedule_gates:
+        if not (skip_schedule_gates or skip_rate_gates):
             return "daily_cap"
     if (
         inp.seconds_since_last_outreach is not None
         and inp.seconds_since_last_outreach < inp.min_cooldown_sec
     ):
-        if not skip_schedule_gates:
+        if not (skip_schedule_gates or skip_rate_gates):
             return "cooldown"
     # After `cooldown`, so it names only the stretch tiredness added. A
     # schedule gate: Door-A (a finished curiosity run with something to say)
@@ -517,7 +523,7 @@ def outreach_block_reason(
         inp.rest_drive_cooldown_sec is not None
         and inp.seconds_since_last_outreach is not None
         and inp.seconds_since_last_outreach < inp.rest_drive_cooldown_sec
-        and not skip_schedule_gates
+        and not (skip_schedule_gates or skip_rate_gates)
     ):
         return REST_DRIVE_BLOCK_REASON
     # Last, so it names only what arousal held. A schedule gate: Door-A (a finished
@@ -2344,7 +2350,9 @@ class EndogenousOutreach:
 
     # -- delivery on behalf of another loop --------------------------------
 
-    def blocked_reason(self, *, skip_schedule_gates: bool = False) -> Optional[str]:
+    def blocked_reason(
+        self, *, skip_schedule_gates: bool = False, skip_rate_gates: bool = False
+    ) -> Optional[str]:
         """The gate that would stop an outreach right now, or None.
 
         Public so a caller can decide whether composing a message is worth a
@@ -2358,7 +2366,30 @@ class EndogenousOutreach:
         cooldown that delivery will also skip.
         """
         return outreach_block_reason(
-            self._gate_inputs(), skip_schedule_gates=skip_schedule_gates
+            self._gate_inputs(),
+            skip_schedule_gates=skip_schedule_gates,
+            skip_rate_gates=skip_rate_gates,
+        )
+
+    async def refresh_human_gates(self) -> None:
+        """Re-read the gates that protect Juniper's moment (recent_chat, arousal).
+
+        The background tick refreshes "seconds since Juniper spoke" only when its own
+        cap and cooldown pass, so a caller that skips those (``skip_rate_gates``) would
+        otherwise check recent_chat against a stale reading."""
+        if self.arousal_reader is not None:
+            await self.arousal_reader.refresh(self._bus)
+        if self.recent_chat_sec > 0:
+            self._last_spoke_ago = await self._spoke_ago()
+
+    async def compose(
+        self, prompt: str, correlation_id: str, retrieval_query: Optional[str] = None
+    ) -> Tuple[str, Dict[str, Any]]:
+        """Orion writes a message through this module's real unified turn (``_generate``),
+        for a caller that brings its own prompt (reading findings). ("", debug) on failure."""
+        return await self._generate(
+            prompt, self._active_session_id(), correlation_id,
+            **({"retrieval_query": retrieval_query} if retrieval_query else {}),
         )
 
     def record_blocked(
@@ -2411,8 +2442,20 @@ class EndogenousOutreach:
         model: Optional[str] = None,
         meta: Optional[Dict[str, Any]] = None,
         skip_schedule_gates: bool = False,
+        skip_rate_gates: bool = False,
+        provenance: Optional[Dict[str, Any]] = None,
+        record_appendix: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Deliver a message ANOTHER loop composed, through this module's gates.
+
+        ``skip_rate_gates`` (reading findings): see ``outreach_block_reason``. Like
+        Door-A, such a send does not consume ``_sent_today``. ``provenance`` (an
+        ``outreach_provenance.v1`` capsule) rides on the delivered message so a
+        follow-up turn can say where it came from. ``record_appendix`` is stored
+        record text (not generated) delivered after Orion's message, e.g. the
+        summary of an article Orion read: the PASS / ungrounded-signal checks read
+        only Orion's own words, so a source quoting an internal-signal name cannot
+        get Orion's message refused.
 
         The curiosity loop (`scripts/curiosity_investigation.py`) uses this when
         Orion, inside an investigation turn, decides a finding is worth saying
@@ -2469,9 +2512,13 @@ class EndogenousOutreach:
         # concurrent organic tick sees a true reading. Door-A itself does not
         # consume the counter when skip_schedule_gates is set.
         await self._recover_sent_today()
+        if skip_rate_gates and not skip_schedule_gates:
+            await self.refresh_human_gates()
         async with self._send_lock:
             blocked = outreach_block_reason(
-                self._gate_inputs(), skip_schedule_gates=skip_schedule_gates
+                self._gate_inputs(),
+                skip_schedule_gates=skip_schedule_gates,
+                skip_rate_gates=skip_rate_gates,
             )
             if blocked:
                 return self._record(
@@ -2503,21 +2550,24 @@ class EndogenousOutreach:
                     tension_reason=tension_reason,
                 )
             session_id = self._active_session_id()
+            appendix = str(record_appendix or "").strip()
+            delivered = f"{body}\n\n{appendix}" if appendix else body
             await self._deliver(
-                text=body,
+                text=delivered,
                 session_id=session_id,
                 correlation_id=correlation_id,
                 model=model,
                 source_tag=tag,
+                provenance=provenance,
             )
             self._last_outreach_at = time.time()
-            if not skip_schedule_gates:
+            if not (skip_schedule_gates or skip_rate_gates):
                 self._sent_today += 1
             logger.info(
                 "endogenous_outreach_sent corr=%s session=%s chars=%d sent_today=%d source=%s door_a=%s",
                 correlation_id,
                 session_id,
-                len(body),
+                len(delivered),
                 self._sent_today,
                 tag,
                 skip_schedule_gates,
@@ -2530,7 +2580,7 @@ class EndogenousOutreach:
                     "source": tag,
                     "correlation_id": correlation_id,
                     "session_id": session_id,
-                    "chars": len(body),
+                    "chars": len(delivered),
                 },
                 forced=False,
             )

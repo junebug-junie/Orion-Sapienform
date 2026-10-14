@@ -131,3 +131,53 @@ def test_same_label_groups_keep_only_the_one_whose_line_survives():
     capped = render_closed_day_block(day.model_copy(update={"arcs": arcs}), max_chars=1000)
     kept = capped.records["day:2026-10-09"]["attention_groups"]
     assert harness_ref in kept and route_ref not in kept
+
+
+# --- R4 immune findings ------------------------------------------------------------------------
+
+def _finding(node="node:substrate.route", channel="prediction_error", kind="decayed_to_zero",
+             start="2026-10-09T09:10:00+00:00", end="2026-10-09T15:40:00+00:00"):
+    return {"metric_id": f"{node}.{channel}", "node": node, "channel": channel, "kind": kind,
+            "window_start": start, "window_end": end, "evidence": {"ratio": 0.92}}
+
+
+def test_no_immune_findings_renders_nothing_new():
+    assert render_closed_day_block(day_1009(), immune_findings=[]).text == BLOCK_1009
+    assert render_closed_day_block(day_1009(), immune_findings=None).text == BLOCK_1009
+    assert "gauge" not in BLOCK_1009
+
+
+def test_immune_finding_renders_one_plain_cited_sentence_in_local_time():
+    block = render_closed_day_block(day_1009(), immune_findings=[_finding()])
+    lines = [ln for ln in block.text.splitlines() if "gauge" in ln]
+    # 09:10Z..15:40Z is 03:10..09:40 in America/Denver (MDT).
+    assert lines == ["My route prediction error gauge looked stuck (decayed to zero) from 03:10 to 09:40 "
+                     "[day:2026-10-09]."]
+    rec = block.records["day:2026-10-09"]["immune_findings"]
+    assert rec == [{"metric_id": "node:substrate.route.prediction_error", "kind": "decayed_to_zero",
+                    "window_start": "2026-10-09T09:10:00+00:00", "window_end": "2026-10-09T15:40:00+00:00"}]
+
+
+def test_immune_findings_cap_at_five_then_and_n_more():
+    many = [_finding(node=f"node:substrate.n{i}", kind="constant",
+                     start=f"2026-10-09T0{i}:00:00+00:00") for i in range(8)]
+    block = render_closed_day_block(day_1009(), immune_findings=many)
+    text = block.text
+    assert len(text) <= DAY_BLOCK_MAX_CHARS and block.lines_dropped > 0   # lower-priority lines yield first
+    assert sum("gauge looked stuck (constant)" in ln for ln in text.splitlines()) == 5
+    assert "And 3 more stuck gauges [day:2026-10-09]." in text
+
+
+def test_malformed_immune_rows_are_dropped_not_invented():
+    junk = [None, "x", {"kind": "constant"}, _finding(kind="made_up"), _finding(start="not a date"),
+            _finding(start="2026-10-09T09:10:00")]  # naive timestamp
+    assert render_closed_day_block(day_1009(), immune_findings=junk).text == BLOCK_1009
+
+
+def test_stuck_gauges_never_evict_attention_or_conversation():
+    many = [_finding(node=f"node:substrate.n{i}", kind="constant",
+                     start=f"2026-10-09T0{i}:00:00+00:00") for i in range(8)]
+    block = render_closed_day_block(day_1009(), immune_findings=many, max_chars=1400)
+    assert "Talked with Juniper" in block.text and "Attention, most time first:" in block.text
+    shown = sum("gauge looked stuck" in ln for ln in block.text.splitlines())
+    assert len(block.records["day:2026-10-09"]["immune_findings"]) == shown

@@ -61,6 +61,8 @@ jobs:
             services/orion-hub/tests/test_curiosity_introspect.py \
             services/orion-hub/tests/test_curiosity_introspect_listener.py \
             services/orion-hub/tests/test_curiosity_routes_runs.py \
+            services/orion-hub/tests/test_reading_finding_outreach.py \
+            services/orion-hub/tests/test_endogenous_outreach.py \
             services/orion-hub/tests/test_turn_orchestrator_ws_frames.py \
             orion/world_pulse_read/tests \
             orion/thought/tests \
@@ -79,7 +81,7 @@ jobs:
             services/orion-dream/tests/test_dream_search.py \
             services/orion-dream/tests/test_introspect_listener.py
       - name: Offline source handoff behavior eval
-        run: python -m pytest services/orion-hub/evals/test_reading_handoff_eval.py services/orion-hub/evals/test_reading_receipt_truth_eval.py services/orion-hub/evals/test_reading_assertion_eval.py services/orion-hub/evals/test_reading_dead_url_eval.py services/orion-hub/evals/test_reading_resonance_eval.py -q
+        run: python -m pytest services/orion-hub/evals/test_reading_handoff_eval.py services/orion-hub/evals/test_reading_receipt_truth_eval.py services/orion-hub/evals/test_reading_assertion_eval.py services/orion-hub/evals/test_reading_dead_url_eval.py services/orion-hub/evals/test_reading_finding_eval.py services/orion-hub/evals/test_reading_resonance_eval.py -q
       - name: Checkpointed reading admission
         run: |
           python -m pip install langgraph==1.2.11

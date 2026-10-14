@@ -57,6 +57,8 @@ are ordinary operational evidence of actual records and saved topics.
 - Dream tests + offline evals: 257 passed, 2 optional integration skips.
 - Durable-runs suite: 412 passed, 86 environment-dependent skips (before the additional
   large-window test; see PR check results for final count).
+- Final focused dream scheduling/core/Postgres/chronology checks: 79 passed, zero skips.
+  These checks and the cortex prompt tests now run in the existing durable CI job.
 - Cortex-exec prompt/token-budget smoke: 3 passed.
 - New isolated Postgres tests exercise migration idempotence, advisory locks, checkpoints,
   missing delivery acknowledgements, retries, generation fencing, cancellation and
@@ -83,6 +85,17 @@ are ordinary operational evidence of actual records and saved topics.
   - Evidence: controlled thread-event regression for both paths; independent reviewer
     reproduced `worker-finished` before `closed` after the fixes.
 - Independent requesting-code-review skill/subagent: no remaining material findings.
+
+## CI dependencies
+
+The implementation commit's durable graph/contract CI passed (498 passed, one optional
+skip, plus the Postgres-backed fairness, deploy-order and chronology evals). Full PR status is blocked
+by the existing personal-term gate: all 11 flagged paths are unchanged by this branch.
+The independent fix is PR #2653 (its static gate is green); merge that fix before rebasing
+this PR. Do not bypass or weaken the privacy gate. The substrate v4 matrix job also failed
+before checkout because its Postgres image mirror returned `toomanyrequests: Data limit
+exceeded`; a retry reproduced the infrastructure failure. The v6 matrix passed.
+Current check results are authoritative in PR #2654.
 
 ## Deployment (requires Juniper's production approval)
 

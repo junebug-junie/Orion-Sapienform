@@ -21,6 +21,10 @@ on:
       - "orion/schemas/compactor_digest_run.py"
       - "orion/schemas/curiosity_compaction.py"
       - "orion/curiosity/compaction*.py"
+      - "services/orion-dream/**"
+      - "services/orion-sql-db/manual_migration_curiosity_compaction.sql"
+      - "orion/cognition/verbs/curiosity_compactor_digest_v1.yaml"
+      - "orion/cognition/prompts/curiosity_compactor_digest_v1.j2"
       - "orion/cognition/compactor/**"
       - "orion/schemas/orion_day.py"
       - "orion/orion_day/**"
@@ -48,6 +52,8 @@ on:
       - "services/orion-hub/scripts/curiosity_investigation.py"
       - "services/orion-harness-governor/app/bus_listener.py"
       - "services/orion-cortex-exec/app/executor.py"
+      - "services/orion-cortex-exec/app/router.py"
+      - "services/orion-cortex-exec/tests/test_dream_cycle_prompt_render.py"
       - "orion/schemas/thought.py"
       - "services/orion-thought/app/bus_listener.py"
       - "services/orion-sql-db/manual_migration_durable_resource_admission_v1.sql"
@@ -68,6 +74,10 @@ on:
       - "orion/schemas/compactor_digest_run.py"
       - "orion/schemas/curiosity_compaction.py"
       - "orion/curiosity/compaction*.py"
+      - "services/orion-dream/**"
+      - "services/orion-sql-db/manual_migration_curiosity_compaction.sql"
+      - "orion/cognition/verbs/curiosity_compactor_digest_v1.yaml"
+      - "orion/cognition/prompts/curiosity_compactor_digest_v1.j2"
       - "orion/cognition/compactor/**"
       - "orion/schemas/orion_day.py"
       - "orion/orion_day/**"
@@ -95,6 +105,8 @@ on:
       - "services/orion-hub/scripts/curiosity_investigation.py"
       - "services/orion-harness-governor/app/bus_listener.py"
       - "services/orion-cortex-exec/app/executor.py"
+      - "services/orion-cortex-exec/app/router.py"
+      - "services/orion-cortex-exec/tests/test_dream_cycle_prompt_render.py"
       - "orion/schemas/thought.py"
       - "services/orion-thought/app/bus_listener.py"
       - "services/orion-sql-db/manual_migration_durable_resource_abandon_pending_v1.sql"
@@ -137,6 +149,17 @@ jobs:
           ORION_ADMISSION_TEST_DSN: postgresql://postgres:admission-test@127.0.0.1:5432/admission_test
         run: |
           cd services/orion-durable-runs && python -m pytest tests -q -p no:cacheprovider
+      - name: Curiosity compaction — sleep scheduling, real Postgres recovery, chronology replay
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+          CURIOSITY_COMPACTION_TEST_POSTGRES_URI: postgresql+psycopg://postgres:admission-test@127.0.0.1:5432/admission_test
+        run: |
+          python -m pytest -q -p no:cacheprovider --strict-markers \
+            services/orion-dream/tests/test_curiosity_compaction.py \
+            services/orion-dream/tests/test_curiosity_compaction_postgres.py \
+            services/orion-dream/tests/test_dream_cycle_v2.py \
+            services/orion-dream/evals/test_curiosity_compaction_eval.py
+          python -m pytest -q -p no:cacheprovider services/orion-cortex-exec/tests/test_dream_cycle_prompt_render.py
       - name: Pytest orion/orion_day/tests (Orion's Day gather, budget, contracts)
         env:
           PYTHONPATH: ${{ github.workspace }}

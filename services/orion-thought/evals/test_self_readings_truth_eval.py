@@ -71,7 +71,7 @@ _ROW = SelfSignalOutcomeAssociationV1(
     signal_id=_EXE, outcome="rpc_timeout", n_high=42, events_high=13, n_normal=120, events_normal=12,
     rate_high=13 / 42, rate_normal=0.1, ratio=3.0952, ci_low=1.6, ci_high=6.0, min_hours=24,
     verdict="tends_more",
-    clause=("when this is high, my next hour had an RPC timeout 3.1x as often (31% of 42 high hours "
+    clause=("when this is high, my next hour had an RPC timeout 3.1x as often at equal activity (31% of 42 high hours "
             "vs 10% of 120 normal) [assoc:ssa-0123456789]"),
 )
 

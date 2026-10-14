@@ -13,8 +13,9 @@ running in its thread and seeds the cache for the next caller (stance and reveri
 
 "Tends to" clauses (spec section E, ``SELF_SIGNAL_OUTCOME_ASSOCIATION_ENABLED``): the newest
 ``self_signal_outcome_association`` row per (signal, outcome), refreshed within 3 h, read at most
-every 5 min under the same lock and timeout. Unreadable -> no clause, readings unchanged. Flag off
--> the block is byte-identical to before.
+every 5 min in a background thread (and once at startup warm) -- never on the turn's path or under
+the history lock. Not loaded yet / unreadable -> no clause, readings unchanged. Flag off -> the
+block is byte-identical to before.
 """
 
 from __future__ import annotations
@@ -64,6 +65,8 @@ _CONNECT_TIMEOUT_SEC = 5
 _cache = None
 _lock = threading.Lock()
 _assoc: tuple[float, dict] | None = None  # (monotonic fetched_at, signal_id -> association)
+_assoc_lock = threading.Lock()
+_assoc_refreshing = False
 _engine = None
 _engine_url: str | None = None
 
@@ -110,15 +113,11 @@ def fetch_associations(since: datetime) -> list[dict]:
     return [dict(zip(_ASSOC_COLUMNS, r)) for r in rows]
 
 
-def _associations(now: datetime) -> dict | None:
-    """signal_id -> renderable association, or None (flag off / unreadable / none fresh).
-    Called under ``_lock``. Never raises."""
-    global _assoc
-    if not settings.self_signal_outcome_association_enabled:
-        return None
-    mono = time.monotonic()
-    if _assoc is not None and mono - _assoc[0] < ASSOCIATION_REFRESH_SEC:
-        return _assoc[1] or None
+def refresh_associations(now: datetime) -> None:
+    """Blocking read of the newest association rows into the in-memory index. Runs off the turn
+    path (startup warm, or a background thread started by ``_associations``). Never raises: an
+    unreadable table caches an empty index, retried after ASSOCIATION_REFRESH_SEC."""
+    global _assoc, _assoc_refreshing
     try:
         from orion.attention.self_signal_outcomes import index_by_signal
         from orion.schemas.self_signal_outcome import SelfSignalOutcomeAssociationV1
@@ -133,8 +132,30 @@ def _associations(now: datetime) -> dict | None:
     except Exception as exc:  # noqa: BLE001 -- no table yet / read error: no clause, readings unchanged
         logger.debug("self_signal_association_fetch_failed err=%s: %s", type(exc).__name__, exc)
         index = {}
-    _assoc = (mono, index)
-    return index or None
+    with _assoc_lock:
+        _assoc = (time.monotonic(), index)
+        _assoc_refreshing = False
+
+
+def _associations(now: datetime) -> dict | None:
+    """signal_id -> renderable association from the in-memory index, or None (flag off / not
+    loaded yet / none fresh). Never reads the database on the caller's thread: a stale index starts
+    one background refresh and this call uses what it has, so the self-readings budget and the
+    history lock never wait on this query."""
+    global _assoc_refreshing
+    if not settings.self_signal_outcome_association_enabled:
+        return None
+    with _assoc_lock:
+        cached = _assoc
+        stale = cached is None or time.monotonic() - cached[0] >= ASSOCIATION_REFRESH_SEC
+        start = stale and not _assoc_refreshing
+        if start:
+            _assoc_refreshing = True
+    if start:
+        threading.Thread(
+            target=refresh_associations, args=(now,), name="self-signal-associations", daemon=True
+        ).start()
+    return (cached[1] or None) if cached is not None else None
 
 
 def _refresh_and_project(now: datetime, lock_wait_sec: float) -> SelfReadingsBlockV1:
@@ -160,6 +181,8 @@ def _refresh_and_project(now: datetime, lock_wait_sec: float) -> SelfReadingsBlo
 def warm(now: datetime | None = None) -> None:
     """Import the calibration modules and seed the 7-day cache (startup, in a thread). Never raises."""
     try:
+        if settings.self_signal_outcome_association_enabled:
+            refresh_associations(now or datetime.now(timezone.utc))
         block = _refresh_and_project(now or datetime.now(timezone.utc), 30.0)
         logger.info("self_readings_warm reason=%s chars=%s", block.skip_reason, len(block.text))
     except Exception as exc:  # noqa: BLE001

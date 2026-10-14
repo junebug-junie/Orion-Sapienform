@@ -5,26 +5,31 @@ it tends to lead to"). Schemas: ``orion/schemas/self_signal_outcome.py``. No LLM
 
 Three steps, each a pure function the producer (orion-equilibrium-service) and the evals share:
 
-1. ``classify_signal_hour``: for one internal ``node:substrate.*`` signal and one UTC hour, judge
-   every reading the way the attention seam would have at that moment -- the reading's strict-below
-   percentile against the signal's own trailing 7 days (``prediction_error_magnitude``'s rule and
-   ``DEFAULT_MIN_READINGS``), then ``world_first.node_candidate`` + ``judge_candidate`` (polarity,
-   placeholder kinds, band cuts: the seam's one definition of "high/unusual for itself"). The hour
-   is ``high`` when at least ``HIGH_HOUR_SHARE`` of its judged readings were eligible, ``normal``
-   otherwise, and ``unknown`` when nothing in it could be judged (no rows, too little history, a
-   placeholder): silence is never counted as normal. Trigger kinds (cabinet) are ``high`` when the
-   trigger turned on in the hour (``self_readings.trigger_onsets``).
+1. ``classify_signal_hours``: for one internal ``node:substrate.*`` signal, judge every reading
+   the way the attention seam would have at that moment -- strict-below percentile against the
+   signal's own trailing 7 days (``prediction_error_magnitude``'s rule and ``DEFAULT_MIN_READINGS``),
+   then ``world_first.node_candidate`` + ``judge_candidate``. Replaying the self_signal_episode
+   gate's 30 s polls, an hour is ``high`` when the gate's own open dwell (hot > 300 s within 600 s)
+   was met in it, ``normal`` when readings spoke but never that long, ``unknown`` when nothing
+   readable spoke (no rows, too little history, a placeholder, an event-written signal with no
+   event): silence is never counted as normal. Triggers (cabinet): ``high`` while the alarm was on.
 2. ``turn_outcome_hours`` / ``rpc_outcome_hours``: outcome counts per hour from rows Orion already
    records (harness_turn_trace run artifacts, transport_baseline_hourly).
-3. ``associate``: pair hour H's condition with hour H+1's outcome (only where H+1 had exposure),
-   count next hours with at least one event, and report the rate ratio with a Katz 95% interval.
-   The unit is the hour, not the event: failures and timeouts come in bursts (one stuck hop logged
-   984 timeouts), so an event-count Poisson interval would be badly overconfident.
+3. ``associate``: pair hour H's condition with hour H+1's outcome (only where H+1 had exposure
+   and H was judged against >= ``MIN_HISTORY_HOURS`` of history), count next hours with at least
+   one event. The unit is the hour, not the event: failures and timeouts come in bursts (one stuck
+   hop logged 984 timeouts). Three corrections keep a false "tends to" out of Orion's prompt:
+   - busy hours have more chances for one failure: Mantel-Haenszel ratio over log2 bins of the
+     next hour's activity (``exposure_stratum``);
+   - hours are not independent (episodes span hours, failures burst): the SE is inflated by
+     ``serial_inflation`` (AR(1), from consecutive hours);
+   - 17+ pairs are re-tested every hour: z is Bonferroni-adjusted for every renderable pair
+     (``family_z``). Repeated looks over time remain (PR report).
 
-A clause ("when this is high, my next hour had a failed turn 3.1x as often ...") exists only when
-both sides have at least ``min_hours`` hours AND the interval excludes 1. Pairs whose signal is
-computed from, or shares an upstream with, the outcome are ``excluded_circular`` (see
-``CIRCULAR_PAIRS``) and never get a clause.
+A clause ("when this is high, my next hour had a failed turn 3.1x as often at equal activity ...")
+exists only when both sides have at least ``min_hours`` hours AND the adjusted interval excludes 1.
+Pairs whose signal is computed from, or shares an upstream with, the outcome are
+``excluded_circular`` (see ``CIRCULAR_PAIRS``) and never get a clause.
 """
 
 from __future__ import annotations
@@ -62,6 +67,12 @@ POLL_SEC = 30.0
 # data so a 95% Katz interval on hour-level rates is not dominated by one or two hours.
 DEFAULT_MIN_HOURS = 24
 Z_95 = 1.959963984540054
+# Hours whose condition was judged against less than this much PE history (a cold-start backfill
+# near the 7-day prune horizon) are kept on the row but never counted: their percentile came
+# from a shorter week than the live seam used. 144 h = 6 of the 7 days.
+MIN_HISTORY_HOURS = 144.0
+# Family-wise 5% across every (signal, outcome) pair that can render (Bonferroni).
+FAMILY_ALPHA = 0.05
 # Hard caps: hours folded into one association (90 days), rows per input batch.
 MAX_HOURS = 24 * 90
 MAX_ROWS = 500_000
@@ -145,7 +156,9 @@ def classify_signal_hours(
     min_readings: int | None = None,
 ) -> dict[datetime, SignalHourV1]:
     """One ``SignalHourV1`` per requested hour. ``history`` must cover 7 days before the earliest
-    hour for full-week percentiles (a shorter week is what the live seam had at that time too)."""
+    hour for full-week percentiles. A backfilled hour near the start of a pruned history is judged
+    against a SHORTER week than the live seam had; the producer records ``history_hours`` on the
+    row and ``associate`` ignores hours below ``MIN_HISTORY_HOURS``."""
     from orion.attention.world_first import node_prediction_error_semantics
     from orion.substrate.prediction_error_magnitude import DEFAULT_MIN_READINGS
 
@@ -169,15 +182,17 @@ def classify_signal_hours(
             if h in target_set:
                 c = counts[h]
                 c[0] += 1
-                c[1] += 1
+                c[1] += 1 if on else 0  # rows with the alarm on
                 if on and not prev_on:
-                    c[2] += 1
+                    c[2] += 1  # onsets
             prev_on = on
-        for h, (n_rows, n_judged, n_on) in counts.items():
+        for h, (n_rows, n_on_rows, n_onsets) in counts.items():
             if n_rows:
+                # High while the alarm was on at any row in the hour, including a run that
+                # started in the previous hour.
                 out[h] = SignalHourV1(
-                    signal_id=node_id, condition="high" if n_on else "normal",
-                    n_readings=n_rows, n_judged=n_judged, n_hot=n_on,
+                    signal_id=node_id, condition="high" if n_on_rows else "normal",
+                    n_readings=n_rows, n_judged=n_rows, n_hot=n_onsets,
                 )
         return out
     if value_kind not in ("level", "count"):
@@ -191,9 +206,8 @@ def classify_signal_hours(
 
     # How long one reading speaks for the body: an event-written reading is news for the seam's
     # orienting window; a per-tick reading until the next one (at most the staleness horizon).
-    cap = timedelta(
-        seconds=EVENT_ORIENTING_WINDOW_SEC if node_prediction_error_event_written(node_id) else INTERNAL_MAX_AGE_SEC
-    )
+    event_written = node_prediction_error_event_written(node_id)
+    cap = timedelta(seconds=EVENT_ORIENTING_WINDOW_SEC if event_written else INTERNAL_MAX_AGE_SEC)
     start, end = targets[0], targets[-1] + HOUR
     lookback = timedelta(seconds=OPEN_WINDOW_SEC)
     judge_from = start - lookback - cap
@@ -231,7 +245,10 @@ def classify_signal_hours(
     while t < end:
         while idx + 1 < len(judged) and judged[idx + 1][0] <= t:
             idx += 1
-        say = judged[idx] if idx >= 0 and t - judged[idx][0] <= cap else None
+        # The seam drops an event at age >= its window, and a per-tick reading only past the
+        # staleness horizon (age > horizon).
+        within = idx >= 0 and ((t - judged[idx][0] < cap) if event_written else (t - judged[idx][0] <= cap))
+        say = judged[idx] if within else None
         epoch = t.timestamp()
         if say is not None and say[1]:
             recent_hot.append(epoch)
@@ -344,7 +361,7 @@ class Interval:
 
 
 def katz_rate_ratio(a: int, n1: int, c: int, n0: int, z: float = Z_95) -> Interval:
-    """Risk ratio (a/n1)/(c/n0) with Katz's log interval. A zero cell gets the Haldane 0.5
+    """Crude risk ratio (a/n1)/(c/n0) with Katz's log interval. A zero cell gets the Haldane 0.5
     correction for the interval only; the point ratio stays raw (None when c == 0)."""
     if n1 <= 0 or n0 <= 0:
         return Interval(None, None, None)
@@ -352,11 +369,85 @@ def katz_rate_ratio(a: int, n1: int, c: int, n0: int, z: float = Z_95) -> Interv
     if a == 0 and c == 0:
         return Interval(ratio, None, None)
     aa, cc, nn1, nn0 = float(a), float(c), float(n1), float(n0)
-    if a == 0 or c == 0 or a == n1 or c == n0:
+    if a == 0 or c == 0:
         aa, cc, nn1, nn0 = aa + 0.5, cc + 0.5, nn1 + 1.0, nn0 + 1.0
     log_rr = math.log((aa / nn1) / (cc / nn0))
     se = math.sqrt(max(0.0, 1.0 / aa - 1.0 / nn1 + 1.0 / cc - 1.0 / nn0))
     return Interval(ratio, math.exp(log_rr - z * se), math.exp(log_rr + z * se))
+
+
+def _crude_log_se(a: int, n1: int, c: int, n0: int) -> float:
+    if n1 <= 0 or n0 <= 0:
+        return 0.0
+    aa, cc, nn1, nn0 = float(a), float(c), float(n1), float(n0)
+    if a == 0 or c == 0:
+        aa, cc, nn1, nn0 = aa + 0.5, cc + 0.5, nn1 + 1.0, nn0 + 1.0
+    return math.sqrt(max(0.0, 1.0 / aa - 1.0 / nn1 + 1.0 / cc - 1.0 / nn0))
+
+
+def exposure_stratum(exposure: int) -> int:
+    """log2 bins of next-hour activity (1, 2-3, 4-7, ...): a busy hour has more chances to hold
+    one failure, so high and normal hours are only compared at similar activity."""
+    return min(16, int(math.floor(math.log2(max(1, int(exposure))))))
+
+
+def mantel_haenszel(
+    strata: Mapping[int, Sequence[int]], *, z: float = Z_95, inflation: float = 1.0
+) -> Interval:
+    """Mantel-Haenszel risk ratio over strata of (a, n1, c, n0), Greenland-Robins variance of
+    log RR (floored at the crude Katz variance), SE multiplied by ``inflation`` (serial correlation). When either MH sum is zero (no
+    events on one side) the interval falls back to the pooled Katz one with the same z and
+    inflation; the point ratio is then None if the normal side had no events."""
+    r_sum = s_sum = v_sum = 0.0
+    a_t = n1_t = c_t = n0_t = 0
+    for a, n1, c, n0 in strata.values():
+        a_t, n1_t, c_t, n0_t = a_t + a, n1_t + n1, c_t + c, n0_t + n0
+        n = n1 + n0
+        if n1 <= 0 or n0 <= 0:
+            continue
+        r_sum += a * n0 / n
+        s_sum += c * n1 / n
+        v_sum += (n1 * n0 * (a + c) - a * c * n) / (n * n)
+    if r_sum > 0 and s_sum > 0 and v_sum > 0:
+        log_rr = math.log(r_sum / s_sum)
+        # Never narrower than the pooled (crude) Katz SE: with a few sparse strata the
+        # Greenland-Robins variance can collapse when R and S come from different strata
+        # (replay: 1 of 2 high hours gave an interval excluding 1).
+        se = max(math.sqrt(v_sum / (r_sum * s_sum)), _crude_log_se(a_t, n1_t, c_t, n0_t)) * inflation
+        return Interval(r_sum / s_sum, math.exp(log_rr - z * se), math.exp(log_rr + z * se))
+    crude = katz_rate_ratio(a_t, n1_t, c_t, n0_t, z=z * inflation)
+    return Interval((r_sum / s_sum) if s_sum > 0 else None, crude.low, crude.high)
+
+
+def lag1_autocorrelation(pairs: Sequence[tuple[float, float]]) -> float:
+    """Pearson correlation of (previous hour, this hour) pairs of truly consecutive hours."""
+    if len(pairs) < 3:
+        return 0.0
+    m0 = sum(p for p, _ in pairs) / len(pairs)
+    m1 = sum(q for _, q in pairs) / len(pairs)
+    cov = sum((p - m0) * (q - m1) for p, q in pairs)
+    v0 = sum((p - m0) ** 2 for p, _ in pairs)
+    v1 = sum((q - m1) ** 2 for _, q in pairs)
+    if v0 <= 0 or v1 <= 0:
+        return 0.0
+    return cov / math.sqrt(v0 * v1)
+
+
+def serial_inflation(cond_pairs: Sequence[tuple[float, float]], hit_pairs: Sequence[tuple[float, float]]) -> float:
+    """SE multiplier for two serially correlated hourly series (Bartlett's AR(1) result for the
+    covariance of two autocorrelated series): sqrt((1 + r) / (1 - r)), r = rho_condition *
+    rho_outcome over consecutive hours, clipped to [0, 0.9]. High hours come in runs (an episode
+    spans hours) and failures in bursts, so hours are not independent trials."""
+    r = lag1_autocorrelation(cond_pairs) * lag1_autocorrelation(hit_pairs)
+    r = min(0.9, max(0.0, r))
+    return math.sqrt((1.0 + r) / (1.0 - r))
+
+
+def family_z(n_comparisons: int, alpha: float = FAMILY_ALPHA) -> float:
+    """Two-sided Bonferroni critical value for ``n_comparisons`` simultaneous intervals."""
+    from statistics import NormalDist
+
+    return NormalDist().inv_cdf(1.0 - alpha / (2.0 * max(1, int(n_comparisons))))
 
 
 def association_id(signal_id: str, outcome: str, computed_at: datetime) -> str:
@@ -383,18 +474,18 @@ def short_signal(signal_id: str) -> str:
 
 
 def clause_for(assoc: SelfSignalOutcomeAssociationV1) -> str:
-    """The one sentence a prompt may show. "" unless the interval excludes 1."""
+    """The one sentence a prompt may show. "" unless the interval excludes 1. The ratio is the
+    activity-adjusted (Mantel-Haenszel) one; the two rates are the raw shares behind it."""
     if assoc.verdict not in ("tends_more", "tends_less") or assoc.rate_high is None or assoc.rate_normal is None:
         return ""
     what = _OUTCOME_WORDS.get(assoc.outcome, assoc.outcome)
-    if assoc.ratio is not None:
-        how = f"{assoc.ratio:.1f}x as often"
-    else:
-        how = "more often"
-    return (
-        f"when this is high, my next hour had {what} {how} ({assoc.rate_high:.0%} of {assoc.n_high} "
-        f"high hours vs {assoc.rate_normal:.0%} of {assoc.n_normal} normal) [assoc:{assoc.association_id}]"
-    )
+    rates = (f"({assoc.rate_high:.0%} of {assoc.n_high} high hours vs {assoc.rate_normal:.0%} of "
+             f"{assoc.n_normal} normal) [assoc:{assoc.association_id}]")
+    if assoc.events_high == 0:
+        return f"when this is high, my next hour never had {what} {rates}"
+    if assoc.ratio is None:
+        return f"when this is high, my next hour had {what} more often {rates}"
+    return f"when this is high, my next hour had {what} {assoc.ratio:.1f}x as often at equal activity {rates}"
 
 
 def associate(
@@ -404,11 +495,21 @@ def associate(
     *,
     computed_at: datetime,
     min_hours: int = DEFAULT_MIN_HOURS,
+    n_comparisons: int = 1,
+    min_history_hours: float = MIN_HISTORY_HOURS,
 ) -> SelfSignalOutcomeAssociationV1:
+    """Hour H's condition vs hour H+1's outcome (>= 1 event), only where H+1 had exposure and H
+    was judged against at least ``min_history_hours`` of history. Ratio and interval: Mantel-
+    Haenszel over next-hour activity strata, SE inflated for serial correlation, z Bonferroni-
+    adjusted for ``n_comparisons`` renderable pairs."""
     by_hour = {hour_floor(r.hour_start): r for r in list(hours)[-MAX_HOURS:]}
     n1 = a = n0 = c = 0
-    used: list[datetime] = []
-    for h, row in by_hour.items():
+    used: dict[datetime, tuple[int, int]] = {}  # hour -> (is_high, hit)
+    strata: dict[int, list[int]] = {}
+    for h in sorted(by_hour):
+        row = by_hour[h]
+        if row.history_hours < min_history_hours:
+            continue
         cond = _signal_condition(row, signal_id)
         if cond not in ("high", "normal"):
             continue
@@ -417,14 +518,21 @@ def associate(
         if o is None or o.exposure <= 0:
             continue
         hit = 1 if o.events > 0 else 0
+        st = strata.setdefault(exposure_stratum(o.exposure), [0, 0, 0, 0])
         if cond == "high":
-            n1 += 1
-            a += hit
+            n1, a = n1 + 1, a + hit
+            st[0] += hit
+            st[1] += 1
         else:
-            n0 += 1
-            c += hit
-        used.append(h)
-    iv = katz_rate_ratio(a, n1, c, n0)
+            n0, c = n0 + 1, c + hit
+            st[2] += hit
+            st[3] += 1
+        used[h] = (1 if cond == "high" else 0, hit)
+    cond_pairs = [(used[h - HOUR][0], v[0]) for h, v in used.items() if h - HOUR in used]
+    hit_pairs = [(used[h - HOUR][1], v[1]) for h, v in used.items() if h - HOUR in used]
+    inflation = serial_inflation(cond_pairs, hit_pairs)
+    z = family_z(n_comparisons)
+    iv = mantel_haenszel(strata, z=z, inflation=inflation)
     circular = CIRCULAR_PAIRS.get((signal_id, outcome), "")
     if circular:
         verdict = "excluded_circular"
@@ -450,7 +558,13 @@ def associate(
         ratio=None if iv.ratio is None else round(iv.ratio, 4),
         ci_low=None if iv.low is None else round(iv.low, 4),
         ci_high=None if iv.high is None else round(iv.high, 4),
+        ci_method="mantel_haenszel_log_rr_bonferroni_ar1",
+        ci_z=round(z, 6),
+        se_inflation=round(inflation, 6),
+        n_comparisons=int(max(1, n_comparisons)),
+        n_strata=len(strata),
         min_hours=int(min_hours),
+        min_history_hours=float(min_history_hours),
         verdict=verdict,  # type: ignore[arg-type]
         excluded_reason=circular,
     )
@@ -462,12 +576,16 @@ def associate_all(
     *,
     computed_at: datetime,
     min_hours: int = DEFAULT_MIN_HOURS,
+    min_history_hours: float = MIN_HISTORY_HOURS,
 ) -> list[SelfSignalOutcomeAssociationV1]:
     signals = sorted({s.signal_id for r in hours for s in r.signals})[:MAX_SIGNALS_PER_HOUR]
+    pairs = [(sid, o) for sid in signals for o in OUTCOMES]
+    # Every pair that could ever render is one simultaneous claim (circular pairs never render).
+    m = sum(1 for p in pairs if p not in CIRCULAR_PAIRS)
     return [
-        associate(hours, sid, outcome, computed_at=computed_at, min_hours=min_hours)
-        for sid in signals
-        for outcome in OUTCOMES
+        associate(hours, sid, o, computed_at=computed_at, min_hours=min_hours, n_comparisons=m,
+                  min_history_hours=min_history_hours)
+        for sid, o in pairs
     ]
 
 

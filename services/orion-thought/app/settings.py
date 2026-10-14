@@ -670,7 +670,7 @@ class ThoughtSettings(BaseSettings):
         0.5, gt=0.0, le=5.0, alias="SELF_READINGS_FETCH_TIMEOUT_SEC"
     )
     # What each body signal tends to lead to (self-calibration spec section E): a self-reading line
-    # gets "; when this is high, my next hour had <outcome> Nx as often (...) [assoc:<id>]" from the
+    # gets "; when this is high, my next hour had <outcome> Nx as often at equal activity (...) [assoc:<id>]" from the
     # newest self_signal_outcome_association row (orion-equilibrium-service's hourly rollup) only
     # when both sides have enough hours and the 95% interval excludes 1. Kill switch: false = the
     # self-readings block is byte-identical to before.

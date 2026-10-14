@@ -30,7 +30,7 @@ class SelfSignalOutcomeAssociationSQL(Base):
     """One row per (signal, outcome) per hourly refresh (SelfSignalOutcomeAssociationV1): next-hour
     outcome rate when the signal was high vs normal, rate ratio and 95% interval, verdict, and the
     one clause a prompt may show. Append-only; readers take the newest row per (signal_id,
-    outcome) and cite association_id. ~24 rows/hour."""
+    outcome) and cite association_id. ~21 rows/hour (~180k/year); no retention policy yet."""
 
     __tablename__ = "self_signal_outcome_association"
 
@@ -52,7 +52,12 @@ class SelfSignalOutcomeAssociationSQL(Base):
     ci_low = Column(Float, nullable=True)
     ci_high = Column(Float, nullable=True)
     ci_method = Column(String, nullable=False)
+    ci_z = Column(Float, nullable=False)
+    se_inflation = Column(Float, nullable=False)
+    n_comparisons = Column(Integer, nullable=False)
+    n_strata = Column(Integer, nullable=False, default=0)
     min_hours = Column(Integer, nullable=False, default=0)
+    min_history_hours = Column(Float, nullable=False, default=0.0)
     verdict = Column(String, nullable=False)
     excluded_reason = Column(String, nullable=False, default="")
     clause = Column(String, nullable=False, default="")

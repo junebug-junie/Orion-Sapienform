@@ -1195,7 +1195,7 @@ channels:
     consumer_services: ["orion-sql-writer"]
     stability: "experimental"
     since: "2026-10-14"
-    description: "One row per (body signal, outcome) per hourly refresh: next-hour outcome rate when the signal was high vs normal, rate ratio with a Katz 95% interval, verdict (tends_more/tends_less/no_clear_difference/below_min_n/excluded_circular) and the one clause a prompt may show. sql-writer -> self_signal_outcome_association (append-only); read by orion-thought self-readings and cited as [assoc:<association_id>]."
+    description: "One row per (body signal, outcome) per hourly refresh: next-hour outcome rate when the signal was high vs normal, activity-adjusted (Mantel-Haenszel) rate ratio with a family-wise 95% interval widened for serial correlation, verdict (tends_more/tends_less/no_clear_difference/below_min_n/excluded_circular) and the one clause a prompt may show. sql-writer -> self_signal_outcome_association (append-only); read by orion-thought self-readings and cited as [assoc:<association_id>]."
 
   - name: "orion:equilibrium:metacog:trigger"
     kind: "event"

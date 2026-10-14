@@ -104,6 +104,7 @@ def test_a_cycle_writes_hour_rows_and_every_association() -> None:
     assert len(res.associations) == 3  # one signal x three outcomes
     again = _cycle(r, FakeReader())
     assert again.skipped == "nothing_due"
+    assert not r.needs_cycle(NOW, NOW - timedelta(days=7))
 
 
 def test_a_read_failure_skips_the_cycle_and_writes_nothing() -> None:
@@ -134,13 +135,17 @@ def _assoc(clause: str, verdict: str = "tends_more") -> SelfSignalOutcomeAssocia
     )
 
 
-CLAUSE = ("when this is high, my next hour had a failed turn 6.0x as often (60% of 30 high hours vs "
+CLAUSE = ("when this is high, my next hour had a failed turn 6.0x as often at equal activity (60% of 30 high hours vs "
           "10% of 60 normal) [assoc:ssa-0123456789]")
 
 
 def test_renderable_only_holds_clauses() -> None:
     r = SelfSignalOutcomeRollup()
-    r.latest = [_assoc(CLAUSE), _assoc("", verdict="below_min_n").model_copy(update={"outcome": "rpc_timeout"})]
+    quiet = _assoc("", verdict="below_min_n").model_copy(update={"outcome": "rpc_timeout",
+                                                                 "association_id": "ssa-9999999999"})
+    r.latest = [_assoc(CLAUSE), quiet]
+    assert dict(r.renderable()) == {}  # nothing published yet: an open row must not cite it
+    r.published_ids = {"ssa-0123456789", "ssa-9999999999"}
     assert list(r.renderable()) == ["node:substrate.bus_synaptic"]
 
 
@@ -228,6 +233,9 @@ def test_service_poll_publishes_hour_rows_then_associations(monkeypatch) -> None
     class _Cache:
         def refresh(self, fetch, *, now):
             return 0
+
+        def earliest(self):
+            return min(r[0][0] for r in HIST.values())
 
         def current(self):
             return {n: (rows[-1][1], rows[-1][0]) for n, rows in HIST.items()}

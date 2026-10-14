@@ -124,7 +124,7 @@ def test_checker_has_teeth(replay) -> None:
     assert check_association(a.model_copy(update={"verdict": "tends_more", "clause": "x"}), rows)
     fake = a.model_copy(update={
         "verdict": "tends_more", "association_id": "ssa-0000000000",
-        "clause": "when this is high, my next hour had a failed turn 9.9x as often "
+        "clause": "when this is high, my next hour had a failed turn 9.9x as often at equal activity "
                   "(90% of 30 high hours vs 10% of 60 normal) [assoc:ssa-0000000000]",
     })
     assert check_clause(fake.clause, {fake.association_id: fake})

@@ -217,7 +217,7 @@ from datetime import datetime, timezone  # noqa: E402
 
 from orion.schemas.self_signal_outcome import SelfSignalOutcomeAssociationV1  # noqa: E402
 
-_CLAUSE = ("when this is high, my next hour had a failed turn 3.1x as often (31% of 42 high hours vs "
+_CLAUSE = ("when this is high, my next hour had a failed turn 3.1x as often at equal activity (31% of 42 high hours vs "
            "10% of 120 normal) [assoc:ssa-0123456789]")
 
 

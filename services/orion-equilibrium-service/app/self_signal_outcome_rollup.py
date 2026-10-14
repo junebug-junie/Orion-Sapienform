@@ -159,11 +159,18 @@ class SelfSignalOutcomeRollup:
     known_hours: dict[datetime, SelfSignalHourV1] = field(default_factory=dict)
     loaded: bool = False
     latest: list[SelfSignalOutcomeAssociationV1] = field(default_factory=list)
-    _last_due_check: datetime | None = None
+    computed: bool = False  # associations computed at least once this process
+    # association_ids that really reached the bus: an open row only cites a persisted row.
+    published_ids: set[str] = field(default_factory=set)
 
     def renderable(self) -> Mapping[str, SelfSignalOutcomeAssociationV1]:
-        """signal_id -> its strongest association that may be shown (episode open rows)."""
-        return index_by_signal(self.latest)
+        """signal_id -> its strongest association that may be shown (episode open rows); only
+        associations whose row was published, so the cited association_id resolves."""
+        return index_by_signal([a for a in self.latest if a.association_id in self.published_ids])
+
+    def needs_cycle(self, now: datetime, history_start: datetime | None) -> bool:
+        """Cheap pre-check (no history copies): something is due, or nothing computed yet."""
+        return not self.loaded or not self.computed or bool(self.due_hours(now, history_start))
 
     def due_hours(self, now: datetime, history_start: datetime | None) -> list[datetime]:
         """Completed hours (plus grace) inside the PE window that have no persisted row yet."""
@@ -198,7 +205,7 @@ class SelfSignalOutcomeRollup:
                     self.known_hours[hour_floor(row.hour_start)] = row
                 self.loaded = True
             due = self.due_hours(now, history_start)
-            if not due and self.latest:
+            if not due and self.computed:
                 return CycleResult(skipped="nothing_due")
             new_rows: list[SelfSignalHourV1] = []
             if due:
@@ -224,6 +231,8 @@ class SelfSignalOutcomeRollup:
                 self.known_hours.pop(h, None)
         hours = [self.known_hours[h] for h in sorted(self.known_hours)]
         self.latest = associate_all(hours, computed_at=now, min_hours=self.min_hours)
+        self.published_ids = set()
+        self.computed = True
         return CycleResult(hour_rows=new_rows, associations=list(self.latest))
 
 

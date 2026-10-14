@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
+import math
+
 import pytest
 
 import orion.attention.self_signal_outcomes as sso
@@ -22,15 +24,16 @@ CAB = "node:substrate.cabinet"
 
 
 def _hours(conds: list[str], events: list[int], *, signal: str = BIO, outcome: str = "turn_failed",
-           exposure: int = 3) -> list[SelfSignalHourV1]:
-    """Hour i has the signal condition conds[i] and outcome events[i] (exposure fixed)."""
+           exposure: int | list[int] = 3, history_hours: float = 168.0) -> list[SelfSignalHourV1]:
+    """Hour i has the signal condition conds[i] and outcome events[i] (exposure fixed or per hour)."""
     out = []
     for i, (c, e) in enumerate(zip(conds, events)):
         h = T0 + timedelta(hours=i)
+        exp = exposure[i] if isinstance(exposure, list) else exposure
         out.append(SelfSignalHourV1(
-            hour_id=sso.hour_id(h), hour_start=h, computed_at=h + timedelta(hours=1),
+            hour_id=sso.hour_id(h), hour_start=h, computed_at=h + timedelta(hours=1), history_hours=history_hours,
             signals=[SignalHourV1(signal_id=signal, condition=c)],  # type: ignore[arg-type]
-            outcomes=[OutcomeHourV1(outcome=outcome, exposure=exposure, events=e)],  # type: ignore[arg-type]
+            outcomes=[OutcomeHourV1(outcome=outcome, exposure=exp, events=e)],  # type: ignore[arg-type]
         ))
     return out
 
@@ -173,6 +176,12 @@ def test_katz_interval_excludes_one_only_with_a_real_gap() -> None:
     assert weak.low < 1.0 < weak.high
 
 
+def test_katz_only_corrects_zero_cells() -> None:
+    full = sso.katz_rate_ratio(30, 30, 10, 100)  # a == n1 is not a zero cell
+    assert full.ratio == pytest.approx(10.0)
+    assert full.low == pytest.approx(math.exp(math.log(10) - sso.Z_95 * math.sqrt(1 / 30 - 1 / 30 + 1 / 10 - 1 / 100)))
+
+
 def test_katz_zero_cells_keep_a_finite_interval_and_no_fake_ratio() -> None:
     iv = sso.katz_rate_ratio(5, 30, 0, 100)
     assert iv.ratio is None and iv.low is not None and iv.high is not None
@@ -195,7 +204,7 @@ def test_interval_excluding_one_renders_a_cited_clause() -> None:
     assert (a.n_high, a.events_high, a.n_normal, a.events_normal) == (30, 18, 60, 6)
     assert a.ci_low > 1.0
     assert a.clause == (
-        "when this is high, my next hour had a failed turn 6.0x as often (60% of 30 high hours "
+        "when this is high, my next hour had a failed turn 6.0x as often at equal activity (60% of 30 high hours "
         f"vs 10% of 60 normal) [assoc:{a.association_id}]"
     )
 
@@ -276,3 +285,91 @@ def test_hour_row_caps_signals() -> None:
     sigs = [SignalHourV1(signal_id=f"node:substrate.s{i:02d}", condition="normal") for i in range(80)]
     row = sso.build_hour_row(T0, signals=sigs, outcomes=[], computed_at=NOW, history_hours=10)
     assert len(row.signals) == 32
+
+
+# --- review fixes: backfill floor, multiplicity, exposure, serial correlation, wording -----------
+
+
+def test_hours_judged_on_a_short_history_never_count() -> None:
+    conds, events = _pattern(n_high=30, n_normal=60, hit_after_high=0.6, hit_after_normal=0.1)
+    short = _hours(conds, events, history_hours=40.0)
+    a = sso.associate(short, BIO, "turn_failed", computed_at=NOW)
+    assert (a.n_high, a.n_normal, a.verdict) == (0, 0, "below_min_n")
+    assert a.min_history_hours == sso.MIN_HISTORY_HOURS == 144.0
+
+
+def test_bonferroni_widens_the_interval_for_the_whole_family() -> None:
+    conds, events = _pattern(n_high=30, n_normal=60, hit_after_high=0.33, hit_after_normal=0.15)
+    rows = _hours(conds, events)
+    one = sso.associate(rows, BIO, "turn_failed", computed_at=NOW, n_comparisons=1)
+    fam = sso.associate(rows, BIO, "turn_failed", computed_at=NOW, n_comparisons=17)
+    assert fam.ci_z == pytest.approx(sso.family_z(17)) and fam.ci_z > 2.9
+    assert fam.ci_low < one.ci_low and fam.ci_high > one.ci_high
+    assert one.verdict == "tends_more" and fam.verdict == "no_clear_difference"
+
+
+def test_associate_all_counts_every_renderable_pair_as_one_family() -> None:
+    conds, events = _pattern(n_high=30, n_normal=60, hit_after_high=0.6, hit_after_normal=0.1)
+    out = sso.associate_all(_hours(conds, events, signal=EXE), computed_at=NOW)
+    # execution x turn_failed / response_repair are circular: one renderable pair (rpc_timeout).
+    assert {a.n_comparisons for a in out} == {1}
+
+
+def test_busy_next_hours_alone_do_not_make_an_association() -> None:
+    """High hours are followed by busy hours (20 turns), normal ones by quiet hours (1 turn); at
+    equal activity the failure share is identical, so the adjusted ratio is ~1 (no clause)."""
+    conds, events, exposure = [], [], []
+    for i in range(40):  # high -> busy next hour, 50% have a failure
+        conds += ["high", "unknown"]
+        events += [0, 1 if i % 2 else 0]
+        exposure += [1, 20]
+    for i in range(40):  # normal -> busy next hour, same 50%
+        conds += ["normal", "unknown"]
+        events += [0, 1 if i % 2 else 0]
+        exposure += [1, 20]
+    for i in range(80):  # normal -> quiet next hour, 10%
+        conds += ["normal", "unknown"]
+        events += [0, 1 if i % 10 == 0 else 0]
+        exposure += [1, 1]
+    rows = _hours(conds, events, exposure=exposure)
+    a = sso.associate(rows, BIO, "turn_failed", computed_at=NOW)
+    crude = (a.events_high / a.n_high) / (a.events_normal / a.n_normal)
+    assert crude > 1.6  # the raw rates alone would have said "tends to"
+    assert a.ratio == pytest.approx(1.0) and a.n_strata == 2
+    assert a.verdict == "no_clear_difference" and a.clause == ""
+
+
+def test_clustered_hours_inflate_the_interval() -> None:
+    conds = (["high"] * 6 + ["normal"] * 6) * 8
+    events = ([1] * 6 + [0] * 6) * 8
+    events = [0] + events[:-1]  # hour H's condition -> hour H+1's outcome, in runs
+    a = sso.associate(_hours(conds, events), BIO, "turn_failed", computed_at=NOW, min_hours=1)
+    assert a.se_inflation > 1.5
+
+
+def test_never_is_said_plainly_not_as_zero_x() -> None:
+    conds, events = _pattern(n_high=40, n_normal=60, hit_after_high=0.0, hit_after_normal=0.6)
+    a = sso.associate(_hours(conds, events), BIO, "turn_failed", computed_at=NOW)
+    assert a.verdict == "tends_less"
+    assert "my next hour never had a failed turn (0% of 40 high hours" in a.clause
+    assert "0.0x" not in a.clause
+
+
+def test_one_event_on_the_poll_grid_is_not_a_high_hour() -> None:
+    """The seam drops an event at age >= 300 s: one hot event must not fill 11 polls (330 s)."""
+    chat = "node:substrate.chat"
+    h = T0 + timedelta(days=8)
+    hist = [(T0 + timedelta(minutes=15 * k), 0.0 if k % 3 else 0.1 + (k % 9) / 10.0)
+            for k in range(int(8 * 24 * 4))]
+    hist.append((h + timedelta(minutes=10), 1.0))  # exactly on the 30 s grid
+    got = sso.classify_signal_hours(chat, sorted(hist), [h])
+    assert got[h].hot_sec <= sso.HIGH_HOUR_HOT_SEC
+    assert got[h].condition == "normal"
+
+
+def test_a_trigger_still_on_from_the_previous_hour_is_high() -> None:
+    h = T0 + timedelta(days=2)
+    rows = [(h - timedelta(minutes=2), 0.0), (h - timedelta(minutes=1), 0.7)]
+    rows += [(h + timedelta(seconds=30 * k), 0.7 if k < 4 else 0.0) for k in range(120)]
+    got = sso.classify_signal_hours(CAB, rows, [h])
+    assert got[h].condition == "high" and got[h].n_hot == 0  # on, but no new onset this hour

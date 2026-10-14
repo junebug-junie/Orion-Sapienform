@@ -107,8 +107,15 @@ class SelfSignalOutcomeAssociationV1(BaseModel):
     ratio: float | None = None
     ci_low: float | None = None
     ci_high: float | None = None
-    ci_method: str = "katz_log_rr_95"
+    # Mantel-Haenszel over next-hour activity strata, SE x se_inflation (serial correlation), at
+    # the Bonferroni z for n_comparisons simultaneous pairs (family-wise 5%).
+    ci_method: str = "mantel_haenszel_log_rr_bonferroni_ar1"
+    ci_z: float = Field(1.959964, gt=0.0)
+    se_inflation: float = Field(1.0, ge=1.0)
+    n_comparisons: int = Field(1, ge=1)
+    n_strata: int = Field(0, ge=0)
     min_hours: int = Field(0, ge=0)
+    min_history_hours: float = Field(0.0, ge=0.0)
     verdict: AssociationVerdict
     excluded_reason: str = ""
     # The one deterministic clause a prompt may show ("" unless verdict is tends_more/less).

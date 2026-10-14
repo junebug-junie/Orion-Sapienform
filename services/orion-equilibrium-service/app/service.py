@@ -481,12 +481,8 @@ class EquilibriumService(BaseChassis):
         except Exception as exc:
             # Absent, never calm: every signal reads unknown this poll.
             history_error = f"prediction-error history unreadable ({type(exc).__name__})"
-        if rollup is not None and history_error is None:
-            try:
-                await self._self_signal_outcome_cycle(rollup, reader, now)
-            except Exception:
-                logger.exception("self_signal_outcome_cycle_failed")
         if gate is None:
+            await self._self_signal_outcome_maybe(rollup, reader, now, history_error)
             return
         observations = observe_signals(
             magnitudes,
@@ -515,6 +511,22 @@ class EquilibriumService(BaseChassis):
                 gate.mark_published(out, now=now.timestamp())
         if gate.dump() != before:
             await self._persist_self_signal_state()
+        # After the gate, so an hourly backfill never delays an episode poll.
+        await self._self_signal_outcome_maybe(rollup, reader, now, history_error)
+
+    async def _self_signal_outcome_maybe(self, rollup, reader, now, history_error) -> None:
+        if rollup is not None and history_error is None:
+            try:
+                await self._self_signal_outcome_cycle(rollup, reader, now)
+                self._self_signal_outcome_failures = 0
+            except Exception:
+                # A deterministic bug would fail every 30 s poll: traceback once, then one line
+                # every 120 polls (~1 h).
+                n = self._self_signal_outcome_failures = getattr(self, "_self_signal_outcome_failures", 0) + 1
+                if n == 1:
+                    logger.exception("self_signal_outcome_cycle_failed")
+                elif n % 120 == 0:
+                    logger.warning("self_signal_outcome_cycle_failed consecutive=%d (traceback suppressed)", n)
 
     async def _self_signal_outcome_cycle(
         self, rollup: SelfSignalOutcomeRollup, reader: SelfSignalOutcomeReader, now: datetime
@@ -522,15 +534,17 @@ class EquilibriumService(BaseChassis):
         """Hourly: publish new SelfSignalHourV1 rows, then every (signal, outcome) association.
         A row that fails to publish is forgotten so the next poll recomputes and retries it."""
         cache = self._pe_history_cache
+        history_start = cache.earliest()
+        if not rollup.needs_cycle(now, history_start):
+            return
         node_ids = list(cache.current())
-        firsts = [h[0][0] for h in (cache.history(n) for n in node_ids) if h]
         result = await asyncio.to_thread(
             rollup.run_cycle,
             now=now,
             reader=reader,
             history=cache.history,
             node_ids=node_ids,
-            history_start=min(firsts) if firsts else None,
+            history_start=history_start,
         )
         if result.skipped:
             if result.skipped != "nothing_due":
@@ -548,6 +562,7 @@ class EquilibriumService(BaseChassis):
                 settings.channel_self_signal_outcome_association, SELF_SIGNAL_ASSOCIATION_KIND, a
             ):
                 published_assoc += 1
+                rollup.published_ids.add(a.association_id)
         logger.info(
             "self_signal_outcome_cycle hours=%d/%d associations=%d/%d renderable=%s %s",
             published_hours, len(result.hour_rows), published_assoc, len(result.associations),

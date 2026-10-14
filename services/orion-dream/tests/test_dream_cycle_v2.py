@@ -891,3 +891,44 @@ def test_reverie_source_queries_join_the_loop_title_by_its_indexed_theme_key():
         assert f"a.theme_key = {col}" in sql  # idx_attention_salience_trace_theme, not loop_id
         assert "t.title" in sql and "LIMIT :limit" in sql
         assert "a.created_at < :until" in sql  # the title as of the window, not today
+
+
+def test_curiosity_compaction_only_after_completed_saved_sleep():
+    from app.cycle import run_cycle_once
+    calls = []
+    async def compact(cycle):
+        calls.append(cycle.cycle_id)
+    _, deps, stories = _story_fakes()
+    deps.compact_curiosity = compact
+    done = asyncio.run(run_cycle_once(deps))
+    assert calls == [done.cycle_id] and stories
+    _, unsaved, _ = _story_fakes()
+    unsaved.compact_curiosity = compact
+    unsaved.persist_cycle = lambda c: False
+    asyncio.run(run_cycle_once(unsaved))
+    empty = _Fakes({}).deps()
+    empty.compact_curiosity = compact
+    asyncio.run(run_cycle_once(empty, force=True))
+    failed = _Fakes(_rows()).deps()
+    async def no_model(prompt):
+        raise RuntimeError("gateway unavailable")
+    failed.complete = no_model
+    failed.compact_curiosity = compact
+    asyncio.run(run_cycle_once(failed))
+    assert calls == [done.cycle_id]
+
+
+def test_curiosity_failure_does_not_fail_sleep_and_switch_wires_hook(monkeypatch):
+    from app import main
+    from app.cycle import run_cycle_once
+    async def fail(cycle):
+        raise RuntimeError("store unavailable")
+    _, deps, _ = _story_fakes()
+    deps.compact_curiosity = fail
+    assert asyncio.run(run_cycle_once(deps)).status == "completed"
+    monkeypatch.setattr(main.settings, "DREAM_CURIOSITY_COMPACTION_ENABLED", False)
+    assert main.build_cycle_deps().compact_curiosity is None
+    monkeypatch.setattr(main.settings, "DREAM_CURIOSITY_COMPACTION_ENABLED", True)
+    monkeypatch.setattr(main.settings, "DREAM_STORY_AFTER_SLEEP_ENABLED", False)
+    monkeypatch.setattr(main.settings, "DREAM_CARRY_ENABLED", False)
+    assert main.build_cycle_deps().compact_curiosity is not None

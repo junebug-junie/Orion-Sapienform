@@ -243,6 +243,31 @@ def build_cycle_deps():
     def _attempt_end():
         return _latest(cycle_store.load_last_attempt_end(read_errors=read_errors), _CYCLE_STATE.get("attempt_end"))
 
+    async def _compact_curiosity(cycle):
+        from app.curiosity_compaction_submit import submit_due
+        from app.curiosity_compaction_store import store
+        from app.carry_submit import submit_via_cortex
+
+        bus = await _cycle_bus()
+        if bus is None:
+            raise RuntimeError("bus disabled: curiosity compaction admission deferred")
+        source = ServiceRef(name=settings.SERVICE_NAME, version=settings.SERVICE_VERSION, node=settings.NODE_NAME)
+
+        async def submit(request):
+            return await submit_via_cortex(bus=bus, source=source, request=request,
+                                          request_channel=settings.CHANNEL_CORTEX_REQUEST,
+                                          user_text="Consolidate the due Curiosity calendar window.")
+
+        async def publish(entry):
+            await bus.publish("orion:journal:write", BaseEnvelope(
+                kind="journal.entry.write.v1",
+                source=ServiceRef(name=settings.SERVICE_NAME, version=settings.SERVICE_VERSION,
+                                  node=settings.NODE_NAME),
+                payload=entry.model_dump(mode="json"),
+            ))
+
+        await submit_due(store(), submit, publish, now=cycle.ended_at, cycle_id=cycle.cycle_id)
+
     def _persist(cycle) -> bool:
         _CYCLE_STATE["attempt_end"] = cycle.ended_at
         if cycle.status != "failed":
@@ -259,6 +284,7 @@ def build_cycle_deps():
         read_errors=read_errors,
         complete=_complete,
         rem_compaction=_rem,
+        compact_curiosity=_compact_curiosity if settings.DREAM_CURIOSITY_COMPACTION_ENABLED else None,
         start_story=(
             (_start_carry if settings.DREAM_CARRY_ENABLED else _start_story)
             if settings.DREAM_STORY_AFTER_SLEEP_ENABLED else None

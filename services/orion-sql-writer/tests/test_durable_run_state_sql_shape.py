@@ -52,3 +52,15 @@ def test_every_schema_field_lands_on_a_column() -> None:
 def test_the_table_has_bounded_retention_by_default() -> None:
     assert "substrate_durable_run_state" in dict(GRAMMAR_RETENTION_TABLES)
     assert retention_days_for(Settings(SQL_WRITER_SUBSCRIBE_CHANNELS=[]))["substrate_durable_run_state"] == 90
+
+
+def test_curiosity_compaction_state_is_accepted_by_real_writer_route():
+    model, schema = MODEL_MAP["DurableRunStateSQL"]
+    event = schema.model_validate({
+        "run_id": "curiosity-compaction:weekly:2026-10-05:r0", "workflow": "curiosity.compaction",
+        "thread_id": "curiosity-compaction:weekly:2026-10-05:r0", "node": "compact",
+        "status": "running", "correlation_id": "trace-compaction",
+        "detail": {"compaction_id": "curiosity-compaction:weekly:2026-10-05"},
+    })
+    values = event.model_dump(exclude={"schema_version"})
+    assert model(**values).workflow == "curiosity.compaction"

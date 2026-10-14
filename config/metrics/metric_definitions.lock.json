@@ -2,16 +2,10 @@
   "_comment": "Definition lock for scripts/check_definition_drift.py. Generated, never hand-edited. Regenerate with --update; the resulting diff IS the definition-change alert. Unlike the *_baseline.json ratchets this tracks current truth in both directions -- a definition change is an event, not a defect.",
   "metric_count": 734,
   "_last_change": {
-    "change_count": 7,
+    "change_count": 1,
     "high_severity_count": 1,
     "changes": [
-      "high   routing_changed metric://bus_channel/orion-field-digester/orion:field_channel:anomaly_score (declared_consumers: \u2026e', 'orion-substrate-run\u2026 -> \u2026e', 'orion-sql-writer', 'orion-substrate-run\u2026)",
-      "medium added metric://inner_state/orion-field-digester/field_channel_anomaly_score.v1",
-      "medium added metric://inner_state/orion-field-digester/field_channel_anomaly_score.v1#mean_signed_deviation",
-      "medium added metric://inner_state/orion-field-digester/field_channel_anomaly_score.v1#recon_error_p95",
-      "medium added metric://inner_state/orion-field-digester/field_channel_anomaly_score.v1#recon_loss",
-      "medium added metric://inner_state/orion-field-digester/field_channel_anomaly_score.v1#threshold",
-      "medium added metric://inner_state/orion-field-digester/field_channel_anomaly_score.v1#threshold_multiplier"
+      "high   routing_changed metric://bus_channel/orion-actions/orion:journal:write (all_producers: \u2026cortex-orch'] -> \u2026cortex-orch', 'orion-dream', 'orion-durable-runs'])"
     ]
   },
   "definitions": {
@@ -355,7 +349,9 @@
       "all_producers": [
         "orion-actions",
         "orion-cortex-exec",
-        "orion-cortex-orch"
+        "orion-cortex-orch",
+        "orion-dream",
+        "orion-durable-runs"
       ],
       "declared_consumers": [
         "orion-sql-writer"

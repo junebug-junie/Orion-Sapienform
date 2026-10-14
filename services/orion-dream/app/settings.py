@@ -93,6 +93,9 @@ class Settings(BaseSettings):
     # fault-jammed GPU queue (reads strained) cannot stop Orion sleeping for a day.
     DREAM_AROUSAL_MAX_HOLD_HOURS: float = Field(default=6.0, gt=0.0)
 
+    # Weekly/monthly Curiosity write-up summaries after a persisted successful sleep.
+    DREAM_CURIOSITY_COMPACTION_ENABLED: bool = Field(default=False)
+
     # --- Dream carry-through (dream.carry durable run) ---
     # On: the dream a completed sleep ends in is a carried dream (text -> picture ->
     # text ... six hops, run by orion-durable-runs), submitted through cortex-orch's

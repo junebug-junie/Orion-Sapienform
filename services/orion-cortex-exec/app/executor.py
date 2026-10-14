@@ -440,6 +440,9 @@ def _resolve_llm_chat_max_tokens(step: ExecutionStep, ctx: Dict[str, Any]) -> Tu
     if step.verb_name == "github_compactor_digest_v1":
         return int(settings.llm_chat_general_max_tokens), requested, "settings.llm_chat_general_max_tokens_github_compactor_digest"
 
+    if step.verb_name == "curiosity_compactor_digest_v1":
+        return 3000, requested, "curiosity_compactor_digest_budget"
+
     if step.verb_name == "chat_history_compactor_digest_v1":
         return int(settings.llm_chat_general_max_tokens), requested, "settings.llm_chat_general_max_tokens_chat_history_compactor_digest"
 

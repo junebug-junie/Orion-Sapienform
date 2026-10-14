@@ -81,7 +81,9 @@ def normalize_presence_context(raw: Any, *, default_requestor: str) -> dict[str,
 
     Timestamps and persist gating stay with the caller; everything else is
     coerced here. With companions, ``audience_mode`` is derived from them so
-    the two can never contradict; without, a valid given mode is kept.
+    the two can never contradict; without, a valid given mode is kept. That
+    means a caller cannot send companions plus a mode like "operator_review":
+    the people present decide the audience.
     """
     raw = raw if isinstance(raw, dict) else {}
     req = raw.get("requestor") if isinstance(raw.get("requestor"), dict) else {}
@@ -109,15 +111,26 @@ def normalize_presence_context(raw: Any, *, default_requestor: str) -> dict[str,
     }
 
 
+_PHRASE_MAX_PEOPLE = 4
+_PHRASE_NOTE_CHARS = 40
+_PHRASE_MAX_CHARS = 240
+
+
 def companions_phrase(companions: list[Any]) -> str:
-    """'Pip (child, listener)' style list for the prompt; unknowns omitted."""
+    """'Pip (child, listener)' style list for the prompt; unknowns omitted.
+
+    Bounded (4 people, 40-char notes, 240 chars total) because it shares the situation
+    fragment's char cap with everything else in the body.
+    """
     parts = []
-    for c in companions:
+    for c in companions[:_PHRASE_MAX_PEOPLE]:
         d = c if isinstance(c, dict) else c.model_dump()
         tags = [d.get("relationship"), d.get("role")]
         if d.get("age_band") not in ("unknown", None) and d.get("age_band") != d.get("relationship"):
             tags.insert(1, f"age {d['age_band']}")
         tags = [t for t in tags if t and t not in ("other", "nearby")]
-        note = f"; {d['context_note']}" if d.get("context_note") else ""
+        note = f"; {d['context_note'][:_PHRASE_NOTE_CHARS]}" if d.get("context_note") else ""
         parts.append(f"{d['display_name']} ({', '.join(tags)}{note})" if tags or note else d["display_name"])
-    return ", ".join(parts)
+    extra = len(companions) - _PHRASE_MAX_PEOPLE
+    phrase = ", ".join(parts) + (f", and {extra} more" if extra > 0 else "")
+    return phrase if len(phrase) <= _PHRASE_MAX_CHARS else phrase[: _PHRASE_MAX_CHARS - 1] + "…"

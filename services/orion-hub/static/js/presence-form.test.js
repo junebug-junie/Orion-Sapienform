@@ -39,3 +39,12 @@ test('collectRows reads selects and inputs back per row and drops nameless rows'
   ]);
   assert.deepEqual(rows, [{ display_name: 'Pip', relationship: 'child', age_band: 'child', role: 'listener' }]);
 });
+
+test('a saved note is shown and survives the read-back', () => {
+  const html = form.rowHtml({ display_name: 'Pip', relationship: 'child', context_note: 'loves <rockets>' }, 0);
+  assert.match(html, /data-presence-field="context_note"[^>]*value="loves &lt;rockets&gt;"/);
+  assert.match(html, />Note \(optional\)</);
+  const el = (f, v) => ({ dataset: { presenceIndex: '0', presenceField: f }, value: v });
+  const rows = form.collectRows([el('display_name', 'Pip'), el('context_note', 'loves rockets')]);
+  assert.equal(rows[0].context_note, 'loves rockets');
+});

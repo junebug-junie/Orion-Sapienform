@@ -40,6 +40,8 @@
       + selectHtml('relationship', idx, relationship)
       + selectHtml('age_band', idx, c.age_band || (relationship === 'child' ? 'child' : 'unknown'))
       + selectHtml('role', idx, c.role || 'listener')
+      + '<label class="col-span-2 space-y-0.5 md:col-span-5">' + LABEL_SPAN + 'Note (optional)</span>'
+      + '<input data-presence-field="context_note" data-presence-index="' + idx + '" class="' + FIELD_CLASS + '" placeholder="e.g. loves dinosaurs" value="' + escapeHtml(c.context_note) + '" /></label>'
       + '<button data-presence-remove="' + idx + '" class="rounded border border-rose-500/50 bg-rose-500/10 px-2 py-1 text-[10px] text-rose-200" type="button">Remove</button>';
   }
 

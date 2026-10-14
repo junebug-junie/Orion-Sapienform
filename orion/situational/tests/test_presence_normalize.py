@@ -117,11 +117,41 @@ def test_fragment_names_the_child_and_asks_for_a_whole_story() -> None:
     raw = {"companions": [{"display_name": "Pip", "relationship": "child", "role": "listener"}]}
     text = _fragment(_presence_from_ctx({"presence_context": raw}, CFG, NOW))
     assert "Pip (child, listener)" in text
-    assert "A child is listening (Pip)" in text
+    assert "A child is with you (Pip)" in text
     assert "a real ending" in text
 
 
 def test_solo_fragment_says_nothing_about_companions_or_children() -> None:
     text = _fragment(_presence_from_ctx({}, CFG, NOW))
     assert "right now:" not in text
-    assert "child is listening" not in text
+    assert "child is with you" not in text
+
+
+def test_note_change_busts_the_situation_cache() -> None:
+    def fp(note):
+        raw = {"companions": [{"display_name": "Pip", "relationship": "child", "context_note": note}]}
+        return _presence_cache_fingerprint({"presence_context": raw}, CFG)
+
+    assert fp("loves rockets") != fp("tired tonight")
+
+
+def test_companion_phrase_is_bounded() -> None:
+    from orion.situational.presence import companions_phrase
+
+    people = [{"display_name": "N" * 60, "relationship": "friend", "role": "nearby", "age_band": "adult",
+               "context_note": "x" * 120} for _ in range(8)]
+    phrase = companions_phrase(normalize_presence_context({"companions": people}, default_requestor="J")["companions"])
+    assert len(phrase) <= 240
+
+
+def test_cautions_survive_the_cap_with_a_child_and_a_crowded_body() -> None:
+    """Review finding: presence lines must not push the safety cautions out
+    of the 1200-char fragment. Crowd the body past the cap; the child caution
+    and the affect guard must still be there, whole."""
+    people = [{"display_name": f"Person{i}" + "n" * 50, "relationship": "child", "role": "listener",
+               "context_note": "y" * 120} for i in range(8)]
+    presence = _presence_from_ctx({"presence_context": {"companions": people}}, CFG, NOW)
+    text = _fragment(presence)
+    assert len(text) <= situation_mod._DEFAULT_PROMPT_MAX_CHARS
+    assert "A child is with you (" in text and "a real ending." in text
+    assert "don't announce it unprompted." in text

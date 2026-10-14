@@ -672,7 +672,7 @@ def _presence_cache_fingerprint(ctx: dict[str, Any], cfg: SituationSettings) -> 
     fingerprint = {
         "audience_mode": presence["audience_mode"],
         "companions": [
-            {k: c[k] for k in ("display_name", "relationship", "role", "age_band")}
+            {k: c[k] for k in ("display_name", "relationship", "role", "age_band", "context_note")}
             for c in presence["companions"]
         ],
         "requestor": {
@@ -2303,13 +2303,6 @@ def _build_prompt_fragment(brief: SituationBriefV1, max_chars: int) -> Situation
         lines.append(
             f"With {brief.requestor.display_name} right now: {companions_phrase(brief.presence.companions)}."
         )
-    kids = [c.display_name for c in brief.presence.companions if is_child(c.model_dump())]
-    if kids:
-        # Kept in the head of the body, which the char cap never trims.
-        lines.append(
-            f"A child is listening ({', '.join(kids)}): use words and pictures a young child can follow,"
-            " and if you tell a story, tell all of it -- a beginning, a middle, and a real ending."
-        )
     # Fixed home/body location, only when configured. Placed up front so the
     # budget cap never trims it. Without it, a travel city mentioned in recent
     # chat is the only place in context (see 2026-10-05, correlation 5063fb71).
@@ -2508,6 +2501,15 @@ def _build_prompt_fragment(brief: SituationBriefV1, max_chars: int) -> Situation
         "Situation context is grounding, not a requirement to mention.",
         "Use only when relevant; avoid contrived time/weather/location commentary.",
     ]
+    # A caution, not a body line: cautions are kept whole and in priority
+    # order, while body lines are the first thing the char cap trims.
+    kids = [c.display_name for c in brief.presence.companions if is_child(c.model_dump())]
+    if kids:
+        cautions.insert(
+            0,
+            f"A child is with you ({', '.join(kids[:3])}): use words a young child can follow;"
+            " a story you tell gets a beginning, a middle and a real ending.",
+        )
     if brief.perception.presence_identity_ask:
         # Inserted first: this is the one caution that's actionable THIS
         # turn and time-limited (already cooldown-gated server-side, so it

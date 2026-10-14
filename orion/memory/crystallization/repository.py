@@ -52,21 +52,25 @@ def _crystallizations_sql_path() -> Path:
     return repo_root / "orion" / "core" / "storage" / "sql" / "memory_crystallizations.sql"
 
 
-def apply_memory_crystallizations_schema(dsn: str) -> None:
+def apply_memory_crystallizations_schema(dsn: str, *, force: bool = False) -> bool:
+    """Same contract as apply_memory_cards_schema: skipped (False) while the
+    file's fingerprint is recorded, True when the DDL ran."""
     import psycopg2
+
+    from orion.core.storage.schema_fingerprint import apply_schema_file_once
 
     sql_path = _crystallizations_sql_path()
     if not sql_path.is_file():
         raise FileNotFoundError(f"memory_crystallizations DDL not found at {sql_path}")
-    sql = sql_path.read_text(encoding="utf-8")
-    connect_options = (
-        f"-c lock_timeout={_SCHEMA_APPLY_LOCK_TIMEOUT_MS} "
-        f"-c statement_timeout={_SCHEMA_APPLY_STATEMENT_TIMEOUT_MS}"
+    return apply_schema_file_once(
+        dsn,
+        name="memory_crystallizations",
+        sql=sql_path.read_text(encoding="utf-8"),
+        lock_timeout_ms=_SCHEMA_APPLY_LOCK_TIMEOUT_MS,
+        statement_timeout_ms=_SCHEMA_APPLY_STATEMENT_TIMEOUT_MS,
+        connect=psycopg2.connect,
+        force=force,
     )
-    with psycopg2.connect(dsn, options=connect_options) as conn:
-        conn.autocommit = True
-        with conn.cursor() as cur:
-            cur.execute(sql)
 
 
 def _jsonb(value: Any) -> str:

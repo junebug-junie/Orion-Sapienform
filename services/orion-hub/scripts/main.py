@@ -1484,16 +1484,20 @@ async def startup_event():
                 logger.error("memory_pg_pool_failed error=%s", exc)
                 app.state.memory_pg_pool = None
             if app.state.memory_pg_pool is not None:
-                try:
-                    apply_memory_cards_schema(dsn)
-                    logger.info("memory_cards_schema_applied ok=true")
-                    try:
-                        apply_memory_crystallizations_schema(dsn)
-                        logger.info("memory_crystallizations_schema_applied ok=true")
-                    except Exception as crys_exc:
-                        logger.error("memory_crystallizations_schema_apply_failed error=%s", crys_exc, exc_info=True)
-                except Exception as schema_exc:
-                    logger.error("memory_cards_schema_apply_failed error=%s", schema_exc, exc_info=True)
+                # Each file independently, skipped when its fingerprint is
+                # current, retried in the background on failure -- a restart
+                # during the nightly pg_dump used to log a lock_timeout
+                # traceback here and skip the crystallizations file outright
+                # (2026-10-14). See scripts/memory_schema_bootstrap.py.
+                from scripts.memory_schema_bootstrap import ensure_memory_schemas
+
+                _ready, app.state.memory_schema_retry_task = await ensure_memory_schemas(
+                    dsn,
+                    [
+                        ("memory_cards", apply_memory_cards_schema),
+                        ("memory_crystallizations", apply_memory_crystallizations_schema),
+                    ],
+                )
         else:
             app.state.memory_pg_pool = None
             logger.warning("memory_pg_pool_skipped reason=asyncpg_import_failed")
@@ -1563,6 +1567,9 @@ async def shutdown_event() -> None:
         except Exception as exc:
             logger.warning("system_health_heartbeat_stop_error error=%s", exc)
         heartbeat_chassis = None
+    schema_retry = getattr(app.state, "memory_schema_retry_task", None)
+    if schema_retry is not None and not schema_retry.done():
+        schema_retry.cancel()
     pool = getattr(app.state, "memory_pg_pool", None)
     if pool is not None:
         try:

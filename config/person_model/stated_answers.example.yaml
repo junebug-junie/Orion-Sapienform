@@ -2,8 +2,12 @@
 # DATA, not code. Each entry cites where the person said it. The linkage dry run
 # uses `home` to flag 'home' aliases on other places (scripts/run_person_linkage.py);
 # the attribute store (P3) will ingest these as voice=ask_answer rows.
+#
+# REDACTED EXAMPLE. The real answers live in the gitignored
+# config/person_model/stated_answers.local.yaml, which the loader reads first
+# (orion.person_model.person.local_first). Copy this file there and fill it in.
 people:
   referent-b96fc90e-0f16-5e40-a3eb-9807cc38e968:
     home:
-      value: "Ogden, Utah"
-      source: "design PR #2646, Juniper's answer 4 (2026-10-14): home is Ogden"
+      value: "Springfield, Exampleland"
+      source: "design PR #2646, the interlocutor's answer 4 (2026-10-14): [home city]"

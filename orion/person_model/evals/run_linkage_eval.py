@@ -2,7 +2,8 @@
 """Linkage calibration eval: auto-merge precision, recall, and review-band size.
 
 Inputs: a dry-run ``decisions.jsonl`` (scripts/run_person_linkage.py) and labels,
-either ``cleanup_labels.jsonl`` ({"decision_id", "label"}) or the CSV the
+either ``cleanup_labels.local.jsonl`` (gitignored, real; the committed
+``cleanup_labels.example.jsonl`` is a fake-name fixture) ({"decision_id", "label"}) or the CSV the
 interlocutor exports from the HTML review (``your_choice`` approve/reject on each
 card; approve on a same_as card = same person).
 
@@ -25,6 +26,12 @@ import csv
 import json
 import sys
 from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[3]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from orion.person_model.person import local_first  # noqa: E402
 
 MARGIN = 1.0
 
@@ -63,7 +70,7 @@ def load_labels(path: Path, decisions: dict) -> dict:
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--decisions", type=Path, required=True)
-    ap.add_argument("--labels", type=Path, default=Path(__file__).with_name("cleanup_labels.jsonl"))
+    ap.add_argument("--labels", type=Path, default=local_first(Path(__file__).with_name("cleanup_labels.example.jsonl")))
     args = ap.parse_args()
     decisions = {d["decision_id"]: d for d in (json.loads(x) for x in args.decisions.read_text(encoding="utf-8").splitlines() if x.strip())}
     labels = load_labels(args.labels, decisions)

@@ -103,16 +103,16 @@ def test_adapter_reads_hub_weather_config() -> None:
     hub_settings = SimpleNamespace(
         ORION_SITUATION_WEATHER_ENABLED=True,
         ORION_SITUATION_WEATHER_PROVIDER="openmeteo",
-        ORION_SITUATION_WEATHER_LAT=41.2230,
-        ORION_SITUATION_WEATHER_LON=-111.9738,
+        ORION_SITUATION_WEATHER_LAT=45.0000,
+        ORION_SITUATION_WEATHER_LON=-100.0000,
         ORION_SITUATION_WEATHER_TTL_SECONDS=600,
     )
     cfg = settings_from_runtime(hub_settings_to_runtime_namespace(hub_settings))
 
     assert cfg.weather_enabled is True
     assert cfg.weather_provider == "openmeteo"
-    assert cfg.weather_lat == 41.2230
-    assert cfg.weather_lon == -111.9738
+    assert cfg.weather_lat == 45.0000
+    assert cfg.weather_lon == -100.0000
     assert cfg.weather_ttl_seconds == 600
 
 

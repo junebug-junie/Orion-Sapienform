@@ -217,7 +217,7 @@ def test_inconsistent_pairs_resolve_toward_high_and_are_logged(stakes, reason, a
 
 def test_stakes_never_lowered_and_statement_never_read():
     """The same statement gets whatever the distiller's pair says; vocabulary changes nothing."""
-    scary = "Juniper told me she was terrified her sister was in the hospital."
+    scary = "Juniper told me she was terrified her neighbor was in the hospital."
     low = _run(_mem(statement=scary, stakes="low", stakes_reason="none")).memories[0]
     assert (low.stakes, low.confirmation_state) == ("low", "auto")
     calm = "Juniper flew to Austin for a work offsite this week."

@@ -57,7 +57,7 @@ def test_fetch_rdf_chatturn_fragments_queries_normalized_chat_graph(
     monkeypatch.setattr(rdf_adapter.requests, "post", _fake_post)
 
     rdf_adapter.fetch_rdf_chatturn_fragments(
-        query_text="Ogden Utah",
+        query_text="Millbrook Utah",
         session_id=None,
         max_items=3,
     )

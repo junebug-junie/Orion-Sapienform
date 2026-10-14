@@ -31,38 +31,38 @@ def _profile() -> dict:
 
 
 def test_fusion_collapses_identical_vector_transcript_with_different_ids():
-    text = 'ExactUserText: "Teddy loves Addy"\nOrionResponse: "I remember that."'
+    text = 'ExactUserText: "Pip loves Wren"\nOrionResponse: "I remember that."'
     cands = [
         {"id": "doc-a", "source": "vector", "text": text, "score": 0.9, "tags": ["vector-assoc", "collection:a"]},
         {"id": "doc-b", "source": "vector", "text": text, "score": 0.8, "tags": ["vector-assoc", "collection:b"]},
     ]
 
-    bundle, _ = fuse_candidates(candidates=cands, profile=_profile(), query_text="Teddy", diagnostic=True)
+    bundle, _ = fuse_candidates(candidates=cands, profile=_profile(), query_text="Pip", diagnostic=True)
 
     assert len(bundle.items) == 1
 
 
 def test_fusion_collapses_duplicate_transcript_across_vector_collections():
-    text = "User: Teddy loves Addy\nOrion: Yes"
+    text = "User: Pip loves Wren\nOrion: Yes"
     cands = [
         {"id": "vec-1", "source": "vector", "text": text, "score": 0.6, "tags": ["vector-assoc", "collection:chat_a"]},
         {"id": "vec-2", "source": "vector", "text": text, "score": 0.7, "tags": ["vector-assoc", "collection:chat_b"]},
     ]
 
-    bundle, _ = fuse_candidates(candidates=cands, profile=_profile(), query_text="Teddy", diagnostic=True)
+    bundle, _ = fuse_candidates(candidates=cands, profile=_profile(), query_text="Pip", diagnostic=True)
 
     assert len(bundle.items) == 1
     assert bundle.items[0].id == "vec-2"
 
 
 def test_fusion_collapses_cross_source_duplicate_transcript():
-    text = "User: Teddy loves Addy\nOrion: Yes"
+    text = "User: Pip loves Wren\nOrion: Yes"
     cands = [
         {"id": "vec-1", "source": "vector", "text": text, "score": 0.85, "tags": ["vector-assoc", "collection:chat"]},
         {"id": "sql-1", "source": "sql_chat", "text": text, "score": 0.7, "tags": ["sql", "chat"]},
     ]
 
-    bundle, _ = fuse_candidates(candidates=cands, profile=_profile(), query_text="Teddy", diagnostic=True)
+    bundle, _ = fuse_candidates(candidates=cands, profile=_profile(), query_text="Pip", diagnostic=True)
 
     assert len(bundle.items) == 1
 

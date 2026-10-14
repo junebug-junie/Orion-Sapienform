@@ -81,7 +81,7 @@ def test_process_recall_diagnostic_contains_gating_suppression_and_selection(mon
                 "id": "corr-diagnostic",
                 "source": "vector",
                 "source_ref": "orion_chat",
-                "text": "Teddy loves Addy",
+                "text": "Pip loves Wren",
                 "ts": 1000.0,
                 "score": 0.9,
                 "tags": [],
@@ -101,9 +101,9 @@ def test_process_recall_diagnostic_contains_gating_suppression_and_selection(mon
     monkeypatch.setattr(worker, "_query_backends", _query)
 
     q = RecallQueryV1(
-        fragment="Teddy loves Addy",
+        fragment="Pip loves Wren",
         profile="reflect.v1",
-        exclude={"active_turn_text": "Teddy loves Addy", "active_turn_ids": ["corr-diagnostic"], "active_turn_ts": 1000.0},
+        exclude={"active_turn_text": "Pip loves Wren", "active_turn_ids": ["corr-diagnostic"], "active_turn_ts": 1000.0},
     )
 
     bundle, decision = asyncio.run(worker.process_recall(q, corr_id="corr-diagnostic", diagnostic=True))

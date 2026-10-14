@@ -21,7 +21,7 @@ _VALID_STANCE = {
     "conversation_frame": "playful_relational",
     "task_mode": "playful_exchange",
     "identity_salience": "low",
-    "user_intent": "User shares a life moment with Amanda.",
+    "user_intent": "User shares a life moment with Robin.",
     "self_relevance": "Receive warmly; do not over-interpret.",
     "juniper_relevance": "Honor the shared moment without inventing facts.",
     "answer_strategy": "WarmDirectAnswer",
@@ -66,7 +66,7 @@ def _frontier_payload() -> dict:
                 "matter_id": "m1",
                 "source_claim_id": "c1",
                 "label": "shared evening moment",
-                "summary": "User mentions watching a show with Amanda.",
+                "summary": "User mentions watching a show with Robin.",
                 "matter_kind": "relationship_opportunity",
                 "score": 0.88,
                 "features": {"current_turn_relevance": 0.9, "confidence": 0.85},
@@ -211,7 +211,7 @@ def test_mocked_mind_run_returns_meaningful_synthesis(monkeypatch: pytest.Monkey
     )
     req = MindRunRequestV1(
         correlation_id=str(uuid4()),
-        snapshot_inputs={"user_text": "going to watch a show with Amanda"},
+        snapshot_inputs={"user_text": "going to watch a show with Robin"},
         policy=MindRunPolicyV1(n_loops_max=1, wall_time_ms_max=60_000),
     )
     result = run_mind(
@@ -629,7 +629,7 @@ def test_legacy_semantic_claim_shape_is_normalized() -> None:
     assert synthesis.claims[0].claim_kind == "current_turn_claim"
     assert synthesis.diagnostics.notes[-1] == "normalized_from_legacy_claim_shape"
 
-    pack = build_evidence_pack({"user_text": "watching a show with Amanda"})
+    pack = build_evidence_pack({"user_text": "watching a show with Robin"})
 
     class _Client:
         def request_json(self, **kwargs):  # type: ignore[no-untyped-def]
@@ -678,7 +678,7 @@ def test_valid_semantic_synthesis_survives_with_grounded_evidence_refs() -> None
     from app.guardrails import filter_semantic_claims_with_stats
     from orion.mind.synthesis_v1 import SemanticSynthesisV1
 
-    pack = build_evidence_pack({"user_text": "watching a show with Amanda"})
+    pack = build_evidence_pack({"user_text": "watching a show with Robin"})
     synthesis = SemanticSynthesisV1.model_validate(
         _semantic_payload(claim_label="shared evening moment", evidence_ref="current_turn:0")
     )

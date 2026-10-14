@@ -288,6 +288,8 @@ minutes on a large table set.
 
 The live character set — **Mara Vale**, **Nico Sable**, **Sofia Bell**, and **Cam Lin**, plus **Juniper Feld** (human) and **Orion** (external join) — lives as authored cards in `cards/town_cards.yaml`. This is the single source of truth for identities. Retired cards (Juno Park, Tessa Quinn, Vale Moreno, Dr. Elian Cross) are archived at `cards/archived/2026-08-29-retired-cast.yaml` — do not delete them.
 
+**Personal details stay local.** The repo is public, so the committed `cards/town_cards.yaml` is a redacted example. The real cards live in the gitignored `cards/town_cards.local.yaml`, and the generator reads that first. Its outputs follow the source: real cards write `cards/generated/*.local.txt` (gitignored, and the embodiment bootstrap reads `orion_town_card.local.txt` before `orion_town_card.txt`). The example cards write the tracked `*.txt` files. `patches/orion-human-juniper.patch` holds the token `__ORION_TOWN_HUMAN_DESCRIPTION__` in place of Juniper's join description; `scripts/apply_upstream_patches.sh` fills it in from the cards (`generate_descriptions.py --render-human-patch`). A fresh host needs `town_cards.local.yaml` copied over by hand, or it gets the redacted text. CI gate: `tests/test_no_personal_terms.py`.
+
 Regenerate the AI Town artifacts from the cards with the deterministic generator (run from repo root):
 
 ```bash

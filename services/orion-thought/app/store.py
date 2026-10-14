@@ -843,7 +843,7 @@ MAX_SELF_STUDY_CONTEXT_CHARS = 150
 # source_kind='self_study' also covers a separate, free-form LLM-narrated
 # "Curiosity" reflection (source_ref prefix "curiosity:") that turned out to
 # quote real, sensitive personal content when reflecting on memory patterns
-# (a live sample referenced "wife Amanda, hospital" while discussing which
+# (a live sample referenced "[spouse name] + [health detail]" while discussing which
 # crystallizations get kept vs rejected) -- confirmed live before this list
 # was written, not a hypothetical. The four prefixes below are the deliberate
 # subset of source_kind='self_study' this reader will EVER touch.

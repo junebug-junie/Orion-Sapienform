@@ -34,6 +34,22 @@ for name in "${PATCHES[@]}"; do
     echo "Skipping ${name} (not present)"
     continue
   fi
+  # The committed human-join patch holds a token in place of Juniper's join
+  # description (personal details stay out of the public repo). Render it from
+  # the cards -- town_cards.local.yaml first, the redacted example second.
+  if [[ "${name}" == "orion-human-juniper.patch" ]]; then
+    if [[ ! -f "${ROOT}/cards/town_cards.local.yaml" ]]; then
+      echo "note: cards/town_cards.local.yaml missing -- rendering the redacted example card;" \
+        "an upstream already patched with the real card will not match" >&2
+    fi
+    RENDERED="$(mktemp)"
+    trap 'rm -f "${RENDERED:-}"' EXIT
+    if ! python3 "${ROOT}/scripts/generate_descriptions.py" --render-human-patch > "${RENDERED}"; then
+      echo "${name}: rendering from the cards failed (needs python3 + PyYAML)" >&2
+      exit 1
+    fi
+    PATCH="${RENDERED}"
+  fi
   # Check "already applied" (reverse) FIRST: additive patches (pure insertions)
   # always pass a forward --check even when already present, so a forward-first
   # order would double-apply them and duplicate the inserted code.

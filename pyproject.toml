@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "Monorepo for Orion Sapienform services"
 authors = [
     { name = "Orion", email = "orion@conjourney.net" },
-    { name = "Juniper Feld", email = "june.d.feld@gmail.com" }
+    { name = "Juniper Feld" }
 ]
 readme = "README.md"
 requires-python = ">=3.12,<3.13"

@@ -4,7 +4,7 @@
 - Turns weather on: `hub_settings_to_runtime_namespace()` now reads real hub-configured weather settings instead of hardcoding it off.
 - `services/orion-hub/app/settings.py` gains `ORION_SITUATION_WEATHER_ENABLED`/`LAT`/`LON`/`TTL_SECONDS` (`ORION_SITUATION_WEATHER_PROVIDER` already existed there, unused by the adapter until now).
 - Fixed the same event-loop-blocking bug in `_build_environment_context` that `_build_runtime_context` already got in #1845: its blocking `urlopen` now runs via `asyncio.to_thread`, since this is awaited from orion-hub's single shared WebSocket event loop, not just cortex-exec's per-turn dispatch.
-- Real weather coordinates (Utah/Ogden, openmeteo) added to `services/orion-hub/.env_example`, matching `services/orion-cortex-exec/.env_example`'s already-committed values for the same physical location — synced to the primary checkout's live `.env` in the same session (the sync script reads `.env_example` from the primary checkout, so it can't see worktree-local additions until merge; hand-edited to keep it from silently drifting until then).
+- Real weather coordinates ([home region], openmeteo) added to `services/orion-hub/.env_example`, matching `services/orion-cortex-exec/.env_example`'s already-committed values for the same physical location — synced to the primary checkout's live `.env` in the same session (the sync script reads `.env_example` from the primary checkout, so it can't see worktree-local additions until merge; hand-edited to keep it from silently drifting until then).
 
 ## Outcome moved
 
@@ -24,7 +24,7 @@ Unified-turn chat prompts now carry real current weather (temperature, condition
 
 - `services/orion-hub/app/settings.py`: added `ORION_SITUATION_WEATHER_ENABLED/LAT/LON/TTL_SECONDS` Fields + a `field_validator` turning blank-string env values into `None` for lat/lon (mirrors cortex-exec's identical validator).
 - `orion/situational/context.py`: `_build_environment_context` converted sync→async; its blocking `_fetch_weather` call now runs via `await asyncio.to_thread(...)`; `hub_settings_to_runtime_namespace()` reads the four weather fields from real hub settings instead of hardcoding them off; docstring updated.
-- `services/orion-hub/.env_example`: added the four new keys with real production values (lat=41.2230, lon=-111.9738, provider=openmeteo, ttl=600).
+- `services/orion-hub/.env_example`: added the four new keys with real production values (lat=45.0000, lon=-100.0000, provider=openmeteo, ttl=600).
 - `orion/situational/tests/test_hub_settings_adapter.py`: two new tests (`test_adapter_reads_hub_weather_config`, `test_adapter_weather_disabled_when_hub_sets_it_off`); renamed/updated the test that used to assert weather was off by default.
 - `services/orion-cortex-exec/tests/test_situation_provider.py`: two new tests for the async `_build_environment_context` conversion (populated-result assertion, TTL-caching assertion) plus a `_clear_weather_cache` autouse fixture mirroring the existing `_clear_runtime_cache` one.
 
@@ -38,7 +38,7 @@ Unified-turn chat prompts now carry real current weather (temperature, condition
 
 ## Env/config changes
 
-- Added keys (`services/orion-hub`): `ORION_SITUATION_WEATHER_ENABLED=true`, `ORION_SITUATION_WEATHER_LAT=41.2230`, `ORION_SITUATION_WEATHER_LON=-111.9738`, `ORION_SITUATION_WEATHER_TTL_SECONDS=600`. (`ORION_SITUATION_WEATHER_PROVIDER` already existed; changed its intended default from `stub` to `openmeteo` in `.env_example`.)
+- Added keys (`services/orion-hub`): `ORION_SITUATION_WEATHER_ENABLED=true`, `ORION_SITUATION_WEATHER_LAT=45.0000`, `ORION_SITUATION_WEATHER_LON=-100.0000`, `ORION_SITUATION_WEATHER_TTL_SECONDS=600`. (`ORION_SITUATION_WEATHER_PROVIDER` already existed; changed its intended default from `stub` to `openmeteo` in `.env_example`.)
 - Removed keys: none.
 - Renamed keys: none.
 - `.env_example` updated: yes (`services/orion-hub/.env_example`).

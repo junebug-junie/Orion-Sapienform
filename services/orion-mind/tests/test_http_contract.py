@@ -128,7 +128,7 @@ def test_mind_run_emits_shadow_synthesis_from_projection_items_without_authority
         json={
             "correlation_id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
             "snapshot_inputs": {
-                "user_text": "thanks, I'm going to watch a crazy show with Amanda, my wife :) ",
+                "user_text": "thanks, I'm going to watch a crazy show with Robin, my wife :) ",
                 "facets": {"cognitive_projection": _projection_with_item()},
             },
             "policy": {"n_loops_max": 1, "wall_time_ms_max": 60000, "router_profile_id": "default"},

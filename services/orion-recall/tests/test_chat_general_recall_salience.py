@@ -40,7 +40,7 @@ def test_chat_general_substantive_turn_drops_greeting_pollution(monkeypatch):
             {
                 "id": "s1",
                 "source": "vector",
-                "text": "You said the move stress is heavy because you're carrying most logistics while your wife is incapacitated.",
+                "text": "You said the move stress is heavy because you're carrying most logistics while your partner is traveling.",
                 "score": 0.72,
                 "tags": [],
             },
@@ -50,7 +50,7 @@ def test_chat_general_substantive_turn_drops_greeting_pollution(monkeypatch):
     monkeypatch.setattr(worker, "_query_backends", _query)
 
     q = RecallQueryV1(
-        fragment="I'm under move stress and carrying the move mostly alone while my wife is incapacitated.",
+        fragment="I'm under move stress and carrying the move mostly alone while my partner is traveling.",
         profile="chat.general.v1",
         verb="chat_general",
     )
@@ -85,7 +85,7 @@ def test_chat_general_instruction_tail_does_not_shift_query_anchor(monkeypatch):
     monkeypatch.setattr(worker, "_fetch_anchor_candidates", _anchor)
     monkeypatch.setattr(worker, "_query_backends", _query)
 
-    base = "I'm under move stress and carrying this move mostly alone while my wife is incapacitated."
+    base = "I'm under move stress and carrying this move mostly alone while my partner is traveling."
     with_tail = f"{base}\nBe sure to remain based on your recall and process injection."
 
     q1 = RecallQueryV1(fragment=base, profile="chat.general.v1", verb="chat_general")

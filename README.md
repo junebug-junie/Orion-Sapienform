@@ -1095,4 +1095,4 @@ Fork pieces of the stack for your own mesh and share what emerges. Orion grows b
 
 ---
 
-*License: MIT* • *Status: Experimental* • *Contact: june.d.feld@gmail.com*
+*License: MIT* • *Status: Experimental* • *Contact: open a GitHub issue*

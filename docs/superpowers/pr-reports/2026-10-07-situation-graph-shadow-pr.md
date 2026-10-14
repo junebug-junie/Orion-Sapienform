@@ -3,7 +3,7 @@
 - **New `situation.update` graph** in orion-durable-runs: one self-driven LangGraph thread per UTC day (`situation:juniper:<date>`) that keeps Orion's running situation and publishes it as `SituationStateV1` to Redis `orion:situation:latest` and bus `orion:situation:state`. This is step 2 of the approved Situation Graph design (#2526). **Shadow: nothing reads it yet.**
 - **Inputs:** finished chat turns, finished episode distills, and a 15-minute clock. A single writer coalesces bursts.
 - **Facts are re-derived from `episode_memory` on every step,** so a step is idempotent. The graph checkpoints once per step, not per node, and day threads are seeded from the previous day and then retired, so the runner's resume sweep stays bounded.
-- **Current state only from Juniper's own end dates.** `whereabouts` and `doing` hold only memories whose end date Juniper stated (writer v5, #2535). Undated `happened` memories go into `recent`. The live check found a newest-place rule naming "sang karaoke at the Jackalope bar during the Austin trip" as her whereabouts.
+- **Current state only from Juniper's own end dates.** `whereabouts` and `doing` hold only memories whose end date Juniper stated (writer v5, #2535). Undated `happened` memories go into `recent`. The live check found a newest-place rule naming "sang karaoke at the [bar] during the Austin trip" as her whereabouts.
 - **Priming is recall by shared referent** (people, places, projects): memories ranked by strength decayed over their half-life, a 0.4 s budget, skipped when the cues haven't changed. No graph reads and no text similarity.
 
 ## Outcome moved
@@ -77,7 +77,7 @@ check_env_key_single_source.py                          OK
 ```text
 Live read-only run of the real graph + real SQL against production episode_memory
 (in-memory checkpointer, nothing published), at 2026-10-06T23:24Z and 2026-10-07T03:00Z:
-  before the fix: whereabouts = "sang karaoke at the Jackalope bar during the Austin trip" (WRONG)
+  before the fix: whereabouts = "sang karaoke at the [bar] during the Austin trip" (WRONG)
   after:          whereabouts = none (no stated end date yet), waiting_on 3, recent 3,
                   cues 4, primed 6, prime 6.5 ms
 ```

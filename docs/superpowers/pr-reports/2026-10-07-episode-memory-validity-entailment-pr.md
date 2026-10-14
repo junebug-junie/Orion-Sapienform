@@ -1,18 +1,18 @@
 ## Summary
 
 - **End dates on any memory.** The episode distiller now keeps an end date on any memory, not just follow-ups, when Juniper's own words name the period ("Will be here till Wednesday"). Before this, "in Chicago until Wednesday" was stored with no end date.
-- **Imported names get asked about.** A memory that names a known person, place, project or service Juniper never said in that conversation is kept, but goes to her as a confirmation question instead of being stored as settled fact. This catches the live confabulation "Juniper corrected me that she lives in Ogden, Utah, not Chicago": "Chicago" came from Orion's own reply.
+- **Imported names get asked about.** A memory that names a known person, place, project or service Juniper never said in that conversation is kept, but goes to her as a confirmation question instead of being stored as settled fact. This catches the live confabulation "Juniper corrected me that she lives in [home city], not Chicago": "Chicago" came from Orion's own reply.
 - **No word lists.** The names come from referent keys Orion already uses.
   - In Juniper's voice, only her own prompts ground a name.
   - In Orion's voice, Orion's quoted reply also counts.
 - **Distiller prompt v5.** It asks for `expires_at` plus `until_quote` on any purpose, and names only from this episode.
-- **Repair script.** Re-checks stored rows with the same function. It runs as a dry run by default. Live dry run: 38 rows checked, **1 flagged (the Ogden row)**, 0 skipped.
+- **Repair script.** Re-checks stored rows with the same function. It runs as a dry run by default. Live dry run: 38 rows checked, **1 flagged (the [home city] row)**, 0 skipped.
 
 ## Outcome moved
 
 Prerequisite for the Situation Graph (spec in #2526, section 7). The situation state will carry episode-memory facts into every chat turn, so the facts must have real end dates, and a confabulated "correction" must not be presented as settled.
-- **Live, before:** 3 of 40 rows had end dates, all of them follow-ups, and the Ogden row was stored as settled.
-- **After:** time-bounded facts get end dates, and the Ogden-style row becomes a confirmation card.
+- **Live, before:** 3 of 40 rows had end dates, all of them follow-ups, and the [home city] row was stored as settled.
+- **After:** time-bounded facts get end dates, and the [home city]-style row becomes a confirmation card.
 
 ## Current architecture
 
@@ -128,7 +128,7 @@ cd /mnt/scripts/Orion-Sapienform && .venv/bin/python scripts/repair_episode_memo
   - Concern: a statement that names a known place Juniper didn't say becomes a card. The confirmation loop caps cards at 3 a day and 5 open.
   - Mitigation: the live measurement flags 1 of 40.
 - **Low: missed names.**
-  - Concern: names are matched on slugs only (for example "ogden-utah" won't match "Ogden, Utah"), so the check can miss names but never invents them.
+  - Concern: names are matched on slugs only (for example "home-city-state" won't match "[home city]"), so the check can miss names but never invents them.
   - Mitigation: aliases can be added later from the referent alias store.
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

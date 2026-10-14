@@ -5,7 +5,7 @@
 ## Summary
 
 - The judge that decides whether a conversation has ended was asked "BOUNDARY: YES or NO", but nobody told it what a boundary is. It said yes to almost everything, so one evening's chat was cut into several episodes. The prompt now defines it in Juniper's terms: yes means the thread ended or moved to something unrelated; no means a pause, a follow-up, an elaboration, a reaction, a return to the same subject, or small talk inside the thread. (`orion/memory/turn_change_classify.py`, `BOUNDARY_DEFINITION`)
-- The distiller (the step that turns an episode into memories) marked every memory low-stakes, including Juniper's sister and her being scared her AC had broken Orion. The prompt now has Juniper's rubric as definitions with examples, and every memory must name its category in `stakes_reason` (`none` when low). Prompt version `memory_episode_distill.v3`.
+- The distiller (the step that turns an episode into memories) marked every memory low-stakes, including a family-relationship memory and a fear about the hardware. The prompt now has Juniper's rubric as definitions with examples, and every memory must name its category in `stakes_reason` (`none` when low). Prompt version `memory_episode_distill.v3`.
 - The validator never reads a memory's words to judge stakes. It only checks that `stakes`, `stakes_reason` and `asks_direction` are present and agree. When they disagree it moves the memory toward high (ask Juniper), never toward low, and logs why.
 - Two evals on the live model lanes, scores and counts only: a 30-day boundary re-score, and a stakes before/after on 10 real episodes.
 
@@ -123,7 +123,7 @@ Rebuild both services together. The validator and the prompt ship in the same im
 - **Medium. The boundary wording was tuned on the data it is measured on.** 26 decisive turns, my own labels, three wordings. Mitigation: re-run `run_boundary_prompt_rescore_eval.py` after a few weeks of new turns.
 - **Medium. Single runs.** The two "before" passes differed by one resumed_thread split (17 vs 18), so run-to-run noise exists. The stakes numbers are one run per prompt per episode.
 - **Low. The Chicago phase in this replay differs from the live stamp.** The replay recomputes phase from gaps between turns, so the 03:51 turn (a 17-minute gap) is `short_pause` here, while the live Hub stamped it `resumed_thread`. Either way the new score at 03:51 is 0.00, so the session stays one episode.
-- **Low. Borderline stakes calls remain.** For example, in the Chicago episode, her height and finding economy seats "brutal" stayed low. The rubric is the model's judgment, by design. The validator does not second-guess it.
+- **Low. Borderline stakes calls remain.** For example, in the Chicago episode, a body detail and a travel complaint stayed low. The rubric is the model's judgment, by design. The validator does not second-guess it.
 - **Not fixed here, observed during the eval.** From at least 03:30 until 03:50 UTC today (start not pinned), the GPU pool's cooling shed (`rule=cooling shed=cabinet_rising`) left every metacog and quick classify request unserved. The live service logged `memory_classify_degraded` for those turns.
 
 ## PR link

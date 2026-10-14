@@ -16,14 +16,14 @@ from app.sql_timeline import _filter_excluded_rows
 
 def test_filter_excluded_rows_removes_id_and_text_echoes():
     rows = [
-        {"id": "corr-1", "text": "User: Teddy loves Addy\nOrion: ..."},
+        {"id": "corr-1", "text": "User: Pip loves Wren\nOrion: ..."},
         {"id": "row-2", "text": "User: unrelated\nOrion: ..."},
     ]
 
     out = _filter_excluded_rows(
         rows,
         exclude_ids=["corr-1"],
-        exclude_text="Teddy loves Addy",
+        exclude_text="Pip loves Wren",
     )
 
     assert len(out) == 1

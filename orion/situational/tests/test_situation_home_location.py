@@ -22,14 +22,14 @@ from orion.situational.context import (
 )
 
 NOW = datetime.now(timezone.utc)
-HOME = "Ogden, Utah"
+HOME = "Millbrook, Utah"
 BODY = "Server cabinet in basement, in office, laundry closet"
 
 
 def _hub(**extra) -> SimpleNamespace:
     base = dict(
         ORION_SITUATION_LOCATION_LABEL="Utah",
-        ORION_SITUATION_LOCALITY="Ogden",
+        ORION_SITUATION_LOCALITY="Millbrook",
         ORION_SITUATION_REGION="Utah",
         ORION_SITUATION_COUNTRY="US",
         ORION_SITUATION_HOME_LOCATION=HOME,
@@ -56,7 +56,7 @@ def _fragment_text(hub: SimpleNamespace) -> str:
 
 def test_hub_adapter_carries_place_fields_not_unknown() -> None:
     cfg = settings_from_runtime(hub_settings_to_runtime_namespace(_hub()))
-    assert (cfg.location_label, cfg.locality, cfg.region, cfg.country) == ("Utah", "Ogden", "Utah", "US")
+    assert (cfg.location_label, cfg.locality, cfg.region, cfg.country) == ("Utah", "Millbrook", "Utah", "US")
     assert cfg.home_location == HOME
     assert cfg.physical_location == BODY
     place = situation_mod._build_place_context(cfg)

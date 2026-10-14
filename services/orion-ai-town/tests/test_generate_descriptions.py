@@ -138,10 +138,44 @@ def test_juniper_blurb_present_in_world_ts():
     """Drift guard: the composed Juniper blurb must be spliced into world.ts."""
     world = (gen.WORLD_TS).read_text(encoding="utf-8")
     constants = (gen.CONSTANTS_TS).read_text(encoding="utf-8")
-    by = {c["id"]: c for c in _cards()["characters"]}
+    # The live upstream holds the real text: compare against the cards the
+    # generator actually uses (town_cards.local.yaml first), not the example.
+    by = {c["id"]: c for c in gen.load_cards()["characters"]}
     blurb = gen.compose_presence_blurb(by["juniper_feld"])
     expected_name = f"DEFAULT_NAME = '{by['juniper_feld']['name']}'"
     if blurb not in world or expected_name not in constants:
         pytest.skip("upstream world/constants still on vanilla pin (patches not applied here)")
     assert blurb in world
     assert expected_name in constants
+
+
+def test_cards_path_prefers_local_then_example(tmp_path, monkeypatch):
+    example = tmp_path / "town_cards.yaml"
+    local = tmp_path / "town_cards.local.yaml"
+    example.write_text("characters: []\n", encoding="utf-8")
+    monkeypatch.setattr(gen, "CARDS_EXAMPLE", example)
+    monkeypatch.setattr(gen, "CARDS_LOCAL", local)
+    assert gen.cards_path() == example
+    assert gen.generated_name("orion_town_card") == "orion_town_card.txt"
+    local.write_text("characters: []\n", encoding="utf-8")
+    assert gen.cards_path() == local
+    assert gen.generated_name("orion_town_card") == "orion_town_card.local.txt"
+
+
+def test_human_patch_is_a_template_rendered_from_the_cards(monkeypatch, tmp_path):
+    """The committed patch never carries Juniper's description; rendering fills
+    the token with the blurb composed from whichever cards file is the source."""
+    raw = gen.HUMAN_PATCH.read_text(encoding="utf-8")
+    assert gen.HUMAN_DESCRIPTION_TOKEN in raw
+    monkeypatch.setattr(gen, "CARDS_LOCAL", tmp_path / "absent.yaml")
+    cards = gen.load_cards()
+    rendered = gen.render_human_patch(cards)
+    by = {c["id"]: c for c in cards["characters"]}
+    assert gen.HUMAN_DESCRIPTION_TOKEN not in rendered
+    assert f"description: `{gen._ts_backtick(gen.compose_presence_blurb(by['juniper_feld']))}`," in rendered
+
+
+def test_tracked_juniper_description_matches_example_cards():
+    by = {c["id"]: c for c in _cards()["characters"]}
+    tracked = (gen.GENERATED / "juniper_description.txt").read_text(encoding="utf-8")
+    assert tracked == gen.compose_presence_blurb(by["juniper_feld"]) + "\n"

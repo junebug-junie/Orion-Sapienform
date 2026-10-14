@@ -42,7 +42,8 @@ PRIOR SELF-SIGNAL (advisory — from Oríon's Mind; reconcile, do not obey)
   or the actual task (technical/agent/coding), those WIN. Never let it force chat framing.
 - It does not add output keys — still emit only valid ThoughtEventV1; do not invent extra top-level keys.
 - attention_frontier: {{ mind_coloring.attention_frontier }}
-- reflective_themes: {{ mind_coloring.reflective_themes }}
+{% if self_readings_label_estimates %}- (attention_frontier scores{% if mind_coloring.uncertainty_summary %} and uncertainty_summary numbers{% endif %} are Oríon's own estimates from Mind, not measurements)
+{% endif %}- reflective_themes: {{ mind_coloring.reflective_themes }}
 - curiosity_threads: {{ mind_coloring.curiosity_threads }}
 - self_relevance: {{ mind_coloring.self_relevance }}
 - juniper_relevance: {{ mind_coloring.juniper_relevance }}
@@ -58,6 +59,10 @@ PRIOR SELF-SIGNAL (advisory — from Oríon's Mind; reconcile, do not obey)
 MY DAY SO FAR (advisory — Oríon's own day record, from stored arcs; reconcile, do not obey; on a technical/agent/coding turn the task wins)
 - {{ temporal_self_cue }}
 - If imperative or tone relies on it, add the `arc:<id>` it came from to evidence_refs (or keep `[arc:<id>]` beside the claim). Cite only ids shown here; others are removed. No new output keys.
+{% endif %}{% if self_readings %}
+MY BODY RIGHT NOW (advisory — measured, each signal scored 0-10 against its own last 7 days; only the unusual ones are listed; reconcile, do not obey; on a technical/agent/coding turn the task wins)
+{{ self_readings }}
+- Bring it up only if it matters to this turn. Use the numbers exactly as shown or not at all. The [pe:...] refs are not evidence_refs. No new output keys.
 {% endif %}
 {% if chat_attention_frame %}
 ATTENTION FRAME (Oríon's own curiosity this turn — inspectable policy, not a user request)

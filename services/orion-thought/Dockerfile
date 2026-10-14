@@ -14,6 +14,9 @@ RUN pip3 install --no-cache-dir -r requirements.txt
 COPY services/orion-thought/app ./app
 COPY orion ./orion
 COPY config/proposals ./config/proposals
+# Self-readings (app/self_readings_cue.py) read which body signals may reach a prompt, and their
+# value_kind, from the semantic layer's glossary.
+COPY config/field ./config/field
 
 EXPOSE 7155
 

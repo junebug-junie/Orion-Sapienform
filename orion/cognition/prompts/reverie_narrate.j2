@@ -73,6 +73,11 @@ SOURCE (bounded internal input — the current winning coalition)
 {% for p in recent_percepts %}
   - {{ p.narrative }}
 {% endfor %}
+{% endif %}{% if self_readings %}
+HOW MY BODY IS DOING (measured, each signal scored 0-10 against its own last 7 days; only the unusual ones are listed)
+{{ self_readings }}
+- Real state, not a coalition id: it may color the interpretation when it bears on the coalition,
+  never replaces a grounded evidence_ref. Use the numbers exactly as shown or not at all.
 {% endif %}
 {% if recent_arcs %}
 EARLIER TODAY (your own day record, closed arcs, from stored history — background only):

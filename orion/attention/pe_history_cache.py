@@ -102,6 +102,10 @@ class NodePeHistoryCache:
             if window
         }
 
+    def history(self, node_id: str) -> list[tuple[datetime, float]]:
+        """A copy of one node's 7-day window, oldest first (empty when unknown)."""
+        return list(self._windows.get(node_id, ()))
+
     def magnitudes(
         self, *, now: datetime
     ) -> dict[str, tuple[PredictionErrorMagnitudeV1, datetime, float | None]]:

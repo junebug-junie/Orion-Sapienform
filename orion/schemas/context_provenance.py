@@ -132,6 +132,14 @@ CONTEXT_PROVENANCE_REGISTRY: dict[str, ContextKeyProvenance] = {
             "for the unified turn's stance_react only (app/temporal_self_cue.py).",
         ),
         _entry(
+            "self_readings",
+            "live_runtime_projection",
+            "Body signals that are high or unusual for themselves right now: a fixed template (no "
+            "LLM) over substrate_node_prediction_error_history, each line scored 0-10 against the "
+            "signal's own 7 days and citing [pe:<node>@<observed_at>]. Set by orion-thought for "
+            "stance_react and reverie (app/self_readings_cue.py, orion/attention/self_readings.py).",
+        ),
+        _entry(
             "recent_arcs",
             "derived_summary",
             "Orion's last few CLOSED arcs of today, most recent first, local time: one line each "
@@ -185,6 +193,8 @@ PLUMBING_KEYS: frozenset[str] = frozenset(
         "metacog_enrich_prompt_chars",
         "metacog_enrich_section_sizes",
         "metacog_entry_id",
+        # template switch only: labels Mind's numbers as Orion's own estimates (stance_react.j2)
+        "self_readings_label_estimates",
         # memoization for context_provenance_for_ctx itself, not turn content:
         "_context_provenance_cache",
     }

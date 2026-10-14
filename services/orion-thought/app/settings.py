@@ -659,6 +659,17 @@ class ThoughtSettings(BaseSettings):
         0.5, gt=0.0, le=5.0, alias="TEMPORAL_SELF_CUE_FETCH_TIMEOUT_SEC"
     )
 
+    # --- Self-readings: body signals against their own 7 days (self-calibration spec section C) ---
+    # app/self_readings_cue.py -> orion/attention/self_readings.py. A fixed template (no LLM) over
+    # substrate_node_prediction_error_history, calibrated by the attention seam's own rule; only
+    # unusual signals render, a calm body renders nothing. Kill switches: false = that prompt
+    # exactly as before. The read+render is bounded by FETCH_TIMEOUT_SEC (renders nothing on miss).
+    self_readings_stance_enabled: bool = Field(True, alias="SELF_READINGS_STANCE_ENABLED")
+    self_readings_reverie_enabled: bool = Field(True, alias="SELF_READINGS_REVERIE_ENABLED")
+    self_readings_fetch_timeout_sec: float = Field(
+        0.5, gt=0.0, le=5.0, alias="SELF_READINGS_FETCH_TIMEOUT_SEC"
+    )
+
     # --- Temporal Self rev 4: reverie gets the last few closed arcs (app/reverie.py) ---
     # The reverie tick fetches the same frame as the stance cue (TEMPORAL_SELF_FRAME_URL, same
     # TEMPORAL_SELF_CUE_MAX_AGE_SEC gate) and renders the last LIMIT closed arcs of today, most

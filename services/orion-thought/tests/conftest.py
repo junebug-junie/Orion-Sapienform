@@ -67,3 +67,14 @@ def gpu_pool(monkeypatch):
     pool = GrantingPool()
     monkeypatch.setattr(client, "gpu_lease", pool)
     return pool
+
+
+@pytest.fixture(autouse=True)
+def _no_live_database(monkeypatch):
+    """Self-readings (app/self_readings_cue.py) read Postgres on every stance/reverie call and
+    are on by default. Point any unset DSN at a refused local port so a test never waits on DNS
+    for the compose hostname; the cue renders nothing (fetch_failed), as it would live."""
+    import os
+
+    if not os.environ.get("POSTGRES_URI"):
+        monkeypatch.setenv("POSTGRES_URI", "postgresql://x:x@127.0.0.1:1/nope")

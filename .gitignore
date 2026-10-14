@@ -194,8 +194,7 @@ graphify-out/graph.html
 /graphify-out
 /.graphify-migrated-*
 
-# Per-item human-review sets quote Juniper's memories/chats; the repo is public (2026-10-14).
-# Written to /tmp/reading-resonance-eval/labeling/ instead. Gate: tests/test_no_private_eval_artifacts.py
-docs/superpowers/evals/*labeling-set*
+# Review/labeling artifacts carry Juniper chat + memory snippets; the repo is public.
 docs/superpowers/evals/*-review.html
 docs/superpowers/evals/*-decisions.csv
+docs/superpowers/evals/*labeling-set*

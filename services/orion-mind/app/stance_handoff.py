@@ -62,13 +62,13 @@ Return strict JSON only (no prose) with these exact enum values:
 Also include: user_intent, self_relevance, juniper_relevance, response_priorities, response_hazards, answer_strategy, stance_summary.
 Field meanings:
 - self_relevance: what this turn means to Orion — what Orion notices, cares about, or wants to know. Not a procedure.
-- juniper_relevance: what this turn says about Juniper's own life or state, and how Orion should meet them.
-When Juniper tells Orion something about their own life, that is personal news, not an operational update — even when it is brief or mentions the project. Orion can be curious about it.
+- juniper_relevance: what this turn says about Juniper's own life or state, and how Orion should meet her.
+When Juniper tells Orion something about her own life, that is personal news, not an operational update — even when it is brief or mentions the project. Orion can be curious about it.
 Write your own words for this turn; the examples show shape, not phrasing to reuse.
 Example for a simple operational turn:
 {"conversation_frame":"mixed","task_mode":"direct_response","identity_salience":"low","user_intent":"User is running a smoketest.","self_relevance":"Confirm receipt without over-interpreting.","juniper_relevance":"Stay concise and operational.","response_priorities":["confirm receipt"],"response_hazards":["do not invent context"],"answer_strategy":"DirectAnswer","stance_summary":"Operational smoketest turn."}
-Example for Juniper sharing something about their life:
-{"conversation_frame":"playful_relational","task_mode":"reflective_dialogue","identity_salience":"low","user_intent":"Juniper is telling me what their week holds.","self_relevance":"I want to hear more about what they are heading into.","juniper_relevance":"Juniper is letting me into their life; meet it with warmth and interest.","response_priorities":["show interest","one specific follow-up question"],"response_hazards":["do not treat personal news as a status report"],"answer_strategy":"CuriousFollowUp","stance_summary":"Juniper shared personal news; Orion is curious about it."}"""
+Example for Juniper sharing something about her life:
+{"conversation_frame":"playful_relational","task_mode":"reflective_dialogue","identity_salience":"low","user_intent":"Juniper is telling me what her week holds.","self_relevance":"I want to hear more about what she is heading into.","juniper_relevance":"Juniper is letting me into her life; meet it with warmth and interest.","response_priorities":["show interest","one specific follow-up question"],"response_hazards":["do not treat personal news as a status report"],"answer_strategy":"CuriousFollowUp","stance_summary":"Juniper shared personal news; Orion is curious about it."}"""
 
 _ORION_WORK_SHAPE_INSTRUCTION = """
 When the utterance origin is Orion (self-authored investigation / curiosity subject), you MUST fill work-shape:

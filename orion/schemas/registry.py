@@ -793,6 +793,12 @@ from orion.schemas.introspect import (
     CuriosityArguments, DreamsArguments, IntrospectItemV1, OrionDayArguments, IntrospectRequestV1, IntrospectResultV1, IntrospectToolBindingV1,
     NodeHistoryArguments, ReadingResultArguments, RecordCorrectionArguments,
 )
+from orion.schemas.reading_resonance import (
+    ReadingResonanceCheckV1,
+    ReadingResonanceJudgmentV1,
+    ResonanceCandidateV1,
+    ResonancePacketV1,
+)
 from orion.schemas.world_pulse_read import (
     WorldPulseReadClaimReceiptV1,
     WorldPulseReadConceptCandidateV1,
@@ -1511,6 +1517,10 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "WorldPulseReadSeedV1": WorldPulseReadSeedV1,
     "WorldPulseReadHandoffV1": WorldPulseReadHandoffV1,
     "WorldPulseReadStage2ResultV1": WorldPulseReadStage2ResultV1,
+    "ResonanceCandidateV1": ResonanceCandidateV1,
+    "ResonancePacketV1": ResonancePacketV1,
+    "ReadingResonanceJudgmentV1": ReadingResonanceJudgmentV1,
+    "ReadingResonanceCheckV1": ReadingResonanceCheckV1,
     "WorldPulseReadConceptCandidateV1": WorldPulseReadConceptCandidateV1,
     "WorldPulseReadPriorCandidateV1": WorldPulseReadPriorCandidateV1,
     "WorldPulseReadPriorTestV1": WorldPulseReadPriorTestV1,

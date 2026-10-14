@@ -11,10 +11,13 @@ search-by-meaning plumbing the introspect tools use (orion/introspect/semantic_i
   ``label: definition`` by vector-host (bge-large-en-v1.5) and upserted through
   orion-vector-writer into the Chroma collection ``orion_atlas_concepts``. A pass embeds
   only concepts the index lacks or holds stale text for.
-- Query: each subject's own ``label: definition`` is embedded and the nearest concepts are
-  read back. Chroma is an index, never the record: every hit is re-read from the store and
-  re-gated (stored concept, not a fenced memory node, label at least MIN_LABEL_CHARS, not
-  one of the read's own concepts, not already offered by label).
+- Query: each subject's own ``label: definition`` is embedded, and every indexed concept is
+  scored by its best mean-centered cosine to any subject (``rank_centered``; the mean is the
+  index's own). Chroma's nearest-neighbour order is raw cosine, which centering does not
+  follow, so the whole index (~1,000 vectors) is read with ``all_vectors``. Chroma is an
+  index, never the record: every hit is re-read from the store and re-gated (stored
+  concept, not a fenced memory node, label at least MIN_LABEL_CHARS, not one of the read's
+  own concepts, not already offered by label).
 
 Offered is not accepted. ``plan_claims`` is unchanged: a link is accepted only when the
 quote is verbatim in the retained text AND names the object by its stored label. A meaning
@@ -26,12 +29,12 @@ and a quote naming it is accepted exactly as it would have been from the label p
 Labels shorter than MIN_LABEL_CHARS are never offered (the quote check is a substring
 test; "ai" is inside "said").
 
-``OBJECT_MIN_SIMILARITY`` was set from live data (2026-10-13 replay, PR report
-docs/superpowers/pr-reports/2026-10-13-reading-claim-semantic-objects-pr.md): over 6,080
-(subject, atlas concept) pairs from the six reads, cosine rests at a median of 0.531
-(p90 0.605, p95 0.630, p99 0.693); bge never rests near 0. 0.65 sits between p95 and p99:
-a read whose subjects have no real neighbours (a 404 page) gets 2-3 offers, a read in a
-dense atlas region (GPU hardware) fills the cap.
+Why centered (2026-10-14, PR report
+docs/superpowers/pr-reports/2026-10-14-reading-link-targets-centered-pr.md): raw bge cosine
+has no calm state (unrelated concept pairs rest at 0.53), so the old raw floor of 0.65
+offered "gpu_section_hub_page" and "message matching / capitulation" to a NASA expo read.
+Centered against the index mean, unrelated pairs rest at 0.05 and the floor
+(OBJECT_MIN_CENTERED_SIMILARITY) cuts those while keeping the NASA and GPU neighbours.
 """
 
 from __future__ import annotations
@@ -43,7 +46,14 @@ from typing import Any
 
 import httpx
 
-from orion.introspect.semantic_index import IndexPass, SearchConfig, embed, index_docs, nearest
+from orion.introspect.semantic_index import (
+    IndexPass,
+    SearchConfig,
+    SearchUnavailableError,
+    all_vectors,
+    embed,
+    index_docs,
+)
 from orion.substrate.reconcile import is_identity_fenced
 
 from .assertions import _SEMANTIC_KINDS, MAX_OBJECTS, MIN_LABEL_CHARS, ClaimContextV1, EndpointV1
@@ -51,10 +61,21 @@ from .assertions import _SEMANTIC_KINDS, MAX_OBJECTS, MIN_LABEL_CHARS, ClaimCont
 logger = logging.getLogger(__name__)
 
 ATLAS_CONCEPT_COLLECTION = "orion_atlas_concepts"
-OBJECT_MIN_SIMILARITY = 0.65
-# Hits read back per subject before re-gating. The read's own concepts and exact-label
-# objects are near their own subjects by construction, so ask for the cap plus room for them.
-NEAREST_PER_SUBJECT = 2 * MAX_OBJECTS
+# Centered-cosine floor for meaning objects (centered_matrix): a concept is offered when its
+# best centered cosine to any of the read's subjects is at least this. Set from live data
+# (2026-10-14 replay, services/orion-hub/evals/run_reading_link_targets_replay.py) on 625
+# concept pairs over the 1,022 indexed atlas concepts, centered against the index mean:
+# two concepts minted by the same read (related by construction) p10 0.18 / p50 0.37;
+# a concept vs one from a different read p50 0.05 / p90 0.24 / p95 0.30 / p99 0.46.
+# 0.35 sits between the per-pair unrelated p95 and p99. Hub thresholds the BEST score over
+# all of a read's subjects, whose null is fatter: over the 28 reads with stored subjects,
+# best-over-subjects against concepts other reads minted rests at p50 0.08 (calm) but has
+# p95 0.34 / p99 0.51, and 4.6% of those concepts clear 0.35 (an upper bound on noise:
+# "other read" includes sibling reads on one topic). So the list is a recall net with ~5%
+# adjacency in it, not a judgment; the quote rule decides links.
+# The value is tied to the index mean it was measured against; re-run the replay after
+# the atlas changes shape.
+OBJECT_MIN_CENTERED_SIMILARITY = 0.35
 # Index the whole concept atlas (1,016 concepts live on 2026-10-13), not the
 # region-rank slice the exact path scans.
 INDEX_SCAN_LIMIT = 5000
@@ -63,6 +84,24 @@ INDEX_SCAN_LIMIT = 5000
 INDEX_BATCH = 200
 DOC_PREFIX = "atlas-concept"
 HTTP_TIMEOUT_SEC = 5.0
+
+
+def centered_matrix(vectors: Any) -> tuple[Any, Any]:
+    """(mean, rows minus the mean, renormalized) for an (n, d) array of unit bge vectors.
+
+    bge cosine has no calm state (unrelated text rests near 0.53-0.66); subtracting the
+    pool mean (Mu & Viswanath 2018, as orion/world_pulse_read/resonance_similarity.py does
+    for reads) moves the unrelated rest point near 0, so one floor means the same thing in
+    a dense atlas region and a sparse one."""
+    import numpy as np
+
+    raw = np.asarray(vectors, dtype=np.float64)
+    if raw.ndim != 2 or raw.shape[0] == 0:
+        raise ValueError("centered_matrix needs a non-empty (n, d) array")
+    mu = raw.mean(axis=0)
+    cen = raw - mu
+    cen /= np.maximum(np.linalg.norm(cen, axis=1, keepdims=True), 1e-12)
+    return mu, cen
 
 
 def concept_doc(node: Any) -> str:
@@ -132,30 +171,55 @@ def _regate(store: Any, ranked: list[tuple[str, float]], taken: set[str], room: 
     return out
 
 
+def rank_centered(
+    index: list[tuple[str, list[float]]], subject_vecs: list[list[float]], floor: float,
+) -> list[tuple[str, float]]:
+    """(doc_id, best centered cosine to any subject) at or above ``floor``, best first.
+    Pure: the mean is the index's own (every indexed concept), subjects are centered with it."""
+    import numpy as np
+
+    if not index or not subject_vecs:
+        return []
+    ids = [i for i, _ in index]
+    raw = np.asarray([v for _, v in index], dtype=np.float64)
+    raw /= np.maximum(np.linalg.norm(raw, axis=1, keepdims=True), 1e-12)
+    mu, cen = centered_matrix(raw)
+    q = np.asarray(subject_vecs, dtype=np.float64)
+    if q.shape[1] != raw.shape[1]:
+        raise ValueError("subject and index vectors differ in dimension")
+    q /= np.maximum(np.linalg.norm(q, axis=1, keepdims=True), 1e-12)
+    qc = q - mu
+    qc /= np.maximum(np.linalg.norm(qc, axis=1, keepdims=True), 1e-12)
+    best = (qc @ cen.T).max(axis=0)
+    keep = [(ids[k], float(best[k])) for k in range(len(ids)) if best[k] >= floor]
+    return sorted(keep, key=lambda kv: (-kv[1], kv[0]))
+
+
 async def related_objects(
     store: Any, ctx: ClaimContextV1, cfg: SearchConfig, *, client: httpx.AsyncClient,
 ) -> list[tuple[EndpointV1, float]]:
-    """Existing concepts nearest this read's subjects, best first, at or above the floor,
-    up to the room left under MAX_OBJECTS. Raises SearchUnavailableError when the embedder
-    or index cannot answer (the caller keeps the exact-label objects)."""
+    """Existing concepts nearest this read's subjects by centered cosine, best first, at or
+    above ``cfg.min_similarity`` (OBJECT_MIN_CENTERED_SIMILARITY), up to the room left under
+    MAX_OBJECTS. Raises SearchUnavailableError when the embedder or index cannot answer
+    (the caller keeps the exact-label objects)."""
     room = MAX_OBJECTS - len(ctx.objects)
     if room <= 0 or not ctx.subjects:
         return []
     # Store reads can be Falkor round trips: keep them off the event loop, like
     # build_claim_context; only the embed and Chroma calls run on it.
     docs = await asyncio.to_thread(_subject_docs, store, ctx)
-
-    async def hits(doc: str) -> list[tuple[str, float]]:
-        vector, _model = await embed(client, cfg, doc, doc_prefix=DOC_PREFIX)
-        return await nearest(client, cfg, vector, NEAREST_PER_SUBJECT)
-
-    best: dict[str, float] = {}
-    for scored in await asyncio.gather(*(hits(d) for d in docs)):
-        for node_id, sim in scored:
-            if sim >= cfg.min_similarity and sim > best.get(node_id, -1.0):
-                best[node_id] = sim
+    if not docs:
+        return []
+    vectors = [v for v, _model in await asyncio.gather(*(embed(client, cfg, d, doc_prefix=DOC_PREFIX)
+                                                          for d in docs))]
+    # Centering needs the whole index (its mean, and an order Chroma's raw nearest does not
+    # follow): ~1,000 x 1024 floats, about 2 s of /get against a Stage 2 turn of minutes.
+    index = await all_vectors(client, cfg)
+    try:
+        ranked = await asyncio.to_thread(rank_centered, index, vectors, cfg.min_similarity)
+    except ValueError as exc:
+        raise SearchUnavailableError(f"index vectors unusable: {exc}") from exc
     taken = {e.node_id for e in (*ctx.subjects, *ctx.objects)}
-    ranked = sorted(best.items(), key=lambda kv: (-kv[1], kv[0]))
     return await asyncio.to_thread(_regate, store, ranked, taken, room)
 
 

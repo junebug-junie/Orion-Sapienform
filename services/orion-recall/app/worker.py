@@ -982,11 +982,52 @@ async def _compute_entity_relatedness_boost_map(
                 for turn_id, matched_names in matches.items()
                 if matched_names
             }
+            # Which names each injected turn matched, so belief fusion can
+            # show the part of the turn that mentions them (not its opening).
+            for f in injected:
+                f["meta"]["entity_terms"] = list(matches.get(f["uri"]) or [])
 
         return boost_map, injected
     except Exception as exc:
         logger.debug(f"entity relatedness boost: skipped: {exc}")
         return {}, []
+
+
+async def _entity_boost_within_deadline(
+    *,
+    query_text: str,
+    candidates: List[Dict[str, Any]],
+    remaining_s: float | None,
+    corr_id: str | None,
+) -> Tuple[Dict[str, float], List[Dict[str, Any]], bool]:
+    """Run _compute_entity_relatedness_boost_map bounded by what is left of
+    the recall deadline. Returns (boost_map, injected, deadline_hit). Shared
+    by the default fusion path and the PCR purposeful (belief) path so both
+    apply the same deadline rule."""
+    if remaining_s is not None and remaining_s <= 0:
+        return {}, [], True
+    try:
+        boost_map, injected = await asyncio.wait_for(
+            _compute_entity_relatedness_boost_map(
+                query_text=query_text,
+                candidates=candidates,
+                query_entities=_boost_query_entities(query_text),
+            ),
+            timeout=remaining_s,
+        )
+    except asyncio.TimeoutError:
+        logger.warning("recall_deadline_hit corr_id=%s stage=entity_boost", corr_id)
+        return {}, [], True
+    return boost_map, injected, False
+
+
+def _pcr_plan_allows_chat_entity_injection(pcr_backend_plan: Dict[str, bool], profile: Dict[str, Any]) -> bool:
+    """Purposeful recall may pull entity-matched older chat turns only when
+    the intent's collector plan includes chat-turn content ("rdf_chat" --
+    relational/semantic/open_loop). procedural/contradiction deliberately
+    exclude chat history, and apply_collector_plan already turned
+    enable_falkor_chat off for them; both checks must agree."""
+    return bool(pcr_backend_plan.get("rdf_chat")) and bool(profile.get("enable_falkor_chat", True))
 
 
 def _rdf_enabled(profile: Dict[str, Any]) -> bool:
@@ -2616,35 +2657,52 @@ async def process_recall(
     elif settings.RECALL_PCR_ENABLED and recall_phase == "purposeful":
         belief_budget = q.belief_digest_max_tokens or settings.RECALL_BELIEF_RENDER_BUDGET
         profile["render_budget_tokens"] = belief_budget
+        # 2026-10-14 (corr 21c8a610): "Tell Pip and I a story..." got only
+        # unrelated active_packet lines because this branch never ran the
+        # entity injection the default branch below runs -- falkor_chat's
+        # own fetch is recency-windowed, so the older turn naming the child as
+        # Juniper's son never entered the pool. Same helper, same deadline,
+        # gated on the intent's plan including chat-turn content.
+        belief_boost_map: Dict[str, float] = {}
+        if not context_only and _pcr_plan_allows_chat_entity_injection(pcr_backend_plan, profile):
+            entity_boost_started = time.time()
+            belief_boost_map, belief_injected, boost_deadline_hit = await _entity_boost_within_deadline(
+                query_text=query_fragment,
+                candidates=candidates,
+                remaining_s=_remaining_s(),
+                corr_id=corr_id,
+            )
+            if boost_deadline_hit:
+                deadline_hit = True
+            if belief_injected:
+                candidates = candidates + belief_injected
+                backend_counts_total["falkor_chat_entity_injected"] = len(belief_injected)
+            timing_breakdown_ms["entity_relatedness_boost"] = int((time.time() - entity_boost_started) * 1000)
+            timings_ms["boost"] = timing_breakdown_ms["entity_relatedness_boost"]
+            fuse_started = time.time()
         bundle, ranking_debug = pcr_fuse_belief_candidates(
             candidates=candidates,
             profile=profile,
             retrieval_intent=str(retrieval_intent),
             query_text=query_fragment,
             latency_ms=latency_ms,
+            entity_boost_map=belief_boost_map,
         )
     else:
         entity_boost_started = time.time()
         entity_boost_map: Dict[str, float] = {}
         entity_injected_candidates: List[Dict[str, Any]] = []
-        boost_remaining = _remaining_s()
         if context_only:
             pass  # the boost injects entity-matched turns: retrieval, not a feed
-        elif boost_remaining is not None and boost_remaining <= 0:
-            deadline_hit = True
         else:
-            try:
-                entity_boost_map, entity_injected_candidates = await asyncio.wait_for(
-                    _compute_entity_relatedness_boost_map(
-                        query_text=query_fragment,
-                        candidates=candidates,
-                        query_entities=_boost_query_entities(query_fragment),
-                    ),
-                    timeout=boost_remaining,
-                )
-            except asyncio.TimeoutError:
+            entity_boost_map, entity_injected_candidates, boost_deadline_hit = await _entity_boost_within_deadline(
+                query_text=query_fragment,
+                candidates=candidates,
+                remaining_s=_remaining_s(),
+                corr_id=corr_id,
+            )
+            if boost_deadline_hit:
                 deadline_hit = True
-                logger.warning("recall_deadline_hit corr_id=%s stage=entity_boost", corr_id)
         if entity_injected_candidates:
             # Live evidence (6 real queries, 3 profiles) showed the boost
             # alone never fires: falkor_chat's own fetch is recency-windowed

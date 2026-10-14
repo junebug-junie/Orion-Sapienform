@@ -62,6 +62,7 @@ from .fcc_model_mapping import DEFAULT_FCC_MODEL_LABEL
 from .substrate_effect_pipeline import run_substrate_effect_pipeline
 from .repair_pressure_wiring import attach_repair_pressure_contract
 from orion.substrate.appraisal.view_model import build_substrate_effect_view
+from orion.situational.presence import normalize_presence_context
 from .substrate_effect_cache import substrate_effect_cache
 from .autonomy_constitution import (
     COGNITIVE_LIVE_APPLY_ENABLED,
@@ -1710,11 +1711,12 @@ def api_presence_set(payload: dict, x_orion_session_id: Optional[str] = Header(N
     if not isinstance(payload, dict):
         raise HTTPException(status_code=422, detail="presence payload must be an object")
     session_key = str(x_orion_session_id or payload.get("browser_client_id") or "anonymous")
-    merged = _default_presence_context()
-    merged.update(payload or {})
-    companions = merged.get("companions")
-    if not isinstance(companions, list):
-        merged["companions"] = []
+    # Stored clean: bad enum values fall back to defaults and audience_mode is
+    # derived from the companions (orion/situational/presence.py).
+    merged = normalize_presence_context(
+        {**_default_presence_context(), **payload},
+        default_requestor=settings.ORION_PRESENCE_DEFAULT_REQUESTOR,
+    )
     merged["persist_to_memory"] = bool(merged.get("persist_to_memory", False) and settings.ORION_PRESENCE_PERSIST_ALLOWED)
     if presence_context_store:
         return presence_context_store.set(session_key, merged)

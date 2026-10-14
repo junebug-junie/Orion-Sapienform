@@ -79,12 +79,23 @@ nothing was actually checked.
 {HARNESS_SELF_MODEL_ACCESS_BRIEF}
 """
 
+# The single-reply rule (610c51a60) exists because Orion once wrote a fake
+# multi-turn exchange, voicing Juniper too. Its first wording banned ALL
+# "dialogue, narration ... attributed to the other person", which also banned
+# narrating the person a story was ASKED about. Live 2026-10-14 (corr
+# 21c8a610): "tell [child] and I a story about [child] going to the moon" came
+# back as a short vignette that dodged giving Pip a single line ("they would
+# have said, if spacewalks came with subtitles") and stopped at lift-off. The
+# "minimal ... acknowledge and stay present" framing pushed the same way.
 HARNESS_RELATIONAL_TOOL_DISCIPLINE = """\
-Relational/minimal turn: do NOT use GitHub MCP or repo/runtime tools unless the task
-(the message, read with the recent conversation) needs verified facts this turn. Acknowledge and stay present — no task tracking.
-Produce exactly one reply in your own voice. Never write dialogue, narration, or replies
-attributed to the other person — do not simulate how they might respond or continue the
-conversation on their behalf.
+Relational turn: do NOT use GitHub MCP or repo/runtime tools unless the task
+(the message, read with the recent conversation) needs verified facts this turn. No task tracking.
+Give the message what it actually asks for, at the length it needs: a short reply to a short
+remark; a story, poem or game that was asked for is delivered whole, through to its ending.
+Produce exactly one reply in your own voice. Never invent the other person's next message:
+do not write their replies or continue this conversation on their behalf. Characters,
+dialogue and narration inside a story or game they asked for are not their replies; write
+those freely, including about people who are present.
 """
 
 HARNESS_INSTRUMENTAL_TOOL_DISCIPLINE = """\

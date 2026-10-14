@@ -622,7 +622,28 @@ def test_harness_motor_instruction_relational_enforces_single_turn_reply() -> No
     assert is_relational_motor_stance(thought) is True
     instruction = harness_motor_instruction(thought=thought, answer_contract=None)
     assert "exactly one reply" in instruction
-    assert "Never write dialogue" in instruction
+    assert "Never invent the other person's next message" in instruction
+
+
+def test_relational_instruction_allows_narrating_a_requested_story() -> None:
+    """Regression, corr 21c8a610 (2026-10-14): the single-reply rule banned
+    "narration attributed to the other person", so a story ABOUT a present
+    child was withheld from him and left unfinished. The rule must still forbid
+    inventing the partner's replies, but permit story characters and endings."""
+    thought = make_thought(imperative="Tell a whimsical story of Pip's trip to the moon.")
+    thought.stance_harness_slice = StanceHarnessSliceV1(
+        task_mode="playful_exchange",
+        conversation_frame="playful_relational",
+        interaction_regime="relational",
+        answer_strategy="narrative_flow",
+    )
+    assert is_relational_motor_stance(thought) is True
+    instruction = harness_motor_instruction(thought=thought, answer_contract=None)
+    assert "through to its ending" in instruction
+    assert "including about people who are present" in instruction
+    assert "Never write dialogue, narration" not in instruction
+    assert "Relational/minimal" not in instruction
+    assert "Acknowledge and stay present" not in instruction
 
 
 def test_harness_motor_instruction_instrumental_omits_single_turn_language() -> None:
@@ -633,7 +654,7 @@ def test_harness_motor_instruction_instrumental_omits_single_turn_language() -> 
     assert is_relational_motor_stance(thought) is False
     instruction = harness_motor_instruction(thought=thought, answer_contract=None)
     assert "exactly one reply" not in instruction
-    assert "Never write dialogue" not in instruction
+    assert "Never invent the other person's next message" not in instruction
 
 
 def test_harness_motor_instruction_imperative_forward() -> None:

@@ -4243,26 +4243,15 @@
       <div class="flex items-center justify-between border-b border-gray-800 px-5 py-4">
         <div>
           <div class="text-xs uppercase tracking-[0.24em] text-indigo-300">Presence / Situation</div>
-          <div class="mt-1 text-[11px] text-gray-400">Session-local audience context. Keep minor details generic by default.</div>
+          <div class="mt-1 text-[11px] text-gray-400">Who is with you right now. Orion reads this every turn, e.g. so a story is pitched for a child who is listening. Add each person, then Save.</div>
         </div>
         <button id="presenceModalClose" class="rounded-lg border border-gray-700 bg-gray-900 px-3 py-1 text-xs text-gray-200 hover:bg-gray-800" type="button">Close</button>
       </div>
       <div class="min-h-0 flex-1 overflow-y-auto px-5 py-4 space-y-3 text-xs text-gray-300">
         <div class="grid grid-cols-1 gap-3 md:grid-cols-2">
           <label class="space-y-1">
-            <span class="text-[10px] uppercase tracking-wide text-gray-500">Requestor name</span>
+            <span class="text-[10px] uppercase tracking-wide text-gray-500">Your name</span>
             <input id="presenceRequestorName" class="w-full rounded border border-gray-700 bg-gray-900/60 px-2 py-1 text-gray-100" value="Juniper" />
-          </label>
-          <label class="space-y-1">
-            <span class="text-[10px] uppercase tracking-wide text-gray-500">Audience mode</span>
-            <select id="presenceAudienceMode" class="w-full rounded border border-gray-700 bg-gray-900/60 px-2 py-1 text-gray-100">
-              <option value="solo">Solo</option>
-              <option value="kid_present">Kid present</option>
-              <option value="family">Family</option>
-              <option value="spouse_present">Spouse present</option>
-              <option value="guest_present">Guest present</option>
-              <option value="mixed_group">Mixed group</option>
-            </select>
           </label>
         </div>
         <div class="flex flex-wrap gap-2">
@@ -4274,8 +4263,8 @@
         </div>
         <div class="space-y-2">
           <div class="flex items-center justify-between">
-            <span class="text-[10px] uppercase tracking-wide text-gray-500">Companions</span>
-            <button id="presenceAddCompanionButton" class="rounded border border-gray-700 bg-gray-900 px-2 py-1 text-[10px]" type="button">Add companion</button>
+            <span class="text-[10px] uppercase tracking-wide text-gray-500">People with you</span>
+            <button id="presenceAddCompanionButton" class="rounded border border-gray-700 bg-gray-900 px-2 py-1 text-[10px]" type="button">Add person</button>
           </div>
           <div id="presenceCompanionRows" class="space-y-2"></div>
         </div>
@@ -4413,6 +4402,7 @@
   <script src="/static/js/cockpit-hud.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
   <script src="/static/js/hub-tab-launcher.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
   <script src="/static/js/gpu_pool_leases.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
+  <script src="/static/js/presence-form.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
   <script src="/static/js/app.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
 </body>
 </html>

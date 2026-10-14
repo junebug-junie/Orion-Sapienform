@@ -131,6 +131,14 @@ CONTEXT_PROVENANCE_REGISTRY: dict[str, ContextKeyProvenance] = {
             "TEMPORAL_SELF_CUE_MAX_AGE_SEC old), every clause citing [arc:<id>]. Set by orion-thought "
             "for the unified turn's stance_react only (app/temporal_self_cue.py).",
         ),
+        _entry(
+            "recent_arcs",
+            "derived_summary",
+            "Orion's last few CLOSED arcs of today, most recent first, local time: one line each "
+            "rendered by a fixed template (no LLM) from orion-durable-runs' current Temporal Self "
+            "frame, each citing [arc:<id>]. Set by orion-thought for reverie_narrate only "
+            "(app/reverie.py build_recent_arcs_text; orion/temporal_self/recent_arcs.py).",
+        ),
         _entry("curiosity_signals", "live_runtime_projection", "Live curiosity/drive signals."),
         _entry("metacog_substrate_cue", "live_runtime_projection", "Compact live substrate cue for metacog prompts."),
         _entry("substrate_eventfulness_score", "live_runtime_projection", "Live substrate eventfulness score."),

@@ -238,12 +238,46 @@ def _metacog_route() -> str:
     return "metacog_background" if settings.reverie_metacog_background_enabled else "metacog"
 
 
+async def build_recent_arcs_text(correlation_id: str, *, now: datetime | None = None) -> str:
+    """Today's last few closed arcs for the reverie prompt, or "" (Temporal Self rev 4).
+
+    Same frame fetch as the stance cue (``temporal_self_cue.fetch_frame_bounded``), bounded by
+    ``ORION_REVERIE_RECENT_ARCS_FETCH_TIMEOUT_SEC``; the block itself is a fixed template
+    (``orion.temporal_self.recent_arcs``). Never raises: any failure leaves the block out.
+    """
+    if not settings.reverie_recent_arcs_enabled:
+        return ""
+    try:
+        from orion.temporal_self.recent_arcs import project_recent_arcs
+
+        from .temporal_self_cue import fetch_frame_bounded
+
+        frame = await fetch_frame_bounded(settings.reverie_recent_arcs_fetch_timeout_sec, correlation_id)
+        block = project_recent_arcs(
+            frame,
+            now or datetime.now(timezone.utc),
+            limit=settings.reverie_recent_arcs_limit,
+            max_age_sec=settings.temporal_self_cue_max_age_sec,
+        )
+    except Exception as exc:  # noqa: BLE001 -- a reverie tick must never fail on this block
+        logger.warning("reverie_recent_arcs_failed corr=%s err=%s: %s", correlation_id, type(exc).__name__, exc)
+        return ""
+    if block.text:
+        logger.info("reverie_recent_arcs corr=%s day=%s arcs=%s chars=%s",
+                    correlation_id, block.day_id, len(block.arc_ids), len(block.text))
+    else:
+        logger.info("reverie_recent_arcs_skipped corr=%s reason=%s day=%s",
+                    correlation_id, block.skip_reason, block.day_id)
+    return block.text
+
+
 def build_reverie_context(
     broadcast: AttentionBroadcastProjectionV1,
     *,
     concern_cards: list[ConcernCardV1] | None = None,
     loop_outcomes: dict[str, dict[str, Any]] | None = None,
     recent_percepts: list[dict[str, Any]] | None = None,
+    recent_arcs: str | None = None,
 ) -> dict[str, Any]:
     percepts = recent_percepts or []
     if concern_cards:
@@ -259,6 +293,8 @@ def build_reverie_context(
         }
         if percepts:
             ctx["recent_percepts"] = percepts
+        if recent_arcs:
+            ctx["recent_arcs"] = recent_arcs
         return ctx
     open_loops = _open_loops_for_prompt(broadcast, loop_outcomes=loop_outcomes)
     ctx = {
@@ -279,6 +315,8 @@ def build_reverie_context(
     }
     if percepts:
         ctx["recent_percepts"] = percepts
+    if recent_arcs:
+        ctx["recent_arcs"] = recent_arcs
     return ctx
 
 
@@ -289,6 +327,7 @@ def build_reverie_plan_request(
     concern_cards: list[ConcernCardV1] | None = None,
     loop_outcomes: dict[str, dict[str, Any]] | None = None,
     recent_percepts: list[dict[str, Any]] | None = None,
+    recent_arcs: str | None = None,
 ) -> PlanExecutionRequest:
     use_lift = settings.reverie_semantic_lift_enabled and bool(concern_cards)
     mode = "metacog" if use_lift else "brain"
@@ -312,6 +351,7 @@ def build_reverie_plan_request(
             concern_cards=concern_cards,
             loop_outcomes=loop_outcomes,
             recent_percepts=recent_percepts,
+            recent_arcs=recent_arcs,
         ),
     )
 
@@ -628,8 +668,8 @@ async def run_reverie_once(
                 stream_ids=settings.reverie_perception_stream_id_list,
             )
 
-        loop_outcomes, recent_percepts = await asyncio.gather(
-            _fetch_loop_outcomes(), _fetch_percepts()
+        loop_outcomes, recent_percepts, recent_arcs = await asyncio.gather(
+            _fetch_loop_outcomes(), _fetch_percepts(), build_recent_arcs_text(correlation_id)
         )
         plan_request = build_reverie_plan_request(
             broadcast,
@@ -637,6 +677,7 @@ async def run_reverie_once(
             concern_cards=concern_cards,
             loop_outcomes=loop_outcomes,
             recent_percepts=recent_percepts,
+            recent_arcs=recent_arcs,
         )
         # Same formula build_reverie_plan_request uses internally to decide `use_lift` --
         # duplicated here (not returned by that function) because only a call that actually set

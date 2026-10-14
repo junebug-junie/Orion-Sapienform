@@ -349,7 +349,8 @@ template, no LLM.
   within the 300 s orienting window; max 3 lines / 600 chars, each citing
   `[pe:<node>@<observed_at>]`. A calm body renders nothing. When a block shows, unreadable signals
   are named ("Can't read right now: ...") and event signals with no recent event say so.
-- **Triggers** (cabinet warming) read as firings in the last hour against their own week.
+- **Triggers** (cabinet warming) read as times it went off (off->on transitions, not 30 s checks) in
+  the last hour against their own week; the ref names the newest ON row.
 - Reverie's concern-card (semantic lift) branch never gets it: that branch discards interpretations
   with mechanism vocabulary.
 - With stance on and Mind coloring present, the prompt labels Mind's frontier scores as Orion's own
@@ -362,7 +363,7 @@ template, no LLM.
 - Eval: `evals/test_self_readings_truth_eval.py` (every number shown resolves to its row);
   live replay `python evals/run_self_readings_live_eval.py`.
 
-## Reverie VISUAL chain (Patch 2 orchestration + Patch 3 context-seeding + Patch 4 continuity reset + Patch 5 self-study context-seed + Patch 6 memory-crystallization context-seed + Patch 7 context-slot rotation)
+## Reverie VISUAL chain (context rotation + validated episode-memory seed)
 
 `app/visual_chain.py`, alongside `chain.py`. Patch 2 of
 `docs/superpowers/specs/2026-08-20-reverie-visual-chain-design.md` — the
@@ -497,6 +498,21 @@ verbatim `summary` text from the most recent `status='active'` row --
 deliberately NOT content-filtered, unlike `self_study_text`. `memory_text`
 recorded in `chain_json` on both paths, surfaced in the Hub tab.
 
+**Stage 2 PR G episode-memory cutover (design doc
+`2026-10-06-memory-stage2-referent-graph-design.md` §5):** the memory slot
+now reads `episode_memory` by default through `load_episode_memory_seed`.
+Only active, unexpired `happened`/`about_juniper` memories created in the
+last seven days are eligible; every evidence quote must be verified, no
+`downgraded_voice`/`rejected_invalid` event may exist, and the memory must
+be either low-stakes automatic or explicitly confirmed. Selection rotates
+by least recent visual use, with never-used memories first. The exact
+`memory_id` is recorded as a `VisualSourceV1` under
+`context_selection.source_kind='episode_memory'`, including generation
+failures; `chain_json.memory_source_kind` also identifies the loaded memory
+slot on runs where a different slot won the round-robin.
+`REVERIE_VISUAL_MEMORY_SEED_SOURCE=crystallization` is the bounded
+rollback until the legacy reader is removed at cutover.
+
 **Patch 7 context-slot rotation (design doc §18) -- the real root cause:**
 same day, live report: "the memory got washed out and Orion just continued
 generating stars." Root cause verified with the REAL tokenizer: SDXL-turbo's
@@ -588,8 +604,9 @@ Flags:
 | `ORION_VISUAL_CHAIN_CONTINUITY_MAX_RUNS` | `3` | Consecutive continuity-carrying runs before a forced reset (Patch 4, design doc §15); no off switch, 0 resets every run |
 | `ORION_SELF_STUDY_CONTEXT_CHAR_LIMIT` | `150` | Max chars of the self-study analysis context-seed woven into the prompt (Patch 5, design doc §16; cut from 400 by Patch 7, design doc §18 -- 400 chars of self-study's dense jargon alone tokenizes to 104 tokens with framing, already over SDXL's 77-token budget by itself) |
 | `ORION_SELF_STUDY_CONTEXT_MAX_AGE_SEC` | `21600` | How stale that self-study analysis can be before it's treated as absent (6h -- these analyses fire on their own 6-72h cadence) |
-| `ORION_MEMORY_CRYSTALLIZATION_CONTEXT_CHAR_LIMIT` | `180` | Max chars of the memory-crystallization context-seed woven into the prompt (Patch 6, design doc §17; cut from 400 by Patch 7, design doc §18, same real-token-budget reasoning) |
-| `ORION_MEMORY_CRYSTALLIZATION_CONTEXT_MAX_AGE_SEC` | `604800` | How stale the latest active crystallization can be before it's treated as absent (7 days -- NOT self-study's 6h; a crystallized memory doesn't go stale on that clock. Covers all but one 10-day historical outlier; see settings.py's own comment for the reconciled live-data numbers) |
+| `REVERIE_VISUAL_MEMORY_SEED_SOURCE` | `episode_memory` | Memory-slot reader: governed `episode_memory` by default; `crystallization` is a bounded rollback |
+| `ORION_MEMORY_CRYSTALLIZATION_CONTEXT_CHAR_LIMIT` | `180` | Max chars of the selected memory source woven into the prompt; historical key retained during cutover |
+| `ORION_MEMORY_CRYSTALLIZATION_CONTEXT_MAX_AGE_SEC` | `604800` | Maximum creation age for the selected memory source. Episode memory clamps this to a hard 7-day ceiling; the historical key remains configurable for rollback |
 
 Tests: `tests/test_visual_chain.py` — every hop faked (diffusion HTTP call,
 percept upload, vision-host RPC, reverie context-seed, persistence); one test
@@ -631,6 +648,14 @@ max-age-sec clause presence/absence, `status='active'` filter (a
 never-raises. `build_visual_prompt`'s fourth clause and `run_visual_chain_
 once`'s wiring have the same exact-string/orchestration coverage pattern
 as Patch 5's `self_study_text` (design doc §17).
+
+Stage 2 PR G's `load_episode_memory_seed` has direct SQL-contract coverage
+for purpose/status/expiry, stakes confirmation, all-verified evidence,
+disqualifying events, least-recently-seeded rotation, typed identity,
+word-boundary truncation, empty results, and database failure. Orchestration
+tests prove the episode `memory_id` survives into both successful and
+generation-failed chain receipts; the honesty eval covers the selected
+source contract end to end.
 
 Patch 7's `select_context_slot` has direct unit coverage in
 `tests/test_visual_chain.py`: nothing available, rotates through all

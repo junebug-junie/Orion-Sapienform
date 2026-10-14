@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
+from typing import Literal
 
 from dotenv import load_dotenv
 from pydantic import AliasChoices, Field
@@ -569,19 +570,23 @@ class ThoughtSettings(BaseSettings):
     self_study_context_max_age_sec: float = Field(
         21600.0, alias="ORION_SELF_STUDY_CONTEXT_MAX_AGE_SEC", gt=0
     )
+    # Stage 2 PR G: visual reverie reads the validated episode-memory store by
+    # default. ``crystallization`` is a bounded rollback while the legacy
+    # reader remains present; Stage 2 PR H removes that reader at cutover.
+    visual_memory_seed_source: Literal["episode_memory", "crystallization"] = Field(
+        "episode_memory", alias="REVERIE_VISUAL_MEMORY_SEED_SOURCE"
+    )
     memory_crystallization_context_char_limit: int = Field(
         _MAX_MEMORY_CRYSTALLIZATION_CONTEXT_CHARS,
         alias="ORION_MEMORY_CRYSTALLIZATION_CONTEXT_CHAR_LIMIT",
         gt=0,
     )
-    # 604800s (7 days), NOT self_study_context_max_age_sec's 6h -- that 6h
-    # value was wrongly copied from self-study without checking whether it
-    # fits (real bug, caught live 2026-08-28: the 6h default meant this
-    # context-seed read empty on every single tick, because a
-    # crystallization is not a time-window-bound comparison the way a
-    # self-study body is ("the last 6h against the 6h before it") -- a
-    # crystallized memory from yesterday is still a real memory, it doesn't
-    # go stale on that clock.
+    # 604800s (7 days), NOT self_study_context_max_age_sec's 6h. Stage 2
+    # episode-memory eligibility is explicitly bounded to seven days; the
+    # same field remains wired to the legacy crystallization reader during
+    # rollback so this cutover does not add a second drifting age control.
+    # The episode reader clamps this value to seven days, so an operator may
+    # narrow but cannot widen its governance boundary.
     #
     # 7 days, not this fix's first draft of 3 days: a code-review pass on
     # this exact patch caught that the 3-day pick rested on an all-time-max

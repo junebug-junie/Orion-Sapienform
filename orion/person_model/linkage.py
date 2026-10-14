@@ -106,7 +106,7 @@ class LinkageContext:
     embedding_sim: Callable[[str, str], Optional[float]] = lambda a, b: None
     # Prompt-context keys harvested from the templates (normalize.prompt_context_keys).
     prompt_keys: FrozenSet[str] = frozenset()
-    # Pairs of folded names seen side by side in one source ("jay, jay").
+    # Pairs of folded names seen side by side in one source ("zed, zed").
     cooccurring: FrozenSet[Tuple[str, str]] = frozenset()
 
 
@@ -355,8 +355,8 @@ def stated_home_conflicts(
 
     The person's own answer decides it, so it is an auto outcome (auto_reject:
     the alias stops claiming home; the place itself is untouched)."""
-    # The town is the first token of the stated home ("Ogden, Utah" -> ogden);
-    # a shared state name alone ("Salt Lake City, Utah") is not the same home.
+    # The town is the first token of the stated home ("Springfield, Exampleland" -> springfield);
+    # a shared state name alone ("Shelbyville, Exampleland") is not the same home.
     town = (tokens(stated_home) or [""])[0]
     out = []
     for row in alias_rows:
@@ -388,7 +388,7 @@ def stated_home_conflicts(
 
 
 def repeated_name_splits(clusters: Dict[str, dict], cfg: LinkageConfig) -> List[PersonLinkageDecisionV1]:
-    """A name listed twice side by side in one source ("Jay, Jay") is two people
+    """A name listed twice side by side in one source ("Zed, Zed") is two people
     until the interlocutor says otherwise: one needs_your_call card per name.
 
     ``clusters``: folded name -> {"label", "node_id", "repeat_sources": [...]}."""

@@ -9,7 +9,7 @@ class MemStore:
     def __init__(self):
         self.props = {("tf-ent-ca5c", "label"): "juniper"}
         self.edges = set()
-        self.aliases = {("ref-slc", "home"): {"alias_text": "home", "valid_until": None}}
+        self.aliases = {("ref-shelby", "home"): {"alias_text": "home", "valid_until": None}}
 
     def snapshot(self):
         return copy.deepcopy((self.props, sorted(self.edges), self.aliases))
@@ -45,8 +45,8 @@ class MemStore:
 def _decisions(ctx, candidates):
     cfg = L.load_config()
     ds = L.run([ANCHOR], candidates, cfg, ctx)
-    ds += L.stated_home_conflicts([{"node_id": "ref-slc", "alias_norm": "home", "referent_kind": "place"}], person=ANCHOR,
-                                  stated_home="Ogden", place_labels={"ref-slc": "slc"}, cfg=cfg, stated_ref="a4")
+    ds += L.stated_home_conflicts([{"node_id": "ref-shelby", "alias_norm": "home", "referent_kind": "place"}], person=ANCHOR,
+                                  stated_home="Springfield", place_labels={"ref-shelby": "shelby"}, cfg=cfg, stated_ref="a4")
     return [d for d in ds if d.relation in ("same_as", "facet_of", "junk", "not_home")]
 
 
@@ -60,7 +60,7 @@ def test_apply_then_unmerge_restores_the_store_exactly(ctx, candidates):
         entries.append(e)
     assert store.snapshot() != before
     assert store.get_prop("tf-ent-ca5c", "merged_into") == ANCHOR.node_id
-    assert store.get_alias("ref-slc", "home")["valid_until"] == "2026-10-14T00:00:00+00:00"
+    assert store.get_alias("ref-shelby", "home")["valid_until"] == "2026-10-14T00:00:00+00:00"
     for e in reversed(entries):
         apply_ops(store, unmerge_ops(e))
     assert store.snapshot() == before
@@ -137,6 +137,6 @@ def test_not_home_requires_the_alias_to_exist():
     store = MemStore()
     cfg = L.load_config()
     d = L.stated_home_conflicts([{"node_id": "ref-x", "alias_norm": "home", "referent_kind": "place"}], person=ANCHOR,
-                                stated_home="Ogden", place_labels={"ref-x": "slc"}, cfg=cfg, stated_ref="a4")[0]
+                                stated_home="Springfield", place_labels={"ref-x": "shelby"}, cfg=cfg, stated_ref="a4")[0]
     with pytest.raises(ValueError):
         build_entry(d, store, decided_by="t", decision="auto", now_iso="x")

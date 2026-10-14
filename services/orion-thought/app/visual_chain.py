@@ -73,6 +73,14 @@ second audience for that content beyond the one person who is also its
 original source. See `store.load_latest_memory_crystallization`'s own
 docstring for the full writeup.
 
+Stage 2 PR G (2026-10-14): `memory_text` now comes from governed
+`episode_memory` by default through `store.load_episode_memory_seed`; the
+Patch 6 reader remains only behind the explicit crystallization rollback
+switch. The selected memory carries its exact id under
+`context_selection.source_kind='episode_memory'`, while
+`memory_source_kind` identifies the loaded slot even when round-robin selects
+a different context source this run.
+
 Patch 7 (design doc §18): the REAL root cause of "the memory got washed
 out and Orion just kept generating stars" (live report, 2026-08-28, same
 day Patch 6 shipped) -- Patches 3/5/6 concatenated ALL THREE context-seeds
@@ -227,6 +235,7 @@ from .rpc_health import fold_bus
 from .settings import settings
 from .store import (
     acknowledge_visual_production,
+    load_episode_memory_seed,
     load_latest_memory_crystallization,
     load_latest_reverie_interpretation,
     load_latest_self_study_reflection,
@@ -949,6 +958,7 @@ class VisualPlan:
     context_text: str | None
     self_study_text: str | None
     memory_text: str | None
+    memory_source_kind: str | None
     context_selection: VisualContextSelectionV1 | None
 
     def chain_fields(self) -> dict[str, Any]:
@@ -958,6 +968,7 @@ class VisualPlan:
             "context_text": self.context_text,
             "self_study_text": self.self_study_text,
             "memory_text": self.memory_text,
+            "memory_source_kind": self.memory_source_kind,
             "context_slot_used": self.context_slot_used,
             "context_slot_rotation": self.context_slot_rotation,
             "context_slot_interpreted": self.context_slot_interpreted,
@@ -999,6 +1010,11 @@ async def compute_visual_plan(
     # read (review finding on the original 2-value version: two
     # separate round trips to the same row wasted a query and left a
     # theoretical read-your-own-write race), not three gathered reads.
+    memory_loader = (
+        load_episode_memory_seed
+        if settings.visual_memory_seed_source == "episode_memory"
+        else load_latest_memory_crystallization
+    )
     (
         continuity_state,
         reverie_context,
@@ -1018,7 +1034,7 @@ async def compute_visual_plan(
             with_identity=True,
         ),
         asyncio.to_thread(
-            load_latest_memory_crystallization,
+            memory_loader,
             char_limit=settings.memory_crystallization_context_char_limit,
             max_age_sec=settings.memory_crystallization_context_max_age_sec,
             with_identity=True,
@@ -1061,12 +1077,31 @@ async def compute_visual_plan(
         context_text, self_study_text, memory_text, context_slot_rotation
     )
     continuity_source = VisualSourceV1(source_id=prior_chain_id, text=effective_prior) if prior_chain_id and effective_prior else None
-    selected_kind = {"context_text": "reverie", "self_study_text": "self_study", "memory_text": "memory",
-                     "context": "reverie", "reverie": "reverie", "self_study": "self_study", "memory": "memory"}.get(context_slot_used)
+    memory_source_kind = (
+        "episode_memory" if settings.visual_memory_seed_source == "episode_memory" else "memory"
+    )
+    selected_kind = {
+        "context_text": "reverie",
+        "self_study_text": "self_study",
+        "memory_text": memory_source_kind,
+        "context": "reverie",
+        "reverie": "reverie",
+        "self_study": "self_study",
+        "memory": memory_source_kind,
+    }.get(context_slot_used)
     context_selection = VisualContextSelectionV1(
         source_kind=selected_kind or ("prior_visual" if effective_prior else "default_seed"),
         reverie=reverie_context if selected_kind == "reverie" and isinstance(reverie_context, ReverieVisualContextV1) else None,
-        source=(self_study_context if selected_kind == "self_study" and isinstance(self_study_context, VisualSourceV1) else memory_context if selected_kind == "memory" and isinstance(memory_context, VisualSourceV1) else continuity_source if not selected_kind else None),
+        source=(
+            self_study_context
+            if selected_kind == "self_study" and isinstance(self_study_context, VisualSourceV1)
+            else memory_context
+            if selected_kind in {"memory", "episode_memory"}
+            and isinstance(memory_context, VisualSourceV1)
+            else continuity_source
+            if not selected_kind
+            else None
+        ),
         continuity=continuity_source,
     )
     # Patch 8 (module docstring): turn the raw selected clause into a concrete visual
@@ -1101,6 +1136,7 @@ async def compute_visual_plan(
         context_text=context_text,
         self_study_text=self_study_text,
         memory_text=memory_text,
+        memory_source_kind=memory_source_kind if memory_text else None,
         context_selection=context_selection,
     )
 

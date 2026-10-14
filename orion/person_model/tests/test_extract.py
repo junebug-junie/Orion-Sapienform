@@ -10,10 +10,10 @@ def test_version_pins_revision_labels_and_threshold():
 
 
 def test_mention_rows_are_replay_stable():
-    text = "My boss, Rachel, and Jay, Jay."
+    text = "My boss, Marlow, and Zed, Zed."
     spans = [{"start": 9, "end": 15, "label": PERSON_LABEL, "score": 0.98765432}, {"start": 21, "end": 24, "label": PERSON_LABEL, "score": 0.9}]
     a = [m.model_dump_json() for m in spans_to_mentions(spans, text=text, source_kind="chat_prompt", source_id="p1", version="v")]
     b = [m.model_dump_json() for m in spans_to_mentions(list(reversed(spans)), text=text, source_kind="chat_prompt", source_id="p1", version="v")]
     assert a == b
-    assert spans_to_mentions(spans, text=text, source_kind="chat_prompt", source_id="p1", version="v")[0].text == "Rachel"
+    assert spans_to_mentions(spans, text=text, source_kind="chat_prompt", source_id="p1", version="v")[0].text == "Marlow"
     assert mention_id("chat_prompt", "p1", 9, 15, "v") != mention_id("chat_prompt", "p1", 9, 15, "v2")

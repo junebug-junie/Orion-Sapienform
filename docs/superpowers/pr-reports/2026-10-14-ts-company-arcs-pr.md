@@ -45,3 +45,7 @@ cd /mnt/scripts/Orion-Sapienform && git pull --ff-only && ORION_ALLOW_SHARED_CHE
 - Low: a stretch in its 2-min grace at midnight can leave a zero-length 00:00 arc.
 - Low: "been here since" said while citing a conversation arc can be marked a citation mismatch.
 - Live write path UNVERIFIED until deployed.
+
+## PR link
+
+https://github.com/junebug-junie/Orion-Sapienform/pull/2665

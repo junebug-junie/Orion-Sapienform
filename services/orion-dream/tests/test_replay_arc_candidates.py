@@ -45,7 +45,7 @@ def test_arc_maps_to_a_citable_candidate_with_declared_weight():
 def test_arc_weight_saturates_below_a_critical_metacog_and_zero_is_dropped():
     from app.replay import ARC_WEIGHT_MAX, arc_weight, candidate_from_arc
 
-    assert arc_weight(74106, 53) == ARC_WEIGHT_MAX < 1.0  # a 20 h curiosity, 53 returns
+    assert arc_weight(74106, 53) == ARC_WEIGHT_MAX < 0.8  # a 20 h curiosity, 53 returns; under a 0.8 crystallization
     assert arc_weight(3600, 3) == ARC_WEIGHT_MAX
     assert arc_weight(0, 0) == 0.0
     assert arc_weight("junk", None) == 0.0
@@ -212,7 +212,7 @@ def test_pressure_and_rest_drive_unchanged_with_arcs_on():
     assert "arc candidates=10" in c_on.note
 
 
-def test_arcs_cannot_crowd_out_existing_sources():
+def test_arcs_take_at_most_a_third_and_critical_metacog_leads():
     from app.cycle import run_cycle_once
     from app.settings import settings
 
@@ -264,11 +264,17 @@ def test_arc_read_timeout_is_bounded(monkeypatch):
         return _live_arcs(until)
 
     on = _Fakes(_rows(), arc_loader=slow)
-    t0 = time.monotonic()
-    c = asyncio.run(run_cycle_once(on.deps(with_arcs=True)))
+
+    async def timed():
+        # Timed inside the loop: asyncio.run's shutdown joins the still-sleeping thread.
+        t0 = time.monotonic()
+        cycle_ = await run_cycle_once(on.deps(with_arcs=True))
+        return cycle_, time.monotonic() - t0
+
+    c, elapsed = asyncio.run(timed())
     assert c.status == "completed" and not any(r.source_kind == "arc" for r in c.replay)
     assert "arc candidates=0" in c.note
-    assert time.monotonic() - t0 < 5.0
+    assert elapsed < 0.4  # the loader sleeps 0.5 s: wait_for must return first
 
 
 def test_arcs_about_one_subject_are_one_candidate_the_heaviest():
@@ -313,3 +319,47 @@ def test_source_caps_only_tighten_and_default_is_unchanged():
     assert select_replay(items, 12) == select_replay(items, 12, source_caps={})
     assert len(select_replay(items, 12, source_caps={"metacog": 99})) == 6  # never above ceil(k/2)
     assert len(select_replay(items, 12, source_caps={"metacog": 2})) == 2
+
+
+def _many_existing():
+    rows = _rows()
+    rows["compaction_request"] = [{"request_id": f"r{i}", "theme": f"theme {i}", "reason": "recurs"} for i in range(10)]
+    return rows
+
+
+def test_existing_sources_keep_two_thirds_with_many_existing():
+    from app.cycle import run_cycle_once
+    from app.settings import settings
+
+    off = _Fakes(_many_existing())
+    on = _Fakes(_many_existing(), arcs=_live_arcs)
+    c_off = asyncio.run(run_cycle_once(off.deps(with_arcs=False)))
+    c_on = asyncio.run(run_cycle_once(on.deps(with_arcs=True)))
+    k = settings.DREAM_REPLAY_MAX
+    on_existing = [r.ref_id for r in c_on.replay if r.source_kind != "arc"]
+    assert len(c_on.replay) == k
+    assert len(on_existing) == min(len(c_off.replay), k - k // 3) == 8
+    # what stays is the top of the arc-free selection, in order: arcs only remove its tail
+    assert on_existing == [r.ref_id for r in c_off.replay][: len(on_existing)]
+
+
+def test_control_pool_sees_only_the_replayable_arcs(monkeypatch):
+    from app import cycle
+    from app.cycle import run_cycle_once
+    from app.replay import arc_replay_slots
+    from app.settings import settings
+
+    seen = {}
+    real = cycle.control_pairs
+
+    def spy(pool, n, **kw):
+        seen["pool"] = list(pool)
+        return real(pool, n, **kw)
+
+    monkeypatch.setattr(cycle, "control_pairs", spy)
+    on = _Fakes(_rows(), arcs=lambda now: [_arc(f"y{i}", dwell=60.0 * (i + 1), returns=0,
+                                               ended=now - timedelta(minutes=i + 1)) for i in range(20)])
+    asyncio.run(run_cycle_once(on.deps(with_arcs=True)))
+    arcs = [c for c in seen["pool"] if c.source_kind == "arc"]
+    assert len(arcs) == arc_replay_slots(settings.DREAM_REPLAY_MAX) == 4
+    assert {c.ref_id for c in arcs} == {f"arc:y{i}" for i in (19, 18, 17, 16)}  # the heaviest

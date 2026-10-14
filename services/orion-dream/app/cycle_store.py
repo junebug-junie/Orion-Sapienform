@@ -139,7 +139,9 @@ def _get_engine():
     if _engine is None:
         from sqlalchemy import create_engine
 
-        _engine = create_engine(settings.POSTGRES_URI, pool_pre_ping=True)
+        # connect_timeout: statement_timeout only starts after connecting; a hung connect must not
+        # pin a default-executor thread (the cycle's wait_for only stops waiting, not the thread).
+        _engine = create_engine(settings.POSTGRES_URI, pool_pre_ping=True, connect_args={"connect_timeout": 5})
     return _engine
 
 

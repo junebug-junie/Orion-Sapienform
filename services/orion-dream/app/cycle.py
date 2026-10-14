@@ -327,12 +327,14 @@ async def run_cycle_once(deps: CycleDeps, *, trigger: str = "pressure", force: b
     # replay (replay.arc_replay_slots: 4 of 12), so the existing sources keep at least two
     # thirds; ARC_WEIGHT_MAX (0.8) keeps a critical metacog ahead of every arc. Arcs never
     # start a sleep on their own: with no existing candidate the cycle above is `empty`.
-    # The control arm draws from the same pool (up to 20 arcs), as it always has.
+    # Arcs above an existing item's weight do displace it, within that third.
     arcs = await read_arc_candidates(deps, pressure.since, started)
-    pool = candidates + arcs
-    replay = select_replay(
-        pool, settings.DREAM_REPLAY_MAX, source_caps={"arc": arc_replay_slots(settings.DREAM_REPLAY_MAX)},
-    )
+    arc_slots = arc_replay_slots(settings.DREAM_REPLAY_MAX)
+    replay = select_replay(candidates + arcs, settings.DREAM_REPLAY_MAX, source_caps={"arc": arc_slots})
+    # Control pool: the same top arcs replay could take, not all 20. Uniform sampling over
+    # 20 arcs + ~5-12 existing items would make most control fragments arcs while the dream
+    # arm is capped at a third: source mix would confound the dream-vs-control comparison.
+    pool = candidates + arcs[:arc_slots]
 
     compaction_delta_id = None
     if deps.rem_compaction is not None:

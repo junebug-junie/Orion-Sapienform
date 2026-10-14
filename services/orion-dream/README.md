@@ -125,11 +125,13 @@ concern held, a curiosity followed, a body state. `sleep` arcs are left out, and
 most 20 go in per sleep. Arcs about the same thing (same kind and subject) count
 once, as the heaviest of them. Each becomes a replay item with `source_kind="arc"` and
 `ref_id="arc:<arc_id>"`, so anything the dream produces from it can cite the arc.
-Weight = `0.8 * (dwell + returns) / 2`, where `dwell = min(1, ln(1+min)/ln(61))`
-(reaches 1 at an hour) and `returns = min(1, attention_returns/3)`. The 0.8 cap keeps
-a critical metacog ahead of every arc. An arc with no dwell and no returns is dropped.
+Weight = `0.75 * (dwell + returns) / 2`, where `dwell = min(1, ln(1+min)/ln(61))`
+(reaches 1 at an hour) and `returns = min(1, attention_returns/3)`. The 0.75 cap keeps
+a critical metacog (1.0) and a 0.8-salience crystallization ahead of every arc. An arc with no dwell and no returns is dropped.
 Arcs take at most a third of the replay (4 of 12), so the other sources, things the
-day explicitly flagged, always keep at least two thirds. Arcs are replay material only:
+day explicitly flagged, always keep at least two thirds; within that third an arc
+heavier than an existing item does take its slot. The control arm's pool gets the
+same top arcs, not all 20, so both arms see arcs at a similar rate. Arcs are replay material only:
 they never add to sleep pressure, never count as a reason to sleep, and never touch
 the rest drive. The cycle note records `arc candidates=N`. Off switch:
 `DREAM_REPLAY_ARC_CANDIDATES_ENABLED=false`. A failed or slow read (2 s statement

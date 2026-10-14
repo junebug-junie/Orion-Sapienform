@@ -257,10 +257,10 @@ def select_replay(
 #   returns = min(1, attention_returns / 3)                coming back to a thing after
 #             it was suspended; three returns is "kept returning".
 #   weight  = ARC_WEIGHT_MAX * (dwell + returns) / 2
-# ARC_WEIGHT_MAX < 1.0 so a critical metacog (1.0) always outranks an arc. Weight 0
+# ARC_WEIGHT_MAX (0.75) < 1.0 so a critical metacog (1.0) always outranks an arc. Weight 0
 # (no dwell, no return) carries nothing and is dropped, like a 0-salience crystallization.
 
-ARC_WEIGHT_MAX = 0.8
+ARC_WEIGHT_MAX = 0.75  # below a 0.8-salience crystallization too: an arc never wins a tie
 ARC_DWELL_SATURATE_MIN = 60.0
 ARC_RETURNS_SATURATE = 3
 ARC_CANDIDATES_MAX = 20
@@ -268,7 +268,8 @@ ARC_EXCLUDED_KINDS = frozenset({"sleep"})  # a sleep never replays a sleep
 
 
 def arc_replay_slots(k: int) -> int:
-    """At most a third of the replay is arcs. The other sources are things the day
+    """At most a third of the replay is arcs (they DO displace lower-weight existing items
+    within that third; the existing sources keep at least two thirds). The other sources are things the day
     explicitly flagged (a critical metacog, a theme reverie ASKED sleep to consolidate);
     arcs are the chronology around them. Live 10-12: under the plain ceil(k/2) per-source
     cap, six arcs at >= 0.5 would have displaced all six compaction requests (0.5)."""
@@ -312,10 +313,13 @@ def candidate_from_arc(row: dict[str, Any]) -> Optional[ReplayItemV1]:
         return None
     subject = _clip(row.get("subject_label"), 200) or _clip(row.get("subject_ref"), 200)
     try:
-        dwell_min = float(dwell or 0.0) / 60.0
+        dwell_min = max(0.0, float(dwell or 0.0)) / 60.0
     except (TypeError, ValueError):
         dwell_min = 0.0
-    ret = int(returns or 0)
+    try:
+        ret = max(0, int(returns or 0))
+    except (TypeError, ValueError):
+        ret = 0
     return ReplayItemV1(
         ref_id=f"arc:{aid}",
         source_kind="arc",
@@ -352,7 +356,7 @@ def arc_candidates(
         item = candidate_from_arc(row)
         if item is None:
             continue
-        key = (item.tags[0], str(row.get("subject_ref") or item.ref_id).strip().lower())
+        key = (item.tags[0], str(row.get("subject_ref") or item.ref_id).strip())  # an exact id: no case fold
         kept = best.get(key)
         if kept is None or (item.weight, ended.timestamp(), item.ref_id) > (kept[0].weight, kept[1].timestamp(), kept[0].ref_id):
             best[key] = (item, ended)

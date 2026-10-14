@@ -67,7 +67,7 @@ def test_window_snippet():
 
 
 def test_window_masks_email_addresses():
-    w = cli.window("Juniper Feld <someone.x@gmail.com> to skye", "Juniper")
+    w = cli.window("Juniper Feld <someone.x@gmail.com> to zara", "Juniper")
     assert "@" not in w and "[email]" in w
 
 
@@ -94,9 +94,9 @@ def test_cli_is_read_only_by_construction():
 
 
 def test_claims_by_two_people_ride_on_their_pair_question():
-    pair = _d("mention:skye", "Skye Laflamme", "needs_your_call", kind="mention_cluster")
-    pair = pair.model_copy(update={"candidate_id": "mention:skye laflamme", "rule": "possible_match_band"})
-    claim = _d("mention:skye", "skye", "needs_your_call", rule="multiple_anchor_claims")
-    claim = claim.model_copy(update={"evidence": {"claimed_by_ids": ["mention:skye", "mention:skye laflamme"]}})
+    pair = _d("mention:zara", "Zara Quill", "needs_your_call", kind="mention_cluster")
+    pair = pair.model_copy(update={"candidate_id": "mention:zara quill", "rule": "possible_match_band"})
+    claim = _d("mention:zara", "zara", "needs_your_call", rule="multiple_anchor_claims")
+    claim = claim.model_copy(update={"evidence": {"claimed_by_ids": ["mention:zara", "mention:zara quill"]}})
     out = cli.fold_claims_into_pair_questions([pair, claim])
     assert len(out) == 1 and out[0].evidence["also_answers"] == [claim.decision_id]

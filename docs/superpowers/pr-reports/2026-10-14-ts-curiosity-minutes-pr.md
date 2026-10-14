@@ -31,3 +31,7 @@ cd /mnt/scripts/Orion-Sapienform && git pull --ff-only && ORION_ALLOW_SHARED_CHE
 
 ## Risks / concerns
 - UNVERIFIED: a curiosity run longer than ~35 min may never become an arc (chronicle late-probe window 1800 s, no `curiosity_run` override). Check `completed_at - turn_started_at` in `curiosity_run_outcomes`.
+
+## PR link
+
+https://github.com/junebug-junie/Orion-Sapienform/pull/2659

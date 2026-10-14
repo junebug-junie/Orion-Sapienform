@@ -25,8 +25,11 @@ from orion.world_pulse_read.assertions import (
     journal_claims,
     plan_claims,
 )
+from orion.world_pulse_read import concept_search
 from orion.world_pulse_read.concept_search import (
+    OBJECT_MIN_CENTERED_SIMILARITY,
     concept_doc,
+    rank_centered,
     index_atlas_concepts,
     related_objects,
     with_related_objects,
@@ -107,7 +110,7 @@ def test_a_concept_near_the_subject_whose_label_is_not_in_the_read_is_offered():
     related = _related(store, ctx, backend)
     ids = [e.node_id for e, _ in related]
     assert ids == [RELATED_ID]
-    assert related[0][0].via == "meaning" and related[0][1] > 0.9
+    assert related[0][0].via == "meaning" and related[0][1] >= OBJECT_MIN_CENTERED_SIMILARITY
     widened = with_related_objects(ctx, related)
     assert widened.usable
     # Label hits first, unchanged; the meaning hit after them.
@@ -138,8 +141,10 @@ def test_the_cap_holds_with_label_hits_first():
     vectors = dict(VECTORS, **{f"Heat topic {i:02d}": (1.0, 0.01 * i, 0.0) for i in range(30)})
     store, _, ctx, _, _ = _setup(extra)
     backend = _indexed(store, vectors)
-    related = _related(store, ctx, backend)
-    assert len(related) == MAX_OBJECTS - len(ctx.objects)  # 31 qualify; only the room is taken
+    # Floor off: 30 near-duplicates shift the index mean onto themselves, so the cap (not
+    # the floor) is what this test pins.
+    related = _related(store, ctx, backend, min_similarity=-1.0)
+    assert len(related) == MAX_OBJECTS - len(ctx.objects)  # 31+ qualify; only the room is taken
     widened = with_related_objects(ctx, related)
     assert len(widened.objects) == MAX_OBJECTS
     assert [o.node_id for o in widened.objects[: len(ctx.objects)]] == [o.node_id for o in ctx.objects]
@@ -358,3 +363,64 @@ def test_index_task_starts_only_with_search_and_assertions_and_stop_cancels_it()
 
     assert asyncio.run(go(True)) == (True, None)
     assert asyncio.run(go(False)) == (False, None)
+
+
+# ---- centered ranking (2026-10-14): the raw floor had no calm state ----
+
+def _cone(*topic: float, cone: float = 3.0) -> list[float]:
+    """A unit vector with a large shared component, the way every bge vector shares one."""
+    import math
+
+    v = list(topic) + [cone]
+    n = math.sqrt(sum(x * x for x in v))
+    return [x / n for x in v]
+
+
+def test_centering_gives_unrelated_concepts_a_calm_state_the_raw_floor_lacked():
+    # Six topics on separate axes, all inside one narrow cone: raw cosine between ANY two
+    # is ~0.9, so the retired raw floor (0.65) offered everything.
+    index = [(f"c{i}", _cone(*[1.0 if k == i else 0.0 for k in range(6)])) for i in range(6)]
+    near = _cone(*[0.9 if k == 0 else (0.3 if k == 1 else 0.0) for k in range(6)])
+    raw = {i: sum(a * b for a, b in zip(v, near)) for i, v in index}
+    assert min(raw.values()) > 0.65  # what the raw floor saw: every concept "related"
+    ranked = dict(rank_centered(index, [near], -1.0))
+    assert ranked["c0"] > OBJECT_MIN_CENTERED_SIMILARITY
+    assert all(ranked[f"c{i}"] < 0.1 for i in range(2, 6))  # unrelated rests near/below 0
+    kept = [i for i, _ in rank_centered(index, [near], OBJECT_MIN_CENTERED_SIMILARITY)]
+    assert kept[0] == "c0" and not set(kept) & {"c2", "c3", "c4", "c5"}
+
+
+def test_rank_centered_takes_the_best_subject_and_refuses_mismatched_dimensions():
+    import pytest
+
+    index = [(f"c{i}", _cone(*[1.0 if k == i else 0.0 for k in range(4)])) for i in range(4)]
+    a, b = _cone(1.0, 0, 0, 0), _cone(0, 0, 0, 1.0)
+    both = dict(rank_centered(index, [a, b], -1.0))
+    assert both["c0"] == pytest.approx(dict(rank_centered(index, [a], -1.0))["c0"])
+    assert both["c3"] == pytest.approx(dict(rank_centered(index, [b], -1.0))["c3"])
+    assert rank_centered([], [a], 0.0) == [] and rank_centered(index, [], 0.0) == []
+    with pytest.raises(ValueError):
+        rank_centered(index, [[1.0, 0.0]], 0.0)
+
+
+def test_all_vectors_pages_through_the_whole_index():
+    from orion.introspect.semantic_index import SearchUnavailableError, all_vectors
+
+    backend = FakeSemanticBackend({"x": (1.0, 0.0)})
+    for i in range(7):
+        backend.docs[f"d{i}"] = ([float(i), 1.0], {}, "t")
+
+    async def go(page):
+        async with backend.client() as client:
+            return await all_vectors(client, backend.config(), page=page)
+    got = asyncio.run(go(3))
+    assert [i for i, _ in got] == [f"d{i}" for i in range(7)] and got[4][1] == [4.0, 1.0]
+    backend.docs.clear()  # a collection nothing was ever upserted into does not exist
+    import pytest
+    with pytest.raises(SearchUnavailableError):
+        asyncio.run(go(3))
+
+
+def test_the_raw_floor_is_retired_not_left_beside_the_centered_one():
+    assert not hasattr(concept_search, "OBJECT_MIN_SIMILARITY")
+    assert not hasattr(concept_search, "NEAREST_PER_SUBJECT")

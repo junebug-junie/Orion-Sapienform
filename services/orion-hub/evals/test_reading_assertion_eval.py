@@ -17,7 +17,7 @@ subject whose label the text does not contain. Measures:
 - meaning_links: links to it from a verbatim quote that does not name it. Must be 0 (the
   quote rule is unchanged; the claim is journalled ``proposed`` for review).
 
-Live counts over real reads: services/orion-hub/evals/run_reading_claim_objects_replay.py.
+Live counts over real reads: services/orion-hub/evals/run_reading_link_targets_replay.py.
 
 This does not measure live model quality (how often a real Stage 2 quotes exactly); that
 needs a completed live read, UNVERIFIED until the reading queue moves.

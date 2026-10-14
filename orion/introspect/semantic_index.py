@@ -169,6 +169,34 @@ async def nearest(
     return sorted(scored, key=lambda s: -s[1])
 
 
+async def all_vectors(
+    client: httpx.AsyncClient, cfg: SearchConfig, *, page: int = 500,
+) -> list[tuple[str, list[float]]]:
+    """Every (doc_id, vector) the index holds, paged through /get. For a caller that must
+    score against the whole collection itself (e.g. a centered cosine, which Chroma's own
+    nearest-neighbour order does not follow). Raises SearchUnavailableError when the index
+    is missing, empty, or answers malformed rows."""
+    coll = await _collection(client, cfg)
+    if coll is None:
+        raise SearchUnavailableError(f"search index {cfg.collection} not built yet")
+    out: list[tuple[str, list[float]]] = []
+    offset = 0
+    while True:
+        status, body = await _json(client, "POST", f"{_base(cfg)}/{coll.id}/get",
+                                   json={"limit": page, "offset": offset, "include": ["embeddings"]})
+        ids = body.get("ids") if isinstance(body, dict) else None
+        vecs = body.get("embeddings") if isinstance(body, dict) else None
+        if status != 200 or not isinstance(ids, list) or not isinstance(vecs, list) or len(ids) != len(vecs):
+            raise SearchUnavailableError(f"chroma get failed: HTTP {status}")
+        out.extend((str(i), list(v)) for i, v in zip(ids, vecs) if v)
+        if len(ids) < page:
+            break
+        offset += page
+    if not out:
+        raise SearchUnavailableError(f"search index {cfg.collection} is empty")
+    return out
+
+
 async def stored_hashes(client: httpx.AsyncClient, cfg: SearchConfig, ids: list[str]) -> dict[str, str]:
     """content_hash per already-indexed id; a missing collection holds nothing."""
     coll = await _collection(client, cfg)

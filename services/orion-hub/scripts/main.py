@@ -60,7 +60,7 @@ from orion.introspect.semantic_index import SearchConfig
 from orion.world_pulse_read.concept_search import (
     ATLAS_CONCEPT_COLLECTION,
     INDEX_BATCH as ATLAS_CONCEPT_INDEX_BATCH,
-    OBJECT_MIN_SIMILARITY as READING_OBJECT_MIN_SIMILARITY,
+    OBJECT_MIN_CENTERED_SIMILARITY as READING_OBJECT_MIN_SIMILARITY,
 )
 from scripts.reading_listener import ReadingListener
 from scripts.curiosity_introspect_listener import CuriosityIntrospectListener

@@ -2,11 +2,11 @@
 
 ## Summary
 
-- Orion can now learn, from its own records, what each of its body signals tends to lead to: "when this is high, my next hour had a failed turn 3.1x as often (31% of 42 high hours vs 10% of 120 normal) [assoc:...]". Deterministic, no LLM.
+- Orion can now learn, from its own records, what each of its body signals tends to lead to: "when this is high, my next hour had a failed turn 3.1x as often at equal activity (31% of 42 high hours vs 10% of 120 normal) [assoc:...]". Deterministic, no LLM.
 - An hourly rollup in orion-equilibrium-service marks each body signal's hour as high / normal / unknown (high = the episode gate's own "unusual for longer than one event can explain" rule was met), counts that hour's failed turns, repaired replies and RPC timeouts, and stores one row per hour in `self_signal_hour` -- so the history outlives the 7-day prediction-error prune.
-- From those hours it computes, per signal and outcome, the next-hour rate when high vs normal, the ratio, and a 95% interval, stored in `self_signal_outcome_association`.
+- From those hours it computes, per signal and outcome, the next-hour rate when high vs normal and an activity-adjusted ratio with a deliberately cautious 95% interval (adjusted for busy hours, for hours not being independent, and for testing 17 pairs at once), stored in `self_signal_outcome_association`.
 - The clause renders in the self-reading line (stance_react / reverie) and in the episode open row's evidence **only** when both sides have at least 24 hours and the interval excludes 1. Pairs where the signal is built from the outcome itself are excluded.
-- **Live today: nothing clears.** One week of hours, no signal x outcome pair has an interval that excludes 1 (even ignoring the minimum). Orion's prompts are unchanged until real evidence accumulates.
+- **Live today: nothing clears.** Only 23 of the last 167 hours have a full enough week of history to count, so every pair is below the minimum. Even counting all 167 hours with no minimum, no pair's interval excludes 1. Orion's prompts are unchanged until real evidence accumulates (about a month at today's rate of high hours).
 
 ## Outcome moved
 
@@ -21,7 +21,7 @@ Before: a self-reading said "this signal is high for me" with nothing about cons
 
 ## Architecture touched
 
-- New pure reducer `orion/attention/self_signal_outcomes.py` (hour classification, outcome counts, Katz interval, circular-pair exclusion, clause).
+- New pure reducer `orion/attention/self_signal_outcomes.py` (hour classification, outcome counts, activity-adjusted family-wise interval, circular-pair exclusion, clause).
 - orion-equilibrium-service: `app/self_signal_outcome_rollup.py` rides the existing self_signal poll loop and its PE cache; reads `harness_turn_trace`, `transport_baseline_hourly`, `self_signal_hour` read-only; publishes on two new channels.
 - orion-sql-writer: two new tables (created by `create_all` at boot, no manual migration).
 - orion-thought: reads the newest association per (signal, outcome) within 3 h and passes it to the self-reading render.
@@ -74,37 +74,74 @@ Every number the clause can show was traced: signals through the glossary (`chec
 - The first version called an hour high when most readings were hot; it found 0 high execution hours. The second used "more than 300 s of hot time"; but a signal's top decile is ~10% of every hour by construction (~360 s), so a perfectly typical hour could be "high" (test `test_scattered_top_decile_readings_are_a_normal_hour`).
 - Shipped rule: replay the episode gate's 30 s polls; an hour is high when the gate's own open dwell (> 300 s hot within 600 s) is met in it. Same constants as the gate (pinned by a test). Live 167 hours: biometrics 8 high, bus_synaptic 27, cabinet 16 (trigger fired), codebase 5, execution 16, route 10, chat 0 (event-written, two hot turns within 10 minutes never happened); unknown hours (no readable reading) are never counted as normal: chat 81, codebase 47, route 51.
 
-## Minimum n (24 hours each side)
+## Minimum n (24 hours each side) and the interval
 
-At the live base rates (failed turn ~26%, timeout ~28% of normal hours) 24 high hours give >= 6 expected events in the high group, the usual floor for the log-ratio normal approximation; one hour then moves the rate by ~4 points instead of 8-12 at n=8-12. With 24 high vs ~140 normal hours, the interval only excludes 1 when the ratio is above ~2x. Today the most high hours any non-excluded pair has is 21 (bus_synaptic), so nothing can render yet -- and even at min 1 no interval excludes 1.
+At the live base rates (failed turn ~26%, timeout ~28% of normal hours) 24 high hours give >= 6 expected events in the high group, the usual floor for a log-ratio approximation; one hour then moves the rate by ~4 points instead of 8-12 at n=8-12. On top of that (review fixes), the interval:
 
-## Live association table (2026-10-14, 167 hours, 2026-10-07 05Z..2026-10-14 03Z)
+- uses the Mantel-Haenszel ratio over log2 bins of next-hour activity, so "busy hour after busy hour" is not read as an association (test `test_busy_next_hours_alone_do_not_make_an_association`), with the SE never narrower than the crude one;
+- is widened for serial correlation (AR(1) of condition x outcome over consecutive hours; `se_inflation` on the row, 1.0-1.45 live);
+- uses the Bonferroni z for every renderable pair (17 today: z = 2.97, family-wise 5%).
 
-`python scripts/analysis/self_signal_outcome_truth.py --live` (counts are "next hours with >=1 event / hours"):
+High hours accrue at ~1-4 per day per signal, so the first clause cannot appear for weeks, and only for a large effect.
+
+## Live association table (2026-10-14)
+
+Counted hours only (>= 144 h of PE history; the 7-day prune leaves 23 such hours today) -- what the producer will compute after deploy:
 
 ```text
-signal        outcome          high hrs normal hrs rate hi rate no  ratio    95% interval  verdict
-biometrics    turn_failed           2/4     31/117     50%     26%   1.89    (0.68, 5.26)  below_min_n
-biometrics    response_repair       2/4     64/117     50%     55%   0.91    (0.34, 2.47)  below_min_n
-biometrics    rpc_timeout           3/8     45/157     38%     29%   1.31    (0.52, 3.31)  below_min_n
-bus_synaptic  turn_failed          5/21     28/100     24%     28%   0.85    (0.37, 1.94)  below_min_n
-bus_synaptic  response_repair      9/21     57/100     43%     57%   0.75    (0.45, 1.27)  below_min_n
-bus_synaptic  rpc_timeout          9/26     39/139     35%     28%   1.23    (0.68, 2.23)  excluded_circular
-cabinet       turn_failed          6/14     27/108     43%     25%   1.71    (0.86, 3.41)  below_min_n
-cabinet       response_repair      8/14     58/108     57%     54%   1.06    (0.65, 1.73)  below_min_n
-cabinet       rpc_timeout          6/16     42/150     38%     28%   1.34    (0.68, 2.65)  below_min_n
-chat          turn_failed           0/0      15/66       -     23%      -               -  below_min_n
-chat          response_repair       0/0      38/66       -     58%      -               -  excluded_circular
-chat          rpc_timeout           0/0      26/85       -     31%      -               -  below_min_n
-codebase      turn_failed           1/2      13/81     50%     16%   3.12   (0.71, 13.59)  below_min_n
-codebase      response_repair       0/2      42/81      0%     52%   0.00    (0.03, 4.07)  below_min_n
-codebase      rpc_timeout           1/5     27/114     20%     24%   0.84    (0.14, 5.03)  below_min_n
-execution     turn_failed          1/12     29/103      8%     28%   0.30    (0.04, 1.98)  excluded_circular
-execution     response_repair      9/12     54/103     75%     52%   1.43    (0.98, 2.08)  excluded_circular
-execution     rpc_timeout          6/16     37/142     38%     26%   1.44    (0.72, 2.87)  below_min_n
-route         turn_failed           4/9      20/78     44%     26%   1.73    (0.76, 3.94)  below_min_n
-route         response_repair       6/9      44/78     67%     56%   1.18    (0.72, 1.95)  below_min_n
-route         rpc_timeout          1/10     34/105     10%     32%   0.31    (0.05, 2.02)  below_min_n
+replayed 167 hours 2026-10-07 06Z..2026-10-14 04Z, min_hours=24, min_history_hours=144 (23 hours eligible), Bonferroni z=2.97382
+signal        outcome          high hrs normal hrs rate hi rate no MH ratio   adj. interval  infl  verdict
+biometrics    turn_failed           0/0       4/16       -     25%        -               -  1.00  below_min_n
+biometrics    response_repair       0/0       4/16       -     25%        -               -  1.00  below_min_n
+biometrics    rpc_timeout           0/0       3/22       -     14%        -               -  1.00  below_min_n
+bus_synaptic  turn_failed           2/3       2/13     67%     15%     5.50  (0.25, 118.80)  1.06  below_min_n
+bus_synaptic  response_repair       0/3       4/13      0%     31%     0.00   (0.00, 44.44)  1.16  below_min_n
+bus_synaptic  rpc_timeout           2/3       1/19     67%      5%        - (0.13, 1201.28)  1.45  excluded_circular
+cabinet       turn_failed           0/0       4/16       -     25%        -               -  1.00  below_min_n
+cabinet       response_repair       0/0       4/16       -     25%        -               -  1.00  below_min_n
+cabinet       rpc_timeout           0/0       3/22       -     14%        -               -  1.00  below_min_n
+chat          turn_failed           0/0       3/11       -     27%        -               -  1.00  below_min_n
+chat          response_repair       0/0       4/11       -     36%        -               -  1.00  excluded_circular
+chat          rpc_timeout           0/0       1/15       -      7%        -               -  1.00  below_min_n
+codebase      turn_failed           1/1       3/15    100%     20%     3.50   (0.59, 20.70)  1.00  below_min_n
+codebase      response_repair       0/1       4/15      0%     27%     0.00   (0.02, 40.99)  1.00  below_min_n
+codebase      rpc_timeout           1/3       2/19     33%     11%     6.00  (0.14, 255.66)  1.20  below_min_n
+execution     turn_failed           0/1       4/15      0%     27%     0.00   (0.02, 40.99)  1.00  excluded_circular
+execution     response_repair       1/1       3/15    100%     20%        -   (1.08, 23.22)  1.00  excluded_circular
+execution     rpc_timeout           0/1       3/21      0%     14%        -   (0.03, 79.44)  1.00  below_min_n
+route         turn_failed           1/1       3/11    100%     27%     2.00    (0.45, 8.85)  1.00  below_min_n
+route         response_repair       1/1       3/11    100%     27%     4.00   (0.30, 52.55)  1.00  below_min_n
+route         rpc_timeout           0/2       2/15      0%     13%     0.00   (0.02, 71.85)  1.00  below_min_n
+would render today: 0
+truth-to-rows: PASS
+```
+
+Diagnostic (every replayed hour, no history floor -- these hours are stored but never counted):
+
+```text
+replayed 167 hours 2026-10-07 06Z..2026-10-14 04Z, min_hours=24, min_history_hours=0 (167 hours eligible), Bonferroni z=2.97382
+signal        outcome          high hrs normal hrs rate hi rate no MH ratio   adj. interval  infl  verdict
+biometrics    turn_failed           2/4     31/117     50%     26%     1.77   (0.26, 11.82)  1.22  below_min_n
+biometrics    response_repair       2/4     64/117     50%     55%     0.86    (0.17, 4.37)  1.07  below_min_n
+biometrics    rpc_timeout           3/8     45/157     38%     29%     1.15    (0.21, 6.29)  1.21  below_min_n
+bus_synaptic  turn_failed          6/22      27/99     27%     27%     1.03    (0.33, 3.26)  1.01  below_min_n
+bus_synaptic  response_repair      9/22      57/99     41%     58%     0.67    (0.30, 1.51)  1.00  below_min_n
+bus_synaptic  rpc_timeout         10/27     38/138     37%     28%     1.24    (0.52, 2.92)  1.01  excluded_circular
+cabinet       turn_failed          6/15     28/107     40%     26%     1.72    (0.52, 5.66)  1.11  below_min_n
+cabinet       response_repair      9/15     57/107     60%     53%     1.19    (0.58, 2.44)  1.05  below_min_n
+cabinet       rpc_timeout          6/19     43/147     32%     29%     1.02    (0.31, 3.41)  1.12  below_min_n
+chat          turn_failed           0/0      16/67       -     24%        -               -  1.00  below_min_n
+chat          response_repair       0/0      38/67       -     57%        -               -  1.00  excluded_circular
+chat          rpc_timeout           0/0      27/86       -     31%        -               -  1.00  below_min_n
+codebase      turn_failed           1/2      14/81     50%     17%     4.86   (0.53, 44.88)  1.00  below_min_n
+codebase      response_repair       0/2      41/81      0%     51%     0.00   (0.01, 15.52)  1.00  below_min_n
+codebase      rpc_timeout           1/5     28/114     20%     25%     0.81   (0.05, 14.17)  1.06  below_min_n
+execution     turn_failed          1/11     29/104      9%     28%     0.25    (0.01, 5.23)  1.05  excluded_circular
+execution     response_repair      8/11     55/104     73%     53%     1.42    (0.76, 2.66)  1.02  excluded_circular
+execution     rpc_timeout          6/15     37/143     40%     26%     1.31    (0.45, 3.78)  1.03  below_min_n
+route         turn_failed           4/9      21/79     44%     27%     1.16    (0.29, 4.63)  1.06  below_min_n
+route         response_repair       6/9      44/79     67%     56%     0.87    (0.40, 1.88)  1.02  below_min_n
+route         rpc_timeout          1/10     35/106     10%     33%     0.25    (0.01, 4.78)  1.04  below_min_n
 would render today: 0
 truth-to-rows: PASS
 ```
@@ -112,12 +149,12 @@ truth-to-rows: PASS
 ## Tests run
 
 ```text
-tests/test_self_signal_outcomes.py tests/test_attention_self_readings.py               50 passed
+tests/test_self_signal_outcomes.py tests/test_attention_self_readings.py tests/test_attention_pe_history_cache.py  64 passed
 orion/metacog/tests/{test_evidence_map,test_evidence_map_producer_contract,test_self_signal_episode}.py  passed
 services/orion-equilibrium-service: tests/test_self_signal_outcome_rollup.py tests/test_self_signal_episode_gate.py
   tests/test_docker_compose_env_parity.py evals/                                       48 passed
 services/orion-thought: tests/test_stance_self_readings.py tests/test_reverie_thin_import_boundary.py
-  evals/test_self_readings_truth_eval.py                                               32 passed, 3 skipped (pre-existing origin/main template skips)
+  evals/test_self_readings_truth_eval.py                                               33 passed, 3 skipped (pre-existing origin/main template skips)
 services/orion-sql-writer: tests/test_self_signal_outcome_sql_shape.py tests/test_transport_baseline_hourly_sql_shape.py  10 passed
 scripts/check_metric_lineage.py --gate / --prompt-semantics                            PASS / PASS
 scripts/check_definition_drift.py --gate                                               PASS (after --update)
@@ -149,7 +186,24 @@ Live runtime path UNVERIFIED until deployed: after deploy, `python scripts/analy
 
 ## Review findings fixed
 
-(filled in after review)
+Code review ran in a subagent over `origin/main...HEAD`; no blockers. Every should-fix and the nits are fixed:
+
+- Finding: 17 pairs re-tested hourly at 95% -> a false clause was likely over time.
+  - Fix: Bonferroni z over every renderable pair (`family_z`, `n_comparisons`/`ci_z` on the row). Repeated looks over time remain (concern below).
+  - Evidence: `test_bonferroni_widens_the_interval_for_the_whole_family`, `test_associate_all_counts_every_renderable_pair_as_one_family`.
+- Finding: adjacent hours are not independent; Katz too narrow.
+  - Fix: AR(1) SE inflation from consecutive hours (`serial_inflation`, `se_inflation` on the row).
+  - Evidence: `test_clustered_hours_inflate_the_interval`; live 1.00-1.45.
+- Finding: exposure confound (busy hours have more chances for one failure).
+  - Fix: Mantel-Haenszel over log2 next-hour activity bins, SE floored at the crude Katz SE (Greenland-Robins collapsed on sparse strata in the replay); clause says "at equal activity".
+  - Evidence: `test_busy_next_hours_alone_do_not_make_an_association` (crude 1.6x -> adjusted 1.0, no clause).
+- Finding: cold-start backfill judged hours against a truncated week and kept them for 90 days.
+  - Fix: `associate` ignores hours with `history_hours` < 144; rows stay stored and labelled; docstring corrected.
+  - Evidence: `test_hours_judged_on_a_short_history_never_count`; live table above (23 eligible hours).
+- Finding: orion-thought's association read sat inside the 0.5 s self-readings budget and the history lock.
+  - Fix: background refresh thread (and startup warm); the turn path only reads the in-memory index.
+  - Evidence: `test_a_stale_index_never_reads_on_the_callers_thread`.
+- Nits fixed: event-written replay drops an event at age >= 300 s like the seam (`test_one_event_on_the_poll_grid_is_not_a_high_hour`); "never had" instead of "0.0x"; Haldane only on zero cells (`test_katz_only_corrects_zero_cells`); stale docstrings; a trigger still on from the previous hour is high; open rows cite only published associations (`published_ids`); the rollup runs after the gate step, skips history copies when nothing is due (`NodePeHistoryCache.earliest`), and rate-limits repeated failures; association table growth (~21 rows/hour, no retention) documented.
 
 ## Restart required
 
@@ -161,8 +215,10 @@ Consumer-first: sql-writer creates the tables and subscribes, then equilibrium p
 
 ## Risks / concerns
 
-- Severity: medium. Concern: hours are not independent (high hours cluster, failures cluster), so a Katz interval assuming independent hours is somewhat too narrow. Mitigation: hour-level binary outcome (not raw counts) and min 24 hours each side; a later patch could block-bootstrap by day.
-- Severity: low. Concern: the first deploy backfills up to 7 days of hours whose percentile window is shorter than a week for the earliest hours (`history_hours` records it on each row). Mitigation: those rows are labelled; new hours always have a full week.
+- Severity: medium. Concern: the association is re-tested every hour as data grows (repeated looks); Bonferroni covers the 17 pairs per look, not the looks. Mitigation: wide adjusted interval and min 24 hours; a follow-up could require the verdict to hold for N consecutive refreshes before rendering.
+- Severity: low. Concern: the AR(1) inflation is a first-order approximation to the hours' dependence; a day-block bootstrap would be stricter.
+- Severity: low. Concern: chat can essentially never be "high" (two hot chat turns within ~5 minutes); its hours without a turn are unknown. Live: 0 high, 86 normal, 81 unknown. Not degenerate as an input (it reads normal), but it will not produce a clause.
+- Severity: low. Concern: the first deploy stores up to 7 days of backfilled hours that never count (short history); counting starts with the hours after deploy.
 - Severity: low. Concern: `harness_turn_trace` holds every harness run (chat and self-initiated), so "a failed turn" is any harness turn, not only Juniper's chat turns.
 - Severity: low. Concern: outcome fields (`compliance_verdict`, `response_repair_ran`, `timeout_count`) are not in the semantic layer; documented in the association's registry notes.
 

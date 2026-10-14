@@ -70,7 +70,7 @@ It runs in shadow next to today's recall. It replaces the old recall only when m
 
 **Live findings that shape it:**
 - **The writer already proposes aliases, and Stage 1 throws them away.** In the raw 27B output for the Hecate episode, `aliases` = "Inspur NF5288M5", "AGX-2 GPU", "8x smx2 gpus". `validate.py:308-315` keeps only `(key, role)`.
-- **Some proposed aliases are wrong as identities.** "my boss" only means something relative to Juniper. "a Marriott" names a class of hotel. "autonomous robot" for the camera project names a different future thing. So aliases need grounding and a collision path.
+- **Some proposed aliases are wrong as identities.** "my boss" only means something relative to Juniper. "[hotel chain]" names a class of hotel. "autonomous robot" for the camera project names a different future thing. So aliases need grounding and a collision path.
 - **The substrate graph has almost nothing walkable by default.** All 1,610 Entity nodes and 851 of 855 Concept nodes are `proposed`, but #2497's neighborhood defaults to `provisional`/`canonical`. A default read focused on topic-foundry's "circe" entity returns `focal_unavailable_or_filtered`.
 - **Neighborhood reads are slow on the chat path today:** 352–674 ms for one focal node from the host. The cost is round trips, not query time. A single bounded Cypher query runs in 2–4 ms inside Falkor.
 
@@ -114,7 +114,7 @@ What this shows:
 |---|---|---|
 | `project:hecate` | "Inspur NF5288M5", "AGX-2 GPU", "8x smx2 gpus" | Yes. Prompt `ddc979a1…`: "I got us an Inspur NF5288M5 AGX-2 GPU that holds 8x smx2 gpus. We'll call it Hecate" |
 | `person:juniper-relative` | "my relative" | Yes, but relative to the speaker |
-| `place:hotel` | "[hotel]", "a Marriott" | "[hotel]" yes. "a Marriott" is a class (**UNVERIFIED** whether it is quoted) |
+| `place:hotel` | "[hotel]", "[hotel chain]" | "[hotel]" yes. "[hotel chain]" is a class (**UNVERIFIED** whether it is quoted) |
 | `event:joker-2-viewing` | "Joker 2" | Yes |
 | `event:austin-offsite` | "Austin team", "offsite" | "offsite" yes |
 | `person:boss` | "my boss" | Yes, but relative to the speaker |
@@ -351,7 +351,7 @@ The projector writes the provisional/canonical names onto `EntityNodeV1.aliases`
 | Rule | Effect | Live example |
 |---|---|---|
 | **Grounding:** the alias occurs (word-bounded, case-insensitive) in a verified evidence quote with `source_kind='chat_prompt'` | `provisional`. This is an auto-accept policy, `alias_grounding_v1` ("it is Juniper's own word"), with tests | "Inspur NF5288M5", "8x smx2 gpus", "AGX-2 GPU" on Hecate |
-| Not grounded in a prompt | `proposed`. Never used to resolve or to index | "a Marriott" if unquoted; "the new server" from Orion's statement |
+| Not grounded in a prompt | `proposed`. Never used to resolve or to index | "[hotel chain]" if unquoted; "the new server" from Orion's statement |
 | **Descriptor:** starts with a determiner or possessive (the, a, an, my, our, her, his, their, this, that), or every token is common (df > 0.5%) | `alias_class='descriptor'`, `valid_until = last use + 90 d`. Resolves only while valid and unique | "my boss", "my relative", "camera" |
 | **Collision:** an alias proposed for node B is already provisional/canonical on node A | The alias on B is `proposed` → identity proposal (1.2 step 4) | If a robot node someday gets "autonomous robot", Orion asks |
 | **Rare tokens:** a token of a name alias with df ≤ 0.5% that belongs to exactly one node's aliases | The extractor matches it on its own | "the Inspur" → "inspur" (df 4) → Hecate |

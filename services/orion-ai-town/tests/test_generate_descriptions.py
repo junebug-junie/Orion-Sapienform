@@ -138,7 +138,9 @@ def test_juniper_blurb_present_in_world_ts():
     """Drift guard: the composed Juniper blurb must be spliced into world.ts."""
     world = (gen.WORLD_TS).read_text(encoding="utf-8")
     constants = (gen.CONSTANTS_TS).read_text(encoding="utf-8")
-    by = {c["id"]: c for c in _cards()["characters"]}
+    # The live upstream holds the real text: compare against the cards the
+    # generator actually uses (town_cards.local.yaml first), not the example.
+    by = {c["id"]: c for c in gen.load_cards()["characters"]}
     blurb = gen.compose_presence_blurb(by["juniper_feld"])
     expected_name = f"DEFAULT_NAME = '{by['juniper_feld']['name']}'"
     if blurb not in world or expected_name not in constants:

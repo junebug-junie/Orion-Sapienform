@@ -37,6 +37,18 @@ def test_line_hits_matches_words_and_emails_case_insensitively():
     assert cpt.line_hits("zorblaxian ideas", hashes) == set()  # whole words only
 
 
+def test_line_hits_catches_camel_case_accents_and_email_variants():
+    hashes = {cpt.term_hash("zorblax"), cpt.term_hash("pat@example.org")}
+    z = {cpt.term_hash("zorblax")}
+    assert cpt.line_hits("def zorblaxMemory(): pass", hashes) == z
+    assert cpt.line_hits("class ZorblaxCard: ...", hashes) == z
+    assert cpt.line_hits("memoryZorblax = 1", hashes) == z
+    assert cpt.line_hits("Zörblax said", hashes) == z
+    e = {cpt.term_hash("pat@example.org")}
+    assert cpt.line_hits("x.pat@example.org", hashes) == e
+    assert cpt.line_hits("mailto:pat%40example.org", hashes) == e
+
+
 def test_term_hash_rejects_phrases():
     with pytest.raises(SystemExit):
         cpt.term_hash("two words")

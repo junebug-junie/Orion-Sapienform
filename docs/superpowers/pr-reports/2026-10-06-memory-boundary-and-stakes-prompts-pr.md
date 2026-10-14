@@ -5,7 +5,7 @@
 ## Summary
 
 - The judge that decides whether a conversation has ended was asked "BOUNDARY: YES or NO", but nobody told it what a boundary is. It said yes to almost everything, so one evening's chat was cut into several episodes. The prompt now defines it in Juniper's terms: yes means the thread ended or moved to something unrelated; no means a pause, a follow-up, an elaboration, a reaction, a return to the same subject, or small talk inside the thread. (`orion/memory/turn_change_classify.py`, `BOUNDARY_DEFINITION`)
-- The distiller (the step that turns an episode into memories) marked every memory low-stakes, including Juniper's sister and her being scared her AC had broken Orion. The prompt now has Juniper's rubric as definitions with examples, and every memory must name its category in `stakes_reason` (`none` when low). Prompt version `memory_episode_distill.v3`.
+- The distiller (the step that turns an episode into memories) marked every memory low-stakes, including a family-relationship memory and a fear about the hardware. The prompt now has Juniper's rubric as definitions with examples, and every memory must name its category in `stakes_reason` (`none` when low). Prompt version `memory_episode_distill.v3`.
 - The validator never reads a memory's words to judge stakes. It only checks that `stakes`, `stakes_reason` and `asks_direction` are present and agree. When they disagree it moves the memory toward high (ask Juniper), never toward low, and logs why.
 - Two evals on the live model lanes, scores and counts only: a 30-day boundary re-score, and a stakes before/after on 10 real episodes.
 

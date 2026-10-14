@@ -11,7 +11,8 @@ not a determined attacker.
 Matching: every tracked text file is split into lowercase letter-only word
 tokens; each token and each email address is hashed and looked up. Terms are
 therefore single words (or emails); for a multi-word name add its distinctive
-word. A hit prints the file, line, and the hash (never the term).
+word. Limits: whole words only, so a plural or a name with a suffix glued on
+("names") is not caught; that would need fuzzy matching. A hit prints the file, line, and the hash (never the term).
 
   python scripts/check_personal_terms.py            # gate (exit 1 on any hit)
   python scripts/check_personal_terms.py --add      # read terms from stdin, append hashes
@@ -25,6 +26,7 @@ import hashlib
 import re
 import subprocess
 import sys
+import unicodedata
 from fnmatch import fnmatch
 from pathlib import Path
 
@@ -35,7 +37,6 @@ DENYLIST = ROOT / "config" / "privacy" / "personal_terms.sha256"
 SKIP_GLOBS = ("*/node_modules/*", "node_modules/*")
 MAX_BYTES = 4_000_000
 
-_WORD = re.compile(r"[a-z]+")
 _EMAIL = re.compile(r"[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}")
 
 
@@ -75,11 +76,30 @@ def _h(c: str) -> str:
     return h
 
 
+# Word tokens on the original case, so camelCase splits for free:
+# "nameMemory" -> name, Memory; "HTMLName" -> HTML, Name; "NAME_X" -> NAME, X.
+_TOKEN = re.compile(r"[A-Z]?[a-z]+|[A-Z]+(?![a-z])")
+
+
+def _ascii_fold(text: str) -> str:
+    if text.isascii():
+        return text
+    return "".join(ch for ch in unicodedata.normalize("NFKD", text) if not unicodedata.combining(ch))
+
+
+def _email_variants(addr: str) -> set[str]:
+    """The address plus every dotted suffix of its local part (``x.a.b@d`` -> ``a.b@d``, ``b@d``)."""
+    local, _, domain = addr.partition("@")
+    parts = local.split(".")
+    return {".".join(parts[i:]) + "@" + domain for i in range(len(parts))}
+
+
 def line_hits(line: str, hashes: set[str]) -> set[str]:
-    low = line.lower()
-    words = _WORD.findall(low)
-    cands = set(words)
-    cands.update(_EMAIL.findall(low))
+    text = _ascii_fold(line)
+    cands = {t.lower() for t in set(_TOKEN.findall(text))}
+    low = text.lower()
+    for addr in _EMAIL.findall(low.replace("%40", "@")) if "@" in low or "%40" in low else ():
+        cands |= _email_variants(addr)
     return {h for h in map(_h, cands) if h in hashes}
 
 

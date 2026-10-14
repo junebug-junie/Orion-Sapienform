@@ -105,7 +105,9 @@ def _poll_new_body(timeout: float = 30.0) -> tuple[Optional[str], Optional[str]]
 
 
 def _prefer_local(path: Path) -> Path:
-    """``x.local.txt`` beside ``x.txt`` wins: generate_descriptions.py writes the
+    """``x.local.txt`` beside ``x.txt`` wins, also for an explicit
+    EMBODIMENT_TOWN_CARDS_PATH (the container sets one, and the mounted
+    ``generated/`` dir carries the sibling): generate_descriptions.py writes the
     real (gitignored) card there when town_cards.local.yaml is its source."""
     local = path.with_name(f"{path.stem}.local{path.suffix}")
     return local if local.exists() else path

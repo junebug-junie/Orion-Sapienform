@@ -149,6 +149,6 @@ python3 scripts/reading_reread_backfill.py rollback --yes --restore-seeds   # on
 
 ## PR link
 
-PR_LINK_PLACEHOLDER
+https://github.com/junebug-junie/Orion-Sapienform/pull/2652 (stacked on #2647; retarget to main when #2647 merges)
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

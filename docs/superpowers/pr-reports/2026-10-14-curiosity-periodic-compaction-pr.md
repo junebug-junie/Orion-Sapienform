@@ -86,16 +86,18 @@ are ordinary operational evidence of actual records and saved topics.
     reproduced `worker-finished` before `closed` after the fixes.
 - Independent requesting-code-review skill/subagent: no remaining material findings.
 
-## CI dependencies
+## CI follow-up
 
 The implementation commit's durable graph/contract CI passed (498 passed, one optional
-skip, plus the Postgres-backed fairness, deploy-order and chronology evals). Full PR status is blocked
-by the existing personal-term gate: all 11 flagged paths are unchanged by this branch.
-The independent fix is PR #2653 (its static gate is green); merge that fix before rebasing
-this PR. Do not bypass or weaken the privacy gate. The substrate v4 matrix job also failed
-before checkout because its Postgres image mirror returned `toomanyrequests: Data limit
-exceeded`; a retry reproduced the infrastructure failure. The v6 matrix passed.
-Current check results are authoritative in PR #2654.
+skip, plus Postgres-backed fairness, deploy-order and chronology evals). Initial full CI
+failed the existing personal-term gate; all 11 flagged paths were unchanged here. The
+privacy fix in PR #2653 has since merged and is incorporated from main without conflicts.
+The local privacy gate now passes all seven checks. No privacy gate was weakened.
+
+The initial durable/substrate infrastructure failures were Postgres image-mirror
+`toomanyrequests: Data limit exceeded` errors before checkout, not test failures.
+Both substrate matrix versions subsequently passed. Fresh checks on the integrated
+branch, including the added Curiosity CI commands, are authoritative in PR #2654.
 
 ## Deployment (requires Juniper's production approval)
 

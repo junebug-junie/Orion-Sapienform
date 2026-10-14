@@ -31,7 +31,9 @@ MAX_HYPOTHESES = 12
 # teaches it. One constant, three readers.
 FORMED_FROM_PREFIX = "dream_hypothesis:"
 
-ReplaySourceKind = Literal["metacog", "compaction_request", "resonance", "crystallization"]
+# "arc": a closed Temporal Self arc (temporal_self_arc), ref_id "arc:<arc_id>". Replay
+# material only: never counted in sleep pressure (orion-dream app/replay.py).
+ReplaySourceKind = Literal["metacog", "compaction_request", "resonance", "crystallization", "arc"]
 HypothesisArm = Literal["dream", "control"]
 CycleStatus = Literal["completed", "empty", "failed"]
 CycleTrigger = Literal["pressure", "manual"]

@@ -1,6 +1,6 @@
 """Dream cycle v2 store. Reads four producer tables; writes only v2 cycle/observation tables.
 
-Read-only on every source (orion_metacog, dream_compaction_request_queue,
+Read-only on every source (orion_metacog, dream_compaction_request_queue, temporal_self_arc,
 substrate_reverie_resonance_alert, memory_crystallizations, chat_history_log).
 Writes exactly CYCLE_WRITE_TABLES -- a test pins that no canonical memory
 table ever appears in a write statement here.
@@ -322,3 +322,41 @@ def persist_cycle(cycle: DreamCycleV1) -> bool:
     except Exception as exc:
         logger.warning("dream_cycle persist failed id=%s err=%s", cycle.cycle_id, exc)
         return False
+
+
+# Closed Temporal Self arcs that ENDED in [since, until), sleep excluded (Temporal Self
+# rev 4 patch 7). Read-only on temporal_self_arc (written by orion-durable-runs, same
+# database). Narrow columns, never the whole arc_json: evidence ids stay in the arc row,
+# cited by arc_id. ARC_ROW_LIMIT bounds the read; replay.arc_candidates ranks and caps.
+ARC_ROW_LIMIT = 2000
+ARC_READ_STATEMENT_TIMEOUT_MS = 2000
+ARC_ROWS_SQL = """
+    SELECT arc_id, kind, subject_ref,
+           coalesce(arc_json->>'subject_label', '') AS subject_label,
+           began_at, ended_at, status, attention_returns,
+           CASE WHEN jsonb_typeof(arc_json->'cumulative_dwell_sec') = 'number'
+                THEN (arc_json->>'cumulative_dwell_sec')::double precision ELSE 0 END
+             AS cumulative_dwell_sec
+      FROM temporal_self_arc
+     WHERE status = 'closed' AND kind <> 'sleep'
+       AND ended_at >= :since AND ended_at < :until
+     ORDER BY ended_at DESC
+     LIMIT :limit
+"""
+
+
+def load_arc_rows(since: datetime, until: datetime) -> list[dict[str, Any]]:
+    """Closed arcs for replay. Any failure (missing table, timeout) is [] and logged:
+    the sleep then replays exactly what it did before arcs existed."""
+    try:
+        from sqlalchemy import text
+
+        with _get_engine().begin() as conn:
+            conn.execute(text(f"SET LOCAL statement_timeout = '{int(ARC_READ_STATEMENT_TIMEOUT_MS)}ms'"))
+            rows = conn.execute(
+                text(ARC_ROWS_SQL), {"since": since, "until": until, "limit": ARC_ROW_LIMIT}
+            ).mappings().all()
+        return [dict(r) for r in rows]
+    except Exception as exc:
+        logger.warning("dream_cycle arc read failed err=%s", exc)
+        return []

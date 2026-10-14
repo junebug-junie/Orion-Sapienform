@@ -156,7 +156,13 @@ Juniper answered these on 2026-10-14 (relayed):
 - Reddit route: **public RSS/Atom, paced**, not the Data API (her app creation was blocked).
 - She accepted an open risk: Reddit's terms on automated access and AI use are UNVERIFIED (the
   policy page returned 403).
-- There are two kinds of source, self-improvement and interests (Part 2 config below).
+- Both categories are approved, and so are **all** the suggested subreddits (Part 2 config
+  below).
+- **Priority (her final order, which supersedes an earlier draft that put self-improvement
+  ahead of interests):**
+  1. `r/v100`, always first;
+  2. the interest subreddits;
+  3. the other self-improvement subreddits (LocalLLaMA, LocalLLM, homelab).
 
 Still open:
 
@@ -164,12 +170,9 @@ Still open:
    UNVERIFIED and checked in Phase 4. If a busy thread has more new comments than one feed holds,
    the pass is marked `feed_truncated` rather than claiming it read everything.
 2. **Feed polling interval.** The default is every 6 h per subreddit. Is that fine for her?
-3. **Proposed sources to trim:**
-   - self-improvement: r/LocalLLaMA, r/LocalLLM, r/homelab;
-   - interests: r/ArtificialSentience, r/consciousness, r/cogsci, r/compmathneuro,
-     r/neuroscience, r/MachineLearning, r/philosophyofmind;
-   - non-Reddit: GitHub issues/discussions for `ggml-org/llama.cpp` and `vllm-project/vllm`,
-     and the Level1Techs / ServeTheHome forums.
+3. **Non-Reddit sources.** Should Orion also follow GitHub issues/discussions for
+   `ggml-org/llama.cpp` and `vllm-project/vllm`, and the Level1Techs / ServeTheHome forums? If so,
+   at what priority?
 4. **Experiment proposals.** Should "worth trying" proposals go only to outreach, or also to a Hub
    panel she can mark tried / not tried? The mark is what lets Orion learn whether its judgement
    was right.
@@ -284,16 +287,25 @@ same way as `GpuPoolStateSQL`, with retention.
 
 ```yaml
 reddit:
-  self_improvement:          # judged against the body map; experiment step on
-    - {sub: v100, mode: whole_sub, max_new_threads_per_day: 10}         # confirmed 2026-10-14, ~1 post/day
-    - {sub: LocalLLaMA, mode: body_map_filter, max_new_threads_per_day: 5}   # proposed
-    - {sub: LocalLLM, mode: body_map_filter, max_new_threads_per_day: 3}     # proposed
-    - {sub: homelab, mode: body_map_filter, max_new_threads_per_day: 3}      # proposed (cooling/noise)
-  interests:                 # normal reading + resonance, no experiment step
-    - {sub: singularity, max_new_threads_per_day: 3}
-    - {sub: transhumanism, max_new_threads_per_day: 3}
-    # proposed, Juniper to trim: ArtificialSentience, consciousness, cogsci, compmathneuro,
-    # neuroscience, MachineLearning, philosophyofmind
+  # priority: lower number = served first by the Reddit fetch lane AND by the reading queue.
+  # Juniper 2026-10-14: v100 first always; interests next; other self-improvement subs last.
+  # category decides what happens AFTER the read (judge vs normal reading), not the order.
+  - {sub: v100,                category: self_improvement, priority: 1, mode: whole_sub,       max_new_threads_per_day: 10}  # ~1 post/day live
+  - {sub: singularity,         category: interests,        priority: 2, max_new_threads_per_day: 3}
+  - {sub: transhumanism,       category: interests,        priority: 2, max_new_threads_per_day: 3}
+  - {sub: ArtificialSentience, category: interests,        priority: 2, max_new_threads_per_day: 3}
+  - {sub: consciousness,       category: interests,        priority: 2, max_new_threads_per_day: 3}
+  - {sub: cogsci,              category: interests,        priority: 2, max_new_threads_per_day: 3}
+  - {sub: compmathneuro,       category: interests,        priority: 2, max_new_threads_per_day: 3}
+  - {sub: neuroscience,        category: interests,        priority: 2, max_new_threads_per_day: 3}
+  - {sub: MachineLearning,     category: interests,        priority: 2, max_new_threads_per_day: 3}
+  - {sub: philosophyofmind,    category: interests,        priority: 2, max_new_threads_per_day: 3}
+  - {sub: LocalLLaMA,          category: self_improvement, priority: 3, mode: body_map_filter, max_new_threads_per_day: 5}
+  - {sub: LocalLLM,            category: self_improvement, priority: 3, mode: body_map_filter, max_new_threads_per_day: 3}
+  - {sub: homelab,             category: self_improvement, priority: 3, mode: body_map_filter, max_new_threads_per_day: 3}  # cooling/power/noise
+priority_budget:              # shares of fetch.reddit.daily_request_budget, by priority
+  reserve: {1: 70}            # held for v100 until 20:00 UTC, then released to lower tiers
+  floor:   {3: 40}            # starvation guard: tier 3 always gets this much when it has due work
 reread: {max_passes: 5, interval_days: 3, new_comments_only: true}
 fetch:
   reddit:
@@ -359,42 +371,75 @@ judge carries the real decision. A miss is fixed by fixing the body map, never b
 - **Storage.** One Postgres row per source host in `reading_source_rate_state`:
   `source`, `next_allowed_at`, `day`, `requests_today`, `backoff_sec`, `blocked`, `last_status`,
   `last_error`.
-- **One request at a time.** A fetch takes the row `FOR UPDATE`. If `now < next_allowed_at`, or
-  the daily budget is spent, or the source is blocked, it does not fetch. The calling durable run
-  interrupts until `next_allowed_at` (or the next day) and retries.
+- **One request at a time, highest priority first.** Durable runs never fetch on their own.
+  Each follow or scan run that needs a fetch interrupts with
+  `{"reason": "reddit_fetch", "priority": P, "due_at": T}`, and its run state carries the priority
+  from config.
 
-  Otherwise it fetches and then sets:
-  - `next_allowed_at = now + max(min_spacing, Retry-After, backoff)`;
-  - on 429, `backoff_sec` doubles (base 600 s, cap 6 h);
-  - on 200, `backoff_sec` resets.
+  A single driver, `services/orion-durable-runs/app/reddit_lane_driver.py`, does the fetching. It
+  has the same shape as the existing `situation_driver.py` / `temporal_self_driver.py`. On each
+  tick:
+  1. It takes the rate-state row `FOR UPDATE`.
+  2. If `now >= next_allowed_at` and budget remains, it picks the one unfinished run with the
+     lowest `(priority, due_at)` whose priority tier still has budget (rules below).
+  3. It resumes that run for exactly one fetch.
+  4. It updates the row:
+     - `next_allowed_at = now + max(min_spacing, Retry-After, backoff)`;
+     - on 429, `backoff_sec` doubles (base 600 s, cap 6 h);
+     - on 200, `backoff_sec` resets;
+     - `requests_today_by_priority` increments.
 
-  The row lock serializes every caller, so there is never more than one Reddit request in flight.
+  The durable runs themselves are the queue, and the driver only chooses which one goes next, so
+  there is never more than one Reddit request in flight.
+- **Budget rules by priority.** With `daily_request_budget` B (default 300):
+  - Priority 1 (v100) may always fetch while any budget remains.
+  - Priorities 2-3 may not spend the last `reserve[1] - used[1]` requests until 20:00 UTC. After
+    that, the unused v100 reserve is released.
+  - Priority 2 may not take the last `floor[3] - used[3]` requests while priority 3 has due work.
+  - Otherwise, a lower number always goes first.
+- **Why the tier-3 floor exists (the one deviation from strict order).** Under strict priority,
+  nine interest subreddits at cap would use the whole remainder every day. LocalLLaMA, LocalLLM and
+  homelab would then never be read, and their rereads would starve indefinitely rather than
+  arriving late. A 40-request floor keeps them alive (about 3 new threads/day plus their rereads)
+  without ever delaying v100.
+- **The reading queue honors the same priority.** Today's claim is FIFO
+  (`orion/world_pulse_read/queue.py`, `ORDER BY created_at, seed_id`). Changes:
+  - Add `source_priority smallint NOT NULL DEFAULT 100` to `world_pulse_read_seed`.
+  - Add an optional `source_priority: int | None` to `ReadingRequestedV1`. That model is
+    `extra="forbid"`, so this is a consumer-first rollout: Hub must accept the field before the
+    connector sends it.
+  - Claim with `ORDER BY source_priority, created_at, seed_id`.
+
+  Existing reads (Juniper's own, world-pulse) default to 100, so they keep their current place and
+  are not jumped by low-priority Reddit reads. Exception: priority-1 v100 reads go ahead of
+  them too, per "first, always". Reddit tiers 2-3 map to 200/300, so her own hand-submitted reads
+  still go ahead of interest subreddits. This is a judgement call; if she wants hand-submitted
+  reads below v100 only, it is one constant.
 - **Why this is not a shadow queue.** The work items are durable runs, which already own retry and
   idempotency. The row holds only "when may anyone ask Reddit next", the same kind of state as a
   pool lease clock (memory `feedback_retries_go_on_durable_runs_not_shadow_queues`).
-- **Volume estimate.** Worst case with every proposed source kept, using these per-subreddit caps:
-  - 13 subreddits;
-  - new-thread caps: v100 10 (real ~1), LocalLLaMA 5, LocalLLM 3, homelab 3, interests 3 each x 9;
-  - sum of caps: 48 new threads/day; realistic about 30.
+- **Volume estimate and budget split.** All 13 approved subreddits are polled every 6 h (4
+  fetches/day each). Each new thread costs 1 pass-0 fetch plus 5 rereads, so in steady state a
+  sub costs `4 + 6 x new_threads/day`. "Worst" uses the caps; "realistic" assumes v100 ~1/day,
+  interests ~2/sub/day, and the body-map filter passing about 60% of the tier-3 cap.
 
-  | What | Worst case/day | Realistic/day |
-  | --- | --- | --- |
-  | Subreddit feeds (13 x every 6 h) | 52 | 52 |
-  | Thread pass 0 (one fetch per new thread) | 48 | ~30 |
-  | Rereads (5 passes over 15 days; steady state = new threads/day x 5) | 240 | ~150 |
-  | **Total** | **340** | **~230** |
+  | Priority | Subreddits | Worst want/day | Realistic want/day | Budget at B=300 | Worst-case result |
+  | --- | --- | --- | --- | --- | --- |
+  | 1 | v100 | 4 + 6x10 = **64** | 4 + 6x1 = **10** | reserved 70, always first | fully served |
+  | 2 | 9 interest subs | 36 + 6x27 = **198** | 36 + 6x18 = **144** | remainder: 300 - 64 - 40 = 196 at worst | ~2/day deferred |
+  | 3 | LocalLLaMA, LocalLLM, homelab | 12 + 6x11 = **78** | 12 + 6x7 = **54** | floor 40, more if left over | ~38/day deferred |
+  | | **Total** | **340** | **~208** | **300** | |
 
-  At 180 s minimum spacing the lane fits 480 requests/day, so the realistic load uses about half
-  of it. Worst case exceeds the 300 budget. When that happens, rereads wait a day rather than
-  skip (a reread later than 3 days is fine; a new-post scan is not urgent either). The budget and
-  spacing are config.
-
-  Sources that bring the budget down if needed:
-  - drop the 7 proposed interest subreddits: -28 polls and up to -126 thread fetches/day;
-  - lower interest caps to 1.
-
-  The observed 429 after ~4 quick requests was at sub-second spacing. Whether 180 s is enough is
-  UNVERIFIED, and the Phase 4 live check measures it.
+  Notes on the table:
+  - Realistic load fits easily: v100 uses ~10 of its 70, and the released remainder covers tiers
+    2-3 in full.
+  - Only the all-caps worst case defers work. A deferred fetch waits for the next day (a reread
+    arriving later than 3 days is acceptable); it is never dropped.
+  - At 180 s minimum spacing the lane can make 480 requests/day, so B=300 is the binding limit,
+    not the spacing.
+  - B, the reserve, the floor and the spacing are all config.
+  - The observed 429 after ~4 quick requests was at sub-second spacing. Whether 180 s is enough
+    is UNVERIFIED, and the Phase 4 live check measures it.
 
 **Fallback if Reddit blocks the reader:** Juniper pastes thread URLs into the Hub Reading tab. A
 Reddit URL is still fetched only through the same pacer and RSS transport. If the source is
@@ -503,7 +548,10 @@ Part 1:
 Part 2:
 
 - `config/reading_sources.yaml`
-- `orion/reading_sources/{reddit_rss.py,github.py,filter.py,pacer.py}`
+- `orion/reading_sources/{reddit_rss.py,github.py,filter.py}` and
+  `services/orion-durable-runs/app/reddit_lane_driver.py` (the priority-ordered pacer)
+- `orion/world_pulse_read/queue.py` (claim order) and `orion/schemas/reading.py`
+  (`source_priority`, consumer-first)
 - `services/orion-durable-runs/app/reading_follow_graph.py`
 - `services/orion-durable-runs/app/self_improvement_judge_graph.py` (or a stage-3 node in
   `reading_graph.py`)
@@ -512,6 +560,7 @@ Part 2:
 - `services/orion-hub/.env_example` + local `.env` sync (`READING_REDDIT_ENABLED`,
   `READING_FOLLOW_ENABLED`; no secrets)
 - `manual_migration_*.sql`: `reading_source_rate_state`
+  plus `world_pulse_read_seed.source_priority`
   (`-- ORION-MIGRATION-REQUIRED-BY: orion-durable-runs, orion-hub`)
 - `services/orion-hub/README.md`: the operator note on Reddit app vs Devvit
 
@@ -563,6 +612,13 @@ Part 2:
 
 **Phase 4 (Reddit + follow):**
 - Gate (pacer): two concurrent callers produce one request.
+- Gate (pacer): with one priority-1, one priority-2 and one priority-3 run due, the order is
+  1, 2, 3.
+- Gate (pacer): with tier 3 due and B - used <= floor[3], a priority-2 run waits.
+- Gate (pacer): before 20:00 UTC tiers 2-3 cannot spend the v100 reserve; after 20:00 UTC they
+  can.
+- Gate (queue): a `source_priority` 1 seed is claimed before an older 100 seed, and a 200 seed
+  after it.
 - Gate (pacer): a 429 with `Retry-After: 900` gives `next_allowed_at >= now + 900`, and a second
   429 doubles the backoff.
 - Gate (pacer): the daily budget stops fetches.

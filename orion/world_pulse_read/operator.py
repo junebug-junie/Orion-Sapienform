@@ -328,6 +328,55 @@ async def retry_read(
     return {"action": "requeued", "stage": stage}
 
 
+REREAD_MARKER = "operator_reread"
+
+_OTHER_ROW_FOR_URL_SQL = """
+SELECT seed_id FROM world_pulse_read_seed
+WHERE url = $1 AND seed_id <> $2 AND duplicate_of IS NULL
+  AND (status IN ('pending', 'claimed') OR
+       (status = 'done' AND stage2_status IN ('pending', 'claimed')) OR
+       (status = 'done' AND (handoff_json->'read_evidence'->0) IS NOT NULL))
+LIMIT 1
+"""
+
+
+async def reread_read(conn: Any, seed_id: str) -> dict[str, Any]:
+    """Put a finished read back through BOTH stages on the same seed (Juniper 2026-10-14:
+    re-fetch reads whose page text was never retained, so Stage 2 can make claims).
+
+    Same row, so the "a URL is read once" rule (READ_URL_SQL) still holds: no second seed,
+    no alias. The workers do the rest exactly as for a new read: Stage 1 claims it, binds a
+    NEW durable attempt (bind_turn numbers attempts per seed, so no old run is reused),
+    and its handoff replaces this one; Stage 2 then runs on the new handoff. The old
+    handoff stays until Stage 1 replaces it (MARK_DONE_SQL coalesces), so a failed reread
+    leaves the old read readable. Refused unless both stages are finished, nothing is bound,
+    and no other row holds this URL (the stage-1 sweep would fold this row onto it)."""
+    async with conn.transaction():
+        row = await _locked_row(conn, seed_id)
+        if row["status"] != "done":
+            raise OperatorActionError("stage1_not_done")
+        if row["stage2_status"] not in ("done", "failed", "skipped"):
+            raise OperatorActionError("stage2_not_terminal")
+        if not _has_read_evidence(row["handoff_json"]):
+            raise OperatorActionError("no_read_evidence")
+        for stage in (1, 2):
+            if await conn.fetchval(_ACTIVE_BINDING_SQL, seed_id, stage):
+                raise OperatorActionError("active_durable_binding")
+        await conn.execute("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", row["url"])
+        if await conn.fetchval(_OTHER_ROW_FOR_URL_SQL, row["url"], seed_id):
+            raise OperatorActionError("url_held_by_another_row")
+        await conn.execute(
+            """UPDATE world_pulse_read_seed
+               SET status='pending', attempts=0, last_error=$2,
+                   claimed_at=NULL, completed_at=NULL,
+                   stage2_status='pending', stage2_attempts=0, stage2_error=NULL,
+                   stage2_claimed_at=NULL, stage2_completed_at=NULL
+               WHERE seed_id=$1""",
+            seed_id, REREAD_MARKER,
+        )
+    return {"action": "requeued_reread", "stage": 1}
+
+
 def operator_request(*, url: str, why_now: str = "", title: str = "") -> ReadingRequestedV1:
     if is_document_ref(url):
         url = normalize_document_ref(url)

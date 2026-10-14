@@ -28,7 +28,9 @@ read (related by construction) vs a concept from a different read's evidence gro
 
 With --llm-url, each usable read gets a claims-only prompt (the real
 ``claim_prompt_section``) with the live and the after object lists, and the model's claims
-go through the real ``plan_claims`` (no journal). Stops when the pool is busy.
+go through the real ``plan_claims`` (no journal). Stops when the pool is busy. Tag
+``meaning_rule`` is the after list with reading_meaning_target_v1 ON (its prompt wording and
+its rule, ``ClaimContextV1.meaning_links``); ``--tags meaning_rule`` runs only that pass.
 Exit 0 on completion; 2 when a store is unavailable; 3 when the LLM pass paused.
 """
 from __future__ import annotations
@@ -54,6 +56,7 @@ from orion.schemas.world_pulse_read import WorldPulseReadHandoffV1, WorldPulseRe
 from orion.substrate.reconcile import is_identity_fenced
 from orion.world_pulse_read.assertions import (
     MAX_OBJECTS,
+    MEANING_POLICY,
     resolve_reading_subjects,
     MIN_LABEL_CHARS,
     EndpointV1,
@@ -155,6 +158,8 @@ async def main() -> int:
     ap.add_argument("--llm-url", default="")
     ap.add_argument("--llm-model", default="agent")
     ap.add_argument("--llm-max-tokens", type=int, default=1200)
+    ap.add_argument("--tags", default="live,after,meaning_rule",
+                    help="LLM passes: live (raw 0.65), after (centered, strict rule), meaning_rule (centered, rule on)")
     ap.add_argument("--llm-role", default="agent", help="gpu-pool role the LLM route lands on (pool gate)")
     ap.add_argument("--pool-url", default=os.environ.get("GPU_POOL_URL", "http://127.0.0.1:8127"))
     args = ap.parse_args()
@@ -304,11 +309,15 @@ async def main() -> int:
                     # ---- optional: the model's actual claims, through the real plan_claims ----
                     if args.llm_url and usable:
                         rec["llm"] = {}
-                        for tag, extra in (("live", live), ("after", after)):
+                        wanted = {t.strip() for t in args.tags.split(",") if t.strip()}
+                        for tag, extra, rule_on in (("live", live, False), ("after", after, False),
+                                                    ("meaning_rule", after, True)):
+                            if tag not in wanted:
+                                continue
                             objs = tuple(exact) + tuple(EndpointV1(node_id=i, kind=nodes[i].node_kind,
-                                                                   label=str(nodes[i].label), via="meaning")
-                                                        for i, _ in extra)
-                            c2 = replace(ctx, objects=objs[:MAX_OBJECTS])
+                                                                   label=str(nodes[i].label), via="meaning", score=sc)
+                                                        for i, sc in extra)
+                            c2 = replace(ctx, objects=objs[:MAX_OBJECTS], meaning_links=rule_on)
                             if not c2.usable:
                                 continue
                             prompt = claims_prompt(handoff, c2)
@@ -352,6 +361,8 @@ async def main() -> int:
                                     p.claim.predicate == "associated_with" for p in subject_named),
                                 "claims": len(plans), "reasons": reasons,
                                 "accepted": sum(p.decision is not None for p in plans),
+                                "accepted_meaning_rule": sum(p.decision is not None and p.decision.policy == MEANING_POLICY
+                                                             for p in plans),
                                 "to_meaning_objects": sum(via.get(p.claim.object_id) == "meaning" for p in plans),
                                 "examples": [{"object": p.claim.object_id, "predicate": p.claim.predicate,
                                               "quote": p.claim.quote[:200], "reason": p.claim.receipt.reason}
@@ -374,11 +385,13 @@ async def main() -> int:
         agg: dict[str, dict[str, int]] = {}
         for r in report["reads"]:
             for tag, v in (r.get("llm") or {}).items():
-                a = agg.setdefault(tag, {"reads": 0, "claims": 0, "accepted": 0, "to_meaning_objects": 0,
+                a = agg.setdefault(tag, {"reads": 0, "claims": 0, "accepted": 0, "accepted_meaning_rule": 0,
+                                         "to_meaning_objects": 0,
                                          "cf_meaning_quote_names_subject": 0,
                                          "cf_meaning_quote_names_subject_associated_with": 0})
                 a["reads"] += 1
-                for k in ("claims", "accepted", "to_meaning_objects", "cf_meaning_quote_names_subject",
+                for k in ("claims", "accepted", "accepted_meaning_rule", "to_meaning_objects",
+                          "cf_meaning_quote_names_subject",
                           "cf_meaning_quote_names_subject_associated_with"):
                     a[k] += v[k]
                 for reason, n in v["reasons"].items():

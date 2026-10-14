@@ -228,4 +228,4 @@ def with_related_objects(ctx: ClaimContextV1, related: list[tuple[EndpointV1, fl
     a label hit always outranks a meaning hit), still capped at MAX_OBJECTS."""
     if not related:
         return ctx
-    return replace(ctx, objects=(*ctx.objects, *(e for e, _ in related))[:MAX_OBJECTS])
+    return replace(ctx, objects=(*ctx.objects, *(replace(e, score=round(float(sc), 4)) for e, sc in related))[:MAX_OBJECTS])

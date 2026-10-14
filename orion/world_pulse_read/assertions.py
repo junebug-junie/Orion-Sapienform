@@ -26,6 +26,20 @@ Flow, all deterministic except the model's proposal:
    (b) both endpoints resolved to stored Concept/Entity ids (step 1);
    (c) the predicate passes its domain rule.
    Anything else stays ``proposed``: journalled, no link. Juniper can reject later.
+
+   A MEANING-ONLY object (offered by concept_search.py, label not in this read's text) can
+   never pass (a): a verbatim quote cannot contain a label the text lacks. Since #2647 those
+   claims go to ``reading_meaning_target_v1`` instead (Juniper, 2026-10-14), only while
+   ``ClaimContextV1.meaning_links`` is on (Hub flag
+   HUB_WORLD_PULSE_READ_MEANING_TARGET_LINKS_ENABLED). It ACCEPTS to ``provisional`` only
+   when all hold:
+   (a') predicate is ``associated_with`` (nothing stronger is claimed from meaning alone);
+   (b') the quote (4+ words) is found verbatim in a retained text (same matcher as (a))
+        and names the SUBJECT, the concept this read produced, by its stored label;
+   (c') both endpoints resolved to stored ids, and the object is one this read's prompt
+        actually offered by meaning (the same ``ClaimContextV1`` bound the prompt).
+   Its decisions carry their own policy name, so they can be counted and withdrawn
+   together (services/orion-hub/scripts/reading_meaning_links.py).
 4. ``AssertionProjector`` (run by Hub with ``proposal_actors=(READING_ACTOR,)``) writes the
    Assertion node and its semantic projection edge, which the neighborhood read walks.
 
@@ -59,6 +73,9 @@ logger = logging.getLogger(__name__)
 
 READING_ACTOR = "world_pulse_read_stage2"
 POLICY = "reading_quote_rule_v1"
+# Juniper 2026-10-14: subject-anchored rule for objects offered by meaning only (see above).
+MEANING_POLICY = "reading_meaning_target_v1"
+MEANING_PREDICATE = "associated_with"
 _NS = uuid.UUID("5d0c7e1a-6f0b-4b5e-8a43-2c1d9b7e4f10")
 
 # A cited quote must be a statement, not a word: a single label ("refrigeration") is found
@@ -87,6 +104,8 @@ class EndpointV1:
     # How an object was found: "label" (named in the read) or "meaning" (near a subject
     # by embedding, concept_search.py). Subjects are always "label".
     via: str = "label"
+    # Centered-cosine score a meaning object was offered at (concept_search.rank_centered).
+    score: Optional[float] = None
 
 
 @dataclass(frozen=True)
@@ -96,6 +115,9 @@ class ClaimContextV1:
     texts: tuple[RetainedTextV1, ...] = ()
     # What object labels were matched against (the read's own words + retained text).
     haystack: str = ""
+    # reading_meaning_target_v1 in force for this read. Bound once with the prompt, so the
+    # prompt the model saw and the rule that judges its claims can never disagree.
+    meaning_links: bool = False
 
     @property
     def usable(self) -> bool:
@@ -234,7 +256,15 @@ def claim_prompt_section(ctx: ClaimContextV1) -> str:
     named = [e for e in ctx.objects if e.via != "meaning"]
     related = [e for e in ctx.objects if e.via == "meaning"]
     objects = f"objects:\n{listing(named)}\n" if named else ""
-    if related:
+    if related and ctx.meaning_links:
+        objects += (
+            "objects related by meaning (the text below does not name these). A claim to one "
+            "is linked ONLY with predicate associated_with AND a quote that names the SUBJECT "
+            "by its label exactly as listed above; any other claim to one is recorded for "
+            "review, not linked:\n"
+            f"{listing(related)}\n"
+        )
+    elif related:
         objects += (
             "objects related by meaning (the text below does not name these; a claim to one "
             "is recorded for review, not linked, unless the quote names it):\n"
@@ -251,7 +281,9 @@ def claim_prompt_section(ctx: ClaimContextV1) -> str:
         "only that the source mentions both, never causation. If no predicate fits without "
         "distortion, propose nothing.\n"
         "quote: copy the supporting sentence EXACTLY, character for character, from the text "
-        "below; it must name the object. A paraphrased quote is not accepted.\n"
+        + ("below; it must name the object (for an object related by meaning: the subject). "
+           if related and ctx.meaning_links else "below; it must name the object. ")
+        + "A paraphrased quote is not accepted.\n"
         'Add the key "relationship_claims": [{"subject_id": "...", "predicate": "...", '
         '"object_id": "...", "statement_text": "one plain sentence", "quote": "exact text"}]\n'
         + "\n".join(excerpts)
@@ -306,6 +338,7 @@ def plan_claims(
     ``object_lookup`` (``stored_object_lookup``) reads the store for an id not in the list."""
     subjects = {e.node_id: e for e in ctx.subjects}
     objects = {e.node_id: e for e in ctx.objects}
+    haystack = ctx.haystack.lower()
     seen: set[str] = set()
     plans: list[ClaimPlanV1] = []
     for raw in list(claims)[:MAX_CLAIMS]:
@@ -351,29 +384,46 @@ def plan_claims(
             text, start, end = found
             span = {"content_sha256": text.sha256, "representation": text.representation,
                     "span_start": start, "span_end": end}
+        # Meaning-only: offered by concept_search (in THIS context's list, never re-found by
+        # object_lookup, which only returns label objects) and its label is not in the read.
+        # A meaning object whose label the text does contain is a named target: full rule set.
+        meaning_only = (ctx.meaning_links and obj.via == "meaning" and objects.get(obj.node_id) is obj
+                        and not _label_in(obj.label, haystack))
         reason = (
             "quote_too_short" if not quote_ok
             else "quote_not_found" if found is None
+            # reading_meaning_target_v1: only associated_with, and the quote must be about
+            # the SUBJECT (the object, by construction, is not named in the text).
+            else "meaning_target_predicate" if meaning_only and claim.predicate != MEANING_PREDICATE
+            else "quote_not_about_subject" if meaning_only and not _label_in(sub.label, quote.lower())
             # The quote must be ABOUT the object: any sentence lifted from the page is
             # not evidence for a link to an arbitrary offered concept. (The subject may
             # appear as a pronoun, so only the object's stored label is required.)
-            else "quote_not_about_endpoints" if obj.label.strip().lower() not in quote.lower()
+            else "quote_not_about_endpoints" if not meaning_only and obj.label.strip().lower() not in quote.lower()
             else domain_violation(claim.predicate, sub.kind, obj.kind)
         )
         decision = None
         if reason is None:
             text, start, end = found
+            if meaning_only:
+                score = f" (offered by meaning, centered score {obj.score:.3f})" if obj.score is not None else ""
+                policy, rationale = MEANING_POLICY, (
+                    f"quote naming the subject found verbatim in the retained {text.representation} "
+                    f"of {text.url}; object offered by meaning{score}")
+            else:
+                policy = POLICY
+                rationale = f"quote found verbatim in the retained {text.representation} of {text.url}"
             decision = SubstrateGraphDecisionV1(
                 proposal_id=proposal_id, proposal_kind="relationship_assertion", target_id=target,
                 actor=READING_ACTOR, decision_id=f"reading-{uuid.uuid5(_NS, f'{proposal_id}|accept')}",
-                expected_prior_revision=0, resulting_state="provisional", policy=POLICY,
-                authority="local_inferred",
-                rationale=f"quote found verbatim in the retained {text.representation} of {text.url}",
+                expected_prior_revision=0, resulting_state="provisional", policy=policy,
+                authority="local_inferred", rationale=rationale,
                 evidence_refs=[f"reading_text:{text.sha256}#bytes={start}-{end}", f"reading_seed:{seed_id}"],
                 recorded_at=recorded_at,
             )
+        accepted_reason = "accepted_meaning_target" if decision is not None and decision.policy == MEANING_POLICY else "accepted"
         receipt = WorldPulseReadClaimReceiptV1(
-            outcome="accepted_provisional" if decision else "proposed", reason=reason or "accepted",
+            outcome="accepted_provisional" if decision else "proposed", reason=reason or accepted_reason,
             proposal_id=proposal_id, assertion_id=target,
             decision_id=decision.decision_id if decision else None, **span,
         )

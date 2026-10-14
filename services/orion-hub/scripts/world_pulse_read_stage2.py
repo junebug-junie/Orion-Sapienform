@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from dataclasses import replace
 from datetime import datetime, timezone
 from typing import Any, Callable, NamedTuple, Optional
 from uuid import uuid4, uuid5, NAMESPACE_URL
@@ -43,6 +44,7 @@ from orion.schemas.world_pulse_read import (
     strip_model_claim_receipts,
 )
 from orion.world_pulse_read.assertions import (
+    MEANING_POLICY,
     READING_ACTOR,
     ClaimContextV1,
     build_claim_context,
@@ -311,6 +313,7 @@ class WorldPulseReadStage2Pipeline:
         store_provider: Optional[Callable[[], Any]] = None,
         durable_url: str = "http://127.0.0.1:8124",
         assertions_enabled: bool = True,
+        meaning_target_links: bool = True,
         projector_readiness: Optional[Callable[[], Any]] = None,
         concept_search: Optional[SearchConfig] = None,
     ) -> None:
@@ -318,6 +321,9 @@ class WorldPulseReadStage2Pipeline:
         # HUB_WORLD_PULSE_READ_ASSERTIONS_ENABLED: kill switch for relationship claims
         # (prompt block, journal writes, and Hub's reading assertion projector).
         self.assertions_enabled = bool(assertions_enabled)
+        # HUB_WORLD_PULSE_READ_MEANING_TARGET_LINKS_ENABLED: reading_meaning_target_v1,
+        # bound onto each read's ClaimContextV1 so its prompt and its rule agree.
+        self.meaning_target_links = bool(meaning_target_links)
         self._projector_readiness = projector_readiness
         self._assertion_projector: Any = None
         self._claim_context: ClaimContextV1 = ClaimContextV1()
@@ -706,6 +712,7 @@ class WorldPulseReadStage2Pipeline:
                                handoff.seed_ref.seed_id, type(exc).__name__, str(exc)[:300])
             related_ms = int((time.perf_counter() - started) * 1000)
             ctx = with_related_objects(ctx, related)
+        ctx = replace(ctx, meaning_links=self.meaning_target_links)
         logger.info(
             "reading_claim_context seed=%s texts=%d subjects=%d objects=%d named=%d related=%d "
             "related_top=%s related_ms=%d usable=%s",
@@ -734,8 +741,10 @@ class WorldPulseReadStage2Pipeline:
         outcomes: dict[str, int] = {}
         for c in report.claims:
             outcomes[c.receipt.reason] = outcomes.get(c.receipt.reason, 0) + 1
-        logger.info("reading_claims_recorded seed=%s claims=%d proposals=%d accepted=%d reasons=%s",
-                    seed_id, len(report.claims), report.proposals, report.accepted,
+        meaning = sum(1 for p in plans if p.decision is not None and p.decision.policy == MEANING_POLICY)
+        logger.info("reading_claims_recorded seed=%s claims=%d proposals=%d accepted=%d "
+                    "meaning_rule_decisions=%d meaning_links=%s reasons=%s",
+                    seed_id, len(report.claims), report.proposals, report.accepted, meaning, ctx.meaning_links,
                     ",".join(f"{k}:{v}" for k, v in sorted(outcomes.items())))
         return result.model_copy(update={"relationship_claims": report.claims})
 

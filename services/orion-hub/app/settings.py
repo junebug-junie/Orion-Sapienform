@@ -826,6 +826,13 @@ class Settings(BaseSettings):
     HUB_WORLD_PULSE_READ_ASSERTIONS_ENABLED: bool = Field(
         default=True, alias="HUB_WORLD_PULSE_READ_ASSERTIONS_ENABLED"
     )
+    # reading_meaning_target_v1 (Juniper 2026-10-14): a claim to an object offered by
+    # meaning only may be accepted as associated_with when its quote names the subject.
+    # false = those claims stay proposed again (the prompt says so too); links it already
+    # made stay until withdrawn (scripts/reading_meaning_links.py withdraw).
+    HUB_WORLD_PULSE_READ_MEANING_TARGET_LINKS_ENABLED: bool = Field(
+        default=True, alias="HUB_WORLD_PULSE_READ_MEANING_TARGET_LINKS_ENABLED"
+    )
 
     # --- Orion's own graph ------------------------------------------------
     # `orion_worldview` is Orion's alone: it reads AND writes there, nothing in

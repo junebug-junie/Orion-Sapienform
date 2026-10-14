@@ -231,6 +231,13 @@
             class="px-3 py-1.5 text-xs font-semibold rounded-full bg-gray-800 text-gray-200 border border-gray-700 hover:bg-gray-700"
             role="button"
           >GPU pool</a>
+          <a
+            id="temporalSelfTabButton"
+            href="#temporal-self"
+            data-hash-target="#temporal-self"
+            class="px-3 py-1.5 text-xs font-semibold rounded-full bg-gray-800 text-gray-200 border border-gray-700 hover:bg-gray-700"
+            role="button"
+          >Temporal Self</a>
             </nav>
             <div id="hubTabLauncherEmpty" class="hub-tab-launcher-empty" hidden>No section matches.</div>
           </div>
@@ -1231,6 +1238,24 @@
         </div>
         <div class="rounded-xl border border-gray-800 bg-gray-950/40 overflow-hidden flex-1 min-h-[40rem]">
           <iframe id="gpuPoolPanelFrame" src="/gpu-pool" class="w-full h-full border-0 min-h-[48rem]" loading="lazy" title="GPU pool"></iframe>
+        </div>
+      </section>
+
+      <section id="temporal-self" data-panel="temporal-self" class="hidden w-full bg-gray-900 rounded-2xl shadow-lg p-5 flex flex-col gap-4 min-h-[56rem]">
+        <div class="flex items-center justify-between gap-3">
+          <div>
+            <h2 class="text-xl font-bold text-white">Temporal Self</h2>
+            <p class="text-xs text-gray-400 max-w-xl">
+              Orion's day as arcs: what they attended to, for how long, what they kept returning to, the open threads, and how aroused or rest-hungry they are now. Pick a past closed day to read it back.
+            </p>
+          </div>
+          <div class="flex items-center gap-2 flex-shrink-0">
+            <button id="temporalSelfPanelRefresh" class="text-xs bg-gray-800 hover:bg-gray-700 text-gray-200 rounded-lg px-3 py-1 border border-gray-700" type="button">Refresh</button>
+            <a id="temporalSelfPanelStandaloneLink" href="/temporal-self" class="text-xs bg-gray-800 hover:bg-gray-700 text-gray-200 rounded-lg px-3 py-1 border border-gray-700">Open standalone</a>
+          </div>
+        </div>
+        <div class="rounded-xl border border-gray-800 bg-gray-950/40 overflow-hidden flex-1 min-h-[40rem]">
+          <iframe id="temporalSelfPanelFrame" src="/temporal-self" class="w-full h-full border-0 min-h-[48rem]" loading="lazy" title="Temporal Self"></iframe>
         </div>
       </section>
 
@@ -4360,6 +4385,7 @@
   <script src="/static/js/self_observability.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
   <script src="/static/js/hub_surface_tab.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
   <script src="/static/js/gpu_pool_tab.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
+  <script src="/static/js/temporal_self_tab.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
   <script src="/static/js/reading_tab.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
   <script src="/static/js/runtime-activity.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
   <!--

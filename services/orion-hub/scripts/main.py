@@ -36,6 +36,7 @@ from scripts.hub_surface_routes import router as hub_surface_router, page_router
 from scripts.hub_surface_routes import _engine as hub_surface_engine
 from scripts.runtime_activity_routes import RuntimeActivityFeeds, router as runtime_activity_router
 from scripts.gpu_pool_routes import feed as gpu_pool_feed, page_router as gpu_pool_page_router, router as gpu_pool_router
+from scripts.temporal_self_routes import page_router as temporal_self_page_router, router as temporal_self_router
 from orion.hub.runtime_activity import get_runtime_activity
 import scripts.api_routes as api_routes_runtime
 import scripts.concept_atlas_routes as concept_atlas_routes_runtime
@@ -1744,6 +1745,8 @@ app.include_router(hub_surface_page_router)
 app.include_router(runtime_activity_router)
 app.include_router(gpu_pool_router)
 app.include_router(gpu_pool_page_router)
+app.include_router(temporal_self_router)
+app.include_router(temporal_self_page_router)
 
 # Real-time WS endpoint (also /hub/ws for path-prefixed reverse proxies where the browser path includes /hub)
 app.add_websocket_route("/ws", websocket_endpoint)

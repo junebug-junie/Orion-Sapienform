@@ -35,6 +35,12 @@ PANELS_WITHOUT_APP_JS_TAB = {
     # panel's show/hide and hash handling instead of app.js's setActiveTab
     # (same pattern as self-observability above).
     "hub-surface",
+    # Same self-routing pattern: gpu_pool_tab.js, reading_tab.js and
+    # temporal_self_tab.js each own their panel's show/hide + hash handling
+    # (each has its own nav entry, asserted by test_every_panel_has_a_nav_entry).
+    "gpu-pool",
+    "reading",
+    "temporal-self",
 }
 
 

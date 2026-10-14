@@ -3783,6 +3783,22 @@ Plan: `docs/superpowers/plans/2026-09-28-urgent-curiosity-plan-3-seeded-urgent-r
 gpu2 is loaded and unloaded only by orion-gpu-pool (GPU pool stage 4). The old per-run
 `HUB_CURIOSITY_ELASTIC_ACTIVATION_ENABLED` permission was deleted in stage 4.6.
 
+## Temporal Self tab (Orion's day)
+
+The **Temporal Self** tab (`#temporal-self`, standalone at `/temporal-self`) shows Orion's day as
+arcs: a timeline grouped by kind (label, start-end, dwell, returns, open/closed), the active arc,
+open threads, the day phase, and regulation now (arousal level + since, rest drive, immune findings).
+◀ / ▶ and the date picker load a past closed day (a day that is not closed yet reads "not closed").
+Render-only; it never writes.
+
+Every data route is a thin proxy to orion-durable-runs at `HUB_CURIOSITY_DURABLE_RUNS_URL` (the
+Hub's existing durable-runs base URL, reused rather than adding a second key): `/api/temporal-self/`
+`frame`, `day/{day_id}`, `arcs?day_id=&kind=&limit=`, `threads`, `cursors`, `regulation`
+(`/regulation/state`) and `immune` (`/health` `temporal_self.immune`). Upstream down or timed out
+(5 s) is a 502 naming the reason; an upstream 404/503 passes through with its detail; never a 500.
+Code: `scripts/temporal_self_routes.py`, `templates/temporal_self.html`, `static/js/temporal_self.js`,
+`static/js/temporal_self_tab.js`.
+
 ## GPU leases (lend cards in orion-gpu-pool)
 
 The **GPU leases** button in the composer control strip opens a small modal with one switch per

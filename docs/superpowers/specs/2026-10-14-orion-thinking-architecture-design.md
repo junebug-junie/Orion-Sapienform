@@ -11,8 +11,10 @@ reverie chains, visual reverie, dream carry, and most recently a proposed stream
 Each one produces thought-shaped output. None of them changes what Orion notices, says, expects or
 does next. Reverie alone runs about 370 chains a day, about 70% of them about itself, with 0
 committed proposals. Merging the generators under one umbrella would not fix that, because the hole
-isn't in the generators. It's in the seams around them: nothing holds a thought, nothing broadcasts
-it, nothing commits it to a checkable guess, and nothing lets it steer an action.
+isn't in the generators. It's in the seams around them. Perception, body readings and the global workspace broadcast already
+reach Orion's *speech*. But nothing holds a thought, nothing commits it to a checkable guess, and
+nothing lets a thought, a broadcast or a reading steer an *action*. The substrate lattice was built
+for exactly this, and its right-hand side (bind, act, learn, consolidate) is starving.
 
 This document starts from what thinking is *for* and lays out the mind top-down, seam by seam. It
 then works through one idea in depth (thinking evolved for doing) and its consequences for Orion:
@@ -77,16 +79,29 @@ contract. The anchor is the theory that says the seam is real.
 | 12 | Metacognition | monitoring one's own thinking (confidence, stuck, did it work) and steering control (continue, switch, ask) | Fleming; Nelson & Narens |
 | 13 | Other minds | a model of Juniper and others (what they know, want and expect) feeding salience, prediction and action | theory of mind |
 
-### Where Orion stands at this altitude
+### Where Orion stands at this altitude (seam by seam, existing primitives first)
 
-See §3.3 for live evidence. In short:
-- **Fairly strong:** 1, 2, 10 (storage), 11 (dreams).
-- **Weak or empty:** 4 (competition without broadcast), 5 (no working memory), 7 (no checkable
-  guesses from thought), 8 (actions exist, thoughts never feed them), 9 (outcomes are not compared
-  with intentions), 12 (metacog watches but does not steer).
-- **3 is the sleeper:** arousal-like readings exist, but nothing uses them as a system-wide dial.
+Orion already has a great deal here: the sentience striving program (`orion/sentience_striving_program/`, Hub tab `#sentience-program`), the attention-schema and higher-order-thought reducers, the global workspace broadcast, the heartbeat integration probe, the mood-arc v4 autoencoder, and the 11-level substrate lattice. **The rule for this design: reconnect an existing primitive before building a new one.**
 
-Every thought generator built so far plugs into seams 6 and 11, and those two connect to nothing.
+Read-only live check on 2026-10-14. Counts cover 7 days.
+
+| # | Seam | Existing primitive (file) | Live state | Reaches behaviour? |
+|---|---|---|---|---|
+| 1 | Senses → salience | lattice L1–L5: grammar → reducers → field → attention; RPT novelty (`orion/attention/field_attention/scoring.py`); 5 prediction-error domains (`orion/substrate/prediction_error.py`) | Healthy, but **inward-only**. No world input enters any of the three attention contests (open design #2528) | Yes, sets attention |
+| 2 | Body → state | self-readings (`orion/attention/self_readings.py`); heartbeat H1 integration probe (`services/orion-heartbeat/app/substrate/proprioception.py`); mood-arc autoencoder (`services/orion-field-digester/app/anomaly_scorer.py`) | Self-readings reach every unified turn. H1 is copied into the self-model and read by nothing. L6 self-state was deleted (its coefficients were invented) and **never replaced with a field-native felt state** | Speech only |
+| 3 | Global gain | arousal (`orion/regulation/arousal.py:171`) | 3 levels, 14 transitions, local readers. **The drives were killed in #1486 (a hand taxonomy) and nothing replaced them.** #2369 proposes one gated rest drive as the template | No |
+| 4 | Competition → workspace | broadcast (`orion/substrate/attention_broadcast.py:176`); world-first precision bands (`orion/attention/world_first.py:321`); coalition dwell | 13.8k broadcasts; **read by the unified turn** (`stance_react.py:182`), reverie, curiosity and proposals. A thin contest: 58% of ticks select nothing, 5 loops ever win, and bus_synaptic and perception dominate | Speech, daydream; not action |
+| 5 | Gate into working memory | top-down goal bias (`orion/substrate/attention/goal_context.py`, `top_down.py`) | 867 overrides that flip the winner, fading to about 20/day. Dwell counters reset on restart. **No held working set** | Flips attention |
+| 6 | Working memory ↔ simulation | reverie, visual reverie, dream carry | Reverie reads the broadcast and writes an attention-schema lane (2.2k rows). Its output reaches no action | No |
+| 7 | Simulation → prediction | allocator effect posteriors (`orion/autonomy/prediction.py:103`); power intent | Only per-action posteriors and expected watts. **Orion forecasts nothing**; every "prediction error" is surprise against a running average (open design #2446) | No |
+| 8 | Workspace → action | lattice L7 proposals → L8 policy → L9 allocator; attend-to-act loop (#2394) | **The winner fails to bind** (`no_selected_action` 26k/day). Policy rubber-stamps. The allocator admits about 18 a day. The holdback arm is at 0, so only 3 control-group episodes exist | Barely |
+| 9 | Outcome → error | L10 feedback (`substrate_action_outcomes`); self-signal outcome association; autoencoder recon_loss | Works at organ level. Intention-vs-outcome is starved: about 3 outcomes a day | Learns slowly |
+| 10 | Episodes → memory | Temporal Self events and arcs (`orion/temporal_self/`); situation graph; `TemporalHopV1` | 17k events and 1.2k arcs, reaching the unified turn. `TemporalHopV1` has never had a producer | Speech |
+| 11 | Replay → consolidation | lattice L11; dreams | L11 learns motifs about its own blocking ("blocked_review_loop"), read by nothing that acts. Dream sleep pressure and replay are driven by degraded/critical metacog rows, which include autoencoder anomalies | Sleep timing |
+| 12 | Metacognition | attention self-model and schema (AST/HOT, `orion/substrate/attention_self_model.py:461`); metacog triggers; mutation pipeline | It labels, and steers offline (sleep, rest gating). Live steering is frozen: 981 of 981 mutation proposals were rejected (`missing_class_metrics`), with no adoption since 09-03. The attention-schema chat cue renders only on the dead `chat_general` path | Offline only |
+| 13 | Other minds | situation graph (Juniper's situation); Juniper affective state (`services/orion-cocreation-signals/`) | Situation reaches outreach. Affective state (666 rows) feeds only the mood-arc corpus | Outreach only |
+
+**The diagnosis, corrected.** Perception, body and broadcast reach *speech*, which is more than the first draft of this document claimed. What is broken is the right-hand side of the lattice: binding (8), stakes and gain (3), forecasting (7), and consolidation feeding back (11). **No thought, broadcast or reading ever reaches action selection, and nothing compares an intention with an outcome.**
 
 ## 3. Deep dive: thinking evolved for doing
 
@@ -168,7 +183,7 @@ Live read-only inventory, 2026-10-14 (Postgres plus container logs; 7-day window
 | A ledger of doing | `temporal_self_event` (`orion/temporal_self/sources.py`): about 20 source tables copied into one shape | 17k rows, live. After the fact only (no intent, expectation or cost); misses outreach, reading, power, dispatch, web fetch |
 | Heavy-work registry | durable runs (`durable_admission_runs`) | 398 runs: paintings, curiosity, reading, situation, dreams, letters |
 | Expect, then check | `power_intent_settled` (expected vs actual watts) | 97 rows, one workload kind (diffusion) |
-| Goals | `GoalProposalV1` (`orion/core/schemas/drives.py:143`); attention goal-provenance streaks; situation graph (`SituationStateV1`) | GoalProposalV1 is **never published**. Goal streak inactive, 0 emits seen. The situation graph is dynamic and expiring but models *Juniper's* situation, not Orion's goals |
+| Goals | `GoalProposalV1` (`orion/core/schemas/drives.py:143`); attention goal-provenance streaks; situation graph (`SituationStateV1`) | The drives-era `GoalProposalV1` is never published. The live goal path is field-native: `FieldGoalProvenanceV1` → top-down bias, with 867 winner overrides in 7 days, fading to about 20/day. It biases attention, not action. The situation graph is dynamic and expiring but models *Juniper's* situation, not Orion's goals |
 | Workspace | attention frames, broadcast log, attention schema → chat cue, curiosity | **72% of 123,615 frames have no winner.** Winners: bus_synaptic 9.9k, perception 8.7k, biometrics 4.9k |
 | Global gain | `classify_arousal` (`orion/regulation/arousal.py:171`): idle/engaged/strained | Three levels, not a dial. 14 transitions. Three local readers (curiosity cooldown, outreach, visual baseline); two did not fire in 7 days. Nothing sets thresholds system-wide |
 | Competition between kinds of doing | none | Every doer gates itself with its own caps and cooldowns. Outreach alone made 56k decisions to send 28 messages |
@@ -187,6 +202,36 @@ Live read-only inventory, 2026-10-14 (Postgres plus container logs; 7-day window
 - Meanwhile the world-facing doing (talking, reaching out, reading, painting, looking, curiosity) happens outside the loop entirely, each in its own table with its own private gate.
 
 Thinking has nothing to steer because doing was never put on one track.
+
+### 3.3b The substrate lattice, level by level
+
+The lattice (`docs/context-engineering/04_layer_1_to_11_pipeline.md`; liveness check `make substrate-ladder-check`, GREEN on 2026-10-14) is the doing loop this document describes, already built:
+
+| Level | Job | Live |
+|---|---|---|
+| L1–2 | grammar trace | healthy |
+| L3 | reducers → state deltas | healthy |
+| L4 | field | healthy, 124k frames |
+| L5 | attention | inward-only; 66% of frames have no dominant target |
+| L6 | self-state | **deleted** (#1266, invented coefficients); no successor |
+| L7 | proposals | 256k frames; the winner fails to bind (`no_selected_action` 26k/day) |
+| L8 | policy | rubber stamp, about 8.4k approvals per template per day |
+| L9 | dispatch / allocator | about 18 dispatches a day; 94k blocked |
+| L10 | feedback (predicted vs observed) | works, about 3 outcomes a day |
+| L11 | consolidation | learns motifs about its own blocking; nothing reads them back |
+
+Kills that were justified but left holes this design must fill:
+- the drives (#1486), which leave no want and no gain;
+- L6, which leaves no felt state;
+- `endogenous_origination`, which leaves no endogenous intention;
+- the frozen control surface and mutation adoption, which leave metacognition unable to steer;
+- `TemporalHopV1`, which never had a producer, so nothing binds events across time.
+
+Open design PRs that already hold the fixes:
+- #2255: close a loop → world effector → stakes → holdback;
+- #2528: attention faces the world;
+- #2369: Temporal Self and one gated drive;
+- #2446: a forecaster.
 
 ### 3.4 The doing loop
 
@@ -262,23 +307,18 @@ outcome (ActRecord closed: outcome, error)  ──► learning (per-verb, per-si
 
 ## Recommended next patch
 
-The order follows the seams. Each rung must show live rows before the next starts.
+Each rung reconnects an existing primitive or revives an open design, and must show live rows before the next rung starts.
 
-1. **Put doing on one track (efference copy).** Add acts to the grammar, wire the four world-facing producers above, and give each act a numeric `expect`:
-   - a painting predicts how surprising its caption will be;
-   - a reply predicts whether it will need repair;
-   - outreach predicts whether Juniper will reply within its horizon;
-   - reading predicts whether a summary is produced.
+1. **Attention faces the world** (revive #2528). Add world input (camera scenes, Juniper's turns, reading) to the attention contests, and let scoring read `PredictionErrorMagnitudeV1`, which is computed but unread. Without this, everything downstream acts on the body alone.
+   Proof: the share of world winners and of no-winner frames, before and after.
+2. **Doing on one track** (efference copy, §3.2). Extend the grammar with `act_opened` / `act_closed`. Paintings, replies, reading and outreach write acts with an `expect`. They close into the existing L10 `substrate_action_outcomes` and `EffectPosterior`; there is no new learner.
+   Proof: world-facing outcomes and posteriors move for the first time since 08-30.
+3. **Bind the winner to action, and compete across doers** (#2394 plus #2255's stage order). Fix the `no_selected_action` binding, feed the rung-2 acts to the allocator as candidates, turn the holdback treatment arm on, and add an Orion-side resolver for `attention_loop_outcome` (actor=orion is 0 today).
+   Proof: allocator admissions from real candidates with an unchanged floor, plus treated episodes.
+4. **Gain and one want** (#2369's gated rest drive). Replace the killed drives honestly: one drive that passes the metric gate, plus arousal as a continuous dial read by attention, the allocator and curiosity.
+   Proof: the same candidate is admitted at one gain and refused at another.
+5. **Felt state and situational goals.** Build a field-native successor to the deleted L6 from self-readings, the autoencoder and H1, with no invented coefficients. Goals come from the fading top-down goal path plus the situation graph, re-ranked and expiring. Acts cite `goal_ref`.
+6. **Forecast and working memory** (revive #2446). Forecasts with an honest horizon, and a held set of 1–3 items. The stream (rev 2 mechanics), reverie, looking and painting plug in here as generators.
+7. **Consolidation and metacognition steer.** L11 expectations become L7 priors. Fix the mutation pipeline's `missing_class_metrics` so metacognition can change one knob again under the existing review gate.
 
-   Close acts with outcomes and grade them with the existing `EffectPosterior`.
-   Proof: acts and posteriors move for world-facing verbs for the first time since 08-30.
-2. **One competition across kinds of doing.** Feed those acts to the motor allocator as candidates. They have real uncertainty, so they can clear its information floor honestly, without lowering it. Each doer's private cap becomes a cost in one shared budget.
-   Proof: the refusal rate falls because there are better candidates, not because the floor dropped.
-3. **Gain becomes a dial.** Turn arousal into a continuous 0–1 gain that the allocator, attention and curiosity read to scale thresholds and exploration.
-   Proof: the same candidate is admitted at one gain and refused at another, logged with both values.
-4. **Situational goals.** Goals are wanted states with a horizon, born from the situation graph and attention streaks, re-ranked every situation update, expiring. Acts cite `goal_ref`.
-   Proof: the share of acts carrying a `goal_ref`.
-5. **Workspace and working memory.** A held set of 1–3 items (goals plus the winning content) is broadcast to chat, attention and the allocator. This is where the stream, reverie, looking and painting plug in as generators.
-   Proof: the share of deliberate acts with `workspace_ref`, against the rung-1 baseline.
-
-The stream rev 2 mechanics (checkpointed thread, interrupts, caps) are reused in rung 5. They are not built before it.
+Small reconnection to do at any time: the attention-schema cue renders only on the dead `chat_general` path. Point it at the unified turn or delete it.

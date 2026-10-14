@@ -23,9 +23,9 @@ def test_self_is_they_them():
 
 
 def test_unstated_pronouns_render_the_name_not_a_guess():
-    p = PersonRefV1(node_id="referent-x", display_name="Amanda")
+    p = PersonRefV1(node_id="referent-x", display_name="Brenda")
     assert pronoun_forms(p) is None
-    assert possessive(p) == "Amanda's"
+    assert possessive(p) == "Brenda's"
 
 
 def test_pronouns_without_evidence_are_refused(tmp_path):

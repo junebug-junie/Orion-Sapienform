@@ -26,3 +26,7 @@ cd /mnt/scripts/Orion-Sapienform && git pull --ff-only && ORION_ALLOW_SHARED_CHE
 - UNVERIFIED in a real browser (no headless browser on host); layout/mobile unchecked.
 - No endpoint lists closed days; picker shows "not closed" for unchronicled dates.
 - Regulation panel is "now" even when viewing a past day (labelled).
+
+## PR link
+
+https://github.com/junebug-junie/Orion-Sapienform/pull/2657

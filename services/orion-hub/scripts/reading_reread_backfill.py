@@ -1,0 +1,548 @@
+#!/usr/bin/env python3
+"""Re-read finished reads whose page text was never retained (Juniper 2026-10-14).
+
+Reads before text retention (~2026-10-11), or whose fetch came back a 404, have no usable
+retained text, so Stage 2 never saw a claim block and could not link anything. This puts
+each one back through the REAL reading path, one at a time: ``operator.reread_read`` sets
+the same seed row back to Stage 1 pending, and Hub's own workers do the rest (Stage 1
+reading turn on the agent lane via durable runs, text retained, then Stage 2 with
+reading_meaning_target_v1 active). No shadow queue, no direct model call.
+
+CLAUDE.md section 14 protocol. Everything lands in --out (default /tmp/reading-reread-backfill):
+
+    # from services/orion-hub, PYTHONPATH=.:../..
+    python3 scripts/reading_reread_backfill.py snapshot          # read-only: targets, URL probe, snapshot
+    python3 scripts/reading_reread_backfill.py run --yes         # after Hub is deployed with this code
+    tail -f /tmp/reading-reread-backfill/progress.log
+    python3 scripts/reading_reread_backfill.py report            # report.md + before_after.csv
+    python3 scripts/reading_reread_backfill.py rollback          # dry run; --yes to withdraw links,
+                                                                 # --restore-seeds to put rows back
+
+Targets: reads whose Stage 2 finished in (--until - --days, --until] with no usable retained
+text (fetch_text.load_retained_texts returns nothing). Each URL is probed with one plain GET
+first; 404/410 or an unresolvable host is recorded ``gone`` and never re-read.
+
+Pacing: one read at a time; before each, wait until the GPU pool is quiet (same check as the
+resonance judge run). A read that is not finished within --per-read-timeout-min stops the
+run (anomaly) instead of starting the next. Resumable: finished targets are in results.jsonl.
+
+What a re-read writes (all snapshotted first): the seed row (status, handoff_json,
+stage2_result_json, trace ids), new reading_durable_turn rows (new run ids), new
+reading_document_snapshot rows (content-addressed, insert-only), new journal_entries rows
+(new trace ids), substrate concept nodes re-materialized by Stage 1 (merged by identity),
+and substrate_graph_journal proposals/decisions for the claims Stage 2 makes. Rollback
+appends ``rejected`` decisions for every link decided for these seeds since the run
+started (both reading policies), and with --restore-seeds writes the snapshotted row
+values back. It does not delete journal rows, snapshots, or concept nodes (append-only
+stores); those are listed in the report.
+"""
+
+from __future__ import annotations
+
+import argparse
+import asyncio
+import csv
+import json
+import os
+import socket
+import subprocess
+import sys
+import time
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from typing import Any
+from urllib.parse import urlsplit
+
+HUB_ROOT = Path(__file__).resolve().parents[1]
+REPO_ROOT = HUB_ROOT.parents[1]
+for p in (REPO_ROOT, HUB_ROOT):
+    if str(p) not in sys.path:
+        sys.path.insert(0, str(p))
+
+from orion.world_pulse_read.assertions import MEANING_POLICY, POLICY  # noqa: E402
+
+DEFAULT_OUT = "/tmp/reading-reread-backfill"
+HUB_CONTAINER = "orion-athena-hub"
+# Code that must be live in Hub before a re-read is safe (checked in the container).
+DEPLOY_MARKERS = (
+    ("/app/orion/world_pulse_read/assertions.py", MEANING_POLICY),
+    # Without the stale-sweep exclusion a re-queued digest item is skipped on the next tick.
+    ("/app/orion/world_pulse_read/queue.py", "operator reread"),
+)
+GONE_STATUSES = frozenset({404, 410})
+SEED_COLUMNS = ("status", "attempts", "last_error", "claimed_at", "completed_at", "trace_id",
+                "handoff_json", "handoff_at", "stage2_status", "stage2_attempts", "stage2_error",
+                "stage2_claimed_at", "stage2_completed_at", "stage2_trace_id", "stage2_result_json")
+
+TARGETS_SQL = """
+SELECT seed_id, kind, url, title, stage2_completed_at, handoff_json FROM world_pulse_read_seed
+WHERE stage2_status = 'done' AND handoff_json IS NOT NULL AND duplicate_of IS NULL
+  AND stage2_completed_at > $2::timestamptz - make_interval(days => $1)
+  AND stage2_completed_at <= $2::timestamptz
+ORDER BY stage2_completed_at
+"""
+SEED_ROW_SQL = "SELECT * FROM world_pulse_read_seed WHERE seed_id = $1"
+DURABLE_SQL = "SELECT * FROM reading_durable_turn WHERE seed_id = $1 ORDER BY stage, attempt"
+JOURNAL_FOR_SEED_SQL = """
+SELECT event_id, event_kind, proposal_id, decision_id, target_id, revision, payload, recorded_at
+FROM substrate_graph_journal
+WHERE (event_kind = 'decision' AND payload->'evidence_refs' ? ('reading_seed:' || $1))
+   OR (event_kind = 'proposal' AND proposal_id IN (
+        SELECT proposal_id FROM substrate_graph_journal
+        WHERE event_kind = 'decision' AND payload->'evidence_refs' ? ('reading_seed:' || $1)))
+ORDER BY recorded_at, event_id
+"""
+JOURNAL_ENTRIES_SQL = "SELECT entry_id, source_ref, created_at FROM journal_entries WHERE source_ref = ANY($1::text[])"
+NEW_RUNS_SQL = "SELECT stage, attempt, run_id, created_at, consumed_at FROM reading_durable_turn WHERE seed_id = $1 AND created_at >= $2 ORDER BY stage, attempt"
+DECISIONS_SINCE_SQL = """
+SELECT payload->>'policy' AS policy, payload->>'resulting_state' AS state, target_id, decision_id
+FROM substrate_graph_journal
+WHERE event_kind = 'decision' AND recorded_at >= $2 AND payload->'evidence_refs' ? ('reading_seed:' || $1)
+"""
+
+
+def _now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _jsonable(v: Any) -> Any:
+    if isinstance(v, datetime):
+        return v.isoformat()
+    if isinstance(v, (bytes, bytearray)):
+        return v.decode("utf-8", "replace")
+    return v
+
+
+def _row_dict(row: Any) -> dict[str, Any]:
+    out = {}
+    for k, v in dict(row).items():
+        if k.endswith("_json") or k == "payload":
+            v = json.loads(v) if isinstance(v, str) else v
+        out[k] = _jsonable(v)
+    return out
+
+
+def resolve_dsn(explicit: str | None) -> str:
+    if explicit:
+        return explicit
+    for key in ("RECALL_PG_DSN", "POSTGRES_URI", "DATABASE_URL"):
+        value = str(os.getenv(key, "")).strip()
+        if value:
+            return value
+    return "postgresql://postgres:postgres@127.0.0.1:55432/conjourney"
+
+
+class Progress:
+    """progress.log: one line per event with title, percent, ETA, processed/total, rate,
+    errors, anomalies (CLAUDE.md section 14)."""
+
+    def __init__(self, out: Path, total: int, done: int = 0) -> None:
+        self.path, self.total, self.done = out / "progress.log", total, done
+        self.started, self.base = time.monotonic(), done
+        self.errors = self.anomalies = 0
+
+    def line(self, title: str, **extra: Any) -> str:
+        n = self.done - self.base
+        elapsed = max(1e-6, time.monotonic() - self.started)
+        rate = n / elapsed * 3600
+        left = self.total - self.done
+        eta = f"{left / (n / elapsed) / 60:.0f}m" if n else "unknown"
+        pct = 100.0 * self.done / max(1, self.total)
+        text = (f"{_now().isoformat(timespec='seconds')} {title} | {pct:.0f}% | eta {eta} | "
+                f"{self.done}/{self.total} | {rate:.1f}/h | errors {self.errors} | anomalies {self.anomalies}")
+        if extra:
+            text += " | " + " ".join(f"{k}={v}" for k, v in extra.items())
+        with self.path.open("a") as fh:
+            fh.write(text + "\n")
+        print(text, flush=True)
+        return text
+
+
+async def probe(client: Any, url: str) -> dict[str, Any]:
+    """One plain GET. gone = 404/410 or a host that does not resolve; anything else (403 bot
+    walls, 5xx, timeouts) is inconclusive and left to the real reader, which records it."""
+    host = urlsplit(url).hostname or ""
+    try:
+        await asyncio.to_thread(socket.getaddrinfo, host, None)
+    except OSError as exc:
+        return {"probe": "gone", "http_status": None, "detail": f"dns:{type(exc).__name__}"}
+    try:
+        resp = await client.get(url, follow_redirects=True, timeout=20.0,
+                                headers={"User-Agent": "Mozilla/5.0 (orion reading backfill probe)"})
+    except Exception as exc:  # noqa: BLE001
+        return {"probe": "inconclusive", "http_status": None, "detail": type(exc).__name__}
+    status = resp.status_code
+    verdict = "gone" if status in GONE_STATUSES else "fetchable" if status < 400 else "inconclusive"
+    return {"probe": verdict, "http_status": status, "final_url": str(resp.url)}
+
+
+def _subject_nodes(handoff: Any) -> list[dict[str, Any]]:
+    """Read-only Falkor snapshot of the concept nodes this read wrote (what Stage 1 re-merges)."""
+    try:
+        from orion.substrate.falkor_store import FalkorSubstrateStore, FalkorSubstrateStoreConfig
+        from orion.world_pulse_read.assertions import resolve_reading_subjects
+
+        store = FalkorSubstrateStore(FalkorSubstrateStoreConfig(
+            uri=os.getenv("FALKORDB_URI", "redis://127.0.0.1:6380"), ensure_indexes=False))
+        out = []
+        for e in resolve_reading_subjects(store, handoff):
+            node = store.get_node_by_id(e.node_id)
+            out.append(node.model_dump(mode="json") if node is not None else {"node_id": e.node_id, "missing": True})
+        return out
+    except Exception as exc:  # noqa: BLE001
+        return [{"error": f"{type(exc).__name__}: {exc}"[:300]}]
+
+
+async def cmd_snapshot(conn: Any, args: argparse.Namespace, out: Path) -> int:
+    import httpx
+
+    from orion.schemas.world_pulse_read import WorldPulseReadHandoffV1
+    from orion.world_pulse_read.fetch_text import load_retained_texts
+
+    until = datetime.fromisoformat(args.until) if args.until else _now()
+    until = until if until.tzinfo else until.replace(tzinfo=timezone.utc)
+    targets, snaps = [], []
+    async with conn.transaction(readonly=True):
+        rows = await conn.fetch(TARGETS_SQL, args.days, until)
+        prog = Progress(out, len(rows))
+        prog.line("snapshot_start", window_days=args.days, until=until.isoformat(), reads=len(rows))
+        async with httpx.AsyncClient() as client:
+            for row in rows:
+                handoff = WorldPulseReadHandoffV1.model_validate(_row_dict(row)["handoff_json"])
+                texts = await load_retained_texts(conn, handoff.read_evidence)
+                prog.done += 1
+                if texts:
+                    continue
+                full = _row_dict(await conn.fetchrow(SEED_ROW_SQL, row["seed_id"]))
+                traces = [t for t in (full.get("trace_id"), full.get("stage2_trace_id")) if t]
+                refs = [f"world_pulse_read:{full.get('trace_id')}", f"world_pulse_read_stage2:{full.get('stage2_trace_id')}"]
+                result = full.get("stage2_result_json") or {}
+                claims = result.get("relationship_claims") or []
+                p = await probe(client, row["url"])
+                target = {"seed_id": row["seed_id"], "kind": row["kind"], "url": row["url"],
+                          "title": row["title"], "stage2_completed_at": _jsonable(row["stage2_completed_at"]),
+                          "why_no_text": ("no_retained_text" if not any(e.content_sha256 for e in handoff.read_evidence)
+                                          else "retained_text_is_an_http_error_or_unverifiable"),
+                          "before_concepts": len(handoff.concept_candidates) if hasattr(handoff, "concept_candidates") else None,
+                          "before_claims": len(claims),
+                          "before_accepted": sum((c.get("receipt") or {}).get("outcome") == "accepted_provisional" for c in claims),
+                          **p}
+                targets.append(target)
+                snaps.append({
+                    "seed_id": row["seed_id"], "seed_row": full,
+                    "durable_turns": [_row_dict(r) for r in await conn.fetch(DURABLE_SQL, row["seed_id"])],
+                    "graph_journal": [_row_dict(r) for r in await conn.fetch(JOURNAL_FOR_SEED_SQL, row["seed_id"])],
+                    "journal_entries": [_row_dict(r) for r in await conn.fetch(JOURNAL_ENTRIES_SQL, refs)],
+                    "retained_sha256": sorted({e.content_sha256 for e in handoff.read_evidence if e.content_sha256}),
+                    "subject_nodes": await asyncio.to_thread(_subject_nodes, handoff),
+                    "traces": traces,
+                })
+                prog.line(f"target {row['seed_id'][:60]}", probe=p["probe"], http=p.get("http_status"))
+    (out / "targets.json").write_text(json.dumps(targets, indent=1, default=str))
+    with (out / "snapshot.jsonl").open("w") as fh:
+        for s in snaps:
+            fh.write(json.dumps(s, default=str) + "\n")
+    (out / "seeds.txt").write_text("".join(t["seed_id"] + "\n" for t in targets))
+    counts: dict[str, int] = {}
+    for t in targets:
+        counts[t["probe"]] = counts.get(t["probe"], 0) + 1
+    size = (out / "snapshot.jsonl").stat().st_size
+    prog.line("snapshot_done", targets=len(targets), by_probe=json.dumps(counts, separators=(",", ":")),
+              snapshot_bytes=size)
+    if size > 100 * 1024 * 1024:
+        print("snapshot exceeds 100MB: stop and ask Juniper (CLAUDE.md section 14)", file=sys.stderr)
+        return 4
+    return 0
+
+
+def deploy_check() -> list[str]:
+    """What is missing from the running Hub for a re-read to be safe. [] = ready."""
+    missing = []
+    for path, marker in DEPLOY_MARKERS:
+        r = subprocess.run(["docker", "exec", HUB_CONTAINER, "grep", "-q", marker, path],
+                           capture_output=True, text=True)
+        if r.returncode != 0:
+            missing.append(f"{path} lacks {marker!r} ({(r.stderr or '').strip()[:120] or 'not found'})")
+    r = subprocess.run(["docker", "exec", HUB_CONTAINER, "printenv", "HUB_WORLD_PULSE_READ_MEANING_TARGET_LINKS_ENABLED"],
+                       capture_output=True, text=True)
+    if r.stdout.strip().lower() not in {"true", "1", "yes"}:
+        missing.append(f"HUB_WORLD_PULSE_READ_MEANING_TARGET_LINKS_ENABLED in {HUB_CONTAINER} is {r.stdout.strip()!r}")
+    return missing
+
+
+def _load_jsonl(path: Path) -> list[dict[str, Any]]:
+    return [json.loads(ln) for ln in path.read_text().splitlines() if ln.strip()] if path.exists() else []
+
+
+async def _pool_quiet(client: Any, pool_url: str, wait_sec: float) -> list[str]:
+    from evals.run_reading_resonance_eval import wait_for_quiet_pool
+
+    return await wait_for_quiet_pool(client, pool_url, wait_sec, None)
+
+
+async def restore_seed(conn: Any, snap: dict[str, Any]) -> None:
+    """Write the snapshotted values of every SEED_COLUMNS column back onto the seed row."""
+    row = snap["seed_row"]
+    sets, vals = [], []
+    for i, col in enumerate(SEED_COLUMNS, start=2):
+        v = row.get(col)
+        if col.endswith("_json") and v is not None:
+            sets.append(f"{col} = ${i}::jsonb")
+            v = json.dumps(v)
+        elif col.endswith("_at") and v is not None:
+            sets.append(f"{col} = ${i}::timestamptz")
+            v = datetime.fromisoformat(v)
+        else:
+            sets.append(f"{col} = ${i}")
+        vals.append(v)
+    await conn.execute(f"UPDATE world_pulse_read_seed SET {', '.join(sets)} WHERE seed_id = $1",
+                       snap["seed_id"], *vals)
+
+
+async def _settled(conn: Any, seed_id: str) -> tuple[str, Any] | None:
+    row = await conn.fetchrow(SEED_ROW_SQL, seed_id)
+    if row["status"] in ("failed", "skipped"):
+        return "stage1_" + row["status"], row
+    if row["status"] == "done" and row["stage2_status"] in ("done", "failed", "skipped"):
+        return "stage2_" + row["stage2_status"], row
+    return None
+
+
+async def cmd_run(pool: Any, args: argparse.Namespace, out: Path) -> int:
+    import httpx
+
+    from orion.schemas.world_pulse_read import WorldPulseReadHandoffV1
+    from orion.world_pulse_read.fetch_text import load_retained_texts
+    from orion.world_pulse_read.operator import OperatorActionError, reread_read
+
+    if not args.yes:
+        print("run writes to live stores; pass --yes (after Hub is deployed with this code)", file=sys.stderr)
+        return 1
+    if not args.skip_deploy_check:
+        missing = deploy_check()
+        if missing:
+            print("REFUSED: Hub is not on the reread code yet:\n  " + "\n  ".join(missing), file=sys.stderr)
+            return 5
+    targets = json.loads((out / "targets.json").read_text())
+    snaps = {s["seed_id"]: s for s in _load_jsonl(out / "snapshot.jsonl")}
+    results_path = out / "results.jsonl"
+    done_ids = {r["seed_id"] for r in _load_jsonl(results_path)}
+    todo = [t for t in targets if t["probe"] != "gone" and t["seed_id"] not in done_ids]
+    if args.limit:
+        todo = todo[: args.limit]
+    meta = out / "run_meta.json"
+    if not meta.exists():
+        meta.write_text(json.dumps({"run_started_at": _now().isoformat()}))
+    prog = Progress(out, len(done_ids) + len(todo), done=len(done_ids))
+    prog.line("run_start", todo=len(todo), already_done=len(done_ids),
+              gone_skipped=sum(t["probe"] == "gone" for t in targets))
+
+    def record(rec: dict[str, Any]) -> None:
+        with results_path.open("a") as fh:
+            fh.write(json.dumps(rec, default=str) + "\n")
+
+    async with httpx.AsyncClient() as client:
+        for t in todo:
+            seed_id = t["seed_id"]
+            while True:
+                busy = await _pool_quiet(client, args.pool_url, 30.0)
+                if not busy:
+                    break
+                prog.line(f"paused pool busy before {seed_id[:50]}", reason=busy[0][:120])
+                await asyncio.sleep(args.pause_sec)
+            started = _now()
+            async with pool.acquire() as conn:
+                try:
+                    await reread_read(conn, seed_id)
+                except OperatorActionError as exc:
+                    prog.errors += 1
+                    prog.done += 1
+                    record({"seed_id": seed_id, "outcome": f"refused:{exc.code}", "started_at": started})
+                    prog.line(f"refused {seed_id[:50]}", code=exc.code)
+                    continue
+            prog.line(f"requeued {seed_id[:60]}", url=t["url"][:80])
+            deadline = time.monotonic() + args.per_read_timeout_min * 60
+            settled = None
+            while time.monotonic() < deadline:
+                await asyncio.sleep(args.poll_sec)
+                async with pool.acquire() as conn:
+                    settled = await _settled(conn, seed_id)
+                if settled:
+                    break
+            if settled is None:
+                prog.anomalies += 1
+                record({"seed_id": seed_id, "outcome": "timeout_still_running", "started_at": started})
+                prog.line(f"ANOMALY timeout {seed_id[:50]}: stopping (resume with run --yes)",
+                          minutes=args.per_read_timeout_min)
+                return 3
+            outcome, row = settled
+            async with pool.acquire() as conn:
+                runs = [_row_dict(r) for r in await conn.fetch(NEW_RUNS_SQL, seed_id, started)]
+                decisions = [_row_dict(r) for r in await conn.fetch(DECISIONS_SINCE_SQL, seed_id, started)]
+                handoff = WorldPulseReadHandoffV1.model_validate(_row_dict(row)["handoff_json"])
+                texts = await load_retained_texts(conn, handoff.read_evidence)
+                restored = False
+                if outcome.startswith("stage1_"):
+                    # The reader failed: put the old finished read back as it was.
+                    await restore_seed(conn, snaps[seed_id])
+                    restored = True
+            result = _row_dict(row).get("stage2_result_json") or {}
+            claims = result.get("relationship_claims") or [] if outcome == "stage2_done" else []
+            reasons: dict[str, int] = {}
+            for c in claims:
+                r = (c.get("receipt") or {}).get("reason", "?")
+                reasons[r] = reasons.get(r, 0) + 1
+            rec = {
+                "seed_id": seed_id, "url": t["url"], "outcome": outcome, "started_at": started,
+                "finished_at": _now(), "run_ids": [r["run_id"] for r in runs], "restored_old_row": restored,
+                "stage1_error": row["last_error"], "stage2_error": row["stage2_error"],
+                "retained_chars": [len(x.text) for x in texts], "claims": len(claims), "reasons": reasons,
+                "links_quote_rule": sum(d["policy"] == POLICY for d in decisions),
+                "links_meaning_rule": sum(d["policy"] == MEANING_POLICY for d in decisions),
+                "decisions": decisions,
+            }
+            if outcome != "stage2_done" or not texts:
+                prog.anomalies += outcome == "stage2_done" and not texts
+                prog.errors += outcome != "stage2_done"
+            prog.done += 1
+            record(rec)
+            prog.line(f"{outcome} {seed_id[:50]}", text=bool(texts), claims=len(claims),
+                      quote_links=rec["links_quote_rule"], meaning_links=rec["links_meaning_rule"],
+                      runs=",".join(rec["run_ids"]))
+    prog.line("run_done")
+    return 0
+
+
+def cmd_report(out: Path) -> int:
+    targets = json.loads((out / "targets.json").read_text())
+    results = {r["seed_id"]: r for r in _load_jsonl(out / "results.jsonl")}
+    rows = []
+    for t in targets:
+        r = results.get(t["seed_id"], {})
+        rows.append({"seed_id": t["seed_id"], "url": t["url"], "probe": t["probe"], "http_status": t.get("http_status"),
+                     "before_claims": t["before_claims"], "before_accepted": t["before_accepted"],
+                     "outcome": r.get("outcome", "skipped_gone" if t["probe"] == "gone" else "not_run"),
+                     "after_retained_chars": sum(r.get("retained_chars") or []), "after_claims": r.get("claims", 0),
+                     "after_links_quote_rule": r.get("links_quote_rule", 0),
+                     "after_links_meaning_rule": r.get("links_meaning_rule", 0),
+                     "run_ids": " ".join(r.get("run_ids") or [])})
+    with (out / "before_after.csv").open("w", newline="") as fh:
+        w = csv.DictWriter(fh, fieldnames=list(rows[0]) if rows else ["seed_id"])
+        w.writeheader()
+        w.writerows(rows)
+    ran = [x for x in rows if x["outcome"] not in ("not_run", "skipped_gone")]
+    text_now = sum(1 for x in ran if x["after_retained_chars"])
+    links_q = sum(x["after_links_quote_rule"] for x in rows)
+    links_m = sum(x["after_links_meaning_rule"] for x in rows)
+    errors = sum(1 for x in ran if x["outcome"] != "stage2_done")
+    pending = sum(1 for x in rows if x["outcome"] == "not_run")
+    verdict = ("NOT RUN" if not ran else "INCOMPLETE" if pending else
+               "DONE" if errors == 0 else "DONE_WITH_ERRORS")
+    md = [f"# Reading reread backfill report ({_now().isoformat(timespec='seconds')})", "",
+          f"Verdict: **{verdict}**", "",
+          f"- targets: {len(rows)} (gone, skipped: {sum(x['probe'] == 'gone' for x in rows)})",
+          f"- re-read: {len(ran)}; now with retained text: {text_now}; errors: {errors}; not run yet: {pending}",
+          f"- links made: {links_q} by reading_quote_rule_v1, {links_m} by reading_meaning_target_v1",
+          f"- needs another pass: {'yes' if pending or errors else 'no'}", "",
+          "| seed | probe | outcome | text chars | claims | quote links | meaning links |",
+          "|---|---|---|---|---|---|---|"]
+    md += [f"| {x['seed_id'][:48]} | {x['probe']} {x['http_status'] or ''} | {x['outcome']} | "
+           f"{x['after_retained_chars']} | {x['after_claims']} | {x['after_links_quote_rule']} | "
+           f"{x['after_links_meaning_rule']} |" for x in rows]
+    md += ["", "Rollback: `python3 scripts/reading_reread_backfill.py rollback --yes [--restore-seeds]`",
+           f"Files: {out}/targets.json, snapshot.jsonl, seeds.txt, results.jsonl, progress.log, "
+           "before_after.csv, report.md"]
+    (out / "report.md").write_text("\n".join(md) + "\n")
+    print("\n".join(md[:9]))
+    return 0
+
+
+async def cmd_rollback(pool: Any, args: argparse.Namespace, out: Path) -> int:
+    from orion.substrate.graph_journal import RevisionConflict, SubstrateGraphJournal
+    from orion.world_pulse_read.meaning_links import list_policy_links, withdrawal_for
+
+    seeds = [ln.strip() for ln in (out / "seeds.txt").read_text().splitlines() if ln.strip()]
+    meta = json.loads((out / "run_meta.json").read_text()) if (out / "run_meta.json").exists() else {}
+    since = datetime.fromisoformat(meta["run_started_at"]) if meta.get("run_started_at") else None
+    if since is None:
+        print("no run_meta.json: the backfill never ran; nothing to roll back")
+        return 0
+    journal = SubstrateGraphJournal(pool)
+    async with pool.acquire() as conn:
+        links = await list_policy_links(conn, policies=[MEANING_POLICY, POLICY], since=since, seed_ids=seeds)
+    written = 0
+    for link in links:
+        d = withdrawal_for(link, recorded_at=_now(), reason="reading reread backfill rollback")
+        line = {"assertion_id": link.decided.target_id, "policy": link.decided.policy, "status": link.status,
+                "withdrawal": d.decision_id if d else None}
+        if d is not None and args.yes:
+            try:
+                line["written"] = bool(await journal.append(d))
+            except RevisionConflict:
+                line["written"] = False
+            written += bool(line.get("written"))
+        print(json.dumps(line))
+    restored = 0
+    if args.restore_seeds:
+        snaps = _load_jsonl(out / "snapshot.jsonl")
+        results = {r["seed_id"] for r in _load_jsonl(out / "results.jsonl")}
+        for snap in snaps:
+            if snap["seed_id"] not in results:
+                continue
+            if args.yes:
+                async with pool.acquire() as conn:
+                    await restore_seed(conn, snap)
+            restored += 1
+    print(json.dumps({"dry_run": not args.yes, "links": len(links), "withdrawals_written": written,
+                      "seed_rows_restored" if args.yes else "seed_rows_to_restore": restored}))
+    return 0
+
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    ap = argparse.ArgumentParser(description="Re-read reads with no retained text through the real reading path.")
+    ap.add_argument("action", choices=("snapshot", "run", "report", "rollback"))
+    ap.add_argument("--out", default=DEFAULT_OUT)
+    ap.add_argument("--dsn", default=None)
+    ap.add_argument("--days", type=int, default=14)
+    ap.add_argument("--until", default="2026-10-14T00:10:00+00:00",
+                    help="window end (default: the window #2647's replay and judge run used)")
+    ap.add_argument("--yes", action="store_true")
+    ap.add_argument("--limit", type=int, default=0, help="run: at most N reads this invocation")
+    ap.add_argument("--pool-url", default=os.environ.get("GPU_POOL_URL", "http://127.0.0.1:8127"))
+    ap.add_argument("--pause-sec", type=float, default=60.0)
+    ap.add_argument("--poll-sec", type=float, default=30.0)
+    ap.add_argument("--per-read-timeout-min", type=float, default=240.0)
+    ap.add_argument("--skip-deploy-check", action="store_true")
+    ap.add_argument("--restore-seeds", action="store_true", help="rollback: also write snapshotted seed rows back")
+    return ap.parse_args(argv)
+
+
+async def _amain(args: argparse.Namespace) -> int:
+    import asyncpg
+
+    out = Path(args.out)
+    out.mkdir(parents=True, exist_ok=True)
+    if args.action == "report":
+        return cmd_report(out)
+    try:
+        pool = await asyncpg.create_pool(resolve_dsn(args.dsn), min_size=1, max_size=2)
+    except Exception as exc:  # noqa: BLE001
+        print(f"UNKNOWN: database unavailable: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return 2
+    try:
+        if args.action == "snapshot":
+            async with pool.acquire() as conn:
+                return await cmd_snapshot(conn, args, out)
+        if args.action == "run":
+            return await cmd_run(pool, args, out)
+        return await cmd_rollback(pool, args, out)
+    finally:
+        await pool.close()
+
+
+def main(argv: list[str] | None = None) -> int:
+    return asyncio.run(_amain(parse_args(argv)))
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

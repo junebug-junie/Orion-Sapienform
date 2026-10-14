@@ -122,6 +122,11 @@ jobs:
       - name: Grammar event producer catalog matches emitting code
         run: python -m pytest tests/test_grammar_event_producer_catalog.py -q -p no:cacheprovider
 
+      # Public repo: per-item human-review sets (they quote Juniper's memories and
+      # chats) must never be tracked under docs/superpowers/evals/ (2026-10-14).
+      - name: No private review artifacts tracked
+        run: python -m pytest tests/test_no_private_eval_artifacts.py -q -p no:cacheprovider
+
       # Field topology: every capability->capability edge must read a channel
       # some edge actually writes, and there is one topology file, not two.
       # The transport->orchestration edge read a never-written channel for

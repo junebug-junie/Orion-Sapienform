@@ -209,6 +209,10 @@ class FakeSemanticBackend:
         self.fail_embed = False
         # vector-writer down: upserts are published but never land.
         self.drop_upserts = False
+        # Chroma answers the whole-index paged read (all_vectors) with an error.
+        self.fail_get_all = False
+        # The collection exists but holds no rows (created, then emptied).
+        self.exists_empty = False
 
     def vector(self, text: str) -> list[float]:
         return self.vectors.get(text) or self._norm([0.0] * (self._dims - 1) + [1.0])
@@ -229,7 +233,7 @@ class FakeSemanticBackend:
                                              "embedding_model": "fake-bge", "embedding_dim": len(vec)})
         base = f"{self.CHROMA_URL}/api/v1/collections"
         if request.method == "GET" and url.startswith(base + "/") and not url.endswith("/count"):
-            if not self.docs:
+            if not self.docs and not self.exists_empty:
                 # Chroma 0.4.24: a collection nothing was ever upserted into does not exist.
                 name = url.rsplit("/", 1)[-1]
                 return httpx.Response(500, json={"error": f"ValueError('Collection {name} does not exist.')"})
@@ -237,8 +241,19 @@ class FakeSemanticBackend:
         if url == f"{base}/{self.COLLECTION_ID}/count":
             return httpx.Response(200, json=len(self.docs))
         if url == f"{base}/{self.COLLECTION_ID}/get":
-            ids = [i for i in json.loads(request.content)["ids"] if i in self.docs]
-            return httpx.Response(200, json={"ids": ids, "metadatas": [self.docs[i][1] for i in ids]})
+            body = json.loads(request.content)
+            if "ids" in body:
+                ids = [i for i in body["ids"] if i in self.docs]
+            elif self.fail_get_all:
+                return httpx.Response(500, json={"error": "boom"})
+            else:  # paged read of the whole collection (semantic_index.all_vectors)
+                every = sorted(self.docs)
+                ids = every[body.get("offset", 0): body.get("offset", 0) + body.get("limit", len(every))]
+            include = body.get("include") or []
+            return httpx.Response(200, json={
+                "ids": ids,
+                "metadatas": [self.docs[i][1] for i in ids] if "metadatas" in include else None,
+                "embeddings": [self.docs[i][0] for i in ids] if "embeddings" in include else None})
         if url == f"{base}/{self.COLLECTION_ID}/query":
             body = json.loads(request.content)
             q = body["query_embeddings"][0]
@@ -252,10 +267,12 @@ class FakeSemanticBackend:
 
         return httpx.AsyncClient(transport=httpx.MockTransport(self._handler))
 
-    def config(self, *, min_similarity: float = 0.65, index_batch: int = 200):
+    def config(self, *, min_similarity: float | None = None, index_batch: int = 200):
         from orion.introspect.semantic_index import SearchConfig
-        from orion.world_pulse_read.concept_search import ATLAS_CONCEPT_COLLECTION
+        from orion.world_pulse_read.concept_search import ATLAS_CONCEPT_COLLECTION, OBJECT_MIN_CENTERED_SIMILARITY
 
+        if min_similarity is None:
+            min_similarity = OBJECT_MIN_CENTERED_SIMILARITY
         return SearchConfig(chroma_url=self.CHROMA_URL, embed_url=self.EMBED_URL,
                             collection=ATLAS_CONCEPT_COLLECTION, min_similarity=min_similarity,
                             index_interval_sec=300.0, index_batch=index_batch)

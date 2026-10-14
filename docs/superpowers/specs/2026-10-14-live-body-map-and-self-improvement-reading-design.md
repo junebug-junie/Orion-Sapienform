@@ -44,10 +44,20 @@ it is missing the one part Juniper actually named: the launch flags.
      Live `nvidia-smi` shows four.
 
   That is exactly the failure Juniper described.
-- **Part 2's hard part is getting into Reddit, not the reading.** Reddit closed self-service Data
-  API access in November 2025. New apps need an approval request, and Reddit points
-  non-commercial builders at Devvit, which is why Juniper landed on Devvit templates. The policy
-  details are UNVERIFIED (secondary sources only). Everything after the fetch already exists:
+- **For Part 2, the hard part is fetching from Reddit politely, not the reading itself.**
+  Reddit closed self-service Data API access in November 2025 (Responsible Builder Policy), and
+  Juniper's app creation is blocked. So the route is **Reddit's public RSS/Atom feeds**, fetched
+  slowly with an honest user agent.
+
+  Verified live 2026-10-14 from athena with UA `orion-reader/0.1 (personal non-commercial
+  reader)`:
+  - `/r/LocalLLaMA/.rss` returned 200 with 25 entries.
+  - `/r/v100/.rss` returned 200 with 25 entries spanning 2026-09-19..10-13 (~1 post/day).
+  - A browser-imitating UA was blocked.
+  - Per-thread comment feeds hit HTTP 429 after ~4 quick requests.
+
+  That makes a strict one-at-a-time pacer the core of the connector. Everything after the fetch
+  already exists:
   - the document snapshot path (`orion/world_pulse_read/documents.py`), which turns fetched
     text into a content-addressed read;
   - the Stage 1/2 durable reading turns;
@@ -128,24 +138,32 @@ The plan:
 - Timed waits on durable runs: `orion_day_graph.py` `retry_wait` interrupts until `retry_at`. A
   3-day wait has never been exercised (UNVERIFIED that `admission_runtime` resumes timer
   interrupts days later without a pool event; Phase 4 acceptance check).
-- Reddit: unauthenticated fetch is blocked ("Your request has been blocked due to a network
-  policy", 2026-10-14).
+- Reddit (live 2026-10-14, all with UA `orion-reader/0.1 (personal non-commercial reader)` unless
+  noted):
+  - Plain unauthenticated page/JSON fetches are blocked ("Your request has been blocked due to a
+    network policy").
+  - A browser-imitating UA is blocked too.
+  - Subreddit `.rss` works.
+  - Thread `<permalink>/.rss` works but returns 429 after ~4 quick requests.
+  - The Data API is closed to new self-service apps.
 
 ## Missing questions
 
 Juniper answered these on 2026-10-14 (relayed):
 
-- Follow the **whole V100 subreddit**, because "it isn't a big community or high velocity". The
-  link was truncated, so the name is recorded as `r/V100`, UNVERIFIED until she confirms it.
-- She is registering a Reddit app.
-- There are two kinds of source: self-improvement and interests (Part 2 config below).
+- Follow the **whole** `r/v100` (confirmed: https://www.reddit.com/r/v100/, lowercase), because
+  "it isn't a big community or high velocity". Live, it gets ~1 post/day.
+- Reddit route: **public RSS/Atom, paced**, not the Data API (her app creation was blocked).
+- She accepted an open risk: Reddit's terms on automated access and AI use are UNVERIFIED (the
+  policy page returned 403).
+- There are two kinds of source, self-improvement and interests (Part 2 config below).
 
 Still open:
 
-1. **Exact subreddit name.** Is it `r/V100`, `r/Volta`, or another name?
-2. **Reddit approval.** Since November 2025, a script app at reddit.com/prefs/apps may not be
-   enough on its own. Reddit asks non-Devvit personal tools to file an access request. Will she
-   file it, and does she want the request text drafted? (Policy details UNVERIFIED.)
+1. **Thread feed size.** How many comments does a thread `.rss` return, and in what order? This is
+   UNVERIFIED and checked in Phase 4. If a busy thread has more new comments than one feed holds,
+   the pass is marked `feed_truncated` rather than claiming it read everything.
+2. **Feed polling interval.** The default is every 6 h per subreddit. Is that fine for her?
 3. **Proposed sources to trim:**
    - self-improvement: r/LocalLLaMA, r/LocalLLM, r/homelab;
    - interests: r/ArtificialSentience, r/consciousness, r/cogsci, r/compmathneuro,
@@ -267,7 +285,7 @@ same way as `GpuPoolStateSQL`, with retention.
 ```yaml
 reddit:
   self_improvement:          # judged against the body map; experiment step on
-    - {sub: V100, mode: whole_sub, max_new_threads_per_day: 10}         # name UNVERIFIED
+    - {sub: v100, mode: whole_sub, max_new_threads_per_day: 10}         # confirmed 2026-10-14, ~1 post/day
     - {sub: LocalLLaMA, mode: body_map_filter, max_new_threads_per_day: 5}   # proposed
     - {sub: LocalLLM, mode: body_map_filter, max_new_threads_per_day: 3}     # proposed
     - {sub: homelab, mode: body_map_filter, max_new_threads_per_day: 3}      # proposed (cooling/noise)
@@ -277,6 +295,14 @@ reddit:
     # proposed, Juniper to trim: ArtificialSentience, consciousness, cogsci, compmathneuro,
     # neuroscience, MachineLearning, philosophyofmind
 reread: {max_passes: 5, interval_days: 3, new_comments_only: true}
+fetch:
+  reddit:
+    transport: rss            # "api" later = a config change, not a redesign (Data API closed Nov 2025)
+    user_agent: "orion-reader/0.1 (personal non-commercial reader)"   # honest, fixed, no personal identifiers
+    min_spacing_sec: 180      # one request at a time, globally
+    daily_request_budget: 300
+    feed_poll_interval_hours: 6
+    backoff: {base_sec: 600, max_sec: 21600}   # on 429, doubles; Retry-After wins when longer
 ```
 
 **`body_map_filter` takes its terms from the body map, not from a word list.** At filter time the
@@ -292,49 +318,112 @@ When the body changes, the filter changes with it. The filter is a cheap pre-sel
 judge carries the real decision. A miss is fixed by fixing the body map, never by adding words
 (memory `feedback_dont_patch_misses_by_growing_word_lists`).
 
-**Connector, deterministic and outside the LLM.** `orion/reading_sources/reddit.py` uses the
-Reddit Data API over OAuth:
+**Connector, deterministic and outside the LLM.** `orion/reading_sources/reddit_rss.py`:
 
-- **Credentials:** a personal script app. `REDDIT_CLIENT_ID`, `REDDIT_CLIENT_SECRET`,
-  `REDDIT_USERNAME` and `REDDIT_PASSWORD` (or `REDDIT_REFRESH_TOKEN`) live in the Hub `.env`.
-  `.env_example` gets empty placeholders only.
-- **User agent:** a descriptive `REDDIT_USER_AGENT`, for example
-  `orion-reader/0.1 (personal, non-commercial; by u/<juniper>)`.
-- **Rate limiting:** honor the `X-Ratelimit-Remaining` / `X-Ratelimit-Reset` headers. Published
-  guidance is about 100 queries/min per client (UNVERIFIED); we target far below that, at most
-  about 30 requests per sweep.
-- **Kill switch:** `READING_REDDIT_ENABLED`.
-- **No evasion:** no scraping, no old.reddit or `.json` endpoints without auth, no third-party
-  mirrors or proxies, and no rotating user agents. If OAuth fails, the connector stops and
-  records `reddit_auth_failed`; it does not fall back to anything else.
-- **Output:** for each thread pass it writes one document snapshot. The text is the thread title
-  and body on pass 0, then only the comments with `created_utc > cursor` on passes 1-5, each with
-  its author-score and permalink. It then submits a read through the existing
-  `operator.submit_read` path with a `file://...?sha256=` ref and `why_now` =
-  `self_improvement:<sub>:<thread_id>:pass<N>`.
-- **Operator README:** say plainly that Devvit templates are not what we need. This is a local
-  script app, plus an access request if Reddit requires one.
+- **Transport.** Public Atom feeds only:
+  - `https://www.reddit.com/r/<sub>/.rss` to find new posts;
+  - `<thread permalink>/.rss` for a thread's body and comments.
 
-**Fallback if API access is denied or not yet approved:**
+  It is parsed with the stdlib (`xml.etree`). HTML in entry content is reduced to text with the
+  stdlib `html.parser`. No new dependency.
+- **User agent.** One fixed honest UA, from config: `orion-reader/0.1 (personal non-commercial
+  reader)`. It is never browser-imitating, never rotated, and never contains Juniper's email,
+  username or any personal identifier.
+- **No evasion.** No `.json` endpoints, no old.reddit, no third-party mirrors or proxies, no
+  headless browser, and no retrying a block with a different UA. A 403 or "network policy" body
+  sets the source to `blocked` and stops all Reddit fetching until an operator clears it in Hub.
+- **No credentials.** There are no `REDDIT_*` secrets. The only env keys are
+  `READING_REDDIT_ENABLED` (kill switch) and `READING_FOLLOW_ENABLED`. They go in
+  `services/orion-hub/.env_example` with local `.env` synced; the non-secret pacing values stay
+  in `config/reading_sources.yaml`.
+- **New-comment detection.** Each Atom entry carries an `id` (`t1_<comment>`, `t3_<post>`) and an
+  `updated` time. The cursor is the set of seen entry ids plus the max `updated`. A pass's text
+  is only the entries whose id is unseen.
+  - Edited old comments (same id, later `updated`) are ignored in v1, since "new comments only"
+    is the ask.
+  - If every entry in a feed is unseen on a reread, the pass is marked `feed_truncated`
+    (possible gap, UNVERIFIED feed depth).
+- **Output.** For each thread pass the connector writes one document snapshot:
+  - pass 0: post title + body + the comments present;
+  - passes 1-5: only the new comments, each with its permalink.
 
-- Juniper pastes thread URLs into the Hub Reading tab. For Reddit URLs, the connector refuses
-  without credentials and Hub shows "needs Reddit API approval". Nothing is fetched by other
-  means.
-- Non-Reddit sources (GitHub issues via the GitHub API, forums with ordinary robots-respecting
-  fetch) work regardless. A GitHub issue's comments get the same reread treatment.
+  It then submits a read through the existing `operator.submit_read` path with a
+  `file://...?sha256=` ref and `why_now` = `<category>:<sub>:<thread_id>:pass<N>`. New bytes make a
+  new read, and the same bytes dedupe (`already_read`), with no bypass.
+- **Operator README.** Explain why there is no Reddit app: Devvit templates are for apps that run
+  on Reddit, not a local reader; the Data API is closed to new self-service apps; RSS is the
+  route; and `transport: api` exists for the day access is granted.
+
+**The pacer: one global Reddit fetch lane.** This is rate state, not a work queue.
+
+- **Storage.** One Postgres row per source host in `reading_source_rate_state`:
+  `source`, `next_allowed_at`, `day`, `requests_today`, `backoff_sec`, `blocked`, `last_status`,
+  `last_error`.
+- **One request at a time.** A fetch takes the row `FOR UPDATE`. If `now < next_allowed_at`, or
+  the daily budget is spent, or the source is blocked, it does not fetch. The calling durable run
+  interrupts until `next_allowed_at` (or the next day) and retries.
+
+  Otherwise it fetches and then sets:
+  - `next_allowed_at = now + max(min_spacing, Retry-After, backoff)`;
+  - on 429, `backoff_sec` doubles (base 600 s, cap 6 h);
+  - on 200, `backoff_sec` resets.
+
+  The row lock serializes every caller, so there is never more than one Reddit request in flight.
+- **Why this is not a shadow queue.** The work items are durable runs, which already own retry and
+  idempotency. The row holds only "when may anyone ask Reddit next", the same kind of state as a
+  pool lease clock (memory `feedback_retries_go_on_durable_runs_not_shadow_queues`).
+- **Volume estimate.** Worst case with every proposed source kept, using these per-subreddit caps:
+  - 13 subreddits;
+  - new-thread caps: v100 10 (real ~1), LocalLLaMA 5, LocalLLM 3, homelab 3, interests 3 each x 9;
+  - sum of caps: 48 new threads/day; realistic about 30.
+
+  | What | Worst case/day | Realistic/day |
+  | --- | --- | --- |
+  | Subreddit feeds (13 x every 6 h) | 52 | 52 |
+  | Thread pass 0 (one fetch per new thread) | 48 | ~30 |
+  | Rereads (5 passes over 15 days; steady state = new threads/day x 5) | 240 | ~150 |
+  | **Total** | **340** | **~230** |
+
+  At 180 s minimum spacing the lane fits 480 requests/day, so the realistic load uses about half
+  of it. Worst case exceeds the 300 budget. When that happens, rereads wait a day rather than
+  skip (a reread later than 3 days is fine; a new-post scan is not urgent either). The budget and
+  spacing are config.
+
+  Sources that bring the budget down if needed:
+  - drop the 7 proposed interest subreddits: -28 polls and up to -126 thread fetches/day;
+  - lower interest caps to 1.
+
+  The observed 429 after ~4 quick requests was at sub-second spacing. Whether 180 s is enough is
+  UNVERIFIED, and the Phase 4 live check measures it.
+
+**Fallback if Reddit blocks the reader:** Juniper pastes thread URLs into the Hub Reading tab. A
+Reddit URL is still fetched only through the same pacer and RSS transport. If the source is
+`blocked`, Hub shows "Reddit is blocking the reader" and nothing is fetched by other means.
+Non-Reddit sources work regardless: GitHub issues through the GitHub API, and forums with
+ordinary robots-respecting fetch. A GitHub issue's comments get the same reread treatment.
 
 **Reread schedule = one durable run per followed thread.** The workflow is `reading.follow.v1`
 in `services/orion-durable-runs/app/`, with run_id `follow:<source>:<thread_id>`:
 
 ```text
-fetch_pass(N) -> snapshot + submit_read (or "no new comments" -> skip) -> wait_until(now+3d)
-  -> ... until N == 5 -> finish
+acquire_lane -> fetch_pass(N) -> snapshot + submit_read (or "no new comments" -> skip)
+  -> wait_until(now+3d) -> ... until N == 5 -> finish
 ```
 
-- The run holds **no GPU lease**: fetching is HTTP. The reads it submits go through the existing
+A subreddit scan is one more durable run, `reading.source_scan.v1`, with run_id
+`scan:<sub>:<6h-bucket>`. It reads the sub feed through the lane and starts a `reading.follow.v1`
+for each new thread that passes the category filter (whole-sub, or the body-map filter), within
+the per-sub cap. The run id is deterministic, so a restart cannot double-start a follow.
+
+- The runs hold **no GPU lease**: fetching is HTTP. The reads they submit go through the existing
   admitted reading turns.
-- The wait reuses the `retry_wait` interrupt pattern. There is no new queue table; the cursor
-  (last comment `created_utc`, pass N) lives in run state.
+- The waits reuse the `retry_wait` interrupt pattern. The cursor (seen entry ids, max `updated`,
+  pass N) lives in run state.
+- Rereads apply to **both** categories. Only self-improvement reads go on to the judge.
+
+**Interests category.** Reads from interest subreddits go through the normal reading pipeline
+(Stage 1/2, `link_made`, `belief_moved`, resonance when it ships) with no judge step and no
+experiment output. They differ from self-improvement only in config.
 
 **Judge step (self_improvement sources only).** After Stage 2 of a self-improvement read, one more
 durable turn runs, `reading.self_improvement_judge.v1`. It takes three inputs:
@@ -414,14 +503,16 @@ Part 1:
 Part 2:
 
 - `config/reading_sources.yaml`
-- `orion/reading_sources/{reddit.py,github.py,filter.py}`
+- `orion/reading_sources/{reddit_rss.py,github.py,filter.py,pacer.py}`
 - `services/orion-durable-runs/app/reading_follow_graph.py`
 - `services/orion-durable-runs/app/self_improvement_judge_graph.py` (or a stage-3 node in
   `reading_graph.py`)
 - `orion/schemas/reading_finding.py`: the new kinds; `orion/world_pulse_read/findings.py`: producer
 - `services/orion-hub/scripts/reading_finding_outreach.py`: render the new kinds
-- `services/orion-hub/.env_example` + local `.env` sync (`REDDIT_*`, `READING_REDDIT_ENABLED`,
-  `READING_FOLLOW_ENABLED`)
+- `services/orion-hub/.env_example` + local `.env` sync (`READING_REDDIT_ENABLED`,
+  `READING_FOLLOW_ENABLED`; no secrets)
+- `manual_migration_*.sql`: `reading_source_rate_state`
+  (`-- ORION-MIGRATION-REQUIRED-BY: orion-durable-runs, orion-hub`)
 - `services/orion-hub/README.md`: the operator note on Reddit app vs Devvit
 
 ## Non-goals
@@ -435,7 +526,8 @@ Part 2:
 - No making athena's GPUs pool-managed.
 - No flipping hecate's `expected_online`. It stays an operator intent.
 - No automated application of any reading-derived change, ever.
-- No Reddit access without approved OAuth, no scraping, no mirrors.
+- No Reddit Data API until access is granted, no scraping, no `.json` endpoints, no mirrors,
+  and no UA spoofing.
 - No word-list topic filters.
 - No caps on learning outreach.
 
@@ -470,15 +562,26 @@ Part 2:
   rendering.
 
 **Phase 4 (Reddit + follow):**
-- Gate: the connector refuses without credentials (`reddit_auth_failed`, no fallback fetch).
-- Gate: rate-limit headers are honored (mocked).
+- Gate (pacer): two concurrent callers produce one request.
+- Gate (pacer): a 429 with `Retry-After: 900` gives `next_allowed_at >= now + 900`, and a second
+  429 doubles the backoff.
+- Gate (pacer): the daily budget stops fetches.
+- Gate (pacer): a 403 or "network policy" body sets the source to `blocked` and stops all fetches.
+- Gate: the UA comes from config and is the only UA the transport ever sends.
+- Gate: the Atom parser handles a recorded real `/r/v100/.rss` fixture.
 - Gate: the pass-N snapshot contains only comments newer than the cursor.
 - Gate: a pass with no new comments submits no read.
 - Live: `reading.follow.v1` resumes after a timer interrupt. First check this with a 10-minute
   interval in a test run, because the multi-day resume is UNVERIFIED today.
-- Live: a real r/V100 thread produces pass 0 and pass 1 reads with different sha256 values.
+- Live: a real r/v100 thread produces pass 0 and pass 1 reads with different sha256 values.
+- Live: one day of pacer logs shows no 429 at the configured spacing. If 429s appear, the spacing
+  is raised before more sources are added.
+- Live: record the thread feed depth (open question 1).
 
 **Phase 5 (judge + outreach):**
+- Eval fixture: the current r/v100 feed already mixes build show-and-tell ("My 3xV100 rig",
+  "2 x V100 build", motherboard compatibility) with software substance ("Best Qwen 3.8 Flash Next
+  Runtime - 4 x 32GB NVLinked V100s ..."). Capture it as the first replay set.
 - Eval: Juniper hand-labels a replay set of at least 20 real threads or comments, mixing
   software tips, already-doing tips, hardware show-and-tell and noise. Report the judge's
   agreement with her labels. Rule of thumb: `hardware_only` and `already_doing` should be nearly
@@ -502,8 +605,9 @@ Part 2:
     reads, findings and outreach rows.
 - **Privacy boundary.**
   - Reddit content is public, but attribution matters: store usernames only as part of permalinks,
-    never build profiles of users, and do not post or vote. The OAuth scope is `read` only.
-  - Credentials live only in the local `.env`.
+    never build profiles of users, and never post, vote, or log in. The reader is anonymous
+    and read-only.
+  - There are no Reddit credentials. The UA carries no personal identifier.
   - Launch argv is redacted for `--api-key` and any `*_TOKEN`/`*_KEY` values before it leaves the
     launcher.
   - There is no Juniper-to-Orion privacy boundary (memory
@@ -521,8 +625,11 @@ Part 2:
     control surface.
   - The judge invents a gain or a flag. This is prevented by verbatim-quote verification and the
     body-map target/current-value post-checks.
-  - Unapproved Reddit access gets the account banned. This is prevented by OAuth-only access and
-    a hard stop on auth failure.
+  - The reader hammers Reddit and gets athena's IP blocked. This is prevented by the global
+    one-at-a-time pacer, the daily budget, Retry-After plus backoff, and a hard stop on
+    403/"network policy".
+  - Reddit's terms on automated access and AI use are UNVERIFIED (the policy page returned 403).
+    Juniper accepted this risk on 2026-10-14. The kill switch is `READING_REDDIT_ENABLED=false`.
   - A proposal is applied unattended. This is prevented by having no write tools in the judge and
     an explicit non-goal.
 - **Disable / rollback.**
@@ -544,8 +651,8 @@ Phases, each one PR:
    introspect `body_map` tool.
 3. **Consumers.** `self_study` reads the body map; the compact brief for curiosity/situation; the
    Hub Body panel.
-4. **Sources + Reddit connector + follow runs.** Can start in parallel with 2 once Juniper has API
-   approval. The GitHub connector can ship first because it needs no approval.
+4. **Sources + pacer + Reddit RSS connector + follow/scan runs.** Can start in parallel with
+   Phase 2 (no approval needed). The GitHub connector can follow in the same phase.
 5. **Judge + finding kinds + outreach rendering**, plus the hand-labelled replay eval.
 
 Start with Phase 1: it is two files, it is reversible, and it closes the one gap Juniper named
@@ -553,7 +660,7 @@ that nothing in Orion can see today.
 
 ## Sources
 
-- Reddit API policy (secondary, UNVERIFIED against Reddit's own text):
+- Reddit API closure (secondary, UNVERIFIED against Reddit's own text; the reason the route is RSS):
   [Responsible Builder Policy thread, r/redditdev mirror, Nov 2025](https://r.datuan.dev/r/redditdev/comments/1oug31u/introducing_the_responsible_builder_policy_new/nrxva1s/?context=3),
   [data365: Reddit OAuth API documentation](https://data365.co/blog/reddit-oauth-api-documentation),
   [keyapi: Reddit Data API overhaul](https://www.keyapi.ai/blog/reddit-data-api-overhaul-major-changes-and-migration-guide/),

@@ -3,15 +3,15 @@
   "metric_count": 734,
   "_last_change": {
     "change_count": 7,
-    "high_severity_count": 1,
+    "high_severity_count": 7,
     "changes": [
-      "high   routing_changed metric://bus_channel/orion-field-digester/orion:field_channel:anomaly_score (declared_consumers: \u2026e', 'orion-substrate-run\u2026 -> \u2026e', 'orion-sql-writer', 'orion-substrate-run\u2026)",
-      "medium added metric://inner_state/orion-field-digester/field_channel_anomaly_score.v1",
-      "medium added metric://inner_state/orion-field-digester/field_channel_anomaly_score.v1#mean_signed_deviation",
-      "medium added metric://inner_state/orion-field-digester/field_channel_anomaly_score.v1#recon_error_p95",
-      "medium added metric://inner_state/orion-field-digester/field_channel_anomaly_score.v1#recon_loss",
-      "medium added metric://inner_state/orion-field-digester/field_channel_anomaly_score.v1#threshold",
-      "medium added metric://inner_state/orion-field-digester/field_channel_anomaly_score.v1#threshold_multiplier"
+      "high   routing_changed metric://field_channel/orion-field-digester/node:substrate.bus_synaptic.prediction_error (prompt_sites: ['services.ori\u2026 -> ['orion.attention.self_readings:render_self_readings', 'ser\u2026\u2026)",
+      "high   routing_changed metric://field_channel/orion-substrate-runtime/node:substrate.biometrics.prediction_error (prompt_sites: ['services.ori\u2026 -> ['orion.attention.self_readings:render_self_readings', 'ser\u2026\u2026)",
+      "high   routing_changed metric://field_channel/orion-substrate-runtime/node:substrate.cabinet.prediction_error (prompt_sites: - -> ['orion.attention.self_readings:render_self_readings'])",
+      "high   routing_changed metric://field_channel/orion-substrate-runtime/node:substrate.chat.prediction_error (prompt_sites: - -> ['orion.attention.self_readings:render_self_readings'])",
+      "high   routing_changed metric://field_channel/orion-substrate-runtime/node:substrate.codebase.prediction_error (prompt_sites: - -> ['orion.attention.self_readings:render_self_readings'])",
+      "high   routing_changed metric://field_channel/orion-substrate-runtime/node:substrate.execution.prediction_error (prompt_sites: ['services.ori\u2026 -> ['orion.attention.self_readings:render_self_readings', 'ser\u2026\u2026)",
+      "high   routing_changed metric://field_channel/orion-substrate-runtime/node:substrate.route.prediction_error (prompt_sites: - -> ['orion.attention.self_readings:render_self_readings'])"
     ]
   },
   "definitions": {
@@ -4293,6 +4293,7 @@
       "absent_means": "carried forward in node_vectors (prediction_error is not a decayed or expiring channel, services/orion-field-digester/app/digestion/decay.py); the self-model drops the domain after 1800 s without a fresh observed_at (orion/substrate/prediction_error_freshness.py:26).",
       "polarity": "higher_is_worse",
       "prompt_sites": [
+        "orion.attention.self_readings:render_self_readings",
         "services.orion-mind.app.recall_signal_resolver:render_bus_synaptic_digest_line"
       ],
       "notes": "category=infra_transport level=node",
@@ -4449,6 +4450,7 @@
         "orion.substrate.metacog_trend_signals:latest_node_prediction_errors"
       ],
       "prompt_sites": [
+        "orion.attention.self_readings:render_self_readings",
         "services.orion-cortex-exec.app.metacog_trend_reader:fetch_recent_trend_signals"
       ],
       "notes": "category=physical_substrate level=node",
@@ -4466,6 +4468,9 @@
       "absent_means": "when the thermal reading is 'unknown' (older than the 300 s grace) the tick writes nothing and the node keeps its last value (worker.py:1434).",
       "declared_consumers": [
         "orion.substrate.endogenous_curiosity:_prediction_error_candidates"
+      ],
+      "prompt_sites": [
+        "orion.attention.self_readings:render_self_readings"
       ],
       "notes": "category=physical_substrate level=node",
       "registry_source": "config/field/field_channel_glossary.v1.yaml"
@@ -4485,6 +4490,9 @@
         "orion.attention.field_attention.selectors:select_node_targets",
         "orion.substrate.endogenous_curiosity:_prediction_error_candidates"
       ],
+      "prompt_sites": [
+        "orion.attention.self_readings:render_self_readings"
+      ],
       "notes": "category=social_conversational level=node",
       "registry_source": "config/field/field_channel_glossary.v1.yaml"
     },
@@ -4501,6 +4509,9 @@
       "polarity": "higher_is_worse",
       "declared_consumers": [
         "orion.substrate.endogenous_curiosity:_prediction_error_candidates"
+      ],
+      "prompt_sites": [
+        "orion.attention.self_readings:render_self_readings"
       ],
       "notes": "category=self_monitoring level=node",
       "registry_source": "config/field/field_channel_glossary.v1.yaml"
@@ -4522,6 +4533,7 @@
         "orion.substrate.metacog_trend_signals:latest_node_prediction_errors"
       ],
       "prompt_sites": [
+        "orion.attention.self_readings:render_self_readings",
         "services.orion-cortex-exec.app.metacog_trend_reader:fetch_recent_trend_signals"
       ],
       "notes": "category=self_monitoring level=node",
@@ -4572,6 +4584,9 @@
       "declared_consumers": [
         "orion.attention.field_attention.selectors:select_node_targets",
         "orion.substrate.endogenous_curiosity:_prediction_error_candidates"
+      ],
+      "prompt_sites": [
+        "orion.attention.self_readings:render_self_readings"
       ],
       "notes": "category=task_execution level=node",
       "registry_source": "config/field/field_channel_glossary.v1.yaml"

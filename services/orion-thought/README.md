@@ -333,6 +333,35 @@ Logs: `temporal_self_cue corr=... chars=... arcs=... fetch_ms=...`,
 `temporal_self_cue_skipped corr=... reason=stale|wrong_day|fetch_failed|invalid_frame|disabled`,
 `temporal_self_day_citations corr=... label=...`. Kill switch: `TEMPORAL_SELF_STANCE_CUE_ENABLED=false`.
 
+## Self-readings for stance_react and reverie (self-calibration spec section C)
+
+Orion's body signals, each scored 0-10 against its own last 7 days, shown to the unified turn's
+stance step (`MY BODY RIGHT NOW`) and to reverie's coalition branch (`HOW MY BODY IS DOING`).
+`app/self_readings_cue.py` reads `substrate_node_prediction_error_history` (read-only) into one
+process-wide `NodePeHistoryCache` (7-day seed once, then incremental); `orion/attention/self_readings.py`
+calibrates with the attention seam's own rule (`world_first.judge_candidate`) and renders a fixed
+template, no LLM.
+
+- **Which signals:** glossary prediction_error entries whose `prompt_sites` name
+  `orion.attention.self_readings:render_self_readings` (biometrics, bus_synaptic, execution, chat,
+  route, codebase, cabinet). The world (camera perception) and placeholders (harness_closure) never.
+- **What renders:** only signals high or unusual for themselves, fresh, and (event-written ones)
+  within the 300 s orienting window; max 3 lines / 600 chars, each citing
+  `[pe:<node>@<observed_at>]`. A calm body renders nothing. When a block shows, unreadable signals
+  are named ("Can't read right now: ...") and event signals with no recent event say so.
+- **Triggers** (cabinet warming) read as firings in the last hour against their own week.
+- Reverie's concern-card (semantic lift) branch never gets it: that branch discards interpretations
+  with mechanism vocabulary.
+- With stance on and Mind coloring present, the prompt labels Mind's frontier scores as Orion's own
+  estimates, not measurements.
+- Fail-open: `SELF_READINGS_FETCH_TIMEOUT_SEC` (0.5 s) bounds read+render; a miss renders nothing.
+  Startup warms the cache in a thread. Logs: `self_readings corr=... purpose=stance|reverie chars=...
+  shown=...` or `self_readings_skipped reason=...`.
+- Kill switches: `SELF_READINGS_STANCE_ENABLED=false`, `SELF_READINGS_REVERIE_ENABLED=false` (that
+  prompt byte-identical to before).
+- Eval: `evals/test_self_readings_truth_eval.py` (every number shown resolves to its row);
+  live replay `python evals/run_self_readings_live_eval.py`.
+
 ## Reverie VISUAL chain (Patch 2 orchestration + Patch 3 context-seeding + Patch 4 continuity reset + Patch 5 self-study context-seed + Patch 6 memory-crystallization context-seed + Patch 7 context-slot rotation)
 
 `app/visual_chain.py`, alongside `chain.py`. Patch 2 of

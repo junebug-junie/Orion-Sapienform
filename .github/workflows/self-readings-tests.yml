@@ -1,0 +1,55 @@
+name: Self-readings (self-calibration section C)
+
+# Body signals against their own 7 days, shown to stance_react and reverie: the pure build/render
+# (orion/attention/self_readings.py), the orion-thought cue + prompt wiring, and the
+# truth-to-rows eval (acceptance check 4: every number shown resolves to a persisted row).
+on:
+  pull_request:
+    paths:
+      - "orion/attention/**"
+      - "orion/schemas/self_reading.py"
+      - "orion/schemas/attention_frame.py"
+      - "orion/schemas/attention_candidate.py"
+      - "orion/substrate/prediction_error_magnitude.py"
+      - "orion/cognition/prompts/stance_react.j2"
+      - "orion/cognition/prompts/reverie_narrate.j2"
+      - "config/field/field_channel_glossary.v1.yaml"
+      - "services/orion-thought/app/**"
+      - "services/orion-thought/tests/test_stance_self_readings.py"
+      - "services/orion-thought/evals/*self_readings*"
+      - "tests/test_attention_self_readings.py"
+      - "tests/fixtures/self_readings_history.py"
+      - ".github/workflows/self-readings-tests.yml"
+  push:
+    branches: [main]
+    paths:
+      - "orion/attention/**"
+      - "orion/schemas/self_reading.py"
+      - "config/field/field_channel_glossary.v1.yaml"
+      - "services/orion-thought/app/**"
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  self-readings:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      PYTHONPATH: ${{ github.workspace }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # the byte-identity test compares prompts against origin/main
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: |
+          python -m pip install -r services/orion-hub/tests/requirements-reading.txt
+          python -m pip install -r services/orion-thought/requirements.txt
+      - name: Build and render (pure)
+        run: python -m pytest -q -p no:cacheprovider tests/test_attention_self_readings.py tests/test_attention_pe_history_cache.py
+      - name: orion-thought cue and prompt wiring
+        run: cd services/orion-thought && python -m pytest -q -p no:cacheprovider tests/test_stance_self_readings.py tests/test_reverie_thin_import_boundary.py
+      - name: Truth-to-rows eval
+        run: cd services/orion-thought && python -m pytest -q -p no:cacheprovider evals/test_self_readings_truth_eval.py

@@ -581,8 +581,13 @@ async def cmd_run(pool: Any, args: argparse.Namespace, out: Path) -> int:
                 async with pool.acquire() as conn:
                     own = [tasks[k] for k in tasks]
                     own_runs = {r["run_id"] for r in await conn.fetch(OWN_RUNS_SQL, own)} if own else set()
-                busy = await _pool_busy(client, args.pool_url, 30.0, own_runs)
-                if not busy:
+                # --gate none: re-reads run through the normal reading path at BACKGROUND
+                # priority, so the pool already orders them behind live work and the hub's
+                # HUB_WORLD_PULSE_READ_MAX_IN_FLIGHT bounds them. The quiet-pool gate (built for
+                # the system-priority judge) only serialises them -- live 2026-10-14 it paused
+                # --concurrency 3 behind a single unrelated background hold for 30+ min.
+                busy = [] if args.gate == "none" else await _pool_busy(client, args.pool_url, 30.0, own_runs)
+                if not busy and args.gate != "none":
                     async with pool.acquire() as conn:
                         queued = await conn.fetchval(QUEUE_BUSY_SQL, target_ids, args.digest_item_max_age_sec)
                     busy = [f"{queued} live read(s) in flight on the reading queue"] if queued else []
@@ -819,6 +824,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                     help="run: reads in flight at once (needs Hub HUB_WORLD_PULSE_READ_MAX_IN_FLIGHT >= N)")
     ap.add_argument("--pool-url", default=os.environ.get("GPU_POOL_URL", "http://127.0.0.1:8127"))
     ap.add_argument("--pause-sec", type=float, default=60.0)
+    ap.add_argument("--gate", choices=("pool", "none"), default="pool",
+                    help="run: 'pool' pauses new starts while any foreign pool lease/queue or live read "
+                         "exists (conservative, serialises); 'none' starts up to --concurrency and lets "
+                         "the pool's background priority + the hub's in-flight cap do the pacing")
     ap.add_argument("--poll-sec", type=float, default=30.0)
     ap.add_argument("--per-read-timeout-min", type=float, default=240.0)
     ap.add_argument("--digest-item-max-age-sec", type=float, default=5 * 86400.0,

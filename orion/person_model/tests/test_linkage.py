@@ -39,38 +39,38 @@ def test_no_single_feature_can_force_a_merge(cfg):
 def test_embedding_alone_never_auto_merges(cfg):
     """A different name with a perfect embedding stays out of auto-merge."""
     ctx = L.LinkageContext(embedding_sim=lambda a, b: 1.0)
-    d = L.decide(L.Anchor("a", "teddy"), L.Candidate("c", "ted", producer="x"), cfg, ctx)
+    d = L.decide(L.Anchor("a", "bobby"), L.Candidate("c", "bob", producer="x"), cfg, ctx)
     assert d.group != "auto_merge"
-    no_emb = L.decide(L.Anchor("a", "teddy"), L.Candidate("c", "ted", producer="x"), cfg, L.LinkageContext())
+    no_emb = L.decide(L.Anchor("a", "bobby"), L.Candidate("c", "bob", producer="x"), cfg, L.LinkageContext())
     assert d.score - no_emb.score == pytest.approx(cfg.w("embedding_centered", "agree"))
 
 
 def test_exact_label_without_corroboration_goes_to_review(cfg):
     """Exact text alone (extractor and embedding missing) is not enough to merge."""
-    d = L.decide(L.Anchor("a", "addy", producer="p"), L.Candidate("c", "Addy", producer="q"), cfg, L.LinkageContext())
+    d = L.decide(L.Anchor("a", "zara", producer="p"), L.Candidate("c", "Zara", producer="q"), cfg, L.LinkageContext())
     assert d.group == "needs_your_call"
 
 
 def test_cooccurring_names_are_forced_to_review(cfg):
     ctx = L.LinkageContext(is_person_name=lambda s: True, embedding_sim=lambda a, b: 0.9,
-                           cooccurring=frozenset({("jay", "jaye")}))
-    d = L.decide(L.Anchor("mention:jay", "Jay"), L.Candidate("mention:jaye", "Jaye", "mention_cluster"), cfg, ctx)
+                           cooccurring=frozenset({("zed", "zede")}))
+    d = L.decide(L.Anchor("mention:zed", "Zed"), L.Candidate("mention:zede", "Zede", "mention_cluster"), cfg, ctx)
     assert d.group == "needs_your_call"
 
 
 def test_repeated_name_split_card(cfg):
-    out = L.repeated_name_splits({"jay": {"label": "Jay", "node_id": "mention:jay", "repeat_sources": ["p1"]},
-                                  "rachel": {"label": "Rachel", "node_id": "mention:rachel", "repeat_sources": []}}, cfg)
-    assert [(d.relation, d.group, d.anchor_label) for d in out] == [("distinct", "needs_your_call", "Jay")]
+    out = L.repeated_name_splits({"zed": {"label": "Zed", "node_id": "mention:zed", "repeat_sources": ["p1"]},
+                                  "marlow": {"label": "Marlow", "node_id": "mention:marlow", "repeat_sources": []}}, cfg)
+    assert [(d.relation, d.group, d.anchor_label) for d in out] == [("distinct", "needs_your_call", "Zed")]
 
 
 def test_stated_home_flags_other_place_home_alias(cfg):
-    rows = [{"node_id": "ref-slc", "alias_norm": "home", "referent_kind": "place", "grounded_in": "chat_prompt:x"},
-            {"node_id": "ref-ogden", "alias_norm": "home", "referent_kind": "place"},
-            {"node_id": "ref-slc", "alias_norm": "slc", "referent_kind": "place"}]
-    out = L.stated_home_conflicts(rows, person=ANCHOR, stated_home="Ogden, Utah",
-                                  place_labels={"ref-slc": "slc", "ref-ogden": "ogden"}, cfg=cfg, stated_ref="answer 4")
-    assert [(d.candidate_id, d.relation, d.group) for d in out] == [("ref-slc#alias:home", "not_home", "auto_reject")]
+    rows = [{"node_id": "ref-shelby", "alias_norm": "home", "referent_kind": "place", "grounded_in": "chat_prompt:x"},
+            {"node_id": "ref-springfield", "alias_norm": "home", "referent_kind": "place"},
+            {"node_id": "ref-shelby", "alias_norm": "shelby", "referent_kind": "place"}]
+    out = L.stated_home_conflicts(rows, person=ANCHOR, stated_home="Springfield, Exampleland",
+                                  place_labels={"ref-shelby": "shelby", "ref-springfield": "springfield"}, cfg=cfg, stated_ref="answer 4")
+    assert [(d.candidate_id, d.relation, d.group) for d in out] == [("ref-shelby#alias:home", "not_home", "auto_reject")]
 
 
 def test_best_per_candidate_prefers_the_strongest_claim(cfg, ctx):
@@ -117,21 +117,21 @@ def test_exact_plus_extractor_from_the_same_producer_goes_to_review(cfg):
     """Review finding 1: two features (8.0) must not auto-merge; the cross-producer
     corroboration is what reaches the 8.5 line."""
     ctx = L.LinkageContext(is_person_name=lambda s: True)
-    same = L.decide(L.Anchor("a", "addy", producer="p"), L.Candidate("c", "Addy", producer="p"), cfg, ctx)
-    cross = L.decide(L.Anchor("a", "addy", producer="p"), L.Candidate("c", "Addy", producer="q"), cfg, ctx)
+    same = L.decide(L.Anchor("a", "zara", producer="p"), L.Candidate("c", "Zara", producer="p"), cfg, ctx)
+    cross = L.decide(L.Anchor("a", "zara", producer="p"), L.Candidate("c", "Zara", producer="q"), cfg, ctx)
     assert same.score == pytest.approx(8.0) and same.group == "needs_your_call"
     assert cross.score == pytest.approx(8.5) and cross.group == "auto_merge"
 
 
 def test_sharing_only_a_chat_message_is_counter_evidence(cfg):
     """Review finding 2: two names in one message are not evidence of one person."""
-    a = L.Anchor("mention:jay", "Jay", (), "x", ("chat_prompt:p1",))
-    msg = L.decide(a, L.Candidate("mention:jason", "Jason", "mention_cluster", (), "x", ("chat_prompt:p1",)), cfg, L.LinkageContext())
-    mem = L.decide(a, L.Candidate("n", "Jason", "substrate_node", (), "y", ("episode_memory:m1",)), cfg, L.LinkageContext())
+    a = L.Anchor("mention:zed", "Zed", (), "x", ("chat_prompt:p1",))
+    msg = L.decide(a, L.Candidate("mention:zedekiah", "Zedekiah", "mention_cluster", (), "x", ("chat_prompt:p1",)), cfg, L.LinkageContext())
+    mem = L.decide(a, L.Candidate("n", "Zedekiah", "substrate_node", (), "y", ("episode_memory:m1",)), cfg, L.LinkageContext())
     f_msg = next(f for f in msg.features if f.name == "shared_evidence")
     assert f_msg.level == "same_message" and f_msg.weight < 0
-    a2 = L.Anchor("r", "jay", (), "x", ("episode_memory:m1",))
-    f_mem = next(f for f in L.decide(a2, L.Candidate("n", "Jason", producer="y", evidence_refs=("episode_memory:m1",)), cfg, L.LinkageContext()).features if f.name == "shared_evidence")
+    a2 = L.Anchor("r", "zed", (), "x", ("episode_memory:m1",))
+    f_mem = next(f for f in L.decide(a2, L.Candidate("n", "Zedekiah", producer="y", evidence_refs=("episode_memory:m1",)), cfg, L.LinkageContext()).features if f.name == "shared_evidence")
     assert f_mem.level == "agree" and mem is not None
 
 
@@ -147,9 +147,9 @@ def test_two_people_claiming_one_candidate_go_to_review(cfg):
 
 
 def test_home_needs_the_town_not_just_the_state(cfg):
-    rows = [{"node_id": "ref-slc", "alias_norm": "home", "referent_kind": "place"}]
-    out = L.stated_home_conflicts(rows, person=ANCHOR, stated_home="Ogden, Utah",
-                                  place_labels={"ref-slc": "Salt Lake City, Utah"}, cfg=cfg, stated_ref="a4")
+    rows = [{"node_id": "ref-shelby", "alias_norm": "home", "referent_kind": "place"}]
+    out = L.stated_home_conflicts(rows, person=ANCHOR, stated_home="Springfield, Exampleland",
+                                  place_labels={"ref-shelby": "Shelbyville, Exampleland"}, cfg=cfg, stated_ref="a4")
     assert len(out) == 1
 
 

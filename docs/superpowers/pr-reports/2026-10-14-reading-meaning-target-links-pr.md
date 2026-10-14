@@ -76,7 +76,7 @@ No new metric. The centered score is #2647's ranking score, already gated there.
 ## Tests run
 
 ```text
-RUN_READING_POSTGRES=1 PYTHONPATH=$PWD pytest -q <the orion-reading-tests.yml list>   -> 1620 passed, 6 skipped
+RUN_READING_POSTGRES=1 PYTHONPATH=$PWD pytest -q <the orion-reading-tests.yml list>   -> 1633 passed, 6 skipped
 RUN_READING_POSTGRES=1 pytest -q services/orion-hub/tests/test_world_pulse_read_*.py orion/world_pulse_read/tests \
   tests/test_no_private_eval_artifacts.py (after merging #2647's latest)              -> 473 passed
 mutation checks: dropping the predicate check, the subject check, the label-not-in-text test, or the
@@ -91,7 +91,7 @@ check_metric_lineage.py --gate PASS; check_definition_drift.py --gate PASS
 ```text
 pytest services/orion-hub/evals/test_reading_assertion_eval.py -s
   meaning_rule_recall=1.00 meaning_rule_false_links=0 meaning_unsupported_links=0
-pytest <the six reading evals in orion-reading-tests.yml>    -> 34 passed
+pytest <the six reading evals in orion-reading-tests.yml>    -> 37 passed
 run_reading_link_targets_replay.py --until 2026-10-14T00:10:00+00:00 --tags meaning_rule --llm-url .../v1/chat/completions
   llm totals meaning_rule: reads=3 claims=1 accepted=1 accepted_meaning_rule=0 (pool-gated, one pass)
 reading_reread_backfill.py snapshot -> targets=26 fetchable=19 inconclusive=4 gone=3, snapshot 872561 bytes

@@ -74,10 +74,11 @@ def caption_prompt_for(model_id: str) -> str | None:
 def resolve_caption_prompt(model_id: str, request: dict | None) -> tuple[str | None, str | None]:
     """The prompt a caption call uses, honoring a caller's ``request.caption_prompt``.
 
-    Returns ``(prompt, warning)``. A caller prompt only replaces the default on
-    a chat-template VLM: BLIP-family models continue the text they are handed
-    instead of obeying it (#2542: BLIP-base echoed the instruction back), so on
-    those the override is dropped and the warning says so. Used by the walkway
+    Returns ``(prompt, warning)``. A caller prompt only works on a chat-template
+    VLM: BLIP-family models continue the text they are handed instead of
+    obeying it (#2542: BLIP-base echoed the instruction back). On those the
+    warning is set and the caller (runner._run_caption_frame) returns no
+    caption rather than the model's unprompted one. Used by the walkway
     stream (vision-frame-router's caption_dispatch) to ask Qwen2-VL about
     people, animals and vehicles only, instead of listing every object.
     """
@@ -86,7 +87,7 @@ def resolve_caption_prompt(model_id: str, request: dict | None) -> tuple[str | N
     if not override:
         return default, None
     if not is_chat_template_vlm(model_id):
-        return default, "caption_prompt_ignored:not_instruction_tuned"
+        return default, "caption_rejected:caller_prompt_unsupported"
     return override, None
 
 

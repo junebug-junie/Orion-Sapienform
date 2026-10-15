@@ -119,6 +119,8 @@ async def _triggered_primary(d: FrameDispatcher, bus: FakeBus, stream: str = "wa
 
 
 PERSON = VisionObject(label="person", score=0.62, box_xyxy=[100, 200, 180, 420])
+MOVED = VisionObject(label="person", score=0.62, box_xyxy=[900, 200, 980, 420])
+SKELETON = VisionObject(label="person", score=0.37, box_xyxy=[2060, 877, 2274, 1227])
 
 
 def test_real_config_turns_blip_off_for_walkway_only():
@@ -217,10 +219,11 @@ async def test_rate_limit_and_lane_cap():
     assert d.metrics.caption_dispatched_total == 1
     assert d.metrics.caption_skip_counts == {"rate_limited": 1}
 
-    # Clock past the rate limit, first caption still in flight -> lane cap.
+    # Clock past the rate limit, someone new in view, first caption still in
+    # flight -> lane cap.
     d.state.camera("walkway").last_caption_dispatch_ts = time.time() - 60
     corr3, _ = await _triggered_primary(d, bus)
-    await d.handle_reply_envelope(_reply(corr3, objects=[PERSON]))
+    await d.handle_reply_envelope(_reply(corr3, objects=[MOVED]))
     assert d.metrics.caption_skip_counts == {"rate_limited": 1, "lane_inflight_limit": 1}
 
 
@@ -257,11 +260,18 @@ async def test_caption_lane_timeout_uses_its_own_timeout_and_counter():
     corr, _ = await _triggered_primary(d, bus)
     await d.handle_reply_envelope(_reply(corr, objects=[PERSON]))
     pending = next(t for t in d.state.pending.values() if t.lane == "caption")
-    assert pending.timeout_s == 15
-    cleared = await d.sweep_timeouts(now=pending.dispatched_at + 16)
+    assert pending.timeout_s == 20
+    assert await d.sweep_timeouts(now=pending.dispatched_at + 19) == 0
+    cleared = await d.sweep_timeouts(now=pending.dispatched_at + 21)
     assert cleared == 1
     assert d.metrics.caption_failure_counts == {"timeout": 1}
     assert d.metrics.host_timeouts_total == 0
+
+    # The reply that finally arrives after the timeout is not ours any more:
+    # ignored, not counted as a caption.
+    await d.handle_reply_envelope(_reply(pending.correlation_id, task_type="caption_frame",
+                                         caption=VisionCaption(text="A man walks by.", confidence=1.0)))
+    assert d.metrics.caption_captioned_total == 0
 
 
 @pytest.mark.asyncio
@@ -274,3 +284,35 @@ async def test_dry_run_books_but_does_not_publish_caption():
     await d.handle_reply_envelope(_reply(corr, objects=[PERSON]))
     assert bus.published == []
     assert d.metrics.caption_dispatched_total == 1
+
+
+@pytest.mark.asyncio
+async def test_same_scene_is_not_recaptioned_until_it_changes_or_ages_out():
+    """The patio skeleton reads as `person` all night; one caption per
+    same_scene_ttl_sec for it, not one every 8 s. Someone new is captioned."""
+    d, bus = _make()
+
+    async def frame(objects):
+        corr, _ = await _triggered_primary(d, bus)
+        await d.handle_reply_envelope(_reply(corr, objects=objects))
+
+    await frame([SKELETON])
+    c = str(bus.published[-1][1].correlation_id)
+    await d.handle_reply_envelope(_reply(c, task_type="caption_frame",
+                                         caption=VisionCaption(text="", confidence=0.0, rejected_reason="null_answer")))
+    cam = d.state.camera("walkway")
+    cam.last_caption_dispatch_ts -= 30  # past the 8 s rate limit
+    await frame([SKELETON])
+    assert d.metrics.caption_skip_counts == {"same_scene": 1}
+    assert d.metrics.caption_dispatched_total == 1
+
+    await frame([SKELETON, PERSON])  # someone walks past the prop
+    assert d.metrics.caption_dispatched_total == 2
+
+    c = str(bus.published[-1][1].correlation_id)
+    await d.handle_reply_envelope(_reply(c, task_type="caption_frame",
+                                         caption=VisionCaption(text="A man walks by.", confidence=1.0)))
+    cam.last_caption_objects = [{"label": "person", "box_xyxy": SKELETON.box_xyxy}]
+    cam.last_caption_dispatch_ts = time.time() - 301  # past same_scene_ttl_sec
+    await frame([SKELETON])
+    assert d.metrics.caption_dispatched_total == 3

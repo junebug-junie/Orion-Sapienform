@@ -26,6 +26,7 @@ from orion.schemas.vision import (
 
 from .projection import (
     build_window_payload,
+    is_caption_only,
     envelope_to_http_dict,
     identity_confidence_from_artifact,
     identity_hint_from_artifact,
@@ -541,7 +542,11 @@ class WindowService:
                 stream_id, now=window_end
             )
 
-        if settings.WINDOW_BELIEF_ENABLED:
+        # A window holding only a late caption (no detection pass) is not a
+        # look at the scene: it must not vote "saw nobody" into the belief
+        # tracker or presence.
+        looked = any(not is_caption_only(a) for a, _ in items)
+        if settings.WINDOW_BELIEF_ENABLED and looked:
             summary = dict(payload.summary or {})
             evidence = dict(summary.get("evidence") or {})
             observed = frozenset(str(x).strip().lower() for x in evidence.get("hard_labels") or [] if str(x).strip())

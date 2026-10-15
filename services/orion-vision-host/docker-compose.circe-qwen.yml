@@ -171,9 +171,10 @@ services:
       # flight, a few calls an hour) and the frame router's walkway captions
       # (at most one in flight, at most one per caption_dispatch
       # min_seconds_between_dispatch). A short queue lets either wait one
-      # ~3 s caption for the other instead of being refused; the router
-      # drops a caption that comes back stale (orion-vision-window's
-      # WINDOW_CAPTION_MAX_AGE_SEC).
+      # ~3 s caption for the other instead of being refused; a walkway
+      # caption that comes back late is dropped by orion-vision-window's
+      # caption gate (WINDOW_CAPTION_MAX_AGE_SEC), the router counts it as a
+      # timeout.
       - VISION_MAX_INFLIGHT=1
       - VISION_MAX_INFLIGHT_PER_GPU=1
       - VISION_QUEUE_WHEN_BUSY=true

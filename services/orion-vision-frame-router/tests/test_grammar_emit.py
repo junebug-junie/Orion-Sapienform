@@ -277,16 +277,18 @@ async def test_dry_run_counts_frames_but_not_tasks(tmp_path: Path, organ) -> Non
     assert kv["failed"] == "0"
 
 
-def test_secondary_caption_reply_counts_toward_caption_yield() -> None:
-    """Walkway captions come from a secondary VLM-lane task (2026-10-15); its
-    primary asks for none. Caption yield must still see them, and a secondary
-    reply must still not count as a detection."""
+def test_caption_lane_yield_counts_at_dispatch_and_leaves_host_counts_alone() -> None:
+    """Walkway captions come from the VLM lane (2026-10-15); its primary asks
+    for none. Two sent, one captioned, one never answered: yield 1/2, and
+    replies_ok/failed still describe only the athena host."""
     rec = grammar_emit.OrganWindowRecorder(configured_streams=["walkway"], clock=_Clock())
     rec.record_reply_ok("walkway", primary=True, objects=2, caption_requested=False, caption_present=False)
-    rec.record_reply_ok("walkway", primary=False, objects=None, caption_requested=True, caption_present=True)
-    rec.record_reply_ok("walkway", primary=False, objects=None, caption_requested=True, caption_present=False)
+    rec.record_caption_lane("walkway", requested=True)
+    rec.record_caption_lane("walkway", requested=True)
+    rec.record_caption_lane("walkway", captioned=True)
     kv = _summary_kv(grammar_emit.build_window_events(router="r", snapshot=rec.drain())[0].atom.summary)
     assert kv["caption_requested"] == "2"
     assert kv["captions"] == "1"
+    assert kv["replies_ok"] == "1"
+    assert kv["failed"] == "0"
     assert kv["detect_replies"] == "1"
-    assert kv["objects"] == "2"

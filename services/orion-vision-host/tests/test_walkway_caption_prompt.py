@@ -21,11 +21,12 @@ def test_qwen_without_override_keeps_default_prompt():
     assert resolve_caption_prompt(QWEN, None) == (CAPTION_PROMPT, None)
 
 
-def test_blip_ignores_override_and_says_so():
-    # BLIP continues text instead of obeying it (#2542), so it never gets one.
+def test_blip_cannot_take_a_caller_prompt_and_says_so():
+    # BLIP continues text instead of obeying it (#2542); the runner turns this
+    # warning into "no caption" (test_run_caption_frame_walkway.py).
     prompt, warning = resolve_caption_prompt(BLIP, {"caption_prompt": WALKWAY_PROMPT})
     assert prompt is None
-    assert warning == "caption_prompt_ignored:not_instruction_tuned"
+    assert warning == "caption_rejected:caller_prompt_unsupported"
 
 
 def test_null_answer_matches_with_case_and_punctuation():

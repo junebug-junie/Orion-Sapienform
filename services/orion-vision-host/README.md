@@ -40,8 +40,9 @@ otherwise.
 **2026-10-15: walkway captions.** The lane now has a second caller: the frame
 router's walkway `caption_dispatch` (`config/vision_frame_router.yaml`). Those
 `caption_frame` tasks carry `request.caption_prompt` (honored only on
-instruction-tuned VLMs -- BLIP ignores it with warning
-`caption_prompt_ignored:not_instruction_tuned`, see `vlm_family.resolve_caption_prompt`)
+instruction-tuned VLMs; on BLIP the task returns no caption with
+`rejected_reason="caller_prompt_unsupported"` instead of BLIP's own caption,
+see `vlm_family.resolve_caption_prompt`)
 and `request.caption_null_answers` (an exact "nothing notable" reply becomes
 `caption = {text: "", confidence: 0.0, rejected_reason: "null_answer"}`).
 They address the frame by `image_path`, so the compose file mounts

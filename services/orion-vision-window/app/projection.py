@@ -29,6 +29,14 @@ def _skip_edge_artifact(art: VisionArtifactPayload) -> bool:
     return art.task_type == "edge_detection"
 
 
+def is_caption_only(art: VisionArtifactPayload) -> bool:
+    """A caption with no detection pass behind it -- the walkway's Qwen
+    caption artifact (vision-frame-router caption_dispatch, 2026-10-15). It is
+    not a look at the scene: it must not count as a frame, nor as "looked and
+    saw nobody"."""
+    return art.task_type == "caption_frame" and art.outputs.objects is None
+
+
 def stream_key_from_artifact(art: VisionArtifactPayload) -> str:
     """Best-effort stream / source key from artifact inputs (§15 open: heuristic)."""
     inp = art.inputs or {}
@@ -327,7 +335,9 @@ def summarize_items(items: List[Tuple[VisionArtifactPayload, float]]) -> Dict[st
         # How many are believed to be THERE (per-frame max).
         "object_counts": counts,
         "top_labels": top_labels,
-        "item_count": len(items),
+        # Detection passes only: a caption-only artifact is not a frame
+        # looked at (scene inventory reads this as frame_count).
+        "item_count": sum(1 for art, _ts in items if not is_caption_only(art)),
         "captions": captions,
         # How many detections FIRED across the whole window. Frame-rate
         # dependent by definition, which is fine under this name.

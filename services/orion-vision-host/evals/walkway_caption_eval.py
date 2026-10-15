@@ -48,6 +48,7 @@ def main(argv=None) -> int:
     ap.add_argument("--frames", required=True)
     ap.add_argument("--limit", type=int, default=10)
     ap.add_argument("--device", default="cpu")
+    ap.add_argument("--prompt", default=None, help="qwen only: try this prompt instead of the configured one")
     args = ap.parse_args(argv)
 
     from app import runner as runner_mod
@@ -59,7 +60,7 @@ def main(argv=None) -> int:
     request_extra: dict = {}
     if args.mode == "qwen":
         cfg = walkway_caption_cfg()
-        request_extra = {"caption_prompt": cfg["prompt"], "caption_null_answers": cfg["null_answers"]}
+        request_extra = {"caption_prompt": args.prompt or cfg["prompt"], "caption_null_answers": cfg["null_answers"]}
     model_id = settings.VISION_VLM_MODEL_ID
     if (args.mode == "qwen") != ("qwen" in model_id.lower()):
         print(f"VISION_VLM_MODEL_ID={model_id!r} does not match --mode {args.mode}", file=sys.stderr)

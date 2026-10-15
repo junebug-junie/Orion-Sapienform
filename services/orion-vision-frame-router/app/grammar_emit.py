@@ -175,23 +175,32 @@ class OrganWindowRecorder:
         caption_present: bool,
     ) -> None:
         """``objects`` is None when the reply carried no ``objects`` key (an embed-only
-        or identity task): that is not an empty detection and is not counted as one.
-
-        Caption yield counts any reply that asked for a caption, primary or
-        not: walkway captions come from a secondary task on the VLM lane
-        (dispatcher._handle_caption_reply), its primary task asks for none."""
+        or identity task): that is not an empty detection and is not counted as one."""
         with self._lock:
             bucket = self._bucket(stream_id)[1]
             bucket.replies_ok += 1
-            if caption_requested:
-                bucket.caption_requested += 1
-                if caption_present:
-                    bucket.captions += 1
             if not primary:
                 return
             if objects is not None:
                 bucket.detect_replies += 1
                 bucket.objects += max(0, int(objects))
+            if caption_requested:
+                bucket.caption_requested += 1
+                if caption_present:
+                    bucket.captions += 1
+
+    def record_caption_lane(self, stream_id: Any, *, requested: bool = False, captioned: bool = False) -> None:
+        """Caption yield for streams captioned by the separate VLM lane (walkway,
+        dispatcher._maybe_dispatch_caption): counted as requested when the
+        task is SENT, so a down or slow lane reads as "asked, no caption".
+        Deliberately leaves replies_ok/failed alone -- those describe the
+        athena host, and the lane's failures are counted in router metrics."""
+        with self._lock:
+            bucket = self._bucket(stream_id)[1]
+            if requested:
+                bucket.caption_requested += 1
+            if captioned:
+                bucket.captions += 1
 
     def drain(self) -> WindowSnapshot:
         with self._lock:

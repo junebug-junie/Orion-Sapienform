@@ -199,12 +199,26 @@ streams:
       # while someone is on the walkway keeps the lane mostly free for
       # orion-thought's dream re-observation.
       min_seconds_between_dispatch: 8
+      # Same scene, no new caption: when every gate box matches (same label,
+      # IoU >= same_scene_iou) a box from the last captioned frame within
+      # same_scene_ttl_sec, skip. The patio skeleton reads as `person` all
+      # night; without this it costs a VLM call every 8 s.
+      same_scene_iou: 0.5
+      same_scene_ttl_sec: 300
       max_inflight: 1
-      timeout_sec: 15
+      # Equal to orion-vision-window's WINDOW_CAPTION_MAX_AGE_SEC, so a reply
+      # the router counts as timed out is also one the window drops as stale.
+      timeout_sec: 20
+      # Chosen by evals/walkway_caption_eval.py (2026-10-15, real night
+      # frames): "Describe only ... If there are none, answer exactly:
+      # nothing notable." got "There are no people, animals, or vehicles
+      # visible ..." from Qwen2-VL-2B on 8/8 empty frames (a caption saying
+      # nothing). Asking the question first, then the exact reply, got
+      # "nothing notable" on 2/2.
       prompt: >-
-        Describe only people, animals and vehicles you can clearly see on the
-        walkway or street, and what they are doing, in one short sentence.
-        If there are none, answer exactly: nothing notable.
+        Are there any people, animals or vehicles in this image? If there are
+        none, reply with only: nothing notable. If there are, describe them
+        and what they are doing in one short sentence.
       null_answers: ["nothing notable"]
 
 cameras:

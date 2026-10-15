@@ -13,6 +13,7 @@ from loguru import logger
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.schemas.vision import VisionFramePointerPayload, VisionTaskResultPayload
 
+from orion.vision.stationary import box_iou
 from orion.schemas.vision_organ_projection import FAILURE_HOST_ERROR, FAILURE_INVALID_REPLY, FAILURE_TIMEOUT
 
 from . import grammar_emit
@@ -328,6 +329,9 @@ class FrameDispatcher:
             if cam.last_caption_dispatch_ts is not None and (now - cam.last_caption_dispatch_ts) < min_s:
                 self.metrics.record_caption_skip("rate_limited")
                 return
+            if _same_scene(objects, cam, cfg, now=now):
+                self.metrics.record_caption_skip("same_scene")
+                return
             if self.state.inflight_lane("caption") >= int(cfg.get("max_inflight", 1)):
                 self.metrics.record_caption_skip("lane_inflight_limit")
                 return
@@ -346,6 +350,7 @@ class FrameDispatcher:
             if not self.settings.DRY_RUN and self.bus:
                 await self.bus.publish(self.settings.CHANNEL_CAPTION_INTAKE, caption_env)
             cam.last_caption_dispatch_ts = now
+            cam.last_caption_objects = [{"label": o["label"], "box_xyxy": o["box_xyxy"]} for o in objects]
             self.state.mark_dispatched(
                 correlation_id=corr,
                 camera_id=task.camera_id,
@@ -359,9 +364,14 @@ class FrameDispatcher:
                 want_caption=True,
                 lane="caption",
                 dispatch_tier=task.dispatch_tier,
-                timeout_s=float(cfg.get("timeout_sec", 15.0)),
+                timeout_s=float(cfg.get("timeout_sec", 20.0)),
             )
             self.metrics.caption_dispatched_total += 1
+            organ = grammar_emit.get_recorder()
+            if organ is not None and not self.settings.DRY_RUN:
+                # Requested at dispatch: a lane that never answers then reads
+                # as "asked, no caption", not as "never asked".
+                organ.record_caption_lane(_organ_stream(stream_id, task.camera_id), requested=True)
         logger.info(
             "[ROUTER] caption_dispatch camera_id={} stream_id={} corr={} labels={}",
             task.camera_id,
@@ -392,14 +402,9 @@ class FrameDispatcher:
         caption = outputs.caption if outputs is not None else None
         text = str(caption.text or "").strip() if caption is not None else ""
         organ = grammar_emit.get_recorder()
-        if organ is not None:
-            organ.record_reply_ok(
-                _organ_stream(task.stream_id, task.camera_id),
-                primary=False,
-                objects=None,
-                caption_requested=True,
-                caption_present=bool(text),
-            )
+        if organ is not None and text:
+            # Only the yield moves; replies_ok/failed stay the athena host's.
+            organ.record_caption_lane(_organ_stream(task.stream_id, task.camera_id), captioned=True)
         if text:
             self.metrics.caption_captioned_total += 1
             logger.info("[ROUTER] caption_ok stream_id={} corr={} text={!r}", task.stream_id, task.correlation_id, text[:160])
@@ -426,6 +431,21 @@ class FrameDispatcher:
                             _organ_failure(task, FAILURE_TIMEOUT)
                     cleared += 1
             return cleared
+
+
+def _same_scene(objects: list[dict], cam, cfg: dict, *, now: float) -> bool:
+    """Every gate box now matches (same label, IoU >= same_scene_iou) a box of
+    the last captioned frame, captioned within same_scene_ttl_sec."""
+    ttl = float(cfg.get("same_scene_ttl_sec", 0) or 0)
+    if ttl <= 0 or not cam.last_caption_objects or cam.last_caption_dispatch_ts is None:
+        return False
+    if (now - cam.last_caption_dispatch_ts) > ttl:
+        return False
+    thr = float(cfg.get("same_scene_iou", 0.5))
+    return all(
+        any(p["label"] == o["label"] and box_iou(p["box_xyxy"], o["box_xyxy"]) >= thr for p in cam.last_caption_objects)
+        for o in objects
+    )
 
 
 def _organ_stream(stream_id: str | None, camera_id: str | None) -> str:

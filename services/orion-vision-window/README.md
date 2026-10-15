@@ -99,11 +99,19 @@ frame (`inputs.source_objects`, attached by vision-frame-router's
 `WINDOW_CAPTION_MAX_AGE_SEC` of its frame (`app/caption_gate.py`). A rejected
 caption stays on the artifact as `text=""`, `confidence=0.0`,
 `rejected_reason="gate:<reason>"` (`no_source_detections`,
-`no_gate_detection`, `stationary_only`, `stale`); host-side no-captions are
+`no_gate_detection`, `stationary_only`, `stale`, `no_frame_ts`); host-side no-captions are
 counted as `host:<reason>` (e.g. `host:null_answer`). Counts land in
 `summary.caption_gate` and `/api/vision-window/metrics`
 (`vision_window_caption_gate_*`); each rejection is logged
 (`[WINDOW] caption_rejected ...`). The rejected text never enters the summary.
 Found live 2026-10-15: BLIP described a dark empty walkway frame as "A camera
 is placed on a wooden bench in a garden" and Orion repeated it as the street
-line. Tests: `tests/test_caption_gate.py`.
+line. Known gap: prop runs live in memory, so for the first
+`VISION_STATIONARY_MIN_SEC` (30 min) after a window restart a prop (the patio
+skeleton) still counts as moving; a non-null Qwen caption of it would pass then
+(the router's `same_scene` skip limits that to one ask per 5 min, and the eval
+saw Qwen answer "nothing notable" for the skeleton frames). A caption-only
+artifact (`task_type=caption_frame`, no objects) is not a frame: it does not
+count toward `item_count`/scene-inventory `frame_count`, and a window holding
+only such an artifact does not vote into belief or presence. Tests:
+`tests/test_caption_gate.py`.

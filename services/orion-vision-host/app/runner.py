@@ -1066,13 +1066,30 @@ class VisionRunner:
         device: str,
         warnings: List[str],
     ) -> Dict[str, Any]:
-        img = _load_image_from_request(request)
-
         # Use env defaults if not specified in profile
         model_id = settings.VISION_VLM_MODEL_ID
         if p.model_id and not p.model_id.startswith("REPLACE_ME"):
             model_id = p.model_id
 
+        # request.caption_prompt (walkway: people/animals/vehicles only) replaces
+        # the default on instruction-tuned VLMs only; see resolve_caption_prompt.
+        text_prompt, prompt_warning = resolve_caption_prompt(model_id, request)
+        if prompt_warning:
+            warnings.append(prompt_warning)
+            # The caller asked a question this model cannot follow (e.g. the
+            # qwen lane drifted back to BLIP). Answering with the model's own
+            # unprompted caption is exactly the walkway failure this prompt
+            # exists to prevent: no caption, with the reason.
+            return {
+                "configured": True,
+                "implemented": True,
+                "kind": "caption_frame",
+                "model_id": model_id,
+                "device": device,
+                "caption": {"text": "", "confidence": 0.0, "rejected_reason": "caller_prompt_unsupported"},
+            }
+
+        img = _load_image_from_request(request)
         dtype = self._resolve_dtype(p)
 
         model, processor = self.models.load_vlm_captioner(
@@ -1084,11 +1101,6 @@ class VisionRunner:
             qwen_max_pixels=settings.VISION_VLM_QWEN_MAX_PIXELS,
         )
 
-        # request.caption_prompt (walkway: people/animals/vehicles only) replaces
-        # the default on instruction-tuned VLMs only; see resolve_caption_prompt.
-        text_prompt, prompt_warning = resolve_caption_prompt(model_id, request)
-        if prompt_warning:
-            warnings.append(prompt_warning)
         if text_prompt is None and "blip" not in model_id.lower():
             # Unknown family: sent no prompt like BLIP. Instruction-tuned
             # models outside vlm_family's allowlist (LLaVA, Florence-2) may

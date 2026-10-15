@@ -96,12 +96,12 @@ class CaptionGate:
         source = inputs.get("source_objects")
         if not isinstance(source, list):
             return "no_source_detections"
-        frame_ts = inputs.get("frame_ts")
         try:
-            if frame_ts is not None and (float(ts) - float(frame_ts)) > self.max_age_sec:
-                return "stale"
+            age = float(ts) - float(inputs.get("frame_ts"))
         except (TypeError, ValueError):
-            pass
+            return "no_frame_ts"  # cannot prove it is fresh
+        if age > self.max_age_sec:
+            return "stale"
         candidates = []
         for o in source:
             if not isinstance(o, dict):
@@ -131,6 +131,7 @@ class CaptionGate:
         -- the summary is what the council narrates from."""
         if not self.enabled_for(stream_id):
             return items, None, []
+        stream_id = str(stream_id).strip().lower()  # trackers are keyed lowercase
         self._observe(stream_id, items)
         accepted = 0
         rejected: Counter = Counter()

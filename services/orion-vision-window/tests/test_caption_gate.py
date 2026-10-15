@@ -191,3 +191,42 @@ async def test_flush_keeps_agreeing_vlm_caption():
     assert summary["captions"] == [text]
     assert summary["caption_gate"] == {"accepted": 1, "rejected": {}}
     assert svc._m_caption_gate_accepted == 1
+
+
+def test_caption_without_frame_ts_is_dropped():
+    gate = _gate()
+    art = _caption("A man walks by.", source=[_src("person", WALKER)])
+    items, stats, _ = gate.apply("walkway", [(art, time.time())])
+    assert stats["rejected"] == {"no_frame_ts": 1}
+
+
+def test_mixed_case_stream_id_still_checks_props():
+    gate = _gate()
+    t0 = time.time() - 2400
+    for k in range(105):
+        gate.apply("Walkway", [(_detect([("person", 0.37, SKELETON)], stream="Walkway"), t0 + 20.0 * k)])
+    now = t0 + 2100
+    art = _caption("Two skeletons at a table.", source=[_src("person", SKELETON, 0.37)], frame_ts=now, stream="Walkway")
+    items, stats, _ = gate.apply("Walkway", [(art, now + 1)])
+    assert stats["rejected"] == {"stationary_only": 1}
+
+
+@pytest.mark.asyncio
+async def test_caption_only_window_is_not_a_look_at_the_scene():
+    """A late caption landing alone in a window must not vote 'saw nobody'
+    into belief/presence, nor count as a frame in the scene inventory."""
+    svc = WindowService()
+    now = time.time()
+    with patch.object(svc.bus, "publish", new_callable=AsyncMock):
+        await svc._flush_and_publish(stream_id="walkway", correlation_id=None, causality_chain=[], buffered=[
+            {"artifact": _detect([("person", 0.7, WALKER)]), "ts": now - 5, "env": None}])
+        with patch.object(svc._belief_registry, "observe", wraps=svc._belief_registry.observe) as obs, \
+                patch.object(svc, "_note_presence") as pres:
+            await svc._flush_and_publish(stream_id="walkway", correlation_id=None, causality_chain=[], buffered=[
+                {"artifact": _caption("A man walks by.", source=[_src("person", WALKER)], frame_ts=now - 4),
+                 "ts": now, "env": None}])
+            obs.assert_not_called()
+            pres.assert_not_called()
+    summary = svc._live_by_stream["walkway"].summary
+    assert summary["item_count"] == 0
+    assert summary["captions"] == ["A man walks by."]

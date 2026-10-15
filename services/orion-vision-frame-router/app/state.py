@@ -19,6 +19,8 @@ class CameraState(BaseModel):
     # Last walkway-style caption task sent to the VLM lane for this camera
     # (dispatcher._maybe_dispatch_caption); its own clock, like identity's.
     last_caption_dispatch_ts: float | None = None
+    # The gate boxes of that last captioned frame: [{"label", "box_xyxy"}].
+    last_caption_objects: list[dict] = Field(default_factory=list)
     inflight: set[str] = Field(default_factory=set)
     last_skip_reason: str | None = None
 

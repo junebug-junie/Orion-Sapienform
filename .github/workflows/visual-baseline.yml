@@ -29,9 +29,16 @@ on:
 jobs:
   contracts:
     runs-on: ubuntu-latest
+    # packages: read lets GITHUB_TOKEN pull the private GHCR postgres copy.
+    permissions:
+      contents: read
+      packages: read
     services:
       postgres:
-        image: public.ecr.aws/docker/library/postgres:15  # Docker Hub mirror: no unauthenticated pull rate limit
+        image: ghcr.io/junebug-junie/postgres:15  # private GHCR copy of postgres:15; Docker Hub and ECR Public both rate-limit shared runner IPs
+        credentials:
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
         env:
           POSTGRES_PASSWORD: visual_test_only
         ports:

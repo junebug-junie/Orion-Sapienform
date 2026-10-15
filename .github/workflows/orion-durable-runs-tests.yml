@@ -122,9 +122,16 @@ jobs:
     name: durable-runs — graph resume + contracts
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    # packages: read lets GITHUB_TOKEN pull the private GHCR postgres copy.
+    permissions:
+      contents: read
+      packages: read
     services:
       postgres:
-        image: public.ecr.aws/docker/library/postgres:16  # Docker Hub mirror: no unauthenticated pull rate limit
+        image: ghcr.io/junebug-junie/postgres:16  # private GHCR copy of postgres:16; Docker Hub and ECR Public both rate-limit shared runner IPs
+        credentials:
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
         env:
           POSTGRES_PASSWORD: admission-test
           POSTGRES_DB: admission_test

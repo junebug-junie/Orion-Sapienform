@@ -24,11 +24,18 @@ on:
 jobs:
   schema:
     runs-on: ubuntu-latest
+    # packages: read lets GITHUB_TOKEN pull the private GHCR postgres copy.
+    permissions:
+      contents: read
+      packages: read
     services:
       # Throwaway Postgres: the lock-contention tests hold ACCESS EXCLUSIVE on
       # memory_cards, which must never run against a real database.
       postgres:
-        image: public.ecr.aws/docker/library/postgres:16  # Docker Hub mirror: no unauthenticated pull rate limit
+        image: ghcr.io/junebug-junie/postgres:16  # private GHCR copy of postgres:16; Docker Hub and ECR Public both rate-limit shared runner IPs
+        credentials:
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres

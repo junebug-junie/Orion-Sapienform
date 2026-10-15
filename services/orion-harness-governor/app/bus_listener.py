@@ -481,7 +481,10 @@ async def handle_harness_run_request(
         run = HarnessRunV1(
             correlation_id=corr,
             final_text=None,
-            draft_text=motor.draft_text or None,
+            # No draft on the reply: Hub's urgent path salvages `partial_draft` into
+            # text, which would turn a half-finished thought into a success and
+            # suppress the retry. The work lives in the resumable session.
+            draft_text=None,
             finalize_ran=False,
             step_count=motor.step_count,
             exit_code=motor.exit_code,

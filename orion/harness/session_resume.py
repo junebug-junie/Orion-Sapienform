@@ -29,10 +29,12 @@ Resume is refused (a fresh session starts instead) when:
 
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import json
 import os
 import uuid
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
@@ -59,6 +61,9 @@ class ResumePlan:
     resumes: int
     reason: str
     generation: int = 0
+    # Identifies THIS attempt. A late `mark_end` from a cancelled earlier attempt
+    # carries a stale token and is ignored, so it cannot overwrite a newer attempt.
+    token: str = ""
 
     def metadata(self) -> dict[str, Any]:
         """Trace evidence stamped on the turn's final frame."""
@@ -90,6 +95,29 @@ def find_transcript(home: Path, session_id: str) -> Optional[Path]:
     return None
 
 
+# A `.jsonl` transcript is mostly envelope: JSON escaping, usage counters,
+# thinking signatures, per-event wrappers. About half its bytes are live-context
+# text, and bytes overstate UTF-8 chars too. Not a measured constant -- a
+# deliberately rough discount; the ceiling guard corrects it from the live stream.
+TRANSCRIPT_BYTES_TO_CHARS = 0.5
+
+
+def transcript_chars_estimate(path: Path) -> int:
+    return int(path.stat().st_size * TRANSCRIPT_BYTES_TO_CHARS)
+
+
+@contextmanager
+def _locked(path: Path):
+    """Serialize read-decide-write per key across processes/threads."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path.with_suffix(".lock"), "a+") as handle:
+        fcntl.flock(handle, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(handle, fcntl.LOCK_UN)
+
+
 def _registry_path(home: Path, resume_key: str) -> Path:
     digest = hashlib.sha256(resume_key.encode("utf-8")).hexdigest()[:24]
     return home / _REGISTRY_DIRNAME / f"{digest}.json"
@@ -105,9 +133,17 @@ def _read(path: Path) -> dict[str, Any]:
 
 def _write(path: Path, record: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(".tmp")
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
     tmp.write_text(json.dumps(record), encoding="utf-8")
     os.replace(tmp, path)
+
+
+def _as_int(value: Any) -> int:
+    """A corrupt registry value must degrade to 0, never kill the turn."""
+    try:
+        return max(0, int(value or 0))
+    except (TypeError, ValueError):
+        return 0
 
 
 def max_resumes() -> int:
@@ -133,17 +169,25 @@ def plan_attempt(
     home = home or claude_home()
     limit = max_resumes() if limit is None else limit
     path = _registry_path(home, resume_key)
+    with _locked(path):
+        return _plan_locked(resume_key, home, path, window_chars, limit)
+
+
+def _plan_locked(
+    resume_key: str, home: Path, path: Path, window_chars: Optional[int], limit: int
+) -> ResumePlan:
     record = _read(path)
-    generation = int(record.get("generation") or 0)
-    resumes = int(record.get("resumes") or 0)
+    generation = _as_int(record.get("generation"))
+    resumes = _as_int(record.get("resumes"))
     state = str(record.get("state") or "")
     session_id = session_id_for(resume_key, generation)
+    token = uuid.uuid4().hex
 
     def fresh(reason: str, *, bump: bool) -> ResumePlan:
         gen = generation + 1 if bump else generation
         sid = session_id_for(resume_key, gen)
-        _write(path, {"key": resume_key, "generation": gen, "resumes": 0, "state": STATE_RUNNING})
-        return ResumePlan(session_id=sid, resume=False, resumes=0, reason=reason, generation=gen)
+        _write(path, {"key": resume_key, "generation": gen, "resumes": 0, "state": STATE_RUNNING, "token": token})
+        return ResumePlan(session_id=sid, resume=False, resumes=0, reason=reason, generation=gen, token=token)
 
     if not record:
         return fresh("first_attempt", bump=False)
@@ -156,11 +200,11 @@ def plan_attempt(
     transcript = find_transcript(home, session_id)
     if transcript is None:
         return fresh("transcript_missing", bump=True)
-    if window_chars is not None and transcript.stat().st_size >= window_chars:
+    if window_chars is not None and transcript_chars_estimate(transcript) >= window_chars:
         return fresh("transcript_exceeds_lane_window", bump=True)
     _write(
         path,
-        {"key": resume_key, "generation": generation, "resumes": resumes + 1, "state": STATE_RUNNING},
+        {"key": resume_key, "generation": generation, "resumes": resumes + 1, "state": STATE_RUNNING, "token": token},
     )
     return ResumePlan(
         session_id=session_id,
@@ -168,19 +212,23 @@ def plan_attempt(
         resumes=resumes + 1,
         reason="resumed_after_" + (state or STATE_RUNNING),
         generation=generation,
+        token=token,
     )
 
 
-def mark_end(resume_key: str, state: str, *, home: Optional[Path] = None) -> None:
-    """Record how the attempt ended. A process that is killed never reaches
-    this, which is exactly what leaves it `running` (resumable)."""
+def mark_end(resume_key: str, state: str, *, plan: ResumePlan, home: Optional[Path] = None) -> bool:
+    """Record how THIS attempt ended; False (and no write) when a newer attempt
+    has since taken the record. Only an outside kill leaves `interrupted`/`running`
+    (resumable); every other ending closes the turn."""
     home = home or claude_home()
     path = _registry_path(home, resume_key)
-    record = _read(path)
-    if not record:
-        return
-    record["state"] = state
-    _write(path, record)
+    with _locked(path):
+        record = _read(path)
+        if not record or record.get("token") != plan.token:
+            return False
+        record["state"] = state
+        _write(path, record)
+    return True
 
 
 def continuation_prompt(plan: ResumePlan) -> str:

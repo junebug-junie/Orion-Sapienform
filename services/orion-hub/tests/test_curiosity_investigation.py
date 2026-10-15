@@ -2672,7 +2672,7 @@ def test_durable_turn_request_forwards_the_run_id_as_the_resume_key() -> None:
         env = BaseEnvelope(kind="curiosity.turn.request.v1", source=SOURCE, reply_to=f"r{attempt}",
                            payload={"run_id": "run-stable", "correlation_id": corr, "prompt": "p", "timeout_sec": 10.0, "attempt": attempt})
         asyncio.run(loop._handle_turn_request({"data": bus.codec.encode(env)}))
-    assert seen == ["run-stable", "run-stable"]
+    assert len(seen) == 2 and seen[0] == seen[1] and seen[0].startswith("run-stable:")
 
 
 def test_in_process_fallback_and_runner_rpc_share_one_turn() -> None:

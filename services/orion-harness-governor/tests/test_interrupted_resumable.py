@@ -39,11 +39,13 @@ async def _run(request, motor):
 
 
 @pytest.mark.asyncio
-async def test_sigkilled_durable_turn_fails_without_finalizing_and_keeps_the_draft():
+async def test_sigkilled_durable_turn_fails_without_finalizing_and_drops_the_draft_from_the_reply():
     run = await _run(_request("run-1"), _motor(exit_code=-9, grounding_status="fcc_nonzero_exit"))
     assert run.final_text is None and run.finalize_ran is False
     assert run.grounding_status == "interrupted_resumable"
-    assert run.draft_text == "half a thought that stops mid"
+    # The draft must not ride the reply: Hub's urgent path would salvage it into
+    # "text" and report a half-finished thought as a success.
+    assert run.draft_text is None
 
 
 def test_only_durable_externally_killed_turns_qualify():
@@ -55,3 +57,24 @@ def test_only_durable_externally_killed_turns_qualify():
     assert interrupted_for_resume(_request("run-1"), _motor(exit_code=0)) is False
     ceiling = _motor(exit_code=-9, grounding_status="fcc_context_ceiling_exceeded")
     assert interrupted_for_resume(_request("run-1"), ceiling) is False  # cut-short path owns it
+
+
+@pytest.mark.asyncio
+async def test_real_frames_through_the_runner_decide_interrupted_vs_motor_verdict():
+    """The pair the governor keys on must be what HarnessRunner really emits."""
+    from app.bus_listener import interrupted_for_resume
+    from orion.harness.runner import HarnessRunner
+
+    async def run_with(frame):
+        async def motor(**_kw):
+            yield {"type": "step", "step": {"type": "assistant", "message": {"content": [{"type": "text", "text": "partial"}]}}}
+            yield frame
+
+        return await HarnessRunner(AsyncMock(), fcc_runner=motor, fcc_timeout_sec=999).run(_request("run-1"))
+
+    killed = await run_with({"type": "error", "error": "claude exited with code -9", "error_code": "fcc_nonzero_exit",
+                             "metadata": {"exit_code": -9}, "llm_response": "partial"})
+    assert interrupted_for_resume(_request("run-1"), killed) is True
+
+    timed_out = await run_with({"type": "error", "error": "t", "error_code": "fcc_timeout", "llm_response": "partial"})
+    assert interrupted_for_resume(_request("run-1"), timed_out) is False

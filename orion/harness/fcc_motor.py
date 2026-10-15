@@ -1243,17 +1243,18 @@ async def run_fcc_turn(
                 # Headroom: the resumed turn still has to do its remaining work.
                 window_chars=int(max_context_chars(lane_n_ctx) * 0.6) if lane_n_ctx else None,
             )
-        except OSError:
+        except Exception:  # noqa: BLE001 -- fall back to a plain turn
             logger.warning("fcc_session_resume_plan_failed corr=%s", correlation_id, exc_info=True)
         else:
             if session_plan.resume:
                 # The live context is the whole resumed transcript, not just the short
                 # continuation prompt, or the ceiling guard would start at ~0.
                 found = session_resume.find_transcript(session_resume.claude_home(), session_plan.session_id)
-                drive_kwargs["context_seed_chars"] = found.stat().st_size if found else 0
+                drive_kwargs["context_seed_chars"] = session_resume.transcript_chars_estimate(found) if found else 0
             logger.info(
-                "fcc_session_resume_decision corr=%s key=%s resumed=%s resumes=%s reason=%s",
+                "fcc_session_resume_decision corr=%s key=%s resumed=%s resumes=%s reason=%s seed_chars=%s",
                 correlation_id, resume_key, session_plan.resume, session_plan.resumes, session_plan.reason,
+                drive_kwargs.get("context_seed_chars", 0),
             )
     argv = build_claude_argv(
         claude_bin=claude_bin,
@@ -1289,22 +1290,29 @@ async def run_fcc_turn(
 def _record_session_end(frame: Dict[str, object], *, resume_key: str, plan: Any) -> Dict[str, object]:
     """Close the attempt's resume record and stamp the decision on the frame.
 
-    A killed turn never reaches here, which is what leaves its record
-    `running` (resumable). A context-ceiling death is recorded so it is not
-    resumed into the same full window.
+    A SIGKILL cancel DOES reach here, as an `fcc_nonzero_exit` frame with a
+    negative exit code -> `interrupted`. A generator cancelled mid-stream never
+    does, which leaves the record `running` (also resumable). A context-ceiling
+    death is recorded so it is not resumed into the same full window.
     """
     from orion.harness import session_resume
 
     code = str(frame.get("error_code") or "") if frame.get("type") == "error" else ""
-    if not code:
-        state = session_resume.STATE_COMPLETED
-    elif code in (FCC_CONTEXT_CEILING_ERROR_CODE, LEGACY_FCC_CONTEXT_CEILING_ERROR_CODE):
+    exit_code = (frame.get("metadata") or {}).get("exit_code")
+    if code in (FCC_CONTEXT_CEILING_ERROR_CODE, LEGACY_FCC_CONTEXT_CEILING_ERROR_CODE):
         state = session_resume.STATE_CEILING
-    else:
+    elif code and isinstance(exit_code, int) and exit_code < 0:
+        # Killed by an outside signal (a cancel's SIGKILL, OOM, restart): the
+        # governor reports it failed and the durable run retries -- resume it.
         state = session_resume.STATE_INTERRUPTED
+    else:
+        # Finished, or ended by the motor's own verdict (timeout, stall, line
+        # limit, a CLI that errored on its own). The governor finalizes those,
+        # so the turn is DONE: a later request under this key is a new turn.
+        state = session_resume.STATE_COMPLETED
     try:
-        session_resume.mark_end(resume_key, state)
-    except OSError:
+        session_resume.mark_end(resume_key, state, plan=plan)
+    except Exception:  # noqa: BLE001 -- bookkeeping must not break the turn
         logger.warning("fcc_session_resume_mark_end_failed key=%s", resume_key, exc_info=True)
     metadata = dict(frame.get("metadata") or {})
     metadata["session_resume"] = {**plan.metadata(), "ended": state}

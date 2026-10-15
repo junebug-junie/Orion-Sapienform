@@ -4642,8 +4642,9 @@ class CuriosityInvestigation:
                     **({"gpu_lease": request.gpu_lease} if request.gpu_lease is not None else {}),
                     **({"urgent": True} if request.urgent is not None else {}),
                     **({"retrieval_query": request.retrieval_query} if request.retrieval_query else {}),
-                    # The durable run id is stable across attempts, leases and restarts.
-                    resume_key=request.run_id,
+                    # Stable across attempts, leases and restarts; the purpose keeps two
+                    # different turns of one run from sharing a session.
+                    resume_key=f"{request.run_id}:{request.source_tag}",
                 )
                 if measured:
                     await self._spend_turn_ended(request.run_id, turn_ok=bool(text))

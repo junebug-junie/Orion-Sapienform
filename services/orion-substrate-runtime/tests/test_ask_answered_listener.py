@@ -197,3 +197,55 @@ def test_settings_defaults():
     s = Settings(POSTGRES_URI="postgresql://orion:orion@localhost:5432/orion")
     assert s.channel_ask_answered == "orion:ask:answered"
     assert s.enable_ask_answered_listener is True
+
+
+# --- names typed on a "same person?" card (2026-10-15) ---------------------------------------------
+
+
+def _pair_event(answer="yes", names=None, status="answered"):
+    return OrionAskAnsweredV1(
+        ask_id="ask-pair", status=status, answer=answer,
+        answered_at=datetime(2026, 10, 15, 22, 35, tzinfo=timezone.utc),
+        source_kind="vision_same_individual", source_ref="aaa|bbb", names=names or {},
+    )
+
+
+def test_pair_names_write_one_entity_per_named_face():
+    store = InMemorySubstrateGraphStore()
+    out = _apply(_pair_event("yes", {"aaa": "Kid next door", "bbb": "Kid next door"}), store)
+    assert out["outcome"] == "pair_names"
+    assert sorted(e["individual_id"] for e in out["entities"]) == ["aaa", "bbb"]
+    for iid in ("aaa", "bbb"):
+        node = store.get_node_by_id(entity_node_id_for_individual(iid))
+        # The same entity a "who is this?" answer for that individual writes.
+        assert node.label == "Kid next door" and node.subject_ref == f"vision_individual:{iid}"
+        assert node.provenance.authority == "user_asserted" and node.metadata["label_ask_id"] == "ask-pair"
+
+
+def test_pair_name_renames_an_entity_a_who_is_this_answer_made():
+    store = InMemorySubstrateGraphStore()
+    _apply(_event(answer="Theo", ref="aaa"), store)
+    out = _apply(_pair_event("no", {"aaa": "Theodore"}), store)
+    assert out["entities"][0]["outcome"] == "relabelled"
+    node = store.get_node_by_id(entity_node_id_for_individual("aaa"))
+    assert node.label == "Theodore" and node.aliases == ["Theo"]
+    assert store.get_node_by_id(entity_node_id_for_individual("bbb")) is None
+
+
+@pytest.mark.parametrize("event", [
+    _pair_event("yes"),                                   # no names: verdict only
+    _pair_event("no", {"zzz": "Not on the card"}),        # not one of the two faces
+    _pair_event(None, {"aaa": "X"}, status="dismissed"),
+])
+def test_pair_events_without_usable_names_write_nothing(event):
+    store = InMemorySubstrateGraphStore()
+    assert _apply(event, store) is None
+    assert not store.snapshot().nodes
+
+
+def test_event_without_names_key_still_validates():
+    """A payload from a Hub built before `names` (or one with no names) validates;
+    the Hub leaves the key out when it is empty."""
+    payload = _pair_event("yes").model_dump(mode="json")
+    payload.pop("names")
+    assert OrionAskAnsweredV1.model_validate(payload).names == {}

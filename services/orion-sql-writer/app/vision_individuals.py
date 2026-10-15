@@ -949,6 +949,8 @@ INDIVIDUALS_LOCK_KEY = 0x0A1C_0001
 # What manual_migration_vision_confirm_asks_v1.sql adds.
 V3_COLUMNS = (("orion_ask", "image_refs"),)
 V3_TABLES = ("vision_individual_pair_verdict",)
+V4_COLUMNS = (("orion_ask", "answer_detail"), ("vision_individual", "label_copied"))
+V4_TABLES = ("vision_ask_picture_verdict",)
 
 
 def _check_tables(conn) -> None:
@@ -986,6 +988,19 @@ def _check_tables(conn) -> None:
         raise MigrationMissing(
             "missing " + ",".join(absent3)
             + " -- apply services/orion-sql-db/manual_migration_vision_confirm_asks_v1.sql"
+        )
+    have4 = {(r[0], r[1]) for r in conn.execute(text(
+        "SELECT table_name, column_name FROM information_schema.columns "
+        "WHERE table_schema = current_schema() AND table_name = ANY(:t)"),
+        {"t": sorted({t for t, _ in V4_COLUMNS})}).fetchall()}
+    absent4 = [f"{t}.{c}" for t, c in V4_COLUMNS if (t, c) not in have4]
+    absent4 += [r[0] for r in conn.execute(text(
+        "SELECT t FROM unnest(CAST(:t AS text[])) AS t WHERE to_regclass(t) IS NULL"),
+        {"t": list(V4_TABLES)}).fetchall()]
+    if absent4:
+        raise MigrationMissing(
+            "missing " + ",".join(absent4)
+            + " -- apply services/orion-sql-db/manual_migration_vision_ask_names_v1.sql"
         )
 
 
@@ -1349,11 +1364,49 @@ def _write_patio_presence(conn, stream_id: str, zone_name: str, patio_crops: Seq
     return True
 
 
-def _propagate_label(conn, individual_id: str, label: str, ask_id: str, at: datetime) -> int:
-    """Give ``label`` to every unlabeled individual Juniper said is the same
-    person as ``individual_id`` -- the whole group, transitively (a=b, b=c:
-    naming a names c too), matching ``same_groups`` used by the opener. Never
-    overwrites a name she gave directly."""
+def _clean_name(value: Any) -> str:
+    # orion.substrate.adapters.vision_individual.MAX_LABEL_LENGTH; the Hub refuses longer.
+    return " ".join(str(value or "").split())[:120]
+
+
+def _detail(raw: Any) -> Dict[str, Any]:
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except ValueError:
+            return {}
+    return raw if isinstance(raw, dict) else {}
+
+
+def _set_typed_label(conn, individual_id: str, label: str, ask_id: str, at: datetime) -> bool:
+    """A name Juniper typed for this individual (a "who is this?" answer, or a
+    name on a "same person?" card). The last typed name wins: it replaces a
+    copied name and an earlier typed one; replacing a typed one is logged."""
+    from sqlalchemy import text
+
+    prev = conn.execute(text(
+        "SELECT label, label_copied, label_ask_id FROM vision_individual WHERE individual_id=:i FOR UPDATE"),
+        {"i": individual_id}).fetchone()
+    if prev is None:
+        logger.warning("ask_answer_for_missing_individual ask_id=%s individual_id=%s", ask_id, individual_id)
+        return False
+    if prev[0] and prev[0] != label and not prev[1]:
+        logger.info("[VISION_LABEL_REPLACED] individual_id=%s old=%r old_ask_id=%s new=%r ask_id=%s",
+                    individual_id, prev[0], prev[2], label, ask_id)
+    conn.execute(text(
+        "UPDATE vision_individual SET label=:l, labeled_at=:at, label_ask_id=:a, label_copied=false, "
+        "updated_at=now() WHERE individual_id=:i"), {"l": label, "at": at, "a": ask_id, "i": individual_id})
+    return True
+
+
+def _propagate_label(conn, individual_id: str, label: str, ask_id: str, at: datetime, *,
+                     replace_copied: bool = False) -> List[str]:
+    """Give ``label`` to everyone Juniper said is the same person as
+    ``individual_id`` -- the whole group, transitively (a=b, b=c: naming a
+    names c too), matching ``same_groups`` used by the opener. Never overwrites
+    a name she typed for that individual; ``replace_copied`` (the label is one
+    she just typed) also replaces names that were only copied. Returns the ids
+    it labelled."""
     from sqlalchemy import text
 
     pairs = [(r[0], r[1]) for r in conn.execute(text(
@@ -1364,73 +1417,170 @@ def _propagate_label(conn, individual_id: str, label: str, ask_id: str, at: date
         "SELECT CAST(:i AS text), id FROM g"), {"i": individual_id}).fetchall()]
     group = sorted({b for _, b in pairs} - {individual_id})
     if not group:
+        return []
+    return [r[0] for r in conn.execute(text(
+        "UPDATE vision_individual SET label=:l, labeled_at=:at, label_ask_id=:a, label_copied=true, updated_at=now() "
+        "WHERE individual_id = ANY(:ids) AND (label IS NULL OR (:rc AND label_copied)) "
+        "RETURNING individual_id"),
+        {"l": label, "at": at, "a": ask_id, "ids": group, "rc": bool(replace_copied)}).fetchall()]
+
+
+def _close_who_is_this(conn, individual_ids: Sequence[str], label: str, ask_id: str, now: datetime) -> int:
+    """Close any still-open "who is this?" card for people who just got ``label``
+    from a name Juniper typed elsewhere, so she is not asked again. Marked
+    applied: the label is already set (a copied one must not become typed)."""
+    from sqlalchemy import text
+
+    if not individual_ids:
         return 0
-    return conn.execute(text(
-        "UPDATE vision_individual SET label=:l, labeled_at=:at, label_ask_id=:a, updated_at=now() "
-        "WHERE label IS NULL AND individual_id = ANY(:ids)"),
-        {"l": label, "at": at, "a": ask_id, "ids": group}).rowcount or 0
+    n = conn.execute(text(
+        "UPDATE orion_ask SET status='answered', answer=:l, answered_at=:now, applied_at=:now, "
+        "answer_detail=jsonb_build_object('resolved_by', CAST(:a AS text)) "
+        "WHERE source_kind=:k AND status='open' AND source_ref = ANY(:ids)"),
+        {"l": label, "now": now, "a": ask_id, "k": SOURCE_KIND_INDIVIDUAL, "ids": list(individual_ids)}).rowcount or 0
+    if n:
+        logger.info("[VISION_ASK_CLOSED_BY_NAME] n=%d by_ask_id=%s ids=%s", n, ask_id, ",".join(individual_ids))
+    return n
+
+
+def _apply_typed_name(conn, individual_id: str, label: str, ask_id: str, at: datetime, now: datetime) -> bool:
+    """One typed name, applied the same way wherever it was typed: the
+    individual, then everyone confirmed the same person, then their open cards."""
+    if not _set_typed_label(conn, individual_id, label, ask_id, at):
+        return False
+    copied = _propagate_label(conn, individual_id, label, ask_id, at, replace_copied=True)
+    _close_who_is_this(conn, [individual_id, *copied], label, ask_id, now)
+    return True
+
+
+PICTURE_VERDICTS = ("same", "different", "unsure")
+
+
+def picture_rows(ask_id: str, individual_id: str, detail: Dict[str, Any], answered_at: datetime) -> List[dict]:
+    """``answer_detail.pictures`` -> vision_ask_picture_verdict rows (pure; no crop ids yet)."""
+    out: List[dict] = []
+    seen = set()
+    for p in detail.get("pictures") or []:
+        if not isinstance(p, dict):
+            continue
+        ref, verdict = str(p.get("image_ref") or ""), str(p.get("verdict") or "")
+        if not ref or ref in seen or verdict not in PICTURE_VERDICTS:
+            continue
+        seen.add(ref)
+        name = _clean_name(p.get("name")) or None
+        out.append({"ask": ask_id, "ref": ref, "idx": int(p.get("index") or 0), "ind": individual_id,
+                    "v": verdict, "name": name if verdict != "unsure" else None, "at": answered_at})
+    return out
+
+
+def _record_pictures(conn, rows: List[dict]) -> int:
+    """Keep each picture's verdict. Record only: nothing here splits an individual."""
+    from sqlalchemy import text
+
+    if not rows:
+        return 0
+    refs = [r["ref"] for r in rows]
+    crop = {}
+    for ref, crop_id in conn.execute(text(
+            "SELECT DISTINCT ON (ref) ref, crop_id FROM ("
+            "  SELECT face_thumb_ref AS ref, crop_id, observed_at FROM vision_crop_observation "
+            "  WHERE face_thumb_ref = ANY(:r) UNION ALL "
+            "  SELECT thumb_ref, crop_id, observed_at FROM vision_crop_observation WHERE thumb_ref = ANY(:r)) c "
+            "ORDER BY ref, observed_at DESC"), {"r": refs}).fetchall():
+        crop[ref] = crop_id
+    for r in rows:
+        conn.execute(text(
+            "INSERT INTO vision_ask_picture_verdict (ask_id, image_ref, picture_index, individual_id, verdict, name, "
+            "crop_id, answered_at) VALUES (:ask, :ref, :idx, :ind, :v, :name, :crop, :at) "
+            "ON CONFLICT (ask_id, image_ref) DO NOTHING"), {**r, "crop": crop.get(r["ref"])})
+    others = [r for r in rows if r["v"] != "same"]
+    if others:
+        logger.info("[VISION_PICTURE_VERDICT] ask_id=%s individual_id=%s pictures=%d not_same=%s",
+                    rows[0]["ask"], rows[0]["ind"], len(rows),
+                    ",".join(f"{r['idx']}:{r['v']}" for r in others))
+    return len(rows)
 
 
 def _apply_answers(conn, now: datetime) -> int:
+    """Every unapplied "who is this?" and "same person?" answer, oldest first, so
+    when two answers name one individual the later one wins."""
     from sqlalchemy import text
 
     rows = conn.execute(text(
-        "SELECT ask_id, source_ref, answer, answered_at FROM orion_ask WHERE source_kind='vision_individual' "
-        "AND status='answered' AND applied_at IS NULL")).fetchall()
-    for ask_id, individual_id, answer, answered_at in rows:
-        label = (answer or "").strip()
-        if label:
-            n = conn.execute(text(
-                "UPDATE vision_individual SET label=:l, labeled_at=:at, label_ask_id=:a, updated_at=now() "
-                "WHERE individual_id=:i"), {"l": label, "at": answered_at or now, "a": ask_id, "i": individual_id}).rowcount
-            if not n:
-                logger.warning("ask_answer_for_missing_individual ask_id=%s individual_id=%s", ask_id, individual_id)
-            else:
-                _propagate_label(conn, individual_id, label, ask_id, answered_at or now)
-        conn.execute(text("UPDATE orion_ask SET applied_at=:now WHERE ask_id=:a"), {"now": now, "a": ask_id})
-    return len(rows) + _apply_pair_answers(conn, now)
-
-
-def _apply_pair_answers(conn, now: datetime) -> int:
-    """"Are these the same person?" answers -> one vision_individual_pair_verdict
-    row each, with the face similarity at that moment (the calibration point).
-    'same' links the two (no merge, no delete) and carries a name across if
-    exactly one of them has one; 'different' just keeps the pair from being asked again."""
-    from sqlalchemy import text
-
-    rows = conn.execute(text(
-        "SELECT ask_id, source_ref, answer, answered_at FROM orion_ask WHERE source_kind=:k "
-        "AND status='answered' AND applied_at IS NULL"), {"k": SOURCE_KIND_SAME}).fetchall()
-    for ask_id, ref, answer, answered_at in rows:
-        pair = parse_pair_ref(ref)
-        same = parse_yes_no(answer)
+        "SELECT ask_id, source_kind, source_ref, answer, answered_at, answer_detail FROM orion_ask "
+        "WHERE source_kind = ANY(:k) AND status='answered' AND applied_at IS NULL "
+        "ORDER BY answered_at NULLS FIRST, ask_id"),
+        {"k": [SOURCE_KIND_INDIVIDUAL, SOURCE_KIND_SAME]}).fetchall()
+    for ask_id, kind, ref, answer, answered_at, detail in rows:
         at = answered_at or now
-        if pair is None or same is None:
-            logger.warning("pair_answer_not_applied ask_id=%s source_ref=%s answer=%r", ask_id, ref, answer)
+        if kind == SOURCE_KIND_INDIVIDUAL:
+            label = _clean_name(answer)
+            if label:
+                _apply_typed_name(conn, ref, label, ask_id, at, now)
+                _record_pictures(conn, picture_rows(ask_id, ref, _detail(detail), at))
         else:
-            a, b = pair
-            inds = {r[0]: r for r in conn.execute(text(
-                "SELECT individual_id, face_centroid, label FROM vision_individual WHERE individual_id = ANY(:ids)"),
-                {"ids": [a, b]}).fetchall()}
-            fa = inds.get(a)[1] if a in inds else None
-            fb = inds.get(b)[1] if b in inds else None
-            sim = cosine(list(fa), list(fb)) if fa and fb and len(fa) == len(fb) else None
-            conn.execute(text(
-                "INSERT INTO vision_individual_pair_verdict (individual_a, individual_b, verdict, face_cosine, "
-                "ask_id, decided_at) VALUES (:a, :b, :v, :c, :ask, :at) ON CONFLICT (individual_a, individual_b) "
-                "DO UPDATE SET verdict=EXCLUDED.verdict, face_cosine=EXCLUDED.face_cosine, ask_id=EXCLUDED.ask_id, "
-                "decided_at=EXCLUDED.decided_at"),
-                {"a": a, "b": b, "v": "same" if same else "different",
-                 "c": None if sim is None else round(float(sim), 4), "ask": ask_id, "at": at})
-            logger.info("[VISION_PAIR_VERDICT] ask_id=%s a=%s b=%s verdict=%s face_cosine=%s",
-                        ask_id, a, b, "same" if same else "different", sim)
-            if same:
-                labels = {iid: inds[iid][2] for iid in inds if inds[iid][2]}
-                if len(labels) == 1:
-                    (named, label), = labels.items()
-                    _propagate_label(conn, named, label, ask_id, at)
+            _apply_pair_answer(conn, ask_id, ref, answer, at, _detail(detail), now)
         conn.execute(text("UPDATE orion_ask SET applied_at=:now WHERE ask_id=:a"), {"now": now, "a": ask_id})
     return len(rows)
+
+
+def pair_names(pair: Tuple[str, str], same: Optional[bool], detail: Dict[str, Any]) -> Dict[str, str]:
+    """The typed names on a "same person?" answer that can be applied: only for
+    the two faces on the card, never on a "not a yes/no" answer, and one name
+    for both on "same" (if two different names got stored, none is applied)."""
+    if same is None:
+        return {}
+    raw = detail.get("names") if isinstance(detail.get("names"), dict) else {}
+    names = {iid: _clean_name(raw.get(iid)) for iid in pair if _clean_name(raw.get(iid))}
+    if same and names:
+        if len(set(names.values())) != 1:
+            return {}
+        name = next(iter(names.values()))
+        names = {iid: name for iid in pair}
+    return names
+
+
+def _apply_pair_answer(conn, ask_id: str, ref: str, answer: Optional[str], at: datetime,
+                       detail: Dict[str, Any], now: datetime) -> None:
+    """One "are these the same person?" answer -> one vision_individual_pair_verdict
+    row, with the face similarity at that moment (the calibration point).
+    'same' links the two (no merge, no delete); 'different' keeps the pair from
+    being asked again. A name typed on the card is applied as a typed name for
+    that face (both faces on 'same'). With no name, 'same' carries a name
+    across if exactly one of them has one."""
+    from sqlalchemy import text
+
+    pair = parse_pair_ref(ref)
+    same = parse_yes_no(answer)
+    if pair is None or same is None:
+        logger.warning("pair_answer_not_applied ask_id=%s source_ref=%s answer=%r", ask_id, ref, answer)
+        return
+    a, b = pair
+    inds = {r[0]: r for r in conn.execute(text(
+        "SELECT individual_id, face_centroid, label FROM vision_individual WHERE individual_id = ANY(:ids)"),
+        {"ids": [a, b]}).fetchall()}
+    fa = inds.get(a)[1] if a in inds else None
+    fb = inds.get(b)[1] if b in inds else None
+    sim = cosine(list(fa), list(fb)) if fa and fb and len(fa) == len(fb) else None
+    conn.execute(text(
+        "INSERT INTO vision_individual_pair_verdict (individual_a, individual_b, verdict, face_cosine, "
+        "ask_id, decided_at) VALUES (:a, :b, :v, :c, :ask, :at) ON CONFLICT (individual_a, individual_b) "
+        "DO UPDATE SET verdict=EXCLUDED.verdict, face_cosine=EXCLUDED.face_cosine, ask_id=EXCLUDED.ask_id, "
+        "decided_at=EXCLUDED.decided_at"),
+        {"a": a, "b": b, "v": "same" if same else "different",
+         "c": None if sim is None else round(float(sim), 4), "ask": ask_id, "at": at})
+    names = pair_names(pair, same, detail)
+    logger.info("[VISION_PAIR_VERDICT] ask_id=%s a=%s b=%s verdict=%s face_cosine=%s names=%d",
+                ask_id, a, b, "same" if same else "different", sim, len(names))
+    if names:
+        for iid in (a, b):
+            if iid in names:
+                _apply_typed_name(conn, iid, names[iid], ask_id, at, now)
+    elif same:
+        labels = {iid: inds[iid][2] for iid in inds if inds[iid][2]}
+        if len(labels) == 1:
+            (named, label), = labels.items()
+            _propagate_label(conn, named, label, ask_id, at)
 
 
 # The slow "who is this?" rule (10 sightings over 5 days) counts only its own

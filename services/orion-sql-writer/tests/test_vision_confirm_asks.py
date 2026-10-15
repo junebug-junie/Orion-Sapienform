@@ -8,7 +8,7 @@ three walkway migrations applied (opener -> orion_ask row -> Hub-style answer
 walkway tables -- e.g.:
 
     docker run -d --rm --name pg -e POSTGRES_PASSWORD=t -p 127.0.0.1:55499:5432 postgres:16-alpine
-    for f in walkway_camera_v1 walkway_privacy_v2 vision_confirm_asks_v1; do
+    for f in walkway_camera_v1 walkway_privacy_v2 vision_confirm_asks_v1 vision_ask_names_v1; do
       docker exec -i pg psql -U postgres < services/orion-sql-db/manual_migration_$f.sql; done
     ORION_TEST_PG_URI=postgresql://postgres:t@127.0.0.1:55499/postgres pytest tests/test_vision_confirm_asks.py
 """
@@ -182,7 +182,7 @@ def pg():
     engine = create_engine(PG)
     with engine.begin() as conn:
         conn.execute(text("TRUNCATE orion_ask, vision_individual_pair_verdict, vision_individual_sighting, "
-                          "vision_individual CASCADE"))
+                          "vision_individual, vision_ask_picture_verdict, vision_crop_observation CASCADE"))
     yield engine
     engine.dispose()
 
@@ -386,3 +386,188 @@ def test_not_sure_pair_comes_back_after_the_cooldown(pg) -> None:
         conn.execute(text("UPDATE vision_individual_sighting SET ended_at=:t, started_at=:t"), {"t": much_later})
         again = [a for a in vi._open_asks(conn, much_later, TZ, cfg) if a["source_kind"] == vi.SOURCE_KIND_SAME]
     assert [a["source_ref"] for a in again] == ["aaa|bbb"]
+
+
+# --- names typed on the card (2026-10-15) ---------------------------------------------------------
+
+
+def test_names_migration_declares_its_consumers_and_is_additive() -> None:
+    sql = (REPO / "services/orion-sql-db/manual_migration_vision_ask_names_v1.sql").read_text()
+    assert sql.splitlines()[0] == "-- ORION-MIGRATION-REQUIRED-BY: orion-sql-writer, orion-hub"
+    body = "\n".join(line for line in sql.splitlines() if not line.startswith("--")).upper()
+    assert "DROP" not in body and "DELETE" not in body and "TRUNCATE" not in body
+
+
+def test_pair_names_rules() -> None:
+    pair = ("aaa", "bbb")
+    assert vi.pair_names(pair, None, {"names": {"aaa": "X"}}) == {}            # not a yes/no: nothing
+    assert vi.pair_names(pair, True, {}) == {}
+    assert vi.pair_names(pair, True, {"names": {"aaa": " Kid  next door "}}) == {"aaa": "Kid next door",
+                                                                               "bbb": "Kid next door"}
+    assert vi.pair_names(pair, True, {"names": {"aaa": "X", "bbb": "Y"}}) == {}  # two names for one person
+    assert vi.pair_names(pair, False, {"names": {"aaa": "X", "bbb": "", "zzz": "Q"}}) == {"aaa": "X"}
+
+
+def test_picture_rows_rules() -> None:
+    detail = {"pictures": [
+        {"image_ref": "r0", "index": 0, "verdict": "same", "name": "Theo"},
+        {"image_ref": "r1", "index": 1, "verdict": "unsure", "name": "ignored"},
+        {"image_ref": "r2", "index": 2, "verdict": "different", "name": " Other  kid "},
+        {"image_ref": "r2", "index": 2, "verdict": "same"},       # repeat: dropped
+        {"image_ref": "r3", "index": 3, "verdict": "bogus"},      # unknown verdict: dropped
+    ]}
+    rows = vi.picture_rows("ask", "ind", detail, NOW)
+    assert [(r["ref"], r["idx"], r["v"], r["name"]) for r in rows] == [
+        ("r0", 0, "same", "Theo"), ("r1", 1, "unsure", None), ("r2", 2, "different", "Other kid")]
+    assert vi.picture_rows("ask", "ind", {}, NOW) == []
+
+
+def _ask(conn, ask_id: str, kind: str, ref: str, *, status="open", answer=None, detail=None, at=NOW) -> None:
+    from sqlalchemy import text
+
+    conn.execute(text(
+        "INSERT INTO orion_ask (ask_id, question, source_kind, source_ref, status, answer, answered_at, answer_detail) "
+        "VALUES (:i, 'q', :k, :r, :s, :a, :t, CAST(:d AS jsonb))"),
+        {"i": ask_id, "k": kind, "r": ref, "s": status, "a": answer, "t": at if status != "open" else None,
+         "d": None if detail is None else json.dumps(detail)})
+
+
+def _labels(conn) -> dict:
+    from sqlalchemy import text
+
+    return {r[0]: (r[1], r[2]) for r in conn.execute(text(
+        "SELECT individual_id, label, label_copied FROM vision_individual")).fetchall()}
+
+
+def _same(conn, a: str, b: str) -> None:
+    from sqlalchemy import text
+
+    conn.execute(text("INSERT INTO vision_individual_pair_verdict (individual_a, individual_b, verdict, ask_id, "
+                      "decided_at) VALUES (:a, :b, 'same', 'ask-old', :t)"), {"a": a, "b": b, "t": NOW})
+
+
+@needs_pg
+def test_same_with_a_name_labels_the_whole_group_and_closes_its_cards(pg) -> None:
+    from sqlalchemy import text
+
+    with pg.begin() as conn:
+        for iid, c in (("aaa", "a"), ("bbb", "b"), ("ccc", "c"), ("ddd", "d")):
+            _add_person(conn, iid, _vec(1, 0.0), 6, FACE(c))
+        # ccc was already confirmed the same as bbb and carries a COPIED name; ddd (same as aaa)
+        # has a name Juniper typed for it.
+        _same(conn, "bbb", "ccc")
+        _same(conn, "aaa", "ddd")
+        conn.execute(text("UPDATE vision_individual SET label='Old copy', label_copied=true WHERE individual_id='ccc'"))
+        conn.execute(text("UPDATE vision_individual SET label='Typed', label_copied=false WHERE individual_id='ddd'"))
+        _ask(conn, "who-ccc", "vision_individual", "ccc")     # still open: the name reaches it
+        _ask(conn, "pair", "vision_same_individual", "aaa|bbb", status="answered", answer="yes",
+             detail={"names": {"aaa": "Kid next door", "bbb": "Kid next door"}})
+        assert vi._apply_answers(conn, NOW) == 1
+        labels = _labels(conn)
+        closed = conn.execute(text("SELECT status, answer, applied_at IS NOT NULL, answer_detail FROM orion_ask "
+                                   "WHERE ask_id='who-ccc'")).one()
+        verdict = conn.execute(text("SELECT verdict FROM vision_individual_pair_verdict "
+                                    "WHERE individual_a='aaa' AND individual_b='bbb'")).scalar()
+    assert verdict == "same"
+    assert labels["aaa"] == ("Kid next door", False) and labels["bbb"] == ("Kid next door", False)
+    assert labels["ccc"] == ("Kid next door", True)   # a copied name is replaced by a typed one
+    assert labels["ddd"] == ("Typed", False)          # a name she typed for ddd is never replaced by a copy
+    assert closed == ("answered", "Kid next door", True, {"resolved_by": "pair"})
+
+
+@needs_pg
+def test_different_with_two_names_labels_each(pg) -> None:
+    with pg.begin() as conn:
+        _add_person(conn, "aaa", _vec(1, 0.0), 6, FACE("a"))
+        _add_person(conn, "bbb", _vec(1, 0.5), 6, FACE("b"))
+        _ask(conn, "pair", "vision_same_individual", "aaa|bbb", status="answered", answer="no",
+             detail={"names": {"aaa": "Theo", "bbb": "Maya"}})
+        vi._apply_answers(conn, NOW)
+        assert _labels(conn) == {"aaa": ("Theo", False), "bbb": ("Maya", False)}
+
+
+@needs_pg
+def test_no_names_is_a_verdict_only(pg) -> None:
+    from sqlalchemy import text
+
+    with pg.begin() as conn:
+        _add_person(conn, "aaa", _vec(1, 0.0), 6, FACE("a"))
+        _add_person(conn, "bbb", _vec(1, 0.5), 6, FACE("b"))
+        _ask(conn, "who-aaa", "vision_individual", "aaa")
+        _ask(conn, "pair", "vision_same_individual", "aaa|bbb", status="answered", answer="no")
+        vi._apply_answers(conn, NOW)
+        assert _labels(conn) == {"aaa": (None, False), "bbb": (None, False)}
+        assert conn.execute(text("SELECT status FROM orion_ask WHERE ask_id='who-aaa'")).scalar() == "open"
+        assert conn.execute(text("SELECT count(*) FROM vision_individual_pair_verdict")).scalar() == 1
+
+
+@needs_pg
+def test_who_is_this_closed_by_the_hub_applies_as_a_typed_name(pg) -> None:
+    """The Hub closes an open "who is this?" card with the pair's name (resolved_by);
+    sql-writer applies that card like any answer, in answer order."""
+    from sqlalchemy import text
+
+    with pg.begin() as conn:
+        _add_person(conn, "aaa", _vec(1, 0.0), 6, FACE("a"))
+        _add_person(conn, "bbb", _vec(1, 0.5), 6, FACE("b"))
+        _ask(conn, "pair", "vision_same_individual", "aaa|bbb", status="answered", answer="no",
+             detail={"names": {"aaa": "Theo"}})
+        _ask(conn, "who-aaa", "vision_individual", "aaa", status="answered", answer="Theo",
+             detail={"resolved_by": "pair"})
+        assert vi._apply_answers(conn, NOW) == 2
+        assert _labels(conn)["aaa"] == ("Theo", False)
+        assert conn.execute(text("SELECT count(*) FROM orion_ask WHERE applied_at IS NULL")).scalar() == 0
+
+
+@needs_pg
+@pytest.mark.parametrize("first,second,winner", [("Alice", "Bob", "Bob"), ("Bob", "Alice", "Alice")])
+def test_last_typed_name_wins(pg, first, second, winner) -> None:
+    with pg.begin() as conn:
+        _add_person(conn, "aaa", _vec(1, 0.0), 6, FACE("a"))
+        _add_person(conn, "bbb", _vec(1, 0.5), 6, FACE("b"))
+        # Inserted in the opposite order to their answer times: answer time decides.
+        _ask(conn, "z-pair", "vision_same_individual", "aaa|bbb", status="answered", answer="no",
+             detail={"names": {"aaa": second}}, at=NOW)
+        _ask(conn, "a-who", "vision_individual", "aaa", status="answered", answer=first,
+             at=NOW - timedelta(minutes=1))
+        vi._apply_answers(conn, NOW)
+        assert _labels(conn)["aaa"] == (winner, False)
+
+
+@needs_pg
+def test_who_is_this_pictures_are_recorded_and_the_face_name_labels(pg) -> None:
+    from sqlalchemy import text
+
+    refs = [FACE("a"), "thumb:" + "e" * 64, "thumb:" + "9" * 64]
+    with pg.begin() as conn:
+        _add_person(conn, "aaa", _vec(1, 0.0), 6, FACE("a"))
+        conn.execute(text(
+            "INSERT INTO vision_crop_observation (crop_id, observation_id, stream_id, observed_at, label, score, "
+            "box_xyxy, thumb_ref) VALUES ('crop-2', 'obs', 'walkway', :t, 'person', 0.9, '{0,0,1,1}', :r)"),
+            {"t": NOW, "r": refs[2]})
+        _ask(conn, "who", "vision_individual", "aaa", status="answered", answer="Theo", detail={"pictures": [
+            {"image_ref": refs[0], "index": 0, "verdict": "same", "name": "Theo"},
+            {"image_ref": refs[1], "index": 1, "verdict": "unsure", "name": None},
+            {"image_ref": refs[2], "index": 2, "verdict": "different", "name": "Other kid"}]})
+        vi._apply_answers(conn, NOW)
+        vi._apply_answers(conn, NOW)  # applied once: a second tick records nothing twice
+        rows = conn.execute(text("SELECT picture_index, verdict, name, crop_id, individual_id "
+                                 "FROM vision_ask_picture_verdict ORDER BY picture_index")).fetchall()
+        assert _labels(conn)["aaa"] == ("Theo", False)   # the individual: the face picture's name
+        # Record only: nothing split, no new individual, no pair verdict invented for a crop.
+        assert conn.execute(text("SELECT count(*) FROM vision_individual")).scalar() == 1
+        assert conn.execute(text("SELECT count(*) FROM vision_individual_pair_verdict")).scalar() == 0
+    assert [tuple(r) for r in rows] == [(0, "same", "Theo", None, "aaa"), (1, "unsure", None, None, "aaa"),
+                                        (2, "different", "Other kid", "crop-2", "aaa")]
+
+
+@needs_pg
+def test_check_tables_names_the_names_migration(pg) -> None:
+    from sqlalchemy import text
+
+    with pg.connect() as conn:
+        tx = conn.begin()
+        conn.execute(text("ALTER TABLE orion_ask DROP COLUMN answer_detail"))
+        with pytest.raises(vi.MigrationMissing, match="manual_migration_vision_ask_names_v1"):
+            vi._check_tables(conn)
+        tx.rollback()

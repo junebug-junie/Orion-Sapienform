@@ -34,6 +34,23 @@ WORLD_CHAT_SOURCE_ID = "world:chat"
 PERCEPTION_NODE_ID = "node:substrate.perception"
 WORLD_SOURCE_PREFIX = "world:"
 
+# Camera surprise for the outdoor walkway camera (2026-10-15). A separate node
+# so a busy street never overwrites the room cameras' reading in
+# PERCEPTION_NODE_ID. Underscore, not a dot: the metric registry builds URNs as
+# "<node>.<channel>", so a dotted suffix would be ambiguous.
+PERCEPTION_WALKWAY_NODE_ID = "node:substrate.perception_walkway"
+
+# Substrate nodes that are written and recorded (graph node, receipt,
+# prediction-error history) but kept out of every cognition candidate builder
+# until their live-data sanity check has run (AGENTS.md metric quality gate,
+# step 4). Endogenous curiosity, the substrate attention broadcast and the
+# attention runtime's world-first candidates pick up ANY node:substrate.* node
+# carrying prediction_error, so "no consumer yet" needs this fence. Removing an
+# id here is the go-live decision for that node; at that point also decide
+# whether is_world_source_id below should call it world (it is an outdoor
+# camera) and give it the camera-absent check PERCEPTION_NODE_ID gets.
+NO_COGNITION_CONSUMER_NODE_IDS: frozenset[str] = frozenset({PERCEPTION_WALKWAY_NODE_ID})
+
 
 def is_world_source_id(source_id: str | None) -> bool:
     """True for an external (world) source id: chat, camera surprise, or any

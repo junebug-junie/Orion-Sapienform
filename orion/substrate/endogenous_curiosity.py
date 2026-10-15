@@ -33,6 +33,7 @@ from datetime import datetime, timezone
 from typing import Any, Sequence
 
 from orion.core.schemas.frontier_curiosity import FrontierInvocationSignalV1
+from orion.schemas.attention_candidate import NO_COGNITION_CONSUMER_NODE_IDS
 from orion.substrate.pressure import PressureConfig
 
 _TRUTHY = {"1", "true", "yes", "on"}
@@ -283,7 +284,7 @@ def _prediction_error_candidates(
             if error < min_error:
                 continue
             node_id = str(getattr(node, "node_id", "") or "")
-            if not node_id:
+            if not node_id or node_id in NO_COGNITION_CONSUMER_NODE_IDS:
                 continue
             candidates.append(
                 FrontierInvocationSignalV1(

@@ -173,3 +173,17 @@ def test_no_winner_tick_reports_no_dwell_while_the_old_coalition_decays() -> Non
 def test_unreadable_sources_are_named_in_the_trace() -> None:
     frame = _frame([_node("node:substrate.execution", "Execution PE")], {})
     assert frame.debug["world_first"]["absent_sources"] == ["node:substrate.execution"]
+
+
+def test_walkway_perception_node_is_fenced_out_of_attention() -> None:
+    """node:substrate.perception_walkway is written and recorded but has no
+    cognition consumer until its live-data sanity check runs: neither the
+    world-first nor the legacy competition may rank it, however loud."""
+    from orion.schemas.attention_candidate import PERCEPTION_WALKWAY_NODE_ID
+
+    walkway = _node(PERCEPTION_WALKWAY_NODE_ID, "Walkway PE", pressure=1.0, pe=1.0, embedding_staleness=0.0)
+    frame = _frame([walkway], {PERCEPTION_WALKWAY_NODE_ID: _mag(0.999, value=1.0)})
+    assert frame.open_loops == []
+    wf = frame.debug["world_first"]
+    assert wf["candidates"] == [] and PERCEPTION_WALKWAY_NODE_ID not in wf.get("uncalibrated", [])
+    assert ab.substrate_pressure_signals([walkway], min_salience=0.0) == []

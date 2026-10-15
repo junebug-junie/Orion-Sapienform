@@ -1180,6 +1180,23 @@ the frame, and is independent of both it and `node:substrate.bus_synaptic` -- se
   `vision_channel_staleness_pressure` genuinely-reachable-rest-point shape `node:substrate.vision`
   uses).
 
+**Walkway camera has its own node (2026-10-15).** Baselines were always per stream, but the
+published score used to be one process-wide cache that held whichever stream scored last. The
+outdoor walkway camera samples a busy street at 2 frames/s and would have overwritten the room
+cameras' reading. Now streams listed in `SUBSTRATE_PERCEPTION_WALKWAY_STREAM_IDS` (comma-separated,
+default `walkway`) keep their own cache and feed `node:substrate.perception_walkway`; every other
+stream (cam0, carbon-webcam) feeds `node:substrate.perception` exactly as before. The tick writes
+both nodes every tick through `_publish_perception_group` (same staleness -> 0.0, still-warming ->
+0.0, receipt every tick); a failure on one never skips the other. Receipts for the walkway node
+carry `reducer_name = substrate.perception_walkway`, which has its own rung in
+`orion/substrate_ladder_liveness.py`. The world-model `vision_embedding` group stays a room
+embedding: walkway frames never touch `_last_perception_embedding_vector`. The walkway node has no
+cognition consumer yet: endogenous curiosity, the substrate attention broadcast and
+orion-attention-runtime's world-first candidates skip it via
+`orion/schemas/attention_candidate.py` `NO_COGNITION_CONSUMER_NODE_IDS`, because its live-data
+sanity check cannot run until the walkway camera has produced real history. Set the key to `none`
+to fold the walkway back into the room node.
+
 **Ships shadow-only, default off, no consumer wired.** Deliberately **not** added to
 `ACTIVE_INFERENCE_DOMAINS` or any capability edge in `config/field/orion_field_topology.v1.yaml`
 in this patch (that file documents the node's existence in a comment only -- no `edges:` entry).

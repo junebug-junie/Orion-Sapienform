@@ -12,14 +12,14 @@ def test_shipped_config_loads_and_patio_is_never_embeddable():
 
 def test_bottom_center_decides_zone_and_first_match_wins():
     zones = load_zones(DEFAULT_ZONES_PATH)["walkway"]
-    # feet at (0.1, 0.9): inside patio and inside walkway; patio listed first.
-    z = zone_for_box(zones, [40, 200, 88, 324], 640, 360)
+    # feet at (0.8, 0.9): inside patio and inside walkway; patio listed first.
+    z = zone_for_box(zones, [480, 200, 544, 324], 640, 360)
     assert z is not None and z.name == "patio" and not may_embed(z)
-    # feet at (0.6, 0.9): walkway only.
-    z = zone_for_box(zones, [360, 200, 408, 324], 640, 360)
+    # feet at (0.3, 0.9): walkway only.
+    z = zone_for_box(zones, [160, 200, 224, 324], 640, 360)
     assert z is not None and z.name == "walkway" and may_embed(z)
     # feet in the sky: no zone, embeddable.
-    z = zone_for_box(zones, [300, 10, 340, 50], 640, 360)
+    z = zone_for_box(zones, [300, 10, 340, 40], 640, 360)
     assert z is None and may_embed(z)
 
 
@@ -30,7 +30,7 @@ def test_missing_file_means_no_zones(tmp_path: Path):
 def test_box_touching_bottom_edge_stays_in_patio():
     zones = load_zones(DEFAULT_ZONES_PATH)["walkway"]
     for y2 in (360, 400):
-        z = zone_for_box(zones, [40, 200, 88, y2], 640, 360)
+        z = zone_for_box(zones, [480, 200, 544, y2], 640, 360)
         assert z is not None and z.name == "patio" and not may_embed(z)
 
 

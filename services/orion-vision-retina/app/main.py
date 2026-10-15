@@ -372,6 +372,11 @@ class RetinaService:
         self._sample_attempted = True
         result = await self.source.read()
         if result is None:
+            if getattr(self.source, "ever_connected", True) is False:
+                # A live RTSP source still connecting after boot/reconnect:
+                # not a failure yet.
+                self.metrics.last_error = getattr(self.source, "last_error", None) or "connecting to camera"
+                return False
             self.metrics.frames_failed += 1
             self.metrics.last_error = "source read returned no frame"
             return False

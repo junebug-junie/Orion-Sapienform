@@ -127,8 +127,8 @@ streams:
     # docs/superpowers/specs/2026-09-22-walkway-camera-busy-world-design.md
     # Patch 0 + idea 1 + idea 8). Adapted from porch_eye (below), which never
     # had a camera and whose `trigger_labels: []` meant it never reached the
-    # captioned tier. Captured by the second orion-vision-edge instance
-    # (STREAM_ID=walkway).
+    # captioned tier. Captured at full resolution by its own
+    # orion-vision-retina instance (orion-vision-retina-walkway, stream_id=walkway).
     #
     # - retina_fast on both tiers so detection, the whole-frame embedding
     #   (perception prediction error) and crop embeddings all run; captions

@@ -579,6 +579,18 @@ class Settings(BaseSettings):
     perception_baseline_retention_days: float = Field(
         30.0, alias="SUBSTRATE_PERCEPTION_BASELINE_RETENTION_DAYS"
     )
+    # Camera streams (comma-separated stream names) whose surprise feeds
+    # node:substrate.perception_walkway instead of node:substrate.perception
+    # (2026-10-15). The outdoor walkway camera samples a busy street at 2
+    # frames/s; sharing one node let it overwrite the room cameras' reading.
+    # Every stream NOT listed keeps feeding node:substrate.perception. Same
+    # tick, flag and interval as the room node. To fold every stream back into
+    # the room node (pre-2026-10-15 behaviour) set it to a name no camera uses,
+    # e.g. "none" -- compose's ${...:-walkway} turns an empty value back into
+    # "walkway".
+    perception_walkway_stream_ids: str = Field(
+        "walkway", alias="SUBSTRATE_PERCEPTION_WALKWAY_STREAM_IDS"
+    )
 
     # Health monitor -> orion-notify attention alerts. Edge-triggered (fires only
     # on healthy->unhealthy transitions), not polled-and-spammed.

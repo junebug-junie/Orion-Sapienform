@@ -175,10 +175,10 @@ async def run_detector_loop():
                 logger.debug("Ignored non-pointer message")
                 continue
 
-            # Each edge instance detects only its own camera. Every instance
-            # subscribes to the same frames channel, so without this a second
-            # instance (walkway) would re-detect cam0's frames and vice versa,
-            # doubling activity events and GPU work.
+            # The edge detects only its own camera. The frames channel also
+            # carries other cameras (e.g. the walkway retina instance), so
+            # without this it would re-detect their frames, doubling activity
+            # events and GPU work.
             if not is_own_frame(pointer.stream_id, settings.STREAM_ID):
                 continue
 

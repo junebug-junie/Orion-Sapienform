@@ -132,7 +132,7 @@ class Settings(BaseSettings):
     @classmethod
     def source_required(cls, v: str) -> str:
         if not str(v or "").strip():
-            raise ValueError("SOURCE is empty (for the walkway instance: set WALKWAY_RTSP_URL in the service .env)")
+            raise ValueError("SOURCE is empty (set REOLINK_URL in the service .env)")
         return v
 
     @field_validator("JPEG_QUALITY")

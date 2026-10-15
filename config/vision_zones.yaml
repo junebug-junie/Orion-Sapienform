@@ -11,20 +11,26 @@
 #
 # dwell_rare_sec: dwell longer than this is unusual here (attention score input).
 #
-# The polygons below are placeholders until the camera is mounted and
-# Juniper traces the real ones from a frame.
+# Traced 2026-10-15 from a 2560x1920 frame of the mounted walkway camera
+# (Reolink, 192.168.1.87). The walkway retina instance reads this same
+# 2560x1920 main stream; coordinates are normalized, so any 4:3 size works. Camera looks out from under the
+# porch roof: porch slab + furniture lower right, community mailboxes
+# left-middle, lawn/sidewalk/street everywhere else below the sky.
 version: 1
 streams:
   walkway:
     zones:
+      # Porch slab, its plant bed and furniture. Family space.
       - name: patio
         embed: false
-        polygon: [[0.0, 0.70], [0.35, 0.70], [0.35, 1.0], [0.0, 1.0]]
+        polygon: [[0.58, 0.53], [1.0, 0.47], [1.0, 1.0], [0.56, 1.0]]
+      # The community mailbox cluster and the ground in front of it.
       - name: mailbox
         embed: true
         dwell_rare_sec: 180
-        polygon: [[0.75, 0.40], [0.95, 0.40], [0.95, 0.75], [0.75, 0.75]]
+        polygon: [[0.15, 0.39], [0.38, 0.39], [0.38, 0.66], [0.15, 0.66]]
+      # Everything public below the sky line (lawn, sidewalk, street, far houses).
       - name: walkway
         embed: true
         dwell_rare_sec: 120
-        polygon: [[0.0, 0.35], [1.0, 0.35], [1.0, 1.0], [0.0, 1.0]]
+        polygon: [[0.0, 0.14], [1.0, 0.14], [1.0, 1.0], [0.0, 1.0]]

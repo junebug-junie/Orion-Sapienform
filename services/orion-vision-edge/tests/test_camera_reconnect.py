@@ -105,13 +105,3 @@ def test_a_read_that_raises_counts_as_a_failure_and_still_reopens() -> None:
     assert cam.reopens == 1
     cam.step()
     assert cam.get_frame() is FRAME
-
-
-def test_walkway_has_its_own_heartbeat_identity() -> None:
-    """orion-equilibrium keys health on service@node; a shared name would flip one record
-    between ok and degraded whenever only one of the two cameras is down."""
-    import yaml
-
-    compose = yaml.safe_load((Path(__file__).resolve().parents[1] / "docker-compose.yml").read_text())
-    env = compose["services"]["vision-edge-walkway"]["environment"]
-    assert "SERVICE_NAME=vision-edge-walkway" in env

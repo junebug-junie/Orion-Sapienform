@@ -80,6 +80,9 @@ RUNGS: tuple[Rung, ...] = (
     Rung("receipts:biometrics_node_reducer", "substrate_reduction_receipts", "created_at", timedelta(minutes=20), "reducer_name", "biometrics_node_reducer"),
     Rung("receipts:substrate.bus_synaptic", "substrate_reduction_receipts", "created_at", timedelta(minutes=20), "reducer_name", "substrate.bus_synaptic"),
     Rung("receipts:substrate.perception", "substrate_reduction_receipts", "created_at", timedelta(minutes=20), "reducer_name", "substrate.perception"),
+    # Walkway camera's own surprise node: same tick, writes every tick whether or
+    # not the walkway camera delivers (0.0 when stale), so it is steady too.
+    Rung("receipts:substrate.perception_walkway", "substrate_reduction_receipts", "created_at", timedelta(minutes=20), "reducer_name", "substrate.perception_walkway"),
     # The vision organ lane writes one receipt per 60 s router window, and a
     # silence receipt on a clock when the router goes quiet, so it is steady
     # either way. Replaced substrate.vision_channel (tick retired 2026-10-02).

@@ -13,6 +13,8 @@ on:
       - "orion/grammar/**"
       - "orion/schemas/**"
       - "orion/substrate/**"
+      - "orion/vision/**"
+      - "config/vision_zones.yaml"
       - "services/orion-sql-db/**"
       - "services/orion-sql-writer/**"
       - "services/orion-substrate-runtime/**"
@@ -29,6 +31,8 @@ on:
       - "orion/grammar/**"
       - "orion/schemas/**"
       - "orion/substrate/**"
+      - "orion/vision/**"
+      - "config/vision_zones.yaml"
       - "services/orion-sql-db/**"
       - "services/orion-sql-writer/**"
       - "services/orion-substrate-runtime/**"
@@ -75,6 +79,8 @@ jobs:
             services/orion-sql-writer/tests/test_juniper_multimodal_affect_sql_shape.py \
             services/orion-sql-writer/tests/test_vision_walkway_persist.py \
             services/orion-sql-writer/tests/test_vision_individuals.py \
+            services/orion-sql-writer/tests/test_vision_walkway_faces_stationary.py \
+            orion/vision/tests \
             services/orion-sql-writer/tests/test_vision_rhythm.py \
             services/orion-sql-writer/tests/test_vision_walkway_zones_thumbs_cursor.py \
             services/orion-sql-writer/tests/test_vision_expect_refresh.py \

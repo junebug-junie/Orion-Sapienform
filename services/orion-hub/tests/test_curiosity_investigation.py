@@ -2586,7 +2586,7 @@ def test_a_reissued_turn_request_joins_the_inflight_turn_instead_of_running_twic
     calls = []
     gate = asyncio.Event()
 
-    async def slow_generate(prompt, correlation_id, source=None, require_lookup=True, parent_run_id=None, session_id=None):
+    async def slow_generate(prompt, correlation_id, source=None, require_lookup=True, parent_run_id=None, session_id=None, resume_key=None):
         calls.append(correlation_id)
         await gate.wait()
         return "the finding", {"harness_step_count": 14, "elapsed_sec": 1.0}
@@ -2630,7 +2630,7 @@ def test_distinct_correlation_ids_under_one_run_id_are_two_real_turns_not_a_cach
     loop = _loop(bus, kickoff_via_cortex=True)
     calls: list[tuple[str, str]] = []
 
-    async def recording_generate(prompt, correlation_id, source=None, require_lookup=True, parent_run_id=None, session_id=None):
+    async def recording_generate(prompt, correlation_id, source=None, require_lookup=True, parent_run_id=None, session_id=None, resume_key=None):
         calls.append((prompt, correlation_id))
         return f"answer for {prompt}", {"harness_step_count": 1, "elapsed_sec": 1.0}
 
@@ -2653,6 +2653,28 @@ def test_distinct_correlation_ids_under_one_run_id_are_two_real_turns_not_a_cach
     assert reply2.text == "answer for question two"
 
 
+def test_durable_turn_request_forwards_the_run_id_as_the_resume_key() -> None:
+    """A retried durable turn must reach the governor under the SAME stable key
+    (the run id), so a killed `claude` session is resumed, not restarted. The
+    turn correlation id cannot be the key: it is fenced per lease generation."""
+    from orion.core.bus.bus_schemas import BaseEnvelope
+
+    bus = _CortexBus()
+    loop = _loop(bus, kickoff_via_cortex=True)
+    seen: list[str | None] = []
+
+    async def recording_generate(prompt, correlation_id, source=None, require_lookup=True, parent_run_id=None, session_id=None, resume_key=None):
+        seen.append(resume_key)
+        return "answer", {"harness_step_count": 1, "elapsed_sec": 1.0}
+
+    loop._generate = recording_generate  # type: ignore[assignment]
+    for attempt, corr in ((1, "corr-gen1"), (2, "corr-gen2")):
+        env = BaseEnvelope(kind="curiosity.turn.request.v1", source=SOURCE, reply_to=f"r{attempt}",
+                           payload={"run_id": "run-stable", "correlation_id": corr, "prompt": "p", "timeout_sec": 10.0, "attempt": attempt})
+        asyncio.run(loop._handle_turn_request({"data": bus.codec.encode(env)}))
+    assert seen == ["run-stable", "run-stable"]
+
+
 def test_in_process_fallback_and_runner_rpc_share_one_turn() -> None:
     """Cortex was unreachable at dispatch time but the runner got the run
     anyway (or Hub misread the reply): the tick's in-process fallback and the
@@ -2665,7 +2687,7 @@ def test_in_process_fallback_and_runner_rpc_share_one_turn() -> None:
     calls = []
     gate = asyncio.Event()
 
-    async def slow_generate(prompt, correlation_id, source=None, require_lookup=True, parent_run_id=None, session_id=None):
+    async def slow_generate(prompt, correlation_id, source=None, require_lookup=True, parent_run_id=None, session_id=None, resume_key=None):
         calls.append(correlation_id)
         await gate.wait()
         return "the finding", {"harness_step_count": 14, "elapsed_sec": 1.0}

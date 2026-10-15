@@ -1545,6 +1545,7 @@ async def execute_unified_turn(
     inference_timeout_sec, reply_budget_sec = _held_turn_budgets(payload)
     harness_req = HarnessRunRequestV1(
         gpu_lease=payload.get("gpu_lease"),
+        resume_key=payload.get("resume_key"),
         inference_timeout_sec=inference_timeout_sec,
         reply_budget_sec=reply_budget_sec,
         reading_binding=reading_binding,

@@ -62,7 +62,15 @@ The substrate logged substrate_system_one_appraisal_completed (latency 580ms) af
 
 ## Review findings fixed
 
-See the PR comments.
+The review found no material issues. Three nits, all fixed:
+
+- Finding: the exclude-file comment said it "does not apply" on circe. But `up_all_services*.sh` reads it on every host.
+  - Fix: the comment now says that only the post-merge resolver ignores the file on circe.
+- Finding: the test checked list membership, not the resolver's output.
+  - Fix: a new test, `test_post_merge_resolver_rebuilds_kev_on_circe_not_athena`, runs the resolver with `--json` for circe and athena.
+  - Evidence: when `orion-kev` is removed from the exclude list, 2 tests fail.
+- Finding: no CI job ran `services/orion-kev/tests`.
+  - Fix: the `system-one-appraisal-tests` workflow now runs them. It also triggers on `services/orion-kev/**`, `config/gpu_pool.yaml`, both mesh lists, and the resolver.
 
 ## Restart required
 

@@ -17,6 +17,11 @@ on:
       - "tests/test_system_one_appraisal_bus_catalog.py"
       - "scripts/analysis/eval_system_one_appraisal.py"
       - "scripts/smoke_system_one_appraisal.py"
+      - "services/orion-kev/**"
+      - "config/gpu_pool.yaml"
+      - "mesh-utilities/common/include_services_circe.txt"
+      - "mesh-utilities/common/exclude_services.txt"
+      - "scripts/rebuild_affected_services.py"
       - ".github/workflows/system-one-appraisal-tests.yml"
   push:
     branches: [main]
@@ -35,6 +40,11 @@ on:
       - "tests/test_system_one_appraisal_bus_catalog.py"
       - "scripts/analysis/eval_system_one_appraisal.py"
       - "scripts/smoke_system_one_appraisal.py"
+      - "services/orion-kev/**"
+      - "config/gpu_pool.yaml"
+      - "mesh-utilities/common/include_services_circe.txt"
+      - "mesh-utilities/common/exclude_services.txt"
+      - "scripts/rebuild_affected_services.py"
       - ".github/workflows/system-one-appraisal-tests.yml"
 
 jobs:
@@ -75,4 +85,5 @@ jobs:
             services/orion-substrate-runtime/tests/test_curiosity_reading_link_seeds.py \
             services/orion-substrate-runtime/evals/test_curiosity_seed_neighborhood_eval.py \
             services/orion-substrate-runtime/tests/test_store_observability_writers.py \
-            services/orion-substrate-runtime/tests/test_worker_attention_broadcast_tick.py
+            services/orion-substrate-runtime/tests/test_worker_attention_broadcast_tick.py \
+            services/orion-kev/tests

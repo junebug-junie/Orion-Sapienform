@@ -1,6 +1,6 @@
-# Kev / TypeSafe-compatible System One endpoint for Orion Athena.
+# Kev / TypeSafe-compatible System One endpoint, deployed on circe.
 # Serves POST /v1/systemone on :8009. Consumed by orion-substrate-runtime
-# shadow appraisal (SUBSTRATE_SYSTEM_ONE_BASE_URL=http://orion-athena-kev:8009).
+# on athena (SUBSTRATE_SYSTEM_ONE_BASE_URL=http://100.112.254.99:8009).
 #
 # Base image is Python 3.11; upstream kev pyproject wants >=3.12, so we do not
 # `pip install .` — PYTHONPATH=/app and run the module directly.

@@ -36,3 +36,33 @@ def test_dockerfile_binds_all_interfaces() -> None:
     text = (ROOT / "Dockerfile").read_text(encoding="utf-8")
     assert 'host="0.0.0.0"' in text
     assert "KEV_GIT_SHA=" in text
+
+
+def _env_value(path: Path, key: str) -> str:
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if line.startswith(f"{key}="):
+            return line.split("=", 1)[1].strip()
+    raise AssertionError(f"{key} missing from {path}")
+
+
+def test_gpu_pin_matches_gpu_pool_kev_role() -> None:
+    """KEV_GPU_DEVICE_ID and the pool's `kev` role must name the same card and port,
+    or the pool counts Kev's VRAM on a card it is not on."""
+    repo = ROOT.parents[1]
+    pool = yaml.safe_load((repo / "config" / "gpu_pool.yaml").read_text(encoding="utf-8"))
+    role = pool["roles"]["kev"]
+    assert role["kind"] == "service"
+    indices = {str(pool["cards"][card]["index"]) for card in role["cards"]}
+    assert indices == {_env_value(ROOT / ".env_example", "KEV_GPU_DEVICE_ID")}
+    assert str(role["port"]) == _env_value(ROOT / ".env_example", "KEV_HOST_PORT")
+
+
+def test_substrate_points_at_kev_pool_address() -> None:
+    """Substrate's Kev URL must be the pool's own address for the kev role (node + port),
+    so moving the card to another host without moving the URL fails here."""
+    from orion.gpu_pool.config import load_pool_config
+
+    repo = ROOT.parents[1]
+    url = _env_value(repo / "services" / "orion-substrate-runtime" / ".env_example",
+                     "SUBSTRATE_SYSTEM_ONE_BASE_URL")
+    assert url == load_pool_config(repo / "config" / "gpu_pool.yaml").url("kev")

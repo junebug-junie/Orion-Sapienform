@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import time
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
@@ -80,21 +81,33 @@ class VisionScheduler:
         # "cuda:N" is a torch index; the admission gate reads NVML, which
         # indexes every card the container can see. Map each torch index to
         # the NVML card it really is, so the gate checks the card the work
-        # runs on. Identity when the mapping is unknown (UUID entries), which
-        # is the old behaviour.
+        # runs on. Identity only when CUDA_VISIBLE_DEVICES is not a plain
+        # index list (UUID/MIG entries) -- the old behaviour. A numeric list
+        # that does not cover cuda:N means that device does not exist: drop
+        # it rather than gate it on some other card's memory.
+        cvd = os.environ.get("CUDA_VISIBLE_DEVICES")
+        cvd_numeric = cvd is None or all(
+            e.strip().isdigit() for e in cvd.split(",") if e.strip()
+        ) and bool(cvd.strip())
         self._nvml_by_torch: Dict[int, int] = {}
-        for idx in self._gpu_indices:
+        for idx in list(self._gpu_indices):
             nvml_idx = torch_to_nvml_index(idx)
-            if nvml_idx is None:
+            if nvml_idx is None and not cvd_numeric:
                 logger.warning(
                     f"[SCHED] cannot map torch cuda:{idx} to an NVML index "
                     f"(CUDA_VISIBLE_DEVICES not a plain index list); assuming identity"
                 )
                 nvml_idx = idx
+            if nvml_idx is None or nvml_idx in self._nvml_by_torch.values():
+                logger.error(
+                    f"[SCHED] dropping cuda:{idx}: not a distinct visible device "
+                    f"(CUDA_VISIBLE_DEVICES={cvd!r}, nvml={nvml_idx})"
+                )
+                self._gpu_indices.remove(idx)
+                self._gpu_sems.pop(idx, None)
+                continue
             self._nvml_by_torch[idx] = nvml_idx
-        self._torch_by_nvml: Dict[int, int] = {}
-        for t_idx, n_idx in self._nvml_by_torch.items():
-            self._torch_by_nvml.setdefault(n_idx, t_idx)
+        self._torch_by_nvml: Dict[int, int] = {n: t for t, n in self._nvml_by_torch.items()}
         logger.info(f"[SCHED] gpu map torch->nvml {self._nvml_by_torch}")
 
         # gpu_hard_floor refusal accounting (surfaced on /health). A full
@@ -115,17 +128,23 @@ class VisionScheduler:
             "last_admit_at": self.last_admit_at,
         }
 
+    def _gpu_label(self, nvml_idx: Any) -> str:
+        torch_idx = self._torch_by_nvml.get(nvml_idx, nvml_idx)
+        if torch_idx == nvml_idx:
+            return f"gpu={nvml_idx}"
+        return f"gpu=cuda:{torch_idx} (nvml={nvml_idx})"
+
     def _describe_refusal(self) -> str:
         detail: List[Dict[str, Any]] = list(getattr(self.gpu, "last_pick_detail", None) or [])
         if not detail:
-            return f"no candidate GPU visible (configured={self._gpu_indices})"
+            return f"no candidate GPU visible (configured torch->nvml={self._nvml_by_torch})"
         parts = []
         for row in detail:
             if not row.get("visible", True):
-                parts.append(f"gpu={row.get('gpu')} not visible to NVML")
+                parts.append(f"{self._gpu_label(row.get('gpu'))} not visible to NVML")
                 continue
             parts.append(
-                f"gpu={row['gpu']} nvml_free={row['nvml_free_mb']}MB + own_reusable={row['own_reusable_mb']}MB "
+                f"{self._gpu_label(row['gpu'])} nvml_free={row['nvml_free_mb']}MB + own_reusable={row['own_reusable_mb']}MB "
                 f"- reserve={row['reserve_mb']}MB = effective={row['effective_free_mb']}MB "
                 f"< hard_floor={row['hard_floor_mb']}MB"
             )

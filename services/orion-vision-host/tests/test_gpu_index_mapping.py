@@ -23,8 +23,20 @@ from app.scheduler import VisionScheduler
 SERVICE_DIR = Path(__file__).resolve().parents[1]
 T10_TOTAL = 16384
 P4_TOTAL = 7680
-RESERVE = 1200  # .env_example VISION_VRAM_RESERVE_MB
-FLOOR = 800  # .env_example VISION_VRAM_HARD_FLOOR_MB
+
+
+def _env_example() -> dict:
+    out = {}
+    for line in (SERVICE_DIR / ".env_example").read_text().splitlines():
+        line = line.strip()
+        if line and not line.startswith("#") and "=" in line:
+            k, v = line.split("=", 1)
+            out[k] = v
+    return out
+
+
+RESERVE = int(_env_example()["VISION_VRAM_RESERVE_MB"])
+FLOOR = int(_env_example()["VISION_VRAM_HARD_FLOOR_MB"])
 
 
 def _sched(devices=("cuda:0",)) -> VisionScheduler:
@@ -132,9 +144,9 @@ def test_own_cache_is_read_from_the_torch_index_of_the_checked_card(monkeypatch)
     [
         # Expected after the move: 16384 - qwen 6556 - vision host 5632 ~= 4190 free.
         (4190, True),
-        # Qwen grows ~2.2GB: free + own idle cache must stay >= reserve + floor = 2000.
-        (2000, True),
-        (1999, False),
+        # Qwen grows ~2.2GB: free + own idle cache must stay >= reserve + floor (2000 today).
+        (RESERVE + FLOOR, True),
+        (RESERVE + FLOOR - 1, False),
     ],
 )
 def test_expected_t10_numbers_with_qwen_neighbour(monkeypatch, t10_free_mb, admitted):
@@ -149,20 +161,34 @@ def test_expected_t10_numbers_with_qwen_neighbour(monkeypatch, t10_free_mb, admi
     assert (_run(sched).device == "cuda:0") is admitted
 
 
+def test_numeric_cvd_drops_a_device_it_does_not_cover(monkeypatch):
+    """CUDA_VISIBLE_DEVICES=1 with cuda:0,cuda:1: cuda:1 does not exist. It
+    must be dropped, not gated on NVML 1 (cuda:0's card) by an identity
+    fallback."""
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "1")
+    sched = _sched(devices=("cuda:0", "cuda:1"))
+    assert sched._nvml_by_torch == {0: 1}
+    assert sched._gpu_indices == [0]
+    assert set(sched._gpu_sems) == {0}
+
+
+def test_refusal_text_names_both_index_spaces(monkeypatch):
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "1")
+    sched = _sched()
+    sched.gpu.list_gpus = lambda: [  # type: ignore[method-assign]
+        GpuInfo(index=0, name="Tesla P4", total_mb=P4_TOTAL, free_mb=4500, used_mb=P4_TOTAL - 4500),
+        GpuInfo(index=1, name="Tesla T10", total_mb=T10_TOTAL, free_mb=300, used_mb=T10_TOTAL - 300),
+    ]
+    monkeypatch.setattr(gpu_mod, "own_reusable_cache_mb", lambda idx: 0)
+    pick = _run(sched)
+    assert pick.device == "cpu"
+    assert pick.refusal_reason.startswith("gpu=cuda:0 (nvml=1) nvml_free=300MB")
+
+
 def test_unmappable_cvd_falls_back_to_identity(monkeypatch):
     monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "GPU-49b63420")
     sched = _sched()
     assert sched._nvml_by_torch == {0: 0}
-
-
-def _env_example() -> dict:
-    out = {}
-    for line in (SERVICE_DIR / ".env_example").read_text().splitlines():
-        line = line.strip()
-        if line and not line.startswith("#") and "=" in line:
-            k, v = line.split("=", 1)
-            out[k] = v
-    return out
 
 
 def test_compose_pins_one_card_by_device_ids():

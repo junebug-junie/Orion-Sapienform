@@ -23,6 +23,7 @@ def _env_example() -> dict:
 
 def test_compose_pin_is_required_device_id():
     text = (SERVICE_DIR / "docker-compose.yml").read_text()
+    text = "\n".join(ln for ln in text.splitlines() if not ln.strip().startswith("#"))
     assert 'device_ids: ["${WHISPER_TTS_GPU_DEVICE_ID:?' in text
 
 

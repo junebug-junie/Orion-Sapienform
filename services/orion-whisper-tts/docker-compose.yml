@@ -79,9 +79,7 @@ services:
       # review of PR #1881 (2026-08-26) -- same trap, left out here on
       # purpose rather than repeated.
 
-      # GPU visibility
-      #- CUDA_VISIBLE_DEVICES=${GPU_INDEX}
-      #- NVIDIA_VISIBLE_DEVICES=${GPU_INDEX}
+      # GPU visibility: pinned by deploy.devices.device_ids below.
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
 
     volumes:

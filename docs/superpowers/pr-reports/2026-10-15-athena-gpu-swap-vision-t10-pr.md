@@ -52,7 +52,7 @@
 ## Env/config changes
 
 - Added keys: `VISION_HOST_GPU_DEVICE_ID` (orion-vision-host), `VISION_EDGE_GPU_DEVICE_ID` (orion-vision-edge)
-- Removed keys: none
+- Removed keys: `GPU_INDEX` (orion-whisper-tts; read only by commented-out compose lines; removed by hand from local `.env` too)
 - Renamed keys: none
 - Changed value: `WHISPER_TTS_GPU_DEVICE_ID` `1` -> `00000000:86:00.0`
 - `.env_example` updated: yes, all three services
@@ -128,7 +128,25 @@ Vision-host gate: admits when NVML free + own idle cache - 1200 >= 800, so it ne
 
 ## Review findings fixed
 
-(filled after review)
+- Finding (should): an unmappable `cuda:N` fell back to "same NVML number", which could gate a non-existent device on another card's memory (`CUDA_VISIBLE_DEVICES=1`, `cuda:0,cuda:1`).
+  - Fix: identity fallback only for non-numeric `CUDA_VISIBLE_DEVICES` (UUID/MIG, old behaviour); a numeric list that does not cover `cuda:N`, or a duplicate mapping, drops that device with an error log.
+  - Evidence: `test_numeric_cvd_drops_a_device_it_does_not_cover`.
+- Finding (should): stale qwen-lane comments (`docker-compose.circe-qwen.yml`) said retina/detection stay on the P4 and justified the low 512 floors with whisper-tts as the neighbour.
+  - Fix: comments updated; the floor asymmetry (qwen admits at ~1 GB free, shared host needs 2 GB) is now named there and in Risks below.
+  - Evidence: diff.
+- Finding (nit): refusal text mixed NVML and torch index spaces.
+  - Fix: rows render `gpu=cuda:<torch> (nvml=<n>)` when they differ; "no candidate" prints the torch->nvml map.
+  - Evidence: `test_refusal_text_names_both_index_spaces`.
+- Finding (nit): test reserve/floor were hard-coded.
+  - Fix: read from `.env_example`.
+- Finding (nit): `.env_example` "qwen can grow ~2.2GB" assumed zero own cache.
+  - Fix: comment says so.
+- Finding (nit): stale `GPU_INDEX=2` in whisper-tts `.env_example`, read only by commented-out compose lines.
+  - Fix: removed from `.env_example`, compose comments, and by hand from the primary checkout's local `.env`.
+- Finding (nit): whisper-tts pin test did not ignore comment lines.
+  - Fix: strips comments like the other two.
+
+Re-run: vision-host in image 329 passed / same 4 pre-existing failures; whisper-tts 85 passed; env parity PASS.
 
 ## Restart required
 
@@ -167,6 +185,9 @@ Expect: P4 bus 86:00.0 holds whisper-tts + vision-edge, T10 bus D8:00.0 holds qw
 - Severity: low
   - Concern: whisper-tts reported `Failed to initialize NVML: Unknown Error` from `nvidia-smi` inside the current container (torch CUDA still available). Pre-existing; a recreate should clear it.
   - Mitigation: the post-deploy `/health` and smoke call.
+- Severity: low
+  - Concern: qwen lane admits at ~1 GB free (512/512 floors), the shared vision host needs 2 GB. Under memory pressure on the T10, qwen keeps admitting while the shared host refuses.
+  - Mitigation: qwen runs one task at a time with bounded pixels; watch the shared host's `/health` refusal streak after deploy.
 - Severity: low
   - Concern: the qwen lane's compose still uses `gpus: all` + `CUDA_VISIBLE_DEVICES=1`. Correct for it after its next rebuild, but not pinned by `device_ids`.
   - Mitigation: follow-up to pin it the same way.

@@ -34,8 +34,10 @@ def _inspector(free_mb: int, total_mb: int = 7680) -> GpuInspector:
 
 
 def test_live_incident_numbers_are_admitted_when_own_cache_is_reusable():
-    # 7680 total - 5613 used ~= 2067 free per NVML; ~1000+ MiB of the 5610 is our own idle cache.
-    insp = _inspector(free_mb=2067 - 600)  # tighter than live, still must admit with own cache
+    # Live NVML free was 1988 (gate needs 2000). How much of the 5610 MiB our PID
+    # holds is idle cache was NOT measured live -- 1000 here is a fixture value,
+    # and free is set tighter than live so the own-cache term must carry it.
+    insp = _inspector(free_mb=1467)
     pick = insp.pick_best_gpu([0], RESERVE, FLOOR, own_reusable_fn=lambda idx: 1000)
     assert pick is not None and pick[0] == 0
     row = insp.last_pick_detail[0]
@@ -84,6 +86,7 @@ MIB = 1024 * 1024
 
 
 def test_own_reusable_cache_mb_reads_reserved_minus_allocated(monkeypatch):
+    monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
     monkeypatch.setitem(sys.modules, "torch", _fake_torch(reserved=5000 * MIB, allocated=3800 * MIB))
     assert own_reusable_cache_mb(0) == 1200
 
@@ -98,6 +101,7 @@ def test_own_reusable_cache_mb_reads_reserved_minus_allocated(monkeypatch):
     ],
 )
 def test_own_reusable_cache_mb_is_zero_when_not_applicable(monkeypatch, kwargs, idx):
+    monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
     base = {"reserved": 5000 * MIB, "allocated": 1000 * MIB}
     base.update(kwargs)
     monkeypatch.setitem(sys.modules, "torch", _fake_torch(**base))
@@ -179,3 +183,36 @@ def test_health_surfaces_refusal_stats(monkeypatch):
     assert body["scheduler"]["gpu_hard_floor_refusals_total"] == 7
     assert body["scheduler"]["gpu_hard_floor_refusal_streak"] == 7
     assert body["scheduler"]["last_refusal_reason"].startswith("gpu=0")
+
+
+@pytest.mark.parametrize(
+    "cvd,nvml_idx,expected",
+    [
+        (None, 0, 0),
+        (None, 2, 2),
+        ("0", 0, 0),
+        ("0", 1, None),  # NVML card 1 is not ours: never borrow torch device 0's cache for it
+        ("4", 4, 0),
+        ("4", 0, None),
+        ("3,1", 1, 1),
+        ("GPU-abc", 0, None),
+        ("", 0, None),
+    ],
+)
+def test_nvml_to_torch_index(monkeypatch, cvd, nvml_idx, expected):
+    if cvd is None:
+        monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
+    else:
+        monkeypatch.setenv("CUDA_VISIBLE_DEVICES", cvd)
+    assert gpu_mod.nvml_to_torch_index(nvml_idx) == expected
+
+
+def test_own_cache_is_read_from_the_mapped_torch_device(monkeypatch):
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "4")
+    seen = []
+    torch_stub = _fake_torch(reserved=3000 * MIB, allocated=1000 * MIB)
+    torch_stub.cuda.memory_reserved = lambda i: (seen.append(i), 3000 * MIB)[1]
+    monkeypatch.setitem(sys.modules, "torch", torch_stub)
+    assert own_reusable_cache_mb(4) == 2000
+    assert seen == [0]
+    assert own_reusable_cache_mb(0) == 0  # NVML card 0 is someone else's

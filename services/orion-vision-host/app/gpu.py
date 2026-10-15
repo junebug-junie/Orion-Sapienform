@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
@@ -134,12 +135,38 @@ class GpuInspector:
         return best[0], best[1]
 
 
+def nvml_to_torch_index(nvml_index: int) -> Optional[int]:
+    """Map an NVML (PCI-bus-order) index to this process's torch device index.
+
+    Torch indices are relative to CUDA_VISIBLE_DEVICES; NVML sees every card
+    the container exposes. With CUDA_DEVICE_ORDER=PCI_BUS_ID (pinned in the
+    Dockerfile and compose), visible device k is the card at the k-th entry
+    of CUDA_VISIBLE_DEVICES. Unset means identity. UUID / MIG entries or an
+    index not in the list -> None, so the caller falls back to NVML only and
+    never adds one card's cache to another card's free figure.
+    """
+    if nvml_index < 0:
+        return None
+    raw = os.environ.get("CUDA_VISIBLE_DEVICES")
+    if raw is None:
+        return nvml_index
+    entries = [e.strip() for e in raw.split(",") if e.strip()]
+    try:
+        ints = [int(e) for e in entries]
+    except ValueError:
+        return None
+    try:
+        return ints.index(nvml_index)
+    except ValueError:
+        return None
+
+
 def own_reusable_cache_mb(gpu_index: int) -> int:
     """MiB this process holds in PyTorch's caching allocator but is not using.
 
     That memory is reusable by our own next task, yet NVML reports it as used.
     Returns 0 whenever torch/CUDA is missing, CUDA was never initialised in
-    this process, or the index is not visible to this process -- i.e. the old
+    this process, or the NVML index is not visible to this process -- i.e. the old
     behaviour. Never initialises CUDA itself.
     """
     try:
@@ -149,10 +176,11 @@ def own_reusable_cache_mb(gpu_index: int) -> int:
     try:
         if not torch.cuda.is_available() or not torch.cuda.is_initialized():
             return 0
-        if gpu_index < 0 or gpu_index >= torch.cuda.device_count():
+        torch_index = nvml_to_torch_index(gpu_index)
+        if torch_index is None or torch_index >= torch.cuda.device_count():
             return 0
-        reserved = int(torch.cuda.memory_reserved(gpu_index))
-        allocated = int(torch.cuda.memory_allocated(gpu_index))
+        reserved = int(torch.cuda.memory_reserved(torch_index))
+        allocated = int(torch.cuda.memory_allocated(torch_index))
     except Exception:
         return 0
     return max(0, reserved - allocated) // (1024 * 1024)

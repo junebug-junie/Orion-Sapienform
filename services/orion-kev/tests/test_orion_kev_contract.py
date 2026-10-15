@@ -66,3 +66,19 @@ def test_substrate_points_at_kev_pool_address() -> None:
     url = _env_value(repo / "services" / "orion-substrate-runtime" / ".env_example",
                      "SUBSTRATE_SYSTEM_ONE_BASE_URL")
     assert url == load_pool_config(repo / "config" / "gpu_pool.yaml").url("kev")
+
+
+def _service_list(path: Path) -> set[str]:
+    return {
+        line.strip()
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.strip().startswith("#")
+    }
+
+
+def test_rebuild_lists_place_kev_on_circe_only() -> None:
+    """The post-merge rebuild must refresh Kev on circe and never recreate it on athena.
+    circe reads its allowlist; every host without one (athena) reads the exclude file."""
+    common = ROOT.parents[1] / "mesh-utilities" / "common"
+    assert "orion-kev" in _service_list(common / "include_services_circe.txt")
+    assert "orion-kev" in _service_list(common / "exclude_services.txt")

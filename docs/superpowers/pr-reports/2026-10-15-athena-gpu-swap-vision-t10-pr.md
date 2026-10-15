@@ -194,6 +194,6 @@ Expect: P4 bus 86:00.0 holds whisper-tts + vision-edge, T10 bus D8:00.0 holds qw
 
 ## PR link
 
-(filled after push)
+https://github.com/junebug-junie/Orion-Sapienform/pull/2697
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

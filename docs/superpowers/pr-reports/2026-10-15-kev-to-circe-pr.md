@@ -135,6 +135,6 @@ scripts/safe_docker_build.sh orion-kev down
 
 ## PR link
 
-<link>
+https://github.com/junebug-junie/Orion-Sapienform/pull/2695
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

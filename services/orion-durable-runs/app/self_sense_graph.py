@@ -219,6 +219,7 @@ def make_nodes(deps: Deps) -> dict[str, Callable[[SelfSenseRunState], Awaitable[
                     correlation_id=correlation_id,
                     self_definition_version=self_definition_version,
                     lived_answers=lived_answers,
+                    motor_steps=(answer.get("debug") or {}).get("harness_step_count"),
                 )
             )
         published, failed = await deps.publish_rows(rows)

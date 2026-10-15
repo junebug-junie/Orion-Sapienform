@@ -3726,6 +3726,7 @@ class CuriosityInvestigation:
                 correlation_id=correlation_id,
                 self_definition_version=self_definition_version,
                 lived_answers=lived_answers,
+                motor_steps=(debug or {}).get("harness_step_count"),
             )
             if self._bus is None:
                 failed += 1

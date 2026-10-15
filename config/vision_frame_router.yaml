@@ -189,11 +189,16 @@ streams:
     # geometry: config/vision_profiles.yaml retina_detect_open_vocab
     # tile_*). Both tiers: in daylight the patio skeleton keeps this stream
     # on the triggered tier most of the time. Spaced out because a tiled
-    # task costs several detector passes on the same P4 that serves cam0.
+    # task costs ~2.6 extra detector passes on the same P4 that serves cam0
+    # (already ~100% busy: walkway ~5.4 s + cam0 ~2.3 s per ~8 s cycle).
+    # 20 s = about one walkway task in three, while a far-sidewalk walker
+    # stays in view for ~30 s or more. Side effect: a person only the
+    # tiles can see appears in detections on tiled frames and not on the
+    # frames between (the 8 s trigger TTL lapses in between).
     tiled_detect:
       enabled: true
       tiers: [baseline, triggered]
-      min_seconds_between: 15
+      min_seconds_between: 20
     # Walkway captions from the Qwen2-VL lane (2026-10-15, Juniper). After a
     # triggered-tier detect reply that found at least one of `labels` at
     # >= min_score, the router sends the same frame to

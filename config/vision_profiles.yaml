@@ -216,15 +216,24 @@ profiles:
       # ask). The GroundingDINO processor shrinks every image to 800 px on
       # the short side, so a ~50 px person on the far walkway sidewalk
       # (2560x1920 frame) reaches the model at ~21 px. Each tile below is
-      # run as its own pass (2x2 tiles reach the model at 0.75 scale, ~37 px
-      # for that person, instead of 0.42), boxes are mapped back to
+      # run as its own pass (the band tiles below reach the model at 0.93
+      # scale, ~46 px for that person, instead of 0.42), boxes are mapped back to
       # full-frame pixels and merged with the whole-frame pass
       # (app/tiling.py: cut-fragment drop, seam union, per-label NMS), then
       # max_detections applies as before. Numbers: docs/superpowers/
       # pr-reports/2026-10-15-walkway-tiled-detection-pr.md.
-      tile_grid: [2, 2]                 # cols, rows
+      # Layout: two tiles side by side over the band holding the street and
+      # both sidewalks (y 15%-60%), not a 2x2 grid of the whole frame. On
+      # the same real frames the band found the stroller, the half-hidden
+      # mail carrier and a walked dog the whole-frame pass missed; the 2x2
+      # grid's extras were the patio skeleton and a porch-swing "bicycle".
+      # Band tiles (1408x864) reach the model at 0.93 scale, 2x2 tiles at
+      # 0.75, and the band costs ~2.6 extra whole-frame passes vs ~3.8.
+      # The lower 40% is lawn and patio: near, large objects the
+      # whole-frame pass already sees.
+      tile_grid: [2, 1]                 # cols, rows
       tile_overlap: 0.2                 # fraction of a tile shared with its neighbour
-      tile_region: null                 # normalized [x0, y0, x1, y1] to tile; null = whole frame
+      tile_region: [0.0, 0.15, 1.0, 0.6]  # normalized [x0, y0, x1, y1] to tile; null = whole frame
       tile_include_full_frame: true     # keep the whole-frame pass for big near objects
       tile_batch: false                 # sequential: same peak VRAM as one pass (P4 has ~2.7 GB free)
       tile_min_short_side_px: 1200      # never tile a frame already at/below model resolution

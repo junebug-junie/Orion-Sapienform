@@ -186,6 +186,11 @@ def detect_runner(vision_profiles, monkeypatch, tmp_path):
     return r, str(frame), calls
 
 
+def _shipped_tile_count(runner) -> int:
+    grid = runner.profiles.get_profile("retina_detect_open_vocab").params["tile_grid"]
+    return int(grid[0]) * int(grid[1])
+
+
 def _detect(runner, request):
     p = runner.profiles.get_profile("retina_detect_open_vocab")
     return runner._run_detect_grounding_dino(p, request, "cpu")
@@ -202,8 +207,10 @@ def test_far_small_object_found_by_tiles_not_single_pass(detect_runner) -> None:
     tiled = _detect(r, {"image_path": frame, "stream_id": "walkway", "detect_tiles": True})
     assert len(tiled["objects"]) == 1
     assert tiled["objects"][0]["box_xyxy"] == [1500.0, 600.0, 1530.0, 650.0]  # full-frame pixels
-    assert tiled["detect_tiles"]["tiles"] == 4
-    assert len(calls) == 1 + 4
+    n_tiles = _shipped_tile_count(r)
+    assert n_tiles >= 2
+    assert tiled["detect_tiles"]["tiles"] == n_tiles
+    assert len(calls) == 1 + n_tiles
     # Boxes stay in the full frame's pixel space for zones/crops/faces.
     assert (tiled["frame_width"], tiled["frame_height"]) == (W, H)
 
@@ -279,7 +286,7 @@ def test_time_budget_skips_remaining_tiles(detect_runner, monkeypatch) -> None:
     p = r.profiles.get_profile("retina_detect_open_vocab")
     monkeypatch.setitem(p.params, "tile_time_budget_s", 1e-9)
     out = r._run_detect_grounding_dino(p, {"image_path": frame, "detect_tiles": True}, "cpu")
-    assert out["detect_tiles"]["tiles"] == 4
+    assert out["detect_tiles"]["tiles"] == _shipped_tile_count(r)
     assert out["detect_tiles"]["tiles_run"] == 1  # first tile always runs, budget then spent
     assert len(calls) == 1 + 1
 

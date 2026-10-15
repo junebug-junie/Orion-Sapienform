@@ -118,6 +118,6 @@ No restart required. The scripts run from the primary checkout on the next pull.
 
 ## PR link
 
-PR_LINK
+https://github.com/junebug-junie/Orion-Sapienform/pull/2680
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

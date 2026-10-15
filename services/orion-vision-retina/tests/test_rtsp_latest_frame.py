@@ -304,3 +304,101 @@ def test_stall_watchdog_can_be_disabled():
 
     asyncio.run(run())
     assert src.stall_restarts == 0
+
+
+def test_a_reader_that_keeps_cycling_is_named_but_not_replaced():
+    # Camera down after it connected: reads fail fast and the reader
+    # reconnects on its own. No restart storm; one stall_error, cleared on resume.
+    caps: list[_FakeCap] = []
+    down = threading.Event()
+    down.set()
+
+    class _Flaky(_FakeCap):
+        def read(self):
+            if self.i >= 2 and down.is_set():
+                time.sleep(0.005)
+                return False, None
+            return super().read()
+
+    def opener(_url):
+        cap = _Flaky() if not caps else _FakeCap(fail_after=None if not down.is_set() else 0)
+        caps.append(cap)
+        return cap
+
+    src = RtspFrameSource("rtsp://x", opener=opener, stall_seconds=0.15, reconnect_seconds=0.01)
+
+    async def run():
+        await src.start()
+        assert _wait(lambda: src.ever_connected)
+        await src.read()
+        for _ in range(5):
+            time.sleep(0.06)
+            await src.read()
+        assert src.stall_restarts == 0
+        assert src.stall_error and "reconnecting" in src.stall_error
+        down.clear()                                  # camera back
+        assert _wait(lambda: src._latest is not None)
+        assert await src.read() is not None
+        assert src.stall_error is None
+        await src.stop()
+
+    asyncio.run(run())
+
+
+def test_stall_error_clears_after_a_capped_window_and_resume():
+    # Review finding: the cap branch set stall_error but never _stalled_since,
+    # so a later resume left a stale "rtsp stalled" forever.
+    gate = threading.Event()
+    caps: list[_FakeCap] = []
+
+    def opener(_url):
+        cap = _WedgeAfterCap(1, gate)
+        caps.append(cap)
+        return cap
+
+    src = RtspFrameSource("rtsp://x", opener=opener, stall_seconds=0.05)
+
+    async def run():
+        await src.start()
+        assert _wait(lambda: caps[0].wedged.is_set())
+        await src.read()
+        for _ in range(4):
+            time.sleep(0.08)
+            await src.read()
+            _wait(lambda: caps[-1].wedged.is_set(), timeout=0.5)
+        assert "abandoned readers" in (src.stall_error or "")
+        with src._lock:
+            src._latest = (np.zeros((4, 6, 3), np.uint8), time.time())
+        assert await src.read() is not None
+        assert src.stall_error is None
+        gate.set()
+        await src.stop()
+
+    asyncio.run(run())
+
+
+def test_readers_stuck_at_the_cap_ask_for_a_process_restart():
+    gate = threading.Event()
+    caps: list[_FakeCap] = []
+
+    def opener(_url):
+        cap = _WedgeAfterCap(1, gate)
+        caps.append(cap)
+        return cap
+
+    src = RtspFrameSource("rtsp://x", opener=opener, stall_seconds=0.05)
+
+    async def run():
+        await src.start()
+        assert _wait(lambda: caps[0].wedged.is_set())
+        await src.read()
+        for _ in range(2 + RtspFrameSource.WEDGED_WINDOWS_BEFORE_EXIT + 1):
+            time.sleep(0.08)
+            await src.read()
+            _wait(lambda: caps[-1].wedged.is_set(), timeout=0.5)
+        flagged = src.needs_process_restart
+        gate.set()
+        await src.stop()
+        return flagged
+
+    assert asyncio.run(run()) is True

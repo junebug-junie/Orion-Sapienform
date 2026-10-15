@@ -211,6 +211,7 @@ class RtspFrameSource(_VideoCaptureSource):
     # Abandoned readers may still hold a camera session until their blocked
     # read returns. Reolinks limit sessions; do not stack more than this.
     MAX_ABANDONED_ALIVE = 2
+    WEDGED_WINDOWS_BEFORE_EXIT = 4
 
     def __init__(
         self,
@@ -221,7 +222,7 @@ class RtspFrameSource(_VideoCaptureSource):
         reconnect_seconds: float = 5.0,
         opener=None,
         join_timeout: float = 5.0,
-        stall_seconds: float = 15.0,
+        stall_seconds: float = 30.0,
         transport: str = "tcp",
         io_timeout_seconds: float = 5.0,
     ) -> None:
@@ -262,6 +263,14 @@ class RtspFrameSource(_VideoCaptureSource):
         self._reader_started_mono: float = time.monotonic()
         self.stall_restarts = 0
         self._stalled_since: float | None = None
+        # Monotonic time the live reader last finished a step. Frames missing
+        # while this keeps moving = camera down/garbage: the reader reconnects
+        # on its own. Frames missing AND this frozen = reader wedged in FFmpeg.
+        self._reader_progress_mono: float = time.monotonic()
+        # Consecutive watchdog windows refused by MAX_ABANDONED_ALIVE. At
+        # WEDGED_WINDOWS_BEFORE_EXIT the process asks to be restarted.
+        self._capped_windows = 0
+        self.needs_process_restart = False
         # Set while a stall is in progress, cleared when frames resume.
         # last_error stays sticky (the most recent error ever seen).
         self.stall_error: str | None = None
@@ -287,14 +296,20 @@ class RtspFrameSource(_VideoCaptureSource):
                         if cap is not None:
                             cap.release()
                         cap = self._open_sync()
+                        self._progress(stop_evt)
                         if not cap.isOpened():
-                            self.last_error = "rtsp open failed"
+                            if not stop_evt.is_set():
+                                self.last_error = "rtsp open failed"
                             stop_evt.wait(self._reconnect_seconds)
+                            self._progress(stop_evt)
                             continue
                     ok, frame = cap.read()
+                    self._progress(stop_evt)
                 except Exception as exc:  # noqa: BLE001 -- a decoder error must not kill the eye
-                    self.last_error = f"rtsp reader error: {type(exc).__name__}: {exc}"
-                    logger.warning(f"[RETINA] {self.last_error}; reconnecting")
+                    self._progress(stop_evt)
+                    if not stop_evt.is_set():
+                        self.last_error = f"rtsp reader error: {type(exc).__name__}: {exc}"
+                        logger.warning(f"[RETINA] {self.last_error}; reconnecting")
                     if cap is not None:
                         cap.release()
                     cap = None
@@ -310,6 +325,7 @@ class RtspFrameSource(_VideoCaptureSource):
                         cap = None
                         failures = 0
                         stop_evt.wait(self._reconnect_seconds)
+                        self._progress(stop_evt)
                     continue
                 failures = 0
                 with self._lock:
@@ -324,9 +340,16 @@ class RtspFrameSource(_VideoCaptureSource):
             if cap is not None:
                 cap.release()
 
+    def _progress(self, stop_evt: threading.Event) -> None:
+        """The live reader finished one step (an open, a read, a wait). An
+        abandoned reader's steps do not count."""
+        if not stop_evt.is_set():
+            self._reader_progress_mono = time.monotonic()
+
     def _spawn_reader(self) -> None:
         self._stop_evt = threading.Event()
         self._reader_started_mono = time.monotonic()
+        self._reader_progress_mono = self._reader_started_mono
         self._thread = threading.Thread(
             target=self._reader, args=(self._stop_evt,), name="retina-rtsp-reader", daemon=True
         )
@@ -363,24 +386,39 @@ class RtspFrameSource(_VideoCaptureSource):
         last = self._last_frame_mono or 0.0
         if now - max(last, self._reader_started_mono) <= self.stall_seconds:
             return
+        if self._stalled_since is None:
+            self._stalled_since = last
+        quiet = now - last
+        if now - max(self._reader_progress_mono, self._reader_started_mono) <= self.stall_seconds:
+            # The reader is still opening/reading/waiting and reconnects on
+            # its own (camera down, garbage stream). Say so once; no restart.
+            if self.stall_error is None:
+                self.stall_error = f"rtsp stalled: no frame for {quiet:.0f}s; reader alive and reconnecting"
+                self.last_error = self.stall_error
+                logger.warning(f"[RETINA] {self.stall_error}")
+            return
+        # No frame AND the reader has not finished a step for a whole window:
+        # it is wedged inside FFmpeg. Abandon it, open a fresh capture.
         self._abandoned = [t for t in self._abandoned if t.is_alive()]
         if len(self._abandoned) >= self.MAX_ABANDONED_ALIVE:
+            self._capped_windows += 1
             self.last_error = self.stall_error = (
-                f"rtsp stalled {now - last:.0f}s; {len(self._abandoned)} abandoned readers "
+                f"rtsp stalled {quiet:.0f}s; {len(self._abandoned)} abandoned readers "
                 "still blocked, not opening another camera session yet"
             )
             logger.error(f"[RETINA] {self.last_error}")
+            if self._capped_windows >= self.WEDGED_WINDOWS_BEFORE_EXIT:
+                self.needs_process_restart = True
             self._reader_started_mono = now  # re-check after another window
             return
-        if self._stalled_since is None:
-            self._stalled_since = last
+        self._capped_windows = 0
         with self._lock:
             self._stop_evt.set()
         old, self._thread = self._thread, None
         if old is not None and old.is_alive():
             self._abandoned.append(old)
         self.stall_restarts += 1
-        self.last_error = f"rtsp stalled: no frame for {now - last:.0f}s; restarted reader"
+        self.last_error = f"rtsp stalled: no frame for {quiet:.0f}s; reader wedged, restarted it"
         self.stall_error = self.last_error
         logger.warning(
             f"[RETINA] {self.last_error} (stall_restarts={self.stall_restarts}, "
@@ -402,7 +440,8 @@ class RtspFrameSource(_VideoCaptureSource):
                 f"(stall_restarts={self.stall_restarts})"
             )
             self._stalled_since = None
-            self.stall_error = None
+        self.stall_error = None
+        self._capped_windows = 0
         frame, ts = latest
         h, w = frame.shape[:2]
         return FrameReadResult(frame=frame, ts=ts, width=w, height=h, source_meta={"type": "rtsp"})
@@ -435,7 +474,7 @@ def create_frame_source(
     height: int | None = None,
     reconnect_seconds: float = 5.0,
     rtsp_transport: str = "tcp",
-    rtsp_stall_seconds: float = 15.0,
+    rtsp_stall_seconds: float = 30.0,
     rtsp_io_timeout_seconds: float = 5.0,
 ) -> FrameSource:
     st = source_type.lower().strip()

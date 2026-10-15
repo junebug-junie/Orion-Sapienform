@@ -27,7 +27,7 @@ def test_rtsp_source_sets_ffmpeg_capture_options(monkeypatch):
     src = create_frame_source("rtsp", "rtsp://cam/x", rtsp_io_timeout_seconds=4)
     assert isinstance(src, RtspFrameSource)
     assert os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] == "rtsp_transport;tcp|timeout;4000000"
-    assert src.stall_seconds == 15.0
+    assert src.stall_seconds == 30.0
 
 
 def test_rtsp_default_opener_passes_open_and_read_timeouts(monkeypatch):
@@ -62,6 +62,10 @@ def test_settings_ship_tcp_and_watchdog_on(monkeypatch):
         monkeypatch.delenv(k, raising=False)
     s = Settings(_env_file=None)
     assert s.RETINA_RTSP_TRANSPORT == "tcp"
-    assert s.RETINA_RTSP_STALL_SECONDS > s.RETINA_RTSP_IO_TIMEOUT_SECONDS > 0
+    # The watchdog must not race the reader's own recovery cycle.
+    assert s.RETINA_RTSP_STALL_SECONDS > 3 * s.RETINA_RTSP_IO_TIMEOUT_SECONDS + s.SOURCE_RECONNECT_SECONDS
     with pytest.raises(ValueError):
         Settings(_env_file=None, RETINA_RTSP_TRANSPORT="quic")
+    with pytest.raises(ValueError):
+        Settings(_env_file=None, RETINA_RTSP_STALL_SECONDS=15, RETINA_RTSP_IO_TIMEOUT_SECONDS=5)
+    assert Settings(_env_file=None, RETINA_RTSP_STALL_SECONDS=0).RETINA_RTSP_STALL_SECONDS == 0

@@ -74,7 +74,7 @@ cp .env_example .env
 | `CHANNEL_RETINA_PUB` | `orion:vision:frames` | Publish channel |
 | `RETINA_RTSP_TRANSPORT` | `tcp` | RTSP only: `tcp`, `udp`, `http`. TCP stops UDP packet loss (smeared frames, `RTP: bad cseq`) |
 | `RETINA_RTSP_IO_TIMEOUT_SECONDS` | `5.0` | RTSP only: FFmpeg socket `timeout` + OpenCV read timeout, so a quiet stream cannot block `cap.read()` forever |
-| `RETINA_RTSP_STALL_SECONDS` | `15.0` | RTSP only: no frame this long → WARNING, abandon the reader thread, open a fresh capture. `0` disables |
+| `RETINA_RTSP_STALL_SECONDS` | `30.0` | RTSP only: no frame this long → WARNING; if the reader thread is also wedged, abandon it and open a fresh capture. `0` disables. Must be > 3×IO timeout + reconnect |
 
 ### RTSP stall watchdog (2026-10-15)
 
@@ -84,9 +84,14 @@ stayed up and logged nothing; only a restart fixed it. Now:
 - RTSP runs over TCP with an FFmpeg socket timeout (`OPENCV_FFMPEG_CAPTURE_OPTIONS=rtsp_transport;tcp|timeout;<µs>`,
   set by `RtspFrameSource` only) plus OpenCV `CAP_PROP_OPEN/READ_TIMEOUT_MSEC`. The FFmpeg bundled
   with OpenCV 4.10 (FFmpeg 5.1) honours `timeout`; `stimeout`/`rw_timeout` are ignored by it.
-- If no frame arrives for `RETINA_RTSP_STALL_SECONDS` after the camera has connected once, the
-  reader thread is abandoned (never joined) and a fresh one opens a new capture. At most two
-  abandoned readers may still be alive, so camera sessions do not pile up.
+- If no frame arrives for `RETINA_RTSP_STALL_SECONDS` after the camera has connected once, it
+  logs one WARNING. If the reader thread is still finishing steps (opens, reads, waits), the
+  camera is down or sending garbage and the reader reconnects on its own. If the reader made
+  no progress for the whole window it is wedged in FFmpeg: it is abandoned (never joined) and
+  a fresh one opens a new capture. At most two abandoned readers may be alive, so camera
+  sessions do not pile up; after 4 windows stuck at that cap the process exits so the
+  container restart policy brings the eye back.
+- `evals/frame_smear.py` measures packet-loss smear in saved frames (see its docstring).
 - System health `details` carry `last_frame_age_sec` and `source_stall_restarts`; a stall logs
   `[RETINA] rtsp stalled: ...` at WARNING and `rtsp frames resumed ...` on recovery.
 

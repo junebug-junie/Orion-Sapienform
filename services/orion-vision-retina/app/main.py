@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import time
 from contextlib import asynccontextmanager
 from typing import Optional
@@ -374,6 +375,12 @@ class RetinaService:
     async def capture_once(self) -> bool:
         self._sample_attempted = True
         result = await self.source.read()
+        if getattr(self.source, "needs_process_restart", False) is True:
+            # RTSP readers wedged in FFmpeg and the session cap stops us opening
+            # more: only a fresh process clears them. Exit so the container's
+            # restart policy brings the eye back, instead of a silent outage.
+            logger.critical(f"[RETINA] {getattr(self.source, 'stall_error', '')}; exiting for restart")
+            os._exit(1)
         self.metrics.source_stall_restarts = int(getattr(self.source, "stall_restarts", 0) or 0)
         if result is None:
             if getattr(self.source, "ever_connected", True) is False:

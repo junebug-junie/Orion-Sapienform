@@ -964,8 +964,9 @@ class VisionRunner:
 
     def _crop_face_fn(self, p: ProfileDef, device: str):
         """Faces inside walkway person crops, on the identity_face profile's
-        own MTCNN + InceptionResnetV1 (same model-manager cache slot, so no
-        second copy is loaded). Returns None (no faces this request) when that
+        own MTCNN + InceptionResnetV1 (same model-manager cache slot when the
+        detect task runs on the same device as identity_face; another device
+        loads its own copy). Returns None (no faces this request) when that
         profile is disabled. Never reads or writes Juniper's enrolled gallery:
         the vector goes to the individuals reducer, not to identity matching.
         """
@@ -978,7 +979,7 @@ class VisionRunner:
         if not face_profile.enabled or not self._is_enabled(face_profile_name):
             return None
         min_prob = float(p.params.get("crop_face_min_prob", 0.95))
-        min_side = float(p.params.get("crop_face_min_side_px", 20))
+        min_side = float(p.params.get("crop_face_min_side_px", 40))
         dtype = self._resolve_dtype(face_profile)
 
         def _faces(crops: List[Image.Image]) -> List[Optional[Tuple[List[float], float, Image.Image]]]:

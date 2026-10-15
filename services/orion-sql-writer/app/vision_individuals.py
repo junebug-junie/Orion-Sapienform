@@ -307,6 +307,10 @@ class BatchResult:
     assigned_by_face: int = 0
     # crop_id -> was its individual a stationary fixture after this crop.
     crop_stationary: Dict[str, bool] = field(default_factory=dict)
+    # individual_id -> still_since, for individuals that BECAME stationary in
+    # this batch: their earlier sightings of the same run (split by gaps
+    # longer than the merge gap, saved non-stationary) must be re-flagged.
+    became_stationary: Dict[str, datetime] = field(default_factory=dict)
 
 
 def _ts(d: datetime) -> float:
@@ -487,7 +491,32 @@ def apply_batch(
         individuals=inds, sightings=touched, new_individual_ids=new_ids,
         patio_crops=patio, skipped_no_embedding=skipped, assigned=assigned,
         assigned_by_face=by_face, crop_stationary=crop_stationary,
+        became_stationary=_mark_run_sightings(inds, individuals, cands, touched),
     )
+
+
+def _mark_run_sightings(
+    inds: Dict[str, Individual],
+    before: Dict[str, Individual],
+    cands: Dict[str, List[Sighting]],
+    touched: Dict[str, Sighting],
+) -> Dict[str, datetime]:
+    """Individuals that turned stationary in this batch: flag every sighting of
+    the same still run (ended at/after ``still_since``) this batch knows about,
+    and return them so the DB pass can flag older ones. Without this, the
+    first 30 minutes of a prop -- split into many sightings by detector gaps
+    longer than the merge gap -- stay ordinary sightings that count toward asks."""
+    flipped: Dict[str, datetime] = {}
+    for iid, ind in inds.items():
+        prior = before.get(iid)
+        if not ind.stationary or ind.still_since is None or (prior is not None and prior.stationary):
+            continue
+        flipped[iid] = ind.still_since
+        for sg in cands.get(iid, []):
+            if sg.ended_at >= ind.still_since and not sg.stationary:
+                sg.stationary = True
+                touched[sg.sighting_id] = sg
+    return flipped
 
 
 def head_count_crops(
@@ -950,6 +979,12 @@ def _one_stream(engine, stream_id: str, now: datetime, tz: ZoneInfo, cfg: Indivi
                 _upsert_individual(conn, batch.individuals[iid])
             for s in batch.sightings.values():
                 _upsert_sighting(conn, s, forbidden)
+            for iid, since in batch.became_stationary.items():
+                conn.execute(text(
+                    "UPDATE vision_individual_sighting SET stationary=true, attention_score=NULL, "
+                    "attention_components=CAST(:c AS jsonb) "
+                    "WHERE individual_id=:i AND ended_at >= :since AND NOT stationary"),
+                    {"c": json.dumps({"_basis": "stationary"}), "i": iid, "since": since})
             zone_rare = {z.name: z.dwell_rare_sec for z in zones}
             for s in batch.sightings.values():
                 if _score_and_maybe_event(conn, s, batch.individuals[s.individual_id], zone_rare, tz, cfg):

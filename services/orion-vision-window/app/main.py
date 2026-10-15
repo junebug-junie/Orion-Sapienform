@@ -57,6 +57,19 @@ def _person_boxes(items: List[Tuple[VisionArtifactPayload, float]]) -> List[Tupl
     return out
 
 
+_FACE_KEYS = ("face_embedding", "face_score", "face_thumb_ref")
+
+
+def _crop_payload(obs: Any) -> Dict[str, Any]:
+    """The crop observation as JSON, with face keys dropped where empty."""
+    data = obs.model_dump(mode="json")
+    for crop in data.get("crops") or []:
+        for k in _FACE_KEYS:
+            if crop.get(k) is None:
+                crop.pop(k, None)
+    return data
+
+
 def _corr_uuid(value: Optional[Union[str, UUID]]) -> UUID:
     if value is None:
         return uuid.uuid4()
@@ -673,8 +686,10 @@ class WindowService:
     async def _publish_crop_observation(self, artifact: VisionArtifactPayload, env: BaseEnvelope) -> None:
         """Per-artifact, not per-window: every tracked-label box the host
         zoned/embedded (walkway individuals, idea 1) goes to the individuals
-        reducer with its own frame time. Patio boxes are forwarded with no
-        vector; they are presence counts. Best effort, like the inventory:
+        reducer with its own frame time (patio boxes included, with vectors
+        and faces since 2026-10-15). Empty face keys are left out so a
+        not-yet-redeployed sql-writer (VisionCropV1 is extra="forbid") still
+        accepts face-less crops. Best effort, like the inventory:
         a failure here must never cost ingest."""
         if not settings.WINDOW_CROP_OBSERVATIONS_ENABLED or not self.bus:
             return
@@ -693,7 +708,7 @@ class WindowService:
                     source=_source_ref(),
                     correlation_id=cid,
                     causality_chain=[*(getattr(env, "causality_chain", None) or [])],
-                    payload=obs.model_dump(mode="json"),
+                    payload=_crop_payload(obs),
                 ),
             )
             self._m_crop_obs_published += 1

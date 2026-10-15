@@ -348,7 +348,7 @@ L2-normalized inline `embedding`; the detect artifact also carries
   `crop_face_labels` (default `person`) is run through the `identity_face`
   profile's already-loaded MTCNN + InceptionResnetV1 (`crop_faces`). The most
   confident face at or above `crop_face_min_prob` (0.95) and
-  `crop_face_min_side_px` (20) adds `face_embedding` (512-d, unit),
+  `crop_face_min_side_px` (40) adds `face_embedding` (512-d, unit),
   `face_score` and `face_thumb_ref` (own rate limiter, triggered tier only) to
   the object. A face failure costs the face, never the crop vector. cam0/carbon
   have no zones on file, never reach the embed list, and so never get a face

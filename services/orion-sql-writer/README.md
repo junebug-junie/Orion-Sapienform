@@ -337,12 +337,14 @@ The one place the vision-host, vision-council and this README point to.
    thumbnailed), orion-vision-council (what an unresolved percept may say),
    and orion-sql-writer (defense-in-depth recompute, `zone_no_embed`, presence
    rows). A partial rebuild leaves them disagreeing about where the patio is.
+4. orion-hub mounts `/mnt/telemetry/orion-vision-host/crop_thumbs` read-only.
 5. **v2 (2026-10-15):** apply
    `services/orion-sql-db/manual_migration_walkway_privacy_v2.sql` (drops the
-   no-embed CHECKs, adds face + stationary columns), then deploy
-   orion-sql-writer BEFORE orion-vision-window/-host: `VisionCropV1` is
-   `extra="forbid"`, so an old writer rejects crops carrying the new face fields.
-4. orion-hub mounts `/mnt/telemetry/orion-vision-host/crop_thumbs` read-only.
+   no-embed CHECKs, adds face + stationary columns) BEFORE deploying this
+   orion-sql-writer (its crop INSERT names the new columns), and deploy
+   orion-sql-writer before orion-vision-window: `VisionCropV1` is
+   `extra="forbid"`, so an old writer rejects any crop observation that holds a
+   face (the window leaves out face keys that are empty).
 
 Spec: `docs/superpowers/specs/2026-09-22-walkway-camera-busy-world-design.md`
 (ideas 1, 2, 3-opener, 6-score, 8-writer, 9). Tables come from

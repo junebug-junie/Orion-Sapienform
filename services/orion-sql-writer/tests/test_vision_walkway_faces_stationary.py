@@ -311,3 +311,35 @@ def test_fixture_is_the_real_box() -> None:
     assert len(rows) == 79
     x1s = [float(r[1]) for r in rows]
     assert 2040 < min(x1s) and max(x1s) < 2090
+
+
+def test_gapped_cadence_reflags_the_runs_earlier_sightings() -> None:
+    # Review repro: 20 s steps with a ~100 s gap every few minutes (live max
+    # gap 105 s) split the prop into a new sighting every ~3 min. Without the
+    # re-flag, ~10 sightings from before the 30-minute mark stayed ordinary
+    # and alone met ask_min_sightings=10 in one night.
+    crops, t, k = [], 0, 0
+    while t <= 2400:
+        crops.append(_crop(f"g{k}", T0 + timedelta(seconds=t), APP_A, box=(2060.0, 877.0, 2274.0, 1227.0), zone="patio"))
+        k += 1
+        t += 100 if k % 8 == 0 else 20
+    res = _batch(crops, [], new_id=iter(f"id{k}" for k in range(1000)).__next__)
+    assert len(res.sightings) >= 8
+    assert all(s.stationary for s in res.sightings.values())
+    (iid,) = res.became_stationary
+    assert res.became_stationary[iid] == T0
+
+
+def test_already_stationary_individual_is_not_reported_as_flipping() -> None:
+    res = _batch(_skeleton_crops(), [], new_id=iter(f"id{k}" for k in range(1000)).__next__)
+    (ind,) = res.individuals.values()
+    later = _crop("x1", T0 + timedelta(hours=2), APP_A, box=(2062.0, 877.0, 2273.0, 1229.0), zone="patio")
+    assert _batch([later], [ind]).became_stationary == {}
+
+
+def test_db_pass_reflags_older_sightings_of_the_run() -> None:
+    import inspect
+
+    src = inspect.getsource(vi._one_stream)
+    assert "batch.became_stationary" in src
+    assert "WHERE individual_id=:i AND ended_at >= :since AND NOT stationary" in " ".join(src.split())

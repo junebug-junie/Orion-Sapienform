@@ -20,7 +20,9 @@
 -- Every step is idempotent. Requires manual_migration_walkway_camera_v1.sql.
 --
 -- Apply: docker exec -i orion-athena-sql-db psql -U postgres -d conjourney < services/orion-sql-db/manual_migration_walkway_privacy_v2.sql
--- Rollback (additive columns; the CHECKs only come back if no row breaks them):
+-- Rollback (additive columns). To restore the CHECKs, re-run
+-- manual_migration_walkway_camera_v1.sql (it re-adds them; fails only if a row
+-- has zone_no_embed=true with a vector, which no current zone produces):
 --   ALTER TABLE vision_crop_observation DROP COLUMN face_embedding, DROP COLUMN face_score, DROP COLUMN face_thumb_ref;
 --   ALTER TABLE vision_individual DROP COLUMN face_centroid, DROP COLUMN face_n, DROP COLUMN still_box,
 --     DROP COLUMN still_since, DROP COLUMN still_last, DROP COLUMN stationary;

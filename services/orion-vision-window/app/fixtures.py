@@ -22,7 +22,11 @@ from typing import Dict, Iterable, List, Optional, Sequence
 
 from orion.vision.stationary import StillRun, advance, box_iou, is_stationary
 
-# A fixture run nobody has seen for this long is forgotten.
+# A fixture run nobody has seen for this long is forgotten. Runs live in
+# memory only: after a window restart (or a day without the prop) the prop
+# makes the stream "present" again for VISION_STATIONARY_MIN_SEC. The
+# sql-writer reducer's stationary flag is persisted, so the two can briefly
+# disagree; that is accepted for a presence signal.
 FORGET_FIXTURE_SEC = 86400.0
 
 

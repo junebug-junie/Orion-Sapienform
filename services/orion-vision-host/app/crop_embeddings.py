@@ -465,7 +465,7 @@ def crop_faces(
     model: Any,
     device: str,
     min_prob: float,
-    min_side_px: float = 20.0,
+    min_side_px: float = 40.0,
 ) -> List[Optional[FaceHit]]:
     """Per crop, the most confident face (MTCNN) at or above ``min_prob`` and
     at least ``min_side_px`` on its short side, embedded by InceptionResnetV1

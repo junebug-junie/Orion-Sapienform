@@ -69,6 +69,16 @@ def test_face_fields_ride_along_to_the_reducer() -> None:
     VisionCropObservationV1.model_validate(obs.model_dump(mode="json"))
 
 
+def test_published_payload_omits_empty_face_keys_for_old_writers() -> None:
+    from app.main import _crop_payload
+
+    obs = build_crop_observation(_artifact(_objs()))
+    data = _crop_payload(obs)
+    assert all("face_embedding" not in c and "face_thumb_ref" not in c for c in data["crops"])
+    # A pre-face VisionCropV1 (extra=forbid) would accept this; the current one round-trips it.
+    VisionCropObservationV1.model_validate(data)
+
+
 def test_untracked_artifact_publishes_nothing() -> None:
     art = _artifact([VisionObject(label="person", score=0.9, box_xyxy=[1, 2, 3, 4])], inputs={"stream_id": "cam0"})
     assert build_crop_observation(art) is None

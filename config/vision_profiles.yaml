@@ -209,7 +209,7 @@ profiles:
       crop_face_profile: identity_face
       crop_face_labels: [person]
       crop_face_min_prob: 0.95
-      crop_face_min_side_px: 20
+      crop_face_min_side_px: 40         # tiny upscaled faces embed close together; a wrong face match merges people
       # Open-vocabulary detection can only name what the prompt asks about.
       # With this unset, runner.py fell back to a hardcoded six-word list
       # (person/face/phone/screen/door/package), which is why 19 days of live

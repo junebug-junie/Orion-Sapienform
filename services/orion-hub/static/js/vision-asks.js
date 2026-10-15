@@ -20,6 +20,15 @@
   // shown side by side (older rows have only image_ref). A "same person?"
   // card (source_kind vision_same_individual) shows both faces and answers
   // with Same person (yes) / Different people (no) / Not sure (dismiss).
+  //
+  // Names on visual cards (2026-10-15, Juniper): a "same person?" card is a
+  // choice plus one Send button. "Same person" opens one optional name box for
+  // both; "Different people" opens one optional name box under each face; the
+  // names ride along as {names: {<individual_id>: name}}. A "who is this?" card
+  // with several pictures asks, under every picture after the first, whether
+  // it is the same person (the default), someone else (optionally named) or
+  // not sure; that rides along as {pictures: [...]}. The main box still names
+  // the first picture, which is the one the question is about.
   const RESOLVABLE_KINDS = ["memory_confirmation", "open_question"];
 
   function isResolvable(ask) {
@@ -45,6 +54,7 @@
   }
 
   const SAME_PERSON_KIND = "vision_same_individual";
+  const WHO_IS_THIS_KIND = "vision_individual";
   // More than this many pictures would not fit a phone-width card.
   const MAX_IMAGES = 4;
 
@@ -63,7 +73,8 @@
       const view = askImageView(r);
       if (view.kind === "none" || seen[view.kind + ":" + view.ref]) return;
       seen[view.kind + ":" + view.ref] = true;
-      out.push(view);
+      // raw: the ref exactly as stored, which is what an answer names a picture by.
+      out.push({ kind: view.kind, ref: view.ref, raw: String(r).trim() });
     });
     return out.slice(0, MAX_IMAGES);
   }
@@ -74,10 +85,19 @@
     return "Picture " + (index + 1) + " of " + total + " of what Orion is asking about";
   }
 
+  // The two individual ids of a "same person?" card, left then right
+  // (source_ref is "<idA>|<idB>", the same order as image_refs).
+  function pairIds(ask) {
+    const parts = String((ask && ask.source_ref) || "").split("|");
+    return parts.length === 2 && parts[0] && parts[1] ? parts : [];
+  }
+
   function askCardViewModel(ask) {
     const a = ask || {};
     const images = askImageViews(a);
     return {
+      pairIds: isSamePerson(a) ? pairIds(a) : [],
+      whoIsThis: String(a.source_kind || "") === WHO_IS_THIS_KIND,
       askId: String(a.ask_id || ""),
       question: String(a.question || ""),
       image: images[0] || { kind: "none", ref: "" },
@@ -115,6 +135,9 @@
     if (detail === "revised_too_short") return "Write it as a full sentence (at least " + MIN_REVISION_WORDS + " words). To drop it, press Reject.";
     if (detail === "revised_unchanged") return "That is the same as what I have. Change it, or press Confirm.";
     if (detail === "answer_must_be_yes_or_no") return "Press Same person, Different people, or Not sure.";
+    if (detail === "same_person_takes_one_name") return "Same person takes one name.";
+    if (detail === "name_too_long") return "That name is too long (120 characters at most).";
+    if (detail === "pick_an_answer") return "Pick Same person, Different people, or Not sure first.";
     if (status === 409) return "Someone already answered this one, or it expired.";
     if (status === 404) return "That question no longer exists.";
     if (status === 503) return "Can't reach the question store right now.";
@@ -201,7 +224,8 @@
 
   // The pictures, side by side. Each one shrinks to share the card width, so
   // two faces fit a phone screen; a single picture keeps its old size.
-  function renderImages(doc, vm) {
+  // below(index, view): optional controls shown under that picture.
+  function renderImages(doc, vm, below) {
     const row = el(doc, "div", "flex gap-2 items-start");
     setStyle(row, { display: "flex", gap: "0.5rem", alignItems: "flex-start" });
     row.setAttribute("data-ask-images", String(vm.images.length));
@@ -227,12 +251,82 @@
         });
         fig.appendChild(img);
         fig.appendChild(gone);
+        const extra = below ? below(i, view) : null;
+        if (extra) fig.appendChild(extra);
         row.appendChild(fig);
       } else {
-        row.appendChild(el(doc, "div", "text-[11px] text-gray-500 break-all", "Picture: " + view.ref));
+        const box = el(doc, "div", "text-[11px] text-gray-500 break-all", "Picture: " + view.ref);
+        const extra = below ? below(i, view) : null;
+        if (extra) {
+          const wrap = el(doc, "div", total > 1 ? "flex-1 min-w-0" : "");
+          if (total > 1) setStyle(wrap, { flex: "1 1 0", minWidth: "0" });
+          wrap.appendChild(box);
+          wrap.appendChild(extra);
+          row.appendChild(wrap);
+        } else {
+          row.appendChild(box);
+        }
       }
     });
     return row;
+  }
+
+  let uid = 0;
+  function nextId(prefix) {
+    uid += 1;
+    return prefix + "-" + uid;
+  }
+
+  // A labelled text box. The label is a real <label for>, so a screen reader
+  // reads it and a tap on it focuses the box.
+  function nameField(doc, askId, labelText, dataName) {
+    const wrap = el(doc, "div", "space-y-1");
+    const id = nextId("ask-name");
+    const label = el(doc, "label", "block text-[11px] text-gray-400", labelText);
+    label.setAttribute("for", id);
+    const input = el(doc, "input", "w-full bg-gray-900 text-gray-100 text-xs rounded px-2 py-1 border border-gray-700");
+    setStyle(input, { width: "100%", boxSizing: "border-box", minWidth: "0" });
+    input.setAttribute("id", id);
+    input.setAttribute("type", "text");
+    input.setAttribute("maxlength", "120");
+    input.setAttribute("autocomplete", "off");
+    input.setAttribute("data-ask-input", askId);
+    if (dataName) input.setAttribute("data-ask-name", dataName);
+    wrap.appendChild(label);
+    wrap.appendChild(input);
+    return { wrap: wrap, input: input };
+  }
+
+  function showNode(node, on) {
+    node.hidden = !on;
+    if (node.classList) {
+      if (on) node.classList.remove("hidden");
+      else node.classList.add("hidden");
+    }
+  }
+
+  // What a "same person?" card sends for a choice and the typed names.
+  // Not sure is a dismissal (no names); empty names are left out.
+  function samePersonSubmission(choice, ids, sameName, leftName, rightName) {
+    const clean = function (t) { return String(t || "").split(/\s+/).filter(Boolean).join(" "); };
+    if (choice === "unsure") return { action: "dismiss", answer: "", extra: null };
+    if (choice !== "same" && choice !== "different") return null;
+    const names = {};
+    if (ids.length === 2) {
+      if (choice === "same" && clean(sameName)) {
+        names[ids[0]] = clean(sameName);
+        names[ids[1]] = clean(sameName);
+      }
+      if (choice === "different") {
+        if (clean(leftName)) names[ids[0]] = clean(leftName);
+        if (clean(rightName)) names[ids[1]] = clean(rightName);
+      }
+    }
+    return {
+      action: "answer",
+      answer: choice === "same" ? "yes" : "no",
+      extra: Object.keys(names).length ? { names: names } : null,
+    };
   }
 
   function renderSamePerson(doc, vm, onAction) {
@@ -240,33 +334,94 @@
     card.setAttribute("data-ask-id", vm.askId);
     card.setAttribute("data-ask-kind", "same-person");
     card.appendChild(el(doc, "div", "text-sm text-gray-100", vm.question));
-    if (vm.images.length) card.appendChild(renderImages(doc, vm));
+    const canName = vm.pairIds.length === 2;
+    // One optional name box under each face, shown for "Different people".
+    const faceFields = [];
+    const faceWraps = [];
+    if (vm.images.length) {
+      card.appendChild(renderImages(doc, vm, function (i) {
+        if (!canName || i > 1) return null;
+        const f = nameField(doc, vm.askId, (i === 0 ? "Left" : "Right") + " face: who is it? (optional)",
+          i === 0 ? "left" : "right");
+        faceFields[i] = f.input;
+        faceWraps[i] = f.wrap;
+        showNode(f.wrap, false);
+        return f.wrap;
+      }));
+    }
     if (vm.askedAt) card.appendChild(el(doc, "div", "text-[11px] text-gray-500", "Asked " + vm.askedAt));
-    const row = el(doc, "div", "flex flex-wrap items-center gap-2");
-    function btn(label, action, cls) {
-      const b = el(doc, "button", "text-xs rounded px-3 py-1 " + cls, label);
-      b.setAttribute("type", "button");
-      b.setAttribute("data-ask-action", action);
-      return b;
+
+    // The choice: three radio buttons in one group, then one Send.
+    const group = el(doc, "fieldset", "flex flex-wrap items-center gap-3 border-0 p-0 m-0");
+    setStyle(group, { border: "0", padding: "0", margin: "0" });
+    group.setAttribute("data-ask-choices", vm.askId);
+    group.appendChild(el(doc, "legend", "sr-only", "Are these the same person?"));
+    const groupName = nextId("ask-choice");
+    const radios = {};
+    [["same", "Same person"], ["different", "Different people"], ["unsure", "Not sure"]].forEach(function (c) {
+      const label = el(doc, "label", "inline-flex items-center gap-1 text-xs text-gray-200");
+      const radio = el(doc, "input", "");
+      radio.setAttribute("type", "radio");
+      radio.setAttribute("name", groupName);
+      radio.setAttribute("value", c[0]);
+      radio.setAttribute("data-ask-choice", c[0]);
+      radio.addEventListener("change", function () { choose(c[0]); });
+      radios[c[0]] = radio;
+      label.appendChild(radio);
+      label.appendChild(el(doc, "span", "", c[1]));
+      group.appendChild(label);
+    });
+    card.appendChild(group);
+
+    // One name box for both, shown for "Same person".
+    const same = canName ? nameField(doc, vm.askId, "Who is this? (optional)", "same") : null;
+    if (same) {
+      showNode(same.wrap, false);
+      card.appendChild(same.wrap);
     }
-    const sameBtn = btn("Same person", "same", "bg-emerald-700 hover:bg-emerald-600 text-white");
-    const diffBtn = btn("Different people", "different", "bg-sky-700 hover:bg-sky-600 text-white");
-    const unsureBtn = btn("Not sure", "dismiss", "bg-gray-800 hover:bg-gray-700 text-gray-300 border border-gray-700");
+    let choice = "";
+    function choose(c) {
+      choice = c;
+      Object.keys(radios).forEach(function (k) { radios[k].checked = k === c; });
+      if (same) showNode(same.wrap, c === "same");
+      faceWraps.forEach(function (w) { if (w) showNode(w, c === "different"); });
+    }
+
+    const sendBtn = el(doc, "button", "text-xs rounded px-3 py-1 bg-sky-700 hover:bg-sky-600 text-white", "Send");
+    sendBtn.setAttribute("type", "button");
+    sendBtn.setAttribute("data-ask-action", "send");
     const note = el(doc, "div", "text-[11px] text-amber-300 hidden");
-    const buttons = [sameBtn, diffBtn, unsureBtn];
-    function run(action, text) {
-      buttons.forEach(function (b) { b.disabled = true; });
-      return Promise.resolve(onAction(vm.askId, action, text, note)).finally(function () {
-        buttons.forEach(function (b) { b.disabled = false; });
+    sendBtn.addEventListener("click", function () {
+      const sub = samePersonSubmission(choice, vm.pairIds, same ? same.input.value : "",
+        faceFields[0] ? faceFields[0].value : "", faceFields[1] ? faceFields[1].value : "");
+      if (!sub) {
+        note.textContent = errorLine(422, "pick_an_answer");
+        note.classList.remove("hidden");
+        return;
+      }
+      sendBtn.disabled = true;
+      return Promise.resolve(onAction(vm.askId, sub.action, sub.answer, note, undefined, sub.extra)).finally(function () {
+        sendBtn.disabled = false;
       });
-    }
-    sameBtn.addEventListener("click", function () { return run("answer", "yes"); });
-    diffBtn.addEventListener("click", function () { return run("answer", "no"); });
-    unsureBtn.addEventListener("click", function () { return run("dismiss", ""); });
-    buttons.forEach(function (b) { row.appendChild(b); });
-    card.appendChild(row);
+    });
+    card.appendChild(sendBtn);
     card.appendChild(note);
     return card;
+  }
+
+  // What a multi-picture "who is this?" card sends about pictures 2..n.
+  // choices[i] is "same" | "different" | "unsure" for picture i (i >= 1).
+  function pictureSubmission(views, choices, names) {
+    if (!views || views.length < 2) return null;
+    const out = [];
+    for (let i = 1; i < views.length; i++) {
+      const verdict = choices[i] || "same";
+      const entry = { image_ref: views[i].raw, verdict: verdict };
+      const name = String(names[i] || "").split(/\s+/).filter(Boolean).join(" ");
+      if (verdict === "different" && name) entry.name = name;
+      out.push(entry);
+    }
+    return out;
   }
 
   function renderAsk(doc, ask, onAction) {
@@ -276,13 +431,50 @@
     const card = el(doc, "div", "rounded-lg border border-sky-800 bg-gray-800/60 p-3 space-y-2");
     card.setAttribute("data-ask-id", vm.askId);
     card.appendChild(el(doc, "div", "text-sm text-gray-100", vm.question));
-    if (vm.images.length) card.appendChild(renderImages(doc, vm));
+    // Several pictures: each one after the first gets "is this the same
+    // person?" (default yes), so one cluster holding two people can be said.
+    const multi = vm.whoIsThis && vm.images.length > 1;
+    const choices = {};
+    const pictureNames = {};
+    if (vm.images.length) {
+      card.appendChild(renderImages(doc, vm, !multi ? null : function (i) {
+        if (i === 0) return el(doc, "div", "text-[11px] text-gray-400", "The one I am asking about");
+        const wrap = el(doc, "div", "space-y-1");
+        const id = nextId("ask-pic");
+        const label = el(doc, "label", "block text-[11px] text-gray-400", "Picture " + (i + 1) + " is:");
+        label.setAttribute("for", id);
+        const select = el(doc, "select", "w-full bg-gray-900 text-gray-100 text-xs rounded px-1 py-1 border border-gray-700");
+        setStyle(select, { width: "100%", minWidth: "0", boxSizing: "border-box" });
+        select.setAttribute("id", id);
+        select.setAttribute("data-ask-picture", String(i));
+        [["same", "The same person"], ["different", "Someone else"], ["unsure", "Not sure"]].forEach(function (o) {
+          const opt = el(doc, "option", "", o[1]);
+          opt.setAttribute("value", o[0]);
+          select.appendChild(opt);
+        });
+        select.value = "same";
+        const other = nameField(doc, vm.askId, "Who is it? (optional)", "picture-" + i);
+        showNode(other.wrap, false);
+        choices[i] = "same";
+        pictureNames[i] = other.input;
+        select.addEventListener("change", function () {
+          choices[i] = String(select.value || "same");
+          showNode(other.wrap, choices[i] === "different");
+        });
+        wrap.appendChild(label);
+        wrap.appendChild(select);
+        wrap.appendChild(other.wrap);
+        return wrap;
+      }));
+    }
     if (vm.askedAt) card.appendChild(el(doc, "div", "text-[11px] text-gray-500", "Asked " + vm.askedAt));
     const row = el(doc, "div", "flex items-center gap-2");
     const input = el(doc, "input", "flex-1 bg-gray-900 text-gray-100 text-xs rounded px-2 py-1 border border-gray-700");
+    setStyle(input, { minWidth: "0" });
     input.setAttribute("type", "text");
     input.setAttribute("maxlength", "500");
-    input.setAttribute("placeholder", "Your answer");
+    input.setAttribute("placeholder", multi ? "Who is the first picture?" : "Your answer");
+    input.setAttribute("aria-label", multi ? "Who is the first picture?" : "Your answer");
     input.setAttribute("data-ask-input", vm.askId);
     const answerBtn = el(doc, "button", "text-xs bg-sky-700 hover:bg-sky-600 text-white rounded px-3 py-1", "Answer");
     answerBtn.setAttribute("type", "button");
@@ -294,14 +486,17 @@
     // Both buttons are locked while a request is in flight, so a double
     // click cannot send a second POST and flash a spurious 409.
     const buttons = [answerBtn, dismissBtn];
-    function run(action, text) {
+    function run(action, text, extra) {
       buttons.forEach(function (b) { b.disabled = true; });
-      return Promise.resolve(onAction(vm.askId, action, text, note)).finally(function () {
+      return Promise.resolve(onAction(vm.askId, action, text, note, undefined, extra)).finally(function () {
         buttons.forEach(function (b) { b.disabled = false; });
       });
     }
     answerBtn.addEventListener("click", function () {
-      return run("answer", input.value);
+      if (!multi) return run("answer", input.value);
+      const names = {};
+      Object.keys(pictureNames).forEach(function (k) { names[k] = pictureNames[k].value; });
+      return run("answer", input.value, { pictures: pictureSubmission(vm.images, choices, names) });
     });
     dismissBtn.addEventListener("click", function () {
       return run("dismiss", "");
@@ -314,10 +509,16 @@
     return card;
   }
 
-  async function submitAction(fetchFn, askId, action, answerText, resolution) {
+  // extra: optional {names} / {pictures} sent with an answer.
+  async function submitAction(fetchFn, askId, action, answerText, resolution, extra) {
     const url = "/api/asks/" + encodeURIComponent(askId) + "/" + action;
     const init = { method: "POST", headers: { "Content-Type": "application/json" } };
-    if (action === "answer") init.body = JSON.stringify({ answer: String(answerText || "").trim() });
+    if (action === "answer") {
+      const body = { answer: String(answerText || "").trim() };
+      if (extra && extra.names && Object.keys(extra.names).length) body.names = extra.names;
+      if (extra && Array.isArray(extra.pictures) && extra.pictures.length) body.pictures = extra.pictures;
+      init.body = JSON.stringify(body);
+    }
     if (action === "resolve") {
       init.body = JSON.stringify({ resolution: String(resolution || ""), note: String(answerText || "").trim() });
     }
@@ -368,9 +569,12 @@
       return hasText(list);
     }
 
+    // A picked choice counts too: a rebuild would clear it.
     function hasText(node) {
       if (!node) return false;
       if (node.getAttribute && node.getAttribute("data-ask-input") && String(node.value || "").trim()) return true;
+      if (node.getAttribute && node.getAttribute("data-ask-choice") && node.checked) return true;
+      if (node.getAttribute && node.getAttribute("data-ask-picture") && node.value && node.value !== "same") return true;
       const kids = node.children || [];
       for (let i = 0; i < kids.length; i++) if (hasText(kids[i])) return true;
       return false;
@@ -396,7 +600,7 @@
       }
     }
 
-    async function onAction(askId, action, answerText, note, resolution) {
+    async function onAction(askId, action, answerText, note, resolution, extra) {
       if (action === "answer" && !String(answerText || "").trim()) {
         note.textContent = "Type an answer first, or press Dismiss.";
         note.classList.remove("hidden");
@@ -408,7 +612,7 @@
         return;
       }
       try {
-        const res = await submitAction(fetchFn, askId, action, answerText, resolution);
+        const res = await submitAction(fetchFn, askId, action, answerText, resolution, extra);
         if (!res.ok) {
           note.textContent = errorLine(res.status, res.body && res.body.detail);
           note.classList.remove("hidden");
@@ -434,6 +638,9 @@
     askImageViews: askImageViews,
     imageAlt: imageAlt,
     isSamePerson: isSamePerson,
+    pairIds: pairIds,
+    samePersonSubmission: samePersonSubmission,
+    pictureSubmission: pictureSubmission,
     askCardViewModel: askCardViewModel,
     statusLine: statusLine,
     errorLine: errorLine,

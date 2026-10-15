@@ -45,6 +45,18 @@ class _FakeConn:
 
     async def fetch(self, sql: str, *args):
         self.sql.append(sql)
+        if "jsonb_each_text" in sql:
+            # CLOSE_NAMED_WHO_SQL: open "who is this?" cards for the named individuals.
+            import json as _json
+
+            names, pair_ask_id, kind = _json.loads(args[0]), args[1], args[2]
+            out = []
+            for r in self.rows.values():
+                if r["source_kind"] == kind and r["source_ref"] in names and r["status"] == "open":
+                    r.update(status="answered", answer=names[r["source_ref"]], answered_at=_now(),
+                             answer_detail={"resolved_by": pair_ask_id})
+                    out.append({k: r[k] for k in ("ask_id", "status", "answer", "answered_at", "source_kind", "source_ref")})
+            return out
         if "FROM episode_memory" in sql:
             (ids,) = args
             return [{"memory_id": m, "statement": self.statements[m]} for m in ids if m in self.statements]
@@ -82,6 +94,9 @@ class _FakeConn:
         self.sql.append(sql)
         if sql.lstrip().startswith("UPDATE"):
             ask_id, new_status, answer, kinds, *same_rule = args
+            detail = None
+            if len(same_rule) == 3:
+                *same_rule, detail = same_rule
             r = self.rows.get(ask_id)
             if r is None or not self._answerable(r):
                 return None
@@ -97,9 +112,15 @@ class _FakeConn:
             if wants_resolvable:
                 assert self.tx_depth == 1, "card update must run inside the transaction"
             r.update(status=new_status, answer=answer, answered_at=_now())
+            if "answer_detail" in sql:
+                import json as _json
+
+                r["answer_detail"] = None if detail is None else _json.loads(detail)
             return {k: r[k] for k in ("ask_id", "status", "answer", "answered_at", "source_kind", "source_ref")}
         (ask_id,) = args
         r = self.rows.get(ask_id)
+        if "FOR UPDATE" in sql:
+            return None if r is None else {k: r.get(k) for k in ("source_kind", "source_ref", "image_ref", "image_refs")}
         return None if r is None else {"status": r["status"], "expires_at": r["expires_at"], "source_kind": r["source_kind"]}
 
 
@@ -618,3 +639,121 @@ def test_close_ask_sql_runs_on_real_postgres():
             await conn.close()
 
     asyncio.run(go())
+
+
+# --- names on visual cards (2026-10-15) ----------------------------------------
+
+
+def _who_row(ask_id: str, individual_id: str, refs: list[str] | None = None) -> dict[str, Any]:
+    import json as _json
+
+    r = _row(ask_id)
+    refs = refs or ["thumb:" + "a" * 64]
+    r.update(source_ref=individual_id, image_ref=refs[0], image_refs=_json.dumps(refs))
+    return r
+
+
+def test_same_person_with_a_name_names_both_and_closes_their_who_is_this(env):
+    client, rows, published = env
+    rows["p1"] = _pair_row("p1")
+    rows["w-a"] = _who_row("w-a", "aaa")
+    rows["w-x"] = _who_row("w-x", "xxx")  # someone else: untouched
+    r = client.post("/api/asks/p1/answer", json={"answer": "yes", "names": {"aaa": "  Kid  next door "}})
+    assert r.status_code == 200, r.text
+    assert rows["p1"]["answer"] == "yes"
+    assert rows["p1"]["answer_detail"] == {"names": {"aaa": "Kid next door", "bbb": "Kid next door"}}
+    assert r.json()["closed_asks"] == ["w-a"]
+    assert (rows["w-a"]["status"], rows["w-a"]["answer"]) == ("answered", "Kid next door")
+    assert rows["w-a"]["answer_detail"] == {"resolved_by": "p1"}
+    assert rows["w-x"]["status"] == "open"
+    # The pair event carries the names; the closed card publishes its own plain answer.
+    assert [e.ask_id for e in published] == ["p1", "w-a"]
+    assert published[0].names == {"aaa": "Kid next door", "bbb": "Kid next door"}
+    assert (published[1].source_kind, published[1].answer, published[1].names) == ("vision_individual", "Kid next door", {})
+
+
+def test_different_people_names_each_face(env):
+    client, rows, published = env
+    rows["p1"] = _pair_row("p1")
+    r = client.post("/api/asks/p1/answer", json={"answer": "no", "names": {"aaa": "Theo", "bbb": "Maya"}})
+    assert r.status_code == 200, r.text
+    assert rows["p1"]["answer_detail"] == {"names": {"aaa": "Theo", "bbb": "Maya"}}
+    assert published[0].names == {"aaa": "Theo", "bbb": "Maya"}
+
+
+def test_empty_names_are_a_plain_verdict(env):
+    client, rows, published = env
+    rows["p1"] = _pair_row("p1")
+    r = client.post("/api/asks/p1/answer", json={"answer": "no", "names": {"aaa": "  ", "bbb": ""}})
+    assert r.status_code == 200, r.text
+    assert rows["p1"]["answer_detail"] is None
+    assert published[0].names == {}
+    # Left out of the bus payload, so a consumer built before `names` still validates it.
+    assert "names" not in ask_routes.build_answered_envelope(published[0]).payload
+
+
+@pytest.mark.parametrize("body,detail", [
+    ({"answer": "yes", "names": {"aaa": "Theo", "bbb": "Maya"}}, "same_person_takes_one_name"),
+    ({"answer": "no", "names": {"zzz": "Theo"}}, "name_for_unknown_individual"),
+    ({"answer": "no", "names": {"aaa": "x" * 121}}, "name_too_long"),
+    ({"answer": "no", "names": {"aaa": "a", "bbb": "b", "ccc": "c"}}, "name_for_unknown_individual"),
+])
+def test_bad_names_are_refused_and_leave_the_card_open(env, body, detail):
+    client, rows, published = env
+    rows["p1"] = _pair_row("p1")
+    r = client.post("/api/asks/p1/answer", json=body)
+    assert r.status_code == 422 and r.json()["detail"] == detail, r.text
+    assert rows["p1"]["status"] == "open" and published == []
+
+
+def test_names_are_refused_on_a_who_is_this_card(env):
+    client, rows, _pub = env
+    r = client.post("/api/asks/a1/answer", json={"answer": "Bob", "names": {"ind-a1": "Bob"}})
+    assert r.status_code == 422 and r.json()["detail"] == "names_only_on_same_person_cards"
+    assert rows["a1"]["status"] == "open"
+
+
+def test_who_is_this_with_three_pictures_records_each_picture(env):
+    client, rows, published = env
+    refs = ["thumb:" + c * 64 for c in "abc"]
+    rows["w3"] = _who_row("w3", "ind-1", refs)
+    r = client.post("/api/asks/w3/answer", json={"answer": "Theo", "pictures": [
+        {"image_ref": refs[1], "verdict": "same"},
+        {"image_ref": refs[2], "verdict": "different", "name": " Other  kid "},
+    ]})
+    assert r.status_code == 200, r.text
+    assert rows["w3"]["answer"] == "Theo"  # the individual's name: the first (face) picture's
+    assert rows["w3"]["answer_detail"] == {"pictures": [
+        {"image_ref": refs[0], "index": 0, "verdict": "same", "name": "Theo"},
+        {"image_ref": refs[1], "index": 1, "verdict": "same", "name": "Theo"},
+        {"image_ref": refs[2], "index": 2, "verdict": "different", "name": "Other kid"},
+    ]}
+    assert published[0].answer == "Theo" and published[0].names == {}
+
+
+@pytest.mark.parametrize("pictures,detail", [
+    ([{"image_ref": "thumb:" + "z" * 64, "verdict": "same"}], "picture_not_on_card"),
+    ([{"image_ref": "thumb:" + "b" * 64, "verdict": "same"}] * 2, "picture_listed_twice"),
+    ([{"image_ref": "thumb:" + "a" * 64, "verdict": "different", "name": "x"}], "first_picture_is_the_answer"),
+])
+def test_bad_pictures_are_refused(env, pictures, detail):
+    client, rows, _pub = env
+    rows["w3"] = _who_row("w3", "ind-1", ["thumb:" + c * 64 for c in "abc"])
+    r = client.post("/api/asks/w3/answer", json={"answer": "Theo", "pictures": pictures})
+    assert r.status_code == 422 and r.json()["detail"] == detail, r.text
+    assert rows["w3"]["status"] == "open"
+
+
+def test_pictures_are_refused_on_a_pair_card(env):
+    client, rows, _pub = env
+    rows["p1"] = _pair_row("p1")
+    r = client.post("/api/asks/p1/answer", json={"answer": "yes", "pictures": [
+        {"image_ref": "thumb:" + "b" * 64, "verdict": "same"}]})
+    assert r.status_code == 422 and r.json()["detail"] == "pictures_only_on_who_is_this_cards"
+
+
+def test_unparseable_answer_with_names_is_still_yes_no_422(env):
+    client, rows, _pub = env
+    rows["p1"] = _pair_row("p1")
+    r = client.post("/api/asks/p1/answer", json={"answer": "maybe", "names": {"aaa": "Theo"}})
+    assert r.status_code == 422 and r.json()["detail"] == "answer_must_be_yes_or_no"

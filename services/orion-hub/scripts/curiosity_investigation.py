@@ -3811,6 +3811,7 @@ class CuriosityInvestigation:
         gpu_lease: GpuLeaseRefV1 | None = None,
         urgent: bool = False,
         retrieval_query: str | None = None,
+        resume_key: str | None = None,
     ) -> Tuple[str, dict]:
         """Real unified-turn generation. Returns ("", debug) on any failure,
         defer, or degraded run -- same "never fabricate, silence over a false
@@ -3857,6 +3858,10 @@ class CuriosityInvestigation:
         started = time.monotonic()
         turn_timeout = self.timeout_sec if timeout_sec is None else timeout_sec
         payload = _turn_payload(source, fcc_model_label or self._fcc_model_label)
+        if resume_key:
+            # Durable-run retry: the governor resumes this run's killed `claude`
+            # session instead of starting over (orion/harness/session_resume.py).
+            payload["resume_key"] = resume_key
         if gpu_lease is not None:
             # Stage 4: every LLM call of the turn attaches to the run's GPU pool hold.
             payload["gpu_lease"] = gpu_lease.model_dump(mode="json")
@@ -4637,6 +4642,9 @@ class CuriosityInvestigation:
                     **({"gpu_lease": request.gpu_lease} if request.gpu_lease is not None else {}),
                     **({"urgent": True} if request.urgent is not None else {}),
                     **({"retrieval_query": request.retrieval_query} if request.retrieval_query else {}),
+                    # Stable across attempts, leases and restarts; the purpose keeps two
+                    # different turns of one run from sharing a session.
+                    resume_key=f"{request.run_id}:{request.source_tag}",
                 )
                 if measured:
                     await self._spend_turn_ended(request.run_id, turn_ok=bool(text))

@@ -46,6 +46,7 @@ def _run(
     safe_build_reads_stdin: bool = False,
     migrations: str = "",
     checker: str | None = None,
+    applier: str | None = None,
 ):
     fake_root = tmp_path / "repo"
     fake_scripts = fake_root / "scripts"
@@ -56,6 +57,8 @@ def _run(
     (fake_scripts / "rebuild_affected_services.py").write_text(_FAKE_CLASSIFIER)
     if checker is not None:
         (fake_scripts / "check_sql_migrations_applied.py").write_text(checker)
+    if applier is not None:
+        (fake_scripts / "apply_post_pull_migrations.py").write_text(applier)
 
     capture = tmp_path / "safe-build-args.txt"
     safe_build = fake_scripts / "safe_docker_build.sh"
@@ -212,3 +215,44 @@ def test_no_migrations_prints_no_migration_block(tmp_path: Path) -> None:
     completed, _calls = _run(tmp_path, plan="orion-hub,build")
     assert completed.returncode == 0, completed.stdout + completed.stderr
     assert "hand-applied SQL migration" not in completed.stdout
+
+
+# 2026-10-15 (Juniper): apply safe migrations inside the pull, BEFORE the rebuilds, so the deploy
+# gate does not refuse their consumers. The applier writes to the same capture file as the fake
+# safe_docker_build.sh, so the order of the two is visible.
+_APPLIER = """\
+import os, sys
+with open(os.environ["REBUILD_TEST_CAPTURE"], "a") as fh:
+    fh.write("APPLY " + " ".join(sys.argv[1:]) + "\\n")
+print("post-pull migrations: fake applier ran")
+raise SystemExit(1)  # a refusal/failure must never stop the rebuilds
+"""
+
+
+def test_migrations_are_applied_before_any_rebuild(tmp_path: Path) -> None:
+    completed, calls = _run(
+        tmp_path, plan="orion-hub,build;orion-sql-writer,build", migrations=_MIG,
+        checker=_CHECKER_REPORT, applier=_APPLIER,
+    )
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert calls == [f"APPLY {_MIG}", "orion-hub up -d --build", "orion-sql-writer up -d --build"]
+    out = completed.stdout
+    # applier output, then the read-only report of what is live afterwards
+    assert out.index("fake applier ran") < out.index("live state:")
+
+
+def test_dry_run_passes_dry_run_to_the_applier(tmp_path: Path) -> None:
+    completed, calls = _run(
+        tmp_path, plan="orion-hub,build", migrations=_MIG, checker=_CHECKER_REPORT,
+        applier=_APPLIER, extra_args=["--dry-run"],
+    )
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert calls == [f"APPLY --dry-run {_MIG}"]
+
+
+def test_no_migrations_never_calls_the_applier(tmp_path: Path) -> None:
+    """The classifier lists no migration on a host without orion-sql-db (circe), so the applier
+    is never reached there; see test_migrations_are_not_reported_on_a_host_without_the_database."""
+    completed, calls = _run(tmp_path, plan="orion-hub,build", applier=_APPLIER)
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert calls == ["orion-hub up -d --build"]

@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """Report which hand-applied SQL migrations actually reached the live database.
 
-`services/orion-sql-db/*.sql` is applied BY HAND. Nothing records which ones ran, so a migration
+`services/orion-sql-db/*.sql` is applied outside any service (by hand, or on `git pull` by
+scripts/apply_post_pull_migrations.py when the file is safe). The database does not record which
+ones ran, so a migration
 that was written, reviewed, merged and never applied looks identical in git to one that is live
 (PR #2400: missing column, attention silently degraded; PR #2424: missing table,
 orion-hardware-watch crash-looped).

@@ -500,6 +500,77 @@ def has_unconditional_effects(text: str) -> bool:
     return any(not e.conditional for e in parse_migration(text).effects)
 
 
+# ------------------------------------------------------------------- post-pull auto-apply safety
+#
+# scripts/apply_post_pull_migrations.py applies a changed migration on `git pull` only when nothing
+# in it can lose data. These scans run on the same tokenizer/parser as the drift check, so prose in
+# a comment header or a quoted string can never trip (or hide) a rule. They err toward refusing: a
+# refused file is only "apply it by hand", the state before auto-apply existed.
+
+_UNSAFE_DROP = re.compile(
+    r"\bdrop (?:table|schema|database|sequence|view|materialized view|type|domain|owned|extension)\b", re.I)
+_TRUNCATE = re.compile(r"\btruncate\b", re.I)
+_DELETE = re.compile(r"\bdelete from\b", re.I)
+# `ON CONFLICT ... DO UPDATE SET` is an upsert of the incoming row, not a whole-table rewrite.
+_UPDATE = re.compile(rf"(?<!\bdo )\bupdate (?:only )?{_QID}(?: (?:as )?{_ID})? set\b", re.I)
+_WHERE = re.compile(r"\bwhere\b", re.I)
+# Statements Postgres refuses inside a transaction block.
+_NO_TXN = re.compile(
+    r"^(?:create (?:unique )?index concurrently|drop index concurrently|reindex\b.*\bconcurrently\b|"
+    r"refresh materialized view concurrently|alter table \S+ detach partition \S+ concurrently|"
+    r"vacuum\b|cluster\b|create database\b|drop database\b|alter system\b|"
+    r"create tablespace\b|drop tablespace\b|create subscription\b|alter subscription\b|drop subscription\b)",
+    re.I)
+_TXN_CONTROL = re.compile(r"^(?:begin|commit|end|rollback|abort|start transaction)\b", re.I)
+
+
+def _all_statement_texts(sql: str) -> Iterable[str]:
+    """Every statement, descending into dollar-quoted bodies (DO blocks, function bodies)."""
+    for st in split_statements(sql):
+        yield st.text
+        for body in st.bodies:
+            yield from _all_statement_texts(body)
+
+
+def _unbounded(pattern: re.Pattern, text: str) -> bool:
+    """``pattern`` occurs with no WHERE after it in the same statement."""
+    return any(not _WHERE.search(text, m.end()) for m in pattern.finditer(text))
+
+
+def auto_apply_hazards(text: str) -> list[str]:
+    """Why a migration must NOT be auto-applied: anything that drops or renames a schema object
+    (renames break running consumers mid-deploy), TRUNCATE, and DELETE/UPDATE with no WHERE.
+    Empty list = nothing in the file can lose data. Scans DO and function bodies too."""
+    reasons: list[str] = []
+    for e in parse_migration(text).effects:
+        if e.op == "drop":
+            reasons.append(f"drops or renames {e.kind} {e.name}")
+    for t in _all_statement_texts(text):
+        m = _UNSAFE_DROP.search(t)
+        if m:
+            reasons.append(f"{m.group(0).upper()} statement")
+        if _TRUNCATE.search(t):
+            reasons.append("TRUNCATE statement")
+        if _unbounded(_DELETE, t):
+            reasons.append("DELETE with no WHERE")
+        if _unbounded(_UPDATE, t):
+            reasons.append("UPDATE with no WHERE")
+    return list(dict.fromkeys(reasons))
+
+
+def transaction_incompatible(text: str) -> list[str]:
+    """Top-level statements that cannot run inside one wrapping transaction: Postgres refuses
+    some (CREATE INDEX CONCURRENTLY, VACUUM, ...) in a transaction block, and a file that manages
+    its own BEGIN/COMMIT would have its COMMIT end the wrapper early. Empty = wrap it."""
+    out: list[str] = []
+    for st in split_statements(text):
+        if _NO_TXN.match(st.text):
+            out.append(" ".join(st.text.split()[:4]).upper())
+        elif _TXN_CONTROL.match(st.text):
+            out.append(f"own transaction control ({st.text.split()[0].upper()})")
+    return list(dict.fromkeys(out))
+
+
 # --------------------------------------------------------------------------- replay
 
 

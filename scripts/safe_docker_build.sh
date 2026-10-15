@@ -183,7 +183,9 @@ fi
 # database (read-only) whether each one the service needs is applied.
 # Deploy-time, not a container boot guard: a service that refuses to start is
 # worse than one that degrades. Only `up` is gated (build/config/logs/ps pass).
-# Never auto-applies (a migration can be destructive). An unreachable database
+# Never auto-applies (a migration can be destructive); the post-pull flow
+# applies the safe ones before its rebuilds (scripts/apply_post_pull_migrations.py).
+# An unreachable database
 # is UNKNOWN and refuses -- no answer is not "applied".
 _GATE_UP=0
 for _a in "$@"; do

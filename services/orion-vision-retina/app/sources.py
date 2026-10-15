@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import os
 import random
+import threading
 import time
 from pathlib import Path
 from typing import Any, Protocol
@@ -157,6 +158,16 @@ class _VideoCaptureSource:
 
 
 class RtspFrameSource(_VideoCaptureSource):
+    """A live network camera, sampled at RETINA_FPS.
+
+    A live RTSP stream arrives at the camera's own frame rate (the walkway
+    Reolink's main stream is 30 fps). Calling ``cap.read()`` once per tick at
+    a lower RETINA_FPS returns the OLDEST buffered frame, not the current one,
+    so the picture falls further behind the longer the service runs. A
+    background thread therefore keeps reading the stream and holds only the
+    newest frame; ``read()`` hands that one out, once.
+    """
+
     def __init__(
         self,
         url: str,
@@ -164,6 +175,7 @@ class RtspFrameSource(_VideoCaptureSource):
         width: int | None = None,
         height: int | None = None,
         reconnect_seconds: float = 5.0,
+        opener=None,
     ) -> None:
         if not url:
             raise ValueError("rtsp source requires RETINA_SOURCE url")
@@ -174,6 +186,68 @@ class RtspFrameSource(_VideoCaptureSource):
             reconnect_seconds=reconnect_seconds,
             source_type="rtsp",
         )
+        self._opener = opener or cv2.VideoCapture
+        self._lock = threading.Lock()
+        self._latest: tuple[object, float] | None = None
+        self._stop_evt = threading.Event()
+        self._thread: threading.Thread | None = None
+
+    def _open_sync(self):
+        cap = self._opener(self._source)
+        if self._width:
+            cap.set(cv2.CAP_PROP_FRAME_WIDTH, float(self._width))
+        if self._height:
+            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, float(self._height))
+        return cap
+
+    def _reader(self) -> None:
+        cap = None
+        failures = 0
+        while not self._stop_evt.is_set():
+            if cap is None or not cap.isOpened():
+                if cap is not None:
+                    cap.release()
+                cap = self._open_sync()
+                if not cap.isOpened():
+                    self._stop_evt.wait(self._reconnect_seconds)
+                    continue
+            ok, frame = cap.read()
+            if not ok or frame is None:
+                failures += 1
+                if failures >= 3:
+                    cap.release()
+                    cap = None
+                    failures = 0
+                    self._stop_evt.wait(self._reconnect_seconds)
+                continue
+            failures = 0
+            with self._lock:
+                self._latest = (frame, time.time())
+        if cap is not None:
+            cap.release()
+
+    async def start(self) -> None:
+        if self._thread is None or not self._thread.is_alive():
+            self._stop_evt.clear()
+            self._thread = threading.Thread(target=self._reader, name="retina-rtsp-reader", daemon=True)
+            self._thread.start()
+
+    async def stop(self) -> None:
+        self._stop_evt.set()
+        if self._thread is not None:
+            await asyncio.to_thread(self._thread.join, 10.0)
+            self._thread = None
+
+    async def read(self) -> FrameReadResult | None:
+        if self._thread is None or not self._thread.is_alive():
+            await self.start()
+        with self._lock:
+            latest, self._latest = self._latest, None
+        if latest is None:
+            return None  # nothing new since the last tick
+        frame, ts = latest
+        h, w = frame.shape[:2]
+        return FrameReadResult(frame=frame, ts=ts, width=w, height=h, source_meta={"type": "rtsp"})
 
 
 class WebcamFrameSource(_VideoCaptureSource):

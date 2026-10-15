@@ -76,26 +76,15 @@ Activity is published on every frame where YOLO/motion yields trigger labels, in
 
 ### Camera identity (credentials never published)
 
-`SOURCE` (from `REOLINK_URL` / `WALKWAY_RTSP_URL`) may carry the camera password and
+`SOURCE` (from `REOLINK_URL`) may carry the camera password and
 is used only to open the stream. Every published `camera_id` is the camera name
 (`STREAM_ID`), `/health` reports a redacted `source`, and capture logs redact it too.
 Until 2026-09-24 `camera_id` was the raw URL, which leaked the password into
 `substrate_perception_embedding_baseline.stream_id`.
 
-### Walkway instance
-
-A second capture instance for the outdoor walkway camera (`docker-compose.yml`
-service `vision-edge-walkway`, profile `walkway`, `STREAM_ID=walkway`, host port
-`WALKWAY_EDGE_PORT`, default 7101). Set `WALKWAY_RTSP_URL` in the local service
-`.env` (empty in `.env_example`; an empty value is refused at boot), then:
-
-```bash
-scripts/safe_docker_build.sh orion-vision-edge --profile walkway up -d --build vision-edge-walkway
-```
-
-Each instance only detects frames whose `stream_id` matches its own
-(`app/stream_filter.py`). Router policy: `config/vision_frame_router.yaml`
-`streams.walkway`; zones: `config/vision_zones.yaml`.
+The walkway camera is NOT captured here: it runs on its own
+`orion-vision-retina` instance (`orion-vision-retina-walkway`), the canonical
+capture service. The edge stays the room camera's cheap first pass.
 
 ---
 

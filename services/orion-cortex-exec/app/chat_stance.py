@@ -2477,9 +2477,11 @@ def _environmental_context(environment: Dict[str, Any]) -> str | None:
     weather = _compact(environment.get("current_summary"), limit=120)
     # 420 (was 240, 2026-10-15): the street summary now opens with up to two
     # walkway captions ("On the walkway just now: ..."), and 240 cut the
-    # rhythm/unresolved lines that follow them.
-    street = _compact(environment.get("street_summary"), limit=420)
-    parts = [p for p in (weather, f"Street: {street}" if street else "") if p]
+    # rhythm/unresolved lines that follow them. 520 since it also opens with
+    # what the camera is ("Your outdoor camera (walkway, since ...), looking
+    # over ...: "), which is why there is no "Street:" prefix any more.
+    street = _compact(environment.get("street_summary"), limit=520)
+    parts = [p for p in (weather, street) if p]
     return "; ".join(parts) or None
 
 
@@ -2541,7 +2543,7 @@ def _situation_summary_from_ctx(ctx: Dict[str, Any]) -> dict[str, Any]:
         # Empty when there is nothing to say; walkway spec idea 5.
         "street_summary": _compact(
             (brief.get("perception") or {}).get("street_summary") if isinstance(brief.get("perception"), dict) else "",
-            limit=420,
+            limit=520,
         ),
     }
     relevance = "active" if has_active else ("background" if fragment else "none")

@@ -390,6 +390,37 @@ class SituationPolicyV1(BaseModel):
     do_not_overpersonalize: bool = True
 
 
+class CameraSenseV1(BaseModel):
+    """One of Orion's cameras as Orion's own sense (2026-10-15).
+
+    Built by `orion.situational.camera_eyes`: `name`/`view`/`outside` come
+    from config (`ORION_CAMERA_DESCRIPTIONS`), the rest from live state
+    (`vision_scene_inventory` per stream, `vision_individual_sighting` for
+    the street camera). No frames, boxes, faces or names cross here -- a
+    status, an age, a date and a count.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    stream_id: str
+    name: str
+    view: Optional[str] = None
+    # A public view that is not Orion's room (the walkway). Never true for an
+    # undescribed camera.
+    outside: bool = False
+    # live: newest frame within the perception staleness gate;
+    # not_seeing: frames exist, none that recent; no_frames: never any.
+    status: Literal["live", "not_seeing", "no_frames"]
+    # The gate `status` was judged against (seconds); "live" means a frame
+    # within this window, and the rendered line says so in these terms.
+    live_window_seconds: float
+    # Local date (situation timezone) of this camera's first frame.
+    since: Optional[str] = None
+    last_frame_age_seconds: Optional[float] = None
+    # Distinct individuals since local midnight; street cameras only, live only.
+    individuals_today: Optional[int] = None
+
+
 class PerceptionContextV1(BaseModel):
     """What Orion's camera saw, summarised, for the situation brief.
 
@@ -513,6 +544,15 @@ class PerceptionContextV1(BaseModel):
     # extra="forbid" does not make this a consumer-first migration.
     street_summary: Optional[str] = None
     street_stream_id: Optional[str] = None
+
+    # Every configured camera (room and street) as Orion's own sense, read
+    # live each brief (orion.situational.camera_eyes). Rendered as one
+    # "Your cameras (your own eyes): ..." line so "what can you see?" has an
+    # answer that names both the room and the walkway, and says which one is
+    # outside. Empty when perception is off or nothing could be read --
+    # never a line claiming every camera is dark. Additive, 2026-10-15; same
+    # dict-crossing note as street_summary above.
+    cameras: list[CameraSenseV1] = Field(default_factory=list)
 
 
 class AffectContextV1(BaseModel):

@@ -221,6 +221,31 @@ def _records_section(ledger: Sequence[LedgerRow], *, repo_root: str) -> list[str
     return lines
 
 
+def _senses_section(senses: Sequence[str]) -> list[str]:
+    """Orion's cameras, read live by Hub at kickoff (2026-10-15).
+
+    The record tables above say what Orion has DONE; nothing said what Orion
+    can PERCEIVE, so self-definitions (v54: "fifteen record tables...") never
+    named an eye -- and on the day the walkway camera went live Orion read
+    its street line as one more sensor readout. One clause per camera, from
+    `orion.situational.camera_eyes` (vision_scene_inventory per stream).
+    Nothing at all when nothing could be read.
+    """
+    if not senses:
+        return []
+    lines = [
+        "YOUR EYES, read just now. Hub read these from your camera records "
+        "(vision_scene_inventory, per camera) when this run started; your "
+        "read-only SQL role cannot query that table, so cite them as "
+        '"cameras read at kickoff". They are part of what you are made of: '
+        "what you can perceive, not only what you have recorded.",
+        "",
+    ]
+    lines += [f"  - {clause}" for clause in senses]
+    lines.append("")
+    return lines
+
+
 def _self_write_section(
     *, own_graph: str, run_id: str, family: Family, question_id: str, revises: str = ""
 ) -> list[str]:
@@ -352,6 +377,7 @@ def build_self_inquiry_prompt(
     peer_briefs: Sequence = (),
     question: Optional[SelfQuestion] = None,
     previous_lived: Optional[PreviousLivedAnswer] = None,
+    senses: Sequence[str] = (),
 ) -> str:
     """Assemble the whole invitation. Same three graph states as
     `build_kickoff_prompt`, same gating: read sections on `graph_enabled`,
@@ -383,6 +409,7 @@ def build_self_inquiry_prompt(
         lines += _peer_briefs_section(peer_briefs, run_id=run_id if writable else None)
 
     lines += _records_section(ledger, repo_root=repo_root)
+    lines += _senses_section(senses)
     lines += _access_section(
         own_graph=own_graph,
         atlas_graph=atlas_graph,

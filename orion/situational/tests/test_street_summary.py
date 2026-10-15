@@ -239,6 +239,8 @@ def _stub_room(monkeypatch, percept=None):
     from orion.situational.perception_reader import PresenceResolution
 
     monkeypatch.setattr(situation_mod, "fetch_latest_percept", lambda **_: percept)
+    # Camera senses read the database too; tests never reach a real one.
+    monkeypatch.setattr(situation_mod, "fetch_camera_eyes", lambda *a, **k: None)
     monkeypatch.setattr(
         situation_mod, "fetch_presence_resolved",
         lambda stream_ids, *, max_age_seconds: PresenceResolution(None, None, True),
@@ -260,7 +262,11 @@ def test_street_rides_on_the_stale_room_path_too(monkeypatch) -> None:
     diag = SituationDiagnosticsV1()
     ctx = asyncio.run(situation_mod._build_perception_context(_cfg(perception_enabled=True), diag))
     assert ctx.available is False
-    assert ctx.street_summary == "Someone is on the patio."
+    # Opens with what the camera is (2026-10-15): Orion's own outdoor eye.
+    assert ctx.street_summary == (
+        "Your outdoor camera (walkway), looking over the community walkway, the street"
+        " and our patio: Someone is on the patio."
+    )
     assert ctx.street_stream_id == "walkway"
     assert diag.provider_status["perception_street"] == "ok"
 
@@ -302,7 +308,10 @@ def test_prompt_line_only_when_there_is_a_summary() -> None:
     text = situation_mod._build_prompt_fragment(
         _brief(PerceptionContextV1(street_summary=street)), 4000
     ).compact_text
-    assert f"Street (walkway camera): {street}" in text
+    # The summary carries its own framing (_build_street_fields); the brief
+    # renders it as-is rather than under a generic "Street" label.
+    assert f"\n- {street}" in text
+    assert "Street (walkway camera)" not in text
     quiet = situation_mod._build_prompt_fragment(_brief(PerceptionContextV1()), 4000).compact_text
     assert "Street" not in quiet
 

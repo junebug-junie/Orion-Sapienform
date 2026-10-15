@@ -26,6 +26,7 @@ from .perception_reader import (
     presence_row_age_seconds,
 )
 from .cabinet_sound_reader import fetch_cabinet_sound_history
+from .camera_eyes import CAMERA_EYES_DEADLINE_SEC, build_senses, describe_camera, fetch_camera_eyes, senses_line, street_framing
 from .presence import companions_phrase, is_child, normalize_presence_context
 from .reverie_reader import fetch_recent_reverie_snippets
 from .session_turn_phase import read_session_turn_state, write_session_turn_state
@@ -51,6 +52,7 @@ from orion.schemas.situation import (
     AffectContextV1,
     AgendaContextV1,
     CabinetContextV1,
+    CameraSenseV1,
     ConversationPhaseContextV1,
     CuriosityPriorContextV1,
     CuriosityPriorSummaryV1,
@@ -780,6 +782,15 @@ def _cached_percept_outlived_gate(brief: Any, cached_age: float, cfg: SituationS
             and perception.observation_age_seconds + cached_age > cfg.perception_max_age_seconds
         ):
             return True
+        # A camera called "live" in a cached brief must still be inside its
+        # window, or "newest within the last 15 min" outlives its truth.
+        for cam in perception.cameras:
+            if (
+                cam.status == "live"
+                and cam.last_frame_age_seconds is not None
+                and cam.last_frame_age_seconds + cached_age > cam.live_window_seconds
+            ):
+                return True
         cabinet = brief.cabinet
         return bool(
             cabinet.sound_available
@@ -1774,13 +1785,21 @@ async def _resolve_presence_and_identity_ask(
 
 
 async def _build_street_fields(
-    cfg: SituationSettings, diagnostics: SituationDiagnosticsV1
+    cfg: SituationSettings,
+    diagnostics: SituationDiagnosticsV1,
+    first_frames: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """`street_summary`/`street_stream_id` for PerceptionContextV1, or {}.
 
     Walkway spec ideas 5 and 9. First configured stream that has anything to
     say wins; streams are cheap reads and there is normally one. Fail-open:
     any failure is a missing line, recorded in diagnostics, never an error.
+
+    The summary opens with what the camera IS (2026-10-15, live turn
+    caa3eb4d): "Your outdoor camera (walkway, since 2026-10-14), looking over
+    the community walkway, the street and our patio: ...". Without it Orion
+    read the street line as one more sensor readout, not as their own eye
+    outside. `first_frames` maps stream -> first frame time (camera_eyes).
     """
     for stream_id in cfg.street_stream_ids:
         try:
@@ -1796,7 +1815,15 @@ async def _build_street_fields(
             continue
         if street.lines:
             diagnostics.provider_status["perception_street"] = "ok"
-            return {"street_summary": " ".join(street.lines), "street_stream_id": stream_id}
+            framing = street_framing(
+                describe_camera(stream_id),
+                (first_frames or {}).get(stream_id),
+                _tz_or_utc(cfg.timezone),
+            )
+            return {
+                "street_summary": f"{framing}: " + " ".join(street.lines),
+                "street_stream_id": stream_id,
+            }
         diagnostics.provider_status["perception_street"] = "quiet"
     return {}
 
@@ -1812,10 +1839,68 @@ async def _build_perception_context(
     room = await _build_room_perception_context(
         cfg, diagnostics, allow_identity_ask=allow_identity_ask
     )
-    if not cfg.perception_enabled or not cfg.street_stream_ids:
+    if not cfg.perception_enabled:
         return room
-    street = await _build_street_fields(cfg, diagnostics)
-    return room.model_copy(update=street) if street else room
+    cameras, first_frames = await _build_camera_senses(cfg, diagnostics)
+    update: dict[str, Any] = {"cameras": cameras} if cameras else {}
+    if cfg.street_stream_ids:
+        update.update(await _build_street_fields(cfg, diagnostics, first_frames))
+    return room.model_copy(update=update) if update else room
+
+
+def _tz_or_utc(name: str):
+    try:
+        return ZoneInfo(name)
+    except Exception:  # noqa: BLE001
+        return timezone.utc
+
+
+async def _build_camera_senses(
+    cfg: SituationSettings, diagnostics: SituationDiagnosticsV1
+) -> tuple[list[CameraSenseV1], dict[str, Any]]:
+    """Every configured camera (room, then street) as Orion's own sense.
+
+    Live state per stream from `camera_eyes.fetch_camera_eyes`; "live" uses
+    the same staleness gate as the room percept. Returns the senses and a
+    stream -> first-frame map for the street line's "since" date. Fail-open:
+    an unread database is no line (diagnostics say so), never "all dark".
+    """
+    streams = list(dict.fromkeys([*cfg.perception_stream_ids, *cfg.street_stream_ids]))
+    if not streams:
+        return [], {}
+    now = datetime.now(timezone.utc)
+    try:
+        # One overall deadline: each statement has its own 1.5 s timeout and
+        # there are up to ~8, so a connected-but-slow database could otherwise
+        # hold an uncached chat turn ~12 s (review finding, 2026-10-15).
+        eyes = await asyncio.wait_for(
+            asyncio.to_thread(
+                fetch_camera_eyes,
+                streams,
+                count_individuals_for=cfg.street_stream_ids,
+                tz_name=cfg.timezone,
+                now=now,
+            ),
+            timeout=CAMERA_EYES_DEADLINE_SEC,
+        )
+    except asyncio.TimeoutError:
+        diagnostics.provider_status["perception_cameras"] = "timeout"
+        return [], {}
+    except Exception as exc:  # noqa: BLE001 -- provider contract is fail-open
+        diagnostics.provider_status["perception_cameras"] = "error"
+        diagnostics.provider_errors["perception_cameras"] = str(exc)
+        return [], {}
+    if eyes is None:
+        diagnostics.provider_status["perception_cameras"] = "unread"
+        return [], {}
+    diagnostics.provider_status["perception_cameras"] = "ok"
+    senses = build_senses(
+        eyes,
+        now=now,
+        tz=_tz_or_utc(cfg.timezone),
+        live_max_age_seconds=cfg.perception_max_age_seconds,
+    )
+    return senses, {e.stream_id: e.first_frame_at for e in eyes}
 
 
 async def _build_room_perception_context(
@@ -2426,10 +2511,17 @@ def _build_prompt_fragment(brief: SituationBriefV1, max_chars: int) -> Situation
         # Never phrase this as "the room is empty/quiet" -- not seeing and
         # seeing nothing are different claims, and only one of them is true.
         lines.append("Room: haven't seen anything recently; do not infer.")
+    # Which eyes Orion has and whether each is seeing (2026-10-15). One line,
+    # so "what can you see?" names the room AND the walkway, and says the
+    # walkway is outside. Absent when nothing could be read.
+    eyes_line = senses_line(brief.perception.cameras)
+    if eyes_line:
+        lines.append(eyes_line)
     # The street outside (walkway camera). No line at all when there is
-    # nothing to say -- a quiet or unread street is not narrated.
+    # nothing to say -- a quiet or unread street is not narrated. The summary
+    # opens with what the camera is (_build_street_fields), so no prefix here.
     if brief.perception.street_summary:
-        lines.append(f"Street (walkway camera): {brief.perception.street_summary}")
+        lines.append(brief.perception.street_summary)
     if brief.affect.available and brief.affect.summary:
         seen = _recency_phrase(brief.affect.observation_age_seconds)
         if brief.affect.backend == "vision" and brief.affect.subtitle_source != "caller":

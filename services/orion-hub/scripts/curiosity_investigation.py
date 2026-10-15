@@ -799,6 +799,16 @@ class CuriosityInvestigation:
         # Walkway (street) camera streams whose captions join study material.
         # Empty = off. Never a room camera.
         street_stream_ids: Tuple[str, ...] = ("walkway",),
+        # Every camera Orion has (room + street), read live at self-inquiry
+        # kickoff as "YOUR EYES" (orion.situational.camera_eyes). Empty = no
+        # section. Live = a frame within camera_live_max_age_sec.
+        camera_stream_ids: Tuple[str, ...] = (),
+        # Which of those are street cameras (individuals counted) and the
+        # timezone for "since"/"today" -- the situation brief's own settings,
+        # so both surfaces say the same thing.
+        camera_street_stream_ids: Tuple[str, ...] = (),
+        camera_timezone: str = "America/Denver",
+        camera_live_max_age_sec: float = 900.0,
         pool_provider: Callable[[], Any],
         source_ref: ServiceRef,
         # --- Orion's own graph -------------------------------------------
@@ -949,6 +959,12 @@ class CuriosityInvestigation:
         self.relation_sample = relation_sample
         self.timezone_name = timezone_name
         self.street_stream_ids = tuple(str(s).strip() for s in (street_stream_ids or ()) if str(s).strip())
+        self.camera_stream_ids = tuple(
+            dict.fromkeys(str(s).strip() for s in (camera_stream_ids or ()) if str(s).strip())
+        )
+        self.camera_live_max_age_sec = float(camera_live_max_age_sec)
+        self.camera_street_stream_ids = tuple(s for s in (camera_street_stream_ids or ()) if s)
+        self.camera_timezone = camera_timezone
         try:
             self._tz = ZoneInfo(timezone_name)
             self._tz_loaded = True
@@ -3028,6 +3044,46 @@ class CuriosityInvestigation:
         except Exception:  # noqa: BLE001
             logger.warning("curiosity_self_recent_families_write_failed", exc_info=True)
 
+    async def _read_self_senses(self) -> list[str]:
+        """One clause per camera for the self-inquiry prompt ("YOUR EYES").
+
+        Off the event loop (synchronous SQLAlchemy read over POSTGRES_URI, the
+        same engine the situation brief uses). Never raises: an unread
+        database is no section, never "every camera is dark".
+        """
+        if not self.camera_stream_ids:
+            return []
+        from orion.situational.camera_eyes import (
+            CAMERA_EYES_DEADLINE_SEC,
+            build_senses,
+            eye_phrase,
+            fetch_camera_eyes,
+        )
+
+        now = datetime.now(timezone.utc)
+        try:
+            tz = ZoneInfo(self.camera_timezone)
+        except Exception:  # noqa: BLE001
+            tz = timezone.utc
+        try:
+            eyes = await asyncio.wait_for(
+                asyncio.to_thread(
+                    fetch_camera_eyes,
+                    self.camera_stream_ids,
+                    count_individuals_for=self.camera_street_stream_ids,
+                    tz_name=self.camera_timezone,
+                    now=now,
+                ),
+                timeout=CAMERA_EYES_DEADLINE_SEC,
+            )
+        except Exception as exc:  # noqa: BLE001 -- includes TimeoutError
+            logger.info("curiosity_self_senses_unreadable err=%s", type(exc).__name__)
+            return []
+        if not eyes:
+            return []
+        senses = build_senses(eyes, now=now, tz=tz, live_max_age_seconds=self.camera_live_max_age_sec)
+        return [eye_phrase(s) for s in senses]
+
     async def _read_self_ledger(self) -> list[LedgerRow]:
         """Row count and latest timestamp per outcome table. Orientation for the
         prompt, never a subject. A table that fails to answer is left out."""
@@ -3157,6 +3213,7 @@ class CuriosityInvestigation:
             )
         latest, definition_count = await self._read_self_context()
         ledger = await self._read_self_ledger()
+        senses = await self._read_self_senses()
 
         await self._ensure_self_question_seed()
         pool = merge_seed_with_rows(load_seed_questions(), await self._fetch_self_questions())
@@ -3214,6 +3271,7 @@ class CuriosityInvestigation:
             peer_briefs=peer_briefs,
             question=picked,
             previous_lived=previous_lived,
+            senses=senses,
         )
         # Claim is unset at kickoff (Orion has not chosen). Continuation note
         # rides on Mind; the SelfDefinition / HelpRequest teach stays on the

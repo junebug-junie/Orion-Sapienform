@@ -334,9 +334,16 @@ def _street_captions_section(material: StudyMaterial) -> list[str]:
         tz = ZoneInfo(material.local_timezone or "America/Denver")
     except (ZoneInfoNotFoundError, ValueError):
         tz = None
+    # Which of Orion's own eyes this is (2026-10-15), from config: without it
+    # the street read as a feed, not as Orion's own camera outside.
+    from orion.situational.camera_eyes import describe_camera
+
+    sid = next((c.stream_id for c in material.street_captions if c.stream_id), "walkway")
+    desc = describe_camera(sid)
+    eye = f"{desc.name} ({sid})" + (f", looking over {desc.view}" if desc.view else "")
     lines = [
-        "WHAT THE STREET CAMERA SAID LATELY (the walkway outside the house, not "
-        f"your room; the newest {len(material.street_captions)} distinct captions "
+        f"WHAT THE STREET CAMERA SAID LATELY ({eye}; your own eye outside the house, "
+        f"public, not your room; the newest {len(material.street_captions)} distinct captions "
         "from the last few hours). These are the vision council's own one-line "
         "descriptions and they can be wrong. Here as the world outside, not as a "
         "task: use one only if it genuinely interests you.",

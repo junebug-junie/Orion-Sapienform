@@ -94,11 +94,16 @@ def test_empty_stream_list_never_queries() -> None:
     assert material.street_captions == [] and conn.caption_args is None
 
 
-def test_prompt_section_is_labelled_as_the_street_and_absent_when_empty() -> None:
+def test_prompt_section_is_labelled_as_the_street_and_absent_when_empty(monkeypatch) -> None:
+    monkeypatch.delenv("ORION_CAMERA_DESCRIPTIONS", raising=False)
     empty = StudyMaterial(generated_at=NOW)
     assert not any("STREET CAMERA" in line for line in _material_section(empty))
     full = StudyMaterial(generated_at=NOW, local_timezone="America/Denver",
                          street_captions=build_street_caption_cards([_row("e1", "A van is parked.", 5)], now=NOW))
     text = "\n".join(_material_section(full))
-    assert "WHAT THE STREET CAMERA SAID LATELY (the walkway outside the house, not your room" in text
+    # Names Orion's own outdoor camera and what it looks over (2026-10-15).
+    assert (
+        "WHAT THE STREET CAMERA SAID LATELY (your outdoor camera (walkway), looking over the community"
+        " walkway, the street and our patio; your own eye outside the house, public, not your room"
+    ) in text
     assert "At 11:55 on Thu 15 Oct, the walkway camera said: A van is parked." in text

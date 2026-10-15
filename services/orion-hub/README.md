@@ -963,6 +963,14 @@ Study material also carries the street, labelled as the street: up to 3
 could-not-name items and the newest 3 distinct walkway captions from the last
 6 h (`HUB_CURIOSITY_STREET_STREAM_IDS`, default `walkway`, empty = off). See
 `orion/curiosity/README.md` "The street in the study material".
+The street section's heading names which eye it is (`your outdoor camera
+(walkway), looking over ...; your own eye outside the house`), from
+`ORION_CAMERA_DESCRIPTIONS`. The self-inquiry prompt also gets a "YOUR EYES"
+section: one live clause per camera (room streams from
+`ORION_SITUATION_PERCEPTION_STREAM_IDS`, then `ORION_SITUATION_STREET_STREAM_IDS`;
+live = a frame within `ORION_SITUATION_PERCEPTION_MAX_AGE_SECONDS`), read at
+kickoff via `orion/situational/camera_eyes.py` over `POSTGRES_URI`. Unread
+database = no section.
 
 #### When it runs
 

@@ -91,3 +91,52 @@ def test_continuation_prompt_does_not_restate_the_task(tmp_path):
     plan = sr.ResumePlan(session_id="s", resume=True, resumes=1, reason="r")
     text = sr.continuation_prompt(plan)
     assert "earlier work" in text and "do not redo" in text
+
+
+# --- motor wiring -----------------------------------------------------------
+
+from orion.harness.fcc_motor import _record_session_end, build_claude_argv  # noqa: E402
+
+
+def _argv(plan):
+    return build_claude_argv(
+        claude_bin="claude", model_id="m", prompt="THE TASK", correlation_id="c", session_plan=plan
+    )
+
+
+def test_first_attempt_argv_pins_the_session_id_and_keeps_the_task_prompt():
+    plan = sr.ResumePlan(session_id="sid-1", resume=False, resumes=0, reason="first_attempt")
+    argv = _argv(plan)
+    assert argv[:3] == ["claude", "-p", "THE TASK"]
+    assert argv[argv.index("--session-id") + 1] == "sid-1"
+    assert "--resume" not in argv
+
+
+def test_resume_argv_replaces_the_task_with_the_continuation_prompt():
+    plan = sr.ResumePlan(session_id="sid-1", resume=True, resumes=1, reason="r")
+    argv = _argv(plan)
+    assert "THE TASK" not in argv
+    assert argv[argv.index("--resume") + 1] == "sid-1"
+    assert "--session-id" not in argv
+
+
+def test_no_plan_keeps_legacy_argv():
+    argv = _argv(None)
+    assert argv[:3] == ["claude", "-p", "THE TASK"]
+    assert "--resume" not in argv and "--session-id" not in argv
+
+
+def test_session_end_records_state_and_stamps_trace_metadata(tmp_path, monkeypatch):
+    monkeypatch.setenv("HARNESS_FCC_CLAUDE_CONFIG_DIR", str(tmp_path))
+    plan = sr.plan_attempt("run-9")
+    ok = _record_session_end({"type": "final", "metadata": {"a": 1}}, resume_key="run-9", plan=plan)
+    assert ok["metadata"]["a"] == 1
+    assert ok["metadata"]["session_resume"]["ended"] == sr.STATE_COMPLETED
+    ceiling = sr.plan_attempt("run-9")
+    dead = _record_session_end(
+        {"type": "error", "error_code": "fcc_context_ceiling_exceeded"}, resume_key="run-9", plan=ceiling
+    )
+    assert dead["metadata"]["session_resume"]["ended"] == sr.STATE_CEILING
+    other = sr.plan_attempt("run-9")
+    hung = _record_session_end({"type": "error", "error_code": "fcc_timeout"}, resume_key="run-9", plan=other)
+    assert hung["metadata"]["session_resume"]["ended"] == sr.STATE_INTERRUPTED

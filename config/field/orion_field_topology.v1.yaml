@@ -207,6 +207,14 @@ edges:
   # TICK_ENABLED=false) -- an edge here would be premature before the
   # live-data sanity check documented in perception_prediction_error()'s own
   # docstring has run against real accumulated history.
+  #
+  # 2026-10-15: node:substrate.perception_walkway, the same score for the
+  # outdoor walkway camera only (streams in SUBSTRATE_PERCEPTION_WALKWAY_
+  # STREAM_IDS), written by the same tick so a busy street cannot overwrite the
+  # room cameras' node:substrate.perception. Same reasoning, same omission: no
+  # `nodes:` entry and no edge. Also fenced out of curiosity and attention
+  # (orion/schemas/attention_candidate.py NO_COGNITION_CONSUMER_NODE_IDS) until
+  # its live-data sanity check has run.
 
   - source_id: node:athena
     target_id: capability:orchestration

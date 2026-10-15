@@ -588,6 +588,22 @@ keys) — never in this repo.
 
 ---
 
+### The street in the study material (2026-10-15)
+
+Besides Orion's own internals, the menu carries the walkway (street) camera,
+always labelled as the street, never the room, and never counted toward
+`has_material` (so it cannot make an empty menu look full):
+
+- up to 3 things the cameras could not name (`vision_unresolved`, last 3 days);
+- the newest 3 distinct walkway captions from the last 6 h
+  (`study_material.STREET_CAPTIONS_RECENT_SQL`, streams from Hub's
+  `HUB_CURIOSITY_STREET_STREAM_IDS`, default `walkway`; empty = off). Reducer
+  rows (`arrived_as_expected`, ...) are grades, not captions, and are skipped.
+
+Separately, `node:substrate.perception_walkway` (the street camera's own
+surprise reading) seeds endogenous curiosity like the room camera's node does;
+attention still does not read it (`orion/schemas/attention_candidate.py`).
+
 ## 15. Source material
 
 - `docs/superpowers/specs/2026-08-26-orion-priors-and-worldview-design.md` — the

@@ -197,14 +197,18 @@ from orion.curiosity.study_material import (
     APPROVED_SAMPLE_SQL,
     DEFAULT_CRYSTALLIZATION_SAMPLE,
     DEFAULT_RELATION_SAMPLE,
+    DEFAULT_STREET_CAPTION_LOOKBACK_HOURS,
     DEFAULT_UNRESOLVED_LOOKBACK_HOURS,
     DEFAULT_UNRESOLVED_SAMPLE,
     RELATION_COUNT_SQL,
     RELATION_RESOLVABLE_SQL,
     RELATION_SAMPLE_SQL,
+    STREET_CAPTION_FETCH_ROWS,
+    STREET_CAPTIONS_RECENT_SQL,
     StudyMaterial,
     UNRESOLVED_RECENT_SQL,
     assemble_study_material,
+    build_street_caption_cards,
     build_unresolved_cards,
 )
 from orion.curiosity.attention_schema import (
@@ -792,6 +796,9 @@ class CuriosityInvestigation:
         crystallization_sample: int = DEFAULT_CRYSTALLIZATION_SAMPLE,
         relation_sample: int = DEFAULT_RELATION_SAMPLE,
         timezone_name: str = "UTC",
+        # Walkway (street) camera streams whose captions join study material.
+        # Empty = off. Never a room camera.
+        street_stream_ids: Tuple[str, ...] = ("walkway",),
         pool_provider: Callable[[], Any],
         source_ref: ServiceRef,
         # --- Orion's own graph -------------------------------------------
@@ -941,6 +948,7 @@ class CuriosityInvestigation:
         self.crystallization_sample = crystallization_sample
         self.relation_sample = relation_sample
         self.timezone_name = timezone_name
+        self.street_stream_ids = tuple(str(s).strip() for s in (street_stream_ids or ()) if str(s).strip())
         try:
             self._tz = ZoneInfo(timezone_name)
             self._tz_loaded = True
@@ -1899,7 +1907,30 @@ class CuriosityInvestigation:
         )
         material.local_timezone = self.timezone_name
         material.unresolved = await self._read_unresolved_percepts(pool)
+        material.street_captions = await self._read_street_captions(pool, now=now)
         return material
+
+    async def _read_street_captions(self, pool: Any, *, now: datetime) -> list:
+        """What the walkway (street) camera said lately (2026-10-15): the newest
+        distinct captions from `street_stream_ids` only -- never the room
+        cameras. Own read, own failure, like `_read_unresolved_percepts`: any
+        error costs this section only. Empty stream list = off, no query.
+        """
+        ids = [s for s in self.street_stream_ids if s]
+        if not ids:
+            return []
+        try:
+            async with pool.acquire() as conn:
+                rows = await conn.fetch(
+                    STREET_CAPTIONS_RECENT_SQL,
+                    ids,
+                    DEFAULT_STREET_CAPTION_LOOKBACK_HOURS,
+                    STREET_CAPTION_FETCH_ROWS,
+                )
+        except Exception as exc:  # noqa: BLE001
+            logger.info("curiosity_street_captions_unreadable err=%s", type(exc).__name__)
+            return []
+        return build_street_caption_cards(rows, now=now)
 
     async def _read_unresolved_percepts(self, pool: Any) -> list:
         """Recent percepts Orion's cameras could not name (walkway spec idea 4),

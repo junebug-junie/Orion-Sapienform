@@ -291,6 +291,7 @@ def _material_section(material: StudyMaterial) -> list[str]:
         lines.append("")
 
     lines += _unresolved_section(material)
+    lines += _street_captions_section(material)
     return lines
 
 
@@ -320,6 +321,28 @@ def _unresolved_section(material: StudyMaterial) -> list[str]:
         "",
     ]
     lines += [f"  - {card.preview(tz)}" for card in material.unresolved]
+    lines.append("")
+    return lines
+
+
+def _street_captions_section(material: StudyMaterial) -> list[str]:
+    """What the walkway (street) camera said lately, labelled as the street.
+    Nothing at all when there is nothing -- no heading over an empty list."""
+    if not material.street_captions:
+        return []
+    try:
+        tz = ZoneInfo(material.local_timezone or "America/Denver")
+    except (ZoneInfoNotFoundError, ValueError):
+        tz = None
+    lines = [
+        "WHAT THE STREET CAMERA SAID LATELY (the walkway outside the house, not "
+        f"your room; the newest {len(material.street_captions)} distinct captions "
+        "from the last few hours). These are the vision council's own one-line "
+        "descriptions and they can be wrong. Here as the world outside, not as a "
+        "task: use one only if it genuinely interests you.",
+        "",
+    ]
+    lines += [f"  - {card.preview(tz)}" for card in material.street_captions]
     lines.append("")
     return lines
 

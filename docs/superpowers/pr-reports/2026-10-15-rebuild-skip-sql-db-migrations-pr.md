@@ -175,6 +175,6 @@ No restart required. The post-merge hook reads these scripts from the checkout o
 
 ## PR link
 
-PR_LINK
+https://github.com/junebug-junie/Orion-Sapienform/pull/2700
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

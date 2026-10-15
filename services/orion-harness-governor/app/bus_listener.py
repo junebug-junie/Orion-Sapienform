@@ -17,6 +17,7 @@ from orion.harness.cut_short import (
     ensure_cut_short_marked,
     is_cut_short_code,
 )
+from orion.harness.claim_gate import gate_correction_claims
 from orion.harness.finalize import (
     DEFAULT_FINALIZE_INTERLOCUTOR,
     HarnessFinalizeFailedError,
@@ -106,6 +107,22 @@ _FCC_SELF_KILL_CODES = frozenset(
 
 
 INTERRUPTED_RESUMABLE = "interrupted_resumable"
+
+
+def _gate_claims(text: str | None, motor: Any, corr: str) -> str | None:
+    """Every text that can reach a reader passes this: a correction_id the turn's
+    `record_correction` calls did not return is replaced and the reply says so
+    (orion/harness/claim_gate.py). Returns None for None so it is safe on optional fields."""
+    if text is None:
+        return None
+    results = tuple(getattr(motor, "correction_results", ()) or ())
+    gate = gate_correction_claims(text, results)
+    if gate.changed:
+        logger.warning(
+            "harness_unverified_correction_claim corr=%s ids=%s correction_results=%s",
+            corr, ",".join(gate.unverified_ids), len(results),
+        )
+    return gate.text
 
 
 def interrupted_for_resume(request: HarnessRunRequestV1, motor: Any) -> bool:
@@ -371,7 +388,7 @@ async def _maybe_publish_draft_preview(
     if held is not None:
         logger.info("harness_draft_preview_held corr=%s reason=%s", corr, held)
         return None, held
-    text = draft_preview_display_text(motor.draft_text, motor.reading_receipts)
+    text = _gate_claims(draft_preview_display_text(motor.draft_text, motor.reading_receipts), motor, corr)
     if not text.strip():
         return None, "empty_draft"
     try:
@@ -539,7 +556,7 @@ async def handle_harness_run_request(
     try:
         chain = await run_bounded_finalize(run_harness_finalize_chain(
             correlation_id=corr,
-            draft_text=motor.draft_text,
+            draft_text=_gate_claims(motor.draft_text, motor, corr),
             draft_molecule=motor.draft_molecule,
             thought=request.thought_event,
             grammar_receipts=motor.grammar_receipts,
@@ -570,7 +587,7 @@ async def handle_harness_run_request(
         run = HarnessRunV1(
             correlation_id=corr,
             final_text=None,
-            draft_text=motor.draft_text,
+            draft_text=_gate_claims(motor.draft_text, motor, corr),
             substrate_appraisal=partial.substrate_appraisal,
             reflection=partial.reflection,
             verdict_molecule_id=partial.verdict_molecule_id,
@@ -641,8 +658,8 @@ async def handle_harness_run_request(
             correlation_id=corr,
             # When a grounded draft was already shown, deliver that same text:
             # swapping it for the raw draft would read as a revision no judge made.
-            final_text=preview_text if preview_text is not None else motor.draft_text,
-            draft_text=motor.draft_text,
+            final_text=_gate_claims(preview_text if preview_text is not None else motor.draft_text, motor, corr),
+            draft_text=_gate_claims(motor.draft_text, motor, corr),
             finalize_ran=False,
             finalize_degraded_reason=_SUBSTRATE_UNAVAILABLE_USER_REASON,
             step_count=motor.step_count,
@@ -670,7 +687,7 @@ async def handle_harness_run_request(
         run = HarnessRunV1(
             correlation_id=corr,
             final_text=None,
-            draft_text=motor.draft_text,
+            draft_text=_gate_claims(motor.draft_text, motor, corr),
             finalize_ran=False,
             step_count=motor.step_count,
             exit_code=motor.exit_code,
@@ -695,10 +712,11 @@ async def handle_harness_run_request(
         # (run_harness_finalize_chain(cut_short=True)) and passes the marked
         # findings through. This keeps the marker if that ever regresses.
         final_text = ensure_cut_short_marked(final_text)
+    final_text = _gate_claims(final_text, motor, corr)
     run = HarnessRunV1(
         correlation_id=corr,
         final_text=final_text,
-        draft_text=motor.draft_text,
+        draft_text=_gate_claims(motor.draft_text, motor, corr),
         substrate_appraisal=chain.substrate_appraisal,
         reflection=chain.reflection,
         verdict_molecule_id=chain.verdict_molecule_id,

@@ -112,8 +112,10 @@ def _real_ranges() -> dict[tuple[str | None, str], tuple]:
 
 def test_real_glossary_rest_ranges_validate_and_round_trip_as_tuples():
     ranges = _real_ranges()
-    # 10 of the 11 semantics entries; harness_closure is a placeholder.
-    assert len(ranges) == 10
+    # 11 of the 12 semantics entries; harness_closure is a placeholder.
+    # +1 2026-10-15: node:substrate.perception_walkway (curiosity reads it).
+    assert len(ranges) == 11
+    assert ranges[("node:substrate.perception_walkway", "prediction_error")][1] == (0.0, 0.0)
     for key, (kind, rng) in ranges.items():
         assert isinstance(rng, tuple), key
         assert rest_range_problem(rng, kind) is None, key

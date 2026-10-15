@@ -84,7 +84,7 @@ def dedupe_street_captions(
     caption already kept (case/punctuation-insensitive). Freshness and
     dedupe apply before `limit`, so a repeat never crowds out a distinct one.
 
-    Returns `{narrative, observed_at, age_sec, stream_id}`, newest first.
+    Returns `{narrative, observed_at, age_sec, stream_id, event_id}`, newest first.
     """
     if limit <= 0:
         return []
@@ -113,6 +113,7 @@ def dedupe_street_captions(
                 "observed_at": ts,
                 "age_sec": max(0.0, (now - ts).total_seconds()),
                 "stream_id": str(row.get("stream_id") or ""),
+                "event_id": str(row.get("event_id") or ""),
             }
         )
         if len(out) >= limit:

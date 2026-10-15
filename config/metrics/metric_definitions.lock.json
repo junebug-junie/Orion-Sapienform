@@ -1,21 +1,11 @@
 {
   "_comment": "Definition lock for scripts/check_definition_drift.py. Generated, never hand-edited. Regenerate with --update; the resulting diff IS the definition-change alert. Unlike the *_baseline.json ratchets this tracks current truth in both directions -- a definition change is an event, not a defect.",
-  "metric_count": 745,
+  "metric_count": 746,
   "_last_change": {
-    "change_count": 11,
+    "change_count": 1,
     "high_severity_count": 0,
     "changes": [
-      "medium added metric://bus_channel/orion-equilibrium-service/orion:equilibrium:self_signal:hour",
-      "medium added metric://bus_channel/orion-equilibrium-service/orion:equilibrium:self_signal:outcome_association",
-      "medium added metric://inner_state/orion-equilibrium-service/self_signal_outcome_association.v1",
-      "medium added metric://inner_state/orion-equilibrium-service/self_signal_outcome_association.v1#ci_high",
-      "medium added metric://inner_state/orion-equilibrium-service/self_signal_outcome_association.v1#ci_low",
-      "medium added metric://inner_state/orion-equilibrium-service/self_signal_outcome_association.v1#ci_z",
-      "medium added metric://inner_state/orion-equilibrium-service/self_signal_outcome_association.v1#min_history_hours",
-      "medium added metric://inner_state/orion-equilibrium-service/self_signal_outcome_association.v1#rate_high",
-      "medium added metric://inner_state/orion-equilibrium-service/self_signal_outcome_association.v1#rate_normal",
-      "medium added metric://inner_state/orion-equilibrium-service/self_signal_outcome_association.v1#ratio",
-      "medium added metric://inner_state/orion-equilibrium-service/self_signal_outcome_association.v1#se_inflation"
+      "medium added metric://field_channel/orion-substrate-runtime/node:substrate.perception_walkway.prediction_error"
     ]
   },
   "definitions": {
@@ -4591,6 +4581,23 @@
       ],
       "sparsity": "designed_sparse",
       "absent_means": "written as 0.0 every tick rather than dropped; nothing written until 15 s after process start before the first embedding arrives.",
+      "polarity": "higher_is_worse",
+      "declared_consumers": [
+        "orion.substrate.endogenous_curiosity:_prediction_error_candidates"
+      ],
+      "notes": "category=self_monitoring level=node",
+      "registry_source": "config/field/field_channel_glossary.v1.yaml"
+    },
+    "metric://field_channel/orion-substrate-runtime/node:substrate.perception_walkway.prediction_error": {
+      "meaning": "How surprising the walkway (outdoor) camera scene is versus that stream's own recent normal: embedding distance from its running average, z-scored against its own history, negatives clipped, 3 sigma = 1.0. Kept apart from node:substrate.perception so the street does not overwrite the room cameras.",
+      "value_kind": "level",
+      "rest": "0.0 = at or below the walkway stream's usual surprise. Also 0.0 while its baseline is still warming (fewer than 2 surprise samples) and when its frames are stale -- so 0 here does NOT prove the walkway camera is working; embedding_staleness on the same node carries that.",
+      "rest_range": [
+        0.0,
+        0.0
+      ],
+      "sparsity": "designed_sparse",
+      "absent_means": "written as 0.0 every tick rather than dropped; nothing written until 15 s after process start, then 0.0 with embedding_staleness 1.0 until the first walkway embedding arrives.",
       "polarity": "higher_is_worse",
       "declared_consumers": [
         "orion.substrate.endogenous_curiosity:_prediction_error_candidates"

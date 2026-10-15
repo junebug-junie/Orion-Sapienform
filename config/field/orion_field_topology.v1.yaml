@@ -212,9 +212,9 @@ edges:
   # outdoor walkway camera only (streams in SUBSTRATE_PERCEPTION_WALKWAY_
   # STREAM_IDS), written by the same tick so a busy street cannot overwrite the
   # room cameras' node:substrate.perception. Same reasoning, same omission: no
-  # `nodes:` entry and no edge. Also fenced out of curiosity and attention
-  # (orion/schemas/attention_candidate.py NO_COGNITION_CONSUMER_NODE_IDS) until
-  # its live-data sanity check has run.
+  # `nodes:` entry and no edge. Read by endogenous curiosity since
+  # 2026-10-15; still fenced out of attention
+  # (orion/schemas/attention_candidate.py NO_ATTENTION_CONSUMER_NODE_IDS).
 
   - source_id: node:athena
     target_id: capability:orchestration

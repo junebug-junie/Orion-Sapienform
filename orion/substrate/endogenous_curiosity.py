@@ -33,7 +33,7 @@ from datetime import datetime, timezone
 from typing import Any, Sequence
 
 from orion.core.schemas.frontier_curiosity import FrontierInvocationSignalV1
-from orion.schemas.attention_candidate import NO_COGNITION_CONSUMER_NODE_IDS
+from orion.schemas.attention_candidate import NO_CURIOSITY_CONSUMER_NODE_IDS
 from orion.substrate.pressure import PressureConfig
 
 _TRUTHY = {"1", "true", "yes", "on"}
@@ -110,6 +110,16 @@ HARD_BUDGET_CEILING = 8
 # crowding out another domain's genuine candidate on ordinary room
 # activity -- not hypothetical, this is what the constant being borrowed
 # rather than derived (see that comment) would actually cause in practice.
+#
+# `node:substrate.perception_walkway` (the outdoor walkway camera's own
+# surprise, same formula as the room node, its own EWMA baseline) joined this
+# scan on 2026-10-15 by Juniper's decision, after the step-4 live-data check:
+# first 172 real walkway scores (night, 2026-10-15 04:57-05:10 UTC) were 61.6%
+# exact 0.0, p50 0.0, p90 0.146, p99 0.508, 2 of 172 >= min_error 0.55
+# (1.2%); 0 of its first 18 tick writes crossed. The room node over the prior
+# 7 days crossed on 2.7% of ticks. Daytime street traffic is NOT yet measured.
+# Gate record: docs/superpowers/pr-reports/2026-10-15-walkway-street-into-mind-pr.md.
+# Attention still fences it (NO_ATTENTION_CONSUMER_NODE_IDS).
 #
 # Deliberately NOT switched to reading `dynamic_pressure` directly, unlike the
 # sibling fix in `attention_broadcast.py::_node_salience()` (PR #1061):
@@ -284,7 +294,7 @@ def _prediction_error_candidates(
             if error < min_error:
                 continue
             node_id = str(getattr(node, "node_id", "") or "")
-            if not node_id or node_id in NO_COGNITION_CONSUMER_NODE_IDS:
+            if not node_id or node_id in NO_CURIOSITY_CONSUMER_NODE_IDS:
                 continue
             candidates.append(
                 FrontierInvocationSignalV1(

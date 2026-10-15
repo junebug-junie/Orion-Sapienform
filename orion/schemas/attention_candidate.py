@@ -40,16 +40,22 @@ WORLD_SOURCE_PREFIX = "world:"
 # "<node>.<channel>", so a dotted suffix would be ambiguous.
 PERCEPTION_WALKWAY_NODE_ID = "node:substrate.perception_walkway"
 
-# Substrate nodes that are written and recorded (graph node, receipt,
-# prediction-error history) but kept out of every cognition candidate builder
-# until their live-data sanity check has run (AGENTS.md metric quality gate,
-# step 4). Endogenous curiosity, the substrate attention broadcast and the
-# attention runtime's world-first candidates pick up ANY node:substrate.* node
-# carrying prediction_error, so "no consumer yet" needs this fence. Removing an
-# id here is the go-live decision for that node; at that point also decide
-# whether is_world_source_id below should call it world (it is an outdoor
-# camera) and give it the camera-absent check PERCEPTION_NODE_ID gets.
-NO_COGNITION_CONSUMER_NODE_IDS: frozenset[str] = frozenset({PERCEPTION_WALKWAY_NODE_ID})
+# Per-consumer fences: substrate nodes that are written and recorded (graph
+# node, receipt, prediction-error history) but kept out of one cognition
+# candidate builder. Endogenous curiosity, the substrate attention broadcast and
+# the attention runtime's world-first candidates each pick up ANY
+# node:substrate.* node carrying prediction_error, so "not this consumer yet"
+# needs an explicit fence. Removing an id from a set is the go-live decision for
+# that node in that consumer, made after its live-data sanity check (AGENTS.md
+# metric quality gate, step 4).
+#
+# The walkway camera node, 2026-10-15: curiosity reads it (Juniper's decision;
+# gate record in docs/superpowers/pr-reports/2026-10-15-walkway-street-into-mind-pr.md).
+# Attention still does not: before it does, decide whether is_world_source_id
+# below should call it world (it is an outdoor camera) and give it the
+# camera-absent check PERCEPTION_NODE_ID gets.
+NO_ATTENTION_CONSUMER_NODE_IDS: frozenset[str] = frozenset({PERCEPTION_WALKWAY_NODE_ID})
+NO_CURIOSITY_CONSUMER_NODE_IDS: frozenset[str] = frozenset()
 
 
 def is_world_source_id(source_id: str | None) -> bool:

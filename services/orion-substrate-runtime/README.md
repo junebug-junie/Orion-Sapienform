@@ -1190,11 +1190,11 @@ both nodes every tick through `_publish_perception_group` (same staleness -> 0.0
 0.0, receipt every tick); a failure on one never skips the other. Receipts for the walkway node
 carry `reducer_name = substrate.perception_walkway`, which has its own rung in
 `orion/substrate_ladder_liveness.py`. The world-model `vision_embedding` group stays a room
-embedding: walkway frames never touch `_last_perception_embedding_vector`. The walkway node has no
-cognition consumer yet: endogenous curiosity, the substrate attention broadcast and
-orion-attention-runtime's world-first candidates skip it via
-`orion/schemas/attention_candidate.py` `NO_COGNITION_CONSUMER_NODE_IDS`, because its live-data
-sanity check cannot run until the walkway camera has produced real history. Set the key to `none`
+embedding: walkway frames never touch `_last_perception_embedding_vector`. Since 2026-10-15
+endogenous curiosity reads the walkway node like any other prediction-error node (live-data check
+in `docs/superpowers/pr-reports/2026-10-15-walkway-street-into-mind-pr.md`); the substrate
+attention broadcast and orion-attention-runtime's world-first candidates still skip it via
+`orion/schemas/attention_candidate.py` `NO_ATTENTION_CONSUMER_NODE_IDS`. Set the key to `none`
 to fold the walkway back into the room node.
 
 **Ships shadow-only, default off, no consumer wired.** Deliberately **not** added to

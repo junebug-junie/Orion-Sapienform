@@ -111,7 +111,13 @@ def test_orion_markdown_selects_nothing() -> None:
 
 
 def _orion_graph_repo(root: Path) -> None:
-    """orion.schemas.alpha <- orion.hubmod <- orion.farmod; one service per edge."""
+    """orion.schemas.alpha <- orion.hubmod <- orion.farmod; one service per edge.
+
+    NOTE: the classifier always reads the REAL scripts/service_rebuild_paths.yaml
+    (not one under --repo-root). These synthetic tests rely on its
+    contract_paths (orion/bus/, orion/schemas/), orion_import_hops: 1 and the
+    orion.schemas.registry barrier; changing those keys changes their meaning.
+    """
     files = {
         "orion/__init__.py": "",
         "orion/schemas/__init__.py": "",
@@ -188,6 +194,65 @@ def test_own_package_closure_then_one_hop_and_registry_barrier(mini_repo: Path) 
         (svc / "app" / "main.py").write_text(text)
     payload = _resolve(["orion/schemas/alpha.py"], mini_repo, host="athena")
     assert payload["services"] == ["svc-deep", "svc-direct", "svc-one-hop", "svc-registry"], payload["reasons"]
+
+
+def test_hop_is_closed_inside_the_package_it_lands_in(mini_repo: Path) -> None:
+    """pkgb.x imports alpha (the hop); pkgb.y reaches it through pkgb.x. A
+    service importing only pkgb.y runs alpha and must rebuild (review finding:
+    orion.core.activation_decay <- substrate.activation <- falkor_store)."""
+    _orion_graph_repo(mini_repo)
+    for rel, text in {
+        "orion/pkgb/__init__.py": "",
+        "orion/pkgb/x.py": "from orion.schemas.alpha import X\n",
+        "orion/pkgb/y.py": "from orion.pkgb.x import X\n",
+    }.items():
+        (mini_repo / rel).parent.mkdir(parents=True, exist_ok=True)
+        (mini_repo / rel).write_text(text)
+    svc = mini_repo / "services" / "svc-sibling"
+    (svc / "app").mkdir(parents=True)
+    (svc / "docker-compose.yml").write_text("services: {}\n")
+    (svc / "app" / "main.py").write_text("from orion.pkgb.y import X\n")
+    payload = _resolve(["orion/schemas/alpha.py"], mini_repo, host="athena")
+    assert "svc-sibling" in payload["services"], payload["reasons"]
+    assert "svc-two-hops" not in payload["services"]
+
+
+def test_real_repo_hop_closure_reaches_cortex_exec() -> None:
+    payload = _resolve(["orion/core/activation_decay.py"], ROOT, host="athena")
+    assert "orion-cortex-exec" in payload["services"], payload["reasons"]
+
+
+def test_core_data_file_without_reader_entry_does_not_storm() -> None:
+    payload = _resolve(["orion/core/storage/sql/some_new_table.sql"], ROOT, host="athena")
+    assert payload["services"] == []
+    assert "bus core" in payload["reasons"]["orion/core/storage/sql/some_new_table.sql"]
+
+
+def test_data_reader_entries_can_name_services() -> None:
+    payload = _resolve(["orion/core/storage/sql/graphiti_projection.sql"], ROOT, host="athena")
+    assert payload["services"] == ["orion-graphiti-adapter"], payload["reasons"]
+
+
+def test_orion_eval_fixtures_and_makefiles_select_nothing() -> None:
+    paths = [
+        "orion/substrate/evals/fixtures/repair_pressure/grounding_negative.json",
+        "orion/autonomy/evals/fixtures/agency_episode_metadata.json",
+        "orion/cognition/Makefile",
+    ]
+    payload = _resolve(paths, ROOT, host="athena")
+    assert payload["services"] == []
+
+
+def test_missing_pyyaml_exits_2_instead_of_dropping_skip_rules() -> None:
+    code = (
+        "import sys, runpy; sys.modules['yaml'] = None; "
+        f"sys.argv = ['x', '--paths', 'orion/bus/channels.yaml', '--list-only']; "
+        f"runpy.run_path({str(MODULE)!r}, run_name='__main__')"
+    )
+    proc = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=120)
+    assert proc.returncode == 2, (proc.stdout, proc.stderr)
+    assert "PyYAML is required" in proc.stderr
+    assert proc.stdout == ""
 
 
 def test_relative_import_counts_as_an_edge(mini_repo: Path) -> None:

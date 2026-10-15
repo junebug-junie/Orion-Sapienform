@@ -10,7 +10,8 @@
 #   orion/**/<data file>    → importers of its orion_data_readers entry, else of
 #                             any module in its top-level orion/<pkg>/ (verb
 #                             YAML, prompt templates are read by their package).
-#   orion/**/*.md           → never rebuild.
+#   orion/**/*.md, Makefile, non-.py files under tests/ or evals/ → never rebuild.
+#   orion/__init__.py       → every service importing orion (it runs everywhere).
 #   orion/**/tests/, test_*.py, conftest.py → never rebuild.
 #   orion/bus/, orion/schemas/ (contract_paths) .py → import graph like any
 #                             other module. Non-.py files there have no import
@@ -41,7 +42,7 @@ orion_import_hops: 1
 # Modules that count as consumers but are never walked through. The schema
 # registry imports every registered schema and is imported by
 # orion.core.bus.async_service, so walking through it reaches every bus
-# service (59-84 per orion edit on the last 10 merges, vs 0-17 with this).
+# service (~60 per orion edit on the last 10 merges, vs 0-23 with this).
 # Services that import the registry directly still rebuild.
 orion_import_barriers:
   - orion.schemas.registry
@@ -49,10 +50,28 @@ orion_import_barriers:
 # Non-Python orion/ data read by modules OUTSIDE its own top-level package
 # (no import edge exists). path prefix → reader modules; their importers
 # rebuild. Data with no entry here maps to its whole top-level orion/<pkg>/.
+# Values: orion.* reader modules (their importers rebuild) or service names
+# (rebuilt directly, for a service that opens the file itself).
 orion_data_readers:
   orion/recall/profiles/:
     - orion.cognition.recall_query
     - orion.cognition.daily_metacog_budget
+  orion/core/storage/sql/graphiti_projection.sql:
+    - orion-graphiti-adapter
+  orion/core/storage/sql/memory_cards.sql:
+    - orion.core.storage.memory_cards
+    - orion-recall
+    - orion-hub
+  orion/core/storage/sql/memory_crystallizations.sql:
+    - orion.memory.crystallization.repository
+    - orion-hub
+    - orion-cortex-exec
+
+# Data files here without an orion_data_readers entry are skipped (with a
+# printed reason) instead of whole-package fallback: orion.core contains the
+# bus core, so "every importer of orion.core" is the whole fleet (67 services).
+orion_data_no_fallback:
+  - orion/core/
 
 # Root-level or repo-wide paths: never trigger docker rebuild (log skip reason).
 skip_prefixes:

@@ -379,7 +379,7 @@ def _imported_orion_names(text: str, *, module: str | None, is_package: bool) ->
     ``from orion.a import b`` yields both ``orion.a`` and ``orion.a.b`` (b may
     be a submodule). Relative imports are resolved when ``module`` (the file's
     own dotted name under orion/) is given. Regex, not ast: ast.walk over the
-    ~4.6k files cost ~6s per run; a docstring that happens to start a line with
+    ~4.6k files cost ~7s per run (regex: ~1.3s); a docstring that happens to start a line with
     an import statement only over-includes a consumer.
     """
     out: set[str] = set()
@@ -511,13 +511,17 @@ def module_service_consumers(
          however deep (a package is one unit: orion.curiosity.worldview <-
          atlas <- write_stamp is still "curiosity");
       2. then ``hops`` hops into other packages (orion.harness.fcc_motor
-         imports orion.curiosity.write_stamp).
+         imports orion.curiosity.write_stamp), each hop closed the same way
+         inside the package it lands in (orion.substrate.activation imports
+         orion.core.activation_decay; falkor_store and falkor_anchor_store
+         in orion.substrate reach it through activation).
     Services importing any walked module are consumers. A module in
     ``barriers`` is a consumer itself but is never walked through.
 
-    Measured on the last 10 merges to main: an unbounded walk reaches 59-84
-    services for an ordinary orion.situational / orion.schemas edit, almost
-    all through orion.schemas.registry -> orion.core.bus.async_service.
+    Measured on the last 10 merges to main: without the registry barrier this
+    reaches ~60 services (unbounded: 84) for an ordinary orion.situational /
+    orion.schemas edit, through orion.schemas.registry ->
+    orion.core.bus.async_service.
     ``whole_package`` treats every module under ``target`` as changed (a data
     file read by its package).
     """
@@ -534,16 +538,23 @@ def module_service_consumers(
     def importers(modules: set[str]) -> set[str]:
         return {imp for mod in modules if mod not in barriers for imp in by_module.get(mod, ())}
 
-    seen = set(start)
-    frontier = set(start)
-    while frontier:  # 1. closure inside the changed module's own package
-        frontier = {m for m in importers(frontier) if _top_package(m) == pkg} - seen
-        seen |= frontier
+    def close_within(new: set[str], packages: set[str]) -> set[str]:
+        """Add every module of ``packages`` that (transitively) imports ``new``."""
+        added = set(new)
+        frontier = set(new)
+        while frontier:
+            frontier = {m for m in importers(frontier) if _top_package(m) in packages} - seen - added
+            added |= frontier
+        return added
+
+    seen: set[str] = set()
+    seen |= close_within(start, {pkg})  # 1. the changed module's own package
     frontier = set(seen)
-    for _ in range(max(0, hops)):  # 2. hops into other packages
-        frontier = importers(frontier) - seen
-        if not frontier:
+    for _ in range(max(0, hops)):  # 2. hop into other packages, closed per package
+        crossed = importers(frontier) - seen
+        if not crossed:
             break
+        frontier = close_within(crossed, {_top_package(m) for m in crossed})
         seen |= frontier
     services = {svc for mod in seen for svc in by_service.get(mod, ())}
     return services, seen - start
@@ -572,8 +583,9 @@ def _orion_targets_for_path(
         if _path_matches_prefix(path, prefix) and len(prefix) > len(best):
             best = prefix
     if best:
-        readers = list(data_readers[best])
-        return [(m, False) for m in readers], f"data file read by {', '.join(readers)}"
+        readers = [r for r in data_readers[best] if r == "orion" or r.startswith("orion.")]
+        label = f"data file read by {', '.join(data_readers[best])}"
+        return [(m, False) for m in readers], label
     if len(parts) < 3:
         return [], ""
     pkg = ".".join(parts[:2])
@@ -682,9 +694,11 @@ def resolve_affected_services(
     contract_raw = mapping.get("contract_paths")
     contract_prefixes = list(["orion/bus/", "orion/schemas/"] if contract_raw is None else contract_raw)
     fleet_wide_paths: dict[str, str] = mapping.get("fleet_wide_paths") or {}
-    import_hops = int(mapping.get("orion_import_hops", 1))
+    hops_raw = mapping.get("orion_import_hops")
+    import_hops = 1 if hops_raw is None else int(hops_raw)
     data_readers: dict[str, list[str]] = mapping.get("orion_data_readers") or {}
     import_barriers = frozenset(mapping.get("orion_import_barriers") or [])
+    data_no_fallback: list[str] = list(mapping.get("orion_data_no_fallback") or [])
     skip_prefixes = list(mapping.get("skip_prefixes") or [])
     skip_exact = set(mapping.get("skip_exact") or [])
     script_services: dict[str, list[str]] = mapping.get("script_services") or {}
@@ -757,6 +771,12 @@ def resolve_affected_services(
             if path.endswith(".md"):
                 note("orion markdown docs (no auto rebuild)", skip=True)
                 continue
+            path_parts = tuple(path.split("/"))
+            if not path.endswith(".py") and (
+                _SERVICE_OFFLINE_DIRS.intersection(path_parts[:-1]) or path_parts[-1] == "Makefile"
+            ):
+                note("orion eval/test fixture or Makefile (no auto rebuild)", skip=True)
+                continue
             in_contract = any(_path_matches_prefix(path, p) for p in contract_prefixes)
             targets, label = _orion_targets_for_path(path, data_readers)
             if in_contract and not path.endswith(".py") and not any(
@@ -771,7 +791,19 @@ def resolve_affected_services(
                 print(f"rebuild_affected_services: {path}: {message}", file=sys.stderr)
                 note(message, skip=False)
                 continue
-            if not targets:
+            data_reader_prefix = max(
+                (p for p in data_readers if _path_matches_prefix(path, p)), key=len, default=""
+            )
+            if not path.endswith(".py") and not data_reader_prefix and any(
+                _path_matches_prefix(path, p) for p in data_no_fallback
+            ):
+                note(
+                    "data file with no orion_data_readers entry in a package whose whole-package "
+                    "fallback reaches the bus core (rebuild manually, or add orion_data_readers)",
+                    skip=True,
+                )
+                continue
+            if not targets and not data_reader_prefix:
                 note("file directly under orion/ (rebuild manually if needed)", skip=True)
                 continue
             consumers: set[str] = set()
@@ -788,6 +820,11 @@ def resolve_affected_services(
                 hop_modules |= hops_seen
             top_pkg = path.split("/")[1]
             consumers.update(orion_extra.get(top_pkg, []))
+            if data_reader_prefix:
+                # Non-module entries are services that read the file directly.
+                consumers.update(
+                    r for r in data_readers[data_reader_prefix] if r != "orion" and not r.startswith("orion.")
+                )
             if consumers:
                 for svc in consumers:
                     affected.add(svc)

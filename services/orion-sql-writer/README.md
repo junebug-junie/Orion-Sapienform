@@ -337,6 +337,11 @@ The one place the vision-host, vision-council and this README point to.
    thumbnailed), orion-vision-council (what an unresolved percept may say),
    and orion-sql-writer (defense-in-depth recompute, `zone_no_embed`, presence
    rows). A partial rebuild leaves them disagreeing about where the patio is.
+5. **v2 (2026-10-15):** apply
+   `services/orion-sql-db/manual_migration_walkway_privacy_v2.sql` (drops the
+   no-embed CHECKs, adds face + stationary columns), then deploy
+   orion-sql-writer BEFORE orion-vision-window/-host: `VisionCropV1` is
+   `extra="forbid"`, so an old writer rejects crops carrying the new face fields.
 4. orion-hub mounts `/mnt/telemetry/orion-vision-host/crop_thumbs` read-only.
 
 Spec: `docs/superpowers/specs/2026-09-22-walkway-camera-busy-world-design.md`
@@ -352,11 +357,11 @@ without the migration's constraints.
 `vision_crop_observation` row per crop (`crop_id = <observation_id>:<index>`,
 idempotent). Before insert, each box's zone is recomputed from
 `config/vision_zones.yaml` (copied into the image), and any box whose declared
-OR recomputed zone is a no-embed zone (the patio) loses its embedding and its
-thumbnail ref, and the row gets `zone_no_embed = true` (from the config, never
-from the zone's name). The table's CHECK constraint (`zone_no_embed` => no
-embedding, embedding_ref, or thumb_ref) is the last layer, so a second
-`embed: false` zone is covered without editing SQL.
+OR recomputed zone is a no-embed zone loses its embedding, thumbnail and face
+fields, and the row gets `zone_no_embed = true` (from the config, never from
+the zone's name). Since 2026-10-15 no zone is no-embed (the patio is
+fingerprinted) and v2 dropped the table CHECKs that enforced it. Face fields
+(`face_embedding`, `face_score`, `face_thumb_ref`) are stored as sent.
 
 **Individuals loop** (`app/vision_individuals.py`, every
 `VISION_INDIVIDUALS_INTERVAL_SEC`, default 60 s). Reads new crops per stream
@@ -364,7 +369,9 @@ since `vision_individuals_cursor`, which tracks LANDING time
 (`vision_crop_observation.created_at`), so a crop that arrives late (old
 `observed_at`) is still processed; within a batch crops are clustered in
 `observed_at` order, and a late crop outside the latest sighting becomes its
-own earlier sighting; joins each embedded crop to the nearest
+own earlier sighting; a crop with a face first tries the nearest same-kind
+FACE centroid (`VISION_INDIVIDUALS_FACE_MATCH_THRESHOLD`, 0.60; that match wins
+over appearance), otherwise joins each embedded crop to the nearest
 same-kind centroid at cosine >= `VISION_INDIVIDUALS_MATCH_THRESHOLD`, else opens
 a new `vision_individual` (centroid = renormalized running mean; two crops
 from one frame never join the same individual). Observations no more than
@@ -374,12 +381,19 @@ Every touched sighting is scored (`app/vision_attention_score.py`: unknown,
 unusual time from its own hour history, long dwell vs the zone's
 `dwell_rare_sec`, few prior sightings; weights in one dict; null components
 count 0 and are stored as null). At or above `VISION_ATTENTION_THRESHOLD` it
-writes one `vision_events` row `attention_worthy` per sighting. No-embed-zone
-boxes never become individuals; they only update one
-`substrate_embodied_presence` row per no-embed zone, `<stream>:<zone name>`
-(e.g. `walkway:patio`; `subject = {"count": n}`, `no_embed_zone: true`), and
-only while the camera is producing census rows. The situation brief finds
-these rows by that flag. Then: Juniper's answers are applied (`orion_ask`
+writes one `vision_events` row `attention_worthy` per sighting. Every zone with
+`presence: true` (or `embed: false`) keeps one `substrate_embodied_presence`
+row, `<stream>:<zone name>` (e.g. `walkway:patio`; `subject = {"count": n}`,
+`head_count_zone: true` and, for the situation brief which still filters on
+it, `no_embed_zone: true`), only while the camera is producing census rows.
+**Stationary fixtures:** an individual whose box keeps IoU >=
+`VISION_STATIONARY_IOU` (0.5) with its run's first box, gaps <=
+`VISION_STATIONARY_MAX_GAP_SEC` (300), for `VISION_STATIONARY_MIN_SEC` (1800)
+is `stationary` (individual + current sighting): a prop such as the patio
+skeleton seen live 2026-10-15. Stationary sightings are kept but get no
+attention score/event, do not count toward asks or rhythm, and are left out
+of the zone head count. The first box that moves clears it; while stationary
+a gap does not. Then: Juniper's answers are applied (`orion_ask`
 answered -> `vision_individual.label`, `applied_at` set), open asks past
 `expires_at` expire, and new asks open for unlabeled individuals with
 >= `VISION_ASK_MIN_SIGHTINGS` sightings over >= `VISION_ASK_MIN_DAYS` local

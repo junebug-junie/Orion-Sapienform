@@ -195,37 +195,41 @@ def test_real_summary_unnamed_box_fires_no_label():
     assert "1 thing(s)" in item.description
 
 
-# --- a camera with a no-embed zone (the walkway's patio) ---------------------
-# Shipped config/vision_zones.yaml (traced 2026-10-15): patio = the porch,
-# x >= ~0.56, y >= ~0.5 on the right (embed: false); walkway = y 0.14..1.0
-# (embed: true). Boxes are in a 1000x1000 frame.
+# --- the walkway camera (patio fingerprinted since 2026-10-15) -----------------
+# Shipped config/vision_zones.yaml: patio = the porch, x >= ~0.56, y >= ~0.5 on
+# the right; walkway = y 0.14..1.0. Neither is a no-embed zone any more
+# (Juniper lifted the limit), so walkway unresolved items carry the full
+# council text, caption and frame like every other camera. Boxes are in a
+# 1000x1000 frame.
 PATIO_BOX = [750.0, 800.0, 850.0, 950.0]      # bottom-center (800, 950): patio
 WALKWAY_BOX = [200.0, 750.0, 300.0, 900.0]    # bottom-center (250, 900): walkway, clear of the patio
-SKY_BOX = [400.0, 20.0, 500.0, 100.0]         # above the walkway's top edge: outside every zone
 
 
-def test_walkway_unnamed_box_on_the_patio_records_nothing():
+def test_shipped_walkway_is_not_guarded():
+    from orion.vision.zones import load_zones
+    from app.unresolved import _guarded_zones
+
+    zones = load_zones(Path(__file__).resolve().parents[3] / "config" / "vision_zones.yaml")
+    window = _real_window([("person", 0.9, PATIO_BOX)], stream="walkway")
+    assert _guarded_zones(window, zones) is None
+
+
+def test_walkway_council_uncertainty_is_recorded_with_full_text():
+    window = _real_window([("person", 0.9, PATIO_BOX)], stream="walkway")
+    item = build_unresolved(window, _interp(["someone on the patio holding something"]),
+                            council_model="m", council_route="r")
+    assert item is not None and item.reason == "council_uncertainty"
+    assert "someone on the patio holding something" in item.description
+    assert item.image_ref == "/mnt/telemetry/vision/frames/walkway.jpg"
+    assert any("two people sitting on the patio" in t for t in item.what_was_tried)
+
+
+def test_walkway_unnamed_box_on_the_patio_is_no_label_with_named_labels_and_frame():
     window = _real_window([("", 0.5, PATIO_BOX), ("person", 0.9, PATIO_BOX)], stream="walkway")
-    assert build_unresolved(window, _interp(["who is that on the patio"]), council_model="m", council_route="r") is None
-
-
-def test_walkway_council_uncertainty_is_never_recorded_as_free_text():
-    window = _real_window([("person", 0.9, WALKWAY_BOX)], stream="walkway")
-    assert build_unresolved(window, _interp(["someone on the patio holding something"]),
-                            council_model="m", council_route="r") is None
-
-
-def test_walkway_unnamed_box_outside_the_patio_is_no_label_without_frame_or_captions():
-    window = _real_window([("", 0.5, WALKWAY_BOX), ("", 0.5, PATIO_BOX), ("object", 0.4, SKY_BOX),
-                           ("person", 0.9, PATIO_BOX)], stream="walkway")
-    item = build_unresolved(window, _interp(["two people on the patio"]), council_model="m", council_route="r")
+    item = build_unresolved(window, None, council_model="m", council_route="r")
     assert item is not None and item.reason == "no_label"
-    assert "1 thing(s)" in item.description  # the walkway box only
-    assert "walkway camera" in item.description
-    assert item.image_ref is None
-    text = " ".join([item.description, *item.what_was_tried]).lower()
-    assert "patio" not in text and "caption" not in text and "person" not in text
-    assert item.evidence_refs == ["art-real"]
+    assert "person" in item.description
+    assert item.image_ref is not None
 
 
 def test_second_no_embed_zone_guards_its_stream_too():

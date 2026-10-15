@@ -33,6 +33,7 @@ from .projection import (
     stream_key_from_artifact,
 )
 from .crops import build_crop_observation
+from .fixtures import FixtureTracker
 from .recovery_store import RecoveryStore
 from .presence import PresenceRegistry, write_snapshot_to_postgres, write_transitions_to_postgres
 from .scene_belief import SceneBeliefRegistry
@@ -43,6 +44,17 @@ settings = Settings()
 
 def _source_ref() -> ServiceRef:
     return ServiceRef(name=settings.SERVICE_NAME, version=settings.SERVICE_VERSION)
+
+
+def _person_boxes(items: List[Tuple[VisionArtifactPayload, float]]) -> List[Tuple[float, List[List[float]]]]:
+    """(artifact time, [person box, ...]) per artifact, for app/fixtures.py."""
+    out: List[Tuple[float, List[List[float]]]] = []
+    for art, ts in items:
+        objs = (art.outputs.objects or []) if art.outputs else []
+        boxes = [[float(v) for v in o.box_xyxy] for o in objs
+                 if str(o.label or "").strip().lower() == "person" and len(o.box_xyxy or []) == 4]
+        out.append((float(ts), boxes))
+    return out
 
 
 def _corr_uuid(value: Optional[Union[str, UUID]]) -> UUID:
@@ -128,6 +140,12 @@ class WindowService:
             vote_n=settings.WINDOW_BELIEF_VOTE_N,
             enter_votes=settings.WINDOW_BELIEF_ENTER_VOTES,
             exit_votes=settings.WINDOW_BELIEF_EXIT_VOTES,
+        )
+        self._fixtures = FixtureTracker(
+            streams=[x for x in str(settings.WINDOW_STATIONARY_STREAMS or "").split(",")],
+            min_sec=settings.VISION_STATIONARY_MIN_SEC,
+            iou=settings.VISION_STATIONARY_IOU,
+            max_gap_sec=settings.VISION_STATIONARY_MAX_GAP_SEC,
         )
         self._presence_registry = PresenceRegistry(
             grace_sec=settings.WINDOW_PRESENCE_GRACE_SEC,
@@ -508,9 +526,12 @@ class WindowService:
 
             payload = payload.model_copy(update={"summary": summary})
             if settings.WINDOW_PRESENCE_ENABLED:
+                # A person who has not moved for VISION_STATIONARY_MIN_SEC (a
+                # prop) does not make the stream present (app/fixtures.py).
+                self._fixtures.observe_window(stream_id, _person_boxes(items))
                 self._note_presence(
                     stream_id,
-                    result.believed_labels,
+                    self._fixtures.presence_labels(stream_id, result.believed_labels),
                     identity_hint=identity_hint,
                     identity_confidence=identity_confidence,
                 )

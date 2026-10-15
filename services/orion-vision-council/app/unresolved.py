@@ -18,17 +18,21 @@ Study material for curiosity, not an alert. Two deterministic triggers:
 A per-stream minimum interval keeps a noisy scene from flooding the table.
 Pure module: no bus I/O, so it is testable without a running service.
 
-**Cameras with a no-embed zone (the walkway's patio).** The council's
-uncertainties and the captions describe the WHOLE frame, patio included, and
+**Cameras with a no-embed zone (generic; none configured since 2026-10-15).**
+The council's uncertainties and the captions describe the WHOLE frame, and
 ``artifact_uris`` are whole frames. For any stream that has an ``embed:
 false`` zone in ``config/vision_zones.yaml`` (``orion.vision.zones``) this
-module therefore never emits ``council_uncertainty``, never quotes a caption,
-never names other detected labels, and never sets ``image_ref``. It emits
+module never emits ``council_uncertainty``, never quotes a caption, never
+names other detected labels, and never sets ``image_ref``. It emits
 ``no_label`` only, counted from the unnamed boxes whose zone is a real,
-embeddable zone (``summary.unnamed_boxes``, placed by the window service);
-a box in a no-embed zone, outside every zone, or with no frame size is left
-out entirely. If the zones file cannot be read, every stream is treated this
-way (fail closed). Other cameras keep the full behaviour.
+embeddable zone (``summary.unnamed_boxes``, placed by the window service).
+If the zones file cannot be read, every stream is treated this way (fail
+closed).
+
+The walkway's patio was such a zone until Juniper lifted the limit on
+2026-10-15; with ``embed: true`` the walkway gets the full behaviour (council
+text, caption, frame) like every other camera
+(tests/test_unresolved.py::test_shipped_walkway_is_not_guarded).
 """
 
 from __future__ import annotations

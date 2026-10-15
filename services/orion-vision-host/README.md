@@ -339,8 +339,21 @@ L2-normalized inline `embedding`; the detect artifact also carries
 
 - The camera name comes from task meta `stream_id` (set by the frame router),
   copied into the request by `VisionRunner._request_with_stream_id`.
-- **Patio rule:** a box in a no-embed zone (`config/vision_zones.yaml`,
-  `embed: false`) is never cropped; it keeps its zone and no vector.
+- **No-embed zones (generic):** a box in a no-embed zone (`config/vision_zones.yaml`,
+  `embed: false`) is never cropped; it keeps its zone and no vector. Since
+  2026-10-15 no zone uses this -- Juniper lifted the patio rule, so patio
+  boxes get vectors, thumbnails and faces like the rest of the walkway.
+- **Faces (walkway, 2026-10-15):** when the request also sets
+  `want_crop_faces: true` (router `walkway` policy only), each embedded crop in
+  `crop_face_labels` (default `person`) is run through the `identity_face`
+  profile's already-loaded MTCNN + InceptionResnetV1 (`crop_faces`). The most
+  confident face at or above `crop_face_min_prob` (0.95) and
+  `crop_face_min_side_px` (20) adds `face_embedding` (512-d, unit),
+  `face_score` and `face_thumb_ref` (own rate limiter, triggered tier only) to
+  the object. A face failure costs the face, never the crop vector. cam0/carbon
+  have no zones on file, never reach the embed list, and so never get a face
+  here; Juniper's enrolled gallery is not read or written by this path. If the
+  `identity_face` profile is disabled, crops get no face.
 - **Fails closed:** if the zones file is missing or unreadable, no crop is
   embedded at all. The Dockerfile copies `config/vision_zones.yaml` to
   `/app/config/`; override with `VISION_ZONES_PATH` only for local runs.
@@ -355,7 +368,8 @@ L2-normalized inline `embedding`; the detect artifact also carries
   not rewritten for `VISION_CROP_THUMB_RETENTION_DAYS` (10, longer than an
   ask's 7-day life). orion-hub mounts the directory read-only and serves one
   thumbnail by hash at `/api/vision/crop-thumbs/<sha256>`. Empty dir disables.
-- Test: `tests/test_crop_embeddings_patio.py`, `tests/test_crop_thumbnails.py` (embedder mocked).
+- Test: `tests/test_crop_embeddings_patio.py`, `tests/test_crop_thumbnails.py`,
+  `tests/test_crop_faces.py` (embedder and face models mocked).
 
 ## Observability (logs-first)
 

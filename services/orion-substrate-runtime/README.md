@@ -247,7 +247,8 @@ recency even though the stored copy may lag.
 speaks Kev's TypeSafe-compatible `POST /v1/systemone` API. It rides the existing attention-broadcast
 tick; there is no new timer or graph. The typed frame is published on
 `orion:system_one:appraisal`; the grammar projection on `orion:grammar:event` remains the causal
-shadow. The local Kev process is `services/orion-kev` (`orion-athena-kev` on `app-net`).
+shadow. The Kev process is `services/orion-kev`, deployed on circe (GPU 3) and reached at
+`http://100.112.254.99:8009`.
 
 Inputs are deliberately bounded existing artifacts:
 
@@ -319,11 +320,11 @@ order by c.generated_at desc limit 10;
 ```
 
 ```bash
-# bring up Kev (GPU Docker; survives reboot via restart: unless-stopped)
+# bring up Kev ON CIRCE (GPU Docker; survives reboot via restart: unless-stopped)
 scripts/safe_docker_build.sh orion-kev up -d --build
 
 SUBSTRATE_SYSTEM_ONE_APPRAISAL_ENABLED=true
-SUBSTRATE_SYSTEM_ONE_BASE_URL=http://orion-athena-kev:8009
+SUBSTRATE_SYSTEM_ONE_BASE_URL=http://100.112.254.99:8009
 SUBSTRATE_SYSTEM_ONE_MODEL=kev-latest
 ```
 

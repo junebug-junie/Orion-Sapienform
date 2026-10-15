@@ -103,6 +103,11 @@ roles:
   agent-deep: {kind: llm, backend: vllm, cards: [hecate-gpu0], owner: agent-deep, port: 8021}
   metacog:    {kind: llm, cards: [gpu3], owner: [metacog, fast], port: 8012}
   fast:       {kind: llm, cards: [gpu3], owner: [metacog, fast], port: 8013}
+  # Kev (services/orion-kev), System One appraisal for orion-substrate-runtime, moved off athena's
+  # T10 2026-10-15. Substrate calls it directly, not through the gateway, so no class or route names
+  # it: this entry exists so the pool counts its VRAM on gpu3 (measured 3.9GB live) and probes it.
+  # Kev has no /health; /docs is what its compose healthcheck uses too.
+  kev:        {kind: service, cards: [gpu3], owner: [], port: 8009, slots: 1, vram_gb: 4, health: /docs}
   world:      {kind: service, cards: [gpu2], owner: world, port: 6613, slots: 2, vram_gb: 1,
                # Never compute at the same time as diffusion (symmetric; the scheduler reports
                # queued reason=serialized:<role>). Keeps the old /capacity permit's mutex: two

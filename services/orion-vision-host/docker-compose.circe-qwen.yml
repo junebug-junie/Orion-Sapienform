@@ -144,7 +144,8 @@ services:
       # generated image (orion-thought, by percept_sha256) and caption
       # walkway frames the detector already found someone in (frame router
       # caption_dispatch, by image_path -- see the frames mount below). No
-      # retina/detection/embedding profiles: those stay on athena's P4.
+      # retina/detection/embedding profiles: those run in the shared
+      # vision host, on this same T10 since 2026-10-15 (were on the P4).
       - VISION_ENABLED_PROFILES=vlm_caption
 
       # The one thing this whole lane is for: a real, non-degenerate VLM.
@@ -183,11 +184,14 @@ services:
       # Deliberately LOWER than settings.py's own tuned defaults
       # (1200/1000/800) -- those were calibrated for athena's shared P4,
       # co-hosting 4+ warm profiles at once (see .env_example's 2026-08-21
-      # recalibration note there). This lane's own model is small (~4.8GB)
-      # on a 16GB card with real headroom even alongside whisper-tts, which
-      # also moved onto this same T10 the same day (2026-09-21, see
-      # README.md) -- two small models, not the athena P4's 4+ profile
-      # crowding, so lower floors are still correct here. CIRCE_QWEN_-
+      # recalibration note there). This lane's own model is small (~4.8GB,
+      # ~6.5GB resident live). Since 2026-10-15 its T10 neighbour is the
+      # shared vision host (~5.6GB, 4+ warm profiles; whisper-tts moved to
+      # the P4), leaving ~4.2GB free. Known asymmetry: this lane admits at
+      # ~1GB free, the shared host needs 2GB, so under pressure this lane
+      # keeps admitting while the shared host refuses. Accepted: this lane
+      # runs one task at a time with bounded pixels, so its growth is
+      # bounded; watch the shared host's /health refusal streak. CIRCE_QWEN_-
       # prefixed -- see this file's own header comment for why every key
       # here is, no exceptions.
       - VISION_VRAM_RESERVE_MB=${CIRCE_QWEN_VISION_VRAM_RESERVE_MB:-512}

@@ -161,6 +161,31 @@ def nvml_to_torch_index(nvml_index: int) -> Optional[int]:
         return None
 
 
+def torch_to_nvml_index(torch_index: int) -> Optional[int]:
+    """Inverse of nvml_to_torch_index: this process's torch index -> NVML index.
+
+    VISION_DEVICES names torch devices ("cuda:N"), but the admission gate reads
+    NVML, which sees every card the container exposes regardless of
+    CUDA_VISIBLE_DEVICES. Without this, a container that sees two cards and
+    sets CUDA_VISIBLE_DEVICES=1 would run on the second card while checking
+    free memory on the first (the qwen lane did exactly that on athena).
+    Unset means identity. UUID / MIG entries or an out-of-range index -> None.
+    """
+    if torch_index < 0:
+        return None
+    raw = os.environ.get("CUDA_VISIBLE_DEVICES")
+    if raw is None:
+        return torch_index
+    entries = [e.strip() for e in raw.split(",") if e.strip()]
+    try:
+        ints = [int(e) for e in entries]
+    except ValueError:
+        return None
+    if torch_index >= len(ints):
+        return None
+    return ints[torch_index]
+
+
 def own_reusable_cache_mb(gpu_index: int) -> int:
     """MiB this process holds in PyTorch's caching allocator but is not using.
 

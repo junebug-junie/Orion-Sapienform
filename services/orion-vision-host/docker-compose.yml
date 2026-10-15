@@ -100,7 +100,26 @@ services:
     ports:
       - "${HOST_PORT}:6600"
 
-    gpus: all
+    # GPU pin (2026-10-15: moved from the P4 to the T10). Not `gpus: all`:
+    # that exposed both athena cards, so NVML saw two GPUs while torch saw
+    # only CUDA_VISIBLE_DEVICES's one, and the two index spaces only agreed
+    # by luck. device_ids exposes exactly one card; inside the container it
+    # is NVML index 0 AND torch cuda:0, so CUDA_VISIBLE_DEVICES=0,
+    # VISION_DEVICES=cuda:0 and the VRAM admission gate all name the same
+    # physical card. Same pattern as services/orion-whisper-tts.
+    #
+    # The value is the HOST's PCI bus id (stable if a card is added; an
+    # nvidia-smi index shifts). Verified 2026-10-15 that docker accepts it
+    # (`docker run --gpus '"device=00000000:D8:00.0"'` -> Tesla T10 only).
+    # Do not add `runtime: nvidia`: in CDI mode that rejects a PCI bus id.
+    # No default: an unset key fails the bring-up instead of guessing a card.
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["${VISION_HOST_GPU_DEVICE_ID:?VISION_HOST_GPU_DEVICE_ID must be set in services/orion-vision-host/.env}"]
+              capabilities: [gpu]
 
     networks:
       - app-net

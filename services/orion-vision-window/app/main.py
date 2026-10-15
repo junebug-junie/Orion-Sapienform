@@ -33,6 +33,7 @@ from .projection import (
     stream_key_from_artifact,
 )
 from .crops import build_crop_observation
+from .caption_gate import CaptionGate
 from .fixtures import FixtureTracker
 from .recovery_store import RecoveryStore
 from .presence import PresenceRegistry, write_snapshot_to_postgres, write_transitions_to_postgres
@@ -160,6 +161,15 @@ class WindowService:
             iou=settings.VISION_STATIONARY_IOU,
             max_gap_sec=settings.VISION_STATIONARY_MAX_GAP_SEC,
         )
+        self._caption_gate = CaptionGate(
+            streams=settings.WINDOW_CAPTION_GATE_STREAMS,
+            labels=settings.WINDOW_CAPTION_GATE_LABELS,
+            min_score=settings.WINDOW_CAPTION_GATE_MIN_SCORE,
+            max_age_sec=settings.WINDOW_CAPTION_MAX_AGE_SEC,
+            stationary_min_sec=settings.VISION_STATIONARY_MIN_SEC,
+            stationary_iou=settings.VISION_STATIONARY_IOU,
+            stationary_max_gap_sec=settings.VISION_STATIONARY_MAX_GAP_SEC,
+        )
         self._presence_registry = PresenceRegistry(
             grace_sec=settings.WINDOW_PRESENCE_GRACE_SEC,
             write_min_interval_sec=settings.WINDOW_PRESENCE_WRITE_MIN_INTERVAL_SEC,
@@ -184,6 +194,8 @@ class WindowService:
         self._m_recovery_ok = 0
         self._m_recovery_fail = 0
         self._m_catchup_expired = 0
+        self._m_caption_gate_accepted = 0
+        self._m_caption_gate_rejected: Dict[str, int] = {}
 
     def _recovery_url(self) -> str:
         return (settings.VISION_WINDOW_RECOVERY_REDIS_URL or settings.ORION_BUS_URL).strip()
@@ -473,6 +485,18 @@ class WindowService:
         if not buffered:
             return
         items: List[Tuple[VisionArtifactPayload, float]] = [(b["artifact"], b["ts"]) for b in buffered]
+        # Detector-agreement gate (app/caption_gate.py): before the summary is
+        # built, so a rejected caption never reaches summary.captions.
+        items, caption_gate_stats, caption_rejections = self._caption_gate.apply(stream_id, items)
+        if caption_gate_stats:
+            self._m_caption_gate_accepted += caption_gate_stats["accepted"]
+            for reason, n in caption_gate_stats["rejected"].items():
+                self._m_caption_gate_rejected[reason] = self._m_caption_gate_rejected.get(reason, 0) + n
+        for rej in caption_rejections:
+            logger.info(
+                f"[WINDOW] caption_rejected stream={stream_id} reason={rej['reason']} "
+                f"artifact={rej['artifact_id']} text={rej['text']!r}"
+            )
         # Skip missing envelopes (direct test calls); production ingest always attaches env.
         envs: List[BaseEnvelope] = [b["env"] for b in buffered if b["env"] is not None]
         window_start = min(b["ts"] for b in buffered)
@@ -487,6 +511,10 @@ class WindowService:
             cursor=cursor,
             stale_after_ms=settings.STALE_AFTER_MS,
         )
+        if caption_gate_stats:
+            payload = payload.model_copy(
+                update={"summary": {**(payload.summary or {}), "caption_gate": caption_gate_stats}}
+            )
         identity_hint: Optional[Dict[str, Any]] = None
         identity_confidence: Optional[str] = None
         if settings.WINDOW_BELIEF_ENABLED and settings.WINDOW_IDENTITY_ENABLED:
@@ -1045,4 +1073,6 @@ async def api_metrics() -> Dict[str, Any]:
         "vision_window_cursor_expired_total": service._m_catchup_expired,
         "vision_window_crop_observations_published_total": service._m_crop_obs_published,
         "vision_window_crop_observations_failed_total": service._m_crop_obs_failed,
+        "vision_window_caption_gate_accepted_total": service._m_caption_gate_accepted,
+        "vision_window_caption_gate_rejected_total": dict(service._m_caption_gate_rejected),
     }

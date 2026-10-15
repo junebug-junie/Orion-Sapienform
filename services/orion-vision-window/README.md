@@ -86,3 +86,24 @@ is a prop. A window whose person boxes are all props does not make the stream
 2026-10-15: a Halloween skeleton at the patio table, detected as `person` in
 the same box all night. Room cameras are not listed: a person at a desk sits
 still for hours. Tests: `tests/test_stationary_fixtures.py`.
+
+## Caption gate (detector agreement)
+
+On streams in `WINDOW_CAPTION_GATE_STREAMS` (default `walkway`) a caption
+reaches the window summary -- and so the council narrative, `vision_events`,
+the chat situation brief's street line -- only if the detections of its own
+frame (`inputs.source_objects`, attached by vision-frame-router's
+`caption_dispatch`) include a `WINDOW_CAPTION_GATE_LABELS` object at
+`>= WINDOW_CAPTION_GATE_MIN_SCORE` that is not a stationary prop (same
+`VISION_STATIONARY_*` rule as above, tracked per label), and it arrived within
+`WINDOW_CAPTION_MAX_AGE_SEC` of its frame (`app/caption_gate.py`). A rejected
+caption stays on the artifact as `text=""`, `confidence=0.0`,
+`rejected_reason="gate:<reason>"` (`no_source_detections`,
+`no_gate_detection`, `stationary_only`, `stale`); host-side no-captions are
+counted as `host:<reason>` (e.g. `host:null_answer`). Counts land in
+`summary.caption_gate` and `/api/vision-window/metrics`
+(`vision_window_caption_gate_*`); each rejection is logged
+(`[WINDOW] caption_rejected ...`). The rejected text never enters the summary.
+Found live 2026-10-15: BLIP described a dark empty walkway frame as "A camera
+is placed on a wooden bench in a garden" and Orion repeated it as the street
+line. Tests: `tests/test_caption_gate.py`.

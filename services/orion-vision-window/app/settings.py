@@ -114,6 +114,19 @@ class Settings(BaseSettings):
     VISION_STATIONARY_IOU: float = 0.5
     VISION_STATIONARY_MAX_GAP_SEC: float = 300.0
 
+    # Caption gate (app/caption_gate.py, 2026-10-15). On these streams a
+    # caption reaches the window summary (and so the council, vision_events,
+    # the chat situation brief) only if the detections of its own frame
+    # (inputs.source_objects, attached by vision-frame-router caption_dispatch)
+    # include a GATE_LABELS object at >= GATE_MIN_SCORE that is not a
+    # stationary prop (VISION_STATIONARY_* above), and it arrived within
+    # MAX_AGE_SEC of its frame. Anything else is recorded as rejected, never
+    # narrated. Empty streams = gate off.
+    WINDOW_CAPTION_GATE_STREAMS: str = "walkway"
+    WINDOW_CAPTION_GATE_LABELS: str = "person,dog,bicycle,stroller,vehicle,package,mail truck"
+    WINDOW_CAPTION_GATE_MIN_SCORE: float = 0.25
+    WINDOW_CAPTION_MAX_AGE_SEC: float = 20.0
+
     # HTTP
     HTTP_HOST: str = "0.0.0.0"
     HTTP_PORT: int = 8000

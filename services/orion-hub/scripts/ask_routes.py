@@ -84,6 +84,7 @@ try:
     from asyncpg.exceptions import (
         InterfaceError as _AsyncpgInterfaceError,
         PostgresConnectionError as _AsyncpgConnectionError,
+        UndefinedColumnError as _AsyncpgUndefinedColumnError,
         UndefinedTableError as _AsyncpgUndefinedTableError,
     )
 
@@ -95,6 +96,7 @@ try:
     )
 except ImportError:  # pragma: no cover - optional in minimal dev envs
     _AsyncpgUndefinedTableError = None  # type: ignore[misc, assignment]
+    _AsyncpgUndefinedColumnError = None  # type: ignore[misc, assignment]
     _TRANSPORT_ERRORS = (TimeoutError, OSError)
 
 logger = logging.getLogger("orion-hub.asks")
@@ -264,7 +266,9 @@ def _pool(request: Request):
 
 
 def _raise_store_http(exc: BaseException) -> None:
-    if _AsyncpgUndefinedTableError is not None and isinstance(exc, _AsyncpgUndefinedTableError):
+    # A missing column is a migration not applied yet (e.g. orion_ask.answer_detail): same 503.
+    schema_errors = tuple(e for e in (_AsyncpgUndefinedTableError, _AsyncpgUndefinedColumnError) if e is not None)
+    if schema_errors and isinstance(exc, schema_errors):
         logger.warning("ask_schema_missing error=%s", exc)
         raise HTTPException(status_code=503, detail="ask_schema_missing") from exc
     if isinstance(exc, _TRANSPORT_ERRORS):

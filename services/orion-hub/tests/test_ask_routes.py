@@ -620,6 +620,8 @@ def test_close_ask_sql_runs_on_real_postgres():
     asyncpg = pytest.importorskip("asyncpg")
     dsn = os.environ["ORION_TEST_PG_URI"].replace("postgresql+psycopg2://", "postgresql://")
 
+    import json
+
     async def go():
         conn = await asyncpg.connect(dsn)
         try:
@@ -629,11 +631,20 @@ def test_close_ask_sql_runs_on_real_postgres():
                 await conn.execute("INSERT INTO orion_ask (ask_id, question, source_kind, source_ref) "
                                    "VALUES ($1, 'q', $2, $1)", aid, kind)
             args = (list(ask_routes.RESOLVABLE_KINDS), ask_routes.SAME_INDIVIDUAL_KIND, list(ask_routes.YES_NO_ANSWERS))
-            run = lambda aid, st, ans: conn.fetchrow(ask_routes.CLOSE_ASK_SQL, aid, st, ans, *args)  # noqa: E731
+            run = lambda aid, st, ans, d=None: conn.fetchrow(ask_routes.CLOSE_ASK_SQL, aid, st, ans, *args, d)  # noqa: E731
             assert (await run("sqltest-p1", "answered", "yes"))["answer"] == "yes"
             assert await run("sqltest-p2", "answered", "maybe") is None
             assert (await run("sqltest-p3", "dismissed", None))["status"] == "dismissed"
             assert (await run("sqltest-w1", "answered", "Bob"))["answer"] == "Bob"
+            await conn.execute("UPDATE orion_ask SET status='open' WHERE ask_id = 'sqltest-p1'")
+            assert (await run("sqltest-p1", "answered", "no", '{"names": {"x": "Theo"}}'))["answer"] == "no"
+            stored = await conn.fetchval("SELECT answer_detail::text FROM orion_ask WHERE ask_id = 'sqltest-p1'")
+            assert json.loads(stored) == {"names": {"x": "Theo"}}
+            await conn.execute("INSERT INTO orion_ask (ask_id, question, source_kind, source_ref) "
+                               "VALUES ('sqltest-w2', 'q', 'vision_individual', 'sqltest-ind')")
+            closed = await conn.fetch(ask_routes.CLOSE_NAMED_WHO_SQL, '{"sqltest-ind": "Theo"}', "sqltest-p1",
+                                      ask_routes.WHO_IS_THIS_KIND)
+            assert [(r["ask_id"], r["answer"]) for r in closed] == [("sqltest-w2", "Theo")]
             await conn.execute("DELETE FROM orion_ask WHERE ask_id LIKE 'sqltest-%'")
         finally:
             await conn.close()
@@ -757,3 +768,16 @@ def test_unparseable_answer_with_names_is_still_yes_no_422(env):
     rows["p1"] = _pair_row("p1")
     r = client.post("/api/asks/p1/answer", json={"answer": "maybe", "names": {"aaa": "Theo"}})
     assert r.status_code == 422 and r.json()["detail"] == "answer_must_be_yes_or_no"
+
+
+def test_missing_names_migration_is_503_not_500(env):
+    asyncpg = pytest.importorskip("asyncpg")
+    client, _rows, _pub = env
+    pool = client.app.state.memory_pg_pool
+
+    async def boom(*_a, **_k):
+        raise asyncpg.exceptions.UndefinedColumnError('column "answer_detail" of relation "orion_ask" does not exist')
+
+    pool.conn.fetchrow = boom
+    r = client.post("/api/asks/a1/answer", json={"answer": "Bob"})
+    assert r.status_code == 503 and r.json()["detail"] == "ask_schema_missing"

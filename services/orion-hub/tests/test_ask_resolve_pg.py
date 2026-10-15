@@ -35,6 +35,7 @@ MIGRATIONS = (
     "manual_migration_episode_memory_v1.sql",
     "manual_migration_walkway_camera_v1.sql",
     "manual_migration_vision_confirm_asks_v1.sql",  # orion_ask.image_refs (Hub selects it)
+    "manual_migration_vision_ask_names_v1.sql",  # orion_ask.answer_detail (Hub /answer writes it)
     "manual_migration_attention_loop_outcome.sql",
     "manual_migration_memory_confirmation_v1.sql",
 )

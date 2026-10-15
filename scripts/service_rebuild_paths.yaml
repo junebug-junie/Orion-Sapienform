@@ -85,6 +85,28 @@ skip_prefixes:
   - mesh-utilities/
   - config/
 
+# Hand-applied SQL migrations (fnmatch globs; `*` stays inside one directory
+# level here). These are applied with `docker exec ... psql`, never by a
+# container: orion-sql-db runs the stock postgres:15 image, has no Dockerfile,
+# and mounts only its data volume, so recreating it applies nothing.
+# 2026-10-15: PR #2698 added one migration file and the post-merge rebuild
+# recreated orion-athena-sql-db -- an unclean Postgres shutdown and a
+# fleet-wide "not yet accepting connections" burst. Never rebuilt; the
+# post-merge script prints each changed migration's live state and apply
+# command instead (scripts/check_sql_migrations_applied.py --post-pull-report).
+hand_applied_migration_globs:
+  - services/orion-sql-db/manual_migration_*.sql
+
+# Stateful services whose recreate is an outage: only these files inside
+# services/<svc>/ trigger a rebuild; every other file there is skipped (it is
+# not read by the container). A bind mount or Dockerfile COPY of the service
+# that brings a path in still wins, so mounting a file later makes it rebuild
+# again without editing this list. Paths are relative to services/<svc>/.
+service_rebuild_only:
+  orion-sql-db:
+    - docker-compose.yml
+    - Dockerfile
+
 # Single files at repo root with no runtime docker effect.
 skip_exact:
   - AGENTS.md

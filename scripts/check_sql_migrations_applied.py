@@ -116,6 +116,88 @@ def service_gate(service: str, ref: str = "HEAD", connect_fn=None) -> int:
     return 0
 
 
+def _required_by_text(text: str) -> tuple[str, bool]:
+    """(display string, whether a deploy gate refuses some service on it)."""
+    rb = drift.parse_required_by(text)
+    if rb is None:
+        return "none declared", False
+    if rb.services and not drift.is_destructive(text):
+        return ", ".join(rb.services), True
+    if rb.services:
+        return ", ".join(rb.services), False
+    return (f"none ({rb.none_reason})" if rb.none_reason else "none declared"), False
+
+
+def post_pull_report(paths: list[str], ref: str = "HEAD", connect_fn=None) -> list[str]:
+    """Read-only lines for scripts/rebuild_services_from_git_diff.sh: one block per changed
+    hand-applied migration -- who needs it, live state, and the apply command when one is due.
+
+    Never applies anything. A database it cannot read makes every verdict UNKNOWN, never
+    "applied". Rollback and DESTRUCTIVE files get no apply command: a deploy must never run them."""
+    lines: list[str] = []
+    names = [Path(p).name for p in paths]
+    live = None
+    why_unknown = ""
+    try:
+        times = drift.commit_times(REPO_ROOT, ref)
+    except Exception as exc:  # noqa: BLE001
+        times = {}
+        why_unknown = f"could not read git history for {ref}: {exc}"
+    files = drift.load_files(REPO_ROOT, times)  # uncommitted files count, as in the deploy gate
+    if not why_unknown:
+        try:
+            conn = (connect_fn or open_connection)()
+            try:
+                live = drift.load_live_state(conn)
+            finally:
+                conn.close()
+        except Exception as exc:  # noqa: BLE001 -- any failure is UNKNOWN, never a verdict
+            why_unknown = " ".join(str(exc).split()) or type(exc).__name__
+    # Against an empty live state every file reads MISSING; used only for apply commands.
+    empty = drift.LiveState(tables=set(), columns=set(), indexes={}, sequences=set())
+    report = drift.evaluate(files, live if live is not None else empty, window_days=None)
+    by_name = {f.name: f for f in report.files}
+    texts = {f.name: f.text for f in files}
+    for rel, name in zip(paths, names):
+        path = REPO_ROOT / rel
+        text = texts.get(name) or (path.read_text(errors="replace") if path.is_file() else "")
+        required, gated = _required_by_text(text)
+        lines.append(f"  - {rel} (required by: {required})")
+        if drift.is_rollback_file(name):
+            lines.append("      rollback file: undoes another migration; never applied on deploy. "
+                         "Do not run it unless you are backing that migration out.")
+            continue
+        if drift.is_destructive(text):
+            lines.append("      DESTRUCTIVE: operator-approved only; no apply command is printed. "
+                         "Read the file and decide by hand.")
+            continue
+        r = by_name.get(name)
+        if r is None:
+            lines.append("      live state: UNKNOWN (the checker did not load this file)")
+            continue
+        if live is None:
+            lines.append(f"      live state: UNKNOWN ({why_unknown}; no answer is not 'applied')")
+            if r.status not in ("SKIPPED",):
+                lines.append(f"      apply if not yet applied: {r.apply_command()}")
+            continue
+        if r.status == "APPLIED":
+            lines.append("      live state: APPLIED")
+        elif r.broken:
+            refused = (" -- the services above stay refused by safe_docker_build.sh until it is"
+                       if gated else "")
+            lines.append(f"      live state: NOT APPLIED{refused}")
+            lines.append(f"      {r.summary()}")
+            lines.append(f"      apply: {r.apply_command()}")
+        elif r.status == "DATA":
+            lines.append("      live state: UNVERIFIABLE (data-only; the schema cannot show whether it ran)")
+            lines.append(f"      apply if not yet applied: {r.apply_command()}")
+        else:
+            lines.append(f"      live state: {r.status}")
+        for note in r.info:
+            lines.append(f"      note: {note}")
+    return lines
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--json", action="store_true")
@@ -126,7 +208,14 @@ def main() -> int:
     ap.add_argument("--ref", default="HEAD", help="git ref whose history orders the migrations")
     ap.add_argument("--service", help="deploy gate: refuse unless every migration REQUIRED-BY this "
                                       "service is applied (exit 1 missing, 2 unknown)")
+    ap.add_argument("--post-pull-report", nargs="+", metavar="PATH",
+                    help="post-merge view of these changed migration paths (repo-relative): "
+                         "required-by, live state, apply command. Read-only; always exits 0")
     args = ap.parse_args()
+    if args.post_pull_report:
+        for line in post_pull_report(args.post_pull_report, args.ref):
+            print(line)
+        return 0
     if args.service:
         return service_gate(args.service, args.ref)
 

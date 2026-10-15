@@ -84,6 +84,61 @@ fi
 SERVICES=$(printf '%s\n' "$PLAN" | awk -F'\t' 'NF {print $1}')
 RECREATE=$(printf '%s\n' "$PLAN" | awk -F'\t' '$2 == "recreate" {print $1}')
 
+# Hand-applied SQL migrations changed in this pull. They never rebuild
+# anything (2026-10-15: a migration-only pull recreated orion-athena-sql-db,
+# an unclean Postgres restart under the whole fleet). Their consumers stay
+# refused by safe_docker_build.sh's migration gate until applied, so say so
+# here, with the live verdict and apply command from the same checker the
+# gate runs -- otherwise the refusal is the first the operator hears of it.
+# Read-only: never applies anything.
+if [ "$LIST_ONLY" != "1" ]; then
+    set +e
+    MIGRATIONS=$(python3 "$PY" --migrations "$@" 2>/dev/null)
+    set -e
+    if [ -n "${MIGRATIONS//[$'\n\r\t ']}" ]; then
+        echo "rebuild_services_from_git_diff.sh: hand-applied SQL migration(s) changed -- no rebuild applies these:"
+        CHECKER="$REPO_ROOT/scripts/check_sql_migrations_applied.py"
+        # Same interpreter lookup as safe_docker_build.sh: the repo venv has
+        # psycopg2; a linked worktree reaches the main checkout's venv.
+        CHECK_PY=python3
+        COMMON_DIR=$(git -C "$REPO_ROOT" rev-parse --git-common-dir 2>/dev/null || true)
+        case "$COMMON_DIR" in
+            ""|/*) ;;
+            *) COMMON_DIR="$REPO_ROOT/$COMMON_DIR" ;;
+        esac
+        if [ -x "$REPO_ROOT/.venv/bin/python" ]; then
+            CHECK_PY="$REPO_ROOT/.venv/bin/python"
+        elif [ -n "$COMMON_DIR" ] && [ -x "$COMMON_DIR/../.venv/bin/python" ]; then
+            CHECK_PY="$COMMON_DIR/../.venv/bin/python"
+        fi
+        RAW_APPLY="docker exec -i orion-athena-sql-db psql -U postgres -d conjourney -v ON_ERROR_STOP=1 <"
+        REPORT_RC=1
+        if [ -f "$CHECKER" ]; then
+            # One read-only run for every file: required-by, live state, apply
+            # command (rollback/DESTRUCTIVE files get none).
+            set +e
+            # shellcheck disable=SC2086
+            REPORT=$(cd "$REPO_ROOT" && "$CHECK_PY" "$CHECKER" --post-pull-report $MIGRATIONS </dev/null 2>&1)
+            REPORT_RC=$?
+            set -e
+            printf '%s\n' "$REPORT"
+        fi
+        if [ "$REPORT_RC" != "0" ]; then
+            echo "  live state: UNKNOWN (scripts/check_sql_migrations_applied.py missing or failed; no answer is not 'applied')"
+            for mig_path in $MIGRATIONS; do
+                echo "  - $mig_path"
+                case "$mig_path" in
+                    *_rollback.sql)
+                        echo "      rollback file: never applied on deploy"
+                        continue
+                        ;;
+                esac
+                echo "      apply only after reading its header (never a *_rollback.sql or -- DESTRUCTIVE file): $RAW_APPLY $mig_path"
+            done
+        fi
+    fi
+fi
+
 # cortex-exec and cortex-orch are coupled at runtime, not just by the
 # import-graph classifier above: cortex-exec's self_study.py round-trips
 # CortexClientRequest calls through cortex-orch (verb resolution + verb

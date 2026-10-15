@@ -15,6 +15,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import fnmatch
 import json
 import os
 import re
@@ -75,6 +76,9 @@ class ResolveResult:
     # bind-mounted into a container, so an unchanged image would not recreate
     # it and a single-file mount would keep serving the old inode).
     recreate: list[str] = field(default_factory=list)
+    # Changed hand-applied SQL migrations (hand_applied_migration_globs). Never
+    # rebuilt; the caller reports their live applied/missing state instead.
+    migrations: list[str] = field(default_factory=list)
 
 
 def _load_yaml(path: Path) -> dict[str, Any]:
@@ -258,11 +262,17 @@ def _resolve_mount_source(host: str, compose_dir: Path, repo_root: Path) -> str 
     return _repo_relative(candidate, repo_root)
 
 
-def _dep_source_allowed(prefix: str, service: str, mode: str, repo_root: Path) -> bool:
+def _dep_source_allowed(
+    prefix: str, service: str, mode: str, repo_root: Path, *, include_own: bool = False
+) -> bool:
     top = prefix.split("/", 1)[0]
     if top in _DEP_SOURCE_EXCLUDED_TOPS or "/" not in prefix:
         return False  # repo root, orion/, or a whole top-level folder
     if _path_matches_prefix(prefix, f"{_SERVICES_DIR}/{service}"):
+        if include_own:
+            # The migration/rebuild-only skips bypass the direct rule, so
+            # they need to see every own-dir COPY/mount, file or directory.
+            return True
         # Own-dir paths are already rebuilt by the direct services/<svc>/ rule.
         # A directory mount of the service's own code/static is live already;
         # only a single-file own mount keeps a stale inode and needs recreate.
@@ -280,14 +290,18 @@ def _load_compose(path: Path) -> dict[str, Any]:
     return data
 
 
-@lru_cache(maxsize=4)
-def build_dependency_sources(repo_root: str) -> tuple[DepSource, ...]:
+@lru_cache(maxsize=8)
+def build_dependency_sources(repo_root: str, include_own: bool = False) -> tuple[DepSource, ...]:
     """Repo paths each service bakes into its image or bind-mounts into containers.
 
     Parsed from services/<svc>/docker-compose.yml (build context + dockerfile,
     bind-mount volumes) and the Dockerfiles it names. Catches the case the
     import graph cannot see: a non-Python file such as config/vision_zones.yaml
     COPY'd into three images (PR #2677).
+
+    ``include_own`` keeps a service's paths inside its own services/<svc>/
+    (normally dropped: the direct rule already rebuilds them). The glob skip
+    rules use it so they can never skip a file the container does read.
     """
     root = Path(repo_root).resolve()
     out: set[DepSource] = set()
@@ -317,21 +331,21 @@ def build_dependency_sources(repo_root: str) -> tuple[DepSource, ...]:
                 if not host:
                     continue
                 prefix = _resolve_mount_source(host, compose_dir, root)
-                if prefix is None or not _dep_source_allowed(prefix, service, MODE_RECREATE, root):
+                if prefix is None or not _dep_source_allowed(prefix, service, MODE_RECREATE, root, include_own=include_own):
                     continue
                 out.add(DepSource(prefix, service, MODE_RECREATE, f"bind-mounted by {_COMPOSE_FILE} service {name}"))
         for context, dockerfile in sorted(dockerfiles):
             if not dockerfile.is_file():
                 continue
             df_rel = _repo_relative(dockerfile, root) or dockerfile.name
-            if df_rel and _dep_source_allowed(df_rel, service, MODE_BUILD, root):
+            if df_rel and _dep_source_allowed(df_rel, service, MODE_BUILD, root, include_own=include_own):
                 out.add(DepSource(df_rel, service, MODE_BUILD, f"Dockerfile of {_COMPOSE_FILE} build"))
             text = dockerfile.read_text(encoding="utf-8", errors="replace")
             for instruction in _dockerfile_instructions(text):
                 for src in _copy_sources(instruction):
                     literal = _strip_glob(src)
                     prefix = _repo_relative(context / literal, root)
-                    if prefix is None or not _dep_source_allowed(prefix, service, MODE_BUILD, root):
+                    if prefix is None or not _dep_source_allowed(prefix, service, MODE_BUILD, root, include_own=include_own):
                         continue
                     out.add(DepSource(prefix, service, MODE_BUILD, f"COPY/ADD in {df_rel}"))
     return tuple(sorted(out, key=lambda d: (d.prefix, d.service, d.mode)))
@@ -670,6 +684,11 @@ def _service_from_path(path: str) -> str | None:
     return rest.split("/", 1)[0]
 
 
+def _glob_match(path: str, pattern: str) -> bool:
+    """fnmatch, but `*` never crosses a `/` (same depth as the pattern)."""
+    return path.count("/") == pattern.count("/") and fnmatch.fnmatchcase(path, pattern)
+
+
 def _path_matches_prefix(path: str, prefix: str) -> bool:
     normalized = prefix.rstrip("/")
     return path == normalized or path.startswith(f"{normalized}/")
@@ -701,14 +720,18 @@ def resolve_affected_services(
     data_no_fallback: list[str] = list(mapping.get("orion_data_no_fallback") or [])
     skip_prefixes = list(mapping.get("skip_prefixes") or [])
     skip_exact = set(mapping.get("skip_exact") or [])
+    migration_globs: list[str] = list(mapping.get("hand_applied_migration_globs") or [])
+    rebuild_only: dict[str, list[str]] = mapping.get("service_rebuild_only") or {}
     script_services: dict[str, list[str]] = mapping.get("script_services") or {}
     orion_extra: dict[str, list[str]] = mapping.get("orion_package_extra_services") or {}
     dep_sources = build_dependency_sources(str(root))
+    own_dep_sources = build_dependency_sources(str(root), include_own=True)
 
     affected: set[str] = set()
     recreate: set[str] = set()
     skipped: list[str] = []
     reasons: dict[str, str] = {}
+    migrations: list[str] = []
 
     for raw_path in paths:
         path = raw_path.replace("\\", "/")
@@ -756,6 +779,45 @@ def resolve_affected_services(
                 note("orion package tests (no auto rebuild)", skip=True)
                 matched_skip = True
         if matched_skip:
+            continue
+
+        owner = _service_from_path(path)
+        is_migration = any(_glob_match(path, g) for g in migration_globs)
+        only = rebuild_only.get(owner or "")
+        outside_only = (
+            only is not None
+            and not is_migration
+            and path[len(f"{_SERVICES_DIR}/{owner}/"):] not in set(only)
+        )
+        # These skips bypass the direct services/<svc>/ rule, so they never
+        # skip a path the owning service's own compose mount or Dockerfile
+        # COPY brings into a container; such a path falls through to that
+        # rule. (Another service's mount is already handled by `hits` above
+        # and must not drag the owner along.)
+        consumed = (is_migration or outside_only) and any(
+            d.service == owner for d in dependency_hits(path, own_dep_sources)
+        )
+        if is_migration and not consumed:
+            migrations.append(path)
+            note(
+                "hand-applied SQL migration: no container consumes it, so no rebuild "
+                "(apply it by hand with docker exec ... psql; never by recreating the DB container)",
+                skip=True,
+            )
+            continue
+        if outside_only and not consumed:
+            if path.endswith("/.env_example"):
+                note(
+                    f"env template change for {owner} (rebuild-only service) -- run "
+                    "sync_local_env_from_example.py; recreate it by hand only if the change needs it",
+                    skip=True,
+                )
+            else:
+                note(
+                    f"{owner} only rebuilds on {', '.join(only)} (service_rebuild_only: a recreate is "
+                    "an outage); this file is not read by its container",
+                    skip=True,
+                )
             continue
 
         service = _service_from_path(path)
@@ -875,6 +937,10 @@ def resolve_affected_services(
             host_allowlist=sorted(allowlist),
             host_filtered_out=host_filtered_out,
             recreate=sorted(svc for svc in recreate if svc in filtered),
+            # Migrations are reported on the host that runs their database.
+            migrations=sorted(
+                {m for m in migrations if _service_from_path(m) in allowlist}
+            ),
         )
 
     excludes = _load_excludes(root)
@@ -885,6 +951,7 @@ def resolve_affected_services(
         reasons=reasons,
         mesh_host=host,
         recreate=sorted(svc for svc in recreate if svc in filtered),
+        migrations=sorted(set(migrations)),
     )
 
 
@@ -977,6 +1044,11 @@ def running_profile_services(
     return sorted(out)
 
 
+def migration_report(migrations: list[str], repo_root: Path) -> list[str]:
+    """Changed migrations that still exist (a deleted one has nothing to apply)."""
+    return [rel for rel in migrations if (repo_root / rel).is_file()]
+
+
 def _emit_host_summary(result: ResolveResult) -> None:
     if result.mesh_host:
         print(f"rebuild_affected_services: mesh host: {result.mesh_host}", file=sys.stderr)
@@ -1008,6 +1080,11 @@ def main(argv: list[str] | None = None) -> int:
         "--plan",
         action="store_true",
         help="Print '<service>\\t<build|recreate>' per affected service (recreate = bind-mounted change)",
+    )
+    parser.add_argument(
+        "--migrations",
+        action="store_true",
+        help="Print each changed hand-applied SQL migration still in the tree, one per line",
     )
     parser.add_argument(
         "--running-profile-services",
@@ -1079,8 +1156,12 @@ def main(argv: list[str] | None = None) -> int:
             "host_allowlist": result.host_allowlist,
             "host_filtered_out": result.host_filtered_out,
             "recreate": result.recreate,
+            "migrations": result.migrations,
         }
         print(json.dumps(payload, indent=2))
+    elif args.migrations:
+        for rel in migration_report(result.migrations, repo_root):
+            print(rel)
     elif args.plan:
         recreate = set(result.recreate)
         for svc in result.services:

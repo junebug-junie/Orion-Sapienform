@@ -18,9 +18,12 @@ publishes far more traffic than the Vision panel has any use for, and an
 unbounded per-stream dict would be a real, if slow, resource leak whenever
 a new stream_id ever appears on the bus.
 
-Bytes are fetched from orion-percept-store server-side (by Hub, not by the
-browser) -- see api_routes.py's /api/vision/carbon/latest-frame/image. The
-browser never talks to percept-store directly.
+Bytes are fetched server-side (by Hub, not by the browser) -- see
+api_routes.py's /api/vision/frames/latest/image. Two addressing modes, as in
+VisionFramePointerPayload: carbon uploads to orion-percept-store (sha256);
+the walkway retina (2026-10-15) runs on athena and only writes a local
+``image_path`` under the shared frames directory, which Hub reads from a
+read-only mount. A pointer with neither is dropped.
 """
 from __future__ import annotations
 
@@ -39,6 +42,7 @@ logger = logging.getLogger("orion-hub.vision_frame_cache")
 @dataclass
 class FramePointer:
     sha256: Optional[str]
+    image_path: Optional[str]
     frame_ts: Optional[float]
     width: Optional[int]
     height: Optional[int]
@@ -47,6 +51,7 @@ class FramePointer:
     def to_dict(self) -> Dict[str, Any]:
         return {
             "sha256": self.sha256,
+            "image_path": self.image_path,
             "frame_ts": self.frame_ts,
             "width": self.width,
             "height": self.height,
@@ -121,14 +126,12 @@ class VisionFrameCache:
         stream_id = frame.stream_id
         if not stream_id or stream_id not in self.stream_ids:
             return
-        if not frame.sha256:
-            # This stream isn't using percept_store addressing (e.g. a
-            # shared-filesystem node using image_path only) -- nothing this
-            # cache can serve back out over HTTP to a browser.
+        if not frame.sha256 and not frame.image_path:
             return
         async with self._lock:
             self._latest_by_stream[stream_id] = FramePointer(
                 sha256=frame.sha256,
+                image_path=frame.image_path,
                 frame_ts=frame.frame_ts,
                 width=frame.width,
                 height=frame.height,

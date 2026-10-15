@@ -12656,7 +12656,16 @@ let chatTurnTimer = null;
       // poll so switching away from it (or re-selecting it) doesn't stack
       // multiple overlapping timers.
       let carbonLivePollTimer = null;
-      let carbonLiveLastSha256 = null;
+      // Polled live view state (carbon-live / walkway-live). In-flight
+      // markers hold the render generation that owns them, so switching
+      // views can't clear a newer view's marker (review finding,
+      // 2026-10-15). liveImageSeq orders image loads so an older response
+      // landing late can't swap a newer frame back out.
+      let liveFrameShownId = null;
+      let liveMetaInFlightGen = null;
+      let liveImageInFlightGen = null;
+      let liveImageSeq = 0;
+      let livePicture = { loadedAtMs: null, lastError: false };
       // "Carbon (affect snapshot)" dropdown value -- shared between
       // updateVisionUi's dispatch and fetchAmbientStatus's view-active
       // check below so the two can't drift out of sync (review finding,
@@ -12675,45 +12684,96 @@ let chatTurnTimer = null;
           clearInterval(carbonLivePollTimer);
           carbonLivePollTimer = null;
         }
-        carbonLiveLastSha256 = null;
+        liveFrameShownId = null;
+        liveImageSeq += 1; // orphan any image still loading for the old view
+        livePicture = { loadedAtMs: null, lastError: false };
       }
 
-      async function renderCarbonLiveFrame(container, generation) {
-        // Cheap metadata check first, full image bytes only if the frame
-        // actually changed -- review finding, 2026-08-22: polling the
-        // image route directly every 5s re-fetched+re-transferred the full
-        // JPEG through Hub even on ticks where carbon's own capture hadn't
-        // produced a new frame yet (same ~5s cadence on both sides).
-        let meta;
+      // Polled "live" camera view (carbon-live, walkway-live). Cheap
+      // metadata check every tick; image bytes only when the frame changed
+      // (bandwidth -- review finding, 2026-08-22), one image load at a time.
+      // The badge is recomputed every tick from BOTH the backend's frame
+      // freshness and when the picture on screen last actually loaded, so
+      // a stream that stops moving, or an image route that keeps failing,
+      // shows STALE / IMAGE ERROR and dims -- never a frozen picture
+      // labelled LIVE. A failed poll keeps the last picture (no flicker).
+      // All the "what to show" logic is in vision-live-frame.js (tested).
+      function paintLiveFrame(container, view, meta) {
+        const L = window.OrionVisionLiveFrame;
+        const state = L.liveFrameState(meta, view, livePicture, Date.now());
+        if (state.kind === "none") {
+          container.innerHTML = "";
+          const msg = document.createElement("div");
+          msg.className = "text-gray-500 text-xs text-center px-4";
+          msg.dataset.liveFrameEmpty = view.streamId;
+          msg.textContent = state.message;
+          container.appendChild(msg);
+          return null;
+        }
+        let frame = container.querySelector("[data-live-frame]");
+        if (!frame || frame.dataset.liveFrame !== view.streamId) {
+          container.innerHTML = "";
+          frame = document.createElement("div");
+          frame.className = "relative w-full h-full flex items-center justify-center";
+          frame.dataset.liveFrame = view.streamId;
+          const img = document.createElement("img");
+          img.alt = `${view.label} (latest captured frame)`;
+          const badge = document.createElement("span");
+          badge.dataset.liveFrameBadge = "1";
+          frame.appendChild(img);
+          frame.appendChild(badge);
+          container.appendChild(frame);
+        }
+        const img = frame.querySelector("img");
+        const badge = frame.querySelector("[data-live-frame-badge]");
+        badge.textContent = state.badgeText;
+        badge.className = `absolute top-2 left-2 text-[10px] font-semibold rounded px-2 py-0.5 ${state.badgeClass}`;
+        img.className = `w-full h-full object-contain transition-opacity ${state.imageClass}`;
+        return img;
+      }
+
+      async function renderLiveFrame(container, generation, view) {
+        const L = window.OrionVisionLiveFrame;
+        if (!L || liveMetaInFlightGen === generation) return;
+        liveMetaInFlightGen = generation;
+        let meta = null;
         try {
-          const resp = await fetch("/api/vision/carbon/latest-frame");
-          meta = await resp.json().catch(() => null);
+          const resp = await fetch(`/api/vision/frames/latest?stream_id=${encodeURIComponent(view.streamId)}`);
+          meta = resp.ok ? await resp.json().catch(() => null) : null;
         } catch (err) {
           meta = null;
+        } finally {
+          if (liveMetaInFlightGen === generation) liveMetaInFlightGen = null;
         }
         if (generation !== visionRenderGeneration) return;
-        if (!meta || !meta.available) {
-          container.innerHTML = '<div class="text-gray-500 text-xs text-center px-4">No frame from carbon yet -- confirm orion-vision-retina is running there.</div>';
-          carbonLiveLastSha256 = null;
-          return;
-        }
-        if (meta.sha256 === carbonLiveLastSha256) {
-          return; // unchanged since the last poll -- nothing to refetch
-        }
-        const img = new Image();
-        img.className = "w-full h-full object-contain";
-        img.alt = "Carbon (latest captured frame)";
-        img.src = `/api/vision/carbon/latest-frame/image?t=${Date.now()}`;
-        img.onerror = () => {
-          if (generation !== visionRenderGeneration) return;
-          container.innerHTML = '<div class="text-gray-500 text-xs text-center px-4">No frame from carbon yet -- confirm orion-vision-retina is running there.</div>';
+        const img = paintLiveFrame(container, view, meta);
+        if (!img || liveImageInFlightGen === generation) return;
+        if (!L.shouldFetchImage(meta, liveFrameShownId)) return;
+        const seq = ++liveImageSeq;
+        const frameId = meta.frame_id;
+        liveImageInFlightGen = generation;
+        const next = new Image();
+        const done = () => {
+          if (liveImageInFlightGen === generation) liveImageInFlightGen = null;
         };
-        img.onload = () => {
-          if (generation !== visionRenderGeneration) return;
-          container.innerHTML = "";
-          container.appendChild(img);
-          carbonLiveLastSha256 = meta.sha256;
+        next.onload = () => {
+          done();
+          if (generation !== visionRenderGeneration || seq !== liveImageSeq) return;
+          img.src = next.src;
+          liveFrameShownId = frameId;
+          livePicture = { loadedAtMs: Date.now(), lastError: false };
+          paintLiveFrame(container, view, meta);
         };
+        next.onerror = () => {
+          // Frame pruned between poll and fetch, unreadable, or undecodable:
+          // keep the last picture, record the error so the badge can't stay
+          // LIVE, and let the next tick retry whatever is newest.
+          done();
+          if (generation !== visionRenderGeneration || seq !== liveImageSeq) return;
+          livePicture = { ...livePicture, lastError: true };
+          paintLiveFrame(container, view, meta);
+        };
+        next.src = L.imageUrl(view.streamId, frameId);
       }
 
       // Repaints the "Carbon (affect snapshot)" panel from an ALREADY-
@@ -12768,7 +12828,10 @@ let chatTurnTimer = null;
             return;
         }
 
-        if (value === "carbon-live" || value === CARBON_AFFECT_VIEW_VALUE) {
+        const liveView = window.OrionVisionLiveFrame
+          ? window.OrionVisionLiveFrame.LIVE_FRAME_VIEWS[value]
+          : null;
+        if (liveView || value === CARBON_AFFECT_VIEW_VALUE) {
             // Neither carbon view has a "pop out to floating video" concept
             // (no continuous stream to pop out) -- disable the button and
             // force visionIsFloating back to false rather than letting a
@@ -12779,10 +12842,11 @@ let chatTurnTimer = null;
             visionIsFloating = false;
             setPopoutEnabled(false);
             if (visionFloatingContainer) visionFloatingContainer.classList.add("hidden");
-            if (value === "carbon-live") {
-                renderCarbonLiveFrame(visionDockedContainer, generation);
+            if (liveView) {
+                visionDockedContainer.innerHTML = '<div class="text-gray-400 text-xs text-center px-4">Loading latest frame…</div>';
+                renderLiveFrame(visionDockedContainer, generation, liveView);
                 carbonLivePollTimer = setInterval(
-                    () => renderCarbonLiveFrame(visionDockedContainer, generation), 5000
+                    () => renderLiveFrame(visionDockedContainer, generation, liveView), liveView.pollMs
                 );
             } else {
                 // No poll of its own -- fetchAmbientStatus() below already

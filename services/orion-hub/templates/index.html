@@ -665,6 +665,10 @@
                    means "poll the latest captured frame", not real video. -->
               <option value="carbon-live">Carbon (live)</option>
               <option value="carbon-affect">Carbon (affect snapshot)</option>
+              <!-- Walkway (2026-10-15): latest frame from the walkway retina
+                   on athena, polled every ~1.5s, downscaled server-side,
+                   badged LIVE/STALE (static/js/vision-live-frame.js). -->
+              <option value="walkway-live">Walkway (live)</option>
               <option value="simulated">Simulated Feed</option>
             </select>
             <button id="visionPopoutButton" class="text-xs bg-gray-800 hover:bg-gray-700 text-gray-200 rounded-lg px-3 py-1 border border-gray-700">Pop Out</button>
@@ -4350,6 +4354,7 @@
   <script src="/static/js/service-logs-ui.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
   <script src="/static/js/container-bringup-ui.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
   <script src="/static/js/carbon-affect-snapshot.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
+  <script src="/static/js/vision-live-frame.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
   <script src="/static/js/vision-asks.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
   <script src="/static/js/thought-process.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/cytoscape/3.28.1/cytoscape.min.js" crossorigin="anonymous" referrerpolicy="no-referrer"></script>

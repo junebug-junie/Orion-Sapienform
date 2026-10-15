@@ -30,6 +30,7 @@ from orion.hub.chat_route import (
 from .settings import settings
 from . import vision_affect_ambient
 from . import vision_frame_cache
+from . import vision_live_frame
 from .grafana_tempo_link import build_grafana_tempo_trace_explore_url
 from .otel_trace_id import is_valid_otel_trace_id, normalize_otel_trace_id
 from .session import ensure_session
@@ -1309,64 +1310,42 @@ def api_vision_affect_ambient_toggle(req: AffectAmbientToggleRequest) -> Dict[st
 # recent affect snapshot") -----------------------------------------------
 
 
-@router.get("/api/vision/carbon/latest-frame")
-async def api_vision_carbon_latest_frame(
-    stream_id: str = Query(default="carbon"),
-) -> Dict[str, Any]:
-    """Metadata (sha256, frame_ts) for the most recent captured frame on
-    ``stream_id`` (default "carbon") -- powers the Vision panel's
-    "Carbon (live)" dropdown option. Backed by vision_frame_cache.py's
-    bus-subscriber cache -- confirmed live 2026-08-22 that no persisted
-    "latest frame for stream X" lookup exists anywhere else in this repo
-    (see that module's docstring).
+# Generic latest-frame routes (2026-10-15, Juniper: watch the walkway
+# camera from the Vision dropdown like carbon). The carbon routes below are
+# kept as aliases so nothing that already calls them breaks.
 
-    ``stream_id`` is a real query param, not hardcoded to "carbon" inside
-    this function -- review finding, 2026-08-22: VisionFrameCache already
-    supports an arbitrary allowlist (VISION_FRAME_CACHE_STREAM_IDS), but a
-    hardcoded route body would make any OTHER stream an operator adds to
-    that allowlist permanently unreachable through this route. The Vision
-    panel's own JS only ever requests "carbon" today -- this just avoids a
-    second hardcoded route+JS pair being needed the day that changes.
-    """
+
+def _live_frame_settings() -> tuple[str, int, float]:
+    frames_dir = str(getattr(settings, "HUB_VISION_FRAMES_DIR", "") or "").strip()
+    max_width = getattr(settings, "HUB_VISION_LIVE_MAX_WIDTH", 1280)
+    stale_after = getattr(settings, "HUB_VISION_LIVE_STALE_SEC", 10.0)
+    # Explicit None checks, not `x or DEFAULT`: 0 is a real value here
+    # (max width 0 = full size; stale 0 = anything older than now is stale).
+    max_width = 1280 if max_width is None else max(0, int(max_width))
+    stale_after = 10.0 if stale_after is None else max(0.0, float(stale_after))
+    return frames_dir or vision_live_frame.DEFAULT_FRAMES_DIR, max_width, stale_after
+
+
+async def _latest_frame_meta(stream_id: str) -> Dict[str, Any]:
     if vision_frame_cache.cache is None:
-        return {"available": False, "reason": "cache_not_started"}
+        return {"available": False, "stream_id": stream_id, "reason": "cache_not_started"}
+    if stream_id not in vision_frame_cache.cache.stream_ids:
+        return {"available": False, "stream_id": stream_id, "reason": "stream_not_cached"}
     latest = await vision_frame_cache.cache.get_latest(stream_id)
     if not latest:
-        return {"available": False, "reason": "no_frame_seen_yet"}
-    return {"available": True, **latest}
+        return {"available": False, "stream_id": stream_id, "reason": "no_frame_seen_yet"}
+    _, _, stale_after = _live_frame_settings()
+    return vision_live_frame.public_frame_meta(
+        stream_id, latest, now=time.time(), stale_after_sec=stale_after
+    )
 
 
-@router.get("/api/vision/carbon/latest-frame/image")
-async def api_vision_carbon_latest_frame_image(
-    stream_id: str = Query(default="carbon"),
-) -> Response:
-    """Proxies the actual JPEG bytes from orion-percept-store, server-side
-    -- the browser never talks to percept-store directly (no auth/CORS
-    surface to expose, and percept-store's port doesn't need to be
-    reachable from wherever Hub's frontend happens to be loaded from).
-
-    Uses aiohttp (already a dependency, already this file's own convention
-    for proxied fetches -- see _proxy_request above), not
-    asyncio.to_thread(requests.get, ...) -- review finding, 2026-08-22: the
-    thread-pool version tied up a shared executor slot for the whole fetch,
-    the same pool vision_affect_ambient's blocking capture calls (up to
-    ~195s worst case) also use.
-
-    Verifies the fetched bytes actually hash to the sha256 that was asked
-    for before serving them -- review finding, 2026-08-22: this used to
-    trust percept-store's response uncritically, unlike the orchestrator's
-    own percept fetch (services/orion-juniper-affective-state/app/main.py
-    _fetch_percept), which has done this chain-of-custody check since it
-    was first built. Corrupted or substituted content must not reach the
-    browser silently.
-    """
-    if vision_frame_cache.cache is None:
-        raise HTTPException(status_code=503, detail="vision_frame_cache_not_started")
-    latest = await vision_frame_cache.cache.get_latest(stream_id)
-    if not latest or not latest.get("sha256"):
-        raise HTTPException(status_code=404, detail="no_frame_seen_yet")
-    sha256 = latest["sha256"]
-
+async def _fetch_percept_frame(sha256: str) -> bytes:
+    """JPEG bytes from orion-percept-store by content address, re-hashed
+    before use (chain of custody, same as the orchestrator's _fetch_percept).
+    Uses aiohttp, not a thread-pool requests.get -- a thread-pool slot held
+    for the whole fetch competes with vision_affect_ambient's long blocking
+    captures (review finding, 2026-08-22)."""
     base = str(settings.PERCEPT_STORE_BASE_URL or "").strip().rstrip("/")
     if not base:
         raise HTTPException(status_code=503, detail="percept_store_base_url_not_configured")
@@ -1383,16 +1362,103 @@ async def api_vision_carbon_latest_frame_image(
         raise HTTPException(
             status_code=502, detail=f"percept_store_unavailable:{exc}"
         ) from exc
-
     fetched_sha256 = hashlib.sha256(data).hexdigest()
     if fetched_sha256 != sha256:
         logger.error(
-            f"[HUB] carbon_latest_frame_hash_mismatch expected={sha256[:12]} "
+            f"[HUB] latest_frame_hash_mismatch expected={sha256[:12]} "
             f"got={fetched_sha256[:12]}"
         )
         raise HTTPException(status_code=502, detail="percept_store_hash_mismatch")
+    return data
 
-    return Response(content=data, media_type="image/jpeg")
+
+async def _latest_frame_image(stream_id: str) -> Response:
+    """Latest frame for ``stream_id`` as a browser-sized JPEG.
+
+    Local file first (walkway: shared frames dir, read-only mount, path
+    confined to that dir), percept-store by sha256 second (carbon). Then
+    downscaled to HUB_VISION_LIVE_MAX_WIDTH off the event loop, and memoised
+    per stream so several tabs polling the same frame decode it once.
+    """
+    if vision_frame_cache.cache is None:
+        raise HTTPException(status_code=503, detail="vision_frame_cache_not_started")
+    if stream_id not in vision_frame_cache.cache.stream_ids:
+        raise HTTPException(status_code=404, detail="stream_not_cached")
+    latest = await vision_frame_cache.cache.get_latest(stream_id)
+    if not latest:
+        raise HTTPException(status_code=404, detail="no_frame_seen_yet")
+    frames_dir, max_width, _ = _live_frame_settings()
+    frame_id = vision_live_frame.frame_id_of(latest) or ""
+    headers = {
+        "Cache-Control": "no-store",
+        "X-Content-Type-Options": "nosniff",
+        # Bus-supplied text: only echoed when it is a plain frame name or a
+        # sha256, so CR/LF or non-latin-1 can't break the response.
+        "X-Orion-Frame-Id": vision_live_frame.safe_header_frame_id(frame_id),
+    }
+    cached = vision_live_frame.memo.get(stream_id, frame_id, max_width)
+    if cached is not None:
+        return Response(content=cached, media_type="image/jpeg", headers=headers)
+
+    data: Optional[bytes] = None
+    if latest.get("image_path"):
+        data = await asyncio.to_thread(
+            vision_live_frame.load_local_frame, latest["image_path"], frames_dir
+        )
+        # A pointer carrying BOTH addresses: the local copy must hash to the
+        # sha256 too, or it is dropped in favour of the verified store copy
+        # (keeps carbon's chain of custody -- review finding, 2026-10-15).
+        if (
+            data is not None
+            and latest.get("sha256")
+            and hashlib.sha256(data).hexdigest() != latest["sha256"]
+        ):
+            logger.warning(f"[HUB] latest_frame_local_hash_mismatch stream={stream_id}")
+            data = None
+    if data is None and latest.get("sha256"):
+        data = await _fetch_percept_frame(latest["sha256"])
+    if data is None:
+        # Pruned already, outside the frames dir, or not mounted into Hub.
+        raise HTTPException(status_code=404, detail="frame_not_readable")
+    try:
+        out = await asyncio.to_thread(vision_live_frame.downscale_jpeg, data, max_width)
+    except Exception as exc:
+        logger.warning(f"[HUB] latest_frame_decode_failed stream={stream_id} err={exc}")
+        raise HTTPException(status_code=404, detail="frame_not_decodable") from exc
+    vision_live_frame.memo.put(stream_id, frame_id, max_width, out)
+    return Response(content=out, media_type="image/jpeg", headers=headers)
+
+
+@router.get("/api/vision/frames/latest")
+async def api_vision_frames_latest(stream_id: str = Query(...)) -> Dict[str, Any]:
+    """Metadata for the newest frame Hub has seen on ``stream_id`` (must be
+    in VISION_FRAME_CACHE_STREAM_IDS): frame_id, age_sec, stale. Never the
+    host file path."""
+    return await _latest_frame_meta(stream_id)
+
+
+@router.get("/api/vision/frames/latest/image")
+async def api_vision_frames_latest_image(stream_id: str = Query(...)) -> Response:
+    return await _latest_frame_image(stream_id)
+
+
+@router.get("/api/vision/carbon/latest-frame")
+async def api_vision_carbon_latest_frame(
+    stream_id: Annotated[str, Query()] = "carbon",
+) -> Dict[str, Any]:
+    """Alias of /api/vision/frames/latest (kept for existing callers).
+    Backed by vision_frame_cache.py's bus-subscriber cache -- no persisted
+    "latest frame for stream X" lookup exists anywhere else in this repo."""
+    return await _latest_frame_meta(stream_id)
+
+
+@router.get("/api/vision/carbon/latest-frame/image")
+async def api_vision_carbon_latest_frame_image(
+    stream_id: Annotated[str, Query()] = "carbon",
+) -> Response:
+    """Alias of /api/vision/frames/latest/image (kept for existing callers).
+    The browser never talks to percept-store or the frames dir directly."""
+    return await _latest_frame_image(stream_id)
 
 
 class AutonomyGoalArchiveRequest(BaseModel):

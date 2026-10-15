@@ -229,8 +229,9 @@ def test_check_now_stores_raw_response_and_video_sha256_for_the_affect_snapshot_
 
 
 class _FakeFrameCache:
-    def __init__(self, latest=None):
+    def __init__(self, latest=None, stream_ids=("carbon",)):
         self._latest = latest
+        self.stream_ids = set(stream_ids)
 
     async def get_latest(self, stream_id):
         return self._latest
@@ -240,14 +241,14 @@ class _FakeFrameCache:
 async def test_latest_frame_route_reports_unavailable_when_cache_not_started():
     with patch.object(vision_frame_cache, "cache", None):
         payload = await api_routes.api_vision_carbon_latest_frame()
-    assert payload == {"available": False, "reason": "cache_not_started"}
+    assert payload == {"available": False, "stream_id": "carbon", "reason": "cache_not_started"}
 
 
 @pytest.mark.asyncio
 async def test_latest_frame_route_reports_no_frame_seen_yet():
     with patch.object(vision_frame_cache, "cache", _FakeFrameCache(latest=None)):
         payload = await api_routes.api_vision_carbon_latest_frame()
-    assert payload == {"available": False, "reason": "no_frame_seen_yet"}
+    assert payload == {"available": False, "stream_id": "carbon", "reason": "no_frame_seen_yet"}
 
 
 @pytest.mark.asyncio
@@ -334,7 +335,15 @@ def _patch_aiohttp_session(fake_session):
 
 @pytest.mark.asyncio
 async def test_latest_frame_image_proxies_bytes_from_percept_store():
-    real_bytes = b"\xff\xd8fake-jpeg-bytes"
+    # A real (small) JPEG: the route now decodes to check width, and one
+    # already narrower than HUB_VISION_LIVE_MAX_WIDTH is served untouched.
+    import io
+
+    from PIL import Image
+
+    buf = io.BytesIO()
+    Image.new("RGB", (64, 48), (10, 20, 30)).save(buf, format="JPEG")
+    real_bytes = buf.getvalue()
     sha256 = hashlib.sha256(real_bytes).hexdigest()
     latest = {"sha256": sha256, "frame_ts": 100.0}
     fake_session = _FakeAiohttpSession(response=_FakeAiohttpResponse(content=real_bytes))
@@ -394,6 +403,7 @@ async def test_latest_frame_routes_accept_a_stream_id_param_not_hardcoded_carbon
     class _RecordingFrameCache:
         def __init__(self):
             self.requested_stream_ids: list[str] = []
+            self.stream_ids = {"cam0"}
 
         async def get_latest(self, stream_id):
             self.requested_stream_ids.append(stream_id)

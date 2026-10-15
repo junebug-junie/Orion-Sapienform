@@ -3842,6 +3842,17 @@ equilibrium's legacy pooled-timeout branch only covers cortex-exec/cortex-orch, 
 snapshots feed only the per-hop EWMA baseline gate
 (docs/superpowers/specs/2026-09-24-metacog-capture-and-transport-ewma-baseline-design.md).
 
+## Vision panel: live camera views (carbon, walkway)
+
+The Vision panel's camera dropdown has polled "live" views: **Carbon (live)** (every 5s) and **Walkway (live)** (every 1.5s, added 2026-10-15). Each view asks `GET /api/vision/frames/latest?stream_id=<id>` for metadata and fetches `GET /api/vision/frames/latest/image?stream_id=<id>` only when the frame changed. A badge reads `LIVE · Ns ago` or, once Hub has seen no new frame for `HUB_VISION_LIVE_STALE_SEC` (default 10), `STALE · last frame Ns ago` with the picture dimmed -- a frozen frame is never shown as live. Logic: `static/js/vision-live-frame.js` (tests: `vision-live-frame.test.js`).
+
+- Source: `scripts/vision_frame_cache.py` remembers the latest `orion:vision:frames` pointer for each stream in `VISION_FRAME_CACHE_STREAM_IDS` (default `carbon,walkway`). Other streams return `stream_not_cached`.
+- Bytes: a local `image_path` (walkway, on athena) is read from the read-only `HUB_VISION_FRAMES_DIR` mount -- only files directly in that dir, JPEG names, regular files, no symlinks (`O_NOFOLLOW`), 16MB cap; otherwise percept-store by sha256 (carbon), re-hashed before use. Either way the frame is downscaled to `HUB_VISION_LIVE_MAX_WIDTH` (default 1280; 0 = full size) in a worker thread and memoised per stream. The browser never sees host paths.
+- `/api/vision/carbon/latest-frame{,/image}` remain as aliases.
+- Walkway frames are pruned by the retina after about a minute; a pruned frame returns 404 and the panel keeps the last picture until the next poll.
+- Changing the mount needs a Hub recreate, not just a restart.
+- Tests: `tests/test_vision_live_frame.py`, `tests/test_vision_frame_cache.py`, `tests/test_vision_affect_capture_api.py`.
+
 ## Orion is asking (open questions to Juniper)
 
 Walkway camera idea 3 (`docs/superpowers/specs/2026-09-22-walkway-camera-busy-world-design.md`). The "Orion is asking" panel (`#visionAsksCard`, `static/js/vision-asks.js`; since 2026-10-06 the first card on the Hub home, no longer inside Vision) lists Orion's open questions and lets Juniper answer or dismiss them. Routes in `scripts/ask_routes.py`, on the Hub's asyncpg pool (`RECALL_PG_DSN`, `conjourney`):

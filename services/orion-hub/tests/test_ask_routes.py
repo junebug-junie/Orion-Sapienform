@@ -746,6 +746,7 @@ def test_who_is_this_with_three_pictures_records_each_picture(env):
     ([{"image_ref": "thumb:" + "z" * 64, "verdict": "same"}], "picture_not_on_card"),
     ([{"image_ref": "thumb:" + "b" * 64, "verdict": "same"}] * 2, "picture_listed_twice"),
     ([{"image_ref": "thumb:" + "a" * 64, "verdict": "different", "name": "x"}], "first_picture_is_the_answer"),
+    ([{"image_ref": "thumb:" + "b" * 64, "verdict": "same", "name": "Not Theo"}], "same_picture_takes_the_answer"),
 ])
 def test_bad_pictures_are_refused(env, pictures, detail):
     client, rows, _pub = env

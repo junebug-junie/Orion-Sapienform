@@ -61,7 +61,7 @@ import re
 import stat
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Literal, Optional
+from typing import Annotated, Any, Literal, Optional
 
 from fastapi import APIRouter, HTTPException, Query, Request, Response
 from pydantic import BaseModel, Field
@@ -169,7 +169,7 @@ class PictureAnswer(BaseModel):
 class AskAnswerBody(BaseModel):
     answer: str = Field(min_length=1, max_length=MAX_ANSWER_CHARS)
     # "Same person?" cards only: individual_id -> name (empty names are dropped).
-    names: dict[str, str] = Field(default_factory=dict)
+    names: dict[str, Annotated[str, Field(max_length=MAX_ANSWER_CHARS)]] = Field(default_factory=dict)
     # Multi-picture "who is this?" cards only: one entry per picture.
     pictures: list[PictureAnswer] = Field(default_factory=list, max_length=MAX_PICTURES)
 
@@ -239,6 +239,8 @@ def picture_answer_detail(answer: str, image_refs: list[str], pictures: list[Pic
             if p.verdict != "same" or (name and name != answer):
                 raise HTTPException(status_code=422, detail="first_picture_is_the_answer")
             continue
+        if p.verdict == "same" and name and name != answer:
+            raise HTTPException(status_code=422, detail="same_picture_takes_the_answer")
         out[i] = {"image_ref": p.image_ref, "index": i, "verdict": p.verdict,
                   "name": answer if p.verdict == "same" else (name if p.verdict == "different" and name else None)}
     return {"pictures": [out[i] for i in sorted(out)]}

@@ -581,3 +581,21 @@ def test_picture_face_split() -> None:
     assert out["impure"] is True and out["with_face"] == 3 and out["pictures"] == 4
     assert out["min_face_cosine"] < 0.39
     assert vi.picture_face_split(["r0", "r9"], same, 0.39)["impure"] is None  # one face: unknown
+
+
+@needs_pg
+def test_two_typed_names_in_one_group_are_logged(pg, caplog) -> None:
+    from sqlalchemy import text
+
+    with pg.begin() as conn:
+        for iid, c in (("aaa", "a"), ("bbb", "b"), ("ccc", "c")):
+            _add_person(conn, iid, _vec(1, 0.0), 6, FACE(c))
+        _same(conn, "aaa", "bbb")
+        _same(conn, "bbb", "ccc")
+        conn.execute(text("UPDATE vision_individual SET label='Alice', label_copied=false WHERE individual_id='bbb'"))
+        _ask(conn, "who", "vision_individual", "aaa", status="answered", answer="Bob")
+        with caplog.at_level("WARNING"):
+            vi._apply_answers(conn, NOW)
+        labels = _labels(conn)
+    assert labels == {"aaa": ("Bob", False), "bbb": ("Alice", False), "ccc": ("Bob", True)}
+    assert any("VISION_GROUP_NAME_CONFLICT" in r.getMessage() for r in caplog.records)

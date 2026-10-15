@@ -42,6 +42,11 @@ on:
       - "services/orion-sql-db/manual_migration_referent_alias_*.sql"
       - "orion/substrate/**"
       - "services/orion-hub/scripts/ask_routes.py"
+      - "services/orion-hub/tests/test_ask_resolve_pg.py"
+      - "services/orion-hub/tests/test_ask_names_pg.py"
+      - "services/orion-sql-db/manual_migration_walkway_camera_v1.sql"
+      - "services/orion-sql-db/manual_migration_vision_confirm_asks_v1.sql"
+      - "services/orion-sql-db/manual_migration_vision_ask_names_v1.sql"
       - ".github/workflows/orion-memory-episode-tests.yml"
 
 jobs:

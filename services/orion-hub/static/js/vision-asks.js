@@ -355,7 +355,11 @@
     const group = el(doc, "fieldset", "flex flex-wrap items-center gap-3 border-0 p-0 m-0");
     setStyle(group, { border: "0", padding: "0", margin: "0" });
     group.setAttribute("data-ask-choices", vm.askId);
-    group.appendChild(el(doc, "legend", "sr-only", "Are these the same person?"));
+    const legend = el(doc, "legend", "sr-only", "Are these the same person?");
+    // Visually hidden without the stylesheet too; still read by a screen reader.
+    setStyle(legend, { position: "absolute", width: "1px", height: "1px", overflow: "hidden",
+      clip: "rect(0 0 0 0)", whiteSpace: "nowrap" });
+    group.appendChild(legend);
     const groupName = nextId("ask-choice");
     const radios = {};
     [["same", "Same person"], ["different", "Different people"], ["unsure", "Not sure"]].forEach(function (c) {

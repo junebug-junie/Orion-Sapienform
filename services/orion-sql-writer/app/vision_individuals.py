@@ -1435,6 +1435,14 @@ def _propagate_label(conn, individual_id: str, label: str, ask_id: str, at: date
     group = sorted({b for _, b in pairs} - {individual_id})
     if not group:
         return []
+    if replace_copied:
+        # Two typed names in one confirmed group: copies follow the newest, but say so.
+        others = sorted({r[0] for r in conn.execute(text(
+            "SELECT label FROM vision_individual WHERE individual_id = ANY(:ids) AND label IS NOT NULL "
+            "AND NOT label_copied AND label <> :l"), {"ids": group, "l": label}).fetchall()})
+        if others:
+            logger.warning("[VISION_GROUP_NAME_CONFLICT] individual_id=%s new=%r other_typed=%r ask_id=%s",
+                           individual_id, label, others, ask_id)
     return [r[0] for r in conn.execute(text(
         "UPDATE vision_individual SET label=:l, labeled_at=:at, label_ask_id=:a, label_copied=true, updated_at=now() "
         "WHERE individual_id = ANY(:ids) AND (label IS NULL OR (:rc AND label_copied)) "

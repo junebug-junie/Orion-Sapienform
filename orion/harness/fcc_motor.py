@@ -1070,6 +1070,7 @@ async def run_fcc_turn(
     pool_state: Mapping[str, Any] | None = None,
     chat_reply: bool = False,
     resume_key: str | None = None,
+    task_anchor: str | None = None,
 ) -> AsyncIterator[Dict[str, object]]:
     """Orion capability: the actual FCC-Claude process.
 
@@ -1264,7 +1265,11 @@ async def run_fcc_turn(
         reading_only=reading_only,
         mcp_config_path=mcp_config_path,
         session_plan=session_plan,
+        task_anchor=task_anchor,
     )
+    if task_anchor:
+        logger.info("fcc_task_anchor corr=%s chars=%s", correlation_id, len(task_anchor))
+        drive_kwargs["task_anchor_chars"] = len(task_anchor)
     spawn_env = _build_subprocess_env(
         chat_reply=chat_reply,
         gpu_lease=gpu_lease,
@@ -1328,6 +1333,7 @@ def build_claude_argv(
     reading_only: bool = False,
     mcp_config_path: Optional[Path] = None,
     session_plan: Any = None,
+    task_anchor: Optional[str] = None,
 ) -> List[str]:
     """The ``claude`` argv for one FCC turn.
 
@@ -1349,6 +1355,9 @@ def build_claude_argv(
     else:
         argv = [claude_bin, "-p", prompt]
     argv.extend(["--output-format", "stream-json", "--verbose", "--model", model_id])
+    if task_anchor:
+        # System-prompt text is never rewritten by CLI compaction (orion/harness/task_anchor.py).
+        argv.extend(["--append-system-prompt", task_anchor])
     if reading_only:
         # Source models can fetch/search, but cannot reach shell, filesystem,
         # graph tools, memory writers or operator-installed MCP servers/plugins.
@@ -1558,6 +1567,7 @@ async def _drive_fcc_turn(
     reading_only: bool,
     workspace: str,
     context_seed_chars: int = 0,
+    task_anchor_chars: int = 0,
 ) -> AsyncIterator[Dict[str, object]]:
     """Read one turn's stream-json and yield Orion frames. Shared by spawn and warm modes."""
     steps_seen = 0
@@ -1805,6 +1815,8 @@ async def _drive_fcc_turn(
         "exit_code": exit_code,
         # How many times the CLI compacted this turn's context (compact_boundary).
         "fcc_compactions": compactions,
+        # Whether the turn carried a task anchor (0 = none). Read next to fcc_compactions.
+        "task_anchor_chars": task_anchor_chars,
         # Spec L5 start-up telemetry: "warm" (pooled process) or "spawn".
         "fcc_spawn_mode": io.mode,
         "fcc_spawn_or_acquire_ms": init_ms,

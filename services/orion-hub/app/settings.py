@@ -371,7 +371,7 @@ class Settings(BaseSettings):
     # more traffic than this panel has any use for.
     VISION_FRAME_CACHE_ENABLED: bool = Field(default=True, alias="VISION_FRAME_CACHE_ENABLED")
     VISION_FRAME_CACHE_STREAM_IDS: str = Field(
-        default="carbon",
+        default="carbon,walkway",
         alias="VISION_FRAME_CACHE_STREAM_IDS",
         description="Comma-separated stream_ids to cache the latest frame pointer for.",
     )
@@ -385,6 +385,19 @@ class Settings(BaseSettings):
     PERCEPT_STORE_BASE_URL: str = Field(default="", alias="PERCEPT_STORE_BASE_URL")
     PERCEPT_STORE_TIMEOUT_SEC: float = Field(default=10.0, alias="PERCEPT_STORE_TIMEOUT_SEC")
     PERCEPT_STORE_TOKEN: str = Field(default="", alias="PERCEPT_STORE_TOKEN")
+
+    # Vision panel "Walkway (live)" (2026-10-15). The walkway retina runs on
+    # athena and its frame pointers carry only a local image_path in this
+    # shared frames dir (no percept-store sha256); docker-compose mounts it
+    # read-only at the same path. Frames are served only from directly
+    # inside this dir (scripts/vision_live_frame.py), downscaled to at most
+    # HUB_VISION_LIVE_MAX_WIDTH px (0 = no downscale), and the panel marks a
+    # stream STALE once Hub has seen no new pointer for HUB_VISION_LIVE_STALE_SEC.
+    HUB_VISION_FRAMES_DIR: str = Field(
+        default="/mnt/telemetry/vision/frames", alias="HUB_VISION_FRAMES_DIR"
+    )
+    HUB_VISION_LIVE_MAX_WIDTH: int = Field(default=1280, alias="HUB_VISION_LIVE_MAX_WIDTH")
+    HUB_VISION_LIVE_STALE_SEC: float = Field(default=10.0, alias="HUB_VISION_LIVE_STALE_SEC")
 
     # Walkway ask card pictures (scripts/ask_routes.py GET /api/vision/crop-
     # thumbs/{sha256}). orion-vision-host writes one small JPEG per EMBEDDED

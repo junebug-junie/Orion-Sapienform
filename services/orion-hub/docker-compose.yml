@@ -62,6 +62,10 @@ services:
       # small JPEG per embedded crop here (never a patio box) and prunes it
       # after 10 days. Served only by content hash (scripts/ask_routes.py).
       - ${HUB_VISION_CROP_THUMB_DIR:-/mnt/telemetry/orion-vision-host/crop_thumbs}:${HUB_VISION_CROP_THUMB_DIR:-/mnt/telemetry/orion-vision-host/crop_thumbs}:ro
+      # "Walkway (live)" in the Vision panel (read-only): the walkway retina
+      # writes its frames here with a local path only. Served only from
+      # directly inside this dir, downscaled (scripts/vision_live_frame.py).
+      - ${HUB_VISION_FRAMES_DIR:-/mnt/telemetry/vision/frames}:${HUB_VISION_FRAMES_DIR:-/mnt/telemetry/vision/frames}:ro
       # Reuse the operator's existing host-level git/gh auth read-only, same pattern
       # as the claude-binary mount below -- no credentials are stored
       # in this repo. `origin` is an SSH remote (git@github.com:...), so `git push`
@@ -221,12 +225,15 @@ services:
       # would come up recording. For a camera kill switch that is the wrong
       # direction to fail, so the key is left to env_file alone.
       - VISION_FRAME_CACHE_ENABLED=${VISION_FRAME_CACHE_ENABLED:-true}
-      - VISION_FRAME_CACHE_STREAM_IDS=${VISION_FRAME_CACHE_STREAM_IDS:-carbon}
+      - VISION_FRAME_CACHE_STREAM_IDS=${VISION_FRAME_CACHE_STREAM_IDS:-carbon,walkway}
       - VISION_FRAME_CHANNEL=${VISION_FRAME_CHANNEL:-orion:vision:frames}
       - PERCEPT_STORE_BASE_URL=${PERCEPT_STORE_BASE_URL:-}
       - PERCEPT_STORE_TIMEOUT_SEC=${PERCEPT_STORE_TIMEOUT_SEC:-10}
       - PERCEPT_STORE_TOKEN=${PERCEPT_STORE_TOKEN:-}
       - HUB_VISION_CROP_THUMB_DIR=${HUB_VISION_CROP_THUMB_DIR:-/mnt/telemetry/orion-vision-host/crop_thumbs}
+      - HUB_VISION_FRAMES_DIR=${HUB_VISION_FRAMES_DIR:-/mnt/telemetry/vision/frames}
+      - HUB_VISION_LIVE_MAX_WIDTH=${HUB_VISION_LIVE_MAX_WIDTH:-1280}
+      - HUB_VISION_LIVE_STALE_SEC=${HUB_VISION_LIVE_STALE_SEC:-10}
       - MEMORY_CONFIRMATION_LOOP_ENABLED=${MEMORY_CONFIRMATION_LOOP_ENABLED:-true}
 
       # New Titanium Channels

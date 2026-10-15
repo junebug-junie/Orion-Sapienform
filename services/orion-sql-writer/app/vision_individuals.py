@@ -867,6 +867,23 @@ def same_person_question(*, face_n_a: int, face_n_b: int) -> str:
             f"(left: {face_n_a} good looks, right: {face_n_b}).")
 
 
+def picture_face_split(refs: Sequence[str], face_by_ref: Dict[str, Sequence[float]],
+                       band: float) -> Dict[str, Any]:
+    """Does one "who is this?" card show more than one face?
+
+    ``face_by_ref``: picture ref -> face embedding (for the pictures that have
+    one). The card is ``impure`` when two of its faces are less alike than
+    ``band`` -- the low edge of the measured same-person band -- and ``None``
+    (unknown) when fewer than two pictures have a face."""
+    faces = [(r, face_by_ref[r]) for r in refs if face_by_ref.get(r)]
+    sims = [cosine(faces[i][1], faces[j][1]) for i in range(len(faces)) for j in range(i + 1, len(faces))
+            if len(faces[i][1]) == len(faces[j][1])]
+    lo = min(sims) if sims else None
+    return {"pictures": len(refs), "with_face": len(faces),
+            "min_face_cosine": None if lo is None else round(float(lo), 3),
+            "impure": None if lo is None else bool(lo < band)}
+
+
 def individual_display_label(ind_label: Optional[str], kind: str, individual_id: str) -> str:
     return ind_label or f"{kind} #{individual_id[:6]}"
 

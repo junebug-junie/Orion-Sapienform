@@ -42,9 +42,15 @@ def _asks(open_ids):
         out.append({"ask_id": "p1", "question": "Are these the same person?", "source_kind": "vision_same_individual",
                     "source_ref": "a|b", "created_at": "2026-10-15T21:40:00+00:00", "evidence_refs": [],
                     "image_ref": f"thumb:{FACE_A}", "image_refs": [f"thumb:{FACE_A}", f"thumb:{FACE_B}"]})
+    if "v3" in open_ids:
+        out.append({"ask_id": "v3", "question": "Do you know who this is?", "source_kind": "vision_individual",
+                    "source_ref": "ind-3", "created_at": "2026-10-15T21:30:00+00:00", "evidence_refs": [],
+                    "image_ref": f"thumb:{FACE_A}",
+                    "image_refs": [f"thumb:{FACE_A}", f"thumb:{FACE_B}", f"thumb:{FACE_C}"]})
     return out
 
 
+FACE_C = "c" * 64
 FACE_A = "a" * 64
 FACE_B = "b" * 64
 # 1x1 JPEG-ish bytes are not needed: a 1x1 GIF is a valid image for the browser.
@@ -57,7 +63,7 @@ def test_orion_is_asking_panel_browser_smoke():
 
     page_html = f"<!doctype html><html><body>{_panel_html()}<script src=\"/static/js/vision-asks.js\"></script></body></html>"
     script = (HUB / "static" / "js" / "vision-asks.js").read_text(encoding="utf-8")
-    open_ids = {"m-confirm", "m-revise", "m-reject", "v1", "p1"}
+    open_ids = {"m-confirm", "m-revise", "m-reject", "v1", "p1", "v3"}
     posted: list[tuple[str, dict]] = []
 
     def handle(route):
@@ -66,7 +72,7 @@ def test_orion_is_asking_panel_browser_smoke():
             return route.fulfill(body=page_html, content_type="text/html")
         if url.endswith("/static/js/vision-asks.js"):
             return route.fulfill(body=script, content_type="application/javascript")
-        if url.endswith(f"/api/vision/crop-thumbs/{FACE_A}"):
+        if url.endswith(f"/api/vision/crop-thumbs/{FACE_A}") or url.endswith(f"/api/vision/crop-thumbs/{FACE_C}"):
             return route.fulfill(body=PIXEL, content_type="image/gif")
         if route.request.method == "POST":
             m = re.search(r"/api/asks/([^/]+)/(resolve|answer|dismiss)$", url)
@@ -88,7 +94,7 @@ def test_orion_is_asking_panel_browser_smoke():
         page.goto("http://hub.test/home")
 
         page.wait_for_selector('[data-ask-id="m-confirm"]')
-        assert "Orion has 5 questions for you." in page.inner_text("#visionAsksStatus")
+        assert "Orion has 6 questions for you." in page.inner_text("#visionAsksStatus")
         assert "Orion is asking" in page.inner_text("#visionAsksCard")
         # Database text is inert: the markup in a question renders as text and never runs.
         assert "<img src=x" in page.inner_text('[data-ask-id="m-reject"]')
@@ -105,15 +111,49 @@ def test_orion_is_asking_panel_browser_smoke():
             "document.querySelector('[data-ask-id=\"p1\"]').innerText.includes('Picture no longer available.')")
         boxes = [page.locator('[data-ask-id="p1"] figure').nth(i).bounding_box() for i in range(2)]
         assert abs(boxes[0]["y"] - boxes[1]["y"]) < 2 and boxes[1]["x"] > boxes[0]["x"], boxes  # side by side
-        assert page.locator('[data-ask-id="p1"] [data-ask-input]').count() == 0
+        # Name boxes are there but hidden until a choice needs them; one Send per card.
+        assert not page.is_visible('[data-ask-id="p1"] [data-ask-name="same"]')
+        assert not page.is_visible('[data-ask-id="p1"] [data-ask-name="left"]')
+        assert page.locator('[data-ask-id="p1"] [data-ask-action]').count() == 1
         page.set_viewport_size({"width": 360, "height": 800})  # phone width: both still inside the card
         card_box = page.locator('[data-ask-id="p1"]').bounding_box()
         fig_b = page.locator('[data-ask-id="p1"] figure').nth(1).bounding_box()
         assert fig_b["x"] + fig_b["width"] <= card_box["x"] + card_box["width"] + 1, (fig_b, card_box)
-        page.click('[data-ask-id="p1"] [data-ask-action="same"]')
+        # "Different people" opens one labelled box under each face, inside the card at 360 px.
+        page.get_by_label("Different people").check()
+        assert page.is_visible('[data-ask-id="p1"] [data-ask-name="left"]')
+        assert page.is_visible('[data-ask-id="p1"] [data-ask-name="right"]')
+        right = page.get_by_label("Right face: who is it? (optional)").bounding_box()
+        assert right["x"] + right["width"] <= card_box["x"] + card_box["width"] + 1, (right, card_box)
+        # Switching to "Same person" swaps them for one box for both.
+        page.get_by_label("Same person").check()
+        assert not page.is_visible('[data-ask-id="p1"] [data-ask-name="left"]')
+        page.get_by_label("Who is this? (optional)").fill("Kid next door")
+        page.click('[data-ask-id="p1"] [data-ask-action="send"]')
         page.wait_for_selector('[data-ask-id="p1"]', state="detached")
-        assert posted[-1] == ("p1/answer", {"answer": "yes"})
+        assert posted[-1] == ("p1/answer", {"answer": "yes", "names": {"a": "Kid next door", "b": "Kid next door"}})
         posted.clear()
+
+        # A "who is this?" card with three pictures: pictures 2 and 3 each say
+        # whether they are the same person (default) or someone else.
+        card3 = '[data-ask-id="v3"]'
+        assert page.locator(f"{card3} select").count() == 2
+        assert page.get_by_label("Picture 3 is:").input_value() == "same"
+        assert not page.is_visible(f'{card3} [data-ask-name="picture-2"]')
+        page.get_by_label("Picture 3 is:").select_option("different")
+        assert page.is_visible(f'{card3} [data-ask-name="picture-2"]')
+        sel_box = page.get_by_label("Picture 3 is:").bounding_box()
+        card3_box = page.locator(card3).bounding_box()
+        assert sel_box["x"] + sel_box["width"] <= card3_box["x"] + card3_box["width"] + 1, (sel_box, card3_box)
+        page.fill(f'{card3} [data-ask-name="picture-2"]', "Other kid")
+        page.fill(f'{card3} input[placeholder="Who is the first picture?"]', "Theo")
+        page.click(f'{card3} [data-ask-action="answer"]')
+        page.wait_for_selector(card3, state="detached")
+        assert posted[-1] == ("v3/answer", {"answer": "Theo", "pictures": [
+            {"image_ref": f"thumb:{FACE_B}", "verdict": "same"},
+            {"image_ref": f"thumb:{FACE_C}", "verdict": "different", "name": "Other kid"}]})
+        posted.clear()
+        page.set_viewport_size({"width": 1280, "height": 800})
 
         page.click('[data-ask-id="m-confirm"] [data-ask-action="confirm"]')
         page.wait_for_selector('[data-ask-id="m-confirm"]', state="detached")

@@ -571,3 +571,13 @@ def test_check_tables_names_the_names_migration(pg) -> None:
         with pytest.raises(vi.MigrationMissing, match="manual_migration_vision_ask_names_v1"):
             vi._check_tables(conn)
         tx.rollback()
+
+
+def test_picture_face_split() -> None:
+    same = {"r0": _vec(1, 0.1), "r1": _vec(1, 0.2)}
+    assert vi.picture_face_split(["r0", "r1"], same, 0.39)["impure"] is False
+    mixed = {**same, "r2": _vec(0, 1)}
+    out = vi.picture_face_split(["r0", "r1", "r2", "r3"], mixed, 0.39)
+    assert out["impure"] is True and out["with_face"] == 3 and out["pictures"] == 4
+    assert out["min_face_cosine"] < 0.39
+    assert vi.picture_face_split(["r0", "r9"], same, 0.39)["impure"] is None  # one face: unknown

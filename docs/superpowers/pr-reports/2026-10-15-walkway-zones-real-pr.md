@@ -151,6 +151,7 @@ Walkway surprise split: after merge, from the primary checkout on main, before s
 
 ```bash
 scripts/safe_docker_build.sh orion-substrate-runtime up -d --build
+scripts/safe_docker_build.sh orion-attention-runtime up -d --build
 ```
 
 Zones and retina:

@@ -253,6 +253,12 @@ def test_dependency_sources_parse_copy_add_and_mounts(mini_repo: Path) -> None:
         "     config/other.yaml /app/config/\n"
         "ADD [\"config/rules/*.yaml\", \"/app/rules/\"]\n"
         "COPY --from=base /opt/thing /opt/thing\n"
+        "COPY\tconfig/tabbed.yaml /app/\n"
+        "COPY config/a.yaml \\\n"
+        "# a comment inside a continuation\n"
+        "     /app/a.yaml\n"
+        "COPY services/${SVC}/x config/${NAME}.yaml /app/\n"
+        "COPY config /app/config\n"
         "COPY . /repo\n",
     )
     _service(
@@ -280,6 +286,8 @@ def test_dependency_sources_parse_copy_add_and_mounts(mini_repo: Path) -> None:
     assert services_for("config/zones.yaml") == (["orion-baker"], [])
     assert services_for("config/other.yaml") == (["orion-baker"], [])
     assert services_for("config/rules/a.yaml") == (["orion-baker"], [])
+    assert services_for("config/tabbed.yaml") == (["orion-baker"], [])
+    assert services_for("config/a.yaml") == (["orion-baker"], [])
     assert services_for("config/router.yaml") == (["orion-mounter"], ["orion-mounter"])
     assert services_for("config/corpus/doc.md") == (["orion-mounter"], ["orion-mounter"])
     assert services_for("config/long.yaml") == (["orion-mounter"], ["orion-mounter"])
@@ -328,7 +336,7 @@ def _profile_services(repo: Path, service: str, ps_lines: list[str], tmp_path: P
     return proc.stdout.splitlines()
 
 
-_RETINA_COMPOSE = "/mnt/scripts/Orion-Sapienform/services/orion-vision-retina/docker-compose.yml"
+_RETINA_COMPOSE = (ROOT / "services/orion-vision-retina/docker-compose.yml").resolve().as_posix()
 
 
 def test_running_walkway_profile_service_is_reported(tmp_path: Path) -> None:
@@ -353,7 +361,7 @@ def test_profile_match_requires_the_same_compose_file(tmp_path: Path) -> None:
 
 
 def test_skip_profile_excludes_analytics(tmp_path: Path) -> None:
-    compose = "/mnt/scripts/Orion-Sapienform/services/orion-analytics/docker-compose.yml"
+    compose = (ROOT / "services/orion-analytics/docker-compose.yml").resolve().as_posix()
     ps = [f"orion-analytics\tlightdash\t{compose}"]
     assert _profile_services(ROOT, "orion-analytics", ps, tmp_path) == ["analytics\tlightdash"]
     assert _profile_services(ROOT, "orion-analytics", ps, tmp_path, "analytics") == []
@@ -374,3 +382,64 @@ def test_plan_output_marks_recreate(mini_repo: Path) -> None:
     )
     assert proc.returncode == 0, proc.stderr
     assert proc.stdout.splitlines() == ["orion-actions\tbuild", "orion-mounter\trecreate"]
+
+
+def test_whole_config_folder_copy_does_not_fan_out() -> None:
+    """mesh-guardian/llamacpp hosts `COPY config` whole; that is not evidence
+    they read any given file, so an unrelated config edit must not rebuild them."""
+    payload = _resolve(["config/vision_zones.yaml"], ROOT, host="athena")
+    assert "orion-mesh-guardian" not in payload["services"]
+    payload = _resolve(["config/some_unrelated_new_file.yaml"], ROOT, host="athena")
+    assert payload["services"] == []
+
+
+def test_own_directory_mount_is_not_force_recreated(mini_repo: Path) -> None:
+    _service(
+        mini_repo,
+        "orion-selfmount",
+        "services:\n"
+        "  s:\n"
+        "    image: x\n"
+        "    volumes:\n"
+        "      - ./static:/app/static:ro\n"
+        "      - ./otel/cfg.yaml:/etc/cfg.yaml:ro\n",
+    )
+    svc = mini_repo / "services" / "orion-selfmount"
+    (svc / "static").mkdir()
+    (svc / "static" / "app.js").write_text("// x\n")
+    (svc / "otel").mkdir()
+    (svc / "otel" / "cfg.yaml").write_text("a: 1\n")
+    payload = _resolve(["services/orion-selfmount/static/app.js"], mini_repo, host="athena")
+    assert payload["services"] == ["orion-selfmount"]
+    assert payload["recreate"] == []
+    # A single-file own mount keeps the old inode after a pull: recreate it.
+    payload = _resolve(["services/orion-selfmount/otel/cfg.yaml"], mini_repo, host="athena")
+    assert payload["recreate"] == ["orion-selfmount"]
+
+
+def test_profile_service_started_from_another_checkout_is_left_alone(tmp_path: Path) -> None:
+    other = "/srv/worktrees/Orion-x/services/orion-vision-retina/docker-compose.yml"
+    ps = [f"orion-vision-retina\torion-vision-retina-walkway\t{other}"]
+    assert _profile_services(ROOT, "orion-vision-retina", ps, tmp_path) == []
+    overlay = f"{_RETINA_COMPOSE},/tmp/overlay.yml"
+    ps = [f"orion-vision-retina\torion-vision-retina-walkway\t{overlay}"]
+    assert _profile_services(ROOT, "orion-vision-retina", ps, tmp_path) == []
+
+
+def test_docker_unavailable_starts_no_profile_services(tmp_path: Path) -> None:
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    docker = fake_bin / "docker"
+    docker.write_text("#!/bin/sh\nexit 1\n")
+    docker.chmod(0o755)
+    import os
+
+    env = dict(os.environ, PATH=f"{fake_bin}:{os.environ['PATH']}")
+    env.pop("ORION_REBUILD_DOCKER_PS_FILE", None)
+    proc = subprocess.run(
+        [sys.executable, str(MODULE), "--running-profile-services", "orion-vision-retina"],
+        capture_output=True, text=True, check=False, timeout=60, env=env,
+    )
+    assert proc.returncode == 0
+    assert proc.stdout == ""
+    assert "docker ps unavailable" in proc.stderr

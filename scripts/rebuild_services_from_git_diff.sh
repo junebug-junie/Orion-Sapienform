@@ -175,7 +175,8 @@ for svc in $SERVICES; do
         echo "[dry-run] would rebuild: $svc${RECREATE_FLAG:+ ($RECREATE_FLAG)}"
         if [ -n "$PROFILE_SERVICES" ]; then
             printf '%s\n' "$PROFILE_SERVICES" | while IFS="$(printf '\t')" read -r profile name; do
-                [ -n "$name" ] && echo "[dry-run] would rebuild running profile service: $svc --profile $profile $name"
+                [ -n "$name" ] || continue
+                echo "[dry-run] would rebuild running profile service: $svc --profile $profile $name"
             done
         fi
         REBUILT=$((REBUILT + 1))
@@ -214,7 +215,9 @@ for svc in $SERVICES; do
             [ -n "$name" ] || continue
             echo "=== rebuild_services_from_git_diff: $svc (running profile service $name, profile $profile) ==="
             # shellcheck disable=SC2086
-            run_safe_build "$svc" --profile "$profile" up -d --build $RECREATE_FLAG "$name"
+            # </dev/null: the loop reads its list from stdin; nothing the build
+            # runs may consume the remaining lines.
+            run_safe_build "$svc" --profile "$profile" up -d --build $RECREATE_FLAG "$name" </dev/null
             if [ "$rc" -ne 0 ]; then
                 echo "rebuild_services_from_git_diff.sh: FAILED $svc/$name (exit $rc)" >&2
                 svc_failed=1

@@ -45,11 +45,15 @@ _COMPOSE_FILE = "docker-compose.yml"
 # Host-side default for ${ORION_HOST_REPO_ROOT:-...} in compose bind mounts.
 _HOST_REPO_ROOT_DEFAULT = "/mnt/scripts/Orion-Sapienform"
 _REPO_ROOT_VAR_RE = re.compile(r"^\$\{ORION_HOST_REPO_ROOT(?::?-[^}]*)?\}")
-_GLOB_CHARS = set("*?[")
+# "$" too: an unexpanded ARG/ENV reference cannot name a literal repo path.
+_GLOB_CHARS = set("*?[$")
 # Dependency sources that never fan out through the baked/mounted rule:
 # orion/ keeps its own deliberately narrow import-graph policy
 # (service_rebuild_paths.yaml: orion_import_packages), and a whole-repo source
-# ("" = repo root) would make every path affect that service.
+# ("" = repo root) would make every path affect that service. A source that is
+# a whole top-level folder (e.g. `COPY config ...`) is excluded for the same
+# reason: it is not evidence the service reads any particular file under it,
+# and it would put those images on every config/ edit.
 _DEP_SOURCE_EXCLUDED_TOPS = frozenset({"", _ORION_DIR})
 
 MODE_BUILD = "build"
@@ -154,8 +158,8 @@ def _dockerfile_instructions(text: str) -> list[str]:
     buf = ""
     for raw in text.splitlines():
         line = raw.rstrip()
-        if not buf and line.lstrip().startswith("#"):
-            continue
+        if line.lstrip().startswith("#"):
+            continue  # comments, including ones inside a continuation
         if line.endswith("\\"):
             buf += line[:-1] + " "
             continue
@@ -170,13 +174,13 @@ def _dockerfile_instructions(text: str) -> list[str]:
 
 def _copy_sources(instruction: str) -> list[str]:
     """Source operands of a COPY/ADD instruction; [] for other or --from= stages."""
-    head, _, rest = instruction.partition(" ")
-    if head.upper() not in {"COPY", "ADD"}:
+    split = instruction.split(None, 1)
+    if len(split) < 2 or split[0].upper() not in {"COPY", "ADD"}:
         return []
-    rest = rest.strip()
+    rest = split[1].strip()
     tokens: list[str] = []
     while rest.startswith("--"):
-        flag, _, rest = rest.partition(" ")
+        flag, _, rest = rest.partition(" ") if " " in rest else (rest, "", "")
         if flag.lower().startswith("--from"):
             return []  # copies from another build stage/image, not the context
         rest = rest.strip()
@@ -189,7 +193,7 @@ def _copy_sources(instruction: str) -> list[str]:
         tokens = rest.split()
     if len(tokens) < 2:
         return []
-    return [t for t in tokens[:-1] if "://" not in t and not t.startswith("$")]
+    return [t for t in tokens[:-1] if "://" not in t and not t.startswith("<<")]
 
 
 def _repo_relative(path: Path, repo_root: Path) -> str | None:
@@ -215,7 +219,7 @@ def _strip_glob(source: str) -> str:
 
 def _mount_host_path(volume: Any) -> str | None:
     if isinstance(volume, dict):
-        if volume.get("type", "bind") != "bind":
+        if volume.get("type") != "bind":
             return None
         source = volume.get("source")
         return str(source) if source else None
@@ -251,12 +255,17 @@ def _resolve_mount_source(host: str, compose_dir: Path, repo_root: Path) -> str 
     return _repo_relative(candidate, repo_root)
 
 
-def _dep_source_allowed(prefix: str, service: str, mode: str) -> bool:
+def _dep_source_allowed(prefix: str, service: str, mode: str, repo_root: Path) -> bool:
     top = prefix.split("/", 1)[0]
-    if top in _DEP_SOURCE_EXCLUDED_TOPS:
-        return False
-    if mode == MODE_BUILD and _path_matches_prefix(prefix, f"{_SERVICES_DIR}/{service}"):
-        return False  # own-dir COPY is already covered by the direct services/<svc>/ rule
+    if top in _DEP_SOURCE_EXCLUDED_TOPS or "/" not in prefix:
+        return False  # repo root, orion/, or a whole top-level folder
+    if _path_matches_prefix(prefix, f"{_SERVICES_DIR}/{service}"):
+        # Own-dir paths are already rebuilt by the direct services/<svc>/ rule.
+        # A directory mount of the service's own code/static is live already;
+        # only a single-file own mount keeps a stale inode and needs recreate.
+        if mode == MODE_BUILD:
+            return False
+        return (repo_root / prefix).is_file()
     return True
 
 
@@ -305,21 +314,21 @@ def build_dependency_sources(repo_root: str) -> tuple[DepSource, ...]:
                 if not host:
                     continue
                 prefix = _resolve_mount_source(host, compose_dir, root)
-                if prefix is None or not _dep_source_allowed(prefix, service, MODE_RECREATE):
+                if prefix is None or not _dep_source_allowed(prefix, service, MODE_RECREATE, root):
                     continue
                 out.add(DepSource(prefix, service, MODE_RECREATE, f"bind-mounted by {_COMPOSE_FILE} service {name}"))
         for context, dockerfile in sorted(dockerfiles):
             if not dockerfile.is_file():
                 continue
             df_rel = _repo_relative(dockerfile, root) or dockerfile.name
-            if df_rel and _dep_source_allowed(df_rel, service, MODE_BUILD):
+            if df_rel and _dep_source_allowed(df_rel, service, MODE_BUILD, root):
                 out.add(DepSource(df_rel, service, MODE_BUILD, f"Dockerfile of {_COMPOSE_FILE} build"))
             text = dockerfile.read_text(encoding="utf-8", errors="replace")
             for instruction in _dockerfile_instructions(text):
                 for src in _copy_sources(instruction):
                     literal = _strip_glob(src)
                     prefix = _repo_relative(context / literal, root)
-                    if prefix is None or not _dep_source_allowed(prefix, service, MODE_BUILD):
+                    if prefix is None or not _dep_source_allowed(prefix, service, MODE_BUILD, root):
                         continue
                     out.add(DepSource(prefix, service, MODE_BUILD, f"COPY/ADD in {df_rel}"))
     return tuple(sorted(out, key=lambda d: (d.prefix, d.service, d.mode)))
@@ -698,18 +707,28 @@ def running_profile_services(
     if not isinstance(compose_services, dict):
         return []
     suffix = f"{_SERVICES_DIR}/{service}/{_COMPOSE_FILE}"
-    running_names: set[str] = set()
+    own_compose = compose_path.resolve().as_posix()
+    running_from: dict[str, list[str]] = {}
     for _project, compose_service, config_files in running:
         files = [f.strip().replace("\\", "/") for f in config_files.split(",") if f.strip()]
         if any(f == suffix or f.endswith("/" + suffix) for f in files):
-            running_names.add(compose_service)
+            running_from[compose_service] = files
     skip = skip_profiles or set()
     out: list[tuple[str, str]] = []
     for name, spec in compose_services.items():
-        if not isinstance(spec, dict) or name not in running_names:
+        if not isinstance(spec, dict) or name not in running_from:
             continue
         profiles = [str(p) for p in (spec.get("profiles") or [])]
         if not profiles or any(p in skip for p in profiles):
+            continue
+        if running_from[name] != [own_compose]:
+            # Started from another checkout (a worktree) or with an overlay
+            # compose file: an `up` from here would silently take it over.
+            print(
+                f"rebuild_affected_services: WARNING: running profile service {service}/{name} "
+                f"was started from {','.join(running_from[name])!r}, not {own_compose!r} -- leaving it alone",
+                file=sys.stderr,
+            )
             continue
         out.append((profiles[0], name))
     return sorted(out)

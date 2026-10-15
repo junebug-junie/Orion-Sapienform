@@ -32,7 +32,14 @@ for line in os.environ.get("FAKE_PLAN", "").split(";"):
 """
 
 
-def _run(tmp_path: Path, *, plan: str, profiles: str = "", extra_args: list[str] | None = None):
+def _run(
+    tmp_path: Path,
+    *,
+    plan: str,
+    profiles: str = "",
+    extra_args: list[str] | None = None,
+    safe_build_reads_stdin: bool = False,
+):
     fake_root = tmp_path / "repo"
     fake_scripts = fake_root / "scripts"
     fake_scripts.mkdir(parents=True)
@@ -45,7 +52,8 @@ def _run(tmp_path: Path, *, plan: str, profiles: str = "", extra_args: list[str]
     safe_build = fake_scripts / "safe_docker_build.sh"
     safe_build.write_text(
         "#!/bin/sh\n"
-        "printf '%s\\n' \"$*\" >> \"$REBUILD_TEST_CAPTURE\"\n"
+        + ("cat >/dev/null\n" if safe_build_reads_stdin else "")
+        + "printf '%s\\n' \"$*\" >> \"$REBUILD_TEST_CAPTURE\"\n"
     )
     safe_build.chmod(0o755)
 
@@ -123,3 +131,18 @@ def test_dry_run_reports_profile_services_without_building(tmp_path: Path) -> No
     assert calls == []
     assert "would rebuild: orion-vision-retina (--force-recreate)" in completed.stdout
     assert "--profile walkway orion-vision-retina-walkway" in completed.stdout
+
+
+def test_build_step_reading_stdin_cannot_swallow_later_profile_services(tmp_path: Path) -> None:
+    completed, calls = _run(
+        tmp_path,
+        plan="orion-vision-retina,build",
+        profiles="orion-vision-retina,walkway,svc-a;orion-vision-retina,walkway,svc-b",
+        safe_build_reads_stdin=True,
+    )
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert calls == [
+        "orion-vision-retina up -d --build",
+        "orion-vision-retina --profile walkway up -d --build svc-a",
+        "orion-vision-retina --profile walkway up -d --build svc-b",
+    ]

@@ -70,12 +70,19 @@ else
     set --
 fi
 
-# shellcheck disable=SC2086
-SERVICES=$(python3 "$PY" --list-only "$@")
+# --plan prints "<service>\t<build|recreate>". recreate = a changed repo path
+# is bind-mounted into the service's containers, so an unchanged image would
+# not recreate them (and a single-file mount keeps the old inode) -- those
+# get --force-recreate below.
+set +e
+PLAN=$(python3 "$PY" --plan "$@")
 PY_RC=$?
+set -e
 if [ "$PY_RC" -ne 0 ]; then
     exit "$PY_RC"
 fi
+SERVICES=$(printf '%s\n' "$PLAN" | awk -F'\t' 'NF {print $1}')
+RECREATE=$(printf '%s\n' "$PLAN" | awk -F'\t' '$2 == "recreate" {print $1}')
 
 # cortex-exec and cortex-orch are coupled at runtime, not just by the
 # import-graph classifier above: cortex-exec's self_study.py round-trips
@@ -134,9 +141,44 @@ ANALYTICS="orion-analytics"
 FAILED=""
 REBUILT=0
 
+# run_safe_build <service-dir> <compose args...>; sets rc.
+run_safe_build() {
+    set +e
+    if [ -n "$ALLOW_SHARED" ]; then
+        ORION_ALLOW_SHARED_CHECKOUT_WRITE="$ALLOW_SHARED" "$SAFE_BUILD" "$@"
+    else
+        "$SAFE_BUILD" "$@"
+    fi
+    rc=$?
+    set -e
+}
+
 for svc in $SERVICES; do
+    RECREATE_FLAG=""
+    if printf '%s\n' $RECREATE | grep -qx "$svc" 2>/dev/null; then
+        RECREATE_FLAG="--force-recreate"
+    fi
+
+    # Profile-gated compose services of this stack that are RUNNING on this
+    # host right now. A plain `up` never selects them, so before this they
+    # kept their old image forever (orion-vision-retina-walkway). Never
+    # starts a profile service that is not already running. The analytics
+    # stack is brought up with its whole profile below, so skip it here.
+    SKIP_PROFILE_ARGS=""
+    if [ "$svc" = "$ANALYTICS" ]; then
+        SKIP_PROFILE_ARGS="--skip-profile analytics"
+    fi
+    # shellcheck disable=SC2086
+    PROFILE_SERVICES=$(python3 "$PY" --running-profile-services "$svc" $SKIP_PROFILE_ARGS || true)
+
     if [ "$DRY_RUN" = "1" ]; then
-        echo "[dry-run] would rebuild: $svc"
+        echo "[dry-run] would rebuild: $svc${RECREATE_FLAG:+ ($RECREATE_FLAG)}"
+        if [ -n "$PROFILE_SERVICES" ]; then
+            printf '%s\n' "$PROFILE_SERVICES" | while IFS="$(printf '\t')" read -r profile name; do
+                [ -n "$name" ] || continue
+                echo "[dry-run] would rebuild running profile service: $svc --profile $profile $name"
+            done
+        fi
         REBUILT=$((REBUILT + 1))
         continue
     fi
@@ -146,44 +188,46 @@ for svc in $SERVICES; do
 
     if [ "$svc" = "$CORTEX_EXEC" ]; then
         # Match mesh-utilities/common/cortex_exec_fleet_helpers.sh lane bring-up.
-        set +e
-        if [ -n "$ALLOW_SHARED" ]; then
-            ORION_ALLOW_SHARED_CHECKOUT_WRITE="$ALLOW_SHARED" \
-                "$SAFE_BUILD" "$svc" up -d --build $CORTEX_LANES
-        else
-            "$SAFE_BUILD" "$svc" up -d --build $CORTEX_LANES
-        fi
-        rc=$?
-        set -e
+        # shellcheck disable=SC2086
+        run_safe_build "$svc" up -d --build $RECREATE_FLAG $CORTEX_LANES
     elif [ "$svc" = "$ANALYTICS" ]; then
         # Every long-running service in orion-analytics is intentionally behind
         # the `analytics` Compose profile (`analytics-dbt` is a separate tools
         # profile). Calling plain `up` selects nothing and exits with
         # "no service selected", which made the first post-merge rebuild of
         # the Curiosity dashboard fail despite a valid compose file.
-        set +e
-        if [ -n "$ALLOW_SHARED" ]; then
-            ORION_ALLOW_SHARED_CHECKOUT_WRITE="$ALLOW_SHARED" \
-                "$SAFE_BUILD" "$svc" --profile analytics up -d --build
-        else
-            "$SAFE_BUILD" "$svc" --profile analytics up -d --build
-        fi
-        rc=$?
-        set -e
+        # shellcheck disable=SC2086
+        run_safe_build "$svc" --profile analytics up -d --build $RECREATE_FLAG
     else
-        set +e
-        if [ -n "$ALLOW_SHARED" ]; then
-            ORION_ALLOW_SHARED_CHECKOUT_WRITE="$ALLOW_SHARED" \
-                "$SAFE_BUILD" "$svc" up -d --build
-        else
-            "$SAFE_BUILD" "$svc" up -d --build
-        fi
-        rc=$?
-        set -e
+        # shellcheck disable=SC2086
+        run_safe_build "$svc" up -d --build $RECREATE_FLAG
     fi
 
+    svc_failed=0
     if [ "$rc" -ne 0 ]; then
         echo "rebuild_services_from_git_diff.sh: FAILED $svc (exit $rc)" >&2
+        svc_failed=1
+    fi
+
+    if [ -n "$PROFILE_SERVICES" ]; then
+        TAB=$(printf '\t')
+        while IFS="$TAB" read -r profile name; do
+            [ -n "$name" ] || continue
+            echo "=== rebuild_services_from_git_diff: $svc (running profile service $name, profile $profile) ==="
+            # shellcheck disable=SC2086
+            # </dev/null: the loop reads its list from stdin; nothing the build
+            # runs may consume the remaining lines.
+            run_safe_build "$svc" --profile "$profile" up -d --build $RECREATE_FLAG "$name" </dev/null
+            if [ "$rc" -ne 0 ]; then
+                echo "rebuild_services_from_git_diff.sh: FAILED $svc/$name (exit $rc)" >&2
+                svc_failed=1
+            fi
+        done <<EOF_PROFILES
+$PROFILE_SERVICES
+EOF_PROFILES
+    fi
+
+    if [ "$svc_failed" -ne 0 ]; then
         FAILED="$FAILED $svc"
     else
         REBUILT=$((REBUILT + 1))

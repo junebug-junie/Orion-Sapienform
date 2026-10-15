@@ -157,6 +157,6 @@ docker logs --since 2m orion-vision-retina-walkway 2>&1 | grep -c 'bad cseq'    
 
 ## PR link
 
-(filled in after `gh pr create`)
+https://github.com/junebug-junie/Orion-Sapienform/pull/2692
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

@@ -210,8 +210,9 @@ class VisionHostService:
                     ok=False,
                     task_type=task.task_type,
                     device=None,
-                    error="No GPU available above hard floor (VRAM pressure).",
-                    meta={"error_code": "gpu_hard_floor"},
+                    error="No GPU available above hard floor (VRAM pressure)."
+                    + (f" {pick.refusal_reason}" if pick.refusal_reason else ""),
+                    meta={"error_code": "gpu_hard_floor", "refusal_reason": pick.refusal_reason},
                 )
             try:
                 return await asyncio.wait_for(
@@ -620,6 +621,7 @@ async def health():
             "max_inflight_per_gpu": settings.VISION_MAX_INFLIGHT_PER_GPU,
             "queue_when_busy": settings.VISION_QUEUE_WHEN_BUSY,
             "max_queue": settings.VISION_MAX_QUEUE,
+            **(service.sched.refusal_stats() if service.sched else {}),
         },
     }
 

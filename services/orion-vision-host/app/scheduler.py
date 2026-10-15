@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from dataclasses import dataclass
-from typing import Awaitable, Callable, Dict, Optional, Tuple
+from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
 
 from loguru import logger
 
@@ -19,6 +20,7 @@ class VisionQueueFullError(RuntimeError):
 class ScheduledPick:
     device: str
     gpu_index: Optional[int]
+    refusal_reason: Optional[str] = None
 
 
 class VisionScheduler:
@@ -74,6 +76,57 @@ class VisionScheduler:
 
         for idx in self._gpu_indices:
             self._gpu_sems[idx] = asyncio.Semaphore(max_inflight_per_gpu)
+
+        # gpu_hard_floor refusal accounting (surfaced on /health). A full
+        # refusal streak used to be silent: ~600 refusals in 25 min on
+        # 2026-10-15 with nothing on /health saying so.
+        self.hard_floor_refusals_total = 0
+        self.hard_floor_refusal_streak = 0
+        self.last_refusal_reason: Optional[str] = None
+        self.last_refusal_at: Optional[float] = None
+        self.last_admit_at: Optional[float] = None
+
+    def refusal_stats(self) -> Dict[str, Any]:
+        return {
+            "gpu_hard_floor_refusals_total": self.hard_floor_refusals_total,
+            "gpu_hard_floor_refusal_streak": self.hard_floor_refusal_streak,
+            "last_refusal_reason": self.last_refusal_reason,
+            "last_refusal_at": self.last_refusal_at,
+            "last_admit_at": self.last_admit_at,
+        }
+
+    def _describe_refusal(self) -> str:
+        detail: List[Dict[str, Any]] = list(getattr(self.gpu, "last_pick_detail", None) or [])
+        if not detail:
+            return f"no candidate GPU visible (configured={self._gpu_indices})"
+        parts = []
+        for row in detail:
+            if not row.get("visible", True):
+                parts.append(f"gpu={row.get('gpu')} not visible to NVML")
+                continue
+            parts.append(
+                f"gpu={row['gpu']} nvml_free={row['nvml_free_mb']}MB + own_reusable={row['own_reusable_mb']}MB "
+                f"- reserve={row['reserve_mb']}MB = effective={row['effective_free_mb']}MB "
+                f"< hard_floor={row['hard_floor_mb']}MB"
+            )
+        return "; ".join(parts)
+
+    def _record_refusal(self) -> str:
+        reason = self._describe_refusal()
+        self.hard_floor_refusals_total += 1
+        self.hard_floor_refusal_streak += 1
+        self.last_refusal_reason = reason
+        self.last_refusal_at = time.time()
+        streak = self.hard_floor_refusal_streak
+        if streak == 1 or streak % 100 == 0:
+            logger.warning(f"[SCHED] gpu_hard_floor refusal streak={streak} total={self.hard_floor_refusals_total} {reason}")
+        return reason
+
+    def _record_admit(self) -> None:
+        if self.hard_floor_refusal_streak:
+            logger.info(f"[SCHED] gpu_hard_floor refusal streak ended after {self.hard_floor_refusal_streak} refusals")
+        self.hard_floor_refusal_streak = 0
+        self.last_admit_at = time.time()
 
     def queue_depth(self) -> int:
         """Pending items waiting on the worker (best-effort backlog indicator)."""
@@ -151,8 +204,10 @@ class VisionScheduler:
                 gpu_index = self._pick_gpu_index()
                 if gpu_index is None:
                     # No GPU available above hard floor; caller can degrade/refuse.
-                    pick = ScheduledPick(device="cpu", gpu_index=None)
+                    reason = self._record_refusal() if self._gpu_indices else None
+                    pick = ScheduledPick(device="cpu", gpu_index=None, refusal_reason=reason)
                     return await handler(pick)
+                self._record_admit()
 
                 gpu_sem = self._gpu_sems.get(gpu_index)
                 if gpu_sem is None:

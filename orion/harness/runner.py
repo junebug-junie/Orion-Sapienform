@@ -526,7 +526,8 @@ class HarnessRunner:
             **({"pool_state": turn_pool_state} if isinstance(turn_pool_state, dict) else {}),
             **({"resume_key": request.resume_key} if getattr(request, "resume_key", None) else {}),
             **({"task_anchor": anchor} if (anchor := build_task_anchor(
-                request.user_message, reading_only=bool(getattr(request, "reading_only", False)))) else {}),
+                request.user_message, reading_only=bool(getattr(request, "reading_only", False)),
+                utterance_origin=getattr(request, "utterance_origin", None))) else {}),
             **({"reading_binding": request.reading_binding} if getattr(request, "reading_binding", None) else {}),
             **({"reading_only": True} if getattr(request, "reading_only", False) else {}),
             # Only a Juniper-originated Hub chat reply. Passed only when true so

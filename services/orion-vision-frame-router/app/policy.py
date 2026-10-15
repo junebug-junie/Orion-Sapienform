@@ -31,6 +31,12 @@ _LEGACY_TIER_KEYS = frozenset(
 )
 
 
+# Task types whose host pipeline runs GroundingDINO detect (config/
+# vision_profiles.yaml task_routing); a tiles flag on anything else would
+# spend the tiled_detect clock and do nothing.
+TILED_DETECT_TASK_TYPES = frozenset({"retina_fast", "retina_dense", "detect_open_vocab"})
+
+
 class FrameDispatchDecision(BaseModel):
     should_dispatch: bool
     task_type: str | None = None
@@ -456,7 +462,7 @@ class FrameDispatchPolicy:
         spaced out rather than run on every frame. Geometry lives in the host
         profile (config/vision_profiles.yaml tile_* params)."""
         cfg = self.tiled_detect_for(frame.camera_id, frame.stream_id)
-        if not cfg:
+        if not cfg or task.task_type not in TILED_DETECT_TASK_TYPES:
             return False
         tiers = cfg.get("tiers") or ["baseline", "triggered"]
         if decision.dispatch_tier not in tiers:

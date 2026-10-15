@@ -75,4 +75,7 @@ def detect_images(
                 "box_xyxy": [float(x) for x in boxes[i].tolist()],
             })
         per_image.append(objs)
-    return per_image
+    # A post-processor that returns fewer results than images (or none)
+    # means "nothing found" for the rest, never an IndexError for the caller.
+    per_image += [[] for _ in range(len(images) - len(per_image))]
+    return per_image[: len(images)]

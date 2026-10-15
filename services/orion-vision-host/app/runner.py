@@ -27,7 +27,14 @@ from .crop_embeddings import (
 )
 from .detections import cap_by_score, nms
 from .gdino import detect_images
-from .tiling import merge_tiled_detections, tile_layout, tiling_params, tiling_requested, to_frame_coords
+from .tiling import (
+    merge_tiled_detections,
+    tile_layout,
+    tiles_bounds,
+    tiling_params,
+    tiling_requested,
+    to_frame_coords,
+)
 from .model_manager import ModelManager
 from .models import VisionResult, VisionTask
 from .profiles import PipelineDef, ProfileDef, VisionProfiles
@@ -806,18 +813,24 @@ class VisionRunner:
                 tiling_stats["skipped"] = f"short_side<{min_short}"
             else:
                 tiles = tile_layout(img.width, img.height, tp["grid"], tp["overlap"], tp["region"])
+                bounds = tiles_bounds(tiles)
                 crops = [img.crop(t.as_box()) for t in tiles]
                 t_tiles = time.perf_counter()
+                budget = tp["time_budget_s"]
                 if tp["batch"]:
                     per_tile = detect_images(model, processor, crops, text, box_th, text_th, device, _cast)
                 else:
-                    per_tile = [
-                        detect_images(model, processor, [c], text, box_th, text_th, device, _cast)[0]
-                        for c in crops
-                    ]
+                    # Sequential, with a wall-clock budget: once the tiles
+                    # have used it up, the rest are skipped so a slow GPU
+                    # moment cannot push the task past the router timeout.
+                    per_tile = []
+                    for c in crops:
+                        if budget > 0 and per_tile and time.perf_counter() - t_tiles >= budget:
+                            break
+                        per_tile.append(detect_images(model, processor, [c], text, box_th, text_th, device, _cast)[0])
                 tiles_s = time.perf_counter() - t_tiles
                 tile_objs = [
-                    to_frame_coords(o, t, img.width, img.height)
+                    to_frame_coords(o, t, img.width, img.height, bounds=bounds)
                     for t, objs in zip(tiles, per_tile)
                     for o in objs
                 ]
@@ -831,6 +844,7 @@ class VisionRunner:
                 )
                 tiling_stats.update({
                     "tiles": len(tiles),
+                    "tiles_run": len(per_tile),
                     "grid": tp["grid"],
                     "tiles_s": round(tiles_s, 3),
                     "batched": tp["batch"],
@@ -839,14 +853,19 @@ class VisionRunner:
                     "merged": len(objects),
                 })
                 logger.info(
-                    f"[DETECT_TILES] stream={request.get('stream_id')} tiles={len(tiles)} "
+                    f"[DETECT_TILES] stream={request.get('stream_id')} tiles={len(per_tile)}/{len(tiles)} "
                     f"full_s={full_s:.3f} tiles_s={tiles_s:.3f} full_raw={full_count} "
                     f"tile_raw={len(tile_objs)} merged={len(objects)}"
                 )
 
         # Suppress duplicate boxes before capping, so the cap spends its budget
         # on distinct objects rather than on six views of the same desk.
-        raw_count = len(objects)
+        # (A tiled merge is already NMS-ed; running it again is a no-op.)
+        raw_count = (
+            tiling_stats["full_frame_raw"] + tiling_stats["tile_raw"]
+            if tiling_stats and "tile_raw" in tiling_stats
+            else len(objects)
+        )
         objects = nms(objects, nms_iou)
         objects = cap_by_score(objects, max_det)
         if raw_count != len(objects):

@@ -228,3 +228,120 @@ def test_small_frame_is_not_tiled(detect_runner, tmp_path) -> None:
     out = _detect(r, {"image_path": str(small), "detect_tiles": True})
     assert out["detect_tiles"]["skipped"].startswith("short_side<")
     assert len(calls) == 1
+
+
+# ---------------------------------------------------------------- review fixes
+
+
+def test_seam_union_does_not_chain_through_the_growing_box() -> None:
+    """Person A is split across the vertical seam (pieces in TL and TR);
+    their union covers a corner neither piece covers. Person B, cut by the
+    horizontal seam in the BL tile, overlaps only that corner of the union,
+    not either original piece, so B must stay a separate box."""
+    tl, tr, bl = Tile(0, 0, 1422, 1067), Tile(1138, 0, 2560, 1067), Tile(0, 853, 1422, 1920)
+    a1 = to_frame_coords({"label": "person", "score": 0.6, "box_xyxy": [1200.0, 600.0, 1421.0, 1000.0]}, tl, W, H)
+    a2 = to_frame_coords({"label": "person", "score": 0.5, "box_xyxy": [0.0, 600.0, 162.0, 800.0]}, tr, W, H)
+    b = to_frame_coords({"label": "person", "score": 0.5, "box_xyxy": [1140.0, 7.0, 1195.0, 347.0]}, bl, W, H)
+    assert a1["_cut"] and a2["_cut"] and b["_cut"]
+    merged = merge_tiled_detections([], [a1, a2, b], nms_iou=0.6)
+    assert len(merged) == 2
+    boxes = sorted(o["box_xyxy"] for o in merged)
+    assert boxes[0] == [1138.0, 600.0, 1421.0, 1000.0]  # A's two pieces, unioned
+    assert boxes[1] == [1140.0, 860.0, 1195.0, 1200.0]  # B, untouched
+
+
+def test_small_cut_person_inside_big_box_that_stops_at_the_seam_survives() -> None:
+    """A far person touching the seam is inside a big same-label box that
+    ends at the seam (it does not continue into the next tile), so the
+    small box is not a fragment of it."""
+    left = Tile(0, 0, 1422, 1067)
+    group = {"label": "person", "score": 0.5, "box_xyxy": [1000.0, 300.0, 1421.0, 900.0]}
+    small = to_frame_coords({"label": "person", "score": 0.45, "box_xyxy": [1390.0, 500.0, 1421.0, 560.0]}, left, W, H)
+    assert small["_cut"]
+    merged = merge_tiled_detections([group], [small], nms_iou=0.6)
+    assert len(merged) == 2
+
+
+def test_region_outer_edges_are_not_cut() -> None:
+    tiles = tile_layout(W, H, (2, 1), 0.2, region=(0.0, 0.15, 1.0, 0.6))
+    from app.tiling import tiles_bounds
+
+    b = tiles_bounds(tiles)
+    # Touches the band's bottom edge (y=1152), which is not a seam.
+    o = to_frame_coords({"label": "person", "score": 0.5, "box_xyxy": [100.0, 800.0, 140.0, 863.0]}, tiles[0], W, H, bounds=b)
+    assert o["_cut"] is False
+    # Without bounds the same box counts as cut (frame continues below).
+    assert to_frame_coords({"label": "person", "score": 0.5, "box_xyxy": [100.0, 800.0, 140.0, 863.0]}, tiles[0], W, H)["_cut"]
+
+
+def test_time_budget_skips_remaining_tiles(detect_runner, monkeypatch) -> None:
+    r, frame, calls = detect_runner
+    p = r.profiles.get_profile("retina_detect_open_vocab")
+    monkeypatch.setitem(p.params, "tile_time_budget_s", 1e-9)
+    out = r._run_detect_grounding_dino(p, {"image_path": frame, "detect_tiles": True}, "cpu")
+    assert out["detect_tiles"]["tiles"] == 4
+    assert out["detect_tiles"]["tiles_run"] == 1  # first tile always runs, budget then spent
+    assert len(calls) == 1 + 1
+
+
+# ---------------------------------------------------------------- gdino.detect_images
+
+
+class _T:
+    """Minimal stand-in for a torch tensor result."""
+
+    def __init__(self, rows):
+        self.rows = rows
+
+    def detach(self):
+        return self
+
+    def float(self):
+        return self
+
+    def cpu(self):
+        return self
+
+    def numpy(self):
+        return np.array(self.rows, dtype=np.float32)
+
+
+class _FakeProcessor:
+    def __init__(self, results):
+        self.results = results
+        self.seen = None
+
+    def __call__(self, images, text, return_tensors):
+        self.seen = (len(images), list(text))
+        return {"input_ids": None}
+
+    def post_process_grounded_object_detection(self, **kw):
+        assert kw["target_sizes"].shape[0] == self.seen[0]
+        return self.results
+
+
+def _fake_model(**kw):
+    return object()
+
+
+def test_detect_images_batch_returns_one_list_per_image_in_order() -> None:
+    from app.gdino import detect_images
+
+    imgs = [Image.new("RGB", (100, 80)), Image.new("RGB", (60, 40))]
+    proc = _FakeProcessor([
+        {"boxes": _T([[1, 2, 3, 4]]), "scores": _T([0.5]), "text_labels": ["person"]},
+        {"boxes": _T([[5, 6, 7, 8], [1, 1, 2, 2]]), "scores": _T([0.6, 0.4]), "labels": [3, 4]},
+    ])
+    out = detect_images(_fake_model, proc, imgs, "person . dog .", 0.3, 0.25, "cpu")
+    assert proc.seen == (2, ["person . dog .", "person . dog ."])
+    assert [len(x) for x in out] == [1, 2]
+    assert out[0][0] == {"label": "person", "score": 0.5, "box_xyxy": [1.0, 2.0, 3.0, 4.0]}
+    assert out[1][1]["label"] == "4"
+
+
+def test_detect_images_none_boxes_and_empty_results_mean_nothing_found() -> None:
+    from app.gdino import detect_images
+
+    img = Image.new("RGB", (10, 10))
+    assert detect_images(_fake_model, _FakeProcessor([{"boxes": None, "scores": None}]), [img], "p .", 0.3, 0.25, "cpu") == [[]]
+    assert detect_images(_fake_model, _FakeProcessor([]), [img, img], "p .", 0.3, 0.25, "cpu") == [[], []]

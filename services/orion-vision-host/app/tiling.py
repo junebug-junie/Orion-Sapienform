@@ -4,8 +4,9 @@ Tiled full-resolution detection: tile layout, box mapping, cross-tile merge.
 Why: GroundingDINO's processor resizes every image to 800 px on the short
 side (1333 max long side). The walkway frame is 2560x1920, so a person on the
 far sidewalk (~50 px tall at full resolution) reaches the model at ~21 px.
-Running the detector on overlapping crops of the frame keeps those people
-near native size. See docs/superpowers/pr-reports/
+Running the detector on overlapping crops of the frame shrinks them less
+(2x2 tiles of a 2560x1920 frame reach the model at 0.75 scale, ~37 px,
+instead of 0.42). See docs/superpowers/pr-reports/
 2026-10-15-walkway-tiled-detection-pr.md for the measurements.
 
 Pure Python and dependency-free (like detections.py) so it is testable
@@ -13,13 +14,19 @@ without torch.
 
 Merge rule, in order:
   1. Every tile box is shifted into full-frame pixels. A tile box is "cut"
-     when it touches a tile edge that is not also a frame edge -- the object
-     probably continues into the next tile.
+     when it touches a tile edge that is not also an edge of the tiled area
+     (the frame, or tile_region) -- the object probably continues into the
+     next tile. The edges it was cut at are kept.
   2. A cut box mostly inside a same-label whole box (from the full-frame
-     pass or another tile) is a fragment of that object: drop it.
+     pass or another tile) that reaches past one of those cut edges is a
+     fragment of that object: drop it. A whole box that merely contains a
+     small cut box without crossing its seam (a far person inside a big
+     group box) does not remove it.
   3. Cut boxes of the same label from different tiles that overlap each
-     other are two halves of one object split by a seam: replace them with
-     their union (score = the higher of the two).
+     other are pieces of one object split by a seam: replace them with
+     their union (score = the highest). Each new piece is compared with the
+     original pieces, never with the growing union, so two neighbours
+     standing side by side across a seam do not chain into one box.
   4. Per-label NMS over everything, then the caller's max_detections cap.
 """
 
@@ -96,27 +103,53 @@ def tile_layout(
     return tiles
 
 
+def tiles_bounds(tiles: Sequence[Tile]) -> Tuple[int, int, int, int]:
+    """The rectangle the tiles cover together (the tiled area)."""
+    return (min(t.x0 for t in tiles), min(t.y0 for t in tiles),
+            max(t.x1 for t in tiles), max(t.y1 for t in tiles))
+
+
 def to_frame_coords(obj: Dict[str, Any], tile: Tile, frame_w: int, frame_h: int,
-                    edge_margin_frac: float = 0.01) -> Dict[str, Any]:
-    """Copy of a tile-space detection shifted into frame space, with
-    ``_cut`` set when the box touches an interior tile edge."""
+                    edge_margin_frac: float = 0.01,
+                    bounds: Optional[Sequence[int]] = None) -> Dict[str, Any]:
+    """Copy of a tile-space detection shifted into frame space. ``_cut``
+    is set when the box touches a tile edge inside ``bounds`` (the tiled
+    area; default the whole frame); ``_cut_edges`` lists those edges as
+    (axis, coordinate, direction the object continues: -1 or +1)."""
     bx0, by0, bx1, by1 = [float(v) for v in obj["box_xyxy"]]
     fx0, fy0, fx1, fy1 = bx0 + tile.x0, by0 + tile.y0, bx1 + tile.x0, by1 + tile.y0
     fx0, fy0 = max(0.0, fx0), max(0.0, fy0)
     fx1, fy1 = min(float(frame_w), fx1), min(float(frame_h), fy1)
+    ax0, ay0, ax1, ay1 = bounds if bounds is not None else (0, 0, frame_w, frame_h)
     mx = max(2.0, edge_margin_frac * tile.width)
     my = max(2.0, edge_margin_frac * tile.height)
-    cut = (
-        (tile.x0 > 0 and fx0 - tile.x0 <= mx)
-        or (tile.y0 > 0 and fy0 - tile.y0 <= my)
-        or (tile.x1 < frame_w and tile.x1 - fx1 <= mx)
-        or (tile.y1 < frame_h and tile.y1 - fy1 <= my)
-    )
+    edges = []
+    if tile.x0 > ax0 and fx0 - tile.x0 <= mx:
+        edges.append(("x", float(tile.x0), -1))
+    if tile.y0 > ay0 and fy0 - tile.y0 <= my:
+        edges.append(("y", float(tile.y0), -1))
+    if tile.x1 < ax1 and tile.x1 - fx1 <= mx:
+        edges.append(("x", float(tile.x1), 1))
+    if tile.y1 < ay1 and tile.y1 - fy1 <= my:
+        edges.append(("y", float(tile.y1), 1))
     out = dict(obj)
     out["box_xyxy"] = [fx0, fy0, fx1, fy1]
-    out["_cut"] = bool(cut)
+    out["_cut"] = bool(edges)
+    out["_cut_edges"] = edges
     out["_tile"] = tile.as_box()
     return out
+
+
+def _crosses(box: Sequence[float], edges: Sequence[Tuple[str, float, int]], margin: float = 2.0) -> bool:
+    """True when ``box`` reaches past at least one of the cut edges, in the
+    direction the cut object continues."""
+    for axis, coord, direction in edges:
+        lo, hi = (box[0], box[2]) if axis == "x" else (box[1], box[3])
+        if direction > 0 and hi > coord + margin:
+            return True
+        if direction < 0 and lo < coord - margin:
+            return True
+    return False
 
 
 def _area(b: Sequence[float]) -> float:
@@ -148,34 +181,43 @@ def merge_tiled_detections(
     whole += [o for o in tile_objects if not o.get("_cut")]
     cut = [o for o in tile_objects if o.get("_cut")]
 
-    # 2. Fragments inside a whole box of the same label.
+    # 2. Fragments inside a same-label whole box that continues past the seam.
     cut = [
         c for c in cut
         if not any(
-            w.get("label") == c.get("label") and _contained(c["box_xyxy"], w["box_xyxy"]) >= contain_frac
+            w.get("label") == c.get("label")
+            and _contained(c["box_xyxy"], w["box_xyxy"]) >= contain_frac
+            and _crosses(w["box_xyxy"], c.get("_cut_edges") or [])
             for w in whole
         )
     ]
 
-    # 3. Union seam halves (different tiles, same label, overlapping).
+    # 3. Union seam pieces (different tiles, same label, overlapping an
+    #    ORIGINAL piece of the group -- no chaining through the growing box).
     merged: List[Dict[str, Any]] = []
     used = [False] * len(cut)
     for i, a in enumerate(cut):
         if used[i]:
             continue
         group = dict(a)
+        members = [a["box_xyxy"]]
         tiles = {a.get("_tile")}
         for j in range(i + 1, len(cut)):
             b = cut[j]
-            if used[j] or b.get("label") != group.get("label") or b.get("_tile") in tiles:
+            if used[j] or b.get("label") != a.get("label") or b.get("_tile") in tiles:
                 continue
-            gb, bb = group["box_xyxy"], b["box_xyxy"]
-            smaller = min(_area(gb), _area(bb))
-            if smaller > 0 and _inter(gb, bb) / smaller >= seam_merge_frac:
-                group["box_xyxy"] = [min(gb[0], bb[0]), min(gb[1], bb[1]), max(gb[2], bb[2]), max(gb[3], bb[3])]
-                group["score"] = max(float(group.get("score", 0.0)), float(b.get("score", 0.0)))
-                tiles.add(b.get("_tile"))
-                used[j] = True
+            bb = b["box_xyxy"]
+            if not any(
+                min(_area(m), _area(bb)) > 0 and _inter(m, bb) / min(_area(m), _area(bb)) >= seam_merge_frac
+                for m in members
+            ):
+                continue
+            gb = group["box_xyxy"]
+            group["box_xyxy"] = [min(gb[0], bb[0]), min(gb[1], bb[1]), max(gb[2], bb[2]), max(gb[3], bb[3])]
+            group["score"] = max(float(group.get("score", 0.0)), float(b.get("score", 0.0)))
+            members.append(bb)
+            tiles.add(b.get("_tile"))
+            used[j] = True
         merged.append(group)
 
     out = nms(whole + merged, nms_iou)
@@ -203,6 +245,7 @@ def tiling_params(params: Dict[str, Any], request: Dict[str, Any]) -> Dict[str, 
         "batch": bool(pick("batch", False)),
         "contain_frac": float(pick("contain_frac", 0.7)),
         "seam_merge_frac": float(pick("seam_merge_frac", 0.25)),
+        "time_budget_s": float(pick("time_budget_s", 0) or 0),
     }
 
 

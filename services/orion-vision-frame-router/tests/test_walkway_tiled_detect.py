@@ -91,3 +91,17 @@ def test_tier_not_listed_gets_no_tiles() -> None:
     p.streams_cfg["walkway"]["tiled_detect"] = {"enabled": True, "tiers": ["triggered"], "min_seconds_between": 1}
     task, tiled = _task(p, state, "walkway", now=1000.0)  # nothing seen yet -> baseline tier
     assert task is not None and not tiled
+
+
+def test_task_type_without_detect_gets_no_tiles() -> None:
+    p, state = _policy(), RouterState()
+    env = _env("walkway")
+    for _ in range(20):
+        d = p.decide(env, state, now=1000.0, image_path_exists=True)
+        if d.should_dispatch:
+            break
+    frame = VisionFramePointerPayload.model_validate(env.payload)
+    task = p.build_task_request(frame, env, d)
+    task.task_type = "embed_image"
+    assert not p.apply_tiled_detect(task, frame, d, state, now=1000.0)
+    assert state.camera("walkway").last_tiled_detect_ts is None

@@ -125,6 +125,9 @@ Code review ran in a subagent against `origin/main...HEAD`.
 - Finding (nit): "Not sure" blocked a pair forever.
   - Fix: dismissed pairs come back after `VISION_ASK_COOLDOWN_DAYS`, like expired ones.
   - Evidence: `test_not_sure_pair_comes_back_after_the_cooldown`.
+- Finding (CI, Memory episode job): the Hub's `SELECT image_refs` failed (`UndefinedColumnError`) in the Postgres-backed memory-confirmation tests. Those tests build their own database from a fixed list of migrations.
+  - Fix: added `manual_migration_vision_confirm_asks_v1.sql` to the lists in `services/orion-hub/tests/test_ask_resolve_pg.py`, `orion/memory/episode/tests/test_confirmation_pg.py`, `services/orion-memory-consolidation/evals/run_memory_confirmation_replay_eval.py`, and to the workflow path filter.
+  - Evidence: run locally on a throwaway postgres:16, 7 + 18 passed. This also shows the deploy order matters: apply the migration before the Hub comes up (the deploy wrapper enforces it).
 - Not changed (noted):
   - A copied name gets no substrate entity (see Risks).
   - A missing migration stops the whole individuals loop. The deploy wrapper's `REQUIRED-BY` gate prevents that state.

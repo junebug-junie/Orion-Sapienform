@@ -23,6 +23,7 @@ on:
       - "orion/substrate/**"
       - "scripts/backfill_referents_from_episodes.py"
       - "services/orion-sql-db/manual_migration_walkway_camera_v1.sql"
+      - "services/orion-sql-db/manual_migration_vision_confirm_asks_v1.sql"
       - "services/orion-sql-db/manual_migration_attention_loop_outcome.sql"
       - "services/orion-hub/scripts/ask_routes.py"
       - "services/orion-hub/tests/test_ask_resolve_pg.py"

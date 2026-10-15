@@ -193,6 +193,6 @@ rebuild enabled (.orion/post-merge-rebuild-enabled or ORION_POST_MERGE_REBUILD=1
 
 ## PR link
 
-<link>
+https://github.com/junebug-junie/Orion-Sapienform/pull/2703
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

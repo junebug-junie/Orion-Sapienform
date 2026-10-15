@@ -1,7 +1,7 @@
 ## Summary
 
 - The CI failures on 2026-10-15 were **not** GHCR. Every failing job died pulling `public.ecr.aws/docker/library/postgres:15/16` with `toomanyrequests: Data limit exceeded` (AWS ECR Public's anonymous data cap). In the substrate job the private GHCR falkordb image pulled fine in the same job, seconds earlier.
-- Copied `postgres:15` and `postgres:16` once to the private package `ghcr.io/junebug-junie/postgres` (linked to this repo, same as the falkordb copy from 2026-10-09), and switched all 12 postgres service containers to it, pulled with `GITHUB_TOKEN`.
+- Copied `postgres:15` and `postgres:16` once to the private package `ghcr.io/junebug-junie/postgres` (linked to this repo, same as the falkordb copy from 2026-10-09), and switched all 11 postgres service entries (12 jobs; the substrate matrix runs one entry twice) to it, pulled with `GITHUB_TOKEN`.
 - Added `permissions: {contents: read, packages: read}` to each job that pulls the private copy.
 - New static gate `tests/test_ci_service_image_sources.py` (run in `orion-static-gates`): every service image must come from `ghcr.io/`, and any `ghcr.io/junebug-junie/*` image must have credentials and `packages: read`.
 
@@ -61,7 +61,7 @@ actionlint                                                  -> not installed on 
 ## Evals run
 
 ```text
-None; CI-config change. The live check is the PR's own CI: every postgres-backed job that its path filters trigger must pull from GHCR.
+None; CI-config change. Live check = this PR's own CI: all 18 checks passed, including every postgres-backed job (attention, contracts, durable-runs, exo, gpu-pool x3, history, memory episode, neighborhood x2, schema, sql-writer x2), each pulling ghcr.io/junebug-junie/postgres with GITHUB_TOKEN.
 ```
 
 ## Docker/build/smoke checks
@@ -72,7 +72,14 @@ docker build + push of both copies to ghcr.io/junebug-junie/postgres: succeeded 
 
 ## Review findings fixed
 
-- See PR conversation.
+- Finding (should): a matrix image whose key could not be resolved was silently skipped by the gate.
+  - Fix: it now yields a sentinel that fails the GHCR check.
+  - Evidence: gate still 3 passed on the real workflows.
+- Finding (nit): gate globbed only `*.yml` and ignored job-level `container:`.
+  - Fix: both covered.
+- Finding (nit): report said 12 service containers; it is 11 entries / 12 jobs.
+  - Fix: corrected.
+- Not changed (nit): string-form `permissions: read-all` is rejected; loud failure, acceptable.
 
 ## Restart required
 
@@ -88,6 +95,6 @@ No restart required.
 
 ## PR link
 
-TBD
+https://github.com/junebug-junie/Orion-Sapienform/pull/2686
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

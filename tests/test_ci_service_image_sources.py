@@ -16,17 +16,21 @@ OWN_PREFIX = "ghcr.io/junebug-junie/"
 
 
 def _service_images():
-    for path in sorted(WORKFLOWS.glob("*.yml")):
+    for path in sorted([*WORKFLOWS.glob("*.yml"), *WORKFLOWS.glob("*.yaml")]):
         doc = yaml.safe_load(path.read_text()) or {}
         top_perms = doc.get("permissions")
         for job_name, job in (doc.get("jobs") or {}).items():
             matrix = ((job.get("strategy") or {}).get("matrix") or {})
-            for svc_name, svc in (job.get("services") or {}).items():
+            containers = dict(job.get("services") or {})
+            if job.get("container"):
+                c = job["container"]
+                containers["<job container>"] = c if isinstance(c, dict) else {"image": c}
+            for svc_name, svc in containers.items():
                 image = svc.get("image", "")
                 images = [image]
                 if image.startswith("${{ matrix."):
                     key = image.removeprefix("${{ matrix.").removesuffix("}}").strip()
-                    images = list(matrix.get(key) or [])
+                    images = list(matrix.get(key) or []) or [f"<unresolvable matrix image {image}>"]
                 for img in images:
                     yield path.name, job_name, svc_name, img, svc, job.get("permissions", top_perms)
 

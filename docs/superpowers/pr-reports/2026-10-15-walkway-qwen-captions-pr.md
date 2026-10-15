@@ -130,6 +130,6 @@ The main athena `orion-vision-host` needs no restart for behavior (its code chan
 
 ## PR link
 
-PR_LINK_PLACEHOLDER
+https://github.com/junebug-junie/Orion-Sapienform/pull/2690
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

@@ -49,6 +49,19 @@ class Settings(BaseSettings):
     HEALTH_INTERVAL_SECONDS: float = 10.0
     SOURCE_RECONNECT_SECONDS: float = 5.0
 
+    # RTSP cameras only (webcam/folder/mock ignore these). See
+    # app/sources.py RtspFrameSource and the 2026-10-15 walkway stall.
+    #   TRANSPORT       tcp interleaves RTP on the RTSP connection: no UDP
+    #                   loss/reorder (the walkway's smeared lower frame and
+    #                   `RTP: bad cseq` lines). udp/http also accepted.
+    #   IO_TIMEOUT      FFmpeg socket timeout + OpenCV read timeout: a quiet
+    #                   socket returns from cap.read() after this, not never.
+    #   STALL_SECONDS   no frame for this long -> WARNING, abandon the reader
+    #                   thread, start a fresh capture. 0 disables.
+    RETINA_RTSP_TRANSPORT: str = "tcp"
+    RETINA_RTSP_IO_TIMEOUT_SECONDS: float = 5.0
+    RETINA_RTSP_STALL_SECONDS: float = 15.0
+
     # On-demand video+audio clip capture for AffectGPT (app/clip_capture.py).
     # Separate from RETINA_SOURCE/RETINA_CAMERA_ID above -- those drive the
     # existing single-frame capture_loop, this is a distinct on-demand path
@@ -98,6 +111,14 @@ class Settings(BaseSettings):
         if isinstance(v, str) and v.strip() == "":
             return None
         return v
+
+    @field_validator("RETINA_RTSP_TRANSPORT", mode="before")
+    @classmethod
+    def _check_rtsp_transport(cls, v: object) -> str:
+        t = str(v or "tcp").strip().lower()
+        if t not in {"tcp", "udp", "http"}:
+            raise ValueError(f"RETINA_RTSP_TRANSPORT must be tcp, udp or http, got {v!r}")
+        return t
 
     @field_validator("JPEG_QUALITY", mode="before")
     @classmethod

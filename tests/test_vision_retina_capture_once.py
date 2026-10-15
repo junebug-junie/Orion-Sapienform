@@ -86,3 +86,23 @@ async def test_capture_once_updates_fps_observed(tmp_path: Path) -> None:
 
     await svc.capture_once()
     assert svc.metrics.fps_observed > 0.0
+
+
+@pytest.mark.asyncio
+async def test_capture_once_names_an_rtsp_stall_and_counts_restarts(tmp_path: Path) -> None:
+    # 2026-10-15: the walkway went quiet for ~34 min reporting only
+    # "source read returned no frame". A stall now names itself.
+    settings = Settings(FRAME_STORAGE_DIR=str(tmp_path))
+    bus = MagicMock()
+    bus.publish = AsyncMock()
+    svc = RetinaService(settings=settings, bus=bus)
+    src = _FakeSource(None)
+    src.ever_connected = True
+    src.stall_restarts = 2
+    src.stall_error = "rtsp stalled: no frame for 16s; restarted reader"
+    svc.source = src
+
+    assert await svc.capture_once() is False
+    assert svc.metrics.last_error == src.stall_error
+    assert svc.metrics.source_stall_restarts == 2
+    assert svc._source_ok() is False

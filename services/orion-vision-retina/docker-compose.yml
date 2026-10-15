@@ -31,6 +31,10 @@ services:
       - JPEG_QUALITY=${JPEG_QUALITY:-90}
       - HEALTH_INTERVAL_SECONDS=${HEALTH_INTERVAL_SECONDS:-10.0}
       - SOURCE_RECONNECT_SECONDS=${SOURCE_RECONNECT_SECONDS:-5.0}
+      # RTSP only: TCP transport, read timeout, stall watchdog (sources.py).
+      - RETINA_RTSP_TRANSPORT=${RETINA_RTSP_TRANSPORT:-tcp}
+      - RETINA_RTSP_IO_TIMEOUT_SECONDS=${RETINA_RTSP_IO_TIMEOUT_SECONDS:-5.0}
+      - RETINA_RTSP_STALL_SECONDS=${RETINA_RTSP_STALL_SECONDS:-15.0}
       # On-demand clip capture (AffectGPT) -- UNVERIFIED against real
       # hardware, see app/clip_capture.py. Off by default.
       - RETINA_CLIP_ENABLED=${RETINA_CLIP_ENABLED:-false}
@@ -148,6 +152,10 @@ services:
       - JPEG_QUALITY=${WALKWAY_RETINA_JPEG_QUALITY:-88}
       - HEALTH_INTERVAL_SECONDS=${HEALTH_INTERVAL_SECONDS:-10.0}
       - SOURCE_RECONNECT_SECONDS=${SOURCE_RECONNECT_SECONDS:-5.0}
+      # RTSP only: TCP transport, read timeout, stall watchdog (sources.py).
+      - RETINA_RTSP_TRANSPORT=${RETINA_RTSP_TRANSPORT:-tcp}
+      - RETINA_RTSP_IO_TIMEOUT_SECONDS=${RETINA_RTSP_IO_TIMEOUT_SECONDS:-5.0}
+      - RETINA_RTSP_STALL_SECONDS=${RETINA_RTSP_STALL_SECONDS:-15.0}
       # No clip capture on this instance: clip requests target carbon.
       - RETINA_CLIP_ENABLED=false
     volumes:

@@ -10,6 +10,7 @@ from typing import Any, Protocol
 
 import cv2
 import numpy as np
+from loguru import logger
 from pydantic import BaseModel, ConfigDict, Field
 
 
@@ -157,6 +158,37 @@ class _VideoCaptureSource:
         )
 
 
+_RTSP_TRANSPORTS = {"tcp", "udp", "http"}
+
+
+def rtsp_capture_options(transport: str, io_timeout_seconds: float) -> str:
+    """The OPENCV_FFMPEG_CAPTURE_OPTIONS string for an RTSP camera.
+
+    ``timeout`` is the RTSP demuxer's socket I/O timeout in microseconds. It is
+    the one name the FFmpeg bundled with this image's OpenCV (4.10, avformat
+    59.27 = FFmpeg 5.1) honours: measured in the built image against a fake
+    RTSP server that goes quiet mid-stream, ``timeout`` cut the blocked read to
+    5.1s while ``stimeout`` and ``rw_timeout`` were silently ignored (30s, the
+    OpenCV default). TCP interleaving stops the UDP packet loss/reordering that
+    smeared the bottom of the walkway frames (``RTP: bad cseq``)."""
+    t = (transport or "tcp").strip().lower()
+    if t not in _RTSP_TRANSPORTS:
+        raise ValueError(f"unsupported RTSP transport: {transport!r}")
+    micros = max(1, int(float(io_timeout_seconds) * 1_000_000))
+    return f"rtsp_transport;{t}|timeout;{micros}"
+
+
+def _open_rtsp_capture(url: str, *, open_timeout_ms: int, read_timeout_ms: int):
+    return cv2.VideoCapture(
+        url,
+        cv2.CAP_FFMPEG,
+        [
+            cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, int(open_timeout_ms),
+            cv2.CAP_PROP_READ_TIMEOUT_MSEC, int(read_timeout_ms),
+        ],
+    )
+
+
 class RtspFrameSource(_VideoCaptureSource):
     """A live network camera, sampled at RETINA_FPS.
 
@@ -166,7 +198,19 @@ class RtspFrameSource(_VideoCaptureSource):
     so the picture falls further behind the longer the service runs. A
     background thread therefore keeps reading the stream and holds only the
     newest frame; ``read()`` hands that one out, once.
+
+    Stall watchdog (incident 2026-10-15: the walkway reader went silent for
+    ~34 min, no log, until a container restart). ``read()`` checks how long it
+    has been since the reader thread last delivered a frame. Past
+    ``stall_seconds`` it logs a WARNING, sets that thread's own stop event,
+    abandons it (never joins it -- it may be wedged inside FFmpeg), and starts
+    a fresh reader on a fresh capture. A stopped thread can never write
+    ``_latest`` again: the stop event is set, and checked, under ``_lock``.
     """
+
+    # Abandoned readers may still hold a camera session until their blocked
+    # read returns. Reolinks limit sessions; do not stack more than this.
+    MAX_ABANDONED_ALIVE = 2
 
     def __init__(
         self,
@@ -177,6 +221,9 @@ class RtspFrameSource(_VideoCaptureSource):
         reconnect_seconds: float = 5.0,
         opener=None,
         join_timeout: float = 5.0,
+        stall_seconds: float = 15.0,
+        transport: str = "tcp",
+        io_timeout_seconds: float = 5.0,
     ) -> None:
         if not url:
             raise ValueError("rtsp source requires RETINA_SOURCE url")
@@ -187,17 +234,37 @@ class RtspFrameSource(_VideoCaptureSource):
             reconnect_seconds=reconnect_seconds,
             source_type="rtsp",
         )
-        self._opener = opener or cv2.VideoCapture
+        # Process-wide, read by OpenCV's FFmpeg backend at open time. Set here,
+        # on the constructing thread, never concurrently with an open. Only
+        # the RTSP source sets it; webcam/folder/mock never touch it.
+        self.capture_options = rtsp_capture_options(transport, io_timeout_seconds)
+        os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = self.capture_options
+        read_ms = max(1, int(float(io_timeout_seconds) * 1000))
+        open_ms = max(read_ms * 2, 10_000)
+        self._opener = opener or (
+            lambda u: _open_rtsp_capture(u, open_timeout_ms=open_ms, read_timeout_ms=read_ms)
+        )
         self._lock = threading.Lock()
         self._latest: tuple[object, float] | None = None
         self._stop_evt = threading.Event()
         self._thread: threading.Thread | None = None
         self._abandoned: list[threading.Thread] = []
         self._join_timeout = join_timeout
+        self.stall_seconds = float(stall_seconds)
         # True once any frame has ever arrived; lets the service tell
         # "still connecting" apart from "stream stalled".
         self.ever_connected = False
         self.last_error: str | None = None
+        # Monotonic time of the newest frame any live reader delivered, and of
+        # the last reader (re)start. The stall clock runs from the later one,
+        # so a fresh reader gets a full stall window to connect.
+        self._last_frame_mono: float | None = None
+        self._reader_started_mono: float = time.monotonic()
+        self.stall_restarts = 0
+        self._stalled_since: float | None = None
+        # Set while a stall is in progress, cleared when frames resume.
+        # last_error stays sticky (the most recent error ever seen).
+        self.stall_error: str | None = None
 
     def _open_sync(self):
         cap = self._opener(self._source)
@@ -221,11 +288,13 @@ class RtspFrameSource(_VideoCaptureSource):
                             cap.release()
                         cap = self._open_sync()
                         if not cap.isOpened():
+                            self.last_error = "rtsp open failed"
                             stop_evt.wait(self._reconnect_seconds)
                             continue
                     ok, frame = cap.read()
                 except Exception as exc:  # noqa: BLE001 -- a decoder error must not kill the eye
                     self.last_error = f"rtsp reader error: {type(exc).__name__}: {exc}"
+                    logger.warning(f"[RETINA] {self.last_error}; reconnecting")
                     if cap is not None:
                         cap.release()
                     cap = None
@@ -234,32 +303,43 @@ class RtspFrameSource(_VideoCaptureSource):
                 if not ok or frame is None:
                     failures += 1
                     if failures >= 3:
+                        if not stop_evt.is_set():
+                            self.last_error = "rtsp read failed 3 times; reconnecting"
+                            logger.warning(f"[RETINA] {self.last_error}")
                         cap.release()
                         cap = None
                         failures = 0
                         stop_evt.wait(self._reconnect_seconds)
                     continue
                 failures = 0
-                if stop_evt.is_set():
-                    break
                 with self._lock:
+                    # Checked under the lock the watchdog sets it under: once
+                    # a reader is stopped, it can never publish a frame.
+                    if stop_evt.is_set():
+                        break
                     self._latest = (frame, time.time())
+                    self._last_frame_mono = time.monotonic()
                     self.ever_connected = True
         finally:
             if cap is not None:
                 cap.release()
 
-    async def start(self) -> None:
-        if self._thread is not None and self._thread.is_alive():
-            return
+    def _spawn_reader(self) -> None:
         self._stop_evt = threading.Event()
+        self._reader_started_mono = time.monotonic()
         self._thread = threading.Thread(
             target=self._reader, args=(self._stop_evt,), name="retina-rtsp-reader", daemon=True
         )
         self._thread.start()
 
+    async def start(self) -> None:
+        if self._thread is not None and self._thread.is_alive():
+            return
+        self._spawn_reader()
+
     async def stop(self) -> None:
-        self._stop_evt.set()
+        with self._lock:
+            self._stop_evt.set()
         thread, self._thread = self._thread, None
         if thread is not None:
             await asyncio.to_thread(thread.join, self._join_timeout)
@@ -271,13 +351,58 @@ class RtspFrameSource(_VideoCaptureSource):
                 self.last_error = "rtsp reader still blocked after stop; will exit on its next read"
         self._abandoned = [t for t in self._abandoned if t.is_alive()]
 
+    def last_frame_age(self) -> float | None:
+        """Seconds since a reader last delivered a frame (None before the first)."""
+        last = self._last_frame_mono
+        return None if last is None else max(0.0, time.monotonic() - last)
+
+    def _check_stall(self) -> None:
+        if not self.ever_connected or self.stall_seconds <= 0:
+            return
+        now = time.monotonic()
+        last = self._last_frame_mono or 0.0
+        if now - max(last, self._reader_started_mono) <= self.stall_seconds:
+            return
+        self._abandoned = [t for t in self._abandoned if t.is_alive()]
+        if len(self._abandoned) >= self.MAX_ABANDONED_ALIVE:
+            self.last_error = self.stall_error = (
+                f"rtsp stalled {now - last:.0f}s; {len(self._abandoned)} abandoned readers "
+                "still blocked, not opening another camera session yet"
+            )
+            logger.error(f"[RETINA] {self.last_error}")
+            self._reader_started_mono = now  # re-check after another window
+            return
+        if self._stalled_since is None:
+            self._stalled_since = last
+        with self._lock:
+            self._stop_evt.set()
+        old, self._thread = self._thread, None
+        if old is not None and old.is_alive():
+            self._abandoned.append(old)
+        self.stall_restarts += 1
+        self.last_error = f"rtsp stalled: no frame for {now - last:.0f}s; restarted reader"
+        self.stall_error = self.last_error
+        logger.warning(
+            f"[RETINA] {self.last_error} (stall_restarts={self.stall_restarts}, "
+            f"abandoned_alive={len(self._abandoned)})"
+        )
+        self._spawn_reader()
+
     async def read(self) -> FrameReadResult | None:
+        self._check_stall()
         if self._thread is None or not self._thread.is_alive():
             await self.start()
         with self._lock:
             latest, self._latest = self._latest, None
         if latest is None:
             return None  # nothing new since the last tick
+        if self._stalled_since is not None:
+            logger.info(
+                f"[RETINA] rtsp frames resumed after {time.monotonic() - self._stalled_since:.0f}s "
+                f"(stall_restarts={self.stall_restarts})"
+            )
+            self._stalled_since = None
+            self.stall_error = None
         frame, ts = latest
         h, w = frame.shape[:2]
         return FrameReadResult(frame=frame, ts=ts, width=w, height=h, source_meta={"type": "rtsp"})
@@ -309,6 +434,9 @@ def create_frame_source(
     width: int | None = None,
     height: int | None = None,
     reconnect_seconds: float = 5.0,
+    rtsp_transport: str = "tcp",
+    rtsp_stall_seconds: float = 15.0,
+    rtsp_io_timeout_seconds: float = 5.0,
 ) -> FrameSource:
     st = source_type.lower().strip()
     common = dict(width=width, height=height, reconnect_seconds=reconnect_seconds)
@@ -317,7 +445,13 @@ def create_frame_source(
     if st == "mock":
         return MockFrameSource(source)
     if st == "rtsp":
-        return RtspFrameSource(source, **common)
+        return RtspFrameSource(
+            source,
+            **common,
+            transport=rtsp_transport,
+            stall_seconds=rtsp_stall_seconds,
+            io_timeout_seconds=rtsp_io_timeout_seconds,
+        )
     if st == "webcam":
         return WebcamFrameSource(source or "0", **common)
     raise ValueError(f"unsupported RETINA_SOURCE_TYPE: {source_type!r}")

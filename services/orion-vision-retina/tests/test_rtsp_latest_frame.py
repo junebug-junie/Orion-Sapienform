@@ -165,3 +165,142 @@ def test_a_decoder_exception_reconnects_instead_of_killing_the_reader():
     got = asyncio.run(run())
     assert got is not None
     assert src.last_error and "RuntimeError" in src.last_error
+
+
+# --- Stall watchdog (incident 2026-10-15: walkway silent ~34 min, no log) ---
+
+
+class _WedgeAfterCap(_FakeCap):
+    """Delivers `n` frames, then cap.read() blocks on `gate` (a stream that
+    went quiet without closing). Once released it returns one more frame,
+    tagged 255, which must never reach _latest."""
+
+    def __init__(self, n: int, gate: threading.Event) -> None:
+        super().__init__()
+        self.n = n
+        self.gate = gate
+        self.wedged = threading.Event()
+
+    def read(self):
+        if self.i >= self.n:
+            self.wedged.set()
+            self.gate.wait()
+            return True, np.full((4, 6, 3), 255, dtype=np.uint8)
+        return super().read()
+
+
+def test_a_wedged_reader_is_replaced_and_frames_resume():
+    gate = threading.Event()
+    caps: list[_FakeCap] = []
+
+    def opener(_url):
+        cap = _WedgeAfterCap(3, gate) if not caps else _FakeCap()
+        caps.append(cap)
+        return cap
+
+    src = RtspFrameSource("rtsp://x", opener=opener, stall_seconds=0.2)
+
+    async def run():
+        await src.start()
+        first_thread = src._thread
+        assert _wait(lambda: caps[0].wedged.is_set())
+        assert await src.read() is not None          # the 3 good frames
+        assert await src.read() is None              # wedged, inside the window
+        assert src.stall_restarts == 0
+        time.sleep(0.3)                               # past the stall threshold
+        await src.read()                              # watchdog fires
+        assert src.stall_restarts == 1
+        assert src._thread is not first_thread and src._thread.is_alive()
+        assert first_thread in src._abandoned
+        assert src.last_error and "stalled" in src.last_error
+        assert _wait(lambda: len(caps) >= 2 and caps[1].i >= 3)
+        resumed = await src.read()
+        assert resumed is not None and int(resumed.frame[0, 0, 0]) != 255
+        assert src.last_frame_age() is not None and src.last_frame_age() < 0.2
+        # The wedged socket finally returns: its frame must not land.
+        with src._lock:
+            src._latest = None
+        gate.set()
+        assert _wait(lambda: not first_thread.is_alive())
+        assert caps[0].released
+        await src.stop()
+        return src._latest
+
+    latest = asyncio.run(run())
+    assert latest is None or int(latest[0][0, 0, 0]) != 255
+
+
+def test_no_stall_restart_before_the_first_frame():
+    # Still connecting is not a stall: a camera that never delivered gets
+    # the reader's own reconnect loop, not a session-per-window storm.
+    gate = threading.Event()
+    caps: list[_FakeCap] = []
+
+    def opener(_url):
+        cap = _WedgeAfterCap(0, gate)
+        caps.append(cap)
+        return cap
+
+    src = RtspFrameSource("rtsp://x", opener=opener, stall_seconds=0.05, join_timeout=0.05)
+
+    async def run():
+        await src.start()
+        assert _wait(lambda: caps and caps[0].wedged.is_set())
+        time.sleep(0.15)
+        assert await src.read() is None
+        restarts = src.stall_restarts
+        gate.set()
+        await src.stop()
+        return restarts
+
+    assert asyncio.run(run()) == 0
+
+
+def test_abandoned_readers_are_capped_so_camera_sessions_do_not_pile_up():
+    gate = threading.Event()
+    caps: list[_FakeCap] = []
+
+    def opener(_url):
+        # every capture delivers one frame then wedges
+        cap = _WedgeAfterCap(1, gate)
+        caps.append(cap)
+        return cap
+
+    src = RtspFrameSource("rtsp://x", opener=opener, stall_seconds=0.05)
+
+    async def run():
+        await src.start()
+        assert _wait(lambda: caps and caps[0].wedged.is_set())
+        await src.read()
+        for _ in range(6):
+            time.sleep(0.08)
+            await src.read()
+            _wait(lambda: caps[-1].wedged.is_set(), timeout=0.5)
+        opened = len(caps)
+        restarts = src.stall_restarts
+        gate.set()
+        await src.stop()
+        return opened, restarts
+
+    opened, restarts = asyncio.run(run())
+    # 1 live reader + at most MAX_ABANDONED_ALIVE wedged ones.
+    assert restarts == RtspFrameSource.MAX_ABANDONED_ALIVE
+    assert opened == RtspFrameSource.MAX_ABANDONED_ALIVE + 1
+
+
+def test_stall_watchdog_can_be_disabled():
+    gate = threading.Event()
+    cap = _WedgeAfterCap(2, gate)
+    src = RtspFrameSource("rtsp://x", opener=lambda _u: cap, stall_seconds=0)
+
+    async def run():
+        await src.start()
+        assert _wait(lambda: cap.wedged.is_set())
+        await src.read()
+        time.sleep(0.05)
+        await src.read()
+        gate.set()
+        await src.stop()
+
+    asyncio.run(run())
+    assert src.stall_restarts == 0

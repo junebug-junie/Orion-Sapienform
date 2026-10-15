@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -18,6 +19,17 @@ class RetinaMetrics:
     last_frame_ts: float | None = None
     last_error: str | None = None
     fps_observed: float = 0.0
+    # Times an RTSP reader was abandoned and replaced for delivering no frame
+    # (RtspFrameSource stall watchdog). Always 0 for other sources.
+    source_stall_restarts: int = 0
+
+
+def last_frame_age_sec(metrics: RetinaMetrics, now: float | None = None) -> float | None:
+    """Seconds since the newest published frame was captured, or None before
+    the first. The number that grows when a camera goes quiet."""
+    if metrics.last_frame_ts is None:
+        return None
+    return round(max(0.0, (now if now is not None else time.time()) - metrics.last_frame_ts), 3)
 
 
 def make_system_health_envelope(
@@ -54,6 +66,8 @@ def make_system_health_envelope(
             "fps_target": fps_target,
             "fps_observed": metrics.fps_observed,
             "last_frame_ts": metrics.last_frame_ts,
+            "last_frame_age_sec": last_frame_age_sec(metrics),
+            "source_stall_restarts": metrics.source_stall_restarts,
             "last_error": metrics.last_error,
             "storage_dir": storage_dir,
         },

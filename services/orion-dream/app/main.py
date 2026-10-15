@@ -292,6 +292,8 @@ def build_cycle_deps():
         publish_drive_reading=_publish_drive_reading if settings.DREAM_REST_DRIVE_PUBLISH_ENABLED else None,
         read_arousal=_read_arousal if settings.DREAM_IDLE_FROM_AROUSAL_ENABLED else None,
         load_arc_rows=cycle_store.load_arc_rows if settings.DREAM_REPLAY_ARC_CANDIDATES_ENABLED else None,
+        load_walkway_rows=cycle_store.load_walkway_rows if settings.DREAM_REPLAY_WALKWAY_ENABLED else None,
+        walkway_timezone=settings.DREAM_WALKWAY_TIMEZONE,
     )
 
 

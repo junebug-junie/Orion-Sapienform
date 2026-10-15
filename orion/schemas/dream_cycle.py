@@ -33,7 +33,13 @@ FORMED_FROM_PREFIX = "dream_hypothesis:"
 
 # "arc": a closed Temporal Self arc (temporal_self_arc), ref_id "arc:<arc_id>". Replay
 # material only: never counted in sleep pressure (orion-dream app/replay.py).
-ReplaySourceKind = Literal["metacog", "compaction_request", "resonance", "crystallization", "arc"]
+# "walkway": graded walkway-camera predictions (vision_percept_expectation met/missed)
+# scored since the last sleep, one per subject, ref_id "walkway:<expectation_id>".
+# Replay material only, like "arc" (2026-10-15). Only orion-dream builds and
+# validates ReplayItemV1; dream_replay.source_kind is plain text.
+ReplaySourceKind = Literal[
+    "metacog", "compaction_request", "resonance", "crystallization", "arc", "walkway"
+]
 HypothesisArm = Literal["dream", "control"]
 CycleStatus = Literal["completed", "empty", "failed"]
 CycleTrigger = Literal["pressure", "manual"]

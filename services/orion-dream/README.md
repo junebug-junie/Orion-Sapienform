@@ -137,6 +137,22 @@ the rest drive. The cycle note records `arc candidates=N`. Off switch:
 `DREAM_REPLAY_ARC_CANDIDATES_ENABLED=false`. A failed or slow read (2 s statement
 timeout, 5 s overall) means no arcs, and the sleep runs exactly as before.
 
+### Replay draws on graded walkway predictions (2026-10-15)
+
+What Orion expected to see on the street and whether it came: met/missed rows of
+`vision_percept_expectation` (the walkway rhythm reducer, orion-sql-writer) scored
+since the last sleep began, one replay item per subject (`source_kind="walkway"`,
+`ref_id="walkway:<expectation_id>"`), worded like "On the walkway I expected the black
+dog around 07:40: came on Thu 22 Oct; did not come on Wed 21 Oct. Over the last 14
+days it came 6 of 8 times." Open and unscorable rows are not results and are dropped.
+Weight is a declared heuristic: 0.5 when the subject missed at least once in the
+window (a prediction error), 0.3 when every one came; at most a sixth of the replay
+(2 of 12). Like arcs: replay material only, read after the pressure read, never sleep
+pressure, never starts a sleep, any read failure = the sleep as before. The cycle note
+records `walkway candidates=N`. Empty for the camera's first week: the reducer only
+emits an expectation with >= 5 days of support. Off switch:
+`DREAM_REPLAY_WALKWAY_ENABLED=false` (or empty `DREAM_WALKWAY_STREAM_IDS`).
+
 ### Reverie themes read as titles
 
 Compaction requests and resonance alerts name a reverie theme by its bare open-loop id

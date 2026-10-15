@@ -362,3 +362,47 @@ def load_arc_rows(since: datetime, until: datetime) -> list[dict[str, Any]]:
     except Exception as exc:
         logger.warning("dream_cycle arc read failed err=%s", exc)
         return []
+
+
+# Graded walkway predictions (2026-10-15): met/missed rows from
+# vision_percept_expectation (written by orion-sql-writer's rhythm reducer, same
+# database) scored in [since, until), plus each subject's 14-day met/missed
+# tally. Read-only; SQL shared with orion-thought (orion/situational/street_material.py).
+WALKWAY_ROW_LIMIT = 200
+WALKWAY_READ_STATEMENT_TIMEOUT_MS = 2000
+
+
+def load_walkway_rows(since: datetime, until: datetime, *, stream_ids: list[str] | None = None) -> dict[str, list[dict[str, Any]]]:
+    """{"graded": rows, "calibration": rows}. Any failure (missing table, timeout)
+    is empty and logged: the sleep then replays exactly what it did before."""
+    from datetime import timedelta
+
+    from orion.situational.street_material import (
+        CALIBRATION_LOOKBACK_DAYS,
+        CALIBRATION_SQL,
+        GRADED_EXPECTATIONS_SQL,
+        parse_stream_ids,
+    )
+
+    ids = stream_ids if stream_ids is not None else parse_stream_ids(settings.DREAM_WALKWAY_STREAM_IDS)
+    if not ids:
+        return {"graded": [], "calibration": []}
+    try:
+        from sqlalchemy import bindparam, text
+
+        with _get_engine().begin() as conn:
+            conn.execute(text(f"SET LOCAL statement_timeout = '{int(WALKWAY_READ_STATEMENT_TIMEOUT_MS)}ms'"))
+            graded = conn.execute(
+                text(GRADED_EXPECTATIONS_SQL).bindparams(bindparam("stream_ids", expanding=True)),
+                {"stream_ids": ids, "since": since, "until": until, "limit": WALKWAY_ROW_LIMIT},
+            ).mappings().all()
+            if not graded:
+                return {"graded": [], "calibration": []}
+            cal = conn.execute(
+                text(CALIBRATION_SQL).bindparams(bindparam("stream_ids", expanding=True)),
+                {"stream_ids": ids, "cal_since": until - timedelta(days=CALIBRATION_LOOKBACK_DAYS)},
+            ).mappings().all()
+        return {"graded": [dict(r) for r in graded], "calibration": [dict(r) for r in cal]}
+    except Exception as exc:
+        logger.warning("dream_cycle walkway read failed err=%s", exc)
+        return {"graded": [], "calibration": []}

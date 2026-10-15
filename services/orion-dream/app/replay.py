@@ -11,6 +11,8 @@ Candidates are what the day left unprocessed since the last cycle:
                      cycle, weighted by their own salience.
   arc                closed Temporal Self arcs since the last sleep (bottom of
                      this file). Replay material only, never sleep pressure.
+  walkway            graded walkway-camera predictions (met/missed) scored since
+                     the last sleep, one per subject. Replay material only.
 
 Weights are declared heuristics, stated here once.
 
@@ -362,3 +364,90 @@ def arc_candidates(
             best[key] = (item, ended)
     ranked = sorted(best.values(), key=lambda t: (-t[0].weight, -t[1].timestamp(), t[0].ref_id))
     return [item for item, _ in ranked[: max(0, int(cap))]]
+
+
+# --- graded walkway predictions (2026-10-15) ----------------------------------
+#
+# What Orion expected to see on the street and whether it came: the rhythm
+# reducer's met/missed `vision_percept_expectation` rows scored in the window,
+# one candidate per (stream, subject), with the subject's 14-day hit rate when
+# there is one. Replay material ONLY, like arcs: added after the pressure read
+# (app/cycle.py), so the street never makes Orion tired.
+#
+# Weight (declared heuristic): a miss is a prediction error, the thing sleep
+# most plausibly has work to do on, so a subject with any miss in the window
+# weighs WALKWAY_WEIGHT_MISSED; all-met weighs WALKWAY_WEIGHT_MET. Both sit below
+# a critical metacog (1.0), a 0.8-salience crystallization and ARC_WEIGHT_MAX,
+# and at most `walkway_replay_slots` of a replay are walkway items.
+#
+# Empty for the walkway camera's first week: the reducer emits an expectation
+# only after >= 5 days of support.
+
+WALKWAY_WEIGHT_MISSED = 0.5
+WALKWAY_WEIGHT_MET = 0.3
+WALKWAY_CANDIDATES_MAX = 10
+
+
+def walkway_replay_slots(k: int) -> int:
+    """At most a sixth of the replay (2 of 12), never zero when k > 0."""
+    k = max(0, int(k))
+    return (k + 5) // 6
+
+
+def walkway_candidates(
+    rows: Iterable[dict[str, Any]],
+    calibration_rows: Iterable[dict[str, Any]],
+    since: datetime,
+    until: datetime,
+    *,
+    tz: Any,
+    cap: int = WALKWAY_CANDIDATES_MAX,
+) -> list[ReplayItemV1]:
+    """met/missed rows scored in [since, until) -> one ReplayItemV1 per subject,
+    heaviest first (ties: newest, then ref_id). Re-checks the window so a loose
+    source can never widen it. [] when nothing was graded."""
+    from orion.situational.street_material import (
+        build_calibration,
+        build_graded_expectations,
+        calibration_phrase,
+    )
+
+    graded = []
+    for g in build_graded_expectations(rows):
+        try:
+            if g.scored_at is not None and since <= g.scored_at < until:
+                graded.append(g)
+        except TypeError:
+            continue
+    cal = build_calibration(calibration_rows or ())
+    by_subject: dict[tuple[str, str], list] = {}
+    for g in graded:  # newest scored first
+        by_subject.setdefault((g.stream_id, g.subject_key), []).append(g)
+    items: list[tuple[ReplayItemV1, datetime]] = []
+    for (stream, key), gs in by_subject.items():
+        newest = gs[0]
+        missed = sum(1 for g in gs if not g.came)
+        weight = WALKWAY_WEIGHT_MISSED if missed else WALKWAY_WEIGHT_MET
+        outcomes = []
+        for g in gs[:5]:
+            day = (g.window_start or g.scored_at).astimezone(tz).strftime("%a %d %b")
+            outcomes.append(("came" if g.came else "did not come") + f" on {day}")
+        at = f" around {newest.around}" if newest.around else ""
+        text = f"On the {stream or 'street camera'} I expected {newest.subject}{at}: " + "; ".join(outcomes) + "."
+        phrase = calibration_phrase(cal.get((stream, key)))
+        if phrase:
+            text += f" {phrase[:1].upper()}{phrase[1:]}."
+        rid = newest.expectation_id or f"{stream}:{key}"
+        items.append((
+            ReplayItemV1(
+                ref_id=f"walkway:{rid}",
+                source_kind="walkway",
+                text=_clip(text),
+                weight=weight,
+                reason=f"walkway prediction graded since last sleep ({len(gs) - missed} met, {missed} missed)",
+                tags=["walkway", newest.subject.lower()],
+            ),
+            newest.scored_at,
+        ))
+    items.sort(key=lambda t: (-t[0].weight, -t[1].timestamp(), t[0].ref_id))
+    return [item for item, _ in items[: max(0, int(cap))]]

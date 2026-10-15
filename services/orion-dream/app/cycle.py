@@ -28,7 +28,16 @@ from orion.schemas.drive_reading import DriveReadingV1
 from orion.schemas.telemetry.dream import DreamInternalTriggerV1
 
 from app.recombine import Complete, control_pairs, dream_pairs, recombine
-from app.replay import arc_candidates, arc_replay_slots, compute_pressure, keyed_candidates, prior_keys, select_replay
+from app.replay import (
+    arc_candidates,
+    arc_replay_slots,
+    compute_pressure,
+    keyed_candidates,
+    prior_keys,
+    select_replay,
+    walkway_candidates,
+    walkway_replay_slots,
+)
 from app.story import story_trigger
 from app.settings import settings
 
@@ -66,6 +75,11 @@ class CycleDeps:
     # the sleep exactly as before. Read only once a sleep proceeds, after the pressure read:
     # arcs are replay material, never pressure, has_candidates or the rest drive.
     load_arc_rows: Optional[Callable[[datetime, datetime], list[dict[str, Any]]]] = None
+    # Graded walkway predictions (2026-10-15): (since, until) -> {"graded": rows,
+    # "calibration": rows}. None (DREAM_REPLAY_WALKWAY_ENABLED off) or any failure = no
+    # walkway candidates. Replay material only, read after the pressure read like arcs.
+    load_walkway_rows: Optional[Callable[[datetime, datetime], dict[str, list[dict[str, Any]]]]] = None
+    walkway_timezone: str = "America/Denver"
     # Set by run_cycle_once when arousal held a sleep this check (e.g. "arousal_strained"),
     # else None, so a manual run can say "held" instead of "not due".
     hold_reason: Optional[str] = None
@@ -151,6 +165,27 @@ async def read_arc_candidates(deps: CycleDeps, since: datetime, until: datetime)
         return arc_candidates(rows, since, until)
     except Exception:  # noqa: BLE001 -- no arcs is the pre-arc sleep, never a failed one
         logger.warning("dream_arc_candidates_failed -- replaying without arcs", exc_info=True)
+        return []
+
+
+async def read_walkway_candidates(deps: CycleDeps, since: datetime, until: datetime) -> list:
+    """Graded walkway predictions for [since, until). Never raises; any failure is []."""
+    if deps.load_walkway_rows is None:
+        return []
+    try:
+        from zoneinfo import ZoneInfo
+
+        try:
+            tz = ZoneInfo(deps.walkway_timezone)
+        except Exception:  # noqa: BLE001
+            tz = timezone.utc
+        rows = await asyncio.wait_for(
+            asyncio.to_thread(deps.load_walkway_rows, since, until), timeout=ARC_READ_TIMEOUT_SEC
+        )
+        rows = rows or {}
+        return walkway_candidates(rows.get("graded") or [], rows.get("calibration") or [], since, until, tz=tz)
+    except Exception:  # noqa: BLE001 -- no walkway is the pre-walkway sleep, never a failed one
+        logger.warning("dream_walkway_candidates_failed -- replaying without the walkway", exc_info=True)
         return []
 
 
@@ -331,11 +366,18 @@ async def run_cycle_once(deps: CycleDeps, *, trigger: str = "pressure", force: b
     # Arcs above an existing item's weight do displace it, within that third.
     arcs = await read_arc_candidates(deps, pressure.since, started)
     arc_slots = arc_replay_slots(settings.DREAM_REPLAY_MAX)
-    replay = select_replay(candidates + arcs, settings.DREAM_REPLAY_MAX, source_caps={"arc": arc_slots})
+    # Graded walkway predictions: same rule as arcs, capped at a sixth of the replay.
+    walkway = await read_walkway_candidates(deps, pressure.since, started)
+    walkway_slots = walkway_replay_slots(settings.DREAM_REPLAY_MAX)
+    replay = select_replay(
+        candidates + arcs + walkway, settings.DREAM_REPLAY_MAX,
+        source_caps={"arc": arc_slots, "walkway": walkway_slots},
+    )
     # Control pool: the same top arcs replay could take, not all 20. Uniform sampling over
     # 20 arcs + ~5-12 existing items would make most control fragments arcs while the dream
     # arm is capped at a third: source mix would confound the dream-vs-control comparison.
-    pool = candidates + arcs[:arc_slots]
+    # Same for walkway items.
+    pool = candidates + arcs[:arc_slots] + walkway[:walkway_slots]
 
     compaction_delta_id = None
     if deps.rem_compaction is not None:
@@ -373,6 +415,7 @@ async def run_cycle_once(deps: CycleDeps, *, trigger: str = "pressure", force: b
         compaction_delta_id=compaction_delta_id,
         note=f"pairs dream={len(d_pairs)} control={len(c_pairs)}"
         + (f" | arc candidates={len(arcs)}" if deps.load_arc_rows is not None else "")
+        + (f" | walkway candidates={len(walkway)}" if deps.load_walkway_rows is not None else "")
         + (f" | overdue: {settings.DREAM_LOOKBACK_HOURS:g} h without crossing threshold" if backstop else ""),
     )
     persisted = await asyncio.to_thread(deps.persist_cycle, cycle)

@@ -24,6 +24,8 @@ from typing import Any, NamedTuple, Sequence
 
 from sqlalchemy import create_engine, text
 
+from orion.situational.street_material import dedupe_street_captions, street_caption_line
+
 logger = logging.getLogger(__name__)
 
 _ENGINE = None
@@ -469,6 +471,19 @@ _STREET_UNRESOLVED_SQL = text(
     "ORDER BY observed_at DESC LIMIT 20"
 )
 
+# Latest walkway narratives (council captions), freshness-gated in SQL and
+# deduped in Python (street_material.dedupe_street_captions). A different
+# statement from `_room_percept_stmt` on purpose: this is the street, rendered
+# as "On the walkway just now: ...", never as the room.
+_STREET_CAPTIONS_SQL = text(
+    "SELECT event_type, narrative, created_at FROM vision_events "
+    "WHERE stream_id = :stream_id "
+    "  AND narrative IS NOT NULL AND narrative <> '' "
+    "  AND created_at > now() - make_interval(mins => :lookback) "
+    "ORDER BY created_at DESC LIMIT 20"
+)
+STREET_CAPTION_MAX = 2
+
 # One row per no-embed zone, `<stream>:<zone>` (orion-sql-writer's
 # vision_individuals.no_embed_presence_id), recognised by the flag in the
 # snapshot rather than by a hardcoded zone name.
@@ -552,6 +567,7 @@ def summarize_street(
     now: datetime,
     tz: Any,
     camera: str = "walkway",
+    captions: list[dict[str, Any]] | None = None,
 ) -> list[str]:
     """Pure: rows in, a few short plain-English lines out.
 
@@ -562,6 +578,18 @@ def summarize_street(
     """
     lines: list[str] = []
     camera = (camera or "").strip() or "camera"
+
+    # 0. What the street camera's captions said (last 15 minutes). First, so
+    # the chat-stance clip keeps it: it is the only line about the scene
+    # itself rather than about who was recognised.
+    caption = street_caption_line(
+        dedupe_street_captions(
+            captions or [], now=now, max_age_sec=STREET_RECENT_MINUTES * 60, limit=STREET_CAPTION_MAX
+        ),
+        camera=camera,
+    )
+    if caption:
+        lines.append(caption)
 
     # 1. Who is around (last 15 minutes).
     recent_cut = now - timedelta(minutes=STREET_RECENT_MINUTES)
@@ -736,11 +764,16 @@ def fetch_street_summary(
             patio_rows = _street_rows(
                 conn, _PATIO_PRESENCE_SQL, {"prefix": _like_prefix(stream_id)}, "no_embed_zones"
             )
+            captions = _street_rows(
+                conn, _STREET_CAPTIONS_SQL,
+                {"stream_id": stream_id, "lookback": STREET_RECENT_MINUTES},
+                "captions",
+            )
     except Exception as exc:  # noqa: BLE001 -- fail-open by contract
         logger.warning("situation_street_connect_failed err=%s", exc)
         return StreetSummary(stream_id, [], False)
 
-    if all(r is None for r in (sightings, expectations, unresolved, patio_rows)):
+    if all(r is None for r in (sightings, expectations, unresolved, patio_rows, captions)):
         # Every read failed: that is "unread", not a quiet street.
         return StreetSummary(stream_id, [], False)
 
@@ -780,6 +813,7 @@ def fetch_street_summary(
             now=now,
             tz=tz,
             camera=stream_id,
+            captions=captions,
         )
     except Exception as exc:  # noqa: BLE001
         logger.warning("situation_street_summarize_failed err=%s", exc)

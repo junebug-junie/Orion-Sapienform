@@ -330,7 +330,8 @@ def test_patio_count_zero_says_nothing() -> None:
 def test_every_read_failing_is_unread() -> None:
     boom = RuntimeError("timeout")
     conn = _Conn({"vision_individual_sighting": boom, "vision_percept_expectation": boom,
-                  "vision_unresolved": boom, "substrate_embodied_presence": boom})
+                  "vision_unresolved": boom, "substrate_embodied_presence": boom,
+                  "FROM vision_events": boom})
     got = fetch_street_summary("walkway", engine=_Engine(conn), now=NOW)
     assert got.read_ok is False
 

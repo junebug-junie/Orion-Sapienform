@@ -150,6 +150,6 @@ No restart required. This takes effect on the next `git pull` on the primary che
 
 ## PR link
 
-PR_LINK_PLACEHOLDER
+https://github.com/junebug-junie/Orion-Sapienform/pull/2689
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

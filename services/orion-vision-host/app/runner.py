@@ -14,7 +14,7 @@ from PIL import Image
 
 import torch
 
-from orion.vision.caption_echo import strip_echoed_prompt_prefix
+from orion.vision.caption_echo import CAPTION_PROMPT, strip_echoed_prompt_prefix
 
 from .artifacts import merge_result_inputs
 from .caption_sanitize import sanitize_answer, sanitize_caption
@@ -30,7 +30,7 @@ from .model_manager import ModelManager
 from .models import VisionResult, VisionTask
 from .profiles import PipelineDef, ProfileDef, VisionProfiles
 from .settings import Settings
-from .vlm_family import caption_prompt_for, is_chat_template_vlm
+from .vlm_family import caption_prompt_for, is_chat_template_vlm, matches_null_answer, resolve_caption_prompt
 from .when_guard import safe_when
 
 settings = Settings()
@@ -1066,13 +1066,30 @@ class VisionRunner:
         device: str,
         warnings: List[str],
     ) -> Dict[str, Any]:
-        img = _load_image_from_request(request)
-
         # Use env defaults if not specified in profile
         model_id = settings.VISION_VLM_MODEL_ID
         if p.model_id and not p.model_id.startswith("REPLACE_ME"):
             model_id = p.model_id
 
+        # request.caption_prompt (walkway: people/animals/vehicles only) replaces
+        # the default on instruction-tuned VLMs only; see resolve_caption_prompt.
+        text_prompt, prompt_warning = resolve_caption_prompt(model_id, request)
+        if prompt_warning:
+            warnings.append(prompt_warning)
+            # The caller asked a question this model cannot follow (e.g. the
+            # qwen lane drifted back to BLIP). Answering with the model's own
+            # unprompted caption is exactly the walkway failure this prompt
+            # exists to prevent: no caption, with the reason.
+            return {
+                "configured": True,
+                "implemented": True,
+                "kind": "caption_frame",
+                "model_id": model_id,
+                "device": device,
+                "caption": {"text": "", "confidence": 0.0, "rejected_reason": "caller_prompt_unsupported"},
+            }
+
+        img = _load_image_from_request(request)
         dtype = self._resolve_dtype(p)
 
         model, processor = self.models.load_vlm_captioner(
@@ -1084,7 +1101,6 @@ class VisionRunner:
             qwen_max_pixels=settings.VISION_VLM_QWEN_MAX_PIXELS,
         )
 
-        text_prompt = caption_prompt_for(model_id)
         if text_prompt is None and "blip" not in model_id.lower():
             # Unknown family: sent no prompt like BLIP. Instruction-tuned
             # models outside vlm_family's allowlist (LLaVA, Florence-2) may
@@ -1107,7 +1123,12 @@ class VisionRunner:
             if text_prompt
             else (generated_text or "").strip()
         )
-        caption_text, ok, reason = sanitize_caption(cleaned)
+        if matches_null_answer(cleaned, request.get("caption_null_answers")):
+            # The model said the agreed "nothing here" sentence: no caption,
+            # recorded as a rejection with its reason, never a caption at 1.0.
+            caption_text, ok, reason = None, False, "null_answer"
+        else:
+            caption_text, ok, reason = sanitize_caption(cleaned, prompt=text_prompt or CAPTION_PROMPT)
         if not ok:
             warnings.append(f"caption_rejected:{reason}")
             # A rejected caption is published as rejected, never as an empty

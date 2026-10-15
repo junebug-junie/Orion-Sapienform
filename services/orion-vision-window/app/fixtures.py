@@ -90,6 +90,16 @@ class FixtureTracker:
     def _fixed(self, run: StillRun) -> bool:
         return is_stationary(run, self.min_sec)
 
+    def is_fixture_box(self, stream_id: str, box) -> bool:
+        """True when ``box`` overlaps a run that has already been held long
+        enough to be a fixture (a prop), as of the last observed window."""
+        if not self.enabled_for(stream_id) or len(box or []) != 4:
+            return False
+        return any(
+            self._fixed(r) and box_iou(box, r.box) >= self.iou
+            for r in self._runs.get(stream_id, [])
+        )
+
     def fixture_only(self, stream_id: str) -> bool:
         return self.enabled_for(stream_id) and self._fixture_only.get(stream_id, False)
 

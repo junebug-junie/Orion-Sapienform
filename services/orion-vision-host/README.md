@@ -37,6 +37,23 @@ bus channel and env prefix is a contract change, out of scope for a location
 move. Read every "circe" reference below as historical unless it says
 otherwise.
 
+**2026-10-15: walkway captions.** The lane now has a second caller: the frame
+router's walkway `caption_dispatch` (`config/vision_frame_router.yaml`). Those
+`caption_frame` tasks carry `request.caption_prompt` (honored only on
+instruction-tuned VLMs; on BLIP the task returns no caption with
+`rejected_reason="caller_prompt_unsupported"` instead of BLIP's own caption,
+see `vlm_family.resolve_caption_prompt`)
+and `request.caption_null_answers` (an exact "nothing notable" reply becomes
+`caption = {text: "", confidence: 0.0, rejected_reason: "null_answer"}`).
+They address the frame by `image_path`, so the compose file mounts
+`/mnt/telemetry/vision/frames` read-only, and the lane's artifact broadcast is
+opened for `stream_id=walkway` only (`VISION_ARTIFACT_BROADCAST_STREAMS` /
+`CIRCE_QWEN_VISION_ARTIFACT_BROADCAST_STREAMS`, `main.artifact_broadcast_allowed`)
+so orion-vision-window receives them; dream re-observations carry no
+stream_id and still never broadcast. The scheduler now queues up to 2 tasks
+(`VISION_QUEUE_WHEN_BUSY=true`, `VISION_MAX_QUEUE=2`) so the two callers wait
+for each other instead of being refused.
+
 A second, independent instance of this same service running
 `Qwen/Qwen2-VL-2B-Instruct` instead of the shared athena instance's
 BLIP-base. Not a replacement for the athena instance above — that one keeps

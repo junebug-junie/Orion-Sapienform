@@ -635,10 +635,15 @@ channels:
   # dedicated instance sets VISION_VLM_MODEL_ID explicitly, live-verified
   # inside the built image before this channel was wired
   # (services/orion-vision-host/docker-compose.circe-qwen.yml).
+  # orion-vision-frame-router joined as a producer 2026-10-15: walkway
+  # captions (config/vision_frame_router.yaml streams.walkway.caption_dispatch)
+  # are caption_frame tasks sent here after a detect reply found someone,
+  # carrying request.caption_prompt / caption_null_answers and
+  # meta.source_objects (read by orion-vision-window's caption gate).
   - name: "orion:exec:request:VisionHostService:circe-vl"
     kind: "request"
     schema_id: "VisionTaskRequestPayload"
-    producer_services: ["orion-thought"]
+    producer_services: ["orion-thought", "orion-vision-frame-router"]
     consumer_services: ["orion-vision-host"]
     single_consumer: true
     stability: "experimental"
@@ -1263,6 +1268,13 @@ channels:
     # single-consumer path instead. Real producer and real consumer on both
     # ends -- not the orphan-channel shape CLAUDE.md section 0A bans.
 
+  # UPDATE 2026-10-15: the lane now broadcasts on orion:vision:artifacts for
+  # stream_id=walkway ONLY (VISION_ARTIFACT_BROADCAST_STREAMS, main.py
+  # artifact_broadcast_allowed): walkway caption artifacts from the frame
+  # router's caption_dispatch, consumed by orion-vision-window's caption gate.
+  # A dream re-observation carries no stream_id and still never broadcasts, so
+  # the reasoning below still holds for it.
+  #
   # The circe-qwen lane (2026-08-26, docker-compose.circe-qwen.yml) does NOT
   # get an isolated channel here -- it sets VISION_ARTIFACT_BROADCAST_ENABLED
   # =false instead and publishes no artifact broadcast at all. A caption_frame

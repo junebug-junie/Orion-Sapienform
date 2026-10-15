@@ -3,9 +3,9 @@
   "metric_count": 746,
   "_last_change": {
     "change_count": 1,
-    "high_severity_count": 0,
+    "high_severity_count": 1,
     "changes": [
-      "medium added metric://field_channel/orion-substrate-runtime/node:substrate.perception_walkway.prediction_error"
+      "high   routing_changed metric://bus_channel/orion-thought/orion:exec:request:VisionHostService:circe-vl (all_producers: ['orion-thought'] -> ['orion-thought', 'orion-vision-frame-router'])"
     ]
   },
   "definitions": {
@@ -3321,7 +3321,8 @@
     "metric://bus_channel/orion-thought/orion:exec:request:VisionHostService:circe-vl": {
       "schema_id": "VisionTaskRequestPayload",
       "all_producers": [
-        "orion-thought"
+        "orion-thought",
+        "orion-vision-frame-router"
       ],
       "declared_consumers": [
         "orion-vision-host"

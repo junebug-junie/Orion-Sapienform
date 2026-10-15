@@ -88,6 +88,33 @@ tracked boxes, patio included since 2026-10-15) and `want_crop_faces` (a face
 vector + face thumbnail on each embedded person crop). No identity dispatch:
 Juniper's whole-frame identity check stays on the room cameras.
 
+**Walkway captions come from Qwen2-VL, not BLIP (2026-10-15).** The walkway
+primary task asks the athena host for no caption (`want_caption: false`). Its
+`caption_dispatch` block makes the router, after a *triggered*-tier detect
+reply that found at least one of `labels` at `>= min_score`, send the same
+frame as a `caption_frame` task to `CHANNEL_CAPTION_INTAKE`
+(`orion:exec:request:VisionHostService:circe-vl`, the Qwen2-VL-2B lane) with
+`request.caption_prompt` ("Are there any people, animals or vehicles in this
+image? If there are none, reply with only: nothing notable. ..." -- chosen by
+`services/orion-vision-host/evals/walkway_caption_eval.py`), `request.caption_null_answers`
+(that answer becomes *no caption* on the host) and `meta.source_objects` (the
+frame's gate detections, read by orion-vision-window's caption gate). It is
+chained after the detect reply, so detection never waits on the ~3 s VLM; it
+has its own in-flight cap (`max_inflight`) and per-camera clock
+(`min_seconds_between_dispatch`) and never takes an athena host slot
+(`RouterState.inflight_total()` counts host-lane tasks only). A frame whose
+gate boxes all match (same label, IoU >= `same_scene_iou`) the last captioned
+frame's within `same_scene_ttl_sec` is skipped as `same_scene` -- the patio
+skeleton reads as `person` all night. Busy, timed out (`timeout_sec`, equal to
+the window's `WINDOW_CAPTION_MAX_AGE_SEC`) or down = no caption; nothing falls
+back to BLIP. The vision organ counts the lane's `caption_requested` when a
+task is sent and `captions` when one comes back, leaving `replies_ok`/`failed`
+to the athena host. Outcomes are counted in the health heartbeat:
+`caption_dispatched_total`, `caption_captioned_total`, `caption_skip_counts`
+(`no_detection`, `rate_limited`, `same_scene`, `lane_inflight_limit`), `caption_no_caption_counts`
+(`null_answer`, sanitizer reasons), `caption_failure_counts`. Tests:
+`tests/test_walkway_caption_dispatch.py`.
+
 Per-stream overrides use the `streams:` block (e.g. `streams.cam0`). Legacy per-camera overrides remain under `cameras:` keyed by `camera_id`.
 
 ## Bus channels
@@ -96,6 +123,7 @@ Per-stream overrides use the `streams:` block (e.g. `streams.cam0`). Legacy per-
 |---------|-----------|---------|
 | `orion:vision:frames` | Subscribe | `VisionFramePointerPayload` (`vision.frame.pointer`) |
 | `orion:exec:request:VisionHostService` | Publish | `VisionTaskRequestPayload` (`vision.task.request`) |
+| `orion:exec:request:VisionHostService:circe-vl` | Publish | `VisionTaskRequestPayload` `caption_frame` for streams with `caption_dispatch` (walkway) |
 | `orion:vision:reply:*` | PSUBSCRIBE | `VisionTaskResultPayload` (`vision.task.result`) |
 | `orion:system:health` | Publish | `SystemHealthV1` router metrics |
 | `orion:grammar:event` | Publish | `GrammarEventV1` vision organ window (`vision.organ:`), when `VISION_ORGAN_GRAMMAR_ENABLED` |

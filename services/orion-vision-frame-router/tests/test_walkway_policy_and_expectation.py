@@ -97,7 +97,9 @@ def test_walkway_dog_triggers_captioned_tier() -> None:
     state.record_activity("walkway", ["dog"], now=99.0)
     d = _decide(policy, state)
     assert d.dispatch_tier == "triggered" and d.triggered_by == "labels"
-    assert d.request_overrides["want_caption"] is True
+    # The caption comes from the Qwen lane (caption_dispatch), not the host's
+    # BLIP (2026-10-15; test_walkway_caption_dispatch.py).
+    assert d.request_overrides["want_caption"] is False
     assert d.request_overrides["want_crop_embeddings"] is True
     assert d.request_overrides["want_crop_faces"] is True
 

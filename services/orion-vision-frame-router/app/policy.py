@@ -8,11 +8,15 @@ import yaml
 from pydantic import BaseModel, Field
 
 from orion.core.bus.bus_schemas import BaseEnvelope
-from orion.schemas.vision import VisionFramePointerPayload, VisionTaskRequestPayload
+from orion.schemas.vision import VisionFramePointerPayload, VisionTaskRequestPayload, VisionTaskResultPayload
 
 from .expectation import ExpectationCache
+from .host_trigger import HOST_TRIGGER_SCORE_THRESHOLD
 from .settings import Settings
-from .state import RouterState
+from .state import PendingTask, RouterState
+
+# Detections forwarded with one caption task (meta.source_objects), highest score first.
+MAX_CAPTION_SOURCE_OBJECTS = 20
 
 SUPPORTED_TASK_TYPES = {"retina_fast", "embed_image", "detect_open_vocab", "caption_frame"}
 
@@ -425,3 +429,72 @@ class FrameDispatchPolicy:
             request=base_request,
             meta=meta,
         )
+
+    # ------------------------------------------------------------------
+    # Walkway captions from the VLM lane (2026-10-15)
+    # ------------------------------------------------------------------
+    def caption_dispatch_for(self, camera_id: str | None, stream_id: str | None) -> dict[str, Any]:
+        """This stream's ``caption_dispatch:`` block (stream-level, not per
+        tier), or {} when absent/disabled. Opt-in per stream like
+        identity_dispatch: cam0/carbon keep the host's own BLIP caption."""
+        merged, _ = self.resolve_stream_policy(camera_id or "", stream_id)
+        cfg = dict(merged.get("caption_dispatch") or {})
+        return cfg if cfg.get("enabled", False) else {}
+
+    @staticmethod
+    def caption_gate_objects(result: VisionTaskResultPayload, cfg: dict[str, Any]) -> list[dict[str, Any]]:
+        """The detections in a primary reply that let a caption be asked for:
+        label in ``cfg.labels`` and score >= ``cfg.min_score``. Empty = the
+        detector saw nobody, so no VLM call (a dark empty frame is where BLIP
+        invented "a camera on a wooden bench in a garden"). Whether a detection
+        is a stationary prop is decided downstream in orion-vision-window,
+        which keeps the fixture history; these boxes travel with the caption
+        task (meta.source_objects) so that gate can check them."""
+        if not result.ok or result.artifact is None:
+            return []
+        labels = {str(x).strip().lower() for x in (cfg.get("labels") or []) if str(x).strip()}
+        min_score = float(cfg.get("min_score", HOST_TRIGGER_SCORE_THRESHOLD))
+        out: list[dict[str, Any]] = []
+        for obj in result.artifact.outputs.objects or []:
+            label = str(obj.label or "").strip().lower()
+            if label not in labels or float(obj.score) < min_score:
+                continue
+            out.append({
+                "label": label,
+                "score": round(float(obj.score), 4),
+                "box_xyxy": [float(v) for v in obj.box_xyxy],
+            })
+        out.sort(key=lambda o: o["score"], reverse=True)
+        return out[:MAX_CAPTION_SOURCE_OBJECTS]
+
+    @staticmethod
+    def build_caption_task_request(
+        task: PendingTask,
+        *,
+        stream_id: str | None,
+        source_objects: list[dict[str, Any]],
+        cfg: dict[str, Any],
+    ) -> VisionTaskRequestPayload:
+        """caption_frame for the VLM lane, same frame the detector just read."""
+        request: dict[str, Any] = {}
+        if task.image_path:
+            request["image_path"] = task.image_path
+        if task.percept_sha256:
+            request["percept_sha256"] = task.percept_sha256
+        prompt = str(cfg.get("prompt") or "").strip()
+        if prompt:
+            request["caption_prompt"] = prompt
+        null_answers = [str(a) for a in (cfg.get("null_answers") or []) if str(a).strip()]
+        if null_answers:
+            request["caption_null_answers"] = null_answers
+        meta = {
+            "camera_id": task.camera_id,
+            "stream_id": stream_id,
+            "frame_ts": task.frame_ts,
+            "dispatch_tier": task.dispatch_tier,
+            "caption_secondary_dispatch": True,
+            "source_task_correlation_id": task.correlation_id,
+            # Read by orion-vision-window's caption gate.
+            "source_objects": source_objects,
+        }
+        return VisionTaskRequestPayload(task_type="caption_frame", request=request, meta=meta)

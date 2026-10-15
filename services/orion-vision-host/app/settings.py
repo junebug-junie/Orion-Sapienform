@@ -41,6 +41,14 @@ class Settings(BaseSettings):
     # scripts/check_metric_lineage.py's orphan ratchet gate catches. Default
     # True preserves every existing deployment's behavior unchanged.
     VISION_ARTIFACT_BROADCAST_ENABLED: bool = True
+    # Comma-separated stream_ids whose artifacts ARE broadcast even when
+    # VISION_ARTIFACT_BROADCAST_ENABLED is false (main.py's
+    # artifact_broadcast_allowed). The circe-qwen lane sets "walkway": the
+    # frame router sends it walkway caption tasks, and orion-vision-window
+    # reads their captions off the broadcast. An artifact with no stream_id
+    # (orion-thought's dream re-observation) still never broadcasts. Empty =
+    # no exceptions.
+    VISION_ARTIFACT_BROADCAST_STREAMS: str = ""
 
     # Dedicated, single-consumer lane for identity_face results ONLY.
     # identity_face is deliberately excluded from CHANNEL_VISIONHOST_PUB's

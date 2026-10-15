@@ -189,6 +189,19 @@ class OrganWindowRecorder:
                 if caption_present:
                     bucket.captions += 1
 
+    def record_caption_lane(self, stream_id: Any, *, requested: bool = False, captioned: bool = False) -> None:
+        """Caption yield for streams captioned by the separate VLM lane (walkway,
+        dispatcher._maybe_dispatch_caption): counted as requested when the
+        task is SENT, so a down or slow lane reads as "asked, no caption".
+        Deliberately leaves replies_ok/failed alone -- those describe the
+        athena host, and the lane's failures are counted in router metrics."""
+        with self._lock:
+            bucket = self._bucket(stream_id)[1]
+            if requested:
+                bucket.caption_requested += 1
+            if captioned:
+                bucket.captions += 1
+
     def drain(self) -> WindowSnapshot:
         with self._lock:
             start, end = self._window_start, self._clock()

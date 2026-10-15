@@ -10,9 +10,10 @@ import uuid
 from typing import TYPE_CHECKING
 
 from loguru import logger
-from orion.core.bus.bus_schemas import BaseEnvelope
+from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.schemas.vision import VisionFramePointerPayload, VisionTaskResultPayload
 
+from orion.vision.stationary import box_iou
 from orion.schemas.vision_organ_projection import FAILURE_HOST_ERROR, FAILURE_INVALID_REPLY, FAILURE_TIMEOUT
 
 from . import grammar_emit
@@ -120,6 +121,8 @@ class FrameDispatcher:
                 frame_ts=frame.frame_ts,
                 stream_id=frame.stream_id,
                 want_caption=want_caption,
+                dispatch_tier=decision.dispatch_tier,
+                percept_sha256=frame.sha256,
             )
             self.metrics.record_dispatch()
             if organ_tasks is not None:
@@ -257,6 +260,10 @@ class FrameDispatcher:
         if not cleared:
             return
 
+        if cleared.lane == "caption":
+            self._handle_caption_reply(env, cleared)
+            return
+
         try:
             result = VisionTaskResultPayload.model_validate(env.payload)
         except Exception as exc:
@@ -285,6 +292,127 @@ class FrameDispatcher:
             self.metrics.host_trigger_updates_total += 1
             logger.info("[ROUTER] host_trigger stream={} labels={}", stream_id, labels)
 
+        await self._maybe_dispatch_caption(env, cleared, result, stream_id)
+
+    async def _maybe_dispatch_caption(
+        self, reply_env: BaseEnvelope, task, result: VisionTaskResultPayload, stream_id: str | None
+    ) -> None:
+        """Ask the VLM lane for a caption of the frame the detector just read,
+        if this stream opted in (``caption_dispatch``), the frame was on an
+        allowed tier, and the detector found at least one gate-label object.
+
+        Chained after the detect reply, never in front of it: detection is
+        never held up by the ~3 s VLM call. The lane has its own in-flight cap
+        and per-camera clock; it never takes an athena host slot. A missed
+        caption (busy, timed out, lane down) is just no caption -- nothing
+        falls back to the host's BLIP, which this stream does not request.
+        """
+        if not task.is_primary or task.task_type == "identity_face":
+            return
+        cfg = self.policy.caption_dispatch_for(task.camera_id, stream_id)
+        if not cfg:
+            return
+        tiers = [str(t) for t in (cfg.get("tiers") or ["triggered"])]
+        if task.dispatch_tier not in tiers:
+            return
+        objects = self.policy.caption_gate_objects(result, cfg)
+        if not objects:
+            self.metrics.record_caption_skip("no_detection")
+            return
+        if not (task.image_path or task.percept_sha256):
+            self.metrics.record_caption_skip("no_frame_address")
+            return
+        now = time.time()
+        async with self._state_lock:
+            cam = self.state.camera(task.camera_id)
+            min_s = float(cfg.get("min_seconds_between_dispatch", 8.0))
+            if cam.last_caption_dispatch_ts is not None and (now - cam.last_caption_dispatch_ts) < min_s:
+                self.metrics.record_caption_skip("rate_limited")
+                return
+            if _same_scene(objects, cam, cfg, now=now):
+                self.metrics.record_caption_skip("same_scene")
+                return
+            if self.state.inflight_lane("caption") >= int(cfg.get("max_inflight", 1)):
+                self.metrics.record_caption_skip("lane_inflight_limit")
+                return
+            caption_task = self.policy.build_caption_task_request(
+                task, stream_id=stream_id, source_objects=objects, cfg=cfg
+            )
+            corr = str(uuid.uuid4())
+            reply_to = f"{self.settings.CHANNEL_REPLY_PREFIX}:{corr}"
+            caption_env = reply_env.derive_child(
+                kind="vision.task.request",
+                source=ServiceRef(name=self.settings.SERVICE_NAME, version=self.settings.SERVICE_VERSION),
+                payload=caption_task,
+                reply_to=reply_to,
+                correlation_id=corr,
+            )
+            if not self.settings.DRY_RUN and self.bus:
+                await self.bus.publish(self.settings.CHANNEL_CAPTION_INTAKE, caption_env)
+            cam.last_caption_dispatch_ts = now
+            cam.last_caption_objects = [{"label": o["label"], "box_xyxy": o["box_xyxy"]} for o in objects]
+            self.state.mark_dispatched(
+                correlation_id=corr,
+                camera_id=task.camera_id,
+                image_path=task.image_path,
+                task_type="caption_frame",
+                reply_to=reply_to,
+                now=now,
+                frame_ts=task.frame_ts,
+                stream_id=stream_id,
+                is_primary=False,
+                want_caption=True,
+                lane="caption",
+                dispatch_tier=task.dispatch_tier,
+                timeout_s=float(cfg.get("timeout_sec", 20.0)),
+            )
+            self.metrics.caption_dispatched_total += 1
+            organ = grammar_emit.get_recorder()
+            if organ is not None and not self.settings.DRY_RUN:
+                # Requested at dispatch: a lane that never answers then reads
+                # as "asked, no caption", not as "never asked".
+                organ.record_caption_lane(_organ_stream(stream_id, task.camera_id), requested=True)
+        logger.info(
+            "[ROUTER] caption_dispatch camera_id={} stream_id={} corr={} labels={}",
+            task.camera_id,
+            stream_id,
+            corr,
+            sorted({o["label"] for o in objects}),
+        )
+
+    def _handle_caption_reply(self, env: BaseEnvelope, task) -> None:
+        """A VLM-lane caption reply. Counted here, honestly by outcome; the
+        caption itself reaches orion-vision-window over the lane's own
+        (walkway-scoped) artifact broadcast, where the detector-agreement gate
+        decides whether it becomes narrative."""
+        try:
+            result = VisionTaskResultPayload.model_validate(env.payload)
+        except Exception as exc:  # noqa: BLE001
+            self.metrics.last_error = f"invalid_caption_reply_payload: {exc}"
+            self.metrics.record_caption_failure(FAILURE_INVALID_REPLY)
+            return
+        if not result.ok:
+            self.metrics.record_caption_failure(result.error_code or FAILURE_HOST_ERROR)
+            logger.warning(
+                "[ROUTER] caption_failed stream_id={} corr={} error={}",
+                task.stream_id, task.correlation_id, result.error_code or result.error,
+            )
+            return
+        outputs = result.artifact.outputs if result.artifact is not None else None
+        caption = outputs.caption if outputs is not None else None
+        text = str(caption.text or "").strip() if caption is not None else ""
+        organ = grammar_emit.get_recorder()
+        if organ is not None and text:
+            # Only the yield moves; replies_ok/failed stay the athena host's.
+            organ.record_caption_lane(_organ_stream(task.stream_id, task.camera_id), captioned=True)
+        if text:
+            self.metrics.caption_captioned_total += 1
+            logger.info("[ROUTER] caption_ok stream_id={} corr={} text={!r}", task.stream_id, task.correlation_id, text[:160])
+        else:
+            reason = (caption.rejected_reason if caption is not None else None) or "no_caption"
+            self.metrics.record_caption_no_caption(reason)
+            logger.info("[ROUTER] caption_none stream_id={} corr={} reason={}", task.stream_id, task.correlation_id, reason)
+
     async def sweep_timeouts(self, *, now: float) -> int:
         async with self._state_lock:
             expired = self.state.expired_correlation_ids(
@@ -294,11 +422,30 @@ class FrameDispatcher:
             for cid in expired:
                 task = self.state.clear_pending(cid, now=now)
                 if task:
-                    self.metrics.host_timeouts_total += 1
-                    if not self.settings.DRY_RUN:
-                        _organ_failure(task, FAILURE_TIMEOUT)
+                    if task.lane == "caption":
+                        # The VLM lane, not the athena host: its own counter.
+                        self.metrics.record_caption_failure(FAILURE_TIMEOUT)
+                    else:
+                        self.metrics.host_timeouts_total += 1
+                        if not self.settings.DRY_RUN:
+                            _organ_failure(task, FAILURE_TIMEOUT)
                     cleared += 1
             return cleared
+
+
+def _same_scene(objects: list[dict], cam, cfg: dict, *, now: float) -> bool:
+    """Every gate box now matches (same label, IoU >= same_scene_iou) a box of
+    the last captioned frame, captioned within same_scene_ttl_sec."""
+    ttl = float(cfg.get("same_scene_ttl_sec", 0) or 0)
+    if ttl <= 0 or not cam.last_caption_objects or cam.last_caption_dispatch_ts is None:
+        return False
+    if (now - cam.last_caption_dispatch_ts) > ttl:
+        return False
+    thr = float(cfg.get("same_scene_iou", 0.5))
+    return all(
+        any(p["label"] == o["label"] and box_iou(p["box_xyxy"], o["box_xyxy"]) >= thr for p in cam.last_caption_objects)
+        for o in objects
+    )
 
 
 def _organ_stream(stream_id: str | None, camera_id: str | None) -> str:

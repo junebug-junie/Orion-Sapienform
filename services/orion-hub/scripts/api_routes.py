@@ -1317,8 +1317,12 @@ def api_vision_affect_ambient_toggle(req: AffectAmbientToggleRequest) -> Dict[st
 
 def _live_frame_settings() -> tuple[str, int, float]:
     frames_dir = str(getattr(settings, "HUB_VISION_FRAMES_DIR", "") or "").strip()
-    max_width = int(getattr(settings, "HUB_VISION_LIVE_MAX_WIDTH", 1280) or 0)
-    stale_after = float(getattr(settings, "HUB_VISION_LIVE_STALE_SEC", 10.0) or 10.0)
+    max_width = getattr(settings, "HUB_VISION_LIVE_MAX_WIDTH", 1280)
+    stale_after = getattr(settings, "HUB_VISION_LIVE_STALE_SEC", 10.0)
+    # Explicit None checks, not `x or DEFAULT`: 0 is a real value here
+    # (max width 0 = full size; stale 0 = anything older than now is stale).
+    max_width = 1280 if max_width is None else max(0, int(max_width))
+    stale_after = 10.0 if stale_after is None else max(0.0, float(stale_after))
     return frames_dir or vision_live_frame.DEFAULT_FRAMES_DIR, max_width, stale_after
 
 
@@ -1388,7 +1392,9 @@ async def _latest_frame_image(stream_id: str) -> Response:
     headers = {
         "Cache-Control": "no-store",
         "X-Content-Type-Options": "nosniff",
-        "X-Orion-Frame-Id": frame_id,
+        # Bus-supplied text: only echoed when it is a plain frame name or a
+        # sha256, so CR/LF or non-latin-1 can't break the response.
+        "X-Orion-Frame-Id": vision_live_frame.safe_header_frame_id(frame_id),
     }
     cached = vision_live_frame.memo.get(stream_id, frame_id, max_width)
     if cached is not None:
@@ -1399,6 +1405,16 @@ async def _latest_frame_image(stream_id: str) -> Response:
         data = await asyncio.to_thread(
             vision_live_frame.load_local_frame, latest["image_path"], frames_dir
         )
+        # A pointer carrying BOTH addresses: the local copy must hash to the
+        # sha256 too, or it is dropped in favour of the verified store copy
+        # (keeps carbon's chain of custody -- review finding, 2026-10-15).
+        if (
+            data is not None
+            and latest.get("sha256")
+            and hashlib.sha256(data).hexdigest() != latest["sha256"]
+        ):
+            logger.warning(f"[HUB] latest_frame_local_hash_mismatch stream={stream_id}")
+            data = None
     if data is None and latest.get("sha256"):
         data = await _fetch_percept_frame(latest["sha256"])
     if data is None:

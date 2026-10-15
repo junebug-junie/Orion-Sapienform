@@ -15,7 +15,12 @@ Safety of the local read: the path comes off the bus, not from the browser,
 but it is still treated as untrusted. It is served only when it is a direct
 child of the configured frames directory, named like a JPEG, a regular file,
 not a symlink (``O_NOFOLLOW``), not a FIFO (``O_NONBLOCK``), and under a size
-cap.
+cap. ``O_NOFOLLOW`` does not stop a hard link inside the directory; making
+one needs write access to the host dir, which Hub (read-only mount) lacks.
+
+Every frame -- carbon's percept-store bytes included -- goes through
+``downscale_jpeg``: wider than HUB_VISION_LIVE_MAX_WIDTH is re-encoded at
+quality 80, and bytes that will not decode are a 404, not served raw.
 """
 from __future__ import annotations
 
@@ -29,6 +34,15 @@ DEFAULT_FRAMES_DIR = "/mnt/telemetry/vision/frames"
 # Walkway frames are ~750KB; anything this large is not one of ours.
 MAX_FRAME_BYTES = 16 * 1024 * 1024
 _FRAME_NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,200}\.(?:jpg|jpeg)")
+_SHA256_RE = re.compile(r"[0-9a-f]{64}")
+
+
+def safe_header_frame_id(frame_id: Optional[str]) -> str:
+    """frame_id if it is a plain JPEG name or a sha256, else ''."""
+    fid = frame_id or ""
+    if _FRAME_NAME_RE.fullmatch(fid) or _SHA256_RE.fullmatch(fid):
+        return fid
+    return ""
 
 
 def resolve_local_frame(image_path: Optional[str], frames_dir: str) -> Optional[str]:

@@ -314,3 +314,66 @@ def test_compose_mounts_the_frames_dir_read_only_and_caches_walkway():
         "${HUB_VISION_FRAMES_DIR:-/mnt/telemetry/vision/frames}:ro"
     ) in compose
     assert "VISION_FRAME_CACHE_STREAM_IDS=${VISION_FRAME_CACHE_STREAM_IDS:-carbon,walkway}" in compose
+
+
+# --- review fixes (2026-10-15) ------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_local_copy_that_does_not_match_sha256_falls_through_to_the_store(frames_dir: Path):
+    """A pointer with BOTH addresses: an unverified local file must not
+    bypass the percept-store chain of custody."""
+    p = frames_dir / "carbon_1.jpg"
+    p.write_bytes(_jpeg(64, 48))
+    latest = {"sha256": "a" * 64, "image_path": str(p), "cached_at": time.time()}
+    a, b, c, d = _route_patches(_FakeFrameCache(latest, stream_ids=("carbon",)), frames_dir)
+    with a, b, c, d, patch.object(api_routes.settings, "PERCEPT_STORE_BASE_URL", ""):
+        with pytest.raises(HTTPException) as exc_info:
+            await api_routes.api_vision_frames_latest_image(stream_id="carbon")
+    # 503 = it went on to the (unconfigured) store instead of serving the file.
+    assert exc_info.value.status_code == 503
+
+
+@pytest.mark.asyncio
+async def test_local_copy_that_matches_sha256_is_served_without_the_store(frames_dir: Path):
+    import hashlib
+
+    data = _jpeg(64, 48)
+    p = frames_dir / "carbon_1.jpg"
+    p.write_bytes(data)
+    latest = {"sha256": hashlib.sha256(data).hexdigest(), "image_path": str(p), "cached_at": time.time()}
+    a, b, c, d = _route_patches(_FakeFrameCache(latest, stream_ids=("carbon",)), frames_dir)
+    with a, b, c, d, patch.object(api_routes.settings, "PERCEPT_STORE_BASE_URL", ""):
+        resp = await api_routes.api_vision_frames_latest_image(stream_id="carbon")
+    assert resp.body == data
+
+
+@pytest.mark.parametrize(
+    "fid,expected",
+    [
+        ("walkway_walkway_1_ab.jpg", "walkway_walkway_1_ab.jpg"),
+        ("a" * 64, "a" * 64),
+        ("evil\r\nSet-Cookie: x.jpg", ""),
+        ("café.jpg", ""),
+        (None, ""),
+    ],
+)
+def test_frame_id_header_only_echoes_safe_ids(fid, expected):
+    assert vlf.safe_header_frame_id(fid) == expected
+
+
+def test_configured_zero_is_respected_not_replaced_by_the_default(frames_dir: Path):
+    with patch.object(api_routes.settings, "HUB_VISION_FRAMES_DIR", str(frames_dir), create=True), patch.object(
+        api_routes.settings, "HUB_VISION_LIVE_MAX_WIDTH", 0, create=True
+    ), patch.object(api_routes.settings, "HUB_VISION_LIVE_STALE_SEC", 0, create=True):
+        _, max_width, stale_after = api_routes._live_frame_settings()
+    assert max_width == 0
+    assert stale_after == 0.0
+
+
+def test_page_badge_logic_lives_in_the_tested_module():
+    """The LIVE/STALE decision must come from vision-live-frame.js
+    (node-tested), and app.js must feed it what is actually on screen."""
+    app_js = (HUB_ROOT / "static" / "js" / "app.js").read_text(encoding="utf-8")
+    assert "L.liveFrameState(meta, view, livePicture, Date.now())" in app_js
+    assert "seq !== liveImageSeq" in app_js

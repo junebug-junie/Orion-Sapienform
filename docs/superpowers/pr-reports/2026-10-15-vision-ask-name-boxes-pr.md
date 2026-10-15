@@ -161,6 +161,6 @@ Expect `applied_at` set within about 60 s (one individuals tick). Expect `[VISIO
 
 ## PR link
 
-PR_LINK_PLACEHOLDER
+https://github.com/junebug-junie/Orion-Sapienform/pull/2701
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

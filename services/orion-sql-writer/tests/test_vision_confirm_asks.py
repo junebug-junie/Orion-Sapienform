@@ -599,3 +599,51 @@ def test_two_typed_names_in_one_group_are_logged(pg, caplog) -> None:
         labels = _labels(conn)
     assert labels == {"aaa": ("Bob", False), "bbb": ("Alice", False), "ccc": ("Bob", True)}
     assert any("VISION_GROUP_NAME_CONFLICT" in r.getMessage() for r in caplog.records)
+
+
+@needs_pg
+def test_names_marked_applied_by_an_old_writer_are_healed(pg) -> None:
+    """Hub deployed before sql-writer: the old writer set applied_at on a named pair answer
+    but never applied the names. The new writer applies them once, and only them."""
+    from sqlalchemy import text
+
+    with pg.begin() as conn:
+        _add_person(conn, "aaa", _vec(1, 0.0), 6, FACE("a"))
+        _add_person(conn, "bbb", _vec(1, 0.5), 6, FACE("b"))
+        _ask(conn, "pair", "vision_same_individual", "aaa|bbb", status="answered", answer="no",
+             detail={"names": {"aaa": "Theo", "bbb": "Maya"}})
+        # A later typed name for bbb must not be overwritten by the older pair name.
+        conn.execute(text("UPDATE vision_individual SET label='Maya B', label_copied=false, labeled_at=:t "
+                          "WHERE individual_id='bbb'"), {"t": NOW + timedelta(minutes=5)})
+        conn.execute(text("UPDATE orion_ask SET applied_at=:t WHERE ask_id='pair'"), {"t": NOW})
+        assert vi._apply_answers(conn, NOW) == 1
+        assert _labels(conn) == {"aaa": ("Theo", False), "bbb": ("Maya B", False)}
+        assert vi._apply_answers(conn, NOW) == 0   # healed once; nothing left to heal
+
+
+@needs_pg
+def test_label_copied_backfill(pg) -> None:
+    """The migration's one-time backfill: typed labels stay typed, copied ones are marked copied."""
+    from sqlalchemy import text
+
+    sql = (REPO / "services/orion-sql-db/manual_migration_vision_ask_names_v1.sql").read_text()
+    with pg.connect() as conn:
+        tx = conn.begin()
+        conn.execute(text("ALTER TABLE vision_individual DROP COLUMN label_copied"))
+        for iid, label, ask in (("own", "A", "who-own"), ("pairset", "B", "pair-x"), ("copied", "A", "who-own"),
+                                ("manual", "M", None), ("none", None, None)):
+            conn.execute(text(
+                "INSERT INTO vision_individual (individual_id, stream_id, kind, centroid, first_seen_at, last_seen_at, "
+                "label, label_ask_id) VALUES (:i, 'walkway', 'person', '{1}', :t, :t, :l, :a)"),
+                {"i": iid, "t": NOW, "l": label, "a": ask})
+        _ask(conn, "who-own", "vision_individual", "own", status="answered", answer="A")
+        _ask(conn, "pair-x", "vision_same_individual", "own|pairset", status="answered", answer="yes")
+        conn.exec_driver_sql(sql)
+        got = dict(conn.execute(text("SELECT individual_id, label_copied FROM vision_individual")).fetchall())
+        # A second run must not re-backfill (the column exists now).
+        conn.execute(text("UPDATE vision_individual SET label_copied=false WHERE individual_id='copied'"))
+        conn.exec_driver_sql(sql)
+        again = conn.execute(text("SELECT label_copied FROM vision_individual WHERE individual_id='copied'")).scalar()
+        tx.rollback()
+    assert got == {"own": False, "pairset": True, "copied": True, "manual": False, "none": False}
+    assert again is False

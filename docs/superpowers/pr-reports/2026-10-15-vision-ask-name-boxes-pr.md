@@ -123,6 +123,29 @@ A review subagent read the whole diff and ran the new SQL against a throwaway pg
   - Fix: each value is capped at 500 characters in `AskAnswerBody`. `clean_name` still enforces 120.
   - Evidence: route tests pass.
 
+A second review pass on the updated branch found:
+
+- Finding: if the new Hub runs next to an old sql-writer, the old writer applies the verdict and marks the pair answer applied, but it ignores the names. Those names would be lost for good.
+  - Fix: sql-writer now has a heal pass (`_heal_pair_names`). Each tick it applies any typed pair name whose individual's label is older than the answer (logged as `[VISION_PAIR_NAMES_HEALED]`). A newer name is never overwritten. The Risks section also says to deploy sql-writer before the Hub.
+  - Evidence: `test_names_marked_applied_by_an_old_writer_are_healed` (real Postgres).
+- Finding: the one-time `label_copied` backfill had no test.
+  - Fix: `test_label_copied_backfill` drops the column in a transaction, seeds labels typed on the person's own card, set by a pair answer, copied from someone else's card, entered with no ask, and absent, then runs the real migration file twice.
+  - Evidence: false / true / true / false / false; the second run does not re-backfill.
+- Finding: a repeated picture ref was indexed at its last position, but the card shows the first.
+  - Fix: the first position wins, and refs are trimmed.
+  - Evidence: `test_picture_index_is_the_first_position_shown`.
+- Finding: names sent to a card that is already closed returned 422, not 409.
+  - Fix: the locked SELECT checks status and expiry first.
+  - Evidence: `test_names_on_a_closed_card_are_409_not_422`.
+- Finding: `CLOSE_NAMED_WHO_SQL` closed expired-but-still-open cards.
+  - Fix: it now checks expiry.
+  - Evidence: real-PG SQL test passes.
+- Not changed, recorded:
+  - The substrate writes the entity twice for a named face that also had an open "Who is this?" card. The second write lands on the same node id and logs "updated" (`test_same_answer_twice_is_idempotent`).
+  - Cards closed for people who only got a *copied* name publish no event, so they get no substrate entity. This is now written in the README.
+  - Four pictures at 360 px would be tight. The opener caps "Who is this?" cards at 3 pictures, and the browser smoke covers 3.
+  - `vision_crop_observation` has no index on the thumbnail refs. Each multi-picture answer scans about 13k rows; the table is kept to 7 days.
+
 ## Restart required
 
 Order matters: migration first, then the consumer, then the producer.
@@ -140,7 +163,7 @@ Post-deploy check:
 
 ```bash
 docker exec orion-athena-sql-db psql -U postgres -d conjourney -Atc "select individual_id, label, label_copied from vision_individual where label is not null"
-# expect 9bea16d5…|Amanda Feld|f and 4354c877…|Amanda Feld|t (backfill)
+# expect 9bea16d5…|<name>|f (typed) and 4354c877…|<name>|t (copied by the 22:35 "same" answer) -- the one-time backfill
 ```
 
 Then answer one card with a name and check:
@@ -155,6 +178,7 @@ Expect `applied_at` set within about 60 s (one individuals tick). Expect `[VISIO
 ## Risks / concerns
 
 - Severity: medium. Concern: if orion-hub deploys before orion-substrate-runtime, the substrate drops named pair answers (`extra="forbid"`). Mitigation: the deploy order above. The Postgres labels are unaffected, and empty `names` are left out of the payload.
+- Severity: low. Concern: if orion-hub deploys before orion-sql-writer, the old writer marks named pair answers applied without applying the names. Mitigation: the new writer's heal pass applies them on its first tick. Deploy sql-writer before Hub anyway.
 - Severity: medium. Concern: if orion-hub deploys before the migration, every Answer and Dismiss fails. Mitigation: it now returns 503 `ask_schema_missing`, not 500. `safe_docker_build.sh` refuses `up` while a required migration is unapplied (header `ORION-MIGRATION-REQUIRED-BY: orion-sql-writer, orion-hub`).
 - Severity: low. Concern: the per-picture verdicts are recorded but not used. Mitigation: this is intended (record only). Splitting impure individuals is a follow-up that needs a proposal (identity/memory change).
 - Severity: low. Concern: the purity count is n=2. Mitigation: the eval reruns on demand, and every new multi-picture answer adds labelled rows.

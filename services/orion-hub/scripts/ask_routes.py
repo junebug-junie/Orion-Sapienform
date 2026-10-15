@@ -156,6 +156,7 @@ FROM jsonb_each_text($1::jsonb) AS n(individual_id, name)
 WHERE a.source_kind = $3::text
   AND a.source_ref = n.individual_id
   AND a.status = 'open'
+  AND (a.expires_at IS NULL OR a.expires_at > now())
 RETURNING a.ask_id, a.status, a.answer, a.answered_at, a.source_kind, a.source_ref
 """
 
@@ -208,7 +209,7 @@ def _image_refs(row: Any) -> list[str]:
             refs = json.loads(refs)
         except ValueError:
             refs = []
-    refs = [str(r) for r in (refs or []) if isinstance(r, str) and r.strip()]
+    refs = [str(r).strip() for r in (refs or []) if isinstance(r, str) and r.strip()]
     if not refs and row["image_ref"]:
         refs = [str(row["image_ref"])]
     return refs
@@ -224,7 +225,9 @@ def picture_answer_detail(answer: str, image_refs: list[str], pictures: list[Pic
         return None
     if len(image_refs) < 2:
         raise HTTPException(status_code=422, detail="pictures_need_a_multi_picture_card")
-    index = {ref: i for i, ref in enumerate(image_refs)}
+    index: dict[str, int] = {}
+    for i, ref in enumerate(image_refs):
+        index.setdefault(ref, i)  # first position wins, as the card shows it (askImageViews)
     out: dict[int, dict[str, Any]] = {0: {"image_ref": image_refs[0], "index": 0, "verdict": "same", "name": answer}}
     seen: set[str] = set()
     for p in pictures:
@@ -422,11 +425,15 @@ async def _answer_detail(conn: Any, ask_id: str, answer: Optional[str], names: d
     if not names and not pictures:
         return None
     card = await conn.fetchrow(
-        "SELECT source_kind, source_ref, image_ref, image_refs FROM orion_ask WHERE ask_id = $1 FOR UPDATE",
+        "SELECT source_kind, source_ref, image_ref, image_refs, status, expires_at FROM orion_ask "
+        "WHERE ask_id = $1 FOR UPDATE",
         ask_id,
     )
-    if card is None:
-        return None  # CLOSE_ASK_SQL finds nothing either: 404 below
+    expires = card["expires_at"] if card is not None else None
+    if isinstance(expires, datetime) and expires.tzinfo is None:
+        expires = expires.replace(tzinfo=timezone.utc)
+    if card is None or card["status"] != "open" or (expires is not None and expires <= datetime.now(timezone.utc)):
+        return None  # CLOSE_ASK_SQL moves nothing either: the usual 404 / 409 below
     detail: dict[str, Any] = {}
     if names:
         if card["source_kind"] != SAME_INDIVIDUAL_KIND:

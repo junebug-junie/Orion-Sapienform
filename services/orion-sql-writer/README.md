@@ -449,7 +449,12 @@ time. A multi-picture "who is this?" answer can carry one verdict per picture
 the individual still gets the first (face) picture's name, and every picture's
 verdict lands in `vision_ask_picture_verdict` (with the `crop_id` behind the
 thumbnail when it still exists). That table is record only: nothing splits or
-rewrites an individual from it yet.
+rewrites an individual from it yet. A "who is this?" card closed because its person only
+got a *copied* name is closed here (no bus event), so the substrate gets no
+entity for that person until Juniper types a name for them. If a sql-writer
+built before these names marked a named pair answer applied (Hub deployed
+first), the next tick finds names whose individual's label is older than the
+answer and applies them (`[VISION_PAIR_NAMES_HEALED]`).
 
 Needs `services/orion-sql-db/manual_migration_vision_confirm_asks_v1.sql`
 (`orion_ask.image_refs`, `vision_individual_pair_verdict`) and

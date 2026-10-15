@@ -1546,7 +1546,40 @@ def _apply_answers(conn, now: datetime) -> int:
         else:
             _apply_pair_answer(conn, ask_id, ref, answer, at, _detail(detail), now)
         conn.execute(text("UPDATE orion_ask SET applied_at=:now WHERE ask_id=:a"), {"now": now, "a": ask_id})
-    return len(rows)
+    return len(rows) + _heal_pair_names(conn, now)
+
+
+def _heal_pair_names(conn, now: datetime) -> int:
+    """Names on "same person?" answers that were marked applied without being
+    applied: a sql-writer built before answer_detail applies the verdict and
+    sets applied_at, but ignores the names (Hub deployed first). A name is
+    unapplied when its individual's label is older than the answer (or absent);
+    one this writer applied has labeled_at == answered_at, a later one is newer."""
+    from sqlalchemy import text
+
+    rows = conn.execute(text(
+        "SELECT a.ask_id, a.source_ref, a.answer, a.answered_at, a.answer_detail FROM orion_ask a "
+        "WHERE a.source_kind = :k AND a.status = 'answered' AND a.applied_at IS NOT NULL "
+        "AND a.answered_at IS NOT NULL AND a.answer_detail -> 'names' IS NOT NULL "
+        "AND EXISTS (SELECT 1 FROM jsonb_each_text(a.answer_detail -> 'names') n "
+        "  JOIN vision_individual v ON v.individual_id = n.key "
+        "  WHERE v.labeled_at IS NULL OR v.labeled_at < a.answered_at) "
+        "ORDER BY a.answered_at, a.ask_id"), {"k": SOURCE_KIND_SAME}).fetchall()
+    healed = 0
+    for ask_id, ref, answer, answered_at, detail in rows:
+        pair = parse_pair_ref(ref)
+        if pair is None:
+            continue
+        names = pair_names(pair, parse_yes_no(answer), _detail(detail))
+        stale = {r[0] for r in conn.execute(text(
+            "SELECT individual_id FROM vision_individual WHERE individual_id = ANY(:ids) "
+            "AND (labeled_at IS NULL OR labeled_at < :at)"), {"ids": list(names), "at": answered_at}).fetchall()}
+        for iid in pair:
+            if iid in names and iid in stale:
+                _apply_typed_name(conn, iid, names[iid], ask_id, answered_at, now)
+                healed += 1
+        logger.warning("[VISION_PAIR_NAMES_HEALED] ask_id=%s names=%d", ask_id, len(stale & set(names)))
+    return healed
 
 
 def pair_names(pair: Tuple[str, str], same: Optional[bool], detail: Dict[str, Any]) -> Dict[str, str]:

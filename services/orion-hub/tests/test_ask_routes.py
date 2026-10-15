@@ -120,7 +120,8 @@ class _FakeConn:
         (ask_id,) = args
         r = self.rows.get(ask_id)
         if "FOR UPDATE" in sql:
-            return None if r is None else {k: r.get(k) for k in ("source_kind", "source_ref", "image_ref", "image_refs")}
+            keys = ("source_kind", "source_ref", "image_ref", "image_refs", "status", "expires_at")
+            return None if r is None else {k: r.get(k) for k in keys}
         return None if r is None else {"status": r["status"], "expires_at": r["expires_at"], "source_kind": r["source_kind"]}
 
 
@@ -782,3 +783,23 @@ def test_missing_names_migration_is_503_not_500(env):
     pool.conn.fetchrow = boom
     r = client.post("/api/asks/a1/answer", json={"answer": "Bob"})
     assert r.status_code == 503 and r.json()["detail"] == "ask_schema_missing"
+
+
+def test_names_on_a_closed_card_are_409_not_422(env):
+    client, rows, _pub = env
+    rows["p1"] = _pair_row("p1")
+    rows["p1"]["status"] = "answered"
+    r = client.post("/api/asks/p1/answer", json={"answer": "yes", "names": {"zzz": "Theo"}})
+    assert r.status_code == 409 and r.json()["detail"] == "ask_not_open:answered"
+    rows["done"]["status"] = "answered"
+    r = client.post("/api/asks/done/answer", json={"answer": "Bob", "names": {"x": "Bob"}})
+    assert r.status_code == 409
+
+
+def test_picture_index_is_the_first_position_shown():
+    refs = ["thumb:" + "a" * 64, "thumb:" + "b" * 64, "thumb:" + "a" * 64]
+    out = ask_routes.picture_answer_detail("Theo", refs, [
+        ask_routes.PictureAnswer(image_ref=refs[1], verdict="different", name="Maya")])
+    assert [(p["index"], p["verdict"]) for p in out["pictures"]] == [(0, "same"), (1, "different")]
+    with pytest.raises(ask_routes.HTTPException):  # the repeat of picture 1 is picture 1, the answer
+        ask_routes.picture_answer_detail("Theo", refs, [ask_routes.PictureAnswer(image_ref=refs[2], verdict="unsure")])

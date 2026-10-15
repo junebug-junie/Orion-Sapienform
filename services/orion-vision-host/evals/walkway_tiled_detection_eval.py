@@ -9,6 +9,9 @@ params from config/vision_profiles.yaml, and the walkway prompts from
 config/vision_frame_router.yaml -- so it tests the shipped config.
 
 Frames are NOT committed (they show neighbours); pass a directory of copies.
+Each frame is checked for RTSP packet-loss smear (smear_start): the summary
+reports how many frames were smeared and also counts only detections whose
+box centre is above the smear line, so tiling is not judged on garbage.
 CPU by default so it never competes with the live P4/T10 lanes.
 
 Usage (read-only, inside the vision-host image):
@@ -83,6 +86,34 @@ def _match(a: Dict[str, Any], pool: List[Dict[str, Any]]) -> bool:
     return False
 
 
+def smear_start(img, band_rows: int = 24, max_ratio: float = 0.7) -> "float | None":
+    """Where RTSP packet-loss smear starts, as a fraction of frame height
+    (None = clean). A lost UDP packet makes the decoder repeat the last good
+    row down the rest of the frame: strong left-right edges, almost no
+    top-bottom change. Per band of rows, median(|d/dy|) / median(|d/dx|) is
+    ~1.0 on every real walkway frame checked (2026-10-15 morning) and
+    0.1-0.6 in smeared bands; scan up from the bottom while bands stay low."""
+    import numpy as np
+
+    g = np.asarray(img.convert("L").resize((640, 480)), dtype=np.float32)
+    dy = np.abs(np.diff(g, axis=0))[:, 1:].mean(axis=1)
+    dx = np.abs(np.diff(g, axis=1))[1:, :].mean(axis=1)
+    r = dy / (dx + 1e-3)
+    n = len(r) // band_rows
+    low = [float(np.median(r[i * band_rows:(i + 1) * band_rows])) < max_ratio for i in range(n)]
+    k = n
+    while k > 0 and low[k - 1]:
+        k -= 1
+    if n - k < 2:  # under ~10% of the frame: not a smear
+        return None
+    return round(k * band_rows / 480.0, 3)
+
+
+def _clean(objs, limit_px: float):
+    """Detections whose box centre is above the smear line."""
+    return [o for o in objs if (o["box_xyxy"][1] + o["box_xyxy"][3]) / 2 < limit_px]
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("frames", type=Path)
@@ -92,16 +123,19 @@ def main(argv=None) -> int:
     ap.add_argument("--limit", type=int, default=0)
     ap.add_argument("--batch", action="store_true", help="also time tiles as one batched forward pass")
     ap.add_argument("--draw", action="store_true", help="write annotated JPEGs of frames with differences")
+    ap.add_argument("--load-truncated", action="store_true", help="decode truncated JPEGs (PIL LOAD_TRUNCATED_IMAGES)")
     args = ap.parse_args(argv)
 
     import torch
-    from PIL import Image, ImageDraw
+    from PIL import Image, ImageDraw, ImageFile
     from transformers import AutoModelForZeroShotObjectDetection, AutoProcessor
 
     from app.detections import cap_by_score, nms
     from app.gdino import detect_images
     from app.tiling import merge_tiled_detections, tile_layout, tiles_bounds, to_frame_coords
 
+    if args.load_truncated:
+        ImageFile.LOAD_TRUNCATED_IMAGES = True
     params = _detect_profile()
     req = _walkway_request()
     prompts = req["prompts"]
@@ -141,6 +175,9 @@ def main(argv=None) -> int:
     lat = {"single": [], **{l["name"]: [] for l in layouts}}
     lat_batch = {l["name"]: [] for l in layouts}
     skipped = []
+    smeared = 0
+    clean_totals = {"single": Counter(), **{l["name"]: Counter() for l in layouts}}
+    clean_extra = {l["name"]: Counter() for l in layouts}
     for f in frames:
         try:
             img = Image.open(f).convert("RGB")
@@ -148,11 +185,15 @@ def main(argv=None) -> int:
             skipped.append(f.name)
             print(f"{f.name} SKIPPED unreadable: {exc}", flush=True)
             continue
+        smear = smear_start(img)
+        limit = (smear if smear is not None else 1.0) * img.height
         raw, dt = run([img])
         single = cap_by_score(nms(raw[0], nms_iou), max_det)
         lat["single"].append(dt)
         totals["single"].update(o["label"] for o in single)
-        rec: Dict[str, Any] = {"frame": f.name, "single": single, "single_s": round(dt, 3)}
+        clean_totals["single"].update(o["label"] for o in _clean(single, limit))
+        smeared += smear is not None
+        rec: Dict[str, Any] = {"frame": f.name, "smear_from": smear, "single": single, "single_s": round(dt, 3)}
         for lay in layouts:
             tiles = tile_layout(img.width, img.height, lay["grid"], lay["overlap"], lay["region"])
             crops = [img.crop(t.as_box()) for t in tiles]
@@ -175,6 +216,8 @@ def main(argv=None) -> int:
             new = [o for o in merged if not _match(o, single)]
             gone = [o for o in single if not _match(o, merged)]
             extra[lay["name"]].update(o["label"] for o in new)
+            clean_totals[lay["name"]].update(o["label"] for o in _clean(merged, limit))
+            clean_extra[lay["name"]].update(o["label"] for o in _clean(new, limit))
             lost[lay["name"]].update(o["label"] for o in gone)
             rec[lay["name"]] = {"objects": merged, "extra": new, "lost": gone, "seconds": round(t_total, 3)}
             if args.draw and any(o["label"] in TRACKED for o in new + gone):
@@ -209,6 +252,9 @@ def main(argv=None) -> int:
         "counts": {k: dict(v) for k, v in totals.items()},
         "extra_only_in_tiled": {k: dict(v) for k, v in extra.items()},
         "lost_vs_single": {k: dict(v) for k, v in lost.items()},
+        "smeared_frames": smeared,
+        "counts_above_smear": {k: dict(v) for k, v in clean_totals.items()},
+        "extra_above_smear": {k: dict(v) for k, v in clean_extra.items()},
         "latency": {k: stat(v) for k, v in lat.items()},
         "latency_batched_tiles": {k: stat(v) for k, v in lat_batch.items() if v},
     }

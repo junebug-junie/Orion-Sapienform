@@ -48,6 +48,12 @@ def parse_stream_ids(raw: Any, default: str = "walkway") -> list[str]:
 
 
 def _utc(ts: Any) -> datetime | None:
+    """datetime (Postgres drivers) or ISO string (SQLite text() reads) -> aware UTC."""
+    if isinstance(ts, str):
+        try:
+            ts = datetime.fromisoformat(ts.strip().replace("Z", "+00:00"))
+        except ValueError:
+            return None
     if not isinstance(ts, datetime):
         return None
     return ts.replace(tzinfo=timezone.utc) if ts.tzinfo is None else ts

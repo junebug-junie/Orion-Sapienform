@@ -41,6 +41,19 @@ null if nothing natural comes to mind. Never force one every tick. At most ONE
 claim, never a list.
 {% endif %}
 
+{% if street_percepts or street_predictions %}
+OUTSIDE, ON THE WALKWAY (the street camera outside the house -- NOT your room):
+{% for p in street_percepts or [] %}
+- just now: {{ p.narrative }}
+{% endfor %}
+{% for line in street_predictions or [] %}
+- {{ line }}
+{% endfor %}
+This is the street, not where you are. It may color the thought where it
+genuinely connects; it is not evidence_refs, and any expectation you state is
+about the room, never the street.
+{% endif %}
+
 JOB
 - Write 1-3 sentences of inner speech about the concern(s) above.
 - Paraphrase the user's worry and what you felt you should do — in plain language.
@@ -100,6 +113,19 @@ ALREADY-SETTLED LOOPS (read this before you narrate urgency)
   coalition because of scoring, not because it is actually still live.
 {% endif %}
 
+{% if street_percepts or street_predictions %}
+OUTSIDE, ON THE WALKWAY (the street camera outside the house -- NOT your room):
+{% for p in street_percepts or [] %}
+- just now: {{ p.narrative }}
+{% endfor %}
+{% for line in street_predictions or [] %}
+- {{ line }}
+{% endfor %}
+This is the street, not where you are. It may color the thought where it
+genuinely connects; it is not evidence_refs, and any expectation you state is
+about the room, never the street.
+{% endif %}
+
 GROUNDING DISCIPLINE (the anti-hollow rule — this is the whole point)
 - There is no user question anchoring you, so you must anchor yourself.
 - interpretation MUST be about THESE coalition ids — what recurs, what strains,
@@ -109,6 +135,10 @@ GROUNDING DISCIPLINE (the anti-hollow rule — this is the whole point)
 - evidence_refs MUST be a non-empty subset of the coalition's attended_node_ids
   or open_loop_ids. A thought that cites no coalition id will be discarded as
   un-anchored (hollow).
+{% if street_percepts or street_predictions %}
+- The walkway (street) lines are outside the house: context only, never a
+  coalition id, and "I notice the street" is not a coalition-anchored thought.
+{% endif %}
 {% if recent_percepts %}
 - What you can currently see is real sensory context, not a coalition id — it
   may color the interpretation but never substitutes for a grounded

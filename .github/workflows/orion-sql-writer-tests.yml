@@ -134,3 +134,23 @@ jobs:
             services/orion-sql-writer/tests/test_grammar_ledger_integration.py
           PYTHONPATH=.:services/orion-substrate-runtime:services/orion-sql-writer/tests python -m pytest -q -m integration \
             services/orion-substrate-runtime/tests/test_grammar_consumer_integration.py
+      # Visual confirmation asks against real Postgres: opener, answers, typed names, picture
+      # verdicts, migration backfill. The tests TRUNCATE the walkway tables; this database is throwaway.
+      - name: Run visual confirmation asks Postgres tests (must not skip)
+        env:
+          ORION_TEST_PG_URI: postgresql://postgres:postgres@localhost:5432/conjourney
+        run: |
+          set -o pipefail
+          python - <<'PY'
+          import pathlib, psycopg2
+          conn = psycopg2.connect("postgresql://postgres:postgres@localhost:5432/conjourney")
+          conn.autocommit = True
+          for f in ("walkway_camera_v1", "walkway_privacy_v2", "vision_confirm_asks_v1", "vision_ask_names_v1"):
+              conn.cursor().execute(pathlib.Path(f"services/orion-sql-db/manual_migration_{f}.sql").read_text())
+          PY
+          PYTHONPATH=.:services/orion-sql-writer python -m pytest -q -rs -p no:cacheprovider \
+            services/orion-sql-writer/tests/test_vision_confirm_asks.py | tee vision_pg.out
+          if grep -q "SKIPPED" vision_pg.out; then
+            echo "visual confirmation Postgres tests skipped -- ORION_TEST_PG_URI wiring is broken" >&2
+            exit 1
+          fi

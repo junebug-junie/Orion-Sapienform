@@ -8,6 +8,11 @@ same SQL and rules the deployed loop will run. Prints individual ids, kinds,
 face counts, pair similarities and image counts. Never prints or copies
 pictures (only their refs are copied, and only counted in the output).
 
+Also reports how many open and would-open "who is this?" cards show faces
+from more than one person (two of their pictures' faces less alike than the
+low edge of the measured same-person band, same_track p10), and every
+answered "same person?" verdict with the face similarity it was given at.
+
 Also prints the face-similarity distribution behind
 VISION_SAME_ASK_MIN_FACE_COSINE: two faces in ONE frame (known different
 people) versus the same face a few seconds apart in the same place (almost
@@ -111,6 +116,38 @@ def face_distribution(live) -> dict:
     }
 
 
+def face_by_ref(live, refs) -> dict:
+    """picture ref -> the newest face embedding behind it (a face thumb, or a crop thumb whose crop had a face)."""
+    from sqlalchemy import text
+
+    if not refs:
+        return {}
+    out: dict = {}
+    for ref, emb in live.execute(text(
+            "SELECT ref, face_embedding FROM ("
+            "  SELECT face_thumb_ref AS ref, face_embedding, observed_at FROM vision_crop_observation "
+            "  WHERE face_thumb_ref = ANY(:r) AND face_embedding IS NOT NULL UNION ALL "
+            "  SELECT thumb_ref, face_embedding, observed_at FROM vision_crop_observation "
+            "  WHERE thumb_ref = ANY(:r) AND face_embedding IS NOT NULL) c ORDER BY observed_at DESC"),
+            {"r": sorted(set(refs))}).fetchall():
+        out.setdefault(ref, list(emb))
+    return out
+
+
+def picture_purity(live, cards, band: float) -> dict:
+    """cards: (label, individual_id, image_refs). How many show more than one person's face."""
+    faces = face_by_ref(live, [r for _, _, refs in cards for r in refs])
+    rows = []
+    for label, iid, refs in cards:
+        split = vi.picture_face_split(list(refs), faces, band)
+        rows.append({"card": label, "individual": iid, **split})
+    return {"band": band, "cards": len(rows),
+            "multi_picture": sum(1 for r in rows if r["pictures"] > 1),
+            "impure": sum(1 for r in rows if r["impure"]),
+            "unknown_fewer_than_two_faces": sum(1 for r in rows if r["impure"] is None),
+            "rows": rows}
+
+
 def run(live_dsn: str, scratch_dsn: str, now: datetime) -> dict:
     from sqlalchemy import create_engine, text
 
@@ -134,6 +171,18 @@ def run(live_dsn: str, scratch_dsn: str, now: datetime) -> dict:
                 "individual_a, individual_b, verdict, face_cosine, ask_id, decided_at")
         faces = face_distribution(live)
         opened = vi._open_asks(scratch, now, tz, cfg)
+        band = faces["same_track_likely_same"].get("p10")
+        band = cfg.same_ask_min_face_cosine if band is None else band
+        open_who = [(r[0], r[1], list(r[2] or [])) for r in live.execute(text(
+            "SELECT ask_id, source_ref, image_refs FROM orion_ask WHERE source_kind = 'vision_individual' "
+            "AND status = 'open'")).fetchall()]
+        would_open = [("would_open", a["source_ref"], a["image_refs"]) for a in opened
+                      if a["source_kind"] == vi.SOURCE_KIND_INDIVIDUAL]
+        purity = {"open_now": picture_purity(live, open_who, band),
+                  "would_open": picture_purity(live, would_open, band)}
+        verdicts = [dict(r._mapping) for r in live.execute(text(
+            "SELECT individual_a, individual_b, verdict, face_cosine, decided_at FROM vision_individual_pair_verdict "
+            "ORDER BY decided_at")).fetchall()] if has_verdicts else []
         face_n = dict(scratch.execute(text("SELECT individual_id, face_n FROM vision_individual")).fetchall())
         live.rollback()
     asks = []
@@ -152,7 +201,9 @@ def run(live_dsn: str, scratch_dsn: str, now: datetime) -> dict:
                        "same_ask_min_face_cosine": cfg.same_ask_min_face_cosine,
                        "confirm_ask_daily_cap": cfg.confirm_ask_daily_cap,
                        "face_match_threshold": cfg.face_match_threshold},
-            "face_similarity": faces}
+            "face_similarity": faces,
+            "who_is_this_picture_purity": purity,
+            "pair_verdicts": verdicts}
 
 
 def main() -> int:

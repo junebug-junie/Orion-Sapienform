@@ -14,7 +14,7 @@ asks and, on answer, updates the row and publishes ``OrionAskAnsweredV1`` on
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import List, Literal, Optional
+from typing import Dict, List, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -59,3 +59,9 @@ class OrionAskAnsweredV1(BaseModel):
     answered_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     source_kind: str
     source_ref: str
+    # Names Juniper typed on a "same person?" card (2026-10-15): individual_id ->
+    # name, for one or both faces. Each is a direct "who is this?" answer for that
+    # individual. Additive: the Hub leaves the key out of the payload when it is
+    # empty, so a consumer built before this field still validates every event
+    # that carries no names. Deploy consumers (orion-substrate-runtime) first.
+    names: Dict[str, str] = Field(default_factory=dict)

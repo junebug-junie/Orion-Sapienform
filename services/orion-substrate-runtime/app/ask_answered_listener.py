@@ -7,6 +7,10 @@ The Hub publishes ``OrionAskAnsweredV1`` when Juniper answers an ask. For
 graph store the worker already uses, through the same
 ``SubstrateGraphMaterializer`` path topic-foundry ingestion uses.
 
+A ``vision_same_individual`` ("same person?") answer that carries ``names``
+(2026-10-15: Juniper typed who one or both faces are) writes the same entity
+for each named individual, exactly as a "who is this?" answer for it would.
+
 Not handled here, on purpose:
 - ``vision_individual.label`` in Postgres is set by ``orion-sql-writer`` from
   the ``orion_ask`` row on its own clock (the row is the truth, not this event).
@@ -32,6 +36,7 @@ logger = logging.getLogger("orion.substrate.runtime.ask_answered")
 
 _ASK_ANSWERED_KIND = "orion.ask.answered.v1"
 _VISION_INDIVIDUAL = "vision_individual"
+_VISION_SAME_INDIVIDUAL = "vision_same_individual"
 _MAX_ALIASES = 20
 
 StoreGetter = Callable[[], Any]
@@ -68,25 +73,49 @@ def apply_answer_to_substrate(
     get_store: StoreGetter,
     get_engine: EngineGetter,
 ) -> Optional[dict[str, Any]]:
-    """Write/update the entity for one answered vision_individual ask.
+    """Write/update the entity for one answered vision_individual ask, or one
+    entity per name typed on an answered vision_same_individual ask.
 
     Returns a small result dict for logs/tests, or None when the event is not
     ours or could not be written. Synchronous: call via ``asyncio.to_thread``.
     """
-    if event.source_kind != _VISION_INDIVIDUAL or event.status != "answered" or not (event.answer or "").strip():
+    if event.status != "answered":
         return None
+    if event.source_kind == _VISION_SAME_INDIVIDUAL:
+        pair = [i for i in (event.source_ref or "").split("|") if i]
+        written = []
+        for individual_id, name in sorted((event.names or {}).items()):
+            if individual_id not in pair or not (name or "").strip():
+                logger.warning("ask_answered pair_name_skipped ask_id=%s individual_id=%s", event.ask_id, individual_id)
+                continue
+            result = _write_individual_entity(event, individual_id, name, get_store=get_store, get_engine=get_engine)
+            if result is not None:
+                written.append({"individual_id": individual_id, **result})
+        return {"outcome": "pair_names", "entities": written} if written else None
+    if event.source_kind != _VISION_INDIVIDUAL or not (event.answer or "").strip():
+        return None
+    return _write_individual_entity(event, event.source_ref, event.answer or "", get_store=get_store, get_engine=get_engine)
 
+
+def _write_individual_entity(
+    event: OrionAskAnsweredV1,
+    individual_id: str,
+    label: str,
+    *,
+    get_store: StoreGetter,
+    get_engine: EngineGetter,
+) -> Optional[dict[str, Any]]:
+    """One user-asserted entity for ``individual_id`` named ``label`` by ``event``."""
     from orion.core.schemas.cognitive_substrate import EntityNodeV1
     from orion.substrate.adapters.vision_individual import map_vision_individual_label_to_substrate
     from orion.substrate.falkor_codec import EXTERNALLY_OWNED_METADATA_KEYS
     from orion.substrate.materializer import SubstrateGraphMaterializer
     from orion.substrate.reconcile import SubstrateIdentityResolver
 
-    individual_id = event.source_ref
     kind, stream_id = lookup_individual(get_engine(), individual_id)
     record = map_vision_individual_label_to_substrate(
         individual_id=individual_id,
-        label=event.answer or "",
+        label=label,
         kind=kind,
         ask_id=event.ask_id,
         answered_at=event.answered_at,

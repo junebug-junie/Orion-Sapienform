@@ -16,6 +16,15 @@ publish does not lose the label -- it is reported as ``published: false`` and
 logged. It does lose the substrate entity for that answer: nothing replays
 ``orion:ask:answered`` today (known gap).
 
+**Names on visual cards** (2026-10-15). A "same person?" card may carry ``names``
+(individual_id -> name: one name for both on "Same person", one per face on
+"Different people"); a multi-picture "who is this?" card may carry ``pictures``
+(per picture: same person / someone else, optionally named / not sure). Both are
+stored in ``orion_ask.answer_detail``; sql-writer applies them on its clock.
+A named pair answer also closes, in the same transaction, any open "who is
+this?" card for a named individual (``answer`` = the name, ``answer_detail`` =
+``{"resolved_by": <pair ask_id>}``), so Juniper is not asked again.
+
 There is no "ask opened" bus event: the Hub has no push channel for panels,
 so the card polls ``GET /api/asks`` and Postgres stays the only truth.
 
@@ -52,7 +61,7 @@ import re
 import stat
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Literal, Optional
+from typing import Annotated, Any, Literal, Optional
 
 from fastapi import APIRouter, HTTPException, Query, Request, Response
 from pydantic import BaseModel, Field
@@ -75,6 +84,7 @@ try:
     from asyncpg.exceptions import (
         InterfaceError as _AsyncpgInterfaceError,
         PostgresConnectionError as _AsyncpgConnectionError,
+        UndefinedColumnError as _AsyncpgUndefinedColumnError,
         UndefinedTableError as _AsyncpgUndefinedTableError,
     )
 
@@ -86,6 +96,7 @@ try:
     )
 except ImportError:  # pragma: no cover - optional in minimal dev envs
     _AsyncpgUndefinedTableError = None  # type: ignore[misc, assignment]
+    _AsyncpgUndefinedColumnError = None  # type: ignore[misc, assignment]
     _TRANSPORT_ERRORS = (TimeoutError, OSError)
 
 logger = logging.getLogger("orion-hub.asks")
@@ -114,13 +125,19 @@ _SELECT_COLUMNS = (
 # answer as a verdict, so free text is refused here instead of being dropped there.
 SAME_INDIVIDUAL_KIND = "vision_same_individual"
 YES_NO_ANSWERS = ("yes", "no")
+WHO_IS_THIS_KIND = "vision_individual"
+PAIR_SEP = "|"
+# orion.substrate.adapters.vision_individual.MAX_LABEL_LENGTH: a longer name
+# would be cut there, so it is refused here.
+MAX_NAME_CHARS = 120
+MAX_PICTURES = 4
 
 
 # Explicit ::text casts: Postgres cannot infer $3's type from "$3 IS NULL"
 # (AmbiguousParameterError) -- caught in review, pinned by a real-Postgres test.
 CLOSE_ASK_SQL = """
 UPDATE orion_ask
-SET status = $2, answer = $3::text, answered_at = now()
+SET status = $2, answer = $3::text, answered_at = now(), answer_detail = $7::jsonb
 WHERE ask_id = $1
   AND status = 'open'
   AND (expires_at IS NULL OR expires_at > now())
@@ -129,9 +146,107 @@ WHERE ask_id = $1
 RETURNING ask_id, status, answer, answered_at, source_kind, source_ref
 """
 
+# A named "same person?" answer closes any open "who is this?" card for a named
+# individual: she already said who it is. Same transaction as the pair answer.
+CLOSE_NAMED_WHO_SQL = """
+UPDATE orion_ask a
+SET status = 'answered', answer = n.name, answered_at = now(),
+    answer_detail = jsonb_build_object('resolved_by', $2::text)
+FROM jsonb_each_text($1::jsonb) AS n(individual_id, name)
+WHERE a.source_kind = $3::text
+  AND a.source_ref = n.individual_id
+  AND a.status = 'open'
+  AND (a.expires_at IS NULL OR a.expires_at > now())
+RETURNING a.ask_id, a.status, a.answer, a.answered_at, a.source_kind, a.source_ref
+"""
+
+
+class PictureAnswer(BaseModel):
+    image_ref: str = Field(min_length=1, max_length=500)
+    verdict: Literal["same", "different", "unsure"]
+    name: str = Field(default="", max_length=MAX_ANSWER_CHARS)
+
 
 class AskAnswerBody(BaseModel):
     answer: str = Field(min_length=1, max_length=MAX_ANSWER_CHARS)
+    # "Same person?" cards only: individual_id -> name (empty names are dropped).
+    names: dict[str, Annotated[str, Field(max_length=MAX_ANSWER_CHARS)]] = Field(default_factory=dict)
+    # Multi-picture "who is this?" cards only: one entry per picture.
+    pictures: list[PictureAnswer] = Field(default_factory=list, max_length=MAX_PICTURES)
+
+
+def clean_name(value: Any) -> str:
+    name = " ".join(str(value or "").split())
+    if len(name) > MAX_NAME_CHARS:
+        raise HTTPException(status_code=422, detail="name_too_long")
+    return name
+
+
+def pair_answer_detail(answer: str, source_ref: str, names: dict[str, str]) -> Optional[dict[str, Any]]:
+    """``{"names": {id: name}}`` for a "same person?" answer, or None when no name was typed.
+
+    "yes" (same person): one name for the pair, given to both ids. "no": one per face."""
+    cleaned = {str(k): clean_name(v) for k, v in (names or {}).items()}
+    cleaned = {k: v for k, v in cleaned.items() if v}
+    if not cleaned:
+        return None
+    ids = [i for i in str(source_ref or "").split(PAIR_SEP) if i]
+    if len(ids) != 2 or any(k not in ids for k in cleaned):
+        raise HTTPException(status_code=422, detail="name_for_unknown_individual")
+    if answer == "yes":
+        distinct = set(cleaned.values())
+        if len(distinct) > 1:
+            raise HTTPException(status_code=422, detail="same_person_takes_one_name")
+        name = distinct.pop()
+        cleaned = {i: name for i in ids}
+    return {"names": cleaned}
+
+
+def _image_refs(row: Any) -> list[str]:
+    refs = row["image_refs"]
+    if isinstance(refs, str):
+        try:
+            refs = json.loads(refs)
+        except ValueError:
+            refs = []
+    refs = [str(r).strip() for r in (refs or []) if isinstance(r, str) and r.strip()]
+    if not refs and row["image_ref"]:
+        refs = [str(row["image_ref"])]
+    return refs
+
+
+def picture_answer_detail(answer: str, image_refs: list[str], pictures: list[PictureAnswer]) -> Optional[dict[str, Any]]:
+    """``{"pictures": [...]}`` for a "who is this?" card with more than one picture.
+
+    The first picture is the one the question is about (faces come first): its
+    name is the answer. Every other picture is "same" (gets the answer as its
+    name), "different" (someone else; the name is optional) or "unsure"."""
+    if not pictures:
+        return None
+    if len(image_refs) < 2:
+        raise HTTPException(status_code=422, detail="pictures_need_a_multi_picture_card")
+    index: dict[str, int] = {}
+    for i, ref in enumerate(image_refs):
+        index.setdefault(ref, i)  # first position wins, as the card shows it (askImageViews)
+    out: dict[int, dict[str, Any]] = {0: {"image_ref": image_refs[0], "index": 0, "verdict": "same", "name": answer}}
+    seen: set[str] = set()
+    for p in pictures:
+        if p.image_ref not in index:
+            raise HTTPException(status_code=422, detail="picture_not_on_card")
+        if p.image_ref in seen:
+            raise HTTPException(status_code=422, detail="picture_listed_twice")
+        seen.add(p.image_ref)
+        i = index[p.image_ref]
+        name = clean_name(p.name)
+        if i == 0:
+            if p.verdict != "same" or (name and name != answer):
+                raise HTTPException(status_code=422, detail="first_picture_is_the_answer")
+            continue
+        if p.verdict == "same" and name and name != answer:
+            raise HTTPException(status_code=422, detail="same_picture_takes_the_answer")
+        out[i] = {"image_ref": p.image_ref, "index": i, "verdict": p.verdict,
+                  "name": answer if p.verdict == "same" else (name if p.verdict == "different" and name else None)}
+    return {"pictures": [out[i] for i in sorted(out)]}
 
 
 class AskResolveBody(BaseModel):
@@ -156,7 +271,9 @@ def _pool(request: Request):
 
 
 def _raise_store_http(exc: BaseException) -> None:
-    if _AsyncpgUndefinedTableError is not None and isinstance(exc, _AsyncpgUndefinedTableError):
+    # A missing column is a migration not applied yet (e.g. orion_ask.answer_detail): same 503.
+    schema_errors = tuple(e for e in (_AsyncpgUndefinedTableError, _AsyncpgUndefinedColumnError) if e is not None)
+    if schema_errors and isinstance(exc, schema_errors):
         logger.warning("ask_schema_missing error=%s", exc)
         raise HTTPException(status_code=503, detail="ask_schema_missing") from exc
     if isinstance(exc, _TRANSPORT_ERRORS):
@@ -208,10 +325,15 @@ def _source_ref() -> ServiceRef:
 
 
 def build_answered_envelope(event: OrionAskAnsweredV1) -> BaseEnvelope:
+    payload = event.model_dump(mode="json")
+    # Additive field: left out when empty, so a consumer built before it
+    # (extra="forbid") still accepts every answer that carries no names.
+    if not payload.get("names"):
+        payload.pop("names", None)
     return BaseEnvelope(
         kind=ASK_ANSWERED_KIND,
         source=_source_ref(),
-        payload=event.model_dump(mode="json"),
+        payload=payload,
     )
 
 
@@ -281,30 +403,86 @@ async def _attach_memory_statements(conn: Any, asks: list[dict[str, Any]]) -> No
             a["memory_statement"] = by_id[mid]
 
 
+def _event_from_row(row: Any, names: Optional[dict[str, str]] = None) -> OrionAskAnsweredV1:
+    answered_at = row["answered_at"]
+    if isinstance(answered_at, datetime) and answered_at.tzinfo is None:
+        answered_at = answered_at.replace(tzinfo=timezone.utc)
+    return OrionAskAnsweredV1(
+        ask_id=row["ask_id"],
+        status=row["status"],
+        answer=row["answer"],
+        answered_at=answered_at or datetime.now(timezone.utc),
+        source_kind=row["source_kind"],
+        source_ref=row["source_ref"],
+        names=dict(names or {}),
+    )
+
+
+async def _answer_detail(conn: Any, ask_id: str, answer: Optional[str], names: dict[str, str],
+                         pictures: list[PictureAnswer]) -> Optional[dict[str, Any]]:
+    """Validate typed names against the card (locks the row) and build ``answer_detail``.
+    Raises 422 for names on a card that cannot take them; None when nothing was typed."""
+    if not names and not pictures:
+        return None
+    card = await conn.fetchrow(
+        "SELECT source_kind, source_ref, image_ref, image_refs, status, expires_at FROM orion_ask "
+        "WHERE ask_id = $1 FOR UPDATE",
+        ask_id,
+    )
+    expires = card["expires_at"] if card is not None else None
+    if isinstance(expires, datetime) and expires.tzinfo is None:
+        expires = expires.replace(tzinfo=timezone.utc)
+    if card is None or card["status"] != "open" or (expires is not None and expires <= datetime.now(timezone.utc)):
+        return None  # CLOSE_ASK_SQL moves nothing either: the usual 404 / 409 below
+    detail: dict[str, Any] = {}
+    if names:
+        if card["source_kind"] != SAME_INDIVIDUAL_KIND:
+            raise HTTPException(status_code=422, detail="names_only_on_same_person_cards")
+        if answer in YES_NO_ANSWERS:  # anything else is refused by CLOSE_ASK_SQL (422 below)
+            detail.update(pair_answer_detail(answer, card["source_ref"], names) or {})
+    if pictures:
+        if card["source_kind"] != WHO_IS_THIS_KIND:
+            raise HTTPException(status_code=422, detail="pictures_only_on_who_is_this_cards")
+        detail.update(picture_answer_detail(answer or "", _image_refs(card), pictures) or {})
+    return detail or None
+
+
 async def _close_ask(
     request: Request,
     ask_id: str,
     *,
     new_status: Literal["answered", "dismissed"],
     answer: Optional[str],
+    names: Optional[dict[str, str]] = None,
+    pictures: Optional[list[PictureAnswer]] = None,
 ) -> dict[str, Any]:
     pool = _pool(request)
+    row: Any = None
+    existing: Any = None
+    detail: Optional[dict[str, Any]] = None
+    closed: list[Any] = []
     try:
         async with pool.acquire() as conn:
-            row = await conn.fetchrow(
-                CLOSE_ASK_SQL,
-                ask_id,
-                new_status,
-                answer,
-                list(RESOLVABLE_KINDS),
-                SAME_INDIVIDUAL_KIND,
-                list(YES_NO_ANSWERS),
-            )
-            if row is None:
-                existing = await conn.fetchrow(
-                    "SELECT status, expires_at, source_kind FROM orion_ask WHERE ask_id = $1",
+            async with conn.transaction():
+                detail = await _answer_detail(conn, ask_id, answer, names or {}, pictures or [])
+                row = await conn.fetchrow(
+                    CLOSE_ASK_SQL,
                     ask_id,
+                    new_status,
+                    answer,
+                    list(RESOLVABLE_KINDS),
+                    SAME_INDIVIDUAL_KIND,
+                    list(YES_NO_ANSWERS),
+                    None if detail is None else json.dumps(detail),
                 )
+                if row is None:
+                    existing = await conn.fetchrow(
+                        "SELECT status, expires_at, source_kind FROM orion_ask WHERE ask_id = $1",
+                        ask_id,
+                    )
+                elif detail and detail.get("names"):
+                    closed = list(await conn.fetch(
+                        CLOSE_NAMED_WHO_SQL, json.dumps(detail["names"]), row["ask_id"], WHO_IS_THIS_KIND))
     except Exception as exc:
         _raise_store_http(exc)
 
@@ -319,32 +497,31 @@ async def _close_ask(
             # Closing these without an outcome row would orphan the memory (spec Stage 3 check 6).
             raise HTTPException(status_code=409, detail="ask_needs_resolution")
         current = existing["status"]
-        detail = f"ask_not_open:{current}"
+        detail_text = f"ask_not_open:{current}"
         if current == "open":
-            detail = "ask_not_open:expired"
-        raise HTTPException(status_code=409, detail=detail)
+            detail_text = "ask_not_open:expired"
+        raise HTTPException(status_code=409, detail=detail_text)
 
-    answered_at = row["answered_at"]
-    if isinstance(answered_at, datetime) and answered_at.tzinfo is None:
-        answered_at = answered_at.replace(tzinfo=timezone.utc)
-    event = OrionAskAnsweredV1(
-        ask_id=row["ask_id"],
-        status=row["status"],
-        answer=row["answer"],
-        answered_at=answered_at or datetime.now(timezone.utc),
-        source_kind=row["source_kind"],
-        source_ref=row["source_ref"],
-    )
+    event = _event_from_row(row, (detail or {}).get("names"))
     published = await _publish_answered(event)
     logger.info(
-        "ask_closed ask_id=%s status=%s source_kind=%s source_ref=%s published=%s",
+        "ask_closed ask_id=%s status=%s source_kind=%s source_ref=%s names=%d pictures=%d published=%s",
         event.ask_id,
         event.status,
         event.source_kind,
         event.source_ref,
+        len(event.names),
+        len((detail or {}).get("pictures") or []),
         published,
     )
-    return {"ok": True, "ask": event.model_dump(mode="json"), "published": published}
+    closed_ids = []
+    for c in closed:
+        closed_event = _event_from_row(c)
+        closed_published = await _publish_answered(closed_event)
+        closed_ids.append(closed_event.ask_id)
+        logger.info("ask_closed_by_pair ask_id=%s pair_ask_id=%s individual_id=%s published=%s",
+                    closed_event.ask_id, event.ask_id, closed_event.source_ref, closed_published)
+    return {"ok": True, "ask": event.model_dump(mode="json"), "published": published, "closed_asks": closed_ids}
 
 
 @router.post("/api/asks/{ask_id}/answer")
@@ -354,7 +531,10 @@ async def answer_ask(request: Request, ask_id: str, body: AskAnswerBody) -> dict
         answer = answer.lower()
     if not answer:
         raise HTTPException(status_code=422, detail="answer_empty")
-    return await _close_ask(request, ask_id, new_status="answered", answer=answer)
+    if len(body.names) > 2:
+        raise HTTPException(status_code=422, detail="name_for_unknown_individual")
+    return await _close_ask(request, ask_id, new_status="answered", answer=answer,
+                            names=body.names, pictures=body.pictures)
 
 
 @router.post("/api/asks/{ask_id}/dismiss")

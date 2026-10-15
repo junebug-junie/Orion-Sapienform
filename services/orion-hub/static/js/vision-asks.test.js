@@ -346,25 +346,146 @@ test('a who-is-this card with two pictures renders both, side by side, with alt 
   assert.match(imgs[0].className, /w-full/); // shares the card width on a phone
 });
 
-test('a same-person card shows both faces and answers yes / no / dismiss', async () => {
+test('a same-person card shows both faces, a choice and one Send', async () => {
   const doc = fakeDoc();
   const a = 'c1'.repeat(32);
   const b = 'd1'.repeat(32);
   const calls = [];
-  const card = asks.renderAsk(doc, { ask_id: 'p1', question: 'Are these the same person?',
+  const render = () => asks.renderAsk(doc, { ask_id: 'p1', question: 'Are these the same person?',
     source_kind: 'vision_same_individual', source_ref: 'x|y', image_ref: 'thumb:' + a,
-    image_refs: ['thumb:' + a, 'thumb:' + b] }, (id, action, text) => { calls.push([id, action, text]); });
+    image_refs: ['thumb:' + a, 'thumb:' + b] }, (id, action, text, _note, _res, extra) => { calls.push([id, action, text, extra]); });
+  let card = render();
   assert.equal(card.attrs['data-ask-kind'], 'same-person');
   const imgs = [];
   (function walk(n) { if (n.tagName === 'img') imgs.push(n); (n.children || []).forEach(walk); })(card);
   assert.equal(imgs.length, 2);
   assert.equal(imgs[0].attrs.alt, 'Left face Orion is asking about');
   assert.equal(imgs[1].attrs.alt, 'Right face Orion is asking about');
-  assert.equal(find(card, (n) => n.attrs && n.attrs['data-ask-input']), null, 'no free-text box');
-  await find(card, (n) => n.attrs && n.attrs['data-ask-action'] === 'same').listeners.click();
-  await find(card, (n) => n.attrs && n.attrs['data-ask-action'] === 'different').listeners.click();
-  await find(card, (n) => n.attrs && n.attrs['data-ask-action'] === 'dismiss').listeners.click();
-  assert.deepEqual(calls, [['p1', 'answer', 'yes'], ['p1', 'answer', 'no'], ['p1', 'dismiss', '']]);
+  const sends = [];
+  (function walk(n) { if (n.attrs && n.attrs['data-ask-action']) sends.push(n.attrs['data-ask-action']); (n.children || []).forEach(walk); })(card);
+  assert.deepEqual(sends, ['send'], 'one submit per card');
+  // Name boxes exist but stay hidden until a choice needs them.
+  const named = (c, k) => find(c, (n) => n.attrs && n.attrs['data-ask-name'] === k);
+  for (const k of ['same', 'left', 'right']) assert.ok(named(card, k), k);
+  const wrapOf = (c, k) => find(c, (n) => (n.children || []).includes(named(c, k)));
+  assert.equal(wrapOf(card, 'same').hidden, true);
+  assert.equal(wrapOf(card, 'left').hidden, true);
+  const pick = (c, v) => find(c, (n) => n.attrs && n.attrs['data-ask-choice'] === v).listeners.change();
+  const send = (c) => find(c, (n) => n.attrs && n.attrs['data-ask-action'] === 'send').listeners.click();
+
+  // Send with no choice: nothing posted, the card says what to do.
+  await send(card);
+  assert.equal(calls.length, 0);
+  assert.ok(find(card, (n) => /Pick Same person/.test(n.textContent)));
+
+  pick(card, 'same');
+  assert.equal(wrapOf(card, 'same').hidden, false);
+  assert.equal(wrapOf(card, 'left').hidden, true);
+  await send(card);                                   // no name: plain yes
+  named(card, 'same').value = '  Kid   next door ';
+  await send(card);                                   // one name for both
+  card = render();
+  pick(card, 'different');
+  assert.equal(wrapOf(card, 'same').hidden, true);
+  assert.equal(wrapOf(card, 'left').hidden, false);
+  assert.equal(wrapOf(card, 'right').hidden, false);
+  named(card, 'right').value = 'Maya';
+  await send(card);                                   // only the right face named
+  card = render();
+  pick(card, 'unsure');
+  await send(card);
+  assert.deepEqual(calls, [
+    ['p1', 'answer', 'yes', null],
+    ['p1', 'answer', 'yes', { names: { x: 'Kid next door', y: 'Kid next door' } }],
+    ['p1', 'answer', 'no', { names: { y: 'Maya' } }],
+    ['p1', 'dismiss', '', null],
+  ]);
+});
+
+test('samePersonSubmission: names only for the right choice, never for Not sure', () => {
+  const ids = ['x', 'y'];
+  assert.equal(asks.samePersonSubmission('', ids), null);
+  assert.deepEqual(asks.samePersonSubmission('unsure', ids, 'A', 'B', 'C'), { action: 'dismiss', answer: '', extra: null });
+  assert.deepEqual(asks.samePersonSubmission('same', ids, '', 'B', 'C'), { action: 'answer', answer: 'yes', extra: null });
+  assert.deepEqual(asks.samePersonSubmission('different', ids, 'A', 'B', ' '),
+    { action: 'answer', answer: 'no', extra: { names: { x: 'B' } } });
+  // A malformed source_ref: answer still works, no names.
+  assert.deepEqual(asks.samePersonSubmission('same', [], 'A'), { action: 'answer', answer: 'yes', extra: null });
+});
+
+test('a who-is-this card with three pictures asks about pictures 2 and 3', async () => {
+  const doc = fakeDoc();
+  const [a, b, c] = ['a2', 'b2', 'c2'].map((x) => 'thumb:' + x.repeat(32));
+  const calls = [];
+  const card = asks.renderAsk(doc, { ask_id: 'w3', question: 'Who is this?', source_kind: 'vision_individual',
+    source_ref: 'ind-1', image_ref: a, image_refs: [a, b, c] },
+  (id, action, text, _note, _res, extra) => { calls.push([id, action, text, extra]); });
+  const selects = [];
+  (function walk(n) { if (n.tagName === 'select') selects.push(n); (n.children || []).forEach(walk); })(card);
+  assert.deepEqual(selects.map((s) => s.attrs['data-ask-picture']), ['1', '2']);
+  assert.ok(selects.every((s) => s.value === 'same'), 'default: the same person');
+  // Every select has a real label.
+  for (const s of selects) assert.ok(find(card, (n) => n.tagName === 'label' && n.attrs.for === s.attrs.id));
+  const third = find(card, (n) => n.attrs && n.attrs['data-ask-name'] === 'picture-2');
+  const thirdWrap = find(card, (n) => (n.children || []).includes(third));
+  assert.equal(thirdWrap.hidden, true);
+  selects[1].value = 'different';
+  selects[1].listeners.change();
+  assert.equal(thirdWrap.hidden, false);
+  third.value = ' Other kid ';
+  find(card, (n) => n.attrs && n.attrs['data-ask-input'] === 'w3' && n.attrs.placeholder).value = 'Theo';
+  await find(card, (n) => n.attrs && n.attrs['data-ask-action'] === 'answer').listeners.click();
+  assert.deepEqual(calls, [['w3', 'answer', 'Theo', { pictures: [
+    { image_ref: b, verdict: 'same' },
+    { image_ref: c, verdict: 'different', name: 'Other kid' },
+  ] }]]);
+});
+
+test('a who-is-this card with one picture sends no picture list', async () => {
+  const doc = fakeDoc();
+  const calls = [];
+  const card = asks.renderAsk(doc, { ask_id: 'w1', question: 'Who?', source_kind: 'vision_individual',
+    image_refs: ['thumb:' + 'a3'.repeat(32)] }, (id, action, text, _n, _r, extra) => { calls.push(extra); });
+  assert.equal(find(card, (n) => n.tagName === 'select'), null);
+  find(card, (n) => n.attrs && n.attrs['data-ask-input'] === 'w1').value = 'Theo';
+  await find(card, (n) => n.attrs && n.attrs['data-ask-action'] === 'answer').listeners.click();
+  assert.deepEqual(calls, [undefined]);
+});
+
+test('pictureSubmission: unsure and unnamed someone-else carry no name', () => {
+  const v = [{ raw: 'r0' }, { raw: 'r1' }, { raw: 'r2' }, { raw: 'r3' }];
+  assert.equal(asks.pictureSubmission(v.slice(0, 1), {}, {}), null);
+  assert.deepEqual(asks.pictureSubmission(v, { 1: 'unsure', 2: 'different', 3: 'same' }, { 1: 'X', 2: '  ', 3: 'Y' }), [
+    { image_ref: 'r1', verdict: 'unsure' },
+    { image_ref: 'r2', verdict: 'different' },
+    { image_ref: 'r3', verdict: 'same' },
+  ]);
+});
+
+test('submitAction carries names / pictures only when there are some', async () => {
+  const bodies = [];
+  const fetchFn = async (url, init) => { bodies.push(JSON.parse(init.body)); return { ok: true, status: 200, json: async () => ({}) }; };
+  await asks.submitAction(fetchFn, 'p', 'answer', 'yes', undefined, { names: { x: 'A' } });
+  await asks.submitAction(fetchFn, 'p', 'answer', 'yes', undefined, { names: {} });
+  await asks.submitAction(fetchFn, 'w', 'answer', 'Theo', undefined, { pictures: [{ image_ref: 'r1', verdict: 'same' }] });
+  assert.deepEqual(bodies, [
+    { answer: 'yes', names: { x: 'A' } },
+    { answer: 'yes' },
+    { answer: 'Theo', pictures: [{ image_ref: 'r1', verdict: 'same' }] },
+  ]);
+});
+
+test('a picked choice keeps the poll from wiping the card', async () => {
+  const doc = fakeDoc();
+  const fetchFn = async () => ({ ok: true, status: 200, json: async () => ({ asks: [{ ask_id: 'p1', question: 'q',
+    source_kind: 'vision_same_individual', source_ref: 'x|y' }] }) });
+  const handle = asks.mount(doc, fetchFn);
+  await handle.refresh();
+  assert.equal(handle.isTyping(), false);
+  const card = doc.byId.visionAsksList.children[0];
+  find(card, (n) => n.attrs && n.attrs['data-ask-choice'] === 'different').listeners.change();
+  assert.equal(handle.isTyping(), true);
+  handle.stop();
 });
 
 test('a missing face says so instead of a broken image', () => {

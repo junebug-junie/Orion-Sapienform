@@ -115,6 +115,21 @@ to the athena host. Outcomes are counted in the health heartbeat:
 (`null_answer`, sanitizer reasons), `caption_failure_counts`. Tests:
 `tests/test_walkway_caption_dispatch.py`.
 
+**Walkway tiled detection (2026-10-15).** The stream-level `tiled_detect`
+block (`enabled`, `tiers`, `min_seconds_between`) makes
+`FrameDispatchPolicy.apply_tiled_detect` set `request.detect_tiles: true` on
+at most one primary walkway task per `min_seconds_between` (own per-camera
+clock, `CameraState.last_tiled_detect_ts`), on any listed tier. The athena
+host then also runs the detector on full-resolution tiles (see
+`services/orion-vision-host/README.md` "Tiled detection"). Opt-in per stream:
+cam0/carbon never get tiles, and only detect-bearing task types (`retina_fast`,
+`retina_dense`, `detect_open_vocab`) are marked. The dispatch log line shows
+`tiled=True|False`. Consequence for consumers: a far person only the tiles can
+see shows up on tiled frames (one per `min_seconds_between`) and not on the
+frames in between, so its trigger TTL (8 s) lapses between sightings and the
+individuals reducer gets sparser sightings for it than for a near person.
+Tests: `tests/test_walkway_tiled_detect.py`.
+
 Per-stream overrides use the `streams:` block (e.g. `streams.cam0`). Legacy per-camera overrides remain under `cameras:` keyed by `camera_id`.
 
 ## Bus channels

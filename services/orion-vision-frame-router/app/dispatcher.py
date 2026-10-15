@@ -87,6 +87,7 @@ class FrameDispatcher:
                 return
 
             task = self.policy.build_task_request(frame, env, decision)
+            tiled = self.policy.apply_tiled_detect(task, frame, decision, self.state, now=time.time())
             corr = str(env.correlation_id)
             reply_to = f"{self.settings.CHANNEL_REPLY_PREFIX}:{corr}"
             task_env = make_host_task_envelope(
@@ -103,10 +104,11 @@ class FrameDispatcher:
 
             want_caption = bool((task.request or {}).get("want_caption"))
             logger.info(
-                "[ROUTER] dispatch tier={} task_type={} want_caption={} camera_id={} stream_id={}",
+                "[ROUTER] dispatch tier={} task_type={} want_caption={} tiled={} camera_id={} stream_id={}",
                 decision.dispatch_tier,
                 task.task_type,
                 want_caption,
+                tiled,
                 camera_id,
                 frame.stream_id,
             )

@@ -26,6 +26,14 @@ from .crop_embeddings import (
     load_zones_fail_closed,
 )
 from .detections import cap_by_score, nms
+from .gdino import detect_images
+from .tiling import (
+    merge_tiled_detections,
+    tile_layout,
+    tiling_params,
+    tiling_requested,
+    to_frame_coords,
+)
 from .model_manager import ModelManager
 from .models import VisionResult, VisionTask
 from .profiles import PipelineDef, ProfileDef, VisionProfiles
@@ -785,72 +793,77 @@ class VisionRunner:
             model_id=model_id,
         )
 
-        inputs = processor(images=img, text=text, return_tensors="pt")
-        inputs = self._cast_inputs_to_model_dtype(inputs, model, device)
+        def _cast(inputs: Dict[str, Any]) -> Dict[str, Any]:
+            return self._cast_inputs_to_model_dtype(inputs, model, device)
 
-        with torch.inference_mode():
-            outputs = model(**inputs)
+        t_full = time.perf_counter()
+        objects = detect_images(model, processor, [img], text, box_th, text_th, device, _cast)[0]
+        full_s = time.perf_counter() - t_full
 
-        # target size: (h, w)
-        target_sizes = torch.tensor([[img.height, img.width]], device=device)
-
-        # Robust call (transformers signature differences)
-        try:
-            results = processor.post_process_grounded_object_detection(
-                outputs=outputs,
-                input_ids=inputs.get("input_ids"),
-                box_threshold=box_th,
-                text_threshold=text_th,
-                target_sizes=target_sizes,
-            )
-        except TypeError:
-            results = processor.post_process_grounded_object_detection(
-                outputs,
-                inputs.get("input_ids"),
-                box_threshold=box_th,
-                text_threshold=text_th,
-                target_sizes=target_sizes,
-            )
-
-        r0 = results[0] if isinstance(results, list) and results else (results or {})
-
-        boxes = r0.get("boxes")
-        scores = r0.get("scores")
-        labels = r0.get("text_labels") or r0.get("labels") or []
-
-        if boxes is None or scores is None:
-            return {
-                "configured": True,
-                "implemented": True,
-                "kind": "detect_open_vocab",
-                "model_id": model_id,
-                "device": device,
-                "objects": [],
-                "note": "no boxes/scores returned",
-            }
-
-        boxes = boxes.detach().float().cpu().numpy()
-        scores = scores.detach().float().cpu().numpy()
-
-        # labels might be list[str] OR list[int]
-        if isinstance(labels, torch.Tensor):
-            labels = labels.detach().cpu().tolist()
-
-        objects = []
-        for i in range(min(len(scores), len(boxes))):
-            lab = labels[i] if i < len(labels) else "object"
-            if isinstance(lab, (int, float)):
-                lab = str(lab)
-            obj = {
-                "label": str(lab),
-                "score": float(scores[i]),
-                "box_xyxy": [float(x) for x in boxes[i].tolist()],
-            }
-            objects.append(obj)
+        # Tiled full-resolution pass (walkway only: the router sets
+        # request.detect_tiles on at most one frame per tiled_detect
+        # interval). Geometry comes from this profile's tile_* params.
+        tiling_stats = None
+        if tiling_requested(request):
+            tiling_stats = {"full_frame_s": round(full_s, 3)}
+            tp = tiling_params(p.params, request)
+            min_short = int(p.params.get("tile_min_short_side_px", 1200))
+            if min(img.width, img.height) < min_short:
+                tiling_stats["skipped"] = f"short_side<{min_short}"
+            else:
+                tiles = tile_layout(img.width, img.height, tp["grid"], tp["overlap"], tp["region"])
+                crops = [img.crop(t.as_box()) for t in tiles]
+                t_tiles = time.perf_counter()
+                budget = tp["time_budget_s"]
+                if tp["batch"]:
+                    per_tile = detect_images(model, processor, crops, text, box_th, text_th, device, _cast)
+                else:
+                    # Sequential, with a wall-clock budget: once the tiles
+                    # have used it up, the rest are skipped so a slow GPU
+                    # moment cannot push the task past the router timeout.
+                    per_tile = []
+                    for c in crops:
+                        if budget > 0 and per_tile and time.perf_counter() - t_tiles >= budget:
+                            break
+                        per_tile.append(detect_images(model, processor, [c], text, box_th, text_th, device, _cast)[0])
+                tiles_s = time.perf_counter() - t_tiles
+                tile_objs = [
+                    to_frame_coords(o, t, img.width, img.height)
+                    for t, objs in zip(tiles, per_tile)
+                    for o in objs
+                ]
+                full_count = len(objects)
+                objects = merge_tiled_detections(
+                    objects if tp["include_full_frame"] else [],
+                    tile_objs,
+                    nms_iou,
+                    tp["contain_frac"],
+                    tp["seam_merge_frac"],
+                )
+                tiling_stats.update({
+                    "tiles": len(tiles),
+                    "tiles_run": len(per_tile),
+                    "grid": tp["grid"],
+                    "tiles_s": round(tiles_s, 3),
+                    "batched": tp["batch"],
+                    "full_frame_raw": full_count,
+                    "tile_raw": len(tile_objs),
+                    "merged": len(objects),
+                })
+                logger.info(
+                    f"[DETECT_TILES] stream={request.get('stream_id')} tiles={len(per_tile)}/{len(tiles)} "
+                    f"full_s={full_s:.3f} tiles_s={tiles_s:.3f} full_raw={full_count} "
+                    f"tile_raw={len(tile_objs)} merged={len(objects)}"
+                )
 
         # Suppress duplicate boxes before capping, so the cap spends its budget
         # on distinct objects rather than on six views of the same desk.
-        raw_count = len(objects)
+        # (A tiled merge is already NMS-ed; running it again is a no-op.)
+        raw_count = (
+            tiling_stats["full_frame_raw"] + tiling_stats["tile_raw"]
+            if tiling_stats and "tile_raw" in tiling_stats
+            else len(objects)
+        )
         objects = nms(objects, nms_iou)
         objects = cap_by_score(objects, max_det)
         if raw_count != len(objects):
@@ -909,6 +922,7 @@ class VisionRunner:
             "frame_width": int(img.width),
             "frame_height": int(img.height),
             **({"crop_embeddings": crop_stats} if crop_stats is not None else {}),
+            **({"detect_tiles": tiling_stats} if tiling_stats is not None else {}),
         }
 
     def _attach_crop_embeddings(

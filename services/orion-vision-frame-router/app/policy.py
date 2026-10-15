@@ -31,6 +31,12 @@ _LEGACY_TIER_KEYS = frozenset(
 )
 
 
+# Task types whose host pipeline runs GroundingDINO detect (config/
+# vision_profiles.yaml task_routing); a tiles flag on anything else would
+# spend the tiled_detect clock and do nothing.
+TILED_DETECT_TASK_TYPES = frozenset({"retina_fast", "retina_dense", "detect_open_vocab"})
+
+
 class FrameDispatchDecision(BaseModel):
     should_dispatch: bool
     task_type: str | None = None
@@ -429,6 +435,45 @@ class FrameDispatchPolicy:
             request=base_request,
             meta=meta,
         )
+
+    # ------------------------------------------------------------------
+    # Tiled full-resolution detection (2026-10-15, walkway)
+    # ------------------------------------------------------------------
+    def tiled_detect_for(self, camera_id: str | None, stream_id: str | None) -> dict[str, Any]:
+        """This stream's ``tiled_detect:`` block, or {} when absent/disabled.
+        Opt-in per stream: cam0/carbon never ask for tiles."""
+        merged, _ = self.resolve_stream_policy(camera_id or "", stream_id)
+        cfg = dict(merged.get("tiled_detect") or {})
+        return cfg if cfg.get("enabled", False) else {}
+
+    def apply_tiled_detect(
+        self,
+        task: VisionTaskRequestPayload,
+        frame: VisionFramePointerPayload,
+        decision: FrameDispatchDecision,
+        state: RouterState,
+        *,
+        now: float,
+    ) -> bool:
+        """Set ``request.detect_tiles`` on this primary task when the stream
+        opted in, the tier is listed, and ``min_seconds_between`` has passed
+        since the last tiled task for this camera. A tiled detect costs
+        several GroundingDINO passes on the shared athena GPU, so it is
+        spaced out rather than run on every frame. Geometry lives in the host
+        profile (config/vision_profiles.yaml tile_* params)."""
+        cfg = self.tiled_detect_for(frame.camera_id, frame.stream_id)
+        if not cfg or task.task_type not in TILED_DETECT_TASK_TYPES:
+            return False
+        tiers = cfg.get("tiers") or ["baseline", "triggered"]
+        if decision.dispatch_tier not in tiers:
+            return False
+        cam = state.camera(frame.camera_id or "unknown")
+        gap = float(cfg.get("min_seconds_between", 15))
+        if cam.last_tiled_detect_ts is not None and now - cam.last_tiled_detect_ts < gap:
+            return False
+        task.request["detect_tiles"] = True
+        cam.last_tiled_detect_ts = now
+        return True
 
     # ------------------------------------------------------------------
     # Walkway captions from the VLM lane (2026-10-15)

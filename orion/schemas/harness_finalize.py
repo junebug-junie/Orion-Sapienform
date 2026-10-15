@@ -203,6 +203,10 @@ class HarnessRunRequestV1(BaseModel):
     # The durable run's GPU pool hold. Every LLM call of the turn (FCC via X-Orion-Gpu-Lease,
     # finalize via options.gpu_lease) attaches to it. The only run lease (stage 4.6).
     gpu_lease: GpuLeaseRefV1 | None = None
+    # The durable run's own id. When set, a retry of this turn resumes the killed
+    # `claude` session instead of starting over (orion/harness/session_resume.py).
+    # None = every other caller, unchanged.
+    resume_key: str | None = None
     inference_timeout_sec: float | None = Field(default=None, gt=0)
     # Seconds, from receipt, the caller still waits for the reply (held curiosity turns:
     # durable-runs releases the run's GPU hold at the same moment). When set, the governor

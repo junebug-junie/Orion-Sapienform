@@ -280,6 +280,7 @@ async def default_fcc_runner(
     gpu_lease: dict[str, Any] | None = None,
     pool_state: dict[str, Any] | None = None,
     chat_reply: bool = False,
+    resume_key: str | None = None,
     **_: Any,
 ) -> AsyncIterator[dict[str, Any]]:
     env_path = expand_env_path(os.environ.get("HARNESS_FCC_ENV_PATH", "~/.fcc/.env"))
@@ -289,6 +290,7 @@ async def default_fcc_runner(
         chat_reply=chat_reply,
         gpu_lease=gpu_lease,
         pool_state=pool_state,
+        resume_key=resume_key,
         reading_binding=reading_binding,
         reading_only=reading_only,
         prompt=prompt,
@@ -516,6 +518,7 @@ class HarnessRunner:
             **({"gpu_lease": request.gpu_lease.model_dump(mode="json")}
                if getattr(request, "gpu_lease", None) is not None else {}),
             **({"pool_state": turn_pool_state} if isinstance(turn_pool_state, dict) else {}),
+            **({"resume_key": request.resume_key} if getattr(request, "resume_key", None) else {}),
             **({"reading_binding": request.reading_binding} if getattr(request, "reading_binding", None) else {}),
             **({"reading_only": True} if getattr(request, "reading_only", False) else {}),
             # Only a Juniper-originated Hub chat reply. Passed only when true so

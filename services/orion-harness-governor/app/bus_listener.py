@@ -15,6 +15,7 @@ from orion.harness.cut_short import (
     FCC_CONTEXT_CEILING_ERROR_CODE,
     LEGACY_FCC_CONTEXT_CEILING_ERROR_CODE,
     ensure_cut_short_marked,
+    is_cut_short_code,
 )
 from orion.harness.finalize import (
     DEFAULT_FINALIZE_INTERLOCUTOR,
@@ -102,6 +103,24 @@ _FCC_PRESPAWN_CODES = frozenset({"fcc_bad_model_label", "fcc_lane_context_too_sm
 _FCC_SELF_KILL_CODES = frozenset(
     {"fcc_stream_line_limit", FCC_CONTEXT_CEILING_ERROR_CODE, LEGACY_FCC_CONTEXT_CEILING_ERROR_CODE}
 )
+
+
+INTERRUPTED_RESUMABLE = "interrupted_resumable"
+
+
+def interrupted_for_resume(request: HarnessRunRequestV1, motor: Any) -> bool:
+    """A durable turn the motor's process lost to an outside signal (a cancel's
+    SIGKILL, a restart, an OOM kill): negative exit code, not one of the motor's
+    own cut-short kills. Its draft stops wherever the process was, so finalizing
+    it would speak a half-finished thought as Orion's answer. The caller instead
+    gets a failure and retries under the same `resume_key`, which picks the
+    `claude` session back up (orion/harness/session_resume.py)."""
+    if not getattr(request, "resume_key", None):
+        return False
+    exit_code = getattr(motor, "exit_code", None)
+    if not isinstance(exit_code, int) or exit_code >= 0:
+        return False
+    return not is_cut_short_code(str(getattr(motor, "grounding_status", "") or ""))
 
 
 def fcc_hop_key(serving_role: str | None, fcc_route: str | None = None, fcc_backend: str | None = None) -> str:
@@ -454,6 +473,33 @@ async def handle_harness_run_request(
         recall_debug=recall_debug,
     )
     record_fcc_hop(bus, motor)
+    if interrupted_for_resume(request, motor):
+        logger.warning(
+            "harness_turn_interrupted_resumable corr=%s key=%s exit_code=%s steps=%s draft_chars=%s",
+            corr, request.resume_key, motor.exit_code, motor.step_count, len(motor.draft_text or ""),
+        )
+        run = HarnessRunV1(
+            correlation_id=corr,
+            final_text=None,
+            # No draft on the reply: Hub's urgent path salvages `partial_draft` into
+            # text, which would turn a half-finished thought into a success and
+            # suppress the retry. The work lives in the resumable session.
+            draft_text=None,
+            finalize_ran=False,
+            step_count=motor.step_count,
+            exit_code=motor.exit_code,
+            compliance_verdict="failed",
+            grounding_status=INTERRUPTED_RESUMABLE,
+            grammar_event_ids=_grammar_event_ids(motor.grammar_receipts),
+            recall_debug=recall_debug,
+            memory_digest=memory_digest,
+            fcc_served_model=motor.fcc_served_model,
+            fcc_elapsed_sec=motor.fcc_elapsed_sec,
+            reading_receipts=motor.reading_receipts,
+            source_fetches=motor.source_fetches,
+        )
+        await _reply_and_artifact(bus, run, reply_to=reply_to, corr=corr, causality=causality)
+        return run
     if not motor.draft_text or motor.draft_molecule is None:
         run = HarnessRunV1(
             correlation_id=corr,

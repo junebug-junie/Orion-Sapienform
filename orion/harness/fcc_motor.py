@@ -35,7 +35,7 @@ from orion.fcc.context_budget import (
     summarize_context_risk_suffix,
 )
 
-from orion.harness.cut_short import FCC_CONTEXT_CEILING_ERROR_CODE
+from orion.harness.cut_short import FCC_CONTEXT_CEILING_ERROR_CODE, LEGACY_FCC_CONTEXT_CEILING_ERROR_CODE
 
 logger = logging.getLogger("orion.harness.fcc_motor")
 
@@ -1069,6 +1069,7 @@ async def run_fcc_turn(
     gpu_lease: dict | None = None,
     pool_state: Mapping[str, Any] | None = None,
     chat_reply: bool = False,
+    resume_key: str | None = None,
 ) -> AsyncIterator[Dict[str, object]]:
     """Orion capability: the actual FCC-Claude process.
 
@@ -1230,6 +1231,31 @@ async def run_fcc_turn(
         yield {"type": "error", "error": str(exc), "error_code": exc.error_code}
         return
 
+    # A durable run's retry picks its killed session back up (session_resume.py).
+    # Spawn path only: chat replies are warm-pooled and have no resume key.
+    session_plan = None
+    if resume_key and not chat_reply:
+        from orion.harness import session_resume
+
+        try:
+            session_plan = session_resume.plan_attempt(
+                str(resume_key),
+                # Headroom: the resumed turn still has to do its remaining work.
+                window_chars=int(max_context_chars(lane_n_ctx) * 0.6) if lane_n_ctx else None,
+            )
+        except Exception:  # noqa: BLE001 -- fall back to a plain turn
+            logger.warning("fcc_session_resume_plan_failed corr=%s", correlation_id, exc_info=True)
+        else:
+            if session_plan.resume:
+                # The live context is the whole resumed transcript, not just the short
+                # continuation prompt, or the ceiling guard would start at ~0.
+                found = session_resume.find_transcript(session_resume.claude_home(), session_plan.session_id)
+                drive_kwargs["context_seed_chars"] = session_resume.transcript_chars_estimate(found) if found else 0
+            logger.info(
+                "fcc_session_resume_decision corr=%s key=%s resumed=%s resumes=%s reason=%s seed_chars=%s",
+                correlation_id, resume_key, session_plan.resume, session_plan.resumes, session_plan.reason,
+                drive_kwargs.get("context_seed_chars", 0),
+            )
     argv = build_claude_argv(
         claude_bin=claude_bin,
         model_id=model_id,
@@ -1237,6 +1263,7 @@ async def run_fcc_turn(
         correlation_id=correlation_id,
         reading_only=reading_only,
         mcp_config_path=mcp_config_path,
+        session_plan=session_plan,
     )
     spawn_env = _build_subprocess_env(
         chat_reply=chat_reply,
@@ -1255,7 +1282,41 @@ async def run_fcc_turn(
     async for frame in _drive_fcc_turn(
         io=io, outcome={"retry_spawn": False}, mcp_config_path=mcp_config_path, **drive_kwargs
     ):
+        if session_plan is not None and frame.get("type") in ("final", "error"):
+            frame = _record_session_end(frame, resume_key=str(resume_key), plan=session_plan)
         yield frame
+
+
+def _record_session_end(frame: Dict[str, object], *, resume_key: str, plan: Any) -> Dict[str, object]:
+    """Close the attempt's resume record and stamp the decision on the frame.
+
+    A SIGKILL cancel DOES reach here, as an `fcc_nonzero_exit` frame with a
+    negative exit code -> `interrupted`. A generator cancelled mid-stream never
+    does, which leaves the record `running` (also resumable). A context-ceiling
+    death is recorded so it is not resumed into the same full window.
+    """
+    from orion.harness import session_resume
+
+    code = str(frame.get("error_code") or "") if frame.get("type") == "error" else ""
+    exit_code = (frame.get("metadata") or {}).get("exit_code")
+    if code in (FCC_CONTEXT_CEILING_ERROR_CODE, LEGACY_FCC_CONTEXT_CEILING_ERROR_CODE):
+        state = session_resume.STATE_CEILING
+    elif code and isinstance(exit_code, int) and exit_code < 0:
+        # Killed by an outside signal (a cancel's SIGKILL, OOM, restart): the
+        # governor reports it failed and the durable run retries -- resume it.
+        state = session_resume.STATE_INTERRUPTED
+    else:
+        # Finished, or ended by the motor's own verdict (timeout, stall, line
+        # limit, a CLI that errored on its own). The governor finalizes those,
+        # so the turn is DONE: a later request under this key is a new turn.
+        state = session_resume.STATE_COMPLETED
+    try:
+        session_resume.mark_end(resume_key, state, plan=plan)
+    except Exception:  # noqa: BLE001 -- bookkeeping must not break the turn
+        logger.warning("fcc_session_resume_mark_end_failed key=%s", resume_key, exc_info=True)
+    metadata = dict(frame.get("metadata") or {})
+    metadata["session_resume"] = {**plan.metadata(), "ended": state}
+    return {**frame, "metadata": metadata}
 
 
 def build_claude_argv(
@@ -1266,6 +1327,7 @@ def build_claude_argv(
     correlation_id: str,
     reading_only: bool = False,
     mcp_config_path: Optional[Path] = None,
+    session_plan: Any = None,
 ) -> List[str]:
     """The ``claude`` argv for one FCC turn.
 
@@ -1277,6 +1339,13 @@ def build_claude_argv(
     """
     if prompt is None:
         argv = [claude_bin, "-p", "--input-format", "stream-json"]
+    elif session_plan is not None and session_plan.resume:
+        # The task is already in the resumed transcript; say only what happened.
+        from orion.harness.session_resume import continuation_prompt
+
+        argv = [claude_bin, "-p", continuation_prompt(session_plan), "--resume", session_plan.session_id]
+    elif session_plan is not None:
+        argv = [claude_bin, "-p", prompt, "--session-id", session_plan.session_id]
     else:
         argv = [claude_bin, "-p", prompt]
     argv.extend(["--output-format", "stream-json", "--verbose", "--model", model_id])
@@ -1488,6 +1557,7 @@ async def _drive_fcc_turn(
     fcc_env: Dict[str, str],
     reading_only: bool,
     workspace: str,
+    context_seed_chars: int = 0,
 ) -> AsyncIterator[Dict[str, object]]:
     """Read one turn's stream-json and yield Orion frames. Shared by spawn and warm modes."""
     steps_seen = 0
@@ -1497,7 +1567,7 @@ async def _drive_fcc_turn(
     exit_code = 1
     # Estimated chars currently in the model's context, NOT a lifetime total:
     # rebased to the post-compaction size on every CLI `compact_boundary`.
-    budget_chars = len(prompt)
+    budget_chars = len(prompt) + max(0, int(context_seed_chars))
     compactions = 0
     # The CLI's own "turn complete" event arrived. A timeout/stall AFTER it is the
     # process hanging on exit (e.g. MCP teardown), not a turn cut short: the

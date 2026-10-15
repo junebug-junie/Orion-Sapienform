@@ -86,27 +86,65 @@ HDR = "-- ORION-MIGRATION-REQUIRED-BY: orion-hub\n"
     "GRANT ALL ON t TO PUBLIC;",
     "SET search_path = evil;",
     "CREATE TEMP TABLE x (id int);",
+    # second review: calls riding after an allowed prefix run per existing row
+    "ALTER TABLE t ADD COLUMN c int DEFAULT f();",
+    "ALTER TABLE t ADD COLUMN c int GENERATED ALWAYS AS (a * 2) STORED;",
+    "ALTER TABLE t ADD CONSTRAINT k CHECK (f(a) > 0) NOT VALID;",
+    "INSERT INTO t (a) VALUES (f()) ON CONFLICT DO NOTHING;",
+    # quoted identifiers can spell an allowed prefix
+    'ALTER TABLE "t add column x" DROP COLUMN secret;',
+    'ALTER TABLE t ALTER COLUMN "c set default" TYPE text;',
+    # not additive
+    "ALTER TABLE t DROP CONSTRAINT t_pkey;",
+    "ALTER TABLE t DROP CONSTRAINT IF EXISTS t_old_chk;",
+    "ALTER TABLE t ALTER COLUMN a DROP DEFAULT;",
+    "ALTER TABLE t ALTER COLUMN a DROP NOT NULL;",
+    "ALTER TABLE t ALTER COLUMN a SET NOT NULL;",
+    # a file must not lift the wrapper's timeouts
+    "SET lock_timeout = 0;",
+    "SET LOCAL statement_timeout = 0;",
+    "BEGIN;\nCREATE TABLE x (id int);",
+    # long write locks on a table that already exists (no catalog given = every table exists)
+    "CREATE INDEX ix ON t (c);",
+    "ALTER TABLE t ADD CONSTRAINT t_c_chk CHECK (c > 0);",
+    "ALTER TABLE t ADD COLUMN c int UNIQUE;",
+    "ALTER TABLE t ADD COLUMN c int REFERENCES u (id);",
+    "CREATE INDEX CONCURRENTLY ix ON t ((f(a)));",
 ])
 def test_anything_off_the_allowlist_is_refused(sql):
     assert d.auto_apply_refusals(sql), sql
 
 
+def test_fresh_table_gets_plain_indexes_and_constraints_existing_one_does_not():
+    sql = ("CREATE TABLE IF NOT EXISTS t (id int PRIMARY KEY, n text CHECK (length(n) < 9));\n"
+           "CREATE INDEX IF NOT EXISTS ix_t ON t (lower(n));\n"
+           "ALTER TABLE t ADD COLUMN c int REFERENCES u (id);\n")
+    assert d.auto_apply_refusals(sql, existing_tables=set()) == []
+    refused = d.auto_apply_refusals(sql, existing_tables={"t"})
+    assert any("function call lower()" in r for r in refused)
+    assert any("new column with a constraint on existing table t" in r for r in refused)
+    plain = d.auto_apply_refusals("CREATE INDEX IF NOT EXISTS ix_t ON t (n);", existing_tables={"t"})
+    assert plain and "without CONCURRENTLY" in plain[0]
+
+
 @pytest.mark.parametrize("sql", [
     "CREATE TABLE IF NOT EXISTS t (id int PRIMARY KEY, note text DEFAULT 'x');",
-    "CREATE UNLOGGED TABLE t (id int);",
     "ALTER TABLE t ADD COLUMN IF NOT EXISTS c int;",
     "ALTER TABLE t ADD COLUMN a int, ADD COLUMN b text;",
     "ALTER TABLE IF EXISTS t ADD c int;",
-    "ALTER TABLE t ADD CONSTRAINT t_c_chk CHECK (c > 0);",
-    "ALTER TABLE t DROP CONSTRAINT IF EXISTS t_old_chk;",
-    "ALTER TABLE t ALTER COLUMN c SET DEFAULT 0, ALTER COLUMN d DROP NOT NULL;",
+    "ALTER TABLE t ADD CONSTRAINT t_c_chk CHECK (c > 0) NOT VALID;",
+    "ALTER TABLE t ADD CONSTRAINT t_u_fk FOREIGN KEY (u) REFERENCES u (id) NOT VALID;",
+    "ALTER TABLE t ALTER COLUMN c SET DEFAULT 0, ALTER COLUMN d SET DEFAULT now();",
+    "ALTER TABLE t ADD COLUMN c varchar(20) DEFAULT 'x', ADD COLUMN e numeric(10, 2), ADD COLUMN v vector(768);",
+    "ALTER TABLE t ADD COLUMN at timestamptz NOT NULL DEFAULT now();",
     "CREATE INDEX CONCURRENTLY IF NOT EXISTS ix ON t (c);",
-    "CREATE UNIQUE INDEX IF NOT EXISTS ux ON t (c) WHERE c IS NOT NULL;",
+    "CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS ux ON t USING btree (c) WHERE c IS NOT NULL;",
+    "CREATE TABLE IF NOT EXISTS t (id uuid DEFAULT gen_random_uuid(), n text CHECK (length(n) < 9));",
     "CREATE SEQUENCE IF NOT EXISTS s;",
     "COMMENT ON TABLE t IS 'we never DELETE FROM t';",
     "COMMENT ON COLUMN t.c IS 'x';",
     "INSERT INTO cur (name, at) VALUES ('r', null) ON CONFLICT (name) DO NOTHING;",
-    "BEGIN;\nSET LOCAL lock_timeout = '5s';\nCREATE TABLE t (id int);\nCOMMIT;",
+    "BEGIN;\nCREATE TABLE t (id int);\nCOMMIT;",
     "\\set ON_ERROR_STOP on\nCREATE TABLE t (id int);",
     # prose never counts
     "-- this used to DROP TABLE foo and TRUNCATE bar\n/* EXECUTE 'x' */\nCREATE TABLE t (id int);",
@@ -124,9 +162,11 @@ def test_corpus_calibration():
     assert refused("manual_migration_gpu_pool_stage5_drop_legacy_tables.sql")
     assert refused("manual_migration_retire_streak_tick_v1.sql")
     assert refused("manual_migration_vision_ask_names_v1.sql")  # DO block with a backfill UPDATE
-    for ok in ("manual_migration_vision_confirm_asks_v1.sql", "manual_migration_walkway_privacy_v2.sql",
+    assert refused("manual_migration_walkway_privacy_v2.sql")  # DROP CONSTRAINT
+    # as new migrations against a database that does not have their tables yet
+    for ok in ("manual_migration_vision_confirm_asks_v1.sql", "manual_migration_curiosity_compaction.sql",
                "manual_migration_storage_write_substrate_loop.sql", "manual_migration_temporal_self_v1.sql"):
-        assert refused(ok) == [], ok
+        assert d.auto_apply_refusals((REPO_ROOT / d.MIGRATION_SUBDIR / ok).read_text(), set()) == [], ok
 
 
 @pytest.mark.parametrize("sql, expect", [
@@ -470,3 +510,14 @@ def test_default_prefix_passes_lock_timeout_and_writes_the_database_it_reads():
     assert cmd[-4:] == ["-U", "u", "-d", "otherdb"]
     assert ap.default_psql({})[-4:] == ["-U", "postgres", "-d", "conjourney"]
     assert "lock_timeout=10s" in ap.PGOPTIONS
+
+
+def test_default_command_refuses_when_the_checker_reads_another_host(world):
+    """The default command writes the local container; verification reads ORION_PG_HOST. If those
+    differ, "verified" would describe a different database -- refuse instead."""
+    a = world.add("manual_migration_a.sql", HDR + "CREATE TABLE ta (id int);")
+    world.env.pop("ORION_MIGRATION_APPLY_PSQL")
+    world.env["ORION_PG_HOST"] = "10.9.8.7"
+    assert world.run([a]) == 2
+    assert world.called() == []
+    assert any("refusing to write one database and verify another" in x for x in world.lines)

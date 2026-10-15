@@ -24,9 +24,11 @@ the deploy gate runs) reads as NOT APPLIED (MISSING), and only when ALL of these
   * not a ``*_rollback.sql`` file, no ``-- DESTRUCTIVE`` header line, no NOT-A-MIGRATION marker;
   * a valid ``-- ORION-MIGRATION-REQUIRED-BY:`` header (services or ``none <reason>``);
   * ``drift.auto_apply_refusals`` is empty: every statement is on the additive-DDL allowlist
-    (CREATE TABLE/INDEX/SEQUENCE, ALTER TABLE ADD COLUMN/ADD CONSTRAINT/SET|DROP DEFAULT|NOT NULL/
-    DROP CONSTRAINT, COMMENT ON, INSERT ... VALUES ... ON CONFLICT DO NOTHING, own BEGIN/COMMIT,
-    SET of a timeout) -- no DO/function bodies, CASCADE, EXECUTE, SELECT, psql meta-commands;
+    (CREATE TABLE/INDEX/SEQUENCE, ALTER TABLE ADD COLUMN/ADD CONSTRAINT/SET DEFAULT, COMMENT ON,
+    INSERT ... VALUES ... ON CONFLICT DO NOTHING, own balanced BEGIN/COMMIT) and the rest of it is
+    inert: no function call that could run per existing row, no GENERATED, CASCADE, EXECUTE,
+    SELECT, SET, quoted identifier, DO/function body or psql meta-command; and on a table that
+    already exists live, indexes are CONCURRENTLY and constraints NOT VALID (no long write lock);
   * its header does not name a script to apply it through, and no marker error.
 Every other file is left alone with the reason. APPLIED files are skipped. DATA/CONDITIONAL files
 (the schema cannot show whether they ran) are never auto-applied.
@@ -117,7 +119,8 @@ def psql_prefix(env=os.environ) -> list[str]:
     return shlex.split(raw) if raw else default_psql(env)
 
 
-def classify(rel: str, text: str, result: drift.FileResult | None) -> Item:
+def classify(rel: str, text: str, result: drift.FileResult | None,
+             live_tables: set[str] | None = None) -> Item:
     """Decide what to do with one changed file. Pure; see the module docstring for the rules."""
     name = Path(rel).name
     it = Item(rel=rel, name=name, text=text)
@@ -161,7 +164,7 @@ def classify(rel: str, text: str, result: drift.FileResult | None) -> Item:
     if rb.errors:
         it.action, it.reason = "refuse", "invalid REQUIRED-BY header: " + "; ".join(rb.errors)
         return it
-    refusals = drift.auto_apply_refusals(text)
+    refusals = drift.auto_apply_refusals(text, live_tables)
     if refusals:
         it.action, it.reason = "refuse", "not safe to auto-apply: " + "; ".join(refusals)
         return it
@@ -173,9 +176,10 @@ def classify(rel: str, text: str, result: drift.FileResult | None) -> Item:
     return it
 
 
-def _git(repo: Path, *args: str) -> str:
+def _git(repo: Path, *args: str) -> str | None:
+    """stdout, or None when git failed (a failure must never read as "clean")."""
     r = subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True)
-    return r.stdout.strip() if r.returncode == 0 else ""
+    return r.stdout.strip() if r.returncode == 0 else None
 
 
 def checkout_problem(repo: Path) -> str:
@@ -184,14 +188,17 @@ def checkout_problem(repo: Path) -> str:
     (as of the fetch the pull just did)."""
     git_dir = _git(repo, "rev-parse", "--absolute-git-dir")
     common = _git(repo, "rev-parse", "--git-common-dir")
-    if common and not os.path.isabs(common):
+    if common and not os.path.isabs(common):  # relative to the -C directory
         common = str((repo / common).resolve())
     if not git_dir or not common or Path(git_dir).resolve() != Path(common).resolve():
         return "this is a linked worktree, not the primary checkout"
     branch = _git(repo, "branch", "--show-current")
     if branch != "main":
         return f"branch is {branch or '(detached)'!r}, not main"
-    if _git(repo, "status", "--porcelain"):
+    status = _git(repo, "status", "--porcelain")
+    if status is None:
+        return "git status failed"
+    if status:
         return "the checkout has uncommitted changes"
     head, origin = _git(repo, "rev-parse", "HEAD"), _git(repo, "rev-parse", "--verify", "origin/main")
     if not origin:
@@ -231,9 +238,15 @@ def write_log(path: Path, line: str) -> None:
 
 
 def container_running(env=os.environ) -> tuple[bool, str]:
-    """Default prefix only: is the database container up on THIS host?"""
+    """Default prefix only: is the database container up on THIS host, and is it the database the
+    checker reads (ORION_PG_HOST local)? Otherwise the write and the verification could be two
+    different databases."""
     if env.get("ORION_MIGRATION_APPLY_PSQL", "").strip():
         return True, ""
+    read_host = env.get("ORION_PG_HOST", "localhost").strip()
+    if read_host not in ("", "localhost", "127.0.0.1", "::1"):
+        return False, (f"ORION_PG_HOST={read_host} is not this host, but the apply command writes the "
+                       f"local {drift.SQL_DB_CONTAINER}; refusing to write one database and verify another")
     try:
         r = subprocess.run(["docker", "inspect", "-f", "{{.State.Running}}", drift.SQL_DB_CONTAINER],
                            capture_output=True, text=True, timeout=20, env=dict(env))
@@ -252,7 +265,7 @@ def read_report(repo: Path, ref: str, connect_fn):
         live = drift.load_live_state(conn)
     finally:
         conn.close()
-    return files, drift.evaluate(files, live, window_days=None)
+    return files, drift.evaluate(files, live, window_days=None), live
 
 
 def run(paths: list[str], *, repo: Path = REPO_ROOT, ref: str = "HEAD", dry_run: bool = False,
@@ -271,7 +284,7 @@ def run(paths: list[str], *, repo: Path = REPO_ROOT, ref: str = "HEAD", dry_run:
                 "synchronized with origin/main, writes to the live database (the deploy rule).")
             return 2
     try:
-        files, report = read_report(repo, ref, connect_fn)
+        files, report, live = read_report(repo, ref, connect_fn)
     except Exception as exc:  # noqa: BLE001 -- any failure is UNKNOWN, never a verdict
         out(f"{TAG}: live state UNKNOWN ({' '.join(str(exc).split()) or type(exc).__name__}); "
             "applying nothing -- no answer is not 'applied'")
@@ -279,7 +292,7 @@ def run(paths: list[str], *, repo: Path = REPO_ROOT, ref: str = "HEAD", dry_run:
     by_name = {f.name: f for f in report.files}
     texts = {f.name: f.text for f in files}
     items = [classify(rel, texts.get(Path(rel).name) or (repo / rel).read_text(errors="replace"),
-                      by_name.get(Path(rel).name)) for rel in rels]
+                      by_name.get(Path(rel).name), live.tables) for rel in rels]
 
     todo = [it for it in items if it.action == "apply"]
     if todo and not dry_run:
@@ -355,7 +368,7 @@ def run(paths: list[str], *, repo: Path = REPO_ROOT, ref: str = "HEAD", dry_run:
 
     if applied:
         try:
-            _files, after = read_report(repo, ref, connect_fn)
+            _files, after, _live = read_report(repo, ref, connect_fn)
         except Exception as exc:  # noqa: BLE001
             out(f"{TAG}: could not re-read the live state after applying ({exc}); UNVERIFIED")
             return 2

@@ -431,13 +431,23 @@ def percept_age_seconds(observed_at: datetime | None, now: datetime | None = Non
 # failure: the walkway tables ship as a manual migration and may not exist
 # yet, and a missing table must cost that one line, never the rest.
 #
-# PRIVACY. Names appear only when Juniper gave them (`vision_individual.label`,
-# set through the ask flow). A no-embed zone (the patio; config/vision_zones.yaml
-# `embed: false`) is family space: it is read ONLY from
-# `substrate_embodied_presence` rows flagged `no_embed_zone` and yields a
-# count, never a name, and sightings flagged `zone_no_embed` are excluded from
-# the "who is around" line even if a reducer ever wrote one. Both are found
-# by the flag the writer sets from the zones config, never by a zone's name.
+# NAMES. Names appear only when Juniper gave them (`vision_individual.label`,
+# set through the ask flow); everyone else is "an unfamiliar person". Since
+# 2026-10-15 (manual_migration_walkway_privacy_v2.sql, Juniper lifted the
+# walkway limits) the patio is fingerprinted like the rest of the walkway, so a
+# person on the patio can be an individual and appear in the "who is around"
+# line like anyone else. Zones are still found by the flags the writer sets
+# from config/vision_zones.yaml, never by a zone's name:
+#   * a head-count zone (`presence: true`, today the patio) keeps one
+#     `substrate_embodied_presence` row flagged `head_count_zone` (older
+#     writers: `no_embed_zone`) and yields a count line ("Someone is on the
+#     patio"); identity fields on that row are dropped -- it is a count;
+#   * a no-embed zone (`embed: false`, none configured today) never becomes an
+#     individual: sightings flagged `zone_no_embed` are excluded here too.
+# STATIONARY FIXTURES. A box that has not moved for VISION_STATIONARY_MIN_SEC
+# (the patio skeleton) is a prop, not a visitor: sightings flagged
+# `stationary` are left out of "who is around". The column ships in the same
+# migration; until it is applied the read falls back to the pre-flag statement.
 # ---------------------------------------------------------------------------
 
 STREET_RECENT_MINUTES = 15
@@ -446,7 +456,7 @@ STREET_OUTCOME_LOOKBACK_MINUTES = 60
 PATIO_MAX_AGE_SECONDS = 900
 _MAX_WHO_PHRASES = 4
 
-_STREET_SIGHTINGS_SQL = text(
+_STREET_SIGHTINGS_SELECT = (
     "SELECT s.individual_id, i.kind, i.label, i.distinct_days, "
     "       min(s.started_at) AS first_at, max(s.ended_at) AS last_at "
     "FROM vision_individual_sighting s "
@@ -454,9 +464,14 @@ _STREET_SIGHTINGS_SQL = text(
     "WHERE s.stream_id = :stream_id "
     "  AND s.ended_at > now() - make_interval(mins => :lookback) "
     "  AND NOT s.zone_no_embed "
+    "{stationary}"
     "GROUP BY s.individual_id, i.kind, i.label, i.distinct_days "
     "ORDER BY max(s.ended_at) DESC LIMIT 50"
 )
+# Stationary fixtures excluded (manual_migration_walkway_privacy_v2.sql).
+_STREET_SIGHTINGS_SQL = text(_STREET_SIGHTINGS_SELECT.format(stationary="  AND NOT s.stationary "))
+# Fallback while that migration is unapplied (no `stationary` column yet).
+_STREET_SIGHTINGS_PRE_STATIONARY_SQL = text(_STREET_SIGHTINGS_SELECT.format(stationary=""))
 
 _STREET_EXPECTATIONS_SQL = text(
     "SELECT subject_key, subject_label, status, peak_minute, window_start, "
@@ -495,15 +510,24 @@ STREET_CAPTION_MAX = 2
 # chat stance's 420-char street clip, leaving room for the rhythm line.
 STREET_BRIEF_CAPTION_CHARS = 100
 
-# One row per no-embed zone, `<stream>:<zone>` (orion-sql-writer's
-# vision_individuals.no_embed_presence_id), recognised by the flag in the
-# snapshot rather than by a hardcoded zone name.
+# One head-count row per counted zone, `<stream>:<zone>` (orion-sql-writer's
+# vision_individuals.no_embed_presence_id), recognised by a flag in the
+# snapshot rather than by a hardcoded zone name: `head_count_zone` (writers
+# from 2026-10-15), else the older `no_embed_zone` (still written on every
+# head-count row for compatibility).
 _PATIO_PRESENCE_SQL = text(
     "SELECT presence_id, presence_json, updated_at FROM substrate_embodied_presence "
     "WHERE presence_id LIKE :prefix ESCAPE '\\' "
-    "  AND presence_json->>'no_embed_zone' = 'true' "
+    "  AND (presence_json->>'head_count_zone' = 'true' "
+    "       OR presence_json->>'no_embed_zone' = 'true') "
     "ORDER BY presence_id"
 )
+
+
+def _is_head_count_row(snapshot: Any) -> bool:
+    return isinstance(snapshot, dict) and (
+        snapshot.get("head_count_zone") is True or snapshot.get("no_embed_zone") is True
+    )
 
 
 def _like_prefix(stream_id: str) -> str:
@@ -688,7 +712,8 @@ def summarize_street(
                 f"the latest{when}: {desc}."
             )
 
-    # 4. No-embed zones (the patio): counts only, never names, only when fresh.
+    # 4. Head-count zones (the patio): a count line, only when fresh. People
+    # on the patio may also appear by name/kind in line 1 via their sightings.
     zones = [patio] if isinstance(patio, dict) else list(patio or [])
     for snap in zones:
         if not isinstance(snap, dict):
@@ -756,13 +781,16 @@ def fetch_street_summary(
     now = now or datetime.now(timezone.utc)
     try:
         with engine.connect() as conn:
-            sightings = _street_rows(
-                conn, _STREET_SIGHTINGS_SQL,
-                # Wide enough to see an individual who arrived at the start of
-                # an expectation window, not only the last 15 minutes.
-                {"stream_id": stream_id, "lookback": STREET_OUTCOME_LOOKBACK_MINUTES},
-                "sightings",
-            )
+            # Wide enough to see an individual who arrived at the start of
+            # an expectation window, not only the last 15 minutes.
+            sightings_params = {"stream_id": stream_id, "lookback": STREET_OUTCOME_LOOKBACK_MINUTES}
+            sightings = _street_rows(conn, _STREET_SIGHTINGS_SQL, sightings_params, "sightings")
+            if sightings is None:
+                # Most likely the `stationary` column is not there yet (the
+                # walkway privacy v2 migration is unapplied): read as before.
+                sightings = _street_rows(
+                    conn, _STREET_SIGHTINGS_PRE_STATIONARY_SQL, sightings_params, "sightings_pre_stationary"
+                )
             expectations = _street_rows(
                 conn, _STREET_EXPECTATIONS_SQL,
                 {"stream_id": stream_id, "lookback": STREET_OUTCOME_LOOKBACK_MINUTES},
@@ -796,7 +824,7 @@ def fetch_street_summary(
             raw = prow.get("presence_json")
             if isinstance(raw, str):
                 raw = json.loads(raw)
-            if not isinstance(raw, dict) or raw.get("no_embed_zone") is not True:
+            if not _is_head_count_row(raw):
                 continue
             snap = _presence_row_to_dict(raw, prow.get("updated_at"))
             # The zone's own name from the snapshot, else from the row id.
@@ -808,8 +836,8 @@ def fetch_street_summary(
             subj = snap.get("subject")
             if snap.get("count") is None and isinstance(subj, dict):
                 snap["count"] = subj.get("count")
-            # Belt and braces for the privacy rule: nothing identity-shaped
-            # from a no-embed zone row survives past this point.
+            # A head-count row is a count: nothing identity-shaped from it
+            # survives past this point (names come from sightings, above).
             for key in ("subject", "identity_confirmed", "identity_uncertain", "identity_confidence"):
                 snap.pop(key, None)
             patio.append(snap)

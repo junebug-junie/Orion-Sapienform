@@ -5,6 +5,7 @@
 - Endogenous curiosity now reads the walkway camera's own surprise node (`node:substrate.perception_walkway`). Attention still does not: the one shared fence became two per-consumer fences.
 - The room readers are unchanged and still room-only; nothing street-side is merged into the room percept or seen by the room-only reverie expectation judge.
 - Glossary entry for the walkway node (it now has a consumer), metric-definition lock re-locked for that one addition.
+- Follow-up for sibling PR #2683 (patio fingerprinting on, stationary fixtures): the street summary leaves stationary sightings (the patio skeleton) out of "who is around", finds the patio head-count row by `head_count_zone` (falling back to `no_embed_zone`), and its privacy comments now say patio people can be individuals.
 
 ## Outcome moved
 
@@ -39,10 +40,21 @@ Graded predictions will stay empty for about a week. The rhythm reducer only emi
 - orion-hub curiosity: `_read_street_captions` (own read, own failure), `StudyMaterial.street_captions`, kickoff prompt section.
 - Fence: `NO_COGNITION_CONSUMER_NODE_IDS` split into `NO_ATTENTION_CONSUMER_NODE_IDS` (walkway node; used by `attention_broadcast.py` x2 and attention-runtime `worker.py`) and `NO_CURIOSITY_CONSUMER_NODE_IDS` (empty; used by `endogenous_curiosity.py`).
 
+## Sibling PR #2683 follow-up (patio fingerprinting, stationary fixtures)
+
+PR #2683 (not merged yet) turns patio fingerprinting on, adds `vision_individual_sighting.stationary` / `vision_individual.stationary`, and adds a `head_count_zone` flag on the patio presence row (still writing `no_embed_zone` too). In this branch:
+
+- `fetch_street_summary` sightings read adds `AND NOT s.stationary`. If that statement fails (column not there until `manual_migration_walkway_privacy_v2.sql` is applied), it falls back to the old statement, so the "who is around" line keeps working either way. Live today: column absent, fallback path ran, summary returned normally.
+- The patio presence read matches `head_count_zone = true OR no_embed_zone = true` (SQL and Python check). Identity fields on that row are still dropped: it is a count row; people on the patio can now appear by name/kind through their own sightings.
+- Stale comments fixed in `perception_reader.py` (the "patio is never named / counts only" block) and `PerceptionContextV1.street_summary`.
+- Other readers this branch adds: captions (`vision_events` narratives) carry no stationary flag, so a caption can still mention the skeleton; graded predictions come from `vision_percept_expectation`, which #2683's rhythm reducer already builds from non-stationary individuals and sightings only. No other stationary filter applies.
+- Tests: `test_stationary_sightings_are_excluded_with_fallback_before_the_migration`, `test_head_count_row_found_by_head_count_zone_flag_and_kept_a_count`; the missing-tables test now expects 3 rollbacks (stationary read + fallback + expectations).
+
 ## Files changed
 
 - `orion/situational/street_material.py`: new shared rules/wording/SQL.
-- `orion/situational/perception_reader.py`: caption read + first line in the street summary.
+- `orion/situational/perception_reader.py`: caption read + first line in the street summary; stationary exclusion with pre-migration fallback; `head_count_zone` patio row; privacy comments updated for #2683.
+- `orion/schemas/situation.py`: `street_summary` field comment only.
 - `orion/situational/tests/test_street_material.py`, `test_street_summary.py`: new tests; the all-reads-failed test now also fails the caption read.
 - `services/orion-hub/README.md`: one paragraph on the street in study material.
 - `services/orion-cortex-exec/app/chat_stance.py`: street clip 240 -> 420.
@@ -97,7 +109,7 @@ Static gates (.github/workflows/orion-static-gates.yml, every python step): 32/3
   check_definition_drift.py --gate PASS (after --update for the one added walkway metric),
   tests/test_metric_rest_range.py + test_metric_prompt_semantics.py 67 passed
 New/updated focused tests:
-  orion/situational/tests                         175 passed  (baseline 166)
+  orion/situational/tests                         179 passed  (baseline 166)
   services/orion-thought tests/test_reverie_street_context.py   9 passed
   services/orion-dream tests                     270 passed, 7 skipped (baseline 261 passed)
   services/orion-hub tests/test_curiosity_street_captions_read.py + unresolved  6 passed
@@ -173,7 +185,8 @@ scripts/safe_docker_build.sh orion-attention-runtime up -d --build
 
 - Severity: medium. Concern: daytime walkway crossing rate for curiosity is unmeasured (night sample only). Mitigation: re-check query above after one day; one-line revert.
 - Severity: low. Concern: dedupe is textual, so near-synonyms survive ("A person is present in the frame" / "A person is visible in the frame", seen live). Mitigation: capped at 2-3 captions per consumer; not patched with word lists.
-- Severity: low. Concern: the walkway frame includes the patio (family space). Captions are narrative-only and nameless, but a caption can describe a person on the patio. Mitigation: no names/entities are read; face/identity privacy lives in the vision-council work (sibling lane).
+- Severity: low. Concern: captions are the council's free text and can describe a person on the patio or a stationary prop (the skeleton); no stationary flag exists on `vision_events`. Mitigation: narrative-only (no entities, no names); Juniper lifted the patio limits in #2683; capped at 2-3 captions.
+- Severity: low. Concern: merge order with #2683. This branch works before and after its migration (fallback read), and reads both patio flags. If #2683 later stops writing `no_embed_zone`, this reader already uses `head_count_zone`.
 - Severity: low. Concern: graded predictions are fixture-tested only. Mitigation: fail-open, empty renders nothing; verify after ~2026-10-20.
 
 ## PR link

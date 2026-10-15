@@ -200,3 +200,49 @@ def test_brief_captions_are_clipped_so_the_rhythm_line_survives_the_stance_clip(
     )
     assert len(" ".join(lines)) <= 420
     assert "did not come" in " ".join(lines)
+
+
+# --- sibling PR #2683: patio fingerprinting, stationary fixtures, head_count_zone ---
+
+
+def test_stationary_sightings_are_excluded_with_fallback_before_the_migration() -> None:
+    now = datetime.now(timezone.utc)
+    sighting = {"individual_id": "i1", "kind": "person", "label": None, "distinct_days": 1,
+                "first_at": now - timedelta(minutes=3), "last_at": now - timedelta(minutes=1)}
+
+    class _NoColumnYet(_Conn):
+        def execute(self, stmt, params):
+            if "s.stationary" in str(stmt):
+                raise RuntimeError('column s.stationary does not exist')
+            return super().execute(stmt, params)
+
+    conn = _NoColumnYet({"vision_individual_sighting": [sighting]})
+    got = fetch_street_summary("walkway", engine=_Engine(conn), now=now)
+    assert got.lines == ["On the walkway in the last 15 minutes: an unfamiliar person."]
+
+    seen = []
+
+    class _Migrated(_Conn):
+        def execute(self, stmt, params):
+            if "vision_individual_sighting" in str(stmt):
+                seen.append(str(stmt))
+            return super().execute(stmt, params)
+
+    fetch_street_summary("walkway", engine=_Engine(_Migrated({"vision_individual_sighting": []})), now=now)
+    assert len(seen) == 1 and "AND NOT s.stationary" in seen[0]
+
+
+def test_head_count_row_found_by_head_count_zone_flag_and_kept_a_count() -> None:
+    now = datetime.now(timezone.utc)
+    conn = _Conn({"substrate_embodied_presence": [
+        {"presence_id": "walkway:patio",
+         "presence_json": '{"state": "present", "zone": "patio", "subject": {"count": 2}, '
+                          '"identity_confirmed": true, "head_count_zone": true}',
+         "updated_at": now},
+    ]})
+    got = fetch_street_summary("walkway", engine=_Engine(conn), now=now)
+    assert got.lines == ["2 people are on the patio."]
+    from orion.situational.perception_reader import _PATIO_PRESENCE_SQL
+
+    sql = str(_PATIO_PRESENCE_SQL)
+    assert "head_count_zone" in sql and "no_embed_zone" in sql

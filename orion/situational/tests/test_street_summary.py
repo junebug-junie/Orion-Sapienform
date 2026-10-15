@@ -171,7 +171,8 @@ def test_missing_tables_cost_only_their_own_line() -> None:
     got = fetch_street_summary("walkway", engine=_Engine(conn), now=NOW)
     assert got.read_ok is True
     assert got.lines == ["In the last hour I saw one thing on the walkway I could not name at 07:47: a shape."]
-    assert conn.rollbacks == 2
+    # sightings (stationary read + pre-stationary fallback) and expectations.
+    assert conn.rollbacks == 3
 
 
 def test_patio_row_is_read_by_stream_and_stripped_of_identity() -> None:

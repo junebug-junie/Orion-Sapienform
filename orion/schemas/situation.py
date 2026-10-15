@@ -500,9 +500,11 @@ class PerceptionContextV1(BaseModel):
     # The street outside the walkway camera (walkway spec ideas 5 and 9,
     # docs/superpowers/specs/2026-09-22-walkway-camera-busy-world-design.md),
     # from `orion.situational.perception_reader.fetch_street_summary`. Plain
-    # sentences only: who is around (Juniper-given names, otherwise "an
-    # unfamiliar dog"), expectation outcomes, things Orion could not name,
-    # and the patio as a COUNT, never a name. None when nothing was read or
+    # sentences only: what the street camera's captions said just now, who is
+    # around (Juniper-given names, otherwise "an unfamiliar dog"; patio people
+    # included since 2026-10-15, stationary fixtures excluded), expectation
+    # outcomes, things Orion could not name, and a head count for counted
+    # zones (the patio). None when nothing was read or
     # nothing is worth saying -- never an empty sentence. Independent of
     # `available` above: that is the room camera; this is a different one.
     # Additive, 2026-09-24. The brief crosses services as a dict and is not

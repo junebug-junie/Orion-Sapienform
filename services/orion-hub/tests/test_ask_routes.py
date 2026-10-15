@@ -81,10 +81,15 @@ class _FakeConn:
     async def fetchrow(self, sql: str, *args):
         self.sql.append(sql)
         if sql.lstrip().startswith("UPDATE"):
-            ask_id, new_status, answer, kinds = args
+            ask_id, new_status, answer, kinds, *same_rule = args
             r = self.rows.get(ask_id)
             if r is None or not self._answerable(r):
                 return None
+            if same_rule:
+                # The real SQL: a "same person?" card only takes yes / no (or a dismissal).
+                same_kind, yes_no = same_rule
+                if r["source_kind"] == same_kind and answer is not None and answer not in yes_no:
+                    return None
             # The real SQL: /answer|/dismiss exclude RESOLVABLE_KINDS, /resolve requires them.
             wants_resolvable = "= ANY($4" in sql
             if (r["source_kind"] in kinds) != wants_resolvable:
@@ -532,3 +537,52 @@ def test_outcome_envelope_is_the_catalog_kind():
     o = AttentionLoopOutcomeV1(outcome_id="o", loop_id=loop_id_for(MEM_ID), theme_key="t", verdict="resolved")
     assert build_loop_outcome_envelope(o).kind == "attention.loop.outcome.v1"
     assert ask_routes.CHANNEL_LOOP_OUTCOME == "orion:attention:loop_outcome"
+
+
+# --- visual confirmation asks (2026-10-15) ------------------------------------
+
+
+def _pair_row(ask_id: str) -> dict[str, Any]:
+    r = _row(ask_id)
+    r.update(source_kind="vision_same_individual", source_ref="aaa|bbb", image_ref="thumb:" + "a" * 64,
+             image_refs='["thumb:' + "a" * 64 + '", "thumb:' + "b" * 64 + '"]',
+             question="Are these the same person?")
+    return r
+
+
+def test_list_returns_image_refs_and_backfills_old_rows(env):
+    client, rows, _pub = env
+    rows["p1"] = _pair_row("p1")
+    asks = {a["ask_id"]: a for a in client.get("/api/asks?status=open").json()["asks"]}
+    assert asks["p1"]["image_refs"] == ["thumb:" + "a" * 64, "thumb:" + "b" * 64]
+    # A row from before image_refs: the single image_ref becomes the list.
+    assert asks["a1"]["image_refs"] == ["/mnt/telemetry/vision/crops/x.jpg"]
+    assert "image_refs" in ask_routes._SELECT_COLUMNS
+
+
+def test_same_person_card_takes_yes_or_no_only(env):
+    client, rows, published = env
+    rows["p1"] = _pair_row("p1")
+    r = client.post("/api/asks/p1/answer", json={"answer": "maybe Bob"})
+    assert r.status_code == 422 and r.json()["detail"] == "answer_must_be_yes_or_no"
+    assert rows["p1"]["status"] == "open" and published == []
+    r = client.post("/api/asks/p1/answer", json={"answer": " Yes "})
+    assert r.status_code == 200, r.text
+    assert rows["p1"]["answer"] == "yes"
+    assert (published[0].source_kind, published[0].source_ref, published[0].answer) == (
+        "vision_same_individual", "aaa|bbb", "yes")
+
+
+def test_same_person_card_can_be_dismissed_as_not_sure(env):
+    client, rows, _pub = env
+    rows["p2"] = _pair_row("p2")
+    assert client.post("/api/asks/p2/dismiss").status_code == 200
+    assert rows["p2"]["status"] == "dismissed"
+
+
+def test_answer_sql_enforces_yes_no_for_same_person_cards(env):
+    client, rows, _pub = env
+    client.post("/api/asks/a1/answer", json={"answer": "Bob"})
+    pool = client.app.state.memory_pg_pool
+    upd = next(q for q in pool.conn.sql if q.lstrip().startswith("UPDATE"))
+    assert "source_kind <> $5 OR $3 IS NULL OR $3 = ANY($6::text[])" in upd

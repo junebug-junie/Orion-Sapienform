@@ -670,6 +670,49 @@ def ask_question(*, kind: str, sighting_count: int, distinct_days: int, mean_min
     return f"I have seen {who} {sighting_count} times over {distinct_days} days, {when}. {tail}"
 
 
+def ask_image_refs(
+    sightings: Sequence[Tuple],
+    *,
+    now: datetime,
+    thumb_retention_days: float,
+    ask_expiry_days: float,
+    limit: int = 3,
+    faces_only: bool = False,
+) -> List[str]:
+    """The pictures for an ask, best first: FACE thumbnails newest first, then
+    crop thumbnails newest first, no repeats, at most ``limit``.
+
+    ``sightings`` are ``(thumb_ref, ended_at, zone_no_embed[, face_thumb_ref])``,
+    any order. A thumbnail is a crop of ONE embedded box (or the face inside
+    it), never the whole frame. It must also outlive the ask: the host prunes
+    thumbnails ``thumb_retention_days`` after they were last written, and the
+    ask stays open ``ask_expiry_days``, so only a thumb from a sighting that
+    ended within the difference is offered. Empty -> the card shows no picture.
+    """
+    if thumb_retention_days <= ask_expiry_days:
+        # Any thumbnail could be pruned while the ask is still open.
+        logger.warning("ask_image_ref_disabled thumb_retention_days=%s <= ask_expiry_days=%s",
+                       thumb_retention_days, ask_expiry_days)
+        return []
+    horizon = now - timedelta(days=thumb_retention_days - ask_expiry_days)
+    faces: List[Tuple[datetime, str]] = []
+    crops: List[Tuple[datetime, str]] = []
+    for row in sightings:
+        thumb_ref, ended_at, no_embed = row[0], row[1], row[2]
+        face_ref = row[3] if len(row) > 3 else None
+        if no_embed or ended_at is None or ended_at < horizon:
+            continue
+        for bucket, ref in ((faces, face_ref), (crops, None if faces_only else thumb_ref)):
+            if ref and str(ref).startswith(THUMB_REF_PREFIX):
+                bucket.append((ended_at, str(ref)))
+    out: List[str] = []
+    for bucket in (faces, crops):
+        for _, ref in sorted(bucket, key=lambda tr: tr[0], reverse=True):
+            if ref not in out:
+                out.append(ref)
+    return out[:max(0, int(limit))]
+
+
 def ask_image_ref(
     sightings: Sequence[Tuple],
     *,
@@ -677,35 +720,151 @@ def ask_image_ref(
     thumb_retention_days: float,
     ask_expiry_days: float,
 ) -> Optional[str]:
-    """The thumbnail for an ask: the individual's most recent FACE thumbnail
-    if any is young enough, else its most recent crop thumbnail.
+    """The single best picture (``ask_image_refs``' first), for ``image_ref``."""
+    refs = ask_image_refs(sightings, now=now, thumb_retention_days=thumb_retention_days,
+                          ask_expiry_days=ask_expiry_days, limit=1)
+    return refs[0] if refs else None
 
-    ``sightings`` are ``(thumb_ref, ended_at, zone_no_embed[, face_thumb_ref])``,
-    any order. A thumbnail is a crop of ONE embedded box (or the face inside
-    it), never the whole frame. It must also outlive the ask: the host prunes
-    thumbnails ``thumb_retention_days`` after they were last written, and the
-    ask stays open ``ask_expiry_days``, so only a thumb from a sighting that
-    ended within the difference is offered. None -> the card shows no picture.
-    """
-    if thumb_retention_days <= ask_expiry_days:
-        # Any thumbnail could be pruned while the ask is still open.
-        logger.warning("ask_image_ref_disabled thumb_retention_days=%s <= ask_expiry_days=%s",
-                       thumb_retention_days, ask_expiry_days)
+
+# ---------------------------------------------------------------------------
+# Visual confirmation asks (2026-10-15): "who is this?" from faces, and
+# "are these the same person?". Juniper asked for Orion to confirm what it
+# sees so it can learn; every answer to a pair ask is a labeled calibration
+# point for the face match threshold (vision_individual_pair_verdict).
+# ---------------------------------------------------------------------------
+
+SOURCE_KIND_INDIVIDUAL = "vision_individual"
+SOURCE_KIND_SAME = "vision_same_individual"
+# evidence_refs marker on a "who is this?" ask opened by the face rule, so the
+# daily caps can tell the two openers apart without another column.
+FACE_RULE_REF = "rule:face"
+PAIR_SEP = "|"
+
+
+def should_ask_by_face(*, label: Optional[str], kind: str, face_n: int, stationary: bool, min_faces: int) -> bool:
+    """A person whose face Orion has seen clearly ``min_faces`` times is worth
+    a "who is this?" the same day: a face is strong evidence that the
+    individual is one real person, where the 10-sightings / 5-days rule waits
+    for appearance clusters to prove they hold. ``min_faces <= 0`` disables."""
+    return (min_faces > 0 and not label and not stationary and kind in _PEOPLE_KINDS
+            and int(face_n) >= int(min_faces))
+
+
+def pair_ref(a: str, b: str) -> str:
+    lo, hi = sorted((a, b))
+    return f"{lo}{PAIR_SEP}{hi}"
+
+
+def parse_pair_ref(ref: str) -> Optional[Tuple[str, str]]:
+    parts = str(ref or "").split(PAIR_SEP)
+    if len(parts) != 2 or not parts[0] or not parts[1] or parts[0] >= parts[1]:
         return None
-    horizon = now - timedelta(days=thumb_retention_days - ask_expiry_days)
-    best: Dict[str, Tuple[datetime, str]] = {}
-    for row in sightings:
-        thumb_ref, ended_at, no_embed = row[0], row[1], row[2]
-        face_ref = row[3] if len(row) > 3 else None
-        if no_embed or ended_at is None or ended_at < horizon:
-            continue
-        for kind, ref in (("face", face_ref), ("crop", thumb_ref)):
-            if not ref or not str(ref).startswith(THUMB_REF_PREFIX):
+    return parts[0], parts[1]
+
+
+@dataclass(frozen=True)
+class FaceCandidate:
+    individual_id: str
+    kind: str
+    face_centroid: Tuple[float, ...]
+    face_n: int
+    label: Optional[str] = None
+
+
+def same_groups(same_pairs: Iterable[Tuple[str, str]]) -> Dict[str, str]:
+    """individual_id -> one representative id, over Juniper's 'same' verdicts
+    (transitively: a=b and b=c puts a, b, c in one group)."""
+    parent: Dict[str, str] = {}
+
+    def find(x: str) -> str:
+        parent.setdefault(x, x)
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    for a, b in same_pairs:
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[max(ra, rb)] = min(ra, rb)
+    return {x: find(x) for x in list(parent)}
+
+
+def same_person_pairs(
+    cands: Sequence[FaceCandidate], *, min_cosine: float, skip_refs: Iterable[str] = (),
+    groups: Optional[Dict[str, str]] = None,
+) -> List[Tuple[str, str, float]]:
+    """Pairs worth "are these the same person?", most alike first.
+
+    Every pair of people whose face centroids are at least ``min_cosine``
+    alike, whatever the match threshold: a pair above the threshold that the
+    reducer still kept apart (it matches crop to centroid, one crop at a time)
+    is as worth asking about as one just under it. Skipped: pairs in
+    ``skip_refs`` (already asked or answered), pairs where both are already
+    named (Juniper said who each one is), different face sizes (a model change).
+
+    ``groups`` (``same_groups``): people Juniper already said are one person
+    count as one. A pair inside a group is never asked, and between two
+    groups only the most alike pair is -- "is X the same as A?" and "is X the
+    same as B?" are one question when A and B are the same person."""
+    skip = set(skip_refs)
+    grp = groups or {}
+    g = lambda iid: grp.get(iid, iid)  # noqa: E731
+    seen_groups = set()
+    for ref in skip:
+        pr = parse_pair_ref(ref)
+        if pr:
+            seen_groups.add(tuple(sorted((g(pr[0]), g(pr[1])))))
+    people = [c for c in cands if c.kind in _PEOPLE_KINDS and c.face_centroid]
+    out: List[Tuple[str, str, float]] = []
+    for i in range(len(people)):
+        for j in range(i + 1, len(people)):
+            a, b = people[i], people[j]
+            if a.individual_id == b.individual_id or (a.label and b.label):
                 continue
-            if kind not in best or ended_at > best[kind][0]:
-                best[kind] = (ended_at, str(ref))
-    pick = best.get("face") or best.get("crop")
-    return pick[1] if pick else None
+            if len(a.face_centroid) != len(b.face_centroid):
+                continue
+            if pair_ref(a.individual_id, b.individual_id) in skip:
+                continue
+            sim = cosine(a.face_centroid, b.face_centroid)
+            if sim >= min_cosine:
+                lo, hi = sorted((a.individual_id, b.individual_id))
+                out.append((lo, hi, sim))
+    out.sort(key=lambda t: (-t[2], t[0], t[1]))
+    kept: List[Tuple[str, str, float]] = []
+    for a, b, sim in out:
+        key = tuple(sorted((g(a), g(b))))
+        if key[0] == key[1] or key in seen_groups:
+            continue
+        seen_groups.add(key)
+        kept.append((a, b, sim))
+    return kept
+
+
+_YES = {"yes", "y", "same", "same person", "yes same person", "yes, same person"}
+_NO = {"no", "n", "different", "different people", "not the same", "no different people", "no, different people"}
+
+
+def parse_yes_no(answer: Optional[str]) -> Optional[bool]:
+    """Juniper's answer to a pair ask: True = same person, False = different,
+    None = not a yes/no (applied as nothing; the pair is not asked again)."""
+    a = " ".join(str(answer or "").lower().replace(".", " ").replace("!", " ").split())
+    if a in _YES:
+        return True
+    if a in _NO:
+        return False
+    return None
+
+
+def face_ask_question(*, face_n: int, sighting_count: int) -> str:
+    times = "once" if sighting_count == 1 else f"{sighting_count} times"
+    return (f"I saw this person's face clearly ({face_n} good looks) on the walkway, {times} so far. "
+            "Do you know who this is?")
+
+
+def same_person_question(*, face_n_a: int, face_n_b: int) -> str:
+    return ("Are these the same person? Their faces look alike to me, but I am not sure "
+            f"(left: {face_n_a} good looks, right: {face_n_b}).")
 
 
 def individual_display_label(ind_label: Optional[str], kind: str, individual_id: str) -> str:
@@ -756,6 +915,18 @@ class IndividualsConfig:
     stationary_min_sec: float = 1800.0
     stationary_iou: float = 0.5
     stationary_max_gap_sec: float = 300.0
+    # Visual confirmation asks (2026-10-15). A person with at least this many
+    # face crops gets "who is this?" the same day, and only people with this
+    # many faces are compared for "are these the same person?". <= 0 disables both.
+    ask_face_min_faces: int = 5
+    # Face-centroid cosine at or above which two people are asked about.
+    # Measured live 2026-10-15: two faces in ONE frame (known different
+    # people) median 0.27, 75th pct 0.41; the same face over <= 3 s median
+    # 0.65, 10th pct 0.39. 0.40 is where the two overlap.
+    same_ask_min_face_cosine: float = 0.40
+    # Daily cap for these face asks together (both kinds). The 10-sightings
+    # rule keeps its own cap (ask_daily_cap); memory confirmation has its own.
+    confirm_ask_daily_cap: int = 6
 
 
 # Columns manual_migration_walkway_privacy_v2.sql adds; the cycle refuses to
@@ -773,6 +944,11 @@ V2_COLUMNS = (
 # Two sql-writer instances must never run the same cycle at once: cursors,
 # counts and the ask cap all assume a single writer.
 INDIVIDUALS_LOCK_KEY = 0x0A1C_0001
+
+
+# What manual_migration_vision_confirm_asks_v1.sql adds.
+V3_COLUMNS = (("orion_ask", "image_refs"),)
+V3_TABLES = ("vision_individual_pair_verdict",)
 
 
 def _check_tables(conn) -> None:
@@ -797,6 +973,19 @@ def _check_tables(conn) -> None:
         raise MigrationMissing(
             "missing columns " + ",".join(absent)
             + " -- apply services/orion-sql-db/manual_migration_walkway_privacy_v2.sql"
+        )
+    have3 = {(r[0], r[1]) for r in conn.execute(text(
+        "SELECT table_name, column_name FROM information_schema.columns "
+        "WHERE table_schema = current_schema() AND table_name = ANY(:t)"),
+        {"t": sorted({t for t, _ in V3_COLUMNS})}).fetchall()}
+    absent3 = [f"{t}.{c}" for t, c in V3_COLUMNS if (t, c) not in have3]
+    absent3 += [r[0] for r in conn.execute(text(
+        "SELECT t FROM unnest(CAST(:t AS text[])) AS t WHERE to_regclass(t) IS NULL"),
+        {"t": list(V3_TABLES)}).fetchall()]
+    if absent3:
+        raise MigrationMissing(
+            "missing " + ",".join(absent3)
+            + " -- apply services/orion-sql-db/manual_migration_vision_confirm_asks_v1.sql"
         )
 
 
@@ -1160,6 +1349,20 @@ def _write_patio_presence(conn, stream_id: str, zone_name: str, patio_crops: Seq
     return True
 
 
+def _propagate_label(conn, individual_id: str, label: str, ask_id: str, at: datetime) -> int:
+    """Give ``label`` to every unlabeled individual Juniper said is the same
+    person as ``individual_id`` (one hop of 'same' verdicts). Never overwrites
+    a name she gave directly."""
+    from sqlalchemy import text
+
+    return conn.execute(text(
+        "UPDATE vision_individual SET label=:l, labeled_at=:at, label_ask_id=:a, updated_at=now() "
+        "WHERE label IS NULL AND individual_id IN ("
+        "  SELECT individual_b FROM vision_individual_pair_verdict WHERE individual_a=:i AND verdict='same' "
+        "  UNION SELECT individual_a FROM vision_individual_pair_verdict WHERE individual_b=:i AND verdict='same')"),
+        {"l": label, "at": at, "a": ask_id, "i": individual_id}).rowcount or 0
+
+
 def _apply_answers(conn, now: datetime) -> int:
     from sqlalchemy import text
 
@@ -1174,28 +1377,228 @@ def _apply_answers(conn, now: datetime) -> int:
                 "WHERE individual_id=:i"), {"l": label, "at": answered_at or now, "a": ask_id, "i": individual_id}).rowcount
             if not n:
                 logger.warning("ask_answer_for_missing_individual ask_id=%s individual_id=%s", ask_id, individual_id)
+            else:
+                _propagate_label(conn, individual_id, label, ask_id, answered_at or now)
+        conn.execute(text("UPDATE orion_ask SET applied_at=:now WHERE ask_id=:a"), {"now": now, "a": ask_id})
+    return len(rows) + _apply_pair_answers(conn, now)
+
+
+def _apply_pair_answers(conn, now: datetime) -> int:
+    """"Are these the same person?" answers -> one vision_individual_pair_verdict
+    row each, with the face similarity at that moment (the calibration point).
+    'same' links the two (no merge, no delete) and carries a name across if
+    exactly one of them has one; 'different' just keeps the pair from being asked again."""
+    from sqlalchemy import text
+
+    rows = conn.execute(text(
+        "SELECT ask_id, source_ref, answer, answered_at FROM orion_ask WHERE source_kind=:k "
+        "AND status='answered' AND applied_at IS NULL"), {"k": SOURCE_KIND_SAME}).fetchall()
+    for ask_id, ref, answer, answered_at in rows:
+        pair = parse_pair_ref(ref)
+        same = parse_yes_no(answer)
+        at = answered_at or now
+        if pair is None or same is None:
+            logger.warning("pair_answer_not_applied ask_id=%s source_ref=%s answer=%r", ask_id, ref, answer)
+        else:
+            a, b = pair
+            inds = {r[0]: r for r in conn.execute(text(
+                "SELECT individual_id, face_centroid, label FROM vision_individual WHERE individual_id = ANY(:ids)"),
+                {"ids": [a, b]}).fetchall()}
+            fa = inds.get(a)[1] if a in inds else None
+            fb = inds.get(b)[1] if b in inds else None
+            sim = cosine(list(fa), list(fb)) if fa and fb and len(fa) == len(fb) else None
+            conn.execute(text(
+                "INSERT INTO vision_individual_pair_verdict (individual_a, individual_b, verdict, face_cosine, "
+                "ask_id, decided_at) VALUES (:a, :b, :v, :c, :ask, :at) ON CONFLICT (individual_a, individual_b) "
+                "DO UPDATE SET verdict=EXCLUDED.verdict, face_cosine=EXCLUDED.face_cosine, ask_id=EXCLUDED.ask_id, "
+                "decided_at=EXCLUDED.decided_at"),
+                {"a": a, "b": b, "v": "same" if same else "different",
+                 "c": None if sim is None else round(float(sim), 4), "ask": ask_id, "at": at})
+            logger.info("[VISION_PAIR_VERDICT] ask_id=%s a=%s b=%s verdict=%s face_cosine=%s",
+                        ask_id, a, b, "same" if same else "different", sim)
+            if same:
+                labels = {iid: inds[iid][2] for iid in inds if inds[iid][2]}
+                if len(labels) == 1:
+                    (named, label), = labels.items()
+                    _propagate_label(conn, named, label, ask_id, at)
         conn.execute(text("UPDATE orion_ask SET applied_at=:now WHERE ask_id=:a"), {"now": now, "a": ask_id})
     return len(rows)
 
 
-# The vision daily cap counts only vision asks. orion_ask is shared: since 2026-10-06 the memory
-# confirmation loop also opens cards there under its own cap (5 open), and those must not use up
-# the walkway camera's daily budget.
-ASKED_TODAY_SQL = "SELECT count(*) FROM orion_ask WHERE source_kind = 'vision_individual' AND created_at >= :d"
+# The slow "who is this?" rule (10 sightings over 5 days) counts only its own
+# asks against ask_daily_cap. orion_ask is shared: since 2026-10-06 the memory
+# confirmation loop also opens cards there under its own cap (5 open), and
+# face asks (FACE_RULE_REF, vision_same_individual) have confirm_ask_daily_cap.
+ASKED_TODAY_SQL = (
+    "SELECT count(*) FROM orion_ask WHERE source_kind = 'vision_individual' AND created_at >= :d "
+    "AND NOT (evidence_refs @> CAST(:face AS jsonb))"
+)
+CONFIRM_ASKED_TODAY_SQL = (
+    "SELECT count(*) FROM orion_ask WHERE created_at >= :d AND (source_kind = :same "
+    "OR (source_kind = 'vision_individual' AND evidence_refs @> CAST(:face AS jsonb)))"
+)
+
+# An earlier ask about the same subject blocks a new one: open, answered or
+# dismissed for good; expired only for the cooldown.
+_NOT_ASKED_SQL = (
+    "NOT EXISTS (SELECT 1 FROM orion_ask a WHERE a.source_kind={kind} AND a.source_ref={ref} "
+    "AND (a.status IN ('open','answered','dismissed') OR (a.status = 'expired' AND a.created_at > :cool)))"
+)
+
+
+def _insert_ask(conn, ask) -> bool:
+    from sqlalchemy import text
+
+    inserted = conn.execute(text("""
+        INSERT INTO orion_ask (ask_id, asked_of, question, evidence_refs, image_ref, image_refs, status,
+            created_at, expires_at, source_kind, source_ref)
+        VALUES (:id, :of, :q, CAST(:ev AS jsonb), :img, CAST(:imgs AS jsonb), 'open', :c, :x, :sk, :sr)
+        ON CONFLICT (source_kind, source_ref) WHERE status = 'open' DO NOTHING
+        RETURNING ask_id
+    """), {"id": ask.ask_id, "of": ask.asked_of, "q": ask.question, "ev": json.dumps(ask.evidence_refs),
+           "img": ask.image_ref, "imgs": json.dumps(ask.image_refs), "c": ask.created_at, "x": ask.expires_at,
+           "sk": ask.source_kind, "sr": ask.source_ref}).fetchone()
+    return bool(inserted)
+
+
+def _sighting_rows(conn, individual_id: str):
+    from sqlalchemy import text
+
+    return conn.execute(text(
+        "SELECT sighting_id, started_at, thumb_ref, ended_at, zone_no_embed, face_thumb_ref "
+        "FROM vision_individual_sighting "
+        "WHERE individual_id=:i AND NOT stationary ORDER BY started_at DESC"), {"i": individual_id}).fetchall()
+
+
+def _images(srows, now: datetime, cfg: IndividualsConfig, *, limit: int = 3, faces_only: bool = False) -> List[str]:
+    return ask_image_refs([(row[2], row[3], bool(row[4]), row[5]) for row in srows], now=now,
+                          thumb_retention_days=cfg.thumb_retention_days, ask_expiry_days=cfg.ask_expiry_days,
+                          limit=limit, faces_only=faces_only)
 
 
 def _open_asks(conn, now: datetime, tz: ZoneInfo, cfg: IndividualsConfig) -> List[dict]:
+    """Face asks first (their own cap), then the slow 10-sightings rule (its cap)."""
+    out = _open_face_asks(conn, now, tz, cfg)
+    out.extend(_open_sighting_asks(conn, now, tz, cfg))
+    return out
+
+
+def _open_face_asks(conn, now: datetime, tz: ZoneInfo, cfg: IndividualsConfig) -> List[dict]:
     from sqlalchemy import text
 
     from orion.schemas.ask import OrionAskV1
 
-    asked_today = conn.execute(text(ASKED_TODAY_SQL), {"d": local_day_start(now, tz)}).scalar() or 0
+    if cfg.ask_face_min_faces <= 0:
+        return []
+    day = local_day_start(now, tz)
+    face_marker = json.dumps([FACE_RULE_REF])
+    asked = conn.execute(text(CONFIRM_ASKED_TODAY_SQL),
+                         {"d": day, "same": SOURCE_KIND_SAME, "face": face_marker}).scalar() or 0
+    budget = remaining_ask_budget(daily_cap=cfg.confirm_ask_daily_cap, asked_today=int(asked))
+    if budget <= 0:
+        return []
+    cool = now - timedelta(days=cfg.ask_cooldown_days)
+    people = sorted(_PEOPLE_KINDS)
+    out: List[dict] = []
+    expires = now + timedelta(days=cfg.ask_expiry_days)
+
+    # 1. "Are these the same person?" -- first, so the same person is not
+    # asked "who is this?" twice under two ids.
+    frows = conn.execute(text(
+        "SELECT individual_id, kind, face_centroid, face_n, label FROM vision_individual "
+        "WHERE face_centroid IS NOT NULL AND face_n >= :f AND NOT stationary AND kind = ANY(:k) "
+        "AND (label IS NOT NULL OR last_seen_at > :recent)"),
+        {"f": cfg.ask_face_min_faces, "k": people,
+         "recent": now - timedelta(days=cfg.candidate_days)}).fetchall()
+    cands = [FaceCandidate(r[0], r[1], tuple(r[2]), int(r[3] or 0), r[4]) for r in frows if r[2]]
+    by_id = {c.individual_id: c for c in cands}
+    skip = {r[0] for r in conn.execute(text(
+        "SELECT source_ref FROM orion_ask WHERE source_kind=:k AND (status IN ('open','answered','dismissed') "
+        "OR (status = 'expired' AND created_at > :cool))"), {"k": SOURCE_KIND_SAME, "cool": cool}).fetchall()}
+    verdicts = conn.execute(text(
+        "SELECT individual_a, individual_b, verdict FROM vision_individual_pair_verdict")).fetchall()
+    skip |= {pair_ref(r[0], r[1]) for r in verdicts}
+    groups = same_groups((r[0], r[1]) for r in verdicts if r[2] == "same")
+    for a, b, sim in same_person_pairs(cands, min_cosine=cfg.same_ask_min_face_cosine, skip_refs=skip,
+                                       groups=groups):
+        if len(out) >= budget:
+            break
+        faces = []
+        for iid in (a, b):
+            refs = _images(_sighting_rows(conn, iid), now, cfg, limit=1, faces_only=True)
+            if refs:
+                faces.append(refs[0])
+        if len(faces) != 2 or faces[0] == faces[1]:
+            continue  # the card must show both faces
+        ask = OrionAskV1(
+            ask_id=f"ask-{uuid.uuid4().hex}",
+            question=same_person_question(face_n_a=by_id[a].face_n, face_n_b=by_id[b].face_n),
+            evidence_refs=[f"individual:{a}", f"individual:{b}", f"face_cosine:{sim:.3f}"],
+            image_ref=faces[0], image_refs=faces, created_at=now, expires_at=expires,
+            source_kind=SOURCE_KIND_SAME, source_ref=pair_ref(a, b),
+        )
+        if _insert_ask(conn, ask):
+            out.append(ask.model_dump(mode="json"))
+
+    # 2. "Who is this?" for a face seen often enough, the same day. Not for
+    # someone in an open "same person?" ask: the answer may make it one ask.
+    if len(out) >= budget:
+        return out
+    rows = conn.execute(text(f"""
+        SELECT i.individual_id, i.kind, i.face_n, i.sighting_count, i.label, i.stationary
+        FROM vision_individual i
+        WHERE i.label IS NULL AND NOT i.stationary AND i.face_n >= :f AND i.kind = ANY(:k)
+          AND i.last_seen_at > :recent
+          AND {_NOT_ASKED_SQL.format(kind="'vision_individual'", ref="i.individual_id")}
+          AND NOT EXISTS (SELECT 1 FROM orion_ask p WHERE p.source_kind=:same AND p.status='open'
+                          AND (p.source_ref LIKE i.individual_id || '|%' OR p.source_ref LIKE '%|' || i.individual_id))
+        ORDER BY i.face_n DESC, i.individual_id LIMIT :b
+    """), {"f": cfg.ask_face_min_faces, "k": people, "recent": now - timedelta(days=cfg.candidate_days),
+           "cool": cool, "same": SOURCE_KIND_SAME, "b": budget - len(out)}).fetchall()
+    # One "who is this?" per person: individuals Juniper said are the same
+    # share an answer (_propagate_label), so a group already asked is skipped.
+    asked_groups = {groups.get(r[0], r[0]) for r in conn.execute(text(
+        "SELECT source_ref FROM orion_ask WHERE source_kind='vision_individual' "
+        "AND status IN ('open','answered')")).fetchall()}
+    for iid, kind, face_n, sc, label, stationary in rows:
+        if len(out) >= budget:
+            break
+        if groups.get(iid, iid) in asked_groups:
+            continue
+        if not should_ask_by_face(label=label, kind=kind, face_n=face_n, stationary=bool(stationary),
+                                  min_faces=cfg.ask_face_min_faces):
+            continue
+        srows = _sighting_rows(conn, iid)
+        images = _images(srows, now, cfg)
+        if not images or not images[0].startswith(THUMB_REF_PREFIX) or not any(
+                row[5] == images[0] for row in srows):
+            continue  # a face ask without the face is not worth Juniper's time
+        ask = OrionAskV1(
+            ask_id=f"ask-{uuid.uuid4().hex}",
+            question=face_ask_question(face_n=int(face_n), sighting_count=len(srows) or int(sc)),
+            evidence_refs=[FACE_RULE_REF] + [f"sighting:{row[0]}" for row in srows[:5]],
+            image_ref=images[0], image_refs=images, created_at=now, expires_at=expires,
+            source_kind=SOURCE_KIND_INDIVIDUAL, source_ref=iid,
+        )
+        if _insert_ask(conn, ask):
+            out.append(ask.model_dump(mode="json"))
+            asked_groups.add(groups.get(iid, iid))
+    return out
+
+
+def _open_sighting_asks(conn, now: datetime, tz: ZoneInfo, cfg: IndividualsConfig) -> List[dict]:
+    from sqlalchemy import text
+
+    from orion.schemas.ask import OrionAskV1
+
+    asked_today = conn.execute(text(ASKED_TODAY_SQL), {"d": local_day_start(now, tz),
+                                                       "face": json.dumps([FACE_RULE_REF])}).scalar() or 0
     budget = remaining_ask_budget(daily_cap=cfg.ask_daily_cap, asked_today=int(asked_today))
     if budget <= 0:
         return []
     # Only real visits count: stationary sightings (a prop) are excluded from
     # the counts, and an individual that is a fixture right now is not asked about.
-    cands = conn.execute(text("""
+    cands = conn.execute(text(f"""
         SELECT i.individual_id, i.kind, v.n, v.d, i.label FROM vision_individual i
         JOIN LATERAL (
             SELECT count(*) AS n, count(DISTINCT (s.started_at AT TIME ZONE :tz)::date) AS d
@@ -1204,10 +1607,7 @@ def _open_asks(conn, now: datetime, tz: ZoneInfo, cfg: IndividualsConfig) -> Lis
         ) v ON true
         WHERE i.label IS NULL AND NOT i.stationary AND i.sighting_count >= :n AND i.distinct_days >= :d
           AND v.n >= :n AND v.d >= :d
-          AND NOT EXISTS (SELECT 1 FROM orion_ask a WHERE a.source_kind='vision_individual'
-                          AND a.source_ref=i.individual_id
-                          AND (a.status IN ('open','answered','dismissed')
-                               OR (a.status = 'expired' AND a.created_at > :cool)))
+          AND {_NOT_ASKED_SQL.format(kind="'vision_individual'", ref="i.individual_id")}
         ORDER BY v.n DESC, i.individual_id LIMIT :b
     """), {"n": cfg.ask_min_sightings, "d": cfg.ask_min_days, "b": budget, "tz": str(tz.key),
            "cool": now - timedelta(days=cfg.ask_cooldown_days)}).fetchall()
@@ -1216,32 +1616,19 @@ def _open_asks(conn, now: datetime, tz: ZoneInfo, cfg: IndividualsConfig) -> Lis
         if not should_ask(label=label, sighting_count=sc, distinct_days=dd,
                           min_sightings=cfg.ask_min_sightings, min_days=cfg.ask_min_days):
             continue
-        srows = conn.execute(text(
-            "SELECT sighting_id, started_at, thumb_ref, ended_at, zone_no_embed, face_thumb_ref "
-            "FROM vision_individual_sighting "
-            "WHERE individual_id=:i AND NOT stationary ORDER BY started_at DESC"), {"i": iid}).fetchall()
+        srows = _sighting_rows(conn, iid)
         minutes = [r[1].astimezone(tz).hour * 60 + r[1].astimezone(tz).minute for r in srows]
         mean, r = circular_mean_minute(minutes)
-        image_ref = ask_image_ref(
-            [(row[2], row[3], bool(row[4]), row[5]) for row in srows], now=now,
-            thumb_retention_days=cfg.thumb_retention_days, ask_expiry_days=cfg.ask_expiry_days)
+        images = _images(srows, now, cfg)
         ask = OrionAskV1(
             ask_id=f"ask-{uuid.uuid4().hex}",
             question=ask_question(kind=kind, sighting_count=sc, distinct_days=dd, mean_minute=mean, r=r),
             evidence_refs=[f"sighting:{row[0]}" for row in srows[:5]],
-            image_ref=image_ref, created_at=now, expires_at=now + timedelta(days=cfg.ask_expiry_days),
-            source_kind="vision_individual", source_ref=iid,
+            image_ref=images[0] if images else None, image_refs=images, created_at=now,
+            expires_at=now + timedelta(days=cfg.ask_expiry_days),
+            source_kind=SOURCE_KIND_INDIVIDUAL, source_ref=iid,
         )
-        inserted = conn.execute(text("""
-            INSERT INTO orion_ask (ask_id, asked_of, question, evidence_refs, image_ref, status, created_at,
-                expires_at, source_kind, source_ref)
-            VALUES (:id, :of, :q, CAST(:ev AS jsonb), :img, 'open', :c, :x, :sk, :sr)
-            ON CONFLICT (source_kind, source_ref) WHERE status = 'open' DO NOTHING
-            RETURNING ask_id
-        """), {"id": ask.ask_id, "of": ask.asked_of, "q": ask.question, "ev": json.dumps(ask.evidence_refs),
-               "img": ask.image_ref, "c": ask.created_at, "x": ask.expires_at, "sk": ask.source_kind,
-               "sr": ask.source_ref}).fetchone()
-        if inserted:
+        if _insert_ask(conn, ask):
             out.append(ask.model_dump(mode="json"))
     return out
 
@@ -1261,5 +1648,7 @@ def _prune(conn, now: datetime, cfg: IndividualsConfig, summary: dict) -> None:
     # go too. Labeled ones stay: Juniper named them.
     summary["pruned_individuals"] = conn.execute(text(
         "DELETE FROM vision_individual i WHERE i.label IS NULL AND i.last_seen_at < :c "
-        "AND NOT EXISTS (SELECT 1 FROM orion_ask a WHERE a.source_kind='vision_individual' "
-        "AND a.source_ref=i.individual_id AND a.status='open')"), {"c": sight_cut}).rowcount or 0
+        "AND NOT EXISTS (SELECT 1 FROM orion_ask a WHERE a.status='open' AND ("
+        "(a.source_kind='vision_individual' AND a.source_ref=i.individual_id) OR "
+        "(a.source_kind='vision_same_individual' AND (a.source_ref LIKE i.individual_id || '|%' "
+        "OR a.source_ref LIKE '%|' || i.individual_id))))"), {"c": sight_cut}).rowcount or 0

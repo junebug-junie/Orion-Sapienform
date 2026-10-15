@@ -267,8 +267,11 @@ def test_stationary_sighting_gets_no_attention_score_or_event() -> None:
 def test_ask_candidates_count_only_non_stationary_sightings() -> None:
     conn = _RecConn({"SELECT count(*) FROM orion_ask": [(0,)]})
     vi._open_asks(conn, T0, TZ, vi.IndividualsConfig())
-    cand_sql = next(q for q in conn.sql if "FROM vision_individual i" in q)
+    cand_sql = next(q for q in conn.sql if "FROM vision_individual i" in q and "JOIN LATERAL" in q)
     assert "NOT i.stationary" in cand_sql and "NOT s.stationary" in cand_sql
+    # The face rule's candidates leave stationary fixtures out too.
+    face_sql = next(q for q in conn.sql if "FROM vision_individual i" in q and "i.face_n >= :f" in q)
+    assert "NOT i.stationary" in face_sql
     assert "v.n >= :n AND v.d >= :d" in cand_sql
 
 

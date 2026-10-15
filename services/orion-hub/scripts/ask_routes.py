@@ -104,9 +104,16 @@ _THUMB_ID_RE = re.compile(r"[0-9a-f]{64}")
 MAX_THUMB_BYTES = 256 * 1024
 
 _SELECT_COLUMNS = (
-    "ask_id, asked_of, question, evidence_refs, image_ref, status, answer, "
+    "ask_id, asked_of, question, evidence_refs, image_ref, image_refs, status, answer, "
     "answered_at, created_at, expires_at, source_kind, source_ref"
 )
+
+
+# "Are these the same person?" (orion-sql-writer opens these, 2026-10-15): the
+# only answers are yes / no; "not sure" is Dismiss. sql-writer reads the
+# answer as a verdict, so free text is refused here instead of being dropped there.
+SAME_INDIVIDUAL_KIND = "vision_same_individual"
+YES_NO_ANSWERS = ("yes", "no")
 
 
 class AskAnswerBody(BaseModel):
@@ -161,6 +168,17 @@ def _row_dict(row: Any) -> dict[str, Any]:
         except ValueError:
             refs = []
     out["evidence_refs"] = list(refs or [])
+    imgs = out.get("image_refs")
+    if isinstance(imgs, str):
+        try:
+            imgs = json.loads(imgs)
+        except ValueError:
+            imgs = []
+    imgs = [str(i) for i in (imgs or []) if isinstance(i, str) and i.strip()]
+    # Rows from before image_refs (2026-10-15) carry only image_ref.
+    if not imgs and out.get("image_ref"):
+        imgs = [str(out["image_ref"])]
+    out["image_refs"] = imgs
     for key in ("answered_at", "created_at", "expires_at"):
         out[key] = _iso(out.get(key))
     return out
@@ -267,12 +285,15 @@ async def _close_ask(
                   AND status = 'open'
                   AND (expires_at IS NULL OR expires_at > now())
                   AND source_kind <> ALL($4::text[])
+                  AND (source_kind <> $5 OR $3 IS NULL OR $3 = ANY($6::text[]))
                 RETURNING ask_id, status, answer, answered_at, source_kind, source_ref
                 """,
                 ask_id,
                 new_status,
                 answer,
                 list(RESOLVABLE_KINDS),
+                SAME_INDIVIDUAL_KIND,
+                list(YES_NO_ANSWERS),
             )
             if row is None:
                 existing = await conn.fetchrow(
@@ -285,6 +306,10 @@ async def _close_ask(
     if row is None:
         if existing is None:
             raise HTTPException(status_code=404, detail="ask_not_found")
+        if (existing["source_kind"] == SAME_INDIVIDUAL_KIND and new_status == "answered"
+                and answer not in YES_NO_ANSWERS and existing["status"] == "open"
+                and (existing["expires_at"] is None or existing["expires_at"] > datetime.now(timezone.utc))):
+            raise HTTPException(status_code=422, detail="answer_must_be_yes_or_no")
         if existing["source_kind"] in RESOLVABLE_KINDS:
             # Closing these without an outcome row would orphan the memory (spec Stage 3 check 6).
             raise HTTPException(status_code=409, detail="ask_needs_resolution")
@@ -320,6 +345,8 @@ async def _close_ask(
 @router.post("/api/asks/{ask_id}/answer")
 async def answer_ask(request: Request, ask_id: str, body: AskAnswerBody) -> dict[str, Any]:
     answer = " ".join(body.answer.split())
+    if answer.lower() in YES_NO_ANSWERS:
+        answer = answer.lower()
     if not answer:
         raise HTTPException(status_code=422, detail="answer_empty")
     return await _close_ask(request, ask_id, new_status="answered", answer=answer)

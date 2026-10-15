@@ -317,3 +317,68 @@ test('asks list: only the first two cards are visible, the rest scroll', () => {
   assert.equal(asks.visibleAsksMaxHeight([], 8), null);
   assert.equal(asks.visibleAsksMaxHeight([50, 60, 70], 0), 110);
 });
+
+// --- visual confirmation asks (2026-10-15) ----------------------------------
+
+test('image_refs: all pictures in order, no repeats; old rows fall back to image_ref', () => {
+  const a = 'aa'.repeat(32);
+  const b = 'bb'.repeat(32);
+  const views = asks.askImageViews({ image_refs: ['thumb:' + a, 'thumb:' + b, 'thumb:' + a], image_ref: 'thumb:' + a });
+  assert.deepEqual(views.map((v) => v.ref), ['/api/vision/crop-thumbs/' + a, '/api/vision/crop-thumbs/' + b]);
+  assert.deepEqual(asks.askImageViews({ image_ref: 'thumb:' + b }).map((v) => v.ref), ['/api/vision/crop-thumbs/' + b]);
+  assert.deepEqual(asks.askImageViews({ image_refs: [], image_ref: null }), []);
+  assert.equal(asks.askImageViews({ image_refs: ['https://x/1', 'https://x/2', 'https://x/3', 'https://x/4', 'https://x/5'] }).length, 4);
+});
+
+test('a who-is-this card with two pictures renders both, side by side, with alt text', () => {
+  const doc = fakeDoc();
+  const a = 'a1'.repeat(32);
+  const b = 'b1'.repeat(32);
+  const card = asks.renderAsk(doc, { ask_id: 'w1', question: 'Who?', source_kind: 'vision_individual',
+    image_ref: 'thumb:' + a, image_refs: ['thumb:' + a, 'thumb:' + b] }, () => {});
+  const row = find(card, (n) => n.attrs && n.attrs['data-ask-images'] === '2');
+  assert.ok(row, 'expected an images row');
+  assert.match(row.className, /flex/);
+  const imgs = [];
+  (function walk(n) { if (n.tagName === 'img') imgs.push(n); (n.children || []).forEach(walk); })(card);
+  assert.deepEqual(imgs.map((i) => i.attrs.src), ['/api/vision/crop-thumbs/' + a, '/api/vision/crop-thumbs/' + b]);
+  assert.equal(imgs[0].attrs.alt, 'Picture 1 of 2 of what Orion is asking about');
+  assert.match(imgs[0].className, /w-full/); // shares the card width on a phone
+});
+
+test('a same-person card shows both faces and answers yes / no / dismiss', async () => {
+  const doc = fakeDoc();
+  const a = 'c1'.repeat(32);
+  const b = 'd1'.repeat(32);
+  const calls = [];
+  const card = asks.renderAsk(doc, { ask_id: 'p1', question: 'Are these the same person?',
+    source_kind: 'vision_same_individual', source_ref: 'x|y', image_ref: 'thumb:' + a,
+    image_refs: ['thumb:' + a, 'thumb:' + b] }, (id, action, text) => { calls.push([id, action, text]); });
+  assert.equal(card.attrs['data-ask-kind'], 'same-person');
+  const imgs = [];
+  (function walk(n) { if (n.tagName === 'img') imgs.push(n); (n.children || []).forEach(walk); })(card);
+  assert.equal(imgs.length, 2);
+  assert.equal(imgs[0].attrs.alt, 'Left face Orion is asking about');
+  assert.equal(imgs[1].attrs.alt, 'Right face Orion is asking about');
+  assert.equal(find(card, (n) => n.attrs && n.attrs['data-ask-input']), null, 'no free-text box');
+  await find(card, (n) => n.attrs && n.attrs['data-ask-action'] === 'same').listeners.click();
+  await find(card, (n) => n.attrs && n.attrs['data-ask-action'] === 'different').listeners.click();
+  await find(card, (n) => n.attrs && n.attrs['data-ask-action'] === 'dismiss').listeners.click();
+  assert.deepEqual(calls, [['p1', 'answer', 'yes'], ['p1', 'answer', 'no'], ['p1', 'dismiss', '']]);
+});
+
+test('a missing face says so instead of a broken image', () => {
+  const doc = fakeDoc();
+  const card = asks.renderAsk(doc, { ask_id: 'p2', question: 'Same?', source_kind: 'vision_same_individual',
+    image_refs: ['thumb:' + 'e1'.repeat(32), 'thumb:' + 'f1'.repeat(32)] }, () => {});
+  const img = find(card, (n) => n.tagName === 'img');
+  const gone = find(card, (n) => n.textContent === 'Picture no longer available.');
+  assert.equal(gone.hidden, true);
+  img.listeners.error();
+  assert.equal(img.hidden, true);
+  assert.equal(gone.hidden, false);
+});
+
+test('a refused free-text answer to a same-person card explains the buttons', () => {
+  assert.match(asks.errorLine(422, 'answer_must_be_yes_or_no'), /Same person/);
+});

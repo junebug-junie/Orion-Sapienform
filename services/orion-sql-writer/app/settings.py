@@ -552,6 +552,18 @@ class Settings(BaseSettings):
     # confirmation cards have their own caps in orion-memory-consolidation), counted from
     # orion_ask.created_at since local midnight, so a restart cannot reset it.
     orion_ask_daily_cap: int = Field(2, alias="ORION_ASK_DAILY_CAP")
+    # Visual confirmation asks (2026-10-15). A person whose face was seen this
+    # many times gets "who is this?" the same day; only people with this many
+    # faces are compared for "are these the same person?". 0 disables both.
+    vision_ask_face_min_faces: int = Field(5, alias="VISION_ASK_FACE_MIN_FACES")
+    # Two people whose face centroids are at least this alike (cosine) get
+    # "are these the same person?". Measured live 2026-10-15: known-different
+    # faces median 0.27; the same face seconds apart median 0.65, 10th pct 0.39.
+    vision_same_ask_min_face_cosine: float = Field(0.40, alias="VISION_SAME_ASK_MIN_FACE_COSINE")
+    # Daily cap for the face asks together (both kinds), counted from orion_ask
+    # since local midnight. Separate from ORION_ASK_DAILY_CAP (the slow
+    # 10-sightings rule) and from the memory confirmation caps.
+    vision_confirm_ask_daily_cap: int = Field(6, alias="VISION_CONFIRM_ASK_DAILY_CAP")
     # Local clock for "07:40", distinct days, weekday/weekend, and the ask cap day.
     vision_local_tz: str = Field("America/Denver", alias="VISION_LOCAL_TZ")
 

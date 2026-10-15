@@ -403,7 +403,40 @@ days, under `ORION_ASK_DAILY_CAP`, which counts only `vision_individual` asks
 (since 2026-10-06; memory confirmation cards in the same table have their own
 caps in orion-memory-consolidation) from `orion_ask.created_at` since local
 midnight (restart-proof). Opened asks are rows only (no bus event);
-the Hub's ask card reads `orion_ask`. Retention: crops `VISION_CROP_RETENTION_DAYS` (7),
+the Hub's ask card reads `orion_ask`.
+
+**Visual confirmation asks** (2026-10-15, Juniper: "have Orion ask to confirm
+visual things to help them learn"). Two more kinds of ask, opened first each
+tick under their own cap `VISION_CONFIRM_ASK_DAILY_CAP` (6; counted by
+`source_kind='vision_same_individual'` or the `rule:face` evidence ref, so
+`ORION_ASK_DAILY_CAP` stays the 10-sightings rule's budget):
+
+1. *"Are these the same person?"* (`source_kind=vision_same_individual`,
+   `source_ref=<id_a>|<id_b>`, sorted). Two unlabeled-or-half-labeled people,
+   each with >= `VISION_ASK_FACE_MIN_FACES` (5) face crops, whose face
+   centroids are >= `VISION_SAME_ASK_MIN_FACE_COSINE` (0.40) alike. Opened only
+   with both faces (`image_refs`, two thumbs). People Juniper already said are
+   one person count as one (no "X vs A" and "X vs B"). Answer is `yes` / `no`
+   (the Hub refuses anything else; Not sure = dismiss). Each answer writes one
+   `vision_individual_pair_verdict` row with the face similarity at that
+   moment: `same` links the two (no merge, nothing deleted) and carries a name
+   across when exactly one has one; `different` keeps the pair from being asked
+   again. Those rows are the labeled data for calibrating
+   `VISION_INDIVIDUALS_FACE_MATCH_THRESHOLD` (`scripts/report_vision_individuals.py`
+   prints them). The 0.40 band comes from live faces on 2026-10-15: two faces
+   in one frame (known different people) median 0.27, p75 0.41; the same face
+   a few seconds apart median 0.65, p10 0.39.
+2. *"Who is this?" from a face* (`source_kind=vision_individual`, evidence
+   ref `rule:face`). A person with >= `VISION_ASK_FACE_MIN_FACES` face crops
+   is asked about the same day (no 5-day rule), with up to three pictures,
+   face first. Skipped while the person is in an open "same person?" ask, and
+   once per group of people Juniper said are the same (her answer names them
+   all). `VISION_ASK_FACE_MIN_FACES=0` turns both kinds off.
+
+Needs `services/orion-sql-db/manual_migration_vision_confirm_asks_v1.sql`
+(`orion_ask.image_refs`, `vision_individual_pair_verdict`); without it the
+individuals loop backs off with a clear error. Replay eval (read-only on live):
+`evals/run_vision_confirm_asks_replay_eval.py`. Retention: crops `VISION_CROP_RETENTION_DAYS` (7),
 sightings `VISION_SIGHTING_RETENTION_DAYS` (90); unlabeled individuals unseen
 for the sighting retention are deleted, labeled ones stay.
 

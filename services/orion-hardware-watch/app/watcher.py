@@ -42,6 +42,7 @@ from orion.schemas.hardware_watch import (
     HARDWARE_WATCH_REFLEX_SHED_KIND, HardwareWatchIncidentV1, HardwareWatchReflexShedV1, HardwareWatchShedV1,
 )
 from orion.schemas.notify import NotificationRequest
+from orion.schemas.prediction import PredictionForecastV1
 
 from app.settings import Settings
 
@@ -133,6 +134,7 @@ class Watcher:
         self._ac_low: bool | None = None
         self._reflex_sent: str | None = None          # reason last asserted (None = cleared/never)
         self._reflex: dict[str, Any] = {"controller": settings.heat_controller, "active": False, "reason": None}
+        self._forecast: PredictionForecastV1 | None = None   # newest orion-prediction cabinet forecast
         self._baselines: dict[str, _BaselineCache] = {}
         self._last_refresh: dict[str, datetime] = {}
         self._last_shed: dict[str, Any] = {}          # incident_id -> latest ShedVerdict (for the event)
@@ -211,6 +213,28 @@ class Watcher:
             self._cab = read_cabinet_heat([], now, grace_sec=self.s.reading_grace_sec)
         report.verdicts["cabinet"] = self._cab.as_dict()
 
+    def note_forecast(self, fc: PredictionForecastV1) -> bool:
+        """orion:prediction:forecast consumer. Observe-only: the forecast is shown beside every reflex
+        decision (/health, the reflex on/off log line) so its shed probability can be judged against
+        what the 34 C reflex actually did. It never sheds, and never stops a shed."""
+        if fc.series_id != self.s.forecast_series:
+            return False
+        if self._forecast is None or fc.origin_ts >= self._forecast.origin_ts:
+            self._forecast = fc
+        return True
+
+    def forecast_view(self, now: datetime) -> dict[str, Any] | None:
+        fc = self._forecast
+        if fc is None:
+            return None
+        ex = next((e for e in fc.exceedance if e.name == self.s.forecast_threshold), None)
+        age = (now - fc.issued_at).total_seconds()
+        return {"series_id": fc.series_id, "model": fc.model, "served_baseline": fc.served_baseline,
+                "issued_at": fc.issued_at.isoformat(), "age_sec": round(age, 1),
+                "stale": age > self.s.forecast_stale_sec,
+                "threshold": ex.threshold if ex else None, "window_min": ex.window_min if ex else None,
+                "probability": ex.probability if ex else None}
+
     def _cabinet_now(self, now: datetime) -> CabinetHeatReading:
         return self._cab if self._cab is not None else read_cabinet_heat([], now, grace_sec=self.s.reading_grace_sec)
 
@@ -223,7 +247,7 @@ class Watcher:
                         "reason": reason if self.s.shed_enabled else None, "would_shed": reason,
                         "shed_enabled": self.s.shed_enabled, "evaluated_at": now.isoformat(),
                         "valid_until": valid_until.isoformat() if reason and self.s.shed_enabled else None,
-                        "cabinet": reading.as_dict()}
+                        "cabinet": reading.as_dict(), "forecast": self.forecast_view(now)}
         report.verdicts["reflex"] = {k: v for k, v in self._reflex.items() if k != "cabinet"}
         if reason and self.s.shed_enabled:
             sig = HardwareWatchReflexShedV1(source_id=self._reflex_source(), active=True, reason=reason,
@@ -243,9 +267,12 @@ class Watcher:
             return
         self._reflex["active"] = sig.active
         if (reason if sig.active else None) != self._reflex_sent:
-            logger.warning("hardware_watch_reflex_%s reason=%s temp_c=%s state=%s age_sec=%s ac_low=%s",
+            fv = self._reflex.get("forecast") or {}
+            logger.warning("hardware_watch_reflex_%s reason=%s temp_c=%s state=%s age_sec=%s ac_low=%s "
+                           "forecast_p_shed=%s forecast_age_sec=%s",
                            "on" if sig.active else "off", reason or self._reflex_sent, reading.temp_c,
-                           reading.thermal_state, reading.age_sec, reading.ac_low)
+                           reading.thermal_state, reading.age_sec, reading.ac_low, fv.get("probability"),
+                           fv.get("age_sec"))
         self._reflex_sent = reason if sig.active else None
 
     def _reflex_source(self) -> str:

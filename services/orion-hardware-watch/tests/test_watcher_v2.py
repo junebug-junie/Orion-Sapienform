@@ -369,3 +369,37 @@ def test_health_does_not_claim_a_shed_the_bus_never_carried():
     go(w.tick())
     snap = w.reflex_snapshot()
     assert snap["active"] is False and snap["would_shed"] == "cabinet_hot" and "publish_error" in snap
+
+
+# --- orion-prediction forecast beside the reflex (observe-only) --------------------------------
+
+def _forecast(series_id="athena.cabinet_temp_c", issued_sec=0, origin_sec=0, p=0.4):
+    from orion.schemas.prediction import PredictionForecastV1
+    issued = T0 + timedelta(seconds=issued_sec)
+    return PredictionForecastV1(
+        series_id=series_id, model="naive@5+prophet@360", served_baseline=False, run_id="r", issued_at=issued,
+        origin_ts=T0 + timedelta(seconds=origin_sec), grain_min=5, steps=[],
+        exceedance=[{"name": "shed", "threshold": 34.0, "window_min": 30, "probability": p, "n_paths": 40}])
+
+
+def test_forecast_is_shown_beside_the_reflex_and_never_changes_what_it_does():
+    w, store, rec, clock = make()
+    feed_cooling(store, -4000, 1000, varying)
+    cab(store, -1800, 0, 34.2)
+    assert w.note_forecast(_forecast(p=0.05)) is True
+    at(clock, 0)
+    go(w.tick())
+    snap = w.reflex_snapshot()
+    assert snap["forecast"]["probability"] == 0.05 and snap["forecast"]["stale"] is False
+    # A low forecast probability does not stop the reflex: 34.2 C still sheds.
+    assert [(s.active, s.reason) for s in reflex(rec)] == [(True, "cabinet_hot")]
+
+
+def test_forecast_for_another_series_or_an_older_origin_is_ignored_and_old_ones_read_stale():
+    w, store, rec, clock = make()
+    assert w.note_forecast(_forecast(series_id="athena.other")) is False
+    assert w.forecast_view(T0) is None
+    w.note_forecast(_forecast(origin_sec=300, p=0.2))
+    w.note_forecast(_forecast(origin_sec=0, p=0.9))       # out-of-order delivery: keep the newer origin
+    view = w.forecast_view(T0 + timedelta(seconds=1000))
+    assert view["probability"] == 0.2 and view["stale"] is True

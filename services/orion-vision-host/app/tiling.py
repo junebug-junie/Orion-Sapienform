@@ -14,9 +14,12 @@ without torch.
 
 Merge rule, in order:
   1. Every tile box is shifted into full-frame pixels. A tile box is "cut"
-     when it touches a tile edge that is not also an edge of the tiled area
-     (the frame, or tile_region) -- the object probably continues into the
-     next tile. The edges it was cut at are kept.
+     when it touches a tile edge that is not also a frame edge -- the object
+     probably continues into the next tile, or past the edge of tile_region
+     into frame the whole-frame pass covers. The edges it was cut at are
+     kept. (Not treating region edges as cuts double-counted a person
+     standing close: once whole, once clipped at the band edge. Found on
+     Juniper's own walk frames, 2026-10-15.)
   2. A cut box mostly inside a same-label whole box (from the full-frame
      pass or another tile) that reaches past one of those cut edges is a
      fragment of that object: drop it. A whole box that merely contains a
@@ -103,24 +106,17 @@ def tile_layout(
     return tiles
 
 
-def tiles_bounds(tiles: Sequence[Tile]) -> Tuple[int, int, int, int]:
-    """The rectangle the tiles cover together (the tiled area)."""
-    return (min(t.x0 for t in tiles), min(t.y0 for t in tiles),
-            max(t.x1 for t in tiles), max(t.y1 for t in tiles))
-
-
 def to_frame_coords(obj: Dict[str, Any], tile: Tile, frame_w: int, frame_h: int,
-                    edge_margin_frac: float = 0.01,
-                    bounds: Optional[Sequence[int]] = None) -> Dict[str, Any]:
+                    edge_margin_frac: float = 0.01) -> Dict[str, Any]:
     """Copy of a tile-space detection shifted into frame space. ``_cut``
-    is set when the box touches a tile edge inside ``bounds`` (the tiled
-    area; default the whole frame); ``_cut_edges`` lists those edges as
-    (axis, coordinate, direction the object continues: -1 or +1)."""
+    is set when the box touches a tile edge that is not a frame edge;
+    ``_cut_edges`` lists those edges as (axis, coordinate, direction the
+    object continues: -1 or +1)."""
     bx0, by0, bx1, by1 = [float(v) for v in obj["box_xyxy"]]
     fx0, fy0, fx1, fy1 = bx0 + tile.x0, by0 + tile.y0, bx1 + tile.x0, by1 + tile.y0
     fx0, fy0 = max(0.0, fx0), max(0.0, fy0)
     fx1, fy1 = min(float(frame_w), fx1), min(float(frame_h), fy1)
-    ax0, ay0, ax1, ay1 = bounds if bounds is not None else (0, 0, frame_w, frame_h)
+    ax0, ay0, ax1, ay1 = 0, 0, frame_w, frame_h
     mx = max(2.0, edge_margin_frac * tile.width)
     my = max(2.0, edge_margin_frac * tile.height)
     edges = []

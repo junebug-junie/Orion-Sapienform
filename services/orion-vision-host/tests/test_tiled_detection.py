@@ -269,16 +269,32 @@ def test_small_cut_person_inside_big_box_that_stops_at_the_seam_survives() -> No
     assert len(merged) == 2
 
 
-def test_region_outer_edges_are_not_cut() -> None:
+def test_band_edge_is_a_seam_so_a_near_person_is_not_double_counted() -> None:
+    """Regression (Juniper's walk frames, 2026-10-15): a person standing
+    close extends below the tiled band. The band tile reports them clipped
+    at the band's bottom edge; the whole-frame pass reports all of them.
+    Only the whole box may survive."""
     tiles = tile_layout(W, H, (2, 1), 0.2, region=(0.0, 0.15, 1.0, 0.6))
-    from app.tiling import tiles_bounds
+    band_bottom = tiles[0].y1  # 1152
+    whole = {"label": "person", "score": 0.46, "box_xyxy": [1504.0, 549.0, 1831.0, 1914.0]}
+    tile = tiles[1]
+    clipped = to_frame_coords(
+        {"label": "person", "score": 0.52, "box_xyxy": [1508.0 - tile.x0, 569.0 - tile.y0, 1829.0 - tile.x0, band_bottom - 3.0 - tile.y0]},
+        tile, W, H,
+    )
+    assert clipped["_cut"]
+    merged = merge_tiled_detections([whole], [clipped], nms_iou=0.6)
+    assert merged == [whole]
 
-    b = tiles_bounds(tiles)
-    # Touches the band's bottom edge (y=1152), which is not a seam.
-    o = to_frame_coords({"label": "person", "score": 0.5, "box_xyxy": [100.0, 800.0, 140.0, 863.0]}, tiles[0], W, H, bounds=b)
-    assert o["_cut"] is False
-    # Without bounds the same box counts as cut (frame continues below).
-    assert to_frame_coords({"label": "person", "score": 0.5, "box_xyxy": [100.0, 800.0, 140.0, 863.0]}, tiles[0], W, H)["_cut"]
+
+def test_band_edge_clipped_person_survives_when_whole_pass_missed_them() -> None:
+    tiles = tile_layout(W, H, (2, 1), 0.2, region=(0.0, 0.15, 1.0, 0.6))
+    tile = tiles[1]
+    clipped = to_frame_coords(
+        {"label": "person", "score": 0.5, "box_xyxy": [1493.0 - tile.x0, 564.0 - tile.y0, 1831.0 - tile.x0, tile.y1 - 3.0 - tile.y0]},
+        tile, W, H,
+    )
+    assert len(merge_tiled_detections([], [clipped], nms_iou=0.6)) == 1
 
 
 def test_time_budget_skips_remaining_tiles(detect_runner, monkeypatch) -> None:

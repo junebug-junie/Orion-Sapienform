@@ -132,7 +132,7 @@ def main(argv=None) -> int:
 
     from app.detections import cap_by_score, nms
     from app.gdino import detect_images
-    from app.tiling import merge_tiled_detections, tile_layout, tiles_bounds, to_frame_coords
+    from app.tiling import merge_tiled_detections, tile_layout, to_frame_coords
 
     if args.load_truncated:
         ImageFile.LOAD_TRUNCATED_IMAGES = True
@@ -202,7 +202,7 @@ def main(argv=None) -> int:
             for tile, crop in zip(tiles, crops):
                 r, tdt = run([crop])
                 t_total += tdt
-                tile_objs += [to_frame_coords(o, tile, img.width, img.height, bounds=tiles_bounds(tiles)) for o in r[0]]
+                tile_objs += [to_frame_coords(o, tile, img.width, img.height) for o in r[0]]
             if args.batch:
                 _, bdt = run(crops)
                 lat_batch[lay["name"]].append(bdt + (dt if lay["include_full_frame"] else 0.0))

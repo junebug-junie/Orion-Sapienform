@@ -30,7 +30,6 @@ from .gdino import detect_images
 from .tiling import (
     merge_tiled_detections,
     tile_layout,
-    tiles_bounds,
     tiling_params,
     tiling_requested,
     to_frame_coords,
@@ -813,7 +812,6 @@ class VisionRunner:
                 tiling_stats["skipped"] = f"short_side<{min_short}"
             else:
                 tiles = tile_layout(img.width, img.height, tp["grid"], tp["overlap"], tp["region"])
-                bounds = tiles_bounds(tiles)
                 crops = [img.crop(t.as_box()) for t in tiles]
                 t_tiles = time.perf_counter()
                 budget = tp["time_budget_s"]
@@ -830,7 +828,7 @@ class VisionRunner:
                         per_tile.append(detect_images(model, processor, [c], text, box_th, text_th, device, _cast)[0])
                 tiles_s = time.perf_counter() - t_tiles
                 tile_objs = [
-                    to_frame_coords(o, t, img.width, img.height, bounds=bounds)
+                    to_frame_coords(o, t, img.width, img.height)
                     for t, objs in zip(tiles, per_tile)
                     for o in objs
                 ]

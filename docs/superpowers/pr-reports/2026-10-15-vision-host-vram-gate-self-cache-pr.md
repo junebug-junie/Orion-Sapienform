@@ -126,6 +126,6 @@ Pass means: `gpu_hard_floor_refusal_streak` is 0, `last_admit_at` is recent, and
 
 ## PR link
 
-PR_LINK_PLACEHOLDER
+https://github.com/junebug-junie/Orion-Sapienform/pull/2694
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

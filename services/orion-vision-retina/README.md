@@ -111,11 +111,16 @@ It prints one line per frame and exits 1 if any frame is corrupt (`--max-corrupt
 allows 10%). A frame is corrupt when either:
 
 - `smear_fraction` > 0.05: rows copied down the picture, seen as vertical streaks.
-- `gray_fraction` > 0.25: macroblocks filled with flat mid-gray, which FFmpeg paints when it
+- `gray_fraction` > 0.4: macroblocks filled with flat mid-gray, which FFmpeg paints when it
   lost a reference frame.
 
-Clear blue sky and night do not count as gray: the check needs neutral colour and mid
-brightness.
+Clear blue sky and dark night do not count as gray: the check needs neutral colour, one exact
+brightness, and no texture. Overcast sky, fog, or infrared (black and white) night mode can be
+neutral mid-gray; a synthetic overcast top 60% reads 0.20, under the 0.4 limit. The gray limit
+was set from FFmpeg's own concealment output (0.68-0.91), **not from real corrupted camera
+frames**: treat a gray-only failure as a strong hint and look at the frame before acting.
+Half-written newest frames (no JPEG end marker) are skipped and counted as
+`skipped_unreadable`, because a cut-off JPEG decodes with a flat gray bottom.
 
 If it fails, look at the retina logs for `RTP: ... bad cseq` and `error while decoding MB`.
 On 2026-10-15 the walkway camera sent streaked frames over TCP with ~2000 `bad cseq` lines per

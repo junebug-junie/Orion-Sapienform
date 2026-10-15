@@ -9,9 +9,11 @@ Two ways a broken H.264 stream shows up in a frame:
 2. Decoder gray. A reference frame is lost, so FFmpeg's error concealment
    paints the missing picture with mid-gray (Y=Cb=Cr=128, which OpenCV turns
    into YCrCb ~(130, 128, 128)). `gray_fraction` = share of 16x16 macroblocks
-   that are flat (luma std < 1.5), near mid-gray luma (|Y-128| < 8) and
+   that are flat (luma std < 0.6), at that exact gray (|Y-130| < 4) and
    colourless (|Cr-128|, |Cb-128| < 4). Clear sky fails the colour test (blue);
-   night fails the luma test (dark).
+   dark night fails the luma test. Overcast sky, fog and infrared (black and
+   white) night mode can be neutral and mid-gray: they are only kept out by
+   the tight flatness/luma window and the 0.4 frame limit.
 
 A frame is `corrupt` when smear_fraction > --max or gray_fraction > --max-gray.
 
@@ -19,6 +21,10 @@ Smear is measured on a copy scaled down to 640 px wide. Per-pixel change
 shrinks as resolution grows, so on the 2560x1920 walkway frames every strip
 fell under the 2.0 texture floor and was skipped as "flat": streaked frames
 read smear_fraction 0.00 (2026-10-15, after PR #2692).
+
+Frames whose JPEG has no end marker are skipped, not scored: the retina
+writes frames in place, so the newest file can be half-written, and libjpeg
+fills the missing part with flat gray.
 
 Calibration 2026-10-15 (numbers in the fix/retina-smear-eval-gray PR report).
 Gray was NOT measured on real corrupted camera frames (none were on disk);
@@ -42,7 +48,8 @@ import numpy as np
 
 SMEAR_WIDTH = 640
 DEFAULT_MAX_SMEAR = 0.05
-DEFAULT_MAX_GRAY = 0.25
+DEFAULT_MAX_GRAY = 0.4
+GRAY_LUMA = 130.0  # FFmpeg concealment Y=128 (limited range) after OpenCV BGR->YCrCb
 
 
 def smear_fraction(
@@ -82,11 +89,19 @@ def gray_fraction(
     bgr: np.ndarray,
     *,
     block: int = 16,
-    std_max: float = 1.5,
-    luma_tol: float = 8.0,
+    std_max: float = 0.6,
+    luma: float = GRAY_LUMA,
+    luma_tol: float = 4.0,
     chroma_tol: float = 4.0,
 ) -> float:
-    """Fraction of `block`x`block` macroblocks filled with decoder mid-gray."""
+    """Fraction of `block`x`block` macroblocks filled with decoder mid-gray.
+
+    Takes BGR (or a single-channel image, treated as black and white).
+    """
+    if bgr.ndim == 2:
+        bgr = cv2.cvtColor(bgr, cv2.COLOR_GRAY2BGR)
+    elif bgr.shape[2] == 4:
+        bgr = cv2.cvtColor(bgr, cv2.COLOR_BGRA2BGR)
     h, w = bgr.shape[:2]
     h -= h % block
     w -= w % block
@@ -98,7 +113,7 @@ def gray_fraction(
     luma_std = blocks[..., 0].std(axis=(1, 3))
     hit = (
         (luma_std < std_max)
-        & (np.abs(mean[..., 0] - 128.0) < luma_tol)
+        & (np.abs(mean[..., 0] - luma) < luma_tol)
         & (np.abs(mean[..., 1] - 128.0) < chroma_tol)
         & (np.abs(mean[..., 2] - 128.0) < chroma_tol)
     )
@@ -109,16 +124,47 @@ def frame_report(
     bgr: np.ndarray, *, max_smear: float = DEFAULT_MAX_SMEAR, max_gray: float = DEFAULT_MAX_GRAY
 ) -> dict:
     """smear_fraction, gray_fraction and the combined corrupt verdict for one BGR frame."""
-    s = smear_fraction(cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY))
+    luma = bgr if bgr.ndim == 2 else cv2.cvtColor(bgr[..., :3], cv2.COLOR_BGR2GRAY)
+    s = smear_fraction(luma)
     g = gray_fraction(bgr)
     return {"smear_fraction": s, "gray_fraction": g, "corrupt": s > max_smear or g > max_gray}
+
+
+def _positive_int(v: str) -> int:
+    n = int(v)
+    if n < 1:
+        raise argparse.ArgumentTypeError("must be >= 1")
+    return n
+
+
+def _newest(directory: Path, pattern: str, last: int) -> list[Path]:
+    """Newest `last` files by mtime; files deleted mid-listing are dropped."""
+    found = []
+    for p in directory.glob(pattern):
+        try:
+            found.append((p.stat().st_mtime, p))
+        except FileNotFoundError:  # retina cleanup removed it
+            continue
+    found.sort(key=lambda t: t[0])
+    return [p for _, p in found[-last:]]
+
+
+def load_frame(p: Path) -> np.ndarray | None:
+    """Decode a saved frame; None if gone, unreadable, or a JPEG with no end marker."""
+    try:
+        data = p.read_bytes()
+    except OSError:
+        return None
+    if p.suffix.lower() in (".jpg", ".jpeg") and data.rstrip(b"\x00")[-2:] != b"\xff\xd9":
+        return None  # half-written: libjpeg would fill the rest with flat gray
+    return cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_COLOR)
 
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="Find H.264 smear and decoder-gray corruption in saved frames.")
     ap.add_argument("directory")
     ap.add_argument("--glob", default="*.jpg")
-    ap.add_argument("--last", type=int, default=20)
+    ap.add_argument("--last", type=_positive_int, default=20)
     ap.add_argument("--max", type=float, default=DEFAULT_MAX_SMEAR, help="smear_fraction limit per frame")
     ap.add_argument("--max-gray", type=float, default=DEFAULT_MAX_GRAY, help="gray_fraction limit per frame")
     ap.add_argument(
@@ -129,12 +175,13 @@ def main(argv: list[str] | None = None) -> int:
     )
     ap.add_argument("--quiet", action="store_true", help="print the summary line only")
     a = ap.parse_args(argv)
-    files = sorted(Path(a.directory).glob(a.glob), key=lambda p: p.stat().st_mtime)[-a.last :]
-    read = smeared = grayed = corrupt = 0
+    files = _newest(Path(a.directory), a.glob, a.last)
+    read = skipped = smeared = grayed = corrupt = 0
     worst_smear = worst_gray = 0.0
     for p in files:
-        img = cv2.imread(str(p), cv2.IMREAD_COLOR)
+        img = load_frame(p)
         if img is None:
+            skipped += 1
             continue
         read += 1
         r = frame_report(img, max_smear=a.max, max_gray=a.max_gray)
@@ -149,11 +196,11 @@ def main(argv: list[str] | None = None) -> int:
                 f"gray_fraction={r['gray_fraction']:.2f} corrupt={r['corrupt']}"
             )
     if not read:
-        print("no frames matched" if not files else "no frame could be read")
+        print("no frames matched" if not files else f"no frame could be read (skipped={skipped})")
         return 2
     share = corrupt / read
     print(
-        f"frames={read} corrupt={corrupt} ({share:.2f}, max allowed {a.max_corrupt_fraction}) "
+        f"frames={read} skipped_unreadable={skipped} corrupt={corrupt} ({share:.2f}, max allowed {a.max_corrupt_fraction}) "
         f"smeared={smeared} grayed={grayed} "
         f"worst_smear_fraction={worst_smear:.2f} (max {a.max}) "
         f"worst_gray_fraction={worst_gray:.2f} (max {a.max_gray})"

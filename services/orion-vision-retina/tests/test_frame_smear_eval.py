@@ -124,6 +124,34 @@ def test_clean_scenes_pass(name):
     assert not r["corrupt"]
 
 
+def test_decoder_gray_a_few_levels_off_is_still_caught():
+    img = _color_scene()
+    img[64:] = (133, 133, 133)  # re-encoding can shift concealment gray slightly
+    assert frame_report(_jpeg(img))["corrupt"]
+
+
+def _neutral_sky(top_rows, seed=1, h=1920, w=2560):
+    """Overcast/fog: neutral, mid-gray, smooth ramp with sensor noise."""
+    rng = np.random.default_rng(seed)
+    img = _color_scene(h // 4, w // 4, seed=seed)
+    img = cv2.resize(img, (w, h), interpolation=cv2.INTER_LINEAR)
+    ramp = np.linspace(125, 145, top_rows)[:, None, None]
+    sky = ramp + rng.normal(0, 0.8, (top_rows, w, 1))
+    img[:top_rows] = np.clip(sky, 0, 255).astype(np.uint8)
+    return img
+
+
+@pytest.mark.parametrize("share", [0.4, 0.6])  # overcast sky; thick fog
+def test_overcast_or_fog_is_not_decoder_gray(share):
+    r = frame_report(_jpeg(_neutral_sky(int(1920 * share))))
+    assert not r["corrupt"], r
+
+
+def test_grayscale_input_is_accepted():
+    r = frame_report(np.full((480, 640), 130, np.uint8))
+    assert r["gray_fraction"] == 1.0 and r["corrupt"]
+
+
 def test_neutral_but_not_mid_gray_walls_are_not_decoder_gray():
     img = np.zeros((480, 640, 3), np.uint8)
     img[:240] = 200  # flat white wall
@@ -157,6 +185,23 @@ def test_cli_max_corrupt_fraction_tolerates_a_share(tmp_path):
     _three_clean_one_gray(tmp_path)
     assert main([str(tmp_path), "--max-corrupt-fraction", "0.25"]) == 0
     assert main([str(tmp_path), "--max-corrupt-fraction", "0.2"]) == 1
+
+
+def test_cli_skips_half_written_jpeg(tmp_path, capsys):
+    for i in range(2):
+        _write(tmp_path, f"ok_{i}.jpg", _color_scene(seed=i))
+    ok, buf = cv2.imencode(".jpg", _color_scene(seed=5), [int(cv2.IMWRITE_JPEG_QUALITY), 88])
+    (tmp_path / "z_partial.jpg").write_bytes(buf.tobytes()[: len(buf) // 3])
+    # decoded as-is, libjpeg pads the missing part with flat gray
+    partial = cv2.imread(str(tmp_path / "z_partial.jpg"))
+    assert partial is not None and gray_fraction(partial) > 0.4  # would read as corrupt
+    assert main([str(tmp_path)]) == 0
+    assert "skipped_unreadable=1" in capsys.readouterr().out
+
+
+def test_cli_rejects_last_zero(tmp_path):
+    with pytest.raises(SystemExit):
+        main([str(tmp_path), "--last", "0"])
 
 
 def test_cli_clean_frames_exit_zero_and_empty_dir_exits_two(tmp_path):

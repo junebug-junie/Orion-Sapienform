@@ -1,0 +1,43 @@
+services:
+  prediction:
+    logging:
+      driver: journald
+      options:
+        tag: "{{.Name}}"
+    build:
+      context: ../..
+      dockerfile: services/orion-prediction/Dockerfile
+    container_name: ${PROJECT}-prediction
+    restart: unless-stopped
+    networks:
+      - app-net
+    ports:
+      - "${PREDICTION_PORT:-8132}:8132"
+    environment:
+      - PROJECT=${PROJECT}
+      - SERVICE_NAME=${SERVICE_NAME:-orion-prediction}
+      - SERVICE_VERSION=${SERVICE_VERSION:-0.1.0}
+      - NODE_NAME=${NODE_NAME:-athena}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - ORION_BUS_URL=${ORION_BUS_URL}
+      - ORION_BUS_ENABLED=${ORION_BUS_ENABLED:-true}
+      - HEARTBEAT_INTERVAL_SEC=${HEARTBEAT_INTERVAL_SEC:-10}
+      - POSTGRES_URI=${POSTGRES_URI}
+      - PREDICTION_SERIES_PATH=${PREDICTION_SERIES_PATH:-/app/config/prediction/series.v1.yaml}
+      - PREDICTION_ENABLED=${PREDICTION_ENABLED:-true}
+      - PREDICTION_PUBLISH_ENABLED=${PREDICTION_PUBLISH_ENABLED:-true}
+      - PREDICTION_TICK_SEC=${PREDICTION_TICK_SEC:-30}
+      - PREDICTION_SETTLE_SEC=${PREDICTION_SETTLE_SEC:-60}
+      - PREDICTION_SELECT_INTERVAL_SEC=${PREDICTION_SELECT_INTERVAL_SEC:-21600}
+      - PREDICTION_BACKTEST_WINDOWS=${PREDICTION_BACKTEST_WINDOWS:-40}
+      - PREDICTION_BACKTEST_STEP_MIN=${PREDICTION_BACKTEST_STEP_MIN:-180}
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8132/health', timeout=3)\""]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
+
+networks:
+  app-net:
+    external: true

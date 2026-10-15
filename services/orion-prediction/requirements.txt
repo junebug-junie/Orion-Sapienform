@@ -1,0 +1,14 @@
+fastapi==0.115.6
+uvicorn[standard]==0.32.1
+pydantic==2.10.3
+pydantic-settings==2.6.1
+redis[hiredis]==5.0.7
+psycopg[binary,pool]>=3.2.0,<4
+PyYAML>=6.0,<7
+orjson>=3.10,<4
+numpy==2.2.6
+pandas==2.3.3
+scipy==1.18.1
+statsmodels==0.15.0
+statsforecast==2.1.1
+prophet==1.5.0

@@ -4,6 +4,28 @@ Status: DESIGN (2026-10-15). No code yet. Phases 1–2 are ordinary service work
 Phase 3 touches autonomy (Orion runs experiments on its own hardware) and needs
 proposal-mode sign-off before implementation.
 
+## Implementation status (2026-10-15, same PR)
+
+Built: phase 1, the causal machinery of phase 3 (all three levels), and the hardware-watch
+consumer from phase 2. Not built: VAR/VARMAX, LightGBM, Kalman nowcast, foundation models, an
+experiment dispatcher. Where the build departs from the design below, the build wins:
+
+- **Gate is per horizon, against the better of two baselines** (persistence, same-time-yesterday),
+  not seasonal naive alone. Live backtest: persistence MAE 0.07 °C vs seasonal-naive 1.64 °C at
+  5 min, so a seasonal-naive bar passed every model. The served forecast is stitched: naive @5 min,
+  MSTL @15 min, 1-h average @1 h, Prophet @6 h and 24 h (2026-10-15 replay).
+- `gate_horizons` removed: every horizon is gated.
+- Scores live as columns on `prediction_forecast`, not a separate `prediction_score` table.
+- No `orion:prediction:alert` channel: nothing would consume it (metric-lineage gate). Alerts are
+  in `/health`, `/series/{id}/live`, and a `prediction_alerts_changed` log line.
+- No `/forecast` or `/backtest` ad-hoc endpoints: the scoreboard (`/series/{id}/models`) shows
+  the stored backtest; a 6-minute HTTP call is not a useful API.
+- MSTL fits cycles up to 1 day only (weekly STL: ~26 s per fit); Prophet carries weekly.
+- hardware-watch consumes the forecast observe-only: shown beside each reflex decision, never sheds.
+- Intervals: split-conformal per step from residual paths. With n windows the top quantile is the
+  max residual once (n+1)·q ≥ n, so at the default 40 windows the 95 % upper bound is the max
+  observed error (conservative); at 14 the 80 % and 95 % ranges coincide.
+
 ## Arsonist summary
 
 Do not build "a Prophet service". Build a **forecast contract plus a scoring

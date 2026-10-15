@@ -130,6 +130,10 @@ SYNC_PREFIXES = (
     # GPU pool (2026-09-25, stage 3): the pool's own keys and the Gateway's pool-placement keys.
     # Without these the default sync visited both .env files and silently added nothing.
     "GPU_POOL_",
+    # orion-prediction (2026-10-15) and hardware-watch's forecast keys: neither prefix was listed, so a
+    # default sync visited nothing and added nothing.
+    "PREDICTION_",
+    "HARDWARE_WATCH_",
     "LLM_GATEWAY_POOL_",
     "LLM_GATEWAY_EXECUTOR_",
     # Substrate pending-marker reconcilers (2026-09-25): bounded window + full-sweep schedule.
@@ -546,6 +550,8 @@ DEFAULT_SERVICES = (
     "orion-whisper-tts",
     "orion-kev",
     "orion-exo-exploration",
+    "orion-prediction",
+    "orion-hardware-watch",
     # Added 2026-09-08 with the claude_limit producer. Same blind spot as
     # orion-whisper-tts above (PR #1956): the service was absent here AND no
     # SYNC_PREFIXES entry matched any of its keys, so a default invocation

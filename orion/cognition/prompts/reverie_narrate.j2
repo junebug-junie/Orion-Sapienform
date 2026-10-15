@@ -42,7 +42,7 @@ claim, never a list.
 {% endif %}
 
 {% if street_percepts or street_predictions %}
-OUTSIDE, ON THE WALKWAY (the street camera outside the house -- NOT your room):
+OUTSIDE, ON THE WALKWAY ({{ street_camera or "the street camera" }} -- your own eye outside the house, public, NOT your room):
 {% for p in street_percepts or [] %}
 - just now: {{ p.narrative }}
 {% endfor %}
@@ -114,7 +114,7 @@ ALREADY-SETTLED LOOPS (read this before you narrate urgency)
 {% endif %}
 
 {% if street_percepts or street_predictions %}
-OUTSIDE, ON THE WALKWAY (the street camera outside the house -- NOT your room):
+OUTSIDE, ON THE WALKWAY ({{ street_camera or "the street camera" }} -- your own eye outside the house, public, NOT your room):
 {% for p in street_percepts or [] %}
 - just now: {{ p.narrative }}
 {% endfor %}

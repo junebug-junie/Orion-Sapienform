@@ -295,3 +295,33 @@ async def test_expectation_kept_when_the_room_was_offered(monkeypatch):
     thought = await reverie.run_reverie_once(AsyncMock(), broadcast_reader=_broadcast, cortex_client=cortex)
     assert thought.expectation == "The desk lamp will still be on."
     assert thought.expectation_checkable_by is not None
+
+
+def test_street_section_names_orions_own_outdoor_camera(monkeypatch):
+    """2026-10-15: the heading says which eye this is -- Orion's own outdoor
+    camera and what it looks over -- from config, in both prompt branches."""
+    from app import reverie
+
+    monkeypatch.delenv("ORION_CAMERA_DESCRIPTIONS", raising=False)
+    for kwargs in ({}, {"concern_cards": None}):
+        ctx = reverie.build_reverie_context(_broadcast(), street_percepts=STREET, **kwargs)
+        assert ctx["street_camera"] == (
+            "your outdoor camera (walkway), looking over the community walkway, the street and our patio"
+        )
+        text = _render(**ctx)
+        assert (
+            "OUTSIDE, ON THE WALKWAY (your outdoor camera (walkway), looking over the community walkway,"
+            " the street and our patio -- your own eye outside the house, public, NOT your room):"
+        ) in text
+    quiet = reverie.build_reverie_context(_broadcast(), street_percepts=[], street_predictions=[])
+    assert "street_camera" not in quiet
+
+
+def test_street_camera_label_reads_config(monkeypatch):
+    from app import reverie
+
+    monkeypatch.setenv(
+        "ORION_CAMERA_DESCRIPTIONS", json.dumps({"porch": {"name": "the porch eye", "view": "the steps"}})
+    )
+    assert reverie.street_camera_label(["porch"]) == "the porch eye (porch), looking over the steps"
+    assert reverie.street_camera_label(["nobody"]) == "camera nobody (nobody)"

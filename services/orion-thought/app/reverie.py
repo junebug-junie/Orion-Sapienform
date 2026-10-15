@@ -274,6 +274,17 @@ async def build_recent_arcs_text(
     return block.text, list(block.arc_ids)
 
 
+def street_camera_label(stream_ids: list[str]) -> str:
+    """"your outdoor camera (walkway), looking over the community walkway, the
+    street and our patio" -- from ORION_CAMERA_DESCRIPTIONS, never prose here."""
+    from orion.situational.camera_eyes import describe_camera
+
+    sid = next((s for s in stream_ids if s), "walkway")
+    desc = describe_camera(sid)
+    label = f"{desc.name} ({sid})"
+    return f"{label}, looking over {desc.view}" if desc.view else label
+
+
 def build_reverie_context(
     broadcast: AttentionBroadcastProjectionV1,
     *,
@@ -294,6 +305,10 @@ def build_reverie_context(
         street["street_percepts"] = list(street_percepts)
     if street_predictions:
         street["street_predictions"] = list(street_predictions)
+    if street:
+        # Which of Orion's own eyes this is (2026-10-15): without it the
+        # section read as one more sensor feed, not as Orion's camera outside.
+        street["street_camera"] = street_camera_label(settings.reverie_street_stream_id_list)
     if concern_cards:
         coalition_refs = coalition_audit_refs(broadcast)
         ctx: dict[str, Any] = {

@@ -786,3 +786,47 @@ def test_the_grant_script_grants_exactly_the_tables_the_gate_requires() -> None:
     granted = set(re.findall(r"public\.([a-z_]+)", body))
     assert granted == set(SELF_INQUIRY_PG_TABLE_NAMES)
     assert set(LEDGER_TS_COLUMNS) == set(SELF_INQUIRY_PG_TABLE_NAMES)
+
+
+# --- the loop: Orion's eyes in the self-inquiry prompt (2026-10-15) ----------
+
+
+def test_self_senses_are_read_live_per_camera(monkeypatch) -> None:
+    from datetime import timedelta
+
+    from orion.situational import camera_eyes
+    from orion.situational.camera_eyes import CameraEye
+
+    monkeypatch.delenv(camera_eyes.ENV_KEY, raising=False)
+    now = datetime.now(timezone.utc)
+    seen = {}
+
+    def _fetch(streams, **kw):
+        seen["streams"] = list(streams)
+        seen["counted"] = list(kw["count_individuals_for"])
+        return [
+            CameraEye("cam0", now - timedelta(days=50), now - timedelta(seconds=5)),
+            CameraEye("walkway", now - timedelta(hours=3), now - timedelta(hours=2), 4),
+        ]
+
+    monkeypatch.setattr(camera_eyes, "fetch_camera_eyes", _fetch)
+    loop = _self_loop(_FakeBus(), camera_stream_ids=("cam0", "walkway", "cam0"), street_stream_ids=("walkway",))
+    clauses = asyncio.run(loop._read_self_senses())
+    assert seen == {"streams": ["cam0", "walkway"], "counted": ["walkway"]}
+    assert clauses[0].startswith("your room camera (cam0") and clauses[0].endswith("live (a frame within the last 15 min)")
+    # Stale walkway: says so, and drops the count it can no longer vouch for.
+    assert "your outdoor camera (walkway" in clauses[1]
+    assert clauses[1].endswith("not seeing, last frame 2 h ago")
+
+
+def test_self_senses_unread_or_unconfigured_is_no_section(monkeypatch) -> None:
+    from orion.situational import camera_eyes
+
+    monkeypatch.setattr(camera_eyes, "fetch_camera_eyes", lambda *a, **k: None)
+    assert asyncio.run(_self_loop(_FakeBus(), camera_stream_ids=("cam0",))._read_self_senses()) == []
+
+    def _boom(*a, **k):
+        raise AssertionError("must not read")
+
+    monkeypatch.setattr(camera_eyes, "fetch_camera_eyes", _boom)
+    assert asyncio.run(_self_loop(_FakeBus())._read_self_senses()) == []

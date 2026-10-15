@@ -128,8 +128,11 @@ worth narrating.
 ## Reverie street context (walkway camera, 2026-10-15)
 
 Reverie also sees what is outside, on the walkway, as its own prompt section
-("OUTSIDE, ON THE WALKWAY ... NOT your room"), next to the room percepts and
-never merged into them:
+("OUTSIDE, ON THE WALKWAY (your outdoor camera (walkway), looking over ... --
+your own eye outside the house, public, NOT your room)"), next to the room
+percepts and never merged into them. The camera's name and view come from
+`ORION_CAMERA_DESCRIPTIONS` (context key `street_camera`, set only when there
+is a street section):
 
 - **Captions**: the latest distinct walkway narratives from `vision_events`
   (`stream_id` in `ORION_REVERIE_STREET_STREAM_IDS`, default `walkway`), newer

@@ -98,3 +98,19 @@ def test_lived_prompt_prefills_revises_with_the_previous_answer() -> None:
     # Both the early write and the full template carry it -- the early one
     # used to hard-code an empty revises.
     assert text.count('a.revises = "e511d15b9534"') == 2
+
+
+def test_prompt_lists_orions_eyes_when_read_and_nothing_when_not() -> None:
+    """2026-10-15: what Orion can perceive is part of what Orion is made of;
+    v54 named fifteen tables and no eye."""
+    eyes = [
+        "your room camera (cam0, since 2026-08-21; looks at the room where Juniper works): live (a frame within the last 15 min)",
+        "your outdoor camera (walkway, since 2026-10-14; looks at the community walkway, the street and our patio"
+        " -- outside and public, not your room): live (a frame within the last 15 min), 3 individuals seen today",
+    ]
+    text = build_self_inquiry_prompt(question=_anatomy_question(), run_id=RUN, graph_enabled=False, senses=eyes)
+    assert "YOUR EYES, read just now." in text
+    assert f"  - {eyes[1]}" in text
+    assert text.index("WHERE THE RECORDS ARE") < text.index("YOUR EYES")
+    bare = build_self_inquiry_prompt(question=_anatomy_question(), run_id=RUN, graph_enabled=False)
+    assert "YOUR EYES" not in bare

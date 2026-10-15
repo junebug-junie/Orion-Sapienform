@@ -36,10 +36,6 @@ _REPO_ROOT = Path(__file__).resolve().parents[1]
 _MAPPING_PATH = Path(_SCRIPT_DIR) / "service_rebuild_paths.yaml"
 _SERVICES_DIR = "services"
 _ORION_DIR = "orion"
-_IMPORT_RE = re.compile(
-    r"(?:^\s*(?:from|import)\s+orion\.([a-zA-Z_][a-zA-Z0-9_]*(?:\.[a-zA-Z_][a-zA-Z0-9_]*)*))",
-    re.MULTILINE,
-)
 _DOCKERFILE_COPY_ORION_RE = re.compile(r"^\s*COPY\s+orion\b", re.MULTILINE | re.IGNORECASE)
 _COMPOSE_FILE = "docker-compose.yml"
 # Host-side default for ${ORION_HOST_REPO_ROOT:-...} in compose bind mounts.
@@ -48,13 +44,20 @@ _REPO_ROOT_VAR_RE = re.compile(r"^\$\{ORION_HOST_REPO_ROOT(?::?-[^}]*)?\}")
 # "$" too: an unexpanded ARG/ENV reference cannot name a literal repo path.
 _GLOB_CHARS = set("*?[$")
 # Dependency sources that never fan out through the baked/mounted rule:
-# orion/ keeps its own deliberately narrow import-graph policy
-# (service_rebuild_paths.yaml: orion_import_packages), and a whole-repo source
+# orion/ is resolved by the module-level import graph instead (every image
+# COPYs all of orion/, which says nothing about what it imports), and a
+# whole-repo source
 # ("" = repo root) would make every path affect that service. A source that is
 # a whole top-level folder (e.g. `COPY config ...`) is excluded for the same
 # reason: it is not evidence the service reads any particular file under it,
 # and it would put those images on every config/ edit.
 _DEP_SOURCE_EXCLUDED_TOPS = frozenset({"", _ORION_DIR})
+
+# services/<svc>/<dir>/ trees that are offline harnesses, not runtime code:
+# an import from them is not evidence the running image uses that module
+# (orion-memory-consolidation's evals/ import orion.situational.context; its
+# image never runs them).
+_SERVICE_OFFLINE_DIRS = frozenset({"tests", "evals"})
 
 MODE_BUILD = "build"
 MODE_RECREATE = "recreate"
@@ -343,41 +346,238 @@ def dependency_hits(path: str, sources: tuple[DepSource, ...]) -> list[DepSource
     return hits
 
 
-@lru_cache(maxsize=1)
-def build_import_index(repo_root: str) -> dict[str, set[str]]:
-    """Map orion top-level subpackage -> consumers ('service:<name>' or 'orion:<pkg>')."""
+def _is_test_path(parts: tuple[str, ...]) -> bool:
+    """tests/ directories and pytest files never ship as runtime imports."""
+    if "tests" in parts:
+        return True
+    name = parts[-1] if parts else ""
+    return name == "conftest.py" or (name.startswith("test_") and name.endswith(".py"))
+
+
+def _orion_module_name(rel_parts: tuple[str, ...]) -> str:
+    """('orion','a','b.py') -> 'orion.a.b'; ('orion','a','__init__.py') -> 'orion.a'."""
+    parts = list(rel_parts)
+    last = parts[-1][:-3]  # strip .py
+    if last == "__init__":
+        parts = parts[:-1]
+    else:
+        parts[-1] = last
+    return ".".join(parts)
+
+
+_IMPORT_STMT_RE = re.compile(r"^[ \t]*import[ \t]+([^\n#;]+)", re.MULTILINE)
+_FROM_STMT_RE = re.compile(
+    r"^[ \t]*from[ \t]+(\.*)([A-Za-z_][\w.]*)?[ \t]+import[ \t]+(\([^)]*\)|[^\n#;]+)",
+    re.MULTILINE,
+)
+_IDENT_RE = re.compile(r"[A-Za-z_]\w*")
+
+
+def _imported_orion_names(text: str, *, module: str | None, is_package: bool) -> set[str]:
+    """Every orion.* name a file's import statements mention.
+
+    ``from orion.a import b`` yields both ``orion.a`` and ``orion.a.b`` (b may
+    be a submodule). Relative imports are resolved when ``module`` (the file's
+    own dotted name under orion/) is given. Regex, not ast: ast.walk over the
+    ~4.6k files cost ~6s per run; a docstring that happens to start a line with
+    an import statement only over-includes a consumer.
+    """
+    out: set[str] = set()
+    for match in _IMPORT_STMT_RE.finditer(text):
+        for item in match.group(1).split(","):
+            name = item.strip().split()[0] if item.strip() else ""
+            if name == "orion" or name.startswith("orion."):
+                out.add(name)
+    for match in _FROM_STMT_RE.finditer(text):
+        dots, base, names = match.group(1), match.group(2) or "", match.group(3)
+        if dots:
+            if not module:
+                continue
+            pkg_parts = module.split(".") if is_package else module.split(".")[:-1]
+            drop = len(dots) - 1
+            if drop > len(pkg_parts):
+                continue
+            anchor = pkg_parts[: len(pkg_parts) - drop]
+            base = ".".join([*anchor, base] if base else anchor)
+        if base != "orion" and not base.startswith("orion."):
+            continue
+        out.add(base)
+        cleaned = re.sub(r"#[^\n]*", "", names.strip("()"))
+        for item in cleaned.split(","):
+            words = item.split()
+            if words and words[0] != "*" and _IDENT_RE.fullmatch(words[0]):
+                out.add(f"{base}.{words[0]}")
+    return out
+
+
+@dataclass(frozen=True)
+class ImportGraph:
+    """Module-level orion import graph (test files excluded)."""
+
+    # dotted orion module -> True when it is a package (__init__.py)
+    orion_modules: dict[str, bool]
+    # orion module -> orion names it imports
+    orion_imports: dict[str, frozenset[str]]
+    # services/<name> -> orion names its non-test code imports
+    service_imports: dict[str, frozenset[str]]
+
+
+@lru_cache(maxsize=4)
+def build_import_graph(repo_root: str) -> ImportGraph:
     root = Path(repo_root)
-    index: dict[str, set[str]] = {}
-
-    def add(imported: str, consumer: str) -> None:
-        top = imported.split(".", 1)[0]
-        index.setdefault(top, set()).add(consumer)
-
-    for py_file in (root / _SERVICES_DIR).rglob("*.py"):
-        parts = py_file.parts
-        if _SERVICES_DIR not in parts:
-            continue
-        svc_idx = parts.index(_SERVICES_DIR) + 1
-        if svc_idx >= len(parts):
-            continue
-        service = parts[svc_idx]
-        text = py_file.read_text(encoding="utf-8", errors="replace")
-        for match in _IMPORT_RE.finditer(text):
-            add(match.group(1), f"service:{service}")
+    orion_modules: dict[str, bool] = {}
+    orion_imports: dict[str, frozenset[str]] = {}
+    service_imports: dict[str, set[str]] = {}
 
     for py_file in (root / _ORION_DIR).rglob("*.py"):
-        parts = py_file.parts
-        if _ORION_DIR not in parts:
+        rel = py_file.relative_to(root).parts
+        if _is_test_path(rel):
             continue
-        pkg_idx = parts.index(_ORION_DIR) + 1
-        if pkg_idx >= len(parts):
-            continue
-        pkg = parts[pkg_idx]
+        module = _orion_module_name(rel)
+        is_package = rel[-1] == "__init__.py"
+        orion_modules[module] = is_package
         text = py_file.read_text(encoding="utf-8", errors="replace")
-        for match in _IMPORT_RE.finditer(text):
-            add(match.group(1), f"orion:{pkg}")
+        orion_imports[module] = frozenset(_imported_orion_names(text, module=module, is_package=is_package))
 
-    return index
+    for py_file in (root / _SERVICES_DIR).rglob("*.py"):
+        rel = py_file.relative_to(root).parts
+        if len(rel) < 3 or _is_test_path(rel) or _SERVICE_OFFLINE_DIRS.intersection(rel[2:-1]):
+            continue
+        text = py_file.read_text(encoding="utf-8", errors="replace")
+        names = _imported_orion_names(text, module=None, is_package=False)
+        if names:
+            service_imports.setdefault(rel[1], set()).update(names)
+
+    return ImportGraph(
+        orion_modules=orion_modules,
+        orion_imports=orion_imports,
+        service_imports={svc: frozenset(n) for svc, n in service_imports.items()},
+    )
+
+
+def _executed_modules(names: frozenset[str] | set[str], modules: dict[str, bool]) -> set[str]:
+    """orion modules whose code runs when ``names`` are imported.
+
+    Importing orion.a.b runs orion/__init__.py and orion/a/__init__.py too, so
+    every existing ancestor package counts. Names that are not modules
+    (``from orion.a.b import SomeClass`` also yields ``orion.a.b.SomeClass``)
+    resolve to their nearest existing module.
+    """
+    out: set[str] = set()
+    for name in names:
+        parts = name.split(".")
+        for i in range(1, len(parts) + 1):
+            prefix = ".".join(parts[:i])
+            if prefix in modules:
+                out.add(prefix)
+    return out
+
+
+@lru_cache(maxsize=4)
+def _reverse_edges(repo_root: str) -> tuple[dict[str, frozenset[str]], dict[str, frozenset[str]]]:
+    """(module -> orion modules that run it, module -> services that run it)."""
+    graph = build_import_graph(repo_root)
+    by_module: dict[str, set[str]] = {}
+    by_service: dict[str, set[str]] = {}
+    for importer, names in graph.orion_imports.items():
+        for mod in _executed_modules(names, graph.orion_modules):
+            if mod != importer:
+                by_module.setdefault(mod, set()).add(importer)
+    for svc, names in graph.service_imports.items():
+        for mod in _executed_modules(names, graph.orion_modules):
+            by_service.setdefault(mod, set()).add(svc)
+    return (
+        {k: frozenset(v) for k, v in by_module.items()},
+        {k: frozenset(v) for k, v in by_service.items()},
+    )
+
+
+def _top_package(module: str) -> str:
+    return ".".join(module.split(".")[:2])
+
+
+def module_service_consumers(
+    target: str,
+    repo_root: str,
+    *,
+    whole_package: bool = False,
+    hops: int = 1,
+    barriers: frozenset[str] = frozenset(),
+) -> tuple[set[str], set[str]]:
+    """(services, orion modules walked through) whose runtime code runs ``target``.
+
+    Walk, over reverse import edges:
+      1. every module of ``target``'s own top-level package that reaches it,
+         however deep (a package is one unit: orion.curiosity.worldview <-
+         atlas <- write_stamp is still "curiosity");
+      2. then ``hops`` hops into other packages (orion.harness.fcc_motor
+         imports orion.curiosity.write_stamp).
+    Services importing any walked module are consumers. A module in
+    ``barriers`` is a consumer itself but is never walked through.
+
+    Measured on the last 10 merges to main: an unbounded walk reaches 59-84
+    services for an ordinary orion.situational / orion.schemas edit, almost
+    all through orion.schemas.registry -> orion.core.bus.async_service.
+    ``whole_package`` treats every module under ``target`` as changed (a data
+    file read by its package).
+    """
+    graph = build_import_graph(repo_root)
+    by_module, by_service = _reverse_edges(repo_root)
+    if whole_package:
+        prefix = target + "."
+        start = {m for m in graph.orion_modules if m == target or m.startswith(prefix)}
+        start.add(target)
+    else:
+        start = {target}
+    pkg = _top_package(target)
+
+    def importers(modules: set[str]) -> set[str]:
+        return {imp for mod in modules if mod not in barriers for imp in by_module.get(mod, ())}
+
+    seen = set(start)
+    frontier = set(start)
+    while frontier:  # 1. closure inside the changed module's own package
+        frontier = {m for m in importers(frontier) if _top_package(m) == pkg} - seen
+        seen |= frontier
+    frontier = set(seen)
+    for _ in range(max(0, hops)):  # 2. hops into other packages
+        frontier = importers(frontier) - seen
+        if not frontier:
+            break
+        seen |= frontier
+    services = {svc for mod in seen for svc in by_service.get(mod, ())}
+    return services, seen - start
+
+
+def _orion_targets_for_path(
+    path: str,
+    data_readers: dict[str, list[str]],
+) -> tuple[list[tuple[str, bool]], str]:
+    """([(dotted target, whole_package)], label) a changed orion/ path maps to.
+
+    A .py file maps to its own module. A non-Python file (verb YAML, prompt
+    template) has no import edge, so it maps to the modules that read it:
+    an explicit ``orion_data_readers`` entry when one matches, else every
+    module of its top-level orion/<pkg>/ (loaders read data from their own
+    package tree, e.g. orion/cognition/plan_loader.py -> cognition/prompts/).
+    Empty list when the file sits directly under orion/.
+    """
+    parts = tuple(path.split("/"))
+    if path.endswith(".py"):
+        module = _orion_module_name(parts)
+        kind = "package" if parts[-1] == "__init__.py" else "module"
+        return [(module, False)], f"{module} ({kind})"
+    best = ""
+    for prefix in data_readers:
+        if _path_matches_prefix(path, prefix) and len(prefix) > len(best):
+            best = prefix
+    if best:
+        readers = list(data_readers[best])
+        return [(m, False) for m in readers], f"data file read by {', '.join(readers)}"
+    if len(parts) < 3:
+        return [], ""
+    pkg = ".".join(parts[:2])
+    return [(pkg, True)], f"data file in {pkg} (whole package)"
 
 
 def _load_service_list_file(path: Path) -> set[str]:
@@ -449,15 +649,6 @@ def _load_excludes(repo_root: Path) -> set[str]:
     return _load_service_list_file(path)
 
 
-def _orion_package_from_path(path: str) -> str | None:
-    if not path.startswith(f"{_ORION_DIR}/"):
-        return None
-    rest = path[len(_ORION_DIR) + 1 :]
-    if not rest:
-        return None
-    return rest.split("/", 1)[0]
-
-
 def _service_from_path(path: str) -> str | None:
     if not path.startswith(f"{_SERVICES_DIR}/"):
         return None
@@ -465,28 +656,6 @@ def _service_from_path(path: str) -> str | None:
     if not rest:
         return None
     return rest.split("/", 1)[0]
-
-
-def _direct_and_one_hop_service_consumers(
-    pkg: str,
-    import_index: dict[str, set[str]],
-) -> set[str]:
-    """Services importing orion.<pkg>, plus services importing orion modules that import pkg."""
-    services: set[str] = set()
-    orion_hops: set[str] = set()
-
-    for consumer in import_index.get(pkg, ()):
-        if consumer.startswith("service:"):
-            services.add(consumer.split(":", 1)[1])
-        elif consumer.startswith("orion:"):
-            orion_hops.add(consumer.split(":", 1)[1])
-
-    for hop_pkg in orion_hops:
-        for consumer in import_index.get(hop_pkg, ()):
-            if consumer.startswith("service:"):
-                services.add(consumer.split(":", 1)[1])
-
-    return services
 
 
 def _path_matches_prefix(path: str, prefix: str) -> bool:
@@ -500,21 +669,26 @@ def resolve_affected_services(
     mesh_host: str | None = None,
 ) -> ResolveResult:
     root = (repo_root or _REPO_ROOT).resolve()
+    if _MAPPING_PATH.exists():
+        try:
+            import yaml  # type: ignore  # noqa: F401
+        except ImportError as exc:
+            # Without the mapping every skip/fleet-wide rule vanishes and a
+            # channels.yaml edit would rebuild the whole COPY-orion fleet.
+            raise RuntimeError(f"PyYAML is required to read {_MAPPING_PATH.name}") from exc
     mapping = _load_yaml(_MAPPING_PATH)
     known_services = discover_services(root)
-    import_index = build_import_index(str(root))
     orion_copy_services = set(services_copying_orion(str(root)))
-    contract_prefixes = list(mapping.get("contract_paths") or ["orion/bus/", "orion/schemas/"])
+    contract_raw = mapping.get("contract_paths")
+    contract_prefixes = list(["orion/bus/", "orion/schemas/"] if contract_raw is None else contract_raw)
+    fleet_wide_paths: dict[str, str] = mapping.get("fleet_wide_paths") or {}
+    import_hops = int(mapping.get("orion_import_hops", 1))
+    data_readers: dict[str, list[str]] = mapping.get("orion_data_readers") or {}
+    import_barriers = frozenset(mapping.get("orion_import_barriers") or [])
     skip_prefixes = list(mapping.get("skip_prefixes") or [])
     skip_exact = set(mapping.get("skip_exact") or [])
     script_services: dict[str, list[str]] = mapping.get("script_services") or {}
     orion_extra: dict[str, list[str]] = mapping.get("orion_package_extra_services") or {}
-    orion_import_packages_raw = mapping.get("orion_import_packages")
-    if orion_import_packages_raw is None:
-        orion_import_allowlist: set[str] | None = None
-    else:
-        orion_import_allowlist = set(orion_import_packages_raw)
-
     dep_sources = build_dependency_sources(str(root))
 
     affected: set[str] = set()
@@ -523,7 +697,9 @@ def resolve_affected_services(
     reasons: dict[str, str] = {}
 
     for raw_path in paths:
-        path = raw_path.replace("\\", "/").lstrip("./")
+        path = raw_path.replace("\\", "/")
+        while path.startswith("./"):
+            path = path[2:]
 
         # Baked (COPY/ADD) or bind-mounted repo paths. Checked before the skip
         # rules: config/ is skipped for the generic rule but is exactly what
@@ -551,6 +727,10 @@ def resolve_affected_services(
             note("repo metadata (no runtime rebuild)", skip=True)
             continue
 
+        if path in fleet_wide_paths:
+            note(f"read by every bus service; not auto-rebuilt ({fleet_wide_paths[path]})", skip=True)
+            continue
+
         matched_skip = False
         for prefix in skip_prefixes:
             if _path_matches_prefix(path, prefix):
@@ -558,8 +738,7 @@ def resolve_affected_services(
                 matched_skip = True
                 break
         if not matched_skip and path.startswith(f"{_ORION_DIR}/"):
-            parts = path.split("/")
-            if len(parts) >= 3 and parts[2] == "tests":
+            if _is_test_path(tuple(path.split("/"))):
                 note("orion package tests (no auto rebuild)", skip=True)
                 matched_skip = True
         if matched_skip:
@@ -574,25 +753,52 @@ def resolve_affected_services(
                 note(f"unknown service directory {service!r}", skip=True)
             continue
 
-        if contract_prefixes and any(_path_matches_prefix(path, p) for p in contract_prefixes):
-            for svc in orion_copy_services:
-                affected.add(svc)
-            note("contract path → all services with COPY orion", skip=False)
-            continue
-
-        orion_pkg = _orion_package_from_path(path)
-        if orion_pkg:
-            if orion_import_allowlist is not None and orion_pkg not in orion_import_allowlist:
+        if path.startswith(f"{_ORION_DIR}/"):
+            if path.endswith(".md"):
+                note("orion markdown docs (no auto rebuild)", skip=True)
+                continue
+            in_contract = any(_path_matches_prefix(path, p) for p in contract_prefixes)
+            targets, label = _orion_targets_for_path(path, data_readers)
+            if in_contract and not path.endswith(".py") and not any(
+                _path_matches_prefix(path, p) for p in data_readers
+            ):
+                # The import graph only sees .py modules. A data file under a
+                # contract root (orion/bus/, orion/schemas/) has no import edge
+                # to its readers, so fall back to every image that bakes orion.
+                for svc in orion_copy_services:
+                    affected.add(svc)
+                message = "non-Python contract file, readers unresolvable → all services with COPY orion"
+                print(f"rebuild_affected_services: {path}: {message}", file=sys.stderr)
+                note(message, skip=False)
+                continue
+            if not targets:
+                note("file directly under orion/ (rebuild manually if needed)", skip=True)
+                continue
+            consumers: set[str] = set()
+            hop_modules: set[str] = set()
+            for module, whole_package in targets:
+                found, hops_seen = module_service_consumers(
+                    module,
+                    str(root),
+                    whole_package=whole_package,
+                    hops=import_hops,
+                    barriers=import_barriers,
+                )
+                consumers |= found
+                hop_modules |= hops_seen
+            top_pkg = path.split("/")[1]
+            consumers.update(orion_extra.get(top_pkg, []))
+            if consumers:
+                for svc in consumers:
+                    affected.add(svc)
+                via = f", via {len(hop_modules)} orion module(s)" if hop_modules else ""
+                note(f"{label} → importers (own package + {import_hops} package hop(s)){via}", skip=False)
+            else:
                 note(
-                    f"orion/{orion_pkg}/ not in orion_import_packages (direct services/ changes only)",
+                    f"{label}: no service imports it (own package + {import_hops} package hop(s)) "
+                    "(rebuild manually, or add orion_data_readers / orion_package_extra_services)",
                     skip=True,
                 )
-                continue
-            for svc in _direct_and_one_hop_service_consumers(orion_pkg, import_index):
-                affected.add(svc)
-            for svc in orion_extra.get(orion_pkg, []):
-                affected.add(svc)
-            note(f"orion/{orion_pkg}/ → direct import + one orion hop", skip=False)
             continue
 
         if path.startswith("scripts/"):
@@ -820,7 +1026,11 @@ def main(argv: list[str] | None = None) -> int:
         print(f"rebuild_affected_services: ERROR: {exc}", file=sys.stderr)
         return 2
 
-    result = resolve_affected_services(paths, repo_root, mesh_host=args.host)
+    try:
+        result = resolve_affected_services(paths, repo_root, mesh_host=args.host)
+    except RuntimeError as exc:
+        print(f"rebuild_affected_services: ERROR: {exc}", file=sys.stderr)
+        return 2
     _emit_host_summary(result)
 
     if args.json:

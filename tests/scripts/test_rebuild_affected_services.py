@@ -69,10 +69,169 @@ def test_orion_bus_contract_broadcast() -> None:
     assert "orion/bus/channels.yaml" in payload["skipped"]
 
 
-def test_orion_graph_not_in_import_allowlist() -> None:
-    payload = _resolve(["orion/graph/analytics.py"], ROOT)
+def test_any_orion_package_fans_out_through_the_import_graph() -> None:
+    """The old orion_import_packages allowlist (curiosity only) is gone."""
+    payload = _resolve(["orion/graph/analytics.py"], ROOT, host="athena")
+    assert "orion/graph/analytics.py" not in payload["skipped"]
+    assert payload["reasons"]["orion/graph/analytics.py"].startswith("orion.graph.analytics (module)")
+
+
+def test_pr2684_shared_code_rebuilds_its_importers() -> None:
+    """#2684 changed only orion/situational + orion/schemas and rebuilt nothing."""
+    paths = [
+        "orion/situational/perception_reader.py",
+        "orion/schemas/situation.py",
+        "orion/situational/tests/test_street_summary.py",
+        "docs/superpowers/pr-reports/2026-10-15-walkway-street-into-mind-pr.md",
+    ]
+    payload = _resolve(paths, ROOT, host="athena")
+    assert "orion-cortex-exec" in payload["services"], payload["reasons"]
+    assert "orion-hub" in payload["services"], payload["reasons"]
+    # Importers only -- not the 60+ COPY-orion fleet.
+    assert len(payload["services"]) < 10, payload["services"]
+    assert "orion/schemas/situation.py" not in payload["skipped"]
+
+
+def test_orion_tests_select_nothing() -> None:
+    paths = [
+        "orion/situational/tests/test_street_summary.py",
+        "orion/core/bus/tests/test_anything.py",
+        "orion/curiosity/test_loose_file.py",
+        "orion/curiosity/conftest.py",
+    ]
+    payload = _resolve(paths, ROOT, host="athena")
     assert payload["services"] == []
-    assert "not in orion_import_packages" in payload["reasons"]["orion/graph/analytics.py"]
+    for path in paths:
+        assert payload["reasons"][path] == "orion package tests (no auto rebuild)"
+
+
+def test_orion_markdown_selects_nothing() -> None:
+    payload = _resolve(["orion/curiosity/README.md"], ROOT, host="athena")
+    assert payload["services"] == []
+
+
+def _orion_graph_repo(root: Path) -> None:
+    """orion.schemas.alpha <- orion.hubmod <- orion.farmod; one service per edge."""
+    files = {
+        "orion/__init__.py": "",
+        "orion/schemas/__init__.py": "",
+        "orion/schemas/alpha.py": "X = 1\n",
+        "orion/schemas/beta.py": "Y = 1\n",
+        "orion/schemas/gamma.json": "{}\n",
+        "orion/hubmod/__init__.py": "",
+        "orion/hubmod/core.py": "from orion.schemas.alpha import X\n",
+        "orion/hubmod/rel.py": "from ..schemas import beta\n",
+        "orion/farmod/__init__.py": "from orion.hubmod.core import X\n",
+        "orion/datapkg/__init__.py": "",
+        "orion/datapkg/loader.py": "LOADER = 1\n",
+        "orion/datapkg/prompts/thing.j2": "hi\n",
+    }
+    for rel, text in files.items():
+        (root / rel).parent.mkdir(parents=True, exist_ok=True)
+        (root / rel).write_text(text)
+    imports = {
+        "svc-direct": "from orion.schemas.alpha import X\n",
+        "svc-one-hop": "import orion.hubmod.core\n",
+        "svc-two-hops": "from orion.farmod import X\n",
+        "svc-other-schema": "from orion.schemas import beta\n",
+        "svc-rel-hop": "from orion.hubmod import rel\n",
+        "svc-loader": "from orion.datapkg.loader import LOADER\n",
+        "svc-evals-only": None,
+    }
+    for name, text in imports.items():
+        svc = root / "services" / name
+        (svc / "app").mkdir(parents=True)
+        (svc / "docker-compose.yml").write_text("services: {}\n")
+        (svc / "Dockerfile").write_text("FROM python:3.12\nCOPY orion /app/orion\n")
+        if text is not None:
+            (svc / "app" / "main.py").write_text(text)
+    evals = root / "services" / "svc-evals-only"
+    (evals / "evals").mkdir()
+    (evals / "evals" / "run_eval.py").write_text("from orion.schemas.alpha import X\n")
+    (evals / "tests").mkdir()
+    (evals / "tests" / "test_x.py").write_text("from orion.schemas.alpha import X\n")
+
+
+def test_schema_module_selects_only_its_importers(mini_repo: Path) -> None:
+    _orion_graph_repo(mini_repo)
+    payload = _resolve(["orion/schemas/alpha.py"], mini_repo, host="athena")
+    # Direct importer + importer of a module that imports it (one hop).
+    # Not two hops, not a sibling schema's importer, not evals/tests-only.
+    assert payload["services"] == ["svc-direct", "svc-one-hop"], payload["reasons"]
+
+
+def test_own_package_closure_then_one_hop_and_registry_barrier(mini_repo: Path) -> None:
+    """A package is one unit (deep intra-package chains count); the schema
+    registry is a consumer but never walked through (it reaches every bus
+    service via orion.core.bus)."""
+    _orion_graph_repo(mini_repo)
+    extra = {
+        "orion/schemas/delta.py": "from orion.schemas.alpha import X\n",
+        "orion/schemas/eps.py": "from orion.schemas.delta import X\n",
+        "orion/otherpkg/__init__.py": "",
+        "orion/otherpkg/deep.py": "from orion.schemas.eps import X\n",
+        "orion/schemas/registry.py": "from orion.schemas.alpha import X\n",
+        "orion/core/__init__.py": "",
+        "orion/core/bus.py": "import orion.schemas.registry\n",
+    }
+    for rel, text in extra.items():
+        (mini_repo / rel).parent.mkdir(parents=True, exist_ok=True)
+        (mini_repo / rel).write_text(text)
+    for name, text in {
+        "svc-deep": "from orion.otherpkg.deep import X\n",
+        "svc-registry": "from orion.schemas.registry import X\n",
+        "svc-bus": "import orion.core.bus\n",
+    }.items():
+        svc = mini_repo / "services" / name
+        (svc / "app").mkdir(parents=True)
+        (svc / "docker-compose.yml").write_text("services: {}\n")
+        (svc / "app" / "main.py").write_text(text)
+    payload = _resolve(["orion/schemas/alpha.py"], mini_repo, host="athena")
+    assert payload["services"] == ["svc-deep", "svc-direct", "svc-one-hop", "svc-registry"], payload["reasons"]
+
+
+def test_relative_import_counts_as_an_edge(mini_repo: Path) -> None:
+    _orion_graph_repo(mini_repo)
+    payload = _resolve(["orion/schemas/beta.py"], mini_repo, host="athena")
+    assert payload["services"] == ["svc-other-schema", "svc-rel-hop"], payload["reasons"]
+
+
+def test_package_init_change_reaches_every_submodule_importer(mini_repo: Path) -> None:
+    _orion_graph_repo(mini_repo)
+    payload = _resolve(["orion/hubmod/__init__.py"], mini_repo, host="athena")
+    # farmod imports orion.hubmod.core, which runs orion/hubmod/__init__.py: one hop.
+    assert payload["services"] == ["svc-one-hop", "svc-rel-hop", "svc-two-hops"], payload["reasons"]
+
+
+def test_data_file_maps_to_its_top_level_package(mini_repo: Path) -> None:
+    _orion_graph_repo(mini_repo)
+    payload = _resolve(["orion/datapkg/prompts/thing.j2"], mini_repo, host="athena")
+    assert payload["services"] == ["svc-loader"], payload["reasons"]
+
+
+def test_unresolvable_contract_data_file_falls_back_to_copy_orion_fleet(mini_repo: Path) -> None:
+    _orion_graph_repo(mini_repo)
+    proc = subprocess.run(
+        [sys.executable, str(MODULE), "--paths", "orion/schemas/gamma.json", "--json",
+         "--repo-root", str(mini_repo), "--host", "athena"],
+        capture_output=True, text=True, timeout=120,
+    )
+    assert proc.returncode == 0, proc.stderr
+    payload = json.loads(proc.stdout)
+    assert len(payload["services"]) == 7
+    assert "readers unresolvable" in proc.stderr
+
+
+def test_recall_profiles_rebuild_their_cross_package_readers() -> None:
+    payload = _resolve(["orion/recall/profiles/chat.general.v1.yaml"], ROOT, host="athena")
+    assert "orion-cortex-exec" in payload["services"], payload["reasons"]
+
+
+def test_dot_prefixed_paths_are_not_mangled() -> None:
+    payload = _resolve([".github/workflows/x.yml", "./.env"], ROOT, host="athena")
+    assert payload["services"] == []
+    assert payload["reasons"][".github/workflows/x.yml"] == "under .github (no auto rebuild)"
+    assert ".env" in payload["reasons"]
 
 
 def test_exclude_services_respected(mini_repo: Path) -> None:
@@ -137,7 +296,7 @@ def test_sample_pull_diff(mini_repo: Path) -> None:
         service = mini_repo / "services" / name
         service.mkdir()
         (service / "docker-compose.yml").write_text("services: {}\n")
-        (service / "consumer.py").write_text("import orion.curiosity\n")
+        (service / "consumer.py").write_text("import orion.curiosity.worldview\n")
     payload = _resolve(
         [
             "orion/curiosity/worldview.py",

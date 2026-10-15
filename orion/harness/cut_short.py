@@ -86,6 +86,8 @@ _REASON_TEXT = {
 _TEXT_CAP = 600
 _TOOL_RESULT_CAP = 300
 _TOOL_ARGS_CAP = 160
+_CORRECTION_RESULTS_MAX = 50
+_CORRECTION_RESULT_CAP = 2000
 _LAST_TEXT_CAP = 4000
 # Total budget for the findings section. Finalize/reflect/repair read this
 # draft, so it must stay far below a lane window; the tail is kept because the
@@ -135,6 +137,10 @@ class TurnFindings:
     tool_calls: dict[str, str] = field(default_factory=dict)
     tool_result_count: int = 0
     last_text_entry_index: int | None = None
+    # Bodies of this turn's `record_correction` results ONLY, unscrubbed (an id and a status,
+    # no secrets), so claim_gate can check a claimed correction_id against what the tool really
+    # returned. Not capped by turn length: a long turn cannot push the one real result out.
+    correction_results: list[str] = field(default_factory=list)
 
     def observe(self, step: Any) -> None:
         if not isinstance(step, dict):
@@ -176,6 +182,8 @@ class TurnFindings:
                 if not body:
                     body = "(empty result)"
                 self.tool_result_count += 1
+                if "record_correction" in call and len(self.correction_results) < _CORRECTION_RESULTS_MAX:
+                    self.correction_results.append(body[:_CORRECTION_RESULT_CAP])
                 self.entries.append(
                     f"- {call}{err} returned: {_one_line(scrub_secrets(body), _TOOL_RESULT_CAP)}"
                 )

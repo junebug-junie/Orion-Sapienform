@@ -132,7 +132,7 @@ def main(argv=None) -> int:
         frames = frames[: args.limit]
     args.out.mkdir(parents=True, exist_ok=True)
     # Warm-up (first forward pays allocator/kernel setup).
-    run([Image.open(frames[0]).convert("RGB")])
+    run([Image.new("RGB", (2560, 1920))])
 
     per_frame = []
     totals = {"single": Counter(), **{l["name"]: Counter() for l in layouts}}
@@ -140,8 +140,14 @@ def main(argv=None) -> int:
     lost = {l["name"]: Counter() for l in layouts}
     lat = {"single": [], **{l["name"]: [] for l in layouts}}
     lat_batch = {l["name"]: [] for l in layouts}
+    skipped = []
     for f in frames:
-        img = Image.open(f).convert("RGB")
+        try:
+            img = Image.open(f).convert("RGB")
+        except OSError as exc:  # e.g. a frame copied while the camera was still writing it
+            skipped.append(f.name)
+            print(f"{f.name} SKIPPED unreadable: {exc}", flush=True)
+            continue
         raw, dt = run([img])
         single = cap_by_score(nms(raw[0], nms_iou), max_det)
         lat["single"].append(dt)
@@ -194,7 +200,8 @@ def main(argv=None) -> int:
                 "max_s": round(max(xs), 3)} if xs else None
 
     summary = {
-        "frames": len(frames),
+        "frames": len(frames) - len(skipped),
+        "skipped_unreadable": skipped,
         "device": args.device,
         "prompts": prompts,
         "box_threshold": box_th,

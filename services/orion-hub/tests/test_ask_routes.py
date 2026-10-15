@@ -585,4 +585,36 @@ def test_answer_sql_enforces_yes_no_for_same_person_cards(env):
     client.post("/api/asks/a1/answer", json={"answer": "Bob"})
     pool = client.app.state.memory_pg_pool
     upd = next(q for q in pool.conn.sql if q.lstrip().startswith("UPDATE"))
-    assert "source_kind <> $5 OR $3 IS NULL OR $3 = ANY($6::text[])" in upd
+    assert "source_kind <> $5::text OR $3::text IS NULL OR $3::text = ANY($6::text[])" in upd
+
+
+@pytest.mark.skipif(not __import__("os").getenv("ORION_TEST_PG_URI"),
+                    reason="ORION_TEST_PG_URI not set (throwaway Postgres with the walkway migrations only)")
+def test_close_ask_sql_runs_on_real_postgres():
+    """The fake pool never sends SQL to Postgres; this does. A statement Postgres
+    cannot prepare broke every Answer/Dismiss in review."""
+    import asyncio
+    import os
+
+    asyncpg = pytest.importorskip("asyncpg")
+    dsn = os.environ["ORION_TEST_PG_URI"].replace("postgresql+psycopg2://", "postgresql://")
+
+    async def go():
+        conn = await asyncpg.connect(dsn)
+        try:
+            await conn.execute("DELETE FROM orion_ask WHERE ask_id LIKE 'sqltest-%'")
+            for aid, kind in (("sqltest-p1", "vision_same_individual"), ("sqltest-p2", "vision_same_individual"),
+                              ("sqltest-p3", "vision_same_individual"), ("sqltest-w1", "vision_individual")):
+                await conn.execute("INSERT INTO orion_ask (ask_id, question, source_kind, source_ref) "
+                                   "VALUES ($1, 'q', $2, $1)", aid, kind)
+            args = (list(ask_routes.RESOLVABLE_KINDS), ask_routes.SAME_INDIVIDUAL_KIND, list(ask_routes.YES_NO_ANSWERS))
+            run = lambda aid, st, ans: conn.fetchrow(ask_routes.CLOSE_ASK_SQL, aid, st, ans, *args)  # noqa: E731
+            assert (await run("sqltest-p1", "answered", "yes"))["answer"] == "yes"
+            assert await run("sqltest-p2", "answered", "maybe") is None
+            assert (await run("sqltest-p3", "dismissed", None))["status"] == "dismissed"
+            assert (await run("sqltest-w1", "answered", "Bob"))["answer"] == "Bob"
+            await conn.execute("DELETE FROM orion_ask WHERE ask_id LIKE 'sqltest-%'")
+        finally:
+            await conn.close()
+
+    asyncio.run(go())

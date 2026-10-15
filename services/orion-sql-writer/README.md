@@ -417,10 +417,11 @@ tick under their own cap `VISION_CONFIRM_ASK_DAILY_CAP` (6; counted by
    centroids are >= `VISION_SAME_ASK_MIN_FACE_COSINE` (0.40) alike. Opened only
    with both faces (`image_refs`, two thumbs). People Juniper already said are
    one person count as one (no "X vs A" and "X vs B"). Answer is `yes` / `no`
-   (the Hub refuses anything else; Not sure = dismiss). Each answer writes one
+   (the Hub refuses anything else; Not sure = dismiss, and the pair may come
+   back after `VISION_ASK_COOLDOWN_DAYS`). Each answer writes one
    `vision_individual_pair_verdict` row with the face similarity at that
    moment: `same` links the two (no merge, nothing deleted) and carries a name
-   across when exactly one has one; `different` keeps the pair from being asked
+   to every unnamed member of the confirmed group (transitively) when exactly one has one; `different` keeps the pair from being asked
    again. Those rows are the labeled data for calibrating
    `VISION_INDIVIDUALS_FACE_MATCH_THRESHOLD` (`scripts/report_vision_individuals.py`
    prints them). The 0.40 band comes from live faces on 2026-10-15: two faces

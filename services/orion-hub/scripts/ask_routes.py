@@ -116,6 +116,20 @@ SAME_INDIVIDUAL_KIND = "vision_same_individual"
 YES_NO_ANSWERS = ("yes", "no")
 
 
+# Explicit ::text casts: Postgres cannot infer $3's type from "$3 IS NULL"
+# (AmbiguousParameterError) -- caught in review, pinned by a real-Postgres test.
+CLOSE_ASK_SQL = """
+UPDATE orion_ask
+SET status = $2, answer = $3::text, answered_at = now()
+WHERE ask_id = $1
+  AND status = 'open'
+  AND (expires_at IS NULL OR expires_at > now())
+  AND source_kind <> ALL($4::text[])
+  AND (source_kind <> $5::text OR $3::text IS NULL OR $3::text = ANY($6::text[]))
+RETURNING ask_id, status, answer, answered_at, source_kind, source_ref
+"""
+
+
 class AskAnswerBody(BaseModel):
     answer: str = Field(min_length=1, max_length=MAX_ANSWER_CHARS)
 
@@ -278,16 +292,7 @@ async def _close_ask(
     try:
         async with pool.acquire() as conn:
             row = await conn.fetchrow(
-                """
-                UPDATE orion_ask
-                SET status = $2, answer = $3, answered_at = now()
-                WHERE ask_id = $1
-                  AND status = 'open'
-                  AND (expires_at IS NULL OR expires_at > now())
-                  AND source_kind <> ALL($4::text[])
-                  AND (source_kind <> $5 OR $3 IS NULL OR $3 = ANY($6::text[]))
-                RETURNING ask_id, status, answer, answered_at, source_kind, source_ref
-                """,
+                CLOSE_ASK_SQL,
                 ask_id,
                 new_status,
                 answer,

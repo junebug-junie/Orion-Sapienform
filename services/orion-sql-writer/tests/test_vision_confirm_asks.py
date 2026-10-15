@@ -347,3 +347,42 @@ def test_one_who_is_this_per_confirmed_person(pg) -> None:
         vi._apply_answers(conn, NOW)
         labels = dict(conn.execute(text("SELECT individual_id, label FROM vision_individual")).fetchall())
     assert labels == {"aaa": "Juniper", "bbb": "Juniper"}
+
+
+@needs_pg
+def test_a_name_reaches_the_whole_confirmed_group(pg) -> None:
+    from sqlalchemy import text
+
+    with pg.begin() as conn:
+        for iid, c in (("aaa", "a"), ("bbb", "b"), ("ccc", "c")):
+            _add_person(conn, iid, _vec(1, 0.0), 6, FACE(c))
+        # b=c first, then a=b: naming a must reach c (two hops).
+        for a, b in (("bbb", "ccc"), ("aaa", "bbb")):
+            conn.execute(text("INSERT INTO vision_individual_pair_verdict (individual_a, individual_b, verdict, "
+                              "ask_id, decided_at) VALUES (:a, :b, 'same', 'ask-x', :t)"), {"a": a, "b": b, "t": NOW})
+        conn.execute(text("INSERT INTO orion_ask (ask_id, question, source_kind, source_ref, status, answer, "
+                          "answered_at) VALUES ('ask-who', 'q', 'vision_individual', 'aaa', 'answered', 'Juniper', :t)"),
+                     {"t": NOW})
+        vi._apply_answers(conn, NOW)
+        labels = dict(conn.execute(text("SELECT individual_id, label FROM vision_individual")).fetchall())
+    assert labels == {"aaa": "Juniper", "bbb": "Juniper", "ccc": "Juniper"}
+
+
+@needs_pg
+def test_not_sure_pair_comes_back_after_the_cooldown(pg) -> None:
+    from sqlalchemy import text
+
+    cfg = vi.IndividualsConfig()
+    with pg.begin() as conn:
+        _add_person(conn, "aaa", _vec(1, 0.0), 18, FACE("a"))
+        _add_person(conn, "bbb", _vec(1, 0.5), 19, FACE("b"))
+        (ask,) = [a for a in vi._open_asks(conn, NOW, TZ, cfg) if a["source_kind"] == vi.SOURCE_KIND_SAME]
+        conn.execute(text("UPDATE orion_ask SET status='dismissed' WHERE ask_id=:a"), {"a": ask["ask_id"]})
+        later = NOW + timedelta(days=1)
+        assert all(a["source_kind"] != vi.SOURCE_KIND_SAME for a in vi._open_asks(conn, later, TZ, cfg))
+        # Thumbs must still be young enough: move the sightings forward with the clock.
+        much_later = NOW + timedelta(days=cfg.ask_cooldown_days + 1)
+        conn.execute(text("UPDATE vision_individual SET last_seen_at=:t"), {"t": much_later})
+        conn.execute(text("UPDATE vision_individual_sighting SET ended_at=:t, started_at=:t"), {"t": much_later})
+        again = [a for a in vi._open_asks(conn, much_later, TZ, cfg) if a["source_kind"] == vi.SOURCE_KIND_SAME]
+    assert [a["source_ref"] for a in again] == ["aaa|bbb"]

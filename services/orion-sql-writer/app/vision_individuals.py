@@ -1351,16 +1351,24 @@ def _write_patio_presence(conn, stream_id: str, zone_name: str, patio_crops: Seq
 
 def _propagate_label(conn, individual_id: str, label: str, ask_id: str, at: datetime) -> int:
     """Give ``label`` to every unlabeled individual Juniper said is the same
-    person as ``individual_id`` (one hop of 'same' verdicts). Never overwrites
-    a name she gave directly."""
+    person as ``individual_id`` -- the whole group, transitively (a=b, b=c:
+    naming a names c too), matching ``same_groups`` used by the opener. Never
+    overwrites a name she gave directly."""
     from sqlalchemy import text
 
+    pairs = [(r[0], r[1]) for r in conn.execute(text(
+        "WITH RECURSIVE g(id) AS (SELECT CAST(:i AS text) UNION "
+        "  SELECT CASE WHEN v.individual_a = g.id THEN v.individual_b ELSE v.individual_a END "
+        "  FROM vision_individual_pair_verdict v JOIN g ON g.id IN (v.individual_a, v.individual_b) "
+        "  WHERE v.verdict = 'same') "
+        "SELECT CAST(:i AS text), id FROM g"), {"i": individual_id}).fetchall()]
+    group = sorted({b for _, b in pairs} - {individual_id})
+    if not group:
+        return 0
     return conn.execute(text(
         "UPDATE vision_individual SET label=:l, labeled_at=:at, label_ask_id=:a, updated_at=now() "
-        "WHERE label IS NULL AND individual_id IN ("
-        "  SELECT individual_b FROM vision_individual_pair_verdict WHERE individual_a=:i AND verdict='same' "
-        "  UNION SELECT individual_a FROM vision_individual_pair_verdict WHERE individual_b=:i AND verdict='same')"),
-        {"l": label, "at": at, "a": ask_id, "i": individual_id}).rowcount or 0
+        "WHERE label IS NULL AND individual_id = ANY(:ids)"),
+        {"l": label, "at": at, "a": ask_id, "ids": group}).rowcount or 0
 
 
 def _apply_answers(conn, now: datetime) -> int:
@@ -1513,8 +1521,9 @@ def _open_face_asks(conn, now: datetime, tz: ZoneInfo, cfg: IndividualsConfig) -
     cands = [FaceCandidate(r[0], r[1], tuple(r[2]), int(r[3] or 0), r[4]) for r in frows if r[2]]
     by_id = {c.individual_id: c for c in cands}
     skip = {r[0] for r in conn.execute(text(
-        "SELECT source_ref FROM orion_ask WHERE source_kind=:k AND (status IN ('open','answered','dismissed') "
-        "OR (status = 'expired' AND created_at > :cool))"), {"k": SOURCE_KIND_SAME, "cool": cool}).fetchall()}
+        "SELECT source_ref FROM orion_ask WHERE source_kind=:k AND (status IN ('open','answered') "
+        "OR (status IN ('expired','dismissed') AND created_at > :cool))"),
+        {"k": SOURCE_KIND_SAME, "cool": cool}).fetchall()}
     verdicts = conn.execute(text(
         "SELECT individual_a, individual_b, verdict FROM vision_individual_pair_verdict")).fetchall()
     skip |= {pair_ref(r[0], r[1]) for r in verdicts}

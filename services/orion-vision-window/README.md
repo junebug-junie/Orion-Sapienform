@@ -17,8 +17,9 @@ camera, `docs/superpowers/specs/2026-09-22-walkway-camera-busy-world-design.md`
 idea 1), one `VisionCropObservationV1` to `orion:vision:crops:sql-write`
 (`CHANNEL_CROP_OBSERVATIONS_PUB`, toggle `WINDOW_CROP_OBSERVATIONS_ENABLED`) for
 orion-sql-writer's individuals reducer. A box is "tracked" when the host set a
-`zone` or an `embedding` on it (`want_crop_embeddings`). Patio boxes are
-forwarded with no vector so the reducer can count patio presence. Frame size
+`zone` or an `embedding` on it (`want_crop_embeddings`). Patio boxes carry
+vectors and, on person crops, `face_embedding`/`face_thumb_ref` like the rest
+(2026-10-15). Frame size
 comes from the host's `frame_width`/`frame_height` output. Code: `app/crops.py`.
 Counters: `vision_window_crop_observations_{published,failed}_total` on
 `/api/vision-window/metrics`.
@@ -74,3 +75,14 @@ arc with no row for 1500 s as stale, so a crash cannot leave "someone is here" a
 arcs. Flag: `VISION_PRESENCE_TRANSITIONS_ENABLED` (default true). Needs
 `services/orion-sql-db/manual_migration_vision_presence_transition_v1.sql`; without it each write
 logs `presence_transition_write_failed` and nothing else changes.
+
+## Stationary fixtures (presence)
+
+On streams in `WINDOW_STATIONARY_STREAMS` (default `walkway`) a `person` box
+that keeps IoU >= `VISION_STATIONARY_IOU` (0.5) with its first box, gaps <=
+`VISION_STATIONARY_MAX_GAP_SEC` (300), for `VISION_STATIONARY_MIN_SEC` (1800)
+is a prop. A window whose person boxes are all props does not make the stream
+`present` (`app/fixtures.py`); any moving person box does. Found live
+2026-10-15: a Halloween skeleton at the patio table, detected as `person` in
+the same box all night. Room cameras are not listed: a person at a desk sits
+still for hours. Tests: `tests/test_stationary_fixtures.py`.

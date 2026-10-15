@@ -84,7 +84,9 @@ then the next walkway host task's meta carries `triggered_by: expectation`.
 `streams.walkway` (captured by the `orion-vision-retina-walkway` instance, `stream_id=walkway`, full-resolution main stream): prompts
 `person, dog, bicycle, stroller, vehicle, package, mail truck`, `trigger_labels:
 [person, dog]`, and `want_crop_embeddings: true` on both tiers (host zones + embeds
-tracked boxes; the patio is never embedded). No identity dispatch.
+tracked boxes, patio included since 2026-10-15) and `want_crop_faces` (a face
+vector + face thumbnail on each embedded person crop). No identity dispatch:
+Juniper's whole-frame identity check stays on the room cameras.
 
 Per-stream overrides use the `streams:` block (e.g. `streams.cam0`). Legacy per-camera overrides remain under `cameras:` keyed by `camera_id`.
 

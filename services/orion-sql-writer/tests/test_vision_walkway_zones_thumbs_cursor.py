@@ -46,24 +46,36 @@ def _crop_in(zone_center_x: float) -> dict:
 # --- finding 6: the flag, not the name ---------------------------------------
 
 
-def test_every_no_embed_zone_in_the_shipped_config_is_flagged_and_stripped() -> None:
+def test_shipped_patio_is_fingerprinted_and_still_head_counted() -> None:
+    # 2026-10-15: Juniper lifted the patio rule. No shipped zone is no-embed;
+    # a patio crop keeps its vector, thumbnail and face; the patio keeps its
+    # head-count row (presence: true).
     zones = load_zones(REPO / "config" / "vision_zones.yaml")
-    no_embed = [(sid, z) for sid, zs in zones.items() for z in zs if not z.embed]
-    assert no_embed, "shipped config has no embed:false zone -- the patio rule has nothing to guard"
-    for stream_id, zone in no_embed:
-        xs = [p[0] for p in zone.polygon]
-        ys = [p[1] for p in zone.polygon]
-        cx, cy = (min(xs) + max(xs)) / 2, (min(ys) + max(ys)) / 2
-        obs = VisionCropObservationV1(
-            observation_id="o", stream_id=stream_id, observed_at=T0, frame_width=1000, frame_height=1000,
-            crops=[{"label": "person", "score": 0.9,
-                    "box_xyxy": [cx * 1000 - 5, cy * 1000 - 50, cx * 1000 + 5, cy * 1000],
-                    "embedding": [1.0], "embedding_ref": "crop:x", "thumb_ref": THUMB}],
-        )
-        (row,) = build_crop_rows(obs, zones[stream_id])
-        assert row["zone"] == zone.name
-        assert row["zone_no_embed"] is True
-        assert row["embedding"] is None and row["embedding_ref"] is None and row["thumb_ref"] is None
+    assert not [(sid, z.name) for sid, zs in zones.items() for z in zs if not z.embed]
+    patio = next(z for z in zones["walkway"] if z.name == "patio")
+    assert patio.counts_presence
+    xs = [p[0] for p in patio.polygon]
+    ys = [p[1] for p in patio.polygon]
+    cx, cy = (min(xs) + max(xs)) / 2, (min(ys) + max(ys)) / 2
+    obs = VisionCropObservationV1(
+        observation_id="o", stream_id="walkway", observed_at=T0, frame_width=1000, frame_height=1000,
+        crops=[{"label": "person", "score": 0.9,
+                "box_xyxy": [cx * 1000 - 5, cy * 1000 - 50, cx * 1000 + 5, cy * 1000],
+                "embedding": [1.0], "embedding_ref": "crop:x", "thumb_ref": THUMB,
+                "face_embedding": [0.0, 1.0], "face_score": 0.99, "face_thumb_ref": THUMB}],
+    )
+    (row,) = build_crop_rows(obs, zones["walkway"])
+    assert row["zone"] == "patio" and row["zone_no_embed"] is False
+    assert row["embedding"] == [1.0] and row["thumb_ref"] == THUMB
+    assert row["face_embedding"] == [0.0, 1.0] and row["face_thumb_ref"] == THUMB and row["face_score"] == 0.99
+
+
+def test_a_no_embed_zone_still_strips_faces_too() -> None:
+    rows = build_crop_rows(_obs([{**_crop_in(0.15), "face_embedding": [1.0], "face_thumb_ref": THUMB,
+                                  "face_score": 0.9}]), [PATIO, WALK])
+    (row,) = rows
+    assert row["zone_no_embed"] is True
+    assert row["face_embedding"] is None and row["face_thumb_ref"] is None and row["face_score"] is None
 
 
 def test_a_second_no_embed_zone_is_covered_without_code_changes() -> None:
@@ -106,8 +118,13 @@ def test_sighting_row_in_a_no_embed_zone_carries_no_refs() -> None:
 def test_no_patio_name_left_in_the_checks_or_readers() -> None:
     sql = (REPO / "services/orion-sql-db/manual_migration_walkway_camera_v1.sql").read_text()
     assert "'patio'" not in sql
-    assert "NOT zone_no_embed OR (embedding IS NULL AND embedding_ref IS NULL AND thumb_ref IS NULL)" in sql
-    assert "NOT zone_no_embed OR (embedding_ref IS NULL AND thumb_ref IS NULL)" in sql
+    # v2 drops v1's no-embed CHECKs by their exact names (patio is fingerprinted now).
+    v2 = (REPO / "services/orion-sql-db/manual_migration_walkway_privacy_v2.sql").read_text()
+    for name in ("vision_crop_observation_no_embed_zone_keeps_nothing",
+                 "vision_individual_sighting_no_embed_zone_keeps_nothing"):
+        assert f"CONSTRAINT {name}" in sql
+        assert f"DROP CONSTRAINT IF EXISTS {name}" in v2
+    assert v2.splitlines()[0] == "-- ORION-MIGRATION-REQUIRED-BY: orion-sql-writer"
     reader = (REPO / "orion/situational/perception_reader.py").read_text()
     assert "'patio'" not in reader and ":patio" not in reader
 
@@ -259,7 +276,8 @@ def _row(crop_id, observed_at, created_at):
     return SimpleNamespace(
         crop_id=crop_id, observation_id=f"o-{crop_id}", stream_id="walkway", observed_at=observed_at,
         label="person", box_xyxy=[0, 0, 1, 1], zone="walkway", embedding=[1.0, 0.0], embedding_ref="e",
-        artifact_id="a", zone_no_embed=False, thumb_ref=None, created_at=created_at)
+        artifact_id="a", zone_no_embed=False, thumb_ref=None, face_embedding=None, face_thumb_ref=None,
+        created_at=created_at)
 
 
 def test_row_with_old_observed_at_but_new_created_at_is_processed(monkeypatch) -> None:

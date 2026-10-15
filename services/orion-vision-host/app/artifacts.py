@@ -63,6 +63,10 @@ def build_artifact_payload(res: VisionResult) -> Optional[VisionArtifactPayload]
                 embedding_ref=obj.get("embedding_ref"),
                 embedding=obj.get("embedding"),
                 thumb_ref=obj.get("thumb_ref"),
+                # Walkway faces (want_crop_faces): None unless a face was found in an embedded person crop.
+                face_embedding=obj.get("face_embedding"),
+                face_score=obj.get("face_score"),
+                face_thumb_ref=obj.get("face_thumb_ref"),
             ))
 
     if "caption" in artifacts and isinstance(artifacts["caption"], dict):

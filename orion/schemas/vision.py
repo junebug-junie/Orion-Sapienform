@@ -25,6 +25,15 @@ class VisionObject(BaseModel):
     # crop, written by orion-vision-host ONLY for a crop it embedded (never a
     # no-embed-zone box). The Hub serves it for the ask card.
     thumb_ref: Optional[str] = None
+    # Additive (2026-10-15, walkway faces). On a crop-embedded ``person`` box
+    # of a stream that asked for crop faces (the walkway only): the
+    # L2-normalized 512-d facenet (InceptionResnetV1/VGGFace2) embedding of
+    # the most confident face MTCNN found inside the crop, its detection
+    # probability, and "thumb:<sha256>" of the face. None when no face was
+    # confident enough. The individuals reducer prefers a face match.
+    face_embedding: Optional[List[float]] = None
+    face_score: Optional[float] = None
+    face_thumb_ref: Optional[str] = None
 
 
 # Alias for explicit requirement
@@ -515,9 +524,12 @@ class VisionScribeResultPayload(BaseModel):
 class VisionCropV1(BaseModel):
     """One detection box worth remembering as a possible individual.
 
-    ``embedding`` is None for any box inside a no-embed zone (the patio). The
-    DB enforces the same rule with a CHECK constraint, so a producer bug
-    cannot quietly start storing pictures of the family.
+    ``embedding`` (and the thumbnail and face fields) is None for any box in a
+    no-embed zone. No configured zone is no-embed since 2026-10-15 (the patio
+    is fingerprinted now); the writer still strips them generically.
+
+    ``extra="forbid"``: the face fields are additive, so orion-sql-writer (the
+    consumer) must be deployed before orion-vision-window starts sending them.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -528,8 +540,12 @@ class VisionCropV1(BaseModel):
     embedding_ref: Optional[str] = None
     embedding: Optional[List[float]] = None
     # Additive (2026-09-24): see VisionObject.thumb_ref. Same rule as the
-    # embedding: None for any no-embed-zone box (DB CHECK enforces it too).
+    # embedding: None for any no-embed-zone box.
     thumb_ref: Optional[str] = None
+    # Additive (2026-10-15): see VisionObject.face_embedding.
+    face_embedding: Optional[List[float]] = None
+    face_score: Optional[float] = None
+    face_thumb_ref: Optional[str] = None
 
 
 class VisionCropObservationV1(BaseModel):

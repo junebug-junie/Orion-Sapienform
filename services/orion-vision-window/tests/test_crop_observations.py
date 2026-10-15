@@ -59,6 +59,26 @@ def test_tracked_boxes_become_crops_patio_without_vector() -> None:
     VisionCropObservationV1.model_validate(obs.model_dump(mode="json"))
 
 
+def test_face_fields_ride_along_to_the_reducer() -> None:
+    face = [0.0] * 511 + [1.0]
+    objs = [VisionObject(label="person", score=0.9, box_xyxy=[1, 2, 3, 4], zone="patio", embedding_ref="crop:y",
+                         embedding=VEC, face_embedding=face, face_score=0.99, face_thumb_ref="thumb:" + "cd" * 32)]
+    obs = build_crop_observation(_artifact(objs))
+    crop = obs.crops[0]
+    assert crop.face_embedding == face and crop.face_score == 0.99 and crop.face_thumb_ref == "thumb:" + "cd" * 32
+    VisionCropObservationV1.model_validate(obs.model_dump(mode="json"))
+
+
+def test_published_payload_omits_empty_face_keys_for_old_writers() -> None:
+    from app.main import _crop_payload
+
+    obs = build_crop_observation(_artifact(_objs()))
+    data = _crop_payload(obs)
+    assert all("face_embedding" not in c and "face_thumb_ref" not in c for c in data["crops"])
+    # A pre-face VisionCropV1 (extra=forbid) would accept this; the current one round-trips it.
+    VisionCropObservationV1.model_validate(data)
+
+
 def test_untracked_artifact_publishes_nothing() -> None:
     art = _artifact([VisionObject(label="person", score=0.9, box_xyxy=[1, 2, 3, 4])], inputs={"stream_id": "cam0"})
     assert build_crop_observation(art) is None

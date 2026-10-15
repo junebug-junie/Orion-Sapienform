@@ -103,6 +103,17 @@ class Settings(BaseSettings):
     WINDOW_CROP_OBSERVATIONS_ENABLED: bool = True
     CHANNEL_CROP_OBSERVATIONS_PUB: str = "orion:vision:crops:sql-write"
 
+    # Stationary fixtures (app/fixtures.py, orion/vision/stationary.py): on
+    # these streams a "person" box that keeps IoU >= VISION_STATIONARY_IOU with
+    # its first box (gaps <= VISION_STATIONARY_MAX_GAP_SEC) for
+    # VISION_STATIONARY_MIN_SEC is a prop, and a window whose people are all
+    # props does not make the stream "present". Same keys as orion-sql-writer.
+    # Room cameras stay out: a person at a desk sits still for hours.
+    WINDOW_STATIONARY_STREAMS: str = "walkway"
+    VISION_STATIONARY_MIN_SEC: float = 1800.0
+    VISION_STATIONARY_IOU: float = 0.5
+    VISION_STATIONARY_MAX_GAP_SEC: float = 300.0
+
     # HTTP
     HTTP_HOST: str = "0.0.0.0"
     HTTP_PORT: int = 8000

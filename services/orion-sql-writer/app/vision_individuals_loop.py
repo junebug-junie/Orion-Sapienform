@@ -49,6 +49,10 @@ def individuals_config(settings: Settings) -> IndividualsConfig:
         candidate_days=float(settings.vision_individuals_candidate_days),
         ask_cooldown_days=float(settings.vision_ask_cooldown_days),
         thumb_retention_days=float(settings.vision_crop_thumb_retention_days),
+        face_match_threshold=float(settings.vision_individuals_face_match_threshold),
+        stationary_min_sec=float(settings.vision_stationary_min_sec),
+        stationary_iou=float(settings.vision_stationary_iou),
+        stationary_max_gap_sec=float(settings.vision_stationary_max_gap_sec),
     )
 
 

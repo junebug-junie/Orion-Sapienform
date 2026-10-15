@@ -5,9 +5,17 @@
 # a person or dog stands), else to no zone.
 #
 # embed: false means boxes in this zone are NEVER crop-embedded and never
-# become individuals. The patio is the family's space: Orion may know people
-# are there (count + presence), but keeps no pictures and no vectors of them.
-# The same rule is enforced by a CHECK constraint on vision_crop_observation.
+# become individuals (generic mechanism; no zone uses it now). The patio was
+# embed: false until 2026-10-15, when Juniper lifted that limit (home cameras
+# not pointed into homes are lawful in Utah, the walkway is public): patio
+# boxes now get crop embeddings, thumbnails and faces like anywhere else, and
+# services/orion-sql-db/manual_migration_walkway_privacy_v2.sql drops the DB
+# CHECKs that enforced the old rule.
+#
+# presence: true keeps a head-count row for the zone
+# (substrate_embodied_presence `<stream>:<zone>`, orion-sql-writer's
+# individuals reducer): "someone is on the patio". Stationary fixtures (a box
+# that has not moved for VISION_STATIONARY_MIN_SEC) are left out of it.
 #
 # dwell_rare_sec: dwell longer than this is unusual here (attention score input).
 #
@@ -20,9 +28,10 @@ version: 1
 streams:
   walkway:
     zones:
-      # Porch slab, its plant bed and furniture. Family space.
+      # Porch slab, its plant bed and furniture. Family space: head count kept.
       - name: patio
-        embed: false
+        embed: true
+        presence: true
         polygon: [[0.58, 0.53], [1.0, 0.47], [1.0, 1.0], [0.56, 1.0]]
       # The community mailbox cluster and the ground in front of it.
       - name: mailbox

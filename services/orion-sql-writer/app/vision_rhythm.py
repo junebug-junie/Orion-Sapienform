@@ -383,12 +383,14 @@ def _load_subjects(conn, now: datetime, cfg: RhythmConfig) -> List[Subject]:
     since = now - timedelta(days=cfg.history_days)
     subjects: List[Subject] = []
     inds = conn.execute(text(
-        "SELECT individual_id, stream_id, kind, label FROM vision_individual WHERE sighting_count >= :n"),
+        # Stationary fixtures (a prop that never moves) are not a rhythm.
+        "SELECT individual_id, stream_id, kind, label FROM vision_individual "
+        "WHERE sighting_count >= :n AND NOT stationary"),
         {"n": cfg.min_occurrences}).fetchall()
     for iid, stream_id, kind, label in inds:
         occ = [r[0] for r in conn.execute(text(
             "SELECT started_at FROM vision_individual_sighting WHERE individual_id=:i AND started_at >= :since "
-            "ORDER BY started_at"), {"i": iid, "since": since}).fetchall()]
+            "AND NOT stationary ORDER BY started_at"), {"i": iid, "since": since}).fetchall()]
         subjects.append(Subject(stream_id, f"individual:{iid}", individual_display_label(label, kind, iid), tuple(occ)))
     for stream_id in cfg.label_streams:
         for label in cfg.labels:
@@ -415,7 +417,7 @@ def _occurred(conn, stream_id: str, subject_key: str, start: datetime, end: date
     if kind == "individual":
         row = conn.execute(text(
             "SELECT min(GREATEST(started_at, :a)) FROM vision_individual_sighting WHERE individual_id=:i "
-            "AND started_at <= :b AND ended_at >= :a"), {"i": ref, "a": start, "b": end}).fetchone()
+            "AND started_at <= :b AND ended_at >= :a AND NOT stationary"), {"i": ref, "a": start, "b": end}).fetchone()
     else:
         row = conn.execute(text(
             "SELECT min(observed_at) FROM vision_scene_inventory WHERE stream_id=:s AND observed_at >= :a "

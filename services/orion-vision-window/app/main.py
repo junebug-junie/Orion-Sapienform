@@ -33,6 +33,7 @@ from .projection import (
     stream_key_from_artifact,
 )
 from .crops import build_crop_observation
+from .fixtures import FixtureTracker
 from .recovery_store import RecoveryStore
 from .presence import PresenceRegistry, write_snapshot_to_postgres, write_transitions_to_postgres
 from .scene_belief import SceneBeliefRegistry
@@ -43,6 +44,30 @@ settings = Settings()
 
 def _source_ref() -> ServiceRef:
     return ServiceRef(name=settings.SERVICE_NAME, version=settings.SERVICE_VERSION)
+
+
+def _person_boxes(items: List[Tuple[VisionArtifactPayload, float]]) -> List[Tuple[float, List[List[float]]]]:
+    """(artifact time, [person box, ...]) per artifact, for app/fixtures.py."""
+    out: List[Tuple[float, List[List[float]]]] = []
+    for art, ts in items:
+        objs = (art.outputs.objects or []) if art.outputs else []
+        boxes = [[float(v) for v in o.box_xyxy] for o in objs
+                 if str(o.label or "").strip().lower() == "person" and len(o.box_xyxy or []) == 4]
+        out.append((float(ts), boxes))
+    return out
+
+
+_FACE_KEYS = ("face_embedding", "face_score", "face_thumb_ref")
+
+
+def _crop_payload(obs: Any) -> Dict[str, Any]:
+    """The crop observation as JSON, with face keys dropped where empty."""
+    data = obs.model_dump(mode="json")
+    for crop in data.get("crops") or []:
+        for k in _FACE_KEYS:
+            if crop.get(k) is None:
+                crop.pop(k, None)
+    return data
 
 
 def _corr_uuid(value: Optional[Union[str, UUID]]) -> UUID:
@@ -128,6 +153,12 @@ class WindowService:
             vote_n=settings.WINDOW_BELIEF_VOTE_N,
             enter_votes=settings.WINDOW_BELIEF_ENTER_VOTES,
             exit_votes=settings.WINDOW_BELIEF_EXIT_VOTES,
+        )
+        self._fixtures = FixtureTracker(
+            streams=[x for x in str(settings.WINDOW_STATIONARY_STREAMS or "").split(",")],
+            min_sec=settings.VISION_STATIONARY_MIN_SEC,
+            iou=settings.VISION_STATIONARY_IOU,
+            max_gap_sec=settings.VISION_STATIONARY_MAX_GAP_SEC,
         )
         self._presence_registry = PresenceRegistry(
             grace_sec=settings.WINDOW_PRESENCE_GRACE_SEC,
@@ -508,9 +539,12 @@ class WindowService:
 
             payload = payload.model_copy(update={"summary": summary})
             if settings.WINDOW_PRESENCE_ENABLED:
+                # A person who has not moved for VISION_STATIONARY_MIN_SEC (a
+                # prop) does not make the stream present (app/fixtures.py).
+                self._fixtures.observe_window(stream_id, _person_boxes(items))
                 self._note_presence(
                     stream_id,
-                    result.believed_labels,
+                    self._fixtures.presence_labels(stream_id, result.believed_labels),
                     identity_hint=identity_hint,
                     identity_confidence=identity_confidence,
                 )
@@ -652,8 +686,10 @@ class WindowService:
     async def _publish_crop_observation(self, artifact: VisionArtifactPayload, env: BaseEnvelope) -> None:
         """Per-artifact, not per-window: every tracked-label box the host
         zoned/embedded (walkway individuals, idea 1) goes to the individuals
-        reducer with its own frame time. Patio boxes are forwarded with no
-        vector; they are presence counts. Best effort, like the inventory:
+        reducer with its own frame time (patio boxes included, with vectors
+        and faces since 2026-10-15). Empty face keys are left out so a
+        not-yet-redeployed sql-writer (VisionCropV1 is extra="forbid") still
+        accepts face-less crops. Best effort, like the inventory:
         a failure here must never cost ingest."""
         if not settings.WINDOW_CROP_OBSERVATIONS_ENABLED or not self.bus:
             return
@@ -672,7 +708,7 @@ class WindowService:
                     source=_source_ref(),
                     correlation_id=cid,
                     causality_chain=[*(getattr(env, "causality_chain", None) or [])],
-                    payload=obs.model_dump(mode="json"),
+                    payload=_crop_payload(obs),
                 ),
             )
             self._m_crop_obs_published += 1

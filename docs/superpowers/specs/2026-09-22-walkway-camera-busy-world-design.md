@@ -577,3 +577,37 @@ honest expectation.
 Idea 1 is a perception change, not a cognition-loop change, so it does not
 need proposal mode. Ideas 3, 4, 5, and 7 touch memory, curiosity, and
 stance and do.
+
+## Amendment 2026-10-15: privacy limits lifted, faces, stationary fixtures
+
+Juniper removed three limits (Utah: home cameras not pointed into homes are
+lawful; the walkway is public):
+
+1. **Patio fingerprinting on.** `config/vision_zones.yaml` patio `embed: true`
+   (+ `presence: true`, so its head count stays). Patio boxes get crop
+   embeddings, thumbnails and faces, and become individuals.
+   `manual_migration_walkway_privacy_v2.sql` drops the no-embed CHECKs. The
+   `embed: false` mechanism stays generic; no zone uses it.
+2. **Faces for anyone on the walkway.** The router's walkway policy sets
+   `want_crop_faces`; vision-host runs the identity_face profile's MTCNN +
+   InceptionResnetV1 on each embedded person crop and returns a face vector and
+   face thumbnail. The individuals reducer keeps a face centroid per individual
+   and prefers a confident face match over appearance; appearance still works
+   with no face. Naming still happens only through the ask flow, and the ask
+   card prefers the face thumbnail. Juniper's enrolled gallery and the cam0/
+   carbon identity check are unchanged.
+3. **Full captions.** With no no-embed zone the council's unresolved-percept
+   guard no longer triggers on the walkway, so its items carry the council
+   text, caption and frame like other cameras.
+
+**Stationary fixtures.** Live the same night, a Halloween skeleton at the
+patio table was detected as `person` (~0.37) in the same box, 79 times in 26
+minutes (max gap 105 s; IoU vs the first box >= 0.676, median 0.97). With the
+patio fingerprinted it would have become an individual seen all night every
+night. `orion/vision/stationary.py`: a box that keeps IoU >= 0.5 with its run's
+first box, gaps <= 300 s, for 30 min is stationary; the first box that moves
+ends it. The reducer flags such individuals/sightings and excludes them from
+asks, attention, rhythm and zone head counts (still recorded); vision-window
+drops an all-fixture `person` from walkway presence. Trade-off: a real person
+who sits perfectly still on the patio for 30+ minutes is treated as a fixture
+until they move.

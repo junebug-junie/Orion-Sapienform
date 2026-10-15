@@ -192,14 +192,24 @@ profiles:
       # the request sets want_crop_embeddings: true (the router's walkway
       # stream policy does; no other stream asks). Each box whose label is in
       # crop_embedding_labels (request value wins) is zoned via
-      # config/vision_zones.yaml; boxes in a no-embed zone (the patio) are
-      # never cropped. Allowed crops go through crop_embed_profile's already-
+      # config/vision_zones.yaml; boxes in a no-embed zone (none configured
+      # since 2026-10-15) are never cropped. Allowed crops go through crop_embed_profile's already-
       # warm SigLIP tower in ONE batched forward pass. Code:
       # services/orion-vision-host/app/crop_embeddings.py.
       crop_embed_profile: embed_image
       crop_embedding_labels: [person, dog, bicycle, stroller, vehicle]
       crop_embedding_max_per_frame: 8  # highest-scoring boxes first; caps bus payload (~1152 floats each)
       crop_min_side_px: 16             # smaller crops are noise to SigLIP; zoned but not embedded
+      # Walkway faces (2026-10-15, Juniper): when the request also sets
+      # want_crop_faces: true (router walkway policy only), every embedded
+      # crop in crop_face_labels gets the most confident face MTCNN finds in
+      # it, embedded by crop_face_profile's already-loaded InceptionResnetV1
+      # (identity_face below; its enrolled gallery is never read or written by
+      # this path). Below crop_face_min_prob or crop_face_min_side_px: no face.
+      crop_face_profile: identity_face
+      crop_face_labels: [person]
+      crop_face_min_prob: 0.95
+      crop_face_min_side_px: 40         # tiny upscaled faces embed close together; a wrong face match merges people
       # Open-vocabulary detection can only name what the prompt asks about.
       # With this unset, runner.py fell back to a hardcoded six-word list
       # (person/face/phone/screen/door/package), which is why 19 days of live

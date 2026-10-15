@@ -134,14 +134,19 @@ streams:
     #   (perception prediction error) and crop embeddings all run; captions
     #   only on the triggered tier.
     # - want_crop_embeddings: the host zones every box in crop_embedding_labels
-    #   (config/vision_zones.yaml) and embeds its crop unless the zone is the
-    #   patio. Feeds orion-vision-window -> orion:vision:crops:sql-write ->
+    #   (config/vision_zones.yaml) and embeds its crop (patio included since
+    #   2026-10-15). Feeds orion-vision-window -> orion:vision:crops:sql-write ->
     #   the individuals reducer.
+    # - want_crop_faces (2026-10-15, Juniper): each embedded person crop also
+    #   gets a face vector + face thumbnail (identity_face's facenet models),
+    #   so the reducer can tell people apart by face. Not Juniper's identity
+    #   check: nothing here touches the enrolled gallery.
     # - trigger_labels [person, dog]: people and dogs get captions. The
     #   triggered tier is ALSO selected while Redis key
     #   orion:vision:expect:walkway exists (expectation steering, idea 8; see
     #   services/orion-vision-frame-router/app/expectation.py).
-    # - No identity_dispatch: faces are never computed on this camera.
+    # - No identity_dispatch: Juniper's whole-frame identity check stays on
+    #   cam0/carbon; walkway faces come only from want_crop_faces above.
     #
     # Both tiers are spelled out in full: resolve_stream_policy's shallow merge
     # replaces the whole `baseline`/`triggered` key, and the triggered tier
@@ -155,6 +160,7 @@ streams:
         want_caption: false
         want_embeddings: true
         want_crop_embeddings: true
+        want_crop_faces: true
         crop_embedding_labels: [person, dog, bicycle, stroller, vehicle]
         prompts: [person, dog, bicycle, stroller, vehicle, package, mail truck]
     triggered:
@@ -167,6 +173,7 @@ streams:
         want_caption: true
         want_embeddings: true
         want_crop_embeddings: true
+        want_crop_faces: true
         crop_embedding_labels: [person, dog, bicycle, stroller, vehicle]
         prompts: [person, dog, bicycle, stroller, vehicle, package, mail truck]
 

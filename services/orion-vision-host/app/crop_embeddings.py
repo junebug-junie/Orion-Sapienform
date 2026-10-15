@@ -29,10 +29,23 @@ deletes thumbnails not written for ``VISION_CROP_THUMB_RETENTION_DAYS``
 (default 10, longer than an ask's 7-day life). The Hub serves them read-only
 by hash (``/api/vision/crop-thumbs/<sha256>``).
 
-A box whose bottom-center is outside the patio can still contain patio
+A box whose bottom-center is outside a no-embed zone can still contain its
 pixels, so any box that INTERSECTS a no-embed zone
 (``orion.vision.zones.intersects_no_embed``) gets neither an embedding nor a
-thumbnail.
+thumbnail. Since 2026-10-15 no configured zone is no-embed (Juniper lifted the
+patio rule), so this is a generic mechanism nothing uses today.
+
+**Faces (2026-10-15).** When the request also sets ``want_crop_faces`` (the
+router's walkway policy; no other stream), each EMBEDDED crop whose label is
+in ``crop_face_labels`` (default ``person``) is handed to ``face_fn`` -- the
+identity_face profile's already-loaded MTCNN + InceptionResnetV1 -- which
+returns the most confident face's 512-d vector, its probability and the face
+crop, or None. The vector rides on the object (``face_embedding``) to the
+individuals reducer; the face crop becomes ``face_thumb_ref`` (own rate
+limiter, triggered tier only), which the ask card prefers. A stream with no
+zones on file (cam0, carbon) never reaches the embed list, so it can never
+get a face here. Juniper's enrolled gallery is not read or written by this
+path.
 """
 
 from __future__ import annotations
@@ -43,7 +56,7 @@ import os
 import threading
 import time
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Sequence
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 from loguru import logger
@@ -63,6 +76,10 @@ DEFAULT_MAX_CROPS_PER_FRAME = 8
 DEFAULT_MIN_SIDE_PX = 16
 
 EmbedFn = Callable[[List[Image.Image]], np.ndarray]
+# Crops in, per crop: (face vector, face detection probability, face crop) or None.
+FaceHit = Tuple[Sequence[float], float, Image.Image]
+FaceFn = Callable[[List[Image.Image]], List[Optional[FaceHit]]]
+DEFAULT_CROP_FACE_LABELS = ("person",)
 # A crop in, "thumb:<sha256>" (or None) out.
 ThumbFn = Callable[[Image.Image], Optional[str]]
 
@@ -262,6 +279,8 @@ def attach_crop_embeddings(
     min_score: float,
     thumb_fn: Optional[ThumbFn] = None,
     thumb_limiter: Optional[ThumbRateLimiter] = None,
+    face_fn: Optional[FaceFn] = None,
+    face_thumb_limiter: Optional[ThumbRateLimiter] = None,
 ) -> Dict[str, int]:
     """Mutates ``objects`` in place: sets ``zone`` on every tracked-label box and
     ``embedding``/``embedding_ref`` (and ``thumb_ref``, when ``thumb_fn`` is
@@ -270,7 +289,8 @@ def attach_crop_embeddings(
     Returns counters for the detect artifact (``crop_embeddings`` block) so a
     live check can see how many boxes were tracked, embedded, and withheld.
     """
-    stats = {"tracked": 0, "embedded": 0, "withheld_no_embed_zone": 0, "withheld_other": 0, "thumbs": 0}
+    stats = {"tracked": 0, "embedded": 0, "withheld_no_embed_zone": 0, "withheld_other": 0, "thumbs": 0,
+             "faces": 0, "face_thumbs": 0}
     labels = resolve_labels(request, params)
     stream_id = str(request.get("stream_id") or "").strip()
     width, height = image.width, image.height
@@ -360,4 +380,135 @@ def attach_crop_embeddings(
                 logger.warning(f"[CROP] thumbnail write failed: {exc}")
             if obj["thumb_ref"]:
                 stats["thumbs"] += 1
+
+    if face_fn is not None and request.get("want_crop_faces") is True:
+        _attach_faces(objects, to_embed, crops, request=request, params=params, face_fn=face_fn,
+                      thumb_fn=thumb_fn if thumb_allowed else None, thumb_limiter=face_thumb_limiter,
+                      stream_id=stream_id, stats=stats)
     return stats
+
+
+def resolve_face_labels(request: Dict[str, Any], params: Dict[str, Any]) -> set[str]:
+    raw = request.get("crop_face_labels") or params.get("crop_face_labels") or list(DEFAULT_CROP_FACE_LABELS)
+    if isinstance(raw, str):
+        raw = raw.split(",")
+    return {_norm_label(x) for x in raw if _norm_label(x)}
+
+
+def _attach_faces(
+    objects: List[Dict[str, Any]],
+    embedded: List[int],
+    crops: List[Image.Image],
+    *,
+    request: Dict[str, Any],
+    params: Dict[str, Any],
+    face_fn: FaceFn,
+    thumb_fn: Optional[ThumbFn],
+    thumb_limiter: Optional[ThumbRateLimiter],
+    stream_id: str,
+    stats: Dict[str, int],
+) -> None:
+    """Face vector + face thumbnail on embedded crops of a face label. A face
+    failure costs the face, never the crop vector or the detection."""
+    labels = resolve_face_labels(request, params)
+    rows = [row for row, i in enumerate(embedded) if _norm_label(objects[i].get("label")) in labels]
+    for i in embedded:
+        objects[i]["face_embedding"] = None
+        objects[i]["face_score"] = None
+        objects[i]["face_thumb_ref"] = None
+    if not rows:
+        return
+    try:
+        hits = face_fn([crops[row] for row in rows])
+    except Exception as exc:
+        logger.warning(f"[CROP] face embedding failed, crop vectors kept: {exc}")
+        stats["face_error"] = 1
+        return
+    if len(hits) != len(rows):
+        logger.warning(f"[CROP] face_fn returned {len(hits)} results for {len(rows)} crops; faces dropped")
+        stats["face_error"] = 1
+        return
+    for row, hit in zip(rows, hits):
+        if hit is None:
+            continue
+        vec, prob, face_img = hit
+        v = np.asarray(vec, dtype=np.float32).reshape(-1)
+        n = float(np.linalg.norm(v))
+        if v.size == 0 or n <= 0 or not np.isfinite(n):
+            continue
+        obj = objects[embedded[row]]
+        obj["face_embedding"] = [float(x) for x in (v / n).tolist()]
+        obj["face_score"] = round(float(prob), 4)
+        stats["faces"] += 1
+        if thumb_fn is not None and face_img is not None and (
+                thumb_limiter is None or thumb_limiter.take(stream_id)):
+            try:
+                obj["face_thumb_ref"] = thumb_fn(face_img)
+            except Exception as exc:
+                logger.warning(f"[CROP] face thumbnail write failed: {exc}")
+            if obj["face_thumb_ref"]:
+                stats["face_thumbs"] += 1
+
+
+def _face_crop_box(box: Sequence[float], width: int, height: int, pad: float = 0.25) -> tuple[int, int, int, int]:
+    """The face box grown by ``pad`` on each side (hair, chin), clipped."""
+    x1, y1, x2, y2 = (float(v) for v in box)
+    dx, dy = (x2 - x1) * pad, (y2 - y1) * pad
+    return (max(0, int(np.floor(x1 - dx))), max(0, int(np.floor(y1 - dy))),
+            min(width, int(np.ceil(x2 + dx))), min(height, int(np.ceil(y2 + dy))))
+
+
+def crop_faces(
+    crops: List[Image.Image],
+    *,
+    mtcnn: Any,
+    model: Any,
+    device: str,
+    min_prob: float,
+    min_side_px: float = 40.0,
+) -> List[Optional[FaceHit]]:
+    """Per crop, the most confident face (MTCNN) at or above ``min_prob`` and
+    at least ``min_side_px`` on its short side, embedded by InceptionResnetV1
+    in one batched forward pass. Same detect + extract split as
+    runner._run_identity_face. Returns (vector, probability, face crop) or
+    None per crop."""
+    import torch
+
+    picked: List[Optional[tuple]] = []
+    tensors = []
+    for crop in crops:
+        img = crop.convert("RGB")
+        boxes, probs = mtcnn.detect(img)
+        if boxes is None or probs is None or len(boxes) == 0:
+            picked.append(None)
+            continue
+        best = max(range(len(probs)), key=lambda j: (probs[j] if probs[j] is not None else -1.0))
+        prob = probs[best]
+        box = [float(v) for v in boxes[best]]
+        if prob is None or float(prob) < min_prob or min(box[2] - box[0], box[3] - box[1]) < min_side_px:
+            picked.append(None)
+            continue
+        face = mtcnn.extract(img, np.asarray([box], dtype=np.float32), None)
+        if face is None:
+            picked.append(None)
+            continue
+        if face.dim() == 3:
+            face = face.unsqueeze(0)
+        tensors.append(face[:1])
+        picked.append((float(prob), img.crop(_face_crop_box(box, img.width, img.height))))
+    if not tensors:
+        return [None for _ in crops]
+    batch = torch.cat(tensors, dim=0)
+    if device.startswith("cuda"):
+        batch = batch.to(device=device, dtype=next(model.parameters()).dtype)
+    with torch.inference_mode():
+        vecs = model(batch).detach().float().cpu().numpy()
+    out: List[Optional[FaceHit]] = []
+    k = 0
+    for item in picked:
+        if item is None:
+            out.append(None)
+            continue
+        out.append((vecs[k].tolist(), item[0], item[1]))
+        k += 1
+    return out

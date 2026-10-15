@@ -180,6 +180,20 @@ streams:
         want_crop_faces: true
         crop_embedding_labels: [person, dog, bicycle, stroller, vehicle]
         prompts: [person, dog, bicycle, stroller, vehicle, package, mail truck]
+    # Tiled full-resolution detection (2026-10-15, Juniper). Far-sidewalk
+    # people are ~50 px tall in the 2560x1920 frame and ~21 px after the
+    # detector's own downscale, so most were missed. When enabled, at most
+    # one walkway task per min_seconds_between carries
+    # request.detect_tiles: true and the athena host runs GroundingDINO on
+    # overlapping full-resolution tiles as well as the whole frame (tile
+    # geometry: config/vision_profiles.yaml retina_detect_open_vocab
+    # tile_*). Both tiers: in daylight the patio skeleton keeps this stream
+    # on the triggered tier most of the time. Spaced out because a tiled
+    # task costs several detector passes on the same P4 that serves cam0.
+    tiled_detect:
+      enabled: true
+      tiers: [baseline, triggered]
+      min_seconds_between: 15
     # Walkway captions from the Qwen2-VL lane (2026-10-15, Juniper). After a
     # triggered-tier detect reply that found at least one of `labels` at
     # >= min_score, the router sends the same frame to

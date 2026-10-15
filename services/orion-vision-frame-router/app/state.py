@@ -21,6 +21,9 @@ class CameraState(BaseModel):
     last_caption_dispatch_ts: float | None = None
     # The gate boxes of that last captioned frame: [{"label", "box_xyxy"}].
     last_caption_objects: list[dict] = Field(default_factory=list)
+    # Last primary task this router marked detect_tiles (policy.apply_tiled_detect);
+    # its own clock so tiled frames are spaced by tiled_detect.min_seconds_between.
+    last_tiled_detect_ts: float | None = None
     inflight: set[str] = Field(default_factory=set)
     last_skip_reason: str | None = None
 

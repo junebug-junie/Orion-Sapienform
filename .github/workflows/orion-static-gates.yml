@@ -132,6 +132,12 @@ jobs:
       - name: No private review artifacts tracked
         run: python -m pytest tests/test_no_private_eval_artifacts.py -q -p no:cacheprovider
 
+      # Service containers come from GHCR only: Docker Hub (2026-10-09) and ECR
+      # Public (2026-10-15, "Data limit exceeded") both throttle anonymous pulls
+      # per shared runner IP and failed jobs before any test ran.
+      - name: CI service images pulled from GHCR with credentials
+        run: python -m pytest tests/test_ci_service_image_sources.py -q -p no:cacheprovider
+
       # Field topology: every capability->capability edge must read a channel
       # some edge actually writes, and there is one topology file, not two.
       # The transport->orchestration edge read a never-written channel for

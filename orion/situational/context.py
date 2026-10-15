@@ -26,7 +26,7 @@ from .perception_reader import (
     presence_row_age_seconds,
 )
 from .cabinet_sound_reader import fetch_cabinet_sound_history
-from .camera_eyes import build_senses, describe_camera, fetch_camera_eyes, senses_line, street_framing
+from .camera_eyes import CAMERA_EYES_DEADLINE_SEC, build_senses, describe_camera, fetch_camera_eyes, senses_line, street_framing
 from .presence import companions_phrase, is_child, normalize_presence_context
 from .reverie_reader import fetch_recent_reverie_snippets
 from .session_turn_phase import read_session_turn_state, write_session_turn_state
@@ -783,7 +783,7 @@ def _cached_percept_outlived_gate(brief: Any, cached_age: float, cfg: SituationS
         ):
             return True
         # A camera called "live" in a cached brief must still be inside its
-        # window, or "a frame within the last 15 min" outlives its truth.
+        # window, or "newest within the last 15 min" outlives its truth.
         for cam in perception.cameras:
             if (
                 cam.status == "live"
@@ -1870,13 +1870,22 @@ async def _build_camera_senses(
         return [], {}
     now = datetime.now(timezone.utc)
     try:
-        eyes = await asyncio.to_thread(
-            fetch_camera_eyes,
-            streams,
-            count_individuals_for=cfg.street_stream_ids,
-            tz_name=cfg.timezone,
-            now=now,
+        # One overall deadline: each statement has its own 1.5 s timeout and
+        # there are up to ~8, so a connected-but-slow database could otherwise
+        # hold an uncached chat turn ~12 s (review finding, 2026-10-15).
+        eyes = await asyncio.wait_for(
+            asyncio.to_thread(
+                fetch_camera_eyes,
+                streams,
+                count_individuals_for=cfg.street_stream_ids,
+                tz_name=cfg.timezone,
+                now=now,
+            ),
+            timeout=CAMERA_EYES_DEADLINE_SEC,
         )
+    except asyncio.TimeoutError:
+        diagnostics.provider_status["perception_cameras"] = "timeout"
+        return [], {}
     except Exception as exc:  # noqa: BLE001 -- provider contract is fail-open
         diagnostics.provider_status["perception_cameras"] = "error"
         diagnostics.provider_errors["perception_cameras"] = str(exc)

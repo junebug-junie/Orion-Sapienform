@@ -633,6 +633,12 @@ async def startup_event():
                     ).split(",")
                     if s.strip()
                 ),
+                camera_street_stream_ids=tuple(
+                    s.strip()
+                    for s in (settings.ORION_SITUATION_STREET_STREAM_IDS or "").split(",")
+                    if s.strip()
+                ),
+                camera_timezone=settings.ORION_SITUATION_TIMEZONE,
                 camera_live_max_age_sec=float(settings.ORION_SITUATION_PERCEPTION_MAX_AGE_SECONDS),
                 # The same asyncpg pool crystallization_routes.py reads. Passed
                 # as a callable rather than a value because the pool is created

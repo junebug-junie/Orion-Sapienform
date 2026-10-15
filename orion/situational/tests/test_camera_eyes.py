@@ -140,10 +140,10 @@ def test_fresh_walkway_is_live_with_todays_individuals() -> None:
     assert "your room camera (cam0" in line
     assert (
         "your outdoor camera (walkway, since 2026-10-14; looks at the community walkway, the street"
-        " and our patio -- outside and public, not your room): live (a frame within the last 15 min),"
-        " 2 individuals seen today"
+        " and our patio -- outside and public, not your room): receiving frames (newest within the last 15 min),"
+        " 2 individuals counted today (fixtures excluded)"
     ) in line
-    assert "the laptop webcam (carbon" in line and "not seeing, last frame 36 days ago" in line
+    assert "the laptop webcam (carbon" in line and "no frames arriving, last frame 36 days ago" in line
 
 
 def test_stale_walkway_is_not_seeing_and_drops_its_count() -> None:
@@ -153,7 +153,7 @@ def test_stale_walkway_is_not_seeing_and_drops_its_count() -> None:
     (eye,) = fetch_camera_eyes(["walkway"], count_individuals_for=["walkway"], engine=eng, now=NOW)
     (sense,) = build_senses([eye], now=NOW, tz=TZ, live_max_age_seconds=900)
     assert sense.status == "not_seeing" and sense.individuals_today is None
-    assert senses_line([sense]).endswith("not seeing, last frame 3 h ago.")
+    assert senses_line([sense]).endswith("no frames arriving, last frame 3 h ago.")
 
 
 def test_pre_stationary_schema_still_counts() -> None:
@@ -242,7 +242,7 @@ def test_brief_lists_room_and_walkway_and_the_street_line_says_what_it_is(monkey
     text = _brief_text(ctx)
     assert "- Your cameras (your own eyes): " in text
     assert "your room camera (cam0" in text
-    assert "outside and public, not your room): live (a frame within the last 15 min), 3 individuals seen today" in text
+    assert "outside and public, not your room): receiving frames (newest within the last 15 min), 3 individuals counted today (fixtures excluded)" in text
     assert (
         "- Your outdoor camera (walkway, since 2026-10-14), looking over the community walkway, the street"
         " and our patio: Around the walkway now: an unfamiliar person (seen 2 min ago)."
@@ -287,3 +287,43 @@ def test_cache_gate_rebuilds_once_a_live_camera_could_have_aged_out() -> None:
     cfg = _cfg()
     assert situation_mod._cached_percept_outlived_gate(brief, 100, cfg) is False
     assert situation_mod._cached_percept_outlived_gate(brief, 250, cfg) is True
+
+
+def test_outside_must_be_a_real_true() -> None:
+    assert describe_camera("cam0", {"cam0": {"name": "x", "outside": "false"}}).outside is False
+    assert describe_camera("w", {"w": {"name": "x", "outside": True}}).outside is True
+
+
+def test_only_a_missing_column_buys_the_fallback_statement() -> None:
+    assert camera_eyes._is_missing_column(Exception("no such column: stationary"))
+    assert not camera_eyes._is_missing_column(Exception("canceling statement due to statement timeout"))
+    assert not camera_eyes._is_missing_column(None)
+
+
+def test_frames_arriving_without_a_room_description_do_not_claim_sight(monkeypatch) -> None:
+    """cam0 frames keep flowing while its captions lag or go blank (live: 9 min).
+    The camera clause must say frames arrive, never that Orion sees the room,
+    and the Room line keeps its own "do not infer"."""
+    now = datetime.now(timezone.utc)
+    _stub(monkeypatch, [CameraEye("cam0", now - timedelta(days=5), now - timedelta(seconds=5))])
+    cfg = _cfg(perception_enabled=True, perception_stream_ids=["cam0"], street_stream_ids=[])
+    ctx = asyncio.run(situation_mod._build_perception_context(cfg, SituationDiagnosticsV1()))
+    assert ctx.available is False
+    text = _brief_text(ctx)
+    assert "your room camera (cam0" in text and "receiving frames (newest within the last 15 min)" in text
+    assert "Room: haven't seen anything recently; do not infer." in text
+    assert ": live" not in text
+
+
+def test_slow_camera_read_hits_the_deadline_not_the_turn(monkeypatch) -> None:
+    import time as _time
+
+    _stub(monkeypatch, None)
+    monkeypatch.setattr(situation_mod, "CAMERA_EYES_DEADLINE_SEC", 0.05)
+    monkeypatch.setattr(situation_mod, "fetch_camera_eyes", lambda *a, **k: _time.sleep(0.5))
+    diag = SituationDiagnosticsV1()
+    t0 = _time.monotonic()
+    ctx = asyncio.run(situation_mod._build_perception_context(_cfg(perception_enabled=True), diag))
+    assert diag.provider_status["perception_cameras"] == "timeout" and ctx.cameras == []
+    assert ctx.street_summary.startswith("Your outdoor camera (walkway)")
+    assert _time.monotonic() - t0 < 2.0

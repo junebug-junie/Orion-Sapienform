@@ -23,8 +23,9 @@ Two things live here:
   processed): newest window = last frame, oldest window = the day this camera
   started feeding Orion. Walkway individuals seen today come from
   ``vision_individual_sighting`` (stationary fixtures and no-embed zones
-  excluded, as in the street summary). Both reads use the
-  ``(stream_id, observed_at)`` / ``(stream_id, ...)`` indexes (0.4 ms live).
+  excluded, as in the street summary). The frame reads walk the
+  ``(stream_id, observed_at DESC)`` index (0.4 ms live); the individuals read
+  uses only the ``stream_id`` prefix of ``(stream_id, started_at)``.
 
 Fail-open by contract: ``fetch_camera_eyes`` never raises and returns None
 when nothing could be read; a missing table costs that one number.
@@ -44,6 +45,9 @@ from orion.schemas.situation import CameraSenseV1
 logger = logging.getLogger(__name__)
 
 ENV_KEY = "ORION_CAMERA_DESCRIPTIONS"
+# Overall bound callers put on one fetch_camera_eyes call (the per-statement
+# timeout alone would allow ~12 s across 3 streams on a slow database).
+CAMERA_EYES_DEADLINE_SEC = 2.0
 
 # Equal to the .env_example value in orion-cortex-exec, orion-hub and
 # orion-thought (tests/test_camera_eyes.py pins this).
@@ -94,7 +98,7 @@ def describe_camera(stream_id: str, descriptions: Mapping[str, Mapping[str, Any]
     entry = table.get(stream_id) or {}
     name = str(entry.get("name") or "").strip() or f"camera {stream_id}"
     view = str(entry.get("view") or "").strip()
-    return CameraDescription(stream_id=stream_id, name=name, view=view, outside=bool(entry.get("outside")))
+    return CameraDescription(stream_id=stream_id, name=name, view=view, outside=entry.get("outside") is True)  # "false" string is not outside
 
 
 # --- live state ---------------------------------------------------------------
@@ -148,16 +152,26 @@ def _individuals_stmt(*, stationary: bool):
     )
 
 
-def _scalar(conn: Any, stmt: Any, params: dict[str, Any], label: str) -> tuple[bool, Any]:
+def _scalar(conn: Any, stmt: Any, params: dict[str, Any], label: str) -> tuple[bool, Any, Exception | None]:
     try:
-        return True, conn.execute(stmt, params).scalar()
+        return True, conn.execute(stmt, params).scalar(), None
     except Exception as exc:  # noqa: BLE001 -- fail-open by contract
         logger.info("camera_eyes_read_failed part=%s err=%s", label, type(exc).__name__)
         try:
             conn.rollback()
         except Exception:  # noqa: BLE001
             pass
-        return False, None
+        return False, None, exc
+
+
+def _is_missing_column(exc: Exception | None) -> bool:
+    """Only a missing `stationary` column earns the fallback statement -- a
+    timeout must not buy a second 1.5 s statement (Postgres UndefinedColumn,
+    SQLite "no such column")."""
+    if exc is None:
+        return False
+    blob = f"{type(exc).__name__} {type(getattr(exc, 'orig', None)).__name__} {exc}"
+    return "UndefinedColumn" in blob or "no such column" in blob
 
 
 def local_midnight_utc(now: datetime, tz: tzinfo) -> datetime:
@@ -187,9 +201,13 @@ def fetch_camera_eyes(
     if not ids:
         return []
     if engine is None:
-        from orion.situational.perception_reader import _get_engine
+        try:
+            from orion.situational.perception_reader import _get_engine
 
-        engine = _get_engine()
+            engine = _get_engine()
+        except Exception as exc:  # noqa: BLE001 -- bad DSN / missing driver
+            logger.warning("camera_eyes_engine_failed err=%s", exc)
+            return None
     if engine is None:
         return None
     try:
@@ -205,16 +223,16 @@ def fetch_camera_eyes(
     try:
         with engine.connect() as conn:
             for sid in ids:
-                ok_new, last_at = _scalar(conn, newest_stmt, {"stream_id": sid}, "newest")
-                ok_old, first_at = _scalar(conn, oldest_stmt, {"stream_id": sid}, "oldest")
+                ok_new, last_at, _ = _scalar(conn, newest_stmt, {"stream_id": sid}, "newest")
+                ok_old, first_at, _ = _scalar(conn, oldest_stmt, {"stream_id": sid}, "oldest")
                 any_ok = any_ok or ok_new or ok_old
                 individuals: Optional[int] = None
                 if sid in counted:
                     params = {"stream_id": sid, "since": since}
-                    ok, n = _scalar(conn, _individuals_stmt(stationary=True), params, "individuals")
-                    if not ok:
+                    ok, n, err = _scalar(conn, _individuals_stmt(stationary=True), params, "individuals")
+                    if not ok and _is_missing_column(err):
                         # `stationary` ships in manual_migration_walkway_privacy_v2.sql.
-                        ok, n = _scalar(conn, _individuals_stmt(stationary=False), params, "individuals_pre_stationary")
+                        ok, n, _ = _scalar(conn, _individuals_stmt(stationary=False), params, "individuals_pre_stationary")
                     if ok and n is not None:
                         individuals = int(n)
                 eyes.append(
@@ -294,10 +312,10 @@ def eye_phrase(sense: CameraSenseV1) -> str:
     """One camera, one clause: what it is, where it looks, and whether it is
     seeing -- e.g. "your outdoor camera (walkway, since 2026-10-14; looks at
     the community walkway, the street and our patio -- outside and public,
-    not your room): live (a frame within the last 15 min), 3 individuals seen
-    today".
+    not your room): receiving frames (newest within the last 15 min), 3
+    individuals counted today (fixtures excluded)".
 
-    "Live" names the threshold, not the newest frame's age: the brief is
+    It names the threshold, not the newest frame's age: the brief is
     cached for up to five minutes, so a precise age would be stale on most
     turns that read it, while "within the last 15 min" stays true (the cache
     gate rebuilds a brief once a live camera's frame could have aged out).
@@ -314,12 +332,16 @@ def eye_phrase(sense: CameraSenseV1) -> str:
     if sense.status == "no_frames" or sense.last_frame_age_seconds is None:
         return f"{head}: no frames yet"
     if sense.status == "not_seeing":
-        return f"{head}: not seeing, last frame {age_phrase(sense.last_frame_age_seconds)}"
+        return f"{head}: no frames arriving, last frame {age_phrase(sense.last_frame_age_seconds)}"
     window = max(1, round(sense.live_window_seconds / 60))
-    state = f"{head}: live (a frame within the last {window} min)"
+    # "receiving frames", not "live"/"seeing": arriving frames are what
+    # vision_scene_inventory proves. Whether anything was DESCRIBED is the
+    # Room/street lines' job (vision_events), which can lag or go blank while
+    # frames flow (review: cam0 captions lagged inventory 9 min live).
+    state = f"{head}: receiving frames (newest within the last {window} min)"
     if sense.individuals_today is not None:
         n = sense.individuals_today
-        state += f", {n} {'individual' if n == 1 else 'individuals'} seen today"
+        state += f", {n} {'individual' if n == 1 else 'individuals'} counted today (fixtures excluded)"
     return state
 
 

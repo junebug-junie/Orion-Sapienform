@@ -803,6 +803,11 @@ class CuriosityInvestigation:
         # kickoff as "YOUR EYES" (orion.situational.camera_eyes). Empty = no
         # section. Live = a frame within camera_live_max_age_sec.
         camera_stream_ids: Tuple[str, ...] = (),
+        # Which of those are street cameras (individuals counted) and the
+        # timezone for "since"/"today" -- the situation brief's own settings,
+        # so both surfaces say the same thing.
+        camera_street_stream_ids: Tuple[str, ...] = (),
+        camera_timezone: str = "America/Denver",
         camera_live_max_age_sec: float = 900.0,
         pool_provider: Callable[[], Any],
         source_ref: ServiceRef,
@@ -958,6 +963,8 @@ class CuriosityInvestigation:
             dict.fromkeys(str(s).strip() for s in (camera_stream_ids or ()) if str(s).strip())
         )
         self.camera_live_max_age_sec = float(camera_live_max_age_sec)
+        self.camera_street_stream_ids = tuple(s for s in (camera_street_stream_ids or ()) if s)
+        self.camera_timezone = camera_timezone
         try:
             self._tz = ZoneInfo(timezone_name)
             self._tz_loaded = True
@@ -3046,23 +3053,35 @@ class CuriosityInvestigation:
         """
         if not self.camera_stream_ids:
             return []
-        from orion.situational.camera_eyes import build_senses, eye_phrase, fetch_camera_eyes
+        from orion.situational.camera_eyes import (
+            CAMERA_EYES_DEADLINE_SEC,
+            build_senses,
+            eye_phrase,
+            fetch_camera_eyes,
+        )
 
         now = datetime.now(timezone.utc)
         try:
-            eyes = await asyncio.to_thread(
-                fetch_camera_eyes,
-                self.camera_stream_ids,
-                count_individuals_for=self.street_stream_ids,
-                tz_name=self.timezone_name,
-                now=now,
+            tz = ZoneInfo(self.camera_timezone)
+        except Exception:  # noqa: BLE001
+            tz = timezone.utc
+        try:
+            eyes = await asyncio.wait_for(
+                asyncio.to_thread(
+                    fetch_camera_eyes,
+                    self.camera_stream_ids,
+                    count_individuals_for=self.camera_street_stream_ids,
+                    tz_name=self.camera_timezone,
+                    now=now,
+                ),
+                timeout=CAMERA_EYES_DEADLINE_SEC,
             )
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001 -- includes TimeoutError
             logger.info("curiosity_self_senses_unreadable err=%s", type(exc).__name__)
             return []
         if not eyes:
             return []
-        senses = build_senses(eyes, now=now, tz=self._tz, live_max_age_seconds=self.camera_live_max_age_sec)
+        senses = build_senses(eyes, now=now, tz=tz, live_max_age_seconds=self.camera_live_max_age_sec)
         return [eye_phrase(s) for s in senses]
 
     async def _read_self_ledger(self) -> list[LedgerRow]:

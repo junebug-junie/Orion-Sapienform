@@ -120,6 +120,9 @@ services:
       dockerfile: services/orion-vision-retina/Dockerfile
     container_name: orion-vision-retina-walkway
     restart: unless-stopped
+    # The RTSP reader's stop waits up to 5s for a blocked read; leave room
+    # to close the bus cleanly before SIGKILL.
+    stop_grace_period: 15s
     environment:
       - ORION_BUS_URL=${ORION_BUS_URL:-redis://100.92.216.81:6379/0}
       - ORION_BUS_ENFORCE_CATALOG=${ORION_BUS_ENFORCE_CATALOG:-false}
@@ -138,6 +141,9 @@ services:
       - RETINA_HEIGHT=
       - FRAME_STORAGE_DIR=${FRAME_STORAGE_DIR:-/mnt/telemetry/vision/frames}
       - RETINA_FRAME_MODE=local
+      # Effective lifetime is ~60s, not this: the edge's capture worker prunes
+      # the same shared frames directory at its own FRAME_RETENTION_SECONDS.
+      # Ample for router -> host (seconds).
       - FRAME_RETENTION_SECONDS=${FRAME_RETENTION_SECONDS:-300}
       - JPEG_QUALITY=${WALKWAY_RETINA_JPEG_QUALITY:-88}
       - HEALTH_INTERVAL_SECONDS=${HEALTH_INTERVAL_SECONDS:-10.0}

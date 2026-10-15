@@ -81,7 +81,7 @@ then the next walkway host task's meta carries `triggered_by: expectation`.
 
 ### Walkway stream
 
-`streams.walkway` (second orion-vision-edge instance, `STREAM_ID=walkway`): prompts
+`streams.walkway` (captured by the `orion-vision-retina-walkway` instance, `stream_id=walkway`, full-resolution main stream): prompts
 `person, dog, bicycle, stroller, vehicle, package, mail truck`, `trigger_labels:
 [person, dog]`, and `want_crop_embeddings: true` on both tiers (host zones + embeds
 tracked boxes; the patio is never embedded). No identity dispatch.

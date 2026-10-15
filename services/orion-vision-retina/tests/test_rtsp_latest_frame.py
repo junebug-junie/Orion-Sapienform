@@ -97,3 +97,71 @@ def test_stop_releases_the_capture():
     asyncio.run(run())
     assert cap.released
     assert not any(t.name == "retina-rtsp-reader" for t in threading.enumerate())
+
+
+class _BlockingCap(_FakeCap):
+    """read() blocks until released by the test: a dead RTSP socket."""
+
+    def __init__(self, gate: threading.Event) -> None:
+        super().__init__()
+        self.gate = gate
+
+    def read(self):
+        self.entered = getattr(self, "entered", 0) + 1
+        self.gate.wait()
+        return super().read()
+
+
+def test_a_stop_that_times_out_never_leaves_two_live_readers():
+    # Review finding: a shared stop flag cleared by the next start() revived a
+    # reader still blocked in read(), leaving two RTSP sessions decoding.
+    gate = threading.Event()
+    caps: list[_FakeCap] = []
+
+    def opener(_url):
+        cap = _BlockingCap(gate) if not caps else _FakeCap()
+        caps.append(cap)
+        return cap
+
+    src = RtspFrameSource("rtsp://x", opener=opener, join_timeout=0.05)
+
+    async def run():
+        await src.start()
+        assert _wait(lambda: caps and getattr(caps[0], "entered", 0) >= 1)  # first reader is blocked
+        await src.stop()                                     # times out
+        await src.start()                                    # second reader
+        assert _wait(lambda: len(caps) >= 2 and caps[1].i >= 3)
+        gate.set()                                           # dead socket finally returns
+        assert _wait(lambda: caps[0].released)               # old reader exits, not revived
+        alive = [t for t in threading.enumerate() if t.name == "retina-rtsp-reader"]
+        await src.stop()
+        return alive
+
+    alive = asyncio.run(run())
+    assert len(alive) == 1
+
+
+def test_a_decoder_exception_reconnects_instead_of_killing_the_reader():
+    calls = {"n": 0}
+
+    class _Boom(_FakeCap):
+        def read(self):
+            raise RuntimeError("corrupt stream")
+
+    def opener(_url):
+        calls["n"] += 1
+        return _Boom() if calls["n"] == 1 else _FakeCap()
+
+    src = RtspFrameSource("rtsp://x", opener=opener, reconnect_seconds=0.01)
+
+    async def run():
+        await src.start()
+        assert _wait(lambda: calls["n"] >= 2)
+        assert _wait(lambda: src._latest is not None)
+        got = await src.read()
+        await src.stop()
+        return got
+
+    got = asyncio.run(run())
+    assert got is not None
+    assert src.last_error and "RuntimeError" in src.last_error

@@ -338,6 +338,42 @@ answer. `_generate_vlm_text` slices by real input token length instead of
 string-matching a prefix off the decoded text, which cannot reliably strip
 chat special tokens.
 
+## Tiled detection (walkway, 2026-10-15)
+
+The GroundingDINO processor resizes every image to 800 px on the short side
+(1333 max long side). The walkway frame is 2560x1920, so a person on the far
+sidewalk (~50 px tall at full resolution) reaches the model at ~21 px and is
+mostly missed. When a detect request sets `detect_tiles: true` (only the
+router's walkway `tiled_detect` block does, at most one frame per
+`min_seconds_between`), `_run_detect_grounding_dino` also runs the detector on
+overlapping crops of the full-resolution frame (`app/tiling.py`):
+
+1. Tile boxes are shifted into full-frame pixels. A box touching an interior
+   tile edge is "cut".
+2. A cut box mostly inside a same-label whole box is dropped (fragment).
+3. Cut boxes of one label from two tiles that overlap are unioned (an object
+   split by a seam).
+4. Per-label NMS over whole-frame + tile boxes, then `max_detections`.
+
+Everything downstream (zones, crop embeddings, faces, thumbnails, stationary
+rule, crop observations) sees ordinary full-frame boxes. The artifact gains a
+`detect_tiles` block (`tiles`, `tiles_s`, `full_frame_s`, raw/merged counts),
+and each tiled task logs one `[DETECT_TILES]` line with the per-pass timing.
+Frames whose short side is below `tile_min_short_side_px` are never tiled.
+
+Knobs (`retina_detect_open_vocab` params in `config/vision_profiles.yaml`;
+a dict `detect_tiles: {grid: [3, 2], ...}` in the request overrides them):
+`tile_grid`, `tile_overlap`, `tile_region` (normalized sub-rectangle to tile),
+`tile_include_full_frame`, `tile_batch` (one batched forward instead of
+sequential passes; off: no gain on CPU, and ~4x activation memory on the P4),
+`tile_min_short_side_px`, `tile_contain_frac`, `tile_seam_merge_frac`.
+
+Eval on real frames (frames are never committed -- they show neighbours):
+`evals/walkway_tiled_detection_eval.py <frames_dir> --out <dir> [--layout
+name:cols,rows,overlap[,x0,y0,x1,y1]] [--draw]`; see its docstring for the
+read-only docker command. Results: `docs/superpowers/pr-reports/
+2026-10-15-walkway-tiled-detection-pr.md`.
+
 ## Crop embeddings (walkway individuals)
 
 Deploy steps, rebuild set, and the rule that editing `config/vision_zones.yaml`

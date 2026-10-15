@@ -1130,6 +1130,14 @@ Concrete rules:
 - Expand an acronym or a piece of internal vocabulary the first time it appears.
 - Explain a number in terms of what changes when it moves, not just its value.
 
+**Write in the spirit of ASD STE100** (Simplified Technical English). Juniper
+asked for this by name for every explanation that comes back to her:
+
+- Use direct sentence structures: subject, verb, object. One idea per sentence.
+- Put one action in each procedural step. If a step says "and", split it.
+- Use one word for one concept. Do not change to a synonym partway through a
+  reply ("worker" in one line, "consumer" in the next, for the same thing).
+
 **Simplify the vocabulary, never the verdict.** Plain English is not softer.
 "I can't tell which of these happened, because nothing saved it" is plain and
 exact at the same time. Do not round a finding off, drop a caveat, or turn an

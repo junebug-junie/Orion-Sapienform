@@ -66,3 +66,42 @@ def test_substrate_points_at_kev_pool_address() -> None:
     url = _env_value(repo / "services" / "orion-substrate-runtime" / ".env_example",
                      "SUBSTRATE_SYSTEM_ONE_BASE_URL")
     assert url == load_pool_config(repo / "config" / "gpu_pool.yaml").url("kev")
+
+
+def _service_list(path: Path) -> set[str]:
+    return {
+        line.strip()
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.strip().startswith("#")
+    }
+
+
+def test_rebuild_lists_place_kev_on_circe_only() -> None:
+    """The post-merge rebuild must refresh Kev on circe and never recreate it on athena.
+    circe reads its allowlist; every host without one (athena) reads the exclude file."""
+    common = ROOT.parents[1] / "mesh-utilities" / "common"
+    assert "orion-kev" in _service_list(common / "include_services_circe.txt")
+    assert "orion-kev" in _service_list(common / "exclude_services.txt")
+
+
+def test_post_merge_resolver_rebuilds_kev_on_circe_not_athena() -> None:
+    """Pins the resolver's real output, so a change to include/exclude precedence fails here.
+    Runs it as a subprocess with --json, the same way tests/scripts/test_rebuild_affected_services.py does."""
+    import json
+    import subprocess
+    import sys
+
+    repo = ROOT.parents[1]
+
+    def resolve(host: str) -> list[str]:
+        proc = subprocess.run(
+            [sys.executable, str(repo / "scripts" / "rebuild_affected_services.py"),
+             "--paths", "services/orion-kev/entrypoint.sh", "--json",
+             "--repo-root", str(repo), "--host", host],
+            capture_output=True, text=True, timeout=120,
+        )
+        assert proc.returncode == 0, proc.stderr
+        return json.loads(proc.stdout)["services"]
+
+    assert "orion-kev" in resolve("circe")
+    assert "orion-kev" not in resolve("athena")

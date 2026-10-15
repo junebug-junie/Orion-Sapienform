@@ -51,3 +51,9 @@ orion-world-model
 # athena's bring-up-all should now be allowed to manage it like any other
 # athena-resident service. See PR #2276 and this file's include_services_
 # circe.txt counterpart, where it was removed from circe's allowlist.
+# orion-kev moved from athena to circe GPU 3 on 2026-10-15 (PR #2695). Excluded so
+# athena's post-merge rebuild and bring-up-all never recreate the old
+# orion-athena-kev from athena's leftover services/orion-kev/.env. circe's
+# post-merge rebuild uses include_services_circe.txt and ignores this file;
+# up_all_services*.sh does read it on every host, like the other circe services.
+orion-kev

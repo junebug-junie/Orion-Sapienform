@@ -18,6 +18,8 @@ orion-biometrics
 orion-diffusion-host
 orion-gpu-lane-controller
 orion-juniper-affective-state
+# orion-kev moved here from athena's T10 2026-10-15 (PR #2695): circe GPU 3.
+orion-kev
 orion-power-guard
 orion-world-model
 # orion-vision-host REMOVED 2026-09-21: this entry only ever meant the

@@ -27,7 +27,17 @@ docker ps --filter name=kev
 curl -fsS http://127.0.0.1:8009/docs >/dev/null && echo ok
 ```
 
-Then from athena: `curl -fsS http://100.112.254.99:8009/docs >/dev/null && echo ok`.
+### Moving from athena (order matters)
+
+1. Deploy on circe (above).
+2. From athena: `curl -fsS http://100.112.254.99:8009/docs >/dev/null && echo ok`.
+3. Restart orion-substrate-runtime on athena so it reads the circe URL.
+   Check its log for `substrate_system_one_appraisal_completed`.
+4. Stop the old athena container so it frees ~4GB on the T10:
+   `scripts/safe_docker_build.sh orion-kev down` from athena's primary checkout.
+
+If substrate restarts before step 1, appraisals fail and the curiosity gate
+fails open (curiosity runs ungated) until Kev answers on circe.
 
 Restart policy is `unless-stopped` — Docker brings the container back after
 reboot. No systemd linger required.
@@ -41,7 +51,7 @@ reboot. No systemd linger required.
 | Network | `app-net` (external) |
 | Port | `8009` |
 | GPU | `KEV_GPU_DEVICE_ID=3` (host nvidia-smi index) |
-| GPU pool | role `kev` on `gpu3` in `config/gpu_pool.yaml` (VRAM accounting + probe) |
+| GPU pool | role `kev` on `gpu3` in `config/gpu_pool.yaml` (listed + probed; never scheduled) |
 | Weights cache | `KEV_HF_CACHE_HOST_DIR` |
 
 If Kev moves to another card, change `KEV_GPU_DEVICE_ID` and the `kev` role's

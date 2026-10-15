@@ -57,10 +57,12 @@ def test_gpu_pin_matches_gpu_pool_kev_role() -> None:
     assert str(role["port"]) == _env_value(ROOT / ".env_example", "KEV_HOST_PORT")
 
 
-def test_substrate_points_at_kev_host_port() -> None:
+def test_substrate_points_at_kev_pool_address() -> None:
+    """Substrate's Kev URL must be the pool's own address for the kev role (node + port),
+    so moving the card to another host without moving the URL fails here."""
+    from orion.gpu_pool.config import load_pool_config
+
     repo = ROOT.parents[1]
     url = _env_value(repo / "services" / "orion-substrate-runtime" / ".env_example",
                      "SUBSTRATE_SYSTEM_ONE_BASE_URL")
-    assert url.endswith(":" + _env_value(ROOT / ".env_example", "KEV_HOST_PORT"))
-    # athena's substrate cannot resolve a circe container name over Docker DNS.
-    assert "orion-athena-kev" not in url
+    assert url == load_pool_config(repo / "config" / "gpu_pool.yaml").url("kev")

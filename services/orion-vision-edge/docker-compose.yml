@@ -75,12 +75,22 @@ services:
     ports:
       - "7100:7100"
 
-    runtime: nvidia
+    # GPU pin (2026-10-15). The old form (`runtime: nvidia` + a device
+    # request with no device_ids) handed the container every athena card,
+    # and YOLO_DEVICE=0 then landed on whatever CUDA's fastest-first order
+    # called cuda:0 -- the T10, by accident. device_ids exposes exactly one
+    # card, which is cuda:0 inside the container, so YOLO_DEVICE stays 0.
+    # Value is the HOST's PCI bus id (athena: the P4, 00000000:86:00.0).
+    # `runtime: nvidia` is gone on purpose: in CDI mode it refuses a PCI bus
+    # id ("unresolvable CDI devices"), checked live 2026-10-15. Same pattern
+    # as services/orion-whisper-tts. No default: unset fails the bring-up.
     deploy:
       resources:
         reservations:
           devices:
-            - capabilities: [gpu]
+            - driver: nvidia
+              device_ids: ["${VISION_EDGE_GPU_DEVICE_ID:?VISION_EDGE_GPU_DEVICE_ID must be set in services/orion-vision-edge/.env}"]
+              capabilities: [gpu]
 
     networks:
       - app-net

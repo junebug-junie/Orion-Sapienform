@@ -235,7 +235,7 @@ profiles:
       tile_overlap: 0.2                 # fraction of a tile shared with its neighbour
       tile_region: [0.0, 0.15, 1.0, 0.6]  # normalized [x0, y0, x1, y1] to tile; null = whole frame
       tile_include_full_frame: true     # keep the whole-frame pass for big near objects
-      tile_batch: false                 # sequential: same peak VRAM as one pass (P4 has ~2.7 GB free)
+      tile_batch: false                 # sequential: same peak VRAM as one pass (P4 had ~2.7 GB free; T10 since 2026-10-15, ~4.2 GB free beside qwen)
       tile_min_short_side_px: 1200      # never tile a frame already at/below model resolution
       tile_contain_frac: 0.7            # tile box this much inside a same-label whole box = fragment, dropped
       tile_seam_merge_frac: 0.25        # cut boxes from two tiles overlapping this much = one object, unioned

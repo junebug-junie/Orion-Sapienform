@@ -25,6 +25,28 @@ Also publishes a bus-native `SystemHealthV1` heartbeat to `orion:system:health` 
 7. **Models:** Override `VISION_VLM_MODEL_ID` per node for your VRAM budget — default (`Salesforce/blip-image-captioning-base`) is sized for a shared/small card (e.g. athena's P4). `model_manager.py`'s `load_vlm_captioner` also supports BLIP2, Qwen2-VL, and Qwen2.5-VL model_ids (selected by substring match — see `.env_example` comment); Qwen2-VL-class models need real headroom (~4-5GB fp16) and route through a chat-template prompt, unlike BLIP's plain image+text call. Enable only profiles you need via `VISION_ENABLED_PROFILES`.
 8. **Caption quality:** the caption prompt is chosen by model family (`vlm_family.caption_prompt_for`): chat-template VLMs (Qwen2-VL/Qwen2.5-VL) get the factual `CAPTION_PROMPT`; BLIP/BLIP2 and unrecognized models get no prompt, because they continue text rather than follow it (handed the prompt, BLIP-base echoes it back -- every cam0 caption was blank until 2026-10-08 for this reason). `caption_sanitize` then rejects prompt-echo, too-short, stoplist and repetition garbage. A rejected caption publishes `{"text": "", "confidence": 0.0, "rejected_reason": "<reason>"}` and appends `caption_rejected:{reason}` to task warnings; empty text is never published at confidence 1.0.
 
+## GPU placement on athena (2026-10-15)
+
+The shared vision host now runs on athena's Tesla T10 (16GB, PCI bus id
+`00000000:D8:00.0`), next to the qwen lane below. Whisper-tts and
+orion-vision-edge moved to the Tesla P4 (`00000000:86:00.0`). Text below
+that says the shared instance is "on athena's P4" is history.
+
+The card is pinned by `docker-compose.yml`'s `device_ids` from
+`VISION_HOST_GPU_DEVICE_ID` (host PCI bus id, no default). The container
+then sees one card: NVML index 0 and torch `cuda:0` are the same card, so
+`CUDA_VISIBLE_DEVICES=0` and `VISION_DEVICES=cuda:0` stay container-relative.
+The scheduler maps each `cuda:N` through `CUDA_VISIBLE_DEVICES` to its NVML
+index (`gpu.torch_to_nvml_index`), so the VRAM gate checks the card the work
+runs on even in a container that sees several cards.
+
+Check the pin from the host:
+
+```bash
+docker inspect orion-athena-vision-host --format '{{json .HostConfig.DeviceRequests}}'
+nvidia-smi --query-compute-apps=gpu_bus_id,pid,used_memory --format=csv
+```
+
 ## "Circe" Qwen2-VL lane (`docker-compose.circe-qwen.yml`)
 
 **CORRECTION 2026-09-21: this lane now runs on athena's Tesla T10 (16GB,

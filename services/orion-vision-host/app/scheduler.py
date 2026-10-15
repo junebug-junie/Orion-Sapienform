@@ -7,7 +7,7 @@ from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
 
 from loguru import logger
 
-from .gpu import GpuInspector
+from .gpu import GpuInspector, torch_to_nvml_index
 
 
 class VisionQueueFullError(RuntimeError):
@@ -76,6 +76,26 @@ class VisionScheduler:
 
         for idx in self._gpu_indices:
             self._gpu_sems[idx] = asyncio.Semaphore(max_inflight_per_gpu)
+
+        # "cuda:N" is a torch index; the admission gate reads NVML, which
+        # indexes every card the container can see. Map each torch index to
+        # the NVML card it really is, so the gate checks the card the work
+        # runs on. Identity when the mapping is unknown (UUID entries), which
+        # is the old behaviour.
+        self._nvml_by_torch: Dict[int, int] = {}
+        for idx in self._gpu_indices:
+            nvml_idx = torch_to_nvml_index(idx)
+            if nvml_idx is None:
+                logger.warning(
+                    f"[SCHED] cannot map torch cuda:{idx} to an NVML index "
+                    f"(CUDA_VISIBLE_DEVICES not a plain index list); assuming identity"
+                )
+                nvml_idx = idx
+            self._nvml_by_torch[idx] = nvml_idx
+        self._torch_by_nvml: Dict[int, int] = {}
+        for t_idx, n_idx in self._nvml_by_torch.items():
+            self._torch_by_nvml.setdefault(n_idx, t_idx)
+        logger.info(f"[SCHED] gpu map torch->nvml {self._nvml_by_torch}")
 
         # gpu_hard_floor refusal accounting (surfaced on /health). A full
         # refusal streak used to be silent: ~600 refusals in 25 min on
@@ -176,15 +196,18 @@ class VisionScheduler:
             return None
 
         pick = self.gpu.pick_best_gpu(
-            candidates=self._gpu_indices,
+            candidates=[self._nvml_by_torch.get(i, i) for i in self._gpu_indices],
             reserve_mb=self.reserve_mb,
             hard_floor_mb=self.hard_floor_mb,
             metric=self.pick_metric,
         )
         if pick is None:
             return None
-        idx, info = pick
-        logger.debug(f"[SCHED] picked gpu={idx} free={info.free_mb}MB used={info.used_mb}MB")
+        nvml_idx, info = pick
+        idx = self._torch_by_nvml.get(nvml_idx, nvml_idx)
+        logger.debug(
+            f"[SCHED] picked cuda:{idx} (nvml={nvml_idx} {info.name}) free={info.free_mb}MB used={info.used_mb}MB"
+        )
         return idx
 
     def _device_str(self, gpu_index: Optional[int]) -> str:

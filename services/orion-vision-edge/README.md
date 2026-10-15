@@ -65,6 +65,8 @@ Activity is published on every frame where YOLO/motion yields trigger labels, in
 | `YOLO_IOU_THRES` | `0.45` | NMS IOU Threshold |
 | `YOLO_IMG_SIZE` | `640` | Inference size |
 | `YOLO_PERSON_RETRY_THRESHOLD` | `0.15` | Second pass threshold if no person found |
+| `YOLO_DEVICE` | `0` | Container-relative torch device; the container sees one card, so always `0` |
+| `VISION_EDGE_GPU_DEVICE_ID` | (required) | Host GPU pinned by compose `device_ids`, as a PCI bus id. athena: the Tesla P4 `00000000:86:00.0` (since 2026-10-15; shared with whisper-tts) |
 
 ### Debug & Storage
 

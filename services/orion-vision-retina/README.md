@@ -91,9 +91,43 @@ stayed up and logged nothing; only a restart fixed it. Now:
   a fresh one opens a new capture. At most two abandoned readers may be alive, so camera
   sessions do not pile up; after 4 windows stuck at that cap the process exits so the
   container restart policy brings the eye back.
-- `evals/frame_smear.py` measures packet-loss smear in saved frames (see its docstring).
+- `evals/frame_smear.py` checks saved frames for H.264 decode corruption (see its docstring and
+  the post-deploy check below).
 - System health `details` carry `last_frame_age_sec` and `source_stall_restarts`; a stall logs
   `[RETINA] rtsp stalled: ...` at WARNING and `rtsp frames resumed ...` on recovery.
+
+### Post-deploy check: corrupted frames (2026-10-15)
+
+A container that is up and publishing can still publish broken pictures. Run this after every
+retina deploy or camera change. It reads the newest saved frames; it does not open the camera.
+
+```bash
+.venv/bin/python services/orion-vision-retina/evals/frame_smear.py /mnt/telemetry/vision/frames --glob 'walkway_*.jpg' --last 20
+```
+
+(Use `--glob 'frame_*.jpg'` for cam0. The host needs OpenCV; the repo `.venv` has it.)
+
+It prints one line per frame and exits 1 if any frame is corrupt (`--max-corrupt-fraction 0.1`
+allows 10%). A frame is corrupt when either:
+
+- `smear_fraction` > 0.05: rows copied down the picture, seen as vertical streaks.
+- `gray_fraction` > 0.4: macroblocks filled with flat mid-gray, which FFmpeg paints when it
+  lost a reference frame.
+
+Clear blue sky and dark night do not count as gray: the check needs neutral colour, one exact
+brightness, and no texture. Overcast sky, fog, or infrared (black and white) night mode can be
+neutral mid-gray; a synthetic overcast top 60% reads 0.20, under the 0.4 limit. The gray limit
+was set from FFmpeg's own concealment output (0.68-0.91), **not from real corrupted camera
+frames**: treat a gray-only failure as a strong hint and look at the frame before acting.
+Half-written newest frames (no JPEG end marker) are skipped and counted as
+`skipped_unreadable`, because a cut-off JPEG decodes with a flat gray bottom.
+
+If it fails, look at the retina logs for `RTP: ... bad cseq` and `error while decoding MB`.
+On 2026-10-15 the walkway camera sent streaked frames over TCP with ~2000 `bad cseq` lines per
+minute. The cause was the camera's own encoder state, not the network: rebooting the camera
+fixed it at once (0 `bad cseq`, 0 decode errors, 131 frames clean). **When this check fails
+and the transport is already TCP, reboot the camera first**; restarting the retina container
+does not reset the camera's encoder.
 
 Settings live in `app/settings.py` (Pydantic). Schemas: `orion/schemas/vision.py` (`VisionFramePointerPayload`) — already in `orion/schemas/registry.py`; this service does not register new schema types.
 

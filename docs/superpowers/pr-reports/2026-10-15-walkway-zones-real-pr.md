@@ -30,10 +30,10 @@ Walkway surprise split (this update):
 - `services/orion-substrate-runtime/app/worker.py`: walkway streams go to their own cache (`_handle_perception_prediction_error_message`, ~1617); the tick writes both nodes through `_publish_perception_group` (~1709-1760), each isolated so one failing never skips the other.
 - `services/orion-substrate-runtime/app/settings.py`, `.env_example`, `docker-compose.yml`, `README.md`: `SUBSTRATE_PERCEPTION_WALKWAY_STREAM_IDS` (default `walkway`).
 - `orion/schemas/attention_candidate.py`: `PERCEPTION_WALKWAY_NODE_ID` and `NO_COGNITION_CONSUMER_NODE_IDS`.
-- `orion/substrate/endogenous_curiosity.py:287`, `orion/substrate/attention_broadcast.py:140,349`: skip fenced nodes.
+- `orion/substrate/endogenous_curiosity.py:287`, `orion/substrate/attention_broadcast.py:140,349`, `services/orion-attention-runtime/app/worker.py` `_world_first_candidates`: skip fenced nodes.
 - `orion/substrate_ladder_liveness.py`: rung `receipts:substrate.perception_walkway`.
 - `config/field/orion_field_topology.v1.yaml`: comment noting the node (no `nodes:` entry, no edge, same as the room node).
-- Tests: `services/orion-substrate-runtime/tests/test_worker_perception_walkway_split.py` (new), `test_prediction_error_receipt_not_gated.py` (walkway in the every-node receipt check), `orion/substrate/tests/test_endogenous_curiosity_walkway_fence.py` (new), `orion/substrate/tests/test_attention_broadcast_world_first.py` (fence test).
+- Tests: `services/orion-substrate-runtime/tests/test_worker_perception_walkway_split.py` (new), `test_prediction_error_receipt_not_gated.py` (walkway in the every-node receipt check), `orion/substrate/tests/test_endogenous_curiosity_walkway_fence.py` (new), `orion/substrate/tests/test_attention_broadcast_world_first.py` (fence test), `services/orion-attention-runtime/tests/test_world_first_worker.py` (fence test).
 
 Zones and retina:
 
@@ -58,7 +58,7 @@ None.
 services/orion-substrate-runtime/tests: 454 passed, 17 failed -- the same 17 fail on origin/main (DB-backed cursor/quarantine/truth tests); test_grammar_consumer_integration.py needs a local Postgres and errors on both
 orion/substrate/tests: 1129 passed, 3 failed -- the same 3 fail on origin/main (test_felt_state_self_definition_lane.py)
 tests/test_attention_world_first_parity.py, test_attention_self_readings.py, test_attention_event_decay.py: 47 passed
-services/orion-attention-runtime/tests/test_world_first_worker.py: 6 passed
+services/orion-attention-runtime/tests: 56 passed, 5 skipped (includes the new fence test; it fails with the fence removed)
 every command in .github/workflows/orion-static-gates.yml: pass (glossary entry withheld, see the metric gate section)
 orion/vision/tests: 25 passed
 services/orion-vision-council/tests: 110 passed
@@ -80,6 +80,19 @@ ffprobe on rtsp://<cam0 creds>@192.168.1.87:554/h264Preview_01_sub -> h264 640x4
 ```
 
 ## Review findings fixed
+
+Walkway surprise split:
+
+- Finding (blocker): orion-attention-runtime builds world-first candidates from every node in the prediction-error history and field, so the walkway node could still win attention there.
+  - Fix: `_world_first_candidates` subtracts `NO_COGNITION_CONSUMER_NODE_IDS`.
+  - Evidence: `test_walkway_perception_node_is_never_a_candidate`; it fails when the fence line is removed.
+- Finding: the risk bullet claimed the walkway could not win attention anywhere.
+  - Fix: reworded to name the three fenced consumers and what still sees the node.
+- Finding: the walkway is classed as a body signal and lacks the camera-absent check.
+  - Fix: none now (latent while fenced); listed as a go-live item in Risks and in the fence comment.
+- Finding (nit): the walkway shares the room tick's on/off flag. Documented; left as is.
+
+Zones and retina:
 
 - Finding: a `stop()` that timed out on a blocked read left the old reader thread alive, and the next `start()` revived it through the shared stop flag. The result was two RTSP sessions, each decoding the 5MP stream. Reproduced by the reviewer.
   - Fix: each reader thread has its own stop event. A reader that is still stuck is abandoned with its flag already set, so it exits on its next read.
@@ -155,7 +168,8 @@ scripts/safe_docker_build.sh orion-vision-retina --profile walkway up -d --build
 
 - **Resolved: walkway frames no longer feed the room perception-surprise node.** Juniper chose a separate node. Streams in `SUBSTRATE_PERCEPTION_WALKWAY_STREAM_IDS` now feed `node:substrate.perception_walkway` from their own cache; `node:substrate.perception` only ever holds cam0/carbon scores, and the world-model embedding cache stays room-only. Both nodes are written every tick. The walkway node is fenced out of endogenous curiosity and attention until its live-data check runs. Proven by `test_worker_perception_walkway_split.py`.
 - **Severity: medium. The walkway node's metric registry entry is not in this PR.** The metric-lineage orphan ratchet refuses a field channel with no consumer (`field_channel grew 0 -> 1`), and the node has no consumer on purpose. The drafted glossary entry is ready; it needs Juniper's call (see the metric gate section).
-- **Severity: low. Other generic readers still see the walkway node.** The substrate dynamics engine seeds pressure from any node's `prediction_error` (`orion/substrate/pressure.py:48`), the field digester puts it in the field's node vectors, and the attention frame lists it as observed, not attended. None of these can make it win attention or seed curiosity, but it is not invisible.
+- **Severity: low. Other generic readers still see the walkway node.** The substrate dynamics engine seeds pressure from any node's `prediction_error` (`orion/substrate/pressure.py:48`), the field digester puts it in the field's node vectors, and the prediction-error history records it (needed for the live check). The three places that pick attention winners or curiosity seeds skip it: endogenous curiosity, the substrate attention broadcast (world-first and legacy paths), and orion-attention-runtime's world-first candidates. That last one was missed in the first pass and caught in review.
+- **Severity: low, go-live item. The walkway reads as a body signal, not a world one.** `is_world_source_id` (`orion/schemas/attention_candidate.py`) only treats `world:*` and `node:substrate.perception` as world, and only the room node gets the "camera stale = absent" check. Harmless while fenced; decide both when the fence is lifted.
 - **Severity: low. The background reader decodes the full 5MP stream continuously** to keep 2 frames a second. That costs about one CPU core.
 - **Severity: low. Walkway frames are not watchable in Hub yet.** Hub's live view proxies percept-store streams only, and walkway frames are saved to local disk.
 

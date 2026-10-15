@@ -127,3 +127,16 @@ def test_event_decay_setting_reaches_the_candidates() -> None:
         cands = _by_id(w._world_first_candidates(_field(), NOW))
         assert cands["node:substrate.execution"].event_window_sec == expected
         assert cands["node:substrate.biometrics"].event_window_sec is None
+
+
+def test_walkway_perception_node_is_never_a_candidate() -> None:
+    """node:substrate.perception_walkway is recorded every tick (history + field
+    vector) but has no cognition consumer until its live-data check runs, so a
+    loud walkway reading must not bid, from either the history or the field."""
+    walkway = "node:substrate.perception_walkway"
+    rows = _history(walkway, 0.0, 1.0) + _history("node:substrate.execution", 0.0, 0.9)
+    field = _field()
+    field = field.model_copy(update={"node_vectors": {**field.node_vectors, walkway: {"prediction_error": 1.0}}})
+    cands = _by_id(_worker(pe_rows=rows)._world_first_candidates(field, NOW))
+    assert walkway not in cands
+    assert "node:substrate.execution" in cands

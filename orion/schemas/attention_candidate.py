@@ -43,9 +43,12 @@ PERCEPTION_WALKWAY_NODE_ID = "node:substrate.perception_walkway"
 # Substrate nodes that are written and recorded (graph node, receipt,
 # prediction-error history) but kept out of every cognition candidate builder
 # until their live-data sanity check has run (AGENTS.md metric quality gate,
-# step 4). Endogenous curiosity and the attention broadcast pick up ANY
-# node:substrate.* node carrying prediction_error, so "no consumer yet" needs
-# this fence. Removing an id here is the go-live decision for that node.
+# step 4). Endogenous curiosity, the substrate attention broadcast and the
+# attention runtime's world-first candidates pick up ANY node:substrate.* node
+# carrying prediction_error, so "no consumer yet" needs this fence. Removing an
+# id here is the go-live decision for that node; at that point also decide
+# whether is_world_source_id below should call it world (it is an outdoor
+# camera) and give it the camera-absent check PERCEPTION_NODE_ID gets.
 NO_COGNITION_CONSUMER_NODE_IDS: frozenset[str] = frozenset({PERCEPTION_WALKWAY_NODE_ID})
 
 

@@ -8,39 +8,52 @@ it (Juniper, 2026-10-15: "the second I git pull i cant run that migration ... ha
 time"). She asked for this step to run inside the pull, before the rebuilds.
 
 ``scripts/rebuild_services_from_git_diff.sh`` calls this with the changed
-``services/orion-sql-db/*.sql`` paths. It only reaches this host's database: the classifier lists
-migrations only on a host whose service list includes orion-sql-db (circe gets none), and the
-default apply command execs into the local ``orion-athena-sql-db`` container, which must be running.
+``services/orion-sql-db/*.sql`` paths.
+
+WHERE IT RUNS -- the same place a live deploy may run from, and only there:
+  * the primary checkout (not a linked worktree), on ``main``, clean, HEAD == ``origin/main``
+    (safe_docker_build.sh's deploy rule; a pull on a feature branch must never write to the
+    live database). ``--dry-run`` skips this check: it writes nothing.
+  * a host with the database: the classifier lists migrations only where the host's service list
+    includes orion-sql-db (circe gets none), and the default apply command execs into the local
+    ``orion-athena-sql-db`` container, which must be running (this is what stops hosts with no
+    service list, e.g. hecate).
 
 WHAT IT APPLIES -- a changed file the drift checker (orion/sql_migration_drift.py, the same check
 the deploy gate runs) reads as NOT APPLIED (MISSING), and only when ALL of these hold:
   * not a ``*_rollback.sql`` file, no ``-- DESTRUCTIVE`` header line, no NOT-A-MIGRATION marker;
   * a valid ``-- ORION-MIGRATION-REQUIRED-BY:`` header (services or ``none <reason>``);
-  * ``auto_apply_hazards`` finds nothing: no drop or rename of a table/column/index/sequence, no
-    DROP SCHEMA/VIEW/TYPE/..., no TRUNCATE, no DELETE or UPDATE without WHERE (DO and function
-    bodies included);
+  * ``drift.auto_apply_refusals`` is empty: every statement is on the additive-DDL allowlist
+    (CREATE TABLE/INDEX/SEQUENCE, ALTER TABLE ADD COLUMN/ADD CONSTRAINT/SET|DROP DEFAULT|NOT NULL/
+    DROP CONSTRAINT, COMMENT ON, INSERT ... VALUES ... ON CONFLICT DO NOTHING, own BEGIN/COMMIT,
+    SET of a timeout) -- no DO/function bodies, CASCADE, EXECUTE, SELECT, psql meta-commands;
   * its header does not name a script to apply it through, and no marker error.
-Every other file is left alone with the reason and, where one is safe to print, the manual command.
-APPLIED files are skipped. DATA/CONDITIONAL files (the schema cannot show whether they ran) are
-never auto-applied: re-running data statements is not known to be safe.
+Every other file is left alone with the reason. APPLIED files are skipped. DATA/CONDITIONAL files
+(the schema cannot show whether they ran) are never auto-applied.
 
-HOW: in filename order, ``psql -X -v ON_ERROR_STOP=1`` with ``lock_timeout=10s`` (a pg_dump backup
-can hold locks for minutes; better to fail fast than hang the pull) and a 15 min statement_timeout
-backstop, inside ``--single-transaction`` unless the file has statements that cannot run in one
-(CREATE INDEX CONCURRENTLY, VACUUM, its own BEGIN/COMMIT, ...). The first failure, or a file that
-needs a human, stops every later file. After applying, the live state is read again; a file only
-counts as applied when the checker agrees. Each attempt is appended to the durable log.
+ORDER AND STOPS: filename order. A file that needs a human -- refused, DESTRUCTIVE, or one whose
+live state cannot be verified -- holds every later file in the set, and so does the first failed
+apply. Rollback, APPLIED and superseded files hold nothing.
+
+HOW: ``psql -X -v ON_ERROR_STOP=1`` with ``lock_timeout=10s`` (a pg_dump backup can hold locks for
+minutes; fail fast rather than hang the pull) and a 15 min statement_timeout backstop, inside
+``--single-transaction`` unless the file has CREATE INDEX CONCURRENTLY or its own BEGIN/COMMIT.
+The exact text that was scanned is what psql receives. After applying, the live state is read
+again; a file only counts as applied when the checker agrees. Every decision that is not a plain
+skip is appended to the durable log.
 
 ENV
     ORION_POST_PULL_APPLY_MIGRATIONS=0   kill switch (default on); nothing is applied, report only
     ORION_APPLIED_MIGRATIONS_LOG         log path (default ~/.orion/applied_migrations.log)
-    ORION_MIGRATION_APPLY_PSQL           psql command prefix (default: docker exec into
-                                         orion-athena-sql-db); tests point it at a scratch server
-    ORION_PG_HOST/PORT/USER/PASSWORD/DB  read-only live-state connection (as the checker)
+    ORION_MIGRATION_APPLY_PSQL           psql command prefix replacing the docker exec (tests point
+                                         it at a scratch server; it also skips the container check)
+    ORION_PG_HOST/PORT/USER/PASSWORD/DB  read-only live-state connection (as the checker); USER and
+                                         DB also pick the role/database the default command writes
 
-Exit: 0 = nothing left that this step should have applied; 1 = a file was refused, failed, or did
-not verify; 2 = live state UNKNOWN (no answer is not "applied"). The caller runs the rebuilds
-regardless; the deploy gate still refuses every service whose migration is not applied.
+Exit: 0 = nothing left that this step should have applied; 1 = a file was refused, held, failed,
+or did not verify; 2 = not allowed here, or live state UNKNOWN (no answer is not "applied"). The
+caller runs the rebuilds regardless; the deploy gate still refuses every service whose migration
+is not applied.
 """
 from __future__ import annotations
 
@@ -69,8 +82,6 @@ KILL_SWITCH = "ORION_POST_PULL_APPLY_MIGRATIONS"
 LOCK_TIMEOUT = "10s"
 STATEMENT_TIMEOUT = "15min"
 PGOPTIONS = f"-c lock_timeout={LOCK_TIMEOUT} -c statement_timeout={STATEMENT_TIMEOUT}"
-DEFAULT_PSQL = ["docker", "exec", "-i", "-e", f"PGOPTIONS={PGOPTIONS}", drift.SQL_DB_CONTAINER,
-                "psql", "-U", "postgres", "-d", "conjourney"]
 APPLY_TIMEOUT_S = 20 * 60
 
 
@@ -82,6 +93,7 @@ class Item:
     action: str = "skip"         # apply | skip | refuse | operator
     reason: str = ""
     manual: str = ""             # manual command to print, "" when none is safe to print
+    holds: bool = False          # a human must act on this before any later file is applied
     no_txn: list[str] = field(default_factory=list)
     outcome: str = ""            # applied | failed | held | would-apply | unverified
 
@@ -94,9 +106,15 @@ def log_path(env=os.environ) -> Path:
     return Path(env.get("ORION_APPLIED_MIGRATIONS_LOG") or Path.home() / ".orion" / "applied_migrations.log")
 
 
+def default_psql(env=os.environ) -> list[str]:
+    """docker exec into the database container, writing the same role/database the read uses."""
+    return ["docker", "exec", "-i", "-e", f"PGOPTIONS={PGOPTIONS}", drift.SQL_DB_CONTAINER,
+            "psql", "-U", env.get("ORION_PG_USER", "postgres"), "-d", env.get("ORION_PG_DB", "conjourney")]
+
+
 def psql_prefix(env=os.environ) -> list[str]:
     raw = env.get("ORION_MIGRATION_APPLY_PSQL", "").strip()
-    return shlex.split(raw) if raw else list(DEFAULT_PSQL)
+    return shlex.split(raw) if raw else default_psql(env)
 
 
 def classify(rel: str, text: str, result: drift.FileResult | None) -> Item:
@@ -109,6 +127,7 @@ def classify(rel: str, text: str, result: drift.FileResult | None) -> Item:
         return it
     if drift.is_destructive(text):
         it.action, it.reason = "operator", "-- DESTRUCTIVE file: operator-approved only; read it and decide by hand"
+        it.holds = True
         return it
     if drift._NOT_A_MIGRATION.search(text):
         it.reason = "NOT-A-MIGRATION marker"
@@ -125,7 +144,7 @@ def classify(rel: str, text: str, result: drift.FileResult | None) -> Item:
     if result.status in ("DATA", "CONDITIONAL", "UNKNOWN"):
         it.reason = (f"UNVERIFIABLE ({result.status.lower()}: the schema cannot show whether it ran); "
                      "never auto-applied -- apply by hand if it has not run")
-        it.manual = cmd
+        it.manual, it.holds = cmd, True
         return it
     # MISSING / INVALID from here: the deploy gate refuses its consumers until it is fixed.
     it.manual = cmd
@@ -142,9 +161,9 @@ def classify(rel: str, text: str, result: drift.FileResult | None) -> Item:
     if rb.errors:
         it.action, it.reason = "refuse", "invalid REQUIRED-BY header: " + "; ".join(rb.errors)
         return it
-    hazards = drift.auto_apply_hazards(text)
-    if hazards:
-        it.action, it.reason = "refuse", "not safe to auto-apply: " + "; ".join(hazards)
+    refusals = drift.auto_apply_refusals(text)
+    if refusals:
+        it.action, it.reason = "refuse", "not safe to auto-apply: " + "; ".join(refusals)
         return it
     if result.header_script:
         it.action, it.reason = "refuse", f"its header says to apply it through {result.header_script}"
@@ -154,8 +173,36 @@ def classify(rel: str, text: str, result: drift.FileResult | None) -> Item:
     return it
 
 
-def apply_one(it: Item, repo: Path, prefix: list[str], env=os.environ) -> tuple[bool, str]:
-    """Run one file through psql. (ok, combined output tail)."""
+def _git(repo: Path, *args: str) -> str:
+    r = subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True)
+    return r.stdout.strip() if r.returncode == 0 else ""
+
+
+def checkout_problem(repo: Path) -> str:
+    """Why this checkout may not write to the live database ("" = it may). Same rule as a live
+    deploy in safe_docker_build.sh: primary checkout, main, clean, synchronized with origin/main
+    (as of the fetch the pull just did)."""
+    git_dir = _git(repo, "rev-parse", "--absolute-git-dir")
+    common = _git(repo, "rev-parse", "--git-common-dir")
+    if common and not os.path.isabs(common):
+        common = str((repo / common).resolve())
+    if not git_dir or not common or Path(git_dir).resolve() != Path(common).resolve():
+        return "this is a linked worktree, not the primary checkout"
+    branch = _git(repo, "branch", "--show-current")
+    if branch != "main":
+        return f"branch is {branch or '(detached)'!r}, not main"
+    if _git(repo, "status", "--porcelain"):
+        return "the checkout has uncommitted changes"
+    head, origin = _git(repo, "rev-parse", "HEAD"), _git(repo, "rev-parse", "--verify", "origin/main")
+    if not origin:
+        return "origin/main is unknown"
+    if head != origin:
+        return f"main ({head[:9]}) is not origin/main ({origin[:9]})"
+    return ""
+
+
+def apply_one(it: Item, prefix: list[str], env=os.environ) -> tuple[bool, str]:
+    """Run one file's scanned text through psql. (ok, combined output tail)."""
     cmd = list(prefix) + ["-X", "-q", "-v", "ON_ERROR_STOP=1"]
     if not it.no_txn:
         cmd.append("--single-transaction")
@@ -163,9 +210,8 @@ def apply_one(it: Item, repo: Path, prefix: list[str], env=os.environ) -> tuple[
     run_env = dict(env)
     run_env["PGOPTIONS"] = PGOPTIONS  # a local psql reads it; the docker form passes it with -e
     try:
-        with open(repo / it.rel, "rb") as fh:
-            proc = subprocess.run(cmd, stdin=fh, capture_output=True, text=True, env=run_env,
-                                  timeout=APPLY_TIMEOUT_S)
+        proc = subprocess.run(cmd, input=it.text, capture_output=True, text=True, env=run_env,
+                              timeout=APPLY_TIMEOUT_S)
     except subprocess.TimeoutExpired:
         return False, f"psql did not finish within {APPLY_TIMEOUT_S}s"
     except OSError as exc:
@@ -182,12 +228,6 @@ def write_log(path: Path, line: str) -> None:
             fh.write(line + "\n")
     except OSError as exc:
         print(f"{TAG}: could not write {path}: {exc}", file=sys.stderr)
-
-
-def head_sha(repo: Path) -> str:
-    r = subprocess.run(["git", "-C", str(repo), "rev-parse", "--short", "HEAD"],
-                       capture_output=True, text=True)
-    return r.stdout.strip() or "?"
 
 
 def container_running(env=os.environ) -> tuple[bool, str]:
@@ -224,6 +264,12 @@ def run(paths: list[str], *, repo: Path = REPO_ROOT, ref: str = "HEAD", dry_run:
     if not enabled(env):
         out(f"{TAG}: auto-apply OFF ({KILL_SWITCH}=0) -- nothing applied; see the report below")
         return 0
+    if not dry_run:
+        why = checkout_problem(repo)
+        if why:
+            out(f"{TAG}: not applying anything -- {why}. Only the clean primary main checkout, "
+                "synchronized with origin/main, writes to the live database (the deploy rule).")
+            return 2
     try:
         files, report = read_report(repo, ref, connect_fn)
     except Exception as exc:  # noqa: BLE001 -- any failure is UNKNOWN, never a verdict
@@ -245,9 +291,16 @@ def run(paths: list[str], *, repo: Path = REPO_ROOT, ref: str = "HEAD", dry_run:
             return 2
 
     lp = log_path(env)
-    sha = head_sha(repo)
+    sha = _git(repo, "rev-parse", "--short", "HEAD") or "?"
     host = socket.gethostname()
     prefix = psql_prefix(env)
+
+    def log(kind: str, it: Item, extra: str = "") -> None:
+        if dry_run:
+            return
+        stamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        write_log(lp, f"{stamp} {kind} {it.rel} head={sha} host={host}" + (f" {extra}" if extra else ""))
+
     stopped_by = ""
     applied: list[Item] = []
     rc = 0
@@ -256,12 +309,17 @@ def run(paths: list[str], *, repo: Path = REPO_ROOT, ref: str = "HEAD", dry_run:
     for it in items:
         if it.action in ("skip", "operator"):
             out(f"  - {it.rel}: {it.reason}")  # the report printed after this names any command
+            if it.holds:
+                rc = 1
+                stopped_by = stopped_by or it.name
+                log("NEEDS-HUMAN", it, f"reason={it.reason}")
             continue
         if it.action == "refuse":
             rc = 1
             out(f"  - {it.rel}: NOT auto-applied -- {it.reason}")
             if it.manual:
                 out(f"      apply by hand after reading it: {it.manual}")
+            log("REFUSED", it, f"reason={it.reason[:400]}")
             stopped_by = stopped_by or it.name
             continue
         mode = ("no transaction wrapper: " + ", ".join(it.no_txn)) if it.no_txn else "single transaction"
@@ -270,31 +328,30 @@ def run(paths: list[str], *, repo: Path = REPO_ROOT, ref: str = "HEAD", dry_run:
             it.outcome = "held"
             out(f"  - {it.rel}: HELD, not applied -- {stopped_by} comes first in filename order and "
                 f"needs a human; apply by hand afterwards: {it.manual}")
+            log("HELD", it, f"behind={stopped_by}")
             continue
         if dry_run:
             it.outcome = "would-apply"
             out(f"  - {it.rel}: {it.reason}\n      would apply ({mode}, lock_timeout={LOCK_TIMEOUT})")
             continue
         out(f"  - {it.rel}: applying ({mode}, lock_timeout={LOCK_TIMEOUT}) ...")
-        ok, tail = apply_one(it, repo, prefix, env)
-        stamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        ok, tail = apply_one(it, prefix, env)
         if ok:
             it.outcome = "applied"
             applied.append(it)
-            write_log(lp, f"{stamp} APPLIED {it.rel} head={sha} host={host} mode={mode}")
-            out(f"      applied at {stamp}")
+            log("APPLIED", it, f"mode={mode}")
+            out(f"      applied at {datetime.now(timezone.utc).isoformat(timespec='seconds')}")
         else:
             rc = 1
             it.outcome = "failed"
             stopped_by = it.name
-            write_log(lp, f"{stamp} FAILED {it.rel} head={sha} host={host} mode={mode} "
-                          f"error={' '.join(tail.split())[:400]}")
-            out(f"      FAILED at {stamp}; later files are held. psql said:")
+            log("FAILED", it, f"mode={mode} error={' '.join(tail.split())[:400]}")
+            out("      FAILED; later files are held. psql said:")
             for line in tail.splitlines():
                 out(f"        {line}")
             if it.no_txn:
                 out("      (ran without a transaction wrapper, so earlier statements may have "
-                    "committed; the checker below shows what is live)")
+                    "committed; the report below shows what is live)")
 
     if applied:
         try:
@@ -311,10 +368,8 @@ def run(paths: list[str], *, repo: Path = REPO_ROOT, ref: str = "HEAD", dry_run:
                 rc = 1
                 it.outcome = "unverified"
                 summary = r.summary() if r is not None else "not in the checker's report"
-                write_log(lp, f"{datetime.now(timezone.utc).isoformat(timespec='seconds')} UNVERIFIED "
-                              f"{it.rel} head={sha} host={host} checker={summary}")
+                log("UNVERIFIED", it, f"checker={summary}")
                 out(f"  NOT verified: psql succeeded but the checker still says {summary}")
-    if applied:
         out(f"{TAG}: log: {lp}")
     return rc
 

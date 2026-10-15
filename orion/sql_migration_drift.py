@@ -502,70 +502,88 @@ def has_unconditional_effects(text: str) -> bool:
 
 # ------------------------------------------------------------------- post-pull auto-apply safety
 #
-# scripts/apply_post_pull_migrations.py applies a changed migration on `git pull` only when nothing
-# in it can lose data. These scans run on the same tokenizer/parser as the drift check, so prose in
-# a comment header or a quoted string can never trip (or hide) a rule. They err toward refusing: a
-# refused file is only "apply it by hand", the state before auto-apply existed.
+# scripts/apply_post_pull_migrations.py applies a changed migration on `git pull` only when EVERY
+# statement in it is on a short allowlist of additive DDL. An allowlist, not a list of dangerous
+# patterns: review of the first draft (2026-10-15) found a denylist missing EXECUTE strings, psql
+# meta-commands, ALTER COLUMN TYPE, MERGE, CASCADE and WHERE clauses hiding in subqueries. Anything
+# not listed is refused, and a refused file is only "apply it by hand" -- the state before
+# auto-apply existed. Scans run on the drift tokenizer, so prose in comments never counts.
 
-_UNSAFE_DROP = re.compile(
-    r"\bdrop (?:table|schema|database|sequence|view|materialized view|type|domain|owned|extension)\b", re.I)
-_TRUNCATE = re.compile(r"\btruncate\b", re.I)
-_DELETE = re.compile(r"\bdelete from\b", re.I)
-# `ON CONFLICT ... DO UPDATE SET` is an upsert of the incoming row, not a whole-table rewrite.
-_UPDATE = re.compile(rf"(?<!\bdo )\bupdate (?:only )?{_QID}(?: (?:as )?{_ID})? set\b", re.I)
-_WHERE = re.compile(r"\bwhere\b", re.I)
-# Statements Postgres refuses inside a transaction block.
-_NO_TXN = re.compile(
-    r"^(?:create (?:unique )?index concurrently|drop index concurrently|reindex\b.*\bconcurrently\b|"
-    r"refresh materialized view concurrently|alter table \S+ detach partition \S+ concurrently|"
-    r"vacuum\b|cluster\b|create database\b|drop database\b|alter system\b|"
-    r"create tablespace\b|drop tablespace\b|create subscription\b|alter subscription\b|drop subscription\b)",
-    re.I)
-_TXN_CONTROL = re.compile(r"^(?:begin|commit|end|rollback|abort|start transaction)\b", re.I)
+_AUTO_TOP = re.compile(
+    r"^(?:begin|commit|end|start transaction)$"
+    r"|^set (?:local )?(?:lock_timeout|statement_timeout|idle_in_transaction_session_timeout|client_min_messages)\b"
+    r"|^create (?:unlogged )?table (?:if not exists )?" + _QID + r" \("
+    r"|^create (?:unique )?index (?:concurrently )?(?:if not exists )?" + _QID + r" on "
+    r"|^create sequence (?:if not exists )?" + _QID + r"\b"
+    r"|^comment on (?:table|column|index|sequence) ",
+    re.I,
+)
+_AUTO_ALTER_ACTION = re.compile(
+    r"^add column (?:if not exists )?" + _ID + r"\b"
+    r"|^add (?:if not exists )?(?!constraint\b)" + _ID + r" "        # ADD <col> <type> (COLUMN omitted)
+    r"|^add constraint " + _ID + r" "
+    r"|^alter (?:column )?" + _ID + r" (?:set default|drop default|set not null|drop not null)\b"
+    r"|^drop constraint (?:if exists )?" + _ID + r"$",
+    re.I,
+)
+# A seed row that is a no-op when it already exists: re-running the file cannot duplicate it.
+_AUTO_INSERT = re.compile(
+    r"^insert into " + _QID + r"(?: \([^()]*\))? values .* on conflict(?: \([^()]*\))? do nothing$", re.I | re.S)
+_ANYWHERE = re.compile(r"\b(?:cascade|execute|select|returning|call|copy)\b", re.I)
+_META_OK = re.compile(r"^[ \t]*\\set[ \t]+ON_ERROR_STOP[ \t]+(?:on|1|true)[ \t]*$", re.I)
+_META = re.compile(r"^[ \t]*\\")
+_NO_TXN = re.compile(r"^create (?:unique )?index concurrently\b", re.I)
+_TXN_CONTROL = re.compile(r"^(?:begin|commit|end|start transaction)$", re.I)
 
 
-def _all_statement_texts(sql: str) -> Iterable[str]:
-    """Every statement, descending into dollar-quoted bodies (DO blocks, function bodies)."""
-    for st in split_statements(sql):
-        yield st.text
-        for body in st.bodies:
-            yield from _all_statement_texts(body)
+def _head(text: str, words: int = 5) -> str:
+    return " ".join(text.split()[:words])
 
 
-def _unbounded(pattern: re.Pattern, text: str) -> bool:
-    """``pattern`` occurs with no WHERE after it in the same statement."""
-    return any(not _WHERE.search(text, m.end()) for m in pattern.finditer(text))
-
-
-def auto_apply_hazards(text: str) -> list[str]:
-    """Why a migration must NOT be auto-applied: anything that drops or renames a schema object
-    (renames break running consumers mid-deploy), TRUNCATE, and DELETE/UPDATE with no WHERE.
-    Empty list = nothing in the file can lose data. Scans DO and function bodies too."""
+def auto_apply_refusals(text: str) -> list[str]:
+    """Why a migration must NOT be auto-applied; empty = every statement is allowlisted additive
+    DDL: CREATE TABLE/INDEX/SEQUENCE, ALTER TABLE ADD COLUMN/ADD CONSTRAINT/SET|DROP DEFAULT|NOT
+    NULL/DROP CONSTRAINT, COMMENT ON, INSERT ... VALUES ... ON CONFLICT DO NOTHING, the file's own
+    BEGIN/COMMIT and SET [LOCAL] of a timeout. Nowhere: CASCADE, EXECUTE, SELECT, RETURNING, CALL,
+    COPY, dollar-quoted bodies (DO blocks, functions), or psql meta-commands other than
+    ``\\set ON_ERROR_STOP on`` (``\\i``, ``\\gexec``, ``\\!`` run SQL or shell the scan never sees)."""
     reasons: list[str] = []
-    for e in parse_migration(text).effects:
-        if e.op == "drop":
-            reasons.append(f"drops or renames {e.kind} {e.name}")
-    for t in _all_statement_texts(text):
-        m = _UNSAFE_DROP.search(t)
+    for raw in text.splitlines():
+        if _META.match(raw) and not _META_OK.match(raw):
+            reasons.append(f"psql meta-command {raw.strip()[:40]!r}")
+    for st in split_statements(text):
+        t = st.text
+        if st.bodies:
+            reasons.append(f"dollar-quoted body (DO block or function): {_head(t)}")
+            continue
+        if "\\" in t:  # mid-line psql meta-command (`... \\gexec`); strings are already blanked
+            reasons.append(f"psql meta-command in: {_head(t)}")
+            continue
+        m = _ANYWHERE.search(t)
         if m:
-            reasons.append(f"{m.group(0).upper()} statement")
-        if _TRUNCATE.search(t):
-            reasons.append("TRUNCATE statement")
-        if _unbounded(_DELETE, t):
-            reasons.append("DELETE with no WHERE")
-        if _unbounded(_UPDATE, t):
-            reasons.append("UPDATE with no WHERE")
+            reasons.append(f"{m.group(0).upper()} in: {_head(t)}")
+            continue
+        if _AUTO_TOP.match(t) or _AUTO_INSERT.match(t):
+            continue
+        a = _ALTER_TABLE.match(t)
+        if a:
+            bad = [x for x in _split_top_level_commas(a["actions"]) if not _AUTO_ALTER_ACTION.match(x)]
+            if not bad:
+                continue
+            reasons.append(f"ALTER TABLE action not on the allowlist: {_head(bad[0])}")
+            continue
+        reasons.append(f"statement not on the allowlist: {_head(t)}")
     return list(dict.fromkeys(reasons))
 
 
 def transaction_incompatible(text: str) -> list[str]:
-    """Top-level statements that cannot run inside one wrapping transaction: Postgres refuses
-    some (CREATE INDEX CONCURRENTLY, VACUUM, ...) in a transaction block, and a file that manages
-    its own BEGIN/COMMIT would have its COMMIT end the wrapper early. Empty = wrap it."""
+    """Top-level statements that cannot run inside one wrapping transaction: CREATE INDEX
+    CONCURRENTLY (the only one the allowlist admits) and the file's own BEGIN/COMMIT, whose COMMIT
+    would end a wrapper early. Empty = wrap it."""
     out: list[str] = []
     for st in split_statements(text):
         if _NO_TXN.match(st.text):
-            out.append(" ".join(st.text.split()[:4]).upper())
+            out.append("CREATE INDEX CONCURRENTLY")
         elif _TXN_CONTROL.match(st.text):
             out.append(f"own transaction control ({st.text.split()[0].upper()})")
     return list(dict.fromkeys(out))

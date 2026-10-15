@@ -89,9 +89,10 @@ RECREATE=$(printf '%s\n' "$PLAN" | awk -F'\t' '$2 == "recreate" {print $1}')
 # an unclean Postgres restart under the whole fleet). Their consumers stay
 # refused by safe_docker_build.sh's migration gate until applied, so BEFORE any
 # rebuild, scripts/apply_post_pull_migrations.py applies the ones that are
-# NOT APPLIED and safe (no drop/rename/TRUNCATE/unbounded DELETE or UPDATE,
-# valid REQUIRED-BY header, not rollback/DESTRUCTIVE), in filename order with
-# lock_timeout=10s; the first failure holds the rest. Kill switch:
+# NOT APPLIED and safe (every statement on an additive-DDL allowlist, valid
+# REQUIRED-BY header, not rollback/DESTRUCTIVE), in filename order with
+# lock_timeout=10s, only from the clean primary main checkout synced with
+# origin/main; the first file that fails or needs a human holds the rest. Kill switch:
 # ORION_POST_PULL_APPLY_MIGRATIONS=0. Then the read-only report shows the live
 # verdict and the manual command for anything still unapplied. Only on a host
 # whose service list includes orion-sql-db (the classifier lists none on circe).

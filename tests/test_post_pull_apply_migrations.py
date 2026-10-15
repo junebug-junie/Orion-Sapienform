@@ -38,70 +38,102 @@ HDR = "-- ORION-MIGRATION-REQUIRED-BY: orion-hub\n"
 
 
 # --------------------------------------------------------------------------- safety filter
-
-
-@pytest.mark.parametrize("sql, reason", [
-    ("DROP TABLE foo;", "drops or renames table foo"),
-    ("DROP TABLE IF EXISTS a, b CASCADE;", "drops or renames table a"),
-    ("ALTER TABLE t DROP COLUMN c;", "drops or renames column t.c"),
-    ("ALTER TABLE t RENAME COLUMN a TO b;", "drops or renames column t.a"),
-    ("ALTER TABLE t RENAME TO u;", "drops or renames table t"),
-    ("DROP INDEX IF EXISTS ix_old;", "drops or renames index ix_old"),
-    ("DROP SCHEMA s CASCADE;", "DROP SCHEMA statement"),
-    ("DROP VIEW v;", "DROP VIEW statement"),
-    ("TRUNCATE t;", "TRUNCATE statement"),
-    ("DELETE FROM t;", "DELETE with no WHERE"),
-    ("UPDATE t SET a = 1;", "UPDATE with no WHERE"),
-    ("UPDATE ONLY public.t AS x SET a = 1;", "UPDATE with no WHERE"),
-    # The real wipe in manual_migration_action_value_control_arm.sql sits inside a guarded DO.
-    ("DO $$ BEGIN IF NOT EXISTS (SELECT 1) THEN DELETE FROM posterior; END IF; END $$;",
-     "DELETE with no WHERE"),
-    ("CREATE FUNCTION f() RETURNS void AS $fn$ BEGIN TRUNCATE t; END $fn$ LANGUAGE plpgsql;",
-     "TRUNCATE statement"),
-])
-def test_hazards_are_refused(sql, reason):
-    assert reason in d.auto_apply_hazards(sql)
+#
+# An allowlist. Every case below that is refused includes the review probes that slipped past the
+# first (denylist) draft: dynamic SQL, psql meta-commands, type changes, WHERE hiding in a
+# subquery, CTE writes, MERGE, CASCADE, function calls.
 
 
 @pytest.mark.parametrize("sql", [
-    "CREATE TABLE IF NOT EXISTS t (id int);",
-    "ALTER TABLE t ADD COLUMN IF NOT EXISTS c int;",
-    "CREATE INDEX CONCURRENTLY IF NOT EXISTS ix ON t (c);",
-    "DELETE FROM t WHERE created_at < now() - interval '30 days';",
+    "DROP TABLE foo;",
+    "DROP TABLE IF EXISTS a, b CASCADE;",
+    "ALTER TABLE t DROP COLUMN c;",
+    "ALTER TABLE t RENAME COLUMN a TO b;",
+    "ALTER TABLE t RENAME TO u;",
+    "DROP INDEX IF EXISTS ix_old;",
+    "DROP SCHEMA s CASCADE;",
+    "TRUNCATE t;",
+    "DELETE FROM t;",
+    "DELETE FROM t WHERE created_at < now();",
     "UPDATE t SET a = 1 WHERE a IS NULL;",
+    "UPDATE t SET c = (SELECT 1 FROM y WHERE y.id = 1);",
+    "WITH d AS (DELETE FROM t RETURNING id) INSERT INTO log SELECT id FROM d WHERE id > 0;",
+    "DELETE FROM t USING u WHERE true;",
+    "MERGE INTO t USING s ON t.id = s.id WHEN MATCHED THEN DELETE;",
+    "ALTER TABLE t ALTER COLUMN c TYPE int USING NULL;",
+    "ALTER TABLE t ALTER c SET DATA TYPE varchar(3);",
+    "ALTER TABLE t DROP CONSTRAINT pk CASCADE;",
+    "ALTER TABLE t DETACH PARTITION p;",
+    "ALTER VIEW v RENAME TO w;",
+    "DROP FUNCTION f() CASCADE;",
+    "DROP TRIGGER IF EXISTS trg ON t;",
+    "DO $$ BEGIN EXECUTE 'DROP TABLE x'; END $$;",
+    "DO $$ BEGIN EXECUTE format('TRUNCATE %I', 't'); END $$;",
+    "DO $$ BEGIN IF NOT EXISTS (SELECT 1) THEN DELETE FROM posterior; END IF; END $$;",
+    "CREATE FUNCTION f() RETURNS void AS $fn$ ALTER TABLE t DROP COLUMN c $fn$ LANGUAGE sql; SELECT f();",
+    "CALL proc();",
+    "SELECT f();",
+    "CREATE TABLE t2 AS SELECT * FROM t;",
+    "INSERT INTO t SELECT * FROM u ON CONFLICT DO NOTHING;",
+    "INSERT INTO t (id) VALUES (1);",
     "INSERT INTO t (id) VALUES (1) ON CONFLICT (id) DO UPDATE SET id = excluded.id;",
-    "ALTER TABLE t DROP CONSTRAINT IF EXISTS t_pkey;",
-    "ALTER TABLE t ALTER COLUMN c DROP NOT NULL;",
-    "DROP TRIGGER IF EXISTS trg ON t; CREATE TRIGGER trg BEFORE UPDATE ON t FOR EACH ROW EXECUTE FUNCTION f();",
-    "DROP FUNCTION IF EXISTS f();",
-    # Prose and strings never count: the header comment and a literal mention a DROP.
-    "-- this used to DROP TABLE foo and TRUNCATE bar\nCOMMENT ON TABLE t IS 'we never DELETE FROM t';",
+    "INSERT INTO t (id) VALUES (1) ON CONFLICT DO NOTHING RETURNING id;",
+    "\\i other.sql\nCREATE TABLE x (id int);",
+    "\\! rm -rf /\nCREATE TABLE x (id int);",
+    "\\set AUTOCOMMIT off\nCREATE TABLE x (id int);",
+    "CREATE TABLE x (id int);\nSELECT 'DROP TABLE x' \\gexec",
+    "VACUUM t;",
+    "GRANT ALL ON t TO PUBLIC;",
+    "SET search_path = evil;",
+    "CREATE TEMP TABLE x (id int);",
 ])
-def test_safe_statements_pass(sql):
-    assert d.auto_apply_hazards(sql) == []
+def test_anything_off_the_allowlist_is_refused(sql):
+    assert d.auto_apply_refusals(sql), sql
 
 
-def test_every_hazard_in_the_corpus_is_a_drop_rename_or_wipe():
-    """Calibration against the real corpus: every non-rollback, non-DESTRUCTIVE file the filter
-    refuses is refused for a stated reason, and the known guarded wipe is among them."""
-    flagged = {}
-    for p in sorted((REPO_ROOT / d.MIGRATION_SUBDIR).glob("*.sql")):
-        h = d.auto_apply_hazards(p.read_text(errors="replace"))
-        if h:
-            flagged[p.name] = h
-    assert "DELETE with no WHERE" in flagged["manual_migration_action_value_control_arm.sql"]
-    assert any("drops or renames table" in r
-               for r in flagged["manual_migration_gpu_pool_stage5_drop_legacy_tables.sql"])
-    assert "manual_migration_vision_ask_names_v1.sql" not in flagged
+@pytest.mark.parametrize("sql", [
+    "CREATE TABLE IF NOT EXISTS t (id int PRIMARY KEY, note text DEFAULT 'x');",
+    "CREATE UNLOGGED TABLE t (id int);",
+    "ALTER TABLE t ADD COLUMN IF NOT EXISTS c int;",
+    "ALTER TABLE t ADD COLUMN a int, ADD COLUMN b text;",
+    "ALTER TABLE IF EXISTS t ADD c int;",
+    "ALTER TABLE t ADD CONSTRAINT t_c_chk CHECK (c > 0);",
+    "ALTER TABLE t DROP CONSTRAINT IF EXISTS t_old_chk;",
+    "ALTER TABLE t ALTER COLUMN c SET DEFAULT 0, ALTER COLUMN d DROP NOT NULL;",
+    "CREATE INDEX CONCURRENTLY IF NOT EXISTS ix ON t (c);",
+    "CREATE UNIQUE INDEX IF NOT EXISTS ux ON t (c) WHERE c IS NOT NULL;",
+    "CREATE SEQUENCE IF NOT EXISTS s;",
+    "COMMENT ON TABLE t IS 'we never DELETE FROM t';",
+    "COMMENT ON COLUMN t.c IS 'x';",
+    "INSERT INTO cur (name, at) VALUES ('r', null) ON CONFLICT (name) DO NOTHING;",
+    "BEGIN;\nSET LOCAL lock_timeout = '5s';\nCREATE TABLE t (id int);\nCOMMIT;",
+    "\\set ON_ERROR_STOP on\nCREATE TABLE t (id int);",
+    # prose never counts
+    "-- this used to DROP TABLE foo and TRUNCATE bar\n/* EXECUTE 'x' */\nCREATE TABLE t (id int);",
+])
+def test_additive_ddl_is_allowed(sql):
+    assert d.auto_apply_refusals(sql) == []
+
+
+def test_corpus_calibration():
+    """Of the real migrations that declare REQUIRED-BY, the plain additive ones pass and the
+    drop / DO-block ones do not; the guarded posterior wipe is refused."""
+    def refused(name):
+        return d.auto_apply_refusals((REPO_ROOT / d.MIGRATION_SUBDIR / name).read_text(errors="replace"))
+    assert refused("manual_migration_action_value_control_arm.sql")
+    assert refused("manual_migration_gpu_pool_stage5_drop_legacy_tables.sql")
+    assert refused("manual_migration_retire_streak_tick_v1.sql")
+    assert refused("manual_migration_vision_ask_names_v1.sql")  # DO block with a backfill UPDATE
+    for ok in ("manual_migration_vision_confirm_asks_v1.sql", "manual_migration_walkway_privacy_v2.sql",
+               "manual_migration_storage_write_substrate_loop.sql", "manual_migration_temporal_self_v1.sql"):
+        assert refused(ok) == [], ok
 
 
 @pytest.mark.parametrize("sql, expect", [
     ("CREATE TABLE t (id int);", []),
-    ("CREATE INDEX CONCURRENTLY IF NOT EXISTS ix ON t (c);", ["CREATE INDEX CONCURRENTLY IF"]),
+    ("CREATE INDEX CONCURRENTLY IF NOT EXISTS ix ON t (c);", ["CREATE INDEX CONCURRENTLY"]),
     ("BEGIN; CREATE TABLE t (id int); COMMIT;",
      ["own transaction control (BEGIN)", "own transaction control (COMMIT)"]),
-    ("VACUUM ANALYZE t;", ["VACUUM ANALYZE T"]),
-    # BEGIN/END inside a DO body is plpgsql, not transaction control.
     ("DO $$ BEGIN PERFORM 1; END $$;", []),
 ])
 def test_transaction_incompatible(sql, expect):
@@ -127,7 +159,7 @@ def test_classify_safe_missing_file_is_applied():
 def test_classify_concurrent_index_runs_without_wrapper():
     it = ap.classify(REL, HDR + "CREATE INDEX CONCURRENTLY IF NOT EXISTS ix ON t (c);",
                      _fr("manual_migration_x.sql"))
-    assert it.action == "apply" and it.no_txn == ["CREATE INDEX CONCURRENTLY IF"]
+    assert it.action == "apply" and it.no_txn == ["CREATE INDEX CONCURRENTLY"]
 
 
 @pytest.mark.parametrize("rel, text, result, action, fragment", [
@@ -139,7 +171,7 @@ def test_classify_concurrent_index_runs_without_wrapper():
     (REL, "-- ORION-MIGRATION-REQUIRED-BY: none\nCREATE TABLE x (id int);", _fr("manual_migration_x.sql"),
      "refuse", "invalid REQUIRED-BY"),
     (REL, HDR + "CREATE TABLE x (id int); DELETE FROM y;", _fr("manual_migration_x.sql"),
-     "refuse", "DELETE with no WHERE"),
+     "refuse", "statement not on the allowlist: DELETE FROM y"),
     (REL, HDR + "CREATE TABLE x (id int);", _fr("manual_migration_x.sql", header_script="scripts/apply_x.sh"),
      "refuse", "scripts/apply_x.sh"),
     (REL, HDR + "CREATE INDEX ix ON t (c);", _fr("manual_migration_x.sql", status="INVALID"),
@@ -226,9 +258,13 @@ def _git(repo, *args):
 def world(tmp_path):
     repo = tmp_path / "repo"
     (repo / d.MIGRATION_SUBDIR).mkdir(parents=True)
-    _git(repo, "init", "-q")
+    # The primary main checkout, synchronized with origin/main: the only place the applier writes.
+    origin = tmp_path / "origin.git"
+    subprocess.run(["git", "init", "-q", "--bare", "-b", "main", str(origin)], check=True)
+    _git(repo, "init", "-q", "-b", "main")
     _git(repo, "config", "user.email", "t@t")
     _git(repo, "config", "user.name", "t")
+    _git(repo, "remote", "add", "origin", str(origin))
     state = tmp_path / "db.json"
     state.write_text(json.dumps({"tables": [], "columns": [], "indexes": [], "sequences": []}))
     fake = tmp_path / "fake_psql.py"
@@ -254,6 +290,7 @@ def world(tmp_path):
         (repo / d.MIGRATION_SUBDIR / name).write_text(sql)
         _git(repo, "add", "-A")
         _git(repo, "commit", "-qm", name)
+        _git(repo, "push", "-q", "origin", "main")
         return f"{d.MIGRATION_SUBDIR}/{name}"
 
     def run(paths, **kw):
@@ -305,22 +342,65 @@ def test_failure_stops_every_later_file(world):
     assert "FAILED services/orion-sql-db/manual_migration_a.sql" in world.log.read_text()
 
 
-def test_refused_file_holds_later_files_but_destructive_and_rollback_do_not(world):
+def test_rollback_holds_nothing_but_destructive_and_refused_files_hold_later_files(world):
     r = world.add("manual_migration_a_rollback.sql", HDR + "DROP TABLE tz;")
-    x = world.add("manual_migration_b.sql", "-- DESTRUCTIVE\n-- ORION-MIGRATION-REQUIRED-BY: none retire\n"
-                                            "DROP TABLE tz;")
-    ok = world.add("manual_migration_c.sql", HDR + "CREATE TABLE tc (id int);")
-    assert world.run([r, x, ok]) == 0, world.lines
+    ok = world.add("manual_migration_b.sql", HDR + "CREATE TABLE tb (id int);")
+    assert world.run([r, ok]) == 0, world.lines
     assert len(world.called()) == 1
 
     world.calls.unlink()
-    bad = world.add("manual_migration_d.sql", HDR + "CREATE TABLE td (id int); TRUNCATE tc;")
-    later = world.add("manual_migration_e.sql", HDR + "CREATE TABLE te (id int);")
+    x = world.add("manual_migration_c.sql", "-- DESTRUCTIVE\n-- ORION-MIGRATION-REQUIRED-BY: none retire\n"
+                                            "DROP TABLE tz;")
+    after_x = world.add("manual_migration_d.sql", HDR + "CREATE TABLE td (id int);")
+    assert world.run([x, after_x]) == 1
+    assert world.called() == []
+    assert any("HELD, not applied -- manual_migration_c.sql comes first" in ln for ln in world.lines)
+
+    bad = world.add("manual_migration_e.sql", HDR + "CREATE TABLE te (id int); TRUNCATE tb;")
+    later = world.add("manual_migration_f.sql", HDR + "CREATE TABLE tf (id int);")
     assert world.run([bad, later]) == 1
     assert world.called() == []
     text = "\n".join(world.lines)
-    assert "NOT auto-applied -- not safe to auto-apply: TRUNCATE statement" in text
-    assert "HELD, not applied -- manual_migration_d.sql comes first" in text
+    assert "NOT auto-applied -- not safe to auto-apply: statement not on the allowlist: TRUNCATE tb" in text
+    assert "HELD, not applied -- manual_migration_e.sql comes first" in text
+    log = world.log.read_text()
+    assert "NEEDS-HUMAN services/orion-sql-db/manual_migration_c.sql" in log
+    assert "REFUSED services/orion-sql-db/manual_migration_e.sql" in log
+    assert "HELD services/orion-sql-db/manual_migration_f.sql" in log
+
+
+def test_unverifiable_data_file_holds_later_files(world):
+    data = world.add("manual_migration_a_seed.sql", "-- ORION-MIGRATION-REQUIRED-BY: none seed\n"
+                                                    "INSERT INTO seed (id) VALUES (1) ON CONFLICT DO NOTHING;")
+    later = world.add("manual_migration_b.sql", HDR + "CREATE TABLE tb (id int);")
+    assert world.run([data, later]) == 1
+    assert world.called() == []
+    assert any("UNVERIFIABLE (data" in ln for ln in world.lines)
+
+
+@pytest.mark.parametrize("spoil, fragment", [
+    (lambda w: _git(w.repo, "switch", "-q", "-c", "feat/x"), "not main"),
+    (lambda w: (w.repo / "stray.txt").write_text("x"), "uncommitted changes"),
+    (lambda w: (_git(w.repo, "commit", "-q", "--allow-empty", "-m", "local only")), "is not origin/main"),
+])
+def test_only_the_clean_synchronized_main_checkout_writes(world, spoil, fragment):
+    a = world.add("manual_migration_a.sql", HDR + "CREATE TABLE ta (id int);")
+    spoil(world)
+    assert world.run([a]) == 2
+    assert world.called() == []
+    assert fragment in world.lines[0]
+    # a dry run writes nothing, so it may run anywhere
+    assert world.run([a], dry_run=True) == 0
+
+
+def test_a_linked_worktree_never_writes(world, tmp_path):
+    a = world.add("manual_migration_a.sql", HDR + "CREATE TABLE ta (id int);")
+    wt = tmp_path / "wt"
+    _git(world.repo, "worktree", "add", "-q", "--detach", str(wt))
+    lines = []
+    rc = ap.run([a], repo=wt, env=world.env, connect_fn=lambda: _FakeConn(world.state), out=lines.append)
+    assert rc == 2 and world.called() == []
+    assert "linked worktree" in lines[0]
 
 
 def test_already_applied_is_skipped(world):
@@ -384,6 +464,9 @@ def test_default_command_refuses_when_the_db_container_is_not_on_this_host(world
     assert any("is not running on this host" in x for x in world.lines)
 
 
-def test_default_prefix_passes_lock_timeout_into_the_container():
-    assert ap.DEFAULT_PSQL[:5] == ["docker", "exec", "-i", "-e", f"PGOPTIONS={ap.PGOPTIONS}"]
+def test_default_prefix_passes_lock_timeout_and_writes_the_database_it_reads():
+    cmd = ap.default_psql({"ORION_PG_USER": "u", "ORION_PG_DB": "otherdb"})
+    assert cmd[:5] == ["docker", "exec", "-i", "-e", f"PGOPTIONS={ap.PGOPTIONS}"]
+    assert cmd[-4:] == ["-U", "u", "-d", "otherdb"]
+    assert ap.default_psql({})[-4:] == ["-U", "postgres", "-d", "conjourney"]
     assert "lock_timeout=10s" in ap.PGOPTIONS

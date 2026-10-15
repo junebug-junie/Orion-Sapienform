@@ -107,8 +107,13 @@ def scratch(tmp_path, pg):
     sb.write_text(_FAKE_SAFE_BUILD)
     sb.chmod(0o755)
     (repo / MIG_DIR).mkdir(parents=True)
-    for args in (["init", "-q"], ["config", "user.email", "t@t"], ["config", "user.name", "t"]):
+    # The primary main checkout synchronized with origin/main: the only place the applier writes.
+    origin = tmp_path / "origin.git"
+    subprocess.run(["git", "init", "-q", "--bare", "-b", "main", str(origin)], check=True)
+    for args in (["init", "-q", "-b", "main"], ["config", "user.email", "t@t"], ["config", "user.name", "t"],
+                 ["remote", "add", "origin", str(origin)]):
         subprocess.run(["git", "-C", str(repo), *args], check=True)
+    (repo / ".gitignore").write_text("__pycache__/\n")
 
     shim = tmp_path / "bin"
     shim.mkdir()
@@ -139,6 +144,7 @@ def scratch(tmp_path, pg):
         (repo / MIG_DIR / name).write_text(sql)
         subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True)
         subprocess.run(["git", "-C", str(repo), "commit", "-qm", name], check=True)
+        subprocess.run(["git", "-C", str(repo), "push", "-q", "origin", "main"], check=True)
         return f"{MIG_DIR}/{name}"
 
     def pull(paths):
@@ -153,14 +159,15 @@ def scratch(tmp_path, pg):
     _q(pg, "DROP TABLE IF EXISTS pp_probe_a, pp_probe_b, pp_probe_c, pp_probe_keep")
 
 
-# lock_timeout must reach the session that runs the file, not just the command line.
-_ASSERT_LOCK_TIMEOUT = ("DO $$ BEGIN IF current_setting('lock_timeout') <> '10s' THEN "
-                        "RAISE EXCEPTION 'lock_timeout is %', current_setting('lock_timeout'); END IF; END $$;\n")
+# lock_timeout must reach the session that runs the file, not just the command line: the column
+# default is evaluated by the INSERT, inside that session.
+_RECORD_LOCK_TIMEOUT = ("CREATE TABLE IF NOT EXISTS pp_probe_a (id int PRIMARY KEY, "
+                        "lt text DEFAULT current_setting('lock_timeout'));\n"
+                        "INSERT INTO pp_probe_a (id) VALUES (1) ON CONFLICT DO NOTHING;\n")
 
 
 def test_migrations_land_before_the_rebuild(scratch):
-    a = scratch.add("manual_migration_pp_a.sql", HDR + _ASSERT_LOCK_TIMEOUT +
-                    "CREATE TABLE IF NOT EXISTS pp_probe_a (id int);\n"
+    a = scratch.add("manual_migration_pp_a.sql", HDR + _RECORD_LOCK_TIMEOUT +
                     "ALTER TABLE pp_probe_a ADD COLUMN IF NOT EXISTS note text;\n")
     b = scratch.add("manual_migration_pp_b.sql", HDR +
                     "CREATE TABLE IF NOT EXISTS pp_probe_b (id int);\n"
@@ -169,7 +176,8 @@ def test_migrations_land_before_the_rebuild(scratch):
     assert p.returncode == 0, p.stdout + p.stderr
     assert builds == ["BUILD orion-hub up -d --build tables=pp_probe_a,pp_probe_b"], p.stdout
     assert "verified: services/orion-sql-db/manual_migration_pp_a.sql is APPLIED" in p.stdout
-    assert "no transaction wrapper: CREATE INDEX CONCURRENTLY IF" in p.stdout
+    assert "no transaction wrapper: CREATE INDEX CONCURRENTLY" in p.stdout
+    assert _q(scratch.pg, "SELECT lt FROM pp_probe_a") == [("10s",)]
     assert _q(scratch.pg, "SELECT indisvalid FROM pg_index WHERE indexrelid = 'ix_pp_probe_b'::regclass") == [(True,)]
     log = scratch.log.read_text()
     assert log.index("APPLIED services/orion-sql-db/manual_migration_pp_a.sql") < log.index("manual_migration_pp_b")
@@ -183,7 +191,7 @@ def test_migrations_land_before_the_rebuild(scratch):
 
 def test_failed_apply_rolls_back_holds_later_files_and_still_rebuilds(scratch):
     bad = scratch.add("manual_migration_pp_a.sql", HDR +
-                      "CREATE TABLE pp_probe_a (id int);\nSELECT no_such_function();\n")
+                      "CREATE TABLE pp_probe_a (id int);\nCREATE INDEX ix_pp_missing ON pp_no_such_table (id);\n")
     later = scratch.add("manual_migration_pp_b.sql", HDR + "CREATE TABLE pp_probe_b (id int);\n")
     p, builds = scratch.pull([bad, later])
     assert p.returncode == 0, p.stdout + p.stderr
@@ -198,7 +206,7 @@ def test_destructive_content_is_never_applied(scratch):
     f = scratch.add("manual_migration_pp_c.sql", HDR +
                     "CREATE TABLE pp_probe_c (id int);\nDELETE FROM pp_probe_keep;\n")
     p, builds = scratch.pull([f])
-    assert "not safe to auto-apply: DELETE with no WHERE" in p.stdout
+    assert "not safe to auto-apply: statement not on the allowlist: DELETE FROM pp_probe_keep" in p.stdout
     assert _q(scratch.pg, "SELECT count(*) FROM pp_probe_keep") == [(1,)]
     assert builds == ["BUILD orion-hub up -d --build tables=pp_probe_keep"]
 

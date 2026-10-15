@@ -26,6 +26,11 @@ if "--running-profile-services" in args:
         if owner == svc and profile not in skip:
             print(profile + "\\t" + name)
     raise SystemExit(0)
+if "--migrations" in args:
+    for line in os.environ.get("FAKE_MIGRATIONS", "").split(";"):
+        if line:
+            print(line.replace(",", "\t", 1))
+    raise SystemExit(0)
 for line in os.environ.get("FAKE_PLAN", "").split(";"):
     if line:
         print(line.replace(",", "\\t"))
@@ -39,6 +44,8 @@ def _run(
     profiles: str = "",
     extra_args: list[str] | None = None,
     safe_build_reads_stdin: bool = False,
+    migrations: str = "",
+    checker: str | None = None,
 ):
     fake_root = tmp_path / "repo"
     fake_scripts = fake_root / "scripts"
@@ -47,6 +54,8 @@ def _run(
     script = fake_scripts / SCRIPT.name
     shutil.copy2(SCRIPT, script)
     (fake_scripts / "rebuild_affected_services.py").write_text(_FAKE_CLASSIFIER)
+    if checker is not None:
+        (fake_scripts / "check_sql_migrations_applied.py").write_text(checker)
 
     capture = tmp_path / "safe-build-args.txt"
     safe_build = fake_scripts / "safe_docker_build.sh"
@@ -61,6 +70,7 @@ def _run(
     env["REBUILD_TEST_CAPTURE"] = str(capture)
     env["FAKE_PLAN"] = plan
     env["FAKE_PROFILES"] = profiles
+    env["FAKE_MIGRATIONS"] = migrations
     env.pop("ORION_POST_MERGE_REBUILD", None)
     completed = subprocess.run(
         [str(script), *(extra_args or [])],
@@ -146,3 +156,65 @@ def test_build_step_reading_stdin_cannot_swallow_later_profile_services(tmp_path
         "orion-vision-retina --profile walkway up -d --build svc-a",
         "orion-vision-retina --profile walkway up -d --build svc-b",
     ]
+
+
+# 2026-10-15: a migration-only pull (PR #2698) recreated orion-athena-sql-db.
+# The classifier now rebuilds nothing for it; the script must instead name the
+# migration, its live state and the apply command, and still build nothing.
+_MIG = "services/orion-sql-db/manual_migration_vision_confirm_asks_v1.sql"
+
+_CHECKER_MISSING = """\
+import sys
+name = sys.argv[sys.argv.index("--file") + 1]
+print("RED [        missing] " + name + "  (last changed 2026-10-15)")
+print("            MISSING table vision_confirm_asks")
+print("            apply: docker exec -i orion-athena-sql-db psql -U postgres -d conjourney "
+      "-v ON_ERROR_STOP=1 < services/orion-sql-db/" + name)
+print("")
+print("1 migration file(s) replayed: 1 missing; alarm window: all time")
+raise SystemExit(1)
+"""
+
+_CHECKER_UNREACHABLE = """\
+import sys
+print("could not connect to localhost:55432/conjourney: refused", file=sys.stderr)
+raise SystemExit(2)
+"""
+
+
+def test_migration_only_pull_builds_nothing_and_names_the_apply_command(tmp_path: Path) -> None:
+    completed, calls = _run(
+        tmp_path,
+        plan="",
+        migrations=f"{_MIG},orion-sql-writer, orion-hub",
+        checker=_CHECKER_MISSING,
+    )
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert calls == []
+    out = completed.stdout
+    assert f"  - {_MIG} (required by: orion-sql-writer, orion-hub)" in out
+    assert "live state: NOT APPLIED" in out
+    assert "apply: docker exec -i orion-athena-sql-db psql" in out
+    assert "replayed" not in out  # corpus-wide summary trimmed
+    assert "no affected services to rebuild" in out
+
+
+def test_unreachable_database_reports_unknown_with_a_raw_apply_command(tmp_path: Path) -> None:
+    completed, calls = _run(
+        tmp_path,
+        plan="orion-hub,build",
+        migrations=f"{_MIG},orion-hub",
+        checker=_CHECKER_UNREACHABLE,
+    )
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert calls == ["orion-hub up -d --build"]
+    out = completed.stdout
+    assert "live state: UNKNOWN (checker exit 2" in out
+    assert "could not connect" in out
+    assert f"apply by hand (check the file header first): docker exec -i orion-athena-sql-db psql -U postgres -d conjourney -v ON_ERROR_STOP=1 < {_MIG}" in out
+
+
+def test_no_migrations_prints_no_migration_block(tmp_path: Path) -> None:
+    completed, _calls = _run(tmp_path, plan="orion-hub,build")
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert "hand-applied SQL migration" not in completed.stdout

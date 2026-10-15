@@ -667,3 +667,108 @@ def test_docker_unavailable_starts_no_profile_services(tmp_path: Path) -> None:
     assert proc.returncode == 0
     assert proc.stdout == ""
     assert "docker ps unavailable" in proc.stderr
+
+
+# 2026-10-15: PR #2698 only ADDED a hand-applied migration file, and the
+# post-merge rebuild recreated orion-athena-sql-db (unclean Postgres shutdown,
+# fleet-wide "not yet accepting connections"). A migration is applied with
+# docker exec ... psql, never by a container.
+_INCIDENT_MIGRATION = "services/orion-sql-db/manual_migration_vision_confirm_asks_v1.sql"
+
+
+def test_migration_only_change_rebuilds_nothing() -> None:
+    payload = _resolve([_INCIDENT_MIGRATION], ROOT, host="athena")
+    assert payload["services"] == []
+    assert payload["skipped"] == [_INCIDENT_MIGRATION]
+    reason = payload["reasons"][_INCIDENT_MIGRATION]
+    assert "hand-applied SQL migration" in reason
+    assert "never by recreating the DB container" in reason
+    assert payload["migrations"] == [_INCIDENT_MIGRATION]
+
+
+def test_non_mounted_sql_under_sql_db_rebuilds_nothing() -> None:
+    path = "services/orion-sql-db/collapse_dump.sql"
+    payload = _resolve([path], ROOT, host="athena")
+    assert payload["services"] == []
+    assert payload["migrations"] == []
+    assert "not read by the container" in payload["reasons"][path]
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "services/orion-sql-db/docker-compose.yml",
+        "services/orion-sql-db/Dockerfile",
+    ],
+)
+def test_sql_db_container_inputs_still_rebuild(path: str) -> None:
+    payload = _resolve([path, _INCIDENT_MIGRATION], ROOT, host="athena")
+    assert payload["services"] == ["orion-sql-db"]
+    assert payload["migrations"] == [_INCIDENT_MIGRATION]
+
+
+def test_a_bind_mounted_sql_file_still_rebuilds_despite_the_skip_glob(mini_repo: Path) -> None:
+    """If orion-sql-db ever mounts init SQL, the mount wins over the glob skips."""
+    svc = mini_repo / "services" / "orion-sql-db"
+    (svc / "initdb").mkdir(parents=True)
+    (svc / "initdb" / "01_init.sql").write_text("SELECT 1;\n")
+    (svc / "docker-compose.yml").write_text(
+        "services:\n"
+        "  orion-sql-db:\n"
+        "    image: postgres:15\n"
+        "    volumes:\n"
+        "      - ./initdb:/docker-entrypoint-initdb.d:ro\n"
+    )
+    payload = _resolve(["services/orion-sql-db/initdb/01_init.sql"], mini_repo, host="athena")
+    assert payload["services"] == ["orion-sql-db"]
+    assert payload["skipped"] == []
+
+
+def test_a_mounted_migration_glob_path_still_rebuilds(mini_repo: Path) -> None:
+    """Same guard for hand_applied_migration_globs: a mounted migration is consumed."""
+    svc = mini_repo / "services" / "orion-sql-db"
+    svc.mkdir(parents=True)
+    (svc / "manual_migration_x.sql").write_text("SELECT 1;\n")
+    (svc / "docker-compose.yml").write_text(
+        "services:\n"
+        "  orion-sql-db:\n"
+        "    image: postgres:15\n"
+        "    volumes:\n"
+        "      - ./manual_migration_x.sql:/docker-entrypoint-initdb.d/x.sql:ro\n"
+    )
+    payload = _resolve(["services/orion-sql-db/manual_migration_x.sql"], mini_repo, host="athena")
+    assert payload["services"] == ["orion-sql-db"]
+    assert payload["recreate"] == ["orion-sql-db"]
+    assert payload["skipped"] == []
+
+
+def test_migrations_flag_prints_path_and_required_by() -> None:
+    proc = subprocess.run(
+        [sys.executable, str(MODULE), "--paths", _INCIDENT_MIGRATION, "--migrations", "--host", "athena"],
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout.splitlines() == [f"{_INCIDENT_MIGRATION}\torion-sql-writer, orion-hub"]
+
+
+def test_migrations_flag_omits_a_deleted_migration(mini_repo: Path) -> None:
+    proc = subprocess.run(
+        [
+            sys.executable,
+            str(MODULE),
+            "--paths",
+            "services/orion-sql-db/manual_migration_gone.sql",
+            "--migrations",
+            "--repo-root",
+            str(mini_repo),
+            "--host",
+            "athena",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout == ""

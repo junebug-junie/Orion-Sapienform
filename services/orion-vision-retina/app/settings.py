@@ -49,6 +49,22 @@ class Settings(BaseSettings):
     HEALTH_INTERVAL_SECONDS: float = 10.0
     SOURCE_RECONNECT_SECONDS: float = 5.0
 
+    # RTSP cameras only (webcam/folder/mock ignore these). See
+    # app/sources.py RtspFrameSource and the 2026-10-15 walkway stall.
+    #   TRANSPORT       tcp interleaves RTP on the RTSP connection: no UDP
+    #                   loss/reorder (the walkway's smeared lower frame and
+    #                   `RTP: bad cseq` lines). udp/http also accepted.
+    #   IO_TIMEOUT      FFmpeg socket timeout + OpenCV read timeout: a quiet
+    #                   socket returns from cap.read() after this, not never.
+    #   STALL_SECONDS   no frame for this long -> WARNING. If the reader thread
+    #                   also made no progress that long (wedged in FFmpeg),
+    #                   abandon it and start a fresh capture. 0 disables. Must
+    #                   exceed the reader's own recovery cycle
+    #                   (3 x IO_TIMEOUT + SOURCE_RECONNECT_SECONDS).
+    RETINA_RTSP_TRANSPORT: str = "tcp"
+    RETINA_RTSP_IO_TIMEOUT_SECONDS: float = 5.0
+    RETINA_RTSP_STALL_SECONDS: float = 30.0
+
     # On-demand video+audio clip capture for AffectGPT (app/clip_capture.py).
     # Separate from RETINA_SOURCE/RETINA_CAMERA_ID above -- those drive the
     # existing single-frame capture_loop, this is a distinct on-demand path
@@ -99,6 +115,14 @@ class Settings(BaseSettings):
             return None
         return v
 
+    @field_validator("RETINA_RTSP_TRANSPORT", mode="before")
+    @classmethod
+    def _check_rtsp_transport(cls, v: object) -> str:
+        t = str(v or "tcp").strip().lower()
+        if t not in {"tcp", "udp", "http"}:
+            raise ValueError(f"RETINA_RTSP_TRANSPORT must be tcp, udp or http, got {v!r}")
+        return t
+
     @field_validator("JPEG_QUALITY", mode="before")
     @classmethod
     def _clamp_jpeg_quality(cls, v: object) -> int:
@@ -114,6 +138,18 @@ class Settings(BaseSettings):
         if isinstance(v, str) and v.strip() == "":
             return None
         return v
+
+    @model_validator(mode="after")
+    def _check_rtsp_stall_window(self) -> "Settings":
+        stall = self.RETINA_RTSP_STALL_SECONDS
+        floor = 3 * self.RETINA_RTSP_IO_TIMEOUT_SECONDS + self.SOURCE_RECONNECT_SECONDS
+        if stall != 0 and stall <= floor:
+            raise ValueError(
+                f"RETINA_RTSP_STALL_SECONDS={stall} must be 0 or > {floor} "
+                "(3 x RETINA_RTSP_IO_TIMEOUT_SECONDS + SOURCE_RECONNECT_SECONDS), "
+                "or the watchdog races the reader's own reconnect"
+            )
+        return self
 
     @model_validator(mode="after")
     def _apply_source_path_alias(self) -> "Settings":

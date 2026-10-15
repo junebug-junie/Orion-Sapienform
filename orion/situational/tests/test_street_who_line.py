@@ -3,8 +3,10 @@
 Live defect (2026-10-15 23:35 UTC, orion-athena-cortex-exec-chat):
 
     On the walkway in the last 15 minutes: a vehicle I have seen on 2 days but
-    have no name for, Teddy, a vehicle I have seen on 2 days but have no name
+    have no name for, <name>, a vehicle I have seen on 2 days but have no name
     for, 4 unfamiliar bicycles, and 2 more.
+
+Names in these tests are invented placeholders, not real labels.
 
 Phrases were ordered by most recent sighting, so two parked cars took two of
 the four slots (the same sentence twice) and a name Juniper gave could fall
@@ -40,7 +42,7 @@ def _who(sightings):
 # the live line above.
 LIVE_ROWS = [
     _s("edcb5152", "vehicle", days=2, minutes_ago=1),
-    _s("f5242d40", "person", label="Teddy", minutes_ago=2),
+    _s("f5242d40", "person", label="Pip", minutes_ago=2),
     _s("9b1729bb", "vehicle", days=2, minutes_ago=3),
     *[_s(f"bike{i}", "bicycle", minutes_ago=4 + i) for i in range(4)],
     *[_s(f"p{i}", "person", minutes_ago=5 + i) for i in range(3)],
@@ -48,10 +50,10 @@ LIVE_ROWS = [
 ]
 
 
-def test_live_line_puts_teddy_first_and_groups_the_parked_cars() -> None:
+def test_live_line_puts_the_name_first_and_groups_the_parked_cars() -> None:
     assert _who(LIVE_ROWS) == (
-        PREFIX + "Teddy, 3 unfamiliar people, 2 vehicles I have each seen on 2 days but have no "
-        "name for, 4 unfamiliar bicycles, and 2 more."
+        PREFIX + "Pip, 3 unfamiliar people, 2 vehicles I have each seen on 2 days but have no "
+        "name for, 2 unfamiliar vehicles, and 4 more."
     )
 
 
@@ -61,10 +63,10 @@ def test_named_first_then_living_then_things_regardless_of_recency() -> None:
         _s("dog", "dog", days=3, minutes_ago=2),
         _s("bike", "bicycle", minutes_ago=3),
         _s("p", "person", minutes_ago=4),
-        _s("m", "person", label="Maeve", minutes_ago=14),
+        _s("m", "person", label="Wren", minutes_ago=14),
     ])
     assert line == (
-        PREFIX + "Maeve, a dog I have seen on 3 days but have no name for, an unfamiliar person, "
+        PREFIX + "Wren, a dog I have seen on 3 days but have no name for, an unfamiliar person, "
         "an unfamiliar bicycle, and 1 more."
     )
 
@@ -72,9 +74,9 @@ def test_named_first_then_living_then_things_regardless_of_recency() -> None:
 def test_names_never_fall_into_and_more_while_they_fit_the_cap() -> None:
     rows = [_s(f"v{i}", "vehicle", days=2 + i, minutes_ago=1) for i in range(6)]
     rows += [_s(f"b{i}", "bicycle", minutes_ago=1) for i in range(5)]
-    rows += [_s(n, "person", label=n, minutes_ago=12) for n in ("Teddy", "Maeve", "Amanda Feld")]
+    rows += [_s(n, "person", label=n, minutes_ago=12) for n in ("Pip", "Wren", "Rowan Example")]
     line = _who(rows)
-    assert line.startswith(PREFIX + "Teddy, Maeve, Amanda Feld, ")
+    assert line.startswith(PREFIX + "Pip, Wren, Rowan Example, ")
     assert line.endswith(", and 5 more.")  # the 5 bicycles, counted as individuals
 
 
@@ -101,11 +103,11 @@ def test_no_phrase_repeats() -> None:
 
 
 def test_two_individuals_with_the_same_name_are_one_name() -> None:
-    assert _who([_s("a", label="Teddy"), _s("b", label="teddy ")]) == PREFIX + "Teddy."
+    assert _who([_s("a", label="Pip"), _s("b", label="pip ")]) == PREFIX + "Pip."
 
 
 def test_old_sightings_and_bad_day_counts_do_not_break_the_line() -> None:
-    assert _who([_s("old", label="Teddy", minutes_ago=40)]) == ""
+    assert _who([_s("old", label="Pip", minutes_ago=40)]) == ""
     assert _who([{**_s("x", "vehicle"), "distinct_days": "?"}]) == PREFIX + "an unfamiliar vehicle."
 
 
@@ -162,3 +164,23 @@ def test_no_street_statement_uses_the_server_clock() -> None:
     for name in ("_STREET_SIGHTINGS_SQL", "_STREET_SIGHTINGS_PRE_STATIONARY_SQL",
                  "_STREET_EXPECTATIONS_SQL", "_STREET_UNRESOLVED_SQL", "_STREET_CAPTIONS_SQL"):
         assert "now()" not in str(getattr(perception_reader, name)), name
+
+
+def test_a_named_thing_sorts_among_the_names() -> None:
+    line = _who([_s("p", "person", minutes_ago=1), _s("van", "vehicle", label="the blue van", minutes_ago=9)])
+    assert line == PREFIX + "the blue van, and an unfamiliar person."
+
+
+def test_one_kind_stays_together_and_the_last_item_gets_and() -> None:
+    line = _who([
+        _s("a", "vehicle", days=2, minutes_ago=1),
+        _s("b", "bicycle", minutes_ago=2),
+        _s("c", "bicycle", minutes_ago=3),
+        _s("d", "vehicle", minutes_ago=4),
+        _s("e", "vehicle", minutes_ago=5),
+        _s("f", "vehicle", minutes_ago=6),
+    ])
+    assert line == (
+        PREFIX + "a vehicle I have seen on 2 days but have no name for, 3 unfamiliar vehicles, "
+        "and 2 unfamiliar bicycles."
+    )

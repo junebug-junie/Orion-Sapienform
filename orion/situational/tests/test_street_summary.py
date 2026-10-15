@@ -53,7 +53,7 @@ def test_names_only_from_labels_otherwise_unfamiliar_or_counted_days() -> None:
     ])
     assert lines == [
         "On the walkway in the last 15 minutes: Biscuit, a dog I have seen on 9 days "
-        "but have no name for, 2 unfamiliar people."
+        "but have no name for, and 2 unfamiliar people."
     ]
 
 

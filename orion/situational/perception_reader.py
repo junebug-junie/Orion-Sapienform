@@ -506,10 +506,13 @@ _STREET_UNRESOLVED_SQL = text(
 # Python side uses for its 15-minute cut, never the server's `now()`: a caller
 # (an eval, a replay) that passes `now=` gets rows from that moment's window,
 # not from whatever the database clock says today. `:until` is `now` plus
-# STREET_CLOCK_GRACE_SECONDS: rows from after `now` are not part of that
-# moment (a replay must not see today), and the grace keeps a live read from
+# STREET_CLOCK_GRACE_SECONDS: events and sightings from after `now` are not
+# part of that moment, and the grace keeps a live read from
 # dropping the newest row when a writer's clock runs a little ahead. A
 # sighting counts if it STARTED by then (someone mid-sighting is present).
+# Only the event window is bounded: a replay still sees CURRENT state for the
+# individual (`label`, `distinct_days`), so names given after `now` and
+# today's day counts show up, and a sighting's `last_at` can run past `now`.
 _STREET_CAPTIONS_SQL = text(
     "SELECT event_type, narrative, created_at FROM vision_events "
     "WHERE stream_id = :stream_id "
@@ -594,8 +597,9 @@ def _who_line(sightings: list[dict[str, Any]], *, recent_cut: datetime) -> str:
     """The "who is around" list, most important first.
 
     Order: names Juniper gave (most recent first), then unnamed people and
-    animals, then vehicles and other things; within each unnamed group the
-    ones seen on several days come before the new ones. Identical unnamed
+    animals, then vehicles and other things; within each unnamed group a
+    kind stays together, the ones seen on several days before the new ones,
+    and kinds with recurring members come first. Identical unnamed
     phrases are grouped by kind. At most `_MAX_WHO_PHRASES` phrases are
     shown, so a name is only cut when there are more names than that; "and
     N more" counts the individuals left out, not the phrases.
@@ -628,18 +632,25 @@ def _who_line(sightings: list[dict[str, Any]], *, recent_cut: datetime) -> str:
 
     # (phrase, how many individuals it stands for)
     phrases: list[tuple[str, int]] = [(name, 1) for name in named]
+    # One kind stays together: its recurring phrase, then its new one.
+    kinds = list(recurring) + sorted(k for k in new if k not in recurring)
     for living in (True, False):
-        for kind, days in recurring.items():
-            if (kind in _LIVING_KINDS) is living:
-                phrases.append((_recurring_phrase(kind, days), len(days)))
-        for kind, n in sorted(new.items()):
-            if (kind in _LIVING_KINDS) is living:
-                phrases.append((_new_phrase(kind, n), n))
+        for kind in kinds:
+            if (kind in _LIVING_KINDS) is not living:
+                continue
+            if kind in recurring:
+                phrases.append((_recurring_phrase(kind, recurring[kind]), len(recurring[kind])))
+            if kind in new:
+                phrases.append((_new_phrase(kind, new[kind]), new[kind]))
     if not phrases:
         return ""
-    shown = phrases[:_MAX_WHO_PHRASES]
+    shown = [p for p, _ in phrases[:_MAX_WHO_PHRASES]]
     extra = sum(n for _, n in phrases[_MAX_WHO_PHRASES:])
-    return ", ".join(p for p, _ in shown) + (f", and {extra} more" if extra > 0 else "")
+    if extra > 0:
+        return ", ".join(shown) + f", and {extra} more"
+    if len(shown) == 1:
+        return shown[0]
+    return ", ".join(shown[:-1]) + ", and " + shown[-1]
 
 
 def _hhmm(minute_of_day: Any) -> str | None:

@@ -4,7 +4,7 @@
 Default (no DB): replays the rows behind the live line seen in
 orion-athena-cortex-exec-chat on 2026-10-15 23:35 UTC,
 
-    a vehicle I have seen on 2 days but have no name for, Teddy, a vehicle I
+    a vehicle I have seen on 2 days but have no name for, <name>, a vehicle I
     have seen on 2 days but have no name for, 4 unfamiliar bicycles, and 2 more
 
 and checks the properties the fix sells.
@@ -49,7 +49,7 @@ def _row(iid, kind, label=None, days=1, minutes_ago=2):
 
 FIXTURE = [
     _row("edcb5152", "vehicle", days=2, minutes_ago=1),
-    _row("f5242d40", "person", label="Teddy", minutes_ago=2),
+    _row("f5242d40", "person", label="Pip", minutes_ago=2),
     _row("9b1729bb", "vehicle", days=2, minutes_ago=3),
     *[_row(f"bike{i}", "bicycle", minutes_ago=4 + i) for i in range(4)],
     *[_row(f"p{i}", "person", minutes_ago=5 + i) for i in range(3)],
@@ -71,7 +71,7 @@ def check(line: str, names: list[str]) -> list[str]:
     want = names[: pr._MAX_WHO_PHRASES]
     if parts[: len(want)] != want:
         failures.append(f"names not first: shown={parts} names={want}")
-    if more and len(names) < pr._MAX_WHO_PHRASES and any(n not in parts for n in names):
+    if more and len(names) <= pr._MAX_WHO_PHRASES and any(n not in parts for n in names):
         failures.append("a name fell into 'and N more' while names fit the cap")
     return failures
 
@@ -91,11 +91,15 @@ def _live_names(now: datetime) -> list[str] | None:
         "  AND s.started_at <= CAST(:until AS timestamptz) "
         "GROUP BY i.label ORDER BY max(s.ended_at) DESC"
     )
-    with engine.connect() as conn:
-        rows = conn.execute(stmt, {
-            "cut": now - timedelta(minutes=pr.STREET_RECENT_MINUTES),
-            "until": now + timedelta(seconds=pr.STREET_CLOCK_GRACE_SECONDS),
-        }).all()
+    try:
+        with engine.connect() as conn:
+            rows = conn.execute(stmt, {
+                "cut": now - timedelta(minutes=pr.STREET_RECENT_MINUTES),
+                "until": now + timedelta(seconds=pr.STREET_CLOCK_GRACE_SECONDS),
+            }).all()
+    except Exception as exc:  # noqa: BLE001 -- unread, exit 2
+        print("name read failed:", type(exc).__name__, exc)
+        return None
     seen: list[str] = []
     for (label,) in rows:
         label = label.strip()
@@ -121,7 +125,7 @@ def main(argv: list[str]) -> int:
             sightings=FIXTURE, expectations=[], unresolved=[], patio=None,
             now=NOW, tz=ZoneInfo("America/Denver"),
         )[0]
-        names = ["Teddy"]
+        names = ["Pip"]
     print(line or "(no who line)")
     print("names in window:", names)
     failures = check(line, names)

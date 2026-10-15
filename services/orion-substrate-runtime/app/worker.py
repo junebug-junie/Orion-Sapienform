@@ -16,6 +16,7 @@ import requests
 from orion.biometrics.node_catalog import NodeCatalog
 from orion.grammar.publish import publish_grammar_event
 from orion.core.schemas.drives import DriveStateV1
+from orion.schemas.attention_candidate import PERCEPTION_NODE_ID, PERCEPTION_WALKWAY_NODE_ID
 from orion.schemas.biometrics_projection import (
     ActiveNodePressureProjectionV1,
     NodeBiometricsProjectionV1,
@@ -355,6 +356,38 @@ def _prediction_error_receipt(
     )
 
 
+# Streams whose frame-embedding surprise feeds PERCEPTION_WALKWAY_NODE_ID
+# instead of PERCEPTION_NODE_ID (settings.perception_walkway_stream_ids).
+_DEFAULT_PERCEPTION_WALKWAY_STREAM_IDS = "walkway"
+
+
+def _parse_stream_ids(raw: Any, default: str) -> frozenset[str]:
+    """Comma-separated stream names -> set. A non-string (unset, or a test
+    double's MagicMock) falls back to ``default``; an explicit empty string
+    is an empty set, i.e. every stream feeds the room node."""
+    if not isinstance(raw, str):
+        raw = default
+    return frozenset(part.strip() for part in raw.split(",") if part.strip())
+
+
+@dataclass
+class _PerceptionGroupState:
+    """Latest perceptual prediction-error reading for one published node.
+
+    Same four facts the room node keeps in the ``_last_perception_*``
+    attributes, for the walkway node: the last real score, how many surprise
+    samples its scalar baseline has seen (still-warming check), when its last
+    embedding arrived (staleness clock) and which stream sent it. In-memory
+    "how is this lately" cache; the durable state is the per-stream row in
+    substrate_perception_embedding_baseline.
+    """
+
+    score: float | None = None
+    surprise_n: int = 0
+    embedding_at: datetime | None = None
+    stream_id: str | None = None
+
+
 @dataclass(frozen=True)
 class ReducerSpec:
     reducer_key: str
@@ -542,6 +575,14 @@ class BiometricsSubstrateWorker:
         # treated both cases identically, and the z-score migration widened
         # the still-warming window from one real observation to two.
         self._last_perception_surprise_n: int = 0
+        # The walkway camera's own reading (2026-10-15). Everything above is
+        # the ROOM cameras only (cam0, carbon) and feeds node:substrate.
+        # perception; streams in settings.perception_walkway_stream_ids feed
+        # node:substrate.perception_walkway from this state instead, so a busy
+        # street at 2 frames/s cannot overwrite the room reading. The walkway
+        # never touches _last_perception_embedding_vector above either: the
+        # world-model vision_embedding group stays a room embedding.
+        self._perception_walkway = _PerceptionGroupState()
         # World-model publish tick (world_model_features.py): real per-domain
         # prediction-error scalars cached by their own _*_tick() methods
         # below, read by _world_model_publish_tick's execution_context group
@@ -1573,6 +1614,17 @@ class BiometricsSubstrateWorker:
             retention_days=self._settings.perception_baseline_retention_days,
         )
         now = datetime.now(timezone.utc)
+        if stream_id in self._perception_walkway_stream_ids():
+            # Walkway group: its own node, its own cache. Nothing below this
+            # branch (room score, room vector cache) moves.
+            walkway = self._perception_walkway_state()
+            walkway.embedding_at = now
+            walkway.stream_id = stream_id
+            walkway.surprise_n = result.baseline.surprise.n
+            if result.score is not None:
+                walkway.score = result.score
+            self._log_perception_score(stream_id, result, node_id=PERCEPTION_WALKWAY_NODE_ID)
+            return
         self._last_perception_embedding_at = now
         self._last_perception_stream_id = stream_id
         # Real vector cache for the world-model publish tick's
@@ -1587,6 +1639,25 @@ class BiometricsSubstrateWorker:
         self._last_perception_surprise_n = result.baseline.surprise.n
         if result.score is not None:
             self._last_perception_prediction_error = result.score
+        self._log_perception_score(stream_id, result, node_id=PERCEPTION_NODE_ID)
+
+    def _perception_walkway_stream_ids(self) -> frozenset[str]:
+        return _parse_stream_ids(
+            getattr(self._settings, "perception_walkway_stream_ids", None),
+            _DEFAULT_PERCEPTION_WALKWAY_STREAM_IDS,
+        )
+
+    def _perception_walkway_state(self) -> _PerceptionGroupState:
+        # getattr: tests build the worker via __new__ and skip __init__.
+        state = getattr(self, "_perception_walkway", None)
+        if state is None:
+            state = _PerceptionGroupState()
+            self._perception_walkway = state
+        return state
+
+    @staticmethod
+    def _log_perception_score(stream_id: str, result: Any, *, node_id: str) -> None:
+        if result.score is not None:
             # raw_surprise + the scalar EWMA baseline it's z-scored against,
             # logged alongside the final score -- added 2026-08-20 after a
             # live-data check on a physically static camera showed ~20-25%
@@ -1598,27 +1669,32 @@ class BiometricsSubstrateWorker:
             # is a dead end for every tick that pinned at score=1.0.
             logger.info(
                 "substrate_perception_prediction_error_scored stream_id=%s score=%.3f "
-                "raw=%.5f surprise_mean=%.5f surprise_var=%.7f n=%d",
+                "raw=%.5f surprise_mean=%.5f surprise_var=%.7f n=%d node_id=%s",
                 stream_id,
                 result.score,
                 result.raw_surprise,
                 result.baseline.surprise.ewma,
                 result.baseline.surprise.variance,
                 result.baseline.n,
+                node_id,
             )
         else:
             logger.info(
                 "substrate_perception_prediction_error_baseline_seeded stream_id=%s "
-                "raw=%s n=%d",
+                "raw=%s n=%d node_id=%s",
                 stream_id,
                 f"{result.raw_surprise:.5f}" if result.raw_surprise is not None else "none",
                 result.baseline.n,
+                node_id,
             )
 
     def _perception_prediction_error_tick(self) -> None:
         """Clock-driven companion to the event-driven listener above -- writes
-        node:substrate.perception on a fixed interval regardless of whether a
-        new embedding arrived this tick.
+        node:substrate.perception (room cameras) AND node:substrate.
+        perception_walkway (walkway camera) on a fixed interval regardless of
+        whether a new embedding arrived this tick. Each node is written under
+        the identical contract by ``_publish_perception_group``; neither is
+        exempt, and a failure writing one never skips the other.
 
         Not optional ceremony: an event-only write here would reproduce the
         exact node:substrate.route decay-to-zero incident CLAUDE.md section
@@ -1633,121 +1709,159 @@ class BiometricsSubstrateWorker:
         """
         if not self._settings.enable_perception_prediction_error_tick:
             return
+        now = datetime.now(timezone.utc)
         try:
-            now = datetime.now(timezone.utc)
-            last_at = self._last_perception_embedding_at
-            if last_at is None:
-                # Nothing observed since this process started -- same startup-
-                # age fallback the retired vision-channel tick used, for the identical
-                # reason: an unbounded skip would report silence for a real
-                # ongoing outage across a restart.
-                startup_age = max(0.0, (now - self._process_started_at).total_seconds())
-                if vision_channel_staleness_pressure(startup_age) <= 0.0:
-                    logger.info(
-                        "substrate_perception_prediction_error_tick_awaiting_first_embedding"
-                    )
-                    return
-                age_seconds = startup_age
-            else:
-                age_seconds = max(0.0, (now - last_at).total_seconds())
-
-            staleness = vision_channel_staleness_pressure(age_seconds)
-            # A stale reading isn't "current calm" either -- once availability
-            # has faulted, the last real score no longer describes anything
-            # happening now. Same "must not outlive its own evidence" rule
-            # the retired vision-channel tick applied to perceptual_yield, applied here
-            # to prediction_error itself.
-            #
-            # `self._last_perception_prediction_error or 0.0` used to
-            # conflate two different states (review finding, 2026-08-19):
-            # "confirmed calm" (a real z-score was computed and it was
-            # exactly/near 0.0) and "no score yet" (real embeddings are
-            # arriving, not stale, but the scalar surprise EWMA -- the
-            # z-score migration's second stage -- hasn't seen a second real
-            # magnitude yet). The z-score migration widened that still-
-            # warming window from one real observation to two, so this
-            # collision now matters more than it used to. Both branches
-            # below still publish 0.0 -- the tick's own "write every tick,
-            # unconditionally" contract (this function's docstring) forbids
-            # skipping the write even during warm-up, the same way it
-            # forbids skipping it on genuine silence -- but now deliberately
-            # and distinguishably in the logs, not by accident.
-            #
-            # Threshold is `< 2`, not `< 1` (second-review finding,
-            # 2026-08-20 -- the first fix shipped this exact off-by-one):
-            # `_domain_zscore`/`compute_ewma_update` (orion/bus/ewma.py)
-            # return `zscore=None` and `n=1` on the FIRST real magnitude
-            # fed into a cold scalar baseline (`prev_count == 0` branch) --
-            # a real z-score, and thus a real score, only appears once
-            # `prev_count >= 1` going in, i.e. once `surprise.n` was
-            # already `>= 1` *before* this tick's own message, which reads
-            # back as `surprise.n >= 2` *after* it. So `surprise_n == 1` is
-            # still a "no score yet" state, exactly like `== 0` -- checking
-            # `< 1` let a stale cached score leak through for exactly the
-            # state this migration's own comment says it widened the
-            # window to include (own test coverage at the time only
-            # exercised `surprise_n == 0`, never the real `== 1` case).
-            still_warming = staleness < 1.0 and self._last_perception_surprise_n < 2
-            if staleness >= 1.0:
-                score = 0.0
-            elif still_warming:
-                score = 0.0
-                logger.info(
-                    "substrate_perception_prediction_error_tick_still_warming stream_id=%s "
-                    "surprise_n=%d",
-                    self._last_perception_stream_id or "none",
-                    self._last_perception_surprise_n,
-                )
-            else:
-                score = self._last_perception_prediction_error or 0.0
-
-            # Receipt on EVERY tick, unconditionally -- NOT gated on
-            # score > 0.0 the way _bus_synaptic_tick's is. This mirrors
-            # the retired vision-channel tick's receipt (it lived a few hundred lines above
-            # in this file), not bus_synaptic's, and for the identical
-            # documented reason: the receipt is the ONLY path into
-            # orion-field-digester's field-node-vector `prediction_error`
-            # channel (state_deltas.py's `target_kind == "prediction_signal"`
-            # perturbation, a separate write path from the FalkorDB
-            # substrate-graph node `_write_prediction_error_node` writes
-            # below). Gating this receipt the way bus_synaptic's is would
-            # reproduce the exact bug the retired vision-channel tick's comment
-            # documents fixing on this same node shape: a real spike writes
-            # the field vector high, then a calm tick with score == 0.0 never
-            # sends a corrective receipt, so the field vector never refreshes
-            # back down -- confirmed live there as a stuck
-            # prediction_error=0.5714 while the eye was actually healthy.
-            self._store.save_receipt(
-                _prediction_error_receipt(
-                    reducer_key="perception",
-                    node_id="node:substrate.perception",
-                    prediction_error=score,
-                    now=now,
-                )
-            )
-            # Written every tick, not only on fault -- same "must not
-            # outlive its own evidence" reasoning as node:substrate.vision
-            # and node:substrate.bus_synaptic above: a node that can only go
-            # up and never refresh back down to a genuine calm reading
-            # produces permanent false alarms in any future consumer polling
-            # its raw value.
-            self._write_prediction_error_node(
-                node_id="node:substrate.perception",
-                error=score,
-                now=now,
+            self._publish_perception_group(
+                node_id=PERCEPTION_NODE_ID,
                 reducer_key="perception",
-                extra_channels={"embedding_staleness": staleness},
-            )
-            logger.info(
-                "substrate_perception_prediction_error_tick_completed age_sec=%.1f "
-                "staleness=%.3f score=%.3f stream_id=%s",
-                age_seconds,
-                staleness,
-                score,
-                self._last_perception_stream_id or "none",
+                log_prefix="substrate_perception_prediction_error",
+                cached_score=self._last_perception_prediction_error,
+                surprise_n=self._last_perception_surprise_n,
+                embedding_at=self._last_perception_embedding_at,
+                stream_id=self._last_perception_stream_id,
+                now=now,
             )
         except Exception:
             logger.exception("substrate_perception_prediction_error_tick_failed")
+        try:
+            walkway = self._perception_walkway_state()
+            self._publish_perception_group(
+                node_id=PERCEPTION_WALKWAY_NODE_ID,
+                reducer_key="perception_walkway",
+                log_prefix="substrate_perception_walkway_prediction_error",
+                cached_score=walkway.score,
+                surprise_n=walkway.surprise_n,
+                embedding_at=walkway.embedding_at,
+                stream_id=walkway.stream_id,
+                now=now,
+            )
+        except Exception:
+            logger.exception("substrate_perception_walkway_prediction_error_tick_failed")
+
+    def _publish_perception_group(
+        self,
+        *,
+        node_id: str,
+        reducer_key: str,
+        log_prefix: str,
+        cached_score: float | None,
+        surprise_n: int,
+        embedding_at: datetime | None,
+        stream_id: str | None,
+        now: datetime,
+    ) -> None:
+        """One perception node's tick: staleness -> 0.0, still-warming -> 0.0,
+        else the cached real score; receipt + graph node written every call.
+        Raises on failure; the caller isolates each node."""
+        last_at = embedding_at
+        if last_at is None:
+            # Nothing observed since this process started -- same startup-
+            # age fallback the retired vision-channel tick used, for the identical
+            # reason: an unbounded skip would report silence for a real
+            # ongoing outage across a restart.
+            startup_age = max(0.0, (now - self._process_started_at).total_seconds())
+            if vision_channel_staleness_pressure(startup_age) <= 0.0:
+                logger.info("%s_tick_awaiting_first_embedding", log_prefix)
+                return
+            age_seconds = startup_age
+        else:
+            age_seconds = max(0.0, (now - last_at).total_seconds())
+
+        staleness = vision_channel_staleness_pressure(age_seconds)
+        # A stale reading isn't "current calm" either -- once availability
+        # has faulted, the last real score no longer describes anything
+        # happening now. Same "must not outlive its own evidence" rule
+        # the retired vision-channel tick applied to perceptual_yield, applied here
+        # to prediction_error itself.
+        #
+        # `self._last_perception_prediction_error or 0.0` used to
+        # conflate two different states (review finding, 2026-08-19):
+        # "confirmed calm" (a real z-score was computed and it was
+        # exactly/near 0.0) and "no score yet" (real embeddings are
+        # arriving, not stale, but the scalar surprise EWMA -- the
+        # z-score migration's second stage -- hasn't seen a second real
+        # magnitude yet). The z-score migration widened that still-
+        # warming window from one real observation to two, so this
+        # collision now matters more than it used to. Both branches
+        # below still publish 0.0 -- the tick's own "write every tick,
+        # unconditionally" contract (this function's docstring) forbids
+        # skipping the write even during warm-up, the same way it
+        # forbids skipping it on genuine silence -- but now deliberately
+        # and distinguishably in the logs, not by accident.
+        #
+        # Threshold is `< 2`, not `< 1` (second-review finding,
+        # 2026-08-20 -- the first fix shipped this exact off-by-one):
+        # `_domain_zscore`/`compute_ewma_update` (orion/bus/ewma.py)
+        # return `zscore=None` and `n=1` on the FIRST real magnitude
+        # fed into a cold scalar baseline (`prev_count == 0` branch) --
+        # a real z-score, and thus a real score, only appears once
+        # `prev_count >= 1` going in, i.e. once `surprise.n` was
+        # already `>= 1` *before* this tick's own message, which reads
+        # back as `surprise.n >= 2` *after* it. So `surprise_n == 1` is
+        # still a "no score yet" state, exactly like `== 0` -- checking
+        # `< 1` let a stale cached score leak through for exactly the
+        # state this migration's own comment says it widened the
+        # window to include (own test coverage at the time only
+        # exercised `surprise_n == 0`, never the real `== 1` case).
+        still_warming = staleness < 1.0 and surprise_n < 2
+        if staleness >= 1.0:
+            score = 0.0
+        elif still_warming:
+            score = 0.0
+            logger.info(
+                "%s_tick_still_warming stream_id=%s surprise_n=%d",
+                log_prefix,
+                stream_id or "none",
+                surprise_n,
+            )
+        else:
+            score = cached_score or 0.0
+
+        # Receipt on EVERY tick, unconditionally -- NOT gated on
+        # score > 0.0 the way _bus_synaptic_tick's is. This mirrors
+        # the retired vision-channel tick's receipt (it lived a few hundred lines above
+        # in this file), not bus_synaptic's, and for the identical
+        # documented reason: the receipt is the ONLY path into
+        # orion-field-digester's field-node-vector `prediction_error`
+        # channel (state_deltas.py's `target_kind == "prediction_signal"`
+        # perturbation, a separate write path from the FalkorDB
+        # substrate-graph node `_write_prediction_error_node` writes
+        # below). Gating this receipt the way bus_synaptic's is would
+        # reproduce the exact bug the retired vision-channel tick's comment
+        # documents fixing on this same node shape: a real spike writes
+        # the field vector high, then a calm tick with score == 0.0 never
+        # sends a corrective receipt, so the field vector never refreshes
+        # back down -- confirmed live there as a stuck
+        # prediction_error=0.5714 while the eye was actually healthy.
+        self._store.save_receipt(
+            _prediction_error_receipt(
+                reducer_key=reducer_key,
+                node_id=node_id,
+                prediction_error=score,
+                now=now,
+            )
+        )
+        # Written every tick, not only on fault -- same "must not
+        # outlive its own evidence" reasoning as node:substrate.vision
+        # and node:substrate.bus_synaptic above: a node that can only go
+        # up and never refresh back down to a genuine calm reading
+        # produces permanent false alarms in any future consumer polling
+        # its raw value.
+        self._write_prediction_error_node(
+            node_id=node_id,
+            error=score,
+            now=now,
+            reducer_key=reducer_key,
+            extra_channels={"embedding_staleness": staleness},
+        )
+        logger.info(
+            "%s_tick_completed age_sec=%.1f staleness=%.3f score=%.3f stream_id=%s",
+            log_prefix,
+            age_seconds,
+            staleness,
+            score,
+            stream_id or "none",
+        )
 
     async def _perception_prediction_error_tick_loop(self) -> None:
         interval = float(self._settings.perception_prediction_error_tick_interval_sec)

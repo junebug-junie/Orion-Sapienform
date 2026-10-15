@@ -46,7 +46,13 @@ _RECEIPT_NODE_IDS = {
     "node:substrate.codebase",
     # node:substrate.vision's tick was retired 2026-10-02 (vision_organ lane).
     "node:substrate.perception",
+    # Walkway camera's own surprise node (2026-10-15).
+    "node:substrate.perception_walkway",
 }
+
+# The perception tick writes both of its nodes through one helper, which
+# receives the node id as a module constant rather than a string literal.
+_PER_NODE_HELPERS = {"_publish_perception_group"}
 
 
 def _is_gt_zero(test: ast.expr) -> bool:
@@ -73,7 +79,21 @@ def _node_id(call: ast.Call) -> str:
     for kw in call.keywords:
         if kw.arg == "node_id" and isinstance(kw.value, ast.Constant):
             return str(kw.value.value)
+        if kw.arg == "node_id" and isinstance(kw.value, ast.Name):
+            value = getattr(worker_module, kw.value.id, None)
+            if isinstance(value, str):
+                return value
     return "<unknown>"
+
+
+def _helper_calls(tree: ast.AST) -> list[ast.Call]:
+    return [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr in _PER_NODE_HELPERS
+    ]
 
 
 def test_no_prediction_error_receipt_is_gated_on_value_greater_than_zero() -> None:
@@ -96,7 +116,7 @@ def test_no_prediction_error_receipt_is_gated_on_value_greater_than_zero() -> No
 
 def test_every_domain_still_has_a_receipt_call() -> None:
     tree = ast.parse(WORKER_PATH.read_text(encoding="utf-8"))
-    found = {_node_id(call) for call in _receipt_calls(tree)}
+    found = {_node_id(call) for call in (*_receipt_calls(tree), *_helper_calls(tree))}
     assert _RECEIPT_NODE_IDS <= found, _RECEIPT_NODE_IDS - found
 
 

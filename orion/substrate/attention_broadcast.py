@@ -31,6 +31,7 @@ from orion.schemas.attention_frame import (
     PredictionErrorMagnitudeV1,
     VoluntaryOverrideAbsentReasonV1,
 )
+from orion.schemas.attention_candidate import NO_COGNITION_CONSUMER_NODE_IDS
 from orion.substrate.attention.common import compact, stable_id
 from orion.substrate.attention.policy import select_actions
 from orion.substrate.attention.scoring import build_open_loops, merge_signals
@@ -135,6 +136,9 @@ def substrate_pressure_signals(
             if not is_cognitive_node(node):
                 # Assertions and memory referents/evidence never compete for the
                 # workspace (orion/substrate/eligibility.py, #2497 rule 8).
+                continue
+            if str(getattr(node, "node_id", "") or "") in NO_COGNITION_CONSUMER_NODE_IDS:
+                # Recorded but not yet admitted to cognition (walkway camera).
                 continue
             metadata = dict(getattr(node, "metadata", None) or {})
             salience, kind = _node_salience(metadata)
@@ -342,6 +346,8 @@ def world_first_signals(
             if not is_cognitive_node(node):
                 continue
             node_id = str(getattr(node, "node_id", "") or "")
+            if node_id in NO_COGNITION_CONSUMER_NODE_IDS:
+                continue
             metadata = dict(getattr(node, "metadata", None) or {})
             if node_id.startswith(SUBSTRATE_NODE_PREFIX) and metadata.get("prediction_error") is not None:
                 absent = None

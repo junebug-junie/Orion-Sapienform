@@ -813,6 +813,14 @@ async def run_reverie_once(
             broadcast=broadcast,
             strip_arc_ids=recent_arc_ids,
         )
+        if thought.expectation and not recent_percepts and (street_percepts or street_predictions):
+            # The expectation is a claim about the ROOM, judged later against a
+            # room percept. When the prompt carried the street but no room
+            # block, a claim is likely about the street, so it is dropped,
+            # never stamped checkable (2026-10-15). No street and no room is
+            # left exactly as before.
+            logger.info("reverie_expectation_dropped_no_room_percepts corr=%s", correlation_id)
+            thought = thought.model_copy(update={"expectation": None})
         if settings.reverie_expectation_scoring_enabled and thought.expectation:
             # Open the checkable window only when scoring is actually on --
             # otherwise nothing will ever query expectation_checkable_by, so

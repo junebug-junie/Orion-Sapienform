@@ -74,6 +74,7 @@ def dedupe_street_captions(
     now: datetime,
     max_age_sec: float,
     limit: int,
+    max_chars: int = CAPTION_MAX_CHARS,
 ) -> list[dict[str, Any]]:
     """Walkway caption rows in (any order), the newest distinct fresh ones out.
 
@@ -102,7 +103,7 @@ def dedupe_street_captions(
     out: list[dict[str, Any]] = []
     seen: set[str] = set()
     for ts, row in parsed:
-        text = _clean(row.get("narrative"))
+        text = _clean(row.get("narrative"), max_chars)
         key = _norm_key(text)
         if not key or key in seen:
             continue
@@ -263,10 +264,22 @@ def graded_expectation_lines(
 # SQL, sqlalchemy `text()` style (:named params, expanding :stream_ids). The
 # Hub's asyncpg reader keeps its own $-numbered copy in study_material.py.
 
+def _sql_str_list(values: frozenset[str]) -> str:
+    return ", ".join("'" + v.replace("'", "''") + "'" for v in sorted(values))
+
+
+# Reducer rows excluded IN SQL (before LIMIT), so a burst of them can never
+# crowd distinct captions out of the window; dedupe_street_captions repeats
+# the check as a backstop. Built from WALKWAY_REDUCER_EVENT_TYPES: one source.
+REDUCER_EVENT_TYPES_SQL = (
+    f"COALESCE(event_type, '') NOT IN ({_sql_str_list(WALKWAY_REDUCER_EVENT_TYPES)})"
+)
+
 STREET_CAPTIONS_SQL = (
     "SELECT stream_id, event_type, narrative, created_at FROM vision_events "
     "WHERE stream_id IN :stream_ids "
     "AND narrative IS NOT NULL AND narrative <> '' "
+    f"AND {REDUCER_EVENT_TYPES_SQL} "
     "AND created_at >= :since "
     "ORDER BY created_at DESC LIMIT :limit"
 )

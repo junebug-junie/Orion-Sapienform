@@ -24,7 +24,11 @@ from typing import Any, NamedTuple, Sequence
 
 from sqlalchemy import create_engine, text
 
-from orion.situational.street_material import dedupe_street_captions, street_caption_line
+from orion.situational.street_material import (
+    REDUCER_EVENT_TYPES_SQL,
+    dedupe_street_captions,
+    street_caption_line,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -474,15 +478,22 @@ _STREET_UNRESOLVED_SQL = text(
 # Latest walkway narratives (council captions), freshness-gated in SQL and
 # deduped in Python (street_material.dedupe_street_captions). A different
 # statement from `_room_percept_stmt` on purpose: this is the street, rendered
-# as "On the walkway just now: ...", never as the room.
+# as "On the walkway just now: ...", never as the room. Single stream and a
+# server-side clock (`make_interval`), like the other street reads in this
+# file, so it is its own statement rather than street_material's expanding one;
+# the reducer-row exclusion is shared.
 _STREET_CAPTIONS_SQL = text(
     "SELECT event_type, narrative, created_at FROM vision_events "
     "WHERE stream_id = :stream_id "
     "  AND narrative IS NOT NULL AND narrative <> '' "
+    f"  AND {REDUCER_EVENT_TYPES_SQL} "
     "  AND created_at > now() - make_interval(mins => :lookback) "
     "ORDER BY created_at DESC LIMIT 20"
 )
 STREET_CAPTION_MAX = 2
+# Per-caption clip in the brief: two of these plus the prefix stay well inside
+# chat stance's 420-char street clip, leaving room for the rhythm line.
+STREET_BRIEF_CAPTION_CHARS = 100
 
 # One row per no-embed zone, `<stream>:<zone>` (orion-sql-writer's
 # vision_individuals.no_embed_presence_id), recognised by the flag in the
@@ -584,7 +595,8 @@ def summarize_street(
     # itself rather than about who was recognised.
     caption = street_caption_line(
         dedupe_street_captions(
-            captions or [], now=now, max_age_sec=STREET_RECENT_MINUTES * 60, limit=STREET_CAPTION_MAX
+            captions or [], now=now, max_age_sec=STREET_RECENT_MINUTES * 60, limit=STREET_CAPTION_MAX,
+            max_chars=STREET_BRIEF_CAPTION_CHARS,
         ),
         camera=camera,
     )

@@ -236,3 +236,62 @@ def test_graded_reader_empty_and_failing_are_nothing(sqlite_engine, monkeypatch)
     assert vision_reader.read_recent_street_graded(
         stream_ids=["walkway"], lookback_hours=24, limit=4, tz_name="America/Denver") == []
     assert vision_reader.read_recent_street_events(max_age_sec=900, limit=2, stream_ids=["walkway"]) == []
+
+
+def test_reducer_rows_are_excluded_before_the_row_limit(sqlite_engine):
+    """A burst of reducer rows (attention_worthy, ...) newer than every caption
+    must not fill the fetch window and hide the real caption."""
+    from app import vision_reader
+
+    now = datetime.now(timezone.utc)
+    for i in range(vision_reader._STREET_FETCH_ROWS + 5):
+        _ins(sqlite_engine, "INSERT INTO vision_events VALUES ('r', 'walkway', 'attention_worthy', :n, :c)",
+             n=f"worth a look {i}", c=now - timedelta(seconds=1 + i * 0.01))
+    _ins(sqlite_engine, "INSERT INTO vision_events VALUES ('e', 'walkway', 'visual_observation', "
+         "'A cyclist rides past.', :c)", c=now - timedelta(seconds=60))
+    got = vision_reader.read_recent_street_events(max_age_sec=900, limit=2, stream_ids=["walkway"])
+    assert [g["narrative"] for g in got] == ["A cyclist rides past."]
+
+
+@pytest.mark.asyncio
+async def test_expectation_is_dropped_when_only_the_street_was_offered(monkeypatch):
+    """The expectation is judged against a ROOM percept. Street-only context
+    (room stale) must not produce a checkable claim."""
+    from app import reverie, vision_reader
+    from app.settings import settings
+
+    monkeypatch.setattr(settings, "reverie_perception_enabled", True)
+    monkeypatch.setattr(settings, "reverie_expectation_scoring_enabled", True)
+    monkeypatch.setattr(settings, "reverie_street_enabled", True)
+    monkeypatch.setattr(settings, "reverie_street_stream_ids", "walkway")
+    monkeypatch.setattr(vision_reader, "read_recent_vision_events", lambda **kw: [])
+    monkeypatch.setattr(vision_reader, "read_recent_street_events", lambda **kw: STREET)
+    monkeypatch.setattr(vision_reader, "read_recent_street_graded", lambda **kw: [])
+    cortex = AsyncMock()
+    cortex.execute_plan = AsyncMock(return_value={"final_text": json.dumps({
+        "interpretation": GROUNDED_TEXT, "evidence_refs": ["ol-1"],
+        "expectation": "The vehicles will still be parked by the curb."})})
+    thought = await reverie.run_reverie_once(AsyncMock(), broadcast_reader=_broadcast, cortex_client=cortex)
+    assert thought is not None
+    assert thought.expectation is None and thought.expectation_checkable_by is None
+    out = _render(**cortex.execute_plan.call_args.kwargs["req"].context)
+    assert "never the street" not in out  # no room block -> no invitation to predict
+
+
+@pytest.mark.asyncio
+async def test_expectation_kept_when_the_room_was_offered(monkeypatch):
+    from app import reverie, vision_reader
+    from app.settings import settings
+
+    monkeypatch.setattr(settings, "reverie_perception_enabled", True)
+    monkeypatch.setattr(settings, "reverie_expectation_scoring_enabled", True)
+    monkeypatch.setattr(settings, "reverie_street_enabled", False)
+    monkeypatch.setattr(vision_reader, "read_recent_vision_events",
+                        lambda **kw: [{"narrative": "the desk lamp is on", "age_sec": 3.0}])
+    cortex = AsyncMock()
+    cortex.execute_plan = AsyncMock(return_value={"final_text": json.dumps({
+        "interpretation": GROUNDED_TEXT, "evidence_refs": ["ol-1"],
+        "expectation": "The desk lamp will still be on."})})
+    thought = await reverie.run_reverie_once(AsyncMock(), broadcast_reader=_broadcast, cortex_client=cortex)
+    assert thought.expectation == "The desk lamp will still be on."
+    assert thought.expectation_checkable_by is not None

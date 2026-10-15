@@ -178,3 +178,25 @@ def test_graded_lines_empty_means_nothing() -> None:
     assert graded_expectation_lines([], [], tz=TZ, limit=5) == []
     assert graded_expectation_lines([_exp("x", "open", 1)], None, tz=TZ, limit=5) == []
     assert build_graded_expectations([{"status": "met", "subject_label": "", "subject_key": "k"}]) == []
+
+
+def test_reducer_types_are_excluded_in_every_caption_sql() -> None:
+    from orion.curiosity.study_material import STREET_CAPTIONS_RECENT_SQL
+    from orion.situational.perception_reader import _STREET_CAPTIONS_SQL
+    from orion.situational.street_material import STREET_CAPTIONS_SQL, WALKWAY_REDUCER_EVENT_TYPES
+
+    for sql in (STREET_CAPTIONS_SQL, str(_STREET_CAPTIONS_SQL), STREET_CAPTIONS_RECENT_SQL):
+        assert "NOT IN" in sql
+        for t in WALKWAY_REDUCER_EVENT_TYPES:
+            assert f"'{t}'" in sql
+
+
+def test_brief_captions_are_clipped_so_the_rhythm_line_survives_the_stance_clip() -> None:
+    long = "A " + "very " * 60 + "long caption."
+    lines = summarize_street(
+        sightings=[], expectations=[{"subject_label": "the black dog", "status": "missed", "peak_minute": 460}],
+        unresolved=[], patio=None, now=NOW, tz=TZ, camera="walkway",
+        captions=[_cap(long, 1), _cap(long.replace("long", "other"), 2)],
+    )
+    assert len(" ".join(lines)) <= 420
+    assert "did not come" in " ".join(lines)

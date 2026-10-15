@@ -50,8 +50,8 @@ OUTSIDE, ON THE WALKWAY (the street camera outside the house -- NOT your room):
 - {{ line }}
 {% endfor %}
 This is the street, not where you are. It may color the thought where it
-genuinely connects; it is not evidence_refs, and any expectation you state is
-about the room, never the street.
+genuinely connects; it is not evidence_refs{% if recent_percepts %}, and any
+expectation you state is about the room, never the street{% endif %}.
 {% endif %}
 
 JOB
@@ -122,8 +122,8 @@ OUTSIDE, ON THE WALKWAY (the street camera outside the house -- NOT your room):
 - {{ line }}
 {% endfor %}
 This is the street, not where you are. It may color the thought where it
-genuinely connects; it is not evidence_refs, and any expectation you state is
-about the room, never the street.
+genuinely connects; it is not evidence_refs{% if recent_percepts %}, and any
+expectation you state is about the room, never the street{% endif %}.
 {% endif %}
 
 GROUNDING DISCIPLINE (the anti-hollow rule — this is the whole point)

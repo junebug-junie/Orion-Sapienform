@@ -567,15 +567,24 @@ DEFAULT_STREET_CAPTION_LOOKBACK_HOURS = 6
 # Read this many rows before dedupe: the council repeats itself on a quiet street.
 STREET_CAPTION_FETCH_ROWS = 40
 
-STREET_CAPTIONS_RECENT_SQL = """
+def _street_captions_recent_sql() -> str:
+    from orion.situational.street_material import REDUCER_EVENT_TYPES_SQL
+
+    return f"""
 SELECT event_id, stream_id, event_type, narrative, created_at
 FROM vision_events
 WHERE stream_id = ANY($1::text[])
   AND narrative IS NOT NULL AND narrative <> ''
+  AND {REDUCER_EVENT_TYPES_SQL}
   AND created_at > now() - make_interval(hours => $2)
 ORDER BY created_at DESC
 LIMIT $3
 """
+
+
+# asyncpg ($-numbered) copy of street_material.STREET_CAPTIONS_SQL; reducer
+# rows are excluded before LIMIT by the shared clause.
+STREET_CAPTIONS_RECENT_SQL = _street_captions_recent_sql()
 
 
 @dataclass(frozen=True)

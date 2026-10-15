@@ -434,9 +434,28 @@ tick under their own cap `VISION_CONFIRM_ASK_DAILY_CAP` (6; counted by
    once per group of people Juniper said are the same (her answer names them
    all). `VISION_ASK_FACE_MIN_FACES=0` turns both kinds off.
 
+**Names on the card** (2026-10-15, Juniper). A "same person?" answer can carry
+names (`orion_ask.answer_detail = {"names": {id: name}}`: one name for both on
+Same person, one per face on Different people). Each is applied exactly like a
+"who is this?" answer for that individual: a *typed* label
+(`vision_individual.label_copied=false`), then copied to everyone confirmed the
+same person (`label_copied=true`), then any still-open "who is this?" card for
+those people is closed (`answer_detail={"resolved_by": <ask_id>}`). Rules: the
+last typed name wins (replacing a typed name is logged as
+`[VISION_LABEL_REPLACED]`); a typed name replaces a copied one; a copied name
+never replaces a typed one. Answers apply oldest first, so "last" means answer
+time. A multi-picture "who is this?" answer can carry one verdict per picture
+(`{"pictures": [{image_ref, index, verdict: same|different|unsure, name}]}`);
+the individual still gets the first (face) picture's name, and every picture's
+verdict lands in `vision_ask_picture_verdict` (with the `crop_id` behind the
+thumbnail when it still exists). That table is record only: nothing splits or
+rewrites an individual from it yet.
+
 Needs `services/orion-sql-db/manual_migration_vision_confirm_asks_v1.sql`
-(`orion_ask.image_refs`, `vision_individual_pair_verdict`); without it the
-individuals loop backs off with a clear error. Replay eval (read-only on live):
+(`orion_ask.image_refs`, `vision_individual_pair_verdict`) and
+`manual_migration_vision_ask_names_v1.sql` (`orion_ask.answer_detail`,
+`vision_individual.label_copied`, `vision_ask_picture_verdict`); without them
+the individuals loop backs off with a clear error. Replay eval (read-only on live):
 `evals/run_vision_confirm_asks_replay_eval.py`. Retention: crops `VISION_CROP_RETENTION_DAYS` (7),
 sightings `VISION_SIGHTING_RETENTION_DAYS` (90); unlabeled individuals unseen
 for the sighting retention are deleted, labeled ones stay.

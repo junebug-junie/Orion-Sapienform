@@ -2,17 +2,76 @@
 #
 # Direct rules (always applied, not listed here):
 #   services/<name>/...     → <name>
-#   orion/<subpackage>/...  → services importing orion.<subpackage> (transitive via orion/)
-#   orion/bus/...           → all services whose Dockerfile COPY orion (contract broadcast)
-#   orion/schemas/...       → same as orion/bus/
+#   orion/**/<module>.py    → services whose runtime (non-tests/evals) code
+#                             imports that module, or imports a module of the
+#                             same orion/<pkg>/ that reaches it, or one package
+#                             hop beyond (orion_import_hops). A package
+#                             __init__.py counts for every import under it.
+#   orion/**/<data file>    → importers of its orion_data_readers entry, else of
+#                             any module in its top-level orion/<pkg>/ (verb
+#                             YAML, prompt templates are read by their package).
+#   orion/**/*.md, Makefile, non-.py files under tests/ or evals/ → never rebuild.
+#   orion/__init__.py       → every service importing orion (it runs everywhere).
+#   orion/**/tests/, test_*.py, conftest.py → never rebuild.
+#   orion/bus/, orion/schemas/ (contract_paths) .py → import graph like any
+#                             other module. Non-.py files there have no import
+#                             edge to their readers → fallback: all services
+#                             whose Dockerfile COPY orion (printed to stderr).
 #
 # Paths listed here extend or override the generic rules.
 
-# Contract / shared roots: intentionally NOT mass-rebuilding every COPY-orion
-# service (60+) on channels.yaml or schema edits — that duplicates
-# up_all_services_batched.sh blast radius. Rebuild named consumers manually or
-# add a narrow script_services / orion_package_extra_services entry instead.
-contract_paths: []
+# Contract roots: schema/bus .py modules resolve through the import graph
+# (only real importers rebuild, not the 60+ COPY-orion fleet — the reason the
+# 2026-08-30 narrowing, cbfd353a9, skipped these roots entirely). Only an
+# unresolvable non-.py file here falls back to the whole COPY-orion fleet.
+contract_paths:
+  - orion/bus/
+  - orion/schemas/
+
+# Files every bus service reads at runtime (one edit would rebuild the whole
+# fleet). Never auto-rebuilt; the producer/consumer services changed in the
+# same pull rebuild through their own services/ paths. path → reason.
+fleet_wide_paths:
+  orion/bus/channels.yaml: "bus channel catalog; cbfd353a9 stopped it broadcasting a 60+ service rebuild"
+
+# Consumers of a changed orion module: every module of its own top-level
+# package that (transitively) imports it, then this many hops into other
+# orion packages; services importing any of those rebuild.
+orion_import_hops: 1
+
+# Modules that count as consumers but are never walked through. The schema
+# registry imports every registered schema and is imported by
+# orion.core.bus.async_service, so walking through it reaches every bus
+# service (~60 per orion edit on the last 10 merges, vs 0-23 with this).
+# Services that import the registry directly still rebuild.
+orion_import_barriers:
+  - orion.schemas.registry
+
+# Non-Python orion/ data read by modules OUTSIDE its own top-level package
+# (no import edge exists). path prefix → reader modules; their importers
+# rebuild. Data with no entry here maps to its whole top-level orion/<pkg>/.
+# Values: orion.* reader modules (their importers rebuild) or service names
+# (rebuilt directly, for a service that opens the file itself).
+orion_data_readers:
+  orion/recall/profiles/:
+    - orion.cognition.recall_query
+    - orion.cognition.daily_metacog_budget
+  orion/core/storage/sql/graphiti_projection.sql:
+    - orion-graphiti-adapter
+  orion/core/storage/sql/memory_cards.sql:
+    - orion.core.storage.memory_cards
+    - orion-recall
+    - orion-hub
+  orion/core/storage/sql/memory_crystallizations.sql:
+    - orion.memory.crystallization.repository
+    - orion-hub
+    - orion-cortex-exec
+
+# Data files here without an orion_data_readers entry are skipped (with a
+# printed reason) instead of whole-package fallback: orion.core contains the
+# bus core, so "every importer of orion.core" is the whole fleet (67 services).
+orion_data_no_fallback:
+  - orion/core/
 
 # Root-level or repo-wide paths: never trigger docker rebuild (log skip reason).
 skip_prefixes:
@@ -20,8 +79,6 @@ skip_prefixes:
   - graphify-out/
   - tests/
   - orion/tests/
-  - orion/bus/
-  - orion/schemas/
   - .github/
   - .cursor/
   - .claude/
@@ -49,14 +106,10 @@ script_services:
     - orion-harness-governor
     - orion-cortex-exec
 
-# When set (including empty list), only these orion/ subpackages fan out via
-# import index. Omit the key entirely to fan out for every orion subpackage.
-# Empty list = rebuild only services/<name>/ paths touched in the pull.
-orion_import_packages:
-  - curiosity
-
-# Optional manual overrides for orion subpackages when import scanning misses a consumer.
-# Prefer keeping this empty — direct import + one orion hop should cover most cases.
+# Optional manual overrides keyed by top-level orion subpackage (orion/<pkg>/)
+# when import scanning misses a consumer (dynamic import, data file read by
+# another package). Prefer keeping this empty. To stop a package from ever
+# auto-rebuilding, add orion/<pkg>/ to skip_prefixes instead.
 orion_package_extra_services: {}
 
 # Per-host positive allowlists live beside exclude_services.txt:

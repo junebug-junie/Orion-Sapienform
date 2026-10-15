@@ -270,7 +270,7 @@ def _dep_source_allowed(
         return False  # repo root, orion/, or a whole top-level folder
     if _path_matches_prefix(prefix, f"{_SERVICES_DIR}/{service}"):
         if include_own:
-            # service_skip_globs bypass the direct services/<svc>/ rule, so
+            # The migration/rebuild-only skips bypass the direct rule, so
             # they need to see every own-dir COPY/mount, file or directory.
             return True
         # Own-dir paths are already rebuilt by the direct services/<svc>/ rule.
@@ -684,6 +684,11 @@ def _service_from_path(path: str) -> str | None:
     return rest.split("/", 1)[0]
 
 
+def _glob_match(path: str, pattern: str) -> bool:
+    """fnmatch, but `*` never crosses a `/` (same depth as the pattern)."""
+    return path.count("/") == pattern.count("/") and fnmatch.fnmatchcase(path, pattern)
+
+
 def _path_matches_prefix(path: str, prefix: str) -> bool:
     normalized = prefix.rstrip("/")
     return path == normalized or path.startswith(f"{normalized}/")
@@ -716,7 +721,7 @@ def resolve_affected_services(
     skip_prefixes = list(mapping.get("skip_prefixes") or [])
     skip_exact = set(mapping.get("skip_exact") or [])
     migration_globs: list[str] = list(mapping.get("hand_applied_migration_globs") or [])
-    service_skip_globs: dict[str, str] = mapping.get("service_skip_globs") or {}
+    rebuild_only: dict[str, list[str]] = mapping.get("service_rebuild_only") or {}
     script_services: dict[str, list[str]] = mapping.get("script_services") or {}
     orion_extra: dict[str, list[str]] = mapping.get("orion_package_extra_services") or {}
     dep_sources = build_dependency_sources(str(root))
@@ -776,28 +781,43 @@ def resolve_affected_services(
         if matched_skip:
             continue
 
-        is_migration = any(fnmatch.fnmatchcase(path, g) for g in migration_globs)
-        glob_reason = next(
-            (reason for g, reason in service_skip_globs.items() if fnmatch.fnmatchcase(path, g)),
-            None,
+        owner = _service_from_path(path)
+        is_migration = any(_glob_match(path, g) for g in migration_globs)
+        only = rebuild_only.get(owner or "")
+        outside_only = (
+            only is not None
+            and not is_migration
+            and path[len(f"{_SERVICES_DIR}/{owner}/"):] not in set(only)
         )
-        if is_migration:
-            migrations.append(path)
-        # Glob skips bypass the direct services/<svc>/ rule, so they never
-        # skip a path a compose mount or Dockerfile COPY (own dir included)
-        # brings into a container; such a path falls through to that rule.
-        consumed = (is_migration or glob_reason is not None) and any(
-            d.service in known_services for d in dependency_hits(path, own_dep_sources)
+        # These skips bypass the direct services/<svc>/ rule, so they never
+        # skip a path the owning service's own compose mount or Dockerfile
+        # COPY brings into a container; such a path falls through to that
+        # rule. (Another service's mount is already handled by `hits` above
+        # and must not drag the owner along.)
+        consumed = (is_migration or outside_only) and any(
+            d.service == owner for d in dependency_hits(path, own_dep_sources)
         )
         if is_migration and not consumed:
+            migrations.append(path)
             note(
                 "hand-applied SQL migration: no container consumes it, so no rebuild "
                 "(apply it by hand with docker exec ... psql; never by recreating the DB container)",
                 skip=True,
             )
             continue
-        if glob_reason is not None and not consumed:
-            note(f"not read by the container ({glob_reason})", skip=True)
+        if outside_only and not consumed:
+            if path.endswith("/.env_example"):
+                note(
+                    f"env template change for {owner} (rebuild-only service) -- run "
+                    "sync_local_env_from_example.py; recreate it by hand only if the change needs it",
+                    skip=True,
+                )
+            else:
+                note(
+                    f"{owner} only rebuilds on {', '.join(only)} (service_rebuild_only: a recreate is "
+                    "an outage); this file is not read by its container",
+                    skip=True,
+                )
             continue
 
         service = _service_from_path(path)
@@ -917,7 +937,10 @@ def resolve_affected_services(
             host_allowlist=sorted(allowlist),
             host_filtered_out=host_filtered_out,
             recreate=sorted(svc for svc in recreate if svc in filtered),
-            migrations=sorted(set(migrations)),
+            # Migrations are reported on the host that runs their database.
+            migrations=sorted(
+                {m for m in migrations if _service_from_path(m) in allowlist}
+            ),
         )
 
     excludes = _load_excludes(root)
@@ -1021,35 +1044,9 @@ def running_profile_services(
     return sorted(out)
 
 
-def _migration_required_by(text: str) -> str:
-    """The file's ORION-MIGRATION-REQUIRED-BY services, as one display string."""
-    try:
-        if str(_REPO_ROOT) not in sys.path:
-            sys.path.insert(0, str(_REPO_ROOT))
-        from orion.sql_migration_drift import parse_required_by
-    except Exception:  # noqa: BLE001 -- display only; never block the report on it
-        return "unknown (orion.sql_migration_drift not importable)"
-    rb = parse_required_by(text)
-    if rb is None:
-        return "none declared"
-    if rb.services:
-        return ", ".join(rb.services)
-    return f"none ({rb.none_reason})" if rb.none_reason else "none declared"
-
-
-def migration_report(migrations: list[str], repo_root: Path) -> list[tuple[str, str]]:
-    """(repo-relative path, required-by) for changed migrations that still exist.
-
-    A deleted migration has nothing left to apply, so it is not reported.
-    """
-    out: list[tuple[str, str]] = []
-    for rel in migrations:
-        path = repo_root / rel
-        if not path.is_file():
-            continue
-        text = path.read_text(encoding="utf-8", errors="replace")
-        out.append((rel, _migration_required_by(text)))
-    return out
+def migration_report(migrations: list[str], repo_root: Path) -> list[str]:
+    """Changed migrations that still exist (a deleted one has nothing to apply)."""
+    return [rel for rel in migrations if (repo_root / rel).is_file()]
 
 
 def _emit_host_summary(result: ResolveResult) -> None:
@@ -1087,7 +1084,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--migrations",
         action="store_true",
-        help="Print '<path>\\t<required-by services>' per changed hand-applied SQL migration still in the tree",
+        help="Print each changed hand-applied SQL migration still in the tree, one per line",
     )
     parser.add_argument(
         "--running-profile-services",
@@ -1163,8 +1160,8 @@ def main(argv: list[str] | None = None) -> int:
         }
         print(json.dumps(payload, indent=2))
     elif args.migrations:
-        for rel, required_by in migration_report(result.migrations, repo_root):
-            print(f"{rel}\t{required_by}")
+        for rel in migration_report(result.migrations, repo_root):
+            print(rel)
     elif args.plan:
         recreate = set(result.recreate)
         for svc in result.services:

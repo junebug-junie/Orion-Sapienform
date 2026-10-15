@@ -163,55 +163,49 @@ def test_build_step_reading_stdin_cannot_swallow_later_profile_services(tmp_path
 # migration, its live state and the apply command, and still build nothing.
 _MIG = "services/orion-sql-db/manual_migration_vision_confirm_asks_v1.sql"
 
-_CHECKER_MISSING = """\
+_CHECKER_REPORT = """\\
 import sys
-name = sys.argv[sys.argv.index("--file") + 1]
-print("RED [        missing] " + name + "  (last changed 2026-10-15)")
-print("            MISSING table vision_confirm_asks")
-print("            apply: docker exec -i orion-athena-sql-db psql -U postgres -d conjourney "
-      "-v ON_ERROR_STOP=1 < services/orion-sql-db/" + name)
-print("")
-print("1 migration file(s) replayed: 1 missing; alarm window: all time")
-raise SystemExit(1)
+args = sys.argv[1:]
+assert "--post-pull-report" in args, args
+for rel in args[args.index("--post-pull-report") + 1:]:
+    print("  - " + rel + " (required by: orion-sql-writer, orion-hub)")
+    print("      live state: NOT APPLIED -- the services above stay refused by safe_docker_build.sh until it is")
+    print("      apply: docker exec -i orion-athena-sql-db psql -U postgres -d conjourney "
+          "-v ON_ERROR_STOP=1 < " + rel)
 """
 
-_CHECKER_UNREACHABLE = """\
-import sys
-print("could not connect to localhost:55432/conjourney: refused", file=sys.stderr)
-raise SystemExit(2)
+_CHECKER_CRASH = """\\
+raise SystemExit(3)
 """
+
+_ROLLBACK = "services/orion-sql-db/manual_migration_vision_confirm_asks_v1_rollback.sql"
 
 
 def test_migration_only_pull_builds_nothing_and_names_the_apply_command(tmp_path: Path) -> None:
-    completed, calls = _run(
-        tmp_path,
-        plan="",
-        migrations=f"{_MIG},orion-sql-writer, orion-hub",
-        checker=_CHECKER_MISSING,
-    )
+    completed, calls = _run(tmp_path, plan="", migrations=_MIG, checker=_CHECKER_REPORT)
     assert completed.returncode == 0, completed.stdout + completed.stderr
     assert calls == []
     out = completed.stdout
     assert f"  - {_MIG} (required by: orion-sql-writer, orion-hub)" in out
     assert "live state: NOT APPLIED" in out
     assert "apply: docker exec -i orion-athena-sql-db psql" in out
-    assert "replayed" not in out  # corpus-wide summary trimmed
     assert "no affected services to rebuild" in out
 
 
-def test_unreachable_database_reports_unknown_with_a_raw_apply_command(tmp_path: Path) -> None:
+def test_failed_checker_reports_unknown_and_never_offers_a_rollback(tmp_path: Path) -> None:
     completed, calls = _run(
         tmp_path,
         plan="orion-hub,build",
-        migrations=f"{_MIG},orion-hub",
-        checker=_CHECKER_UNREACHABLE,
+        migrations=f"{_MIG};{_ROLLBACK}",
+        checker=_CHECKER_CRASH,
     )
     assert completed.returncode == 0, completed.stdout + completed.stderr
     assert calls == ["orion-hub up -d --build"]
     out = completed.stdout
-    assert "live state: UNKNOWN (checker exit 2" in out
-    assert "could not connect" in out
-    assert f"apply by hand (check the file header first): docker exec -i orion-athena-sql-db psql -U postgres -d conjourney -v ON_ERROR_STOP=1 < {_MIG}" in out
+    assert "live state: UNKNOWN" in out
+    assert f"orion-athena-sql-db psql -U postgres -d conjourney -v ON_ERROR_STOP=1 < {_MIG}" in out
+    assert f"< {_ROLLBACK}" not in out
+    assert "rollback file: never applied on deploy" in out
 
 
 def test_no_migrations_prints_no_migration_block(tmp_path: Path) -> None:

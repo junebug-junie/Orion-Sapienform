@@ -195,6 +195,68 @@ def test_service_gate_never_connects_when_nothing_is_required(mig_repo, capsys):
     assert gate_cli.service_gate("orion-unrelated", connect_fn=boom) == 0
 
 
+# ------------------------------------------------------------------ post-pull report
+# 2026-10-15: a migration-only pull recreated orion-athena-sql-db. The rebuild now skips
+# migrations and prints this report instead (scripts/rebuild_services_from_git_diff.sh).
+
+_NEED = "services/orion-sql-db/manual_migration_need_v1.sql"
+_RETIRE = "services/orion-sql-db/manual_migration_retire_v1.sql"
+
+
+def test_post_pull_report_missing_names_consumers_and_apply_command(mig_repo, monkeypatch):
+    _live(monkeypatch, set())
+    out = "\n".join(gate_cli.post_pull_report([_NEED], connect_fn=_Conn))
+    assert f"  - {_NEED} (required by: orion-x)" in out
+    assert "live state: NOT APPLIED -- the services above stay refused by safe_docker_build.sh" in out
+    assert "apply: " + APPLY_PREFIX + _NEED in out
+
+
+def test_post_pull_report_applied(mig_repo, monkeypatch):
+    _live(monkeypatch, {"need_t"})
+    out = "\n".join(gate_cli.post_pull_report([_NEED], connect_fn=_Conn))
+    assert "live state: APPLIED" in out and "apply" not in out.split("APPLIED", 1)[1]
+
+
+def test_post_pull_report_db_down_is_unknown_with_apply_command(mig_repo):
+    def down():
+        raise gate_cli.ConnectError("could not connect: refused")
+    out = "\n".join(gate_cli.post_pull_report([_NEED], connect_fn=down))
+    assert "live state: UNKNOWN (could not connect: refused; no answer is not 'applied')" in out
+    assert "APPLIED" not in out.replace("NOT APPLIED", "")
+    assert "apply if not yet applied: " + APPLY_PREFIX + _NEED in out
+
+
+def test_post_pull_report_live_state_crash_is_unknown_not_missing(mig_repo, monkeypatch):
+    def boom(conn):
+        raise RuntimeError("catalog read failed")
+    monkeypatch.setattr(d, "load_live_state", boom)
+    out = "\n".join(gate_cli.post_pull_report([_NEED], connect_fn=_Conn))
+    assert "live state: UNKNOWN (catalog read failed" in out
+    assert "NOT APPLIED" not in out
+
+
+def test_post_pull_report_never_offers_destructive_or_rollback(mig_repo, monkeypatch):
+    rb = mig_repo / "services" / "orion-sql-db" / "manual_migration_need_v1_rollback.sql"
+    rb.write_text("DROP TABLE IF EXISTS need_t;\n")
+    _live(monkeypatch, set())
+    rb_rel = "services/orion-sql-db/manual_migration_need_v1_rollback.sql"
+    out = "\n".join(gate_cli.post_pull_report([_RETIRE, rb_rel], connect_fn=_Conn))
+    assert "DESTRUCTIVE: operator-approved only; no apply command is printed" in out
+    assert "rollback file: undoes another migration; never applied on deploy" in out
+    assert "docker exec" not in out
+    assert "stay refused" not in out
+
+
+def test_post_pull_report_data_only_is_unverifiable_not_applied(mig_repo, monkeypatch):
+    data = mig_repo / "services" / "orion-sql-db" / "manual_migration_backfill_v1.sql"
+    data.write_text("-- ORION-MIGRATION-REQUIRED-BY: none -- backfill\nUPDATE need_t SET id = 1;\n")
+    _live(monkeypatch, {"need_t"})
+    out = "\n".join(gate_cli.post_pull_report(
+        ["services/orion-sql-db/manual_migration_backfill_v1.sql"], connect_fn=_Conn))
+    assert "live state: UNVERIFIABLE" in out
+    assert "live state: APPLIED" not in out
+
+
 # ------------------------------------------------------------------ wrapper
 
 

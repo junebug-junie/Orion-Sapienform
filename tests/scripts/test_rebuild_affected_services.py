@@ -686,12 +686,67 @@ def test_migration_only_change_rebuilds_nothing() -> None:
     assert payload["migrations"] == [_INCIDENT_MIGRATION]
 
 
-def test_non_mounted_sql_under_sql_db_rebuilds_nothing() -> None:
-    path = "services/orion-sql-db/collapse_dump.sql"
+@pytest.mark.parametrize(
+    "path",
+    [
+        "services/orion-sql-db/collapse_dump.sql",
+        "services/orion-sql-db/README.md",
+        "services/orion-sql-db/.gitignore",
+    ],
+)
+def test_files_the_db_container_never_reads_rebuild_nothing(path: str) -> None:
     payload = _resolve([path], ROOT, host="athena")
     assert payload["services"] == []
     assert payload["migrations"] == []
-    assert "not read by the container" in payload["reasons"][path]
+    assert "orion-sql-db only rebuilds on docker-compose.yml" in payload["reasons"][path]
+
+
+def test_sql_db_env_template_does_not_recreate_postgres() -> None:
+    path = "services/orion-sql-db/.env_example"
+    payload = _resolve([path], ROOT, host="athena")
+    assert payload["services"] == []
+    assert "sync_local_env_from_example.py" in payload["reasons"][path]
+
+
+def test_rollback_migration_rebuilds_nothing() -> None:
+    path = "services/orion-sql-db/manual_migration_episode_memory_v1_rollback.sql"
+    payload = _resolve([path], ROOT, host="athena")
+    assert payload["services"] == []
+    # Reported (the post-pull report labels it never-apply), never rebuilt.
+    assert payload["migrations"] == [path]
+
+
+def test_migration_glob_star_does_not_cross_a_directory(mini_repo: Path) -> None:
+    path = "services/orion-sql-db/sub/manual_migration_x.sql"
+    (mini_repo / "services" / "orion-sql-db").mkdir(parents=True)
+    (mini_repo / "services" / "orion-sql-db" / "docker-compose.yml").write_text("services: {}\n")
+    payload = _resolve([path], mini_repo, host="athena")
+    assert payload["migrations"] == []
+
+
+def test_another_services_mount_does_not_drag_postgres_along(mini_repo: Path) -> None:
+    """Only the owning service's own mount/COPY makes a skipped sql-db file count as consumed."""
+    db = mini_repo / "services" / "orion-sql-db"
+    db.mkdir(parents=True)
+    (db / "docker-compose.yml").write_text("services:\n  orion-sql-db:\n    image: postgres:15\n")
+    (db / "seed.sql").write_text("SELECT 1;\n")
+    other = mini_repo / "services" / "orion-seeder"
+    other.mkdir(parents=True)
+    (other / "docker-compose.yml").write_text(
+        "services:\n"
+        "  orion-seeder:\n"
+        "    image: alpine\n"
+        "    volumes:\n"
+        "      - ../orion-sql-db/seed.sql:/seed.sql:ro\n"
+    )
+    payload = _resolve(["services/orion-sql-db/seed.sql"], mini_repo, host="athena")
+    assert payload["services"] == ["orion-seeder"]
+
+
+def test_migrations_are_not_reported_on_a_host_without_the_database() -> None:
+    payload = _resolve([_INCIDENT_MIGRATION], ROOT, host="circe")
+    assert payload["services"] == []
+    assert payload["migrations"] == []
 
 
 @pytest.mark.parametrize(
@@ -742,7 +797,7 @@ def test_a_mounted_migration_glob_path_still_rebuilds(mini_repo: Path) -> None:
     assert payload["skipped"] == []
 
 
-def test_migrations_flag_prints_path_and_required_by() -> None:
+def test_migrations_flag_prints_paths() -> None:
     proc = subprocess.run(
         [sys.executable, str(MODULE), "--paths", _INCIDENT_MIGRATION, "--migrations", "--host", "athena"],
         capture_output=True,
@@ -750,7 +805,7 @@ def test_migrations_flag_prints_path_and_required_by() -> None:
         timeout=120,
     )
     assert proc.returncode == 0, proc.stderr
-    assert proc.stdout.splitlines() == [f"{_INCIDENT_MIGRATION}\torion-sql-writer, orion-hub"]
+    assert proc.stdout.splitlines() == [_INCIDENT_MIGRATION]
 
 
 def test_migrations_flag_omits_a_deleted_migration(mini_repo: Path) -> None:

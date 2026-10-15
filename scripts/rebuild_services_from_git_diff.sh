@@ -82,6 +82,7 @@ if [ "$PY_RC" -ne 0 ]; then
     exit "$PY_RC"
 fi
 SERVICES=$(printf '%s\n' "$PLAN" | awk -F'\t' 'NF {print $1}')
+RECREATE=$(printf '%s\n' "$PLAN" | awk -F'\t' '$2 == "recreate" {print $1}')
 
 # Hand-applied SQL migrations changed in this pull. They never rebuild
 # anything (2026-10-15: a migration-only pull recreated orion-athena-sql-db,
@@ -111,36 +112,32 @@ if [ "$LIST_ONLY" != "1" ]; then
             CHECK_PY="$COMMON_DIR/../.venv/bin/python"
         fi
         RAW_APPLY="docker exec -i orion-athena-sql-db psql -U postgres -d conjourney -v ON_ERROR_STOP=1 <"
-        TAB=$(printf '\t')
-        while IFS="$TAB" read -r mig_path mig_required; do
-            [ -n "$mig_path" ] || continue
-            echo "  - $mig_path (required by: ${mig_required:-none declared})"
-            if [ ! -f "$CHECKER" ]; then
-                echo "      live state: UNKNOWN (no scripts/check_sql_migrations_applied.py)"
-                echo "      apply by hand (check the file header first): $RAW_APPLY $mig_path"
-                continue
-            fi
+        REPORT_RC=1
+        if [ -f "$CHECKER" ]; then
+            # One read-only run for every file: required-by, live state, apply
+            # command (rollback/DESTRUCTIVE files get none).
             set +e
-            CHECK_OUT=$(cd "$REPO_ROOT" && "$CHECK_PY" "$CHECKER" --since-days 0 --file "$(basename "$mig_path")" </dev/null 2>&1)
-            CHECK_RC=$?
+            # shellcheck disable=SC2086
+            REPORT=$(cd "$REPO_ROOT" && "$CHECK_PY" "$CHECKER" --post-pull-report $MIGRATIONS </dev/null 2>&1)
+            REPORT_RC=$?
             set -e
-            case "$CHECK_RC" in
-                0) echo "      live state: APPLIED" ;;
-                1) echo "      live state: NOT APPLIED -- its consumers stay refused by safe_docker_build.sh until it is" ;;
-                *) echo "      live state: UNKNOWN (checker exit $CHECK_RC; no answer is not 'applied')" ;;
-            esac
-            # The checker's per-file block ends at its first blank line; the
-            # corpus-wide summary after it is noise here.
-            printf '%s\n' "$CHECK_OUT" | sed -n '/^$/q;p' | sed 's/^/      /'
-            if [ "$CHECK_RC" != "0" ] && ! printf '%s\n' "$CHECK_OUT" | grep -q "apply:"; then
-                echo "      apply by hand (check the file header first): $RAW_APPLY $mig_path"
-            fi
-        done <<EOF_MIGRATIONS
-$MIGRATIONS
-EOF_MIGRATIONS
+            printf '%s\n' "$REPORT"
+        fi
+        if [ "$REPORT_RC" != "0" ]; then
+            echo "  live state: UNKNOWN (scripts/check_sql_migrations_applied.py missing or failed; no answer is not 'applied')"
+            for mig_path in $MIGRATIONS; do
+                echo "  - $mig_path"
+                case "$mig_path" in
+                    *_rollback.sql)
+                        echo "      rollback file: never applied on deploy"
+                        continue
+                        ;;
+                esac
+                echo "      apply only after reading its header (never a *_rollback.sql or -- DESTRUCTIVE file): $RAW_APPLY $mig_path"
+            done
+        fi
     fi
 fi
-RECREATE=$(printf '%s\n' "$PLAN" | awk -F'\t' '$2 == "recreate" {print $1}')
 
 # cortex-exec and cortex-orch are coupled at runtime, not just by the
 # import-graph classifier above: cortex-exec's self_study.py round-trips

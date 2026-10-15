@@ -6,23 +6,35 @@ docs/superpowers/specs/2026-09-22-walkway-camera-busy-world-design.md ideas
 Each tick, per stream, this reads the new ``vision_crop_observation`` rows
 since ``vision_individuals_cursor`` and:
 
-1. **Clusters.** A crop with an embedding joins the nearest same-kind
-   ``vision_individual`` centroid on its stream if cosine similarity is at or
-   above the threshold, else opens a new individual. The centroid is a
-   running mean of unit vectors, renormalized. Two crops from the same frame
-   never join the same individual (two people side by side are two people).
+1. **Clusters.** A crop with a face (walkway person crops, 2026-10-15) first
+   tries the nearest same-kind individual by FACE centroid; at or above
+   ``face_match_threshold`` that wins. Otherwise (no face on either side, or
+   no confident face match) the crop joins the nearest same-kind
+   ``vision_individual`` appearance centroid on its stream if cosine
+   similarity is at or above the threshold, else opens a new individual.
+   Centroids are running means of unit vectors, renormalized. Two crops from
+   the same frame never join the same individual (two people side by side
+   are two people).
 2. **Groups sightings.** Consecutive observations of one individual no more
    than ``merge_gap_sec`` apart are one ``vision_individual_sighting``. Zone
    = the zone with the most observations; dwell = ended - started.
 3. **Scores attention** on every touched sighting (app/vision_attention_score.py)
    and writes at most one ``vision_events`` row ``attention_worthy`` per sighting.
-4. **No-embed zones (the patio).** Boxes in a no-embed zone
-   (``vision_crop_observation.zone_no_embed``, set by the writer from
-   ``config/vision_zones.yaml``) never become individuals. They only drive
-   one ``substrate_embodied_presence`` row per no-embed zone,
-   ``<stream>:<zone name>`` (count + state, ``no_embed_zone: true``), and
-   only while the camera is producing census rows -- a dead camera leaves
-   the row to go stale rather than writing a false "absent".
+4. **Zone head counts (the patio).** Every zone with ``presence: true`` (or
+   ``embed: false``) in ``config/vision_zones.yaml`` gets one
+   ``substrate_embodied_presence`` row, ``<stream>:<zone name>`` (count +
+   state), written only while the camera is producing census rows -- a dead
+   camera leaves the row to go stale rather than writing a false "absent".
+   Boxes in a no-embed zone (``zone_no_embed``; none configured since
+   2026-10-15) still never become individuals.
+5. **Stationary fixtures.** Each individual carries a run of "its box has not
+   moved" (``orion.vision.stationary``): IoU with the run's first box at or
+   above ``stationary_iou``, gaps no longer than ``stationary_max_gap_sec``.
+   Held for ``stationary_min_sec`` the individual (and its current sighting)
+   is ``stationary`` -- a prop such as the patio skeleton seen live
+   2026-10-15. Stationary sightings are still recorded but get no attention
+   score or event, do not count toward asks or rhythm subjects, and are left
+   out of zone head counts. The first box that moves ends it.
 
 The cursor is LANDING time (``vision_crop_observation.created_at``), not
 ``observed_at``: a crop that arrives late (bus backlog, a slow host) still
@@ -49,6 +61,7 @@ from zoneinfo import ZoneInfo
 
 import numpy as np
 
+from orion.vision.stationary import StillRun, advance, box_iou, is_stationary
 from orion.vision.zones import Zone
 
 logger = logging.getLogger("sql-writer.vision_individuals")
@@ -123,6 +136,9 @@ class CropRow:
     # The DB CHECK forbids any embedding or thumbnail on such a row.
     zone_no_embed: bool = False
     thumb_ref: Optional[str] = None
+    # Walkway person crops with a confident face (orion-vision-host want_crop_faces).
+    face_embedding: Optional[Tuple[float, ...]] = None
+    face_thumb_ref: Optional[str] = None
 
 
 @dataclass
@@ -137,6 +153,14 @@ class Individual:
     sighting_count: int = 0
     distinct_days: int = 0
     label: Optional[str] = None
+    # Running mean of this individual's face vectors (None until a face is seen).
+    face_centroid: Optional[List[float]] = None
+    face_n: int = 0
+    # The "box has not moved" run (orion.vision.stationary.StillRun).
+    still_box: Optional[List[float]] = None
+    still_since: Optional[datetime] = None
+    still_last: Optional[datetime] = None
+    stationary: bool = False
 
 
 @dataclass
@@ -154,6 +178,10 @@ class Sighting:
     # Thumbnail of the most recent crop in this sighting that has one
     # (orion-vision-host writes one per EMBEDDED crop only). The ask card shows it.
     thumb_ref: Optional[str] = None
+    # Most recent face thumbnail; the ask card prefers it over thumb_ref.
+    face_thumb_ref: Optional[str] = None
+    # The individual was a stationary fixture as of this sighting's newest crop.
+    stationary: bool = False
 
     @property
     def zone(self) -> Optional[str]:
@@ -181,9 +209,15 @@ def local_date(ts: datetime, tz: ZoneInfo) -> date:
 class _CentroidIndex:
     """Per-(stream, kind) matrix of unit centroids, so a match is one matmul,
     not a Python loop over every individual. Rows are updated in place as
-    centroids move; new individuals append a row."""
+    centroids move; new individuals append a row. ``vec_of`` picks which
+    centroid (appearance or face); individuals without one are not indexed."""
 
-    def __init__(self, individuals: Iterable[Individual]) -> None:
+    def __init__(
+        self,
+        individuals: Iterable[Individual],
+        vec_of: Callable[[Individual], Optional[Sequence[float]]] = lambda ind: ind.centroid,
+    ) -> None:
+        self._vec_of = vec_of
         self._ids: Dict[Tuple[str, str], List[str]] = {}
         self._rows: Dict[Tuple[str, str], List[np.ndarray]] = {}
         self._mat: Dict[Tuple[str, str], Optional[np.ndarray]] = {}
@@ -197,26 +231,35 @@ class _CentroidIndex:
         return a / n if n > 0 else a
 
     def add(self, ind: Individual) -> None:
+        vec = self._vec_of(ind)
+        if not vec:
+            return
         key = (ind.stream_id, ind.kind)
         self._ids.setdefault(key, []).append(ind.individual_id)
-        self._rows.setdefault(key, []).append(self._unit(ind.centroid))
+        self._rows.setdefault(key, []).append(self._unit(vec))
         self._mat[key] = None
 
     def update(self, ind: Individual) -> None:
         key = (ind.stream_id, ind.kind)
-        i = self._ids[key].index(ind.individual_id)
-        self._rows[key][i] = self._unit(ind.centroid)
+        ids = self._ids.get(key) or []
+        if ind.individual_id not in ids:
+            self.add(ind)
+            return
+        i = ids.index(ind.individual_id)
+        self._rows[key][i] = self._unit(self._vec_of(ind) or ())
         m = self._mat.get(key)
-        if m is not None:
+        if m is not None and m.shape[1] == self._rows[key][i].shape[0]:
             m[i] = self._rows[key][i]
+        else:
+            self._mat[key] = None
 
-    def nearest(self, crop: "CropRow", exclude: set) -> Tuple[Optional[str], float]:
+    def nearest(self, crop: "CropRow", exclude: set, vec: Optional[Sequence[float]] = None) -> Tuple[Optional[str], float]:
         key = (crop.stream_id, crop.label)
         ids = self._ids.get(key)
         if not ids:
             return None, -2.0
         dims = {r.shape[0] for r in self._rows[key]}
-        e = self._unit(crop.embedding or ())
+        e = self._unit(vec if vec is not None else (crop.embedding or ()))
         if dims != {e.shape[0]}:
             # Mixed embedding sizes (a model change): compare only same-size rows.
             best = (None, -2.0)
@@ -261,7 +304,38 @@ class BatchResult:
     patio_crops: List[CropRow]
     skipped_no_embedding: int
     assigned: int
+    assigned_by_face: int = 0
+    # crop_id -> was its individual a stationary fixture after this crop.
+    crop_stationary: Dict[str, bool] = field(default_factory=dict)
 
+
+def _ts(d: datetime) -> float:
+    return d.timestamp()
+
+
+def _dt(t: float) -> datetime:
+    return datetime.fromtimestamp(t, tz=timezone.utc)
+
+
+def advance_stationary(
+    ind: Individual, box: Sequence[float], at: datetime, *, iou: float, min_sec: float, max_gap_sec: float
+) -> None:
+    """Fold one observation into the individual's "box has not moved" run.
+
+    Older-than-the-run observations are ignored. While the individual is
+    already stationary a gap does not break the run (the prop is still in the
+    same place after a night the detector missed it); a moved box always does.
+    ``min_sec <= 0`` disables the rule (nothing is ever stationary).
+    """
+    run = None
+    if ind.still_box and ind.still_since is not None and ind.still_last is not None:
+        run = StillRun(tuple(ind.still_box), _ts(ind.still_since), _ts(ind.still_last))
+    nxt = advance(run, box, _ts(at), iou_threshold=iou,
+                  max_gap_sec=None if ind.stationary else max_gap_sec)
+    ind.still_box = [float(v) for v in nxt.box]
+    ind.still_since = _dt(nxt.since)
+    ind.still_last = _dt(nxt.last)
+    ind.stationary = is_stationary(nxt, min_sec)
 
 def apply_batch(
     crops: Sequence[CropRow],
@@ -274,6 +348,10 @@ def apply_batch(
     tz: ZoneInfo,
     new_id: Callable[[], str] = lambda: uuid.uuid4().hex,
     nearby_sightings: Optional[Dict[str, List[Sighting]]] = None,
+    face_match_threshold: Optional[float] = 0.60,
+    stationary_min_sec: float = 1800.0,
+    stationary_iou: float = 0.5,
+    stationary_max_gap_sec: float = 300.0,
 ) -> BatchResult:
     """Cluster crops into individuals and group them into sightings.
 
@@ -289,9 +367,16 @@ def apply_batch(
     sightings overlapping this batch's time span, loaded from the DB), and
     every sighting this batch has already opened -- so a burst of late crops
     from one passing becomes one sighting, not one per crop.
+
+    Faces: a crop with ``face_embedding`` joins the nearest same-kind face
+    centroid at or above ``face_match_threshold`` (None disables), before
+    appearance is consulted. See ``advance_stationary`` for the fixture rule.
     """
     forbidden = set(no_embed_zones)
-    inds = {k: replace(v, centroid=list(v.centroid)) for k, v in individuals.items()}
+    inds = {k: replace(v, centroid=list(v.centroid),
+                       face_centroid=list(v.face_centroid) if v.face_centroid else None,
+                       still_box=list(v.still_box) if v.still_box else None)
+            for k, v in individuals.items()}
     cands: Dict[str, List[Sighting]] = {}
     seen_ids: set = set()
     for src in (latest_sightings, *(() if nearby_sightings is None else (nearby_sightings,))):
@@ -308,6 +393,9 @@ def apply_batch(
     assigned = 0
     used_in_observation: Dict[str, set] = {}
     index = _CentroidIndex(inds.values())
+    face_index = _CentroidIndex(inds.values(), vec_of=lambda ind: ind.face_centroid)
+    by_face = 0
+    crop_stationary: Dict[str, bool] = {}
 
     for crop in sorted(crops, key=lambda c: (c.observed_at, c.crop_id)):
         if crop.zone_no_embed or crop.zone in forbidden:
@@ -317,15 +405,31 @@ def apply_batch(
             skipped += 1
             continue
         taken = used_in_observation.setdefault(crop.observation_id, set())
-        best_id, best_sim = index.nearest(crop, taken)
+        best_id: Optional[str] = None
+        if crop.face_embedding and face_match_threshold is not None:
+            fid, fsim = face_index.nearest(crop, taken, vec=crop.face_embedding)
+            if fid is not None and fsim >= face_match_threshold:
+                best_id = fid
+                by_face += 1
+        if best_id is None:
+            aid, asim = index.nearest(crop, taken)
+            if aid is not None and asim >= match_threshold:
+                best_id = aid
 
-        if best_id is not None and best_sim >= match_threshold:
+        if best_id is not None:
             ind = inds[best_id]
             if local_date(crop.observed_at, tz) != local_date(ind.last_seen_at, tz) and crop.observed_at > ind.last_seen_at:
                 ind.distinct_days += 1
             ind.centroid = update_centroid(ind.centroid, ind.centroid_n, crop.embedding)
             ind.centroid_n += 1
             index.update(ind)
+            if crop.face_embedding:
+                if ind.face_centroid:
+                    ind.face_centroid = update_centroid(ind.face_centroid, ind.face_n, crop.face_embedding)
+                else:
+                    ind.face_centroid = normalize(crop.face_embedding)
+                ind.face_n += 1
+                face_index.update(ind)
             ind.last_seen_at = max(ind.last_seen_at, crop.observed_at)
         else:
             ind = Individual(
@@ -333,12 +437,18 @@ def apply_batch(
                 centroid=normalize(crop.embedding), centroid_n=1,
                 first_seen_at=crop.observed_at, last_seen_at=crop.observed_at,
                 sighting_count=0, distinct_days=1,
+                face_centroid=normalize(crop.face_embedding) if crop.face_embedding else None,
+                face_n=1 if crop.face_embedding else 0,
             )
             inds[ind.individual_id] = ind
             new_ids.append(ind.individual_id)
             index.add(ind)
+            face_index.add(ind)
         taken.add(ind.individual_id)
         assigned += 1
+        advance_stationary(ind, crop.box_xyxy, crop.observed_at, iou=stationary_iou,
+                           min_sec=stationary_min_sec, max_gap_sec=stationary_max_gap_sec)
+        crop_stationary[crop.crop_id] = ind.stationary
 
         zone_key = crop.zone or _NO_ZONE
         prev = _nearest_sighting(cands.get(ind.individual_id, []), crop.observed_at, merge_gap_sec)
@@ -352,8 +462,11 @@ def apply_batch(
                 prev.last_box_xyxy = list(crop.box_xyxy)
                 prev.embedding_ref = crop.embedding_ref
                 prev.evidence_ref = f"crop:{crop.crop_id}"
+                prev.stationary = ind.stationary
             if crop.thumb_ref and (newest or not prev.thumb_ref):
                 prev.thumb_ref = crop.thumb_ref
+            if crop.face_thumb_ref and (newest or not prev.face_thumb_ref):
+                prev.face_thumb_ref = crop.face_thumb_ref
             s = prev
         else:
             s = Sighting(
@@ -363,6 +476,8 @@ def apply_batch(
                 embedding_ref=crop.embedding_ref,
                 evidence_ref=f"crop:{crop.crop_id}",
                 thumb_ref=crop.thumb_ref,
+                face_thumb_ref=crop.face_thumb_ref,
+                stationary=ind.stationary,
             )
             cands.setdefault(ind.individual_id, []).append(s)
             ind.sighting_count += 1
@@ -371,7 +486,35 @@ def apply_batch(
     return BatchResult(
         individuals=inds, sightings=touched, new_individual_ids=new_ids,
         patio_crops=patio, skipped_no_embedding=skipped, assigned=assigned,
+        assigned_by_face=by_face, crop_stationary=crop_stationary,
     )
+
+
+def head_count_crops(
+    crops: Sequence[CropRow],
+    zone_name: str,
+    *,
+    crop_stationary: Dict[str, bool],
+    stationary_boxes: Sequence[Tuple[str, Sequence[float]]],
+    iou: float,
+) -> List[CropRow]:
+    """The crops in ``zone_name`` that count as someone being there.
+
+    A crop whose individual is a stationary fixture is left out. A crop with
+    no individual (no vector, no-embed zone) is left out when its box sits on
+    a stationary individual's box of the same kind -- the prop seen by a
+    frame whose crop was not embedded is still the prop."""
+    out: List[CropRow] = []
+    for c in crops:
+        if c.zone != zone_name:
+            continue
+        if c.crop_id in crop_stationary:
+            if crop_stationary[c.crop_id]:
+                continue
+        elif any(kind == c.label and box_iou(c.box_xyxy, box) >= iou for kind, box in stationary_boxes):
+            continue
+        out.append(c)
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -401,9 +544,10 @@ def patio_snapshot(
     grace_sec: float,
     zone: str = "patio",
 ) -> Dict[str, Any]:
-    """Same keys as orion-vision-window's presence snapshot, plus the patio count.
+    """Same keys as orion-vision-window's presence snapshot, plus the zone count.
 
-    ``subject`` is ``{"count": n}`` -- how many, never who.
+    ``subject`` is ``{"count": n}`` -- how many, never who (names live on
+    sightings, not on this row).
     """
     prev = prev or {}
     last_seen_at = batch_last_seen_at
@@ -434,7 +578,12 @@ def patio_snapshot(
         "identity_uncertain": False,
         "identity_confirmed": False,
         "zone": zone,
-        # Readers find these rows by this flag, not by the zone's name.
+        # Readers find these rows by a flag, not by the zone's name.
+        # head_count_zone is the honest name. no_embed_zone is the name
+        # orion/situational/perception_reader.py still filters on: kept True
+        # on every head-count row until that reader reads head_count_zone,
+        # even though no configured zone is no-embed since 2026-10-15.
+        "head_count_zone": True,
         "no_embed_zone": True,
         "state_since": state_since.isoformat(),
         "last_seen_at": last_seen_at.isoformat() if last_seen_at is not None else None,
@@ -493,18 +642,18 @@ def ask_question(*, kind: str, sighting_count: int, distinct_days: int, mean_min
 
 
 def ask_image_ref(
-    sightings: Sequence[Tuple[Optional[str], datetime, bool]],
+    sightings: Sequence[Tuple],
     *,
     now: datetime,
     thumb_retention_days: float,
     ask_expiry_days: float,
 ) -> Optional[str]:
-    """The thumbnail for an ask: the individual's most recent crop thumbnail.
+    """The thumbnail for an ask: the individual's most recent FACE thumbnail
+    if any is young enough, else its most recent crop thumbnail.
 
-    ``sightings`` are ``(thumb_ref, ended_at, zone_no_embed)``, any order. A
-    thumbnail is a crop of ONE embedded box (orion-vision-host never writes
-    one for a no-embed zone), never the whole frame, so an ask cannot show
-    Juniper the patio. It must also outlive the ask: the host prunes
+    ``sightings`` are ``(thumb_ref, ended_at, zone_no_embed[, face_thumb_ref])``,
+    any order. A thumbnail is a crop of ONE embedded box (or the face inside
+    it), never the whole frame. It must also outlive the ask: the host prunes
     thumbnails ``thumb_retention_days`` after they were last written, and the
     ask stays open ``ask_expiry_days``, so only a thumb from a sighting that
     ended within the difference is offered. None -> the card shows no picture.
@@ -515,15 +664,19 @@ def ask_image_ref(
                        thumb_retention_days, ask_expiry_days)
         return None
     horizon = now - timedelta(days=thumb_retention_days - ask_expiry_days)
-    best: Optional[Tuple[datetime, str]] = None
-    for thumb_ref, ended_at, no_embed in sightings:
-        if no_embed or not thumb_ref or not str(thumb_ref).startswith(THUMB_REF_PREFIX):
+    best: Dict[str, Tuple[datetime, str]] = {}
+    for row in sightings:
+        thumb_ref, ended_at, no_embed = row[0], row[1], row[2]
+        face_ref = row[3] if len(row) > 3 else None
+        if no_embed or ended_at is None or ended_at < horizon:
             continue
-        if ended_at is None or ended_at < horizon:
-            continue
-        if best is None or ended_at > best[0]:
-            best = (ended_at, str(thumb_ref))
-    return best[1] if best else None
+        for kind, ref in (("face", face_ref), ("crop", thumb_ref)):
+            if not ref or not str(ref).startswith(THUMB_REF_PREFIX):
+                continue
+            if kind not in best or ended_at > best[kind][0]:
+                best[kind] = (ended_at, str(ref))
+    pick = best.get("face") or best.get("crop")
+    return pick[1] if pick else None
 
 
 def individual_display_label(ind_label: Optional[str], kind: str, individual_id: str) -> str:
@@ -565,6 +718,27 @@ class IndividualsConfig:
     # file age). An ask only shows a thumbnail young enough to outlive the
     # ask itself: taken within (thumb_retention_days - ask_expiry_days).
     thumb_retention_days: float = 10.0
+    # Faces (walkway person crops): cosine similarity to the nearest same-kind
+    # face centroid that wins assignment over appearance. <= 0 disables.
+    face_match_threshold: float = 0.60
+    # Stationary fixtures (orion.vision.stationary): a box that keeps IoU >=
+    # stationary_iou with its run's first box, gaps <= stationary_max_gap_sec,
+    # for stationary_min_sec is a prop, not a visitor. min_sec <= 0 disables.
+    stationary_min_sec: float = 1800.0
+    stationary_iou: float = 0.5
+    stationary_max_gap_sec: float = 300.0
+
+
+# Columns manual_migration_walkway_privacy_v2.sql adds; the cycle refuses to
+# run (MigrationMissing -> back off) without them.
+V2_COLUMNS = (
+    ("vision_crop_observation", "face_embedding"),
+    ("vision_crop_observation", "face_thumb_ref"),
+    ("vision_individual", "face_centroid"),
+    ("vision_individual", "stationary"),
+    ("vision_individual_sighting", "face_thumb_ref"),
+    ("vision_individual_sighting", "stationary"),
+)
 
 
 # Two sql-writer instances must never run the same cycle at once: cursors,
@@ -585,6 +759,16 @@ def _check_tables(conn) -> None:
             "missing tables " + ",".join(r[0] for r in missing)
             + " -- apply services/orion-sql-db/manual_migration_walkway_camera_v1.sql"
         )
+    have = {(r[0], r[1]) for r in conn.execute(text(
+        "SELECT table_name, column_name FROM information_schema.columns "
+        "WHERE table_schema = current_schema() AND table_name = ANY(:t)"),
+        {"t": sorted({t for t, _ in V2_COLUMNS})}).fetchall()}
+    absent = [f"{t}.{c}" for t, c in V2_COLUMNS if (t, c) not in have]
+    if absent:
+        raise MigrationMissing(
+            "missing columns " + ",".join(absent)
+            + " -- apply services/orion-sql-db/manual_migration_walkway_privacy_v2.sql"
+        )
 
 
 def run_one_individuals_cycle(
@@ -600,6 +784,7 @@ def run_one_individuals_cycle(
         "streams": 0, "crops_read": 0, "assigned": 0, "new_individuals": 0,
         "sightings_touched": 0, "attention_events": 0, "patio_writes": 0,
         "answers_applied": 0, "asks_expired": 0, "asks_opened": 0,
+        "assigned_by_face": 0, "stationary_crops": 0,
         "pruned_crops": 0, "pruned_sightings": 0, "pruned_individuals": 0,
     }
     opened: List[dict] = []
@@ -617,8 +802,8 @@ def run_one_individuals_cycle(
                 "SELECT DISTINCT stream_id FROM vision_crop_observation "
                 "WHERE created_at > :since"), {"since": ts - timedelta(seconds=cfg.lookback_ceiling_sec)}).fetchall()}
             streams |= {r[0] for r in conn.execute(text("SELECT stream_id FROM vision_individuals_cursor")).fetchall()}
-            # Patio presence must be able to decay to "absent" on a quiet street.
-            streams |= {s for s, zs in zones_by_stream.items() if any(not z.embed for z in zs)}
+            # Zone head counts must be able to decay to "absent" on a quiet street.
+            streams |= {s for s, zs in zones_by_stream.items() if any(z.counts_presence for z in zs)}
 
         for stream_id in sorted(streams):
             try:
@@ -665,6 +850,8 @@ def _row_to_crop(r) -> CropRow:
         zone=r.zone, embedding=tuple(emb) if emb else None,
         embedding_ref=r.embedding_ref, artifact_id=r.artifact_id,
         zone_no_embed=bool(r.zone_no_embed), thumb_ref=r.thumb_ref,
+        face_embedding=tuple(r.face_embedding) if r.face_embedding else None,
+        face_thumb_ref=r.face_thumb_ref,
     )
 
 
@@ -673,6 +860,7 @@ def _one_stream(engine, stream_id: str, now: datetime, tz: ZoneInfo, cfg: Indivi
     from sqlalchemy import text
 
     forbidden = {z.name for z in zones if not z.embed}
+    head_count_zones = {z.name for z in zones if z.counts_presence}
     with engine.begin() as conn:
         cur = conn.execute(text(
             "SELECT last_created_at FROM vision_individuals_cursor WHERE stream_id=:s"), {"s": stream_id}).fetchone()
@@ -684,7 +872,8 @@ def _one_stream(engine, stream_id: str, now: datetime, tz: ZoneInfo, cfg: Indivi
         upto = now - timedelta(seconds=cfg.settle_sec)
         rows = conn.execute(text(
             "SELECT crop_id, observation_id, stream_id, observed_at, label, box_xyxy, zone, "
-            "embedding, embedding_ref, artifact_id, zone_no_embed, thumb_ref, created_at "
+            "embedding, embedding_ref, artifact_id, zone_no_embed, thumb_ref, face_embedding, face_thumb_ref, "
+            "created_at "
             "FROM vision_crop_observation "
             "WHERE stream_id=:s AND created_at > :since AND created_at <= :upto "
             "ORDER BY created_at, crop_id LIMIT :lim"),
@@ -708,7 +897,8 @@ def _one_stream(engine, stream_id: str, now: datetime, tz: ZoneInfo, cfg: Indivi
             kinds = sorted({c.label for c in crops})
             ind_rows = conn.execute(text(
                 "SELECT individual_id, stream_id, kind, centroid, centroid_n, first_seen_at, last_seen_at, "
-                "sighting_count, distinct_days, label FROM vision_individual "
+                "sighting_count, distinct_days, label, face_centroid, face_n, still_box, still_since, "
+                "still_last, stationary FROM vision_individual "
                 "WHERE stream_id=:s AND kind = ANY(:k) AND (label IS NOT NULL OR last_seen_at > :recent)"),
                 {"s": stream_id, "k": kinds,
                  "recent": oldest_seen - timedelta(days=cfg.candidate_days)}).fetchall()
@@ -716,7 +906,10 @@ def _one_stream(engine, stream_id: str, now: datetime, tz: ZoneInfo, cfg: Indivi
                 individual_id=r.individual_id, stream_id=r.stream_id, kind=r.kind,
                 centroid=list(r.centroid), centroid_n=r.centroid_n, first_seen_at=r.first_seen_at,
                 last_seen_at=r.last_seen_at, sighting_count=r.sighting_count,
-                distinct_days=r.distinct_days, label=r.label) for r in ind_rows}
+                distinct_days=r.distinct_days, label=r.label,
+                face_centroid=list(r.face_centroid) if r.face_centroid else None, face_n=int(r.face_n or 0),
+                still_box=list(r.still_box) if r.still_box else None, still_since=r.still_since,
+                still_last=r.still_last, stationary=bool(r.stationary)) for r in ind_rows}
             # Every sighting overlapping this batch's span (+- gap), not just
             # each individual's latest: a late crop must be able to rejoin the
             # older sighting it belongs to.
@@ -724,7 +917,8 @@ def _one_stream(engine, stream_id: str, now: datetime, tz: ZoneInfo, cfg: Indivi
             gap = timedelta(seconds=cfg.merge_gap_sec)
             s_rows = conn.execute(text(
                 "SELECT sighting_id, individual_id, stream_id, started_at, ended_at, "
-                "observation_count, zone_counts, last_box_xyxy, embedding_ref, evidence_ref, thumb_ref "
+                "observation_count, zone_counts, last_box_xyxy, embedding_ref, evidence_ref, thumb_ref, "
+                "face_thumb_ref, stationary "
                 "FROM vision_individual_sighting WHERE stream_id=:s AND ended_at >= :after "
                 "AND started_at <= :before"),
                 {"s": stream_id, "after": oldest_seen - gap, "before": newest_seen + gap}).fetchall()
@@ -735,14 +929,20 @@ def _one_stream(engine, stream_id: str, now: datetime, tz: ZoneInfo, cfg: Indivi
                     started_at=r.started_at, ended_at=r.ended_at, observation_count=r.observation_count,
                     zone_counts=dict(r.zone_counts or {}), last_box_xyxy=list(r.last_box_xyxy or []) or None,
                     embedding_ref=r.embedding_ref, evidence_ref=r.evidence_ref,
-                    thumb_ref=r.thumb_ref))
+                    thumb_ref=r.thumb_ref, face_thumb_ref=r.face_thumb_ref, stationary=bool(r.stationary)))
 
             batch = apply_batch(
                 crops, individuals=individuals, latest_sightings={}, nearby_sightings=nearby,
                 no_embed_zones=forbidden, match_threshold=cfg.match_threshold,
                 merge_gap_sec=cfg.merge_gap_sec, tz=tz,
+                face_match_threshold=cfg.face_match_threshold if cfg.face_match_threshold > 0 else None,
+                stationary_min_sec=cfg.stationary_min_sec, stationary_iou=cfg.stationary_iou,
+                stationary_max_gap_sec=cfg.stationary_max_gap_sec,
             )
             summary["assigned"] += batch.assigned
+            summary["assigned_by_face"] = summary.get("assigned_by_face", 0) + batch.assigned_by_face
+            summary["stationary_crops"] = summary.get("stationary_crops", 0) + sum(
+                1 for v in batch.crop_stationary.values() if v)
             summary["new_individuals"] += len(batch.new_individual_ids)
             summary["sightings_touched"] += len(batch.sightings)
             changed_ids = {s.individual_id for s in batch.sightings.values()}
@@ -767,15 +967,19 @@ def _one_stream(engine, stream_id: str, now: datetime, tz: ZoneInfo, cfg: Indivi
             {"s": stream_id, "t": new_cursor})
 
         no_embed_crops = batch.patio_crops if batch else []
-        # One presence row per no-embed zone: every zone the config names (so
-        # a quiet one can decay to absent) plus any a flagged row names.
-        zone_names = set(forbidden) | {c.zone for c in no_embed_crops if c.zone}
+        # One head-count row per presence zone: every zone the config names
+        # (so a quiet one can decay to absent) plus any a no-embed row names.
+        zone_names = set(head_count_zones) | {c.zone for c in no_embed_crops if c.zone}
+        stationary_boxes = [(ind.kind, ind.still_box) for ind in (batch.individuals.values() if batch else [])
+                            if ind.stationary and ind.still_box]
         for zone_name in sorted(zone_names):
             # Its own savepoint: a missing presence table (a different
             # migration) must not abort clustering, asks, or pruning.
             try:
                 with conn.begin_nested():
-                    in_zone = [c for c in no_embed_crops if c.zone == zone_name]
+                    in_zone = head_count_crops(
+                        crops, zone_name, crop_stationary=batch.crop_stationary if batch else {},
+                        stationary_boxes=stationary_boxes, iou=cfg.stationary_iou)
                     if _write_patio_presence(conn, stream_id, zone_name, in_zone, now, cfg):
                         summary["patio_writes"] += 1
             except Exception as exc:
@@ -789,14 +993,19 @@ def _upsert_individual(conn, ind: Individual) -> None:
 
     conn.execute(text("""
         INSERT INTO vision_individual (individual_id, stream_id, kind, centroid, centroid_n, first_seen_at,
-            last_seen_at, sighting_count, distinct_days, updated_at)
-        VALUES (:id, :s, :k, :c, :n, :f, :l, :sc, :dd, now())
+            last_seen_at, sighting_count, distinct_days, face_centroid, face_n, still_box, still_since,
+            still_last, stationary, updated_at)
+        VALUES (:id, :s, :k, :c, :n, :f, :l, :sc, :dd, :fc, :fn, :sb, :ss, :sl, :st, now())
         ON CONFLICT (individual_id) DO UPDATE SET centroid=EXCLUDED.centroid, centroid_n=EXCLUDED.centroid_n,
             last_seen_at=EXCLUDED.last_seen_at, sighting_count=EXCLUDED.sighting_count,
-            distinct_days=EXCLUDED.distinct_days, updated_at=now()
+            distinct_days=EXCLUDED.distinct_days, face_centroid=EXCLUDED.face_centroid,
+            face_n=EXCLUDED.face_n, still_box=EXCLUDED.still_box, still_since=EXCLUDED.still_since,
+            still_last=EXCLUDED.still_last, stationary=EXCLUDED.stationary, updated_at=now()
     """), {"id": ind.individual_id, "s": ind.stream_id, "k": ind.kind, "c": ind.centroid,
            "n": ind.centroid_n, "f": ind.first_seen_at, "l": ind.last_seen_at,
-           "sc": ind.sighting_count, "dd": ind.distinct_days})
+           "sc": ind.sighting_count, "dd": ind.distinct_days, "fc": ind.face_centroid,
+           "fn": ind.face_n, "sb": ind.still_box, "ss": ind.still_since, "sl": ind.still_last,
+           "st": ind.stationary})
 
 
 def sighting_row(s: Sighting, no_embed_zones: Iterable[str]) -> Dict[str, Any]:
@@ -808,6 +1017,7 @@ def sighting_row(s: Sighting, no_embed_zones: Iterable[str]) -> Dict[str, Any]:
             "st": s.started_at, "en": s.ended_at, "dw": s.dwell_sec, "oc": s.observation_count,
             "box": s.last_box_xyxy, "er": None if no_embed else s.embedding_ref, "ev": s.evidence_ref,
             "th": None if no_embed else s.thumb_ref, "ne": no_embed,
+            "fth": None if no_embed else s.face_thumb_ref, "sta": bool(s.stationary),
             "zc": json.dumps(s.zone_counts)}
 
 
@@ -817,14 +1027,16 @@ def _upsert_sighting(conn, s: Sighting, no_embed_zones: Iterable[str] = ()) -> N
     conn.execute(text("""
         INSERT INTO vision_individual_sighting (sighting_id, individual_id, stream_id, zone, started_at, ended_at,
             dwell_sec, observation_count, last_box_xyxy, embedding_ref, evidence_ref, thumb_ref, zone_no_embed,
-            zone_counts, updated_at)
-        VALUES (:id, :iid, :s, :z, :st, :en, :dw, :oc, :box, :er, :ev, :th, :ne, CAST(:zc AS jsonb), now())
+            face_thumb_ref, stationary, zone_counts, updated_at)
+        VALUES (:id, :iid, :s, :z, :st, :en, :dw, :oc, :box, :er, :ev, :th, :ne, :fth, :sta,
+            CAST(:zc AS jsonb), now())
         ON CONFLICT (sighting_id) DO UPDATE SET zone=EXCLUDED.zone, started_at=EXCLUDED.started_at,
             ended_at=EXCLUDED.ended_at,
             dwell_sec=EXCLUDED.dwell_sec, observation_count=EXCLUDED.observation_count,
             last_box_xyxy=EXCLUDED.last_box_xyxy, embedding_ref=EXCLUDED.embedding_ref,
             evidence_ref=EXCLUDED.evidence_ref, thumb_ref=EXCLUDED.thumb_ref,
-            zone_no_embed=EXCLUDED.zone_no_embed, zone_counts=EXCLUDED.zone_counts, updated_at=now()
+            zone_no_embed=EXCLUDED.zone_no_embed, face_thumb_ref=EXCLUDED.face_thumb_ref,
+            stationary=EXCLUDED.stationary, zone_counts=EXCLUDED.zone_counts, updated_at=now()
     """), sighting_row(s, no_embed_zones))
 
 
@@ -843,6 +1055,13 @@ def _score_and_maybe_event(conn, s: Sighting, ind: Individual, zone_rare: Dict[s
 
     from app.vision_attention_score import attention_narrative, score_sighting
 
+    if s.stationary:
+        # A fixture, not a visit: recorded, never scored, never an event.
+        conn.execute(text(
+            "UPDATE vision_individual_sighting SET attention_score=NULL, "
+            "attention_components=CAST(:c AS jsonb) WHERE sighting_id=:id"),
+            {"c": json.dumps({"_basis": "stationary"}), "id": s.sighting_id})
+        return False
     since = s.started_at - timedelta(days=cfg.sighting_retention_days)
     ind_hist = _history(conn, (
         "SELECT started_at FROM vision_individual_sighting WHERE individual_id=:i "
@@ -939,15 +1158,23 @@ def _open_asks(conn, now: datetime, tz: ZoneInfo, cfg: IndividualsConfig) -> Lis
     budget = remaining_ask_budget(daily_cap=cfg.ask_daily_cap, asked_today=int(asked_today))
     if budget <= 0:
         return []
+    # Only real visits count: stationary sightings (a prop) are excluded from
+    # the counts, and an individual that is a fixture right now is not asked about.
     cands = conn.execute(text("""
-        SELECT i.individual_id, i.kind, i.sighting_count, i.distinct_days, i.label FROM vision_individual i
-        WHERE i.label IS NULL AND i.sighting_count >= :n AND i.distinct_days >= :d
+        SELECT i.individual_id, i.kind, v.n, v.d, i.label FROM vision_individual i
+        JOIN LATERAL (
+            SELECT count(*) AS n, count(DISTINCT (s.started_at AT TIME ZONE :tz)::date) AS d
+            FROM vision_individual_sighting s
+            WHERE s.individual_id = i.individual_id AND NOT s.stationary
+        ) v ON true
+        WHERE i.label IS NULL AND NOT i.stationary AND i.sighting_count >= :n AND i.distinct_days >= :d
+          AND v.n >= :n AND v.d >= :d
           AND NOT EXISTS (SELECT 1 FROM orion_ask a WHERE a.source_kind='vision_individual'
                           AND a.source_ref=i.individual_id
                           AND (a.status IN ('open','answered','dismissed')
                                OR (a.status = 'expired' AND a.created_at > :cool)))
-        ORDER BY i.sighting_count DESC, i.individual_id LIMIT :b
-    """), {"n": cfg.ask_min_sightings, "d": cfg.ask_min_days, "b": budget,
+        ORDER BY v.n DESC, i.individual_id LIMIT :b
+    """), {"n": cfg.ask_min_sightings, "d": cfg.ask_min_days, "b": budget, "tz": str(tz.key),
            "cool": now - timedelta(days=cfg.ask_cooldown_days)}).fetchall()
     out: List[dict] = []
     for iid, kind, sc, dd, label in cands:
@@ -955,12 +1182,13 @@ def _open_asks(conn, now: datetime, tz: ZoneInfo, cfg: IndividualsConfig) -> Lis
                           min_sightings=cfg.ask_min_sightings, min_days=cfg.ask_min_days):
             continue
         srows = conn.execute(text(
-            "SELECT sighting_id, started_at, thumb_ref, ended_at, zone_no_embed FROM vision_individual_sighting "
-            "WHERE individual_id=:i ORDER BY started_at DESC"), {"i": iid}).fetchall()
+            "SELECT sighting_id, started_at, thumb_ref, ended_at, zone_no_embed, face_thumb_ref "
+            "FROM vision_individual_sighting "
+            "WHERE individual_id=:i AND NOT stationary ORDER BY started_at DESC"), {"i": iid}).fetchall()
         minutes = [r[1].astimezone(tz).hour * 60 + r[1].astimezone(tz).minute for r in srows]
         mean, r = circular_mean_minute(minutes)
         image_ref = ask_image_ref(
-            [(row[2], row[3], bool(row[4])) for row in srows], now=now,
+            [(row[2], row[3], bool(row[4]), row[5]) for row in srows], now=now,
             thumb_retention_days=cfg.thumb_retention_days, ask_expiry_days=cfg.ask_expiry_days)
         ask = OrionAskV1(
             ask_id=f"ask-{uuid.uuid4().hex}",

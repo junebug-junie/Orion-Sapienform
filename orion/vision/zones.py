@@ -1,10 +1,14 @@
 """Camera zones: which part of the picture a box is in, and whether it may be embedded.
 
 Shared by orion-vision-host (skip crop embeddings in no-embed zones), the
-sql-writer individuals reducer (zone + dwell on sightings, patio presence),
+sql-writer individuals reducer (zone + dwell on sightings, zone head counts),
 and the attention score. Config: ``config/vision_zones.yaml``.
 
-The patio rule lives here and in a DB CHECK constraint, not in prose.
+``embed: false`` is a generic mechanism (no crop vector, no thumbnail, never an
+individual). Since 2026-10-15 no configured zone uses it: Juniper lifted the
+patio's no-embed rule. ``presence: true`` is the separate, still-used head
+count: the reducer keeps one ``<stream>:<zone>`` presence row with how many
+are there now. A no-embed zone always gets one too.
 """
 
 from __future__ import annotations
@@ -25,6 +29,13 @@ class Zone:
     polygon: Tuple[Tuple[float, float], ...]
     embed: bool = True
     dwell_rare_sec: Optional[float] = None
+    # Keep a head-count presence row for this zone (orion-sql-writer's
+    # individuals reducer). Implied by embed=False.
+    presence: bool = False
+
+    @property
+    def counts_presence(self) -> bool:
+        return self.presence or not self.embed
 
 
 def _point_in_polygon(x: float, y: float, poly: Sequence[Tuple[float, float]]) -> bool:
@@ -61,6 +72,7 @@ def load_zones(path: Optional[str | Path] = None) -> Dict[str, List[Zone]]:
                 polygon=poly,
                 embed=bool(z.get("embed", True)),
                 dwell_rare_sec=float(dwell) if dwell is not None else None,
+                presence=bool(z.get("presence", False)),
             ))
         out[str(stream_id)] = zones
     return out

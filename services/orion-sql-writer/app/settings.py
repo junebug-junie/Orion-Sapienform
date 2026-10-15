@@ -504,6 +504,19 @@ class Settings(BaseSettings):
     # the same individual. A starting guess, not calibrated: the first week
     # of scripts/report_vision_individuals.py output is what tunes it.
     vision_individuals_match_threshold: float = Field(0.80, alias="VISION_INDIVIDUALS_MATCH_THRESHOLD")
+    # Faces (walkway person crops, 2026-10-15): cosine similarity to the
+    # nearest same-kind face centroid (facenet VGGFace2, 512-d) at or above
+    # this wins assignment over appearance. Same-person facenet pairs usually
+    # sit well above 0.6, different people well below. <= 0 disables faces.
+    vision_individuals_face_match_threshold: float = Field(0.60, alias="VISION_INDIVIDUALS_FACE_MATCH_THRESHOLD")
+    # Stationary fixtures (orion/vision/stationary.py): an individual whose box
+    # keeps IoU >= VISION_STATIONARY_IOU with the box its run started at, with
+    # gaps <= VISION_STATIONARY_MAX_GAP_SEC, for VISION_STATIONARY_MIN_SEC is a
+    # prop (the patio skeleton, 2026-10-15): no asks, attention, rhythm or head
+    # count. Moving ends it. VISION_STATIONARY_MIN_SEC <= 0 disables.
+    vision_stationary_min_sec: float = Field(1800.0, alias="VISION_STATIONARY_MIN_SEC")
+    vision_stationary_iou: float = Field(0.5, alias="VISION_STATIONARY_IOU")
+    vision_stationary_max_gap_sec: float = Field(300.0, alias="VISION_STATIONARY_MAX_GAP_SEC")
     # Two observations of one individual this close together are one sighting.
     vision_individuals_merge_gap_sec: float = Field(60.0, alias="VISION_INDIVIDUALS_MERGE_GAP_SEC")
     # Rows read per stream per tick; the cursor carries the rest to the next tick.
@@ -516,8 +529,9 @@ class Settings(BaseSettings):
     vision_individuals_candidate_days: float = Field(30.0, alias="VISION_INDIVIDUALS_CANDIDATE_DAYS")
     vision_crop_retention_days: float = Field(7.0, alias="VISION_CROP_RETENTION_DAYS")
     vision_sighting_retention_days: float = Field(90.0, alias="VISION_SIGHTING_RETENTION_DAYS")
-    # Patio presence (no individuals, no embeddings): "present" if a patio box
-    # was seen within this many seconds, "recent" within the grace, else "absent".
+    # Zone head counts (the patio; config/vision_zones.yaml presence: true):
+    # "present" if a non-stationary box was seen in the zone within this many
+    # seconds, "recent" within the grace, else "absent".
     vision_patio_present_sec: float = Field(120.0, alias="VISION_PATIO_PRESENT_SEC")
     vision_patio_grace_sec: float = Field(600.0, alias="VISION_PATIO_GRACE_SEC")
     # Attention score (app/vision_attention_score.py): a sighting at or above

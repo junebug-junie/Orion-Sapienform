@@ -2,10 +2,10 @@
 
 docs/superpowers/specs/2026-09-22-walkway-camera-busy-world-design.md idea 1.
 orion-vision-host marks tracked-label boxes (``want_crop_embeddings``) with a
-``zone`` and, where the zone allows, an inline ``embedding``. Every such box is
-forwarded, including patio boxes with no vector: they drive patio presence
-counts in the reducer without Orion keeping a picture or a vector of anyone
-there. Boxes the host did not mark (untracked labels, streams that did not ask)
+``zone`` and, where the zone allows, an inline ``embedding`` (and, on walkway
+person crops, a ``face_embedding`` + ``face_thumb_ref``). Every such box is
+forwarded, with or without a vector: zone head counts (the patio) count them
+all. Boxes the host did not mark (untracked labels, streams that did not ask)
 are not forwarded, so this lane stays silent for cam0/carbon.
 """
 
@@ -40,12 +40,14 @@ def build_crop_observation(art: VisionArtifactPayload) -> Optional[VisionCropObs
             score=float(o.score),
             box_xyxy=[float(x) for x in o.box_xyxy],
             zone=o.zone,
-            # The host never sets a vector on a no-embed-zone box; the DB
-            # CHECK constraint enforces the same. Nothing to strip here, and
-            # stripping silently would hide a host bug instead of failing it.
+            # The host never sets a vector on a no-embed-zone box and the
+            # writer strips one anyway. Nothing to strip here.
             embedding_ref=o.embedding_ref,
             embedding=o.embedding,
             thumb_ref=o.thumb_ref,
+            face_embedding=o.face_embedding,
+            face_score=o.face_score,
+            face_thumb_ref=o.face_thumb_ref,
         )
         for o in objects
         if _is_tracked(o)

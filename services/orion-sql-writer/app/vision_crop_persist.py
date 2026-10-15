@@ -5,15 +5,15 @@ observation fans out to N rows in ``vision_crop_observation`` (crop_id =
 ``<observation_id>:<index>``), so it gets its own handler, the same way
 ``chat.history.spark_meta.patch.v1`` does.
 
-**Patio rule, defense in depth.** The producer (orion-vision-host / window)
-is supposed to skip embeddings for boxes in a no-embed zone. This module
-does not trust that: it recomputes each box's zone from
-``config/vision_zones.yaml`` and drops ``embedding``/``embedding_ref`` if
-EITHER the producer-declared zone or the recomputed zone is a no-embed zone,
-and it sets ``zone_no_embed`` from the config -- never from the zone's name.
-The same goes for ``thumb_ref`` (orion-vision-host's crop thumbnail). The DB
-CHECK constraint on the table (``zone_no_embed`` => no embedding, no
-embedding_ref, no thumb_ref) is the third layer.
+**No-embed zones, defense in depth.** The producer (orion-vision-host /
+window) is supposed to skip embeddings for boxes in a no-embed zone. This
+module does not trust that: it recomputes each box's zone from
+``config/vision_zones.yaml`` and drops ``embedding``/``embedding_ref``,
+``thumb_ref`` and the face fields if EITHER the producer-declared zone or the
+recomputed zone is a no-embed zone, and it sets ``zone_no_embed`` from the
+config -- never from the zone's name. No configured zone is no-embed since
+2026-10-15 (Juniper lifted the patio rule; manual_migration_walkway_privacy_v2.sql
+dropped the DB CHECKs), so this is a generic mechanism nothing uses today.
 
 ``build_crop_rows`` is pure (zones passed in); ``persist_crop_observation``
 is the blocking DB write, called from a worker thread.
@@ -100,6 +100,9 @@ def build_crop_rows(
         embedding = crop.embedding
         embedding_ref = crop.embedding_ref
         thumb_ref = crop.thumb_ref
+        face_embedding = crop.face_embedding
+        face_thumb_ref = crop.face_thumb_ref
+        face_score = crop.face_score
         zone_no_embed = zone in forbidden
         # A box placed outside the patio by its bottom-center can still hold
         # patio pixels: any overlap with a no-embed zone strips the vector and
@@ -109,7 +112,7 @@ def build_crop_rows(
         touches = bool(forbidden) and intersects_no_embed(
             zones, crop.box_xyxy, obs.frame_width or 0, obs.frame_height or 0)
         if zone_no_embed or fail_closed or touches:
-            if embedding is not None or embedding_ref is not None or thumb_ref is not None:
+            if any(v is not None for v in (embedding, embedding_ref, thumb_ref, face_embedding, face_thumb_ref)):
                 logger.warning(
                     "vision_crop_embedding_dropped observation_id=%s index=%s zone=%s "
                     "(producer sent an embedding for a no-embed zone)",
@@ -118,6 +121,9 @@ def build_crop_rows(
             embedding = None
             embedding_ref = None
             thumb_ref = None
+            face_embedding = None
+            face_thumb_ref = None
+            face_score = None
         rows.append({
             "crop_id": f"{obs.observation_id}:{idx}",
             "observation_id": obs.observation_id,
@@ -133,6 +139,9 @@ def build_crop_rows(
             "embedding": [float(v) for v in embedding] if embedding is not None else None,
             "thumb_ref": thumb_ref,
             "zone_no_embed": zone_no_embed,
+            "face_embedding": [float(v) for v in face_embedding] if face_embedding is not None else None,
+            "face_score": float(face_score) if face_score is not None else None,
+            "face_thumb_ref": face_thumb_ref,
         })
     return rows
 
@@ -140,10 +149,12 @@ def build_crop_rows(
 _INSERT_SQL = """
     INSERT INTO vision_crop_observation
         (crop_id, observation_id, stream_id, camera_id, artifact_id, observed_at,
-         label, score, box_xyxy, zone, embedding_ref, embedding, thumb_ref, zone_no_embed)
+         label, score, box_xyxy, zone, embedding_ref, embedding, thumb_ref, zone_no_embed,
+         face_embedding, face_score, face_thumb_ref)
     VALUES
         (:crop_id, :observation_id, :stream_id, :camera_id, :artifact_id, :observed_at,
-         :label, :score, :box_xyxy, :zone, :embedding_ref, :embedding, :thumb_ref, :zone_no_embed)
+         :label, :score, :box_xyxy, :zone, :embedding_ref, :embedding, :thumb_ref, :zone_no_embed,
+         :face_embedding, :face_score, :face_thumb_ref)
     ON CONFLICT (crop_id) DO NOTHING
 """
 

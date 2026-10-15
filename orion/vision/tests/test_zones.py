@@ -3,18 +3,28 @@ from pathlib import Path
 from orion.vision.zones import DEFAULT_ZONES_PATH, load_zones, may_embed, zone_for_box
 
 
-def test_shipped_config_loads_and_patio_is_never_embeddable():
+def test_shipped_config_fingerprints_the_patio_and_keeps_its_head_count():
+    # 2026-10-15: Juniper lifted the patio no-embed rule; the zone stays for
+    # dwell/attention and its head count.
     zones = load_zones(DEFAULT_ZONES_PATH)
     walkway = zones["walkway"]
     patio = [z for z in walkway if z.name == "patio"]
-    assert patio and patio[0].embed is False
+    assert patio and patio[0].embed is True and patio[0].presence is True and patio[0].counts_presence
+    assert all(z.embed for zs in zones.values() for z in zs)
+
+
+def test_no_embed_zone_always_counts_presence():
+    from orion.vision.zones import Zone
+
+    assert Zone(name="x", polygon=((0, 0), (1, 0), (1, 1)), embed=False).counts_presence
+    assert not Zone(name="y", polygon=((0, 0), (1, 0), (1, 1))).counts_presence
 
 
 def test_bottom_center_decides_zone_and_first_match_wins():
     zones = load_zones(DEFAULT_ZONES_PATH)["walkway"]
     # feet at (0.8, 0.9): inside patio and inside walkway; patio listed first.
     z = zone_for_box(zones, [480, 200, 544, 324], 640, 360)
-    assert z is not None and z.name == "patio" and not may_embed(z)
+    assert z is not None and z.name == "patio" and may_embed(z)
     # feet at (0.3, 0.9): walkway only.
     z = zone_for_box(zones, [160, 200, 224, 324], 640, 360)
     assert z is not None and z.name == "walkway" and may_embed(z)
@@ -31,7 +41,7 @@ def test_box_touching_bottom_edge_stays_in_patio():
     zones = load_zones(DEFAULT_ZONES_PATH)["walkway"]
     for y2 in (360, 400):
         z = zone_for_box(zones, [480, 200, 544, y2], 640, 360)
-        assert z is not None and z.name == "patio" and not may_embed(z)
+        assert z is not None and z.name == "patio" and may_embed(z)
 
 
 # --- intersects_no_embed: any overlap with a no-embed zone -------------------

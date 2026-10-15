@@ -84,7 +84,10 @@ def test_walkway_baseline_requests_crop_embeddings_and_prompts() -> None:
     assert req["prompts"] == PROMPTS
     assert set(req["crop_embedding_labels"]) == {"person", "dog", "bicycle", "stroller", "vehicle"}
     assert req["want_caption"] is False
-    assert not d.identity_dispatch_cfg  # no faces on this camera
+    # Faces come from the crop path (walkway people), never from Juniper's
+    # whole-frame identity_face dispatch.
+    assert req["want_crop_faces"] is True
+    assert not d.identity_dispatch_cfg
 
 
 def test_walkway_dog_triggers_captioned_tier() -> None:
@@ -96,6 +99,7 @@ def test_walkway_dog_triggers_captioned_tier() -> None:
     assert d.dispatch_tier == "triggered" and d.triggered_by == "labels"
     assert d.request_overrides["want_caption"] is True
     assert d.request_overrides["want_crop_embeddings"] is True
+    assert d.request_overrides["want_crop_faces"] is True
 
 
 def test_cam0_trigger_labels_unchanged() -> None:
@@ -145,3 +149,15 @@ def test_hung_redis_clears_open_expectations() -> None:
     assert cache.is_open("walkway")
     asyncio.run(cache.refresh_once(_HangingRedis({expect_key("walkway")})))
     assert not cache.is_open("walkway") and cache.refresh_failures == 1
+
+
+def test_room_cameras_never_ask_for_crop_faces() -> None:
+    import yaml
+
+    raw = yaml.safe_load(CFG.read_text(encoding="utf-8"))
+    sections = {**(raw.get("streams") or {}), **(raw.get("cameras") or {}), "defaults": raw.get("defaults")}
+    assert "walkway" in sections
+    for name, cfg in sections.items():
+        if name == "walkway":
+            continue
+        assert "want_crop_faces" not in str(cfg), name

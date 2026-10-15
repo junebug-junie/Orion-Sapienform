@@ -6,7 +6,7 @@ import hashlib
 import json
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 from loguru import logger
@@ -18,7 +18,13 @@ from orion.vision.caption_echo import strip_echoed_prompt_prefix
 
 from .artifacts import merge_result_inputs
 from .caption_sanitize import sanitize_answer, sanitize_caption
-from .crop_embeddings import ThumbRateLimiter, ThumbStore, attach_crop_embeddings, load_zones_fail_closed
+from .crop_embeddings import (
+    ThumbRateLimiter,
+    ThumbStore,
+    attach_crop_embeddings,
+    crop_faces,
+    load_zones_fail_closed,
+)
 from .detections import cap_by_score, nms
 from .model_manager import ModelManager
 from .models import VisionResult, VisionTask
@@ -58,6 +64,9 @@ def _face_frame_store():
             _FACE_FRAMES.start_pruner()
         return _FACE_FRAMES
 _THUMB_LIMITER = ThumbRateLimiter(float(getattr(settings, "VISION_CROP_THUMB_MIN_INTERVAL_SEC", 10.0)))
+# Face thumbnails (the ask card's preferred picture) get their own budget, so
+# a face is not starved by the crop thumbnail of a parked car in the same frame.
+_FACE_THUMB_LIMITER = ThumbRateLimiter(float(getattr(settings, "VISION_CROP_THUMB_MIN_INTERVAL_SEC", 10.0)))
 
 
 def _thumb_store() -> ThumbStore | None:
@@ -859,9 +868,9 @@ class VisionRunner:
                 # whole-frame embedding. Strip any partial vectors.
                 logger.warning(f"[CROP] crop embeddings failed, detections kept: {exc}")
                 for o in objects:
-                    o.pop("embedding", None)
-                    o.pop("embedding_ref", None)
-                    o.pop("thumb_ref", None)
+                    for k in ("embedding", "embedding_ref", "thumb_ref", "face_embedding", "face_score",
+                              "face_thumb_ref"):
+                        o.pop(k, None)
                 crop_stats = {"error": 1, "error_detail": str(exc)[:200]}
 
         # Store as JSON artifact
@@ -882,7 +891,7 @@ class VisionRunner:
             "max_detections": max_det,
             # Crop vectors ride the bus inline (VisionObject.embedding); the
             # on-disk debug copy keeps the ref only, not a second vector store.
-            "objects": [{k: v for k, v in o.items() if k != "embedding"} for o in objects],
+            "objects": [{k: v for k, v in o.items() if k not in ("embedding", "face_embedding")} for o in objects],
         }
         json_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
@@ -934,6 +943,9 @@ class VisionRunner:
             min_score = p.params.get("crop_embedding_min_score")
         min_score = float(box_th if min_score is None else min_score)
         thumb_store = _thumb_store()
+        face_fn = None
+        if request.get("want_crop_faces") is True:
+            face_fn = self._crop_face_fn(p, device)
         return attach_crop_embeddings(
             objects,
             img,
@@ -946,7 +958,37 @@ class VisionRunner:
             min_score=min_score,
             thumb_fn=thumb_store.put if thumb_store is not None else None,
             thumb_limiter=_THUMB_LIMITER,
+            face_fn=face_fn,
+            face_thumb_limiter=_FACE_THUMB_LIMITER,
         )
+
+    def _crop_face_fn(self, p: ProfileDef, device: str):
+        """Faces inside walkway person crops, on the identity_face profile's
+        own MTCNN + InceptionResnetV1 (same model-manager cache slot, so no
+        second copy is loaded). Returns None (no faces this request) when that
+        profile is disabled. Never reads or writes Juniper's enrolled gallery:
+        the vector goes to the individuals reducer, not to identity matching.
+        """
+        face_profile_name = str(p.params.get("crop_face_profile") or "identity_face")
+        try:
+            face_profile = self.profiles.get_profile(face_profile_name)
+        except Exception as exc:
+            logger.warning(f"[CROP] crop face profile missing name={face_profile_name}: {exc}")
+            return None
+        if not face_profile.enabled or not self._is_enabled(face_profile_name):
+            return None
+        min_prob = float(p.params.get("crop_face_min_prob", 0.95))
+        min_side = float(p.params.get("crop_face_min_side_px", 20))
+        dtype = self._resolve_dtype(face_profile)
+
+        def _faces(crops: List[Image.Image]) -> List[Optional[Tuple[List[float], float, Image.Image]]]:
+            model, mtcnn = self.models.load_face_identity_models(
+                profile_name=face_profile.name, device=device, dtype=dtype, torch_home=settings.MODEL_CACHE_DIR
+            )
+            return crop_faces(crops, mtcnn=mtcnn, model=model, device=device,
+                              min_prob=min_prob, min_side_px=min_side)
+
+        return _faces
 
     # ------------------------
     # Real Captioning (VLM)

@@ -689,6 +689,12 @@ class Settings(BaseSettings):
     HUB_CURIOSITY_INVESTIGATION_RELATION_SAMPLE: int = Field(
         default=6, alias="HUB_CURIOSITY_INVESTIGATION_RELATION_SAMPLE"
     )
+    # Walkway (street) camera streams whose recent captions join curiosity's
+    # study material, labelled as the street (2026-10-15). Newest 3 distinct
+    # captions from the last 6 h. Empty string = off. Never a room camera.
+    HUB_CURIOSITY_STREET_STREAM_IDS: str = Field(
+        default="walkway", alias="HUB_CURIOSITY_STREET_STREAM_IDS"
+    )
 
     # --- World-pulse Stage 1 concept-read loop ----------------------------
     HUB_READING_DURABLE_URL: str = Field(

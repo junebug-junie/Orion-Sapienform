@@ -282,8 +282,18 @@ def build_reverie_context(
     recent_percepts: list[dict[str, Any]] | None = None,
     self_readings: str | None = None,
     recent_arcs: str | None = None,
+    street_percepts: list[dict[str, Any]] | None = None,
+    street_predictions: list[str] | None = None,
 ) -> dict[str, Any]:
     percepts = recent_percepts or []
+    # The street (walkway camera) rides under its OWN keys, never inside
+    # recent_percepts: that list is the room, and the room-only expectation
+    # judge reads it. Empty -> key absent -> no section rendered.
+    street: dict[str, Any] = {}
+    if street_percepts:
+        street["street_percepts"] = list(street_percepts)
+    if street_predictions:
+        street["street_predictions"] = list(street_predictions)
     if concern_cards:
         coalition_refs = coalition_audit_refs(broadcast)
         ctx: dict[str, Any] = {
@@ -297,6 +307,7 @@ def build_reverie_context(
         }
         if percepts:
             ctx["recent_percepts"] = percepts
+        ctx.update(street)
         if recent_arcs:
             ctx["recent_arcs"] = recent_arcs
         return ctx
@@ -319,6 +330,7 @@ def build_reverie_context(
     }
     if percepts:
         ctx["recent_percepts"] = percepts
+    ctx.update(street)
     if self_readings:
         # Self-calibration section C: body signals unusual for themselves (rendered, no LLM).
         # Coalition branch only: the concern-card branch discards any interpretation with
@@ -339,6 +351,8 @@ def build_reverie_plan_request(
     recent_percepts: list[dict[str, Any]] | None = None,
     self_readings: str | None = None,
     recent_arcs: str | None = None,
+    street_percepts: list[dict[str, Any]] | None = None,
+    street_predictions: list[str] | None = None,
 ) -> PlanExecutionRequest:
     use_lift = settings.reverie_semantic_lift_enabled and bool(concern_cards)
     mode = "metacog" if use_lift else "brain"
@@ -364,6 +378,8 @@ def build_reverie_plan_request(
             recent_percepts=recent_percepts,
             self_readings=self_readings,
             recent_arcs=recent_arcs,
+            street_percepts=street_percepts,
+            street_predictions=street_predictions,
         ),
     )
 
@@ -693,6 +709,36 @@ async def run_reverie_once(
                 stream_ids=settings.reverie_perception_stream_id_list,
             )
 
+        want_street = settings.reverie_street_enabled and bool(settings.reverie_street_stream_id_list)
+
+        async def _fetch_street() -> tuple[list[dict[str, Any]], list[str]]:
+            # Never raises: a failed street read is a reverie without the street.
+            if not want_street:
+                return [], []
+            from .vision_reader import read_recent_street_events, read_recent_street_graded
+
+            ids = settings.reverie_street_stream_id_list
+            try:
+                captions, graded = await asyncio.gather(
+                    asyncio.to_thread(
+                        read_recent_street_events,
+                        max_age_sec=settings.reverie_street_max_age_sec,
+                        limit=settings.reverie_street_max_events,
+                        stream_ids=ids,
+                    ),
+                    asyncio.to_thread(
+                        read_recent_street_graded,
+                        stream_ids=ids,
+                        lookback_hours=settings.reverie_street_graded_lookback_hours,
+                        limit=settings.reverie_street_graded_max,
+                        tz_name=settings.reverie_street_timezone,
+                    ),
+                )
+            except Exception as exc:
+                logger.warning("reverie street read failed corr=%s err=%s", correlation_id, exc)
+                return [], []
+            return list(captions or []), list(graded or [])
+
         async def _fetch_self_readings() -> str | None:
             # Only the coalition branch renders it (see build_reverie_context).
             if not want_loop_outcomes:
@@ -709,12 +755,19 @@ async def run_reverie_once(
             recent_percepts,
             (recent_arcs, recent_arc_ids),
             self_readings,
+            (street_percepts, street_predictions),
         ) = await asyncio.gather(
             _fetch_loop_outcomes(),
             _fetch_percepts(),
             build_recent_arcs_text(correlation_id),
             _fetch_self_readings(),
+            _fetch_street(),
         )
+        if street_percepts or street_predictions:
+            logger.info(
+                "reverie_street_context corr=%s captions=%d graded=%d",
+                correlation_id, len(street_percepts), len(street_predictions),
+            )
         plan_request = build_reverie_plan_request(
             broadcast,
             correlation_id=correlation_id,
@@ -723,6 +776,8 @@ async def run_reverie_once(
             recent_percepts=recent_percepts,
             self_readings=self_readings,
             recent_arcs=recent_arcs,
+            street_percepts=street_percepts,
+            street_predictions=street_predictions,
         )
         # Same formula build_reverie_plan_request uses internally to decide `use_lift` --
         # duplicated here (not returned by that function) because only a call that actually set
@@ -758,6 +813,14 @@ async def run_reverie_once(
             broadcast=broadcast,
             strip_arc_ids=recent_arc_ids,
         )
+        if thought.expectation and not recent_percepts and (street_percepts or street_predictions):
+            # The expectation is a claim about the ROOM, judged later against a
+            # room percept. When the prompt carried the street but no room
+            # block, a claim is likely about the street, so it is dropped,
+            # never stamped checkable (2026-10-15). No street and no room is
+            # left exactly as before.
+            logger.info("reverie_expectation_dropped_no_room_percepts corr=%s", correlation_id)
+            thought = thought.model_copy(update={"expectation": None})
         if settings.reverie_expectation_scoring_enabled and thought.expectation:
             # Open the checkable window only when scoring is actually on --
             # otherwise nothing will ever query expectation_checkable_by, so

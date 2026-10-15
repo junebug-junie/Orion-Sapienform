@@ -959,6 +959,11 @@ time; Orion decides what to do with it, inside a real
 > `orion/curiosity/README.md`. `orion/sentience_striving_program/README.md` §15
 > evaluates it against that program's own outcomes.
 
+Study material also carries the street, labelled as the street: up to 3
+could-not-name items and the newest 3 distinct walkway captions from the last
+6 h (`HUB_CURIOSITY_STREET_STREAM_IDS`, default `walkway`, empty = off). See
+`orion/curiosity/README.md` "The street in the study material".
+
 #### When it runs
 
 `HUB_CURIOSITY_INVESTIGATION_DAILY_CAP` is a **budget**, not a pace. It is

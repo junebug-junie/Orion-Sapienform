@@ -152,6 +152,108 @@ def read_recent_vision_events(
     return out
 
 
+# --- The street (walkway camera), 2026-10-15 ---------------------------------
+#
+# A SEPARATE read from `read_recent_vision_events` above, never merged into it:
+# that one is the room; these are "outside, on the walkway". Reverie renders
+# them under their own heading, and the room-only expectation judge never sees
+# them. Same narrative-only privacy contract. Shared rules (what is a caption,
+# dedupe, how a graded prediction is worded) live in
+# orion/situational/street_material.py, which is stdlib-only.
+
+# Rows fetched before Python-side dedupe: the council narrates the walkway
+# every ~30-90 s and often repeats itself, so read a few more than shown.
+_STREET_FETCH_ROWS = 20
+
+
+def read_recent_street_events(
+    *,
+    max_age_sec: float,
+    limit: int,
+    stream_ids: Sequence[str],
+) -> list[dict[str, Any]]:
+    """Newest fresh, distinct walkway captions. Never raises; [] on any failure
+    or when ``stream_ids`` is empty (switched off -- never "every camera").
+
+    Each entry: {narrative, age_sec}.
+    """
+    ids = [str(s).strip() for s in stream_ids if str(s).strip()]
+    if limit <= 0 or not ids:
+        return []
+    from orion.situational.street_material import STREET_CAPTIONS_SQL, dedupe_street_captions
+
+    now = datetime.now(timezone.utc)
+    try:
+        from sqlalchemy import bindparam, text
+
+        stmt = text(STREET_CAPTIONS_SQL).bindparams(bindparam("stream_ids", expanding=True))
+        with _get_engine().connect() as conn:
+            rows = conn.execute(
+                stmt,
+                {"stream_ids": ids, "since": now - timedelta(seconds=float(max_age_sec)),
+                 "limit": _STREET_FETCH_ROWS},
+            ).mappings().all()
+    except Exception as exc:
+        logger.warning("street events read failed: %s", exc)
+        return []
+    kept = dedupe_street_captions([dict(r) for r in rows], now=now, max_age_sec=max_age_sec, limit=limit)
+    return [{"narrative": c["narrative"], "age_sec": c["age_sec"]} for c in kept]
+
+
+def read_recent_street_graded(
+    *,
+    stream_ids: Sequence[str],
+    lookback_hours: float,
+    limit: int,
+    tz_name: str,
+) -> list[str]:
+    """Recent met/missed walkway expectations as plain lines, each with the
+    subject's 14-day hit rate when there is one. Never raises; [] on failure,
+    when nothing was graded, or when ``stream_ids`` is empty.
+
+    The rhythm reducer only emits expectations with >= 5 days of support, so
+    this is empty for the walkway's first week -- by design, not a fault.
+    """
+    ids = [str(s).strip() for s in stream_ids if str(s).strip()]
+    if limit <= 0 or not ids:
+        return []
+    from zoneinfo import ZoneInfo
+
+    from orion.situational.street_material import (
+        CALIBRATION_LOOKBACK_DAYS,
+        CALIBRATION_SQL,
+        GRADED_EXPECTATIONS_SQL,
+        graded_expectation_lines,
+    )
+
+    try:
+        tz = ZoneInfo(tz_name)
+    except Exception:
+        tz = timezone.utc
+    now = datetime.now(timezone.utc)
+    try:
+        from sqlalchemy import bindparam, text
+
+        graded_stmt = text(GRADED_EXPECTATIONS_SQL).bindparams(bindparam("stream_ids", expanding=True))
+        cal_stmt = text(CALIBRATION_SQL).bindparams(bindparam("stream_ids", expanding=True))
+        with _get_engine().connect() as conn:
+            rows = conn.execute(
+                graded_stmt,
+                {"stream_ids": ids, "since": now - timedelta(hours=float(lookback_hours)),
+                 "until": now, "limit": limit},
+            ).mappings().all()
+            if not rows:
+                return []
+            cal = conn.execute(
+                cal_stmt,
+                {"stream_ids": ids, "cal_since": now - timedelta(days=CALIBRATION_LOOKBACK_DAYS)},
+            ).mappings().all()
+    except Exception as exc:
+        logger.warning("street graded read failed: %s", exc)
+        return []
+    return graded_expectation_lines([dict(r) for r in rows], [dict(r) for r in cal], tz=tz, limit=limit)
+
+
 def reset_vision_reader_engine_for_tests() -> None:
     global _engine, _engine_url
     _engine = None

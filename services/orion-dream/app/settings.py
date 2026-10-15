@@ -97,6 +97,14 @@ class Settings(BaseSettings):
     # Replay material only: never sleep pressure or the rest drive. Off, or any read
     # failure = replay exactly as before arcs existed.
     DREAM_REPLAY_ARC_CANDIDATES_ENABLED: bool = Field(default=True)
+    # Graded walkway-camera predictions (2026-10-15): met/missed vision_percept_expectation
+    # rows scored since the last sleep, one replay candidate per subject with its 14-day
+    # hit rate, at most a sixth of the replay. Replay material only, never pressure.
+    # Empty for the camera's first week (expectations need >= 5 days of support).
+    # Off, empty stream list, or any read failure = replay exactly as before.
+    DREAM_REPLAY_WALKWAY_ENABLED: bool = Field(default=True)
+    DREAM_WALKWAY_STREAM_IDS: str = Field(default="walkway")
+    DREAM_WALKWAY_TIMEZONE: str = Field(default="America/Denver")
 
     # Weekly/monthly Curiosity write-up summaries after a persisted successful sleep.
     DREAM_CURIOSITY_COMPACTION_ENABLED: bool = Field(default=False)

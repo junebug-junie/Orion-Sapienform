@@ -150,6 +150,26 @@ class ThoughtSettings(BaseSettings):
         "carbon,cam0", alias="ORION_REVERIE_PERCEPTION_STREAM_IDS"
     )
 
+    # 2026-10-15 (walkway into the mind): what is outside, on the walkway,
+    # as its OWN reverie input next to the room percepts above -- never merged
+    # into them, never seen by the room-only expectation judge. Captions are
+    # the latest distinct walkway narratives within MAX_AGE_SEC; graded are
+    # the rhythm reducer's met/missed expectations within the lookback, each
+    # with the subject's 14-day hit rate. Empty stream ids switch both off.
+    reverie_street_enabled: bool = Field(True, alias="ORION_REVERIE_STREET_ENABLED")
+    reverie_street_stream_ids: str = Field("walkway", alias="ORION_REVERIE_STREET_STREAM_IDS")
+    reverie_street_max_age_sec: float = Field(900.0, alias="ORION_REVERIE_STREET_MAX_AGE_SEC")
+    reverie_street_max_events: int = Field(2, alias="ORION_REVERIE_STREET_MAX_EVENTS")
+    reverie_street_graded_lookback_hours: float = Field(
+        24.0, alias="ORION_REVERIE_STREET_GRADED_LOOKBACK_HOURS"
+    )
+    reverie_street_graded_max: int = Field(4, alias="ORION_REVERIE_STREET_GRADED_MAX")
+    reverie_street_timezone: str = Field("America/Denver", alias="ORION_REVERIE_STREET_TIMEZONE")
+
+    @property
+    def reverie_street_stream_id_list(self) -> list[str]:
+        return [p.strip() for p in (self.reverie_street_stream_ids or "").split(",") if p.strip()]
+
     # Read by app/vision_reader.py via the environment (same key as
     # orion/situational/perception_reader.py); declared here so it is visible.
     vision_events_legacy_cutoff: str = Field(

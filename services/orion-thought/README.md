@@ -125,6 +125,32 @@ building a reducer that scores it). Leave this flag off until a live tick has
 been eyeballed for whether the BLIP-base narratives actually add anything
 worth narrating.
 
+## Reverie street context (walkway camera, 2026-10-15)
+
+Reverie also sees what is outside, on the walkway, as its own prompt section
+("OUTSIDE, ON THE WALKWAY ... NOT your room"), next to the room percepts and
+never merged into them:
+
+- **Captions**: the latest distinct walkway narratives from `vision_events`
+  (`stream_id` in `ORION_REVERIE_STREET_STREAM_IDS`, default `walkway`), newer
+  than `ORION_REVERIE_STREET_MAX_AGE_SEC` (900), at most
+  `ORION_REVERIE_STREET_MAX_EVENTS` (2). Reducer rows (`arrived_as_expected`,
+  `expected_absent`, `attention_worthy`) are not captions and are skipped.
+- **Graded predictions**: met/missed rows from `vision_percept_expectation`
+  scored in the last `ORION_REVERIE_STREET_GRADED_LOOKBACK_HOURS` (24), at most
+  `ORION_REVERIE_STREET_GRADED_MAX` (4), each with the subject's 14-day hit rate
+  when there is one. The rhythm reducer needs >= 5 days of support before it
+  emits an expectation, so this is empty for the camera's first week.
+
+Context keys `street_percepts` / `street_predictions` (absent when empty: no
+heading over nothing). The room-only expectation judge never reads them, and the
+prompt says any stated expectation is about the room. Readers:
+`app/vision_reader.py` `read_recent_street_events` / `read_recent_street_graded`
+(fail-open); shared wording in `orion/situational/street_material.py`.
+`ORION_REVERIE_STREET_ENABLED=false` or an empty stream list turns both off
+(no query is made). Log line when present: `reverie_street_context corr=...
+captions=N graded=N`.
+
 ## Reverie expectation scoring (Movement III)
 
 The second half of Movement III: score the falsifiable predictions perception

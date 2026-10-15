@@ -617,6 +617,11 @@ async def startup_event():
                 crystallization_sample=settings.HUB_CURIOSITY_INVESTIGATION_CONCEPT_SAMPLE,
                 relation_sample=settings.HUB_CURIOSITY_INVESTIGATION_RELATION_SAMPLE,
                 timezone_name=settings.HUB_ENDOGENOUS_OUTREACH_TZ,
+                street_stream_ids=tuple(
+                    s.strip()
+                    for s in (settings.HUB_CURIOSITY_STREET_STREAM_IDS or "").split(",")
+                    if s.strip()
+                ),
                 # The same asyncpg pool crystallization_routes.py reads. Passed
                 # as a callable rather than a value because the pool is created
                 # later in startup than this construction.

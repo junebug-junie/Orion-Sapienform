@@ -261,12 +261,12 @@ class AttentionRuntimeWorker:
             history_error = f"prediction-error history unreadable ({type(exc).__name__})"
             logger.warning("attention_world_first_pe_history_failed err=%s", exc)
 
-        from orion.schemas.attention_candidate import NO_COGNITION_CONSUMER_NODE_IDS
+        from orion.schemas.attention_candidate import NO_ATTENTION_CONSUMER_NODE_IDS
 
         node_ids = (set(magnitudes) | {
             k for k in field.node_vectors if k.startswith(SUBSTRATE_NODE_PREFIX)
             and "prediction_error" in field.node_vectors[k]
-        }) - NO_COGNITION_CONSUMER_NODE_IDS  # recorded, not yet admitted (walkway camera)
+        }) - NO_ATTENTION_CONSUMER_NODE_IDS  # recorded, not yet admitted to attention (walkway camera)
         candidates = []
         for node_id in sorted(node_ids):
             mag, observed_at, mid = magnitudes.get(node_id, (None, None, None))

@@ -162,6 +162,10 @@ class StudyMaterial:
     # missing, empty, or unreadable -- read separately from the two stores
     # above so a missing migration never makes the whole menu `unavailable`.
     unresolved: list["UnresolvedPerceptCard"] = field(default_factory=list)
+    # Recent walkway (street) captions, 2026-10-15: what the street camera's
+    # council said lately, deduped, capped. Same degrade-to-nothing rule as
+    # `unresolved`; offered alongside it, never counted as `has_material`.
+    street_captions: list["StreetCaptionCard"] = field(default_factory=list)
     local_timezone: str = "America/Denver"
     unavailable_reason: str | None = None
 
@@ -546,3 +550,72 @@ def build_unresolved_cards(
     cards = [c for c in (build_unresolved_card(r) for r in rows) if c is not None]
     cards.sort(key=lambda c: c.observed_at, reverse=True)
     return cards[: max(0, limit)]
+
+
+
+# --- What the street camera said lately (2026-10-15) ---------------------------
+#
+# The walkway council's own captions, so curiosity has the street as it was
+# described, not only the few things it could not name. Labelled as the street
+# camera by the row's stream_id; the room cameras are never read here. Newest
+# distinct ones first, capped (DEFAULT_STREET_CAPTION_SAMPLE) so the street
+# cannot crowd out the menu. Reducer rows (arrived_as_expected, ...) are grades,
+# not captions, and are skipped -- see orion/situational/street_material.py.
+
+DEFAULT_STREET_CAPTION_SAMPLE = 3
+DEFAULT_STREET_CAPTION_LOOKBACK_HOURS = 6
+# Read this many rows before dedupe: the council repeats itself on a quiet street.
+STREET_CAPTION_FETCH_ROWS = 40
+
+def _street_captions_recent_sql() -> str:
+    from orion.situational.street_material import REDUCER_EVENT_TYPES_SQL
+
+    return f"""
+SELECT event_id, stream_id, event_type, narrative, created_at
+FROM vision_events
+WHERE stream_id = ANY($1::text[])
+  AND narrative IS NOT NULL AND narrative <> ''
+  AND {REDUCER_EVENT_TYPES_SQL}
+  AND created_at > now() - make_interval(hours => $2)
+ORDER BY created_at DESC
+LIMIT $3
+"""
+
+
+# asyncpg ($-numbered) copy of street_material.STREET_CAPTIONS_SQL; reducer
+# rows are excluded before LIMIT by the shared clause.
+STREET_CAPTIONS_RECENT_SQL = _street_captions_recent_sql()
+
+
+@dataclass(frozen=True)
+class StreetCaptionCard:
+    event_id: str
+    observed_at: datetime
+    stream_id: str
+    narrative: str
+
+    def preview(self, tz: Any = None) -> str:
+        when = self.observed_at.astimezone(tz) if tz is not None else self.observed_at
+        place = f"the {self.stream_id} camera" if self.stream_id else "a street camera"
+        return f"At {when:%H:%M} on {when:%a %d %b}, {place} said: {self.narrative}"
+
+
+def build_street_caption_cards(
+    rows: Sequence[Any], *, now: datetime, lookback_hours: float = DEFAULT_STREET_CAPTION_LOOKBACK_HOURS,
+    limit: int = DEFAULT_STREET_CAPTION_SAMPLE,
+) -> list[StreetCaptionCard]:
+    from orion.situational.street_material import dedupe_street_captions
+
+    plain: list[dict[str, Any]] = []
+    for r in rows or ():
+        try:
+            plain.append({k: r[k] for k in ("event_id", "stream_id", "event_type", "narrative", "created_at")})
+        except (KeyError, IndexError, TypeError):
+            continue
+    kept = dedupe_street_captions(plain, now=now, max_age_sec=float(lookback_hours) * 3600, limit=limit)
+    return [
+        StreetCaptionCard(
+            event_id=c["event_id"], observed_at=c["observed_at"], stream_id=c["stream_id"], narrative=c["narrative"]
+        )
+        for c in kept
+    ]

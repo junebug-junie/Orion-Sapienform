@@ -477,6 +477,31 @@ channels:
       sparsity: designed_sparse
       absent_means: "written as 0.0 every tick rather than dropped; nothing written until 15 s after process start before the first embedding arrives."
 
+  # 2026-10-15: same formula as node:substrate.perception above
+  # (orion/substrate/prediction_error.py:1354), fed only by the streams in
+  # SUBSTRATE_PERCEPTION_WALKWAY_STREAM_IDS (default: walkway, the outdoor
+  # camera). services/orion-substrate-runtime/app/worker.py
+  # _handle_perception_prediction_error_message routes the stream, and
+  # _publish_perception_group writes it every tick (0.0 while warming or stale).
+  # Read by endogenous curiosity since 2026-10-15; still fenced out of attention
+  # (orion/schemas/attention_candidate.py NO_ATTENTION_CONSUMER_NODE_IDS).
+  - node: "node:substrate.perception_walkway"
+    producer: orion-substrate-runtime
+    channel: prediction_error
+    level: [node]
+    category: self_monitoring
+    meaning: "How surprising the walkway (outdoor) camera scene is versus that stream's own recent normal: embedding distance from its running average, z-scored against its own history, negatives clipped, 3 sigma = 1.0. Kept apart from node:substrate.perception so the street does not overwrite the room cameras."
+    trend_source: "substrate_node_prediction_error_history WHERE node_id = 'node:substrate.perception_walkway'"
+    consumers:
+      - "orion.substrate.endogenous_curiosity:_prediction_error_candidates"
+    semantics:
+      value_kind: level
+      rest: "0.0 = at or below the walkway stream's usual surprise. Also 0.0 while its baseline is still warming (fewer than 2 surprise samples) and when its frames are stale -- so 0 here does NOT prove the walkway camera is working; embedding_staleness on the same node carries that."
+      # rest_range live 2026-10-15 (night only, first hour of data): 172 per-embedding scores 61.6% exact 0.0, p50 0.0, p90 0.146, p99 0.508, max 1.0; 18 tick writes 50% exact 0.0, max 0.249 (substrate-runtime log + substrate_node_prediction_error_history)
+      rest_range: [0.0, 0.0]
+      sparsity: designed_sparse
+      absent_means: "written as 0.0 every tick rather than dropped; nothing written until 15 s after process start, then 0.0 with embedding_staleness 1.0 until the first walkway embedding arrives."
+
   # orion/substrate/prediction_error.py:409-453
   # _score_and_update_ewma_prediction_error: :452 returns 0.0 with no z yet
   # (cold start); :453 min(1, max(0, z)/3). Execution input (:456): mean

@@ -196,11 +196,12 @@ def test_real_summary_unnamed_box_fires_no_label():
 
 
 # --- a camera with a no-embed zone (the walkway's patio) ---------------------
-# Shipped config/vision_zones.yaml: patio = x 0..0.35, y 0.7..1.0 (embed:
-# false); walkway = y 0.35..1.0 (embed: true). Boxes are in a 1000x1000 frame.
-PATIO_BOX = [100.0, 800.0, 200.0, 950.0]      # bottom-center (150, 950): patio
-WALKWAY_BOX = [600.0, 600.0, 700.0, 900.0]    # bottom-center (650, 900): walkway
-SKY_BOX = [400.0, 50.0, 500.0, 200.0]         # outside every zone
+# Shipped config/vision_zones.yaml (traced 2026-10-15): patio = the porch,
+# x >= ~0.56, y >= ~0.5 on the right (embed: false); walkway = y 0.14..1.0
+# (embed: true). Boxes are in a 1000x1000 frame.
+PATIO_BOX = [750.0, 800.0, 850.0, 950.0]      # bottom-center (800, 950): patio
+WALKWAY_BOX = [200.0, 750.0, 300.0, 900.0]    # bottom-center (250, 900): walkway, clear of the patio
+SKY_BOX = [400.0, 20.0, 500.0, 100.0]         # above the walkway's top edge: outside every zone
 
 
 def test_walkway_unnamed_box_on_the_patio_records_nothing():

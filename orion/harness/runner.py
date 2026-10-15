@@ -55,6 +55,7 @@ from orion.harness.reading_receipts import (
 )
 from orion.harness.repair import map_repair_pressure_contract
 from orion.harness.step_stream import publish_harness_run_step
+from orion.harness.task_anchor import build_task_anchor
 from orion.harness.tool_provenance_audit import detect_tool_provenance_mismatch, fetch_shaped_tool_names
 from orion.schemas.cognition.answer_contract import AnswerContract
 from orion.schemas.harness_finalize import (
@@ -284,6 +285,7 @@ async def default_fcc_runner(
     pool_state: dict[str, Any] | None = None,
     chat_reply: bool = False,
     resume_key: str | None = None,
+    task_anchor: str | None = None,
     **_: Any,
 ) -> AsyncIterator[dict[str, Any]]:
     env_path = expand_env_path(os.environ.get("HARNESS_FCC_ENV_PATH", "~/.fcc/.env"))
@@ -294,6 +296,7 @@ async def default_fcc_runner(
         gpu_lease=gpu_lease,
         pool_state=pool_state,
         resume_key=resume_key,
+        task_anchor=task_anchor,
         reading_binding=reading_binding,
         reading_only=reading_only,
         prompt=prompt,
@@ -522,6 +525,9 @@ class HarnessRunner:
                if getattr(request, "gpu_lease", None) is not None else {}),
             **({"pool_state": turn_pool_state} if isinstance(turn_pool_state, dict) else {}),
             **({"resume_key": request.resume_key} if getattr(request, "resume_key", None) else {}),
+            **({"task_anchor": anchor} if (anchor := build_task_anchor(
+                request.user_message, reading_only=bool(getattr(request, "reading_only", False)),
+                utterance_origin=getattr(request, "utterance_origin", None))) else {}),
             **({"reading_binding": request.reading_binding} if getattr(request, "reading_binding", None) else {}),
             **({"reading_only": True} if getattr(request, "reading_only", False) else {}),
             # Only a Juniper-originated Hub chat reply. Passed only when true so

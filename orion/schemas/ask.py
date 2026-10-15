@@ -29,6 +29,11 @@ class OrionAskV1(BaseModel):
     question: str = Field(min_length=1)
     evidence_refs: List[str] = Field(default_factory=list)
     image_ref: Optional[str] = None
+    # Every picture the card shows, in order (2026-10-15). A "same person?" ask
+    # shows two faces. Producers set image_ref = image_refs[0] so readers that
+    # only know image_ref still show the first one. Rows from before this field
+    # have only image_ref.
+    image_refs: List[str] = Field(default_factory=list)
     status: AskStatus = "open"
     answer: Optional[str] = None
     answered_at: Optional[datetime] = None
@@ -38,7 +43,9 @@ class OrionAskV1(BaseModel):
     # e.g. source_kind="vision_individual", source_ref="<individual_id>";
     # source_kind="memory_confirmation", source_ref="memory-confirm-<memory_id>" (2026-10-06,
     # orion.memory.episode.confirmation: answered only through the Hub's /resolve route, which also
-    # writes the attention_loop_outcome row).
+    # writes the attention_loop_outcome row);
+    # source_kind="vision_same_individual", source_ref="<individual_a>|<individual_b>" (sorted
+    # ids, 2026-10-15): "are these the same person?", answer "yes" or "no".
     source_kind: str
     source_ref: str
 

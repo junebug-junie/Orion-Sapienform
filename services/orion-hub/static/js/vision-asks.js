@@ -15,6 +15,11 @@
   // Reject instead of Answer / Dismiss, and posts to /api/asks/{id}/resolve.
   // Revise opens a box prefilled with the memory's current wording; it cannot
   // be sent empty. The panel is mounted at the top of the Hub home.
+  //
+  // Visual confirmation cards (2026-10-15): every picture in image_refs is
+  // shown side by side (older rows have only image_ref). A "same person?"
+  // card (source_kind vision_same_individual) shows both faces and answers
+  // with Same person (yes) / Different people (no) / Not sure (dismiss).
   const RESOLVABLE_KINDS = ["memory_confirmation", "open_question"];
 
   function isResolvable(ask) {
@@ -39,12 +44,45 @@
     return { kind: "text", ref: ref };
   }
 
+  const SAME_PERSON_KIND = "vision_same_individual";
+  // More than this many pictures would not fit a phone-width card.
+  const MAX_IMAGES = 4;
+
+  function isSamePerson(ask) {
+    return !!ask && String(ask.source_kind || "") === SAME_PERSON_KIND;
+  }
+
+  // Every picture an ask shows, in order, no repeats: image_refs, else the
+  // single image_ref of an older row.
+  function askImageViews(ask) {
+    const a = ask || {};
+    const refs = Array.isArray(a.image_refs) && a.image_refs.length ? a.image_refs : [a.image_ref];
+    const out = [];
+    const seen = {};
+    refs.forEach(function (r) {
+      const view = askImageView(r);
+      if (view.kind === "none" || seen[view.kind + ":" + view.ref]) return;
+      seen[view.kind + ":" + view.ref] = true;
+      out.push(view);
+    });
+    return out.slice(0, MAX_IMAGES);
+  }
+
+  function imageAlt(index, total, samePerson) {
+    if (samePerson && total === 2) return index === 0 ? "Left face Orion is asking about" : "Right face Orion is asking about";
+    if (total <= 1) return "What Orion is asking about";
+    return "Picture " + (index + 1) + " of " + total + " of what Orion is asking about";
+  }
+
   function askCardViewModel(ask) {
     const a = ask || {};
+    const images = askImageViews(a);
     return {
       askId: String(a.ask_id || ""),
       question: String(a.question || ""),
-      image: askImageView(a.image_ref),
+      image: images[0] || { kind: "none", ref: "" },
+      images: images,
+      samePerson: isSamePerson(a),
       askedAt: a.created_at ? String(a.created_at) : "",
       about: a.source_kind ? String(a.source_kind) + ": " + String(a.source_ref || "") : "",
       resolvable: isResolvable(a),
@@ -76,6 +114,7 @@
     if (detail === "revised_needs_note") return "Write how I should remember it first.";
     if (detail === "revised_too_short") return "Write it as a full sentence (at least " + MIN_REVISION_WORDS + " words). To drop it, press Reject.";
     if (detail === "revised_unchanged") return "That is the same as what I have. Change it, or press Confirm.";
+    if (detail === "answer_must_be_yes_or_no") return "Press Same person, Different people, or Not sure.";
     if (status === 409) return "Someone already answered this one, or it expired.";
     if (status === 404) return "That question no longer exists.";
     if (status === 503) return "Can't reach the question store right now.";
@@ -153,24 +192,91 @@
     return card;
   }
 
+  // Layout-critical styles are set inline as well as by class: side by side
+  // must not depend on the Tailwind CDN having loaded.
+  function setStyle(node, styles) {
+    if (!node.style) return;
+    Object.keys(styles).forEach(function (k) { node.style[k] = styles[k]; });
+  }
+
+  // The pictures, side by side. Each one shrinks to share the card width, so
+  // two faces fit a phone screen; a single picture keeps its old size.
+  function renderImages(doc, vm) {
+    const row = el(doc, "div", "flex gap-2 items-start");
+    setStyle(row, { display: "flex", gap: "0.5rem", alignItems: "flex-start" });
+    row.setAttribute("data-ask-images", String(vm.images.length));
+    const total = vm.images.length;
+    vm.images.forEach(function (view, i) {
+      if (view.kind === "img") {
+        const fig = el(doc, "figure", total > 1 ? "flex-1 min-w-0 m-0" : "m-0");
+        const img = el(doc, "img", (total > 1 ? "w-full " : "") + "max-h-48 object-contain rounded border border-gray-700");
+        setStyle(fig, total > 1 ? { flex: "1 1 0", minWidth: "0", margin: "0" } : { margin: "0" });
+        setStyle(img, total > 1 ? { width: "100%", maxHeight: "12rem", objectFit: "contain" }
+          : { maxWidth: "100%", maxHeight: "12rem" });
+        img.setAttribute("src", view.ref);
+        img.setAttribute("alt", imageAlt(i, total, vm.samePerson));
+        img.setAttribute("loading", "lazy");
+        const gone = el(doc, "div", "text-[11px] text-gray-500 hidden", "Picture no longer available.");
+        gone.hidden = true;
+        // A pruned or missing thumbnail must not leave a broken-image icon;
+        // say so instead, so a "same person?" card never looks like one face.
+        img.addEventListener("error", function () {
+          img.hidden = true;
+          gone.hidden = false;
+          if (gone.classList) gone.classList.remove("hidden");
+        });
+        fig.appendChild(img);
+        fig.appendChild(gone);
+        row.appendChild(fig);
+      } else {
+        row.appendChild(el(doc, "div", "text-[11px] text-gray-500 break-all", "Picture: " + view.ref));
+      }
+    });
+    return row;
+  }
+
+  function renderSamePerson(doc, vm, onAction) {
+    const card = el(doc, "div", "rounded-lg border border-sky-800 bg-gray-800/60 p-3 space-y-2");
+    card.setAttribute("data-ask-id", vm.askId);
+    card.setAttribute("data-ask-kind", "same-person");
+    card.appendChild(el(doc, "div", "text-sm text-gray-100", vm.question));
+    if (vm.images.length) card.appendChild(renderImages(doc, vm));
+    if (vm.askedAt) card.appendChild(el(doc, "div", "text-[11px] text-gray-500", "Asked " + vm.askedAt));
+    const row = el(doc, "div", "flex flex-wrap items-center gap-2");
+    function btn(label, action, cls) {
+      const b = el(doc, "button", "text-xs rounded px-3 py-1 " + cls, label);
+      b.setAttribute("type", "button");
+      b.setAttribute("data-ask-action", action);
+      return b;
+    }
+    const sameBtn = btn("Same person", "same", "bg-emerald-700 hover:bg-emerald-600 text-white");
+    const diffBtn = btn("Different people", "different", "bg-sky-700 hover:bg-sky-600 text-white");
+    const unsureBtn = btn("Not sure", "dismiss", "bg-gray-800 hover:bg-gray-700 text-gray-300 border border-gray-700");
+    const note = el(doc, "div", "text-[11px] text-amber-300 hidden");
+    const buttons = [sameBtn, diffBtn, unsureBtn];
+    function run(action, text) {
+      buttons.forEach(function (b) { b.disabled = true; });
+      return Promise.resolve(onAction(vm.askId, action, text, note)).finally(function () {
+        buttons.forEach(function (b) { b.disabled = false; });
+      });
+    }
+    sameBtn.addEventListener("click", function () { return run("answer", "yes"); });
+    diffBtn.addEventListener("click", function () { return run("answer", "no"); });
+    unsureBtn.addEventListener("click", function () { return run("dismiss", ""); });
+    buttons.forEach(function (b) { row.appendChild(b); });
+    card.appendChild(row);
+    card.appendChild(note);
+    return card;
+  }
+
   function renderAsk(doc, ask, onAction) {
     const vm = askCardViewModel(ask);
     if (vm.resolvable) return renderResolvable(doc, vm, onAction);
+    if (vm.samePerson) return renderSamePerson(doc, vm, onAction);
     const card = el(doc, "div", "rounded-lg border border-sky-800 bg-gray-800/60 p-3 space-y-2");
     card.setAttribute("data-ask-id", vm.askId);
     card.appendChild(el(doc, "div", "text-sm text-gray-100", vm.question));
-    if (vm.image.kind === "img") {
-      const img = el(doc, "img", "max-h-48 rounded border border-gray-700");
-      img.setAttribute("src", vm.image.ref);
-      img.setAttribute("alt", "What Orion is asking about");
-      // A pruned or missing thumbnail must not leave a broken-image icon.
-      img.addEventListener("error", function () {
-        img.hidden = true;
-      });
-      card.appendChild(img);
-    } else if (vm.image.kind === "text") {
-      card.appendChild(el(doc, "div", "text-[11px] text-gray-500 break-all", "Picture: " + vm.image.ref));
-    }
+    if (vm.images.length) card.appendChild(renderImages(doc, vm));
     if (vm.askedAt) card.appendChild(el(doc, "div", "text-[11px] text-gray-500", "Asked " + vm.askedAt));
     const row = el(doc, "div", "flex items-center gap-2");
     const input = el(doc, "input", "flex-1 bg-gray-900 text-gray-100 text-xs rounded px-2 py-1 border border-gray-700");
@@ -325,6 +431,9 @@
 
   const api = {
     askImageView: askImageView,
+    askImageViews: askImageViews,
+    imageAlt: imageAlt,
+    isSamePerson: isSamePerson,
     askCardViewModel: askCardViewModel,
     statusLine: statusLine,
     errorLine: errorLine,

@@ -38,7 +38,17 @@ def _asks(open_ids):
     if "v1" in open_ids:
         out.append({"ask_id": "v1", "question": "Who is this?", "source_kind": "vision_individual",
                     "source_ref": "ind-1", "created_at": "2026-10-06T11:00:00+00:00", "evidence_refs": []})
+    if "p1" in open_ids:
+        out.append({"ask_id": "p1", "question": "Are these the same person?", "source_kind": "vision_same_individual",
+                    "source_ref": "a|b", "created_at": "2026-10-15T21:40:00+00:00", "evidence_refs": [],
+                    "image_ref": f"thumb:{FACE_A}", "image_refs": [f"thumb:{FACE_A}", f"thumb:{FACE_B}"]})
     return out
+
+
+FACE_A = "a" * 64
+FACE_B = "b" * 64
+# 1x1 JPEG-ish bytes are not needed: a 1x1 GIF is a valid image for the browser.
+PIXEL = bytes.fromhex("47494638396101000100800000ffffff00000021f90401000000002c00000000010001000002024401003b")
 
 
 def test_orion_is_asking_panel_browser_smoke():
@@ -47,7 +57,7 @@ def test_orion_is_asking_panel_browser_smoke():
 
     page_html = f"<!doctype html><html><body>{_panel_html()}<script src=\"/static/js/vision-asks.js\"></script></body></html>"
     script = (HUB / "static" / "js" / "vision-asks.js").read_text(encoding="utf-8")
-    open_ids = {"m-confirm", "m-revise", "m-reject", "v1"}
+    open_ids = {"m-confirm", "m-revise", "m-reject", "v1", "p1"}
     posted: list[tuple[str, dict]] = []
 
     def handle(route):
@@ -56,6 +66,8 @@ def test_orion_is_asking_panel_browser_smoke():
             return route.fulfill(body=page_html, content_type="text/html")
         if url.endswith("/static/js/vision-asks.js"):
             return route.fulfill(body=script, content_type="application/javascript")
+        if url.endswith(f"/api/vision/crop-thumbs/{FACE_A}"):
+            return route.fulfill(body=PIXEL, content_type="image/gif")
         if route.request.method == "POST":
             m = re.search(r"/api/asks/([^/]+)/(resolve|answer|dismiss)$", url)
             body = json.loads(route.request.post_data or "{}")
@@ -76,7 +88,7 @@ def test_orion_is_asking_panel_browser_smoke():
         page.goto("http://hub.test/home")
 
         page.wait_for_selector('[data-ask-id="m-confirm"]')
-        assert "Orion has 4 questions for you." in page.inner_text("#visionAsksStatus")
+        assert "Orion has 5 questions for you." in page.inner_text("#visionAsksStatus")
         assert "Orion is asking" in page.inner_text("#visionAsksCard")
         # Database text is inert: the markup in a question renders as text and never runs.
         assert "<img src=x" in page.inner_text('[data-ask-id="m-reject"]')
@@ -84,6 +96,24 @@ def test_orion_is_asking_panel_browser_smoke():
         # The vision card keeps its own buttons; memory cards get the three answers.
         assert page.locator('[data-ask-id="v1"] [data-ask-action="answer"]').count() == 1
         assert page.locator('[data-ask-id="m-confirm"] [data-ask-action="answer"]').count() == 0
+
+        # "Same person?" card: both faces side by side, the pruned one says so
+        # instead of a broken image, and the answer is a button, not free text.
+        page.wait_for_selector('[data-ask-id="p1"] img[alt="Left face Orion is asking about"]')
+        assert page.locator('[data-ask-id="p1"] img').count() == 2
+        page.wait_for_function(
+            "document.querySelector('[data-ask-id=\"p1\"]').innerText.includes('Picture no longer available.')")
+        boxes = [page.locator('[data-ask-id="p1"] figure').nth(i).bounding_box() for i in range(2)]
+        assert abs(boxes[0]["y"] - boxes[1]["y"]) < 2 and boxes[1]["x"] > boxes[0]["x"], boxes  # side by side
+        assert page.locator('[data-ask-id="p1"] [data-ask-input]').count() == 0
+        page.set_viewport_size({"width": 360, "height": 800})  # phone width: both still inside the card
+        card_box = page.locator('[data-ask-id="p1"]').bounding_box()
+        fig_b = page.locator('[data-ask-id="p1"] figure').nth(1).bounding_box()
+        assert fig_b["x"] + fig_b["width"] <= card_box["x"] + card_box["width"] + 1, (fig_b, card_box)
+        page.click('[data-ask-id="p1"] [data-ask-action="same"]')
+        page.wait_for_selector('[data-ask-id="p1"]', state="detached")
+        assert posted[-1] == ("p1/answer", {"answer": "yes"})
+        posted.clear()
 
         page.click('[data-ask-id="m-confirm"] [data-ask-action="confirm"]')
         page.wait_for_selector('[data-ask-id="m-confirm"]', state="detached")

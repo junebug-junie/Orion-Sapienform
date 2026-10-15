@@ -12,6 +12,8 @@ Prints:
   - labeled count
   - open asks
   - expectation outcomes (met / missed / unscorable / open)
+  - Juniper's "same person?" verdicts with their face similarity: the
+    labeled calibration data for VISION_INDIVIDUALS_FACE_MATCH_THRESHOLD
 
 A cluster count that keeps growing roughly linearly with sightings means the
 match threshold is too strict (every appearance is a "new" person); one that
@@ -62,7 +64,17 @@ def build_report(conn, *, stream: str, days: int, tz: str, top: int) -> Dict[str
     for day, n in growth:
         run += n
         cumulative.append({"day": str(day), "new": n, "cumulative": run})
+    verdicts = []
+    try:
+        with conn.begin_nested():
+            verdicts = conn.execute(text(
+                "SELECT verdict, face_cosine, individual_a, individual_b, decided_at "
+                "FROM vision_individual_pair_verdict ORDER BY decided_at")).fetchall()
+    except Exception:  # migration not applied yet: no verdicts to show
+        verdicts = []
     return {
+        "face_pair_verdicts": [{"verdict": v[0], "face_cosine": v[1], "individual_a": v[2], "individual_b": v[3],
+                                "decided_at": v[4].isoformat()} for v in verdicts],
         "stream": stream,
         "window_days": days,
         "individuals_per_day": [{"day": str(d), "individuals": i, "sightings": s} for d, i, s in per_day],
@@ -97,6 +109,11 @@ def _print(rep: Dict[str, Any]) -> None:
     for a in rep["open_asks"]:
         print(f"  {a['created_at'][:16]}  {a['question']}")
     o = rep["expectation_outcomes"]
+    vs = rep.get("face_pair_verdicts") or []
+    print(f"\nSame-person verdicts (face threshold calibration): {len(vs)}")
+    for v in vs:
+        cos = "n/a" if v["face_cosine"] is None else f"{v['face_cosine']:.3f}"
+        print(f"  {v['verdict']:<9} face cosine {cos}  {v['individual_a'][:8]} / {v['individual_b'][:8]}")
     print("\nExpectations: " + ", ".join(f"{k}={o.get(k, 0)}" for k in ("met", "missed", "unscorable", "open")))
 
 

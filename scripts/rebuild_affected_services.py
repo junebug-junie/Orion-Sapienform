@@ -9,6 +9,8 @@ Usage:
     python scripts/rebuild_affected_services.py --base ORIG_HEAD
     python scripts/rebuild_affected_services.py --paths services/orion-hub/app/main.py
     python scripts/rebuild_affected_services.py --list-only --base HEAD~1
+    python scripts/rebuild_affected_services.py --plan --base ORIG_HEAD
+    python scripts/rebuild_affected_services.py --running-profile-services orion-vision-retina
 """
 from __future__ import annotations
 
@@ -39,6 +41,19 @@ _IMPORT_RE = re.compile(
     re.MULTILINE,
 )
 _DOCKERFILE_COPY_ORION_RE = re.compile(r"^\s*COPY\s+orion\b", re.MULTILINE | re.IGNORECASE)
+_COMPOSE_FILE = "docker-compose.yml"
+# Host-side default for ${ORION_HOST_REPO_ROOT:-...} in compose bind mounts.
+_HOST_REPO_ROOT_DEFAULT = "/mnt/scripts/Orion-Sapienform"
+_REPO_ROOT_VAR_RE = re.compile(r"^\$\{ORION_HOST_REPO_ROOT(?::?-[^}]*)?\}")
+_GLOB_CHARS = set("*?[")
+# Dependency sources that never fan out through the baked/mounted rule:
+# orion/ keeps its own deliberately narrow import-graph policy
+# (service_rebuild_paths.yaml: orion_import_packages), and a whole-repo source
+# ("" = repo root) would make every path affect that service.
+_DEP_SOURCE_EXCLUDED_TOPS = frozenset({"", _ORION_DIR})
+
+MODE_BUILD = "build"
+MODE_RECREATE = "recreate"
 
 
 @dataclass
@@ -49,6 +64,10 @@ class ResolveResult:
     mesh_host: str = ""
     host_allowlist: list[str] = field(default_factory=list)
     host_filtered_out: list[str] = field(default_factory=list)
+    # Subset of ``services`` that must be force-recreated (a changed path is
+    # bind-mounted into a container, so an unchanged image would not recreate
+    # it and a single-file mount would keep serving the old inode).
+    recreate: list[str] = field(default_factory=list)
 
 
 def _load_yaml(path: Path) -> dict[str, Any]:
@@ -117,6 +136,202 @@ def services_copying_orion(repo_root: str) -> frozenset[str]:
         if _DOCKERFILE_COPY_ORION_RE.search(text):
             out.add(dockerfile.parent.name)
     return frozenset(out)
+
+
+@dataclass(frozen=True)
+class DepSource:
+    """A repo path one service's image or containers depend on."""
+
+    prefix: str  # repo-relative, no trailing slash
+    service: str  # services/<service> directory name
+    mode: str  # MODE_BUILD (baked by COPY/ADD) or MODE_RECREATE (bind-mounted)
+    origin: str  # human-readable provenance for the reason string
+
+
+def _dockerfile_instructions(text: str) -> list[str]:
+    """Logical Dockerfile lines (backslash continuations joined, comments dropped)."""
+    out: list[str] = []
+    buf = ""
+    for raw in text.splitlines():
+        line = raw.rstrip()
+        if not buf and line.lstrip().startswith("#"):
+            continue
+        if line.endswith("\\"):
+            buf += line[:-1] + " "
+            continue
+        buf += line
+        if buf.strip():
+            out.append(buf.strip())
+        buf = ""
+    if buf.strip():
+        out.append(buf.strip())
+    return out
+
+
+def _copy_sources(instruction: str) -> list[str]:
+    """Source operands of a COPY/ADD instruction; [] for other or --from= stages."""
+    head, _, rest = instruction.partition(" ")
+    if head.upper() not in {"COPY", "ADD"}:
+        return []
+    rest = rest.strip()
+    tokens: list[str] = []
+    while rest.startswith("--"):
+        flag, _, rest = rest.partition(" ")
+        if flag.lower().startswith("--from"):
+            return []  # copies from another build stage/image, not the context
+        rest = rest.strip()
+    if rest.startswith("["):
+        try:
+            tokens = [str(t) for t in json.loads(rest)]
+        except ValueError:
+            return []
+    else:
+        tokens = rest.split()
+    if len(tokens) < 2:
+        return []
+    return [t for t in tokens[:-1] if "://" not in t and not t.startswith("$")]
+
+
+def _repo_relative(path: Path, repo_root: Path) -> str | None:
+    try:
+        rel = path.resolve().relative_to(repo_root)
+    except ValueError:
+        return None
+    text = rel.as_posix()
+    return "" if text == "." else text
+
+
+def _strip_glob(source: str) -> str:
+    """Longest literal directory prefix of a COPY source (``a/b*.yaml`` -> ``a``)."""
+    if not any(ch in _GLOB_CHARS for ch in source):
+        return source
+    parts: list[str] = []
+    for part in source.split("/"):
+        if any(ch in _GLOB_CHARS for ch in part):
+            break
+        parts.append(part)
+    return "/".join(parts)
+
+
+def _mount_host_path(volume: Any) -> str | None:
+    if isinstance(volume, dict):
+        if volume.get("type", "bind") != "bind":
+            return None
+        source = volume.get("source")
+        return str(source) if source else None
+    if not isinstance(volume, str):
+        return None
+    # Short syntax HOST:CONTAINER[:MODE]; split on ':' outside ${...}.
+    depth = 0
+    for idx, ch in enumerate(volume):
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+        elif ch == ":" and depth == 0:
+            return volume[:idx]
+    return None  # anonymous volume (container path only)
+
+
+def _resolve_mount_source(host: str, compose_dir: Path, repo_root: Path) -> str | None:
+    host = host.strip().strip('"').strip("'")
+    match = _REPO_ROOT_VAR_RE.match(host)
+    if match:
+        candidate = repo_root / host[match.end():].lstrip("/")
+    elif host.startswith(_HOST_REPO_ROOT_DEFAULT + "/") or host == _HOST_REPO_ROOT_DEFAULT:
+        candidate = repo_root / host[len(_HOST_REPO_ROOT_DEFAULT):].lstrip("/")
+    elif "$" in host or host.startswith("~"):
+        return None  # some other env-driven host path; not a repo path we can name
+    elif host.startswith("/"):
+        candidate = Path(host)
+    elif host.startswith("."):
+        candidate = compose_dir / host
+    else:
+        return None  # named volume
+    return _repo_relative(candidate, repo_root)
+
+
+def _dep_source_allowed(prefix: str, service: str, mode: str) -> bool:
+    top = prefix.split("/", 1)[0]
+    if top in _DEP_SOURCE_EXCLUDED_TOPS:
+        return False
+    if mode == MODE_BUILD and _path_matches_prefix(prefix, f"{_SERVICES_DIR}/{service}"):
+        return False  # own-dir COPY is already covered by the direct services/<svc>/ rule
+    return True
+
+
+def _load_compose(path: Path) -> dict[str, Any]:
+    try:
+        data = _load_yaml(path)
+    except Exception:  # malformed compose must not break the whole classifier
+        return {}
+    return data
+
+
+@lru_cache(maxsize=4)
+def build_dependency_sources(repo_root: str) -> tuple[DepSource, ...]:
+    """Repo paths each service bakes into its image or bind-mounts into containers.
+
+    Parsed from services/<svc>/docker-compose.yml (build context + dockerfile,
+    bind-mount volumes) and the Dockerfiles it names. Catches the case the
+    import graph cannot see: a non-Python file such as config/vision_zones.yaml
+    COPY'd into three images (PR #2677).
+    """
+    root = Path(repo_root).resolve()
+    out: set[DepSource] = set()
+    services_root = root / _SERVICES_DIR
+    if not services_root.is_dir():
+        return ()
+    for compose_path in sorted(services_root.glob(f"*/{_COMPOSE_FILE}")):
+        service = compose_path.parent.name
+        compose_dir = compose_path.parent
+        compose = _load_compose(compose_path)
+        compose_services = compose.get("services") or {}
+        if not isinstance(compose_services, dict):
+            continue
+        dockerfiles: set[tuple[Path, Path]] = set()
+        for name, spec in compose_services.items():
+            if not isinstance(spec, dict):
+                continue
+            build = spec.get("build")
+            if isinstance(build, str):
+                build = {"context": build}
+            if isinstance(build, dict):
+                context = (compose_dir / str(build.get("context") or ".")).resolve()
+                dockerfile = context / str(build.get("dockerfile") or "Dockerfile")
+                dockerfiles.add((context, dockerfile))
+            for volume in spec.get("volumes") or []:
+                host = _mount_host_path(volume)
+                if not host:
+                    continue
+                prefix = _resolve_mount_source(host, compose_dir, root)
+                if prefix is None or not _dep_source_allowed(prefix, service, MODE_RECREATE):
+                    continue
+                out.add(DepSource(prefix, service, MODE_RECREATE, f"bind-mounted by {_COMPOSE_FILE} service {name}"))
+        for context, dockerfile in sorted(dockerfiles):
+            if not dockerfile.is_file():
+                continue
+            df_rel = _repo_relative(dockerfile, root) or dockerfile.name
+            if df_rel and _dep_source_allowed(df_rel, service, MODE_BUILD):
+                out.add(DepSource(df_rel, service, MODE_BUILD, f"Dockerfile of {_COMPOSE_FILE} build"))
+            text = dockerfile.read_text(encoding="utf-8", errors="replace")
+            for instruction in _dockerfile_instructions(text):
+                for src in _copy_sources(instruction):
+                    literal = _strip_glob(src)
+                    prefix = _repo_relative(context / literal, root)
+                    if prefix is None or not _dep_source_allowed(prefix, service, MODE_BUILD):
+                        continue
+                    out.add(DepSource(prefix, service, MODE_BUILD, f"COPY/ADD in {df_rel}"))
+    return tuple(sorted(out, key=lambda d: (d.prefix, d.service, d.mode)))
+
+
+def dependency_hits(path: str, sources: tuple[DepSource, ...]) -> list[DepSource]:
+    """Dependency sources a changed path falls under."""
+    hits: list[DepSource] = []
+    for dep in sources:
+        if _path_matches_prefix(path, dep.prefix):
+            hits.append(dep)
+    return hits
 
 
 @lru_cache(maxsize=1)
@@ -291,30 +506,52 @@ def resolve_affected_services(
     else:
         orion_import_allowlist = set(orion_import_packages_raw)
 
+    dep_sources = build_dependency_sources(str(root))
+
     affected: set[str] = set()
+    recreate: set[str] = set()
     skipped: list[str] = []
     reasons: dict[str, str] = {}
 
     for raw_path in paths:
         path = raw_path.replace("\\", "/").lstrip("./")
 
+        # Baked (COPY/ADD) or bind-mounted repo paths. Checked before the skip
+        # rules: config/ is skipped for the generic rule but is exactly what
+        # Dockerfiles COPY (config/vision_zones.yaml, PR #2677).
+        hits = [d for d in dependency_hits(path, dep_sources) if d.service in known_services]
+        dep_reason = ""
+        if hits:
+            for dep in hits:
+                affected.add(dep.service)
+                if dep.mode == MODE_RECREATE:
+                    recreate.add(dep.service)
+            dep_reason = "; ".join(sorted({f"{d.service} ({d.mode}: {d.origin})" for d in hits}))
+
+        def note(reason: str, *, skip: bool) -> None:
+            # A dependency hit means the path is NOT skipped, whatever the
+            # generic rules below would say about it.
+            if hits:
+                reasons[path] = dep_reason if skip else f"{dep_reason}; {reason}"
+            else:
+                reasons[path] = reason
+                if skip:
+                    skipped.append(path)
+
         if path in skip_exact:
-            skipped.append(path)
-            reasons[path] = "repo metadata (no runtime rebuild)"
+            note("repo metadata (no runtime rebuild)", skip=True)
             continue
 
         matched_skip = False
         for prefix in skip_prefixes:
             if _path_matches_prefix(path, prefix):
-                skipped.append(path)
-                reasons[path] = f"under {prefix.rstrip('/')} (no auto rebuild)"
+                note(f"under {prefix.rstrip('/')} (no auto rebuild)", skip=True)
                 matched_skip = True
                 break
         if not matched_skip and path.startswith(f"{_ORION_DIR}/"):
             parts = path.split("/")
             if len(parts) >= 3 and parts[2] == "tests":
-                skipped.append(path)
-                reasons[path] = "orion package tests (no auto rebuild)"
+                note("orion package tests (no auto rebuild)", skip=True)
                 matched_skip = True
         if matched_skip:
             continue
@@ -323,57 +560,53 @@ def resolve_affected_services(
         if service:
             if service in known_services:
                 affected.add(service)
-                reasons[path] = f"direct change in services/{service}/"
+                note(f"direct change in services/{service}/", skip=False)
             else:
-                skipped.append(path)
-                reasons[path] = f"unknown service directory {service!r}"
+                note(f"unknown service directory {service!r}", skip=True)
             continue
 
         if contract_prefixes and any(_path_matches_prefix(path, p) for p in contract_prefixes):
             for svc in orion_copy_services:
                 affected.add(svc)
-            reasons[path] = "contract path → all services with COPY orion"
+            note("contract path → all services with COPY orion", skip=False)
             continue
 
         orion_pkg = _orion_package_from_path(path)
         if orion_pkg:
             if orion_import_allowlist is not None and orion_pkg not in orion_import_allowlist:
-                skipped.append(path)
-                reasons[path] = (
-                    f"orion/{orion_pkg}/ not in orion_import_packages (direct services/ changes only)"
+                note(
+                    f"orion/{orion_pkg}/ not in orion_import_packages (direct services/ changes only)",
+                    skip=True,
                 )
                 continue
             for svc in _direct_and_one_hop_service_consumers(orion_pkg, import_index):
                 affected.add(svc)
             for svc in orion_extra.get(orion_pkg, []):
                 affected.add(svc)
-            reasons[path] = f"orion/{orion_pkg}/ → direct import + one orion hop"
+            note(f"orion/{orion_pkg}/ → direct import + one orion hop", skip=False)
             continue
 
         if path.startswith("scripts/"):
             mapped = script_services.get(path)
             if mapped is None:
-                skipped.append(path)
-                reasons[path] = "scripts/ change with no script_services mapping (rebuild manually if needed)"
+                note("scripts/ change with no script_services mapping (rebuild manually if needed)", skip=True)
             elif not mapped:
-                skipped.append(path)
-                reasons[path] = "scripts/ meta-tool (explicit empty mapping)"
+                note("scripts/ meta-tool (explicit empty mapping)", skip=True)
             else:
                 for svc in mapped:
                     if svc in known_services:
                         affected.add(svc)
-                reasons[path] = f"script_services mapping → {', '.join(mapped)}"
+                note(f"script_services mapping → {', '.join(mapped)}", skip=False)
             continue
 
         if path == ".env" or path.endswith("/.env_example"):
-            skipped.append(path)
-            reasons[path] = (
-                "env template change — run sync_local_env_from_example.py and restart affected services manually"
+            note(
+                "env template change — run sync_local_env_from_example.py and restart affected services manually",
+                skip=True,
             )
             continue
 
-        skipped.append(path)
-        reasons[path] = "no mapping rule (rebuild manually if needed)"
+        note("no mapping rule (rebuild manually if needed)", skip=True)
 
     host = detect_mesh_host(root, mesh_host)
     allowlist = load_host_allowlist(root, host)
@@ -389,6 +622,7 @@ def resolve_affected_services(
             mesh_host=host,
             host_allowlist=sorted(allowlist),
             host_filtered_out=host_filtered_out,
+            recreate=sorted(svc for svc in recreate if svc in filtered),
         )
 
     excludes = _load_excludes(root)
@@ -398,7 +632,87 @@ def resolve_affected_services(
         skipped=sorted(set(skipped)),
         reasons=reasons,
         mesh_host=host,
+        recreate=sorted(svc for svc in recreate if svc in filtered),
     )
+
+
+# docker ps format used for profile detection: compose project, compose
+# service, compose config files (comma-separated absolute paths).
+_DOCKER_PS_FORMAT = (
+    '{{.Label "com.docker.compose.project"}}\t'
+    '{{.Label "com.docker.compose.service"}}\t'
+    '{{.Label "com.docker.compose.project.config_files"}}'
+)
+
+
+def read_running_compose_containers(ps_file: Path | None = None) -> list[tuple[str, str, str]] | None:
+    """(project, compose service, config_files) for every running container.
+
+    ``ps_file`` replays a saved ``docker ps --format`` dump (tests). Returns
+    None when docker cannot be queried -- callers must then start nothing extra.
+    """
+    if ps_file is not None:
+        text = ps_file.read_text(encoding="utf-8")
+    else:
+        try:
+            proc = subprocess.run(
+                ["docker", "ps", "--format", _DOCKER_PS_FORMAT],
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=30,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return None
+        if proc.returncode != 0:
+            return None
+        text = proc.stdout
+    rows: list[tuple[str, str, str]] = []
+    for line in text.splitlines():
+        if not line.strip():
+            continue
+        parts = line.split("\t")
+        while len(parts) < 3:
+            parts.append("")
+        rows.append((parts[0].strip(), parts[1].strip(), parts[2].strip()))
+    return rows
+
+
+def running_profile_services(
+    repo_root: Path,
+    service: str,
+    running: list[tuple[str, str, str]],
+    skip_profiles: set[str] | None = None,
+) -> list[tuple[str, str]]:
+    """Profile-gated compose services in services/<service>/ that are running now.
+
+    A plain ``up -d --build`` never touches a service behind ``profiles:``, so
+    a live profile container (orion-vision-retina-walkway) kept its old image
+    after every pull. Only services already running are returned: this must
+    never start something an operator left off. Returns (profile, compose
+    service) pairs, sorted.
+    """
+    compose_path = repo_root / _SERVICES_DIR / service / _COMPOSE_FILE
+    compose = _load_compose(compose_path)
+    compose_services = compose.get("services") or {}
+    if not isinstance(compose_services, dict):
+        return []
+    suffix = f"{_SERVICES_DIR}/{service}/{_COMPOSE_FILE}"
+    running_names: set[str] = set()
+    for _project, compose_service, config_files in running:
+        files = [f.strip().replace("\\", "/") for f in config_files.split(",") if f.strip()]
+        if any(f == suffix or f.endswith("/" + suffix) for f in files):
+            running_names.add(compose_service)
+    skip = skip_profiles or set()
+    out: list[tuple[str, str]] = []
+    for name, spec in compose_services.items():
+        if not isinstance(spec, dict) or name not in running_names:
+            continue
+        profiles = [str(p) for p in (spec.get("profiles") or [])]
+        if not profiles or any(p in skip for p in profiles):
+            continue
+        out.append((profiles[0], name))
+    return sorted(out)
 
 
 def _emit_host_summary(result: ResolveResult) -> None:
@@ -428,6 +742,28 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--list-only", action="store_true", help="Print affected service names, one per line")
     parser.add_argument("--json", action="store_true", help="Print JSON {services, skipped, reasons}")
+    parser.add_argument(
+        "--plan",
+        action="store_true",
+        help="Print '<service>\\t<build|recreate>' per affected service (recreate = bind-mounted change)",
+    )
+    parser.add_argument(
+        "--running-profile-services",
+        metavar="SERVICE",
+        help="Print '<profile>\\t<compose service>' for running profile-gated services of SERVICE and exit",
+    )
+    parser.add_argument(
+        "--skip-profile",
+        action="append",
+        default=[],
+        help="With --running-profile-services: ignore services in this profile (repeatable)",
+    )
+    parser.add_argument(
+        "--docker-ps-file",
+        type=Path,
+        default=None,
+        help="Replay a saved docker ps dump instead of querying docker (tests)",
+    )
     parser.add_argument("--repo-root", type=Path, default=_REPO_ROOT, help="Repo root (for tests)")
     parser.add_argument(
         "--host",
@@ -436,6 +772,24 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     repo_root = args.repo_root.resolve()
+
+    if args.running_profile_services:
+        ps_file = args.docker_ps_file
+        if ps_file is None and os.environ.get("ORION_REBUILD_DOCKER_PS_FILE", "").strip():
+            ps_file = Path(os.environ["ORION_REBUILD_DOCKER_PS_FILE"].strip())
+        running = read_running_compose_containers(ps_file)
+        if running is None:
+            print(
+                "rebuild_affected_services: WARNING: docker ps unavailable -- "
+                "not rebuilding any profile-gated services",
+                file=sys.stderr,
+            )
+            return 0
+        for profile, name in running_profile_services(
+            repo_root, args.running_profile_services, running, set(args.skip_profile)
+        ):
+            print(f"{profile}\t{name}")
+        return 0
 
     try:
         if args.paths is not None:
@@ -458,8 +812,13 @@ def main(argv: list[str] | None = None) -> int:
             "mesh_host": result.mesh_host,
             "host_allowlist": result.host_allowlist,
             "host_filtered_out": result.host_filtered_out,
+            "recreate": result.recreate,
         }
         print(json.dumps(payload, indent=2))
+    elif args.plan:
+        recreate = set(result.recreate)
+        for svc in result.services:
+            print(f"{svc}\t{MODE_RECREATE if svc in recreate else MODE_BUILD}")
     elif args.list_only:
         for svc in result.services:
             print(svc)

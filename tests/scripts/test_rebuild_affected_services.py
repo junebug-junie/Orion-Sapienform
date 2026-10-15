@@ -208,3 +208,169 @@ def test_vllm_worker_requires_explicit_compose_profile() -> None:
     import yaml
     compose = yaml.safe_load((ROOT / "services/orion-vllm-host/docker-compose.yml").read_text())
     assert compose["services"]["vllm-host"]["profiles"] == ["vllm-worker"]
+
+
+# --- Baked / bind-mounted repo paths (PR #2677 regression) -----------------
+
+
+def test_pr2677_baked_config_rebuilds_every_image_that_copies_it() -> None:
+    """config/vision_zones.yaml is COPY'd into three images; the old classifier
+    skipped it as `under config` and rebuilt none of them."""
+    payload = _resolve(["config/vision_zones.yaml"], ROOT, host="athena")
+    for svc in ("orion-vision-host", "orion-sql-writer", "orion-vision-council"):
+        assert svc in payload["services"], payload["reasons"]
+    assert "config/vision_zones.yaml" not in payload["skipped"]
+    assert "orion-vision-host" not in payload["recreate"]
+
+
+def test_mounted_repo_config_marks_service_for_recreate() -> None:
+    payload = _resolve(["config/vision_frame_router.yaml"], ROOT, host="athena")
+    assert "orion-vision-frame-router" in payload["services"]
+    assert "orion-vision-frame-router" in payload["recreate"]
+
+
+def _service(root: Path, name: str, compose: str, dockerfile: str | None = None) -> None:
+    svc = root / "services" / name
+    svc.mkdir(parents=True, exist_ok=True)
+    (svc / "docker-compose.yml").write_text(compose)
+    if dockerfile is not None:
+        (svc / "Dockerfile").write_text(dockerfile)
+
+
+def test_dependency_sources_parse_copy_add_and_mounts(mini_repo: Path) -> None:
+    _service(
+        mini_repo,
+        "orion-baker",
+        "services:\n"
+        "  baker:\n"
+        "    build:\n"
+        "      context: ../..\n"
+        "      dockerfile: services/orion-baker/Dockerfile\n",
+        "FROM python:3.12 AS base\n"
+        "COPY services/orion-baker/app ./app\n"
+        "COPY orion ./orion\n"
+        "COPY --chown=1000:1000 config/zones.yaml \\\n"
+        "     config/other.yaml /app/config/\n"
+        "ADD [\"config/rules/*.yaml\", \"/app/rules/\"]\n"
+        "COPY --from=base /opt/thing /opt/thing\n"
+        "COPY . /repo\n",
+    )
+    _service(
+        mini_repo,
+        "orion-mounter",
+        "services:\n"
+        "  mounter:\n"
+        "    image: python:3.12\n"
+        "    volumes:\n"
+        "      - ../../config/router.yaml:/app/config/router.yaml:ro\n"
+        "      - ${ORION_HOST_REPO_ROOT:-/mnt/scripts/Orion-Sapienform}/config/corpus:/app/corpus:ro\n"
+        "      - ${ORION_HOST_REPO_ROOT:-/mnt/scripts/Orion-Sapienform}/orion:/app/orion\n"
+        "      - ${ORION_HOST_REPO_ROOT:-/mnt/scripts/Orion-Sapienform}:/repo:ro\n"
+        "      - ${SOME_OTHER_DIR}/x:/x\n"
+        "      - named_volume:/data\n"
+        "      - type: bind\n"
+        "        source: ../../config/long.yaml\n"
+        "        target: /app/long.yaml\n",
+    )
+
+    def services_for(path: str) -> tuple[list[str], list[str]]:
+        payload = _resolve([path], mini_repo, host="athena")
+        return payload["services"], payload["recreate"]
+
+    assert services_for("config/zones.yaml") == (["orion-baker"], [])
+    assert services_for("config/other.yaml") == (["orion-baker"], [])
+    assert services_for("config/rules/a.yaml") == (["orion-baker"], [])
+    assert services_for("config/router.yaml") == (["orion-mounter"], ["orion-mounter"])
+    assert services_for("config/corpus/doc.md") == (["orion-mounter"], ["orion-mounter"])
+    assert services_for("config/long.yaml") == (["orion-mounter"], ["orion-mounter"])
+    # --from stage copies, whole-repo COPY/mounts and orion/ do not fan out here;
+    # orion/ keeps its own narrow import-graph policy.
+    assert services_for("config/unrelated.yaml") == ([], [])
+    assert services_for("docs/readme.md") == ([], [])
+    assert services_for("orion/vision/zones.py") == ([], [])
+
+
+def test_dockerfile_in_other_service_dir_is_a_dependency(mini_repo: Path) -> None:
+    _service(
+        mini_repo,
+        "orion-twin",
+        "services:\n"
+        "  twin:\n"
+        "    build:\n"
+        "      context: ../..\n"
+        "      dockerfile: services/orion-actions/Dockerfile\n",
+    )
+    (mini_repo / "services" / "orion-actions" / "Dockerfile").write_text("FROM python:3.12\n")
+    payload = _resolve(["services/orion-actions/Dockerfile"], mini_repo, host="athena")
+    assert payload["services"] == ["orion-actions", "orion-twin"]
+
+
+# --- Running profile-gated services -----------------------------------------
+
+
+def _profile_services(repo: Path, service: str, ps_lines: list[str], tmp_path: Path, *skip: str) -> list[str]:
+    ps_file = tmp_path / "docker-ps.txt"
+    ps_file.write_text("\n".join(ps_lines) + "\n")
+    cmd = [
+        sys.executable,
+        str(MODULE),
+        "--repo-root",
+        str(repo),
+        "--running-profile-services",
+        service,
+        "--docker-ps-file",
+        str(ps_file),
+    ]
+    for profile in skip:
+        cmd.extend(["--skip-profile", profile])
+    proc = subprocess.run(cmd, capture_output=True, text=True, check=False, timeout=60)
+    assert proc.returncode == 0, proc.stderr
+    return proc.stdout.splitlines()
+
+
+_RETINA_COMPOSE = "/mnt/scripts/Orion-Sapienform/services/orion-vision-retina/docker-compose.yml"
+
+
+def test_running_walkway_profile_service_is_reported(tmp_path: Path) -> None:
+    ps = [
+        f"orion-vision-retina\torion-vision-retina\t{_RETINA_COMPOSE}",
+        f"orion-vision-retina\torion-vision-retina-walkway\t{_RETINA_COMPOSE}",
+    ]
+    assert _profile_services(ROOT, "orion-vision-retina", ps, tmp_path) == [
+        "walkway\torion-vision-retina-walkway"
+    ]
+
+
+def test_stopped_profile_service_is_never_started(tmp_path: Path) -> None:
+    ps = [f"orion-vision-retina\torion-vision-retina\t{_RETINA_COMPOSE}"]
+    assert _profile_services(ROOT, "orion-vision-retina", ps, tmp_path) == []
+
+
+def test_profile_match_requires_the_same_compose_file(tmp_path: Path) -> None:
+    # Same compose service name, but from another stack's compose file.
+    ps = ["other\torion-vision-retina-walkway\t/srv/services/orion-other/docker-compose.yml"]
+    assert _profile_services(ROOT, "orion-vision-retina", ps, tmp_path) == []
+
+
+def test_skip_profile_excludes_analytics(tmp_path: Path) -> None:
+    compose = "/mnt/scripts/Orion-Sapienform/services/orion-analytics/docker-compose.yml"
+    ps = [f"orion-analytics\tlightdash\t{compose}"]
+    assert _profile_services(ROOT, "orion-analytics", ps, tmp_path) == ["analytics\tlightdash"]
+    assert _profile_services(ROOT, "orion-analytics", ps, tmp_path, "analytics") == []
+
+
+def test_plan_output_marks_recreate(mini_repo: Path) -> None:
+    _service(
+        mini_repo,
+        "orion-mounter",
+        "services:\n  m:\n    image: x\n    volumes:\n      - ../../config/r.yaml:/r.yaml:ro\n",
+    )
+    proc = subprocess.run(
+        [
+            sys.executable, str(MODULE), "--repo-root", str(mini_repo), "--host", "athena",
+            "--plan", "--paths", "config/r.yaml", "services/orion-actions/app/main.py",
+        ],
+        capture_output=True, text=True, check=False, timeout=60,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout.splitlines() == ["orion-actions\tbuild", "orion-mounter\trecreate"]

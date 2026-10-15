@@ -44,6 +44,7 @@ Graded predictions will stay empty for about a week. The rhythm reducer only emi
 - `orion/situational/street_material.py`: new shared rules/wording/SQL.
 - `orion/situational/perception_reader.py`: caption read + first line in the street summary.
 - `orion/situational/tests/test_street_material.py`, `test_street_summary.py`: new tests; the all-reads-failed test now also fails the caption read.
+- `services/orion-hub/README.md`: one paragraph on the street in study material.
 - `services/orion-cortex-exec/app/chat_stance.py`: street clip 240 -> 420.
 - `services/orion-thought/app/{vision_reader,reverie,settings}.py`, `.env_example`, `README.md`, `tests/test_reverie_street_context.py`: reverie street input.
 - `orion/cognition/prompts/reverie_narrate.j2`: "OUTSIDE, ON THE WALKWAY" section in both branches; stated expectations stay about the room.
@@ -102,8 +103,25 @@ New/updated focused tests:
   services/orion-hub tests/test_curiosity_street_captions_read.py + unresolved  6 passed
   orion/substrate/tests/test_endogenous_curiosity_walkway_fence.py + world_first  17 passed
   services/orion-attention-runtime tests/test_world_first_worker.py   7 passed
-Baseline comparison (origin/main detached worktree vs this branch): see "Baseline diff" below.
 ```
+
+Baseline comparison, origin/main (detached worktree at b3a5a6555) vs this branch, same commands:
+
+```text
+suite                                   origin/main                    branch
+orion/situational/tests                 166 passed                     177 passed
+orion/curiosity                         130 passed                     130 passed
+orion/substrate/tests                   3 failed, 1129 passed          3 failed, 1131 passed   (same 3 felt_state failures)
+orion/schemas                           1 failed, 77 passed            1 failed, 77 passed     (same test_context_provenance failure)
+tests/test_metric_rest_range.py         25 passed                      25 passed
+services/orion-thought                  1 failed, 632 passed           1 failed, 641+ passed   (same test_mind_enrichment_defaults_off)
+services/orion-dream                    261 passed                     270 passed
+services/orion-hub (curiosity/situation files)  450 passed             458 passed
+services/orion-attention-runtime        53 passed, 1 collection error  53 passed, 1 collection error (same)
+services/orion-cortex-exec              133 failed, 1081 passed, 15 errors   identical lists
+services/orion-substrate-runtime        14 failed, 432 passed, 11 errors     identical lists
+```
+The FAILED/ERROR lists are identical between the two trees for every suite (diffed); every failure is pre-existing on main.
 
 ## Evals run
 
@@ -123,7 +141,18 @@ vision_events_stream_created_idx) passed. Nothing deployed.
 
 ## Review findings fixed
 
-(filled in after the review subagent)
+Fresh review subagent on `origin/main...HEAD`: no must-fix; two should-fix, both fixed; nits mostly fixed.
+
+- Finding: a reverie prompt with the street but no room block (room camera stale) still said "any expectation you state is about the room", inviting a claim that would later be judged against a room percept -- a street-to-room leak.
+  - Fix: the sentence renders only when a room block is present; `run_reverie_once` drops a stated expectation when the street was offered and the room was not (no street and no room is unchanged from main).
+  - Evidence: `test_expectation_is_dropped_when_only_the_street_was_offered`, `test_expectation_kept_when_the_room_was_offered`; existing `test_reverie_expectation_scoring.py` still passes (62 passed together).
+- Finding: reducer rows (`attention_worthy`, ...) were filtered in Python after the SQL `LIMIT`, so a burst could hide real captions.
+  - Fix: all three caption statements exclude them in SQL from one shared clause (`street_material.REDUCER_EVENT_TYPES_SQL`); the Python check stays as a backstop.
+  - Evidence: `test_reducer_rows_are_excluded_before_the_row_limit` (25 newer reducer rows, caption still found), `test_reducer_types_are_excluded_in_every_caption_sql`.
+- Nit: two 160-char captions first in the brief could push the "did not come" rhythm line past chat stance's clip.
+  - Fix: brief captions clipped to 100 chars. Evidence: `test_brief_captions_are_clipped_so_the_rhythm_line_survives_the_stance_clip`.
+- Nit: Hub README did not mention `HUB_CURIOSITY_STREET_STREAM_IDS`. Fixed.
+- Not changed: textual dedupe misses near-synonyms (listed under risks); bad-timezone fallback in the kickoff section prints UTC without a marker (pre-existing pattern from the unresolved section); `metric_definitions.lock.json` may conflict if main re-locks first (re-run `--update` after rebase).
 
 ## Restart required
 
@@ -149,6 +178,6 @@ scripts/safe_docker_build.sh orion-attention-runtime up -d --build
 
 ## PR link
 
-(added after push)
+https://github.com/junebug-junie/Orion-Sapienform/pull/2682
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

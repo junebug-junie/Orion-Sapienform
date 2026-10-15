@@ -127,16 +127,24 @@ services:
       # (orion-thought) already gets the full result via the RPC reply, so
       # nothing needs this broadcast to exist at all for this lane.
       - VISION_ARTIFACT_BROADCAST_ENABLED=false
+      # ...except artifacts from these camera streams (2026-10-15): the frame
+      # router sends this lane walkway caption tasks (config/
+      # vision_frame_router.yaml streams.walkway.caption_dispatch) and
+      # orion-vision-window reads those captions off the broadcast. Dream
+      # captions carry no stream_id and still never broadcast
+      # (main.py artifact_broadcast_allowed).
+      - VISION_ARTIFACT_BROADCAST_STREAMS=${CIRCE_QWEN_VISION_ARTIFACT_BROADCAST_STREAMS:-walkway}
 
       - MODEL_CACHE_DIR=/mnt/storage-warm/models/vision-circe-qwen
       - HF_HOME=/mnt/storage-warm/models/vision-circe-qwen/hf
       - TRANSFORMERS_CACHE=/mnt/storage-warm/models/vision-circe-qwen/hf/transformers
 
       - VISION_PROFILES_PATH=/app/config/vision_profiles.yaml
-      # Only the captioner -- this lane exists for one job (re-observe a
-      # generated image). No retina/detection/embedding profiles: those
-      # stay on athena's P4, and circe has no shared filesystem to read a
-      # frame path from anyway (percept-store bytes only).
+      # Only the captioner. Two jobs since 2026-10-15: re-observe a
+      # generated image (orion-thought, by percept_sha256) and caption
+      # walkway frames the detector already found someone in (frame router
+      # caption_dispatch, by image_path -- see the frames mount below). No
+      # retina/detection/embedding profiles: those stay on athena's P4.
       - VISION_ENABLED_PROFILES=vlm_caption
 
       # The one thing this whole lane is for: a real, non-degenerate VLM.
@@ -159,13 +167,17 @@ services:
       - VISION_DTYPE=fp16
       - VISION_TIMEOUT_S=${CIRCE_QWEN_VISION_TIMEOUT_S:-30}
 
-      # No queueing needed -- single caller (orion-thought's visual chain),
-      # single-flight by its own design (services/orion-thought/app/
-      # visual_chain.py). Reject rather than queue if that ever changes.
+      # Two callers since 2026-10-15: orion-thought's visual chain (single-
+      # flight, a few calls an hour) and the frame router's walkway captions
+      # (at most one in flight, at most one per caption_dispatch
+      # min_seconds_between_dispatch). A short queue lets either wait one
+      # ~3 s caption for the other instead of being refused; the router
+      # drops a caption that comes back stale (orion-vision-window's
+      # WINDOW_CAPTION_MAX_AGE_SEC).
       - VISION_MAX_INFLIGHT=1
       - VISION_MAX_INFLIGHT_PER_GPU=1
-      - VISION_QUEUE_WHEN_BUSY=false
-      - VISION_MAX_QUEUE=0
+      - VISION_QUEUE_WHEN_BUSY=true
+      - VISION_MAX_QUEUE=2
 
       # Deliberately LOWER than settings.py's own tuned defaults
       # (1200/1000/800) -- those were calibrated for athena's shared P4,
@@ -183,8 +195,9 @@ services:
 
       - TORCH_CUDA_ALLOC_CONF=${CIRCE_QWEN_TORCH_CUDA_ALLOC_CONF:-}
 
-      # This lane never reads a local frame -- no use_latest_frame path. It
-      # DOES need to reach percept-store, though: the caller (orion-thought)
+      # No use_latest_frame path. Walkway caption tasks read their frame by
+      # image_path (frames mount below); orion-thought's re-observation
+      # needs percept-store: the caller (orion-thought)
       # uploads bytes and hands this lane a percept_sha256, but
       # runner.py::_load_image_from_percept_store is what actually
       # downloads those bytes back, server-side, to run inference on.
@@ -206,6 +219,11 @@ services:
 
     volumes:
       - /mnt/storage-warm/models/vision-circe-qwen:/mnt/storage-warm/models/vision-circe-qwen
+      # Camera frames, read-only (2026-10-15): walkway caption tasks from the
+      # frame router address their frame by image_path, same as the main
+      # athena instance's own mount. Dream re-observation still comes in by
+      # percept_sha256.
+      - /mnt/telemetry/vision/frames:/mnt/telemetry/vision/frames:ro
 
     ports:
       - "${CIRCE_QWEN_HOST_PORT:-6602}:6600"

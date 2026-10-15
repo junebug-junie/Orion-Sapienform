@@ -31,6 +31,15 @@ class RouterMetrics:
     # Face checks that got a full-resolution still, and ones that fell back to the stream frame.
     identity_still_total: int = 0
     identity_still_fallback_total: int = 0
+    # Walkway-style captions from the VLM lane (caption_dispatch). Every
+    # outcome is counted with its reason: skipped before asking, failed on
+    # the lane, answered with no caption (null_answer / sanitizer reason), or
+    # answered with a caption.
+    caption_dispatched_total: int = 0
+    caption_captioned_total: int = 0
+    caption_skip_counts: dict[str, int] = field(default_factory=dict)
+    caption_no_caption_counts: dict[str, int] = field(default_factory=dict)
+    caption_failure_counts: dict[str, int] = field(default_factory=dict)
     last_error: str | None = None
 
     def record_skip(self, reason: str) -> None:
@@ -45,6 +54,19 @@ class RouterMetrics:
 
     def record_seen(self) -> None:
         self.frames_seen_total += 1
+
+    @staticmethod
+    def _bump(counts: dict[str, int], key: str) -> None:
+        counts[key] = counts.get(key, 0) + 1
+
+    def record_caption_skip(self, reason: str) -> None:
+        self._bump(self.caption_skip_counts, reason)
+
+    def record_caption_no_caption(self, reason: str) -> None:
+        self._bump(self.caption_no_caption_counts, reason or "unknown")
+
+    def record_caption_failure(self, reason: str) -> None:
+        self._bump(self.caption_failure_counts, reason or "host_error")
 
 
 def make_health_envelope(
@@ -88,6 +110,12 @@ def make_health_envelope(
             "host_errors_total": metrics.host_errors_total,
             "host_timeouts_total": metrics.host_timeouts_total,
             "decode_errors_total": metrics.decode_errors_total,
+            "caption_dispatched_total": metrics.caption_dispatched_total,
+            "caption_captioned_total": metrics.caption_captioned_total,
+            "caption_inflight": state.inflight_lane("caption"),
+            "caption_skip_counts": dict(metrics.caption_skip_counts),
+            "caption_no_caption_counts": dict(metrics.caption_no_caption_counts),
+            "caption_failure_counts": dict(metrics.caption_failure_counts),
             "last_error": metrics.last_error,
         },
     )

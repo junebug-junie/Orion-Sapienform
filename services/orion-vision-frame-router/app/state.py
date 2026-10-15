@@ -16,6 +16,9 @@ class CameraState(BaseModel):
     # A full-resolution still is being fetched for this camera's next face check
     # (dispatcher._identity_with_still); no second check starts until it is published.
     identity_still_pending: bool = False
+    # Last walkway-style caption task sent to the VLM lane for this camera
+    # (dispatcher._maybe_dispatch_caption); its own clock, like identity's.
+    last_caption_dispatch_ts: float | None = None
     inflight: set[str] = Field(default_factory=set)
     last_skip_reason: str | None = None
 
@@ -33,6 +36,14 @@ class PendingTask(BaseModel):
     # only a primary task's reply counts toward detection/caption yield.
     is_primary: bool = True
     want_caption: bool = False
+    # "host" = the athena vision host (counts toward max_inflight_total);
+    # "caption" = the separate Qwen VLM lane, capped by its own
+    # caption_dispatch.max_inflight, never by the athena host's cap.
+    lane: str = "host"
+    dispatch_tier: str | None = None
+    percept_sha256: str | None = None
+    # Per-task timeout (caption lane); None = TASK_TIMEOUT_SECONDS.
+    timeout_s: float | None = None
 
 
 class StreamTriggerState(BaseModel):
@@ -51,7 +62,13 @@ class RouterState:
         return self.cameras[camera_id]
 
     def inflight_total(self) -> int:
-        return len(self.pending)
+        """Tasks in flight on the athena vision host -- what
+        ``max_inflight_total`` caps. Caption-lane tasks run on a different
+        GPU and are capped separately (``inflight_lane("caption")``)."""
+        return sum(1 for t in self.pending.values() if t.lane == "host")
+
+    def inflight_lane(self, lane: str) -> int:
+        return sum(1 for t in self.pending.values() if t.lane == lane)
 
     def mark_seen(self, camera_id: str) -> CameraState:
         cam = self.camera(camera_id)
@@ -71,6 +88,10 @@ class RouterState:
         stream_id: str | None = None,
         is_primary: bool = True,
         want_caption: bool = False,
+        lane: str = "host",
+        dispatch_tier: str | None = None,
+        percept_sha256: str | None = None,
+        timeout_s: float | None = None,
     ) -> None:
         """``is_primary=False`` for the identity_face secondary dispatch
         (dispatcher.py): review finding, 2026-08-26, independently
@@ -107,6 +128,10 @@ class RouterState:
             reply_to=reply_to,
             is_primary=is_primary,
             want_caption=want_caption,
+            lane=lane,
+            dispatch_tier=dispatch_tier,
+            percept_sha256=percept_sha256,
+            timeout_s=timeout_s,
         )
 
     def clear_pending(self, correlation_id: str, *, now: float) -> PendingTask | None:
@@ -120,7 +145,8 @@ class RouterState:
     def expired_correlation_ids(self, *, now: float, timeout_s: float) -> list[str]:
         out: list[str] = []
         for cid, task in list(self.pending.items()):
-            if now - task.dispatched_at >= timeout_s:
+            limit = task.timeout_s if task.timeout_s is not None else timeout_s
+            if now - task.dispatched_at >= limit:
                 out.append(cid)
         return out
 

@@ -141,7 +141,8 @@ streams:
     #   gets a face vector + face thumbnail (identity_face's facenet models),
     #   so the reducer can tell people apart by face. Not Juniper's identity
     #   check: nothing here touches the enrolled gallery.
-    # - trigger_labels [person, dog]: people and dogs get captions. The
+    # - trigger_labels [person, dog]: people and dogs raise the triggered
+    #   tier (faster cadence, captions -- see caption_dispatch). The
     #   triggered tier is ALSO selected while Redis key
     #   orion:vision:expect:walkway exists (expectation steering, idea 8; see
     #   services/orion-vision-frame-router/app/expectation.py).
@@ -170,12 +171,41 @@ streams:
       min_seconds_between_tasks_per_camera: 2
       max_inflight_per_camera: 1
       request:
-        want_caption: true
+        # false (2026-10-15): walkway captions come from caption_dispatch
+        # below (Qwen2-VL), not the athena host's BLIP, which invented "a
+        # camera placed on a wooden bench in a garden" for dark empty frames.
+        want_caption: false
         want_embeddings: true
         want_crop_embeddings: true
         want_crop_faces: true
         crop_embedding_labels: [person, dog, bicycle, stroller, vehicle]
         prompts: [person, dog, bicycle, stroller, vehicle, package, mail truck]
+    # Walkway captions from the Qwen2-VL lane (2026-10-15, Juniper). After a
+    # triggered-tier detect reply that found at least one of `labels` at
+    # >= min_score, the router sends the same frame to
+    # CHANNEL_CAPTION_INTAKE (orion-vision-host docker-compose.circe-qwen.yml)
+    # with this prompt. "nothing notable" comes back as no caption. The
+    # detections ride along (meta.source_objects) and orion-vision-window
+    # drops any walkway caption whose detections are all stationary props or
+    # absent (WINDOW_CAPTION_GATE_*). Own lane cap and clock: never takes an
+    # athena host slot, never holds up detection. A busy/slow/down lane is
+    # just no caption.
+    caption_dispatch:
+      enabled: true
+      tiers: [triggered]
+      labels: [person, dog, bicycle, stroller, vehicle, package, mail truck]
+      min_score: 0.25
+      # Qwen2-VL-2B on the T10 takes ~2-4 s per frame; one caption per 8 s
+      # while someone is on the walkway keeps the lane mostly free for
+      # orion-thought's dream re-observation.
+      min_seconds_between_dispatch: 8
+      max_inflight: 1
+      timeout_sec: 15
+      prompt: >-
+        Describe only people, animals and vehicles you can clearly see on the
+        walkway or street, and what they are doing, in one short sentence.
+        If there are none, answer exactly: nothing notable.
+      null_answers: ["nothing notable"]
 
 cameras:
   mock-cam-01:

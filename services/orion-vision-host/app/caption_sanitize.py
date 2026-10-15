@@ -48,9 +48,12 @@ def _degenerate_reason(tokens: list[str]) -> str | None:
     return None
 
 
-def sanitize_caption(raw: str) -> tuple[str | None, bool, str | None]:
+def sanitize_caption(raw: str, *, prompt: str = CAPTION_PROMPT) -> tuple[str | None, bool, str | None]:
+    """``prompt`` is the prompt the model was actually sent (a caller's
+    ``request.caption_prompt`` on the walkway lane), so an echo of THAT is
+    caught, not only an echo of the fixed default."""
     text = (raw or "").strip()
-    if is_caption_prompt_echo(text):
+    if is_caption_prompt_echo(text, prompt=prompt):
         return None, False, "prompt_echo"
     if len(text) < 12:
         return None, False, "too_short"

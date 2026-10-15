@@ -175,19 +175,23 @@ class OrganWindowRecorder:
         caption_present: bool,
     ) -> None:
         """``objects`` is None when the reply carried no ``objects`` key (an embed-only
-        or identity task): that is not an empty detection and is not counted as one."""
+        or identity task): that is not an empty detection and is not counted as one.
+
+        Caption yield counts any reply that asked for a caption, primary or
+        not: walkway captions come from a secondary task on the VLM lane
+        (dispatcher._handle_caption_reply), its primary task asks for none."""
         with self._lock:
             bucket = self._bucket(stream_id)[1]
             bucket.replies_ok += 1
+            if caption_requested:
+                bucket.caption_requested += 1
+                if caption_present:
+                    bucket.captions += 1
             if not primary:
                 return
             if objects is not None:
                 bucket.detect_replies += 1
                 bucket.objects += max(0, int(objects))
-            if caption_requested:
-                bucket.caption_requested += 1
-                if caption_present:
-                    bucket.captions += 1
 
     def drain(self) -> WindowSnapshot:
         with self._lock:

@@ -16,6 +16,10 @@ class Settings(BaseSettings):
 
     CHANNEL_FRAMES_IN: str = "orion:vision:frames"
     CHANNEL_HOST_INTAKE: str = "orion:exec:request:VisionHostService"
+    # The Qwen2-VL lane (orion-vision-host docker-compose.circe-qwen.yml).
+    # Streams with a caption_dispatch block in the policy file get their
+    # captions from here instead of the athena host's BLIP.
+    CHANNEL_CAPTION_INTAKE: str = "orion:exec:request:VisionHostService:circe-vl"
     CHANNEL_HOST_ARTIFACTS: str = "orion:vision:artifacts"
     CHANNEL_REPLY_PREFIX: str = "orion:vision:reply"
     CHANNEL_SYSTEM_HEALTH: str = "orion:system:health"

@@ -56,6 +56,18 @@ def test_circe_qwen_lane_disables_artifact_broadcast():
     assert "CHANNEL_VISIONHOST_PUB=" not in text
 
 
+def test_circe_qwen_lane_broadcasts_only_walkway_and_reads_frames_read_only():
+    """2026-10-15: walkway captions come from this lane. Its broadcast opens
+    for stream_id=walkway only (main.py artifact_broadcast_allowed), and it
+    reads the walkway frame by path from a READ-ONLY frames mount."""
+    text = COMPOSE_PATH.read_text()
+    assert (
+        "VISION_ARTIFACT_BROADCAST_STREAMS=${CIRCE_QWEN_VISION_ARTIFACT_BROADCAST_STREAMS:-walkway}"
+        in text
+    )
+    assert "- /mnt/telemetry/vision/frames:/mnt/telemetry/vision/frames:ro" in text
+
+
 def test_circe_qwen_lane_overrides_use_prefixed_keys_not_shared_names():
     """Real regression, 2026-08-26, two rounds: this file used to read
     several lane-specific tunables as bare `${VAR:-<circe-correct-default>}`
@@ -120,4 +132,10 @@ def test_circe_qwen_lane_has_no_camera_frame_dependencies():
     ]
     assert len(profile_lines) == 1
     assert profile_lines[0].strip().endswith("VISION_ENABLED_PROFILES=vlm_caption")
-    assert "/mnt/telemetry" not in text
+    # 2026-10-15: the lane runs on athena now and reads walkway frames by path
+    # for the router's caption tasks. The one /mnt/telemetry reference allowed
+    # is that frames directory, mounted read-only; nothing else (no telemetry
+    # write path, no use_latest_frame frames dir setting).
+    telemetry_lines = [line.strip() for line in text.splitlines()
+                       if "/mnt/telemetry" in line and not line.strip().startswith("#")]
+    assert telemetry_lines == ["- /mnt/telemetry/vision/frames:/mnt/telemetry/vision/frames:ro"]

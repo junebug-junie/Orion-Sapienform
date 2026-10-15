@@ -88,6 +88,28 @@ def should_broadcast_identity(task_type: str, payload: Optional[VisionArtifactPa
     return False
 
 
+def artifact_broadcast_allowed(
+    payload: Optional[VisionArtifactPayload], *, enabled: bool, streams: str
+) -> bool:
+    """Whether the general artifact broadcast may carry this artifact.
+
+    ``enabled`` (VISION_ARTIFACT_BROADCAST_ENABLED) true: everything, as
+    before. False (the circe-qwen lane): only artifacts whose own
+    ``inputs.stream_id`` is in ``streams`` (VISION_ARTIFACT_BROADCAST_STREAMS).
+    That keeps orion-thought's dream captions (no stream_id) off the camera
+    projection, which is why this lane was silenced, while letting the
+    walkway caption tasks the frame router sends here reach
+    orion-vision-window.
+    """
+    if enabled:
+        return True
+    allowed = {s.strip() for s in str(streams or "").split(",") if s.strip()}
+    if not allowed or payload is None:
+        return False
+    stream_id = str((payload.inputs or {}).get("stream_id") or "").strip()
+    return bool(stream_id) and stream_id in allowed
+
+
 class VisionHostService:
     def __init__(self):
         self.bus: Optional[OrionBusAsync] = None
@@ -502,9 +524,11 @@ class VisionHostService:
         """
         if not artifact_payload:
             return
-        if settings.VISION_ARTIFACT_BROADCAST_ENABLED and should_broadcast_artifact(
-            task_type, artifact_payload
-        ):
+        if artifact_broadcast_allowed(
+            artifact_payload,
+            enabled=settings.VISION_ARTIFACT_BROADCAST_ENABLED,
+            streams=settings.VISION_ARTIFACT_BROADCAST_STREAMS,
+        ) and should_broadcast_artifact(task_type, artifact_payload):
             await self._publish_artifact_broadcast(artifact_payload, source_envelope)
         if should_broadcast_identity(task_type, artifact_payload):
             await self._publish_identity_broadcast(artifact_payload, source_envelope)

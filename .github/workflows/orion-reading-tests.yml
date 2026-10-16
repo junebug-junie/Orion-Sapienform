@@ -26,6 +26,7 @@ on:
       - "services/orion-harness-governor/**"
       - "services/orion-sql-db/manual_migration*reading*"
       - "services/orion-sql-db/manual_migration_world_pulse_read*"
+      - "services/orion-sql-db/manual_migration_curiosity_focus_request_*"
       - "tests/test_world_pulse_read*"
       - ".github/workflows/orion-reading-tests.yml"
   push:
@@ -63,6 +64,10 @@ jobs:
             services/orion-hub/tests/test_curiosity_introspect.py \
             services/orion-hub/tests/test_curiosity_introspect_listener.py \
             services/orion-hub/tests/test_curiosity_routes_runs.py \
+            services/orion-hub/tests/test_curiosity_focus.py \
+            services/orion-hub/evals/test_curiosity_focus_eval.py \
+            orion/curiosity/tests/test_focus_lifecycle.py \
+            orion/harness/tests/test_claim_gate.py \
             services/orion-hub/tests/test_reading_finding_outreach.py \
             services/orion-hub/tests/test_endogenous_outreach.py \
             services/orion-hub/tests/test_outreach_personality_cue.py \

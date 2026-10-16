@@ -78,7 +78,7 @@ def _q(pg, sql):
 _FAKE_CLASSIFIER = """\
 import os, sys
 args = sys.argv[1:]
-if "--running-profile-services" in args:
+if "--running-profile-services" in args or "--pool-held-services" in args:
     raise SystemExit(0)
 if "--migrations" in args:
     print("\\n".join(x for x in os.environ["FAKE_MIGRATIONS"].split(";") if x))
@@ -131,6 +131,7 @@ def scratch(tmp_path, pg):
         "ORION_PG_PASSWORD": pg["password"], "PGPASSWORD": pg["password"], "ORION_PG_DB": pg["dbname"],
         "ORION_MIGRATION_APPLY_PSQL": f"psql -h {pg['host']} -p {pg['port']} -U {pg['user']} -d {pg['dbname']}",
         "ORION_APPLIED_MIGRATIONS_LOG": str(tmp_path / "applied.log"),
+        "ORION_REBUILD_LOG": str(tmp_path / "post_pull_rebuild.log"),
         "REBUILD_TEST_CAPTURE": str(tmp_path / "capture.txt"),
     })
 

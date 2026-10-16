@@ -7,9 +7,11 @@ orion/hub/turn_orchestrator.py):
   question mark: a syntactic test of whether the message asks Juniper
   something, not a guess at intent). Expects Juniper to send a chat turn within
   OUTREACH_REPLY_HORIZON_SEC; orion-sql-writer's resolver closes it.
-- World-pulse reading, stage 1 -> ``look``. Expects a read with real evidence
-  (stage1_completed) within READ_HORIZON_SEC; closed here on stage1_completed
-  (1) or stage1_failed (0), expired at 0 by the writer if neither arrives.
+- World-pulse reading, stage 1 -> ``look``. Opened once, when the read's durable
+  run starts real work (not when it is queued: the GPU queue wait is not the read).
+  Expects a read with real evidence (stage1_completed) within READ_HORIZON_SEC of
+  that start; closed here on stage1_completed (1) or stage1_failed (0), expired at
+  0 by the writer if neither arrives. A read refused before work never opens.
 
 Every function is best-effort and never raises: the act is a trace of doing,
 and losing one must never block the doing itself. Gated by
@@ -37,13 +39,20 @@ OUTREACH_REPLY_BASIS = (
     "start over 60d (36554s, n=238, measured 2026-10-16); same horizon-at-median rule as chat replies"
 )
 
-# Reading: 3600 s. Measured 2026-10-16 over 30 days of durable reading.turn runs:
-# completed p50 615 s, p90 2734 s (n=375). The horizon is the p90 rounded up to
-# the hour: "a read finishes in the time Orion's own reads usually take".
+# Reading: 3600 s from the moment the read's durable run starts work (its first
+# run.started event). Re-measured 2026-10-16 over 30 days of reading.turn runs on
+# that clock: started -> completed p50 484 s, p90 1840 s, p99 3757 s (n=386). The
+# horizon is the p90 rounded up to the hour: "a read finishes in the time Orion's
+# own reads usually take". The first measurement (p90 2734 s) was taken from run
+# creation, which counts the GPU queue wait; on 2026-10-16 that wait alone was
+# 0.5 to 3.3 h, so 6 of 7 reads that produced were graded late. The queue wait is
+# still recorded per run (durable-runs queue_wait_seconds); it is not the read.
 READ_HORIZON_SEC = 3600.0
 READ_BASIS = (
-    "artifact_produced (stage1_completed with read evidence) by 3600s: p90 of completed "
-    "reading.turn durable runs over 30d is 2734s (n=375, measured 2026-10-16), rounded up"
+    "artifact_produced (stage1_completed with read evidence) by 3600s after the read's durable "
+    "run starts work: p90 of reading.turn run.started->completed over 30d is 1840s "
+    "(n=386, measured 2026-10-16), rounded up to the hour; GPU queue wait before the first start "
+    "excluded (a retried read's re-queue still counts: the act is the seed, retries included)"
 )
 
 
@@ -113,7 +122,9 @@ def _seed_correlation(seed: Any) -> str | None:
     return str(rid) if rid else None
 
 
-async def publish_read_opened(bus: Any, seed: Any) -> bool:
+async def publish_read_opened(bus: Any, seed: Any, *, at: Any = None) -> bool:
+    """Open the seed's `look` act. ``at`` is when the read's work started (the
+    writer sets opened_at and the horizon from it); None means now."""
     if bus is None or not _enabled():
         return False
     try:
@@ -122,7 +133,7 @@ async def publish_read_opened(bus: Any, seed: Any) -> bool:
 
         event = act_opened_event(
             _read_act(seed), source_service="orion-hub", source_component="world_pulse_read.act",
-            correlation_id=_seed_correlation(seed),
+            correlation_id=_seed_correlation(seed), at=at,
         )
         await publish_grammar_event(bus, event, source_name="orion-hub")
         return True

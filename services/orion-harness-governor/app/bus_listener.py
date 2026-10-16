@@ -17,7 +17,7 @@ from orion.harness.cut_short import (
     ensure_cut_short_marked,
     is_cut_short_code,
 )
-from orion.harness.claim_gate import gate_correction_claims
+from orion.harness.claim_gate import gate_correction_claims, gate_focus_claims
 from orion.harness.finalize import (
     DEFAULT_FINALIZE_INTERLOCUTOR,
     HarnessFinalizeFailedError,
@@ -111,7 +111,8 @@ INTERRUPTED_RESUMABLE = "interrupted_resumable"
 
 def _gate_claims(text: str | None, motor: Any, corr: str) -> str | None:
     """Every text that can reach a reader passes this: a correction_id the turn's
-    `record_correction` calls did not return is replaced and the reply says so
+    `record_correction` calls did not return (or a focus_id its `queue_curiosity_focus`
+    calls did not return) is replaced and the reply says so
     (orion/harness/claim_gate.py). Returns None for None so it is safe on optional fields."""
     if text is None:
         return None
@@ -122,7 +123,14 @@ def _gate_claims(text: str | None, motor: Any, corr: str) -> str | None:
             "harness_unverified_correction_claim corr=%s ids=%s correction_results=%s",
             corr, ",".join(gate.unverified_ids), len(results),
         )
-    return gate.text
+    focus_results = tuple(getattr(motor, "focus_results", ()) or ())
+    focus_gate = gate_focus_claims(gate.text, focus_results)
+    if focus_gate.changed:
+        logger.warning(
+            "harness_unverified_focus_claim corr=%s ids=%s focus_results=%s",
+            corr, ",".join(focus_gate.unverified_ids), len(focus_results),
+        )
+    return focus_gate.text
 
 
 def interrupted_for_resume(request: HarnessRunRequestV1, motor: Any) -> bool:

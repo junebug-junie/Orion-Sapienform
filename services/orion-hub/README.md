@@ -3655,6 +3655,65 @@ section 4.
     writer's digest, and the email shows a "Corrections from conversations"
     section.
 
+### Introspect responder: `queue_curiosity_focus`
+
+**What it does.** In a conversation, Juniper can tell Orion "it's your choice
+what to focus on; queue it up in your curiosity run", or ask Orion to look into
+something next. Orion calls the orion-introspect `queue_curiosity_focus` tool,
+and this responder saves ONE pending question in `curiosity_focus_request`
+(`orion/curiosity/focus.py`). The next regular investigate run that passes all
+its normal gates is shown it first and decides itself whether to explore it.
+Design:
+[`2026-10-16-orion-queue-curiosity-focus-design.md`](../../docs/superpowers/specs/2026-10-16-orion-queue-curiosity-focus-design.md).
+
+- **Channel.** `orion:introspect:queue_curiosity_focus:request`; reply on
+  `orion:introspect:result:<correlation_id>` only.
+- **What Orion sends.** `question` and `why` (each 1-500 characters) and
+  `origin`: `self` (Orion's own choice, default) or `juniper` (Juniper named it).
+- **One slot.** A new focus replaces the pending one, and the reply names the
+  one it replaced. A pending focus with origin `juniper` cannot be replaced by
+  an origin `self` call: the reply is "not queued: Juniper asked for this focus;
+  it stays until a run takes it or it expires". A `juniper` call may replace
+  anything. A retried identical call (same words, same chat turn) returns the
+  same `focus_id` and writes nothing new.
+- **Refusals (nothing written).** Not a chat turn; the queue switched off
+  (`HUB_CURIOSITY_FOCUS_ENABLED=false`); the Juniper rule above. A database
+  failure is `queue_curiosity_focus_unavailable; answer unknown`.
+- **What the reply says.** `focus_id`, `status`, `replaced`, `expires_at`, and
+  `next_run.words`: when the next run can start, from the Curiosity tab's own
+  schedule read (cooldown stamp, daily counter). It never says "running now".
+- **Expiry.** 48 hours (`orion.curiosity.focus.FOCUS_TTL`). Measured
+  2026-10-16 over the 30 days before: 206 regular investigate runs, the line
+  runs ~7 times right after local midnight (daily cap 7, 30 min cooldown), the
+  longest gap between runs was 21.1 h and no day was skipped. 48 h covers that
+  plus one whole missed day.
+- **Where it goes next.** The investigate kickoff, on a writable graph only,
+  takes the pending focus (`status='taken'`, `offered_run_id`) after every
+  gate, shows it first ("THE FOCUS YOU QUEUED FOR THIS RUN"), and uses it as the
+  recall query. The run is asked to write `focus_disposition` on its
+  `:TurnOutcome`: `"explored"` or `"set_aside: <why>"`. At turn end Hub reads it
+  back (read-only) and stamps `ran` + the disposition; no disposition is
+  `NULL` = unknown, never explored. An empty or failed turn is `failed` and is
+  never re-queued. Only a run cancelled before its turn began gives the focus
+  back (`pending`, or `replaced` if Orion queued a newer one meanwhile).
+  A focus still `taken` 48 h after it was taken with no recorded end (Hub died
+  mid-turn, admission never confirmed) is marked `failed` with `turn_ok` NULL
+  ("end never recorded"); a late turn end can still stamp it `ran`.
+- **Trust note.** `origin` is Orion's own label; the code does not check that
+  Juniper really named the topic. The chat correlation id is stored, and
+  Juniper can always Clear it or queue her own.
+- **Reading it back.** `curiosity` with `kind=focus` lists recent focuses with
+  a one-line story: queued -> taken by run X -> disposition, or expired /
+  replaced / cleared / failed. Run items that took a focus carry `extra.focus`.
+- **Hub tab.** The Curiosity tab shows the pending focus under Today's budget
+  with a Clear button (`DELETE /curiosity/api/focus/{focus_id}`, pending only),
+  and a run chip that took a focus says so.
+- **Trace (one chat correlation id).** `curiosity_focus_queued focus_id=...
+  chat_corr=...` -> `curiosity_focus_offered run=... focus_id=...` ->
+  `curiosity_focus_outcome run=... turn_ok=... disposition=...`.
+- **Needs** `services/orion-sql-db/manual_migration_curiosity_focus_request_v1.sql`
+  (additive; auto-applied by the post-pull rebuild).
+
 ## Curiosity resource admission
 
 `HUB_CURIOSITY_DURABLE_ADMISSION_ENABLED=true` is the operator-template default.

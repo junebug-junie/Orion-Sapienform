@@ -1038,6 +1038,15 @@ class Settings(BaseSettings):
     HUB_CURIOSITY_ORION_DAY_CORRECTIONS_ENABLED: bool = Field(
         default=True, alias="HUB_CURIOSITY_ORION_DAY_CORRECTIONS_ENABLED"
     )
+    # Curiosity focus (orion/curiosity/focus.py): the queue_curiosity_focus introspect tool
+    # (chat turns only) stores one pending question; the regular investigate line, on a
+    # writable graph, takes it once after every gate and shows it first; turn end stamps the
+    # disposition the run wrote (explored / set_aside:<reason>; none = unknown). Off = the tool
+    # refuses and no run takes a focus (outcomes of already-taken ones are still stamped).
+    # Needs services/orion-sql-db/manual_migration_curiosity_focus_request_v1.sql.
+    HUB_CURIOSITY_FOCUS_ENABLED: bool = Field(
+        default=True, alias="HUB_CURIOSITY_FOCUS_ENABLED"
+    )
 
     # --- Orion's Day: the daily letter (scripts/orion_day_letter.py) --------
     # Hub gathers yesterday (America/Denver), submits an admitted

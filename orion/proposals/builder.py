@@ -343,7 +343,7 @@ def build_proposal_frame(
 
     # Flag-gated NON-DETERMINISTIC producers competing as first-class citizens.
     # Renamed from `reverie_candidates` 2026-07-31: reverie is no longer the only
-    # one. Each carries its own `source` (`reverie_thought`, `cognitive_hop`) and
+    # one. Each carries its own `source` (e.g. `reverie_thought`) and
     # an operator_review gate -- they compete and are policy-gated exactly like
     # builder-native candidates, and none can auto-dispatch. The arena is the
     # arbitration mechanism for all of them; a producer never gets a private

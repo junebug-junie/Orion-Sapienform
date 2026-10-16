@@ -203,6 +203,35 @@ where expectation_verdict is not null
 group by expectation_verdict;
 ```
 
+## Reverie chain: a train of thought (2026-10-16)
+
+A chain (`app/chain.py::run_reverie_chain`, up to `ORION_REVERIE_CHAIN_MAX_STEPS` steps) is
+one train of thought, not one prompt sampled N times (spec
+`docs/superpowers/specs/2026-07-14-reverie-narration-continuity-design.md` items #2/#3):
+
+- **Calm means no chain.** When the broadcast attended nothing (no node, no selected loop),
+  no chain starts: no chain row, no `unknown` refractory entry, no LLM call. Log line:
+  `reverie_chain_skipped reason=calm_no_winner count=N` (also `no_broadcast`, `refractory`).
+- **Each step sees the step before.** Step k's prompt carries the last 2 thoughts verbatim and
+  the `next_focus` hint step k-1 wrote (`ChainContinuity`, in memory only). Non-final steps
+  ask for `next_focus`/`drift`; they are parsed onto `SpontaneousThoughtV1`.
+- **A real stop.** The chain ends `settled` when a step returns no `next_focus` or restates
+  the previous thought (word-set Jaccard >= 0.6, `is_repeat_thought`). `pressure_discharged`
+  now only means a later step yielded nothing publishable; there is no pressure reader.
+- **The real signal, not boilerplate.** Each open loop line carries the world-first band,
+  7-day percentile, trend, value, and `world_first_reason` instead of the generic
+  `why_it_matters`. The prompt calls the winner "the signal your attention settled on", not a
+  "coalition" (it is 0-1 node).
+- **Honest verdicts.** `store.load_recent_loop_outcomes` returns the verdict's actor and age
+  and drops verdicts older than `LOOP_VERDICT_MAX_AGE_SEC` (24h: the decay digest's episode
+  boundary). The prompt says who recorded a verdict ("Juniper resolved this 3h ago" vs "the
+  system's automatic decay ... marked this decayed unattended 5h ago") and never labels a
+  `system:*` verdict as human.
+
+`ORION_REVERIE_DRIFT_TEMP` was removed (declared, never read).
+
+Eval: `evals/test_reverie_chain_continuity_eval.py` replays real recorded chains.
+
 ## Reverie chain pacing by arousal (Temporal Self R3 reader 5)
 
 Right before each pause between reverie chains, the chain worker reads Orion's arousal from

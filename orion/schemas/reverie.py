@@ -66,7 +66,9 @@ class SpontaneousThoughtV1(BaseModel):
     model_id: str | None = None
 
     # Phase C chain linkage — additive, optional; set only when emitted inside a
-    # chain. next_focus/drift are the LLM's forward pointer for the next step.
+    # chain. next_focus/drift are the LLM's forward pointer for the next step:
+    # requested on every non-final chain step (reverie_narrate.j2), fed into the
+    # next step's prompt, and a null next_focus ends the chain ("settled").
     chain_id: str | None = None
     thought_index: int | None = None
     next_focus: str | None = None
@@ -200,6 +202,9 @@ TerminalReason = Literal[
     "no_coalition",
     "refractory",
     "low_salience",
+    # A step had nothing further: the model returned no next_focus, or its
+    # thought restated the previous one (chain.py is_repeat_thought).
+    "settled",
 ]
 
 

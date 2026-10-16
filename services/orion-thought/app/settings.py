@@ -229,7 +229,6 @@ class ThoughtSettings(BaseSettings):
     regulation_reader_max_age_sec: float = Field(
         360.0, gt=0.0, alias="ORION_REGULATION_READER_MAX_AGE_SEC"
     )
-    reverie_drift_temp: float = Field(0.7, alias="ORION_REVERIE_DRIFT_TEMP")
     channel_reverie_chain: str = Field(
         "orion:reverie:chain",
         alias="CHANNEL_REVERIE_CHAIN",

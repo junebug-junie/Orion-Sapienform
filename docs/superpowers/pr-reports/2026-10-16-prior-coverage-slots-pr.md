@@ -70,7 +70,10 @@ UNVERIFIED live. After deploy: new `curiosity_offer_decisions` rows must show 2 
 
 ## Review findings fixed
 
-(filled after review)
+Subagent review: no defects found. It checked every caller of `select_priors`/`read_snapshot`/`Prior` (`orion/situational/context.py` and the Hub value-order eval leave `coverage_slots` at 0), the prompt-drift parser (reads `preview()` lines, unchanged), edge cases (k > sample is capped, negatives clamp to 0, stale priors never drawn, short pools) and env parity. Forcing k=0 made 4 worldview tests fail.
+
+- Noted, intended: the value-order experiment now has 6 ordered picks per run instead of 8. The other 2 are tagged `slot=coverage`; analysis should filter on `slot=order`.
+- Noted, not changed: `coverage_slots >= sample` makes the whole list random. That is a config choice.
 
 ## Restart required
 

@@ -31,6 +31,8 @@ CREATE TABLE IF NOT EXISTS personality_disposition (
     weight             double precision NOT NULL DEFAULT 0,
     evidence_count     integer NOT NULL DEFAULT 0,
     lane_counts        jsonb NOT NULL DEFAULT '{}'::jsonb,
+    -- Per-lane recent hits (habituation; faded with weight, as of updated_at).
+    lane_recent        jsonb NOT NULL DEFAULT '{}'::jsonb,
     chosen_count       integer NOT NULL DEFAULT 0,
     first_seen_at      timestamptz NOT NULL,
     last_reinforced_at timestamptz NOT NULL,

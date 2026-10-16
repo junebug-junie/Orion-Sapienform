@@ -1,8 +1,22 @@
 """Personality graph reducer (spec rev 2, bottom-up). PURE: no I/O, no logging, no numpy.
 
 Evidence (Orion's own words from each lane, plus curiosity picks) folds into nodes
-("dispositions": things Orion keeps returning to). A node's weight grows with evidence,
-saturating within one lane (gain / sqrt(1 + hits_in_lane)) so recurrence across lanes wins.
+("dispositions": things Orion keeps returning to). Each node keeps ``lane_recent``: per lane, a
+hit counter that fades with a half-life. Its weight is DERIVED from it:
+
+    weight = sum over lanes of base(lane) * min(lane_cap, ln(1 + lane_recent[lane]))
+
+Log response with saturation (Weber-Fechner plus habituation): a lane's contribution grows with
+the log of its recent hits and stops growing after about four (the counter is clamped there),
+so one lane's volume buys nothing
+more and the weight reads as HOW MANY lanes keep returning to a theme. It fades because the
+counters fade. A lane counts toward promotion only with at least ``promote_lane_min_recent``
+recent hits, so one echo in a second lane cannot promote a single-lane flood.
+
+History, measured on live data (2026-10-16, read-only dry runs): gain / sqrt(1 + lifetime hits)
+let reverie (~500 rows a day) crown a prediction-error theme at weight 37.9 from 244 reverie rows
+in 24 h; an uncapped base / (1 + recent) still grew like ln(hits) for weeks (a 2,600-hit
+reverie theme led the 7-day graph) and 6 of the top 8 nodes were one lane plus 1-4 echo hits.
 Weight fades with a half-life. Nodes are born as ``candidate``, promoted to ``active`` when
 at least ``promote_min_lanes`` distinct non-seed lanes back them, and ``retired`` when they
 fade out or are never backed. Retired is terminal and never matched again.
@@ -50,7 +64,9 @@ class GraphParams:
     lane_gain: float = 1.0
     choice_gain: float = 2.0  # lane "curiosity_choice": a pick is stronger than a mention
     seed_weight: float = 0.5  # lane "self_inquiry_seed"
+    lane_cap: float = 1.5  # max ln(1 + recent hits) one lane contributes (~4 recent hits)
     promote_min_lanes: int = 2  # distinct lanes, NOT counting "self_inquiry_seed"
+    promote_lane_min_recent: float = 2.0  # recent hits for a lane to count toward promotion
     promote_min_evidence: int = 3
     candidate_ttl_days: float = 7.0  # candidate not reinforced for this long -> retired
     retire_below_weight: float = 0.25  # active node faded below this -> retired
@@ -89,6 +105,8 @@ class Node:  # mirrors personality_disposition
     last_reinforced_at: datetime
     retired_at: datetime | None
     updated_at: datetime  # weight is "as of updated_at"; fade uses now - updated_at
+    # Per-lane recent hits (habituation), faded with the weight, "as of updated_at".
+    lane_recent: dict[str, float] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -151,14 +169,19 @@ def _days(delta: timedelta) -> float:
     return delta.total_seconds() / 86400.0
 
 
-def _lane_gain(lane: str, prior_in_lane: int, params: GraphParams) -> float:
+def _lane_base(lane: str, params: GraphParams) -> float:
     if lane == CHOICE_LANE:
-        base = params.choice_gain
-    elif lane == SEED_LANE:
-        base = params.seed_weight
-    else:
-        base = params.lane_gain
-    return base / math.sqrt(1.0 + max(0, prior_in_lane))
+        return params.choice_gain
+    if lane == SEED_LANE:
+        return params.seed_weight
+    return params.lane_gain
+
+
+def _derived_weight(lane_recent: Mapping[str, float], params: GraphParams) -> float:
+    return sum(
+        _lane_base(lane, params) * min(params.lane_cap, math.log1p(max(0.0, r)))
+        for lane, r in lane_recent.items()
+    )
 
 
 def _node_id(evidence_id: str) -> str:
@@ -170,11 +193,13 @@ def _clip_label(text: str) -> str:
 
 
 def _copy(node: Node) -> Node:
-    return replace(node, centroid=list(node.centroid), lane_counts=dict(node.lane_counts))
+    return replace(node, centroid=list(node.centroid), lane_counts=dict(node.lane_counts),
+                   lane_recent=dict(node.lane_recent))
 
 
-def _non_seed_lanes(node: Node) -> int:
-    return sum(1 for lane, n in node.lane_counts.items() if lane != SEED_LANE and n > 0)
+def _promoting_lanes(node: Node, params: GraphParams) -> int:
+    return sum(1 for lane, r in node.lane_recent.items()
+               if lane != SEED_LANE and r >= params.promote_lane_min_recent)
 
 
 # --- tick state -------------------------------------------------------------------------------
@@ -216,7 +241,9 @@ class _Tick:
             updated = _aware(node.updated_at)
             dt = _days(now - updated) if updated is not None else 0.0
             if dt > 0 and params.half_life_days > 0:
-                node.weight = node.weight * 0.5 ** (dt / params.half_life_days)
+                factor = 0.5 ** (dt / params.half_life_days)
+                node.lane_recent = {k: v * factor for k, v in node.lane_recent.items()}
+                node.weight = _derived_weight(node.lane_recent, params)
             node.updated_at = now
 
     def best_match(self, emb: list[float], *, eligible) -> tuple[Optional[Node], float]:
@@ -235,8 +262,13 @@ class _Tick:
     def reinforce(self, node: Node, ev: Evidence, emb: list[float], lane: str, sim: float,
                   params: GraphParams) -> float:
         c = self.centroid(node) or emb
-        gain = _lane_gain(lane, node.lane_counts.get(lane, 0), params)
-        node.weight += gain
+        before = node.weight
+        # Clamp at the level where the lane's contribution caps: hits on a capped lane refresh it
+        # instead of piling up, so a theme that goes quiet fades out in weeks whatever its volume
+        # (unclamped, 2,600 reverie hits stayed above the cap ~134 days after the last one).
+        node.lane_recent[lane] = min(node.lane_recent.get(lane, 0.0) + 1.0, math.expm1(params.lane_cap))
+        node.weight = _derived_weight(node.lane_recent, params)
+        gain = node.weight - before
         node.evidence_count += 1
         node.lane_counts[lane] = node.lane_counts.get(lane, 0) + 1
         if lane == CHOICE_LANE:
@@ -257,13 +289,16 @@ class _Tick:
 
     def create(self, ev: Evidence, emb: list[float], lane: str, origin: str, now: datetime,
                params: GraphParams) -> Node:
-        gain = _lane_gain(lane, 0, params)
+        gain = _derived_weight({lane: 1.0}, params)
+        # A node born from self-inquiry alone is a seed whichever entry point created it.
+        origin = ORIGIN_SEED if lane == SEED_LANE else origin
         node = Node(
             disposition_id=_node_id(ev.evidence_id), origin=origin, status="candidate",
             label=_clip_label(ev.excerpt), label_similarity=1.0, centroid=list(emb), centroid_n=1,
             weight=gain, evidence_count=1, lane_counts={lane: 1},
             chosen_count=1 if lane == CHOICE_LANE else 0, first_seen_at=ev.occurred_at,
             last_reinforced_at=ev.occurred_at, retired_at=None, updated_at=now,
+            lane_recent={lane: 1.0},
         )
         # Id collision with an existing (e.g. retired) node: derive a distinct id deterministically.
         taken = {n.disposition_id for n in self.nodes}
@@ -293,7 +328,7 @@ class _Tick:
             if node.status == "retired":
                 continue
             if (node.status == "candidate"
-                    and _non_seed_lanes(node) >= params.promote_min_lanes
+                    and _promoting_lanes(node, params) >= params.promote_min_lanes
                     and node.evidence_count >= params.promote_min_evidence):
                 node.status = "active"
             if node.status == "candidate":

@@ -45,6 +45,18 @@ else:
   held every field frame for 18 minutes because the value sat in the top
   percentile of a mostly-zero week until the next poll wrote 0.
 
+- **Continuous** body sources (2026-10-16, spec docs/superpowers/specs/
+  2026-10-16-attention-continuous-signal-quota-design.md, option (b)): an
+  internal source the semantic layer marks as read every tick
+  (``sparsity: per_tick`` -- biometrics, bus_synaptic) is in the top decile of
+  its own week ~10% of the time whatever happens. It competes only when it has
+  been hot for MORE than ``SUSTAIN_DWELL_SEC`` (300 s, the orienting window)
+  of the trailing ``SUSTAIN_WINDOW_SEC`` (600 s) and is hot now. The dwell is
+  measured over the source's own readings (``sustained_hot_dwell``), each
+  judged by ``judge_candidate`` against its 7 days. Perception (the world) is
+  out of scope: orienting to a brief change in the world is correct.
+  ``ATTENTION_SUSTAINED_BODY_ENABLED`` (default on) turns it off per runtime.
+
 Band cut points are ``prediction_error_magnitude.DEFAULT_BAND_CUTS`` -- knobs
 to be graded on live data, not findings.
 
@@ -60,10 +72,18 @@ from __future__ import annotations
 
 import bisect
 import logging
+import math
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Iterable, Protocol, Sequence
 
+from orion.attention.sustained import (
+    EVENT_ORIENTING_WINDOW_SEC as _ORIENTING_WINDOW_SEC,
+    SUSTAIN_DWELL_SEC,
+    SUSTAIN_WINDOW_SEC,
+    hot_dwell_sec,
+    is_sustained,
+)
 from orion.schemas.attention_candidate import (
     PERCEPTION_NODE_ID,
     WORLD_CHAT_SOURCE_ID,
@@ -74,6 +94,7 @@ from orion.schemas.attention_frame import PredictionErrorMagnitudeV1
 from orion.substrate.prediction_error_freshness import PE_STALENESS_HORIZON_SEC
 from orion.substrate.prediction_error_magnitude import (
     DEFAULT_BAND_CUTS,
+    DEFAULT_MIN_READINGS,
     WINDOW_7D,
     compute_prediction_error_magnitude,
 )
@@ -118,7 +139,9 @@ PERCEPTION_MAX_AGE_SEC: float = 180.0
 # storm still re-arms well inside it: after an elevated execution reading the
 # next write lands at p50 68 s / p90 160 s. Shorter than, and so tighter
 # than, the 1800 s PE staleness horizon, which stays the outer bound.
-EVENT_ORIENTING_WINDOW_SEC: float = 300.0
+# The value lives in orion.attention.sustained (stdlib-only, so the metacog
+# episode gate can import it); this is the same object.
+EVENT_ORIENTING_WINDOW_SEC: float = _ORIENTING_WINDOW_SEC
 # Full strength for the first 60 s, then a linear fade to 0 at the window.
 # Why a grace at all: a per-tick level competitor's reading is itself up to
 # one write interval old and is never faded -- p90 gap between writes over the
@@ -240,6 +263,55 @@ def node_prediction_error_event_written(node_id: str) -> bool:
     return result
 
 
+_CONTINUOUS_CACHE: dict[str, bool] = {}
+_CONTINUOUS_WARNED: set[str] = set()
+# A real reading every tick (orion/metrics/semantics.py SPARSITIES).
+_PER_TICK_SPARSITY = "per_tick"
+_CONTINUOUS_VALUE_KINDS = frozenset({"level", "count"})
+
+
+def prediction_error_is_continuous(
+    *, source_kind: str, sparsity: str | None, absent_means: str | None, value_kind: str | None
+) -> bool:
+    """True for a BODY source that reads every tick: the sustained-dwell rule
+    applies. Not the world (perception keeps orienting to brief changes), not
+    an event-written or trigger source (their own rules), not a placeholder."""
+    return (
+        source_kind == "internal"
+        and sparsity == _PER_TICK_SPARSITY
+        and value_kind in _CONTINUOUS_VALUE_KINDS
+        and not prediction_error_is_event_written(sparsity, absent_means)
+    )
+
+
+def node_prediction_error_continuous(node_id: str) -> bool:
+    """``prediction_error_is_continuous`` over the node's glossary entry
+    (biometrics and bus_synaptic as of 2026-10-16). An unreadable glossary
+    reads False (no dwell rule: today's verdict, never a silenced source) and
+    is not cached."""
+    cached = _CONTINUOUS_CACHE.get(node_id)
+    if cached is not None:
+        return cached
+    try:
+        from orion.field.channel_glossary import resolve_channel_entry
+
+        entry = resolve_channel_entry("prediction_error", node=node_id)
+    except Exception as exc:  # noqa: BLE001
+        if node_id not in _CONTINUOUS_WARNED:
+            _CONTINUOUS_WARNED.add(node_id)
+            logger.warning("world_first_glossary_unreadable node_id=%s err=%s", node_id, exc)
+        return False
+    sem = dict(entry.semantics) if entry is not None and entry.node == node_id else {}
+    result = prediction_error_is_continuous(
+        source_kind=source_kind_for_node(node_id),
+        sparsity=sem.get("sparsity"),
+        absent_means=sem.get("absent_means"),
+        value_kind=sem.get("value_kind"),
+    )
+    _CONTINUOUS_CACHE[node_id] = result
+    return result
+
+
 def bad_direction_percentile(
     candidate: AttentionCandidateV1, *, for_ranking: bool = False
 ) -> float | None:
@@ -288,6 +360,13 @@ class CandidateVerdict:
     # to rank_score and salience. 1.0 / None for everything else.
     event_decay: float = 1.0
     event_age_sec: float | None = None
+    # Continuous body sources only (candidate carries sustain_window_sec):
+    # seconds hot in the trailing window, and whether the sustained rule held.
+    # ``sustained`` False = hot now for itself but not for long enough, so not
+    # eligible; the metacog episode gate still reads it as a hot poll.
+    # None / None for every other source.
+    hot_dwell_sec: float | None = None
+    sustained: bool | None = None
 
     @property
     def salience(self) -> float:
@@ -315,6 +394,9 @@ class CandidateVerdict:
             "event_window_sec": self.candidate.event_window_sec,
             "event_age_sec": self.event_age_sec,
             "event_decay": round(self.event_decay, 6),
+            "sustain_window_sec": self.candidate.sustain_window_sec,
+            "hot_dwell_sec": None if self.hot_dwell_sec is None else round(self.hot_dwell_sec, 3),
+            "sustained": self.sustained,
         }
 
 
@@ -370,6 +452,21 @@ def judge_candidate(
         suffix = f", event {event_age:.0f}s old (fade {decay:.2f})"
     if candidate.source_kind == "internal":
         if band in _INTERNAL_ELIGIBLE_BANDS:
+            sustain_window = candidate.sustain_window_sec
+            dwell = candidate.hot_dwell_sec
+            if sustain_window is not None and dwell is not None:
+                # A per-tick body source is high for itself ~10% of the time by
+                # construction: it competes only when the high has lasted.
+                said = f"hot {dwell:.0f}s of last {sustain_window:.0f}s"
+                if not is_sustained(dwell, hot_now=True):
+                    return CandidateVerdict(
+                        candidate, False, f"body {band} for itself, not sustained ({said})",
+                        score, band, None, decay, event_age, dwell, False,
+                    )
+                return CandidateVerdict(
+                    candidate, True, f"body unusual for itself ({band}), sustained ({said})",
+                    score, band, rank_score, decay, event_age, dwell, True,
+                )
             return CandidateVerdict(
                 candidate, True, f"body unusual for itself ({band}){suffix}", score, band,
                 rank_score, decay, event_age,
@@ -502,6 +599,176 @@ def _missing_magnitude() -> PredictionErrorMagnitudeV1:
     return PredictionErrorMagnitudeV1(value=0.0, age_sec=0.0)
 
 
+# node_id -> (content key, times, rows, (horizon index, sorted finite values)).
+# The field contest ticks every ~2 s and a node's readings move every ~60 s;
+# rebuilding a ~14k-reading week each tick cost ~10 ms per node (review
+# 2026-10-16). The key carries the sum of every value, not just the length and
+# ends, so two histories that differ only in the middle never share an entry.
+_HISTORY_MEMO: dict[str, tuple[tuple, list[datetime], list[tuple[datetime, float]], tuple[int, list[float]]]] = {}
+_HISTORY_MEMO_MAX = 32
+
+
+def _history_key(history: Sequence[tuple[datetime, float]]) -> tuple | None:
+    try:
+        return (len(history), history[0], history[-1], math.fsum(float(v) for _, v in history))
+    except (TypeError, ValueError, IndexError):
+        return None
+
+
+def _prepared_history(
+    node_id: str, history: Sequence[tuple[datetime, float]], horizon: datetime
+) -> tuple[list[datetime], list[tuple[datetime, float]], list[float]]:
+    """(times, rows, sorted finite values) of the readings at or after
+    ``horizon``, oldest first."""
+    if not history:
+        return [], [], []
+    key = _history_key(history)
+    memo = _HISTORY_MEMO.get(node_id) if key is not None else None
+    if memo is None or memo[0] != key:
+        rows: list[tuple[datetime, float]] = []
+        for ts, v in history:
+            try:
+                fv = float(v)
+            except (TypeError, ValueError):
+                continue
+            rows.append((ts if ts.tzinfo is not None else ts.replace(tzinfo=timezone.utc), fv))
+        rows.sort(key=_first)
+        memo = (key, [r[0] for r in rows], rows, (-1, []))
+    _, times, rows, (cached_start, cached_values) = memo
+    start = bisect.bisect_left(times, horizon)
+    if start == cached_start:
+        values = cached_values
+    else:
+        values = sorted([v for _, v in rows[start:] if math.isfinite(v)])
+        memo = (memo[0], times, rows, (start, values))
+    if key is not None:
+        if len(_HISTORY_MEMO) >= _HISTORY_MEMO_MAX and node_id not in _HISTORY_MEMO:
+            _HISTORY_MEMO.clear()
+        _HISTORY_MEMO[node_id] = memo
+    return times[start:], rows[start:], values
+
+
+def _first(row: tuple[datetime, float]) -> datetime:
+    return row[0]
+
+
+# Gaps sampled for a source's own write cadence (the most recent ones).
+_CADENCE_GAPS = 200
+
+
+def reading_hold_sec(times: Sequence[datetime]) -> float:
+    """How long one reading may speak for the body: twice the source's own
+    median write gap (recent readings), never past the staleness horizon. A
+    source whose writer stalls must not have its last reading fill the dwell
+    (review 2026-10-16: one held spike read "sustained" after 400 s of
+    silence). Derived from the data, not a knob."""
+    recent = times[-(_CADENCE_GAPS + 1):]
+    gaps = sorted(
+        (b - a).total_seconds() for a, b in zip(recent, recent[1:]) if b > a
+    )
+    if not gaps:
+        return 0.0
+    mid = len(gaps) // 2
+    median = gaps[mid] if len(gaps) % 2 else 0.5 * (gaps[mid - 1] + gaps[mid])
+    return min(2.0 * median, INTERNAL_MAX_AGE_SEC)
+
+
+def _flags(
+    node_id: str,
+    times: list[datetime],
+    rows: list[tuple[datetime, float]],
+    values: list[float],
+    *,
+    now: datetime,
+    window_sec: float,
+    band_cuts: tuple[float, float, float],
+    min_readings: int,
+) -> list[tuple[float, bool | None]]:
+    if not rows:
+        return []
+    n = len(values)
+    # The last reading before the window still speaks into it.
+    first = max(0, bisect.bisect_left(times, now - timedelta(seconds=float(window_sec))) - 1)
+    value_kind, polarity = node_prediction_error_semantics(node_id)
+    kind = source_kind_for_node(node_id)
+    out: list[tuple[float, bool | None]] = []
+    for ts, v in rows[first:]:
+        if not math.isfinite(v) or n == 0:
+            out.append((ts.timestamp(), None))
+            continue
+        pct = bisect.bisect_left(values, v) / n
+        mag = PredictionErrorMagnitudeV1(
+            value=round(v, 6),
+            age_sec=0.0,
+            percentile_now=round(pct, 6),
+            n_readings_7d=n,
+            band="insufficient_history" if n < max(1, int(min_readings)) else _band_for(pct, band_cuts),
+        )
+        verdict = judge_candidate(
+            AttentionCandidateV1(
+                candidate_id=f"attention-candidate:{node_id}",
+                source_id=node_id,
+                source_kind=kind,  # type: ignore[arg-type]
+                label=node_id,
+                unusualness=mag,
+                value_kind=value_kind,
+                polarity=polarity,  # type: ignore[arg-type]
+            ),
+            band_cuts=band_cuts,
+        )
+        out.append((ts.timestamp(), True if verdict.eligible else (None if verdict.score is None else False)))
+    return out
+
+
+def reading_hot_flags(
+    node_id: str,
+    history: Sequence[tuple[datetime, float]],
+    *,
+    now: datetime,
+    window_sec: float = SUSTAIN_WINDOW_SEC,
+    band_cuts: tuple[float, float, float] = DEFAULT_BAND_CUTS,
+    min_readings: int = DEFAULT_MIN_READINGS,
+) -> list[tuple[float, bool | None]]:
+    """``(epoch, hot)`` for every reading that can speak inside the trailing
+    window (the readings in it, plus the last one before it, which speaks
+    until the next). ``hot`` is ``judge_candidate``'s own verdict on that
+    reading as a fresh candidate: eligible -> True, a real but calm reading ->
+    False, unjudgeable (too little history, no polarity, non-finite) -> None.
+
+    Each reading is scored against the node's CURRENT 7-day window, not the
+    window ending at its own time: the two differ by the <= window_sec of
+    readings at the edges (~10 of ~14,000 for a 60 s source), and the caller's
+    cache has already trimmed the older edge.
+    """
+    now = _aware(now)
+    times, rows, values = _prepared_history(node_id, history, now - WINDOW_7D)
+    return _flags(node_id, times, rows, values, now=now, window_sec=window_sec,
+                  band_cuts=band_cuts, min_readings=min_readings)
+
+
+def sustained_hot_dwell(
+    node_id: str,
+    history: Sequence[tuple[datetime, float]],
+    *,
+    now: datetime,
+    window_sec: float = SUSTAIN_WINDOW_SEC,
+    band_cuts: tuple[float, float, float] = DEFAULT_BAND_CUTS,
+) -> float:
+    """Seconds of the trailing ``window_sec`` this node's own readings were
+    hot (``orion.attention.sustained.hot_dwell_sec`` over
+    ``reading_hot_flags``). A reading speaks until the next one, and at most
+    ``reading_hold_sec`` (twice the source's own write cadence)."""
+    now = _aware(now)
+    times, rows, values = _prepared_history(node_id, history, now - WINDOW_7D)
+    return hot_dwell_sec(
+        _flags(node_id, times, rows, values, now=now, window_sec=window_sec,
+               band_cuts=band_cuts, min_readings=DEFAULT_MIN_READINGS),
+        now=now.timestamp(),
+        window_sec=window_sec,
+        max_hold_sec=reading_hold_sec(times),
+    )
+
+
 def node_candidate(
     *,
     node_id: str,
@@ -513,6 +780,8 @@ def node_candidate(
     history_values: Sequence[float] | None = None,
     rank_percentile: float | None = None,
     event_decay: bool = True,
+    pe_history: Sequence[tuple[datetime, float]] | None = None,
+    sustain: bool = True,
 ) -> AttentionCandidateV1:
     """A ``node:substrate.*`` prediction-error node as a candidate.
 
@@ -527,6 +796,14 @@ def node_candidate(
     right now (perception: camera/embedding staleness). For perception the
     stored value is written as 0.0 while stale or warming (glossary), so
     absence must come from staleness, never from the value.
+
+    ``sustain`` (``ATTENTION_SUSTAINED_BODY_ENABLED``, default on) with
+    ``pe_history`` (the node's 7-day ``(observed_at, value)`` readings): when
+    the glossary marks the node a continuous body source, the candidate
+    carries ``sustain_window_sec`` and its ``hot_dwell_sec`` from those
+    readings, and ``judge_candidate`` requires the high to have lasted. No
+    history (or a failed dwell computation) = no rule: today's verdict, never
+    a silenced source.
     """
     kind = source_kind_for_node(node_id)
     value_kind, polarity = node_prediction_error_semantics(node_id)
@@ -534,6 +811,29 @@ def node_candidate(
         absent_reason = absent_reason or "no magnitude (no stored history)"
     elif kind == "external" and magnitude.age_sec > PERCEPTION_MAX_AGE_SEC and not absent_reason:
         absent_reason = f"reading {magnitude.age_sec:.0f}s old"
+    sustain_window: float | None = None
+    dwell: float | None = None
+    if (
+        sustain
+        and pe_history
+        and magnitude is not None
+        and absent_reason is None
+        and node_prediction_error_continuous(node_id)
+    ):
+        try:
+            hist = pe_history
+            if observed_at is not None:
+                obs = _aware(observed_at)
+                last = hist[-1][0] if len(hist) else None
+                if last is None or obs > _aware(last):
+                    # The caller's history can lag the reading being judged
+                    # (e.g. a failed history write): the dwell must end on it.
+                    hist = [*hist, (obs, float(magnitude.value))]
+            dwell = round(sustained_hot_dwell(node_id, hist, now=now), 3)
+            sustain_window = SUSTAIN_WINDOW_SEC
+        except Exception as exc:  # noqa: BLE001 -- a dwell fault must not cost the candidate
+            logger.warning("world_first_sustained_dwell_failed node_id=%s err=%s", node_id, exc)
+            dwell, sustain_window = None, None
     return AttentionCandidateV1(
         candidate_id=f"attention-candidate:{node_id}",
         source_id=node_id,
@@ -555,6 +855,8 @@ def node_candidate(
             if event_decay and node_prediction_error_event_written(node_id)
             else None
         ),
+        sustain_window_sec=sustain_window,
+        hot_dwell_sec=dwell,
         evidence_refs=[node_id],
     )
 

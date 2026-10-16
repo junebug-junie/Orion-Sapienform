@@ -274,6 +274,29 @@ _CROP_COLS = ("crop_id, stream_id, observed_at, label, individual_id, embedding,
               "box_xyxy, thumb_ref, face_thumb_ref, embedding_ref")
 
 
+def reanchored_body(conn, individual_id: str, rows: Sequence[Any]) -> Optional[List[Any]]:
+    """After scripts/reanchor_vision_individuals.py rewrote this individual's
+    body centroid, only some member crops are part of it: the run's
+    ``crop_ids`` and crops that landed after the run. Returns the subset of
+    ``rows`` that is, or None when no re-anchor is in force (none recorded,
+    the latest one was undone, or the audit table does not exist)."""
+    from sqlalchemy import text
+
+    if not conn.execute(text("SELECT to_regclass('vision_individual_reanchor') IS NOT NULL")).scalar():
+        return None
+    last = conn.execute(text(
+        "SELECT action, created_at, crop_ids FROM vision_individual_reanchor WHERE individual_id=:i "
+        "ORDER BY created_at DESC LIMIT 1"), {"i": individual_id}).fetchone()
+    if last is None or last.action != "reanchor":
+        return None
+    basis = set(last.crop_ids or [])
+    ids = [r.crop_id for r in rows]
+    landed = {r[0]: r[1] for r in conn.execute(text(
+        "SELECT crop_id, created_at FROM vision_crop_observation WHERE crop_id = ANY(:c)"), {"c": ids}).fetchall()}
+    return [r for r in rows if r.crop_id in basis
+            or (landed.get(r.crop_id) is not None and landed[r.crop_id] > last.created_at)]
+
+
 def _jsonb_row(conn, table: str, key: str, value: str) -> Optional[Dict[str, Any]]:
     from sqlalchemy import text
 
@@ -480,7 +503,17 @@ def split_one(conn, *, ask_id: str, source_id: str, group_key: str, verdicts: Se
     remaining = [r for r in members if r.crop_id not in moved_set]
     n_left = int(src.centroid_n) - len(moved_rows)
     f_left = max(0, int(src.face_n or 0) - len(m_face))
-    if len(total_known) == int(src.centroid_n):
+    in_body = reanchored_body(conn, source_id, moved_rows)
+    if in_body is not None:
+        # Re-anchored: the body centroid holds only the run's face crops and
+        # later joins; subtract just the moved crops that are part of it.
+        method = "subtract_reanchored"
+        n_left = int(src.centroid_n) - len(in_body)
+        c_new = (remove_from_centroid(list(src.centroid), int(src.centroid_n), [list(r.embedding) for r in in_body])
+                 if in_body else list(src.centroid))
+        f_new = (remove_from_centroid(list(src.face_centroid), int(src.face_n or 0), m_face)
+                 if src.face_centroid and m_face else (list(src.face_centroid) if src.face_centroid else None))
+    elif len(total_known) == int(src.centroid_n):
         method = "exact"
         c_new = mean_unit(list(r.embedding) for r in remaining)
         f_new = mean_unit(list(r.face_embedding) for r in remaining if r.face_embedding)
@@ -759,7 +792,9 @@ def undo_split(conn, split_id: str, *, now: Optional[datetime] = None) -> Dict[s
         _restore_individual(conn, before["source"])
         report["source"] = {"id": src, "restore": "exact"}
     elif src_now is not None:
-        emb = [list(r.embedding) for r in moved_rows if r.embedding]
+        in_body = reanchored_body(conn, src, moved_rows)
+        # Re-anchored since: only crops that are part of the re-anchored body centroid go back into it.
+        emb = [list(r.embedding) for r in (moved_rows if in_body is None else in_body) if r.embedding]
         faces = [list(r.face_embedding) for r in moved_rows if r.face_embedding]
         n, fn = int(src_now["centroid_n"]), int(src_now.get("face_n") or 0)
         conn.execute(text(

@@ -32,6 +32,10 @@ def next_backoff(interval: float, current: Optional[float]) -> float:
 def individuals_config(settings: Settings) -> IndividualsConfig:
     return IndividualsConfig(
         match_threshold=float(settings.vision_individuals_match_threshold),
+        continuation_enabled=bool(settings.vision_individuals_continuation_enabled),
+        continuation_threshold=float(settings.vision_individuals_continuation_threshold),
+        continuation_gap_sec=float(settings.vision_individuals_continuation_gap_sec),
+        continuation_max_disp=float(settings.vision_individuals_continuation_max_disp),
         merge_gap_sec=float(settings.vision_individuals_merge_gap_sec),
         batch_rows=int(settings.vision_individuals_batch_rows),
         lookback_ceiling_sec=float(settings.vision_individuals_lookback_ceiling_sec),

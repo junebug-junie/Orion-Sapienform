@@ -19,7 +19,7 @@ import logging
 import os
 from collections import deque
 from datetime import datetime, timezone
-from typing import Any, Sequence
+from typing import Any, Mapping, Sequence
 
 from orion.substrate.eligibility import is_cognitive_node
 from orion.schemas.attention_frame import (
@@ -190,12 +190,20 @@ def build_substrate_attention_frame(
     external_candidates: Sequence[Any] | None = None,
     rank_percentile_by_node_id: dict[str, float | None] | None = None,
     event_decay: bool = True,
+    pe_history_by_node_id: Mapping[str, Sequence[tuple[datetime, float]]] | None = None,
+    sustain: bool = True,
 ) -> AttentionFrameV1:
     """One workspace competition over the substrate graph.
 
     ``event_decay`` (``ATTENTION_EVENT_DECAY_ENABLED``, world-first only):
     an event-written node fades with its event's age and stops competing
     after ``orion.attention.world_first.EVENT_ORIENTING_WINDOW_SEC``.
+
+    ``sustain`` (``ATTENTION_SUSTAINED_BODY_ENABLED``, world-first only) with
+    ``pe_history_by_node_id`` (each node's 7-day readings): a continuous body
+    node (biometrics, bus_synaptic) competes only when it has been hot for
+    more than 300 s of the last 600 s and is hot now
+    (``orion.attention.sustained``). No history = today's verdict.
 
     ``world_first`` (substrate-runtime passes ``ATTENTION_WORLD_FIRST_ENABLED``;
     spec docs/superpowers/specs/2026-10-07-orion-self-calibration-design.md,
@@ -235,6 +243,8 @@ def build_substrate_attention_frame(
             now=resolved_now,
             min_salience=min_salience,
             limit=max_signals,
+            pe_history_by_node_id=pe_history_by_node_id,
+            sustain=sustain,
         )
     else:
         signals = substrate_pressure_signals(nodes, min_salience=min_salience, limit=max_signals)
@@ -306,6 +316,8 @@ def world_first_signals(
     min_salience: float = DEFAULT_MIN_SALIENCE,
     limit: int = DEFAULT_MAX_SIGNALS,
     event_decay: bool = True,
+    pe_history_by_node_id: Mapping[str, Sequence[tuple[datetime, float]]] | None = None,
+    sustain: bool = True,
 ) -> tuple[list[AttentionSignalV1], dict[str, Any], dict[str, float]]:
     """World-first candidates -> eligible workspace signals, plus the trace.
 
@@ -368,6 +380,8 @@ def world_first_signals(
                         absent_reason=absent,
                         rank_percentile=ranks.get(node_id),
                         event_decay=event_decay,
+                        pe_history=(pe_history_by_node_id or {}).get(node_id),
+                        sustain=sustain,
                     )
                 )
                 node_by_id[node_id] = node

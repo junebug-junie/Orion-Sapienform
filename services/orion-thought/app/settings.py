@@ -692,6 +692,13 @@ class ThoughtSettings(BaseSettings):
     self_readings_fetch_timeout_sec: float = Field(
         0.5, gt=0.0, le=5.0, alias="SELF_READINGS_FETCH_TIMEOUT_SEC"
     )
+    # Continuous body signals must last (spec docs/superpowers/specs/2026-10-16-
+    # attention-continuous-signal-quota-design.md, option (b)). A body node the
+    # glossary marks as read every tick (biometrics, bus_synaptic) qualifies
+    # only when hot for more than 300 s of the last 600 s of its own readings
+    # and hot now (orion.attention.sustained). false = today's verdict exactly.
+    # Ships on (Juniper's rule).
+    attention_sustained_body_enabled: bool = Field(True, alias="ATTENTION_SUSTAINED_BODY_ENABLED")
     # What each body signal tends to lead to (self-calibration spec section E): a self-reading line
     # gets "; when this is high, my next hour had <outcome> Nx as often at equal activity (...) [assoc:<id>]" from the
     # newest self_signal_outcome_association row (orion-equilibrium-service's hourly rollup) only

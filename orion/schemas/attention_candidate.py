@@ -104,4 +104,15 @@ class AttentionCandidateV1(BaseModel):
     # (its unusualness.age_sec), then stops competing even though the carried
     # value is unchanged. None = a level read every tick, or decay disabled.
     event_window_sec: float | None = Field(default=None, gt=0.0)
+    # Set for an INTERNAL source the semantic layer marks as read every tick
+    # (biometrics, bus_synaptic: orion.attention.world_first.
+    # node_prediction_error_continuous). Such a source is high for itself ~10%
+    # of the time by construction, so it competes only when it has been hot for
+    # more than orion.attention.sustained.SUSTAIN_DWELL_SEC of the trailing
+    # ``sustain_window_sec`` and is hot now. ``hot_dwell_sec`` is that dwell,
+    # measured over the source's own readings. Both None = the rule does not
+    # apply (not a per-tick body source, no history, or
+    # ATTENTION_SUSTAINED_BODY_ENABLED=false): today's verdict exactly.
+    sustain_window_sec: float | None = Field(default=None, gt=0.0)
+    hot_dwell_sec: float | None = Field(default=None, ge=0.0)
     evidence_refs: list[str] = Field(default_factory=list)

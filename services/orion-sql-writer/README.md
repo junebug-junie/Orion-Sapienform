@@ -389,10 +389,24 @@ since `vision_individuals_cursor`, which tracks LANDING time
 `observed_at` order, and a late crop outside the latest sighting becomes its
 own earlier sighting; a crop with a face first tries the nearest same-kind
 FACE centroid (`VISION_INDIVIDUALS_FACE_MATCH_THRESHOLD`, 0.60; that match wins
-over appearance), otherwise joins each embedded crop to the nearest
-same-kind centroid at cosine >= `VISION_INDIVIDUALS_MATCH_THRESHOLD`, else opens
-a new `vision_individual` (centroid = renormalized running mean; two crops
-from one frame never join the same individual). Observations no more than
+over appearance). Otherwise the body has two lanes (2026-10-16,
+`docs/superpowers/specs/2026-10-16-vision-body-match-proposal.md`):
+**continuation** -- among individuals whose last box is within
+`VISION_INDIVIDUALS_CONTINUATION_MAX_DISP` (1.5) box heights and was seen
+within `VISION_INDIVIDUALS_CONTINUATION_GAP_SEC` (10 s), the best joins at
+body cosine >= `VISION_INDIVIDUALS_CONTINUATION_THRESHOLD` (0.88); then
+**re-identification** -- the nearest same-kind centroid anywhere at cosine >=
+`VISION_INDIVIDUALS_MATCH_THRESHOLD` (0.90); else a new `vision_individual`
+opens (centroid = renormalized running mean; two crops from one frame never
+join the same individual). Each batch logs
+`[VISION_MATCH] stream=<s> face=<n> continuation=<n> reid=<n> new=<n>`, and
+warns `fragmenting` above 1,500 new person individuals in 24 h (about 500 a
+day is expected). Rollback to the old single body rule, exactly:
+`VISION_INDIVIDUALS_CONTINUATION_ENABLED=false` and
+`VISION_INDIVIDUALS_MATCH_THRESHOLD=0.80`. Replay eval:
+`evals/run_vision_body_match_replay_eval.py`. Named individuals built under
+the old rule carry a mixed body centroid; `scripts/reanchor_vision_individuals.py`
+rebuilds it from their face crops (dry run by default). Observations no more than
 `VISION_INDIVIDUALS_MERGE_GAP_SEC` apart form one `vision_individual_sighting`
 (zone = most observations, tracked in `zone_counts`; dwell = ended - started).
 Every touched sighting is scored (`app/vision_attention_score.py`: unknown,

@@ -26,8 +26,10 @@ from orion.substrate.mutation_detectors import MutationDetectors
 from orion.substrate.mutation_monitor import PostAdoptionMonitor
 from orion.substrate.mutation_pressure import PressureAccumulator, PressurePolicy
 from orion.substrate.mutation_control_surface import (
+    get_prediction_expectation,
     inspect_chat_reflective_lane_threshold,
     set_chat_reflective_lane_threshold,
+    set_prediction_expectation,
 )
 from orion.substrate.mutation_proposals import ProposalFactory, build_placeholder_routing_proposal
 from orion.substrate.mutation_queue import SubstrateMutationStore
@@ -86,7 +88,7 @@ def _fmt_trace(fields: dict[str, Any]) -> str:
 
 
 @contextmanager
-def _isolated_control_surface(*, seed_threshold: float):
+def _isolated_control_surface(*, seed_threshold: float, seed_expectation: tuple[float, float]):
     """Run the smoke against a throwaway control surface, seeded to a known value.
 
     Two reasons, both load-bearing.
@@ -99,10 +101,13 @@ def _isolated_control_surface(*, seed_threshold: float):
 
     Second, the smoke asserts that an auto_promote apply happens. That is only
     a meaningful assertion if the patch would actually change something --
-    `_default_patch_for_class` returns a constant 0.58, so against an ambient
-    surface already at 0.58 the apply is a no-op and is now correctly skipped.
-    Seeding a different starting value makes the assertion test the apply path
-    rather than the ambient state of whatever ran before it.
+    against an ambient surface already holding the patch value the apply is a
+    no-op and is correctly skipped. Seeding a known starting value makes the
+    assertion test the apply path rather than the ambient state of whatever ran
+    before it. Since the 2026-10-16 rung 6 rebuild the apply under test is
+    prediction_expectation_patch, which writes
+    `prediction_expectation.execution` on this surface for real -- so this
+    isolation is what keeps the smoke from moving Orion's live expectation.
 
     Both halves are required, and this is the same shape as
     `services/orion-cortex-orch/tests/conftest.py`'s isolation fixture.
@@ -139,6 +144,12 @@ def _isolated_control_surface(*, seed_threshold: float):
             mutation_control_surface.set_chat_reflective_lane_threshold(
                 value=seed_threshold, actor="mutation_smoke"
             )
+            set_prediction_expectation(
+                "execution",
+                alpha=seed_expectation[0],
+                min_variance=seed_expectation[1],
+                actor="mutation_smoke",
+            )
             yield isolated
         finally:
             mutation_control_surface._CONTROL_SURFACE_STORE = previous_store
@@ -173,36 +184,52 @@ def _routing_smoke_proposal(*, subject_ref: str, target_value: float = 0.58) -> 
     )
 
 
-def _graph_consolidation_smoke_proposal(*, subject_ref: str, target_value: int = 96) -> MutationProposalV1:
-    """A graph_consolidation_param_patch proposal, appliable for real.
+# Seeded live expectation and the smoke's candidate. Both inside the execution
+# domain's bounds (prediction_expectation.DomainSpec.in_bounds) and different,
+# so the step-3 apply is a real write, not a no-op skip.
+_SMOKE_SEED_EXPECTATION = (0.2, 1e-10)
+_SMOKE_TARGET_ALPHA = 0.1
 
-    Steps 2/3 below need a live end-to-end apply through the real worker
-    cycle to demonstrate the active-surface lock actually releasing --
-    `_routing_smoke_proposal()` can no longer do that (`routing_threshold_patch`
-    is retired 2026-09-05, RETIRED_MUTATION_CLASSES; PatchApplier.apply()
-    refuses it unconditionally now, active-surface-locked or not). This is
-    the remaining auto-promotable class apply() does not special-case away.
+
+def _prediction_expectation_smoke_proposal(
+    *, subject_ref: str, target_alpha: float = _SMOKE_TARGET_ALPHA
+) -> MutationProposalV1:
+    """A prediction_expectation_patch proposal, appliable for real.
+
+    Steps 2/3 below need a live end-to-end apply through the real worker cycle
+    to demonstrate the active-surface lock actually releasing. Both earlier
+    carriers are retired (RETIRED_MUTATION_CLASSES): routing_threshold_patch
+    2026-09-05, graph_consolidation_param_patch 2026-10-16. This is rung 6's
+    live auto-promotable class. Built directly rather than through
+    PredictionExpectationTuner -- these steps are about the queue/decision/apply
+    mechanics, not about how the candidate was derived from readings.
     """
+    seed_alpha, seed_min_variance = _SMOKE_SEED_EXPECTATION
     return MutationProposalV1(
         lane="operational",
-        mutation_class="graph_consolidation_param_patch",
-        risk_tier="medium",
-        target_surface="graph_consolidation",
+        mutation_class="prediction_expectation_patch",
+        risk_tier="low",
+        target_surface="prediction_expectation:execution",
         anchor_scope="orion",
         subject_ref=subject_ref,
-        rationale=f"smoke:graph_consolidation_param_patch target={target_value}",
+        rationale=f"smoke:prediction_expectation_patch alpha={target_alpha}",
         expected_effect="reduce_runtime_failure",
-        evidence_refs=["telemetry:smoke"],
+        evidence_refs=["telemetry:prediction_raw_reading:smoke"],
         source_signal_ids=["signal:smoke"],
         source_pressure_id="pressure:smoke",
         patch=MutationPatchV1(
-            mutation_class="graph_consolidation_param_patch",
-            target_surface="graph_consolidation",
-            target_ref="graph_consolidation",
-            patch={"query_limit_nodes": target_value},
-            rollback_payload={"query_limit_nodes": 64},
+            mutation_class="prediction_expectation_patch",
+            target_surface="prediction_expectation:execution",
+            target_ref="execution",
+            patch={"alpha": target_alpha, "min_variance": seed_min_variance},
+            rollback_payload={"alpha": seed_alpha, "min_variance": seed_min_variance},
         ),
     )
+
+
+# Trial evidence injected as measured metrics (which bypass the replay
+# evaluator): a holdout lower bound clearly above the contract's 1e-9 floor.
+_PASSING_TRIAL_METRICS = {"holdout_log_score_gain_lower_bound": 0.1}
 
 
 def run_smoke(*, emit: bool = True) -> list[str]:
@@ -218,7 +245,7 @@ def run_smoke(*, emit: bool = True) -> list[str]:
     emit_line({"event": "mutation_smoke_start", "cycle_id": cycle_id})
 
     with temporary_env("SUBSTRATE_MUTATION_AUTONOMY_ENABLED", "true"), _isolated_control_surface(
-        seed_threshold=0.5
+        seed_threshold=0.5, seed_expectation=_SMOKE_SEED_EXPECTATION
     ):
         store = SubstrateMutationStore()
         applier = PatchApplier(surfaces={})
@@ -226,11 +253,11 @@ def run_smoke(*, emit: bool = True) -> list[str]:
             scorer=ClassSpecificScorer(),
             corpus_registry=ReplayCorpusRegistry(
                 corpus_by_class={
-                    "graph_consolidation_param_patch": "corpus-graph-consolidation",
+                    "prediction_expectation_patch": "corpus-prediction-expectation",
                     "approved_prompt_profile_variant_promotion": "corpus-prompt",
                 },
                 baseline_metric_ref_by_class={
-                    "graph_consolidation_param_patch": "baseline-graph-consolidation",
+                    "prediction_expectation_patch": "baseline-prediction-expectation",
                     "approved_prompt_profile_variant_promotion": "baseline-prompt",
                 },
             ),
@@ -289,57 +316,58 @@ def run_smoke(*, emit: bool = True) -> list[str]:
                 )
 
         # 2) Auto promote lane with one-live-surface block before side effects.
-        # Was "routing" -- retired 2026-09-05 (RETIRED_MUTATION_CLASSES),
-        # PatchApplier.apply() now refuses it unconditionally, active-surface
-        # block or not, which would make step 3 below (release the block,
-        # confirm a real apply happens) demonstrate nothing. Switched to
-        # "graph_consolidation", the remaining auto-promotable class apply()
-        # does not special-case away. Built directly (see
-        # _graph_consolidation_smoke_proposal) rather than through the
-        # detector -> pressure -> factory chain -- this step is about the
-        # active-surface lock, not about how the proposal was generated.
-        store._active_surface_by_target["graph_consolidation"] = "existing-adoption"
-        blocked_proposal = _graph_consolidation_smoke_proposal(subject_ref="entity:graph-consolidation")
+        # Carrier is prediction_expectation_patch: routing (2026-09-05) and
+        # graph_consolidation (2026-10-16) are both retired and refused before
+        # apply, so neither could show step 3's lock release leading to a real
+        # apply. Built directly (see _prediction_expectation_smoke_proposal).
+        surface = "prediction_expectation:execution"
+        store._active_surface_by_target[surface] = "existing-adoption"
+        blocked_proposal = _prediction_expectation_smoke_proposal(subject_ref="entity:prediction-expectation")
         store.add_proposal(blocked_proposal, priority=60)
-        graph_consolidation_metrics: dict[str, dict[str, float]] = {
-            blocked_proposal.proposal_id: {"queue_resolution_delta": 0.3, "requeue_rate_delta": 0.0}
-        }
-        worker.run_cycle(telemetry=[], measured_metrics_by_proposal=graph_consolidation_metrics)
+        trial_metrics: dict[str, dict[str, float]] = {blocked_proposal.proposal_id: dict(_PASSING_TRIAL_METRICS)}
+        worker.run_cycle(telemetry=[], measured_metrics_by_proposal=trial_metrics)
+        blocked_applied = any(a.proposal_id == blocked_proposal.proposal_id for a in store._adoptions.values())
+        blocked_untouched = get_prediction_expectation("execution").alpha == _SMOKE_SEED_EXPECTATION[0]
         emit_line(
             {
                 "event": "mutation_apply_blocked",
                 "cycle_id": cycle_id,
-                "surface_key": "graph_consolidation",
+                "proposal_id": blocked_proposal.proposal_id,
+                "surface_key": surface,
                 "blocked_reason": "active_surface",
-                "applied": False,
+                "applied": blocked_applied or not blocked_untouched,
             }
         )
 
-        # 3) Allow auto-promote after removing active-surface block.
-        store._active_surface_by_target.pop("graph_consolidation", None)
-        allowed_proposal = _graph_consolidation_smoke_proposal(subject_ref="entity:graph-consolidation-allow")
+        # 3) Allow auto-promote after removing active-surface block. "applied"
+        # requires both an applied adoption AND the isolated control surface
+        # actually holding the new alpha -- an adoption record alone is not
+        # proof the live path moved.
+        store._active_surface_by_target.pop(surface, None)
+        allowed_proposal = _prediction_expectation_smoke_proposal(subject_ref="entity:prediction-expectation-allow")
         store.add_proposal(allowed_proposal, priority=60)
-        graph_consolidation_metrics[allowed_proposal.proposal_id] = {"queue_resolution_delta": 0.3, "requeue_rate_delta": 0.0}
-        worker.run_cycle(telemetry=[], measured_metrics_by_proposal=graph_consolidation_metrics)
-        applied = any(a.target_surface == "graph_consolidation" and a.status == "applied" for a in store._adoptions.values())
+        trial_metrics[allowed_proposal.proposal_id] = dict(_PASSING_TRIAL_METRICS)
+        worker.run_cycle(telemetry=[], measured_metrics_by_proposal=trial_metrics)
+        adopted = any(
+            a.proposal_id == allowed_proposal.proposal_id and a.status == "applied" for a in store._adoptions.values()
+        )
+        applied = adopted and get_prediction_expectation("execution").alpha == _SMOKE_TARGET_ALPHA
         emit_line(
             {
                 "event": "mutation_decision_recorded",
                 "cycle_id": cycle_id,
+                "proposal_id": allowed_proposal.proposal_id,
                 "decision": "auto_promote",
-                "surface_key": "graph_consolidation",
+                "surface_key": surface,
                 "queue_status_after": store.queue_status_for_proposal(allowed_proposal.proposal_id) or "-",
                 "applied": applied,
             }
         )
 
         # 4) Rollback payload required before apply.
-        # Also switched off "routing" (see step 2's note) -- this step is
-        # about PatchApplier's rollback-payload requirement, which needs no
-        # control-surface value at all on the generic apply path
-        # "graph_consolidation" now takes, so the isolated-control-surface
-        # setup this step used to depend on is no longer needed here.
-        proposal = _graph_consolidation_smoke_proposal(subject_ref="entity:payload")
+        # Same carrier as steps 2/3. PatchApplier refuses an empty rollback
+        # payload before any class branch, so this never reaches the surface.
+        proposal = _prediction_expectation_smoke_proposal(subject_ref="entity:payload", target_alpha=0.35)
         proposal = proposal.model_copy(update={"patch": proposal.patch.model_copy(update={"rollback_payload": {}})})
         adopt = applier.apply(proposal=proposal, decision=MutationDecisionV1(proposal_id=proposal.proposal_id, action="auto_promote"))
         emit_line(

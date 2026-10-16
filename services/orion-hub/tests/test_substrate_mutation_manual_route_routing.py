@@ -190,43 +190,49 @@ def test_one_live_surface_invariant_blocks_before_side_effects(routing_manual_fi
     now rejected unconditionally before the active-surface check ever runs
     (`RETIRED_MUTATION_CLASSES`, review-confirmed live in this same change --
     this test itself is what caught the gap), so it can no longer exercise
-    this invariant at all. Switched to `graph_consolidation_param_patch`,
-    the remaining auto-promotable class the manual endpoint's apply path
-    does not special-case away, enqueued directly into the same
-    `SUBSTRATE_MUTATION_STORE` the manual endpoint reads -- bypassing the
-    detector/pressure/factory chain, not the invariant itself -- so the
-    endpoint's trial/decision/apply half still runs on it for real.
+    this invariant at all. Then carried by `graph_consolidation_param_patch`,
+    itself retired 2026-10-16 (rung 6 rebuild). Now carried by
+    `prediction_expectation_patch`, rung 6's live auto-promotable class,
+    enqueued directly into the same `SUBSTRATE_MUTATION_STORE` the manual
+    endpoint reads -- bypassing the tuner/factory chain, not the invariant
+    itself -- so the endpoint's trial/decision/apply half still runs on it for
+    real. Its trial passes, so the surface lock is the only thing that can
+    hold it, and its apply would write the (fixture-isolated) control surface,
+    so "no side effect" is checked on the real live read.
     """
     from orion.core.schemas.substrate_mutation import MutationPatchV1, MutationProposalV1
 
-    api_routes.SUBSTRATE_MUTATION_STORE._active_surface_by_target["graph_consolidation"] = "existing-adoption"
+    surface = "prediction_expectation:execution"
+    live_before = mutation_control_surface.get_prediction_expectation("execution")
+    api_routes.SUBSTRATE_MUTATION_STORE._active_surface_by_target[surface] = "existing-adoption"
     proposal = MutationProposalV1(
         lane="operational",
-        mutation_class="graph_consolidation_param_patch",
-        risk_tier="medium",
-        target_surface="graph_consolidation",
+        mutation_class="prediction_expectation_patch",
+        risk_tier="low",
+        target_surface=surface,
         anchor_scope="orion",
         subject_ref="entity:orion",
         rationale="test:one_live_surface_invariant",
         expected_effect="reduce_runtime_failure",
-        evidence_refs=["telemetry:placeholder"],
+        evidence_refs=["telemetry:prediction_raw_reading:placeholder"],
         source_signal_ids=["signal:placeholder"],
-        source_pressure_id="pressure-graph-consolidation-test",
+        source_pressure_id="pressure-prediction-expectation-test",
         patch=MutationPatchV1(
-            mutation_class="graph_consolidation_param_patch",
-            target_surface="graph_consolidation",
-            target_ref="graph_consolidation",
-            patch={"query_limit_nodes": 96},
-            rollback_payload={"query_limit_nodes": 64},
+            mutation_class="prediction_expectation_patch",
+            target_surface=surface,
+            target_ref="execution",
+            patch={"alpha": 0.1, "min_variance": live_before.min_variance},
+            rollback_payload=live_before.as_patch(),
         ),
     )
+    assert proposal.patch.patch != live_before.as_patch()  # a real change, not a no-op
     api_routes.SUBSTRATE_MUTATION_STORE.add_proposal(proposal, priority=60)
     payload = api_routes.api_substrate_mutation_runtime_execute_once(
         request=api_routes.SubstrateMutationExecuteRequest(
             dry_run=False,
             apply_enabled=True,
             telemetry=[],
-            class_metrics={"graph_consolidation_param_patch": {"queue_resolution_delta": 0.2, "requeue_rate_delta": 0.0}},
+            class_metrics={"prediction_expectation_patch": {"holdout_log_score_gain_lower_bound": 0.1}},
         ),
         x_orion_operator_token=routing_manual_fixture["token"],
     )
@@ -234,6 +240,7 @@ def test_one_live_surface_invariant_blocks_before_side_effects(routing_manual_fi
         f"active-surface invariant was never exercised; events={payload['trace']['events']}"
     )
     assert payload["summary"]["applies_completed"] == 0
+    assert mutation_control_surface.get_prediction_expectation("execution") == live_before
     assert api_routes.SUBSTRATE_MUTATION_SURFACES["routing"]["chat_reflective_lane_threshold"] == 0.5
 
 

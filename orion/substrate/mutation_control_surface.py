@@ -538,3 +538,50 @@ def inspect_chat_reflective_lane_threshold(default: float = 0.75) -> dict[str, A
         "degraded": control_surface_store().degraded(),
         "error": control_surface_store().last_error(),
     }
+
+
+# --- Rung 6: self-tuned prediction expectation (prediction_expectation.py) ---
+
+
+def get_prediction_expectation(domain: str, *, store: RuntimeControlSurfaceStore | None = None):
+    """Orion's live expectation settings for one prediction-error domain.
+
+    Falls back to the domain's calibrated constants when nothing was ever
+    adopted, the row is unreadable, or the stored value is out of the domain's
+    bounds -- an unknown or corrupt setting must never reach the live scorer.
+    """
+    from orion.substrate.prediction_expectation import domain_specs, expectation_from_payload
+
+    spec = domain_specs()[domain]
+    payload = (store or control_surface_store()).get(spec.control_surface_key)
+    expectation = expectation_from_payload(payload, default=spec.default)
+    return expectation if spec.in_bounds(expectation) else spec.default
+
+
+def set_prediction_expectation(
+    domain: str,
+    *,
+    alpha: float,
+    min_variance: float,
+    actor: str,
+    proposal_id: str | None = None,
+    decision_id: str | None = None,
+    store: RuntimeControlSurfaceStore | None = None,
+) -> None:
+    from orion.substrate.prediction_expectation import Expectation, domain_specs
+
+    spec = domain_specs()[domain]
+    expectation = Expectation(alpha=float(alpha), min_variance=float(min_variance))
+    if not spec.in_bounds(expectation):
+        raise ControlSurfaceWriteError(f"prediction_expectation_out_of_bounds:{domain}")
+    (store or control_surface_store()).upsert(
+        key=spec.control_surface_key,
+        value={
+            "surface": spec.control_surface_key,
+            **expectation.as_patch(),
+            "actor": actor,
+            "proposal_id": proposal_id,
+            "decision_id": decision_id,
+            "updated_at": _utc_now().isoformat(),
+        },
+    )

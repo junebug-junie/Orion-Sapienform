@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from orion.core.schemas.substrate_mutation import MutationClassV1, MutationPatchV1, MutationRiskTierV1
@@ -17,6 +17,9 @@ class MutationClassContract:
     trial_method: str
     evaluation_metrics: tuple[str, ...]
     auto_promote_default: bool = False
+    # Per-metric pass floor; metrics not listed pass at >= 0.0 (metric_passed's
+    # default). A strictly-positive floor stops "exactly zero evidence" passing.
+    metric_minimums: dict[str, float] = field(default_factory=dict)
 
 
 # Target surfaces whose mutation is parked -- proposals for them are refused
@@ -53,7 +56,16 @@ PARKED_TARGET_SURFACES: frozenset[str] = frozenset()
 # backed by a real code-level gate until this set existed. Checked in both
 # `DecisionEngine.decide()` and `PatchApplier.apply()` (defense in depth,
 # same pattern PR #2088 already used for the rollback-cooldown gate).
-RETIRED_MUTATION_CLASSES: frozenset[str] = frozenset({"routing_threshold_patch"})
+#
+# "graph_consolidation_param_patch" retired 2026-10-16 (rung 6 rebuild). Live
+# for 6 weeks it adopted nothing: its evidence was "a graph review ran"
+# (normal operation, re-read every 30 s tick with no cursor -> ~65k signals a
+# day from ~30 real reviews), its patch was one hardcoded constant, its trial
+# needed reviews that resolve (0 of 300+ in 10 days did), and even an adoption
+# only staged a profile nobody activates. 930 proposals, 930 rejections in the
+# week before retirement. Its replacement as rung 6's live class is
+# prediction_expectation_patch (orion/substrate/prediction_expectation.py).
+RETIRED_MUTATION_CLASSES: frozenset[str] = frozenset({"routing_threshold_patch", "graph_consolidation_param_patch"})
 
 # Single shared reason string for "routing" specifically, for the Hub
 # endpoints/injected-cognition-context callers that report on it
@@ -198,6 +210,26 @@ CONTRACTS: dict[MutationClassV1, MutationClassContract] = {
         required_evidence_types=("telemetry:review_churn", "telemetry:queue_stall"),
         trial_method="replay_consolidation_comparison",
         evaluation_metrics=("queue_resolution_delta", "requeue_rate_delta"),
+        auto_promote_default=True,
+    ),
+    # Rung 6 (2026-10-16): Orion revises how surprised they expect to be, per
+    # EWMA-scored prediction-error domain. target_ref is the domain. Per-domain
+    # bounds (relative to each domain's calibrated floor) are enforced again in
+    # prediction_expectation.DomainSpec.in_bounds(); these are the global outer
+    # limits validate_patch() can check without knowing the domain.
+    "prediction_expectation_patch": MutationClassContract(
+        mutation_class="prediction_expectation_patch",
+        allowed_targets=("execution", "chat"),
+        allowed_fields=("alpha", "min_variance"),
+        bounds={"alpha": (0.01, 0.6), "min_variance": (1e-13, 0.03)},
+        risk_tier="low",
+        required_evidence_types=("telemetry:prediction_raw_reading",),
+        trial_method="replay_log_score_holdout",
+        # Lower confidence bound of the paired per-reading log-score gain on
+        # readings the candidate was not chosen on. > 0 means "better with
+        # ~95% confidence", not "better on average by any sliver".
+        evaluation_metrics=("holdout_log_score_gain_lower_bound",),
+        metric_minimums={"holdout_log_score_gain_lower_bound": 1e-9},
         auto_promote_default=True,
     ),
     "approved_prompt_profile_variant_promotion": MutationClassContract(

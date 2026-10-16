@@ -5,51 +5,37 @@ from dataclasses import dataclass
 from typing import Any
 
 from orion.core.schemas.substrate_mutation import MutationAdoptionV1, MutationDecisionV1, MutationProposalV1
-from orion.core.schemas.substrate_policy_adoption import (
-    SubstratePolicyAdoptionRequestV1,
-    SubstratePolicyOverridesV1,
-    SubstratePolicyRolloutScopeV1,
-)
-from orion.substrate.mutation_contracts import CONTRACTS, RETIRED_MUTATION_CLASSES
+from orion.substrate.mutation_contracts import RETIRED_MUTATION_CLASSES
 from orion.substrate.mutation_control_surface import (
     ControlSurfaceWriteError,
     get_chat_reflective_lane_threshold,
+    get_prediction_expectation,
     set_chat_reflective_lane_threshold,
+    set_prediction_expectation,
 )
-from orion.substrate.policy_profiles import SubstratePolicyProfileStore
-
-# graph_consolidation_param_patch's allowed fields (mutation_contracts.py's
-# CONTRACTS entry) are a direct 1:1 match to SubstratePolicyOverridesV1 fields
-# -- same names, same bounds. Read from the contract itself rather than
-# hand-duplicated here, so the two can't silently drift apart.
-_GRAPH_CONSOLIDATION_OVERRIDE_FIELDS = CONTRACTS["graph_consolidation_param_patch"].allowed_fields
-
-# The evidence this proposal class is built from is always operator_review-
-# surface, world_ontology-zone telemetry (mutation_detectors.TARGET_SURFACE_BY_ZONE).
-# A staged profile must carry that same scope, not the default empty/global
-# one -- an empty rollout_scope matches every review, everywhere, once an
-# operator ever promotes it (SubstratePolicyProfileStore._matches_scope()).
-_GRAPH_CONSOLIDATION_ROLLOUT_SCOPE = SubstratePolicyRolloutScopeV1(
-    invocation_surfaces=["operator_review"],
-    target_zones=["world_ontology"],
+from orion.substrate.prediction_expectation import (
+    MUTATION_CLASS as PREDICTION_EXPECTATION_CLASS,
+    domain_for_surface,
+    expectation_from_payload,
 )
+
+# Rung 6: how long an adopted expectation must survive the post-adoption
+# replay check before its surface lock is released. Long enough for the
+# execution domain (~70 readings/hour live) to clear the monitor's
+# MIN_POST_ADOPTION_READINGS several times over.
+PREDICTION_EXPECTATION_ROLLBACK_WINDOW_SEC = 6 * 3600
 
 
 @dataclass
 class PatchApplier:
     """Applies typed patches to bounded in-memory surfaces.
 
-    ``policy_store``, when given, is where ``graph_consolidation_param_patch``
-    actually lands: a real, live-read ``SubstratePolicyProfileStore`` (the
-    same one ``GraphReviewRuntimeExecutor._resolve_policy()`` consults),
-    instead of the ``surfaces`` dict below -- which nothing in production
-    reads back. ``None`` (the default, used by every existing test and the
-    standalone smoke worker) keeps the old surfaces-dict-only behavior
-    unchanged.
+    Live surfaces: ``prediction_expectation_patch`` writes the substrate
+    control surface (rung 6). The graph_consolidation policy-store staging
+    branch was removed 2026-10-16 with that class's retirement.
     """
 
     surfaces: dict[str, dict[str, Any]]
-    policy_store: SubstratePolicyProfileStore | None = None
 
     @staticmethod
     def _is_noop(*, patch: dict[str, Any], live_threshold: float) -> bool:
@@ -91,6 +77,17 @@ class PatchApplier:
         Surfaces it cannot compare return None, because "cannot tell" must not
         read as "no change".
         """
+        if proposal.mutation_class == PREDICTION_EXPECTATION_CLASS:
+            spec = domain_for_surface(proposal.target_surface)
+            if spec is None:
+                return None
+            try:
+                live = get_prediction_expectation(spec.domain)
+            except Exception:
+                return None
+            if expectation_from_payload(proposal.patch.patch, default=live) == live:
+                return f"patch_is_noop:{spec.control_surface_key}=alpha:{live.alpha},min_variance:{live.min_variance}"
+            return None
         if proposal.mutation_class != "routing_threshold_patch":
             return None
         try:
@@ -156,67 +153,8 @@ class PatchApplier:
             proposal = proposal.model_copy(
                 update={"patch": proposal.patch.model_copy(update={"rollback_payload": rollback_payload})}
             )
-        if proposal.mutation_class == "graph_consolidation_param_patch" and self.policy_store is not None:
-            try:
-                overrides = SubstratePolicyOverridesV1(
-                    **{
-                        field: proposal.patch.patch[field]
-                        for field in _GRAPH_CONSOLIDATION_OVERRIDE_FIELDS
-                        if field in proposal.patch.patch
-                    }
-                )
-                result = self.policy_store.adopt(
-                    SubstratePolicyAdoptionRequestV1(
-                        source_recommendation_id=proposal.proposal_id,
-                        rollout_scope=_GRAPH_CONSOLIDATION_ROLLOUT_SCOPE,
-                        policy_overrides=overrides,
-                        # Staged, not activated: the store is documented as
-                        # manual/operator-controlled, and GraphReviewRuntimeExecutor
-                        # only resolves *active* profiles. This gives the loop a
-                        # real, durable, audited target -- an operator still has to
-                        # promote it before it changes live review behavior.
-                        activate_now=False,
-                        operator_id="mutation_apply",
-                        rationale=f"autonomous proposal {proposal.proposal_id}",
-                        notes=[f"decision:{decision.decision_id}"],
-                    )
-                )
-            except Exception:
-                # Bad bounds (shouldn't happen -- the contract enforces the
-                # same bounds upstream, but this must not crash a scheduled
-                # cycle tick over one bad proposal) or a degraded store.
-                # Nothing durable happened -- same "cannot tell, don't
-                # pretend" stance as routing's ControlSurfaceWriteError
-                # branch above. Logged (not silent): an unattributable
-                # failure here is exactly the kind of thing that looks like
-                # a routine no-op refusal from the outside.
-                logging.getLogger(__name__).warning(
-                    "graph_consolidation_param_patch policy-store staging failed for proposal %s",
-                    proposal.proposal_id,
-                    exc_info=True,
-                )
-                return None
-            rollback_payload = dict(proposal.patch.rollback_payload)
-            # Undoing a staged-but-never-activated profile means discarding
-            # it, not restoring some prior live value -- nothing went live.
-            # rollback() below reads this key to know which profile that is.
-            rollback_payload["policy_profile_id"] = result.profile_id
-            proposal = proposal.model_copy(
-                update={"patch": proposal.patch.model_copy(update={"rollback_payload": rollback_payload})}
-            )
-            # The real write already landed in the policy store above --
-            # skip the decorative surfaces-dict write below entirely (unlike
-            # routing's branch, which still needs it: the control-surface
-            # store is separate from `self.surfaces`, but policy_profiles
-            # IS graph_consolidation's real surface now, not a second one).
-            return MutationAdoptionV1(
-                proposal_id=proposal.proposal_id,
-                decision_id=decision.decision_id,
-                target_surface=proposal.target_surface,
-                applied_patch=dict(proposal.patch.patch),
-                rollback_payload=dict(proposal.patch.rollback_payload),
-                rollback_window_sec=900,
-            )
+        if proposal.mutation_class == PREDICTION_EXPECTATION_CLASS:
+            return self._apply_prediction_expectation(proposal=proposal, decision=decision)
         current = self.surfaces.setdefault(proposal.target_surface, {})
         current.update(proposal.patch.patch)
         return MutationAdoptionV1(
@@ -228,17 +166,53 @@ class PatchApplier:
             rollback_window_sec=900,
         )
 
+    def _apply_prediction_expectation(
+        self, *, proposal: MutationProposalV1, decision: MutationDecisionV1
+    ) -> MutationAdoptionV1 | None:
+        """Write Orion's revised expectation to the live control surface.
+
+        The rollback payload is the value read live at apply time, never the
+        proposal's own copy: undo restores what was actually running.
+        """
+        spec = domain_for_surface(proposal.target_surface)
+        if spec is None or proposal.patch.target_ref != spec.domain:
+            return None
+        live = get_prediction_expectation(spec.domain)
+        candidate = expectation_from_payload(proposal.patch.patch, default=live)
+        if candidate == live or not spec.in_bounds(candidate):
+            return None
+        try:
+            set_prediction_expectation(
+                spec.domain,
+                alpha=candidate.alpha,
+                min_variance=candidate.min_variance,
+                actor="mutation_apply",
+                proposal_id=proposal.proposal_id,
+                decision_id=decision.decision_id,
+            )
+        except ControlSurfaceWriteError:
+            return None
+        return MutationAdoptionV1(
+            proposal_id=proposal.proposal_id,
+            decision_id=decision.decision_id,
+            target_surface=proposal.target_surface,
+            applied_patch=candidate.as_patch(),
+            rollback_payload=live.as_patch(),
+            rollback_window_sec=PREDICTION_EXPECTATION_ROLLBACK_WINDOW_SEC,
+        )
+
     def rollback(self, *, adoption: MutationAdoptionV1) -> None:
-        if "policy_profile_id" in adoption.rollback_payload:
-            # A graph_consolidation_param_patch adoption only ever staged a
-            # profile (see apply() above) -- it never went live, so there is
-            # nothing to restore. The profile itself is left in place (state
-            # stays "staged"); it is simply never activated, and the store's
-            # own max_profiles trim will eventually drop it like any other
-            # unused staged profile. Returning here (not falling through to
-            # the generic surfaces-dict write below) keeps this true: writing
-            # policy_profile_id into self.surfaces would recreate exactly
-            # the decorative second surface apply() was fixed to stop using.
+        spec = domain_for_surface(adoption.target_surface)
+        if spec is not None:
+            previous = expectation_from_payload(adoption.rollback_payload, default=spec.default)
+            set_prediction_expectation(
+                spec.domain,
+                alpha=previous.alpha,
+                min_variance=previous.min_variance,
+                actor="mutation_rollback",
+                proposal_id=adoption.proposal_id,
+                decision_id=adoption.decision_id,
+            )
             return
         threshold = adoption.rollback_payload.get("chat_reflective_lane_threshold")
         if threshold is not None:

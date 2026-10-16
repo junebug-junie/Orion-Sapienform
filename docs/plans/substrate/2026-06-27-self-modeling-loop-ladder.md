@@ -22,7 +22,7 @@ behind trials + rollback.
 | 3 Continuous broadcast | GWT broadcast | `attention_frame.py` | always-on, substrate-wide re-broadcast | **DONE** (`attention_broadcast.py`, flag off) |
 | 4 Autobiographical continuity | narrative/HOT | `consolidation.py` | episodic time-window rollup | **DONE** (`episodic_consolidation.py`, flag off) |
 | 5 Endogenous agency | intrinsic motivation | `frontier_curiosity.py` | intrinsic-signal-seeded goals | **DONE** (`endogenous_curiosity.py`, flag off — needs sign-off) |
-| 6 Self-revision | metacognition | `mutation_*` pipeline | prediction-error/drift → proposals | **DONE** (signals path: `mutation_self_revision.py`) |
+| 6 Self-revision | metacognition | `mutation_*` pipeline | prediction-error → self-tuned expectation | **REBUILT 2026-10-16** (`prediction_expectation.py`; see rung 6 below) |
 
 Dependency order: 1 → 2 → 3, then 4, then 5, then 6. Rung 6 consumes rung 1's
 signal; rungs 4/5/6 all read the unified state from rung 2.
@@ -203,3 +203,38 @@ trials and rollback. Disputed proposals excluded from execution context.
 3. Disputed/failed-trial proposals are excluded from execution context.
 </content>
 </invoke>
+
+### Rung 6 status correction (2026-10-16)
+
+The "DONE" above was false from 2026-07-22 on: `mutation_self_revision.py` was
+deleted with `orion/self_state` (bcc72f6a0). What ran afterwards was a loop on
+its own noise. Live, the week before this rebuild: ~65,000 signals a day from
+~30 real graph reviews (no read cursor), one hardcoded
+`graph_consolidation_param_patch`, 930 proposals, 930 `trial_inconclusive`
+rejections, 0 adoptions since 2026-09-03.
+
+**Rebuilt as: Orion revises how surprised they expect to be.**
+
+- **What changes.** The EWMA-scored prediction-error domains (execution, chat)
+  read their smoothing rate (`alpha`) and variance floor (`min_variance`) from
+  the control surface `prediction_expectation.<domain>` instead of hardcoded
+  constants (`prediction_error.py`).
+- **Evidence.** `orion-substrate-runtime` records each raw reading before it
+  becomes surprise (`substrate_prediction_raw_reading`). Raw readings do not
+  depend on the setting, so replaying them under a candidate setting is an exact
+  counterfactual.
+- **Theory anchor.** Logarithmic scoring rule (strictly proper): a setting
+  scores well only if it is right about where readings land *and* how much they
+  spread. Going numb (huge variance) loses.
+- **Loop (Hub scheduled cycle, `prediction_expectation_tuner.py`).** Pick a
+  candidate on the older 2/3 of a 72 h window; trial it on the newer 1/3 it
+  never saw (paired per-reading gain, lower 95% bound > 0); Orion applies it
+  (auto-promote); replay both settings on readings that arrive after adoption
+  and roll back if the new one is confidently worse by more than 0.05 nats per
+  reading; otherwise settle after 6 h and release the surface.
+- **Retired.** `graph_consolidation_param_patch` and the `world_ontology`
+  review-telemetry signal (`RETIRED_MUTATION_CLASSES`, `_RETIRED_TELEMETRY_ZONES`).
+- **Off switches.** `SUBSTRATE_PREDICTION_EXPECTATION_LIVE_ENABLED=false`
+  (runtime uses the constants), `SUBSTRATE_PREDICTION_EXPECTATION_TUNER_ENABLED=false`
+  (no proposals), `SUBSTRATE_AUTONOMY_ROUTING_APPLY_ENABLED=false` (no applies).
+- **Live check.** `services/orion-substrate-runtime/evals/run_prediction_expectation_live_check.py`.

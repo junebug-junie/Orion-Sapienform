@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import re
-from typing import Any
+from typing import Any, Callable
 
 from orion.core.schemas.substrate_mutation import MutationProposalV1, MutationTrialV1
 from orion.core.schemas.substrate_review_telemetry import GraphReviewTelemetryRecordV1
@@ -390,6 +390,10 @@ class SubstrateTrialRunner:
     corpus_registry: ReplayCorpusRegistry
     routing_replay_evaluator: RoutingReplayEvaluator = RoutingReplayEvaluator()
     graph_consolidation_replay_evaluator: GraphConsolidationReplayEvaluator = GraphConsolidationReplayEvaluator()
+    # Rung 6: proposal -> holdout metrics for prediction_expectation_patch
+    # (PredictionExpectationTuner.trial_metrics). None = no evaluator wired,
+    # which reads as inconclusive, never as passed.
+    prediction_expectation_evaluator: Callable[[MutationProposalV1], dict[str, float] | None] | None = None
 
     def run_trial(
         self,
@@ -493,6 +497,10 @@ class SubstrateTrialRunner:
     ) -> dict[str, float] | None:
         if measured_metrics:
             return None
+        if proposal.mutation_class == "prediction_expectation_patch":
+            if self.prediction_expectation_evaluator is None:
+                return None
+            return self.prediction_expectation_evaluator(proposal)
         if proposal.mutation_class == "graph_consolidation_param_patch":
             return self.graph_consolidation_replay_evaluator.derive_metrics(replay_records=replay_records)
         if proposal.mutation_class != "routing_threshold_patch":

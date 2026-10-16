@@ -40,7 +40,9 @@ class DecisionPolicy:
     # mutation_contracts.py's RETIRED_MUTATION_CLASSES). Kept out of this
     # allowlist as defense in depth alongside DecisionEngine.decide()'s
     # explicit early-reject below, not as the only gate.
-    auto_promote_allowlist: set[str] = field(default_factory=lambda: {"graph_consolidation_param_patch"})
+    # graph_consolidation_param_patch retired 2026-10-16 (same treatment);
+    # prediction_expectation_patch is rung 6's live, self-applied class.
+    auto_promote_allowlist: set[str] = field(default_factory=lambda: {"prediction_expectation_patch"})
     operator_gated_classes: set[str] = field(
         default_factory=lambda: {
             "approved_prompt_profile_variant_promotion",

@@ -50,6 +50,7 @@ SQLAlchemy cycle, which callers MUST run in a worker thread.
 
 from __future__ import annotations
 
+import bisect
 import json
 import logging
 import math
@@ -221,6 +222,7 @@ class _CentroidIndex:
         self._ids: Dict[Tuple[str, str], List[str]] = {}
         self._rows: Dict[Tuple[str, str], List[np.ndarray]] = {}
         self._mat: Dict[Tuple[str, str], Optional[np.ndarray]] = {}
+        self._pos: Dict[Tuple[str, str], Dict[str, int]] = {}
         for ind in individuals:
             self.add(ind)
 
@@ -235,7 +237,9 @@ class _CentroidIndex:
         if not vec:
             return
         key = (ind.stream_id, ind.kind)
-        self._ids.setdefault(key, []).append(ind.individual_id)
+        ids = self._ids.setdefault(key, [])
+        self._pos.setdefault(key, {})[ind.individual_id] = len(ids)
+        ids.append(ind.individual_id)
         self._rows.setdefault(key, []).append(self._unit(vec))
         self._mat[key] = None
 
@@ -289,7 +293,7 @@ class _CentroidIndex:
         if not ids:
             return None, -2.0
         e = self._unit(crop.embedding or ())
-        pos = {iid: i for i, iid in enumerate(ids)}
+        pos = self._pos.get(key, {})
         best: Tuple[Optional[str], float] = (None, -2.0)
         for iid in sorted(set(allowed)):
             i = pos.get(iid)
@@ -429,6 +433,7 @@ def apply_batch(
     continuation_threshold: Optional[float] = None,
     continuation_gap_sec: float = 10.0,
     continuation_max_disp: float = 1.5,
+    prior_observations: Iterable[Tuple[str, datetime, Sequence[float]]] = (),
 ) -> BatchResult:
     """Cluster crops into individuals and group them into sightings.
 
@@ -456,16 +461,20 @@ def apply_batch(
 
     Body matching has two lanes (docs/superpowers/specs/2026-10-16-vision-
     body-match-proposal.md). **Continuation** (``continuation_threshold`` not
-    None): the candidates are individuals whose last box is within
-    ``continuation_max_disp`` box heights (centre distance, mean of the two
-    heights) of the crop's box and was seen within ``continuation_gap_sec``
-    of it; the best of them joins at >= ``continuation_threshold``. The last
-    box comes from the individual's newest known sighting (``last_box_xyxy``
-    at ``ended_at``) and then from every crop this batch assigns -- so the
-    gap must not exceed ``merge_gap_sec``, the window the caller loads
-    sightings for. **Re-identification**: otherwise the best of all
-    individuals joins at >= ``match_threshold``. With the continuation lane
-    off this is exactly the single body rule it replaces.
+    None): the candidates are non-stationary individuals with an observation
+    within ``continuation_gap_sec`` of the crop (before or after it: crops
+    land late) whose box is within ``continuation_max_disp`` box heights
+    (centre distance, mean of the two heights) of the crop's box; the best
+    of them joins at >= ``continuation_threshold``. Observations come from
+    ``prior_observations`` ((individual_id, observed_at, box) of stored
+    crops near this batch), each loaded sighting's ``last_box_xyxy`` at
+    ``ended_at``, and every crop this batch assigns. The gap is capped at
+    ``merge_gap_sec``, the window callers load sightings for. Stationary
+    fixtures are left out: their box is always "recent and close", which
+    would hand them passers-by at the lower line. **Re-identification**:
+    otherwise the best of all individuals joins at >= ``match_threshold``.
+    With the continuation lane off this is exactly the single body rule it
+    replaces.
     """
     forbidden = set(no_embed_zones)
     inds = {k: replace(v, centroid=list(v.centroid),
@@ -495,16 +504,26 @@ def apply_batch(
     by_reid = 0
     crop_stationary: Dict[str, bool] = {}
     crop_individual: Dict[str, str] = {}
-    # individual_id -> (time, box) of its newest known observation: the
-    # continuation lane's "where was it last, and when".
-    last_obs: Dict[str, Tuple[datetime, Tuple[float, ...]]] = {}
+    # Time-sorted (t, individual_id, box) observations: the continuation
+    # lane's "who was here, close by, within the gap".
+    obs_t: List[float] = []
+    obs: List[Tuple[float, str, Tuple[float, ...]]] = []
+    cont_gap = min(float(continuation_gap_sec), float(merge_gap_sec))
+
+    def _observe(iid: str, at: datetime, box: Sequence[float]) -> None:
+        item = (_ts(at), iid, tuple(float(v) for v in box))
+        k = bisect.bisect_right(obs_t, item[0])
+        obs_t.insert(k, item[0])
+        obs.insert(k, item)
+
     if continuation_threshold is not None:
+        for iid, at, box in prior_observations:
+            if iid in inds and box:
+                _observe(iid, at, box)
         for iid, sgs in cands.items():
             for sg in sgs:
-                if not sg.last_box_xyxy or iid not in inds:
-                    continue
-                if iid not in last_obs or sg.ended_at > last_obs[iid][0]:
-                    last_obs[iid] = (sg.ended_at, tuple(float(v) for v in sg.last_box_xyxy))
+                if sg.last_box_xyxy and iid in inds:
+                    _observe(iid, sg.ended_at, sg.last_box_xyxy)
 
     for crop in sorted(crops, key=lambda c: (c.observed_at, c.crop_id)):
         if crop.zone_no_embed or crop.zone in forbidden:
@@ -527,9 +546,17 @@ def apply_batch(
                     best_id = fid
                     by_face += 1
         if best_id is None and continuation_threshold is not None:
-            near = [iid for iid, (t, box) in last_obs.items()
-                    if abs((crop.observed_at - t).total_seconds()) <= continuation_gap_sec
-                    and box_centre_distance_in_heights(box, crop.box_xyxy) <= continuation_max_disp]
+            t = _ts(crop.observed_at)
+            lo, hi = bisect.bisect_left(obs_t, t - cont_gap), bisect.bisect_right(obs_t, t + cont_gap)
+            # Each individual's observation nearest in time to the crop.
+            closest: Dict[str, Tuple[float, Tuple[float, ...]]] = {}
+            for ot, iid, box in obs[lo:hi]:
+                dt = abs(ot - t)
+                if iid not in closest or dt < closest[iid][0]:
+                    closest[iid] = (dt, box)
+            near = {iid for iid, (_, box) in closest.items()
+                    if iid not in taken and not inds[iid].stationary
+                    and box_centre_distance_in_heights(box, crop.box_xyxy) <= continuation_max_disp}
             if near:
                 cid, csim = index.nearest_among(crop, near, taken)
                 if cid is not None and csim >= continuation_threshold:
@@ -573,9 +600,8 @@ def apply_batch(
             face_index.add(ind)
         taken.add(ind.individual_id)
         crop_individual[crop.crop_id] = ind.individual_id
-        if continuation_threshold is not None and (
-                ind.individual_id not in last_obs or crop.observed_at >= last_obs[ind.individual_id][0]):
-            last_obs[ind.individual_id] = (crop.observed_at, tuple(float(v) for v in crop.box_xyxy))
+        if continuation_threshold is not None:
+            _observe(ind.individual_id, crop.observed_at, crop.box_xyxy)
         assigned += 1
         advance_stationary(ind, crop.box_xyxy, crop.observed_at, iou=stationary_iou,
                            min_sec=stationary_min_sec, max_gap_sec=stationary_max_gap_sec)
@@ -1268,11 +1294,18 @@ def run_one_individuals_cycle(
 # the walkway (most of them small). Three times that means the matcher is
 # shattering passings: say so in the log.
 NEW_PERSON_INDIVIDUALS_WARN_PER_DAY = 1500
+FRAGMENTING_WARN_EVERY_SEC = 3600.0
+_last_fragmenting_check: Dict[str, datetime] = {}
 
 
-def _warn_if_fragmenting(conn, stream_id: str, now: datetime) -> int:
+def _warn_if_fragmenting(conn, stream_id: str, now: datetime) -> Optional[int]:
+    """At most once an hour per stream (one count query, one warning)."""
     from sqlalchemy import text
 
+    prev = _last_fragmenting_check.get(stream_id)
+    if prev is not None and (now - prev).total_seconds() < FRAGMENTING_WARN_EVERY_SEC:
+        return None
+    _last_fragmenting_check[stream_id] = now
     n = int(conn.execute(text(
         "SELECT count(*) FROM vision_individual WHERE stream_id=:s AND kind='person' AND first_seen_at > :since"),
         {"s": stream_id, "since": now - timedelta(hours=24)}).scalar() or 0)
@@ -1372,6 +1405,16 @@ def _one_stream(engine, stream_id: str, now: datetime, tz: ZoneInfo, cfg: Indivi
                     thumb_ref=r.thumb_ref, face_thumb_ref=r.face_thumb_ref, stationary=bool(r.stationary)))
 
             cannot = load_cannot_link(conn) if cfg.split_on_verdict_enabled else {}
+            prior_obs: List[Tuple[str, datetime, Sequence[float]]] = []
+            if cfg.continuation_enabled:
+                # Where each individual was, crop by crop, around this batch
+                # (stored membership): a late crop is compared with where its
+                # person was at that moment, not where they were last.
+                cg = timedelta(seconds=min(cfg.continuation_gap_sec, cfg.merge_gap_sec))
+                prior_obs = [(r.individual_id, r.observed_at, list(r.box_xyxy or ())) for r in conn.execute(text(
+                    "SELECT individual_id, observed_at, box_xyxy FROM vision_crop_observation "
+                    "WHERE stream_id=:s AND individual_id IS NOT NULL AND observed_at >= :lo AND observed_at <= :hi"),
+                    {"s": stream_id, "lo": oldest_seen - cg, "hi": newest_seen + cg}).fetchall()]
             batch = apply_batch(
                 crops, individuals=individuals, latest_sightings={}, nearby_sightings=nearby,
                 cannot_link=cannot, cannot_link_margin=cfg.cannot_link_margin,
@@ -1383,6 +1426,7 @@ def _one_stream(engine, stream_id: str, now: datetime, tz: ZoneInfo, cfg: Indivi
                 continuation_threshold=cfg.continuation_threshold if cfg.continuation_enabled else None,
                 continuation_gap_sec=min(cfg.continuation_gap_sec, cfg.merge_gap_sec),
                 continuation_max_disp=cfg.continuation_max_disp,
+                prior_observations=prior_obs,
             )
             logger.info("[VISION_MATCH] stream=%s face=%d continuation=%d reid=%d new=%d",
                         stream_id, batch.assigned_by_face, batch.assigned_by_continuation,

@@ -506,7 +506,7 @@ class Settings(BaseSettings):
     # a centroid averaged over several people scores about sqrt(0.71-0.75) =
     # 0.84-0.87 against a new person, so a line below that lets mixed
     # individuals keep growing. 0.80 + continuation off = the old rule.
-    vision_individuals_match_threshold: float = Field(0.90, alias="VISION_INDIVIDUALS_MATCH_THRESHOLD")
+    vision_individuals_match_threshold: float = Field(0.90, ge=-1.0, le=1.0, alias="VISION_INDIVIDUALS_MATCH_THRESHOLD")
     # Continuation lane: a crop within ..._MAX_DISP box heights (centre
     # distance) of an individual's last box, seen at most ..._GAP_SEC ago
     # (capped at VISION_INDIVIDUALS_MERGE_GAP_SEC), joins the best such
@@ -514,9 +514,9 @@ class Settings(BaseSettings):
     # people 13.6% -> 6.3%, split passings 17.6% -> 15.6%, ~500 small
     # individuals a day instead of ~40. false = re-identification line only.
     vision_individuals_continuation_enabled: bool = Field(True, alias="VISION_INDIVIDUALS_CONTINUATION_ENABLED")
-    vision_individuals_continuation_threshold: float = Field(0.88, alias="VISION_INDIVIDUALS_CONTINUATION_THRESHOLD")
-    vision_individuals_continuation_gap_sec: float = Field(10.0, alias="VISION_INDIVIDUALS_CONTINUATION_GAP_SEC")
-    vision_individuals_continuation_max_disp: float = Field(1.5, alias="VISION_INDIVIDUALS_CONTINUATION_MAX_DISP")
+    vision_individuals_continuation_threshold: float = Field(0.88, ge=-1.0, le=1.0, alias="VISION_INDIVIDUALS_CONTINUATION_THRESHOLD")
+    vision_individuals_continuation_gap_sec: float = Field(10.0, ge=0.0, alias="VISION_INDIVIDUALS_CONTINUATION_GAP_SEC")
+    vision_individuals_continuation_max_disp: float = Field(1.5, gt=0.0, alias="VISION_INDIVIDUALS_CONTINUATION_MAX_DISP")
     # Faces (walkway person crops, 2026-10-15): cosine similarity to the
     # nearest same-kind face centroid (facenet VGGFace2, 512-d) at or above
     # this wins assignment over appearance. Same-person facenet pairs usually

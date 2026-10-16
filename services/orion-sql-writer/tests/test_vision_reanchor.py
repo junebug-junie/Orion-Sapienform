@@ -81,6 +81,10 @@ def pg():
         conn.execute(text("TRUNCATE vision_individual_sighting, vision_individual, vision_crop_observation, "
                           "vision_individual_reanchor CASCADE"))
     yield engine
+    # Other test files share this throwaway db and do not know this table:
+    # leave no re-anchor in force behind.
+    with engine.begin() as conn:
+        conn.execute(text("TRUNCATE vision_individual_reanchor"))
     engine.dispose()
 
 
@@ -201,6 +205,11 @@ def test_apply_snapshots_writes_audits_and_undo_restores_byte_for_byte(pg, tmp_p
         assert sorted(audit[0].crop_ids) == ["m-face0", "m-face1", "m-face2", "m-stored"]
         assert audit[0].snapshot_path == str(snap)
 
+    # A skipped target (cp) keeps moving with the loop; undo must not touch it.
+    with pg.begin() as conn:
+        conn.execute(text("UPDATE vision_individual SET centroid=:c, centroid_n=51 WHERE individual_id='cp'"),
+                     {"c": _vec(0.5, 1)})
+        cp_moved = _rows(conn)["cp"][:2]
     dry = _run("--undo", str(snap))
     assert dry.returncode == 0 and "DRY RUN" in dry.stdout, dry.stderr
     with pg.begin() as conn:
@@ -209,8 +218,9 @@ def test_apply_snapshots_writes_audits_and_undo_restores_byte_for_byte(pg, tmp_p
     assert done.returncode == 0 and "APPLIED" in done.stdout, done.stderr
     with pg.begin() as conn:
         restored = _rows(conn)
-        for k in before:
+        for k in ("m", "lone", "o"):
             assert restored[k][:2] == before[k][:2], k   # exact float32 values, exact n
+        assert restored["cp"][:2] == cp_moved
         assert conn.execute(text(
             "SELECT count(*) FROM vision_individual_reanchor WHERE action='undo' AND individual_id='m'")).scalar() == 1
 
@@ -243,3 +253,60 @@ def test_apply_waits_for_the_individuals_loop_lock(pg, tmp_path) -> None:
     out = mod.apply_reanchor(pg, "walkway", face_threshold=0.60, line=0.90, now=NOW, snapshot_root=tmp_path,
                              lock_timeout="200ms")
     assert out["written"] == 1
+
+
+@needs_pg
+def test_undo_refuses_when_crops_joined_since_unless_forced(pg, tmp_path) -> None:
+    from sqlalchemy import text
+
+    with pg.begin() as conn:
+        _world(conn)
+        before = _rows(conn)
+    assert _run("--apply", "--snapshot-root", str(tmp_path)).returncode == 0
+    snap = next(tmp_path.iterdir()) / "before.json"
+    with pg.begin() as conn:   # the matcher folded a crop in
+        conn.execute(text("UPDATE vision_individual SET centroid_n = centroid_n + 1 WHERE individual_id='m'"))
+    out = _run("--undo", str(snap), "--apply")
+    assert out.returncode == 1 and "REFUSED" in out.stderr
+    with pg.begin() as conn:
+        assert _rows(conn)["m"][1] == 5
+    out = _run("--undo", str(snap), "--apply", "--force")
+    assert out.returncode == 0, out.stderr
+    with pg.begin() as conn:
+        assert _rows(conn)["m"][:2] == before["m"][:2]
+
+
+@needs_pg
+def test_undo_of_a_run_that_never_committed_refuses(pg, tmp_path) -> None:
+    snap = tmp_path / "before.json"
+    snap.write_text(json.dumps({"run_id": "run-never", "rows": [{"individual_id": "m", "centroid": [1.0],
+                                                                 "centroid_n": 1}]}))
+    out = _run("--undo", str(snap), "--apply")
+    assert out.returncode == 1 and "no committed re-anchor rows" in out.stdout
+
+
+@needs_pg
+def test_a_split_after_a_reanchor_subtracts_only_crops_in_the_reanchored_centroid(pg) -> None:
+    """The split's moved crops (the other person's) were never part of the
+    re-anchored body centroid: it must not subtract them again."""
+    from sqlalchemy import text
+
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import test_vision_split as ts
+    from app import vision_split as vs
+
+    with pg.begin() as conn:
+        conn.execute(text("TRUNCATE orion_ask, vision_individual_pair_verdict, vision_ask_picture_verdict, "
+                          "vision_individual_split CASCADE"))
+        ts._world(conn)
+        src = conn.execute(text("SELECT centroid, centroid_n FROM vision_individual WHERE individual_id='src'")).one()
+        conn.execute(text(
+            "INSERT INTO vision_individual_reanchor (reanchor_id, run_id, individual_id, action, rule, crop_ids, "
+            "before, after, created_at) VALUES ('r1', 'run-1', 'src', 'reanchor', 'test', '[\"k0\", \"f2\"]', "
+            "'{}', '{}', :t)"), {"t": ts.NOW - timedelta(minutes=30)})
+    with pg.begin() as conn:
+        assert vs.apply_splits(conn, ts.NOW, ts.CFG)["splits"] == 1
+        after = conn.execute(text("SELECT centroid, centroid_n FROM vision_individual WHERE individual_id='src'")).one()
+        assert sorted(conn.execute(text(
+            "SELECT crop_id FROM vision_crop_observation WHERE individual_id NOT IN ('src')")).scalars()) == ["f1", "m0"]
+    assert list(after.centroid) == list(src.centroid) and after.centroid_n == src.centroid_n

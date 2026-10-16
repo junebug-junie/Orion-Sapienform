@@ -125,6 +125,34 @@ def test_continuation_follows_crops_assigned_in_the_same_batch() -> None:
     assert b.assigned_by_continuation == 5
 
 
+def test_a_late_crop_is_compared_with_where_its_person_was_at_that_moment() -> None:
+    """Review repro: the sighting ended at x=100, but 12 s earlier the person
+    was 3 box heights back. A crop landing late from that moment continues
+    them when the stored crop of that moment is known (prior_observations)."""
+    late = _crop("c", "o1", T0 - timedelta(seconds=12), _at(0.89), _box(100 - 3 * H))
+    without = _apply([late], [_ind("a")], [_sighting("a", T0, _box(100))])
+    assert without.crop_individual["c"] == "new0"
+    b = _apply([late], [_ind("a")], [_sighting("a", T0, _box(100))],
+               prior_observations=[("a", T0 - timedelta(seconds=12.5), _box(100 - 3 * H + 20))])
+    assert b.crop_individual["c"] == "a" and b.assigned_by_continuation == 1
+
+
+def test_a_stationary_fixture_does_not_get_the_continuation_line() -> None:
+    """A prop's box is always recent and close: a passer-by at 0.885 must
+    face the 0.90 line, not the 0.88 one."""
+    chair = _ind("chair")
+    chair.stationary = True
+    b = _apply([_crop("c", "o1", T0 + timedelta(seconds=3), _at(0.885), _box(120))],
+               [chair], [_sighting("chair", T0, _box(100))])
+    assert b.crop_individual["c"] == "new0"
+
+
+def test_the_continuation_gap_is_capped_at_the_merge_gap_inside_apply_batch() -> None:
+    crop = _crop("c", "o1", T0 + timedelta(seconds=70), _at(0.89), _box(100))
+    b = _apply([crop], [_ind("a")], [_sighting("a", T0, _box(100))], continuation_gap_sec=100.0)
+    assert b.crop_individual["c"] == "new0"
+
+
 def test_a_face_match_still_wins_first() -> None:
     other = _ind("f")
     other.face_centroid, other.face_n = [1.0, 0.0], 3

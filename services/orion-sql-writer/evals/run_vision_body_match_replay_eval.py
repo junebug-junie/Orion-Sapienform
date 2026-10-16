@@ -99,7 +99,9 @@ def replay(crops: Sequence[vi.CropRow], landed: Sequence[datetime], cfg: vi.Indi
     inds: Dict[str, vi.Individual] = {}
     sightings: Dict[str, vi.Sighting] = {}
     member: Dict[str, str] = {}
+    by_crop = {c.crop_id: c for c in crops}
     gap = timedelta(seconds=cfg.merge_gap_sec)
+    cgap = timedelta(seconds=min(cfg.continuation_gap_sec, cfg.merge_gap_sec))
     counter = itertools.count()
     for key in sorted(batches):
         batch = batches[key]
@@ -109,6 +111,11 @@ def replay(crops: Sequence[vi.CropRow], landed: Sequence[datetime], cfg: vi.Indi
         for s in sightings.values():
             if s.ended_at >= lo and s.started_at <= hi:
                 nearby[s.individual_id].append(s)
+        # Stored membership around the batch, as _one_stream loads it.
+        olo = min(c.observed_at for c in batch) - cgap
+        ohi = max(c.observed_at for c in batch) + cgap
+        prior = [(iid, by_crop[cid].observed_at, by_crop[cid].box_xyxy) for cid, iid in member.items()
+                 if olo <= by_crop[cid].observed_at <= ohi] if cfg.continuation_enabled else []
         res = vi.apply_batch(
             batch, individuals=inds, latest_sightings={}, nearby_sightings=dict(nearby),
             no_embed_zones=(), match_threshold=cfg.match_threshold, merge_gap_sec=cfg.merge_gap_sec, tz=tz,
@@ -120,6 +127,7 @@ def replay(crops: Sequence[vi.CropRow], landed: Sequence[datetime], cfg: vi.Indi
             continuation_threshold=cfg.continuation_threshold if cfg.continuation_enabled else None,
             continuation_gap_sec=min(cfg.continuation_gap_sec, cfg.merge_gap_sec),
             continuation_max_disp=cfg.continuation_max_disp,
+            prior_observations=prior,
         )
         inds = res.individuals
         for sid, s in res.sightings.items():

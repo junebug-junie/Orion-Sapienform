@@ -42,10 +42,17 @@ on the locked rows, write a snapshot of the old rows to
 after 7 days), update the rows, write one ``vision_individual_reanchor`` row
 each (manual_migration_vision_reanchor_v1.sql), commit.
 
-``--undo <before.json>``: dry run of putting the snapshot's centroid and
-centroid_n back (byte-for-byte); with ``--apply`` it commits, audited as
-action 'undo'. Crops that joined after the re-anchor are folded into the
-restored centroid only by the matcher's later ticks, not by undo.
+``--undo <before.json>``: puts back the old centroid and centroid_n
+(byte-for-byte) of every individual that run's committed audit rows say it
+rewrote -- nothing else. Dry run unless ``--apply`` (audited as action
+'undo'). Refused when the matcher has folded new crops into one of them
+since; ``--force`` restores anyway and those crops drop out of its centroid
+(they stay members; nothing re-adds them).
+
+After a re-anchor, a split of the same individual (app/vision_split.py)
+subtracts only moved crops that are part of the re-anchored centroid (the
+run's ``crop_ids``, or crops that landed after it); an undo of an earlier
+split does the same when it adds crops back.
 
 DSN: --dsn, else POSTGRES_URI, else DATABASE_URL.
 
@@ -136,8 +143,13 @@ def plan_reanchor(conn, stream: str, targets: Sequence[Target], *, face_threshol
         "SELECT individual_id, face_centroid FROM vision_individual "
         "WHERE stream_id=:s AND kind='person' AND face_centroid IS NOT NULL ORDER BY individual_id"),
         {"s": stream}).fetchall()
-    fc_ids = [r.individual_id for r in fc_rows]
-    fc_mat = np.vstack([_unit(r.face_centroid) for r in fc_rows]) if fc_rows else None
+    # Face centroids by size: a model change leaves two sizes side by side;
+    # a crop is compared with the centroids of its own size only.
+    fc_by_dim: Dict[int, List] = {}
+    for r in fc_rows:
+        fc_by_dim.setdefault(len(r.face_centroid), []).append(r)
+    fc = {d: ([r.individual_id for r in rs], np.vstack([_unit(r.face_centroid) for r in rs]))
+          for d, rs in fc_by_dim.items()}
     crops = conn.execute(text(
         "SELECT crop_id, individual_id, embedding, face_embedding FROM vision_crop_observation "
         "WHERE stream_id=:s AND label='person' AND embedding IS NOT NULL AND face_embedding IS NOT NULL "
@@ -148,12 +160,15 @@ def plan_reanchor(conn, stream: str, targets: Sequence[Target], *, face_threshol
         if c.individual_id is not None:
             tid, how = c.individual_id, "stored"
         else:
-            if fc_mat is None or fc_mat.shape[1] != face.shape[0]:
+            if face.shape[0] not in fc:
                 continue
-            tid, how = fc_ids[int(np.argmax(fc_mat @ face))], "face_nearest"
+            ids, mat = fc[face.shape[0]]
+            tid, how = ids[int(np.argmax(mat @ face))], "face_nearest"
         t = by_id.get(tid)
         if t is None or not t.face_centroid or len(t.face_centroid) != face.shape[0]:
             continue
+        if len(c.embedding) != len(t.centroid):
+            continue   # body vector from another model than the centroid's
         if float(_unit(t.face_centroid) @ face) < face_threshold:
             continue
         (plans[tid].stored if how == "stored" else plans[tid].face_nearest).append(c.crop_id)
@@ -277,37 +292,77 @@ def apply_reanchor(engine, stream: str, *, face_threshold: float, line: float, n
     return {"run_id": run_id, "snapshot": str(snap), "written": written, "rows": rows}
 
 
-def undo(engine, snapshot: Path, *, apply: bool, lock_timeout: str = "60s") -> dict:
+def _same_real(a, b) -> bool:
+    """Equal as Postgres real[] values (float32), whatever decimal form they came in."""
+    return a is not None and b is not None and len(a) == len(b) and bool(
+        np.array_equal(np.asarray(a, dtype=np.float32), np.asarray(b, dtype=np.float32)))
+
+
+def undo(engine, snapshot: Path, *, apply: bool, force: bool = False, lock_timeout: str = "60s") -> dict:
+    """Put back the centroids one committed re-anchor run wrote.
+
+    Driven by the audit rows of the snapshot's run (``action='reanchor'``),
+    not by the snapshot's row list: a target the run skipped is never
+    touched, and a run whose transaction never committed has nothing to
+    undo. An individual whose (centroid, centroid_n) is no longer exactly what
+    the run wrote -- the matcher folded new crops in since -- is refused
+    (nothing is written) unless ``force``; with ``force`` those later crops
+    are dropped from its centroid. Dry run: reads only, no lock, no write."""
     from sqlalchemy import text
 
     snap = json.loads(Path(snapshot).read_text())
-    run_id = f"undo-{uuid.uuid4().hex[:12]}"
+    out: Dict[str, object] = {"snapshot": str(snapshot), "run_id": snap.get("run_id"), "restore": [],
+                              "changed_since": [], "missing": [], "already_restored": []}
     conn = engine.connect()
     trans = conn.begin()
-    out = {"snapshot": str(snapshot), "restored": [], "missing": []}
     try:
-        if apply and not _has_audit_table(conn):
-            raise SystemExit("vision_individual_reanchor is missing: apply the migration first")
-        _lock(conn, lock_timeout)
-        for r in snap["rows"]:
+        if not _has_audit_table(conn):
+            raise SystemExit("vision_individual_reanchor is missing: nothing was ever re-anchored")
+        if apply:
+            _lock(conn, lock_timeout)
+        audits = conn.execute(text(
+            "SELECT individual_id, before, after FROM vision_individual_reanchor "
+            "WHERE run_id=:r AND action='reanchor' ORDER BY individual_id"), {"r": snap.get("run_id")}).fetchall()
+        if not audits:
+            out["ok"] = False
+            out["reason"] = "no committed re-anchor rows for this run"
+            trans.rollback()
+            return out
+        todo = []
+        for a in audits:
             cur = conn.execute(text(
-                "SELECT centroid, centroid_n FROM vision_individual WHERE individual_id=:i FOR UPDATE"),
-                {"i": r["individual_id"]}).fetchone()
+                "SELECT centroid, centroid_n FROM vision_individual WHERE individual_id=:i"
+                + (" FOR UPDATE" if apply else "")), {"i": a.individual_id}).fetchone()
             if cur is None:
-                out["missing"].append(r["individual_id"])
+                out["missing"].append(a.individual_id)
                 continue
-            now_c = [float(v) for v in cur.centroid]
-            if now_c == r["centroid"] and int(cur.centroid_n) == int(r["centroid_n"]):
+            now_c, now_n = [float(v) for v in cur.centroid], int(cur.centroid_n)
+            before, after = a.before, a.after
+            if _same_real(now_c, before["centroid"]) and now_n == int(before["centroid_n"]):
+                out["already_restored"].append(a.individual_id)
                 continue
-            conn.execute(text(
-                "UPDATE vision_individual SET centroid=CAST(:c AS real[]), centroid_n=:n, updated_at=now() "
-                "WHERE individual_id=:i"), {"c": r["centroid"], "n": int(r["centroid_n"]), "i": r["individual_id"]})
+            entry = {"individual_id": a.individual_id, "centroid_n_now": now_n,
+                     "centroid_n_written_by_run": int(after["centroid_n"]),
+                     "centroid_n_restored": int(before["centroid_n"])}
+            if not _same_real(now_c, after["centroid"]) or now_n != int(after["centroid_n"]):
+                out["changed_since"].append(entry)
+            todo.append((a.individual_id, now_c, now_n, before, entry))
+        if out["changed_since"] and not force:
+            out["ok"] = False
+            out["reason"] = ("centroids changed since the re-anchor (new crops joined); --force drops "
+                             "those crops from the restored centroid")
+            trans.rollback()
+            return out
+        run_id = f"undo-{uuid.uuid4().hex[:12]}"
+        for iid, now_c, now_n, before, entry in todo:
+            out["restore"].append(entry)
             if apply:
-                _audit(conn, run_id, r["individual_id"], "undo", "restore snapshot", [],
-                       {"centroid": now_c, "centroid_n": int(cur.centroid_n)},
-                       {"centroid": r["centroid"], "centroid_n": int(r["centroid_n"])}, str(snapshot))
-            out["restored"].append({"individual_id": r["individual_id"], "centroid_n_now": int(cur.centroid_n),
-                                    "centroid_n_restored": int(r["centroid_n"])})
+                conn.execute(text(
+                    "UPDATE vision_individual SET centroid=CAST(:c AS real[]), centroid_n=:n, updated_at=now() "
+                    "WHERE individual_id=:i"), {"c": before["centroid"], "n": int(before["centroid_n"]), "i": iid})
+                _audit(conn, run_id, iid, "undo", f"restore run {snap.get('run_id')}", [],
+                       {"centroid": now_c, "centroid_n": now_n}, before, str(snapshot))
+        out["ok"] = True
         if apply:
             trans.commit()
         else:
@@ -326,6 +381,8 @@ def main(argv=None) -> int:
     ap.add_argument("--stream", default="walkway")
     ap.add_argument("--apply", action="store_true", help="write (default: dry run, nothing written)")
     ap.add_argument("--undo", metavar="BEFORE_JSON", help="restore a snapshot (dry run unless --apply)")
+    ap.add_argument("--force", action="store_true",
+                    help="--undo even when crops joined since the re-anchor (they drop out of the centroid)")
     ap.add_argument("--face-threshold", type=float, default=None)
     ap.add_argument("--line", type=float, default=None, help="body line for the last-24h check")
     ap.add_argument("--now", help="ISO time for the last-24h window (default: now)")
@@ -346,9 +403,12 @@ def main(argv=None) -> int:
     engine = create_engine(args.dsn)
     try:
         if args.undo:
-            out = undo(engine, Path(args.undo), apply=args.apply)
+            out = undo(engine, Path(args.undo), apply=args.apply, force=args.force)
             print(json.dumps(out, indent=2))
-            print("APPLIED" if args.apply else "DRY RUN: rolled back. Re-run with --apply to restore.")
+            if not out.get("ok"):
+                print(f"REFUSED: {out.get('reason')}. Nothing changed.", file=sys.stderr)
+                return 1
+            print("APPLIED" if args.apply else "DRY RUN: nothing written. Re-run with --apply to restore.")
             return 0
         if args.apply:
             out = apply_reanchor(engine, args.stream, face_threshold=face_t, line=line, now=now,

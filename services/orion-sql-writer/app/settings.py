@@ -564,6 +564,25 @@ class Settings(BaseSettings):
     # since local midnight. Separate from ORION_ASK_DAILY_CAP (the slow
     # 10-sightings rule) and from the memory confirmation caps.
     vision_confirm_ask_daily_cap: int = Field(6, alias="VISION_CONFIRM_ASK_DAILY_CAP")
+    # Splitting individuals from Juniper's picture answers (2026-10-16,
+    # docs/superpowers/specs/2026-10-16-vision-individual-split-proposal.md).
+    # A picture she marks "someone else" moves out of the asked individual into
+    # a new one (plus close FACE matches; body-only crops never follow). The
+    # side she confirmed keeps its id and name. Off: verdicts are recorded only,
+    # nothing moves, and the matcher ignores cannot-links.
+    vision_split_on_verdict_enabled: bool = Field(True, alias="VISION_SPLIT_ON_VERDICT_ENABLED")
+    # A member face crop follows the moved picture when its face cosine to the
+    # moved picture's face is at least this AND beats the confirmed picture's
+    # face by VISION_SPLIT_FOLLOW_MARGIN.
+    vision_split_follow_min_face_cosine: float = Field(0.60, alias="VISION_SPLIT_FOLLOW_MIN_FACE_COSINE")
+    vision_split_follow_margin: float = Field(0.10, alias="VISION_SPLIT_FOLLOW_MARGIN")
+    # A split that would move more than this fraction of the individual's crops
+    # is refused ([VISION_SPLIT_REFUSED] reason=majority).
+    vision_split_max_move_fraction: float = Field(0.5, alias="VISION_SPLIT_MAX_MOVE_FRACTION")
+    # Cannot-link in the matcher: a crop whose best face match X is within this
+    # cosine of an individual Juniper said is different from X does not join X
+    # by face (it falls through to the body rule).
+    vision_individuals_cannot_link_margin: float = Field(0.10, alias="VISION_INDIVIDUALS_CANNOT_LINK_MARGIN")
     # Local clock for "07:40", distinct days, weekday/weekend, and the ask cap day.
     vision_local_tz: str = Field("America/Denver", alias="VISION_LOCAL_TZ")
 

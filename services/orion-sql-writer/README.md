@@ -448,18 +448,59 @@ time. A multi-picture "who is this?" answer can carry one verdict per picture
 (`{"pictures": [{image_ref, index, verdict: same|different|unsure, name}]}`);
 the individual still gets the first (face) picture's name, and every picture's
 verdict lands in `vision_ask_picture_verdict` (with the `crop_id` behind the
-thumbnail when it still exists). That table is record only: nothing splits or
-rewrites an individual from it yet. A "who is this?" card closed because its person only
+thumbnail when it still exists). A 'different' picture splits the individual
+(next section). A "who is this?" card closed because its person only
 got a *copied* name is closed here (no bus event), so the substrate gets no
 entity for that person until Juniper types a name for them. If a sql-writer
 built before these names marked a named pair answer applied (Hub deployed
 first), the next tick finds names whose individual's label is older than the
 answer and applies them (`[VISION_PAIR_NAMES_HEALED]`).
 
+**Splits on "someone else" pictures** (`app/vision_split.py`, 2026-10-16;
+design `docs/superpowers/specs/2026-10-16-vision-individual-split-proposal.md`).
+Every crop the clusterer assigns now stores its individual
+(`vision_crop_observation.individual_id`, same transaction as the batch; older
+crops stay NULL, no backfill). After answers are applied, each 'different'
+picture group (one per typed name, case-insensitive; unnamed ones together) of
+an answered card becomes one split, automatically, since Juniper's answer is
+the confirmation:
+
+- The named crops move to a NEW individual, plus member FACE crops whose face
+  cosine to the moved picture's face is >= `VISION_SPLIT_FOLLOW_MIN_FACE_COSINE`
+  (0.60) and beats the confirmed picture's face by `VISION_SPLIT_FOLLOW_MARGIN`
+  (0.10). Body-only crops never follow. A crop with no stored membership
+  (older than the migration) still moves when a verdict names it, but never
+  follows. Moving more than `VISION_SPLIT_MAX_MOVE_FRACTION` (0.5) of the
+  individual is refused (`[VISION_SPLIT_REFUSED] reason=majority`).
+- The asked individual keeps its id, label and substrate entity node. Its
+  centroid/counts are recomputed (exactly when all its crops are stored, else
+  the moved crops are subtracted from the running mean); its sightings lose the
+  moved crops' counts, zones and pictures, so an ask card never shows the other
+  person under its name. The new individual gets its own sightings (no
+  attention score: `_basis: split`).
+- Links: always a 'different' pair verdict (cannot-link) between the two; with a
+  typed name, the new individual gets it as a typed label plus a 'same' link to
+  an existing individual Juniper typed that name for (no crop merge). The new
+  individual gets no substrate entity node from the split.
+- The matcher honours cannot-links: a crop whose best face match X is within
+  `VISION_INDIVIDUALS_CANNOT_LINK_MARGIN` (0.10) of an individual Juniper said
+  is different from X does not join X by face; it falls through to the body rule
+  (`face_blocked_by_cannot_link` in the tick summary).
+- Every split, refusal and skip (crop pruned or already moved) is one
+  `vision_individual_split` row (idempotent per individual + ask + name), with
+  the exact before/after. Trace: `[VISION_SPLIT]`. Undo:
+  `python3 scripts/undo_vision_split.py <split_id>` (dry run, rolled back) then
+  `--apply`; it refuses when crops joined the new individual since.
+- `VISION_SPLIT_ON_VERDICT_ENABLED=false` turns splits and the cannot-link rule
+  off (verdicts are recorded only, as before). Replay eval (read-only on live):
+  `evals/run_vision_split_replay_eval.py --live <dsn>`.
+
 Needs `services/orion-sql-db/manual_migration_vision_confirm_asks_v1.sql`
-(`orion_ask.image_refs`, `vision_individual_pair_verdict`) and
+(`orion_ask.image_refs`, `vision_individual_pair_verdict`),
 `manual_migration_vision_ask_names_v1.sql` (`orion_ask.answer_detail`,
-`vision_individual.label_copied`, `vision_ask_picture_verdict`); without them
+`vision_individual.label_copied`, `vision_ask_picture_verdict`) and
+`manual_migration_vision_split_v1.sql` (`vision_crop_observation.individual_id`,
+`vision_individual_split`); without them
 the individuals loop backs off with a clear error. Replay eval (read-only on live):
 `evals/run_vision_confirm_asks_replay_eval.py`. Retention: crops `VISION_CROP_RETENTION_DAYS` (7),
 sightings `VISION_SIGHTING_RETENTION_DAYS` (90); unlabeled individuals unseen

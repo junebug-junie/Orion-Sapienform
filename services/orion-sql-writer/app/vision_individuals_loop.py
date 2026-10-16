@@ -56,6 +56,11 @@ def individuals_config(settings: Settings) -> IndividualsConfig:
         ask_face_min_faces=int(settings.vision_ask_face_min_faces),
         same_ask_min_face_cosine=float(settings.vision_same_ask_min_face_cosine),
         confirm_ask_daily_cap=int(settings.vision_confirm_ask_daily_cap),
+        split_on_verdict_enabled=bool(settings.vision_split_on_verdict_enabled),
+        split_follow_min_face_cosine=float(settings.vision_split_follow_min_face_cosine),
+        split_follow_margin=float(settings.vision_split_follow_margin),
+        split_max_move_fraction=float(settings.vision_split_max_move_fraction),
+        cannot_link_margin=float(settings.vision_individuals_cannot_link_margin),
     )
 
 

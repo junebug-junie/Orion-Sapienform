@@ -263,8 +263,15 @@ def build_continuity_messages(
     history: Any,
     latest_user_prompt: str,
     turns: int = 10,
+    keep_timestamps: bool = False,
 ) -> List[Dict[str, str]]:
-    """Build bounded user/assistant/system turns for CortexChatRequest.messages."""
+    """Build bounded user/assistant/system turns for CortexChatRequest.messages.
+
+    ``keep_timestamps`` carries a history item's ``ts`` (when it has one)
+    through to the output. Only the unified harness turn sets it -- its
+    RECENT CONVERSATION block renders the times; the CortexChatRequest
+    lanes keep the plain role/content shape they always had.
+    """
     max_turns = max(0, int(turns or 0))
     max_msgs = 2 * max_turns if max_turns else 0
     normalized: List[Dict[str, str]] = []
@@ -279,7 +286,11 @@ def build_continuity_messages(
             content = str(item.get("content") or "").strip()
             if not content:
                 continue
-            normalized.append({"role": role, "content": content})
+            entry = {"role": role, "content": content}
+            ts = item.get("ts")
+            if keep_timestamps and isinstance(ts, str) and ts.strip():
+                entry["ts"] = ts.strip()
+            normalized.append(entry)
 
     if max_msgs > 0 and len(normalized) > max_msgs:
         normalized = normalized[-max_msgs:]

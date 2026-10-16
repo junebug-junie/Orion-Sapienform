@@ -1495,7 +1495,9 @@ async def execute_unified_turn(
         last_content = str(last.get("content") or "").strip() if isinstance(last, dict) else None
         if last_content is not None and last_content == user_message.strip():
             history_only = history_only[:-1]
-    recent_turns = build_turn_window(history_only, max_turns=HARNESS_RECENT_TURNS_MAX)
+    recent_turns = build_turn_window(
+        history_only, max_turns=HARNESS_RECENT_TURNS_MAX, keep_timestamps=True
+    )
 
     # "orion" or "agent" -- computed once, up near the top of this function
     # (alongside resolved_fcc_model_label; see that block's own comment) so

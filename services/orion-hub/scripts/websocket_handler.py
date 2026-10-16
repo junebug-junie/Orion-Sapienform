@@ -9,6 +9,7 @@ import logging
 import os
 import sys
 import uuid
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from fastapi import WebSocket, WebSocketDisconnect
@@ -1363,7 +1364,16 @@ async def websocket_endpoint(websocket: WebSocket):
             turns = int(data.get("context_turns") or getattr(settings, "HUB_CONTEXT_TURNS", 10))
             prompt_with_ctx = transcript
             # IMPORTANT: store the raw user message for next turn
-            history.append({"role": "user", "content": transcript})
+            # "ts" = when Hub received it (UTC). Rendered as a local time in
+            # the harness RECENT CONVERSATION block so Orion can tell order
+            # and elapsed time apart (orion/harness/prefix.py).
+            history.append(
+                {
+                    "role": "user",
+                    "content": transcript,
+                    "ts": datetime.now(timezone.utc).isoformat(),
+                }
+            )
 
 
             trace_id = str(uuid.uuid4())
@@ -1533,6 +1543,7 @@ async def websocket_endpoint(websocket: WebSocket):
                                 history=history,
                                 latest_user_prompt=transcript,
                                 turns=turns,
+                                keep_timestamps=True,
                             ),
                             with_biometrics=_with_biometrics,
                             biometrics_cache=biometrics_cache,
@@ -2443,7 +2454,13 @@ async def websocket_endpoint(websocket: WebSocket):
                     continue
 
             if orion_response_text and not workflow_metadata_only:
-                history.append({"role": "assistant", "content": orion_response_text})
+                history.append(
+                    {
+                        "role": "assistant",
+                        "content": orion_response_text,
+                        "ts": datetime.now(timezone.utc).isoformat(),
+                    }
+                )
 
             # Keep history bounded (system + last 2*turns messages)
             try:

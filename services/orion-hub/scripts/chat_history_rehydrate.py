@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import logging
 import os
+from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Mapping, Optional
 
 logger = logging.getLogger("orion-hub.history_rehydrate")
@@ -66,15 +67,32 @@ def rows_to_history_messages(
     for row in rows:
         prompt = str(row.get("prompt") or "").strip()
         response = str(row.get("response") or "").strip()
+        # chat_history_log.created_at: server_default now() on the row's
+        # first insert (orion-sql-writer models/chat_history_log.py), a naive
+        # timestamp in the DB's Etc/UTC zone. One time per row, so both
+        # halves of a turn share it. Absent -> no "ts" key, never invented.
+        ts = _row_ts(row.get("created_at"))
+        extra = {"ts": ts} if ts else {}
         if prompt:
-            messages.append({"role": "user", "content": prompt})
+            messages.append({"role": "user", "content": prompt, **extra})
         if response and not _is_error_shaped(response):
-            messages.append({"role": "assistant", "content": response})
+            messages.append({"role": "assistant", "content": response, **extra})
 
     limit = max(0, int(max_turns)) * 2
     if limit and len(messages) > limit:
         messages = messages[-limit:]
     return messages
+
+
+def _row_ts(value: Any) -> Optional[str]:
+    """ISO-8601 UTC string for a chat_history_log.created_at value."""
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=timezone.utc)
+        return value.astimezone(timezone.utc).isoformat()
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    return None
 
 
 def fetch_recent_rows(
@@ -110,7 +128,7 @@ def fetch_recent_rows(
                 conn.execute(
                     text(
                         """
-                        SELECT prompt, response FROM chat_history_log
+                        SELECT prompt, response, created_at FROM chat_history_log
                         WHERE session_id = :sid
                           -- secs, not hours: make_interval's hours arg is int,
                           -- so a float max_age_hours raises UndefinedFunction.

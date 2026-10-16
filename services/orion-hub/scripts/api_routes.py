@@ -3272,6 +3272,7 @@ async def handle_chat_request(
             history=effective_messages,
             latest_user_prompt=user_prompt,
             turns=context_turns,
+            keep_timestamps=True,
         )
 
         frames = await execute_unified_turn(

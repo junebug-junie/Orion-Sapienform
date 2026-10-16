@@ -462,7 +462,8 @@ _STREET_SIGHTINGS_SELECT = (
     "FROM vision_individual_sighting s "
     "JOIN vision_individual i ON i.individual_id = s.individual_id "
     "WHERE s.stream_id = :stream_id "
-    "  AND s.ended_at > now() - make_interval(mins => :lookback) "
+    "  AND s.ended_at > CAST(:now AS timestamptz) - make_interval(mins => :lookback) "
+    "  AND s.started_at <= CAST(:until AS timestamptz) "
     "  AND NOT s.zone_no_embed "
     "{stationary}"
     "GROUP BY s.individual_id, i.kind, i.label, i.distinct_days "
@@ -478,15 +479,18 @@ _STREET_EXPECTATIONS_SQL = text(
     "       window_end, scored_at "
     "FROM vision_percept_expectation "
     "WHERE stream_id = :stream_id AND ("
-    "   (status IN ('met', 'missed') AND scored_at > now() - make_interval(mins => :lookback))"
-    "   OR (status = 'open' AND window_start <= now() AND window_end > now())"
+    "   (status IN ('met', 'missed') AND scored_at > CAST(:now AS timestamptz) - make_interval(mins => :lookback)"
+    "    AND scored_at <= CAST(:until AS timestamptz))"
+    "   OR (status = 'open' AND window_start <= CAST(:now AS timestamptz)"
+    "       AND window_end > CAST(:now AS timestamptz))"
     ") ORDER BY window_start LIMIT 20"
 )
 
 _STREET_UNRESOLVED_SQL = text(
     "SELECT observed_at, description FROM vision_unresolved "
     "WHERE stream_id = :stream_id "
-    "  AND observed_at > now() - make_interval(mins => :lookback) "
+    "  AND observed_at > CAST(:now AS timestamptz) - make_interval(mins => :lookback) "
+    "  AND observed_at <= CAST(:until AS timestamptz) "
     "ORDER BY observed_at DESC LIMIT 20"
 )
 
@@ -494,17 +498,31 @@ _STREET_UNRESOLVED_SQL = text(
 # deduped in Python (street_material.dedupe_street_captions). A different
 # statement from `_room_percept_stmt` on purpose: this is the street, rendered
 # as "On the walkway just now: ...", never as the room. Single stream and a
-# server-side clock (`make_interval`), like the other street reads in this
+# bound `:now` window (`make_interval`), like the other street reads in this
 # file, so it is its own statement rather than street_material's expanding one;
 # the reducer-row exclusion is shared.
+#
+# CLOCK. Every street read windows on the bound `:now`, the same `now` the
+# Python side uses for its 15-minute cut, never the server's `now()`: a caller
+# (an eval, a replay) that passes `now=` gets rows from that moment's window,
+# not from whatever the database clock says today. `:until` is `now` plus
+# STREET_CLOCK_GRACE_SECONDS: events and sightings from after `now` are not
+# part of that moment, and the grace keeps a live read from
+# dropping the newest row when a writer's clock runs a little ahead. A
+# sighting counts if it STARTED by then (someone mid-sighting is present).
+# Only the event window is bounded: a replay still sees CURRENT state for the
+# individual (`label`, `distinct_days`), so names given after `now` and
+# today's day counts show up, and a sighting's `last_at` can run past `now`.
 _STREET_CAPTIONS_SQL = text(
     "SELECT event_type, narrative, created_at FROM vision_events "
     "WHERE stream_id = :stream_id "
     "  AND narrative IS NOT NULL AND narrative <> '' "
     f"  AND {REDUCER_EVENT_TYPES_SQL} "
-    "  AND created_at > now() - make_interval(mins => :lookback) "
+    "  AND created_at > CAST(:now AS timestamptz) - make_interval(mins => :lookback) "
+    "  AND created_at <= CAST(:until AS timestamptz) "
     "ORDER BY created_at DESC LIMIT 20"
 )
+STREET_CLOCK_GRACE_SECONDS = 60
 STREET_CAPTION_MAX = 2
 # Per-caption clip in the brief: two of these plus the prefix stay well inside
 # chat stance's 420-char street clip, leaving room for the rhythm line.
@@ -553,13 +571,86 @@ def _plural(kind: str) -> str:
     return {"person": "people"}.get(kind, kind + "s")
 
 
-def _who_phrase(kind: str, label: str | None, distinct_days: int) -> str:
-    if label:
-        return label
-    kind = (kind or "something").strip() or "something"
-    if distinct_days >= 2:
-        return f"{_article(kind)} {kind} I have seen on {distinct_days} days but have no name for"
-    return f"{_article('unfamiliar')} unfamiliar {kind}"
+# Kinds that are someone rather than something: unnamed ones of these come
+# before vehicles and other things in the "who is around" line. Anything not
+# listed (vehicle, bicycle, stroller, ...) is a thing.
+_LIVING_KINDS = frozenset({"person", "dog", "cat", "bird", "horse", "animal"})
+
+
+def _recurring_phrase(kind: str, days: list[int]) -> str:
+    """Unnamed individuals of one kind each seen on 2+ days. One phrase per
+    kind: two parked cars are "2 vehicles", not the same sentence twice. The
+    day count is exact when they agree, else the smallest ("at least")."""
+    n = len(days)
+    if n == 1:
+        return f"{_article(kind)} {kind} I have seen on {days[0]} days but have no name for"
+    low = min(days)
+    span = f"{low} days" if low == max(days) else f"at least {low} days"
+    return f"{n} {_plural(kind)} I have each seen on {span} but have no name for"
+
+
+def _new_phrase(kind: str, n: int) -> str:
+    return f"{_article('unfamiliar')} unfamiliar {kind}" if n == 1 else f"{n} unfamiliar {_plural(kind)}"
+
+
+def _who_line(sightings: list[dict[str, Any]], *, recent_cut: datetime) -> str:
+    """The "who is around" list, most important first.
+
+    Order: names Juniper gave (most recent first), then unnamed people and
+    animals, then vehicles and other things; within each unnamed group a
+    kind stays together, the ones seen on several days before the new ones,
+    and kinds with recurring members come first. Identical unnamed
+    phrases are grouped by kind. At most `_MAX_WHO_PHRASES` phrases are
+    shown, so a name is only cut when there are more names than that; "and
+    N more" counts the individuals left out, not the phrases.
+    """
+    named: list[str] = []
+    seen_names: set[str] = set()
+    # kind -> distinct_days per individual, in first-seen (most recent) order.
+    recurring: dict[str, list[int]] = {}
+    new: dict[str, int] = {}
+    for row in sightings:
+        last_at = _utc(row.get("last_at"))
+        if last_at is None or last_at < recent_cut:
+            continue
+        label = str(row.get("label") or "").strip()
+        if label:
+            # Two individuals Juniper gave the same name are one name here.
+            if label.casefold() not in seen_names:
+                seen_names.add(label.casefold())
+                named.append(label)
+            continue
+        kind = str(row.get("kind") or "").strip() or "something"
+        try:
+            days = int(row.get("distinct_days") or 0)
+        except (TypeError, ValueError):
+            days = 0
+        if days >= 2:
+            recurring.setdefault(kind, []).append(days)
+        else:
+            new[kind] = new.get(kind, 0) + 1
+
+    # (phrase, how many individuals it stands for)
+    phrases: list[tuple[str, int]] = [(name, 1) for name in named]
+    # One kind stays together: its recurring phrase, then its new one.
+    kinds = list(recurring) + sorted(k for k in new if k not in recurring)
+    for living in (True, False):
+        for kind in kinds:
+            if (kind in _LIVING_KINDS) is not living:
+                continue
+            if kind in recurring:
+                phrases.append((_recurring_phrase(kind, recurring[kind]), len(recurring[kind])))
+            if kind in new:
+                phrases.append((_new_phrase(kind, new[kind]), new[kind]))
+    if not phrases:
+        return ""
+    shown = [p for p, _ in phrases[:_MAX_WHO_PHRASES]]
+    extra = sum(n for _, n in phrases[_MAX_WHO_PHRASES:])
+    if extra > 0:
+        return ", ".join(shown) + f", and {extra} more"
+    if len(shown) == 1:
+        return shown[0]
+    return ", ".join(shown[:-1]) + ", and " + shown[-1]
 
 
 def _hhmm(minute_of_day: Any) -> str | None:
@@ -628,27 +719,9 @@ def summarize_street(
         lines.append(caption)
 
     # 1. Who is around (last 15 minutes).
-    recent_cut = now - timedelta(minutes=STREET_RECENT_MINUTES)
-    who: list[str] = []
-    unnamed_new: dict[str, int] = {}
-    for row in sightings or []:
-        last_at = _utc(row.get("last_at"))
-        if last_at is None or last_at < recent_cut:
-            continue
-        label = str(row.get("label") or "").strip() or None
-        kind = str(row.get("kind") or "").strip()
-        days = int(row.get("distinct_days") or 0)
-        if not label and days < 2:
-            unnamed_new[kind or "something"] = unnamed_new.get(kind or "something", 0) + 1
-            continue
-        who.append(_who_phrase(kind, label, days))
-    for kind, n in sorted(unnamed_new.items()):
-        who.append(_who_phrase(kind, None, 0) if n == 1 else f"{n} unfamiliar {_plural(kind)}")
+    who = _who_line(sightings or [], recent_cut=now - timedelta(minutes=STREET_RECENT_MINUTES))
     if who:
-        shown = who[:_MAX_WHO_PHRASES]
-        extra = len(who) - len(shown)
-        text_ = ", ".join(shown) + (f", and {extra} more" if extra > 0 else "")
-        lines.append(f"On the {camera} in the last {STREET_RECENT_MINUTES} minutes: {text_}.")
+        lines.append(f"On the {camera} in the last {STREET_RECENT_MINUTES} minutes: {who}.")
 
     # 2. What was expected, and did it happen.
     outcomes: list[str] = []
@@ -779,11 +852,13 @@ def fetch_street_summary(
     except Exception:  # noqa: BLE001
         tz = timezone.utc
     now = now or datetime.now(timezone.utc)
+    until = now + timedelta(seconds=STREET_CLOCK_GRACE_SECONDS)
+    window = {"stream_id": stream_id, "now": now, "until": until}
     try:
         with engine.connect() as conn:
             # Wide enough to see an individual who arrived at the start of
             # an expectation window, not only the last 15 minutes.
-            sightings_params = {"stream_id": stream_id, "lookback": STREET_OUTCOME_LOOKBACK_MINUTES}
+            sightings_params = {**window, "lookback": STREET_OUTCOME_LOOKBACK_MINUTES}
             sightings = _street_rows(conn, _STREET_SIGHTINGS_SQL, sightings_params, "sightings")
             if sightings is None:
                 # Most likely the `stationary` column is not there yet (the
@@ -793,12 +868,12 @@ def fetch_street_summary(
                 )
             expectations = _street_rows(
                 conn, _STREET_EXPECTATIONS_SQL,
-                {"stream_id": stream_id, "lookback": STREET_OUTCOME_LOOKBACK_MINUTES},
+                {**window, "lookback": STREET_OUTCOME_LOOKBACK_MINUTES},
                 "expectations",
             )
             unresolved = _street_rows(
                 conn, _STREET_UNRESOLVED_SQL,
-                {"stream_id": stream_id, "lookback": STREET_OUTCOME_LOOKBACK_MINUTES},
+                {**window, "lookback": STREET_OUTCOME_LOOKBACK_MINUTES},
                 "unresolved",
             )
             patio_rows = _street_rows(
@@ -806,7 +881,7 @@ def fetch_street_summary(
             )
             captions = _street_rows(
                 conn, _STREET_CAPTIONS_SQL,
-                {"stream_id": stream_id, "lookback": STREET_RECENT_MINUTES},
+                {**window, "lookback": STREET_RECENT_MINUTES},
                 "captions",
             )
     except Exception as exc:  # noqa: BLE001 -- fail-open by contract

@@ -78,7 +78,7 @@ def _q(pg, sql):
 _FAKE_CLASSIFIER = """\
 import os, sys
 args = sys.argv[1:]
-if "--running-profile-services" in args:
+if "--running-profile-services" in args or "--pool-held-services" in args:
     raise SystemExit(0)
 if "--migrations" in args:
     print("\\n".join(x for x in os.environ["FAKE_MIGRATIONS"].split(";") if x))

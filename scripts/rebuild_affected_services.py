@@ -127,14 +127,18 @@ def _same_python_ast(repo_root: Path, base_ref: str, path: str) -> bool:
     Any doubt (unreadable blob, syntax error) answers False so the file still
     counts as changed.
     """
-    texts = []
+    blobs = []
     for rev in (base_ref, "HEAD"):
-        proc = _run_git(["show", f"{rev}:{path}"], cwd=repo_root)
+        # Bytes, not text: ast.parse honours the encoding cookie, and a
+        # non-UTF8 blob must not raise out of the planner.
+        proc = subprocess.run(
+            ["git", "show", f"{rev}:{path}"], cwd=repo_root, capture_output=True, check=False
+        )
         if proc.returncode != 0:
             return False
-        texts.append(proc.stdout)
+        blobs.append(proc.stdout)
     try:
-        return ast.dump(ast.parse(texts[0])) == ast.dump(ast.parse(texts[1]))
+        return ast.dump(ast.parse(blobs[0])) == ast.dump(ast.parse(blobs[1]))
     except (SyntaxError, ValueError):
         return False
 

@@ -27,3 +27,9 @@ No eval harness for this script; no runtime/Docker change. No env, schema, or bu
 
 - Severity: low. Mitigation: any doubt keeps the file as changed.
 - Follow-up: `pre_turn_appraisal.py` still fans out to 23 services (real change, not addressed).
+
+## Review findings fixed
+
+- Finding: non-UTF8 `.py` blob raised `UnicodeDecodeError` out of the planner (regression); an encoding-cookie-only change could be skipped.
+  - Fix: read blobs as bytes and hand them to `ast.parse`, which honours the cookie.
+  - Evidence: `test_non_utf8_python_does_not_crash_planner`; 79 tests pass.

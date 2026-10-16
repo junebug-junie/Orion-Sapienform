@@ -870,3 +870,34 @@ def test_docstring_change_still_counts(tmp_path: Path) -> None:
 
 def test_unparseable_python_is_kept(tmp_path: Path) -> None:
     assert _changed(tmp_path, "X = (\n", "X = (  # c\n") == ["orion/mod.py"]
+
+
+def test_non_utf8_python_does_not_crash_planner(tmp_path: Path) -> None:
+    head = "# -*- coding: latin-1 -*-\n"
+    before = (head + "X = '\xe9'\n").encode("latin-1").decode("utf-8", "surrogateescape")
+    after = (head + "X = '\xe9'  # c\n").encode("latin-1").decode("utf-8", "surrogateescape")
+    # comment-only edit to a latin-1 file is still skipped, and nothing raises
+    assert _changed_bytes(tmp_path, before, after) == []
+    assert _changed_bytes(tmp_path / "b", before, after.replace("'\udce9'", "'z'")) == ["orion/mod.py"]
+
+
+def _changed_bytes(tmp_path: Path, before: str, after: str) -> list[str]:
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("rebuild_affected_services_under_test", MODULE)
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = mod
+    spec.loader.exec_module(mod)
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    repo = tmp_path / "repo"
+    (repo / "orion").mkdir(parents=True)
+    for cmd in (["init", "-q", "-b", "main"], ["config", "user.email", "t@e.com"], ["config", "user.name", "T"]):
+        subprocess.run(["git", *cmd], cwd=repo, check=True)
+    f = repo / "orion" / "mod.py"
+    f.write_bytes(before.encode("utf-8", "surrogateescape"))
+    subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "one"], cwd=repo, check=True)
+    first = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True, check=True).stdout.strip()
+    f.write_bytes(after.encode("utf-8", "surrogateescape"))
+    subprocess.run(["git", "commit", "-aq", "-m", "two"], cwd=repo, check=True)
+    return mod.changed_files(repo, first)

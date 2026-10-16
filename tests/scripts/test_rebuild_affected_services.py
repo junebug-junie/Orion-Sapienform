@@ -827,3 +827,46 @@ def test_migrations_flag_omits_a_deleted_migration(mini_repo: Path) -> None:
     )
     assert proc.returncode == 0, proc.stderr
     assert proc.stdout == ""
+
+
+def _commit_pair(tmp_path: Path, before: str, after: str, name: str = "orion/mod.py") -> tuple[Path, str]:
+    repo = tmp_path / "repo"
+    (repo / name).parent.mkdir(parents=True)
+    for cmd in (["init", "-q", "-b", "main"], ["config", "user.email", "t@e.com"], ["config", "user.name", "T"]):
+        subprocess.run(["git", *cmd], cwd=repo, check=True)
+    (repo / name).write_text(before, encoding="utf-8")
+    subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "one"], cwd=repo, check=True)
+    first = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True, check=True
+    ).stdout.strip()
+    (repo / name).write_text(after, encoding="utf-8")
+    subprocess.run(["git", "commit", "-aq", "-m", "two"], cwd=repo, check=True)
+    return repo, first
+
+
+def _changed(tmp_path: Path, before: str, after: str) -> list[str]:
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("rebuild_affected_services_under_test", MODULE)
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = mod
+    spec.loader.exec_module(mod)
+    repo, first = _commit_pair(tmp_path, before, after)
+    return mod.changed_files(repo, first)
+
+
+def test_comment_only_python_change_is_not_a_change(tmp_path: Path) -> None:
+    assert _changed(tmp_path, "X = 1\n", "# note\nX = 1  # why\n") == []
+
+
+def test_real_python_change_is_still_a_change(tmp_path: Path) -> None:
+    assert _changed(tmp_path, "X = 1\n", "X = 2\n") == ["orion/mod.py"]
+
+
+def test_docstring_change_still_counts(tmp_path: Path) -> None:
+    assert _changed(tmp_path, '"""a"""\nX = 1\n', '"""b"""\nX = 1\n') == ["orion/mod.py"]
+
+
+def test_unparseable_python_is_kept(tmp_path: Path) -> None:
+    assert _changed(tmp_path, "X = (\n", "X = (  # c\n") == ["orion/mod.py"]

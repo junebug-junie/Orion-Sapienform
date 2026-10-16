@@ -1,6 +1,9 @@
 # Orion queues its own next curiosity focus — design (proposal mode)
 
-Status: PROPOSAL. Nothing here is implemented. Needs Juniper's go before code.
+Status: APPROVED by Juniper 2026-10-16 and IMPLEMENTED (branch `feat/orion-curiosity-focus`,
+report `docs/superpowers/pr-reports/2026-10-16-orion-curiosity-focus-pr.md`). Juniper's decisions
+are recorded under "Decisions" below and override the proposal text where they differ; the
+sections after it describe what was built.
 
 ## Arsonist summary
 
@@ -75,7 +78,31 @@ Paths that exist but are wrong for this:
   lifecycle). **Recommendation: corrections' lifecycle + continuation's prompt slot.** Do not
   write a fake `:TurnOutcome` into the graph from Hub.
 
-## Missing questions
+## Decisions (Juniper, 2026-10-16)
+
+1. **One pending slot, replace** -- a new call replaces the pending focus and the reply returns
+   what was replaced. EXCEPT a focus with `origin="juniper"` cannot be replaced by an
+   `origin="self"` call: refused with "Juniper asked for this focus; it stays until a run takes
+   it or it expires". A `juniper` call may replace anything.
+2. **Expiry 48 hours**, checked against live cadence (below).
+3. **No Hub input box** for Juniper in this patch. The tab shows the pending focus and a Clear
+   button only.
+4. **Shown, not forced -- but the run owes a disposition.** At turn end the run records whether it
+   explored the focus or set it aside and why (`"explored"` | `"set_aside:<reason>"`), as
+   `focus_disposition` on its own `:TurnOutcome`. Missing reads as unknown, never as explored.
+   `curiosity` shows queued -> taken by run X -> disposition / expired / failed.
+
+### Expiry measured (2026-10-16)
+
+`durable_admission_runs`, regular (non-urgent) `curiosity.investigate` runs on the investigate
+line, last 30 days: 206 runs, one every day (6-8 per day). The line runs right after local
+midnight (America/Denver) until the daily cap (7) is used, 30 min apart, then waits for the next
+local day: admissions cluster 06:10-09:20 UTC every day. Gaps between consecutive runs: p50 0.5 h,
+p90 20.8 h, p99 21.0 h, max 21.1 h; 0 gaps over 24 h. Expected wait for a focus queued at a random
+time: 8.2 h. So 48 h never expired a focus in that window; it covers the worst real wait plus one
+whole missed day. Kept at 48 h (`orion.curiosity.focus.FOCUS_TTL`).
+
+## Missing questions (proposal text, answered above)
 
 1. One slot, replace or refuse? Proposed: one pending slot, **replace**, and the reply returns
    the text it replaced. Juniper asked Orion to decide; the latest decision should win, and the
@@ -118,13 +145,14 @@ auto-apply allowlist accepts it):
 
 | column | meaning |
 |---|---|
-| `focus_id uuid pk` | uuid5(question, why, chat_correlation_id): a retried call is ON CONFLICT DO NOTHING |
+| `focus_id uuid pk` | uuid5(question, why, origin, chat_correlation_id): a retried call returns the existing row, nothing new written (as built) |
 | `question`, `why`, `origin` | Orion's words, append-only |
 | `chat_correlation_id` | `binding.parent_trace_id` of the chat turn |
 | `created_at`, `expires_at` | |
-| `status` | `pending` / `replaced` / `expired` / `offered` / `ran` |
+| `status` | `pending` / `replaced` / `cleared` / `expired` / `taken` / `ran` / `failed` (as built; `status_at`, `replaced_by`) |
 | `offered_at`, `offered_run_id` | stamped by TAKE, cleared by RELEASE |
 | `outcome_stamped_at`, `turn_ok` | stamped at turn end |
+| `disposition`, `disposition_raw` | as built: what the run wrote on its `:TurnOutcome`; NULL = unknown; raw kept when malformed |
 
 Partial unique index `WHERE status = 'pending'` enforces the one slot. Replace = one transaction:
 mark the old pending row `replaced`, insert the new one.
@@ -198,7 +226,8 @@ marks runs that took a focus. `DELETE /api/focus/{focus_id}` lets Juniper clear 
 - No queue of many focuses, no ranking, no topic taxonomy.
 - No urgent priority, no gate/cooldown/cap exemption, no email.
 - No write into `orion_worldview` from Hub.
-- No judge of whether the run "addressed" the focus.
+- No judge of whether the run "addressed" the focus. (As built: the run states its own
+  disposition; Hub records it verbatim, it does not grade it.)
 - Not fixing the 197-step / context-ceiling behavior itself (separate issue: a turn with no
   matching tool should say so early). This patch removes the reason for that hunt only.
 - No Hub "queue for next run" input for Juniper in the first patch (open question 3).

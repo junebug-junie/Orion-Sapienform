@@ -256,6 +256,6 @@ Historical atlas rows, read-only counts 2026-10-16:
 
 ## PR link
 
-PR_LINK_PLACEHOLDER
+https://github.com/junebug-junie/Orion-Sapienform/pull/2714
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

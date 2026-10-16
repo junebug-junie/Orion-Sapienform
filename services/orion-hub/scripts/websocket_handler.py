@@ -31,6 +31,7 @@ from scripts.chat_history import (
     publish_chat_turn,
     select_reasoning_trace_for_history,
 )
+from scripts.chat_history_rehydrate import append_live_assistant_reply, trim_history_window
 from scripts.social_room import (
     apply_social_memory_summary_to_payload,
     hub_direct_room_identity,
@@ -1616,8 +1617,23 @@ async def websocket_endpoint(websocket: WebSocket):
                 # leg is: synthesizing speech for a socket that is already
                 # gone is pure waste, and the client_state check is already
                 # right here.
+                orion_final_text = extract_unified_turn_final_text(orion_turn_frames)
+                # Orion's own reply joins this socket's history, so the next
+                # turn's RECENT CONVERSATION holds it. Before 2026-10-16 this
+                # lane `continue`d without appending or trimming: within one
+                # open tab, Orion saw Juniper's messages back to back with
+                # none of their own replies in between, and the list grew
+                # for the life of the tab. The text is the "final" frame's
+                # llm_response -- the same run.final_text the orchestrator
+                # persists to chat_history_log, so rehydrate after a reconnect
+                # reads the same words. A cut-short turn already carries
+                # "[Cut short - not a finished answer.]" in that text
+                # (orion/harness/finalize.py, governor backstop). A turn_error
+                # partial_draft is NOT appended: it is never persisted either,
+                # so it would differ from what a reconnect restores.
+                append_live_assistant_reply(history, orion_final_text)
+                trim_history_window(history, turns)
                 if websocket.client_state == WebSocketState.CONNECTED:
-                    orion_final_text = extract_unified_turn_final_text(orion_turn_frames)
                     dispatch_tts_reply(
                         text=orion_final_text,
                         disable_tts=disable_tts,
@@ -2454,21 +2470,12 @@ async def websocket_endpoint(websocket: WebSocket):
                     continue
 
             if orion_response_text and not workflow_metadata_only:
-                history.append(
-                    {
-                        "role": "assistant",
-                        "content": orion_response_text,
-                        "ts": datetime.now(timezone.utc).isoformat(),
-                    }
-                )
+                append_live_assistant_reply(history, orion_response_text)
 
-            # Keep history bounded (system + last 2*turns messages)
-            try:
-                keep_msgs = 1 + (2 * max(0, int(turns)))
-                if len(history) > keep_msgs:
-                    history[:] = history[:1] + history[-(2 * turns):]
-            except Exception:
-                pass
+            # Keep history bounded (system + last 2*turns messages). Shared
+            # with the unified lane above; also fixes the old inline slice,
+            # which for turns=0 re-added the whole list instead of bounding.
+            trim_history_window(history, turns)
             await websocket.send_json(await _with_biometrics({"state": "idle"}, cache=biometrics_cache))
 
     except WebSocketDisconnect:

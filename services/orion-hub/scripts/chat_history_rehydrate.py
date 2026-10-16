@@ -84,6 +84,53 @@ def rows_to_history_messages(
     return messages
 
 
+def append_live_assistant_reply(
+    history: List[Dict[str, Any]],
+    text: Optional[str],
+    *,
+    ts: Optional[str] = None,
+) -> bool:
+    """Append Orion's delivered reply to a live connection ``history``.
+
+    Same shape and same filter as a rehydrated assistant message, so a reply
+    reads identically whether it came from this socket or from
+    ``chat_history_log`` after a reconnect: blank and error-shaped text is
+    dropped, and ``ts`` (when Hub delivered it, UTC ISO-8601) rides along for
+    the harness RECENT CONVERSATION block. Returns whether it appended.
+    """
+    content = str(text or "").strip()
+    if not content or _is_error_shaped(content):
+        return False
+    history.append(
+        {
+            "role": "assistant",
+            "content": content,
+            "ts": ts or datetime.now(timezone.utc).isoformat(),
+        }
+    )
+    return True
+
+
+def trim_history_window(history: List[Dict[str, Any]], max_turns: Any) -> None:
+    """Bound a live ``history`` in place to the newest ``max_turns`` pairs.
+
+    Keeps the system priming message at index 0 (when present) plus the last
+    ``2 * max_turns`` messages -- the same window ``rows_to_history_messages``
+    restores and ``build_continuity_messages`` sends. ``max_turns`` below 1 (or
+    unparsable) is floored to 1 pair: the old inline trim sliced
+    ``history[-0:]`` for 0, re-adding the whole list instead of bounding it.
+    In place, because the websocket loop holds this exact list object.
+    """
+    try:
+        pairs = int(max_turns)
+    except (TypeError, ValueError):
+        pairs = 1
+    keep = 2 * max(1, pairs)
+    head = 1 if history and str(history[0].get("role") or "") == "system" else 0
+    if len(history) - head > keep:
+        history[head:] = history[-keep:]
+
+
 def _row_ts(value: Any) -> Optional[str]:
     """ISO-8601 UTC string for a chat_history_log.created_at value."""
     if isinstance(value, datetime):

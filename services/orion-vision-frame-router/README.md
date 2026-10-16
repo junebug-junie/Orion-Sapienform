@@ -94,11 +94,17 @@ primary task asks the athena host for no caption (`want_caption: false`). Its
 reply that found at least one of `labels` at `>= min_score`, send the same
 frame as a `caption_frame` task to `CHANNEL_CAPTION_INTAKE`
 (`orion:exec:request:VisionHostService:circe-vl`, the Qwen2-VL-2B lane) with
-`request.caption_prompt` ("Are there any people, animals or vehicles in this
-image? If there are none, reply with only: nothing notable. ..." -- chosen by
-`services/orion-vision-host/evals/walkway_caption_eval.py`), `request.caption_null_answers`
-(that answer becomes *no caption* on the host) and `meta.source_objects` (the
-frame's gate detections, read by orion-vision-window's caption gate). It is
+`request.caption_prompt` ("In one short sentence, describe what is happening
+in this image."), `request.caption_crop_boxes` + `request.caption_crop_pad`
+(the frame's gate boxes; the host captions a padded crop around them, see
+`crop_to_detections` / `crop_pad`) and `meta.source_objects` (the same
+detections, read by orion-vision-window's caption gate). **2026-10-16:** the
+10-15 prompt ("Are there any people, animals or vehicles ...? If there are
+none, reply with only: nothing notable.") got "nothing notable" on every
+walkway task (24/24 on 10-16, 44/50 on 10-15) because Qwen2-VL-2B answers
+"no" to an existence question even on a clear crop of a car, and the whole
+2560x1920 frame shrinks to ~1 MP for the model. No null answer is configured
+now; `caption_null_answers` still works if one is set. It is
 chained after the detect reply, so detection never waits on the ~3 s VLM; it
 has its own in-flight cap (`max_inflight`) and per-camera clock
 (`min_seconds_between_dispatch`) and never takes an athena host slot

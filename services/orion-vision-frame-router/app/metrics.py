@@ -40,6 +40,11 @@ class RouterMetrics:
     caption_skip_counts: dict[str, int] = field(default_factory=dict)
     caption_no_caption_counts: dict[str, int] = field(default_factory=dict)
     caption_failure_counts: dict[str, int] = field(default_factory=dict)
+    # Answered-but-no-caption replies since the last real caption, across all
+    # captioned streams (only walkway today). 2026-10-16:
+    # 24 of 24 walkway replies were "null_answer" and every counter looked
+    # healthy; a long streak now logs a warning (dispatcher).
+    caption_no_caption_streak: int = 0
     last_error: str | None = None
 
     def record_skip(self, reason: str) -> None:
@@ -64,6 +69,11 @@ class RouterMetrics:
 
     def record_caption_no_caption(self, reason: str) -> None:
         self._bump(self.caption_no_caption_counts, reason or "unknown")
+        self.caption_no_caption_streak += 1
+
+    def record_captioned(self) -> None:
+        self.caption_captioned_total += 1
+        self.caption_no_caption_streak = 0
 
     def record_caption_failure(self, reason: str) -> None:
         self._bump(self.caption_failure_counts, reason or "host_error")
@@ -115,6 +125,7 @@ def make_health_envelope(
             "caption_inflight": state.inflight_lane("caption"),
             "caption_skip_counts": dict(metrics.caption_skip_counts),
             "caption_no_caption_counts": dict(metrics.caption_no_caption_counts),
+            "caption_no_caption_streak": metrics.caption_no_caption_streak,
             "caption_failure_counts": dict(metrics.caption_failure_counts),
             "last_error": metrics.last_error,
         },

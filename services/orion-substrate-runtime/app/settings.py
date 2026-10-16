@@ -182,6 +182,21 @@ class Settings(BaseSettings):
     # broadcast loops. Default off: OpenLoopV1 is extra="forbid", so every
     # broadcast consumer must be rebuilt BEFORE this is turned on. Apply
     # manual_migration_node_prediction_error_history_v1.sql first.
+    # Rung 6 (orion/substrate/prediction_expectation.py): record each raw
+    # execution/chat reading before it becomes surprise, as the replay corpus
+    # Orion tunes their own expectation settings from. Retention must exceed
+    # the Hub tuner's window (SUBSTRATE_PREDICTION_EXPECTATION_WINDOW_HOURS,
+    # default 72) plus a 6 h post-adoption check.
+    prediction_raw_readings_enabled: bool = Field(True, alias="SUBSTRATE_PREDICTION_RAW_READINGS_ENABLED")
+    prediction_raw_reading_retention_hours: float = Field(
+        192.0, ge=84.0, alias="SUBSTRATE_PREDICTION_RAW_READING_RETENTION_HOURS"
+    )
+    # Use Orion's self-tuned expectation (control surface prediction_expectation.<domain>)
+    # instead of the calibrated constants. False = constants, i.e. rung 6 kill switch.
+    prediction_expectation_live_enabled: bool = Field(True, alias="SUBSTRATE_PREDICTION_EXPECTATION_LIVE_ENABLED")
+    prediction_expectation_refresh_sec: float = Field(
+        60.0, ge=5.0, alias="SUBSTRATE_PREDICTION_EXPECTATION_REFRESH_SEC"
+    )
     pe_history_enabled: bool = Field(True, alias="SUBSTRATE_PE_HISTORY_ENABLED")
     # Floor 25h: below that the prune would delete the readings the 24h and
     # prior-24h windows need (0 would delete every row just written). Below

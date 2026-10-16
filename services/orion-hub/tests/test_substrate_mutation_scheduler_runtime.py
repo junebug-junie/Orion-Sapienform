@@ -477,3 +477,58 @@ def test_scheduler_self_revision_lane_is_retired(monkeypatch, scheduler_fixture)
         for proposal in api_routes.SUBSTRATE_MUTATION_STORE._proposals.values()
         if proposal.mutation_class == "cognitive_identity_continuity_adjustment"
     ]
+
+
+def _steady_readings(n: int = 1500):
+    import random
+    from datetime import timedelta
+
+    r = random.Random(2)
+    start = datetime.now(timezone.utc) - timedelta(minutes=n + 5)
+    return [(start + timedelta(minutes=i), abs(0.02 + r.gauss(0, 0.005))) for i in range(n)]
+
+
+def test_scheduled_cycle_lets_orion_adopt_a_self_tuned_expectation(monkeypatch, scheduler_fixture) -> None:
+    """Rung 6 end to end through the Hub's scheduled cycle: the tuner proposes
+    from recorded raw readings, the trial scores the held-out span, and the
+    unattended applier writes Orion's new expectation to the control surface."""
+    from orion.substrate.prediction_expectation import domain_specs
+    from orion.substrate.prediction_expectation_tuner import PredictionExpectationTuner
+
+    readings = _steady_readings()
+    tuner = PredictionExpectationTuner(
+        read_readings=lambda domain, since: [r for r in readings if r[0] >= since] if domain == "execution" else [],
+        read_live=mutation_control_surface.get_prediction_expectation,
+    )
+    monkeypatch.setattr(api_routes, "_prediction_expectation_tuner", lambda: tuner)
+    monkeypatch.setenv("SUBSTRATE_AUTONOMY_APPLY_ENABLED", "true")
+    monkeypatch.setenv("SUBSTRATE_AUTONOMY_ROUTING_APPLY_ENABLED", "true")
+    default = domain_specs()["execution"].default
+    assert mutation_control_surface.get_prediction_expectation("execution") == default
+
+    payload = api_routes.execute_substrate_mutation_scheduled_cycle(telemetry_override=[])
+
+    assert payload["status"] == "completed", payload
+    assert payload["summary"]["prediction_expectation_proposals"] == 1
+    assert payload["summary"]["adoptions_completed"] == 1, payload["summary"]
+    adopted = mutation_control_surface.get_prediction_expectation("execution")
+    assert adopted != default and adopted.alpha < default.alpha
+
+    # Same hour: no second proposal; the adoption holds the surface.
+    again = api_routes.execute_substrate_mutation_scheduled_cycle(telemetry_override=[])
+    assert again["summary"]["prediction_expectation_proposals"] == 0
+
+
+def test_review_telemetry_is_turned_into_signals_once(monkeypatch) -> None:
+    from collections import OrderedDict
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(api_routes, "_MUTATION_SEEN_TELEMETRY_IDS", OrderedDict())
+    rows = [SimpleNamespace(telemetry_id="a"), SimpleNamespace(telemetry_id="b")]
+    fresh = api_routes._unseen_review_telemetry(rows)
+    assert [r.telemetry_id for r in fresh] == ["a", "b"]
+    # Not consumed yet (cycle raised / lost the lock): still unseen.
+    assert [r.telemetry_id for r in api_routes._unseen_review_telemetry(rows)] == ["a", "b"]
+    api_routes._mark_review_telemetry_seen(fresh)
+    rows.append(SimpleNamespace(telemetry_id="c"))
+    assert [r.telemetry_id for r in api_routes._unseen_review_telemetry(rows)] == ["c"]

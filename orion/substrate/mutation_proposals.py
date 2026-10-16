@@ -19,7 +19,6 @@ SURFACE_TO_CLASS = {
     "recall_anchor_policy": "recall_anchor_policy_candidate",
     "recall_page_index_profile": "recall_page_index_profile_candidate",
     "recall_graph_expansion_policy": "recall_graph_expansion_policy_candidate",
-    "graph_consolidation": "graph_consolidation_param_patch",
     "prompt_profile": "approved_prompt_profile_variant_promotion",
     "cognitive_contradiction_reconciliation": "cognitive_contradiction_reconciliation",
     "cognitive_identity_continuity_adjustment": "cognitive_identity_continuity_adjustment",
@@ -41,7 +40,6 @@ SURFACE_TO_LANE = {
     "recall_anchor_policy": "operational",
     "recall_page_index_profile": "operational",
     "recall_graph_expansion_policy": "operational",
-    "graph_consolidation": "operational",
     "prompt_profile": "operational",
     "cognitive_contradiction_reconciliation": "cognitive",
     "cognitive_identity_continuity_adjustment": "cognitive",
@@ -356,8 +354,6 @@ def _default_patch_for_class(mutation_class: str) -> dict[str, float | str]:
         }
     if mutation_class == "field_topology_weight_patch":
         return {"edge_weight_delta": 0.0}
-    if mutation_class == "graph_consolidation_param_patch":
-        return {"query_limit_nodes": 96, "query_limit_edges": 192, "normal_revisit_seconds": 3600}
     if mutation_class == "cognitive_contradiction_reconciliation":
         return {
             "pressure_kind": "contradiction_pressure",
@@ -408,8 +404,6 @@ def _default_rollback_for_class(mutation_class: str) -> dict[str, float | str]:
         return {"semantic_weight": 0.50, "episodic_weight": 0.35, "recency_weight": 0.15}
     if mutation_class == "field_topology_weight_patch":
         return {"edge_weight_delta": 0.0}
-    if mutation_class == "graph_consolidation_param_patch":
-        return {"query_limit_nodes": 64, "query_limit_edges": 128, "normal_revisit_seconds": 7200}
     if mutation_class.startswith("cognitive_") or mutation_class.startswith("recall_"):
         return {"draft_recommendation": "discard_and_revert_to_previous_draft"}
     return {"profile_variant_id": "approved-baseline-v1"}

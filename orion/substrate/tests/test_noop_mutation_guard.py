@@ -137,6 +137,10 @@ def test_the_smoke_script_never_writes_to_the_ambient_control_surface(
     assert mutation_control_surface.get_chat_reflective_lane_threshold() == 0.71
     history = ambient.history("routing.chat_reflective_lane_threshold")
     assert [row["actor"] for row in history] == ["operator"]
+    # Since rung 6 the smoke's real apply is prediction_expectation_patch,
+    # which writes the control surface -- the ambient one must never see it.
+    assert ambient.history("prediction_expectation.execution") == []
+    assert ambient.get("prediction_expectation.execution") is None
     # ... and the smoke still exercises the apply path it exists to prove.
     assert any("decision=auto_promote" in line and "applied=True" in line for line in lines)
 

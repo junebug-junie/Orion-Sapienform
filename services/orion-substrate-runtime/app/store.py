@@ -840,6 +840,30 @@ class BiometricsSubstrateStore:
             for r in rows
         ]
 
+    def save_prediction_raw_reading(self, *, domain: str, observed_at: datetime, raw_value: float) -> None:
+        """Rung 6 replay corpus: one raw per-tick reading of an EWMA-scored
+        prediction-error domain, before it becomes surprise
+        (manual_migration_prediction_raw_reading_v1.sql). Idempotent on the PK."""
+        with self._engine.begin() as conn:
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO substrate_prediction_raw_reading (domain, observed_at, raw_value)
+                    VALUES (:domain, :observed_at, :raw_value)
+                    ON CONFLICT (domain, observed_at) DO NOTHING
+                    """
+                ),
+                {"domain": domain, "observed_at": observed_at, "raw_value": float(raw_value)},
+            )
+
+    def prune_prediction_raw_readings(self, *, older_than: datetime) -> int:
+        with self._engine.begin() as conn:
+            result = conn.execute(
+                text("DELETE FROM substrate_prediction_raw_reading WHERE observed_at < :older_than"),
+                {"older_than": older_than},
+            )
+            return int(result.rowcount or 0)
+
     def prune_prediction_error_history(self, *, older_than: datetime) -> int:
         with self._engine.begin() as conn:
             result = conn.execute(

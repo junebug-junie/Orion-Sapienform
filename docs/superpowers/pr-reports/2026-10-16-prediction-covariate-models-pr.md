@@ -134,6 +134,6 @@ scripts/safe_docker_build.sh orion-prediction up -d --build
 
 ## PR link
 
-<link>
+https://github.com/junebug-junie/Orion-Sapienform/pull/2716
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

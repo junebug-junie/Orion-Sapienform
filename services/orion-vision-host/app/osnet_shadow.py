@@ -124,6 +124,8 @@ class OsnetShadow:
             logger.info("[OSNET] shadow body vector disabled (VISION_OSNET_SHADOW_ENABLED=false)")
 
     def _model(self, device: str):
+        # One lock for every device: a first load (about 0.2 s, once per
+        # device) briefly blocks frames on other devices. Accepted.
         with self._lock:
             m = self._models.get(device)
             if m is not None:
@@ -171,10 +173,12 @@ class OsnetShadow:
                 with torch.inference_mode():
                     feats = model(batch).detach().float().cpu().numpy()
             except Exception as exc:
-                self.failures += 1
-                self.last_error = f"embed: {exc}"[:300]
+                with self._lock:
+                    self.failures += 1
+                    self.last_error = f"embed: {exc}"[:300]
                 raise
-            self.vectors += len(crops)
+            with self._lock:
+                self.vectors += len(crops)
             return feats
 
         return _embed

@@ -272,3 +272,87 @@ def test_degraded_reasons_name_the_fallback_and_osnet_failure() -> None:
     }
     assert model_degraded_reasons(models) == [f"body_embedder_fallback:{BODY}", "osnet_shadow_failed"]
     assert model_degraded_reasons({"body_embedder": {}, "osnet_shadow": {"state": "loaded"}}) == []
+
+
+# --- review fixes (2026-10-16) ----------------------------------------------------------------
+
+
+class _RowsOsnet:
+    def __init__(self, rows):
+        self.rows = rows
+
+    def __call__(self, crops):
+        return np.asarray(self.rows[: len(crops)], dtype=np.float32)
+
+
+def test_a_nan_row_loses_only_its_own_osnet_vector() -> None:
+    objs = _objs()  # persons at rows 0 and 2 of the embed list
+    stats = _run(objs, osnet=_RowsOsnet([[float("nan")] * 512, [1.0] * 512]))
+    person, dog, person2 = objs
+    assert person["osnet_embedding"] is None and person["embedding"] is not None
+    assert person2["osnet_embedding"] is not None and stats["osnet"] == 1
+
+
+def test_wrong_dimension_is_not_stored_as_osnet() -> None:
+    objs = _objs()
+    stats = _run(objs, osnet=_RowsOsnet([[1.0] * 256, [1.0] * 256]))
+    assert all(o["osnet_embedding"] is None for o in objs) and stats["osnet_error"] == 1
+    assert all(o["embedding"] is not None for o in objs)
+
+
+def test_osnet_dim_constant_matches_the_model() -> None:
+    from app.crop_embeddings import OSNET_DIM
+
+    assert OSNET_DIM == osn.FEATURE_DIM
+
+
+def test_body_model_id_is_read_after_the_embedder_ran() -> None:
+    seen = []
+
+    def embed(crops):
+        seen.append("embedded")
+        return np.ones((len(crops), 4), dtype=np.float32)
+
+    def body_id():
+        seen.append("asked")
+        return BODY
+
+    objs = [{"label": "person", "score": 0.9, "box_xyxy": list(PERSON_BOX)}]
+    attach_crop_embeddings(objs, Image.new("RGB", (W, H)), request={"want_crop_embeddings": True,
+                           "stream_id": "walkway"}, params={}, embed_fn=embed, zones_by_stream=ZONES,
+                           model_id="m", embed_profile="embed_image", min_score=0.35, body_model_id=body_id)
+    assert seen == ["embedded", "asked"] and objs[0]["embedding_model_id"] == BODY
+    # Nothing to embed: the embedder is never asked, and neither is the id.
+    seen.clear()
+    _ = attach_crop_embeddings([{"label": "person", "score": 0.9, "box_xyxy": list(PERSON_BOX)}],
+                               Image.new("RGB", (W, H)), request={"want_crop_embeddings": True,
+                               "stream_id": "cam0"}, params={}, embed_fn=embed, zones_by_stream=ZONES,
+                               model_id="m", embed_profile="embed_image", min_score=0.35, body_model_id=body_id)
+    assert seen == []
+
+
+def test_ready_stays_true_when_osnet_fails_and_body_falls_back(monkeypatch) -> None:
+    from app import main as host_main
+
+    class _Sched:
+        def can_pick_gpu(self):
+            return True
+
+        def queue_depth(self):
+            return 0
+
+    class _Runner:
+        warm_errors: dict = {}
+
+        def model_status(self):
+            return {"body_embedder": {"embed_image@cuda:0": {"requested": "x", "loaded": BODY, "fallback": True}},
+                    "osnet_shadow": {"state": "failed", "last_error": "load: no weights"}}
+
+    svc = host_main.VisionHostService.__new__(host_main.VisionHostService)
+    svc.profiles, svc.bus, svc.sched, svc.runner = object(), None, _Sched(), _Runner()
+    monkeypatch.setattr(host_main.settings, "ORION_BUS_ENABLED", False)
+    body = svc.readiness_payload()
+    assert body["ready"] is True
+    assert f"body_embedder_fallback:{BODY}" in body["degraded_reasons"]
+    assert "osnet_shadow_failed" in body["degraded_reasons"]
+    assert body["models"]["osnet_shadow"]["state"] == "failed"

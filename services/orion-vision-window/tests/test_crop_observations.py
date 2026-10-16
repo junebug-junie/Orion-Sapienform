@@ -145,3 +145,22 @@ def test_osnet_shadow_fields_ride_along_and_are_omitted_while_empty() -> None:
     # A crop without them sends no key at all, so a writer that predates them still accepts it.
     assert not {"osnet_embedding", "osnet_model_id", "embedding_model_id"} & set(data["crops"][1])
     VisionCropObservationV1.model_validate(data)
+    # Proof against the pre-change contract: VisionCropV1 as it was before the OSNet fields.
+    from typing import List, Optional
+
+    from pydantic import BaseModel, ConfigDict
+
+    class OldCrop(BaseModel):
+        model_config = ConfigDict(extra="forbid")
+        label: str
+        score: float
+        box_xyxy: List[float]
+        zone: Optional[str] = None
+        embedding_ref: Optional[str] = None
+        embedding: Optional[List[float]] = None
+        thumb_ref: Optional[str] = None
+        face_embedding: Optional[List[float]] = None
+        face_score: Optional[float] = None
+        face_thumb_ref: Optional[str] = None
+
+    OldCrop.model_validate(data["crops"][1])

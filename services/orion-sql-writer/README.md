@@ -374,8 +374,12 @@ only by `evals/run_osnet_vs_siglip_eval.py --live <dsn>` (READ ONLY): same-frame
 different-people pairs vs next-frame same-person pairs (from box geometry, not
 from either model) and Juniper's picture verdicts, per model: cosine
 quantiles, AUC, and how many different people pass at the line that keeps 90%
-of same-person pairs. It reports `INSUFFICIENT DATA` (exit 2) until about a day
-of crops carry both vectors. Retention follows the crop rows (7 days).
+of same-person pairs. A winner is named only when a paired bootstrap puts the
+95% interval of the let-through difference on one side of zero. The geometry
+pairs are seconds apart, so they test short-term consistency and telling
+side-by-side people apart, not matching one person across visits; only the
+verdict pairs speak to that. It reports `INSUFFICIENT DATA` (exit 2) until about
+a day of crops carry both vectors. Retention follows the crop rows (7 days).
 
 **Individuals loop** (`app/vision_individuals.py`, every
 `VISION_INDIVIDUALS_INTERVAL_SEC`, default 60 s). Reads new crops per stream

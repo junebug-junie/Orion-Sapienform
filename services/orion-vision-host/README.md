@@ -487,6 +487,10 @@ nothing about who a crop is assigned to changes.
   `/health` -> `models.osnet_shadow` shows OSNet's state, VRAM, vector count
   and last error; `osnet_shadow_failed` joins `degraded_reasons` when it
   cannot load.
+- **Deploy last:** migration -> orion-sql-writer -> orion-vision-window ->
+  orion-vision-host. An older window drops the new fields silently (its
+  `VisionObject` ignores unknown keys). The kill switch does not remove the
+  order: `embedding_model_id` is sent on every embedded crop either way.
 - Test: `tests/test_osnet_shadow.py` (the real-weights test runs inside the
   built image; it skips where the weights are absent).
 

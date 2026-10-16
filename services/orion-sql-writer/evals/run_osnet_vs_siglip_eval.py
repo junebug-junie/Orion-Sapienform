@@ -5,9 +5,13 @@ docs/superpowers/specs/2026-10-16-vision-body-match-proposal.md, "A better body
 vector". READ ONLY: one READ ONLY transaction on the live DB, nothing written,
 nothing copied, no pictures opened.
 
-Uses only person crops that carry BOTH vectors (``embedding`` = SigLIP,
-``osnet_embedding`` = OSNet, from manual_migration_vision_osnet_shadow_v1.sql),
-so both models are scored on exactly the same crops and the same pairs.
+Scores only pairs whose two crops both carry BOTH vectors (``embedding`` =
+SigLIP, ``osnet_embedding`` = OSNet, from
+manual_migration_vision_osnet_shadow_v1.sql), so both models are scored on
+exactly the same pairs. The pair GEOMETRY (which box is which, which frame is
+next, is there an ambiguous runner-up) is computed over every person crop in
+the window, with or without vectors, so a box that was never embedded can
+still veto an ambiguous pair.
 
 Pair labels come from the camera's geometry, never from either model, so
 neither model can grade itself:
@@ -26,9 +30,17 @@ neither model can grade itself:
 
 For each model it prints the cosine quantiles of each pair kind, the AUC (the
 chance a random same-person pair scores above a random different-people pair;
-0.5 = no better than chance), and the "different people let through" rate at
-the line that keeps 90% of same-person pairs. Higher AUC and lower pass rate
-win.
+0.5 = no better than chance), and -- the headline -- the "different people let
+through" rate at the line that keeps 90% of same-person pairs. A winner is
+named only when a paired bootstrap (the same resampled pairs for both models,
+``--bootstrap`` rounds) puts the 95% interval of the let-through difference
+entirely on one side of zero; otherwise it says "tie".
+
+What this does NOT show: track pairs are at most a few seconds apart (same
+pose, same light), so the geometry score tests short-term consistency plus
+separating people standing side by side. It does not test matching the same
+person across visits hours or days apart, which is what the individuals
+matcher needs. Only Juniper's verdict pairs speak to that, and there are few.
 
 Insufficient data is reported as such, with the counts, and exits 2. Expect
 that until about a day after orion-vision-host starts producing OSNet vectors.
@@ -70,7 +82,7 @@ class Crop:
     stream_id: str
     observed_at: datetime
     box: Tuple[float, float, float, float]
-    vecs: Dict[str, np.ndarray]
+    vecs: Optional[Dict[str, np.ndarray]]  # None: geometry only (not both vectors)
 
 
 def _unit(v) -> np.ndarray:
@@ -123,7 +135,8 @@ def same_frame_pairs(by_stream: Dict[str, List[List[Crop]]]) -> List[Tuple[Crop,
                     iou, contain = _iou_and_containment(fr[i].box, fr[j].box)
                     if iou > 0.3 or contain > 0.7:
                         continue  # possibly one person boxed twice
-                    pairs.append((fr[i], fr[j]))
+                    if fr[i].vecs and fr[j].vecs:
+                        pairs.append((fr[i], fr[j]))
     return pairs
 
 
@@ -160,27 +173,21 @@ def track_pairs(by_stream: Dict[str, List[List[Crop]]], max_gap_sec: float) -> L
                 back, best_b, second_b = _nearest(b, a_fr)
                 if back is None or a_fr[back] is not a or second_b < 1.5 * max(best_b, 1e-6):
                     continue
-                pairs.append((a, b))
+                if a.vecs and b.vecs:
+                    pairs.append((a, b))
     return pairs
 
 
 def auc(same: Sequence[float], diff: Sequence[float]) -> Optional[float]:
     """P(same > diff) + 0.5 P(tie), by ranks (Mann-Whitney U)."""
-    if not same or not diff:
+    if len(same) == 0 or len(diff) == 0:
         return None
     s = np.asarray(same, dtype=np.float64)
     d = np.asarray(diff, dtype=np.float64)
     allv = np.concatenate([s, d])
-    order = allv.argsort(kind="mergesort")
-    ranks = np.empty(len(allv), dtype=np.float64)
-    sorted_v = allv[order]
-    i = 0
-    while i < len(sorted_v):
-        j = i
-        while j + 1 < len(sorted_v) and sorted_v[j + 1] == sorted_v[i]:
-            j += 1
-        ranks[order[i:j + 1]] = (i + j) / 2.0 + 1.0
-        i = j + 1
+    _, inv, counts = np.unique(allv, return_inverse=True, return_counts=True)
+    ends = np.cumsum(counts)
+    ranks = (ends - (counts - 1) / 2.0)[inv]          # mid-ranks, 1-based
     u = ranks[: len(s)].sum() - len(s) * (len(s) + 1) / 2.0
     return float(u / (len(s) * len(d)))
 
@@ -206,13 +213,43 @@ def separation(same: Sequence[float], diff: Sequence[float]) -> Dict[str, object
     return out
 
 
+def _cosines(pairs, m: str) -> np.ndarray:
+    return np.asarray([_cos(a.vecs[m], b.vecs[m]) for a, b in pairs], dtype=np.float64)
+
+
+def _let_through(same: np.ndarray, diff: np.ndarray) -> float:
+    line = np.percentile(same, (1.0 - KEEP_SAME) * 100.0)
+    return float(np.mean(diff >= line))
+
+
 def score_pairs(same_pairs, diff_pairs) -> Dict[str, Dict[str, object]]:
     res = {}
     for m in MODELS:
-        same = [_cos(a.vecs[m], b.vecs[m]) for a, b in same_pairs]
-        diff = [_cos(a.vecs[m], b.vecs[m]) for a, b in diff_pairs]
-        res[m] = separation(same, diff)
+        res[m] = separation(list(_cosines(same_pairs, m)), list(_cosines(diff_pairs, m)))
     return res
+
+
+def compare(same_pairs, diff_pairs, *, rounds: int, seed: int = 0) -> Dict[str, object]:
+    """Paired bootstrap of OSNet minus SigLIP: let-through (lower is better) and AUC.
+
+    The same resampled pairs feed both models, so pair difficulty cancels.
+    ``winner`` is named only when the 95% interval of the let-through
+    difference excludes zero.
+    """
+    cs = {m: _cosines(same_pairs, m) for m in MODELS}
+    cd = {m: _cosines(diff_pairs, m) for m in MODELS}
+    rng = np.random.default_rng(seed)
+    d_let, d_auc = [], []
+    for _ in range(max(1, rounds)):
+        i = rng.integers(0, len(same_pairs), len(same_pairs))
+        j = rng.integers(0, len(diff_pairs), len(diff_pairs))
+        d_let.append(_let_through(cs["osnet"][i], cd["osnet"][j]) - _let_through(cs["siglip"][i], cd["siglip"][j]))
+        d_auc.append(auc(cs["osnet"][i], cd["osnet"][j]) - auc(cs["siglip"][i], cd["siglip"][j]))
+    lo, hi = (float(np.percentile(d_let, q)) for q in (2.5, 97.5))
+    alo, ahi = (float(np.percentile(d_auc, q)) for q in (2.5, 97.5))
+    winner = "osnet" if hi < 0 else "siglip" if lo > 0 else "tie"
+    return {"rounds": rounds, "osnet_minus_siglip_let_through_ci95": [round(lo, 4), round(hi, 4)],
+            "osnet_minus_siglip_auc_ci95": [round(alo, 4), round(ahi, 4)], "winner": winner}
 
 
 def verdict_pairs(pictures, by_crop: Dict[str, Crop], clean_name) -> Tuple[list, list, int]:
@@ -254,9 +291,10 @@ def _columns_present(conn) -> bool:
 
 
 def load_crops(conn, since: datetime, stream: Optional[str]) -> Tuple[List[Crop], Dict[str, object]]:
+    """Every person crop in the window (geometry), with vectors only where it has both."""
     from sqlalchemy import text
 
-    where = "label = 'person' AND observed_at >= :since AND zone_no_embed = false"
+    where = "label = 'person' AND observed_at >= :since"
     params: Dict[str, object] = {"since": since}
     if stream:
         where += " AND stream_id = :s"
@@ -272,17 +310,21 @@ def load_crops(conn, since: datetime, stream: Optional[str]) -> Tuple[List[Crop]
         f"SELECT coalesce(embedding_model_id, '(not recorded)') AS b, coalesce(osnet_model_id, '-') AS o, "
         f"count(*) AS n FROM vision_crop_observation WHERE {where} AND osnet_embedding IS NOT NULL "
         f"GROUP BY 1, 2 ORDER BY 3 DESC"), params).fetchall()
-    rows = conn.execute(text(
-        f"SELECT crop_id, observation_id, stream_id, observed_at, box_xyxy, embedding, osnet_embedding "
-        f"FROM vision_crop_observation WHERE {where} AND embedding IS NOT NULL AND osnet_embedding IS NOT NULL "
-        f"ORDER BY observed_at, crop_id"), params)
+    both = "embedding IS NOT NULL AND osnet_embedding IS NOT NULL"
+    rows = conn.execution_options(stream_results=True, yield_per=2000).execute(text(
+        f"SELECT crop_id, observation_id, stream_id, observed_at, box_xyxy, "
+        f"CASE WHEN {both} THEN embedding END AS embedding, "
+        f"CASE WHEN {both} THEN osnet_embedding END AS osnet_embedding "
+        f"FROM vision_crop_observation WHERE {where} ORDER BY observed_at, crop_id"), params)
     crops = []
     for r in rows:
         if not r.box_xyxy or len(r.box_xyxy) != 4:
             continue
+        vecs = None
+        if r.embedding is not None and r.osnet_embedding is not None:
+            vecs = {"siglip": _unit(r.embedding), "osnet": _unit(r.osnet_embedding)}
         crops.append(Crop(r.crop_id, r.observation_id, r.stream_id, r.observed_at,
-                          tuple(float(v) for v in r.box_xyxy),
-                          {"siglip": _unit(r.embedding), "osnet": _unit(r.osnet_embedding)}))
+                          tuple(float(v) for v in r.box_xyxy), vecs))
     coverage = {
         "person_crops_with_body_vector": int(counts.body),
         "person_crops_with_osnet_vector": int(counts.osnet),
@@ -294,11 +336,12 @@ def load_crops(conn, since: datetime, stream: Optional[str]) -> Tuple[List[Crop]
     return crops, coverage
 
 
-def evaluate(crops: Sequence[Crop], pictures, clean_name, *, max_gap_sec: float, min_pairs: int) -> Dict[str, object]:
+def evaluate(crops: Sequence[Crop], pictures, clean_name, *, max_gap_sec: float, min_pairs: int,
+             bootstrap: int = 200) -> Dict[str, object]:
     by_stream = frames(crops)
     diff_pairs = same_frame_pairs(by_stream)
     same_pairs = track_pairs(by_stream, max_gap_sec)
-    by_crop = {c.crop_id: c for c in crops}
+    by_crop = {c.crop_id: c for c in crops if c.vecs}
     v_same, v_diff, v_pics = verdict_pairs(pictures, by_crop, clean_name)
     report: Dict[str, object] = {
         "pairs": {"same_person_next_frame": len(same_pairs), "different_people_same_frame": len(diff_pairs),
@@ -310,9 +353,8 @@ def evaluate(crops: Sequence[Crop], pictures, clean_name, *, max_gap_sec: float,
     report["sufficient"] = enough
     if enough:
         report["geometry"] = score_pairs(same_pairs, diff_pairs)
-        g = report["geometry"]
-        report["winner"] = ("osnet" if g["osnet"]["auc"] > g["siglip"]["auc"] else
-                            "siglip" if g["siglip"]["auc"] > g["osnet"]["auc"] else "tie")
+        report["comparison"] = compare(same_pairs, diff_pairs, rounds=bootstrap)
+        report["winner"] = report["comparison"]["winner"]
     if v_same or v_diff:
         report["verdicts"] = score_pairs(v_same, v_diff)
     return report
@@ -344,8 +386,13 @@ def _print(report: Dict[str, object]) -> None:
                   f"  different {r['different']['p10']}/{r['different']['p50']}/{r['different']['p90']} "
                   f"(n={r['different']['n']})  AUC {r['auc']}  line {r['line_keeping_90pct_same']} lets "
                   f"{r['different_let_through_at_line']} of different people through")
-    if report.get("winner"):
-        print(f"\nseparation winner on geometry pairs (AUC): {report['winner'].upper()}")
+    if report.get("comparison"):
+        c = report["comparison"]
+        print(f"\nOSNet minus SigLIP, paired bootstrap x{c['rounds']} (95%): different people let through "
+              f"{c['osnet_minus_siglip_let_through_ci95']} (below 0 = OSNet better), "
+              f"AUC {c['osnet_minus_siglip_auc_ci95']}")
+        print(f"winner on geometry pairs (let-through): {report['winner'].upper()}  "
+              f"-- short-term pairs only; cross-visit matching is tested only by the verdict pairs")
 
 
 def main(argv=None) -> int:
@@ -355,6 +402,7 @@ def main(argv=None) -> int:
     ap.add_argument("--since-hours", type=float, default=24.0 * 8)
     ap.add_argument("--max-gap-sec", type=float, default=DEFAULT_MAX_GAP_SEC)
     ap.add_argument("--min-pairs", type=int, default=DEFAULT_MIN_PAIRS)
+    ap.add_argument("--bootstrap", type=int, default=200, help="paired bootstrap rounds")
     ap.add_argument("--json", action="store_true")
     args = ap.parse_args(argv)
     from sqlalchemy import create_engine, text
@@ -364,7 +412,9 @@ def main(argv=None) -> int:
     since = datetime.now(timezone.utc) - timedelta(hours=args.since_hours)
     report: Dict[str, object] = {"generated_at": datetime.now(timezone.utc).isoformat(),
                                  "since": since.isoformat(), "stream": args.stream or None}
-    engine = create_engine(args.live)
+    # Read only twice over: the driver opens every transaction READ ONLY, and
+    # the first statement says so again.
+    engine = create_engine(args.live, execution_options={"postgresql_readonly": True})
     with engine.connect() as conn:
         conn.execute(text("SET TRANSACTION READ ONLY"))
         if not _columns_present(conn):
@@ -378,7 +428,7 @@ def main(argv=None) -> int:
                 "WHERE p.verdict IN ('same', 'different') AND p.crop_id IS NOT NULL "
                 "ORDER BY p.ask_id, p.picture_index")).fetchall()
             report.update(evaluate(crops, pictures, _clean_name, max_gap_sec=args.max_gap_sec,
-                                   min_pairs=args.min_pairs))
+                                   min_pairs=args.min_pairs, bootstrap=args.bootstrap))
     engine.dispose()
     if args.json:
         print(json.dumps(report, indent=2, default=str))

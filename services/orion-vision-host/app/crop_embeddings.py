@@ -92,6 +92,7 @@ FaceHit = Tuple[Sequence[float], float, Image.Image]
 FaceFn = Callable[[List[Image.Image]], List[Optional[FaceHit]]]
 DEFAULT_CROP_FACE_LABELS = ("person",)
 OSNET_LABELS = frozenset({"person"})
+OSNET_DIM = 512  # app/osnet_shadow.FEATURE_DIM; a vector of any other length is not OSNet
 # A crop in, "thumb:<sha256>" (or None) out.
 ThumbFn = Callable[[Image.Image], Optional[str]]
 
@@ -293,7 +294,7 @@ def attach_crop_embeddings(
     thumb_limiter: Optional[ThumbRateLimiter] = None,
     face_fn: Optional[FaceFn] = None,
     face_thumb_limiter: Optional[ThumbRateLimiter] = None,
-    body_model_id: Optional[str] = None,
+    body_model_id: Optional[Any] = None,
     osnet_fn: Optional[EmbedFn] = None,
     osnet_model_id: Optional[str] = None,
 ) -> Dict[str, int]:
@@ -373,6 +374,9 @@ def attach_crop_embeddings(
         raise ValueError(f"crop embedder returned shape {vecs.shape} for {len(to_embed)} crops")
     norms = np.linalg.norm(vecs, axis=1, keepdims=True) + 1e-12
     vecs = vecs / norms
+    # A str, or a callable read now that the embedder has run (runner.py).
+    if callable(body_model_id):
+        body_model_id = body_model_id()
 
     # Thumbnails only on the router's triggered tier when the request names
     # its tier (a request with no tier -- e.g. a direct RPC -- is not gated).
@@ -426,8 +430,8 @@ def _attach_osnet(
         return
     try:
         vecs = np.asarray(osnet_fn([crops[row] for row in rows]), dtype=np.float32)
-        if vecs.ndim != 2 or vecs.shape[0] != len(rows):
-            raise ValueError(f"osnet returned shape {vecs.shape} for {len(rows)} crops")
+        if vecs.ndim != 2 or vecs.shape[0] != len(rows) or vecs.shape[1] != OSNET_DIM:
+            raise ValueError(f"osnet returned shape {vecs.shape} for {len(rows)} crops (want {OSNET_DIM}-d)")
     except Exception as exc:
         logger.warning(f"[CROP] OSNet shadow vector failed, SigLIP vectors kept: {exc}")
         stats["osnet_error"] = 1

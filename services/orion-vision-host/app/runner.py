@@ -976,10 +976,11 @@ class VisionRunner:
             model, processor, _model_id = self._load_embedder(embed_profile, device)
             return self._embed_images(model, processor, crops, device)
 
-        # Loaded up front (cached after the first call) so each crop can name
-        # the body model that actually made its vector.
-        self._load_embedder(embed_profile, device)
-        body_model_id = self.models.loaded_embedder_id(embed_profile.name, device)
+        # Read after the embedder ran (it loads lazily inside _embed), so a frame
+        # with nothing to embed never forces a load.
+        def body_model_id() -> Optional[str]:
+            return self.models.loaded_embedder_id(embed_profile.name, device)
+
         osnet_fn = self.osnet.embed_fn(device)
 
         embed_model_id = (

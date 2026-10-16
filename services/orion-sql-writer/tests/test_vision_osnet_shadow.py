@@ -158,10 +158,34 @@ def test_eval_pairs_come_from_geometry() -> None:
     assert ("a1", "d1") not in diff                      # overlap: left out
     assert {("a1", "b1"), ("a2", "b2")} <= diff
     same = {(x.crop_id, y.crop_id) for x, y in ev.track_pairs(fr, 3.0)}
-    # a1 has two near candidates? no: b2 is 400+ px away. The duplicate d1 is an equally
-    # close second candidate for a2's back-match, so a1/d1 -> a2 is ambiguous and dropped.
+    # a2's back-match into f1 finds a1 and the duplicate d1 within 1.5x of each other,
+    # so neither a1 -> a2 nor d1 -> a2 is kept.
     assert ("b1", "b2") in same and ("a2", "l1") not in same
     assert all(x != "a1" for x, _ in same)
+
+
+def test_a_box_without_vectors_still_vetoes_an_ambiguous_track_pair() -> None:
+    ev = _eval_module()
+    a1 = _ec(ev, "a1", "f1", NOW, (100, 100, 200, 400), (1, 0), (1, 0))
+    a2 = _ec(ev, "a2", "f2", NOW + timedelta(seconds=2.5), (130, 110, 230, 410), (1, 0), (1, 0))
+    assert [(x.crop_id, y.crop_id) for x, y in ev.track_pairs(ev.frames([a1, a2]), 3.0)] == [("a1", "a2")]
+    # A second person (no vectors: never embedded) right next to a2 makes the match ambiguous.
+    ghost = ev.Crop("g2", "f2", "walkway", NOW + timedelta(seconds=2.5), (140, 110, 240, 410), None)
+    assert ev.track_pairs(ev.frames([a1, a2, ghost]), 3.0) == []
+    # ...and it never becomes a scored pair itself.
+    assert all(x.vecs and y.vecs for x, y in ev.same_frame_pairs(ev.frames([a1, a2, ghost])))
+
+
+def test_bootstrap_calls_a_tie_when_the_models_score_the_same() -> None:
+    ev = _eval_module()
+    pairs_same = [(_ec(ev, f"s{i}a", f"o{i}", NOW, (0, 0, 1, 1), (1, 0), (1, 0)),
+                   _ec(ev, f"s{i}b", f"p{i}", NOW, (0, 0, 1, 1), (1, 0.1 * (i % 5)), (1, 0.1 * (i % 5))))
+                  for i in range(40)]
+    pairs_diff = [(_ec(ev, f"d{i}a", f"q{i}", NOW, (0, 0, 1, 1), (1, 0), (1, 0)),
+                   _ec(ev, f"d{i}b", f"q{i}", NOW, (0, 0, 1, 1), (0.2 * (i % 7), 1), (0.2 * (i % 7), 1)))
+                  for i in range(40)]
+    c = ev.compare(pairs_same, pairs_diff, rounds=50)
+    assert c["winner"] == "tie" and c["osnet_minus_siglip_let_through_ci95"] == [0.0, 0.0]
 
 
 def test_auc_and_line() -> None:

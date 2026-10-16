@@ -1399,19 +1399,48 @@ def reverie_refractory_is_suppressed(theme_key: str, now) -> bool:
         return False
 
 
-def load_recent_loop_outcomes(loop_ids: list[str]) -> dict[str, dict[str, Any]]:
-    """Most recent `attention_loop_outcome` verdict per loop_id (orion-hub table,
-    written by a human's Resolve/Dismiss action; read directly, no orion-hub import).
+# A loop verdict older than this is not shown to reverie at all.
+#
+# Loop ids hash the loop's label (orion/substrate/attention/scoring.py), so the
+# same id comes back on every later spike of the same signal: an old verdict is
+# about an earlier episode, not about today's spike. 24h matches the decay
+# digest's own episode boundary (it calls a loop finished after 24h of silence,
+# orion/substrate/attention/implicit_outcome.py DEFAULT_MIN_SILENCE).
+#
+# In practice this bound acts on system:implicit_decay verdicts. A human
+# resolve/dismiss already keeps that loop out of the live coalition for 48h
+# (orion/substrate/attention/verdicts.py VERDICT_EXCLUSION_TTL_HOURS), so a
+# human verdict under 24h can only appear here on a non-selected open loop.
+#
+# Live 2026-10-16: of the 753 thoughts in the prior 7 days whose loop carried a
+# verdict, every one carried a system:implicit_decay verdict 17-37 days old
+# (p50 20.7d), which the old prompt called human ground truth ("unattended 22
+# days"). Over 60 days no human verdict was narrated within 24h (p10 6.3 days).
+LOOP_VERDICT_MAX_AGE_SEC = 24 * 3600.0
 
-    Read-only, best-effort — returns {} on any miss or empty input, so a lookup
+
+def load_recent_loop_outcomes(
+    loop_ids: list[str], *, max_age_sec: float = LOOP_VERDICT_MAX_AGE_SEC
+) -> dict[str, dict[str, Any]]:
+    """Most recent, still-current `attention_loop_outcome` verdict per loop_id
+    (orion-hub table; read directly, no orion-hub import).
+
+    Writers: a human's Resolve/Dismiss in the Hub (actor = the person),
+    `scripts/attention_loop_decay_digest.py` (actor = `system:implicit_decay`),
+    and Orion's own non-final `acted` (excluded here). The actor is returned so
+    the prompt can say who recorded the verdict; a `system:*` verdict must never
+    be presented as a human's.
+
+    Verdicts older than `max_age_sec` are dropped (see LOOP_VERDICT_MAX_AGE_SEC):
+    a stale verdict is about an earlier episode of a reused loop id and must not
+    reach the prompt as current ground truth.
+
+    Read-only, best-effort -- returns {} on any miss or empty input, so a lookup
     failure never breaks a reverie tick. Keyed by the *bare* loop id, matching
-    `attention_loops_store.suppress_loop`'s write format (see `chain.theme_key_for`
-    for the sibling refractory-key fix this mirrors).
+    `attention_loops_store.suppress_loop`'s write format.
 
-    Returns {loop_id: {"verdict": str, "note": str, "age_days": int}} — age is
-    computed here (deterministic code), not left for the prompt/LLM to infer from
-    a raw timestamp. `age_days` is omitted (never `None`) when `created_at` can't
-    be read, so the prompt never has to render a null age.
+    Returns {loop_id: {"verdict", "note", "actor", "age_sec"}} -- age is
+    computed here (deterministic code), never left for the LLM to infer.
     """
     ids = [str(i) for i in (loop_ids or []) if i]
     if not ids:
@@ -1422,7 +1451,7 @@ def load_recent_loop_outcomes(loop_ids: list[str]) -> dict[str, dict[str, Any]]:
         engine = _get_engine()
         stmt = text(
             """
-            SELECT DISTINCT ON (loop_id) loop_id, verdict, note, created_at
+            SELECT DISTINCT ON (loop_id) loop_id, verdict, note, actor, created_at
             FROM attention_loop_outcome
             WHERE loop_id IN :ids
               AND verdict <> 'acted'   -- Orion's non-final verdict never hides a human one
@@ -1431,23 +1460,36 @@ def load_recent_loop_outcomes(loop_ids: list[str]) -> dict[str, dict[str, Any]]:
         ).bindparams(bindparam("ids", expanding=True))
         with engine.connect() as conn:
             rows = conn.execute(stmt, {"ids": ids}).mappings().all()
-
-        now = datetime.now(timezone.utc)
-        out: dict[str, dict[str, Any]] = {}
-        for r in rows:
-            entry: dict[str, Any] = {
-                "verdict": str(r.get("verdict") or ""),
-                "note": str(r.get("note") or ""),
-            }
-            created = r.get("created_at")
-            if isinstance(created, datetime):
-                c = created if created.tzinfo else created.replace(tzinfo=timezone.utc)
-                entry["age_days"] = max(0, int((now - c).total_seconds() // 86400))
-            out[str(r["loop_id"])] = entry
-        return out
+        return loop_outcomes_from_rows(rows, now=datetime.now(timezone.utc), max_age_sec=max_age_sec)
     except Exception as exc:
         logger.debug("loop outcome load failed ids=%s err=%s", ids, exc)
         return {}
+
+
+def loop_outcomes_from_rows(
+    rows: Any, *, now: datetime, max_age_sec: float = LOOP_VERDICT_MAX_AGE_SEC
+) -> dict[str, dict[str, Any]]:
+    """Pure half of `load_recent_loop_outcomes`: age + staleness filter.
+
+    A row with an unreadable `created_at` is dropped: an undated verdict cannot
+    be shown as current.
+    """
+    out: dict[str, dict[str, Any]] = {}
+    for r in rows:
+        created = r.get("created_at")
+        if not isinstance(created, datetime):
+            continue
+        c = created if created.tzinfo else created.replace(tzinfo=timezone.utc)
+        age_sec = max(0.0, (now - c).total_seconds())
+        if age_sec > max_age_sec:
+            continue
+        out[str(r["loop_id"])] = {
+            "verdict": str(r.get("verdict") or ""),
+            "note": str(r.get("note") or ""),
+            "actor": str(r.get("actor") or ""),
+            "age_sec": age_sec,
+        }
+    return out
 
 
 def reverie_refractory_suppress(theme_key: str, until) -> bool:

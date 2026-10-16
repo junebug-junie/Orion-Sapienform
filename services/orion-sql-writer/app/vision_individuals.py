@@ -311,6 +311,13 @@ class BatchResult:
     # this batch: their earlier sightings of the same run (split by gaps
     # longer than the merge gap, saved non-stationary) must be re-flagged.
     became_stationary: Dict[str, datetime] = field(default_factory=dict)
+    # crop_id -> the individual it was assigned to (written to
+    # vision_crop_observation.individual_id: stored membership, so a split
+    # does not need a replay).
+    crop_individual: Dict[str, str] = field(default_factory=dict)
+    # Crops a cannot-link sent somewhere other than their best face match
+    # (refused by face AND the body rule did not pick the same individual).
+    face_blocked_by_cannot_link: int = 0
 
 
 def _ts(d: datetime) -> float:
@@ -341,6 +348,26 @@ def advance_stationary(
     ind.still_last = _dt(nxt.last)
     ind.stationary = is_stationary(nxt, min_sec)
 
+def cannot_link_ambiguous(
+    face: Sequence[float], best_id: str, best_sim: float, *,
+    individuals: Dict[str, "Individual"], cannot_link: Dict[str, Iterable[str]],
+    margin: float, taken: Iterable[str] = (),
+) -> Optional[str]:
+    """The cannot-link rule (split proposal, "Preventing re-merge"): Juniper
+    said ``best_id`` and some Y are different people. If the crop's face is
+    within ``margin`` of Y's face centroid too, the face cannot tell them apart,
+    so the face path must not assign it to ``best_id``. Returns that Y, else
+    None. A Y already used in this frame cannot be the crop, so it never blocks."""
+    used = set(taken)
+    for y in sorted(cannot_link.get(best_id, ()) or ()):
+        ind = individuals.get(y)
+        if ind is None or y in used or not ind.face_centroid or len(ind.face_centroid) != len(face):
+            continue
+        if cosine(face, ind.face_centroid) >= best_sim - margin:
+            return y
+    return None
+
+
 def apply_batch(
     crops: Sequence[CropRow],
     *,
@@ -356,6 +383,8 @@ def apply_batch(
     stationary_min_sec: float = 1800.0,
     stationary_iou: float = 0.5,
     stationary_max_gap_sec: float = 300.0,
+    cannot_link: Optional[Dict[str, Iterable[str]]] = None,
+    cannot_link_margin: float = 0.10,
 ) -> BatchResult:
     """Cluster crops into individuals and group them into sightings.
 
@@ -375,6 +404,11 @@ def apply_batch(
     Faces: a crop with ``face_embedding`` joins the nearest same-kind face
     centroid at or above ``face_match_threshold`` (None disables), before
     appearance is consulted. See ``advance_stationary`` for the fixture rule.
+
+    ``cannot_link`` (individual_id -> ids Juniper said are someone else): a
+    face match is refused when ``cannot_link_ambiguous`` says the crop's face
+    is as close to one of those (within ``cannot_link_margin``); the crop then
+    goes through the appearance rule like a crop without a face match.
     """
     forbidden = set(no_embed_zones)
     inds = {k: replace(v, centroid=list(v.centroid),
@@ -399,7 +433,9 @@ def apply_batch(
     index = _CentroidIndex(inds.values())
     face_index = _CentroidIndex(inds.values(), vec_of=lambda ind: ind.face_centroid)
     by_face = 0
+    blocked = 0
     crop_stationary: Dict[str, bool] = {}
+    crop_individual: Dict[str, str] = {}
 
     for crop in sorted(crops, key=lambda c: (c.observed_at, c.crop_id)):
         if crop.zone_no_embed or crop.zone in forbidden:
@@ -410,15 +446,23 @@ def apply_batch(
             continue
         taken = used_in_observation.setdefault(crop.observation_id, set())
         best_id: Optional[str] = None
+        face_refused: Optional[str] = None
         if crop.face_embedding and face_match_threshold is not None:
             fid, fsim = face_index.nearest(crop, taken, vec=crop.face_embedding)
             if fid is not None and fsim >= face_match_threshold:
-                best_id = fid
-                by_face += 1
+                if cannot_link and cannot_link_ambiguous(
+                        crop.face_embedding, fid, fsim, individuals=inds, cannot_link=cannot_link,
+                        margin=cannot_link_margin, taken=taken):
+                    face_refused = fid
+                else:
+                    best_id = fid
+                    by_face += 1
         if best_id is None:
             aid, asim = index.nearest(crop, taken)
             if aid is not None and asim >= match_threshold:
                 best_id = aid
+        if face_refused is not None and best_id != face_refused:
+            blocked += 1   # the cannot-link changed where this crop went
 
         if best_id is not None:
             ind = inds[best_id]
@@ -449,6 +493,7 @@ def apply_batch(
             index.add(ind)
             face_index.add(ind)
         taken.add(ind.individual_id)
+        crop_individual[crop.crop_id] = ind.individual_id
         assigned += 1
         advance_stationary(ind, crop.box_xyxy, crop.observed_at, iou=stationary_iou,
                            min_sec=stationary_min_sec, max_gap_sec=stationary_max_gap_sec)
@@ -492,6 +537,7 @@ def apply_batch(
         patio_crops=patio, skipped_no_embedding=skipped, assigned=assigned,
         assigned_by_face=by_face, crop_stationary=crop_stationary,
         became_stationary=_mark_run_sightings(inds, individuals, cands, touched),
+        crop_individual=crop_individual, face_blocked_by_cannot_link=blocked,
     )
 
 
@@ -944,6 +990,13 @@ class IndividualsConfig:
     # Daily cap for these face asks together (both kinds). The 10-sightings
     # rule keeps its own cap (ask_daily_cap); memory confirmation has its own.
     confirm_ask_daily_cap: int = 6
+    # Splits on "someone else" picture answers (app/vision_split.py) and the
+    # matcher's cannot-link rule. False: verdicts are recorded only.
+    split_on_verdict_enabled: bool = True
+    split_follow_min_face_cosine: float = 0.60
+    split_follow_margin: float = 0.10
+    split_max_move_fraction: float = 0.5
+    cannot_link_margin: float = 0.10
 
 
 # Columns manual_migration_walkway_privacy_v2.sql adds; the cycle refuses to
@@ -968,6 +1021,9 @@ V3_COLUMNS = (("orion_ask", "image_refs"),)
 V3_TABLES = ("vision_individual_pair_verdict",)
 V4_COLUMNS = (("orion_ask", "answer_detail"), ("vision_individual", "label_copied"))
 V4_TABLES = ("vision_ask_picture_verdict",)
+# What manual_migration_vision_split_v1.sql adds.
+V5_COLUMNS = (("vision_crop_observation", "individual_id"),)
+V5_TABLES = ("vision_individual_split",)
 
 
 def _check_tables(conn) -> None:
@@ -1019,6 +1075,19 @@ def _check_tables(conn) -> None:
             "missing " + ",".join(absent4)
             + " -- apply services/orion-sql-db/manual_migration_vision_ask_names_v1.sql"
         )
+    have5 = {(r[0], r[1]) for r in conn.execute(text(
+        "SELECT table_name, column_name FROM information_schema.columns "
+        "WHERE table_schema = current_schema() AND table_name = ANY(:t)"),
+        {"t": sorted({t for t, _ in V5_COLUMNS})}).fetchall()}
+    absent5 = [f"{t}.{c}" for t, c in V5_COLUMNS if (t, c) not in have5]
+    absent5 += [r[0] for r in conn.execute(text(
+        "SELECT t FROM unnest(CAST(:t AS text[])) AS t WHERE to_regclass(t) IS NULL"),
+        {"t": list(V5_TABLES)}).fetchall()]
+    if absent5:
+        raise MigrationMissing(
+            "missing " + ",".join(absent5)
+            + " -- apply services/orion-sql-db/manual_migration_vision_split_v1.sql"
+        )
 
 
 def run_one_individuals_cycle(
@@ -1034,7 +1103,8 @@ def run_one_individuals_cycle(
         "streams": 0, "crops_read": 0, "assigned": 0, "new_individuals": 0,
         "sightings_touched": 0, "attention_events": 0, "patio_writes": 0,
         "answers_applied": 0, "asks_expired": 0, "asks_opened": 0,
-        "assigned_by_face": 0, "stationary_crops": 0,
+        "assigned_by_face": 0, "stationary_crops": 0, "face_blocked_by_cannot_link": 0,
+        "splits": 0, "splits_refused": 0, "splits_skipped": 0,
         "pruned_crops": 0, "pruned_sightings": 0, "pruned_individuals": 0,
     }
     opened: List[dict] = []
@@ -1068,6 +1138,12 @@ def run_one_individuals_cycle(
 
         with engine.begin() as conn:
             summary["answers_applied"] = _apply_answers(conn, ts)
+        if cfg.split_on_verdict_enabled:
+            from app.vision_split import apply_splits
+
+            with engine.begin() as conn:
+                for k, v in apply_splits(conn, ts, cfg).items():
+                    summary[k] = summary.get(k, 0) + v
         with engine.begin() as conn:
             summary["asks_expired"] = conn.execute(text(
                 "UPDATE orion_ask SET status='expired' WHERE status='open' "
@@ -1181,8 +1257,10 @@ def _one_stream(engine, stream_id: str, now: datetime, tz: ZoneInfo, cfg: Indivi
                     embedding_ref=r.embedding_ref, evidence_ref=r.evidence_ref,
                     thumb_ref=r.thumb_ref, face_thumb_ref=r.face_thumb_ref, stationary=bool(r.stationary)))
 
+            cannot = load_cannot_link(conn) if cfg.split_on_verdict_enabled else {}
             batch = apply_batch(
                 crops, individuals=individuals, latest_sightings={}, nearby_sightings=nearby,
+                cannot_link=cannot, cannot_link_margin=cfg.cannot_link_margin,
                 no_embed_zones=forbidden, match_threshold=cfg.match_threshold,
                 merge_gap_sec=cfg.merge_gap_sec, tz=tz,
                 face_match_threshold=cfg.face_match_threshold if cfg.face_match_threshold > 0 else None,
@@ -1193,6 +1271,8 @@ def _one_stream(engine, stream_id: str, now: datetime, tz: ZoneInfo, cfg: Indivi
             summary["assigned_by_face"] = summary.get("assigned_by_face", 0) + batch.assigned_by_face
             summary["stationary_crops"] = summary.get("stationary_crops", 0) + sum(
                 1 for v in batch.crop_stationary.values() if v)
+            summary["face_blocked_by_cannot_link"] = (summary.get("face_blocked_by_cannot_link", 0)
+                                                      + batch.face_blocked_by_cannot_link)
             summary["new_individuals"] += len(batch.new_individual_ids)
             summary["sightings_touched"] += len(batch.sightings)
             changed_ids = {s.individual_id for s in batch.sightings.values()}
@@ -1200,6 +1280,7 @@ def _one_stream(engine, stream_id: str, now: datetime, tz: ZoneInfo, cfg: Indivi
                 _upsert_individual(conn, batch.individuals[iid])
             for s in batch.sightings.values():
                 _upsert_sighting(conn, s, forbidden)
+            _write_membership(conn, batch.crop_individual)
             for iid, since in batch.became_stationary.items():
                 conn.execute(text(
                     "UPDATE vision_individual_sighting SET stationary=true, attention_score=NULL, "
@@ -1262,6 +1343,33 @@ def _upsert_individual(conn, ind: Individual) -> None:
            "sc": ind.sighting_count, "dd": ind.distinct_days, "fc": ind.face_centroid,
            "fn": ind.face_n, "sb": ind.still_box, "ss": ind.still_since, "sl": ind.still_last,
            "st": ind.stationary})
+
+
+def _write_membership(conn, crop_individual: Dict[str, str]) -> int:
+    """vision_crop_observation.individual_id for every crop this batch assigned,
+    in the batch's own transaction (manual_migration_vision_split_v1.sql)."""
+    from sqlalchemy import text
+
+    if not crop_individual:
+        return 0
+    cids = sorted(crop_individual)
+    return conn.execute(text(
+        "UPDATE vision_crop_observation c SET individual_id = m.iid "
+        "FROM unnest(CAST(:c AS text[]), CAST(:i AS text[])) AS m(cid, iid) WHERE c.crop_id = m.cid"),
+        {"c": cids, "i": [crop_individual[c] for c in cids]}).rowcount or 0
+
+
+def load_cannot_link(conn) -> Dict[str, set]:
+    """individual_id -> ids Juniper said are a different person (every
+    'different' pair verdict, including the ones a split writes)."""
+    from sqlalchemy import text
+
+    out: Dict[str, set] = {}
+    for a, b in conn.execute(text(
+            "SELECT individual_a, individual_b FROM vision_individual_pair_verdict WHERE verdict='different'")).fetchall():
+        out.setdefault(a, set()).add(b)
+        out.setdefault(b, set()).add(a)
+    return out
 
 
 def sighting_row(s: Sighting, no_embed_zones: Iterable[str]) -> Dict[str, Any]:
@@ -1499,7 +1607,8 @@ def picture_rows(ask_id: str, individual_id: str, detail: Dict[str, Any], answer
 
 
 def _record_pictures(conn, rows: List[dict]) -> int:
-    """Keep each picture's verdict. Record only: nothing here splits an individual."""
+    """Keep each picture's verdict. Nothing here moves a crop: app/vision_split.py
+    acts on the 'different' rows later in the same cycle (when enabled)."""
     from sqlalchemy import text
 
     if not rows:

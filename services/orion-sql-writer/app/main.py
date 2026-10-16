@@ -1017,6 +1017,19 @@ async def lifespan(app: FastAPI):
             "retention runs only at startup, which cannot keep up with arrival"
         )
 
+    # Act ledger (rung 2): materialise act events + grade closed acts; resolver closes by horizon.
+    from orion.grammar.ledger import configure_act_ledger
+
+    configure_act_ledger(bool(getattr(settings, "sql_writer_act_ledger_enabled", True)))
+    act_resolver_task: asyncio.Task | None = None
+    if bool(getattr(settings, "sql_writer_act_ledger_enabled", True)) and float(
+            getattr(settings, "sql_writer_act_resolver_interval_sec", 0.0) or 0.0) > 0:
+        from app.act_resolver_loop import act_resolver_loop
+
+        act_resolver_task = asyncio.create_task(act_resolver_loop(settings))
+    else:
+        logger.info("act ledger resolver DISABLED (SQL_WRITER_ACT_LEDGER_ENABLED / SQL_WRITER_ACT_RESOLVER_INTERVAL_SEC)")
+
     # Replays events shed with error='grammar queue full' back into the ledger once the
     # grammar lanes are idle. See app/grammar_fallback_drain.py.
     drain_task: asyncio.Task | None = None
@@ -1077,7 +1090,7 @@ async def lifespan(app: FastAPI):
     finally:
         pending = [
             t for t in (task, write_health_task, watch_task, retention_task, drain_task, vision_permanence_task,
-                        vision_individuals_task, vision_rhythm_task, vision_expect_task)
+                        vision_individuals_task, vision_rhythm_task, vision_expect_task, act_resolver_task)
             if t is not None
         ]
         for background in pending:
@@ -1111,6 +1124,20 @@ def health():
         "service": settings.service_name,
         "version": settings.service_version,
     }
+
+
+@app.get("/act/ledger")
+def act_ledger(days: float = 7.0):
+    """Act ledger debug surface (rung 2): per (verb, actor) opened/closed/expired,
+    share closed inside the horizon, outcome rate vs predicted, mean |error|."""
+    from app.db import session_factory
+    from orion.grammar.act_ledger import ledger_summary
+
+    sess = session_factory()
+    try:
+        return ledger_summary(sess, days=max(0.01, min(float(days), 90.0)))
+    finally:
+        sess.close()
 
 
 @app.get("/grammar/truth")

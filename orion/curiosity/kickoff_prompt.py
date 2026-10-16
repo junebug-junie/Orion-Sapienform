@@ -207,8 +207,20 @@ def _priors_section(view: WorldviewSnapshot, *, stale_after: int) -> list[str]:
             "your call.",
             "",
         ]
-        lines += [f"  - {p.preview()}" for p in view.live_priors]
+        lines += [f"  - {p.preview()}" for p in view.live_priors if not p.coverage]
         lines.append("")
+        covered = [p for p in view.live_priors if p.coverage]
+        if covered:
+            # Not part of the ordered list: they are drawn at random so a prior the order never
+            # reaches still gets looked at. Saying so keeps the sentence above true.
+            lines += [
+                "DRAWN AT RANDOM, not ranked. The list above is where the order stops "
+                "reaching; these live priors are further down it and would not otherwise "
+                "be put in front of you. Nothing about them is a recommendation either:",
+                "",
+            ]
+            lines += [f"  - {p.preview()}" for p in covered]
+            lines.append("")
 
     if view.stale_priors:
         lines += [

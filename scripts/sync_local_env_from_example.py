@@ -151,6 +151,11 @@ SYNC_PREFIXES = (
     "ORION_ENERGY_STAKES_",
     # Hub Energy strip (daily-bar timezone); no generic HUB_ prefix is synced.
     "HUB_ENERGY_",
+    # Act ledger (rung 2, "doing on one track"): hub say/ask/look producers and the
+    # sql-writer act materialiser + horizon resolver. No generic HUB_/SQL_WRITER_ prefix
+    # is synced, so without these the flags never reach a live .env.
+    "HUB_ACT_LEDGER_",
+    "SQL_WRITER_ACT_",
     # orion-whisper-tts, added 2026-08-29. None of this service's 26 keys
     # matched any prefix below, and the service itself was absent from
     # DEFAULT_SERVICES, so the default invocation considered ZERO of them

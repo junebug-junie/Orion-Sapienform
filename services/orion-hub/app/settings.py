@@ -911,6 +911,12 @@ class Settings(BaseSettings):
     HUB_CURIOSITY_PRIOR_SAMPLE: int = Field(
         default=8, alias="HUB_CURIOSITY_PRIOR_SAMPLE"
     )
+    # How many of those slots skip the uncertainty order and draw from the priors ranked past it
+    # (per-run rotation). Without them a confident prior is never shown and never re-checked:
+    # 72 of 119 live self-priors went unoffered across 140 runs (2026-10-16). 0 = off.
+    HUB_CURIOSITY_PRIOR_COVERAGE_SLOTS: int = Field(
+        default=2, alias="HUB_CURIOSITY_PRIOR_COVERAGE_SLOTS"
+    )
     # A prior tested this many times with no status change stops competing for
     # the main list and is offered separately, with retiring it named as a real
     # outcome. 3 is a guess from the design doc and should be revisited against
@@ -1190,6 +1196,11 @@ class Settings(BaseSettings):
     HUB_CURIOSITY_SELF_SENSE_EVAL_MIN_COOLDOWN_SEC: float = Field(
         default=10800.0, alias="HUB_CURIOSITY_SELF_SENSE_EVAL_MIN_COOLDOWN_SEC"
     )
+
+    # Act ledger (rung 2, "doing on one track"): Orion's chat replies (say), outreach
+    # messages (say/ask) and web reads (look) publish act_opened/act_closed grammar events
+    # (orion/grammar/acts.py) that orion-sql-writer persists and grades into L10.
+    HUB_ACT_LEDGER_ENABLED: bool = Field(default=True, alias="HUB_ACT_LEDGER_ENABLED")
 
     HUB_ENDOGENOUS_OUTREACH_ENABLED: bool = Field(
         default=True, alias="HUB_ENDOGENOUS_OUTREACH_ENABLED"

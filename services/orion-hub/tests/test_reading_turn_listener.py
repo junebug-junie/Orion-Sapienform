@@ -130,7 +130,10 @@ def test_production_generate_only_binds_and_polls_durable_run(monkeypatch, cls, 
         assert bind.call_args.args[0] is conn
         assert bind.call_args.args[1].stage == stage
         assert bind.call_args.args[1].seed_id == "seed"
-        poll.assert_awaited_once_with(bound, "http://durable")
+        poll.assert_awaited_once()
+        assert poll.call_args.args == (bound, "http://durable")
+        if stage == 1:  # stage 1 watches for work start (its `look` act opens then)
+            assert callable(poll.call_args.kwargs["on_state"])
         poll.side_effect = None
         poll.return_value = ReadingTurnResultV1(
             run_id="immutable-run",

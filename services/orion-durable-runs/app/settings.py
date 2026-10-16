@@ -194,6 +194,16 @@ class Settings(BaseSettings):
     # gauges and records `immune_finding` rows in temporal_self_event. Never fixes anything.
     temporal_self_immune_enabled: bool = Field(True, alias="TEMPORAL_SELF_IMMUNE_ENABLED")
     temporal_self_immune_interval_sec: float = Field(21600.0, gt=0.0, alias="TEMPORAL_SELF_IMMUNE_INTERVAL_SEC")
+    # Personality graph loop (spec 2026-10-16-orion-dynamic-personality-graph-design.md rev 2): a
+    # periodic reducer folds Orion's own output (dream, journal, reverie, reading, day letter, chat,
+    # outreach, curiosity picks, self-inquiry seeds) into personality_* tables
+    # (services/orion-sql-db/manual_migration_personality_graph_v1.sql); GET /personality/frame is
+    # what chat stance / reverie / curiosity / outreach read back. Kill switch: PERSONALITY_ENABLED.
+    personality_enabled: bool = Field(True, alias="PERSONALITY_ENABLED")
+    personality_tick_sec: float = Field(600.0, gt=0.0, alias="PERSONALITY_TICK_SEC")
+    # vector-host /embedding (bge-large, compute only). durable-runs and vector-host share app-net.
+    personality_embed_url: str = Field("http://orion-athena-vector-host:8320/embedding",
+                                       alias="PERSONALITY_EMBED_URL")
     request_channel: str = DURABLE_RUN_REQUEST_CHANNEL
     state_channel: str = DURABLE_RUN_STATE_CHANNEL
 

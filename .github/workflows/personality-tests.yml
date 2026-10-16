@@ -3,6 +3,7 @@ on:
   pull_request:
     paths:
       - 'orion/personality/**'
+      - 'services/orion-sql-db/manual_migration_personality_graph_v1*.sql'
       - 'scripts/analysis/measure_tone_dial_baseline.py'
       - 'scripts/analysis/tests/test_measure_tone_dial_baseline.py'
       - 'scripts/analysis/measure_personality_choices.py'

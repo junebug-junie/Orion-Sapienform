@@ -69,3 +69,85 @@ class PersonalityChoiceV1(BaseModel):
     situation_refs: List[str] = Field(default_factory=list, max_length=MAX_CHOICE_LIST)
     correlation_id: Optional[str] = None
     source_ref: str = Field(min_length=1)
+
+
+# --- Personality graph loop (rev 2, bottom-up) -------------------------------------------------
+# Spec: docs/superpowers/specs/2026-10-16-orion-dynamic-personality-graph-design.md (rev 2).
+# Single writer: orion-durable-runs' personality reducer (Postgres personality_* tables).
+# Frame: GET /personality/frame on durable-runs. Readers render it with
+# ``orion.personality.cue.project_personality_cue`` (pure) into chat stance, reverie, curiosity
+# kickoff and outreach -- as Orion's own recurring concerns, with evidence, never tone rules.
+
+PersonalityLane = Literal[
+    "dream", "journal", "reverie", "reading", "day_letter", "chat", "outreach",
+    "curiosity_choice", "self_inquiry_seed",
+]
+DispositionOrigin = Literal["seed_self_inquiry", "recurrence"]
+DispositionStatus = Literal["candidate", "active", "retired"]
+PersonalityCueSkipReason = Literal["disabled", "fetch_failed", "invalid_frame", "stale", "empty", "render_failed"]
+DISPOSITION_LABEL_MAX_CHARS = 160
+FRAME_MAX_DISPOSITIONS = 12
+PERSONALITY_CUE_MAX_CHARS = 600
+
+
+class DispositionV1(BaseModel):
+    """One node of the graph: something Orion keeps returning to.
+
+    ``label`` is a short excerpt of Orion's own words from the evidence closest to the node's
+    centroid (no model writes it). ``lane_counts`` is evidence per lane; a node seen in several
+    independent lanes is stronger than one repeated in one lane. ``weight`` already includes fade.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    disposition_id: str = Field(min_length=1)
+    label: str = Field(min_length=1, max_length=DISPOSITION_LABEL_MAX_CHARS)
+    origin: DispositionOrigin
+    status: DispositionStatus
+    weight: float = Field(ge=0.0)
+    evidence_count: int = Field(ge=0)
+    lane_counts: dict[str, int] = Field(default_factory=dict)
+    chosen_count: int = Field(default=0, ge=0)  # curiosity picks that reinforced it
+    first_seen_at: AwareDatetime
+    last_reinforced_at: AwareDatetime
+
+
+class ChoiceStyleV1(BaseModel):
+    """How Orion has been choosing in curiosity over ``window_days``: how often Orion took the
+    top-ranked suggestion versus going their own way (off the order, or off the list)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    window_days: int = Field(ge=1)
+    choices: int = Field(ge=0)
+    took_top: int = Field(ge=0)
+    went_own_way: int = Field(ge=0)
+
+
+class PersonalityFrameV1(BaseModel):
+    """The read-back projection. ``dispositions`` holds active nodes only, strongest first."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: Literal["personality.frame.v1"] = "personality.frame.v1"
+    generated_at: AwareDatetime
+    dispositions: List[DispositionV1] = Field(default_factory=list, max_length=FRAME_MAX_DISPOSITIONS)
+    choice_style: Optional[ChoiceStyleV1] = None
+    active_count: int = Field(default=0, ge=0)
+    candidate_count: int = Field(default=0, ge=0)
+    retired_count: int = Field(default=0, ge=0)
+    evidence_rows: int = Field(default=0, ge=0)
+    warnings: List[str] = Field(default_factory=list, max_length=20)
+
+
+class PersonalityCueV1(BaseModel):
+    """The rendered read-back line. ``text`` is "" when skipped."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: Literal["personality.cue.v1"] = "personality.cue.v1"
+    text: str = Field(default="", max_length=PERSONALITY_CUE_MAX_CHARS)
+    rendered_at: AwareDatetime
+    frame_generated_at: Optional[AwareDatetime] = None
+    disposition_ids: List[str] = Field(default_factory=list)
+    skip_reason: Optional[PersonalityCueSkipReason] = None

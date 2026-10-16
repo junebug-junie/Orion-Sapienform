@@ -395,6 +395,26 @@ async def build_recent_arcs_text(
     return block.text, list(block.arc_ids)
 
 
+async def build_personality_cue_text(correlation_id: str, *, now: datetime | None = None) -> str:
+    """What Orion keeps coming back to, for the reverie prompt; "" when nothing may be shown
+    (personality graph read-back, ``app/personality_cue.py``).
+
+    One fetch per reverie step, alongside reverie's other reads, bounded by
+    ``ORION_REVERIE_RECENT_ARCS_FETCH_TIMEOUT_SEC`` (the same reverie read budget as the
+    recent-arcs block). Never raises: any failure leaves the block out.
+    """
+    try:
+        from .personality_cue import build_personality_cue
+
+        cue = await build_personality_cue(
+            correlation_id, now=now, timeout_sec=settings.reverie_recent_arcs_fetch_timeout_sec
+        )
+    except Exception as exc:  # noqa: BLE001 -- a reverie tick must never fail on this block
+        logger.warning("reverie_personality_cue_failed corr=%s err=%s: %s", correlation_id, type(exc).__name__, exc)
+        return ""
+    return cue.text
+
+
 def street_camera_label(stream_ids: list[str]) -> str:
     """"your outdoor camera (walkway), looking over the community walkway, the
     street and our patio" -- from ORION_CAMERA_DESCRIPTIONS, never prose here."""
@@ -414,6 +434,7 @@ def build_reverie_context(
     recent_percepts: list[dict[str, Any]] | None = None,
     self_readings: str | None = None,
     recent_arcs: str | None = None,
+    personality_cue: str | None = None,
     street_percepts: list[dict[str, Any]] | None = None,
     street_predictions: list[str] | None = None,
     continuity: ChainContinuity | None = None,
@@ -447,6 +468,8 @@ def build_reverie_context(
         ctx.update(street)
         if recent_arcs:
             ctx["recent_arcs"] = recent_arcs
+        if personality_cue:
+            ctx["personality_cue"] = personality_cue
         return ctx
     open_loops = _open_loops_for_prompt(broadcast, loop_outcomes=loop_outcomes)
     # "attended_signal", not "coalition": the broadcast's winner is 0-1 node
@@ -486,6 +509,9 @@ def build_reverie_context(
         ctx["self_readings"] = self_readings
     if recent_arcs:
         ctx["recent_arcs"] = recent_arcs
+    if personality_cue:
+        # Personality graph read-back: what Orion keeps coming back to (rendered, no LLM; a record).
+        ctx["personality_cue"] = personality_cue
     return ctx
 
 
@@ -498,6 +524,7 @@ def build_reverie_plan_request(
     recent_percepts: list[dict[str, Any]] | None = None,
     self_readings: str | None = None,
     recent_arcs: str | None = None,
+    personality_cue: str | None = None,
     street_percepts: list[dict[str, Any]] | None = None,
     street_predictions: list[str] | None = None,
     continuity: ChainContinuity | None = None,
@@ -526,6 +553,7 @@ def build_reverie_plan_request(
             recent_percepts=recent_percepts,
             self_readings=self_readings,
             recent_arcs=recent_arcs,
+            personality_cue=personality_cue,
             street_percepts=street_percepts,
             street_predictions=street_predictions,
             continuity=continuity,
@@ -922,12 +950,14 @@ async def run_reverie_once(
             (recent_arcs, recent_arc_ids),
             self_readings,
             (street_percepts, street_predictions),
+            personality_cue,
         ) = await asyncio.gather(
             _fetch_loop_outcomes(),
             _fetch_percepts(),
             build_recent_arcs_text(correlation_id),
             _fetch_self_readings(),
             _fetch_street(),
+            build_personality_cue_text(correlation_id),
         )
         if street_percepts or street_predictions:
             logger.info(
@@ -942,6 +972,7 @@ async def run_reverie_once(
             recent_percepts=recent_percepts,
             self_readings=self_readings,
             recent_arcs=recent_arcs,
+            personality_cue=personality_cue,
             street_percepts=street_percepts,
             street_predictions=street_predictions,
             continuity=continuity,

@@ -38,6 +38,7 @@ from scripts.hub_surface_routes import _engine as hub_surface_engine
 from scripts.runtime_activity_routes import RuntimeActivityFeeds, router as runtime_activity_router
 from scripts.gpu_pool_routes import feed as gpu_pool_feed, page_router as gpu_pool_page_router, router as gpu_pool_router
 from scripts.temporal_self_routes import page_router as temporal_self_page_router, router as temporal_self_router
+from scripts.personality_routes import page_router as personality_page_router, router as personality_router
 from orion.hub.runtime_activity import get_runtime_activity
 import scripts.api_routes as api_routes_runtime
 import scripts.concept_atlas_routes as concept_atlas_routes_runtime
@@ -563,6 +564,9 @@ async def startup_event():
                 tick_interval_sec=settings.HUB_ENDOGENOUS_OUTREACH_TICK_SEC,
                 min_cooldown_sec=settings.HUB_ENDOGENOUS_OUTREACH_MIN_COOLDOWN_SEC,
                 recent_chat_sec=settings.HUB_ENDOGENOUS_OUTREACH_RECENT_CHAT_SEC,
+                # Personality read-back (scripts/personality_cue_reader.py, spec rev 2).
+                personality_cue_enabled=settings.HUB_PERSONALITY_CUE_ENABLED,
+                durable_runs_url=settings.HUB_CURIOSITY_DURABLE_RUNS_URL,
                 # Orion's rest drive: stretch the cooldown while tired (scripts/rest_drive_reader.py).
                 rest_drive_reader=RestDriveReader(
                     enabled=settings.HUB_ENDOGENOUS_OUTREACH_REST_DRIVE_ENABLED,
@@ -716,6 +720,7 @@ async def startup_event():
                 # reading loop submits to (one service, one base URL).
                 durable_runs_url=settings.HUB_CURIOSITY_DURABLE_RUNS_URL,
                 temporal_self_fact_enabled=settings.HUB_CURIOSITY_TEMPORAL_SELF_FACT_ENABLED,
+                personality_cue_enabled=settings.HUB_PERSONALITY_CUE_ENABLED,
                 # The self-inquiry line: own budget, same loop. See the
                 # settings' own comment and orion/curiosity/self_inquiry.py.
                 self_inquiry_enabled=settings.HUB_CURIOSITY_SELF_INQUIRY_ENABLED,
@@ -1797,6 +1802,8 @@ app.include_router(gpu_pool_router)
 app.include_router(gpu_pool_page_router)
 app.include_router(temporal_self_router)
 app.include_router(temporal_self_page_router)
+app.include_router(personality_router)
+app.include_router(personality_page_router)
 
 # Real-time WS endpoint (also /hub/ws for path-prefixed reverse proxies where the browser path includes /hub)
 app.add_websocket_route("/ws", websocket_endpoint)

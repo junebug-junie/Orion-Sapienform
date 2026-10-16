@@ -682,6 +682,18 @@ class ThoughtSettings(BaseSettings):
         0.5, gt=0.0, le=5.0, alias="TEMPORAL_SELF_CUE_FETCH_TIMEOUT_SEC"
     )
 
+    # --- Personality graph read-back (app/personality_cue.py; spec 2026-10-16 rev 2) ---
+    # What Orion keeps coming back to, in Orion's own words, rendered by a fixed template
+    # (orion/personality/cue.py, no LLM) from orion-durable-runs' GET /personality/frame. A record,
+    # not an instruction. Shown to stance_react (fetched alongside Mind) and reverie (alongside its
+    # other reads). Missing / stale (> MAX_AGE_SEC) / empty frame or no reply within TIMEOUT_SEC
+    # renders nothing. Kill switch: false = both prompts exactly as before.
+    personality_cue_enabled: bool = Field(True, alias="PERSONALITY_CUE_ENABLED")
+    personality_frame_url: str = Field("http://durable-runs:8121", alias="PERSONALITY_FRAME_URL")
+    personality_cue_timeout_sec: float = Field(0.5, gt=0.0, le=5.0, alias="PERSONALITY_CUE_TIMEOUT_SEC")
+    personality_cue_max_age_sec: float = Field(3600.0, gt=0.0, alias="PERSONALITY_CUE_MAX_AGE_SEC")
+    personality_cue_top_k: int = Field(5, ge=1, le=12, alias="PERSONALITY_CUE_TOP_K")
+
     # --- Self-readings: body signals against their own 7 days (self-calibration spec section C) ---
     # app/self_readings_cue.py -> orion/attention/self_readings.py. A fixed template (no LLM) over
     # substrate_node_prediction_error_history, calibrated by the attention seam's own rule; only

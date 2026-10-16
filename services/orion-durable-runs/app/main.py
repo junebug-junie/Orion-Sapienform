@@ -45,6 +45,7 @@ _reconcile_task: asyncio.Task | None = None
 situation: Any = None
 temporal_self: Any = None
 chronicle: Any = None
+personality: Any = None
 rpc_health_publisher: RpcHealthPublisher | None = None
 
 
@@ -355,10 +356,25 @@ def _build_chronicle():
                       cfg=cfg, now=lambda: datetime.now(timezone.utc))
 
 
+def _build_personality():
+    """Personality graph loop (spec 2026-10-16 rev 2): the single writer of personality_*, on the
+    checkpointer's pool. A plain periodic task: state lives in its own tables and cursors."""
+    from datetime import datetime, timezone
+
+    from app.personality_driver import PersonalityDriver, http_embedder
+    from app.personality_sources import PersonalitySourceReader
+    from app.personality_store import PersonalityStore
+
+    embed, close_embed = http_embedder(_settings.personality_embed_url)
+    return PersonalityDriver(store=PersonalityStore(_checkpointer_cm), reader=PersonalitySourceReader(_checkpointer_cm),
+                             embed=embed, now=lambda: datetime.now(timezone.utc),
+                             tick_sec=_settings.personality_tick_sec, close_embedder=close_embed)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global runner, rpc_bus, hunter, heartbeat, _sweep_task, admission, _admission_task, _reconcile_task
-    global rpc_health_publisher, situation, temporal_self
+    global rpc_health_publisher, situation, temporal_self, personality
     from app.runner import DurableRunner
 
     try:
@@ -397,6 +413,9 @@ async def lifespan(app: FastAPI):
         if _settings.temporal_self_enabled and _settings.orion_bus_enabled:
             temporal_self = _build_temporal_self(saver)
             await temporal_self.start(_stop)
+        if _settings.personality_enabled:
+            personality = _build_personality()
+            await personality.start(_stop)
         if admission is not None:
             _admission_task = asyncio.create_task(admission.run(_stop))
             if _settings.memory_episode_writer_enabled:
@@ -433,6 +452,8 @@ async def lifespan(app: FastAPI):
             await situation.close()
         if temporal_self is not None:
             await temporal_self.close()
+        if personality is not None:
+            await personality.close()
         if _admission_task is not None:
             _admission_task.cancel()
             await asyncio.gather(_admission_task, return_exceptions=True)
@@ -474,6 +495,7 @@ async def health() -> dict[str, Any]:
         "situation": situation.health() if situation is not None else None,
         "temporal_self": temporal_self.health() if temporal_self is not None else None,
         "temporal_self_chronicle": chronicle.health() if chronicle is not None else None,
+        "personality": personality.health() if personality is not None else None,
     }
 
 
@@ -573,6 +595,55 @@ async def temporal_self_cursors():
         warnings.append("no chronicle window has committed yet")
     return {"as_of": now.isoformat(), "cursors": out, "late_rows_last_24h": late, "warnings": warnings,
             "chronicle": chronicle.health() if chronicle is not None else None}
+
+
+def _personality_store():
+    if personality is None or _checkpointer_cm is None:
+        raise HTTPException(503, "personality graph is disabled (PERSONALITY_ENABLED)")
+    from app.personality_store import PersonalityStore
+
+    return PersonalityStore(_checkpointer_cm)
+
+
+async def _personality_read(coro):
+    """A missing table means the migration was not applied: 503 with the file name, not a 500."""
+    from psycopg.errors import UndefinedColumn, UndefinedTable
+
+    try:
+        return await coro
+    except (UndefinedTable, UndefinedColumn) as exc:
+        raise HTTPException(503, "personality tables missing: apply "
+                                 "services/orion-sql-db/manual_migration_personality_graph_v1.sql") from exc
+
+
+@app.get("/personality/frame")
+async def personality_frame():
+    """PersonalityFrameV1: active dispositions strongest first, curiosity choice style, counts."""
+    from datetime import datetime, timezone
+
+    store = _personality_store()
+    now = datetime.now(timezone.utc)
+    frame = await _personality_read(store.frame(now, warnings=personality.frame_warnings(now)))
+    return frame.model_dump(mode="json")
+
+
+_PERSONALITY_STATUSES = {"active", "candidate", "retired", "all"}
+
+
+@app.get("/personality/dispositions")
+async def personality_dispositions(status: str = "active", limit: int = 50):
+    """Dispositions by weight (no centroid), each with its last 60 weight-history points."""
+    if status not in _PERSONALITY_STATUSES:
+        raise HTTPException(400, "status must be active, candidate, retired or all")
+    rows = await _personality_read(_personality_store().dispositions(status=status, limit=max(1, min(limit, 500))))
+    return {"status": status, "count": len(rows), "dispositions": rows}
+
+
+@app.get("/personality/evidence")
+async def personality_evidence(disposition_id: Optional[str] = None, limit: int = 50):
+    """Evidence rows, newest first; optionally one disposition's."""
+    rows = await _personality_read(_personality_store().evidence(disposition_id or None, limit=max(1, min(limit, 500))))
+    return {"disposition_id": disposition_id, "count": len(rows), "evidence": rows}
 
 
 @app.get("/runs/unfinished")

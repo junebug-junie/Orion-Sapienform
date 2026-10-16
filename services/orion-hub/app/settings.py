@@ -1126,6 +1126,12 @@ class Settings(BaseSettings):
     HUB_CURIOSITY_TEMPORAL_SELF_FACT_ENABLED: bool = Field(
         default=True, alias="HUB_CURIOSITY_TEMPORAL_SELF_FACT_ENABLED"
     )
+    # Personality graph read-back (spec rev 2, orion/personality/cue.py): what Orion keeps coming
+    # back to, in Orion's own words -- a record, not an instruction. Read from
+    # HUB_CURIOSITY_DURABLE_RUNS_URL /personality/frame into the curiosity kickoff (concurrently
+    # with the today fact, same 1.5 s deadline) and the endogenous outreach prompt (next to the
+    # situation block). No block on any failure or a stale/empty frame. scripts/personality_cue_reader.py.
+    HUB_PERSONALITY_CUE_ENABLED: bool = Field(default=True, alias="HUB_PERSONALITY_CUE_ENABLED")
     # Urgent curiosity runs (docs/superpowers/plans/2026-09-28-urgent-curiosity-plan-3-seeded-urgent-runs.md):
     # a seeded investigation from the Hub button or orion:curiosity:urgent:request,
     # admitted at `urgent` GPU priority, bypassing the curiosity gates. Needs

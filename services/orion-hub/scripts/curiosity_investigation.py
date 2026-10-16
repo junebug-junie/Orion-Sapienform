@@ -97,6 +97,7 @@ from orion.regulation.arousal_view import (
 
 from .arousal_reader import ArousalReader
 from .rest_drive_reader import RestDriveReader
+from .personality_cue_reader import cue_status, read_personality_cue
 from .energy_stakes_gate import (
     HOLD_REASON as ENERGY_HOLD_REASON,
     EnergyHold,
@@ -269,6 +270,7 @@ from orion.schemas.durable_run import (
 )
 from orion.curiosity.urgent_prompt import build_urgent_prompt
 from orion.schemas.curiosity_urgent import CuriosityUrgentSeedV1
+from orion.schemas.personality import PersonalityCueV1
 
 # RPC source name on the pool ``status`` reads Hub makes for a carried hold ref (stage 4.4).
 GPU_LEASE_STATUS_SOURCE = "orion-hub"
@@ -865,6 +867,12 @@ class CuriosityInvestigation:
         # orion-durable-runs' chronicle at `durable_runs_url`. Off here so bare
         # constructions in tests never touch the network; settings ship it on.
         temporal_self_fact_enabled: bool = False,
+        # --- personality read-back (orion/personality/cue.py, spec rev 2) ---
+        # What Orion keeps coming back to, in Orion's own words, read from
+        # `durable_runs_url` /personality/frame concurrently with the today fact and
+        # under the same deadline. Off here so bare constructions in tests never touch
+        # the network; settings ship it on (HUB_PERSONALITY_CUE_ENABLED).
+        personality_cue_enabled: bool = False,
         # --- Orion's Day corrections (orion/orion_day/corrections.py) ------
         # The regular investigate line, on a writable graph only: claims up to
         # MAX_CORRECTIONS_PER_RUN recorded letter corrections once, shows them
@@ -1018,6 +1026,7 @@ class CuriosityInvestigation:
         self.dream_hypotheses_per_run = max(0, int(dream_hypotheses_per_run))
         self.carry_forward_enabled = bool(carry_forward_enabled)
         self.temporal_self_fact_enabled = bool(temporal_self_fact_enabled)
+        self.personality_cue_enabled = bool(personality_cue_enabled)
         self.orion_day_corrections_enabled = bool(orion_day_corrections_enabled)
         self.focus_enabled = bool(focus_enabled)
         # Other Hub loops that want terminal durable-run states without a second
@@ -1467,6 +1476,15 @@ class CuriosityInvestigation:
                         frame.get("day_id") if isinstance(frame, dict) else None,
                         frame.get("as_of") if isinstance(frame, dict) else None)
         return fact
+
+    async def _read_personality_cue(self, now: datetime) -> PersonalityCueV1:
+        """The kickoff's personality read-back cue. ``text == ""`` (with a skip reason) on
+        any failure -- never a failed or delayed kickoff. Same deadline as the today fact;
+        the kickoff gathers both, so they cost one wait, not two."""
+        return await read_personality_cue(
+            self.durable_runs_url, TEMPORAL_SELF_FACT_TIMEOUT_SEC,
+            now=now, enabled=self.personality_cue_enabled,
+        )
 
     async def _take_carry_forward(self, run_id: str):
         """Claim Orion's Day carry-forward for this run. None when off or nothing fresh.
@@ -2381,7 +2399,11 @@ class CuriosityInvestigation:
         corrections = await self._take_corrections(view, run_id)
         focus = await self._take_focus(view, run_id)
         open_lived_questions = await self._read_open_lived_questions(run_id)
-        today_fact = await self._read_today_fact(view, now)
+        # Both durable-runs reads at once: each is bounded by TEMPORAL_SELF_FACT_TIMEOUT_SEC
+        # and neither ever raises, so the kickoff waits for the slower one only.
+        today_fact, personality_cue = await asyncio.gather(
+            self._read_today_fact(view, now), self._read_personality_cue(now)
+        )
         prompt = build_kickoff_prompt(
             material,
             view=view,
@@ -2403,8 +2425,10 @@ class CuriosityInvestigation:
             open_lived_questions=open_lived_questions,
             corrections=corrections,
             today_fact=today_fact,
+            personality_cue=personality_cue.text or None,
             focus=focus,
         )
+        logger.info("curiosity_personality_cue run=%s %s", run_id, cue_status(personality_cue))
         if today_fact:
             logger.info("curiosity_today_fact_offered run=%s fact=%s", run_id, today_fact)
         if open_lived_questions:

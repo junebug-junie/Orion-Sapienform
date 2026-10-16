@@ -88,6 +88,8 @@ _TOOL_RESULT_CAP = 300
 _TOOL_ARGS_CAP = 160
 _CORRECTION_RESULTS_MAX = 50
 _CORRECTION_RESULT_CAP = 2000
+# A curiosity result fits the 12000-char MCP budget; keep all of it so a focus id is never cut off.
+_FOCUS_RESULT_CAP = 13000
 _LAST_TEXT_CAP = 4000
 # Total budget for the findings section. Finalize/reflect/repair read this
 # draft, so it must stay far below a lane window; the tail is kept because the
@@ -141,8 +143,13 @@ class TurnFindings:
     # no secrets), so claim_gate can check a claimed correction_id against what the tool really
     # returned. Not capped by turn length: a long turn cannot push the one real result out.
     correction_results: list[str] = field(default_factory=list)
-    # Same, for `queue_curiosity_focus` results and a claimed focus_id.
+    # Same, for a claimed focus_id: bodies of `queue_curiosity_focus` results AND `curiosity`
+    # results (kind=focus lists real focus ids, and run items carry extra.focus), so Orion
+    # reporting a focus it read back is not marked unverified.
     focus_results: list[str] = field(default_factory=list)
+    # tool_use id -> bare tool name, so the lists above match on the tool itself, never on a
+    # string that only appears in some other tool's arguments.
+    tool_names: dict[str, str] = field(default_factory=dict)
 
     def observe(self, step: Any) -> None:
         if not isinstance(step, dict):
@@ -177,6 +184,7 @@ class TurnFindings:
                 tool_id = str(block.get("id") or "")
                 if tool_id:
                     self.tool_calls[tool_id] = f"{name} {arg_str}".strip()
+                    self.tool_names[tool_id] = name.rsplit("__", 1)[-1]
             elif btype == "tool_result":
                 body = _result_text(block.get("content")).strip()
                 call = self.tool_calls.get(str(block.get("tool_use_id") or ""), "tool")
@@ -184,10 +192,12 @@ class TurnFindings:
                 if not body:
                     body = "(empty result)"
                 self.tool_result_count += 1
-                if "record_correction" in call and len(self.correction_results) < _CORRECTION_RESULTS_MAX:
+                tool = self.tool_names.get(str(block.get("tool_use_id") or ""), "")
+                if tool == "record_correction" and len(self.correction_results) < _CORRECTION_RESULTS_MAX:
                     self.correction_results.append(body[:_CORRECTION_RESULT_CAP])
-                if "queue_curiosity_focus" in call and len(self.focus_results) < _CORRECTION_RESULTS_MAX:
-                    self.focus_results.append(body[:_CORRECTION_RESULT_CAP])
+                if tool in ("queue_curiosity_focus", "curiosity") and len(self.focus_results) < _CORRECTION_RESULTS_MAX:
+                    # A curiosity list is up to ~12k chars and the id may sit anywhere in it.
+                    self.focus_results.append(body[:_FOCUS_RESULT_CAP])
                 self.entries.append(
                     f"- {call}{err} returned: {_one_line(scrub_secrets(body), _TOOL_RESULT_CAP)}"
                 )

@@ -1012,7 +1012,9 @@ def _outcome_section(*, run_id: str, focus: bool = False) -> list[str]:
         f'      run_id: "{run_id}",',
     ]
     if focus:
-        lines.append('      focus_disposition: "explored",  // or "set_aside: <why not, in plain words>"')
+        # A placeholder, not a value: a run that copies it unchanged is recorded as unknown,
+        # never as explored (orion.curiosity.focus.parse_disposition keeps it as raw text).
+        lines.append('      focus_disposition: "<explored | set_aside: why not>",')
     lines += [
         "      continue_line: true,   // open the next run on this instead of a cold menu",
         '      continue_note: "what I still do not know and want to keep pulling on",',

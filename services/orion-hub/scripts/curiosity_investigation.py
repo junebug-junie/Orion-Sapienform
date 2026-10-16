@@ -71,6 +71,7 @@ something worth writing up manufactures significance daily.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import dataclasses
 
 import httpx
@@ -1562,6 +1563,7 @@ class CuriosityInvestigation:
                 disposition, raw, graph_read = await asyncio.to_thread(read_disposition, self._reader, run_id)
             focus_id = await stamp_focus_outcome(
                 pool, run_id=run_id, turn_ok=turn_ok, disposition=disposition, disposition_raw=raw,
+                graph_read=graph_read,
             )
             logger.info(
                 "curiosity_focus_outcome run=%s focus_id=%s turn_ok=%s disposition=%s graph_read=%s",
@@ -1587,16 +1589,20 @@ class CuriosityInvestigation:
             return None
         return any(isinstance(e, dict) and e.get("event") == "run.started" for e in history)
 
-    async def _settle_focus_after_run_end(self, run_id: str) -> None:
-        """A durable investigate run ended failed / abandoned / cancelled while its focus is still
-        `taken` (no turn end stamped it). Never started: give the focus back. Started: Orion may
-        have seen it, so it is `failed` and never re-queued. In doubt: left `taken` (visible)."""
+    async def _settle_focus_after_run_end(self, run_id: str, *, completed: bool = False) -> None:
+        """A durable investigate run ended while its focus is still `taken` (no turn end stamped
+        it). Completed: stamp it now (the disposition is re-read from the graph). Otherwise:
+        never started, give the focus back; started, Orion may have seen it, so it is `failed`
+        and never re-queued; in doubt, left `taken` (the stale sweep in `take_focus` ends it)."""
         try:
             pool = self._pool_provider()
             if pool is None or not run_id:
                 return
             row = (await read_focus_for_runs(pool, [run_id])).get(run_id)
             if row is None or row.status != FOCUS_TAKEN:
+                return
+            if completed:
+                await self._stamp_focus(run_id, turn_ok=True)
                 return
             started = await self._durable_run_started(run_id)
             if started is False:
@@ -2523,6 +2529,11 @@ class CuriosityInvestigation:
                 # Same rule for the focus: once the turn began, Orion may have seen it.
                 focus=focus is not None and not turn_began,
             )
+            if focus is not None and turn_began:
+                # Hub going away mid-turn: this turn's end will never be stamped, and it is no
+                # durable run, so nothing else will settle it. Best effort; never blocks the cancel.
+                with contextlib.suppress(Exception):
+                    await fail_focus(self._pool_provider(), run_id=run_id)
             raise
         if not text:
             logger.info("curiosity_investigation_no_text run=%s debug=%s", run_id, debug)
@@ -4858,6 +4869,9 @@ class CuriosityInvestigation:
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # noqa: BLE001
+                if measured:
+                    # A retry may still stamp `ran`; until then the focus reads failed, not taken.
+                    await self._stamp_focus(request.run_id, turn_ok=False)
                 return CuriosityTurnResultV1(
                     run_id=request.run_id, correlation_id=request.correlation_id, ok=False, error=f"{type(exc).__name__}: {exc}"[:300]
                 )
@@ -4955,6 +4969,8 @@ class CuriosityInvestigation:
             await self._settle_focus_after_run_end(state.run_id)
         if state.workflow != "curiosity.investigate" or state.status != "completed":
             return
+        # Normally the turn end already stamped it; this only catches a stamp that failed.
+        await self._settle_focus_after_run_end(state.run_id, completed=True)
         detail = state.detail or {}
         # Same completion hook as SelfDefinition / outreach: durable admission
         # never reaches the in-process journal enqueue.

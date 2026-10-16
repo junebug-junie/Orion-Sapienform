@@ -39,7 +39,13 @@ from orion.introspect.semantic_index import (
     nearest,
 )
 from orion.introspect.transport import CURIOSITY_REQUEST_CHANNEL, REQUEST_KIND, RESULT_KIND, RESULT_PREFIX
-from orion.schemas.introspect import CuriosityArguments, IntrospectItemV1, IntrospectRequestV1, IntrospectResultV1
+from orion.schemas.introspect import (
+    CuriosityArguments,
+    IntrospectItemV1,
+    IntrospectRequestV1,
+    IntrospectResultV1,
+    clip_json_text,
+)
 
 from scripts import curiosity_run_store as run_store
 from scripts.curiosity_introspect import index_text, occurred_at, run_item, self_question_item
@@ -93,49 +99,58 @@ def _iso(value: Optional[datetime]) -> Optional[str]:
     return value.isoformat() if value is not None else None
 
 
+# Five focus items, or five run items each carrying a focus, must stay inside the 12000-char MCP
+# result budget even when every text field is escape-heavy: each free-text field is clipped on its
+# SERIALIZED length (clip_json_text), and nothing is said twice.
+FOCUS_TEXT_JSON_BUDGET = 600
+FOCUS_WHY_JSON_BUDGET = 300
+FOCUS_STORY_JSON_BUDGET = 700
+_ID_CAP = 80
+
+
+def _disposition_kind(focus: FocusRow) -> Optional[str]:
+    """explored / set_aside / None (unknown). The reason is in the story."""
+    if not focus.disposition:
+        return None
+    return focus.disposition.split(":", 1)[0]
+
+
 def focus_extra(focus: FocusRow) -> dict[str, Any]:
-    """What a run item and a focus item say about a focus: the story first, in plain words."""
+    """A focus item's extra: the story first, in plain words. The question is the item's text."""
+    story, _ = clip_json_text(focus_story(focus), FOCUS_STORY_JSON_BUDGET)
+    why, why_cut = clip_json_text(focus.why, FOCUS_WHY_JSON_BUDGET)
     return {
-        "focus_id": focus.focus_id,
-        "story": focus_story(focus),
+        "story": story,
         "status": focus.status,
         "origin": focus.origin,
-        "question": focus.question,
-        "why": focus.why,
+        "why": why,
+        "why_truncated": why_cut,
         "queued_at": _iso(focus.created_at),
         "expires_at": _iso(focus.expires_at),
         "taken_by_run": focus.offered_run_id,
         "taken_at": _iso(focus.offered_at),
         "turn_ok": focus.turn_ok,
         # None = unknown (the run wrote none, or it could not be read) -- never "explored".
-        "disposition": focus.disposition,
-        "disposition_raw": focus.disposition_raw,
-        "chat_correlation_id": focus.chat_correlation_id,
+        "disposition": _disposition_kind(focus),
+        "chat_correlation_id": (focus.chat_correlation_id or "")[:_ID_CAP] or None,
     }
-
-
-# A run item carries only this much of its focus, so five list items stay inside the MCP result
-# budget; curiosity(kind=focus) returns the whole record.
-_RUN_FOCUS_QUESTION_CAP = 200
 
 
 def run_focus_extra(focus: FocusRow) -> dict[str, Any]:
-    question = " ".join(focus.question.split())
-    return {
-        "focus_id": focus.focus_id,
-        "story": focus_story(focus),
-        "question": question[:_RUN_FOCUS_QUESTION_CAP],
-        "disposition": focus.disposition,
-    }
+    """What a run item says about the focus it took: just enough to look it up with
+    curiosity(kind=focus). Run items are already near the budget on their own."""
+    return {"focus_id": focus.focus_id, "status": focus.status, "disposition": _disposition_kind(focus)}
 
 
 def focus_item(focus: FocusRow, now: datetime) -> IntrospectItemV1:
+    text, truncated = clip_json_text(focus.question, FOCUS_TEXT_JSON_BUDGET)
     return IntrospectItemV1(
         id=focus.focus_id,
         occurred_at=focus.created_at or now,
         kind="curiosity_focus",
         epistemic_status="record",
-        text=focus.question,
+        text=text,
+        truncated=truncated,
         extra=focus_extra(focus),
     )
 

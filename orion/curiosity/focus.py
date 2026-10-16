@@ -101,6 +101,18 @@ VALUES ($1, $2, $3, $4, $5, now() + make_interval(secs => $6::double precision))
 RETURNING {_COLS}, 'pending' AS effective_status
 """
 
+# A focus taken by a run whose end was never recorded (admission never confirmed, Hub died
+# mid-turn, an error before dispatch) would read "taken" forever. Past this age it is marked
+# failed with turn_ok NULL ("end never recorded"); a late turn end can still stamp it ran.
+STALE_TAKEN_AFTER = timedelta(hours=48)
+
+STALE_SQL = """
+UPDATE curiosity_focus_request
+   SET status = 'failed', status_at = now(), outcome_stamped_at = now()
+ WHERE status = 'taken' AND outcome_stamped_at IS NULL
+   AND offered_at < now() - make_interval(secs => $1::double precision)
+"""
+
 TAKE_SQL = f"""
 UPDATE curiosity_focus_request
    SET status = 'taken', status_at = now(), offered_at = now(), offered_run_id = $1
@@ -127,7 +139,9 @@ RETURNING f.focus_id, f.status
 STAMP_SQL = """
 UPDATE curiosity_focus_request
    SET status = CASE WHEN $2 THEN 'ran' ELSE 'failed' END,
-       status_at = now(), turn_ok = $2, disposition = $3, disposition_raw = $4,
+       status_at = now(), turn_ok = $2,
+       disposition = CASE WHEN $5 THEN $3 ELSE disposition END,
+       disposition_raw = CASE WHEN $5 THEN $4 ELSE disposition_raw END,
        outcome_stamped_at = now()
  WHERE offered_run_id = $1 AND status IN ('taken', 'ran', 'failed')
    AND NOT (status = 'ran' AND NOT $2)
@@ -146,7 +160,7 @@ RETURNING focus_id
 CLEAR_SQL = """
 UPDATE curiosity_focus_request
    SET status = 'cleared', status_at = now()
- WHERE focus_id = $1 AND status = 'pending'
+ WHERE focus_id = $1 AND status = 'pending' AND expires_at > now()
 RETURNING focus_id
 """
 
@@ -233,6 +247,13 @@ async def queue_focus(
             await conn.execute(LOCK_SQL, LOCK_KEY)
             existing = await conn.fetchrow(BY_ID_SQL, focus_id)
             if existing is not None:
+                if existing["effective_status"] in (REPLACED, EXPIRED, CLEARED):
+                    # The same words from the same chat turn, but that focus is no longer queued:
+                    # an ok=true here would let Orion say "queued" when nothing is.
+                    raise FocusRefused(
+                        f"this exact focus was queued earlier in this conversation and is now "
+                        f"{existing['effective_status']}; nothing was queued. Reword it to queue it again"
+                    )
                 return QueueResult(focus=_row(existing), replaced=None, already_queued=True)
             await conn.execute(EXPIRE_SQL)
             current = await conn.fetchrow(PENDING_FOR_UPDATE_SQL)
@@ -260,6 +281,7 @@ async def take_focus(pool: Any, *, run_id: str) -> Optional[FocusRow]:
         async with pool.acquire() as conn:
             async with conn.transaction():
                 await conn.execute(EXPIRE_SQL)
+                await conn.execute(STALE_SQL, STALE_TAKEN_AFTER.total_seconds())
                 rows = await conn.fetch(TAKE_SQL, run_id)
     except Exception as exc:  # noqa: BLE001 -- see docstring
         logger.warning("curiosity_focus_take_failed run=%s err=%s", run_id, exc)
@@ -285,14 +307,16 @@ async def release_focus(pool: Any, *, run_id: str) -> Optional[str]:
 
 async def stamp_focus_outcome(
     pool: Any, *, run_id: str, turn_ok: bool, disposition: Optional[str], disposition_raw: Optional[str],
+    graph_read: bool = True,
 ) -> Optional[str]:
     """Turn end for the run that took a focus. Returns the focus_id stamped, or None (no focus
-    for this run, or a failure -- logged). Never raises."""
+    for this run, or a failure -- logged). Never raises. ``graph_read`` False: the disposition
+    could not be read this time, so a disposition an earlier attempt recorded is kept."""
     if pool is None or not run_id:
         return None
     try:
         async with pool.acquire() as conn:
-            rows = await conn.fetch(STAMP_SQL, run_id, bool(turn_ok), disposition, disposition_raw)
+            rows = await conn.fetch(STAMP_SQL, run_id, bool(turn_ok), disposition, disposition_raw, bool(graph_read))
     except Exception as exc:  # noqa: BLE001
         logger.warning("curiosity_focus_stamp_failed run=%s err=%s", run_id, exc)
         return None
@@ -411,8 +435,8 @@ def format_focus_section(focus: Optional[FocusRow]) -> list[str]:
         "",
         "It is an offer, not an order. You can explore it in this run or set it aside. Either way, "
         "say which on your :TurnOutcome at the end (the node is described under LAST below):",
-        '    focus_disposition: "explored"                         // you looked into it in this run',
-        '    focus_disposition: "set_aside: <why not, in plain words>"',
+        '    focus_disposition: "explored"                     // if you looked into it in this run',
+        '    focus_disposition: "set_aside: <why not, in plain words>"   // if you did not',
         "Hub reads that back onto the focus, and Juniper and your curiosity tool show it. If you "
         "write no focus_disposition, it is recorded as unknown, not as explored.",
         "",
@@ -440,6 +464,8 @@ def focus_story(focus: FocusRow) -> str:
         parts.append(f"taken by run {focus.offered_run_id} {at(focus.offered_at)}")
         if status == TAKEN:
             parts.append("the run has not finished, or its end was not recorded")
+        elif status == FAILED and focus.turn_ok is None:
+            parts.append("the run's end was never recorded, so it is counted as failed; the focus is not re-queued")
         elif status == FAILED:
             parts.append("the run failed; the focus is not re-queued")
         elif status == RAN:

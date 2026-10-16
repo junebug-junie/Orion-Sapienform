@@ -298,7 +298,9 @@ def test_a_run_cancelled_before_its_turn_gives_the_focus_back(monkeypatch):
     assert table.rows[0]["status"] == "pending" and table.rows[0]["offered_run_id"] is None
 
 
-def test_a_turn_cancelled_after_it_started_keeps_the_claim(monkeypatch):
+def test_a_turn_cancelled_after_it_started_fails_the_focus_never_releases_it(monkeypatch):
+    """Orion may have seen it, so it is never re-offered; and no durable run will settle it, so it
+    is failed now rather than reading "taken" forever (review finding, 2026-10-16)."""
     loop, table, pool = _loop(monkeypatch)
     _queue(pool)
 
@@ -308,7 +310,7 @@ def test_a_turn_cancelled_after_it_started_keeps_the_claim(monkeypatch):
     loop._generate = _cancelled  # type: ignore[assignment]
     with pytest.raises(asyncio.CancelledError):
         asyncio.run(loop.tick())
-    assert cf.RELEASE_SQL not in table.statements and table.rows[0]["status"] == "taken"
+    assert cf.RELEASE_SQL not in table.statements and table.rows[0]["status"] == "failed"
 
 
 def test_a_durable_run_that_ended_before_it_started_gives_the_focus_back(monkeypatch):
@@ -365,8 +367,65 @@ def test_only_investigate_takes_and_both_turn_end_paths_stamp():
                     takers.add(fn.name)
     assert takers == {"_investigate"}
     src = (HUB / "scripts" / "curiosity_investigation.py").read_text()
-    assert src.count("await self._spend_turn_ended(") == src.count("await self._stamp_focus(") == 2
     assert "await self._settle_focus_after_run_end(state.run_id)" in src
+
+
+def _turn_request(run_id, *, corr="turn-1", attempt=1, tag=None):
+    from orion.schemas.durable_run import CuriosityTurnRequestV1
+
+    extra = {"source_tag": tag} if tag else {}
+    return CuriosityTurnRequestV1(run_id=run_id, correlation_id=corr, prompt="p", timeout_sec=60.0,
+                                  attempt=attempt, **extra)
+
+
+def _scripted(loop, outcomes):
+    """Each _generate call takes the next outcome: text, or an exception to raise."""
+    calls = iter(outcomes)
+
+    async def _gen(*a, **k):
+        out = next(calls)
+        if isinstance(out, BaseException):
+            raise out
+        return out, {}
+
+    loop._generate = _gen  # type: ignore[assignment]
+
+
+def test_durable_turns_stamp_failed_then_ran_and_a_cache_hit_does_not_restamp(monkeypatch):
+    run_id = "d4d4d4d4d4d4"
+    loop, table, pool = _loop(monkeypatch, answers={
+        "focus_disposition IS NOT NULL": [{"focus_disposition": "explored"}]})
+    _queue(pool)
+    asyncio.run(cf.take_focus(pool, run_id=run_id))
+    _scripted(loop, ["", "found it"])
+    first = asyncio.run(loop._turn_result_for(_turn_request(run_id), hold_lock=False))
+    assert first.ok is False and table.rows[0]["status"] == "failed"
+    second = asyncio.run(loop._turn_result_for(_turn_request(run_id, attempt=2), hold_lock=False))
+    assert second.ok and table.rows[0]["status"] == "ran" and table.rows[0]["disposition"] == "explored"
+    stamped = sum(1 for st in table.statements if st == cf.STAMP_SQL)
+    asyncio.run(loop._turn_result_for(_turn_request(run_id, attempt=3), hold_lock=False))  # cache hit
+    assert sum(1 for st in table.statements if st == cf.STAMP_SQL) == stamped
+
+
+def test_a_raised_turn_fails_the_focus_and_another_line_never_stamps(monkeypatch):
+    run_id = "e5e5e5e5e5e5"
+    loop, table, pool = _loop(monkeypatch)
+    _queue(pool)
+    asyncio.run(cf.take_focus(pool, run_id=run_id))
+    _scripted(loop, ["found it", RuntimeError("harness down")])
+    asyncio.run(loop._turn_result_for(_turn_request(run_id, tag="curiosity_self_inquiry"), hold_lock=False))
+    assert table.rows[0]["status"] == "taken" and cf.STAMP_SQL not in table.statements
+    out = asyncio.run(loop._turn_result_for(_turn_request(run_id, corr="turn-2"), hold_lock=False))
+    assert out.ok is False and table.rows[0]["status"] == "failed"
+
+
+def test_a_completed_durable_run_stamps_a_focus_its_turn_end_missed(monkeypatch):
+    loop, table, pool = _loop(monkeypatch, answers={
+        "focus_disposition IS NOT NULL": [{"focus_disposition": "explored"}]})
+    _queue(pool)
+    asyncio.run(cf.take_focus(pool, run_id="f6f6f6f6f6f6"))
+    asyncio.run(loop._settle_focus_after_run_end("f6f6f6f6f6f6", completed=True))
+    assert table.rows[0]["status"] == "ran" and table.rows[0]["disposition"] == "explored"
 
 
 # --- the read tool (curiosity kind=focus) --------------------------------------------------------
@@ -460,3 +519,61 @@ def test_the_listener_is_wired_with_the_kill_switch():
     assert "CuriosityFocusListener(" in src and "enabled=settings.HUB_CURIOSITY_FOCUS_ENABLED" in src
     assert "focus_enabled=settings.HUB_CURIOSITY_FOCUS_ENABLED" in src
     assert "await curiosity_focus_listener.stop()" in src
+
+
+# --- the MCP result budget (review finding, 2026-10-16) -------------------------------------------
+
+NASTY = '"\\\n<>&\u2028'
+MCP_TOOL_RESULT_MAX_CHARS = 12000
+
+
+def _worst_focus(n):
+    from datetime import datetime, timezone
+
+    now = datetime(2026, 10, 16, tzinfo=timezone.utc)
+    return cf.FocusRow(
+        focus_id=str(UUID(int=n)), question=(NASTY * 200)[:500], why=(NASTY * 200)[:500], origin="juniper",
+        status="ran", created_at=now, expires_at=now, status_at=now, chat_correlation_id="c" * 300,
+        replaced_by=str(UUID(int=n + 1)), offered_at=now, offered_run_id="a" * 32, outcome_stamped_at=now,
+        turn_ok=True, disposition="set_aside:" + (NASTY * 100)[:300], disposition_raw=(NASTY * 100)[:300],
+    )
+
+
+def _size(result):
+    """The text orion/introspect/mcp_server.py sends: json.dumps(result, default=str,
+    ensure_ascii=False). Pinned by the source check below."""
+    import json
+
+    return len(json.dumps(result.model_dump(mode="json"), default=str, ensure_ascii=False))
+
+
+def test_the_budget_measure_matches_the_mcp_server():
+    src = (HUB.parents[1] / "orion" / "introspect" / "mcp_server.py").read_text()
+    assert "json.dumps(result, default=str, ensure_ascii=False)" in src
+
+
+def test_five_worst_case_focus_items_stay_under_the_mcp_cap():
+    from datetime import datetime, timezone
+
+    from scripts.curiosity_introspect_listener import focus_item
+
+    now = datetime(2026, 10, 16, tzinfo=timezone.utc)
+    items = [focus_item(_worst_focus(n), now) for n in range(5)]
+    result = IntrospectResultV1(ok=True, operation="curiosity", as_of=now, total_available=99999, items=items)
+    assert _size(result) < MCP_TOOL_RESULT_MAX_CHARS, _size(result)
+    assert all("set aside" in i.extra["story"] for i in items)
+
+
+def test_five_worst_case_run_items_with_a_focus_stay_under_the_mcp_cap():
+    from test_curiosity_introspect import NOW, _worst_outcome, _worst_story
+
+    from scripts.curiosity_introspect import run_item
+    from scripts.curiosity_introspect_listener import run_focus_extra
+
+    for with_write_up in (True, False):
+        items = [run_item(_worst_story(n, body=with_write_up), _worst_outcome(),
+                          extra={"similarity": 0.987654321, "graph_read": False,
+                                 "focus": run_focus_extra(_worst_focus(n))})
+                 for n in range(5)]
+        result = IntrospectResultV1(ok=True, operation="curiosity", as_of=NOW, total_available=99999, items=items)
+        assert _size(result) < MCP_TOOL_RESULT_MAX_CHARS, (_size(result), with_write_up)

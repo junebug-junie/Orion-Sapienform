@@ -333,3 +333,95 @@ def test_the_kickoff_section_shows_the_question_and_asks_for_a_disposition():
     jun = "\n".join(cf.format_focus_section(cf.FocusRow(**{**row.__dict__, "origin": "juniper"})))
     assert "Juniper asked you" in jun
     assert cf.format_focus_section(None) == []
+
+
+# --- review fixes (2026-10-16) ------------------------------------------------------------------
+
+
+async def _age_taken(pool, hours: float) -> None:
+    """Move every taken row's offered_at back by ``hours`` (Postgres has no settable clock)."""
+    if isinstance(pool, FocusPool):
+        for r in pool.table.rows:
+            if r["offered_at"] is not None:
+                r["offered_at"] -= timedelta(hours=hours)
+        return
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE curiosity_focus_request SET offered_at = offered_at - make_interval(hours => $1) "
+            "WHERE offered_at IS NOT NULL", int(hours))
+
+
+@pytest.mark.parametrize("backend", _backends())
+def test_an_unreadable_graph_on_a_retry_keeps_the_known_disposition(backend):
+    async def scenario(pool):
+        await q(pool)
+        await cf.take_focus(pool, run_id=RUN_A)
+        await cf.stamp_focus_outcome(pool, run_id=RUN_A, turn_ok=True, disposition="explored", disposition_raw=None)
+        await cf.stamp_focus_outcome(pool, run_id=RUN_A, turn_ok=True, disposition=None, disposition_raw=None,
+                                     graph_read=False)
+        assert next(iter((await _all(pool)).values())).disposition == "explored"
+
+    run(backend, scenario)
+
+
+@pytest.mark.parametrize("backend", _backends())
+def test_a_taken_focus_whose_end_was_never_recorded_is_failed_after_48h(backend):
+    async def scenario(pool):
+        await q(pool, "stuck")
+        await cf.take_focus(pool, run_id=RUN_A)
+        await _age_taken(pool, 49)
+        await q(pool, "next")
+        await cf.take_focus(pool, run_id=RUN_B)  # the take path runs the sweep
+        rows = {r.question: r for r in (await _all(pool)).values()}
+        assert rows["stuck"].status == cf.FAILED and rows["stuck"].turn_ok is None
+        assert "end was never recorded" in cf.focus_story(rows["stuck"])
+        # A late turn end still records what really happened.
+        await cf.stamp_focus_outcome(pool, run_id=RUN_A, turn_ok=True, disposition="explored", disposition_raw=None)
+        assert {r.question: r for r in (await _all(pool)).values()}["stuck"].status == cf.RAN
+
+    run(backend, scenario)
+
+
+@pytest.mark.parametrize("backend", _backends())
+def test_a_fresh_taken_focus_is_not_swept(backend):
+    async def scenario(pool):
+        await q(pool, "fresh")
+        await cf.take_focus(pool, run_id=RUN_A)
+        await _age_taken(pool, 47)
+        await cf.take_focus(pool, run_id=RUN_B)
+        assert next(iter((await _all(pool)).values())).status == cf.TAKEN
+
+    run(backend, scenario)
+
+
+@pytest.mark.parametrize("backend", _backends())
+def test_clear_does_not_hide_an_expiry(backend):
+    async def scenario(pool):
+        queued = await q(pool, ttl=timedelta(seconds=-1))
+        assert await cf.clear_focus(pool, focus_id=uuid.UUID(queued.focus.focus_id)) is False
+        assert (await _all(pool))[queued.focus.focus_id].status == cf.EXPIRED
+
+    run(backend, scenario)
+
+
+@pytest.mark.parametrize("backend", _backends())
+def test_repeating_a_replaced_focus_is_refused_not_reported_queued(backend):
+    async def scenario(pool):
+        await q(pool, "A")
+        await q(pool, "B")
+        with pytest.raises(cf.FocusRefused, match="now replaced; nothing was queued"):
+            await q(pool, "A")
+        pending = await cf.read_pending(pool)
+        assert pending.question == "B"
+
+    run(backend, scenario)
+
+
+def test_the_kickoff_template_value_is_a_placeholder_that_reads_unknown():
+    from orion.curiosity.kickoff_prompt import _outcome_section
+
+    text = "\n".join(_outcome_section(run_id="abcdef123456", focus=True))
+    assert 'focus_disposition: "explored"' not in text
+    copied = '<explored | set_aside: why not>'
+    assert f'focus_disposition: "{copied}"' in text
+    assert cf.parse_disposition(copied) == (None, copied)

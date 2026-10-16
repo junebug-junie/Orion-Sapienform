@@ -102,7 +102,9 @@ def test_a_focus_id_no_tool_returned_is_gated_and_says_nothing_was_queued():
     reply = "Done -- I queued it for my next run. focus_id: focus_bus_fanout_01"
     gate = gate_focus_claims(reply, [])
     assert gate.unverified_ids == ("focus_bus_fanout_01",)
-    assert f"focus_id: {UNVERIFIED_MARK}" in gate.text and "Nothing was queued." in gate.text
+    assert f"focus_id: {UNVERIFIED_MARK}" in gate.text
+    # An id from an earlier turn may be real: the notice says unknown, never "nothing was queued".
+    assert "is unknown" in gate.text and "Nothing was queued" not in gate.text
     assert "queue_curiosity_focus" in gate.text
 
 
@@ -139,3 +141,27 @@ def test_the_governor_gates_both_claims_on_every_reply_path():
            / "bus_listener.py").read_text()
     body = src.split("def _gate_claims", 1)[1].split("\ndef ", 1)[0]
     assert "gate_correction_claims(" in body and "gate_focus_claims(" in body
+
+
+def test_a_focus_id_read_back_with_the_curiosity_tool_is_verified():
+    """The brief tells Orion to call curiosity(kind=focus) to say whether a focus ran; repeating the
+    id it read must not be marked unverified (review finding, 2026-10-16)."""
+    findings = TurnFindings()
+    _call(findings, "c1", "mcp__orion-introspect__curiosity")
+    _result(findings, "c1", f'{{"items": [{{"id": "{REAL}", "kind": "curiosity_focus"}}]}}')
+    assert gate_focus_claims(f"focus_id: {REAL} ran and was explored", findings.focus_results).changed is False
+
+
+def test_a_tool_whose_arguments_merely_mention_the_name_does_not_count():
+    findings = TurnFindings()
+    findings.observe({"type": "assistant", "message": {"content": [
+        {"type": "tool_use", "id": "b1", "name": "Bash", "input": {"cmd": "echo queue_curiosity_focus record_correction"}}]}})
+    _result(findings, "b1", f'focus_id: {REAL} correction_id: {REAL}')
+    assert findings.focus_results == [] and findings.correction_results == []
+
+
+def test_a_long_curiosity_result_keeps_an_id_near_its_end():
+    findings = TurnFindings()
+    _call(findings, "c2", "mcp__orion-introspect__curiosity")
+    _result(findings, "c2", "x" * 11000 + f" {REAL}")
+    assert gate_focus_claims(f"focus_id: {REAL}", findings.focus_results).changed is False

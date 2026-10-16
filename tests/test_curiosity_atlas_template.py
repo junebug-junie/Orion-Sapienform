@@ -701,6 +701,11 @@ def test_a_run_that_took_a_focus_says_so_in_its_chip(tmp_path) -> None:
     strip = _render({"runs": runs}, tmp_path)["strip"]
     assert "took a queued focus: set aside: no material" in strip
     assert "took a queued focus" not in _render({"runs": _runs()}, tmp_path)["strip"]
+    failed = _runs(runs=[_run(focus=_focus(status="failed"))])
+    strip = _render({"runs": failed}, tmp_path)["strip"]
+    assert "took a queued focus; the run failed" in strip and "unknown" not in strip
+    taken = _runs(runs=[_run(focus=_focus(status="taken"))])
+    assert "end is not recorded yet" in _render({"runs": taken}, tmp_path)["strip"]
 
 
 def test_the_clear_button_sends_delete_to_the_focus_route() -> None:

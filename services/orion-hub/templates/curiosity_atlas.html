@@ -677,6 +677,13 @@ function stripDays(n, now) {
   }
   return out;
 }
+/* What a run did with the focus it took. Only a run that finished has a disposition;
+   a failed or unfinished one says so instead of "unknown". */
+function focusWords(f) {
+  if (f.status === "ran") return `took a queued focus: ${f.disposition_words || "disposition unknown"}`;
+  if (f.status === "failed") return "took a queued focus; the run failed";
+  return "took a queued focus; the run's end is not recorded yet";
+}
 function runOneLiner(r) {
   const bits = [LINE_LABEL[r.line] || r.line, r.status];
   const aboutText = (r.about && r.about.text) || "";
@@ -686,7 +693,7 @@ function runOneLiner(r) {
   if (r.prior_touched) bits.push(`${conf(r.prior_touched.from)} → ${conf(r.prior_touched.to)}`);
   if (r.lane_wait_sec != null && r.lane_wait_sec > 60) bits.push(`waited ${fmtDuration(r.lane_wait_sec)} for a lane`);
   if (r.reach_out && r.reach_out.wanted) bits.push(`reach-out: ${r.reach_out.decision || "?"}`);
-  if (r.focus) bits.push(`took a queued focus: ${r.focus.disposition_words || r.focus.status}`);
+  if (r.focus) bits.push(focusWords(r.focus));
   if (r.error) bits.push(r.error);
   return bits.join(" · ");
 }

@@ -63,6 +63,12 @@ class FocusTable:
                 if r["status"] == cf.PENDING and r["expires_at"] <= self.now:
                     r["status"], r["status_at"] = cf.EXPIRED, self.now
             return "UPDATE"
+        if sql == cf.STALE_SQL:
+            cutoff = self.now - timedelta(seconds=args[0])
+            for r in self.rows:
+                if r["status"] == cf.TAKEN and r["outcome_stamped_at"] is None and r["offered_at"] < cutoff:
+                    r.update(status=cf.FAILED, status_at=self.now, outcome_stamped_at=self.now)
+            return "UPDATE"
         if sql == cf.REPLACE_SQL:
             old, new = args
             for r in self.rows:
@@ -120,13 +126,15 @@ class FocusTable:
             self._check()
             return out
         if sql == cf.STAMP_SQL:
-            run_id, ok, disposition, raw = args
+            run_id, ok, disposition, raw, graph_read = args
             out = []
             for r in self.rows:
                 if (r["offered_run_id"] == run_id and r["status"] in (cf.TAKEN, cf.RAN, cf.FAILED)
                         and not (r["status"] == cf.RAN and not ok)):
                     r.update(status=cf.RAN if ok else cf.FAILED, status_at=self.now, turn_ok=ok,
-                             disposition=disposition, disposition_raw=raw, outcome_stamped_at=self.now)
+                             outcome_stamped_at=self.now)
+                    if graph_read:
+                        r.update(disposition=disposition, disposition_raw=raw)
                     out.append({"focus_id": r["focus_id"]})
             return out
         if sql == cf.FAIL_SQL:
@@ -139,7 +147,7 @@ class FocusTable:
         if sql == cf.CLEAR_SQL:
             out = []
             for r in self.rows:
-                if r["focus_id"] == args[0] and r["status"] == cf.PENDING:
+                if r["focus_id"] == args[0] and r["status"] == cf.PENDING and r["expires_at"] > self.now:
                     r.update(status=cf.CLEARED, status_at=self.now)
                     out.append({"focus_id": r["focus_id"]})
             return out

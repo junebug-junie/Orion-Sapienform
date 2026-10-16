@@ -55,10 +55,13 @@ def gate_correction_claims(final_text: str | None, correction_results: Sequence[
 
 
 def gate_focus_claims(final_text: str | None, focus_results: Sequence[str]) -> ClaimGateResult:
-    """Replace every claimed focus id no queue_curiosity_focus result contains, and say so."""
+    """Replace every claimed focus id that no `queue_curiosity_focus` or `curiosity` result in
+    the turn contains, and say so. The notice does not claim nothing was queued: an id from an
+    earlier turn may be real, it is only unverified in this one."""
     return _gate(
         final_text, focus_results, _FOCUS_CLAIM,
-        label="focus_id", tool="queue_curiosity_focus", nothing="Nothing was queued.",
+        label="focus_id", tool="queue_curiosity_focus or curiosity",
+        nothing="Whether any such focus is queued is unknown.",
     )
 
 

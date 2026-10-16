@@ -3015,6 +3015,11 @@ channels:
       # LLM_GATEWAY_GRAMMAR_ENABLED -- services/orion-llm-gateway/app/grammar_emit.py
       - orion-llm-gateway
       - orion-substrate-runtime
+      # act ledger (rung 2): durable painting runs publish `make` act_opened/act_closed
+      # (services/orion-thought/app/visual_steps.py via orion/grammar/acts.py), gated by
+      # THOUGHT_ACT_LEDGER_ENABLED. orion-hub's say/ask/look acts ride its existing entry
+      # (HUB_ACT_LEDGER_ENABLED). Persisted by orion-sql-writer to grammar_acts.
+      - orion-thought
       # per-window storage-write outcome traces (sql_writer.storage:), gated by
       # SQL_WRITER_WRITE_HEALTH_ENABLED -- services/orion-sql-writer/app/write_health.py.
       # The writer is also this channel's persister; it never counts its own

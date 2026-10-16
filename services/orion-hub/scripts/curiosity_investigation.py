@@ -820,6 +820,7 @@ class CuriosityInvestigation:
         graph_password: str = "",
         hub_url: str = "http://127.0.0.1:8080",
         prior_sample: int = 8,
+        prior_coverage_slots: int = 2,
         stale_prior_tests: int = 3,
         max_hops: int = DEFAULT_MAX_HOPS,
         pg_readonly_role: str = "orion_readonly",
@@ -992,6 +993,7 @@ class CuriosityInvestigation:
         self.graph_password = graph_password
         self.hub_url = hub_url
         self.prior_sample = int(prior_sample)
+        self.prior_coverage_slots = int(prior_coverage_slots)
         self.stale_prior_tests = int(stale_prior_tests)
         self.max_hops = int(max_hops)
         self.pg_readonly_role = pg_readonly_role
@@ -1272,6 +1274,7 @@ class CuriosityInvestigation:
             view = read_snapshot(
                 reader,
                 sample=self.prior_sample,
+                coverage_slots=self.prior_coverage_slots,
                 stale_after=self.stale_prior_tests,
                 rotate_seed=rotate_seed,
                 priors_cypher=priors_cypher,
@@ -1329,6 +1332,7 @@ class CuriosityInvestigation:
             constants={
                 **model.constants(),
                 "prior_sample": self.prior_sample,
+                "prior_coverage_slots": self.prior_coverage_slots,
                 "stale_after": self.stale_prior_tests,
                 "graph_unavailable": view.unavailable_reason,
             },

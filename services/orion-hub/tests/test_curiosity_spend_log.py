@@ -588,3 +588,20 @@ def test_both_arms_read_the_same_words_about_the_order() -> None:
     for prompt in prompts.values():
         assert "least sure about come first" not in prompt
         assert "the code estimates a test could change your mind the most" in prompt
+
+
+def test_offered_rows_record_which_slot_each_prior_came_from() -> None:
+    """The order experiment must be able to tell ordered picks from coverage draws."""
+    from orion.curiosity.worldview import Prior
+
+    class _Model:
+        def yield_for(self, prior_id):
+            return 1.0
+
+        def expected_nats(self, prior_id, confidence):
+            return 0.0
+
+    rows = spend.offered_rows(
+        [Prior("a", "c", 0.5, "open", 0), Prior("b", "c", 0.9, "open", 1, coverage=True)], _Model()
+    )
+    assert [(r["prior_id"], r["slot"]) for r in rows] == [("a", "order"), ("b", "coverage")]

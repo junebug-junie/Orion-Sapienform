@@ -146,8 +146,7 @@ After (this branch). The second part is rendered in chain mode with a sample ste
 
 ```text
 You are noticing your own current state. One thing won your attention this tick: Cabinet prediction error [open-loop-7597ff641a23] (from node:substrate.cabinet).
-That is what happened: usually one signal wins, not a group of concerns — say
-what it is, plainly. ...
+Say what it is, plainly. ...
 - open_loops (what competed this tick, with its real measurement where one exists):
 
   - open-loop-7597ff641a23 (won): Cabinet prediction error

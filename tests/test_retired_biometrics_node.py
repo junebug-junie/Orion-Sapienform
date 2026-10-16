@@ -284,3 +284,58 @@ def test_frozen_retired_keys_no_longer_dilute_biometrics_prediction_error(
     assert diluted == pytest.approx(0.09 / 0.30)
     assert clean == pytest.approx(1.0)
     assert ATLAS_LAST_SEEN < NOW - timedelta(days=50)
+
+
+def test_absence_sweep_path_does_not_claim_a_node_bio_prune_it_never_saves(
+    catalog: NodeCatalog,
+) -> None:
+    """The runtime's absence sweep runs with enable_node_reducer=False and a no-op
+    node-bio saver. The prune receipt must only name what that call persists."""
+    bio, pressure = _live_shape()
+    store = {"pressure": pressure, "receipts": []}
+    process_biometrics_grammar_events(
+        events=[],
+        catalog=catalog,
+        load_node_bio=lambda: bio,
+        save_node_bio=lambda _p: None,
+        load_pressure=lambda: store["pressure"],
+        save_pressure=lambda p: store.update(pressure=p),
+        save_receipt=store["receipts"].append,
+        save_emission=lambda _e: None,
+        publish_accepted=None,
+        enable_node_reducer=False,
+        now=NOW,
+    )
+    assert "atlas" not in store["pressure"].nodes
+    kinds = {d.target_kind for r in store["receipts"] for d in r.state_deltas}
+    assert kinds == {"active_node_pressure"}
+
+
+def test_cabinet_spike_cannot_recreate_a_retired_host(catalog: NodeCatalog) -> None:
+    from orion.schemas.telemetry.cabinet_ambient_spike import CabinetAmbientSpikeV1
+    from orion.substrate.cabinet_ambient_spike_consumer import (
+        apply_cabinet_ambient_spike_bump,
+        build_cabinet_ambient_spike_grammar_events,
+    )
+
+    spike = CabinetAmbientSpikeV1(
+        spike_id="spike-atlas",
+        node="atlas",
+        timestamp=NOW,
+        activity=0.5,
+        rms=6500.0,
+        peak=12000.0,
+        activity_threshold=0.30,
+        consecutive_ticks=2,
+        source_service="orion-biometrics",
+        source_node="atlas",
+    )
+    projection, receipt = apply_cabinet_ambient_spike_bump(
+        projection=_bio({}),
+        spike=spike,
+        catalog=catalog,
+        grammar_events=build_cabinet_ambient_spike_grammar_events(spike),
+        now=NOW,
+    )
+    assert projection.nodes == {}
+    assert receipt.noop_event_ids and not receipt.state_deltas

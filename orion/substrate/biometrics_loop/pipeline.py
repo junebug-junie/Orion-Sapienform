@@ -59,6 +59,8 @@ def prune_retired_nodes(
     pressure: ActiveNodePressureProjectionV1,
     catalog: NodeCatalog,
     now: datetime,
+    prune_node_bio: bool = True,
+    prune_pressure: bool = True,
 ) -> tuple[NodeBiometricsProjectionV1, ActiveNodePressureProjectionV1, ReductionReceiptV1 | None]:
     """Drop retired hosts (catalog `retired_nodes:`) from both live projections.
 
@@ -71,10 +73,16 @@ def prune_retired_nodes(
     pressure reducer all refuse retired hosts, so once pruned they stay out.
 
     Returns the (possibly) new projections and one receipt naming what was removed,
-    or None when there was nothing to prune.
+    or None when there was nothing to prune. `prune_node_bio` / `prune_pressure`
+    let a caller that will not persist one projection leave it alone, so the
+    receipt never claims a removal that was not saved.
     """
-    bio_gone = sorted(n for n in (node_bio.nodes or {}) if catalog.is_retired(n))
-    pressure_gone = sorted(n for n in (pressure.nodes or {}) if catalog.is_retired(n))
+    bio_gone = (
+        sorted(n for n in (node_bio.nodes or {}) if catalog.is_retired(n)) if prune_node_bio else []
+    )
+    pressure_gone = (
+        sorted(n for n in (pressure.nodes or {}) if catalog.is_retired(n)) if prune_pressure else []
+    )
     if not bio_gone and not pressure_gone:
         return node_bio, pressure, None
 
@@ -161,8 +169,14 @@ def process_biometrics_grammar_events(
     node_bio_dirty = False
     pressure_dirty = False
 
+    # Prune only the projections this call owns and saves: the runtime's absence
+    # sweep runs with enable_node_reducer=False and a no-op node-bio saver.
     pruned_bio, pruned_pressure, prune_receipt = prune_retired_nodes(
-        node_bio=node_bio, pressure=pressure, catalog=catalog, now=clock
+        node_bio=node_bio,
+        pressure=pressure,
+        catalog=catalog,
+        now=clock,
+        prune_node_bio=enable_node_reducer,
     )
     if prune_receipt is not None:
         node_bio_dirty = pruned_bio is not node_bio

@@ -81,7 +81,7 @@ def _transport_bus_delta(*, node_id: str = "athena", hints: dict) -> StateDeltaV
 
 def _active_node_pressure_delta(
     *,
-    node_id: str = "atlas",
+    node_id: str = "athena",
     score: float,
     delta_id: str = "delta_pressure_1",
     active_pressures: list[str] | None = None,
@@ -472,22 +472,22 @@ def test_active_node_pressure_availability_delta_uses_replace_mode() -> None:
 
 
 def test_high_pressure_then_recovery_reflects_current_reading_not_floor() -> None:
-    """Reproduces the live bug: node:atlas pinned at availability=0.0 with fresh,
+    """Reproduces the live bug (seen on node:atlas, now retired; replayed on athena): pinned at availability=0.0 with fresh,
     non-stale telemetry elsewhere (staleness~0, real gpu_pressure) -- not an
     ongoing outage, a one-way floor that could never recover. A later event
     reporting genuinely improved conditions (low pressure_score) must now be
     reflected, not min()'d away against the old low value."""
-    state = _state(node_vectors={"node:atlas": {"availability": 1.0}})
+    state = _state(node_vectors={"node:athena": {"availability": 1.0}})
 
     bad_delta = _active_node_pressure_delta(score=0.9, delta_id="delta_bad")
     perturbations = delta_to_perturbations(bad_delta)
     apply_perturbations(state, perturbations, now=NOW)
-    assert state.node_vectors["node:atlas"]["availability"] == 0.0, "sanity: high pressure drives availability to 0"
+    assert state.node_vectors["node:athena"]["availability"] == 0.0, "sanity: high pressure drives availability to 0"
 
     good_delta = _active_node_pressure_delta(score=0.0, delta_id="delta_good")
     perturbations = delta_to_perturbations(good_delta)
     apply_perturbations(state, perturbations, now=NOW)
-    assert state.node_vectors["node:atlas"]["availability"] == 0.8, (
+    assert state.node_vectors["node:athena"]["availability"] == 0.8, (
         "availability must recover to reflect the improved reading (1 - min(1, 0+0.2) = 0.8), "
         "not stay floor-clamped at the old low value"
     )
@@ -496,15 +496,15 @@ def test_high_pressure_then_recovery_reflects_current_reading_not_floor() -> Non
 def test_availability_can_still_drop_on_a_later_worse_reading() -> None:
     """Not just one-way-up: mode="replace" reflects whatever the current
     reading says, so a later genuinely worse score must still lower it."""
-    state = _state(node_vectors={"node:atlas": {"availability": 1.0}})
+    state = _state(node_vectors={"node:athena": {"availability": 1.0}})
 
     ok_delta = _active_node_pressure_delta(score=0.0, delta_id="delta_ok")
     apply_perturbations(state, delta_to_perturbations(ok_delta), now=NOW)
-    assert state.node_vectors["node:atlas"]["availability"] == 0.8
+    assert state.node_vectors["node:athena"]["availability"] == 0.8
 
     worse_delta = _active_node_pressure_delta(score=0.9, delta_id="delta_worse")
     apply_perturbations(state, delta_to_perturbations(worse_delta), now=NOW)
-    assert state.node_vectors["node:atlas"]["availability"] == 0.0
+    assert state.node_vectors["node:athena"]["availability"] == 0.0
 
 
 def test_availability_recovered_transition_restores_full_availability() -> None:
@@ -519,11 +519,11 @@ def test_availability_recovered_transition_restores_full_availability() -> None:
     restored -- the same channel, a frozen-not-ratcheted flavor of the
     same bug. Must land at exactly 1.0 (fully available), not whatever the
     stale pressure_score happens to be."""
-    state = _state(node_vectors={"node:atlas": {"availability": 1.0}})
+    state = _state(node_vectors={"node:athena": {"availability": 1.0}})
 
     bad_delta = _active_node_pressure_delta(score=0.9, delta_id="delta_bad")
     apply_perturbations(state, delta_to_perturbations(bad_delta), now=NOW)
-    assert state.node_vectors["node:atlas"]["availability"] == 0.0, "sanity: pinned low first"
+    assert state.node_vectors["node:athena"]["availability"] == 0.0, "sanity: pinned low first"
 
     recovered_delta = _active_node_pressure_delta(
         score=0.9,  # deliberately still-high and stale -- must be ignored;
@@ -539,7 +539,7 @@ def test_availability_recovered_transition_restores_full_availability() -> None:
     assert availability.mode == "replace"
 
     apply_perturbations(state, perturbations, now=NOW)
-    assert state.node_vectors["node:atlas"]["availability"] == 1.0
+    assert state.node_vectors["node:athena"]["availability"] == 1.0
 
 
 def test_no_availability_perturbation_when_never_flagged_and_still_absent() -> None:

@@ -9,6 +9,8 @@ on:
       - 'orion/biometrics/**'
       - 'orion/substrate/biometrics_loop/**'
       - 'orion/substrate/prediction_error.py'
+      - 'orion/substrate/cabinet_ambient_spike_consumer.py'
+      - 'services/orion-substrate-runtime/app/worker.py'
       - 'config/biometrics/node_catalog.yaml'
       - 'tests/test_retired_biometrics_node.py'
       - 'tests/test_biometrics_pipeline.py'
@@ -24,7 +26,19 @@ on:
     paths:
       - 'orion/biometrics/**'
       - 'orion/substrate/biometrics_loop/**'
+      - 'orion/substrate/prediction_error.py'
+      - 'orion/substrate/cabinet_ambient_spike_consumer.py'
+      - 'services/orion-substrate-runtime/app/worker.py'
       - 'config/biometrics/node_catalog.yaml'
+      - 'tests/test_retired_biometrics_node.py'
+      - 'tests/test_biometrics_pipeline.py'
+      - 'tests/test_biometrics_pressure_organ.py'
+      - 'tests/test_capability_absence_signal.py'
+      - 'tests/test_node_biometrics_reducer.py'
+      - 'tests/test_node_pressure_reducer.py'
+      - 'tests/test_biometrics_grammar_extract.py'
+      - 'tests/test_fleet_roster_coverage.py'
+      - '.github/workflows/biometrics-loop-tests.yml'
   workflow_dispatch:
 permissions:
   contents: read

@@ -112,7 +112,7 @@ def test_expected_offline_node_emits_suppression_candidate(catalog: NodeCatalog)
     """Rule A. Names `hecate`, which the catalog declares `expected_online: false`
     (on-demand box, no biometrics service running). Previously named `atlas`, which is now a
     RETIRED host (catalog `retired_nodes:`) and gets no candidates at all -- see
-    test_retired_node_gets_no_candidates. Before that it named `circe`, whose entry was
+    tests/test_retired_biometrics_node.py::test_organ_emits_nothing_for_a_retired_host. Before that it named `circe`, whose entry was
     flipped to `true` on 2026-07-18."""
     stale_ts = FIXED_TS - timedelta(seconds=300)
     emission = invoke_biometrics_pressure(

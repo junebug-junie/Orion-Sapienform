@@ -364,6 +364,18 @@ fields, and the row gets `zone_no_embed = true` (from the config, never from
 the zone's name). Since 2026-10-15 no zone is no-embed (the patio is
 fingerprinted) and v2 dropped the table CHECKs that enforced it. Face fields
 (`face_embedding`, `face_score`, `face_thumb_ref`) are stored as sent.
+Since 2026-10-16 (`manual_migration_vision_osnet_shadow_v1.sql`) each row also
+stores `osnet_embedding` (shadow OSNet person re-identification vector, person
+crops only), `osnet_model_id` and `embedding_model_id` (the body model that
+actually made `embedding`; SigLIP v1 today). The no-embed strip clears the
+OSNet vector too. **Nothing in the individuals loop or the split reads the
+OSNet columns** (`tests/test_vision_osnet_shadow.py` checks). They are scored
+only by `evals/run_osnet_vs_siglip_eval.py --live <dsn>` (READ ONLY): same-frame
+different-people pairs vs next-frame same-person pairs (from box geometry, not
+from either model) and Juniper's picture verdicts, per model: cosine
+quantiles, AUC, and how many different people pass at the line that keeps 90%
+of same-person pairs. It reports `INSUFFICIENT DATA` (exit 2) until about a day
+of crops carry both vectors. Retention follows the crop rows (7 days).
 
 **Individuals loop** (`app/vision_individuals.py`, every
 `VISION_INDIVIDUALS_INTERVAL_SEC`, default 60 s). Reads new crops per stream

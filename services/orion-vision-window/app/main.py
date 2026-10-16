@@ -59,14 +59,17 @@ def _person_boxes(items: List[Tuple[VisionArtifactPayload, float]]) -> List[Tupl
     return out
 
 
-_FACE_KEYS = ("face_embedding", "face_score", "face_thumb_ref")
+# Additive VisionCropV1 keys, dropped while None so a writer whose schema
+# predates them (extra="forbid") keeps accepting every crop it can store.
+_OPTIONAL_CROP_KEYS = ("face_embedding", "face_score", "face_thumb_ref",
+                       "embedding_model_id", "osnet_embedding", "osnet_model_id")
 
 
 def _crop_payload(obs: Any) -> Dict[str, Any]:
-    """The crop observation as JSON, with face keys dropped where empty."""
+    """The crop observation as JSON, with additive keys dropped where empty."""
     data = obs.model_dump(mode="json")
     for crop in data.get("crops") or []:
-        for k in _FACE_KEYS:
+        for k in _OPTIONAL_CROP_KEYS:
             if crop.get(k) is None:
                 crop.pop(k, None)
     return data

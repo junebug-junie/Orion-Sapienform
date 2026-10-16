@@ -447,6 +447,49 @@ L2-normalized inline `embedding`; the detect artifact also carries
 - Test: `tests/test_crop_embeddings_patio.py`, `tests/test_crop_thumbnails.py`,
   `tests/test_crop_faces.py` (embedder and face models mocked).
 
+### OSNet shadow body vector (2026-10-16)
+
+Juniper approved storing a person re-identification vector next to the SigLIP
+body vector for about a week, so the two can be scored against each other
+(`services/orion-sql-writer/evals/run_osnet_vs_siglip_eval.py`). **Shadow
+only:** the individuals matcher in orion-sql-writer never reads it, so
+nothing about who a crop is assigned to changes.
+
+- **What:** every embedded crop whose label is `person` also gets
+  `osnet_embedding` (512-d, unit) and `osnet_model_id`
+  (`osnet_ain_x1_0:ms_d_c:<sha12>`), from the same crop pixels SigLIP saw.
+  Torchreid's test transform: resize to 256 x 128, ImageNet mean/std, fp32.
+- **Model:** OSNet-AIN x1.0, Torchreid model zoo multi-source checkpoint
+  (MSMT17 + DukeMTMC-reID + CUHK03), classifier head stripped, as published at
+  a pinned revision of `huggingface.co/LibreYOLO/LibreReID-osnet` (MIT). The
+  network is vendored in `app/osnet_ain.py` (Torchreid source, MIT); the
+  `torchreid` 0.2.5 sdist on PyPI is a third-party repackaging that needs a
+  Cython build and pulls opencv-python/matplotlib/tensorboard.
+- **Weights:** downloaded at image build to `/app/models/osnet/osnet_ain_x1_0.pt`
+  (`VISION_OSNET_WEIGHTS_PATH`), sha256-checked by the Dockerfile and again by
+  `app/osnet_shadow.py`, loaded with `weights_only=True`. Never in git.
+- **Kill switch:** `VISION_OSNET_SHADOW_ENABLED` (default `true`). Loaded at
+  warm-up only on a host with `embed_image` enabled (not the circe Qwen lane).
+- **Failure is contained:** a missing or wrong weights file, a load error or
+  an inference error costs the OSNet vector only. The SigLIP vector, faces and
+  detections are unchanged. The load is retried at most every 10 minutes.
+- **Measured on the T10 (2026-10-16, built image, throwaway container):**
+  weights 8.4 MB on the GPU; peak allocated 188 MB, reserved 292 MB at a batch
+  of 8 (nvidia-smi delta 310 MiB including allocator slack); 15.5 ms for one
+  crop, 30 ms for a batch of 8 (3.8 ms per crop), while the live captioner
+  shared the card.
+- **Which body model actually runs:** the `embed_image` profile asks for
+  SigLIP2, which does not load under transformers 4.49.0, so the loader falls
+  back to SigLIP v1. That fallback is now visible: an ERROR log line at load,
+  `GET /health` -> `models.body_embedder` (requested vs loaded, the error), a
+  `body_embedder_fallback:<id>` entry in `/ready`'s `degraded_reasons` (does
+  not change `ready`), and `embedding_model_id` on every embedded crop.
+  `/health` -> `models.osnet_shadow` shows OSNet's state, VRAM, vector count
+  and last error; `osnet_shadow_failed` joins `degraded_reasons` when it
+  cannot load.
+- Test: `tests/test_osnet_shadow.py` (the real-weights test runs inside the
+  built image; it skips where the weights are absent).
+
 ## Observability (logs-first)
 
 Each finished task emits one structured line prefix `[VISION_TASK]` with JSON containing at least: `correlation_id`, `task_type`, `ok`, `device`, `error`, `error_code`, `queue_depth_at_submit`, `scheduler_total_s`, `inference_s`, `queue_wait_est_s`.

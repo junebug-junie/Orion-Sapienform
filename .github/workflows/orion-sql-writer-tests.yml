@@ -172,10 +172,12 @@ jobs:
           for stmt in body.split(";"):
               if stmt.strip():
                   conn.cursor().execute(stmt)
+          conn.cursor().execute(pathlib.Path("services/orion-sql-db/manual_migration_vision_osnet_shadow_v1.sql").read_text())
           PY
           PYTHONPATH=.:services/orion-sql-writer python -m pytest -q -rs -p no:cacheprovider \
             services/orion-sql-writer/tests/test_vision_confirm_asks.py \
-            services/orion-sql-writer/tests/test_vision_split.py | tee vision_pg.out
+            services/orion-sql-writer/tests/test_vision_split.py \
+            services/orion-sql-writer/tests/test_vision_osnet_shadow.py | tee vision_pg.out
           if grep -q "SKIPPED" vision_pg.out; then
             echo "visual confirmation Postgres tests skipped -- ORION_TEST_PG_URI wiring is broken" >&2
             exit 1

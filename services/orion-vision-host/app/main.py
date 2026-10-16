@@ -394,6 +394,11 @@ class VisionHostService:
         if warm_failed:
             degraded.extend([f"warm_failed:{n}" for n in warm_failed])
 
+        # Named, not fatal: the body embedder fell back to another model, or the
+        # shadow OSNet vector cannot load. Neither changes `ready`.
+        models = self.runner.model_status() if self.runner else {}
+        degraded.extend(model_degraded_reasons(models))
+
         ready = profiles_ok and bus_ok and gpu_schedulable and not warm_failed
 
         return {
@@ -405,6 +410,7 @@ class VisionHostService:
             "warm_failed_profiles": warm_failed,
             "degraded_reasons": degraded,
             "queue_depth": self.sched.queue_depth() if self.sched else 0,
+            "models": models,
         }
 
     async def _consume_loop(self):
@@ -607,9 +613,27 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Orion Vision Host", version="0.1.0", lifespan=lifespan)
 
+def model_degraded_reasons(models: Dict[str, Any]) -> list[str]:
+    """``body_embedder_fallback:<loaded id>`` per fallen-back embedder slot, and
+    ``osnet_shadow_failed`` when the shadow OSNet vector cannot load."""
+    out: list[str] = []
+    for st in (models.get("body_embedder") or {}).values():
+        if st.get("fallback"):
+            reason = f"body_embedder_fallback:{st.get('loaded')}"
+            if reason not in out:
+                out.append(reason)
+    if (models.get("osnet_shadow") or {}).get("state") == "failed":
+        out.append("osnet_shadow_failed")
+    return out
+
+
 @app.get("/health")
 async def health():
     return {
+        # The models that actually loaded: requested vs loaded body embedder
+        # (SigLIP2 falls back to SigLIP v1 under transformers 4.49.0) and the
+        # OSNet shadow vector's state, VRAM and vector count.
+        "models": service.runner.model_status() if service.runner else {},
         "ok": True,
         "service": settings.SERVICE_NAME,
         "version": settings.SERVICE_VERSION,

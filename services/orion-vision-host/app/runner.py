@@ -35,6 +35,8 @@ from .tiling import (
     to_frame_coords,
 )
 from .model_manager import ModelManager
+from .osnet_shadow import MODEL_ID as OSNET_MODEL_ID
+from .osnet_shadow import OsnetShadow
 from .models import VisionResult, VisionTask
 from .profiles import PipelineDef, ProfileDef, VisionProfiles
 from .settings import Settings
@@ -238,6 +240,13 @@ class VisionRunner:
 
         self.models = ModelManager()
         self.warm_errors: Dict[str, str] = {}
+        # Shadow person re-identification vector (app/osnet_shadow.py). Its
+        # failures never reach warm_errors: OSNet is not allowed to make the
+        # host "not ready".
+        self.osnet = OsnetShadow(
+            enabled=bool(getattr(settings, "VISION_OSNET_SHADOW_ENABLED", True)),
+            weights_path=str(getattr(settings, "VISION_OSNET_WEIGHTS_PATH", "") or ""),
+        )
 
     def _is_enabled(self, name: str) -> bool:
         return name in self.enabled
@@ -293,7 +302,26 @@ class VisionRunner:
                 msg = str(e)
                 logger.warning(f"[WARM] profile={name} kind={p.kind} err={msg}")
                 self.warm_errors[name] = msg
+        if self.osnet.enabled and self._is_enabled("embed_image"):
+            # Load at start so its VRAM shows up before the first walkway frame
+            # and a missing weights file is logged at boot, not on frame one.
+            # Only where crop embeddings can run (a captioner-only host such as
+            # the circe Qwen lane never loads it; the crop path loads lazily).
+            self.osnet.warm(device)
         return warmed
+
+    def model_status(self) -> Dict[str, Any]:
+        """The models that ACTUALLY loaded (for /health and /ready).
+
+        ``body_embedder``: per embedder slot, the requested id, the loaded id,
+        and whether the loader fell back (SigLIP2 -> SigLIP v1 today).
+        ``osnet_shadow``: app/osnet_shadow.py's status.
+        """
+        body = {
+            f"{k.profile}@{k.device}": dict(v) for k, v in sorted(
+                self.models.embedder_status.items(), key=lambda kv: (kv[0].profile, kv[0].device))
+        }
+        return {"body_embedder": body, "osnet_shadow": self.osnet.status()}
 
     def _warm_profile_backend(self, p: ProfileDef, device: str) -> None:
         dtype = self._resolve_dtype(p)
@@ -882,7 +910,7 @@ class VisionRunner:
                 logger.warning(f"[CROP] crop embeddings failed, detections kept: {exc}")
                 for o in objects:
                     for k in ("embedding", "embedding_ref", "thumb_ref", "face_embedding", "face_score",
-                              "face_thumb_ref"):
+                              "face_thumb_ref", "embedding_model_id", "osnet_embedding", "osnet_model_id"):
                         o.pop(k, None)
                 crop_stats = {"error": 1, "error_detail": str(exc)[:200]}
 
@@ -904,7 +932,8 @@ class VisionRunner:
             "max_detections": max_det,
             # Crop vectors ride the bus inline (VisionObject.embedding); the
             # on-disk debug copy keeps the ref only, not a second vector store.
-            "objects": [{k: v for k, v in o.items() if k not in ("embedding", "face_embedding")} for o in objects],
+            "objects": [{k: v for k, v in o.items() if k not in ("embedding", "face_embedding", "osnet_embedding")}
+                        for o in objects],
         }
         json_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
@@ -947,6 +976,12 @@ class VisionRunner:
             model, processor, _model_id = self._load_embedder(embed_profile, device)
             return self._embed_images(model, processor, crops, device)
 
+        # Loaded up front (cached after the first call) so each crop can name
+        # the body model that actually made its vector.
+        self._load_embedder(embed_profile, device)
+        body_model_id = self.models.loaded_embedder_id(embed_profile.name, device)
+        osnet_fn = self.osnet.embed_fn(device)
+
         embed_model_id = (
             embed_profile.model_id
             if embed_profile.model_id and not embed_profile.model_id.startswith("REPLACE_ME")
@@ -974,6 +1009,9 @@ class VisionRunner:
             thumb_limiter=_THUMB_LIMITER,
             face_fn=face_fn,
             face_thumb_limiter=_FACE_THUMB_LIMITER,
+            body_model_id=body_model_id,
+            osnet_fn=osnet_fn,
+            osnet_model_id=OSNET_MODEL_ID,
         )
 
     def _crop_face_fn(self, p: ProfileDef, device: str):

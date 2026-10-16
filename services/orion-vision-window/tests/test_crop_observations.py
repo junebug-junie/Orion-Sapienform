@@ -125,3 +125,23 @@ def test_projection_never_uses_rtsp_camera_id_as_camera_or_stream_key() -> None:
     assert "rtsp://" not in stream_key_from_artifact(art)
     art2 = _artifact(_objs(), inputs={"camera_id": "cam0", "stream_id": "cam0"})
     assert camera_id_from_artifact(art2) == "cam0"
+
+
+def test_osnet_shadow_fields_ride_along_and_are_omitted_while_empty() -> None:
+    from app.main import _crop_payload
+
+    osnet = [0.0] * 511 + [1.0]
+    objs = [VisionObject(label="person", score=0.9, box_xyxy=[1, 2, 3, 4], zone="walkway", embedding_ref="crop:z",
+                         embedding=VEC, embedding_model_id="google/siglip-so400m-patch14-384",
+                         osnet_embedding=osnet, osnet_model_id="osnet_ain_x1_0:ms_d_c:34c24e98b6b7"),
+            VisionObject(label="dog", score=0.9, box_xyxy=[5, 6, 7, 8], zone="walkway", embedding_ref="crop:d",
+                         embedding=VEC)]
+    obs = build_crop_observation(_artifact(objs))
+    person, dog = obs.crops
+    assert person.osnet_embedding == osnet and person.osnet_model_id.startswith("osnet_ain_x1_0")
+    assert person.embedding_model_id == "google/siglip-so400m-patch14-384"
+    data = _crop_payload(obs)
+    assert "osnet_embedding" in data["crops"][0]
+    # A crop without them sends no key at all, so a writer that predates them still accepts it.
+    assert not {"osnet_embedding", "osnet_model_id", "embedding_model_id"} & set(data["crops"][1])
+    VisionCropObservationV1.model_validate(data)

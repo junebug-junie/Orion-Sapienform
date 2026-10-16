@@ -19,7 +19,11 @@ idea 1), one `VisionCropObservationV1` to `orion:vision:crops:sql-write`
 orion-sql-writer's individuals reducer. A box is "tracked" when the host set a
 `zone` or an `embedding` on it (`want_crop_embeddings`). Patio boxes carry
 vectors and, on person crops, `face_embedding`/`face_thumb_ref` like the rest
-(2026-10-15). Frame size
+(2026-10-15). Since 2026-10-16 person crops can also carry the host's shadow
+`osnet_embedding`/`osnet_model_id` and every embedded crop its
+`embedding_model_id`; like the face keys they are left out of the published
+payload while empty, so a writer that predates them keeps accepting crops.
+Deploy orion-sql-writer before this service and before orion-vision-host. Frame size
 comes from the host's `frame_width`/`frame_height` output. Code: `app/crops.py`.
 Counters: `vision_window_crop_observations_{published,failed}_total` on
 `/api/vision-window/metrics`.

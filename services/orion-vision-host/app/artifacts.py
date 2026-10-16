@@ -67,6 +67,11 @@ def build_artifact_payload(res: VisionResult) -> Optional[VisionArtifactPayload]
                 face_embedding=obj.get("face_embedding"),
                 face_score=obj.get("face_score"),
                 face_thumb_ref=obj.get("face_thumb_ref"),
+                # The body model that actually made ``embedding``, and the
+                # shadow OSNet vector (person crops only; not used for matching).
+                embedding_model_id=obj.get("embedding_model_id"),
+                osnet_embedding=obj.get("osnet_embedding"),
+                osnet_model_id=obj.get("osnet_model_id"),
             ))
 
     if "caption" in artifacts and isinstance(artifacts["caption"], dict):

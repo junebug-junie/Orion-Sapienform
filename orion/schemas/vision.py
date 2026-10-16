@@ -34,6 +34,16 @@ class VisionObject(BaseModel):
     face_embedding: Optional[List[float]] = None
     face_score: Optional[float] = None
     face_thumb_ref: Optional[str] = None
+    # Additive (2026-10-16, OSNet shadow, docs/superpowers/specs/
+    # 2026-10-16-vision-body-match-proposal.md). ``embedding_model_id``: the
+    # body model that ACTUALLY made ``embedding`` (the SigLIP loader can fall
+    # back to another model). ``osnet_embedding``: on an embedded ``person``
+    # crop, the L2-normalized 512-d OSNet-AIN person re-identification vector
+    # of the same crop pixels, with ``osnet_model_id``. Shadow only: stored for
+    # an offline comparison, never used to assign a crop to an individual.
+    embedding_model_id: Optional[str] = None
+    osnet_embedding: Optional[List[float]] = None
+    osnet_model_id: Optional[str] = None
 
 
 # Alias for explicit requirement
@@ -529,8 +539,9 @@ class VisionCropV1(BaseModel):
     no-embed zone. No configured zone is no-embed since 2026-10-15 (the patio
     is fingerprinted now); the writer still strips them generically.
 
-    ``extra="forbid"``: the face fields are additive, so orion-sql-writer (the
-    consumer) must be deployed before orion-vision-window starts sending them.
+    ``extra="forbid"``: the face and OSNet fields are additive, so
+    orion-sql-writer (the consumer) must be deployed before orion-vision-window
+    starts sending them.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -547,6 +558,13 @@ class VisionCropV1(BaseModel):
     face_embedding: Optional[List[float]] = None
     face_score: Optional[float] = None
     face_thumb_ref: Optional[str] = None
+    # Additive (2026-10-16): see VisionObject.osnet_embedding. orion-sql-writer
+    # must be deployed before orion-vision-window sends them (extra="forbid");
+    # the window omits them while None, so an older writer keeps accepting
+    # crops until the host starts producing them.
+    embedding_model_id: Optional[str] = None
+    osnet_embedding: Optional[List[float]] = None
+    osnet_model_id: Optional[str] = None
 
 
 class VisionCropObservationV1(BaseModel):

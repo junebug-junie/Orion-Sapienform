@@ -22,6 +22,7 @@ from typing import Any
 
 import pytest
 from fastapi import WebSocketDisconnect
+from starlette.websockets import WebSocketState
 
 # Settings validation runs at import time; same defaults the other
 # websocket_endpoint driver (test_workflow_schedule_runtime_paths.py) sets.
@@ -48,7 +49,10 @@ class _FakeWebSocket:
     def __init__(self, payloads: list[dict]) -> None:
         self._inbound = [json.dumps(p) for p in payloads]
         self.sent: list[Any] = []
-        self.client_state = SimpleNamespace(name="CONNECTED")
+        # The real enum: _safe_ws_send_json and the unified lane compare
+        # against WebSocketState.CONNECTED, so a stand-in object would read as
+        # "disconnected" and silently skip the code under test.
+        self.client_state = WebSocketState.CONNECTED
         self.headers: dict = {}
         self.client = SimpleNamespace(host="127.0.0.1", port=9000)
 
@@ -58,7 +62,7 @@ class _FakeWebSocket:
     async def receive_text(self) -> str:
         if self._inbound:
             return self._inbound.pop(0)
-        self.client_state.name = "DISCONNECTED"
+        self.client_state = WebSocketState.DISCONNECTED
         raise WebSocketDisconnect()
 
     async def send_json(self, payload: dict) -> None:
@@ -153,7 +157,10 @@ def test_second_turn_sees_orions_first_reply(unified_ws):
 
 def test_turn_without_a_final_frame_adds_no_assistant_text(unified_ws):
     """A turn_error partial_draft is never persisted to chat_history_log, so
-    rehydrate never replays it; the live list must not invent it either."""
+    rehydrate never replays it; the live list must not invent it either.
+    Juniper's own message from that turn deliberately stays (see
+    append_live_assistant_reply's docstring), so the next turn sees two user
+    messages in a row -- which is what actually happened."""
     calls = unified_ws(
         [_turn("first"), _turn("second")],
         [
@@ -174,7 +181,7 @@ def test_cut_short_reply_keeps_its_marker(unified_ws):
 
 def test_history_stays_bounded_over_a_long_connection(unified_ws):
     turns = 3
-    n = 8
+    n = 12
     payloads = [_turn(f"msg {i}", context_turns=turns) for i in range(n)]
     calls = unified_ws(payloads, [_final(f"reply {i}") for i in range(n)])
     # The live list: system + `turns` pairs, plus this turn's new message.
@@ -251,3 +258,83 @@ def test_live_reply_shape_matches_rehydrated_shape():
     h: list[dict] = []
     append_live_assistant_reply(h, "r", ts="2026-10-16T00:00:00+00:00")
     assert set(h[-1]) == set(restored)
+
+
+# --------------------------------------------------------------- legacy lane
+
+
+class _RecordingCortexClient:
+    """Plain brain-mode reply; records each request's continuity messages."""
+
+    def __init__(self, replies: list[str]) -> None:
+        self.replies = list(replies)
+        self.messages: list[list[dict]] = []
+
+    async def chat(self, req, correlation_id=None):
+        from uuid import uuid4
+
+        from orion.schemas.cortex.contracts import CortexChatResult, CortexClientResult
+
+        self.messages.append([dict(m) if isinstance(m, dict) else m.model_dump() for m in (req.messages or [])])
+        text = self.replies.pop(0)
+        result = CortexClientResult(
+            ok=True,
+            mode="brain",
+            verb="chat_general",
+            status="success",
+            final_text=text,
+            memory_used=False,
+            recall_debug={},
+            steps=[],
+            correlation_id=correlation_id or str(uuid4()),
+            metadata={},
+        )
+        return CortexChatResult(cortex_result=result, final_text=text)
+
+
+@pytest.mark.usefixtures("pre_turn_appraisal_off")
+def test_legacy_lane_appends_reply_and_stays_bounded(monkeypatch):
+    """The legacy (brain) lane now shares the same append + trim helpers;
+    drive it through the real endpoint so a regression there is caught too."""
+    import scripts.main as hub_main
+
+    turns = 2
+    n = 6
+    client = _RecordingCortexClient([f"brain reply {i}" for i in range(n)])
+    for name, value in {
+        "bus": None,
+        "cortex_client": client,
+        "tts_client": None,
+        "biometrics_cache": None,
+        "notification_cache": None,
+        "presence_state": None,
+        "endogenous_outreach": None,
+        "room_claude_relay": None,
+    }.items():
+        monkeypatch.setattr(hub_main, name, value, raising=False)
+
+    async def _no_sync(*_a, **_k):
+        return None
+
+    monkeypatch.setattr(ws_handler, "_sync_fcc_sandbox_background", _no_sync)
+
+    lens: list[int] = []
+    real_build = ws_handler.build_continuity_messages
+
+    def _spy_build(*, history, **kwargs):
+        lens.append(len(history))
+        return real_build(history=history, **kwargs)
+
+    monkeypatch.setattr(ws_handler, "build_continuity_messages", _spy_build)
+
+    payloads = [
+        {"text_input": f"brain msg {i}", "mode": "brain", "session_id": "sid-legacy",
+         "no_write": True, "context_turns": turns}
+        for i in range(n)
+    ]
+    asyncio.run(ws_handler.websocket_endpoint(_FakeWebSocket(payloads)))
+
+    assert len(client.messages) == n
+    second = [m["content"] for m in client.messages[1]]
+    assert "brain reply 0" in second
+    assert max(lens) <= 1 + 2 * turns + 1

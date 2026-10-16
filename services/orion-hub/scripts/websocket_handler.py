@@ -1617,23 +1617,8 @@ async def websocket_endpoint(websocket: WebSocket):
                 # leg is: synthesizing speech for a socket that is already
                 # gone is pure waste, and the client_state check is already
                 # right here.
-                orion_final_text = extract_unified_turn_final_text(orion_turn_frames)
-                # Orion's own reply joins this socket's history, so the next
-                # turn's RECENT CONVERSATION holds it. Before 2026-10-16 this
-                # lane `continue`d without appending or trimming: within one
-                # open tab, Orion saw Juniper's messages back to back with
-                # none of their own replies in between, and the list grew
-                # for the life of the tab. The text is the "final" frame's
-                # llm_response -- the same run.final_text the orchestrator
-                # persists to chat_history_log, so rehydrate after a reconnect
-                # reads the same words. A cut-short turn already carries
-                # "[Cut short - not a finished answer.]" in that text
-                # (orion/harness/finalize.py, governor backstop). A turn_error
-                # partial_draft is NOT appended: it is never persisted either,
-                # so it would differ from what a reconnect restores.
-                append_live_assistant_reply(history, orion_final_text)
-                trim_history_window(history, turns)
                 if websocket.client_state == WebSocketState.CONNECTED:
+                    orion_final_text = extract_unified_turn_final_text(orion_turn_frames)
                     dispatch_tts_reply(
                         text=orion_final_text,
                         disable_tts=disable_tts,
@@ -1643,6 +1628,9 @@ async def websocket_endpoint(websocket: WebSocket):
                         session_id=session_id,
                         lane=client_mode,
                     )
+                # Orion's reply joins history (see append_live_assistant_reply).
+                append_live_assistant_reply(history, extract_unified_turn_final_text(orion_turn_frames))
+                trim_history_window(history, turns)
                 continue
 
             # Build outbound chat request through shared builder to keep WS/HTTP identical

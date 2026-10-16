@@ -97,6 +97,25 @@ def append_live_assistant_reply(
     ``chat_history_log`` after a reconnect: blank and error-shaped text is
     dropped, and ``ts`` (when Hub delivered it, UTC ISO-8601) rides along for
     the harness RECENT CONVERSATION block. Returns whether it appended.
+
+    Why it exists (2026-10-16): the unified orion/agent lane in
+    ``websocket_handler.websocket_endpoint`` appended Juniper's message, ran
+    the turn and ``continue``d -- it never appended Orion's reply and never
+    trimmed. Within one open tab Orion saw Juniper's messages back to back
+    with none of their own replies, and the list grew for the tab's lifetime.
+
+    Which text: the unified lane passes the ``final`` frame's
+    ``llm_response`` -- what the browser rendered, and the same
+    ``run.final_text`` the orchestrator persists to ``chat_history_log``, so a
+    reconnect restores the same words. A cut-short turn already carries
+    ``[Cut short - not a finished answer.]`` in that text (finalize chain plus
+    the governor's ``ensure_cut_short_marked`` backstop). A ``turn_error``
+    ``partial_draft`` is never passed here: it is never persisted either.
+
+    Deliberate asymmetry: when a turn yields no final reply, Juniper's message
+    stays in the live list (she did say it, and a "try again?" follow-up only
+    makes sense with it), although rehydrate would not restore it -- the
+    orchestrator persists the user row only alongside a final reply.
     """
     content = str(text or "").strip()
     if not content or _is_error_shaped(content):

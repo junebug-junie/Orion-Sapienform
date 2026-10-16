@@ -281,6 +281,10 @@ class WorldPulseReadPipeline:
         self._step_relay_provider = step_relay_provider
         self._store_provider = store_provider
         self._startup_reclaim_done = False
+        # Act ledger: per seed, when its durable run first started work, and which
+        # seeds' `look` acts this process has opened (see _note_read_state).
+        self._read_work_started_at: dict[str, datetime] = {}
+        self._read_acts_opened: set[str] = set()
         self._bus: Any = None
         self._harness_rpc_bus: Any = None
         self._task: Optional[asyncio.Task] = None
@@ -420,6 +424,7 @@ class WorldPulseReadPipeline:
         except ValueError as exc:
             await self._fail_seed(seed.seed_id, str(exc))
             await publish_lifecycle(self._bus, seed, "stage1_failed", source=self._source_ref, error=str(exc))
+            await self._close_read_act(seed, produced=False, note=str(exc)[:200])
             return "bad_url"
 
         # Skip listing pages before debit — live Wallet A waste on /news indexes.
@@ -432,6 +437,7 @@ class WorldPulseReadPipeline:
             logger.info(
                 "world_pulse_read_skipped_index seed=%s url=%s", seed.seed_id, seed.url
             )
+            await self._close_read_act(seed, produced=False, note="section_index_url")
             return "skipped_index_url"
 
         # Publishers that refuse the fetch tool (reader_blocks.py): every turn on
@@ -452,6 +458,7 @@ class WorldPulseReadPipeline:
                 "world_pulse_read_skipped_blocked seed=%s url=%s reason=%s",
                 seed.seed_id, seed.url, blocked,
             )
+            await self._close_read_act(seed, produced=False, note=blocked[:200])
             return "skipped_reader_blocked"
 
         receipt = None
@@ -679,31 +686,48 @@ class WorldPulseReadPipeline:
     # "work started" (every poll re-reports it), so after a Hub restart the first
     # poll re-opens the act with the same start time, which the writer ignores
     # (first open wins). Cost: at most one extra act_opened per in-flight read per
-    # restart, against one per poll before.
+    # restart, against one per poll before. After a restart a seed's later
+    # attempt is the start seen first, so the act is dated at that attempt's start
+    # unless the writer already holds the earlier open (it does, if it got it).
 
     def _read_act_state(self) -> tuple[dict[str, Any], set[str]]:
-        started = self.__dict__.setdefault("_read_work_started_at", {})
-        opened = self.__dict__.setdefault("_read_acts_opened", set())
-        return started, opened
+        # getattr: tests build pipelines with object.__new__ and skip __init__.
+        if not hasattr(self, "_read_work_started_at"):
+            self._read_work_started_at = {}
+        if not hasattr(self, "_read_acts_opened"):
+            self._read_acts_opened = set()
+        return self._read_work_started_at, self._read_acts_opened
 
     def _note_read_state(self, seed_id: str, state: dict) -> None:
-        """poll_turn callback: remember when this seed's durable run started work."""
+        """poll_turn callback: remember when this seed's durable run started work.
+
+        A cancelled run is not recorded: an operator cancellation is not Orion's
+        read, so a cancel first seen together with its start opens nothing. (An act
+        already opened on an earlier poll stays open and expires at 0.)
+        """
         started, _ = self._read_act_state()
-        if seed_id in started:
+        if seed_id in started or state.get("status") == "cancelled":
             return
         at = work_started_at(state)
         if at is not None:
             started[seed_id] = at
 
     async def _open_read_act(self, seed: WorldPulseReadSeedV1) -> None:
-        started, opened = self._read_act_state()
-        at = started.get(seed.seed_id)
-        if at is None or seed.seed_id in opened:
-            return
-        from scripts.act_emit import publish_read_opened
+        """Publish the act's open once. Runs in a ``finally``: it must never raise."""
+        try:
+            started, opened = self._read_act_state()
+            at = started.get(seed.seed_id)
+            if at is None or seed.seed_id in opened:
+                return
+            from scripts.act_emit import publish_read_opened
 
-        opened.add(seed.seed_id)
-        await publish_read_opened(self._bus, seed, at=at)
+            # Marked opened only once published: a lost open is retried on the next
+            # poll, and a close is never sent for an act whose open was lost (the
+            # writer would create and grade it from the close alone).
+            if await publish_read_opened(self._bus, seed, at=at):
+                opened.add(seed.seed_id)
+        except Exception:  # noqa: BLE001 -- the act is a trace; never mask the read's outcome
+            logger.warning("read_act_open_bookkeeping_failed seed=%s", seed.seed_id, exc_info=True)
 
     async def _close_read_act(self, seed: WorldPulseReadSeedV1, *, produced: bool, note: str) -> None:
         """Close the act only if this process opened it: a read whose work never

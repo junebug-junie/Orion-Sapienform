@@ -203,3 +203,26 @@ def test_poll_reports_each_verified_state_and_a_broken_observer_never_fails_it()
         with pytest.raises(ReadingPending):
             asyncio.run(poll_turn(req, "http://durable", on_state=observer))
     assert seen == ["running"]
+
+
+@pytest.mark.parametrize("status,raises", [("completed", None), ("failed", ValueError)])
+def test_poll_reports_terminal_states_before_returning_or_raising(status, raises):
+    """The poll that ends a read is often the first to see its work start: the
+    observer must see it before poll_turn returns the result or raises."""
+    req = request()
+    result = ReadingTurnResultV1(run_id=req.run_id, correlation_id=str(uuid4()), ok=True,
+                                 text="answer", source_fetches=[])
+    state = {"run_id": req.run_id, "workflow_kind": req.workflow, "status": status,
+             "work_started": True, "error": "boom", "reading_result": result.model_dump()}
+    seen = []
+
+    client = httpx.AsyncClient(
+        transport=httpx.MockTransport(lambda http: httpx.Response(200, json=state)),
+        base_url="http://durable")
+    with patch("orion.world_pulse_read.durable.httpx.AsyncClient", return_value=client):
+        if raises is None:
+            assert asyncio.run(poll_turn(req, "http://durable", on_state=seen.append)) == result
+        else:
+            with pytest.raises(raises):
+                asyncio.run(poll_turn(req, "http://durable", on_state=seen.append))
+    assert [s["status"] for s in seen] == [status]

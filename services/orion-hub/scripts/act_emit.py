@@ -51,7 +51,8 @@ READ_HORIZON_SEC = 3600.0
 READ_BASIS = (
     "artifact_produced (stage1_completed with read evidence) by 3600s after the read's durable "
     "run starts work: p90 of reading.turn run.started->completed over 30d is 1840s "
-    "(n=386, measured 2026-10-16), rounded up to the hour; GPU queue wait excluded"
+    "(n=386, measured 2026-10-16), rounded up to the hour; GPU queue wait before the first start "
+    "excluded (a retried read's re-queue still counts: the act is the seed, retries included)"
 )
 
 

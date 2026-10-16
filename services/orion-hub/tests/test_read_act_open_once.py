@@ -3,8 +3,9 @@
 Live 2026-10-16: the act was opened on every poll of a queued read (243 act_opened
 grammar events for 10 acts), dated at submission, so 6 of the 7 reads that produced
 were graded 0: their durable runs waited 0.5 to 3.3 h for a GPU, then read in 4 to
-12 minutes. These drive the real _read_claimed -> _generate -> poll_turn seam with
-a scripted durable-runs status.
+12 minutes. These drive the real _read_claimed -> _generate seam with a scripted
+poll_turn (orion/world_pulse_read/tests/test_durable.py pins that the real poll_turn
+reports every terminal state to on_state before it returns or raises).
 """
 from __future__ import annotations
 
@@ -75,6 +76,10 @@ def _scripted(monkeypatch, states: list[dict]):
         if state["status"] == "completed":
             return ReadingTurnResultV1(run_id="reading-run", correlation_id="c", ok=True,
                                        text="read", source_fetches=[])
+        if state["status"] == "cancelled":
+            from orion.world_pulse_read.durable import ReadingCancelled
+
+            raise ReadingCancelled("reading-run")
         if state["status"] == "failed":
             if not state["work_started"]:
                 raise ValueError(f"turn_deferred:reading_admission:{state['error']}")
@@ -165,3 +170,57 @@ def test_read_that_starts_then_fails_opens_once_and_closes_at_zero(monkeypatch):
     assert acts[0].observed_at == STARTED_AT
     assert acts[1].act.outcome.value == 0.0
     assert pipe._read_act_state() == ({}, set()), "terminal close forgets the seed"
+
+
+def test_cancel_first_seen_with_its_start_opens_nothing(monkeypatch):
+    bus, conn = _FakeBus(), _Conn()
+    pipe = _pipeline(bus, conn, InMemorySubstrateGraphStore())
+    _wire(pipe)
+    _scripted(monkeypatch, [_state("cancelled", started=True)])
+
+    _ticks(pipe, conn, 1)
+
+    assert _acts(bus) == [], "an operator cancel is not Orion's read"
+    assert pipe._read_act_state() == ({}, set())
+
+
+def test_lost_open_is_retried_and_never_followed_by_an_orphan_close(monkeypatch):
+    bus, conn = _FakeBus(), _Conn()
+    pipe = _pipeline(bus, conn, InMemorySubstrateGraphStore())
+    _wire(pipe)
+    _scripted(monkeypatch, [
+        _state("running", started=True),
+        _state("completed", started=True),
+    ])
+    real_publish = bus.publish
+    calls = {"n": 0}
+
+    async def flaky(channel, envelope):
+        if channel == "orion:grammar:event":
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise RuntimeError("bus blip")
+        await real_publish(channel, envelope)
+
+    bus.publish = flaky  # type: ignore[method-assign]
+
+    _ticks(pipe, conn, 2)
+
+    acts = _acts(bus)
+    assert [e.event_kind for e in acts] == ["act_opened", "act_closed"], "the open is retried next poll"
+    assert acts[0].observed_at == STARTED_AT
+
+
+def test_lost_open_with_no_retry_sends_no_close(monkeypatch):
+    bus, conn = _FakeBus(), _Conn()
+    pipe = _pipeline(bus, conn, InMemorySubstrateGraphStore())
+    _wire(pipe)
+    _scripted(monkeypatch, [_state("completed", started=True)])
+
+    async def down(channel, envelope):
+        if channel == "orion:grammar:event":
+            raise RuntimeError("bus down")
+
+    bus.publish = down  # type: ignore[method-assign]
+    _ticks(pipe, conn, 1)
+    assert pipe._read_act_state() == ({}, set())

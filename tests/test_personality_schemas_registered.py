@@ -14,3 +14,13 @@ def test_personality_schemas_resolve():
     assert resolve("ChoiceOptionV1") is ChoiceOptionV1
     assert SCHEMA_REGISTRY["PersonalityChoiceV1"].model is PersonalityChoiceV1
     assert "ChoiceOptionV1" not in SCHEMA_REGISTRY
+
+
+def test_personality_frame_contracts_resolve():
+    from orion.schemas.personality import ChoiceStyleV1, DispositionV1, PersonalityCueV1, PersonalityFrameV1
+
+    assert resolve("PersonalityFrameV1") is PersonalityFrameV1
+    assert SCHEMA_REGISTRY["PersonalityFrameV1"].model is PersonalityFrameV1
+    for name, model in (("DispositionV1", DispositionV1), ("ChoiceStyleV1", ChoiceStyleV1), ("PersonalityCueV1", PersonalityCueV1)):
+        assert resolve(name) is model
+        assert name not in SCHEMA_REGISTRY

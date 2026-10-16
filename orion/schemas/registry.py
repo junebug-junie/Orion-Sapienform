@@ -110,7 +110,11 @@ from orion.schemas.regulation import REGULATION_STATE_KIND, RegulationStateV1
 from orion.schemas.personality import (
     PERSONALITY_CHOICE_KIND,
     ChoiceOptionV1,
+    ChoiceStyleV1,
+    DispositionV1,
     PersonalityChoiceV1,
+    PersonalityCueV1,
+    PersonalityFrameV1,
 )
 from orion.schemas.vision_sighting import IDENTITY_SIGHTING_KIND, IdentitySightingV1
 from orion.schemas.context_exec import ContextExecPermissionV1
@@ -1582,6 +1586,12 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     # channel yet. PersonalityChoiceV1 is also in SCHEMA_REGISTRY; ChoiceOptionV1 is nested.
     "PersonalityChoiceV1": PersonalityChoiceV1,
     "ChoiceOptionV1": ChoiceOptionV1,
+    # Personality graph loop (rev 2): the frame crosses HTTP (durable-runs -> thought, hub), so it
+    # is also in SCHEMA_REGISTRY; the nested node/style models and the local cue live here only.
+    "PersonalityFrameV1": PersonalityFrameV1,
+    "DispositionV1": DispositionV1,
+    "ChoiceStyleV1": ChoiceStyleV1,
+    "PersonalityCueV1": PersonalityCueV1,
     "IdentitySightingV1": IdentitySightingV1,
     "ContextExecPermissionV1": ContextExecPermissionV1,
     "SelfExperimentSpecV1": SelfExperimentSpecV1,
@@ -2090,6 +2100,10 @@ SCHEMA_REGISTRY: Dict[str, SchemaRegistration] = {
     "PersonalityChoiceV1": SchemaRegistration(
         model=PersonalityChoiceV1,
         kind=PERSONALITY_CHOICE_KIND,
+    ),
+    "PersonalityFrameV1": SchemaRegistration(
+        model=PersonalityFrameV1,
+        kind="personality.frame.v1",
     ),
 }
 

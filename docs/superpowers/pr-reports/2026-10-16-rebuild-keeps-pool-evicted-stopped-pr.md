@@ -2,7 +2,8 @@
 
 - Orion has not rendered a picture (waking painting or dream hop) since 2026-10-16 03:02 UTC. Root cause: a routine `git pull` on circe auto-rebuilt `orion-diffusion-host` and **started it**, while the GPU pool had stopped it on purpose to lend gpu2 to the agent-gpu2 seat.
 - With both containers running on gpu2, the lane controller refuses every load and unload (`seat_and_evicted_both_running`). The pool marks gpu2 `fault`, and every diffusion lease backlogs `no_serviceable_role` until its deadline.
-- Fix: the post-pull rebuild now asks `rebuild_affected_services.py --pool-held-services <svc>` which GPU-pool launch targets (`config/gpu_pool.yaml` `launch:`) are stopped right now. It builds their image and leaves them stopped. The lane controller starts them with the new image on its next load.
+- Fix: for a stack the GPU pool launches from (`config/gpu_pool.yaml` `launch:`), the post-pull rebuild runs `build` first, then asks `rebuild_affected_services.py --pool-held-services <svc>` again which launch targets are stopped right now. Stopped ones stay stopped; everything else gets `up -d --no-build --no-deps`. The controller's next load starts the new image.
+- If the helper cannot read the pool config, the stack is skipped and reported FAILED (exit 3), never plain-`up`'d.
 - Docker unreadable means "hold every target": unknown state never starts something on a pool card.
 - The live gpu2 state still needs a one-time operator fix (below). This PR prevents the next pull from causing it again.
 
@@ -28,8 +29,9 @@ Failure mode removed: "a pull that touches shared `orion/` code restarts a pool-
 
 ## Files changed
 
-- `scripts/rebuild_affected_services.py`: `pool_launch_targets`, `pool_held_services`, `--pool-held-services` CLI.
-- `scripts/rebuild_services_from_git_diff.sh`: hold branch (`build <held>` + `up -d --build --no-deps <others>`), dry-run output.
+- `scripts/rebuild_affected_services.py`: `pool_launch_targets` (raises `PoolConfigError`), `pool_held_services`, `--pool-held-services` CLI (`hold`/`running`/`start` lines, exit 3 on unreadable config).
+- `scripts/rebuild_services_from_git_diff.sh`: pool branch ahead of the cortex/analytics branches; build, re-check, then `up -d --no-build --no-deps`; fail-closed skip; dry-run output.
+- `docs/superpowers/pr-reports/2026-10-16-rebuild-keeps-pool-evicted-stopped-pr.md`: this report.
 - `tests/scripts/test_rebuild_affected_services.py`: helper tests, including one pinned to the real `config/gpu_pool.yaml`.
 - `tests/scripts/test_rebuild_services_from_git_diff.py`: shell behavior tests (fail on the old script, verified).
 
@@ -54,8 +56,8 @@ Failure mode removed: "a pull that touches shared `orion/` code restarts a pool-
 
 ```text
 .venv/bin/python -m pytest -q tests/scripts/test_rebuild_affected_services.py tests/scripts/test_rebuild_services_from_git_diff.py
-89 passed
-# New shell tests against the pre-fix script: 3 failed (regression confirmed).
+96 passed
+# First-version shell tests against the pre-fix script: 3 failed (regression confirmed).
 ```
 
 ## Evals run
@@ -67,14 +69,29 @@ No eval harness for the rebuild scripts; behavior is deterministic and covered b
 ## Docker/build/smoke checks
 
 ```text
-python3 scripts/rebuild_affected_services.py --pool-held-services orion-diffusion-host --docker-ps-file <empty>   -> hold	diffusion-host
-python3 scripts/rebuild_affected_services.py --pool-held-services orion-diffusion-host --docker-ps-file <running> -> (nothing)
+python3 scripts/rebuild_affected_services.py --pool-held-services orion-diffusion-host   (athena, no such container) -> hold	diffusion-host, rc 0
+python3 scripts/rebuild_affected_services.py --pool-held-services orion-hub              -> (nothing), rc 0
 No live rebuild run (would deploy on circe).
 ```
 
 ## Review findings fixed
 
-See the review section appended below.
+Review: orion-repo-agent subagent on commit 6dd1e4954. No must-fix.
+
+- Finding: race -- docker was read before a build that takes minutes; the pool could evict the target meanwhile and `up -d --build` would restart it.
+  - Fix: build first, re-read ownership, then `up -d --no-build --no-deps` only the non-held services.
+  - Evidence: `test_target_evicted_during_the_build_is_not_restarted`.
+- Finding: helper crash / malformed pool YAML / missing PyYAML failed open into a plain `up`.
+  - Fix: `PoolConfigError` -> exit 3; shell skips the stack and reports FAILED.
+  - Evidence: `test_malformed_pool_config_exits_3`, `test_unreadable_pool_ownership_skips_the_stack`.
+- Finding: missing edge tests (failed build, other checkout path, same name from another stack).
+  - Fix: added `test_failed_build_starts_nothing_and_reports_failed`, `test_running_target_from_another_checkout_path_counts_as_running`, `test_same_name_from_another_stack_does_not_count_as_running`.
+  - Evidence: 96 passed.
+- Finding (nit): cortex/analytics branches came before the hold branch.
+  - Fix: pool branch is now checked first.
+- Finding (nit): pool helper queried docker even for stacks with no launch target.
+  - Fix: early return before `docker ps`.
+- Not fixed (documented): a running target is still recreated without the controller's drain step (pre-existing behavior).
 
 ## Restart required
 
@@ -90,7 +107,7 @@ If gpu2 still reads `swap_state: fault` in `curl -fsS localhost:8127/v1/pool` a 
 
 - Severity: medium. Concern: the pool cannot recover from "seat and evicted both running" by itself; it clears the fault, retries the load, and faults again. Mitigation: follow-up (controller could stop the evicted resident when the seat is the one actually holding VRAM, or the pool could alert).
 - Severity: medium. Concern: the pool probes diffusion `/health`, which answers 200 while the model holds no GPU memory; `launch.ready` is `/ready`. Mitigation: follow-up.
-- Severity: low. Concern: a running launch target is still recreated by a pull without a pool drain (unchanged behavior).
+- Severity: low. Concern: a running launch target is still recreated by a pull without a pool drain (unchanged behavior); an in-flight render can be lost.
 
 ## PR link
 

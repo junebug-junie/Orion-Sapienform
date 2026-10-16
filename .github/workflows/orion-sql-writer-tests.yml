@@ -84,6 +84,8 @@ jobs:
             services/orion-sql-writer/tests/test_vision_walkway_persist.py \
             services/orion-sql-writer/tests/test_vision_individuals.py \
             services/orion-sql-writer/tests/test_vision_split.py \
+            services/orion-sql-writer/tests/test_vision_body_match.py \
+            services/orion-sql-writer/tests/test_vision_reanchor.py \
             services/orion-sql-writer/tests/test_vision_walkway_faces_stationary.py \
             orion/vision/tests \
             services/orion-sql-writer/tests/test_vision_rhythm.py \
@@ -168,14 +170,17 @@ jobs:
           # CREATE INDEX CONCURRENTLY cannot run inside the implicit transaction of a
           # multi-statement string: one statement at a time, as psql does.
           import re
-          body = re.sub(r"--[^\n]*", "", pathlib.Path("services/orion-sql-db/manual_migration_vision_split_v1.sql").read_text())
-          for stmt in body.split(";"):
-              if stmt.strip():
-                  conn.cursor().execute(stmt)
+          for f in ("vision_split_v1", "vision_reanchor_v1"):
+              body = re.sub(r"--[^\n]*", "", pathlib.Path(f"services/orion-sql-db/manual_migration_{f}.sql").read_text())
+              for stmt in body.split(";"):
+                  if stmt.strip():
+                      conn.cursor().execute(stmt)
           PY
           PYTHONPATH=.:services/orion-sql-writer python -m pytest -q -rs -p no:cacheprovider \
             services/orion-sql-writer/tests/test_vision_confirm_asks.py \
-            services/orion-sql-writer/tests/test_vision_split.py | tee vision_pg.out
+            services/orion-sql-writer/tests/test_vision_split.py \
+            services/orion-sql-writer/tests/test_vision_body_match.py \
+            services/orion-sql-writer/tests/test_vision_reanchor.py | tee vision_pg.out
           if grep -q "SKIPPED" vision_pg.out; then
             echo "visual confirmation Postgres tests skipped -- ORION_TEST_PG_URI wiring is broken" >&2
             exit 1

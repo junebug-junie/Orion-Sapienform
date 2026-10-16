@@ -215,6 +215,9 @@ class _Result:
     def fetchall(self):
         return list(self._rows)
 
+    def scalar(self):
+        return self._rows[0][0] if self._rows else None
+
     @property
     def rowcount(self):
         return len(self._rows)
@@ -234,6 +237,8 @@ class _Conn:
         params = params or {}
         if sql.startswith("SELECT last_created_at FROM vision_individuals_cursor"):
             return _Result([(self.cursor_at,)])
+        if "FROM vision_crop_observation" in sql and "individual_id IS NOT NULL" in sql:
+            return _Result([])   # stored membership around the batch (continuation lane)
         if "FROM vision_crop_observation" in sql:
             assert "created_at > :since AND created_at <= :upto" in sql, sql
             rows = [r for r in self.crops if params["since"] < r.created_at <= params["upto"]]

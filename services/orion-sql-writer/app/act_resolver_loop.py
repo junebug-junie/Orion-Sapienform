@@ -22,7 +22,7 @@ def run_one_resolve() -> dict:
 
     sess = session_factory()
     try:
-        summary = resolve_due_acts(sess)
+        summary = resolve_due_acts(sess, commit=sess.commit)
         sess.commit()
         return summary.__dict__
     except Exception:

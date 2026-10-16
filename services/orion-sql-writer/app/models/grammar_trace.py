@@ -1,4 +1,4 @@
-from sqlalchemy import Boolean, Column, DateTime, Float, Index, Integer, String, Text
+from sqlalchemy import BigInteger, Boolean, Column, DateTime, Float, Index, Integer, String, Text
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 
 from app.db import Base
@@ -194,7 +194,7 @@ class GrammarActSQL(Base):
     outcome_note = Column(Text, nullable=True)
     error = Column(Float, nullable=True)
     surprise_nats = Column(Float, nullable=True)
-    outcome_row_id = Column(Integer, nullable=True)
+    outcome_row_id = Column(BigInteger, nullable=True)
     closed_at = Column(DateTime(timezone=True), nullable=True)
     close_event_id = Column(String, nullable=True)
     created_at = Column(DateTime(timezone=True), nullable=False)

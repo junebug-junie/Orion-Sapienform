@@ -125,21 +125,56 @@ async def test_read_look_act_open_and_close_share_identity():
 
 
 @pytest.mark.asyncio
-async def test_pipeline_lifecycle_mirrors_stage1_into_acts(monkeypatch):
+async def test_read_failure_closes_only_when_no_retry_is_scheduled(monkeypatch):
     from scripts import world_pulse_read_pipeline as pipe
 
-    lifecycle = []
+    obj = pipe.WorldPulseReadPipeline.__new__(pipe.WorldPulseReadPipeline)
+    obj._bus = _Bus()
+    await obj._read_act_failed(_seed(), SimpleNamespace(retry_scheduled=True), "transient")
+    assert obj._bus.events() == [], "a retried seed keeps its act open"
+    await obj._read_act_failed(_seed(), SimpleNamespace(retry_scheduled=False), "no_read_evidence")
+    await obj._read_act_failed(_seed(), None, "empty_generation")
+    closes = [e.act.outcome.value for e in obj._bus.events()]
+    assert closes == [0.0, 0.0]
 
-    async def fake_event(bus, seed, stage, **kw):
-        lifecycle.append(stage)
 
-    monkeypatch.setattr(pipe, "_publish_lifecycle_event", fake_event)
-    bus = _Bus()
-    for stage in ("started", "stage1_completed", "stage2_started"):
-        await pipe.publish_lifecycle(bus, _seed(), stage)
-    assert lifecycle == ["started", "stage1_completed", "stage2_started"]
-    kinds = [(e.event_kind, e.act.outcome.value if e.act.outcome else None) for e in bus.events()]
-    assert kinds == [("act_opened", None), ("act_closed", 1.0)]
+def test_read_act_opens_only_after_refusal_checks():
+    import inspect
+
+    from scripts import world_pulse_read_pipeline as pipe
+
+    src = inspect.getsource(pipe.WorldPulseReadPipeline._read_claimed)
+    opened = src.index("publish_read_opened(")
+    for refusal in ("bad_url", "skipped_index_url", "skipped_reader_blocked"):
+        assert src.index(refusal) < opened, refusal
+    assert src.index("publish_read_closed(self._bus, seed, produced=True") > src.index('"stage1_completed"')
+
+
+@pytest.mark.asyncio
+async def test_solicited_delivery_is_not_an_outreach_act(monkeypatch):
+    from scripts import act_emit as emit
+    from scripts.endogenous_outreach import EndogenousOutreach
+
+    calls = []
+
+    async def fake(bus, **kw):
+        calls.append(kw)
+        return True
+
+    monkeypatch.setattr(emit, "publish_outreach_act", fake)
+    eo = EndogenousOutreach.__new__(EndogenousOutreach)
+    eo._bus = _Bus()
+    eo._push_to_sockets = lambda **kw: None
+
+    async def _noop(**kw):
+        return None
+
+    eo._publish_history = _noop
+    eo._publish_notification = _noop
+    await eo._deliver(text="hi?", session_id="s", correlation_id="c", unsolicited=False)
+    assert calls == []
+    await eo._deliver(text="hi?", session_id="s", correlation_id="c", unsolicited=True)
+    assert len(calls) == 1
 
 
 def test_flag_ships_on():

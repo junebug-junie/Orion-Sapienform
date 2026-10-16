@@ -30,8 +30,13 @@ def _res(step: str, status: str, **kw) -> ReverieVisualStepResultV1:
 @pytest.mark.parametrize("step,result,expected", [
     ("prepare", _res("prepare", "done"), ("open", None)),
     ("prepare", _res("prepare", "retry", reason="x"), ("open", None)),
-    ("prepare", _res("prepare", "terminal", outcome="failed", reason="ineligible"), ("close", False)),
+    ("prepare", _res("prepare", "terminal", outcome="failed", reason="ineligible"), ("none", None)),
+    ("prepare", _res("prepare", "terminal", outcome="already_satisfied", reason="x"), ("none", None)),
+    # A replay on an attempt that already produced: terminal/produced must grade 1, not 0.
+    ("caption", _res("caption", "terminal", outcome="produced", reason="attempt_produced"), ("close", True)),
+    ("prepare", _res("prepare", "terminal", outcome="produced", reason="attempt_produced"), ("close", True)),
     ("caption", _res("caption", "retry", reason="needs_generate"), ("none", None)),
+    ("caption", _res("caption", "terminal", outcome="failed", reason="retry_window_expired"), ("close", False)),
     ("caption", _res("caption", "done", outcome="produced", reason="ok"), ("close", True)),
     ("abandon", _res("abandon", "done", outcome="unknown", reason="run_abandoned"), ("close", False)),
     ("abandon", _res("abandon", "done", outcome="produced", reason="attempt_already_produced"), ("close", True)),

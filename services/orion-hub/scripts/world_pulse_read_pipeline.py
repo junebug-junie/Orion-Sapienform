@@ -53,7 +53,7 @@ from orion.world_pulse_read.documents import (
     load_snapshot,
     parse_document_ref,
 )
-from orion.world_pulse_read.events import publish_lifecycle as _publish_lifecycle_event
+from orion.world_pulse_read.events import publish_lifecycle
 from orion.world_pulse_read.retry import is_refused_before_work
 from orion.world_pulse_read.fetch_text import WEBFETCH_LIMIT_NOTE, retain_fetch_texts
 from orion.world_pulse_read.timestamps import stamp_server_created_at
@@ -75,24 +75,6 @@ from orion.world_pulse_read.wallet_a import (
     window_is_configured,
 )
 
-
-async def publish_lifecycle(bus, seed, stage, **kwargs):
-    """Publish the reading lifecycle event, then mirror Stage 1 into the act ledger.
-
-    Act ledger (rung 2): a Stage 1 read is a ``look`` act -- opened on
-    "started", closed 1 on "stage1_completed" and 0 on "stage1_failed"
-    (scripts/act_emit.py). The lifecycle event is published first and is
-    unaffected by the act publish, which never raises.
-    """
-    await _publish_lifecycle_event(bus, seed, stage, **kwargs)
-    from scripts.act_emit import publish_read_closed, publish_read_opened
-
-    if stage == "started":
-        await publish_read_opened(bus, seed)
-    elif stage == "stage1_completed":
-        await publish_read_closed(bus, seed, produced=True, note="stage1_completed")
-    elif stage == "stage1_failed":
-        await publish_read_closed(bus, seed, produced=False, note=str(kwargs.get("error") or "stage1_failed")[:200])
 
 logger = logging.getLogger("orion-hub.world_pulse_read_pipeline")
 
@@ -449,9 +431,6 @@ class WorldPulseReadPipeline:
             logger.info(
                 "world_pulse_read_skipped_index seed=%s url=%s", seed.seed_id, seed.url
             )
-            from scripts.act_emit import publish_read_closed
-
-            await publish_read_closed(self._bus, seed, produced=False, note="skipped:section_index_url")
             return "skipped_index_url"
 
         # Publishers that refuse the fetch tool (reader_blocks.py): every turn on
@@ -477,6 +456,12 @@ class WorldPulseReadPipeline:
         receipt = None
         self._settlement_run_id = None
 
+        # Act ledger (rung 2): the read is a `look` act, opened only once real work starts
+        # (bad URLs, blocked publishers and index pages above are refusals, not acts).
+        # Re-opening on a later poll of the same seed is idempotent.
+        from scripts.act_emit import publish_read_closed, publish_read_opened
+
+        await publish_read_opened(self._bus, seed)
         try:
             handoff = await self._stage1_read(seed)
             if handoff is not None and not handoff.read_evidence:
@@ -499,19 +484,22 @@ class WorldPulseReadPipeline:
                 reason,
             )
             await self._settle_wallet(redis, receipt, reason, seed.seed_id)
-            await self._fail_seed(seed.seed_id, reason)
+            fail = await self._fail_seed(seed.seed_id, reason)
             await publish_lifecycle(self._bus, seed, "stage1_failed", source=self._source_ref, error=reason)
+            await self._read_act_failed(seed, fail, reason)
             return NO_READ_EVIDENCE
         except Exception as exc:  # noqa: BLE001
             logger.warning("world_pulse_read_stage1_failed seed=%s err=%s", seed.seed_id, exc)
             await self._settle_wallet(redis, receipt, str(exc), seed.seed_id)
-            await self._fail_seed(seed.seed_id, str(exc) or "parse_failed")
+            fail = await self._fail_seed(seed.seed_id, str(exc) or "parse_failed")
             await publish_lifecycle(self._bus, seed, "stage1_failed", source=self._source_ref, error=str(exc))
+            await self._read_act_failed(seed, fail, str(exc) or "parse_failed")
             return "parse_failed"
         await self._settle_wallet(redis, receipt, None, seed.seed_id)
         if handoff is None:
-            await self._fail_seed(seed.seed_id, "empty_generation")
+            fail = await self._fail_seed(seed.seed_id, "empty_generation")
             await publish_lifecycle(self._bus, seed, "stage1_failed", source=self._source_ref, error="empty_generation")
+            await self._read_act_failed(seed, fail, "empty_generation")
             return "empty_generation"
 
         try:
@@ -532,10 +520,12 @@ class WorldPulseReadPipeline:
             logger.warning(
                 "world_pulse_read_post_read_failed seed=%s err=%s", seed.seed_id, exc
             )
-            await self._fail_seed(seed.seed_id, str(exc) or "post_read_failed", consume=False)
+            fail = await self._fail_seed(seed.seed_id, str(exc) or "post_read_failed", consume=False)
             await publish_lifecycle(self._bus, seed, "stage1_failed", source=self._source_ref, error=str(exc))
+            await self._read_act_failed(seed, fail, str(exc) or "post_read_failed")
             return "post_read_failed"
         await publish_lifecycle(self._bus, seed, "stage1_completed", source=self._source_ref, trace_id=handoff.trace_id)
+        await publish_read_closed(self._bus, seed, produced=True, note="stage1_completed")
         return None
 
     async def _reclaim_stale_claimed(self) -> None:
@@ -648,7 +638,7 @@ class WorldPulseReadPipeline:
                 str(reason)[:_FAIL_REASON_DETAIL_MAX_LEN],
             )
 
-    async def _fail_seed(self, seed_id: str, error: str, *, consume: bool = True) -> None:
+    async def _fail_seed(self, seed_id: str, error: str, *, consume: bool = True) -> Any:
         async def fail(conn):
             async def mark():
                 return await mark_seed_failed(conn, seed_id, error=error, max_attempts=self.max_attempts)
@@ -668,6 +658,19 @@ class WorldPulseReadPipeline:
                 self.max_attempts,
                 error[:_FAIL_REASON_DETAIL_MAX_LEN],
             )
+        return outcome
+
+    async def _read_act_failed(self, seed: WorldPulseReadSeedV1, outcome: Any, note: str) -> None:
+        """Act ledger: close the seed's `look` act at 0 only when no retry is scheduled.
+
+        A retried seed keeps the same act open, so the retry's result (or the horizon)
+        decides it: the act is "read this seed by the horizon", retries included.
+        """
+        if outcome is not None and getattr(outcome, "retry_scheduled", False):
+            return
+        from scripts.act_emit import publish_read_closed
+
+        await publish_read_closed(self._bus, seed, produced=False, note=note[:200])
 
     async def _journal(self, handoff: WorldPulseReadHandoffV1) -> None:
         await publish_journal(self._bus, self._source_ref, handoff)

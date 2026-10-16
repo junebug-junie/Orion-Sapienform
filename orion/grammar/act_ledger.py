@@ -21,6 +21,12 @@ This module is the writer side, called by orion-sql-writer:
   at 0 as ``expired``: the signal is "produced BY the horizon", so a missing
   close past it is a real 0, not a guess.
 
+Two notions of "how wrong" live on a closed act, on purpose: ``error`` is the
+outcome minus the ``predicted`` stamped at OPEN (what the act expected when it
+started), while ``surprise_nats`` and the posterior update use the belief current
+at CLOSE (the conjugate update must start from the latest belief). For long
+horizons (outreach, 10 h) the two beliefs can differ.
+
 All SQL is plain ``text()`` so the module runs on any SQLAlchemy session or
 connection; the caller owns the transaction.
 """
@@ -63,6 +69,22 @@ def _aware(ts: datetime) -> datetime:
 
 
 def _load_posterior_for_update(conn: Any, kind: str, actor: str, signal_id: str) -> EffectPosterior:
+    # Seed the cold row first so FOR UPDATE always has a row to lock: without it two
+    # concurrent first closes both read "no row", both compute n=1, and the
+    # `posterior_n <` guard silently drops one observation.
+    cold = cold_act_posterior()
+    conn.execute(
+        text(
+            """
+            INSERT INTO substrate_action_effect_posterior (
+                dispatch_kind, target_id, signal_id, baseline_bin,
+                posterior_mean, posterior_variance, posterior_n, updated_at
+            ) VALUES (:k, :t, :s, 0, :pm, :pv, 0, now())
+            ON CONFLICT (dispatch_kind, target_id, signal_id, baseline_bin) DO NOTHING
+            """
+        ),
+        {"k": kind, "t": actor, "s": signal_id, "pm": cold.mean, "pv": cold.variance},
+    )
     row = conn.execute(
         text(
             """
@@ -187,7 +209,7 @@ def close_act(
     """Close one act by act_id and grade it into L10. First close wins."""
     row = conn.execute(
         text(
-            "SELECT closed_at, predicted, opened_at FROM grammar_acts WHERE act_id = :a FOR UPDATE"
+            "SELECT closed_at, predicted, opened_at, horizon_at FROM grammar_acts WHERE act_id = :a FOR UPDATE"
         ),
         {"a": act.act_id},
     ).first()
@@ -212,6 +234,13 @@ def close_act(
 
     value = float(outcome.value)
     observed_at = _aware(outcome.observed_at)
+    note = outcome.note or ""
+    horizon_at = None if row is None or row[3] is None else _aware(row[3])
+    if horizon_at is not None and observed_at > horizon_at and value == 1.0:
+        # The expectation is "by the horizon". A success reported after it is a miss,
+        # graded the same whether it lands inside the resolver's grace or after it.
+        value = 0.0
+        note = f"late:{(observed_at - horizon_at).total_seconds():.0f}s {note}"
     error = None
     nats = None
     outcome_row_id = None
@@ -315,7 +344,7 @@ def close_act(
         {
             "value": value,
             "source": outcome.source,
-            "note": (outcome.note or "")[:500],
+            "note": note[:500],
             "error": error,
             "nats": nats,
             "row_id": outcome_row_id,
@@ -394,6 +423,7 @@ class ResolveSummary:
     closed_replied: int
     closed_not_replied: int
     closed_expired: int
+    recovered_producer_closes: int = 0
 
 
 def _act_from_row(row: Any) -> ActV1:
@@ -411,13 +441,72 @@ def _act_from_row(row: Any) -> ActV1:
     )
 
 
-def resolve_due_acts(conn: Any, *, now: datetime | None = None, limit: int = 500) -> ResolveSummary:
-    """Close acts whose outcome is now known from the world or from the clock."""
+_PERSISTED_CLOSE_SQL = text(
+    """
+    SELECT event_json FROM grammar_events
+     WHERE trace_id = :trace_id AND event_kind = 'act_closed'
+     ORDER BY created_at, event_id
+     LIMIT 1
+    """
+)
+
+
+def _persisted_close(conn: Any, act_id: str) -> GrammarEventV1 | None:
+    """A producer close that reached grammar_events but never reached grammar_acts.
+
+    That happens when the close's act-ledger savepoint lost a lock fight (deadlock,
+    lock timeout) or the close was shed and replayed late: the event row is
+    committed, and the fresh-only rule means nothing re-applies it. Checked before
+    any expiry so a real report is never overwritten by a 0.
+    """
+    raw = conn.execute(_PERSISTED_CLOSE_SQL, {"trace_id": f"act:{act_id}"}).scalar()
+    if raw is None:
+        return None
+    try:
+        payload = raw if isinstance(raw, dict) else json.loads(raw)
+        event = GrammarEventV1.model_validate(payload)
+    except Exception:  # noqa: BLE001
+        logger.warning("act_persisted_close_unparseable act_id=%s", act_id)
+        return None
+    return event if event.act is not None and event.act.outcome is not None else None
+
+
+def _one_close(conn: Any, commit: Any, event: GrammarEventV1 | None, act: ActV1,
+               outcome: ActOutcomeV1, close_event_id: str) -> bool:
+    """One close in its own savepoint, then commit (if given) so no locks outlive it."""
+    nested = conn.begin_nested() if hasattr(conn, "begin_nested") else None
+    try:
+        close_act(conn, event, act=act, outcome=outcome, close_event_id=close_event_id)
+        if nested is not None:
+            nested.commit()
+        if commit is not None:
+            commit()
+        return True
+    except Exception:
+        if nested is not None:
+            nested.rollback()
+        logger.exception("act_resolve_failed act_id=%s", act.act_id)
+        return False
+
+
+def resolve_due_acts(
+    conn: Any,
+    *,
+    now: datetime | None = None,
+    limit: int = 500,
+    commit: Any = None,
+) -> ResolveSummary:
+    """Close acts whose outcome is now known from the world or from the clock.
+
+    ``commit`` (the session's commit) is called after every act, so the resolver
+    never holds act or posterior row locks across a whole tick: a long transaction
+    here would deadlock against grammar lanes closing acts on the same posterior.
+    """
     now = _aware(now or _utc_now())
     rows = conn.execute(
         _DUE_SQL, {"expired_before": now - timedelta(seconds=EXPIRY_GRACE_SEC), "limit": limit}
     ).mappings().all()
-    replied = not_replied = expired = 0
+    replied = not_replied = expired = recovered = 0
     for row in rows:
         act = _act_from_row(row)
         opened_at = _aware(row["opened_at"])
@@ -439,19 +528,17 @@ def resolve_due_acts(conn: Any, *, now: datetime | None = None, limit: int = 500
             else:
                 continue
         else:
+            persisted = _persisted_close(conn, act.act_id)
+            if persisted is not None:
+                if _one_close(conn, commit, persisted, persisted.act, persisted.act.outcome,
+                              persisted.event_id):
+                    recovered += 1
+                continue
             outcome = ActOutcomeV1(value=0.0, observed_at=horizon_at, source="expired",
                                    note=f"no producer close within horizon + {EXPIRY_GRACE_SEC:.0f}s grace")
             expired += 1
-        nested = conn.begin_nested() if hasattr(conn, "begin_nested") else None
-        try:
-            close_act(conn, None, act=act, outcome=outcome, close_event_id=f"resolver:{act.act_id}")
-            if nested is not None:
-                nested.commit()
-        except Exception:
-            if nested is not None:
-                nested.rollback()
-            logger.exception("act_resolve_failed act_id=%s", act.act_id)
-    return ResolveSummary(len(rows), replied, not_replied, expired)
+        _one_close(conn, commit, None, act, outcome, f"resolver:{act.act_id}")
+    return ResolveSummary(len(rows), replied, not_replied, expired, recovered)
 
 
 # --- debug surface ---------------------------------------------------------
@@ -462,8 +549,16 @@ _SUMMARY_SQL = text(
            count(*)                                              AS opened,
            count(*) FILTER (WHERE closed_at IS NOT NULL)         AS closed,
            count(*) FILTER (WHERE closed_at IS NULL)             AS open,
+           -- An outcome actually observed by the horizon: a producer report, or the
+           -- resolver seeing Juniper reply. Resolver/expiry zeros are stamped AT the
+           -- horizon by construction and are counted separately, not as coverage.
            count(*) FILTER (WHERE closed_at IS NOT NULL AND horizon_at IS NOT NULL
-                            AND closed_at <= horizon_at)         AS closed_in_horizon,
+                            AND closed_at <= horizon_at
+                            AND (outcome_source = 'producer'
+                                 OR (outcome_source = 'resolver' AND outcome_value = 1))
+                           )                                     AS closed_in_horizon,
+           count(*) FILTER (WHERE outcome_source = 'resolver' AND outcome_value = 0)
+                                                                 AS resolved_absent,
            count(*) FILTER (WHERE expect_basis IS NOT NULL AND expect_basis <> '') AS with_expect,
            avg(outcome_value)                                    AS outcome_rate,
            avg(predicted) FILTER (WHERE closed_at IS NOT NULL)   AS mean_predicted,
@@ -495,7 +590,7 @@ def ledger_summary(conn: Any, *, days: float = 7.0, now: datetime | None = None)
                 "verb": r["verb"], "actor": r["actor"], "level": r["level"], "signal_id": r["signal_id"],
                 "opened": int(r["opened"]), "closed": int(r["closed"]), "open": int(r["open"]),
                 "closed_in_horizon": int(r["closed_in_horizon"]), "with_expect": int(r["with_expect"]),
-                "expired": int(r["expired"]),
+                "expired": int(r["expired"]), "resolved_absent": int(r["resolved_absent"]),
                 "outcome_rate": _f(r["outcome_rate"]), "mean_predicted": _f(r["mean_predicted"]),
                 "mean_abs_error": _f(r["mean_abs_error"]), "mean_surprise_nats": _f(r["mean_surprise_nats"]),
                 "latest": r["latest"].isoformat() if r["latest"] else None,

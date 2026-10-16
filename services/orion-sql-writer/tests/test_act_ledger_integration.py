@@ -227,3 +227,53 @@ def test_ledger_summary_reports_coverage_and_error(session):
         "make", "thought.painting", 2, 1, 1)
     assert row["closed_in_horizon"] == 1 and row["with_expect"] == 2
     assert row["outcome_rate"] == 1.0 and row["mean_abs_error"] == 0.5
+
+
+def test_success_reported_after_the_horizon_grades_zero(session):
+    t0 = datetime.now(timezone.utc) - timedelta(hours=3)
+    act = _make_act()  # 5400 s horizon
+    apply_grammar_trace_batch(session, [act_opened_event(act, source_service="orion-thought",
+                                                         source_component="t", at=t0)])
+    late = act_closed_event(act, produced=True, source_service="orion-thought", source_component="t",
+                            at=t0 + timedelta(seconds=5460))
+    apply_grammar_trace_batch(session, [late])
+    row = _row(session, act.act_id)
+    assert row["outcome_value"] == 0.0 and row["outcome_note"].startswith("late:60s")
+
+
+def test_resolver_recovers_a_persisted_close_instead_of_expiring(session, monkeypatch):
+    import orion.grammar.ledger as ledger
+
+    now = datetime.now(timezone.utc)
+    t0 = now - timedelta(seconds=5400 + 2 * EXPIRY_GRACE_SEC)
+    act = _make_act()
+    apply_grammar_trace_batch(session, [act_opened_event(act, source_service="orion-thought",
+                                                         source_component="t", at=t0)])
+    # The close lands in grammar_events but its act-ledger step is lost (e.g. a lost lock fight).
+    ledger.configure_act_ledger(False)
+    try:
+        apply_grammar_trace_batch(session, [act_closed_event(
+            act, produced=True, source_service="orion-thought", source_component="t",
+            at=t0 + timedelta(seconds=600))])
+    finally:
+        ledger.configure_act_ledger(True)
+    assert _row(session, act.act_id)["closed_at"] is None
+    commits = []
+    summary = resolve_due_acts(session, now=now, commit=lambda: commits.append(1))
+    assert summary.recovered_producer_closes == 1 and summary.closed_expired == 0
+    assert commits == [1]
+    row = _row(session, act.act_id)
+    assert row["outcome_value"] == 1.0 and row["outcome_source"] == "producer"
+
+
+def test_resolver_zeros_are_not_counted_as_in_horizon_coverage(session):
+    from orion.grammar.act_ledger import ledger_summary
+
+    now = datetime.now(timezone.utc)
+    act = _say_act("c-quiet", horizon=60.0)
+    apply_grammar_trace_batch(session, [act_opened_event(
+        act, source_service="orion-hub", source_component="t", correlation_id="c-quiet",
+        at=now - timedelta(minutes=10))])
+    resolve_due_acts(session, now=now)
+    (row,) = ledger_summary(session, now=now)["by_act"]
+    assert row["closed"] == 1 and row["closed_in_horizon"] == 0 and row["resolved_absent"] == 1

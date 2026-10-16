@@ -791,18 +791,28 @@ def painting_act_transition(req: ReverieVisualStepRequestV1,
     """What this step result means for the run's ``make`` act.
 
     Returns (action, produced, note): action is "open", "close" or "none".
-    prepare opens (and also closes at 0 when it refuses the run outright);
-    a produced result closes at 1; a terminal or a non-produced abandon closes at 0.
+
+    - Any result naming outcome "produced" closes at 1, whatever its status: a
+      replayed step on an attempt that already produced reports terminal/produced
+      (_closed_attempt), and that replay may be the only close that gets published.
+    - A prepare that refuses outright (terminal before any work: ineligible,
+      already_satisfied, mismatch) is not an act: nothing is opened or closed.
+    - Otherwise prepare opens; a later terminal, or an abandon that did not
+      produce, closes at 0.
     """
     outcome = getattr(result, "outcome", None)
-    if result.status == "done" and outcome == "produced":
+    if outcome == "produced":
         return "close", True, str(result.reason or "produced")
+    if req.step == "prepare":
+        if result.status == "terminal":
+            return "none", None, ""
+        return "open", None, ""
     if result.status == "terminal":
+        if outcome == "already_satisfied":
+            return "none", None, ""
         return "close", False, f"terminal:{result.reason or outcome or 'failed'}"
     if req.step == "abandon" and result.status == "done":
         return "close", False, f"abandoned:{result.reason or 'run_abandoned'}"
-    if req.step == "prepare":
-        return "open", None, ""
     return "none", None, ""
 
 
@@ -820,7 +830,7 @@ async def _mirror_painting_act(bus, req: ReverieVisualStepRequestV1,
         act = _painting_act(req)
         common = dict(source_service="orion-thought", source_component="visual_steps.act",
                       correlation_id=req.correlation_id)
-        if req.step == "prepare":
+        if action == "open":
             await publish_grammar_event(bus, act_opened_event(act, **common), source_name="orion-thought")
         if action == "close":
             await publish_grammar_event(

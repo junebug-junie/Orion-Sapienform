@@ -77,6 +77,7 @@ class SplitCrop:
 class SplitPlan:
     moved: List[Tuple[str, str]] = field(default_factory=list)   # (crop_id, moved_by)
     refused: Optional[str] = None
+    followers_dropped: bool = False
 
     @property
     def by_verdict(self) -> int:
@@ -168,8 +169,14 @@ def plan_split(
             if s_move >= follow_min_face_cosine and s_move - s_keep >= follow_margin:
                 plan.moved.append((c.crop_id, MOVED_BY_FACE))
                 skip.add(c.crop_id)
-    if source_n > 0 and len(plan.moved) > max_move_fraction * source_n:
-        plan.refused = "majority"
+    limit = max_move_fraction * source_n
+    if source_n > 0 and len(plan.moved) > limit:
+        if plan.by_face and plan.by_verdict <= limit:
+            # Only Orion's own inference pushed it over: move just what Juniper named.
+            plan.moved = [m for m in plan.moved if m[1] == MOVED_BY_VERDICT]
+            plan.followers_dropped = True
+        else:
+            plan.refused = "majority"
     return plan
 
 
@@ -342,6 +349,14 @@ def apply_splits(conn, now: datetime, cfg: IndividualsConfig) -> Dict[str, int]:
             out[{"split": "splits", "refused": "splits_refused"}.get(status, "splits_skipped")] += 1
         except Exception as exc:
             logger.warning("vision_split_failed ask_id=%s source=%s group=%r error=%s", ask_id, src, gk, exc)
+            # A visible end state: one 'skipped' row, never a retry every tick.
+            try:
+                with conn.begin_nested():
+                    _record(conn, split_id=f"split-{uuid.uuid4().hex}", source=src, ask_id=ask_id, group_key=gk,
+                            name=None, status="skipped", reason=f"error: {type(exc).__name__}: {str(exc)[:200]}")
+                out["splits_skipped"] += 1
+            except Exception as exc2:
+                logger.warning("vision_split_error_row_failed ask_id=%s error=%s", ask_id, exc2)
     return out
 
 
@@ -388,6 +403,9 @@ def split_one(conn, *, ask_id: str, source_id: str, group_key: str, verdicts: Se
             seeds.append(r)
     if not move_ids:
         return skip("no_crop_recorded")
+    both = sorted(set(move_ids) & set(keep_ids))
+    if both:
+        return skip("contradictory " + ",".join(both))
     if not seeds:
         return skip("no_member_crop " + ",".join(why))
     keep_seed = [_as_split_crop(rows[c]) for c in keep_ids if c in rows]
@@ -506,16 +524,28 @@ def split_one(conn, *, ask_id: str, source_id: str, group_key: str, verdicts: Se
             upd["ev"] = f"crop:{newest.crop_id}" if newest else None
             upd["er"] = newest.embedding_ref if newest else None
             upd["box"] = list(newest.box_xyxy) if newest and newest.box_xyxy else None
+        upd["st"], upd["en"] = _parse_ts(row["started_at"]), _parse_ts(row["ended_at"])
+        if stay and len(stay) == count:
+            # Every crop left in this sighting is a known member: its bounds are exact.
+            upd["st"], upd["en"] = stay[0].observed_at, stay[-1].observed_at
+        upd["dw"] = max(0.0, (upd["en"] - upd["st"]).total_seconds())
         zone = max(zc.items(), key=lambda kv: (kv[1], kv[0] != ""))[0] if zc else ""
         conn.execute(text(
             "UPDATE vision_individual_sighting SET observation_count=:oc, zone_counts=CAST(:zc AS jsonb), "
+            "started_at=:st, ended_at=:en, dwell_sec=:dw, "
             "zone=:z, thumb_ref=:th, face_thumb_ref=:fth, evidence_ref=:ev, embedding_ref=:er, "
             "last_box_xyxy=:box, updated_at=now() WHERE sighting_id=:s"), {**upd, "z": zone or None})
     conn.execute(text(
         "UPDATE vision_individual SET centroid=:c, centroid_n=:n, face_centroid=:fc, face_n=:fn, "
-        "sighting_count=GREATEST(0, sighting_count - :d), updated_at=now() WHERE individual_id=:i"),
+        "sighting_count=GREATEST(0, sighting_count - :d), first_seen_at=COALESCE(:f, first_seen_at), "
+        "last_seen_at=COALESCE(:l, last_seen_at), distinct_days=COALESCE(:dd, distinct_days), "
+        "updated_at=now() WHERE individual_id=:i"),
         {"c": c_new or list(src.centroid), "n": max(n_left, 0), "fc": f_new, "fn": f_left, "d": deleted,
-         "i": source_id})
+         "i": source_id,
+         # Exact membership: the seen fields come from the crops that stay.
+         "f": min(r.observed_at for r in remaining) if method == "exact" and remaining else None,
+         "l": max(r.observed_at for r in remaining) if method == "exact" and remaining else None,
+         "dd": len({local_date(r.observed_at, tz) for r in remaining}) if method == "exact" and remaining else None})
 
     # --- links and name ----------------------------------------------------------------------------
     after_src = _jsonb_row(conn, "vision_individual", "individual_id", source_id)
@@ -633,6 +663,10 @@ def _restore_sighting(conn, row: Dict[str, Any]) -> None:
         {"j": json.dumps(row)})
 
 
+def row_ask(row) -> Optional[str]:
+    return getattr(row, "ask_id", None)
+
+
 def undo_split(conn, split_id: str, *, now: Optional[datetime] = None) -> Dict[str, Any]:
     """Reverse one split inside ``conn``'s transaction (the caller commits or
     rolls back: scripts/undo_vision_split.py rolls back unless --apply).
@@ -644,8 +678,13 @@ def undo_split(conn, split_id: str, *, now: Optional[datetime] = None) -> Dict[s
     from sqlalchemy import text
 
     now = now or datetime.now(timezone.utc)
+    from app.vision_individuals import INDIVIDUALS_LOCK_KEY
+
+    # The individuals cycle holds this key while it reads and rewrites
+    # individuals; an undo committed in between would be overwritten.
+    conn.execute(text("SELECT pg_advisory_xact_lock(:k)"), {"k": INDIVIDUALS_LOCK_KEY})
     row = conn.execute(text(
-        "SELECT split_id, source_individual_id, new_individual_id, status, moved, before, after, linked_pair, "
+        "SELECT split_id, source_individual_id, new_individual_id, ask_id, status, moved, before, after, linked_pair, "
         "undone_at FROM vision_individual_split WHERE split_id=:s FOR UPDATE"), {"s": split_id}).fetchone()
     if row is None:
         return {"ok": False, "reason": "no such split"}
@@ -668,6 +707,19 @@ def undo_split(conn, split_id: str, *, now: Optional[datetime] = None) -> Dict[s
     if new_now is not None and int(new_now.get("centroid_n") or 0) != len(moved_ids):
         return {"ok": False, "reason": "the new individual's count changed since the split",
                 "centroid_n": new_now.get("centroid_n"), "moved": len(moved_ids)}
+
+    if new_now is not None and new_now.get("label_ask_id") not in (None, row_ask(row)):
+        return {"ok": False, "reason": "Juniper named the new individual after the split; Juniper decides",
+                "label_ask_id": new_now.get("label_ask_id")}
+    written = {(p["individual_a"], p["individual_b"]) for p in (row.linked_pair or [])}
+    later = [f"{a}|{b}:{v}" for a, b, v in conn.execute(text(
+        "SELECT individual_a, individual_b, verdict FROM vision_individual_pair_verdict "
+        "WHERE :n IN (individual_a, individual_b)"), {"n": new}).fetchall() if (a, b) not in written]
+    if later:
+        return {"ok": False, "reason": "pair verdicts about the new individual were answered after the split",
+                "pair_verdicts": later}
+    if _jsonb_row(conn, "vision_individual", "individual_id", src) is None:
+        return {"ok": False, "reason": "the source individual was pruned since the split: nothing to give back to"}
 
     report: Dict[str, Any] = {"ok": True, "split_id": split_id, "source": src, "new": new,
                               "crops_restored": 0, "sightings_restored": 0, "sightings_merged": 0}
@@ -719,8 +771,6 @@ def undo_split(conn, split_id: str, *, now: Optional[datetime] = None) -> Dict[s
              "d": restored_deleted, "f": min(r.observed_at for r in moved_rows) if moved_rows else now,
              "l": max(r.observed_at for r in moved_rows) if moved_rows else now, "i": src})
         report["source"] = {"id": src, "restore": "delta (it changed since the split)"}
-    else:
-        report["source"] = {"id": src, "restore": "missing (pruned since the split)"}
     for p in row.linked_pair or []:
         conn.execute(text(
             "DELETE FROM vision_individual_pair_verdict WHERE individual_a=:a AND individual_b=:b "
@@ -729,10 +779,10 @@ def undo_split(conn, split_id: str, *, now: Optional[datetime] = None) -> Dict[s
     # The new individual and its sightings (cascade). Its label goes with it.
     conn.execute(text("DELETE FROM vision_individual WHERE individual_id=:n"), {"n": new})
     asks = [r[0] for r in conn.execute(text(
-        "SELECT ask_id FROM orion_ask WHERE status='open' AND (source_ref=:n OR source_ref LIKE :n || '|%' "
-        "OR source_ref LIKE '%|' || :n)"), {"n": new}).fetchall()]
+        "UPDATE orion_ask SET status='expired' WHERE status='open' AND (source_ref=:n OR source_ref LIKE :n || '|%' "
+        "OR source_ref LIKE '%|' || :n) RETURNING ask_id"), {"n": new}).fetchall()]
     if asks:
-        report["open_asks_about_new_individual"] = asks
+        report["expired_open_asks_about_new_individual"] = asks
     conn.execute(text("UPDATE vision_individual_split SET undone_at=:t WHERE split_id=:s"), {"t": now, "s": split_id})
     logger.info("[VISION_SPLIT_UNDONE] split_id=%s source=%s new=%s crops=%d source_restore=%s",
                 split_id, src, new, report["crops_restored"], report["source"].get("restore"))

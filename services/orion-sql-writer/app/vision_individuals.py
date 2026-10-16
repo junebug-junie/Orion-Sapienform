@@ -315,7 +315,8 @@ class BatchResult:
     # vision_crop_observation.individual_id: stored membership, so a split
     # does not need a replay).
     crop_individual: Dict[str, str] = field(default_factory=dict)
-    # Crops whose best face match was refused by a cannot-link (fell to body).
+    # Crops a cannot-link sent somewhere other than their best face match
+    # (refused by face AND the body rule did not pick the same individual).
     face_blocked_by_cannot_link: int = 0
 
 
@@ -445,13 +446,14 @@ def apply_batch(
             continue
         taken = used_in_observation.setdefault(crop.observation_id, set())
         best_id: Optional[str] = None
+        face_refused: Optional[str] = None
         if crop.face_embedding and face_match_threshold is not None:
             fid, fsim = face_index.nearest(crop, taken, vec=crop.face_embedding)
             if fid is not None and fsim >= face_match_threshold:
                 if cannot_link and cannot_link_ambiguous(
                         crop.face_embedding, fid, fsim, individuals=inds, cannot_link=cannot_link,
                         margin=cannot_link_margin, taken=taken):
-                    blocked += 1
+                    face_refused = fid
                 else:
                     best_id = fid
                     by_face += 1
@@ -459,6 +461,8 @@ def apply_batch(
             aid, asim = index.nearest(crop, taken)
             if aid is not None and asim >= match_threshold:
                 best_id = aid
+        if face_refused is not None and best_id != face_refused:
+            blocked += 1   # the cannot-link changed where this crop went
 
         if best_id is not None:
             ind = inds[best_id]

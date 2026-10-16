@@ -93,6 +93,13 @@ def test_a_majority_move_is_refused() -> None:
     assert vs.plan_split(source_n=4, move_seed=[_sc("m0", 0), _sc("m1", 1)], keep_seed=[], members=[]).refused is None
 
 
+def test_followers_that_push_a_split_over_the_limit_are_dropped_not_the_answer() -> None:
+    plan = vs.plan_split(source_n=4, move_seed=[_sc("m0", 0, face=FM), _sc("m1", 1)], keep_seed=[],
+                         members=[_sc("f1", 2, face=FM)], source_face_centroid=list(FK))
+    assert plan.refused is None and plan.followers_dropped
+    assert plan.moved == [("m0", "verdict"), ("m1", "verdict")]
+
+
 def test_verdict_groups_by_name_case_insensitive_and_unnamed_together() -> None:
     P = vs.PictureVerdict
     keep, groups = vs.verdict_groups([
@@ -173,6 +180,15 @@ def test_cannot_link_blocks_an_ambiguous_face_match_and_falls_to_body() -> None:
     # Body is far from both: the crop opens a new individual instead of joining x by face.
     assert linked.crop_individual == {"c": "new"}
     assert linked.assigned_by_face == 0 and linked.face_blocked_by_cannot_link == 1
+
+
+def test_cannot_link_counter_only_counts_crops_it_actually_rerouted() -> None:
+    # Body also matches x: the face refusal falls through and the body rule picks x anyway.
+    inds = {"x": _ind("x", _vec(1, 0.20), body=_vec(0, 0, 0, 0, 1)), "y": _ind("y", _vec(1, 0.45))}
+    out = vi.apply_batch([_crop("c", _vec(1, 0.0))], individuals=inds, latest_sightings={}, no_embed_zones=(),
+                         match_threshold=0.8, merge_gap_sec=60, tz=TZ, cannot_link={"x": {"y"}, "y": {"x"}})
+    assert out.crop_individual == {"c": "x"}
+    assert out.assigned_by_face == 0 and out.face_blocked_by_cannot_link == 0
 
 
 def test_cannot_link_leaves_a_clear_face_match_alone() -> None:
@@ -406,6 +422,11 @@ def test_split_moves_the_named_picture_and_its_close_face_and_keeps_identity(pg)
         sb = conn.execute(text("SELECT * FROM vision_individual_sighting WHERE sighting_id='s-b'")).one()
         assert (sb.observation_count, sb.zone_counts, sb.thumb_ref, sb.face_thumb_ref) == (1, {"walk": 1},
                                                                                           "thumb:b2", None)
+        # Its time span shrinks to the crop that stays (b2 at minute 12); the source's seen fields follow.
+        b2_at = NOW - timedelta(hours=1) + timedelta(minutes=12)
+        assert (sb.started_at, sb.ended_at, sb.dwell_sec) == (b2_at, b2_at, 0)
+        assert ind["src"].first_seen_at == NOW - timedelta(hours=1)
+        assert ind["src"].last_seen_at == NOW - timedelta(hours=1) + timedelta(minutes=30)
         assert conn.execute(text("SELECT count(*) FROM vision_individual_sighting WHERE individual_id='src'")).scalar() == 3
         ns = conn.execute(text("SELECT * FROM vision_individual_sighting WHERE individual_id=:n"), {"n": new}).one()
         assert (ns.observation_count, ns.face_thumb_ref, ns.evidence_ref) == (2, "thumb:ff1", "crop:f1")
@@ -563,6 +584,56 @@ def test_undo_refuses_when_crops_joined_the_new_individual(pg) -> None:
     with pg.begin() as conn:
         report = vs.undo_split(conn, row["split_id"])
         assert report["ok"] is False and report["joined_crops"] == ["late"]
+
+
+@needs_pg
+def test_undo_refuses_when_juniper_named_or_judged_the_new_individual_later(pg) -> None:
+    from sqlalchemy import text
+
+    with pg.begin() as conn:
+        _world(conn)
+    with pg.begin() as conn:
+        vs.apply_splits(conn, NOW, CFG)
+        row = _split_row(conn)
+        new = row["new_individual_id"]
+        conn.execute(text("UPDATE vision_individual SET label='Dee', label_ask_id='ask-later' WHERE individual_id=:n"),
+                     {"n": new})
+    with pg.begin() as conn:
+        assert "named the new individual" in vs.undo_split(conn, row["split_id"])["reason"]
+        conn.execute(text("UPDATE vision_individual SET label='Cora', label_ask_id=:a WHERE individual_id=:n"),
+                     {"a": ASK, "n": new})
+        a, b = sorted((new, "zzz-other"))
+        conn.execute(text("INSERT INTO vision_individual_pair_verdict (individual_a, individual_b, verdict, ask_id, "
+                          "decided_at) VALUES (:a, :b, 'same', 'ask-later', :t)"), {"a": a, "b": b, "t": NOW})
+    with pg.begin() as conn:
+        assert vs.undo_split(conn, row["split_id"])["pair_verdicts"] == [f"{a}|{b}:same"]
+
+
+@needs_pg
+def test_a_picture_both_kept_and_moved_is_contradictory(pg) -> None:
+    from sqlalchemy import text
+
+    with pg.begin() as conn:
+        _world(conn)
+        _verdict(conn, 2, "different", "k0", name="Cora")
+    with pg.begin() as conn:
+        assert vs.apply_splits(conn, NOW, CFG)["splits_skipped"] == 1
+        assert _split_row(conn)["reason"] == "contradictory k0"
+        assert conn.execute(text("SELECT count(*) FROM vision_individual")).scalar() == 1
+
+
+@needs_pg
+def test_a_failing_split_leaves_one_error_row_not_a_retry_loop(pg, monkeypatch) -> None:
+    with pg.begin() as conn:
+        _world(conn)
+
+    def boom(*a, **k):
+        raise ValueError("synthetic")
+    monkeypatch.setattr(vs, "split_one", boom)
+    with pg.begin() as conn:
+        assert vs.apply_splits(conn, NOW, CFG)["splits_skipped"] == 1
+        assert _split_row(conn)["reason"].startswith("error: ValueError")
+        assert vs.pending_split_groups(conn) == []
 
 
 @needs_pg

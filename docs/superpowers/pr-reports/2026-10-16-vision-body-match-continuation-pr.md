@@ -161,6 +161,6 @@ Delete `/tmp/vision-reanchor/<ts>/` after 7 days (biometric-adjacent).
 
 ## PR link
 
-(filled in below)
+https://github.com/junebug-junie/Orion-Sapienform/pull/2719
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

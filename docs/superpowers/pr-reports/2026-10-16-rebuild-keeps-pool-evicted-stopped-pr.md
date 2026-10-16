@@ -111,6 +111,6 @@ If gpu2 still reads `swap_state: fault` in `curl -fsS localhost:8127/v1/pool` a 
 
 ## PR link
 
-TBD
+https://github.com/junebug-junie/Orion-Sapienform/pull/2731
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

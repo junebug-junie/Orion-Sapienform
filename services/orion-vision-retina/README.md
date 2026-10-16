@@ -75,6 +75,12 @@ cp .env_example .env
 | `RETINA_RTSP_TRANSPORT` | `tcp` | RTSP only: `tcp`, `udp`, `http`. TCP stops UDP packet loss (smeared frames, `RTP: bad cseq`) |
 | `RETINA_RTSP_IO_TIMEOUT_SECONDS` | `5.0` | RTSP only: FFmpeg socket `timeout` + OpenCV read timeout, so a quiet stream cannot block `cap.read()` forever |
 | `RETINA_RTSP_STALL_SECONDS` | `30.0` | RTSP only: no frame this long → WARNING; if the reader thread is also wedged, abandon it and open a fresh capture. `0` disables. Must be > 3×IO timeout + reconnect |
+| `RETINA_RTSP_RECONNECT_QUIET_SECONDS` | `90.0` | RTSP only: no (re)connect until this long after the last camera session (every path, incl. process start). `0` disables |
+| `RETINA_RTSP_SESSION_STATE_DIR` | `/var/lib/orion-vision-retina` | RTSP only: persisted last-session time (`rtsp_session_<stream_id>.json`) so restarts/deploys wait too. Compose mounts host `/mnt/telemetry/vision/retina_state` |
+| `RETINA_RTSP_HEAL_ENABLED` | `true` | RTSP only: live corruption self-heal |
+| `RETINA_RTSP_HEAL_CHECK_EVERY` | `10` | Score every Nth served frame (smear + decoder gray, `app/frame_corruption.py`) |
+| `RETINA_RTSP_HEAL_WINDOW_SECONDS` | `120.0` | Corruption must persist this long before a heal |
+| `RETINA_RTSP_HEAL_MIN_SHARE` | `0.8` | Share of checks in the window that must be corrupt |
 
 ### RTSP stall watchdog (2026-10-15)
 
@@ -95,6 +101,48 @@ stayed up and logged nothing; only a restart fixed it. Now:
   the post-deploy check below).
 - System health `details` carry `last_frame_age_sec` and `source_stall_restarts`; a stall logs
   `[RETINA] rtsp stalled: ...` at WARNING and `rtsp frames resumed ...` on recovery.
+
+### RTSP reconnect quiet period + corruption self-heal (2026-10-16)
+
+Root cause, proven live: the walkway Reolink keeps a dropped RTSP session
+alive. A client that reconnects inside that window gets the stale session
+muxed into the new one -- ~6,000 `RTP: PT=60/61: bad cseq` lines a minute and
+every frame smeared, for hours (2026-10-15 after a stall + restart, fixed only
+by a camera reboot; 2026-10-16 for 10 h after a deploy restart). `docker stop`,
+wait 180 s, `docker start` gave 0 bad cseq and 20/20 clean frames with no
+camera reboot. Matches https://community.reolink.com/topic/563/.
+
+- **Quiet period.** `RtspSessionGate` blocks every RTSP connect until
+  `RETINA_RTSP_RECONNECT_QUIET_SECONDS` have passed since the last moment a
+  session may have existed (open attempt, decoded frame, release, abandoned
+  wedged reader). One gate in the reader thread covers every path: reader
+  reconnect, watchdog replacement, `pause_device` reopen, heal, process start.
+  It logs `[RETINA] rtsp quiet period: waiting Ns before connecting` (INFO).
+  The stall watchdog ignores the wait.
+- **Restart-proof.** The time is persisted (atomic write, every 5 s while
+  streaming, immediately on release). After a deploy the new container waits
+  out the remainder; if the file is missing it waits one full period. **A
+  ~90 s frame gap after every deploy/restart is expected -- that is the fix.**
+- **Clean teardown.** Every release goes through `cap.release()`, which sends
+  RTSP `TEARDOWN` (verified in the built image, OpenCV 4.10 / FFmpeg 5.1,
+  against a fake server that logs methods). `stop()` waits up to 12 s for a
+  blocked reader to release it itself; compose `stop_grace_period: 30s` gives
+  that time before SIGKILL.
+- **Self-heal.** Every `RETINA_RTSP_HEAL_CHECK_EVERY` served frames are scored
+  off the event loop with the eval's own math. When at least
+  `RETINA_RTSP_HEAL_MIN_SHARE` of the checks over
+  `RETINA_RTSP_HEAL_WINDOW_SECONDS` are corrupt: WARNING, drop the session,
+  wait the quiet period (doubled per consecutive heal, max 8x), reconnect.
+  Never reboots the camera. Dark/flat frames are not corrupt by that math.
+  After 3 heals in a row with no clean window between them it stops
+  dropping sessions (`source_corruption_heal_suppressed=true`, WARNING) and
+  keeps streaming until a clean window resets it -- this caps the blind time
+  if the scorer misreads a scene (fog / infrared night are not yet measured).
+  Settings refuse an RTSP config with < 5 checks per window (silently dead heal).
+- Health `details`: `source_quiet_wait_remaining_sec`,
+  `source_last_session_end_ts`, `source_corrupt_frame_rate`,
+  `source_corruption_checks`, `source_corrupt_frames`, `source_corruption_heals`,
+  `source_corruption_heal_suppressed`.
 
 ### Post-deploy check: corrupted frames (2026-10-15)
 

@@ -216,6 +216,10 @@ async def test_service_poll_publishes_with_cooldown_bypass(monkeypatch):
         def magnitudes(self, *, now):
             return _mags(now, **{BUS: HOT})
 
+        def history(self, node_id):
+            # No readings: no dwell rule, the poll-counted dwell decides (today's behaviour).
+            return []
+
     svc._pe_history_cache = _Cache()
     svc._pe_history_reader = type("R", (), {"fetch_since": lambda self, since: []})()
     for i in range(11):

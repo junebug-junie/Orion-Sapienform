@@ -222,6 +222,13 @@ class Settings(BaseSettings):
     # EVENT_ORIENTING_WINDOW_SEC). World-first only. false = world-first
     # without the fade. Ships on (Juniper's rule).
     attention_event_decay_enabled: bool = Field(True, alias="ATTENTION_EVENT_DECAY_ENABLED")
+    # Continuous body signals must last (spec docs/superpowers/specs/2026-10-16-
+    # attention-continuous-signal-quota-design.md, option (b)). A body node the
+    # glossary marks as read every tick (biometrics, bus_synaptic) qualifies
+    # only when hot for more than 300 s of the last 600 s of its own readings
+    # and hot now (orion.attention.sustained). false = today's verdict exactly.
+    # Ships on (Juniper's rule).
+    attention_sustained_body_enabled: bool = Field(True, alias="ATTENTION_SUSTAINED_BODY_ENABLED")
 
     # System One / Kev appraisal. Rides the attention-broadcast cadence,
     # persists a compiled frame, emits a grammar shadow, and publishes the

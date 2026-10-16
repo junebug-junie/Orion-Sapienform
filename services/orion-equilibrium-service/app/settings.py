@@ -196,8 +196,18 @@ class Settings(BaseSettings):
     # readings closes it as went_silent (never as calm). MAX_OPENS_PER_HOUR
     # caps drafts across all signals. Live 7-day replay: ~9.5 opens/day.
     # Reads substrate_node_prediction_error_history over
-    # EQUILIBRIUM_METACOG_GENERATIVE_POSTGRES_URI (read-only).
+    # EQUILIBRIUM_METACOG_GENERATIVE_POSTGRES_URI (read-only). OPEN_DWELL_SEC /
+    # OPEN_WINDOW_SEC govern poll-counted signals; continuous body signals
+    # (biometrics, bus_synaptic) use the attention contest's own 300 s / 600 s
+    # rule while ATTENTION_SUSTAINED_BODY_ENABLED is on.
     metacog_self_signal_episodes_enabled: bool = Field(True, alias="EQUILIBRIUM_METACOG_SELF_SIGNAL_EPISODES_ENABLED")
+    # Continuous body signals must last (spec docs/superpowers/specs/2026-10-16-
+    # attention-continuous-signal-quota-design.md, option (b)). A body node the
+    # glossary marks as read every tick (biometrics, bus_synaptic) qualifies
+    # only when hot for more than 300 s of the last 600 s of its own readings
+    # and hot now (orion.attention.sustained). false = today's verdict exactly.
+    # Ships on (Juniper's rule).
+    attention_sustained_body_enabled: bool = Field(True, alias="ATTENTION_SUSTAINED_BODY_ENABLED")
     metacog_self_signal_episodes_poll_interval_sec: float = Field(30.0, alias="EQUILIBRIUM_METACOG_SELF_SIGNAL_EPISODES_POLL_INTERVAL_SEC")
     metacog_self_signal_episodes_open_dwell_sec: float = Field(300.0, alias="EQUILIBRIUM_METACOG_SELF_SIGNAL_EPISODES_OPEN_DWELL_SEC")
     metacog_self_signal_episodes_open_window_sec: float = Field(600.0, alias="EQUILIBRIUM_METACOG_SELF_SIGNAL_EPISODES_OPEN_WINDOW_SEC")

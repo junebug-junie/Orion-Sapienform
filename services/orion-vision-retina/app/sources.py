@@ -217,60 +217,76 @@ class RtspSessionGate:
 
     PERSIST_EVERY_SECONDS = 5.0
 
-    def __init__(self, quiet_seconds: float, state_path: str | None = None, *, clock=time.time) -> None:
+    def __init__(
+        self,
+        quiet_seconds: float,
+        state_path: str | None = None,
+        *,
+        clock=time.time,
+        mono=None,
+    ) -> None:
         self.quiet_seconds = max(0.0, float(quiet_seconds))
         self.state_path = state_path or None
+        # Wall clock only for the persisted value (survives a restart);
+        # in-process waits run on a monotonic clock so an NTP step cannot
+        # shorten them. Tests pass one fake for both.
         self._clock = clock
+        self._mono = mono or (clock if clock is not time.time else time.monotonic)
         self._lock = threading.Lock()
+        self._persist_lock = threading.Lock()
         self._not_before = 0.0
         self._last_persist: float | None = None
+        self._last_written = float("-inf")
         self._persist_failed = False
         # Wall time a session last ended (a release); None until one does.
         self.last_session_end_ts: float | None = None
         self._last_activity, self.boot_state = self._load()
 
     def _load(self) -> tuple[float | None, str]:
-        now = self._clock()
+        """Last activity on the monotonic clock, and where it came from."""
+        mono_now = self._mono()
         if self.quiet_seconds <= 0:
             return None, "disabled"
         if not self.state_path:
-            return now, "unknown"
+            return mono_now, "unknown"
         try:
             with open(self.state_path, encoding="utf-8") as fh:
                 ts = float(json.load(fh)["last_session_activity_ts"])
         except FileNotFoundError:
-            return now, "unknown"
+            return mono_now, "unknown"
         except (OSError, ValueError, KeyError, TypeError) as exc:
             logger.warning(f"[RETINA] rtsp session state unreadable ({exc}); waiting a full quiet period")
-            return now, "unknown"
-        # A clock that went backwards (or a future value) must not shorten the wait.
-        return min(ts, now), "persisted"
+            return mono_now, "unknown"
+        # A future value (clock went backwards) must not shorten the wait.
+        age = max(0.0, self._clock() - ts)
+        return mono_now - age, "persisted"
 
     def touch(self, *, ended: bool = False) -> None:
         """A session may exist right now. ``ended``: one was just released."""
         if self.quiet_seconds <= 0:
             return
-        now = self._clock()
+        mono_now = self._mono()
+        wall_now = self._clock()
         with self._lock:
-            self._last_activity = now
+            self._last_activity = mono_now
             if ended:
-                self.last_session_end_ts = now
-            due = ended or self._last_persist is None or now - self._last_persist >= self.PERSIST_EVERY_SECONDS
+                self.last_session_end_ts = wall_now
+            due = ended or self._last_persist is None or mono_now - self._last_persist >= self.PERSIST_EVERY_SECONDS
             if due:
-                self._last_persist = now
+                self._last_persist = mono_now
         if due:
-            self._persist(now)
+            self._persist(wall_now)
 
     def defer(self, seconds: float) -> None:
         """No connect for at least ``seconds`` from now (longer heal waits)."""
         with self._lock:
-            self._not_before = max(self._not_before, self._clock() + max(0.0, float(seconds)))
+            self._not_before = max(self._not_before, self._mono() + max(0.0, float(seconds)))
 
     def remaining(self) -> float:
         """Seconds until a new connect may start (0 = now)."""
         if self.quiet_seconds <= 0:
             return 0.0
-        now = self._clock()
+        now = self._mono()
         with self._lock:
             last = self._last_activity
             not_before = self._not_before
@@ -278,22 +294,28 @@ class RtspSessionGate:
         return max(0.0, rem, not_before - now)
 
     def _persist(self, ts: float) -> None:
+        """Atomic write. Serialized: the old reader's release, the new
+        reader's heartbeat and the event loop can all write at once; the
+        newest timestamp always wins."""
         if not self.state_path:
             return
         tmp = f"{self.state_path}.tmp"
-        try:
-            os.makedirs(os.path.dirname(self.state_path) or ".", exist_ok=True)
-            with open(tmp, "w", encoding="utf-8") as fh:
-                json.dump({"last_session_activity_ts": ts}, fh)
-            os.replace(tmp, self.state_path)
-            self._persist_failed = False
-        except OSError as exc:
-            if not self._persist_failed:
-                logger.warning(
-                    f"[RETINA] cannot persist rtsp session state to {self.state_path} ({exc}); "
-                    "a restart will wait a full quiet period"
-                )
-            self._persist_failed = True
+        with self._persist_lock:
+            ts = max(ts, self._last_written)
+            try:
+                os.makedirs(os.path.dirname(self.state_path) or ".", exist_ok=True)
+                with open(tmp, "w", encoding="utf-8") as fh:
+                    json.dump({"last_session_activity_ts": ts}, fh)
+                os.replace(tmp, self.state_path)
+                self._last_written = ts
+                self._persist_failed = False
+            except OSError as exc:
+                if not self._persist_failed:
+                    logger.warning(
+                        f"[RETINA] cannot persist rtsp session state to {self.state_path} ({exc}); "
+                        "a restart will wait a full quiet period"
+                    )
+                self._persist_failed = True
 
 
 class CorruptionTracker:
@@ -365,6 +387,10 @@ class RtspFrameSource(_VideoCaptureSource):
     # Abandoned readers may still hold a camera session until their blocked
     # read returns. Reolinks limit sessions; do not stack more than this.
     MAX_ABANDONED_ALIVE = 2
+    # Heals in a row (no clean window between) before the self-heal stops
+    # dropping sessions and only reports: caps the blind time if the scorer
+    # misreads a scene (90 + 180 + 360 s quiet, then streaming continues).
+    HEAL_MAX_IN_A_ROW = 3
     WEDGED_WINDOWS_BEFORE_EXIT = 4
 
     def __init__(
@@ -434,6 +460,8 @@ class RtspFrameSource(_VideoCaptureSource):
         self.corrupt_frames = 0
         self.corruption_heals = 0
         self._consecutive_heals = 0
+        # True after HEAL_MAX_IN_A_ROW heals failed to clear corruption.
+        self.heal_suppressed = False
         self.stall_seconds = float(stall_seconds)
         # True once any frame has ever arrived; lets the service tell
         # "still connecting" apart from "stream stalled".
@@ -485,6 +513,8 @@ class RtspFrameSource(_VideoCaptureSource):
                         self._gate.touch()
                         cap = self._open_sync()
                         self._progress(stop_evt)
+                        if stop_evt.is_set():
+                            break  # stopped during the open: release now (finally), no read
                         if not cap.isOpened():
                             if not stop_evt.is_set():
                                 self.last_error = "rtsp open failed"
@@ -548,7 +578,7 @@ class RtspFrameSource(_VideoCaptureSource):
                 rem = self._gate.remaining()
                 if rem <= 0:
                     break
-                if not stop_evt.is_set():
+                if stop_evt is self._stop_evt and not stop_evt.is_set():
                     self._in_quiet_wait = True
                 if not logged:
                     logger.info(
@@ -560,7 +590,7 @@ class RtspFrameSource(_VideoCaptureSource):
                 self._progress(stop_evt)
                 stop_evt.wait(min(rem, 1.0))
         finally:
-            if logged and not stop_evt.is_set():
+            if logged and stop_evt is self._stop_evt and not stop_evt.is_set():
                 self._in_quiet_wait = False
                 # The stall window starts at the real connect attempt, not at
                 # the start of the wait.
@@ -607,8 +637,12 @@ class RtspFrameSource(_VideoCaptureSource):
         with self._lock:
             self._stop_evt.set()
         thread, self._thread = self._thread, None
+        deadline = time.monotonic() + self._join_timeout
+        # Readers retired by a heal/watchdog may still be finishing a read
+        # with a session open: give them the same budget to release
+        # (TEARDOWN) before a process exit kills them.
         if thread is not None:
-            await asyncio.to_thread(thread.join, self._join_timeout)
+            await asyncio.to_thread(thread.join, max(0.0, deadline - time.monotonic()))
             if thread.is_alive():
                 # Blocked in a read on a dead socket. Its own stop event is
                 # set, so it exits (and releases its capture) when the read
@@ -618,6 +652,8 @@ class RtspFrameSource(_VideoCaptureSource):
                 # It still holds a session; it restarts the clock again when
                 # it finally releases.
                 self._gate.touch()
+        for old in [t for t in self._abandoned if t.is_alive() and t is not thread]:
+            await asyncio.to_thread(old.join, max(0.0, deadline - time.monotonic()))
         self._in_quiet_wait = False
         self._abandoned = [t for t in self._abandoned if t.is_alive()]
 
@@ -712,10 +748,26 @@ class RtspFrameSource(_VideoCaptureSource):
         self.corruption_checks += 1
         self.corrupt_frames += int(corrupt)
         if self._tracker.record(corrupt):
-            self._heal()
+            if self._consecutive_heals < self.HEAL_MAX_IN_A_ROW:
+                self._heal()
+            elif not self.heal_suppressed:
+                # Healing did not clear it N times in a row. Either the camera
+                # truly needs an operator, or the scorer is wrong for this
+                # scene (fog / IR night can read as decoder gray). Do not keep
+                # blinding the eye with quiet waits: report and keep streaming.
+                self.heal_suppressed = True
+                self.last_error = (
+                    f"rtsp stream still corrupt after {self._consecutive_heals} heals in a row; "
+                    "not dropping the session again until a clean window (operator check: "
+                    "frame_smear eval, camera)"
+                )
+                logger.warning(f"[RETINA] {self.last_error}")
         elif self._tracker.window_full() and (self._tracker.corrupt_rate() or 0.0) < self._tracker.min_share:
             # A full healthy window: the last heal (if any) worked.
+            if self._consecutive_heals or self.heal_suppressed:
+                logger.info("[RETINA] rtsp stream clean for a full window; heal state reset")
             self._consecutive_heals = 0
+            self.heal_suppressed = False
 
     def _heal(self) -> None:
         """Corrupt stream (stale camera session muxed in): drop the session,

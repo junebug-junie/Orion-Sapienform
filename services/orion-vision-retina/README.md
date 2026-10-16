@@ -134,9 +134,15 @@ camera reboot. Matches https://community.reolink.com/topic/563/.
   `RETINA_RTSP_HEAL_WINDOW_SECONDS` are corrupt: WARNING, drop the session,
   wait the quiet period (doubled per consecutive heal, max 8x), reconnect.
   Never reboots the camera. Dark/flat frames are not corrupt by that math.
+  After 3 heals in a row with no clean window between them it stops
+  dropping sessions (`source_corruption_heal_suppressed=true`, WARNING) and
+  keeps streaming until a clean window resets it -- this caps the blind time
+  if the scorer misreads a scene (fog / infrared night are not yet measured).
+  Settings refuse an RTSP config with < 5 checks per window (silently dead heal).
 - Health `details`: `source_quiet_wait_remaining_sec`,
   `source_last_session_end_ts`, `source_corrupt_frame_rate`,
-  `source_corruption_checks`, `source_corrupt_frames`, `source_corruption_heals`.
+  `source_corruption_checks`, `source_corrupt_frames`, `source_corruption_heals`,
+  `source_corruption_heal_suppressed`.
 
 ### Post-deploy check: corrupted frames (2026-10-15)
 

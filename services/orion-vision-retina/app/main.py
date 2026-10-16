@@ -484,6 +484,7 @@ class RetinaService:
         m.source_corruption_checks = int(src.corruption_checks)
         m.source_corrupt_frames = int(src.corrupt_frames)
         m.source_corruption_heals = int(src.corruption_heals)
+        m.source_corruption_heal_suppressed = bool(getattr(src, "heal_suppressed", False))
 
     def _source_ok(self) -> bool:
         if not self._sample_attempted:

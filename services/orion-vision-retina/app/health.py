@@ -30,6 +30,7 @@ class RetinaMetrics:
     source_corruption_checks: int = 0
     source_corrupt_frames: int = 0
     source_corruption_heals: int = 0
+    source_corruption_heal_suppressed: bool = False
 
 
 def last_frame_age_sec(metrics: RetinaMetrics, now: float | None = None) -> float | None:
@@ -82,6 +83,7 @@ def make_system_health_envelope(
             "source_corruption_checks": metrics.source_corruption_checks,
             "source_corrupt_frames": metrics.source_corrupt_frames,
             "source_corruption_heals": metrics.source_corruption_heals,
+            "source_corruption_heal_suppressed": metrics.source_corruption_heal_suppressed,
             "last_error": metrics.last_error,
             "storage_dir": storage_dir,
         },

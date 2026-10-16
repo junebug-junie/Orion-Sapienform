@@ -179,10 +179,8 @@ Q = 0.3  # quiet seconds for thread tests
 
 def _gate_ready(quiet=Q):
     """A gate with no prior session (boot wait already over)."""
-    clock = {"t": time.time() - 10_000}
-    gate = RtspSessionGate(quiet, None, clock=lambda: clock["t"])
-    # switch to the real clock after construction
-    gate._clock = time.time
+    gate = RtspSessionGate(quiet, None)
+    gate._last_activity = time.monotonic() - 10_000  # boot wait long over
     return gate
 
 
@@ -206,16 +204,17 @@ def test_process_start_waits_out_a_persisted_recent_session(tmp_path):
     p.write_text(json.dumps({"last_session_activity_ts": time.time()}))
     rec = _Recorder(lambda n: _Cap())
     t0 = time.monotonic()
-    src = RtspFrameSource("rtsp://x", opener=rec, reconnect_quiet_seconds=Q, session_state_path=str(p))
+    quiet = 1.0
+    src = RtspFrameSource("rtsp://x", opener=rec, reconnect_quiet_seconds=quiet, session_state_path=str(p))
 
     async def run():
         await src.start()
-        assert _wait(lambda: src.quiet_wait_remaining() > 0, timeout=0.2)
+        assert _wait(lambda: src.quiet_wait_remaining() > 0, timeout=0.6)
         assert _wait(lambda: rec.caps)
         await src.stop()
 
     asyncio.run(run())
-    assert rec.opened_at[0] - t0 >= Q * 0.9
+    assert rec.opened_at[0] - t0 >= quiet * 0.9
     # The release on stop is persisted for the next process.
     assert json.loads(p.read_text())["last_session_activity_ts"] >= time.time() - 5
 
@@ -288,7 +287,7 @@ class _WedgeCap(_Cap):
 def test_watchdog_replacement_waits_the_quiet_period_without_a_second_restart():
     unwedge = threading.Event()
     rec = _Recorder(lambda n: _WedgeCap(2, unwedge) if n == 0 else _Cap())
-    quiet = 0.4
+    quiet = 1.0
     src = RtspFrameSource("rtsp://x", opener=rec, stall_seconds=0.1, gate=_gate_ready(quiet))
 
     async def run():
@@ -300,7 +299,8 @@ def test_watchdog_replacement_waits_the_quiet_period_without_a_second_restart():
         await src.read()  # watchdog abandons the wedged reader
         assert src.stall_restarts == 1
         # During the quiet wait the watchdog must not fire again.
-        for _ in range(4):
+        assert _wait(lambda: src.quiet_wait_remaining() > 0, timeout=0.5)
+        for _ in range(6):
             time.sleep(0.07)
             await src.read()
         assert src.stall_restarts == 1
@@ -631,3 +631,111 @@ def test_health_details_carry_session_and_heal_metrics():
     assert d["source_last_session_end_ts"] == 99.0
     assert d["source_corrupt_frame_rate"] == 0.9
     assert (d["source_corruption_checks"], d["source_corrupt_frames"], d["source_corruption_heals"]) == (10, 9, 1)
+
+
+# --- Review fixes -------------------------------------------------------------
+
+
+def test_stop_during_a_blocking_open_releases_without_reading():
+    entered = threading.Event()
+    go = threading.Event()
+    rec_caps = []
+    reads = []
+
+    def opener(_url):
+        entered.set()
+        go.wait()  # FFmpeg open blocking on a slow camera
+        cap = _Cap()
+        def _read():  # a read here would block up to the I/O timeout again
+            reads.append(1)
+            return False, None
+
+        cap.read = _read
+        rec_caps.append(cap)
+        return cap
+
+    src = RtspFrameSource("rtsp://x", opener=opener, gate=_gate_ready(), join_timeout=2.0)
+
+    async def run():
+        await src.start()
+        assert _wait(lambda: entered.is_set())
+        stopper = asyncio.create_task(src.stop())
+        await asyncio.sleep(0.05)
+        go.set()
+        await stopper
+
+    asyncio.run(run())
+    assert rec_caps and rec_caps[0].released
+    assert reads == []
+    assert src._abandoned == []
+
+
+def test_stop_joins_retired_readers_so_they_tear_down():
+    rec = _Recorder(lambda n: _Cap(value=7))
+    src = RtspFrameSource("rtsp://x", opener=rec, gate=_gate_ready(5.0), join_timeout=2.0)
+
+    async def run():
+        await src.start()
+        assert _wait(lambda: rec.caps and rec.caps[0].i > 2)
+        src._heal()  # retires reader 0; reader 1 waits the quiet period
+        await src.stop()
+
+    asyncio.run(run())
+    assert rec.caps[0].released
+    assert not any(t.is_alive() for t in src._abandoned)
+
+
+def test_heal_stops_after_max_in_a_row_and_resumes_after_a_clean_window():
+    clock = Clock(0.0)
+    src, rec = _heal_source(lambda n: _Cap(value=7))
+    src._tracker._clock = clock
+    src._gate.quiet_seconds = 1000.0  # spawned readers just wait
+    heals = []
+    src._heal = lambda: (heals.append(1), setattr(src, "_consecutive_heals", src._consecutive_heals + 1),
+                         src._tracker.reset())
+
+    def feed(corrupt, seconds):
+        for _ in range(int(seconds / 5)):
+            clock.t += 5
+            asyncio.run(src._check_corruption(np.full((4, 6, 3), 7 if corrupt else 1, np.uint8)))
+
+    src._tracker.window_seconds = 20
+    feed(True, 200)
+    assert len(heals) == RtspFrameSource.HEAL_MAX_IN_A_ROW
+    assert src.heal_suppressed and "still corrupt" in src.last_error
+    feed(False, 40)  # a clean window resets
+    assert not src.heal_suppressed and src._consecutive_heals == 0
+    feed(True, 40)
+    assert len(heals) == RtspFrameSource.HEAL_MAX_IN_A_ROW + 1
+    asyncio.run(src.stop())
+
+
+def test_concurrent_persists_keep_the_newest_timestamp(tmp_path):
+    p = tmp_path / "s.json"
+    gate = RtspSessionGate(90, str(p), clock=Clock())
+    stamps = [1000.0 + i for i in range(200)]
+    threads = [threading.Thread(target=gate._persist, args=(ts,)) for ts in reversed(stamps)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert json.loads(p.read_text())["last_session_activity_ts"] == max(stamps)
+    assert not (tmp_path / "s.json.tmp").exists()
+
+
+def test_a_wall_clock_step_does_not_shorten_the_wait():
+    wall = Clock(1_000_000.0)
+    mono = Clock(50.0)
+    gate = RtspSessionGate(90, None, clock=wall, mono=mono)
+    mono.t += 1000
+    gate.touch(ended=True)
+    wall.t += 3600  # NTP steps the wall clock forward an hour
+    mono.t += 10
+    assert gate.remaining() == pytest.approx(80)
+
+
+def test_heal_needs_enough_checks_per_window_at_low_fps():
+    with pytest.raises(ValueError, match="checks per window"):
+        Settings(_env_file=None, RETINA_SOURCE_TYPE="rtsp", RETINA_SOURCE="rtsp://x", RETINA_FPS=0.2)
+    Settings(_env_file=None, RETINA_SOURCE_TYPE="rtsp", RETINA_SOURCE="rtsp://x", RETINA_FPS=2.0)
+    Settings(_env_file=None, RETINA_SOURCE_TYPE="folder", RETINA_FPS=0.2)  # not RTSP: no check

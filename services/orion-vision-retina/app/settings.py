@@ -176,6 +176,15 @@ class Settings(BaseSettings):
             raise ValueError("RETINA_RTSP_HEAL_WINDOW_SECONDS must be > 0")
         if not 0 < self.RETINA_RTSP_HEAL_MIN_SHARE <= 1:
             raise ValueError("RETINA_RTSP_HEAL_MIN_SHARE must be in (0, 1]")
+        if self.RETINA_SOURCE_TYPE.strip().lower() == "rtsp" and self.RETINA_RTSP_HEAL_ENABLED:
+            # CorruptionTracker needs >= 5 checks inside one window, or the
+            # self-heal is silently dead.
+            checks = self.RETINA_RTSP_HEAL_WINDOW_SECONDS * self.RETINA_FPS / self.RETINA_RTSP_HEAL_CHECK_EVERY
+            if checks < 5:
+                raise ValueError(
+                    f"RETINA_RTSP_HEAL_WINDOW_SECONDS x RETINA_FPS / RETINA_RTSP_HEAL_CHECK_EVERY = {checks:.1f} "
+                    "checks per window; the self-heal needs >= 5 (raise the window or lower CHECK_EVERY)"
+                )
         return self
 
     def rtsp_session_state_path(self) -> str | None:

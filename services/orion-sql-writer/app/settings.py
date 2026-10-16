@@ -661,6 +661,13 @@ class Settings(BaseSettings):
     sql_writer_grammar_drain_interval_sec: float = Field(30.0, alias="SQL_WRITER_GRAMMAR_DRAIN_INTERVAL_SEC")
     sql_writer_grammar_drain_batch: int = Field(200, alias="SQL_WRITER_GRAMMAR_DRAIN_BATCH")
     sql_writer_grammar_trace_batch_timeout_sec: float = Field(45.0, alias="SQL_WRITER_GRAMMAR_TRACE_BATCH_TIMEOUT_SEC")
+    # Act ledger (rung 2, docs/superpowers/specs/2026-10-14-orion-thinking-architecture-design.md):
+    # materialise act_opened/act_closed grammar events into grammar_acts and grade closed acts into
+    # substrate_action_outcomes + substrate_action_effect_posterior (orion/grammar/act_ledger.py).
+    sql_writer_act_ledger_enabled: bool = Field(True, alias="SQL_WRITER_ACT_LEDGER_ENABLED")
+    # Horizon resolver cadence: closes juniper_replied acts from chat_history_log and expires
+    # producer-reported acts past their horizon. 0 disables (open acts then stay open).
+    sql_writer_act_resolver_interval_sec: float = Field(60.0, alias="SQL_WRITER_ACT_RESOLVER_INTERVAL_SEC")
 
     @property
     def route_map(self) -> dict[str, str]:

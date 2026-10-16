@@ -53,7 +53,7 @@ from orion.world_pulse_read.documents import (
     load_snapshot,
     parse_document_ref,
 )
-from orion.world_pulse_read.events import publish_lifecycle
+from orion.world_pulse_read.events import publish_lifecycle as _publish_lifecycle_event
 from orion.world_pulse_read.retry import is_refused_before_work
 from orion.world_pulse_read.fetch_text import WEBFETCH_LIMIT_NOTE, retain_fetch_texts
 from orion.world_pulse_read.timestamps import stamp_server_created_at
@@ -74,6 +74,25 @@ from orion.world_pulse_read.wallet_a import (
     wallet_a_block_reason,
     window_is_configured,
 )
+
+
+async def publish_lifecycle(bus, seed, stage, **kwargs):
+    """Publish the reading lifecycle event, then mirror Stage 1 into the act ledger.
+
+    Act ledger (rung 2): a Stage 1 read is a ``look`` act -- opened on
+    "started", closed 1 on "stage1_completed" and 0 on "stage1_failed"
+    (scripts/act_emit.py). The lifecycle event is published first and is
+    unaffected by the act publish, which never raises.
+    """
+    await _publish_lifecycle_event(bus, seed, stage, **kwargs)
+    from scripts.act_emit import publish_read_closed, publish_read_opened
+
+    if stage == "started":
+        await publish_read_opened(bus, seed)
+    elif stage == "stage1_completed":
+        await publish_read_closed(bus, seed, produced=True, note="stage1_completed")
+    elif stage == "stage1_failed":
+        await publish_read_closed(bus, seed, produced=False, note=str(kwargs.get("error") or "stage1_failed")[:200])
 
 logger = logging.getLogger("orion-hub.world_pulse_read_pipeline")
 
@@ -430,6 +449,9 @@ class WorldPulseReadPipeline:
             logger.info(
                 "world_pulse_read_skipped_index seed=%s url=%s", seed.seed_id, seed.url
             )
+            from scripts.act_emit import publish_read_closed
+
+            await publish_read_closed(self._bus, seed, produced=False, note="skipped:section_index_url")
             return "skipped_index_url"
 
         # Publishers that refuse the fetch tool (reader_blocks.py): every turn on

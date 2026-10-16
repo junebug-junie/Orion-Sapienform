@@ -97,6 +97,7 @@ from .juniper_affective_state import JuniperAffectiveStateSQL
 from .juniper_multimodal_affect import JuniperMultimodalAffectSQL
 from .equilibrium_service_transition import EquilibriumServiceTransitionSQL
 from .grammar_trace import (
+    GrammarActSQL,
     GrammarAtomSQL,
     GrammarCompactionSQL,
     GrammarEdgeSQL,
@@ -197,6 +198,7 @@ __all__ = [
     "JuniperMultimodalAffectSQL",
     "EquilibriumServiceTransitionSQL",
     "GrammarTraceSQL",
+    "GrammarActSQL",
     "HarnessTurnTraceSQL",
     "CockpitTurnSightingSQL",
     "GrammarEventSQL",

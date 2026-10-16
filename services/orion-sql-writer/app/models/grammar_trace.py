@@ -1,4 +1,4 @@
-from sqlalchemy import Column, DateTime, Float, Index, Integer, String, Text
+from sqlalchemy import Boolean, Column, DateTime, Float, Index, Integer, String, Text
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 
 from app.db import Base
@@ -152,3 +152,55 @@ class GrammarProjectionSQL(Base):
     projected_atom_id = Column(String, nullable=True)
     projection_json = Column(JSONB, nullable=False)
     created_at = Column(DateTime(timezone=True), nullable=False)
+
+
+class GrammarActSQL(Base):
+    """One row per act (orion.schemas.grammar.ActV1): opened, then closed by act_id.
+
+    Written by orion/grammar/act_ledger.py. The row is the efference copy: what
+    the act expected (``predicted`` is the EffectPosterior mean stamped at
+    open), what happened, and the error. A closed act is also graded into
+    substrate_action_outcomes / substrate_action_effect_posterior
+    (``outcome_row_id`` points at that row).
+    """
+
+    __tablename__ = "grammar_acts"
+
+    act_id = Column(String, primary_key=True)
+    parent_act_id = Column(String, nullable=True)
+    trace_id = Column(String, nullable=False)
+    level = Column(String, nullable=False)
+    actor = Column(String, nullable=False)
+    verb = Column(String, nullable=False)
+    object_ref = Column(Text, nullable=True)
+    test_before = Column(Text, nullable=True)
+    signal_id = Column(String, nullable=True)
+    direction = Column(String, nullable=True)
+    horizon_sec = Column(Float, nullable=True)
+    expect_basis = Column(Text, nullable=True)
+    predicted = Column(Float, nullable=True)
+    predicted_n = Column(Integer, nullable=True)
+    cold_start = Column(Boolean, nullable=True)
+    goal_ref = Column(String, nullable=True)
+    workspace_ref = Column(String, nullable=True)
+    session_id = Column(String, nullable=True)
+    correlation_id = Column(String, nullable=True)
+    opened_at = Column(DateTime(timezone=True), nullable=True)
+    horizon_at = Column(DateTime(timezone=True), nullable=True)
+    open_event_id = Column(String, nullable=True)
+    cost_json = Column(JSONB, nullable=True)
+    outcome_value = Column(Float, nullable=True)
+    outcome_source = Column(String, nullable=True)
+    outcome_note = Column(Text, nullable=True)
+    error = Column(Float, nullable=True)
+    surprise_nats = Column(Float, nullable=True)
+    outcome_row_id = Column(Integer, nullable=True)
+    closed_at = Column(DateTime(timezone=True), nullable=True)
+    close_event_id = Column(String, nullable=True)
+    created_at = Column(DateTime(timezone=True), nullable=False)
+    updated_at = Column(DateTime(timezone=True), nullable=False)
+
+    __table_args__ = (
+        Index("idx_grammar_acts_open_horizon", "horizon_at", postgresql_where=closed_at.is_(None)),
+        Index("idx_grammar_acts_verb_opened", "verb", "opened_at"),
+    )

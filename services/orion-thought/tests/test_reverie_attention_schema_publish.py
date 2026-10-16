@@ -33,11 +33,14 @@ def _thought(idx: int) -> SpontaneousThoughtV1:
         thought_id=f"th-{idx}", correlation_id="corr-r",
         coalition=CoalitionSnapshotV1(attended_node_ids=["n-1"], selected_open_loop_id="ol-1", open_loop_ids=["ol-1"], generated_at=NOW),
         interpretation=f"thought {idx}: the loop ol-1 keeps recurring", salience=0.7,
-        next_focus="the deploy" if idx == 1 else None,
+        # Step 0 must point somewhere or the chain ends after it
+        # (thought_complete, 2026-10-16); the last step's next_focus is the
+        # one the attention surface reads.
+        next_focus="the deploy" if idx == 1 else "the loop's history",
     )
 
 
-async def _step(chain_id, index):
+async def _step(chain_id, index, **_kw):
     return _thought(index)
 
 

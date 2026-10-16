@@ -54,6 +54,22 @@ genuinely connects; it is not evidence_refs{% if recent_percepts %}, and any
 expectation you state is about the room, never the street{% endif %}.
 {% endif %}
 
+{% if chain_mode %}
+TRAIN OF THOUGHT (this is step {{ chain_step_number }} of one continuing thought)
+{% if chain_prior_thoughts %}
+Earlier in this train of thought you said:
+{% for t in chain_prior_thoughts %}
+- "{{ t }}"
+{% endfor %}
+Take it one step further — do not restate it. Narrow it, test it, connect it
+to something new above, or change your mind about it.
+{% endif %}
+{% if chain_next_focus_hint %}
+Last step you said you wanted to look next at: {{ chain_next_focus_hint }}
+This is a hint, not an order — the input above is still the only thing you may
+cite as evidence_refs.
+{% endif %}
+{% endif %}
 
 JOB
 - Write 1-3 sentences of inner speech about the concern(s) above.
@@ -70,6 +86,11 @@ REQUIRED JSON FIELDS
 {% if recent_percepts %}
 - expectation: OPTIONAL — one concrete, falsifiable claim about the room
   (string, or null if nothing natural to predict). Never a list.
+{% endif %}
+{% if chain_ask_next_focus %}
+- next_focus: what to look at next to carry this thought forward (one short
+  phrase), or null if this thought is complete and there is nothing more to
+  look at. null ends the train of thought.
 {% endif %}
 
 {% else %}
@@ -147,6 +168,22 @@ genuinely connects; it is not evidence_refs{% if recent_percepts %}, and any
 expectation you state is about the room, never the street{% endif %}.
 {% endif %}
 
+{% if chain_mode %}
+TRAIN OF THOUGHT (this is step {{ chain_step_number }} of one continuing thought)
+{% if chain_prior_thoughts %}
+Earlier in this train of thought you said:
+{% for t in chain_prior_thoughts %}
+- "{{ t }}"
+{% endfor %}
+Take it one step further — do not restate it. Narrow it, test it, connect it
+to something new above, or change your mind about it.
+{% endif %}
+{% if chain_next_focus_hint %}
+Last step you said you wanted to look next at: {{ chain_next_focus_hint }}
+This is a hint, not an order — the input above is still the only thing you may
+cite as evidence_refs.
+{% endif %}
+{% endif %}
 
 GROUNDING DISCIPLINE (the anti-hollow rule — this is the whole point)
 - There is no user question anchoring you, so you must anchor yourself.
@@ -183,6 +220,11 @@ REQUIRED JSON FIELDS
 {% if recent_percepts %}
 - expectation: OPTIONAL — one concrete, falsifiable claim about the room
   (string, or null if nothing natural to predict). Never a list.
+{% endif %}
+{% if chain_ask_next_focus %}
+- next_focus: what to look at next to carry this thought forward (one short
+  phrase), or null if this thought is complete and there is nothing more to
+  look at. null ends the train of thought.
 {% endif %}
 {% endif %}
 

@@ -77,7 +77,7 @@ async def test_chain_queues_request_when_flag_on(monkeypatch):
     from orion.schemas.reverie import SpontaneousThoughtV1
     from orion.schemas.thought import CoalitionSnapshotV1
 
-    async def step2(chain_id, index):
+    async def step2(chain_id, index, **_kw):
         return SpontaneousThoughtV1(
             thought_id=f"th-{index}", correlation_id="c",
             coalition=CoalitionSnapshotV1(attended_node_ids=["n-1"], selected_open_loop_id="ol-1",
@@ -109,7 +109,7 @@ async def test_chain_no_request_when_flag_off(monkeypatch):
     queued = []
     monkeypatch.setattr(chain, "persist_compaction_request", lambda r: queued.append(r) or True)
 
-    async def step(chain_id, index):
+    async def step(chain_id, index, **_kw):
         return SpontaneousThoughtV1(
             thought_id=f"th-{index}", correlation_id="c",
             coalition=CoalitionSnapshotV1(attended_node_ids=["n-1"], selected_open_loop_id="ol-1",

@@ -40,7 +40,7 @@ from orion.schemas.reverie import (
 )
 
 from .resonance_monitor import check_resonance_worsening
-from .reverie import _default_broadcast_reader, _source, run_reverie_once
+from .reverie import ChainStep, _default_broadcast_reader, _source, run_reverie_once
 from .rpc_health import fold_bus
 from .settings import settings
 from .store import (
@@ -58,7 +58,12 @@ logger = logging.getLogger("orion-thought.chain")
 # Pressure at/below this is considered discharged → the chain has done its job.
 PRESSURE_DISCHARGE_THRESHOLD = 0.15
 
-StepFn = Callable[[str, int], Awaitable[SpontaneousThoughtV1 | None]]
+# step_fn(chain_id, index, *, prior_thoughts, next_focus_hint, is_last).
+# prior_thoughts = this chain's earlier step interpretations (oldest first);
+# next_focus_hint = the previous step's own next_focus; is_last = no step
+# follows, so the step is not asked for a next_focus. Feed-forward is in-memory
+# only: a chain completes inside one run_reverie_chain call.
+StepFn = Callable[..., Awaitable[SpontaneousThoughtV1 | None]]
 
 
 class RefractoryStore(Protocol):
@@ -170,7 +175,7 @@ def build_compaction_request(chain: ReverieChainV1) -> CompactionRequestV1 | Non
     dream to consolidate it. Never a downscale/prune from the awake path — those
     are the dream's call. Applied by nothing; this only queues an ask.
     """
-    if chain.terminal_reason not in ("pressure_discharged", "max_steps"):
+    if chain.terminal_reason not in ("pressure_discharged", "max_steps", "thought_complete"):
         return None
     if not chain.theme_key or chain.theme_key == "unknown":
         return None
@@ -298,10 +303,20 @@ async def run_reverie_chain(
     thoughts: list[SpontaneousThoughtV1] = []
     ema = 0.0
     terminal: TerminalReason = "max_steps"
+    steps = max(1, max_steps)
+    prior_texts: list[str] = []
+    next_focus_hint: str | None = None
 
-    for index in range(max(1, max_steps)):
+    for index in range(steps):
+        is_last = index == steps - 1
         try:
-            thought = await step_fn(chain_id, index)
+            thought = await step_fn(
+                chain_id,
+                index,
+                prior_thoughts=tuple(prior_texts),
+                next_focus_hint=next_focus_hint,
+                is_last=is_last,
+            )
         except Exception as exc:
             logger.warning("reverie chain step failed chain=%s idx=%s err=%s", chain_id, index, exc)
             thought = None
@@ -311,6 +326,8 @@ async def run_reverie_chain(
 
         thought_ids.append(thought.thought_id)
         thoughts.append(thought)
+        prior_texts.append(thought.interpretation)
+        next_focus_hint = (thought.next_focus or "").strip() or None
         ema = update_ema(ema, thought.salience, alpha=alpha)
 
         if pressure_reader is not None:
@@ -320,6 +337,11 @@ async def run_reverie_chain(
                 break
         if ema < min_ema_salience:
             terminal = "low_salience"
+            break
+        if not is_last and next_focus_hint is None:
+            # The step was asked what to look at next and said nothing: the
+            # thought is complete. Do not spend another step restating it.
+            terminal = "thought_complete"
             break
     else:
         terminal = "max_steps"
@@ -342,7 +364,7 @@ async def run_reverie_chain(
         )
 
     # Habituate a resolved theme so a discharged loop can't immediately re-ignite.
-    if terminal in ("pressure_discharged", "max_steps", "low_salience") or force_suppress:
+    if terminal in ("pressure_discharged", "max_steps", "low_salience", "thought_complete") or force_suppress:
         with suppress(Exception):
             refractory_store.suppress(theme_key, now + timedelta(seconds=refractory_sec))
 
@@ -457,8 +479,18 @@ async def run_reverie_chain_worker(stop_event: asyncio.Event | None = None) -> N
     await bus.connect()
     refractory = DbRefractoryStore()
 
-    async def _step(chain_id: str, index: int) -> SpontaneousThoughtV1 | None:
-        return await run_reverie_once(bus, chain_context=(chain_id, index))
+    async def _step(
+        chain_id: str,
+        index: int,
+        *,
+        prior_thoughts: tuple[str, ...] = (),
+        next_focus_hint: str | None = None,
+        is_last: bool = False,
+    ) -> SpontaneousThoughtV1 | None:
+        return await run_reverie_once(
+            bus,
+            chain_context=ChainStep(chain_id, index, tuple(prior_thoughts), next_focus_hint, is_last),
+        )
 
     logger.info("reverie chain worker started interval=%ss", settings.reverie_interval_sec)
     try:

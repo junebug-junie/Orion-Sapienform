@@ -203,6 +203,34 @@ where expectation_verdict is not null
 group by expectation_verdict;
 ```
 
+## Reverie input and chain development (2026-10-16)
+
+What the reverie prompt carries (`app/reverie.py::_open_loops_for_prompt`):
+
+- Each open loop's real measurement in plain words, from `OpenLoopV1.magnitude`:
+  `reading 0.38 (usual 0.00, 90th pct 0.19; top 1.2% of its own week, band high)`.
+  A missing field is left out, never a placeholder.
+- For a substrate-broadcast loop, "why it surfaced" is the world-first selector's
+  own reason (`provenance.world_first_reason`), not the chat-turn boilerplate.
+- A loop verdict only when it is younger than 48 h (`store.LOOP_OUTCOME_FRESH_HOURS`,
+  same window as the substrate verdict exclusion TTL; loops carry no activation
+  timestamp and loop ids are reused per label). The actor is shown: only a
+  verdict "recorded by Juniper" is called ground truth; a system mark
+  (`system:implicit_decay`) is labelled as bookkeeping.
+
+How a chain develops (`app/chain.py::run_reverie_chain`, spec
+`docs/superpowers/specs/2026-07-14-reverie-narration-continuity-design.md` #2/#3):
+
+- A calm tick (no attended node, no selected loop) starts no chain: no
+  `substrate_reverie_chain` row, no refractory write.
+- Each step after the first gets the chain's earlier interpretations (last 3,
+  400 chars each) and the previous step's `next_focus`, and is told to take the
+  thought one step further. Standalone ticks get none of this.
+- Every step but the last is asked for `next_focus` (what to look at next, or
+  null). A step that returns none ends the chain: `terminal_reason=thought_complete`.
+
+Measure it with `evals/reverie_chain_development_eval.py --hours 24` (read-only).
+
 ## Reverie chain pacing by arousal (Temporal Self R3 reader 5)
 
 Right before each pause between reverie chains, the chain worker reads Orion's arousal from

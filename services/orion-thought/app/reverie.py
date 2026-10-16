@@ -19,7 +19,7 @@ import json
 import logging
 from contextlib import suppress
 from datetime import datetime, timedelta, timezone
-from typing import Any, Callable
+from typing import Any, Callable, NamedTuple
 from uuid import UUID, uuid4
 
 from orion.cognition.plan_loader import build_plan_for_verb
@@ -210,6 +210,38 @@ def build_salience_trace(
 
 # --- honest prompt input (2026-10-16) ----------------------------------------
 
+# Chain-mode carry caps (bounded prompt growth, cap-all-collections).
+MAX_CHAIN_PRIOR_THOUGHTS = 3
+MAX_CHAIN_PRIOR_THOUGHT_CHARS = 400
+MAX_NEXT_FOCUS_CHARS = 200
+
+
+class ChainStep(NamedTuple):
+    """Where one reverie step sits inside a chain (a train of thought).
+
+    Indexes 0/1 stay (chain_id, index), so older `(chain_id, index)` tuples
+    still read the same. `prior_thoughts` are this chain's earlier step
+    interpretations (oldest first); `next_focus_hint` is the previous step's
+    own next_focus; `is_last` means no next step will run, so the prompt does
+    not ask for a next_focus.
+    """
+
+    chain_id: str
+    index: int
+    prior_thoughts: tuple[str, ...] = ()
+    next_focus_hint: str | None = None
+    is_last: bool = False
+
+
+def _as_chain_step(chain_context: Any) -> ChainStep | None:
+    if chain_context is None:
+        return None
+    if isinstance(chain_context, ChainStep):
+        return chain_context
+    chain_id, index = chain_context[0], chain_context[1]
+    return ChainStep(str(chain_id), int(index))
+
+
 def _fmt_reading(value: float) -> str:
     v = float(value)
     if v == 0.0:
@@ -339,6 +371,28 @@ def attention_summary_text(broadcast: AttentionBroadcastProjectionV1) -> str:
     return "Nothing won your attention this tick."
 
 
+def chain_context_for_prompt(step: ChainStep | None) -> dict[str, Any]:
+    """Chain-mode prompt keys; {} for a standalone tick (episodic, by design)."""
+    if step is None:
+        return {}
+    prior = [
+        t.strip()[:MAX_CHAIN_PRIOR_THOUGHT_CHARS]
+        for t in list(step.prior_thoughts)[-MAX_CHAIN_PRIOR_THOUGHTS:]
+        if t and t.strip()
+    ]
+    ctx: dict[str, Any] = {
+        "chain_mode": True,
+        "chain_step_number": int(step.index) + 1,
+        "chain_ask_next_focus": not step.is_last,
+    }
+    if prior:
+        ctx["chain_prior_thoughts"] = prior
+    hint = (step.next_focus_hint or "").strip()[:MAX_NEXT_FOCUS_CHARS]
+    if hint:
+        ctx["chain_next_focus_hint"] = hint
+    return ctx
+
+
 def _metacog_route() -> str:
     """`metacog`, or `metacog_background` once ORION_REVERIE_METACOG_BACKGROUND_ENABLED is on.
 
@@ -406,8 +460,12 @@ def build_reverie_context(
     recent_arcs: str | None = None,
     street_percepts: list[dict[str, Any]] | None = None,
     street_predictions: list[str] | None = None,
+    chain_step: ChainStep | None = None,
 ) -> dict[str, Any]:
     percepts = recent_percepts or []
+    # Stream inside a chain, episodic standalone (spec 2026-07-14): chain keys
+    # are present only when this tick is a chain step.
+    chain_keys = chain_context_for_prompt(chain_step)
     # The street (walkway camera) rides under its OWN keys, never inside
     # recent_percepts: that list is the room, and the room-only expectation
     # judge reads it. Empty -> key absent -> no section rendered.
@@ -436,6 +494,7 @@ def build_reverie_context(
         ctx.update(street)
         if recent_arcs:
             ctx["recent_arcs"] = recent_arcs
+        ctx.update(chain_keys)
         return ctx
     open_loops = _open_loops_for_prompt(broadcast, loop_outcomes=loop_outcomes)
     ctx = {
@@ -470,6 +529,7 @@ def build_reverie_context(
         ctx["self_readings"] = self_readings
     if recent_arcs:
         ctx["recent_arcs"] = recent_arcs
+    ctx.update(chain_keys)
     return ctx
 
 
@@ -484,6 +544,7 @@ def build_reverie_plan_request(
     recent_arcs: str | None = None,
     street_percepts: list[dict[str, Any]] | None = None,
     street_predictions: list[str] | None = None,
+    chain_step: ChainStep | None = None,
 ) -> PlanExecutionRequest:
     use_lift = settings.reverie_semantic_lift_enabled and bool(concern_cards)
     mode = "metacog" if use_lift else "brain"
@@ -511,6 +572,7 @@ def build_reverie_plan_request(
             recent_arcs=recent_arcs,
             street_percepts=street_percepts,
             street_predictions=street_predictions,
+            chain_step=chain_step,
         ),
     )
 
@@ -571,6 +633,16 @@ def parse_reverie_payload(
         if candidate:
             expectation = candidate[:200]
 
+    # Chain mode asks for next_focus (what to look at next; null/empty when the
+    # thought is complete). Clipped, never invented: anything not a non-empty
+    # string reads as "complete".
+    next_focus_raw = data.get("next_focus")
+    next_focus: str | None = None
+    if isinstance(next_focus_raw, str):
+        candidate = next_focus_raw.strip()
+        if candidate and candidate.lower() not in ("null", "none", "nothing", "n/a"):
+            next_focus = candidate[:MAX_NEXT_FOCUS_CHARS]
+
     salience = derive_salience(broadcast)
 
     thought = SpontaneousThoughtV1(
@@ -582,6 +654,7 @@ def parse_reverie_payload(
         evidence_refs=evidence_refs,
         model_id=str(data.get("model_id")) if data.get("model_id") else None,
         expectation=expectation,
+        next_focus=next_focus,
     )
     return thought.marked_hollow()
 
@@ -755,9 +828,13 @@ async def run_reverie_once(
     *,
     broadcast_reader: BroadcastReader | None = None,
     cortex_client: CortexExecClient | None = None,
-    chain_context: tuple[str, int] | None = None,
+    chain_context: ChainStep | tuple[str, int] | None = None,
 ) -> SpontaneousThoughtV1 | None:
     """One spontaneous-thought tick. Returns the published thought, or None.
+
+    ``chain_context`` (a ChainStep) makes this a chain step: the prompt carries
+    the chain's earlier thoughts and the previous step's next_focus, and asks
+    for this step's next_focus. None = a standalone, memoryless tick.
 
     Returns None (publishes nothing) when there is no coalition to narrate or the
     narration comes back hollow — never empty-shell cognition, never a raise.
@@ -771,6 +848,7 @@ async def run_reverie_once(
     except Exception as exc:  # defense-in-depth; the helper already catches internally
         logger.warning("expectation scoring tick failed unexpectedly: %s", exc)
 
+    chain_step = _as_chain_step(chain_context)
     reader = broadcast_reader or _default_broadcast_reader
     broadcast = reader()
     coalition = build_coalition_snapshot(broadcast)
@@ -909,6 +987,7 @@ async def run_reverie_once(
             recent_arcs=recent_arcs,
             street_percepts=street_percepts,
             street_predictions=street_predictions,
+            chain_step=chain_step,
         )
         # Same formula build_reverie_plan_request uses internally to decide `use_lift` --
         # duplicated here (not returned by that function) because only a call that actually set
@@ -969,10 +1048,14 @@ async def run_reverie_once(
                 allowed_refs=coalition_audit_refs(broadcast),
             )
             thought = thought.model_copy(update={"llm_profile": "metacog"})
-        if chain_context is not None:
+        if chain_step is not None:
             thought = thought.model_copy(
-                update={"chain_id": chain_context[0], "thought_index": chain_context[1]}
+                update={"chain_id": chain_step.chain_id, "thought_index": chain_step.index}
             )
+        elif thought.next_focus is not None:
+            # A standalone tick is never asked for next_focus; drop a stray one
+            # so the field only ever means "the chain's next step".
+            thought = thought.model_copy(update={"next_focus": None})
         if settings.reverie_ground_consolidation:
             from .grounding import (
                 collect_grounding,

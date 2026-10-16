@@ -27,7 +27,7 @@ def _broadcast(selected="ol-1", attended=("n-1",)):
     )
 
 
-def _thought(idx=0, salience=0.8):
+def _thought(idx=0, salience=0.8, next_focus="what drives the recurrence"):
     return SpontaneousThoughtV1(
         thought_id=f"th-{idx}", correlation_id="c",
         coalition=CoalitionSnapshotV1(
@@ -35,12 +35,12 @@ def _thought(idx=0, salience=0.8):
             open_loop_ids=["ol-1"], generated_at=NOW,
         ),
         interpretation="the loop ol-1 keeps recurring and has not discharged",
-        salience=salience, evidence_refs=["ol-1"],
+        salience=salience, evidence_refs=["ol-1"], next_focus=next_focus,
     )
 
 
 def _step_always(salience=0.8):
-    async def step(chain_id, index):
+    async def step(chain_id, index, **_kw):
         return _thought(index, salience)
     return step
 
@@ -131,7 +131,7 @@ async def test_chain_suppresses_theme_after_completion():
 async def test_chain_step_none_terminates_without_raise():
     from app import chain
 
-    async def step_none(chain_id, index):
+    async def step_none(chain_id, index, **_kw):
         return None
 
     c = await chain.run_reverie_chain(
@@ -171,7 +171,7 @@ def test_stuck_loop_pure_non_no_coalition_terminal_resets_streak():
 async def test_chain_below_streak_threshold_does_not_force_refractory():
     from app import chain
 
-    async def step_none(chain_id, index):
+    async def step_none(chain_id, index, **_kw):
         return None
 
     store = chain.InMemoryRefractoryStore()
@@ -189,7 +189,7 @@ async def test_chain_below_streak_threshold_does_not_force_refractory():
 async def test_chain_at_streak_threshold_forces_refractory():
     from app import chain
 
-    async def step_none(chain_id, index):
+    async def step_none(chain_id, index, **_kw):
         return None
 
     store = chain.InMemoryRefractoryStore()
@@ -210,7 +210,7 @@ async def test_chain_at_streak_threshold_forces_refractory():
 async def test_chain_streak_loader_failure_degrades_to_zero_not_raise():
     from app import chain
 
-    async def step_none(chain_id, index):
+    async def step_none(chain_id, index, **_kw):
         return None
 
     def boom(theme_key):
@@ -230,7 +230,7 @@ async def test_chain_streak_loader_failure_degrades_to_zero_not_raise():
 async def test_chain_never_raises_on_step_error():
     from app import chain
 
-    async def step_boom(chain_id, index):
+    async def step_boom(chain_id, index, **_kw):
         raise RuntimeError("narration exploded")
 
     c = await chain.run_reverie_chain(

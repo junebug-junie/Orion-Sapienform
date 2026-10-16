@@ -13,5 +13,6 @@ from (
         ('generation_failed', 'Generation failed', 'The visual chain stopped because image generation or local artifact storage raised an error.', 6),
         ('run_deadline_exceeded', 'Run deadline exceeded', 'The visual chain exceeded its whole-run deadline and released its single-flight lock.', 7),
         ('thermal_refused', 'Thermal refusal', 'The visual chain recorded a deliberate refusal to spend GPU capacity while the configured thermal gate was active.', 8),
-        ('resource_deferred', 'GPU deferred', 'The visual chain did not generate because it could not get the GPU (a GPU pool diffusion lease or hold was refused or late) or diffusion-host was busy/draining. Not an image failure.', 9)
+        ('resource_deferred', 'GPU deferred', 'The visual chain did not generate because it could not get the GPU (a GPU pool diffusion lease or hold was refused or late) or diffusion-host was busy/draining. Not an image failure.', 9),
+        ('thought_complete', 'Thought complete', 'A text chain step was asked what to look at next and returned nothing, so the train of thought ended before the step limit.', 10)
 ) as outcomes(outcome_key, outcome_label, outcome_description, sort_order)

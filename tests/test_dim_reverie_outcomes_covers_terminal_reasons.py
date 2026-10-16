@@ -19,3 +19,12 @@ def test_every_visual_terminal_reason_has_an_outcome_row():
     assert not missing, f"dim_reverie_outcomes.sql lacks rows for {missing}"
     orders = [int(n) for n in re.findall(r",\s*(\d+)\)\s*,?\s*$", MART.read_text(), flags=re.M)]
     assert len(orders) == len(set(orders)), "sort_order must stay unique"
+
+
+def test_every_text_terminal_reason_has_an_outcome_row():
+    """Same guarantee for the text chain (thought_complete added 2026-10-16)."""
+    from orion.schemas.reverie import TerminalReason
+
+    keys = set(re.findall(r"^\s*\('([a-z_]+)',", MART.read_text(), flags=re.M))
+    missing = sorted(set(get_args(TerminalReason)) - keys)
+    assert not missing, f"dim_reverie_outcomes.sql lacks rows for {missing}"

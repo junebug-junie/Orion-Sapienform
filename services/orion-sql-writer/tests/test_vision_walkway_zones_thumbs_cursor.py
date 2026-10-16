@@ -215,6 +215,9 @@ class _Result:
     def fetchall(self):
         return list(self._rows)
 
+    def scalar(self):
+        return self._rows[0][0] if self._rows else None
+
     @property
     def rowcount(self):
         return len(self._rows)

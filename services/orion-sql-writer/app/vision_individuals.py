@@ -281,6 +281,28 @@ class _CentroidIndex:
                 return ids[int(j)], float(sims[int(j)])
         return None, -2.0
 
+    def nearest_among(self, crop: "CropRow", allowed: Iterable[str], exclude: set) -> Tuple[Optional[str], float]:
+        """``nearest`` restricted to ``allowed`` ids (the continuation lane's
+        recent, close-by individuals). Same float32 unit rows, same scores."""
+        key = (crop.stream_id, crop.label)
+        ids = self._ids.get(key)
+        if not ids:
+            return None, -2.0
+        e = self._unit(crop.embedding or ())
+        pos = {iid: i for i, iid in enumerate(ids)}
+        best: Tuple[Optional[str], float] = (None, -2.0)
+        for iid in sorted(set(allowed)):
+            i = pos.get(iid)
+            if i is None or iid in exclude:
+                continue
+            row = self._rows[key][i]
+            if row.shape[0] != e.shape[0]:
+                continue
+            sim = float(row @ e)
+            if sim > best[1]:
+                best = (iid, sim)
+        return best
+
 
 def _nearest_sighting(cands: Sequence[Sighting], t: datetime, gap_sec: float) -> Optional[Sighting]:
     """The candidate sighting ``t`` falls inside (+- gap), nearest first."""
@@ -318,6 +340,25 @@ class BatchResult:
     # Crops a cannot-link sent somewhere other than their best face match
     # (refused by face AND the body rule did not pick the same individual).
     face_blocked_by_cannot_link: int = 0
+    # Crops that joined through the continuation lane (a recent, close-by
+    # individual at >= continuation_threshold) and through re-identification
+    # (any individual at >= match_threshold). face + continuation + reid +
+    # new individuals = assigned.
+    assigned_by_continuation: int = 0
+    assigned_by_reid: int = 0
+
+
+def box_centre_distance_in_heights(a: Sequence[float], b: Sequence[float]) -> float:
+    """Distance between two boxes' centres, in units of their mean height.
+    inf for a malformed box (no continuation can be claimed from it)."""
+    if len(a) < 4 or len(b) < 4:
+        return math.inf
+    h = ((float(a[3]) - float(a[1])) + (float(b[3]) - float(b[1]))) / 2.0
+    if h <= 0:
+        return math.inf
+    dx = (float(a[0]) + float(a[2])) / 2.0 - (float(b[0]) + float(b[2])) / 2.0
+    dy = (float(a[1]) + float(a[3])) / 2.0 - (float(b[1]) + float(b[3])) / 2.0
+    return math.hypot(dx, dy) / h
 
 
 def _ts(d: datetime) -> float:
@@ -385,6 +426,9 @@ def apply_batch(
     stationary_max_gap_sec: float = 300.0,
     cannot_link: Optional[Dict[str, Iterable[str]]] = None,
     cannot_link_margin: float = 0.10,
+    continuation_threshold: Optional[float] = None,
+    continuation_gap_sec: float = 10.0,
+    continuation_max_disp: float = 1.5,
 ) -> BatchResult:
     """Cluster crops into individuals and group them into sightings.
 
@@ -409,6 +453,19 @@ def apply_batch(
     face match is refused when ``cannot_link_ambiguous`` says the crop's face
     is as close to one of those (within ``cannot_link_margin``); the crop then
     goes through the appearance rule like a crop without a face match.
+
+    Body matching has two lanes (docs/superpowers/specs/2026-10-16-vision-
+    body-match-proposal.md). **Continuation** (``continuation_threshold`` not
+    None): the candidates are individuals whose last box is within
+    ``continuation_max_disp`` box heights (centre distance, mean of the two
+    heights) of the crop's box and was seen within ``continuation_gap_sec``
+    of it; the best of them joins at >= ``continuation_threshold``. The last
+    box comes from the individual's newest known sighting (``last_box_xyxy``
+    at ``ended_at``) and then from every crop this batch assigns -- so the
+    gap must not exceed ``merge_gap_sec``, the window the caller loads
+    sightings for. **Re-identification**: otherwise the best of all
+    individuals joins at >= ``match_threshold``. With the continuation lane
+    off this is exactly the single body rule it replaces.
     """
     forbidden = set(no_embed_zones)
     inds = {k: replace(v, centroid=list(v.centroid),
@@ -434,8 +491,20 @@ def apply_batch(
     face_index = _CentroidIndex(inds.values(), vec_of=lambda ind: ind.face_centroid)
     by_face = 0
     blocked = 0
+    by_continuation = 0
+    by_reid = 0
     crop_stationary: Dict[str, bool] = {}
     crop_individual: Dict[str, str] = {}
+    # individual_id -> (time, box) of its newest known observation: the
+    # continuation lane's "where was it last, and when".
+    last_obs: Dict[str, Tuple[datetime, Tuple[float, ...]]] = {}
+    if continuation_threshold is not None:
+        for iid, sgs in cands.items():
+            for sg in sgs:
+                if not sg.last_box_xyxy or iid not in inds:
+                    continue
+                if iid not in last_obs or sg.ended_at > last_obs[iid][0]:
+                    last_obs[iid] = (sg.ended_at, tuple(float(v) for v in sg.last_box_xyxy))
 
     for crop in sorted(crops, key=lambda c: (c.observed_at, c.crop_id)):
         if crop.zone_no_embed or crop.zone in forbidden:
@@ -457,10 +526,20 @@ def apply_batch(
                 else:
                     best_id = fid
                     by_face += 1
+        if best_id is None and continuation_threshold is not None:
+            near = [iid for iid, (t, box) in last_obs.items()
+                    if abs((crop.observed_at - t).total_seconds()) <= continuation_gap_sec
+                    and box_centre_distance_in_heights(box, crop.box_xyxy) <= continuation_max_disp]
+            if near:
+                cid, csim = index.nearest_among(crop, near, taken)
+                if cid is not None and csim >= continuation_threshold:
+                    best_id = cid
+                    by_continuation += 1
         if best_id is None:
             aid, asim = index.nearest(crop, taken)
             if aid is not None and asim >= match_threshold:
                 best_id = aid
+                by_reid += 1
         if face_refused is not None and best_id != face_refused:
             blocked += 1   # the cannot-link changed where this crop went
 
@@ -494,6 +573,9 @@ def apply_batch(
             face_index.add(ind)
         taken.add(ind.individual_id)
         crop_individual[crop.crop_id] = ind.individual_id
+        if continuation_threshold is not None and (
+                ind.individual_id not in last_obs or crop.observed_at >= last_obs[ind.individual_id][0]):
+            last_obs[ind.individual_id] = (crop.observed_at, tuple(float(v) for v in crop.box_xyxy))
         assigned += 1
         advance_stationary(ind, crop.box_xyxy, crop.observed_at, iou=stationary_iou,
                            min_sec=stationary_min_sec, max_gap_sec=stationary_max_gap_sec)
@@ -538,6 +620,7 @@ def apply_batch(
         assigned_by_face=by_face, crop_stationary=crop_stationary,
         became_stationary=_mark_run_sightings(inds, individuals, cands, touched),
         crop_individual=crop_individual, face_blocked_by_cannot_link=blocked,
+        assigned_by_continuation=by_continuation, assigned_by_reid=by_reid,
     )
 
 
@@ -941,7 +1024,20 @@ def individual_display_label(ind_label: Optional[str], kind: str, individual_id:
 
 @dataclass(frozen=True)
 class IndividualsConfig:
-    match_threshold: float = 0.80
+    # Re-identification line: body cosine to ANY same-kind individual's
+    # centroid (after the face lane and the continuation lane). 0.90 sits
+    # above sqrt(p) of a centroid of several people (p = 0.71-0.75 between
+    # different people on the walkway), so a mixed centroid stops attracting
+    # new people (docs/superpowers/specs/2026-10-16-vision-body-match-proposal.md).
+    match_threshold: float = 0.90
+    # Continuation lane: a crop within continuation_max_disp box heights of
+    # an individual's last box, seen within continuation_gap_sec, joins the
+    # best such individual at >= continuation_threshold. Off + match_threshold
+    # 0.80 is the rule before 2026-10-16 exactly.
+    continuation_enabled: bool = True
+    continuation_threshold: float = 0.88
+    continuation_gap_sec: float = 10.0
+    continuation_max_disp: float = 1.5
     merge_gap_sec: float = 60.0
     batch_rows: int = 5000
     lookback_ceiling_sec: float = 3600.0
@@ -1168,6 +1264,24 @@ def run_one_individuals_cycle(
     return summary, opened
 
 
+# The body-match proposal expects about 500 new person individuals a day on
+# the walkway (most of them small). Three times that means the matcher is
+# shattering passings: say so in the log.
+NEW_PERSON_INDIVIDUALS_WARN_PER_DAY = 1500
+
+
+def _warn_if_fragmenting(conn, stream_id: str, now: datetime) -> int:
+    from sqlalchemy import text
+
+    n = int(conn.execute(text(
+        "SELECT count(*) FROM vision_individual WHERE stream_id=:s AND kind='person' AND first_seen_at > :since"),
+        {"s": stream_id, "since": now - timedelta(hours=24)}).scalar() or 0)
+    if n > NEW_PERSON_INDIVIDUALS_WARN_PER_DAY:
+        logger.warning("[VISION_MATCH] stream=%s fragmenting: %d new person individuals in 24 h (> %d)",
+                       stream_id, n, NEW_PERSON_INDIVIDUALS_WARN_PER_DAY)
+    return n
+
+
 def _row_to_crop(r) -> CropRow:
     emb = r.embedding
     return CropRow(
@@ -1266,7 +1380,16 @@ def _one_stream(engine, stream_id: str, now: datetime, tz: ZoneInfo, cfg: Indivi
                 face_match_threshold=cfg.face_match_threshold if cfg.face_match_threshold > 0 else None,
                 stationary_min_sec=cfg.stationary_min_sec, stationary_iou=cfg.stationary_iou,
                 stationary_max_gap_sec=cfg.stationary_max_gap_sec,
+                continuation_threshold=cfg.continuation_threshold if cfg.continuation_enabled else None,
+                continuation_gap_sec=min(cfg.continuation_gap_sec, cfg.merge_gap_sec),
+                continuation_max_disp=cfg.continuation_max_disp,
             )
+            logger.info("[VISION_MATCH] stream=%s face=%d continuation=%d reid=%d new=%d",
+                        stream_id, batch.assigned_by_face, batch.assigned_by_continuation,
+                        batch.assigned_by_reid, len(batch.new_individual_ids))
+            summary["assigned_by_continuation"] = (summary.get("assigned_by_continuation", 0)
+                                                   + batch.assigned_by_continuation)
+            summary["assigned_by_reid"] = summary.get("assigned_by_reid", 0) + batch.assigned_by_reid
             summary["assigned"] += batch.assigned
             summary["assigned_by_face"] = summary.get("assigned_by_face", 0) + batch.assigned_by_face
             summary["stationary_crops"] = summary.get("stationary_crops", 0) + sum(
@@ -1281,6 +1404,8 @@ def _one_stream(engine, stream_id: str, now: datetime, tz: ZoneInfo, cfg: Indivi
             for s in batch.sightings.values():
                 _upsert_sighting(conn, s, forbidden)
             _write_membership(conn, batch.crop_individual)
+            if batch.new_individual_ids:
+                _warn_if_fragmenting(conn, stream_id, now)
             for iid, since in batch.became_stationary.items():
                 conn.execute(text(
                     "UPDATE vision_individual_sighting SET stationary=true, attention_score=NULL, "

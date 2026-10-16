@@ -148,7 +148,10 @@ def main(argv=None) -> int:
     args = ap.parse_args(argv)
     from sqlalchemy import create_engine, text
 
-    cfg = vi.IndividualsConfig()
+    # The live individuals this eval rebuilds were clustered by the rule
+    # before 2026-10-16 (single body line 0.80, no continuation lane); the
+    # body-match patch's own eval covers the new rule.
+    cfg = vi.IndividualsConfig(match_threshold=0.80, continuation_enabled=False)
     tz = ZoneInfo(cfg.local_tz)
     engine = create_engine(args.live)
     report = {"generated_at": datetime.now(timezone.utc).isoformat(), "splits": [], "problems": []}

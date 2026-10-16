@@ -149,6 +149,20 @@ class Engine:
         pts, start, end = self._points(spec, now, span)
         return to_grain(pts, spec.grain_min, spec.agg, spec.max_fill_min, start=start, end=end)
 
+    def load_covariates(self, spec: SeriesSpec, index: pd.DatetimeIndex) -> pd.DataFrame | None:
+        """spec.covariates on ``index`` (same grain, short gaps filled, long gaps NaN). None when the
+        series declares none or the index is empty."""
+        if not spec.covariates or len(index) == 0:
+            return None
+        start = index[0].to_pydatetime()
+        end = (index[-1] + pd.Timedelta(minutes=spec.grain_min)).to_pydatetime()
+        cols = {}
+        for cid in spec.covariates:
+            cov = self.registry.get(cid)
+            cols[cid] = to_grain(self.store.points(cov, start, end), cov.grain_min, cov.agg, cov.max_fill_min,
+                                 start=start, end=end).reindex(index)
+        return pd.DataFrame(cols, index=index)
+
     # --- select ---------------------------------------------------------------------------
     def restore(self, spec: SeriesSpec) -> bool:
         """Re-adopt the last stored selection -- only if it still fits the registry and the zoo."""
@@ -191,8 +205,10 @@ class Engine:
         usable, refused = split_seasonalities(spec, len(train))
         names = list(build_models(spec, usable))
         step = max(1, self.backtest_step_min // spec.grain_min)
+        covariates = self.load_covariates(spec, series.index)
         results = {name: run_backtest(series, spec, name, lambda u, n=name: build_models(spec, u)[n],
-                                      self.backtest_windows, step, actuals=actuals) for name in names}
+                                      self.backtest_windows, step, actuals=actuals, covariates=covariates)
+                   for name in names}
         sel = select_champion(results, spec)
         h = spec.max_horizon_steps
         res = {n: r.residuals for n, r in results.items()}
@@ -251,7 +267,12 @@ class Engine:
             raise RuntimeError(f"training view is {filled:.0%} gaps")
         h = spec.max_horizon_steps
         zoo = build_models(spec, list(served.usable))
-        paths = {name: zoo[name].forecast(y, h, train.index) for name in sel.models_needed()}
+        needed = sel.models_needed()
+        X = None
+        if any(zoo[n].uses_covariates for n in needed):
+            cov = self.load_covariates(spec, train.index)
+            X = cov.to_numpy(dtype=float) if cov is not None else None
+        paths = {name: zoo[name].forecast(y, h, train.index, X) for name in needed}
         out = {"rows": [], "payload": None}
         for role, assignment in (("champion", sel.assignment), ("baseline", sel.baseline_assignment)):
             point = stitch(paths, step_owner(assignment, spec.grain_min, h))

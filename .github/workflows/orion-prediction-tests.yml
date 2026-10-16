@@ -35,5 +35,5 @@ jobs:
         run: cd services/orion-prediction && PYTHONPATH=../..:. python -m pytest tests -q -p no:cacheprovider
       - name: "Causal calibration eval (planted effects, many seeds: intervals cover, nulls stay null)"
         run: cd services/orion-prediction && PYTHONPATH=../..:. python evals/run_causal_calibration_eval.py
-      - name: "Replay eval (committed real cabinet history: full zoo, per-horizon gate, blend never loses to baseline)"
-        run: cd services/orion-prediction && PYTHONPATH=../..:. python evals/run_cabinet_replay_eval.py --windows 16
+      - name: "Replay eval (committed real cabinet history, 40 windows as production: full zoo incl. covariates, per-horizon gate, blend never loses to baseline)"
+        run: cd services/orion-prediction && PYTHONPATH=../..:. python evals/run_cabinet_replay_eval.py

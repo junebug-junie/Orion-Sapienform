@@ -12,7 +12,7 @@ Checks (exit 1 on failure):
 - at least one horizon is served by a non-baseline model, or the report says the baseline is served.
 Also reports (not gated): a conditional scenario for +200 W chassis power and the AC covariate.
 
-    cd services/orion-prediction && PYTHONPATH=../..:. python evals/run_cabinet_replay_eval.py --windows 16
+    cd services/orion-prediction && PYTHONPATH=../..:. python evals/run_cabinet_replay_eval.py   # 40 windows, as production
 """
 from __future__ import annotations
 
@@ -47,7 +47,7 @@ def load(col: str, spec, fill: bool = True) -> pd.Series:
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--windows", type=int, default=16)
+    ap.add_argument("--windows", type=int, default=40)
     ap.add_argument("--step-min", type=int, default=180)
     ap.add_argument("--json", type=Path)
     args = ap.parse_args()
@@ -55,6 +55,9 @@ def main() -> int:
     spec = reg.get("athena.cabinet_temp_c")
     y = load("cabinet_temp_c", spec)
     actuals = load("cabinet_temp_c", spec, fill=False).reindex(y.index)
+    cov_cols = {"athena.chassis_watts": "chassis_watts", "athena.cabinet_cooling_watts": "cooling_watts"}
+    covariates = pd.DataFrame({cid: load(cov_cols[cid], reg.get(cid)).reindex(y.index) for cid in spec.covariates},
+                              index=y.index)
     train = training_slice(y, spec)
     usable, refused = split_seasonalities(spec, len(train))
     zoo = build_models(spec, usable)
@@ -63,7 +66,7 @@ def main() -> int:
     for name in zoo:
         t0 = time.monotonic()
         results[name] = run_backtest(y, spec, name, lambda u, n=name: build_models(spec, u)[n], args.windows, step,
-                                     actuals=actuals)
+                                     actuals=actuals, covariates=covariates)
         timing[name] = time.monotonic() - t0
     sel = select_champion(results, spec)
     h = spec.max_horizon_steps

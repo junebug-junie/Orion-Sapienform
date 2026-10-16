@@ -344,7 +344,10 @@ class TestStatusRules:
         assert d.evaluate(files, live(), now=NOW).red
 
     def test_header_named_script_is_offered_as_the_apply_path(self):
-        sql = "-- PRODUCTION: run scripts/gpu_pool_stage5_snapshot_and_drop.sh, not this file.\ncreate table t (id int);"
+        # The marker is the supported form. "PRODUCTION: run scripts/x" (a "run" after a label colon)
+        # is not recognised as prose: it has the same shape as "Undo: run scripts/undo.py".
+        sql = ("-- PRODUCTION: do not run this file by hand.\n"
+               "-- ORION-MIGRATION-APPLY-WITH: scripts/gpu_pool_stage5_snapshot_and_drop.sh\ncreate table t (id int);")
         r = d.evaluate([mf("m.sql", sql, changed=NOW)], live(), now=NOW)
         assert "scripts/gpu_pool_stage5_snapshot_and_drop.sh" in r.files[0].apply_command()
 
@@ -671,6 +674,17 @@ class TestHeaderApplyScriptIsOnlyAnApplyRoute:
         ("-- run python3 scripts/d.py", "scripts/d.py"),
         ("-- do not run this by hand. Run\n-- scripts/e.sh instead", "scripts/e.sh"),
         ("-- ORION-MIGRATION-APPLY-WITH: scripts/g.sh (snapshots first)", "scripts/g.sh"),
+        ("-- ORION-MIGRATION-APPLY-WITH: `./scripts/g2.sh`.", "scripts/g2.sh"),
+        ("-- Run: scripts/h.sh", "scripts/h.sh"),
+        ("-- Run ./scripts/h2.sh", "scripts/h2.sh"),
+        ("-- apply it with: scripts/h3.sh", "scripts/h3.sh"),
+        ("-- Apply with `scripts/h4.sh`", "scripts/h4.sh"),
+        # review 2026-10-16: a "run" that is not an apply instruction must not count
+        ("-- To verify, run scripts/check_sql_migrations_applied.py", None),
+        ("-- Undo: run scripts/undo_vision_split.py", None),
+        ("-- Do not run scripts/x.sh before this", None),
+        ("-- Rollback: run with scripts/undo.py", None),
+        ("-- the writer will run scripts/x.py nightly", None),
         ("-- so scripts/undo.py can put it back", None),
         ("-- Single writer: services/orion-hub/scripts/w.py", None),
         ("-- Check: python3 scripts/check_sql_migrations_applied.py --file x.sql", None),
@@ -689,3 +703,22 @@ class TestHeaderApplyScriptIsOnlyAnApplyRoute:
         two = ("-- ORION-MIGRATION-APPLY-WITH: scripts/a.sh\n-- ORION-MIGRATION-APPLY-WITH: scripts/b.sh\n"
                "create table t (id int);")
         assert d.header_apply_script(two)[1] and "disagree" in d.header_apply_script(two)[1]
+
+    def test_marker_counts_past_line_60(self):
+        late = "\n" * 70 + "-- ORION-MIGRATION-APPLY-WITH: scripts/late.sh\ncreate table t (id int);"
+        assert d.header_apply_script(late) == ("scripts/late.sh", None)
+        prose_late = "\n" * 70 + "-- Run scripts/late.sh\ncreate table t (id int);"
+        assert d.header_apply_script(prose_late) == (None, None)   # legacy prose stays header-only
+
+    def test_broken_marker_never_prints_a_psql_apply_command(self):
+        bad = mf("m.sql", "-- ORION-MIGRATION-APPLY-WITH: services/x/scripts/a.sh\ncreate table t (id int);",
+                 changed=NOW)
+        r = d.evaluate([bad], live(), now=NOW).files[0]
+        assert r.apply_with_error and "psql" not in r.apply_command().split("fix the marker")[0]
+        assert r.apply_command().startswith("none until the marker is fixed")
+
+    def test_apply_with_error_keeps_an_earlier_marker_error(self):
+        f = mf("m.sql", "-- ORION-MIGRATION-SUPERSEDED-BY: nope.sql\n-- ORION-MIGRATION-APPLY-WITH: psql\n"
+                        "create table t (id int);", changed=NOW)
+        r = d.evaluate([f], live(), now=NOW).files[0]
+        assert "SUPERSEDED-BY" in r.marker_error and "APPLY-WITH" in r.marker_error

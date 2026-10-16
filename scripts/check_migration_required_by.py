@@ -12,6 +12,8 @@ That gate is only as good as the declarations, so this CI check makes them manda
    are exempt (they are never part of the expected schema).
 2. Every declaration anywhere in the corpus must parse, name real ``services/<svc>/`` directories,
    and a ``-- DESTRUCTIVE`` file may only declare ``none`` (it must never be demanded by a deploy).
+3. Every ``-- ORION-MIGRATION-APPLY-WITH: scripts/<name>.sh|.py`` marker must parse and name a
+   script that exists, so a typo fails here and not as a red card in production.
 
 Static: needs git, no database. Exit 0 = clean, 1 = violations, 2 = could not resolve the base.
 """
@@ -42,6 +44,11 @@ def check_files(repo: Path, new_names: set[str]) -> list[str]:
         text = p.read_text(errors="replace")
         rb = drift.parse_required_by(text)
         rel = f"{MIG_DIR}/{p.name}"
+        script, apply_err = drift.header_apply_script(text)
+        if apply_err:
+            errors.append(f"{rel}: {apply_err}")
+        elif script and not (repo / script).is_file():
+            errors.append(f"{rel}: its header names {script} as the apply route, but that file does not exist")
         if rb is None:
             if p.name in new_names and p.name.startswith("manual_migration_") and not _exempt(p.name, text):
                 errors.append(

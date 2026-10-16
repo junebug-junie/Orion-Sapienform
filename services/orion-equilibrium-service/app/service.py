@@ -489,6 +489,8 @@ class EquilibriumService(BaseChassis):
             now=now,
             history_error=history_error,
             known_signal_ids=list(gate.state.episodes),
+            pe_history=self._pe_history_cache.history,
+            sustain=settings.attention_sustained_body_enabled,
         )
         distress, zen, _ = self._calculate_metrics()
         before = gate.dump()

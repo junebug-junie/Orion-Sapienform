@@ -249,6 +249,7 @@ class AttentionRuntimeWorker:
             SUBSTRATE_NODE_PREFIX,
             chat_candidate,
             node_candidate,
+            node_prediction_error_continuous,
         )
         from orion.substrate.prediction_error_magnitude import WINDOW_7D
 
@@ -267,6 +268,7 @@ class AttentionRuntimeWorker:
             k for k in field.node_vectors if k.startswith(SUBSTRATE_NODE_PREFIX)
             and "prediction_error" in field.node_vectors[k]
         }) - NO_ATTENTION_CONSUMER_NODE_IDS  # recorded, not yet admitted to attention (walkway camera)
+        sustain = bool(getattr(self._settings, "attention_sustained_body_enabled", True))
         candidates = []
         for node_id in sorted(node_ids):
             mag, observed_at, mid = magnitudes.get(node_id, (None, None, None))
@@ -283,6 +285,15 @@ class AttentionRuntimeWorker:
                     absent_reason=absent,
                     rank_percentile=mid,
                     event_decay=bool(getattr(self._settings, "attention_event_decay_enabled", True)),
+                    # A continuous body node competes only when its high has
+                    # lasted, measured over its own readings (spec 2026-10-16).
+                    # (copied only for the nodes the rule applies to)
+                    pe_history=(
+                        self._pe_history.history(node_id)
+                        if sustain and history_error is None and node_prediction_error_continuous(node_id)
+                        else None
+                    ),
+                    sustain=sustain,
                 )
             )
         try:

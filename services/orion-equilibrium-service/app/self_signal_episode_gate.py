@@ -23,12 +23,13 @@ import json
 import logging
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Iterable, Literal, Mapping
+from typing import Any, Callable, Iterable, Literal, Mapping, Sequence
 
 from orion.attention.world_first import (
     SUBSTRATE_NODE_PREFIX,
     judge_candidate,
     node_candidate,
+    node_prediction_error_continuous,
     source_kind_for_node,
 )
 from orion.metacog.self_signal_episode import (
@@ -64,12 +65,20 @@ def observe_signals(
     now: datetime,
     history_error: str | None = None,
     known_signal_ids: Iterable[str] = (),
+    pe_history: Callable[[str], Sequence[tuple[datetime, float]]] | None = None,
+    sustain: bool = True,
 ) -> list[SignalObservation]:
     """One observation per internal node, judged by the attention seam.
 
     ``known_signal_ids`` (signals with a tracked episode) are always observed,
     so an episode whose node vanished from the history reads as absent and can
-    eventually close ``went_silent`` instead of hanging open forever."""
+    eventually close ``went_silent`` instead of hanging open forever.
+
+    ``pe_history`` (node_id -> its 7-day readings, e.g.
+    ``NodePeHistoryCache.history``) with ``sustain``
+    (``ATTENTION_SUSTAINED_BODY_ENABLED``): a continuous body source carries
+    its dwell over its own readings, so its episode confirms on the poll the
+    attention contest first lets it compete. None = count hot polls."""
     mags = magnitudes or {}
     ids = {
         nid
@@ -90,6 +99,13 @@ def observe_signals(
             # The attention contests' default (ATTENTION_EVENT_DECAY_ENABLED
             # ships on): event-written nodes are news for 300 s.
             event_decay=True,
+            pe_history=(
+                pe_history(node_id)
+                if sustain and pe_history is not None and history_error is None
+                and node_prediction_error_continuous(node_id)
+                else None
+            ),
+            sustain=sustain,
         )
         out.append(observation_from_verdict(judge_candidate(cand), now=now.timestamp()))
     return out

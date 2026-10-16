@@ -48,6 +48,7 @@ from orion.attention.world_first import (
     chat_rate_reading,
     judge_candidate,
     node_candidate,
+    node_prediction_error_continuous,
     node_prediction_error_semantics,
     source_kind_for_node,
 )
@@ -219,12 +220,17 @@ def build_self_readings(
     now: datetime,
     nodes: Iterable[str] | None = None,
     associations: Mapping[str, object] | None = None,
+    sustain: bool = True,
 ) -> list[SelfReadingV1]:
     """One reading per prompt-reaching body node. Never raises for a single bad node.
 
     ``associations`` (signal_id -> ``SelfSignalOutcomeAssociationV1``, from
     ``orion.attention.self_signal_outcomes.index_by_signal``): only renderable rows (a clause, so
-    min n met and the interval excludes 1). None = the readings are exactly as before."""
+    min n met and the interval excludes 1). None = the readings are exactly as before.
+
+    ``sustain`` (``ATTENTION_SUSTAINED_BODY_ENABLED``): a continuous body source (biometrics,
+    bus_synaptic) is unusual only when the attention contest would let it compete -- hot for
+    more than 300 s of the last 600 s over the same readings (``orion.attention.sustained``)."""
     now = _aware(now)
     node_ids = list(nodes) if nodes is not None else prompt_reaching_nodes()
     mags = cache.magnitudes(now=now)
@@ -236,7 +242,7 @@ def build_self_readings(
             # placeholder / bucket (or unknown): never rendered as a measurement.
             continue
         try:
-            reading = _reading(cache, node_id, mags, current, now)
+            reading = _reading(cache, node_id, mags, current, now, sustain=sustain)
             assoc = (associations or {}).get(node_id)
             clause = str(getattr(assoc, "clause", "") or "")
             if clause:
@@ -251,7 +257,7 @@ def build_self_readings(
     return readings
 
 
-def _reading(cache, node_id, mags, current, now) -> SelfReadingV1:
+def _reading(cache, node_id, mags, current, now, *, sustain: bool = True) -> SelfReadingV1:
     label, units = _WORDS.get(node_id, (f"my {short_name(node_id)} signal", ""))
     value_kind, _polarity = node_prediction_error_semantics(node_id)
     is_rate = value_kind in _RATE_KINDS
@@ -272,6 +278,10 @@ def _reading(cache, node_id, mags, current, now) -> SelfReadingV1:
         candidate = node_candidate(
             node_id=node_id, label=label, magnitude=magnitude, observed_at=observed_at,
             now=now, rank_percentile=mid,
+            pe_history=(
+                cache.history(node_id) if sustain and node_prediction_error_continuous(node_id) else None
+            ),
+            sustain=sustain,
         )
         value = float(magnitude.value) if magnitude is not None else None
     verdict = judge_candidate(candidate)
@@ -401,13 +411,14 @@ def render_self_readings(
 
 
 def project_self_readings(
-    cache: NodePeHistoryCache, *, now: datetime, associations: Mapping[str, object] | None = None
+    cache: NodePeHistoryCache, *, now: datetime, associations: Mapping[str, object] | None = None,
+    sustain: bool = True,
 ) -> SelfReadingsBlockV1:
     """build + render. Never raises."""
     now = _aware(now)
     try:
         return render_self_readings(
-            build_self_readings(cache, now=now, associations=associations), now=now
+            build_self_readings(cache, now=now, associations=associations, sustain=sustain), now=now
         )
     except Exception as exc:  # noqa: BLE001
         logger.warning("self_readings_render_failed err=%s: %s", type(exc).__name__, exc)

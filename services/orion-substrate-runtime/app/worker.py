@@ -2982,6 +2982,12 @@ class BiometricsSubstrateWorker:
                     getattr(self, "_pe_rank_percentiles", None) if magnitudes else None
                 ),
                 event_decay=bool(getattr(s, "attention_event_decay_enabled", True)),
+                # Each node's in-memory 7-day readings: a continuous body node
+                # competes only when its high has lasted (spec 2026-10-16).
+                pe_history_by_node_id=(
+                    getattr(self, "_pe_history_cache", None) if magnitudes else None
+                ),
+                sustain=bool(getattr(s, "attention_sustained_body_enabled", True)),
             )
             projection = broadcast_projection_from_frame(frame)
             self._store.save_attention_broadcast(projection)

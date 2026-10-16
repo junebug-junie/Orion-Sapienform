@@ -16,6 +16,11 @@ the event-age fade, so the two can be compared on the same data; each replay
 also reports every source's longest unbroken run as winner (``hold``).
 ``--start/--end`` replay a specific window (e.g. the 05:51-06:09 codebase hold).
 
+Sustained body (2026-10-16): continuous body nodes (biometrics, bus_synaptic)
+compete only when hot for more than 300 s of the last 600 s of their own
+readings and hot now (orion/attention/sustained.py). ``--no-sustain`` replays
+without it, for a same-data comparison.
+
 SELECT only. Usage:
     python services/orion-attention-runtime/evals/replay_world_first.py \
         --dsn postgresql://postgres:postgres@localhost:55432/conjourney --days 3
@@ -84,7 +89,7 @@ def staleness_at(points: list[tuple[datetime, float | None]], t: datetime) -> fl
     return points[i - 1][1] if i else None
 
 
-def tick(series, turns, staleness_points, t, *, event_decay: bool = True):
+def tick(series, turns, staleness_points, t, *, event_decay: bool = True, sustain: bool = True):
     cands = []
     for node_id, s in series.items():
         got = s.at(t)
@@ -101,13 +106,14 @@ def tick(series, turns, staleness_points, t, *, event_decay: bool = True):
                 absent = "camera frames stale"
         cands.append(node_candidate(node_id=node_id, label=node_id, magnitude=mag,
                                     observed_at=observed_at, now=t, absent_reason=absent,
-                                    history_values=[v for _, v in hist], event_decay=event_decay))
+                                    history_values=[v for _, v in hist], event_decay=event_decay,
+                                    pe_history=hist, sustain=sustain))
     cands.append(chat_candidate([x for x in turns if x <= t], now=t))
     return rank_candidates(cands)
 
 
 def replay(pe_rows, turns, staleness_points, *, start: datetime, end: datetime, step: timedelta,
-           event_decay: bool = True) -> dict:
+           event_decay: bool = True, sustain: bool = True) -> dict:
     series = build_series(pe_rows)
     turns = sorted(_aware(t) for t in turns)
     n = 0
@@ -120,7 +126,7 @@ def replay(pe_rows, turns, staleness_points, *, start: datetime, end: datetime, 
     run_src, run_len, run_start = None, 0, start
     t = start
     while t <= end:
-        r = tick(series, turns, staleness_points, t, event_decay=event_decay)
+        r = tick(series, turns, staleness_points, t, event_decay=event_decay, sustain=sustain)
         n += 1
         src = r.winner.candidate.source_id if r.winner else None
         if src is not None and src == run_src:
@@ -140,6 +146,7 @@ def replay(pe_rows, turns, staleness_points, *, start: datetime, end: datetime, 
         t += step
     return {
         "event_decay": event_decay,
+        "sustain": sustain,
         "longest_hold": {
             k: {"ticks": v[0], "seconds": round(v[0] * step.total_seconds()), "from": v[1]}
             for k, v in sorted(longest.items(), key=lambda kv: -kv[1][0])
@@ -239,6 +246,7 @@ def main() -> None:
     ap.add_argument("--step-sec", type=float, default=60.0)
     ap.add_argument("--out", default="")
     ap.add_argument("--no-event-decay", action="store_true")
+    ap.add_argument("--no-sustain", action="store_true")
     ap.add_argument("--start", default="", help="ISO start (UTC); overrides --days")
     ap.add_argument("--end", default="", help="ISO end (UTC); default now")
     a = ap.parse_args()
@@ -259,7 +267,7 @@ def main() -> None:
             "winner_share_by_source": {str(k): round(v / total, 4) for k, v in old_w},
         },
         "world_first_replay": replay(pe, turns, st, start=start, end=end, step=timedelta(seconds=a.step_sec),
-                                     event_decay=decay),
+                                     event_decay=decay, sustain=not a.no_sustain),
         "body_spikes": [
             spike_check(pe, turns, st, start=start, end=end, node_id="node:substrate.execution", min_value=0.9,
                         event_decay=decay),

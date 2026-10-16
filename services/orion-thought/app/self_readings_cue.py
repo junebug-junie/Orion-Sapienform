@@ -173,7 +173,10 @@ def _refresh_and_project(now: datetime, lock_wait_sec: float) -> SelfReadingsBlo
         except Exception as exc:  # noqa: BLE001 -- unread history is "no reading", never calm
             logger.debug("self_readings_fetch_failed err=%s: %s", type(exc).__name__, exc)
             return SelfReadingsBlockV1(rendered_at=now, skip_reason="fetch_failed")
-        return project_self_readings(_cache, now=now, associations=_associations(now))
+        return project_self_readings(
+            _cache, now=now, associations=_associations(now),
+            sustain=settings.attention_sustained_body_enabled,
+        )
     finally:
         _lock.release()
 

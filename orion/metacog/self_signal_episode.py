@@ -11,7 +11,9 @@ built by ``node_candidate`` (PR #2583). This module never re-derives a band,
 percentile, polarity, staleness or event window -- it only folds that verdict
 into an episode over time:
 
-- **hot**     the verdict is eligible (internal, band high/unusual, bad direction).
+- **hot**     the verdict is eligible (internal, band high/unusual, bad direction),
+              or high for itself but not yet sustained (``verdict.sustained`` False:
+              a continuous body source, orion/attention/sustained.py).
 - **calm**    a real current reading that is not eligible (band quiet/usual).
 - **faded**   an event-written signal whose last event is past its orienting
               window (the value is carried forward, but it is no longer news).
@@ -32,6 +34,10 @@ Hysteresis (both directions, read from 7 days of live history -- PR report):
   longer than one event can explain. Without it, live replay opened ~110
   episodes/day, because "high" is the top decile of each signal's OWN week and
   so is hot ~10% of the time by construction; with it, ~9.5/day.
+  A continuous body source (biometrics, bus_synaptic) carries its dwell over
+  its own readings (``SignalObservation.hot_dwell_sec``), the same number the
+  attention contest judges, so its episode confirms on the poll it first
+  competes for attention (spec 2026-10-16-attention-continuous-signal-quota).
 - **Exit (calm gap).** Close once observations have been calm/faded
   continuously for ``calm_gap_sec`` (600 s = twice the orienting window; on
   live data 47-64% of the calm runs between two hot polls of the per-tick and
@@ -57,6 +63,8 @@ from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from typing import Any, Literal
 
+from orion.attention.sustained import SUSTAIN_DWELL_SEC, SUSTAIN_WINDOW_SEC, is_sustained
+
 ObservationKind = Literal["hot", "calm", "faded", "unknown"]
 
 TRIGGER_KIND = "self_signal_episode"
@@ -66,10 +74,12 @@ EVIDENCE_SOURCE = "self_signal_episode"
 SOURCE_TABLE = "substrate_node_prediction_error_history"
 
 DEFAULT_POLL_SEC: float = 30.0
-# = world_first.EVENT_ORIENTING_WINDOW_SEC (asserted equal by a test; not
-# imported so this module stays free of the attention package).
-DEFAULT_OPEN_DWELL_SEC: float = 300.0
-DEFAULT_OPEN_WINDOW_SEC: float = 600.0
+# The attention seam's sustained rule (orion/attention/sustained.py, stdlib
+# only): open dwell = world_first.EVENT_ORIENTING_WINDOW_SEC, open window =
+# twice it. Imported, so the episode gate and the attention contest cannot
+# drift apart.
+DEFAULT_OPEN_DWELL_SEC: float = SUSTAIN_DWELL_SEC
+DEFAULT_OPEN_WINDOW_SEC: float = SUSTAIN_WINDOW_SEC
 DEFAULT_CALM_GAP_SEC: float = 600.0
 DEFAULT_SILENT_CLOSE_SEC: float = 3600.0
 # Hard cap on evidence refs carried by one episode (Juniper's standing rule).
@@ -110,6 +120,11 @@ class SignalObservation:
     trend: str | None = None
     value_kind: str | None = None
     polarity: str | None = None
+    # A continuous body source's dwell over its own readings, from the verdict
+    # (orion.attention.sustained.hot_dwell_sec). When set, the open dwell is
+    # this number, so the episode confirms on exactly the poll the attention
+    # contest first lets the signal compete. None = count hot polls.
+    hot_dwell_sec: float | None = None
 
 
 def observation_from_verdict(verdict: Any, *, now: float) -> SignalObservation:
@@ -120,7 +135,11 @@ def observation_from_verdict(verdict: Any, *, now: float) -> SignalObservation:
     mag = cand.unusualness
     observed = cand.observed_at
     observed_epoch = observed.timestamp() if observed is not None else None
-    if verdict.eligible:
+    sustained = getattr(verdict, "sustained", None)
+    if verdict.eligible or sustained is False:
+        # ``sustained`` False: high for itself now, not yet for long enough to
+        # compete. Still a hot poll here: the pending episode starts at the
+        # onset and a flicker keeps resetting the calm clock, as before.
         kind: ObservationKind = "hot"
     elif verdict.score is None:
         # absent / insufficient_history / stale / placeholder / no polarity
@@ -147,6 +166,10 @@ def observation_from_verdict(verdict: Any, *, now: float) -> SignalObservation:
         trend=mag.trend,
         value_kind=cand.value_kind,
         polarity=cand.polarity,
+        hot_dwell_sec=(
+            None if sustained is None or getattr(verdict, "hot_dwell_sec", None) is None
+            else float(verdict.hot_dwell_sec)
+        ),
     )
 
 
@@ -245,9 +268,24 @@ def dwell_met(
     recent_hot: tuple[float, ...], now: float, *, poll_sec: float, open_dwell_sec: float, open_window_sec: float
 ) -> bool:
     """Hot for MORE than ``open_dwell_sec`` (counted as hot polls x poll_sec)
-    within the trailing ``open_window_sec``."""
+    within the trailing ``open_window_sec``. The comparison is the attention
+    seam's own ``is_sustained``; only the dwell's measurement (polls) is local."""
     n = sum(1 for t in recent_hot if t > now - open_window_sec)
-    return n * poll_sec > open_dwell_sec
+    return is_sustained(n * poll_sec, hot_now=True, dwell_threshold_sec=open_dwell_sec)
+
+
+def _open_dwell_met(
+    episode: "SignalEpisodeV1", obs: SignalObservation, *, poll_sec: float, open_dwell_sec: float,
+    open_window_sec: float,
+) -> bool:
+    """A continuous body source carries its dwell over its own readings (the
+    number the attention contest judged); everything else counts hot polls."""
+    if obs.hot_dwell_sec is not None:
+        return is_sustained(obs.hot_dwell_sec, hot_now=True, dwell_threshold_sec=open_dwell_sec)
+    return dwell_met(
+        episode.recent_hot, obs.at, poll_sec=poll_sec, open_dwell_sec=open_dwell_sec,
+        open_window_sec=open_window_sec,
+    )
 
 
 def step_signal(
@@ -305,9 +343,9 @@ def step_signal(
         hot_now = False
 
     if hot_now:
-        if not episode.confirmed and dwell_met(
-            episode.recent_hot,
-            obs.at,
+        if not episode.confirmed and _open_dwell_met(
+            episode,
+            obs,
             poll_sec=poll_sec,
             open_dwell_sec=open_dwell_sec,
             open_window_sec=open_window_sec,

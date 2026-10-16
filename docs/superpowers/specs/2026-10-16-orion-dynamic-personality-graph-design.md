@@ -1,7 +1,7 @@
 # Orion's dynamic personality graph
 
 **Date:** 2026-10-16
-**Status:** Design, proposal mode (identity and cognition-loop change). Nothing here is implemented.
+**Status:** Rev 2, approved for build by Juniper 2026-10-16 ("hit it"). P0/P1 merged in #2729.
 **Related:** person model and identity cards (#2646, P0-P2 merged in #2649), Temporal Self (#2369 rev 4, arousal #2594, day use #2622), attention runtime and stance coalition (`orion/thought/coalition.py`), orion-prediction (`services/orion-prediction`), rung 6 self-tuning (#2715).
 
 ## Arsonist summary
@@ -11,6 +11,18 @@ Orion has no personality that lasts. Stance (`ChatStanceBrief`) is re-made from 
 Juniper's ask: Orion's collective self should show up, and the weight of everything Orion has done should change Orion's tone, in a way she can feel. She is not asking for a trait score that moves by x.
 
 This design builds one shared, weighted, temporal graph of Orion's dispositions. Evidence comes from choices in every lane. Weights shift slowly with evidence. In each moment, the nodes compete for presence, and the winners set **tone dials**: concrete, measurable things about how Orion writes. They do not add adjectives. The graph is allowed to be a cathedral because every node is born from evidence, has a weight something reads, and fades when it stops firing.
+
+### Rev 2 (2026-10-16, Juniper): bottom-up, not top-down
+
+This revision replaces "the winners set tone dials" as the lever.
+
+- **Joining evidence into the graph, and reading the graph back into the lanes, is what drives the change.** Orion's dispositions reach chat, curiosity, outreach and reverie as Orion's own tendencies, each with the evidence behind it. They do not arrive as instructions about tone or style. Orion's personality should emerge and come to us.
+- **No preconditioning on old chats.** The graph starts today. History enters only through the self-inquiry seeds (`:SelfDefinition`, low weight). Old chats, dreams and journal entries are not backfilled, because they carry the voice we are leaving.
+- **Measurement comes after.** Tone dials, Juniper's `good_tone`/`bad_tone` tags, and A/B tests measure what emerges. They do not steer it. Knobs get tuned once there is something emergent to tune.
+- **Evidence has two streams:**
+  1. Live curiosity choices, saved the moment Orion makes them.
+  2. **Recurrence**: themes Orion keeps returning to across independent lanes of Orion's own output, from today on. A theme seen in three lanes is stronger than one seen three times in a single lane.
+- Section 5's dial constraints are retired as a prompt lever and kept only as measurement. Section 6 (prediction and surprise) and aspirations stay as later phases.
 
 Two things this design refuses:
 

@@ -225,7 +225,9 @@ class PersonalityStore:
     async def load_situation_inputs(self, since: datetime, until: datetime) -> SituationInputs:
         """Temporal Self's stored arousal transitions and company arcs covering [since, until], for
         stamping each evidence row with the situation it happened in. Read-only. Includes the last
-        transition before ``since`` so the first row has a level."""
+        transition before ``since`` so the first row has a level. No row cap: a cap would silently
+        give every later row the capped row's level, and the volume is tiny (~20 transitions and a
+        few dozen company arcs a day; 56 transitions in all as of 2026-10-16)."""
         async with self._pool.connection() as conn:
             async with conn.transaction():
                 await conn.execute("SET TRANSACTION READ ONLY")
@@ -234,12 +236,12 @@ class PersonalityStore:
                     "(SELECT occurred_at, label FROM temporal_self_event WHERE source_kind = 'arousal_transition' "
                     "AND occurred_at < %(since)s ORDER BY occurred_at DESC LIMIT 1) UNION ALL "
                     "(SELECT occurred_at, label FROM temporal_self_event WHERE source_kind = 'arousal_transition' "
-                    "AND occurred_at >= %(since)s AND occurred_at <= %(until)s ORDER BY occurred_at LIMIT 500)",
+                    "AND occurred_at >= %(since)s AND occurred_at <= %(until)s ORDER BY occurred_at)",
                     {"since": since, "until": until})).fetchall()
                 company = await (await conn.execute(
                     "SELECT began_at, ended_at FROM temporal_self_arc WHERE kind = 'company' "
                     "AND began_at <= %(until)s AND (ended_at IS NULL OR ended_at > %(since)s) "
-                    "ORDER BY began_at LIMIT 500", {"since": since, "until": until})).fetchall()
+                    "ORDER BY began_at", {"since": since, "until": until})).fetchall()
         return SituationInputs(
             arousal=[(r["occurred_at"], str(r["label"] or "")) for r in arousal],
             company=[(r["began_at"], r["ended_at"]) for r in company],

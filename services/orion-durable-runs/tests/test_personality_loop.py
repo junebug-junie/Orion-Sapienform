@@ -10,8 +10,6 @@ when the loop is disabled or its tables are missing; PERSONALITY_ENABLED=false s
 from __future__ import annotations
 
 import asyncio
-
-from orion.personality.situation import SituationInputs
 import hashlib
 import json
 import math
@@ -26,6 +24,7 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 SERVICE_ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(REPO_ROOT), str(SERVICE_ROOT)]
 
+from orion.personality.situation import SituationInputs  # noqa: E402
 from orion.personality.graph import Node  # noqa: E402
 
 from app import personality_sources as ps  # noqa: E402
@@ -650,7 +649,6 @@ def test_settings_defaults_ship_on(main_mod):
     s = Settings()
     assert s.personality_enabled is True and s.personality_tick_sec == 600.0
     assert s.personality_embed_url.endswith("-vector-host:8320/embedding")
-
 
 
 def test_new_evidence_is_stamped_with_the_situation_at_its_own_time():

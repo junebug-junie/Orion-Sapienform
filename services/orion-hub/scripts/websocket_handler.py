@@ -31,6 +31,7 @@ from scripts.chat_history import (
     publish_chat_turn,
     select_reasoning_trace_for_history,
 )
+from scripts.chat_history_rehydrate import append_live_assistant_reply, trim_history_window
 from scripts.social_room import (
     apply_social_memory_summary_to_payload,
     hub_direct_room_identity,
@@ -1627,6 +1628,9 @@ async def websocket_endpoint(websocket: WebSocket):
                         session_id=session_id,
                         lane=client_mode,
                     )
+                # Orion's reply joins history (see append_live_assistant_reply).
+                append_live_assistant_reply(history, extract_unified_turn_final_text(orion_turn_frames))
+                trim_history_window(history, turns)
                 continue
 
             # Build outbound chat request through shared builder to keep WS/HTTP identical
@@ -2454,21 +2458,12 @@ async def websocket_endpoint(websocket: WebSocket):
                     continue
 
             if orion_response_text and not workflow_metadata_only:
-                history.append(
-                    {
-                        "role": "assistant",
-                        "content": orion_response_text,
-                        "ts": datetime.now(timezone.utc).isoformat(),
-                    }
-                )
+                append_live_assistant_reply(history, orion_response_text)
 
-            # Keep history bounded (system + last 2*turns messages)
-            try:
-                keep_msgs = 1 + (2 * max(0, int(turns)))
-                if len(history) > keep_msgs:
-                    history[:] = history[:1] + history[-(2 * turns):]
-            except Exception:
-                pass
+            # Keep history bounded (system + last 2*turns messages). Shared
+            # with the unified lane above; also fixes the old inline slice,
+            # which for turns=0 re-added the whole list instead of bounding.
+            trim_history_window(history, turns)
             await websocket.send_json(await _with_biometrics({"state": "idle"}, cache=biometrics_cache))
 
     except WebSocketDisconnect:

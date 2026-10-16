@@ -64,7 +64,7 @@ def test_reduce_and_summarize_buckets_and_ranks():
     assert c["followed_order_rank1"] == 1
     assert c["picks_total"] == 3 and c["picks_outside_ordered_list"] == 1
     assert c["mean_alternatives_per_choice"] == 7.5  # (9-1 + 9-2) / 2
-    assert c["mean_cost_seconds"] == 600.0
+    assert c["median_cost_seconds"] == 600.0
     o = report["lanes"][LANE_OVERRIDE]
     assert o["choices"] == 1 and o["skipped"] == {"malformed_override": 1}
     assert o["chosen_best_rank"] == {"2": 1} and o["followed_order_rank1"] == 0

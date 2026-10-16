@@ -33,6 +33,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import statistics
 import sys
 from collections import Counter
 from pathlib import Path
@@ -152,7 +153,8 @@ def summarize(
             "mean_alternatives_per_choice": (
                 round(sum(len(c.alternatives) for c in mine) / n, 3) if n else None
             ),
-            "mean_cost_seconds": round(sum(costs_s) / len(costs_s), 1) if costs_s else None,
+            # Median: cost_seconds spans retries and queue waits, so a few runs reach ~20 h.
+            "median_cost_seconds": round(statistics.median(costs_s), 1) if costs_s else None,
             "mean_cost_nats": round(sum(costs_n) / len(costs_n), 4) if costs_n else None,
             "mean_cost_effort": round(sum(costs_e) / len(costs_e), 4) if costs_e else None,
         }
@@ -185,8 +187,8 @@ def render_summary(report: Dict[str, Any]) -> str:
             f"mean alternatives/choice {s['mean_alternatives_per_choice']}"
         )
         lines.append(
-            f"  mean cost: seconds={s['mean_cost_seconds']} nats={s['mean_cost_nats']} "
-            f"effort={s['mean_cost_effort']}"
+            f"  cost: median seconds={s['median_cost_seconds']}, mean nats={s['mean_cost_nats']} "
+            f"mean effort={s['mean_cost_effort']}"
         )
         lines.append("")
     return "\n".join(lines)

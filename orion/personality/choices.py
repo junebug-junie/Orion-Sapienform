@@ -2,9 +2,11 @@
 
 Two lanes already persist a choice together with the options that lost:
 
-1. ``curiosity_prior_selection``. ``curiosity_offer_decisions.offered`` is the ordered list of
-   live priors Orion was shown; ``stale_offered`` is the separate "tested repeatedly" section of
-   the same prompt. ``curiosity_run_outcomes.per_prior`` says what the run touched.
+1. ``curiosity_prior_selection``. ``curiosity_offer_decisions.offered`` is the live priors
+   Orion was shown: an ordered head (``slot`` ``order``) followed by priors "DRAWN AT RANDOM,
+   not ranked" (``slot`` ``coverage``; ``orion/curiosity/worldview.py`` ``select_priors``).
+   Only the ordered head keeps its rank. ``stale_offered`` is the separate "tested repeatedly"
+   section of the same prompt. ``curiosity_run_outcomes.per_prior`` says what the run touched.
 
    **Chosen = per_prior entries with kind ``tested`` only.** Live distinct kinds (2026-10-16,
    all rows): ``tested`` 86, ``formed`` 30, ``moved_untested`` 0. ``formed`` is a NEW prior
@@ -14,6 +16,10 @@ Two lanes already persist a choice together with the options that lost:
    chosen wherever it came from: the ordered list (has a rank), the stale section (rank None),
    or off-menu (rank None, score None). Live: of 86 tested, 54 were in ``offered``, 20 in
    ``stale_offered``, 12 in neither.
+
+   ``cost_seconds`` is elapsed time from the turn's FIRST start to its LAST scoring:
+   ``turn_started_at`` keeps the first attempt and ``completed_at`` is reset on each outcome
+   upsert, so retries and queue waits are inside it. Summarize it by median, not mean.
 
 2. ``voluntary_attention_override``. ``frame.voluntary_override`` names the loop Orion's goal
    bias picked (``chosen_loop_id``) and the bottom-up winner it beat (``beat_loop_id``).
@@ -71,7 +77,7 @@ def _num(value: Any) -> Optional[float]:
         return None
     try:
         out = float(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return None
     return out if math.isfinite(out) else None
 
@@ -81,7 +87,7 @@ def _rank(value: Any) -> Optional[int]:
         return None
     try:
         out = int(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return None
     return out if out >= 1 else None
 
@@ -114,7 +120,8 @@ def _build(**kwargs: Any) -> Tuple[Optional[PersonalityChoiceV1], Optional[str]]
 
 def _menu(rows: Any, *, ranked: bool) -> Dict[str, ChoiceOptionV1]:
     """prior_id -> option, first occurrence wins. Stale-section rows carry ranks within
-    their own list; that is not the order Orion was told to read, so it is dropped."""
+    their own list, and coverage rows carry ranks continuing past the ordered head, but the
+    prompt shows both as unranked sections, so their rank is dropped (review 2026-10-16)."""
     out: Dict[str, ChoiceOptionV1] = {}
     for row in _json(rows) or []:
         if not isinstance(row, Mapping):
@@ -124,7 +131,7 @@ def _menu(rows: Any, *, ranked: bool) -> Dict[str, ChoiceOptionV1]:
             continue
         out[prior_id] = ChoiceOptionV1(
             ref=PRIOR_REF_PREFIX + prior_id,
-            rank=_rank(row.get("rank")) if ranked else None,
+            rank=_rank(row.get("rank")) if ranked and row.get("slot") != "coverage" else None,
             score=_num(row.get("expected_nats")),
         )
     return out
@@ -248,11 +255,16 @@ def explain_voluntary_override_choice(
         if chosen_id is None or beat_id is None or chosen_id == beat_id:
             return None, "malformed_override"
 
-        loops = [
-            (i, loop)
-            for i, loop in enumerate(frame.get("open_loops") or [])
-            if isinstance(loop, Mapping) and _str(loop.get("id"))
-        ]
+        # First occurrence of a loop id wins, for both its option and its rank.
+        loops: List[Tuple[int, Mapping[str, Any]]] = []
+        seen_ids: set = set()
+        raw_loops = frame.get("open_loops")
+        for i, loop in enumerate(raw_loops if isinstance(raw_loops, list) else []):
+            lid = _str(loop.get("id")) if isinstance(loop, Mapping) else None
+            if lid is None or lid in seen_ids:
+                continue
+            seen_ids.add(lid)
+            loops.append((i, loop))
         scored = sorted(
             [(i, loop) for i, loop in loops if _num(loop.get("salience")) is not None],
             # On a salience tie the beat goes first: the override record says it was the
@@ -269,17 +281,26 @@ def explain_voluntary_override_choice(
             options[lid] = ChoiceOptionV1(
                 ref=lid, rank=rank_of.get(lid), score=_num(loop.get("salience"))
             )
-            source_refs[lid] = [s for s in (loop.get("source_refs") or []) if _str(s)]
+            raw_refs = loop.get("source_refs")
+            source_refs[lid] = [s for s in raw_refs if _str(s)] if isinstance(raw_refs, list) else []
         # The override record itself is the ground truth for the pair; open_loops only adds
         # the rest of the field and the ranks. If the pair is missing from it, rank the pair
         # from the record (the beat was the bottom-up winner by definition).
+        # Ranks 1/2 from the record only when open_loops gave nothing; otherwise a filled-in
+        # loop is unranked so it cannot collide with a rank open_loops already assigned.
         if chosen_id not in options or beat_id not in options:
+            from_record = not options
             options.setdefault(
-                beat_id, ChoiceOptionV1(ref=beat_id, rank=1, score=_num(vo.get("beat_bottom_up")))
+                beat_id,
+                ChoiceOptionV1(
+                    ref=beat_id, rank=1 if from_record else None, score=_num(vo.get("beat_bottom_up"))
+                ),
             )
             options.setdefault(
                 chosen_id,
-                ChoiceOptionV1(ref=chosen_id, rank=2, score=_num(vo.get("chosen_bottom_up"))),
+                ChoiceOptionV1(
+                    ref=chosen_id, rank=2 if from_record else None, score=_num(vo.get("chosen_bottom_up"))
+                ),
             )
         chosen = options[chosen_id]
         alternatives = [o for lid, o in options.items() if lid != chosen_id]

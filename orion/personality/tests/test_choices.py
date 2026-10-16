@@ -415,3 +415,70 @@ def test_override_salience_tie_ranks_the_beat_first():
     c = voluntary_override_choice_from_row(row)
     assert c.chosen_best_rank == 2
     assert c.alternatives[0].ref == "open-loop-e91fa7e1c61e" and c.alternatives[0].rank == 1
+
+
+# Regressions from the 2026-10-16 review.
+
+def test_curiosity_coverage_pick_is_unranked():
+    # Coverage priors are shown as "DRAWN AT RANDOM, not ranked"; their stored rank only
+    # continues past the ordered head and is not an order Orion read.
+    offer = dict(
+        OFFER_ROW,
+        offered=[{"rank": i, "slot": "order", "prior_id": f"p{i}", "expected_nats": 0.1} for i in range(1, 7)]
+        + [{"rank": 7, "slot": "coverage", "prior_id": "pc", "expected_nats": 0.1}],
+        stale_offered=[],
+    )
+    outcome = dict(OUTCOME_ROW, per_prior=[{"kind": "tested", "prior_id": "pc"}])
+    c = curiosity_choice_from_rows(offer, outcome)
+    assert c.chosen_best_rank is None
+    assert c.chosen[0].rank is None
+
+
+def test_curiosity_overflowing_numbers_do_not_drop_the_row():
+    offer = dict(
+        OFFER_ROW,
+        offered='[{"rank": Infinity, "prior_id": "a", "expected_nats": 1e400}]',
+        stale_offered=[],
+    )
+    outcome = dict(OUTCOME_ROW, per_prior=[{"kind": "tested", "prior_id": "a"}])
+    c = curiosity_choice_from_rows(offer, outcome)
+    assert c is not None
+    assert c.chosen[0].rank is None and c.chosen[0].score is None
+
+
+def _override_row(loops, vo=None):
+    row = copy.deepcopy(OVERRIDE_ROW)
+    row["projection_json"]["frame"]["open_loops"] = loops
+    if vo is not None:
+        row["projection_json"]["frame"]["voluntary_override"].update(vo)
+    return row
+
+
+def test_override_string_source_refs_are_not_split_into_characters():
+    vo = OVERRIDE_ROW["projection_json"]["frame"]["voluntary_override"]
+    loops = [
+        {"id": vo["beat_loop_id"], "salience": 0.9, "source_refs": "abc"},
+        {"id": vo["chosen_loop_id"], "salience": 0.5, "source_refs": "xyz"},
+    ]
+    c = voluntary_override_choice_from_row(_override_row(loops))
+    assert not {"a", "b", "c", "x", "y", "z"} & set(c.situation_refs)
+
+
+def test_override_duplicate_loop_ids_keep_first_rank():
+    vo = OVERRIDE_ROW["projection_json"]["frame"]["voluntary_override"]
+    loops = [
+        {"id": vo["beat_loop_id"], "salience": 0.9},
+        {"id": vo["chosen_loop_id"], "salience": 0.5},
+        {"id": vo["chosen_loop_id"], "salience": 0.99},
+    ]
+    c = voluntary_override_choice_from_row(_override_row(loops))
+    assert c.chosen[0].rank == 2 and c.chosen[0].score == 0.5
+    assert [o.rank for o in c.alternatives] == [1]
+
+
+def test_override_missing_beat_does_not_duplicate_rank_one():
+    vo = OVERRIDE_ROW["projection_json"]["frame"]["voluntary_override"]
+    loops = [{"id": vo["chosen_loop_id"], "salience": 0.9}, {"id": "other", "salience": 0.5}]
+    c = voluntary_override_choice_from_row(_override_row(loops))
+    ranks = [o.rank for o in c.chosen + c.alternatives if o.rank is not None]
+    assert len(ranks) == len(set(ranks))

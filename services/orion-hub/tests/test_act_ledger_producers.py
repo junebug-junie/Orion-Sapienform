@@ -52,7 +52,7 @@ async def test_chat_reply_opens_a_say_act_expecting_juniper():
     act = ev.act
     assert (act.verb, act.actor, act.object_ref) == ("say", "hub.chat_reply", "juniper")
     assert act.expect.signal_id == "juniper_replied" and act.expect.horizon_sec == JUNIPER_REPLY_HORIZON_SEC
-    assert "median gap" in act.expect.basis
+    assert "median time" in act.expect.basis and "turn start" in act.expect.basis
 
 
 @pytest.mark.asyncio

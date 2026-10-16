@@ -26,13 +26,15 @@ logger = logging.getLogger("orion-hub.act_emit")
 # Outreach: 36000 s. Measured 2026-10-16 over 60 days of chat_history_log
 # (n=238 unsolicited outreach rows): median time from an outreach message to
 # Juniper's next chat turn is 36792 s; P(turn <= 1800 s) = 0.04, <= 4 h = 0.18,
-# <= 12 h = 0.63. The same "horizon at the median" rule as chat replies, so the
+# <= 12 h = 0.63. Re-measured the same day on the resolver's clock (when her next
+# turn STARTED, see orion/grammar/act_ledger.py _JUNIPER_REPLY_SQL): median 36554 s,
+# P(<= 36000 s) = 0.49 on both clocks, so the horizon stands. The same "horizon at the median" rule as chat replies, so the
 # binary outcome is not saturated. Known confound: at this horizon the outcome
 # is dominated by Juniper's daily rhythm, not the message (recorded in the PR).
 OUTREACH_REPLY_HORIZON_SEC = 36000.0
 OUTREACH_REPLY_BASIS = (
     "juniper_replied by 36000s: median time from an outreach message to Juniper's next chat turn "
-    "over 60d (36792s, n=238, measured 2026-10-16); same horizon-at-median rule as chat replies"
+    "start over 60d (36554s, n=238, measured 2026-10-16); same horizon-at-median rule as chat replies"
 )
 
 # Reading: 3600 s. Measured 2026-10-16 over 30 days of durable reading.turn runs:

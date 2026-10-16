@@ -697,7 +697,7 @@ class Settings(BaseSettings):
     # materialise act_opened/act_closed grammar events into grammar_acts and grade closed acts into
     # substrate_action_outcomes + substrate_action_effect_posterior (orion/grammar/act_ledger.py).
     sql_writer_act_ledger_enabled: bool = Field(True, alias="SQL_WRITER_ACT_LEDGER_ENABLED")
-    # Horizon resolver cadence: closes juniper_replied acts from chat_history_log and expires
+    # Horizon resolver cadence: closes juniper_replied acts from Juniper turn starts and expires
     # producer-reported acts past their horizon. 0 disables (open acts then stay open).
     sql_writer_act_resolver_interval_sec: float = Field(60.0, alias="SQL_WRITER_ACT_RESOLVER_INTERVAL_SEC")
 

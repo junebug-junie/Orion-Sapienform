@@ -41,7 +41,10 @@ JUNIPER_IDLE_MINUTES_SQL = (
 # ``surface_context`` on a turn (static/js/app.js typed + spoken, thought-process.js), and the
 # turn orchestrator copies it into the ingress raw only when present. Live 2026-10-16, 10 days:
 # 37 ingress hops carried it and all 37 were Juniper's logged turns; none of the 1,100+
-# internal-turn hops did. SQL fragment over cockpit_turn_sighting (raw jsonb).
+# internal-turn hops did. Known false positive: scripts/trace_hub_skill_runner_e2e.py sends
+# surface_context over the hub WebSocket, so an operator smoke run reads as Juniper (its logged
+# row already did under JUNIPER_TURN_PREDICATE). SQL fragment over cockpit_turn_sighting
+# (unqualified stage/seq/raw columns).
 JUNIPER_INGRESS_PREDICATE = (
     "stage = 'ingress' AND seq = 0 AND raw->'surface_context' IS NOT NULL"
 )

@@ -93,6 +93,7 @@ async def test_retry_publishes_nothing_and_flag_off_publishes_nothing(monkeypatc
     assert await _drive(monkeypatch, "prepare", _res("prepare", "done")) == []
     assert await _drive(monkeypatch, "caption", _res("caption", "done", outcome="produced", reason="ok"),
                         enabled=False) == []
+    monkeypatch.setattr(visual_steps.settings, "thought_act_ledger_enabled", False, raising=False)
     bus = _Bus()
     await visual_steps._publish_painting_open(bus, _req("prepare"))
     assert bus.sent == []

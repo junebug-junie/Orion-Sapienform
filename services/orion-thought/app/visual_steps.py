@@ -337,6 +337,8 @@ async def prepare_step(bus, req: ReverieVisualStepRequestV1, *,
         # marker lives in the same row write: a replayed or retried prepare (durable runs
         # replay steps, and a run queued behind another painting retries prepare for up
         # to its whole deadline) never opens it again. Live 2026-10-16: 13 opens for 3 acts.
+        # The marker is per attempt and the act per run: a run that ever claimed a second
+        # attempt would publish a second open, which the writer ignores (first open wins).
         if not current.get("act_opened_at"):
             current["act_opened_at"] = now.isoformat()
             act_opened_here = True

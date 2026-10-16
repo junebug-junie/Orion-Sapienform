@@ -395,15 +395,18 @@ def apply_act_events(conn: Any, events: list[GrammarEventV1]) -> int:
 #
 # 1. A logged Juniper turn (canonical JUNIPER_TURN_PREDICATE: non-empty prompt, not
 #    unsolicited outreach), started at its hub ingress hop when one was recorded,
-#    else at its row's created_at (non-unified hub paths record no ingress).
+#    else at its row's created_at (non-unified hub paths record no ingress). That
+#    fallback keeps the old limits for those turns only: one sent before the act
+#    but logged after it still counts, and a slow one can still miss the horizon.
 # 2. A Juniper ingress hop with no logged row needed (JUNIPER_INGRESS_PREDICATE):
 #    the turn she sent that errored, or whose reply is still being written.
 #
 # Both clocks are naive timestamps on the server's own clock, compared in the
 # server's TimeZone. The act's own turn is excluded by correlation_id, otherwise a
 # chat reply would always "see" its own turn. The ingress window scan is
-# MATERIALIZED on purpose: it reads only (stage, seq, ts), so the wide raw jsonb of
-# every hop in the table is never detoasted (live: 7.6 s with the raw test inline,
+# MATERIALIZED on purpose: it reads only (stage, seq, ts), and raw is tested by a
+# primary-key probe on the in-window hops only, so the wide raw jsonb of every
+# hop in the table is never detoasted (live: 7.6 s with the raw test inline,
 # 0.18 s like this, cockpit_turn_sighting at 40k rows / 1.7 GB).
 _JUNIPER_REPLY_SQL = text(
     f"""
@@ -412,7 +415,7 @@ _JUNIPER_REPLY_SQL = text(
                CAST(:horizon_at AS timestamptz) AT TIME ZONE current_setting('TimeZone') AS hi
     ),
     window_ingress AS MATERIALIZED (
-        SELECT s.correlation_id
+        SELECT s.correlation_id, s.ts
           FROM cockpit_turn_sighting s, bounds b
          WHERE s.stage = 'ingress' AND s.seq = 0 AND s.ts > b.lo AND s.ts <= b.hi
     ),
@@ -426,10 +429,11 @@ _JUNIPER_REPLY_SQL = text(
                  WHERE {JUNIPER_TURN_PREDICATE}
                    AND created_at > (SELECT lo FROM bounds)) h
         UNION ALL
-        SELECT ts AS started_at, correlation_id
-          FROM cockpit_turn_sighting
-         WHERE {JUNIPER_INGRESS_PREDICATE}
-           AND correlation_id IN (SELECT correlation_id FROM window_ingress)
+        SELECT w.ts AS started_at, w.correlation_id
+          FROM window_ingress w
+         WHERE EXISTS (
+                   SELECT 1 FROM cockpit_turn_sighting s
+                    WHERE s.correlation_id = w.correlation_id AND {JUNIPER_INGRESS_PREDICATE})
     )
     SELECT min(started_at) AT TIME ZONE current_setting('TimeZone')
       FROM starts, bounds b

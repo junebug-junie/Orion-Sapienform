@@ -922,7 +922,8 @@ def test_pr2728_retina_app_change_plans_a_build_that_changes_the_image() -> None
     every container of the stack, including the walkway profile one.
     """
     proc = subprocess.run(
-        [sys.executable, str(MODULE), "--plan", "--paths", *_PR2728_PATHS, "--repo-root", str(ROOT)],
+        [sys.executable, str(MODULE), "--plan", "--paths", *_PR2728_PATHS, "--repo-root", str(ROOT),
+         "--host", "athena"],  # retina runs on athena; circe excludes it
         capture_output=True,
         text=True,
         timeout=120,
@@ -947,6 +948,11 @@ def test_own_python_code_mounts_are_also_baked_into_the_image() -> None:
     directory mount as live and plans `build`, not `recreate`; that only
     restarts the process if the same files are COPY'd into the image. A
     mount-only Python app would keep running old code after every pull.
+
+    Limits: checked per services/<svc> directory, not per compose service, so
+    a sibling compose service that mounts the code onto a prebuilt `image:`
+    would pass. A repo-root `COPY . /app` yields no own-dir build prefix and
+    fails conservatively; add an allowlist entry with a reason if that occurs.
     """
     sys.path.insert(0, str(ROOT / "scripts"))
     try:

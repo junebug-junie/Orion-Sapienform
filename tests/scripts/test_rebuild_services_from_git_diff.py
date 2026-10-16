@@ -285,10 +285,12 @@ def test_pr2728_retina_app_change_rebuilds_walkway_and_logs_each_step(tmp_path: 
         "orion-vision-retina --profile walkway up -d --build orion-vision-retina-walkway",
     ]
     lines = _log_lines(tmp_path)
-    events = [line.split(" ", 3)[2] for line in lines]
+    events = [line.split(" ", 4)[3] for line in lines]
     assert events == ["RUN", "START", "END", "START", "END", "DONE"], lines
     assert "services=orion-vision-retina " in lines[0]
-    assert lines[4].split(" ", 4)[3] == "rc=0"
+    assert lines[4].split(" ", 5)[4] == "rc=0"
+    pids = {line.split(" ", 2)[1] for line in lines}
+    assert len(pids) == 1 and next(iter(pids)).startswith("pid="), lines
     assert lines[4].endswith(
         "orion-vision-retina --profile walkway up -d --build orion-vision-retina-walkway"
     )
@@ -328,3 +330,11 @@ def test_unwritable_run_log_never_fails_the_rebuild(tmp_path: Path) -> None:
     completed, calls = _run(tmp_path, plan="orion-vision-retina,build")
     assert completed.returncode == 0, completed.stdout + completed.stderr
     assert calls == ["orion-vision-retina up -d --build"]
+
+
+def test_nothing_to_rebuild_still_leaves_a_log_line(tmp_path: Path) -> None:
+    completed, calls = _run(tmp_path, plan="")
+    assert completed.returncode == 0
+    assert calls == []
+    lines = _log_lines(tmp_path)
+    assert len(lines) == 1 and " NOTHING " in lines[0], lines

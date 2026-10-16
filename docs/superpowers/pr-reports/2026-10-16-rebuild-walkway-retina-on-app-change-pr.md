@@ -44,7 +44,8 @@
 ## Tests run
 
 ```text
-pytest tests/scripts/test_rebuild_services_from_git_diff.py -q   16 passed
+pytest tests/scripts/test_rebuild_services_from_git_diff.py tests/test_post_pull_apply_migrations.py -q   133 passed
+pytest tests/test_post_pull_apply_migrations_postgres.py -q      4 passed (real Postgres)
 pytest tests/scripts/test_rebuild_affected_services.py -q        69 passed
 mutation: emptying the analytics allowlist makes the invariant test fail (offender services/orion-analytics)
 bash -n scripts/rebuild_services_from_git_diff.sh: clean (shellcheck not installed on this host)
@@ -75,7 +76,22 @@ Live log write not exercised on the host yet: UNVERIFIED until the next pull.
 
 ## Review findings fixed
 
-- (filled in after review)
+- Finding (must): the real-Postgres rebuild test ran the real script without `ORION_REBUILD_LOG`, so local runs would write fake lines into the operator's log.
+  - Fix: the fixture sets `ORION_REBUILD_LOG` to tmp.
+  - Evidence: `tests/test_post_pull_apply_migrations_postgres.py` 4 passed; `~/.orion/post_pull_rebuild.log` still absent afterwards.
+- Finding: the PR #2728 planner test depended on the host (circe excludes retina).
+  - Fix: pins `--host athena`.
+  - Evidence: `ORION_MESH_HOST=circe pytest -k "pr2728 or baked"` 3 passed.
+- Finding: overlapping runs (hook plus manual rerun) could not be paired.
+  - Fix: every line carries `pid=`.
+  - Evidence: PR #2728 log test asserts one pid across the run.
+- Finding: early exits (planner failure, nothing to rebuild) left no trace.
+  - Fix: `PLANNER_FAILED rc=` and `NOTHING` lines.
+  - Evidence: `test_nothing_to_rebuild_still_leaves_a_log_line`.
+- Finding: the invariant test is keyed per services/ dir, not per compose service.
+  - Fix: limit stated in its docstring (no service hits it today).
+- Nit: `started=$(date +%s)` could abort under `set -e`.
+  - Fix: `|| started=0`.
 
 ## Restart required
 

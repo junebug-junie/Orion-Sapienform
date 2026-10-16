@@ -1355,6 +1355,11 @@ def build_claude_argv(
     else:
         argv = [claude_bin, "-p", prompt]
     argv.extend(["--output-format", "stream-json", "--verbose", "--model", model_id])
+    if os.environ.get("HARNESS_FCC_DISABLE_SKILLS", "true").strip().lower() not in {"0", "false", "no", "off"}:
+        # The CLI lists its own coding skills (claude-api, keybindings-help, ...) in every turn's
+        # context and has no per-skill filter. Orion has no skills of its own; 0 Skill calls in 5,056
+        # governor transcripts. Dropping the list frees ~6k chars of a 64k-token window.
+        argv.append("--disable-slash-commands")
     if task_anchor:
         # System-prompt text is never rewritten by CLI compaction (orion/harness/task_anchor.py).
         argv.extend(["--append-system-prompt", task_anchor])

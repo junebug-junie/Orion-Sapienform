@@ -150,8 +150,9 @@ class Engine:
         return to_grain(pts, spec.grain_min, spec.agg, spec.max_fill_min, start=start, end=end)
 
     def load_covariates(self, spec: SeriesSpec, index: pd.DatetimeIndex) -> pd.DataFrame | None:
-        """spec.covariates on ``index`` (same grain, short gaps filled, long gaps NaN). None when the
-        series declares none or the index is empty."""
+        """spec.covariates on ``index``: real buckets only, gaps stay NaN (app/direct.py fills interior
+        gaps inside each training window and refuses a stale covariate). None when the series
+        declares none or the index is empty."""
         if not spec.covariates or len(index) == 0:
             return None
         start = index[0].to_pydatetime()
@@ -159,7 +160,7 @@ class Engine:
         cols = {}
         for cid in spec.covariates:
             cov = self.registry.get(cid)
-            cols[cid] = to_grain(self.store.points(cov, start, end), cov.grain_min, cov.agg, cov.max_fill_min,
+            cols[cid] = to_grain(self.store.points(cov, start, end), cov.grain_min, cov.agg, 0,
                                  start=start, end=end).reindex(index)
         return pd.DataFrame(cols, index=index)
 
@@ -177,6 +178,7 @@ class Engine:
         usable = tuple(s for s in spec.seasonalities if s.name in champ["usable_seasonalities"])
         zoo = set(build_models(spec, list(usable)))
         fits = (champ["grain_min"] == spec.grain_min
+                and (champ.get("metrics") or {}).get("covariates", []) == list(spec.covariates)
                 and all(r.ndim == 2 and r.shape[1] == spec.max_horizon_steps for r in residuals.values())
                 and set(assignment) == set(spec.horizons_min) == set(base_assignment)
                 and set(assignment.values()) | set(base_assignment.values()) <= zoo)
@@ -230,7 +232,8 @@ class Engine:
                 (champ_id, "champion_blend", sel.assignment, sel.served_baseline, champ_res),
                 (base_id, "baseline_blend", sel.baseline_assignment, True, base_res)):
             rows.append({**common, "run_id": run_id, "kind": kind, "model": kind,
-                         "n_windows": int(np.any(np.isfinite(paths), axis=1).sum()), "metrics": {},
+                         "n_windows": int(np.any(np.isfinite(paths), axis=1).sum()),
+                         "metrics": {"covariates": list(spec.covariates)},
                          "assignment": {str(k): v for k, v in assignment.items()},
                          "served_baseline": served_baseline, "backtest_seconds": blend_s,
                          "residual_paths": _clean(paths), "errors": []})
@@ -272,11 +275,32 @@ class Engine:
         if any(zoo[n].uses_covariates for n in needed):
             cov = self.load_covariates(spec, train.index)
             X = cov.to_numpy(dtype=float) if cov is not None else None
-        paths = {name: zoo[name].forecast(y, h, train.index, X) for name in needed}
+        # Each model on its own: one dead covariate must not take down horizons (or the baseline)
+        # that never use it. Baseline models use no covariates; if one of them fails, nothing is served.
+        paths, failed = {}, {}
+        for name in needed:
+            try:
+                paths[name] = zoo[name].forecast(y, h, train.index, X)
+            except Exception as exc:  # noqa: BLE001 -- that model's steps fall back to the baseline below
+                failed[name] = f"{type(exc).__name__}: {exc}"[:200]
+        base_owners = step_owner(sel.baseline_assignment, spec.grain_min, h)
+        if any(o in failed for o in base_owners):
+            raise RuntimeError(f"baseline model failed: {failed}")
+        fallback_steps = 0
         out = {"rows": [], "payload": None}
         for role, assignment in (("champion", sel.assignment), ("baseline", sel.baseline_assignment)):
-            point = stitch(paths, step_owner(assignment, spec.grain_min, h))
-            qs = quantile_paths(point, served.residuals[role])
+            owners = step_owner(assignment, spec.grain_min, h)
+            residuals = served.residuals[role]
+            if role == "champion" and failed:
+                # Steps owned by a failed model are served by that step's baseline model, with the
+                # baseline's residual column, so point and interval stay matched.
+                swap = np.array([o in failed for o in owners])
+                fallback_steps = int(sum(swap))
+                owners = [b if s else o for o, b, s in zip(owners, base_owners, swap)]
+                residuals = residuals.copy()
+                residuals[:, swap] = served.residuals["baseline"][:, swap]
+            point = stitch(paths, owners)
+            qs = quantile_paths(point, residuals)
             _check_not_degenerate(point, qs, spec)
             steps = []
             for hm in spec.horizons_min:
@@ -292,14 +316,17 @@ class Engine:
             if role == "champion":
                 exceed = []
                 for t in spec.thresholds:
-                    p, n = exceedance_probability(point, served.residuals[role], t.value, spec.steps(t.window_min))
+                    p, n = exceedance_probability(point, residuals, t.value, spec.steps(t.window_min))
                     exceed.append(PredictionExceedanceV1(name=t.name, threshold=t.value, window_min=t.window_min,
                                                          probability=p, n_paths=n))
+                served_by = {hm: owners[spec.steps(hm) - 1] for hm in sorted(sel.assignment)}
                 out["payload"] = PredictionForecastV1(
                     series_id=spec.series_id,
-                    model="+".join(f"{m}@{hm}" for hm, m in sorted(sel.assignment.items())),
+                    model="+".join(f"{m}@{hm}" for hm, m in served_by.items()),
                     served_baseline=sel.served_baseline, run_id=served.run_ids[role], issued_at=now,
                     origin_ts=origin.to_pydatetime(), grain_min=spec.grain_min, steps=steps, exceedance=exceed)
+        out["failed_models"] = failed
+        out["fallback_steps"] = fallback_steps
         return out
 
     async def issue(self, spec: SeriesSpec, now: datetime, series: pd.Series, sync) -> bool:
@@ -323,6 +350,10 @@ class Engine:
             return False
         await sync(self.store.insert_forecasts, built["rows"])
         st.last_issue_error = None
+        if built["failed_models"]:
+            st.last_issue_error = ("model_fallback", f"{built['fallback_steps']} step(s) served by the baseline; "
+                                                     f"failed: {built['failed_models']}"[:300])
+            logger.warning("prediction_model_fallback series=%s %s", spec.series_id, st.last_issue_error[1])
         if self.publish_enabled and self.publish is not None:
             from orion.core.bus.bus_schemas import BaseEnvelope
 

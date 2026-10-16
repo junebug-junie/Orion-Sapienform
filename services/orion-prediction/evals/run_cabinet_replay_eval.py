@@ -56,7 +56,7 @@ def main() -> int:
     y = load("cabinet_temp_c", spec)
     actuals = load("cabinet_temp_c", spec, fill=False).reindex(y.index)
     cov_cols = {"athena.chassis_watts": "chassis_watts", "athena.cabinet_cooling_watts": "cooling_watts"}
-    covariates = pd.DataFrame({cid: load(cov_cols[cid], reg.get(cid)).reindex(y.index) for cid in spec.covariates},
+    covariates = pd.DataFrame({cid: load(cov_cols[cid], reg.get(cid), fill=False).reindex(y.index) for cid in spec.covariates},
                               index=y.index)
     train = training_slice(y, spec)
     usable, refused = split_seasonalities(spec, len(train))

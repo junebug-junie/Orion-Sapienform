@@ -2,7 +2,10 @@
 
 "Direct" means one regression per lead time k, trained on every past origin t. Every feature is
 measured at or before the origin, so serving never needs a future covariate value -- nothing has
-to forecast chassis watts or AC watts first, and nothing can leak the future into the fit.
+to forecast chassis watts or AC watts first. The caller passes covariates WITHOUT gap filling
+(real buckets only, NaN gaps); this module fills interior gaps from neighbours inside the training
+window, and refuses when a covariate has no real reading in the last ``FRESH_MIN`` minutes before the
+origin -- a stale covariate held flat is a condition the backtest never measured.
 
 Features at origin t (for each lead k):
 - target: y_t - y_{t-1}, y_t - y_{t-3}, y_t - y_{t-12}, y_t - mean(y over 1 h),
@@ -31,6 +34,8 @@ ANCHORS = (1, 2, 3, 6, 12, 36, 72, 144, 288)
 MIN_ROWS = 288           # one day of complete origins per lead
 MAX_COVARIATE_GAPS = 0.10
 RIDGE_ALPHA = 1.0
+# Every covariate needs at least one real bucket this recent at the origin (the shortest feature window).
+FRESH_MIN = 30
 
 
 def _roll_mean(a: np.ndarray, k: int) -> np.ndarray:
@@ -52,13 +57,12 @@ def origin_features(y: np.ndarray, X: np.ndarray, grain_min: int) -> np.ndarray:
         cols.append(y - _lag(y, day))
     for j in range(X.shape[1]):
         x = X[:, j]
-        m2h = _roll_mean(x, max(1, 120 // grain_min))
-        cols += [x, _roll_mean(x, max(1, 30 // grain_min)), m2h, x - m2h]
+        cols += [x, _roll_mean(x, max(1, 30 // grain_min)), _roll_mean(x, max(1, 120 // grain_min))]
     return np.column_stack(cols)
 
 
 def _tod(index: pd.DatetimeIndex, lead_min: int) -> np.ndarray:
-    minutes = (index.asi8 // 60_000_000_000) + lead_min
+    minutes = np.asarray(index.hour * 60 + index.minute, dtype=float) + lead_min   # unit-independent
     phase = 2 * np.pi * (minutes % 1440) / 1440.0
     return np.column_stack([np.sin(phase), np.cos(phase)])
 
@@ -88,6 +92,9 @@ def _direct(grain_min: int, with_covariates: bool):
         gaps = float(np.mean(~np.isfinite(X))) if X.size else 0.0
         if gaps > MAX_COVARIATE_GAPS:
             raise ValueError(f"covariates are {gaps:.0%} gaps in the training window")
+        recent = X[-max(1, FRESH_MIN // grain_min):]
+        if X.shape[1] and not np.all(np.any(np.isfinite(recent), axis=0)):
+            raise ValueError(f"a covariate has no reading in the last {FRESH_MIN} min before the origin")
         X = pd.DataFrame(X).interpolate(limit_direction="both").to_numpy()
         base = origin_features(y, X, grain_min)
         now = base[-1]

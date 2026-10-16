@@ -71,8 +71,8 @@ def run_backtest(series: pd.Series, spec: SeriesSpec, name: str,
     supports, so an early window never fits a cycle it has seen fewer than MIN_CYCLES times.
     ``actuals``: what residuals are measured against -- real readings only (no gap fill, exclusions
     masked), the same thing live scoring compares with. Defaults to ``series``.
-    ``covariates``: columns in spec.covariates order, on ``series``' index; sliced to each window's
-    training rows (history only -- a model never sees a covariate value after its origin).
+    ``covariates``: columns in spec.covariates order, on ``series``' index, real buckets only (no gap
+    fill, so nothing after an origin is interpolated into it); sliced to each window's training rows.
     """
     h = spec.max_horizon_steps
     min_train = MIN_TRAIN_STEPS_DAYS * 1440 // spec.grain_min

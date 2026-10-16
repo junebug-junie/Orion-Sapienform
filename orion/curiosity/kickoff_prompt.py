@@ -151,6 +151,18 @@ def _today_section(today_fact: Optional[str]) -> list[str]:
     return [text, ""]
 
 
+def _personality_section(personality_cue: Optional[str]) -> list[str]:
+    """What Orion keeps coming back to (personality graph, spec rev 2), as its own block.
+
+    Rendered by `orion.personality.cue.project_personality_cue` from orion-durable-runs'
+    personality frame: a record in Orion's own words, not an instruction. Nothing is
+    rendered when the caller has no cue (off, unreachable, stale, empty)."""
+    text = (personality_cue or "").strip()
+    if not text:
+        return []
+    return [text, ""]
+
+
 def _priors_section(view: WorldviewSnapshot, *, stale_after: int) -> list[str]:
     if view.is_unavailable:
         # Stated rather than hidden. A turn that silently loses its own world
@@ -1211,8 +1223,12 @@ def build_kickoff_prompt(
     open_lived_questions: Sequence[OpenLivedQuestion] = (),
     corrections: Sequence = (),
     today_fact: Optional[str] = None,
+    personality_cue: Optional[str] = None,
 ) -> str:
     """Assemble the whole invitation.
+
+    ``personality_cue``: the personality read-back text (`orion.personality.cue`), or None /
+    "" to render nothing. Its own block, right after the today line.
 
     ``today_fact``: one fact line about today's curiosity time from the Temporal Self
     chronicle (`orion.curiosity.temporal_fact`), or None to render nothing. Placed right
@@ -1261,6 +1277,7 @@ def build_kickoff_prompt(
         # the one a run cannot ask itself.
         lines += _thread_section(view)
         lines += _today_section(today_fact)
+        lines += _personality_section(personality_cue)
         lines += _priors_section(view, stale_after=stale_after)
         lines += _peer_briefs_section(peer_briefs, run_id=run_id if writable else None)
         # Only offered when Orion can write the prior that would adopt one --
@@ -1270,6 +1287,7 @@ def build_kickoff_prompt(
             lines += _corrections_section(corrections)
     else:
         lines += _today_section(today_fact)
+        lines += _personality_section(personality_cue)
 
     lines += _carry_forward_section(carry_forward)
     lines += _material_section(material)

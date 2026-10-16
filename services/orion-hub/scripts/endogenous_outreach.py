@@ -278,6 +278,7 @@ from orion.situational.perception_reader import fetch_presence, presence_fragmen
 from orion.regulation.arousal_view import AROUSAL_STRAINED_REASON
 from scripts.arousal_reader import ArousalReader
 from scripts.rest_drive_reader import RestDriveReader
+from scripts.personality_cue_reader import cue_status, read_personality_cue
 from scripts.outreach_vocabulary import (
     find_ungrounded_signal_mentions,
     grounded_signal_names,
@@ -581,6 +582,13 @@ class OutreachContext:
     situation: Optional[Dict[str, Any]] = None
     # Why the situation block is or isn't there ("ok", "no_key", "bus_not_connected", "error:...").
     situation_status: Optional[str] = None
+    # Orion's personality read-back (orion.personality.cue, spec rev 2): what Orion keeps coming
+    # back to, in Orion's own words -- a record, not an instruction. "" when skipped. Enrichment
+    # only (not in is_empty()): it is never on its own a reason to speak.
+    personality_cue: str = ""
+    # Which graph nodes the rendered cue named, and why it was skipped (for grounding_summary).
+    personality_cue_ids: List[str] = field(default_factory=list)
+    personality_cue_skip: Optional[str] = None
 
     def is_empty(self) -> bool:
         return (
@@ -1293,6 +1301,10 @@ def grounding_summary(ctx: OutreachContext) -> Dict[str, Any]:
         ),
         "priors_count": len(ctx.open_prior_previews),
         "prior_ids": list(ctx.open_prior_ids),
+        # Personality read-back: node ids only (durable), never the cue text.
+        "personality_cue": bool((ctx.personality_cue or "").strip()),
+        "personality_cue_ids": list(ctx.personality_cue_ids),
+        "personality_cue_skip": ctx.personality_cue_skip,
     }
 
 
@@ -1481,6 +1493,11 @@ def build_outreach_prompt(ctx: OutreachContext, tz: Any = timezone.utc) -> str:
         lines.extend(sit_lines)
         lines.append("")
 
+    cue_text = (ctx.personality_cue or "").strip()
+    if cue_text:
+        lines.append(cue_text)
+        lines.append("")
+
     if ctx.recent_turns:
         if _recent_turns_include_juniper(ctx.recent_turns):
             lines.append("The last thing the two of you said:")
@@ -1624,8 +1641,16 @@ class EndogenousOutreach:
         recent_chat_sec: float = 900.0,
         rest_drive_reader: Optional[RestDriveReader] = None,
         arousal_reader: Optional[ArousalReader] = None,
+        # Personality read-back (scripts/personality_cue_reader.py): GET
+        # {durable_runs_url}/personality/frame next to the situation read. Off here so bare
+        # constructions in tests never touch the network; settings ship it on
+        # (HUB_PERSONALITY_CUE_ENABLED, base URL HUB_CURIOSITY_DURABLE_RUNS_URL).
+        personality_cue_enabled: bool = False,
+        durable_runs_url: str = "",
     ) -> None:
         self.enabled = enabled
+        self.personality_cue_enabled = bool(personality_cue_enabled)
+        self.durable_runs_url = str(durable_runs_url or "")
         # Orion's arousal: while it reads `strained`, background outreach is refused.
         self.arousal_reader = arousal_reader
         # Orion's rest drive: while it reads `due`, the cooldown is multiplied.
@@ -2677,9 +2702,14 @@ class EndogenousOutreach:
         else:
             curiosity_ids, summaries = [], list(curiosity or []) if curiosity else []
 
-        situation, situation_status = await _read_situation(self._bus)
+        # Concurrent: both are bounded and never raise.
+        (situation, situation_status), personality = await asyncio.gather(
+            _read_situation(self._bus),
+            read_personality_cue(self.durable_runs_url, enabled=self.personality_cue_enabled),
+        )
         if situation_status != "ok":
             logger.warning("endogenous_outreach_situation_unavailable status=%s", situation_status)
+        logger.info("endogenous_outreach_personality_cue %s", cue_status(personality))
 
         presence = None
         try:
@@ -2696,6 +2726,9 @@ class EndogenousOutreach:
             presence=presence,
             situation=situation,
             situation_status=situation_status,
+            personality_cue=personality.text,
+            personality_cue_ids=list(personality.disposition_ids),
+            personality_cue_skip=personality.skip_reason,
             # Set by _should_roll() just before this is called; None on a
             # forced (force=True) debug trigger, which never calls it.
             tension_reason=self._last_tension_reason,

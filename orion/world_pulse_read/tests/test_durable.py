@@ -160,3 +160,46 @@ def test_a_binding_stored_before_4_6_still_binds(as_text):
     conn = _BindingConn(json.dumps(stored) if as_text else stored)
     bound = asyncio.run(bind_turn(conn, original.brief, original.correlation_id))
     assert bound == original   # same run id, same prompt: the stored binding stays authoritative
+
+
+# -- work start (the reading `look` act opens at it) ---------------------------
+
+def test_work_started_at_reads_first_run_started_and_ignores_queued_runs():
+    from datetime import datetime, timezone
+
+    from orion.world_pulse_read.durable import work_started_at
+
+    history = [
+        {"event": "run.accepted", "generated_at": "2026-10-16T12:03:31Z"},
+        {"event": "run.started", "generated_at": "2026-10-16T15:17:37.356183Z"},
+        {"event": "run.started", "generated_at": "2026-10-16T15:40:00Z"},
+    ]
+    assert work_started_at({"work_started": True, "history": history}) == datetime(
+        2026, 10, 16, 15, 17, 37, 356183, tzinfo=timezone.utc)
+    # Queued, or refused before any work: no start.
+    assert work_started_at({"work_started": False, "history": history[:1]}) is None
+    assert work_started_at({"history": history}) is None
+    # No usable history: creation plus the queue wait.
+    assert work_started_at({"work_started": True, "history": [],
+                            "created_at": "2026-10-16T12:00:00+00:00",
+                            "queue_wait_seconds": 60.0}) == datetime(2026, 10, 16, 12, 1, tzinfo=timezone.utc)
+
+
+def test_poll_reports_each_verified_state_and_a_broken_observer_never_fails_it():
+    req = request()
+    state = {"run_id": req.run_id, "workflow_kind": req.workflow, "status": "running",
+             "work_started": True}
+    seen = []
+
+    def respond(http):
+        return httpx.Response(200, json=state)
+
+    def observer(s):
+        seen.append(s["status"])
+        raise RuntimeError("observer bug")
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(respond), base_url="http://durable")
+    with patch("orion.world_pulse_read.durable.httpx.AsyncClient", return_value=client):
+        with pytest.raises(ReadingPending):
+            asyncio.run(poll_turn(req, "http://durable", on_state=observer))
+    assert seen == ["running"]

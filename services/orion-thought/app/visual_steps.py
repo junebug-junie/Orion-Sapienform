@@ -325,11 +325,21 @@ async def prepare_step(bus, req: ReverieVisualStepRequestV1, *,
     elapsed = time.monotonic() - step.started
     now = now_fn()
 
+    act_opened_here = False
+
     def freeze(current: dict, current_row: dict) -> dict | None:
+        nonlocal act_opened_here
         if current_row["outcome"] not in _OPEN_OUTCOMES or _frozen_plan(current) is not None:
             return None
         current.update(plan=plan.to_json(), prepared_at=now.isoformat(),
                        prepare_elapsed_sec=round(elapsed, 3))
+        # The run's `make` act opens with the first plan written for this attempt, and the
+        # marker lives in the same row write: a replayed or retried prepare (durable runs
+        # replay steps, and a run queued behind another painting retries prepare for up
+        # to its whole deadline) never opens it again. Live 2026-10-16: 13 opens for 3 acts.
+        if not current.get("act_opened_at"):
+            current["act_opened_at"] = now.isoformat()
+            act_opened_here = True
         if dream_hop is not None:
             current["dream_hop"] = dream_hop
         # Re-freezing an unreadable plan must not rewind a generating/generated attempt:
@@ -347,6 +357,8 @@ async def prepare_step(bus, req: ReverieVisualStepRequestV1, *,
     if _dream_hop_mismatch(req, frozen["stage_json"]):
         # A concurrent prepare for this dispatch froze a plan for a different hop.
         return step.terminal("failed", "dispatch_request_mismatch")
+    if act_opened_here:
+        await _publish_painting_open(bus, req)
     return step.result("done", attempt_id=attempt_id,
                        elapsed_sec=float(frozen["stage_json"].get("prepare_elapsed_sec") or elapsed))
 
@@ -790,23 +802,23 @@ def painting_act_transition(req: ReverieVisualStepRequestV1,
                             result: ReverieVisualStepResultV1) -> tuple[str, bool | None, str]:
     """What this step result means for the run's ``make`` act.
 
-    Returns (action, produced, note): action is "open", "close" or "none".
+    Returns (action, produced, note): action is "close" or "none". The open is not
+    decided here: prepare_step publishes it once, when it first writes the attempt's
+    plan (see ``act_opened_at``), because a step result alone cannot tell a first
+    prepare from a replayed or retried one.
 
     - Any result naming outcome "produced" closes at 1, whatever its status: a
       replayed step on an attempt that already produced reports terminal/produced
       (_closed_attempt), and that replay may be the only close that gets published.
     - A prepare that refuses outright (terminal before any work: ineligible,
-      already_satisfied, mismatch) is not an act: nothing is opened or closed.
-    - Otherwise prepare opens; a later terminal, or an abandon that did not
-      produce, closes at 0.
+      already_satisfied, mismatch) is not an act: nothing is closed.
+    - A later terminal, or an abandon that did not produce, closes at 0.
     """
     outcome = getattr(result, "outcome", None)
     if outcome == "produced":
         return "close", True, str(result.reason or "produced")
     if req.step == "prepare":
-        if result.status == "terminal":
-            return "none", None, ""
-        return "open", None, ""
+        return "none", None, ""
     if result.status == "terminal":
         if outcome == "already_satisfied":
             return "none", None, ""
@@ -816,26 +828,45 @@ def painting_act_transition(req: ReverieVisualStepRequestV1,
     return "none", None, ""
 
 
-async def _mirror_painting_act(bus, req: ReverieVisualStepRequestV1,
-                               result: ReverieVisualStepResultV1) -> None:
-    if bus is None or not bool(getattr(settings, "thought_act_ledger_enabled", True)):
+def _act_common(req: ReverieVisualStepRequestV1) -> dict[str, Any]:
+    return dict(source_service="orion-thought", source_component="visual_steps.act",
+                correlation_id=req.correlation_id)
+
+
+def _act_ledger_on(bus) -> bool:
+    return bus is not None and bool(getattr(settings, "thought_act_ledger_enabled", True))
+
+
+async def _publish_painting_open(bus, req: ReverieVisualStepRequestV1) -> None:
+    """Publish the run's act_opened. Called once per attempt, by prepare_step."""
+    if not _act_ledger_on(bus):
         return
     try:
-        from orion.grammar.acts import act_closed_event, act_opened_event
+        from orion.grammar.acts import act_opened_event
+        from orion.grammar.publish import publish_grammar_event
+
+        await publish_grammar_event(bus, act_opened_event(_painting_act(req), **_act_common(req)),
+                                    source_name="orion-thought")
+    except Exception as exc:  # noqa: BLE001 -- the act is a trace; never fail the step
+        # Not retried: a lost open is recovered by the writer, which builds the row
+        # from the close (close-before-open) and still grades it.
+        logger.warning("painting_act_publish_failed run=%s step=%s error=%s", req.run_id, req.step, exc)
+
+
+async def _mirror_painting_act(bus, req: ReverieVisualStepRequestV1,
+                               result: ReverieVisualStepResultV1) -> None:
+    if not _act_ledger_on(bus):
+        return
+    try:
+        from orion.grammar.acts import act_closed_event
         from orion.grammar.publish import publish_grammar_event
 
         action, produced, note = painting_act_transition(req, result)
-        if action == "none":
+        if action != "close":
             return
-        act = _painting_act(req)
-        common = dict(source_service="orion-thought", source_component="visual_steps.act",
-                      correlation_id=req.correlation_id)
-        if action == "open":
-            await publish_grammar_event(bus, act_opened_event(act, **common), source_name="orion-thought")
-        if action == "close":
-            await publish_grammar_event(
-                bus, act_closed_event(act, produced=bool(produced), note=note, **common),
-                source_name="orion-thought")
+        await publish_grammar_event(
+            bus, act_closed_event(_painting_act(req), produced=bool(produced), note=note, **_act_common(req)),
+            source_name="orion-thought")
     except Exception as exc:  # noqa: BLE001 -- the act is a trace; never fail the step
         logger.warning("painting_act_publish_failed run=%s step=%s error=%s", req.run_id, req.step, exc)
 

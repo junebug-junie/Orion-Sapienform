@@ -15,8 +15,9 @@ This module is the writer side, called by orion-sql-writer:
   plus the ``substrate_action_effect_posterior`` upsert, with the same two
   double-count guards orion-feedback-runtime uses -- and no new learner.
 - ``resolve_due_acts``: the horizon resolver. ``juniper_replied`` acts are
-  closed from ``chat_history_log`` (1 as soon as Juniper sends a hub chat turn
-  after the act, 0 once the horizon passes without one). Producer-reported
+  closed from the start time of Juniper's next turn (1 as soon as she starts a
+  hub chat turn after the act -- even one that later errors -- 0 once the
+  horizon passes without one; see _JUNIPER_REPLY_SQL). Producer-reported
   signals (``artifact_produced``) that pass their horizon unclosed are closed
   at 0 as ``expired``: the signal is "produced BY the horizon", so a missing
   close past it is a real 0, not a guess.
@@ -47,7 +48,7 @@ from orion.autonomy.prediction import (
     cold_act_posterior,
     score_act_outcome,
 )
-from orion.regulation.juniper_turns import JUNIPER_TURN_PREDICATE
+from orion.regulation.juniper_turns import JUNIPER_INGRESS_PREDICATE, JUNIPER_TURN_PREDICATE
 from orion.schemas.grammar import ActExpectV1, ActOutcomeV1, ActV1, GrammarEventV1
 
 logger = logging.getLogger("orion.grammar.act_ledger")
@@ -387,19 +388,52 @@ def apply_act_events(conn: Any, events: list[GrammarEventV1]) -> int:
 
 # --- horizon resolver ------------------------------------------------------
 
-# A chat turn from Juniper, by the canonical predicate
-# (orion.regulation.juniper_turns.JUNIPER_TURN_PREDICATE: non-empty prompt and
-# not an unsolicited outreach row). chat_history_log.created_at is a naive
-# timestamp written by the server's now(), so it is compared in the server's
-# own TimeZone setting. The act's own turn row is excluded by correlation_id,
-# otherwise a chat reply would always "see" its own turn.
+# "Did Juniper answer by the horizon" is read from when her next turn STARTED, not
+# from chat_history_log.created_at: that row is written only after Orion finishes
+# answering (live 2026-10-16: 1 to 41 minutes after she sent the turn) and never for
+# a turn that errored, so a turn she sent before the horizon read 0. Two arms:
+#
+# 1. A logged Juniper turn (canonical JUNIPER_TURN_PREDICATE: non-empty prompt, not
+#    unsolicited outreach), started at its hub ingress hop when one was recorded,
+#    else at its row's created_at (non-unified hub paths record no ingress).
+# 2. A Juniper ingress hop with no logged row needed (JUNIPER_INGRESS_PREDICATE):
+#    the turn she sent that errored, or whose reply is still being written.
+#
+# Both clocks are naive timestamps on the server's own clock, compared in the
+# server's TimeZone. The act's own turn is excluded by correlation_id, otherwise a
+# chat reply would always "see" its own turn. The ingress window scan is
+# MATERIALIZED on purpose: it reads only (stage, seq, ts), so the wide raw jsonb of
+# every hop in the table is never detoasted (live: 7.6 s with the raw test inline,
+# 0.18 s like this, cockpit_turn_sighting at 40k rows / 1.7 GB).
 _JUNIPER_REPLY_SQL = text(
     f"""
-    SELECT min(created_at AT TIME ZONE current_setting('TimeZone'))
-      FROM chat_history_log
-     WHERE {JUNIPER_TURN_PREDICATE}
-       AND created_at > (CAST(:opened_at AS timestamptz) AT TIME ZONE current_setting('TimeZone'))
-       AND created_at <= (CAST(:horizon_at AS timestamptz) AT TIME ZONE current_setting('TimeZone'))
+    WITH bounds AS (
+        SELECT CAST(:opened_at AS timestamptz) AT TIME ZONE current_setting('TimeZone') AS lo,
+               CAST(:horizon_at AS timestamptz) AT TIME ZONE current_setting('TimeZone') AS hi
+    ),
+    window_ingress AS MATERIALIZED (
+        SELECT s.correlation_id
+          FROM cockpit_turn_sighting s, bounds b
+         WHERE s.stage = 'ingress' AND s.seq = 0 AND s.ts > b.lo AND s.ts <= b.hi
+    ),
+    starts AS (
+        SELECT coalesce(
+                   (SELECT i.ts FROM cockpit_turn_sighting i
+                     WHERE i.correlation_id = h.correlation_id AND i.stage = 'ingress' AND i.seq = 0),
+                   h.created_at) AS started_at,
+               h.correlation_id
+          FROM (SELECT correlation_id, created_at FROM chat_history_log
+                 WHERE {JUNIPER_TURN_PREDICATE}
+                   AND created_at > (SELECT lo FROM bounds)) h
+        UNION ALL
+        SELECT ts AS started_at, correlation_id
+          FROM cockpit_turn_sighting
+         WHERE {JUNIPER_INGRESS_PREDICATE}
+           AND correlation_id IN (SELECT correlation_id FROM window_ingress)
+    )
+    SELECT min(started_at) AT TIME ZONE current_setting('TimeZone')
+      FROM starts, bounds b
+     WHERE started_at > b.lo AND started_at <= b.hi
        AND coalesce(correlation_id, '') <> coalesce(:correlation_id, '')
     """
 )
@@ -519,11 +553,11 @@ def resolve_due_acts(
             ).scalar()
             if first is not None:
                 outcome = ActOutcomeV1(value=1.0, observed_at=_aware(first), source="resolver",
-                                       note="juniper chat turn before horizon (chat_history_log)")
+                                       note="juniper chat turn started before horizon")
                 replied += 1
             elif now >= horizon_at:
                 outcome = ActOutcomeV1(value=0.0, observed_at=horizon_at, source="resolver",
-                                       note="no juniper chat turn before horizon (chat_history_log)")
+                                       note="no juniper chat turn started before horizon")
                 not_replied += 1
             else:
                 continue

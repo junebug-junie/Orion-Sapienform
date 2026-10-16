@@ -68,6 +68,13 @@ instruction-tuned VLMs; on BLIP the task returns no caption with
 see `vlm_family.resolve_caption_prompt`)
 and `request.caption_null_answers` (an exact "nothing notable" reply becomes
 `caption = {text: "", confidence: 0.0, rejected_reason: "null_answer"}`).
+Since 2026-10-16 they also carry `request.caption_crop_boxes` (frame-pixel
+`[x1, y1, x2, y2]` detector boxes) and `request.caption_crop_pad`: the host
+captions the union of the boxes, padded and grown to at least 448 px a side
+(`app/caption_crop.py`), instead of the whole 2560x1920 frame shrunk to
+`VISION_VLM_QWEN_MAX_PIXELS`. The crop used is returned as `crop_box`, and a
+rejected caption logs the model's raw reply
+(`caption_frame rejected reason=... raw=...`).
 They address the frame by `image_path`, so the compose file mounts
 `/mnt/telemetry/vision/frames` read-only, and the lane's artifact broadcast is
 opened for `stream_id=walkway` only (`VISION_ARTIFACT_BROADCAST_STREAMS` /

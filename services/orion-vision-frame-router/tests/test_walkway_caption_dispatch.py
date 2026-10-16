@@ -130,7 +130,10 @@ def test_real_config_turns_blip_off_for_walkway_only():
     assert walkway["baseline"]["request"]["want_caption"] is False
     cfg = policy.caption_dispatch_for("walkway", "walkway")
     assert cfg["enabled"] is True
-    assert "nothing notable" in cfg["prompt"] and cfg["null_answers"] == ["nothing notable"]
+    # 2026-10-16: no existence question / null answer (Qwen2-VL-2B said
+    # "nothing notable" to 24/24 frames with a person or car in them).
+    assert "nothing notable" not in cfg["prompt"] and not cfg.get("null_answers")
+    assert cfg["crop_to_detections"] is True
     assert set(cfg["labels"]) >= {"person", "dog", "bicycle", "stroller", "vehicle", "package", "mail truck"}
     # cam0/carbon unchanged: BLIP caption, no VLM lane.
     for stream in ("cam0", "carbon"):
@@ -157,8 +160,8 @@ async def test_detection_in_reply_sends_caption_task_to_qwen_lane():
     task = env.payload
     assert task["task_type"] == "caption_frame"
     assert Path(task["request"]["image_path"]).name.startswith("walkway_")
-    assert "nothing notable" in task["request"]["caption_prompt"]
-    assert task["request"]["caption_null_answers"] == ["nothing notable"]
+    assert task["request"]["caption_prompt"].startswith("In one short sentence")
+    assert "caption_null_answers" not in task["request"]
     assert task["meta"]["stream_id"] == "walkway"
     assert task["meta"]["source_objects"] == [{"label": "person", "score": 0.62, "box_xyxy": [100.0, 200.0, 180.0, 420.0]}]
     assert str(env.correlation_id) != corr and env.reply_to.endswith(str(env.correlation_id))
@@ -316,3 +319,42 @@ async def test_same_scene_is_not_recaptioned_until_it_changes_or_ages_out():
     cam.last_caption_dispatch_ts = time.time() - 301  # past same_scene_ttl_sec
     await frame([SKELETON])
     assert d.metrics.caption_dispatched_total == 3
+
+
+@pytest.mark.asyncio
+async def test_caption_task_carries_the_detector_boxes_for_a_crop():
+    """2026-10-16: Qwen read the whole 2560x1920 frame at ~1 MP and said
+    "nothing notable" on 24/24 tasks. The caption task now names the boxes
+    so the host can show the model the detector's region."""
+    d, bus = _make()
+    corr, _ = await _triggered_primary(d, bus)
+    await d.handle_reply_envelope(_reply(corr, objects=[PERSON, SKELETON]))
+    _, env = bus.published[-1]
+    req = env.payload["request"]
+    # Same boxes as meta.source_objects (highest score first).
+    assert req["caption_crop_boxes"] == [list(PERSON.box_xyxy), list(SKELETON.box_xyxy)]
+    assert req["caption_crop_pad"] == pytest.approx(0.5)
+
+
+def test_crop_off_sends_no_boxes():
+    policy = FrameDispatchPolicy.load(Settings(ROUTER_POLICY_PATH=str(REAL_POLICY)))
+    cfg = dict(policy.caption_dispatch_for("walkway", "walkway"), crop_to_detections=False)
+    task = type("T", (), {"image_path": "/f/walkway_x.jpg", "percept_sha256": None, "camera_id": "walkway",
+                          "frame_ts": 1.0, "dispatch_tier": "triggered", "correlation_id": "c"})()
+    objs = [{"label": "person", "score": 0.6, "box_xyxy": [1.0, 2.0, 3.0, 4.0]}]
+    req = FrameDispatchPolicy.build_caption_task_request(task, stream_id="walkway", source_objects=objs, cfg=cfg).request
+    assert "caption_crop_boxes" not in req
+
+
+def test_no_caption_streak_counts_up_and_resets_on_a_caption():
+    """A lane that answers but never captions must show up as a streak, not
+    hide inside healthy reply counters (2026-10-16: 24/24 null_answer)."""
+    m = RouterMetrics()
+    for _ in range(24):
+        m.record_caption_no_caption("null_answer")
+    assert m.caption_no_caption_streak == 24
+    m.record_captioned()
+    assert m.caption_no_caption_streak == 0 and m.caption_captioned_total == 1
+    # Failures (lane down) are a different signal and do not touch the streak.
+    m.record_caption_failure("timeout")
+    assert m.caption_no_caption_streak == 0

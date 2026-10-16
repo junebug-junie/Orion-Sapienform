@@ -49,6 +49,11 @@ def main(argv=None) -> int:
     ap.add_argument("--limit", type=int, default=10)
     ap.add_argument("--device", default="cpu")
     ap.add_argument("--prompt", default=None, help="qwen only: try this prompt instead of the configured one")
+    ap.add_argument("--crop-box", default=None,
+                    help="qwen only: x1,y1,x2,y2 detector box to crop to (as caption_dispatch does), "
+                         "applied to every frame. 2026-10-16: frames WITH a person/car in them are the "
+                         "case that matters -- the 10-15 prompt was chosen on empty frames only and "
+                         "then said 'nothing notable' to every real one.")
     args = ap.parse_args(argv)
 
     from app import runner as runner_mod
@@ -60,7 +65,12 @@ def main(argv=None) -> int:
     request_extra: dict = {}
     if args.mode == "qwen":
         cfg = walkway_caption_cfg()
-        request_extra = {"caption_prompt": args.prompt or cfg["prompt"], "caption_null_answers": cfg["null_answers"]}
+        request_extra = {"caption_prompt": args.prompt or cfg["prompt"]}
+        if cfg.get("null_answers"):
+            request_extra["caption_null_answers"] = cfg["null_answers"]
+        if args.crop_box:
+            request_extra["caption_crop_boxes"] = [[float(v) for v in args.crop_box.split(",")]]
+            request_extra["caption_crop_pad"] = float(cfg.get("crop_pad", 0.5))
     model_id = settings.VISION_VLM_MODEL_ID
     if (args.mode == "qwen") != ("qwen" in model_id.lower()):
         print(f"VISION_VLM_MODEL_ID={model_id!r} does not match --mode {args.mode}", file=sys.stderr)
@@ -85,6 +95,7 @@ def main(argv=None) -> int:
             "caption": cap.get("text"),
             "confidence": cap.get("confidence"),
             "rejected_reason": cap.get("rejected_reason"),
+            "crop_box": out.get("crop_box"),
             "becomes_caption": bool(cap.get("text")),
             "warnings": warnings,
             "seconds": round(time.time() - t0, 2),

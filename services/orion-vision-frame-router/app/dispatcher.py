@@ -22,6 +22,10 @@ from .host_trigger import extract_host_trigger_labels, stream_id_from_host_resul
 from .metrics import RouterMetrics
 from .policy import FrameDispatchPolicy
 from .settings import Settings
+
+# A caption lane that answers this many times in a row without a caption is
+# logged as silent (and again every this-many replies).
+CAPTION_NO_CAPTION_WARN_STREAK = 10
 from .state import RouterState
 
 if TYPE_CHECKING:
@@ -408,12 +412,19 @@ class FrameDispatcher:
             # Only the yield moves; replies_ok/failed stay the athena host's.
             organ.record_caption_lane(_organ_stream(task.stream_id, task.camera_id), captioned=True)
         if text:
-            self.metrics.caption_captioned_total += 1
+            self.metrics.record_captioned()
             logger.info("[ROUTER] caption_ok stream_id={} corr={} text={!r}", task.stream_id, task.correlation_id, text[:160])
         else:
             reason = (caption.rejected_reason if caption is not None else None) or "no_caption"
             self.metrics.record_caption_no_caption(reason)
             logger.info("[ROUTER] caption_none stream_id={} corr={} reason={}", task.stream_id, task.correlation_id, reason)
+            streak = self.metrics.caption_no_caption_streak
+            if streak >= CAPTION_NO_CAPTION_WARN_STREAK and streak % CAPTION_NO_CAPTION_WARN_STREAK == 0:
+                logger.warning(
+                    "[ROUTER] caption_lane_silent stream_id={} streak={} counts={} -- the VLM lane answers but "
+                    "never captions; read the host's 'caption_frame rejected ... raw=' log",
+                    task.stream_id, streak, dict(self.metrics.caption_no_caption_counts),
+                )
 
     async def sweep_timeouts(self, *, now: float) -> int:
         async with self._state_lock:

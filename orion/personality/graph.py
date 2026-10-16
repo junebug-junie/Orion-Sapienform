@@ -66,7 +66,9 @@ class GraphParams:
     seed_weight: float = 0.5  # lane "self_inquiry_seed"
     lane_cap: float = 1.5  # max ln(1 + recent hits) one lane contributes (~4 recent hits)
     promote_min_lanes: int = 2  # distinct lanes, NOT counting "self_inquiry_seed"
-    promote_lane_min_recent: float = 2.0  # recent hits for a lane to count toward promotion
+    # A lane counts toward promotion with >= 2 hits, the older within one half-life (1 + 0.5).
+    # 2.0 was unreachable across ticks: the first hit fades before the second lands (1.9997).
+    promote_lane_min_recent: float = 1.5
     promote_min_evidence: int = 3
     candidate_ttl_days: float = 7.0  # candidate not reinforced for this long -> retired
     retire_below_weight: float = 0.25  # active node faded below this -> retired

@@ -244,7 +244,7 @@ def _w(lane_recent: dict[str, float]) -> float:
 def test_params_match_the_documented_formula():
     p = DEFAULT_PARAMS
     assert (p.lane_gain, p.choice_gain, p.seed_weight, p.lane_cap) == (1.0, 2.0, 0.5, CAP)
-    assert (p.promote_min_lanes, p.promote_lane_min_recent, p.promote_min_evidence) == (2, 2.0, 3)
+    assert (p.promote_min_lanes, p.promote_lane_min_recent, p.promote_min_evidence) == (2, 1.5, 3)
 
 
 def test_match_reinforces_and_far_evidence_creates_candidate():
@@ -372,14 +372,27 @@ def test_promotion_counts_only_lanes_at_or_above_the_recent_floor():
                   lane_recent={"dream": 3.0, "journal": journal_recent})
         res = apply_fade([n], now=NOW)
         return res.nodes[0].status if res.nodes else n.status
-    assert tick(1.99) == "candidate"
-    assert tick(2.0) == "active"
-    # Two hits that have faded below the floor no longer count.
+    assert tick(1.49) == "candidate"
+    assert tick(1.5) == "active"
+    # Two hits whose older one is past a half-life (1 + < 0.5) no longer count.
     faded = _node(status="candidate", lane_counts={"dream": 3, "journal": 2},
-                  lane_recent={"dream": 4.0, "journal": 2.0}, updated_at=NOW - timedelta(days=1))
+                  lane_recent={"dream": 3.0, "journal": 1.4}, updated_at=NOW - timedelta(days=1))
     res = apply_fade([faded], now=NOW)
-    assert res.nodes[0].lane_recent["journal"] == pytest.approx(2.0 * HALF)
+    assert res.nodes[0].lane_recent["journal"] == pytest.approx(1.4 * HALF)
     assert res.nodes[0].status == "candidate"
+
+
+def test_two_hits_in_separate_ticks_promote_a_lane():
+    # Regression (2026-10-16): with a 2.0 floor the first hit had faded by the second (1.9997),
+    # so a lane needed three hits unless two landed in one tick.
+    n = _node(status="candidate", lane_counts={"dream": 3}, lane_recent={"dream": 3.0},
+              evidence_count=3)
+    first = fold([n], [_ev(_axis(0), "journal", at=NOW - timedelta(minutes=1))], now=NOW).nodes[0]
+    assert first.status == "candidate"
+    later = NOW + timedelta(days=3)
+    second = fold([first], [_ev(_axis(0), "journal", at=later - timedelta(minutes=1))], now=later).nodes[0]
+    assert 1.5 <= second.lane_recent["journal"] < 2.0
+    assert second.status == "active"
 
 
 def test_seeds_alone_never_promote_but_behavior_can():

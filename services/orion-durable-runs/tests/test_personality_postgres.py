@@ -112,12 +112,15 @@ TEXT = "Continuity in my own record is what I keep coming back to."
 
 async def seed_rows(pool, at):
     """One row per lane at ``at`` (the same theme in dream, journal and chat)."""
-    await ex(pool, "INSERT INTO dream_hypothesis VALUES ('h1', 'c', 'a', %(t)s, 'because', %(at)s)", {"t": TEXT, "at": at})
+    # The theme recurs in two lanes (two hits each: a promoting lane needs lane_recent >= 2) and once in journal.
+    await ex(pool, "INSERT INTO dream_hypothesis VALUES ('h1', 'c', 'a', %(t)s, 'because', %(at)s), "
+                   "('h2', 'c', 'a', %(t)s, 'again', %(at)s)", {"t": TEXT, "at": at})
     await ex(pool, "INSERT INTO journal_entries (entry_id, created_at, title, body, source_kind) VALUES "
                    "('j1', %(at)s, 'Note', %(t)s, 'metacog'), ('j2', %(at)s, 'Reading', 'A mirror.', 'world_pulse')",
              {"t": TEXT, "at": at})
     await ex(pool, "INSERT INTO chat_history_log (id, prompt, response, created_at) VALUES "
-                   "('c1', 'hi', %(t)s, %(naive)s), ('o1', '', 'An outreach line I sent.', %(naive)s)",
+                   "('c1', 'hi', %(t)s, %(naive)s), ('c2', 'again', %(t)s, %(naive)s), "
+                   "('o1', '', 'An outreach line I sent.', %(naive)s)",
              {"t": TEXT, "naive": at.replace(tzinfo=None)})
     await ex(pool, "INSERT INTO substrate_reverie_thought (thought_id, created_at, interpretation) VALUES "
                    "('r1', %(at)s, 'The cabinet runs warm.'), ('r2', %(at)s, '')", {"at": at})
@@ -160,8 +163,9 @@ def test_full_loop_on_postgres():
         assert "chat:pre" not in ids and "journal:j2" not in ids
         active = await q(pool, "SELECT * FROM personality_disposition WHERE status = 'active'")
         assert len(active) == 1 and set(active[0]["lane_counts"]) == {"dream", "journal", "chat"}
+        assert set(active[0]["lane_recent"]) == {"dream", "journal", "chat"}
         chat_cur = (await q(pool, "SELECT * FROM personality_cursor WHERE source = 'chat'"))[0]
-        assert chat_cur["cursor_at"] == T0 + timedelta(minutes=1) and chat_cur["cursor_ref"] == "c1"
+        assert chat_cur["cursor_at"] == T0 + timedelta(minutes=1) and chat_cur["cursor_ref"] == "c2"
 
         # Re-upserted outcome: completed_at moves, the run is read again, nothing double-counts.
         before = await q(pool, "SELECT disposition_id, evidence_count, chosen_count FROM personality_disposition "
@@ -173,6 +177,10 @@ def test_full_loop_on_postgres():
         after = await q(pool, "SELECT disposition_id, evidence_count, chosen_count FROM personality_disposition "
                               "ORDER BY disposition_id")
         assert before == after
+        # The fade-only tick wrote lane_recent through the light UPDATE (it decays with the weight).
+        (faded,) = await q(pool, "SELECT lane_recent FROM personality_disposition WHERE disposition_id = %(d)s",
+                           {"d": active[0]["disposition_id"]})
+        assert all(faded["lane_recent"][k] < active[0]["lane_recent"][k] for k in faded["lane_recent"])
 
         store = PersonalityStore(pool)
         frame = await store.frame(clock.at)

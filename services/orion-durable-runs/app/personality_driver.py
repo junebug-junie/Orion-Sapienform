@@ -27,7 +27,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any, Awaitable, Callable, Optional, Sequence
 
-from orion.personality.graph import ORIGIN_SEED, SEED_LANE, Evidence, FoldResult, Node, apply_fade, fold, seed_nodes
+from orion.personality.graph import Evidence, FoldResult, Node, apply_fade, fold, seed_nodes
 
 from app.personality_sources import (
     READ_LAG_SEC,
@@ -119,9 +119,7 @@ def accept(items: Sequence[SourceItem], existing: set[str], vectors: dict[str, O
 
 
 def merge(seeded: Optional[FoldResult], folded: FoldResult, input_ids: set[str]) -> FoldResult:
-    """Seed result + fold result, deduped (the fold's copy of a node wins). A node born in this
-    fold from self-inquiry evidence alone is a seed node, not recurrence (``fold`` labels every
-    node it creates ``recurrence``)."""
+    """Seed result + fold result, deduped (the fold's copy of a node wins)."""
     nodes: dict[str, Node] = {}
     history: dict[tuple[str, datetime], Any] = {}
     evidence = []
@@ -133,9 +131,6 @@ def merge(seeded: Optional[FoldResult], folded: FoldResult, input_ids: set[str])
         for h in res.history:
             history[(h.disposition_id, h.at)] = h
         evidence.extend(res.evidence_rows)
-    for n in folded.nodes:
-        if n.disposition_id not in input_ids and set(n.lane_counts) == {SEED_LANE}:
-            n.origin = ORIGIN_SEED
     return FoldResult(nodes=list(nodes.values()), evidence_rows=evidence, history=list(history.values()))
 
 

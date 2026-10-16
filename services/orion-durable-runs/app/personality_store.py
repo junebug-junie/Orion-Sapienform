@@ -29,9 +29,10 @@ CHOICE_STYLE_WINDOW_DAYS = 14
 HISTORY_POINTS = 60
 
 FRAME_NODE_COLUMNS = ("disposition_id, origin, status, label, label_similarity, centroid_n, weight, evidence_count, "
-                      "lane_counts, chosen_count, first_seen_at, last_reinforced_at, retired_at, updated_at")
+                      "lane_counts, chosen_count, first_seen_at, last_reinforced_at, retired_at, updated_at, lane_recent")
 NODE_COLUMNS = ("disposition_id, origin, status, label, label_similarity, centroid, centroid_n, weight, "
-                "evidence_count, lane_counts, chosen_count, first_seen_at, last_reinforced_at, retired_at, updated_at")
+                "evidence_count, lane_counts, chosen_count, first_seen_at, last_reinforced_at, retired_at, updated_at, "
+                "lane_recent")
 
 INSERT_EVIDENCE_SQL = """
 INSERT INTO personality_evidence (evidence_id, lane, source_ref, occurred_at, excerpt, disposition_id,
@@ -43,22 +44,23 @@ ON CONFLICT (evidence_id) DO NOTHING
 UPSERT_NODE_SQL = """
 INSERT INTO personality_disposition (disposition_id, origin, status, label, label_similarity, centroid,
   centroid_n, weight, evidence_count, lane_counts, chosen_count, first_seen_at, last_reinforced_at,
-  retired_at, updated_at)
+  retired_at, updated_at, lane_recent)
 VALUES (%(disposition_id)s, %(origin)s, %(status)s, %(label)s, %(label_similarity)s, %(centroid)s::real[],
   %(centroid_n)s, %(weight)s, %(evidence_count)s, %(lane_counts)s::jsonb, %(chosen_count)s, %(first_seen_at)s,
-  %(last_reinforced_at)s, %(retired_at)s, %(updated_at)s)
+  %(last_reinforced_at)s, %(retired_at)s, %(updated_at)s, %(lane_recent)s::jsonb)
 ON CONFLICT (disposition_id) DO UPDATE SET origin = EXCLUDED.origin, status = EXCLUDED.status,
   label = EXCLUDED.label, label_similarity = EXCLUDED.label_similarity, centroid = EXCLUDED.centroid,
   centroid_n = EXCLUDED.centroid_n, weight = EXCLUDED.weight, evidence_count = EXCLUDED.evidence_count,
   lane_counts = EXCLUDED.lane_counts, chosen_count = EXCLUDED.chosen_count,
   first_seen_at = EXCLUDED.first_seen_at, last_reinforced_at = EXCLUDED.last_reinforced_at,
-  retired_at = EXCLUDED.retired_at, updated_at = EXCLUDED.updated_at
+  retired_at = EXCLUDED.retired_at, updated_at = EXCLUDED.updated_at, lane_recent = EXCLUDED.lane_recent
 """
 # Fade-only change (no evidence folded into the node this tick): skip rewriting the 1024-float
-# centroid. Every non-retired node fades every tick, so this is the common case.
+# centroid. Every non-retired node fades every tick, so this is the common case. lane_recent fades
+# with the weight, so it is written here too (a few keys of jsonb).
 UPDATE_NODE_WEIGHT_SQL = """
 UPDATE personality_disposition SET status = %(status)s, weight = %(weight)s, retired_at = %(retired_at)s,
-  updated_at = %(updated_at)s
+  updated_at = %(updated_at)s, lane_recent = %(lane_recent)s::jsonb
 WHERE disposition_id = %(disposition_id)s
 """
 INSERT_HISTORY_SQL = """
@@ -86,6 +88,16 @@ class TickWrite:
     cursors: dict[str, Cursor] = field(default_factory=dict)
 
 
+def _lane_recent(raw: Any) -> dict[str, float]:
+    if isinstance(raw, str):
+        raw = json.loads(raw)
+    return {str(k): float(v) for k, v in (raw or {}).items()}
+
+
+def _json_lane_recent(n: Node) -> str:
+    return json.dumps({k: float(v) for k, v in (n.lane_recent or {}).items()}, sort_keys=True)
+
+
 def node_from_row(r: Mapping[str, Any]) -> Node:
     lane_counts = r.get("lane_counts") or {}
     if isinstance(lane_counts, str):
@@ -97,6 +109,7 @@ def node_from_row(r: Mapping[str, Any]) -> Node:
         evidence_count=int(r["evidence_count"] or 0), lane_counts={str(k): int(v) for k, v in lane_counts.items()},
         chosen_count=int(r["chosen_count"] or 0), first_seen_at=r["first_seen_at"],
         last_reinforced_at=r["last_reinforced_at"], retired_at=r["retired_at"], updated_at=r["updated_at"],
+        lane_recent=_lane_recent(r.get("lane_recent")),
     )
 
 
@@ -107,7 +120,7 @@ def node_row(n: Node) -> dict:
         "centroid_n": int(n.centroid_n), "weight": float(n.weight), "evidence_count": int(n.evidence_count),
         "lane_counts": json.dumps(n.lane_counts, sort_keys=True), "chosen_count": int(n.chosen_count),
         "first_seen_at": n.first_seen_at, "last_reinforced_at": n.last_reinforced_at, "retired_at": n.retired_at,
-        "updated_at": n.updated_at,
+        "updated_at": n.updated_at, "lane_recent": _json_lane_recent(n),
     }
 
 
@@ -129,8 +142,8 @@ def cursor_rows(cursors: Mapping[str, Cursor], now: datetime) -> list[dict]:
 
 
 def node_key(n: Node) -> tuple:
-    """Every column the weight/status-only UPDATE does NOT write. If any of these moved, the node
-    gets a full upsert."""
+    """Every column the weight/status-only UPDATE does NOT write (it writes status, weight,
+    retired_at, updated_at, lane_recent). If any of these moved, the node gets a full upsert."""
     return (n.origin, n.label, n.label_similarity, n.centroid_n, n.evidence_count, n.chosen_count,
             json.dumps(n.lane_counts, sort_keys=True), n.first_seen_at, n.last_reinforced_at)
 
@@ -142,7 +155,8 @@ def split_nodes(nodes: Sequence[Node], loaded: Mapping[str, tuple]) -> tuple[lis
         prev = loaded.get(n.disposition_id)
         if prev is not None and prev == node_key(n):
             light.append({"disposition_id": n.disposition_id, "status": n.status, "weight": float(n.weight),
-                          "retired_at": n.retired_at, "updated_at": n.updated_at})
+                          "retired_at": n.retired_at, "updated_at": n.updated_at,
+                          "lane_recent": _json_lane_recent(n)})
         else:
             full.append(node_row(n))
     return full, light
@@ -228,7 +242,7 @@ class PersonalityStore:
 
     async def dispositions(self, status: str = "active", limit: int = 50) -> list[dict]:
         sql = ("SELECT disposition_id, origin, status, label, label_similarity, centroid_n, weight, evidence_count, "
-               "lane_counts, chosen_count, first_seen_at, last_reinforced_at, retired_at, updated_at "
+               "lane_counts, lane_recent, chosen_count, first_seen_at, last_reinforced_at, retired_at, updated_at "
                "FROM personality_disposition")
         params: dict = {"limit": limit}
         if status != "all":

@@ -233,6 +233,7 @@ def test_split_nodes_rewrites_centroid_only_when_folded_or_new():
     full, light = split_nodes([faded_a, reinforced_b, node("c")], loaded)
     assert [r["disposition_id"] for r in full] == ["b", "c"] and [r["disposition_id"] for r in light] == ["a"]
     assert "centroid" not in light[0] and light[0]["status"] == "retired"
+    assert "lane_recent" in light[0] and "lane_recent" in UPDATE_NODE_WEIGHT_SQL
     # Any column the light UPDATE does not write forces a full upsert (here lane_counts alone).
     full, light = split_nodes([replace(a, lane_counts={"chat": 1, "dream": 1})], loaded)
     assert [r["disposition_id"] for r in full] == ["a"] and light == []
@@ -478,18 +479,30 @@ def test_recurrence_across_lanes_promotes_and_tick_without_evidence_persists_fad
     drv, store, reader, emb, clock = world()
     asyncio.run(drv.tick())
     text = "Continuity in my own record is what I keep coming back to."
+    # One hit in each of three lanes is breadth without recurrence: not promoted (a promoting lane
+    # needs lane_recent >= 2). Two hits in each of two lanes, same tick, promotes. (Across ticks the
+    # first hit has faded below 1.0, so two hits never reach 2.0 -- reducer edge, reported.)
+    once = "A single passing mention in three lanes."
     for lane, m in (("chat", 1), ("journal", 2), ("dream", 3)):
-        reader.add(lane, item(lane, f"{lane}1", utc(minutes=m), text))
+        reader.add(lane, item(lane, f"{lane}1", utc(minutes=m), once))
+    for lane, m in (("chat", 4), ("journal", 5)):
+        reader.add(lane, item(lane, f"{lane}2", utc(minutes=m), text))
+        reader.add(lane, item(lane, f"{lane}3", utc(minutes=m + 1), text))
     clock.at = utc(minutes=10)
     asyncio.run(drv.tick())
-    (n,) = [n for n in store.nodes.values() if n.origin == "recurrence"]
-    assert n.status == "active" and set(n.lane_counts) == {"chat", "journal", "dream"}
-    w0 = n.weight
-    clock.at = utc(days=7, minutes=10)
+    by_label = {n.label: n for n in store.nodes.values()}
+    assert by_label[once].status == "candidate" and set(by_label[once].lane_counts) == {"chat", "journal", "dream"}
+    n = next(n for n in store.nodes.values() if n.label.startswith("Continuity"))
+    assert n.status == "active" and n.lane_counts == {"chat": 2, "journal": 2}
+    r0 = dict(n.lane_recent)
+    clock.at = utc(days=7, minutes=20)
     out = asyncio.run(drv.tick())
     assert out["evidence"] == 0
     faded = store.nodes[n.disposition_id]
-    assert faded.weight == pytest.approx(w0 * 0.5 ** (7 / 14), rel=1e-6)
+    # Fade persists: lane_recent halves over 7 of 14 days and the weight is derived from it.
+    for lane, r in r0.items():
+        assert faded.lane_recent[lane] == pytest.approx(r * 0.5 ** (7 / 14), rel=1e-3)
+    assert 0 < faded.weight < n.weight
     assert faded.updated_at == clock.at
 
 

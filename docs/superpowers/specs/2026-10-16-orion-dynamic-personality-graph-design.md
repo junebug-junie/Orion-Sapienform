@@ -177,13 +177,13 @@ The Orion self card in #2646 P5 becomes a **view over this graph**: the top disp
 3. **Presence:** a live chat turn logs a personality coalition, and the Hub panel shows the same node ids.
 4. **Tone reached:** across a week, measured dials vary with which nodes won (not flat), and the dial distribution differs from the pre-launch baseline. Report both as numbers.
 5. **Surprise loop:** one out-of-character choice produces a self-inquiry question, and Orion's answer changes a node weight or creates an aspiration (row ids as evidence).
-6. **Vibe check:** Juniper reads side-by-side replies in Hub and says whether the tone changed. Her verdict is recorded, not inferred.
+6. **Vibe check:** Juniper reads side-by-side replies in Hub and says whether the tone changed. Her verdict is recorded, not inferred. Her ongoing per-turn verdict is the chat feedback button: thumbs up "Good tone" (`good_tone`) for a reply that does not sound like generic LLM voice, thumbs down "Bad tone" (`bad_tone`) for one that does. Both live in `chat_response_feedback.categories`, linked to the turn.
 
 Every new signal here (node weights, dials, surprise) goes through the metric quality gate before anything builds on it, and the findings go in that patch's PR.
 
 ## Recommended next patch (phase order)
 
-1. **P0, inventory and dial baseline (read-only).** List every lane that makes a choice and whether it keeps the alternatives. Compute the tone dials over the last month of Orion's chat replies to get the baseline. Run the dial-reachability test from missing question 3.
+1. **P0, inventory and dial baseline (read-only).** List every lane that makes a choice and whether it keeps the alternatives. Compute the tone dials over the last month of Orion's chat replies to get the baseline. Run the dial-reachability test from missing question 3. Check which dials separate Juniper's `good_tone` turns from her `bad_tone` turns. A dial that does not separate them is dropped or rethought before P3. (Juniper started tagging 2026-10-16; `bad_tone` was added the same day. Before that there were 2 `good_tone` rows and no tone thumbs-down rows, so this needs a few weeks of tags first.)
 2. **P1, contracts plus choice producers.** `PersonalityChoiceV1` with alternatives, from curiosity and outreach first.
 3. **P2, graph plus reducer.** Seed from `:SelfDefinition`, cost-scaled evidence with fade, retirement, history. Hub weight timeline.
 4. **P3, competition plus dials into chat.** Separate competition pool, coalition, dial constraints in the unified-turn prompt, dial measurement on every reply. Hub "this moment" view.

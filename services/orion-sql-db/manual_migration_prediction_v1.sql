@@ -27,7 +27,7 @@ CREATE TABLE IF NOT EXISTS prediction_model_run (
     usable_seasonalities   jsonb        NOT NULL DEFAULT '[]',
     refused_seasonalities  jsonb        NOT NULL DEFAULT '[]',
     n_windows              integer      NOT NULL,
-    metrics                jsonb        NOT NULL,   -- horizon_min -> {n, mae, rmse, bias, rel_mae, passed, coverage80, coverage95, width80}
+    metrics                jsonb        NOT NULL,   -- horizon_min -> {n, mae, rmse, bias, rel_mae, n_paired, p_win, passed, coverage80_holdout, coverage95_holdout, n_holdout, width80}
     assignment             jsonb        NOT NULL DEFAULT '{}',  -- blends: horizon_min -> model
     served_baseline        boolean      NOT NULL DEFAULT false,
     backtest_seconds       double precision NOT NULL,

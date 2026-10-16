@@ -29,6 +29,7 @@ import pandas as pd
 
 from app.backtest import (
     COVERAGE_BAND,
+    GATE_VERSION,
     QUANTILES,
     Selection,
     exceedance_probability,
@@ -179,6 +180,7 @@ class Engine:
         zoo = set(build_models(spec, list(usable)))
         fits = (champ["grain_min"] == spec.grain_min
                 and (champ.get("metrics") or {}).get("covariates", []) == list(spec.covariates)
+                and (champ.get("metrics") or {}).get("gate_version") == GATE_VERSION
                 and all(r.ndim == 2 and r.shape[1] == spec.max_horizon_steps for r in residuals.values())
                 and set(assignment) == set(spec.horizons_min) == set(base_assignment)
                 and set(assignment.values()) | set(base_assignment.values()) <= zoo)
@@ -211,7 +213,7 @@ class Engine:
         results = {name: run_backtest(series, spec, name, lambda u, n=name: build_models(spec, u)[n],
                                       self.backtest_windows, step, actuals=actuals, covariates=covariates)
                    for name in names}
-        sel = select_champion(results, spec)
+        sel = select_champion(results, spec, self.backtest_step_min)
         h = spec.max_horizon_steps
         res = {n: r.residuals for n, r in results.items()}
         champ_res = stitch(res, step_owner(sel.assignment, spec.grain_min, h))
@@ -233,7 +235,7 @@ class Engine:
                 (base_id, "baseline_blend", sel.baseline_assignment, True, base_res)):
             rows.append({**common, "run_id": run_id, "kind": kind, "model": kind,
                          "n_windows": int(np.any(np.isfinite(paths), axis=1).sum()),
-                         "metrics": {"covariates": list(spec.covariates)},
+                         "metrics": {"covariates": list(spec.covariates), "gate_version": GATE_VERSION},
                          "assignment": {str(k): v for k, v in assignment.items()},
                          "served_baseline": served_baseline, "backtest_seconds": blend_s,
                          "residual_paths": _clean(paths), "errors": []})

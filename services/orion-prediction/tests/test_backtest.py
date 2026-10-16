@@ -113,7 +113,8 @@ def test_a_lower_average_that_is_noise_is_not_served_but_a_real_win_is():
     h = sp.max_horizon_steps
     rng = np.random.default_rng(6)
     naive = rng.normal(0, 1.0, (40, h))
-    # 3% lower average, but window-to-window it is a coin flip: p ~ 0.3 -- the live 2026-10-16 case.
+    # A lower average (rel_mae ~0.86) that window-to-window is not consistent: p ~ 0.2, like the
+    # live 2026-10-16 losers (p 0.21 / 0.31).
     noisy = rng.normal(0, 0.97, (40, h))
     real = naive * 0.7 + rng.normal(0, 0.02, (40, h))
     res = {"naive": _result("naive", naive), "seasonal_naive": _result("seasonal_naive", naive * 3)}
@@ -178,3 +179,29 @@ def test_backtest_decides_seasonalities_per_window_and_scores_against_real_actua
     r = run_backtest(s, sp, "naive", make, 20, 36, actuals=actuals)
     assert () in seen                        # early windows: under 14 days of training -> no weekly
     assert np.isnan(r.residuals[-1, 0])      # newest window's actual is a real gap -> no residual
+
+
+def test_paired_test_keeps_false_wins_near_alpha_on_correlated_windows():
+    from scipy import stats
+
+    from app.backtest import paired_win_p
+    rng = np.random.default_rng(8)
+    n, phi, trials = 40, 0.5, 400
+    naive_fp = fp = power = 0
+    for _ in range(trials):
+        d = np.empty(n)
+        d[0] = rng.normal()
+        for i in range(1, n):
+            d[i] = phi * d[i - 1] + rng.normal(0, np.sqrt(1 - phi ** 2))
+        ref = np.full(n, 2.0)
+        fp += paired_win_p(ref + 0.3 * d, ref, lag=1)[0] < 0.05          # no true advantage
+        naive_fp += stats.ttest_1samp(0.3 * d, 0, alternative="less").pvalue < 0.05
+        power += paired_win_p(ref + 0.3 * d - 0.3, ref, lag=1)[0] < 0.05  # a real 1-sd advantage
+    assert naive_fp / trials > 0.12           # the iid t-test is fooled by correlated windows
+    assert fp / trials <= 0.09                # this one stays near alpha
+    assert power / trials >= 0.8              # and still finds a real win
+
+
+def test_overlap_lag_grows_with_horizon():
+    from app.backtest import overlap_lag
+    assert overlap_lag(5, 180) == 1 and overlap_lag(360, 180) == 1 and overlap_lag(1440, 180) == 7

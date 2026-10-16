@@ -8,7 +8,9 @@ Checks (exit 1 on failure):
 - monthly seasonality is refused on this history; daily is used.
 - every model produces residuals on >= 80% of windows (a model that silently fails is caught).
 - the served champion blend never loses to the better baseline at any horizon (rel_mae <= 1).
-- the blend's time-ordered holdout 80% coverage (newest third of windows) is not grossly off (>= 0.5).
+- the blend's time-ordered holdout 80% coverage (newest third of windows) is not rejected by a binomial
+  test against 0.8 at p < 0.01, counting only independent windows (holdout / ceil(h / step)). A fixed
+  band on ~13 overlapping windows fails by chance (13/13 covered happens 5.5% of the time).
 - every served non-baseline horizon won its paired test (p < GATE_ALPHA).
 - at least one horizon is served by a non-baseline model, or the report says the baseline is served.
 Also reports (not gated): a conditional scenario for +200 W chassis power and the AC covariate.
@@ -18,6 +20,7 @@ Also reports (not gated): a conditional scenario for +200 W chassis power and th
 from __future__ import annotations
 
 import argparse
+import math
 import gzip
 import json
 import sys
@@ -25,6 +28,7 @@ import time
 from pathlib import Path
 
 import pandas as pd
+from scipy.stats import binomtest
 
 SERVICE = Path(__file__).resolve().parents[1]
 REPO = SERVICE.parents[1]
@@ -69,7 +73,7 @@ def main() -> int:
         results[name] = run_backtest(y, spec, name, lambda u, n=name: build_models(spec, u)[n], args.windows, step,
                                      actuals=actuals, covariates=covariates)
         timing[name] = time.monotonic() - t0
-    sel = select_champion(results, spec)
+    sel = select_champion(results, spec, args.step_min)
     h = spec.max_horizon_steps
     res = {n: r.residuals for n, r in results.items()}
     blend = stitch(res, step_owner(sel.assignment, spec.grain_min, h))
@@ -87,9 +91,12 @@ def main() -> int:
         bm = blend_m[key]
         if bm["mae"] is None or bm["mae"] > ref + 1e-9:
             failures.append(f"{hm}min: blend MAE {bm['mae']} worse than best baseline {ref}")
-        c = bm["coverage80_holdout"]
-        if c is None or c < 0.5:
-            failures.append(f"{hm}min: blend holdout coverage80 {c}")
+        c, n_h = bm["coverage80_holdout"], bm["n_holdout"]
+        n_eff = max(1, n_h // max(1, math.ceil(hm / args.step_min)))
+        if c is None:
+            failures.append(f"{hm}min: no holdout coverage")
+        elif binomtest(round(c * n_eff), n_eff, 0.8).pvalue < 0.01:
+            failures.append(f"{hm}min: blend holdout coverage80 {c:.2f} rejects 0.8 ({n_eff} independent windows)")
         served = sel.assignment[hm]
         if served not in BASELINES and not (sel.metrics[served][key]["p_win"] < GATE_ALPHA):
             failures.append(f"{hm}min: {served} served without a significant win")
@@ -108,7 +115,7 @@ def main() -> int:
                           f"/{'-' if pw is None else f'{pw:.2f}'}{mark}").rjust(19))
         print(name.ljust(20) + "".join(cells) + f"{timing[name]:10.1f}")
     print("\ncells: MAE C / MAE relative to the better baseline / paired-win p; * = serves that horizon")
-    print("blend:", {hm: f"MAE {blend_m[str(hm)]['mae']:.3f} cov80 {blend_m[str(hm)]['coverage80_holdout']:.2f}"
+    print("blend:", {hm: f"MAE {blend_m[str(hm)]['mae']:.3f} cov80 {'-' if blend_m[str(hm)]['coverage80_holdout'] is None else format(blend_m[str(hm)]['coverage80_holdout'], '.2f')}"
                      for hm in spec.horizons_min})
     print("assignment:", sel.assignment, "served_baseline:", sel.served_baseline)
 

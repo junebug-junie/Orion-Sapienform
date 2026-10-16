@@ -32,8 +32,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from orion.schemas.vision import VisionEventBundleItem
-
-CAMERA_CAPTION_EVENT_TYPE = "camera_caption"
+from orion.situational.street_material import CAMERA_CAPTION_EVENT_TYPE  # one definition, reader and writer
 CAPTION_TAG_MOTION_UNVERIFIED = "motion_unverified"
 NARRATIVE_MAX_CHARS = 400
 # A caption is a model's description of one frame, not a detection: same cap

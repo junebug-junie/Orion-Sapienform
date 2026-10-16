@@ -122,6 +122,10 @@ class CaptionGate:
             except (TypeError, ValueError):
                 continue
             if label in self._fixtures and score >= self.min_score and len(box) == 4:
+                try:
+                    box = [float(v) for v in box]
+                except (TypeError, ValueError):
+                    continue  # a malformed box is no evidence; never fail the flush
                 out.append((label, box))
         return out
 
@@ -144,7 +148,7 @@ class CaptionGate:
             "frame_ts": inputs.get("frame_ts"),
             "image_path": inputs.get("image_path"),
             "labels": list(dict.fromkeys(label for label, _ in moving)),
-            "boxes": [(label, [float(v) for v in box]) for label, box in moving],
+            "boxes": [(label, list(box)) for label, box in moving],
             "crop_boxes": crop if isinstance(crop, list) else None,
             "model": next(iter((art.model_fingerprints or {}).values()), None),
         }

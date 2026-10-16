@@ -163,3 +163,23 @@ def test_stationary_box_is_not_named_as_the_reason_it_passed():
     gate.apply("walkway", [(art, now + 1)], accepted_out=accepted)
     (rec,) = accepted
     assert rec["labels"] == ["stroller"]
+
+
+@pytest.mark.asyncio
+async def test_malformed_source_box_never_fails_the_flush():
+    svc = WindowService()
+    now = time.time()
+    art = _caption(STROLLER, now - 3)
+    art.inputs["source_objects"] = [
+        {"label": "person", "score": 0.6, "box_xyxy": ["a", "b", "c", "d"]},
+        {"label": "stroller", "score": 0.5, "box_xyxy": PRAM},
+    ]
+    with patch.object(svc.bus, "publish", new_callable=AsyncMock):
+        await _flush(svc, [{"artifact": art, "ts": now, "env": None}])
+    assert svc._m_caption_events_published == 1
+
+
+def test_writer_and_reader_share_one_event_type():
+    from orion.situational import street_material
+
+    assert CAMERA_CAPTION_EVENT_TYPE == street_material.CAMERA_CAPTION_EVENT_TYPE == "camera_caption"

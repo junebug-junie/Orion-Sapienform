@@ -72,11 +72,21 @@ def detector_labels_from_tags(raw: Any) -> list[str]:
     return out
 
 
+# Labels named in the caption label; the rest collapse to "+N" so a busy
+# frame (all 7 gate labels) cannot push the brief past the chat-stance clip.
+CAPTION_LABELS_NAMED = 3
+
+
 def label_camera_caption(text: str, detector_labels: Sequence[str], *, at: str | None = None) -> str:
-    """'camera caption[ at HH:MM] (one frame; detector saw person, stroller;
-    motion not verified): "A person is pushing a stroller…"'."""
-    when = f" at {at}" if at else ""
-    saw = f"detector saw {', '.join(detector_labels)}; " if detector_labels else ""
+    """'camera caption[ logged HH:MM] (one frame; detector saw person,
+    stroller; motion not verified): "A person is pushing a stroller…"'.
+    `at` is the row's write time (seconds after the frame), hence "logged"."""
+    when = f" logged {at}" if at else ""
+    labels = list(detector_labels)
+    named = ", ".join(labels[:CAPTION_LABELS_NAMED])
+    if len(labels) > CAPTION_LABELS_NAMED:
+        named += f" +{len(labels) - CAPTION_LABELS_NAMED}"
+    saw = f"detector saw {named}; " if labels else ""
     return f'camera caption{when} (one frame; {saw}motion not verified): "{text}"'
 GRADED_STATUSES: tuple[str, ...] = ("met", "missed")
 CALIBRATION_LOOKBACK_DAYS = 14
@@ -118,6 +128,7 @@ def dedupe_street_captions(
     max_age_sec: float,
     limit: int,
     max_chars: int = CAPTION_MAX_CHARS,
+    max_camera_captions: int = 1,
 ) -> list[dict[str, Any]]:
     """Walkway caption rows in (any order), the newest distinct fresh ones out.
 
@@ -131,6 +142,9 @@ def dedupe_street_captions(
     A `camera_caption` row (orion-vision-window, a detector-agreed VLM
     caption) comes back with its narrative already labelled as a caption of
     one frame (`label_camera_caption`), so no consumer can show it as a fact.
+    At most `max_camera_captions` of them are kept (newest first): Qwen words
+    each frame differently, so text dedupe cannot stop a busy street from
+    filling the list with captions and pushing out the council's narrative.
 
     Returns `{narrative, observed_at, age_sec, stream_id, event_id,
     event_type, caption_text, detector_labels}`, newest first; `caption_text`
@@ -151,14 +165,19 @@ def dedupe_street_captions(
     parsed.sort(key=lambda t: t[0], reverse=True)
     out: list[dict[str, Any]] = []
     seen: set[str] = set()
+    camera_kept = 0
     for ts, row in parsed:
         text = _clean(row.get("narrative"), max_chars)
         key = _norm_key(text)
         if not key or key in seen:
             continue
-        seen.add(key)
         event_type = str(row.get("event_type") or "")
         is_caption = event_type == CAMERA_CAPTION_EVENT_TYPE
+        if is_caption:
+            if camera_kept >= max_camera_captions:
+                continue
+            camera_kept += 1
+        seen.add(key)
         labels = detector_labels_from_tags(row.get("tags")) if is_caption else []
         out.append(
             {
@@ -342,13 +361,35 @@ REDUCER_EVENT_TYPES_SQL = (
     f"COALESCE(event_type, '') NOT IN ({_sql_str_list(WALKWAY_REDUCER_EVENT_TYPES)})"
 )
 
-STREET_CAPTIONS_SQL = (
+# Camera captions and council narratives are fetched as two LIMITed halves
+# (CAMERA_CAPTION_SQL_LIMIT newest captions + :limit newest others): one
+# caption every ~8 s on a busy street would otherwise fill the LIMIT and the
+# council's row would never be read at all. Shared by every SQL copy.
+CAMERA_CAPTION_SQL_LIMIT = 2
+CAMERA_CAPTION_SQL = f"event_type = '{CAMERA_CAPTION_EVENT_TYPE}'"
+NOT_CAMERA_CAPTION_SQL = f"COALESCE(event_type, '') <> '{CAMERA_CAPTION_EVENT_TYPE}'"
+
+
+def split_caption_sql(select_where: str, *, order: str, other_limit: str) -> str:
+    """`SELECT ... WHERE ...` (no ORDER/LIMIT) -> newest `other_limit`
+    non-caption rows UNION ALL newest CAMERA_CAPTION_SQL_LIMIT camera
+    captions, newest first. Subqueries keep it valid on Postgres and SQLite."""
+    return (
+        f"SELECT * FROM ({select_where} AND {NOT_CAMERA_CAPTION_SQL} {order} LIMIT {other_limit}) AS council_rows "
+        f"UNION ALL "
+        f"SELECT * FROM ({select_where} AND {CAMERA_CAPTION_SQL} {order} LIMIT {CAMERA_CAPTION_SQL_LIMIT}) AS caption_rows "
+        f"{order}"
+    )
+
+
+STREET_CAPTIONS_SQL = split_caption_sql(
     "SELECT stream_id, event_type, narrative, tags, created_at FROM vision_events "
     "WHERE stream_id IN :stream_ids "
     "AND narrative IS NOT NULL AND narrative <> '' "
     f"AND {REDUCER_EVENT_TYPES_SQL} "
-    "AND created_at >= :since "
-    "ORDER BY created_at DESC LIMIT :limit"
+    "AND created_at >= :since",
+    order="ORDER BY created_at DESC",
+    other_limit=":limit",
 )
 
 GRADED_EXPECTATIONS_SQL = (

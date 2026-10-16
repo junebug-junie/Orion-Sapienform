@@ -136,6 +136,7 @@ as one `vision.event.bundle` on `CHANNEL_CAPTION_EVENTS_PUB`
 only), and `evidence_refs` `artifact:`, `frame:`, `frame_ts:`, `box:<label>:`,
 `crop:`, `model:` (`app/caption_events.py`). Readers label these rows as a
 caption of one frame, never a checked fact
-(`orion/situational/street_material.py`). Counts:
+(`orion/situational/street_material.py`): at most one per consumer, fetched
+under its own SQL limit so it cannot crowd out the council row. Counts:
 `vision_window_caption_events_{published,failed}_total`. Tests:
 `tests/test_caption_events.py`.

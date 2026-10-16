@@ -64,13 +64,15 @@ def origins_for(n: int, h: int, n_windows: int, step: int, min_train: int) -> li
 
 def run_backtest(series: pd.Series, spec: SeriesSpec, name: str,
                  make_model: Callable[[list[Seasonality]], Forecaster], n_windows: int, step: int,
-                 actuals: pd.Series | None = None) -> BacktestResult:
+                 actuals: pd.Series | None = None, covariates: pd.DataFrame | None = None) -> BacktestResult:
     """``series``: the full regular view (short gaps filled). Training windows come from training_slice.
 
     ``make_model(usable)`` is called per window with the seasonalities *that window's* training data
     supports, so an early window never fits a cycle it has seen fewer than MIN_CYCLES times.
     ``actuals``: what residuals are measured against -- real readings only (no gap fill, exclusions
     masked), the same thing live scoring compares with. Defaults to ``series``.
+    ``covariates``: columns in spec.covariates order, on ``series``' index, real buckets only (no gap
+    fill, so nothing after an origin is interpolated into it); sliced to each window's training rows.
     """
     h = spec.max_horizon_steps
     min_train = MIN_TRAIN_STEPS_DAYS * 1440 // spec.grain_min
@@ -87,7 +89,10 @@ def run_backtest(series: pd.Series, spec: SeriesSpec, name: str,
             continue
         try:
             usable, _ = split_seasonalities(spec, len(train))
-            pred = make_model(usable).forecast(y, h, train.index)
+            model = make_model(usable)
+            X = covariates.reindex(train.index).to_numpy(dtype=float) if (
+                model.uses_covariates and covariates is not None) else None
+            pred = model.forecast(y, h, train.index, X)
         except Exception as exc:  # noqa: BLE001 -- one bad window is recorded, not fatal
             errors.append(f"{idx[o].isoformat()}: {type(exc).__name__}: {exc}"[:300])
             continue

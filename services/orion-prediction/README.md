@@ -28,6 +28,10 @@ Spec: `docs/superpowers/specs/2026-10-15-orion-prediction-service-design.md`.
 | `window_average_1h` | short-horizon smoother |
 | `mstl_ets`, `mstl_arima` | MSTL decomposition (cycles up to 1 day) + ETS / ARIMA trend |
 | `prophet` | changepoints + every declared seasonality as Fourier terms (incl. weekly, custom) |
+| `direct_ar` | one ridge regression per lead time from the temperature's own recent history (`app/direct.py`) |
+| `direct_arx` | the same plus the series' covariates (chassis watts, AC watts) as known at the origin -- never a future value |
+
+`direct_ar` vs `direct_arx` is a standing ablation: the scoreboard shows what the covariates add.
 
 A seasonality is used only when training holds 2 full cycles (monthly is refused today). MSTL
 skips cycles longer than a day: STL at the weekly period costs ~26 s per fit vs ~2.3 s.

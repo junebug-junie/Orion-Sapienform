@@ -752,6 +752,10 @@ def _maybe_render_mcp_config(
     )
 
 
+def _skills_disabled() -> bool:
+    return os.environ.get("HARNESS_FCC_DISABLE_SKILLS", "true").strip().lower() not in {"0", "false", "no", "off"}
+
+
 def _fcc_context_env(env: dict[str, str], *, n_ctx: Optional[int] = None) -> None:
     """Align llamacpp context ceiling + auto-compact with hub agent-claude.
 
@@ -832,6 +836,13 @@ def _build_subprocess_env(
     # shared checkout. See scripts/hooks/session_start_agent_board.py and
     # session_stop_agent_board.py, which no-op when this is set.
     env["ORION_FCC_SUBPROCESS"] = "1"
+    if _skills_disabled():
+        # Warm pool (chat replies) cannot take --disable-slash-commands (it breaks /clear), so it
+        # drops the CLI's built-in coding skills here instead: 26 -> 11 listed, /clear still
+        # resets (proved live 2026-10-16). context-mode's plugin skills stay listed.
+        env["CLAUDE_CODE_DISABLE_BUNDLED_SKILLS"] = "1"
+    else:
+        env.pop("CLAUDE_CODE_DISABLE_BUNDLED_SKILLS", None)
     _fcc_context_env(env, n_ctx=n_ctx)
     if _env_truthy("HARNESS_FCC_CONTEXT_MODE_HOOKS_ENABLED"):
         # Point the context-mode plugin's hooks + MCP server at the same
@@ -1355,6 +1366,13 @@ def build_claude_argv(
     else:
         argv = [claude_bin, "-p", prompt]
     argv.extend(["--output-format", "stream-json", "--verbose", "--model", model_id])
+    if prompt is not None and _skills_disabled():
+        # The CLI lists its own coding skills (claude-api, keybindings-help, ...) in every turn's
+        # context and has no per-skill filter. Orion has no skills of its own; 0 Skill calls in 5,056
+        # governor transcripts. Dropping the list frees ~6k chars of a 64k-token window.
+        # NOT for the warm pool (prompt=None): the flag also turns the built-in `/clear` into plain
+        # text, so the pool's reset handshake (conversation_reset) never arrives (proved live 2026-10-16).
+        argv.append("--disable-slash-commands")
     if task_anchor:
         # System-prompt text is never rewritten by CLI compaction (orion/harness/task_anchor.py).
         argv.extend(["--append-system-prompt", task_anchor])

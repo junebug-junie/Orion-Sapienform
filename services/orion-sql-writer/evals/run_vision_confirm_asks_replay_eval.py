@@ -2,8 +2,8 @@
 """Replay eval: which visual confirmation asks would open on deploy?
 
 Reads the LIVE walkway tables read-only (a READ ONLY transaction: it cannot
-write), copies them into a THROWAWAY database that has the three walkway
-migrations applied, and runs the real opener (``_open_asks``) there -- the
+write), copies them into a THROWAWAY database that has every walkway
+migration applied (incl. vision_split_v1), and runs the real opener (``_open_asks``) there -- the
 same SQL and rules the deployed loop will run. Prints individual ids, kinds,
 face counts, pair similarities and image counts. Never prints or copies
 pictures (only their refs are copied, and only counted in the output).
@@ -156,7 +156,7 @@ def run(live_dsn: str, scratch_dsn: str, now: datetime) -> dict:
     tz = ZoneInfo(cfg.local_tz)
     with live_e.connect() as live, scratch_e.begin() as scratch:
         live.execute(text("SET TRANSACTION READ ONLY"))
-        vi._check_tables(scratch)  # the scratch db must have all three migrations
+        vi._check_tables(scratch)  # the scratch db must have every walkway migration, incl. vision_split_v1
         scratch.execute(text("TRUNCATE orion_ask, vision_individual_pair_verdict, vision_individual_sighting, "
                              "vision_individual CASCADE"))
         copied = {

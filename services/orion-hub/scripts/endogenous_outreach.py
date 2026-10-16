@@ -3000,6 +3000,22 @@ class EndogenousOutreach:
             notification_title=notification_title,
             notification_type=notification_type,
         )
+        # Act ledger (rung 2): an unsolicited message is a say/ask act that expects
+        # Juniper to answer; orion-sql-writer closes it from chat_history_log.
+        # Solicited deliveries (collapse-mirror replies, the debug route) are replies
+        # to Juniper, not outreach, and must not train the outreach belief.
+        if not unsolicited:
+            return
+        from scripts.act_emit import publish_outreach_act
+
+        await publish_outreach_act(
+            self._bus,
+            text=text,
+            message_id=message_id,
+            correlation_id=correlation_id,
+            session_id=session_id,
+            source_tag=source_tag,
+        )
 
     def _push_to_sockets(
         self,

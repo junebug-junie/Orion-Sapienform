@@ -1191,6 +1191,11 @@ class Settings(BaseSettings):
         default=10800.0, alias="HUB_CURIOSITY_SELF_SENSE_EVAL_MIN_COOLDOWN_SEC"
     )
 
+    # Act ledger (rung 2, "doing on one track"): Orion's chat replies (say), outreach
+    # messages (say/ask) and web reads (look) publish act_opened/act_closed grammar events
+    # (orion/grammar/acts.py) that orion-sql-writer persists and grades into L10.
+    HUB_ACT_LEDGER_ENABLED: bool = Field(default=True, alias="HUB_ACT_LEDGER_ENABLED")
+
     HUB_ENDOGENOUS_OUTREACH_ENABLED: bool = Field(
         default=True, alias="HUB_ENDOGENOUS_OUTREACH_ENABLED"
     )

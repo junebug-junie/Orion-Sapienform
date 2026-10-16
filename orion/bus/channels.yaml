@@ -3853,3 +3853,13 @@ channels:
     stability: "experimental"
     since: "2026-09-10"
     description: "Lifecycle facts backed by queue timestamps and artifacts; Pub/Sub is not the status store."
+
+  - name: "orion:prediction:forecast"
+    kind: "event"
+    schema_id: "PredictionForecastV1"
+    message_kind: "prediction.forecast.v1"
+    producer_services: ["orion-prediction"]
+    consumer_services: ["orion-hardware-watch"]
+    stability: "experimental"
+    since: "2026-10-15"
+    description: "Latest served forecast per target series (backtest-gated champion, or the seasonal-naive baseline with served_baseline=true): point + split-conformal quantiles per horizon, and threshold exceedance probabilities from residual paths. One per completed grain bucket. hardware-watch shows the shed exceedance beside each reflex decision (observe-only). docs/superpowers/specs/2026-10-15-orion-prediction-service-design.md"

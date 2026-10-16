@@ -1,0 +1,39 @@
+name: orion-prediction tests
+
+on:
+  pull_request:
+    paths:
+      - "services/orion-prediction/**"
+      - "orion/schemas/prediction.py"
+      - "config/prediction/**"
+      - "services/orion-sql-db/manual_migration_prediction_v1.sql"
+      - ".github/workflows/orion-prediction-tests.yml"
+  push:
+    branches: [main]
+    paths:
+      - "services/orion-prediction/**"
+      - "orion/schemas/prediction.py"
+      - "config/prediction/**"
+      - "services/orion-sql-db/manual_migration_prediction_v1.sql"
+      - ".github/workflows/orion-prediction-tests.yml"
+
+jobs:
+  prediction:
+    name: prediction — unit tests + causal calibration + real cabinet replay
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r services/orion-prediction/requirements.txt pytest
+      - name: Unit tests
+        run: cd services/orion-prediction && PYTHONPATH=../..:. python -m pytest tests -q -p no:cacheprovider
+      - name: "Causal calibration eval (planted effects, many seeds: intervals cover, nulls stay null)"
+        run: cd services/orion-prediction && PYTHONPATH=../..:. python evals/run_causal_calibration_eval.py
+      - name: "Replay eval (committed real cabinet history: full zoo, per-horizon gate, blend never loses to baseline)"
+        run: cd services/orion-prediction && PYTHONPATH=../..:. python evals/run_cabinet_replay_eval.py --windows 16

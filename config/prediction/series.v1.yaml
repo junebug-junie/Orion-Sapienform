@@ -1,0 +1,55 @@
+# orion-prediction series registry. Loaded and validated by services/orion-prediction/app/series.py.
+# Spec: docs/superpowers/specs/2026-10-15-orion-prediction-service-design.md
+#
+# role: target    -> forecast every grain bucket, backtest-gated, scored live, published.
+# role: covariate -> loaded only for /scenario and causal analysis; never forecast on its own.
+# Every entry names its consumers; an entry nobody reads does not belong here.
+#
+# Durations: "<n>min", "<n>h", "<n>d". A seasonality is used only when the training window holds
+# at least 2 full cycles of it (the fit records the rest under refused_seasonalities).
+version: 1
+series:
+  - series_id: athena.cabinet_temp_c
+    role: target
+    source: {kind: biometrics, node: athena, key: cabinet_temp_c}
+    unit: C
+    grain: 5min
+    agg: mean
+    max_fill: 15min
+    transform: none
+    # The portable AC was installed 2026-09-26 (home_cooling_sample starts that day): a structural break.
+    train_from: "2026-09-26T00:00:00Z"
+    train_window: 21d
+    seasonalities:
+      - {name: daily, period: 1d, fourier_order: 6}
+      - {name: weekly, period: 7d, fourier_order: 3}
+      - {name: monthly, period: 30d, fourier_order: 2}   # refused until 60 days of post-break data exist
+    exclude: []
+    horizons: [5min, 15min, 1h, 6h, 24h]
+    thresholds:
+      # hardware-watch's reflex sheds at 34 C (HARDWARE_WATCH_HEAT_CONTROLLER=v2).
+      - {name: shed, value: 34.0, window: 30min}
+      # Switchback experiments may start only while this probability is under max_probability.
+      - {name: experiment_guard, value: 32.0, window: 30min, max_probability: 0.05}
+    covariates: [athena.chassis_watts, athena.cabinet_cooling_watts]
+    # hardware-watch shows the "shed" exceedance beside each reflex decision (observe-only). Exceedance
+    # is on the 5-min MEAN, so it understates a single raw reading crossing 34 C.
+    consumers: [hardware-watch, prediction-scoreboard, causal-effects]
+
+  - series_id: athena.chassis_watts
+    role: covariate
+    source: {kind: biometrics, node: athena, key: chassis_watts}
+    unit: W
+    grain: 5min
+    agg: mean
+    max_fill: 15min
+    consumers: [scenario, causal-effects]
+
+  - series_id: athena.cabinet_cooling_watts
+    role: covariate
+    source: {kind: cooling, role: cabinet_cooling}
+    unit: W
+    grain: 5min
+    agg: mean
+    max_fill: 15min
+    consumers: [scenario, causal-effects]

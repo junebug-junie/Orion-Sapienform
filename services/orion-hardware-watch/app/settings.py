@@ -60,6 +60,10 @@ class Settings(BaseSettings):
     # v1: the 2026-09-29 rules (AC-power incident + latched shed), the one-week rollback path.
     heat_controller: Literal["v1", "v2"] = Field("v2", alias="HARDWARE_WATCH_HEAT_CONTROLLER")
     reading_grace_sec: float = Field(300.0, gt=0, alias="HARDWARE_WATCH_READING_GRACE_SEC")
+    # orion-prediction forecast shown beside each reflex decision (observe-only; never sheds).
+    forecast_series: str = Field("athena.cabinet_temp_c", alias="HARDWARE_WATCH_FORECAST_SERIES")
+    forecast_threshold: str = Field("shed", alias="HARDWARE_WATCH_FORECAST_THRESHOLD")
+    forecast_stale_sec: float = Field(900.0, gt=0, alias="HARDWARE_WATCH_FORECAST_STALE_SEC")
     heat_lookahead_min: float = Field(20.0, ge=0, alias="HARDWARE_WATCH_HEAT_LOOKAHEAD_MIN")
     ac_low_mean_w: float = Field(140.0, gt=0, alias="HARDWARE_WATCH_AC_LOW_MEAN_W")
     ac_low_window_sec: float = Field(900.0, gt=0, alias="HARDWARE_WATCH_AC_LOW_WINDOW_SEC")

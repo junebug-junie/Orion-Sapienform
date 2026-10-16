@@ -9,7 +9,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import FastAPI, HTTPException
@@ -17,8 +17,10 @@ from pydantic import BaseModel, Field
 
 from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import ServiceRef
-from orion.core.bus.bus_service_chassis import ChassisConfig, HeartbeatOnly
+from orion.core.bus.bus_schemas import BaseEnvelope
+from orion.core.bus.bus_service_chassis import ChassisConfig, HeartbeatOnly, Hunter
 from orion.notify.client import NotifyClient
+from orion.schemas.prediction import PREDICTION_FORECAST_CHANNEL, PredictionForecastV1
 
 from app.settings import get_settings
 from app.store import PostgresStore
@@ -52,6 +54,18 @@ async def _tick_forever() -> None:
             pass
 
 
+async def _on_forecast(env: BaseEnvelope) -> None:
+    """orion-prediction's cabinet forecast -> shown beside the reflex (observe-only)."""
+    if watcher is None:
+        return
+    try:
+        fc = PredictionForecastV1.model_validate(env.payload or {})
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("hardware_watch_forecast_invalid err=%s", str(exc)[:300])
+        return
+    watcher.note_forecast(fc)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global watcher, _bus, _store
@@ -70,6 +84,13 @@ async def lifespan(app: FastAPI):
     logger.info("hardware_watch_ready enabled=%s controller=%s shed=%s urgent=%s test_hook=%s tick=%ss",
                 _settings.enabled, _settings.heat_controller, _settings.shed_enabled, _settings.urgent_enabled,
                 _settings.test_hook_enabled, _settings.tick_sec)
+    forecasts = Hunter(ChassisConfig(
+        service_name=_settings.service_name, service_version=_settings.service_version,
+        node_name=_settings.node_name, bus_url=_settings.orion_bus_url, bus_enabled=_settings.orion_bus_enabled,
+        heartbeat_interval_sec=_settings.heartbeat_interval_sec), handler=_on_forecast,
+        patterns=[PREDICTION_FORECAST_CHANNEL])
+    await forecasts.start_background()
+    _chassis.append(forecasts)
     _stop.clear()
     _tasks.append(asyncio.create_task(_tick_forever()))
     try:
@@ -112,6 +133,7 @@ async def health() -> dict[str, Any]:
         # v2 (D2): the reflex's own current claim. Orion's learned shed (orion/autonomy/self_shed.py,
         # D8) is refused only while this is active -- not by any open incident.
         "reflex_shed": watcher.reflex_snapshot() if watcher else None,
+        "forecast": watcher.forecast_view(datetime.now(timezone.utc)) if watcher else None,
         "last_tick_at": last.at.isoformat() if last and last.at else None,
         "last_tick_ok": last.ok if last else None,
         "errors": last.errors if last else {},

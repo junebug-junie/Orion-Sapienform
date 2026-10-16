@@ -3819,6 +3819,54 @@ The page polls every 60 s only while viewing today and while the Hub panel is vi
 Code: `scripts/temporal_self_routes.py`, `templates/temporal_self.html`, `static/js/temporal_self.js`,
 `static/js/temporal_self_tab.js`.
 
+## Personality tab (what Orion keeps returning to)
+
+The **Personality** tab (`#personality`, standalone at `/personality`) is read-only observability for
+Orion's personality graph (spec `2026-10-16-orion-dynamic-personality-graph-design.md` rev 2,
+section 7). It shows, top to bottom:
+
+- **What Orion sees right now**: the exact cue text chat stance, reverie, curiosity kickoff and
+  outreach are handed. The Hub renders it server-side with `orion.personality.cue.project_personality_cue`
+  (the same pure function the lanes call) at its default max age (3600 s) and top_k (5); the page
+  names those parameters. That matches the lanes while their own knobs (orion-thought
+  `PERSONALITY_CUE_MAX_AGE_SEC`/`_TOP_K`/`_ENABLED`) sit at the defaults; the Hub's 5 s fetch budget
+  is also longer than a lane's, so a lane can still get `fetch_failed` when the panel shows a cue.
+  When the cue is empty the skip reason is named (`stale`, `empty`, `fetch_failed`,
+  `invalid_frame`, `render_failed`). A frame that does not validate reads as unavailable, never as
+  an empty graph.
+- Counts (active / candidate / retired / evidence rows), the curiosity choice-style line, the
+  frame's `generated_at`, and any frame warnings.
+- **Active** nodes: label (Orion's own words), weight with an inline sparkline of its history,
+  evidence count, lanes (`lane: count`), chosen count, first seen, last reinforced. Click a row for
+  its evidence (lane, time, excerpt, similarity, weight delta).
+- **Candidates** and **Retired**, collapsed, same columns.
+- An empty graph reads "The graph is empty — it starts from today and grows as Orion writes."; a
+  missing frame reads "durable-runs unavailable: <reason>".
+
+Routes (proxies to orion-durable-runs at `HUB_CURIOSITY_DURABLE_RUNS_URL`, reused; no new key):
+`/api/personality/frame`, `/api/personality/dispositions?status=active|candidate|retired|all&limit=`
+(1-200, default 50), `/api/personality/evidence?disposition_id=&limit=` (1-200, default 50), and
+`/api/personality/cue` (frame + rendered cue + `render_params`; fail-open: always 200, an upstream fault rides in
+`error`/`upstream_status`). Unset URL is a 503; upstream down, timed out, 5xx or non-JSON is a 502
+naming the reason; upstream 404/503 pass through. All upstream text is written with `textContent`
+(excerpts are Orion's raw words); the only `innerHTML` is the numeric sparkline with an escaped title.
+The page polls every 60 s while the Hub panel is visible and no evidence list is open.
+Code: `scripts/personality_routes.py`, `templates/personality.html`, `static/js/personality.js`,
+`static/js/personality_tab.js`.
+
+### Personality read-back in curiosity and outreach
+
+`HUB_PERSONALITY_CUE_ENABLED` (default `true`). The curiosity kickoff and the endogenous outreach prompt each show a short block of "things you keep coming back to".
+
+- **Source.** The shared fixed template `orion.personality.cue.project_personality_cue` renders it from orion-durable-runs `GET /personality/frame`, at the existing `HUB_CURIOSITY_DURABLE_RUNS_URL`.
+- **Content.** Orion's own words, as a record, not an instruction. It adds no tone or style directions.
+- **Curiosity** reads it at the same time as the "today so far" fact, under the same deadline.
+- **Outreach** reads it at the same time as the situation read and places it right after the situation block.
+- **On failure** (an error, a frame over 1 h old, or an empty frame) there is no block, and nothing waits.
+- **The cue alone is never a reason to start an outreach.**
+- **Records.** Outreach `grounding_summary` records `personality_cue`, `personality_cue_ids` and `personality_cue_skip`: node ids only, never the text. Each read writes one log line: `curiosity_personality_cue run=<id> rendered=… ids=… skip=…` or `endogenous_outreach_personality_cue rendered=… ids=… skip=…`.
+- **Code.** `scripts/personality_cue_reader.py`.
+
 ## GPU leases (lend cards in orion-gpu-pool)
 
 The **GPU leases** button in the composer control strip opens a small modal with one switch per

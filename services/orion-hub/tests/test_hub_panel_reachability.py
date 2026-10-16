@@ -39,6 +39,7 @@ SELF_ROUTING_PANELS = {
     "gpu-pool",            # gpu_pool_tab.js
     "reading",             # reading_tab.js
     "temporal-self",       # temporal_self_tab.js
+    "personality",         # personality_tab.js
 }
 
 PANELS_WITHOUT_APP_JS_TAB = PANELS_WITHOUT_NAV | SELF_ROUTING_PANELS

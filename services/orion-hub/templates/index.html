@@ -238,6 +238,13 @@
             class="px-3 py-1.5 text-xs font-semibold rounded-full bg-gray-800 text-gray-200 border border-gray-700 hover:bg-gray-700"
             role="button"
           >Temporal Self</a>
+          <a
+            id="personalityTabButton"
+            href="#personality"
+            data-hash-target="#personality"
+            class="px-3 py-1.5 text-xs font-semibold rounded-full bg-gray-800 text-gray-200 border border-gray-700 hover:bg-gray-700"
+            role="button"
+          >Personality</a>
             </nav>
             <div id="hubTabLauncherEmpty" class="hub-tab-launcher-empty" hidden>No section matches.</div>
           </div>
@@ -1260,6 +1267,24 @@
         </div>
         <div class="rounded-xl border border-gray-800 bg-gray-950/40 overflow-hidden flex-1 min-h-[40rem]">
           <iframe id="temporalSelfPanelFrame" src="/temporal-self" class="w-full h-full border-0 min-h-[48rem]" loading="lazy" title="Temporal Self"></iframe>
+        </div>
+      </section>
+
+      <section id="personality" data-panel="personality" class="hidden w-full bg-gray-900 rounded-2xl shadow-lg p-5 flex flex-col gap-4 min-h-[56rem]">
+        <div class="flex items-center justify-between gap-3">
+          <div>
+            <h2 class="text-xl font-bold text-white">Personality</h2>
+            <p class="text-xs text-gray-400 max-w-xl">
+              What Orion keeps returning to across dreams, journal, reverie, reading and conversation: the exact cue the lanes see right now, each recurring theme with its weight over time and the evidence behind it. Read-only.
+            </p>
+          </div>
+          <div class="flex items-center gap-2 flex-shrink-0">
+            <button id="personalityPanelRefresh" class="text-xs bg-gray-800 hover:bg-gray-700 text-gray-200 rounded-lg px-3 py-1 border border-gray-700" type="button">Refresh</button>
+            <a id="personalityPanelStandaloneLink" href="/personality" class="text-xs bg-gray-800 hover:bg-gray-700 text-gray-200 rounded-lg px-3 py-1 border border-gray-700">Open standalone</a>
+          </div>
+        </div>
+        <div class="rounded-xl border border-gray-800 bg-gray-950/40 overflow-hidden flex-1 min-h-[40rem]">
+          <iframe id="personalityPanelFrame" src="/personality" class="w-full h-full border-0 min-h-[48rem]" loading="lazy" title="Personality"></iframe>
         </div>
       </section>
 
@@ -4380,6 +4405,7 @@
   <script src="/static/js/hub_surface_tab.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
   <script src="/static/js/gpu_pool_tab.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
   <script src="/static/js/temporal_self_tab.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
+  <script src="/static/js/personality_tab.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
   <script src="/static/js/reading_tab.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
   <script src="/static/js/runtime-activity.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
   <!--

@@ -68,6 +68,7 @@ jobs:
             services/orion-hub/tests/test_outreach_personality_cue.py \
             services/orion-hub/tests/test_curiosity_personality_cue.py \
             services/orion-hub/tests/test_personality_cue_reader.py \
+            services/orion-hub/tests/test_personality_routes.py \
             services/orion-hub/tests/test_turn_orchestrator_ws_frames.py \
             services/orion-hub/tests/test_act_ledger_producers.py \
             orion/world_pulse_read/tests \

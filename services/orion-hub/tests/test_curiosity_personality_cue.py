@@ -140,3 +140,20 @@ def test_both_reads_together_cost_one_deadline(monkeypatch):
 
     fact, cue, elapsed = asyncio.run(run())
     assert fact is None and cue.text and elapsed < 0.55
+
+
+def test_main_wires_the_personality_flag_into_curiosity_and_outreach():
+    # Both classes default the flag to False; without main.py passing the setting the reads never
+    # happen in production (the gap the first cut of this patch had).
+    import ast
+    from pathlib import Path
+
+    tree = ast.parse((Path(__file__).resolve().parents[1] / "scripts" / "main.py").read_text())
+    calls = {
+        node.func.id: {kw.arg for kw in node.keywords}
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+        and node.func.id in {"CuriosityInvestigation", "EndogenousOutreach"}
+    }
+    assert "personality_cue_enabled" in calls["CuriosityInvestigation"]
+    assert {"personality_cue_enabled", "durable_runs_url"} <= calls["EndogenousOutreach"]

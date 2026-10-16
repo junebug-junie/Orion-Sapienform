@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Personality</title>
+<style>
+/* Theme tokens shared with templates/gpu_pool.html so the tab matches Hub in both modes. */
+:root {
+  color-scheme: light;
+  --plane: #f9f9f7; --surface: #fcfcfb; --ink: #0b0b0b; --ink-2: #52514e; --ink-muted: #898781;
+  --grid: #e1e0d9; --axis: #c3c2b7; --hairline: rgba(11,11,11,0.10);
+  --series-1: #2a78d6; --good: #0ca30c; --warning: #fab219; --critical: #d03b3b; --good-text: #006300;
+  --shadow: 0 1px 2px rgba(11,11,11,0.05), 0 4px 12px rgba(11,11,11,0.04);
+}
+@media (prefers-color-scheme: dark) {
+  :root:where(:not([data-theme="light"])) {
+    color-scheme: dark;
+    --plane: #0d0d0d; --surface: #1a1a19; --ink: #ffffff; --ink-2: #c3c2b7; --ink-muted: #898781;
+    --grid: #2c2c2a; --axis: #383835; --hairline: rgba(255,255,255,0.10);
+    --series-1: #3987e5; --good-text: #0ca30c;
+    --shadow: 0 1px 2px rgba(0,0,0,0.4), 0 4px 12px rgba(0,0,0,0.3);
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --plane: #0d0d0d; --surface: #1a1a19; --ink: #ffffff; --ink-2: #c3c2b7; --ink-muted: #898781;
+  --grid: #2c2c2a; --axis: #383835; --hairline: rgba(255,255,255,0.10);
+  --series-1: #3987e5; --good-text: #0ca30c;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--plane); color: var(--ink); font: 13px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+main { max-width: 1200px; margin: 0 auto; padding: 12px; display: flex; flex-direction: column; gap: 12px; }
+header { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+h1 { font-size: 18px; margin: 0; }
+h2 { font-size: 14px; margin: 0 0 8px; }
+.muted { color: var(--ink-muted); font-size: 12px; }
+.err { color: var(--critical); }
+.panel { background: var(--surface); border: 1px solid var(--hairline); border-radius: 12px; padding: 12px; box-shadow: var(--shadow); min-width: 0; }
+.badge { display: inline-block; padding: 1px 8px; border-radius: 999px; border: 1px solid var(--hairline); font-size: 11px; }
+.big { font-size: 16px; font-weight: 600; }
+.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; }
+.row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+button, input { font: inherit; color: var(--ink); background: var(--plane); border: 1px solid var(--axis); border-radius: 8px; padding: 4px 10px; }
+button { cursor: pointer; }
+button:hover { border-color: var(--ink-2); }
+.scroll { overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 6px; }
+th, td { text-align: left; padding: 3px 6px; border-bottom: 1px solid var(--hairline); vertical-align: top; }
+th { color: var(--ink-2); font-weight: 600; }
+td.time, td.num { white-space: nowrap; font-variant-numeric: tabular-nums; }
+td.num, th.num { text-align: right; }
+td.label, td.excerpt { word-break: break-word; }
+td.lanes { color: var(--ink-2); }
+tr.node { cursor: pointer; }
+tr.node:hover td, tr.node.open td { background: var(--plane); }
+button.label-btn { all: unset; cursor: pointer; word-break: break-word; }
+button.label-btn:focus-visible { outline: 2px solid var(--series-1); outline-offset: 2px; border-radius: 4px; }
+tr.evidence-row > td { background: var(--plane); padding: 6px 10px 10px 24px; }
+table.evidence td.excerpt { white-space: pre-wrap; }
+.spark-wrap { display: inline-block; vertical-align: middle; color: var(--series-1); }
+.spark { display: block; }
+pre.cue { white-space: pre-wrap; word-break: break-word; margin: 0; padding: 10px; border-radius: 8px;
+  background: var(--plane); border: 1px solid var(--hairline); font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; }
+details.group { border: 1px solid var(--hairline); border-radius: 8px; padding: 6px 8px; }
+details.group + details.group { margin-top: 8px; }
+details.group summary { cursor: pointer; font-weight: 600; }
+</style>
+</head>
+<body>
+<main id="personalityRoot">
+  <header>
+    <h1>What Orion keeps returning to</h1>
+    <span class="muted" id="pGeneratedAt"></span>
+    <span class="row" style="margin-left:auto">
+      <button id="pRefresh" type="button">Refresh</button>
+    </span>
+  </header>
+  <div id="pStatus" class="muted" role="status"></div>
+  <div id="pWarnings" class="muted"></div>
+
+  <section class="panel">
+    <h2>What Orion sees right now <span class="muted" id="pCueMeta"></span></h2>
+    <div class="muted" style="margin-bottom:6px">The text chat, reverie, curiosity and outreach are handed, rendered here by the same function they use. <span id="pCueParams"></span></div>
+    <pre class="cue" id="pCueText" hidden></pre>
+    <div class="muted" id="pCueSkip"></div>
+  </section>
+
+  <section class="panel">
+    <div class="row"><strong id="pCounts">—</strong></div>
+    <div id="pChoiceStyle" style="margin-top:4px"></div>
+  </section>
+
+  <section class="panel">
+    <h2>Active <span class="muted" id="pActiveCount"></span></h2>
+    <div class="muted">Strongest first. Click a row for the evidence behind it.</div>
+    <div id="pActive"></div>
+  </section>
+
+  <section class="panel">
+    <details class="group">
+      <summary>Candidates <span class="muted" id="pCandidateCount"></span></summary>
+      <div id="pCandidates"></div>
+    </details>
+    <details class="group">
+      <summary>Retired <span class="muted" id="pRetiredCount"></span></summary>
+      <div id="pRetired"></div>
+    </details>
+  </section>
+</main>
+<script src="/static/js/personality.js?v={{HUB_UI_ASSET_VERSION}}"></script>
+</body>
+</html>

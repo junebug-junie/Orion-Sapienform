@@ -8,6 +8,7 @@ from __future__ import annotations
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -59,14 +60,15 @@ def _worker(monkeypatch, *, live: bool) -> tuple[BiometricsSubstrateWorker, list
         )
     ]
     worker._get_substrate_graph_store = MagicMock(return_value=None)
-    worker._control_surface_store = object()  # never a real store in tests
+    # Never a real store in tests: a stub that already reads as Postgres.
+    worker._control_surface_store = SimpleNamespace(source_kind=lambda: "postgres", postgres_url="stub")
     surface_reads: list[str] = []
     passed: list = []
     monkeypatch.setattr(worker_module, "process_execution_grammar_events", lambda **kwargs: None)
     monkeypatch.setattr(
         worker_module,
         "get_prediction_expectation",
-        lambda domain, store: surface_reads.append(domain) or _TUNED,
+        lambda domain, store, strict=False: surface_reads.append(domain) or _TUNED,
     )
 
     def fake_error(prev, curr, *, expectation=None):
@@ -99,3 +101,17 @@ def test_kill_switch_scores_with_the_calibrated_constants(monkeypatch) -> None:
     assert passed == [None]
     assert surface_reads == []
     worker._store.save_prediction_raw_reading.assert_called_once()  # corpus still recorded
+
+
+def test_a_failed_read_keeps_the_last_value_read_not_the_defaults(monkeypatch) -> None:
+    worker, _, passed = _worker(monkeypatch, live=True)
+    worker._execution_tick()
+    worker._settings.prediction_expectation_refresh_sec = 0.0  # force a re-read
+
+    def failing(domain, store, strict=False):
+        raise RuntimeError("db blip")
+
+    monkeypatch.setattr(worker_module, "get_prediction_expectation", failing)
+    worker._execution_tick()
+
+    assert passed == [_TUNED, _TUNED]

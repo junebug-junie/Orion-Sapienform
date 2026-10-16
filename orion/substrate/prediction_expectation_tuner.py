@@ -81,7 +81,16 @@ class PredictionExpectationTuner:
     read_live: Callable[[str], Expectation]
     window: timedelta = timedelta(hours=72)
     min_interval: timedelta = timedelta(hours=1)
+    # Minimum spacing between two proposals for the same domain. Hourly
+    # re-assessment of a ~98%-identical 72 h window is ~24 correlated tries a
+    # day; spacing them keeps a rejected or noisy candidate from retrying (and
+    # an adoption from flip-flopping) on what is effectively the same data.
+    min_proposal_spacing: timedelta = timedelta(hours=24)
+    # Readings replayed before an adoption to warm both settings up for the
+    # post-adoption comparison (only WARMUP_READINGS of them are needed).
+    post_adoption_warmup: timedelta = timedelta(hours=6)
     _last_assessed: dict[str, datetime] = field(default_factory=dict)
+    _last_proposed: dict[str, datetime] = field(default_factory=dict)
 
     def propose(self, *, store, now: datetime | None = None) -> list[MutationProposalV1]:
         t = now or datetime.now(timezone.utc)
@@ -91,14 +100,23 @@ class PredictionExpectationTuner:
             last = self._last_assessed.get(domain)
             if last is not None and t - last < self.min_interval:
                 continue
+            proposed = self._last_proposed.get(domain)
+            if proposed is not None and t - proposed < self.min_proposal_spacing:
+                continue
             if store.active_surface(surface) is not None or store.has_queued_proposal_for_surface(surface):
                 continue
             cooldown = store.rollback_cooldown_until(surface)
             if cooldown is not None and t < cooldown:
                 continue
             self._last_assessed[domain] = t
-            current = self.read_live(domain)
-            readings = self.read_readings(domain, t - self.window)
+            try:
+                current = self.read_live(domain)
+                readings = self.read_readings(domain, t - self.window)
+            except Exception:
+                # Unknown live value or unreadable corpus: skip this domain,
+                # never build a proposal against a guessed "current".
+                logger.warning("prediction_expectation_assess_read_failed domain=%s", domain, exc_info=True)
+                continue
             assessment = assess(spec, readings, current=current)
             if assessment is None:
                 continue
@@ -161,6 +179,7 @@ class PredictionExpectationTuner:
             )
             store.record_signal(signal)
             store.add_proposal(proposal, priority=60, due_at=t)
+            self._last_proposed[domain] = t
             proposals.append(proposal)
         return proposals
 
@@ -207,7 +226,7 @@ class PredictionExpectationTuner:
             adopted = expectation_from_payload(adoption.applied_patch, default=spec.default)
             previous = expectation_from_payload(adoption.rollback_payload, default=spec.default)
             gain = holdout_gain(
-                self.read_readings(spec.domain, adoption.applied_at - self.window),
+                self.read_readings(spec.domain, adoption.applied_at - self.post_adoption_warmup),
                 candidate=adopted,
                 reference=previous,
                 after=adoption.applied_at,
@@ -222,7 +241,15 @@ def postgres_reading_reader(postgres_url: str, *, limit: int = 20000) -> Reading
     """Production reader over ``substrate_prediction_raw_reading``."""
     from sqlalchemy import create_engine, text
 
-    engine = create_engine(postgres_url, pool_pre_ping=True, pool_size=1, max_overflow=0)
+    # Bounded: this runs on the Hub scheduler thread while it holds the cycle
+    # lock, so a silent DB host must not stall it for minutes.
+    engine = create_engine(
+        postgres_url,
+        pool_pre_ping=True,
+        pool_size=1,
+        max_overflow=0,
+        connect_args={"connect_timeout": 5, "options": "-c statement_timeout=15000"},
+    )
 
     def read(domain: str, since: datetime) -> Readings:
         with engine.connect() as conn:

@@ -232,7 +232,7 @@ def test_one_live_surface_invariant_blocks_before_side_effects(routing_manual_fi
             dry_run=False,
             apply_enabled=True,
             telemetry=[],
-            class_metrics={"prediction_expectation_patch": {"holdout_log_score_gain_lower_bound": 0.1}},
+            class_metrics={"prediction_expectation_patch": {"holdout_log_score_gain_lower_bound": 0.1, "holdout_log_score_gain_mean": 0.1}},
         ),
         x_orion_operator_token=routing_manual_fixture["token"],
     )

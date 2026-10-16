@@ -229,7 +229,7 @@ def _prediction_expectation_smoke_proposal(
 
 # Trial evidence injected as measured metrics (which bypass the replay
 # evaluator): a holdout lower bound clearly above the contract's 1e-9 floor.
-_PASSING_TRIAL_METRICS = {"holdout_log_score_gain_lower_bound": 0.1}
+_PASSING_TRIAL_METRICS = {"holdout_log_score_gain_lower_bound": 0.1, "holdout_log_score_gain_mean": 0.1}
 
 
 def run_smoke(*, emit: bool = True) -> list[str]:

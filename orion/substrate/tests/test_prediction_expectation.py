@@ -43,7 +43,7 @@ from orion.substrate.prediction_expectation import (
 from orion.substrate.prediction_expectation_tuner import PredictionExpectationTuner
 
 # Anchored to the wall clock: queue items come due at real time (add_proposal).
-T0 = datetime.now(timezone.utc).replace(microsecond=0) - timedelta(minutes=800)
+T0 = datetime.now(timezone.utc).replace(microsecond=0) - timedelta(minutes=2400)
 SPEC = domain_specs()["execution"]
 DEFAULT = SPEC.default
 
@@ -93,7 +93,7 @@ def test_going_numb_loses_under_the_log_score() -> None:
 
 
 def test_assess_finds_a_better_setting_and_it_survives_holdout() -> None:
-    readings = _timed(_iid(700, seed=2))
+    readings = _timed(_iid(1500, seed=2))
     a = assess(SPEC, readings, current=DEFAULT)
     assert a is not None
     assert a.candidate.alpha < DEFAULT.alpha  # steady data: slower tracking is better calibrated
@@ -104,7 +104,7 @@ def test_assess_finds_a_better_setting_and_it_survives_holdout() -> None:
 
 
 def test_holdout_rejects_a_candidate_that_only_fit_the_past() -> None:
-    readings = _timed(_drift(700, seed=3))
+    readings = _timed(_drift(2500, seed=3))
     a = assess(SPEC, readings, current=DEFAULT)
     assert a is not None
     held = holdout_gain(readings, candidate=a.candidate, reference=DEFAULT, after=a.fit_window_end, min_readings=150)
@@ -208,11 +208,11 @@ def test_orion_adopts_a_better_expectation_then_rolls_it_back_when_the_world_cha
     isolated_surface, monkeypatch
 ) -> None:
     monkeypatch.setenv("SUBSTRATE_MUTATION_AUTONOMY_ENABLED", "true")
-    history = _iid(700, seed=2)
+    history = _iid(1500, seed=2)
     reader = _Readings(_timed(history))
     tuner = PredictionExpectationTuner(read_readings=reader, read_live=get_prediction_expectation)
     store = SubstrateMutationStore()
-    now = T0 + timedelta(minutes=700)
+    now = T0 + timedelta(minutes=1500)
 
     proposals = tuner.propose(store=store, now=now)
     assert len(proposals) == 1
@@ -235,7 +235,7 @@ def test_orion_adopts_a_better_expectation_then_rolls_it_back_when_the_world_cha
     # The world stops being steady and starts drifting: the slow tracking Orion
     # adopted is now confidently worse than the setting it replaced.
     adoption = next(iter(store._adoptions.values()))
-    reader.readings += _timed(_drift(400, seed=11), start=adoption.applied_at + timedelta(seconds=1))
+    reader.readings += _timed(_drift(600, seed=11), start=adoption.applied_at + timedelta(seconds=1))
     deltas = tuner.post_adoption_deltas(store=store)
     assert deltas[proposal.proposal_id] <= -0.05, deltas
     result = _worker(store, tuner).run_cycle(
@@ -317,3 +317,74 @@ def test_world_ontology_review_telemetry_no_longer_produces_signals() -> None:
         }
     )
     assert MutationDetectors().from_review_telemetry([record]) == []
+
+
+def _expectation_proposal(alpha: float = 0.1) -> MutationProposalV1:
+    return MutationProposalV1(
+        mutation_class="prediction_expectation_patch",
+        risk_tier="low",
+        target_surface=SPEC.target_surface,
+        anchor_scope="orion",
+        subject_ref="entity:orion",
+        evidence_refs=["x"],
+        source_signal_ids=["s"],
+        source_pressure_id="direct-evidence:s",
+        patch=MutationPatchV1(
+            mutation_class="prediction_expectation_patch",
+            target_surface=SPEC.target_surface,
+            target_ref="execution",
+            patch={"alpha": alpha, "min_variance": DEFAULT.min_variance},
+            rollback_payload=DEFAULT.as_patch(),
+        ),
+        notes=[f"fit_window_start:{T0.isoformat()}", f"fit_window_end:{T0.isoformat()}"],
+    )
+
+
+def test_apply_refuses_when_the_live_value_cannot_be_read(isolated_surface, monkeypatch) -> None:
+    """A failed read must not be recorded as "live was the default" -- that
+    would make a later rollback restore the wrong value."""
+    from orion.core.schemas.substrate_mutation import MutationDecisionV1
+
+    def broken(key):
+        raise mutation_control_surface.ControlSurfaceReadError("db blip")
+
+    monkeypatch.setattr(isolated_surface, "read", broken)
+    proposal = _expectation_proposal()
+    decision = MutationDecisionV1(proposal_id=proposal.proposal_id, action="auto_promote", reason="test")
+    assert PatchApplier(surfaces={}).apply(proposal=proposal, decision=decision) is None
+
+
+def test_a_failed_trial_read_is_inconclusive_not_a_crash(isolated_surface) -> None:
+    def broken(domain, since):
+        raise RuntimeError("relation does not exist")
+
+    tuner = PredictionExpectationTuner(read_readings=broken, read_live=get_prediction_expectation)
+    runner = SubstrateTrialRunner(
+        scorer=ClassSpecificScorer(),
+        corpus_registry=ReplayCorpusRegistry(
+            corpus_by_class={"prediction_expectation_patch": "c"},
+            baseline_metric_ref_by_class={"prediction_expectation_patch": "b"},
+        ),
+        prediction_expectation_evaluator=tuner.trial_metrics,
+    )
+    assert runner.run_trial(proposal=_expectation_proposal(), measured_metrics={}).status == "inconclusive"
+
+
+def test_a_confident_but_tiny_gain_does_not_pass_the_trial() -> None:
+    status, notes = ClassSpecificScorer().evaluate(
+        mutation_class="prediction_expectation_patch",
+        metrics={"holdout_log_score_gain_lower_bound": 0.001, "holdout_log_score_gain_mean": 0.004},
+    )
+    assert status == "failed" and "metric_failed:holdout_log_score_gain_mean" in notes
+
+
+def test_proposals_for_a_domain_are_spaced_a_day_apart(isolated_surface) -> None:
+    reader = _Readings(_timed(_iid(1500, seed=2)))
+    tuner = PredictionExpectationTuner(read_readings=reader, read_live=get_prediction_expectation)
+    store = SubstrateMutationStore()
+    now = T0 + timedelta(minutes=1500)
+    first = tuner.propose(store=store, now=now)
+    assert len(first) == 1
+    store.set_queue_status(store.queue_item_id_for_proposal(first[0].proposal_id), "rejected")
+    assert tuner.propose(store=store, now=now + timedelta(hours=2)) == []
+    assert len(tuner.propose(store=store, now=now + timedelta(hours=25))) == 1

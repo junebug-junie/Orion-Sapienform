@@ -4228,32 +4228,47 @@ class BiometricsSubstrateWorker:
     def _prediction_expectation(self, domain: str) -> Expectation | None:
         """Orion's adopted expectation for ``domain`` (rung 6), or None to
         use the calibrated constants. Refreshed at most every
-        SUBSTRATE_PREDICTION_EXPECTATION_REFRESH_SEC; a read failure keeps
-        the constants rather than stalling the tick."""
-        # getattr: tests build this worker with __new__ and stub settings; a
-        # missing setting means "behave exactly as before rung 6".
-        if not getattr(self._settings, "prediction_expectation_live_enabled", False):
+        SUBSTRATE_PREDICTION_EXPECTATION_REFRESH_SEC.
+
+        A failed read keeps the last value actually read (never silently the
+        defaults while the Hub believes an adoption is live), and a store that
+        fell back to memory/sqlite at boot is rebuilt while a Postgres URL is
+        configured, so one DB blip cannot pin the constants for the process's
+        whole life.
+        """
+        # `is True`: tests build this worker with __new__ and MagicMock
+        # settings; anything but an explicit True means "behave as before".
+        if getattr(self._settings, "prediction_expectation_live_enabled", False) is not True:
             return None
         cache = self.__dict__.setdefault("_prediction_expectation_cache", {})
         now_mono = time.monotonic()
         cached = cache.get(domain)
         if cached is not None and now_mono - cached[0] < self._settings.prediction_expectation_refresh_sec:
             return cached[1]
+        previous = cached[1] if cached is not None else None
         try:
-            if getattr(self, "_control_surface_store", None) is None:
+            store = getattr(self, "_control_surface_store", None)
+            if store is None or (store.source_kind() != "postgres" and store.postgres_url):
                 # Resolves SUBSTRATE_CONTROL_PLANE_POSTGRES_URL like every other
                 # control-surface reader (scripts/check_control_surface_store_parity.py).
-                self._control_surface_store = RuntimeControlSurfaceStore()
-            expectation: Expectation | None = get_prediction_expectation(domain, store=self._control_surface_store)
+                store = RuntimeControlSurfaceStore()
+                self._control_surface_store = store
+                if store.source_kind() != "postgres":
+                    logger.warning(
+                        "prediction_expectation_store_not_postgres source_kind=%s error=%s",
+                        store.source_kind(),
+                        store.last_error(),
+                    )
+            expectation: Expectation | None = get_prediction_expectation(domain, store=store, strict=True)
         except Exception:
-            logger.warning("prediction_expectation_read_failed domain=%s", domain, exc_info=True)
-            expectation = None
+            logger.warning("prediction_expectation_read_failed domain=%s keeping=%s", domain, previous, exc_info=True)
+            expectation = previous
         cache[domain] = (now_mono, expectation)
         return expectation
 
     def _record_prediction_raw_reading(self, domain: str, raw_reading: float | None, now: datetime) -> None:
         """Append the rung-6 replay corpus row; prune at most hourly. Best effort."""
-        if raw_reading is None or not getattr(self._settings, "prediction_raw_readings_enabled", False):
+        if raw_reading is None or getattr(self._settings, "prediction_raw_readings_enabled", False) is not True:
             return
         try:
             self._store.save_prediction_raw_reading(domain=domain, observed_at=now, raw_value=raw_reading)

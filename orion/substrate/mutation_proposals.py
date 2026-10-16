@@ -354,8 +354,6 @@ def _default_patch_for_class(mutation_class: str) -> dict[str, float | str]:
         }
     if mutation_class == "field_topology_weight_patch":
         return {"edge_weight_delta": 0.0}
-    if mutation_class == "graph_consolidation_param_patch":
-        return {"query_limit_nodes": 96, "query_limit_edges": 192, "normal_revisit_seconds": 3600}
     if mutation_class == "cognitive_contradiction_reconciliation":
         return {
             "pressure_kind": "contradiction_pressure",
@@ -406,8 +404,6 @@ def _default_rollback_for_class(mutation_class: str) -> dict[str, float | str]:
         return {"semantic_weight": 0.50, "episodic_weight": 0.35, "recency_weight": 0.15}
     if mutation_class == "field_topology_weight_patch":
         return {"edge_weight_delta": 0.0}
-    if mutation_class == "graph_consolidation_param_patch":
-        return {"query_limit_nodes": 64, "query_limit_edges": 128, "normal_revisit_seconds": 7200}
     if mutation_class.startswith("cognitive_") or mutation_class.startswith("recall_"):
         return {"draft_recommendation": "discard_and_revert_to_previous_draft"}
     return {"profile_variant_id": "approved-baseline-v1"}

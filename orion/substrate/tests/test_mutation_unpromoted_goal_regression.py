@@ -48,7 +48,7 @@ def _run_trial(proposal: MutationProposalV1):
             corpus_by_class={proposal.mutation_class: "corpus-v1"},
             baseline_metric_ref_by_class={proposal.mutation_class: "baseline-v1"},
         ),
-    ).run_trial(proposal=proposal, measured_metrics={"holdout_log_score_gain_lower_bound": 0.1})
+    ).run_trial(proposal=proposal, measured_metrics={"holdout_log_score_gain_lower_bound": 0.1, "holdout_log_score_gain_mean": 0.1})
 
 
 def test_mutation_decision_rejects_unpromoted_goal_execution() -> None:

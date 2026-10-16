@@ -228,8 +228,10 @@ CONTRACTS: dict[MutationClassV1, MutationClassContract] = {
         # Lower confidence bound of the paired per-reading log-score gain on
         # readings the candidate was not chosen on. > 0 means "better with
         # ~95% confidence", not "better on average by any sliver".
-        evaluation_metrics=("holdout_log_score_gain_lower_bound",),
-        metric_minimums={"holdout_log_score_gain_lower_bound": 1e-9},
+        # And the mean gain must be worth a live change (MIN_EFFECT_NATS in
+        # prediction_expectation.py; literal here to avoid an import cycle).
+        evaluation_metrics=("holdout_log_score_gain_lower_bound", "holdout_log_score_gain_mean"),
+        metric_minimums={"holdout_log_score_gain_lower_bound": 1e-9, "holdout_log_score_gain_mean": 0.01},
         auto_promote_default=True,
     ),
     "approved_prompt_profile_variant_promotion": MutationClassContract(

@@ -49,6 +49,18 @@ CONTROL_SURFACE_KEY_PREFIX = "prediction_expectation."
 # Two standard errors: a paired difference must clear ~95% one-sided
 # confidence before it counts as better (trial) or worse (monitor).
 CONFIDENCE_Z = 2.0
+# Per-reading differences are NOT independent: both replays carry their
+# running mean/variance forward, so neighbours share ~1/alpha readings of
+# memory. The standard error is therefore taken from batch means over blocks
+# BATCH_MEMORY_MULTIPLE memory-lengths long (at least MIN_BATCH_SIZE), and a
+# comparison needs MIN_BATCHES blocks. A naive sqrt(var/n) here was several
+# times too small (code review, 2026-10-16).
+BATCH_MEMORY_MULTIPLE = 2.0
+MIN_BATCH_SIZE = 10
+MIN_BATCHES = 8
+# Smallest gain worth changing a live setting for, in nats per reading. A
+# confident but tiny gain is not worth the churn (or the flip-flop risk).
+MIN_EFFECT_NATS = 0.01
 FIT_FRACTION = 2.0 / 3.0
 # Readings replayed but never scored at the start of a window. A replay starts
 # cold (variance 0, so the first comparisons run at the bare floor), and one
@@ -58,6 +70,7 @@ WARMUP_READINGS = 30
 MIN_FIT_READINGS = 300
 MIN_HOLDOUT_READINGS = 150
 MIN_POST_ADOPTION_READINGS = 150
+# (Effective minima are higher for slow alphas: MIN_BATCHES * batch_size.)
 
 ALPHA_GRID: tuple[float, ...] = (0.05, 0.1, 0.2, 0.35, 0.5)
 MIN_VARIANCE_MULTIPLIERS: tuple[float, ...] = (0.1, 1.0, 10.0)
@@ -80,6 +93,11 @@ class Expectation:
 class DomainSpec:
     domain: str
     default: Expectation
+    # How long an adoption must survive the post-adoption replay before its
+    # surface is released. Sized so the domain's live reading rate can reach
+    # MIN_POST_ADOPTION_READINGS inside it (execution ~70/h; chat per turn,
+    # so it gets the schema's 24 h maximum and may still settle unmeasured).
+    rollback_window_sec: int = 6 * 3600
 
     @property
     def target_surface(self) -> str:
@@ -112,6 +130,7 @@ def _domains() -> dict[str, DomainSpec]:
         "chat": DomainSpec(
             "chat",
             Expectation(pe._CHAT_PREDICTION_ERROR_EWMA_ALPHA, pe._CHAT_PREDICTION_ERROR_MIN_VARIANCE),
+            rollback_window_sec=24 * 3600,
         ),
     }
 
@@ -171,11 +190,14 @@ def per_reading_log_scores(values: Sequence[float], expectation: Expectation) ->
 
 @dataclass(frozen=True)
 class PairedGain:
-    """Per-reading paired log-score difference (candidate minus reference)."""
+    """Per-reading paired log-score difference (candidate minus reference).
+
+    ``standard_error`` is a batch-means estimate (see BATCH_MEMORY_MULTIPLE)."""
 
     mean: float
     standard_error: float
     count: int
+    batches: int
 
     @property
     def lower_bound(self) -> float:
@@ -201,12 +223,20 @@ def paired_gain(
     cand = per_reading_log_scores(values[:end], candidate)
     ref = per_reading_log_scores(values[:end], reference)
     diffs = [c - r for c, r in zip(cand[score_from:end], ref[score_from:end]) if c is not None and r is not None]
-    n = len(diffs)
-    if n < 2:
+    size = batch_size(candidate, reference)
+    n_batches = len(diffs) // size
+    if n_batches < MIN_BATCHES:
         return None
-    mean = sum(diffs) / n
-    var = sum((d - mean) ** 2 for d in diffs) / (n - 1)
-    return PairedGain(mean=mean, standard_error=math.sqrt(var / n), count=n)
+    used = diffs[: n_batches * size]
+    batch_means = [sum(used[i * size : (i + 1) * size]) / size for i in range(n_batches)]
+    mean = sum(used) / len(used)
+    var = sum((b - mean) ** 2 for b in batch_means) / (n_batches - 1)
+    return PairedGain(mean=mean, standard_error=math.sqrt(var / n_batches), count=len(used), batches=n_batches)
+
+
+def batch_size(*expectations: Expectation) -> int:
+    slowest = min(e.alpha for e in expectations)
+    return max(MIN_BATCH_SIZE, math.ceil(BATCH_MEMORY_MULTIPLE / slowest))
 
 
 def candidate_grid(spec: DomainSpec, current: Expectation) -> list[Expectation]:
@@ -258,7 +288,7 @@ def assess(
     best: tuple[Expectation, PairedGain] | None = None
     for candidate in candidate_grid(spec, current):
         gain = paired_gain(values, candidate=candidate, reference=current, score_from=WARMUP_READINGS, score_to=split)
-        if gain is None or gain.lower_bound <= 0.0:
+        if gain is None or gain.lower_bound <= 0.0 or gain.mean < MIN_EFFECT_NATS:
             continue
         if best is None or gain.mean > best[1].mean + 1e-12:
             best = (candidate, gain)

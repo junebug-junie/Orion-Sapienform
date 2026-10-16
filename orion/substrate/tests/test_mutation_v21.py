@@ -118,7 +118,7 @@ def _direct_routing_proposal(*, target_value: float = 0.58, rollback_value: floa
 _PE_DEFAULT_ALPHA = 0.2
 _PE_DEFAULT_MIN_VARIANCE = 1e-10
 _PE_SURFACE = "prediction_expectation:execution"
-_PE_PASSING_METRICS = {"holdout_log_score_gain_lower_bound": 0.1}
+_PE_PASSING_METRICS = {"holdout_log_score_gain_lower_bound": 0.1, "holdout_log_score_gain_mean": 0.1}
 
 
 def _direct_prediction_expectation_proposal(*, alpha: float = 0.1) -> MutationProposalV1:

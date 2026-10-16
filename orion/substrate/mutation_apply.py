@@ -7,6 +7,7 @@ from typing import Any
 from orion.core.schemas.substrate_mutation import MutationAdoptionV1, MutationDecisionV1, MutationProposalV1
 from orion.substrate.mutation_contracts import RETIRED_MUTATION_CLASSES
 from orion.substrate.mutation_control_surface import (
+    ControlSurfaceReadError,
     ControlSurfaceWriteError,
     get_chat_reflective_lane_threshold,
     get_prediction_expectation,
@@ -18,13 +19,6 @@ from orion.substrate.prediction_expectation import (
     domain_for_surface,
     expectation_from_payload,
 )
-
-# Rung 6: how long an adopted expectation must survive the post-adoption
-# replay check before its surface lock is released. Long enough for the
-# execution domain (~70 readings/hour live) to clear the monitor's
-# MIN_POST_ADOPTION_READINGS several times over.
-PREDICTION_EXPECTATION_ROLLBACK_WINDOW_SEC = 6 * 3600
-
 
 @dataclass
 class PatchApplier:
@@ -177,7 +171,11 @@ class PatchApplier:
         spec = domain_for_surface(proposal.target_surface)
         if spec is None or proposal.patch.target_ref != spec.domain:
             return None
-        live = get_prediction_expectation(spec.domain)
+        try:
+            live = get_prediction_expectation(spec.domain, strict=True)
+        except ControlSurfaceReadError:
+            # Unknown live value -> unknown rollback target. Refuse.
+            return None
         candidate = expectation_from_payload(proposal.patch.patch, default=live)
         if candidate == live or not spec.in_bounds(candidate):
             return None
@@ -198,7 +196,7 @@ class PatchApplier:
             target_surface=proposal.target_surface,
             applied_patch=candidate.as_patch(),
             rollback_payload=live.as_patch(),
-            rollback_window_sec=PREDICTION_EXPECTATION_ROLLBACK_WINDOW_SEC,
+            rollback_window_sec=spec.rollback_window_sec,
         )
 
     def rollback(self, *, adoption: MutationAdoptionV1) -> None:

@@ -35,7 +35,7 @@ def test_thin_domain_reports_insufficient_readings() -> None:
 
 def test_steady_domain_reports_a_candidate_against_the_live_default() -> None:
     r = random.Random(2)
-    s = summarize("execution", _timed([abs(0.02 + r.gauss(0, 0.005)) for _ in range(700)]), None)
+    s = summarize("execution", _timed([abs(0.02 + r.gauss(0, 0.005)) for _ in range(1500)]), None)
     assert s["live_is_default"] is True
     assert isinstance(s["assessment"], dict)
     assert s["assessment"]["fit_gain_lower_bound"] > 0.0

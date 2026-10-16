@@ -443,7 +443,7 @@ def _prediction_expectation_tuner() -> PredictionExpectationTuner | None:
             return None
         _PREDICTION_EXPECTATION_TUNER = PredictionExpectationTuner(
             read_readings=postgres_reading_reader(postgres_url),
-            read_live=get_prediction_expectation,
+            read_live=lambda domain: get_prediction_expectation(domain, strict=True),
             window=timedelta(hours=_env_float(
                 "SUBSTRATE_PREDICTION_EXPECTATION_WINDOW_HOURS", default=72.0, minimum=6.0, maximum=192.0
             )),
@@ -455,12 +455,17 @@ def _prediction_expectation_tuner() -> PredictionExpectationTuner | None:
 
 
 def _unseen_review_telemetry(records: list) -> list:
-    fresh = [record for record in records if record.telemetry_id not in _MUTATION_SEEN_TELEMETRY_IDS]
-    for record in fresh:
+    return [record for record in records if record.telemetry_id not in _MUTATION_SEEN_TELEMETRY_IDS]
+
+
+def _mark_review_telemetry_seen(records: list) -> None:
+    """Called only after a cycle actually consumed ``records`` -- marking
+    before run_cycle would drop them for good if the cycle raised or lost the
+    leader lock."""
+    for record in records:
         _MUTATION_SEEN_TELEMETRY_IDS[record.telemetry_id] = None
     while len(_MUTATION_SEEN_TELEMETRY_IDS) > _MUTATION_SEEN_TELEMETRY_MAX:
         _MUTATION_SEEN_TELEMETRY_IDS.popitem(last=False)
-    return fresh
 SUBSTRATE_AUTONOMY_LOCAL_CYCLE_LOCK = threading.Lock()
 SUBSTRATE_REVIEW_LOCAL_CYCLE_LOCK = threading.Lock()
 
@@ -4957,14 +4962,12 @@ def execute_substrate_mutation_scheduled_cycle(
             corpus_by_class={
                 "routing_threshold_patch": "replay-routing-v1",
                 "recall_weighting_patch": "replay-recall-v1",
-                "graph_consolidation_param_patch": "replay-consolidation-v1",
                 "approved_prompt_profile_variant_promotion": "replay-prompt-profile-v1",
                 "prediction_expectation_patch": PREDICTION_EXPECTATION_CORPUS_ID,
             },
             baseline_metric_ref_by_class={
                 "routing_threshold_patch": "baseline-routing-v1",
                 "recall_weighting_patch": "baseline-recall-v1",
-                "graph_consolidation_param_patch": "baseline-consolidation-v1",
                 "approved_prompt_profile_variant_promotion": "baseline-prompt-profile-v1",
                 "prediction_expectation_patch": PREDICTION_EXPECTATION_BASELINE_REF,
             },
@@ -5095,15 +5098,19 @@ def execute_substrate_mutation_scheduled_cycle(
         post_adoption_delta_by_proposal: Dict[str, float] = {}
         if tuner is not None and _env_flag("SUBSTRATE_AUTONOMY_ENABLED", default=False):
             _t_tuner = time.monotonic()
-            try:
-                if proposals_enabled:
+            # Separate guards: a failed proposal must not skip monitoring.
+            if proposals_enabled:
+                try:
                     prediction_expectation_proposals = len(
                         tuner.propose(store=SUBSTRATE_MUTATION_STORE, now=tick_now)
                     )
-                if monitor_enabled:
+                except Exception:
+                    logger.warning("prediction_expectation_propose_failed", exc_info=True)
+            if monitor_enabled:
+                try:
                     post_adoption_delta_by_proposal = tuner.post_adoption_deltas(store=SUBSTRATE_MUTATION_STORE)
-            except Exception:
-                logger.warning("prediction_expectation_tuner_failed", exc_info=True)
+                except Exception:
+                    logger.warning("prediction_expectation_post_adoption_failed", exc_info=True)
             _phase_sec["prediction_expectation_tuner"] = time.monotonic() - _t_tuner
 
         _t_run = time.monotonic()
@@ -5118,6 +5125,11 @@ def execute_substrate_mutation_scheduled_cycle(
             replay_telemetry=telemetry,
             now=tick_now,
         )
+        if telemetry_override is None and not set(result.get("notes") or []) & {
+            "leader_lock_not_acquired",
+            "autonomy_kill_switch_disabled",
+        }:
+            _mark_review_telemetry_seen(telemetry)
         _phase_sec["run_cycle"] = time.monotonic() - _t_run
         _phase_sec["total"] = time.monotonic() - _t_cycle_start
         scheduler_summary = {
@@ -5239,20 +5251,30 @@ def _execute_substrate_mutation_cycle(*, request: SubstrateMutationExecuteReques
         allow_apply=apply_allowed,
         blocked_reason=";".join(apply_blockers) if apply_blockers else None,
     )
+    # Same store as the scheduled cycle, so rung-6 proposals and adoptions
+    # can be due here too: trial and monitor them the same way, never by
+    # default-rejecting a proposal or settling an adoption unmeasured.
+    manual_tuner = _prediction_expectation_tuner()
     corpus = ReplayCorpusRegistry(
         corpus_by_class={
             "routing_threshold_patch": "replay-routing-v1",
             "recall_weighting_patch": "replay-recall-v1",
-            "graph_consolidation_param_patch": "replay-consolidation-v1",
             "approved_prompt_profile_variant_promotion": "replay-prompt-profile-v1",
+            "prediction_expectation_patch": PREDICTION_EXPECTATION_CORPUS_ID,
         },
         baseline_metric_ref_by_class={
             "routing_threshold_patch": "baseline-routing-v1",
             "recall_weighting_patch": "baseline-recall-v1",
-            "graph_consolidation_param_patch": "baseline-consolidation-v1",
             "approved_prompt_profile_variant_promotion": "baseline-prompt-profile-v1",
+            "prediction_expectation_patch": PREDICTION_EXPECTATION_BASELINE_REF,
         },
     )
+    manual_post_adoption_deltas: Dict[str, float] = {}
+    if manual_tuner is not None:
+        try:
+            manual_post_adoption_deltas = manual_tuner.post_adoption_deltas(store=SUBSTRATE_MUTATION_STORE)
+        except Exception:
+            logger.warning("prediction_expectation_post_adoption_failed", exc_info=True)
     worker = SubstrateAdaptationWorker(
         store=SUBSTRATE_MUTATION_STORE,
         detectors=MutationDetectors(
@@ -5263,7 +5285,11 @@ def _execute_substrate_mutation_cycle(*, request: SubstrateMutationExecuteReques
             routing_surface_reader=inspect_chat_reflective_lane_threshold,
             surface_reliability_reader=SUBSTRATE_MUTATION_STORE.surface_reliability,
         ),
-        trial_runner=SubstrateTrialRunner(scorer=ClassSpecificScorer(), corpus_registry=corpus),
+        trial_runner=SubstrateTrialRunner(
+            scorer=ClassSpecificScorer(),
+            corpus_registry=corpus,
+            prediction_expectation_evaluator=manual_tuner.trial_metrics if manual_tuner is not None else None,
+        ),
         decision_engine=DecisionEngine(),
         applier=applier,
         monitor=PostAdoptionMonitor(),
@@ -5297,6 +5323,7 @@ def _execute_substrate_mutation_cycle(*, request: SubstrateMutationExecuteReques
         telemetry=telemetry,
         measured_metrics_by_proposal={},
         measured_metrics_by_class=request.class_metrics or None,
+        post_adoption_delta_by_proposal=manual_post_adoption_deltas or None,
         post_adoption_delta_by_target_surface=request.post_adoption_delta_by_target_surface or None,
         replay_telemetry=telemetry,
         now=now,
@@ -5783,7 +5810,9 @@ def _autonomy_readiness_payload() -> Dict[str, Any]:
             # at staging; see graph_consolidation.recent_activity below.
             # Plain English, not jargon: this string is the first line a
             # human reads on this page.
-            "summary": "Orion can suggest changes to itself and try some out quietly, but nothing changes how it actually behaves without you approving it first.",
+            # 2026-10-16: one surface now changes live behavior without
+            # approval -- rung 6's prediction_expectation_patch.
+            "summary": "Orion can suggest changes to itself and try some out quietly. One kind of change Orion makes alone: how surprised they expect to be (checked on held-out data first, undone automatically if it turns out worse). Everything else waits for you.",
             "safe_next_action": "build_recall_v2_manual_canary",
             "highest_risk": "misconfigured autonomy apply gate on any future live-apply surface",
             "warnings": [],

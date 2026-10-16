@@ -479,7 +479,7 @@ def test_scheduler_self_revision_lane_is_retired(monkeypatch, scheduler_fixture)
     ]
 
 
-def _steady_readings(n: int = 700):
+def _steady_readings(n: int = 1500):
     import random
     from datetime import timedelta
 
@@ -525,6 +525,10 @@ def test_review_telemetry_is_turned_into_signals_once(monkeypatch) -> None:
 
     monkeypatch.setattr(api_routes, "_MUTATION_SEEN_TELEMETRY_IDS", OrderedDict())
     rows = [SimpleNamespace(telemetry_id="a"), SimpleNamespace(telemetry_id="b")]
+    fresh = api_routes._unseen_review_telemetry(rows)
+    assert [r.telemetry_id for r in fresh] == ["a", "b"]
+    # Not consumed yet (cycle raised / lost the lock): still unseen.
     assert [r.telemetry_id for r in api_routes._unseen_review_telemetry(rows)] == ["a", "b"]
+    api_routes._mark_review_telemetry_seen(fresh)
     rows.append(SimpleNamespace(telemetry_id="c"))
     assert [r.telemetry_id for r in api_routes._unseen_review_telemetry(rows)] == ["c"]

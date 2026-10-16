@@ -1191,10 +1191,12 @@ class VisionRunner:
             # The model's own words, so a rejection streak can be read back
             # (2026-10-16: 24/24 walkway "null_answer"s left no trace of what
             # the model actually said or what it was shown).
-            logger.info(
-                "caption_frame rejected reason={} crop_box={} raw={!r}",
-                reason, crop_box, (generated_text or "")[:200],
-            )
+            # Caller-prompted tasks only (walkway); cam0 BLIP rejections stay quiet.
+            if request.get("caption_prompt"):
+                logger.info(
+                    "caption_frame rejected reason={} crop_box={} raw={!r}",
+                    reason, crop_box, (generated_text or "")[:200],
+                )
             # A rejected caption is published as rejected, never as an empty
             # string at full confidence (what every cam0 artifact carried
             # before 2026-10-08, indistinguishable from a real result).

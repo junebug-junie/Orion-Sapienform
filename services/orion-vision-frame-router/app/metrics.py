@@ -40,7 +40,8 @@ class RouterMetrics:
     caption_skip_counts: dict[str, int] = field(default_factory=dict)
     caption_no_caption_counts: dict[str, int] = field(default_factory=dict)
     caption_failure_counts: dict[str, int] = field(default_factory=dict)
-    # Answered-but-no-caption replies since the last real caption. 2026-10-16:
+    # Answered-but-no-caption replies since the last real caption, across all
+    # captioned streams (only walkway today). 2026-10-16:
     # 24 of 24 walkway replies were "null_answer" and every counter looked
     # healthy; a long streak now logs a warning (dispatcher).
     caption_no_caption_streak: int = 0

@@ -30,9 +30,19 @@ def test_small_far_box_gets_a_padded_crop_at_least_min_side():
     assert (x2 - x1) * (y2 - y1) < 0.1 * FRAME[0] * FRAME[1]
 
 
-def test_union_of_several_boxes():
-    box = crop_box_for(FRAME, [[100, 200, 180, 420], [900, 200, 980, 420]], pad=0.0)
-    assert box[0] <= 100 and box[2] >= 980
+def test_nearby_boxes_are_cropped_together():
+    # A person and the dog beside them: one crop holds both.
+    box = crop_box_for(FRAME, [[100, 200, 180, 420], [200, 350, 260, 420]], pad=0.5)
+    assert box[0] <= 100 and box[2] >= 260
+
+
+def test_far_apart_boxes_crop_to_the_top_box_only():
+    # Person (first = highest score) at the left edge, the patio prop at the
+    # right: the crop stays on the person, not a frame-wide union.
+    person, prop = [100, 600, 180, 820], [2060, 877, 2274, 1227]
+    x1, y1, x2, y2 = crop_box_for(FRAME, [person, prop], pad=0.5)
+    assert x1 <= person[0] and x2 >= person[2]
+    assert x2 < prop[0]
 
 
 def test_crop_clamped_to_frame_edges():

@@ -358,3 +358,27 @@ def test_no_caption_streak_counts_up_and_resets_on_a_caption():
     # Failures (lane down) are a different signal and do not touch the streak.
     m.record_caption_failure("timeout")
     assert m.caption_no_caption_streak == 0
+
+
+@pytest.mark.asyncio
+async def test_ten_null_replies_log_caption_lane_silent_once():
+    from loguru import logger
+
+    d, bus = _make()
+    lines: list[str] = []
+    sink = logger.add(lambda m: lines.append(str(m)), level="WARNING")
+    try:
+        for _ in range(12):
+            cam = d.state.camera("walkway")
+            cam.last_caption_dispatch_ts = None
+            cam.last_caption_objects = []
+            corr, _ = await _triggered_primary(d, bus)
+            await d.handle_reply_envelope(_reply(corr, objects=[PERSON]))
+            c = str(bus.published[-1][1].correlation_id)
+            await d.handle_reply_envelope(_reply(c, task_type="caption_frame",
+                                                 caption=VisionCaption(text="", confidence=0.0, rejected_reason="null_answer")))
+    finally:
+        logger.remove(sink)
+    assert d.metrics.caption_no_caption_streak == 12
+    silent = [l for l in lines if "caption_lane_silent" in l]
+    assert len(silent) == 1 and "streak=10" in silent[0]

@@ -65,18 +65,30 @@ def crop_box_for(
 ) -> Optional[Tuple[int, int, int, int]]:
     """The region to caption, or None to caption the whole frame.
 
-    Union of the valid boxes, padded by ``pad`` x the union's larger side,
-    grown to at least ``min_side`` per side, clamped to the frame. None when
-    there is no valid box or the crop would cover most of the frame anyway.
+    The first valid box (highest score) plus every box that touches its
+    padded region; that group's union is padded on all four sides by ``pad``
+    x its larger side, grown to at least ``min_side`` per side and clamped to
+    the frame. None when there is no valid box or the crop would cover 80%+
+    of the frame anyway (the caller then captions the whole frame and
+    reports ``crop_box: None``).
     """
     width, height = size
     valid = _valid_boxes(boxes)
     if not valid or width <= 0 or height <= 0:
         return None
-    x1 = min(b[0] for b in valid)
-    y1 = min(b[1] for b in valid)
-    x2 = max(b[2] for b in valid)
-    y2 = max(b[3] for b in valid)
+    # Anchor on the first box (the router sends them highest score first) and
+    # keep only boxes that touch its padded region. A person at one edge plus
+    # a parked car or the patio prop at the other would otherwise make a
+    # union nearly as wide as the frame, and pull the description to the prop.
+    anchor = valid[0]
+    reach = max(0.0, float(pad)) * max(anchor[2] - anchor[0], anchor[3] - anchor[1])
+    ax1, ay1, ax2, ay2 = anchor[0] - reach, anchor[1] - reach, anchor[2] + reach, anchor[3] + reach
+    group = [b for b in valid if b[0] < ax2 and b[2] > ax1 and b[1] < ay2 and b[3] > ay1]
+    x1 = min(b[0] for b in group)
+    y1 = min(b[1] for b in group)
+    x2 = max(b[2] for b in group)
+    y2 = max(b[3] for b in group)
+    # Same margin on all four sides: pad x the group's larger side.
     margin = max(0.0, float(pad)) * max(x2 - x1, y2 - y1)
     x1, y1, x2, y2 = x1 - margin, y1 - margin, x2 + margin, y2 + margin
     x1, x2 = max(0.0, x1), min(float(width), x2)

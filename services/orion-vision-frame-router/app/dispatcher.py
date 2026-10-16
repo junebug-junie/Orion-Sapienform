@@ -22,11 +22,11 @@ from .host_trigger import extract_host_trigger_labels, stream_id_from_host_resul
 from .metrics import RouterMetrics
 from .policy import FrameDispatchPolicy
 from .settings import Settings
+from .state import RouterState
 
 # A caption lane that answers this many times in a row without a caption is
 # logged as silent (and again every this-many replies).
 CAPTION_NO_CAPTION_WARN_STREAK = 10
-from .state import RouterState
 
 if TYPE_CHECKING:
     from orion.core.bus.async_service import OrionBusAsync
@@ -421,9 +421,9 @@ class FrameDispatcher:
             streak = self.metrics.caption_no_caption_streak
             if streak >= CAPTION_NO_CAPTION_WARN_STREAK and streak % CAPTION_NO_CAPTION_WARN_STREAK == 0:
                 logger.warning(
-                    "[ROUTER] caption_lane_silent stream_id={} streak={} counts={} -- the VLM lane answers but "
-                    "never captions; read the host's 'caption_frame rejected ... raw=' log",
-                    task.stream_id, streak, dict(self.metrics.caption_no_caption_counts),
+                    "[ROUTER] caption_lane_silent streak={} (all captioned streams) last_stream_id={} counts={} -- "
+                    "the VLM lane answers but never captions; read the host's 'caption_frame rejected ... raw=' log",
+                    streak, task.stream_id, dict(self.metrics.caption_no_caption_counts),
                 )
 
     async def sweep_timeouts(self, *, now: float) -> int:

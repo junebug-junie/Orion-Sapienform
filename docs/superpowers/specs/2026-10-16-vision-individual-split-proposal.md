@@ -3,6 +3,10 @@
 Date: 2026-10-16. Status: proposal (design only). Identity change: proposal
 mode per AGENTS.md section 0A. Nothing here is built yet.
 
+Names in this doc are placeholders: name A, B, C, D stand for the labels
+Juniper typed (the real labels are in `vision_individual.label`). Individuals
+are referred to by id prefix.
+
 ## Arsonist summary
 
 Orion groups walkway sightings into "individuals". Some individuals hold
@@ -79,17 +83,17 @@ first.
 
   | Individual | Label | Crops | Face crops |
   |---|---|---|---|
-  | 62cb5fcc | Maeve (typed) | 758 | 25 |
-  | f5242d40 | Teddy (typed) | 297 | 35 |
-  | 4354c877 | Amanda Feld (copied) | 84 | 49 |
-  | 9bea16d5 | Amanda Feld (typed) | 54 | 23 |
+  | 62cb5fcc | name A (typed) | 758 | 25 |
+  | f5242d40 | name B (typed) | 297 | 35 |
+  | 4354c877 | name D (copied) | 84 | 49 |
+  | 9bea16d5 | name D (typed) | 54 | 23 |
 
 - **Picture verdicts:**
-  - Ask 9dd6a5ad on 62cb5fcc: picture 0 is the same person (Maeve). Pictures
-    1 and 2 are a different person, named Esme. Pictures 1 and 2 are body crops
+  - Ask 9dd6a5ad on 62cb5fcc: picture 0 is the same person (name A). Pictures
+    1 and 2 are a different person, named name C. Pictures 1 and 2 are body crops
     with no face.
-  - Ask 64490457 on f5242d40: pictures 0 and 1 are the same person (Teddy).
-    Picture 2 is a different person, named Esme. All three pictures have a face.
+  - Ask 64490457 on f5242d40: pictures 0 and 1 are the same person (name B).
+    Picture 2 is a different person, named name C. All three pictures have a face.
 - **Pair verdicts:**
 
   | Pair | Verdict | Face cosine |
@@ -129,20 +133,20 @@ seed" is the crops she called "different".)
 
 | Source individual | Crops moved by answer | Face crops that follow | Stay | New vs remaining, body cosine | New vs remaining, face cosine |
 |---|---|---|---|---|---|
-| 62cb5fcc "Maeve" | 2 | 0 (no face seed for Esme) | 755 | 0.977 | n/a |
-| f5242d40 "Teddy" | 1 | 3 (4 at margin 0.05) | 287 | 0.944 | 0.728 |
+| 62cb5fcc "name A" | 2 | 0 (no face seed for name C) | 755 | 0.977 | n/a |
+| f5242d40 "name B" | 1 | 3 (4 at margin 0.05) | 287 | 0.944 | 0.728 |
 
-The two new "Esme" pieces score 0.889 against each other on body cosine.
+The two new "name C" pieces score 0.889 against each other on body cosine.
 There is no face cosine, because one piece has no face.
 
 ### Why body-embedding "nearest neighbour" must not decide who follows
 
-- Inside 62cb5fcc, the live body centroid scores 0.977 against the Esme
-  pictures and only 0.851 against the Maeve picture. If each of its 758
+- Inside 62cb5fcc, the live body centroid scores 0.977 against the name C
+  pictures and only 0.851 against the name A picture. If each of its 758
   crops went to whichever named seed is nearer by body embedding, **734 of
-  758 crops would leave "Maeve"** (715 with a 0.05 margin). That does not
-  split off Esme. It shows the whole individual is a body-embedding blob
-  that got the name "Maeve" from its 25 face crops.
+  758 crops would leave "name A"** (715 with a 0.05 margin). That does not
+  split off name C. It shows the whole individual is a body-embedding blob
+  that got the name "name A" from its 25 face crops.
 - Two different people in the same frame score body cosine p10 0.673,
   p50 0.752, p90 0.832 (n = 2,910 pairs). **20% of known-different pairs are
   at or above the 0.80 body threshold.** At this camera distance, the body
@@ -157,10 +161,10 @@ the replay over the next 516 person crops:
 |---|---|
 | 62cb5fcc | +2 |
 | f5242d40 | +19 |
-| Esme piece from 62cb5fcc | +0 |
-| Esme piece from f5242d40 | +0 |
+| name C piece from 62cb5fcc | +0 |
+| name C piece from f5242d40 | +0 |
 
-The replay cannot show whether Esme walked past after 23:22. It does show
+The replay cannot show whether name C walked past after 23:22. It does show
 that nothing changed for incoming crops. The new individuals are close to
 the big ones on body cosine (0.944 and 0.977), so incoming crops still go to
 the bigger ones.
@@ -172,14 +176,14 @@ All pairs labelled so far:
 | Pair | Juniper says | Face cosine |
 |---|---|---|
 | 4354c877 / 9bea16d5 (individual centroids) | same | 0.533 |
-| Teddy picture 0 / Teddy picture 1 (crops) | same | **0.151** |
+| name B picture 0 / name B picture 1 (crops) | same | **0.151** |
 | 62cb5fcc / f5242d40 (centroids) | different | **0.758** |
-| Maeve picture / Esme picture (on Teddy's ask) | different | **0.646** |
-| Teddy picture 0 / Esme picture | different | 0.582 |
-| Maeve picture / Teddy picture 0 | different | 0.511 |
+| name A picture / name C picture (on name B's ask) | different | **0.646** |
+| name B picture 0 / name C picture | different | 0.582 |
+| name A picture / name B picture 0 | different | 0.511 |
 | 4354c877 / f5242d40 (centroids) | different | 0.405 |
-| Maeve picture / Teddy picture 1 | different | 0.145 |
-| Teddy picture 1 / Esme picture | different | 0.125 |
+| name A picture / name B picture 1 | different | 0.145 |
+| name B picture 1 / name C picture | different | 0.125 |
 
 Earlier measurement, in the PR #2698 report and re-checked here on 44 pairs:
 
@@ -189,7 +193,7 @@ Earlier measurement, in the PR #2698 report and re-checked here on 44 pairs:
 The labelled "same" and "different" sets overlap completely. No threshold
 separates them.
 
-The Teddy-vs-Teddy score of 0.151 is suspicious. The cards show body
+The name B-vs-name B score of 0.151 is suspicious. The cards show body
 thumbnails, but the face embedding comes from whatever face the detector
 found inside the person box. That face may belong to someone else, for
 example a child being carried. This is Missing question 1.
@@ -214,8 +218,8 @@ keeps the `individual_id`, its label, and its substrate entity node. The
 moved crops get a **new** `individual_id`.
 
 Identity follows her answer, not crop count. For 62cb5fcc, that matters:
-most of its body crops look more like Esme than Maeve, but the name came
-from Maeve's face.
+most of its body crops look more like name C than name A, but the name came
+from name A's face.
 
 **Which crops move.** Two kinds of crops move:
 
@@ -243,7 +247,7 @@ contain moved crops, with the same grouping rule as `apply_batch`
 - The source's rebuilt sighting keeps its `sighting_id`.
 - Groups of moved crops get new sightings.
 - Thumb, face-thumb, and evidence refs are re-picked from members. This is
-  the step that stops the next ask card from showing Esme under "Maeve".
+  the step that stops the next ask card from showing name C under "name A".
 - Attention scores are recomputed for rebuilt sightings.
 - `vision_events` rows already emitted stay as history. A split never edits
   history.
@@ -275,11 +279,11 @@ get a rhythm at all (fewer than `min_occurrences`).
   same stream and kind already has that exact typed name, the split adds a
   `vision_individual_pair_verdict` row `same` between the two. It does **not**
   move crops into the other individual.
-  - Today: the second Esme split links to the first. The existing group logic
-    then treats both as one Esme. The street line already shows each name
+  - Today: the second name C split links to the first. The existing group logic
+    then treats both as one name C. The street line already shows each name
     once.
   - Reason: two of today's four labelled people already have two
-    individuals each ("Amanda Feld"). Linking keeps every split undoable on
+    individuals each ("name D"). Linking keeps every split undoable on
     its own. A merge would mix two splits' crops.
 - **"Someone else" without a name.** The new individual has no label. It is
   eligible for the normal "who is this?" ask once it has enough faces, under
@@ -404,8 +408,8 @@ Undo writes the same line, tagged `[VISION_SPLIT_UNDONE]`.
 
 **The wrong side keeps the name.** If the "who keeps the id" rule picked by
 crop count, splitting 62cb5fcc by body neighbour would move 734 crops away.
-The name "Maeve" would stay on 24 crops, or end up on Esme's body crops. Any
-later chat or street line would then name the wrong child.
+The name "name A" would stay on 24 crops, or end up on name C's body crops. Any
+later chat or street line would then name the wrong person.
 
 **Guards:**
 
@@ -423,8 +427,8 @@ table.
 
 ## Missing questions
 
-1. Do the cards show the face the face embedding came from? Teddy picture 0
-   vs Teddy picture 1 scores 0.151. If the cards show body thumbnails but the
+1. Do the cards show the face the face embedding came from? name B picture 0
+   vs name B picture 1 scores 0.151. If the cards show body thumbnails but the
    face embedding is from another face in the box, every face calibration
    number is noisy. That would need a check of `face_thumb_ref` vs `thumb_ref`
    on these crops, in the Hub, before patch 2.
@@ -504,14 +508,14 @@ table.
 3. **Live, after deploy.** The live path must show all of these:
    - `[VISION_SPLIT]` lines for asks 9dd6a5ad and 64490457.
    - Two `vision_individual_split` rows.
-   - Two new individuals labelled "Esme", linked by a `same` pair verdict.
-   - `different` pair verdicts from each Esme individual to its source.
+   - Two new individuals labelled "name C", linked by a `same` pair verdict.
+   - `different` pair verdicts from each name C individual to its source.
    - The next "who is this?" card for 62cb5fcc or f5242d40 shows none of the
      moved crops' thumbs. Verify the image refs, not only the payload.
 4. **Undo.** `scripts/undo_vision_split.py` restores one split on a scratch
    copy of the tables.
 5. **Honest outcome metric.** For 7 days, report how many new crops join
-   each Esme individual. The expected value is about 0, because of the
+   each name C individual. The expected value is about 0, because of the
    forward replay above. If it stays at 0, patch 2 is needed, and that is
    the evidence for it.
 

@@ -113,6 +113,6 @@ Rebuild also the consumers that bundle `orion/` (street_material change): orion-
 
 ## PR link
 
-(filled after PR creation)
+https://github.com/junebug-junie/Orion-Sapienform/pull/2740
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

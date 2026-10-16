@@ -147,6 +147,15 @@ CONTEXT_PROVENANCE_REGISTRY: dict[str, ContextKeyProvenance] = {
             "frame, each citing [arc:<id>]. Set by orion-thought for reverie_narrate only "
             "(app/reverie.py build_recent_arcs_text; orion/temporal_self/recent_arcs.py).",
         ),
+        _entry(
+            "personality_cue",
+            "derived_summary",
+            "What Orion keeps coming back to: a fixed template (no LLM, orion/personality/cue.py) "
+            "over orion-durable-runs' personality graph frame (GET /personality/frame), each line an "
+            "excerpt of Orion's own words with the lanes and counts behind it. A record, not an "
+            "instruction. Set by orion-thought for stance_react and reverie "
+            "(app/personality_cue.py) and by Hub for curiosity kickoff and outreach.",
+        ),
         _entry("curiosity_signals", "live_runtime_projection", "Live curiosity/drive signals."),
         _entry("metacog_substrate_cue", "live_runtime_projection", "Compact live substrate cue for metacog prompts."),
         _entry("substrate_eventfulness_score", "live_runtime_projection", "Live substrate eventfulness score."),

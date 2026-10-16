@@ -84,7 +84,7 @@ PersonalityLane = Literal[
 ]
 DispositionOrigin = Literal["seed_self_inquiry", "recurrence"]
 DispositionStatus = Literal["candidate", "active", "retired"]
-PersonalityCueSkipReason = Literal["disabled", "fetch_failed", "invalid_frame", "stale", "empty"]
+PersonalityCueSkipReason = Literal["disabled", "fetch_failed", "invalid_frame", "stale", "empty", "render_failed"]
 DISPOSITION_LABEL_MAX_CHARS = 160
 FRAME_MAX_DISPOSITIONS = 12
 PERSONALITY_CUE_MAX_CHARS = 600

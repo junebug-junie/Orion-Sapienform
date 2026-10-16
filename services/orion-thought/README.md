@@ -391,6 +391,23 @@ Logs: `temporal_self_cue corr=... chars=... arcs=... fetch_ms=...`,
 `temporal_self_cue_skipped corr=... reason=stale|wrong_day|fetch_failed|invalid_frame|disabled`,
 `temporal_self_day_citations corr=... label=...`. Kill switch: `TEMPORAL_SELF_STANCE_CUE_ENABLED=false`.
 
+## Personality read-back for stance_react and reverie (personality graph, spec rev 2)
+
+What Orion keeps coming back to, in Orion's own words, read back as a record, not an instruction.
+`app/personality_cue.py` fetches orion-durable-runs `GET /personality/frame` (`PERSONALITY_FRAME_URL`,
+same base as `TEMPORAL_SELF_FRAME_URL`) and renders it with `orion.personality.cue.project_personality_cue`
+(a fixed template, no LLM, <= 600 chars, strongest nodes first). No tone or style instruction is added
+anywhere: the cue only names what recurred, where, and how often.
+
+- Chat: built concurrently with Mind enrichment and the day cue (`PERSONALITY_CUE_TIMEOUT_SEC=0.5`),
+  passed as `personality_cue` and rendered as `WHAT I KEEP COMING BACK TO` in `stance_react.j2`.
+- Reverie: one fetch per step alongside reverie's other reads (`ORION_REVERIE_RECENT_ARCS_FETCH_TIMEOUT_SEC`),
+  rendered as `WHAT YOU KEEP COMING BACK TO` in `reverie_narrate.j2` next to `EARLIER TODAY`.
+
+A frame that is missing, invalid, older than `PERSONALITY_CUE_MAX_AGE_SEC=3600`, or empty renders nothing.
+Log (one per build): `personality_cue corr=... rendered=true|false ids=... skip=disabled|fetch_failed|invalid_frame|stale|empty|render_failed`.
+Kill switch: `PERSONALITY_CUE_ENABLED=false`.
+
 ## Self-readings for stance_react and reverie (self-calibration spec section C)
 
 Orion's body signals, each scored 0-10 against its own last 7 days, shown to the unified turn's

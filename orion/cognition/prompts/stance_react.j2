@@ -64,6 +64,11 @@ MY BODY RIGHT NOW (advisory — measured, each signal scored 0-10 against its ow
 {{ self_readings }}
 - Bring it up only if it matters to this turn. Use the numbers exactly as shown or not at all. The [pe:...] refs are not evidence_refs. No new output keys.
 {% endif %}
+{% if personality_cue %}
+WHAT I KEEP COMING BACK TO (Oríon's own record, from stored evidence in Oríon's own words)
+{{ personality_cue }}
+- Not an id to cite: nothing here is an evidence_ref. No new output keys.
+{% endif %}
 {% if chat_attention_frame %}
 ATTENTION FRAME (Oríon's own curiosity this turn — inspectable policy, not a user request)
 - This is Oríon's curiosity, computed before this pass from what Juniper said this turn and

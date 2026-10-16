@@ -215,3 +215,57 @@ def test_env_example_carries_the_new_keys_on() -> None:
                  "VISION_INDIVIDUALS_CONTINUATION_THRESHOLD=0.88", "VISION_INDIVIDUALS_CONTINUATION_GAP_SEC=10",
                  "VISION_INDIVIDUALS_CONTINUATION_MAX_DISP=1.5"):
         assert line in text.splitlines(), line
+
+
+# --- the deployed cycle against REAL Postgres (ORION_TEST_PG_URI; see test_vision_reanchor.py) -------
+
+import os  # noqa: E402
+
+import pytest  # noqa: E402
+
+PG = os.getenv("ORION_TEST_PG_URI", "")
+needs_pg = pytest.mark.skipif(not PG, reason="ORION_TEST_PG_URI not set (throwaway Postgres only)")
+
+
+@needs_pg
+@pytest.mark.parametrize("enabled,expected", [(True, "a"), (False, None)])
+def test_the_cycle_continues_a_db_sighting_and_the_kill_switch_stops_it(enabled, expected) -> None:
+    """run_one_individuals_cycle loads the individual's sighting (last box,
+    ended_at) and joins a close crop 5 s later at 0.89 -- only with the
+    continuation lane on; off, 0.89 < 0.90 opens a new individual."""
+    from sqlalchemy import create_engine, text
+
+    now = T0 + timedelta(minutes=5)
+    seen = now - timedelta(minutes=2)
+    engine = create_engine(PG)
+    try:
+        with engine.begin() as conn:
+            conn.execute(text("TRUNCATE orion_ask, vision_individual_pair_verdict, vision_individual_sighting, "
+                              "vision_individual, vision_crop_observation, vision_individuals_cursor CASCADE"))
+            conn.execute(text(
+                "INSERT INTO vision_individual (individual_id, stream_id, kind, centroid, centroid_n, first_seen_at, "
+                "last_seen_at, sighting_count, distinct_days) VALUES ('a', 'walkway', 'person', :c, 5, :t, :t, 1, 1)"),
+                {"c": [1.0, 0.0], "t": seen})
+            conn.execute(text(
+                "INSERT INTO vision_individual_sighting (sighting_id, individual_id, stream_id, started_at, ended_at, "
+                "observation_count, zone_counts, last_box_xyxy) VALUES ('s-a', 'a', 'walkway', :s, :t, 5, "
+                "'{\"walkway\": 5}'::jsonb, :b)"),
+                {"s": seen - timedelta(seconds=20), "t": seen, "b": list(_box(100))})
+            conn.execute(text("INSERT INTO vision_individuals_cursor (stream_id, last_created_at) VALUES ('walkway', :t)"),
+                         {"t": seen})
+            conn.execute(text(
+                "INSERT INTO vision_crop_observation (crop_id, observation_id, stream_id, observed_at, label, score, "
+                "box_xyxy, zone, embedding, created_at) VALUES ('c1', 'o1', 'walkway', :t, 'person', 0.9, :b, "
+                "'walkway', :e, :t)"),
+                {"t": seen + timedelta(seconds=5), "b": list(_box(100 + H)), "e": list(_at(0.89))})
+        cfg = vi.IndividualsConfig(continuation_enabled=enabled, ask_face_min_faces=0)
+        summary, _ = vi.run_one_individuals_cycle(postgres_uri=PG, cfg=cfg, zones_by_stream={}, now=now)
+        with engine.begin() as conn:
+            got = conn.execute(text("SELECT individual_id FROM vision_crop_observation WHERE crop_id='c1'")).scalar()
+        assert summary["assigned"] == 1
+        if expected:
+            assert got == expected and summary["assigned_by_continuation"] == 1
+        else:
+            assert got not in (None, "a") and summary["assigned_by_continuation"] == 0
+    finally:
+        engine.dispose()

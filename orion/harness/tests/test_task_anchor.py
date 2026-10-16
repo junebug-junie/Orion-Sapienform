@@ -141,3 +141,35 @@ def test_the_anchor_lands_after_the_model_even_when_permission_flags_are_inserte
     argv = _argv(task_anchor="ANCHOR")
     assert argv.index("--append-system-prompt") > argv.index("--model")
     assert argv[argv.index("--append-system-prompt") + 1] == "ANCHOR"
+
+
+# --- skill listing --------------------------------------------------------------------------
+
+def _argv_for(monkeypatch, value=None, **kw):
+    from orion.harness.fcc_motor import build_claude_argv
+
+    if value is None:
+        monkeypatch.delenv("HARNESS_FCC_DISABLE_SKILLS", raising=False)
+    else:
+        monkeypatch.setenv("HARNESS_FCC_DISABLE_SKILLS", value)
+    return build_claude_argv(claude_bin="claude", model_id="m", prompt="p", correlation_id="c", **kw)
+
+
+def test_skill_listing_is_dropped_by_default(monkeypatch):
+    assert "--disable-slash-commands" in _argv_for(monkeypatch)
+
+
+def test_warm_pool_argv_keeps_slash_commands_so_clear_still_resets(monkeypatch):
+    # With the flag the CLI treats `/clear` as plain text and never sends `conversation_reset`.
+    from orion.harness.fcc_motor import build_claude_argv
+
+    monkeypatch.delenv("HARNESS_FCC_DISABLE_SKILLS", raising=False)
+    argv = build_claude_argv(claude_bin="claude", model_id="m", prompt=None, correlation_id="c")
+    assert "--disable-slash-commands" not in argv
+    assert "--input-format" in argv
+
+
+@pytest.mark.parametrize("value", ["false", "0", "no", "off"])
+def test_skill_listing_flag_can_be_turned_off(monkeypatch, value):
+    assert "--disable-slash-commands" in _argv_for(monkeypatch)
+    assert "--disable-slash-commands" not in _argv_for(monkeypatch, value)

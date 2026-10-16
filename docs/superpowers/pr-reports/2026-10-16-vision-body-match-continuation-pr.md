@@ -23,12 +23,12 @@ Re-anchor dry run on live data (read-only). The last column counts how many of t
 
 ```text
 individual label          copied  n old  n new stored  face     cos  last 24 h >= 0.90: old -> new (of total)
-26b5a26f   Esme           F           2      -      0     0       -  623 -> - (of 4989)   skip: no face crop passes the rule
-4354c877   Amanda Feld    T          84     45      0    45  0.9973  81 -> 79 (of 4989)
-62cb5fcc   Maeve          F         756     24      0    24   0.918  690 -> 35 (of 4989)
-9bea16d5   Amanda Feld    F          54     21      0    21  0.9806  60 -> 31 (of 4989)
-cb65248a   Esme           F           1      3      1     2  0.9013  3 -> 12 (of 4989)
-f5242d40   Teddy          F         296     20      0    20  0.9685  246 -> 58 (of 4989)
+26b5a26f   name E         F           2      -      0     0       -  623 -> - (of 4989)   skip: no face crop passes the rule
+4354c877   name D        T          84     45      0    45  0.9973  81 -> 79 (of 4989)
+62cb5fcc   name A         F         756     24      0    24   0.918  690 -> 35 (of 4989)
+9bea16d5   name D        F          54     21      0    21  0.9806  60 -> 31 (of 4989)
+cb65248a   name E         F           1      3      1     2  0.9013  3 -> 12 (of 4989)
+f5242d40   name B         F         296     20      0    20  0.9685  246 -> 58 (of 4989)
 ```
 
 62cb5fcc stops pulling in the child in the chair: 690 crops pass against its old average, and 35 pass against the new one.
@@ -156,7 +156,7 @@ Delete `/tmp/vision-reanchor/<ts>/` after 7 days (biometric-adjacent).
 - Severity: medium. Concern: about 500 small individuals a day means fewer people reach the ask gates (>= 10 sightings, >= 5 days), so Orion asks about fewer people. Mitigation: this is the safe direction (pieces can be joined later; a mixed individual cannot be separated). `[VISION_MATCH] ... fragmenting` warns above 1,500 a day.
 - Severity: low. Concern: a re-anchor uses face crops of unknown membership (crops older than the split migration) by the "nearest face centroid" rule. Mitigation: a face-cosine guard of >= 0.60 to the target, a dry-run review, and `--undo`.
 - Severity: low. Concern: `--undo --force` drops crops that joined after the re-anchor from the centroid. Mitigation: without `--force`, undo refuses and names those individuals.
-- Severity: medium (needs Juniper). Concern: the "Esme" individual 26b5a26f has 2 crops and no face. Its body average still scores >= 0.90 against 623 of the last 24 h of person crops, so it is a magnet at the new line too. The re-anchor cannot fix it, because it has no face crops. Mitigation: none in this patch. Options: clear its label, or let it be found and split.
+- Severity: medium (needs Juniper). Concern: the "name E" individual 26b5a26f has 2 crops and no face. Its body average still scores >= 0.90 against 623 of the last 24 h of person crops, so it is a magnet at the new line too. The re-anchor cannot fix it, because it has no face crops. Mitigation: none in this patch. Options: clear its label, or let it be found and split.
 - Severity: low. Concern: about 12x more individuals load per tick (30 days of candidates). Mitigation: the index lookups are vectorised or O(1); watch tick time after deploy.
 
 ## PR link

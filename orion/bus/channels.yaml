@@ -3818,6 +3818,17 @@ channels:
     since: "2026-10-11"
     description: "orion-introspect record_correction tool RPC. Orion records a correction to a claim in an Orion's Day letter that a conversation with Juniper established was wrong. Hub checks the ref names a real note paragraph or carry item and that every prior id exists in orion_worldview (read only), then writes one orion_day_correction row; nothing else. It changes no belief: the next curiosity run is offered it and re-tests the named priors itself. Reply on orion:introspect:result:<correlation_id>."
 
+  - name: "orion:introspect:queue_curiosity_focus:request"
+    kind: "request"
+    schema_id: "IntrospectRequestV1"
+    message_kind: "introspect.tool.request.v1"
+    producer_services: ["orion-harness-governor"]
+    consumer_services: ["orion-hub"]
+    single_consumer: true
+    stability: "experimental"
+    since: "2026-10-16"
+    description: "orion-introspect queue_curiosity_focus tool RPC. From a chat turn only, Orion queues one question (and why) for its next regular investigate curiosity run. Hub writes one curiosity_focus_request row: one pending slot, a new focus replaces the pending one (named in the reply), except Orion's own choice (origin self) never replaces a focus Juniper asked for (origin juniper). Starts nothing; the run still waits for every gate, cooldown and cap, is shown the focus, and records a disposition (explored / set_aside:<reason>). Off when HUB_CURIOSITY_FOCUS_ENABLED=false. Reply on orion:introspect:result:<correlation_id>."
+
   - name: "orion:introspect:node_history:request"
     kind: "request"
     schema_id: "IntrospectRequestV1"

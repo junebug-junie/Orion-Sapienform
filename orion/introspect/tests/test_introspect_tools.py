@@ -53,7 +53,8 @@ def _invoke(bus, name="reading_results", args=None):
 
 def test_tool_specs_list_reading_results_then_dreams_then_curiosity_then_orion_day():
     assert [s.name for s in IntrospectTools(ReplyBus(), BINDING).tool_specs()] == [
-        "reading_results", "dreams", "curiosity", "orion_day", "record_correction", "node_history",
+        "reading_results", "dreams", "curiosity", "orion_day", "record_correction", "queue_curiosity_focus",
+        "node_history",
     ]
 
 

@@ -123,6 +123,15 @@ from orion.curiosity.kickoff_prompt import (
     offered_priors_in_prompt,
 )
 from orion.orion_day.carry_forward import release_carry_forward, take_carry_forward
+from orion.curiosity.focus import (
+    TAKEN as FOCUS_TAKEN,
+    fail_focus,
+    read_disposition,
+    read_for_runs as read_focus_for_runs,
+    release_focus,
+    stamp_focus_outcome,
+    take_focus,
+)
 from orion.orion_day.corrections import (
     MAX_CORRECTIONS_PER_RUN,
     correction_outcome,
@@ -861,6 +870,11 @@ class CuriosityInvestigation:
         # with their named priors' current numbers, and stamps at turn end which
         # of those priors the run re-tested.
         orion_day_corrections_enabled: bool = False,
+        # --- Curiosity focus (orion/curiosity/focus.py) --------------------
+        # The regular investigate line, on a writable graph only: takes the one
+        # pending focus Orion queued from chat, shows it first, and stamps the
+        # disposition the run wrote at turn end.
+        focus_enabled: bool = False,
         # --- the self-inquiry line -----------------------------------------
         self_inquiry_enabled: bool = False,
         self_inquiry_daily_cap: int = 3,
@@ -1004,6 +1018,7 @@ class CuriosityInvestigation:
         self.carry_forward_enabled = bool(carry_forward_enabled)
         self.temporal_self_fact_enabled = bool(temporal_self_fact_enabled)
         self.orion_day_corrections_enabled = bool(orion_day_corrections_enabled)
+        self.focus_enabled = bool(focus_enabled)
         # Other Hub loops that want terminal durable-run states without a second
         # subscription (Orion's Day: scripts/orion_day_letter.py). Each hook gets
         # every DurableRunStateV1 this listener decodes; a failing hook is logged
@@ -1520,6 +1535,80 @@ class CuriosityInvestigation:
         except Exception as exc:  # noqa: BLE001
             logger.warning("curiosity_correction_outcome_failed run=%s err=%s", run_id, exc)
 
+    async def _take_focus(self, view: WorldviewSnapshot, run_id: str):
+        """Claim the one pending curiosity focus for this run. None unless Orion could record a
+        disposition for it: the same writable condition the kickoff shows the section on
+        (claiming means "shown to Orion"). Called only from `_investigate`, after every gate."""
+        if not self.focus_enabled or not run_id:
+            return None
+        if not self.graph_enabled or view.is_unavailable:
+            return None
+        return await take_focus(self._pool_provider(), run_id=run_id)
+
+    async def _stamp_focus(self, run_id: str, *, turn_ok: bool) -> None:
+        """Turn end: the focus this run took becomes `ran` (with the disposition the run wrote on
+        its :TurnOutcome; none = unknown) or `failed`. Read-only on the graph. Never raises.
+        Not gated on the flag: a focus taken while it was on still gets its outcome."""
+        if not run_id:
+            return
+        try:
+            pool = self._pool_provider()
+            if pool is None:
+                return
+            if run_id not in await read_focus_for_runs(pool, [run_id]):
+                return
+            disposition, raw, graph_read = (None, None, False)
+            if self._reader is not None:
+                disposition, raw, graph_read = await asyncio.to_thread(read_disposition, self._reader, run_id)
+            focus_id = await stamp_focus_outcome(
+                pool, run_id=run_id, turn_ok=turn_ok, disposition=disposition, disposition_raw=raw,
+            )
+            logger.info(
+                "curiosity_focus_outcome run=%s focus_id=%s turn_ok=%s disposition=%s graph_read=%s",
+                run_id, focus_id, turn_ok, disposition or ("unknown:" + raw if raw else "unknown"), graph_read,
+            )
+        except Exception as exc:  # noqa: BLE001 -- the turn's own result stands
+            logger.warning("curiosity_focus_outcome_failed run=%s err=%s", run_id, exc)
+
+    async def _durable_run_started(self, run_id: str) -> Optional[bool]:
+        """Whether durable-runs' history for this run holds its own `run.started` event. None
+        on any doubt (unreachable, unknown run): callers keep claims then."""
+        root = str(self.durable_runs_url or "").strip().rstrip("/")
+        if not root or not run_id:
+            return None
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                resp = await client.get(f"{root}/runs/{run_id}")
+            if resp.status_code != 200:
+                return None
+            history = resp.json().get("history") or []
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("curiosity_run_started_check_failed run=%s err=%s", run_id, exc)
+            return None
+        return any(isinstance(e, dict) and e.get("event") == "run.started" for e in history)
+
+    async def _settle_focus_after_run_end(self, run_id: str) -> None:
+        """A durable investigate run ended failed / abandoned / cancelled while its focus is still
+        `taken` (no turn end stamped it). Never started: give the focus back. Started: Orion may
+        have seen it, so it is `failed` and never re-queued. In doubt: left `taken` (visible)."""
+        try:
+            pool = self._pool_provider()
+            if pool is None or not run_id:
+                return
+            row = (await read_focus_for_runs(pool, [run_id])).get(run_id)
+            if row is None or row.status != FOCUS_TAKEN:
+                return
+            started = await self._durable_run_started(run_id)
+            if started is False:
+                status = await release_focus(pool, run_id=run_id)
+                logger.info("curiosity_focus_released_unstarted run=%s focus_id=%s now=%s", run_id, row.focus_id, status)
+            elif started is True:
+                await fail_focus(pool, run_id=run_id)
+                logger.info("curiosity_focus_outcome run=%s focus_id=%s turn_ok=False disposition=unknown "
+                            "reason=run_ended_without_turn_end", run_id, row.focus_id)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("curiosity_focus_settle_failed run=%s err=%s", run_id, exc)
+
     async def _release_carry_forward_if_unseen(self, run_id: str) -> None:
         """A durable run that ended before its turn started never showed Orion the
         carry-forward (or the Orion's Day corrections) it claimed at kickoff: give them back.
@@ -1551,8 +1640,11 @@ class CuriosityInvestigation:
 
     async def _release_offers(
         self, run_id: str, *, dream: bool, carry_forward: bool, corrections: bool = False,
+        focus: bool = False,
     ) -> None:
         """Give back what this run claimed but Orion never saw (cancelled before the turn)."""
+        if focus:
+            await release_focus(self._pool_provider(), run_id=run_id)
         if dream:
             await release_hypotheses_for_run(self._pool_provider(), run_id=run_id)
         if carry_forward:
@@ -2281,6 +2373,7 @@ class CuriosityInvestigation:
         dream_hypotheses = await self._take_dream_hypotheses(view, run_id)
         carry_forward = await self._take_carry_forward(run_id)
         corrections = await self._take_corrections(view, run_id)
+        focus = await self._take_focus(view, run_id)
         open_lived_questions = await self._read_open_lived_questions(run_id)
         today_fact = await self._read_today_fact(view, now)
         prompt = build_kickoff_prompt(
@@ -2304,6 +2397,7 @@ class CuriosityInvestigation:
             open_lived_questions=open_lived_questions,
             corrections=corrections,
             today_fact=today_fact,
+            focus=focus,
         )
         if today_fact:
             logger.info("curiosity_today_fact_offered run=%s fact=%s", run_id, today_fact)
@@ -2323,6 +2417,11 @@ class CuriosityInvestigation:
                 run_id, ",".join(c.correction_id for c in corrections),
                 sum(len(c.prior_ids) for c in corrections),
             )
+        if focus is not None:
+            logger.info(
+                "curiosity_focus_offered run=%s focus_id=%s origin=%s chat_corr=%s",
+                run_id, focus.focus_id, focus.origin, focus.chat_correlation_id,
+            )
         if dream_hypotheses:
             logger.info(
                 "curiosity_dream_hypotheses_offered run=%s ids=%s",
@@ -2335,7 +2434,8 @@ class CuriosityInvestigation:
         # What recall searches for during the turn. Carried on the durable brief
         # (and the in-process turn request), not only in the in-memory dict
         # above, so a Hub restart mid-run does not lose it.
-        retrieval_query = _standing_question_from_view(view)
+        # A focus Orion queued is what it chose to look at: recall searches for it first.
+        retrieval_query = focus.question if focus is not None else _standing_question_from_view(view)
         if peer_briefs:
             # Hub is RO on worldview; peer service MERGEs consumed=true.
             await publish_peer_briefs_consumed(
@@ -2362,7 +2462,7 @@ class CuriosityInvestigation:
                     await self._refund_investigation(previous_stamp)
                     await self._release_offers(
                         run_id, dream=bool(dream_hypotheses), carry_forward=carry_forward is not None,
-                        corrections=bool(corrections),
+                        corrections=bool(corrections), focus=focus is not None,
                     )
                 raise
             if dispatched:
@@ -2409,6 +2509,7 @@ class CuriosityInvestigation:
                 )
                 await self._spend_turn_ended(run_id, turn_ok=bool(text))
                 await self._stamp_corrections(run_id)
+                await self._stamp_focus(run_id, turn_ok=bool(text))
         except asyncio.CancelledError:
             # Hub is going away mid-turn. Give the slot back and let the
             # cancellation continue -- swallowing it would leave a task the
@@ -2419,6 +2520,8 @@ class CuriosityInvestigation:
                 # Corrections are released only when Orion cannot have seen them: a correction
                 # re-offered after a started turn could be re-tested twice.
                 corrections=bool(corrections) and not turn_began,
+                # Same rule for the focus: once the turn began, Orion may have seen it.
+                focus=focus is not None and not turn_began,
             )
             raise
         if not text:
@@ -4743,6 +4846,7 @@ class CuriosityInvestigation:
                 if measured:
                     await self._spend_turn_ended(request.run_id, turn_ok=bool(text))
                     await self._stamp_corrections(request.run_id)
+                    await self._stamp_focus(request.run_id, turn_ok=bool(text))
                 return CuriosityTurnResultV1(
                     run_id=request.run_id,
                     correlation_id=request.correlation_id,
@@ -4848,6 +4952,7 @@ class CuriosityInvestigation:
             return
         if state.workflow == "curiosity.investigate" and state.status in {"failed", "abandoned", "cancelled"}:
             await self._release_carry_forward_if_unseen(state.run_id)
+            await self._settle_focus_after_run_end(state.run_id)
         if state.workflow != "curiosity.investigate" or state.status != "completed":
             return
         detail = state.detail or {}

@@ -38,7 +38,7 @@ _IDS = ["updated", "banners", "tiles", "strip", "strip-range", "strip-note", "le
         "priors", "priors-note", "toggle-closed", "prior-filter", "briefs-summary",
         "peer-briefs-table", "refresh", "run-now", "run-now-msg", "self-run-now",
         "self-run-now-msg", "urgent-question", "urgent-run", "urgent-run-msg", "urgent-list",
-        "urgent-note"]
+        "urgent-note", "focus-pending", "focus-msg"]
 
 _HARNESS = """
 const ELS = {};
@@ -661,3 +661,49 @@ def test_the_standalone_link_and_the_iframe_agree_on_the_route() -> None:
     index = (_HUB / "templates" / "index.html").read_text(encoding="utf-8")
     block = index.split('id="curiosity-atlas"', 1)[1].split("</section>", 1)[0]
     assert block.count('"/curiosity"') == 2, block.count('"/curiosity"')
+
+
+# --- the queued curiosity focus (orion/curiosity/focus.py) --------------------
+
+
+def _focus(**over) -> dict:
+    base = {"focus_id": "0f0c0c05-0000-4000-8000-000000000001", "question": "How much of the bus is <heartbeats>?",
+            "why": "I keep guessing", "origin": "self", "status": "pending",
+            "queued_at": "2026-10-16T15:00:00+00:00", "expires_at": "2026-10-18T15:00:00+00:00",
+            "taken_by_run": None, "disposition": None, "disposition_words": "unknown (the run recorded none)",
+            "story": "queued"}
+    base.update(over)
+    return base
+
+
+def test_the_pending_focus_shows_with_a_clear_button_and_is_escaped(tmp_path) -> None:
+    runs = _runs()
+    runs["schedule"]["pending_focus"] = {"available": True, "enabled": True, "focus": _focus()}
+    card = _render({"runs": runs}, tmp_path)["focus-pending"]
+    assert "How much of the bus is &lt;heartbeats&gt;?" in card and "<heartbeats>" not in card
+    assert "Orion chose this" in card and "I keep guessing" in card
+    assert 'data-focus-clear="0f0c0c05-0000-4000-8000-000000000001"' in card
+
+
+def test_juniper_origin_nothing_queued_and_unreadable_read_differently(tmp_path) -> None:
+    runs = _runs()
+    runs["schedule"]["pending_focus"] = {"available": True, "enabled": True, "focus": _focus(origin="juniper")}
+    assert "you asked for this" in _render({"runs": runs}, tmp_path)["focus-pending"]
+    runs["schedule"]["pending_focus"] = {"available": True, "enabled": False, "focus": None}
+    empty = _render({"runs": runs}, tmp_path)["focus-pending"]
+    assert "Nothing queued" in empty and "switched off" in empty and "data-focus-clear" not in empty
+    runs["schedule"]["pending_focus"] = {"available": False, "enabled": True, "focus": None}
+    assert "could not be read" in _render({"runs": runs}, tmp_path)["focus-pending"]
+
+
+def test_a_run_that_took_a_focus_says_so_in_its_chip(tmp_path) -> None:
+    runs = _runs(runs=[_run(focus=_focus(status="ran", disposition_words="set aside: no material"))])
+    strip = _render({"runs": runs}, tmp_path)["strip"]
+    assert "took a queued focus: set aside: no material" in strip
+    assert "took a queued focus" not in _render({"runs": _runs()}, tmp_path)["strip"]
+
+
+def test_the_clear_button_sends_delete_to_the_focus_route() -> None:
+    html = TEMPLATE.read_text(encoding="utf-8")
+    assert '/curiosity/api/focus/${encodeURIComponent(focusId)}`, { method: "DELETE" }' in html
+    assert 'closest("[data-focus-clear]")' in html and "clearFocus(" in html

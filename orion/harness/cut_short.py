@@ -141,6 +141,8 @@ class TurnFindings:
     # no secrets), so claim_gate can check a claimed correction_id against what the tool really
     # returned. Not capped by turn length: a long turn cannot push the one real result out.
     correction_results: list[str] = field(default_factory=list)
+    # Same, for `queue_curiosity_focus` results and a claimed focus_id.
+    focus_results: list[str] = field(default_factory=list)
 
     def observe(self, step: Any) -> None:
         if not isinstance(step, dict):
@@ -184,6 +186,8 @@ class TurnFindings:
                 self.tool_result_count += 1
                 if "record_correction" in call and len(self.correction_results) < _CORRECTION_RESULTS_MAX:
                     self.correction_results.append(body[:_CORRECTION_RESULT_CAP])
+                if "queue_curiosity_focus" in call and len(self.focus_results) < _CORRECTION_RESULTS_MAX:
+                    self.focus_results.append(body[:_CORRECTION_RESULT_CAP])
                 self.entries.append(
                     f"- {call}{err} returned: {_one_line(scrub_secrets(body), _TOOL_RESULT_CAP)}"
                 )

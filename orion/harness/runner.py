@@ -139,6 +139,8 @@ class HarnessMotorResult:
     # What this turn's `record_correction` calls actually returned. The governor checks claims in
     # the reply against it (orion/harness/claim_gate.py).
     correction_results: tuple[str, ...] = ()
+    # Same, for `queue_curiosity_focus` (a claimed focus_id).
+    focus_results: tuple[str, ...] = ()
     # Real backend model the CLI's stream-json "assistant" events echoed back
     # (see fcc_motor.py's _served_model_from_assistant), distinct from the
     # ~/.fcc/.env route alias in HarnessRunRequestV1.fcc_model_label -- that
@@ -851,6 +853,7 @@ class HarnessRunner:
             grammar_collector=collector,
             tool_provenance_audit=tool_provenance_audit,
             correction_results=tuple(turn_findings.correction_results),
+            focus_results=tuple(turn_findings.focus_results),
             step_char_sum=step_char_sum,
             step_char_max=step_char_max,
             tool_failure_streak_max=tool_failure_streak_max,

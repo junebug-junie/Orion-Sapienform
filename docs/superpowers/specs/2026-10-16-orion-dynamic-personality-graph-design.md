@@ -23,6 +23,12 @@ This revision replaces "the winners set tone dials" as the lever.
   1. Live curiosity choices, saved the moment Orion makes them.
   2. **Recurrence**: themes Orion keeps returning to across independent lanes of Orion's own output, from today on. A theme seen in three lanes is stronger than one seen three times in a single lane.
 - Section 5's dial constraints are retired as a prompt lever and kept only as measurement. Section 6 (prediction and surprise) and aspirations stay as later phases.
+- **Build decisions after a seam map (2026-10-16):**
+  - **Store:** Postgres `personality_*` tables, not FalkorDB. The single writer is a periodic reducer in orion-durable-runs, the same pattern as the Temporal Self chronicle. The graph is small, needs fade and an audit history, and every reader already reaches the Postgres pool.
+  - **Read-back:** over HTTP (`GET /personality/frame`), rendered by one shared pure template, `orion/personality/cue.py`. It does not go through `SituationStateV1`, which only outreach reads today. The Temporal Self frame already uses this pattern to reach chat stance, reverie, curiosity kickoff and outreach, and every reader fails open.
+  - **Recurrence matching:** bge-large embeddings from vector-host, cosine similarity to node centroids. A node's gain saturates within a lane, so recurrence across several lanes outweighs repetition in one. A node's label is an excerpt of Orion's own words.
+  - **Seeds:** the latest `self_concept_history` version of each self-inquiry concept, not the FalkorDB `:SelfDefinition` nodes, which have malformed `revises` fields. A seed stays a candidate until non-seed lanes back it.
+  - **Not yet built:** situation subnodes (CAPS if-then). The first read-back shows the strongest nodes overall. It does not choose nodes per situation.
 
 Two things this design refuses:
 

@@ -84,19 +84,24 @@ fi
 SERVICES=$(printf '%s\n' "$PLAN" | awk -F'\t' 'NF {print $1}')
 RECREATE=$(printf '%s\n' "$PLAN" | awk -F'\t' '$2 == "recreate" {print $1}')
 
-# Hand-applied SQL migrations changed in this pull. They never rebuild
+# Hand-written SQL migrations changed in this pull. They never rebuild
 # anything (2026-10-15: a migration-only pull recreated orion-athena-sql-db,
 # an unclean Postgres restart under the whole fleet). Their consumers stay
-# refused by safe_docker_build.sh's migration gate until applied, so say so
-# here, with the live verdict and apply command from the same checker the
-# gate runs -- otherwise the refusal is the first the operator hears of it.
-# Read-only: never applies anything.
+# refused by safe_docker_build.sh's migration gate until applied, so BEFORE any
+# rebuild, scripts/apply_post_pull_migrations.py applies the ones that are
+# NOT APPLIED and safe (every statement on an additive-DDL allowlist, valid
+# REQUIRED-BY header, not rollback/DESTRUCTIVE), in filename order with
+# lock_timeout=10s, only from the clean primary main checkout synced with
+# origin/main; the first file that fails or needs a human holds the rest. Kill switch:
+# ORION_POST_PULL_APPLY_MIGRATIONS=0. Then the read-only report shows the live
+# verdict and the manual command for anything still unapplied. Only on a host
+# whose service list includes orion-sql-db (the classifier lists none on circe).
 if [ "$LIST_ONLY" != "1" ]; then
     set +e
     MIGRATIONS=$(python3 "$PY" --migrations "$@" 2>/dev/null)
     set -e
     if [ -n "${MIGRATIONS//[$'\n\r\t ']}" ]; then
-        echo "rebuild_services_from_git_diff.sh: hand-applied SQL migration(s) changed -- no rebuild applies these:"
+        echo "rebuild_services_from_git_diff.sh: hand-written SQL migration(s) changed -- no rebuild runs these; safe ones are applied first, before any rebuild:"
         CHECKER="$REPO_ROOT/scripts/check_sql_migrations_applied.py"
         # Same interpreter lookup as safe_docker_build.sh: the repo venv has
         # psycopg2; a linked worktree reaches the main checkout's venv.
@@ -112,6 +117,19 @@ if [ "$LIST_ONLY" != "1" ]; then
             CHECK_PY="$COMMON_DIR/../.venv/bin/python"
         fi
         RAW_APPLY="docker exec -i orion-athena-sql-db psql -U postgres -d conjourney -v ON_ERROR_STOP=1 <"
+        APPLIER="$REPO_ROOT/scripts/apply_post_pull_migrations.py"
+        if [ -f "$APPLIER" ]; then
+            APPLY_ARGS=""
+            if [ "$DRY_RUN" = "1" ]; then
+                APPLY_ARGS="--dry-run"
+            fi
+            # Never fails the pull: the deploy gate still refuses any service
+            # whose migration did not land.
+            set +e
+            # shellcheck disable=SC2086
+            (cd "$REPO_ROOT" && "$CHECK_PY" "$APPLIER" $APPLY_ARGS $MIGRATIONS </dev/null 2>&1)
+            set -e
+        fi
         REPORT_RC=1
         if [ -f "$CHECKER" ]; then
             # One read-only run for every file: required-by, live state, apply

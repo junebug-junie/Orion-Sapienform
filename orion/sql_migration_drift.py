@@ -500,6 +500,174 @@ def has_unconditional_effects(text: str) -> bool:
     return any(not e.conditional for e in parse_migration(text).effects)
 
 
+# ------------------------------------------------------------------- post-pull auto-apply safety
+#
+# scripts/apply_post_pull_migrations.py applies a changed migration on `git pull` only when EVERY
+# statement in it is on a short allowlist of additive DDL AND the rest of each statement is inert.
+# Two reviews of the first drafts (2026-10-15) shaped this: a denylist missed EXECUTE strings, psql
+# meta-commands, ALTER COLUMN TYPE, MERGE, CASCADE and WHERE clauses in subqueries; a prefix-only
+# allowlist let function calls ride after an allowed prefix (a volatile DEFAULT, a CHECK or an
+# expression index runs a function once per existing row) and let a quoted identifier spell an
+# allowed prefix. Anything not provably inert is refused, and a refused file is only "apply it by
+# hand" -- the state before auto-apply existed. The tokenizer assumes standard_conforming_strings
+# (the Postgres default since 9.1).
+
+_AUTO_TOP = re.compile(
+    r"^(?:begin|commit|end|start transaction)$"
+    r"|^create table (?:if not exists )?(?P<table>" + _QID + r") ?\("
+    r"|^create (?:unique )?index (?P<conc>concurrently )?(?:if not exists )?" + _QID
+    + r" on (?:only )?(?P<itable>" + _QID + r")(?: using " + _ID + r")? ?\("
+    r"|^create sequence (?:if not exists )?" + _QID + r"\b"
+    r"|^comment on (?:table|column|index|sequence) ",
+    re.I,
+)
+_AUTO_ALTER_ACTION = re.compile(
+    r"^add column (?:if not exists )?" + _ID + r"\b"
+    r"|^add (?:if not exists )?(?!constraint\b)" + _ID + r" "        # ADD <col> <type> (COLUMN omitted)
+    r"|^add constraint " + _ID + r" "
+    r"|^alter (?:column )?" + _ID + r" set default\b",
+    re.I,
+)
+# A seed row that is a no-op when it already exists: re-running the file cannot duplicate it.
+_AUTO_INSERT = re.compile(
+    r"^insert into " + _QID + r" ?(?:\([^()]*\) )?values ?\(.*\) on conflict(?: ?\([^()]*\))? do nothing$",
+    re.I | re.S)
+_ANYWHERE = re.compile(
+    r"\b(?:cascade|execute|select|returning|call|copy|generated)\b", re.I)
+# `word(`: allowed only for type modifiers, constraint syntax, and the table name a statement
+# names. Anything else is a function call -- refused, except now() (stable: no per-row work).
+_CALL = re.compile(r"(?P<name>[A-Za-z_][\w$.]*)\(")
+_PAREN_OK = {
+    "varchar", "char", "character", "varying", "numeric", "decimal", "timestamp", "timestamptz",
+    "time", "timetz", "interval", "bit", "varbit", "float", "vector", "halfvec",
+    "key", "unique", "check", "values", "in", "and", "or", "not", "include", "distinct", "now",
+}
+_NAMES_A_TABLE = {"table", "on", "references", "into", "exists", "only", "using"}
+_META_OK = re.compile(r"^[ \t]*\\set[ \t]+ON_ERROR_STOP[ \t]+(?:on|1|true)[ \t]*$", re.I)
+_META = re.compile(r"^[ \t]*\\")
+_NO_TXN = re.compile(r"^create (?:unique )?index concurrently\b", re.I)
+_TXN_CONTROL = re.compile(r"^(?:begin|commit|end|start transaction)$", re.I)
+_LONG_LOCK_COLUMN = re.compile(r"\b(?:primary key|unique|references|check)\b", re.I)
+
+
+def _head(text: str, words: int = 5) -> str:
+    return " ".join(text.split()[:words])
+
+
+def _strip_comments(sql: str) -> str:
+    sql = re.sub(r"/\*.*?\*/", " ", sql, flags=re.S)
+    return re.sub(r"--[^\n]*", "", sql)
+
+
+def _calls(t: str) -> list[str]:
+    """Function-call names in a statement (strings already blanked, `x (` normalised to `x(`)."""
+    t = re.sub(r"\s+\(", "(", t)
+    out = []
+    for m in _CALL.finditer(t):
+        name = m["name"].lower()
+        prev = t[:m.start()].split()
+        if _bare(name) in _PAREN_OK or (prev and prev[-1].lower() in _NAMES_A_TABLE):
+            continue
+        out.append(name)
+    return out
+
+
+def auto_apply_refusals(text: str, existing_tables: Optional[set[str]] = None) -> list[str]:
+    """Why a migration must NOT be auto-applied; empty = every statement is allowlisted additive
+    DDL with an inert remainder:
+      CREATE TABLE, CREATE [UNIQUE] INDEX, CREATE SEQUENCE, COMMENT ON, the file's own balanced
+      BEGIN/COMMIT, ALTER TABLE ADD COLUMN / ADD CONSTRAINT / ALTER COLUMN SET DEFAULT, and
+      INSERT ... VALUES (...) ON CONFLICT DO NOTHING.
+    Refused anywhere: function calls other than now() (except inside CREATE TABLE, or an index on a
+    table this file creates: no existing row is touched), GENERATED columns, CASCADE, EXECUTE, SELECT,
+    RETURNING, CALL, COPY, SET/RESET (a file must not lift the wrapper's lock_timeout), any
+    dollar-quoted body, any double quote (a quoted identifier can spell an allowed prefix), psql
+    meta-commands other than ``\\set ON_ERROR_STOP on``.
+    ``existing_tables`` (live table names): on a table that already exists, an index must be
+    CONCURRENTLY and a constraint NOT VALID, and a new column may not carry PRIMARY KEY / UNIQUE /
+    REFERENCES / CHECK -- each would scan the table under a lock that blocks its writers. Without
+    it every table counts as existing."""
+    reasons: list[str] = []
+
+    def existing(name: str) -> bool:
+        """True unless the live catalog lacks it (a table this file then creates is new and
+        empty). Unknown catalog: every table counts as existing."""
+        return existing_tables is None or _bare(name) in existing_tables
+
+    for raw in text.splitlines():
+        if _META.match(raw) and not _META_OK.match(raw):
+            reasons.append(f"psql meta-command {raw.strip()[:40]!r}")
+    if '"' in _strip_comments(text):
+        reasons.append("double quote outside a comment (quoted identifier)")
+    opened = 0
+    for st in split_statements(text):
+        t = st.text
+        if st.bodies:
+            reasons.append(f"dollar-quoted body (DO block or function): {_head(t)}")
+            continue
+        if "\\" in t:  # mid-line psql meta-command (`... \gexec`); strings are already blanked
+            reasons.append(f"psql meta-command in: {_head(t)}")
+            continue
+        m = _ANYWHERE.search(t)
+        if m:
+            reasons.append(f"{m.group(0).upper()} in: {_head(t)}")
+            continue
+        top = _AUTO_TOP.match(t)
+        # CREATE TABLE touches no existing row (it makes an empty table or, IF NOT EXISTS, nothing),
+        # and neither does an index on a table this file creates: a call there runs later, on new
+        # rows, as the schema's own semantics. Anywhere else a call can run per existing row.
+        inert_calls = bool(top and (top["table"] or (top["itable"] and not existing(top["itable"]))))
+        calls = [] if inert_calls else _calls(t)
+        if calls:
+            reasons.append(f"function call {calls[0]}() in: {_head(t)}")
+            continue
+        if _TXN_CONTROL.match(t):
+            opened += 1 if t.lower().split()[0] in ("begin", "start") else -1
+            continue
+        if top:
+            if top["table"]:
+                pass
+            elif top["itable"] and not top["conc"] and existing(top["itable"]):
+                reasons.append(f"index on existing table {_bare(top['itable'])} without CONCURRENTLY "
+                               "(blocks its writers while it builds)")
+            continue
+        if _AUTO_INSERT.match(t):
+            continue
+        a = _ALTER_TABLE.match(t)
+        if a:
+            actions = _split_top_level_commas(a["actions"])
+            bad = [x for x in actions if not _AUTO_ALTER_ACTION.match(x)]
+            if bad:
+                reasons.append(f"ALTER TABLE action not on the allowlist: {_head(bad[0])}")
+                continue
+            if existing(a["table"]):
+                for x in actions:
+                    if x.lower().startswith("add constraint") and "not valid" not in x.lower():
+                        reasons.append(f"constraint on existing table {_bare(a['table'])} without "
+                                       "NOT VALID (scans it under lock)")
+                    elif not x.lower().startswith("add constraint") and _LONG_LOCK_COLUMN.search(x):
+                        reasons.append(f"new column with a constraint on existing table "
+                                       f"{_bare(a['table'])} (scans it under lock): {_head(x)}")
+            continue
+        reasons.append(f"statement not on the allowlist: {_head(t)}")
+    if opened != 0:
+        reasons.append("unbalanced BEGIN/COMMIT")
+    return list(dict.fromkeys(reasons))
+
+
+def transaction_incompatible(text: str) -> list[str]:
+    """Top-level statements that cannot run inside one wrapping transaction: CREATE INDEX
+    CONCURRENTLY (the only one the allowlist admits) and the file's own BEGIN/COMMIT, whose COMMIT
+    would end a wrapper early. Empty = wrap it."""
+    out: list[str] = []
+    for st in split_statements(text):
+        if _NO_TXN.match(st.text):
+            out.append("CREATE INDEX CONCURRENTLY")
+        elif _TXN_CONTROL.match(st.text):
+            out.append(f"own transaction control ({st.text.split()[0].upper()})")
+    return list(dict.fromkeys(out))
+
+
 # --------------------------------------------------------------------------- replay
 
 

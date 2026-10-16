@@ -264,6 +264,7 @@ def node_prediction_error_event_written(node_id: str) -> bool:
 
 
 _CONTINUOUS_CACHE: dict[str, bool] = {}
+_CONTINUOUS_WARNED: set[str] = set()
 # A real reading every tick (orion/metrics/semantics.py SPARSITIES).
 _PER_TICK_SPARSITY = "per_tick"
 _CONTINUOUS_VALUE_KINDS = frozenset({"level", "count"})
@@ -296,7 +297,9 @@ def node_prediction_error_continuous(node_id: str) -> bool:
 
         entry = resolve_channel_entry("prediction_error", node=node_id)
     except Exception as exc:  # noqa: BLE001
-        logger.warning("world_first_glossary_unreadable node_id=%s err=%s", node_id, exc)
+        if node_id not in _CONTINUOUS_WARNED:
+            _CONTINUOUS_WARNED.add(node_id)
+            logger.warning("world_first_glossary_unreadable node_id=%s err=%s", node_id, exc)
         return False
     sem = dict(entry.semantics) if entry is not None and entry.node == node_id else {}
     result = prediction_error_is_continuous(
@@ -596,54 +599,91 @@ def _missing_magnitude() -> PredictionErrorMagnitudeV1:
     return PredictionErrorMagnitudeV1(value=0.0, age_sec=0.0)
 
 
+# node_id -> (content key, times, rows, (horizon index, sorted finite values)).
+# The field contest ticks every ~2 s and a node's readings move every ~60 s;
+# rebuilding a ~14k-reading week each tick cost ~10 ms per node (review
+# 2026-10-16). The key carries the sum of every value, not just the length and
+# ends, so two histories that differ only in the middle never share an entry.
+_HISTORY_MEMO: dict[str, tuple[tuple, list[datetime], list[tuple[datetime, float]], tuple[int, list[float]]]] = {}
+_HISTORY_MEMO_MAX = 32
+
+
+def _history_key(history: Sequence[tuple[datetime, float]]) -> tuple | None:
+    try:
+        return (len(history), history[0], history[-1], math.fsum(float(v) for _, v in history))
+    except (TypeError, ValueError, IndexError):
+        return None
+
+
 def _prepared_history(
-    history: Sequence[tuple[datetime, float]], horizon: datetime
+    node_id: str, history: Sequence[tuple[datetime, float]], horizon: datetime
 ) -> tuple[list[datetime], list[tuple[datetime, float]], list[float]]:
     """(times, rows, sorted finite values) of the readings at or after
-    ``horizon``, oldest first. No memo on purpose: two histories of the same
-    length and ends can differ in the middle, and a ~14k-reading week costs a
-    few ms (2026-10-16), paid only for the continuous body nodes."""
-    rows: list[tuple[datetime, float]] = []
-    for ts, v in history:
-        try:
-            fv = float(v)
-        except (TypeError, ValueError):
-            continue
-        rows.append((ts if ts.tzinfo is not None else ts.replace(tzinfo=timezone.utc), fv))
-    rows.sort(key=_first)
-    times = [r[0] for r in rows]
+    ``horizon``, oldest first."""
+    if not history:
+        return [], [], []
+    key = _history_key(history)
+    memo = _HISTORY_MEMO.get(node_id) if key is not None else None
+    if memo is None or memo[0] != key:
+        rows: list[tuple[datetime, float]] = []
+        for ts, v in history:
+            try:
+                fv = float(v)
+            except (TypeError, ValueError):
+                continue
+            rows.append((ts if ts.tzinfo is not None else ts.replace(tzinfo=timezone.utc), fv))
+        rows.sort(key=_first)
+        memo = (key, [r[0] for r in rows], rows, (-1, []))
+    _, times, rows, (cached_start, cached_values) = memo
     start = bisect.bisect_left(times, horizon)
-    rows, times = rows[start:], times[start:]
-    values = sorted([v for _, v in rows if math.isfinite(v)])
-    return times, rows, values
+    if start == cached_start:
+        values = cached_values
+    else:
+        values = sorted([v for _, v in rows[start:] if math.isfinite(v)])
+        memo = (memo[0], times, rows, (start, values))
+    if key is not None:
+        if len(_HISTORY_MEMO) >= _HISTORY_MEMO_MAX and node_id not in _HISTORY_MEMO:
+            _HISTORY_MEMO.clear()
+        _HISTORY_MEMO[node_id] = memo
+    return times[start:], rows[start:], values
 
 
 def _first(row: tuple[datetime, float]) -> datetime:
     return row[0]
 
 
-def reading_hot_flags(
+# Gaps sampled for a source's own write cadence (the most recent ones).
+_CADENCE_GAPS = 200
+
+
+def reading_hold_sec(times: Sequence[datetime]) -> float:
+    """How long one reading may speak for the body: twice the source's own
+    median write gap (recent readings), never past the staleness horizon. A
+    source whose writer stalls must not have its last reading fill the dwell
+    (review 2026-10-16: one held spike read "sustained" after 400 s of
+    silence). Derived from the data, not a knob."""
+    recent = times[-(_CADENCE_GAPS + 1):]
+    gaps = sorted(
+        (b - a).total_seconds() for a, b in zip(recent, recent[1:]) if b > a
+    )
+    if not gaps:
+        return 0.0
+    mid = len(gaps) // 2
+    median = gaps[mid] if len(gaps) % 2 else 0.5 * (gaps[mid - 1] + gaps[mid])
+    return min(2.0 * median, INTERNAL_MAX_AGE_SEC)
+
+
+def _flags(
     node_id: str,
-    history: Sequence[tuple[datetime, float]],
+    times: list[datetime],
+    rows: list[tuple[datetime, float]],
+    values: list[float],
     *,
     now: datetime,
-    window_sec: float = SUSTAIN_WINDOW_SEC,
-    band_cuts: tuple[float, float, float] = DEFAULT_BAND_CUTS,
-    min_readings: int = DEFAULT_MIN_READINGS,
+    window_sec: float,
+    band_cuts: tuple[float, float, float],
+    min_readings: int,
 ) -> list[tuple[float, bool | None]]:
-    """``(epoch, hot)`` for every reading that can speak inside the trailing
-    window (the readings in it, plus the last one before it, which speaks
-    until the next). ``hot`` is ``judge_candidate``'s own verdict on that
-    reading as a fresh candidate: eligible -> True, a real but calm reading ->
-    False, unjudgeable (too little history, no polarity, non-finite) -> None.
-
-    Each reading is scored against the node's CURRENT 7-day window, not the
-    window ending at its own time: the two differ by the <= window_sec of
-    readings at the edges (~10 of ~10,000 for a 60 s source), and the caller's
-    cache has already trimmed the older edge.
-    """
-    now = _aware(now)
-    times, rows, values = _prepared_history(history, now - WINDOW_7D)
     if not rows:
         return []
     n = len(values)
@@ -680,6 +720,32 @@ def reading_hot_flags(
     return out
 
 
+def reading_hot_flags(
+    node_id: str,
+    history: Sequence[tuple[datetime, float]],
+    *,
+    now: datetime,
+    window_sec: float = SUSTAIN_WINDOW_SEC,
+    band_cuts: tuple[float, float, float] = DEFAULT_BAND_CUTS,
+    min_readings: int = DEFAULT_MIN_READINGS,
+) -> list[tuple[float, bool | None]]:
+    """``(epoch, hot)`` for every reading that can speak inside the trailing
+    window (the readings in it, plus the last one before it, which speaks
+    until the next). ``hot`` is ``judge_candidate``'s own verdict on that
+    reading as a fresh candidate: eligible -> True, a real but calm reading ->
+    False, unjudgeable (too little history, no polarity, non-finite) -> None.
+
+    Each reading is scored against the node's CURRENT 7-day window, not the
+    window ending at its own time: the two differ by the <= window_sec of
+    readings at the edges (~10 of ~14,000 for a 60 s source), and the caller's
+    cache has already trimmed the older edge.
+    """
+    now = _aware(now)
+    times, rows, values = _prepared_history(node_id, history, now - WINDOW_7D)
+    return _flags(node_id, times, rows, values, now=now, window_sec=window_sec,
+                  band_cuts=band_cuts, min_readings=min_readings)
+
+
 def sustained_hot_dwell(
     node_id: str,
     history: Sequence[tuple[datetime, float]],
@@ -690,15 +756,16 @@ def sustained_hot_dwell(
 ) -> float:
     """Seconds of the trailing ``window_sec`` this node's own readings were
     hot (``orion.attention.sustained.hot_dwell_sec`` over
-    ``reading_hot_flags``). A per-tick reading speaks until the next one, and
-    at most the staleness horizon (the same cap ``judge_candidate`` puts on a
-    current reading)."""
+    ``reading_hot_flags``). A reading speaks until the next one, and at most
+    ``reading_hold_sec`` (twice the source's own write cadence)."""
     now = _aware(now)
+    times, rows, values = _prepared_history(node_id, history, now - WINDOW_7D)
     return hot_dwell_sec(
-        reading_hot_flags(node_id, history, now=now, window_sec=window_sec, band_cuts=band_cuts),
+        _flags(node_id, times, rows, values, now=now, window_sec=window_sec,
+               band_cuts=band_cuts, min_readings=DEFAULT_MIN_READINGS),
         now=now.timestamp(),
         window_sec=window_sec,
-        max_hold_sec=INTERNAL_MAX_AGE_SEC,
+        max_hold_sec=reading_hold_sec(times),
     )
 
 
@@ -754,7 +821,15 @@ def node_candidate(
         and node_prediction_error_continuous(node_id)
     ):
         try:
-            dwell = round(sustained_hot_dwell(node_id, pe_history, now=now), 3)
+            hist = pe_history
+            if observed_at is not None:
+                obs = _aware(observed_at)
+                last = hist[-1][0] if len(hist) else None
+                if last is None or obs > _aware(last):
+                    # The caller's history can lag the reading being judged
+                    # (e.g. a failed history write): the dwell must end on it.
+                    hist = [*hist, (obs, float(magnitude.value))]
+            dwell = round(sustained_hot_dwell(node_id, hist, now=now), 3)
             sustain_window = SUSTAIN_WINDOW_SEC
         except Exception as exc:  # noqa: BLE001 -- a dwell fault must not cost the candidate
             logger.warning("world_first_sustained_dwell_failed node_id=%s err=%s", node_id, exc)

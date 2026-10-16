@@ -298,3 +298,98 @@ def test_poll_counted_dwell_is_unchanged_for_signals_without_a_reading_dwell() -
         if ev is not None:
             opened = i
     assert opened == 10  # 11 hot polls x 30 s = 330 s > 300 s, as before
+
+
+# --- review 2026-10-16 ------------------------------------------------------------------------
+
+
+def _live_cadence_bus_rows(now=NOW):
+    """Calm week with the last 6 hours at bus_synaptic's live 60 s cadence."""
+    cut = now - timedelta(hours=6)
+    rows = [r for r in fx.calm_rows(now) if not (r[0] == BUS and r[1] > cut)]
+    for s in range(6 * 3600, 60, -60):
+        rows.append((BUS, now - timedelta(seconds=s), 0.02))
+    return rows
+
+
+def test_a_held_spike_does_not_become_sustained_when_the_writer_stops() -> None:
+    """One top reading, then no rows at all: the reading speaks for at most twice the source's
+    own cadence, so silence never fills the dwell."""
+    rows = _live_cadence_bus_rows() + [(BUS, NOW - timedelta(seconds=20), 0.2)]
+    for later in (0, 200, 400, 900):
+        t = NOW + timedelta(seconds=later)
+        v = wf.judge_candidate(_candidate(rows, BUS, now=t))
+        assert v.candidate.hot_dwell_sec <= 120.0 + 1e-6, later
+        assert not v.eligible, later
+
+
+def test_reading_hold_is_twice_the_sources_own_cadence() -> None:
+    times = [NOW + timedelta(seconds=60 * i) for i in range(50)]
+    assert wf.reading_hold_sec(times) == pytest.approx(120.0)
+    assert wf.reading_hold_sec(times[:1]) == 0.0
+
+
+def test_the_dwell_ends_on_the_reading_being_judged_even_if_history_lags() -> None:
+    rows = _sustained_bus_rows(400)
+    hist = _hist(rows, BUS)
+    observed_at, value = hist[-1]
+    mag = compute_prediction_error_magnitude(value=value, observed_at=observed_at, history=hist, now=NOW)
+    lagging = wf.node_candidate(
+        node_id=BUS, label=BUS, magnitude=mag, observed_at=observed_at, now=NOW, pe_history=hist[:-1],
+    )
+    full = wf.node_candidate(
+        node_id=BUS, label=BUS, magnitude=mag, observed_at=observed_at, now=NOW, pe_history=hist,
+    )
+    assert lagging.hot_dwell_sec == full.hot_dwell_sec
+
+
+def test_memo_never_mixes_two_histories_with_the_same_ends() -> None:
+    a = _hist(_sustained_bus_rows(400), BUS)
+    b = _hist(_sustained_bus_rows(900, gap=(380, 80)), BUS)
+    assert (len(a), a[0], a[-1]) == (len(b), b[0], b[-1])
+    da = wf.sustained_hot_dwell(BUS, a, now=NOW)
+    db = wf.sustained_hot_dwell(BUS, b, now=NOW)
+    assert da != db
+    assert wf.sustained_hot_dwell(BUS, a, now=NOW) == da
+
+
+def test_substrate_runtime_deque_history_wires_through_the_broadcast() -> None:
+    """substrate-runtime passes its in-memory dict[str, deque] as is."""
+    from collections import deque
+
+    import orion.substrate.attention_broadcast as ab
+
+    rows = fx.bus_spike_rows()
+    cand = _candidate(rows, BUS)
+    frame = ab.build_substrate_attention_frame(
+        nodes=[_bus_node(cand.observed_at)], now=NOW,
+        magnitude_by_node_id={BUS: cand.unusualness}, world_first=True, external_candidates=[],
+        pe_history_by_node_id={BUS: deque(_hist(rows, BUS))},
+    )
+    traced = next(c for c in frame.debug["world_first"]["candidates"] if c["source_id"] == BUS)
+    assert traced["sustained"] is False and frame.debug["world_first"]["no_winner"] is True
+
+
+@pytest.mark.parametrize("open_dwell", [120.0, 600.0])
+def test_operator_dwell_setting_does_not_split_continuous_episodes_from_the_contest(open_dwell) -> None:
+    """EQUILIBRIUM_..._OPEN_DWELL_SEC governs poll-counted signals; a continuous signal confirms
+    on the contest's own rule whatever it is set to."""
+    v = wf.judge_candidate(_candidate(_sustained_bus_rows(400), BUS))
+    assert v.eligible
+    obs = sse.observation_from_verdict(v, now=NOW.timestamp())
+    ep, _ = sse.step_signal(None, obs, open_dwell_sec=open_dwell)
+    assert ep.confirmed
+    spike = sse.observation_from_verdict(wf.judge_candidate(_candidate(fx.bus_spike_rows(), BUS)), now=NOW.timestamp())
+    ep2, _ = sse.step_signal(None, spike, open_dwell_sec=open_dwell)
+    assert not ep2.confirmed
+
+
+def test_equilibrium_service_poll_passes_real_history() -> None:
+    gate = _load_gate()
+    rows = _sustained_bus_rows(400)
+    cache = _cache(rows, NOW)
+    obs = gate.observe_signals(cache.magnitudes(now=NOW), now=NOW, pe_history=cache.history)
+    bus = next(o for o in obs if o.signal_id == BUS)
+    assert bus.hot_dwell_sec is not None and bus.hot_dwell_sec > 300
+    exe = next(o for o in obs if o.signal_id == EXE)
+    assert exe.hot_dwell_sec is None  # event-written: poll-counted dwell, unchanged

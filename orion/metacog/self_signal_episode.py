@@ -279,9 +279,14 @@ def _open_dwell_met(
     open_window_sec: float,
 ) -> bool:
     """A continuous body source carries its dwell over its own readings (the
-    number the attention contest judged); everything else counts hot polls."""
+    number the attention contest judged) and is held to the contest's own
+    threshold, so it confirms on exactly the poll it first competes. The
+    configurable ``open_dwell_sec`` / ``open_window_sec`` govern the
+    poll-counted signals only: applying them here would let an operator
+    setting make a continuous episode impossible (dwell >= 600 can never be
+    exceeded in a 600 s window) or open before the contest crowns it."""
     if obs.hot_dwell_sec is not None:
-        return is_sustained(obs.hot_dwell_sec, hot_now=True, dwell_threshold_sec=open_dwell_sec)
+        return is_sustained(obs.hot_dwell_sec, hot_now=True)
     return dwell_met(
         episode.recent_hot, obs.at, poll_sec=poll_sec, open_dwell_sec=open_dwell_sec,
         open_window_sec=open_window_sec,

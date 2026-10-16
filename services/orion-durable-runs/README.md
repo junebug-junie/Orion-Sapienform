@@ -653,6 +653,64 @@ shows only written rows); regulation and chronicle are unaffected. With arousal 
 `temporal_self.immune.skipped` says why. Kill switch: `TEMPORAL_SELF_IMMUNE_ENABLED=false`. Health: `/health` ->
 `temporal_self.immune`. Live dry run: `docs/superpowers/evidence/2026-10-13-immune-sweep/`.
 
+## Personality graph loop (2026-10-16, spec rev 2)
+
+What it does: every 10 minutes (and once at start) a reducer reads what Orion wrote in each lane
+since its last read, matches each piece to the themes Orion keeps returning to, and updates a small
+weighted graph of those themes ("dispositions"). A theme backed by several independent lanes becomes
+`active`; one that stops firing fades and is retired. Chat stance, reverie, curiosity and outreach
+read the strongest active themes back from `GET /personality/frame`.
+
+Spec: `docs/superpowers/specs/2026-10-16-orion-dynamic-personality-graph-design.md` (rev 2). Pure
+reducer: `orion/personality/graph.py`. Code here: `app/personality_sources.py` (reads),
+`app/personality_store.py` (one transaction per tick), `app/personality_driver.py` (the tick).
+This service is the single writer of `personality_disposition`, `personality_evidence`,
+`personality_weight_history` and `personality_cursor`
+(`services/orion-sql-db/manual_migration_personality_graph_v1.sql`; apply it before deploy).
+
+| Lane | Table, text, time column |
+|---|---|
+| `dream` | `dream_hypothesis` claim + why, `created_at` |
+| `journal` | `journal_entries` title + body, `created_at` (not `world_pulse`/`orion_day`: copies of reading and day letter) |
+| `reverie` | `substrate_reverie_thought.interpretation`, `created_at` |
+| `reading` | `world_pulse_read_seed` title + `stage2_result_json.summary` (Orion's read), `stage2_completed_at` |
+| `day_letter` | `orion_day_letter.note_md`, `created_at` |
+| `chat` / `outreach` | `chat_history_log.response` with / without a prompt, `created_at` (naive UTC) |
+| `curiosity_choice` | `curiosity_offer_decisions` JOIN `curiosity_run_outcomes`, one row per tested prior, `completed_at` |
+| `self_inquiry_seed` | `self_concept_history` (`curiosity_self_inquiry`) content, `created_at` |
+
+Rules:
+
+- **No backfill.** A source with no cursor starts at the reducer's first boot. On that first tick
+  the latest version of each self-inquiry concept seeds low-weight candidate nodes (all or nothing;
+  the `seed` cursor marks it done).
+- **Exact resume.** Each source is read by `(time, pk)` keyset after its cursor, up to now minus
+  120 s, at most 200 rows per tick. Evidence, nodes, history and cursors commit in one transaction.
+- **No double count.** Evidence ids are `<lane>:<pk>` (`curiosity_choice:<run_id>:<prior_id>`). An
+  id already stored is dropped before the fold: a curiosity outcome re-upserted with a new
+  `completed_at` is read again and folds nothing.
+- **A failed embed holds its source** at the previous row; the row is retried next tick
+  (`held_sources`, warning `embed_failed:<source>` in `/health`). After 3 failed ticks for the same
+  row, or at once on an HTTP 4xx, the row is consumed as skipped evidence (`disposition_id` null,
+  `meta.embed_rejected`), so one bad row cannot keep a lane dark.
+- **Fold runs off the event loop** (`asyncio.to_thread`): it is pure and grows with nodes x evidence.
+- **Fade persists** even on a tick with no evidence (`apply_fade`).
+
+Embeddings: `PERSONALITY_EMBED_URL` (vector-host `/embedding`, bge-large 1024-d, compute only;
+both containers are on `app-net`), concurrency 4, timeout 15 s.
+
+Routes: `GET /personality/frame` (`PersonalityFrameV1`), `GET /personality/dispositions?status=
+active|candidate|retired|all&limit=50` (each with its last 60 weight-history points),
+`GET /personality/evidence?disposition_id=&limit=50` (newest first). Each answers 503 when
+`PERSONALITY_ENABLED=false` or the tables are missing. `/health` has a `personality` block (ticks,
+last tick, last error, evidence last tick, rows per source, held sources, nodes by status).
+
+Failure: a bad tick logs `personality_tick_failed error_type=...` and writes nothing; the service
+keeps running. Kill switch: `PERSONALITY_ENABLED=false` (tables stay).
+
+Tests: `tests/test_personality_loop.py` (fakes), `tests/test_personality_postgres.py` (real
+Postgres, needs `ORION_ADMISSION_TEST_DSN`).
+
 ## Deploy order
 
 Stage 4.5 is a cutover: follow `docs/runbooks/2026-09-25-gpu-pool-stage4-cutover.md` exactly

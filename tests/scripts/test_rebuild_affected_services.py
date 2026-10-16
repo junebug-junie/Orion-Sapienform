@@ -595,7 +595,9 @@ def test_skip_profile_excludes_analytics(tmp_path: Path) -> None:
 # --- GPU-pool launch targets held stopped (2026-10-16 diffusion-host incident) ---
 
 
-def _pool_held(repo: Path, service: str, ps_lines: list[str] | None, tmp_path: Path) -> list[str]:
+def _pool_held(
+    repo: Path, service: str, ps_lines: list[str] | None, tmp_path: Path, expect_rc: int = 0
+) -> list[str]:
     cmd = [sys.executable, str(MODULE), "--repo-root", str(repo), "--pool-held-services", service]
     env = None
     if ps_lines is not None:
@@ -611,7 +613,7 @@ def _pool_held(repo: Path, service: str, ps_lines: list[str] | None, tmp_path: P
         env = {**os.environ, "PATH": f"{fake_bin}:{os.environ.get('PATH', '')}"}
         env.pop("ORION_REBUILD_DOCKER_PS_FILE", None)
     proc = subprocess.run(cmd, capture_output=True, text=True, check=False, timeout=60, env=env)
-    assert proc.returncode == 0, proc.stderr
+    assert proc.returncode == expect_rc, proc.stderr
     return proc.stdout.splitlines()
 
 
@@ -625,7 +627,24 @@ def test_real_pool_config_names_diffusion_host_as_a_launch_target(tmp_path: Path
 
 def test_running_pool_target_is_not_held(tmp_path: Path) -> None:
     ps = [f"orion-diffusion-host\tdiffusion-host\t{_DIFFUSION_COMPOSE}"]
-    assert _pool_held(ROOT, "orion-diffusion-host", ps, tmp_path) == []
+    assert _pool_held(ROOT, "orion-diffusion-host", ps, tmp_path) == ["running\tdiffusion-host"]
+
+
+def test_running_target_from_another_checkout_path_counts_as_running(tmp_path: Path) -> None:
+    # circe's controller runs compose from a /repo mount; the label then carries that prefix.
+    ps = ["orion-diffusion-host\tdiffusion-host\t/repo/services/orion-diffusion-host/docker-compose.yml"]
+    assert _pool_held(ROOT, "orion-diffusion-host", ps, tmp_path) == ["running\tdiffusion-host"]
+
+
+def test_same_name_from_another_stack_does_not_count_as_running(tmp_path: Path) -> None:
+    ps = ["other\tdiffusion-host\t/srv/services/orion-other/docker-compose.yml"]
+    assert _pool_held(ROOT, "orion-diffusion-host", ps, tmp_path) == ["hold\tdiffusion-host"]
+
+
+def test_malformed_pool_config_exits_3(mini_repo: Path, tmp_path: Path) -> None:
+    (mini_repo / "config").mkdir(exist_ok=True)
+    (mini_repo / "config" / "gpu_pool.yaml").write_text("roles: [unclosed\n")
+    _pool_held(mini_repo, "orion-actions", [], tmp_path, expect_rc=3)
 
 
 def test_docker_unreadable_holds_every_pool_target(tmp_path: Path) -> None:

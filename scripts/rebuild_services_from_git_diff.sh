@@ -244,23 +244,28 @@ for svc in $SERVICES; do
     # shellcheck disable=SC2086
     PROFILE_SERVICES=$(python3 "$PY" --running-profile-services "$svc" $SKIP_PROFILE_ARGS || true)
 
-    # GPU-pool launch targets of this stack (config/gpu_pool.yaml `launch:`)
-    # that are STOPPED right now: the pool evicted them on purpose. Build
-    # their image, never start them -- the lane controller starts them with
-    # the new image on its next load. Confirmed live 2026-10-16 04:02 UTC: a
-    # plain `up -d --build` restarted diffusion-host under agent-gpu2 on gpu2,
-    # the controller then refused every load/unload
-    # (seat_and_evicted_both_running) and no picture rendered for 15 hours.
-    # POOL_START: the stack's other plain services, still brought up.
-    POOL_PLAN=$(python3 "$PY" --pool-held-services "$svc" || true)
+    # GPU-pool launch targets of this stack (config/gpu_pool.yaml `launch:`).
+    # A STOPPED one was evicted by the pool on purpose: build its image, never
+    # start it. Confirmed live 2026-10-16 04:02 UTC: a plain `up -d --build`
+    # restarted diffusion-host under agent-gpu2 on gpu2, the lane controller
+    # then refused every load/unload (seat_and_evicted_both_running) and no
+    # picture rendered for 15 hours. The helper exits non-zero when it cannot
+    # tell what the pool owns: that stack is skipped (FAILED), never plain-up'd.
+    POOL_RC=0
+    POOL_PLAN=$(python3 "$PY" --pool-held-services "$svc") || POOL_RC=$?
+    if [ "$POOL_RC" -ne 0 ]; then
+        echo "rebuild_services_from_git_diff.sh: FAILED $svc -- cannot read GPU pool ownership (exit $POOL_RC); not starting anything" >&2
+        FAILED="$FAILED $svc"
+        continue
+    fi
     POOL_HOLD=$(printf '%s\n' "$POOL_PLAN" | awk -F '\t' '$1 == "hold" { print $2 }')
-    POOL_START=$(printf '%s\n' "$POOL_PLAN" | awk -F '\t' '$1 == "start" { print $2 }')
 
     if [ "$DRY_RUN" = "1" ]; then
-        if [ -n "$POOL_HOLD" ]; then
-            echo "[dry-run] would build without starting (GPU pool holds it stopped): $svc" $POOL_HOLD
-            if [ -n "$POOL_START" ]; then
-                echo "[dry-run] would rebuild: $svc${RECREATE_FLAG:+ ($RECREATE_FLAG)}" $POOL_START
+        if [ -n "$POOL_PLAN" ]; then
+            echo "[dry-run] would build: $svc, then up -d --no-build --no-deps${RECREATE_FLAG:+ $RECREATE_FLAG} on its non-held services"
+            if [ -n "$POOL_HOLD" ]; then
+                # shellcheck disable=SC2086
+                echo "[dry-run] would hold stopped (GPU pool evicted it): $svc" $POOL_HOLD
             fi
         else
             echo "[dry-run] would rebuild: $svc${RECREATE_FLAG:+ ($RECREATE_FLAG)}"
@@ -278,7 +283,32 @@ for svc in $SERVICES; do
     echo ""
     echo "=== rebuild_services_from_git_diff: $svc ==="
 
-    if [ "$svc" = "$CORTEX_EXEC" ]; then
+    if [ -n "$POOL_PLAN" ]; then
+        # Build first, then decide what to start from a FRESH look at docker:
+        # the build takes minutes and the pool may evict a target meanwhile.
+        run_safe_build "$svc" build
+        if [ "$rc" -eq 0 ]; then
+            POOL_RC=0
+            POOL_PLAN=$(python3 "$PY" --pool-held-services "$svc") || POOL_RC=$?
+            if [ "$POOL_RC" -ne 0 ]; then
+                echo "rebuild_services_from_git_diff.sh: cannot re-read GPU pool ownership for $svc (exit $POOL_RC); built, not started" >&2
+                rc=$POOL_RC
+            else
+                POOL_HOLD=$(printf '%s\n' "$POOL_PLAN" | awk -F '\t' '$1 == "hold" { print $2 }')
+                POOL_UP=$(printf '%s\n' "$POOL_PLAN" | awk -F '\t' '$1 == "running" || $1 == "start" { print $2 }')
+                if [ -n "$POOL_HOLD" ]; then
+                    # The controller's next load starts the image built above.
+                    # shellcheck disable=SC2086
+                    echo "rebuild_services_from_git_diff.sh: GPU pool holds stopped:" $POOL_HOLD "-- built, not started"
+                fi
+                if [ -n "$POOL_UP" ]; then
+                    # --no-deps: a depends_on edge must not start a held service.
+                    # shellcheck disable=SC2086
+                    run_safe_build "$svc" up -d --no-build --no-deps $RECREATE_FLAG $POOL_UP
+                fi
+            fi
+        fi
+    elif [ "$svc" = "$CORTEX_EXEC" ]; then
         # Match mesh-utilities/common/cortex_exec_fleet_helpers.sh lane bring-up.
         # shellcheck disable=SC2086
         run_safe_build "$svc" up -d --build $RECREATE_FLAG $CORTEX_LANES
@@ -290,15 +320,6 @@ for svc in $SERVICES; do
         # the Curiosity dashboard fail despite a valid compose file.
         # shellcheck disable=SC2086
         run_safe_build "$svc" --profile analytics up -d --build $RECREATE_FLAG
-    elif [ -n "$POOL_HOLD" ]; then
-        echo "rebuild_services_from_git_diff.sh: GPU pool holds stopped:" $POOL_HOLD "-- building, not starting"
-        # shellcheck disable=SC2086
-        run_safe_build "$svc" build $POOL_HOLD
-        if [ "$rc" -eq 0 ] && [ -n "$POOL_START" ]; then
-            # --no-deps: a depends_on edge must not start a held service.
-            # shellcheck disable=SC2086
-            run_safe_build "$svc" up -d --build --no-deps $RECREATE_FLAG $POOL_START
-        fi
     else
         # shellcheck disable=SC2086
         run_safe_build "$svc" up -d --build $RECREATE_FLAG

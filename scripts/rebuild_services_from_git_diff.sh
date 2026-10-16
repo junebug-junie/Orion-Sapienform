@@ -244,8 +244,27 @@ for svc in $SERVICES; do
     # shellcheck disable=SC2086
     PROFILE_SERVICES=$(python3 "$PY" --running-profile-services "$svc" $SKIP_PROFILE_ARGS || true)
 
+    # GPU-pool launch targets of this stack (config/gpu_pool.yaml `launch:`)
+    # that are STOPPED right now: the pool evicted them on purpose. Build
+    # their image, never start them -- the lane controller starts them with
+    # the new image on its next load. Confirmed live 2026-10-16 04:02 UTC: a
+    # plain `up -d --build` restarted diffusion-host under agent-gpu2 on gpu2,
+    # the controller then refused every load/unload
+    # (seat_and_evicted_both_running) and no picture rendered for 15 hours.
+    # POOL_START: the stack's other plain services, still brought up.
+    POOL_PLAN=$(python3 "$PY" --pool-held-services "$svc" || true)
+    POOL_HOLD=$(printf '%s\n' "$POOL_PLAN" | awk -F '\t' '$1 == "hold" { print $2 }')
+    POOL_START=$(printf '%s\n' "$POOL_PLAN" | awk -F '\t' '$1 == "start" { print $2 }')
+
     if [ "$DRY_RUN" = "1" ]; then
-        echo "[dry-run] would rebuild: $svc${RECREATE_FLAG:+ ($RECREATE_FLAG)}"
+        if [ -n "$POOL_HOLD" ]; then
+            echo "[dry-run] would build without starting (GPU pool holds it stopped): $svc" $POOL_HOLD
+            if [ -n "$POOL_START" ]; then
+                echo "[dry-run] would rebuild: $svc${RECREATE_FLAG:+ ($RECREATE_FLAG)}" $POOL_START
+            fi
+        else
+            echo "[dry-run] would rebuild: $svc${RECREATE_FLAG:+ ($RECREATE_FLAG)}"
+        fi
         if [ -n "$PROFILE_SERVICES" ]; then
             printf '%s\n' "$PROFILE_SERVICES" | while IFS="$(printf '\t')" read -r profile name; do
                 [ -n "$name" ] || continue
@@ -271,6 +290,15 @@ for svc in $SERVICES; do
         # the Curiosity dashboard fail despite a valid compose file.
         # shellcheck disable=SC2086
         run_safe_build "$svc" --profile analytics up -d --build $RECREATE_FLAG
+    elif [ -n "$POOL_HOLD" ]; then
+        echo "rebuild_services_from_git_diff.sh: GPU pool holds stopped:" $POOL_HOLD "-- building, not starting"
+        # shellcheck disable=SC2086
+        run_safe_build "$svc" build $POOL_HOLD
+        if [ "$rc" -eq 0 ] && [ -n "$POOL_START" ]; then
+            # --no-deps: a depends_on edge must not start a held service.
+            # shellcheck disable=SC2086
+            run_safe_build "$svc" up -d --build --no-deps $RECREATE_FLAG $POOL_START
+        fi
     else
         # shellcheck disable=SC2086
         run_safe_build "$svc" up -d --build $RECREATE_FLAG

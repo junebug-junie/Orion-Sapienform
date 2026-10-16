@@ -26,6 +26,15 @@ if "--running-profile-services" in args:
         if owner == svc and profile not in skip:
             print(profile + "\\t" + name)
     raise SystemExit(0)
+if "--pool-held-services" in args:
+    svc = args[args.index("--pool-held-services") + 1]
+    for line in os.environ.get("FAKE_POOL", "").split(";"):
+        if not line:
+            continue
+        owner, kind, name = line.split(",")
+        if owner == svc:
+            print(kind + "\\t" + name)
+    raise SystemExit(0)
 if "--migrations" in args:
     for line in os.environ.get("FAKE_MIGRATIONS", "").split(";"):
         if line:
@@ -42,6 +51,7 @@ def _run(
     *,
     plan: str,
     profiles: str = "",
+    pool: str = "",
     extra_args: list[str] | None = None,
     safe_build_reads_stdin: bool = False,
     migrations: str = "",
@@ -73,6 +83,7 @@ def _run(
     env["REBUILD_TEST_CAPTURE"] = str(capture)
     env["FAKE_PLAN"] = plan
     env["FAKE_PROFILES"] = profiles
+    env["FAKE_POOL"] = pool
     env["FAKE_MIGRATIONS"] = migrations
     env.pop("ORION_POST_MERGE_REBUILD", None)
     completed = subprocess.run(
@@ -159,6 +170,52 @@ def test_build_step_reading_stdin_cannot_swallow_later_profile_services(tmp_path
         "orion-vision-retina --profile walkway up -d --build svc-a",
         "orion-vision-retina --profile walkway up -d --build svc-b",
     ]
+
+
+# 2026-10-16 04:02 UTC: a circe pull ran `up -d --build` on orion-diffusion-host while the GPU
+# pool had it stopped (agent-gpu2 held gpu2). Both ended up running, the lane controller refused
+# every load/unload (seat_and_evicted_both_running) and no picture rendered for 15 hours.
+def test_pool_evicted_service_is_built_but_never_started(tmp_path: Path) -> None:
+    completed, calls = _run(
+        tmp_path,
+        plan="orion-diffusion-host,build",
+        pool="orion-diffusion-host,hold,diffusion-host",
+    )
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert calls == ["orion-diffusion-host build diffusion-host"]
+    assert not any(" up " in f" {c} " for c in calls)
+
+
+def test_pool_hold_still_brings_up_the_stacks_other_services(tmp_path: Path) -> None:
+    completed, calls = _run(
+        tmp_path,
+        plan="orion-diffusion-host,recreate",
+        pool="orion-diffusion-host,hold,diffusion-host;orion-diffusion-host,start,sidecar",
+    )
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert calls == [
+        "orion-diffusion-host build diffusion-host",
+        "orion-diffusion-host up -d --build --no-deps --force-recreate sidecar",
+    ]
+
+
+def test_running_pool_target_keeps_the_plain_up(tmp_path: Path) -> None:
+    # Helper prints nothing when the launch target is running: unchanged behavior.
+    completed, calls = _run(tmp_path, plan="orion-diffusion-host,build", pool="")
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert calls == ["orion-diffusion-host up -d --build"]
+
+
+def test_dry_run_reports_pool_hold(tmp_path: Path) -> None:
+    completed, calls = _run(
+        tmp_path,
+        plan="orion-diffusion-host,build",
+        pool="orion-diffusion-host,hold,diffusion-host",
+        extra_args=["--dry-run"],
+    )
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert calls == []
+    assert "would build without starting (GPU pool holds it stopped): orion-diffusion-host diffusion-host" in completed.stdout
 
 
 # 2026-10-15: a migration-only pull (PR #2698) recreated orion-athena-sql-db.

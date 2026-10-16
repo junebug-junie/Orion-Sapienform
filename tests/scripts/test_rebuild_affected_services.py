@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -589,6 +590,68 @@ def test_skip_profile_excludes_analytics(tmp_path: Path) -> None:
     ps = [f"orion-analytics\tlightdash\t{compose}"]
     assert _profile_services(ROOT, "orion-analytics", ps, tmp_path) == ["analytics\tlightdash"]
     assert _profile_services(ROOT, "orion-analytics", ps, tmp_path, "analytics") == []
+
+
+# --- GPU-pool launch targets held stopped (2026-10-16 diffusion-host incident) ---
+
+
+def _pool_held(repo: Path, service: str, ps_lines: list[str] | None, tmp_path: Path) -> list[str]:
+    cmd = [sys.executable, str(MODULE), "--repo-root", str(repo), "--pool-held-services", service]
+    env = None
+    if ps_lines is not None:
+        ps_file = tmp_path / "docker-ps.txt"
+        ps_file.write_text("\n".join(ps_lines) + "\n")
+        cmd.extend(["--docker-ps-file", str(ps_file)])
+    else:
+        # docker unreadable: point docker at a binary that fails.
+        fake_bin = tmp_path / "bin"
+        fake_bin.mkdir()
+        (fake_bin / "docker").write_text("#!/bin/sh\nexit 1\n")
+        (fake_bin / "docker").chmod(0o755)
+        env = {**os.environ, "PATH": f"{fake_bin}:{os.environ.get('PATH', '')}"}
+        env.pop("ORION_REBUILD_DOCKER_PS_FILE", None)
+    proc = subprocess.run(cmd, capture_output=True, text=True, check=False, timeout=60, env=env)
+    assert proc.returncode == 0, proc.stderr
+    return proc.stdout.splitlines()
+
+
+_DIFFUSION_COMPOSE = (ROOT / "services/orion-diffusion-host/docker-compose.yml").resolve().as_posix()
+
+
+def test_real_pool_config_names_diffusion_host_as_a_launch_target(tmp_path: Path) -> None:
+    # Pins the live wiring: config/gpu_pool.yaml roles.diffusion.launch -> diffusion-host.
+    assert _pool_held(ROOT, "orion-diffusion-host", [], tmp_path) == ["hold\tdiffusion-host"]
+
+
+def test_running_pool_target_is_not_held(tmp_path: Path) -> None:
+    ps = [f"orion-diffusion-host\tdiffusion-host\t{_DIFFUSION_COMPOSE}"]
+    assert _pool_held(ROOT, "orion-diffusion-host", ps, tmp_path) == []
+
+
+def test_docker_unreadable_holds_every_pool_target(tmp_path: Path) -> None:
+    assert _pool_held(ROOT, "orion-diffusion-host", None, tmp_path) == ["hold\tdiffusion-host"]
+
+
+def test_profile_launch_target_is_left_to_the_profile_rule(tmp_path: Path) -> None:
+    # atlas-agent-burst lives behind compose profile agent-burst: a plain `up` never starts it.
+    assert _pool_held(ROOT, "orion-llamacpp-host", [], tmp_path) == []
+
+
+def test_non_pool_service_prints_nothing(tmp_path: Path) -> None:
+    assert _pool_held(ROOT, "orion-vision-retina", [], tmp_path) == []
+
+
+def test_hold_lists_the_stacks_other_plain_services_to_start(mini_repo: Path, tmp_path: Path) -> None:
+    (mini_repo / "config").mkdir(exist_ok=True)
+    (mini_repo / "config" / "gpu_pool.yaml").write_text(
+        "roles:\n  gen:\n    launch: {actuator: h, compose: services/orion-gen/docker-compose.yml, service: gen}\n"
+    )
+    _service(
+        mini_repo,
+        "orion-gen",
+        "services:\n  gen:\n    image: x\n  sidecar:\n    image: y\n  extra:\n    image: z\n    profiles: [p]\n",
+    )
+    assert _pool_held(mini_repo, "orion-gen", [], tmp_path) == ["hold\tgen", "start\tsidecar"]
 
 
 def test_plan_output_marks_recreate(mini_repo: Path) -> None:

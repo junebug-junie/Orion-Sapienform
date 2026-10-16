@@ -1,0 +1,50 @@
+name: Biometrics substrate loop
+# The biometrics node/pressure reducers, the pressure organ and the node catalog had no CI:
+# four tests in this set sat red on main for weeks (they asserted circe was expected offline
+# after the catalog flipped it). Also pins the retired-host prune (atlas, 2026-10-16):
+# tests/test_retired_biometrics_node.py.
+on:
+  pull_request:
+    paths:
+      - 'orion/biometrics/**'
+      - 'orion/substrate/biometrics_loop/**'
+      - 'orion/substrate/prediction_error.py'
+      - 'config/biometrics/node_catalog.yaml'
+      - 'tests/test_retired_biometrics_node.py'
+      - 'tests/test_biometrics_pipeline.py'
+      - 'tests/test_biometrics_pressure_organ.py'
+      - 'tests/test_capability_absence_signal.py'
+      - 'tests/test_node_biometrics_reducer.py'
+      - 'tests/test_node_pressure_reducer.py'
+      - 'tests/test_biometrics_grammar_extract.py'
+      - 'tests/test_fleet_roster_coverage.py'
+      - '.github/workflows/biometrics-loop-tests.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'orion/biometrics/**'
+      - 'orion/substrate/biometrics_loop/**'
+      - 'config/biometrics/node_catalog.yaml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  biometrics-loop:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install pytest pydantic PyYAML requests
+      - name: Reducers, organ, catalog, retired-host prune
+        run: |
+          python -m pytest -q -p no:cacheprovider \
+            tests/test_retired_biometrics_node.py \
+            tests/test_biometrics_pipeline.py \
+            tests/test_biometrics_pressure_organ.py \
+            tests/test_capability_absence_signal.py \
+            tests/test_node_biometrics_reducer.py \
+            tests/test_node_pressure_reducer.py \
+            tests/test_biometrics_grammar_extract.py \
+            tests/test_fleet_roster_coverage.py

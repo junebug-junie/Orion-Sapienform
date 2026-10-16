@@ -177,7 +177,8 @@ def intervention_effect(series: pd.Series, model: Forecaster, start: datetime, e
                         busy: Sequence[tuple[datetime, datetime]] = (), seed: int = 0) -> EffectEstimate:
     """Effect of an action over [start, end + lag) against a pre-period counterfactual.
 
-    ``busy``: other logged interventions; placebo windows must not overlap them.
+    ``busy``: other logged interventions (already extended by their lag); neither a placebo window
+    nor its pre-period may overlap them.
     """
     s0 = pd.Timestamp(floor_ts(start, grain_min))
     s1 = pd.Timestamp(floor_ts(end + timedelta(minutes=lag_min), grain_min))
@@ -196,12 +197,15 @@ def intervention_effect(series: pd.Series, model: Forecaster, start: datetime, e
     placebos: list[float] = []
     if latest > first_ok:
         span_steps = int((latest - first_ok) / pd.Timedelta(minutes=grain_min))
-        tried = 0
-        while len(placebos) < n_placebo and tried < n_placebo * 5:
-            tried += 1
-            p0 = first_ok + pd.Timedelta(minutes=grain_min * int(rng.integers(0, span_steps + 1)))
+        pre = pd.Timedelta(minutes=pre_steps * grain_min)
+        # Distinct start offsets, without replacement: a repeated placebo is not new evidence.
+        for k in rng.permutation(span_steps + 1):
+            if len(placebos) >= n_placebo:
+                break
+            p0 = first_ok + pd.Timedelta(minutes=grain_min * int(k))
             p1 = p0 + dur
-            if _overlaps(p0, p1, spans):
+            # Neither the placebo window nor its pre-period may contain a logged action.
+            if _overlaps(p0 - pre, p1, spans):
                 continue
             pe = _window_effect(series, model, p0, p1, pre_steps)
             if pe is not None:

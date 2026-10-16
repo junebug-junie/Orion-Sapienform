@@ -22,6 +22,11 @@ experiment dispatcher. Where the build departs from the design below, the build 
   the stored backtest; a 6-minute HTTP call is not a useful API.
 - MSTL fits cycles up to 1 day only (weekly STL: ~26 s per fit); Prophet carries weekly.
 - hardware-watch consumes the forecast observe-only: shown beside each reflex decision, never sheds.
+  The shed probability is about the 5-minute MEAN temperature, so it understates the chance that
+  one raw reading crosses 34 °C (what the reflex acts on). A max-aggregated series is the follow-up
+  if this number is ever used to act.
+- Experiments: a logged block counts only if it matches a design block (same arm, start/end within
+  2 min, same action); otherwise analysis is refused. The guard refuses on stale input.
 - Intervals: split-conformal per step from residual paths. With n windows the top quantile is the
   max residual once (n+1)·q ≥ n, so at the default 40 windows the 95 % upper bound is the max
   observed error (conservative); at 14 the 80 % and 95 % ranges coincide.

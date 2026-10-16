@@ -20,7 +20,7 @@ from app.causal import (
     scenario,
     time_of_day_profile,
 )
-from app.engine import Engine
+from app.engine import Engine, InputStale
 from app.frame import to_grain, training_slice
 from app.models import build_models, split_seasonalities
 from app.series import SeriesSpec
@@ -85,7 +85,7 @@ class Effects:
         series = self._series(spec, span_start, end + timedelta(minutes=lag_min + spec.grain_min))
         usable, _ = split_seasonalities(spec, int(pre_days * 1440 // spec.grain_min))
         model = build_models(spec, usable)[ITS_MODEL]
-        busy = [(r["started_at"], r["ended_at"]) for r in self.store.interventions(limit=500)
+        busy = [(r["started_at"], r["ended_at"] + timedelta(minutes=lag_min)) for r in self.store.interventions(limit=500)
                 if str(r["intervention_id"]) != str(intervention_id)]
         est = intervention_effect(series, model, start, end, spec.grain_min, pre_days=pre_days, lag_min=lag_min,
                                   busy=busy)
@@ -100,13 +100,18 @@ class Effects:
         if t is None:
             return {"safe": False, "reason": f"{spec.series_id} declares no experiment_guard threshold"}
         st = self.engine.state.get(spec.series_id)
-        rows = self.store.latest_forecast(spec.series_id)
-        if st is None or st.selection is None or not rows:
-            return {"safe": False, "reason": "no current forecast"}
+        if st is None or st.served is None:
+            return {"safe": False, "reason": "no current selection"}
         now = self.engine.clock()
         series = self.engine.load_series(spec, now, timedelta(minutes=spec.train_window_min + spec.grain_min))
         origin = self.engine.latest_complete_bucket(spec, now)
-        built = self.engine.build_forecast(spec, series, origin, now)
+        try:
+            built = self.engine.build_forecast(spec, series, origin, now)
+        except InputStale as exc:
+            return {"safe": False, "reason": f"input stale ({exc})", "checked_at": now.isoformat()}
+        except Exception as exc:  # noqa: BLE001 -- no forecast means no permission
+            return {"safe": False, "reason": f"no forecast: {type(exc).__name__}: {exc}"[:300],
+                    "checked_at": now.isoformat()}
         ex = next((e for e in built["payload"].exceedance if e.name == "experiment_guard"), None)
         p = ex.probability if ex else None
         safe = p is not None and p < (t.max_probability if t.max_probability is not None else 0.0)
@@ -134,10 +139,10 @@ class Effects:
         if exp is None:
             raise CausalError("unknown experiment")
         spec = self._spec(exp["series_id"], "target")
-        blocks = [{"arm": r["arm"], "start": r["started_at"].isoformat(), "end": r["ended_at"].isoformat()}
-                  for r in self.store.interventions(experiment_id=experiment_id, limit=1000) if r["arm"]]
-        if not blocks:
+        logged = [r for r in self.store.interventions(experiment_id=experiment_id, limit=1000) if r["arm"]]
+        if not logged:
             raise CausalError("no logged blocks for this experiment")
+        blocks = self._match_design(exp, logged)
         first = min(pd.Timestamp(b["start"]) for b in blocks).to_pydatetime()
         last = max(pd.Timestamp(b["end"]) for b in blocks).to_pydatetime()
         if last > self.engine.clock():
@@ -146,11 +151,37 @@ class Effects:
         profile = time_of_day_profile(history.dropna(), spec.grain_min) if history.notna().any() else None
         series = self._series(spec, first, last)
         est = analyze_switchback(series, blocks, exp["burn_in_min"], spec.grain_min, profile)
-        self.store.set_experiment_status(experiment_id, "analyzed")
+        if est.effect is not None:
+            self.store.set_experiment_status(experiment_id, "analyzed")
         return self.store.insert_effect({"action": exp["action"], "series_id": spec.series_id,
                                          "claim_kind": est.claim_kind, "experiment_id": experiment_id,
                                          "effect": est.effect, "ci_lo": est.ci_lo, "ci_hi": est.ci_hi,
                                          "p_value": est.p_value, "n": est.n, "details": est.details})
+
+    @staticmethod
+    def _match_design(exp: dict, logged: list[dict], tolerance_min: float = 2.0) -> list[dict]:
+        """Only blocks run as randomised count as an experiment: each logged block must be a design
+        block (start and end within tolerance, same arm) for the experiment's own action."""
+        design = exp["design"]["blocks"]
+        tol = pd.Timedelta(minutes=tolerance_min)
+        used, out, bad = set(), [], []
+        for r in logged:
+            if r["action"] != exp["action"]:
+                bad.append(f"{r['intervention_id']}: action {r['action']} != {exp['action']}")
+                continue
+            s0, s1 = pd.Timestamp(r["started_at"]), pd.Timestamp(r["ended_at"])
+            hit = next((b for b in design if b["index"] not in used
+                        and abs(pd.Timestamp(b["start"]) - s0) <= tol and abs(pd.Timestamp(b["end"]) - s1) <= tol), None)
+            if hit is None:
+                bad.append(f"{r['intervention_id']}: {s0.isoformat()} matches no design block")
+            elif hit["arm"] != r["arm"]:
+                bad.append(f"{r['intervention_id']}: logged arm {r['arm']} but the design says {hit['arm']}")
+            else:
+                used.add(hit["index"])
+                out.append({"index": hit["index"], "arm": hit["arm"], "start": s0.isoformat(), "end": s1.isoformat()})
+        if bad:
+            raise CausalError("logged blocks do not follow the randomised design: " + "; ".join(bad[:5]))
+        return sorted(out, key=lambda b: b["index"])
 
     # --- the Orion-facing answer --------------------------------------------------------------
     def best_effect(self, action: str, series_id: str) -> dict:
@@ -163,7 +194,12 @@ class Effects:
                     "effect": r["effect"], "ci_lo": r["ci_lo"], "ci_hi": r["ci_hi"], "p_value": r["p_value"],
                     "n": r["n"], "estimate_ids": [str(r["estimate_id"])],
                     "summary": f"randomised experiment: {action} changes {series_id} by {r['effect']:+.2f} {spec.unit}"}
-        obs = [r for r in rows if r["claim_kind"] == "observational_effect" and r["ci_lo"] is not None]
+        # Newest estimate per intervention only: re-estimating one occurrence must not count it twice.
+        newest: dict[str, dict] = {}
+        for r in rows:   # store.effects is newest-first
+            if r["claim_kind"] == "observational_effect" and r["ci_lo"] is not None:
+                newest.setdefault(str(r["intervention_id"]), r)
+        obs = list(newest.values())
         if obs:
             # Inverse-variance pool, with each estimate's SE read off its placebo 95% interval.
             se = np.array([max((r["ci_hi"] - r["ci_lo"]) / (2 * 1.96), 1e-9) for r in obs])

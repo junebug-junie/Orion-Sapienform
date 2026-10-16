@@ -1,6 +1,6 @@
 """orion-prediction: forecasting, evaluation, and cause-and-effect estimates over Orion's telemetry.
 
-Bus: forecasts on orion:prediction:forecast, monitoring on orion:prediction:alert.
+Bus: forecasts on orion:prediction:forecast. Monitoring alerts are in /health and /series/{id}/live.
 HTTP: health, series + scoreboard, latest forecast, live metrics, ad-hoc backtest, scenario
 (conditional), interventions + effect estimates (observational), switchback experiments
 (experimental), and GET /effects for the best available answer.
@@ -11,11 +11,12 @@ from __future__ import annotations
 import asyncio
 import logging
 from contextlib import asynccontextmanager
+import uuid
 from datetime import datetime
 from typing import Any
 
 from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel, Field
+from pydantic import AwareDatetime, BaseModel, Field
 
 from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import ServiceRef
@@ -136,11 +137,14 @@ async def health() -> dict[str, Any]:
     series = {}
     if e is not None:
         for sid, st in e.state.items():
+            sv = st.served
             series[sid] = {
-                "selected_at": st.selected_at.isoformat() if st.selected_at else None,
-                "assignment": st.selection.assignment if st.selection else None,
-                "served_baseline": st.selection.served_baseline if st.selection else None,
-                "refused_seasonalities": st.refused, "last_select_seconds": st.last_select_seconds,
+                "selected_at": sv.selected_at.isoformat() if sv else None,
+                "next_select_at": st.next_select_at.isoformat() if st.next_select_at else None,
+                "assignment": sv.selection.assignment if sv else None,
+                "served_baseline": sv.selection.served_baseline if sv else None,
+                "refused_seasonalities": list(sv.refused) if sv else None,
+                "last_select_seconds": st.last_select_seconds,
                 "last_input_ts": st.last_input_ts.isoformat() if st.last_input_ts else None,
                 "alerts": st.alerts,
             }
@@ -206,12 +210,12 @@ async def post_scenario(body: ScenarioBody) -> dict[str, Any]:
 
 class InterventionBody(BaseModel):
     action: str = Field(..., pattern=r"^[a-z0-9_.:-]{1,120}$")
-    started_at: datetime
-    ended_at: datetime
+    started_at: AwareDatetime
+    ended_at: AwareDatetime
     source: str = Field(..., min_length=1, max_length=80)
     notes: str = Field("", max_length=2000)
     arm: str | None = Field(None, pattern=r"^(on|off)$")
-    experiment_id: str | None = None
+    experiment_id: uuid.UUID | None = None
 
 
 @app.post("/interventions")
@@ -220,7 +224,7 @@ async def post_intervention(body: InterventionBody) -> dict[str, Any]:
     if (body.arm is None) != (body.experiment_id is None):
         raise HTTPException(422, "arm and experiment_id go together")
     return await _causal(effects.log_intervention, body.action, body.started_at, body.ended_at, body.source,
-                         body.notes, body.arm, body.experiment_id)
+                         body.notes, body.arm, str(body.experiment_id) if body.experiment_id else None)
 
 
 @app.get("/interventions")
@@ -231,7 +235,7 @@ async def get_interventions(action: str | None = None, limit: int = 100) -> dict
 
 
 class EstimateBody(BaseModel):
-    intervention_id: str
+    intervention_id: uuid.UUID
     series_id: str
     pre_days: float = Field(3.0, ge=1, le=7)
     lag_min: int = Field(30, ge=0, le=720)
@@ -240,7 +244,7 @@ class EstimateBody(BaseModel):
 @app.post("/effects/estimate")
 async def post_estimate(body: EstimateBody) -> dict[str, Any]:
     _ready()
-    return await _causal(effects.estimate_intervention, body.intervention_id, body.series_id, body.pre_days,
+    return await _causal(effects.estimate_intervention, str(body.intervention_id), body.series_id, body.pre_days,
                          body.lag_min)
 
 
@@ -256,7 +260,7 @@ async def experiment_guard(series_id: str) -> dict[str, Any]:
 class DesignBody(BaseModel):
     action: str = Field(..., pattern=r"^[a-z0-9_.:-]{1,120}$")
     series_id: str
-    start_at: datetime
+    start_at: AwareDatetime
     block_min: int = Field(20, ge=5, le=240)
     n_blocks: int = Field(8, ge=8, le=96)
     burn_in_min: int = Field(5, ge=0, le=120)
@@ -271,9 +275,9 @@ async def post_design(body: DesignBody) -> dict[str, Any]:
 
 
 @app.post("/experiments/{experiment_id}/analyze")
-async def post_analyze(experiment_id: str) -> dict[str, Any]:
+async def post_analyze(experiment_id: uuid.UUID) -> dict[str, Any]:
     _ready()
-    return await _causal(effects.analyze_experiment, experiment_id)
+    return await _causal(effects.analyze_experiment, str(experiment_id))
 
 
 @app.get("/effects/{action}")

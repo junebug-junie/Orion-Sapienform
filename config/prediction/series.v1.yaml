@@ -32,8 +32,9 @@ series:
       # Switchback experiments may start only while this probability is under max_probability.
       - {name: experiment_guard, value: 32.0, window: 30min, max_probability: 0.05}
     covariates: [athena.chassis_watts, athena.cabinet_cooling_watts]
-    # hardware-watch reads orion:prediction:forecast exceedance next (phase 2); not wired yet.
-    consumers: [prediction-scoreboard, causal-effects]
+    # hardware-watch shows the "shed" exceedance beside each reflex decision (observe-only). Exceedance
+    # is on the 5-min MEAN, so it understates a single raw reading crossing 34 C.
+    consumers: [hardware-watch, prediction-scoreboard, causal-effects]
 
   - series_id: athena.chassis_watts
     role: covariate

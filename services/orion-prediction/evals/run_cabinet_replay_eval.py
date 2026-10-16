@@ -38,11 +38,11 @@ from app.series import load_registry  # noqa: E402
 FIXTURE = Path(__file__).resolve().parent / "fixtures" / "cabinet_5min.csv.gz"
 
 
-def load(col: str, spec) -> pd.Series:
+def load(col: str, spec, fill: bool = True) -> pd.Series:
     with gzip.open(FIXTURE, "rt") as fh:
         df = pd.read_csv(fh)
     ts = pd.to_datetime(df["bucket_start"], utc=True)
-    return to_grain(zip(ts, df[col].astype(float)), spec.grain_min, spec.agg, spec.max_fill_min)
+    return to_grain(zip(ts, df[col].astype(float)), spec.grain_min, spec.agg, spec.max_fill_min if fill else 0)
 
 
 def main() -> int:
@@ -54,14 +54,16 @@ def main() -> int:
     reg = load_registry(REPO / "config" / "prediction" / "series.v1.yaml")
     spec = reg.get("athena.cabinet_temp_c")
     y = load("cabinet_temp_c", spec)
+    actuals = load("cabinet_temp_c", spec, fill=False).reindex(y.index)
     train = training_slice(y, spec)
     usable, refused = split_seasonalities(spec, len(train))
     zoo = build_models(spec, usable)
     step = args.step_min // spec.grain_min
     results, timing = {}, {}
-    for name, model in zoo.items():
+    for name in zoo:
         t0 = time.monotonic()
-        results[name] = run_backtest(y, spec, model, args.windows, step)
+        results[name] = run_backtest(y, spec, name, lambda u, n=name: build_models(spec, u)[n], args.windows, step,
+                                     actuals=actuals)
         timing[name] = time.monotonic() - t0
     sel = select_champion(results, spec)
     h = spec.max_horizon_steps

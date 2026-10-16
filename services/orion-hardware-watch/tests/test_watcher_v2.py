@@ -403,3 +403,23 @@ def test_forecast_for_another_series_or_an_older_origin_is_ignored_and_old_ones_
     w.note_forecast(_forecast(origin_sec=0, p=0.9))       # out-of-order delivery: keep the newer origin
     view = w.forecast_view(T0 + timedelta(seconds=1000))
     assert view["probability"] == 0.2 and view["stale"] is True
+
+
+def test_naive_timestamp_forecast_is_refused_by_the_schema():
+    from orion.schemas.prediction import PredictionForecastV1
+    with pytest.raises(ValidationError):
+        PredictionForecastV1(series_id="athena.cabinet_temp_c", model="m", served_baseline=True, run_id="r",
+                             issued_at=datetime(2026, 10, 15, 12, 0), origin_ts=datetime(2026, 10, 15, 12, 0),
+                             grain_min=5, steps=[])
+
+
+def test_a_forecast_view_that_raises_cannot_stop_the_reflex(monkeypatch):
+    w, store, rec, clock = make()
+    feed_cooling(store, -4000, 1000, varying)
+    cab(store, -1800, 0, 34.2)
+    w.note_forecast(_forecast())
+    monkeypatch.setattr(w, "_forecast_view", lambda now: (_ for _ in ()).throw(TypeError("bad forecast")))
+    at(clock, 0)
+    go(w.tick())
+    assert [(s.active, s.reason) for s in reflex(rec)] == [(True, "cabinet_hot")]
+    assert w.reflex_snapshot()["forecast"] is None

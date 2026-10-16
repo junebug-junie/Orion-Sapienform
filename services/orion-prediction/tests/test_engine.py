@@ -188,7 +188,7 @@ def test_restart_restores_the_stored_selection_instead_of_reselecting():
     asyncio.run(fresh.tick(_sync))
     assert len(store.runs) == n_runs
     st = fresh.state["test.temp"]
-    assert st.selection is not None and st.residuals["champion"].shape[1] == spec.max_horizon_steps
+    assert st.served is not None and st.served.residuals["champion"].shape[1] == spec.max_horizon_steps
 
 
 def test_degenerate_output_is_refused_and_alerted():
@@ -214,3 +214,42 @@ def test_live_metrics_compare_champion_to_baseline_on_the_same_origins():
     live = eng.live_metrics(spec, end + timedelta(minutes=1))
     assert live["horizons"]["60"]["rel_mae_vs_baseline"] == pytest.approx(0.5)
     assert live["rel_mae_vs_baseline_24h"] == pytest.approx(0.5)
+
+
+def test_restore_refuses_a_selection_that_no_longer_fits_the_registry():
+    reg, spec, s, store, end = _setup()
+    clock = Clock(end + timedelta(seconds=90))
+    asyncio.run(_engine(reg, store, clock, []).tick(_sync))
+    changed = parse_registry(spec_doc(train_window="10d", horizons=["5min", "1h", "12h"]))
+    fresh = _engine(changed, store, clock, [])
+    assert fresh.restore(changed.get("test.temp")) is False
+
+
+def test_build_forecast_refuses_stale_input_even_outside_issue():
+    reg, spec, s, store, end = _setup()
+    clock = Clock(end + timedelta(seconds=90))
+    eng = _engine(reg, store, clock, [])
+    asyncio.run(eng.tick(_sync))
+    later = end + timedelta(hours=3)
+    series = eng.load_series(spec, later, timedelta(days=10))
+    with pytest.raises(engine_mod.InputStale):
+        eng.build_forecast(spec, series, eng.latest_complete_bucket(spec, later), later)
+
+
+def test_one_series_failing_does_not_stop_the_others():
+    doc = spec_doc(train_window="10d")
+    other = dict(doc["series"][0], series_id="test.other")
+    reg = parse_registry({"version": 1, "series": [doc["series"][0], other]})
+    _, spec, s, store, end = _setup()
+    real_points = store.points
+
+    def points(sp, since, until=None):
+        if sp.series_id == "test.temp":
+            raise ConnectionError("pg down")
+        return real_points(sp, since, until)
+    store.points = points
+    eng = _engine(reg, store, Clock(end + timedelta(seconds=90)), [])
+    asyncio.run(eng.tick(_sync))
+    assert "test.temp" not in {f["series_id"] for f in store.forecasts}
+    assert {f["series_id"] for f in store.forecasts} == {"test.other"}
+    assert "selection_failed" in eng.state["test.temp"].alerts or "tick_failed" in eng.state["test.temp"].alerts

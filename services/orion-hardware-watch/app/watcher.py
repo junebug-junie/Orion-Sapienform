@@ -219,11 +219,23 @@ class Watcher:
         what the 34 C reflex actually did. It never sheds, and never stops a shed."""
         if fc.series_id != self.s.forecast_series:
             return False
-        if self._forecast is None or fc.origin_ts >= self._forecast.origin_ts:
+        try:
+            newer = self._forecast is None or fc.origin_ts >= self._forecast.origin_ts
+        except TypeError:   # timestamps that cannot be compared: keep what we have
+            return False
+        if newer:
             self._forecast = fc
         return True
 
     def forecast_view(self, now: datetime) -> dict[str, Any] | None:
+        """Never raises: a bad forecast must not be able to break the reflex tick or /health."""
+        try:
+            return self._forecast_view(now)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("hardware_watch_forecast_view_failed err=%s", str(exc)[:200])
+            return None
+
+    def _forecast_view(self, now: datetime) -> dict[str, Any] | None:
         fc = self._forecast
         if fc is None:
             return None

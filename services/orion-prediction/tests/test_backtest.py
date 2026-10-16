@@ -107,10 +107,52 @@ def test_real_backtest_loop_on_synthetic_daily_series_prefers_seasonal_structure
     s = daily_series(10, amp=1.5, noise=0.05, seed=7)
     usable, refused = split_seasonalities(sp, 6 * 288)
     assert refused == []
-    zoo = build_models(sp, usable)
-    res = {n: run_backtest(s, sp, zoo[n], 12, 36) for n in ("naive", "seasonal_naive", "mstl_ets")}
+    res = {n: run_backtest(s, sp, n, lambda u, n=n: build_models(sp, u)[n], 12, 36)
+           for n in ("naive", "seasonal_naive", "mstl_ets")}
     assert all(r.n_windows == 12 for r in res.values())
     sel = select_champion(res, sp)
     # A clean daily sine: persistence is fine at 5 min but loses badly at 6 h to anything seasonal.
     assert sel.metrics["naive"]["360"]["mae"] > sel.metrics["seasonal_naive"]["360"]["mae"]
     assert sel.baseline_assignment[360] == "seasonal_naive"
+
+
+def test_gate_is_paired_a_model_that_fails_the_hard_windows_cannot_win():
+    # Review repro: candidate is 1.5x worse than naive on shared windows but NaN on the hard ones.
+    sp = spec(horizons=["5min"])
+    h = sp.max_horizon_steps
+    rng = np.random.default_rng(11)
+    naive = rng.normal(0, 0.1, (30, h))
+    naive[:20] *= 10                       # 20 hard windows
+    cand = naive * 1.5
+    cand[:20] = np.nan                     # candidate "fails" exactly there
+    sel = select_champion({"naive": _result("naive", naive), "seasonal_naive": _result("seasonal_naive", naive * 3),
+                           "cand": _result("cand", cand)}, sp)
+    m = sel.metrics["cand"]["5"]
+    assert m["rel_mae"] > 1.4 and m["n_paired"] == 10
+    assert sel.assignment[5] == "naive"
+
+
+def test_gate_refuses_a_good_model_that_skipped_too_many_windows():
+    sp = spec(horizons=["5min"])
+    h = sp.max_horizon_steps
+    naive = np.random.default_rng(12).normal(0, 1.0, (40, h))
+    cand = naive * 0.5
+    cand[:6] = np.nan                      # 34/40 = 85% < 90%
+    sel = select_champion({"naive": _result("naive", naive), "seasonal_naive": _result("seasonal_naive", naive * 3),
+                           "cand": _result("cand", cand)}, sp)
+    assert sel.metrics["cand"]["5"]["rel_mae"] < 1 and sel.assignment[5] == "naive"
+
+
+def test_backtest_decides_seasonalities_per_window_and_scores_against_real_actuals():
+    sp = spec(horizons=["5min"], train_window="10d", seasonalities=[{"name": "weekly", "period": "7d"}])
+    s = daily_series(17, seed=13)
+    seen = []
+
+    def make(usable):
+        seen.append(tuple(x.name for x in usable))
+        return build_models(sp, usable)["naive"]
+    actuals = s.copy()
+    actuals.iloc[-200:] = np.nan             # gaps the filled series would have hidden
+    r = run_backtest(s, sp, "naive", make, 20, 36, actuals=actuals)
+    assert () in seen                        # early windows: under 14 days of training -> no weekly
+    assert np.isnan(r.residuals[-1, 0])      # newest window's actual is a real gap -> no residual

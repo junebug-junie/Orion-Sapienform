@@ -10,7 +10,9 @@ every horizon is a baseline. Quantiles are split-conformal from the served model
 residual paths, not the models' internal intervals.
 
 ``exceedance.probability`` is the share of backtest residual *paths* that, added to this forecast,
-reach the threshold at any step inside the window. ``None`` means too few complete residual paths
+reach the threshold at any step inside the window. It is about the series' own aggregate (for the
+cabinet: 5-minute MEAN temperature), so it understates the chance that a single raw reading
+crosses the line, which is what the 34 C reflex acts on. ``None`` means too few complete residual paths
 to say -- never read it as 0.
 
 Monitoring alerts are not a bus event (nothing would consume one): they are in orion-prediction's
@@ -19,10 +21,9 @@ Monitoring alerts are not a bus event (nothing would consume one): they are in o
 
 from __future__ import annotations
 
-from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
 
 PREDICTION_FORECAST_CHANNEL = "orion:prediction:forecast"
 PREDICTION_FORECAST_KIND = "prediction.forecast.v1"
@@ -31,7 +32,7 @@ PREDICTION_FORECAST_KIND = "prediction.forecast.v1"
 class PredictionStepV1(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    target_ts: datetime
+    target_ts: AwareDatetime
     horizon_min: int = Field(..., ge=1)
     point: float
     # Quantile level as a string key ("0.1") -> value. Monotone non-decreasing in level.
@@ -55,8 +56,8 @@ class PredictionForecastV1(BaseModel):
     model: str
     served_baseline: bool
     run_id: str
-    issued_at: datetime
-    origin_ts: datetime  # start of the last observed grain bucket
+    issued_at: AwareDatetime
+    origin_ts: AwareDatetime  # start of the last complete grain bucket
     grain_min: int = Field(..., ge=1)
     claim_kind: Literal["forecast"] = "forecast"
     steps: list[PredictionStepV1]

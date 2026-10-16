@@ -17,6 +17,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any, Iterable, Mapping, Optional, Sequence
 
+from orion.personality.situation import SituationInputs
 from orion.personality.graph import CHOICE_LANE, EvidenceRow, HistoryRow, Node, choice_style_from_rows, project_frame
 from orion.schemas.personality import FRAME_MAX_DISPOSITIONS, PersonalityFrameV1
 
@@ -220,6 +221,31 @@ class PersonalityStore:
                     # that stops committing reads as stale to every lane (cue max_age).
                     await cur.execute(UPSERT_CURSOR_SQL, {"source": TICK_HEARTBEAT, "at": w.now,
                                                           "ref": None, "now": w.now})
+
+    async def load_situation_inputs(self, since: datetime, until: datetime) -> SituationInputs:
+        """Temporal Self's stored arousal transitions and company arcs covering [since, until], for
+        stamping each evidence row with the situation it happened in. Read-only. Includes the last
+        transition before ``since`` so the first row has a level. No row cap: a cap would silently
+        give every later row the capped row's level, and the volume is tiny (~20 transitions and a
+        few dozen company arcs a day; 56 transitions in all as of 2026-10-16)."""
+        async with self._pool.connection() as conn:
+            async with conn.transaction():
+                await conn.execute("SET TRANSACTION READ ONLY")
+                await conn.execute(f"SET LOCAL statement_timeout = '{STATEMENT_TIMEOUT}'")
+                arousal = await (await conn.execute(
+                    "(SELECT occurred_at, label FROM temporal_self_event WHERE source_kind = 'arousal_transition' "
+                    "AND occurred_at < %(since)s ORDER BY occurred_at DESC LIMIT 1) UNION ALL "
+                    "(SELECT occurred_at, label FROM temporal_self_event WHERE source_kind = 'arousal_transition' "
+                    "AND occurred_at >= %(since)s AND occurred_at <= %(until)s ORDER BY occurred_at)",
+                    {"since": since, "until": until})).fetchall()
+                company = await (await conn.execute(
+                    "SELECT began_at, ended_at FROM temporal_self_arc WHERE kind = 'company' "
+                    "AND began_at <= %(until)s AND (ended_at IS NULL OR ended_at > %(since)s) "
+                    "ORDER BY began_at", {"since": since, "until": until})).fetchall()
+        return SituationInputs(
+            arousal=[(r["occurred_at"], str(r["label"] or "")) for r in arousal],
+            company=[(r["began_at"], r["ended_at"]) for r in company],
+        )
 
     # --- reads for the routes ------------------------------------------------------------------
 

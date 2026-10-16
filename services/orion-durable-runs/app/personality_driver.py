@@ -23,11 +23,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 from typing import Any, Awaitable, Callable, Optional, Sequence
 
 from orion.personality.graph import Evidence, FoldResult, Node, apply_fade, fold, seed_nodes
+from orion.personality.situation import situation_at
 
 from app.personality_sources import (
     READ_LAG_SEC,
@@ -200,6 +201,21 @@ class PersonalityDriver:
         async with self._lock:
             return await self._tick()
 
+    async def _with_situation(self, evidence: list[Evidence], warnings: list[str]) -> list[Evidence]:
+        """Stamp ``meta.situation`` (arousal, day phase, company at the row's own time) onto new
+        evidence. Recorded only (CAPS if-then data for later situation subnodes); fail-open: if the
+        Temporal Self tables cannot be read the evidence still folds, without a situation."""
+        if not evidence:
+            return evidence
+        try:
+            times = [e.occurred_at for e in evidence]
+            inputs = await self._store.load_situation_inputs(min(times), max(times))
+            return [replace(e, meta={**dict(e.meta or {}), "situation": situation_at(e.occurred_at, inputs)})
+                    for e in evidence]
+        except Exception as exc:  # noqa: BLE001 - the situation is an annotation, never a gate
+            warnings.append(f"situation_unavailable:{type(exc).__name__}")
+            return evidence
+
     async def _tick(self) -> dict:
         now = self._now()
         hi = now - self._lag
@@ -266,6 +282,8 @@ class PersonalityDriver:
             if was_held:
                 held.append(name)
                 warnings.append(f"embed_failed:{name}")
+
+        evidence = await self._with_situation(evidence, warnings)
 
         input_ids = {n.disposition_id for n in nodes} | {n.disposition_id for n in (seeded.nodes if seeded else [])}
         base = list(nodes) + (list(seeded.nodes) if seeded else [])

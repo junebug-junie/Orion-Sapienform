@@ -148,6 +148,6 @@ cd /mnt/scripts/Orion-Sapienform && scripts/safe_docker_build.sh orion-thought u
 
 ## PR link
 
-(filled in after push)
+https://github.com/junebug-junie/Orion-Sapienform/pull/2724
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)
